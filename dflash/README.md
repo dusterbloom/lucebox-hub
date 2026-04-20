@@ -10,8 +10,9 @@
 
 <p align="center">
   <strong>The first GGUF port of DFlash speculative decoding.</strong><br/>
-  Qwen3.5-27B at up to 135.8 tok/s (peak config: DDTree budget=22 + f16 intermediate) on a single RTX 3090. 128K context on 24 GB.<br/>
-  3.48× faster than chain speculative decoding, 2.9× faster than SGLang AWQ.<br/><br/>
+  Qwen3.5-27B at up to 210 tok/s<sup>*</sup> on a single RTX 3090 (HumanEval 10-prompt bench: 129.5 tok/s mean, 158.4 tok/s peak at DDTree budget=22). 128K context on 24 GB.<br/>
+  3.43× faster than autoregressive (+15% over chain spec decoding), 2.8× faster than SGLang AWQ.<br/>
+  <sub><sup>*</sup>Demo run: 207.6 tok/s DFlash vs 38.0 tok/s AR (5.46×).</sub><br/><br/>
   <a href="https://lucebox.com/blog/dflash">Blog post</a> · <a href="RESULTS.md">Benchmarks</a> · <a href="https://discord.gg/yHfswqZmJQ">Discord</a> · <a href="https://lucebox.com">lucebox.com</a>
 </p>
 
@@ -23,16 +24,16 @@
 
 ```
                    AR (tok/s)   DFlash (tok/s)   Speedup
-HumanEval              37.4         130.2          3.48x
-Math500                37.4         111.2          2.97x
-GSM8K                  37.6          97.0          2.58x
+HumanEval             37.78        129.52          3.43x
+Math500               37.71        110.51          2.93x
+GSM8K                 37.65         96.15          2.55x
 ```
 
 > Consumer GPUs can run 27B models at chat-grade speed without multi-GPU, without batching, without quantization compromises. The bottleneck was never hardware. It was the decoding algorithm.
 
 ## The gap we filled
 
-On a 24 GB RTX 3090 with Q4_K_M weights, autoregressive decode of Qwen3.5-27B hits ~38 tok/s regardless of framework. Every token reads the full model from VRAM.
+On a 24 GB RTX 3090 with Q4_K_M weights, autoregressive decode of Qwen3.5-27B hits ~37.7 tok/s regardless of framework. Every token reads the full model from VRAM.
 
 Speculative decoding breaks that ceiling: a tiny draft proposes multiple tokens per step, the target verifies them in one forward. [DFlash (z-lab, 2025)](https://arxiv.org/abs/2502.20762) takes this further with **block-diffusion drafting**: a 5-layer non-causal denoising draft conditioned on captured target hidden states. Accepts ~8 tokens/step vs ~3 for chain EAGLE. The official draft is [`z-lab/Qwen3.5-27B-DFlash`](https://huggingface.co/z-lab/Qwen3.5-27B-DFlash). [DDTree (Ringel & Romano, 2025)](https://arxiv.org/abs/2604.12989) adds tree-structured verify on top, recovering the last 30% of the speedup.
 
@@ -42,7 +43,7 @@ Q4_K_M GGUF (~16 GB) is the largest quantization that fits target + 3.46 GB draf
 
 - ~2000 lines of C++/CUDA on top of ggml (no libllama, no Python runtime)
 - a pinned fork of llama.cpp at [`Luce-Org/llama.cpp@luce-dflash`](https://github.com/Luce-Org/llama.cpp/tree/luce-dflash) that adds three tree-mode ggml ops: `ggml_ssm_conv_tree`, `ggml_gated_delta_net_tree`, `ggml_gated_delta_net_tree_persist`
-- hardcoded for the one model pair, decoding at 130 tok/s
+- hardcoded for the one model pair, decoding at 129.52 tok/s mean (158.40 peak)
 
 ## Results
 
@@ -50,9 +51,9 @@ Qwen3.5-27B Q4_K_M, concurrency=1, n_gen=256, 10 prompts/dataset:
 
 | Task      | AR tok/s | DFlash+DDTree tok/s | AL   | Speedup |
 |-----------|:--------:|:-------------------:|:----:|:-------:|
-| HumanEval | 37.4     | **130.2**           | 8.31 | **3.48×** |
-| Math500   | 37.4     | **111.2**           | 7.04 | **2.97×** |
-| GSM8K     | 37.6     | **97.0**            | 6.14 | **2.58×** |
+| HumanEval | 37.78    | **129.52**          | 8.31 | **3.43×** |
+| Math500   | 37.71    | **110.51**          | 7.04 | **2.93×** |
+| GSM8K     | 37.65    | **96.15**           | 6.14 | **2.55×** |
 
 AR = autoregressive (`test_generate`). DFlash+DDTree = tree verify at budget=22 with fast rollback (`test_dflash`). AL = Acceptance Length, average committed tokens per draft/verify step. Reproduce via `python3 scripts/bench_llm.py`.
 
@@ -60,7 +61,7 @@ AR = autoregressive (`test_generate`). DFlash+DDTree = tree verify at budget=22 
 
 | Prompt length | Prefill time | Decode tok/s |
 |:-------------:|:------------:|:------------:|
-| 520 (HE)      | 0.06 s       | 135          |
+| 520 (HE)      | 0.06 s       | 134.78       |
 | 13K           | 15 s         | 99           |
 | 32K           | 106 s        | 35           |
 | 128K          | ~10 min      | ~15-20 (est) |
@@ -136,7 +137,7 @@ The DeltaNet primitive is already a first-class ggml op (`ggml_gated_delta_net`)
 ## Why not llama.cpp / vLLM / z-lab?
 
 - **llama.cpp**: runs Qwen3.5-27B via GGUF but has no DFlash integration. Chain EAGLE isn't enough; block diffusion + DDTree needs a custom decode loop that bypasses `llama_decode`.
-- **vLLM / SGLang**: Qwen3.5-27B in BF16 is 54 GB, so a single 24 GB card forces a quantized path. GGUF for this arch is broken on SGLang as of 2026-04 and vLLM is dropping GGUF support. AWQ runs on SGLang as plain autoregressive at 47 tok/s but can't host the BF16 draft + DDTree tree state alongside it on 24 GB. Q4_K_M GGUF is the only format that fits the full spec-decode stack; this repo runs it at 130 tok/s, **2.9× faster** than SGLang AWQ autoregressive on the same hardware.
+- **vLLM / SGLang**: Qwen3.5-27B in BF16 is 54 GB, so a single 24 GB card forces a quantized path. GGUF for this arch is broken on SGLang as of 2026-04 and vLLM is dropping GGUF support. AWQ runs on SGLang as plain autoregressive at 46.6 tok/s but can't host the BF16 draft + DDTree tree state alongside it on 24 GB. Q4_K_M GGUF is the only format that fits the full spec-decode stack, this repo runs it at 129.5 tok/s mean (158.4 peak) on HumanEval, **2.8× faster** than SGLang AWQ autoregressive on the same hardware.
 - **z-lab reference**: HuggingFace transformers, H100-only, 60+ GB VRAM.
 
 ## Scope and limits
@@ -150,7 +151,7 @@ Research proof-of-concept, not production.
 - **CUDA sm_86+** only. No Metal, ROCm, multi-GPU.
 - **Q4_K_M target** costs ~30 points of per-position accept vs the paper's BF16. Q5_K_M / Q6_K would recover most of it, if they fit.
 
-Correctness: `test_vs_oracle` validates the draft graph at cos sim 0.9999 vs the PyTorch reference. The target graph matches llama.cpp's `models/qwen35.cpp` semantically and produces bit-identical output to `test_generate` in autoregressive mode.
+Correctness: `test_vs_oracle` validates the draft graph at cos sim 0.999812 vs the PyTorch reference. The target graph matches llama.cpp's `models/qwen35.cpp` semantically and produces bit-identical output to `test_generate` in autoregressive mode.
 
 ## Contributing
 

@@ -32,8 +32,8 @@
     <text x="28" y="232" font-size="11" fill="#8888a0">Qwen3.5-27B Q4_K_M · RTX 3090</text>
 
     <text x="250" y="178" font-size="11" fill="#55556a" letter-spacing="1">SPEEDUP</text>
-    <text x="250" y="212" font-size="28" font-weight="700" fill="#f0d040">3.54×</text>
-    <text x="250" y="232" font-size="11" fill="#8888a0">vs autoregressive · 2.9× SGLang</text>
+    <text x="250" y="212" font-size="28" font-weight="700" fill="#f0d040">3.43×</text>
+    <text x="250" y="232" font-size="11" fill="#8888a0">vs autoregressive · 2.8× SGLang</text>
 
     <text x="410" y="178" font-size="11" fill="#55556a" letter-spacing="1">CONTEXT</text>
     <text x="410" y="212" font-size="28" font-weight="700" fill="#e8e8ed">128K</text>

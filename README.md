@@ -34,7 +34,7 @@ Two projects today, more coming. Each one is a self-contained release with its o
 
 ---
 
-## 01 · Megakernel
+## 01 · Megakernel Qwen3.5 0.8B on RTX 3090
 
 **The first megakernel for hybrid DeltaNet/Attention LLMs.** All 24 layers of Qwen 3.5-0.8B in a single CUDA dispatch, 1.87 tok/J on a 2020 GPU, matching Apple's latest silicon at 2× the throughput.
 
@@ -57,15 +57,15 @@ python final_bench.py
 
 ---
 
-## 02 · DFlash 27B
+## 02 · DFlash DDtree Qwen3.5 27B GGUF on RTX 3090
 
-**First GGUF port of DFlash speculative decoding.** Qwen3.5-27B at up to 135.8 tok/s on a single RTX 3090 (peak config: DDTree budget=22 + f16 intermediate, HE bench mean 130.2) (Q4_K_M target + BF16 draft). 128K context in 24 GB. 3.5× faster than chain speculative decoding, 2.9× faster than SGLang AWQ on the same hardware.
+**First GGUF port of DFlash speculative decoding.** Qwen3.5-27B at up to 210 tok/s on a single RTX 3090 (demo peak 207.6 tok/s DFlash vs 38.0 tok/s AR, 5.46×; HumanEval 10-prompt bench: 129.5 tok/s mean, 158.4 tok/s peak at DDTree budget=22) (Q4_K_M target + BF16 draft). 128K context in 24 GB (HE bench 134.78 tok/s at ctx=131072). 3.43× faster than autoregressive (+15% over chain spec decoding), 2.8× faster than SGLang AWQ on the same hardware.
 
 | Benchmark | AR (tok/s) | DFlash+DDTree (tok/s) | Speedup |
 |-----------|:----------:|:---------------------:|:-------:|
-| **HumanEval** | 37.4 | **130.7** | **3.49×** |
-| Math500 | 37.4 | 111.2 | 2.97× |
-| GSM8K | 37.6 | 97.0 | 2.58× |
+| **HumanEval** | 37.8 | **129.5** | **3.43×** |
+| Math500 | 37.7 | 110.5 | 2.93× |
+| GSM8K | 37.7 | 96.2 | 2.55× |
 
 **The constraint that shaped the project.** AWQ INT4 of Qwen3.5-27B plus the BF16 draft doesn't leave room for the DDTree verify state on a 24 GB card. Q4_K_M GGUF (~16 GB target) is the largest format that fits target + 3.46 GB draft + budget=22 tree state + KV cache in 24 GB on the RTX 3090. Picking it forced a new port on top of ggml, since no public DFlash runtime supports a GGUF target.
 
