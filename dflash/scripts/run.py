@@ -80,7 +80,12 @@ def main():
     im_end_id = tokenizer.encode("<|im_end|>", add_special_tokens=False)
     im_end_id = im_end_id[0] if im_end_id else -1
 
+    args.bin = str(Path(args.bin).resolve())
+    bin_dir = str(Path(args.bin).parent)
+    dll_dir = str(Path(args.bin).parent / "bin")
     env = {**os.environ}
+    if sys.platform == "win32":
+        env["PATH"] = dll_dir + os.pathsep + bin_dir + os.pathsep + env.get("PATH", "")
     if args.kv_q4:
         env["DFLASH27B_KV_Q4"] = "1"
 
@@ -92,18 +97,23 @@ def main():
               file=sys.stderr, flush=True)
 
         r, w = os.pipe()
+        if sys.platform == "win32":
+            import msvcrt
+            os.set_inheritable(w, True)
+            stream_fd_val = int(msvcrt.get_osfhandle(w))
+        else:
+            stream_fd_val = w
         cmd = [args.bin, args.target, draft_path, in_bin,
                str(args.n_gen), out_bin,
                "--fast-rollback", "--ddtree", f"--ddtree-budget={args.budget}",
-               f"--stream-fd={w}"]
+               f"--stream-fd={stream_fd_val}"]
         if sys.platform == "win32":
-            os.set_inheritable(w, True)
             proc = subprocess.Popen(cmd, env=env, close_fds=False,
-                                    stdout=subprocess.DEVNULL,
+                                    stdout=sys.stderr,
                                     stderr=subprocess.PIPE)
         else:
             proc = subprocess.Popen(cmd, pass_fds=(w,), env=env,
-                                    stdout=subprocess.DEVNULL,
+                                    stdout=sys.stderr,
                                     stderr=subprocess.PIPE)
         os.close(w)
 
@@ -126,6 +136,10 @@ def main():
             return
         finally:
             proc.wait()
+            err = proc.stderr.read()
+            if err:
+                sys.stderr.buffer.write(err)
+                sys.stderr.flush()
         print(file=sys.stderr, flush=True)
         print(f"[run] generated {generated} tokens", file=sys.stderr, flush=True)
 

@@ -27,8 +27,19 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
-#include <unistd.h>
 #include <vector>
+
+#if defined(_WIN32)
+#if !defined(NOMINMAX)
+#define NOMINMAX
+#endif
+#if !defined(WIN32_LEAN_AND_MEAN)
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 using namespace dflash27b;
 
@@ -124,8 +135,13 @@ int main(int argc, char ** argv) {
     auto stream_emit = [&](int32_t tok) {
         if (stream_fd < 0) return;
         int32_t v = tok;
+#if defined(_WIN32)
+        DWORD written;
+        WriteFile((HANDLE)(intptr_t)stream_fd, &v, sizeof(v), &written, nullptr);
+#else
         ssize_t n = ::write(stream_fd, &v, sizeof(v));
         (void)n;
+#endif
     };
 
     // ── Load model and cache
