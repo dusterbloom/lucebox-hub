@@ -61,9 +61,20 @@ def run_ar(path):
     return float(m.group(1)) if m else 0.0
 
 
-def run_df(path):
+def _auto_max_ctx(n_prompt):
+    # Auto-fit attention budget: prompt + gen + small verify pad, aligned to
+    # FATTN_KQ_STRIDE=256. Oversizing max_ctx makes attention stride over
+    # unused KV and can cost >20× prefill time (32K prompt + --kv-q4 +
+    # max_ctx=131072 → 1035s vs 38s at max_ctx=32768). See scripts/run.py.
+    pad = 64  # covers q_len=16 + ddtree budget up to 22 with margin
+    return ((n_prompt + N_GEN + pad + 255) // 256) * 256
+
+
+def run_df(path, n_prompt):
+    max_ctx = _auto_max_ctx(n_prompt)
     r = subprocess.run([TEST_DFLASH, TARGET, DRAFT, path, str(N_GEN), "/tmp/df_out.bin",
-                        "--fast-rollback", "--ddtree", f"--ddtree-budget={BUDGET}"],
+                        "--fast-rollback", "--ddtree", f"--ddtree-budget={BUDGET}",
+                        f"--max-ctx={max_ctx}"],
                        capture_output=True, text=True, timeout=300)
     tps = re.search(r"→\s+(\d+\.\d+)\s+tok/s", r.stdout)
     al  = re.search(r"avg commit/step=(\d+\.\d+)", r.stdout)
@@ -89,7 +100,7 @@ def main():
             if n == 0 or n > 3500:
                 continue
             ar = run_ar(path)
-            df, al = run_df(path)
+            df, al = run_df(path, n)
             if ar > 0: ar_tps.append(ar)
             if df > 0: df_tps.append(df); df_al.append(al)
             print(f"  [{i+1:02d}/{N_SAMPLE}] n_tok={n:4d}  AR={ar:6.2f}  DFlash={df:7.2f}  AL={al:5.2f}", flush=True)

@@ -56,6 +56,12 @@ def main():
     ap.add_argument("--system", type=str, default=None)
     ap.add_argument("--kv-q4", action="store_true",
                     help="Q4_0 KV cache (required for max_ctx=131072)")
+    ap.add_argument("--max-ctx", type=int, default=0,
+                    help="Override max KV context (default: auto-fit "
+                         "prompt+n_gen+block, aligned to 256). Passing a "
+                         "value much larger than needed (e.g. 131072 on a "
+                         "16K prompt) massively degrades attention speed "
+                         "because the kernel strides over unused KV.")
     args = ap.parse_args()
 
     prompt_text = args.prompt if args.prompt else sys.stdin.read().strip()
@@ -93,7 +99,18 @@ def main():
         in_bin  = os.path.join(tmp, "prompt.bin")
         out_bin = os.path.join(tmp, "out.bin")
         n_tok = tokenize(tokenizer, text, in_bin)
-        print(f"[run] prompt {n_tok} tokens, streaming up to {args.n_gen} tokens…",
+        # Auto-fit max_ctx: prompt + gen + a small verify pad, aligned to
+        # FATTN_KQ_STRIDE=256. Oversizing this is a performance trap —
+        # attention compute scales with the allocated max_ctx, not the
+        # actual filled kv_len, so a 131072 max_ctx on a 16K prompt runs
+        # attention 8× slower than necessary (verified: 32K prompt with
+        # max_ctx=131072 + --kv-q4 → 1035s prefill vs 38s at max_ctx=32768).
+        if args.max_ctx > 0:
+            max_ctx = args.max_ctx
+        else:
+            pad = 64  # covers q_len=16 + ddtree budget up to 22 with margin
+            max_ctx = ((n_tok + args.n_gen + pad + 255) // 256) * 256
+        print(f"[run] prompt {n_tok} tokens, streaming up to {args.n_gen} tokens, max_ctx={max_ctx}",
               file=sys.stderr, flush=True)
 
         r, w = os.pipe()
@@ -106,6 +123,7 @@ def main():
         cmd = [args.bin, args.target, draft_path, in_bin,
                str(args.n_gen), out_bin,
                "--fast-rollback", "--ddtree", f"--ddtree-budget={args.budget}",
+               f"--max-ctx={max_ctx}",
                f"--stream-fd={stream_fd_val}"]
         if sys.platform == "win32":
             proc = subprocess.Popen(cmd, env=env, close_fds=False,
