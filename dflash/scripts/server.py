@@ -88,8 +88,12 @@ def build_app(target: Path, draft: Path, bin_path: Path, budget: int, max_ctx: i
         prompt = tokenizer.apply_chat_template(
             msgs, tokenize=False, add_generation_prompt=True)
         ids = tokenizer.encode(prompt, add_special_tokens=False)
-        tmp = Path(tempfile.mkstemp(suffix=".bin")[1])
-        with open(tmp, "wb") as f:
+        # mkstemp returns (fd, path). The previous code kept only the
+        # path and discarded fd, leaking 1 file descriptor per request.
+        # os.fdopen() takes ownership of the fd and closes it on __exit__.
+        fd, path = tempfile.mkstemp(suffix=".bin")
+        tmp = Path(path)
+        with os.fdopen(fd, "wb") as f:
             for t in ids:
                 f.write(struct.pack("<i", int(t)))
         return tmp
