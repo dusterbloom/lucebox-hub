@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# setup_system.sh — install system build dependencies for dflash
-# Supports Ubuntu 22.04 (jammy) and 24.04 (noble). Run with sudo or as root.
+# Install system build dependencies for dflash.
+# Ubuntu 22.04 (jammy) and 24.04 (noble). Run with sudo.
 set -euo pipefail
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -42,11 +42,8 @@ apt-get install -y build-essential cmake git git-lfs
 git lfs install --system 2>/dev/null || git lfs install
 ok "Build tools installed."
 
-# ── huggingface-cli (via pipx, installed for the invoking user) ───────────────
+# ── huggingface-cli (pipx, installed for $SUDO_USER not root) ────────────────
 
-# pipx installs CLI tools into an isolated venv and links the binary into
-# ~/.local/bin. We install as $SUDO_USER (the real user) so the tool ends up
-# in their home, not root's.
 REAL_USER="${SUDO_USER:-$USER}"
 
 apt-get install -y pipx
@@ -59,7 +56,6 @@ else
     ok "huggingface-cli installed."
 fi
 
-# Ensure ~/.local/bin is on the user's PATH (pipx ensurepath writes to their shell rc)
 sudo -u "${REAL_USER}" pipx ensurepath --quiet 2>/dev/null || true
 
 # ── CUDA Toolkit ─────────────────────────────────────────────────────────────
@@ -86,16 +82,14 @@ else
     ok "CUDA toolkit installed."
     CUDA_NEWLY_INSTALLED=1
 
-    # ── PATH persistence ──────────────────────────────────────────────────────
-    # Write for bash (and shells that source /etc/profile):
+    # PATH persistence
     BASH_PROFILE=/etc/profile.d/cuda.sh
     if [[ ! -f "${BASH_PROFILE}" ]]; then
         printf 'export PATH=/usr/local/cuda/bin:$PATH\n' > "${BASH_PROFILE}"
         ok "Bash PATH configured via ${BASH_PROFILE}."
     fi
 
-    # Write for zsh (/etc/profile.d is NOT sourced by zsh unless zprofile is
-    # explicitly wired to /etc/profile, which Ubuntu's default zsh config is not):
+    # Ubuntu's default zsh does not source /etc/profile.d, so write zshenv too.
     ZSH_ENV=/etc/zsh/zshenv
     if [[ -d /etc/zsh ]] && ! grep -q 'cuda' "${ZSH_ENV}" 2>/dev/null; then
         printf 'export PATH=/usr/local/cuda/bin:$PATH\n' >> "${ZSH_ENV}"
