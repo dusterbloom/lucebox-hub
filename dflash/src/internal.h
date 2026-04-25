@@ -158,6 +158,24 @@ void free_target_weights(TargetWeights & w);
 
 // ─── Draft weights (z-lab DFlash, bf16) ───────────────────────────
 
+struct DraftHparams {
+    int n_layer       = DFLASH27B_DRAFT_LAYERS;
+    int hidden        = DFLASH27B_TARGET_HIDDEN;
+    int n_head        = DFLASH27B_TARGET_N_HEADS;
+    int n_kv_head     = DFLASH27B_TARGET_N_KV_HEADS;
+    int head_dim      = DFLASH27B_TARGET_HEAD_DIM;
+    int intermediate  = DFLASH27B_TARGET_INTERMEDIATE;
+    int n_target_layers = DFLASH27B_DRAFT_N_TARGET_LAYERS;
+    int block_size    = DFLASH27B_DRAFT_BLOCK_SIZE;
+    int mask_token_id = DFLASH27B_DRAFT_MASK_TOKEN_ID;
+    float rope_theta  = DFLASH27B_ROPE_THETA;
+    float rms_eps     = DFLASH27B_RMS_EPS;
+    float rope_factor       = 1.0f;
+    float rope_beta_fast    = 0.0f;
+    float rope_beta_slow    = 0.0f;
+    int   rope_orig_ctx     = 0;
+};
+
 struct DraftLayer {
     ggml_tensor * attn_norm;
     ggml_tensor * ffn_norm;
@@ -177,10 +195,11 @@ struct DraftWeights {
     ggml_backend_t    backend = nullptr;
     ggml_backend_buffer_t buf = nullptr;
 
-    ggml_tensor *          fc          = nullptr;   // [5*hidden, hidden]
-    ggml_tensor *          hidden_norm = nullptr;   // [hidden]
-    std::vector<DraftLayer> layers;                 // size = 5
-    ggml_tensor *          out_norm    = nullptr;   // [hidden]
+    DraftHparams           hparams;
+    ggml_tensor *          fc          = nullptr;
+    ggml_tensor *          hidden_norm = nullptr;
+    std::vector<DraftLayer> layers;
+    ggml_tensor *          out_norm    = nullptr;
 };
 
 bool load_draft_safetensors(const std::string & path,
