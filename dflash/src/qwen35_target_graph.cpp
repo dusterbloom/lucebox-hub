@@ -592,26 +592,35 @@ static ggml_tensor * build_delta_net_block(
         ? cap->ssm_intermediate_states
         : nullptr;
 
-    // Chunked delta-net path: chain-only (no parent_ids), no per-token
-    // capture (no cap). Ported from llama.cpp
-    // src/models/delta-net-base.cpp::build_delta_net_chunking. At n_tokens=16
-    // and 48 delta-net layers it eliminates the serial per-token loop that
-    // dominates target-verify compute at long ctx. Currently OFF by
-    // default — port produces correct shape but slightly wrong final state,
-    // causing AL degradation and loopy output. Set DFLASH27B_CHUNKED=1 to
-    // opt in for A/B testing while debugging.
-    bool use_chunked = false;
-    if (!parent_ids && !cap && n_seq_tokens > 1) {
+    // Chunked delta-net path: chain-only (no parent_ids). Uses sequential
+    // per-token processing (unrolled ggml loop) instead of the parallel
+    // chunked solve — avoids the strictly-lower D matrix issue that the
+    // reference implementation has.
+    //
+    // Now supports fast-rollback capture (cap != nullptr): the sequential
+    // GDA loop emits per-token ggml_cpy ops into cap->ssm_intermediate_states
+    // (f16 cache buffer) so the spec-decode rollback can restore state without
+    // a replay forward pass. cap->conv_input is already filled above (before
+    // this predicate) regardless of which delta-net path runs.
+    //
+    // Enabled by default for chain verify. Set DFLASH27B_CHUNKED=0 to
+    // disable (falls back to fused ggml_gated_delta_net kernel).
+    bool use_chunked = true;
+    if (!parent_ids && n_seq_tokens > 1) {
         if (const char * s_env = std::getenv("DFLASH27B_CHUNKED")) {
             use_chunked = (std::atoi(s_env) != 0);
         }
+    } else {
+        use_chunked = false;
     }
 
     ggml_tensor * output = nullptr;
     ggml_tensor * new_state = nullptr;
 
     if (use_chunked) {
-        auto r = build_delta_net_chunked(ctx, q_c, k_c, v_c, g_tensor, beta, s);
+        ggml_tensor * inter_cap = (cap && cap->ssm_intermediate_states)
+            ? cap->ssm_intermediate_states : nullptr;
+        auto r = build_delta_net_chunked(ctx, gf, q_c, k_c, v_c, g_tensor, beta, s, inter_cap);
         output    = r.output;
         new_state = r.new_state;
         goto after_delta_net;

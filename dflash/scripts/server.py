@@ -140,10 +140,16 @@ def build_app(target: Path, draft: Path, bin_path: Path, budget: int, max_ctx: i
     if sys.platform == "win32":
         env["PATH"] = dll_dir + os.pathsep + str(Path(bin_abs).parent) + os.pathsep + env.get("PATH", "")
 
-    cmd = [bin_abs, str(target), str(draft), "--daemon",
-           "--fast-rollback", "--ddtree", f"--ddtree-budget={budget}",
-           f"--max-ctx={max_ctx}",
-           f"--stream-fd={stream_fd_val}"]
+    if os.environ.get("LUCE_LINEAR") == "1":
+        cmd = [bin_abs, str(target), str(draft), "--daemon",
+               "--fast-rollback",
+               f"--max-ctx={max_ctx}",
+               f"--stream-fd={stream_fd_val}"]
+    else:
+        cmd = [bin_abs, str(target), str(draft), "--daemon",
+               "--fast-rollback", "--ddtree", f"--ddtree-budget={budget}",
+               f"--max-ctx={max_ctx}",
+               f"--stream-fd={stream_fd_val}"]
     if sys.platform == "win32":
         daemon_proc = subprocess.Popen(cmd, close_fds=False, env=env,
                                        stdin=subprocess.PIPE)

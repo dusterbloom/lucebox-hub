@@ -554,7 +554,13 @@ static bool build_target_step(
         ggml_set_input(sg.attn_mask);
     }
 
-    sg.gf = ggml_new_graph_custom(sg.ctx, 16384, false);
+    // Chunked sequential delta-net path adds ~21 nodes per delta-net layer per token
+    // (19 per-token ops + 2 extra per-token nodes when capture_delta_intermediate is
+    // on: one ggml_view_4d into the ssm_inter_cap buffer and one ggml_cpy).
+    // Base ~3K nodes + 21 * n_delta * n_tokens.  Use conservative 28 * n_delta * n_tokens.
+    const int n_delta_layers = w.n_layer - w.n_layer / w.full_attention_interval;
+    const int graph_cap = 8192 + 28 * n_delta_layers * n_tokens;
+    sg.gf = ggml_new_graph_custom(sg.ctx, graph_cap, false);
 
     QwenGraphInputs gi{};
     gi.inp_embed                  = sg.inp_embed;
@@ -624,7 +630,11 @@ static bool build_target_step_tree(
     ggml_set_name(sg.parent_ids, "parent_ids");
     ggml_set_input(sg.parent_ids);
 
-    sg.gf = ggml_new_graph_custom(sg.ctx, 16384, false);
+    // Chunked sequential delta-net path adds ~18 nodes per delta-net layer per token.
+    // Base ~3K nodes + 18 * n_delta * n_tokens.  Use conservative 24 * n_delta * n_tokens.
+    const int n_delta_layers = w.n_layer - w.n_layer / w.full_attention_interval;
+    const int graph_cap = 4096 + 24 * n_delta_layers * n_tokens;
+    sg.gf = ggml_new_graph_custom(sg.ctx, graph_cap, false);
 
     QwenGraphInputs gi{};
     gi.inp_embed                  = sg.inp_embed;
@@ -691,7 +701,11 @@ static bool build_target_step_tree_reusable(
     ggml_set_name(sg.parent_ids, "parent_ids");
     ggml_set_input(sg.parent_ids);
 
-    sg.gf = ggml_new_graph_custom(sg.ctx, 16384, false);
+    // Chunked sequential delta-net path adds ~18 nodes per delta-net layer per token.
+    // Base ~3K nodes + 18 * n_delta * n_tokens.  Use conservative 24 * n_delta * n_tokens.
+    const int n_delta_layers = w.n_layer - w.n_layer / w.full_attention_interval;
+    const int graph_cap = 4096 + 24 * n_delta_layers * max_n;
+    sg.gf = ggml_new_graph_custom(sg.ctx, graph_cap, false);
 
     QwenGraphInputs gi{};
     gi.inp_embed                  = sg.inp_embed;
