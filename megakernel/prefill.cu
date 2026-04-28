@@ -690,7 +690,7 @@ pf_dn_chunk_phase2(
 //   Two warps (warp_id<2) each compute one 16×16 N-tile via m16n16k16 fragments
 //   over 8 K-iterations. Output stored in s_wmma_d_tile[16][32], then
 //   subtract-u + write to s_d (same f32 layout as scalar path).
-__global__ void __launch_bounds__(DN_PHASE2_BLOCK, 1)
+__global__ void __launch_bounds__(DN_PHASE2_BLOCK, 2)
 pf_dn_chunk_phase2_wmma(
     const float *u_in,
     const float *w_in,
