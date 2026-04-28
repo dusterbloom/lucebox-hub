@@ -880,7 +880,33 @@ pf_dn_chunk_phase2_wmma(
         __syncthreads();
         // ─── /WMMA o_inter qs compute ──────────────────────────────────────
 
-        // Compute output o[c, j] = o_inter + o_intra. qs is now precomputed in s_wmma_tile.
+        // ─── Precompute exp tables (eliminates ~32× redundancy in o-compute) ─
+        // o_inter / o_intra do `expf(cs[c])` and `expf(cs[c] - cs[sp])` per
+        // (c, j) — but the values only depend on (c, sp), not on j. Precompute
+        // 44 unique entries once per chunk into s_qkt's unused upper triangle
+        // and beyond, then look up in the hot loop.
+        //
+        // Layout reuses s_qkt's tail (s_qkt has DN_CHUNK_C * DN_CHUNK_C = 64
+        // entries; we use the upper triangle (sp > c) for s_exp_diff and
+        // place s_exp_cs at the very end via an unused slot — cleaner: use
+        // the diagonal+lower tri positions s_qkt[c, sp] with sp <= c (that's
+        // 36 used slots with QKt's actual data, but QKt's full 64 are loaded
+        // and we read sp <= c only). So s_exp_diff CANNOT collide with s_qkt.
+        // Allocate two private smem arrays via __shared__ inside the kernel
+        // body (they're function-scope statics — safe under __launch_bounds__).
+        __shared__ float s_exp_cs[DN_CHUNK_C];
+        __shared__ float s_exp_diff[DN_CHUNK_C * DN_CHUNK_C];   // s_exp_diff[c*C + sp] for sp <= c
+        if (tid < DN_CHUNK_C) {
+            s_exp_cs[tid] = expf(s_cs[tid]);
+        }
+        if (tid < DN_CHUNK_C * DN_CHUNK_C) {
+            int c = tid / DN_CHUNK_C;
+            int sp = tid % DN_CHUNK_C;
+            s_exp_diff[tid] = (sp <= c) ? expf(s_cs[c] - s_cs[sp]) : 0.f;
+        }
+        __syncthreads();
+
+        // Compute output o[c, j] = o_inter + o_intra. qs in s_wmma_tile, exps tabled.
         for (int ci = tid; ci < DN_CHUNK_C * DN_PHASE2_J_PER_BLOCK; ci += DN_PHASE2_BLOCK) {
             int c = ci / DN_PHASE2_J_PER_BLOCK;
             int j = ci % DN_PHASE2_J_PER_BLOCK;
@@ -888,12 +914,12 @@ pf_dn_chunk_phase2_wmma(
             if (t >= S) continue;
 
             float qs = s_wmma_tile[c * 32 + j];
-            float cs_c = s_cs[c];
-            float o_inter = expf(cs_c) * qs;
+            float o_inter = s_exp_cs[c] * qs;
 
             float o_intra = 0.f;
+            #pragma unroll
             for (int sp = 0; sp <= c; sp++) {
-                float l = expf(cs_c - s_cs[sp]);
+                float l = s_exp_diff[c * DN_CHUNK_C + sp];
                 o_intra += s_qkt[c * DN_CHUNK_C + sp] * l * s_d[sp * DN_PHASE2_J_PER_BLOCK + j];
             }
 
