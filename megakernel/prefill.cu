@@ -721,10 +721,14 @@ pf_dn_chunk_phase2_wmma(
     float *s_qkt   = s_d     + DN_CHUNK_C * DN_PHASE2_J_PER_BLOCK;
     float *s_cs    = s_qkt   + DN_CHUNK_C * DN_CHUNK_C;
     float *s_decay_rem_buf = s_cs + DN_CHUNK_C;
-    float *s_wmma_d_tile   = s_decay_rem_buf + DN_CHUNK_C;   // [16][32] f32 = 16×32 floats
+    float *s_wmma_tile     = s_decay_rem_buf + DN_CHUNK_C;   // [16][32] f32 = 16×32 floats
+                                                             // shared by d-compute (Phase 2) and
+                                                             // o_inter qs (Phase 3); the d output
+                                                             // is consumed before o_inter starts.
     __nv_bfloat16 *s_state_bf16 =
-        reinterpret_cast<__nv_bfloat16 *>(s_wmma_d_tile + 16 * 32);
+        reinterpret_cast<__nv_bfloat16 *>(s_wmma_tile + 16 * 32);
     __nv_bfloat16 *s_w_bf16     = s_state_bf16 + DN_PHASE2_J_PER_BLOCK * DK_B;
+    __nv_bfloat16 *s_Q_bf16     = s_w_bf16     + 16 * DK_B;   // M-padded to 16
 
     // Load state slice for this head and j-range from global (f32).
     for (int ji = tid; ji < DN_PHASE2_J_PER_BLOCK * DN_KEY; ji += DN_PHASE2_BLOCK) {
@@ -772,18 +776,28 @@ pf_dn_chunk_phase2_wmma(
             int d = ci % DK_B;
             s_w_bf16[c * DK_B + d] = __float2bfloat16(0.f);
         }
-        // Load Q and K from qkv_pre → s_Q, s_K with padded stride DK_S
+        // Load Q and K from qkv_pre → s_Q, s_K with padded stride DK_S, ALSO mirror Q to s_Q_bf16.
         for (int ci = tid; ci < DN_CHUNK_C * DN_KEY; ci += DN_PHASE2_BLOCK) {
             int c = ci / DN_KEY;
             int d = ci % DN_KEY;
             int t = t_start + c;
+            float qv, kv;
             if (t < S) {
-                s_Q[c * DK_S + d] = qkv_pre[t * DN_CONV_CH + h * DN_KEY + d];
-                s_K[c * DK_S + d] = qkv_pre[t * DN_CONV_CH + DN_QK_SIZE + h * DN_KEY + d];
+                qv = qkv_pre[t * DN_CONV_CH + h * DN_KEY + d];
+                kv = qkv_pre[t * DN_CONV_CH + DN_QK_SIZE + h * DN_KEY + d];
             } else {
-                s_Q[c * DK_S + d] = 0.f;
-                s_K[c * DK_S + d] = 0.f;
+                qv = 0.f;
+                kv = 0.f;
             }
+            s_Q[c * DK_S + d] = qv;
+            s_K[c * DK_S + d] = kv;
+            s_Q_bf16[c * DK_B + d] = __float2bfloat16(qv);
+        }
+        // Pad s_Q_bf16 rows DN_CHUNK_C..15 with zero (mirror of s_w_bf16 padding).
+        for (int ci = tid; ci < (16 - DN_CHUNK_C) * DK_B; ci += DN_PHASE2_BLOCK) {
+            int c = (ci / DK_B) + DN_CHUNK_C;
+            int d = ci % DK_B;
+            s_Q_bf16[c * DK_B + d] = __float2bfloat16(0.f);
         }
         // Load cs for this chunk [C]
         if (tid < DN_CHUNK_C) {
@@ -813,7 +827,7 @@ pf_dn_chunk_phase2_wmma(
                 mma_sync(c_d, a_w, b_state, c_d);
             }
             // Store this warp's 16×16 N-tile at columns [n_tile*16, n_tile*16+16).
-            store_matrix_sync(s_wmma_d_tile + n_tile * 16, c_d, /*ldc=*/32, mem_row_major);
+            store_matrix_sync(s_wmma_tile + n_tile * 16, c_d, /*ldc=*/32, mem_row_major);
         }
         __syncthreads();
 
@@ -821,7 +835,7 @@ pf_dn_chunk_phase2_wmma(
         for (int ci = tid; ci < DN_CHUNK_C * DN_PHASE2_J_PER_BLOCK; ci += DN_PHASE2_BLOCK) {
             int c = ci / DN_PHASE2_J_PER_BLOCK;
             int j = ci % DN_PHASE2_J_PER_BLOCK;
-            s_d[ci] = s_u[ci] - s_wmma_d_tile[c * 32 + j];
+            s_d[ci] = s_u[ci] - s_wmma_tile[c * 32 + j];
         }
         // ─── /WMMA d compute ───────────────────────────────────────────────
 
@@ -838,18 +852,37 @@ pf_dn_chunk_phase2_wmma(
         }
         __syncthreads();
 
-        // Compute output o[c, j] = o_inter + o_intra (scalar — Phase 3 will WMMA o_inter).
+        // ─── WMMA o_inter qs compute (Phase 3) ─────────────────────────────
+        // qs[c, j] = Σ_d Q[c, d] · state[j, d]  — same shape as d-compute
+        // (M=8 padded to 16, N=32 split as 2 N-tiles of 16, K=128 in 8 K-iters).
+        // Overwrites s_wmma_tile (d-compute output is dead by this point —
+        // s_d was finalized in the subtract-u step, and the QKt sync above
+        // ensures all warps are done reading s_wmma_tile from the d phase).
+        if (warp_id < 2) {
+            int n_tile = warp_id;
+            fragment<matrix_a, 16, 16, 16, __nv_bfloat16, row_major>     a_Q;
+            fragment<matrix_b, 16, 16, 16, __nv_bfloat16, col_major>     b_state;
+            fragment<accumulator, 16, 16, 16, float>                     c_qs;
+            fill_fragment(c_qs, 0.f);
+            #pragma unroll
+            for (int kk = 0; kk < DN_KEY; kk += 16) {
+                load_matrix_sync(a_Q,    s_Q_bf16     + kk,                          DK_B);
+                load_matrix_sync(b_state, s_state_bf16 + n_tile * 16 * DK_B + kk,    DK_B);
+                mma_sync(c_qs, a_Q, b_state, c_qs);
+            }
+            store_matrix_sync(s_wmma_tile + n_tile * 16, c_qs, /*ldc=*/32, mem_row_major);
+        }
+        __syncthreads();
+        // ─── /WMMA o_inter qs compute ──────────────────────────────────────
+
+        // Compute output o[c, j] = o_inter + o_intra. qs is now precomputed in s_wmma_tile.
         for (int ci = tid; ci < DN_CHUNK_C * DN_PHASE2_J_PER_BLOCK; ci += DN_PHASE2_BLOCK) {
             int c = ci / DN_PHASE2_J_PER_BLOCK;
             int j = ci % DN_PHASE2_J_PER_BLOCK;
             int t = t_start + c;
             if (t >= S) continue;
 
-            float qs = 0.f;
-            #pragma unroll
-            for (int i = 0; i < DN_KEY; i++) {
-                qs += s_Q[c * DK_S + i] * s_state[j * DK_S + i];
-            }
+            float qs = s_wmma_tile[c * 32 + j];
             float cs_c = s_cs[c];
             float o_inter = expf(cs_c) * qs;
 
@@ -1510,12 +1543,15 @@ extern "C" void launch_prefill_bf16(
                 + DN_CHUNK_C                         // s_cs
                 + DN_CHUNK_C;                        // s_decay_rem_buf
             constexpr size_t P2_SMEM_BYTES = P2_SMEM_FLOATS * sizeof(float);
-            // WMMA variant adds: s_wmma_d_tile (16×32 f32) + s_state_bf16 (J_per×DN_KEY bf16)
-            //                  + s_w_bf16 (16×DN_KEY bf16, M-padded to 16 for fragment shape).
+            // WMMA variant adds: s_wmma_tile (16×32 f32, shared by d and o_inter qs)
+            //                  + s_state_bf16 (J_per×DN_KEY bf16)
+            //                  + s_w_bf16 (16×DN_KEY bf16, M-padded for fragment shape)
+            //                  + s_Q_bf16 (16×DN_KEY bf16, M-padded for fragment shape).
             constexpr size_t P2_WMMA_EXTRA_BYTES =
-                /*s_wmma_d_tile*/ 16 * 32 * sizeof(float)
+                /*s_wmma_tile  */ 16 * 32 * sizeof(float)
                 + /*s_state_bf16*/ DN_PHASE2_J_PER_BLOCK * DN_KEY * sizeof(__nv_bfloat16)
-                + /*s_w_bf16    */ 16 * DN_KEY * sizeof(__nv_bfloat16);
+                + /*s_w_bf16    */ 16 * DN_KEY * sizeof(__nv_bfloat16)
+                + /*s_Q_bf16    */ 16 * DN_KEY * sizeof(__nv_bfloat16);
             constexpr size_t P2_WMMA_SMEM_BYTES = P2_SMEM_BYTES + P2_WMMA_EXTRA_BYTES;
             // Runtime dispatcher: MEGAKERNEL_DN_PHASE2_WMMA_RUNTIME=1 → WMMA, else scalar.
             static const bool use_wmma_phase2 = []() {
