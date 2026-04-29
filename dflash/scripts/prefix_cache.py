@@ -263,6 +263,11 @@ class PrefixCache:
         self.entries: OrderedDict[bytes, int] = OrderedDict()  # hash → slot_id
         self.next_slot = 0
         self.im_end, self.im_start, self.system_t = _qwen_marker_ids(tokenizer)
+        # Pending eviction: set by prepare_inline_snap when at cap; the old
+        # entry is NOT removed until confirm_inline_snap succeeds.  This ensures
+        # that if the request aborts before confirm runs, the old entry survives
+        # and the daemon slot count stays consistent.
+        self._pending_evict_key: bytes | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -334,13 +339,19 @@ class PrefixCache:
             self.entries.move_to_end(target_key)
             return None   # already cached
 
-        # Pick slot: reuse LRU eviction's slot if at cap, else next free.
+        # Pick slot: when at cap, reserve the LRU slot WITHOUT evicting yet.
+        # The actual eviction is deferred to confirm_inline_snap so that if the
+        # request aborts before confirm runs, the old entry survives and the
+        # daemon slot count stays consistent.
         if len(self.entries) >= self.cap:
-            old_key, old_slot = self.entries.popitem(last=False)
-            slot = old_slot   # daemon will overwrite this slot in-place
+            # Peek at LRU without removing.
+            old_key = next(iter(self.entries))
+            slot = self.entries[old_key]
+            self._pending_evict_key = old_key
         else:
             slot = self.next_slot
             self.next_slot = (self.next_slot + 1) % self.cap
+            self._pending_evict_key = None
 
         return (slot, target_cut)
 
@@ -348,14 +359,33 @@ class PrefixCache:
                              prompt_ids: list[int]) -> None:
         """Register an inline snapshot in the LRU after the daemon has
         successfully fired ``[snap] inline``. Called from the caller after
-        the actual response stream completes."""
+        the actual response stream completes.
+
+        If prepare_inline_snap reserved a slot by displacing an LRU entry,
+        the eviction happens HERE (atomically with the insert), so an aborted
+        request that never reaches confirm leaves the old entry intact.
+        """
         if self.disabled:
             return
+        # Atomically evict the reserved old entry (if any) and insert the new one.
+        if self._pending_evict_key is not None:
+            self.entries.pop(self._pending_evict_key, None)
+            self._pending_evict_key = None
         key = hash_prefix(prompt_ids[:target_cut],
                           self.kv_k_type, self.fa_window)
         self.entries[key] = slot
         print(f"{self.log_prefix} inline-snap committed slot={slot} "
               f"prefix_len={target_cut}", flush=True)
+
+    def abort_inline_snap(self, slot: int) -> None:
+        """Release the reservation made by prepare_inline_snap without
+        evicting the old entry or registering a new one.  Call this from
+        exception paths where the request failed before the daemon snapshot
+        could complete, so the pending eviction is cancelled.
+        """
+        if self.disabled:
+            return
+        self._pending_evict_key = None
 
     # Legacy out-of-band snapshot (kept for backward-compatibility tests
     # that call it directly; new code uses prepare_inline_snap +
