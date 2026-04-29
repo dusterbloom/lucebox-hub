@@ -267,11 +267,15 @@ def build_app(target: Path, draft: Path, bin_path: Path, budget: int, max_ctx: i
             async def sse() -> AsyncIterator[str]:
                 async with daemon_lock:
                     hit = prefix_cache.lookup(prompt_ids)
+                    snap_prep = prefix_cache.prepare_inline_snap(prompt_ids)
                     if hit:
                         slot, _prefix_len = hit
-                        cmd_line = f"RESTORE {slot} {prompt_bin} {gen_len}\n"
+                        cmd_line = f"RESTORE {slot} {prompt_bin} {gen_len}"
                     else:
-                        cmd_line = f"{prompt_bin} {gen_len}\n"
+                        cmd_line = f"{prompt_bin} {gen_len}"
+                    if snap_prep:
+                        cmd_line += f" snap={snap_prep[1]}:{snap_prep[0]}"
+                    cmd_line += "\n"
                     daemon_proc.stdin.write(cmd_line.encode("utf-8"))
                     daemon_proc.stdin.flush()
                     head = {
@@ -298,8 +302,9 @@ def build_app(target: Path, draft: Path, bin_path: Path, budget: int, max_ctx: i
                     finally:
                         try: prompt_bin.unlink()
                         except Exception: pass
-                    if not hit:
-                        await prefix_cache.maybe_snapshot(prompt_ids, token_stream_consumer=_drain_pipe_to_sentinel)
+                    if snap_prep:
+
+                        prefix_cache.confirm_inline_snap(*snap_prep, prompt_ids)
                     tail = {
                         "id": completion_id, "object": "chat.completion.chunk",
                         "created": created, "model": MODEL_NAME,
@@ -314,16 +319,21 @@ def build_app(target: Path, draft: Path, bin_path: Path, budget: int, max_ctx: i
         # Non-streaming: collect all tokens, return one response
         async with daemon_lock:
             hit = prefix_cache.lookup(prompt_ids)
+            snap_prep = prefix_cache.prepare_inline_snap(prompt_ids)
             if hit:
                 slot, _prefix_len = hit
-                cmd_line = f"RESTORE {slot} {prompt_bin} {gen_len}\n"
+                cmd_line = f"RESTORE {slot} {prompt_bin} {gen_len}"
             else:
-                cmd_line = f"{prompt_bin} {gen_len}\n"
+                cmd_line = f"{prompt_bin} {gen_len}"
+            if snap_prep:
+                cmd_line += f" snap={snap_prep[1]}:{snap_prep[0]}"
+            cmd_line += "\n"
             daemon_proc.stdin.write(cmd_line.encode("utf-8"))
             daemon_proc.stdin.flush()
             tokens = list(_token_stream(r_pipe, gen_len))
-            if not hit:
-                await prefix_cache.maybe_snapshot(prompt_ids, token_stream_consumer=_drain_pipe_to_sentinel)
+            if snap_prep:
+
+                prefix_cache.confirm_inline_snap(*snap_prep, prompt_ids)
 
         try: prompt_bin.unlink()
         except Exception: pass
@@ -443,11 +453,15 @@ def build_app(target: Path, draft: Path, bin_path: Path, budget: int, max_ctx: i
                     yield f"event: content_block_start\ndata: {json.dumps(cb_start)}\n\n"
 
                     hit = prefix_cache.lookup(prompt_ids)
+                    snap_prep = prefix_cache.prepare_inline_snap(prompt_ids)
                     if hit:
                         slot, _prefix_len = hit
-                        cmd_line = f"RESTORE {slot} {prompt_bin} {gen_len}\n"
+                        cmd_line = f"RESTORE {slot} {prompt_bin} {gen_len}"
                     else:
-                        cmd_line = f"{prompt_bin} {gen_len}\n"
+                        cmd_line = f"{prompt_bin} {gen_len}"
+                    if snap_prep:
+                        cmd_line += f" snap={snap_prep[1]}:{snap_prep[0]}"
+                    cmd_line += "\n"
                     daemon_proc.stdin.write(cmd_line.encode("utf-8"))
                     daemon_proc.stdin.flush()
 
@@ -465,8 +479,10 @@ def build_app(target: Path, draft: Path, bin_path: Path, budget: int, max_ctx: i
                         try: prompt_bin.unlink()
                         except Exception: pass
 
-                    if not hit:
-                        await prefix_cache.maybe_snapshot(prompt_ids, token_stream_consumer=_drain_pipe_to_sentinel)
+                    if snap_prep:
+
+
+                        prefix_cache.confirm_inline_snap(*snap_prep, prompt_ids)
 
                     yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
 
@@ -483,16 +499,21 @@ def build_app(target: Path, draft: Path, bin_path: Path, budget: int, max_ctx: i
         # Non-streaming
         async with daemon_lock:
             hit = prefix_cache.lookup(prompt_ids)
+            snap_prep = prefix_cache.prepare_inline_snap(prompt_ids)
             if hit:
                 slot, _prefix_len = hit
-                cmd_line = f"RESTORE {slot} {prompt_bin} {gen_len}\n"
+                cmd_line = f"RESTORE {slot} {prompt_bin} {gen_len}"
             else:
-                cmd_line = f"{prompt_bin} {gen_len}\n"
+                cmd_line = f"{prompt_bin} {gen_len}"
+            if snap_prep:
+                cmd_line += f" snap={snap_prep[1]}:{snap_prep[0]}"
+            cmd_line += "\n"
             daemon_proc.stdin.write(cmd_line.encode("utf-8"))
             daemon_proc.stdin.flush()
             tokens = [t async for t in _astream_tokens(r_pipe, gen_len)]
-            if not hit:
-                await prefix_cache.maybe_snapshot(prompt_ids, token_stream_consumer=_drain_pipe_to_sentinel)
+            if snap_prep:
+
+                prefix_cache.confirm_inline_snap(*snap_prep, prompt_ids)
 
         try: prompt_bin.unlink()
         except Exception: pass
