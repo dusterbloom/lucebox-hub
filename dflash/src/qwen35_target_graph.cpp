@@ -337,6 +337,140 @@ void restore_ssm_state(TargetCache & c) {
     }
 }
 
+// ─── Cross-request prefix snapshot (Phase A) ─────────────────────────
+
+bool snapshot_target_cache(const TargetWeights & w,
+                           const TargetCache & cache,
+                           ggml_backend_t backend,
+                           PrefixSnapshot & snap) {
+    const int n_full_attn = w.n_layer / w.full_attention_interval; // 16
+    const int n_delta     = w.n_layer - n_full_attn;               // 48
+
+    // Lazy allocation: only allocate on the first call.
+    if (snap.ctx == nullptr) {
+        const int total_tensors = 2 * n_full_attn + 2 * n_delta + 1; // 65
+        ggml_init_params ip{};
+        ip.mem_size   = (size_t)(total_tensors + 16) * ggml_tensor_overhead();
+        ip.mem_buffer = nullptr;
+        ip.no_alloc   = true;
+        snap.ctx = ggml_init(ip);
+        if (!snap.ctx) { set_last_error("PrefixSnapshot ggml_init failed"); return false; }
+
+        snap.attn_k_snap.assign(n_full_attn, nullptr);
+        snap.attn_v_snap.assign(n_full_attn, nullptr);
+        snap.ssm_state_snap.assign(n_delta, nullptr);
+        snap.conv_state_snap.assign(n_delta, nullptr);
+
+        // Allocate KV snap tensors matching the cache's shapes and types.
+        for (int i = 0; i < n_full_attn; i++) {
+            ggml_tensor * sk = cache.attn_k[i];
+            ggml_tensor * sv = cache.attn_v[i];
+            ggml_tensor * K = ggml_new_tensor_3d(snap.ctx, sk->type, sk->ne[0], sk->ne[1], sk->ne[2]);
+            ggml_tensor * V = ggml_new_tensor_3d(snap.ctx, sv->type, sv->ne[0], sv->ne[1], sv->ne[2]);
+            char name[64];
+            std::snprintf(name, sizeof(name), "snap_cache_k_%d", i); ggml_set_name(K, name);
+            std::snprintf(name, sizeof(name), "snap_cache_v_%d", i); ggml_set_name(V, name);
+            snap.attn_k_snap[i] = K;
+            snap.attn_v_snap[i] = V;
+        }
+
+        // Allocate SSM and conv snap tensors.
+        for (int i = 0; i < n_delta; i++) {
+            ggml_tensor * ss = cache.ssm_state[i];
+            ggml_tensor * cs = cache.conv_state[i];
+            ggml_tensor * S = ggml_new_tensor_3d(snap.ctx, ss->type, ss->ne[0], ss->ne[1], ss->ne[2]);
+            ggml_tensor * C = ggml_new_tensor_2d(snap.ctx, cs->type, cs->ne[0], cs->ne[1]);
+            char name[64];
+            std::snprintf(name, sizeof(name), "snap_ssm_state_%d", i);  ggml_set_name(S, name);
+            std::snprintf(name, sizeof(name), "snap_conv_state_%d", i); ggml_set_name(C, name);
+            snap.ssm_state_snap[i]  = S;
+            snap.conv_state_snap[i] = C;
+        }
+
+        // Allocate target_feat snap tensor.
+        {
+            ggml_tensor * tf = cache.target_feat;
+            snap.target_feat_snap = ggml_new_tensor_2d(snap.ctx, tf->type, tf->ne[0], tf->ne[1]);
+            ggml_set_name(snap.target_feat_snap, "snap_target_feat");
+        }
+
+        snap.buf = ggml_backend_alloc_ctx_tensors(snap.ctx, backend);
+        if (!snap.buf) {
+            set_last_error("ggml_backend_alloc_ctx_tensors failed for PrefixSnapshot");
+            ggml_free(snap.ctx);
+            snap.ctx = nullptr;
+            snap.attn_k_snap.clear();
+            snap.attn_v_snap.clear();
+            snap.ssm_state_snap.clear();
+            snap.conv_state_snap.clear();
+            snap.target_feat_snap = nullptr;
+            return false;
+        }
+    }
+
+    // Copy live cache tensors into snapshot (works for both first call and refreshes).
+    for (int i = 0; i < n_full_attn; i++) {
+        ggml_backend_tensor_copy(cache.attn_k[i], snap.attn_k_snap[i]);
+        ggml_backend_tensor_copy(cache.attn_v[i], snap.attn_v_snap[i]);
+    }
+    for (int i = 0; i < n_delta; i++) {
+        ggml_backend_tensor_copy(cache.ssm_state[i],  snap.ssm_state_snap[i]);
+        ggml_backend_tensor_copy(cache.conv_state[i], snap.conv_state_snap[i]);
+    }
+    ggml_backend_tensor_copy(cache.target_feat, snap.target_feat_snap);
+
+    snap.cur_pos         = cache.cur_pos;
+    snap.last_tok        = cache.last_tok;
+    snap.kv_k_type       = cache.kv_k_type;
+    snap.max_ctx         = cache.max_ctx;
+    snap.target_feat_cap = cache.target_feat_cap;
+
+    return true;
+}
+
+bool restore_target_cache(const PrefixSnapshot & snap, TargetCache & cache) {
+    if (snap.kv_k_type != cache.kv_k_type) {
+        set_last_error("restore_target_cache: kv_k_type mismatch");
+        return false;
+    }
+    if (snap.max_ctx != cache.max_ctx) {
+        set_last_error("restore_target_cache: max_ctx mismatch");
+        return false;
+    }
+
+    const int n_full_attn = (int)snap.attn_k_snap.size();
+    const int n_delta     = (int)snap.ssm_state_snap.size();
+
+    for (int i = 0; i < n_full_attn; i++) {
+        ggml_backend_tensor_copy(snap.attn_k_snap[i], cache.attn_k[i]);
+        ggml_backend_tensor_copy(snap.attn_v_snap[i], cache.attn_v[i]);
+    }
+    for (int i = 0; i < n_delta; i++) {
+        ggml_backend_tensor_copy(snap.ssm_state_snap[i],  cache.ssm_state[i]);
+        ggml_backend_tensor_copy(snap.conv_state_snap[i], cache.conv_state[i]);
+    }
+    ggml_backend_tensor_copy(snap.target_feat_snap, cache.target_feat);
+
+    cache.cur_pos  = snap.cur_pos;
+    cache.last_tok = snap.last_tok;
+
+    return true;
+}
+
+void free_prefix_snapshot(PrefixSnapshot & snap) {
+    if (snap.buf) { ggml_backend_buffer_free(snap.buf); snap.buf = nullptr; }
+    if (snap.ctx) { ggml_free(snap.ctx);                snap.ctx = nullptr; }
+    snap.attn_k_snap.clear();
+    snap.attn_v_snap.clear();
+    snap.ssm_state_snap.clear();
+    snap.conv_state_snap.clear();
+    snap.target_feat_snap = nullptr;
+    snap.cur_pos         = 0;
+    snap.kv_k_type       = GGML_TYPE_COUNT;
+    snap.max_ctx         = 0;
+    snap.target_feat_cap = 0;
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 static ggml_tensor * rms_norm_mul(ggml_context * ctx, ggml_tensor * x,

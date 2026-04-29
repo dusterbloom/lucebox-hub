@@ -1213,18 +1213,82 @@ int main(int argc, char ** argv) {
         std::fflush(stdout);
     }
 
+    constexpr int PREFIX_CACHE_SLOTS = 8;
+    PrefixSnapshot prefix_snapshots[PREFIX_CACHE_SLOTS];   // default-constructed, ctx==nullptr
+
     StepGraph sg;
     bool daemon_first_iter = true;
 
     while (true) {
         std::string prompt_file_str;
+        bool restore_from_slot = false;
+        int  restore_slot_id   = -1;
+
         if (daemon_mode) {
             std::string line;
             if (!std::getline(std::cin, line)) break;
-            char ppath[1024];
-            if (std::sscanf(line.c_str(), "%1023s %d", ppath, &n_gen) != 2) continue;
-            prompt_file_str = ppath;
-            prompt_path = prompt_file_str.c_str();
+
+            // Try keyword commands first.
+            if (line.rfind("SNAPSHOT ", 0) == 0) {
+                int slot = -1;
+                if (std::sscanf(line.c_str() + 9, "%d", &slot) != 1
+                    || slot < 0 || slot >= PREFIX_CACHE_SLOTS) {
+                    std::fprintf(stderr, "[snap] invalid slot %d\n", slot);
+                    continue;
+                }
+                if (!snapshot_target_cache(w, cache, backend, prefix_snapshots[slot])) {
+                    std::fprintf(stderr, "[snap] failed slot=%d: %s\n", slot, dflash27b_last_error());
+                    continue;
+                }
+                std::printf("[snap] slot=%d cur_pos=%d\n", slot, prefix_snapshots[slot].cur_pos);
+                std::fflush(stdout);
+                continue;
+            }
+            if (line.rfind("FREE_SNAPSHOT ", 0) == 0) {
+                int slot = -1;
+                if (std::sscanf(line.c_str() + 14, "%d", &slot) != 1
+                    || slot < 0 || slot >= PREFIX_CACHE_SLOTS) continue;
+                free_prefix_snapshot(prefix_snapshots[slot]);
+                std::printf("[snap] freed slot=%d\n", slot);
+                std::fflush(stdout);
+                continue;
+            }
+            if (line == "LIST_SLOTS") {
+                std::printf("[snap] slots=");
+                bool first = true;
+                for (int i = 0; i < PREFIX_CACHE_SLOTS; i++) {
+                    if (prefix_snapshots[i].ctx != nullptr) {
+                        std::printf("%s%d", first ? "" : ",", i);
+                        first = false;
+                    }
+                }
+                std::printf("\n");
+                std::fflush(stdout);
+                continue;
+            }
+            if (line.rfind("RESTORE ", 0) == 0) {
+                int slot = -1;
+                char ppath[1024];
+                if (std::sscanf(line.c_str() + 8, "%d %1023s %d", &slot, ppath, &n_gen) != 3
+                    || slot < 0 || slot >= PREFIX_CACHE_SLOTS
+                    || prefix_snapshots[slot].ctx == nullptr) {
+                    std::fprintf(stderr, "[snap] RESTORE bad args or empty slot %d\n", slot);
+                    stream_emit(-1);
+                    continue;
+                }
+                prompt_file_str = ppath;
+                prompt_path = prompt_file_str.c_str();
+                restore_from_slot = true;
+                restore_slot_id   = slot;
+                // Fall through into the existing prefill path; the cache reset
+                // and restore happen after the cache rebuild block below.
+            } else {
+                // Legacy: bare `<prompt_file> <n_gen>` line — full reset path.
+                char ppath[1024];
+                if (std::sscanf(line.c_str(), "%1023s %d", ppath, &n_gen) != 2) continue;
+                prompt_file_str = ppath;
+                prompt_path = prompt_file_str.c_str();
+            }
 
             // Rebuild cache + step graph between requests so KV / SSM / conv /
             // target_feat ring start fresh. Weights stay resident.
@@ -1239,6 +1303,18 @@ int main(int argc, char ** argv) {
                 }
             }
             daemon_first_iter = false;
+
+            // After cache is fresh, optionally restore from snapshot.
+            if (restore_from_slot) {
+                if (!restore_target_cache(prefix_snapshots[restore_slot_id], cache)) {
+                    std::fprintf(stderr, "[snap] restore failed: %s\n", dflash27b_last_error());
+                    stream_emit(-1);
+                    continue;
+                }
+                std::printf("[snap] restored slot=%d cur_pos=%d\n",
+                            restore_slot_id, cache.cur_pos);
+                std::fflush(stdout);
+            }
         }
 
         auto prompt = read_int32_file(prompt_path);
@@ -1435,8 +1511,9 @@ int main(int argc, char ** argv) {
     std::vector<float>    pf_embed_buf;
     std::vector<int32_t>  pf_pos_buf;
     std::vector<float>    pf_logits_buf;
-    const int prompt_len = (int)prompt.size();
-    for (int start = 0; start < prompt_len; start += PREFILL_UBATCH) {
+    const int prompt_len     = (int)prompt.size();
+    const int prefill_start  = cache.cur_pos;   // 0 for fresh cache; >0 after snapshot restore
+    for (int start = prefill_start; start < prompt_len; start += PREFILL_UBATCH) {
         const int n_tokens = std::min(PREFILL_UBATCH, prompt_len - start);
         const int kv_len   = start + n_tokens;
         const bool pf_with_mask = (g_kq_stride_pad > KQ_MASK_PAD) || (n_tokens > 1);
@@ -1486,6 +1563,14 @@ int main(int argc, char ** argv) {
         committed = start + n_tokens;
     }
     auto t_pf1 = std::chrono::steady_clock::now();
+    // If prefill was a no-op due to a snapshot RESTORE (cache.cur_pos already
+    // covers the prompt), seed last_tok from the restored cache so the decode
+    // loop has a valid starting token. Detected by prefill_start == prompt_len:
+    // the for loop ran zero iterations and `committed` stayed at 0.
+    if (last_tok == -1 && cache.last_tok != -1 && prefill_start == prompt_len) {
+        last_tok  = cache.last_tok;
+        committed = prompt_len;
+    }
     std::printf("[prefill] %d tokens in %.2f s, last_tok=%d\n",
                 committed,
                 std::chrono::duration<double>(t_pf1 - t_pf0).count(),
@@ -2355,6 +2440,13 @@ int main(int argc, char ** argv) {
     std::printf("\n");
 
     if (daemon_mode) {
+        // Update cache.cur_pos / cache.last_tok to reflect end-of-generation
+        // state so a subsequent SNAPSHOT command captures the correct boundary.
+        // Both fields are otherwise unused by the prefill/decode hot path
+        // (kv_start is tracked separately, last_tok is a local) — they exist
+        // for cross-request snapshot accounting.
+        cache.cur_pos  = (int)out_all.size();
+        cache.last_tok = last_tok;
         stream_emit(-1);
     } else {
         if (out_path) write_int32_file(out_path, out_all);
@@ -2363,6 +2455,9 @@ int main(int argc, char ** argv) {
 
     } // end while(true)
 
+    if (daemon_mode) {
+        for (int i = 0; i < PREFIX_CACHE_SLOTS; i++) free_prefix_snapshot(prefix_snapshots[i]);
+    }
     step_graph_destroy(sg);
     free_target_cache(cache);
     free_draft_weights(dw);
