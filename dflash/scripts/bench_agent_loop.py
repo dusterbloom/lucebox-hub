@@ -37,7 +37,7 @@ ROOT          = Path(__file__).resolve().parent.parent.parent
 TARGET        = Path.home() / "models/qwen3.6-27b/Qwen3.6-27B-UD-Q4_K_XL.gguf"
 DRAFT         = Path.home() / "models/qwen3.6-27b-dflash"
 BIN           = ROOT / "dflash/build/test_dflash"
-SERVER_SCRIPT = ROOT / "dflash/scripts/server.py"
+SERVER_SCRIPT = ROOT / "dflash/scripts/server_tools.py"
 
 
 def _default_session_dir() -> Path:
@@ -92,58 +92,69 @@ SYSTEM_PROMPT = (
 )
 
 
-def _tool_result_text(blk: dict) -> str:
-    raw = blk.get("content")
-    if isinstance(raw, list):
-        return "".join(
-            c.get("text", "") for c in raw
-            if isinstance(c, dict) and c.get("type") == "text"
-        )
-    return str(raw) if raw else ""
-
-
 def _to_openai_messages(turns: list[dict]) -> list[dict]:
     """Convert Anthropic-format turns → OpenAI messages array.
 
-    PR #59's `dflash/scripts/server.py` (and its Anthropic endpoint) only
-    reads message `content`, ignoring `tool_calls` / role=tool, and its
-    pydantic schema requires `content`. To exercise it against real
-    transcripts we flatten tool I/O into text within plain user/assistant
-    messages: tool_use → `<tool_call>...</tool_call>` text inside the
-    assistant content, tool_result → `<tool_response>...</tool_response>`
-    text inside the user content. Token counts on the wire stay close to
-    the original (which is what the prefix cache cares about) and the
-    chat template wraps each turn the same way.
+    Emits proper structured tool messages (the OpenAI-on-the-wire shape):
+      tool_use   → assistant.tool_calls[].function.{name,arguments}
+      tool_result → role="tool" message with tool_call_id
+      text       → user/assistant content
+      thinking   → dropped (no OpenAI equivalent)
+
+    Targets `dflash/scripts/server_tools.py`, whose ChatRequest schema
+    accepts `content: Any | None`, `tool_calls`, and `tool_call_id` —
+    i.e. the real production tool path the daemon uses for agent CLIs.
     """
     out: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     for turn in turns:
         role = turn["role"]
         blocks = turn["blocks"]
-        parts: list[str] = []
         if role == "user":
+            text_parts: list[str] = []
             for blk in blocks:
                 t = blk.get("type")
                 if t == "text":
-                    parts.append(blk.get("text") or "")
+                    text_parts.append(blk.get("text") or "")
                 elif t == "tool_result":
                     tc_id = blk.get("tool_use_id") or ""
-                    body = _tool_result_text(blk)
-                    parts.append(f"<tool_response id={tc_id}>\n{body}\n</tool_response>")
-            text = "\n".join(p for p in parts if p)
-            if text:
-                out.append({"role": "user", "content": text})
+                    raw = blk.get("content")
+                    if isinstance(raw, list):
+                        body = "".join(
+                            c.get("text", "") for c in raw
+                            if isinstance(c, dict) and c.get("type") == "text"
+                        )
+                    else:
+                        body = str(raw) if raw else ""
+                    out.append({"role": "tool", "tool_call_id": tc_id,
+                                "content": body})
+            if text_parts:
+                out.append({"role": "user",
+                            "content": "\n".join(text_parts)})
         else:  # assistant
+            text_parts = []
+            tool_calls: list[dict] = []
             for blk in blocks:
                 t = blk.get("type")
                 if t == "text":
-                    parts.append(blk.get("text") or "")
+                    text_parts.append(blk.get("text") or "")
                 elif t == "tool_use":
-                    name = blk.get("name") or ""
-                    args = json.dumps(blk.get("input") or {})
-                    parts.append(f"<tool_call name={name}>{args}</tool_call>")
-                # `thinking` blocks dropped — Anthropic-only, no OpenAI equivalent
-            text = "\n".join(p for p in parts if p)
-            out.append({"role": "assistant", "content": text})
+                    tool_calls.append({
+                        "id": blk.get("id") or "",
+                        "type": "function",
+                        "function": {
+                            "name": blk.get("name") or "",
+                            "arguments": json.dumps(blk.get("input") or {}),
+                        },
+                    })
+                # `thinking` blocks dropped — Anthropic-only
+            asst: dict = {"role": "assistant"}
+            if text_parts:
+                asst["content"] = "\n".join(text_parts)
+            elif not tool_calls:
+                asst["content"] = ""
+            if tool_calls:
+                asst["tool_calls"] = tool_calls
+            out.append(asst)
     return out
 
 
@@ -175,7 +186,8 @@ def _stream_chat(port: int, payload: dict, timeout: int = 600) -> tuple[float, f
 
     t0 = time.perf_counter()
     t_first: float | None = None
-    n_tok = 0
+    usage_tok: int | None = None  # from usage chunk if server emits one
+    delta_count = 0  # fallback: count of content/reasoning/tool deltas
     buf = b""
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         while True:
@@ -196,20 +208,26 @@ def _stream_chat(port: int, payload: dict, timeout: int = 600) -> tuple[float, f
                 except json.JSONDecodeError:
                     continue
                 if not ev.get("choices") and ev.get("usage"):
-                    n_tok = ev["usage"].get("completion_tokens", n_tok)
+                    usage_tok = ev["usage"].get("completion_tokens", usage_tok)
                     continue
                 choices = ev.get("choices") or []
                 if not choices:
                     continue
                 delta = choices[0].get("delta") or {}
-                if t_first is None and (
-                    delta.get("content") or delta.get("reasoning_content")
-                    or delta.get("tool_calls")
-                ):
-                    t_first = time.perf_counter()
+                produced = (delta.get("content") or delta.get("reasoning_content")
+                            or delta.get("tool_calls"))
+                if produced:
+                    delta_count += 1
+                    if t_first is None:
+                        t_first = time.perf_counter()
     t_end = time.perf_counter()
     if t_first is None:
         t_first = t_end
+    # Prefer usage.completion_tokens when the server emits it; otherwise
+    # fall back to counting deltas. PR #59's server does NOT honour
+    # stream_options.include_usage, so without this fallback every call
+    # appears to generate 0 tokens even when 64 content deltas streamed.
+    n_tok = usage_tok if usage_tok is not None else delta_count
     return (t_first - t0, t_end - t0, n_tok)
 
 
