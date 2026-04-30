@@ -1226,17 +1226,13 @@ int main(int argc, char ** argv) {
             prompt_file_str = ppath;
             prompt_path = prompt_file_str.c_str();
 
-            // Rebuild cache + step graph between requests so KV / SSM / conv /
-            // target_feat ring start fresh. Weights stay resident.
+            // Reset cache state between requests. On the first request the
+            // cache was promoted from prefill-only to full (with rollback
+            // tensors) by migrate_prefill_cache. On subsequent requests we
+            // just zero all state tensors in place — no GPU buffer free/alloc.
             if (!daemon_first_iter) {
-                step_graph_destroy(sg);
-                free_target_cache(cache);
-                if (!create_target_cache(w, max_ctx, max_verify_tokens, backend, cache,
-                                         /*prefill_only=*/true)) {
-                    std::fprintf(stderr, "cache realloc: %s\n", dflash27b_last_error());
-                    stream_emit(-1);
-                    continue;
-                }
+                step_graph_free(sg);
+                reset_target_cache(cache);
             }
             daemon_first_iter = false;
         }
