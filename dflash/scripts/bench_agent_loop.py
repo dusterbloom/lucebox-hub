@@ -87,56 +87,63 @@ def _load_transcript(path: Path) -> list[dict]:
     return turns
 
 
+SYSTEM_PROMPT = (
+    "You are a precise coding assistant for the lucebox-hub repo. Answer concisely."
+)
+
+
+def _tool_result_text(blk: dict) -> str:
+    raw = blk.get("content")
+    if isinstance(raw, list):
+        return "".join(
+            c.get("text", "") for c in raw
+            if isinstance(c, dict) and c.get("type") == "text"
+        )
+    return str(raw) if raw else ""
+
+
 def _to_openai_messages(turns: list[dict]) -> list[dict]:
-    """Convert Anthropic-format turns → OpenAI messages array."""
-    out: list[dict] = []
+    """Convert Anthropic-format turns → OpenAI messages array.
+
+    PR #59's `dflash/scripts/server.py` (and its Anthropic endpoint) only
+    reads message `content`, ignoring `tool_calls` / role=tool, and its
+    pydantic schema requires `content`. To exercise it against real
+    transcripts we flatten tool I/O into text within plain user/assistant
+    messages: tool_use → `<tool_call>...</tool_call>` text inside the
+    assistant content, tool_result → `<tool_response>...</tool_response>`
+    text inside the user content. Token counts on the wire stay close to
+    the original (which is what the prefix cache cares about) and the
+    chat template wraps each turn the same way.
+    """
+    out: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     for turn in turns:
         role = turn["role"]
         blocks = turn["blocks"]
+        parts: list[str] = []
         if role == "user":
-            text_parts: list[str] = []
             for blk in blocks:
                 t = blk.get("type")
                 if t == "text":
-                    text_parts.append(blk.get("text") or "")
+                    parts.append(blk.get("text") or "")
                 elif t == "tool_result":
                     tc_id = blk.get("tool_use_id") or ""
-                    raw = blk.get("content")
-                    if isinstance(raw, list):
-                        text = "".join(
-                            c.get("text", "") for c in raw
-                            if isinstance(c, dict) and c.get("type") == "text"
-                        )
-                    else:
-                        text = str(raw) if raw else ""
-                    out.append({"role": "tool", "tool_call_id": tc_id, "content": text})
-            if text_parts:
-                out.append({"role": "user", "content": "\n".join(text_parts)})
+                    body = _tool_result_text(blk)
+                    parts.append(f"<tool_response id={tc_id}>\n{body}\n</tool_response>")
+            text = "\n".join(p for p in parts if p)
+            if text:
+                out.append({"role": "user", "content": text})
         else:  # assistant
-            text_parts = []
-            tool_calls: list[dict] = []
             for blk in blocks:
                 t = blk.get("type")
                 if t == "text":
-                    text_parts.append(blk.get("text") or "")
+                    parts.append(blk.get("text") or "")
                 elif t == "tool_use":
-                    tool_calls.append({
-                        "id": blk.get("id") or "",
-                        "type": "function",
-                        "function": {
-                            "name": blk.get("name") or "",
-                            "arguments": json.dumps(blk.get("input") or {}),
-                        },
-                    })
+                    name = blk.get("name") or ""
+                    args = json.dumps(blk.get("input") or {})
+                    parts.append(f"<tool_call name={name}>{args}</tool_call>")
                 # `thinking` blocks dropped — Anthropic-only, no OpenAI equivalent
-            asst: dict = {"role": "assistant"}
-            if text_parts:
-                asst["content"] = "\n".join(text_parts)
-            elif not tool_calls:
-                asst["content"] = ""
-            if tool_calls:
-                asst["tool_calls"] = tool_calls
-            out.append(asst)
+            text = "\n".join(p for p in parts if p)
+            out.append({"role": "assistant", "content": text})
     return out
 
 
@@ -251,6 +258,17 @@ def run_config(label: str, port: int, slots: int, turns: list[dict],
 
     print(f"\n--- {label} (slots={slots}) ---", flush=True)
 
+    # Warmup: discard a single tiny call so CUDA graph capture / kernel JIT
+    # land outside the measured run. Without this, call 1 cold absorbs
+    # ~tens of seconds of one-time cost that has nothing to do with prefill.
+    try:
+        _stream_chat(port, {"model": "luce-dflash",
+                            "messages": [{"role": "user", "content": "ok"}],
+                            "max_tokens": 1}, timeout=180)
+        print("  (warmup done)", flush=True)
+    except Exception as e:
+        print(f"  WARN: warmup failed: {e}", flush=True)
+
     asst_indices = [i for i, t in enumerate(turns) if t["role"] == "assistant"]
     per_call: list[dict] = []
     try:
@@ -282,8 +300,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--turns", type=int, default=10,
                     help="Cap LLM calls per replay (default: %(default)s)")
-    ap.add_argument("--n-gen", type=int, default=8,
-                    help="max_tokens per response (kept small to bound bench time)")
+    ap.add_argument("--n-gen", type=int, default=64,
+                    help="max_tokens per response (small to bound bench time, "
+                         "but large enough that a thinking model emits at least "
+                         "one completion token after reasoning)")
     ap.add_argument("--max-ctx", type=int, default=16384,
                     help="Server --max-ctx (default: %(default)s)")
     ap.add_argument("--session", type=Path, default=None,
