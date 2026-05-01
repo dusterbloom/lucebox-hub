@@ -1,4 +1,7 @@
 [submodule "dflash/deps/llama.cpp"]
 	path = dflash/deps/llama.cpp
-	url = https://github.com/Luce-Org/llama.cpp.git
-	branch = luce-dflash
+	# Temporarily pointing at easel's fork (branch fix/cuda-vmm-pool-extension-race)
+	# while https://github.com/Luce-Org/llama.cpp-dflash-ggml/pull/4 is in review.
+	# Revert to Luce-Org/llama.cpp.git once that PR is merged.
+	url = https://github.com/easel/llama.cpp-dflash-ggml.git
+	branch = fix/cuda-vmm-pool-extension-race
