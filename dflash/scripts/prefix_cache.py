@@ -87,8 +87,13 @@ class DaemonStdoutBus:
                 if decoded and not any(decoded.startswith(p) for p in self._SUPPRESS_PREFIXES):
                     print(f"  [daemon] {decoded}", flush=True)
 
-    async def await_reply(self, prefix: str, timeout: float = 10.0) -> str:
-        """Block until daemon emits a line starting with *prefix*."""
+    async def await_reply(self, prefix: str, timeout: float = 60.0) -> str:
+        """Block until daemon emits a line starting with *prefix*.
+
+        Default timeout 60s: covers daemon-startup model load + KV alloc +
+        snap-pool init at large --max-ctx values where the original 10s
+        budget races daemon initialization on warm starts.
+        """
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         self._waiters.append((prefix, fut))
