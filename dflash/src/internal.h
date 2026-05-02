@@ -127,6 +127,11 @@ struct TargetWeights {
     int ssm_d_state             = 128;
     int ssm_dt_rank             = 48;
     int ssm_n_group             = 16;
+
+    // Target layer IDs captured for the DFlash draft model.
+    // Computed from n_layer at load time: step = (n_layer - 2) / (N - 1),
+    // ids[k] = 1 + k * step.  E.g. 27B→{1,16,31,46,61}, 9B→{1,8,15,22,29}.
+    int capture_layer_ids[DFLASH27B_DRAFT_N_TARGET_LAYERS] = {1, 16, 31, 46, 61};
 };
 
 // Load a Q4_K_M target model from a GGUF file on disk.
