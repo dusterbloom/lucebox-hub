@@ -28,6 +28,7 @@ _LOCAL_DRAFT_ROOT = ROOT / "models" / "draft"
 DRAFT = None
 TEST_DFLASH = os.environ.get("DFLASH_BIN", str(ROOT / "build" / f"test_dflash{BIN_SUFFIX}"))
 TEST_GENERATE = os.environ.get("DFLASH_BIN_AR", str(ROOT / "build" / f"test_generate{BIN_SUFFIX}"))
+TOKENIZER = os.environ.get("DFLASH_TOKENIZER", "Qwen/Qwen3.5-27B")
 TMPDIR = Path(tempfile.gettempdir()) / "dflash_bench"
 TMPDIR.mkdir(parents=True, exist_ok=True)
 
@@ -148,14 +149,15 @@ def main():
     _require_file(TEST_DFLASH, "test_dflash binary")
     _require_file(TEST_GENERATE, "test_generate binary")
 
-    print(f"[bench] target = {TARGET}", flush=True)
-    print(f"[bench] draft  = {DRAFT}", flush=True)
-    print(f"[bench] ar bin = {TEST_GENERATE}", flush=True)
-    print(f"[bench] df bin = {TEST_DFLASH}", flush=True)
+    print(f"[bench] target    = {TARGET}", flush=True)
+    print(f"[bench] draft     = {DRAFT}", flush=True)
+    print(f"[bench] ar bin    = {TEST_GENERATE}", flush=True)
+    print(f"[bench] df bin    = {TEST_DFLASH}", flush=True)
+    print(f"[bench] tokenizer = {TOKENIZER}", flush=True)
 
     from datasets import load_dataset
     from transformers import AutoTokenizer
-    tok = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-27B", trust_remote_code=True)
+    tok = AutoTokenizer.from_pretrained(TOKENIZER, trust_remote_code=True)
 
     results = {}
     for name, ds_name, cfg, split, extract in BENCHES:

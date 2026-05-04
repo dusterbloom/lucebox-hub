@@ -297,6 +297,12 @@ def main():
                     help="Visible CUDA device id for the draft backend")
     ap.add_argument("--cuda-visible-devices", default=None,
                     help="Optional CUDA_VISIBLE_DEVICES override for test_dflash")
+    ap.add_argument("--target-tokenizer",
+                    default=os.environ.get("DFLASH_TOKENIZER", "Qwen/Qwen3.5-27B"),
+                    help="HuggingFace tokenizer repo for the target. Defaults to "
+                         "$DFLASH_TOKENIZER, then Qwen/Qwen3.5-27B. Override for "
+                         "Qwen3.6 or other variants, e.g. "
+                         "--target-tokenizer Qwen/Qwen3.6-27B")
     args = ap.parse_args()
 
     print(f"[bench] target = {TARGET}")
@@ -305,9 +311,9 @@ def main():
     print(f"[bench] tmp    = {TMPDIR}")
 
     if not args.skip_tokenize:
-        print("[bench] tokenizing prompts via HF…")
+        print(f"[bench] tokenizing prompts via HF (tokenizer={args.target_tokenizer})…")
         from transformers import AutoTokenizer
-        tok = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-27B", trust_remote_code=True)
+        tok = AutoTokenizer.from_pretrained(args.target_tokenizer, trust_remote_code=True)
         for i, (name, p) in enumerate(PROMPTS):
             path = _prompt_path(i)
             n = tokenize_prompt(p, path, tok)
