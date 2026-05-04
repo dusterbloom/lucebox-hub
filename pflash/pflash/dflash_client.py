@@ -16,6 +16,8 @@ log = logging.getLogger(__name__)
 class DflashClient:
     def __init__(self, bin_path: str, target_path: str, draft_path: str,
                  max_ctx: int = 16384, ddtree_budget: int = 16,
+                 ddtree_temp: Optional[float] = None,
+                 chain_seed: bool = True,
                  fa_window: Optional[int] = None,
                  kv_tq3: Optional[bool] = None,
                  lm_head_fix: Optional[bool] = None,
@@ -47,6 +49,10 @@ class DflashClient:
                f"--ddtree-budget={ddtree_budget}",
                f"--max-ctx={max_ctx}",
                f"--stream-fd={self.w_pipe}"]
+        if ddtree_temp is not None:
+            cmd.append(f"--ddtree-temp={ddtree_temp}")
+        if not chain_seed:
+            cmd.append("--ddtree-no-chain-seed")
         log.info("spawning dflash daemon: %s", " ".join(cmd))
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                                      pass_fds=(self.w_pipe,), env=env)
