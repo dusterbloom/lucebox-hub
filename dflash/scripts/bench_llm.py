@@ -4,10 +4,11 @@
     python3 scripts/bench_llm.py
 
 Paths resolve from the repo root by default. Override with env vars:
-    DFLASH_TARGET   path to target Qwen3.6-27B-Q4_K_M.gguf (or 3.5)
-    DFLASH_DRAFT    path to draft model.safetensors
-    DFLASH_BIN      path to build/test_dflash
-    DFLASH_BIN_AR   path to build/test_generate
+    DFLASH_TARGET    path to target Qwen3.6-27B-Q4_K_M.gguf (or 3.5)
+    DFLASH_DRAFT     path to draft model.safetensors
+    DFLASH_BIN       path to build/test_dflash
+    DFLASH_BIN_AR    path to build/test_generate
+    DFLASH_TOKENIZER HF tokenizer repo (default Qwen/Qwen3.5-27B; matches run.py)
 """
 import json
 import os
