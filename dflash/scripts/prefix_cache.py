@@ -657,24 +657,30 @@ class PrefixCache:
                     pass
                 self.abort_inline_snap(slot)
 
-    async def startup_sync(self) -> None:
+    async def startup_sync(self, timeout: float = 120.0) -> None:
         """Query the daemon for existing slots and free them all.
 
         Called once at server startup to ensure Python's hash table is
         consistent with the daemon's slot state (both empty after this).
+
+        The default ``timeout`` is intentionally generous (120s) because
+        first-boot CUDA kernel JIT compilation can dominate startup wall
+        time on architectures whose kernels aren't pre-compiled (notably
+        consumer Blackwell sm_120, where the megakernel + DFlash kernels
+        compile from scratch on first launch).
         """
         if self.disabled:
             return
         async with self.lock:
             self._send("LIST_SLOTS\n")
-            reply = await self._await_reply("[snap] slots=")
+            reply = await self._await_reply("[snap] slots=", timeout=timeout)
             slots_str = reply.split("[snap] slots=", 1)[1].strip()
             if not slots_str:
                 return
             orphans = [s.strip() for s in slots_str.split(",") if s.strip()]
             for s in orphans:
                 self._send(f"FREE_SNAPSHOT {s}\n")
-                await self._await_reply("[snap] freed slot=")
+                await self._await_reply("[snap] freed slot=", timeout=timeout)
             print(f"{self.log_prefix} freed {len(orphans)} orphaned daemon slots",
                   flush=True)
 
