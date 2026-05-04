@@ -50,7 +50,16 @@ for p, label in [
 # ─── NIAH prompt builder ──────────────────────────────────────────────
 
 def build_long_prompt(target_tokens: int, seed: int = 42) -> tuple[str, str]:
-    """Needle-In-A-Haystack prompt, same shape as pflash/tests/niah_gen.py."""
+    """Needle-In-A-Haystack-shaped prompt for the cache test.
+
+    Uses a coarse `target_tokens * 4.0` sizing — this script only needs a
+    long, deterministic, mostly-filler prompt and does not care about exact
+    token counts (cf. pflash/tests/niah_gen.py, which is the canonical
+    NIAH generator with tokenizer-aware sizing and a hard <=target cap).
+    Keep the FILLER / NEEDLE / QUESTION text in rough sync with niah_gen.py
+    so a reader sees the same NIAH shape; full deduplication would require
+    moving the shared text into a package both files can import.
+    """
     rng = random.Random(seed)
     key   = "".join(rng.choices("abcdefghijklmnopqrstuvwxyz", k=8))
     value = "".join(rng.choices("0123456789", k=7))

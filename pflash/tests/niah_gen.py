@@ -1,5 +1,5 @@
 """Generate NIAH single-needle test cases at any context size."""
-import argparse, json, random, sys
+import argparse, json, os, random, sys
 from transformers import AutoTokenizer
 
 
@@ -97,22 +97,38 @@ def gen_one(seed: int, target_tokens: int, tokenizer, tolerance: float = 0.005):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--n", type=_positive_int, default=10)
+    # --n stays type=int so --n 0 keeps producing an empty JSONL (preserves
+    # prior CLI behavior). --ctx is positive-only because the convergence
+    # loop divides by it.
+    ap.add_argument("--n", type=int, default=10)
     ap.add_argument("--ctx", type=_positive_int, default=8192)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--tokenizer", default="Qwen/Qwen3.6-27B")
+    # Default matches bench_niah_cpp.py's --drafter-tokenizer, since that is
+    # the tokenizer the downstream NIAH bench uses to size case["prompt"]
+    # for the drafter forward. Override for any other harness.
+    ap.add_argument("--tokenizer", default="Qwen/Qwen3-0.6B")
     args = ap.parse_args()
     tok = AutoTokenizer.from_pretrained(args.tokenizer)
-    with open(args.out, "w") as f:
-        for i in range(args.n):
-            try:
-                ex = gen_one(seed=42 + i, target_tokens=args.ctx, tokenizer=tok)
-            except ValueError as e:
-                sys.exit(f"[error] case {i}: {e}")
-            assert ex["n_tokens"] <= args.ctx, (
-                f"case {i}: n_tokens={ex['n_tokens']} exceeds --ctx={args.ctx}")
-            f.write(json.dumps(ex) + "\n")
-            print(f"  case {i}: ntok={ex['n_tokens']} key={ex['key']} ans={ex['answer']}")
+
+    # Write to a sibling temp file and atomically rename on success. Avoids
+    # truncating an existing args.out when gen_one fails mid-run (e.g. on
+    # an impossibly small --ctx for case 0).
+    tmp_path = f"{args.out}.tmp.{os.getpid()}"
+    try:
+        with open(tmp_path, "w") as f:
+            for i in range(args.n):
+                try:
+                    ex = gen_one(seed=42 + i, target_tokens=args.ctx, tokenizer=tok)
+                except ValueError as e:
+                    sys.exit(f"[error] case {i}: {e}")
+                assert ex["n_tokens"] <= args.ctx, (
+                    f"case {i}: n_tokens={ex['n_tokens']} exceeds --ctx={args.ctx}")
+                f.write(json.dumps(ex) + "\n")
+                print(f"  case {i}: ntok={ex['n_tokens']} key={ex['key']} ans={ex['answer']}")
+        os.replace(tmp_path, args.out)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
     print(f"saved {args.n} cases to {args.out}")
 
 
