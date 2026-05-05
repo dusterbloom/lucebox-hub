@@ -115,6 +115,7 @@ class ChatRequest(BaseModel):
     top_p: float | None = None         # accepted, ignored
     top_k: int | None = None           # accepted, ignored
     stop: list[str] | str | None = None  # FIX 3: accept stop field (Open WebUI sends it)
+    chat_template_kwargs: dict | None = None
 
 
 class AnthropicMessage(BaseModel):
@@ -131,6 +132,7 @@ class AnthropicMessagesRequest(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     stop_sequences: list[str] | None = None
+    chat_template_kwargs: dict | None = None
 
 
 def build_app(target: Path, draft: Path, bin_path: Path, budget: int, max_ctx: int,
@@ -246,9 +248,20 @@ def build_app(target: Path, draft: Path, bin_path: Path, budget: int, max_ctx: i
                 f.write(struct.pack("<i", int(t)))
         return Path(path)
 
-    def _render_messages(msgs_list: list[dict]) -> tuple[Path, list[int], str]:
+    def _render_messages(msgs_list: list[dict],
+                         template_kwargs: dict | None = None
+                         ) -> tuple[Path, list[int], str]:
+        """Apply chat template to msgs_list and return (bin path, ids, raw prompt).
+
+        The raw prompt is returned for spec-prefill: when compression fires we
+        re-tokenise it with the drafter vocab.
+
+        ``template_kwargs`` is passed through to ``apply_chat_template`` so callers
+        can toggle template knobs like ``enable_thinking`` per-request.
+        """
         prompt = tokenizer.apply_chat_template(
-            msgs_list, tokenize=False, add_generation_prompt=True)
+            msgs_list, tokenize=False, add_generation_prompt=True,
+            **(template_kwargs or {}))
         ids = tokenizer.encode(prompt, add_special_tokens=False)
         return _ids_to_bin(ids), ids, prompt
 
@@ -256,10 +269,11 @@ def build_app(target: Path, draft: Path, bin_path: Path, budget: int, max_ctx: i
     def _tokenize_prompt(req: ChatRequest) -> tuple[Path, list[int], list[dict]]:
         msgs = [{"role": m.role, "content": _content_to_str(m.content)}
                 for m in req.messages]
-        path, ids, _prompt = _render_messages(msgs)
+        path, ids, _prompt = _render_messages(msgs, req.chat_template_kwargs)
         return path, ids, msgs
 
-    def _maybe_compress(msgs: list[dict], prompt_bin: Path, prompt_ids: list[int]
+    def _maybe_compress(msgs: list[dict], prompt_bin: Path, prompt_ids: list[int],
+                        template_kwargs: dict | None = None
                         ) -> tuple[Path, list[int]]:
         if not prefill_cfg or not prefill_cfg.enabled:
             return prompt_bin, prompt_ids
@@ -284,7 +298,7 @@ def build_app(target: Path, draft: Path, bin_path: Path, budget: int, max_ctx: i
 
         new_msgs = list(msgs)
         new_msgs[last_user_idx] = {"role": "user", "content": compressed_text}
-        new_bin, new_ids, _ = _render_messages(new_msgs)
+        new_bin, new_ids, _ = _render_messages(new_msgs, template_kwargs)
         try:
             prompt_bin.unlink()
         except Exception:
@@ -416,7 +430,8 @@ def build_app(target: Path, draft: Path, bin_path: Path, budget: int, max_ctx: i
                         cmd_line = f"RESTORE {slot} {cached_cur_bin} {gen_len}\n"
                     else:
                         cur_bin, cur_ids = await asyncio.to_thread(
-                            _maybe_compress, raw_msgs, prompt_bin, prompt_ids)
+                            _maybe_compress, raw_msgs, prompt_bin, prompt_ids,
+                            req.chat_template_kwargs)
                         prompt_len = len(cur_ids)
                         gen_len = _gen_len_for(prompt_len, req.max_tokens)
                         if gen_len <= 0:
@@ -509,7 +524,8 @@ def build_app(target: Path, draft: Path, bin_path: Path, budget: int, max_ctx: i
                 cmd_line = f"RESTORE {slot} {cached_cur_bin} {gen_len}\n"
             else:
                 cur_bin, cur_ids = await asyncio.to_thread(
-                    _maybe_compress, raw_msgs, prompt_bin, prompt_ids)
+                    _maybe_compress, raw_msgs, prompt_bin, prompt_ids,
+                            req.chat_template_kwargs)
                 prompt_len = len(cur_ids)
                 gen_len = _gen_len_for(prompt_len, req.max_tokens)
                 if gen_len <= 0:
@@ -571,7 +587,7 @@ def build_app(target: Path, draft: Path, bin_path: Path, budget: int, max_ctx: i
             msgs.append({"role": "system", "content": system_text})
         for m in req.messages:
             msgs.append({"role": m.role, "content": _content_to_str(m.content)})
-        path, ids, _prompt = _render_messages(msgs)
+        path, ids, _prompt = _render_messages(msgs, req.chat_template_kwargs)
         return path, ids, msgs
 
     @app.post("/v1/messages")
@@ -603,7 +619,8 @@ def build_app(target: Path, draft: Path, bin_path: Path, budget: int, max_ctx: i
                         cmd_line = f"RESTORE {slot} {cached_cur_bin} {gen_len}\n"
                     else:
                         cur_bin, cur_ids = await asyncio.to_thread(
-                            _maybe_compress, raw_msgs, prompt_bin, prompt_ids)
+                            _maybe_compress, raw_msgs, prompt_bin, prompt_ids,
+                            req.chat_template_kwargs)
                         prompt_len = len(cur_ids)
                         gen_len = min(req.max_tokens, max_ctx - prompt_len - 20)
                         if gen_len <= 0:
@@ -695,7 +712,8 @@ def build_app(target: Path, draft: Path, bin_path: Path, budget: int, max_ctx: i
                 cmd_line = f"RESTORE {slot} {cached_cur_bin} {gen_len}\n"
             else:
                 cur_bin, cur_ids = await asyncio.to_thread(
-                    _maybe_compress, raw_msgs, prompt_bin, prompt_ids)
+                    _maybe_compress, raw_msgs, prompt_bin, prompt_ids,
+                            req.chat_template_kwargs)
                 prompt_len = len(cur_ids)
                 gen_len = min(req.max_tokens, max_ctx - prompt_len - 20)
                 if gen_len <= 0:
