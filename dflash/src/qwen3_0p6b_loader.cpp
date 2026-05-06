@@ -28,9 +28,19 @@
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
+#if defined(_WIN32)
+#if !defined(NOMINMAX)
+#define NOMINMAX
+#endif
+#if !defined(WIN32_LEAN_AND_MEAN)
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 namespace dflash27b {
 
@@ -142,6 +152,39 @@ bool load_qwen3_0p6b_drafter(const std::string & path,
 
     // mmap the GGUF data section.
     const size_t data_off = gguf_get_data_offset(gctx);
+#if defined(_WIN32)
+    std::wstring wpath;
+    {
+        const int wlen = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+        if (wlen <= 0) {
+            set_last_error("MultiByteToWideChar failed for " + path);
+            gguf_free(gctx);
+            return false;
+        }
+        wpath.resize(wlen - 1);
+        MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wlen);
+    }
+    HANDLE hFile = CreateFileW(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        set_last_error("CreateFileW failed for " + path);
+        gguf_free(gctx);
+        return false;
+    }
+    HANDLE hMapping = CreateFileMappingA(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    CloseHandle(hFile);
+    if (!hMapping) {
+        set_last_error("CreateFileMappingA failed for " + path);
+        gguf_free(gctx);
+        return false;
+    }
+    void * mm = MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0);
+    CloseHandle(hMapping);
+    if (!mm) {
+        set_last_error("MapViewOfFile failed for " + path);
+        gguf_free(gctx);
+        return false;
+    }
+#else
     int fd = ::open(path.c_str(), O_RDONLY);
     struct stat st; ::fstat(fd, &st);
     void * mm = ::mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
@@ -151,6 +194,7 @@ bool load_qwen3_0p6b_drafter(const std::string & path,
         gguf_free(gctx);
         return false;
     }
+#endif
 
     bool ok = true;
     ok &= copy_tensor_from_file(gctx, "token_embd.weight", mm, data_off, out.tok_embd);
@@ -174,7 +218,11 @@ bool load_qwen3_0p6b_drafter(const std::string & path,
         std::snprintf(nm, sizeof(nm), "blk.%d.ffn_up.weight",      il); ok &= copy_tensor_from_file(gctx, nm, mm, data_off, L.ffn_up);
         std::snprintf(nm, sizeof(nm), "blk.%d.ffn_down.weight",    il); ok &= copy_tensor_from_file(gctx, nm, mm, data_off, L.ffn_down);
     }
+#if defined(_WIN32)
+    UnmapViewOfFile(mm);
+#else
     ::munmap(mm, st.st_size);
+#endif
     gguf_free(gctx);
 
     if (!ok) {
