@@ -525,6 +525,7 @@ static void print_usage(const char * prog) {
         "  --draft  <dir>    path to z-lab DFlash safetensors directory (optional)\n"
         "  --prompt <text>   input prompt text (default: \"Hello, world!\")\n"
         "  --tokens <ids>    comma-separated prompt token IDs (overrides --prompt)\n"
+        "  --tokens-file <path> read comma-separated token IDs from a file (for long prompts)\n"
         "  --n-predict <N>   max tokens to generate (default: 128)\n"
         "  --ctx-size  <N>   max context size (default: 4096)\n"
         "  --kv-k <type>     KV cache K type: f16/q8_0/q4_0/tq3_0 (default: q8_0)\n"
@@ -537,6 +538,8 @@ static void print_usage(const char * prog) {
         "  --gpu <N>         CUDA device index (default: 0)\n"
         "  --bench           benchmark mode: repeat generation, report statistics\n"
         "  --fa-window <N>   sliding attention window for full layers (0 = full, default: 0)\n"
+        "  --pflash          use pFlash prefill for prompts >= 4096 tokens\n"
+        "  --pflash-alpha <F> pFlash block selection threshold (default: 0.12)\n"
         "\n",
         prog);
 }
@@ -552,6 +555,7 @@ int main(int argc, char ** argv) {
     std::string  draft_path;
     std::string  prompt_text  = "Hello, world!";
     std::string  token_ids_str;
+    std::string  tokens_file;
     int          n_predict    = 128;
     int          ctx_size     = 4096;
     std::string  kv_k_str     = "q8_0";
@@ -560,6 +564,8 @@ int main(int argc, char ** argv) {
     int          ddtree_budget = 22;
     bool         bench_mode   = false;
     int          fa_window    = 0;
+    bool         use_pflash   = false;
+    float        pflash_alpha = 0.12f;
     SamplerCfg   sampler;
 
     for (int i = 1; i < argc; i++) {
@@ -574,7 +580,8 @@ int main(int argc, char ** argv) {
         if      (std::strcmp(argv[i], "--model")     == 0) model_path    = require_next("--model");
         else if (std::strcmp(argv[i], "--draft")     == 0) draft_path    = require_next("--draft");
         else if (std::strcmp(argv[i], "--prompt")    == 0) prompt_text   = require_next("--prompt");
-        else if (std::strcmp(argv[i], "--tokens")    == 0) token_ids_str = require_next("--tokens");
+        else if (std::strcmp(argv[i], "--tokens")      == 0) token_ids_str = require_next("--tokens");
+        else if (std::strcmp(argv[i], "--tokens-file") == 0) tokens_file   = require_next("--tokens-file");
         else if (std::strcmp(argv[i], "--n-predict") == 0) n_predict     = std::atoi(require_next("--n-predict"));
         else if (std::strcmp(argv[i], "--ctx-size")  == 0) ctx_size      = std::atoi(require_next("--ctx-size"));
         else if (std::strcmp(argv[i], "--kv-k")      == 0) kv_k_str      = require_next("--kv-k");
@@ -585,8 +592,10 @@ int main(int argc, char ** argv) {
         else if (std::strcmp(argv[i], "--top-p")     == 0) sampler.top_p = (float)std::atof(require_next("--top-p"));
         else if (std::strcmp(argv[i], "--budget")    == 0) ddtree_budget = std::atoi(require_next("--budget"));
         else if (std::strcmp(argv[i], "--gpu")       == 0) gpu           = std::atoi(require_next("--gpu"));
-        else if (std::strcmp(argv[i], "--fa-window") == 0) fa_window     = std::atoi(require_next("--fa-window"));
-        else if (std::strcmp(argv[i], "--bench")     == 0) bench_mode    = true;
+        else if (std::strcmp(argv[i], "--fa-window")    == 0) fa_window     = std::atoi(require_next("--fa-window"));
+        else if (std::strcmp(argv[i], "--bench")        == 0) bench_mode    = true;
+        else if (std::strcmp(argv[i], "--pflash")       == 0) use_pflash    = true;
+        else if (std::strcmp(argv[i], "--pflash-alpha") == 0) pflash_alpha  = (float)std::atof(require_next("--pflash-alpha"));
         else if (std::strcmp(argv[i], "--help")      == 0 ||
                  std::strcmp(argv[i], "-h")          == 0) {
             print_usage(argv[0]);
@@ -600,6 +609,22 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "error: --model is required\n");
         print_usage(argv[0]);
         return 2;
+    }
+
+    // ── Load token IDs from file if --tokens-file was specified ──────────
+    if (!tokens_file.empty()) {
+        FILE * f = fopen(tokens_file.c_str(), "r");
+        if (!f) {
+            std::fprintf(stderr, "error: cannot open tokens file: %s\n", tokens_file.c_str());
+            return 1;
+        }
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        rewind(f);
+        std::string content(sz, '\0');
+        fread(&content[0], 1, sz, f);
+        fclose(f);
+        token_ids_str = content;
     }
 
     // ── KV type env vars (consumed by create_gemma4_cache → resolve_kv_types) ─
@@ -817,93 +842,105 @@ int main(int argc, char ** argv) {
 
         {
             const int n_prompt   = (int)prompt_ids.size();
-            const int swa_window = w.swa_window > 0 ? w.swa_window : 1024;
-            const int chunk_size = std::min(n_prompt, swa_window);
 
-            for (int cs = 0; cs < n_prompt; cs += chunk_size) {
-                const int chunk_n   = std::min(chunk_size, n_prompt - cs);
-                const bool is_last  = (cs + chunk_n == n_prompt);
-                const bool need_mask = (cs + chunk_n > 1);
-
-                if (!build_gemma4_step(sg, w, cache, backend,
-                                       /*kv_start=*/cs, chunk_n,
-                                       need_mask, /*capture=*/true)) {
-                    std::fprintf(stderr, "prefill chunk build failed at offset %d\n", cs);
+            if (use_pflash && n_prompt >= 4096) {
+                int rc = gemma4_pflash_prefill(w, cache, backend,
+                                               prompt_ids.data(), n_prompt,
+                                               pflash_alpha);
+                if (rc != 0) {
+                    std::fprintf(stderr, "pflash prefill failed: %s\n",
+                                 dflash27b_last_error());
                     return 1;
                 }
+                last_logit_tok = cache.last_tok;
+            } else {
+                const int swa_window = w.swa_window > 0 ? w.swa_window : 1024;
+                const int chunk_size = std::min(n_prompt, swa_window);
 
-                // Embed the chunk tokens
-                if (!embed_tokens_batch(w, prompt_ids.data() + cs, chunk_n,
-                                        sg.inp_embed, backend)) {
-                    return 1;
+                for (int cs = 0; cs < n_prompt; cs += chunk_size) {
+                    const int chunk_n   = std::min(chunk_size, n_prompt - cs);
+                    const bool is_last  = (cs + chunk_n == n_prompt);
+                    const bool need_mask = (cs + chunk_n > 1);
+
+                    if (!build_gemma4_step(sg, w, cache, backend,
+                                           /*kv_start=*/cs, chunk_n,
+                                           need_mask, /*capture=*/true)) {
+                        std::fprintf(stderr, "prefill chunk build failed at offset %d\n", cs);
+                        return 1;
+                    }
+
+                    if (!embed_tokens_batch(w, prompt_ids.data() + cs, chunk_n,
+                                            sg.inp_embed, backend)) {
+                        return 1;
+                    }
+
+                    {
+                        std::vector<int32_t> pos(chunk_n);
+                        for (int i = 0; i < chunk_n; i++) pos[i] = cs + i;
+                        ggml_backend_tensor_set(sg.positions, pos.data(), 0,
+                                                sizeof(int32_t) * chunk_n);
+                    }
+
+                    if (sg.attn_mask) {
+                        const int kv_len = cs + chunk_n;
+                        std::vector<uint16_t> mask_buf;
+                        build_causal_mask(mask_buf, kv_len, chunk_n, cs);
+                        ggml_backend_tensor_set(sg.attn_mask, mask_buf.data(), 0,
+                                                sizeof(uint16_t) * mask_buf.size());
+                    }
+
+                    if (sg.swa_mask) {
+                        const int kv_len = cs + chunk_n;
+                        std::vector<uint16_t> swa_buf;
+                        build_swa_causal_mask(swa_buf, kv_len, chunk_n, cs, swa_window);
+                        ggml_backend_tensor_set(sg.swa_mask, swa_buf.data(), 0,
+                                                sizeof(uint16_t) * swa_buf.size());
+                    }
+
+                    auto st = ggml_backend_graph_compute(backend, sg.gf);
+                    if (st != GGML_STATUS_SUCCESS) {
+                        std::fprintf(stderr, "prefill compute failed at chunk offset %d\n", cs);
+                        return 1;
+                    }
+
+                    cache.cur_pos = cs + chunk_n;
+
+                    if (is_last) {
+                        const int vocab = w.n_vocab;
+                        std::vector<float> logits_cpu(vocab);
+                        const size_t last_tok_offset = (size_t)(chunk_n - 1) * vocab;
+                        ggml_backend_tensor_get(sg.logits, logits_cpu.data(),
+                                                sizeof(float) * last_tok_offset,
+                                                sizeof(float) * vocab);
+                        last_logit_tok = sample_logits(logits_cpu.data(), vocab,
+                                                       sampler, prompt_ids, rng);
+                        cache.last_tok = last_logit_tok;
+                    }
+
+                    step_graph_free(sg);
                 }
-
-                // Positions: [cs, cs+1, ..., cs+chunk_n-1]
-                {
-                    std::vector<int32_t> pos(chunk_n);
-                    for (int i = 0; i < chunk_n; i++) pos[i] = cs + i;
-                    ggml_backend_tensor_set(sg.positions, pos.data(), 0,
-                                            sizeof(int32_t) * chunk_n);
-                }
-
-                // Full causal mask for all full-attention layers
-                if (sg.attn_mask) {
-                    const int kv_len = cs + chunk_n;
-                    std::vector<uint16_t> mask_buf;
-                    build_causal_mask(mask_buf, kv_len, chunk_n, cs);
-                    ggml_backend_tensor_set(sg.attn_mask, mask_buf.data(), 0,
-                                            sizeof(uint16_t) * mask_buf.size());
-                }
-
-                // SWA mask for sliding-window attention layers.
-                // For the first chunk (cs == 0) all positions are within the
-                // window so the standard causal mask is correct. For subsequent
-                // chunks some early positions are outside the window.
-                if (sg.swa_mask) {
-                    const int kv_len = cs + chunk_n;
-                    std::vector<uint16_t> swa_buf;
-                    build_swa_causal_mask(swa_buf, kv_len, chunk_n, cs, swa_window);
-                    ggml_backend_tensor_set(sg.swa_mask, swa_buf.data(), 0,
-                                            sizeof(uint16_t) * swa_buf.size());
-                }
-
-                auto st = ggml_backend_graph_compute(backend, sg.gf);
-                if (st != GGML_STATUS_SUCCESS) {
-                    std::fprintf(stderr, "prefill compute failed at chunk offset %d\n", cs);
-                    return 1;
-                }
-
-                cache.cur_pos = cs + chunk_n;
-
-                // Sample the first decode token from the last chunk's logits
-                if (is_last) {
-                    const int vocab = w.n_vocab;
-                    std::vector<float> logits_cpu(vocab);
-                    // logits tensor shape: [vocab, chunk_n] — take the last token's row
-                    const size_t last_tok_offset = (size_t)(chunk_n - 1) * vocab;
-                    ggml_backend_tensor_get(sg.logits, logits_cpu.data(),
-                                            sizeof(float) * last_tok_offset,
-                                            sizeof(float) * vocab);
-                    last_logit_tok = sample_logits(logits_cpu.data(), vocab,
-                                                   sampler, prompt_ids, rng);
-                    cache.last_tok = last_logit_tok;
-                }
-
-                step_graph_free(sg);
             }
         }
 
         double prefill_t1 = now_ms();
         {
-            const int n_prompt   = (int)prompt_ids.size();
-            const int swa_window = w.swa_window > 0 ? w.swa_window : 1024;
-            const int chunk_size = std::min(n_prompt, swa_window);
-            const double prefill_ms = prefill_t1 - prefill_t0;
-            std::printf("[prefill] %d tokens in %.1f ms (%.1f tok/s) "
-                        "[chunked, chunk_size=%d]  (last sampled token: %d)\n",
-                        n_prompt, prefill_ms,
-                        prefill_ms > 0.0 ? (double)n_prompt / (prefill_ms / 1000.0) : 0.0,
-                        chunk_size, last_logit_tok);
+            const int    n_prompt    = (int)prompt_ids.size();
+            const double prefill_ms  = prefill_t1 - prefill_t0;
+            if (use_pflash && n_prompt >= 4096) {
+                std::printf("[prefill] %d tokens in %.1f ms (%.1f tok/s) "
+                            "[pflash]  (last sampled token: %d)\n",
+                            n_prompt, prefill_ms,
+                            prefill_ms > 0.0 ? (double)n_prompt / (prefill_ms / 1000.0) : 0.0,
+                            last_logit_tok);
+            } else {
+                const int swa_window = w.swa_window > 0 ? w.swa_window : 1024;
+                const int chunk_size = std::min(n_prompt, swa_window);
+                std::printf("[prefill] %d tokens in %.1f ms (%.1f tok/s) "
+                            "[chunked, chunk_size=%d]  (last sampled token: %d)\n",
+                            n_prompt, prefill_ms,
+                            prefill_ms > 0.0 ? (double)n_prompt / (prefill_ms / 1000.0) : 0.0,
+                            chunk_size, last_logit_tok);
+            }
         }
 
         // ── Draft KV prefill: materialize draft KV for all prompt positions ─
@@ -911,21 +948,33 @@ int main(int argc, char ** argv) {
             const int n_prompt = (int)prompt_ids.size();
             const int target_feat_w = dw.n_target_layers * dw.target_hidden;
 
+            // Clamp to draft KV cache capacity. When the prompt is longer than the
+            // draft cache, we prefill only the LAST draft_prefill_n tokens so that
+            // the context that matters most (closest to the first decode step) is
+            // represented in the draft KV cache.
+            const int draft_kv_cap      = cache.draft_kv_cap > 0
+                                              ? cache.draft_kv_cap
+                                              : (int)cache.draft_k[0]->ne[2];
+            const int draft_prefill_n    = std::min(n_prompt, draft_kv_cap);
+            const int draft_prefill_skip = n_prompt - draft_prefill_n;
+
             DraftKVPrefillGraph pkg;
-            if (!build_draft_kv_prefill(pkg, dw, cache, backend, n_prompt)) {
+            if (!build_draft_kv_prefill(pkg, dw, cache, backend, draft_prefill_n)) {
                 std::fprintf(stderr, "[draft] KV prefill build failed\n");
                 return 1;
             }
 
             // Extract target_feat from ring buffer (bf16 → f32) directly into GPU tensor.
             // The ring buffer stores tokens at slot (pos % cap).
-            // Prompt filled positions 0..n_prompt-1 sequentially.
+            // We want the LAST draft_prefill_n hidden states (positions draft_prefill_skip
+            // through n_prompt-1). Their slots in the ring buffer start at
+            // draft_prefill_skip % target_feat_cap and wrap as normal.
             {
-                const int    cap          = cache.target_feat_cap;
-                const size_t feat_elt     = ggml_element_size(cache.target_feat);
-                const int    slot0        = 0;  // prefill starts at position 0
-                const int    pre_n        = std::min(n_prompt, cap - slot0);
-                const int    post_n       = n_prompt - pre_n;
+                const int    cap      = cache.target_feat_cap;
+                const size_t feat_elt = ggml_element_size(cache.target_feat);
+                const int    slot0    = draft_prefill_skip % cap;
+                const int    pre_n    = std::min(draft_prefill_n, cap - slot0);
+                const int    post_n   = draft_prefill_n - pre_n;
 
                 dflash27b_launch_bf16_to_f32(
                     (const char *)cache.target_feat->data + (size_t)slot0 * feat_elt * target_feat_w,
@@ -940,11 +989,11 @@ int main(int argc, char ** argv) {
                 cudaDeviceSynchronize();
             }
 
-            // Positions: [0, 1, ..., n_prompt-1]
+            // Positions: [draft_prefill_skip, ..., n_prompt-1]
             {
-                std::vector<int32_t> pos(n_prompt);
-                for (int i = 0; i < n_prompt; i++) pos[i] = i;
-                ggml_backend_tensor_set(pkg.positions, pos.data(), 0, sizeof(int32_t) * n_prompt);
+                std::vector<int32_t> pos(draft_prefill_n);
+                for (int i = 0; i < draft_prefill_n; i++) pos[i] = draft_prefill_skip + i;
+                ggml_backend_tensor_set(pkg.positions, pos.data(), 0, sizeof(int32_t) * draft_prefill_n);
             }
 
             auto st = ggml_backend_graph_compute(backend, pkg.gf);
@@ -953,10 +1002,13 @@ int main(int argc, char ** argv) {
                 draft_kv_prefill_destroy(pkg);
                 return 1;
             }
-            cache.draft_kv_pos = n_prompt;
+            // draft_kv_pos tracks entries written, bounded by draft_kv_cap.
+            cache.draft_kv_pos = draft_prefill_n;
 
             draft_kv_prefill_destroy(pkg);
-            std::printf("[draft] KV prefill done: %d positions materialized\n", n_prompt);
+            std::printf("[draft] KV prefill done: %d positions materialized "
+                        "(skipped %d early tokens, cap=%d)\n",
+                        draft_prefill_n, draft_prefill_skip, draft_kv_cap);
         }
 
         // ── Decode loop ───────────────────────────────────────────────────
@@ -1112,7 +1164,21 @@ int main(int argc, char ** argv) {
                 }
 
                 // ── 2. Build draft graph (KV-cached, no target_feat input)
-                if (!build_draft_step(dsg, dw, cache, backend, q_len, committed)) {
+                // The draft model operates in its own KV address space bounded by
+                // draft_kv_cap. Use cache.draft_kv_pos (number of entries written into
+                // the draft KV cache) as kv_start, NOT the absolute committed position.
+                {
+                    const int dkv_cap = cache.draft_kv_cap > 0
+                                            ? cache.draft_kv_cap
+                                            : (int)cache.draft_k[0]->ne[2];
+                    if (cache.draft_kv_pos + q_len > dkv_cap) {
+                        std::fprintf(stderr,
+                            "[spec] draft KV overflow: draft_kv_pos=%d q_len=%d cap=%d\n",
+                            cache.draft_kv_pos, q_len, dkv_cap);
+                        return 1;
+                    }
+                }
+                if (!build_draft_step(dsg, dw, cache, backend, q_len, cache.draft_kv_pos)) {
                     std::fprintf(stderr, "[spec] draft build failed\n");
                     return 1;
                 }
@@ -1124,21 +1190,24 @@ int main(int argc, char ** argv) {
                                         sizeof(float) * noise_embed_buf.size());
 
                 // positions: absolute [committed, committed+1, ..., committed+q_len-1]
+                // (absolute positions are used for RoPE — they must match training)
                 {
                     std::vector<int32_t> pos(q_len);
                     for (int i = 0; i < q_len; i++) pos[i] = committed + i;
                     ggml_backend_tensor_set(dsg.positions, pos.data(), 0, sizeof(int32_t) * q_len);
                 }
 
-                // Causal mask: block token i attends to context [0..committed-1] plus
-                // block tokens [0..i]. Shape: [kv_pad, q_pad] f16.
+                // Causal mask: block token i attends to all draft KV context
+                // [0..draft_kv_pos-1] plus block tokens [0..i].
+                // Use draft_kv_pos (draft KV address space), not committed.
                 {
-                    const int kv_len = committed + q_len;
-                    const int kv_pad = align_up(kv_len, KQ_MASK_PAD);
-                    const int q_pad  = align_up(q_len, KQ_MASK_PAD);
+                    const int dkv_ctx = cache.draft_kv_pos;
+                    const int kv_len  = dkv_ctx + q_len;
+                    const int kv_pad  = align_up(kv_len, KQ_MASK_PAD);
+                    const int q_pad   = align_up(q_len, KQ_MASK_PAD);
                     std::vector<uint16_t> mask((size_t)kv_pad * q_pad, F16_NEG_INF);
                     for (int q = 0; q < q_len; q++) {
-                        const int max_k = committed + q;
+                        const int max_k = dkv_ctx + q;
                         for (int k = 0; k <= max_k; k++) {
                             mask[(size_t)q * kv_pad + k] = F16_ZERO;
                         }
