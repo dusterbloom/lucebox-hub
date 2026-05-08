@@ -644,6 +644,21 @@ GemmaGraphOutputs build_gemma4_graph(ggml_context * ctx, ggml_cgraph * gf,
                                      GemmaTargetCache & cache,
                                      const GemmaGraphInputs & in);
 
+// SWA window geometry for a chunk at position kv_start with n_tokens query tokens.
+// Returns the triple that build_swa_attn_block uses for the K/V view.
+// The mask must be sized [effective_win_len, n_tokens] (both aligned) and filled
+// with view-relative indices: mask[q][k_view] where abs_k = abs_win_start + k_view.
+struct SwaView {
+    int abs_win_start;    // absolute KV position of view slot 0
+    int effective_win_len; // number of valid tokens in the view
+    int ring_win_start;   // ring-buffer modular offset (for graph K view)
+};
+
+SwaView compute_swa_view(int kv_start,
+                          int n_tokens,
+                          int swa_window,
+                          int swa_ctx_alloc /* ring size */);
+
 
 // ─── Gemma4 Draft weights ─────────────────────────────────────────
 

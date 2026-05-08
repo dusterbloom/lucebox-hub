@@ -173,18 +173,33 @@ static void build_causal_mask(std::vector<uint16_t> & out,
 }
 
 // ─── SWA causal mask builder (for chunked batched prefill) ───────────────────
-
+//
+// Mask is in VIEW-RELATIVE coordinates matching the K view that build_gemma4_graph
+// passes to FA.  The K view starts at abs_win_start in absolute token space;
+// k_view=0 corresponds to absolute position abs_win_start.
+//
+// mask[q_idx][k_view_idx] = 0 (attend) iff:
+//   abs_k = abs_win_start + k_view_idx
+//   abs_q = kv_start + q_idx
+//   abs_k >= (abs_q - swa_window + 1) AND abs_k <= abs_q
+// else -inf.
 static void build_swa_causal_mask(std::vector<uint16_t> & out,
-                                   int kv_len, int n_tokens, int kv_start,
+                                   int abs_win_start,  // absolute pos of view slot 0
+                                   int win_len,        // effective_win_len
+                                   int n_tokens,
+                                   int kv_start,
                                    int swa_window) {
-    const int kv_pad = align_up(kv_len, g_kq_stride_pad);
+    const int kv_pad = align_up(win_len, g_kq_stride_pad);
     const int q_pad  = align_up(n_tokens, KQ_MASK_PAD);
     out.assign((size_t)kv_pad * q_pad, F16_NEG_INF);
     for (int q = 0; q < n_tokens; q++) {
-        const int abs_q = kv_start + q;
-        const int lo = std::max(0, abs_q - swa_window + 1);
-        for (int k = lo; k <= abs_q && k < kv_len; k++) {
-            out[(size_t)q * kv_pad + k] = F16_ZERO;
+        const int abs_q  = kv_start + q;
+        const int lo_abs = std::max(0, abs_q - swa_window + 1);
+        for (int k_view = 0; k_view < win_len; k_view++) {
+            const int abs_k = abs_win_start + k_view;
+            if (abs_k >= lo_abs && abs_k <= abs_q) {
+                out[(size_t)q * kv_pad + k_view] = F16_ZERO;
+            }
         }
     }
 }
@@ -309,8 +324,13 @@ static bool build_gemma4_step(StepGraph & sg,
         ggml_set_output(sg.attn_mask);  // force gallocr to allocate even if no op references it
 
         if (n_tokens > 1) {
-            // SWA mask needed for sliding-window attention layers in batched prefill
-            sg.swa_mask = ggml_new_tensor_2d(sg.ctx, GGML_TYPE_F16, kv_pad, q_pad);
+            // SWA mask needed for sliding-window attention layers in batched prefill.
+            // Must be sized by the SWA window view, not the full kv_len, so that
+            // its column count matches the K view that build_gemma4_graph passes to FA.
+            const SwaView swa_view = compute_swa_view(kv_start, n_tokens,
+                                                       w.swa_window, cache.swa_ctx_alloc);
+            const int swa_kv_pad = align_up(swa_view.effective_win_len, g_kq_stride_pad);
+            sg.swa_mask = ggml_new_tensor_2d(sg.ctx, GGML_TYPE_F16, swa_kv_pad, q_pad);
             ggml_set_name(sg.swa_mask, "swa_mask");
             ggml_set_input(sg.swa_mask);
             ggml_set_output(sg.swa_mask);  // force gallocr to allocate even if no op references it
@@ -910,9 +930,12 @@ int main(int argc, char ** argv) {
                     }
 
                     if (sg.swa_mask && sg.swa_mask->buffer) {
-                        const int kv_len = cs + chunk_n;
+                        const SwaView swa_view = compute_swa_view(cs, chunk_n,
+                                                                    swa_window, cache.swa_ctx_alloc);
                         std::vector<uint16_t> swa_buf;
-                        build_swa_causal_mask(swa_buf, kv_len, chunk_n, cs, swa_window);
+                        build_swa_causal_mask(swa_buf, swa_view.abs_win_start,
+                                              swa_view.effective_win_len,
+                                              chunk_n, cs, swa_window);
                         ggml_backend_tensor_set(sg.swa_mask, swa_buf.data(), 0,
                                                 sizeof(uint16_t) * swa_buf.size());
                     }
@@ -1273,10 +1296,12 @@ int main(int argc, char ** argv) {
 
                 // SWA mask for target verify (required when n_tokens > 1)
                 if (sg.swa_mask && sg.swa_mask->buffer) {
-                    const int kv_len = committed + q_len;
+                    const SwaView swa_view = compute_swa_view(committed, q_len,
+                                                               w.swa_window, cache.swa_ctx_alloc);
                     std::vector<uint16_t> swa_buf;
-                    build_swa_causal_mask(swa_buf, kv_len, q_len, committed,
-                                          w.swa_window);
+                    build_swa_causal_mask(swa_buf, swa_view.abs_win_start,
+                                          swa_view.effective_win_len,
+                                          q_len, committed, w.swa_window);
                     ggml_backend_tensor_set(sg.swa_mask, swa_buf.data(), 0,
                                             sizeof(uint16_t) * swa_buf.size());
                 }

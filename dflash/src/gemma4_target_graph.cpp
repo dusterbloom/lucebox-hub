@@ -202,6 +202,33 @@ static ggml_tensor * build_moe_ffn(ggml_context * ctx,
     return cur_shared_ffn;
 }
 
+// ─── SWA view geometry helper ────────────────────────────────────────────────
+//
+// Compute the (abs_win_start, effective_win_len, ring_win_start) triple for a
+// chunk at position kv_start with n_tokens query tokens, given swa_window and
+// the ring-buffer size (swa_ctx_alloc).  This is the single source of truth for
+// the K/V view passed to FA and for the host-side causal mask.
+SwaView compute_swa_view(int kv_start, int n_tokens,
+                          int swa_window, int swa_ctx_alloc)
+{
+    const int ring_size = swa_ctx_alloc;
+    const int abs_win_start = (swa_window > 0 && kv_start > swa_window)
+                              ? (kv_start - swa_window) : 0;
+    const int ring_write_pos = kv_start % ring_size;
+    const int kv_len         = kv_start + n_tokens;
+    const int win_len_abs    = kv_len - abs_win_start;
+    const int win_len        = std::min(win_len_abs, ring_size);
+    const int ring_win_start = ((ring_write_pos - (win_len - n_tokens)) % ring_size
+                                 + ring_size) % ring_size;
+    const int effective_win_len = (ring_win_start + win_len <= ring_size)
+                                  ? win_len : (ring_size - ring_win_start);
+    SwaView v;
+    v.abs_win_start    = abs_win_start;
+    v.effective_win_len = effective_win_len;
+    v.ring_win_start   = ring_win_start;
+    return v;
+}
+
 // Sliding-Window Attention block.
 // Uses standard RoPE (rope_theta_swa) and a windowed view of the KV cache.
 static ggml_tensor * build_swa_attn_block(
@@ -284,24 +311,12 @@ static ggml_tensor * build_swa_attn_block(
         ggml_build_forward_expand(gf, ggml_cpy(ctx, Vcur_T, v_slot));
     }
 
-    // Determine window for SWA reads.
-    // With a ring buffer, map absolute win_start to ring-relative position.
-    // The ring holds swa_ctx_alloc slots; once kv_start >= ring_size we use
-    // modular arithmetic so reads stay within [0, ring_size).
-    const int abs_win_start = (w.swa_window > 0 && kv_start > w.swa_window)
-                              ? (kv_start - w.swa_window) : 0;
-    // Ring-relative window start: same as write_pos for the oldest needed token.
-    const int ring_write_pos = kv_start % ring_size;
-    // Number of tokens in window (capped to ring size so view fits).
-    const int kv_len  = kv_start + n_tokens;
-    const int win_len_abs = kv_len - abs_win_start;
-    const int win_len = std::min(win_len_abs, ring_size);
-    // Physical start in the ring: go back win_len-n_tokens from write position.
-    const int ring_win_start = ((ring_write_pos - (win_len - n_tokens)) % ring_size
-                                 + ring_size) % ring_size;
-    // Ensure view does not cross the ring boundary; clamp to ring_size if it would.
-    const int effective_win_len = (ring_win_start + win_len <= ring_size)
-                                  ? win_len : (ring_size - ring_win_start);
+    // Determine window for SWA reads using the shared geometry helper.
+    // This ensures the K/V view and the host-side causal mask always agree.
+    const SwaView swa_view = compute_swa_view(kv_start, n_tokens,
+                                               w.swa_window, ring_size);
+    const int effective_win_len = swa_view.effective_win_len;
+    const int ring_win_start    = swa_view.ring_win_start;
 
     const bool need_256_pad = (kv_k_type == GGML_TYPE_TQ3_0 || kv_v_type == GGML_TYPE_TQ3_0
                                || head_dim >= 512);
