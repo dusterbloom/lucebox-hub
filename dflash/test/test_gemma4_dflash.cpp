@@ -1038,6 +1038,25 @@ int main(int argc, char ** argv) {
                         break;
                     }
 
+                    // ── TQ3_0 K-cache write probe ─────────────────────────────────────
+                    if (getenv("DFLASH_TQ3_PROBE_CACHE_WRITE") &&
+                        (cs == 0 || cs == chunk_size) &&
+                        !cache.attn_k.empty()) {
+                        ggml_tensor * cache_k_layer0 = cache.attn_k[0];
+                        if (cache_k_layer0 && cache_k_layer0->type == GGML_TYPE_TQ3_0) {
+                            // nb[1] is the stride in bytes between successive token slots
+                            const size_t off = (size_t)cache_k_layer0->nb[1] * (size_t)cs;
+                            uint8_t blk[14] = {};
+                            ggml_backend_tensor_get(cache_k_layer0, blk, off, 14);
+                            std::fprintf(stderr, "[CACHE-WRITE-PROBE] cs=%d off=%zu bytes=", cs, off);
+                            for (int _i = 0; _i < 14; _i++)
+                                std::fprintf(stderr, "%02x ", blk[_i]);
+                            std::fprintf(stderr, "\n");
+                            std::fflush(stderr);
+                        }
+                    }
+                    // ─────────────────────────────────────────────────────────────────
+
                     cache.cur_pos = cs + chunk_n;
 
                     if (is_last) {
