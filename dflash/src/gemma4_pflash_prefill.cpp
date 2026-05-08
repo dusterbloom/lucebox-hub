@@ -402,31 +402,54 @@ static ggml_tensor * build_swa_ops(ggml_context * ctx, ggml_cgraph * gf,
         Vcur = ggml_reshape_3d(ctx, Vcur, D_swa, n_kv_layer, cc.cl);
         Vcur = ggml_rms_norm(ctx, Vcur, PFLASH_EPS);
 
+        // Use ring-buffer write position: (kv_start + cs) % ring_size.
+        // This keeps writes within the tensor bounds for swa_ctx_alloc-sized caches.
+        const int ring_size_swa  = (int)cache_k->ne[1];
+        const int abs_write_start = cc.kv_start + cc.cs;
+        const int ring_write_pos  = abs_write_start % ring_size_swa;
+
         ggml_tensor * Kcur_T = ggml_permute(ctx, Kcur, 0, 2, 1, 3);
         ggml_tensor * Vcur_T = ggml_permute(ctx, Vcur, 0, 2, 1, 3);
         ggml_tensor * k_slot = ggml_view_3d(ctx, cache_k,
             D_swa, cc.cl, n_kv_layer,
             cache_k->nb[1], cache_k->nb[2],
-            cache_k->nb[1] * (cc.kv_start + cc.cs));
+            cache_k->nb[1] * ring_write_pos);
         ggml_tensor * v_slot = ggml_view_3d(ctx, cache_v,
             D_swa, cc.cl, n_kv_layer,
             cache_v->nb[1], cache_v->nb[2],
-            cache_v->nb[1] * (cc.kv_start + cc.cs));
+            cache_v->nb[1] * ring_write_pos);
         ggml_build_forward_expand(gf, ggml_cpy(ctx, Kcur_T, k_slot));
         ggml_build_forward_expand(gf, ggml_cpy(ctx, Vcur_T, v_slot));
     }
 
-    // SWA window
-    int win_start = 0;
-    if (w.swa_window > 0 && (cc.kv_start + cc.cs) > w.swa_window)
-        win_start = (cc.kv_start + cc.cs) - w.swa_window;
-    int win_len = (cc.kv_start + cc.cs + cc.cl) - win_start;
+    // SWA window — compute using ring-buffer-relative positions.
+    // ring_size_read is the actual allocated slot count for this SWA layer's KV.
+    const int ring_size_read = cache_k ? (int)cache_k->ne[1] : (cc.kv_start + cc.cs + cc.cl);
+    const int abs_cur_end    = cc.kv_start + cc.cs + cc.cl;  // absolute end position
+    const int abs_win_start_swa = (w.swa_window > 0 && (cc.kv_start + cc.cs) > w.swa_window)
+        ? (cc.kv_start + cc.cs) - w.swa_window : 0;
+    const int win_len_abs = abs_cur_end - abs_win_start_swa;
+    // Cap window length to ring buffer size to stay within tensor bounds.
+    const int win_len_capped = std::min(win_len_abs, ring_size_read);
+    // Ring-relative position of the write end (exclusive: first slot after last write).
+    const int ring_write_end = abs_cur_end % ring_size_read;
+    // Ring-relative start: go back (win_len_capped - cc.cl) slots from ring_write_end.
+    int win_start = ((ring_write_end - win_len_capped) % ring_size_read
+                     + ring_size_read) % ring_size_read;
+    int win_len = win_len_capped;
+    // Clamp to ring boundary — view must not exceed tensor allocation.
+    if (win_start + win_len > ring_size_read) {
+        win_len = ring_size_read - win_start;
+    }
 
     if (cache_k && (cache.kv_k_type == GGML_TYPE_TQ3_0 || D_swa >= 512)) {
         const int pad = 256 / (int)ggml_type_size(cache.kv_k_type);
         if (pad > 0) {
-            win_start = (win_start / pad) * pad;
-            win_len   = (cc.kv_start + cc.cs + cc.cl) - win_start;
+            // Align win_start down to pad boundary; re-cap to ring size.
+            const int aligned_start = (win_start / pad) * pad;
+            const int extra = win_start - aligned_start;
+            win_start = aligned_start;
+            win_len   = std::min(win_len + extra, ring_size_read - win_start);
         }
     }
 
@@ -510,25 +533,34 @@ static void fill_swa_mask(ggml_tensor * attn_mask, int win_start, int win_len,
         mask_data.size() * sizeof(uint16_t));
 }
 
-// Compute SWA window bounds for a chunk (accounts for quantization padding).
-// cache_k_present must match whether cache_k was non-null in the graph build,
-// so the mask dimensions align with the attn_mask tensor created in build_swa_ops.
+// Compute SWA window bounds for a chunk (accounts for quantization padding and ring buffer).
+// cache_k is the actual KV tensor for this layer (may be nullptr); its ne[1] gives ring_size.
+// Must mirror build_swa_ops exactly so mask dimensions align with the attn_mask tensor.
 static void swa_window_bounds(const GemmaTargetWeights & w,
                                const GemmaTargetCache & cache,
                                int cs, int cl, int kv_start,
-                               bool cache_k_present,
+                               const ggml_tensor * cache_k,
                                int & win_start_out, int & win_len_out) {
-    int win_start = 0;
-    if (w.swa_window > 0 && (kv_start + cs) > w.swa_window)
-        win_start = (kv_start + cs) - w.swa_window;
-    int win_len = (kv_start + cs + cl) - win_start;
+    const int abs_cur_end = kv_start + cs + cl;
+    const int ring_size   = cache_k ? (int)cache_k->ne[1] : abs_cur_end;
+
+    const int abs_win_start = (w.swa_window > 0 && (kv_start + cs) > w.swa_window)
+        ? (kv_start + cs) - w.swa_window : 0;
+    const int win_len_abs = abs_cur_end - abs_win_start;
+    const int win_len_capped = std::min(win_len_abs, ring_size);
+
+    const int ring_write_end = abs_cur_end % ring_size;
+    int win_start = ((ring_write_end - win_len_capped) % ring_size + ring_size) % ring_size;
+    int win_len   = win_len_capped;
 
     // Mirror the padding condition in build_swa_ops exactly.
-    if (cache_k_present && (cache.kv_k_type == GGML_TYPE_TQ3_0 || w.head_dim_swa >= 512)) {
+    if (cache_k && (cache.kv_k_type == GGML_TYPE_TQ3_0 || w.head_dim_swa >= 512)) {
         const int pad = 256 / (int)ggml_type_size(cache.kv_k_type);
         if (pad > 0) {
-            win_start = (win_start / pad) * pad;
-            win_len   = (kv_start + cs + cl) - win_start;
+            const int aligned_start = (win_start / pad) * pad;
+            const int extra = win_start - aligned_start;
+            win_start = aligned_start;
+            win_len   = std::min(win_len + extra, ring_size - win_start);
         }
     }
     win_start_out = win_start;
@@ -583,9 +615,14 @@ int gemma4_pflash_prefill(const GemmaTargetWeights & w,
     const int D_swa     = w.head_dim_swa;
     const int n_head_kv = w.n_head_kv;
 
-    // All chunked operations (both Graph A and SWA) use SWA_CHUNK since fused
-    // graphs include SWA attention which constrains the chunk size.
-    const int SWA_CHUNK = std::min(32768, std::max(1024, w.swa_window));
+    // GRAPH_CHUNK: large chunk for Graph A (Q/K/V proj + RoPE) and standalone
+    // Graph B (output proj + FFN) — these are pure linear ops with no attention
+    // dependency and benefit from fewer, larger graph build/compute cycles.
+    // SWA_CHUNK: matched to the actual SWA KV cache allocation so each chunk
+    // fills exactly one cache-worth of slots. With swa_ctx_alloc=4096 this gives
+    // ~16 chunks at 64K context instead of ~51 at the old 1280-slot minimum.
+    const int GRAPH_CHUNK = 32768;
+    const int SWA_CHUNK   = std::min(GRAPH_CHUNK, (int)cache.swa_ctx_alloc);
     const ggml_type half_type = GGML_TYPE_BF16;
 
     // ── Persistent GPU buffers ────────────────────────────────────────────────
@@ -676,20 +713,59 @@ int gemma4_pflash_prefill(const GemmaTargetWeights & w,
     ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
     if (!galloc) { cleanup(); set_last_error("pflash: gallocr failed"); return -1; }
 
-    // ── Pre-reserve gallocr for largest expected graph (fused B + SWA + A) ───
-    // This eliminates gallocr reallocation overhead across all ~40 graph builds.
+    // ── Compute max standalone SWA run length for pre-reservation ────────────
+    // The largest graph in the new batched scheme is a SWA group of max_swa_run
+    // consecutive layers in one ggml graph.  Pre-reserve the gallocr for that
+    // size so we avoid reallocation on every graph build.
+    int max_swa_run = 1;
     {
+        // Mirror the scan used when building process_list above so the value is exact.
+        std::vector<bool> tmp_handled(n_layer, false);
+        for (int il2 = 0; il2 < n_layer - 1; il2++) {
+            const bool is_s  = (il2 < (int)w.swa_layers.size()) ? w.swa_layers[il2]   : true;
+            const bool is_sn = ((il2+1) < (int)w.swa_layers.size()) ? w.swa_layers[il2+1] : true;
+            if (!is_s && is_sn) {
+                tmp_handled[il2]     = true;
+                tmp_handled[il2 + 1] = true;
+                il2++;
+            }
+        }
+        for (int il2 = 0; il2 < n_layer; ) {
+            if (tmp_handled[il2]) { il2++; continue; }
+            const bool is_swa2 = (il2 < (int)w.swa_layers.size()) ? w.swa_layers[il2] : true;
+            if (is_swa2) {
+                int end2 = il2 + 1;
+                while (end2 < n_layer && !tmp_handled[end2]) {
+                    const bool nx = (end2 < (int)w.swa_layers.size()) ? w.swa_layers[end2] : true;
+                    if (!nx) break;
+                    end2++;
+                }
+                max_swa_run = std::max(max_swa_run, end2 - il2);
+                il2 = end2;
+            } else {
+                il2++;
+            }
+        }
+    }
+
+    // ── Pre-reserve gallocr for largest expected graph ────────────────────────
+    // The largest graph is either:
+    //   (a) a fused [B(full) + SWA] pair graph, or
+    //   (b) a batched SWA group of max_swa_run layers.
+    // We reserve for whichever is larger (by node count).
+    {
+        const int reserve_layers = std::max(2, max_swa_run);  // at least B+SWA pair
         ggml_init_params ip_reserve{};
-        ip_reserve.mem_size = ggml_tensor_overhead() * 512
-                            + ggml_graph_overhead_custom(4096, false)
-                            + 512 * 1024;
+        ip_reserve.mem_size = (size_t)reserve_layers * (ggml_tensor_overhead() * 512
+                            + ggml_graph_overhead_custom(8192, false)
+                            + 512 * 1024);
         ip_reserve.no_alloc = true;
         ggml_context * rctx = ggml_init(ip_reserve);
-        ggml_cgraph * rgf = ggml_new_graph_custom(rctx, 4096, false);
+        const size_t reserve_nodes = (size_t)8192 * reserve_layers;
+        ggml_cgraph * rgf = ggml_new_graph_custom(rctx, reserve_nodes, false);
 
-        // Build a dummy graph sized for the largest expected tensors:
-        // A fused [B + SWA + A] graph with SWA_CHUNK tokens.
-        // Largest matmuls: FFN (n_ff × n_embd × rc) and attention (n_embd × n_embd × rc).
+        // Build a dummy graph sized for the largest expected tensors.
+        // Largest matmuls: FFN (n_ff × n_embd × rc) and attention.
         const int rc = SWA_CHUNK;
 
         int64_t n_ff_eff = w.n_ff;
@@ -700,24 +776,19 @@ int gemma4_pflash_prefill(const GemmaTargetWeights & w,
         ggml_tensor * dummy_w1   = ggml_new_tensor_2d(rctx, GGML_TYPE_F32, n_embd, n_ff_eff);
         ggml_tensor * dummy_w2   = ggml_new_tensor_2d(rctx, GGML_TYPE_F32, n_ff_eff, n_embd);
 
-        // Chain ops: two FFN passes (representing fused B + SWA) with shared intermediates
+        // Chain reserve_layers FFN passes to represent the largest batched SWA graph.
         ggml_tensor * t = ggml_rms_norm(rctx, dummy_h, 1e-6f);
         t = ggml_mul(rctx, t, dummy_norm);
-        ggml_tensor * g = ggml_mul_mat(rctx, dummy_w1, t);
-        ggml_tensor * u = ggml_mul_mat(rctx, dummy_w1, t);
-        ggml_tensor * gu = ggml_mul(rctx, g, u);
-        t = ggml_mul_mat(rctx, dummy_w2, gu);
-        t = ggml_add(rctx, t, dummy_h);
-
-        // Second FFN pass (SWA layer)
-        ggml_tensor * t2 = ggml_rms_norm(rctx, t, 1e-6f);
-        t2 = ggml_mul(rctx, t2, dummy_norm);
-        ggml_tensor * g2 = ggml_mul_mat(rctx, dummy_w1, t2);
-        ggml_tensor * u2 = ggml_mul_mat(rctx, dummy_w1, t2);
-        ggml_tensor * gu2 = ggml_mul(rctx, g2, u2);
-        t2 = ggml_mul_mat(rctx, dummy_w2, gu2);
-        t2 = ggml_add(rctx, t2, t);
-        ggml_build_forward_expand(rgf, t2);
+        for (int ri = 0; ri < reserve_layers; ri++) {
+            ggml_tensor * g  = ggml_mul_mat(rctx, dummy_w1, t);
+            ggml_tensor * u  = ggml_mul_mat(rctx, dummy_w1, t);
+            ggml_tensor * gu = ggml_mul(rctx, g, u);
+            t = ggml_mul_mat(rctx, dummy_w2, gu);
+            t = ggml_add(rctx, t, dummy_h);
+            t = ggml_rms_norm(rctx, t, 1e-6f);
+            t = ggml_mul(rctx, t, dummy_norm);
+        }
+        ggml_build_forward_expand(rgf, t);
 
         ggml_gallocr_reserve(galloc, rgf);
         ggml_free(rctx);
@@ -764,24 +835,46 @@ int gemma4_pflash_prefill(const GemmaTargetWeights & w,
     // paired (e.g. two consecutive full-attn layers, trailing full-attn, etc.).
     // Strategy: walk il = 0..n_layer-1, skip layers that were handled in pairs
     // but process pairs when we reach the full_il.
+    //
+    // ProcessItem types:
+    //   is_pair=true  → fused (full-attn + SWA) pair
+    //   is_pair=false, swa_group_end >= 0 → batched SWA run [standalone..swa_group_end)
+    //   is_pair=false, swa_group_end < 0  → standalone full-attn layer
 
-    // Build an ordered processing list: either a pair index or a standalone layer.
     struct ProcessItem {
         bool is_pair;
-        int  pair_idx;    // if is_pair
-        int  standalone;  // if !is_pair
+        int  pair_idx;       // if is_pair
+        int  standalone;     // if !is_pair: first layer index
+        int  swa_group_end;  // if !is_pair && >=0: exclusive end of consecutive SWA run
     };
     std::vector<ProcessItem> process_list;
     {
         int pair_cursor = 0;
         for (int il = 0; il < n_layer; ) {
             if (pair_cursor < (int)pairs.size() && pairs[pair_cursor].full_il == il) {
-                process_list.push_back({true, pair_cursor, -1});
+                process_list.push_back({true, pair_cursor, -1, -1});
                 il = pairs[pair_cursor].swa_il + 1;
                 pair_cursor++;
             } else if (!layer_handled[il]) {
-                process_list.push_back({false, -1, il});
-                il++;
+                const bool is_swa = (il < (int)w.swa_layers.size()) ? w.swa_layers[il] : true;
+                if (is_swa) {
+                    // Scan forward to find the end of the consecutive SWA run.
+                    // A layer belongs to this run if it is standalone (not already
+                    // handled by a pair) and is an SWA layer.
+                    int swa_end = il + 1;
+                    while (swa_end < n_layer && !layer_handled[swa_end]) {
+                        const bool next_is_swa = (swa_end < (int)w.swa_layers.size())
+                                                 ? w.swa_layers[swa_end] : true;
+                        if (!next_is_swa) break;
+                        swa_end++;
+                    }
+                    process_list.push_back({false, -1, il, swa_end});
+                    il = swa_end;
+                } else {
+                    // Standalone full-attn layer
+                    process_list.push_back({false, -1, il, -1});
+                    il++;
+                }
             } else {
                 il++;  // skip (handled in pair already)
             }
@@ -791,30 +884,27 @@ int gemma4_pflash_prefill(const GemmaTargetWeights & w,
     // ── Main processing loop ──────────────────────────────────────────────────
     for (const auto & item : process_list) {
         if (!item.is_pair) {
-            // ── Standalone layer ──────────────────────────────────────────────
+            // ── Standalone layer(s) ───────────────────────────────────────────
             const int il = item.standalone;
-            const auto & L = w.layers[il];
-            const bool is_swa = (il < (int)w.swa_layers.size()) ? w.swa_layers[il] : true;
 
-            ggml_tensor * cache_k = nullptr;
-            ggml_tensor * cache_v = nullptr;
-            int n_kv_layer = 0, kv_idx = -1;
-            bool write_kv = false;
-            get_layer_kv(il, cache_k, cache_v, n_kv_layer, kv_idx, write_kv);
-            (void)kv_idx;
+            if (item.swa_group_end >= 0) {
+                // ── Batched SWA group: layers [il, swa_group_end) ─────────────
+                // All SWA layers in the run share the same SWA_CHUNK loop.
+                // Within each chunk we build ONE graph chaining all layers.
+                const int swa_end   = item.swa_group_end;
+                const int swa_count = swa_end - il;
 
-            if (is_swa) {
-                // ── Standalone SWA layer ──────────────────────────────────────
                 for (int cs = 0; cs < S; cs += SWA_CHUNK) {
                     const int cl = std::min(SWA_CHUNK, S - cs);
 
+                    // Scale context memory and node budget proportionally to group size.
                     ggml_init_params ip{};
-                    ip.mem_size = ggml_tensor_overhead() * 512
+                    ip.mem_size = (size_t)swa_count * (ggml_tensor_overhead() * 512
                                 + ggml_graph_overhead_custom(8192, false)
-                                + 512 * 1024;
+                                + 512 * 1024);
                     ip.no_alloc = true;
                     ggml_context * gctx = ggml_init(ip);
-                    ggml_cgraph  * gf   = ggml_new_graph_custom(gctx, 8192, false);
+                    ggml_cgraph  * gf   = ggml_new_graph_custom(gctx, (size_t)8192 * swa_count, false);
 
                     const size_t h_esz  = ggml_element_size(hidden_buf.t);
                     ggml_tensor * h_view = ggml_view_2d(gctx, hidden_buf.t,
@@ -823,41 +913,84 @@ int gemma4_pflash_prefill(const GemmaTargetWeights & w,
                     ggml_tensor * pos_chunk = ggml_view_1d(gctx, pos_buf.t, cl,
                         (size_t)cs * sizeof(int32_t));
 
-                    ChunkCtx cc{S, cs, cl, kv_start, h_view, pos_chunk};
-                    ggml_tensor * attn_mask = nullptr;
-                    ggml_tensor * cur = build_swa_ops(gctx, gf, w, L, cache,
-                        cache_k, cache_v, il, n_kv_layer, h_view, &attn_mask, cc);
+                    // Collect attn_mask pointers for each layer in the group
+                    // (needed for fill_swa_mask after alloc).
+                    std::vector<ggml_tensor *> attn_masks(swa_count, nullptr);
 
-                    // Write back residual
+                    // Chain layers: first layer reads from h_view (hidden_buf),
+                    // subsequent layers feed directly from the previous output.
+                    ggml_tensor * cur = nullptr;
+                    for (int l = il; l < swa_end; l++) {
+                        const auto & Ll = w.layers[l];
+                        ggml_tensor * layer_cache_k = nullptr;
+                        ggml_tensor * layer_cache_v = nullptr;
+                        int layer_n_kv = 0, layer_kv_idx = -1;
+                        bool layer_write_kv = false;
+                        get_layer_kv(l, layer_cache_k, layer_cache_v,
+                                     layer_n_kv, layer_kv_idx, layer_write_kv);
+                        (void)layer_kv_idx;
+
+                        ggml_tensor * layer_in = (l == il) ? h_view : cur;
+                        ChunkCtx cc{S, cs, cl, kv_start, layer_in, pos_chunk};
+
+                        ggml_tensor * layer_mask = nullptr;
+                        cur = build_swa_ops(gctx, gf, w, Ll, cache,
+                            layer_cache_k, layer_cache_v, l, layer_n_kv,
+                            layer_in, &layer_mask, cc);
+                        attn_masks[l - il] = layer_mask;
+                    }
+
+                    // Write final output back to hidden_buf (overwriting h_view region)
                     ggml_build_forward_expand(gf, ggml_cpy(gctx, cur, h_view));
 
                     if (!ggml_gallocr_alloc_graph(galloc, gf)) {
                         cleanup(); ggml_gallocr_free(galloc); ggml_free(gctx);
-                        set_last_error("pflash: SWA gallocr failed"); return -1;
+                        set_last_error("pflash: SWA group gallocr failed"); return -1;
                     }
 
-                    // Fill and upload mask
-                    {
-                        int win_start = 0, win_len = 0;
-                        swa_window_bounds(w, cache, cs, cl, kv_start,
-                                          cache_k != nullptr, win_start, win_len);
-                        fill_swa_mask(attn_mask, win_start, win_len, cs, cl,
-                                      kv_start, w.swa_window);
+                    // Fill and upload masks for each layer in the group
+                    for (int l = il; l < swa_end; l++) {
+                        ggml_tensor * layer_cache_k = nullptr;
+                        ggml_tensor * layer_cache_v = nullptr;
+                        int layer_n_kv = 0, layer_kv_idx = -1;
+                        bool layer_write_kv = false;
+                        get_layer_kv(l, layer_cache_k, layer_cache_v,
+                                     layer_n_kv, layer_kv_idx, layer_write_kv);
+                        (void)layer_n_kv; (void)layer_kv_idx; (void)layer_write_kv; (void)layer_cache_v;
+
+                        if (attn_masks[l - il]) {
+                            int win_start = 0, win_len = 0;
+                            swa_window_bounds(w, cache, cs, cl, kv_start,
+                                              layer_cache_k, win_start, win_len);
+                            fill_swa_mask(attn_masks[l - il], win_start, win_len,
+                                          cs, cl, kv_start, w.swa_window);
+                        }
                     }
 
                     ggml_backend_graph_compute(backend, gf);
                     ggml_free(gctx);
                 }
+
+                std::fprintf(stderr, "[pflash] SWA group layers %d-%d done\n", il, swa_end - 1);
+
             } else {
                 // ── Standalone full-attn layer ────────────────────────────────
+                const auto & L = w.layers[il];
+                ggml_tensor * cache_k = nullptr;
+                ggml_tensor * cache_v = nullptr;
+                int n_kv_layer = 0, kv_idx = -1;
+                bool write_kv = false;
+                get_layer_kv(il, cache_k, cache_v, n_kv_layer, kv_idx, write_kv);
+                (void)kv_idx;
+
                 if (!write_kv) {
                     std::fprintf(stderr, "[pflash] layer %d: shared KV (no write), skipping\n", il);
                     continue;
                 }
 
-                // Graph A
-                for (int cs = 0; cs < S; cs += SWA_CHUNK) {
-                    const int cl = std::min(SWA_CHUNK, S - cs);
+                // Graph A — use GRAPH_CHUNK (pure linear ops, no attention constraint)
+                for (int cs = 0; cs < S; cs += GRAPH_CHUNK) {
+                    const int cl = std::min(GRAPH_CHUNK, S - cs);
 
                     ggml_init_params ipA{};
                     ipA.mem_size = ggml_tensor_overhead() * 256
@@ -897,9 +1030,9 @@ int gemma4_pflash_prefill(const GemmaTargetWeights & w,
                     }
                 }
 
-                // Graph B
-                for (int cs = 0; cs < S; cs += SWA_CHUNK) {
-                    const int cl = std::min(SWA_CHUNK, S - cs);
+                // Graph B — use GRAPH_CHUNK (output proj + FFN, no attention constraint)
+                for (int cs = 0; cs < S; cs += GRAPH_CHUNK) {
+                    const int cl = std::min(GRAPH_CHUNK, S - cs);
 
                     ggml_init_params ipB{};
                     ipB.mem_size = ggml_tensor_overhead() * 512
@@ -929,10 +1062,10 @@ int gemma4_pflash_prefill(const GemmaTargetWeights & w,
                     ggml_backend_graph_compute(backend, gfB);
                     ggml_free(gB);
                 }
-            }
 
-            if (il == 0 || il == n_layer - 1 || (il % 10 == 0))
-                std::fprintf(stderr, "[pflash] layer %d/%d done\n", il + 1, n_layer);
+                if (il == 0 || il == n_layer - 1 || (il % 10 == 0))
+                    std::fprintf(stderr, "[pflash] layer %d/%d done\n", il + 1, n_layer);
+            }
 
         } else {
             // ── Fused pair: Graph A(full) → pFlash → fused [B(full) + SWA] ───
@@ -987,7 +1120,7 @@ int gemma4_pflash_prefill(const GemmaTargetWeights & w,
                     {
                         int win_start = 0, win_len = 0;
                         swa_window_bounds(w, cache, cs, cl, kv_start,
-                                          swa_cache_k != nullptr, win_start, win_len);
+                                          swa_cache_k, win_start, win_len);
                         fill_swa_mask(attn_mask, win_start, win_len, cs, cl,
                                       kv_start, w.swa_window);
                     }
@@ -997,9 +1130,9 @@ int gemma4_pflash_prefill(const GemmaTargetWeights & w,
                 continue;
             }
 
-            // ── Graph A for full_il (chunked, standalone) ─────────────────────
-            for (int cs = 0; cs < S; cs += SWA_CHUNK) {
-                const int cl = std::min(SWA_CHUNK, S - cs);
+            // ── Graph A for full_il — use GRAPH_CHUNK (pure linear ops, no attention constraint)
+            for (int cs = 0; cs < S; cs += GRAPH_CHUNK) {
+                const int cl = std::min(GRAPH_CHUNK, S - cs);
 
                 ggml_init_params ipA{};
                 ipA.mem_size = ggml_tensor_overhead() * 256
@@ -1086,7 +1219,7 @@ int gemma4_pflash_prefill(const GemmaTargetWeights & w,
                 {
                     int win_start = 0, win_len = 0;
                     swa_window_bounds(w, cache, cs, cl, kv_start,
-                                      swa_cache_k != nullptr, win_start, win_len);
+                                      swa_cache_k, win_start, win_len);
                     fill_swa_mask(attn_mask_swa, win_start, win_len, cs, cl,
                                   kv_start, w.swa_window);
                 }
