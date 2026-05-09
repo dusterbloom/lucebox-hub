@@ -2154,21 +2154,18 @@ int main(int argc, char ** argv) {
                     ggml_backend_tensor_set(mtp_g.in_pos, &p, 0, sizeof(int32_t));
                 }
 
-                // Pre-compute: check input values (inputs are valid in gallocr buffer before compute)
-                if (mtp_steps <= 1) {
-                    if (mtp_g.in_tok_embd) {
-                        std::vector<float> te(8);
-                        ggml_backend_tensor_get(mtp_g.in_tok_embd, te.data(), 0, sizeof(float)*8);
-                        std::printf("[mtp-pre] tok_embd: %.3f %.3f %.3f %.3f tok=%d\n",
-                                    te[0],te[1],te[2],te[3], cur_tok);
+                // Fill the FA mask for TQ3_0 + head_dim>=512 cross-attention layers.
+                // Real positions [0..kv_seq_len-1]: 0x0000 (F16 0.0 = admit).
+                // Padding positions [kv_seq_len..mask_width-1]: 0xFC00 (F16 -inf = exclude).
+                if (mtp_g.fa_mask && mtp_g.fa_mask->buffer) {
+                    const int64_t mask_n = mtp_g.fa_mask->ne[0];  // total mask width
+                    const int64_t kv_seq = mtp_g.fa_mask_kv_seq_len;  // admitted positions
+                    std::vector<uint16_t> mask_buf(mask_n);
+                    for (int64_t i = 0; i < mask_n; i++) {
+                        mask_buf[i] = (i < kv_seq) ? 0x0000u : 0xFC00u;
                     }
-                    if (mtp_g.in_h_prev) {
-                        std::vector<float> hp(8);
-                        ggml_backend_tensor_get(mtp_g.in_h_prev, hp.data(), 0, sizeof(float)*8);
-                        std::printf("[mtp-pre] h_prev: %.3f %.3f %.3f %.3f\n",
-                                    hp[0],hp[1],hp[2],hp[3]);
-                    }
-                    std::fflush(stdout);
+                    ggml_backend_tensor_set(mtp_g.fa_mask, mask_buf.data(), 0,
+                                            sizeof(uint16_t) * mask_n);
                 }
 
                 {
@@ -2183,20 +2180,6 @@ int main(int argc, char ** argv) {
                 // Read draft token from in-graph argmax
                 int32_t draft_tok = -1;
                 ggml_backend_tensor_get(mtp_g.out_argmax, &draft_tok, 0, sizeof(int32_t));
-                // Debug: check logits and h_post for NaN/inf (read AFTER compute)
-                if (mtp_steps <= 2 && mtp_g.out_logits) {
-                    std::vector<float> lv(8);
-                    ggml_backend_tensor_get(mtp_g.out_logits, lv.data(), 0, sizeof(float)*8);
-                    std::printf("[mtp-logits] first8: %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f  argmax=%d\n",
-                                lv[0],lv[1],lv[2],lv[3],lv[4],lv[5],lv[6],lv[7], draft_tok);
-                    if (mtp_g.out_h_post) {
-                        std::vector<float> hv(8);
-                        ggml_backend_tensor_get(mtp_g.out_h_post, hv.data(), 0, sizeof(float)*8);
-                        std::printf("[mtp-hpost] first8: %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f\n",
-                                    hv[0],hv[1],hv[2],hv[3],hv[4],hv[5],hv[6],hv[7]);
-                    }
-                    std::fflush(stdout);
-                }
 
                 ggml_gallocr_free(mtp_alloc);
 
@@ -2315,6 +2298,17 @@ int main(int argc, char ** argv) {
 
                 const int32_t next_tok = (int32_t)sample_logits(
                     logits_cpu.data(), vocab, sampler, history, rng);
+
+                // Debug: check logits on first decode step
+                if (generated.empty()) {
+                    float maxl = logits_cpu[0]; int maxi = 0;
+                    for (int i = 1; i < vocab; i++) {
+                        if (logits_cpu[i] > maxl) { maxl = logits_cpu[i]; maxi = i; }
+                    }
+                    std::printf("[tgt-only-dbg] logits[0..3]: %.3f %.3f %.3f %.3f max=%.3f@%d next=%d\n",
+                                logits_cpu[0], logits_cpu[1], logits_cpu[2], logits_cpu[3], maxl, maxi, next_tok);
+                    std::fflush(stdout);
+                }
 
                 generated.push_back(cur_tok);
                 history.push_back(cur_tok);

@@ -180,6 +180,14 @@ bool build_mtp_step_graph(const MtpDrafterWeights  & w,
     ggml_set_name(inpL, "mtp_pre_proj_out");
 
     // ── 3. Transformer blocks ─────────────────────────────────────────────────
+    // Single FA mask shared across every layer that needs one. First need-mask
+    // layer creates the input tensor; later layers reuse it. We require every
+    // need-mask layer to want the same (width, kv_seq_len) — short contexts
+    // satisfy this because SWA cap >= attn_pos. Divergence in long contexts
+    // trips an error and the builder must be extended to per-layer masks.
+    ggml_tensor * shared_fa_mask           = nullptr;
+    int64_t       shared_fa_mask_width     = 0;
+    int64_t       shared_fa_mask_kv_seq_len = 0;
     for (int il = 0; il < n_layer; ++il) {
         const MtpLayerWeights & L = w.layers[il];
         const bool is_swa = L.is_swa;
@@ -330,6 +338,25 @@ bool build_mtp_step_graph(const MtpDrafterWeights  & w,
         // Pad to 1 minimum to avoid zero-size tensors when attn_pos==0.
         const int64_t kv_view_len = std::max(kv_seq_len, (int64_t)1);
 
+        // For head_dim==512 with any K type, ggml_flash_attn_ext requires
+        // K->ne[1] % 256 == 0 for gqa_opt_applies to be true (and returns
+        // BEST_FATTN_KERNEL_NONE otherwise). Pad the K/V view to the next 256
+        // multiple; the padding rows contain stale cache data but are masked
+        // out by the caller-provided fa_mask with -inf bias on those positions.
+        // This only applies to the non-wrap path (head_dim=512 layers are full-attn
+        // with monotone KV so no wrap occurs).
+        // FATTN_KQ_STRIDE alignment: TQ3_0 K is stored in blocks along ne[1] and
+        // the FA kernels (chunked + vec) iterate KV in 256-position groups; an
+        // unaligned ne[1] reads past the valid window into stale cache cells. We
+        // pad the view to 256 and exclude the tail with a -inf mask.
+        // This matches gemma4_target_graph.cpp:352-355's `need_256_pad` policy.
+        const bool kv_cache_is_tq3 = (cache_k->type == GGML_TYPE_TQ3_0);
+        const bool needs_kv_pad = (kv_cache_is_tq3 || head_dim_fa >= 512)
+                                  && !kv_wraps && (kv_view_len % 256 != 0);
+        const int64_t kv_view_len_padded = needs_kv_pad
+            ? ((kv_view_len + 255) / 256) * 256
+            : kv_view_len;
+
         auto view_kv = [&](ggml_tensor * cache, int64_t start, int64_t len) {
             return ggml_view_3d(ctx, cache,
                 head_dim_kv, len, n_head_kv,
@@ -360,8 +387,9 @@ bool build_mtp_step_graph(const MtpDrafterWeights  & w,
             Kview = ggml_concat(ctx, k1, k2, 1);
             Vview = ggml_concat(ctx, v1, v2, 1);
         } else {
-            Kview = view_kv(cache_k, kv_start_slot, kv_view_len);
-            Vview = view_kv(cache_v, kv_start_slot, kv_view_len);
+            // Use padded length for the K/V view when required.
+            Kview = view_kv(cache_k, kv_start_slot, kv_view_len_padded);
+            Vview = view_kv(cache_v, kv_start_slot, kv_view_len_padded);
         }
         {
             char name[64]; std::snprintf(name, sizeof(name), "mtp_Kview_%d", il);
@@ -370,123 +398,118 @@ bool build_mtp_step_graph(const MtpDrafterWeights  & w,
             ggml_set_name(Vview, name);
         }
 
-        // Dequantize K/V views to a float type before GQA broadcast and matmuls.
-        // CUDA ggml_repeat requires src0 type F32 or F16 (binbcast.cu:376).
-        // Type selection (evaluated at graph-build time from Kview->type):
-        //   TQ3_0 → F16: ggml_cpy_tq3_0_f16_cuda supports this (cpy.cu:574).
-        //   Q8_0  → F32: ggml_cpy_q8_0_f32_cuda supports this (cpy.cu:550).
-        //   F16/F32: identity cast (both F32/F16 are accepted by repeat).
-        // TQ3_0→F32 and Q8_0→F16 are NOT supported in cpy.cu.
-        const ggml_type kv_fp_type = (Kview->type == GGML_TYPE_TQ3_0)
-            ? GGML_TYPE_F16 : GGML_TYPE_F32;
-        ggml_tensor * Kview_fp = ggml_cast(ctx, Kview, kv_fp_type);
-        ggml_tensor * Vview_fp = ggml_cast(ctx, Vview, kv_fp_type);
-        {
-            char name[64]; std::snprintf(name, sizeof(name), "mtp_Kview_fp_%d", il);
-            ggml_set_name(Kview_fp, name);
-            std::snprintf(name, sizeof(name), "mtp_Vview_fp_%d", il);
-            ggml_set_name(Vview_fp, name);
-        }
-
-        // GQA broadcast: repeat KV heads so n_kv_heads matches n_head_fa.
-        // ggml_repeat broadcasts with modulo indexing (0,1,...,Hkv-1,0,1,...),
-        // matching standard GQA implementations (PyTorch repeat_interleave).
-        ggml_tensor * Kma = Kview_fp;
-        ggml_tensor * Vma = Vview_fp;
-        if (n_head_kv != n_head_fa) {
-            ggml_tensor * kv_ref = ggml_new_tensor_3d(ctx, kv_fp_type,
-                head_dim_kv, kv_view_len, n_head_fa);
-            Kma = ggml_repeat(ctx, Kview_fp, kv_ref);
-            ggml_tensor * vv_ref = ggml_new_tensor_3d(ctx, kv_fp_type,
-                head_dim_kv, kv_view_len, n_head_fa);
-            Vma = ggml_repeat(ctx, Vview_fp, vv_ref);
-        }
-        {
-            char name[64]; std::snprintf(name, sizeof(name), "mtp_Kma_%d", il);
-            ggml_set_name(Kma, name);
-            std::snprintf(name, sizeof(name), "mtp_Vma_%d", il);
-            ggml_set_name(Vma, name);
-        }
-
-        // Manual cross-attention. K/V has already been sliced to the positions
-        // admitted by the donor attention type.
+        // Detect if K/V is in TQ3_0 (FWHT-domain).
         //
-        // ggml mul_mat(A, B) broadcast rule:  B.ne[2] % A.ne[2] == 0.
-        // K (A) has ne[2]=n_head_fa; Q (B) must have ne[2]=n_head_fa too.
-        // Qcur is [head_dim_fa, n_head_fa, 1] — heads in ne[1], batch in ne[2].
-        // Permute to [head_dim_fa, 1, n_head_fa] so ne[2]=n_head_fa matches K.
+        // The CUDA FA kernels (fattn-chunked.cu:228,394; fattn-vec.cuh:168)
+        // apply forward WHT to Q and inverse WHT to the attention output
+        // INTERNALLY iff they observe K->type == GGML_TYPE_TQ3_0 at FA entry.
+        // We therefore pass the native Kview/Vview straight into FA below;
+        // any cast to F16/F32 here would strip the type tag and FA would
+        // pick a non-WHT kernel, producing meaningless QK^T.
         //
-        // Standard ggml multi-head layout:
-        //   Q (after permute): [head_dim, n_tokens=1, n_heads]
-        //   K:                 [head_dim, kv_len,     n_heads]
-        //   V (after permute): [kv_len,   head_dim,   n_heads]
-        Qcur = ggml_cont(ctx, ggml_permute(ctx, Qcur, 0, 2, 1, 3));
-        // Qcur is now [head_dim_fa, 1, n_head_fa, 1]
-        {
-            char name[64]; std::snprintf(name, sizeof(name), "mtp_Qcur_perm_%d", il);
-            ggml_set_name(Qcur, name);
-        }
+        // SWA-wrap branch above already concat-forced K/V to F32, so for
+        // wrap+TQ3_0 caches kv_is_tq3 is false here and FA picks a regular
+        // F32 path; correctness on that branch needs a separate fix (avoid
+        // the wrap or do two FA passes with combined softmax).
+        const bool kv_is_tq3 = (Kview->type == GGML_TYPE_TQ3_0);
 
-        // Step 1: KQ = mul_mat(Kma, Qcur)
-        //   mul_mat(A, x): A.ne[0] must == x.ne[0]; output shape = [A.ne[1], x.ne[1], ...]
-        //   mul_mat(Kma[head_dim, ctx, n_h], Qcur[head_dim, 1, n_h])
-        //     → KQ [ctx, 1, n_h]
-        ggml_tensor * KQ = ggml_mul_mat(ctx, Kma, Qcur);
-        {
-            char name[64]; std::snprintf(name, sizeof(name), "mtp_KQ_%d", il);
-            ggml_set_name(KQ, name);
-        }
-
-        // Step 2: scale KQ by assistant's f_attention_scale = 1.0
-        // (NOT target.attn_scale = 1/sqrt(head_dim) — atomicbot's gemma4-assistant
-        // uses unit scale per llama-model.cpp:1651 / gemma4-assistant.cpp:139-140;
-        // mismatched scale produces a different softmax distribution and 100%
-        // greedy divergence vs target.)
-        KQ = ggml_scale(ctx, KQ, 1.0f);
-        {
-            char name[64]; std::snprintf(name, sizeof(name), "mtp_KQ_scaled_%d", il);
-            ggml_set_name(KQ, name);
-        }
-
-        // Step 3: softmax over KV sequence dimension (axis 0 = ctx_len).
-        // All cells in the KV view are admitted (slice already handles SWA/full window),
-        // so plain softmax with no mask is equivalent to softmax_ext with all-zero mask.
-        // KQ: [ctx, 1, n_h] — softmax over dim 0
-        ggml_tensor * KQ_soft = ggml_soft_max(ctx, KQ);
-        {
-            char name[64]; std::snprintf(name, sizeof(name), "mtp_KQ_softmax_%d", il);
-            ggml_set_name(KQ_soft, name);
-        }
-
-        // Step 4: weighted sum over V: KQV = mul_mat(V^T, KQ_soft)
-        //   We need V in [kv_len, head_dim, n_h] so mul_mat(Vt, KQ_soft) gives
-        //   [head_dim, 1, n_h].
+        // Cross-attention via ggml_flash_attn_ext.
         //
-        // Problem: ggml_mul_mat requires !ggml_is_transposed(a), i.e. nb[0] <= nb[1].
-        // ggml_cont(ggml_permute(...)) copies the permuted strides (nb[0] > nb[1]),
-        // so the 'a' tensor is still flagged transposed.
+        // Layout for ggml_flash_attn_ext:
+        //   Q: [head_dim, n_tokens=1, n_head_q]
+        //   K: [head_dim, kv_len,     n_head_kv]  (GQA: n_head_q % n_head_kv == 0)
+        //   V: [head_dim, kv_len,     n_head_kv]
+        //   output: [head_dim, n_tokens=1, n_head_q]  (reshaped to [q_out_dim, 1])
         //
-        // Vma is F16 (TQ3_0 path) or F32 (Q8_0 path). Use ggml_cont_4d to create a
-        // fresh tensor with standard contiguous strides in layout [kv_len, head_dim, n_h].
-        // ggml_cont_4d calls ggml_new_tensor_4d (fresh strides, nb[0]<nb[1]) so the
-        // result is NOT flagged transposed by ggml_is_transposed().
-        ggml_tensor * Vt = ggml_cont_4d(ctx,
-            ggml_permute(ctx, Vma, 1, 0, 2, 3),
-            kv_view_len, head_dim_kv, n_head_fa, 1);
+        // Benefits over manual matmul attention:
+        //   - Handles TQ3_0 (FWHT rotation) internally in VEC/chunked/MMA kernels.
+        //   - Handles GQA directly without broadcasting K/V.
+        //   - No manual FWHT correction needed.
+        //
+        // For TQ3_0 + head_dim > 256 + n_tokens=1 (decode), the CUDA dispatch
+        // requires a non-null mask to select the CHUNKED kernel path. We create
+        // an all-zero (fully-admitted) mask in that case.
+        //
+        // Permute Q from [head_dim_fa, n_head_fa, 1] → [head_dim_fa, 1, n_head_fa]
+        // so it matches the FA expected layout.
+        ggml_tensor * Qfa = ggml_cont(ctx, ggml_permute(ctx, Qcur, 0, 2, 1, 3));
         {
-            char name[64]; std::snprintf(name, sizeof(name), "mtp_Vt_%d", il);
-            ggml_set_name(Vt, name);
-        }
-        //   mul_mat(Vt[kv_len, head_dim, n_h], KQ_soft[kv_len, 1, n_h])
-        //     → KQV [head_dim, 1, n_h]
-        ggml_tensor * KQV = ggml_mul_mat(ctx, Vt, KQ_soft);
-        {
-            char name[64]; std::snprintf(name, sizeof(name), "mtp_KQV_%d", il);
-            ggml_set_name(KQV, name);
+            char name[64]; std::snprintf(name, sizeof(name), "mtp_Qfa_%d", il);
+            ggml_set_name(Qfa, name);
         }
 
+        // K/V for FA: pass the original Kview/Vview (TQ3_0, Q8_0, or concat-F32)
+        // directly to ggml_flash_attn_ext. FA handles TQ3_0 FWHT internally
+        // (CHUNKED or VEC kernel applies Q-forward-WHT and output inverse-WHT).
+        // Passing TQ3_0 directly lets FA route to CHUNKED for head_dim=512,
+        // which doesn't require K->ne[1] % 256 == 0 alignment.
+        // For the wrap case (kv_wraps=true), Kview is already F32 (from to_f32 + concat).
+        ggml_tensor * Kfa = Kview;  // original type (TQ3_0, Q8_0, or concat-F32)
+        ggml_tensor * Vfa = Vview;
+        {
+            char name[64]; std::snprintf(name, sizeof(name), "mtp_Kfa_%d", il);
+            ggml_set_name(Kfa, name);
+            std::snprintf(name, sizeof(name), "mtp_Vfa_%d", il);
+            ggml_set_name(Vfa, name);
+        }
+        {
+            // Log per-layer FA types only on the first build of the process.
+            static bool g_mtp_fa_types_done = false;
+            if (!g_mtp_fa_types_done) {
+                std::printf("[mtp-fa-types] layer %d: Qfa=%s Kfa=%s Vfa=%s "
+                            "head_dim_fa=%lld kv_is_tq3=%d need_mask=%d\n",
+                            il, ggml_type_name(Qfa->type), ggml_type_name(Kfa->type),
+                            ggml_type_name(Vfa->type), (long long)head_dim_fa,
+                            (int)kv_is_tq3, (int)((kv_is_tq3 && head_dim_fa >= 512) || needs_kv_pad));
+                if (il == n_layer - 1) g_mtp_fa_types_done = true;
+            }
+        }
+
+        // For head_dim==512 with TQ3_0 K: gqa_opt_applies requires K->ne[1] % 256 == 0
+        // AND mask != nullptr (both needed for BEST_FATTN_KERNEL to not return NONE).
+        // We padded K/V to kv_view_len_padded above; now create a mask of that width.
+        // The caller fills: positions [0..kv_seq_len-1] = 0.0 (admit),
+        //                   positions [kv_seq_len..kv_view_len_padded-1] = -inf (exclude padding).
+        //
+        // For head_dim==256 (SWA) with TQ3_0 K (non-wrap): VEC kernel handles it without mask.
+        // For wrap case (F32 K/V after concat): no TQ3_0 issues, no mask needed.
+        const bool need_mask = (kv_is_tq3 && head_dim_fa >= 512) || needs_kv_pad;
+        const int64_t fa_mask_width = (needs_kv_pad ? kv_view_len_padded : kv_view_len);
+        ggml_tensor * fa_mask = nullptr;
+        if (need_mask) {
+            if (shared_fa_mask == nullptr) {
+                shared_fa_mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, fa_mask_width, 1);
+                ggml_set_name(shared_fa_mask, "mtp_fa_mask");
+                ggml_set_input(shared_fa_mask);
+                shared_fa_mask_width      = fa_mask_width;
+                shared_fa_mask_kv_seq_len = kv_view_len;
+            } else if (shared_fa_mask_width != fa_mask_width
+                       || shared_fa_mask_kv_seq_len != kv_view_len) {
+                char buf[256];
+                std::snprintf(buf, sizeof(buf),
+                    "build_mtp_step_graph: per-layer FA masks diverge "
+                    "(layer %d wants width=%lld kv_seq=%lld; existing %lld/%lld). "
+                    "Long-context SWA cap mismatch — extend builder to per-layer masks.",
+                    il, (long long)fa_mask_width, (long long)kv_view_len,
+                    (long long)shared_fa_mask_width, (long long)shared_fa_mask_kv_seq_len);
+                set_last_error(buf);
+                ggml_free(ctx);
+                return false;
+            }
+            fa_mask = shared_fa_mask;
+        }
+
+        // Gemma4 MTP: f_attention_scale = 1.0 (no pre-softmax scaling).
+        ggml_tensor * attn_out = ggml_flash_attn_ext(ctx, Qfa, Kfa, Vfa, fa_mask,
+                                                      1.0f, 0.0f, 0.0f);
+        {
+            char name[64]; std::snprintf(name, sizeof(name), "mtp_fa_out_%d", il);
+            ggml_set_name(attn_out, name);
+        }
+
+        // FA output: [head_dim_fa, 1, n_head_fa]. Flatten to [q_out_dim, 1].
         // Flatten heads: [head_dim_fa, 1, n_head_fa] → [q_out_dim, 1]
-        ggml_tensor * attn = ggml_cont(ctx, KQV);
+        ggml_tensor * attn = ggml_cont(ctx, attn_out);
         {
             char name[64]; std::snprintf(name, sizeof(name), "mtp_attn_out_%d", il);
             ggml_set_name(attn, name);
@@ -692,6 +715,8 @@ bool build_mtp_step_graph(const MtpDrafterWeights  & w,
     out.in_tok_embd  = in_tok_embd;
     out.in_h_prev    = in_h_prev;
     out.in_pos       = in_pos;
+    out.fa_mask             = shared_fa_mask;
+    out.fa_mask_kv_seq_len  = shared_fa_mask_kv_seq_len;
     out.out_logits   = logits;
     out.out_h_post   = h_post;
     out.out_argmax   = argmax;
@@ -709,6 +734,8 @@ void free_mtp_step_graph(MtpStepGraph & g) {
     g.in_tok_embd  = nullptr;
     g.in_h_prev    = nullptr;
     g.in_pos       = nullptr;
+    g.fa_mask             = nullptr;
+    g.fa_mask_kv_seq_len  = 0;
     g.out_logits   = nullptr;
     g.out_h_post   = nullptr;
     g.out_argmax   = nullptr;

@@ -656,8 +656,11 @@ bool load_gemma4_target_gguf(const std::string & path, ggml_backend_t backend,
 void free_gemma4_target_weights(GemmaTargetWeights & w);
 
 // Gemma4 cache
+// extra_q8_layers: additional layer indices to force Q8_0 KV regardless of the
+// global kv type (e.g. MTP donor layers that need to avoid the TQ3_0/FWHT mismatch).
 bool create_gemma4_cache(const GemmaTargetWeights & w, int max_ctx,
-                         ggml_backend_t backend, GemmaTargetCache & out);
+                         ggml_backend_t backend, GemmaTargetCache & out,
+                         const std::vector<int> & extra_q8_layers = {});
 void free_gemma4_cache(GemmaTargetCache & c);
 void reset_gemma4_cache(GemmaTargetCache & c);
 
@@ -802,6 +805,12 @@ bool load_gemma4_mtp_assistant(const std::string & gguf_path,
 
 void free_gemma4_mtp_assistant(MtpDrafterWeights & w);
 
+// Read only the MTP SWA layer pattern from the GGUF (lightweight — no tensor loading).
+// Returns false if the GGUF can't be opened or lacks the required architecture.
+// out_mtp_swa_layers[il] = true if MTP layer il uses sliding-window attention.
+bool get_mtp_swa_pattern(const std::string & gguf_path,
+                         std::vector<bool> & out_mtp_swa_layers);
+
 // Re-resolve MTP donor layers using the actual target SWA pattern instead of the
 // hardcoded alternating assumption used during loading.  Call this after both the
 // target model and MTP assistant are loaded, passing the target's swa_layers vector.
@@ -835,6 +844,17 @@ struct MtpStepGraph {
     ggml_tensor  * in_tok_embd   = nullptr;  // F32 [n_embd_backbone, 1] — pre-dequantised embedding
     ggml_tensor  * in_h_prev     = nullptr;
     ggml_tensor  * in_pos        = nullptr;
+    // Single FA mask shared across all MTP layers that need padding (currently
+    // every TQ3_0 layer with non-256-aligned kv_view_len, and every head_dim≥512
+    // layer with non-256-aligned kv_view_len). The builder asserts at compile
+    // time that every need-mask layer wants the same `(width, kv_seq_len)`; if
+    // they ever diverge (e.g. SWA window cap < full-attn pos in long context)
+    // the assert fires and the builder must be extended to per-layer masks.
+    // Caller must fill before each compute:
+    //   positions [0..fa_mask_kv_seq_len-1]: 0x0000 (F16 0.0 = admit)
+    //   positions [fa_mask_kv_seq_len..width-1]: 0xFC00 (F16 -inf = exclude)
+    ggml_tensor  * fa_mask              = nullptr;  // F16 [width, 1] or null
+    int64_t        fa_mask_kv_seq_len   = 0;
     // Outputs (caller reads via ggml_backend_tensor_get after compute)
     ggml_tensor  * out_logits    = nullptr;
     ggml_tensor  * out_h_post    = nullptr;

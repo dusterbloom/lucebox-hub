@@ -521,7 +521,8 @@ static ggml_tensor * build_full_attn_block(
 bool create_gemma4_cache(const GemmaTargetWeights & w,
                          int max_ctx,
                          ggml_backend_t backend,
-                         GemmaTargetCache & out) {
+                         GemmaTargetCache & out,
+                         const std::vector<int> & extra_q8_layers) {
     out.backend = backend;
     out.max_ctx = max_ctx;
     out.cur_pos = 0;
@@ -637,6 +638,25 @@ bool create_gemma4_cache(const GemmaTargetWeights & w,
             "[cache] narrow asymmetric: forced Q8_0 on %d captured full-attn layer(s) "
             "(remaining %d full-attn keep TQ3)\n",
             n_overridden, n_full_attn - n_overridden);
+    }
+
+    // Extra override: force Q8_0 on caller-specified layer indices (e.g. MTP donor layers).
+    // These layers must NOT use TQ3_0 because MTP cross-attention reads them via ggml_cast
+    // (no FWHT inverse applied), so TQ3_0 FWHT-domain values would corrupt attention scores.
+    if (!extra_q8_layers.empty() &&
+        (kv_k_type == GGML_TYPE_TQ3_0 || kv_v_type == GGML_TYPE_TQ3_0)) {
+        int n_mtp_overridden = 0;
+        for (int il : extra_q8_layers) {
+            if (il < 0 || il >= w.n_layer) continue;
+            if (kv_k_type == GGML_TYPE_TQ3_0) out.kv_k_type_per_layer[il] = GGML_TYPE_Q8_0;
+            if (kv_v_type == GGML_TYPE_TQ3_0) out.kv_v_type_per_layer[il] = GGML_TYPE_Q8_0;
+            n_mtp_overridden++;
+        }
+        if (n_mtp_overridden > 0) {
+            std::fprintf(stderr,
+                "[cache] MTP donor override: forced Q8_0 on %d layer(s) to avoid TQ3/FWHT cross-attn mismatch\n",
+                n_mtp_overridden);
+        }
     }
 
     // (head_dim and n_head_kv are resolved per-layer in the allocation loop below)

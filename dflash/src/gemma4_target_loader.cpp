@@ -917,18 +917,21 @@ bool load_gemma4_mtp_assistant(const std::string & gguf_path,
         return false;
     }
 
-    // Optional centroid tensors (Edge models only; Dense 31B has n_centroids == 0).
+    // Optional centroid tensors. Load them when n_centroids > 0, regardless of
+    // use_ordered_embeddings flag — some GGUFs may have the flag wrong while the
+    // centroid tensors are present. The graph builder decides whether to use them.
     ggml_tensor * centroids_t      = nullptr;
     ggml_tensor * token_ordering_t = nullptr;
-    if (use_ordered_embeddings && n_centroids > 0) {
+    if (n_centroids > 0) {
         centroids_t      = g("mtp.centroids.weight");
         token_ordering_t = g("mtp.token_ordering.weight");
-        if (!centroids_t) {
+        if (use_ordered_embeddings && !centroids_t) {
             set_last_error("load_gemma4_mtp_assistant: use_ordered_embeddings=true but mtp.centroids.weight missing");
             gguf_free(gctx);
             return false;
         }
-        // token_ordering is optional per TENSOR_NOT_REQUIRED in atomicbot.
+        // centroids/token_ordering are optional when use_ordered_embeddings=false
+        // (may be present anyway for future use).
     }
 
     // Per-layer tensors.
@@ -1087,10 +1090,10 @@ bool load_gemma4_mtp_assistant(const std::string & gguf_path,
     out.requires_target_arch = requires_target_arch;
 
     std::printf("[mtp_loader] loaded: n_embd_backbone=%u n_mtp_layers=%u "
-                "attention_k_eq_v=%d n_centroids=%u requires_target_arch=%s "
-                "tensors=%zu GPU %.2f MiB\n",
+                "attention_k_eq_v=%d n_centroids=%u use_ordered_embeddings=%d "
+                "requires_target_arch=%s tensors=%zu GPU %.2f MiB\n",
                 n_embd_backbone, n_mtp_layer,
-                (int)attention_k_eq_v, n_centroids,
+                (int)attention_k_eq_v, n_centroids, (int)use_ordered_embeddings,
                 requires_target_arch.c_str(),
                 slots.size(),
                 (double)total_gpu / (1024.0 * 1024.0));
@@ -1116,6 +1119,48 @@ void free_gemma4_mtp_assistant(MtpDrafterWeights & w) {
     w.centroids         = nullptr;
     w.token_ordering    = nullptr;
     w = MtpDrafterWeights{};
+}
+
+// ─── get_mtp_swa_pattern ──────────────────────────────────────────────────────
+
+bool get_mtp_swa_pattern(const std::string & gguf_path,
+                         std::vector<bool> & out_mtp_swa_layers) {
+    ggml_context * meta_ctx = nullptr;
+    gguf_init_params gip{};
+    gip.no_alloc = true;
+    gip.ctx      = &meta_ctx;
+    gguf_context * gctx = gguf_init_from_file(gguf_path.c_str(), gip);
+    if (!gctx) return false;
+
+    // Validate arch
+    {
+        int64_t aid = gguf_find_key(gctx, "general.architecture");
+        if (aid < 0) { gguf_free(gctx); if (meta_ctx) ggml_free(meta_ctx); return false; }
+        if (std::string(gguf_get_val_str(gctx, aid)) != "gemma4_assistant") {
+            gguf_free(gctx); if (meta_ctx) ggml_free(meta_ctx); return false;
+        }
+    }
+
+    const uint32_t n_mtp_layer = get_u32_or(gctx, "gemma4_assistant.block_count", 4);
+    out_mtp_swa_layers.assign(n_mtp_layer, false);
+
+    int64_t swa_arr_id = gguf_find_key(gctx, "gemma4_assistant.attention.sliding_window_pattern");
+    if (swa_arr_id >= 0) {
+        size_t arr_n = gguf_get_arr_n(gctx, swa_arr_id);
+        enum gguf_type arr_type = gguf_get_arr_type(gctx, swa_arr_id);
+        const void * arr_data   = gguf_get_arr_data(gctx, swa_arr_id);
+        for (size_t i = 0; i < arr_n && i < (size_t)n_mtp_layer; i++) {
+            if (arr_type == GGUF_TYPE_BOOL || arr_type == GGUF_TYPE_INT8 || arr_type == GGUF_TYPE_UINT8) {
+                out_mtp_swa_layers[i] = (((const uint8_t *)arr_data)[i] != 0);
+            } else {
+                out_mtp_swa_layers[i] = (((const int32_t *)arr_data)[i] != 0);
+            }
+        }
+    }
+
+    gguf_free(gctx);
+    if (meta_ctx) ggml_free(meta_ctx);
+    return true;
 }
 
 // ─── resolve_mtp_donor_layers ─────────────────────────────────────────────────
