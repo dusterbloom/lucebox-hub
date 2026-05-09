@@ -203,10 +203,26 @@ The full ladder, all with the same 50k code prompt + dm=4:
 
 Decode tok/s is **flat** from 64k → 256k. Cache allocation grows by ~700 MB per ctx-doubling, which is just the empty buffer overhead — actual KV usage is held at 50k tokens, so per-step KV bandwidth is constant.
 
-Comparison to dense 31B + Q8/Q8 + ctx=64k + Shakespeare prompt (target-only, no drafter):
-- prefill 1402 tok/s, decode **7.96 tok/s**, VRAM 22.6 GB.
+### Dense 31B + dflash + Q8/Q8 + pflash + dm=8 — the same ladder
 
-Dense at 64k just barely fits Q8 KV. MoE at 256k fits comfortably. **MoE 26B is the right model for 24 GB long-context production**, no contest.
+For comparison we ran the dense 31B at the same ctx ladder with the same code prompt. **pFlash is on for both**; the dense vs MoE prefill gap is architectural (15× compute ratio), not a pflash failure. Both runs log `[chunked+pflash, chunk_size=1024]`.
+
+| ctx | Prefill tok/s | Decode tok/s | AL/8 | VRAM |
+|---|---|---|---|---|
+| **64k** | 319 | **1.78** ← anomaly | **1.94** (24%) | **24/24 GB cap** |
+| **128k** | 256 | **24.89** | **7.11** (89%) | 24/24 GB cap |
+| **256k** | 236 | **23.87** | **7.11** (89%) | 24/24 GB cap |
+
+Two structural observations:
+
+1. **The dense+drafter ladder hits the 24 GB cap at every cell**, but only the 64K cell decodes catastrophically slowly with a collapsed AL. Both 128K and 256K decode healthily at ~24 tok/s with AL 7.11 (89% acceptance). All three cells use the same Q8 GGUF drafter (`draft-q8_0.gguf`, 1.52 GiB on GPU) and identical config. **The 64K-specific collapse is an open puzzle.** Hypotheses: (a) the cache happens to land in a VRAM region that forces drafter eviction or paging only at this specific ctx allocation, (b) some allocator-fragmentation edge case kicks in when the 50k-token prompt tightly fills 78% of a 64k cache vs 39% of a 128k cache. We did not isolate the cause.
+2. **Dense prefill is uniformly 13–20× slower than MoE** at the same ctx. The MoE has ~4B active params/token with 30 layers; dense has 31B params with 60 layers — that's a ~15× compute ratio that matches the observed prefill ratio. pFlash helps both, but it can only skip attention; the FFN compute is unavoidable and dense has 7-8× more of it active per token. Plus dense is hitting the 24 GB cap so some unknown fraction is paging contention; we cannot separate the two contributions on a 24 GB GPU.
+
+So the dense **does** decode well at long ctx (128K/256K @ ~24 tok/s, AL 7.11) once you get past the prefill cost. But for a 24 GB GPU the prefill economics are bad: a 50K-token prompt takes ~3 minutes on dense vs ~10 seconds on MoE (architectural, not bug-territory).
+
+### Net: MoE 26B is the long-context ship target on 24 GB
+
+MoE at 256k fits at 21.7 GB with a 50k-token prefill in ~10 seconds and decode at 35-37 tok/s. Dense at 256k caps at 24 GB, prefills the same 50k tokens in ~3.5 minutes, and decodes ~24 tok/s. **MoE wins on prefill TTFT, fits long context with headroom, and decodes ~50% faster post-prefill.** Dense 31B remains useful at small context where MTP gives the highest AL (0.87 accept_rate at 4K with the head_dim=512 mask fix).
 
 ---
 
@@ -231,24 +247,30 @@ In rough order of importance, things we wish someone had told us:
 5. **Single-token decode is a special case for SWA masks.** The mask geometry that's correct for batched prefill is wrong for single-token decode if the K view is the full SWA ring. Don't gate mask construction on `n_tokens > 1`.
 6. **`gqa_opt_applies` (the head_dim=512 MMA fast path) requires BOTH alignment AND a mask.** The "NONE → abort" failure mode is silent until the kernel selector returns NONE.
 7. **A bisect that returns "every commit in range is bad" is a real answer.** Walk further back, or pivot to direct code audit. Don't keep bisecting.
-8. **MoE > dense for long-context on consumer GPUs.** The 26B MoE with sparse experts has both lower active compute AND lower weights footprint than the 31B dense. At 24 GB you can fit the MoE at 256k context with Q8 KV; the dense barely fits at 64k.
+8. **MoE > dense for long-context PREFILL on consumer GPUs.** The 26B MoE with ~4B active params has both lower active compute AND lower weights footprint than the 31B dense. Both fit 256k context on a 24 GB GPU; the MoE prefills a 50K prompt in ~10 seconds vs dense's ~3.5 minutes (15× compute ratio). Dense's decode at 128K/256K is fine (~24 tok/s, AL 7.11) but its 64K cell collapses anomalously — open puzzle.
 9. **Q8/Q8 KV is 2.4× faster on prefill than TQ3/TQ3 KV at 64k**, costs only 1.3 GB more, and decode is comparable. Use Q8 unless VRAM forces you to TQ3.
-10. **`pflash` is prefill-only.** The decode-time KV bottleneck is unaddressed in production stacks. Decode-time block-sparse attention (Quest, H2O, StreamingLLM) is the next research-to-production move.
+10. **`pflash` is prefill-only.** It helps both dense and MoE, but it can only skip the *attention* compute; the FFN compute is unavoidable, which is why dense (60 layers × 31B params) prefills 15× slower than MoE (30 layers × 4B active) even with pflash on. The decode-time KV bottleneck is unaddressed in production stacks. Decode-time block-sparse attention (Quest, H2O, StreamingLLM) is the next research-to-production move.
 
 ---
 
 ## Production ship config (RTX 3090, Gemma-4)
 
-| Use case | Config | Decode tok/s | VRAM |
-|---|---|---|---|
-| **Long context (≥64k), code/agent** | **MoE 26B + dflash + Q8/Q8 + dm=4 + pflash** | **35–37 from 64k to 256k** | **19.7–21.7 GB** |
-| Short context (4k), code/agent | MoE 26B + dflash + Q8/Q8 + dm=4 + pflash | ~112 | 19 GB |
-| Short context, highest quality MTP | 31B dense + MTP + Q8/Q8 (post-Bug-3 fix) | 34 | 20 GB |
-| Short context, dflash dense reference | 31B dense + dflash + Q8/Q8 + dm=8 + pflash | ~98 (HumanEval) | 22 GB |
-| 64k dense, Q8/Q8 sanity | 31B + Q8/Q8 + pflash, no drafter | 7.96 | 22.6 GB |
-| 64k dense, TQ3 minimum-VRAM | 31B + TQ3/TQ3 + pflash, no drafter | 6.90 | 21.25 GB |
+All "with drafter" cells use dflash + Q8 GGUF drafter + pflash + Q8/Q8 KV.
 
-The headline: **MoE 26B + dflash + Q8/Q8 + pflash + dm=4 fits 256k on a 24 GB 3090 at 35–37 tok/s**. With the three fixes from this session (TQ3 dispatcher, SWA mask, head_dim=512 mask) all upstream, this is a real ship config, not a benchmark stunt.
+| Use case | Config | Prefill tok/s | Decode tok/s | VRAM |
+|---|---|---|---|---|
+| **Long context (≥64k), code/agent — primary ship target** | **MoE 26B + dflash + dm=4** | **4900** at 64K | **35–37 from 64K to 256K** | **19.7–21.7 GB** |
+| Short context (4k), code/agent | MoE 26B + dflash + dm=4 | (small ctx, ~3700) | ~112 | 19 GB |
+| Long context, dense — once prefill is paid | 31B dense + dflash + dm=8 (128K/256K) | 240–260 (slow) | ~24, AL 7.11 | 24/24 GB cap |
+| Short context, highest quality MTP | 31B dense + MTP (post-Bug-3 fix) | (small ctx) | 34, accept_rate 0.87 | 20 GB |
+| Short context, dflash dense reference | 31B dense + dflash + dm=8 (HumanEval/2) | ~800 | ~98 | 22 GB |
+| 64K dense, target-only sanity | 31B + Q8/Q8 + pflash | 1402 | 7.96 | 22.6 GB |
+| 64K dense, TQ3 minimum-VRAM | 31B + TQ3/TQ3 + pflash | 585 | 6.90 | 21.25 GB |
+| ⚠️ Avoid: dense + drafter + ctx=64K | (anomaly: 1.78 tok/s, AL 1.94) | — | — | — |
+
+The headline: **MoE 26B + dflash + Q8/Q8 + pflash + dm=4 fits 256K on a 24 GB 3090 at 35–37 tok/s decode and 4.9K tok/s prefill**. With the three fixes from this session (TQ3 dispatcher, SWA mask, head_dim=512 mask) all upstream, this is a real ship config, not a benchmark stunt.
+
+**Avoid the dense+drafter+64K-specific cell** until the AL-collapse anomaly is understood — same model + same drafter + same config decodes fine at 128K/256K but craters at 64K. Possibly a VRAM-allocator edge case.
 
 ---
 
