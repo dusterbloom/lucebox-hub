@@ -334,18 +334,20 @@ static bool build_gemma4_step(StepGraph & sg,
         ggml_set_input(sg.attn_mask);
         ggml_set_output(sg.attn_mask);  // force gallocr to allocate even if no op references it
 
-        if (n_tokens > 1) {
-            // SWA mask needed for sliding-window attention layers in batched prefill.
-            // Must be sized by the SWA window view, not the full kv_len, so that
-            // its column count matches the K view that build_gemma4_graph passes to FA.
-            const SwaView swa_view = compute_swa_view(kv_start, n_tokens,
-                                                       w.swa_window, cache.swa_ctx_alloc);
-            const int swa_kv_pad = align_up(swa_view.effective_win_len, g_kq_stride_pad);
-            sg.swa_mask = ggml_new_tensor_2d(sg.ctx, GGML_TYPE_F16, swa_kv_pad, q_pad);
-            ggml_set_name(sg.swa_mask, "swa_mask");
-            ggml_set_input(sg.swa_mask);
-            ggml_set_output(sg.swa_mask);  // force gallocr to allocate even if no op references it
-        }
+        // SWA mask is required for every SWA dispatch — including single-token
+        // decode (n_tokens==1). When swa_mask is null, gemma4_target_graph falls
+        // back to attn_mask, which is sized for kv_len rather than the SWA window;
+        // the resulting dimension mismatch lets FA read past the populated cache
+        // region and corrupts attention. Catastrophic with TQ3_0 KV (it amplifies
+        // uninitialized-cache noise into a fixed-point repetition loop), benign
+        // but technically wrong with Q8_0 KV.
+        const SwaView swa_view = compute_swa_view(kv_start, n_tokens,
+                                                   w.swa_window, cache.swa_ctx_alloc);
+        const int swa_kv_pad = align_up(swa_view.effective_win_len, g_kq_stride_pad);
+        sg.swa_mask = ggml_new_tensor_2d(sg.ctx, GGML_TYPE_F16, swa_kv_pad, q_pad);
+        ggml_set_name(sg.swa_mask, "swa_mask");
+        ggml_set_input(sg.swa_mask);
+        ggml_set_output(sg.swa_mask);  // force gallocr to allocate even if no op references it
     }
 
     sg.gf = ggml_new_graph_custom(sg.ctx, 16384, false);
@@ -1305,6 +1307,19 @@ int main(int argc, char ** argv) {
                     ggml_backend_tensor_set(sg.attn_mask, mask_buf.data(), 0,
                                             sizeof(uint16_t) * mask_buf.size());
                 }
+                if (sg.swa_mask && sg.swa_mask->buffer) {
+                    const SwaView swa_view = compute_swa_view(committed, 1,
+                                                              w.swa_window, cache.swa_ctx_alloc);
+                    std::vector<uint16_t> swa_buf;
+                    build_swa_causal_mask(swa_buf,
+                                          /*kv_start*/ committed,
+                                          /*n_tokens*/ 1,
+                                          /*swa_window*/ w.swa_window,
+                                          /*ring_size*/ swa_view.effective_win_len,
+                                          /*kv_end*/ committed + 1);
+                    ggml_backend_tensor_set(sg.swa_mask, swa_buf.data(), 0,
+                                            sizeof(uint16_t) * swa_buf.size());
+                }
 
                 if (!embed_token(w, cur_tok, sg.inp_embed, backend)) {
                     std::fprintf(stderr, "[daemon] embed_token failed\n");
@@ -1671,6 +1686,19 @@ int main(int argc, char ** argv) {
                         build_causal_mask(mask_buf, kv_len, 1, committed);
                         ggml_backend_tensor_set(sg.attn_mask, mask_buf.data(), 0,
                                                 sizeof(uint16_t) * mask_buf.size());
+                    }
+                    if (sg.swa_mask && sg.swa_mask->buffer) {
+                        const SwaView swa_view = compute_swa_view(committed, 1,
+                                                                  w.swa_window, cache.swa_ctx_alloc);
+                        std::vector<uint16_t> swa_buf;
+                        build_swa_causal_mask(swa_buf,
+                                              /*kv_start*/ committed,
+                                              /*n_tokens*/ 1,
+                                              /*swa_window*/ w.swa_window,
+                                              /*ring_size*/ swa_view.effective_win_len,
+                                              /*kv_end*/ committed + 1);
+                        ggml_backend_tensor_set(sg.swa_mask, swa_buf.data(), 0,
+                                                sizeof(uint16_t) * swa_buf.size());
                     }
 
                     if (!embed_token(w, cur_tok, sg.inp_embed, backend)) return 1;
@@ -2093,6 +2121,19 @@ int main(int argc, char ** argv) {
                     ggml_backend_tensor_set(sg.attn_mask, mask_buf.data(), 0,
                                             sizeof(uint16_t) * mask_buf.size());
                 }
+                if (sg.swa_mask && sg.swa_mask->buffer) {
+                    const SwaView swa_view = compute_swa_view(committed, 1,
+                                                              w.swa_window, cache.swa_ctx_alloc);
+                    std::vector<uint16_t> swa_buf;
+                    build_swa_causal_mask(swa_buf,
+                                          /*kv_start*/ committed,
+                                          /*n_tokens*/ 1,
+                                          /*swa_window*/ w.swa_window,
+                                          /*ring_size*/ swa_view.effective_win_len,
+                                          /*kv_end*/ committed + 1);
+                    ggml_backend_tensor_set(sg.swa_mask, swa_buf.data(), 0,
+                                            sizeof(uint16_t) * swa_buf.size());
+                }
                 if (!embed_token(w, cur_tok, sg.inp_embed, backend)) return 1;
                 {
                     int32_t pos_val = committed;
@@ -2270,6 +2311,19 @@ int main(int argc, char ** argv) {
                     build_causal_mask(mask_buf, kv_len, 1, committed);
                     ggml_backend_tensor_set(sg.attn_mask, mask_buf.data(), 0,
                                             sizeof(uint16_t) * mask_buf.size());
+                }
+                if (sg.swa_mask && sg.swa_mask->buffer) {
+                    const SwaView swa_view = compute_swa_view(committed, 1,
+                                                              w.swa_window, cache.swa_ctx_alloc);
+                    std::vector<uint16_t> swa_buf;
+                    build_swa_causal_mask(swa_buf,
+                                          /*kv_start*/ committed,
+                                          /*n_tokens*/ 1,
+                                          /*swa_window*/ w.swa_window,
+                                          /*ring_size*/ swa_view.effective_win_len,
+                                          /*kv_end*/ committed + 1);
+                    ggml_backend_tensor_set(sg.swa_mask, swa_buf.data(), 0,
+                                            sizeof(uint16_t) * swa_buf.size());
                 }
 
                 if (!embed_token(w, cur_tok, sg.inp_embed, backend)) return 1;
