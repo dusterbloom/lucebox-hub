@@ -616,6 +616,11 @@ struct GemmaTargetCache {
     // Index of the last full-attention layer in the target (Dense 31B = 58).
     // Computed once at cache init from w.swa_layers (highest il with swa==false).
     int           mtp_last_full_layer = -1;
+    // γ>1 MTP partial-accept correctness: when set to a non-negative value <
+    // n_tokens, the h_prev capture slices that row instead of the default
+    // (n_tokens - 1).  Sentinel -1 preserves the existing γ=1 behavior.
+    // Set by the γ>1 driver after greedy match: mtp_h_prev_row = accept_n - 1.
+    int           mtp_h_prev_row = -1;
 
     // Draft KV cache (prefix-direct: projected target features → K/V per layer)
     ggml_context        * draft_kv_ctx = nullptr;

@@ -1105,12 +1105,21 @@ GemmaGraphOutputs build_gemma4_graph(
     // Source: vLLM PR #41745:569-621 + llama.cpp #22738.
     if (cache.mtp_h_prev_enabled && cache.mtp_h_prev) {
         const int n_embd_hp = (int)cache.mtp_h_prev->ne[0];
+        // Row to capture from the [n_embd, n_tokens] tensor.  Default (sentinel
+        // -1) is the last row, matching the γ=1 contract.  For γ>1 partial
+        // accept, the driver sets cache.mtp_h_prev_row = accept_n - 1 so we
+        // capture the last *accepted* hidden, not the last *speculative* one.
+        // See plan: /home/peppi/.claude/plans/wild-growing-ember.md Phase 2.
+        const int capture_row = (cache.mtp_h_prev_row >= 0)
+            ? cache.mtp_h_prev_row
+            : (n_tokens - 1);
+        GGML_ASSERT(capture_row >= 0 && capture_row < n_tokens);
         ggml_tensor * h_prev_src = out;
         if (n_tokens > 1) {
             h_prev_src = ggml_view_2d(ctx, out,
                 n_embd_hp, 1,
                 ggml_row_size(out->type, n_embd_hp),
-                ggml_row_size(out->type, n_embd_hp) * (n_tokens - 1));
+                ggml_row_size(out->type, n_embd_hp) * capture_row);
         }
         if (h_prev_src->type != GGML_TYPE_F32) {
             h_prev_src = ggml_cast(ctx, h_prev_src, GGML_TYPE_F32);

@@ -85,9 +85,11 @@ static void copy_target_feat_bf16_to_f32(
 
     ggml_cgraph * gf = ggml_new_graph(tmp_ctx);
 
+    // ggml_view_2d wants non-const but we promise not to mutate the source.
+    ggml_tensor * src_bf16_nc = const_cast<ggml_tensor *>(src_bf16);
     // Pre-wrap segment: rows [ring_slot0 .. ring_slot0+pre_n-1] → dst rows [0..pre_n-1]
     {
-        ggml_tensor * s = ggml_view_2d(tmp_ctx, src_bf16, feat_w, pre_n,
+        ggml_tensor * s = ggml_view_2d(tmp_ctx, src_bf16_nc, feat_w, pre_n,
                                        src_bf16->nb[1],
                                        (size_t)ring_slot0 * src_bf16->nb[1]);
         ggml_tensor * d = ggml_view_2d(tmp_ctx, dst_f32, feat_w, pre_n,
@@ -96,7 +98,7 @@ static void copy_target_feat_bf16_to_f32(
     }
     // Post-wrap segment: rows [0..post_n-1] → dst rows [pre_n..pre_n+post_n-1]
     if (post_n > 0) {
-        ggml_tensor * s = ggml_view_2d(tmp_ctx, src_bf16, feat_w, post_n,
+        ggml_tensor * s = ggml_view_2d(tmp_ctx, src_bf16_nc, feat_w, post_n,
                                        src_bf16->nb[1], 0);
         ggml_tensor * d = ggml_view_2d(tmp_ctx, dst_f32, feat_w, post_n,
                                        dst_f32->nb[1],
@@ -672,6 +674,10 @@ static void print_usage(const char * prog) {
         "  --draft-swa-trunc enable per-layer SWA truncation in the draft graph\n"
         "                    (also DFLASH_DRAFT_SWA_TRUNC=1; helps long-prompt decode)\n"
         "  --mem-diag        print VRAM checkpoints around major allocations\n"
+        "  --gamma <N>       MTP chain length (1=γ=1 correctness gate, 2-16=γ>1 path, default: 1)\n"
+        "                    γ>1 requires --draft-method mtp and --temp 0 (greedy only)\n"
+        "  --mtp-pos-mode <m> position_ids within an MTP chain: const|incr (default: const)\n"
+        "                    'const' matches Google's HF reference; 'incr' is for A/B falsification\n"
         "\n",
         prog);
 }
@@ -766,6 +772,8 @@ int main(int argc, char ** argv) {
     int          draft_kv_cap_override = 0;
     bool         mem_diag = false;
     DraftMethod  draft_method = DraftMethod::Auto;
+    int          gamma = 1;          // MTP chain length (1=current correctness gate, >1=Phase 2+3)
+    int          mtp_pos_mode = 0;   // 0=const (Google reference), 1=incr (A/B falsification)
 
     for (int i = 1; i < argc; i++) {
         auto require_next = [&](const char * flag) -> const char * {
@@ -806,6 +814,13 @@ int main(int argc, char ** argv) {
         else if (std::strcmp(argv[i], "--draft-swa-trunc") == 0) ::setenv("DFLASH_DRAFT_SWA_TRUNC", "1", 1);
         else if (std::strcmp(argv[i], "--mem-diag")     == 0) mem_diag = true;
         else if (std::strcmp(argv[i], "--mtp") == 0) mtp_path = require_next("--mtp");
+        else if (std::strcmp(argv[i], "--gamma") == 0) gamma = std::atoi(require_next("--gamma"));
+        else if (std::strcmp(argv[i], "--mtp-pos-mode") == 0) {
+            const char * m = require_next("--mtp-pos-mode");
+            if      (std::strcmp(m, "const") == 0) mtp_pos_mode = 0;
+            else if (std::strcmp(m, "incr")  == 0) mtp_pos_mode = 1;
+            else { std::fprintf(stderr, "error: unknown --mtp-pos-mode %s (expected const|incr)\n", m); return 1; }
+        }
         else if (std::strcmp(argv[i], "--draft-method") == 0) {
             const char * m = require_next("--draft-method");
             if      (std::strcmp(m, "none")   == 0) draft_method = DraftMethod::None;
@@ -856,6 +871,20 @@ int main(int argc, char ** argv) {
     }
     if (draft_method == DraftMethod::Dflash && draft_path.empty()) {
         std::fprintf(stderr, "error: --draft-method dflash requires --draft <path>\n");
+        return 1;
+    }
+
+    // ── γ>1 MTP plumbing (Phase 1 of wild-growing-ember plan) ────────────
+    if (gamma < 1 || gamma > 16) {
+        std::fprintf(stderr, "error: --gamma must be in [1, 16] (got %d)\n", gamma);
+        return 1;
+    }
+    if (gamma > 1 && draft_method != DraftMethod::Mtp) {
+        std::fprintf(stderr, "error: --gamma > 1 requires --draft-method mtp\n");
+        return 1;
+    }
+    if (gamma > 1 && sampler.temp != 0.0f) {
+        std::fprintf(stderr, "error: --gamma > 1 currently requires greedy decoding (--temp 0); stochastic γ>1 needs Leviathan rescaling and is not yet implemented\n");
         return 1;
     }
 
@@ -2221,6 +2250,357 @@ int main(int argc, char ** argv) {
             }
 
         } else if (have_mtp) {
+
+            if (gamma > 1) {
+            // ── γ>1 MTP SPECULATIVE DECODE LOOP ──────────────────────────
+            //
+            // Phase 3 of wild-growing-ember plan: chain generation with hoisted
+            // allocator, batched target verify, greedy longest-prefix accept.
+            //
+            // Per-chain flow:
+            //   1. Rebuild mtp_g ONCE per chain (hoisted outside k-loop).
+            //   2. K MTP steps: feed (seed_tok, h_prev) → draft[k], chain h_post.
+            //   3. Batched target verify: [cur_tok, draft[0..K-1]] = K+1 tokens.
+            //   4. Greedy longest-prefix match → accept_drafts + bonus token.
+            //   5. Commit tokens, advance state.
+            //   6. If accept_drafts < K: 1-token re-capture to refresh mtp_h_prev
+            //      at the correct row (approach A from plan).
+            //
+            // Pack convention:
+            //   verify_in[0]   = cur_tok at position committed
+            //   verify_in[i+1] = draft[i] at position committed+i+1, i in [0,K)
+            //   target_tok[i]  = target's prediction for position committed+i+1
+            //   accept if draft[i] == target_tok[i]  (0-based comparison over K)
+            //   bonus = target_tok[accept_drafts]
+            //   emit_count = accept_drafts + 1
+            //   new committed = old_committed + accept_drafts + 1
+            //
+            // mtp_h_prev refresh (approach A):
+            //   verify is run with mtp_h_prev_row = -1 (sentinel = last row = K).
+            //   After match, if accept_drafts < K, one extra 1-token target forward
+            //   at position old_committed+accept_drafts refreshes the hidden to the
+            //   correct row.
+
+            // Stats counters
+            int mtp_gt1_chains    = 0;
+            int mtp_gt1_accepted  = 0;  // total drafted tokens accepted
+            int mtp_gt1_total     = 0;  // total drafted positions evaluated
+
+            // Allocate a persistent mtp_galloc for the chain loop.
+            // build_mtp_step_graph needs a fresh ggml context per chain, but we
+            // reuse the same ggml_gallocr_t to avoid repeated VRAM alloc/free.
+            ggml_gallocr_t mtp_galloc = ggml_gallocr_new(
+                ggml_backend_get_default_buffer_type(backend));
+
+            const int K = gamma;
+            const int vocab = w.n_vocab;
+
+            while ((int)generated.size() < n_predict) {
+
+                if (IS_EOS_TOK(cur_tok, w)) {
+                    std::printf("\n[mtp-gt1] EOS token %d at step %zu\n",
+                                cur_tok, generated.size());
+                    break;
+                }
+                if (committed >= ctx_size - (K + 2)) {
+                    std::printf("\n[mtp-gt1] context nearly full at step %zu\n",
+                                generated.size());
+                    break;
+                }
+
+                // ── Phase 3a: Build mtp_g ONCE for this chain ──────────────
+                // attn_pos = committed for all K steps (const mode, Google ref).
+                // incr mode: in_pos is updated per step inside the k-loop below.
+                free_mtp_step_graph(mtp_g);
+                if (!build_mtp_step_graph(mtp_w, cache, w, mtp_g, committed)) {
+                    std::fprintf(stderr, "[mtp-gt1] build_mtp_step_graph failed: %s\n",
+                                 dflash27b_last_error());
+                    ggml_gallocr_free(mtp_galloc);
+                    return 1;
+                }
+                if (!ggml_gallocr_alloc_graph(mtp_galloc, mtp_g.gf)) {
+                    std::fprintf(stderr, "[mtp-gt1] gallocr_alloc_graph failed\n");
+                    ggml_gallocr_free(mtp_galloc);
+                    return 1;
+                }
+
+                // ── Phase 3a: Chain generation (K steps) ──────────────────
+                std::vector<int32_t> draft(K);
+
+                for (int k = 0; k < K; ++k) {
+                    // Seed token for step k
+                    const int32_t seed_tok = (k == 0) ? cur_tok : draft[k - 1];
+
+                    // in_tok_embd: pre-dequantised F32 embedding of seed_tok
+                    if (!embed_token(w, seed_tok, mtp_g.in_tok_embd, backend)) {
+                        std::fprintf(stderr, "[mtp-gt1] embed_token failed for tok=%d k=%d\n",
+                                     seed_tok, k);
+                        ggml_gallocr_free(mtp_galloc);
+                        return 1;
+                    }
+
+                    // in_h_prev: at k=0 use target's captured hidden; at k>0 chain from prev step
+                    if (k == 0) {
+                        ggml_backend_tensor_copy(cache.mtp_h_prev, mtp_g.in_h_prev);
+                    } else {
+                        ggml_backend_tensor_copy(mtp_g.out_h_post, mtp_g.in_h_prev);
+                    }
+
+                    // in_pos: const=committed for all k (Google ref), incr=committed+k (A/B)
+                    {
+                        int32_t p = (mtp_pos_mode == 0) ? committed : (committed + k);
+                        ggml_backend_tensor_set(mtp_g.in_pos, &p, 0, sizeof(int32_t));
+                    }
+
+                    // FA mask for TQ3_0 / head_dim>=512 layers
+                    if (mtp_g.fa_mask && mtp_g.fa_mask->buffer) {
+                        const int64_t mask_n = mtp_g.fa_mask->ne[0];
+                        const int64_t kv_seq = mtp_g.fa_mask_kv_seq_len;
+                        std::vector<uint16_t> mask_buf(mask_n);
+                        for (int64_t i = 0; i < mask_n; i++) {
+                            mask_buf[i] = (i < kv_seq) ? 0x0000u : 0xFC00u;
+                        }
+                        ggml_backend_tensor_set(mtp_g.fa_mask, mask_buf.data(), 0,
+                                                sizeof(uint16_t) * mask_n);
+                    }
+
+                    // Compute
+                    {
+                        auto st = ggml_backend_graph_compute(backend, mtp_g.gf);
+                        if (st != GGML_STATUS_SUCCESS) {
+                            std::fprintf(stderr, "[mtp-gt1] MTP compute failed at k=%d\n", k);
+                            ggml_gallocr_free(mtp_galloc);
+                            return 1;
+                        }
+                    }
+
+                    // Read draft token from in-graph argmax
+                    int32_t tok_out = 0;
+                    ggml_backend_tensor_get(mtp_g.out_argmax, &tok_out, 0, sizeof(int32_t));
+                    draft[k] = tok_out;
+                }
+
+                // ── Phase 3b: Batched target verify ────────────────────────
+                // Pack: verify_in = [cur_tok, draft[0..K-1]] = K+1 tokens
+                // at positions [committed .. committed+K].
+                std::vector<int32_t> verify_in;
+                verify_in.reserve(K + 1);
+                verify_in.push_back(cur_tok);
+                for (int i = 0; i < K; ++i) verify_in.push_back(draft[i]);
+
+                const int verify_n = K + 1;
+                const int old_committed = committed;
+
+                // mtp_h_prev_row = -1 (sentinel = last row = K).
+                // Correct row refresh happens below if accept_drafts < K.
+                cache.mtp_h_prev_row = -1;
+
+                if (!build_gemma4_step(sg, w, cache, backend,
+                                       committed, verify_n,
+                                       /*with_mask=*/true,
+                                       /*capture=*/false,  // no target_feat needed for MTP path
+                                       /*use_pflash=*/false, pflash_alpha,
+                                       fa_window)) {
+                    std::fprintf(stderr, "[mtp-gt1] verify build failed at step %zu\n",
+                                 generated.size());
+                    ggml_gallocr_free(mtp_galloc);
+                    return 1;
+                }
+
+                // Embed verify_in batch
+                if (!embed_tokens_batch(w, verify_in.data(), verify_n, sg.inp_embed, backend)) {
+                    ggml_gallocr_free(mtp_galloc);
+                    return 1;
+                }
+
+                // Positions: [committed .. committed+K]
+                {
+                    std::vector<int32_t> pos(verify_n);
+                    for (int i = 0; i < verify_n; ++i) pos[i] = committed + i;
+                    ggml_backend_tensor_set(sg.positions, pos.data(), 0,
+                                            sizeof(int32_t) * verify_n);
+                }
+
+                // Causal mask for batched verify
+                if (sg.attn_mask && sg.attn_mask->buffer) {
+                    const int kv_len = committed + verify_n;
+                    std::vector<uint16_t> mask_buf;
+                    build_causal_mask(mask_buf, kv_len, verify_n, committed);
+                    ggml_backend_tensor_set(sg.attn_mask, mask_buf.data(), 0,
+                                            sizeof(uint16_t) * mask_buf.size());
+                }
+
+                // SWA mask for batched verify
+                if (sg.swa_mask && sg.swa_mask->buffer) {
+                    const SwaView swa_view = compute_swa_view(committed, verify_n,
+                                                               w.swa_window, cache.swa_ctx_alloc);
+                    std::vector<uint16_t> swa_buf;
+                    build_swa_causal_mask(swa_buf,
+                                          /*kv_start*/ committed,
+                                          /*n_tokens*/ verify_n,
+                                          /*swa_window*/ w.swa_window,
+                                          /*ring_size*/ swa_view.effective_win_len,
+                                          /*kv_end*/ committed + verify_n);
+                    ggml_backend_tensor_set(sg.swa_mask, swa_buf.data(), 0,
+                                            sizeof(uint16_t) * swa_buf.size());
+                }
+
+                {
+                    auto st = ggml_backend_graph_compute(backend, sg.gf);
+                    if (st != GGML_STATUS_SUCCESS) {
+                        std::fprintf(stderr, "[mtp-gt1] verify compute failed\n");
+                        ggml_gallocr_free(mtp_galloc);
+                        return 1;
+                    }
+                }
+
+                // Read [vocab, verify_n] logits → target_tok[0..K]
+                std::vector<float> verify_logits_buf((size_t)vocab * verify_n);
+                ggml_backend_tensor_get(sg.logits, verify_logits_buf.data(), 0,
+                                        sizeof(float) * (size_t)vocab * verify_n);
+
+                std::vector<int32_t> target_tok(verify_n);
+                for (int i = 0; i < verify_n; ++i) {
+                    target_tok[i] = (int32_t)argmax_f32(
+                        verify_logits_buf.data() + (size_t)i * vocab, vocab);
+                }
+
+                step_graph_free(sg);
+
+                // ── Phase 3c: Greedy longest-prefix accept + commit ─────────
+                // draft[i] == target_tok[i] means the MTP chain correctly
+                // predicted what target would say at position committed+i+1.
+                int accept_drafts = 0;
+                for (int i = 0; i < K; ++i) {
+                    if (draft[i] == target_tok[i]) accept_drafts++;
+                    else break;
+                }
+
+                // Bonus token: target's prediction at the first mismatch position
+                // (or free prediction after full match).
+                const int32_t bonus = target_tok[accept_drafts];
+
+                // Emit accepted draft tokens then bonus
+                bool hit_eos = false;
+                for (int i = 0; i < accept_drafts && (int)generated.size() < n_predict; ++i) {
+                    generated.push_back(draft[i]);
+                    history.push_back(draft[i]);
+                    std::printf("%d ", draft[i]);
+                    std::fflush(stdout);
+                    if (IS_EOS_TOK(draft[i], w)) { hit_eos = true; break; }
+                }
+                if (!hit_eos && (int)generated.size() < n_predict) {
+                    generated.push_back(bonus);
+                    history.push_back(bonus);
+                    std::printf("%d ", bonus);
+                    std::fflush(stdout);
+                    if (IS_EOS_TOK(bonus, w)) hit_eos = true;
+                }
+
+                committed = old_committed + accept_drafts + 1;
+                cache.cur_pos = committed;
+                cur_tok = bonus;
+                cache.last_tok = cur_tok;
+
+                if (first_token_ms < 0.0) {
+                    first_token_ms = now_ms() - decode_t0;
+                }
+
+                // ── mtp_h_prev refresh (approach A) ───────────────────────
+                // We need h_prev captured at the row corresponding to
+                // verify_in[accept_drafts] = the last accepted token.
+                // The verify ran with mtp_h_prev_row = -1 (captures row K).
+                // If accept_drafts < K, we do a 1-token re-capture.
+                // If accept_drafts == K, row K is the bonus's predecessor — but
+                // the bonus token is at new_committed-1 = old_committed+K, and
+                // verify_in[K] = draft[K-1] at old_committed+K.  Row K in the
+                // verify was the last row; mtp_h_prev already holds the correct
+                // value.  No re-capture needed.
+                if (accept_drafts < K) {
+                    // Re-run a 1-token target forward at position old_committed+accept_drafts
+                    // with capture enabled so mtp_h_prev gets the right hidden state.
+                    // Use mtp_h_prev_row = -1 (n_tokens=1 → only row 0 exists = last row).
+                    cache.mtp_h_prev_row = -1;
+                    if (!build_gemma4_step(sg, w, cache, backend,
+                                           old_committed + accept_drafts, /*n_tokens=*/1,
+                                           /*with_mask=*/true,
+                                           /*capture=*/false,
+                                           /*use_pflash=*/false, pflash_alpha,
+                                           fa_window)) {
+                        std::fprintf(stderr, "[mtp-gt1] h_prev re-capture build failed\n");
+                        ggml_gallocr_free(mtp_galloc);
+                        return 1;
+                    }
+                    // Embed the token at that position (= verify_in[accept_drafts])
+                    if (!embed_token(w, verify_in[accept_drafts], sg.inp_embed, backend)) {
+                        ggml_gallocr_free(mtp_galloc);
+                        return 1;
+                    }
+                    {
+                        int32_t pos_val = old_committed + accept_drafts;
+                        ggml_backend_tensor_set(sg.positions, &pos_val, 0, sizeof(int32_t));
+                    }
+                    if (sg.attn_mask && sg.attn_mask->buffer) {
+                        const int kv_len = old_committed + accept_drafts + 1;
+                        std::vector<uint16_t> mask_buf;
+                        build_causal_mask(mask_buf, kv_len, 1, old_committed + accept_drafts);
+                        ggml_backend_tensor_set(sg.attn_mask, mask_buf.data(), 0,
+                                                sizeof(uint16_t) * mask_buf.size());
+                    }
+                    if (sg.swa_mask && sg.swa_mask->buffer) {
+                        const SwaView swa_view = compute_swa_view(
+                            old_committed + accept_drafts, 1,
+                            w.swa_window, cache.swa_ctx_alloc);
+                        std::vector<uint16_t> swa_buf;
+                        build_swa_causal_mask(swa_buf,
+                                              /*kv_start*/ old_committed + accept_drafts,
+                                              /*n_tokens*/ 1,
+                                              /*swa_window*/ w.swa_window,
+                                              /*ring_size*/ swa_view.effective_win_len,
+                                              /*kv_end*/ old_committed + accept_drafts + 1);
+                        ggml_backend_tensor_set(sg.swa_mask, swa_buf.data(), 0,
+                                                sizeof(uint16_t) * swa_buf.size());
+                    }
+                    {
+                        auto st = ggml_backend_graph_compute(backend, sg.gf);
+                        if (st != GGML_STATUS_SUCCESS) {
+                            std::fprintf(stderr, "[mtp-gt1] h_prev re-capture compute failed\n");
+                            ggml_gallocr_free(mtp_galloc);
+                            return 1;
+                        }
+                    }
+                    step_graph_free(sg);
+                }
+
+                // ── Stats ──────────────────────────────────────────────────
+                mtp_gt1_chains++;
+                mtp_gt1_accepted += accept_drafts;
+                mtp_gt1_total    += K;
+
+                std::printf("[mtp-gt1] chain k=%d accepted=%d bonus=%d "
+                            "total_acc=%d pos_mode=%s\n",
+                            mtp_gt1_chains, accept_drafts, bonus,
+                            mtp_gt1_accepted,
+                            mtp_pos_mode == 0 ? "const" : "incr");
+                std::fflush(stdout);
+
+                if (hit_eos) break;
+
+            } // while generated < n_predict
+
+            ggml_gallocr_free(mtp_galloc);
+
+            if (mtp_gt1_chains > 0) {
+                const double mean_accept = (double)mtp_gt1_accepted / mtp_gt1_chains;
+                const double accept_rate = (double)mtp_gt1_accepted / mtp_gt1_total;
+                std::printf("\n[mtp-gt1] chains=%d total_accepted=%d mean_accept=%.2f "
+                            "accept_rate=%.3f gamma=%d pos_mode=%s\n",
+                            mtp_gt1_chains, mtp_gt1_accepted, mean_accept,
+                            accept_rate, K,
+                            mtp_pos_mode == 0 ? "const" : "incr");
+            }
+
+            } else { // gamma == 1
             // ── MTP SPECULATIVE DECODE LOOP (γ=1 v1) ─────────────────────
             //
             // Each iteration:
@@ -2417,6 +2797,8 @@ int main(int argc, char ** argv) {
                             mtp_steps, mtp_accepted,
                             (float)mtp_accepted / mtp_steps);
             }
+
+            } // end gamma == 1
 
         } else {
             // ── TARGET-ONLY DECODE LOOP ───────────────────────────────────
