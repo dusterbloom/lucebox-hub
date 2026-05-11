@@ -1,0 +1,32 @@
+# RTX 3090 — Gemma-4 MoE 26B-A4B + DFlash (dm=4) + pflash @ 256K context
+# Measured: 67.95 tok/s decode, TTFT ~55ms, VRAM 21.73 GB
+extends = "base"
+backend = "dflash"
+
+[hardware]
+gpu = "RTX 3090"
+sm = 86
+
+[model]
+target = "${HOME}/models/gemma4-26b-a4b-it/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+dflash_draft = "${HOME}/models/gemma4-26b-a4b-dflash/draft-q8_0.gguf"
+
+[runtime]
+ctx = 262144
+kv_k = "q8_0"
+kv_v = "q8_0"
+flash_attn = true
+pflash = true
+
+[runtime.spec]
+method = "dflash"
+draft_max = 4
+
+[expected_floors]
+decode_tok_s = 65.0
+ttft_ms_max = 65.0
+
+[provenance]
+source_log = ".sisyphus/notes/gemma4-baseline/tq3-frontier/C3_dflash_pflash_256K_q8_dm4.log"
+measured_at = "2026-05-10"
+hardware_id = "peppi-rtx3090-wsl"

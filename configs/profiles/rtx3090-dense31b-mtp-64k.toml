@@ -1,0 +1,31 @@
+# RTX 3090 — Gemma-4 Dense 31B + MTP (gamma=2) @ 64K context
+# Measured: 10.07 tok/s decode, acceptance_length=0.73 (+61% over no-MTP)
+extends = "base"
+backend = "dflash"
+
+[hardware]
+gpu = "RTX 3090"
+sm = 86
+
+[model]
+target = "${LUCEBOX_ROOT}/models/gemma-4-31B-it-Q4_K_M.gguf"
+mtp_assistant = "${LUCEBOX_ROOT}/models/gemma4-mtp-31B/gemma-4-31B-it-assistant.Q4_K_M.gguf"
+
+[runtime]
+ctx = 65536
+kv_k = "tq3_0"
+kv_v = "tq3_0"
+flash_attn = true
+
+[runtime.spec]
+method = "mtp"
+gamma = 2
+
+[expected_floors]
+decode_tok_s = 9.5
+
+[provenance]
+source_log = ".sisyphus/notes/gemma4-baseline/mtp-gamma/phase4-b/mtp_g2_ctx65536.log"
+measured_at = "2026-05-11"
+hardware_id = "peppi-rtx3090-wsl"
+commit = "4bcb972"

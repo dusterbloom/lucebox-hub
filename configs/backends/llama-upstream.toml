@@ -1,0 +1,29 @@
+# llama-upstream backend — external llama.cpp server binary
+# Set LUCEBOX_LLAMA_BIN to the path of your compiled llama-server or llama-cli.
+name = "llama-upstream"
+upstream = "https://github.com/ggerganov/llama.cpp"
+build_hint = "cmake -B build -DGGML_CUDA=ON && cmake --build build --config Release -t llama-cli"
+
+[binary]
+env_var = "LUCEBOX_LLAMA_BIN"
+
+[supports]
+spec_types = ["none"]
+kv_quants = ["q8_0", "f16", "f32"]
+
+[flags]
+model = "--model"
+ctx = "--ctx-size"
+kv_k = "--kv-cache-type-k"
+kv_v = "--kv-cache-type-v"
+flash_attn = "--flash-attn"
+temp = "--temp"
+seed = "--seed"
+n_predict = "--n-predict"
+ignore_eos = "--ignore-eos"
+batch = "--batch-size"
+ubatch = "--ubatch-size"
+
+[stdout_parse]
+tok_s = "eval time.*?([0-9]+\\.[0-9]+) tokens per second"
+ttft_ms = "load time.*?([0-9]+\\.[0-9]+) ms"
