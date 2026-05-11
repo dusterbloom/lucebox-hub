@@ -63,6 +63,15 @@ DEFAULT_TARGET = Path(os.environ.get(
 DEFAULT_DRAFT_ROOT = ROOT / "models" / "draft"
 DEFAULT_BIN = ROOT / "build" / ("test_dflash" + (".exe" if sys.platform == "win32" else ""))
 DEFAULT_BUDGET = 22
+
+
+def _extra_daemon_has_target_sharding(extra: list[str] | None) -> bool:
+    """True if we spawn test_dflash with multi-GPU target layer split."""
+    if not extra:
+        return False
+    return any(tok.startswith("--target-gpus") for tok in extra)
+
+
 MODEL_NAME = "luce-dflash"
 
 # Architecture strings stored in `general.architecture` of every GGUF this
@@ -607,9 +616,19 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
               prefill_cache_slots: int = 4,
               arch: str = "qwen35",
               use_pflash: bool = False,
+              extra_daemon_args: list[str] | None = None,
               lazy_draft: bool = False,
               verbose_daemon: bool = False) -> FastAPI:
     import asyncio
+    if _extra_daemon_has_target_sharding(extra_daemon_args):
+        if prefix_cache_slots > 0 or prefill_cache_slots > 0:
+            print(
+                "  [cfg] target-gpus sharding: disabling prefix/full cache "
+                "(daemon SNAPSHOT/RESTORE not implemented for this mode)",
+                flush=True,
+            )
+            prefix_cache_slots = 0
+            prefill_cache_slots = 0
     app = FastAPI(title="Luce DFlash OpenAI server")
 
     @app.exception_handler(OpenAICompatError)
@@ -675,6 +694,8 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
                "--fast-rollback", "--ddtree", f"--ddtree-budget={budget}",
                f"--max-ctx={max_ctx}",
                f"--stream-fd={stream_fd_val}"]
+        if extra_daemon_args:
+            cmd.extend(extra_daemon_args)
     if sys.platform == "win32":
         daemon_proc = subprocess.Popen(cmd, close_fds=False, env=env,
                                        stdin=subprocess.PIPE,
@@ -2243,6 +2264,22 @@ def main():
     ap.add_argument("--pflash", action="store_true",
                     help="Enable pFlash sparse-attention prefill in the daemon binary "
                          "(Gemma4 only; no-op for Qwen3).")
+    ap.add_argument("--target-gpu", type=int, default=None,
+                    help="Visible CUDA device id for test_dflash (sets DFLASH_TARGET_GPU)")
+    ap.add_argument("--draft-gpu", type=int, default=None,
+                    help="Visible CUDA device id for draft (sets DFLASH_DRAFT_GPU)")
+    ap.add_argument("--target-gpus", type=str, default=None,
+                    help="Comma-separated target GPU ids for target-layer sharding (passes --target-gpus)")
+    # nargs='?' so Compose can use a bare `--target-layer-split` line before another
+    # flag; const="" means "use test_dflash defaults" (we do not forward an empty value).
+    ap.add_argument("--target-layer-split", nargs="?", const="", default=None,
+                    metavar="WEIGHTS",
+                    help="Optional comma-separated layer split weights for --target-gpus "
+                         "(omit WEIGHTS after the flag to use defaults)")
+    ap.add_argument("--draft-feature-mirror", action="store_true",
+                    help="Pass --draft-feature-mirror to test_dflash (safe cross-GPU feature path)")
+    ap.add_argument("--peer-access", action="store_true",
+                    help="Pass --peer-access to test_dflash (prefer P2P memcpy when available)")
     add_cli_flags(ap)
     args = ap.parse_args()
     prefill_cfg = config_from_args(args)
@@ -2256,6 +2293,11 @@ def main():
 
     if args.fa_window is not None:
         os.environ["DFLASH27B_FA_WINDOW"] = str(args.fa_window)
+
+    if args.target_gpu is not None:
+        os.environ["DFLASH_TARGET_GPU"] = str(args.target_gpu)
+    if args.draft_gpu is not None:
+        os.environ["DFLASH_DRAFT_GPU"] = str(args.draft_gpu)
 
     if args.prefill_compression != "off":
         os.environ.setdefault("DFLASH27B_LM_HEAD_FIX", "0")
@@ -2323,7 +2365,25 @@ def main():
         drafter_tokenizer = AutoTokenizer.from_pretrained(
             prefill_cfg.drafter_tokenizer_id, trust_remote_code=True)
 
-    app = build_app(args.target, draft, bin_path, args.budget, args.max_ctx,
+    extra_daemon: list[str] = []
+    if args.draft_feature_mirror:
+        extra_daemon.append("--draft-feature-mirror")
+    if args.peer_access:
+        extra_daemon.append("--peer-access")
+    if args.target_gpus:
+        extra_daemon.append(f"--target-gpus={args.target_gpus}")
+        if args.target_layer_split:
+            extra_daemon.append(f"--target-layer-split={args.target_layer_split}")
+        # Keep sharded daemon behavior aligned with the single-GPU server path.
+        extra_daemon.append("--target-split-load-draft")
+        extra_daemon.append("--target-split-dflash")
+        # Multi-GPU daemon mode currently does not implement SNAPSHOT/RESTORE.
+        if args.prefix_cache_slots > 0 or args.prefill_cache_slots > 0:
+            print("  [cfg] target-gpus daemon mode disables prefix/full cache slots (snapshot protocol unsupported)")
+            args.prefix_cache_slots = 0
+            args.prefill_cache_slots = 0
+
+    app = build_app(args.target, draft, args.bin, args.budget, args.max_ctx,
                     tokenizer, stop_ids,
                     prefill_cfg=prefill_cfg if prefill_cfg.enabled else None,
                     drafter_tokenizer=drafter_tokenizer,
@@ -2331,6 +2391,7 @@ def main():
                     prefill_cache_slots=args.prefill_cache_slots,
                     arch=arch,
                     use_pflash=getattr(args, "pflash", False),
+                    extra_daemon_args=extra_daemon or None,
                     lazy_draft=args.lazy_draft,
                     verbose_daemon=args.verbose_daemon)
 
