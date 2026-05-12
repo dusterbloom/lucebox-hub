@@ -11,7 +11,7 @@ to Q8_0 (~50% size reduction vs BF16).  Norm weights stay F32
 (precision-critical, tiny).
 
 The output GGUF uses the same arch and tensor naming as
-convert_dflash_to_gguf.py so gguf_draft_loader.cpp can load it.
+convert_dflash_to_gguf.py so draft_gguf_loader.cpp can load it.
 
 Usage:
     # Qwen3.5 draft (auto-detects arch from config.json when present)

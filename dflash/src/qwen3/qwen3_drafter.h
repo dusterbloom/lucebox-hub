@@ -3,7 +3,7 @@
 // Hosted in the SAME process / SAME ggml allocator as the dflash target, so
 // we never pay the cross-process VRAM contention that broke the Python
 // subprocess integration. Drafter uses our custom Qwen3-0.6B forward
-// (qwen3_0p6b_graph.cpp + qwen3_0p6b_loader.cpp) which calls our FlashPrefill
+// (qwen3_graph.cpp + qwen3_loader.cpp) which calls our FlashPrefill
 // CUDA kernels for the attention compute, replacing libllama. This removes
 // the dense O(S²) FA cost that made libllama 3+ minutes at 140K.
 //
@@ -18,16 +18,26 @@
 #include <string>
 #include <vector>
 
-#include "qwen3_0p6b_drafter.h"
+#include "qwen3_drafter_model.h"
 
 struct ggml_backend;
 typedef struct ggml_backend * ggml_backend_t;
 
 namespace dflash27b {
 
+enum class DrafterArch {
+    Qwen3_0p6b,
+    Qwen35_0p8b,
+};
+
+bool parse_drafter_arch(const std::string & name, DrafterArch & out);
+const char * drafter_arch_name(DrafterArch arch);
+
 struct DrafterContext {
     ggml_backend_t        backend = nullptr;   // owned (created in load_drafter)
     Qwen3DrafterWeights   weights;             // BF16 weights on the backend
+    DrafterArch           arch    = DrafterArch::Qwen3_0p6b;
+    void *                arch_state = nullptr;
     bool                  loaded  = false;
 };
 
@@ -39,6 +49,8 @@ struct DrafterContext {
 // the GPU since the drafter weights are only ~1.5 GB.
 bool load_drafter(const std::string & gguf_path, int gpu_layers,
                   DrafterContext & out);
+bool load_drafter(const std::string & gguf_path, int gpu_layers,
+                  DrafterArch arch, DrafterContext & out);
 
 void free_drafter(DrafterContext & ctx);
 

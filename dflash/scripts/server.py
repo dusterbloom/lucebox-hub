@@ -41,6 +41,7 @@ from _prefill_hook import (
     compress_text_via_daemon, _drain_until_sentinel,
 )
 from prefix_cache import DaemonStdoutBus, PrefixCache
+from tool_memory import ToolMemory
 
 
 class OpenAICompatError(Exception):
@@ -240,15 +241,18 @@ def parse_reasoning(
     so the generated text contains only the reasoning body + ``</think>``.
     Returns (cleaned_content, reasoning_content).
     """
+    def _strip_leading_think_closers(value: str) -> str:
+        return re.sub(r"^(?:\s*</think>\s*)+", "", value).strip()
+
     parts = text.partition(THINK_OPEN_TAG)
     saw_open_tag = bool(parts[1])
     rest = parts[2] if saw_open_tag else parts[0]
     if THINK_CLOSE_TAG not in rest:
         if thinking_enabled and (started_in_thinking or saw_open_tag):
             return "", (rest.strip() or None)
-        return rest.strip(), None
+        return _strip_leading_think_closers(rest), None
     reasoning, _, content = rest.partition(THINK_CLOSE_TAG)
-    return content.strip(), (reasoning.strip() or None)
+    return _strip_leading_think_closers(content), (reasoning.strip() or None)
 
 
 def _find_tool_properties(tools, function_name):
@@ -614,6 +618,7 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
               drafter_tokenizer: AutoTokenizer | None = None,
               prefix_cache_slots: int = 4,
               prefill_cache_slots: int = 4,
+              prefill_cache_bytes: int = 0,
               arch: str = "qwen35",
               use_pflash: bool = False,
               extra_daemon_args: list[str] | None = None,
@@ -732,11 +737,31 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
     )
     if prefill_cfg is not None and prefill_cache_slots > 0:
         prefix_cache.init_full_cache(prefill_cache_slots)
+    tool_memory = ToolMemory(
+        max_entries=int(os.environ.get("DFLASH_TOOL_MEMORY_MAX_ENTRIES", "50000")),
+        max_bytes=int(os.environ.get("DFLASH_TOOL_MEMORY_MAX_BYTES", str(64 * 1024 * 1024))),
+    )
+
+    def _remember_tool_call_text(raw_text: str, tool_calls: list[dict] | None) -> None:
+        if not raw_text or not tool_calls:
+            return
+        call_ids = [
+            tc.get("id")
+            for tc in tool_calls
+            if isinstance(tc, dict) and isinstance(tc.get("id"), str) and tc.get("id")
+        ]
+        if call_ids:
+            tool_memory.remember(call_ids, raw_text)
 
     @app.on_event("startup")
     async def _startup():
         bus.start(asyncio.get_running_loop())
         await prefix_cache.startup_sync()
+        if not getattr(prefix_cache, "_full_disabled", True):
+            restored = await prefix_cache.rehydrate_full_cache(
+                _rehydrate_full_cache_entry)
+            if restored:
+                log.info("full-cache restored %d entries from disk", restored)
         if lazy_draft:
             log.info("lazy-draft: parking decode draft at startup to free ~3.3 GB")
             daemon_proc.stdin.write(b"park draft\n")
@@ -831,13 +856,18 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
         msgs: list[dict] = []
         for m in req.messages:
             d: dict = {"role": m.role}
-            if m.content is not None:
+            replay_raw_text = None
+            if m.role == "assistant" and m.tool_calls is not None:
+                replay_raw_text = tool_memory.lookup_message(m.tool_calls)
+            if replay_raw_text is not None:
+                d["content"] = replay_raw_text
+            elif m.content is not None:
                 d["content"] = _content_to_str(m.content)
             if m.name is not None:
                 d["name"] = m.name
             if m.tool_call_id is not None:
                 d["tool_call_id"] = m.tool_call_id
-            if m.tool_calls is not None:
+            if m.tool_calls is not None and replay_raw_text is None:
                 d["tool_calls"] = []
                 for tc in m.tool_calls:
                     args = tc.function.arguments
@@ -986,6 +1016,33 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
         daemon_proc.stdin.flush()
         if timing is not None:
             timing["t_cmd_sent"] = time.monotonic()
+
+    async def _rehydrate_full_cache_entry(slot: int, cur_bin_path: str,
+                                          cur_ids_len: int) -> bool:
+        cmd_line = f"{cur_bin_path} 0 snap={cur_ids_len}:{slot}\n"
+        loop = asyncio.get_running_loop()
+        sent = False
+        try:
+            _write_cmd(cmd_line)
+            sent = True
+            await bus.await_reply(f"[snap] inline slot={slot} ", timeout=120.0)
+            await loop.run_in_executor(None, _drain_until_sentinel, r_pipe)
+            return True
+        except Exception as exc:
+            log.warning("full-cache restore failed for slot=%d path=%s: %s",
+                        slot, cur_bin_path, exc)
+            if sent:
+                try:
+                    await loop.run_in_executor(None, _drain_until_sentinel, r_pipe)
+                except Exception:
+                    pass
+                try:
+                    daemon_proc.stdin.write(f"FREE_SNAPSHOT {slot}\n".encode("utf-8"))
+                    daemon_proc.stdin.flush()
+                    await bus.await_reply(f"[snap] freed slot={slot}", timeout=5.0)
+                except Exception:
+                    pass
+            return False
 
     def _park_draft_if_lazy(timing=None):
         """Park decode draft to free ~3.3 GB VRAM. Call after tokens consumed."""
@@ -1176,6 +1233,8 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
                     mode = "reasoning" if started_in_thinking else "content"
                     window = ""
                     tool_buffer = ""
+                    accumulated_content = ""
+                    accumulated_raw_text = ""
                     stops = normalize_stop(req.stop)
                     tag_holdback = max(len(THINK_OPEN_TAG), len(THINK_CLOSE_TAG), len(TOOL_OPEN_TAG))
                     stop_holdback = max((len(s) for s in stops), default=0)
@@ -1192,6 +1251,7 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
                         async for tok_id in _astream_tokens(r_pipe, gen_len, timing):
                             completion_tokens += 1
                             piece = tokenizer.decode([tok_id])
+                            accumulated_raw_text += piece
                             window += piece
 
                             if stops and mode != "tool_buffer":
@@ -1200,6 +1260,8 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
                                     window = window[:si]
                                     stop_hit = True
                                     kind = "reasoning_content" if mode == "reasoning" else "content"
+                                    if mode == "content":
+                                        accumulated_content += window
                                     out = emit_delta(window, kind)
                                     if out: yield out
                                     window = ""
@@ -1229,18 +1291,24 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
 
                                 else:  # mode == "content"
                                     think_idx = window.find(THINK_OPEN_TAG)
+                                    think_close_idx = window.find(THINK_CLOSE_TAG)
                                     tool_idx  = window.find(TOOL_OPEN_TAG)
                                     hits = [(i, t) for i, t in
-                                            ((think_idx, "think"), (tool_idx, "tool")) if i != -1]
+                                            ((think_idx, "think"),
+                                             (think_close_idx, "think_close"),
+                                             (tool_idx, "tool")) if i != -1]
                                     if hits:
                                         hits.sort()
                                         idx, which = hits[0]
                                         pre = window[:idx]
+                                        accumulated_content += pre
                                         out = emit_delta(pre, "content")
                                         if out: yield out
                                         if which == "think":
                                             window = window[idx + len(THINK_OPEN_TAG):]
                                             mode = "reasoning"
+                                        elif which == "think_close":
+                                            window = window[idx + len(THINK_CLOSE_TAG):]
                                         else:
                                             tool_buffer = window[idx:]
                                             window = ""
@@ -1248,6 +1316,7 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
                                         continue
                                     if len(window) > HOLDBACK:
                                         safe = window[:-HOLDBACK]
+                                        accumulated_content += safe
                                         out = emit_delta(safe, "content")
                                         if out: yield out
                                         window = window[-HOLDBACK:]
@@ -1275,6 +1344,7 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
                             out = emit_delta(window, "reasoning_content")
                             if out: yield out
                         elif mode == "content" and window:
+                            accumulated_content += window
                             out = emit_delta(window, "content")
                             if out: yield out
                         elif mode == "tool_buffer":
@@ -1285,6 +1355,7 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
                         if mode == "tool_buffer":
                             cleaned_after, tool_calls = parse_tool_calls(tool_buffer, tools=req.tools)
                             if tool_calls:
+                                _remember_tool_call_text(accumulated_raw_text, tool_calls)
                                 if cleaned_after:
                                     out = emit_delta(cleaned_after, "content")
                                     if out: yield out
@@ -1410,6 +1481,7 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
         if req.chat_template_kwargs:
             thinking_enabled = req.chat_template_kwargs.get("enable_thinking", True)
         cleaned, tool_calls = parse_tool_calls(text, tools=req.tools)
+        _remember_tool_call_text(text, tool_calls)
         cleaned, reasoning = parse_reasoning(
             cleaned,
             thinking_enabled=thinking_enabled,
@@ -1907,6 +1979,7 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
         if chat_req.chat_template_kwargs:
             thinking_enabled = chat_req.chat_template_kwargs.get("enable_thinking", True)
         cleaned, tool_calls = parse_tool_calls(text, tools=chat_req.tools)
+        _remember_tool_call_text(text, tool_calls)
         cleaned, reasoning = parse_reasoning(
             cleaned, thinking_enabled=thinking_enabled,
             started_in_thinking=started_in_thinking)
@@ -2043,6 +2116,7 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
                 window = ""
                 tool_buffer = ""
                 accumulated_text = ""
+                accumulated_raw_text = ""
                 tag_holdback = max(len(THINK_OPEN_TAG), len(THINK_CLOSE_TAG), len(TOOL_OPEN_TAG))
                 HOLDBACK = tag_holdback
                 completion_tokens = 0
@@ -2052,6 +2126,7 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
                     async for tok_id in _astream_tokens(r_pipe, gen_len, timing):
                         completion_tokens += 1
                         piece = tokenizer.decode([tok_id])
+                        accumulated_raw_text += piece
                         window += piece
 
                         while True:
@@ -2072,9 +2147,12 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
 
                             else:  # content
                                 think_idx = window.find(THINK_OPEN_TAG)
+                                think_close_idx = window.find(THINK_CLOSE_TAG)
                                 tool_idx = window.find(TOOL_OPEN_TAG)
                                 hits = [(i, t) for i, t in
-                                        ((think_idx, "think"), (tool_idx, "tool")) if i != -1]
+                                        ((think_idx, "think"),
+                                         (think_close_idx, "think_close"),
+                                         (tool_idx, "tool")) if i != -1]
                                 if hits:
                                     hits.sort()
                                     idx, which = hits[0]
@@ -2087,6 +2165,8 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
                                     if which == "think":
                                         window = window[idx + len(THINK_OPEN_TAG):]
                                         mode = "reasoning"
+                                    elif which == "think_close":
+                                        window = window[idx + len(THINK_CLOSE_TAG):]
                                     else:
                                         tool_buffer = window[idx:]
                                         window = ""
@@ -2134,6 +2214,7 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
                 if mode == "tool_buffer" and tool_buffer:
                     cleaned_after, tool_calls = parse_tool_calls(tool_buffer, tools=chat_req.tools)
                     if tool_calls:
+                        _remember_tool_call_text(accumulated_raw_text, tool_calls)
                         if cleaned_after:
                             accumulated_text += cleaned_after
                         for tc in tool_calls:
@@ -2260,6 +2341,9 @@ def main():
                          "timing and per-step diagnostics.")
     ap.add_argument("--prefix-cache-slots", type=int, default=4)
     ap.add_argument("--prefill-cache-slots", type=int, default=4)
+    ap.add_argument("--prefill-cache-bytes", type=int, default=0,
+                    help="Disk budget in bytes for persisted full-cache artifacts. "
+                         "0 disables budget trimming.")
     ap.add_argument("--daemon", action="store_true")
     ap.add_argument("--pflash", action="store_true",
                     help="Enable pFlash sparse-attention prefill in the daemon binary "
@@ -2389,6 +2473,7 @@ def main():
                     drafter_tokenizer=drafter_tokenizer,
                     prefix_cache_slots=args.prefix_cache_slots,
                     prefill_cache_slots=args.prefill_cache_slots,
+                    prefill_cache_bytes=args.prefill_cache_bytes,
                     arch=arch,
                     use_pflash=getattr(args, "pflash", False),
                     extra_daemon_args=extra_daemon or None,
