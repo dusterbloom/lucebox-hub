@@ -512,4 +512,5 @@ if(DFLASH27B_TESTS)
         find_package(CUDAToolkit REQUIRED)
         target_link_libraries(test_mtp_graph_shapes PRIVATE CUDA::cudart)
     endif()
+    endif()  # DFLASH27B_GPU_BACKEND STREQUAL "cuda"
 endif()
