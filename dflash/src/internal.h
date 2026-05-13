@@ -687,10 +687,17 @@ struct GemmaGraphOutputs {
     ggml_tensor * logits = nullptr;
 };
 
-// Gemma4 cache lifecycle
+// Gemma4 cache lifecycle.
+// extra_q8_layers: additional layer indices to force Q8_0 KV regardless of the
+//   global kv type (e.g. MTP donor layers that need to avoid TQ3_0/FWHT mismatch).
+// enable_dflash_capture_overrides: when true and TQ3_0 KV is selected, force
+//   Q8_0 on the capture layers feeding the DFlash draft so they ride the pflash
+//   sparse fast path (which excludes TQ3).
 bool create_gemma4_cache(const GemmaTargetWeights & w, int max_ctx,
                          ggml_backend_t backend, GemmaTargetCache & out,
-                         int target_feat_cap_hint = 0);
+                         const std::vector<int> & extra_q8_layers = {},
+                         int target_feat_cap_hint = 0,
+                         bool enable_dflash_capture_overrides = false);
 void free_gemma4_cache(GemmaTargetCache & c);
 void reset_gemma4_cache(GemmaTargetCache & c);
 

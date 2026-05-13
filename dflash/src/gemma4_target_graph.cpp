@@ -549,7 +549,9 @@ bool create_gemma4_cache(const GemmaTargetWeights & w,
                          int max_ctx,
                          ggml_backend_t backend,
                          GemmaTargetCache & out,
-                         int target_feat_cap_hint) {
+                         const std::vector<int> & extra_q8_layers,
+                         int target_feat_cap_hint,
+                         bool enable_dflash_capture_overrides) {
     out.backend = backend;
     out.max_ctx = max_ctx;
     out.cur_pos = 0;
@@ -617,10 +619,74 @@ bool create_gemma4_cache(const GemmaTargetWeights & w,
         return false;
     }
 
-    // Per-layer KV types (uniform for basic target execution; later PRs add
-    // per-layer overrides for asymmetric KV strategies).
+    // Per-layer KV types.
+    //
+    // The upstream FA dispatch (deps/llama.cpp/.../fattn.cu) routes
+    // TQ3 + (Q->ne[0] > 256 || Q->ne[1] > 1) to the slow CHUNKED kernel.
+    // On Dense Gemma4 31B with full-attn head_dim=512, every chunked
+    // prefill / draft-verify hits this trap.
+    //
+    // Narrow workaround (mirrors vLLM's kv-cache-dtype-skip-layers):
+    // when DFlash draft is wired up, force Q8_0 KV on the small subset of
+    // full-attn layers whose hidden states are CAPTURED for the draft.
+    // This unblocks the pflash sparse fast path for the layers the draft
+    // actually depends on, without touching the other 8/10 full-attn
+    // layers (avoids the MoE regression we saw when forcing ALL full-attn
+    // -> Q8).
     out.kv_k_type_per_layer.assign(w.n_layer, kv_k_type);
     out.kv_v_type_per_layer.assign(w.n_layer, kv_v_type);
+
+    const bool gate = (kv_k_type == GGML_TYPE_TQ3_0 || kv_v_type == GGML_TYPE_TQ3_0)
+                    && (w.head_dim > 256)
+                    && enable_dflash_capture_overrides
+                    && (w.n_capture_layers > 0);
+
+    if (gate) {
+        int n_overridden = 0;
+        for (int ci = 0; ci < w.n_capture_layers; ci++) {
+            const int captured_il = w.capture_layer_ids[ci];
+            if (captured_il < 0 || captured_il >= w.n_layer) continue;
+            const bool is_swa = (captured_il < (int)w.swa_layers.size())
+                                && w.swa_layers[captured_il];
+            if (is_swa) continue;  // SWA layers don't hit the trap
+            if (kv_k_type == GGML_TYPE_TQ3_0) {
+                out.kv_k_type_per_layer[captured_il] = GGML_TYPE_Q8_0;
+            }
+            if (kv_v_type == GGML_TYPE_TQ3_0) {
+                out.kv_v_type_per_layer[captured_il] = GGML_TYPE_Q8_0;
+            }
+            n_overridden++;
+        }
+        // Count total full-attn layers for the log message
+        int n_full_attn = 0;
+        for (int il = 0; il < w.n_layer; il++) {
+            const bool is_swa = (il < (int)w.swa_layers.size()) && w.swa_layers[il];
+            if (!is_swa && out.layer_to_kv_idx[il] >= 0) n_full_attn++;
+        }
+        std::fprintf(stderr,
+            "[cache] narrow asymmetric: forced Q8_0 on %d captured full-attn layer(s) "
+            "(remaining %d full-attn keep TQ3)\n",
+            n_overridden, n_full_attn - n_overridden);
+    }
+
+    // Extra override: force Q8_0 on caller-specified layer indices (e.g. MTP donor layers).
+    // These layers must NOT use TQ3_0 because MTP cross-attention reads them via ggml_cast
+    // (no FWHT inverse applied), so TQ3_0 FWHT-domain values would corrupt attention scores.
+    if (!extra_q8_layers.empty() &&
+        (kv_k_type == GGML_TYPE_TQ3_0 || kv_v_type == GGML_TYPE_TQ3_0)) {
+        int n_mtp_overridden = 0;
+        for (int il : extra_q8_layers) {
+            if (il < 0 || il >= w.n_layer) continue;
+            if (kv_k_type == GGML_TYPE_TQ3_0) out.kv_k_type_per_layer[il] = GGML_TYPE_Q8_0;
+            if (kv_v_type == GGML_TYPE_TQ3_0) out.kv_v_type_per_layer[il] = GGML_TYPE_Q8_0;
+            n_mtp_overridden++;
+        }
+        if (n_mtp_overridden > 0) {
+            std::fprintf(stderr,
+                "[cache] MTP donor override: forced Q8_0 on %d layer(s) to avoid TQ3/FWHT cross-attn mismatch\n",
+                n_mtp_overridden);
+        }
+    }
 
     // (head_dim and n_head_kv are resolved per-layer in the allocation loop below)
 
@@ -1040,6 +1106,52 @@ GemmaGraphOutputs build_gemma4_graph(
 
     // ── Final norm ─────────────────────────────────────────────────────────────
     ggml_tensor * out = rms_norm_mul(ctx, inpL, w.out_norm, EPS);
+
+    // ── MTP h_prev capture (post-output-norm, last token) ──────────────────────
+    // h_prev must be the backbone hidden AFTER final RMSNorm — the same vector
+    // fed to lm_head — so the MTP draft head sees the same representation as
+    // the target's token prediction. Capturing inside the layer loop (pre-norm)
+    // caused accept_rate=0 because the draft head was trained on post-norm hiddens.
+    if (cache.mtp_h_prev_enabled && cache.mtp_h_prev_capture_mode == 1
+            && cache.mtp_h_prev_batch && n_tokens > 1) {
+        // Approach B: write all n_tokens rows of post-final-norm hidden into
+        // the first n_tokens columns of mtp_h_prev_batch.  The γ>1 driver
+        // then picks the correct column host-side after greedy match; no
+        // extra re-capture forward is needed.
+        const int n_embd_hp = (int)cache.mtp_h_prev_batch->ne[0];
+        GGML_ASSERT(n_tokens <= (int)cache.mtp_h_prev_batch->ne[1]);
+        ggml_tensor * src = out;  // [n_embd, n_tokens]
+        if (src->type != GGML_TYPE_F32) {
+            src = ggml_cast(ctx, src, GGML_TYPE_F32);
+        }
+        ggml_tensor * dst_view = ggml_view_2d(ctx, cache.mtp_h_prev_batch,
+            n_embd_hp, n_tokens,
+            ggml_row_size(cache.mtp_h_prev_batch->type, n_embd_hp),
+            /* offset = */ 0);
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, src, dst_view));
+    } else if (cache.mtp_h_prev_enabled && cache.mtp_h_prev) {
+        const int n_embd_hp = (int)cache.mtp_h_prev->ne[0];
+        // Row to capture from the [n_embd, n_tokens] tensor.  Default (sentinel
+        // -1) is the last row, matching the γ=1 contract.  For γ>1 partial
+        // accept, the driver sets cache.mtp_h_prev_row = accept_n - 1 so we
+        // capture the last *accepted* hidden, not the last *speculative* one.
+        const int capture_row = (cache.mtp_h_prev_row >= 0)
+            ? cache.mtp_h_prev_row
+            : (n_tokens - 1);
+        GGML_ASSERT(capture_row >= 0 && capture_row < n_tokens);
+        ggml_tensor * h_prev_src = out;
+        if (n_tokens > 1) {
+            h_prev_src = ggml_view_2d(ctx, out,
+                n_embd_hp, 1,
+                ggml_row_size(out->type, n_embd_hp),
+                ggml_row_size(out->type, n_embd_hp) * capture_row);
+        }
+        if (h_prev_src->type != GGML_TYPE_F32) {
+            h_prev_src = ggml_cast(ctx, h_prev_src, GGML_TYPE_F32);
+        }
+        h_prev_src = ggml_reshape_2d(ctx, h_prev_src, n_embd_hp, 1);
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, h_prev_src, cache.mtp_h_prev));
+    }
 
     // ── last_token_logits_only: slice to the final token before lm_head ────────
     // During chunked prefill we only need the last token's logits to seed decode.
