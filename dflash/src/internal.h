@@ -610,7 +610,13 @@ void free_gemma4_target_weights(GemmaTargetWeights & w);
 } // namespace dflash27b
 
 #if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP)
-#include <cuda_runtime.h>
+// Forward-declare cudaStream_t so non-nvcc compile units that include this
+// header (e.g. smoke tests built with plain g++ and no CUDA include dirs)
+// can still parse the dflash_cuda_copy_between_devices declaration.
+// The runtime header is included only by the implementation TU
+// (src/cuda_cross_device_copy.cpp), which is nvcc-compiled.
+struct CUstream_st;
+typedef struct CUstream_st * cudaStream_t;
 // Host-staged copy between CUDA devices (no peer access required).
 // Streams are device-specific: src_stream orders the D2H leg on src_dev and
 // dst_stream orders the H2D leg on dst_dev. Null streams use each device's
