@@ -220,6 +220,8 @@ add_library(dflash27b STATIC
     src/gemma4_target_graph.cpp
     # Gemma4 draft loaders (PR08)
     src/gemma4_dflash_graph.cpp
+    # Gemma4 MTP step graph (PR10)
+    src/gemma4_mtp_graph.cpp
 )
 # BSA (Block-Sparse Attention) backs the speculative-prefill drafter scoring
 # path. Default ON so prefill is fast out of the box. Turn OFF if you don't
@@ -468,6 +470,16 @@ if(DFLASH27B_TESTS)
         add_executable(smoke_gemma4_draft_forward test/gemma4/smoke_gemma4_draft_forward.cpp)
         target_include_directories(smoke_gemma4_draft_forward PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
         target_link_libraries(smoke_gemma4_draft_forward PRIVATE dflash27b ggml ggml-cuda)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/gemma4/test_mtp_loader.cpp")
+        add_executable(test_mtp_loader test/gemma4/test_mtp_loader.cpp)
+        target_include_directories(test_mtp_loader PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_mtp_loader PRIVATE dflash27b ggml ggml-cuda)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/gemma4/test_mtp_graph_shapes.cpp")
+        add_executable(test_mtp_graph_shapes test/gemma4/test_mtp_graph_shapes.cpp)
+        target_include_directories(test_mtp_graph_shapes PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_mtp_graph_shapes PRIVATE dflash27b ggml ggml-cuda)
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_load_target_laguna.cpp")
         add_executable(smoke_load_target_laguna test/smoke_load_target_laguna.cpp)

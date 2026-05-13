@@ -635,6 +635,26 @@ struct GemmaTargetCache {
     ggml_tensor * target_feat     = nullptr;
     int           target_feat_cap = 0;
 
+    // MTP h_prev: last committed token's post-block hidden state from the
+    // last full-attention layer.  Shape [n_embd_backbone, 1] f32.
+    // Allocated only when MTP is enabled (mtp_h_prev_enabled flag on cache).
+    // Written by the target graph at the end of every decode step.
+    ggml_tensor * mtp_h_prev         = nullptr;
+    bool          mtp_h_prev_enabled = false;
+    // Index of the last full-attention layer in the target (Dense 31B = 58).
+    // Computed once at cache init from w.swa_layers (highest il with swa==false).
+    int           mtp_last_full_layer = -1;
+    // γ>1 MTP partial-accept correctness: when set to a non-negative value <
+    // n_tokens, the h_prev capture slices that row instead of the default
+    // (n_tokens - 1).  Sentinel -1 preserves the existing γ=1 behavior.
+    int           mtp_h_prev_row = -1;
+
+    // Approach B: when mtp_h_prev_capture_mode == 1, the target graph writes
+    // all n_tokens rows of post-final-norm hidden into mtp_h_prev_batch.
+    // Width = max gamma + 1 = 17 (matches the --gamma CLI cap of 16).
+    ggml_tensor * mtp_h_prev_batch         = nullptr;  // [n_embd_backbone, 17]
+    int           mtp_h_prev_capture_mode  = 0;         // 0 = single-row, 1 = batch
+
     // Draft KV cache (prefix-direct: projected target features → K/V per layer)
     ggml_context        * draft_kv_ctx = nullptr;
     ggml_backend_buffer_t draft_kv_buf = nullptr;
@@ -769,6 +789,102 @@ ggml_tensor * build_gemma4_draft_graph(ggml_context * ctx,
                                        ggml_tensor * attn_mask,
                                        int n_tokens,
                                        int kv_start);
+
+// ─── Gemma4 MTP (Multi-Token Prediction) assistant weights ───────────────────
+//
+// Loaded from a gemma4_assistant GGUF (e.g. gemma-4-31B-it-assistant.Q4_K_M.gguf).
+// These are the 4 cross-attention transformer blocks that run after the target
+// model's forward pass to predict the next speculative token.
+
+struct MtpLayerWeights {
+    // Q-only attention (no wk/wv — V is always read from the donor target KV cache;
+    // attention_k_eq_v=true means V stored as rms-normed non-rotated K, so MTP
+    // MUST read V from cache, not reuse K).
+    ggml_tensor * attn_norm      = nullptr;
+    ggml_tensor * wq             = nullptr;
+    ggml_tensor * attn_q_norm    = nullptr;
+    ggml_tensor * wo             = nullptr;
+    ggml_tensor * attn_post_norm = nullptr;
+    ggml_tensor * ffn_norm       = nullptr;
+    ggml_tensor * ffn_up         = nullptr;
+    ggml_tensor * ffn_gate       = nullptr;
+    ggml_tensor * ffn_down       = nullptr;
+    ggml_tensor * ffn_post_norm  = nullptr;
+    ggml_tensor * out_scale      = nullptr;
+    // Donor target layer resolved per-MTP-layer: LAST target layer whose
+    // attention type (SWA vs full) matches this MTP layer's type.
+    int32_t       donor_target_layer = -1;
+    bool          is_swa             = false;
+};
+
+struct MtpDrafterWeights {
+    // Pre/post projection (concat tok_emb + h_prev → n_embd, and back)
+    ggml_tensor * pre_projection  = nullptr;  // [2*n_embd_backbone, n_embd]
+    ggml_tensor * post_projection = nullptr;  // [n_embd, n_embd_backbone]
+    ggml_tensor * output_norm     = nullptr;  // [n_embd]
+    // Token embedding (tied LM head for the MTP assistant model).
+    ggml_tensor * tok_embd        = nullptr;  // [n_embd, n_vocab]
+    // Per-dim RoPE freq factors (assistant's own).
+    ggml_tensor * rope_freqs      = nullptr;  // [head_dim/2] f32
+    // Optional centroid head (Edge models only; nullptr for Dense 31B)
+    ggml_tensor * centroids       = nullptr;
+    ggml_tensor * token_ordering  = nullptr;
+    // MTP transformer layers (always 4 per atomicbot spec)
+    std::vector<MtpLayerWeights> layers;
+    // Metadata
+    int32_t  n_embd                 = 0;
+    int32_t  n_embd_backbone        = 0;
+    int32_t  n_centroids            = 0;
+    int32_t  centroid_top_k         = 0;
+    bool     use_ordered_embeddings = false;
+    bool     attention_k_eq_v       = false;
+    std::string requires_target_arch;
+    // Backend that owns the tensors
+    ggml_backend_t        backend = nullptr;
+    ggml_context        * ctx     = nullptr;
+    ggml_backend_buffer_t buffer  = nullptr;
+};
+
+// Load Gemma4 MTP assistant weights from a GGUF file.
+bool load_gemma4_mtp_assistant(const std::string & gguf_path,
+                               ggml_backend_t backend,
+                               MtpDrafterWeights & out);
+
+void free_gemma4_mtp_assistant(MtpDrafterWeights & w);
+
+// Read only the MTP SWA layer pattern from the GGUF (lightweight — no tensor loading).
+bool get_mtp_swa_pattern(const std::string & gguf_path,
+                         std::vector<bool> & out_mtp_swa_layers);
+
+// Re-resolve MTP donor layers using the actual target SWA pattern.
+void resolve_mtp_donor_layers(MtpDrafterWeights & mtp,
+                              const std::vector<bool> & target_swa_layers);
+
+// ─── Gemma4 MTP step graph ────────────────────────────────────────────────────
+struct MtpStepGraph {
+    ggml_context * ctx           = nullptr;
+    ggml_cgraph  * gf            = nullptr;
+    ggml_tensor  * in_tok        = nullptr;  // I32 [1]
+    ggml_tensor  * in_tok_embd   = nullptr;  // F32 [n_embd_backbone, 1]
+    ggml_tensor  * in_h_prev     = nullptr;
+    ggml_tensor  * in_pos        = nullptr;
+    // Shared FA mask across MTP layers that need padding.
+    ggml_tensor  * fa_mask              = nullptr;  // F16 [width, 1] or null
+    int64_t        fa_mask_kv_seq_len   = 0;
+    ggml_tensor  * out_logits    = nullptr;
+    ggml_tensor  * out_h_post    = nullptr;
+    ggml_tensor  * out_argmax    = nullptr;
+};
+
+// Build the MTP step graph. attn_pos = cache.cur_pos at submit time.
+bool build_mtp_step_graph(const MtpDrafterWeights  & w,
+                          const GemmaTargetCache   & target_cache,
+                          const GemmaTargetWeights & target,
+                          MtpStepGraph             & out,
+                          int                        attn_pos);
+
+// Free the ggml context owned by the graph (tensors only).
+void free_mtp_step_graph(MtpStepGraph & g);
 
 } // namespace dflash27b
 
