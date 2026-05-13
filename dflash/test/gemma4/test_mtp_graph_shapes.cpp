@@ -170,7 +170,7 @@ int main() {
     const int n_embd_backbone = mtp.n_embd_backbone;  // e.g. 5376
     const int n_vocab         = 262144;                 // Dense 31B vocab
     const int n_target_layers = 60;                    // Dense 31B
-    const int max_ctx         = 64;                    // small stub context
+    const int max_ctx         = 256;                   // 256-aligned (full-attn donor view padding requires it; matches create_gemma4_cache 256-alignment in gemma4_target_graph.cpp:570)
 
     // Dense 31B SWA pattern: odd-indexed = SWA, even = full attention
     std::vector<bool> target_swa(n_target_layers, false);
