@@ -634,6 +634,14 @@ struct GemmaTargetCache {
 
     ggml_tensor * target_feat     = nullptr;
     int           target_feat_cap = 0;
+
+    // Draft KV cache (prefix-direct: projected target features → K/V per layer)
+    ggml_context        * draft_kv_ctx = nullptr;
+    ggml_backend_buffer_t draft_kv_buf = nullptr;
+    std::vector<ggml_tensor *> draft_k;   // [head_dim, n_kv_heads, draft_kv_cap] f32
+    std::vector<ggml_tensor *> draft_v;
+    int draft_kv_cap = 0;
+    int draft_kv_pos = 0;
 };
 
 struct GemmaGraphInputs {
@@ -736,6 +744,31 @@ bool load_gemma4_draft_gguf(const std::string & path,
                             ggml_backend_t backend,
                             GemmaDraftWeights & out);
 void free_gemma4_draft_weights(GemmaDraftWeights & w);
+
+// Gemma4 draft KV cache lifecycle (lives inside GemmaTargetCache).
+bool create_draft_kv_cache(const GemmaDraftWeights & dw,
+                           ggml_backend_t backend,
+                           GemmaTargetCache & cache,
+                           int cap_override = 0);
+void free_draft_kv_cache(GemmaTargetCache & cache);
+
+// Gemma4 draft graph builders.
+ggml_tensor * build_draft_kv_prefill_graph(ggml_context * ctx,
+                                           ggml_cgraph * gf,
+                                           const GemmaDraftWeights & w,
+                                           GemmaTargetCache & cache,
+                                           ggml_tensor * target_feat,
+                                           ggml_tensor * positions,
+                                           int n_tokens);
+ggml_tensor * build_gemma4_draft_graph(ggml_context * ctx,
+                                       ggml_cgraph * gf,
+                                       const GemmaDraftWeights & w,
+                                       GemmaTargetCache & cache,
+                                       ggml_tensor * draft_embed,
+                                       ggml_tensor * positions,
+                                       ggml_tensor * attn_mask,
+                                       int n_tokens,
+                                       int kv_start);
 
 } // namespace dflash27b
 

@@ -741,6 +741,7 @@ bool create_gemma4_cache(const GemmaTargetWeights & w,
 }
 
 void free_gemma4_cache(GemmaTargetCache & c) {
+    free_draft_kv_cache(c);
     if (c.base_buf) { ggml_backend_buffer_free(c.base_buf); c.base_buf = nullptr; }
     if (c.base_ctx) { ggml_free(c.base_ctx);                c.base_ctx = nullptr; }
     c.attn_k.clear();
@@ -756,6 +757,7 @@ void free_gemma4_cache(GemmaTargetCache & c) {
 void reset_gemma4_cache(GemmaTargetCache & c) {
     c.cur_pos      = 0;
     c.last_tok     = -1;
+    c.draft_kv_pos = 0;
     std::vector<uint8_t> zeros(1 * 1024 * 1024, 0);
     if (!c.base_ctx) return;
     for (ggml_tensor * t = ggml_get_first_tensor(c.base_ctx); t != nullptr;
@@ -768,6 +770,81 @@ void reset_gemma4_cache(GemmaTargetCache & c) {
             off += chunk;
         }
     }
+}
+
+// ─── Draft KV cache allocation ───────────────────────────────────────────────
+
+bool create_draft_kv_cache(const GemmaDraftWeights & dw,
+                           ggml_backend_t backend,
+                           GemmaTargetCache & cache,
+                           int cap_override) {
+    // Capacity: sliding window + one block + headroom
+    const int default_cap = dw.sliding_window + dw.block_size + 32;
+    const int draft_kv_cap = cap_override > 0 ? cap_override : default_cap;
+    if (draft_kv_cap < dw.block_size + 1) {
+        set_last_error("create_draft_kv_cache: cap_override is smaller than block_size+1");
+        return false;
+    }
+
+    const size_t n_tensors = (size_t)(2 * dw.n_layer);  // K + V per layer
+    ggml_init_params ip{};
+    ip.mem_size   = ggml_tensor_overhead() * n_tensors + 256;
+    ip.mem_buffer = nullptr;
+    ip.no_alloc   = true;
+    cache.draft_kv_ctx = ggml_init(ip);
+    if (!cache.draft_kv_ctx) {
+        set_last_error("create_draft_kv_cache: ggml_init failed");
+        return false;
+    }
+
+    cache.draft_k.reserve((size_t)dw.n_layer);
+    cache.draft_v.reserve((size_t)dw.n_layer);
+
+    for (int il = 0; il < dw.n_layer; il++) {
+        ggml_tensor * K = ggml_new_tensor_3d(cache.draft_kv_ctx, GGML_TYPE_F32,
+                                             dw.head_dim, dw.n_head_kv, draft_kv_cap);
+        ggml_tensor * V = ggml_new_tensor_3d(cache.draft_kv_ctx, GGML_TYPE_F32,
+                                             dw.head_dim, dw.n_head_kv, draft_kv_cap);
+        char name[64];
+        std::snprintf(name, sizeof(name), "draft_k_%d", il);
+        ggml_set_name(K, name);
+        std::snprintf(name, sizeof(name), "draft_v_%d", il);
+        ggml_set_name(V, name);
+        cache.draft_k.push_back(K);
+        cache.draft_v.push_back(V);
+    }
+
+    cache.draft_kv_buf = ggml_backend_alloc_ctx_tensors(cache.draft_kv_ctx, backend);
+    if (!cache.draft_kv_buf) {
+        set_last_error("create_draft_kv_cache: ggml_backend_alloc_ctx_tensors failed");
+        ggml_free(cache.draft_kv_ctx);
+        cache.draft_kv_ctx = nullptr;
+        cache.draft_k.clear();
+        cache.draft_v.clear();
+        return false;
+    }
+
+    cache.draft_kv_cap = draft_kv_cap;
+    cache.draft_kv_pos = 0;
+
+    ggml_backend_buffer_clear(cache.draft_kv_buf, 0);
+
+    return true;
+}
+
+void free_draft_kv_cache(GemmaTargetCache & cache) {
+    if (cache.draft_kv_buf) {
+        ggml_backend_buffer_free(cache.draft_kv_buf);
+        cache.draft_kv_buf = nullptr;
+    }
+    if (cache.draft_kv_ctx) {
+        ggml_free(cache.draft_kv_ctx);
+        cache.draft_kv_ctx = nullptr;
+    }
+    cache.draft_k.clear();
+    cache.draft_v.clear();
+    cache.draft_kv_cap = 0;
+    cache.draft_kv_pos = 0;
 }
 
 // ─── Main graph builder ───────────────────────────────────────────────────────

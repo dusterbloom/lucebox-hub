@@ -1,16 +1,35 @@
-// Loaders for the Gemma4 DFlash draft model weights.
-// Graph builders (build_draft_kv_prefill_graph, build_gemma4_draft_graph)
-// land in the dflash-runtime PR.
+// Builds ggml compute graphs for the Gemma4 DFlash draft model
+// (5-layer block-diffusion model with KV cache and logit softcapping).
 //
 // Architecture:
-//   - 5-layer block-diffusion draft (4 SWA + 1 full attention)
-//   - 6 captured target layers
-//   - FC input = 6 * target_hidden (target_hidden = 4096 for all Gemma4 variants),
-//     giving FC width = 24576
+//   - 6 captured target layers  (Qwen3 used 5)
+//   - FC input = 6 * target_hidden, where target_hidden = 4096 for all Gemma4
+//     variants (31B dense and 26B-A4B MoE), giving FC width = 24576
 //   - Logit softcapping: tanh(logits / cap) * cap, cap = 30.0
 //   - Tied lm_head: uses tok_embd transposed (or a provided lm_head weight)
 //   - Vocab = 262144
-//   - Draft has its own lm_head + softcap
+//   - Draft has its own lm_head + softcap — it does NOT rely on the target's
+//     lm_head (unlike the Qwen3 draft which shares the target's projection)
+//   - KV cache (prefix-direct): target features are projected into per-layer
+//     K/V entries and stored in GemmaTargetCache::draft_k/draft_v.
+//     build_draft_kv_prefill_graph materializes the context K/V;
+//     build_gemma4_draft_graph writes block K/V and attends over the full cache.
+//   - Layer types: 4 SWA (sliding_attention) + 1 full attention
+//     The attention kernel itself is the same ggml_flash_attn_ext call in both
+//     cases; the caller controls the mask to implement the sliding window.
+//
+// Two-step per-decode:
+//   1. build_draft_kv_prefill_graph: project new committed context tokens into
+//      draft KV cache (side-effect only; nullptr returned).
+//   2. build_gemma4_draft_graph: attend over context+block K/V and return logits.
+//
+// build_gemma4_draft_graph takes:
+//   - draft_embed   [draft_hidden, n_tokens] f32  (MASK token embeddings)
+//   - positions     [n_tokens]               i32  (absolute token positions)
+//   - attn_mask     [kv_pad, q_pad]          f16  (causal over context+block)
+//   - kv_start      = cache.draft_kv_pos (context length before this block)
+// and returns:
+//   - logits        [n_vocab, n_tokens]      f32  (after softcapping)
 //
 // Safetensors tensor naming (actual file, no model. prefix):
 //   fc.weight                                           → fc
@@ -56,6 +75,315 @@
 #endif
 
 namespace dflash27b {
+
+// ─── Draft SWA truncation toggle ──────────────────────────────────────────
+// Set DFLASH_DRAFT_SWA_TRUNC=1 to enable per-layer K/V truncation in the
+// draft graph for SWA layers (last n-1 layers — the final layer is full).
+// Mirrors PR #129 for the qwen3 drafter, ported to gemma4's cached layout.
+static inline bool draft_swa_trunc_enabled() {
+    static int e = -1;
+    if (e < 0) {
+        const char * v = std::getenv("DFLASH_DRAFT_SWA_TRUNC");
+        e = (v && std::atoi(v) != 0) ? 1 : 0;
+        if (e) {
+            std::fprintf(stderr, "[draft-swa-trunc] enabled\n");
+        }
+    }
+    return e == 1;
+}
+
+// ─── Draft RoPE wrapper with optional YaRN extrapolation ──────────────────
+// Set DFLASH_DRAFT_YARN=1 to enable YaRN scaling for draft RoPE; assumes the
+// draft was effectively trained at DFLASH_DRAFT_YARN_NCTX_ORIG (default 32768)
+// despite config.json claiming a larger max_position_embeddings.
+static inline ggml_tensor * draft_rope(ggml_context * ctx, ggml_tensor * x,
+                                       ggml_tensor * positions, int head_dim,
+                                       float rope_base) {
+    static struct {
+        int   nctx;
+        float ext;
+        float bf;
+        float bs;
+        bool  init;
+    } p = {0, 0.0f, 0.0f, 0.0f, false};
+    if (!p.init) {
+        const char * en = std::getenv("DFLASH_DRAFT_YARN");
+        if (en && std::atoi(en) != 0) {
+            const char * nc = std::getenv("DFLASH_DRAFT_YARN_NCTX_ORIG");
+            p.nctx = nc ? std::atoi(nc) : 32768;
+            p.ext  = 1.0f;
+            p.bf   = 32.0f;
+            p.bs   = 1.0f;
+            std::fprintf(stderr,
+                "[draft-yarn] enabled: n_ctx_orig=%d ext_factor=%.2f beta_fast=%.1f beta_slow=%.1f\n",
+                p.nctx, p.ext, p.bf, p.bs);
+        }
+        p.init = true;
+    }
+    return ggml_rope_ext(ctx, x, positions, /*freq_factors=*/nullptr,
+                        head_dim, GGML_ROPE_TYPE_NEOX, p.nctx,
+                        rope_base, /*freq_scale=*/1.0f,
+                        p.ext, /*attn_factor=*/1.0f, p.bf, p.bs);
+}
+
+// ─── Graph builders ───────────────────────────────────────────────────────
+
+// build_draft_kv_prefill_graph — prefix-direct KV materialisation (SGLang style).
+//
+// Projects n_tokens new context positions through the draft model's Wk / Wv
+// (after FC → ctx_hidden) and writes the resulting K, V tensors into
+// cache.draft_k[il] / cache.draft_v[il] starting at offset cache.draft_kv_pos.
+//
+// The function is side-effect only: it expands ggml_cpy ops into gf and
+// returns nullptr.  The caller must ggml_graph_compute(gf) to materialise
+// the cache entries, then increment cache.draft_kv_pos by n_tokens.
+//
+//   target_feat  [6*target_hidden, n_tokens] f32
+//   positions    [n_tokens]                 i32   (absolute positions for RoPE)
+ggml_tensor * build_draft_kv_prefill_graph(
+    ggml_context *            ctx,
+    ggml_cgraph *             gf,
+    const GemmaDraftWeights & w,
+    GemmaTargetCache &        cache,
+    ggml_tensor *             target_feat,
+    ggml_tensor *             positions,
+    int                       n_tokens)
+{
+    // Guard: writing cache.draft_kv_pos..cache.draft_kv_pos+n_tokens-1 must fit.
+    if (cache.draft_k.empty() ||
+        cache.draft_kv_pos < 0 ||
+        cache.draft_kv_pos + n_tokens > (int)cache.draft_k[0]->ne[2]) {
+        const int tensor_cap = cache.draft_k.empty() ? -1 : (int)cache.draft_k[0]->ne[2];
+        GGML_ABORT("draft KV prefill out of bounds: draft_kv_pos=%d n_tokens=%d cap=%d tensor_cap=%d",
+                   cache.draft_kv_pos, n_tokens, cache.draft_kv_cap, tensor_cap);
+    }
+
+    const int n_kv     = w.n_head_kv;
+    const int head_dim = w.head_dim;
+    const float eps       = GEMMA4_RMS_EPS;
+    const float rope_base = w.rope_theta;
+
+    // ── 1. FC projection: ctx_hidden = fc @ target_feat  →  [n_embd, n_tokens]
+    ggml_tensor * ctx_hidden = ggml_mul_mat(ctx, w.fc, target_feat);
+    // hidden_norm: RMSNorm applied right after the fc projection
+    // (matches qwen3_dflash_graph.cpp:57-59)
+    ctx_hidden = ggml_rms_norm(ctx, ctx_hidden, eps);
+    ctx_hidden = ggml_mul(ctx, ctx_hidden, w.hidden_norm);
+    ggml_set_name(ctx_hidden, "draft_kv_prefill_ctx_hidden");
+
+    // ── 2. Per-layer K / V projection, normalisation, RoPE, cache write
+    for (int il = 0; il < w.n_layer; il++) {
+        const GemmaDraftLayer & L = w.layers[il];
+
+        // K = Wk @ ctx_hidden → [kv_dim, n_tokens] → [head_dim, n_kv, n_tokens]
+        ggml_tensor * Kb = ggml_mul_mat(ctx, L.wk, ctx_hidden);
+        Kb = ggml_reshape_3d(ctx, Kb, head_dim, n_kv, n_tokens);
+        Kb = ggml_rms_norm(ctx, Kb, eps);
+        Kb = ggml_mul(ctx, Kb, L.k_norm);
+        Kb = draft_rope(ctx, Kb, positions, head_dim, rope_base);
+
+        // V = Wv @ ctx_hidden → [kv_dim, n_tokens] → [head_dim, n_kv, n_tokens]
+        ggml_tensor * Vb = ggml_mul_mat(ctx, L.wv, ctx_hidden);
+        Vb = ggml_reshape_3d(ctx, Vb, head_dim, n_kv, n_tokens);
+
+        // Write K into cache.draft_k[il] at offset cache.draft_kv_pos
+        ggml_tensor * k_dst = ggml_view_3d(ctx, cache.draft_k[il],
+            head_dim, n_kv, n_tokens,
+            cache.draft_k[il]->nb[1], cache.draft_k[il]->nb[2],
+            (size_t)cache.draft_kv_pos * cache.draft_k[il]->nb[2]);
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, Kb, k_dst));
+
+        // Write V into cache.draft_v[il] at offset cache.draft_kv_pos
+        ggml_tensor * v_dst = ggml_view_3d(ctx, cache.draft_v[il],
+            head_dim, n_kv, n_tokens,
+            cache.draft_v[il]->nb[1], cache.draft_v[il]->nb[2],
+            (size_t)cache.draft_kv_pos * cache.draft_v[il]->nb[2]);
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, Vb, v_dst));
+    }
+
+    return nullptr;
+}
+
+// build_gemma4_draft_graph — KV-cached draft forward.
+//
+// Attends over the full draft KV cache (context K/V already materialised by
+// build_draft_kv_prefill_graph, plus newly written block K/V) and returns
+// logits for the n_tokens block positions.
+//
+//   draft_embed  [n_embd, n_tokens] f32   (MASK token embeddings)
+//   positions    [n_tokens]         i32   (absolute token positions)
+//   attn_mask    [kv_pad, q_pad]    f16   (causal over context+block)
+//   kv_start     context length before this block (= cache.draft_kv_pos)
+//
+// Returns logits [n_vocab, n_tokens] f32 (softcapped).
+ggml_tensor * build_gemma4_draft_graph(
+    ggml_context *               ctx,
+    ggml_cgraph *                gf,
+    const GemmaDraftWeights &    w,
+    GemmaTargetCache &           cache,
+    ggml_tensor *                draft_embed,
+    ggml_tensor *                positions,
+    ggml_tensor *                attn_mask,
+    int                          n_tokens,
+    int                          kv_start)
+{
+    // Validate KV cache write range before any graph nodes touch it.
+    if (kv_start < 0 || kv_start + n_tokens > cache.draft_kv_cap) {
+        GGML_ABORT("draft KV write out of bounds: kv_start=%d n_tokens=%d cap=%d",
+                   kv_start, n_tokens, cache.draft_kv_cap);
+    }
+
+    const int n_head   = w.n_head;
+    const int n_kv     = w.n_head_kv;
+    const int head_dim = w.head_dim;
+    const float eps       = GEMMA4_RMS_EPS;
+    const float rope_base = w.rope_theta;
+    const int   kv_len    = kv_start + n_tokens;
+
+    // Gemma4 scales embeddings by sqrt(hidden_size) — the draft shares the
+    // target's tok_embd, so it must apply the same scaling.  Reference:
+    // vLLM qwen3_dflash.py embed_normalizer = target_config.hidden_size**0.5
+    ggml_tensor * hidden = ggml_scale(ctx, draft_embed, std::sqrt((float)w.n_embd));
+    ggml_set_name(hidden, "gemma4_draft_scaled_embed");
+
+    // ── 2. Transformer layers ─────────────────────────────────────────
+    for (int il = 0; il < w.n_layer; il++) {
+        const GemmaDraftLayer & L = w.layers[il];
+
+        // ── 2a. Attention pre-norm
+        ggml_tensor * cur = ggml_rms_norm(ctx, hidden, eps);
+        cur = ggml_mul(ctx, cur, L.attn_norm);
+
+        // ── 2b. Q / K / V projections from block hidden state
+        ggml_tensor * Q  = ggml_mul_mat(ctx, L.wq, cur);  // [q_dim,  n_tokens]
+        ggml_tensor * Kb = ggml_mul_mat(ctx, L.wk, cur);  // [kv_dim, n_tokens]
+        ggml_tensor * Vb = ggml_mul_mat(ctx, L.wv, cur);  // [kv_dim, n_tokens]
+
+        // ── 2c. Reshape + per-head RMSNorm for Q and block K
+        Q = ggml_reshape_3d(ctx, Q, head_dim, n_head, n_tokens);
+        Q = ggml_rms_norm(ctx, Q, eps);
+        Q = ggml_mul(ctx, Q, L.q_norm);
+
+        Kb = ggml_reshape_3d(ctx, Kb, head_dim, n_kv, n_tokens);
+        Kb = ggml_rms_norm(ctx, Kb, eps);
+        Kb = ggml_mul(ctx, Kb, L.k_norm);
+
+        Vb = ggml_reshape_3d(ctx, Vb, head_dim, n_kv, n_tokens);
+
+        // ── 2d. RoPE on Q and block K
+        Q  = draft_rope(ctx, Q,  positions, head_dim, rope_base);
+        Kb = draft_rope(ctx, Kb, positions, head_dim, rope_base);
+
+        // ── 2e. Write block K / V into draft KV cache at [kv_start..kv_start+n_tokens)
+        ggml_tensor * k_dst = ggml_view_3d(ctx, cache.draft_k[il],
+            head_dim, n_kv, n_tokens,
+            cache.draft_k[il]->nb[1], cache.draft_k[il]->nb[2],
+            (size_t)kv_start * cache.draft_k[il]->nb[2]);
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, Kb, k_dst));
+
+        ggml_tensor * v_dst = ggml_view_3d(ctx, cache.draft_v[il],
+            head_dim, n_kv, n_tokens,
+            cache.draft_v[il]->nb[1], cache.draft_v[il]->nb[2],
+            (size_t)kv_start * cache.draft_v[il]->nb[2]);
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, Vb, v_dst));
+
+        // ── 2f. Full K / V view (context + block) from draft KV cache
+        // Optional SWA truncation: when enabled and this is an SWA layer
+        // with kv_len exceeding sliding_window, restrict K/V (and the mask)
+        // to the last (sliding_window + n_tokens) slots. Matches the draft
+        // model's training-time SWA pattern.
+        const bool layer_is_swa = (il < (int)w.layer_is_swa.size())
+                                      ? w.layer_is_swa[il] : false;
+        const bool use_swa_trunc = draft_swa_trunc_enabled()
+                                       && layer_is_swa
+                                       && w.sliding_window > 0
+                                       && kv_len > (w.sliding_window + n_tokens);
+        const int eff_kv_len = use_swa_trunc
+                                   ? (w.sliding_window + n_tokens)
+                                   : kv_len;
+        const int kv_offset  = kv_len - eff_kv_len;  // 0 if no truncation
+
+        ggml_tensor * K_full = ggml_view_3d(ctx, cache.draft_k[il],
+            head_dim, n_kv, eff_kv_len,
+            cache.draft_k[il]->nb[1], cache.draft_k[il]->nb[2],
+            (size_t)kv_offset * cache.draft_k[il]->nb[2]);
+        ggml_tensor * V_full = ggml_view_3d(ctx, cache.draft_v[il],
+            head_dim, n_kv, eff_kv_len,
+            cache.draft_v[il]->nb[1], cache.draft_v[il]->nb[2],
+            (size_t)kv_offset * cache.draft_v[il]->nb[2]);
+
+        // ── 2g. Permute into flash_attn_ext layout
+        //   Q:      [head_dim, n_tokens,    n_head,    1]
+        //   K_full: [head_dim, eff_kv_len,  n_head_kv, 1]
+        //   V_full: [head_dim, eff_kv_len,  n_head_kv, 1]
+        Q      = ggml_cont(ctx, ggml_permute(ctx, Q,      0, 2, 1, 3));
+        K_full = ggml_cont(ctx, ggml_permute(ctx, K_full, 0, 2, 1, 3));
+        V_full = ggml_cont(ctx, ggml_permute(ctx, V_full, 0, 2, 1, 3));
+
+        // SWA-truncated mask view: take the last eff_kv_len rows along the
+        // kv axis (axis 0). Mask shape is [kv_pad, q_pad] with kv_pad >= kv_len,
+        // so the slice [kv_offset .. kv_offset+eff_kv_len) gives the same
+        // causal pattern for the surviving K positions.
+        ggml_tensor * eff_mask = attn_mask;
+        if (use_swa_trunc && kv_offset > 0) {
+            // ggml_view_2d would produce a non-contiguous tensor (row stride is
+            // unchanged at kv_pad * elt). FA requires contiguous mask, so we
+            // copy the slice into a fresh tensor.
+            ggml_tensor * mask_view = ggml_view_2d(ctx, attn_mask,
+                eff_kv_len, attn_mask->ne[1],
+                attn_mask->nb[1],
+                (size_t)kv_offset * ggml_element_size(attn_mask));
+            eff_mask = ggml_cont(ctx, mask_view);
+        }
+
+        // ── 2h. Flash attention over full context+block KV
+        //   scale = 1 / sqrt(head_dim); no logit softcap at attention level
+        const float scale = 1.0f / std::sqrt((float)head_dim);
+        ggml_tensor * attn = ggml_flash_attn_ext(ctx, Q, K_full, V_full, eff_mask,
+                                                  scale, /*max_bias=*/0.0f,
+                                                  /*logit_softcap=*/0.0f);
+        // attn: [head_dim, n_head, n_tokens, 1]
+        attn = ggml_reshape_2d(ctx, attn, head_dim * n_head, n_tokens);
+
+        // ── 2i. Output projection + residual
+        ggml_tensor * attn_out = ggml_mul_mat(ctx, L.wo, attn);
+        hidden = ggml_add(ctx, hidden, attn_out);
+
+        // ── 2j. FFN pre-norm
+        ggml_tensor * hf = ggml_rms_norm(ctx, hidden, eps);
+        hf = ggml_mul(ctx, hf, L.ffn_norm);
+
+        // ── 2k. SwiGLU FFN: down(silu(gate(x)) * up(x))
+        ggml_tensor * g  = ggml_mul_mat(ctx, L.w_gate, hf);
+        g = ggml_silu(ctx, g);
+        ggml_tensor * u  = ggml_mul_mat(ctx, L.w_up, hf);
+        ggml_tensor * gu = ggml_mul(ctx, g, u);
+        ggml_tensor * ffn_out = ggml_mul_mat(ctx, L.w_down, gu);
+
+        hidden = ggml_add(ctx, hidden, ffn_out);
+    }
+
+    // ── 3. Final output norm
+    ggml_tensor * out = ggml_rms_norm(ctx, hidden, eps);
+    out = ggml_mul(ctx, out, w.out_norm);
+    ggml_set_name(out, "gemma4_draft_hidden_out");
+
+    // ── 4. LM head (tied: transpose of tok_embd)
+    //   tok_embd: [draft_hidden, n_vocab]  ggml ne[0]=draft_hidden, ne[1]=n_vocab
+    //   out:      [draft_hidden, n_tokens]
+    //   logits:   [n_vocab, n_tokens]
+    ggml_tensor * logits = ggml_mul_mat(ctx, w.tok_embd, out);
+    ggml_set_name(logits, "gemma4_draft_logits_pre_cap");
+
+    // ── 5. Logit softcapping: logits = cap * tanh(logits / cap)
+    const float cap = w.logit_softcap;
+    logits = ggml_scale(ctx, logits, 1.0f / cap);
+    logits = ggml_tanh(ctx, logits);
+    logits = ggml_scale(ctx, logits, cap);
+    ggml_set_name(logits, "gemma4_draft_logits");
+
+    return logits;
+}
 
 // ─── Safetensors loader ───────────────────────────────────────────────────
 
