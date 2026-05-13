@@ -684,6 +684,59 @@ SwaView compute_swa_view(int kv_start,
                          int swa_window,
                          int swa_ctx_alloc /* ring size */);
 
+// ─── Gemma4 Draft weights ────────────────────────────────────────────────────
+struct GemmaDraftLayer {
+    ggml_tensor * attn_norm = nullptr;
+    ggml_tensor * ffn_norm  = nullptr;
+    ggml_tensor * wq        = nullptr;
+    ggml_tensor * wk        = nullptr;
+    ggml_tensor * wv        = nullptr;
+    ggml_tensor * wo        = nullptr;
+    ggml_tensor * q_norm    = nullptr;
+    ggml_tensor * k_norm    = nullptr;
+    ggml_tensor * w_gate    = nullptr;
+    ggml_tensor * w_up      = nullptr;
+    ggml_tensor * w_down    = nullptr;
+};
+
+struct GemmaDraftWeights {
+    ggml_context        * ctx     = nullptr;
+    ggml_backend_t        backend = nullptr;
+    ggml_backend_buffer_t buf     = nullptr;
+
+    ggml_tensor * fc          = nullptr;   // [6*target_hidden, draft_hidden]
+    ggml_tensor * hidden_norm = nullptr;
+    ggml_tensor * out_norm    = nullptr;
+    ggml_tensor * tok_embd    = nullptr;   // [draft_hidden, n_vocab] — tied lm_head
+
+    std::vector<GemmaDraftLayer> layers;
+    std::vector<bool>            layer_is_swa;
+
+    int n_layer          = GEMMA4_DRAFT_LAYERS;          // 5
+    int n_head           = 0;
+    int n_head_kv        = 0;
+    int head_dim         = 128;
+    int n_embd           = 0;
+    int n_ff             = 0;
+    int n_vocab          = GEMMA4_31B_VOCAB;             // 262144
+    int block_size       = GEMMA4_DRAFT_BLOCK_SIZE;      // 16
+    int n_target_layers  = GEMMA4_DRAFT_N_TARGET_LAYERS; // 6
+    int target_hidden    = 0;
+    float logit_softcap  = GEMMA4_LOGIT_SOFTCAP;         // 30.0
+    float rope_theta     = GEMMA4_ROPE_THETA;            // 1e6
+    int mask_token_id    = GEMMA4_31B_DRAFT_MASK_TOKEN_ID;
+    int sliding_window   = 2048;
+};
+
+// Gemma4 draft loading
+bool load_gemma4_draft_safetensors(const std::string & dir_path,
+                                   ggml_backend_t backend,
+                                   GemmaDraftWeights & out);
+bool load_gemma4_draft_gguf(const std::string & path,
+                            ggml_backend_t backend,
+                            GemmaDraftWeights & out);
+void free_gemma4_draft_weights(GemmaDraftWeights & w);
+
 } // namespace dflash27b
 
 #if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP)
