@@ -1160,9 +1160,11 @@ GemmaGraphOutputs build_gemma4_graph(
                 ggml_row_size(out->type, n_embd_hp),
                 ggml_row_size(out->type, n_embd_hp) * capture_row);
         }
-        if (h_prev_src->type != GGML_TYPE_F32) {
-            h_prev_src = ggml_cast(ctx, h_prev_src, GGML_TYPE_F32);
-        }
+        // `out` is the result of rms_norm_mul on a F32 residual stream;
+        // Gemma4's full-attention stack stays in F32 end-to-end. Assert the
+        // invariant; the previous ggml_cast(...) branch was dead code that
+        // forced a kernel for a path that has never fired.
+        GGML_ASSERT(h_prev_src->type == GGML_TYPE_F32);
         h_prev_src = ggml_reshape_2d(ctx, h_prev_src, n_embd_hp, 1);
         ggml_build_forward_expand(gf, ggml_cpy(ctx, h_prev_src, cache.mtp_h_prev));
     }
