@@ -177,11 +177,6 @@ static size_t align_up(size_t x, size_t a) {
 // read-only mmap view of tok_embd for the input embedding path, so placing
 // it on GPU as well is safe and necessary for correct LM head logits.
 
-static bool is_gemma4_gpu_tensor(const char * name) {
-    (void)name;
-    return true;
-}
-
 } // namespace
 
 // ─── load_gemma4_target_gguf ─────────────────────────────────────────────────
@@ -595,7 +590,9 @@ bool load_gemma4_target_gguf(const std::string & path,
     const int64_t n_tensors = gguf_get_n_tensors(gctx);
     for (int64_t tid = 0; tid < n_tensors; tid++) {
         const char * tname = gguf_get_tensor_name(gctx, tid);
-        if (!is_gemma4_gpu_tensor(tname)) continue;
+        // (Previously gated by is_gemma4_gpu_tensor(tname), which returned
+        // true unconditionally. All Gemma4 tensors are GPU-resident; if a
+        // future split surfaces, reinstate the filter and document why.)
         ggml_tensor * t = ggml_get_tensor(meta_ctx, tname);
         if (!t) continue;
         total_gpu = align_up(total_gpu, alignment);
