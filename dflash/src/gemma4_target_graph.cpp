@@ -1112,6 +1112,20 @@ GemmaGraphOutputs build_gemma4_graph(
     // fed to lm_head — so the MTP draft head sees the same representation as
     // the target's token prediction. Capturing inside the layer loop (pre-norm)
     // caused accept_rate=0 because the draft head was trained on post-norm hiddens.
+    //
+    // Capture-mode 1 (the batch write below) is reserved for the γ>1 MTP driver
+    // and is NOT exercised today — no caller in this branch sets
+    // cache.mtp_h_prev_capture_mode = 1 (γ=1 is hardcoded in
+    // gemma4_backend.cpp::Gemma4Backend::init via enable_mtp_h_prev(...,
+    // args_.mtp_gamma) with mtp_gamma defaulting to 1). Keep the wiring in
+    // place so the γ>1 follow-up only needs to flip the mode + write a chain
+    // driver; do not delete it. The condition below also guards against an
+    // accidental future caller flipping the mode without finishing the chain
+    // driver, in which case the batch write is harmless (consumed later by
+    // the γ>1 driver) but slow.
+    //
+    // See dflash/docs/gemma4-pr-split/pr13-slop-audit.md (Finding S7) and
+    // the γ=2 scoping memo at the time of writing.
     if (cache.mtp_h_prev_enabled && cache.mtp_h_prev_capture_mode == 1
             && cache.mtp_h_prev_batch && n_tokens > 1) {
         // Approach B: write all n_tokens rows of post-final-norm hidden into
