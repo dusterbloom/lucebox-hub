@@ -966,6 +966,20 @@ bool Gemma4Backend::decode_mtp(int n_gen,
         return false;
     }
 
+    // ── Persistent MTP gallocr ───────────────────────────────────────────────
+    // The MTP graph topology is identical step-to-step — only attn_pos and
+    // KV view length change. ggml_gallocr supports replanning a fresh graph
+    // against the same allocator via ggml_gallocr_alloc_graph; reuse it
+    // across the loop instead of new/free per token. Frees once at function
+    // exit. See dflash/docs/gemma4-pr-split/pr13-slop-audit.md (Finding S3).
+    ggml_gallocr_t mtp_alloc = ggml_gallocr_new(
+        ggml_backend_get_default_buffer_type(backend_));
+    if (!mtp_alloc) {
+        std::fprintf(stderr, "[gemma4] mtp gallocr_new failed\n");
+        free_mtp_step_graph(mtp_g);
+        return false;
+    }
+
     int committed = cache_.cur_pos;
 
     auto t0 = std::chrono::steady_clock::now();
@@ -1045,10 +1059,9 @@ bool Gemma4Backend::decode_mtp(int n_gen,
             return false;
         }
 
-        // Allocate MTP graph (build_mtp_step_graph creates the ggml context
-        // but not the backend buffers).
-        ggml_gallocr_t mtp_alloc = ggml_gallocr_new(
-            ggml_backend_get_default_buffer_type(backend_));
+        // Replan the persistent gallocr against the freshly-rebuilt MTP
+        // graph. ggml_gallocr_alloc_graph reuses the same backend buffer
+        // when the topology fits, or grows it as needed.
         if (!ggml_gallocr_alloc_graph(mtp_alloc, mtp_g.gf)) {
             std::fprintf(stderr, "[gemma4] mtp gallocr_alloc_graph failed\n");
             ggml_gallocr_free(mtp_alloc);
@@ -1100,8 +1113,6 @@ bool Gemma4Backend::decode_mtp(int n_gen,
         int32_t draft_tok = -1;
         ggml_backend_tensor_get(mtp_g.out_argmax, &draft_tok, 0, sizeof(int32_t));
 
-        ggml_gallocr_free(mtp_alloc);
-
         // Emit the current token (already committed by target step above).
         out_tokens.push_back(cur_tok);
         history.push_back(cur_tok);
@@ -1129,6 +1140,7 @@ bool Gemma4Backend::decode_mtp(int n_gen,
     auto t1 = std::chrono::steady_clock::now();
     out_decode_s = std::chrono::duration<double>(t1 - t0).count();
 
+    ggml_gallocr_free(mtp_alloc);
     free_mtp_step_graph(mtp_g);
 
     if (req.stream) {
