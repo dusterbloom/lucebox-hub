@@ -239,6 +239,7 @@ add_library(dflash27b STATIC
     src/common/layer_split_utils.cpp
     src/common/ddtree.cpp
     src/common/peer_access.cpp
+    src/common/mtp_chain_runner.cpp
 )
 # BSA (Block-Sparse Attention) backs the speculative-prefill drafter scoring
 # path. Default ON so prefill is fast out of the box. Turn OFF if you don't
@@ -487,6 +488,16 @@ if(DFLASH27B_TESTS)
         add_executable(test_kv_quant test/test_kv_quant.cpp)
         target_include_directories(test_kv_quant PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
         target_link_libraries(test_kv_quant PRIVATE dflash27b)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_mtp_interface_contract.cpp")
+        add_executable(test_mtp_interface_contract test/test_mtp_interface_contract.cpp)
+        target_include_directories(test_mtp_interface_contract PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_mtp_interface_contract PRIVATE dflash27b)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_mtp_chain_runner.cpp")
+        add_executable(test_mtp_chain_runner test/test_mtp_chain_runner.cpp)
+        target_include_directories(test_mtp_chain_runner PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_mtp_chain_runner PRIVATE dflash27b)
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_draft_vs_reference.cpp")
         add_executable(test_draft_vs_reference test/test_draft_vs_reference.cpp)
