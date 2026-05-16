@@ -41,7 +41,8 @@ bool Qwen35DFlashTarget::verify_batch(
                            /*capture_delta_intermediate=*/false,
                            fa_window_,
                            /*last_token_logits_only=*/false,
-                           kq_stride_pad_)) {
+                           kq_stride_pad_,
+                           /*capture_all_norm_hidden=*/capture_hidden_seq_)) {
         std::fprintf(stderr, "[Qwen35DFlashTarget] build_target_step failed: base_pos=%d n_tokens=%d\n",
                      base_pos, n_tokens);
         return false;

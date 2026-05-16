@@ -495,6 +495,7 @@ struct QwenGraphInputs {
     bool          capture_delta_intermediate = false; // if true, populate out_delta_captures
     int           fa_window = 0;  // sliding window for FA layers: 0 = full attention
     bool          last_token_logits_only = false; // if true, only compute logits for last token (prefill optimization)
+    bool          capture_all_norm_hidden = false; // if true, expose full [n_embd, n_tokens] post-norm hidden as a graph output (MTP warmup needs this; non-MTP callers should leave false to avoid pinning ~7.5MB at ubatch=384)
     ggml_tensor * parent_ids = nullptr; // [n_tokens] i32; tree mode when non-null
 };
 

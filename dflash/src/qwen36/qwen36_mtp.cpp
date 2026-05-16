@@ -30,6 +30,7 @@
 
 #include "common/dflash_target.h"
 #include "common/gguf_mmap.h"
+#include "qwen35/qwen35_dflash_target.h"
 
 #include "ggml.h"
 #include "ggml-alloc.h"
@@ -493,18 +494,17 @@ bool Qwen36MtpModule::init(const std::string & gguf_path,
 
         if (n_head_kv > 0 && key_len > 0 && val_len > 0 && gamma_max > 0) {
             state_->head_kv.resize(gamma_max);
-            // CPU mirror (always allocated; warmup uses it as a staging
-            // buffer for the GPU path, and the CPU forward fallback reads it
-            // directly).
-            for (int h = 0; h < gamma_max; h++) {
-                state_->head_kv[h].k.assign(
-                    (size_t)n_ctx * n_head_kv * key_len, 0.0f);
-                state_->head_kv[h].v.assign(
-                    (size_t)n_ctx * n_head_kv * val_len, 0.0f);
-            }
-
-            // GPU-side tensors when a backend is available.
-            if (tgt_backend) {
+            // The CPU forward path (T1 stub tests, no backend) reads/writes
+            // the host vectors; the GPU path reads/writes the backend tensors.
+            // Allocate only the side we will actually use.
+            if (!tgt_backend) {
+                for (int h = 0; h < gamma_max; h++) {
+                    state_->head_kv[h].k.assign(
+                        (size_t)n_ctx * n_head_kv * key_len, 0.0f);
+                    state_->head_kv[h].v.assign(
+                        (size_t)n_ctx * n_head_kv * val_len, 0.0f);
+                }
+            } else {
                 const int rb_tensors = 2 * gamma_max;
                 ggml_init_params kp{};
                 kp.mem_size   = (size_t)(rb_tensors + 16) * ggml_tensor_overhead();
@@ -537,20 +537,7 @@ bool Qwen36MtpModule::init(const std::string & gguf_path,
                     out_error = "qwen36_mtp: ggml_backend_alloc_ctx_tensors for head_kv failed";
                     return false;
                 }
-                // Zero-initialize the GPU KV buffers.
-                std::vector<uint8_t> zeros(1 * 1024 * 1024, 0);
-                for (int h = 0; h < gamma_max; h++) {
-                    for (ggml_tensor * t : {state_->head_kv[h].k_cache,
-                                             state_->head_kv[h].v_cache}) {
-                        const size_t nb = ggml_nbytes(t);
-                        size_t off = 0;
-                        while (off < nb) {
-                            const size_t chunk = std::min(nb - off, zeros.size());
-                            ggml_backend_tensor_set(t, zeros.data(), off, chunk);
-                            off += chunk;
-                        }
-                    }
-                }
+                ggml_backend_buffer_clear(state_->kv_buf, 0);
             }
         }
     }
@@ -578,6 +565,12 @@ bool Qwen36MtpModule::attach(DFlashTarget * target) {
     }
     state_->target   = target;
     state_->attached = true;
+    // The MTP forward needs per-position post-norm hiddens for warmup +
+    // chain-iter h_prev lookup; signal that to the target so it captures
+    // them.  Non-MTP-bound targets pay nothing.
+    if (auto * t = dynamic_cast<Qwen35DFlashTarget *>(target)) {
+        t->enable_hidden_seq_capture(true);
+    }
     return true;
 }
 
@@ -1285,31 +1278,6 @@ bool Qwen36MtpModule::warm_head_kv(const int32_t * prompt_tokens,
                     sizeof(float) * (size_t)n_head_kv * key_len);
         std::memcpy(kv.v.data() + v_slot_off, v_buf.data(),
                     sizeof(float) * (size_t)n_head_kv * val_len);
-
-        // Also upload to GPU head_kv tensor if present.  Layout there is
-        // [head_dim, n_ctx, n_head_kv] (matching backbone cache), so each
-        // kv-head's row at slot p starts at byte offset
-        //   (kvh * n_ctx + p) * head_dim * sizeof(float).
-        if (kv.k_cache) {
-            for (int kvh = 0; kvh < n_head_kv; kvh++) {
-                const size_t k_dst_off =
-                    ((size_t)kvh * state_->n_ctx + p) * key_len * sizeof(float);
-                ggml_backend_tensor_set(kv.k_cache,
-                    k_buf.data() + (size_t)kvh * key_len,
-                    k_dst_off,
-                    sizeof(float) * key_len);
-            }
-        }
-        if (kv.v_cache) {
-            for (int kvh = 0; kvh < n_head_kv; kvh++) {
-                const size_t v_dst_off =
-                    ((size_t)kvh * state_->n_ctx + p) * val_len * sizeof(float);
-                ggml_backend_tensor_set(kv.v_cache,
-                    v_buf.data() + (size_t)kvh * val_len,
-                    v_dst_off,
-                    sizeof(float) * val_len);
-            }
-        }
     }
     return true;
 }

@@ -32,6 +32,12 @@ public:
 
     ggml_backend_t backend() const override { return backend_; }
 
+    // Enable per-position post-norm hidden capture during verify_batch.
+    // Off by default; MTP modules that depend on hidden_at_pos() flip it on
+    // in attach().  Non-MTP paths (target_gen, DFlash drafter spec-decode)
+    // leave it off and avoid pinning the full [n_embd, n_tokens] tensor.
+    void enable_hidden_seq_capture(bool on) { capture_hidden_seq_ = on; }
+
     // ── DFlashTarget interface ──────────────────────────────────────
 
     bool verify_batch(const std::vector<int32_t> & tokens,
@@ -105,6 +111,10 @@ private:
     // Used by hidden_at_pos to translate an absolute sequence position to an
     // index inside the captured chunk.  -1 means no captured chunk yet.
     mutable int                last_verify_chunk_start_ = -1;
+
+    // Whether verify_batch should request the full post-norm hidden sequence
+    // and copy it to the host.  Toggled by enable_hidden_seq_capture().
+    bool                       capture_hidden_seq_ = false;
 };
 
 }  // namespace dflash27b

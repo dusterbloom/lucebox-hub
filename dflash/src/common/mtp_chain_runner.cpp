@@ -180,20 +180,30 @@ GenerateResult MtpChainRunner::run(const GenerateRequest & req,
         // accepted everything (accept_n == g_actual), the KV is correct.
         // If we rejected the tail, restore to snapshot and re-verify the
         // actually-committed prefix.
-        if (accept_n < g_actual) {
+        // Whether the recommit path ran on this iter — drives the
+        // base_pos / cur_tok bookkeeping below.  The recommit's verify_batch
+        // writes K/V + advances SSM for cur_tok + accepted + bonus, leaving
+        // the bonus at the LAST position the cache was written to.  Naive
+        // base_pos += accept_n + 1 would put next iter's cur_tok = bonus AT
+        // the bonus position again — the next verify_batch re-processes that
+        // token, double-incrementing the SSM state and corrupting it after a
+        // few iters on long prompts.  Fix: capture argmax from the recommit
+        // and advance one extra slot so cur_tok_next is a new position.
+        bool recommitted = (accept_n < g_actual);
+        std::vector<int32_t> rc_argmax;
+        if (recommitted) {
             if (!target_.restore_kv()) {
                 result.ok = false;
                 result.error = "restore_kv";
                 return result;
             }
             std::vector<int32_t> commit_seq;
-            commit_seq.reserve(total_this_iter);
+            commit_seq.reserve((size_t)accept_n + 2);
             commit_seq.push_back(cur_tok);
             for (int i = 0; i < accept_n; i++) commit_seq.push_back(drafts[i]);
-            // bonus token comes from target's argmax at the divergence point
             commit_seq.push_back(all_argmax[accept_n]);
             int discard = -1;
-            if (!target_.verify_batch(commit_seq, base_pos, discard, nullptr)) {
+            if (!target_.verify_batch(commit_seq, base_pos, discard, &rc_argmax)) {
                 result.ok = false;
                 result.error = "recommit";
                 return result;
@@ -225,7 +235,21 @@ GenerateResult MtpChainRunner::run(const GenerateRequest & req,
             cur_tok = result.tokens.empty() ? cur_tok : result.tokens.back();
         }
 
-        base_pos += total_this_iter;
+        // base_pos advance:
+        //   accept-all: verify_batch wrote g+1 KV slots, base_pos += g+1.
+        //   recommit:   recommit wrote accept_n+2 KV slots (cur_tok + accepted
+        //               + bonus). Advance by accept_n+2 so next iter's
+        //               base_pos points to a NEW position, not the bonus slot.
+        //               cur_tok_next is the argmax at the bonus position from
+        //               the recommit (a fresh prediction, not yet in cache).
+        if (recommitted) {
+            base_pos += accept_n + 2;
+            if (!hit_eos && !rc_argmax.empty()) {
+                cur_tok = rc_argmax.back();
+            }
+        } else {
+            base_pos += total_this_iter;
+        }
 
         stats_.total_iters    += 1;
         stats_.total_accepted += accept_n;

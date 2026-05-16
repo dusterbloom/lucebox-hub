@@ -1158,15 +1158,17 @@ QwenGraphOutputs build_qwen35_graph(
     ggml_set_output(last_norm_hidden);
     ggml_build_forward_expand(gf, last_norm_hidden);
 
-    // 2b. Also expose the FULL sequence post-norm hidden [n_embd, n_tokens] f32.
-    //     warm_head_kv() reads this to write per-position K/V entries for all
-    //     prefill positions without re-running the backbone.  Save a stable
-    //     pointer before `out` may be overwritten by the last_token_logits_only
-    //     view below.
-    ggml_tensor * all_norm_hidden = out;
-    ggml_set_name(all_norm_hidden, "all_norm_hidden");
-    ggml_set_output(all_norm_hidden);
-    ggml_build_forward_expand(gf, all_norm_hidden);
+    // Optionally expose the full [n_embd, n_tokens] post-norm hidden sequence
+    // (used by Qwen3.6 MTP warm_head_kv).  Default off: keeping this output
+    // pinned across compute would otherwise reserve ~7.5MB at ubatch=384 for
+    // the non-MTP target_gen path that throws the sequence away.
+    ggml_tensor * all_norm_hidden = nullptr;
+    if (in.capture_all_norm_hidden) {
+        all_norm_hidden = out;
+        ggml_set_name(all_norm_hidden, "all_norm_hidden");
+        ggml_set_output(all_norm_hidden);
+        ggml_build_forward_expand(gf, all_norm_hidden);
+    }
 
     // 3. LM head — optionally only for the last token (prefill optimization:
     //    reduces logits from [vocab, n_tokens] to [vocab, 1], saving ~233MB
