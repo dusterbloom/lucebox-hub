@@ -35,6 +35,12 @@ struct StepGraph {
     ggml_tensor *   hidden_states = nullptr;       // draft hidden-only output
     ggml_tensor *   argmax_tokens = nullptr; // [n_tokens] i32, GPU-side argmax of logits
     ggml_tensor *   topk_indices = nullptr;  // [K, n_tokens] i32, GPU-side top-K indices
+    // Post-norm hidden for last token [n_embd] f32.  Used by MTP module to
+    // seed h_prev_0.  Populated by build_target_step; null otherwise.
+    ggml_tensor *   last_norm_hidden = nullptr;
+    // Full post-norm hidden sequence [n_embd, n_tokens] f32.  Used by
+    // warm_head_kv() to read per-position hiddens during prefill.
+    ggml_tensor *   all_norm_hidden = nullptr;
 
     // Per-delta-net-layer captures (verify only).
     std::vector<DeltaNetCapture> delta_captures;
@@ -53,6 +59,8 @@ inline void step_graph_free(StepGraph & sg) {
     sg.hidden_states = nullptr;
     sg.argmax_tokens = nullptr;
     sg.topk_indices = nullptr;
+    sg.last_norm_hidden = nullptr;
+    sg.all_norm_hidden = nullptr;
     sg.delta_captures.clear();
 }
 

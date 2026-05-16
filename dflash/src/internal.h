@@ -500,6 +500,15 @@ struct QwenGraphInputs {
 
 struct QwenGraphOutputs {
     ggml_tensor * logits;      // [vocab, n_tokens] f32
+    // Post-norm hidden for the last committed token, shape [n_embd], f32.
+    // This is the output of out_norm before the LM-head projection.  Set as
+    // ggml_set_output so it remains valid after graph_compute.  Used by the
+    // Qwen3.6 MTP module to seed h_prev_0 for the first NextN head.
+    ggml_tensor * last_norm_hidden = nullptr;   // [n_embd] f32
+    // Full post-norm hidden sequence, shape [n_embd, n_tokens] f32.
+    // Same tensor as last_norm_hidden's parent; set as ggml_set_output so
+    // the MTP warm_head_kv() can read per-position hiddens during prefill.
+    ggml_tensor * all_norm_hidden = nullptr;    // [n_embd, n_tokens] f32
     // One entry per delta-net layer (48 for qwen35-27b). Only populated when
     // QwenGraphInputs::capture_delta_intermediate is true. Tensors are graph
     // views marked as ggml_set_output() so their data persists after

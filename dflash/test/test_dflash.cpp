@@ -27,10 +27,13 @@
                             // dflash27b::run_laguna_daemon() instead of the
                             // qwen35 + DFlash + DDTree pipeline below.
 #include "qwen35_daemon.h"  // arch dispatch - single-GPU qwen35 daemon mode
+#include "qwen35_backend.h" // Qwen3.6 MTP bench path reuses qwen35 backbone
 #include "qwen35_layer_split.h" // multi-GPU layer-split daemon args
 #include "layer_split_daemon_loop.h" // extracted layer-split daemon loop
 #include "qwen3_daemon.h"   // arch dispatch - qwen3 (0.6B standalone)
 #include "gemma4_daemon.h"  // arch dispatch - gemma4 (iSWA + MoE)
+#include "qwen36/qwen36_mtp.h"
+#include "common/mtp_chain_runner.h"
 #include "sampler.h"        // shared CPU sampler chain (SamplerCfg /
                             // sample_logits / parse_sampler_token) used by
                             // both arches; behaviour stays identical.
@@ -647,6 +650,201 @@ static int run_target_layer_split_harness(
     return 0;
 }
 
+static int run_qwen36_mtp_harness(const char * target_path,
+                                  const char * mtp_gguf_path,
+                                  const char * prompt_path,
+                                  int n_gen,
+                                  const char * out_path,
+                                  int gamma,
+                                  int prompt_id,
+                                  int target_gpu,
+                                  int max_ctx) {
+    if (!target_path || !mtp_gguf_path || !prompt_path) {
+        std::fprintf(stderr, "qwen36-mtp requires target, --mtp-gguf, and --prompt-bin\n");
+        return 2;
+    }
+    if (n_gen <= 0) {
+        std::fprintf(stderr, "qwen36-mtp requires --n-gen > 0\n");
+        return 2;
+    }
+    if (gamma < 0) {
+        std::fprintf(stderr, "qwen36-mtp requires --gamma >= 0\n");
+        return 2;
+    }
+
+    std::vector<int32_t> prompt = read_int32_file(prompt_path);
+    if (prompt.empty()) {
+        std::fprintf(stderr, "qwen36-mtp empty prompt: %s\n", prompt_path);
+        return 1;
+    }
+    if ((int)prompt.size() + n_gen + std::max(1, gamma) + 1 > max_ctx) {
+        std::fprintf(stderr,
+            "qwen36-mtp prompt (%zu) + n_gen (%d) exceeds max_ctx (%d)\n",
+            prompt.size(), n_gen, max_ctx);
+        return 1;
+    }
+
+    Qwen35Config cfg;
+    cfg.target_path       = target_path;
+    cfg.draft_path        = nullptr;
+    cfg.device.gpu        = target_gpu;
+    cfg.device.max_ctx    = max_ctx;
+    cfg.draft_gpu         = target_gpu;
+    cfg.fa_window         = g_fa_window;
+    cfg.kq_stride_pad     = g_kq_stride_pad;
+    cfg.draft_ctx_max     = 0;
+
+    Qwen35Backend backend(cfg);
+    if (!backend.init()) {
+        std::fprintf(stderr, "qwen36-mtp backend init failed\n");
+        return 1;
+    }
+    if (!backend.ensure_decode_cache(std::max(DFLASH27B_DRAFT_BLOCK_SIZE, gamma + 1))) {
+        std::fprintf(stderr, "qwen36-mtp decode cache: %s\n", dflash27b_last_error());
+        return 1;
+    }
+
+    DFlashTarget * target = backend.dflash_target();
+    if (!target) {
+        std::fprintf(stderr, "qwen36-mtp target adapter unavailable\n");
+        return 1;
+    }
+
+    std::unique_ptr<mtp::Qwen36MtpModule> mtp_module;
+    if (gamma > 0) {
+        mtp_module = std::make_unique<mtp::Qwen36MtpModule>();
+        std::string err;
+        if (!mtp_module->init(mtp_gguf_path, backend.tensor_context(), target, err)) {
+            std::fprintf(stderr, "qwen36-mtp init failed: %s\n", err.c_str());
+            return 1;
+        }
+        if (!mtp_module->attach(target)) {
+            std::fprintf(stderr, "qwen36-mtp attach(target) failed\n");
+            return 1;
+        }
+        // Shape B (PR 2e-final): the MTP module reads the backbone's final
+        // post-norm hidden via DFlashTarget::last_hidden() which is populated
+        // by Qwen35DFlashTarget after every verify_batch call.  No backbone
+        // block attachment needed; set_initial_hidden() is called once after
+        // prefill (below) and the module auto-pulls target->last_hidden() for
+        // subsequent chain runner iterations.
+    }
+
+    auto t_prefill0 = std::chrono::steady_clock::now();
+    int32_t prefill_next = -1;
+    const int prefill_ubatch = 512;
+    // Accumulate the backbone's post-norm hidden for every prefill position so
+    // we can warm the MTP head's KV cache after prefill completes.
+    std::vector<float> all_prefill_hidden;
+    if (mtp_module) {
+        all_prefill_hidden.resize((size_t)prompt.size() * target->hidden_size());
+    }
+    for (int start = 0; start < (int)prompt.size(); start += prefill_ubatch) {
+        const int n = std::min(prefill_ubatch, (int)prompt.size() - start);
+        std::vector<int32_t> chunk(prompt.begin() + start,
+                                   prompt.begin() + start + n);
+        if (!target->verify_batch(chunk, start, prefill_next, nullptr)) {
+            std::fprintf(stderr, "qwen36-mtp prefill failed at %d\n", start);
+            return 1;
+        }
+        if (mtp_module) {
+            int n_chunk = 0;
+            const float * h_seq = target->last_hidden_seq(&n_chunk);
+            if (h_seq && n_chunk == n) {
+                std::memcpy(all_prefill_hidden.data() +
+                                (size_t)start * target->hidden_size(),
+                            h_seq,
+                            sizeof(float) * (size_t)n * target->hidden_size());
+            } else {
+                std::fprintf(stderr,
+                    "qwen36-mtp prefill chunk hidden seq missing: "
+                    "expected %d tokens, got %d\n", n, n_chunk);
+            }
+        }
+    }
+
+    // Seed the MTP module with the backbone's final hidden after prefill, and
+    // warm the head's KV cache over all prefill positions.
+    if (mtp_module && target->last_hidden()) {
+        mtp_module->set_initial_hidden(target->last_hidden(), target->hidden_size());
+    }
+    if (mtp_module && !all_prefill_hidden.empty() && prefill_next >= 0) {
+        if (!mtp_module->warm_head_kv(prompt.data(), (int)prompt.size(),
+                                       prefill_next, all_prefill_hidden.data())) {
+            std::fprintf(stderr, "qwen36-mtp warm_head_kv failed\n");
+            return 1;
+        }
+    }
+    auto t_prefill1 = std::chrono::steady_clock::now();
+    const double prefill_s = std::chrono::duration<double>(t_prefill1 - t_prefill0).count();
+    if (prefill_next < 0) {
+        std::fprintf(stderr, "qwen36-mtp prefill produced invalid token\n");
+        return 1;
+    }
+
+    DaemonIO io;
+    io.stream_fd = -1;
+    std::vector<int32_t> generated;
+    generated.reserve(n_gen);
+
+    auto t_decode0 = std::chrono::steady_clock::now();
+    generated.push_back(prefill_next);
+
+    int accepted = 0;
+    int proposed = 0;
+    if (!target->is_eos(prefill_next) && n_gen > 1) {
+        if (gamma == 0) {
+            int32_t cur = prefill_next;
+            int base_pos = (int)prompt.size();
+            while ((int)generated.size() < n_gen) {
+                int32_t next = -1;
+                std::vector<int32_t> one{cur};
+                if (!target->verify_batch(one, base_pos, next, nullptr)) {
+                    std::fprintf(stderr, "qwen36-mtp AR decode failed at pos %d\n", base_pos);
+                    return 1;
+                }
+                generated.push_back(next);
+                cur = next;
+                base_pos++;
+                if (target->is_eos(next)) break;
+            }
+        } else {
+            mtp_module->reset_chain();
+            GenerateRequest req;
+            req.n_gen = n_gen - 1;
+            req.stream = false;
+            req.do_sample = false;
+            mtp::MtpChainRunner runner(*mtp_module, *target, SamplerCfg{});
+            GenerateResult res = runner.run(req, io,
+                                            prefill_next,
+                                            (int)prompt.size(),
+                                            gamma);
+            if (!res.ok) {
+                std::fprintf(stderr, "qwen36-mtp runner failed: %s\n", res.error.c_str());
+                return 1;
+            }
+            generated.insert(generated.end(), res.tokens.begin(), res.tokens.end());
+            accepted = runner.stats().total_accepted;
+            proposed = runner.stats().total_proposed;
+        }
+    }
+    auto t_decode1 = std::chrono::steady_clock::now();
+    const double decode_s = std::chrono::duration<double>(t_decode1 - t_decode0).count();
+    const double tok_s = decode_s > 0.0 ? (double)generated.size() / decode_s : 0.0;
+
+    if (out_path && *out_path) {
+        std::vector<int32_t> all = prompt;
+        all.insert(all.end(), generated.begin(), generated.end());
+        write_int32_file(out_path, all);
+    }
+
+    std::printf("RESULT tok_s=%.2f prompt=%d gamma=%d tokens=%zu decode_s=%.6f prefill_s=%.6f accepted=%d proposed=%d\n",
+                tok_s, prompt_id, gamma, generated.size(), decode_s, prefill_s,
+                accepted, proposed);
+    std::fflush(stdout);
+    return 0;
+}
+
 // ─── Main ─────────────────────────────────────────────────────────
 
 int main(int argc, char ** argv) {
@@ -756,6 +954,12 @@ int main(int argc, char ** argv) {
     bool  draft_feature_mirror = false;
     bool  target_split_load_draft = false;
     bool  target_split_dflash = false;
+    const char * mtp_gguf_path = nullptr;
+    const char * mtp_prompt_path = nullptr;
+    const char * mtp_out_path = nullptr;
+    int   mtp_gamma = 2;
+    int   mtp_n_gen = 0;
+    int   mtp_prompt_id = 0;
     int   target_gpu = 0;
     int   draft_gpu = 0;
     const char * draft_ipc_bin = nullptr;
@@ -825,6 +1029,42 @@ int main(int argc, char ** argv) {
         else if (std::strcmp(argv[i], "--target-split-dflash") == 0) {
             target_split_dflash = true;
             target_split_load_draft = true;
+        }
+        else if (std::strncmp(argv[i], "--mtp-gguf=", 11) == 0) {
+            mtp_gguf_path = argv[i] + 11;
+        }
+        else if (std::strcmp(argv[i], "--mtp-gguf") == 0) {
+            if (i + 1 < argc) mtp_gguf_path = argv[++i];
+        }
+        else if (std::strncmp(argv[i], "--gamma=", 8) == 0) {
+            mtp_gamma = std::atoi(argv[i] + 8);
+        }
+        else if (std::strcmp(argv[i], "--gamma") == 0) {
+            if (i + 1 < argc) mtp_gamma = std::atoi(argv[++i]);
+        }
+        else if (std::strncmp(argv[i], "--prompt-bin=", 13) == 0) {
+            mtp_prompt_path = argv[i] + 13;
+        }
+        else if (std::strcmp(argv[i], "--prompt-bin") == 0) {
+            if (i + 1 < argc) mtp_prompt_path = argv[++i];
+        }
+        else if (std::strncmp(argv[i], "--n-gen=", 8) == 0) {
+            mtp_n_gen = std::atoi(argv[i] + 8);
+        }
+        else if (std::strcmp(argv[i], "--n-gen") == 0) {
+            if (i + 1 < argc) mtp_n_gen = std::atoi(argv[++i]);
+        }
+        else if (std::strncmp(argv[i], "--out=", 6) == 0) {
+            mtp_out_path = argv[i] + 6;
+        }
+        else if (std::strcmp(argv[i], "--out") == 0) {
+            if (i + 1 < argc) mtp_out_path = argv[++i];
+        }
+        else if (std::strncmp(argv[i], "--prompt-id=", 12) == 0) {
+            mtp_prompt_id = std::atoi(argv[i] + 12);
+        }
+        else if (std::strcmp(argv[i], "--prompt-id") == 0) {
+            if (i + 1 < argc) mtp_prompt_id = std::atoi(argv[++i]);
         }
         else if (std::strncmp(argv[i], "--target-gpu=", 13) == 0) {
             target_gpu = std::max(0, std::atoi(argv[i] + 13));
@@ -939,7 +1179,14 @@ int main(int argc, char ** argv) {
         g_kq_stride_pad = 256;
     }
 
-    if (!is_laguna && !daemon_mode && !test_window_mode && (!prompt_path || !out_path)) {
+    if (mtp_gguf_path) {
+        if (mtp_prompt_path) prompt_path = mtp_prompt_path;
+        if (mtp_n_gen > 0) n_gen = mtp_n_gen;
+        if (mtp_out_path) out_path = mtp_out_path;
+    }
+
+    if (!is_laguna && !daemon_mode && !test_window_mode && !mtp_gguf_path &&
+        (!prompt_path || !out_path)) {
         std::fprintf(stderr, "Missing positional arguments for non-daemon mode.\n");
         return 2;
     }
@@ -1066,6 +1313,20 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "bad gpu ids target=%d draft=%d device_count=%d\n",
                      target_gpu, draft_gpu, cuda_device_count);
         return 2;
+    }
+    if (mtp_gguf_path) {
+        if (target_gpus.size() > 1) {
+            std::fprintf(stderr, "qwen36-mtp bench supports single target GPU only\n");
+            return 2;
+        }
+        const int max_ctx_eff = g_max_ctx_override > 0 ? g_max_ctx_override : 4096;
+        std::fprintf(stderr,
+            "[test_dflash] qwen36-mtp bench target=%s mtp=%s gamma=%d max_ctx=%d\n",
+            target_path, mtp_gguf_path, mtp_gamma, max_ctx_eff);
+        return run_qwen36_mtp_harness(target_path, mtp_gguf_path,
+                                      prompt_path, n_gen, out_path,
+                                      mtp_gamma, mtp_prompt_id,
+                                      target_gpu, max_ctx_eff);
     }
     if (target_gpus.size() > 1) {
         if (test_window_mode || profile_scaling) {

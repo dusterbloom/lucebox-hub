@@ -3,6 +3,7 @@
 #include "qwen35_dflash_target.h"
 #include "graph_builders.h"
 #include "step_graph.h"
+#include "common/attn_masks.h"
 
 namespace dflash27b {
 
@@ -41,6 +42,8 @@ bool Qwen35DFlashTarget::verify_batch(
                            fa_window_,
                            /*last_token_logits_only=*/false,
                            kq_stride_pad_)) {
+        std::fprintf(stderr, "[Qwen35DFlashTarget] build_target_step failed: base_pos=%d n_tokens=%d\n",
+                     base_pos, n_tokens);
         return false;
     }
 
@@ -61,8 +64,27 @@ bool Qwen35DFlashTarget::verify_batch(
     ggml_backend_tensor_set(sg_.positions, pos.data(), 0,
                             sizeof(int32_t) * pos.size());
 
+    // Populate the causal attention mask. The mask buffer is freshly allocated
+    // by build_target_step (uninitialized memory); without this set, attention
+    // reads garbage and ggml_argmax over the resulting logits returns -1 for
+    // non-last positions, breaking the chain runner's recommit path.
+    if (sg_.attn_mask) {
+        const int win_start = (fa_window_ > 0 && base_pos > fa_window_)
+                                  ? (base_pos - fa_window_) : 0;
+        const int kv_len = base_pos + n_tokens - win_start;
+        std::vector<uint16_t> mask_buf;
+        build_causal_mask(mask_buf, kv_len, n_tokens, base_pos,
+                          kq_stride_pad_, win_start);
+        ggml_backend_tensor_set(sg_.attn_mask, mask_buf.data(), 0,
+                                sizeof(uint16_t) * mask_buf.size());
+    }
+
     auto st = ggml_backend_graph_compute(backend_, sg_.gf);
-    if (st != GGML_STATUS_SUCCESS) return false;
+    if (st != GGML_STATUS_SUCCESS) {
+        std::fprintf(stderr, "[Qwen35DFlashTarget] graph_compute failed: base_pos=%d n_tokens=%d status=%d\n",
+                     base_pos, n_tokens, (int)st);
+        return false;
+    }
 
     // Read argmax from last token.
     if (n_tokens == 1) {
@@ -77,6 +99,26 @@ bool Qwen35DFlashTarget::verify_batch(
         all_argmax->resize(n_tokens);
         ggml_backend_tensor_get(sg_.argmax_tokens, all_argmax->data(), 0,
                                 sizeof(int32_t) * n_tokens);
+    }
+
+    // Copy the last token's post-norm hidden to a CPU buffer so the MTP module
+    // can call last_hidden() before the next graph_compute overwrites it.
+    if (sg_.last_norm_hidden) {
+        last_hidden_cpu_.resize(hidden);
+        ggml_backend_tensor_get(sg_.last_norm_hidden, last_hidden_cpu_.data(),
+                                0, sizeof(float) * hidden);
+    }
+
+    // Copy the full [n_tokens, n_embd] post-norm hidden sequence so the
+    // Qwen3.6 MTP warm_head_kv() can read per-position hiddens during prefill.
+    if (sg_.all_norm_hidden) {
+        last_hidden_seq_cpu_.resize((size_t)n_tokens * hidden);
+        ggml_backend_tensor_get(sg_.all_norm_hidden, last_hidden_seq_cpu_.data(),
+                                0, sizeof(float) * (size_t)n_tokens * hidden);
+        last_hidden_seq_n_         = n_tokens;
+        last_verify_chunk_start_   = base_pos;
+    } else {
+        last_hidden_seq_n_ = 0;
     }
 
     cache_.cur_pos = base_pos + n_tokens;

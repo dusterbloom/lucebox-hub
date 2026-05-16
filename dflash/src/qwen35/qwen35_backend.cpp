@@ -278,6 +278,18 @@ DFlashTarget * Qwen35Backend::dflash_target() {
     return dflash_target_.get();
 }
 
+// ── Test/bench integration hooks ────────────────────────────────────────
+
+bool Qwen35Backend::ensure_decode_cache(int max_verify_tokens) {
+    return migrate_prefill_cache(w_, cfg_.device.max_ctx,
+                                 max_verify_tokens,
+                                 target_backend_, cache_);
+}
+
+ggml_context * Qwen35Backend::tensor_context() const {
+    return w_.ctx;
+}
+
 // ── Shutdown ────────────────────────────────────────────────────────────
 
 void Qwen35Backend::shutdown() {

@@ -137,8 +137,11 @@ bool build_target_step(
     QwenGraphOutputs go = build_qwen35_graph(sg.ctx, sg.gf, w, cache, gi);
     if (!go.logits) return false;
     sg.logits = go.logits;
+    sg.last_norm_hidden = go.last_norm_hidden;  // [n_embd] last-token post-norm hidden
+    sg.all_norm_hidden  = go.all_norm_hidden;   // [n_embd, n_tokens] all post-norm hiddens
     sg.delta_captures = std::move(go.delta_captures);
     ggml_set_output(sg.logits);
+    // last_norm_hidden and all_norm_hidden already marked ggml_set_output inside build_qwen35_graph.
 
     sg.argmax_tokens = ggml_argmax(sg.ctx, sg.logits);
     ggml_set_name(sg.argmax_tokens, "chain_verify_argmax");

@@ -101,6 +101,12 @@ public:
     bool supports_dflash_spec_decode() const override { return true; }
     DFlashTarget * dflash_target() override;
 
+    // Test/bench integration hooks for native-head MTP. These keep the
+    // Qwen3.6 MTP harness on the backend-owned target/cache/context without
+    // exposing the frozen common interfaces.
+    bool ensure_decode_cache(int max_verify_tokens);
+    ggml_context * tensor_context() const;
+
     void shutdown() override;
 
 private:

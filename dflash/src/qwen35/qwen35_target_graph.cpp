@@ -1144,6 +1144,30 @@ QwenGraphOutputs build_qwen35_graph(
     // 2. Final norm
     ggml_tensor * out = rms_norm_mul(ctx, inpL, w.out_norm, w.rms_eps);
 
+    // 2a. Expose the last token's post-norm hidden as a named graph output.
+    //     This is h_prev_0 for the Qwen3.6 MTP module (the backbone's final
+    //     hidden state for the last committed token).  We always view the last
+    //     column of `out` regardless of whether last_token_logits_only is set,
+    //     so the MTP module always receives exactly one [n_embd] slice.
+    //     Empirical check: pre-norm capture (inpL) makes draft accept rate
+    //     strictly worse on Qwen3.6-27B; post-norm is correct.
+    ggml_tensor * last_norm_hidden = ggml_view_2d(ctx, out, hidden, 1,
+                                                   out->nb[1],
+                                                   (size_t)(n_tokens - 1) * out->nb[1]);
+    ggml_set_name(last_norm_hidden, "last_norm_hidden");
+    ggml_set_output(last_norm_hidden);
+    ggml_build_forward_expand(gf, last_norm_hidden);
+
+    // 2b. Also expose the FULL sequence post-norm hidden [n_embd, n_tokens] f32.
+    //     warm_head_kv() reads this to write per-position K/V entries for all
+    //     prefill positions without re-running the backbone.  Save a stable
+    //     pointer before `out` may be overwritten by the last_token_logits_only
+    //     view below.
+    ggml_tensor * all_norm_hidden = out;
+    ggml_set_name(all_norm_hidden, "all_norm_hidden");
+    ggml_set_output(all_norm_hidden);
+    ggml_build_forward_expand(gf, all_norm_hidden);
+
     // 3. LM head — optionally only for the last token (prefill optimization:
     //    reduces logits from [vocab, n_tokens] to [vocab, 1], saving ~233MB
     //    scratch at ubatch=384 and eliminating a large matmul).
@@ -1163,6 +1187,8 @@ QwenGraphOutputs build_qwen35_graph(
 
     QwenGraphOutputs og = std::move(og_early);
     og.logits = logits;
+    og.last_norm_hidden = last_norm_hidden;
+    og.all_norm_hidden = all_norm_hidden;
     return og;
 }
 

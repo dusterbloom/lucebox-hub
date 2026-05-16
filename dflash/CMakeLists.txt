@@ -242,6 +242,10 @@ add_library(dflash27b STATIC
     src/common/layer_split_utils.cpp
     src/common/ddtree.cpp
     src/common/peer_access.cpp
+    src/common/mtp_chain_runner.cpp
+    src/qwen36/qwen36_mtp.cpp
+    src/qwen36/qwen36_mtp_loader.cpp
+    src/qwen36/qwen36_mtp_graph.cpp
 )
 # BSA (Block-Sparse Attention) backs the speculative-prefill drafter scoring
 # path. Default ON so prefill is fast out of the box. Turn OFF if you don't
@@ -490,6 +494,32 @@ if(DFLASH27B_TESTS)
         add_executable(test_kv_quant test/test_kv_quant.cpp)
         target_include_directories(test_kv_quant PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
         target_link_libraries(test_kv_quant PRIVATE dflash27b)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_mtp_interface_contract.cpp")
+        add_executable(test_mtp_interface_contract test/test_mtp_interface_contract.cpp)
+        target_include_directories(test_mtp_interface_contract PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_mtp_interface_contract PRIVATE dflash27b)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_mtp_chain_runner.cpp")
+        add_executable(test_mtp_chain_runner test/test_mtp_chain_runner.cpp)
+        target_include_directories(test_mtp_chain_runner PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_mtp_chain_runner PRIVATE dflash27b)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_qwen36_mtp_basic.cpp")
+        add_executable(test_qwen36_mtp_basic test/test_qwen36_mtp_basic.cpp)
+        target_include_directories(test_qwen36_mtp_basic PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_qwen36_mtp_basic PRIVATE dflash27b)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_qwen36_mtp_step_unit.cpp")
+        add_executable(test_qwen36_mtp_step_unit test/test_qwen36_mtp_step_unit.cpp)
+        target_include_directories(test_qwen36_mtp_step_unit PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_qwen36_mtp_step_unit PRIVATE dflash27b)
+        target_compile_definitions(test_qwen36_mtp_step_unit PRIVATE DFLASH_TEST)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_gguf_metadata_unit.cpp")
+        add_executable(test_gguf_metadata_unit test/test_gguf_metadata_unit.cpp)
+        target_include_directories(test_gguf_metadata_unit PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_gguf_metadata_unit PRIVATE dflash27b)
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_draft_vs_reference.cpp")
         add_executable(test_draft_vs_reference test/test_draft_vs_reference.cpp)
