@@ -88,10 +88,28 @@ bool Qwen35DFlashTarget::verify_batch(
     const int hidden = w_.n_embd;
     const bool need_mask = (kq_stride_pad_ > KQ_MASK_PAD) || (n_tokens > 1);
 
+    // Per-position DeltaNet intermediate capture is only safe when:
+    //   1. The caller (MTP chain runner) opted in via enable_chain_capture(true).
+    //   2. The cache buffers actually exist (migrate_prefill_cache ran).
+    //   3. n_tokens fits in the pre-allocated cache.  The conv_input cache is
+    //      [(d_conv-1) + max_verify_tokens, conv_ch, 1] and the in-graph
+    //      ggml_view_3d into it asserts when n_tokens > max_verify_tokens
+    //      (e.g. 512-token prefill chunks vs 16-slot cache).  The
+    //      ssm_intermediate ggml_cpy also requires n_tokens == max_verify_tokens
+    //      after the matching dst-side view (see qwen35_target_graph.cpp).
+    int max_verify_tokens = 0;
+    if (!cache_.ssm_intermediate.empty() && cache_.ssm_intermediate[0] != nullptr) {
+        max_verify_tokens = (int)cache_.ssm_intermediate[0]->ne[3];
+    }
+    const bool capture_intermediate =
+        chain_capture_enabled_ &&
+        max_verify_tokens > 0 &&
+        n_tokens <= max_verify_tokens;
+
     if (!build_target_step(sg_, w_, cache_, backend_,
                            /*kv_start=*/base_pos, n_tokens,
                            need_mask, /*capture=*/true,
-                           /*capture_delta_intermediate=*/false,
+                           /*capture_delta_intermediate=*/capture_intermediate,
                            fa_window_,
                            /*last_token_logits_only=*/false,
                            kq_stride_pad_,
@@ -245,6 +263,30 @@ bool Qwen35DFlashTarget::verify_batch(
     }
 
     cache_.cur_pos = base_pos + n_tokens;
+
+    // Record linear-chain "tree" topology so restore_kv_at_chain (and
+    // restore_kv_at_dfs, for completeness) can roll back to any accepted
+    // prefix of this batch.  Only meaningful when capture actually fired —
+    // when it didn't, leave last_tree_base_pos_ at its prior value (could be
+    // -1 or a stale verify_tree value); the chain runner only calls
+    // restore_kv_at_chain on iters where it itself enabled capture, and a
+    // stale last_tree_* wouldn't be consulted by restore_kv_at_dfs in that
+    // window because verify_batch resets it here on every captured call.
+    if (capture_intermediate) {
+        last_tree_base_pos_ = base_pos;
+        last_tree_n_nodes_  = n_tokens - 1;
+        last_tree_parents_.resize(n_tokens);
+        last_tree_depths_.resize(n_tokens > 0 ? (size_t)(n_tokens - 1) : 0);
+        if (n_tokens > 0) last_tree_parents_[0] = -1;  // root marker
+        for (int i = 1; i < n_tokens; i++) {
+            last_tree_parents_[i] = i - 1;
+            last_tree_depths_[i - 1] = i;
+        }
+    } else {
+        // Invalidate so a stray restore_kv_at_chain() returns false instead of
+        // rolling back against stale capture buffers from an earlier iter.
+        last_tree_base_pos_ = -1;
+    }
 
     if (vprof_on) {
         const double vp_total = vprof_ms_since(vp_t_total);
@@ -528,6 +570,21 @@ bool Qwen35DFlashTarget::restore_kv_at_dfs(const std::vector<int> & accepted_dfs
     // commit_n committed tokens occupy slots [base..base+commit_n-1].
     cache_.cur_pos = last_tree_base_pos_ + commit_n;
     return true;
+}
+
+bool Qwen35DFlashTarget::restore_kv_at_chain(int accept_n) {
+    // A chain of N tokens recorded by verify_batch is the DFS spine
+    // [0, 1, ..., N-1].  Roll back to slot accept_n: the first (accept_n + 1)
+    // positions remain committed, the tail is discarded.  Returns false if
+    // the most recent verify_batch did NOT capture per-position intermediates
+    // (chain_capture_enabled_ was off, or n_tokens overflowed the cache) —
+    // the chain runner falls back to its legacy snapshot+recommit path.
+    if (accept_n < 0) return false;
+    if (last_tree_base_pos_ < 0) return false;
+    if (accept_n > last_tree_n_nodes_) return false;
+    std::vector<int> path((size_t)accept_n + 1);
+    for (int i = 0; i <= accept_n; i++) path[i] = i;
+    return restore_kv_at_dfs(path);
 }
 
 bool Qwen35DFlashTarget::snapshot_kv() {

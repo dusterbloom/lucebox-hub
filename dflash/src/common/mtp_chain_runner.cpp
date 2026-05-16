@@ -109,6 +109,18 @@ GenerateResult MtpChainRunner::run(const GenerateRequest & req,
     int32_t cur_tok = last_prefill_token;
     int     base_pos = committed_pos;
 
+    // Enable per-position DeltaNet intermediate capture for the duration of
+    // this run, so verify_batch records the per-slot SSM state and conv input
+    // window we need for restore_kv_at_chain() on partial-accept iters.
+    // Safe because chain verify candidates are bounded by g_actual+1 <=
+    // max_gamma+1 <= max_verify_tokens.  RAII: turned off on every exit path.
+    struct ChainCaptureGuard {
+        DFlashTarget & t;
+        ~ChainCaptureGuard() { t.enable_chain_capture(false); }
+    };
+    target_.enable_chain_capture(true);
+    ChainCaptureGuard guard{target_};
+
     // ExternalDrafter optionally provides h_prev across iters. NativeHeads
     // does not — running_hidden stays empty for that flavor.
     std::vector<float> running_hidden;
@@ -181,39 +193,49 @@ GenerateResult MtpChainRunner::run(const GenerateRequest & req,
 
         // ── KV reconciliation ──────────────────────────────────────────
         // verify_batch advanced KV by 1+g_actual positions. We only want
-        // total_this_iter additional positions past base_pos. If we
-        // accepted everything (accept_n == g_actual), the KV is correct.
-        // If we rejected the tail, restore to snapshot and re-verify the
-        // actually-committed prefix.
-        // Whether the recommit path ran on this iter — drives the
-        // base_pos / cur_tok bookkeeping below.  The recommit's verify_batch
-        // writes K/V + advances SSM for cur_tok + accepted + bonus, leaving
-        // the bonus at the LAST position the cache was written to.  Naive
-        // base_pos += accept_n + 1 would put next iter's cur_tok = bonus AT
-        // the bonus position again — the next verify_batch re-processes that
-        // token, double-incrementing the SSM state and corrupting it after a
-        // few iters on long prompts.  Fix: capture argmax from the recommit
-        // and advance one extra slot so cur_tok_next is a new position.
-        bool recommitted = (accept_n < g_actual);
+        // total_this_iter additional positions past base_pos.  Three paths:
+        //   1. accept_n == g_actual: KV is correct, nothing to do.
+        //   2. accept_n <  g_actual, fast rollback: target.restore_kv_at_chain
+        //      (accept_n) reuses the per-position SSM/conv intermediates
+        //      captured by the first verify_batch to undo the rejected tail
+        //      in-place.  No second backbone forward.  The bonus token's KV
+        //      is NOT written; next iter's verify_batch will process it as
+        //      the new cur_tok at slot base_pos+accept_n+1.  base_pos
+        //      advance and cur_tok bookkeeping match the accept-all path.
+        //   3. accept_n <  g_actual, fast path declined: fall back to the
+        //      legacy snapshot+recommit (verify_batch on [cur, accepted,
+        //      bonus]).  Used by targets that lack DeltaNet capture (CPU
+        //      stubs, layer-split shards) and any iter where chain capture
+        //      was skipped defensively.  base_pos advances by accept_n+2 to
+        //      skip past the recommit-written bonus slot; cur_tok_next is
+        //      taken from the recommit's argmax at the bonus position.
+        bool recommitted = false;
+        bool fast_rolled_back = false;
         std::vector<int32_t> rc_argmax;
-        if (recommitted) {
-            if (!target_.restore_kv()) {
-                result.ok = false;
-                result.error = "restore_kv";
-                return result;
-            }
-            std::vector<int32_t> commit_seq;
-            commit_seq.reserve((size_t)accept_n + 2);
-            commit_seq.push_back(cur_tok);
-            for (int i = 0; i < accept_n; i++) commit_seq.push_back(drafts[i]);
-            commit_seq.push_back(all_argmax[accept_n]);
-            int discard = -1;
-            if (!target_.verify_batch(commit_seq, base_pos, discard, &rc_argmax)) {
-                result.ok = false;
-                result.error = "recommit";
-                return result;
+        if (accept_n < g_actual) {
+            if (target_.restore_kv_at_chain(accept_n)) {
+                fast_rolled_back = true;
+            } else {
+                recommitted = true;
+                if (!target_.restore_kv()) {
+                    result.ok = false;
+                    result.error = "restore_kv";
+                    return result;
+                }
+                std::vector<int32_t> commit_seq;
+                commit_seq.reserve((size_t)accept_n + 2);
+                commit_seq.push_back(cur_tok);
+                for (int i = 0; i < accept_n; i++) commit_seq.push_back(drafts[i]);
+                commit_seq.push_back(all_argmax[accept_n]);
+                int discard = -1;
+                if (!target_.verify_batch(commit_seq, base_pos, discard, &rc_argmax)) {
+                    result.ok = false;
+                    result.error = "recommit";
+                    return result;
+                }
             }
         }
+        (void)fast_rolled_back;  // bookkeeping is identical to accept-all path.
 
         // ── Emit accepted prefix + bonus, capped at n_gen ──────────────
         // emit_cap is the absolute ceiling on tokens that may be written
@@ -241,12 +263,18 @@ GenerateResult MtpChainRunner::run(const GenerateRequest & req,
         }
 
         // base_pos advance:
-        //   accept-all: verify_batch wrote g+1 KV slots, base_pos += g+1.
-        //   recommit:   recommit wrote accept_n+2 KV slots (cur_tok + accepted
-        //               + bonus). Advance by accept_n+2 so next iter's
-        //               base_pos points to a NEW position, not the bonus slot.
-        //               cur_tok_next is the argmax at the bonus position from
-        //               the recommit (a fresh prediction, not yet in cache).
+        //   accept-all / fast_rolled_back:
+        //       verify_batch wrote g+1 KV slots; the fast rollback rolled
+        //       cache.cur_pos back to base_pos+accept_n+1 = base_pos +
+        //       total_this_iter, leaving the bonus token's KV unwritten.
+        //       Advance by total_this_iter and let next iter's verify_batch
+        //       process the bonus as the new cur_tok.
+        //   recommit:
+        //       recommit wrote accept_n+2 KV slots (cur_tok + accepted +
+        //       bonus). Advance by accept_n+2 so next iter's base_pos points
+        //       to a NEW position, not the bonus slot.  cur_tok_next is the
+        //       argmax at the bonus position from the recommit (a fresh
+        //       prediction, not yet in cache).
         if (recommitted) {
             base_pos += accept_n + 2;
             if (!hit_eos && !rc_argmax.empty()) {

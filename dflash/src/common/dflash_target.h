@@ -101,6 +101,36 @@ struct DFlashTarget {
         return false;
     }
 
+    // Chain-mode variant of restore_kv_at_dfs: roll back DeltaNet SSM/conv +
+    // full-attn KV to slot `accept_n` of the MOST RECENT verify_batch call
+    // (which fed a linear chain of N tokens at base_pos..base_pos+N-1).  This
+    // is the degenerate, all-spine case of restore_kv_at_dfs and lets the MTP
+    // chain runner skip its second `verify_batch` "recommit" on partial accept:
+    // the original verify_batch already wrote KV for every accepted slot, and
+    // the captured per-position ssm_intermediate + conv_input_cache let us
+    // undo the rejected tail's SSM advance without re-running the target.
+    //
+    // After this call cache cur_pos = base_pos + accept_n + 1 so the next
+    // verify_batch's kv_start lines up.  Default returns false; targets that
+    // do not implement it (CPU stubs, layer-split shards, or any target with
+    // chain capture disabled) cause the chain runner to fall back to the
+    // legacy snapshot+recommit path.
+    virtual bool restore_kv_at_chain(int accept_n) {
+        (void)accept_n;
+        return false;
+    }
+
+    // Toggle whether subsequent verify_batch calls should capture per-position
+    // DeltaNet intermediate state into the cache so restore_kv_at_chain() has
+    // something to roll back to.  Off by default — capture is unsafe when
+    // n_tokens > max_verify_tokens (prefill chunks) or when n_tokens !=
+    // max_verify_tokens (would assert in the in-graph ggml_cpy on the
+    // ssm_intermediate buffer).  The MTP chain runner flips this on for the
+    // duration of its run loop (where every verify_batch fits within the
+    // pre-allocated draft block) and off afterwards.  No-op for targets
+    // without DeltaNet capture support.
+    virtual void enable_chain_capture(bool /*on*/) {}
+
     // ── Token utilities ─────────────────────────────────────────────
 
     // Check if a token is end-of-sequence for this model.

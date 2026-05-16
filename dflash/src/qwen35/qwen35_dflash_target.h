@@ -106,6 +106,25 @@ public:
     // was not called, or if dfs_idx is out of range.
     bool restore_kv_at_dfs(const std::vector<int> & accepted_dfs) override;
 
+    // Chain-mode rollback (degenerate linear case of restore_kv_at_dfs).
+    // Builds the DFS spine [0, 1, ..., accept_n] and dispatches to
+    // restore_kv_at_dfs.  Requires that the most recent verify_batch ran with
+    // chain capture enabled (see enable_chain_capture below) — otherwise the
+    // per-position SSM intermediate buffers are stale and we return false so
+    // the chain runner falls back to its snapshot+recommit path.
+    bool restore_kv_at_chain(int accept_n) override;
+
+    // Toggle per-position DeltaNet intermediate capture in verify_batch.
+    // Off by default.  When on, verify_batch will populate the per-layer
+    // ssm_intermediate / conv_input_cache buffers AND record a linear-chain
+    // "tree" topology so restore_kv_at_chain can roll back to any accepted
+    // prefix.  Only safe when n_tokens fits in the pre-allocated cache (i.e.
+    // n_tokens <= max_verify_tokens) — verify_batch defensively skips capture
+    // (and clears the topology) when it would overflow the cache, which makes
+    // restore_kv_at_chain return false for that iter and triggers the slow
+    // recommit fallback.
+    void enable_chain_capture(bool on) override { chain_capture_enabled_ = on; }
+
     bool is_eos(int token) const override;
 
     bool embed_tokens(const int32_t * tokens, int n,
@@ -227,6 +246,15 @@ private:
     // self-contained.
     std::vector<int>           last_tree_parents_;
     std::vector<int>           last_tree_depths_;
+
+    // When true, verify_batch will populate per-position DeltaNet
+    // ssm_intermediate / conv_input_cache buffers AND record a linear-chain
+    // topology in last_tree_* so restore_kv_at_chain() can dispatch to
+    // restore_kv_at_dfs() on partial-accept.  Toggled by the MTP chain runner
+    // via enable_chain_capture(); off by default (capture is unsafe on
+    // n_tokens > max_verify_tokens, e.g. 512-token prefill chunks, where the
+    // in-graph ggml_view_3d into the conv_input cache asserts).
+    bool                       chain_capture_enabled_ = false;
 };
 
 }  // namespace dflash27b
