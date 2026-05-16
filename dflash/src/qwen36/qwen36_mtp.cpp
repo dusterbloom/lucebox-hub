@@ -1078,31 +1078,51 @@ bool Qwen36MtpModule::step_batch(int32_t current_token,
                                    state_->draft_topk, step_out);
             }
         } else {
-            // Standard path: shared LM head via target->project_hidden_to_tokens.
-            std::vector<int32_t> tok_out;
-            if (!state_->target->project_hidden_to_tokens(x_normed.data(), 1, tok_out)
-                || tok_out.empty()) {
-                std::fprintf(stderr,
-                    "[qwen36_mtp] step_batch: project_hidden_to_tokens failed at head %d\n", h);
-                out.clear();
-                return false;
-            }
-            step_out.draft_token = tok_out[0];
-            step_out.draft_logit = 0.0f;  // logit unavailable via this path
+            // Standard path: shared LM head via target's project_hidden_to_*.
+            // For top-K (draft_topk > 1) prefer project_hidden_to_logits so we
+            // can populate the top-K logprob surface; fall back to the argmax
+            // path for K=1 or when the target lacks the logits virtual.
             if (state_->draft_topk > 1) {
-                // Top-K via the shared backbone LM head is not yet wired through
-                // DFlashTarget; surface the limitation rather than silently
-                // emitting a chain-only tree. Tracked: extend DFlashTarget with
-                // project_hidden_to_logits() (Task 1 follow-up for GPU bench).
-                static bool warned = false;
-                if (!warned) {
-                    std::fprintf(stderr,
-                        "[qwen36_mtp] step_batch: draft_topk=%d requested but "
-                        "head has no explicit shared_head_head matrix; "
-                        "top-K surface is empty for this run (argmax only).\n",
-                        state_->draft_topk);
-                    warned = true;
+                std::vector<float> logits_buf_t;
+                int vocab = 0;
+                if (state_->target->project_hidden_to_logits(x_normed.data(), 1,
+                                                              logits_buf_t, vocab)
+                    && vocab > 0) {
+                    step_out.draft_token = argmax(logits_buf_t.data(), vocab);
+                    step_out.draft_logit = logits_buf_t[step_out.draft_token];
+                    emit_topk_logprobs(logits_buf_t.data(), vocab,
+                                       state_->draft_topk, step_out);
+                } else {
+                    std::vector<int32_t> tok_out;
+                    if (!state_->target->project_hidden_to_tokens(x_normed.data(), 1, tok_out)
+                        || tok_out.empty()) {
+                        std::fprintf(stderr,
+                            "[qwen36_mtp] step_batch: project_hidden_to_tokens failed at head %d\n", h);
+                        out.clear();
+                        return false;
+                    }
+                    step_out.draft_token = tok_out[0];
+                    step_out.draft_logit = 0.0f;
+                    static bool warned = false;
+                    if (!warned) {
+                        std::fprintf(stderr,
+                            "[qwen36_mtp] step_batch: draft_topk=%d requested but target "
+                            "lacks project_hidden_to_logits; emitting argmax only.\n",
+                            state_->draft_topk);
+                        warned = true;
+                    }
                 }
+            } else {
+                std::vector<int32_t> tok_out;
+                if (!state_->target->project_hidden_to_tokens(x_normed.data(), 1, tok_out)
+                    || tok_out.empty()) {
+                    std::fprintf(stderr,
+                        "[qwen36_mtp] step_batch: project_hidden_to_tokens failed at head %d\n", h);
+                    out.clear();
+                    return false;
+                }
+                step_out.draft_token = tok_out[0];
+                step_out.draft_logit = 0.0f;
             }
         }
 

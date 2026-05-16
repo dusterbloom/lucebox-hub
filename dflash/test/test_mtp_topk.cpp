@@ -77,6 +77,25 @@ struct StubTarget : DFlashTarget {
         }
         return true;
     }
+    // Optional: emit per-row logits with distinct ordering so top-K is
+    // well-defined.  Row r logit = (r+1) * 0.001 * sum(hidden), mirroring the
+    // explicit shared_head_head matrix used elsewhere in this file.  Used by
+    // the no-shared_head_head fallback path on Qwen3.6-27B.
+    bool project_hidden_to_logits(const float * hidden, int n_tokens,
+                                  std::vector<float> & logits_out,
+                                  int & out_vocab) override {
+        out_vocab = V;
+        logits_out.assign((size_t)n_tokens * V, 0.0f);
+        for (int t = 0; t < n_tokens; t++) {
+            float sum = 0.0f;
+            for (int d = 0; d < H; d++) sum += hidden[t * H + d];
+            for (int r = 0; r < V; r++) {
+                logits_out[(size_t)t * V + r] =
+                    static_cast<float>(r + 1) * 0.001f * sum;
+            }
+        }
+        return true;
+    }
     int hidden_size() const override { return H; }
     int mask_token_id() const override { return -1; }
     const std::vector<int> & capture_layer_ids() const override {
@@ -255,10 +274,45 @@ static void test_explicit_k1_matches_default() {
     std::printf("[mtp_topk] test_explicit_k1_matches_default PASS\n");
 }
 
+// 4. No shared_head_head (Qwen3.6-27B GGUF reality): top-K must still
+//    populate via target->project_hidden_to_logits.  Regression test for
+//    qwen36_mtp.cpp:1080-1107 fallback path.
+static void test_no_shared_head_head_topk_via_target_logits() {
+    StubTarget tgt;
+    Qwen36MtpWeights w;
+    ggml_context * ctx = build_test_weights(w);
+    // Strip the explicit per-head LM head from every head so step_batch is
+    // forced down the target->project_hidden_to_* fallback path.
+    for (int h = 0; h < (int)w.heads.size(); h++) {
+        w.heads[h].shared_head_head = nullptr;
+    }
+    std::vector<float> h_prev(TEST_N_EMBD, 0.1f);
+
+    auto m = make_module(tgt, w);
+    m->set_draft_topk(4);
+    m->set_initial_hidden(h_prev.data(), TEST_N_EMBD);
+
+    std::vector<StepOutput> out;
+    CHECK(m->step_batch(/*cur=*/1, /*pos=*/0, out));
+    CHECK((int)out.size() == TEST_N_HEADS);
+    for (const auto & s : out) {
+        // The whole point: top-K is non-empty even without shared_head_head.
+        CHECK((int)s.topk_logprobs.size() == 4);
+        CHECK((int)s.topk_ids.size() == 4);
+        for (int i = 1; i < 4; i++) {
+            CHECK(s.topk_logprobs[i] <= s.topk_logprobs[i - 1]);
+        }
+        CHECK(s.topk_ids[0] == s.draft_token);
+    }
+    ggml_free(ctx);
+    std::printf("[mtp_topk] test_no_shared_head_head_topk_via_target_logits PASS\n");
+}
+
 int main() {
     test_default_k1_argmax_unchanged();
     test_k4_populates_sorted_topk();
     test_explicit_k1_matches_default();
-    std::printf("[mtp_topk] all 3 tests PASS\n");
+    test_no_shared_head_head_topk_via_target_logits();
+    std::printf("[mtp_topk] all 4 tests PASS\n");
     return 0;
 }
