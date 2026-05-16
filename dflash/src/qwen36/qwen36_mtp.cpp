@@ -1817,13 +1817,21 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
         }
 
         StepOutput so;
-        // We need the PRE-shared_head_norm hidden for the next iter's
+        // We need the PRE-shared_head_norm hidden for the NEXT iter's
         // h_prev (mirrors llama.cpp PR #22673 `t_h_pre_norm`; feeding
         // post-norm here double-normalises on the next iter's `hnorm`
         // and was the root of the D>1 compound-decay regression — at
         // D=3 per-position accept fell from ~91% to ~67%).  The
         // unfused-LM-head branch additionally needs the post-norm
         // hidden for the on-host projection; download both when needed.
+        //
+        // Cost gate: x_normed is ~n_embd*4 ≈ 20KB on Qwen3.6-27B; the
+        // h_pre download is the same size.  On the FUSED-LM-head greedy
+        // path (chain_depth=1, no top-K) we need NEITHER download —
+        // the argmax tensor is already produced on-device.  Skipping
+        // them saves ~24% throughput on the chain head call (the audit
+        // figure: ~1ms/iter on D=1 ⇒ ~+4-7 tok/s end-to-end).  Mirror
+        // PR #22673's `top_k=1` greedy chain in common/speculative.cpp.
         std::vector<float> x_normed;
         const bool need_x_normed =
             !(sg->fused_lm_head && sg->out_argmax_token);
@@ -1832,9 +1840,16 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
             ggml_backend_tensor_get(sg->out_x_normed,
                 x_normed.data(), 0, sizeof(float) * n_embd);
         }
-        std::vector<float> h_pre(n_embd);
-        ggml_backend_tensor_get(sg->out_h_pre_norm,
-            h_pre.data(), 0, sizeof(float) * n_embd);
+        // Only download h_pre when ANOTHER iteration follows that will
+        // consume it as h_prev.  On the last chain step the value is
+        // discarded — skip the device->host transfer entirely.
+        const bool need_h_pre = (it + 1 < chain_depth);
+        std::vector<float> h_pre;
+        if (need_h_pre) {
+            h_pre.resize(n_embd);
+            ggml_backend_tensor_get(sg->out_h_pre_norm,
+                h_pre.data(), 0, sizeof(float) * n_embd);
+        }
 
         if (sg->fused_lm_head && sg->out_argmax_token) {
             int32_t tok = 0;
@@ -1889,8 +1904,11 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
         // Stash PRE-shared_head_norm hidden for next iter's h_prev and
         // advance cur_token to the freshly drafted token.  Post-norm here
         // (the previous behaviour) compounded a distribution drift per
-        // depth — see the pre-norm-hidden comment above.
-        state_->last_hidden = std::move(h_pre);
+        // depth — see the pre-norm-hidden comment above.  Skipped on the
+        // final iter (h_pre stays empty when need_h_pre=false).
+        if (need_h_pre) {
+            state_->last_hidden = std::move(h_pre);
+        }
         cur_token = so.draft_token;
     }
     return true;
