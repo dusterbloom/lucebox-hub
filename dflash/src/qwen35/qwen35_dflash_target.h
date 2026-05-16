@@ -32,6 +32,15 @@ public:
 
     ggml_backend_t backend() const override { return backend_; }
 
+    // Phase B+ fused-LM-head path: the Qwen3.6 MTP head's step graph can
+    // append `mul_mat(w_.output, x_normed) -> argmax` directly so it
+    // avoids a hidden -> host -> separate-cgraph round trip per call.
+    ggml_tensor * lm_head_weight() const override { return w_.output; }
+
+    // Mirror the causal window onto MTP head's flash-attn so it sees the
+    // same active context as the target's full-attention blocks.
+    int fa_window() const override { return fa_window_; }
+
     // Enable per-position post-norm hidden capture during verify_batch.
     // Off by default; MTP modules that depend on hidden_at_pos() flip it on
     // in attach().  Non-MTP paths (target_gen, DFlash drafter spec-decode)

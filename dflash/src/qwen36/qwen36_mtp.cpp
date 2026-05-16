@@ -456,7 +456,20 @@ struct Qwen36MtpModule::State {
     ggml_context *            kv_ctx = nullptr;
     ggml_backend_buffer_t     kv_buf = nullptr;
 
-    // Cached step graph (rebuilt per call because draft_pos changes shape).
+    // Phase B+ step graph cache.  ggml views (slot offset, kv_len) are
+    // static at graph-build time, so we maintain one fully-built graph per
+    // draft_pos and reuse it for every chain iter that lands on that slot.
+    // For a single generation of N tokens the cache fills to N entries and
+    // every subsequent step at the same slot is a pure tensor_set + compute
+    // (skipping ggml_init + DAG construction + gallocr).
+    //
+    // Indexed by draft_pos; size grows lazily, capped at n_ctx.  Each entry
+    // owns its own ggml_context + gallocr (per the existing builder API);
+    // a future refactor could share contexts across slots if memory becomes
+    // a concern (~50 nodes * 256 B per graph * 8192 slots ≈ 100 MB).
+    std::vector<std::unique_ptr<Qwen36MtpStepGraph>> step_sg_cache;
+    // Single scratch graph for the deprecated path (callers that pass the
+    // legacy build_qwen36_mtp_step_graph signature with no caching).
     Qwen36MtpStepGraph        step_sg;
     // Cached warmup graph (rebuilt per call because n_tokens varies).
     Qwen36MtpWarmGraph        warm_sg;
@@ -559,10 +572,17 @@ bool Qwen36MtpModule::init(const std::string & gguf_path,
                     return false;
                 }
                 for (int h = 0; h < gamma_max; h++) {
+                    // Head KV stored as F16 on device (Phase B+).  CUDA
+                    // ggml_flash_attn_ext takes F16 K/V natively (fattn.cu
+                    // accepts F16/BF16/quant K/V; F32 K/V are auto-cast
+                    // up-front) and ggml_cpy F32 -> F16 is supported inside
+                    // the step graph for the per-step K/V write.  Saves 50%
+                    // of the per-head KV footprint and matches the backbone
+                    // cache_k/cache_v dtype.
                     ggml_tensor * k_t = ggml_new_tensor_3d(state_->kv_ctx,
-                        GGML_TYPE_F32, key_len, n_ctx, n_head_kv);
+                        GGML_TYPE_F16, key_len, n_ctx, n_head_kv);
                     ggml_tensor * v_t = ggml_new_tensor_3d(state_->kv_ctx,
-                        GGML_TYPE_F32, val_len, n_ctx, n_head_kv);
+                        GGML_TYPE_F16, val_len, n_ctx, n_head_kv);
                     char name[64];
                     std::snprintf(name, sizeof(name), "mtp_head_%d_k", h);
                     ggml_set_name(k_t, name);
@@ -594,7 +614,14 @@ bool Qwen36MtpModule::init(const std::string & gguf_path,
     return attach(target);
 }
 
-int  Qwen36MtpModule::max_gamma()   const { return state_->weights.n_heads; }
+int  Qwen36MtpModule::max_gamma()   const {
+    // Post-Phase-A semantics: max_gamma is the autoregressive CHAIN depth ceiling,
+    // not the physical NextN head count. We re-feed the single head's own
+    // post-shared_head_norm hidden as h_prev to extend the chain to arbitrary depth
+    // (oracle blocker 5.6 analysis). Capped at 8 to match Unsloth's --spec-draft-n-max
+    // ceiling and keep the head_kv slot writes within n_ctx=8192.
+    return 8;
+}
 int  Qwen36MtpModule::hidden_size() const { return state_->weights.n_embd; }
 int  Qwen36MtpModule::num_heads()   const { return state_->weights.n_heads; }
 
@@ -630,6 +657,10 @@ void Qwen36MtpModule::set_draft_topk(int k) {
 }
 
 void Qwen36MtpModule::shutdown() {
+    for (auto & sg : state_->step_sg_cache) {
+        if (sg) qwen36_mtp_step_graph_free(*sg);
+    }
+    state_->step_sg_cache.clear();
     qwen36_mtp_step_graph_free(state_->step_sg);
     qwen36_mtp_warm_graph_free(state_->warm_sg);
     if (state_->kv_buf) {
@@ -1375,22 +1406,92 @@ int Qwen36MtpModule::test_initial_hidden_dim() const {
     return state_->initial_hidden_dim;
 }
 
-// Per-call cgraph on the backbone backend; LM head projection is delegated
-// to target->project_hidden_to_tokens which runs on the same backend.
+// Get-or-build a cached step graph for the (head_idx, draft_pos) slot.
+// Per Phase B+: ggml views are static at graph build time, but generation
+// is monotonic in draft_pos, so we lazily build one graph per slot and
+// reuse it across iterations / generations.  The graph is rebuilt only
+// when its build keys (fa_window, fused_lm_head, topk_k) differ from the
+// current call — typically only once at startup since these are config.
+Qwen36MtpStepGraph * Qwen36MtpModule::get_or_build_step_graph_(int head_idx,
+                                                                int draft_pos,
+                                                                int kv_len) {
+    if (head_idx < 0 || head_idx >= (int)state_->weights.heads.size()) {
+        return nullptr;
+    }
+    if (draft_pos < 0 || draft_pos >= state_->n_ctx) return nullptr;
+    if (head_idx >= (int)state_->head_kv.size())     return nullptr;
+
+    // Cache layout: flat index (head_idx * n_ctx + draft_pos).  For the
+    // 27B GGUF with n_heads=1 this collapses to draft_pos.
+    const int n_heads = state_->weights.n_heads;
+    const int n_ctx   = state_->n_ctx;
+    const size_t flat = (size_t)head_idx * n_ctx + draft_pos;
+    if (state_->step_sg_cache.size() != (size_t)n_heads * n_ctx) {
+        state_->step_sg_cache.resize((size_t)n_heads * n_ctx);
+    }
+
+    const int    n_embd    = state_->weights.n_embd;
+    const int    n_head    = state_->weights.n_head_count;
+    const int    n_head_kv = state_->weights.n_head_kv;
+    const int    key_len   = state_->weights.n_key_length;
+    const int    val_len   = state_->weights.n_value_length;
+    const int    ffn_len   = state_->weights.n_ffn_length;
+    const int    n_rot     = std::min(64, key_len);
+    const float  rope_freq_base = 1e7f;
+    const float  rms_eps        = 1e-6f;
+    int          rope_sections[4] = { 11, 11, 10, 0 };
+
+    // Build keys derived from the bound target's config.  These rarely
+    // change at runtime; recording them lets us detect a stale cache.
+    const int    fa_win    = state_->target ? state_->target->fa_window() : 0;
+    ggml_tensor * lm_head  = state_->target ? state_->target->lm_head_weight() : nullptr;
+    const int    topk_k    = (lm_head && state_->draft_topk > 1) ? state_->draft_topk : 0;
+
+    auto & slot = state_->step_sg_cache[flat];
+    if (slot &&
+        slot->draft_pos == draft_pos &&
+        slot->kv_len    == kv_len    &&
+        slot->fa_window == fa_win    &&
+        slot->fused_lm_head == (lm_head != nullptr) &&
+        slot->topk_k    == topk_k) {
+        return slot.get();
+    }
+
+    if (slot) {
+        qwen36_mtp_step_graph_free(*slot);
+    } else {
+        slot.reset(new Qwen36MtpStepGraph());
+    }
+
+    const auto & head = state_->weights.heads[head_idx];
+    if (!build_qwen36_mtp_step_graph(*slot, head,
+                                      state_->head_kv[head_idx].k_cache,
+                                      state_->head_kv[head_idx].v_cache,
+                                      state_->target->backend(),
+                                      n_embd, n_head, n_head_kv,
+                                      key_len, val_len, ffn_len,
+                                      n_rot, rope_sections,
+                                      rope_freq_base, rms_eps,
+                                      draft_pos, kv_len,
+                                      fa_win, lm_head, topk_k)) {
+        std::fprintf(stderr,
+            "[qwen36_mtp] get_or_build_step_graph_: build failed "
+            "head=%d draft_pos=%d kv_len=%d\n", head_idx, draft_pos, kv_len);
+        slot.reset();
+        return nullptr;
+    }
+    return slot.get();
+}
+
+// Per-call cgraph on the backbone backend; cached per (head_idx, draft_pos)
+// in state_->step_sg_cache (Phase B+).  When the bound target exposes its
+// lm_head_weight() the graph also fuses the LM-head matmul + argmax so we
+// skip the hidden -> host -> separate-cgraph round trip per call.
 bool Qwen36MtpModule::step_batch_gpu_(int32_t current_token,
                                        int base_pos,
                                        std::vector<StepOutput> & out) {
     const int n_embd    = state_->weights.n_embd;
     const int n_heads   = state_->weights.n_heads;
-    const int n_head    = state_->weights.n_head_count;
-    const int n_head_kv = state_->weights.n_head_kv;
-    const int key_len   = state_->weights.n_key_length;
-    const int val_len   = state_->weights.n_value_length;
-    const int ffn_len   = state_->weights.n_ffn_length;
-    const int n_rot     = std::min(64, key_len);
-    const float rope_freq_base = 1e7f;
-    const float rms_eps = 1e-6f;
-    int rope_sections[4] = { 11, 11, 10, 0 };
 
     out.clear();
     out.reserve(n_heads);
@@ -1398,10 +1499,8 @@ bool Qwen36MtpModule::step_batch_gpu_(int32_t current_token,
     ggml_backend_t backend = state_->target->backend();
     int32_t cur_token = current_token;
     std::vector<float> embed_buf(n_embd);
-    std::vector<float> h_prev_buf(n_embd, 0.0f);
 
     for (int h = 0; h < n_heads; h++) {
-        const auto & head = state_->weights.heads[h];
         const int draft_pos = base_pos + h;
         if (draft_pos >= state_->n_ctx) {
             std::fprintf(stderr,
@@ -1436,69 +1535,96 @@ bool Qwen36MtpModule::step_batch_gpu_(int32_t current_token,
             // n_heads=1 so this branch is rarely exercised.
             h_prev = state_->last_hidden.data();
         }
-        std::memcpy(h_prev_buf.data(), h_prev, sizeof(float) * n_embd);
-
-        // ── Embed cur_token via target (already on host) ────────────────
+        // Embed cur_token via target (already on host).
         if (!state_->target->embed_tokens(&cur_token, 1, embed_buf.data())) {
             std::fprintf(stderr, "[qwen36_mtp gpu] embed_tokens failed h=%d\n", h);
             out.clear();
             return false;
         }
 
-        // ── Build the per-call step graph ───────────────────────────────
-        if (!build_qwen36_mtp_step_graph(state_->step_sg, head,
-                                          state_->head_kv[h].k_cache,
-                                          state_->head_kv[h].v_cache,
-                                          backend,
-                                          n_embd, n_head, n_head_kv,
-                                          key_len, val_len, ffn_len,
-                                          n_rot, rope_sections,
-                                          rope_freq_base, rms_eps,
-                                          draft_pos, kv_len)) {
-            std::fprintf(stderr, "[qwen36_mtp gpu] build_step_graph failed\n");
-            out.clear();
-            return false;
-        }
+        // Get-or-build the cached step graph for this slot.
+        Qwen36MtpStepGraph * sg = get_or_build_step_graph_(h, draft_pos, kv_len);
+        if (!sg) { out.clear(); return false; }
 
-        // ── Upload inputs ───────────────────────────────────────────────
-        ggml_backend_tensor_set(state_->step_sg.inp_embed,
+        // Upload inputs.  Pass h_prev directly (no scratch memcpy — task E).
+        ggml_backend_tensor_set(sg->inp_embed,
             embed_buf.data(), 0, sizeof(float) * n_embd);
-        ggml_backend_tensor_set(state_->step_sg.inp_h_prev,
-            h_prev_buf.data(), 0, sizeof(float) * n_embd);
+        ggml_backend_tensor_set(sg->inp_h_prev,
+            h_prev, 0, sizeof(float) * n_embd);
         // MROPE positions: text-only mode (axes 0..2 = position, axis 3 = 0).
         const int32_t pos[4] = { draft_pos, draft_pos, draft_pos, 0 };
-        ggml_backend_tensor_set(state_->step_sg.inp_pos,
-            pos, 0, sizeof(pos));
+        ggml_backend_tensor_set(sg->inp_pos, pos, 0, sizeof(pos));
 
-        // ── Compute ─────────────────────────────────────────────────────
-        auto st = ggml_backend_graph_compute(backend, state_->step_sg.gf);
+        auto st = ggml_backend_graph_compute(backend, sg->gf);
         if (st != GGML_STATUS_SUCCESS) {
             std::fprintf(stderr, "[qwen36_mtp gpu] graph_compute status=%d\n", (int)st);
             out.clear();
             return false;
         }
 
-        // ── Read out_x_normed back to host ──────────────────────────────
-        std::vector<float> x_normed(n_embd);
-        ggml_backend_tensor_get(state_->step_sg.out_x_normed,
-            x_normed.data(), 0, sizeof(float) * n_embd);
-
-        // ── Project through shared LM head ──────────────────────────────
         StepOutput so;
-        if (state_->draft_topk > 1) {
-            // Top-K path: pull raw logits so we can emit topk_logprobs/ids
-            // alongside the argmax token.  Targets that don't support this
-            // (default base impl) return false; we fall back to argmax-only
-            // and leave topk_* empty.
-            std::vector<float> logits_buf;
-            int vocab = 0;
-            if (state_->target->project_hidden_to_logits(x_normed.data(), 1,
-                                                          logits_buf, vocab) &&
-                vocab > 0) {
-                so.draft_token = argmax(logits_buf.data(), vocab);
-                so.draft_logit = logits_buf[so.draft_token];
+        if (sg->fused_lm_head && sg->out_argmax_token) {
+            // Fused path: read the argmax (and optional full logits for
+            // top-K) directly from the cached graph's outputs — no separate
+            // projection cgraph, no hidden -> host round trip.
+            int32_t tok = 0;
+            ggml_backend_tensor_get(sg->out_argmax_token, &tok, 0, sizeof(int32_t));
+            so.draft_token = tok;
+            so.draft_logit = 0.0f;
+            if (sg->out_logits && state_->draft_topk > 1) {
+                const int vocab = (int)sg->out_logits->ne[0];
+                std::vector<float> logits_buf((size_t)vocab);
+                ggml_backend_tensor_get(sg->out_logits, logits_buf.data(),
+                    0, sizeof(float) * vocab);
+                so.draft_logit = logits_buf[tok];
                 emit_topk_logprobs(logits_buf.data(), vocab,
                                    state_->draft_topk, so);
+            }
+            // Chain state: when n_heads > 1 the next head's h_prev needs the
+            // hidden.  Skip the x_normed download otherwise to keep the
+            // fused path zero-host-roundtrip.
+            if (n_heads > 1) {
+                std::vector<float> x_normed(n_embd);
+                ggml_backend_tensor_get(sg->out_x_normed, x_normed.data(),
+                    0, sizeof(float) * n_embd);
+                state_->last_hidden = std::move(x_normed);
+            }
+        } else {
+            // Unfused fallback: read hidden, project on host via target.
+            std::vector<float> x_normed(n_embd);
+            ggml_backend_tensor_get(sg->out_x_normed,
+                x_normed.data(), 0, sizeof(float) * n_embd);
+            if (state_->draft_topk > 1) {
+                std::vector<float> logits_buf;
+                int vocab = 0;
+                if (state_->target->project_hidden_to_logits(x_normed.data(), 1,
+                                                              logits_buf, vocab) &&
+                    vocab > 0) {
+                    so.draft_token = argmax(logits_buf.data(), vocab);
+                    so.draft_logit = logits_buf[so.draft_token];
+                    emit_topk_logprobs(logits_buf.data(), vocab,
+                                       state_->draft_topk, so);
+                } else {
+                    std::vector<int32_t> tok_out;
+                    if (!state_->target->project_hidden_to_tokens(x_normed.data(), 1,
+                                                                   tok_out) ||
+                        tok_out.empty()) {
+                        std::fprintf(stderr,
+                            "[qwen36_mtp gpu] project_hidden_to_tokens failed h=%d\n", h);
+                        out.clear();
+                        return false;
+                    }
+                    so.draft_token = tok_out[0];
+                    so.draft_logit = 0.0f;
+                    static bool warned = false;
+                    if (!warned) {
+                        std::fprintf(stderr,
+                            "[qwen36_mtp gpu] draft_topk=%d requested but target "
+                            "lacks project_hidden_to_logits; emitting argmax only.\n",
+                            state_->draft_topk);
+                        warned = true;
+                    }
+                }
             } else {
                 std::vector<int32_t> tok_out;
                 if (!state_->target->project_hidden_to_tokens(x_normed.data(), 1,
@@ -1511,33 +1637,10 @@ bool Qwen36MtpModule::step_batch_gpu_(int32_t current_token,
                 }
                 so.draft_token = tok_out[0];
                 so.draft_logit = 0.0f;
-                static bool warned = false;
-                if (!warned) {
-                    std::fprintf(stderr,
-                        "[qwen36_mtp gpu] draft_topk=%d requested but target "
-                        "lacks project_hidden_to_logits; emitting argmax only.\n",
-                        state_->draft_topk);
-                    warned = true;
-                }
             }
-        } else {
-            std::vector<int32_t> tok_out;
-            if (!state_->target->project_hidden_to_tokens(x_normed.data(), 1,
-                                                           tok_out) ||
-                tok_out.empty()) {
-                std::fprintf(stderr,
-                    "[qwen36_mtp gpu] project_hidden_to_tokens failed h=%d\n", h);
-                out.clear();
-                return false;
-            }
-            so.draft_token = tok_out[0];
-            so.draft_logit = 0.0f;
+            state_->last_hidden = std::move(x_normed);
         }
         out.push_back(so);
-
-        // Chain state: save x_normed as last_hidden (used only when
-        // n_heads > 1 to seed the next head's h_prev).
-        state_->last_hidden = x_normed;
         cur_token = so.draft_token;
     }
     return true;
@@ -1582,17 +1685,11 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
     }
 
     // ── GPU multi-iter chain ─────────────────────────────────────────
-    const int n_embd    = state_->weights.n_embd;
-    const int n_head    = state_->weights.n_head_count;
-    const int n_head_kv = state_->weights.n_head_kv;
-    const int key_len   = state_->weights.n_key_length;
-    const int val_len   = state_->weights.n_value_length;
-    const int ffn_len   = state_->weights.n_ffn_length;
-    const int n_rot     = std::min(64, key_len);
-    const float rope_freq_base = 1e7f;
-    const float rms_eps = 1e-6f;
-    int rope_sections[4] = { 11, 11, 10, 0 };
-
+    // Phase B+: per-iter step graphs are pulled from state_->step_sg_cache
+    // via get_or_build_step_graph_().  First-pass at each draft_pos is a
+    // build; subsequent calls are a pure tensor_set + compute.  When the
+    // bound target exposes lm_head_weight() the fused argmax output is read
+    // from the graph directly so we skip the projection-cgraph round trip.
     out.reserve(chain_depth);
 
     ggml_backend_t backend = state_->target->backend();
@@ -1609,11 +1706,10 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
             state_->weights.heads.size(), state_->head_kv.size());
         return false;
     }
-    const auto & head = state_->weights.heads[h];
 
+    const int n_embd = state_->weights.n_embd;
     int32_t cur_token = current_token;
     std::vector<float> embed_buf(n_embd);
-    std::vector<float> h_prev_buf(n_embd, 0.0f);
 
     for (int it = 0; it < chain_depth; it++) {
         const int draft_pos = base_pos + it;
@@ -1653,7 +1749,6 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
             }
             h_prev = state_->last_hidden.data();
         }
-        std::memcpy(h_prev_buf.data(), h_prev, sizeof(float) * n_embd);
 
         if (!state_->target->embed_tokens(&cur_token, 1, embed_buf.data())) {
             std::fprintf(stderr,
@@ -1661,30 +1756,18 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
             return false;
         }
 
-        // Per-iter graph rebuild — Phase A baseline.  Phase B caches.
-        if (!build_qwen36_mtp_step_graph(state_->step_sg, head,
-                                          state_->head_kv[h].k_cache,
-                                          state_->head_kv[h].v_cache,
-                                          backend,
-                                          n_embd, n_head, n_head_kv,
-                                          key_len, val_len, ffn_len,
-                                          n_rot, rope_sections,
-                                          rope_freq_base, rms_eps,
-                                          draft_pos, kv_len)) {
-            std::fprintf(stderr,
-                "[qwen36_mtp gpu chain] build_step_graph failed iter=%d\n", it);
-            return false;
-        }
+        Qwen36MtpStepGraph * sg = get_or_build_step_graph_(h, draft_pos, kv_len);
+        if (!sg) return false;
 
-        ggml_backend_tensor_set(state_->step_sg.inp_embed,
+        ggml_backend_tensor_set(sg->inp_embed,
             embed_buf.data(), 0, sizeof(float) * n_embd);
-        ggml_backend_tensor_set(state_->step_sg.inp_h_prev,
-            h_prev_buf.data(), 0, sizeof(float) * n_embd);
+        // Pass h_prev directly (no scratch memcpy — task E).
+        ggml_backend_tensor_set(sg->inp_h_prev,
+            h_prev, 0, sizeof(float) * n_embd);
         const int32_t pos[4] = { draft_pos, draft_pos, draft_pos, 0 };
-        ggml_backend_tensor_set(state_->step_sg.inp_pos,
-            pos, 0, sizeof(pos));
+        ggml_backend_tensor_set(sg->inp_pos, pos, 0, sizeof(pos));
 
-        auto st = ggml_backend_graph_compute(backend, state_->step_sg.gf);
+        auto st = ggml_backend_graph_compute(backend, sg->gf);
         if (st != GGML_STATUS_SUCCESS) {
             std::fprintf(stderr,
                 "[qwen36_mtp gpu chain] graph_compute status=%d iter=%d\n",
@@ -1692,12 +1775,28 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
             return false;
         }
 
+        StepOutput so;
+        // We need the post-norm hidden for the next iter's h_prev whether
+        // or not the LM head is fused; fused path still downloads x_normed.
         std::vector<float> x_normed(n_embd);
-        ggml_backend_tensor_get(state_->step_sg.out_x_normed,
+        ggml_backend_tensor_get(sg->out_x_normed,
             x_normed.data(), 0, sizeof(float) * n_embd);
 
-        StepOutput so;
-        if (state_->draft_topk > 1) {
+        if (sg->fused_lm_head && sg->out_argmax_token) {
+            int32_t tok = 0;
+            ggml_backend_tensor_get(sg->out_argmax_token, &tok, 0, sizeof(int32_t));
+            so.draft_token = tok;
+            so.draft_logit = 0.0f;
+            if (sg->out_logits && state_->draft_topk > 1) {
+                const int vocab = (int)sg->out_logits->ne[0];
+                std::vector<float> logits_buf((size_t)vocab);
+                ggml_backend_tensor_get(sg->out_logits, logits_buf.data(),
+                    0, sizeof(float) * vocab);
+                so.draft_logit = logits_buf[tok];
+                emit_topk_logprobs(logits_buf.data(), vocab,
+                                   state_->draft_topk, so);
+            }
+        } else if (state_->draft_topk > 1) {
             std::vector<float> logits_buf;
             int vocab = 0;
             if (state_->target->project_hidden_to_logits(x_normed.data(), 1,

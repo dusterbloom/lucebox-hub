@@ -18,6 +18,7 @@
 
 struct ggml_backend;
 typedef struct ggml_backend * ggml_backend_t;
+struct ggml_tensor;
 
 namespace dflash27b {
 
@@ -29,6 +30,19 @@ struct DFlashTarget {
     // cgraphs against the same backend should check this and fall back if
     // it's null.
     virtual ggml_backend_t backend() const { return nullptr; }
+
+    // Optional: return the LM-head weight tensor on the target's backend
+    // (shape [n_embd, n_vocab], used by ggml_mul_mat).  When non-null, the
+    // Qwen3.6 MTP step graph fuses `mul_mat(W, x_normed) -> argmax` into
+    // its own cgraph, skipping a hidden -> host -> separate-cgraph round
+    // trip per step.  Default returns nullptr so existing targets (CPU
+    // stubs) keep the project_hidden_to_* fallback path.
+    virtual ggml_tensor * lm_head_weight() const { return nullptr; }
+
+    // Optional: causal attention window the target's full-attn blocks use
+    // (kv_len - fa_window).  The MTP head uses the same window so it sees
+    // the same active context.  0 means full causal context.
+    virtual int fa_window() const { return 0; }
 
     // ── Target forward ──────────────────────────────────────────────
 

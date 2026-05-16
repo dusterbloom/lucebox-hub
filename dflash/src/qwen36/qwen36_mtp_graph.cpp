@@ -32,11 +32,18 @@ void qwen36_mtp_step_graph_free(Qwen36MtpStepGraph & sg) {
         ggml_free(sg.ctx);
         sg.ctx = nullptr;
     }
-    sg.gf            = nullptr;
-    sg.inp_embed     = nullptr;
-    sg.inp_h_prev    = nullptr;
-    sg.inp_pos       = nullptr;
-    sg.out_x_normed  = nullptr;
+    sg.gf               = nullptr;
+    sg.inp_embed        = nullptr;
+    sg.inp_h_prev       = nullptr;
+    sg.inp_pos          = nullptr;
+    sg.out_x_normed     = nullptr;
+    sg.out_argmax_token = nullptr;
+    sg.out_logits       = nullptr;
+    sg.draft_pos        = -1;
+    sg.kv_len           = -1;
+    sg.fa_window        = 0;
+    sg.topk_k           = 0;
+    sg.fused_lm_head    = false;
 }
 
 void qwen36_mtp_warm_graph_free(Qwen36MtpWarmGraph & sg) {
@@ -166,7 +173,10 @@ bool build_qwen36_mtp_step_graph(
         float rope_freq_base,
         float rms_eps,
         int draft_pos,
-        int kv_len) {
+        int kv_len,
+        int fa_window,
+        ggml_tensor * lm_head_weight,
+        int lm_head_topk) {
     qwen36_mtp_step_graph_free(sg);
 
     const int q_dim = n_head * key_len;
@@ -272,16 +282,23 @@ bool build_qwen36_mtp_step_graph(
     ggml_build_forward_expand(sg.gf, ggml_cpy(sg.ctx, Kcur_T, k_slot));
     ggml_build_forward_expand(sg.gf, ggml_cpy(sg.ctx, Vcur_T, v_slot));
 
-    // ─── Flash attention over slots [0, kv_len) ──────────────────
+    // ─── Flash attention over slots [fa_kv_lo, kv_len) ──────────
+    // fa_window: if > 0 restrict to the trailing fa_window slots so the
+    // head sees the same active window as the target's full-attn blocks.
+    const int fa_kv_lo = (fa_window > 0 && kv_len > fa_window)
+                          ? (kv_len - fa_window) : 0;
+    const int fa_kv_n  = kv_len - fa_kv_lo;
     ggml_tensor * Qfa = ggml_permute(sg.ctx, Q3, 0, 2, 1, 3);
     Qfa = ggml_cont(sg.ctx, Qfa);
 
     ggml_tensor * Kfa = ggml_view_3d(sg.ctx, head_k_cache,
-        head_dim, kv_len, n_head_kv,
-        head_k_cache->nb[1], head_k_cache->nb[2], 0);
+        head_dim, fa_kv_n, n_head_kv,
+        head_k_cache->nb[1], head_k_cache->nb[2],
+        (size_t)fa_kv_lo * head_k_cache->nb[1]);
     ggml_tensor * Vfa = ggml_view_3d(sg.ctx, head_v_cache,
-        head_dim, kv_len, n_head_kv,
-        head_v_cache->nb[1], head_v_cache->nb[2], 0);
+        head_dim, fa_kv_n, n_head_kv,
+        head_v_cache->nb[1], head_v_cache->nb[2],
+        (size_t)fa_kv_lo * head_v_cache->nb[1]);
 
     const float kq_scale = 1.0f / std::sqrt((float)head_dim);
     ggml_tensor * attn = ggml_flash_attn_ext(sg.ctx, Qfa, Kfa, Vfa,
@@ -319,6 +336,34 @@ bool build_qwen36_mtp_step_graph(
 
     ggml_build_forward_expand(sg.gf, sg.out_x_normed);
 
+    // ─── Fused LM-head projection (optional) ─────────────────────
+    // When the caller passes lm_head_weight non-null we append the LM
+    // head matmul + argmax directly to this graph so step_batch_gpu_ can
+    // avoid the hidden -> CPU -> separate projection-graph round trip
+    // that dominates per-step latency (see qwen35_dflash_target.cpp:
+    // project_hidden_to_tokens for the unfused path).
+    if (lm_head_weight) {
+        // out is shape [n_embd]; reshape to [n_embd, 1] so mul_mat against
+        // the [n_embd, n_vocab] weight matches the LM-head projection
+        // step graph (graph_builders.cpp:251).
+        ggml_tensor * x_for_lm = ggml_reshape_2d(sg.ctx, out, n_embd, 1);
+        ggml_tensor * logits   = ggml_mul_mat(sg.ctx, lm_head_weight, x_for_lm);
+        ggml_set_name(logits, "mtp_fused_logits");
+        if (lm_head_topk > 0) {
+            // Surface raw logits so the host can run log-softmax for
+            // top-K without re-running the matmul.  For K=1 we skip this
+            // and download just the argmax to keep transfer minimal.
+            ggml_set_output(logits);
+            sg.out_logits = logits;
+            ggml_build_forward_expand(sg.gf, logits);
+        }
+        ggml_tensor * argmax = ggml_argmax(sg.ctx, logits);
+        ggml_set_name(argmax, "mtp_fused_argmax");
+        ggml_set_output(argmax);
+        sg.out_argmax_token = argmax;
+        ggml_build_forward_expand(sg.gf, argmax);
+    }
+
     // ─── Allocate ────────────────────────────────────────────────
     sg.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
     if (!sg.alloc) {
@@ -329,6 +374,13 @@ bool build_qwen36_mtp_step_graph(
         std::fprintf(stderr, "[qwen36_mtp_graph] ggml_gallocr_alloc_graph failed\n");
         return false;
     }
+
+    // Record build keys for cache invalidation in Qwen36MtpModule.
+    sg.draft_pos     = draft_pos;
+    sg.kv_len        = kv_len;
+    sg.fa_window     = fa_window;
+    sg.topk_k        = lm_head_topk;
+    sg.fused_lm_head = (lm_head_weight != nullptr);
     return true;
 }
 

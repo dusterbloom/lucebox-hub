@@ -193,6 +193,15 @@ private:
     bool step_batch_gpu_(int32_t current_token,
                          int base_pos,
                          std::vector<StepOutput> & out);
+
+    // Phase B+ helper: get-or-build the cached step graph for (head_idx,
+    // draft_pos).  kv_len is derived as draft_pos+1 (chain pattern); the
+    // graph is rebuilt only on a miss or when fa_window / fused-LM-head /
+    // topk_k changed since the last build for the same slot.  Returns
+    // nullptr on build failure.
+    struct Qwen36MtpStepGraph * get_or_build_step_graph_(int head_idx,
+                                                          int draft_pos,
+                                                          int kv_len);
 };
 
 }  // namespace mtp
