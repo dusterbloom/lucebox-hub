@@ -132,19 +132,108 @@ bool Qwen35DFlashTarget::verify_tree(
         int base_pos,
         std::vector<int32_t> & out_argmax,
         std::vector<float> * out_logits) {
-    // Stage 1 stub: only handle the degenerate single-token tree by
-    // dispatching to verify_batch.  Larger trees return false so the
-    // harness falls back to chain-verify until Stage 2 lands.
-    if (tree.n_nodes != 0 || flat_tokens.size() != 1) {
+    const int N = (int)flat_tokens.size();
+    if (N <= 0) return false;
+    if (N != 1 + tree.n_nodes) return false;
+
+    // Degenerate single-token tree: cheap fast path through verify_batch.
+    if (tree.n_nodes == 0) {
+        int32_t last_tok = -1;
+        std::vector<int32_t> all_argmax;
+        if (!verify_batch(flat_tokens, base_pos, last_tok, &all_argmax)) {
+            return false;
+        }
+        out_argmax = std::move(all_argmax);
+        if (out_logits) out_logits->clear();
+        return true;
+    }
+
+    // Real tree verify — body lifted from test_dflash.cpp:3140-3231 (the
+    // ddtree-verify branch of run_qwen36_mtp_harness's spec-decode loop)
+    // minus the walk/commit policy (the harness keeps that).
+    //
+    // TODO(oracle blocker 5.3 — DeltaNet rollback): this path runs with
+    // capture_delta_intermediate=false, so DeltaNet SSM state is not
+    // snapshotted per tree-node and cannot be rolled back on partial
+    // accept.  The first speculative step per run is valid; long-horizon
+    // benches need Stage 3 (capture_delta_intermediate=true +
+    // restore_kv_at_dfs(int) adapter) which is not in this work.
+    const int hidden = w_.n_embd;
+
+    if (!build_target_step_tree(sg_, w_, cache_, backend_,
+                                /*kv_start=*/base_pos, /*n_tokens=*/N,
+                                fa_window_, kq_stride_pad_)) {
+        std::fprintf(stderr,
+            "[Qwen35DFlashTarget] verify_tree: build_target_step_tree failed: base_pos=%d N=%d\n",
+            base_pos, N);
         return false;
     }
-    int32_t last_tok = -1;
-    std::vector<int32_t> all_argmax;
-    if (!verify_batch(flat_tokens, base_pos, last_tok, &all_argmax)) {
+
+    // Embed all N flat tokens (root at slot 0, DFS-ordered tree nodes 1..N-1).
+    std::vector<float> tree_embed((size_t)hidden * N, 0.0f);
+    if (!w_.embedder.embed(flat_tokens.data(), N, tree_embed.data())) {
         return false;
     }
-    out_argmax = std::move(all_argmax);
-    if (out_logits) out_logits->clear();
+    ggml_backend_tensor_set(sg_.inp_embed, tree_embed.data(), 0,
+                            sizeof(float) * (size_t)hidden * N);
+
+    // M-RoPE axis-major positions: root at base_pos, node i at base_pos + depths[i-1].
+    // Mirrors the harness pos4 layout (4 ints per axis, axis-major).
+    std::vector<int32_t> pos4(4 * N, 0);
+    for (int i = 0; i < N; i++) {
+        const int p = base_pos + (i == 0 ? 0 : tree.depths[i - 1]);
+        pos4[0 * N + i] = p;
+        pos4[1 * N + i] = p;
+        pos4[2 * N + i] = p;
+        pos4[3 * N + i] = 0;
+    }
+    ggml_backend_tensor_set(sg_.positions, pos4.data(), 0,
+                            sizeof(int32_t) * 4 * N);
+
+    // Ancestor-only attention mask.  build_target_step_tree allocated
+    // sg.attn_mask with kv_pad = align_up(cache.max_ctx + N, kq_stride_pad);
+    // pin build_tree_mask's kv stride to the same value via kv_pad_override.
+    const int win_start = (fa_window_ > 0 && base_pos > fa_window_)
+                            ? (base_pos - fa_window_) : 0;
+    std::vector<uint16_t> mask_buf;
+    build_tree_mask(tree, base_pos, mask_buf, kq_stride_pad_,
+                    win_start, /*kv_pad_override=*/cache_.max_ctx + N);
+    ggml_backend_tensor_set(sg_.attn_mask, mask_buf.data(), 0,
+                            sizeof(uint16_t) * mask_buf.size());
+
+    // parent_ids: root is -1; node i (1..n_nodes) points to its tree parent.
+    std::vector<int32_t> parent_ids(N, 0);
+    parent_ids[0] = -1;
+    for (int i = 1; i < N; i++) parent_ids[i] = (int32_t)tree.parents[i];
+    ggml_backend_tensor_set(sg_.parent_ids, parent_ids.data(), 0,
+                            sizeof(int32_t) * N);
+
+    auto st = ggml_backend_graph_compute(backend_, sg_.gf);
+    if (st != GGML_STATUS_SUCCESS) {
+        std::fprintf(stderr,
+            "[Qwen35DFlashTarget] verify_tree: graph_compute failed: base_pos=%d N=%d status=%d\n",
+            base_pos, N, (int)st);
+        return false;
+    }
+
+    // Read argmax for all N tree positions.
+    out_argmax.resize(N);
+    ggml_backend_tensor_get(sg_.argmax_tokens, out_argmax.data(), 0,
+                            sizeof(int32_t) * N);
+
+    // Optional: pull the full [N × vocab] logits.
+    if (out_logits) {
+        const int vocab = sg_.logits ? (int)sg_.logits->ne[0] : 0;
+        if (vocab <= 0) {
+            out_logits->clear();
+        } else {
+            out_logits->resize((size_t)N * vocab);
+            ggml_backend_tensor_get(sg_.logits, out_logits->data(), 0,
+                                    sizeof(float) * (size_t)N * vocab);
+        }
+    }
+
+    cache_.cur_pos = base_pos + N;
     return true;
 }
 

@@ -912,7 +912,11 @@ static int run_qwen36_mtp_harness(const char * target_path,
                     L, K,
                     std::max(1, ddtree_budget),
                     ddtree_chain_seed);
-                sum_tree_size += tree.n_nodes;
+                // N = 1 + tree.n_nodes — count root + DFS-ordered nodes.
+                // Per Stage 2 brief: report mean_tree_size = N (the actual
+                // graph_compute batch size for tree-verify), not the
+                // accepted-path depth.
+                sum_tree_size += 1 + tree.n_nodes;
                 n_steps++;
                 (void)ddtree_temp;  // temperature is consumed by extract_draft_topk
                                     // when called from the external-drafter path;
