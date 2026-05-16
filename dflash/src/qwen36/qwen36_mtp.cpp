@@ -562,6 +562,25 @@ bool Qwen36MtpModule::init(const std::string & gguf_path,
         return false;
     }
 
+    // Hard contract — current GPU paths (warm_head_kv, step_batch_gpu_,
+    // step_chain) hardcode h=0 and chain only against the first NextN head.
+    // A GGUF with n_heads>1 (e.g. DeepSeek-V3 NextN can ship up to 3) would
+    // silently produce wrong drafts: head_kv is allocated for all heads but
+    // only head 0 is warmed/written.  Fail loudly until the multi-head path
+    // is built and tested.  Per momus review, "the one thing nobody checked".
+    if (state_->weights.n_heads > 1) {
+        char buf[256];
+        std::snprintf(buf, sizeof(buf),
+            "Qwen36MtpModule::init: n_heads=%d (>1) is not supported. "
+            "warm_head_kv only initializes head 0 and step_chain reuses "
+            "head 0 across iters; multi-head GGUFs would silently produce "
+            "wrong drafts. See momus review.",
+            state_->weights.n_heads);
+        out_error = buf;
+        state_->weights = {};
+        return false;
+    }
+
     // Per-head KV cache allocation.  Two modes:
     //   - GPU mode (default when target has a backend): allocate ggml tensors
     //     [head_dim, n_ctx, n_head_kv] on backbone backend so the step cgraph
@@ -1811,9 +1830,24 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
                 h_prev = state_->target->hidden_at_pos_pre_norm(base_pos - 1);
                 if (!h_prev) {
                     // Fallback: adapter did not capture the pre-norm
-                    // sequence this verify_batch.  Post-norm is acceptable
-                    // at D=1 (single iter, no head re-feed) but degrades
-                    // D>=2 accept; the alternative is failing the chain.
+                    // sequence this verify_batch.  Post-norm degrades
+                    // D>=2 accept (commit 9850ec9 fixed the intra-iter
+                    // re-feed; this is the OUTER seed and silently
+                    // returns to the pre-9850ec9 regime when it fires).
+                    // Warn once per process so production knows.
+                    static bool warned_post_norm = false;
+                    if (!warned_post_norm) {
+                        std::fprintf(stderr,
+                            "[qwen36_mtp gpu chain] WARN: hidden_at_pos_pre_norm "
+                            "returned null at base_pos=%d, falling back to "
+                            "post-norm hidden. This silently undoes the "
+                            "PR #22673 t_h_pre_norm fix at iter 0 and crushes "
+                            "D>=2 accept. Caller should call "
+                            "enable_hidden_seq_capture(true) on the target "
+                            "BEFORE the prefill verify_batch. (warning fires once)\n",
+                            base_pos);
+                        warned_post_norm = true;
+                    }
                     h_prev = state_->target->hidden_at_pos(base_pos - 1);
                 }
             }
