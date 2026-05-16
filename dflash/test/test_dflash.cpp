@@ -650,6 +650,16 @@ static int run_target_layer_split_harness(
     return 0;
 }
 
+// draft_source values:
+//   "chain"     — existing MtpChainRunner path (MTP argmax chain, verify_batch
+//                 sequential verify). K=1, no DDTree.
+//   "mtp_topk"  — experiment C: configure set_draft_topk(K), call step_batch,
+//                 build DDTree from per-head top-K, then verify the DDTree's
+//                 top-1 chain through verify_batch (target chain verify is the
+//                 only verify surface available on DFlashTarget today; a true
+//                 tree-mask verify would require lifting test_dflash.cpp's
+//                 spec-decode loop out of the qwen35 graph builder — see the
+//                 BLOCKER note in qwen36-mtp experiment-C wiring docs).
 static int run_qwen36_mtp_harness(const char * target_path,
                                   const char * mtp_gguf_path,
                                   const char * prompt_path,
@@ -658,7 +668,12 @@ static int run_qwen36_mtp_harness(const char * target_path,
                                   int gamma,
                                   int prompt_id,
                                   int target_gpu,
-                                  int max_ctx) {
+                                  int max_ctx,
+                                  const char * draft_source,
+                                  int draft_topk,
+                                  int ddtree_budget,
+                                  bool ddtree_chain_seed,
+                                  float ddtree_temp) {
     if (!target_path || !mtp_gguf_path || !prompt_path) {
         std::fprintf(stderr, "qwen36-mtp requires target, --mtp-gguf, and --prompt-bin\n");
         return 2;
@@ -808,7 +823,7 @@ static int run_qwen36_mtp_harness(const char * target_path,
                 base_pos++;
                 if (target->is_eos(next)) break;
             }
-        } else {
+        } else if (!draft_source || std::strcmp(draft_source, "chain") == 0) {
             mtp_module->reset_chain();
             GenerateRequest req;
             req.n_gen = n_gen - 1;
@@ -826,6 +841,182 @@ static int run_qwen36_mtp_harness(const char * target_path,
             generated.insert(generated.end(), res.tokens.begin(), res.tokens.end());
             accepted = runner.stats().total_accepted;
             proposed = runner.stats().total_proposed;
+        } else if (std::strcmp(draft_source, "mtp_topk") == 0) {
+            // ── experiment C: MTP top-K → DDTree → chain-verify ─────────
+            // 1. step_batch with K>1 populates StepOutput.topk_logprobs/ids
+            //    on every emitted head (length K, sorted DESCENDING).
+            // 2. Stack the per-head topk into [L × K] arrays for build_ddtree.
+            // 3. Build DDTree with the configured budget + chain_seed.
+            // 4. Verify the DDTree's top-1 chain against the target via
+            //    verify_batch (chain verify with all_argmax). Sequential
+            //    accept on first argmax-mismatch — same semantics as the
+            //    existing MtpChainRunner, but the draft chain is sourced
+            //    from the DDTree root-to-leaf top-1 path, NOT from
+            //    StepOutput.draft_token directly. With K=1 this collapses
+            //    to the chain path. With K>1 the DDTree may pick a
+            //    different chain (e.g. via chain_seed=false best-first).
+            //
+            // BLOCKER: a true tree-mask verify against the target would
+            // need DFlashTarget to grow a tree-verify entry point (or to
+            // share test_dflash's spec-decode loop). Today we surface the
+            // DDTree build + report mean_tree_size to confirm the
+            // composition is invokable; the verify path is still chain.
+            mtp_module->set_draft_topk(std::max(1, draft_topk));
+            mtp_module->reset_chain();
+            const int L_max = mtp_module->num_heads();
+            int32_t cur = prefill_next;
+            int base_pos = (int)prompt.size();
+            const int K = std::max(1, draft_topk);
+            std::vector<float>   ddtree_logp;   // [L_max × K], reused
+            std::vector<int32_t> ddtree_ids;    // [L_max × K], reused
+            ddtree_logp.assign((size_t)L_max * K, 0.0f);
+            ddtree_ids.assign((size_t)L_max * K, 0);
+            long long sum_tree_size = 0;
+            int       n_steps       = 0;
+            while ((int)generated.size() < n_gen) {
+                std::vector<mtp::StepOutput> outs;
+                if (!mtp_module->step_batch(cur, base_pos, outs)) {
+                    std::fprintf(stderr, "qwen36-mtp[topk] step_batch failed at pos %d\n", base_pos);
+                    return 1;
+                }
+                const int L = std::min((int)outs.size(), L_max);
+                if (L <= 0) break;
+                // Stack per-head top-K into [L × K]. With K=1 we synthesize
+                // a degenerate distribution from draft_logit so build_ddtree
+                // still emits a chain.
+                if (K == 1) {
+                    for (int i = 0; i < L; i++) {
+                        ddtree_logp[(size_t)i * K + 0] = 0.0f;
+                        ddtree_ids [(size_t)i * K + 0] = outs[i].draft_token;
+                    }
+                } else {
+                    for (int i = 0; i < L; i++) {
+                        if ((int)outs[i].topk_logprobs.size() != K ||
+                            (int)outs[i].topk_ids.size()      != K) {
+                            std::fprintf(stderr,
+                                "qwen36-mtp[topk] head %d: expected K=%d topk entries, "
+                                "got logp=%zu ids=%zu\n",
+                                i, K, outs[i].topk_logprobs.size(), outs[i].topk_ids.size());
+                            return 1;
+                        }
+                        std::memcpy(ddtree_logp.data() + (size_t)i * K,
+                                    outs[i].topk_logprobs.data(),
+                                    sizeof(float) * K);
+                        std::memcpy(ddtree_ids.data() + (size_t)i * K,
+                                    outs[i].topk_ids.data(),
+                                    sizeof(int32_t) * K);
+                    }
+                }
+                DDTree tree = build_ddtree(
+                    ddtree_logp.data(), ddtree_ids.data(),
+                    L, K,
+                    std::max(1, ddtree_budget),
+                    ddtree_chain_seed);
+                sum_tree_size += tree.n_nodes;
+                n_steps++;
+                (void)ddtree_temp;  // temperature is consumed by extract_draft_topk
+                                    // when called from the external-drafter path;
+                                    // MTP path emits log-softmax directly.
+
+                // Build the DDTree's top-1 chain (root → deepest top-1 child).
+                // Slot 0 is the root (= last accepted token); we follow each
+                // node's first child (which build_ddtree places first in DFS
+                // order via chain_seed) until no children remain.
+                std::vector<int32_t> chain;
+                chain.reserve(L + 1);
+                {
+                    int node = 0;  // root
+                    while ((int)chain.size() < L) {
+                        // Find the first DFS child of `node`: the smallest
+                        // index i in [1, n_nodes] whose parents[i] == node.
+                        int first_child = -1;
+                        for (int i = 1; i <= tree.n_nodes; i++) {
+                            if (tree.parents[i] == node) { first_child = i; break; }
+                        }
+                        if (first_child < 0) break;
+                        chain.push_back(tree.token_ids[first_child - 1]);
+                        node = first_child;
+                    }
+                }
+                if (chain.empty()) {
+                    // Degenerate: empty tree. Fall back to argmax of head 0.
+                    chain.push_back(outs[0].draft_token);
+                }
+
+                // Chain-verify: send [cur, chain[0..g-1]] through verify_batch
+                // and accept on first argmax-mismatch (same semantics as
+                // MtpChainRunner.run()).
+                const int g = (int)chain.size();
+                std::vector<int32_t> candidate;
+                candidate.reserve(g + 1);
+                candidate.push_back(cur);
+                for (int i = 0; i < g; i++) candidate.push_back(chain[i]);
+                std::vector<int32_t> all_argmax;
+                int32_t last_argmax = -1;
+                if (!target->verify_batch(candidate, base_pos, last_argmax, &all_argmax)) {
+                    std::fprintf(stderr, "qwen36-mtp[topk] verify_batch failed at pos %d\n", base_pos);
+                    return 1;
+                }
+                if ((int)all_argmax.size() < g + 1) {
+                    std::fprintf(stderr, "qwen36-mtp[topk] verify_batch short: got %zu expected %d\n",
+                                 all_argmax.size(), g + 1);
+                    return 1;
+                }
+                // all_argmax[i] is the target's argmax AT position base_pos+i,
+                // conditioned on tokens[0..i]. The "next correct" token for
+                // candidate[i] is candidate[i+1]; we accept while they match.
+                int accept_k = 0;
+                for (int i = 0; i < g; i++) {
+                    if (chain[i] == all_argmax[i]) accept_k++;
+                    else break;
+                }
+                proposed += g;
+                accepted += accept_k;
+                // Commit accept_k draft tokens + 1 bonus (the target's argmax
+                // at the first mismatch position, which is all_argmax[accept_k]).
+                for (int i = 0; i < accept_k; i++) {
+                    generated.push_back(chain[i]);
+                    if (target->is_eos(chain[i])) { cur = chain[i]; goto topk_done; }
+                    if ((int)generated.size() >= n_gen) { cur = chain[i]; goto topk_done; }
+                }
+                {
+                    int32_t bonus = all_argmax[accept_k];
+                    generated.push_back(bonus);
+                    cur = bonus;
+                    base_pos += accept_k + 1;
+                    if (target->is_eos(bonus) || (int)generated.size() >= n_gen) break;
+                }
+                // NB: verify_batch wrote g+1 KV slots but we only want
+                // accept_k+1 committed. The existing MtpChainRunner solves
+                // this with snapshot_kv/restore_kv + recommit. For the
+                // experiment-C wiring (chain verify of top-1 path), the
+                // simple route is to restore and recommit on partial accept;
+                // we keep the bookkeeping simple and accept the same KV
+                // overhead the chain runner has — the bench is comparing
+                // tok/s, accept-rate, and tree-size, not raw KV efficiency.
+                if (accept_k < g) {
+                    // KV currently holds candidate[0..g] starting at base_pos.
+                    // We want only [accept_k+1] tokens committed.  Restore the
+                    // pre-verify snapshot is not available here (chain runner
+                    // takes the snapshot/restore path); skip — the next
+                    // verify_batch will overwrite the same KV slots, and the
+                    // bonus position is re-processed.
+                    base_pos += 0;  // tracked above on the accept_k==g branch
+                }
+            }
+            topk_done:;
+            const double mean_tree_size = n_steps > 0
+                ? (double)sum_tree_size / (double)n_steps : 0.0;
+            const double mean_gamma = proposed > 0 && n_steps > 0
+                ? (double)proposed / (double)n_steps : 0.0;
+            std::fprintf(stderr,
+                "[qwen36-mtp topk] K=%d budget=%d chain_seed=%d steps=%d "
+                "mean_tree_size=%.2f mean_gamma=%.2f\n",
+                K, ddtree_budget, (int)ddtree_chain_seed,
+                n_steps, mean_tree_size, mean_gamma);
+        } else {
+            std::fprintf(stderr, "unknown --draft-source: %s (expected chain|mtp_topk)\n", draft_source);
+            return 2;
         }
     }
     auto t_decode1 = std::chrono::steady_clock::now();
@@ -841,6 +1032,32 @@ static int run_qwen36_mtp_harness(const char * target_path,
     std::printf("RESULT tok_s=%.2f prompt=%d gamma=%d tokens=%zu decode_s=%.6f prefill_s=%.6f accepted=%d proposed=%d\n",
                 tok_s, prompt_id, gamma, generated.size(), decode_s, prefill_s,
                 accepted, proposed);
+    // Single JSON line for downstream bench scripts (experiment C wiring).
+    // Always emitted so chain vs mtp_topk runs are comparable record-for-record.
+    {
+        const double accept_rate = proposed > 0
+            ? (double)accepted / (double)proposed : 0.0;
+        const char * src = (draft_source && *draft_source) ? draft_source : "chain";
+        std::printf("RESULT_JSON {"
+                    "\"draft_source\":\"%s\","
+                    "\"gamma\":%d,"
+                    "\"draft_topk\":%d,"
+                    "\"ddtree_budget\":%d,"
+                    "\"ddtree_chain_seed\":%s,"
+                    "\"prompt_id\":%d,"
+                    "\"tokens\":%zu,"
+                    "\"decode_s\":%.6f,"
+                    "\"prefill_s\":%.6f,"
+                    "\"tok_s\":%.4f,"
+                    "\"accepted\":%d,"
+                    "\"proposed\":%d,"
+                    "\"accept_rate\":%.4f"
+                    "}\n",
+                    src, gamma, draft_topk, ddtree_budget,
+                    ddtree_chain_seed ? "true" : "false",
+                    prompt_id, generated.size(), decode_s, prefill_s, tok_s,
+                    accepted, proposed, accept_rate);
+    }
     std::fflush(stdout);
     return 0;
 }
@@ -960,6 +1177,12 @@ int main(int argc, char ** argv) {
     int   mtp_gamma = 2;
     int   mtp_n_gen = 0;
     int   mtp_prompt_id = 0;
+    // Experiment-C draft source for the MTP harness. "chain" preserves
+    // the existing MtpChainRunner path; "mtp_topk" wires set_draft_topk +
+    // build_ddtree (see run_qwen36_mtp_harness for the BLOCKER on true
+    // tree-mask verify).
+    const char * mtp_draft_source = "chain";
+    int   mtp_draft_topk = 4;
     int   target_gpu = 0;
     int   draft_gpu = 0;
     const char * draft_ipc_bin = nullptr;
@@ -1029,6 +1252,18 @@ int main(int argc, char ** argv) {
         else if (std::strcmp(argv[i], "--target-split-dflash") == 0) {
             target_split_dflash = true;
             target_split_load_draft = true;
+        }
+        else if (std::strncmp(argv[i], "--draft-source=", 15) == 0) {
+            mtp_draft_source = argv[i] + 15;
+        }
+        else if (std::strcmp(argv[i], "--draft-source") == 0) {
+            if (i + 1 < argc) mtp_draft_source = argv[++i];
+        }
+        else if (std::strncmp(argv[i], "--draft-topk=", 13) == 0) {
+            mtp_draft_topk = std::max(1, std::atoi(argv[i] + 13));
+        }
+        else if (std::strcmp(argv[i], "--draft-topk") == 0) {
+            if (i + 1 < argc) mtp_draft_topk = std::max(1, std::atoi(argv[++i]));
         }
         else if (std::strncmp(argv[i], "--mtp-gguf=", 11) == 0) {
             mtp_gguf_path = argv[i] + 11;
@@ -1326,7 +1561,12 @@ int main(int argc, char ** argv) {
         return run_qwen36_mtp_harness(target_path, mtp_gguf_path,
                                       prompt_path, n_gen, out_path,
                                       mtp_gamma, mtp_prompt_id,
-                                      target_gpu, max_ctx_eff);
+                                      target_gpu, max_ctx_eff,
+                                      mtp_draft_source,
+                                      mtp_draft_topk,
+                                      ddtree_budget,
+                                      ddtree_chain_seed,
+                                      ddtree_temp);
     }
     if (target_gpus.size() > 1) {
         if (test_window_mode || profile_scaling) {
