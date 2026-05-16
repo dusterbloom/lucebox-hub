@@ -133,6 +133,7 @@ public:
     bool step_batch(int32_t current_token,
                     int base_pos,
                     std::vector<StepOutput> & out) override;
+    void set_draft_topk(int k) override;
 
     // Receive the backbone's final post-norm hidden state for the last committed
     // token. Called by the chain runner before each step_batch(). The pointer

@@ -167,6 +167,32 @@ bool Qwen35DFlashTarget::project_hidden_to_tokens(
     return true;
 }
 
+bool Qwen35DFlashTarget::project_hidden_to_logits(
+        const float * hidden,
+        int n_tokens,
+        std::vector<float> & logits_out,
+        int & out_vocab) {
+    out_vocab = 0;
+    if (n_tokens <= 0) return false;
+
+    if (!build_lm_head_projection_step(proj_sg_, w_, backend_, n_tokens)) {
+        return false;
+    }
+
+    ggml_backend_tensor_set(proj_sg_.hidden_input, hidden, 0,
+                            sizeof(float) * (size_t)n_tokens * w_.n_embd);
+
+    auto st = ggml_backend_graph_compute(backend_, proj_sg_.gf);
+    if (st != GGML_STATUS_SUCCESS) return false;
+
+    const int vocab = (int)proj_sg_.logits->ne[0];
+    logits_out.resize((size_t)n_tokens * vocab);
+    ggml_backend_tensor_get(proj_sg_.logits, logits_out.data(), 0,
+                            sizeof(float) * (size_t)n_tokens * vocab);
+    out_vocab = vocab;
+    return true;
+}
+
 int Qwen35DFlashTarget::mask_token_id() const {
     return w_.mask_token_id;
 }

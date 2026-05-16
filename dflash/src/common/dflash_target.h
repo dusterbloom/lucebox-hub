@@ -70,6 +70,21 @@ struct DFlashTarget {
                                           int n_tokens,
                                           std::vector<int32_t> & tokens_out) = 0;
 
+    // Optional: project draft hidden states through the target's lm_head
+    // and return the full raw logits (n_tokens * vocab floats) on host.
+    // Used by MTP drafters that need a top-K surface for DDTree (the
+    // argmax path above hides the distribution). Default returns false so
+    // existing targets compile unchanged; concrete targets that wire it
+    // up resize `logits_out` to n_tokens * vocab and return true. The
+    // `out_vocab` param reports the vocab dim back to the caller.
+    virtual bool project_hidden_to_logits(const float * /*hidden*/,
+                                          int /*n_tokens*/,
+                                          std::vector<float> & /*logits_out*/,
+                                          int & out_vocab) {
+        out_vocab = 0;
+        return false;
+    }
+
     // ── Configuration for draft model ───────────────────────────────
 
     // Target's hidden dimension (draft model must match).

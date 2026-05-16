@@ -57,6 +57,11 @@ public:
                                   int n_tokens,
                                   std::vector<int32_t> & tokens_out) override;
 
+    bool project_hidden_to_logits(const float * hidden,
+                                  int n_tokens,
+                                  std::vector<float> & logits_out,
+                                  int & out_vocab) override;
+
     int hidden_size() const override { return w_.n_embd; }
     int mask_token_id() const override;
     const std::vector<int> & capture_layer_ids() const override;

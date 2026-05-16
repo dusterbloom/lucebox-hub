@@ -55,6 +55,16 @@ struct StepOutput {
     int32_t              draft_token = -1;
     float                draft_logit = 0.0f;
     std::vector<float>   next_hidden;   // ExternalDrafter writes h_post; empty for NativeHeads
+
+    // Optional top-K logprobs surface for tree-structured drafting (DDTree).
+    // Empty when the module is configured for argmax-only drafting (the
+    // default). When populated by NativeHeads with K>1, both vectors are
+    // length K, sorted DESCENDING by logprob (rank 0 == argmax). For
+    // multi-head emission the runner builds a [L * K] layout by stacking
+    // the per-head vectors in order; each StepOutput holds the K entries
+    // for its own depth.
+    std::vector<float>   topk_logprobs;
+    std::vector<int32_t> topk_ids;
 };
 
 // ── Common base ─────────────────────────────────────────────────────────
@@ -152,6 +162,14 @@ struct INativeMtp : IMtpModule {
     virtual bool step_batch(int32_t current_token,
                             int base_pos,
                             std::vector<StepOutput> & out) = 0;
+
+    // Configure per-head top-K logprob emission. Default K=1 means argmax
+    // only (StepOutput.topk_* stays empty — pre-existing behavior). With
+    // K>1, step_batch additionally fills StepOutput.topk_logprobs and
+    // topk_ids (length K, sorted DESCENDING) on every emitted head, which
+    // the DDTree builder consumes. Concrete impls override; the default
+    // no-op keeps fake/stub subclasses compatible with the existing ABI.
+    virtual void set_draft_topk(int /*k*/) {}
 };
 
 }  // namespace mtp

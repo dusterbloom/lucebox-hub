@@ -43,6 +43,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace dflash27b::mtp {
@@ -133,6 +134,41 @@ static int32_t argmax(const float * logits, int n) {
         if (logits[i] > logits[best]) best = i;
     }
     return best;
+}
+
+// Fill StepOutput.topk_logprobs / topk_ids with the K highest log-softmax
+// entries from `logits` (length n_vocab), sorted DESCENDING by logprob.
+// Uses partial_sort over (logprob, id) pairs — O(n_vocab + K log K) is
+// trivial vs the per-head TRMBlock forward and avoids a full sort.
+static void emit_topk_logprobs(const float * logits, int n_vocab, int K,
+                               mtp::StepOutput & out) {
+    K = std::min(K, n_vocab);
+    if (K <= 0) return;
+
+    // log-softmax: stable via max-shift + logsumexp.
+    float max_l = logits[0];
+    for (int i = 1; i < n_vocab; i++) if (logits[i] > max_l) max_l = logits[i];
+    double denom = 0.0;
+    for (int i = 0; i < n_vocab; i++) denom += std::exp((double)(logits[i] - max_l));
+    const float log_denom = (float)std::log(denom) + max_l;
+
+    // Pair (logprob, id); partial_sort top-K descending.
+    std::vector<std::pair<float, int32_t>> scratch;
+    scratch.reserve(n_vocab);
+    for (int i = 0; i < n_vocab; i++) {
+        scratch.emplace_back(logits[i] - log_denom, (int32_t)i);
+    }
+    std::partial_sort(scratch.begin(), scratch.begin() + K, scratch.end(),
+                      [](const auto & a, const auto & b) {
+                          return a.first > b.first;
+                      });
+
+    out.topk_logprobs.resize(K);
+    out.topk_ids.resize(K);
+    for (int i = 0; i < K; i++) {
+        out.topk_logprobs[i] = scratch[i].first;
+        out.topk_ids[i]      = scratch[i].second;
+    }
 }
 
 // Per-head RMSNorm: apply rmsnorm_cpu to each n_per_head-element slice of `x`
@@ -424,6 +460,13 @@ struct Qwen36MtpModule::State {
     Qwen36MtpStepGraph        step_sg;
     // Cached warmup graph (rebuilt per call because n_tokens varies).
     Qwen36MtpWarmGraph        warm_sg;
+
+    // Per-head top-K logprob emission. K=1 means argmax-only (legacy ABI:
+    // StepOutput.topk_* stays empty). K>1 populates the topk surface in
+    // every emitted StepOutput. Configured once via set_draft_topk();
+    // persists across reset_chain() since the bench/harness toggles K at
+    // setup time, not per chain.
+    int                       draft_topk = 1;
 };
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -580,6 +623,10 @@ void Qwen36MtpModule::reset_chain() {
     }
     state_->initial_hidden_ptr = nullptr;
     state_->initial_hidden_dim = 0;
+}
+
+void Qwen36MtpModule::set_draft_topk(int k) {
+    state_->draft_topk = (k >= 1) ? k : 1;
 }
 
 void Qwen36MtpModule::shutdown() {
@@ -1026,6 +1073,10 @@ bool Qwen36MtpModule::step_batch(int32_t current_token,
                        logits_buf.data(), n_vocab, n_embd);
             step_out.draft_token = argmax(logits_buf.data(), n_vocab);
             step_out.draft_logit = logits_buf[step_out.draft_token];
+            if (state_->draft_topk > 1) {
+                emit_topk_logprobs(logits_buf.data(), n_vocab,
+                                   state_->draft_topk, step_out);
+            }
         } else {
             // Standard path: shared LM head via target->project_hidden_to_tokens.
             std::vector<int32_t> tok_out;
@@ -1038,6 +1089,21 @@ bool Qwen36MtpModule::step_batch(int32_t current_token,
             }
             step_out.draft_token = tok_out[0];
             step_out.draft_logit = 0.0f;  // logit unavailable via this path
+            if (state_->draft_topk > 1) {
+                // Top-K via the shared backbone LM head is not yet wired through
+                // DFlashTarget; surface the limitation rather than silently
+                // emitting a chain-only tree. Tracked: extend DFlashTarget with
+                // project_hidden_to_logits() (Task 1 follow-up for GPU bench).
+                static bool warned = false;
+                if (!warned) {
+                    std::fprintf(stderr,
+                        "[qwen36_mtp] step_batch: draft_topk=%d requested but "
+                        "head has no explicit shared_head_head matrix; "
+                        "top-K surface is empty for this run (argmax only).\n",
+                        state_->draft_topk);
+                    warned = true;
+                }
+            }
         }
 
         out.push_back(std::move(step_out));
@@ -1398,19 +1464,55 @@ bool Qwen36MtpModule::step_batch_gpu_(int32_t current_token,
             x_normed.data(), 0, sizeof(float) * n_embd);
 
         // ── Project through shared LM head ──────────────────────────────
-        std::vector<int32_t> tok_out;
-        if (!state_->target->project_hidden_to_tokens(x_normed.data(), 1,
-                                                       tok_out) ||
-            tok_out.empty()) {
-            std::fprintf(stderr,
-                "[qwen36_mtp gpu] project_hidden_to_tokens failed h=%d\n", h);
-            out.clear();
-            return false;
-        }
-
         StepOutput so;
-        so.draft_token = tok_out[0];
-        so.draft_logit = 0.0f;
+        if (state_->draft_topk > 1) {
+            // Top-K path: pull raw logits so we can emit topk_logprobs/ids
+            // alongside the argmax token.  Targets that don't support this
+            // (default base impl) return false; we fall back to argmax-only
+            // and leave topk_* empty.
+            std::vector<float> logits_buf;
+            int vocab = 0;
+            if (state_->target->project_hidden_to_logits(x_normed.data(), 1,
+                                                          logits_buf, vocab) &&
+                vocab > 0) {
+                so.draft_token = argmax(logits_buf.data(), vocab);
+                so.draft_logit = logits_buf[so.draft_token];
+                emit_topk_logprobs(logits_buf.data(), vocab,
+                                   state_->draft_topk, so);
+            } else {
+                std::vector<int32_t> tok_out;
+                if (!state_->target->project_hidden_to_tokens(x_normed.data(), 1,
+                                                               tok_out) ||
+                    tok_out.empty()) {
+                    std::fprintf(stderr,
+                        "[qwen36_mtp gpu] project_hidden_to_tokens failed h=%d\n", h);
+                    out.clear();
+                    return false;
+                }
+                so.draft_token = tok_out[0];
+                so.draft_logit = 0.0f;
+                static bool warned = false;
+                if (!warned) {
+                    std::fprintf(stderr,
+                        "[qwen36_mtp gpu] draft_topk=%d requested but target "
+                        "lacks project_hidden_to_logits; emitting argmax only.\n",
+                        state_->draft_topk);
+                    warned = true;
+                }
+            }
+        } else {
+            std::vector<int32_t> tok_out;
+            if (!state_->target->project_hidden_to_tokens(x_normed.data(), 1,
+                                                           tok_out) ||
+                tok_out.empty()) {
+                std::fprintf(stderr,
+                    "[qwen36_mtp gpu] project_hidden_to_tokens failed h=%d\n", h);
+                out.clear();
+                return false;
+            }
+            so.draft_token = tok_out[0];
+            so.draft_logit = 0.0f;
+        }
         out.push_back(so);
 
         // Chain state: save x_normed as last_hidden (used only when
