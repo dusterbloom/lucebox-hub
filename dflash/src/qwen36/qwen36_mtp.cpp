@@ -1583,13 +1583,16 @@ bool Qwen36MtpModule::step_batch_gpu_(int32_t current_token,
                                    state_->draft_topk, so);
             }
             // Chain state: when n_heads > 1 the next head's h_prev needs the
-            // hidden.  Skip the x_normed download otherwise to keep the
-            // fused path zero-host-roundtrip.
+            // hidden.  Skip the download otherwise to keep the fused path
+            // zero-host-roundtrip.  Read PRE-shared_head_norm hidden — feeding
+            // post-norm here causes the next iter's `hnorm` to double-
+            // normalise (see qwen36_mtp_graph.cpp pre-norm output comment;
+            // mirrors llama.cpp PR #22673 `t_h_pre_norm` design).
             if (n_heads > 1) {
-                std::vector<float> x_normed(n_embd);
-                ggml_backend_tensor_get(sg->out_x_normed, x_normed.data(),
+                std::vector<float> h_pre(n_embd);
+                ggml_backend_tensor_get(sg->out_h_pre_norm, h_pre.data(),
                     0, sizeof(float) * n_embd);
-                state_->last_hidden = std::move(x_normed);
+                state_->last_hidden = std::move(h_pre);
             }
         } else {
             // Unfused fallback: read hidden, project on host via target.
@@ -1640,7 +1643,16 @@ bool Qwen36MtpModule::step_batch_gpu_(int32_t current_token,
                 so.draft_token = tok_out[0];
                 so.draft_logit = 0.0f;
             }
-            state_->last_hidden = std::move(x_normed);
+            // last_hidden must be PRE-shared_head_norm (chain h_prev contract;
+            // see qwen36_mtp_graph.cpp pre-norm output comment and
+            // llama.cpp PR #22673 `t_h_pre_norm`).  `x_normed` is consumed
+            // above for the LM-head projection only.
+            if (n_heads > 1) {
+                std::vector<float> h_pre(n_embd);
+                ggml_backend_tensor_get(sg->out_h_pre_norm, h_pre.data(),
+                    0, sizeof(float) * n_embd);
+                state_->last_hidden = std::move(h_pre);
+            }
         }
         out.push_back(so);
         cur_token = so.draft_token;
@@ -1778,11 +1790,24 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
         }
 
         StepOutput so;
-        // We need the post-norm hidden for the next iter's h_prev whether
-        // or not the LM head is fused; fused path still downloads x_normed.
-        std::vector<float> x_normed(n_embd);
-        ggml_backend_tensor_get(sg->out_x_normed,
-            x_normed.data(), 0, sizeof(float) * n_embd);
+        // We need the PRE-shared_head_norm hidden for the next iter's
+        // h_prev (mirrors llama.cpp PR #22673 `t_h_pre_norm`; feeding
+        // post-norm here double-normalises on the next iter's `hnorm`
+        // and was the root of the D>1 compound-decay regression — at
+        // D=3 per-position accept fell from ~91% to ~67%).  The
+        // unfused-LM-head branch additionally needs the post-norm
+        // hidden for the on-host projection; download both when needed.
+        std::vector<float> x_normed;
+        const bool need_x_normed =
+            !(sg->fused_lm_head && sg->out_argmax_token);
+        if (need_x_normed) {
+            x_normed.resize(n_embd);
+            ggml_backend_tensor_get(sg->out_x_normed,
+                x_normed.data(), 0, sizeof(float) * n_embd);
+        }
+        std::vector<float> h_pre(n_embd);
+        ggml_backend_tensor_get(sg->out_h_pre_norm,
+            h_pre.data(), 0, sizeof(float) * n_embd);
 
         if (sg->fused_lm_head && sg->out_argmax_token) {
             int32_t tok = 0;
@@ -1834,9 +1859,11 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
         }
         out.push_back(so);
 
-        // Stash post-shared_head_norm hidden for next iter's h_prev and
-        // advance cur_token to the freshly drafted token.
-        state_->last_hidden = std::move(x_normed);
+        // Stash PRE-shared_head_norm hidden for next iter's h_prev and
+        // advance cur_token to the freshly drafted token.  Post-norm here
+        // (the previous behaviour) compounded a distribution drift per
+        // depth — see the pre-norm-hidden comment above.
+        state_->last_hidden = std::move(h_pre);
         cur_token = so.draft_token;
     }
     return true;

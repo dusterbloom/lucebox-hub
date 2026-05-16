@@ -45,6 +45,14 @@ struct Qwen36MtpStepGraph {
 
     // Outputs.
     ggml_tensor * out_x_normed     = nullptr;  // [n_embd]   f32 — post shared_head_norm hidden
+    // Pre-shared_head_norm hidden (post FFN residual `add`).  Mirrors
+    // llama.cpp PR #22673's `t_h_pre_norm`: this is the tensor that must
+    // be fed back as h_prev for the NEXT autoregressive step.  Re-using
+    // `out_x_normed` here causes the next iter's `hnorm` to double-
+    // normalise, producing a distribution drift that compounds per depth
+    // (D=3 accept collapsed from ~91% to ~67% per-position in our bench;
+    // see qwen36_mtp.cpp:1166 for the byte-correct CPU stash of pre-norm).
+    ggml_tensor * out_h_pre_norm   = nullptr;  // [n_embd]   f32 — pre shared_head_norm hidden
     // Fused LM-head outputs (only populated when build is called with a
     // non-null lm_head_weight).  out_argmax_token holds the i32 argmax of
     // the logits; out_logits is exposed so the host can compute log-softmax

@@ -18,6 +18,7 @@
 
 #include "common/mtp_interface.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -291,6 +292,65 @@ static void test_default_step_chain_forwards_to_step_batch() {
                 "(returned %zu drafts) OK\n", outs.size());
 }
 
+// ── Test 5: per-position accept stays high across depth (Good) ────────
+// Regression guard for the compound-decay bug fixed in commit ${THIS_COMMIT}:
+// the GPU step path used to capture POST-shared_head_norm hidden and feed
+// it back as h_prev for the next iter, causing the next iter's `hnorm` to
+// double-normalise.  Per-position accept collapsed at D=3 (from ~91% to
+// ~67% in real-model bench).  Mirror that signal at unit-test scale: drive
+// the Good chain at depth=3 and 5; per-position accept against the
+// reference oracle must stay >0.85.  A regression that re-introduces the
+// post-norm refeed (the BrokenRefeed mock at depth>=2) drops below 0.85.
+static double per_position_accept(const std::vector<int32_t> & got,
+                                  const std::vector<int32_t> & ref) {
+    if (ref.empty()) return 1.0;
+    int hits = 0;
+    const size_t n = std::min(got.size(), ref.size());
+    for (size_t i = 0; i < n; i++) {
+        if (got[i] == ref[i]) hits++;
+    }
+    return (double)hits / (double)ref.size();
+}
+
+static void test_good_chain_accept_holds_across_depth() {
+    constexpr double kThreshold = 0.85;
+    GoodChainMtp good;
+    for (int depth : { 3, 5 }) {
+        auto got = drive(good, /*prefill=*/7, depth);
+        auto ref = reference_chain(/*prefill=*/7, depth);
+        const double acc = per_position_accept(got, ref);
+        if (acc < kThreshold) {
+            std::fprintf(stderr,
+                "[chain_strict_spec] FAIL: good per-position accept "
+                "at depth=%d = %.3f (< %.2f) — possible chain regression\n",
+                depth, acc, kThreshold);
+            std::exit(1);
+        }
+        std::printf("[chain_strict_spec] depth=%d good per-position accept "
+                    "= %.3f (>= %.2f) OK\n", depth, acc, kThreshold);
+    }
+}
+
+// Companion negative case: the broken-refeed mock MUST drop below the
+// threshold at depth>=2 so we know the threshold actually has teeth on
+// the very class of regression we're guarding against.
+static void test_broken_chain_accept_drops_below_threshold() {
+    constexpr double kThreshold = 0.85;
+    BrokenRefeedMtp bad;
+    auto got = drive(bad, /*prefill=*/7, /*depth=*/5);
+    auto ref = reference_chain(/*prefill=*/7, /*depth=*/5);
+    const double acc = per_position_accept(got, ref);
+    if (acc >= kThreshold) {
+        std::fprintf(stderr,
+            "[chain_strict_spec] FAIL: broken per-position accept "
+            "at depth=5 = %.3f (>= %.2f) — threshold has no teeth\n",
+            acc, kThreshold);
+        std::exit(1);
+    }
+    std::printf("[chain_strict_spec] depth=5 broken per-position accept "
+                "= %.3f (< %.2f, control) OK\n", acc, kThreshold);
+}
+
 }  // namespace
 
 int main() {
@@ -298,6 +358,8 @@ int main() {
     test_good_chain_matches_reference();
     test_broken_chain_diverges();
     test_default_step_chain_forwards_to_step_batch();
-    std::printf("[chain_strict_spec] all 4 tests PASS\n");
+    test_good_chain_accept_holds_across_depth();
+    test_broken_chain_accept_drops_below_threshold();
+    std::printf("[chain_strict_spec] all 6 tests PASS\n");
     return 0;
 }

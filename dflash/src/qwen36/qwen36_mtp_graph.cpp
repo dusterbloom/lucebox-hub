@@ -326,6 +326,18 @@ bool build_qwen36_mtp_step_graph(
     ffn_out = ggml_reshape_1d(sg.ctx, ffn_out, n_embd);
     x = ggml_add(sg.ctx, x, ffn_out);
 
+    // ─── Pre-shared_head_norm hidden (chain-state output) ────────
+    // Per llama.cpp PR #22673 (`t_h_pre_norm` in src/models/qwen35.cpp),
+    // the hidden fed back as h_prev for the NEXT autoregressive step
+    // must be POST-residual-add but PRE-`shared_head_norm`.  Feeding
+    // back `out_x_normed` (post-norm) double-normalises on the next
+    // iter's `hnorm` and compounds rejection per depth.  See the
+    // CPU-path reference at qwen36_mtp.cpp:1166 (`last_hidden = x`).
+    ggml_set_name(x, "mtp_out_h_pre_norm");
+    ggml_set_output(x);
+    sg.out_h_pre_norm = x;
+    ggml_build_forward_expand(sg.gf, sg.out_h_pre_norm);
+
     // ─── Shared head norm ────────────────────────────────────────
     ggml_tensor * out = head.shared_head_norm
         ? rms_norm_mul(sg.ctx, x, head.shared_head_norm, rms_eps)
