@@ -11,6 +11,8 @@
 
 #pragma once
 
+#include "ddtree.h"
+
 #include <cstdint>
 #include <vector>
 
@@ -41,6 +43,26 @@ struct DFlashTarget {
                               int base_pos,
                               int & last_tok,
                               std::vector<int32_t> * all_argmax = nullptr) = 0;
+
+    // Tree-structured verify: run a flat DFS-ordered DDTree through the
+    // target with an ancestor-only attention mask.  `flat_tokens[0]` is the
+    // tree root (= last accepted token), `flat_tokens[1..N-1]` are the
+    // DFS-ordered tree nodes (mirroring DDTree::token_ids).  `tree.n_nodes`
+    // must equal flat_tokens.size() - 1.  On success, `out_argmax` is the
+    // target's argmax at each of the N tree positions (size == N) and
+    // (if non-null) `out_logits` is the raw logits laid out as
+    // [N × vocab] floats.  Returns false by default so existing targets
+    // that haven't wired tree-verify can be detected by callers; concrete
+    // targets override to plug in build_target_step_tree + the tree mask.
+    virtual bool verify_tree(const std::vector<int32_t> & flat_tokens,
+                             const DDTree & tree,
+                             int base_pos,
+                             std::vector<int32_t> & out_argmax,
+                             std::vector<float> * out_logits = nullptr) {
+        (void)flat_tokens; (void)tree; (void)base_pos;
+        (void)out_argmax;  (void)out_logits;
+        return false;
+    }
 
     // ── KV state management ─────────────────────────────────────────
 

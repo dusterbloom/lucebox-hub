@@ -918,6 +918,53 @@ static int run_qwen36_mtp_harness(const char * target_path,
                                     // when called from the external-drafter path;
                                     // MTP path emits log-softmax directly.
 
+                // Stage 1: try DFlashTarget::verify_tree first.  If the
+                // target has a real tree-verify implementation (Stage 2+),
+                // this path commits accepted tree nodes + the next bonus
+                // token in one graph_compute.  If it returns false (stub
+                // for n_nodes > 0 today), fall through to chain-verify of
+                // the DDTree's top-1 spine.
+                {
+                    std::vector<int32_t> flat;
+                    flat.reserve(1 + tree.n_nodes);
+                    flat.push_back(cur);
+                    for (int i = 0; i < tree.n_nodes; i++) flat.push_back(tree.token_ids[i]);
+
+                    std::vector<int32_t> tree_argmax;
+                    if (target->verify_tree(flat, tree, base_pos, tree_argmax, /*out_logits=*/nullptr)) {
+                        int next_token = -1;
+                        int bonus_node_idx = 0;
+                        std::vector<int> accepted_path = follow_verified_tree(
+                            tree, tree_argmax.data(), next_token, &bonus_node_idx);
+                        const int accept_depth = (int)accepted_path.size();  // includes root
+                        const int draft_depth  = std::max(0, accept_depth - 1);
+                        bool tt_eos_or_cap = false;
+                        for (int i = 1; i < accept_depth; i++) {
+                            const int node_idx = accepted_path[i];  // 1..n_nodes
+                            const int32_t tok  = tree.token_ids[node_idx - 1];
+                            generated.push_back(tok);
+                            if (target->is_eos(tok) || (int)generated.size() >= n_gen) {
+                                cur = tok; tt_eos_or_cap = true; break;
+                            }
+                        }
+                        if (!tt_eos_or_cap && next_token >= 0) {
+                            generated.push_back((int32_t)next_token);
+                            cur = (int32_t)next_token;
+                            base_pos += draft_depth + 1;
+                        } else if (!tt_eos_or_cap) {
+                            // No bonus available (degenerate tree); advance
+                            // only over the accepted draft nodes.
+                            base_pos += draft_depth;
+                        }
+                        proposed += tree.n_nodes;
+                        accepted += draft_depth;
+                        if (tt_eos_or_cap || target->is_eos(cur) || (int)generated.size() >= n_gen) {
+                            goto topk_done;
+                        }
+                        continue;  // next outer iter — skip chain-verify fallback
+                    }
+                }
+
                 // Build the DDTree's top-1 chain (root → deepest top-1 child).
                 // Slot 0 is the root (= last accepted token); we follow each
                 // node's first child (which build_ddtree places first in DFS

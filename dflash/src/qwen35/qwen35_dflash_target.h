@@ -45,6 +45,17 @@ public:
                       int & last_tok,
                       std::vector<int32_t> * all_argmax = nullptr) override;
 
+    // Tree-verify override.  Stage 1 stub: only handles the degenerate
+    // single-token case (tree.n_nodes == 0) by dispatching to verify_batch.
+    // For real DDTree shapes (n_nodes > 0) it returns false so the harness
+    // falls back to chain-verify.  Stage 2 will wire build_target_step_tree
+    // + ancestor mask here.
+    bool verify_tree(const std::vector<int32_t> & flat_tokens,
+                     const DDTree & tree,
+                     int base_pos,
+                     std::vector<int32_t> & out_argmax,
+                     std::vector<float> * out_logits = nullptr) override;
+
     bool snapshot_kv() override;
     bool restore_kv() override;
 

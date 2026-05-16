@@ -126,6 +126,28 @@ bool Qwen35DFlashTarget::verify_batch(
     return true;
 }
 
+bool Qwen35DFlashTarget::verify_tree(
+        const std::vector<int32_t> & flat_tokens,
+        const DDTree & tree,
+        int base_pos,
+        std::vector<int32_t> & out_argmax,
+        std::vector<float> * out_logits) {
+    // Stage 1 stub: only handle the degenerate single-token tree by
+    // dispatching to verify_batch.  Larger trees return false so the
+    // harness falls back to chain-verify until Stage 2 lands.
+    if (tree.n_nodes != 0 || flat_tokens.size() != 1) {
+        return false;
+    }
+    int32_t last_tok = -1;
+    std::vector<int32_t> all_argmax;
+    if (!verify_batch(flat_tokens, base_pos, last_tok, &all_argmax)) {
+        return false;
+    }
+    out_argmax = std::move(all_argmax);
+    if (out_logits) out_logits->clear();
+    return true;
+}
+
 bool Qwen35DFlashTarget::snapshot_kv() {
     snapshot_ssm_state(cache_);
     return true;
