@@ -73,6 +73,20 @@ struct DFlashTarget {
     // Restore KV cache to the last snapshot (undo speculative forward).
     virtual bool restore_kv() = 0;
 
+    // Stage 3 (oracle blocker 5.3): rollback DeltaNet SSM/conv + full-attn
+    // KV to the accepted-path tail of the most recent verify_tree() call.
+    // `accepted_dfs` is the DFS-slot list from follow_verified_tree
+    // (accepted_dfs[0] = 0 = root; subsequent entries are tree-node DFS
+    // indices).  Default returns false — concrete targets that wire it up
+    // (Qwen35DFlashTarget) override.  Callers MUST check the return value:
+    // a `false` from a target that has no rollback means the next iteration
+    // will see poisoned KV/SSM and should be treated as a fatal error in
+    // multi-iteration tree-spec loops.
+    virtual bool restore_kv_at_dfs(const std::vector<int> & accepted_dfs) {
+        (void)accepted_dfs;
+        return false;
+    }
+
     // ── Token utilities ─────────────────────────────────────────────
 
     // Check if a token is end-of-sequence for this model.

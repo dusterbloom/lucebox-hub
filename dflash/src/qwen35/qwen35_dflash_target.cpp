@@ -4,6 +4,16 @@
 #include "graph_builders.h"
 #include "step_graph.h"
 #include "common/attn_masks.h"
+#include "device_runtime.h"  // cudaStream_t, cudaMemcpyAsync, cudaMemcpy2DAsync
+
+#include <cstdio>
+
+// ggml-cuda dequantize helper (used to widen F16/Q8_0 ssm_intermediate slots
+// back to F32 for cache_.ssm_state).  Same trick as test_dflash.cpp and
+// dflash_feature_ring.cpp — the symbol lives in ggml-cuda/convert.cuh and has
+// no public header, so forward-declare the typedef here.
+using to_fp32_cuda_t = void (*)(const void *, float *, int64_t, cudaStream_t);
+extern "C++" to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type);
 
 namespace dflash27b {
 
@@ -152,12 +162,11 @@ bool Qwen35DFlashTarget::verify_tree(
     // ddtree-verify branch of run_qwen36_mtp_harness's spec-decode loop)
     // minus the walk/commit policy (the harness keeps that).
     //
-    // TODO(oracle blocker 5.3 — DeltaNet rollback): this path runs with
-    // capture_delta_intermediate=false, so DeltaNet SSM state is not
-    // snapshotted per tree-node and cannot be rolled back on partial
-    // accept.  The first speculative step per run is valid; long-horizon
-    // benches need Stage 3 (capture_delta_intermediate=true +
-    // restore_kv_at_dfs(int) adapter) which is not in this work.
+    // Stage 3: build_target_step_tree below uses capture_delta_intermediate
+    // = true (see graph_builders.cpp), so cache_.ssm_intermediate[il] holds
+    // the per-DFS-slot SSM state and cache_.conv_input_cache[il] holds the
+    // full conv window.  restore_kv_at_dfs() consumes these on partial
+    // accept to undo rejected siblings before the next iteration.
     const int hidden = w_.n_embd;
 
     if (!build_target_step_tree(sg_, w_, cache_, backend_,
@@ -234,6 +243,162 @@ bool Qwen35DFlashTarget::verify_tree(
     }
 
     cache_.cur_pos = base_pos + N;
+
+    // Stage 3: cache the tree topology so restore_kv_at_dfs() can locate the
+    // accepted slots, compute the post-rollback cur_pos, and walk ancestry
+    // for the conv-window K-1 rollback on sibling-walk accept paths.
+    last_tree_base_pos_ = base_pos;
+    last_tree_n_nodes_  = tree.n_nodes;
+    last_tree_parents_.assign(tree.parents.begin(), tree.parents.end());
+    last_tree_depths_.assign(tree.depths.begin(), tree.depths.end());
+
+    return true;
+}
+
+bool Qwen35DFlashTarget::restore_kv_at_dfs(const std::vector<int> & accepted_dfs) {
+    if (last_tree_base_pos_ < 0) {
+        std::fprintf(stderr,
+            "[Qwen35DFlashTarget] restore_kv_at_dfs called before any verify_tree\n");
+        return false;
+    }
+    if (accepted_dfs.empty()) {
+        std::fprintf(stderr,
+            "[Qwen35DFlashTarget] restore_kv_at_dfs: empty accepted_dfs\n");
+        return false;
+    }
+    if (accepted_dfs[0] != 0) {
+        std::fprintf(stderr,
+            "[Qwen35DFlashTarget] restore_kv_at_dfs: accepted_dfs[0]=%d, expected 0 (root)\n",
+            accepted_dfs[0]);
+        return false;
+    }
+    const int commit_n     = (int)accepted_dfs.size();          // includes root
+    const int rollback_dfs = accepted_dfs[commit_n - 1];        // deepest accepted DFS slot
+    const int N            = 1 + last_tree_n_nodes_;
+    if (rollback_dfs < 0 || rollback_dfs >= N) {
+        std::fprintf(stderr,
+            "[Qwen35DFlashTarget] restore_kv_at_dfs: rollback_dfs=%d out of range [0,%d)\n",
+            rollback_dfs, N);
+        return false;
+    }
+    // Detect pure-chain walk (accepted[i] == i for every i in the prefix).
+    // Hot path; lets us short-circuit the per-conv-column gather + KV compaction.
+    bool walked_sibling = false;
+    for (int i = 0; i < commit_n; i++) {
+        if (accepted_dfs[i] != i) { walked_sibling = true; break; }
+    }
+
+    const int n_delta = (int)cache_.ssm_intermediate.size();
+    cudaStream_t stream = nullptr;  // default stream — serializes with next graph_compute
+    for (int il = 0; il < n_delta; il++) {
+        ggml_tensor * ssm_inter = cache_.ssm_intermediate[il];
+        ggml_tensor * conv_in   = cache_.conv_input_cache[il];
+        if (!ssm_inter || !conv_in) {
+            std::fprintf(stderr,
+                "[Qwen35DFlashTarget] restore_kv_at_dfs: missing capture layer %d "
+                "(ssm_inter=%p conv_in=%p) — was verify_tree run with "
+                "capture_delta_intermediate=true?\n",
+                il, (void*)ssm_inter, (void*)conv_in);
+            return false;
+        }
+        // SSM state rollback (dequant ssm_intermediate[rollback_dfs] → ssm_state[il]).
+        const size_t ssm_elems =
+            (size_t)cache_.ssm_state[il]->ne[0] *
+            (size_t)cache_.ssm_state[il]->ne[1] *
+            (size_t)cache_.ssm_state[il]->ne[2];
+        const size_t ssm_src_off =
+            (size_t)rollback_dfs * ssm_inter->nb[3];
+        const void * ssm_src = (const char *)ssm_inter->data + ssm_src_off;
+        ggml_get_to_fp32_cuda(ssm_inter->type)(
+            ssm_src, (float *)cache_.ssm_state[il]->data,
+            (int64_t)ssm_elems, stream);
+
+        // Conv rollback: copy the K-1 most recent inputs along the accepted
+        // path's ANCESTRY (not DFS order).  Mirror test_dflash.cpp:3395-3437.
+        const int    K_conv  = 4;
+        const int    row_cnt = (int)conv_in->ne[1];
+        const size_t elt     = ggml_element_size(conv_in);
+        const size_t dpitch  = (K_conv - 1) * elt;
+        const size_t spitch  = conv_in->nb[1];
+        if (!walked_sibling) {
+            // Fast path: K_conv-1 = 3 contiguous slots ending at rollback_dfs.
+            const int    conv_off = rollback_dfs + 1;
+            const void * conv_src = (const char *)conv_in->data + (size_t)conv_off * elt;
+            cudaError_t ce = cudaMemcpy2DAsync(
+                cache_.conv_state[il]->data, dpitch,
+                conv_src, spitch,
+                (K_conv - 1) * elt, row_cnt,
+                cudaMemcpyDeviceToDevice, stream);
+            if (ce != cudaSuccess) {
+                std::fprintf(stderr,
+                    "[Qwen35DFlashTarget] restore_kv_at_dfs conv fast il=%d: %s\n",
+                    il, cudaGetErrorString(ce));
+                return false;
+            }
+        } else {
+            int virt[K_conv - 1];
+            virt[K_conv - 2] = rollback_dfs;
+            for (int k = K_conv - 3; k >= 0; k--) {
+                const int prev = virt[k + 1];
+                virt[k] = (prev >= 0) ? (int)last_tree_parents_[prev] : (prev - 1);
+            }
+            for (int k = 0; k < K_conv - 1; k++) {
+                const int sx_slot = (K_conv - 1) + virt[k];
+                const void * src_col =
+                    (const char *)conv_in->data + (size_t)sx_slot * elt;
+                char * dst_col =
+                    (char *)cache_.conv_state[il]->data + (size_t)k * elt;
+                cudaError_t ce = cudaMemcpy2DAsync(dst_col, dpitch,
+                                                   src_col, spitch,
+                                                   elt, row_cnt,
+                                                   cudaMemcpyDeviceToDevice, stream);
+                if (ce != cudaSuccess) {
+                    std::fprintf(stderr,
+                        "[Qwen35DFlashTarget] restore_kv_at_dfs conv col il=%d k=%d: %s\n",
+                        il, k, cudaGetErrorString(ce));
+                    return false;
+                }
+            }
+        }
+    }
+
+    // Full-attention KV compaction: verify_tree wrote K/V at slots
+    // [base..base+N-1] in DFS order.  For the next iter's verify to see the
+    // correct committed prefix, slots [base..base+commit_n-1] must hold the
+    // K/V of the accepted path.  d==0 (root) is trivially aligned.
+    if (walked_sibling) {
+        const int base = last_tree_base_pos_;
+        const int n_full_attn = (int)cache_.attn_k.size();
+        for (int d = 1; d < commit_n; d++) {
+            const int src_dfs  = accepted_dfs[d];
+            const int dst_slot = d;
+            if (src_dfs == dst_slot) continue;
+            for (int l = 0; l < n_full_attn; l++) {
+                ggml_tensor * ck = cache_.attn_k[l];
+                ggml_tensor * cv = cache_.attn_v[l];
+                if (!ck || !cv) continue;
+                const size_t slot_bytes = ck->nb[1];
+                const size_t src_off = (size_t)(base + src_dfs)  * slot_bytes;
+                const size_t dst_off = (size_t)(base + dst_slot) * slot_bytes;
+                const int n_kv = (int)ck->ne[2];
+                for (int h = 0; h < n_kv; h++) {
+                    const size_t head_src = src_off + (size_t)h * ck->nb[2];
+                    const size_t head_dst = dst_off + (size_t)h * ck->nb[2];
+                    cudaMemcpyAsync((char *)ck->data + head_dst,
+                                    (const char *)ck->data + head_src,
+                                    slot_bytes, cudaMemcpyDeviceToDevice, stream);
+                    cudaMemcpyAsync((char *)cv->data + head_dst,
+                                    (const char *)cv->data + head_src,
+                                    slot_bytes, cudaMemcpyDeviceToDevice, stream);
+                }
+            }
+        }
+    }
+
+    // Advance cur_pos to "just past the last committed slot" so the next
+    // verify_batch's kv_start lines up.  root = dfs 0 lives at base, so
+    // commit_n committed tokens occupy slots [base..base+commit_n-1].
+    cache_.cur_pos = last_tree_base_pos_ + commit_n;
     return true;
 }
 

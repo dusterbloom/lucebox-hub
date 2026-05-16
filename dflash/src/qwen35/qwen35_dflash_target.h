@@ -59,6 +59,25 @@ public:
     bool snapshot_kv() override;
     bool restore_kv() override;
 
+    // Stage 3 (oracle blocker 5.3): rollback DeltaNet SSM + conv + full-attn KV
+    // to the slot of `dfs_idx` from the MOST RECENT verify_tree() call. The
+    // verify_tree run captured per-DFS-slot SSM intermediate states (cache_.
+    // ssm_intermediate[il]) and the full conv input window (cache_.
+    // conv_input_cache[il]); this method dequantizes/copies those into the
+    // live state buffers so the next verify_batch / verify_tree sees correct
+    // DeltaNet history.  Full-attention KV that was written at slot
+    // (root_base_pos + accepted_dfs[d]) is compacted to (root_base_pos + d)
+    // for d=1..commit_n-1 when the accepted walk deviates from the DFS spine.
+    //
+    // `accepted_dfs` is the accepted-path DFS-index list returned by
+    // follow_verified_tree (size >= 1, accepted_dfs[0] == 0 = root).  The
+    // caller may pass only the committed prefix (i.e. truncate at n_gen).
+    //
+    // After this call cache_.cur_pos = root_base_pos + commit_n so the next
+    // verify_batch writes at the right offset.  Returns false if verify_tree
+    // was not called, or if dfs_idx is out of range.
+    bool restore_kv_at_dfs(const std::vector<int> & accepted_dfs) override;
+
     bool is_eos(int token) const override;
 
     bool embed_tokens(const int32_t * tokens, int n,
@@ -131,6 +150,17 @@ private:
     // Whether verify_batch should request the full post-norm hidden sequence
     // and copy it to the host.  Toggled by enable_hidden_seq_capture().
     bool                       capture_hidden_seq_ = false;
+
+    // ── Stage 3: state captured by verify_tree for restore_kv_at_dfs() ──
+    // base_pos of the most recent verify_tree call (= root slot in KV).
+    int                        last_tree_base_pos_ = -1;
+    // n_nodes of the most recent verify_tree.
+    int                        last_tree_n_nodes_  = 0;
+    // Copies of tree.parents/depths from the most recent verify_tree so
+    // rollback's conv-window walk (which traverses ancestry, not DFS) is
+    // self-contained.
+    std::vector<int>           last_tree_parents_;
+    std::vector<int>           last_tree_depths_;
 };
 
 }  // namespace dflash27b

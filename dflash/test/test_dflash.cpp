@@ -942,11 +942,17 @@ static int run_qwen36_mtp_harness(const char * target_path,
                             tree, tree_argmax.data(), next_token, &bonus_node_idx);
                         const int accept_depth = (int)accepted_path.size();  // includes root
                         const int draft_depth  = std::max(0, accept_depth - 1);
+                        // Track how many DFS slots were actually committed to
+                        // KV for restore_kv_at_dfs.  We always commit root
+                        // (= last bonus, slot 0), and each accepted child up
+                        // to the n_gen cap.
+                        int committed_dfs_n = 1;  // root always committed
                         bool tt_eos_or_cap = false;
                         for (int i = 1; i < accept_depth; i++) {
                             const int node_idx = accepted_path[i];  // 1..n_nodes
                             const int32_t tok  = tree.token_ids[node_idx - 1];
                             generated.push_back(tok);
+                            committed_dfs_n++;
                             if (target->is_eos(tok) || (int)generated.size() >= n_gen) {
                                 cur = tok; tt_eos_or_cap = true; break;
                             }
@@ -964,6 +970,26 @@ static int run_qwen36_mtp_harness(const char * target_path,
                         accepted += draft_depth;
                         if (tt_eos_or_cap || target->is_eos(cur) || (int)generated.size() >= n_gen) {
                             goto topk_done;
+                        }
+                        // Stage 3 (oracle blocker 5.3): roll back DeltaNet
+                        // SSM/conv + full-attn KV to the deepest committed
+                        // DFS slot so the next iter's verify sees the
+                        // accepted-path tail (not the poisoned tail that
+                        // included rejected siblings + bonus DFS slots).
+                        // Without this, multi-iter tree-verify produces
+                        // wrong output the moment any sibling subtree was
+                        // forwarded but not accepted.
+                        std::vector<int> commit_prefix(
+                            accepted_path.begin(),
+                            accepted_path.begin() + committed_dfs_n);
+                        if (!target->restore_kv_at_dfs(commit_prefix)) {
+                            std::fprintf(stderr,
+                                "qwen36-mtp[topk] restore_kv_at_dfs failed "
+                                "(commit_n=%d, deepest_dfs=%d)\n",
+                                committed_dfs_n,
+                                committed_dfs_n > 0
+                                    ? commit_prefix[committed_dfs_n - 1] : -1);
+                            return 1;
                         }
                         continue;  // next outer iter — skip chain-verify fallback
                     }
