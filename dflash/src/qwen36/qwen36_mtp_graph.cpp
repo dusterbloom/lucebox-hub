@@ -32,18 +32,21 @@ void qwen36_mtp_step_graph_free(Qwen36MtpStepGraph & sg) {
         ggml_free(sg.ctx);
         sg.ctx = nullptr;
     }
-    sg.gf               = nullptr;
-    sg.inp_embed        = nullptr;
-    sg.inp_h_prev       = nullptr;
-    sg.inp_pos          = nullptr;
-    sg.out_x_normed     = nullptr;
-    sg.out_argmax_token = nullptr;
-    sg.out_logits       = nullptr;
-    sg.draft_pos        = -1;
-    sg.kv_len           = -1;
-    sg.fa_window        = 0;
-    sg.topk_k           = 0;
-    sg.fused_lm_head    = false;
+    sg.gf                = nullptr;
+    sg.inp_embed         = nullptr;
+    sg.inp_h_prev        = nullptr;
+    sg.inp_pos           = nullptr;
+    sg.inp_kv_idx_write  = nullptr;
+    sg.inp_kv_idxs_read  = nullptr;
+    sg.inp_kv_mask       = nullptr;
+    sg.out_x_normed      = nullptr;
+    sg.out_h_pre_norm    = nullptr;
+    sg.out_argmax_token  = nullptr;
+    sg.out_logits        = nullptr;
+    sg.fa_window         = 0;
+    sg.fa_max            = 0;
+    sg.topk_k            = 0;
+    sg.fused_lm_head     = false;
 }
 
 void qwen36_mtp_warm_graph_free(Qwen36MtpWarmGraph & sg) {
@@ -172,8 +175,7 @@ bool build_qwen36_mtp_step_graph(
         int rope_sections[4],
         float rope_freq_base,
         float rms_eps,
-        int draft_pos,
-        int kv_len,
+        int n_ctx,
         int fa_window,
         ggml_tensor * lm_head_weight,
         int lm_head_topk) {
@@ -181,6 +183,7 @@ bool build_qwen36_mtp_step_graph(
 
     const int q_dim = n_head * key_len;
     const int head_dim = key_len;  // qwen3.6 has key_length == value_length
+    const int fa_max = (fa_window > 0 && fa_window < n_ctx) ? fa_window : n_ctx;
 
     ggml_init_params ip{};
     ip.mem_size   = 128 * 1024 * 1024;
@@ -203,6 +206,19 @@ bool build_qwen36_mtp_step_graph(
     sg.inp_pos = ggml_new_tensor_1d(sg.ctx, GGML_TYPE_I32, 4);
     ggml_set_name(sg.inp_pos, "mtp_inp_pos");
     ggml_set_input(sg.inp_pos);
+
+    // Runtime KV slot routing (bug #5: avoid baking draft_pos into views).
+    sg.inp_kv_idx_write = ggml_new_tensor_1d(sg.ctx, GGML_TYPE_I64, 1);
+    ggml_set_name(sg.inp_kv_idx_write, "mtp_inp_kv_idx_write");
+    ggml_set_input(sg.inp_kv_idx_write);
+
+    sg.inp_kv_idxs_read = ggml_new_tensor_2d(sg.ctx, GGML_TYPE_I32, fa_max, n_head_kv);
+    ggml_set_name(sg.inp_kv_idxs_read, "mtp_inp_kv_idxs_read");
+    ggml_set_input(sg.inp_kv_idxs_read);
+
+    sg.inp_kv_mask = ggml_new_tensor_2d(sg.ctx, GGML_TYPE_F16, fa_max, 1);
+    ggml_set_name(sg.inp_kv_mask, "mtp_inp_kv_mask");
+    ggml_set_input(sg.inp_kv_mask);
 
     // ─── Eq 21: eh_proj([hnorm(h_prev); enorm(embed)]) ────────────
     ggml_tensor * e_in = rms_norm_mul(sg.ctx, sg.inp_embed,  head.enorm, rms_eps);
@@ -261,48 +277,37 @@ bool build_qwen36_mtp_step_graph(
                           0, rope_freq_base, 1.0f,
                           0.0f, 1.0f, 0.0f, 0.0f);
 
-    // ─── Write Kcur/Vcur into head_kv at slot draft_pos ──────────
-    // head_kv layout: [head_dim, n_ctx, n_head_kv], same as backbone cache_k/v.
-    // Backbone writes Kcur_T = permute(Kcur, 0, 2, 1, 3) into a slot view.
-    // For n_tokens=1 our Kcur is [head_dim, n_head_kv, 1]; permuted is
-    // [head_dim, 1, n_head_kv], which matches a 1-slot view of head_kv.
-    ggml_tensor * Kcur_T = ggml_permute(sg.ctx, K3, 0, 2, 1, 3);
-    ggml_tensor * Vcur3  = ggml_reshape_3d(sg.ctx, Vcur, head_dim, n_head_kv, 1);
-    ggml_tensor * Vcur_T = ggml_permute(sg.ctx, Vcur3, 0, 2, 1, 3);
+    // ─── Write Kcur/Vcur at runtime slot (inp_kv_idx_write) ──────
+    // Bug #5: per-slot views can't be built at graph-build time (offset
+    // must be static).  Use ggml_set_rows on a 3D cache view; b is the
+    // F32 K/V with shape [head_dim, 1, n_head_kv]; c is i64[1] broadcast
+    // across the head_kv axis (b->ne[2] % c->ne[1] == 0 satisfies the
+    // broadcast rule, so all heads write the same slot).
+    // K3 is post-RoPE [head_dim, n_head_kv, 1]; reshape to [head_dim,1,n_head_kv]
+    // so set_rows sees ne[1]=1 (==c.ne[0]) and broadcasts the i64[1] index over
+    // the n_head_kv axis.
+    ggml_tensor * K_b = ggml_reshape_3d(sg.ctx, K3,   head_dim, 1, n_head_kv);
+    ggml_tensor * V_b = ggml_reshape_3d(sg.ctx, Vcur, head_dim, 1, n_head_kv);
+    ggml_tensor * k_after = ggml_set_rows(sg.ctx, head_k_cache, K_b, sg.inp_kv_idx_write);
+    ggml_tensor * v_after = ggml_set_rows(sg.ctx, head_v_cache, V_b, sg.inp_kv_idx_write);
+    ggml_build_forward_expand(sg.gf, k_after);
+    ggml_build_forward_expand(sg.gf, v_after);
 
-    ggml_tensor * k_slot = ggml_view_3d(sg.ctx, head_k_cache,
-        head_dim, /*n_tokens=*/1, n_head_kv,
-        head_k_cache->nb[1], head_k_cache->nb[2],
-        head_k_cache->nb[1] * draft_pos);
-    ggml_tensor * v_slot = ggml_view_3d(sg.ctx, head_v_cache,
-        head_dim, /*n_tokens=*/1, n_head_kv,
-        head_v_cache->nb[1], head_v_cache->nb[2],
-        head_v_cache->nb[1] * draft_pos);
-
-    ggml_build_forward_expand(sg.gf, ggml_cpy(sg.ctx, Kcur_T, k_slot));
-    ggml_build_forward_expand(sg.gf, ggml_cpy(sg.ctx, Vcur_T, v_slot));
-
-    // ─── Flash attention over slots [fa_kv_lo, kv_len) ──────────
-    // fa_window: if > 0 restrict to the trailing fa_window slots so the
-    // head sees the same active window as the target's full-attn blocks.
-    const int fa_kv_lo = (fa_window > 0 && kv_len > fa_window)
-                          ? (kv_len - fa_window) : 0;
-    const int fa_kv_n  = kv_len - fa_kv_lo;
+    // ─── Flash attention over runtime-selected slots ─────────────
+    // Read fa_max rows per head via ggml_get_rows.  Indices live in
+    // inp_kv_idxs_read [fa_max, n_head_kv]; rows past live kv_len are
+    // gathered from slot 0 then masked to -INF via inp_kv_mask.  Read
+    // from k_after / v_after so the DAG sees the set_rows write as a
+    // dependency (set_rows returns view(a) so direct dep chaining works).
     ggml_tensor * Qfa = ggml_permute(sg.ctx, Q3, 0, 2, 1, 3);
     Qfa = ggml_cont(sg.ctx, Qfa);
 
-    ggml_tensor * Kfa = ggml_view_3d(sg.ctx, head_k_cache,
-        head_dim, fa_kv_n, n_head_kv,
-        head_k_cache->nb[1], head_k_cache->nb[2],
-        (size_t)fa_kv_lo * head_k_cache->nb[1]);
-    ggml_tensor * Vfa = ggml_view_3d(sg.ctx, head_v_cache,
-        head_dim, fa_kv_n, n_head_kv,
-        head_v_cache->nb[1], head_v_cache->nb[2],
-        (size_t)fa_kv_lo * head_v_cache->nb[1]);
+    ggml_tensor * Kfa = ggml_get_rows(sg.ctx, k_after, sg.inp_kv_idxs_read);
+    ggml_tensor * Vfa = ggml_get_rows(sg.ctx, v_after, sg.inp_kv_idxs_read);
 
     const float kq_scale = 1.0f / std::sqrt((float)head_dim);
     ggml_tensor * attn = ggml_flash_attn_ext(sg.ctx, Qfa, Kfa, Vfa,
-                                              /*mask=*/nullptr, kq_scale, 0.0f, 0.0f);
+                                              sg.inp_kv_mask, kq_scale, 0.0f, 0.0f);
     // attn: [head_dim, n_head, n_tokens=1] (permuted output of FA)
     attn = ggml_reshape_2d(sg.ctx, attn, q_dim, 1);
 
@@ -388,9 +393,8 @@ bool build_qwen36_mtp_step_graph(
     }
 
     // Record build keys for cache invalidation in Qwen36MtpModule.
-    sg.draft_pos     = draft_pos;
-    sg.kv_len        = kv_len;
     sg.fa_window     = fa_window;
+    sg.fa_max        = fa_max;
     sg.topk_k        = lm_head_topk;
     sg.fused_lm_head = (lm_head_weight != nullptr);
     return true;

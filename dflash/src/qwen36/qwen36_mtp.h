@@ -194,14 +194,10 @@ private:
                          int base_pos,
                          std::vector<StepOutput> & out);
 
-    // Phase B+ helper: get-or-build the cached step graph for (head_idx,
-    // draft_pos).  kv_len is derived as draft_pos+1 (chain pattern); the
-    // graph is rebuilt only on a miss or when fa_window / fused-LM-head /
-    // topk_k changed since the last build for the same slot.  Returns
-    // nullptr on build failure.
-    struct Qwen36MtpStepGraph * get_or_build_step_graph_(int head_idx,
-                                                          int draft_pos,
-                                                          int kv_len);
+    // Bug #5 fix: graphs are shape-only, keyed on (head_idx, fa_window,
+    // fused_lm_head, topk_k).  Per-call slot routing (write idx, read
+    // idxs, mask) is pushed as runtime tensor inputs by the caller.
+    struct Qwen36MtpStepGraph * get_or_build_step_graph_(int head_idx);
 };
 
 }  // namespace mtp

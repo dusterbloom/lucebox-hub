@@ -38,6 +38,7 @@
 #include "gguf.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -483,18 +484,18 @@ struct Qwen36MtpModule::State {
     ggml_context *            kv_ctx = nullptr;
     ggml_backend_buffer_t     kv_buf = nullptr;
 
-    // Phase B+ step graph cache.  ggml views (slot offset, kv_len) are
-    // static at graph-build time, so we maintain one fully-built graph per
-    // draft_pos and reuse it for every chain iter that lands on that slot.
-    // For a single generation of N tokens the cache fills to N entries and
-    // every subsequent step at the same slot is a pure tensor_set + compute
-    // (skipping ggml_init + DAG construction + gallocr).
-    //
-    // Indexed by draft_pos; size grows lazily, capped at n_ctx.  Each entry
-    // owns its own ggml_context + gallocr (per the existing builder API);
-    // a future refactor could share contexts across slots if memory becomes
-    // a concern (~50 nodes * 256 B per graph * 8192 slots ≈ 100 MB).
-    std::vector<std::unique_ptr<Qwen36MtpStepGraph>> step_sg_cache;
+    // Bug #5 fix: graphs are shape-only.  Slot write + FA read slots/mask
+    // are runtime inputs, so a single graph services every draft_pos for
+    // a given (head_idx, fa_window, fused_lm_head, topk_k).  Cap at 4
+    // entries — head_kv is single-head in production and target config
+    // is stable, so the LRU collapses to 1 entry in practice.
+    struct StepGraphKey {
+        int  head_idx     = -1;
+        int  fa_window    = 0;
+        bool fused_lm_head = false;
+        int  topk_k       = 0;
+    };
+    std::array<std::pair<StepGraphKey, std::unique_ptr<Qwen36MtpStepGraph>>, 4> step_sg_cache{};
     // Single scratch graph for the deprecated path (callers that pass the
     // legacy build_qwen36_mtp_step_graph signature with no caching).
     Qwen36MtpStepGraph        step_sg;
@@ -705,10 +706,11 @@ void Qwen36MtpModule::set_draft_topk(int k) {
 }
 
 void Qwen36MtpModule::shutdown() {
-    for (auto & sg : state_->step_sg_cache) {
-        if (sg) qwen36_mtp_step_graph_free(*sg);
+    for (auto & e : state_->step_sg_cache) {
+        if (e.second) qwen36_mtp_step_graph_free(*e.second);
+        e.second.reset();
+        e.first = State::StepGraphKey{};
     }
-    state_->step_sg_cache.clear();
     qwen36_mtp_step_graph_free(state_->step_sg);
     qwen36_mtp_warm_graph_free(state_->warm_sg);
     if (state_->kv_buf) {
@@ -1474,29 +1476,44 @@ int Qwen36MtpModule::test_initial_hidden_dim() const {
     return state_->initial_hidden_dim;
 }
 
-// Get-or-build a cached step graph for the (head_idx, draft_pos) slot.
-// Per Phase B+: ggml views are static at graph build time, but generation
-// is monotonic in draft_pos, so we lazily build one graph per slot and
-// reuse it across iterations / generations.  The graph is rebuilt only
-// when its build keys (fa_window, fused_lm_head, topk_k) differ from the
-// current call — typically only once at startup since these are config.
-Qwen36MtpStepGraph * Qwen36MtpModule::get_or_build_step_graph_(int head_idx,
-                                                                int draft_pos,
-                                                                int kv_len) {
+// Bug #5 fix: shape-only graph cached per (head_idx, fa_window, fused, topk).
+// Per-call slot routing is uploaded via push_kv_slot_inputs_() below.
+
+// Push the runtime KV routing inputs (write slot, read idxs, mask) for the
+// current draft_pos / kv_len.  fa_max is baked into the graph at build time.
+static void push_kv_slot_inputs_(Qwen36MtpStepGraph * sg,
+                                 int draft_pos, int kv_len,
+                                 int n_head_kv) {
+    const int fa_max  = sg->fa_max;
+    const int fa_win  = sg->fa_window;
+    const int fa_kv_lo = (fa_win > 0 && kv_len > fa_win) ? (kv_len - fa_win) : 0;
+    const int fa_kv_n  = std::min(kv_len - fa_kv_lo, fa_max);
+
+    const int64_t widx = (int64_t)draft_pos;
+    ggml_backend_tensor_set(sg->inp_kv_idx_write, &widx, 0, sizeof(int64_t));
+
+    std::vector<int32_t> ridx((size_t)fa_max * n_head_kv);
+    for (int h = 0; h < n_head_kv; ++h) {
+        int32_t * row = ridx.data() + (size_t)h * fa_max;
+        for (int i = 0; i < fa_max; ++i) {
+            row[i] = (i < fa_kv_n) ? (fa_kv_lo + i) : 0;  // unused rows masked to -INF
+        }
+    }
+    ggml_backend_tensor_set(sg->inp_kv_idxs_read, ridx.data(), 0,
+        sizeof(int32_t) * ridx.size());
+
+    std::vector<uint16_t> mask((size_t)fa_max, 0);
+    const uint16_t neg_inf_f16 = 0xFC00;
+    for (int i = fa_kv_n; i < fa_max; ++i) mask[i] = neg_inf_f16;
+    ggml_backend_tensor_set(sg->inp_kv_mask, mask.data(), 0,
+        sizeof(uint16_t) * mask.size());
+}
+
+Qwen36MtpStepGraph * Qwen36MtpModule::get_or_build_step_graph_(int head_idx) {
     if (head_idx < 0 || head_idx >= (int)state_->weights.heads.size()) {
         return nullptr;
     }
-    if (draft_pos < 0 || draft_pos >= state_->n_ctx) return nullptr;
     if (head_idx >= (int)state_->head_kv.size())     return nullptr;
-
-    // Cache layout: flat index (head_idx * n_ctx + draft_pos).  For the
-    // 27B GGUF with n_heads=1 this collapses to draft_pos.
-    const int n_heads = state_->weights.n_heads;
-    const int n_ctx   = state_->n_ctx;
-    const size_t flat = (size_t)head_idx * n_ctx + draft_pos;
-    if (state_->step_sg_cache.size() != (size_t)n_heads * n_ctx) {
-        state_->step_sg_cache.resize((size_t)n_heads * n_ctx);
-    }
 
     const int    n_embd    = state_->weights.n_embd;
     const int    n_head    = state_->weights.n_head_count;
@@ -1509,30 +1526,31 @@ Qwen36MtpStepGraph * Qwen36MtpModule::get_or_build_step_graph_(int head_idx,
     const float  rms_eps        = 1e-6f;
     int          rope_sections[4] = { 11, 11, 10, 0 };
 
-    // Build keys derived from the bound target's config.  These rarely
-    // change at runtime; recording them lets us detect a stale cache.
-    const int    fa_win    = state_->target ? state_->target->fa_window() : 0;
-    ggml_tensor * lm_head  = state_->target ? state_->target->lm_head_weight() : nullptr;
-    const int    topk_k    = (lm_head && state_->draft_topk > 1) ? state_->draft_topk : 0;
+    const int    fa_win   = state_->target ? state_->target->fa_window() : 0;
+    ggml_tensor * lm_head = state_->target ? state_->target->lm_head_weight() : nullptr;
+    const bool   fused    = (lm_head != nullptr);
+    const int    topk_k   = (fused && state_->draft_topk > 1) ? state_->draft_topk : 0;
 
-    auto & slot = state_->step_sg_cache[flat];
-    if (slot &&
-        slot->draft_pos == draft_pos &&
-        slot->kv_len    == kv_len    &&
-        slot->fa_window == fa_win    &&
-        slot->fused_lm_head == (lm_head != nullptr) &&
-        slot->topk_k    == topk_k) {
-        return slot.get();
+    // Find matching cached entry; else pick first empty / oldest slot.
+    int hit = -1, free_slot = -1;
+    for (int i = 0; i < (int)state_->step_sg_cache.size(); ++i) {
+        const auto & k = state_->step_sg_cache[i].first;
+        if (state_->step_sg_cache[i].second &&
+            k.head_idx == head_idx && k.fa_window == fa_win &&
+            k.fused_lm_head == fused && k.topk_k == topk_k) {
+            hit = i; break;
+        }
+        if (!state_->step_sg_cache[i].second && free_slot < 0) free_slot = i;
     }
+    if (hit >= 0) return state_->step_sg_cache[hit].second.get();
+    if (free_slot < 0) free_slot = 0;  // evict slot 0 (FIFO is fine; cap=4)
 
-    if (slot) {
-        qwen36_mtp_step_graph_free(*slot);
-    } else {
-        slot.reset(new Qwen36MtpStepGraph());
-    }
+    auto & slot = state_->step_sg_cache[free_slot];
+    if (slot.second) qwen36_mtp_step_graph_free(*slot.second);
+    else             slot.second.reset(new Qwen36MtpStepGraph());
 
     const auto & head = state_->weights.heads[head_idx];
-    if (!build_qwen36_mtp_step_graph(*slot, head,
+    if (!build_qwen36_mtp_step_graph(*slot.second, head,
                                       state_->head_kv[head_idx].k_cache,
                                       state_->head_kv[head_idx].v_cache,
                                       state_->target->backend(),
@@ -1540,15 +1558,17 @@ Qwen36MtpStepGraph * Qwen36MtpModule::get_or_build_step_graph_(int head_idx,
                                       key_len, val_len, ffn_len,
                                       n_rot, rope_sections,
                                       rope_freq_base, rms_eps,
-                                      draft_pos, kv_len,
+                                      state_->n_ctx,
                                       fa_win, lm_head, topk_k)) {
         std::fprintf(stderr,
-            "[qwen36_mtp] get_or_build_step_graph_: build failed "
-            "head=%d draft_pos=%d kv_len=%d\n", head_idx, draft_pos, kv_len);
-        slot.reset();
+            "[qwen36_mtp] get_or_build_step_graph_: build failed head=%d\n",
+            head_idx);
+        slot.second.reset();
+        slot.first = State::StepGraphKey{};
         return nullptr;
     }
-    return slot.get();
+    slot.first = State::StepGraphKey{head_idx, fa_win, fused, topk_k};
+    return slot.second.get();
 }
 
 // Per-call cgraph on the backbone backend; cached per (head_idx, draft_pos)
@@ -1617,8 +1637,8 @@ bool Qwen36MtpModule::step_batch_gpu_(int32_t current_token,
             return false;
         }
 
-        // Get-or-build the cached step graph for this slot.
-        Qwen36MtpStepGraph * sg = get_or_build_step_graph_(h, draft_pos, kv_len);
+        // Get-or-build the shape-only step graph.
+        Qwen36MtpStepGraph * sg = get_or_build_step_graph_(h);
         if (!sg) { out.clear(); return false; }
 
         // Upload inputs.  Pass h_prev directly (no scratch memcpy — task E).
@@ -1629,6 +1649,7 @@ bool Qwen36MtpModule::step_batch_gpu_(int32_t current_token,
         // MROPE positions: text-only mode (axes 0..2 = position, axis 3 = 0).
         const int32_t pos[4] = { draft_pos, draft_pos, draft_pos, 0 };
         ggml_backend_tensor_set(sg->inp_pos, pos, 0, sizeof(pos));
+        push_kv_slot_inputs_(sg, draft_pos, kv_len, state_->weights.n_head_kv);
 
         auto st = ggml_backend_graph_compute(backend, sg->gf);
         if (st != GGML_STATUS_SUCCESS) {
@@ -1881,7 +1902,7 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
         }
         const double t_embed = prof_on ? prof_ms_since(t0) : 0.0;
 
-        Qwen36MtpStepGraph * sg = get_or_build_step_graph_(h, draft_pos, kv_len);
+        Qwen36MtpStepGraph * sg = get_or_build_step_graph_(h);
         if (!sg) return false;
 
         t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
@@ -1898,6 +1919,7 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
         t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
         const int32_t pos[4] = { draft_pos, draft_pos, draft_pos, 0 };
         ggml_backend_tensor_set(sg->inp_pos, pos, 0, sizeof(pos));
+        push_kv_slot_inputs_(sg, draft_pos, kv_len, state_->weights.n_head_kv);
         const double t_set_pos = prof_on ? prof_ms_since(t0) : 0.0;
 
         t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
