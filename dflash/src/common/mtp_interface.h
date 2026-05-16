@@ -170,6 +170,27 @@ struct INativeMtp : IMtpModule {
     // the DDTree builder consumes. Concrete impls override; the default
     // no-op keeps fake/stub subclasses compatible with the existing ABI.
     virtual void set_draft_topk(int /*k*/) {}
+
+    // Multi-step autoregressive chain draft. Concrete implementations chain
+    // their own forward `chain_depth` times, feeding the head's own
+    // post-shared_head_norm hidden as h_prev for the next iteration. `out`
+    // is sized to the number of drafts actually emitted (≤ chain_depth);
+    // each element is populated like step_batch (draft_token / draft_logit
+    // and optionally topk_*).
+    //
+    // Default implementation: forward to step_batch and return ALL emitted
+    // drafts unchanged.  This preserves the pre-Phase-A semantics for
+    // multi-head native modules (where step_batch emits `num_heads` drafts
+    // per call) — the runner sees the same draft count it did before, and
+    // `chain_depth` is effectively ignored for any module that hasn't
+    // overridden step_chain.  Overriders (Qwen36MtpModule today) treat
+    // chain_depth as authoritative.
+    virtual bool step_chain(int32_t current_token,
+                            int base_pos,
+                            int /*chain_depth*/,
+                            std::vector<StepOutput> & out) {
+        return step_batch(current_token, base_pos, out);
+    }
 };
 
 }  // namespace mtp

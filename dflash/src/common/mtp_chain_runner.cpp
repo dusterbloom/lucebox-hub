@@ -30,7 +30,12 @@ bool MtpChainRunner::propose_drafts_(int32_t current_token,
     if (mtp_.flavor() == MtpFlavor::NativeHeads) {
         auto & native = static_cast<INativeMtp &>(mtp_);
         std::vector<StepOutput> outs;
-        if (!native.step_batch(current_token, base_pos, outs)) return false;
+        // Phase A: ask the native module for `gamma` autoregressive drafts.
+        // For depth==1 (today's production for any pre-Phase-A native module)
+        // this is byte-identical to the old step_batch path via the default
+        // impl in INativeMtp::step_chain.  For depth>1 the module chains its
+        // own forward and returns up to `gamma` drafts.
+        if (!native.step_chain(current_token, base_pos, gamma, outs)) return false;
         const int got = (int)outs.size();
         const int take = std::min(gamma, got);
         for (int i = 0; i < take; i++) drafts_out.push_back(outs[i].draft_token);

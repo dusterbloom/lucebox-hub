@@ -122,6 +122,14 @@ bool Qwen35DFlashTarget::verify_batch(
 
     // Copy the full [n_tokens, n_embd] post-norm hidden sequence so the
     // Qwen3.6 MTP warm_head_kv() can read per-position hiddens during prefill.
+    //
+    // R8 audit (Phase A): this branch overwrites last_hidden_seq_cpu_ via
+    // .resize() + tensor_get on EVERY verify_batch call — including the
+    // recommit path at mtp_chain_runner.cpp:206 (recommit calls verify_batch
+    // which lands here).  So `hidden_at_pos(base_pos-1)` on the chain's next
+    // iteration reads the fresh hiddens from the recommit, not a stale slice.
+    // Hypothesis from the Phase A brief (stale recommit hiddens as cause of
+    // the 71.6% per-step accept ceiling) is NOT supported by this code path.
     if (sg_.all_norm_hidden) {
         last_hidden_seq_cpu_.resize((size_t)n_tokens * hidden);
         ggml_backend_tensor_get(sg_.all_norm_hidden, last_hidden_seq_cpu_.data(),

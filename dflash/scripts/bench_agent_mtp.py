@@ -178,6 +178,10 @@ def main():
     p.add_argument("--ddtree-no-chain-seed", action="store_true",
                    help="Disable DDTree chain_seed (paper's pure best-first). "
                         "Required to get a real tree shape when K>1.")
+    p.add_argument("--chain-depth", type=int, default=1,
+                   help="Phase A autoregressive chain depth (default 1). "
+                        "Passed to test_dflash as --gamma N for the MTP cell. "
+                        "depth=1 is byte-identical to the pre-Phase-A bench.")
     args = p.parse_args()
 
     if not Path(MTP_GGUF).is_file():
@@ -223,12 +227,15 @@ def main():
                       f"prefill={a['prefill_s']:.2f}s  TTFT={a['ttft_s']:.2f}s  "
                       f"total={a['total_s']:.2f}s")
                 if run_chain:
-                    m = run_cell(1, prompt_path, prompt_id, n_prompt, args.n_gen,
-                                 draft_source="chain")
+                    # Phase A: --chain-depth N drives the MTP cell at gamma=N,
+                    # exercising the new INativeMtp::step_chain path.  At N=1
+                    # this is byte-identical to the pre-Phase-A bench.
+                    m = run_cell(max(1, args.chain_depth), prompt_path, prompt_id,
+                                 n_prompt, args.n_gen, draft_source="chain")
                     mtp.append(m)
                     accept = m["accepted"] / max(1, m["proposed"])
-                    print(f"  MTP run {run + 1}: tok_s={m['tok_s']:.2f}  "
-                          f"tokens={m['tokens']}  "
+                    print(f"  MTP run {run + 1} (chain_depth={args.chain_depth}): "
+                          f"tok_s={m['tok_s']:.2f}  tokens={m['tokens']}  "
                           f"prefill={m['prefill_s']:.2f}s  TTFT={m['ttft_s']:.2f}s  "
                           f"total={m['total_s']:.2f}s  accept={accept * 100:.1f}%")
                 if run_topk:
@@ -250,7 +257,10 @@ def main():
                 mtp = list(ar)
 
             def med(xs, k):
-                return statistics.median(x[k] for x in xs)
+                vals = [x[k] for x in xs]
+                if not vals or not isinstance(vals[0], (int, float)):
+                    return vals[0] if vals else None
+                return statistics.median(vals)
 
             ar_med = {k: med(ar, k) for k in ar[0]}
             mtp_med = {k: med(mtp, k) for k in mtp[0]}

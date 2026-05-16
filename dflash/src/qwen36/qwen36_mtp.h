@@ -135,6 +135,16 @@ public:
                     std::vector<StepOutput> & out) override;
     void set_draft_topk(int k) override;
 
+    // Autoregressive chain draft: runs the head `chain_depth` times,
+    // feeding the previous iteration's post-shared_head_norm hidden as
+    // h_prev for the next.  Per-iter graph is rebuilt today (Phase A
+    // honest baseline; graph caching is Phase B).  On the CPU stub path
+    // (no backend) this falls back to the default `step_batch`+clamp.
+    bool step_chain(int32_t current_token,
+                    int base_pos,
+                    int chain_depth,
+                    std::vector<StepOutput> & out) override;
+
     // Receive the backbone's final post-norm hidden state for the last committed
     // token. Called by the chain runner before each step_batch(). The pointer
     // and dim must remain valid for the duration of step_batch(); the module

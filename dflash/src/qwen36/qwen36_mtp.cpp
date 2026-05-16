@@ -1543,4 +1543,202 @@ bool Qwen36MtpModule::step_batch_gpu_(int32_t current_token,
     return true;
 }
 
+// Phase A autoregressive chain draft.  Reuses head 0 (the only NextN head on
+// the Qwen3.6-27B GGUF) `chain_depth` times, feeding the head's own
+// post-shared_head_norm hidden back as h_prev for the next iteration.  The
+// per-iter graph is rebuilt on each call — Phase B (R1) will cache it.
+//
+// CPU stub path (no backend / no kv_ctx): degrade gracefully to the default
+// `step_batch`+clamp.  Unit tests exercising the CPU forward at depth=1
+// remain byte-identical to the old behaviour.
+bool Qwen36MtpModule::step_chain(int32_t current_token,
+                                 int base_pos,
+                                 int chain_depth,
+                                 std::vector<StepOutput> & out) {
+    out.clear();
+    if (!state_->loaded || !state_->attached) return false;
+    if (chain_depth <= 0) chain_depth = 1;
+
+    // Single-iter fast path: byte-identical to the established step_batch
+    // contract.  Avoids the additional state_->last_hidden plumbing in the
+    // depth>1 loop below.
+    if (chain_depth == 1) {
+        std::vector<StepOutput> tmp;
+        if (!step_batch(current_token, base_pos, tmp)) return false;
+        if (!tmp.empty()) out.push_back(std::move(tmp.front()));
+        return true;
+    }
+
+    // CPU stub fallback for depth>1 — not exercised by production today
+    // (the only depth>1 caller goes through the GPU path); degrade to one
+    // step_batch call so tests that swap out the backend still link.
+    const bool gpu_ready = (state_->kv_ctx && state_->target &&
+                            state_->target->backend());
+    if (!gpu_ready) {
+        std::vector<StepOutput> tmp;
+        if (!step_batch(current_token, base_pos, tmp)) return false;
+        if (!tmp.empty()) out.push_back(std::move(tmp.front()));
+        return true;
+    }
+
+    // ── GPU multi-iter chain ─────────────────────────────────────────
+    const int n_embd    = state_->weights.n_embd;
+    const int n_head    = state_->weights.n_head_count;
+    const int n_head_kv = state_->weights.n_head_kv;
+    const int key_len   = state_->weights.n_key_length;
+    const int val_len   = state_->weights.n_value_length;
+    const int ffn_len   = state_->weights.n_ffn_length;
+    const int n_rot     = std::min(64, key_len);
+    const float rope_freq_base = 1e7f;
+    const float rms_eps = 1e-6f;
+    int rope_sections[4] = { 11, 11, 10, 0 };
+
+    out.reserve(chain_depth);
+
+    ggml_backend_t backend = state_->target->backend();
+
+    // The Qwen3.6-27B GGUF has n_heads=1; chain depth replays that single
+    // head against successive draft positions.  If a future GGUF lands with
+    // multiple physical NextN heads, this implementation would still chain
+    // on head 0 only — multi-head + chain interaction is a Phase >A concern.
+    const int h = 0;
+    if ((int)state_->weights.heads.size() <= h ||
+        (int)state_->head_kv.size() <= h) {
+        std::fprintf(stderr,
+            "[qwen36_mtp gpu chain] head 0 missing (heads=%zu head_kv=%zu)\n",
+            state_->weights.heads.size(), state_->head_kv.size());
+        return false;
+    }
+    const auto & head = state_->weights.heads[h];
+
+    int32_t cur_token = current_token;
+    std::vector<float> embed_buf(n_embd);
+    std::vector<float> h_prev_buf(n_embd, 0.0f);
+
+    for (int it = 0; it < chain_depth; it++) {
+        const int draft_pos = base_pos + it;
+        if (draft_pos >= state_->n_ctx) {
+            std::fprintf(stderr,
+                "[qwen36_mtp gpu chain] draft_pos=%d exceeds n_ctx=%d (iter=%d)\n",
+                draft_pos, state_->n_ctx, it);
+            return false;
+        }
+        const int kv_len = draft_pos + 1;
+
+        // h_prev resolution mirrors step_batch_gpu_:
+        //   iter 0: pull from target (hidden_at_pos > last_hidden > initial).
+        //   iter h>0: use state_->last_hidden written by the previous iter
+        //             from out_x_normed (the post-shared_head_norm hidden).
+        const float * h_prev = nullptr;
+        if (it == 0) {
+            if (base_pos >= 1) {
+                h_prev = state_->target->hidden_at_pos(base_pos - 1);
+            }
+            if (!h_prev) h_prev = state_->target->last_hidden();
+            if (!h_prev && state_->initial_hidden_ptr &&
+                state_->initial_hidden_dim == n_embd) {
+                h_prev = state_->initial_hidden_ptr;
+            }
+            if (!h_prev) {
+                std::fprintf(stderr,
+                    "[qwen36_mtp gpu chain] no hidden available at base_pos=%d\n",
+                    base_pos);
+                return false;
+            }
+        } else {
+            if ((int)state_->last_hidden.size() != n_embd) {
+                std::fprintf(stderr,
+                    "[qwen36_mtp gpu chain] last_hidden missing for iter %d\n", it);
+                return false;
+            }
+            h_prev = state_->last_hidden.data();
+        }
+        std::memcpy(h_prev_buf.data(), h_prev, sizeof(float) * n_embd);
+
+        if (!state_->target->embed_tokens(&cur_token, 1, embed_buf.data())) {
+            std::fprintf(stderr,
+                "[qwen36_mtp gpu chain] embed_tokens failed iter=%d\n", it);
+            return false;
+        }
+
+        // Per-iter graph rebuild — Phase A baseline.  Phase B caches.
+        if (!build_qwen36_mtp_step_graph(state_->step_sg, head,
+                                          state_->head_kv[h].k_cache,
+                                          state_->head_kv[h].v_cache,
+                                          backend,
+                                          n_embd, n_head, n_head_kv,
+                                          key_len, val_len, ffn_len,
+                                          n_rot, rope_sections,
+                                          rope_freq_base, rms_eps,
+                                          draft_pos, kv_len)) {
+            std::fprintf(stderr,
+                "[qwen36_mtp gpu chain] build_step_graph failed iter=%d\n", it);
+            return false;
+        }
+
+        ggml_backend_tensor_set(state_->step_sg.inp_embed,
+            embed_buf.data(), 0, sizeof(float) * n_embd);
+        ggml_backend_tensor_set(state_->step_sg.inp_h_prev,
+            h_prev_buf.data(), 0, sizeof(float) * n_embd);
+        const int32_t pos[4] = { draft_pos, draft_pos, draft_pos, 0 };
+        ggml_backend_tensor_set(state_->step_sg.inp_pos,
+            pos, 0, sizeof(pos));
+
+        auto st = ggml_backend_graph_compute(backend, state_->step_sg.gf);
+        if (st != GGML_STATUS_SUCCESS) {
+            std::fprintf(stderr,
+                "[qwen36_mtp gpu chain] graph_compute status=%d iter=%d\n",
+                (int)st, it);
+            return false;
+        }
+
+        std::vector<float> x_normed(n_embd);
+        ggml_backend_tensor_get(state_->step_sg.out_x_normed,
+            x_normed.data(), 0, sizeof(float) * n_embd);
+
+        StepOutput so;
+        if (state_->draft_topk > 1) {
+            std::vector<float> logits_buf;
+            int vocab = 0;
+            if (state_->target->project_hidden_to_logits(x_normed.data(), 1,
+                                                          logits_buf, vocab) &&
+                vocab > 0) {
+                so.draft_token = argmax(logits_buf.data(), vocab);
+                so.draft_logit = logits_buf[so.draft_token];
+                emit_topk_logprobs(logits_buf.data(), vocab,
+                                   state_->draft_topk, so);
+            } else {
+                std::vector<int32_t> tok_out;
+                if (!state_->target->project_hidden_to_tokens(x_normed.data(), 1,
+                                                               tok_out) ||
+                    tok_out.empty()) {
+                    std::fprintf(stderr,
+                        "[qwen36_mtp gpu chain] project_hidden_to_tokens failed iter=%d\n", it);
+                    return false;
+                }
+                so.draft_token = tok_out[0];
+                so.draft_logit = 0.0f;
+            }
+        } else {
+            std::vector<int32_t> tok_out;
+            if (!state_->target->project_hidden_to_tokens(x_normed.data(), 1,
+                                                           tok_out) ||
+                tok_out.empty()) {
+                std::fprintf(stderr,
+                    "[qwen36_mtp gpu chain] project_hidden_to_tokens failed iter=%d\n", it);
+                return false;
+            }
+            so.draft_token = tok_out[0];
+            so.draft_logit = 0.0f;
+        }
+        out.push_back(so);
+
+        // Stash post-shared_head_norm hidden for next iter's h_prev and
+        // advance cur_token to the freshly drafted token.
+        state_->last_hidden = std::move(x_normed);
+        cur_token = so.draft_token;
+    }
+    return true;
+}
+
 }  // namespace dflash27b::mtp
