@@ -136,8 +136,24 @@ bool Qwen35DFlashTarget::verify_batch(
                                 0, sizeof(float) * (size_t)n_tokens * hidden);
         last_hidden_seq_n_         = n_tokens;
         last_verify_chunk_start_   = base_pos;
+        // Mirror the PRE-final-output-norm sequence (set by the graph when
+        // capture_all_norm_hidden is on).  hidden_at_pos_pre_norm() reads
+        // this; the Qwen3.6 MTP chain seeds h_prev_0 with it (PR #22673
+        // `t_h_pre_norm`).  If the graph did not expose the pre-norm
+        // tensor (e.g. older graph builds, defensive fallback), clear the
+        // buffer so the accessor returns nullptr and the caller falls
+        // back to the post-norm tensor.
+        if (sg_.all_h_pre_norm) {
+            last_hidden_seq_pre_norm_cpu_.resize((size_t)n_tokens * hidden);
+            ggml_backend_tensor_get(sg_.all_h_pre_norm,
+                                    last_hidden_seq_pre_norm_cpu_.data(),
+                                    0, sizeof(float) * (size_t)n_tokens * hidden);
+        } else {
+            last_hidden_seq_pre_norm_cpu_.clear();
+        }
     } else {
         last_hidden_seq_n_ = 0;
+        last_hidden_seq_pre_norm_cpu_.clear();
     }
 
     cache_.cur_pos = base_pos + n_tokens;

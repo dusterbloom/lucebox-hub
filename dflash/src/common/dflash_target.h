@@ -173,6 +173,20 @@ struct DFlashTarget {
         (void)abs_pos;
         return nullptr;
     }
+
+    // Pre-final-output-norm variant of hidden_at_pos.  Mirrors llama.cpp
+    // PR #22673's `t_h_pre_norm`.  The Qwen3.6 MTP head's hnorm normalises
+    // h_prev internally; feeding it the post-output-norm tensor double-
+    // normalises and compounds per-depth rejection on D>=2 chains.  Spec-
+    // chain callers must prefer this accessor for the outer h_prev_0 seed
+    // and fall back to hidden_at_pos() only if it returns nullptr (e.g.
+    // adapters that do not yet capture the pre-norm sequence).  Default
+    // returns nullptr; Qwen35DFlashTarget overrides it when hidden-seq
+    // capture is enabled.
+    virtual const float * hidden_at_pos_pre_norm(int abs_pos) const {
+        (void)abs_pos;
+        return nullptr;
+    }
 };
 
 } // namespace dflash27b

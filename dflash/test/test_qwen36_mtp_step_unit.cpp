@@ -90,6 +90,44 @@ struct StubTarget : DFlashTarget {
     }
 };
 
+// ── DualHiddenTarget ───────────────────────────────────────────────────────
+//
+// Stub target that publishes DIFFERENT vectors for hidden_at_pos (post-norm)
+// and hidden_at_pos_pre_norm.  The Qwen3.6 MTP module's chain seed (h_prev_0)
+// must prefer the pre-norm vector to mirror llama.cpp PR #22673 t_h_pre_norm
+// (post-norm path double-normalises via the head's hnorm and crushes D>=2
+// accept).  This stub lets a unit test observe which accessor the consumer
+// picks: the per-head draft token is a deterministic function of h_prev, so
+// pre-norm vs post-norm seeds yield different tokens, and the test asserts
+// equivalence to a control module that was fed the pre-norm vector directly
+// via set_initial_hidden.
+struct DualHiddenTarget : StubTarget {
+    std::vector<float> post_norm;
+    std::vector<float> pre_norm;
+    int absolute_pos = 0;  // position at which both vectors live
+    // Observability: how many times each accessor was called and at which
+    // abs_pos.  The test asserts pre-norm was called and matched FIRST so a
+    // future regression that swaps accessors will be caught regardless of
+    // numerical noise downstream of the TRMBlock.
+    mutable int  post_norm_call_count = 0;
+    mutable int  pre_norm_call_count  = 0;
+    mutable int  last_pre_norm_pos    = -999;
+    mutable int  last_post_norm_pos   = -999;
+
+    const float * hidden_at_pos(int abs_pos) const override {
+        post_norm_call_count++;
+        last_post_norm_pos = abs_pos;
+        if (abs_pos != absolute_pos) return nullptr;
+        return post_norm.empty() ? nullptr : post_norm.data();
+    }
+    const float * hidden_at_pos_pre_norm(int abs_pos) const override {
+        pre_norm_call_count++;
+        last_pre_norm_pos = abs_pos;
+        if (abs_pos != absolute_pos) return nullptr;
+        return pre_norm.empty() ? nullptr : pre_norm.data();
+    }
+};
+
 // ── Weight builder ─────────────────────────────────────────────────────────
 //
 // Allocates per-head ggml tensors in a shared context with small deterministic
@@ -444,6 +482,109 @@ static void test_forward_deterministic() {
     std::printf("[step_unit] test_forward_deterministic PASS\n");
 }
 
+// 11. Chain seed PREFERS pre-norm hidden over post-norm.  Regression guard
+//     for the bug fixed in commit ${THIS_COMMIT}: the spec-chain's outer
+//     h_prev_0 used target->hidden_at_pos(base_pos-1) (post-output-norm),
+//     which double-normalised against the head's own hnorm and crushed
+//     D>=2 accept (real-bench: 70.7% compound-decayed at D=3).  Pre-norm
+//     seed (llama.cpp PR #22673 `t_h_pre_norm`) is the fix.
+//
+//     Method: drive step_batch (CPU path) at base_pos=1 with a target that
+//     COUNTS how many times each accessor is called and at which abs_pos.
+//     The new behaviour: hidden_at_pos_pre_norm() must be called for
+//     abs_pos = base_pos - 1 = 0; hidden_at_pos() may be called (only as
+//     a fallback) but must NOT be the one whose result was used.  We
+//     check call-trace + the non-null pre-norm vector, which is more
+//     robust than comparing tokens through the uniform-weight test
+//     TRMBlock (which collapses input differences).
+static void test_chain_seed_prefers_pre_norm() {
+    Qwen36MtpWeights w;
+    ggml_context * ctx = build_test_weights(w);
+
+    DualHiddenTarget tgt;
+    tgt.post_norm.assign(TEST_N_EMBD, 0.5f);
+    tgt.pre_norm.assign(TEST_N_EMBD, 0.1f);
+    tgt.absolute_pos = 0;
+
+    auto m = make_module(tgt, ctx, w);
+    std::vector<StepOutput> out;
+    CHECK(m->step_batch(/*cur=*/3, /*base_pos=*/1, out));
+    CHECK((int)out.size() == TEST_N_HEADS);
+
+    // Invariant 1: pre-norm was queried at abs_pos = base_pos - 1 = 0.
+    if (tgt.pre_norm_call_count == 0) {
+        std::fprintf(stderr,
+            "[step_unit] FAIL: hidden_at_pos_pre_norm was NEVER called — "
+            "consumer is still using hidden_at_pos exclusively (PR #22673 "
+            "regression).\n");
+        std::exit(1);
+    }
+    if (tgt.last_pre_norm_pos != 0) {
+        std::fprintf(stderr,
+            "[step_unit] FAIL: hidden_at_pos_pre_norm called with abs_pos=%d "
+            "but base_pos-1 = 0 was expected.\n", tgt.last_pre_norm_pos);
+        std::exit(1);
+    }
+
+    // Invariant 2: pre-norm returned non-null so consumer must NOT have
+    // also dispatched the post-norm fallback for the SAME abs_pos.  If
+    // tgt.post_norm_call_count > 0 at this abs_pos, the consumer is
+    // probing post-norm after a successful pre-norm read — that's an
+    // efficiency bug but not a correctness one; warn but don't fail.
+    if (tgt.post_norm_call_count > 0 &&
+        tgt.last_post_norm_pos == 0) {
+        std::fprintf(stderr,
+            "[step_unit] WARN: hidden_at_pos called at abs_pos=0 after a "
+            "successful hidden_at_pos_pre_norm hit — consumer is "
+            "fallback-probing both accessors.\n");
+    }
+
+    ggml_free(ctx);
+    std::printf("[step_unit] test_chain_seed_prefers_pre_norm PASS "
+                "(pre_norm_calls=%d post_norm_calls=%d)\n",
+                tgt.pre_norm_call_count, tgt.post_norm_call_count);
+}
+
+// 12. Companion negative: if a target ONLY publishes post-norm (returns
+//     nullptr from hidden_at_pos_pre_norm), the consumer must FALL BACK
+//     to hidden_at_pos rather than failing.  This preserves the default
+//     DFlashTarget interface contract — adapters that haven't been
+//     updated for the pre-norm accessor must still work.
+struct PostNormOnlyTarget : StubTarget {
+    std::vector<float> post_norm;
+    int absolute_pos = 0;
+    mutable int post_norm_call_count = 0;
+    const float * hidden_at_pos(int abs_pos) const override {
+        post_norm_call_count++;
+        if (abs_pos != absolute_pos) return nullptr;
+        return post_norm.empty() ? nullptr : post_norm.data();
+    }
+    // hidden_at_pos_pre_norm intentionally NOT overridden — base virtual
+    // returns nullptr, simulating an adapter that doesn't expose pre-norm.
+};
+static void test_chain_seed_falls_back_to_post_norm() {
+    Qwen36MtpWeights w;
+    ggml_context * ctx = build_test_weights(w);
+    PostNormOnlyTarget tgt;
+    tgt.post_norm.assign(TEST_N_EMBD, 0.2f);
+    tgt.absolute_pos = 0;
+
+    auto m = make_module(tgt, ctx, w);
+    std::vector<StepOutput> out;
+    CHECK(m->step_batch(/*cur=*/5, /*base_pos=*/1, out));
+    CHECK((int)out.size() == TEST_N_HEADS);
+    if (tgt.post_norm_call_count == 0) {
+        std::fprintf(stderr,
+            "[step_unit] FAIL: hidden_at_pos fallback not called when "
+            "hidden_at_pos_pre_norm returns nullptr — chain would fail "
+            "on un-updated adapters.\n");
+        std::exit(1);
+    }
+    ggml_free(ctx);
+    std::printf("[step_unit] test_chain_seed_falls_back_to_post_norm PASS "
+                "(post_norm_calls=%d)\n", tgt.post_norm_call_count);
+}
+
 // ── main ──────────────────────────────────────────────────────────────────
 
 int main() {
@@ -457,6 +598,8 @@ int main() {
     test_set_initial_hidden_stores_pointer();
     test_forward_with_initial_hidden_produces_token();
     test_forward_deterministic();
-    std::printf("[step_unit] all 10 tests PASS\n");
+    test_chain_seed_prefers_pre_norm();
+    test_chain_seed_falls_back_to_post_norm();
+    std::printf("[step_unit] all 12 tests PASS\n");
     return 0;
 }

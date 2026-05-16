@@ -41,6 +41,14 @@ struct StepGraph {
     // Full post-norm hidden sequence [n_embd, n_tokens] f32.  Used by
     // warm_head_kv() to read per-position hiddens during prefill.
     ggml_tensor *   all_norm_hidden = nullptr;
+    // Pre-final-output-norm hidden — last token [n_embd] f32 and full
+    // sequence [n_embd, n_tokens] f32.  Used by the Qwen3.6 MTP module to
+    // seed the NextN head's h_prev WITHOUT double-normalising against the
+    // head's own hnorm (mirror of llama.cpp PR #22673 `t_h_pre_norm`).
+    // Populated alongside last_/all_norm_hidden when the caller asks for
+    // capture_all_norm_hidden.
+    ggml_tensor *   last_h_pre_norm = nullptr;
+    ggml_tensor *   all_h_pre_norm  = nullptr;
 
     // Per-delta-net-layer captures (verify only).
     std::vector<DeltaNetCapture> delta_captures;
@@ -61,6 +69,8 @@ inline void step_graph_free(StepGraph & sg) {
     sg.topk_indices = nullptr;
     sg.last_norm_hidden = nullptr;
     sg.all_norm_hidden = nullptr;
+    sg.last_h_pre_norm = nullptr;
+    sg.all_h_pre_norm  = nullptr;
     sg.delta_captures.clear();
 }
 

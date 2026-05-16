@@ -1142,6 +1142,32 @@ QwenGraphOutputs build_qwen35_graph(
     }
 
     // 2. Final norm
+    //
+    // 2pre. Capture PRE-final-output-norm hidden (mirrors llama.cpp
+    //       PR #22673's `t_h_pre_norm` from src/models/qwen35.cpp:208-211).
+    //       The Qwen3.6 MTP head's hnorm normalises h_prev internally; if
+    //       we feed it the post-output-norm hidden it double-normalises,
+    //       compounding the per-depth rejection rate (see audit notes in
+    //       qwen36_mtp.cpp:1743 / qwen36_mtp_graph.cpp:329).  Only wired
+    //       as a graph output when capture_all_norm_hidden is set — that
+    //       flag is owned by the MTP module's adapter.
+    ggml_tensor * last_h_pre_norm = nullptr;
+    ggml_tensor * all_h_pre_norm  = nullptr;
+    if (in.capture_all_norm_hidden) {
+        ggml_tensor * inpL_2d = ggml_reshape_2d(ctx, inpL, hidden, n_tokens);
+        last_h_pre_norm = ggml_view_2d(ctx, inpL_2d, hidden, 1,
+                                        inpL_2d->nb[1],
+                                        (size_t)(n_tokens - 1) * inpL_2d->nb[1]);
+        ggml_set_name(last_h_pre_norm, "last_h_pre_norm");
+        ggml_set_output(last_h_pre_norm);
+        ggml_build_forward_expand(gf, last_h_pre_norm);
+
+        all_h_pre_norm = inpL_2d;
+        ggml_set_name(all_h_pre_norm, "all_h_pre_norm");
+        ggml_set_output(all_h_pre_norm);
+        ggml_build_forward_expand(gf, all_h_pre_norm);
+    }
+
     ggml_tensor * out = rms_norm_mul(ctx, inpL, w.out_norm, w.rms_eps);
 
     // 2a. Expose the last token's post-norm hidden as a named graph output.
@@ -1191,6 +1217,8 @@ QwenGraphOutputs build_qwen35_graph(
     og.logits = logits;
     og.last_norm_hidden = last_norm_hidden;
     og.all_norm_hidden = all_norm_hidden;
+    og.last_h_pre_norm = last_h_pre_norm;
+    og.all_h_pre_norm  = all_h_pre_norm;
     return og;
 }
 

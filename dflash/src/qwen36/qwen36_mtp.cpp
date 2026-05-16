@@ -807,7 +807,15 @@ bool Qwen36MtpModule::step_batch(int32_t current_token,
             bool found_hidden = false;
             if (state_->target) {
                 if (base_pos >= 1) {
-                    const float * tgt_h = state_->target->hidden_at_pos(base_pos - 1);
+                    // Prefer pre-output-norm (PR #22673 t_h_pre_norm) so
+                    // the head's hnorm doesn't double-normalise.  Fall
+                    // back to post-norm if the adapter did not capture
+                    // the pre-norm sequence this verify_batch.
+                    const float * tgt_h =
+                        state_->target->hidden_at_pos_pre_norm(base_pos - 1);
+                    if (!tgt_h) {
+                        tgt_h = state_->target->hidden_at_pos(base_pos - 1);
+                    }
                     if (tgt_h) {
                         h_prev = tgt_h;
                         found_hidden = true;
@@ -1514,10 +1522,17 @@ bool Qwen36MtpModule::step_batch_gpu_(int32_t current_token,
         const int kv_len = draft_pos + 1;
 
         // ── Select h_prev (same priority as CPU path) ───────────────────
+        // Pre-output-norm preferred (PR #22673 t_h_pre_norm) — head's
+        // hnorm normalises h_prev internally and post-norm seed double-
+        // normalises.  Fall back to post-norm if the adapter did not
+        // capture the pre-norm sequence this verify_batch.
         const float * h_prev = nullptr;
         if (h == 0) {
             if (base_pos >= 1) {
-                h_prev = state_->target->hidden_at_pos(base_pos - 1);
+                h_prev = state_->target->hidden_at_pos_pre_norm(base_pos - 1);
+                if (!h_prev) {
+                    h_prev = state_->target->hidden_at_pos(base_pos - 1);
+                }
             }
             if (!h_prev) h_prev = state_->target->last_hidden();
             if (!h_prev && state_->initial_hidden_ptr &&
@@ -1736,13 +1751,25 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
         const int kv_len = draft_pos + 1;
 
         // h_prev resolution mirrors step_batch_gpu_:
-        //   iter 0: pull from target (hidden_at_pos > last_hidden > initial).
+        //   iter 0: pull from target (hidden_at_pos_pre_norm > hidden_at_pos
+        //           > last_hidden > initial).  Pre-norm preferred to mirror
+        //           llama.cpp PR #22673 `t_h_pre_norm` — the head's hnorm
+        //           normalises h_prev internally so the post-output-norm
+        //           tensor double-normalises and crushes D>=2 accept.
         //   iter h>0: use state_->last_hidden written by the previous iter
-        //             from out_x_normed (the post-shared_head_norm hidden).
+        //             from out_h_pre_norm (the pre-shared_head_norm hidden;
+        //             commit 9850ec9).
         const float * h_prev = nullptr;
         if (it == 0) {
             if (base_pos >= 1) {
-                h_prev = state_->target->hidden_at_pos(base_pos - 1);
+                h_prev = state_->target->hidden_at_pos_pre_norm(base_pos - 1);
+                if (!h_prev) {
+                    // Fallback: adapter did not capture the pre-norm
+                    // sequence this verify_batch.  Post-norm is acceptable
+                    // at D=1 (single iter, no head re-feed) but degrades
+                    // D>=2 accept; the alternative is failing the chain.
+                    h_prev = state_->target->hidden_at_pos(base_pos - 1);
+                }
             }
             if (!h_prev) h_prev = state_->target->last_hidden();
             if (!h_prev && state_->initial_hidden_ptr &&

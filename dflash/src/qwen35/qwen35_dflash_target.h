@@ -128,6 +128,23 @@ public:
         return last_hidden_seq_cpu_.data() + (size_t)rel * w_.n_embd;
     }
 
+    // Pre-final-output-norm variant of hidden_at_pos.  Mirrors llama.cpp
+    // PR #22673's `t_h_pre_norm`: the Qwen3.6 MTP head's hnorm normalises
+    // h_prev internally, so feeding it the post-output-norm tensor double-
+    // normalises and compounds per-depth rejection.  The chain GPU loop's
+    // outer h_prev_0 seed must use this accessor; the intra-iter re-feed
+    // already uses the MTP graph's pre-norm output (state_->last_hidden).
+    // Returns nullptr if the most recent verify_batch did NOT capture the
+    // pre-norm sequence (enable_hidden_seq_capture(true) flips this on).
+    const float * hidden_at_pos_pre_norm(int abs_pos) const override {
+        const int rel = abs_pos - last_verify_chunk_start_;
+        if (rel < 0 || rel >= last_hidden_seq_n_ ||
+            last_hidden_seq_pre_norm_cpu_.empty()) {
+            return nullptr;
+        }
+        return last_hidden_seq_pre_norm_cpu_.data() + (size_t)rel * w_.n_embd;
+    }
+
 private:
     TargetWeights & w_;
     TargetCache & cache_;
@@ -150,6 +167,11 @@ private:
     // from the last verify_batch.  Used by Qwen3.6 MTP warm_head_kv to seed
     // the head's per-position K/V cache during prefill.
     mutable std::vector<float> last_hidden_seq_cpu_;
+    // CPU-side copy of the full [n_tokens, n_embd] PRE-final-output-norm
+    // hidden sequence — populated alongside last_hidden_seq_cpu_ when
+    // capture_hidden_seq_ is on.  Consumed by hidden_at_pos_pre_norm() so
+    // the Qwen3.6 MTP chain's outer h_prev_0 seed dodges double-normalisation.
+    mutable std::vector<float> last_hidden_seq_pre_norm_cpu_;
     mutable int                last_hidden_seq_n_ = 0;
     // Absolute position of the FIRST token captured in last_hidden_seq_cpu_.
     // Used by hidden_at_pos to translate an absolute sequence position to an

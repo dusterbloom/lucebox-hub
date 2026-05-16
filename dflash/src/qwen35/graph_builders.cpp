@@ -141,6 +141,8 @@ bool build_target_step(
     sg.logits = go.logits;
     sg.last_norm_hidden = go.last_norm_hidden;
     sg.all_norm_hidden  = go.all_norm_hidden;  // null unless capture_all_norm_hidden
+    sg.last_h_pre_norm  = go.last_h_pre_norm;  // null unless capture_all_norm_hidden
+    sg.all_h_pre_norm   = go.all_h_pre_norm;   // null unless capture_all_norm_hidden
     sg.delta_captures = std::move(go.delta_captures);
     ggml_set_output(sg.logits);
 
