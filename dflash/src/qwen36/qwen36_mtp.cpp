@@ -38,8 +38,10 @@
 #include "gguf.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -47,6 +49,31 @@
 #include <vector>
 
 namespace dflash27b::mtp {
+
+// Per-iter profiler for step_chain_gpu_ loop body.  Enabled by setting
+// DFLASH_MTP_PROFILE=1 in the environment.  Per-iter line: a single
+// stderr printf gated to keep the hot path free when disabled.  Per-chain
+// aggregate is dumped at chain end with percentage breakdown.
+//
+// Why std::chrono::steady_clock and not cudaEvents: every
+// ggml_backend_tensor_set / tensor_get / graph_compute already calls
+// cudaStreamSynchronize internally (see ggml-cuda.cu:686,694,704,714).
+// Host-side wall clock around a sync IS the GPU+sync latency.  This is
+// the cheapest portable instrumentation possible and matches the granular
+// breakdown the rest of the codebase uses (DFLASH_FP_PROFILE et al).
+namespace {
+inline bool mtp_profile_enabled() {
+    static const bool on = (std::getenv("DFLASH_MTP_PROFILE") != nullptr);
+    return on;
+}
+
+using prof_clock = std::chrono::steady_clock;
+inline double prof_ms_since(prof_clock::time_point t0) {
+    auto t1 = prof_clock::now();
+    return std::chrono::duration<double, std::milli>(t1 - t0).count();
+}
+}  // namespace
+
 
 // ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -1740,6 +1767,13 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
     int32_t cur_token = current_token;
     std::vector<float> embed_buf(n_embd);
 
+    // Profiling accumulators (DFLASH_MTP_PROFILE=1).  All in ms.
+    const bool prof_on = mtp_profile_enabled();
+    double prof_sum_embed = 0.0, prof_sum_set = 0.0, prof_sum_compute = 0.0;
+    double prof_sum_get_x = 0.0, prof_sum_get_h = 0.0, prof_sum_get_argmax = 0.0;
+    double prof_sum_total = 0.0;
+    int    prof_iters = 0;
+
     for (int it = 0; it < chain_depth; it++) {
         const int draft_pos = base_pos + it;
         if (draft_pos >= state_->n_ctx) {
@@ -1791,24 +1825,38 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
             h_prev = state_->last_hidden.data();
         }
 
+        prof_clock::time_point t_iter0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
+
+        prof_clock::time_point t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
         if (!state_->target->embed_tokens(&cur_token, 1, embed_buf.data())) {
             std::fprintf(stderr,
                 "[qwen36_mtp gpu chain] embed_tokens failed iter=%d\n", it);
             return false;
         }
+        const double t_embed = prof_on ? prof_ms_since(t0) : 0.0;
 
         Qwen36MtpStepGraph * sg = get_or_build_step_graph_(h, draft_pos, kv_len);
         if (!sg) return false;
 
+        t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
         ggml_backend_tensor_set(sg->inp_embed,
             embed_buf.data(), 0, sizeof(float) * n_embd);
+        const double t_set_embed = prof_on ? prof_ms_since(t0) : 0.0;
+
+        t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
         // Pass h_prev directly (no scratch memcpy — task E).
         ggml_backend_tensor_set(sg->inp_h_prev,
             h_prev, 0, sizeof(float) * n_embd);
+        const double t_set_hprev = prof_on ? prof_ms_since(t0) : 0.0;
+
+        t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
         const int32_t pos[4] = { draft_pos, draft_pos, draft_pos, 0 };
         ggml_backend_tensor_set(sg->inp_pos, pos, 0, sizeof(pos));
+        const double t_set_pos = prof_on ? prof_ms_since(t0) : 0.0;
 
+        t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
         auto st = ggml_backend_graph_compute(backend, sg->gf);
+        const double t_compute = prof_on ? prof_ms_since(t0) : 0.0;
         if (st != GGML_STATUS_SUCCESS) {
             std::fprintf(stderr,
                 "[qwen36_mtp gpu chain] graph_compute status=%d iter=%d\n",
@@ -1835,25 +1883,34 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
         std::vector<float> x_normed;
         const bool need_x_normed =
             !(sg->fused_lm_head && sg->out_argmax_token);
+        double t_get_x = 0.0;
         if (need_x_normed) {
             x_normed.resize(n_embd);
+            t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
             ggml_backend_tensor_get(sg->out_x_normed,
                 x_normed.data(), 0, sizeof(float) * n_embd);
+            t_get_x = prof_on ? prof_ms_since(t0) : 0.0;
         }
         // Only download h_pre when ANOTHER iteration follows that will
         // consume it as h_prev.  On the last chain step the value is
         // discarded — skip the device->host transfer entirely.
         const bool need_h_pre = (it + 1 < chain_depth);
         std::vector<float> h_pre;
+        double t_get_h = 0.0;
         if (need_h_pre) {
             h_pre.resize(n_embd);
+            t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
             ggml_backend_tensor_get(sg->out_h_pre_norm,
                 h_pre.data(), 0, sizeof(float) * n_embd);
+            t_get_h = prof_on ? prof_ms_since(t0) : 0.0;
         }
 
+        double t_get_argmax = 0.0;
         if (sg->fused_lm_head && sg->out_argmax_token) {
             int32_t tok = 0;
+            t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
             ggml_backend_tensor_get(sg->out_argmax_token, &tok, 0, sizeof(int32_t));
+            t_get_argmax = prof_on ? prof_ms_since(t0) : 0.0;
             so.draft_token = tok;
             so.draft_logit = 0.0f;
             if (sg->out_logits && state_->draft_topk > 1) {
@@ -1910,6 +1967,39 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
             state_->last_hidden = std::move(h_pre);
         }
         cur_token = so.draft_token;
+
+        if (prof_on) {
+            const double t_total = prof_ms_since(t_iter0);
+            std::fprintf(stderr,
+                "[mtp_prof iter=%d] embed=%.3f set=%.3f.%.3f.%.3f "
+                "compute=%.3f get=%.3f.%.3f argmax=%.3f total=%.3f (ms)\n",
+                it, t_embed, t_set_embed, t_set_hprev, t_set_pos,
+                t_compute, t_get_x, t_get_h, t_get_argmax, t_total);
+            prof_sum_embed   += t_embed;
+            prof_sum_set     += t_set_embed + t_set_hprev + t_set_pos;
+            prof_sum_compute += t_compute;
+            prof_sum_get_x   += t_get_x;
+            prof_sum_get_h   += t_get_h;
+            prof_sum_get_argmax += t_get_argmax;
+            prof_sum_total   += t_total;
+            ++prof_iters;
+        }
+    }
+
+    if (prof_on && prof_iters > 0) {
+        const double sum_get = prof_sum_get_x + prof_sum_get_h + prof_sum_get_argmax;
+        const double denom   = prof_sum_total > 0.0 ? prof_sum_total : 1.0;
+        const double pct_embed   = 100.0 * prof_sum_embed   / denom;
+        const double pct_set     = 100.0 * prof_sum_set     / denom;
+        const double pct_compute = 100.0 * prof_sum_compute / denom;
+        const double pct_get     = 100.0 * sum_get          / denom;
+        std::fprintf(stderr,
+            "[mtp_prof chain depth=%d iters=%d avg_iter=%.3f ms "
+            "breakdown_pct: embed=%.1f%% set=%.1f%% compute=%.1f%% get=%.1f%% "
+            "(get_x=%.3f get_h=%.3f get_argmax=%.3f ms total)]\n",
+            chain_depth, prof_iters, prof_sum_total / prof_iters,
+            pct_embed, pct_set, pct_compute, pct_get,
+            prof_sum_get_x, prof_sum_get_h, prof_sum_get_argmax);
     }
     return true;
 }
