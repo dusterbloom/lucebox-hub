@@ -230,10 +230,9 @@ private:
     // Toggled by set_hidden_capture_mode().  See VerifyCaptureMode docs.
     VerifyCaptureMode          capture_mode_ = VerifyCaptureMode::FULL_SEQ;
 
-    // ── Per-instance accumulators for DFLASH_VERIFY_PROFILE=1 ──
-    // Summed wall-clock (ms) across every verify_batch call on this target;
-    // emitted with a per-process line from the destructor.  All zero and
-    // untouched when profiling is off.
+#ifdef DFLASH_VERIFY_PROFILE
+    // Per-instance accumulators: summed wall-clock (ms) per verify_batch call;
+    // dumped from destructor. Zero-cost when flag is off.
     mutable double             vprof_sum_set_         = 0.0;
     mutable double             vprof_sum_compute_     = 0.0;
     mutable double             vprof_sum_get_hidden_  = 0.0;
@@ -241,6 +240,7 @@ private:
     mutable double             vprof_sum_get_argmax_  = 0.0;
     mutable double             vprof_sum_total_       = 0.0;
     mutable long long          vprof_n_calls_         = 0;
+#endif  // DFLASH_VERIFY_PROFILE
 
     // ── Stage 3: state captured by verify_tree for restore_kv_at_dfs() ──
     // base_pos of the most recent verify_tree call (= root slot in KV).

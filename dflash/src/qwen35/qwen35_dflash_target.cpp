@@ -19,16 +19,10 @@ extern "C++" to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type);
 
 namespace dflash27b {
 
-// Per-call profiler for verify_batch.  Enabled by setting
-// DFLASH_VERIFY_PROFILE=1 in the environment.  Mirrors the pattern used
-// for the MTP head in qwen36_mtp.cpp (commit eb8ba7f): every
-// ggml_backend_tensor_set / tensor_get / graph_compute internally calls
-// cudaStreamSynchronize (see ggml-cuda.cu:686,694,704,714), so host-side
-// wall-clock around the call IS the GPU+sync latency.
-//
-// Per-call line: one stderr printf when enabled.
-// Per-process summary: dumped from ~Qwen35DFlashTarget() with averages and
-// totals across all verify_batch invocations on this target instance.
+#ifdef DFLASH_VERIFY_PROFILE
+// Per-call profiler for verify_batch.  Enabled by -DDFLASH_VERIFY_PROFILE=1.
+// Host-side wall-clock around ggml_backend_* calls IS the GPU+sync latency
+// because every set/get/compute internally calls cudaStreamSynchronize.
 namespace {
 inline bool verify_profile_enabled() {
     static const bool on = (std::getenv("DFLASH_VERIFY_PROFILE") != nullptr);
@@ -41,8 +35,10 @@ inline double vprof_ms_since(vprof_clock::time_point t0) {
     return std::chrono::duration<double, std::milli>(t1 - t0).count();
 }
 }  // namespace
+#endif  // DFLASH_VERIFY_PROFILE
 
 Qwen35DFlashTarget::~Qwen35DFlashTarget() {
+#ifdef DFLASH_VERIFY_PROFILE
     if (verify_profile_enabled() && vprof_n_calls_ > 0) {
         const double inv = 1.0 / (double)vprof_n_calls_;
         std::fprintf(stderr,
@@ -61,6 +57,7 @@ Qwen35DFlashTarget::~Qwen35DFlashTarget() {
             vprof_sum_set_, vprof_sum_compute_, vprof_sum_get_hidden_,
             vprof_sum_get_hpre_, vprof_sum_get_argmax_, vprof_sum_total_);
     }
+#endif  // DFLASH_VERIFY_PROFILE
     step_graph_destroy(proj_sg_);
     if (rollback_stream_) { cudaStreamDestroy(rollback_stream_); rollback_stream_ = nullptr; }
 }
@@ -120,6 +117,7 @@ bool Qwen35DFlashTarget::verify_batch(
         return false;
     }
 
+#ifdef DFLASH_VERIFY_PROFILE
     // Per-call profiling state (DFLASH_VERIFY_PROFILE=1).
     const bool vprof_on = verify_profile_enabled();
     double vp_set = 0.0, vp_compute = 0.0;
@@ -127,14 +125,19 @@ bool Qwen35DFlashTarget::verify_batch(
     vprof_clock::time_point vp_t_total =
         vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
     vprof_clock::time_point vp_t0;
+#endif  // DFLASH_VERIFY_PROFILE
 
     // Embed input tokens and fill positions.
     std::vector<float> embed((size_t)n_tokens * hidden);
     if (!w_.embedder.embed(tokens.data(), n_tokens, embed.data())) return false;
+#ifdef DFLASH_VERIFY_PROFILE
     vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
+#endif
     ggml_backend_tensor_set(sg_.inp_embed, embed.data(), 0,
                             sizeof(float) * embed.size());
+#ifdef DFLASH_VERIFY_PROFILE
     if (vprof_on) vp_set += vprof_ms_since(vp_t0);
+#endif
 
     // Qwen35 uses interleaved positions: 4 ints per token.
     std::vector<int32_t> pos(4 * n_tokens);
@@ -144,10 +147,14 @@ bool Qwen35DFlashTarget::verify_batch(
         pos[4 * i + 2] = base_pos + i;
         pos[4 * i + 3] = 0;
     }
+#ifdef DFLASH_VERIFY_PROFILE
     vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
+#endif
     ggml_backend_tensor_set(sg_.positions, pos.data(), 0,
                             sizeof(int32_t) * pos.size());
+#ifdef DFLASH_VERIFY_PROFILE
     if (vprof_on) vp_set += vprof_ms_since(vp_t0);
+#endif
 
     // Populate the causal attention mask. The mask buffer is freshly allocated
     // by build_target_step (uninitialized memory); without this set, attention
@@ -160,15 +167,23 @@ bool Qwen35DFlashTarget::verify_batch(
         std::vector<uint16_t> mask_buf;
         build_causal_mask(mask_buf, kv_len, n_tokens, base_pos,
                           kq_stride_pad_, win_start);
+#ifdef DFLASH_VERIFY_PROFILE
         vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
+#endif
         ggml_backend_tensor_set(sg_.attn_mask, mask_buf.data(), 0,
                                 sizeof(uint16_t) * mask_buf.size());
+#ifdef DFLASH_VERIFY_PROFILE
         if (vprof_on) vp_set += vprof_ms_since(vp_t0);
+#endif
     }
 
+#ifdef DFLASH_VERIFY_PROFILE
     vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
+#endif
     auto st = ggml_backend_graph_compute(backend_, sg_.gf);
+#ifdef DFLASH_VERIFY_PROFILE
     if (vprof_on) vp_compute = vprof_ms_since(vp_t0);
+#endif
     if (st != GGML_STATUS_SUCCESS) {
         std::fprintf(stderr, "[Qwen35DFlashTarget] graph_compute failed: base_pos=%d n_tokens=%d status=%d\n",
                      base_pos, n_tokens, (int)st);
@@ -176,7 +191,9 @@ bool Qwen35DFlashTarget::verify_batch(
     }
 
     // Read argmax from last token.
+#ifdef DFLASH_VERIFY_PROFILE
     vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
+#endif
     if (n_tokens == 1) {
         ggml_backend_tensor_get(sg_.argmax_tokens, &last_tok, 0, sizeof(int32_t));
     } else {
@@ -190,16 +207,22 @@ bool Qwen35DFlashTarget::verify_batch(
         ggml_backend_tensor_get(sg_.argmax_tokens, all_argmax->data(), 0,
                                 sizeof(int32_t) * n_tokens);
     }
+#ifdef DFLASH_VERIFY_PROFILE
     if (vprof_on) vp_get_argmax = vprof_ms_since(vp_t0);
+#endif
 
     // Copy the last token's post-norm hidden to a CPU buffer so the MTP module
     // can call last_hidden() before the next graph_compute overwrites it.
     if (sg_.last_norm_hidden) {
         last_hidden_cpu_.resize(hidden);
+#ifdef DFLASH_VERIFY_PROFILE
         vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
+#endif
         ggml_backend_tensor_get(sg_.last_norm_hidden, last_hidden_cpu_.data(),
                                 0, sizeof(float) * hidden);
+#ifdef DFLASH_VERIFY_PROFILE
         if (vprof_on) vp_get_hidden += vprof_ms_since(vp_t0);
+#endif
     }
 
     // Copy the full [n_tokens, n_embd] post-norm hidden sequence so the
@@ -231,11 +254,15 @@ bool Qwen35DFlashTarget::verify_batch(
         const size_t src_row_off  = last_row_only ? (size_t)(n_tokens - 1) : 0;
 
         last_hidden_seq_cpu_.resize((size_t)rows_to_copy * hidden);
+#ifdef DFLASH_VERIFY_PROFILE
         vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
+#endif
         ggml_backend_tensor_get(sg_.all_norm_hidden, last_hidden_seq_cpu_.data(),
                                 src_row_off * hidden * sizeof(float),
                                 sizeof(float) * (size_t)rows_to_copy * hidden);
+#ifdef DFLASH_VERIFY_PROFILE
         if (vprof_on) vp_get_hidden += vprof_ms_since(vp_t0);
+#endif
         last_hidden_seq_n_         = rows_to_copy;
         last_verify_chunk_start_   = last_row_only
                                        ? (base_pos + n_tokens - 1)
@@ -249,12 +276,16 @@ bool Qwen35DFlashTarget::verify_batch(
         // back to the post-norm tensor.
         if (sg_.all_h_pre_norm) {
             last_hidden_seq_pre_norm_cpu_.resize((size_t)rows_to_copy * hidden);
+#ifdef DFLASH_VERIFY_PROFILE
             vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
+#endif
             ggml_backend_tensor_get(sg_.all_h_pre_norm,
                                     last_hidden_seq_pre_norm_cpu_.data(),
                                     src_row_off * hidden * sizeof(float),
                                     sizeof(float) * (size_t)rows_to_copy * hidden);
+#ifdef DFLASH_VERIFY_PROFILE
             if (vprof_on) vp_get_hpre = vprof_ms_since(vp_t0);
+#endif
         } else {
             last_hidden_seq_pre_norm_cpu_.clear();
         }
@@ -271,6 +302,7 @@ bool Qwen35DFlashTarget::verify_batch(
         last_tree_base_pos_ = -1;
     }
 
+#ifdef DFLASH_VERIFY_PROFILE
     if (vprof_on) {
         const double vp_total = vprof_ms_since(vp_t_total);
         std::fprintf(stderr,
@@ -286,6 +318,7 @@ bool Qwen35DFlashTarget::verify_batch(
         vprof_sum_total_      += vp_total;
         vprof_n_calls_++;
     }
+#endif  // DFLASH_VERIFY_PROFILE
     return true;
 }
 

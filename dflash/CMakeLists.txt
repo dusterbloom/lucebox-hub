@@ -84,6 +84,15 @@ endif()
 option(DFLASH27B_FA_ALL_QUANTS "Compile ggml-cuda fattn kernels for all KV-quant pairs" ON)
 set(GGML_CUDA_FA_ALL_QUANTS ${DFLASH27B_FA_ALL_QUANTS} CACHE BOOL "" FORCE)
 
+option(DFLASH_VERIFY_PROFILE "Enable verify_batch per-call profiling" OFF)
+option(DFLASH_MTP_PROFILE "Enable MTP step_chain per-iter profiling" OFF)
+if(DFLASH_VERIFY_PROFILE)
+    add_definitions(-DDFLASH_VERIFY_PROFILE=1)
+endif()
+if(DFLASH_MTP_PROFILE)
+    add_definitions(-DDFLASH_MTP_PROFILE=1)
+endif()
+
 # HIP Phase 2 — opt-in rocWMMA flashprefill kernels (Strix Halo / gfx1151).
 # Default OFF (Phase 1 = ggml q8 fallback). Set ON for the 1.7-2.7× compress
 # speedup at 8K-32K context. Requires rocwmma headers installed under

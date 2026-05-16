@@ -51,17 +51,10 @@
 
 namespace dflash27b::mtp {
 
-// Per-iter profiler for step_chain_gpu_ loop body.  Enabled by setting
-// DFLASH_MTP_PROFILE=1 in the environment.  Per-iter line: a single
-// stderr printf gated to keep the hot path free when disabled.  Per-chain
-// aggregate is dumped at chain end with percentage breakdown.
-//
-// Why std::chrono::steady_clock and not cudaEvents: every
-// ggml_backend_tensor_set / tensor_get / graph_compute already calls
-// cudaStreamSynchronize internally (see ggml-cuda.cu:686,694,704,714).
-// Host-side wall clock around a sync IS the GPU+sync latency.  This is
-// the cheapest portable instrumentation possible and matches the granular
-// breakdown the rest of the codebase uses (DFLASH_FP_PROFILE et al).
+#ifdef DFLASH_MTP_PROFILE
+// Per-iter profiler for the step_chain_gpu_ loop.  Enabled by -DDFLASH_MTP_PROFILE=1.
+// Uses host-side wall-clock (same latency as cudaEvents because every ggml
+// backend call internally calls cudaStreamSynchronize).
 namespace {
 inline bool mtp_profile_enabled() {
     static const bool on = (std::getenv("DFLASH_MTP_PROFILE") != nullptr);
@@ -74,6 +67,7 @@ inline double prof_ms_since(prof_clock::time_point t0) {
     return std::chrono::duration<double, std::milli>(t1 - t0).count();
 }
 }  // namespace
+#endif  // DFLASH_MTP_PROFILE
 
 
 // ── Internal helpers ──────────────────────────────────────────────────────
@@ -1819,12 +1813,14 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
     int32_t cur_token = current_token;
     std::vector<float> embed_buf(n_embd);
 
+#ifdef DFLASH_MTP_PROFILE
     // Profiling accumulators (DFLASH_MTP_PROFILE=1).  All in ms.
     const bool prof_on = mtp_profile_enabled();
     double prof_sum_embed = 0.0, prof_sum_set = 0.0, prof_sum_compute = 0.0;
     double prof_sum_get_x = 0.0, prof_sum_get_h = 0.0, prof_sum_get_argmax = 0.0;
     double prof_sum_total = 0.0;
     int    prof_iters = 0;
+#endif  // DFLASH_MTP_PROFILE
 
     for (int it = 0; it < chain_depth; it++) {
         const int draft_pos = base_pos + it;
@@ -1892,39 +1888,49 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
             h_prev = state_->last_hidden.data();
         }
 
+#ifdef DFLASH_MTP_PROFILE
         prof_clock::time_point t_iter0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
-
         prof_clock::time_point t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
+#endif  // DFLASH_MTP_PROFILE
         if (!state_->target->embed_tokens(&cur_token, 1, embed_buf.data())) {
             std::fprintf(stderr,
                 "[qwen36_mtp gpu chain] embed_tokens failed iter=%d\n", it);
             return false;
         }
+#ifdef DFLASH_MTP_PROFILE
         const double t_embed = prof_on ? prof_ms_since(t0) : 0.0;
+#endif  // DFLASH_MTP_PROFILE
 
         Qwen36MtpStepGraph * sg = get_or_build_step_graph_(h);
         if (!sg) return false;
 
+#ifdef DFLASH_MTP_PROFILE
         t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
+#endif
         ggml_backend_tensor_set(sg->inp_embed,
             embed_buf.data(), 0, sizeof(float) * n_embd);
+#ifdef DFLASH_MTP_PROFILE
         const double t_set_embed = prof_on ? prof_ms_since(t0) : 0.0;
-
         t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
+#endif
         // Pass h_prev directly (no scratch memcpy — task E).
         ggml_backend_tensor_set(sg->inp_h_prev,
             h_prev, 0, sizeof(float) * n_embd);
+#ifdef DFLASH_MTP_PROFILE
         const double t_set_hprev = prof_on ? prof_ms_since(t0) : 0.0;
-
         t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
+#endif
         const int32_t pos[4] = { draft_pos, draft_pos, draft_pos, 0 };
         ggml_backend_tensor_set(sg->inp_pos, pos, 0, sizeof(pos));
         push_kv_slot_inputs_(sg, draft_pos, kv_len, state_->weights.n_head_kv);
+#ifdef DFLASH_MTP_PROFILE
         const double t_set_pos = prof_on ? prof_ms_since(t0) : 0.0;
-
         t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
+#endif
         auto st = ggml_backend_graph_compute(backend, sg->gf);
+#ifdef DFLASH_MTP_PROFILE
         const double t_compute = prof_on ? prof_ms_since(t0) : 0.0;
+#endif
         if (st != GGML_STATUS_SUCCESS) {
             std::fprintf(stderr,
                 "[qwen36_mtp gpu chain] graph_compute status=%d iter=%d\n",
@@ -1951,34 +1957,52 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
         std::vector<float> x_normed;
         const bool need_x_normed =
             !(sg->fused_lm_head && sg->out_argmax_token);
+#ifdef DFLASH_MTP_PROFILE
         double t_get_x = 0.0;
+#endif
         if (need_x_normed) {
             x_normed.resize(n_embd);
+#ifdef DFLASH_MTP_PROFILE
             t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
+#endif
             ggml_backend_tensor_get(sg->out_x_normed,
                 x_normed.data(), 0, sizeof(float) * n_embd);
+#ifdef DFLASH_MTP_PROFILE
             t_get_x = prof_on ? prof_ms_since(t0) : 0.0;
+#endif
         }
         // Only download h_pre when ANOTHER iteration follows that will
         // consume it as h_prev.  On the last chain step the value is
         // discarded — skip the device->host transfer entirely.
         const bool need_h_pre = (it + 1 < chain_depth);
         std::vector<float> h_pre;
+#ifdef DFLASH_MTP_PROFILE
         double t_get_h = 0.0;
+#endif
         if (need_h_pre) {
             h_pre.resize(n_embd);
+#ifdef DFLASH_MTP_PROFILE
             t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
+#endif
             ggml_backend_tensor_get(sg->out_h_pre_norm,
                 h_pre.data(), 0, sizeof(float) * n_embd);
+#ifdef DFLASH_MTP_PROFILE
             t_get_h = prof_on ? prof_ms_since(t0) : 0.0;
+#endif
         }
 
+#ifdef DFLASH_MTP_PROFILE
         double t_get_argmax = 0.0;
+#endif
         if (sg->fused_lm_head && sg->out_argmax_token) {
             int32_t tok = 0;
+#ifdef DFLASH_MTP_PROFILE
             t0 = prof_on ? prof_clock::now() : prof_clock::time_point{};
+#endif
             ggml_backend_tensor_get(sg->out_argmax_token, &tok, 0, sizeof(int32_t));
+#ifdef DFLASH_MTP_PROFILE
             t_get_argmax = prof_on ? prof_ms_since(t0) : 0.0;
+#endif
             so.draft_token = tok;
             so.draft_logit = 0.0f;
             if (sg->out_logits && state_->draft_topk > 1) {
@@ -2036,6 +2060,7 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
         }
         cur_token = so.draft_token;
 
+#ifdef DFLASH_MTP_PROFILE
         if (prof_on) {
             const double t_total = prof_ms_since(t_iter0);
             std::fprintf(stderr,
@@ -2052,8 +2077,10 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
             prof_sum_total   += t_total;
             ++prof_iters;
         }
+#endif  // DFLASH_MTP_PROFILE
     }
 
+#ifdef DFLASH_MTP_PROFILE
     if (prof_on && prof_iters > 0) {
         const double sum_get = prof_sum_get_x + prof_sum_get_h + prof_sum_get_argmax;
         const double denom   = prof_sum_total > 0.0 ? prof_sum_total : 1.0;
@@ -2069,6 +2096,7 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
             pct_embed, pct_set, pct_compute, pct_get,
             prof_sum_get_x, prof_sum_get_h, prof_sum_get_argmax);
     }
+#endif  // DFLASH_MTP_PROFILE
     return true;
 }
 
