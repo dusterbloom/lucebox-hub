@@ -47,6 +47,25 @@ public:
     // leave it off and avoid pinning the full [n_embd, n_tokens] tensor.
     void enable_hidden_seq_capture(bool on) { capture_hidden_seq_ = on; }
 
+    // Hidden-sequence capture granularity.  FULL_SEQ downloads the entire
+    // [n_tokens, n_embd] post-norm + pre-norm hidden tensors device->host
+    // on every verify_batch (needed by warm_head_kv during prefill, which
+    // consumes per-position hiddens via last_hidden_seq()).  LAST_ROW_ONLY
+    // downloads only row n_tokens-1 — sufficient for decode-side chain
+    // verifies whose only consumer is hidden_at_pos(base_pos - 1), i.e. the
+    // last token of the just-verified batch.  Switching to LAST_ROW_ONLY
+    // after prefill collapses two ~80 KB device->host syncs (post-norm +
+    // pre-norm, hidden_dim=5120, D+1=4 tokens) into two ~20 KB single-row
+    // syncs and saves the 2x WSL2 scheduler latency hit per verify.
+    enum class VerifyCaptureMode {
+        FULL_SEQ,        // default — required during prefill / warm_head_kv
+        LAST_ROW_ONLY,   // decode mode — only hidden_at_pos(base_pos-1) used
+    };
+    void set_hidden_capture_mode(VerifyCaptureMode mode) {
+        capture_mode_ = mode;
+    }
+    VerifyCaptureMode hidden_capture_mode() const { return capture_mode_; }
+
     // ── DFlashTarget interface ──────────────────────────────────────
 
     bool verify_batch(const std::vector<int32_t> & tokens,
@@ -181,6 +200,10 @@ private:
     // Whether verify_batch should request the full post-norm hidden sequence
     // and copy it to the host.  Toggled by enable_hidden_seq_capture().
     bool                       capture_hidden_seq_ = false;
+
+    // Granularity of the device->host download when capture_hidden_seq_ is on.
+    // Toggled by set_hidden_capture_mode().  See VerifyCaptureMode docs.
+    VerifyCaptureMode          capture_mode_ = VerifyCaptureMode::FULL_SEQ;
 
     // ── Per-instance accumulators for DFLASH_VERIFY_PROFILE=1 ──
     // Summed wall-clock (ms) across every verify_batch call on this target;

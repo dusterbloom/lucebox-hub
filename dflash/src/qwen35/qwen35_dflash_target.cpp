@@ -194,13 +194,33 @@ bool Qwen35DFlashTarget::verify_batch(
     // Hypothesis from the Phase A brief (stale recommit hiddens as cause of
     // the 71.6% per-step accept ceiling) is NOT supported by this code path.
     if (sg_.all_norm_hidden) {
-        last_hidden_seq_cpu_.resize((size_t)n_tokens * hidden);
+        // LAST_ROW_ONLY (decode mode): download only row n_tokens-1 of the
+        // [n_tokens, n_embd] hidden tensors.  The chain's only consumer is
+        // hidden_at_pos(base_pos - 1) on the NEXT verify, where the chain's
+        // base_pos = (this verify's base_pos + n_tokens), so it asks for
+        // abs_pos = (base_pos + n_tokens - 1) — exactly the row we keep.
+        // We stash that single row at offset 0 of last_hidden_seq_cpu_ and
+        // set last_verify_chunk_start_ = base_pos + n_tokens - 1, so the
+        // hidden_at_pos() accessor's `rel = abs_pos - chunk_start` formula
+        // resolves to 0 and returns the right pointer.
+        //
+        // FULL_SEQ (prefill mode): unchanged — download the whole sequence
+        // because warm_head_kv() / last_hidden_seq() walks every position.
+        const bool last_row_only =
+            (capture_mode_ == VerifyCaptureMode::LAST_ROW_ONLY) && n_tokens > 0;
+        const int  rows_to_copy   = last_row_only ? 1 : n_tokens;
+        const size_t src_row_off  = last_row_only ? (size_t)(n_tokens - 1) : 0;
+
+        last_hidden_seq_cpu_.resize((size_t)rows_to_copy * hidden);
         vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
         ggml_backend_tensor_get(sg_.all_norm_hidden, last_hidden_seq_cpu_.data(),
-                                0, sizeof(float) * (size_t)n_tokens * hidden);
+                                src_row_off * hidden * sizeof(float),
+                                sizeof(float) * (size_t)rows_to_copy * hidden);
         if (vprof_on) vp_get_hidden += vprof_ms_since(vp_t0);
-        last_hidden_seq_n_         = n_tokens;
-        last_verify_chunk_start_   = base_pos;
+        last_hidden_seq_n_         = rows_to_copy;
+        last_verify_chunk_start_   = last_row_only
+                                       ? (base_pos + n_tokens - 1)
+                                       : base_pos;
         // Mirror the PRE-final-output-norm sequence (set by the graph when
         // capture_all_norm_hidden is on).  hidden_at_pos_pre_norm() reads
         // this; the Qwen3.6 MTP chain seeds h_prev_0 with it (PR #22673
@@ -209,11 +229,12 @@ bool Qwen35DFlashTarget::verify_batch(
         // buffer so the accessor returns nullptr and the caller falls
         // back to the post-norm tensor.
         if (sg_.all_h_pre_norm) {
-            last_hidden_seq_pre_norm_cpu_.resize((size_t)n_tokens * hidden);
+            last_hidden_seq_pre_norm_cpu_.resize((size_t)rows_to_copy * hidden);
             vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
             ggml_backend_tensor_get(sg_.all_h_pre_norm,
                                     last_hidden_seq_pre_norm_cpu_.data(),
-                                    0, sizeof(float) * (size_t)n_tokens * hidden);
+                                    src_row_off * hidden * sizeof(float),
+                                    sizeof(float) * (size_t)rows_to_copy * hidden);
             if (vprof_on) vp_get_hpre = vprof_ms_since(vp_t0);
         } else {
             last_hidden_seq_pre_norm_cpu_.clear();

@@ -1433,6 +1433,18 @@ bool Qwen36MtpModule::warm_head_kv(const int32_t * prompt_tokens,
         std::memcpy(kv.v.data() + v_slot_off, v_buf.data(),
                     sizeof(float) * (size_t)n_head_kv * val_len);
     }
+    // Prefill is done.  From this point on, every verify_batch is a decode
+    // step whose ONLY hidden-sequence consumer is hidden_at_pos(base_pos-1)
+    // (the chain's iter-0 h_prev seed).  Tell the target to download only
+    // that single row from all_norm_hidden / all_h_pre_norm instead of the
+    // full [n_tokens, n_embd] tensor — collapses the 2x per-verify ~80 KB
+    // device->host sync to a 2x ~20 KB sync (hidden_dim=5120, D+1=4 tokens
+    // baseline) and erases the WSL2 cudaStreamSynchronize scheduler tax
+    // that dominated decode-side verify_batch in the verify_prof traces.
+    if (auto * t = dynamic_cast<Qwen35DFlashTarget *>(state_->target)) {
+        t->set_hidden_capture_mode(
+            Qwen35DFlashTarget::VerifyCaptureMode::LAST_ROW_ONLY);
+    }
     return true;
 }
 
