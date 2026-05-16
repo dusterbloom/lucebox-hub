@@ -182,6 +182,18 @@ private:
     // and copy it to the host.  Toggled by enable_hidden_seq_capture().
     bool                       capture_hidden_seq_ = false;
 
+    // ── Per-instance accumulators for DFLASH_VERIFY_PROFILE=1 ──
+    // Summed wall-clock (ms) across every verify_batch call on this target;
+    // emitted with a per-process line from the destructor.  All zero and
+    // untouched when profiling is off.
+    mutable double             vprof_sum_set_         = 0.0;
+    mutable double             vprof_sum_compute_     = 0.0;
+    mutable double             vprof_sum_get_hidden_  = 0.0;
+    mutable double             vprof_sum_get_hpre_    = 0.0;
+    mutable double             vprof_sum_get_argmax_  = 0.0;
+    mutable double             vprof_sum_total_       = 0.0;
+    mutable long long          vprof_n_calls_         = 0;
+
     // ── Stage 3: state captured by verify_tree for restore_kv_at_dfs() ──
     // base_pos of the most recent verify_tree call (= root slot in KV).
     int                        last_tree_base_pos_ = -1;

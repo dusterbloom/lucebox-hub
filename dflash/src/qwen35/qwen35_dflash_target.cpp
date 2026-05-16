@@ -6,7 +6,9 @@
 #include "common/attn_masks.h"
 #include "device_runtime.h"  // cudaStream_t, cudaMemcpyAsync, cudaMemcpy2DAsync
 
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 
 // ggml-cuda dequantize helper (used to widen F16/Q8_0 ssm_intermediate slots
 // back to F32 for cache_.ssm_state).  Same trick as test_dflash.cpp and
@@ -17,7 +19,48 @@ extern "C++" to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type);
 
 namespace dflash27b {
 
+// Per-call profiler for verify_batch.  Enabled by setting
+// DFLASH_VERIFY_PROFILE=1 in the environment.  Mirrors the pattern used
+// for the MTP head in qwen36_mtp.cpp (commit eb8ba7f): every
+// ggml_backend_tensor_set / tensor_get / graph_compute internally calls
+// cudaStreamSynchronize (see ggml-cuda.cu:686,694,704,714), so host-side
+// wall-clock around the call IS the GPU+sync latency.
+//
+// Per-call line: one stderr printf when enabled.
+// Per-process summary: dumped from ~Qwen35DFlashTarget() with averages and
+// totals across all verify_batch invocations on this target instance.
+namespace {
+inline bool verify_profile_enabled() {
+    static const bool on = (std::getenv("DFLASH_VERIFY_PROFILE") != nullptr);
+    return on;
+}
+
+using vprof_clock = std::chrono::steady_clock;
+inline double vprof_ms_since(vprof_clock::time_point t0) {
+    auto t1 = vprof_clock::now();
+    return std::chrono::duration<double, std::milli>(t1 - t0).count();
+}
+}  // namespace
+
 Qwen35DFlashTarget::~Qwen35DFlashTarget() {
+    if (verify_profile_enabled() && vprof_n_calls_ > 0) {
+        const double inv = 1.0 / (double)vprof_n_calls_;
+        std::fprintf(stderr,
+            "[verify_prof summary calls=%lld "
+            "avg_set=%.3f avg_compute=%.3f avg_get_hidden=%.3f "
+            "avg_get_hpre=%.3f avg_get_argmax=%.3f avg_total=%.3f "
+            "(sum_set=%.1f sum_compute=%.1f sum_get_hidden=%.1f "
+            "sum_get_hpre=%.1f sum_get_argmax=%.1f sum_total=%.1f ms)]\n",
+            (long long)vprof_n_calls_,
+            vprof_sum_set_ * inv,
+            vprof_sum_compute_ * inv,
+            vprof_sum_get_hidden_ * inv,
+            vprof_sum_get_hpre_ * inv,
+            vprof_sum_get_argmax_ * inv,
+            vprof_sum_total_ * inv,
+            vprof_sum_set_, vprof_sum_compute_, vprof_sum_get_hidden_,
+            vprof_sum_get_hpre_, vprof_sum_get_argmax_, vprof_sum_total_);
+    }
     step_graph_destroy(proj_sg_);
 }
 
@@ -58,11 +101,21 @@ bool Qwen35DFlashTarget::verify_batch(
         return false;
     }
 
+    // Per-call profiling state (DFLASH_VERIFY_PROFILE=1).
+    const bool vprof_on = verify_profile_enabled();
+    double vp_set = 0.0, vp_compute = 0.0;
+    double vp_get_hidden = 0.0, vp_get_hpre = 0.0, vp_get_argmax = 0.0;
+    vprof_clock::time_point vp_t_total =
+        vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
+    vprof_clock::time_point vp_t0;
+
     // Embed input tokens and fill positions.
     std::vector<float> embed((size_t)n_tokens * hidden);
     if (!w_.embedder.embed(tokens.data(), n_tokens, embed.data())) return false;
+    vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
     ggml_backend_tensor_set(sg_.inp_embed, embed.data(), 0,
                             sizeof(float) * embed.size());
+    if (vprof_on) vp_set += vprof_ms_since(vp_t0);
 
     // Qwen35 uses interleaved positions: 4 ints per token.
     std::vector<int32_t> pos(4 * n_tokens);
@@ -72,8 +125,10 @@ bool Qwen35DFlashTarget::verify_batch(
         pos[4 * i + 2] = base_pos + i;
         pos[4 * i + 3] = 0;
     }
+    vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
     ggml_backend_tensor_set(sg_.positions, pos.data(), 0,
                             sizeof(int32_t) * pos.size());
+    if (vprof_on) vp_set += vprof_ms_since(vp_t0);
 
     // Populate the causal attention mask. The mask buffer is freshly allocated
     // by build_target_step (uninitialized memory); without this set, attention
@@ -86,11 +141,15 @@ bool Qwen35DFlashTarget::verify_batch(
         std::vector<uint16_t> mask_buf;
         build_causal_mask(mask_buf, kv_len, n_tokens, base_pos,
                           kq_stride_pad_, win_start);
+        vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
         ggml_backend_tensor_set(sg_.attn_mask, mask_buf.data(), 0,
                                 sizeof(uint16_t) * mask_buf.size());
+        if (vprof_on) vp_set += vprof_ms_since(vp_t0);
     }
 
+    vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
     auto st = ggml_backend_graph_compute(backend_, sg_.gf);
+    if (vprof_on) vp_compute = vprof_ms_since(vp_t0);
     if (st != GGML_STATUS_SUCCESS) {
         std::fprintf(stderr, "[Qwen35DFlashTarget] graph_compute failed: base_pos=%d n_tokens=%d status=%d\n",
                      base_pos, n_tokens, (int)st);
@@ -98,6 +157,7 @@ bool Qwen35DFlashTarget::verify_batch(
     }
 
     // Read argmax from last token.
+    vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
     if (n_tokens == 1) {
         ggml_backend_tensor_get(sg_.argmax_tokens, &last_tok, 0, sizeof(int32_t));
     } else {
@@ -111,13 +171,16 @@ bool Qwen35DFlashTarget::verify_batch(
         ggml_backend_tensor_get(sg_.argmax_tokens, all_argmax->data(), 0,
                                 sizeof(int32_t) * n_tokens);
     }
+    if (vprof_on) vp_get_argmax = vprof_ms_since(vp_t0);
 
     // Copy the last token's post-norm hidden to a CPU buffer so the MTP module
     // can call last_hidden() before the next graph_compute overwrites it.
     if (sg_.last_norm_hidden) {
         last_hidden_cpu_.resize(hidden);
+        vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
         ggml_backend_tensor_get(sg_.last_norm_hidden, last_hidden_cpu_.data(),
                                 0, sizeof(float) * hidden);
+        if (vprof_on) vp_get_hidden += vprof_ms_since(vp_t0);
     }
 
     // Copy the full [n_tokens, n_embd] post-norm hidden sequence so the
@@ -132,8 +195,10 @@ bool Qwen35DFlashTarget::verify_batch(
     // the 71.6% per-step accept ceiling) is NOT supported by this code path.
     if (sg_.all_norm_hidden) {
         last_hidden_seq_cpu_.resize((size_t)n_tokens * hidden);
+        vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
         ggml_backend_tensor_get(sg_.all_norm_hidden, last_hidden_seq_cpu_.data(),
                                 0, sizeof(float) * (size_t)n_tokens * hidden);
+        if (vprof_on) vp_get_hidden += vprof_ms_since(vp_t0);
         last_hidden_seq_n_         = n_tokens;
         last_verify_chunk_start_   = base_pos;
         // Mirror the PRE-final-output-norm sequence (set by the graph when
@@ -145,9 +210,11 @@ bool Qwen35DFlashTarget::verify_batch(
         // back to the post-norm tensor.
         if (sg_.all_h_pre_norm) {
             last_hidden_seq_pre_norm_cpu_.resize((size_t)n_tokens * hidden);
+            vp_t0 = vprof_on ? vprof_clock::now() : vprof_clock::time_point{};
             ggml_backend_tensor_get(sg_.all_h_pre_norm,
                                     last_hidden_seq_pre_norm_cpu_.data(),
                                     0, sizeof(float) * (size_t)n_tokens * hidden);
+            if (vprof_on) vp_get_hpre = vprof_ms_since(vp_t0);
         } else {
             last_hidden_seq_pre_norm_cpu_.clear();
         }
@@ -157,6 +224,22 @@ bool Qwen35DFlashTarget::verify_batch(
     }
 
     cache_.cur_pos = base_pos + n_tokens;
+
+    if (vprof_on) {
+        const double vp_total = vprof_ms_since(vp_t_total);
+        std::fprintf(stderr,
+            "[verify_prof n_tokens=%d base_pos=%d set=%.3f compute=%.3f "
+            "get_hidden=%.3f get_hpre=%.3f get_argmax=%.3f total=%.3f (ms)]\n",
+            n_tokens, base_pos, vp_set, vp_compute,
+            vp_get_hidden, vp_get_hpre, vp_get_argmax, vp_total);
+        vprof_sum_set_        += vp_set;
+        vprof_sum_compute_    += vp_compute;
+        vprof_sum_get_hidden_ += vp_get_hidden;
+        vprof_sum_get_hpre_   += vp_get_hpre;
+        vprof_sum_get_argmax_ += vp_get_argmax;
+        vprof_sum_total_      += vp_total;
+        vprof_n_calls_++;
+    }
     return true;
 }
 
