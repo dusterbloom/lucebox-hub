@@ -62,6 +62,7 @@ Qwen35DFlashTarget::~Qwen35DFlashTarget() {
             vprof_sum_get_hpre_, vprof_sum_get_argmax_, vprof_sum_total_);
     }
     step_graph_destroy(proj_sg_);
+    if (rollback_stream_) { cudaStreamDestroy(rollback_stream_); rollback_stream_ = nullptr; }
 }
 
 Qwen35DFlashTarget::Qwen35DFlashTarget(
@@ -264,27 +265,9 @@ bool Qwen35DFlashTarget::verify_batch(
 
     cache_.cur_pos = base_pos + n_tokens;
 
-    // Record linear-chain "tree" topology so restore_kv_at_chain (and
-    // restore_kv_at_dfs, for completeness) can roll back to any accepted
-    // prefix of this batch.  Only meaningful when capture actually fired —
-    // when it didn't, leave last_tree_base_pos_ at its prior value (could be
-    // -1 or a stale verify_tree value); the chain runner only calls
-    // restore_kv_at_chain on iters where it itself enabled capture, and a
-    // stale last_tree_* wouldn't be consulted by restore_kv_at_dfs in that
-    // window because verify_batch resets it here on every captured call.
-    if (capture_intermediate) {
-        last_tree_base_pos_ = base_pos;
-        last_tree_n_nodes_  = n_tokens - 1;
-        last_tree_parents_.resize(n_tokens);
-        last_tree_depths_.resize(n_tokens > 0 ? (size_t)(n_tokens - 1) : 0);
-        if (n_tokens > 0) last_tree_parents_[0] = -1;  // root marker
-        for (int i = 1; i < n_tokens; i++) {
-            last_tree_parents_[i] = i - 1;
-            last_tree_depths_[i - 1] = i;
-        }
-    } else {
-        // Invalidate so a stray restore_kv_at_chain() returns false instead of
-        // rolling back against stale capture buffers from an earlier iter.
+    // Topology is owned by the caller via capture_topology_for_chain(); if
+    // capture fired without prior topology, invalidate to be defensive.
+    if (!capture_intermediate) {
         last_tree_base_pos_ = -1;
     }
 
@@ -459,7 +442,14 @@ bool Qwen35DFlashTarget::restore_kv_at_dfs(const std::vector<int> & accepted_dfs
     }
 
     const int n_delta = (int)cache_.ssm_intermediate.size();
-    cudaStream_t stream = nullptr;  // default stream — serializes with next graph_compute
+    // Bug #3: dedicated stream so the rollback copies don't serialize with
+    // the default stream (e.g. ggml backend compute, host syncs).
+    if (!rollback_stream_) {
+        if (cudaStreamCreate(&rollback_stream_) != cudaSuccess) {
+            rollback_stream_ = nullptr;  // fall back to default
+        }
+    }
+    cudaStream_t stream = rollback_stream_;
     for (int il = 0; il < n_delta; il++) {
         ggml_tensor * ssm_inter = cache_.ssm_intermediate[il];
         ggml_tensor * conv_in   = cache_.conv_input_cache[il];
@@ -533,9 +523,9 @@ bool Qwen35DFlashTarget::restore_kv_at_dfs(const std::vector<int> & accepted_dfs
     }
 
     // Full-attention KV compaction: verify_tree wrote K/V at slots
-    // [base..base+N-1] in DFS order.  For the next iter's verify to see the
-    // correct committed prefix, slots [base..base+commit_n-1] must hold the
-    // K/V of the accepted path.  d==0 (root) is trivially aligned.
+    // [base..base+N-1] in DFS order.  Bug #3: collapse the per-head inner
+    // loop into one cudaMemcpy2DAsync (pitch=nb[2], height=n_kv) — saves
+    // 2*n_kv-2 launches per (layer, d) pair on a dedicated stream.
     if (walked_sibling) {
         const int base = last_tree_base_pos_;
         const int n_full_attn = (int)cache_.attn_k.size();
@@ -548,28 +538,44 @@ bool Qwen35DFlashTarget::restore_kv_at_dfs(const std::vector<int> & accepted_dfs
                 ggml_tensor * cv = cache_.attn_v[l];
                 if (!ck || !cv) continue;
                 const size_t slot_bytes = ck->nb[1];
-                const size_t src_off = (size_t)(base + src_dfs)  * slot_bytes;
-                const size_t dst_off = (size_t)(base + dst_slot) * slot_bytes;
-                const int n_kv = (int)ck->ne[2];
-                for (int h = 0; h < n_kv; h++) {
-                    const size_t head_src = src_off + (size_t)h * ck->nb[2];
-                    const size_t head_dst = dst_off + (size_t)h * ck->nb[2];
-                    cudaMemcpyAsync((char *)ck->data + head_dst,
-                                    (const char *)ck->data + head_src,
-                                    slot_bytes, cudaMemcpyDeviceToDevice, stream);
-                    cudaMemcpyAsync((char *)cv->data + head_dst,
-                                    (const char *)cv->data + head_src,
-                                    slot_bytes, cudaMemcpyDeviceToDevice, stream);
-                }
+                const int    n_kv       = (int)ck->ne[2];
+                const size_t pitch      = ck->nb[2];
+                const size_t src_off    = (size_t)(base + src_dfs)  * slot_bytes;
+                const size_t dst_off    = (size_t)(base + dst_slot) * slot_bytes;
+                cudaMemcpy2DAsync((char *)ck->data + dst_off, pitch,
+                                  (const char *)ck->data + src_off, pitch,
+                                  slot_bytes, n_kv,
+                                  cudaMemcpyDeviceToDevice, stream);
+                cudaMemcpy2DAsync((char *)cv->data + dst_off, cv->nb[2],
+                                  (const char *)cv->data + src_off, cv->nb[2],
+                                  slot_bytes, (int)cv->ne[2],
+                                  cudaMemcpyDeviceToDevice, stream);
             }
         }
     }
+
+    // Sync rollback stream so the next graph_compute (on default stream)
+    // sees a consistent KV/SSM state.
+    if (rollback_stream_) cudaStreamSynchronize(rollback_stream_);
 
     // Advance cur_pos to "just past the last committed slot" so the next
     // verify_batch's kv_start lines up.  root = dfs 0 lives at base, so
     // commit_n committed tokens occupy slots [base..base+commit_n-1].
     cache_.cur_pos = last_tree_base_pos_ + commit_n;
     return true;
+}
+
+void Qwen35DFlashTarget::capture_topology_for_chain(int n_tokens, int base_pos) {
+    if (n_tokens <= 0) { last_tree_base_pos_ = -1; return; }
+    last_tree_base_pos_ = base_pos;
+    last_tree_n_nodes_  = n_tokens - 1;
+    last_tree_parents_.resize(n_tokens);
+    last_tree_depths_.resize((size_t)(n_tokens - 1));
+    last_tree_parents_[0] = -1;
+    for (int i = 1; i < n_tokens; i++) {
+        last_tree_parents_[i] = i - 1;
+        last_tree_depths_[i - 1] = i;
+    }
 }
 
 bool Qwen35DFlashTarget::restore_kv_at_chain(int accept_n) {

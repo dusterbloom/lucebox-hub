@@ -36,6 +36,16 @@ using __nv_bfloat16 = __hip_bfloat16;
 #define cudaEventElapsedTime hipEventElapsedTime
 #define cudaEventDestroy hipEventDestroy
 #define cudaStreamSynchronize hipStreamSynchronize
+#define cudaStreamCreate hipStreamCreate
+#define cudaStreamDestroy hipStreamDestroy
+#define cudaMemcpy3DAsync hipMemcpy3DAsync
+#define cudaPitchedPtr hipPitchedPtr
+#define cudaPos hipPos
+#define cudaExtent hipExtent
+#define cudaMemcpy3DParms hipMemcpy3DParms
+#define make_cudaPitchedPtr make_hipPitchedPtr
+#define make_cudaPos make_hipPos
+#define make_cudaExtent make_hipExtent
 #define cudaGetLastError hipGetLastError
 #define cudaGetErrorString hipGetErrorString
 #define cudaDeviceSynchronize hipDeviceSynchronize

@@ -13,6 +13,7 @@
 
 #include "ggml.h"
 #include "ggml-backend.h"
+#include "device_runtime.h"  // cudaStream_t
 
 #include <vector>
 
@@ -124,6 +125,11 @@ public:
     // restore_kv_at_chain return false for that iter and triggers the slow
     // recommit fallback.
     void enable_chain_capture(bool on) override { chain_capture_enabled_ = on; }
+
+    // Record a linear-chain "tree" (spine [0..n_tokens-1] at base_pos) so
+    // a subsequent restore_kv_at_chain() can locate the rollback slot.
+    // Owned by the caller (chain runner), separate from verify_batch state.
+    void capture_topology_for_chain(int n_tokens, int base_pos) override;
 
     bool is_eos(int token) const override;
 
@@ -255,6 +261,11 @@ private:
     // n_tokens > max_verify_tokens, e.g. 512-token prefill chunks, where the
     // in-graph ggml_view_3d into the conv_input cache asserts).
     bool                       chain_capture_enabled_ = false;
+
+    // Dedicated CUDA stream for restore_kv_at_dfs copies (bug #3): avoids
+    // serializing ~384 per-head launches on the default stream.  Created on
+    // first use, destroyed in the dtor.
+    mutable cudaStream_t       rollback_stream_ = nullptr;
 };
 
 }  // namespace dflash27b

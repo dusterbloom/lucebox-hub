@@ -131,6 +131,12 @@ struct DFlashTarget {
     // without DeltaNet capture support.
     virtual void enable_chain_capture(bool /*on*/) {}
 
+    // Record linear-chain "tree" topology so a subsequent restore_kv_at_chain()
+    // knows the base_pos / n_tokens of the chain to roll back.  MUST be called
+    // by the chain runner BEFORE verify_batch on every iter that may need a
+    // rollback.  No-op for targets without chain capture support.
+    virtual void capture_topology_for_chain(int /*n_tokens*/, int /*base_pos*/) {}
+
     // ── Token utilities ─────────────────────────────────────────────
 
     // Check if a token is end-of-sequence for this model.

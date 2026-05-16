@@ -165,6 +165,9 @@ GenerateResult MtpChainRunner::run(const GenerateRequest & req,
             return result;
         }
 
+        // Caller-owned topology for restore_kv_at_chain (bug #2).
+        target_.capture_topology_for_chain((int)candidate.size(), base_pos);
+
         int last_argmax = -1;
         std::vector<int32_t> all_argmax;
         if (!target_.verify_batch(candidate, base_pos, last_argmax, &all_argmax)) {
@@ -192,50 +195,43 @@ GenerateResult MtpChainRunner::run(const GenerateRequest & req,
         const int total_this_iter = accept_n + 1;
 
         // ── KV reconciliation ──────────────────────────────────────────
-        // verify_batch advanced KV by 1+g_actual positions. We only want
-        // total_this_iter additional positions past base_pos.  Three paths:
-        //   1. accept_n == g_actual: KV is correct, nothing to do.
-        //   2. accept_n <  g_actual, fast rollback: target.restore_kv_at_chain
-        //      (accept_n) reuses the per-position SSM/conv intermediates
-        //      captured by the first verify_batch to undo the rejected tail
-        //      in-place.  No second backbone forward.  The bonus token's KV
-        //      is NOT written; next iter's verify_batch will process it as
-        //      the new cur_tok at slot base_pos+accept_n+1.  base_pos
-        //      advance and cur_tok bookkeeping match the accept-all path.
-        //   3. accept_n <  g_actual, fast path declined: fall back to the
-        //      legacy snapshot+recommit (verify_batch on [cur, accepted,
-        //      bonus]).  Used by targets that lack DeltaNet capture (CPU
-        //      stubs, layer-split shards) and any iter where chain capture
-        //      was skipped defensively.  base_pos advances by accept_n+2 to
-        //      skip past the recommit-written bonus slot; cur_tok_next is
-        //      taken from the recommit's argmax at the bonus position.
-        bool recommitted = false;
-        bool fast_rolled_back = false;
-        std::vector<int32_t> rc_argmax;
+        // Three paths converge on the SAME post-iter invariant:
+        //   base_pos advances by total_this_iter = accept_n + 1
+        //   cur_tok                 = bonus (= all_argmax[accept_n])
+        // and the bonus's KV is written by the NEXT iter's verify_batch.
+        //
+        //   1. accept-all (accept_n == g_actual): verify_batch wrote g+1 slots;
+        //      we treat the last (bonus) slot as uncommitted and let next iter
+        //      overwrite it.
+        //   2. fast rollback (restore_kv_at_chain succeeds): rolls cache.cur_pos
+        //      to base_pos + accept_n + 1, leaving the bonus slot unwritten.
+        //   3. recommit (fast path declined): snapshot+restore, then recommit
+        //      only [cur, accepted...] (accept_n+1 slots, NO bonus).  Bonus is
+        //      threaded via cur_tok like the other paths.  Advancing by
+        //      accept_n+2 here would skip a position every recommit iter and
+        //      diverge from AR — see test_recommit_byte_identical_to_ar.
         if (accept_n < g_actual) {
-            if (target_.restore_kv_at_chain(accept_n)) {
-                fast_rolled_back = true;
-            } else {
-                recommitted = true;
+            if (!target_.restore_kv_at_chain(accept_n)) {
+                // Slow path: snapshot rollback + commit ONLY [cur, accepted...]
+                // (accept_n+1 slots).  Bonus stays uncommitted, threaded via
+                // cur_tok like the fast path.
                 if (!target_.restore_kv()) {
                     result.ok = false;
                     result.error = "restore_kv";
                     return result;
                 }
                 std::vector<int32_t> commit_seq;
-                commit_seq.reserve((size_t)accept_n + 2);
+                commit_seq.reserve((size_t)accept_n + 1);
                 commit_seq.push_back(cur_tok);
                 for (int i = 0; i < accept_n; i++) commit_seq.push_back(drafts[i]);
-                commit_seq.push_back(all_argmax[accept_n]);
                 int discard = -1;
-                if (!target_.verify_batch(commit_seq, base_pos, discard, &rc_argmax)) {
+                if (!target_.verify_batch(commit_seq, base_pos, discard, nullptr)) {
                     result.ok = false;
                     result.error = "recommit";
                     return result;
                 }
             }
         }
-        (void)fast_rolled_back;  // bookkeeping is identical to accept-all path.
 
         // ── Emit accepted prefix + bonus, capped at n_gen ──────────────
         // emit_cap is the absolute ceiling on tokens that may be written
@@ -262,27 +258,8 @@ GenerateResult MtpChainRunner::run(const GenerateRequest & req,
             cur_tok = result.tokens.empty() ? cur_tok : result.tokens.back();
         }
 
-        // base_pos advance:
-        //   accept-all / fast_rolled_back:
-        //       verify_batch wrote g+1 KV slots; the fast rollback rolled
-        //       cache.cur_pos back to base_pos+accept_n+1 = base_pos +
-        //       total_this_iter, leaving the bonus token's KV unwritten.
-        //       Advance by total_this_iter and let next iter's verify_batch
-        //       process the bonus as the new cur_tok.
-        //   recommit:
-        //       recommit wrote accept_n+2 KV slots (cur_tok + accepted +
-        //       bonus). Advance by accept_n+2 so next iter's base_pos points
-        //       to a NEW position, not the bonus slot.  cur_tok_next is the
-        //       argmax at the bonus position from the recommit (a fresh
-        //       prediction, not yet in cache).
-        if (recommitted) {
-            base_pos += accept_n + 2;
-            if (!hit_eos && !rc_argmax.empty()) {
-                cur_tok = rc_argmax.back();
-            }
-        } else {
-            base_pos += total_this_iter;
-        }
+        // All paths share: base_pos += total_this_iter and cur_tok = bonus.
+        base_pos += total_this_iter;
 
         stats_.total_iters    += 1;
         stats_.total_accepted += accept_n;

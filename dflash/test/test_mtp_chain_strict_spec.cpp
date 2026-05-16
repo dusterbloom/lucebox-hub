@@ -17,12 +17,17 @@
 // h_prev every step.  The runner-level invariant is the same either way.
 
 #include "common/mtp_interface.h"
+#include "common/mtp_chain_runner.h"
+#include "common/dflash_target.h"
+#include "common/model_backend.h"
+#include "common/sampler.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <vector>
 
 using namespace dflash27b;
@@ -351,6 +356,127 @@ static void test_broken_chain_accept_drops_below_threshold() {
                 "= %.3f (< %.2f, control) OK\n", acc, kThreshold);
 }
 
+// ── Test 7: γ=3 partial-accept multi-iter byte-identity to AR baseline ──
+// Drives MtpChainRunner with a target whose argmax depends only on the
+// absolute position (= deterministic oracle).  The drafter agrees with
+// the target at g=0 every iter and disagrees for g>=1, so accept_n=1
+// every iter and γ>=2 always hits the snapshot+recommit fallback (the
+// scripted target has no restore_kv_at_chain override).
+//
+// Bug catcher: the recommit branch in mtp_chain_runner.cpp historically
+// advanced base_pos by (accept_n + 2) — one past the last verify-written
+// slot — and forwarded cur_tok = rc_argmax.back().  That treats the
+// bonus's KV as committed AND uses the post-bonus prediction as the next
+// iter's input, drifting from the fast-path / γ=1 baseline by 1 position
+// per recommit iter.  After ~50 iters the emitted token stream is missing
+// every 3rd position from the AR sequence.
+
+struct OracleScriptedTarget : dflash27b::DFlashTarget {
+    int H = 8;
+    int eos_id = -1;  // disabled
+    int kv_pos = 0;
+    std::vector<int32_t> snap_kv;
+
+    // target_argmax[pos] is the argmax AFTER seeing token at pos.
+    static int32_t oracle(int pos) { return 1000 + pos; }
+
+    bool verify_batch(const std::vector<int32_t> & tokens, int base_pos,
+                      int & last_tok,
+                      std::vector<int32_t> * all_argmax) override {
+        if (all_argmax) all_argmax->clear();
+        for (size_t i = 0; i < tokens.size(); i++) {
+            const int pos = base_pos + (int)i;
+            if (all_argmax) all_argmax->push_back(oracle(pos));
+        }
+        last_tok = all_argmax && !all_argmax->empty() ? all_argmax->back() : -1;
+        kv_pos = base_pos + (int)tokens.size();
+        return true;
+    }
+    bool snapshot_kv() override { snap_kv.push_back(kv_pos); return true; }
+    bool restore_kv()  override {
+        if (snap_kv.empty()) return false;
+        kv_pos = snap_kv.back(); snap_kv.pop_back(); return true;
+    }
+    bool is_eos(int token) const override { return token == eos_id; }
+    bool embed_tokens(const int32_t *, int, float *) const override { return true; }
+    bool project_hidden_to_tokens(const float *, int,
+                                  std::vector<int32_t> &) override { return true; }
+    int hidden_size() const override { return H; }
+    int mask_token_id() const override { return -1; }
+    const std::vector<int> & capture_layer_ids() const override {
+        static const std::vector<int> ids;
+        return ids;
+    }
+};
+
+// Drafter: agrees with oracle at g=0, garbage at g>=1.  accept_n=1 always.
+struct PartialAcceptDrafter : dflash27b::mtp::IExternalDrafterMtp {
+    int H = 8;
+    std::vector<int> donors_{0};
+    int max_gamma()    const override { return 8; }
+    int hidden_size()  const override { return H; }
+    bool attach(dflash27b::DFlashTarget *) override { return true; }
+    void reset_chain() override {}
+    void shutdown()    override {}
+    bool step(const dflash27b::mtp::StepInput  & in,
+              dflash27b::mtp::StepOutput       & out) override {
+        out.draft_token = (in.gamma_index == 0)
+            ? OracleScriptedTarget::oracle(in.base_pos + in.gamma_index)
+            : -99999;  // guaranteed reject
+        out.draft_logit = 1.0f;
+        out.next_hidden.assign(H, 0.0f);
+        return true;
+    }
+    const std::vector<int> & donor_layers() const override { return donors_; }
+    bool enable_target_hidden_capture(bool, int) override { return true; }
+    void set_capture_row(int) override {}
+    bool consume_captured_hidden(float *, int) override { return true; }
+};
+
+static void test_recommit_byte_identical_to_ar() {
+    using namespace dflash27b;
+    using namespace dflash27b::mtp;
+    constexpr int kNGen = 100;  // ~50 recommit iters at 2 tokens/iter
+
+    // Baseline: γ=1, no recommit involved.
+    OracleScriptedTarget tgt_ar;
+    PartialAcceptDrafter mtp_ar;
+    mtp_ar.attach(&tgt_ar);
+    MtpChainRunner runner_ar(mtp_ar, tgt_ar, SamplerCfg{});
+    GenerateRequest req; req.n_gen = kNGen; req.stream = false;
+    DaemonIO io; io.stream_fd = -1;
+    auto res_ar = runner_ar.run(req, io, /*cur=*/0, /*pos=*/0, /*gamma=*/1);
+    CHECK(res_ar.ok);
+    CHECK((int)res_ar.tokens.size() == kNGen);
+
+    // Spec: γ=3, accept_n=1 every iter → recommit fallback every iter.
+    OracleScriptedTarget tgt_spec;
+    PartialAcceptDrafter mtp_spec;
+    mtp_spec.attach(&tgt_spec);
+    MtpChainRunner runner_spec(mtp_spec, tgt_spec, SamplerCfg{});
+    auto res_spec = runner_spec.run(req, io, /*cur=*/0, /*pos=*/0, /*gamma=*/3);
+    CHECK(res_spec.ok);
+    CHECK((int)res_spec.tokens.size() == kNGen);
+
+    for (int i = 0; i < kNGen; i++) {
+        if (res_ar.tokens[i] != res_spec.tokens[i]) {
+            std::fprintf(stderr,
+                "[chain_strict_spec] FAIL recommit divergence at i=%d: "
+                "AR=%d spec=%d (first 6 AR=%d,%d,%d,%d,%d,%d  "
+                "spec=%d,%d,%d,%d,%d,%d)\n",
+                i, res_ar.tokens[i], res_spec.tokens[i],
+                res_ar.tokens[0],res_ar.tokens[1],res_ar.tokens[2],
+                res_ar.tokens[3],res_ar.tokens[4],res_ar.tokens[5],
+                res_spec.tokens[0],res_spec.tokens[1],res_spec.tokens[2],
+                res_spec.tokens[3],res_spec.tokens[4],res_spec.tokens[5]);
+            std::exit(1);
+        }
+    }
+    std::printf("[chain_strict_spec] γ=3 recommit byte-identical to γ=1 AR "
+                "(%d tokens, %d iters) OK\n",
+                kNGen, runner_spec.stats().total_iters);
+}
+
 }  // namespace
 
 int main() {
@@ -360,6 +486,7 @@ int main() {
     test_default_step_chain_forwards_to_step_batch();
     test_good_chain_accept_holds_across_depth();
     test_broken_chain_accept_drops_below_threshold();
-    std::printf("[chain_strict_spec] all 6 tests PASS\n");
+    test_recommit_byte_identical_to_ar();
+    std::printf("[chain_strict_spec] all 7 tests PASS\n");
     return 0;
 }
