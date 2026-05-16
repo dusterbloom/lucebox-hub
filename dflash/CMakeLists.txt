@@ -678,5 +678,26 @@ if(DFLASH27B_TESTS)
             ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src
             ${DFLASH27B_SRC_INCLUDE_DIRS})
     endif()
+
+    # Bug #5 CUDA proof-of-teeth: set_rows -> [cast] -> get_rows -> FA-ext.
+    if(DFLASH27B_GPU_BACKEND STREQUAL "cuda"
+       AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_mtp_step_graph_cuda.cpp")
+        add_executable(test_mtp_step_graph_cuda test/test_mtp_step_graph_cuda.cpp)
+        target_link_libraries(test_mtp_step_graph_cuda PRIVATE
+            dflash27b ggml ggml-cuda ggml-base)
+        target_include_directories(test_mtp_step_graph_cuda PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+            ${DFLASH27B_SRC_INCLUDE_DIRS})
+
+        # Sibling target with the cast skipped -- proves the cast is needed.
+        add_executable(test_mtp_step_graph_cuda_nocast test/test_mtp_step_graph_cuda.cpp)
+        target_link_libraries(test_mtp_step_graph_cuda_nocast PRIVATE
+            dflash27b ggml ggml-cuda ggml-base)
+        target_include_directories(test_mtp_step_graph_cuda_nocast PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+            ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_compile_definitions(test_mtp_step_graph_cuda_nocast PRIVATE
+            MTP_SKIP_CAST=1)
+    endif()
     endif()
 endif()
