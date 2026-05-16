@@ -297,7 +297,7 @@ def build_prompt(tok, sys_prompt_path: Path, row, target_tokens: int) -> tuple:
         try:
             text = tok.apply_chat_template(
                 msgs, tokenize=False, add_generation_prompt=True,
-                enable_thinking=False,
+                enable_thinking=(os.environ.get("BENCH_THINKING", "0") == "1"),
             )
         except Exception:
             text = sys_text + "\n\n" + user_text + "\n\n"

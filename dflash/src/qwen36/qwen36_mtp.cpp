@@ -619,7 +619,9 @@ int  Qwen36MtpModule::max_gamma()   const {
     // not the physical NextN head count. We re-feed the single head's own
     // post-shared_head_norm hidden as h_prev to extend the chain to arbitrary depth
     // (oracle blocker 5.6 analysis). Capped at 8 to match Unsloth's --spec-draft-n-max
-    // ceiling and keep the head_kv slot writes within n_ctx=8192.
+    // ceiling and keep the head_kv slot writes within n_ctx=8192. Returns 0 pre-init
+    // so the basic contract test (max_gamma()==0 before init) still holds.
+    if (!state_->loaded) return 0;
     return 8;
 }
 int  Qwen36MtpModule::hidden_size() const { return state_->weights.n_embd; }
