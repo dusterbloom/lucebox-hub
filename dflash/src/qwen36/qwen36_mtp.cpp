@@ -1939,21 +1939,10 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
         }
 
         StepOutput so;
-        // We need the PRE-shared_head_norm hidden for the NEXT iter's
-        // h_prev (mirrors llama.cpp PR #22673 `t_h_pre_norm`; feeding
-        // post-norm here double-normalises on the next iter's `hnorm`
-        // and was the root of the D>1 compound-decay regression — at
-        // D=3 per-position accept fell from ~91% to ~67%).  The
-        // unfused-LM-head branch additionally needs the post-norm
-        // hidden for the on-host projection; download both when needed.
-        //
-        // Cost gate: x_normed is ~n_embd*4 ≈ 20KB on Qwen3.6-27B; the
-        // h_pre download is the same size.  On the FUSED-LM-head greedy
-        // path (chain_depth=1, no top-K) we need NEITHER download —
-        // the argmax tensor is already produced on-device.  Skipping
-        // them saves ~24% throughput on the chain head call (the audit
-        // figure: ~1ms/iter on D=1 ⇒ ~+4-7 tok/s end-to-end).  Mirror
-        // PR #22673's `top_k=1` greedy chain in common/speculative.cpp.
+        // h_prev for the next iter must be PRE-shared_head_norm (not post-norm);
+        // feeding post-norm double-normalises against head's hnorm (see PR #22673).
+        // On the fused-LM-head greedy path neither x_normed nor h_pre is needed —
+        // the argmax is already on-device; skip both downloads.
         std::vector<float> x_normed;
         const bool need_x_normed =
             !(sg->fused_lm_head && sg->out_argmax_token);

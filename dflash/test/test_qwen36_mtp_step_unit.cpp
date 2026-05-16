@@ -482,21 +482,9 @@ static void test_forward_deterministic() {
     std::printf("[step_unit] test_forward_deterministic PASS\n");
 }
 
-// 11. Chain seed PREFERS pre-norm hidden over post-norm.  Regression guard
-//     for the bug fixed in commit ${THIS_COMMIT}: the spec-chain's outer
-//     h_prev_0 used target->hidden_at_pos(base_pos-1) (post-output-norm),
-//     which double-normalised against the head's own hnorm and crushed
-//     D>=2 accept (real-bench: 70.7% compound-decayed at D=3).  Pre-norm
-//     seed (llama.cpp PR #22673 `t_h_pre_norm`) is the fix.
-//
-//     Method: drive step_batch (CPU path) at base_pos=1 with a target that
-//     COUNTS how many times each accessor is called and at which abs_pos.
-//     The new behaviour: hidden_at_pos_pre_norm() must be called for
-//     abs_pos = base_pos - 1 = 0; hidden_at_pos() may be called (only as
-//     a fallback) but must NOT be the one whose result was used.  We
-//     check call-trace + the non-null pre-norm vector, which is more
-//     robust than comparing tokens through the uniform-weight test
-//     TRMBlock (which collapses input differences).
+// 11. Chain seed must use pre-norm hidden (hidden_at_pos_pre_norm), not post-norm.
+//     Regression guard: post-norm double-normalises against head's hnorm (PR #22673).
+//     Verifies hidden_at_pos_pre_norm() is called at abs_pos = base_pos - 1.
 static void test_chain_seed_prefers_pre_norm() {
     Qwen36MtpWeights w;
     ggml_context * ctx = build_test_weights(w);

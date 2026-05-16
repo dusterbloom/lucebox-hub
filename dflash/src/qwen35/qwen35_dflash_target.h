@@ -88,47 +88,26 @@ public:
     bool snapshot_kv() override;
     bool restore_kv() override;
 
-    // Stage 3 (oracle blocker 5.3): rollback DeltaNet SSM + conv + full-attn KV
-    // to the slot of `dfs_idx` from the MOST RECENT verify_tree() call. The
-    // verify_tree run captured per-DFS-slot SSM intermediate states (cache_.
-    // ssm_intermediate[il]) and the full conv input window (cache_.
-    // conv_input_cache[il]); this method dequantizes/copies those into the
-    // live state buffers so the next verify_batch / verify_tree sees correct
-    // DeltaNet history.  Full-attention KV that was written at slot
-    // (root_base_pos + accepted_dfs[d]) is compacted to (root_base_pos + d)
-    // for d=1..commit_n-1 when the accepted walk deviates from the DFS spine.
-    //
-    // `accepted_dfs` is the accepted-path DFS-index list returned by
-    // follow_verified_tree (size >= 1, accepted_dfs[0] == 0 = root).  The
-    // caller may pass only the committed prefix (i.e. truncate at n_gen).
-    //
-    // After this call cache_.cur_pos = root_base_pos + commit_n so the next
-    // verify_batch writes at the right offset.  Returns false if verify_tree
-    // was not called, or if dfs_idx is out of range.
+    // Rollback DeltaNet SSM/conv + full-attn KV to the accepted-path tail of
+    // the most recent verify_tree() call.  Dequantizes per-DFS-slot SSM
+    // snapshots; compacts full-attn KV when accepted walk deviates from DFS spine.
+    // Postcondition: cache_.cur_pos = root_base_pos + commit_n.
+    // Returns false if verify_tree was not called or accepted_dfs is out of range.
     bool restore_kv_at_dfs(const std::vector<int> & accepted_dfs) override;
 
-    // Chain-mode rollback (degenerate linear case of restore_kv_at_dfs).
-    // Builds the DFS spine [0, 1, ..., accept_n] and dispatches to
-    // restore_kv_at_dfs.  Requires that the most recent verify_batch ran with
-    // chain capture enabled (see enable_chain_capture below) — otherwise the
-    // per-position SSM intermediate buffers are stale and we return false so
-    // the chain runner falls back to its snapshot+recommit path.
+    // Chain-mode rollback: builds spine [0..accept_n] and dispatches to
+    // restore_kv_at_dfs.  Requires chain capture enabled on the prior verify_batch.
+    // Returns false if capture was off; caller falls back to snapshot+recommit.
     bool restore_kv_at_chain(int accept_n) override;
 
-    // Toggle per-position DeltaNet intermediate capture in verify_batch.
-    // Off by default.  When on, verify_batch will populate the per-layer
-    // ssm_intermediate / conv_input_cache buffers AND record a linear-chain
-    // "tree" topology so restore_kv_at_chain can roll back to any accepted
-    // prefix.  Only safe when n_tokens fits in the pre-allocated cache (i.e.
-    // n_tokens <= max_verify_tokens) — verify_batch defensively skips capture
-    // (and clears the topology) when it would overflow the cache, which makes
-    // restore_kv_at_chain return false for that iter and triggers the slow
-    // recommit fallback.
+    // Enable per-position DeltaNet intermediate capture in verify_batch.
+    // Off by default; unsafe when n_tokens > max_verify_tokens.
+    // When on, verify_batch populates ssm_intermediate/conv_input_cache and
+    // records a linear-chain topology for restore_kv_at_chain.
     void enable_chain_capture(bool on) override { chain_capture_enabled_ = on; }
 
-    // Record a linear-chain "tree" (spine [0..n_tokens-1] at base_pos) so
-    // a subsequent restore_kv_at_chain() can locate the rollback slot.
-    // Owned by the caller (chain runner), separate from verify_batch state.
+    // Record linear-chain topology (spine [0..n_tokens-1] at base_pos) so
+    // restore_kv_at_chain() can locate the rollback slot.
     void capture_topology_for_chain(int n_tokens, int base_pos) override;
 
     bool is_eos(int token) const override;

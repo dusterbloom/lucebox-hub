@@ -87,54 +87,30 @@ struct DFlashTarget {
     // Restore KV cache to the last snapshot (undo speculative forward).
     virtual bool restore_kv() = 0;
 
-    // Stage 3 (oracle blocker 5.3): rollback DeltaNet SSM/conv + full-attn
-    // KV to the accepted-path tail of the most recent verify_tree() call.
-    // `accepted_dfs` is the DFS-slot list from follow_verified_tree
-    // (accepted_dfs[0] = 0 = root; subsequent entries are tree-node DFS
-    // indices).  Default returns false — concrete targets that wire it up
-    // (Qwen35DFlashTarget) override.  Callers MUST check the return value:
-    // a `false` from a target that has no rollback means the next iteration
-    // will see poisoned KV/SSM and should be treated as a fatal error in
-    // multi-iteration tree-spec loops.
+    // Rollback DeltaNet SSM/conv + full-attn KV to the accepted-path tail of
+    // the most recent verify_tree() call.  accepted_dfs[0] must be 0 (root).
+    // Returns false if unsupported; callers must treat false as fatal in
+    // multi-iteration tree-spec loops (poisoned KV/SSM otherwise).
     virtual bool restore_kv_at_dfs(const std::vector<int> & accepted_dfs) {
         (void)accepted_dfs;
         return false;
     }
 
-    // Chain-mode variant of restore_kv_at_dfs: roll back DeltaNet SSM/conv +
-    // full-attn KV to slot `accept_n` of the MOST RECENT verify_batch call
-    // (which fed a linear chain of N tokens at base_pos..base_pos+N-1).  This
-    // is the degenerate, all-spine case of restore_kv_at_dfs and lets the MTP
-    // chain runner skip its second `verify_batch` "recommit" on partial accept:
-    // the original verify_batch already wrote KV for every accepted slot, and
-    // the captured per-position ssm_intermediate + conv_input_cache let us
-    // undo the rejected tail's SSM advance without re-running the target.
-    //
-    // After this call cache cur_pos = base_pos + accept_n + 1 so the next
-    // verify_batch's kv_start lines up.  Default returns false; targets that
-    // do not implement it (CPU stubs, layer-split shards, or any target with
-    // chain capture disabled) cause the chain runner to fall back to the
-    // legacy snapshot+recommit path.
+    // Roll back DeltaNet SSM/conv + full-attn KV to slot `accept_n` of the
+    // most recent verify_batch chain.  Requires chain capture enabled.
+    // Postcondition: cache cur_pos = base_pos + accept_n + 1.
+    // Returns false if unsupported; chain runner falls back to snapshot+recommit.
     virtual bool restore_kv_at_chain(int accept_n) {
         (void)accept_n;
         return false;
     }
 
-    // Toggle whether subsequent verify_batch calls should capture per-position
-    // DeltaNet intermediate state into the cache so restore_kv_at_chain() has
-    // something to roll back to.  Off by default — capture is unsafe when
-    // n_tokens > max_verify_tokens (prefill chunks) or when n_tokens !=
-    // max_verify_tokens (would assert in the in-graph ggml_cpy on the
-    // ssm_intermediate buffer).  The MTP chain runner flips this on for the
-    // duration of its run loop (where every verify_batch fits within the
-    // pre-allocated draft block) and off afterwards.  No-op for targets
-    // without DeltaNet capture support.
+    // Enable per-position DeltaNet intermediate capture in verify_batch.
+    // Off by default; unsafe when n_tokens > max_verify_tokens.
     virtual void enable_chain_capture(bool /*on*/) {}
 
-    // Record linear-chain "tree" topology so a subsequent restore_kv_at_chain()
-    // knows the base_pos / n_tokens of the chain to roll back.  MUST be called
-    // by the chain runner BEFORE verify_batch on every iter that may need a
-    // rollback.  No-op for targets without chain capture support.
+    // Record linear-chain topology before verify_batch so restore_kv_at_chain()
+    // can locate the rollback slot.  Must be called before each capturable iter.
     virtual void capture_topology_for_chain(int /*n_tokens*/, int /*base_pos*/) {}
 
     // ── Token utilities ─────────────────────────────────────────────

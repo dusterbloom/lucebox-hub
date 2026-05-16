@@ -36,19 +36,10 @@ namespace {
 
 // ── DeterministicOracleTarget ─────────────────────────────────────────
 //
-// A mock target with a stateful "ssm_counter_" that is bumped once per
-// token forwarded.  argmax(pos, tok) = (ssm_counter_ + 1) % vocab — i.e.
-// the argmax depends on hidden state, not just on `tok`.  This is the
-// minimum condition under which rollback correctness becomes observable:
-// if tree-verify forwards N tokens but only `commit_n` are accepted, the
-// counter must be restored to (counter_before + commit_n) before the next
-// verify; otherwise it sits at (counter_before + N), and the next argmax
-// is wrong.
-//
-// verify_tree models the real graph behavior: every DFS slot gets
-// forwarded (counter += N), per-DFS-slot argmax is computed against the
-// counter value AT that slot, and per-DFS-slot ssm_intermediate snapshots
-// are stashed in an internal table for restore_kv_at_dfs to consume.
+// Mock target with stateful ssm_counter_ bumped once per token forwarded.
+// argmax = (ssm_counter_ + 1) % vocab — hidden-state-dependent.
+// Invariant: after restore_kv_at_dfs, counter = counter_before + commit_n.
+// verify_tree snapshots per-DFS-slot counter values for restore_kv_at_dfs.
 struct DeterministicOracleTarget : DFlashTarget {
     int H = 4;
     int V = 64;
