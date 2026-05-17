@@ -55,6 +55,7 @@ SYS_PROMPT_LARGE = FIX_DIR / "agent_prompts" / "codex_gpt52.md"
 sys.path.insert(0, str(ROOT / "scripts"))
 from bench_agent import (  # noqa: E402
     BUCKETS, build_prompt, tokenize_to_file, _load_swe_rows, _run_timed,
+    select_rows_for_bucket,
 )
 
 RESULT_RE = re.compile(
@@ -194,7 +195,7 @@ def main():
     buckets = args.bucket or list(BUCKETS)
     from transformers import AutoTokenizer
     tok = AutoTokenizer.from_pretrained(TOKENIZER, trust_remote_code=True)
-    rows = _load_swe_rows().head(args.n_sample).to_dict("records")
+    rows = select_rows_for_bucket(_load_swe_rows(), None, args.n_sample, seed=42)
 
     aggregate = {}
     print(f"GGUF:      {MTP_GGUF}")
