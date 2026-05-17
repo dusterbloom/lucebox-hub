@@ -23,6 +23,7 @@ def mock_tokenizer():
     tokenizer.encode.return_value = [1]
     tokenizer.decode.return_value = "hello"
     tokenizer.apply_chat_template.return_value = "prompt"
+    tokenizer.vocab_size = 151936
     return tokenizer
 
 
@@ -939,3 +940,60 @@ def test_responses_instructions_and_developer_merged(mock_os_read, mock_pipe,
     assert len(system_msgs) == 1
     assert "Top-level instructions." in system_msgs[0]["content"]
     assert "Developer context." in system_msgs[0]["content"]
+
+
+# ─── out-of-range token filtering (OverflowError regression) ───────
+
+@patch("server.os.pipe")
+@patch("server.os.read")
+def test_out_of_range_token_non_streaming_returns_200(
+        mock_os_read, mock_pipe, mock_tokenizer, app):
+    """Daemon emits a negative sentinel-like token (-2) that is not the EOS
+    sentinel (-1).  Without filtering, tokenizer.decode([-2]) raises
+    OverflowError → 500.  After the fix the token is silently dropped and
+    the endpoint returns 200 with empty content rather than crashing."""
+    mock_pipe.return_value = (1, 2)
+    # Make decode raise for any negative token to mirror HF tokenizer behaviour
+    def _decode(ids, **_kw):
+        if any(t < 0 or t >= 151936 for t in ids):
+            raise OverflowError("out of range integral type conversion attempted")
+        return "hello"
+    mock_tokenizer.decode.side_effect = _decode
+    # Daemon stream: bogus token (-2) then EOS sentinel (-1)
+    mock_os_read.side_effect = [struct.pack("<i", -2), struct.pack("<i", -1)]
+
+    client = TestClient(app)
+    response = client.post("/v1/chat/completions", json={
+        "model": MODEL_NAME,
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": False,
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "choices" in data
+    assert data["choices"][0]["finish_reason"] == "stop"
+
+
+@patch("server.os.pipe")
+@patch("server.os.read")
+def test_out_of_range_token_streaming_returns_200(
+        mock_os_read, mock_pipe, mock_tokenizer, app):
+    """Same contract for the streaming path: bad token is dropped, no crash."""
+    mock_pipe.return_value = (1, 2)
+    def _decode(ids, **_kw):
+        if any(t < 0 or t >= 151936 for t in ids):
+            raise OverflowError("out of range integral type conversion attempted")
+        return ""
+    mock_tokenizer.decode.side_effect = _decode
+    mock_os_read.side_effect = [struct.pack("<i", -2), struct.pack("<i", -1)]
+
+    client = TestClient(app)
+    response = client.post("/v1/chat/completions", json={
+        "model": MODEL_NAME,
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": True,
+    })
+
+    assert response.status_code == 200
+    assert "data: [DONE]" in response.text

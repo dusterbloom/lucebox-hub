@@ -549,10 +549,10 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             : out_tokens.back();
 
         if (i == 0 && out_tokens.empty()) {
-            // First decode: read argmax from prefill's last logits
-            int32_t argmax = 0;
-            ggml_backend_tensor_get(sg_.argmax_tokens, &argmax, 0, sizeof(int32_t));
-            tok = argmax;
+            // Prefill already computed and cached its last argmax in cache_.last_tok.
+            // Reading sg_.argmax_tokens here returns uninitialized GPU memory because
+            // build_target_step rebuilt the graph but compute hasn't run yet.
+            tok = cache_.last_tok;
             out_tokens.push_back(tok);
             io.emit(tok);
             if (IS_EOS_TOK(tok, w_)) { io.emit(-1); return true; }
