@@ -586,7 +586,15 @@ bool Qwen36MtpModule::init(const std::string & gguf_path,
         const int n_head_kv = state_->weights.n_head_kv;
         const int key_len   = state_->weights.n_key_length;
         const int val_len   = state_->weights.n_value_length;
-        const int n_ctx     = 8192;  // chain horizon
+        // Chain horizon = max prompt+decode positions the MTP head KV can hold.
+        // Was hardcoded to 8192; overflows on real agentic prompts (Claude Code
+        // sends 9-24K). Allow override via DFLASH27B_MTP_CTX so the daemon path
+        // can size this to match target max_ctx.
+        int n_ctx = 8192;
+        if (const char * s = std::getenv("DFLASH27B_MTP_CTX")) {
+            const int v = std::atoi(s);
+            if (v > 0) n_ctx = v;
+        }
         state_->n_ctx       = n_ctx;
 
         if (n_head_kv > 0 && key_len > 0 && val_len > 0 && gamma_max > 0) {

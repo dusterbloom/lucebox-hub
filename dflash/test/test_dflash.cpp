@@ -1628,10 +1628,42 @@ int main(int argc, char ** argv) {
     }
     if (mtp_gguf_path) {
         if (target_gpus.size() > 1) {
-            std::fprintf(stderr, "qwen36-mtp bench supports single target GPU only\n");
+            std::fprintf(stderr, "qwen36-mtp does not support --target-gpus\n");
             return 2;
         }
         const int max_ctx_eff = g_max_ctx_override > 0 ? g_max_ctx_override : 4096;
+        // ---- MTP daemon path: load once, serve requests via daemon protocol ----
+        if (daemon_mode) {
+            std::fprintf(stderr,
+                "[test_dflash] arch=qwen35+mtp daemon -> dispatching to run_qwen35_daemon "
+                "(mtp=%s gamma=%d max_ctx=%d stream_fd=%d)\n",
+                mtp_gguf_path, mtp_gamma, max_ctx_eff, stream_fd);
+            dflash27b::Qwen35DaemonArgs qargs;
+            qargs.target_path       = target_path;
+            qargs.draft_path        = nullptr;   // MTP mode: no DFlash draft
+            qargs.device.gpu        = target_gpu;
+            qargs.device.max_ctx    = max_ctx_eff;
+            qargs.draft_gpu         = target_gpu;
+            qargs.stream_fd         = stream_fd;
+            qargs.chunk             = 512;
+            qargs.fa_window         = g_fa_window;
+            qargs.kq_stride_pad     = g_kq_stride_pad;
+            qargs.draft_swa_window  = 0;
+            qargs.draft_ctx_max     = 0;
+            qargs.fast_rollback     = false;
+            qargs.seq_verify        = false;
+            qargs.ddtree_mode       = ddtree_budget > 0 && ddtree_mode;
+            qargs.ddtree_budget     = ddtree_budget;
+            qargs.ddtree_temp       = ddtree_temp;
+            qargs.ddtree_chain_seed = ddtree_chain_seed;
+            qargs.use_feature_mirror = false;
+            qargs.mtp_gguf_path     = mtp_gguf_path;
+            qargs.mtp_gamma         = mtp_gamma;
+            qargs.mtp_draft_source  = mtp_draft_source;
+            qargs.mtp_draft_topk    = mtp_draft_topk;
+            return dflash27b::run_qwen35_daemon(qargs);
+        }
+        // ---- MTP file-mode harness (bench / one-shot) ----
         std::fprintf(stderr,
             "[test_dflash] qwen36-mtp bench target=%s mtp=%s gamma=%d max_ctx=%d\n",
             target_path, mtp_gguf_path, mtp_gamma, max_ctx_eff);
