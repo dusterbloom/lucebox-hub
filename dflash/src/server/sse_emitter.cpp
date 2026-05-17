@@ -8,6 +8,48 @@
 
 namespace dflash27b {
 
+// Snap a byte offset back to a UTF-8 code-point boundary.
+// Returns the largest position <= `pos` that doesn't split a multi-byte sequence.
+// (Mirrors ds4_server.c's utf8_stream_safe_len.)
+static size_t utf8_safe_len(const std::string & s, size_t pos) {
+    if (pos >= s.size()) return s.size();
+    // Walk backwards while we're on a continuation byte (10xxxxxx).
+    while (pos > 0 && (s[pos] & 0xC0) == 0x80) pos--;
+    return pos;
+}
+
+// Sanitize a string for JSON: replace invalid/incomplete UTF-8 with U+FFFD.
+static std::string utf8_sanitize(const std::string & s) {
+    std::string out;
+    out.reserve(s.size());
+    size_t i = 0;
+    while (i < s.size()) {
+        uint8_t c = (uint8_t)s[i];
+        size_t seq_len = 0;
+        if (c < 0x80) seq_len = 1;
+        else if ((c & 0xE0) == 0xC0) seq_len = 2;
+        else if ((c & 0xF0) == 0xE0) seq_len = 3;
+        else if ((c & 0xF8) == 0xF0) seq_len = 4;
+        if (seq_len == 0 || i + seq_len > s.size()) {
+            out += "\xEF\xBF\xBD";  // U+FFFD
+            i++;
+            continue;
+        }
+        bool valid = true;
+        for (size_t j = 1; j < seq_len; j++) {
+            if (((uint8_t)s[i + j] & 0xC0) != 0x80) { valid = false; break; }
+        }
+        if (valid) {
+            out.append(s, i, seq_len);
+            i += seq_len;
+        } else {
+            out += "\xEF\xBF\xBD";
+            i++;
+        }
+    }
+    return out;
+}
+
 static const char THINK_OPEN[]  = "<think>";
 static const char THINK_CLOSE[] = "</think>";
 static const char TOOL_OPEN[]   = "<tool_call>";
@@ -163,7 +205,9 @@ std::vector<std::string> SseEmitter::emit_start() {
 
 // ─── emit_token ─────────────────────────────────────────────────────────
 
-std::vector<std::string> SseEmitter::emit_token(const std::string & piece) {
+std::vector<std::string> SseEmitter::emit_token(const std::string & raw_piece) {
+    // Sanitize input to prevent json::dump() from throwing on invalid UTF-8.
+    std::string piece = utf8_sanitize(raw_piece);
     std::vector<std::string> out;
     accumulated_raw_ += piece;
     window_ += piece;
@@ -177,6 +221,22 @@ std::vector<std::string> SseEmitter::emit_token(const std::string & piece) {
         }
 
         if (mode_ == StreamMode::REASONING) {
+            // Strip leading <think> tag from reasoning (ds4 pattern).
+            // When started_in_thinking=true, the model may echo <think> again.
+            // The model may emit whitespace before <think>, so we skip leading
+            // whitespace first, then check for the tag.
+            if (!checked_think_prefix_) {
+                // Skip leading whitespace to find potential <think> tag
+                size_t ws = 0;
+                while (ws < window_.size() && (window_[ws] == '\n' || window_[ws] == ' ' || window_[ws] == '\r'))
+                    ws++;
+                if (ws + THINK_OPEN_LEN > window_.size()) break;  // wait for more
+                if (window_.compare(ws, THINK_OPEN_LEN, THINK_OPEN) == 0) {
+                    window_ = window_.substr(ws + THINK_OPEN_LEN);
+                }
+                checked_think_prefix_ = true;
+            }
+
             size_t idx = window_.find(THINK_CLOSE);
             if (idx != std::string::npos) {
                 std::string pre = window_.substr(0, idx);
@@ -215,7 +275,9 @@ std::vector<std::string> SseEmitter::emit_token(const std::string & piece) {
             }
             // No close tag yet — emit safe prefix if window is large enough
             if (window_.size() > HOLDBACK) {
-                std::string safe = window_.substr(0, window_.size() - HOLDBACK);
+                size_t cut = utf8_safe_len(window_, window_.size() - HOLDBACK);
+                if (cut == 0) break;  // not enough complete chars yet
+                std::string safe = window_.substr(0, cut);
                 reasoning_text_ += safe;
                 switch (format_) {
                 case ApiFormat::OPENAI_CHAT:
@@ -240,7 +302,7 @@ std::vector<std::string> SseEmitter::emit_token(const std::string & piece) {
                     break;
                 default: break;
                 }
-                window_ = window_.substr(window_.size() - HOLDBACK);
+                window_ = window_.substr(cut);
             }
             break;
         }
@@ -285,10 +347,13 @@ std::vector<std::string> SseEmitter::emit_token(const std::string & piece) {
 
         // No tags found — emit safe prefix
         if (window_.size() > HOLDBACK) {
-            std::string safe = window_.substr(0, window_.size() - HOLDBACK);
-            accumulated_content_ += safe;
-            emit_content_delta(out, safe);
-            window_ = window_.substr(window_.size() - HOLDBACK);
+            size_t cut = utf8_safe_len(window_, window_.size() - HOLDBACK);
+            if (cut > 0) {
+                std::string safe = window_.substr(0, cut);
+                accumulated_content_ += safe;
+                emit_content_delta(out, safe);
+                window_ = window_.substr(cut);
+            }
         }
         break;
     }

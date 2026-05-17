@@ -97,6 +97,9 @@ private:
     int          block_index_ = 0;
     std::string  active_kind_;  // "thinking" or "text"
 
+    // Strip leading <think> tag from reasoning (ds4 pattern).
+    bool         checked_think_prefix_ = false;
+
     int64_t      created_at_;
 
     // Responses API IDs
