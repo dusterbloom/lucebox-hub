@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "schema_v": 1,
+    "timestamp_utc": "2026-05-17T11:01:10.359803+00:00",
+    "git_sha": "0925beaeeb866134f87680c58a926780f9248bbe",
+    "hostname": "DESKTOP-7MCOG2Q",
+    "platform": "Linux-5.15.167.4-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "gpu": "NVIDIA GeForce RTX 3090, 595.79",
+    "cuda": "Build cuda_12.6.r12.6/compiler.35059454_0"
+  },
+  "workload": {
+    "name": "swe_bench_2k",
+    "bucket": "2k",
+    "n_sample": 8,
+    "seed": 42,
+    "tokenizer_id": "Qwen/Qwen3.5-27B",
+    "prompt_shas": [
+      "8b617031c15d1a3ef358afdd5c5d379b505a85895c3fc8b9c8027d67f3846097",
+      "d1e06b2c78f60849c4ca21a765fa0a49f11376cddfd3ef822ba69fe3935177de",
+      "4dc1fd24a3f4f113b677af1a0768a215e0485641bb5c6ccdb661520a19a82ff6",
+      "58e79e853fd975ccd00407c7709d43232874d584432ef4931a910100e4c27f62",
+      "bbd45562b0e027bab35e43db1266a0b3309371b5156be68b64f3a10d21b0167d",
+      "5a3fbff0b7cb85fc5dbcae9711387942b309b8020c2d6711952566fc2b63ee12",
+      "ab2dc73e968438cb7c15f5832916ea8ee802c976c3f778b5050dbc3ea9ad5337",
+      "3a78ceecabafafb94e9b55db3d4536eae7a82750c5833aff0d99ec2cec2a753a"
+    ]
+  },
+  "speculator": {
+    "name": "dflash_b22",
+    "config": {
+      "name": "dflash_b22",
+      "budget": 22,
+      "target_gguf": "/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf",
+      "draft_gguf": "/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf",
+      "kv_type": "q8_0"
+    }
+  },
+  "results": [],
+  "aggregates": {
+    "tok_s_mean": 0.0,
+    "tok_s_median": 0.0,
+    "tok_s_p25": 0.0,
+    "tok_s_p75": 0.0,
+    "tok_s_ci95_low": 0.0,
+    "tok_s_ci95_high": 0.0,
+    "n_total_runs": 0,
+    "spec_vs_ar_speedup_median": 0.0,
+    "spec_vs_ar_speedup_mean": 0.0
+  }
+}

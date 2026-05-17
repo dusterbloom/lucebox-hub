@@ -1,0 +1,211 @@
+{
+  "meta": {
+    "schema_v": 1,
+    "timestamp_utc": "2026-05-17T13:55:36.565558+00:00",
+    "git_sha": "0925beaeeb866134f87680c58a926780f9248bbe",
+    "hostname": "DESKTOP-7MCOG2Q",
+    "platform": "Linux-5.15.167.4-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "gpu": "NVIDIA GeForce RTX 3090, 595.79",
+    "cuda": "Build cuda_12.6.r12.6/compiler.35059454_0"
+  },
+  "workload": {
+    "name": "swe_bench_2k",
+    "bucket": "2k",
+    "n_sample": 8,
+    "seed": 42,
+    "tokenizer_id": "Qwen/Qwen3.5-27B",
+    "prompt_shas": [
+      "8b617031c15d1a3ef358afdd5c5d379b505a85895c3fc8b9c8027d67f3846097",
+      "d1e06b2c78f60849c4ca21a765fa0a49f11376cddfd3ef822ba69fe3935177de",
+      "4dc1fd24a3f4f113b677af1a0768a215e0485641bb5c6ccdb661520a19a82ff6",
+      "58e79e853fd975ccd00407c7709d43232874d584432ef4931a910100e4c27f62",
+      "bbd45562b0e027bab35e43db1266a0b3309371b5156be68b64f3a10d21b0167d",
+      "5a3fbff0b7cb85fc5dbcae9711387942b309b8020c2d6711952566fc2b63ee12",
+      "ab2dc73e968438cb7c15f5832916ea8ee802c976c3f778b5050dbc3ea9ad5337",
+      "3a78ceecabafafb94e9b55db3d4536eae7a82750c5833aff0d99ec2cec2a753a"
+    ]
+  },
+  "speculator": {
+    "name": "dflash_b22",
+    "config": {
+      "name": "dflash_b22",
+      "budget": 22,
+      "target_gguf": "/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf",
+      "draft_gguf": "/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf",
+      "kv_type": "q8_0"
+    }
+  },
+  "results": [
+    {
+      "prompt_idx": 0,
+      "prompt_id": "scikit-learn__scikit-learn-13439",
+      "tok_s": 67.79,
+      "accept_rate": 0.37209302325581395,
+      "al": 5.95,
+      "n_tokens_generated": 256,
+      "decode_s": 3.776,
+      "prefill_s": 0.0,
+      "raw_json": {
+        "tok_s": 67.79,
+        "tokens": 256,
+        "decode_s": 3.776,
+        "prefill_s": 0.0,
+        "accepted": 256,
+        "proposed": 688,
+        "al": 5.95
+      },
+      "run_idx": 0
+    },
+    {
+      "prompt_idx": 1,
+      "prompt_id": "django__django-12155",
+      "tok_s": 49.95,
+      "accept_rate": 0.27586206896551724,
+      "al": 4.41,
+      "n_tokens_generated": 256,
+      "decode_s": 5.125,
+      "prefill_s": 0.0,
+      "raw_json": {
+        "tok_s": 49.95,
+        "tokens": 256,
+        "decode_s": 5.125,
+        "prefill_s": 0.0,
+        "accepted": 256,
+        "proposed": 928,
+        "al": 4.41
+      },
+      "run_idx": 0
+    },
+    {
+      "prompt_idx": 2,
+      "prompt_id": "scikit-learn__scikit-learn-25232",
+      "tok_s": 43.27,
+      "accept_rate": 0.25,
+      "al": 4.0,
+      "n_tokens_generated": 256,
+      "decode_s": 5.916,
+      "prefill_s": 0.0,
+      "raw_json": {
+        "tok_s": 43.27,
+        "tokens": 256,
+        "decode_s": 5.916,
+        "prefill_s": 0.0,
+        "accepted": 256,
+        "proposed": 1024,
+        "al": 4.0
+      },
+      "run_idx": 0
+    },
+    {
+      "prompt_idx": 3,
+      "prompt_id": "django__django-14434",
+      "tok_s": 42.68,
+      "accept_rate": 0.2318840579710145,
+      "al": 3.71,
+      "n_tokens_generated": 256,
+      "decode_s": 5.998,
+      "prefill_s": 0.0,
+      "raw_json": {
+        "tok_s": 42.68,
+        "tokens": 256,
+        "decode_s": 5.998,
+        "prefill_s": 0.0,
+        "accepted": 256,
+        "proposed": 1104,
+        "al": 3.71
+      },
+      "run_idx": 0
+    },
+    {
+      "prompt_idx": 4,
+      "prompt_id": "django__django-13279",
+      "tok_s": 45.03,
+      "accept_rate": 0.25396825396825395,
+      "al": 4.06,
+      "n_tokens_generated": 256,
+      "decode_s": 5.686,
+      "prefill_s": 0.0,
+      "raw_json": {
+        "tok_s": 45.03,
+        "tokens": 256,
+        "decode_s": 5.686,
+        "prefill_s": 0.0,
+        "accepted": 256,
+        "proposed": 1008,
+        "al": 4.06
+      },
+      "run_idx": 0
+    },
+    {
+      "prompt_idx": 5,
+      "prompt_id": "sphinx-doc__sphinx-7757",
+      "tok_s": 37.87,
+      "accept_rate": 0.21333333333333335,
+      "al": 3.41,
+      "n_tokens_generated": 256,
+      "decode_s": 6.761,
+      "prefill_s": 0.0,
+      "raw_json": {
+        "tok_s": 37.87,
+        "tokens": 256,
+        "decode_s": 6.761,
+        "prefill_s": 0.0,
+        "accepted": 256,
+        "proposed": 1200,
+        "al": 3.41
+      },
+      "run_idx": 0
+    },
+    {
+      "prompt_idx": 6,
+      "prompt_id": "scikit-learn__scikit-learn-25973",
+      "tok_s": 48.38,
+      "accept_rate": 0.2807017543859649,
+      "al": 4.49,
+      "n_tokens_generated": 256,
+      "decode_s": 5.291,
+      "prefill_s": 0.0,
+      "raw_json": {
+        "tok_s": 48.38,
+        "tokens": 256,
+        "decode_s": 5.291,
+        "prefill_s": 0.0,
+        "accepted": 256,
+        "proposed": 912,
+        "al": 4.49
+      },
+      "run_idx": 0
+    },
+    {
+      "prompt_idx": 7,
+      "prompt_id": "django__django-13670",
+      "tok_s": 51.96,
+      "accept_rate": 0.325,
+      "al": 5.2,
+      "n_tokens_generated": 78,
+      "decode_s": 1.501,
+      "prefill_s": 0.0,
+      "raw_json": {
+        "tok_s": 51.96,
+        "tokens": 78,
+        "decode_s": 1.501,
+        "prefill_s": 0.0,
+        "accepted": 78,
+        "proposed": 240,
+        "al": 5.2
+      },
+      "run_idx": 0
+    }
+  ],
+  "aggregates": {
+    "tok_s_mean": 48.36625,
+    "tok_s_median": 46.705,
+    "tok_s_p25": 42.8275,
+    "tok_s_p75": 51.457499999999996,
+    "tok_s_ci95_low": 42.68,
+    "tok_s_ci95_high": 51.96,
+    "n_total_runs": 8,
+    "spec_vs_ar_speedup_median": 1.4475,
+    "spec_vs_ar_speedup_mean": 1.4991
+  }
+}
