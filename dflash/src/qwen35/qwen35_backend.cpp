@@ -333,18 +333,24 @@ GenerateResult Qwen35Backend::generate(const GenerateRequest & req,
     reset_target_cache(cache_);
 
     // Prefill
+    auto t_prefill_start = std::chrono::steady_clock::now();
     const int committed = do_prefill(req.prompt, io, req.snap_pos, req.snap_slot);
     if (committed < 0) {
         result.error = "prefill";
         return result;
     }
+    auto t_prefill_end = std::chrono::steady_clock::now();
+    result.prefill_s = std::chrono::duration<double>(t_prefill_end - t_prefill_start).count();
 
     // Decode (speculative)
     if (req.n_gen > 0) {
+        auto t_decode_start = std::chrono::steady_clock::now();
         if (!do_spec_decode(committed, req.n_gen, result.tokens, io)) {
             result.error = "decode";
             return result;
         }
+        result.decode_s = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - t_decode_start).count();
     }
 
     result.ok = true;
@@ -380,12 +386,15 @@ GenerateResult Qwen35Backend::restore_and_generate(int slot,
     int committed = snap_pos;
     const int prompt_len = (int)req.prompt.size();
     if (prompt_len > snap_pos) {
+        auto t_prefill_start = std::chrono::steady_clock::now();
         std::vector<int32_t> delta(req.prompt.begin() + snap_pos, req.prompt.end());
         committed = do_prefill(delta, io, req.snap_pos, req.snap_slot, /*kv_offset=*/snap_pos);
         if (committed < 0) {
             result.error = "prefill";
             return result;
         }
+        result.prefill_s = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - t_prefill_start).count();
     } else if (prompt_len > 0 && prompt_len < snap_pos) {
         // Cached more than the request — should never happen in practice.
         result.error = "snapshot_longer_than_prompt";
@@ -395,10 +404,13 @@ GenerateResult Qwen35Backend::restore_and_generate(int slot,
 
     // Decode
     if (req.n_gen > 0) {
+        auto t_decode_start = std::chrono::steady_clock::now();
         if (!do_spec_decode(committed, req.n_gen, result.tokens, io)) {
             result.error = "decode";
             return result;
         }
+        result.decode_s = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - t_decode_start).count();
     }
 
     result.ok = true;
