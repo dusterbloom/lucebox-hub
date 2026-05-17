@@ -1,4 +1,4 @@
-"""HumanEval workload — loads openai_humaneval test split.
+"""GSM8K workload — loads gsm8k main test split.
 
 Mirrors swe_bench.py pattern: dataset load, chat-template wrap,
 tokenize_to_file, yield WorkloadPrompts. Throughput-only (no grading).
@@ -17,16 +17,16 @@ sys.path.insert(0, str(SCRIPTS))
 from bench_agent import tokenize_to_file   # noqa: E402
 from matrix.workload import Workload, WorkloadPrompt   # noqa: E402
 
-# Dataset spec — mirrors bench_llm.py line 42.
-_DS_NAME = "openai_humaneval"
-_DS_CFG = None
+# Dataset spec — mirrors bench_llm.py line 43.
+_DS_NAME = "gsm8k"
+_DS_CFG = "main"
 _DS_SPLIT = "test"
-_EXTRACT = lambda x: x["prompt"]   # noqa: E731
+_EXTRACT = lambda x: f"Question: {x['question']}\nAnswer: "   # noqa: E731
 _N_GEN_DEFAULT = 256
 
 
-class HumanEvalWorkload(Workload):
-    """HumanEval workload (openai_humaneval test split).
+class Gsm8kWorkload(Workload):
+    """GSM8K workload (gsm8k main test split).
 
     Parameters
     ----------
@@ -42,7 +42,7 @@ class HumanEvalWorkload(Workload):
         Where to write tokenised .bin files (defaults to system tmp).
     """
 
-    name = "humaneval"
+    name = "gsm8k"
 
     def __init__(
         self,
@@ -70,7 +70,6 @@ class HumanEvalWorkload(Workload):
 
         for idx, sample in enumerate(ds_sel):
             raw_prompt = _EXTRACT(sample)
-            task_id = sample.get("task_id", f"humaneval_{idx}")
 
             try:
                 text = tok.apply_chat_template(
@@ -82,13 +81,13 @@ class HumanEvalWorkload(Workload):
             except Exception:
                 text = raw_prompt
 
-            bin_path = self.tmpdir / f"humaneval_{idx:03d}.bin"
+            bin_path = self.tmpdir / f"gsm8k_{idx:03d}.bin"
             tokenize_to_file(tok, text, bin_path)
             token_ids = tok.encode(text, add_special_tokens=False)
 
             wp = WorkloadPrompt.from_tokens(
                 idx=idx,
-                prompt_id=str(task_id),
+                prompt_id=f"gsm8k_{idx}",
                 token_ids=token_ids,
             )
             wp.bin_path = bin_path   # type: ignore[attr-defined]
@@ -98,6 +97,7 @@ class HumanEvalWorkload(Workload):
         return {
             "name": self.name,
             "dataset": _DS_NAME,
+            "config": _DS_CFG,
             "split": _DS_SPLIT,
             "n_sample": self.n_sample,
             "seed": self.seed,

@@ -76,19 +76,28 @@ def _build_workload(name: str, n_sample: int, seed: int):
 
     Supported names:
         swe_bench_2k / swe_bench_8k / swe_bench_24k
-        humaneval   (stub — will raise NotImplementedError at runtime)
+        humaneval   — openai_humaneval test split
+        gsm8k       — gsm8k main test split
+        math500     — HuggingFaceH4/MATH-500 test split
     """
     from matrix.workloads.swe_bench import SweBenchWorkload
     from matrix.workloads.humaneval import HumanEvalWorkload
+    from matrix.workloads.gsm8k import Gsm8kWorkload
+    from matrix.workloads.math500 import Math500Workload
 
     if name.startswith("swe_bench_"):
         bucket = name[len("swe_bench_"):]
         return SweBenchWorkload(bucket=bucket, n_sample=n_sample, seed=seed)
     if name == "humaneval":
         return HumanEvalWorkload(n_sample=n_sample, seed=seed)
+    if name == "gsm8k":
+        return Gsm8kWorkload(n_sample=n_sample, seed=seed)
+    if name == "math500":
+        return Math500Workload(n_sample=n_sample, seed=seed)
     raise ValueError(
         f"Unknown workload {name!r}. "
-        "Valid forms: swe_bench_2k | swe_bench_8k | swe_bench_24k | humaneval"
+        "Valid forms: swe_bench_2k | swe_bench_8k | swe_bench_24k | "
+        "humaneval | gsm8k | math500"
     )
 
 
@@ -332,7 +341,7 @@ def main() -> None:
     parser.add_argument(
         "--workloads",
         default="swe_bench_2k",
-        help="Comma-separated workload names: swe_bench_2k,swe_bench_8k,humaneval",
+        help="Comma-separated workload names: swe_bench_2k,swe_bench_8k,humaneval,gsm8k,math500",
     )
     parser.add_argument(
         "--speculators",
