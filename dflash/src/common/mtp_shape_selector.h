@@ -12,15 +12,16 @@ namespace mtp {
 enum class SpecShapeKind { Chain, Tree, ArOnly };
 
 struct SpecShape {
-    SpecShapeKind kind     = SpecShapeKind::Chain;
-    int           gamma    = 3;   // Chain/Tree: γ depth. ArOnly: 1.
-    int           branches = 1;   // Tree only: B siblings.
-    int           topk     = 1;   // Tree only: K per node.
+    SpecShapeKind kind         = SpecShapeKind::Chain;
+    int           gamma        = 3;    // Chain/Tree: γ depth. ArOnly: 1.
+    int           branches     = 1;    // Tree only: B siblings.
+    int           topk         = 1;    // Tree only: K per node.
+    float         entropy_bits = 0.0f; // Shannon entropy (bits) that drove the decision.
 };
 
 struct SpecShapeConfig {
-    float h_low      = 0.5f;
-    float h_high     = 1.5f;
+    float h_low      = 10.0f;  // default: Tree never fires; Qwen3.6 sweep shows no winning threshold at B=2 K=2
+    float h_high     = 100.0f;
     int   chain_gamma = 3;
     int   tree_B      = 2;
     int   tree_K      = 2;
