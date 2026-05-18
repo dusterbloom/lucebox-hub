@@ -1061,13 +1061,24 @@ bool Qwen35Backend::init_mtp_() {
 
     mtp_module_ = std::make_unique<mtp::Qwen36MtpModule>();
     std::string err;
-    // Use the two-arg init that shares the backbone ggml_context so MTP
-    // tensors are mapped from the same memory arena as the target weights.
-    // Pass backbone max_ctx so head_kv can hold any prompt the target can —
-    // without this the head_kv defaulted to 8192 and warm_head_kv failed on
-    // prompts > 8K tokens (Claude Code / Codex agentic flows routinely 10-50K).
-    if (!mtp_module_->init(cfg_.mtp_gguf_path, tensor_context(), target, err,
-                            /*n_ctx_request=*/cfg_.device.max_ctx)) {
+    // When mtp_gguf_path is the same combined GGUF as the backbone target,
+    // share the backbone ggml_context so MTP tensors use the same memory arena.
+    // When mtp_gguf_path is a separate file (different quant or head-only GGUF),
+    // the 3-arg init must be used: it loads its own context from the MTP file so
+    // tensor types and sizes are consistent with the data being copied.
+    // Passing the backbone context for a separate file causes a write-out-of-bounds
+    // abort because backbone tensors are Q4_K-typed (smaller) while the separate
+    // file may contain Q8_0 data (larger).
+    // Pass max_ctx so head_kv can hold any prompt the target can — without this
+    // the head_kv defaulted to 8192 and warm_head_kv failed on prompts > 8K tokens.
+    const bool same_file = (cfg_.target_path && cfg_.mtp_gguf_path &&
+                            std::string(cfg_.target_path) == std::string(cfg_.mtp_gguf_path));
+    const bool ok_init = same_file
+        ? mtp_module_->init(cfg_.mtp_gguf_path, tensor_context(), target, err,
+                            /*n_ctx_request=*/cfg_.device.max_ctx)
+        : mtp_module_->init(cfg_.mtp_gguf_path, target, err,
+                            /*n_ctx_request=*/cfg_.device.max_ctx);
+    if (!ok_init) {
         std::fprintf(stderr, "[mtp] init failed: %s\n", err.c_str());
         mtp_module_.reset();
         return false;
