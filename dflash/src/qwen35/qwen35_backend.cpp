@@ -496,11 +496,15 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         }
         const bool with_mask = (cfg_.kq_stride_pad > KQ_MASK_PAD) || (n_tokens > 1);
 
+        // Prefill always uses full attention (fa_window=0) so that all
+        // positions encode the complete context — critical for tool
+        // definitions at prompt start to propagate into KV values that
+        // decode-time windowed attention will later read.
         if (!build_target_step(sg_, w_, cache_, target_backend_,
                                /*kv_start=*/kv_pos, /*n_tokens=*/n_tokens,
                                with_mask, /*capture=*/true,
                                /*capture_delta_intermediate=*/false,
-                               cfg_.fa_window,
+                               /*fa_window=*/0,
                                /*last_token_logits_only=*/(start + n_tokens < prompt_len),
                                cfg_.kq_stride_pad)) {
             std::fprintf(stderr, "prefill build @%d\n", kv_pos);
@@ -526,10 +530,9 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         ggml_backend_tensor_set(sg_.positions, pos_buf.data(), 0,
                                 sizeof(int32_t) * pos_buf.size());
 
-        // Mask
+        // Mask — full attention during prefill (no windowing)
         if (sg_.attn_mask) {
-            const int win_start = (cfg_.fa_window > 0 && kv_pos > cfg_.fa_window)
-                                      ? (kv_pos - cfg_.fa_window) : 0;
+            const int win_start = 0;
             const int kv_len = kv_pos + n_tokens - win_start;
             std::vector<uint16_t> mask_buf;
             build_causal_mask(mask_buf, kv_len, n_tokens, kv_pos, cfg_.kq_stride_pad, win_start);

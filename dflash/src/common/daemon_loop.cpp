@@ -82,7 +82,6 @@ ModelBackend::CompressResult ModelBackend::compress(const CompressRequest & req)
         remaining -= (size_t)n;
     }
     ::close(tmp_fd);
-    }
 
     // Build collecting DaemonIO
     DaemonIO io;
