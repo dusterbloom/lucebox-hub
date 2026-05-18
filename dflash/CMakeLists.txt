@@ -241,6 +241,7 @@ add_library(dflash27b STATIC
     src/qwen36/qwen36_mtp_loader.cpp
     src/common/mtp_chain_runner.cpp
     src/common/mtp_orchestrator.cpp
+    src/common/mtp_shape_selector.cpp
     src/common/sampler.cpp
     src/common/daemon_loop.cpp
     src/common/gguf_inspect.cpp
@@ -505,6 +506,11 @@ if(DFLASH27B_TESTS)
         add_executable(test_prefix_cache_mtp test/test_prefix_cache_mtp.cpp)
         target_include_directories(test_prefix_cache_mtp PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
         target_link_libraries(test_prefix_cache_mtp PRIVATE dflash27b)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_mtp_shape_selector.cpp")
+        add_executable(test_mtp_shape_selector test/test_mtp_shape_selector.cpp)
+        target_include_directories(test_mtp_shape_selector PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_mtp_shape_selector PRIVATE dflash27b)
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_draft_vs_reference.cpp")
         add_executable(test_draft_vs_reference test/test_draft_vs_reference.cpp)
