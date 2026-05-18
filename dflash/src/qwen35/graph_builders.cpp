@@ -209,10 +209,14 @@ bool build_target_step_tree(
     gi.capture_layers             = true;
     gi.capture_delta_intermediate = true;
     gi.parent_ids                 = sg.parent_ids;
+    gi.capture_all_norm_hidden    = true;
 
     QwenGraphOutputs go = build_qwen35_graph(sg.ctx, sg.gf, w, cache, gi);
     if (!go.logits) return false;
     sg.logits = go.logits;
+    sg.all_norm_hidden  = go.all_norm_hidden;  // null unless capture_all_norm_hidden
+    sg.last_h_pre_norm  = go.last_h_pre_norm;  // null unless capture_all_norm_hidden
+    sg.all_h_pre_norm   = go.all_h_pre_norm;   // null unless capture_all_norm_hidden
     sg.delta_captures = std::move(go.delta_captures);
     ggml_set_output(sg.logits);
 

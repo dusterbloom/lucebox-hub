@@ -216,9 +216,42 @@ private:
                          std::vector<StepOutput> & out);
 
     // Bug #5 fix: graphs are shape-only, keyed on (head_idx, fa_window,
-    // fused_lm_head, topk_k).  Per-call slot routing (write idx, read
-    // idxs, mask) is pushed as runtime tensor inputs by the caller.
-    struct Qwen36MtpStepGraph * get_or_build_step_graph_(int head_idx);
+    // fused_lm_head, topk_k, use_arena, mirror_to_chain).  Per-call slot
+    // routing (write idx, read idxs, mask) is pushed as runtime tensor
+    // inputs by the caller.  mirror_to_chain=true adds a second set_rows
+    // write into head_k/v_cache (canonical sibling only).
+    struct Qwen36MtpStepGraph * get_or_build_step_graph_(int head_idx,
+                                                         bool use_arena = false,
+                                                         bool mirror_to_chain = false);
+
+    // Arena-routed GPU forward used by step_batch_arena.  Mirrors
+    // step_batch_gpu_ but writes the per-step K/V to (path_id * gamma_max
+    // + depth) inside arena_k/arena_v; FA reads compose chain prefix +
+    // arena slot via a runtime kv_idxs_read.
+    bool step_batch_gpu_arena_(int32_t parent_tok,
+                               int path_id,
+                               int base_pos,
+                               int depth,
+                               int K,
+                               std::vector<StepOutput> & out);
+
+    // Lazy-allocate the per-sibling K/V arena.  Sized
+    // [key_len, B_max * gamma_max, n_head_kv] F16 on the backbone backend.
+    // Idempotent — early-returns true if already allocated for the
+    // requested (B_max, gamma_max).
+    bool ensure_arena_(int B_max, int gamma_max);
+
+public:
+    // ── INativeMtp arena overrides ─────────────────────────────────
+    bool step_batch_arena(int32_t parent_tok,
+                          int path_id,
+                          int base_pos,
+                          int depth,
+                          int K,
+                          std::vector<StepOutput> & out) override;
+    void reset_arena() override;
+
+private:
 
     // Grow the GPU head_kv tensors to hold `required_slots`, rounded up to
     // a 1024-slot quantum and capped at the per-init n_ctx_max ceiling. A

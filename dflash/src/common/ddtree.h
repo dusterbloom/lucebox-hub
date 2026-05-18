@@ -61,4 +61,22 @@ std::vector<int> follow_verified_tree(const DDTree & tree,
                                       int & out_next_token,
                                       int * out_node_idx = nullptr);
 
+// Build a DDTree from per-sibling top-K logprobs for Tree-MTP (B>=2 siblings
+// per depth).  Layout:
+//   top_log_probs: [L * B * K] f32  — depth-major, sibling-major, rank-major
+//   top_token_ids: [L * B * K] i32
+//   L: chain depth (>= 1)
+//   B: sibling count per depth (>= 1).  B=1 collapses to a per-depth top-K
+//      distribution and delegates to build_ddtree() for byte-identical output.
+//   K: top-K per (depth, sibling)
+//
+// Tree shape: balanced B-ary up to depth L (B^d nodes at depth d), so the
+// flat node count is (B^(L+1) - B) / (B-1).  Each child uses rank 0..B-1 from
+// its parent sibling slot's K distribution.  When the caller wants pruned
+// best-first instead of full B-ary, pass budget < B^(L+1)/B; the spillover is
+// pruned by cumulative logw (same heap ranking as build_ddtree).
+DDTree build_ddtree_tree(const float * top_log_probs,
+                         const int32_t * top_token_ids,
+                         int L, int B, int K, int budget);
+
 }  // namespace dflash27b

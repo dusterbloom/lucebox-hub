@@ -42,6 +42,10 @@ struct Qwen36MtpStepGraph {
     ggml_tensor * inp_kv_idx_write= nullptr;   // [1]           i64 — slot to write Kcur/Vcur
     ggml_tensor * inp_kv_idxs_read= nullptr;   // [fa_max,n_head_kv] i32 — FA read slots
     ggml_tensor * inp_kv_mask     = nullptr;   // [fa_max,1]    f16 — -INF on inactive rows
+    // Mirror write slot (only used when arena+mirror; absolute pos in chain
+    // cache).  Lets us populate head_k_cache[draft_pos] alongside arena[slot]
+    // for path_id == 0 so subsequent iters' FA prefix reads aren't stale.
+    ggml_tensor * inp_kv_idx_mirror = nullptr; // [1]           i64
 
     // Outputs.
     ggml_tensor * out_x_normed     = nullptr;  // [n_embd]   f32 — post shared_head_norm hidden
@@ -108,6 +112,19 @@ bool build_qwen36_mtp_warm_graph(
 //     runtime via inp_kv_mask.
 //   - lm_head_weight / lm_head_topk: see prior comment block; behaviour unchanged.
 // Returns false on allocation failure.
+// Optional arena routing for Tree-MTP B>=2 siblings.  When `use_arena` is
+// true the per-step K/V WRITE targets `arena_k`/`arena_v` instead of the
+// chain head_kv tensors.  Reads (FA over the live prefix) ALWAYS gather
+// from `head_k_cache`/`head_v_cache` — siblings share the prefix but get
+// a dedicated slot row in the arena so they don't poison each other.
+//
+// Chain mode (`use_arena=false`) is byte-identical to the pre-arena
+// signature and unaffected by these params.
+// `mirror_to_chain` writes the per-step K/V to BOTH arena_k/v AND
+// head_k/v_cache when use_arena=true.  This keeps the chain cache populated
+// across iters so the next iter's FA prefix read isn't all zeros — the
+// callsite must only set it for the canonical sibling (path_id == 0) and
+// rely on post-verify commit for non-canonical accepts.
 bool build_qwen36_mtp_step_graph(
         Qwen36MtpStepGraph & sg,
         const Qwen36MtpHeadWeights & head,
@@ -127,7 +144,11 @@ bool build_qwen36_mtp_step_graph(
         int n_ctx,
         int fa_window           = 0,
         ggml_tensor * lm_head_weight = nullptr,
-        int lm_head_topk        = 0);
+        int lm_head_topk        = 0,
+        bool use_arena          = false,
+        ggml_tensor * arena_k   = nullptr,
+        ggml_tensor * arena_v   = nullptr,
+        bool mirror_to_chain    = false);
 
 }  // namespace mtp
 }  // namespace dflash27b

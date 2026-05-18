@@ -200,6 +200,82 @@ DDTree build_ddtree(const float * top_log_probs,
     return tree;
 }
 
+DDTree build_ddtree_tree(const float * top_log_probs,
+                         const int32_t * top_token_ids,
+                         int L, int B, int K, int budget) {
+    // B=1 path is the existing per-depth top-K best-first builder.  Keeping
+    // the two paths physically separate guarantees byte-identical output for
+    // the chain regression gate (test T6).
+    if (B <= 1) {
+        return build_ddtree(top_log_probs, top_token_ids, L, K, budget,
+                            /*chain_seed=*/true);
+    }
+
+    DDTree tree;
+    tree.parents.push_back(-1);
+    tree.child_maps.emplace_back();
+    if (L <= 0 || K <= 0 || budget <= 0) {
+        tree.visibility.assign(1, 1);
+        return tree;
+    }
+
+    // Balanced B-ary expansion in DFS order.  Each node at depth d-1 spawns
+    // B children whose tokens are top_token_ids[d-1, child_rank, 0] — the
+    // argmax-of-each-sibling slot at that depth.  The K dim is reserved for
+    // pruning extensions; budget is the absolute cap on non-root nodes.
+    struct Frame { int parent_idx; int depth; };
+    std::vector<Frame> stack;
+    stack.reserve((size_t)L * (size_t)B);
+    // DFS: push root's B children left-to-right; pop right-to-left order so
+    // siblings spawn before their descendants, matching the existing DDTree
+    // DFS convention (depth-first, leftmost first).
+    for (int b = B - 1; b >= 0; --b) stack.push_back({0, 1});
+
+    while (!stack.empty() && tree.n_nodes < budget) {
+        Frame f = stack.back();
+        stack.pop_back();
+        if (f.depth > L) continue;
+
+        // Recover the child slot (b in 0..B-1) from the order we'll spawn at
+        // this parent: count how many of this parent's children we've placed.
+        const auto & cmap = tree.child_maps[f.parent_idx];
+        const int   b_slot = (int)cmap.size();
+        if (b_slot >= B) continue;
+
+        const size_t idx = (size_t)(f.depth - 1) * (size_t)B * (size_t)K
+                         + (size_t)b_slot * (size_t)K + 0;
+        const int32_t tok = top_token_ids[idx];
+
+        const int cur_idx = tree.n_nodes + 1;
+        tree.token_ids.push_back(tok);
+        tree.depths.push_back(f.depth);
+        tree.parents.push_back(f.parent_idx);
+        tree.child_maps.emplace_back();
+        // Tag children by slot rather than token id to keep duplicates
+        // distinct in the flat tree.  follow_verified_tree() keys on token
+        // id, which works as long as siblings have distinct tokens; the
+        // tree-MTP runner uses the DFS index path instead.
+        tree.child_maps[f.parent_idx][tok] = cur_idx;
+        tree.n_nodes++;
+
+        if (f.depth < L) {
+            for (int b = B - 1; b >= 0; --b) stack.push_back({cur_idx, f.depth + 1});
+        }
+    }
+
+    const int N = 1 + tree.n_nodes;
+    tree.visibility.assign((size_t)N * N, 0);
+    tree.visibility[0 * N + 0] = 1;
+    for (int i = 1; i < N; i++) {
+        const int p = tree.parents[i];
+        for (int j = 0; j < i; j++) {
+            tree.visibility[(size_t)i * N + j] = tree.visibility[(size_t)p * N + j];
+        }
+        tree.visibility[(size_t)i * N + i] = 1;
+    }
+    return tree;
+}
+
 std::vector<int> follow_verified_tree(const DDTree & tree,
                                       const int32_t * posterior,
                                       int & out_next_token,
