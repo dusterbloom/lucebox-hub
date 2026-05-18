@@ -203,6 +203,24 @@ struct INativeMtp : IMtpModule {
         return step_batch(current_token, base_pos, out);
     }
 
+    // Arena-routed batched step for Tree-MTP (B>=2 siblings per depth).
+    // path_id selects an arena slot row (0..B_max-1); depth selects the column
+    // (0..gamma_max-1).  Implementations that own a head_kv arena must write
+    // K/V to slot (path_id * gamma_max + depth) instead of the chain's
+    // head_kv tensor, so sibling paths can run in parallel without colliding.
+    //
+    // path_id < 0 means "non-arena" — route to the same path as step_batch
+    // (chain mode).  Default implementation ignores arena entirely and
+    // forwards to step_batch, so callers can request arena-routed writes
+    // unconditionally and B=1 stays byte-identical.
+    virtual bool step_batch_arena(int32_t parent_tok,
+                                  int /*path_id*/,
+                                  int depth,
+                                  int /*K*/,
+                                  std::vector<StepOutput> & out) {
+        return step_batch(parent_tok, depth, out);
+    }
+
     // Pre-warm head K/V over all prefill positions. `hiddens` is the backbone's
     // per-position post-norm sequence laid out [tok0_hidden, ..., tokN_hidden].
     virtual bool warm_head_kv(const int32_t * /*prompt*/, int /*n_prompt*/,
