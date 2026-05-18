@@ -482,18 +482,40 @@ struct Qwen36MtpModule::State {
     ggml_context *            kv_ctx = nullptr;
     ggml_backend_buffer_t     kv_buf = nullptr;
 
+    // Tree-MTP arena (B>=2 sibling K/V).  Allocated alongside head_kv at
+    // init, sized [key_len, B_max * gamma_max, n_head_kv] F16.  Sibling p
+    // at depth d writes its per-step K/V at slot (p * gamma_max + d); the
+    // chain head_k_cache supplies the shared prefix at FA read time.
+    // Cleared between tree-runner iters via reset_arena().
+    ggml_context *            arena_ctx     = nullptr;
+    ggml_backend_buffer_t     arena_buf     = nullptr;
+    ggml_tensor *             arena_k       = nullptr;
+    ggml_tensor *             arena_v       = nullptr;
+    int                       arena_B_max     = 0;
+    int                       arena_gamma_max = 0;
+
+    // Per-path PRE-shared_head_norm hidden cache.  `last_hidden` is the
+    // chain-mode single-path slot; siblings need parallel storage because
+    // the tree runner interleaves (p, d) calls — path P's d>0 forward
+    // would otherwise consume path (P-1)'s d-1 hidden and crater accept
+    // rate.  Sized B_max * n_embd, indexed by path_id.
+    std::vector<float>        arena_last_hidden;
+    int                       arena_last_hidden_stride = 0;
+
     // Bug #5 fix: graphs are shape-only.  Slot write + FA read slots/mask
     // are runtime inputs, so a single graph services every draft_pos for
-    // a given (head_idx, fa_window, fused_lm_head, topk_k).  Cap at 4
-    // entries — head_kv is single-head in production and target config
-    // is stable, so the LRU collapses to 1 entry in practice.
+    // a given (head_idx, fa_window, fused_lm_head, topk_k, use_arena).
+    // Cap at 4 entries — head_kv is single-head in production and target
+    // config is stable, so the LRU collapses to 1 entry in practice.
     struct StepGraphKey {
-        int  head_idx     = -1;
-        int  fa_window    = 0;
-        bool fused_lm_head = false;
-        int  topk_k       = 0;
+        int  head_idx        = -1;
+        int  fa_window       = 0;
+        bool fused_lm_head   = false;
+        int  topk_k          = 0;
+        bool use_arena       = false;
+        bool mirror_to_chain = false;
     };
-    std::array<std::pair<StepGraphKey, std::unique_ptr<Qwen36MtpStepGraph>>, 4> step_sg_cache{};
+    std::array<std::pair<StepGraphKey, std::unique_ptr<Qwen36MtpStepGraph>>, 8> step_sg_cache{};
     // Single scratch graph for the deprecated path (callers that pass the
     // legacy build_qwen36_mtp_step_graph signature with no caching).
     Qwen36MtpStepGraph        step_sg;
@@ -836,6 +858,20 @@ void Qwen36MtpModule::shutdown() {
         ggml_free(state_->kv_ctx);
         state_->kv_ctx = nullptr;
     }
+    if (state_->arena_buf) {
+        ggml_backend_buffer_free(state_->arena_buf);
+        state_->arena_buf = nullptr;
+    }
+    if (state_->arena_ctx) {
+        ggml_free(state_->arena_ctx);
+        state_->arena_ctx = nullptr;
+    }
+    state_->arena_k = nullptr;
+    state_->arena_v = nullptr;
+    state_->arena_B_max = 0;
+    state_->arena_gamma_max = 0;
+    state_->arena_last_hidden.clear();
+    state_->arena_last_hidden_stride = 0;
     // Per-head KV CPU mirrors are std::vector<float> — destructors free them.
     state_->head_kv.clear();
     state_->head_kv_pos.clear();
@@ -1928,22 +1964,47 @@ int Qwen36MtpModule::test_initial_hidden_dim() const {
 
 // Push the runtime KV routing inputs (write slot, read idxs, mask) for the
 // current draft_pos / kv_len.  fa_max is baked into the graph at build time.
+//
+// Arena routing: when arena_slot >= 0, the write_idx targets the arena tensor
+// at `arena_slot` (instead of `draft_pos` in chain cache).  The FA read
+// composes [chain || arena] along dim 1; positions BEFORE base_pos read from
+// chain (warm prefix), positions IN [base_pos, base_pos+depth] read from
+// THIS path's arena slots (p*gamma_max + 0..depth).  Sibling paths' arena
+// slots are not visible — each sibling's FA is restricted to its own chain.
 static void push_kv_slot_inputs_(Qwen36MtpStepGraph * sg,
                                  int draft_pos, int kv_len,
-                                 int n_head_kv) {
+                                 int n_head_kv,
+                                 int arena_slot = -1,
+                                 int n_ctx      = 0,
+                                 int arena_base_pos  = -1,
+                                 int arena_path_base = -1) {
     const int fa_max  = sg->fa_max;
     const int fa_win  = sg->fa_window;
     const int fa_kv_lo = (fa_win > 0 && kv_len > fa_win) ? (kv_len - fa_win) : 0;
     const int fa_kv_n  = std::min(kv_len - fa_kv_lo, fa_max);
 
-    const int64_t widx = (int64_t)draft_pos;
+    const bool arena = (arena_slot >= 0);
+    const int64_t widx = arena ? (int64_t)arena_slot : (int64_t)draft_pos;
     ggml_backend_tensor_set(sg->inp_kv_idx_write, &widx, 0, sizeof(int64_t));
 
     std::vector<int32_t> ridx((size_t)fa_max * n_head_kv);
     for (int h = 0; h < n_head_kv; ++h) {
         int32_t * row = ridx.data() + (size_t)h * fa_max;
         for (int i = 0; i < fa_max; ++i) {
-            row[i] = (i < fa_kv_n) ? (fa_kv_lo + i) : 0;  // unused rows masked to -INF
+            if (i < fa_kv_n) {
+                const int abs_pos = fa_kv_lo + i;
+                if (arena && abs_pos >= arena_base_pos) {
+                    // [arena_base_pos .. draft_pos] is this path's freshly-
+                    // written arena window.  arena slot for absolute pos p
+                    // is (path_base + (p - arena_base_pos)).
+                    const int slot = arena_path_base + (abs_pos - arena_base_pos);
+                    row[i] = n_ctx + slot;
+                } else {
+                    row[i] = abs_pos;  // chain warm prefix
+                }
+            } else {
+                row[i] = 0;  // unused rows masked to -INF
+            }
         }
     }
     ggml_backend_tensor_set(sg->inp_kv_idxs_read, ridx.data(), 0,
@@ -1956,11 +2017,19 @@ static void push_kv_slot_inputs_(Qwen36MtpStepGraph * sg,
         sizeof(uint16_t) * mask.size());
 }
 
-Qwen36MtpStepGraph * Qwen36MtpModule::get_or_build_step_graph_(int head_idx) {
+Qwen36MtpStepGraph * Qwen36MtpModule::get_or_build_step_graph_(int head_idx,
+                                                                 bool use_arena,
+                                                                 bool mirror_to_chain) {
     if (head_idx < 0 || head_idx >= (int)state_->weights.heads.size()) {
         return nullptr;
     }
     if (head_idx >= (int)state_->head_kv.size())     return nullptr;
+    if (use_arena && (!state_->arena_k || !state_->arena_v)) {
+        std::fprintf(stderr,
+            "[qwen36_mtp] get_or_build_step_graph_: arena requested but unallocated\n");
+        return nullptr;
+    }
+    if (mirror_to_chain && !use_arena) mirror_to_chain = false;
 
     const int    n_embd    = state_->weights.n_embd;
     const int    n_head    = state_->weights.n_head_count;
@@ -1984,7 +2053,9 @@ Qwen36MtpStepGraph * Qwen36MtpModule::get_or_build_step_graph_(int head_idx) {
         const auto & k = state_->step_sg_cache[i].first;
         if (state_->step_sg_cache[i].second &&
             k.head_idx == head_idx && k.fa_window == fa_win &&
-            k.fused_lm_head == fused && k.topk_k == topk_k) {
+            k.fused_lm_head == fused && k.topk_k == topk_k &&
+            k.use_arena == use_arena &&
+            k.mirror_to_chain == mirror_to_chain) {
             hit = i; break;
         }
         if (!state_->step_sg_cache[i].second && free_slot < 0) free_slot = i;
@@ -2006,16 +2077,175 @@ Qwen36MtpStepGraph * Qwen36MtpModule::get_or_build_step_graph_(int head_idx) {
                                       n_rot, rope_sections,
                                       rope_freq_base, rms_eps,
                                       state_->n_ctx,
-                                      fa_win, lm_head, topk_k)) {
+                                      fa_win, lm_head, topk_k,
+                                      use_arena,
+                                      use_arena ? state_->arena_k : nullptr,
+                                      use_arena ? state_->arena_v : nullptr,
+                                      mirror_to_chain)) {
         std::fprintf(stderr,
-            "[qwen36_mtp] get_or_build_step_graph_: build failed head=%d\n",
-            head_idx);
+            "[qwen36_mtp] get_or_build_step_graph_: build failed head=%d arena=%d mirror=%d\n",
+            head_idx, (int)use_arena, (int)mirror_to_chain);
         slot.second.reset();
         slot.first = State::StepGraphKey{};
         return nullptr;
     }
-    slot.first = State::StepGraphKey{head_idx, fa_win, fused, topk_k};
+    slot.first = State::StepGraphKey{head_idx, fa_win, fused, topk_k,
+                                       use_arena, mirror_to_chain};
     return slot.second.get();
+}
+
+// ── Tree-MTP arena (B>=2) ─────────────────────────────────────────────────
+//
+// Lazy-allocate the per-sibling K/V arena on first step_batch_arena call.
+// Sized [key_len, B_max * gamma_max, n_head_kv] F16 on the backbone backend.
+// Idempotent — early-returns true if already sized for (B_max, gamma_max).
+bool Qwen36MtpModule::ensure_arena_(int B_max, int gamma_max) {
+    if (B_max <= 0 || gamma_max <= 0) return false;
+    if (!state_->target) return false;
+    ggml_backend_t backend = state_->target->backend();
+    if (!backend) return false;  // CPU stub path doesn't run arena
+
+    if (state_->arena_buf &&
+        state_->arena_B_max == B_max &&
+        state_->arena_gamma_max == gamma_max) {
+        return true;
+    }
+    // Re-alloc on shape change (rare — config is stable).
+    if (state_->arena_buf) {
+        ggml_backend_buffer_free(state_->arena_buf);
+        state_->arena_buf = nullptr;
+    }
+    if (state_->arena_ctx) {
+        ggml_free(state_->arena_ctx);
+        state_->arena_ctx = nullptr;
+    }
+    state_->arena_k = nullptr;
+    state_->arena_v = nullptr;
+
+    const int n_head_kv = state_->weights.n_head_kv;
+    const int key_len   = state_->weights.n_key_length;
+    const int val_len   = state_->weights.n_value_length;
+    const int slots     = B_max * gamma_max;
+
+    ggml_init_params kp{};
+    kp.mem_size   = 4 * ggml_tensor_overhead();
+    kp.mem_buffer = nullptr;
+    kp.no_alloc   = true;
+    state_->arena_ctx = ggml_init(kp);
+    if (!state_->arena_ctx) return false;
+
+    state_->arena_k = ggml_new_tensor_3d(state_->arena_ctx,
+        GGML_TYPE_F16, key_len, slots, n_head_kv);
+    state_->arena_v = ggml_new_tensor_3d(state_->arena_ctx,
+        GGML_TYPE_F16, val_len, slots, n_head_kv);
+    ggml_set_name(state_->arena_k, "mtp_arena_k");
+    ggml_set_name(state_->arena_v, "mtp_arena_v");
+
+    state_->arena_buf = ggml_backend_alloc_ctx_tensors(state_->arena_ctx, backend);
+    if (!state_->arena_buf) {
+        std::fprintf(stderr,
+            "[qwen36_mtp] arena alloc failed (B_max=%d gamma_max=%d slots=%d)\n",
+            B_max, gamma_max, slots);
+        ggml_free(state_->arena_ctx);
+        state_->arena_ctx = nullptr;
+        state_->arena_k = nullptr;
+        state_->arena_v = nullptr;
+        return false;
+    }
+    ggml_backend_buffer_clear(state_->arena_buf, 0);
+    state_->arena_B_max     = B_max;
+    state_->arena_gamma_max = gamma_max;
+
+    // Per-path host hidden cache — B_max slots of n_embd floats.
+    const int n_embd = state_->weights.n_embd;
+    state_->arena_last_hidden.assign((size_t)B_max * n_embd, 0.0f);
+    state_->arena_last_hidden_stride = n_embd;
+
+    // Tear down any cached step graphs — their cached arena pointer (or its
+    // absence) is now stale.  Graphs lazy-rebuild on the next call.
+    for (auto & e : state_->step_sg_cache) {
+        if (e.second) qwen36_mtp_step_graph_free(*e.second);
+        e.second.reset();
+        e.first = State::StepGraphKey{};
+    }
+    return true;
+}
+
+void Qwen36MtpModule::reset_arena() {
+    if (state_->arena_buf) {
+        ggml_backend_buffer_clear(state_->arena_buf, 0);
+    }
+    // Zero per-path hidden so a stale slot from the previous iter can't be
+    // read at depth>0 of a path whose depth=0 was skipped or failed.
+    std::fill(state_->arena_last_hidden.begin(),
+              state_->arena_last_hidden.end(), 0.0f);
+}
+
+bool Qwen36MtpModule::step_batch_arena(int32_t parent_tok,
+                                       int path_id,
+                                       int base_pos,
+                                       int depth,
+                                       int K,
+                                       std::vector<StepOutput> & out) {
+    // Probe / non-arena call: degrade to step_batch (chain-mode parity).
+    // Callers can request arena unconditionally; B=1 stays chain-byte-identical.
+    if (path_id < 0) {
+        return step_batch(parent_tok, base_pos + depth, out);
+    }
+    if (!state_->loaded || !state_->attached) {
+        out.clear();
+        return false;
+    }
+    // CPU stub: no GPU arena.  Delegate to step_batch (effectively chain
+    // mode — sibling isolation is a no-op when there's no real cache).
+    if (!state_->kv_ctx || !state_->target || !state_->target->backend()) {
+        return step_batch(parent_tok, base_pos + depth, out);
+    }
+
+    // Lazy-allocate the arena.  B_max from env (capped at 8), gamma_max from
+    // effective_gamma_ (set by backend after attach).  effective_gamma_ == 0
+    // is a contract violation upstream — fail loud rather than allocate the
+    // wrong shape.
+    const int gamma_max = effective_gamma_;
+    if (gamma_max <= 0) {
+        std::fprintf(stderr,
+            "[qwen36_mtp] step_batch_arena: effective_gamma_ == 0 — "
+            "backend must call set_effective_gamma() before decode\n");
+        out.clear();
+        return false;
+    }
+    int B_max = 8;
+    if (const char * s = std::getenv("DFLASH27B_MTP_TREE_B_MAX")) {
+        const int v = std::atoi(s);
+        if (v > 0 && v <= 8) B_max = v;
+    }
+    if (path_id >= B_max) {
+        std::fprintf(stderr,
+            "[qwen36_mtp] step_batch_arena: path_id=%d >= B_max=%d\n",
+            path_id, B_max);
+        out.clear();
+        return false;
+    }
+    if (depth >= gamma_max) {
+        std::fprintf(stderr,
+            "[qwen36_mtp] step_batch_arena: depth=%d >= gamma_max=%d\n",
+            depth, gamma_max);
+        out.clear();
+        return false;
+    }
+    if (!ensure_arena_(B_max, gamma_max)) {
+        out.clear();
+        return false;
+    }
+
+    // K is the runner's requested top-K; honour by temporarily widening
+    // draft_topk for this call.  Restore at exit so chain paths (which
+    // share the module) see their configured K unchanged.
+    const int saved_topk = state_->draft_topk;
+    if (K > saved_topk) state_->draft_topk = K;
+    const bool ok = step_batch_gpu_arena_(parent_tok, path_id, base_pos, depth, K, out);
+    state_->draft_topk = saved_topk;
+    return ok;
 }
 
 // Per-call cgraph on the backbone backend; cached per (head_idx, draft_pos)
@@ -2545,6 +2775,180 @@ bool Qwen36MtpModule::step_chain(int32_t current_token,
             prof_sum_get_x, prof_sum_get_h, prof_sum_get_argmax);
     }
 #endif  // DFLASH_MTP_PROFILE
+    return true;
+}
+
+// ── Tree-MTP arena GPU forward ────────────────────────────────────────────
+//
+// Mirrors step_batch_gpu_ but writes the per-step K/V into the per-sibling
+// arena slot (path_id * gamma_max + depth) and reads FA across the composed
+// [chain_cache || arena] tensor.  See qwen36_mtp_graph.cpp for the routing.
+//
+// One StepOutput per call (depth-1 emission), matching the tree-runner's
+// per-(path,depth) contract.  Chain state (last_hidden) is NOT mutated —
+// each sibling's depth>=1 h_prev is the head's own pre-norm output, which
+// the runner stages externally via step_batch_arena loops.
+bool Qwen36MtpModule::step_batch_gpu_arena_(int32_t parent_tok,
+                                             int path_id,
+                                             int base_pos,
+                                             int depth,
+                                             int /*K*/,
+                                             std::vector<StepOutput> & out) {
+    const int n_embd = state_->weights.n_embd;
+    out.clear();
+    out.reserve(1);
+
+    ggml_backend_t backend = state_->target->backend();
+    const int gamma_max = state_->arena_gamma_max;
+    const int arena_slot = path_id * gamma_max + depth;
+    const int draft_pos  = base_pos + depth;
+    if (draft_pos >= state_->n_ctx) {
+        std::fprintf(stderr,
+            "[qwen36_mtp arena] draft_pos=%d exceeds n_ctx=%d\n",
+            draft_pos, state_->n_ctx);
+        return false;
+    }
+    const int kv_len = draft_pos + 1;
+
+    // h_prev selection — depth=0 starts from the backbone's last committed
+    // hidden (pre-norm preferred); depth>0 reads PATH-LOCAL pre-norm hidden
+    // (arena_last_hidden[path_id]).  Per-module last_hidden cannot be used
+    // here because the tree runner interleaves (p, d) calls — the next
+    // sibling would clobber the current one's hidden.
+    const float * h_prev = nullptr;
+    if (depth == 0) {
+        if (base_pos >= 1) {
+            h_prev = state_->target->hidden_at_pos_pre_norm(base_pos - 1);
+            if (!h_prev) h_prev = state_->target->hidden_at_pos(base_pos - 1);
+        }
+        if (!h_prev) h_prev = state_->target->last_hidden();
+        if (!h_prev && state_->initial_hidden_ptr &&
+            state_->initial_hidden_dim == n_embd) {
+            h_prev = state_->initial_hidden_ptr;
+        }
+        if (!h_prev) {
+            std::fprintf(stderr,
+                "[qwen36_mtp arena] no hidden at base_pos=%d\n", base_pos);
+            return false;
+        }
+    } else {
+        const int stride = state_->arena_last_hidden_stride;
+        if (stride != n_embd ||
+            (int)state_->arena_last_hidden.size() < (path_id + 1) * stride) {
+            std::fprintf(stderr,
+                "[qwen36_mtp arena] arena_last_hidden missing path=%d depth=%d\n",
+                path_id, depth);
+            return false;
+        }
+        h_prev = state_->arena_last_hidden.data() + (size_t)path_id * stride;
+    }
+
+    std::vector<float> embed_buf(n_embd);
+    if (!state_->target->embed_tokens(&parent_tok, 1, embed_buf.data())) {
+        std::fprintf(stderr, "[qwen36_mtp arena] embed_tokens failed\n");
+        return false;
+    }
+
+    // Mirror to chain only for the canonical sibling (path_id == 0).  This
+    // keeps the chain head_kv populated across iters so the next iter's FA
+    // prefix read isn't stale — without it, slots [committed_pos.. n_prompt]
+    // stay zero past iter 0 and accept rate collapses (~0.02 vs ~0.50 first
+    // iter).  Non-canonical paths use a separate graph cache slot without
+    // the mirror.
+    const bool mirror_to_chain = (path_id == 0);
+    Qwen36MtpStepGraph * sg = get_or_build_step_graph_(0, /*use_arena=*/true,
+                                                       mirror_to_chain);
+    if (!sg) return false;
+
+    ggml_backend_tensor_set(sg->inp_embed,  embed_buf.data(), 0, sizeof(float) * n_embd);
+    ggml_backend_tensor_set(sg->inp_h_prev, h_prev,           0, sizeof(float) * n_embd);
+    const int32_t pos[4] = { draft_pos, draft_pos, draft_pos, 0 };
+    ggml_backend_tensor_set(sg->inp_pos, pos, 0, sizeof(pos));
+    push_kv_slot_inputs_(sg, draft_pos, kv_len,
+                          state_->weights.n_head_kv,
+                          arena_slot, state_->n_ctx,
+                          /*arena_base_pos=*/base_pos,
+                          /*arena_path_base=*/path_id * gamma_max);
+    if (mirror_to_chain && sg->inp_kv_idx_mirror) {
+        const int64_t midx = (int64_t)draft_pos;
+        ggml_backend_tensor_set(sg->inp_kv_idx_mirror, &midx, 0, sizeof(int64_t));
+    }
+
+    auto st = ggml_backend_graph_compute(backend, sg->gf);
+    if (st != GGML_STATUS_SUCCESS) {
+        std::fprintf(stderr,
+            "[qwen36_mtp arena] graph_compute status=%d\n", (int)st);
+        return false;
+    }
+    if (mirror_to_chain && (int)state_->head_kv_pos.size() > 0) {
+        state_->head_kv_pos[0] = std::max(state_->head_kv_pos[0], draft_pos);
+    }
+
+    StepOutput so;
+    const int vocab_for_topk = (sg->out_logits ? (int)sg->out_logits->ne[0] : 0);
+    if (sg->fused_lm_head && sg->out_argmax_token) {
+        int32_t tok = 0;
+        ggml_backend_tensor_get(sg->out_argmax_token, &tok, 0, sizeof(int32_t));
+        so.draft_token = tok;
+        so.draft_logit = 0.0f;
+        if (sg->out_logits && state_->draft_topk > 1) {
+            std::vector<float> logits_buf((size_t)vocab_for_topk);
+            ggml_backend_tensor_get(sg->out_logits, logits_buf.data(),
+                0, sizeof(float) * vocab_for_topk);
+            so.draft_logit = logits_buf[tok];
+            emit_topk_logprobs(logits_buf.data(), vocab_for_topk,
+                               state_->draft_topk, so);
+        }
+    } else {
+        std::vector<float> x_normed(n_embd);
+        ggml_backend_tensor_get(sg->out_x_normed,
+            x_normed.data(), 0, sizeof(float) * n_embd);
+        if (state_->draft_topk > 1) {
+            std::vector<float> logits_buf;
+            int vocab = 0;
+            if (state_->target->project_hidden_to_logits(x_normed.data(), 1,
+                                                          logits_buf, vocab) &&
+                vocab > 0) {
+                so.draft_token = argmax(logits_buf.data(), vocab);
+                so.draft_logit = logits_buf[so.draft_token];
+                emit_topk_logprobs(logits_buf.data(), vocab,
+                                   state_->draft_topk, so);
+            } else {
+                std::vector<int32_t> tok_out;
+                if (!state_->target->project_hidden_to_tokens(x_normed.data(), 1,
+                                                               tok_out) ||
+                    tok_out.empty()) {
+                    return false;
+                }
+                so.draft_token = tok_out[0];
+                so.draft_logit = 0.0f;
+            }
+        } else {
+            std::vector<int32_t> tok_out;
+            if (!state_->target->project_hidden_to_tokens(x_normed.data(), 1,
+                                                           tok_out) ||
+                tok_out.empty()) {
+                return false;
+            }
+            so.draft_token = tok_out[0];
+            so.draft_logit = 0.0f;
+        }
+    }
+
+    // Stash pre-norm hidden for THIS path's next depth call.  Writes into
+    // arena_last_hidden[path_id]; sibling paths have their own slots so
+    // tree-runner's (p, d) interleaving doesn't crater accept rate.
+    {
+        const int stride = state_->arena_last_hidden_stride;
+        if (stride == n_embd &&
+            (int)state_->arena_last_hidden.size() >= (path_id + 1) * stride) {
+            ggml_backend_tensor_get(sg->out_h_pre_norm,
+                state_->arena_last_hidden.data() + (size_t)path_id * stride,
+                0, sizeof(float) * n_embd);
+        }
+    }
+
+    out.push_back(so);
     return true;
 }
 

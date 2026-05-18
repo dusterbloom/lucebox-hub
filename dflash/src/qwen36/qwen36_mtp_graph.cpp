@@ -39,6 +39,7 @@ void qwen36_mtp_step_graph_free(Qwen36MtpStepGraph & sg) {
     sg.inp_kv_idx_write  = nullptr;
     sg.inp_kv_idxs_read  = nullptr;
     sg.inp_kv_mask       = nullptr;
+    sg.inp_kv_idx_mirror = nullptr;
     sg.out_x_normed      = nullptr;
     sg.out_h_pre_norm    = nullptr;
     sg.out_argmax_token  = nullptr;
@@ -178,8 +179,16 @@ bool build_qwen36_mtp_step_graph(
         int n_ctx,
         int fa_window,
         ggml_tensor * lm_head_weight,
-        int lm_head_topk) {
+        int lm_head_topk,
+        bool use_arena,
+        ggml_tensor * arena_k,
+        ggml_tensor * arena_v,
+        bool mirror_to_chain) {
     qwen36_mtp_step_graph_free(sg);
+    if (use_arena && (!arena_k || !arena_v)) {
+        std::fprintf(stderr, "[qwen36_mtp_graph] arena requested but arena_k/v null\n");
+        return false;
+    }
 
     const int q_dim = n_head * key_len;
     const int head_dim = key_len;  // qwen3.6 has key_length == value_length
@@ -219,6 +228,12 @@ bool build_qwen36_mtp_step_graph(
     sg.inp_kv_mask = ggml_new_tensor_2d(sg.ctx, GGML_TYPE_F16, fa_max, 1);
     ggml_set_name(sg.inp_kv_mask, "mtp_inp_kv_mask");
     ggml_set_input(sg.inp_kv_mask);
+
+    if (use_arena && mirror_to_chain) {
+        sg.inp_kv_idx_mirror = ggml_new_tensor_1d(sg.ctx, GGML_TYPE_I64, 1);
+        ggml_set_name(sg.inp_kv_idx_mirror, "mtp_inp_kv_idx_mirror");
+        ggml_set_input(sg.inp_kv_idx_mirror);
+    }
 
     // ─── Eq 21: eh_proj([hnorm(h_prev); enorm(embed)]) ────────────
     ggml_tensor * e_in = rms_norm_mul(sg.ctx, sg.inp_embed,  head.enorm, rms_eps);
@@ -286,12 +301,32 @@ bool build_qwen36_mtp_step_graph(
     // K3 is post-RoPE [head_dim, n_head_kv, 1]; reshape to [head_dim,1,n_head_kv]
     // so set_rows sees ne[1]=1 (==c.ne[0]) and broadcasts the i64[1] index over
     // the n_head_kv axis.
+    //
+    // Arena routing (Tree-MTP B>=2): when use_arena=true, the write target is
+    // the per-sibling arena_k/arena_v instead of the chain head_k/v_cache, so
+    // siblings get an isolated slot.  The FA read tensor below is the virtual
+    // concat(chain_cache, arena_after) along the slot axis — chain prefix and
+    // sibling's fresh K/V both reachable via inp_kv_idxs_read.  Caller routes:
+    //   - prefix slots p < draft_pos  -> idx = p              (chain region)
+    //   - current pos draft_pos       -> idx = n_ctx + slot   (arena region)
     ggml_tensor * K_b = ggml_reshape_3d(sg.ctx, K3,   head_dim, 1, n_head_kv);
     ggml_tensor * V_b = ggml_reshape_3d(sg.ctx, Vcur, head_dim, 1, n_head_kv);
-    ggml_tensor * k_after = ggml_set_rows(sg.ctx, head_k_cache, K_b, sg.inp_kv_idx_write);
-    ggml_tensor * v_after = ggml_set_rows(sg.ctx, head_v_cache, V_b, sg.inp_kv_idx_write);
+    ggml_tensor * k_write_dst = use_arena ? arena_k : head_k_cache;
+    ggml_tensor * v_write_dst = use_arena ? arena_v : head_v_cache;
+    ggml_tensor * k_after = ggml_set_rows(sg.ctx, k_write_dst, K_b, sg.inp_kv_idx_write);
+    ggml_tensor * v_after = ggml_set_rows(sg.ctx, v_write_dst, V_b, sg.inp_kv_idx_write);
     ggml_build_forward_expand(sg.gf, k_after);
     ggml_build_forward_expand(sg.gf, v_after);
+
+    // Arena+mirror: also write the K/V to head_k/v_cache so the chain cache
+    // stays populated across iters (otherwise non-canonical paths leave
+    // stale zeros at slot draft_pos, craterring FA accuracy on iter 1+).
+    if (use_arena && mirror_to_chain && sg.inp_kv_idx_mirror) {
+        ggml_tensor * km = ggml_set_rows(sg.ctx, head_k_cache, K_b, sg.inp_kv_idx_mirror);
+        ggml_tensor * vm = ggml_set_rows(sg.ctx, head_v_cache, V_b, sg.inp_kv_idx_mirror);
+        ggml_build_forward_expand(sg.gf, km);
+        ggml_build_forward_expand(sg.gf, vm);
+    }
 
     // ─── Flash attention over runtime-selected slots ─────────────
     // Read fa_max rows per head via ggml_get_rows.  Indices live in
@@ -299,11 +334,29 @@ bool build_qwen36_mtp_step_graph(
     // gathered from slot 0 then masked to -INF via inp_kv_mask.  Read
     // from k_after / v_after so the DAG sees the set_rows write as a
     // dependency (set_rows returns view(a) so direct dep chaining works).
+    //
+    // Arena: read tensor is concat(head_k_cache, arena_after) so a single
+    // get_rows can pull both the shared prefix and the per-sibling current
+    // K/V via composed indices.  Chain mode reads directly from k_after.
     ggml_tensor * Qfa = ggml_permute(sg.ctx, Q3, 0, 2, 1, 3);
     Qfa = ggml_cont(sg.ctx, Qfa);
 
-    ggml_tensor * Kfa = ggml_get_rows(sg.ctx, k_after, sg.inp_kv_idxs_read);
-    ggml_tensor * Vfa = ggml_get_rows(sg.ctx, v_after, sg.inp_kv_idxs_read);
+    ggml_tensor * k_read_src = k_after;
+    ggml_tensor * v_read_src = v_after;
+    if (use_arena) {
+        // CUDA ggml_concat asserts src0/src1/dst are F32 (concat.cu:165),
+        // so cast both halves up before composing.  Cost: ~one chain-cache
+        // F16->F32 copy per FA call (~8-16 MB at n_ctx=8K), trivial vs the
+        // FA matmul that dominates per-step latency.
+        ggml_tensor * chain_k_f32 = ggml_cast(sg.ctx, head_k_cache, GGML_TYPE_F32);
+        ggml_tensor * arena_k_f32 = ggml_cast(sg.ctx, k_after,      GGML_TYPE_F32);
+        ggml_tensor * chain_v_f32 = ggml_cast(sg.ctx, head_v_cache, GGML_TYPE_F32);
+        ggml_tensor * arena_v_f32 = ggml_cast(sg.ctx, v_after,      GGML_TYPE_F32);
+        k_read_src = ggml_concat(sg.ctx, chain_k_f32, arena_k_f32, /*dim=*/1);
+        v_read_src = ggml_concat(sg.ctx, chain_v_f32, arena_v_f32, /*dim=*/1);
+    }
+    ggml_tensor * Kfa = ggml_get_rows(sg.ctx, k_read_src, sg.inp_kv_idxs_read);
+    ggml_tensor * Vfa = ggml_get_rows(sg.ctx, v_read_src, sg.inp_kv_idxs_read);
 
     const float kq_scale = 1.0f / std::sqrt((float)head_dim);
     ggml_tensor * attn = ggml_flash_attn_ext(sg.ctx, Qfa, Kfa, Vfa,

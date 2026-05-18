@@ -204,10 +204,12 @@ struct INativeMtp : IMtpModule {
     }
 
     // Arena-routed batched step for Tree-MTP (B>=2 siblings per depth).
-    // path_id selects an arena slot row (0..B_max-1); depth selects the column
-    // (0..gamma_max-1).  Implementations that own a head_kv arena must write
-    // K/V to slot (path_id * gamma_max + depth) instead of the chain's
-    // head_kv tensor, so sibling paths can run in parallel without colliding.
+    // path_id selects an arena slot row (0..B_max-1); depth selects the
+    // column (0..gamma_max-1).  Implementations that own a head_kv arena
+    // must write K/V to slot (path_id * gamma_max + depth) instead of the
+    // chain's head_kv tensor, so sibling paths can run in parallel without
+    // colliding.  base_pos is the absolute position of the parent token in
+    // the backbone cache — depth d writes draft_pos = base_pos + d.
     //
     // path_id < 0 means "non-arena" — route to the same path as step_batch
     // (chain mode).  Default implementation ignores arena entirely and
@@ -215,11 +217,18 @@ struct INativeMtp : IMtpModule {
     // unconditionally and B=1 stays byte-identical.
     virtual bool step_batch_arena(int32_t parent_tok,
                                   int /*path_id*/,
+                                  int base_pos,
                                   int depth,
                                   int /*K*/,
                                   std::vector<StepOutput> & out) {
-        return step_batch(parent_tok, depth, out);
+        return step_batch(parent_tok, base_pos + depth, out);
     }
+
+    // Clear the per-sibling arena KV between tree-runner iters.  Default
+    // no-op for modules that don't own an arena (chain-only or test stubs).
+    // The tree runner calls this once at the top of every iter; chain mode
+    // (B<=1 short-circuit) never invokes it.
+    virtual void reset_arena() {}
 
     // Pre-warm head K/V over all prefill positions. `hiddens` is the backbone's
     // per-position post-norm sequence laid out [tok0_hidden, ..., tokN_hidden].

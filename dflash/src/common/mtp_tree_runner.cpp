@@ -96,6 +96,11 @@ GenerateResult MtpTreeRunner::run(const GenerateRequest & req,
         const int remaining = n_gen - (int)result.tokens.size();
         const int g_iter    = std::min(gamma, remaining);
 
+        // Per-iter arena reset — sibling slots from the previous iter must
+        // not leak into this iter's FA read window.  No-op on B=1 (chain
+        // short-circuit above) and on modules without an arena.
+        native.reset_arena();
+
         // ── Propose B sibling chains of depth g_iter via arena-routed step ──
         // Layout: per_path_outs[path][depth] holds the StepOutput at that
         // (path, depth).  Each path's step_batch_arena writes to its own
@@ -108,7 +113,7 @@ GenerateResult MtpTreeRunner::run(const GenerateRequest & req,
         // (which IS the head's distribution conditioned on cur_tok); that
         // gives B distinct depth-0 sibling tokens with rank 0..B-1.
         std::vector<StepOutput> seed;
-        if (!native.step_batch_arena(cur_tok, /*path_id=*/0, /*depth=*/0,
+        if (!native.step_batch_arena(cur_tok, /*path_id=*/0, base_pos, /*depth=*/0,
                                      /*K=*/std::max(K_, B_), seed) ||
             seed.empty()) {
             result.ok = false;
@@ -128,7 +133,8 @@ GenerateResult MtpTreeRunner::run(const GenerateRequest & req,
         per_path_outs[0].push_back(seed[0]);
         for (int p = 1; p < B_; ++p) {
             std::vector<StepOutput> tmp;
-            if (!native.step_batch_arena(cur_tok, p, 0, std::max(K_, B_), tmp) ||
+            if (!native.step_batch_arena(cur_tok, p, base_pos, 0,
+                                          std::max(K_, B_), tmp) ||
                 tmp.empty()) {
                 result.ok = false;
                 result.error = "tree_runner: sibling seed failed";
@@ -146,7 +152,7 @@ GenerateResult MtpTreeRunner::run(const GenerateRequest & req,
             for (int p = 0; p < B_; ++p) {
                 const int32_t parent = per_path_outs[p].back().draft_token;
                 std::vector<StepOutput> tmp;
-                if (!native.step_batch_arena(parent, p, d, K_, tmp) ||
+                if (!native.step_batch_arena(parent, p, base_pos, d, K_, tmp) ||
                     tmp.empty()) {
                     result.ok = false;
                     result.error = "tree_runner: path step failed";

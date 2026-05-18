@@ -229,7 +229,8 @@ struct ArenaRecorderMtp : public dflash27b::mtp::INativeMtp {
         return true;
     }
 
-    bool step_batch_arena(int32_t parent, int path_id, int depth, int K,
+    bool step_batch_arena(int32_t parent, int path_id, int /*base_pos*/,
+                          int depth, int K,
                           std::vector<dflash27b::mtp::StepOutput> & out) override {
         arena_calls.emplace_back(path_id, depth);
         out.clear();
