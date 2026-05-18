@@ -430,6 +430,32 @@ bool Qwen35DFlashTarget::verify_tree(
         }
     }
 
+    // Mirror verify_batch's hidden-capture path so hidden_at_pos_pre_norm()
+    // returns valid data for the MTP module's h_prev seed at iter 1+.
+    // Store all N DFS-ordered rows (FULL_SEQ); last_verify_chunk_start_ = base_pos
+    // so hidden_at_pos(base_pos + k) returns DFS-slot-k's hidden.  On pure chain
+    // accepts (the common path) k == commit_n-1 == accepted_dfs[commit_n-1], so
+    // the MTP query hidden_at_pos(cache_.cur_pos - 1) lands on the correct row.
+    if (capture_hidden_seq_ && sg_.all_norm_hidden) {
+        const int hidden = w_.n_embd;
+        last_hidden_seq_cpu_.resize((size_t)N * hidden);
+        ggml_backend_tensor_get(sg_.all_norm_hidden, last_hidden_seq_cpu_.data(),
+                                0, sizeof(float) * (size_t)N * hidden);
+        last_hidden_seq_n_       = N;
+        last_verify_chunk_start_ = base_pos;
+        if (sg_.all_h_pre_norm) {
+            last_hidden_seq_pre_norm_cpu_.resize((size_t)N * hidden);
+            ggml_backend_tensor_get(sg_.all_h_pre_norm,
+                                    last_hidden_seq_pre_norm_cpu_.data(),
+                                    0, sizeof(float) * (size_t)N * hidden);
+        } else {
+            last_hidden_seq_pre_norm_cpu_.clear();
+        }
+    } else if (capture_hidden_seq_) {
+        last_hidden_seq_n_ = 0;
+        last_hidden_seq_pre_norm_cpu_.clear();
+    }
+
     cache_.cur_pos = base_pos + N;
 
     // Stage 3: cache the tree topology so restore_kv_at_dfs() can locate the
