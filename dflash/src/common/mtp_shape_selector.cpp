@@ -52,16 +52,16 @@ SpecShapeConfig SpecShapeConfig::from_env() {
 SpecShape select_spec_shape(const float * topk_logprobs, int k,
                             const SpecShapeConfig & cfg) {
     if (!topk_logprobs || k <= 0) {
-        return SpecShape{ SpecShapeKind::ArOnly, 1, 1, 1 };
+        return SpecShape{ SpecShapeKind::ArOnly, 1, 1, 1, 0.0f };
     }
     const float H = softmax_entropy_bits(topk_logprobs, k);
     if (H < cfg.h_low) {
-        return SpecShape{ SpecShapeKind::Chain, cfg.chain_gamma, 1, 1 };
+        return SpecShape{ SpecShapeKind::Chain, cfg.chain_gamma, 1, 1, H };
     }
     if (H < cfg.h_high) {
-        return SpecShape{ SpecShapeKind::Tree, cfg.tree_gamma, cfg.tree_B, cfg.tree_K };
+        return SpecShape{ SpecShapeKind::Tree, cfg.tree_gamma, cfg.tree_B, cfg.tree_K, H };
     }
-    return SpecShape{ SpecShapeKind::ArOnly, 1, 1, 1 };
+    return SpecShape{ SpecShapeKind::ArOnly, 1, 1, 1, H };
 }
 
 }  // namespace mtp

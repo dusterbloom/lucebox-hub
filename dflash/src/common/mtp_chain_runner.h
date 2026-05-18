@@ -31,6 +31,10 @@ struct MtpChainStats {
     int   total_accepted  = 0;   // draft tokens accepted (Σ accept_n)
     int   total_emitted   = 0;   // tokens written to out_tokens (accepted + bonus)
     int   eos_hits        = 0;
+    // Top-K logprobs from the first iter's first draft position.  Populated
+    // when the module emits topk (set_draft_topk(K>1) configured).  Used by
+    // the entropy-adaptive selector to pick the shape for the NEXT request.
+    std::vector<float> first_iter_topk;
 };
 
 class MtpChainRunner {
@@ -74,13 +78,16 @@ private:
     // `prev_hidden` is the host-side h_prev captured from the previous
     // commit's post-norm hidden (ExternalDrafter only; ignored for
     // NativeHeads). `prev_hidden_dim` must equal mtp_.hidden_size().
+    // `first_pos_topk_out` receives topk_logprobs from the first draft position
+    // (depth-0 StepOutput).  May be left empty if the module emits K=1 only.
     bool propose_drafts_(int32_t current_token,
                          int base_pos,
                          int gamma,
                          const float * prev_hidden,
                          int prev_hidden_dim,
                          std::vector<int32_t> & drafts_out,
-                         std::vector<float>   & next_hidden_out);
+                         std::vector<float>   & next_hidden_out,
+                         std::vector<float>   * first_pos_topk_out = nullptr);
 };
 
 }  // namespace mtp

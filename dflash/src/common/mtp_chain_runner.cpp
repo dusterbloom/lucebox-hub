@@ -23,7 +23,8 @@ bool MtpChainRunner::propose_drafts_(int32_t current_token,
                                      const float * prev_hidden,
                                      int prev_hidden_dim,
                                      std::vector<int32_t> & drafts_out,
-                                     std::vector<float>   & next_hidden_out) {
+                                     std::vector<float>   & next_hidden_out,
+                                     std::vector<float>   * first_pos_topk_out) {
     drafts_out.clear();
     drafts_out.reserve(gamma);
 
@@ -39,6 +40,10 @@ bool MtpChainRunner::propose_drafts_(int32_t current_token,
         const int got = (int)outs.size();
         const int take = std::min(gamma, got);
         for (int i = 0; i < take; i++) drafts_out.push_back(outs[i].draft_token);
+        // Capture first-position topK for the entropy-adaptive selector.
+        if (first_pos_topk_out && !outs.empty() && !outs[0].topk_logprobs.empty()) {
+            *first_pos_topk_out = outs[0].topk_logprobs;
+        }
         // NativeHeads does not produce h_prev — leave next_hidden_out empty.
         next_hidden_out.clear();
         return true;
@@ -67,6 +72,11 @@ bool MtpChainRunner::propose_drafts_(int32_t current_token,
 
         StepOutput out;
         if (!ext.step(in, out)) return false;
+
+        // Capture first-position topK for the entropy-adaptive selector.
+        if (g == 0 && first_pos_topk_out && !out.topk_logprobs.empty()) {
+            *first_pos_topk_out = out.topk_logprobs;
+        }
 
         drafts_out.push_back(out.draft_token);
         cur = out.draft_token;
@@ -134,10 +144,16 @@ GenerateResult MtpChainRunner::run(const GenerateRequest & req,
         // ── Propose γ drafts ───────────────────────────────────────────
         std::vector<int32_t> drafts;
         std::vector<float>   next_hidden;
+        // Capture first-iter first-position topK for the entropy-adaptive
+        // selector.  Only on iter 0; nullptr on subsequent iters avoids
+        // overwriting the cached value from the initial proposal.
+        std::vector<float> * topk_capture =
+            (stats_.total_iters == 0 && stats_.first_iter_topk.empty())
+            ? &stats_.first_iter_topk : nullptr;
         if (!propose_drafts_(cur_tok, base_pos, g_iter,
                              running_hidden.empty() ? nullptr : running_hidden.data(),
                              (int)running_hidden.size(),
-                             drafts, next_hidden)) {
+                             drafts, next_hidden, topk_capture)) {
             result.ok = false;
             result.error = "mtp.propose";
             return result;

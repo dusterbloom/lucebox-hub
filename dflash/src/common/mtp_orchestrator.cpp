@@ -2,6 +2,7 @@
 #include "common/dflash_target.h"
 #include "common/mtp_chain_runner.h"
 #include "common/mtp_tree_runner.h"
+#include "common/mtp_shape_selector.h"
 #include "common/prefix_snap.h"
 
 #include <algorithm>
@@ -209,30 +210,116 @@ GenerateResult warm_and_decode(ModelBackend * backend,
         return result;
     }
 
-    // Dispatch chain vs tree based on DFLASH27B_MTP_TREE_B.  B=1 (default)
-    // routes through MtpChainRunner unchanged; B>=2 fans out sibling paths
-    // via MtpTreeRunner with arena-routed head_kv writes.  The env check
-    // here avoids constructor + delegate overhead when it doesn't apply.
+    // Entropy-adaptive shape selector.  Activated by DFLASH27B_MTP_ADAPTIVE=1.
+    // Thread-local topK cache: populated from the chain runner's first-iter
+    // first-position StepOutput after each request.  On the first request
+    // (cache empty), bootstrap to Chain.  On subsequent requests, run the
+    // selector against the cached logprobs.
+    //
+    // When adaptive is off (default), falls through to the static
+    // DFLASH27B_MTP_TREE_B dispatch — byte-identical to the pre-adaptive path.
+    const bool adaptive = std::getenv("DFLASH27B_MTP_ADAPTIVE") != nullptr;
+
+    // Static env dispatch (used when adaptive=false, or to supply tree params
+    // when adaptive selects Tree).
     const int tree_b = dflash27b::mtp::env_tree_b();
     const int tree_k = std::max(2, env_int("DFLASH27B_MTP_TREE_K", 2));
+
+    // Per-thread logprob cache.  Cleared on the first call (empty vector ==
+    // "no prior data → bootstrap to Chain").
+    static thread_local std::vector<float> tl_last_topk;
+
+    dflash27b::mtp::SpecShape shape;
+    if (adaptive) {
+        const auto cfg = dflash27b::mtp::SpecShapeConfig::from_env();
+        if (tl_last_topk.empty()) {
+            // Bootstrap: no prior entropy sample — default to Chain at γ.
+            shape = { dflash27b::mtp::SpecShapeKind::Chain, gamma, 1, 1, 0.0f };
+        } else {
+            shape = dflash27b::mtp::select_spec_shape(
+                        tl_last_topk.data(), (int)tl_last_topk.size(), cfg);
+            // Tree params: always use the configured env values so
+            // DFLASH27B_MTP_TREE_B / _K remain the tuning knobs.
+            if (shape.kind == dflash27b::mtp::SpecShapeKind::Tree) {
+                shape.branches = std::max(2, tree_b > 1 ? tree_b : cfg.tree_B);
+                shape.topk     = std::max(2, tree_k > 1 ? tree_k : cfg.tree_K);
+                shape.gamma    = cfg.tree_gamma;
+            }
+        }
+    }
 
     auto t_decode0 = std::chrono::steady_clock::now();
     GenerateResult inner_res;
     int iters = 0, proposed = 0, accepted = 0, emitted = 0;
-    if (tree_b <= 1) {
-        dflash27b::mtp::MtpChainRunner runner(*module, *target, sampler);
-        inner_res = runner.run(inner, io, last_tok, prompt_len, gamma);
+
+    if (adaptive && shape.kind == dflash27b::mtp::SpecShapeKind::ArOnly) {
+        // AR-only: skip MTP, decode one token via the target backbone.
+        // verify_batch with a 1-token sequence is the AR step.
+        std::vector<int32_t> ar_seq = { last_tok };
+        int ar_argmax = -1;
+        if (target->verify_batch(ar_seq, prompt_len, ar_argmax, nullptr) &&
+            ar_argmax >= 0) {
+            result.tokens.push_back(ar_argmax);
+            inner_res.tokens.push_back(ar_argmax);
+            if (inner.stream) io.emit(ar_argmax);
+            if (target->is_eos(ar_argmax)) {
+                if (inner.stream) io.emit(-1);
+            } else {
+                // Remainder: fall back to chain for the rest of n_gen.
+                GenerateRequest remainder = inner;
+                remainder.n_gen -= 1;
+                if (remainder.n_gen > 0) {
+                    dflash27b::mtp::MtpChainRunner chain_r(*module, *target, sampler);
+                    GenerateResult chain_res = chain_r.run(remainder, io, ar_argmax,
+                                                           prompt_len + 1, gamma);
+                    if (chain_res.ok) {
+                        for (int32_t t : chain_res.tokens) {
+                            inner_res.tokens.push_back(t);
+                        }
+                        const auto & st = chain_r.stats();
+                        iters += st.total_iters; proposed += st.total_proposed;
+                        accepted += st.total_accepted; emitted += st.total_emitted;
+                        if (!st.first_iter_topk.empty()) tl_last_topk = st.first_iter_topk;
+                    } else {
+                        inner_res = std::move(chain_res);
+                    }
+                } else {
+                    if (inner.stream) io.emit(-1);
+                    inner_res.ok = true;
+                }
+            }
+            inner_res.ok = true;
+        } else {
+            inner_res.error = "ar_only: verify_batch failed";
+        }
+    } else if (adaptive && shape.kind == dflash27b::mtp::SpecShapeKind::Tree &&
+               shape.branches >= 2) {
+        dflash27b::mtp::MtpTreeRunner runner(*module, *target, sampler,
+                                              shape.branches, shape.topk);
+        inner_res = runner.run(inner, io, last_tok, prompt_len, shape.gamma);
         const auto & st = runner.stats();
         iters = st.total_iters; proposed = st.total_proposed;
         accepted = st.total_accepted; emitted = st.total_emitted;
-    } else {
+        // Tree runner doesn't expose topK; keep existing tl_last_topk.
+    } else if (!adaptive && tree_b >= 2) {
+        // Static tree dispatch (no adaptive flag, explicit TREE_B env).
         dflash27b::mtp::MtpTreeRunner runner(*module, *target, sampler,
                                               tree_b, tree_k);
         inner_res = runner.run(inner, io, last_tok, prompt_len, gamma);
         const auto & st = runner.stats();
         iters = st.total_iters; proposed = st.total_proposed;
         accepted = st.total_accepted; emitted = st.total_emitted;
+    } else {
+        // Chain dispatch: adaptive→Chain or non-adaptive with B≤1.
+        dflash27b::mtp::MtpChainRunner runner(*module, *target, sampler);
+        inner_res = runner.run(inner, io, last_tok, prompt_len, gamma);
+        const auto & st = runner.stats();
+        iters = st.total_iters; proposed = st.total_proposed;
+        accepted = st.total_accepted; emitted = st.total_emitted;
+        // Update per-thread topK cache for the next request's selector.
+        if (!st.first_iter_topk.empty()) tl_last_topk = st.first_iter_topk;
     }
+
     result.decode_s = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - t_decode0).count();
 
@@ -243,7 +330,18 @@ GenerateResult warm_and_decode(ModelBackend * backend,
 
     for (int32_t t : inner_res.tokens) result.tokens.push_back(t);
 
-    if (iters > 0) {
+    // Telemetry: adaptive mode emits shape choice per request; static mode
+    // emits the existing B= / accept_rate line.
+    if (adaptive && iters >= 0) {
+        const char shape_c = (shape.kind == dflash27b::mtp::SpecShapeKind::Chain)  ? 'C' :
+                             (shape.kind == dflash27b::mtp::SpecShapeKind::Tree)   ? 'T' : 'A';
+        std::fprintf(stderr,
+            "[mtp_decode] shape=%c gamma=%d B=%d K=%d H_bits=%.2f"
+            " iters=%d proposed=%d accepted=%d accept_rate=%.2f\n",
+            shape_c, shape.gamma, shape.branches, shape.topk, shape.entropy_bits,
+            iters, proposed, accepted,
+            proposed > 0 ? (double)accepted / (double)proposed : 0.0);
+    } else if (iters > 0) {
         std::fprintf(stderr,
             "[mtp_decode] B=%d iters=%d proposed=%d accepted=%d emitted=%d accept_rate=%.2f\n",
             tree_b, iters, proposed, accepted, emitted,

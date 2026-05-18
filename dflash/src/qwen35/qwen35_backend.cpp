@@ -1100,8 +1100,17 @@ bool Qwen35Backend::init_mtp_() {
         return false;
     }
 
-    if (cfg_.mtp_draft_source && std::strcmp(cfg_.mtp_draft_source, "mtp_topk") == 0) {
-        mtp_module_->set_draft_topk(std::max(1, cfg_.mtp_draft_topk));
+    // Unconditionally enable K=4 top-logprob emission so the entropy-adaptive
+    // selector (DFLASH27B_MTP_ADAPTIVE) has top-K data available every iter.
+    // The chain runner ignores topk_logprobs, so non-adaptive paths pay only
+    // a small sort overhead with no behavioral change.  mtp_topk source config
+    // can override upward; adaptive selector always needs at least 4.
+    {
+        const int topk = (cfg_.mtp_draft_source &&
+                          std::strcmp(cfg_.mtp_draft_source, "mtp_topk") == 0)
+                       ? std::max(4, cfg_.mtp_draft_topk)
+                       : 4;
+        mtp_module_->set_draft_topk(topk);
     }
 
     head_kv_warm_ = false;  // R5: fresh attach starts with cold head_kv
