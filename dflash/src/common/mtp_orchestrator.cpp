@@ -1,8 +1,10 @@
 #include "common/mtp_orchestrator.h"
 #include "common/dflash_target.h"
 #include "common/mtp_chain_runner.h"
+#include "common/mtp_tree_runner.h"
 #include "common/prefix_snap.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -207,9 +209,30 @@ GenerateResult warm_and_decode(ModelBackend * backend,
         return result;
     }
 
+    // Dispatch chain vs tree based on DFLASH27B_MTP_TREE_B.  B=1 (default)
+    // routes through MtpChainRunner unchanged; B>=2 fans out sibling paths
+    // via MtpTreeRunner with arena-routed head_kv writes.  The env check
+    // here avoids constructor + delegate overhead when it doesn't apply.
+    const int tree_b = dflash27b::mtp::env_tree_b();
+    const int tree_k = std::max(2, env_int("DFLASH27B_MTP_TREE_K", 2));
+
     auto t_decode0 = std::chrono::steady_clock::now();
-    dflash27b::mtp::MtpChainRunner runner(*module, *target, sampler);
-    GenerateResult inner_res = runner.run(inner, io, last_tok, prompt_len, gamma);
+    GenerateResult inner_res;
+    int iters = 0, proposed = 0, accepted = 0, emitted = 0;
+    if (tree_b <= 1) {
+        dflash27b::mtp::MtpChainRunner runner(*module, *target, sampler);
+        inner_res = runner.run(inner, io, last_tok, prompt_len, gamma);
+        const auto & st = runner.stats();
+        iters = st.total_iters; proposed = st.total_proposed;
+        accepted = st.total_accepted; emitted = st.total_emitted;
+    } else {
+        dflash27b::mtp::MtpTreeRunner runner(*module, *target, sampler,
+                                              tree_b, tree_k);
+        inner_res = runner.run(inner, io, last_tok, prompt_len, gamma);
+        const auto & st = runner.stats();
+        iters = st.total_iters; proposed = st.total_proposed;
+        accepted = st.total_accepted; emitted = st.total_emitted;
+    }
     result.decode_s = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - t_decode0).count();
 
@@ -220,13 +243,11 @@ GenerateResult warm_and_decode(ModelBackend * backend,
 
     for (int32_t t : inner_res.tokens) result.tokens.push_back(t);
 
-    const auto & st = runner.stats();
-    if (st.total_iters > 0) {
+    if (iters > 0) {
         std::fprintf(stderr,
-            "[mtp_decode] iters=%d proposed=%d accepted=%d emitted=%d accept_rate=%.2f\n",
-            st.total_iters, st.total_proposed, st.total_accepted, st.total_emitted,
-            st.total_proposed > 0
-                ? (double)st.total_accepted / (double)st.total_proposed : 0.0);
+            "[mtp_decode] B=%d iters=%d proposed=%d accepted=%d emitted=%d accept_rate=%.2f\n",
+            tree_b, iters, proposed, accepted, emitted,
+            proposed > 0 ? (double)accepted / (double)proposed : 0.0);
     }
 
     result.ok = true;

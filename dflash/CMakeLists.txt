@@ -240,6 +240,7 @@ add_library(dflash27b STATIC
     src/qwen36/qwen36_mtp_graph.cpp
     src/qwen36/qwen36_mtp_loader.cpp
     src/common/mtp_chain_runner.cpp
+    src/common/mtp_tree_runner.cpp
     src/common/mtp_orchestrator.cpp
     src/common/sampler.cpp
     src/common/daemon_loop.cpp
