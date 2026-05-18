@@ -1392,6 +1392,9 @@ def _normalize_math(s: str | None) -> str:
     s = s.strip()
     if s.startswith("$") and s.endswith("$"):
         s = s[1:-1].strip()
+    # Strip currency $ (e.g. "$18" → "18")
+    if _re.match(r'^\$\d', s):
+        s = s[1:]
     s = _re.sub(r"\\text\s*\{([^}]*)\}", r"\1", s)
     s = _re.sub(r"\\mathrm\s*\{([^}]*)\}", r"\1", s)
     for cmd in [r"\left", r"\right", r"\displaystyle", r"\tfrac", r"\dfrac"]:
@@ -1451,13 +1454,10 @@ def _math_equiv(pred: str | None, gold: str | None) -> bool:
 
 def _score_math_response(text: str, gold_answer: str) -> tuple[bool, str]:
     """Score a Math500 response. Returns (correct, detail_str)."""
-    # Strip thinking block if present
     think_end = text.rfind("</think>")
     answer_text = text[think_end + len("</think>"):] if think_end >= 0 else text
 
     pred = _extract_boxed(answer_text)
-    if not pred:
-        pred = _extract_boxed(text)
 
     # Fallback: "the answer is **X**" patterns
     if pred is None:
@@ -1483,6 +1483,62 @@ def _score_math_response(text: str, gold_answer: str) -> tuple[bool, str]:
         detail = f"wrong: pred={pred_short} gold={gold_short}"
     else:
         detail = f"no answer found, gold={gold_short}"
+    return correct, detail
+
+
+def _score_gsm_response(text: str, gold_answer: str) -> tuple[bool, str]:
+    """Score a GSM8K response. Returns (correct, detail_str)."""
+    think_end = text.rfind("</think>")
+    answer_text = text[think_end + len("</think>"):] if think_end >= 0 else text
+
+    pred = None
+
+    # \boxed{<number>}
+    boxed = _extract_boxed(answer_text)
+    if boxed:
+        cleaned = boxed.replace(",", "").replace("$", "").strip()
+        if _re.match(r'^[+-]?\d+\.?\d*$', cleaned):
+            pred = cleaned
+
+    # #### <number>
+    if pred is None:
+        m = _re.search(r'####\s*\$?([+-]?\d[\d,]*\.?\d*)', answer_text)
+        if m:
+            pred = m.group(1).replace(",", "")
+
+    # "the answer is **X**"
+    if pred is None:
+        m = _re.search(
+            r'(?:answer\s+is|result\s+is|equals?|there\s+are|we\s+get)\s*\*?\*?\$?([+-]?\d[\d,]*\.?\d*)',
+            answer_text, _re.IGNORECASE)
+        if m:
+            pred = m.group(1).replace(",", "")
+
+    # **<number>** or **$<number>**
+    if pred is None:
+        m = _re.search(r'\*\*\$?([+-]?\d[\d,]*\.?\d*)\*\*', answer_text)
+        if m:
+            pred = m.group(1).replace(",", "")
+
+    # Last standalone number
+    if pred is None:
+        nums = _re.findall(r'(?<![.\d])([+-]?\d[\d,]*\.?\d*)(?![.\d])', answer_text)
+        if nums:
+            pred = nums[-1].replace(",", "")
+
+    correct = False
+    if pred is not None:
+        try:
+            correct = abs(float(pred) - float(gold_answer)) < 1e-6
+        except (ValueError, TypeError):
+            correct = pred.strip() == gold_answer.strip()
+
+    if correct:
+        detail = f"correct: {pred}"
+    elif pred:
+        detail = f"wrong: pred={pred} gold={gold_answer}"
+    else:
+        detail = f"no answer found, gold={gold_answer}"
     return correct, detail
 
 
@@ -1648,10 +1704,13 @@ def _run_bench_suite(
             results.append(result)
             continue
 
-        # Math500 correctness scoring
+        # Correctness scoring
         score_detail = ""
-        if suite == "math" and "gold_answer" in case and result.get("text"):
-            correct, detail = _score_math_response(result["text"], case["gold_answer"])
+        if "gold_answer" in case and result.get("text"):
+            if suite == "gsm":
+                correct, detail = _score_gsm_response(result["text"], case["gold_answer"])
+            else:
+                correct, detail = _score_math_response(result["text"], case["gold_answer"])
             result["correct"] = correct
             result["score_detail"] = detail
             n_scored += 1

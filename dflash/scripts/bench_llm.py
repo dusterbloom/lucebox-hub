@@ -38,9 +38,18 @@ N_GEN = 256
 BUDGET = 22  # default; overridden by --budget CLI arg
 N_SAMPLE = 10
 
+def _gsm_gold(x):
+    """Extract numeric answer after #### from GSM8K answer field."""
+    ans = x["answer"]
+    idx = ans.rfind("####")
+    if idx >= 0:
+        return ans[idx + 4:].strip().replace(",", "")
+    return ans.strip()
+
+
 BENCHES = [
     ("HumanEval", "openai_humaneval", None, "test", lambda x: x["prompt"], None, N_GEN),
-    ("GSM8K", "gsm8k", "main", "test", lambda x: f"Question: {x['question']}\nAnswer: ", None, N_GEN),
+    ("GSM8K", "gsm8k", "main", "test", lambda x: f"Question: {x['question']}\nAnswer: ", _gsm_gold, 1024),
     ("Math500", "HuggingFaceH4/MATH-500", None, "test", lambda x: f"Problem: {x['problem']}\nSolution: Put your final answer in \\boxed{{}}.\n", lambda x: x["answer"], 2048),
 ]
 
@@ -182,6 +191,9 @@ def _normalize_math(s: str) -> str:
     s = s.strip()
     if s.startswith("$") and s.endswith("$"):
         s = s[1:-1].strip()
+    # Strip currency $ (e.g. "$18" → "18")
+    if re.match(r'^\$\d', s):
+        s = s[1:]
     s = re.sub(r"\\text\s*\{([^}]*)\}", r"\1", s)
     s = re.sub(r"\\mathrm\s*\{([^}]*)\}", r"\1", s)
     for cmd in [r"\left", r"\right", r"\displaystyle", r"\tfrac", r"\dfrac"]:
@@ -240,12 +252,7 @@ def _math_equiv(pred: str, gold: str) -> bool:
 
 
 def score_math(output_bin: Path, gold_answer: str, tok) -> tuple[bool, str]:
-    """Score a Math500 output against the gold answer.
-
-    Extracts \\boxed{} answers from model output (after </think> for thinking
-    models), compares against gold with normalized string matching + numeric/
-    fraction equivalence. Returns (correct, detail_str).
-    """
+    """Score a Math500 output against the gold answer. Returns (correct, detail_str)."""
     ids = _read_ids(output_bin)
     text = tok.decode(ids)
 
@@ -253,10 +260,6 @@ def score_math(output_bin: Path, gold_answer: str, tok) -> tuple[bool, str]:
     answer_text = text[think_end + len("</think>"):] if think_end >= 0 else text
 
     pred = _extract_boxed(answer_text)
-    if not pred:
-        pred = _extract_boxed(text)
-    if not pred:
-        pred = None
 
     # Fallback: "the answer is **X**" patterns
     if pred is None:
@@ -283,6 +286,66 @@ def score_math(output_bin: Path, gold_answer: str, tok) -> tuple[bool, str]:
     else:
         detail = f"✗ no answer found, gold={gold_short}"
     return correct, detail
+
+
+def score_gsm(output_bin: Path, gold_answer: str, tok) -> tuple[bool, str]:
+    """Score a GSM8K output against the gold numeric answer. Returns (correct, detail_str)."""
+    ids = _read_ids(output_bin)
+    text = tok.decode(ids)
+
+    think_end = text.rfind("</think>")
+    answer_text = text[think_end + len("</think>"):] if think_end >= 0 else text
+
+    pred = None
+
+    # \boxed{<number>}
+    boxed = _extract_boxed(answer_text)
+    if boxed:
+        cleaned = boxed.replace(",", "").replace("$", "").strip()
+        if re.match(r'^[+-]?\d+\.?\d*$', cleaned):
+            pred = cleaned
+
+    # #### <number>
+    if pred is None:
+        m = re.search(r'####\s*\$?([+-]?\d[\d,]*\.?\d*)', answer_text)
+        if m:
+            pred = m.group(1).replace(",", "")
+
+    # "the answer is **X**"
+    if pred is None:
+        m = re.search(
+            r'(?:answer\s+is|result\s+is|equals?|there\s+are|we\s+get)\s*\*?\*?\$?([+-]?\d[\d,]*\.?\d*)',
+            answer_text, re.IGNORECASE)
+        if m:
+            pred = m.group(1).replace(",", "")
+
+    # **<number>** or **$<number>**
+    if pred is None:
+        m = re.search(r'\*\*\$?([+-]?\d[\d,]*\.?\d*)\*\*', answer_text)
+        if m:
+            pred = m.group(1).replace(",", "")
+
+    # Last standalone number
+    if pred is None:
+        nums = re.findall(r'(?<![.\d])([+-]?\d[\d,]*\.?\d*)(?![.\d])', answer_text)
+        if nums:
+            pred = nums[-1].replace(",", "")
+
+    correct = False
+    if pred is not None:
+        try:
+            correct = abs(float(pred) - float(gold_answer)) < 1e-6
+        except (ValueError, TypeError):
+            correct = pred.strip() == gold_answer.strip()
+
+    if correct:
+        detail = f"🎯 {pred}"
+    elif pred:
+        detail = f"✗ pred={pred} gold={gold_answer}"
+    else:
+        detail = f"✗ no answer found, gold={gold_answer}"
+    return correct, detail
+
 
 
 def main():
@@ -357,7 +420,10 @@ def main():
 
             score_detail = ""
             if gold is not None:
-                correct, score_detail = score_math(df_bin, gold, tok)
+                if name == "GSM8K":
+                    correct, score_detail = score_gsm(df_bin, gold, tok)
+                else:
+                    correct, score_detail = score_math(df_bin, gold, tok)
                 n_scored += 1
                 if correct:
                     n_score_correct += 1

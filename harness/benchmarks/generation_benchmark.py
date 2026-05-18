@@ -52,6 +52,150 @@ def approx_token_count(text: str) -> int:
     return max(1, len(re.findall(r"\S+", text)))
 
 
+def _extract_boxed(text: str) -> str | None:
+    """Extract the last \\boxed{...} from a string, handling nested braces."""
+    results = []
+    i = 0
+    while i < len(text):
+        idx = text.find("\\boxed{", i)
+        if idx == -1:
+            break
+        start = idx + len("\\boxed{")
+        depth = 1
+        j = start
+        while j < len(text) and depth > 0:
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+            j += 1
+        if depth == 0:
+            results.append(text[start:j-1].strip())
+        i = j
+    return results[-1] if results else None
+
+
+def _normalize_math(s: str) -> str:
+    """Normalize a math answer string for comparison."""
+    if s is None:
+        return ""
+    s = s.strip()
+    if s.startswith("$") and s.endswith("$"):
+        s = s[1:-1].strip()
+    s = re.sub(r"\\text\s*\{([^}]*)\}", r"\1", s)
+    s = re.sub(r"\\mathrm\s*\{([^}]*)\}", r"\1", s)
+    for cmd in [r"\left", r"\right", r"\displaystyle", r"\tfrac", r"\dfrac"]:
+        s = s.replace(cmd, "")
+    s = re.sub(r"\s+", " ", s).strip()
+    s = s.rstrip(".,")
+    return s
+
+
+def _math_equiv(pred: str, gold: str) -> bool:
+    """Check if two math answers are equivalent."""
+    if pred is None or gold is None:
+        return False
+    p = _normalize_math(pred)
+    g = _normalize_math(gold)
+    if p == g:
+        return True
+    try:
+        pf = float(p.replace(",", ""))
+        gf = float(g.replace(",", ""))
+        return abs(pf - gf) < 1e-6
+    except (ValueError, TypeError):
+        pass
+    frac_pat = re.compile(r"\\?frac\s*\{([^}]+)\}\s*\{([^}]+)\}")
+    for s, other in [(p, g), (g, p)]:
+        m = frac_pat.search(s)
+        if m:
+            try:
+                val = float(m.group(1)) / float(m.group(2))
+                oval = float(other.replace(",", ""))
+                if abs(val - oval) < 1e-6:
+                    return True
+            except (ValueError, ZeroDivisionError):
+                pass
+    return False
+
+
+def _extract_numeric_answer(text: str) -> str | None:
+    """Extract a numeric answer from model output for GSM-style problems."""
+    think_end = text.rfind("</think>")
+    answer_text = text[think_end + len("</think>"):] if think_end >= 0 else text
+
+    # #### <number>
+    m = re.search(r'####\s*([+-]?\d[\d,]*\.?\d*)', answer_text)
+    if m:
+        return m.group(1).replace(",", "")
+
+    # \boxed{<number>}
+    boxed = _extract_boxed(answer_text)
+    if boxed:
+        cleaned = boxed.replace(",", "").strip()
+        if re.match(r'^[+-]?\d+\.?\d*$', cleaned):
+            return cleaned
+
+    # "the answer is <number>"
+    m = re.search(
+        r'(?:answer\s+is|result\s+is|equals?|there\s+are|we\s+get)\s*\$?\s*\\?(?:boxed\{)?([+-]?\d[\d,]*\.?\d*)',
+        answer_text, re.IGNORECASE)
+    if m:
+        return m.group(1).replace(",", "")
+
+    # **<number>**
+    m = re.search(r'\*\*([+-]?\d[\d,]*\.?\d*)\*\*', answer_text)
+    if m:
+        return m.group(1).replace(",", "")
+
+    # Last standalone number
+    nums = re.findall(r'(?<![.\d])([+-]?\d[\d,]*\.?\d*)(?![.\d])', answer_text)
+    if nums:
+        return nums[-1].replace(",", "")
+
+    return None
+
+
+def score_gold_answer(case: dict[str, Any], text: str) -> tuple[bool | None, str]:
+    """Score model output against gold_answer if present.
+
+    Returns (correct_or_None, detail_str). None means no gold_answer to check.
+    """
+    gold = case.get("gold_answer")
+    if gold is None:
+        return None, ""
+
+    suite = case.get("suite", "")
+    think_end = text.rfind("</think>")
+    answer_text = text[think_end + len("</think>"):] if think_end >= 0 else text
+
+    if suite == "gsm":
+        pred = _extract_numeric_answer(text)
+        if pred is None:
+            return False, f"no numeric answer found, gold={gold}"
+        try:
+            correct = abs(float(pred) - float(gold)) < 1e-6
+        except (ValueError, TypeError):
+            correct = pred.strip() == gold.strip()
+        return correct, f"pred={pred} gold={gold}"
+    else:
+        # Math-style: extract \boxed{} and compare
+        pred = _extract_boxed(answer_text)
+        if not pred:
+            pred = _extract_boxed(text)
+        if not pred:
+            # Fallback: bold pattern
+            m = re.search(
+                r'(?:answer\s+is|result\s+is|equals?)\s*\*\*(.+?)\*\*',
+                answer_text, re.IGNORECASE)
+            if m:
+                pred = m.group(1).strip().rstrip(".")
+        if not pred:
+            return False, f"no answer found, gold={gold}"
+        correct = _math_equiv(pred, gold)
+        return correct, f"pred={pred} gold={gold}"
+
+
 def expected_pass(case: dict[str, Any], text: str) -> tuple[bool, list[str]]:
     failures: list[str] = []
     for needle in case.get("expect_contains", []):
@@ -142,6 +286,7 @@ def run_case(
             token_source = "approx_words"
         prompt_tokens = usage.get("prompt_tokens")
         pass_expected, failures = expected_pass(case, text)
+        gold_correct, gold_detail = score_gold_answer(case, text)
         runs.append(
             {
                 "elapsed_s": elapsed,
@@ -151,6 +296,8 @@ def run_case(
                 "token_count_source": token_source,
                 "expected_pass": pass_expected,
                 "expected_failures": failures,
+                "gold_correct": gold_correct,
+                "gold_detail": gold_detail,
                 "text": text,
                 "usage": usage,
             }
@@ -158,16 +305,20 @@ def run_case(
 
     tok_s_values = [r["tok_s"] for r in runs]
     elapsed_values = [r["elapsed_s"] for r in runs]
+    gold_results = [r["gold_correct"] for r in runs if r["gold_correct"] is not None]
     return {
         "id": case["id"],
         "description": case.get("description", ""),
         "expect_contains": case.get("expect_contains", []),
         "expect_regex": case.get("expect_regex", []),
+        "gold_answer": case.get("gold_answer"),
         "runs": runs,
         "mean_tok_s": statistics.mean(tok_s_values),
         "median_tok_s": statistics.median(tok_s_values),
         "mean_elapsed_s": statistics.mean(elapsed_values),
         "expected_pass": all(r["expected_pass"] for r in runs),
+        "gold_correct": all(gold_results) if gold_results else None,
+        "gold_detail": runs[-1].get("gold_detail", ""),
         "text": runs[-1]["text"],
         "completion_tokens": runs[-1]["completion_tokens"],
         "prompt_tokens": runs[-1]["prompt_tokens"],
@@ -179,20 +330,25 @@ def cmd_run(args: argparse.Namespace) -> int:
     cases = load_cases(Path(args.prompts))
     results = []
     for case in cases:
-        print(f"[bench] {args.name}: {case['id']}", flush=True)
-        results.append(
-            run_case(
-                case=case,
-                base_url=args.url,
-                api_key=args.api_key,
-                model=args.model,
-                max_tokens=args.max_tokens,
-                temperature=args.temperature,
-                timeout=args.timeout,
-                repeats=args.repeats,
-            )
+        print(f"[bench] {args.name}: {case['id']}", end="", flush=True)
+        result = run_case(
+            case=case,
+            base_url=args.url,
+            api_key=args.api_key,
+            model=args.model,
+            max_tokens=args.max_tokens,
+            temperature=args.temperature,
+            timeout=args.timeout,
+            repeats=args.repeats,
         )
+        results.append(result)
+        if result["gold_correct"] is not None:
+            mark = "🎯" if result["gold_correct"] else "✗"
+            print(f"  {mark} {result['gold_detail']}", flush=True)
+        else:
+            print(flush=True)
 
+    scored = [r for r in results if r["gold_correct"] is not None]
     report = {
         "name": args.name,
         "url": args.url,
@@ -206,6 +362,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         "summary": {
             "cases": len(results),
             "expected_pass": sum(1 for r in results if r["expected_pass"]),
+            "gold_correct": sum(1 for r in scored if r["gold_correct"]),
+            "gold_scored": len(scored),
             "mean_tok_s": statistics.mean([r["mean_tok_s"] for r in results]) if results else 0.0,
         },
     }
@@ -213,6 +371,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     print(f"[bench] wrote {out}")
+    if scored:
+        print(f"[bench] correctness: {report['summary']['gold_correct']}/{len(scored)}"
+              f" ({report['summary']['gold_correct']/len(scored)*100:.0f}%)")
     return 0 if report["summary"]["expected_pass"] == len(results) else 1
 
 
