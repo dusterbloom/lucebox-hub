@@ -369,9 +369,16 @@ bool load_target_gguf_partial(const std::string & path,
 
     TargetLoadPlan plan = plan_in;
     if (plan.layer_begin < 0) plan.layer_begin = 0;
-    if (plan.layer_end < 0) plan.layer_end = (int)n_layer;
+    // Default layer_end to ALL gguf blocks (n_block_raw), not just backbone
+    // (n_layer). MTP variants append NextN head blocks past n_layer; the MTP
+    // loader binds them by name in the same meta_ctx the backbone loader
+    // populates, so they MUST be loaded onto the GPU here. Filtering them out
+    // (the old "plan.layer_end = n_layer" default) made `find_tensor` succeed
+    // descriptor-wise but with t->data==nullptr — the MTP path then failed
+    // with "missing required tensor: blk.{n_layer}.attn_q.weight".
+    if (plan.layer_end < 0) plan.layer_end = (int)n_block_raw;
     if (plan.layer_begin > plan.layer_end ||
-        plan.layer_end > (int)n_layer) {
+        plan.layer_end > (int)n_block_raw) {
         char buf[160];
         std::snprintf(buf, sizeof(buf),
             "invalid target load layer range [%d,%d) for n_layer=%u",
