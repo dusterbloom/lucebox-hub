@@ -832,11 +832,17 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
     // holds argmax for ALL positions in that chunk. We need the LAST position.
     int32_t last_tok;
     {
-        const int PREFILL_UBATCH = 512;
-        int n_last_chunk = committed % PREFILL_UBATCH;
-        if (n_last_chunk == 0) n_last_chunk = PREFILL_UBATCH;
+        // The last prefill chunk's size is whatever the still-bound argmax
+        // tensor says. Deriving it from `committed % PREFILL_UBATCH` was wrong
+        // when prefix-cache partial restore made the chunk shorter than the
+        // committed position would suggest (delta-prefill from kv_offset != 0).
+        const int64_t n_last_chunk = sg_.argmax_tokens ? sg_.argmax_tokens->ne[0] : 0;
+        if (n_last_chunk <= 0) {
+            std::fprintf(stderr, "do_spec_decode: argmax_tokens missing or empty\n");
+            return false;
+        }
         ggml_backend_tensor_get(sg_.argmax_tokens, &last_tok,
-                                sizeof(int32_t) * (n_last_chunk - 1),
+                                sizeof(int32_t) * (size_t)(n_last_chunk - 1),
                                 sizeof(int32_t));
     }
 
