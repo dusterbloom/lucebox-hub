@@ -122,6 +122,10 @@ inline GgufMmap & GgufMmap::operator=(GgufMmap && o) noexcept {
 }
 
 inline bool GgufMmap::open(const std::string & path, std::string & out_error) {
+    // Idempotency: if already open, release prior mapping before re-opening.
+    // This prevents leaking the prior fd/mapping and ensures that, on failure,
+    // the object is left in the default empty state (not half-overwritten).
+    if (data_) { this->~GgufMmap(); new (this) GgufMmap(); }
 #if defined(_WIN32)
     const int wlen = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
     if (wlen <= 0) {
@@ -197,9 +201,10 @@ inline GgufMmap::OwnedRegion GgufMmap::release() {
     r.data = data_;
     r.size = size_;
 #if defined(_WIN32)
-    // On Windows the mapping HANDLE must stay alive while the view is mapped.
-    // Transfer it; caller must call CloseHandle after UnmapViewOfFile.
-    // We encode it in fd as -1 (caller uses handle via a separate mechanism).
+    // Close the mapping handle now.  Per MSDN, closing the handle does not
+    // unmap the view — the view remains valid until UnmapViewOfFile is called.
+    // OwnedRegion has no handle field; caller unmaps via UnmapViewOfFile(data).
+    if (handle_) CloseHandle(reinterpret_cast<HANDLE>(handle_));
     r.fd = -1;
     handle_ = nullptr;
 #else
