@@ -269,6 +269,11 @@ int flash_prefill_forward_bf16(
     void * dmK = nullptr, * dmQ = nullptr;
     float * dS = nullptr, * dM = nullptr;
     int32_t * dIdx = nullptr, * dCnt = nullptr;
+#ifdef DFLASH27B_HAVE_BSA
+    // BSA is the default forward path when compiled in (sm_80+, DFLASH27B_ENABLE_BSA=ON).
+    // Set DFLASH_FP_NO_BSA=1 to force the legacy WMMA kernel (debugging only).
+    const bool use_bsa = (std::getenv("DFLASH_FP_NO_BSA") == nullptr);
+#endif
     cudaError_t e;
 #ifdef DFLASH27B_BACKEND_HIP
     if ((e = cudaMalloc(&dmK,  (size_t)B * M_gemm * Hk * D * 2)) != cudaSuccess) goto err;  // bf16, padded
@@ -340,7 +345,6 @@ int flash_prefill_forward_bf16(
     }
     // 4. sparse flash forward (BSA-or-WMMA)
 #ifdef DFLASH27B_HAVE_BSA
-    static const bool use_bsa = (std::getenv("DFLASH_FP_USE_BSA") != nullptr);
     if (use_bsa && D == 128 && BLOCK == 128) {
         launch_bsa_sparse_flash_forward_bf16(
             Q, K, V, O, dIdx, dCnt, scale,
