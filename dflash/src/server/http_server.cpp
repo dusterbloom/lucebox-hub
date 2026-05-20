@@ -448,10 +448,20 @@ bool HttpServer::route_request(int fd, const HttpRequest & hr) {
         return true;  // handled (with error)
     }
 
-    // Check context length.
-    if ((int)req.prompt_tokens.size() + req.max_output > config_.max_ctx) {
-        send_error(fd, 400, "prompt + max_tokens exceeds context window");
-        return true;
+    // Clamp max_output to fit the context window. Mirrors Python server behaviour
+    // (server.py: min(max_tokens, max_ctx - prompt_len - 20)). Avoids 400-ing
+    // clients like Claude Code that send a large default max_tokens.
+    {
+        const int prompt_len = (int)req.prompt_tokens.size();
+        const int headroom = 20;
+        if (prompt_len + headroom >= config_.max_ctx) {
+            send_error(fd, 400, "prompt exceeds context window");
+            return true;
+        }
+        const int effective_max = config_.max_ctx - prompt_len - headroom;
+        if (req.max_output > effective_max) {
+            req.max_output = effective_max;
+        }
     }
 
     // Set socket non-blocking for send() stall detection during streaming.
