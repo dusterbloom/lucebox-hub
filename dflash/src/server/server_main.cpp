@@ -53,6 +53,12 @@ static void print_usage(const char * prog) {
         "  --prefill-keep-ratio <F>    Fraction of tokens to keep (default: 0.05)\n"
         "  --prefill-drafter <path>    Drafter GGUF for compression (Qwen3-0.6B)\n"
         "  --prefill-skip-park         Skip park/unpark (for >=32GB GPUs)\n"
+        "\n"
+        "MTP speculative decoding (mutually exclusive with --draft):\n"
+        "  --mtp-gguf <path>           MTP drafter GGUF path\n"
+        "  --mtp-gamma <int>           Speculation chain depth (default: 0 = disabled)\n"
+        "  --mtp-draft-source <chain|mtp_topk>  Draft strategy (default: chain)\n"
+        "  --mtp-draft-topk <int>      Top-k for mtp_topk mode (default: 1)\n"
         "\n", prog);
 }
 
@@ -118,6 +124,14 @@ int main(int argc, char ** argv) {
             sconfig.pflash_drafter_path = argv[++i];
         } else if (std::strcmp(argv[i], "--prefill-skip-park") == 0) {
             sconfig.pflash_skip_park = true;
+        } else if (std::strcmp(argv[i], "--mtp-gguf") == 0 && i + 1 < argc) {
+            bargs.mtp_gguf_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--mtp-gamma") == 0 && i + 1 < argc) {
+            bargs.mtp_gamma = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--mtp-draft-source") == 0 && i + 1 < argc) {
+            bargs.mtp_draft_source = argv[++i];
+        } else if (std::strcmp(argv[i], "--mtp-draft-topk") == 0 && i + 1 < argc) {
+            bargs.mtp_draft_topk = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--cache-type-k") == 0 && i + 1 < argc) {
             cache_type_k = argv[++i];
         } else if (std::strcmp(argv[i], "--cache-type-v") == 0 && i + 1 < argc) {
@@ -210,6 +224,12 @@ int main(int argc, char ** argv) {
     std::fprintf(stderr, "[server] │  fa_window       = %d\n", bargs.fa_window);
     std::fprintf(stderr, "[server] │  ddtree          = %s\n", bargs.ddtree_mode ? "ON" : "off");
     std::fprintf(stderr, "[server] │  ddtree_budget   = %d\n", bargs.ddtree_budget);
+    if (bargs.mtp_gguf_path) {
+        std::fprintf(stderr, "[server] │  mtp_gguf        = %s\n", bargs.mtp_gguf_path);
+        std::fprintf(stderr, "[server] │  mtp_gamma       = %d\n", bargs.mtp_gamma);
+        std::fprintf(stderr, "[server] │  mtp_draft_src   = %s\n",
+                     bargs.mtp_draft_source ? bargs.mtp_draft_source : "chain (default)");
+    }
     std::fprintf(stderr, "[server] │  cors            = %s\n", sconfig.enable_cors ? "ON" : "off");
     std::fprintf(stderr, "[server] │  cache_type_k    = %s\n",
         cache_type_k.empty() ? (sconfig.max_ctx > 6144 ? "tq3_0 (auto)" : "q4_0 (default)") : cache_type_k.c_str());
