@@ -650,6 +650,95 @@ std::vector<int32_t> drafter_score_and_compress(
         return ids;
     }
 
+    // ── DFLASH_SKIP_DRAFTER fast path ─────────────────────────────────
+    // Bypass the drafter forward entirely; use forced head/tail + anchor
+    // n-gram matches (query keywords found in the body) + stride-fill.
+    // Anchor matching catches retrieval needles where the question's keyword
+    // also appears at the needle's location — preserves NIAH accuracy without
+    // paying for the 14-16s drafter forward.
+    if (std::getenv("DFLASH_SKIP_DRAFTER")) {
+        auto t0 = std::chrono::steady_clock::now();
+        const int n_chunks = (S + chunk_size - 1) / chunk_size;
+        const int n_keep   = std::max(1, (int)((float)n_chunks * keep_ratio));
+        const int h_raw    = env_int("DFLASH_COMPRESS_HEAD_CHUNKS", 8);
+        const int t_raw    = env_int("DFLASH_COMPRESS_TAIL_CHUNKS", 24);
+        int head_chunks = h_raw, tail_chunks = t_raw;
+        if (head_chunks + tail_chunks >= n_keep) {
+            const int budget = std::max(1, n_keep - 1);
+            head_chunks = std::max(0, h_raw * budget / (h_raw + t_raw));
+            tail_chunks = std::max(0, budget - head_chunks);
+        }
+        const int query_tokens = env_int("DFLASH_COMPRESS_QUERY_TOKENS", 96);
+        const int anchor_radius = env_int("DFLASH_COMPRESS_ANCHOR_RADIUS", 2);
+        const int max_anchor_hits = env_int("DFLASH_COMPRESS_MAX_ANCHOR_HITS", 8);
+
+        std::vector<uint8_t> forced((size_t)n_chunks, 0);
+        for (int c = 0; c < std::min(n_chunks, head_chunks); ++c) forced[(size_t)c] = 1;
+        for (int c = std::max(0, n_chunks - tail_chunks); c < n_chunks; ++c) forced[(size_t)c] = 1;
+
+        // Anchor: 4-gram match of query tail tokens against the body.
+        const int q0 = std::max(0, S - query_tokens);
+        constexpr int NGRAM = 4;
+        for (int q = q0; q + NGRAM <= S; ++q) {
+            int hits = 0;
+            int hit_pos[8];
+            const int search_end = std::max(0, q0 - NGRAM);
+            for (int p = 0; p <= search_end && hits <= max_anchor_hits; ++p) {
+                bool same = true;
+                for (int k = 0; k < NGRAM; ++k) {
+                    if (ids[(size_t)p + k] != ids[(size_t)q + k]) { same = false; break; }
+                }
+                if (same) {
+                    if (hits < 8) hit_pos[hits] = p;
+                    ++hits;
+                }
+            }
+            if (hits > 0 && hits <= max_anchor_hits) {
+                for (int i = 0; i < hits && i < 8; ++i) {
+                    force_chunk_neighborhood(forced, n_chunks, hit_pos[i] / chunk_size, anchor_radius);
+                }
+            }
+        }
+
+        std::vector<uint8_t> selected_mask((size_t)n_chunks, 0);
+        int selected_count = 0;
+        int forced_count = 0;
+        for (int c = 0; c < n_chunks; ++c) {
+            if (forced[(size_t)c]) { selected_mask[(size_t)c] = 1; ++selected_count; ++forced_count; }
+        }
+        // Stride-fill remaining keep_ratio budget over un-selected chunks.
+        if (selected_count < n_keep) {
+            const int remaining = n_keep - selected_count;
+            const int stride = std::max(1, n_chunks / std::max(1, remaining));
+            for (int c = 0; c < n_chunks && selected_count < n_keep; c += stride) {
+                if (!selected_mask[(size_t)c]) { selected_mask[(size_t)c] = 1; ++selected_count; }
+            }
+        }
+        std::vector<int32_t> out;
+        out.reserve((size_t)n_keep * chunk_size + 16);
+        int span_start = -1, span_end = -1;
+        for (int c = 0; c < n_chunks; ++c) {
+            if (!selected_mask[(size_t)c]) continue;
+            int s_ = c * chunk_size;
+            int e_ = std::min(S, (c + 1) * chunk_size);
+            if (span_start < 0) { span_start = s_; span_end = e_; }
+            else if (s_ == span_end) { span_end = e_; }
+            else {
+                for (int j = span_start; j < span_end; ++j) out.push_back(ids[j]);
+                span_start = s_; span_end = e_;
+            }
+        }
+        if (span_start >= 0) {
+            for (int j = span_start; j < span_end; ++j) out.push_back(ids[j]);
+        }
+        auto t1 = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "[drafter-skip] kept %zu tokens from %d chunks (%d forced incl. anchors) in %.3fs S=%d\n",
+                     out.size(), selected_count, forced_count,
+                     std::chrono::duration<double>(t1 - t0).count(), S);
+        std::fflush(stderr);
+        return out;
+    }
+
     // ── 1. Custom forward + GPU tail-attention scoring ────────────────
     auto t0 = std::chrono::steady_clock::now();
     std::vector<float> running_max;
