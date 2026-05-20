@@ -1,11 +1,9 @@
 // Unit test driving the extraction of MTP orchestration from
 // qwen35_backend.cpp into dflash/src/common/mtp_orchestrator.
 //
-// Howard's PR #214 review (CHANGES_REQUESTED) asked for MTP logic to live
-// in /common so any ModelBackend that supports MTP can leverage it. This
-// test pins the public surface of the new common helper and proves it
-// handles the trivial guard cases — null backend, no MTP support — before
-// any real backend is wired through it.
+// Pins the public surface of the common helper and proves it handles the
+// trivial guard cases — null backend, no MTP support — before any real
+// backend is wired through it.
 //
 // T5-T10: MtpChainRunner state machine (gamma propagation, EOS, partial
 //         accept, n_gen termination, step failure, stats accounting).
@@ -256,7 +254,7 @@ struct LiveStubBackend : public StubBackend {
 static void t1_null_backend() {
     dflash27b::GenerateRequest req;
     dflash27b::DaemonIO io;
-    auto res = dflash27b::common::mtp::warm_and_decode(nullptr, req, io);
+    auto res = dflash27b::mtp::warm_and_decode(nullptr, req, io);
     assert(!res.ok);
     assert(res.error.find("backend") != std::string::npos);
     std::puts("T1 null_backend PASS");
@@ -269,7 +267,7 @@ static void t2_backend_without_mtp() {
     b.supports_mtp_value = false;
     dflash27b::GenerateRequest req;
     dflash27b::DaemonIO io;
-    auto res = dflash27b::common::mtp::warm_and_decode(&b, req, io);
+    auto res = dflash27b::mtp::warm_and_decode(&b, req, io);
     assert(!res.ok);
     assert(res.error.find("mtp") != std::string::npos
         || res.error.find("MTP") != std::string::npos);
@@ -284,7 +282,7 @@ static void t3_empty_prompt() {
     dflash27b::GenerateRequest req;
     req.n_gen = 8;
     dflash27b::DaemonIO io;
-    auto res = dflash27b::common::mtp::warm_and_decode(&b, req, io);
+    auto res = dflash27b::mtp::warm_and_decode(&b, req, io);
     assert(!res.ok);
     assert(res.error.find("prompt") != std::string::npos);
     std::puts("T3 empty_prompt PASS");
@@ -301,7 +299,7 @@ static void t4_generic_backend_dispatch() {
     req.prompt = {1, 2, 3, 4};
     req.n_gen = 4;
     dflash27b::DaemonIO io;
-    auto res = dflash27b::common::mtp::warm_and_decode(&b, req, io);
+    auto res = dflash27b::mtp::warm_and_decode(&b, req, io);
     assert(!res.ok);
     // Reached verify_batch (which stub fails) — proves orchestrator depends
     // only on ModelBackend / DFlashTarget / IMtpModule abstractions.
@@ -487,7 +485,7 @@ static void t11_reset_chain_before_drive() {
     req.prompt = {1, 2, 3};
     req.n_gen  = 2;
     dflash27b::DaemonIO io;
-    auto res = dflash27b::common::mtp::warm_and_decode(&b, req, io);
+    auto res = dflash27b::mtp::warm_and_decode(&b, req, io);
     // reset_chain() is called once by the orchestrator before drive.
     assert(b.mtp_mod.reset_chain_calls >= 1);
     // Result should succeed (prefill passes, chain runs).
@@ -506,7 +504,7 @@ static void t12_set_initial_hidden_plumbing() {
     req.prompt = {5, 6, 7, 8};
     req.n_gen  = 1;
     dflash27b::DaemonIO io;
-    auto res = dflash27b::common::mtp::warm_and_decode(&b, req, io);
+    auto res = dflash27b::mtp::warm_and_decode(&b, req, io);
     assert(res.ok);
     // The orchestrator calls set_initial_hidden once (if last_hidden() != null).
     // SuccessStubTarget::last_hidden() returns non-null after verify_batch,
@@ -529,7 +527,7 @@ static void t13_gamma_derived_from_module() {
     req.prompt = {1, 2};
     req.n_gen  = 3;
     dflash27b::DaemonIO io;
-    auto res = dflash27b::common::mtp::warm_and_decode(&b, req, io);
+    auto res = dflash27b::mtp::warm_and_decode(&b, req, io);
     assert(res.ok);
     // At least some tokens generated; can't directly inspect the runner's
     // stats from here, but success proves the orchestrator read effective_gamma
@@ -549,7 +547,7 @@ static void t14_zero_gamma_rejected() {
     req.prompt = {1, 2, 3};
     req.n_gen  = 4;
     dflash27b::DaemonIO io;
-    auto res = dflash27b::common::mtp::warm_and_decode(&b, req, io);
+    auto res = dflash27b::mtp::warm_and_decode(&b, req, io);
     assert(!res.ok);
     assert(res.error.find("effective_gamma") != std::string::npos
         || res.error.find("gamma") != std::string::npos);

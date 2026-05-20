@@ -409,7 +409,7 @@ GenerateResult Qwen35Backend::generate(const GenerateRequest & req,
     // MTP path: delegate to common orchestrator. Cache was already sized in
     // init_mtp_() — no per-request migrate (idempotent no-op).
     if (supports_mtp()) {
-        return common::mtp::warm_and_decode(this, req, io);
+        return mtp::warm_and_decode(this, req, io);
     }
 
     // DFlash / AR path

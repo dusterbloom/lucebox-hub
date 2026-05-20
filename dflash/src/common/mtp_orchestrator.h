@@ -14,7 +14,6 @@ namespace dflash27b {
 
 class DFlashTarget;
 
-namespace common {
 namespace mtp {
 
 // Drive the full MTP warm + chain decode for one request.
@@ -42,5 +41,4 @@ GenerateResult warm_and_decode(ModelBackend * backend,
                                 const DaemonIO & io);
 
 }  // namespace mtp
-}  // namespace common
 }  // namespace dflash27b
