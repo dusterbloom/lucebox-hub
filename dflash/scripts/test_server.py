@@ -573,6 +573,28 @@ def test_chat_template_can_explicitly_enable_thinking(
 
 @patch("server.os.pipe")
 @patch("server.os.read")
+def test_chat_template_can_enable_thinking_by_env(
+        mock_os_read, mock_pipe, mock_tokenizer, app, monkeypatch):
+    monkeypatch.setenv("DFLASH_ENABLE_THINKING", "1")
+    mock_pipe.return_value = (1, 2)
+    mock_tokenizer.apply_chat_template.return_value = "prompt<think>\n"
+    mock_os_read.side_effect = [struct.pack("<i", 10), struct.pack("<i", -1)]
+
+    client = TestClient(app)
+    response = client.post("/v1/chat/completions", json={
+        "model": MODEL_NAME,
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": False,
+    })
+
+    assert response.status_code == 200
+    kwargs = mock_tokenizer.apply_chat_template.call_args_list[-1][1]
+    assert kwargs["enable_thinking"] is True
+    assert mock_tokenizer.encode.call_args_list[-1][0][0] == "prompt<think>\n"
+
+
+@patch("server.os.pipe")
+@patch("server.os.read")
 def test_chat_completions_streaming(mock_os_read, mock_pipe, mock_tokenizer, app):
     mock_pipe.return_value = (1, 2)
     mock_tokenizer.apply_chat_template.return_value = "<think>\n"

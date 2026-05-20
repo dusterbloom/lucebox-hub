@@ -112,6 +112,14 @@ def _print_hip_budget_advisory(budget: int) -> None:
         print(f"  [hip] {arch}: no advisory; using budget={budget}", flush=True)
 
 
+def _parse_bool(value: str | bool | None) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _extra_daemon_has_target_sharding(extra: list[str] | None) -> bool:
     """True if we spawn test_dflash with multi-GPU target layer split."""
     if not extra:
@@ -658,6 +666,10 @@ def _anthropic_tools_to_openai(tools: list[dict] | None) -> list[ToolDef] | None
 DEFAULT_MAX_TOKENS = int(os.environ.get("DFLASH_DEFAULT_MAX_TOKENS", 4096))
 
 
+def _default_chat_enable_thinking() -> bool:
+    return _parse_bool(os.environ.get("DFLASH_ENABLE_THINKING"))
+
+
 class ChatRequest(BaseModel):
     model: str = MODEL_NAME
     messages: list[ChatMessage]
@@ -995,9 +1007,11 @@ def build_app(target: Path, draft: Path | None, bin_path: Path, budget: int, max
         pre-fills a closed ``<think></think>`` block that can make the model emit
         EOS immediately. We strip that trailing closed block before tokenization
         so the assistant turn remains open without enabling think mode.
+        Deployments can opt in globally with DFLASH_ENABLE_THINKING=1 or
+        per request with ``chat_template_kwargs.enable_thinking``.
         """
         tpl_kwargs: dict = {"tokenize": False, "add_generation_prompt": True,
-                            "enable_thinking": False}
+                            "enable_thinking": _default_chat_enable_thinking()}
         tpl_kwargs.update(
             {k: v for k, v in (template_kwargs or {}).items() if k in _ALLOWED_TEMPLATE_KWARGS}
         )
@@ -2799,6 +2813,8 @@ def main():
     ap.add_argument("--fa-window", type=int, default=None,
                     help="Sliding window for FA layers. 0 = full attention.")
     ap.add_argument("--tokenizer", type=str, default=None)
+    ap.add_argument("--enable-thinking", nargs="?", const="true", default=None,
+                    metavar="BOOL")
     ap.add_argument("--lazy-draft", action="store_true",
                     help="Park decode draft (~3.3 GB) when idle; unpark/park "
                          "around each generate to free VRAM for longer context.")
@@ -2855,6 +2871,9 @@ def main():
 
     if args.fa_window is not None:
         os.environ["DFLASH27B_FA_WINDOW"] = str(args.fa_window)
+    if args.enable_thinking is not None:
+        os.environ["DFLASH_ENABLE_THINKING"] = (
+            "1" if _parse_bool(args.enable_thinking) else "0")
 
     placement = resolve_server_placement(args)
     placement.apply_env(os.environ)
