@@ -1,0 +1,78 @@
+{
+  "bench_date": "2026-05-21",
+  "binary_commit": "05eaacf",
+  "drafter": "Qwen3-0.6B-BF16.gguf",
+  "target": "Qwen3.6-27B-Q4_K_M.gguf",
+  "ctx": 131072,
+  "max_ctx_server": 139264,
+  "niah_cases": 3,
+  "niah_completed": 2,
+  "niah_crash": "case 2 both conditions, ggml_view_3d assert on target reload",
+  "conditions": {
+    "baseline_128k": {
+      "DFLASH_DRAFTER_SCORE_LAYERS": "unset (28 layers)",
+      "cases": [
+        {
+          "case": 0,
+          "type": "cold",
+          "drafter_fwd_s": 328.91,
+          "forward_s": 271.75,
+          "A_compute_s": 57.40,
+          "FP_s": 72.47,
+          "tail_score_s": 18.73,
+          "tail_score_layers": "0-27",
+          "total_s": 290.47,
+          "niah": "PASS",
+          "answer": "4025016"
+        },
+        {
+          "case": 1,
+          "type": "warm",
+          "drafter_fwd_s": 71.42,
+          "forward_s": 62.30,
+          "A_compute_s": 3.69,
+          "FP_s": 44.97,
+          "tail_score_s": 4.49,
+          "tail_score_layers": "0-27",
+          "total_s": 66.79,
+          "niah": "PASS",
+          "answer": "0438574"
+        }
+      ]
+    },
+    "bf16_l7_128k": {
+      "DFLASH_DRAFTER_SCORE_LAYERS": "7",
+      "cases": [
+        {
+          "case": 0,
+          "type": "cold",
+          "drafter_fwd_s": 181.31,
+          "forward_s": 166.44,
+          "A_compute_s": 31.65,
+          "FP_s": 54.24,
+          "tail_score_s": 8.15,
+          "tail_score_layers": "21-27",
+          "total_s": 174.59,
+          "niah": "PASS",
+          "answer": "4025016"
+        },
+        {
+          "case": 1,
+          "type": "warm",
+          "drafter_fwd_s": 112.89,
+          "forward_s": 104.80,
+          "A_compute_s": 19.80,
+          "FP_s": 56.25,
+          "tail_score_s": 2.35,
+          "tail_score_layers": "21-27",
+          "total_s": 107.15,
+          "niah": "PASS",
+          "answer": "0438574"
+        }
+      ]
+    }
+  },
+  "speedup_cold": 1.81,
+  "speedup_warm": 0.63,
+  "verdict": "REGRESSION on warm path. tail-score halved but A_compute+FP inflated by 27.4s net."
+}
