@@ -23,7 +23,7 @@
 #include <vector>
 
 using json = nlohmann::json;
-using namespace dflash27b;
+using namespace dflash::common;
 
 // ─── Test framework (ds4 style) ────────────────────────────────────────
 

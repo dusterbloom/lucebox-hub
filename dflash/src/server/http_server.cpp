@@ -21,7 +21,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-namespace dflash27b {
+namespace dflash::common {
 
 // ─── Utilities ──────────────────────────────────────────────────────────
 
@@ -963,4 +963,4 @@ bool HttpServer::send_sse_headers(int fd) {
     return send_all(fd, header.data(), header.size());
 }
 
-}  // namespace dflash27b
+}  // namespace dflash::common

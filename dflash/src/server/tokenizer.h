@@ -14,7 +14,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace dflash27b {
+namespace dflash::common {
 
 class Tokenizer {
 public:
@@ -82,4 +82,4 @@ private:
     PreTokenizer pre_type_ = PreTokenizer::QWEN35;
 };
 
-}  // namespace dflash27b
+}  // namespace dflash::common

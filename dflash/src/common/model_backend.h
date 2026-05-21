@@ -17,7 +17,7 @@
 
 #include "sampler.h"
 
-namespace dflash27b {
+namespace dflash::common {
 
 // Token callback for streaming generation. Called once per committed token.
 // Return true to continue generation, false to abort.
@@ -154,4 +154,4 @@ struct ModelBackend {
     virtual void shutdown() = 0;
 };
 
-}  // namespace dflash27b
+}  // namespace dflash::common

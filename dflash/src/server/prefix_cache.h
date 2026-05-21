@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-namespace dflash27b {
+namespace dflash::common {
 
 // ─── Chat marker detection ──────────────────────────────────────────────
 
@@ -139,4 +139,4 @@ private:
     void move_full_to_end(int idx);
 };
 
-}  // namespace dflash27b
+}  // namespace dflash::common

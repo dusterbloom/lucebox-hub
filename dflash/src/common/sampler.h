@@ -15,7 +15,7 @@
 #include <string>
 #include <vector>
 
-namespace dflash27b {
+namespace dflash::common {
 
 struct SamplerCfg {
     float    temp       = 0.0f;
@@ -39,4 +39,4 @@ int sample_logits(const float * logits_in,
 // top_k=0, rep_pen=1, seed=0).
 bool parse_sampler_token(std::string & line, SamplerCfg & out);
 
-}  // namespace dflash27b
+}  // namespace dflash::common

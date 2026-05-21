@@ -29,7 +29,7 @@
 #include <thread>
 #include <vector>
 
-namespace dflash27b {
+namespace dflash::common {
 
 using json = nlohmann::json;
 
@@ -163,4 +163,4 @@ struct ServerJob {
     ServerJob *   next = nullptr;
 };
 
-}  // namespace dflash27b
+}  // namespace dflash::common

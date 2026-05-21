@@ -21,7 +21,7 @@
 #include <memory>
 #include <string>
 
-using namespace dflash27b;
+using namespace dflash::common;
 
 static void print_usage(const char * prog) {
     std::fprintf(stderr,
