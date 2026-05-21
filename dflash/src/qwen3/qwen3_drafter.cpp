@@ -680,6 +680,12 @@ PFlashMode resolve_pflash_mode(PFlashMode mode_param) {
 // P1b fix: L_compress default raised to 32768 (plan §2: drafter forward costs
 // 14-16s at 32K, not at 8K).  AUTO should only skip the drafter when the prompt
 // is at least 32K tokens long.
+//
+// Empirically validated 2026-05-21 (48-cell NIAH sweep, see
+// dflash/bench/results/2026-05-21_envelope/PROPER_SUMMARY.md):
+//   AUTO fires at ctx >= 32K   → wall time ~2× faster than OFF, 100% NIAH accuracy
+//   AUTO passes through < 32K  → indistinguishable from OFF (4K, 8K, 16K)
+// Threshold 32768 confirmed; override with DFLASH_PFLASH_L_COMPRESS.
 bool resolve_auto_skip(int S, int anchor_hits) {
     const int L_compress = env_int("DFLASH_PFLASH_L_COMPRESS", 32768);
     return (S >= L_compress && anchor_hits > 0);

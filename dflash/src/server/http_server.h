@@ -52,7 +52,14 @@ struct ServerConfig {
     // ServerConfig share the same type without a conversion step.
     using PflashMode = dflash27b::PFlashMode;
     PflashMode  pflash_mode      = PflashMode::OFF;
+    // Validated 2026-05-21 (48-cell NIAH + multi-turn sweep,
+    // dflash/bench/results/2026-05-21_envelope/PROPER_SUMMARY.md):
+    // AUTO correctly skips compression at <32K and fires at >=32K.
     int         pflash_threshold = 32000;   // token count threshold for AUTO mode
+    // Validated 2026-05-21: keep=0.05 → 0.85 MTP accept (claude_code ALWAYS),
+    // within baseline 0.71–0.88; 100% NIAH accuracy at all ctx sizes tested.
+    // opencode showed -0.15 delta at keep=0.05 (1 run, tool-loop variance;
+    // not attributed to keep_ratio; do not change without further evidence).
     float       pflash_keep_ratio = 0.05f;  // fraction of tokens to keep
     std::string pflash_drafter_path;        // path to drafter GGUF (Qwen3-0.6B)
     bool        pflash_skip_park = false;   // skip park/unpark for ≥32GB GPUs
