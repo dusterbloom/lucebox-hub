@@ -700,10 +700,30 @@ if(DFLASH27B_TESTS)
         add_test(NAME server_unit COMMAND test_server_unit)
     endif()
 
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_pflash_mode.cpp")
+        add_executable(test_pflash_mode test/test_pflash_mode.cpp)
+        target_include_directories(test_pflash_mode PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        if(DFLASH27B_GPU_BACKEND STREQUAL "hip")
+            target_compile_definitions(test_pflash_mode PRIVATE DFLASH27B_BACKEND_HIP=1 GGML_USE_HIP)
+        else()
+            target_compile_definitions(test_pflash_mode PRIVATE
+                DFLASH27B_BACKEND_CUDA=1
+                DFLASH27B_CUDA_MIN_SM=${_dflash27b_cuda_min_sm})
+        endif()
+        target_link_libraries(test_pflash_mode PRIVATE dflash27b ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+        if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
+            find_package(CUDAToolkit REQUIRED)
+            target_link_libraries(test_pflash_mode PRIVATE CUDA::cudart)
+        else()
+            target_link_libraries(test_pflash_mode PRIVATE hip::host)
+        endif()
+        add_test(NAME pflash_mode COMMAND test_pflash_mode)
+    endif()
+
     # 'make check' — builds test targets then runs ctest
     add_custom_target(check
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-        DEPENDS test_server_unit
+        DEPENDS test_server_unit test_pflash_mode
         COMMENT "Building and running unit tests"
     )
 

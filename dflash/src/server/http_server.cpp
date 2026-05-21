@@ -427,10 +427,13 @@ bool HttpServer::route_request(int fd, const HttpRequest & hr) {
             const auto & eb = body["extra_body"];
             if (eb.contains("pflash_mode") && eb["pflash_mode"].is_string()) {
                 const std::string mode_str = eb["pflash_mode"].get<std::string>();
-                if      (mode_str == "auto")   req.pflash_mode_override = PFlashMode::AUTO;
-                else if (mode_str == "always") req.pflash_mode_override = PFlashMode::ALWAYS;
-                else if (mode_str == "off")    req.pflash_mode_override = PFlashMode::OFF;
-                // Unknown values silently ignored — fall through to server-wide config.
+                auto parsed = parse_pflash_mode_str(mode_str);
+                if (!parsed.has_value()) {
+                    send_error(fd, 400,
+                        "extra_body.pflash_mode must be one of: off, auto, always");
+                    return true;
+                }
+                req.pflash_mode_override = *parsed;
             }
         }
 

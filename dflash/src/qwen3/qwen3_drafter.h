@@ -78,4 +78,27 @@ std::vector<int32_t> drafter_score_and_compress(
     int        pool_kernel = 13,
     PFlashMode mode_param  = PFlashMode::OFF);
 
+// ── Exposed for unit testing ─────────────────────────────────────────────
+// Resolve the per-request mode. The env-fallback was removed: when mode_param
+// is OFF the caller (shell/harness) is responsible for resolving env → mode
+// before calling drafter_score_and_compress. HTTP layer already resolves.
+PFlashMode resolve_pflash_mode(PFlashMode mode_param);
+
+// Decide whether AUTO mode skips the drafter forward.
+// Returns true when S >= L_compress (env DFLASH_PFLASH_L_COMPRESS, default
+// 32768) AND anchor_hits > 0.
+bool resolve_auto_skip(int S, int anchor_hits);
+
+// Pure 4-gram anchor scan: last `query_tokens` of `ids` matched against body.
+// For each query n-gram with 1..max_hits_per_q body matches, appends body
+// positions to hit_pos[]. Returns total positions written.
+// hit_pos must have room for at least max_hits_buf entries.
+int compute_anchor_hits(
+    const std::vector<int32_t> & ids,
+    int S,
+    int query_tokens,
+    int max_hits_per_q,
+    int max_hits_buf,
+    int * hit_pos);
+
 } // namespace dflash27b

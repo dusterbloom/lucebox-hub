@@ -629,7 +629,13 @@ static std::vector<int32_t> qwen35_score_and_compress(
 // For each query n-gram that has 1..max_hits_per_q body matches, appends those
 // body positions to hit_pos[]. Returns the total number of positions written.
 // hit_pos must have room for at least max_hits_buf entries (caller ensures this).
-static int compute_anchor_hits(
+//
+// P1a fix: outer loop no longer exits when the hit buffer fills.  Pre-refactor
+// used a per-q scratch buffer of 8 entries that reset each iteration; the old
+// code scanned all query n-grams regardless of cumulative total.  Removing
+// `total < max_hits_buf` from the outer guard restores that recall.  The inner
+// clamp `total < max_hits_buf` still prevents overflow.
+int compute_anchor_hits(
     const std::vector<int32_t> & ids,
     int S,
     int query_tokens,
@@ -640,7 +646,7 @@ static int compute_anchor_hits(
     const int q0 = std::max(0, S - query_tokens);
     constexpr int NGRAM = 4;
     int total = 0;
-    for (int q = q0; q + NGRAM <= S && total < max_hits_buf; ++q) {
+    for (int q = q0; q + NGRAM <= S; ++q) {  // P1a: removed `total < max_hits_buf`
         int hits = 0;
         int local[16]; // per-q scratch; max_hits_per_q <= 8 in practice
         const int search_end = std::max(0, q0 - NGRAM);
@@ -661,6 +667,22 @@ static int compute_anchor_hits(
         }
     }
     return total;
+}
+
+// P0 fix: resolve_pflash_mode no longer falls back to DFLASH_PFLASH_MODE env
+// when mode_param is OFF.  The HTTP layer is the single resolution point; shell
+// / harness callers must resolve env → PFlashMode in their own main() before
+// calling drafter_score_and_compress.
+PFlashMode resolve_pflash_mode(PFlashMode mode_param) {
+    return mode_param;  // env-fallback removed
+}
+
+// P1b fix: L_compress default raised to 32768 (plan §2: drafter forward costs
+// 14-16s at 32K, not at 8K).  AUTO should only skip the drafter when the prompt
+// is at least 32K tokens long.
+bool resolve_auto_skip(int S, int anchor_hits) {
+    const int L_compress = env_int("DFLASH_PFLASH_L_COMPRESS", 32768);
+    return (S >= L_compress && anchor_hits > 0);
 }
 
 std::vector<int32_t> drafter_score_and_compress(
@@ -701,29 +723,18 @@ std::vector<int32_t> drafter_score_and_compress(
 
     // ── Adaptive auto policy ──────────────────────────────────────────
     // Per-request decision whether to bypass the drafter forward entirely.
-    // mode_param is the typed value from the request path (set by the HTTP
-    // server from CompressRequest::pflash_mode). When mode_param is OFF,
-    // the env var DFLASH_PFLASH_MODE is consulted as a fallback for
-    // shell/harness use.
+    // mode_param is the typed value from the request path; the HTTP layer is
+    // the single resolution point (no env-fallback here — see resolve_pflash_mode).
     //
-    // auto rule: skip when (a) prompt is long enough that the 14-16s drafter
-    // forward dominates TTFT, AND (b) anchor_hits > 0 so the keep-set built
-    // from head/tail/anchor/stride has positive retrieval signal.  When there
-    // are no anchor hits we fall through to the drafter path (Louver-style
-    // recall floor: don't compress blind on unknown content).
-    PFlashMode mode = mode_param;
-    if (mode == PFlashMode::OFF) {
-        // Allow env override for shell / harness use when not set by the request path.
-        const char* mode_env = std::getenv("DFLASH_PFLASH_MODE");
-        if (mode_env != nullptr) {
-            if      (std::strcmp(mode_env, "auto")   == 0) mode = PFlashMode::AUTO;
-            else if (std::strcmp(mode_env, "always") == 0) mode = PFlashMode::ALWAYS;
-        }
-    }
+    // auto rule: skip when (a) prompt >= L_compress (default 32K — drafter
+    // forward costs 14-16s at 32K), AND (b) anchor_hits > 0 so the keep-set
+    // built from head/tail/anchor/stride has positive retrieval signal. When
+    // there are no anchor hits we fall through to the drafter path (Louver-
+    // style recall floor: don't compress blind on unknown content).
+    const PFlashMode mode = resolve_pflash_mode(mode_param);
     bool skip_drafter;
     if (mode == PFlashMode::AUTO) {
-        const int L_compress = env_int("DFLASH_PFLASH_L_COMPRESS", 8192);
-        skip_drafter = (S >= L_compress && anchor_hits > 0);
+        skip_drafter = resolve_auto_skip(S, anchor_hits);
     } else if (mode == PFlashMode::ALWAYS) {
         skip_drafter = true;
     } else {

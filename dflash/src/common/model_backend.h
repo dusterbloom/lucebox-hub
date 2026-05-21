@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "sampler.h"
+#include "common/pflash_mode.h"
 
 namespace dflash27b {
 
@@ -72,10 +73,7 @@ struct GenerateResult {
     double                     decode_s    = 0.0;
 };
 
-// ─── PFlash mode ────────────────────────────────────────────────────────
-// Shared by CompressRequest and ServerConfig so per-request overrides can
-// flow through the typed path without a string round-trip.
-enum class PFlashMode { OFF, AUTO, ALWAYS };
+// PFlashMode is defined in common/pflash_mode.h (included above).
 
 // ─── Backend interface ──────────────────────────────────────────────────
 struct ModelBackend {
