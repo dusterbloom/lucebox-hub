@@ -625,13 +625,52 @@ static std::vector<int32_t> qwen35_score_and_compress(
     return out_ids;
 }
 
+// Pure 4-gram anchor scan: last `query_tokens` of `ids` matched against the body.
+// For each query n-gram that has 1..max_hits_per_q body matches, appends those
+// body positions to hit_pos[]. Returns the total number of positions written.
+// hit_pos must have room for at least max_hits_buf entries (caller ensures this).
+static int compute_anchor_hits(
+    const std::vector<int32_t> & ids,
+    int S,
+    int query_tokens,
+    int max_hits_per_q,
+    int max_hits_buf,
+    int * hit_pos)
+{
+    const int q0 = std::max(0, S - query_tokens);
+    constexpr int NGRAM = 4;
+    int total = 0;
+    for (int q = q0; q + NGRAM <= S && total < max_hits_buf; ++q) {
+        int hits = 0;
+        int local[16]; // per-q scratch; max_hits_per_q <= 8 in practice
+        const int search_end = std::max(0, q0 - NGRAM);
+        for (int p = 0; p <= search_end && hits <= max_hits_per_q; ++p) {
+            bool same = true;
+            for (int k = 0; k < NGRAM; ++k) {
+                if (ids[(size_t)p + k] != ids[(size_t)q + k]) { same = false; break; }
+            }
+            if (same) {
+                if (hits < (int)(sizeof(local)/sizeof(local[0]))) local[hits] = p;
+                ++hits;
+            }
+        }
+        if (hits > 0 && hits <= max_hits_per_q) {
+            for (int i = 0; i < hits && total < max_hits_buf; ++i) {
+                hit_pos[total++] = local[i];
+            }
+        }
+    }
+    return total;
+}
+
 std::vector<int32_t> drafter_score_and_compress(
     DrafterContext & ctx,
     const std::vector<int32_t> & ids,
-    float keep_ratio,
-    int chunk_size,
-    int n_lookahead,
-    int pool_kernel) {
+    float      keep_ratio,
+    int        chunk_size,
+    int        n_lookahead,
+    int        pool_kernel,
+    PFlashMode mode_param) {
     if (!ctx.loaded) {
         set_last_error("drafter not loaded");
         return {};
@@ -650,13 +689,47 @@ std::vector<int32_t> drafter_score_and_compress(
         return ids;
     }
 
-    // ── DFLASH_SKIP_DRAFTER fast path ─────────────────────────────────
-    // Bypass the drafter forward entirely; use forced head/tail + anchor
-    // n-gram matches (query keywords found in the body) + stride-fill.
-    // Anchor matching catches retrieval needles where the question's keyword
-    // also appears at the needle's location — preserves NIAH accuracy without
-    // paying for the 14-16s drafter forward.
-    if (std::getenv("DFLASH_SKIP_DRAFTER")) {
+    // Shared anchor scan — computed once, consumed by both the fast path and the
+    // slow (drafter-forward) path below.
+    const int query_tokens    = env_int("DFLASH_COMPRESS_QUERY_TOKENS", 96);
+    const int max_anchor_hits = env_int("DFLASH_COMPRESS_MAX_ANCHOR_HITS", 8);
+    int hit_pos[16] = {0};
+    const int anchor_hits = compute_anchor_hits(ids, S, query_tokens,
+                                                max_anchor_hits,
+                                                std::min(max_anchor_hits, 16),
+                                                hit_pos);
+
+    // ── Adaptive auto policy ──────────────────────────────────────────
+    // Per-request decision whether to bypass the drafter forward entirely.
+    // mode_param is the typed value from the request path (set by the HTTP
+    // server from CompressRequest::pflash_mode). When mode_param is OFF,
+    // the env var DFLASH_PFLASH_MODE is consulted as a fallback for
+    // shell/harness use.
+    //
+    // auto rule: skip when (a) prompt is long enough that the 14-16s drafter
+    // forward dominates TTFT, AND (b) anchor_hits > 0 so the keep-set built
+    // from head/tail/anchor/stride has positive retrieval signal.  When there
+    // are no anchor hits we fall through to the drafter path (Louver-style
+    // recall floor: don't compress blind on unknown content).
+    PFlashMode mode = mode_param;
+    if (mode == PFlashMode::OFF) {
+        // Allow env override for shell / harness use when not set by the request path.
+        const char* mode_env = std::getenv("DFLASH_PFLASH_MODE");
+        if (mode_env != nullptr) {
+            if      (std::strcmp(mode_env, "auto")   == 0) mode = PFlashMode::AUTO;
+            else if (std::strcmp(mode_env, "always") == 0) mode = PFlashMode::ALWAYS;
+        }
+    }
+    bool skip_drafter;
+    if (mode == PFlashMode::AUTO) {
+        const int L_compress = env_int("DFLASH_PFLASH_L_COMPRESS", 8192);
+        skip_drafter = (S >= L_compress && anchor_hits > 0);
+    } else if (mode == PFlashMode::ALWAYS) {
+        skip_drafter = true;
+    } else {
+        skip_drafter = (std::getenv("DFLASH_SKIP_DRAFTER") != nullptr);  // legacy
+    }
+    if (skip_drafter) {
         auto t0 = std::chrono::steady_clock::now();
         const int n_chunks = (S + chunk_size - 1) / chunk_size;
         const int n_keep   = std::max(1, (int)((float)n_chunks * keep_ratio));
@@ -668,36 +741,15 @@ std::vector<int32_t> drafter_score_and_compress(
             head_chunks = std::max(0, h_raw * budget / (h_raw + t_raw));
             tail_chunks = std::max(0, budget - head_chunks);
         }
-        const int query_tokens = env_int("DFLASH_COMPRESS_QUERY_TOKENS", 96);
         const int anchor_radius = env_int("DFLASH_COMPRESS_ANCHOR_RADIUS", 2);
-        const int max_anchor_hits = env_int("DFLASH_COMPRESS_MAX_ANCHOR_HITS", 8);
 
         std::vector<uint8_t> forced((size_t)n_chunks, 0);
         for (int c = 0; c < std::min(n_chunks, head_chunks); ++c) forced[(size_t)c] = 1;
         for (int c = std::max(0, n_chunks - tail_chunks); c < n_chunks; ++c) forced[(size_t)c] = 1;
 
-        // Anchor: 4-gram match of query tail tokens against the body.
-        const int q0 = std::max(0, S - query_tokens);
-        constexpr int NGRAM = 4;
-        for (int q = q0; q + NGRAM <= S; ++q) {
-            int hits = 0;
-            int hit_pos[8];
-            const int search_end = std::max(0, q0 - NGRAM);
-            for (int p = 0; p <= search_end && hits <= max_anchor_hits; ++p) {
-                bool same = true;
-                for (int k = 0; k < NGRAM; ++k) {
-                    if (ids[(size_t)p + k] != ids[(size_t)q + k]) { same = false; break; }
-                }
-                if (same) {
-                    if (hits < 8) hit_pos[hits] = p;
-                    ++hits;
-                }
-            }
-            if (hits > 0 && hits <= max_anchor_hits) {
-                for (int i = 0; i < hits && i < 8; ++i) {
-                    force_chunk_neighborhood(forced, n_chunks, hit_pos[i] / chunk_size, anchor_radius);
-                }
-            }
+        // Anchor: consume pre-computed 4-gram hit positions.
+        for (int i = 0; i < anchor_hits; ++i) {
+            force_chunk_neighborhood(forced, n_chunks, hit_pos[i] / chunk_size, anchor_radius);
         }
 
         std::vector<uint8_t> selected_mask((size_t)n_chunks, 0);
@@ -800,35 +852,15 @@ std::vector<int32_t> drafter_score_and_compress(
         head_chunks = std::max(0, h_raw * budget / (h_raw + t_raw));
         tail_chunks = std::max(0, budget - head_chunks);
     }
-    const int query_tokens = env_int("DFLASH_COMPRESS_QUERY_TOKENS", 96);
     const int anchor_radius = env_int("DFLASH_COMPRESS_ANCHOR_RADIUS", 2);
-    const int max_anchor_hits = env_int("DFLASH_COMPRESS_MAX_ANCHOR_HITS", 8);
     std::vector<uint8_t> selected_mask((size_t)n_chunks, 0);
     std::vector<uint8_t> forced((size_t)n_chunks, 0);
     for (int c = 0; c < std::min(n_chunks, head_chunks); ++c) forced[(size_t)c] = 1;
     for (int c = std::max(0, n_chunks - tail_chunks); c < n_chunks; ++c) forced[(size_t)c] = 1;
 
-    const int q0 = std::max(0, S - query_tokens);
-    constexpr int NGRAM = 4;
-    for (int q = q0; q + NGRAM <= S; ++q) {
-        int hits = 0;
-        int hit_pos[8];
-        const int search_end = std::max(0, q0 - NGRAM);
-        for (int p = 0; p <= search_end && hits <= max_anchor_hits; ++p) {
-            bool same = true;
-            for (int k = 0; k < NGRAM; ++k) {
-                if (ids[(size_t)p + k] != ids[(size_t)q + k]) { same = false; break; }
-            }
-            if (same) {
-                if (hits < 8) hit_pos[hits] = p;
-                ++hits;
-            }
-        }
-        if (hits > 0 && hits <= max_anchor_hits) {
-            for (int i = 0; i < hits && i < 8; ++i) {
-                force_chunk_neighborhood(forced, n_chunks, hit_pos[i] / chunk_size, anchor_radius);
-            }
-        }
+    // Anchor: consume pre-computed 4-gram hit positions.
+    for (int i = 0; i < anchor_hits; ++i) {
+        force_chunk_neighborhood(forced, n_chunks, hit_pos[i] / chunk_size, anchor_radius);
     }
 
     int selected_count = 0;

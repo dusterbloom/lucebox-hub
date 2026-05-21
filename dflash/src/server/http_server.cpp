@@ -421,6 +421,19 @@ bool HttpServer::route_request(int fd, const HttpRequest & hr) {
 
         req.thinking_enabled = enable_thinking;
 
+        // Per-request pflash mode override (vllm-mlx PR #180 API shape).
+        // extra_body: {"pflash_mode": "auto" | "always" | "off"}
+        if (body.contains("extra_body") && body["extra_body"].is_object()) {
+            const auto & eb = body["extra_body"];
+            if (eb.contains("pflash_mode") && eb["pflash_mode"].is_string()) {
+                const std::string mode_str = eb["pflash_mode"].get<std::string>();
+                if      (mode_str == "auto")   req.pflash_mode_override = PFlashMode::AUTO;
+                else if (mode_str == "always") req.pflash_mode_override = PFlashMode::ALWAYS;
+                else if (mode_str == "off")    req.pflash_mode_override = PFlashMode::OFF;
+                // Unknown values silently ignored — fall through to server-wide config.
+            }
+        }
+
         // Serialize tools JSON for template injection.
         std::string tools_json;
         if (req.tools.is_array() && !req.tools.empty()) {
@@ -566,6 +579,7 @@ void HttpServer::worker_loop() {
                         creq.keep_ratio = config_.pflash_keep_ratio;
                         creq.drafter_path = config_.pflash_drafter_path;
                         creq.skip_park = config_.pflash_skip_park;
+                        creq.pflash_mode = req.pflash_mode_override.value_or(config_.pflash_mode);
 
                         auto cresult = backend_.compress(creq);
 

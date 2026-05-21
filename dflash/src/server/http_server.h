@@ -25,6 +25,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -47,7 +48,9 @@ struct ServerConfig {
     int         prefix_cache_cap = 32;  // prefix cache slots (0 disables)
 
     // PFlash (speculative prefill compression)
-    enum class PflashMode { OFF, AUTO, ALWAYS };
+    // Alias to the shared enum in model_backend.h so CompressRequest and
+    // ServerConfig share the same type without a conversion step.
+    using PflashMode = dflash27b::PFlashMode;
     PflashMode  pflash_mode      = PflashMode::OFF;
     int         pflash_threshold = 32000;   // token count threshold for AUTO mode
     float       pflash_keep_ratio = 0.05f;  // fraction of tokens to keep
@@ -73,6 +76,8 @@ struct ParsedRequest {
     // Thinking/reasoning state
     bool                      thinking_enabled = true;
     bool                      started_in_thinking = false;
+    // Per-request pflash mode override (nullopt → use server-wide config).
+    std::optional<dflash27b::PFlashMode> pflash_mode_override;
 };
 
 // ─── HTTP server ────────────────────────────────────────────────────────

@@ -72,6 +72,11 @@ struct GenerateResult {
     double                     decode_s    = 0.0;
 };
 
+// ─── PFlash mode ────────────────────────────────────────────────────────
+// Shared by CompressRequest and ServerConfig so per-request overrides can
+// flow through the typed path without a string round-trip.
+enum class PFlashMode { OFF, AUTO, ALWAYS };
+
 // ─── Backend interface ──────────────────────────────────────────────────
 struct ModelBackend {
     virtual ~ModelBackend() = default;
@@ -117,6 +122,7 @@ struct ModelBackend {
         float                keep_ratio;      // fraction to keep (0.0–1.0)
         std::string          drafter_path;    // GGUF path (for lazy-load)
         bool                 skip_park;       // true on ≥32GB GPUs
+        PFlashMode           pflash_mode = PFlashMode::OFF;  // per-request override
     };
 
     struct CompressResult {

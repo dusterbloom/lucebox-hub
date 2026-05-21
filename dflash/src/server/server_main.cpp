@@ -49,6 +49,7 @@ static void print_usage(const char * prog) {
         "\n"
         "PFlash (speculative prefill compression):\n"
         "  --prefill-compression off|auto|always  (default: off)\n"
+        "  --pflash-mode off|auto|always          Alias for --prefill-compression\n"
         "  --prefill-threshold <N>     Token threshold for auto mode (default: 32000)\n"
         "  --prefill-keep-ratio <F>    Fraction of tokens to keep (default: 0.05)\n"
         "  --prefill-drafter <path>    Drafter GGUF for compression (Qwen3-0.6B)\n"
@@ -105,14 +106,18 @@ int main(int argc, char ** argv) {
             bargs.ddtree_budget = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--no-cors") == 0) {
             sconfig.enable_cors = false;
-        } else if (std::strcmp(argv[i], "--prefill-compression") == 0 && i + 1 < argc) {
+        } else if ((std::strcmp(argv[i], "--prefill-compression") == 0 ||
+                    std::strcmp(argv[i], "--pflash-mode") == 0) && i + 1 < argc) {
+            const char * flag = argv[i];
             const char * mode = argv[++i];
-            if (std::strcmp(mode, "auto") == 0)
+            if (std::strcmp(mode, "off") == 0)
+                sconfig.pflash_mode = ServerConfig::PflashMode::OFF;
+            else if (std::strcmp(mode, "auto") == 0)
                 sconfig.pflash_mode = ServerConfig::PflashMode::AUTO;
             else if (std::strcmp(mode, "always") == 0)
                 sconfig.pflash_mode = ServerConfig::PflashMode::ALWAYS;
             else {
-                std::fprintf(stderr, "[server] unknown --prefill-compression mode: '%s' (expected: auto, always, off)\n", mode);
+                std::fprintf(stderr, "[server] unknown %s mode: '%s' (expected: off, auto, always)\n", flag, mode);
                 print_usage(argv[0]);
                 return 1;
             }

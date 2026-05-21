@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "qwen3_drafter_model.h"
+#include "common/model_backend.h"
 
 struct ggml_backend;
 typedef struct ggml_backend * ggml_backend_t;
@@ -71,9 +72,10 @@ void free_drafter_weights(DrafterContext & ctx);
 std::vector<int32_t> drafter_score_and_compress(
     DrafterContext & ctx,
     const std::vector<int32_t> & ids,
-    float  keep_ratio,
-    int    chunk_size  = 32,
-    int    n_lookahead = 8,
-    int    pool_kernel = 13);
+    float      keep_ratio,
+    int        chunk_size  = 32,
+    int        n_lookahead = 8,
+    int        pool_kernel = 13,
+    PFlashMode mode_param  = PFlashMode::OFF);
 
 } // namespace dflash27b
