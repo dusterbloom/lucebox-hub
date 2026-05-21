@@ -75,6 +75,18 @@ float get_f32(gguf_context * g, const char * key, float def) {
 
 } // namespace
 
+// Detect arch prefix from general.architecture; returns true if arch has QK-norm.
+static bool arch_has_qk_norm(gguf_context * gctx, std::string & out_prefix) {
+    int k = gguf_find_key(gctx, "general.architecture");
+    std::string arch = (k >= 0) ? gguf_get_val_str(gctx, k) : "qwen3";
+    if (arch == "llama" || arch == "qwen2") {
+        out_prefix = arch + ".";
+        return false;
+    }
+    out_prefix = "qwen3.";
+    return true;
+}
+
 bool load_qwen3_drafter_model(const std::string & path,
                               ggml_backend_t backend,
                               Qwen3DrafterWeights & out) {
@@ -87,14 +99,34 @@ bool load_qwen3_drafter_model(const std::string & path,
         return false;
     }
 
-    out.n_embd     = (int)get_u32(gctx, "qwen3.embedding_length", 1024);
-    out.n_ff       = (int)get_u32(gctx, "qwen3.feed_forward_length", 3072);
-    out.n_head     = (int)get_u32(gctx, "qwen3.attention.head_count", 16);
-    out.n_head_kv  = (int)get_u32(gctx, "qwen3.attention.head_count_kv", 8);
-    out.n_layer    = (int)get_u32(gctx, "qwen3.block_count", 28);
-    out.n_ctx_max  = (int)get_u32(gctx, "qwen3.context_length", 40960);
-    out.head_dim   = (int)get_u32(gctx, "qwen3.attention.key_length", 128);
-    out.rope_theta = get_f32(gctx, "qwen3.rope.freq_base", 1000000.0f);
+    // Detect architecture; set key prefix and QK-norm presence.
+    std::string pfx;
+    const bool has_qk_norm = arch_has_qk_norm(gctx, pfx);
+    std::fprintf(stderr, "[drafter-loader] arch prefix=%s qk_norm=%s\n",
+                 pfx.c_str(), has_qk_norm ? "yes" : "no");
+    std::fflush(stderr);
+
+    // Per-arch fallback defaults (qwen3 defaults for backward compat).
+    const bool is_llama_family = (pfx == "llama." || pfx == "qwen2.");
+    const uint32_t def_n_embd    = is_llama_family ?  576 : 1024;
+    const uint32_t def_n_ff      = is_llama_family ? 1536 : 3072;
+    const uint32_t def_n_head    = is_llama_family ?    9 :   16;
+    const uint32_t def_n_head_kv = is_llama_family ?    3 :    8;
+    const uint32_t def_n_layer   = is_llama_family ?   30 :   28;
+    const uint32_t def_n_ctx     = is_llama_family ? 8192 : 40960;
+    const uint32_t def_head_dim  = is_llama_family ?   64 :  128;
+    const uint32_t def_n_vocab   = is_llama_family ? 49152 : 151936;
+    const float    def_rope      = is_llama_family ? 100000.0f : 1000000.0f;
+
+    out.n_embd     = (int)get_u32(gctx, (pfx + "embedding_length").c_str(),        def_n_embd);
+    out.n_ff       = (int)get_u32(gctx, (pfx + "feed_forward_length").c_str(),      def_n_ff);
+    out.n_head     = (int)get_u32(gctx, (pfx + "attention.head_count").c_str(),     def_n_head);
+    out.n_head_kv  = (int)get_u32(gctx, (pfx + "attention.head_count_kv").c_str(),  def_n_head_kv);
+    out.n_layer    = (int)get_u32(gctx, (pfx + "block_count").c_str(),              def_n_layer);
+    out.n_ctx_max  = (int)get_u32(gctx, (pfx + "context_length").c_str(),           def_n_ctx);
+    out.head_dim   = (int)get_u32(gctx, (pfx + "attention.key_length").c_str(),     def_head_dim);
+    out.n_vocab    = (int)get_u32(gctx, (pfx + "vocab_size").c_str(),               def_n_vocab);
+    out.rope_theta = get_f32(gctx,      (pfx + "rope.freq_base").c_str(),            def_rope);
 
     // Detect weight quant type from blk.0.attn_q.weight; support BF16 and Q8_0.
     ggml_type wtype = GGML_TYPE_BF16;
@@ -117,8 +149,9 @@ bool load_qwen3_drafter_model(const std::string & path,
     std::fflush(stderr);
 
     // Compute total tensor metadata size for context allocation.
+    // Qwen3 has 11 tensors/layer (includes q_norm + k_norm); llama-family has 9.
     const int n_layer = out.n_layer;
-    const int n_tensors_per_layer = 11;
+    const int n_tensors_per_layer = has_qk_norm ? 11 : 9;
     const int n_top_tensors = 3;
     const int total_tensors = n_top_tensors + n_layer * n_tensors_per_layer;
 
@@ -153,8 +186,11 @@ bool load_qwen3_drafter_model(const std::string & path,
         L.wk        = ggml_new_tensor_2d(out.ctx, wtype, n_embd, kv_dim);
         L.wv        = ggml_new_tensor_2d(out.ctx, wtype, n_embd, kv_dim);
         L.wo        = ggml_new_tensor_2d(out.ctx, wtype, q_dim, n_embd);
-        L.q_norm    = ggml_new_tensor_1d(out.ctx, GGML_TYPE_F32, head_dim);
-        L.k_norm    = ggml_new_tensor_1d(out.ctx, GGML_TYPE_F32, head_dim);
+        if (has_qk_norm) {
+            L.q_norm = ggml_new_tensor_1d(out.ctx, GGML_TYPE_F32, head_dim);
+            L.k_norm = ggml_new_tensor_1d(out.ctx, GGML_TYPE_F32, head_dim);
+        }
+        // else q_norm/k_norm stay nullptr (llama-family has no per-head QK-norm)
         L.ffn_norm  = ggml_new_tensor_1d(out.ctx, GGML_TYPE_F32, n_embd);
         L.ffn_gate  = ggml_new_tensor_2d(out.ctx, wtype, n_embd, n_ff);
         L.ffn_up    = ggml_new_tensor_2d(out.ctx, wtype, n_embd, n_ff);
@@ -237,8 +273,10 @@ bool load_qwen3_drafter_model(const std::string & path,
         std::snprintf(nm, sizeof(nm), "blk.%d.attn_k.weight",      il); ok &= copy_tensor_from_file(gctx, nm, mm, data_off, L.wk);
         std::snprintf(nm, sizeof(nm), "blk.%d.attn_v.weight",      il); ok &= copy_tensor_from_file(gctx, nm, mm, data_off, L.wv);
         std::snprintf(nm, sizeof(nm), "blk.%d.attn_output.weight", il); ok &= copy_tensor_from_file(gctx, nm, mm, data_off, L.wo);
-        std::snprintf(nm, sizeof(nm), "blk.%d.attn_q_norm.weight", il); ok &= copy_tensor_from_file(gctx, nm, mm, data_off, L.q_norm);
-        std::snprintf(nm, sizeof(nm), "blk.%d.attn_k_norm.weight", il); ok &= copy_tensor_from_file(gctx, nm, mm, data_off, L.k_norm);
+        if (has_qk_norm) {
+            std::snprintf(nm, sizeof(nm), "blk.%d.attn_q_norm.weight", il); ok &= copy_tensor_from_file(gctx, nm, mm, data_off, L.q_norm);
+            std::snprintf(nm, sizeof(nm), "blk.%d.attn_k_norm.weight", il); ok &= copy_tensor_from_file(gctx, nm, mm, data_off, L.k_norm);
+        }
         std::snprintf(nm, sizeof(nm), "blk.%d.ffn_norm.weight",    il); ok &= copy_tensor_from_file(gctx, nm, mm, data_off, L.ffn_norm);
         std::snprintf(nm, sizeof(nm), "blk.%d.ffn_gate.weight",    il); ok &= copy_tensor_from_file(gctx, nm, mm, data_off, L.ffn_gate);
         std::snprintf(nm, sizeof(nm), "blk.%d.ffn_up.weight",      il); ok &= copy_tensor_from_file(gctx, nm, mm, data_off, L.ffn_up);

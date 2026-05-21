@@ -433,8 +433,10 @@ bool forward_qwen3_drafter_model(
 
             ggml_tensor * Q = ggml_mul_mat(gA, L.wq, h_norm);
             Q = ggml_reshape_3d(gA, Q, D, H, cl);
-            Q = ggml_rms_norm(gA, Q, eps);
-            Q = ggml_mul(gA, Q, L.q_norm);
+            if (L.q_norm) {
+                Q = ggml_rms_norm(gA, Q, eps);
+                Q = ggml_mul(gA, Q, L.q_norm);
+            }
             // NoPE: capture pre-RoPE Q tail so the tail scorer is not biased by distance.
             if (nope_tail) {
                 const int tail_lo_nr = S - n_lookahead;
@@ -454,8 +456,10 @@ bool forward_qwen3_drafter_model(
 
             ggml_tensor * K = ggml_mul_mat(gA, L.wk, h_norm);
             K = ggml_reshape_3d(gA, K, D, Hk, cl);
-            K = ggml_rms_norm(gA, K, eps);
-            K = ggml_mul(gA, K, L.k_norm);
+            if (L.k_norm) {
+                K = ggml_rms_norm(gA, K, eps);
+                K = ggml_mul(gA, K, L.k_norm);
+            }
             // NoPE: save pre-RoPE K chunk alongside K_curr_v.
             if (nope_tail) {
                 const size_t kn_esz = ggml_element_size(K_norope_v[il].t);
