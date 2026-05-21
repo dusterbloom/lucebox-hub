@@ -1,0 +1,13 @@
+{
+  "case_idx": 0,
+  "prompt_len": 32764,
+  "answer": "4025016",
+  "response_text": "The special magic qahftrxc number is 4025016.",
+  "score": 1.0,
+  "wall_s": 18.221484184265137,
+  "qt": "48",
+  "ar": "1",
+  "mh": "16",
+  "keep_ratio": 0.05,
+  "ctx_tokens": 32768
+}

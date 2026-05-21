@@ -1,0 +1,13 @@
+{
+  "case_idx": 1,
+  "prompt_len": 32764,
+  "answer": "0438574",
+  "response_text": "The special magic bsdmrulm number is 0438574.",
+  "score": 1.0,
+  "wall_s": 22.63806128501892,
+  "qt": "48",
+  "ar": "1",
+  "mh": "4",
+  "keep_ratio": 0.05,
+  "ctx_tokens": 32768
+}

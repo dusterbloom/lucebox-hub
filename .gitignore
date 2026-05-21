@@ -78,3 +78,12 @@ fix-plan.md
 # Harness test artifacts
 .harness-work/
 health
+
+# Multi-turn harness client state (may contain tokens, large dbs)
+dflash/bench/results/**/multiturn_runs/*/claude-home/
+dflash/bench/results/**/multiturn_runs/*/opencode-home/
+dflash/bench/results/**/multiturn_runs/*/hermes-home/
+dflash/bench/results/**/multiturn_runs/*/opencode-project/
+dflash/bench/results/**/multiturn_runs/*/pair-llamacpp/
+dflash/bench/analysis/__pycache__/
+*.pyc

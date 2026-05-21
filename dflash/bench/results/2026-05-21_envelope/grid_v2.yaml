@@ -1,0 +1,8 @@
+ctx_tokens: [1024, 2048, 4096, 8192, 16384, 32768]
+keep_ratio: [0.025, 0.05, 0.10, 0.20]
+mode: ["off", "always"]
+n_per_cell: 5
+tasks: [niah_single, fwe, mqa]
+# VT dropped: baseline is near-random (0-40% in OFF mode), no useful signal
+# 64K dropped: cells dominate wall (~12 min each × 5 = 1 hour per cell, too expensive)
+# FWE requires ctx >= 8192 per the harness — the harness will raise at 1K/2K/4K, that's fine

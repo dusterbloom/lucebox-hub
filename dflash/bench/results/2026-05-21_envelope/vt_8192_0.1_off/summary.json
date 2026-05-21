@@ -1,0 +1,19 @@
+{
+  "task": "vt",
+  "ctx_tokens": 8192,
+  "n_cases": 5,
+  "n_completed": 5,
+  "accuracy": 0.4,
+  "scores": [
+    0.0,
+    0.0,
+    1.0,
+    1.0,
+    0.0
+  ],
+  "wall_p50": 9.33339810371399,
+  "wall_p95": 12.57549262046814,
+  "mode": "off",
+  "keep_ratio": 0.1,
+  "server_url": "http://127.0.0.1:8080"
+}

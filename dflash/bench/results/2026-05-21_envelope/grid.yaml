@@ -1,0 +1,6 @@
+ctx_tokens: [4096, 8192, 16384, 32768, 65536]
+keep_ratio: [0.025, 0.05, 0.10, 0.20]
+mode: ["off", "always"]
+n_per_cell: 5
+tasks: [niah_single, vt, fwe, mqa]
+# FWE requires ctx >= 8192 per the harness documented constraint

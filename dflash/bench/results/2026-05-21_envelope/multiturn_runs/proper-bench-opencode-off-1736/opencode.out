@@ -1,0 +1,6 @@
+Performing one time database migration, may take a few minutes...
+sqlite-migration:done
+Database migration complete.
+{"type":"step_start","timestamp":1779377788308,"sessionID":"ses_1b4d1ae92ffeJ91nYsAB7bktMH","part":{"id":"prt_e4b2e5592001cdvmN81Q5oGd8r","messageID":"msg_e4b2e5202001x8by9Pg93m8MfM","sessionID":"ses_1b4d1ae92ffeJ91nYsAB7bktMH","snapshot":"ec318529bf7626d06e7a1e060daee5a100eb7cc0","type":"step-start"}}
+{"type":"text","timestamp":1779377797957,"sessionID":"ses_1b4d1ae92ffeJ91nYsAB7bktMH","part":{"id":"prt_e4b2e7837001fl5I40HYV3Sz2g","messageID":"msg_e4b2e5202001x8by9Pg93m8MfM","sessionID":"ses_1b4d1ae92ffeJ91nYsAB7bktMH","type":"text","text":"Clamps `x` to the range `[lo, hi]`. Returns `x` if it's within bounds, otherwise returns the nearest bound. Raises `ValueError` if `lo > hi`.\n\nOK_DONE","time":{"start":1779377797175,"end":1779377797954}}}
+{"type":"step_finish","timestamp":1779377797967,"sessionID":"ses_1b4d1ae92ffeJ91nYsAB7bktMH","part":{"id":"prt_e4b2e7b4c001Ev1fJr8Wnjv63a","reason":"stop","snapshot":"ec318529bf7626d06e7a1e060daee5a100eb7cc0","messageID":"msg_e4b2e5202001x8by9Pg93m8MfM","sessionID":"ses_1b4d1ae92ffeJ91nYsAB7bktMH","type":"step-finish","tokens":{"total":5553,"input":5508,"output":45,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0}}
