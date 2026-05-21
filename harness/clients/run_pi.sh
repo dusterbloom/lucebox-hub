@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Load asdf so the pi shim resolves correctly in non-interactive subshells
+# shellcheck disable=SC1090
+source "$HOME/.asdf/asdf.sh" || true
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${MAX_CTX:=65536}"
 : "${BUDGET:=22}"

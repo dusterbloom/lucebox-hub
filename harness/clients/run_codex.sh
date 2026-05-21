@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Load nvm so node is in PATH for codex (a Node.js binary) in non-interactive subshells
+# shellcheck disable=SC1090
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh" || true
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${MAX_CTX:=32768}"
 : "${BUDGET:=22}"
