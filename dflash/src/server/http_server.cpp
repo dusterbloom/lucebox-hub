@@ -273,16 +273,41 @@ bool HttpServer::route_request(int fd, const HttpRequest & hr) {
             req.response_id = generate_id("msg");
             req.messages = body["messages"];
             if (body.contains("system")) {
-                // Anthropic puts system as a top-level field.
-                // Strip billing header blocks injected by Claude Code.
                 json sys_content = body["system"];
-                if (sys_content.is_array()) {
+
+                // Concatenate text for marker detection.
+                std::string sys_str;
+                if (sys_content.is_string()) {
+                    sys_str = sys_content.get<std::string>();
+                } else if (sys_content.is_array()) {
+                    for (const auto & block : sys_content) {
+                        if (block.is_object() && block.value("type", "") == "text") {
+                            sys_str += block.value("text", "");
+                        }
+                    }
+                }
+
+                // Trim Claude Code's huge agent system prompt. Default on unless
+                // DFLASH_ANTHROPIC_RAW_SYSTEM=1. Mirrors Python server.py behaviour.
+                const char * raw_env = std::getenv("DFLASH_ANTHROPIC_RAW_SYSTEM");
+                const bool raw_sys = raw_env && std::string(raw_env) == "1";
+                const bool is_claude_code = !raw_sys && (
+                    sys_str.find("Claude Code") != std::string::npos ||
+                    sys_str.find("Claude Agent SDK") != std::string::npos);
+
+                if (is_claude_code) {
+                    sys_content = std::string(
+                        "You are a concise coding assistant running behind an Anthropic "
+                        "Messages compatible client. Answer the user's request directly. "
+                        "Use the provided tools only when they are needed.");
+                } else if (sys_content.is_array()) {
+                    // Preserve original structure but strip billing header blocks.
                     json filtered = json::array();
                     for (const auto & block : sys_content) {
                         if (block.is_object() && block.value("type", "") == "text") {
                             std::string text = block.value("text", "");
                             if (text.rfind("x-anthropic-billing-header:", 0) == 0) {
-                                continue;  // skip billing header block
+                                continue;
                             }
                         }
                         filtered.push_back(block);
@@ -294,6 +319,7 @@ bool HttpServer::route_request(int fd, const HttpRequest & hr) {
                         sys_content = "";
                     }
                 }
+
                 if (!sys_content.empty()) {
                     json sys_msg = {{"role", "system"}, {"content", sys_content}};
                     req.messages.insert(req.messages.begin(), sys_msg);
@@ -422,10 +448,20 @@ bool HttpServer::route_request(int fd, const HttpRequest & hr) {
         return true;  // handled (with error)
     }
 
-    // Check context length.
-    if ((int)req.prompt_tokens.size() + req.max_output > config_.max_ctx) {
-        send_error(fd, 400, "prompt + max_tokens exceeds context window");
-        return true;
+    // Clamp max_output to fit the context window. Mirrors Python server behaviour
+    // (server.py: min(max_tokens, max_ctx - prompt_len - 20)). Avoids 400-ing
+    // clients like Claude Code that send a large default max_tokens.
+    {
+        const int prompt_len = (int)req.prompt_tokens.size();
+        const int headroom = 20;
+        if (prompt_len + headroom >= config_.max_ctx) {
+            send_error(fd, 400, "prompt exceeds context window");
+            return true;
+        }
+        const int effective_max = config_.max_ctx - prompt_len - headroom;
+        if (req.max_output > effective_max) {
+            req.max_output = effective_max;
+        }
     }
 
     // Set socket non-blocking for send() stall detection during streaming.
