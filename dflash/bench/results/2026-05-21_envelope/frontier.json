@@ -1,0 +1,482 @@
+[
+  {
+    "task": "niah_single",
+    "ctx": 4096,
+    "keep": 0.025,
+    "mode": "off",
+    "accuracy": 1.0,
+    "wall_p50": 4.815924644470215,
+    "wall_p95": 8.037857294082642,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 4096,
+    "keep": 0.025,
+    "mode": "always",
+    "accuracy": 1.0,
+    "wall_p50": 4.813105583190918,
+    "wall_p95": 7.935792922973633,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 4096,
+    "keep": 0.025,
+    "mode": "auto",
+    "accuracy": 1.0,
+    "wall_p50": 4.902396202087402,
+    "wall_p95": 8.129024982452393,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 4096,
+    "keep": 0.05,
+    "mode": "off",
+    "accuracy": 1.0,
+    "wall_p50": 4.797708749771118,
+    "wall_p95": 5.0192835330963135,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 4096,
+    "keep": 0.05,
+    "mode": "always",
+    "accuracy": 1.0,
+    "wall_p50": 5.22084903717041,
+    "wall_p95": 5.22084903717041,
+    "n_cases": 1
+  },
+  {
+    "task": "niah_single",
+    "ctx": 4096,
+    "keep": 0.05,
+    "mode": "auto",
+    "accuracy": 1.0,
+    "wall_p50": 4.817228317260742,
+    "wall_p95": 8.017232894897461,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 4096,
+    "keep": 0.1,
+    "mode": "off",
+    "accuracy": 1.0,
+    "wall_p50": 4.919348239898682,
+    "wall_p95": 7.40319037437439,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 4096,
+    "keep": 0.1,
+    "mode": "always",
+    "accuracy": 1.0,
+    "wall_p50": 4.800513505935669,
+    "wall_p95": 7.957721471786499,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 4096,
+    "keep": 0.1,
+    "mode": "auto",
+    "accuracy": 1.0,
+    "wall_p50": 4.803973913192749,
+    "wall_p95": 4.835350275039673,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 4096,
+    "keep": 0.2,
+    "mode": "off",
+    "accuracy": 1.0,
+    "wall_p50": 4.803536653518677,
+    "wall_p95": 4.986170530319214,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 4096,
+    "keep": 0.2,
+    "mode": "always",
+    "accuracy": 1.0,
+    "wall_p50": 4.877580165863037,
+    "wall_p95": 8.099071502685547,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 4096,
+    "keep": 0.2,
+    "mode": "auto",
+    "accuracy": 1.0,
+    "wall_p50": 4.877114295959473,
+    "wall_p95": 8.348788499832153,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 8192,
+    "keep": 0.025,
+    "mode": "off",
+    "accuracy": 1.0,
+    "wall_p50": 9.658395528793335,
+    "wall_p95": 13.165757894515991,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 8192,
+    "keep": 0.025,
+    "mode": "always",
+    "accuracy": 1.0,
+    "wall_p50": 12.359693050384521,
+    "wall_p95": 13.313772201538086,
+    "n_cases": 4
+  },
+  {
+    "task": "niah_single",
+    "ctx": 8192,
+    "keep": 0.025,
+    "mode": "auto",
+    "accuracy": 1.0,
+    "wall_p50": 10.161027908325195,
+    "wall_p95": 10.971463680267334,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 8192,
+    "keep": 0.05,
+    "mode": "off",
+    "accuracy": 1.0,
+    "wall_p50": 9.951767921447754,
+    "wall_p95": 11.360401391983032,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 8192,
+    "keep": 0.05,
+    "mode": "always",
+    "accuracy": 1.0,
+    "wall_p50": 9.962842464447021,
+    "wall_p95": 12.257457733154297,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 8192,
+    "keep": 0.05,
+    "mode": "auto",
+    "accuracy": 1.0,
+    "wall_p50": 10.142021656036377,
+    "wall_p95": 12.527130842208862,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 8192,
+    "keep": 0.1,
+    "mode": "off",
+    "accuracy": 1.0,
+    "wall_p50": 9.638430833816528,
+    "wall_p95": 12.7479989528656,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 8192,
+    "keep": 0.1,
+    "mode": "always",
+    "accuracy": 1.0,
+    "wall_p50": 9.941705465316772,
+    "wall_p95": 12.725888729095459,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 8192,
+    "keep": 0.1,
+    "mode": "auto",
+    "accuracy": 1.0,
+    "wall_p50": 9.924953699111938,
+    "wall_p95": 12.700873136520386,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 8192,
+    "keep": 0.2,
+    "mode": "off",
+    "accuracy": 1.0,
+    "wall_p50": 10.179173946380615,
+    "wall_p95": 12.175131559371948,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 8192,
+    "keep": 0.2,
+    "mode": "always",
+    "accuracy": 1.0,
+    "wall_p50": 9.711585283279419,
+    "wall_p95": 12.402524471282959,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 8192,
+    "keep": 0.2,
+    "mode": "auto",
+    "accuracy": 1.0,
+    "wall_p50": 9.589402675628662,
+    "wall_p95": 12.49865174293518,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 16384,
+    "keep": 0.025,
+    "mode": "off",
+    "accuracy": 1.0,
+    "wall_p50": 23.006423473358154,
+    "wall_p95": 23.29160213470459,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 16384,
+    "keep": 0.025,
+    "mode": "always",
+    "accuracy": 1.0,
+    "wall_p50": 23.378487825393677,
+    "wall_p95": 23.746674060821533,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 16384,
+    "keep": 0.025,
+    "mode": "auto",
+    "accuracy": 1.0,
+    "wall_p50": 23.242023468017578,
+    "wall_p95": 23.418583869934082,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 16384,
+    "keep": 0.05,
+    "mode": "off",
+    "accuracy": 1.0,
+    "wall_p50": 23.30529236793518,
+    "wall_p95": 23.681886434555054,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 16384,
+    "keep": 0.05,
+    "mode": "always",
+    "accuracy": 1.0,
+    "wall_p50": 22.71702551841736,
+    "wall_p95": 23.682353258132935,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 16384,
+    "keep": 0.05,
+    "mode": "auto",
+    "accuracy": 1.0,
+    "wall_p50": 22.981063842773438,
+    "wall_p95": 23.522031784057617,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 16384,
+    "keep": 0.1,
+    "mode": "off",
+    "accuracy": 1.0,
+    "wall_p50": 23.473023891448975,
+    "wall_p95": 23.673458337783813,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 16384,
+    "keep": 0.1,
+    "mode": "always",
+    "accuracy": 1.0,
+    "wall_p50": 23.45856547355652,
+    "wall_p95": 23.584074020385742,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 16384,
+    "keep": 0.1,
+    "mode": "auto",
+    "accuracy": 1.0,
+    "wall_p50": 23.11294150352478,
+    "wall_p95": 23.502392768859863,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 16384,
+    "keep": 0.2,
+    "mode": "off",
+    "accuracy": 1.0,
+    "wall_p50": 23.061599731445312,
+    "wall_p95": 23.141112565994263,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 16384,
+    "keep": 0.2,
+    "mode": "always",
+    "accuracy": 1.0,
+    "wall_p50": 23.111581325531006,
+    "wall_p95": 23.280487298965454,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 16384,
+    "keep": 0.2,
+    "mode": "auto",
+    "accuracy": 1.0,
+    "wall_p50": 20.65197992324829,
+    "wall_p95": 27.622894287109375,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 32768,
+    "keep": 0.025,
+    "mode": "off",
+    "accuracy": 1.0,
+    "wall_p50": 32.7888240814209,
+    "wall_p95": 39.90498113632202,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 32768,
+    "keep": 0.025,
+    "mode": "always",
+    "accuracy": 1.0,
+    "wall_p50": 26.49020504951477,
+    "wall_p95": 27.93217945098877,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 32768,
+    "keep": 0.025,
+    "mode": "auto",
+    "accuracy": 1.0,
+    "wall_p50": 24.760911226272583,
+    "wall_p95": 27.05033564567566,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 32768,
+    "keep": 0.05,
+    "mode": "off",
+    "accuracy": 1.0,
+    "wall_p50": 24.254387140274048,
+    "wall_p95": 24.37930917739868,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 32768,
+    "keep": 0.05,
+    "mode": "always",
+    "accuracy": 1.0,
+    "wall_p50": 24.21672296524048,
+    "wall_p95": 32.39896893501282,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 32768,
+    "keep": 0.05,
+    "mode": "auto",
+    "accuracy": 1.0,
+    "wall_p50": 30.89981722831726,
+    "wall_p95": 30.9865825176239,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 32768,
+    "keep": 0.1,
+    "mode": "off",
+    "accuracy": 1.0,
+    "wall_p50": 52.3698468208313,
+    "wall_p95": 55.181899070739746,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 32768,
+    "keep": 0.1,
+    "mode": "always",
+    "accuracy": 1.0,
+    "wall_p50": 24.531410217285156,
+    "wall_p95": 29.008824110031128,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 32768,
+    "keep": 0.1,
+    "mode": "auto",
+    "accuracy": 1.0,
+    "wall_p50": 27.850902557373047,
+    "wall_p95": 31.51896333694458,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 32768,
+    "keep": 0.2,
+    "mode": "off",
+    "accuracy": 1.0,
+    "wall_p50": 24.493568658828735,
+    "wall_p95": 30.64686417579651,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 32768,
+    "keep": 0.2,
+    "mode": "always",
+    "accuracy": 1.0,
+    "wall_p50": 30.910744428634644,
+    "wall_p95": 31.64335346221924,
+    "n_cases": 5
+  },
+  {
+    "task": "niah_single",
+    "ctx": 32768,
+    "keep": 0.2,
+    "mode": "auto",
+    "accuracy": 1.0,
+    "wall_p50": 32.22374391555786,
+    "wall_p95": 32.846189737319946,
+    "n_cases": 5
+  }
+]

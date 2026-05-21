@@ -1,0 +1,5 @@
+ctx_tokens: [4096, 8192, 16384, 32768]
+keep_ratio: [0.025, 0.05, 0.10, 0.20]
+mode: ["off", "always", "auto"]
+n_per_cell: 5
+tasks: [niah_single]

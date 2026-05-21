@@ -1,0 +1,10 @@
+{
+  "task": "niah_single",
+  "ctx_tokens": 4096,
+  "n_cases": 5,
+  "accuracy": 1.0,
+  "wall_p50": 4.797708749771118,
+  "wall_p95": 5.0192835330963135,
+  "mode": "off",
+  "keep_ratio": 0.05
+}

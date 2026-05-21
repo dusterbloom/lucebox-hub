@@ -231,6 +231,22 @@ def main():
         task, ctx, keep, mode = cell_args
         cell_dir = _cell_dir(base_out, task, ctx, keep, mode)
         seed_i = args.seed + hash((task, ctx, keep, mode)) % 10000
+        # Skip cells that already have a complete summary.json (resume support).
+        if not args.dry_run and (cell_dir / "summary.json").exists():
+            try:
+                with open(cell_dir / "summary.json") as f:
+                    existing = json.load(f)
+                print(f"[sweep] skip (cached) task={task} ctx={ctx} keep={keep} mode={mode} "
+                      f"acc={existing.get('accuracy')}", flush=True)
+                return {
+                    "task": task, "ctx": ctx, "keep": keep, "mode": mode,
+                    "accuracy": existing.get("accuracy"),
+                    "wall_p50": existing.get("wall_p50"),
+                    "wall_p95": existing.get("wall_p95"),
+                    "n_cases": existing.get("n_cases"),
+                }
+            except Exception:
+                pass  # corrupted summary — re-run
         print(f"[sweep] start task={task} ctx={ctx} keep={keep} mode={mode}", flush=True)
         if task == "niah_single":
             summary = _run_niah_single(

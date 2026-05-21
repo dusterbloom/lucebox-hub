@@ -1,0 +1,13 @@
+{
+  "client": "opencode",
+  "pflash_mode": "always",
+  "keep_ratio": 0.05,
+  "mtp_accept_rates": [
+    0.64,
+    0.91
+  ],
+  "mtp_accept_mean": 0.775,
+  "mtp_accept_min": 0.64,
+  "mtp_accept_max": 0.91,
+  "marker_count": 1
+}

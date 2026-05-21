@@ -1,0 +1,10 @@
+{
+  "client": "hermes",
+  "pflash_mode": "off",
+  "keep_ratio": 0.05,
+  "mtp_accept_rates": [],
+  "mtp_accept_mean": null,
+  "mtp_accept_min": null,
+  "mtp_accept_max": null,
+  "marker_count": 0
+}

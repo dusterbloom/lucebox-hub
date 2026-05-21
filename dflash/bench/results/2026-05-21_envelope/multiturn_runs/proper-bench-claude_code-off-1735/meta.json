@@ -1,0 +1,12 @@
+{
+  "client": "claude_code",
+  "pflash_mode": "off",
+  "keep_ratio": 0.05,
+  "mtp_accept_rates": [
+    0.75
+  ],
+  "mtp_accept_mean": 0.75,
+  "mtp_accept_min": 0.75,
+  "mtp_accept_max": 0.75,
+  "marker_count": 1
+}
