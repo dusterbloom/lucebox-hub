@@ -1,0 +1,36 @@
+{
+  "name": "A_prior",
+  "label": "Prior (Q4_K_M + BF16 drafter + park/unpark)",
+  "results": [
+    {
+      "case": 0,
+      "cold": true,
+      "niah": true,
+      "answer": "The special magic qahftrxc number is 4025016.",
+      "expected": "4025016",
+      "drafter_fwd_s": 7.5,
+      "wall_s": 20.820900307000556
+    },
+    {
+      "case": 1,
+      "cold": false,
+      "niah": true,
+      "answer": "The special magic bsdmrulm number is 0438574.",
+      "expected": "0438574",
+      "drafter_fwd_s": 8.71,
+      "wall_s": 19.087906969994947
+    },
+    {
+      "case": 2,
+      "cold": false,
+      "niah": false,
+      "answer": "",
+      "expected": "1596346",
+      "drafter_fwd_s": null,
+      "wall_s": null
+    }
+  ],
+  "p50_warm_s": 8.71,
+  "niah_warm_2": 1,
+  "peak_vram_gb": 22.291015625
+}

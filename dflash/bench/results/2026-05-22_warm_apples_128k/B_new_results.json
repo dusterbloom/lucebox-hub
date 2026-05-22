@@ -1,0 +1,36 @@
+{
+  "name": "B_new",
+  "label": "New (Q3_K_S + reranker Q8 + skip-park)",
+  "results": [
+    {
+      "case": 0,
+      "cold": true,
+      "niah": true,
+      "answer": "The special magic qahftrxc number is 4025016.",
+      "expected": "4025016",
+      "drafter_fwd_s": 32.11,
+      "wall_s": 41.90549936599564
+    },
+    {
+      "case": 1,
+      "cold": false,
+      "niah": true,
+      "answer": "The special magic bsdmrulm number is 0438574.",
+      "expected": "0438574",
+      "drafter_fwd_s": 29.23,
+      "wall_s": 38.12716302699846
+    },
+    {
+      "case": 2,
+      "cold": false,
+      "niah": false,
+      "answer": "",
+      "expected": "1596346",
+      "drafter_fwd_s": null,
+      "wall_s": null
+    }
+  ],
+  "p50_warm_s": 29.23,
+  "niah_warm_2": 1,
+  "peak_vram_gb": 17.3671875
+}
