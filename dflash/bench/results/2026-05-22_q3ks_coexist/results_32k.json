@@ -1,0 +1,30 @@
+{
+  "ctx_tokens": 32768,
+  "results": [
+    {
+      "pass": true,
+      "answer": "The special magic qahftrxc number is 4025016.",
+      "expected": "4025016",
+      "drafter_fwd_s": 1.49,
+      "crash": false,
+      "cuda_crash": false
+    },
+    {
+      "pass": true,
+      "answer": "The special magic bsdmrulm number is 0438574.",
+      "expected": "0438574",
+      "drafter_fwd_s": 1.45,
+      "crash": false,
+      "cuda_crash": false
+    },
+    {
+      "pass": false,
+      "answer": "",
+      "expected": "1596346",
+      "drafter_fwd_s": null,
+      "crash": false,
+      "cuda_crash": false
+    }
+  ],
+  "peak_vram_gb": 16.306640625
+}

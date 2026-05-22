@@ -1,0 +1,30 @@
+{
+  "ctx_tokens": 65536,
+  "results": [
+    {
+      "pass": false,
+      "answer": "",
+      "expected": "4025016",
+      "drafter_fwd_s": null,
+      "crash": false,
+      "cuda_crash": false
+    },
+    {
+      "pass": true,
+      "answer": "The special magic bsdmrulm number is 0438574.",
+      "expected": "0438574",
+      "drafter_fwd_s": 3.01,
+      "crash": false,
+      "cuda_crash": false
+    },
+    {
+      "pass": false,
+      "answer": "",
+      "expected": "1596346",
+      "drafter_fwd_s": null,
+      "crash": false,
+      "cuda_crash": false
+    }
+  ],
+  "peak_vram_gb": 16.4638671875
+}
