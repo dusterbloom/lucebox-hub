@@ -1,0 +1,154 @@
+[
+  {
+    "condition": "baseline_qwen3",
+    "drafter": "Qwen3-0.6B-BF16.gguf",
+    "keep": 0.05,
+    "case_results": [
+      {
+        "ttft_s": 9.44531330299651,
+        "text": "The special magic qahftrxc number is 4025016.",
+        "found": true,
+        "error": null,
+        "drafter_fwd_s": 1.7,
+        "tail_score_s": 0.25,
+        "embed_error": false
+      },
+      {
+        "ttft_s": 6.444520334996923,
+        "text": "The special magic bsdmrulm number is 0438574.",
+        "found": true,
+        "error": null,
+        "drafter_fwd_s": 1.54,
+        "tail_score_s": 0.23,
+        "embed_error": false
+      },
+      {
+        "ttft_s": 2.533865807003167,
+        "text": "",
+        "found": false,
+        "error": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))",
+        "drafter_fwd_s": null,
+        "tail_score_s": null,
+        "embed_error": false
+      }
+    ],
+    "drafter_p50_s": 1.62,
+    "tail_score_p50_s": 0.24,
+    "niah_pass": 2,
+    "niah_total": 3
+  },
+  {
+    "condition": "reranker_keep05",
+    "drafter": "Qwen3-Reranker-0.6B-Q8_0.gguf",
+    "keep": 0.05,
+    "case_results": [
+      {
+        "ttft_s": 6.875953300004767,
+        "text": "The special magic qahftrxc number is 4025016.",
+        "found": true,
+        "error": null,
+        "drafter_fwd_s": 1.47,
+        "tail_score_s": 0.23,
+        "embed_error": false
+      },
+      {
+        "ttft_s": 6.268469295995601,
+        "text": "The special magic bsdmrulm number is 0438574.",
+        "found": true,
+        "error": null,
+        "drafter_fwd_s": 1.44,
+        "tail_score_s": 0.22,
+        "embed_error": false
+      },
+      {
+        "ttft_s": 1.8824731650020112,
+        "text": "",
+        "found": false,
+        "error": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))",
+        "drafter_fwd_s": null,
+        "tail_score_s": null,
+        "embed_error": false
+      }
+    ],
+    "drafter_p50_s": 1.455,
+    "tail_score_p50_s": 0.225,
+    "niah_pass": 2,
+    "niah_total": 3
+  },
+  {
+    "condition": "reranker_keep10",
+    "drafter": "Qwen3-Reranker-0.6B-Q8_0.gguf",
+    "keep": 0.1,
+    "case_results": [
+      {
+        "ttft_s": 8.006742138997652,
+        "text": "The special magic qahftrxc number is 4025016.",
+        "found": true,
+        "error": null,
+        "drafter_fwd_s": 1.45,
+        "tail_score_s": 0.23,
+        "embed_error": false
+      },
+      {
+        "ttft_s": 8.179283541998302,
+        "text": "The special magic bsdmrulm number is 0438574.",
+        "found": true,
+        "error": null,
+        "drafter_fwd_s": 1.44,
+        "tail_score_s": 0.22,
+        "embed_error": false
+      },
+      {
+        "ttft_s": 1.6417565239971736,
+        "text": "",
+        "found": false,
+        "error": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))",
+        "drafter_fwd_s": null,
+        "tail_score_s": null,
+        "embed_error": false
+      }
+    ],
+    "drafter_p50_s": 1.4449999999999998,
+    "tail_score_p50_s": 0.225,
+    "niah_pass": 2,
+    "niah_total": 3
+  },
+  {
+    "condition": "reranker_keep20",
+    "drafter": "Qwen3-Reranker-0.6B-Q8_0.gguf",
+    "keep": 0.2,
+    "case_results": [
+      {
+        "ttft_s": 12.042625803005649,
+        "text": "The special magic qahftrxc number is 4025016.",
+        "found": true,
+        "error": null,
+        "drafter_fwd_s": 1.43,
+        "tail_score_s": 0.22,
+        "embed_error": false
+      },
+      {
+        "ttft_s": 12.083480209999834,
+        "text": "The special magic bsdmrulm number is 0438574.",
+        "found": true,
+        "error": null,
+        "drafter_fwd_s": 1.46,
+        "tail_score_s": 0.22,
+        "embed_error": false
+      },
+      {
+        "ttft_s": 1.7115081199954147,
+        "text": "",
+        "found": false,
+        "error": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))",
+        "drafter_fwd_s": null,
+        "tail_score_s": null,
+        "embed_error": false
+      }
+    ],
+    "drafter_p50_s": 1.4449999999999998,
+    "tail_score_p50_s": 0.22,
+    "niah_pass": 2,
+    "niah_total": 3
+  }
+]
