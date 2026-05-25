@@ -79,6 +79,7 @@ struct Qwen3MoeWeights {
     int   n_vocab        = 0;
     int   n_ctx_max      = 0;
     float rope_theta     = 0.0f;
+    float norm_eps       = 1e-6f;  // RMS-norm epsilon (qwen3moe.attention.layer_norm_rms_epsilon)
     bool  norm_topk_prob = true;
 };
 
