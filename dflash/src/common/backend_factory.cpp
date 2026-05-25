@@ -6,6 +6,7 @@
 #include "qwen35_backend.h"
 #include "laguna_backend.h"
 #include "qwen3_backend.h"
+#include "qwen3moe_backend.h"
 #include "gemma4_backend.h"
 
 #include <cstdio>
@@ -82,6 +83,23 @@ std::unique_ptr<ModelBackend> create_backend(const BackendArgs & args) {
         auto backend = std::make_unique<Qwen3Backend>(qcfg);
         if (!backend->init()) {
             std::fprintf(stderr, "[backend_factory] Qwen3Backend init failed\n");
+            return nullptr;
+        }
+        return backend;
+
+    } else if (arch == "qwen3moe") {
+        Qwen3MoeBackendConfig qcfg;
+        qcfg.model_path    = args.model_path;
+        qcfg.device        = args.device;
+        qcfg.stream_fd     = args.stream_fd;
+        qcfg.chunk         = args.chunk;
+        qcfg.draft_path    = args.draft_path;
+        qcfg.draft_gpu     = args.draft_device.gpu;
+        qcfg.draft_ctx_max = args.draft_ctx_max;
+
+        auto backend = std::make_unique<Qwen3MoeBackend>(qcfg);
+        if (!backend->init()) {
+            std::fprintf(stderr, "[backend_factory] Qwen3MoeBackend init failed\n");
             return nullptr;
         }
         return backend;
