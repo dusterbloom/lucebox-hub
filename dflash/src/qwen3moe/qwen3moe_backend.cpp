@@ -134,17 +134,17 @@ static bool embed_tokens(ggml_backend_t backend,
     ggml_cgraph * gf = ggml_new_graph(ectx);
     ggml_build_forward_expand(gf, cpy);
 
-    ggml_gallocr_t galloc = ggml_gallocr_new(
+    // Static gallocr — reused across calls; saves cudaMalloc/cudaFree per embed.
+    static ggml_gallocr_t galloc = nullptr;
+    if (!galloc) galloc = ggml_gallocr_new(
         ggml_backend_get_default_buffer_type(backend));
     if (!ggml_gallocr_alloc_graph(galloc, gf)) {
-        ggml_gallocr_free(galloc);
         ggml_free(ectx);
         return false;
     }
     ggml_backend_tensor_set(id_t, ids, 0, sizeof(int32_t) * n);
     ggml_backend_graph_compute(backend, gf);
     ggml_backend_tensor_get(cpy, embed_buf, 0, sizeof(float) * (size_t)hidden * n);
-    ggml_gallocr_free(galloc);
     ggml_free(ectx);
     return true;
 }

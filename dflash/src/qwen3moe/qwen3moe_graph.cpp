@@ -248,13 +248,16 @@ bool Qwen3MoeBackend::do_step(const float * embed,
     ggml_build_forward_expand(gf, logits_out);
 
     // ── Allocate and compute ──────────────────────────────────────────────────
-    ggml_gallocr_t galloc = ggml_gallocr_new(
+    // Static gallocr: allocated once, reused across all decode/prefill steps.
+    // Avoids per-token cudaMalloc/cudaFree (~5-10ms/token). Pattern mirrors
+    // gemma4_graph.cpp:513. Leaked at process exit, fine for long-running server.
+    static ggml_gallocr_t galloc = nullptr;
+    if (!galloc) galloc = ggml_gallocr_new(
         ggml_backend_get_default_buffer_type(backend_));
     if (!ggml_gallocr_alloc_graph(galloc, gf)) {
         std::fprintf(stderr,
             "[qwen3moe] graph alloc failed (n_tokens=%d kv_start=%d kv_len=%d)\n",
             n_tokens, kv_start, kv_len);
-        ggml_gallocr_free(galloc);
         ggml_free(ctx);
         return false;
     }
@@ -291,7 +294,6 @@ bool Qwen3MoeBackend::do_step(const float * embed,
         std::fprintf(stderr,
             "[qwen3moe] graph compute failed (status=%d n_tokens=%d kv_start=%d)\n",
             (int)st, n_tokens, kv_start);
-        ggml_gallocr_free(galloc);
         ggml_free(ctx);
         return false;
     }
@@ -301,7 +303,6 @@ bool Qwen3MoeBackend::do_step(const float * embed,
     ggml_backend_tensor_get(logits_out, out_logits.data(), 0,
                             sizeof(float) * vocab);
 
-    ggml_gallocr_free(galloc);
     ggml_free(ctx);
     return true;
 }
