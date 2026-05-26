@@ -24,6 +24,8 @@ struct Qwen3MoeVerifyGraphResult {
     ggml_tensor *             inp         = nullptr;   // [hidden, n_tokens] F32
     ggml_tensor *             positions   = nullptr;   // [n_tokens] I32
     ggml_tensor *             attn_mask   = nullptr;   // [kv_len, n_tokens] F16
+    ggml_tensor *             k_idxs      = nullptr;   // [n_tokens] I64 cache write idx
+    ggml_tensor *             v_idxs      = nullptr;   // [n_tokens] I64 cache write idx
     ggml_tensor *             argmax      = nullptr;   // [n_tokens] I32 argmax
     std::vector<ggml_tensor*> captures;               // one per capture layer
 };

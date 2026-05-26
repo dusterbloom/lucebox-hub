@@ -14,7 +14,10 @@
 
 #include <cinttypes>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <utility>
+#include <vector>
 
 #if !defined(_WIN32)
 #include <cerrno>
@@ -141,16 +144,28 @@ bool load_qwen3moe_gguf(const std::string & path,
             std::fprintf(stderr, "[qwen3moe-loader] eos_token_id=%u\n", eos);
     }
 
-    // ── Step 4: derive n_vocab from token_embd tensor shape ────────────────
-    uint32_t n_vocab = 0;
-    {
+    // ── Step 4: derive n_vocab — prefer metadata, fall back via axis match ──
+    // Some Coder ggufs store tok_embd as [vocab, hidden] (transposed) so we
+    // can't blindly read ne[1]. Pick the axis that does NOT equal n_embd.
+    uint32_t n_vocab = qmoe_get_u32(gctx, "qwen3moe.vocab_size", 0);
+    if (n_vocab == 0) {
         ggml_tensor * tok = ggml_get_tensor(meta_ctx, "token_embd.weight");
         if (tok) {
-            n_vocab = (uint32_t)tok->ne[1];
+            if ((uint32_t)tok->ne[0] == n_embd) {
+                n_vocab = (uint32_t)tok->ne[1];
+            } else if ((uint32_t)tok->ne[1] == n_embd) {
+                n_vocab = (uint32_t)tok->ne[0];
+                std::fprintf(stderr,
+                    "[qwen3moe-loader] tok_embd is transposed [vocab=%lld, hidden=%lld]; "
+                    "n_vocab=%u (will need physical transpose at load)\n",
+                    (long long)tok->ne[0], (long long)tok->ne[1], n_vocab);
+            } else {
+                std::fprintf(stderr,
+                    "[qwen3moe-loader] tok_embd shape [%lld,%lld] does not match "
+                    "n_embd=%u on either axis; set qwen3moe.vocab_size in GGUF metadata\n",
+                    (long long)tok->ne[0], (long long)tok->ne[1], n_embd);
+            }
         }
-    }
-    if (n_vocab == 0) {
-        n_vocab = qmoe_get_u32(gctx, "qwen3moe.vocab_size", 0);
     }
 
     // ── Step 5: zero-guard essential hparams ───────────────────────────────
@@ -248,6 +263,13 @@ bool load_qwen3moe_gguf(const std::string & path,
         gguf_free(gctx);
         return false;
     }
+
+    // Note: gguf-compat fixups for transposed [vocab,hidden] tok_embd and for
+    // k-quant tok_embd that ggml-cuda's get_rows doesn't support are NOT done
+    // here yet — the dequant+swap path was attempted but produced incorrect
+    // embeddings (causes immediate EOS sampling on Coder UD-IQ2_XXS and
+    // Coder-Instruct-IQ2_XXS-tokembd-F16). Tracked as open follow-ups; the
+    // vocab-axis detection above is the safe partial fix.
 
     // Per-layer
     out.layers.resize(n_layer);

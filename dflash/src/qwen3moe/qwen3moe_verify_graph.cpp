@@ -78,6 +78,14 @@ bool build_qwen3moe_verify_graph(
     ggml_set_name(attn_mask, "verify_attn_mask");
     ggml_set_input(attn_mask);
 
+    // K/V write indices into the position-major cache [D, Hk, max_ctx].
+    ggml_tensor * k_idxs = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, n_tokens);
+    ggml_set_name(k_idxs, "verify_k_idxs");
+    ggml_set_input(k_idxs);
+    ggml_tensor * v_idxs = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, n_tokens);
+    ggml_set_name(v_idxs, "verify_v_idxs");
+    ggml_set_input(v_idxs);
+
     ggml_tensor * cur = inp;
 
     // Capture tensors for the feature mirror.
@@ -115,35 +123,30 @@ bool build_qwen3moe_verify_graph(
                           w.rope_theta, 1.0f,
                           0.0f, 1.0f, 0.0f, 0.0f);
 
-        ggml_tensor * K_half = ggml_cast(ctx, K, half_type);
-        ggml_tensor * V_half = ggml_cast(ctx, V, half_type);
+        // K/V cache layout: [D, Hk, max_ctx]. Writes via ggml_set_rows
+        // with dynamic I64 idx tensors so the destination offset isn't
+        // baked into graph node data pointers (mirrors qwen3moe_graph.cpp
+        // and avoids the broken kv_start-as-view-offset pattern).
+        (void)half_type;  // cache.k[il]->type drives the write conversion
+        ggml_tensor * K_2d = ggml_reshape_2d(ctx, K, D * Hk, n_tokens);
+        ggml_tensor * V_2d = ggml_reshape_2d(ctx, V, D * Hk, n_tokens);
+        ggml_tensor * cache_k_2d = ggml_reshape_2d(ctx, cache.k[il], D * Hk, cache.max_ctx);
+        ggml_tensor * cache_v_2d = ggml_reshape_2d(ctx, cache.v[il], D * Hk, cache.max_ctx);
+        ggml_build_forward_expand(gf, ggml_set_rows(ctx, cache_k_2d, K_2d, k_idxs));
+        ggml_build_forward_expand(gf, ggml_set_rows(ctx, cache_v_2d, V_2d, v_idxs));
 
-        // [D, Hk, n_tokens] → [D, n_tokens, Hk] for cache write
-        ggml_tensor * Kt = ggml_permute(ctx, K_half, 0, 2, 1, 3);
-        ggml_tensor * Vt = ggml_permute(ctx, V_half, 0, 2, 1, 3);
-
-        ggml_tensor * k_dst = ggml_view_3d(ctx, cache.k[il],
-                                            D, n_tokens, Hk,
-                                            cache.k[il]->nb[1],
-                                            cache.k[il]->nb[2],
-                                            cache.k[il]->nb[1] * (size_t)kv_start);
-        ggml_build_forward_expand(gf, ggml_cpy(ctx, Kt, k_dst));
-
-        ggml_tensor * v_dst = ggml_view_3d(ctx, cache.v[il],
-                                            D, n_tokens, Hk,
-                                            cache.v[il]->nb[1],
-                                            cache.v[il]->nb[2],
-                                            cache.v[il]->nb[1] * (size_t)kv_start);
-        ggml_build_forward_expand(gf, ggml_cpy(ctx, Vt, v_dst));
-
+        // Reads: view [D, Hk, kv_len] from the position-major cache then
+        // permute (0,2,1,3) to [D, kv_len, Hk] for flash_attn_ext.
         ggml_tensor * K_full = ggml_view_3d(ctx, cache.k[il],
-                                             D, kv_len, Hk,
+                                             D, Hk, kv_len,
                                              cache.k[il]->nb[1],
                                              cache.k[il]->nb[2], 0);
         ggml_tensor * V_full = ggml_view_3d(ctx, cache.v[il],
-                                             D, kv_len, Hk,
+                                             D, Hk, kv_len,
                                              cache.v[il]->nb[1],
                                              cache.v[il]->nb[2], 0);
+        K_full = ggml_permute(ctx, K_full, 0, 2, 1, 3);
+        V_full = ggml_permute(ctx, V_full, 0, 2, 1, 3);
 
         ggml_tensor * Qfa = ggml_permute(ctx, Q, 0, 2, 1, 3);
         Qfa = ggml_cont(ctx, Qfa);
@@ -244,6 +247,8 @@ bool build_qwen3moe_verify_graph(
     out.inp       = inp;
     out.positions = positions;
     out.attn_mask = attn_mask;
+    out.k_idxs    = k_idxs;
+    out.v_idxs    = v_idxs;
     out.argmax    = argmax_out;
     out.captures  = std::move(cap_outputs);
     return true;

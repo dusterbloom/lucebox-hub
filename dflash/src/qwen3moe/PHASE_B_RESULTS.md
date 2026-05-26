@@ -1,6 +1,13 @@
 # Phase B (DFlash spec decode) — Results & Limitations
 
-Branch: `feat/qwen3moe-backend` | Last validated: 2026-05-26
+Branch: `feat/qwen3moe-backend` | Last validated AR: 2026-05-27 | Last validated spec: 2026-05-26 (1e1de73)
+
+> **NOTE 2026-05-27**: AR baseline lifted from 66.0 → 155.9 tok/s by
+> commit `704a136` (CUDA-graph-replayable step path) and follow-up
+> verify_graph cache-layout port. The spec-decode rows below were
+> measured against the OLD 66.0 baseline and have NOT been re-measured
+> against 155.9. The "vs AR" column is stale until the spec sweep is
+> rerun (single-pass crop verify is the next gate per §What's needed).
 
 ## Status: Architecturally complete, blocked on lineage-matched drafter
 
@@ -23,7 +30,8 @@ capped below the autoregressive baseline due to:
 | 4  | 36.3 % | 2.42 | **52.0** | -21 % |
 | 8  | 16.6 % | 2.33 | 43.6 | -34 % |
 | 16 | 7.2 % | 2.15 | 30.0 | -55 % |
-| AR (no spec) | — | — | **66.0** | baseline |
+| AR (no spec, 1e1de73 — superseded) | — | — | 66.0 | (old baseline) |
+| AR (no spec, **704a136** + verify port) | — | — | **155.9** | new baseline (+135%) |
 
 The 72.7 % acceptance at `bs=2` empirically validates that the
 implementation reads target captures correctly, projects them through

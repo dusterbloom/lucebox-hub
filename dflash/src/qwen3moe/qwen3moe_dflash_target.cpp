@@ -143,6 +143,15 @@ bool Qwen3MoeDFlashTarget::verify_batch(
     ggml_backend_tensor_set(vg.attn_mask, mask_data.data(), 0,
                             sizeof(ggml_fp16_t) * mask_data.size());
 
+    // K/V write indices into the position-major cache: positions
+    // [base_pos, base_pos+1, ..., base_pos+n_tokens-1] as I64.
+    std::vector<int64_t> kv_idx(n_tokens);
+    for (int i = 0; i < n_tokens; ++i) kv_idx[i] = base_pos + i;
+    ggml_backend_tensor_set(vg.k_idxs, kv_idx.data(), 0,
+                            sizeof(int64_t) * n_tokens);
+    ggml_backend_tensor_set(vg.v_idxs, kv_idx.data(), 0,
+                            sizeof(int64_t) * n_tokens);
+
     // 4. Compute.
     auto st = ggml_backend_graph_compute(backend_, vg.gf);
     if (st != GGML_STATUS_SUCCESS) {
