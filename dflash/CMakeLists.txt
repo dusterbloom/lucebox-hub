@@ -225,6 +225,8 @@ add_library(dflash_common STATIC
     src/qwen3moe/qwen3moe_loader.cpp
     src/qwen3moe/qwen3moe_graph.cpp
     src/qwen3moe/qwen3moe_backend.cpp
+    src/qwen3moe/qwen3moe_dflash_target.cpp
+    src/qwen3moe/qwen3moe_verify_graph.cpp
     src/gemma4/gemma4_loader.cpp
     src/gemma4/gemma4_graph.cpp
     src/gemma4/gemma4_backend.cpp

@@ -11,12 +11,14 @@
 
 #include "qwen3moe_backend.h"
 #include "common/sampler.h"
-#include "dflash27b.h"   // dflash27b_last_error
+#include "common/dflash_draft_graph.h"   // build_draft_step
+#include "dflash27b.h"                   // dflash27b_last_error
 
 #include "ggml-cuda.h"
 #include "ggml-alloc.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cmath>
 #include <utility>
@@ -363,20 +365,32 @@ GenerateResult Qwen3MoeBackend::generate(const GenerateRequest & req,
     // Continue decode (n_gen - 1 more tokens)
     int cur_committed = committed;
     if (req.n_gen > 1) {
-        if (!embed_tokens(backend_, w_.tok_embd, &first, 1, hidden, embed_buf.data())) {
-            result.error = "embed2 alloc";
-            return result;
-        }
-        if (!do_step(embed_buf.data(), 1, cur_committed, last_logits_)) {
-            result.error = "decode logits";
-            return result;
-        }
-        cur_committed++;
-        cache_.cur_pos = cur_committed;
+        // Try DFlash speculative decode first (greedy-only; sampler must be plain argmax).
+        if (supports_dflash_spec_decode() && !sampler_.needs_logit_processing()) {
+            // result.tokens already has `first`; do_spec_decode seeds from .back().
+            if (!do_spec_decode(cur_committed, req.n_gen - 1, result.tokens, out_io,
+                                req.hint_tokens)) {
+                result.error = "spec decode";
+                out_io.emit(-1);
+                return result;
+            }
+        } else {
+            // AR fallback: step `first` to get next logits, then AR loop.
+            if (!embed_tokens(backend_, w_.tok_embd, &first, 1, hidden, embed_buf.data())) {
+                result.error = "embed2 alloc";
+                return result;
+            }
+            if (!do_step(embed_buf.data(), 1, cur_committed, last_logits_)) {
+                result.error = "decode logits";
+                return result;
+            }
+            cur_committed++;
+            cache_.cur_pos = cur_committed;
 
-        if (!do_decode(cur_committed, req.n_gen - 1, result.tokens, out_io)) {
-            result.error = "decode";
-            return result;
+            if (!do_decode(cur_committed, req.n_gen - 1, result.tokens, out_io)) {
+                result.error = "decode";
+                return result;
+            }
         }
     }
 
@@ -565,6 +579,235 @@ bool Qwen3MoeBackend::snapshot_used(int slot) const {
 int Qwen3MoeBackend::snapshot_cur_pos(int slot) const {
     if (slot < 0 || slot >= PREFIX_SLOTS) return 0;
     return snapshots_[slot].cur_pos;
+}
+
+// ── DFlash target accessor ─────────────────────────────────────────────────
+
+DFlashTarget * Qwen3MoeBackend::dflash_target() {
+    if (!dflash_target_ && cfg_.draft_path && feature_mirror_.target_feat) {
+        dflash_target_ = std::make_unique<Qwen3MoeDFlashTarget>(
+            w_, cache_, backend_, feature_mirror_,
+            cfg_.fa_window, cfg_.kq_stride_pad,
+            dw_.n_target_layers, dw_.mask_token_id);
+    }
+    return dflash_target_.get();
+}
+
+// ── DFlash speculative decode ──────────────────────────────────────────────
+// Mirrors Qwen35Backend::do_spec_decode: draft → verify → accept → replay.
+
+bool Qwen3MoeBackend::do_spec_decode(int                    committed,
+                                      int                    n_gen,
+                                      std::vector<int32_t> & out_tokens,
+                                      const DaemonIO &       io,
+                                      const std::vector<int32_t> * hint_tokens) {
+    DFlashTarget * target = dflash_target();
+    if (!target) return false;
+
+    const int hidden = w_.n_embd;
+    const int q_len  = dw_.block_size;
+
+    // Seed: last token in the prompt (cache_.cur_pos was set by do_prefill).
+    // We re-use the same convention as qwen35_backend: the prefill left the
+    // last_tok in the committed sequence. Retrieve it from out_tokens if
+    // already non-empty, otherwise from the generate() caller.
+    // Note: generate() calls us after sampling `first_tok`; we don't have
+    // it here directly.  The convention is: caller must have committed the
+    // first token via the AR path before handing off; in our generate() wiring
+    // we sample and commit the first token AR, then call do_spec_decode with
+    // n_gen-1. last_tok is the most recently emitted token in out_tokens.
+    if (out_tokens.empty()) return false;
+    int32_t last_tok = out_tokens.back();
+
+    StepGraph draft_sg;
+
+    std::vector<float>   noise_embed((size_t)hidden * q_len);
+    std::vector<int32_t> noise_ids(q_len);
+    std::vector<int32_t> draft_tok(q_len);
+    std::vector<int32_t> target_tok(q_len);
+    std::vector<int32_t> pos_q(q_len);
+    std::vector<int32_t> pos_k;
+    std::vector<float>   local_hidden;
+
+    int n_generated   = 0;
+    int n_draft_steps = 0;
+    int n_accept_sum  = 0;
+    int n_hint_proposed = 0;
+    int n_hint_accepted = 0;
+
+    auto t_dec0 = std::chrono::steady_clock::now();
+
+    while (n_generated < n_gen) {
+        const int need_commit_budget = n_gen - n_generated;
+
+        // 1. Build noise embeddings: [last_tok, mask, mask, ...]
+        noise_ids[0] = last_tok;
+        for (int i = 1; i < q_len; i++) noise_ids[i] = target->mask_token_id();
+        if (!target->embed_tokens(noise_ids.data(), q_len, noise_embed.data())) {
+            std::fprintf(stderr, "[qwen3moe-spec] noise embed failed\n");
+            step_graph_destroy(draft_sg);
+            return false;
+        }
+
+        // 2. Draft compute
+        constexpr int DRAFT_CTX_MAX_DEFAULT = 2048;
+        const int ring_cap = feature_mirror_.cap;
+        const int draft_ctx = std::min(committed,
+            std::min(ring_cap, std::max(DRAFT_CTX_MAX_DEFAULT, cfg_.draft_ctx_max)));
+        const int draft_start = committed - draft_ctx;
+        int mirror_slot0 = 0;
+        const bool use_mirror_view =
+            draft_feature_mirror_can_view(feature_mirror_, committed, draft_ctx, mirror_slot0);
+
+        if (!build_draft_step(draft_sg, dw_, /*lm_head=*/nullptr, draft_backend_,
+                              draft_ctx, use_mirror_view ? &feature_mirror_ : nullptr,
+                              committed,
+                              std::min(ring_cap, std::max(DRAFT_CTX_MAX_DEFAULT, cfg_.draft_ctx_max)))) {
+            std::fprintf(stderr, "[qwen3moe-spec] draft build failed\n");
+            step_graph_destroy(draft_sg);
+            return false;
+        }
+        if (!use_mirror_view &&
+            !copy_feature_ring_range_to_tensor(feature_mirror_, draft_sg.target_hidden_cat,
+                                               draft_start, draft_ctx)) {
+            std::fprintf(stderr, "[qwen3moe-spec] feature copy failed\n");
+            step_graph_destroy(draft_sg);
+            return false;
+        }
+        ggml_backend_tensor_set(draft_sg.inp_embed, noise_embed.data(), 0,
+                                sizeof(float) * noise_embed.size());
+        pos_k.resize((size_t)draft_ctx + q_len);
+        for (int i = 0; i < q_len; i++) pos_q[i] = draft_ctx + i;
+        for (int i = 0; i < draft_ctx + q_len; i++) pos_k[i] = i;
+        ggml_backend_tensor_set(draft_sg.positions, pos_q.data(), 0,
+                                sizeof(int32_t) * pos_q.size());
+        ggml_backend_tensor_set(draft_sg.positions_k, pos_k.data(), 0,
+                                sizeof(int32_t) * pos_k.size());
+
+        auto st = ggml_backend_graph_compute(draft_backend_, draft_sg.gf);
+        if (st != GGML_STATUS_SUCCESS) {
+            std::fprintf(stderr, "[qwen3moe-spec] draft compute failed (%d)\n", (int)st);
+            step_graph_destroy(draft_sg);
+            return false;
+        }
+
+        local_hidden.resize((size_t)hidden * q_len);
+        ggml_backend_tensor_get(draft_sg.hidden_states, local_hidden.data(), 0,
+                                sizeof(float) * local_hidden.size());
+
+        // 3. Project draft hidden → token IDs via target LM head
+        if (!target->project_hidden_to_tokens(local_hidden.data(), q_len, draft_tok)) {
+            std::fprintf(stderr, "[qwen3moe-spec] projection failed\n");
+            step_graph_destroy(draft_sg);
+            return false;
+        }
+        draft_tok[0] = last_tok;
+
+        // 3b. Tool call hint injection
+        int hint_fill = 0;
+        if (hint_tokens && n_generated < (int)hint_tokens->size()) {
+            const int hint_avail = (int)hint_tokens->size() - n_generated;
+            hint_fill = std::min(hint_avail, q_len - 1);
+            for (int i = 0; i < hint_fill; i++) {
+                draft_tok[1 + i] = (*hint_tokens)[n_generated + i];
+            }
+        }
+
+        // 4. Snapshot KV, verify
+        if (!target->snapshot_kv()) {
+            std::fprintf(stderr, "[qwen3moe-spec] snapshot_kv failed\n");
+            step_graph_destroy(draft_sg);
+            return false;
+        }
+
+        int verify_last_tok = -1;
+        if (!target->verify_batch(draft_tok, committed, verify_last_tok, &target_tok)) {
+            std::fprintf(stderr, "[qwen3moe-spec] verify failed\n");
+            target->restore_kv();
+            step_graph_destroy(draft_sg);
+            return false;
+        }
+
+        // 5. Accept longest prefix
+        int accept_n = 1;
+        for (int i = 0; i < q_len - 1; i++) {
+            if (draft_tok[i + 1] == target_tok[i]) accept_n++;
+            else break;
+        }
+        if (hint_fill > 0) {
+            n_hint_proposed += hint_fill;
+            n_hint_accepted += std::min(hint_fill, accept_n - 1);
+        }
+        int bonus_tok = (accept_n < q_len) ? target_tok[accept_n - 1] : -1;
+        int commit_n  = accept_n + (bonus_tok >= 0 ? 1 : 0);
+        if (commit_n > need_commit_budget) {
+            commit_n = need_commit_budget;
+            if (commit_n <= accept_n) bonus_tok = -1;
+        }
+
+        // 6. Replay: restore KV, re-run accepted tokens
+        if (!target->restore_kv()) {
+            std::fprintf(stderr, "[qwen3moe-spec] restore_kv failed\n");
+            step_graph_destroy(draft_sg);
+            return false;
+        }
+
+        std::vector<int32_t> replay_tok((size_t)commit_n);
+        for (int i = 0; i < commit_n; i++) {
+            replay_tok[i] = (i < accept_n) ? draft_tok[i] : bonus_tok;
+        }
+        int replay_last_tok = -1;
+        if (!target->verify_batch(replay_tok, committed, replay_last_tok, nullptr)) {
+            std::fprintf(stderr, "[qwen3moe-spec] replay failed\n");
+            step_graph_destroy(draft_sg);
+            return false;
+        }
+        last_tok = replay_last_tok;
+
+        // 7. Feature ring is updated by verify_batch (via copy_capture_slice_to_draft_ring).
+        // No separate sync needed here — the replay verify_batch already wrote the
+        // accepted-token captures into the mirror.
+
+        // 8. Emit committed tokens
+        bool hit_eos = false;
+        int emitted  = 0;
+        for (int i = 0; i < commit_n; i++) {
+            out_tokens.push_back(replay_tok[i]);
+            io.emit(replay_tok[i]);
+            emitted++;
+            if (io.cancelled) break;
+            if (replay_tok[i] == 151643 || replay_tok[i] == 151645) {
+                hit_eos = true; break;
+            }
+        }
+        committed      += emitted;
+        cache_.cur_pos  = committed;
+        n_generated    += emitted;
+        n_accept_sum   += std::min(accept_n, emitted);
+        n_draft_steps++;
+        if (io.cancelled || hit_eos) break;
+    }
+
+    step_graph_destroy(draft_sg);
+
+    auto t_dec1 = std::chrono::steady_clock::now();
+    const double decode_s = std::chrono::duration<double>(t_dec1 - t_dec0).count();
+    const int total_draft_pos = std::max(1, n_draft_steps * q_len);
+    const double accept_pct = 100.0 * (double)n_accept_sum / (double)total_draft_pos;
+    std::fprintf(stderr,
+        "[qwen3moe-spec] tokens=%d time=%.3f s speed=%.2f tok/s "
+        "steps=%d accepted=%d/%d (%.1f%%) avg_commit=%.2f\n",
+        n_generated, decode_s,
+        n_generated > 0 ? n_generated / decode_s : 0.0,
+        n_draft_steps, n_accept_sum, total_draft_pos, accept_pct,
+        n_draft_steps > 0 ? (double)n_generated / (double)n_draft_steps : 0.0);
+    if (n_hint_proposed > 0) {
+        std::fprintf(stderr, "[qwen3moe-spec] hint: %d/%d accepted (%.1f%%)\n",
+                     n_hint_accepted, n_hint_proposed,
+                     100.0 * (double)n_hint_accepted / (double)n_hint_proposed);
+    }
+
+    return true;
 }
 
 // ── Compress (Phase C — stub) ──────────────────────────────────────────────

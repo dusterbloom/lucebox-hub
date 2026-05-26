@@ -11,13 +11,15 @@
 #include "placement/placement_config.h"
 #include "common/sampler.h"
 #include "qwen3moe_internal.h"
-#include "dflash_feature_ring.h"   // DraftFeatureMirror, draft_feature_mirror_init
-#include "step_graph.h"             // StepGraph, step_graph_destroy
-#include "internal.h"               // DraftWeights, load_draft_gguf, free_draft_weights
+#include "qwen3moe_dflash_target.h"        // Qwen3MoeDFlashTarget
+#include "dflash_feature_ring.h"            // DraftFeatureMirror, draft_feature_mirror_init
+#include "step_graph.h"                     // StepGraph, step_graph_destroy
+#include "internal.h"                       // DraftWeights, load_draft_gguf, free_draft_weights
 
 #include "ggml.h"
 #include "ggml-backend.h"
 
+#include <memory>
 #include <random>
 #include <string>
 #include <vector>
@@ -79,6 +81,15 @@ public:
 
     void shutdown() override;
 
+    // Lazy accessor for the DFlash target adapter.
+    DFlashTarget * dflash_target();
+
+    bool do_spec_decode(int                           committed,
+                        int                           n_gen,
+                        std::vector<int32_t>        & out_tokens,
+                        const DaemonIO              & io,
+                        const std::vector<int32_t>  * hint_tokens = nullptr);
+
 private:
     Qwen3MoeBackendConfig cfg_;
     ggml_backend_t        backend_ = nullptr;
@@ -98,6 +109,9 @@ private:
     DraftWeights         dw_;
     DraftFeatureMirror   feature_mirror_;
     StepGraph            draft_sg_;
+
+    // DFlash target adapter (Phase B.2/B.3) — created lazily.
+    std::unique_ptr<Qwen3MoeDFlashTarget> dflash_target_;
 
     // Forward pass primitives (implemented in qwen3moe_graph.cpp /
     // qwen3moe_backend.cpp once Phase A wiring is in place).
