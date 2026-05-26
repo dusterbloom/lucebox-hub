@@ -11,6 +11,7 @@
 
 #include "qwen3moe_backend.h"
 #include "common/sampler.h"
+#include "dflash27b.h"   // dflash27b_last_error
 
 #include "ggml-cuda.h"
 #include "ggml-alloc.h"
@@ -57,6 +58,50 @@ bool Qwen3MoeBackend::init() {
     if (!w_.tok_embd) {
         std::fprintf(stderr, "[qwen3moe] no token embedding tensor\n");
         return false;
+    }
+
+    // ── Drafter (DFlash spec-decode) ─────────────────────────────────────────
+    if (cfg_.draft_path) {
+        // GPU split: use a separate CUDA backend if draft_gpu differs from target
+        split_gpus_ = (cfg_.draft_gpu >= 0 && cfg_.draft_gpu != cfg_.device.gpu);
+        draft_backend_ = backend_;  // default: share target's CUDA backend
+        if (split_gpus_) {
+            draft_backend_ = ggml_backend_cuda_init(cfg_.draft_gpu);
+            if (!draft_backend_) {
+                std::fprintf(stderr, "[qwen3moe] draft CUDA init failed (gpu=%d)\n",
+                             cfg_.draft_gpu);
+                return false;
+            }
+        }
+
+        // Load DFlash draft GGUF. Pass nullptr for the target parameter since
+        // Qwen3MoeWeights is not TargetWeights; mask_token_id comes from the GGUF.
+        if (!load_draft_gguf(cfg_.draft_path, draft_backend_, dw_, nullptr)) {
+            std::fprintf(stderr, "[qwen3moe] draft load failed: %s\n",
+                         dflash27b_last_error());
+            return false;
+        }
+        std::printf("[qwen3moe] draft loaded: %d layers, block_size=%d, "
+                    "n_target_layers=%d, mask_token=%d\n",
+                    dw_.n_layer, dw_.block_size, dw_.n_target_layers,
+                    dw_.mask_token_id);
+
+        // Feature mirror (cross-GPU or F32-conversion buffer for spec decode)
+        const int mirror_cap = std::min(cfg_.draft_ctx_max, cfg_.device.max_ctx);
+        const int draft_gpu  = (cfg_.draft_gpu >= 0) ? cfg_.draft_gpu : cfg_.device.gpu;
+        if (!draft_feature_mirror_init(feature_mirror_, draft_backend_,
+                                       draft_gpu, cfg_.device.gpu,
+                                       mirror_cap, dw_.n_target_layers,
+                                       w_.n_embd)) {
+            std::fprintf(stderr,
+                         "[qwen3moe] feature mirror init failed (cap=%d, "
+                         "n_target=%d, hidden=%d) — spec decode unavailable\n",
+                         mirror_cap, dw_.n_target_layers, w_.n_embd);
+            // Non-fatal — AR decode still works.
+        } else {
+            std::printf("[qwen3moe] feature mirror init: cap=%d, n_target=%d, hidden=%d\n",
+                        mirror_cap, dw_.n_target_layers, w_.n_embd);
+        }
     }
 
     std::fflush(stdout);
@@ -540,6 +585,16 @@ bool Qwen3MoeBackend::try_handle_command(const std::string & /*line*/,
 // ── Shutdown ───────────────────────────────────────────────────────────────
 
 void Qwen3MoeBackend::shutdown() {
+    // Drafter teardown (mirrors qwen35_backend.cpp shutdown order)
+    step_graph_destroy(draft_sg_);
+    draft_feature_mirror_free(feature_mirror_);
+    free_draft_weights(dw_);
+    if (split_gpus_ && draft_backend_ && draft_backend_ != backend_) {
+        ggml_backend_free(draft_backend_);
+        draft_backend_ = nullptr;
+        split_gpus_ = false;
+    }
+
     for (int s = 0; s < PREFIX_SLOTS; ++s) {
         free_qwen3moe_snapshot(snapshots_[s]);
     }

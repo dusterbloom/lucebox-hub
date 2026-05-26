@@ -96,6 +96,8 @@ std::unique_ptr<ModelBackend> create_backend(const BackendArgs & args) {
         qcfg.draft_path    = args.draft_path;
         qcfg.draft_gpu     = args.draft_device.gpu;
         qcfg.draft_ctx_max = args.draft_ctx_max;
+        qcfg.fa_window     = args.fa_window;
+        qcfg.kq_stride_pad = args.kq_stride_pad;
 
         auto backend = std::make_unique<Qwen3MoeBackend>(qcfg);
         if (!backend->init()) {

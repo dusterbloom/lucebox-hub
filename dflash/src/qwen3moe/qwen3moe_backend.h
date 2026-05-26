@@ -11,6 +11,9 @@
 #include "placement/placement_config.h"
 #include "common/sampler.h"
 #include "qwen3moe_internal.h"
+#include "dflash_feature_ring.h"   // DraftFeatureMirror, draft_feature_mirror_init
+#include "step_graph.h"             // StepGraph, step_graph_destroy
+#include "internal.h"               // DraftWeights, load_draft_gguf, free_draft_weights
 
 #include "ggml.h"
 #include "ggml-backend.h"
@@ -30,6 +33,8 @@ struct Qwen3MoeBackendConfig {
     const char *    draft_path = nullptr;
     int             draft_gpu  = -1;
     int             draft_ctx_max = 4096;
+    int             fa_window      = 2048;   // FA sliding window for verify_batch (Phase B.2)
+    int             kq_stride_pad  = 32;     // mask alignment for FA; must equal KQ_MASK_PAD
 };
 
 class Qwen3MoeBackend : public ModelBackend {
@@ -68,6 +73,10 @@ public:
     bool try_handle_command(const std::string & line,
                             const DaemonIO &    io) override;
 
+    bool supports_dflash_spec_decode() const override {
+        return cfg_.draft_path != nullptr && feature_mirror_.target_feat != nullptr;
+    }
+
     void shutdown() override;
 
 private:
@@ -82,6 +91,13 @@ private:
 
     static constexpr int  PREFIX_SLOTS = 64;
     Qwen3MoeSnapshot      snapshots_[PREFIX_SLOTS];
+
+    // ── DFlash drafter (Phase B) ──────────────────────────────────────────
+    ggml_backend_t       draft_backend_  = nullptr;
+    bool                 split_gpus_     = false;
+    DraftWeights         dw_;
+    DraftFeatureMirror   feature_mirror_;
+    StepGraph            draft_sg_;
 
     // Forward pass primitives (implemented in qwen3moe_graph.cpp /
     // qwen3moe_backend.cpp once Phase A wiring is in place).
