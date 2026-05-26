@@ -162,54 +162,24 @@ bool Qwen3MoeDFlashTarget::verify_batch(
     }
 
     // 6. Copy capture activations into the draft feature mirror.
-    // copy_capture_slice_to_draft_ring uses copy_peer_async under the hood;
-    // the capture tensors are on backend_'s device (same as w_).
+    // vg.captures[k] are GPU-resident (gallocr-allocated on backend_'s device).
+    // Pass them directly to copy_capture_slice_to_draft_ring which uses
+    // cudaMemcpyPeerAsync internally — no host roundtrip.
     const int target_device = feature_mirror_.target_device;
     const int n_cap = (int)capture_ids_.size();
     if (feature_mirror_.target_feat) {
-        // Retrieve capture tensor data into host buffer then write to ring.
-        // We use ggml_backend_tensor_get to pull the captured F32 slice, then
-        // copy_capture_slice_to_draft_ring which takes a host-accessible
-        // ggml_tensor*. Since the capture tensors live on the GPU, we must
-        // read them back first, then write via a staging ggml tensor.
-        // Simpler: allocate a small CPU context + tensor and use it as the
-        // bridge.
-        std::vector<float> cap_host((size_t)n_tokens * (size_t)hidden);
         for (int k = 0; k < n_cap; ++k) {
             if (!vg.captures[k]) continue;
-            ggml_backend_tensor_get(vg.captures[k], cap_host.data(), 0,
-                                    sizeof(float) * cap_host.size());
-
-            // Build a tiny CPU-backed ggml tensor pointing to cap_host.
-            ggml_init_params cip{};
-            cip.mem_size   = ggml_tensor_overhead() + 4096;
-            cip.mem_buffer = nullptr;
-            cip.no_alloc   = false;  // allocate from mem_buffer (stack)
-            // Use no_alloc=true + manual data pointer set instead.
-            cip.no_alloc = true;
-            ggml_context * cctx = ggml_init(cip);
-            if (!cctx) {
-                std::fprintf(stderr, "[qwen3moe] verify_batch: cpu ctx alloc failed\n");
-                ggml_free(vg.ctx);
-                return false;
-            }
-            ggml_tensor * cpu_t = ggml_new_tensor_2d(cctx, GGML_TYPE_F32,
-                                                       hidden, n_tokens);
-            // Point to the host buffer directly.
-            cpu_t->data = cap_host.data();
-
             if (!copy_capture_slice_to_draft_ring(feature_mirror_, k,
-                                                   cpu_t,
+                                                   vg.captures[k],
                                                    /*src_device=*/target_device,
                                                    /*chunk_start=*/0,
                                                    /*start_pos=*/base_pos,
                                                    n_tokens)) {
                 std::fprintf(stderr, "[qwen3moe] verify_batch: capture copy failed (k=%d)\n", k);
-                ggml_free(cctx);
                 ggml_free(vg.ctx);
                 return false;
             }
-            ggml_free(cctx);
         }
     }
 
@@ -309,11 +279,11 @@ bool Qwen3MoeDFlashTarget::project_hidden_to_tokens(
 
         proj_sg_.gf = ggml_new_graph_custom(proj_sg_.ctx, 1024, false);
 
-        // out_norm + lm_head
-        ggml_tensor * normed = ggml_rms_norm(proj_sg_.ctx, proj_sg_.hidden_input,
-                                              w_.norm_eps);
-        normed = ggml_mul(proj_sg_.ctx, normed, w_.out_norm);
-        proj_sg_.logits = ggml_mul_mat(proj_sg_.ctx, w_.output, normed);
+        // BUG1 FIX: do NOT apply rms_norm + out_norm here.
+        // build_draft_step already applies the draft's final rms_norm (w.out_norm)
+        // before emitting hidden_states, so the input is already-normalized.
+        // Applying the target's out_norm a second time is double normalization.
+        proj_sg_.logits = ggml_mul_mat(proj_sg_.ctx, w_.output, proj_sg_.hidden_input);
         ggml_set_name(proj_sg_.logits, "proj_logits");
         ggml_set_output(proj_sg_.logits);
 

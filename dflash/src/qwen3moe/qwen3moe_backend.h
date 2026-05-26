@@ -130,6 +130,7 @@ private:
                    const DaemonIO &               io);
 
     std::vector<float> last_logits_;
+    int32_t            last_prefill_tok_ = -1;   // argmax of prefill's final logit; seeds spec-decode
 };
 
 }  // namespace dflash::common

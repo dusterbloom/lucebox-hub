@@ -83,6 +83,13 @@ bool Qwen3MoeBackend::init() {
                          dflash27b_last_error());
             return false;
         }
+        // Override mask_token_id: load_draft_gguf uses a hardcoded 27B default
+        // (248070) which is out-of-bounds for Qwen3's 151936-token vocab.
+        // The correct mask for Qwen3-Coder-30B-A3B-DFlash is 151669 (matches
+        // the dflash_config in the source HF repo).
+        if (dw_.mask_token_id < 0 || dw_.mask_token_id >= w_.n_vocab) {
+            dw_.mask_token_id = 151669;
+        }
         std::printf("[qwen3moe] draft loaded: %d layers, block_size=%d, "
                     "n_target_layers=%d, mask_token=%d\n",
                     dw_.n_layer, dw_.block_size, dw_.n_target_layers,
@@ -303,6 +310,37 @@ GenerateResult Qwen3MoeBackend::generate(const GenerateRequest & req,
         return result;
     }
 
+    // BUG3 FIX: populate feature ring by re-running the target forward with
+    // capture for all prefill positions.  do_prefill calls do_step() which has
+    // no capture mechanism, so the feature ring was still all-zeros — draft
+    // predictions were noise, causing ~7% acceptance.  verify_batch writes KV
+    // at the same positions (idempotent) and populates feature_mirror_.
+    if (supports_dflash_spec_decode() && !sampler_.needs_logit_processing()) {
+        DFlashTarget * tgt = dflash_target();
+        if (tgt) {
+            const int saved_pos = cache_.cur_pos;
+            const int prefill_chunk = std::max(1,
+                cfg_.chunk > 0 ? cfg_.chunk : 512);
+            const int prompt_len = (int)req.prompt.size();
+            bool capture_ok = true;
+            for (int start = 0; start < prompt_len && capture_ok; start += prefill_chunk) {
+                const int n = std::min(prefill_chunk, prompt_len - start);
+                std::vector<int32_t> chunk(req.prompt.begin() + start,
+                                           req.prompt.begin() + start + n);
+                int dummy_last = 0;
+                if (!tgt->verify_batch(chunk, /*base_pos=*/start,
+                                       dummy_last, /*all_argmax=*/nullptr)) {
+                    std::fprintf(stderr,
+                        "[qwen3moe] prefill feature capture failed "
+                        "(start=%d n=%d) — spec decode may degrade\n",
+                        start, n);
+                    capture_ok = false;
+                }
+            }
+            cache_.cur_pos = saved_pos;
+        }
+    }
+
     // Inline snapshot
     if (req.snap_slot >= 0 && req.snap_pos > 0 && req.snap_pos <= committed) {
         cache_.cur_pos = req.snap_pos;
@@ -336,7 +374,7 @@ GenerateResult Qwen3MoeBackend::generate(const GenerateRequest & req,
         return result;
     }
 
-    // Sample first token
+    // Compute first-token argmax (used by both paths below).
     int32_t first;
     if (sampler_.needs_logit_processing()) {
         first = sample_logits(logits.data(), vocab, sampler_,
@@ -348,33 +386,37 @@ GenerateResult Qwen3MoeBackend::generate(const GenerateRequest & req,
             if (logits[j] > best) { best = logits[j]; first = j; }
         }
     }
-    result.tokens.push_back(first);
-    out_io.emit(first);
 
-    if (out_io.cancelled) {
-        out_io.emit(-1);
-        result.ok = true;
-        return result;
-    }
-    if (first == 151643 || first == 151645) {
-        out_io.emit(-1);
-        result.ok = true;
-        return result;
-    }
-
-    // Continue decode (n_gen - 1 more tokens)
+    // BUG2 FIX: for spec decode, do NOT pre-emit `first`; let do_spec_decode
+    // emit it as replay_tok[0] (mirrors qwen35_backend behavior).  For the AR
+    // path, emit it here as before.
     int cur_committed = committed;
-    if (req.n_gen > 1) {
-        // Try DFlash speculative decode first (greedy-only; sampler must be plain argmax).
-        if (supports_dflash_spec_decode() && !sampler_.needs_logit_processing()) {
-            // result.tokens already has `first`; do_spec_decode seeds from .back().
-            if (!do_spec_decode(cur_committed, req.n_gen - 1, result.tokens, out_io,
-                                req.hint_tokens)) {
-                result.error = "spec decode";
-                out_io.emit(-1);
-                return result;
-            }
-        } else {
+    if (req.n_gen > 0 && supports_dflash_spec_decode() && !sampler_.needs_logit_processing()) {
+        // Spec-decode path: seed with `first`, emit all n_gen tokens inside loop.
+        last_prefill_tok_ = first;
+        if (!do_spec_decode(cur_committed, req.n_gen, result.tokens, out_io,
+                            req.hint_tokens)) {
+            result.error = "spec decode";
+            out_io.emit(-1);
+            return result;
+        }
+    } else {
+        // AR path: emit first token, then continue AR.
+        result.tokens.push_back(first);
+        out_io.emit(first);
+
+        if (out_io.cancelled) {
+            out_io.emit(-1);
+            result.ok = true;
+            return result;
+        }
+        if (first == 151643 || first == 151645) {
+            out_io.emit(-1);
+            result.ok = true;
+            return result;
+        }
+
+        if (req.n_gen > 1) {
             // AR fallback: step `first` to get next logits, then AR loop.
             if (!embed_tokens(backend_, w_.tok_embd, &first, 1, hidden, embed_buf.data())) {
                 result.error = "embed2 alloc";
@@ -441,6 +483,36 @@ GenerateResult Qwen3MoeBackend::restore_and_generate(int                     slo
     const int total_committed = (int)req.prompt.size();
     cache_.cur_pos = total_committed;
 
+    // BUG3 FIX (mirror): populate feature ring for the full prompt.
+    // The snapshot only restores KV layers; the feature ring is not snapshotted.
+    // Re-run verify_batch over the full prompt to fill feature_mirror_ before
+    // the first spec-decode round.
+    if (supports_dflash_spec_decode() && !sampler_.needs_logit_processing()) {
+        DFlashTarget * tgt = dflash_target();
+        if (tgt) {
+            const int saved_pos = cache_.cur_pos;
+            const int prefill_chunk = std::max(1,
+                cfg_.chunk > 0 ? cfg_.chunk : 512);
+            const int prompt_len = (int)req.prompt.size();
+            bool capture_ok = true;
+            for (int start = 0; start < prompt_len && capture_ok; start += prefill_chunk) {
+                const int n = std::min(prefill_chunk, prompt_len - start);
+                std::vector<int32_t> chunk(req.prompt.begin() + start,
+                                           req.prompt.begin() + start + n);
+                int dummy_last = 0;
+                if (!tgt->verify_batch(chunk, /*base_pos=*/start,
+                                       dummy_last, /*all_argmax=*/nullptr)) {
+                    std::fprintf(stderr,
+                        "[qwen3moe] restore: prefill feature capture failed "
+                        "(start=%d n=%d) — spec decode may degrade\n",
+                        start, n);
+                    capture_ok = false;
+                }
+            }
+            cache_.cur_pos = saved_pos;
+        }
+    }
+
     if (req.snap_slot >= 0 && req.snap_pos > 0 && req.snap_pos <= total_committed) {
         cache_.cur_pos = req.snap_pos;
         if (snapshot_save(req.snap_slot)) {
@@ -483,36 +555,48 @@ GenerateResult Qwen3MoeBackend::restore_and_generate(int                     slo
             if (logits[j] > best) { best = logits[j]; first = j; }
         }
     }
-    result.tokens.push_back(first);
-    out_io.emit(first);
 
-    if (out_io.cancelled) {
-        out_io.emit(-1);
-        result.ok = true;
-        return result;
-    }
-    if (first == 151643 || first == 151645) {
-        out_io.emit(-1);
-        result.ok = true;
-        return result;
-    }
-
+    // BUG2 FIX (mirror): same as generate() — for spec decode don't pre-emit first.
     int cur_committed = total_committed;
-    if (req.n_gen > 1) {
-        if (!embed_tokens(backend_, w_.tok_embd, &first, 1, hidden, embed_buf.data())) {
-            result.error = "embed2 alloc";
+    if (req.n_gen > 0 && supports_dflash_spec_decode() && !sampler_.needs_logit_processing()) {
+        last_prefill_tok_ = first;
+        if (!do_spec_decode(cur_committed, req.n_gen, result.tokens, out_io,
+                            req.hint_tokens)) {
+            result.error = "spec decode";
+            out_io.emit(-1);
             return result;
         }
-        if (!do_step(embed_buf.data(), 1, cur_committed, last_logits_)) {
-            result.error = "decode logits";
-            return result;
-        }
-        cur_committed++;
-        cache_.cur_pos = cur_committed;
+    } else {
+        result.tokens.push_back(first);
+        out_io.emit(first);
 
-        if (!do_decode(cur_committed, req.n_gen - 1, result.tokens, out_io)) {
-            result.error = "decode";
+        if (out_io.cancelled) {
+            out_io.emit(-1);
+            result.ok = true;
             return result;
+        }
+        if (first == 151643 || first == 151645) {
+            out_io.emit(-1);
+            result.ok = true;
+            return result;
+        }
+
+        if (req.n_gen > 1) {
+            if (!embed_tokens(backend_, w_.tok_embd, &first, 1, hidden, embed_buf.data())) {
+                result.error = "embed2 alloc";
+                return result;
+            }
+            if (!do_step(embed_buf.data(), 1, cur_committed, last_logits_)) {
+                result.error = "decode logits";
+                return result;
+            }
+            cur_committed++;
+            cache_.cur_pos = cur_committed;
+
+            if (!do_decode(cur_committed, req.n_gen - 1, result.tokens, out_io)) {
+                result.error = "decode";
+                return result;
+            }
         }
     }
 
@@ -607,17 +691,11 @@ bool Qwen3MoeBackend::do_spec_decode(int                    committed,
     const int hidden = w_.n_embd;
     const int q_len  = dw_.block_size;
 
-    // Seed: last token in the prompt (cache_.cur_pos was set by do_prefill).
-    // We re-use the same convention as qwen35_backend: the prefill left the
-    // last_tok in the committed sequence. Retrieve it from out_tokens if
-    // already non-empty, otherwise from the generate() caller.
-    // Note: generate() calls us after sampling `first_tok`; we don't have
-    // it here directly.  The convention is: caller must have committed the
-    // first token via the AR path before handing off; in our generate() wiring
-    // we sample and commit the first token AR, then call do_spec_decode with
-    // n_gen-1. last_tok is the most recently emitted token in out_tokens.
-    if (out_tokens.empty()) return false;
-    int32_t last_tok = out_tokens.back();
+    // BUG2 FIX: seed from last_prefill_tok_ (set by generate() / restore_and_generate()
+    // before calling us). This mirrors qwen35_backend where cache_.last_tok holds the
+    // prefill's final argmax. We do NOT pre-emit this token; do_spec_decode emits it as
+    // replay_tok[0] in the first accepted batch, so there is no double-emission.
+    int32_t last_tok = last_prefill_tok_;
 
     StepGraph draft_sg;
 
