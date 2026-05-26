@@ -171,6 +171,14 @@ if(DFLASH27B_GPU_BACKEND STREQUAL "cuda" AND _dflash_is_consumer_blackwell)
     set(GGML_CUDA_BLACKWELL_CONSUMER ON CACHE BOOL
         "Skip sm_12X→sm_12Xa for consumer Blackwell (no FP4)" FORCE)
 endif()
+# Enable ggml-cuda's CUDA Graphs capture for batch=1 decode. ggml/CMakeLists.txt
+# defaults this to OFF when ggml is built as a subdirectory (our case); llama.cpp's
+# top-level CMakeLists flips it back ON. We do the same flip here. Forcing the
+# CACHE entry means the option() call inside ggml respects this value.
+if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
+    set(GGML_CUDA_GRAPHS ON CACHE BOOL "Enable CUDA graphs for AR decode" FORCE)
+endif()
+
 # Use only the ggml subtree of llama.cpp (skip libllama).
 add_subdirectory(deps/llama.cpp/ggml EXCLUDE_FROM_ALL)
 

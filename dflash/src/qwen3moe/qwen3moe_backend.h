@@ -131,6 +131,35 @@ private:
 
     std::vector<float> last_logits_;
     int32_t            last_prefill_tok_ = -1;   // argmax of prefill's final logit; seeds spec-decode
+
+    // ── Cached decode graph (n_tokens==1 fast path) ──────────────────────
+    // ggml-cuda's CUDA-graph cache keys off cgraph->nodes[0] pointer, and
+    // requires identical node ne/nb/data across calls. We rebuild the graph
+    // only when kv_len padded to DECODE_KV_PAD changes (every 256 tokens),
+    // so the topology stays stable across most consecutive decode steps.
+    static constexpr int DECODE_KV_PAD = 256;
+    ggml_context * decode_ctx_           = nullptr;
+    ggml_cgraph  * decode_gf_            = nullptr;
+    ggml_gallocr_t decode_galloc_        = nullptr;
+    ggml_tensor  * decode_inp_           = nullptr;  // unused (inline_embed path)
+    ggml_tensor  * decode_token_ids_     = nullptr;  // [1]           I32 token id
+    ggml_tensor  * decode_positions_     = nullptr;  // [1]           I32
+    ggml_tensor  * decode_mask_          = nullptr;  // [kv_len_pad,1] F16
+    ggml_tensor  * decode_k_idxs_        = nullptr;  // [1]           I64
+    ggml_tensor  * decode_v_idxs_        = nullptr;  // [1]           I64
+    ggml_tensor  * decode_logits_        = nullptr;  // [vocab, 1]   F32 output
+    ggml_tensor  * decode_next_id_       = nullptr;  // [1]          I32 GPU argmax
+    int            decode_kv_len_padded_ = -1;       // -1 = no cached graph
+
+    // Cached-graph single-token decode step. Takes a token id directly and
+    // runs ggml_get_rows for the embedding inside the cached graph — saves
+    // one full graph_compute + D2H per token compared to embed_tokens + do_step.
+    // For greedy sampling pass out_next_id (4-byte D2H from GPU argmax).
+    // For temp>0 / penalties / top-p pass out_logits (full vocab D2H).
+    bool do_decode_step(int32_t              token_id,
+                        int                  kv_start,
+                        std::vector<float> * out_logits,
+                        int32_t            * out_next_id);
 };
 
 }  // namespace dflash::common

@@ -90,7 +90,9 @@ struct Qwen3MoeCache {
     int max_ctx = 0;
     int n_layer = 0;
 
-    // Per-layer K/V: [head_dim, max_ctx, n_head_kv] in BF16/F16.
+    // Per-layer K/V: [head_dim, n_head_kv, max_ctx] in BF16/F16.
+    // Position is the OUTER dim — reshape to [D*Hk, max_ctx] for set_rows
+    // writes; view as [D, Hk, kv_len] + permute(0,2,1,3) for flash_attn reads.
     std::vector<ggml_tensor *> k;
     std::vector<ggml_tensor *> v;
 

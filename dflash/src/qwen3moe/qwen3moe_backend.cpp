@@ -250,31 +250,26 @@ bool Qwen3MoeBackend::do_decode(int                    committed,
                                  int                    n_gen,
                                  std::vector<int32_t> & out_tokens,
                                  const DaemonIO &       io) {
-    const int hidden = w_.n_embd;
     const int vocab  = w_.n_vocab;
+    const bool greedy = !sampler_.needs_logit_processing();
     std::vector<float> logits;
-    std::vector<float> embed_buf(hidden);
+
+    // First token: sample from prefill's last_logits_.
+    if (last_logits_.empty()) return false;
+    int32_t next;
+    if (greedy) {
+        next = 0;
+        float best = last_logits_[0];
+        for (int j = 1; j < vocab; ++j) {
+            if (last_logits_[j] > best) { best = last_logits_[j]; next = j; }
+        }
+    } else {
+        next = sample_logits(last_logits_.data(), vocab, sampler_,
+                             out_tokens, sampler_rng_);
+    }
+    last_logits_.clear();
 
     for (int i = 0; i < n_gen; ++i) {
-        // First iteration uses prefill logits (already in last_logits_)
-        if (i == 0) {
-            if (last_logits_.empty()) return false;
-            logits = std::move(last_logits_);
-        }
-
-        // Sample next token
-        int32_t next;
-        if (sampler_.needs_logit_processing()) {
-            next = sample_logits(logits.data(), vocab, sampler_,
-                                 out_tokens, sampler_rng_);
-        } else {
-            next = 0;
-            float best = logits[0];
-            for (int j = 1; j < vocab; ++j) {
-                if (logits[j] > best) { best = logits[j]; next = j; }
-            }
-        }
-
         out_tokens.push_back(next);
         io.emit(next);
         committed++;
@@ -287,12 +282,20 @@ bool Qwen3MoeBackend::do_decode(int                    committed,
         // Last iteration — don't need logits for another step
         if (i == n_gen - 1) break;
 
-        // Embed and step to get logits for next iteration
-        if (!embed_tokens(backend_, w_.tok_embd, &next, 1, hidden, embed_buf.data())) {
-            return false;
-        }
-        if (!do_step(embed_buf.data(), 1, committed, logits)) {
-            return false;
+        // Cached-graph decode step: read GPU argmax for greedy, else full logits.
+        if (greedy) {
+            int32_t next_gpu;
+            if (!do_decode_step(next, committed, /*out_logits=*/nullptr,
+                                &next_gpu)) {
+                return false;
+            }
+            next = next_gpu;
+        } else {
+            if (!do_decode_step(next, committed, &logits, /*out_next_id=*/nullptr)) {
+                return false;
+            }
+            next = sample_logits(logits.data(), vocab, sampler_,
+                                 out_tokens, sampler_rng_);
         }
     }
 
@@ -927,6 +930,18 @@ void Qwen3MoeBackend::shutdown() {
         ggml_backend_free(draft_backend_);
         draft_backend_ = nullptr;
         split_gpus_ = false;
+    }
+
+    // Cached decode graph (n_tokens=1 fast path).
+    if (decode_galloc_) {
+        ggml_gallocr_free(decode_galloc_);
+        decode_galloc_ = nullptr;
+    }
+    if (decode_ctx_) {
+        ggml_free(decode_ctx_);
+        decode_ctx_ = nullptr;
+        decode_gf_  = nullptr;
+        decode_kv_len_padded_ = -1;
     }
 
     for (int s = 0; s < PREFIX_SLOTS; ++s) {

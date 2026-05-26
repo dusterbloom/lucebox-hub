@@ -314,9 +314,15 @@ void free_qwen3moe_weights(Qwen3MoeWeights & w) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// create_qwen3moe_cache — BF16/F16 KV cache, [head_dim, max_ctx, n_head_kv]
+// create_qwen3moe_cache — BF16/F16 KV cache, [head_dim, n_head_kv, max_ctx]
 // ─────────────────────────────────────────────────────────────────────────────
-
+//
+// Layout note (Phase 2): positions are the OUTER dim so each kv slot is a
+// D*Hk-element contiguous block. This makes the cache reshapeable to
+// [D*Hk, max_ctx] for ggml_set_rows writes — required so per-step K/V writes
+// don't bake kv_start into the graph topology. For attention reads we view
+// as [D, Hk, kv_len] and permute(0,2,1,3) to feed flash_attn_ext, which
+// expects [D, kv_len, Hk] (the old static layout).
 bool create_qwen3moe_cache(ggml_backend_t         backend,
                            const Qwen3MoeWeights & w,
                            int                     max_ctx,
@@ -345,8 +351,8 @@ bool create_qwen3moe_cache(ggml_backend_t         backend,
     out.k.resize(n_layer);
     out.v.resize(n_layer);
     for (int il = 0; il < n_layer; ++il) {
-        out.k[il] = ggml_new_tensor_3d(out.ctx, half_type, D, max_ctx, Hk);
-        out.v[il] = ggml_new_tensor_3d(out.ctx, half_type, D, max_ctx, Hk);
+        out.k[il] = ggml_new_tensor_3d(out.ctx, half_type, D, Hk, max_ctx);
+        out.v[il] = ggml_new_tensor_3d(out.ctx, half_type, D, Hk, max_ctx);
     }
 
     out.buf = ggml_backend_alloc_ctx_tensors(out.ctx, backend);
