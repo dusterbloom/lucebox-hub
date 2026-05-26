@@ -90,6 +90,15 @@ bool Qwen3MoeBackend::init() {
         if (dw_.mask_token_id < 0 || dw_.mask_token_id >= w_.n_vocab) {
             dw_.mask_token_id = 151669;
         }
+        // Optional block_size override (diagnostic for low-acceptance scenarios:
+        // smaller blocks waste less verify on mostly-rejected proposals).
+        if (const char * s = std::getenv("DFLASH_BLOCK_SIZE")) {
+            int bs = std::atoi(s);
+            if (bs >= 2 && bs <= 32) {
+                dw_.block_size = bs;
+                std::fprintf(stderr, "[qwen3moe] DFLASH_BLOCK_SIZE override: %d\n", bs);
+            }
+        }
         std::printf("[qwen3moe] draft loaded: %d layers, block_size=%d, "
                     "n_target_layers=%d, mask_token=%d\n",
                     dw_.n_layer, dw_.block_size, dw_.n_target_layers,
@@ -791,22 +800,19 @@ bool Qwen3MoeBackend::do_spec_decode(int                    committed,
             }
         }
 
-        // 4. Snapshot KV, verify
-        if (!target->snapshot_kv()) {
-            std::fprintf(stderr, "[qwen3moe-spec] snapshot_kv failed\n");
-            step_graph_destroy(draft_sg);
-            return false;
-        }
-
+        // 4. Single-pass verify: write KV + captures for ALL q_len positions,
+        // then crop. No snapshot/restore/replay — the verify pass's KV writes
+        // for the accepted prefix are correct as-is; rejected suffix slots
+        // are simply ignored (cur_pos advances only by accept_n).
         int verify_last_tok = -1;
         if (!target->verify_batch(draft_tok, committed, verify_last_tok, &target_tok)) {
             std::fprintf(stderr, "[qwen3moe-spec] verify failed\n");
-            target->restore_kv();
             step_graph_destroy(draft_sg);
             return false;
         }
 
-        // 5. Accept longest prefix
+        // 5. Accept longest prefix where draft[i+1] == target_argmax[i].
+        // accept_n counts the seed (draft_tok[0]) + the verified-matching drafts.
         int accept_n = 1;
         for (int i = 0; i < q_len - 1; i++) {
             if (draft_tok[i + 1] == target_tok[i]) accept_n++;
@@ -816,52 +822,59 @@ bool Qwen3MoeBackend::do_spec_decode(int                    committed,
             n_hint_proposed += hint_fill;
             n_hint_accepted += std::min(hint_fill, accept_n - 1);
         }
+        // Bonus token = target's argmax at the rejection position (or q_len-1
+        // if all accepted). NOT committed to KV this round — it becomes the
+        // seed of the next round, where its KV gets computed naturally.
         int bonus_tok = (accept_n < q_len) ? target_tok[accept_n - 1] : -1;
-        int commit_n  = accept_n + (bonus_tok >= 0 ? 1 : 0);
-        if (commit_n > need_commit_budget) {
-            commit_n = need_commit_budget;
-            if (commit_n <= accept_n) bonus_tok = -1;
+        int total_new = accept_n - 1 + (bonus_tok >= 0 ? 1 : 0);  // tokens to emit
+        if (total_new > need_commit_budget) {
+            total_new = need_commit_budget;
         }
 
-        // 6. Replay: restore KV, re-run accepted tokens
-        if (!target->restore_kv()) {
-            std::fprintf(stderr, "[qwen3moe-spec] restore_kv failed\n");
-            step_graph_destroy(draft_sg);
-            return false;
-        }
+        // 6. Crop cache to accepted prefix only. The verify wrote KV at slots
+        // [committed..committed+q_len-1]; we keep only [committed..committed+accept_n-1].
+        // The rejected suffix slots have stale K/V but cur_pos < their offset,
+        // so attention never reads them. Next round's verify overwrites the
+        // first rejected slot (which becomes the new seed slot for the bonus).
+        cache_.cur_pos = committed + accept_n;
 
-        std::vector<int32_t> replay_tok((size_t)commit_n);
-        for (int i = 0; i < commit_n; i++) {
-            replay_tok[i] = (i < accept_n) ? draft_tok[i] : bonus_tok;
-        }
-        int replay_last_tok = -1;
-        if (!target->verify_batch(replay_tok, committed, replay_last_tok, nullptr)) {
-            std::fprintf(stderr, "[qwen3moe-spec] replay failed\n");
-            step_graph_destroy(draft_sg);
-            return false;
-        }
-        last_tok = replay_last_tok;
+        // 7. Feature ring: verify_batch wrote captures for all q_len positions.
+        // Same crop logic: features past cur_pos are stale but unreachable by
+        // the draft's attention range, which only spans 0..cur_pos. Safe.
 
-        // 7. Feature ring is updated by verify_batch (via copy_capture_slice_to_draft_ring).
-        // No separate sync needed here — the replay verify_batch already wrote the
-        // accepted-token captures into the mirror.
-
-        // 8. Emit committed tokens
+        // 8. Emit tokens.
+        // Round 1 must emit the seed (draft_tok[0] = first), since generate()
+        // skipped it for the spec path. Subsequent rounds skip the seed —
+        // it's the bonus from the previous round, already emitted.
+        // `committed` (= base_pos for next verify) advances by accept_n; the
+        // bonus's KV is deferred to next round when bonus becomes the seed.
+        const bool is_first_round = (n_draft_steps == 0);
+        const int emit_start = is_first_round ? 0 : 1;
         bool hit_eos = false;
         int emitted  = 0;
-        for (int i = 0; i < commit_n; i++) {
-            out_tokens.push_back(replay_tok[i]);
-            io.emit(replay_tok[i]);
-            emitted++;
+        for (int i = emit_start; i < accept_n && emitted < need_commit_budget; ++i) {
+            out_tokens.push_back(draft_tok[i]);
+            io.emit(draft_tok[i]);
+            ++emitted;
             if (io.cancelled) break;
-            if (replay_tok[i] == 151643 || replay_tok[i] == 151645) {
+            if (draft_tok[i] == 151643 || draft_tok[i] == 151645) {
                 hit_eos = true; break;
             }
         }
-        committed      += emitted;
-        cache_.cur_pos  = committed;
-        n_generated    += emitted;
-        n_accept_sum   += std::min(accept_n, emitted);
+        if (!hit_eos && bonus_tok >= 0 && emitted < need_commit_budget) {
+            out_tokens.push_back(bonus_tok);
+            io.emit(bonus_tok);
+            ++emitted;
+            if (bonus_tok == 151643 || bonus_tok == 151645) hit_eos = true;
+        }
+
+        // Advance cache by accept_n (committed K/V), regardless of bonus.
+        committed     += accept_n;
+        cache_.cur_pos = committed;
+        // Seed for next round: bonus if it exists (next round's noise_ids[0]).
+        last_tok = (bonus_tok >= 0) ? bonus_tok : draft_tok[accept_n - 1];
+        n_generated  += emitted;
+        n_accept_sum += std::max(0, accept_n - 1);  // count real matches (excl. seed)
         n_draft_steps++;
         if (io.cancelled || hit_eos) break;
     }
