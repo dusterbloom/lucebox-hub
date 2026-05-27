@@ -39,9 +39,9 @@ ALL_CLIENTS = [
 # Primary 5: have session_inject_proxy wiring for bandit.
 PRIMARY_CLIENTS = ["claude_code", "codex", "pi", "hermes", "opencode"]
 
-_PFLASH_DRAFTER = "/home/peppi/models/Qwen3-0.6B-Q8_0.gguf"
+_PFLASH_DRAFTER = os.environ.get("PFLASH_DRAFT", "/path/to/your/models/Qwen3-0.6B-Q8_0.gguf")
 # dFlash decode speculation drafter (different model: Qwen3.6 family, ~1 GB)
-_DECODE_DRAFT = "/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf"
+_DECODE_DRAFT = os.environ.get("DECODE_DRAFT", "/path/to/your/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf")
 
 # Default model/server configuration (RTX 3090, 24 GB).
 DEFAULT_SERVER_ENV = {
@@ -50,11 +50,11 @@ DEFAULT_SERVER_ENV = {
     "DFLASH27B_KV_K": "tq3_0",
     "DFLASH27B_KV_V": "tq3_0",
     "GGML_CUDA_NO_VMM": "1",
-    "TARGET": "/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf",
+    "TARGET": os.environ.get("TARGET", "/path/to/your/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf"),
     # DRAFT wires dFlash decode speculation (--draft in common.sh).
     # Both baseline and pflash arms keep this active for apples-to-apples comparison.
     "DRAFT": _DECODE_DRAFT,
-    "DFLASH_SERVER_BIN": "/home/peppi/Dev/lucebox-hub/dflash/build/dflash_server",
+    "DFLASH_SERVER_BIN": os.environ.get("DFLASH_SERVER_BIN", "/path/to/your/Dev/lucebox-hub/dflash/build/dflash_server"),
     "MAX_CTX": "98304",
     "MAX_TOKENS": "512",
     "VERIFY_MODE": "ddtree",
@@ -64,7 +64,7 @@ DEFAULT_SERVER_ENV = {
     # EXTRA_SERVER_ARGS is intentionally empty here; callers inject pflash or
     # baseline flags via build_env(overrides={"EXTRA_SERVER_ARGS": ...}).
     "EXTRA_SERVER_ARGS": "",
-    "CLAUDE_BIN": "/home/peppi/.local/bin/claude",
+    "CLAUDE_BIN": os.environ.get("CLAUDE_BIN", "/path/to/your/.local/bin/claude"),
     "CLAUDE_TIMEOUT": "600",
     "MARKER": "OK_DONE",
     "CLAUDE_TOOLS": "none",

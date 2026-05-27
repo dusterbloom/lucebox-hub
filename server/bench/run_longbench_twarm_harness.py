@@ -23,10 +23,10 @@ from statistics import mean, median
 import requests
 
 REPO = Path(__file__).resolve().parents[2]
-BINARY = "/home/peppi/Dev/lucebox-hub/dflash/build/dflash_server"
-TARGET = "/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf"
-DECODE_DRAFT = "/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf"
-PFLASH_DRAFTER = "/home/peppi/models/Qwen3-0.6B-Q8_0.gguf"
+BINARY = os.environ.get("DFLASH_SERVER_BIN", "/path/to/your/Dev/lucebox-hub/dflash/build/dflash_server")
+TARGET = os.environ.get("TARGET", "/path/to/your/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf")
+DECODE_DRAFT = os.environ.get("DECODE_DRAFT", "/path/to/your/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf")
+PFLASH_DRAFTER = os.environ.get("PFLASH_DRAFT", "/path/to/your/models/Qwen3-0.6B-Q8_0.gguf")
 PORT = 19099
 BASE_URL = f"http://127.0.0.1:{PORT}"
 DEFAULT_DATA = Path("/tmp/longbench_hotpotqa.jsonl")

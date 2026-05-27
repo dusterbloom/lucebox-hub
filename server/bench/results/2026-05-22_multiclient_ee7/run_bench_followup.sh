@@ -1,3 +1,5 @@
+# HISTORICAL — original paths replaced with placeholders. Set env vars
+# per server/bench/bench.env.sample before re-running this script.
 #!/usr/bin/env bash
 # Follow-up bench: pi + codex x {baseline, ee7} after PATH fix
 set -euo pipefail
@@ -9,8 +11,8 @@ RESULTS_DIR="$WORKTREE/dflash/bench/results/2026-05-22_multiclient_ee7"
 export MODEL_SERVER=lucebox
 export LUCEBOX_SERVER_BACKEND=cpp
 export DFLASH_SERVER_BIN="$WORKTREE/dflash/build/dflash_server"
-export TARGET=/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf
-export DRAFT=/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf
+export TARGET=/path/to/your/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf
+export DRAFT=/path/to/your/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf
 export MAX_CTX=98304
 export MAX_TOKENS=512
 export GGML_CUDA_NO_VMM=1
@@ -19,10 +21,10 @@ export DFLASH27B_KV_V=tq3_0
 export VERIFY_MODE=ddtree
 export BUDGET=16
 export REPO_DIR="$WORKTREE"
-export EXTRA_SERVER_ARGS="--prefill-compression always --prefill-keep-ratio 0.05 --prefill-drafter /home/peppi/models/Qwen3-0.6B-BF16.gguf"
+export EXTRA_SERVER_ARGS="--prefill-compression always --prefill-keep-ratio 0.05 --prefill-drafter /path/to/your/models/Qwen3-0.6B-BF16.gguf"
 
-export PI_BIN=/home/peppi/.nvm/versions/node/v22.17.0/bin/pi
-export CODEX_BIN=/home/peppi/.local/bin/codex
+export PI_BIN=/path/to/your/.nvm/versions/node/v22.17.0/bin/pi
+export CODEX_BIN=/path/to/your/.local/bin/codex
 export CLIENT_WORK_DIR="$RESULTS_DIR/client-work-followup"
 mkdir -p "$CLIENT_WORK_DIR/clients"
 

@@ -48,8 +48,8 @@ DEFAULT_ENV = {
     "GGML_CUDA_NO_VMM": "1",
     "PFLASH_DRAFTER_EARLY_EXIT_N": "7",
     "PFLASH_DRAFTER_SCORE_LAYERS": "7",
-    "TARGET": "/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf",
-    "DRAFT": "/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf",
+    "TARGET": os.environ.get("TARGET", "/path/to/your/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf"),
+    "DRAFT": os.environ.get("DECODE_DRAFT", "/path/to/your/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf"),
     "MAX_CTX": "98304",
     "MAX_TOKENS": "512",
     "VERIFY_MODE": "ddtree",
@@ -58,7 +58,7 @@ DEFAULT_ENV = {
     "RUN_DIR": "/tmp/lucebox-bench-runs",
     "EXTRA_SERVER_ARGS": (
         "--prefill-compression always --prefill-keep-ratio 0.10 "
-        "--prefill-drafter /home/peppi/models/Qwen3-0.6B-BF16.gguf"
+        f"--prefill-drafter {os.environ.get(\'PFLASH_DRAFT\', \'/path/to/your/models/Qwen3-0.6B-Q8_0.gguf\')}"
     ),
     "CLAUDE_TIMEOUT": "600",
     "MARKER": "OK_DONE",

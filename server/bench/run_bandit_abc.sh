@@ -34,9 +34,9 @@ RESULTS_BASE="${RESULTS_BASE:-$REPO_DIR/server/bench/results/2026-05-27_full_har
 RESULTS_DIR="$RESULTS_BASE/$CLIENT/bandit_abc"
 
 SERVER_BIN="${DFLASH_SERVER_BIN:-$REPO_DIR/server/build/dflash_server}"
-TARGET="${TARGET:-/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf}"
-DRAFT="${DRAFT:-/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf}"
-PFLASH_DRAFTER="${PFLASH_DRAFTER:-/home/peppi/models/Qwen3-0.6B-BF16.gguf}"
+TARGET="${TARGET:-/path/to/your/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf}"
+DRAFT="${DRAFT:-/path/to/your/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf}"
+PFLASH_DRAFTER="${PFLASH_DRAFTER:-/path/to/your/models/Qwen3-0.6B-BF16.gguf}"
 PROMPT_FILE="${PROMPT_FILE:-$HARNESS_DIR/prompts/decode_check.txt}"
 MARKER="${MARKER:-OK_DONE}"
 CLAUDE_TIMEOUT="${CLAUDE_TIMEOUT:-600}"

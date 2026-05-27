@@ -1,3 +1,5 @@
+# HISTORICAL — original paths replaced with placeholders. Set env vars
+# per server/bench/bench.env.sample before re-running this script.
 #!/usr/bin/env bash
 # Multi-client ee7 validation bench — 2026-05-22
 # Runs each client × {baseline, ee7} with flock GPU guard
@@ -12,8 +14,8 @@ mkdir -p "$RUN_DIR"
 export MODEL_SERVER=lucebox
 export LUCEBOX_SERVER_BACKEND=cpp
 export DFLASH_SERVER_BIN="$WORKTREE/dflash/build/dflash_server"
-export TARGET=/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf
-export DRAFT=/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf
+export TARGET=/path/to/your/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf
+export DRAFT=/path/to/your/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf
 export MAX_CTX=98304
 export MAX_TOKENS=512
 export GGML_CUDA_NO_VMM=1
@@ -23,14 +25,14 @@ export VERIFY_MODE=ddtree
 export BUDGET=16
 export REPO_DIR="$WORKTREE"
 export RUN_DIR
-export EXTRA_SERVER_ARGS="--prefill-compression always --prefill-keep-ratio 0.05 --prefill-drafter /home/peppi/models/Qwen3-0.6B-BF16.gguf"
+export EXTRA_SERVER_ARGS="--prefill-compression always --prefill-keep-ratio 0.05 --prefill-drafter /path/to/your/models/Qwen3-0.6B-BF16.gguf"
 
 # Client binary overrides (harness defaults to /workspace paths)
-export CLAUDE_BIN=/home/peppi/.local/bin/claude
-export HERMES_BIN=/home/peppi/.local/bin/hermes
-export OPENCODE_BIN=/home/peppi/.nvm/versions/node/v22.17.0/bin/opencode
-export PI_BIN=/home/peppi/.asdf/shims/pi
-export CODEX_BIN=/home/peppi/.local/bin/codex
+export CLAUDE_BIN=/path/to/your/.local/bin/claude
+export HERMES_BIN=/path/to/your/.local/bin/hermes
+export OPENCODE_BIN=/path/to/your/.nvm/versions/node/v22.17.0/bin/opencode
+export PI_BIN=/path/to/your/.asdf/shims/pi
+export CODEX_BIN=/path/to/your/.local/bin/codex
 export CLIENT_WORK_DIR="$RUN_DIR/client-work"
 mkdir -p "$CLIENT_WORK_DIR/clients"
 

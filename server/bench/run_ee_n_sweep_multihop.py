@@ -18,8 +18,8 @@ import requests
 
 REPO = Path(__file__).resolve().parents[2]
 SERVER_BIN = REPO / "dflash/build/dflash_server"
-TARGET = Path("/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf")
-DRAFTER = Path(os.environ.get("PFLASH_DRAFT", "/home/peppi/models/Qwen3-0.6B-Q8_0.gguf"))
+TARGET = Path(os.environ.get("TARGET", "/path/to/your/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf"))
+DRAFTER = Path(os.environ.get("PFLASH_DRAFT", "/path/to/your/models/Qwen3-0.6B-Q8_0.gguf"))
 PORT = 18099
 BASE_URL = f"http://127.0.0.1:{PORT}"
 
@@ -49,7 +49,7 @@ def start_server(condition, log_path, compression_mode="always", keep_ratio=0.05
 
     DECODE_DRAFT = os.environ.get(
         "DECODE_DRAFT",
-        "/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf",
+        os.environ.get("DECODE_DRAFT", "/path/to/your/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf"),
     )
     cmd = [
         str(SERVER_BIN), str(TARGET),
