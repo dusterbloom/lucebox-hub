@@ -36,11 +36,49 @@ cat > "$AGENT_DIR/settings.json" <<JSON
 }
 JSON
 
+start_lucebox_server
+trap stop_lucebox_server EXIT
+wait_lucebox_server
+
+# Session-inject proxy: inject extra_body.session_id for bandit experiments.
+PROXY_PID=""
+CLIENT_BASE_URL="$BASE_URL"
+if [[ -n "${PFLASH_SESSION_ID:-}" ]]; then
+  PROXY_PORT="${PFLASH_PROXY_PORT:-18084}"
+  python3 "$SCRIPT_DIR/session_inject_proxy.py" \
+    --host "$HOST" \
+    --port "$PROXY_PORT" \
+    --upstream "$BASE_URL" \
+    --session-id "$PFLASH_SESSION_ID" \
+    >> "$LOG_DIR/proxy.log" 2>&1 &
+  PROXY_PID=$!
+  trap 'kill "$PROXY_PID" 2>/dev/null || true; wait "$PROXY_PID" 2>/dev/null || true; stop_lucebox_server' EXIT
+  _proxy_ready=0
+  for _i in $(seq 1 10); do
+    if curl -fsS "http://$HOST:$PROXY_PORT/health" >/dev/null 2>&1; then _proxy_ready=1; break; fi
+    sleep 1
+    if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+      echo "session-inject proxy exited early; log: $LOG_DIR/proxy.log" >&2
+      cat "$LOG_DIR/proxy.log" >&2 || true
+      exit 1
+    fi
+  done
+  if [[ "$_proxy_ready" -eq 0 ]]; then
+    echo "session-inject proxy did not become ready after 10s; log: $LOG_DIR/proxy.log" >&2
+    cat "$LOG_DIR/proxy.log" >&2 || true
+    kill "$PROXY_PID" 2>/dev/null || true
+    exit 1
+  fi
+  CLIENT_BASE_URL="http://$HOST:$PROXY_PORT"
+  echo "[run_pi] session-inject proxy up on $CLIENT_BASE_URL (session=$PFLASH_SESSION_ID)"
+fi
+
+# Write models.json after proxy resolution so baseUrl points at proxy when active.
 cat > "$AGENT_DIR/models.json" <<JSON
 {
   "providers": {
     "lucebox": {
-      "baseUrl": "$BASE_URL/v1",
+      "baseUrl": "$CLIENT_BASE_URL/v1",
       "api": "$PROVIDER_API",
       "apiKey": "$API_KEY",
       "compat": {
@@ -65,10 +103,6 @@ cat > "$AGENT_DIR/models.json" <<JSON
   }
 }
 JSON
-
-start_lucebox_server
-trap stop_lucebox_server EXIT
-wait_lucebox_server
 
 set +e
 HOME="$HOME_DIR" \

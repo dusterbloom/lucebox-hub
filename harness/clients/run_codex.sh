@@ -31,6 +31,43 @@ CODEX_SANDBOX="${CODEX_SANDBOX:-danger-full-access}"
 CODEX_WIRE_API="${CODEX_WIRE_API:-responses}"
 mkdir -p "$CODEX_HOME_DIR"
 
+start_lucebox_server
+trap stop_lucebox_server EXIT
+wait_lucebox_server
+
+# Session-inject proxy: inject extra_body.session_id for bandit experiments.
+PROXY_PID=""
+CLIENT_BASE_URL="$BASE_URL"
+if [[ -n "${PFLASH_SESSION_ID:-}" ]]; then
+  PROXY_PORT="${PFLASH_PROXY_PORT:-18083}"
+  python3 "$SCRIPT_DIR/session_inject_proxy.py" \
+    --host "$HOST" \
+    --port "$PROXY_PORT" \
+    --upstream "$BASE_URL" \
+    --session-id "$PFLASH_SESSION_ID" \
+    >> "$LOG_DIR/proxy.log" 2>&1 &
+  PROXY_PID=$!
+  trap 'kill "$PROXY_PID" 2>/dev/null || true; wait "$PROXY_PID" 2>/dev/null || true; stop_lucebox_server' EXIT
+  _proxy_ready=0
+  for _i in $(seq 1 10); do
+    if curl -fsS "http://$HOST:$PROXY_PORT/health" >/dev/null 2>&1; then _proxy_ready=1; break; fi
+    sleep 1
+    if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+      echo "session-inject proxy exited early; log: $LOG_DIR/proxy.log" >&2
+      cat "$LOG_DIR/proxy.log" >&2 || true
+      exit 1
+    fi
+  done
+  if [[ "$_proxy_ready" -eq 0 ]]; then
+    echo "session-inject proxy did not become ready after 10s; log: $LOG_DIR/proxy.log" >&2
+    cat "$LOG_DIR/proxy.log" >&2 || true
+    kill "$PROXY_PID" 2>/dev/null || true
+    exit 1
+  fi
+  CLIENT_BASE_URL="http://$HOST:$PROXY_PORT"
+  echo "[run_codex] session-inject proxy up on $CLIENT_BASE_URL (session=$PFLASH_SESSION_ID)"
+fi
+
 cat > "$CODEX_HOME_DIR/config.toml" <<TOML
 model = "$MODEL_ID"
 model_provider = "luce"
@@ -39,14 +76,10 @@ sandbox_mode = "$CODEX_SANDBOX"
 
 [model_providers.luce]
 name = "Lucebox"
-base_url = "$BASE_URL/v1"
+base_url = "$CLIENT_BASE_URL/v1"
 env_key = "OPENAI_API_KEY"
 wire_api = "$CODEX_WIRE_API"
 TOML
-
-start_lucebox_server
-trap stop_lucebox_server EXIT
-wait_lucebox_server
 
 set +e
 HOME="$CODEX_HOME_DIR" \

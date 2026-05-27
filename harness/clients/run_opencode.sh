@@ -23,6 +23,44 @@ for path in "$REPO_DIR"/* "$REPO_DIR"/.[!.]*; do
   [[ -e "$PROJECT_DIR/$name" ]] || ln -s "$path" "$PROJECT_DIR/$name"
 done
 
+start_lucebox_server
+trap stop_lucebox_server EXIT
+wait_lucebox_server
+
+# Session-inject proxy: inject extra_body.session_id for bandit experiments.
+PROXY_PID=""
+CLIENT_BASE_URL="$BASE_URL"
+if [[ -n "${PFLASH_SESSION_ID:-}" ]]; then
+  PROXY_PORT="${PFLASH_PROXY_PORT:-18086}"
+  python3 "$SCRIPT_DIR/session_inject_proxy.py" \
+    --host "$HOST" \
+    --port "$PROXY_PORT" \
+    --upstream "$BASE_URL" \
+    --session-id "$PFLASH_SESSION_ID" \
+    >> "$LOG_DIR/proxy.log" 2>&1 &
+  PROXY_PID=$!
+  trap 'kill "$PROXY_PID" 2>/dev/null || true; wait "$PROXY_PID" 2>/dev/null || true; stop_lucebox_server' EXIT
+  _proxy_ready=0
+  for _i in $(seq 1 10); do
+    if curl -fsS "http://$HOST:$PROXY_PORT/health" >/dev/null 2>&1; then _proxy_ready=1; break; fi
+    sleep 1
+    if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+      echo "session-inject proxy exited early; log: $LOG_DIR/proxy.log" >&2
+      cat "$LOG_DIR/proxy.log" >&2 || true
+      exit 1
+    fi
+  done
+  if [[ "$_proxy_ready" -eq 0 ]]; then
+    echo "session-inject proxy did not become ready after 10s; log: $LOG_DIR/proxy.log" >&2
+    cat "$LOG_DIR/proxy.log" >&2 || true
+    kill "$PROXY_PID" 2>/dev/null || true
+    exit 1
+  fi
+  CLIENT_BASE_URL="http://$HOST:$PROXY_PORT"
+  echo "[run_opencode] session-inject proxy up on $CLIENT_BASE_URL (session=$PFLASH_SESSION_ID)"
+fi
+
+# Write opencode.json after proxy resolution so baseURL points at proxy when active.
 cat > "$PROJECT_DIR/opencode.json" <<JSON
 {
   "\$schema": "https://opencode.ai/config.json",
@@ -33,7 +71,7 @@ cat > "$PROJECT_DIR/opencode.json" <<JSON
       "npm": "@ai-sdk/openai-compatible",
       "name": "Lucebox",
       "options": {
-        "baseURL": "$BASE_URL/v1",
+        "baseURL": "$CLIENT_BASE_URL/v1",
         "apiKey": "$API_KEY",
         "timeout": 600000,
         "chunkTimeout": 60000
@@ -55,10 +93,6 @@ cat > "$PROJECT_DIR/opencode.json" <<JSON
   }
 }
 JSON
-
-start_lucebox_server
-trap stop_lucebox_server EXIT
-wait_lucebox_server
 
 set +e
 cd "$PROJECT_DIR"
