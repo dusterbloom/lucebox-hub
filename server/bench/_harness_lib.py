@@ -40,6 +40,8 @@ ALL_CLIENTS = [
 PRIMARY_CLIENTS = ["claude_code", "codex", "pi", "hermes", "opencode"]
 
 _PFLASH_DRAFTER = "/home/peppi/models/Qwen3-0.6B-Q8_0.gguf"
+# dFlash decode speculation drafter (different model: Qwen3.6 family, ~1 GB)
+_DECODE_DRAFT = "/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf"
 
 # Default model/server configuration (RTX 3090, 24 GB).
 DEFAULT_SERVER_ENV = {
@@ -49,8 +51,9 @@ DEFAULT_SERVER_ENV = {
     "DFLASH27B_KV_V": "tq3_0",
     "GGML_CUDA_NO_VMM": "1",
     "TARGET": "/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf",
-    # decode drafter (dflash speculative decode path)
-    "DRAFT": "/home/peppi/models/Qwen3-0.6B-Q8_0.gguf",
+    # DRAFT wires dFlash decode speculation (--draft in common.sh).
+    # Both baseline and pflash arms keep this active for apples-to-apples comparison.
+    "DRAFT": _DECODE_DRAFT,
     "DFLASH_SERVER_BIN": "/home/peppi/Dev/lucebox-hub/dflash/build/dflash_server",
     "MAX_CTX": "98304",
     "MAX_TOKENS": "512",
@@ -71,8 +74,10 @@ DEFAULT_SERVER_ENV = {
     "API_KEY": "sk-lucebox",
 }
 
-# pflash arm: prefill compression ON, ee7, anchor-transitive cascade
-# DRAFT="" prevents --draft being passed; drafter path is in --prefill-drafter via EXTRA_SERVER_ARGS.
+# pflash arm: prefill compression ON, ee7.
+# DRAFT is inherited from DEFAULT_SERVER_ENV (decode drafter stays active).
+# --prefill-drafter uses _PFLASH_DRAFTER (Qwen3-0.6B-Q8_0, the small scoring model).
+# Cascade is OFF for agentic P1 sweep (cascade is for multi-hop QA benchmarks).
 PFLASH_SERVER_EXTRA_ARGS = (
     f"--prefill-compression always --prefill-keep-ratio 0.05 "
     f"--prefill-drafter {_PFLASH_DRAFTER}"
@@ -81,15 +86,13 @@ PFLASH_ENV_OVERRIDES = {
     "EXTRA_SERVER_ARGS": PFLASH_SERVER_EXTRA_ARGS,
     "PFLASH_DRAFTER_EARLY_EXIT_N": "7",
     "PFLASH_DRAFTER_SCORE_LAYERS": "7",
-    "PFLASH_COMPRESS_ANCHOR_TRANSITIVE": "1",
-    "DRAFT": "",
+    # PFLASH_COMPRESS_ANCHOR_TRANSITIVE intentionally omitted (off by default for P1 agentic)
 }
 
-# baseline arm: no compression, no early exit, no decode drafter
-# DRAFT="" prevents common.sh from passing --draft with an incompatible arch model.
+# baseline arm: no compression, no early exit.
+# DRAFT is inherited from DEFAULT_SERVER_ENV (decode drafter stays active).
 BASELINE_ENV_OVERRIDES: dict[str, str] = {
     "EXTRA_SERVER_ARGS": "",
-    "DRAFT": "",
 }
 
 
