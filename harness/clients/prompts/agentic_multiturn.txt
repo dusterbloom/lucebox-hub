@@ -1,0 +1,15 @@
+You are helping debug and implement a small coding task across multiple steps.
+
+Step 1: Write a Python function called `merge_sorted_lists(a, b)` that merges two sorted
+lists into a single sorted list in O(n+m) time. Include a docstring.
+
+Step 2: Add an edge-case handling block: if either input is empty, return the other directly
+(no copy). Show the updated function.
+
+Step 3: Write 4 pytest tests covering: both empty, first empty, second empty, interleaved
+values. Each test must pass with your implementation.
+
+Step 4: Now translate `merge_sorted_lists` to Rust as a generic fn with T: Ord + Clone.
+Include a #[cfg(test)] block with 3 tests.
+
+Complete all 4 steps in a single response. End your final answer with exactly: OK_DONE
