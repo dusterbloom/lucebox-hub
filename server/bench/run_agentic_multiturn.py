@@ -38,14 +38,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _harness_lib import (
     ALL_CLIENTS,
+    BASELINE_ENV_OVERRIDES,
     BENCH_LOCK,
     DEFAULT_SERVER_ENV,
     HARNESS_DIR,
+    PFLASH_ENV_OVERRIDES,
     REPO,
     build_env,
     client_out_filename,
     harness_for,
+    run_arm,
     run_client,
+    write_two_arm_metrics,
 )
 
 PROMPT_FILE = HARNESS_DIR / "prompts/agentic_multiturn.txt"
@@ -123,61 +127,86 @@ def clients_for(args: argparse.Namespace) -> list[str]:
 
 
 def run_one(client: str, output_dir: Path, args: argparse.Namespace) -> dict:
-    """Run a single client; return metrics dict."""
+    """Run baseline + pflash arms for one client; write combined metrics.txt."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    overrides: dict[str, str] = {
+    base_overrides: dict[str, str] = {
         "PROMPT_FILE": args.prompt_file,
         "MARKER": "OK_DONE",
         "PORT": "19099",
     }
     if args.dflash_server_bin:
-        overrides["DFLASH_SERVER_BIN"] = args.dflash_server_bin
+        base_overrides["DFLASH_SERVER_BIN"] = args.dflash_server_bin
 
-    env = build_env(overrides)
-    stamp = f"agentic-mt-{client}-{int(time.time())}"
-
-    result = run_client(
+    # --- baseline arm (no compression) ---
+    print(f"\n[agentic_multiturn] --- {client}: baseline arm ---", flush=True)
+    baseline_dir = output_dir / "baseline"
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+    baseline = run_arm(
         client=client,
-        env=env,
-        run_name=stamp,
-        run_dir=str(output_dir),
+        label="baseline",
+        arm_env_overrides=BASELINE_ENV_OVERRIDES,
+        base_overrides=base_overrides,
+        run_dir=baseline_dir,
         timeout_s=args.timeout,
     )
 
-    # Write per-run metrics.txt
-    metrics_path = output_dir / "metrics.txt"
-    with metrics_path.open("w") as f:
-        f.write(f"client={client}\n")
-        f.write(f"ok_done={'YES' if result['ok_done'] else 'NO'}\n")
-        f.write(f"accept_rate={result.get('accept_rate') or 'N/A'}\n")
-        f.write(f"drafter_fwd_s={result.get('drafter_fwd_s') or 'N/A'}\n")
-        f.write(f"n_tokens={result.get('n_tokens') or 'N/A'}\n")
-        f.write(f"rc={result.get('rc')}\n")
-        f.write(f"run_dir={output_dir}\n")
-        if result.get("error"):
-            f.write(f"error={result['error']}\n")
+    # --- pflash arm (compression ON, ee7) ---
+    print(f"\n[agentic_multiturn] --- {client}: pflash arm ---", flush=True)
+    pflash_dir = output_dir / "pflash"
+    pflash_dir.mkdir(parents=True, exist_ok=True)
+    pflash = run_arm(
+        client=client,
+        label="pflash",
+        arm_env_overrides=PFLASH_ENV_OVERRIDES,
+        base_overrides=base_overrides,
+        run_dir=pflash_dir,
+        timeout_s=args.timeout,
+    )
 
-    return result
+    write_two_arm_metrics(baseline, pflash, output_dir)
+
+    # Return a summary dict for the outer loop
+    return {
+        "client": client,
+        "ok_done": baseline.get("ok_done") and pflash.get("ok_done"),
+        "baseline": baseline,
+        "pflash": pflash,
+        "run_dir": str(output_dir),
+    }
 
 
 def write_summary(results: list[dict], output_base: Path) -> None:
     summary = output_base / "SUMMARY.md"
     with summary.open("w") as f:
         f.write("# Agentic Multi-turn — Cross-client Summary\n\n")
-        f.write("| client | OK_DONE | accept_rate | drafter_fwd_s | rc |\n")
-        f.write("|--------|---------|-------------|---------------|----||\n")
+        f.write(
+            "| client | OK_DONE (both) | baseline_wall | pflash_wall | "
+            "e2e_speedup | accept_rate | drafter_speedup |\n"
+        )
+        f.write("|--------|----------------|---------------|-------------|"
+                "-------------|-------------|----------------|\n")
         for r in results:
             client = r.get("client", "?")
             ok = "YES" if r.get("ok_done") else "NO"
-            ar = r.get("accept_rate") or "N/A"
-            df = (
-                f"{r['drafter_fwd_s']:.2f}s"
-                if r.get("drafter_fwd_s")
+            b = r.get("baseline", {})
+            p = r.get("pflash", {})
+            bw = f"{b['wall_s']:.1f}s" if b.get("wall_s") else "N/A"
+            pw = f"{p['wall_s']:.1f}s" if p.get("wall_s") else "N/A"
+            speedup = (
+                f"{b['wall_s'] / p['wall_s']:.2f}x"
+                if (b.get("wall_s") and p.get("wall_s") and p["wall_s"] > 0)
                 else "N/A"
             )
-            rc = r.get("rc", "?")
-            f.write(f"| {client} | {ok} | {ar} | {df} | {rc} |\n")
+            ar = p.get("accept_rate") or "N/A"
+            bdf = b.get("drafter_fwd_s")
+            pdf = p.get("drafter_fwd_s")
+            ds = (
+                f"{bdf / pdf:.2f}x"
+                if (bdf and pdf and pdf > 0)
+                else "N/A"
+            )
+            f.write(f"| {client} | {ok} | {bw} | {pw} | {speedup} | {ar} | {ds} |\n")
     print(f"[agentic_multiturn] summary -> {summary}", flush=True)
 
 

@@ -39,6 +39,8 @@ ALL_CLIENTS = [
 # Primary 5: have session_inject_proxy wiring for bandit.
 PRIMARY_CLIENTS = ["claude_code", "codex", "pi", "hermes", "opencode"]
 
+_PFLASH_DRAFTER = "/home/peppi/models/Qwen3-0.6B-Q8_0.gguf"
+
 # Default model/server configuration (RTX 3090, 24 GB).
 DEFAULT_SERVER_ENV = {
     "MODEL_SERVER": "lucebox",
@@ -46,10 +48,9 @@ DEFAULT_SERVER_ENV = {
     "DFLASH27B_KV_K": "tq3_0",
     "DFLASH27B_KV_V": "tq3_0",
     "GGML_CUDA_NO_VMM": "1",
-    "PFLASH_DRAFTER_EARLY_EXIT_N": "7",
-    "PFLASH_DRAFTER_SCORE_LAYERS": "7",
     "TARGET": "/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf",
-    "DRAFT": "/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf",
+    # decode drafter (dflash speculative decode path)
+    "DRAFT": "/home/peppi/models/Qwen3-0.6B-Q8_0.gguf",
     "DFLASH_SERVER_BIN": "/home/peppi/Dev/lucebox-hub/dflash/build/dflash_server",
     "MAX_CTX": "98304",
     "MAX_TOKENS": "512",
@@ -57,10 +58,9 @@ DEFAULT_SERVER_ENV = {
     "BUDGET": "16",
     "REPO_DIR": str(REPO),
     "RUN_DIR": "/tmp/lucebox-bench-runs",
-    "EXTRA_SERVER_ARGS": (
-        "--prefill-compression always --prefill-keep-ratio 0.05 "
-        "--prefill-drafter /home/peppi/models/Qwen3-0.6B-BF16.gguf"
-    ),
+    # EXTRA_SERVER_ARGS is intentionally empty here; callers inject pflash or
+    # baseline flags via build_env(overrides={"EXTRA_SERVER_ARGS": ...}).
+    "EXTRA_SERVER_ARGS": "",
     "CLAUDE_BIN": "/home/peppi/.local/bin/claude",
     "CLAUDE_TIMEOUT": "600",
     "MARKER": "OK_DONE",
@@ -69,6 +69,23 @@ DEFAULT_SERVER_ENV = {
     "HOST": "127.0.0.1",
     "MODEL_ID": "luce-dflash",
     "API_KEY": "sk-lucebox",
+}
+
+# pflash arm: prefill compression ON, ee7, anchor-transitive
+PFLASH_SERVER_EXTRA_ARGS = (
+    f"--prefill-compression always --prefill-keep-ratio 0.05 "
+    f"--prefill-drafter {_PFLASH_DRAFTER} "
+    f"--prefill-anchor-transitive"
+)
+PFLASH_ENV_OVERRIDES = {
+    "EXTRA_SERVER_ARGS": PFLASH_SERVER_EXTRA_ARGS,
+    "PFLASH_DRAFTER_EARLY_EXIT_N": "7",
+    "PFLASH_DRAFTER_SCORE_LAYERS": "7",
+}
+
+# baseline arm: no compression, no early exit
+BASELINE_ENV_OVERRIDES: dict[str, str] = {
+    "EXTRA_SERVER_ARGS": "",
 }
 
 
@@ -216,17 +233,113 @@ def run_client(
     if not ok_done:
         ok_done = marker in combined
 
-    print(f"  drafter_fwd={drafter_fwd}s n={n_tokens} accept={accept_str} ok_done={ok_done}",
-          flush=True)
+    # Parse prompt tokens from server log ([prefill] tokens=N time=X.XXX s)
+    prompt_tokens = None
+    for text_source in [
+        (server_log.read_text() if server_log.exists() else ""),
+        combined,
+    ]:
+        if prompt_tokens is None:
+            mp = re.search(r"\[prefill\] tokens=(\d+)", text_source)
+            if mp:
+                prompt_tokens = int(mp.group(1))
+        # Also try usage.prompt_tokens from JSON response body in client out
+        if prompt_tokens is None:
+            mp2 = re.search(r'"prompt_tokens"\s*:\s*(\d+)', text_source)
+            if mp2:
+                prompt_tokens = int(mp2.group(1))
+
+    print(f"  drafter_fwd={drafter_fwd}s n={n_tokens} prompt_tokens={prompt_tokens} "
+          f"accept={accept_str} ok_done={ok_done}", flush=True)
 
     return {
         "client": client,
         "run_name": run_name,
+        "wall_s": elapsed,
         "drafter_fwd_s": drafter_fwd,
         "n_tokens": n_tokens,
+        "prompt_tokens": prompt_tokens,
         "accept_rate": accept_rate,
         "accept_detail": accept_str,
         "ok_done": ok_done,
         "run_dir": actual_run_dir,
         "rc": rc,
     }
+
+
+def run_arm(
+    client: str,
+    label: str,
+    arm_env_overrides: dict,
+    base_overrides: dict,
+    run_dir: Path,
+    timeout_s: int = 700,
+) -> dict:
+    """Run one arm (baseline or pflash) of a two-arm bench.
+
+    Merges base_overrides + arm_env_overrides, runs the client harness,
+    returns the metrics dict with an added 'label' key.
+    """
+    merged = {**base_overrides, **arm_env_overrides}
+    env = build_env(merged)
+    stamp = f"{label}-{client}-{int(time.time())}"
+    result = run_client(
+        client=client,
+        env=env,
+        run_name=stamp,
+        run_dir=str(run_dir),
+        timeout_s=timeout_s,
+    )
+    result["label"] = label
+    return result
+
+
+def write_two_arm_metrics(baseline: dict, pflash: dict, output_dir: Path) -> None:
+    """Write combined metrics.txt for a two-arm bench run."""
+    metrics_path = output_dir / "metrics.txt"
+
+    prompt_tokens = pflash.get("prompt_tokens") or baseline.get("prompt_tokens") or "N/A"
+
+    b_wall = baseline.get("wall_s")
+    p_wall = pflash.get("wall_s")
+    speedup = (b_wall / p_wall) if (b_wall and p_wall and p_wall > 0) else None
+
+    b_drafter = baseline.get("drafter_fwd_s")
+    p_drafter = pflash.get("drafter_fwd_s")
+    drafter_speedup = (b_drafter / p_drafter) if (b_drafter and p_drafter and p_drafter > 0) else None
+
+    with metrics_path.open("w") as f:
+        f.write(f"prompt_tokens={prompt_tokens}\n\n")
+
+        f.write("[baseline]\n")
+        b_wall_str = f"{b_wall:.1f}s" if b_wall else "N/A"
+        b_drafter_str = f"{b_drafter:.2f}s" if b_drafter else "N/A"
+        f.write(f"wall={b_wall_str}   drafter_wall={b_drafter_str}   accept_rate=N/A\n")
+        f.write(f"ok_done={'YES' if baseline.get('ok_done') else 'NO'}\n\n")
+
+        f.write("[pflash ee7+cascade]\n")
+        p_wall_str = f"{p_wall:.1f}s" if p_wall else "N/A"
+        p_drafter_str = f"{p_drafter:.2f}s" if p_drafter else "N/A"
+        ar = pflash.get("accept_rate") or "N/A"
+        # Extract keep_ratio from accept_detail if available
+        keep_ratio_str = "N/A"
+        ad = pflash.get("accept_detail") or ""
+        km = re.search(r"keep=([\d.]+)", ad)
+        if km:
+            keep_ratio_str = km.group(1)
+        f.write(
+            f"wall={p_wall_str}   drafter_wall={p_drafter_str}   "
+            f"accept_rate={ar}   keep_ratio={keep_ratio_str}\n"
+        )
+        f.write(f"ok_done={'YES' if pflash.get('ok_done') else 'NO'}\n\n")
+
+        f.write("[headline]\n")
+        speedup_str = f"{speedup:.2f}x" if speedup else "N/A"
+        ds_str = f"{drafter_speedup:.2f}x" if drafter_speedup else "N/A"
+        both_ok = baseline.get("ok_done") and pflash.get("ok_done")
+        f.write(
+            f"e2e_speedup={speedup_str}   drafter_speedup={ds_str}   "
+            f"tokens_kept_pct={keep_ratio_str}   OK_DONE={'yes' if both_ok else 'no'}\n"
+        )
+
+    print(f"[harness_lib] metrics -> {metrics_path}", flush=True)
