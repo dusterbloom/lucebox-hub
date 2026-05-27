@@ -41,20 +41,26 @@ def start_server(condition, log_path, compression_mode="always", keep_ratio=0.05
         ee_n, sl = CONDITION_SPECS[condition]
         env["PFLASH_DRAFTER_EARLY_EXIT_N"] = str(ee_n)
         env["PFLASH_DRAFTER_SCORE_LAYERS"] = str(sl)
-    for k in ("DFLASH_COMPRESS_ANCHOR_TRANSITIVE", "DFLASH_COMPRESS_ANCHOR_MAX_ITERS",
-              "DFLASH_COMPRESS_RARE_MAX_FREQ", "DFLASH_COMPRESS_ANCHOR_NGRAM",
-              "DFLASH_COMPRESS_CASCADE_MIN_ANCHOR_FRAC", "DFLASH_COMPRESS_MAX_FORCED_RATIO"):
+    for k in ("PFLASH_COMPRESS_ANCHOR_TRANSITIVE", "PFLASH_COMPRESS_ANCHOR_MAX_ITERS",
+              "PFLASH_COMPRESS_RARE_MAX_FREQ", "PFLASH_COMPRESS_ANCHOR_NGRAM",
+              "PFLASH_COMPRESS_CASCADE_MIN_ANCHOR_FRAC", "PFLASH_COMPRESS_MAX_FORCED_RATIO"):
         if k in os.environ:
             env[k] = os.environ[k]
 
+    DECODE_DRAFT = os.environ.get(
+        "DECODE_DRAFT",
+        "/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf",
+    )
     cmd = [
         str(SERVER_BIN), str(TARGET),
+        "--draft", DECODE_DRAFT,
         "--host", "127.0.0.1",
         "--port", str(PORT),
         "--max-ctx", str(max_ctx),
         "--prefill-compression", srv_compression,
         "--prefill-keep-ratio", str(keep_ratio),
         "--prefill-drafter", str(DRAFTER),
+        "--lazy-draft",
     ]
     with open(log_path, "w") as f:
         proc = subprocess.Popen(cmd, stdout=f, stderr=f, env=env)
@@ -87,14 +93,14 @@ def stop_server(proc):
 
 
 def extract_metrics_from_log(log_path):
-    metrics = {"drafter_fwd_s": None, "tail_score_s": None}
+    metrics = {"drafter_score_s": None, "tail_score_s": None}
     ggml_assert_count = 0
     try:
         with open(log_path) as f:
             for line in f:
                 m = re.search(r"\[drafter\]\s+forward\+score in ([\d.]+)s", line)
                 if m:
-                    metrics["drafter_fwd_s"] = float(m.group(1))
+                    metrics["drafter_score_s"] = float(m.group(1))
                 m2 = re.search(r"tail.?score\s+([\d.]+)s", line, re.IGNORECASE)
                 if m2:
                     metrics["tail_score_s"] = float(m2.group(1))
@@ -115,7 +121,7 @@ def run_one_case(condition, ctx, case, case_idx, results_dir, compression_mode="
     proc = start_server(condition, log_path, compression_mode=compression_mode, keep_ratio=keep_ratio)
     result = {
         "latency_s": None, "text": "", "passed": False, "error": None,
-        "drafter_fwd_s": None, "tail_score_s": None, "ggml_assert_count": 0,
+        "drafter_score_s": None, "tail_score_s": None, "ggml_assert_count": 0,
     }
     try:
         if not wait_server(proc, timeout=180):
@@ -164,7 +170,7 @@ def run_condition_ctx(condition, ctx, cases, results_dir, compression_mode="alwa
         r = run_one_case(condition, ctx, case, i, results_dir, compression_mode=compression_mode, keep_ratio=keep_ratio)
         case_results.append(r)
         status = "PASS" if r["passed"] else "FAIL"
-        drafter_s = f"{r['drafter_fwd_s']:.3f}s" if r["drafter_fwd_s"] else "N/A"
+        drafter_s = f"{r['drafter_score_s']:.3f}s" if r["drafter_score_s"] else "N/A"
         latency_s = f"{r['latency_s']:.2f}s" if r["latency_s"] is not None else "N/A"
         print(f"  case {i}: latency={latency_s} drafter={drafter_s} [{status}] resp={r['text'][:80]!r}", flush=True)
         if r["error"]:
@@ -173,7 +179,7 @@ def run_condition_ctx(condition, ctx, cases, results_dir, compression_mode="alwa
             print(f"  [STOP] ggml_view_3d assert detected in case {i} log — Bug #42 regressed!", flush=True)
             sys.exit(1)
 
-    drafter_times = [r["drafter_fwd_s"] for r in case_results if r["drafter_fwd_s"] is not None]
+    drafter_times = [r["drafter_score_s"] for r in case_results if r["drafter_score_s"] is not None]
     pass_count = sum(1 for r in case_results if r["passed"])
 
     if pass_count == 0 and len(case_results) > 0:

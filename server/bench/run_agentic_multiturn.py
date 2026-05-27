@@ -195,8 +195,8 @@ def write_summary(results: list[dict], output_base: Path) -> None:
                 else "N/A"
             )
             ar = p.get("accept_rate") or "N/A"
-            bdf = b.get("drafter_fwd_s")
-            pdf = p.get("drafter_fwd_s")
+            bdf = b.get("drafter_score_s")
+            pdf = p.get("drafter_score_s")
             ds = (
                 f"{bdf / pdf:.2f}x"
                 if (bdf and pdf and pdf > 0)

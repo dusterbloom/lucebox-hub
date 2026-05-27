@@ -42,19 +42,25 @@ def start_server(condition, ctx, log_path):
     elif condition == "ee7":
         env["PFLASH_DRAFTER_EARLY_EXIT_N"] = "7"
         env["PFLASH_DRAFTER_SCORE_LAYERS"] = "7"
-    for k in ("DFLASH_COMPRESS_ANCHOR_TRANSITIVE", "DFLASH_COMPRESS_ANCHOR_MAX_ITERS",
-              "DFLASH_COMPRESS_RARE_MAX_FREQ", "DFLASH_COMPRESS_ANCHOR_NGRAM"):
+    for k in ("PFLASH_COMPRESS_ANCHOR_TRANSITIVE", "PFLASH_COMPRESS_ANCHOR_MAX_ITERS",
+              "PFLASH_COMPRESS_RARE_MAX_FREQ", "PFLASH_COMPRESS_ANCHOR_NGRAM"):
         if k in os.environ:
             env[k] = os.environ[k]
 
+    DECODE_DRAFT = os.environ.get(
+        "DECODE_DRAFT",
+        "/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf",
+    )
     cmd = [
         str(SERVER_BIN), str(TARGET),
+        "--draft", DECODE_DRAFT,
         "--host", "127.0.0.1",
         "--port", str(PORT),
         "--max-ctx", str(max_ctx),
         "--prefill-compression", "always",
         "--prefill-keep-ratio", "0.05",
         "--prefill-drafter", str(DRAFTER),
+        "--lazy-draft",
     ]
     with open(log_path, "w") as f:
         proc = subprocess.Popen(cmd, stdout=f, stderr=f, env=env)
@@ -89,7 +95,7 @@ def stop_server(proc):
 def extract_metrics_from_log(log_path):
     """Extract drafter forward+score, tail-score, and stage times from server log."""
     metrics = {
-        "drafter_fwd_s": None,
+        "drafter_score_s": None,
         "tail_score_s": None,
         "a_compute_s": None,
         "fp_s": None,
@@ -100,7 +106,7 @@ def extract_metrics_from_log(log_path):
                 # Main drafter timing: [drafter] forward+score in X.XXXs
                 m = re.search(r"\[drafter\]\s+forward\+score in ([\d.]+)s", line)
                 if m:
-                    metrics["drafter_fwd_s"] = float(m.group(1))
+                    metrics["drafter_score_s"] = float(m.group(1))
                 # tail-score timing
                 m2 = re.search(r"tail.?score\s+([\d.]+)s", line, re.IGNORECASE)
                 if m2:
@@ -124,7 +130,7 @@ def run_one_case_with_server(condition, ctx, case, case_idx, results_dir):
     proc = start_server(condition, ctx, log_path)
     result = {
         "ttft_s": None, "text": "", "found": False, "error": None,
-        "drafter_fwd_s": None, "tail_score_s": None,
+        "drafter_score_s": None, "tail_score_s": None,
         "a_compute_s": None, "fp_s": None,
     }
     try:
@@ -175,7 +181,7 @@ def run_condition_ctx(condition, ctx, cases, results_dir):
         r = run_one_case_with_server(condition, ctx, case, i, results_dir)
         case_results.append(r)
         status = "OK" if r["found"] else "FAIL"
-        drafter_s = f"{r['drafter_fwd_s']:.3f}s" if r["drafter_fwd_s"] else "N/A"
+        drafter_s = f"{r['drafter_score_s']:.3f}s" if r["drafter_score_s"] else "N/A"
         tail_s = f"{r['tail_score_s']:.3f}s" if r["tail_score_s"] else "N/A"
         ttft_s = f"{r['ttft_s']:.2f}s" if r["ttft_s"] is not None else "N/A"
         print(
@@ -187,7 +193,7 @@ def run_condition_ctx(condition, ctx, cases, results_dir):
         if r["error"]:
             print(f"  case {i}: error={r['error'][:200]}", flush=True)
 
-    drafter_times = [r["drafter_fwd_s"] for r in case_results if r["drafter_fwd_s"] is not None]
+    drafter_times = [r["drafter_score_s"] for r in case_results if r["drafter_score_s"] is not None]
     tail_times = [r["tail_score_s"] for r in case_results if r["tail_score_s"] is not None]
     ttfts = [r["ttft_s"] for r in case_results if r["ttft_s"] is not None]
     a_compute_times = [r["a_compute_s"] for r in case_results if r["a_compute_s"] is not None]

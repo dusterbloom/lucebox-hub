@@ -42,14 +42,20 @@ def start_server(condition, ctx, log_path):
         env["PFLASH_DRAFTER_EARLY_EXIT_N"] = "7"
         env["PFLASH_DRAFTER_SCORE_LAYERS"] = "7"
 
+    DECODE_DRAFT = os.environ.get(
+        "DECODE_DRAFT",
+        "/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf",
+    )
     cmd = [
         str(SERVER_BIN), str(TARGET),
+        "--draft", DECODE_DRAFT,
         "--host", "127.0.0.1",
         "--port", str(PORT),
         "--max-ctx", str(max_ctx),
         "--prefill-compression", "always",
         "--prefill-keep-ratio", "0.05",
         "--prefill-drafter", str(DRAFTER),
+        "--lazy-draft",
     ]
     with open(log_path, "w") as f:
         proc = subprocess.Popen(cmd, stdout=f, stderr=f, env=env)
@@ -86,7 +92,7 @@ def run_one_case_with_server(condition, ctx, case, case_idx, results_dir):
     log_path = results_dir / f"{condition}_{ctx}_case{case_idx}_server.log"
     proc = start_server(condition, ctx, log_path)
     result = {"wall_s": None, "text": "", "found": False, "error": None,
-              "drafter_fwd_s": None, "tail_score_s": None}
+              "drafter_score_s": None, "tail_score_s": None}
     try:
         if not wait_server(proc):
             tail = ""
@@ -126,7 +132,7 @@ def run_one_case_with_server(condition, ctx, case, case_idx, results_dir):
             for line in f:
                 m = re.search(r"\[drafter\] forward\+score in ([\d.]+)s", line)
                 if m:
-                    result["drafter_fwd_s"] = float(m.group(1))
+                    result["drafter_score_s"] = float(m.group(1))
                 m2 = re.search(r"tail-score ([\d.]+)s", line)
                 if m2:
                     result["tail_score_s"] = float(m2.group(1))
@@ -144,7 +150,7 @@ def run_condition_ctx(condition, ctx, cases, results_dir):
         r = run_one_case_with_server(condition, ctx, case, i, results_dir)
         case_results.append(r)
         status = "OK" if r["found"] else "FAIL"
-        drafter_s = f"{r['drafter_fwd_s']:.3f}s" if r['drafter_fwd_s'] else "N/A"
+        drafter_s = f"{r['drafter_score_s']:.3f}s" if r['drafter_score_s'] else "N/A"
         tail_s = f"{r['tail_score_s']:.3f}s" if r['tail_score_s'] else "N/A"
         print(f"  case {i}: wall={r['wall_s']:.2f}s drafter={drafter_s} tail={tail_s} [{status}]", flush=True)
         if r["text"]:
@@ -153,7 +159,7 @@ def run_condition_ctx(condition, ctx, cases, results_dir):
             print(f"  case {i}: error={r['error'][:100]}", flush=True)
 
     ok_results = [r for r in case_results if not r.get("error")]
-    drafter_times = [r["drafter_fwd_s"] for r in ok_results if r["drafter_fwd_s"] is not None]
+    drafter_times = [r["drafter_score_s"] for r in ok_results if r["drafter_score_s"] is not None]
     tail_times = [r["tail_score_s"] for r in ok_results if r["tail_score_s"] is not None]
     walls = [r["wall_s"] for r in ok_results if r["wall_s"] is not None]
     niah_pass = sum(1 for c in ok_results if c["found"])

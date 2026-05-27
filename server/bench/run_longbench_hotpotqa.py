@@ -71,20 +71,25 @@ def start_server(condition, log_path, compression_mode="always", keep_ratio=0.10
         env["PFLASH_DRAFTER_SCORE_LAYERS"] = str(sl)
     # Pass through anchor-transitive / bandit / gated-cascade env flags if set
     for k in (
-        "DFLASH_COMPRESS_ANCHOR_TRANSITIVE",
-        "DFLASH_COMPRESS_ANCHOR_MAX_ITERS",
-        "DFLASH_COMPRESS_RARE_MAX_FREQ",
-        "DFLASH_COMPRESS_ANCHOR_NGRAM",
-        "DFLASH_COMPRESS_CASCADE_MIN_ANCHOR_FRAC",
-        "DFLASH_COMPRESS_MAX_FORCED_RATIO",
+        "PFLASH_COMPRESS_ANCHOR_TRANSITIVE",
+        "PFLASH_COMPRESS_ANCHOR_MAX_ITERS",
+        "PFLASH_COMPRESS_RARE_MAX_FREQ",
+        "PFLASH_COMPRESS_ANCHOR_NGRAM",
+        "PFLASH_COMPRESS_CASCADE_MIN_ANCHOR_FRAC",
+        "PFLASH_COMPRESS_MAX_FORCED_RATIO",
         "DFLASH_BANDIT_KEEP",
         "DFLASH_BANDIT_ENABLED",
     ):
         if k in os.environ:
             env[k] = os.environ[k]
 
+    DECODE_DRAFT = os.environ.get(
+        "DECODE_DRAFT",
+        "/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf",
+    )
     cmd = [
         str(SERVER_BIN), str(TARGET),
+        "--draft", DECODE_DRAFT,
         "--host", "127.0.0.1",
         "--port", str(PORT),
         "--max-ctx", "139264",
@@ -96,6 +101,7 @@ def start_server(condition, log_path, compression_mode="always", keep_ratio=0.10
             "--prefill-compression", srv_compression,
             "--prefill-keep-ratio", str(keep_ratio),
             "--prefill-drafter", str(DRAFTER),
+            "--lazy-draft",
         ]
     with open(log_path, "w") as f:
         proc = subprocess.Popen(cmd, stdout=f, stderr=f, env=env)
@@ -128,13 +134,13 @@ def stop_server(proc):
 
 
 def extract_metrics_from_log(log_path):
-    metrics = {"drafter_fwd_s": None, "tail_score_s": None, "ggml_assert_count": 0}
+    metrics = {"drafter_score_s": None, "tail_score_s": None, "ggml_assert_count": 0}
     try:
         with open(log_path) as f:
             for line in f:
                 m = re.search(r"\[drafter\]\s+forward\+score in ([\d.]+)s", line)
                 if m:
-                    metrics["drafter_fwd_s"] = float(m.group(1))
+                    metrics["drafter_score_s"] = float(m.group(1))
                 m2 = re.search(r"tail.?score\s+([\d.]+)s", line, re.IGNORECASE)
                 if m2:
                     metrics["tail_score_s"] = float(m2.group(1))
@@ -157,7 +163,7 @@ def run_one_case(condition, case, case_idx, results_dir, compression_mode, keep_
         "text": "",
         "f1": 0.0,
         "error": None,
-        "drafter_fwd_s": None,
+        "drafter_score_s": None,
         "tail_score_s": None,
         "ggml_assert_count": 0,
     }
@@ -215,7 +221,7 @@ def run_condition(condition, cases, results_dir, compression_mode, keep_ratio):
             sys.exit(1)
 
     f1_scores = [r["f1"] for r in case_results]
-    drafter_times = [r["drafter_fwd_s"] for r in case_results if r["drafter_fwd_s"] is not None]
+    drafter_times = [r["drafter_score_s"] for r in case_results if r["drafter_score_s"] is not None]
     return {
         "condition": condition,
         "compression_mode": compression_mode,

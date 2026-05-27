@@ -160,7 +160,7 @@ def run_client(
     The harness script is responsible for starting and stopping the server;
     env must contain all required variables (PORT, HOST, TARGET, etc.).
 
-    Returns dict with keys: condition, drafter_fwd_s, n_tokens, accept_rate,
+    Returns dict with keys: condition, drafter_score_s, n_tokens, accept_rate,
     accept_detail, ok_done, run_dir, rc.
     """
     actual_run_dir = run_dir or f"/tmp/lucebox-bench-runs/{run_name}"
@@ -175,7 +175,7 @@ def run_client(
         return {
             "client": client,
             "run_name": run_name,
-            "drafter_fwd_s": None,
+            "drafter_score_s": None,
             "n_tokens": None,
             "accept_rate": None,
             "accept_detail": None,
@@ -205,7 +205,7 @@ def run_client(
         return {
             "client": client,
             "run_name": run_name,
-            "drafter_fwd_s": None,
+            "drafter_score_s": None,
             "n_tokens": None,
             "accept_rate": None,
             "accept_detail": None,
@@ -291,7 +291,7 @@ def run_client(
         "client": client,
         "run_name": run_name,
         "wall_s": elapsed,
-        "drafter_fwd_s": drafter_fwd,
+        "drafter_score_s": drafter_fwd,
         "n_tokens": n_tokens,
         "prompt_tokens": prompt_tokens,
         "keep_ratio": keep_ratio,
@@ -345,8 +345,8 @@ def write_two_arm_metrics(baseline: dict, pflash: dict, output_dir: Path) -> Non
     p_wall = pflash.get("wall_s")
     speedup = (b_wall / p_wall) if (b_wall and p_wall and p_wall > 0) else None
 
-    b_drafter = baseline.get("drafter_fwd_s")
-    p_drafter = pflash.get("drafter_fwd_s")
+    b_drafter = baseline.get("drafter_score_s")
+    p_drafter = pflash.get("drafter_score_s")
     drafter_speedup = (b_drafter / p_drafter) if (b_drafter and p_drafter and p_drafter > 0) else None
 
     b_prefill = baseline.get("prefill_s")

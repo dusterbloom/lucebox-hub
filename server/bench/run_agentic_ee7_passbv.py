@@ -174,8 +174,8 @@ def run_for_client(
     for cond in selected:
         r = run_condition_for_client(client, cond, results_dir, args)
         results.append(r)
-        if cond["name"] == "baseline" and r.get("drafter_fwd_s"):
-            baseline_fwd = r["drafter_fwd_s"]
+        if cond["name"] == "baseline" and r.get("drafter_score_s"):
+            baseline_fwd = r["drafter_score_s"]
 
     write_client_summary(client, results, baseline_fwd, results_dir)
     return results
@@ -195,12 +195,12 @@ def write_client_summary(
     rows = []
     for r in results:
         cond = r["condition"]
-        df = f"{r['drafter_fwd_s']:.2f}s" if r.get("drafter_fwd_s") else "N/A"
+        df = f"{r['drafter_score_s']:.2f}s" if r.get("drafter_score_s") else "N/A"
         ar = r.get("accept_rate") or "N/A"
         ok = "YES" if r.get("ok_done") else "NO"
         speedup = "1.00x"
-        if cond != "baseline" and r.get("drafter_fwd_s") and baseline_fwd:
-            speedup = f"{baseline_fwd / r['drafter_fwd_s']:.2f}x"
+        if cond != "baseline" and r.get("drafter_score_s") and baseline_fwd:
+            speedup = f"{baseline_fwd / r['drafter_score_s']:.2f}x"
         print(f"{cond:>12}  {df:>12}  {ar:>12}  {ok:>8}  {speedup:>8}")
         rows.append(
             {
@@ -240,7 +240,7 @@ def write_global_summary(
         f.write("|--------|-------------|---------|---------|---------------|\n")
         for client, results in all_results.items():
             baseline_fwd = next(
-                (r["drafter_fwd_s"] for r in results if r["condition"] == "baseline"),
+                (r["drafter_score_s"] for r in results if r["condition"] == "baseline"),
                 None,
             )
             ee7 = next(
@@ -249,10 +249,10 @@ def write_global_summary(
             )
             if ee7:
                 df_b = f"{baseline_fwd:.2f}s" if baseline_fwd else "N/A"
-                df_e = f"{ee7['drafter_fwd_s']:.2f}s" if ee7.get("drafter_fwd_s") else "N/A"
+                df_e = f"{ee7['drafter_score_s']:.2f}s" if ee7.get("drafter_score_s") else "N/A"
                 speedup = (
-                    f"{baseline_fwd / ee7['drafter_fwd_s']:.2f}x"
-                    if baseline_fwd and ee7.get("drafter_fwd_s")
+                    f"{baseline_fwd / ee7['drafter_score_s']:.2f}x"
+                    if baseline_fwd and ee7.get("drafter_score_s")
                     else "N/A"
                 )
                 ok = "YES" if ee7.get("ok_done") else "NO"
