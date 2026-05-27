@@ -140,27 +140,23 @@ def run_one(client: str, output_dir: Path, args: argparse.Namespace) -> dict:
 
     # --- baseline arm (no compression) ---
     print(f"\n[agentic_multiturn] --- {client}: baseline arm ---", flush=True)
-    baseline_dir = output_dir / "baseline"
-    baseline_dir.mkdir(parents=True, exist_ok=True)
     baseline = run_arm(
         client=client,
         label="baseline",
         arm_env_overrides=BASELINE_ENV_OVERRIDES,
         base_overrides=base_overrides,
-        run_dir=baseline_dir,
+        output_base=output_dir,
         timeout_s=args.timeout,
     )
 
     # --- pflash arm (compression ON, ee7) ---
     print(f"\n[agentic_multiturn] --- {client}: pflash arm ---", flush=True)
-    pflash_dir = output_dir / "pflash"
-    pflash_dir.mkdir(parents=True, exist_ok=True)
     pflash = run_arm(
         client=client,
         label="pflash",
         arm_env_overrides=PFLASH_ENV_OVERRIDES,
         base_overrides=base_overrides,
-        run_dir=pflash_dir,
+        output_base=output_dir,
         timeout_s=args.timeout,
     )
 

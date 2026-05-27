@@ -116,8 +116,12 @@ start_dflash_native_server() {
   # Export KV cache type env vars for the C++ server to pick up.
   export DFLASH27B_KV_K="$CACHE_TYPE_K"
   export DFLASH27B_KV_V="$CACHE_TYPE_V"
+  local draft_args=()
+  if [[ -n "$DRAFT" ]]; then
+    draft_args=(--draft "$DRAFT")
+  fi
   "$DFLASH_SERVER_BIN" "$TARGET" \
-    --draft "$DRAFT" \
+    "${draft_args[@]}" \
     --host "$HOST" \
     --port "$PORT" \
     --max-ctx "$MAX_CTX" \

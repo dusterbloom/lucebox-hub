@@ -71,21 +71,25 @@ DEFAULT_SERVER_ENV = {
     "API_KEY": "sk-lucebox",
 }
 
-# pflash arm: prefill compression ON, ee7, anchor-transitive
+# pflash arm: prefill compression ON, ee7
+# Note: --prefill-anchor-transitive is not in this binary build; omitted.
+# DRAFT="" prevents --draft being passed; drafter path is in --prefill-drafter via EXTRA_SERVER_ARGS.
 PFLASH_SERVER_EXTRA_ARGS = (
     f"--prefill-compression always --prefill-keep-ratio 0.05 "
-    f"--prefill-drafter {_PFLASH_DRAFTER} "
-    f"--prefill-anchor-transitive"
+    f"--prefill-drafter {_PFLASH_DRAFTER}"
 )
 PFLASH_ENV_OVERRIDES = {
     "EXTRA_SERVER_ARGS": PFLASH_SERVER_EXTRA_ARGS,
     "PFLASH_DRAFTER_EARLY_EXIT_N": "7",
     "PFLASH_DRAFTER_SCORE_LAYERS": "7",
+    "DRAFT": "",
 }
 
-# baseline arm: no compression, no early exit
+# baseline arm: no compression, no early exit, no decode drafter
+# DRAFT="" prevents common.sh from passing --draft with an incompatible arch model.
 BASELINE_ENV_OVERRIDES: dict[str, str] = {
     "EXTRA_SERVER_ARGS": "",
+    "DRAFT": "",
 }
 
 
@@ -272,22 +276,26 @@ def run_arm(
     label: str,
     arm_env_overrides: dict,
     base_overrides: dict,
-    run_dir: Path,
+    output_base: Path,
     timeout_s: int = 700,
 ) -> dict:
     """Run one arm (baseline or pflash) of a two-arm bench.
 
+    Harness output lands at output_base/label/ (e.g. _smoke_v2/baseline/).
     Merges base_overrides + arm_env_overrides, runs the client harness,
     returns the metrics dict with an added 'label' key.
     """
     merged = {**base_overrides, **arm_env_overrides}
     env = build_env(merged)
-    stamp = f"{label}-{client}-{int(time.time())}"
+    # run_client sets RUN_DIR=parent(run_dir), STAMP=run_name → LOG_DIR=parent/run_name
+    # So pass run_dir=output_base/label and run_name=label to get LOG_DIR=output_base/label
+    arm_dir = output_base / label
+    arm_dir.mkdir(parents=True, exist_ok=True)
     result = run_client(
         client=client,
         env=env,
-        run_name=stamp,
-        run_dir=str(run_dir),
+        run_name=label,
+        run_dir=str(arm_dir),
         timeout_s=timeout_s,
     )
     result["label"] = label
