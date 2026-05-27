@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# QUARANTINED: single-arm script that bypasses run_arm helper, is missing
+# --draft (decode drafter), and points to a stale worktree path
+# (drafter-fastpath). Not used in the evidence sweep.
+# See project_bench_infra_audit_findings.md for context.
+if __name__ == "__main__":
+    raise SystemExit("QUARANTINED: see project_bench_infra_audit_findings.md")
+
 """Early-exit forward bench: baseline_ee, ee14, ee7 at 32K and 64K.
 
 Usage:

@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# QUARANTINED: one-shot experimental script that bypasses run_arm helper and is
+# missing --draft (decode drafter) in its server launch. Not used in the evidence
+# sweep. See project_bench_infra_audit_findings.md for context.
+if __name__ == "__main__":
+    raise SystemExit("QUARANTINED: see project_bench_infra_audit_findings.md")
+
 """
 Task #47: ee7 + --prefill-skip-park empirical test at 32K.
 Single condition. One server per case (ggml view_3d avoidance).

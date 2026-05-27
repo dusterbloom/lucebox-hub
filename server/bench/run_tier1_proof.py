@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# QUARANTINED: one-shot experimental script that bypasses run_arm helper,
+# is missing --draft (decode drafter), and points to a stale worktree path
+# (drafter-fastpath). Not used in the evidence sweep.
+# See project_bench_infra_audit_findings.md for context.
+if __name__ == "__main__":
+    raise SystemExit("QUARANTINED: see project_bench_infra_audit_findings.md")
+
 """Tier 1 drafter speedup proof: measure drafter forward wall time under
 baseline (BF16, 28 layers), Q8 (Q8_0, 28 layers), Q8+subset (Q8_0, 7 layers).
 
