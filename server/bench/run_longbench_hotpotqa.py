@@ -288,6 +288,12 @@ def main():
     results_dir.mkdir(parents=True, exist_ok=True)
 
     all_results = []
+    # Arm 1: baseline (decode-only, no prefill compression)
+    r_base = run_condition("baseline", cases, results_dir, "none", args.keep_ratio)
+    all_results.append(r_base)
+    with open(results_dir / "raw_results.json", "w") as f:
+        json.dump(all_results, f, indent=2)
+    # Arm 2: ee7 (prefill compression + cascade)
     for condition in CONDITION_SPECS:
         r = run_condition(condition, cases, results_dir, args.compression_mode, args.keep_ratio)
         all_results.append(r)

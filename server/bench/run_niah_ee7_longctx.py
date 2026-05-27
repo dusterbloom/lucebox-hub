@@ -21,7 +21,7 @@ from statistics import median
 REPO = Path(__file__).resolve().parents[2]
 SERVER_BIN = REPO / "dflash/build/dflash_server"
 TARGET = Path("/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf")
-DRAFTER = Path("/home/peppi/models/Qwen3-0.6B-BF16.gguf")
+DRAFTER = Path(os.environ.get("PFLASH_DRAFT", "/home/peppi/models/Qwen3-0.6B-Q8_0.gguf"))
 PORT = 18099
 BASE_URL = f"http://127.0.0.1:{PORT}"
 
