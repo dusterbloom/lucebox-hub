@@ -1,0 +1,71 @@
+[server] loading tokenizer from /home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf
+[tokenizer] added_tokens: 33 special tokens
+[tokenizer] loaded vocab=248320 merges=247587 bos=248044 eos=248046 eot=248046 pre=qwen35 sp=no
+[server] loading pflash drafter tokenizer from /home/peppi/models/Qwen3-0.6B-Q8_0.gguf
+[tokenizer] added_tokens: 26 special tokens
+[tokenizer] loaded vocab=151936 merges=151387 bos=151643 eos=151645 eot=151645 pre=qwen2 sp=no
+[server] pflash: mode=always threshold=32000 keep=0.050 skip_park=0
+[server] creating backend...
+[backend_factory] detected arch=qwen35
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24575 MiB):
+  Device 0: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24575 MiB
+[draft GGUF] SWA layers: 4/5 (window=2048)
+
+[server] ╭─── Configuration ───────────────────────────────────╮
+[server] │  host            = 127.0.0.1
+[server] │  port            = 19099
+[server] │  model           = /home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf
+[server] │  draft           = /home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf
+[server] │  model_name      = luce-dflash
+[server] │  max_ctx         = 98304
+[server] │  max_tokens      = 512
+[server] │  target_device   = auto:0
+[server] │  draft_device    = auto:0
+[server] │  peer_access     = off
+[server] │  chunk           = 512
+[server] │  fa_window       = 2048
+[server] │  ddtree          = ON
+[server] │  ddtree_budget   = 16
+[server] │  cors            = ON
+[server] │  cache_type_k    = tq3_0 (auto)
+[server] │  cache_type_v    = tq3_0 (auto)
+[server] │  pflash          = always
+[server] │  pflash_threshold= 32000
+[server] │  pflash_keep     = 0.050
+[server] │  pflash_drafter  = /home/peppi/models/Qwen3-0.6B-Q8_0.gguf
+[server] │  pflash_skip_park= off
+[server] │  fp_use_bsa      = ON
+[server] │  fp_alpha        = 0.85
+[server] │  lazy_draft      = ON
+[server] ╰─────────────────────────────────────────────────────╯
+
+[pc] enabled: cap=32 family=qwen
+[loader] eos_id=248046 eos_chat_id=-1
+[target] target loaded: layers [0,64) output=1, 850 tensors on GPU 14.99 GiB, tok_embd 682 MiB CPU-only (q4_K)
+[draft]  loaded
+[park] draft released
+[server] listening on http://127.0.0.1:19099
+[park] target released
+[compress] loading drafter from /home/peppi/models/Qwen3-0.6B-Q8_0.gguf ...
+[qwen3-0.6b] detected weight type: Q8_0
+[drafter] loaded qwen3-0.6b BF16: n_layer=28 n_head=16 n_kv=8 n_embd=1024 n_ff=3072 head_dim=128 vocab=151936
+[compress] drafter ready
+[qwen3-0.6b-fp] layer 1/7 done (A_setup=0.000s A_alloc=0.000s A_compute=0.016s FP=0.003s B_warm=0.000s B_setup=0.000s B_alloc=0.000s B_copy_in=0.000s B_norm=0.000s B_compute=0.000s B_copy_out=0.000s)
+[qwen3-0.6b-fp] layer 7/7 done (A_setup=0.000s A_alloc=0.000s A_compute=0.041s FP=0.011s B_warm=0.000s B_setup=0.000s B_alloc=0.000s B_copy_in=0.000s B_norm=0.000s B_compute=0.000s B_copy_out=0.000s)
+[qwen3-0.6b-fp] forward 0.19s (S=5810, A_setup=0.00s A_alloc=0.00s A_compute=0.04s FP=0.01s B_warm=0.00s B_setup=0.00s B_alloc=0.00s B_copy_in=0.00s B_norm=0.00s B_compute=0.00s B_copy_out=0.00s)  tail-score 0.06s (layers 0-6)  total 0.25s
+[drafter] forward+score in 0.29s S=5810
+[drafter] score_and_compress total 0.29s S=5810 kept=466 (15/182 chunks, forced=15)
+[compress] 5810 -> 466 tokens
+[loader] eos_id=248046 eos_chat_id=-1
+[unpark] target restored
+[pflash] 5948 -> 466 -> 481 tokens (8.1% kept)
+[drafter] freed
+[draft GGUF] SWA layers: 4/5 (window=2048)
+[unpark] draft restored
+[snap] alloc right-sized: cur_pos=475 buf=179.31 MiB backend=CPU
+[snap] inline slot=0 cur_pos=475
+[spec-decode] tokens=1228 time=16.658 s speed=73.72 tok/s steps=136 accepted=1113/2176 (51.1%) avg_commit=9.03
+[prefill] tokens=481 time=0.818 s
+[park] draft released
+[vram] released scratch buffers
+[pc] inline-snap committed slot=0 prefix_len=475

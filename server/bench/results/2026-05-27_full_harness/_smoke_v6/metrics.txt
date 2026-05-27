@@ -1,0 +1,12 @@
+prompt_tokens=5948
+
+[baseline]
+wall=24.8s   prefill=N/A   drafter_wall=N/A
+ok_done=YES
+
+[pflash ee7]
+wall=25.4s   prefill=N/A   drafter_wall=0.29s   tokens_kept=8.1%
+ok_done=YES
+
+[headline]
+e2e_speedup=0.98x   prefill_speedup=N/A   drafter_speedup=N/A   tokens_kept=8.1%   OK_DONE=yes

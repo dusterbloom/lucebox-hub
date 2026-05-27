@@ -1,0 +1,14 @@
+
+[agentic_multiturn] === client=claude_code ===
+
+[agentic_multiturn] --- claude_code: baseline arm ---
+[harness_lib] running client=claude_code run=baseline
+[harness_lib] client=claude_code rc=0 elapsed=24.8s
+  drafter_fwd=Nones n=None prompt_tokens=5948 keep_ratio=None prefill_s=None accept=accepted=799/1456 (54.9%) ok_done=True
+
+[agentic_multiturn] --- claude_code: pflash arm ---
+[harness_lib] running client=claude_code run=pflash
+[harness_lib] client=claude_code rc=0 elapsed=25.4s
+  drafter_fwd=0.29s n=5810 prompt_tokens=5948 keep_ratio=0.081 prefill_s=None accept=accepted=1113/2176 (51.1%) ok_done=True
+[harness_lib] metrics -> server/bench/results/2026-05-27_full_harness/_smoke_v6/metrics.txt
+[agentic_multiturn] ALL OK_DONE

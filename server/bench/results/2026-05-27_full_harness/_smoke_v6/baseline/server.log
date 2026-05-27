@@ -1,0 +1,42 @@
+[server] loading tokenizer from /home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf
+[tokenizer] added_tokens: 33 special tokens
+[tokenizer] loaded vocab=248320 merges=247587 bos=248044 eos=248046 eot=248046 pre=qwen35 sp=no
+[server] creating backend...
+[backend_factory] detected arch=qwen35
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24575 MiB):
+  Device 0: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24575 MiB
+[draft GGUF] SWA layers: 4/5 (window=2048)
+
+[server] ╭─── Configuration ───────────────────────────────────╮
+[server] │  host            = 127.0.0.1
+[server] │  port            = 19099
+[server] │  model           = /home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf
+[server] │  draft           = /home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf
+[server] │  model_name      = luce-dflash
+[server] │  max_ctx         = 98304
+[server] │  max_tokens      = 512
+[server] │  target_device   = auto:0
+[server] │  draft_device    = auto:0
+[server] │  peer_access     = off
+[server] │  chunk           = 512
+[server] │  fa_window       = 2048
+[server] │  ddtree          = ON
+[server] │  ddtree_budget   = 16
+[server] │  cors            = ON
+[server] │  cache_type_k    = tq3_0 (auto)
+[server] │  cache_type_v    = tq3_0 (auto)
+[server] │  pflash          = off
+[server] │  lazy_draft      = off
+[server] ╰─────────────────────────────────────────────────────╯
+
+[pc] enabled: cap=32 family=qwen
+[server] listening on http://127.0.0.1:19099
+[snap] alloc right-sized: cur_pos=5679 buf=427.27 MiB backend=CPU
+[loader] eos_id=248046 eos_chat_id=-1
+[target] target loaded: layers [0,64) output=1, 850 tensors on GPU 14.99 GiB, tok_embd 682 MiB CPU-only (q4_K)
+[draft]  loaded
+[snap] inline slot=0 cur_pos=5679
+[spec-decode] tokens=875 time=13.086 s speed=66.86 tok/s steps=91 accepted=799/1456 (54.9%) avg_commit=9.62
+[prefill] tokens=5948 time=6.642 s
+[vram] released scratch buffers
+[pc] inline-snap committed slot=0 prefix_len=5679
