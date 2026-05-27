@@ -9,8 +9,13 @@ CLIENT_WORK_DIR="${CLIENT_WORK_DIR:-/tmp/lucebox-bench-pr}"
 RUN_DIR="${RUN_DIR:-/tmp/lucebox-bench-runs}"
 
 TARGET="${TARGET:-/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf}"
+# pFlash drafter: small scoring model passed to --prefill-drafter
+PFLASH_DRAFT="${PFLASH_DRAFT:-/home/peppi/models/Qwen3-0.6B-Q8_0.gguf}"
+# dFlash decode drafter: matched Qwen3.6 family passed to --draft for spec decode
+DECODE_DRAFT="${DECODE_DRAFT:-/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf}"
+# Legacy alias: DRAFT means dFlash decode drafter (backward compat for callers).
 # Use ${DRAFT-default} (no colon) so callers can suppress --draft by exporting DRAFT=""
-DRAFT="${DRAFT-/home/peppi/models/Qwen3-0.6B-Q8_0.gguf}"
+DRAFT="${DRAFT-$DECODE_DRAFT}"
 DFLASH_BIN="${DFLASH_BIN:-$REPO_DIR/server/build/test_dflash}"
 DFLASH_SERVER_BIN="${DFLASH_SERVER_BIN:-/home/peppi/Dev/lucebox-hub/dflash/build/dflash_server}"
 MODEL_SERVER="${MODEL_SERVER:-lucebox}"
