@@ -210,6 +210,8 @@ def run_client(
     n_tokens = None
     accept_rate = None
     accept_str = None
+    keep_ratio = None
+    prefill_s = None
     ok_done = False
 
     # Try server log first, fall back to combined output
@@ -227,6 +229,16 @@ def run_client(
             if m2:
                 accept_rate = m2.group(2) + "%"
                 accept_str = m2.group(0)
+        # [pflash] N -> M -> K tokens (X.X% kept)
+        if keep_ratio is None:
+            m3 = re.search(r"\[pflash\] \d+ -> \d+ -> \d+ tokens \(([\d.]+)% kept\)", text_source)
+            if m3:
+                keep_ratio = float(m3.group(1)) / 100.0
+        # [server] chat DONE ... prefill=X.Xs
+        if prefill_s is None:
+            m4 = re.search(r"prefill=([\d.]+)s", text_source)
+            if m4:
+                prefill_s = float(m4.group(1))
 
     marker = env.get("MARKER", "OK_DONE")
     # Check client output file
@@ -237,24 +249,30 @@ def run_client(
     if not ok_done:
         ok_done = marker in combined
 
-    # Parse prompt tokens from server log ([prefill] tokens=N time=X.XXX s)
+    # Parse prompt tokens. Try multiple log formats:
+    # 1. [prefill] tokens=N (if server emits this line)
+    # 2. prompt_tokens=N in [server] chat msg_... line
+    # 3. "input_tokens":N from anthropic client JSON output
     prompt_tokens = None
     for text_source in [
         (server_log.read_text() if server_log.exists() else ""),
         combined,
     ]:
         if prompt_tokens is None:
-            mp = re.search(r"\[prefill\] tokens=(\d+)", text_source)
-            if mp:
-                prompt_tokens = int(mp.group(1))
-        # Also try usage.prompt_tokens from JSON response body in client out
-        if prompt_tokens is None:
-            mp2 = re.search(r'"prompt_tokens"\s*:\s*(\d+)', text_source)
-            if mp2:
-                prompt_tokens = int(mp2.group(1))
+            for pattern in [
+                r"\[prefill\] tokens=(\d+)",
+                r"\[server\] chat msg_\S+ \S+ \S+ msgs=\d+ tools=\d+ prompt_tokens=(\d+)",
+                r'"prompt_tokens"\s*:\s*(\d+)',
+                r'"input_tokens"\s*:\s*(\d+)',
+            ]:
+                mp = re.search(pattern, text_source)
+                if mp:
+                    prompt_tokens = int(mp.group(1))
+                    break
 
     print(f"  drafter_fwd={drafter_fwd}s n={n_tokens} prompt_tokens={prompt_tokens} "
-          f"accept={accept_str} ok_done={ok_done}", flush=True)
+          f"keep_ratio={keep_ratio} prefill_s={prefill_s} accept={accept_str} ok_done={ok_done}",
+          flush=True)
 
     return {
         "client": client,
@@ -263,6 +281,8 @@ def run_client(
         "drafter_fwd_s": drafter_fwd,
         "n_tokens": n_tokens,
         "prompt_tokens": prompt_tokens,
+        "keep_ratio": keep_ratio,
+        "prefill_s": prefill_s,
         "accept_rate": accept_rate,
         "accept_detail": accept_str,
         "ok_done": ok_done,
@@ -316,38 +336,43 @@ def write_two_arm_metrics(baseline: dict, pflash: dict, output_dir: Path) -> Non
     p_drafter = pflash.get("drafter_fwd_s")
     drafter_speedup = (b_drafter / p_drafter) if (b_drafter and p_drafter and p_drafter > 0) else None
 
+    b_prefill = baseline.get("prefill_s")
+    p_prefill = pflash.get("prefill_s")
+    prefill_speedup = (b_prefill / p_prefill) if (b_prefill and p_prefill and p_prefill > 0) else None
+
+    # keep_ratio from parsed [pflash] line (preferred) or accept_detail
+    keep_ratio_val = pflash.get("keep_ratio")
+    keep_ratio_str = f"{keep_ratio_val*100:.1f}%" if keep_ratio_val is not None else "N/A"
+
     with metrics_path.open("w") as f:
         f.write(f"prompt_tokens={prompt_tokens}\n\n")
 
         f.write("[baseline]\n")
         b_wall_str = f"{b_wall:.1f}s" if b_wall else "N/A"
         b_drafter_str = f"{b_drafter:.2f}s" if b_drafter else "N/A"
-        f.write(f"wall={b_wall_str}   drafter_wall={b_drafter_str}   accept_rate=N/A\n")
+        b_prefill_str = f"{b_prefill:.2f}s" if b_prefill else "N/A"
+        f.write(f"wall={b_wall_str}   prefill={b_prefill_str}   drafter_wall={b_drafter_str}\n")
         f.write(f"ok_done={'YES' if baseline.get('ok_done') else 'NO'}\n\n")
 
-        f.write("[pflash ee7+cascade]\n")
+        f.write("[pflash ee7]\n")
         p_wall_str = f"{p_wall:.1f}s" if p_wall else "N/A"
         p_drafter_str = f"{p_drafter:.2f}s" if p_drafter else "N/A"
-        ar = pflash.get("accept_rate") or "N/A"
-        # Extract keep_ratio from accept_detail if available
-        keep_ratio_str = "N/A"
-        ad = pflash.get("accept_detail") or ""
-        km = re.search(r"keep=([\d.]+)", ad)
-        if km:
-            keep_ratio_str = km.group(1)
+        p_prefill_str = f"{p_prefill:.2f}s" if p_prefill else "N/A"
         f.write(
-            f"wall={p_wall_str}   drafter_wall={p_drafter_str}   "
-            f"accept_rate={ar}   keep_ratio={keep_ratio_str}\n"
+            f"wall={p_wall_str}   prefill={p_prefill_str}   drafter_wall={p_drafter_str}   "
+            f"tokens_kept={keep_ratio_str}\n"
         )
         f.write(f"ok_done={'YES' if pflash.get('ok_done') else 'NO'}\n\n")
 
         f.write("[headline]\n")
         speedup_str = f"{speedup:.2f}x" if speedup else "N/A"
         ds_str = f"{drafter_speedup:.2f}x" if drafter_speedup else "N/A"
+        ps_str = f"{prefill_speedup:.2f}x" if prefill_speedup else "N/A"
         both_ok = baseline.get("ok_done") and pflash.get("ok_done")
         f.write(
-            f"e2e_speedup={speedup_str}   drafter_speedup={ds_str}   "
-            f"tokens_kept_pct={keep_ratio_str}   OK_DONE={'yes' if both_ok else 'no'}\n"
+            f"e2e_speedup={speedup_str}   prefill_speedup={ps_str}   "
+            f"drafter_speedup={ds_str}   tokens_kept={keep_ratio_str}   "
+            f"OK_DONE={'yes' if both_ok else 'no'}\n"
         )
 
     print(f"[harness_lib] metrics -> {metrics_path}", flush=True)
