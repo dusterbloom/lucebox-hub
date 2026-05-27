@@ -4,16 +4,16 @@ set -euo pipefail
 # Source this file from a client harness launcher on the RTX 3090 host.
 # Assumes the repo and client package cache already exist on that machine.
 
-REPO_DIR="${REPO_DIR:-/workspace/lucebox-hub-harness}"
-CLIENT_WORK_DIR="${CLIENT_WORK_DIR:-/workspace/lucebox-harness-work}"
-RUN_DIR="${RUN_DIR:-/workspace/lucebox-client-harness-runs}"
+REPO_DIR="${REPO_DIR:-/tmp/lucebox-bench-pr}"
+CLIENT_WORK_DIR="${CLIENT_WORK_DIR:-/tmp/lucebox-bench-pr}"
+RUN_DIR="${RUN_DIR:-/tmp/lucebox-bench-runs}"
 
 TARGET="${TARGET:-/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf}"
-DRAFT="${DRAFT:-/home/peppi/models/Qwen3-0.6B-Q8_0.gguf}"
+DRAFT="${DRAFT:-/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf}"
 DFLASH_BIN="${DFLASH_BIN:-$REPO_DIR/server/build/test_dflash}"
+DFLASH_SERVER_BIN="${DFLASH_SERVER_BIN:-/home/peppi/Dev/lucebox-hub/dflash/build/dflash_server}"
 MODEL_SERVER="${MODEL_SERVER:-lucebox}"
 LUCEBOX_SERVER_BACKEND="${LUCEBOX_SERVER_BACKEND:-cpp}"
-DFLASH_SERVER_BIN="${DFLASH_SERVER_BIN:-/home/peppi/Dev/lucebox-hub/dflash/build/dflash_server}"
 LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-/workspace/llama-cpp-server-build/bin/llama-server}"
 LLAMA_N_GPU_LAYERS="${LLAMA_N_GPU_LAYERS:-999}"
 LLAMA_FLASH_ATTN="${LLAMA_FLASH_ATTN:-1}"

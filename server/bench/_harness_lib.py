@@ -61,6 +61,7 @@ DEFAULT_SERVER_ENV = {
         "--prefill-compression always --prefill-keep-ratio 0.05 "
         "--prefill-drafter /home/peppi/models/Qwen3-0.6B-BF16.gguf"
     ),
+    "CLAUDE_BIN": "/home/peppi/.local/bin/claude",
     "CLAUDE_TIMEOUT": "600",
     "MARKER": "OK_DONE",
     "CLAUDE_TOOLS": "none",
