@@ -71,8 +71,7 @@ DEFAULT_SERVER_ENV = {
     "API_KEY": "sk-lucebox",
 }
 
-# pflash arm: prefill compression ON, ee7
-# Note: --prefill-anchor-transitive is not in this binary build; omitted.
+# pflash arm: prefill compression ON, ee7, anchor-transitive cascade
 # DRAFT="" prevents --draft being passed; drafter path is in --prefill-drafter via EXTRA_SERVER_ARGS.
 PFLASH_SERVER_EXTRA_ARGS = (
     f"--prefill-compression always --prefill-keep-ratio 0.05 "
@@ -82,6 +81,7 @@ PFLASH_ENV_OVERRIDES = {
     "EXTRA_SERVER_ARGS": PFLASH_SERVER_EXTRA_ARGS,
     "PFLASH_DRAFTER_EARLY_EXIT_N": "7",
     "PFLASH_DRAFTER_SCORE_LAYERS": "7",
+    "PFLASH_COMPRESS_ANCHOR_TRANSITIVE": "1",
     "DRAFT": "",
 }
 
