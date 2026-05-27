@@ -1,29 +1,48 @@
 #!/usr/bin/env python3
 """
-Pass B: Agentic claude_code harness for ee7 broad validation.
+Pass B: Agentic harness for ee7 broad validation — baseline / ee14 / ee7 comparison.
 
-Purpose: measure drafter_fwd, accept_rate, and OK_DONE across baseline/ee14/ee7
-using the real claude_code client against a live dflash_server.
-Run manually from the drafter-fastpath worktree; results land in
-dflash/bench/results/2026-05-21_ee7_broad/. Keep as evidence trail for
-multi-client validation (commit 764b18e).
+Drives a configurable harness client through three conditions to measure
+drafter_fwd speedup and OK_DONE retention.  Originally validated on claude_code
+(commit 764b18e); extended to all 11 harness clients.
+
+Usage:
+  python3 server/bench/run_agentic_ee7_passbv.py --client claude_code
+  python3 server/bench/run_agentic_ee7_passbv.py --client codex
+  python3 server/bench/run_agentic_ee7_passbv.py --client all
+
+Results land in server/bench/results/<date>_ee7_passbv/<client>/SUMMARY_PASS_B.md.
+
+backend_pair is a wrapper over other clients; it has no single-script invocation
+and is skipped when --client all.  Pass --include-backend-pair to override.
 """
+import argparse
 import os
-import re
-import subprocess
 import sys
 import time
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
-RESULTS_DIR = REPO / "dflash/bench/results/2026-05-21_ee7_broad"
-HARNESS = REPO / "harness/clients/run_claude_code.sh"
+# _harness_lib lives in the same directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _harness_lib import (
+    ALL_CLIENTS,
+    DEFAULT_SERVER_ENV,
+    REPO,
+    build_env,
+    run_client,
+)
+
+RESULTS_BASE = REPO / "server/bench/results"
+_SKIP_BY_DEFAULT = {"backend_pair"}
 
 CONDITIONS = [
     {
         "name": "baseline",
-        "env_extra": {},
+        "env_extra": {
+            "PFLASH_DRAFTER_EARLY_EXIT_N": "",
+            "PFLASH_DRAFTER_SCORE_LAYERS": "",
+        },
     },
     {
         "name": "ee14",
@@ -39,158 +58,246 @@ CONDITIONS = [
 ]
 
 
-def run_condition(cond: dict) -> dict:
-    name = cond["name"]
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_name = f"ee7-passbv-{name}-{stamp}"
-    run_dir = f"/tmp/lucebox-harness-runs/{run_name}"
-    os.makedirs(run_dir, exist_ok=True)
-
-    env = os.environ.copy()
-    # Common server env (matches the spec)
-    env.update({
-        "MODEL_SERVER": "lucebox",
-        "LUCEBOX_SERVER_BACKEND": "cpp",
-        "DFLASH_SERVER_BIN": str(REPO / "dflash/build/dflash_server"),
-        "TARGET": "/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf",
-        "DRAFT": "/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf",
-        "MAX_CTX": "98304",
-        "MAX_TOKENS": "512",
-        "GGML_CUDA_NO_VMM": "1",
-        "DFLASH27B_KV_K": "tq3_0",
-        "DFLASH27B_KV_V": "tq3_0",
-        "VERIFY_MODE": "ddtree",
-        "BUDGET": "16",
-        "REPO_DIR": str(REPO),
-        "RUN_DIR": "/tmp/lucebox-harness-runs",
-        "EXTRA_SERVER_ARGS": (
-            "--prefill-compression always --prefill-keep-ratio 0.05 "
-            "--prefill-drafter /home/peppi/models/Qwen3-0.6B-BF16.gguf"
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--client",
+        default="claude_code",
+        help=(
+            "Client to drive. Pass 'all' to iterate all 11 clients "
+            "(backend_pair skipped by default). "
+            "Valid names: " + ", ".join(ALL_CLIENTS)
         ),
-        "PROMPT_FILE": str(REPO / "harness/clients/prompts/decode_check.txt"),
-        "CLAUDE_TIMEOUT": "600",
-        "MARKER": "OK_DONE",
-        "CLAUDE_TOOLS": "none",
-        "PORT": "18098",
-        "STAMP": run_name,
-        "CLAUDE_BIN": "/home/peppi/.local/bin/claude",
-    })
-    # Clear any previous early-exit env
-    env.pop("PFLASH_DRAFTER_EARLY_EXIT_N", None)
-    env.pop("PFLASH_DRAFTER_SCORE_LAYERS", None)
-    # Apply condition-specific env
-    env.update(cond["env_extra"])
+    )
+    p.add_argument(
+        "--results-dir",
+        default=None,
+        help="Override output directory (default: server/bench/results/<date>_ee7_passbv)",
+    )
+    p.add_argument(
+        "--skip-backend-pair",
+        action="store_true",
+        default=True,
+        help="Skip backend_pair when --client all (default: True)",
+    )
+    p.add_argument(
+        "--include-backend-pair",
+        dest="skip_backend_pair",
+        action="store_false",
+        help="Include backend_pair when --client all",
+    )
+    p.add_argument(
+        "--conditions",
+        nargs="+",
+        choices=["baseline", "ee14", "ee7"],
+        default=["baseline", "ee14", "ee7"],
+        help="Which conditions to run (default: all three)",
+    )
+    p.add_argument(
+        "--dflash-server-bin",
+        default=None,
+        help="Path to dflash_server C++ binary (default: <repo>/server/build/dflash_server)",
+    )
+    p.add_argument(
+        "--timeout",
+        type=int,
+        default=900,
+        help="Per-condition wall timeout in seconds (default: 900)",
+    )
+    return p.parse_args()
 
-    print(f"\n[passbv] running condition={name} stamp={stamp}", flush=True)
-    t0 = time.perf_counter()
-    try:
-        result = subprocess.run(
-            ["bash", str(HARNESS)],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=900,
+
+def clients_for(args: argparse.Namespace) -> list[str]:
+    if args.client == "all":
+        skip = _SKIP_BY_DEFAULT if args.skip_backend_pair else set()
+        return [c for c in ALL_CLIENTS if c not in skip]
+    if args.client not in ALL_CLIENTS:
+        print(
+            f"[passbv] unknown client '{args.client}'. "
+            f"Valid: {', '.join(ALL_CLIENTS)}",
+            file=sys.stderr,
         )
-        elapsed = time.perf_counter() - t0
-        print(f"[passbv] condition={name} rc={result.returncode} elapsed={elapsed:.1f}s", flush=True)
-    except subprocess.TimeoutExpired:
-        elapsed = time.perf_counter() - t0
-        print(f"[passbv] condition={name} TIMEOUT after {elapsed:.0f}s — marking as failed", flush=True)
-        return {
-            "condition": name,
-            "drafter_fwd_s": None,
-            "n_tokens": None,
-            "accept_rate": None,
-            "accept_detail": None,
-            "ok_done": False,
-            "run_dir": str(run_dir),
-            "rc": -1,
-            "error": "timeout",
-        }
+        sys.exit(1)
+    return [args.client]
 
-    server_log = Path(f"/tmp/lucebox-harness-runs/{run_name}/server.log")
-    client_out = Path(f"/tmp/lucebox-harness-runs/{run_name}/claude-code.out")
 
-    # Extract metrics
-    drafter_fwd = None
-    accept_rate = None
-    ok_done = False
-    n_tokens = None
-    accept_str = None
+def run_condition_for_client(
+    client: str,
+    cond: dict,
+    results_dir: Path,
+    args: argparse.Namespace,
+) -> dict:
+    name = cond["name"]
+    stamp = f"passbv-{client}-{name}-{int(time.time())}"
+    run_dir = results_dir / client / name
 
-    if server_log.exists():
-        text = server_log.read_text()
-        m = re.search(r"\[drafter\] forward\+score in ([\d.]+)s S=(\d+)", text)
-        if m:
-            drafter_fwd = float(m.group(1))
-            n_tokens = int(m.group(2))
-        m2 = re.search(r"accepted=(\d+/\d+) \(([\d.]+)%\)", text)
-        if m2:
-            accept_rate = m2.group(2) + "%"
-            accept_str = m2.group(0)
-
-    if client_out.exists():
-        client_text = client_out.read_text()
-        ok_done = "OK_DONE" in client_text
-
-    print(f"  drafter_fwd={drafter_fwd}s S={n_tokens} accept={accept_str} ok_done={ok_done}", flush=True)
-
-    return {
-        "condition": name,
-        "drafter_fwd_s": drafter_fwd,
-        "n_tokens": n_tokens,
-        "accept_rate": accept_rate,
-        "accept_detail": accept_str,
-        "ok_done": ok_done,
-        "run_dir": str(run_dir),
-        "rc": result.returncode,
+    overrides: dict[str, str] = {
+        "PORT": "19099",
     }
+    if args.dflash_server_bin:
+        overrides["DFLASH_SERVER_BIN"] = args.dflash_server_bin
+
+    # Merge condition overrides; empty-string values signal removal
+    cond_extra = cond.get("env_extra", {})
+    overrides.update({k: v for k, v in cond_extra.items() if v != ""})
+
+    env = build_env(overrides)
+
+    # Remove early-exit vars for baseline so the server runs without them
+    if name == "baseline":
+        env.pop("PFLASH_DRAFTER_EARLY_EXIT_N", None)
+        env.pop("PFLASH_DRAFTER_SCORE_LAYERS", None)
+
+    print(f"\n[passbv] client={client} condition={name} stamp={stamp}", flush=True)
+    result = run_client(
+        client=client,
+        env=env,
+        run_name=stamp,
+        run_dir=str(run_dir),
+        timeout_s=args.timeout,
+    )
+    result["condition"] = name
+    return result
 
 
-def main():
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Get baseline drafter time for speedup calculation
+def run_for_client(
+    client: str,
+    results_dir: Path,
+    args: argparse.Namespace,
+) -> list[dict]:
+    selected = [c for c in CONDITIONS if c["name"] in args.conditions]
     results = []
     baseline_fwd = None
 
-    for cond in CONDITIONS:
-        r = run_condition(cond)
+    for cond in selected:
+        r = run_condition_for_client(client, cond, results_dir, args)
         results.append(r)
-        if r["condition"] == "baseline" and r["drafter_fwd_s"] is not None:
+        if cond["name"] == "baseline" and r.get("drafter_fwd_s"):
             baseline_fwd = r["drafter_fwd_s"]
 
-    # Print table
-    print("\n=== PASS B TABLE ===")
-    print(f"{'condition':>12}  {'drafter_fwd':>12}  {'accept_rate':>12}  {'OK_DONE':>8}  {'speedup':>8}")
+    write_client_summary(client, results, baseline_fwd, results_dir)
+    return results
+
+
+def write_client_summary(
+    client: str,
+    results: list[dict],
+    baseline_fwd: float | None,
+    results_dir: Path,
+) -> None:
+    print(f"\n=== PASS B TABLE — {client} ===")
+    print(
+        f"{'condition':>12}  {'drafter_fwd':>12}  {'accept_rate':>12}  "
+        f"{'OK_DONE':>8}  {'speedup':>8}"
+    )
     rows = []
     for r in results:
         cond = r["condition"]
-        df = f"{r['drafter_fwd_s']:.2f}s" if r['drafter_fwd_s'] else "N/A"
-        ar = r['accept_rate'] or "N/A"
-        ok = "YES" if r['ok_done'] else "NO"
+        df = f"{r['drafter_fwd_s']:.2f}s" if r.get("drafter_fwd_s") else "N/A"
+        ar = r.get("accept_rate") or "N/A"
+        ok = "YES" if r.get("ok_done") else "NO"
         speedup = "1.00x"
-        if cond != "baseline" and r['drafter_fwd_s'] and baseline_fwd:
+        if cond != "baseline" and r.get("drafter_fwd_s") and baseline_fwd:
             speedup = f"{baseline_fwd / r['drafter_fwd_s']:.2f}x"
         print(f"{cond:>12}  {df:>12}  {ar:>12}  {ok:>8}  {speedup:>8}")
-        rows.append({
-            "condition": cond,
-            "drafter_fwd": df,
-            "accept_rate": ar,
-            "OK_DONE": ok,
-            "speedup": speedup,
-        })
+        rows.append(
+            {
+                "condition": cond,
+                "drafter_fwd": df,
+                "accept_rate": ar,
+                "OK_DONE": ok,
+                "speedup": speedup,
+            }
+        )
 
-    # Write to results dir
-    out = RESULTS_DIR / "SUMMARY_PASS_B.md"
-    with open(out, "w") as f:
-        f.write("# Pass B: Agentic claude_code Harness — ee7 vs ee14 vs baseline\n\n")
-        f.write("| condition | drafter_fwd | accept_rate | OK_DONE | speedup_vs_baseline |\n")
+    out_dir = results_dir / client
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / "SUMMARY_PASS_B.md"
+    with out.open("w") as f:
+        f.write(f"# Pass B: Agentic Harness — ee7 vs ee14 vs baseline ({client})\n\n")
+        f.write(
+            "| condition | drafter_fwd | accept_rate | OK_DONE | speedup_vs_baseline |\n"
+        )
         f.write("|---|---|---|---|---|\n")
         for row in rows:
-            f.write(f"| {row['condition']} | {row['drafter_fwd']} | {row['accept_rate']} | {row['OK_DONE']} | {row['speedup']} |\n")
-    print(f"\n[done] {out}", flush=True)
-    return results
+            f.write(
+                f"| {row['condition']} | {row['drafter_fwd']} | "
+                f"{row['accept_rate']} | {row['OK_DONE']} | {row['speedup']} |\n"
+            )
+    print(f"[passbv] summary -> {out}", flush=True)
+
+
+def write_global_summary(
+    all_results: dict[str, list[dict]],
+    results_dir: Path,
+) -> None:
+    out = results_dir / "SUMMARY_PASS_B_ALL.md"
+    with out.open("w") as f:
+        f.write("# Pass B: Cross-client — ee7 speedup summary\n\n")
+        f.write("| client | baseline_fwd | ee7_fwd | speedup | OK_DONE(ee7) |\n")
+        f.write("|--------|-------------|---------|---------|---------------|\n")
+        for client, results in all_results.items():
+            baseline_fwd = next(
+                (r["drafter_fwd_s"] for r in results if r["condition"] == "baseline"),
+                None,
+            )
+            ee7 = next(
+                (r for r in results if r["condition"] == "ee7"),
+                None,
+            )
+            if ee7:
+                df_b = f"{baseline_fwd:.2f}s" if baseline_fwd else "N/A"
+                df_e = f"{ee7['drafter_fwd_s']:.2f}s" if ee7.get("drafter_fwd_s") else "N/A"
+                speedup = (
+                    f"{baseline_fwd / ee7['drafter_fwd_s']:.2f}x"
+                    if baseline_fwd and ee7.get("drafter_fwd_s")
+                    else "N/A"
+                )
+                ok = "YES" if ee7.get("ok_done") else "NO"
+                f.write(f"| {client} | {df_b} | {df_e} | {speedup} | {ok} |\n")
+    print(f"[passbv] global summary -> {out}", flush=True)
+
+
+def main() -> None:
+    args = parse_args()
+    clients = clients_for(args)
+
+    date_tag = datetime.now().strftime("%Y-%m-%d")
+    results_dir = (
+        Path(args.results_dir)
+        if args.results_dir
+        else RESULTS_BASE / f"{date_tag}_ee7_passbv"
+    )
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    all_results: dict[str, list[dict]] = {}
+    for client in clients:
+        all_results[client] = run_for_client(client, results_dir, args)
+
+    if len(clients) > 1:
+        write_global_summary(all_results, results_dir)
+
+    any_failed = any(
+        not r.get("ok_done")
+        for rs in all_results.values()
+        for r in rs
+        if r["condition"] == "ee7"
+    )
+    if any_failed:
+        failed = [
+            c
+            for c, rs in all_results.items()
+            if not any(r.get("ok_done") for r in rs if r["condition"] == "ee7")
+        ]
+        print(
+            f"[passbv] FAIL: OK_DONE not seen for ee7 on: {', '.join(failed)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print("[passbv] ALL ee7 OK_DONE", flush=True)
 
 
 if __name__ == "__main__":
