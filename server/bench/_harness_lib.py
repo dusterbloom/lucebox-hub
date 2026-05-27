@@ -260,21 +260,23 @@ def run_client(
     if not ok_done:
         ok_done = marker in combined
 
-    # Parse prompt tokens. Try multiple log formats:
-    # 1. [prefill] tokens=N (if server emits this line)
-    # 2. prompt_tokens=N in [server] chat msg_... line
-    # 3. "input_tokens":N from anthropic client JSON output
+    # Parse prompt tokens (real input size, NOT post-compression effective).
+    # Priority order matters:
+    # 1. "input_tokens":N from claude client JSON output — always real input count
+    # 2. prompt_tokens=N in [server] chat msg_... line — server-side input count
+    # 3. "prompt_tokens":N from response JSON — real input count
+    # [prefill] tokens=N is intentionally OMITTED: in the pflash arm this reports
+    # the post-compression effective token count (e.g. 474 instead of 5940).
     prompt_tokens = None
     for text_source in [
-        (server_log.read_text() if server_log.exists() else ""),
         combined,
+        (server_log.read_text() if server_log.exists() else ""),
     ]:
         if prompt_tokens is None:
             for pattern in [
-                r"\[prefill\] tokens=(\d+)",
-                r"\[server\] chat msg_\S+ \S+ \S+ msgs=\d+ tools=\d+ prompt_tokens=(\d+)",
-                r'"prompt_tokens"\s*:\s*(\d+)',
                 r'"input_tokens"\s*:\s*(\d+)',
+                r'\[server\] chat msg_\S+ \S+ \S+ msgs=\d+ tools=\d+ prompt_tokens=(\d+)',
+                r'"prompt_tokens"\s*:\s*(\d+)',
             ]:
                 mp = re.search(pattern, text_source)
                 if mp:
