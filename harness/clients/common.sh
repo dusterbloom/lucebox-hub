@@ -9,7 +9,7 @@ CLIENT_WORK_DIR="${CLIENT_WORK_DIR:-/tmp/lucebox-bench-pr}"
 RUN_DIR="${RUN_DIR:-/tmp/lucebox-bench-runs}"
 
 TARGET="${TARGET:-/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf}"
-DRAFT="${DRAFT:-/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf}"
+DRAFT="${DRAFT:-/home/peppi/models/Qwen3-0.6B-Q8_0.gguf}"
 DFLASH_BIN="${DFLASH_BIN:-$REPO_DIR/server/build/test_dflash}"
 DFLASH_SERVER_BIN="${DFLASH_SERVER_BIN:-/home/peppi/Dev/lucebox-hub/dflash/build/dflash_server}"
 MODEL_SERVER="${MODEL_SERVER:-lucebox}"
