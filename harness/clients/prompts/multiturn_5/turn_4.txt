@@ -1,0 +1,1 @@
+Translate the generic binary search to Rust. Use a generic function with the Ord trait bound. Include the function and a #[cfg(test)] module with at least 3 tests mirroring the Python test cases. End your response with exactly: OK_DONE

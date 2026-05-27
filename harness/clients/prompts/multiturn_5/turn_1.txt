@@ -1,0 +1,1 @@
+Write a binary search function in Python. The function should take a sorted list and a target value, return the index if found or -1 if not found. Include a brief docstring. End your response with exactly: OK_DONE

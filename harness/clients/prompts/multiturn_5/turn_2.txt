@@ -1,0 +1,1 @@
+Now add a pytest unit test suite for the binary search function you just wrote. Cover: empty list, single element (found), single element (not found), even-length list, odd-length list, target at boundaries. End your response with exactly: OK_DONE

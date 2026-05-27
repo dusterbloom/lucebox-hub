@@ -1,0 +1,1 @@
+Make the binary search function generic over any comparable type using Python type hints (TypeVar + Protocol for __lt__). The function signature should work for lists of int, float, or str without changes. Show the updated function and one test using strings. End your response with exactly: OK_DONE

@@ -1,0 +1,1 @@
+Write a concise README for this binary search library covering: purpose, Python usage example, Rust usage example, how to run tests in each language. Keep it under 30 lines. End your response with exactly: OK_DONE
