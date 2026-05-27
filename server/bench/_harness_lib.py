@@ -50,7 +50,7 @@ DEFAULT_SERVER_ENV = {
     "PFLASH_DRAFTER_SCORE_LAYERS": "7",
     "TARGET": "/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf",
     "DRAFT": "/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q4_k_m.gguf",
-    "DFLASH_SERVER_BIN": str(REPO / "server/build/dflash_server"),
+    "DFLASH_SERVER_BIN": "/home/peppi/Dev/lucebox-hub/dflash/build/dflash_server",
     "MAX_CTX": "98304",
     "MAX_TOKENS": "512",
     "VERIFY_MODE": "ddtree",
