@@ -78,9 +78,17 @@ DEFAULT_SERVER_ENV = {
 # DRAFT is inherited from DEFAULT_SERVER_ENV (decode drafter stays active).
 # --prefill-drafter uses _PFLASH_DRAFTER (Qwen3-0.6B-Q8_0, the small scoring model).
 # Cascade is OFF for agentic P1 sweep (cascade is for multi-hop QA benchmarks).
+#
+# --lazy-draft is REQUIRED when both --draft (decode spec) and --prefill-drafter
+# (pflash) are active on the same server. Without it, the drafter_ctx_ slot that
+# pflash needs is already marked loaded by the decode draft path, causing compress()
+# to fail with "drafter already loaded". lazy-draft parks the decode draft at
+# startup so the pflash drafter can load into drafter_ctx_ on the first compress
+# call; after compress, free_drafter() frees pflash drafter and unpark("draft")
+# reloads the decode draft for generation.
 PFLASH_SERVER_EXTRA_ARGS = (
     f"--prefill-compression always --prefill-keep-ratio 0.05 "
-    f"--prefill-drafter {_PFLASH_DRAFTER}"
+    f"--prefill-drafter {_PFLASH_DRAFTER} --lazy-draft"
 )
 PFLASH_ENV_OVERRIDES = {
     "EXTRA_SERVER_ARGS": PFLASH_SERVER_EXTRA_ARGS,
