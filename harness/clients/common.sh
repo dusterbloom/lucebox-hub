@@ -9,7 +9,8 @@ CLIENT_WORK_DIR="${CLIENT_WORK_DIR:-/tmp/lucebox-bench-pr}"
 RUN_DIR="${RUN_DIR:-/tmp/lucebox-bench-runs}"
 
 TARGET="${TARGET:-/home/peppi/models/qwen3.6-27b-q4km/Qwen3.6-27B-Q4_K_M.gguf}"
-DRAFT="${DRAFT:-/home/peppi/models/Qwen3-0.6B-Q8_0.gguf}"
+# Use ${DRAFT-default} (no colon) so callers can suppress --draft by exporting DRAFT=""
+DRAFT="${DRAFT-/home/peppi/models/Qwen3-0.6B-Q8_0.gguf}"
 DFLASH_BIN="${DFLASH_BIN:-$REPO_DIR/server/build/test_dflash}"
 DFLASH_SERVER_BIN="${DFLASH_SERVER_BIN:-/home/peppi/Dev/lucebox-hub/dflash/build/dflash_server}"
 MODEL_SERVER="${MODEL_SERVER:-lucebox}"
@@ -196,9 +197,12 @@ start_llamacpp_server() {
 }
 
 wait_lucebox_server() {
-  for _ in $(seq 1 300); do
+  # Phase 1: wait for /health (port open + tokenizer loaded)
+  local health_ok=0
+  for _ in $(seq 1 120); do
     if curl -fsS "$BASE_URL/health" >/dev/null 2>&1; then
-      return 0
+      health_ok=1
+      break
     fi
     sleep 1
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
@@ -207,9 +211,35 @@ wait_lucebox_server() {
       return 1
     fi
   done
-  echo "server did not become healthy; log: $SERVER_LOG" >&2
-  tail -n 160 "$SERVER_LOG" >&2 || true
-  return 1
+  if [[ "$health_ok" -eq 0 ]]; then
+    echo "server did not become healthy after 120s; log: $SERVER_LOG" >&2
+    tail -n 160 "$SERVER_LOG" >&2 || true
+    return 1
+  fi
+
+  # Phase 2: wait for model to fully load by probing /v1/models (returns after GPU load)
+  # The C++ server answers /health before the GPU model is fully loaded; a small inference
+  # probe would hang, so instead we wait for the "listening on" log line which appears
+  # immediately after the model finishes loading.
+  local loaded=0
+  for _ in $(seq 1 180); do
+    if grep -q "listening on" "$SERVER_LOG" 2>/dev/null; then
+      loaded=1
+      break
+    fi
+    sleep 1
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+      echo "server exited after health; log: $SERVER_LOG" >&2
+      tail -n 160 "$SERVER_LOG" >&2 || true
+      return 1
+    fi
+  done
+  if [[ "$loaded" -eq 0 ]]; then
+    echo "model did not finish loading after 180s; log: $SERVER_LOG" >&2
+    tail -n 160 "$SERVER_LOG" >&2 || true
+    return 1
+  fi
+  return 0
 }
 
 stop_lucebox_server() {

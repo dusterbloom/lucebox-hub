@@ -5,7 +5,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${MAX_CTX:=49152}"
 : "${BUDGET:=22}"
 : "${VERIFY_MODE:=ddtree}"
-: "${EXTRA_SERVER_ARGS:=--lazy-draft}"
+# Use ${var:-default} form but allow bench harness to pass EXTRA_SERVER_ARGS='' to suppress --lazy-draft
+# For bench arms: EXTRA_SERVER_ARGS is set non-empty by pflash arm, or "__none__" sentinel by baseline arm.
+# When EXTRA_SERVER_ARGS is unset, default to --lazy-draft for interactive use.
+: "${EXTRA_SERVER_ARGS=--lazy-draft}"
 : "${CLAUDE_TOOLS:=default}"
 : "${CLAUDE_TIMEOUT:=300}"
 if [[ "${MODEL_SERVER:-}" == "llamacpp" ]]; then
