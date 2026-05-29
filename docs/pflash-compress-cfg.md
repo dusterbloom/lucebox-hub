@@ -32,8 +32,10 @@ more hits per query token are affordable.
 
 On by default. Gated rare-token bridge expands the query pool with tokens
 from newly-forced chunks and re-runs anchor scan to fixed point.
-Improves multi-hop F1 on LongBench HotpotQA (empirically; F1=0.628 ceiling
-at ee7+anchor-transitive on RTX 3090 — see bench/2026-05-25_longbench_hotpotqa/).
+Improves multi-hop F1 on LongBench HotpotQA (empirically; F1=0.587 at
+ee7+anchor-transitive+keep=0.10, 3× reproduced on RTX 3090 — see
+bench/2026-05-28_adaptive_stack/E_rerun_pflash_anchor_093712/SUMMARY.md.
+Prior F1=0.628 is a real result at keep=0.05 on the prior cascade-gated binary).
 Control via PFLASH_COMPRESS_ANCHOR_TRANSITIVE=0 to disable.
 
 ## head/tail chunk forcing

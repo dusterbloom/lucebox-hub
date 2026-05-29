@@ -3,11 +3,14 @@
 ## Problem
 
 PR #274 (adaptive composition) shipped on `feat/pflash-drafter-ee7`, validating
-13× prefill TPS and +47% decode TPS at long context. It surfaced a load-bearing
-ceiling on the dflash decode side: spec-decode `accept_rate` was capped at
-13–21% on the opencode harness and went to 0.0% on a peer-chat call. Composition
-arm decode TPS (24.4 tok/s) therefore stayed below pflash-only (33.0 tok/s) —
-the drafter overhead wasn't amortizing through acceptance.
+~12× prefill TPS at long context. Decode TPS in composition is at parity with
+baseline (D 25.2 vs A 24.1 tok/s) — the C2 gate correctly blocks spec-decode
+when pflash compresses context, because compressed T_target collapses r→1 and
+spec-decode loses. It surfaced a load-bearing ceiling on the dflash decode side:
+spec-decode `accept_rate` was capped at 13–21% on the opencode harness and went
+to 0.0% on a peer-chat call. Composition arm decode TPS (24.4 tok/s) therefore
+stayed below pflash-only (33.0 tok/s) — the drafter overhead was not amortizing
+through acceptance.
 
 ## Diagnosis (the wrong hypothesis first)
 
