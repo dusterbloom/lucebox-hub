@@ -2655,6 +2655,54 @@ static void test_c2_gate_boundary_at_2x_fa_window() {
     TEST_ASSERT(!dflash::common::c2_spec_decode_permitted(4097, 2048, 3841));
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Lazy-dFlash load predicate: should_load_dflash()
+//
+// lazy=false: always load (unless already_loaded).
+// lazy=true : load only when eff_size <= c2_threshold.
+// already_loaded: never re-load regardless of other flags.
+// ═══════════════════════════════════════════════════════════════════════
+
+static void test_lazy_dflash_not_lazy_not_loaded() {
+    // lazy=false, not loaded → must load.
+    TEST_ASSERT(should_load_dflash(false, 99999, 4096, false));
+}
+
+static void test_lazy_dflash_not_lazy_already_loaded() {
+    // lazy=false, already loaded → don't reload.
+    TEST_ASSERT(!should_load_dflash(false, 99999, 4096, true));
+}
+
+static void test_lazy_dflash_lazy_within_threshold() {
+    // lazy=true, eff_size <= threshold → load.
+    TEST_ASSERT(should_load_dflash(true, 500,  4096, false));
+    TEST_ASSERT(should_load_dflash(true, 3840, 4096, false));
+    TEST_ASSERT(should_load_dflash(true, 4096, 4096, false));
+}
+
+static void test_lazy_dflash_lazy_exceeds_threshold() {
+    // lazy=true, eff_size > threshold → keep parked.
+    TEST_ASSERT(!should_load_dflash(true, 4097,  4096, false));
+    TEST_ASSERT(!should_load_dflash(true, 11244, 4096, false));
+    TEST_ASSERT(!should_load_dflash(true, 50000, 4096, false));
+}
+
+static void test_lazy_dflash_lazy_already_loaded() {
+    // lazy=true, already loaded → never re-trigger even if within threshold.
+    TEST_ASSERT(!should_load_dflash(true, 100, 4096, true));
+    TEST_ASSERT(!should_load_dflash(true, 4096, 4096, true));
+}
+
+static void test_lazy_dflash_all_long_ctx_blocked() {
+    // All contexts >= 5000 with threshold=4096 must stay parked under lazy.
+    bool any_loaded = false;
+    for (int eff = 5000; eff <= 128000; eff += 1000) {
+        if (should_load_dflash(true, eff, 4096, false))
+            any_loaded = true;
+    }
+    TEST_ASSERT(!any_loaded);
+}
+
 int main() {
     std::fprintf(stderr, "══════════════════════════════════════════\n");
     std::fprintf(stderr, " Server Unit Tests\n");
@@ -2838,6 +2886,14 @@ int main() {
     RUN_TEST(test_c2_gate_65k_compressed_blocks_spec);
     RUN_TEST(test_c2_gate_small_compressed_permits_spec);
     RUN_TEST(test_c2_gate_boundary_at_2x_fa_window);
+
+    std::fprintf(stderr, "\n── Lazy-dFlash load predicate ──\n");
+    RUN_TEST(test_lazy_dflash_not_lazy_not_loaded);
+    RUN_TEST(test_lazy_dflash_not_lazy_already_loaded);
+    RUN_TEST(test_lazy_dflash_lazy_within_threshold);
+    RUN_TEST(test_lazy_dflash_lazy_exceeds_threshold);
+    RUN_TEST(test_lazy_dflash_lazy_already_loaded);
+    RUN_TEST(test_lazy_dflash_all_long_ctx_blocked);
 
     std::fprintf(stderr, "\n══════════════════════════════════════════\n");
     std::fprintf(stderr, " Results: %d assertions, %d failures\n",

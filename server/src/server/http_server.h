@@ -334,6 +334,16 @@ bool check_admission(int effective_size, int raw_size,
                      int max_output, int max_ctx, bool pflash_on,
                      float pflash_keep_ratio = 0.10f);
 
+// Lazy-dFlash load predicate (pure, testable). Load the decode draft only when
+// C2 would permit spec-decode (eff_size <= c2_threshold); otherwise keep it
+// parked to reclaim VRAM. Reclaims VRAM only; does NOT change decode speed.
+inline bool should_load_dflash(bool lazy_flag, int eff_size,
+                               int c2_threshold, bool already_loaded) {
+    if (!lazy_flag)     return !already_loaded;
+    if (already_loaded) return false;
+    return eff_size <= c2_threshold;
+}
+
 // ─── Parse session_id from a chat-completion JSON body ──────────────────
 // Returns empty string when session_id is absent or not a string (int/null/array).
 // Checks extra_body.session_id first, then top-level session_id.

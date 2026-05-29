@@ -1534,8 +1534,16 @@ void HttpServer::worker_loop() {
         };
 
         // Run generation (with or without restore).
-        // Lazy-draft: ensure decode draft is loaded before generate.
-        if (config_.lazy_draft) {
+        // Lazy-draft: load decode draft only when C2 would permit spec-decode
+        // (eff_size <= 2*fa_window). Long-ctx requests stay parked → ~1.6-3 GB
+        // VRAM reclaimed; do_spec_decode already guards !draft_parked_, so AR
+        // fallback is transparent.
+        const bool draft_loaded_for_request = should_load_dflash(
+            config_.lazy_draft,
+            (int)effective_prompt.size(),
+            2 * config_.fa_window,
+            /*already_loaded=*/false);
+        if (draft_loaded_for_request) {
             backend_.free_drafter();    // free pflash drafter (~1.4 GB) if loaded
             backend_.unpark("draft");   // reload decode draft (~3.3 GB)
         }
@@ -1548,7 +1556,7 @@ void HttpServer::worker_loop() {
         }
 
         // Lazy-draft: park decode draft after generate to free VRAM.
-        if (config_.lazy_draft) {
+        if (draft_loaded_for_request) {
             backend_.park("draft");
         }
 
