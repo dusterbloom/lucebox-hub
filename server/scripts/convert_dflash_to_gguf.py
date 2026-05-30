@@ -140,15 +140,81 @@ SAFETENSORS_DTYPE_TO_GGUF = {
 # Main
 # ──────────────────────────────────────────────────────────────────────
 
+def load_config(config_path: Path) -> dict:
+    """Load model config.json and return a flat dict of relevant constants."""
+    with open(config_path) as f:
+        cfg = json.load(f)
+    dc = cfg.get("dflash_config", {})
+    target_ids = dc.get("target_layer_ids", [])
+    return {
+        "HIDDEN":           cfg["hidden_size"],
+        "N_LAYER":          cfg["num_hidden_layers"],
+        "N_HEAD":           cfg["num_attention_heads"],
+        "N_HEAD_KV":        cfg["num_key_value_heads"],
+        "HEAD_DIM":         cfg["head_dim"],
+        "INTERMEDIATE":     cfg["intermediate_size"],
+        "VOCAB":            cfg.get("vocab_size", VOCAB),
+        "ROPE_THETA":       float(cfg.get("rope_theta", ROPE_THETA)),
+        "RMS_EPS":          cfg.get("rms_norm_eps", RMS_EPS),
+        "BLOCK_SIZE":       cfg.get("block_size", BLOCK_SIZE),
+        "MASK_TOKEN_ID":    dc.get("mask_token_id", MASK_TOKEN_ID),
+        "N_TARGET_LAYERS":  len(target_ids) if target_ids else N_TARGET_LAYERS,
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("safetensors", type=Path)
     ap.add_argument("out_gguf",     type=Path)
+    ap.add_argument("--config",     type=Path, default=None,
+                    help="Path to config.json (inferred from safetensors dir if omitted)")
     args = ap.parse_args()
 
     if not args.safetensors.exists():
         print(f"[error] safetensors not found: {args.safetensors}", file=sys.stderr)
         sys.exit(1)
+
+    # Resolve config: explicit > sibling of safetensors > module-level defaults
+    config_path = args.config
+    if config_path is None:
+        candidate = args.safetensors.parent / "config.json"
+        if candidate.exists():
+            config_path = candidate
+            print(f"[info] auto-detected config: {config_path}")
+
+    # Override module-level constants from config when available
+    _HIDDEN       = HIDDEN
+    _N_LAYER      = N_LAYER
+    _N_HEAD       = N_HEAD
+    _N_HEAD_KV    = N_HEAD_KV
+    _HEAD_DIM     = HEAD_DIM
+    _INTERMEDIATE = INTERMEDIATE
+    _VOCAB        = VOCAB
+    _ROPE_THETA   = ROPE_THETA
+    _RMS_EPS      = RMS_EPS
+    _BLOCK_SIZE   = BLOCK_SIZE
+    _MASK_TOKEN_ID    = MASK_TOKEN_ID
+    _N_TARGET_LAYERS  = N_TARGET_LAYERS
+
+    if config_path is not None:
+        cfg = load_config(config_path)
+        _HIDDEN          = cfg["HIDDEN"]
+        _N_LAYER         = cfg["N_LAYER"]
+        _N_HEAD          = cfg["N_HEAD"]
+        _N_HEAD_KV       = cfg["N_HEAD_KV"]
+        _HEAD_DIM        = cfg["HEAD_DIM"]
+        _INTERMEDIATE    = cfg["INTERMEDIATE"]
+        _VOCAB           = cfg["VOCAB"]
+        _ROPE_THETA      = cfg["ROPE_THETA"]
+        _RMS_EPS         = cfg["RMS_EPS"]
+        _BLOCK_SIZE      = cfg["BLOCK_SIZE"]
+        _MASK_TOKEN_ID   = cfg["MASK_TOKEN_ID"]
+        _N_TARGET_LAYERS = cfg["N_TARGET_LAYERS"]
+        print(f"[info] config: hidden={_HIDDEN} n_layer={_N_LAYER} n_head={_N_HEAD} "
+              f"n_head_kv={_N_HEAD_KV} head_dim={_HEAD_DIM} intermediate={_INTERMEDIATE} "
+              f"n_target_layers={_N_TARGET_LAYERS} rope_theta={_ROPE_THETA}")
+    else:
+        print("[info] no config.json found, using module-level defaults (27B draft)")
 
     print(f"[info] reading safetensors header from {args.safetensors}")
     header_size, header = load_safetensors_header(args.safetensors)
@@ -158,26 +224,29 @@ def main():
     writer = gguf.GGUFWriter(args.out_gguf, ARCH)
 
     # Architecture metadata
-    writer.add_string("general.name", "Qwen3.5-27B-DFlash-Draft")
+    writer.add_string("general.name", "Qwen3.5-DFlash-Draft")
     writer.add_uint32(f"{ARCH}.context_length",          CTX_LEN)
-    writer.add_uint32(f"{ARCH}.embedding_length",        HIDDEN)
-    writer.add_uint32(f"{ARCH}.block_count",             N_LAYER)
-    writer.add_uint32(f"{ARCH}.feed_forward_length",     INTERMEDIATE)
-    writer.add_uint32(f"{ARCH}.attention.head_count",    N_HEAD)
-    writer.add_uint32(f"{ARCH}.attention.head_count_kv", N_HEAD_KV)
+    writer.add_uint32(f"{ARCH}.embedding_length",        _HIDDEN)
+    writer.add_uint32(f"{ARCH}.block_count",             _N_LAYER)
+    writer.add_uint32(f"{ARCH}.feed_forward_length",     _INTERMEDIATE)
+    writer.add_uint32(f"{ARCH}.attention.head_count",    _N_HEAD)
+    writer.add_uint32(f"{ARCH}.attention.head_count_kv", _N_HEAD_KV)
     # llama.cpp uses key_length / value_length to override the default
     # n_embd_head = n_embd / n_head heuristic (DFlash has n_embd=5120
     # but head_dim=128 so n_head*head_dim=4096 != n_embd).
-    writer.add_uint32(f"{ARCH}.attention.key_length",    HEAD_DIM)
-    writer.add_uint32(f"{ARCH}.attention.value_length",  HEAD_DIM)
-    writer.add_uint32(f"{ARCH}.vocab_size",              VOCAB)
-    writer.add_float32(f"{ARCH}.attention.layer_norm_rms_epsilon", RMS_EPS)
-    writer.add_float32(f"{ARCH}.rope.freq_base",         ROPE_THETA)
+    writer.add_uint32(f"{ARCH}.attention.key_length",    _HEAD_DIM)
+    writer.add_uint32(f"{ARCH}.attention.value_length",  _HEAD_DIM)
+    writer.add_uint32(f"{ARCH}.vocab_size",              _VOCAB)
+    writer.add_float32(f"{ARCH}.attention.layer_norm_rms_epsilon", _RMS_EPS)
+    writer.add_float32(f"{ARCH}.rope.freq_base",         _ROPE_THETA)
 
     # DFlash-specific hyperparameters
-    writer.add_uint32(f"{ARCH}.dflash.n_target_layers", N_TARGET_LAYERS)
-    writer.add_uint32(f"{ARCH}.dflash.block_size",      BLOCK_SIZE)
-    writer.add_uint32(f"{ARCH}.dflash.mask_token_id",   MASK_TOKEN_ID)
+    writer.add_uint32(f"{ARCH}.dflash.n_target_layers", _N_TARGET_LAYERS)
+    writer.add_uint32(f"{ARCH}.dflash.block_size",      _BLOCK_SIZE)
+    writer.add_uint32(f"{ARCH}.dflash.mask_token_id",   _MASK_TOKEN_ID)
+    # feat_dim_per_capture: dims the target captures per capture layer.
+    # fc.weight input = n_target_layers * hidden, so per-capture = hidden.
+    writer.add_uint32(f"{ARCH}.dflash.feat_dim_per_capture", _HIDDEN)
 
     # Walk + add tensors. Sort: dflash.* singletons first, then output_*,
     # then per-layer in numeric order — keeps the on-disk layout stable.
