@@ -783,14 +783,17 @@ GenerateResult Qwen35MoeBackend::generate(const GenerateRequest & req,
                         const int token_pos = chunk_start + i;
                         const int cap = target_cache().target_feat_cap;
                         const int slot = token_pos % cap;
+                        // feat_per_cap: dims written per capture; 0 = full hidden (legacy 27B draft)
+                        const int feat_per_cap = (target_cache().feat_dim_per_capture > 0)
+                            ? target_cache().feat_dim_per_capture : hidden;
                         const size_t elt = ggml_element_size(target_cache().target_feat);
                         const size_t col_stride = target_cache().target_feat->nb[1];
                         const size_t offset = (size_t)slot * col_stride +
-                                              (size_t)capture_idx * (size_t)hidden * elt;
-                        std::vector<ggml_bf16_t> bf16_tmp((size_t)hidden);
-                        ggml_fp32_to_bf16_row(tok_embed, bf16_tmp.data(), hidden);
+                                              (size_t)capture_idx * (size_t)feat_per_cap * elt;
+                        std::vector<ggml_bf16_t> bf16_tmp((size_t)feat_per_cap);
+                        ggml_fp32_to_bf16_row(tok_embed, bf16_tmp.data(), feat_per_cap);
                         ggml_backend_tensor_set(target_cache().target_feat, bf16_tmp.data(),
-                                                 offset, (size_t)hidden * elt);
+                                                 offset, (size_t)feat_per_cap * elt);
                     }
                 }
             }
@@ -1081,18 +1084,21 @@ bool Qwen35MoeBackend::hybrid_forward_one_token(int32_t tok, int kv_pos,
             if (capture_idx >= 0) {
                 const int cap = target_cache().target_feat_cap;
                 const int slot = kv_pos % cap;
+                // feat_per_cap: dims written per capture; 0 = full hidden (legacy 27B draft)
+                const int feat_per_cap = (target_cache().feat_dim_per_capture > 0)
+                    ? target_cache().feat_dim_per_capture : hidden;
                 const size_t elt = ggml_element_size(target_cache().target_feat);
                 const size_t col_stride = target_cache().target_feat->nb[1];
                 const size_t offset = (size_t)slot * col_stride +
-                                      (size_t)capture_idx * (size_t)hidden * elt;
+                                      (size_t)capture_idx * (size_t)feat_per_cap * elt;
 
-                // Convert F32 → BF16 on host
-                std::vector<ggml_bf16_t> bf16_buf((size_t)hidden);
-                ggml_fp32_to_bf16_row(act_cur.data(), bf16_buf.data(), hidden);
+                // Convert F32 → BF16 on host (truncate to feat_per_cap if < hidden)
+                std::vector<ggml_bf16_t> bf16_buf((size_t)feat_per_cap);
+                ggml_fp32_to_bf16_row(act_cur.data(), bf16_buf.data(), feat_per_cap);
 
                 // Write to GPU target_feat tensor
                 ggml_backend_tensor_set(target_cache().target_feat, bf16_buf.data(),
-                                         offset, (size_t)hidden * elt);
+                                         offset, (size_t)feat_per_cap * elt);
             }
         }
     }

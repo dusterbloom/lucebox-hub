@@ -175,6 +175,7 @@ bool load_draft_gguf(const std::string & path,
     const uint32_t n_head_kv = read_u32("attention.head_count_kv", 0);
     const uint32_t head_dim  = read_u32("attention.key_length",    0);
     const uint32_t block_sz  = read_u32("dflash.block_size",       0);
+    const uint32_t feat_dim_per_capture = read_u32("dflash.feat_dim_per_capture", 0);
     uint32_t n_tgt_lay       = read_u32("dflash.n_target_layers",  0);
     if (n_tgt_lay == 0) {
         std::snprintf(key, sizeof(key), "%s.%s", A, "dflash.target_layer_ids");
@@ -204,8 +205,9 @@ bool load_draft_gguf(const std::string & path,
     }
 
     // Store GGUF-declared config into DraftWeights (replaces hardcoded defaults).
-    out.block_size = (int)block_sz;
-    out.n_target_layers = (int)n_tgt_lay;
+    out.block_size           = (int)block_sz;
+    out.n_target_layers      = (int)n_tgt_lay;
+    out.feat_dim_per_capture = (int)feat_dim_per_capture;  // 0 = use target n_embd (legacy)
 
     // Propagate target model properties if available.
     if (target) {

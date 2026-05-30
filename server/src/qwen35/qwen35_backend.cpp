@@ -129,16 +129,23 @@ bool Qwen35Backend::init() {
         std::fprintf(stderr, "cache: %s\n", dflash27b_last_error());
         return false;
     }
+    // Propagate draft's feat_dim_per_capture so target_graph capture sites
+    // truncate hidden states to the width the draft fc.weight expects.
+    // 0 (default) = use full target n_embd (legacy dense 27B draft).
+    cache_.feat_dim_per_capture = dw_.feat_dim_per_capture;
 
     // Init feature mirror when draft model is available (needed for spec decode).
     // On single-GPU, this is an F32 conversion buffer; on split-GPU, a cross-device mirror.
+    // Use feat_dim_per_capture when nonzero (35B-A3B draft expects 2048 dims/capture,
+    // not the full target n_embd=5120).
     if (cfg_.draft_path && !use_remote_draft) {
         const int mirror_cap = std::min({cfg_.draft_ctx_max, cfg_.device.max_ctx,
                                          cache_.target_feat_cap > 0 ? cache_.target_feat_cap : cfg_.device.max_ctx});
+        const int feat_hidden = (dw_.feat_dim_per_capture > 0) ? dw_.feat_dim_per_capture : w_.n_embd;
         if (!draft_feature_mirror_init(feature_mirror_, draft_backend_,
                                        cfg_.draft_gpu, cfg_.device.gpu, mirror_cap,
                                        w_.n_capture_layers,
-                                       w_.n_embd)) {
+                                       feat_hidden)) {
             std::fprintf(stderr, "warning: feature mirror init failed, spec decode will use AR fallback\n");
         }
     }

@@ -186,7 +186,9 @@ bool create_target_cache_partial(const TargetWeights & w,
         constexpr int TARGET_FEAT_CAP_DEFAULT = 4096;
         out.target_feat_cap = std::min(max_ctx, TARGET_FEAT_CAP_DEFAULT);
         if (allocate_target_feat) {
-            const int fc_in = w.n_capture_layers * w.n_embd;
+            const int feat_per_cap = (out.feat_dim_per_capture > 0)
+                ? out.feat_dim_per_capture : (int)w.n_embd;
+            const int fc_in = w.n_capture_layers * feat_per_cap;
             out.target_feat = ggml_new_tensor_2d(out.base_ctx, GGML_TYPE_BF16, fc_in, out.target_feat_cap);
             ggml_set_name(out.target_feat, "target_feat");
         } else {
@@ -974,6 +976,8 @@ static ggml_tensor * build_single_layer(
             if (CAPTURE_LAYERS[k] == layer_idx) { capture_idx = k; break; }
         }
         if (capture_idx >= 0) {
+            const int    feat_per_cap = (cache.feat_dim_per_capture > 0)
+                ? cache.feat_dim_per_capture : hidden;
             const size_t elt        = ggml_element_size(cache.target_feat);
             const size_t col_stride = cache.target_feat->nb[1];
             const int    cap        = cache.target_feat_cap;
@@ -986,20 +990,20 @@ static ggml_tensor * build_single_layer(
             {
                 const size_t offset =
                     (size_t)slot_start * col_stride +
-                    (size_t)capture_idx * hidden * elt;
+                    (size_t)capture_idx * feat_per_cap * elt;
                 ggml_tensor * slot = ggml_view_2d(ctx, cache.target_feat,
-                    hidden, pre_n, col_stride, offset);
+                    feat_per_cap, pre_n, col_stride, offset);
                 ggml_tensor * src  = ggml_view_2d(ctx, cur_2d,
-                    hidden, pre_n, cur_2d->nb[1], 0);
+                    feat_per_cap, pre_n, cur_2d->nb[1], 0);
                 ggml_build_forward_expand(gf, ggml_cpy(ctx, src, slot));
             }
             if (post_n > 0) {
                 const size_t offset =
-                    (size_t)capture_idx * hidden * elt;
+                    (size_t)capture_idx * feat_per_cap * elt;
                 ggml_tensor * slot = ggml_view_2d(ctx, cache.target_feat,
-                    hidden, post_n, col_stride, offset);
+                    feat_per_cap, post_n, col_stride, offset);
                 ggml_tensor * src  = ggml_view_2d(ctx, cur_2d,
-                    hidden, post_n, cur_2d->nb[1],
+                    feat_per_cap, post_n, cur_2d->nb[1],
                     (size_t)pre_n * cur_2d->nb[1]);
                 ggml_build_forward_expand(gf, ggml_cpy(ctx, src, slot));
             }
@@ -1107,6 +1111,8 @@ QwenGraphOutputs build_qwen35_graph(
                 if (CAPTURE_LAYERS[k] == il) { capture_idx = k; break; }
             }
             if (capture_idx >= 0) {
+                const int    feat_per_cap = (cache.feat_dim_per_capture > 0)
+                    ? cache.feat_dim_per_capture : hidden;
                 const size_t elt        = ggml_element_size(cache.target_feat);
                 const size_t col_stride = cache.target_feat->nb[1];
                 const int    cap        = cache.target_feat_cap;
@@ -1120,22 +1126,22 @@ QwenGraphOutputs build_qwen35_graph(
                 {
                     const size_t offset =
                         (size_t)slot_start * col_stride +
-                        (size_t)capture_idx * hidden * elt;
+                        (size_t)capture_idx * feat_per_cap * elt;
                     ggml_tensor * slot = ggml_view_2d(ctx, cache.target_feat,
-                        hidden, pre_n, col_stride, offset);
+                        feat_per_cap, pre_n, col_stride, offset);
                     ggml_tensor * src  = ggml_view_2d(ctx, cur_2d,
-                        hidden, pre_n, cur_2d->nb[1], 0);
+                        feat_per_cap, pre_n, cur_2d->nb[1], 0);
                     ggml_build_forward_expand(gf, ggml_cpy(ctx, src, slot));
                 }
 
                 // Second slice: wrap-around at [0..post_n) if needed.
                 if (post_n > 0) {
                     const size_t offset =
-                        (size_t)capture_idx * hidden * elt;
+                        (size_t)capture_idx * feat_per_cap * elt;
                     ggml_tensor * slot = ggml_view_2d(ctx, cache.target_feat,
-                        hidden, post_n, col_stride, offset);
+                        feat_per_cap, post_n, col_stride, offset);
                     ggml_tensor * src  = ggml_view_2d(ctx, cur_2d,
-                        hidden, post_n, cur_2d->nb[1],
+                        feat_per_cap, post_n, cur_2d->nb[1],
                         (size_t)pre_n * cur_2d->nb[1]);
                     ggml_build_forward_expand(gf, ggml_cpy(ctx, src, slot));
                 }

@@ -24,7 +24,7 @@ public:
     GenerateResult restore_and_generate(int slot,
                                         const GenerateRequest & req,
                                         const DaemonIO & io) override;
-    bool supports_dflash_spec_decode() const override { return !hybrid_mode_; }
+    bool supports_dflash_spec_decode() const override { return true; }
 
 protected:
     bool load_target_model(ggml_backend_t backend, TargetWeights & out) override;

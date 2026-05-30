@@ -274,9 +274,10 @@ struct DraftWeights {
     int   rope_n_ctx_orig = 0;      // original_max_position_embeddings
 
     // DFlash draft-specific config (populated by loader or set by caller).
-    int block_size      = DFLASH27B_DRAFT_BLOCK_SIZE;       // tokens per draft step (16 or 10)
-    int n_target_layers = DFLASH27B_DRAFT_N_TARGET_LAYERS;  // captured target layers (5)
-    int mask_token_id   = DFLASH27B_DRAFT_MASK_TOKEN_ID;    // noise mask token
+    int block_size           = DFLASH27B_DRAFT_BLOCK_SIZE;       // tokens per draft step (16 or 10)
+    int n_target_layers      = DFLASH27B_DRAFT_N_TARGET_LAYERS;  // captured target layers (5)
+    int mask_token_id        = DFLASH27B_DRAFT_MASK_TOKEN_ID;    // noise mask token
+    int feat_dim_per_capture = 0;  // target hidden dims captured per layer; 0 = use target n_embd (legacy)
 };
 
 bool load_draft_safetensors(const std::string & path,
@@ -366,6 +367,10 @@ struct TargetCache {
     // cast (ggml_get_to_fp32_cuda).
     ggml_tensor * target_feat = nullptr;
     int target_feat_cap = 0;
+    // Dims captured per target layer into target_feat (set from DraftWeights).
+    // 0 = use target n_embd (legacy; dense 27B draft). Non-zero = truncate
+    // target hidden states to this width before storing (35B-A3B draft = 2048).
+    int feat_dim_per_capture = 0;
 };
 
 // Snapshot the current SSM+conv state into TargetCache::*_snap tensors.
