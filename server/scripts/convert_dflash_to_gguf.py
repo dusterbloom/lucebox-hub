@@ -154,6 +154,7 @@ def load_config(config_path: Path) -> dict:
         "HEAD_DIM":         cfg["head_dim"],
         "INTERMEDIATE":     cfg["intermediate_size"],
         "VOCAB":            cfg.get("vocab_size", VOCAB),
+        "CTX_LEN":          cfg.get("max_position_embeddings", CTX_LEN),
         "ROPE_THETA":       float(cfg.get("rope_theta", ROPE_THETA)),
         "RMS_EPS":          cfg.get("rms_norm_eps", RMS_EPS),
         "BLOCK_SIZE":       cfg.get("block_size", BLOCK_SIZE),
@@ -190,6 +191,7 @@ def main():
     _HEAD_DIM     = HEAD_DIM
     _INTERMEDIATE = INTERMEDIATE
     _VOCAB        = VOCAB
+    _CTX_LEN      = CTX_LEN
     _ROPE_THETA   = ROPE_THETA
     _RMS_EPS      = RMS_EPS
     _BLOCK_SIZE   = BLOCK_SIZE
@@ -205,6 +207,7 @@ def main():
         _HEAD_DIM        = cfg["HEAD_DIM"]
         _INTERMEDIATE    = cfg["INTERMEDIATE"]
         _VOCAB           = cfg["VOCAB"]
+        _CTX_LEN         = cfg["CTX_LEN"]
         _ROPE_THETA      = cfg["ROPE_THETA"]
         _RMS_EPS         = cfg["RMS_EPS"]
         _BLOCK_SIZE      = cfg["BLOCK_SIZE"]
@@ -212,7 +215,7 @@ def main():
         _N_TARGET_LAYERS = cfg["N_TARGET_LAYERS"]
         print(f"[info] config: hidden={_HIDDEN} n_layer={_N_LAYER} n_head={_N_HEAD} "
               f"n_head_kv={_N_HEAD_KV} head_dim={_HEAD_DIM} intermediate={_INTERMEDIATE} "
-              f"n_target_layers={_N_TARGET_LAYERS} rope_theta={_ROPE_THETA}")
+              f"ctx_len={_CTX_LEN} n_target_layers={_N_TARGET_LAYERS} rope_theta={_ROPE_THETA}")
     else:
         print("[info] no config.json found, using module-level defaults (27B draft)")
 
@@ -225,7 +228,7 @@ def main():
 
     # Architecture metadata
     writer.add_string("general.name", "Qwen3.5-DFlash-Draft")
-    writer.add_uint32(f"{ARCH}.context_length",          CTX_LEN)
+    writer.add_uint32(f"{ARCH}.context_length",          _CTX_LEN)
     writer.add_uint32(f"{ARCH}.embedding_length",        _HIDDEN)
     writer.add_uint32(f"{ARCH}.block_count",             _N_LAYER)
     writer.add_uint32(f"{ARCH}.feed_forward_length",     _INTERMEDIATE)

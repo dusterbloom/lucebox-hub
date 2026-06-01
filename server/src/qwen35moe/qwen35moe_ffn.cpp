@@ -31,10 +31,8 @@ Qwen35MoeRouterOutputs build_qwen35moe_router(
     ggml_tensor * weights  = ggml_get_rows(ctx, probs_3d, selected);
     weights = ggml_reshape_2d(ctx, weights, n_used, n_tokens);
 
-    if (w.expert_gating_func == 2) {
-        ggml_tensor * w_sum = ggml_sum_rows(ctx, weights);
-        weights = ggml_div(ctx, weights, w_sum);
-    }
+    ggml_tensor * w_sum = ggml_sum_rows(ctx, weights);
+    weights = ggml_div(ctx, weights, w_sum);
     if (w.expert_weights_scale != 1.0f) {
         weights = ggml_scale(ctx, weights, w.expert_weights_scale);
     }

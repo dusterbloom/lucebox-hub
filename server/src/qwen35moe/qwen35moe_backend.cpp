@@ -68,7 +68,9 @@ bool Qwen35MoeBackend::load_target_model(ggml_backend_t backend, TargetWeights &
         ? std::string("hotness:") + hotness_path
         : std::string("uniform");
 
-    // If all experts fit on GPU, reload with experts included
+    // If all experts fit on GPU, use the canonical full-target graph. DFlash
+    // feature capture is graph-level; split hot/cold storage is only needed
+    // when at least one expert is actually cold.
     if (placement.total_hot >= out.n_layer * out.n_expert) {
         std::printf("[qwen35moe] all experts fit in VRAM, loading fully to GPU\n");
         std::fflush(stdout);
@@ -172,8 +174,6 @@ bool Qwen35MoeBackend::load_target_model(ggml_backend_t backend, TargetWeights &
                 placement_source.c_str());
     if (total_cold > 0) {
         hybrid_mode_ = true;
-        // Keep cfg_.draft_path set — hybrid spec-decode uses it for drafting
-        // while target verification runs through the hybrid forward path.
         std::printf("[qwen35moe] hybrid decode path active (%d cold experts)\n", total_cold);
     } else {
         std::printf("[qwen35moe] all experts hot — using fused all-GPU decode path\n");

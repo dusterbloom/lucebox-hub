@@ -1,13 +1,32 @@
 #!/usr/bin/env python3
-"""RED-bar tests for qwen35moe dFlash spec-decode drafter.
-Run BEFORE applying fixes — all should FAIL or SKIP.
-Run AFTER fixes — all should PASS.
+"""Opt-in tests for the local qwen35moe DFlash drafter artifact.
+
+These tests validate private model files, so pytest skips the module unless
+QWEN35MOE_DFLASH_TEST=1 is set.
 """
-import struct, json, sys
+import json
+import os
+import struct
+import sys
 from pathlib import Path
 
-SAFETENSORS = Path("/home/peppi/models/qwen3.6-35b-a3b-dflash/model.safetensors")
-GGUF_OUT    = Path("/home/peppi/models/qwen3.6-35b-a3b-dflash/qwen3.6-35b-a3b-dflash-f16.gguf")
+DEFAULT_MODEL_DIR = Path("/home/peppi/models/qwen3.6-35b-a3b-dflash")
+MODEL_DIR = Path(os.environ.get("QWEN35MOE_DFLASH_DIR", str(DEFAULT_MODEL_DIR)))
+SAFETENSORS = Path(os.environ.get("QWEN35MOE_DFLASH_SAFETENSORS", str(MODEL_DIR / "model.safetensors")))
+GGUF_OUT = Path(os.environ.get("QWEN35MOE_DFLASH_GGUF", str(MODEL_DIR / "qwen3.6-35b-a3b-dflash-f16.gguf")))
+CONFIG_JSON = Path(os.environ.get("QWEN35MOE_DFLASH_CONFIG", str(MODEL_DIR / "config.json")))
+
+RUN_LOCAL_ARTIFACT_TESTS = os.environ.get("QWEN35MOE_DFLASH_TEST") == "1"
+
+
+def require_local_artifacts():
+    if RUN_LOCAL_ARTIFACT_TESTS:
+        return
+    if "pytest" in sys.modules:
+        import pytest
+
+        pytest.skip("requires private qwen35moe DFlash artifacts; set QWEN35MOE_DFLASH_TEST=1")
+    raise RuntimeError("set QWEN35MOE_DFLASH_TEST=1 to run local artifact tests")
 
 
 def read_gguf_kv(path):
@@ -75,14 +94,27 @@ def read_gguf_kv(path):
     return kv
 
 
+def expected_context_length():
+    if CONFIG_JSON.exists():
+        with open(CONFIG_JSON) as f:
+            cfg = json.load(f)
+        return int(cfg.get("max_position_embeddings", 32768))
+    return 32768
+
+
 def test_gguf_exists():
+    require_local_artifacts()
     assert GGUF_OUT.exists(), f"GGUF not yet created at {GGUF_OUT}"
 
 
 def test_gguf_arch_metadata():
+    require_local_artifacts()
     kv = read_gguf_kv(GGUF_OUT)
     arch = kv.get("general.architecture", "")
     A = f"{arch}." if arch else ""
+    expected_ctx = expected_context_length()
+    assert kv.get(f"{A}context_length", 0) == expected_ctx, \
+        f"context_length must be {expected_ctx}, got {kv.get(f'{A}context_length', 'MISSING')}"
     assert kv.get(f"{A}embedding_length", 0) == 2048, \
         f"embedding_length must be 2048 (draft hidden), got {kv.get(f'{A}embedding_length', 'MISSING')}"
     assert kv.get(f"{A}block_count", 0) == 8, \
@@ -97,7 +129,15 @@ def test_gguf_arch_metadata():
         f"feat_dim_per_capture must be 2048, got {kv.get(f'{A}dflash.feat_dim_per_capture', 'MISSING')}"
 
 
+def test_config_context_length():
+    require_local_artifacts()
+    assert CONFIG_JSON.exists(), f"config.json not found at {CONFIG_JSON}"
+    assert expected_context_length() == 262144, \
+        f"expected qwen35moe draft context 262144, got {expected_context_length()}"
+
+
 def test_safetensors_fc_shape():
+    require_local_artifacts()
     with open(SAFETENSORS, "rb") as f:
         sz  = struct.unpack("<Q", f.read(8))[0]
         hdr = json.loads(f.read(sz))
@@ -107,8 +147,16 @@ def test_safetensors_fc_shape():
 
 
 if __name__ == "__main__":
+    if not RUN_LOCAL_ARTIFACT_TESTS:
+        print("  SKIP local artifact tests (set QWEN35MOE_DFLASH_TEST=1)")
+        sys.exit(0)
     failures = 0
-    tests = [test_gguf_exists, test_gguf_arch_metadata, test_safetensors_fc_shape]
+    tests = [
+        test_gguf_exists,
+        test_gguf_arch_metadata,
+        test_config_context_length,
+        test_safetensors_fc_shape,
+    ]
     for t in tests:
         try:
             t()
