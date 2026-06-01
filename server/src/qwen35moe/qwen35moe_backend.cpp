@@ -1104,6 +1104,7 @@ bool Qwen35MoeBackend::hybrid_forward_one_token(int32_t tok, int kv_pos,
     }
 
     // Project to logits and get argmax
+    static const bool kGpuArgmax = (std::getenv("DFLASH_GPU_ARGMAX") != nullptr);
     const int vocab = target_weights().n_vocab;
     StepGraph proj_sg;
     ggml_init_params ip{};
@@ -1119,7 +1120,13 @@ bool Qwen35MoeBackend::hybrid_forward_one_token(int32_t tok, int kv_pos,
     normed = ggml_mul(proj_sg.ctx, normed, target_weights().out_norm);
     proj_sg.logits = ggml_mul_mat(proj_sg.ctx, target_weights().output, normed);
     ggml_set_output(proj_sg.logits);
-    ggml_build_forward_expand(proj_sg.gf, proj_sg.logits);
+    if (kGpuArgmax) {
+        proj_sg.argmax_tokens = ggml_argmax(proj_sg.ctx, proj_sg.logits);
+        ggml_set_output(proj_sg.argmax_tokens);
+        ggml_build_forward_expand(proj_sg.gf, proj_sg.argmax_tokens);
+    } else {
+        ggml_build_forward_expand(proj_sg.gf, proj_sg.logits);
+    }
     proj_sg.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(target_backend()));
     if (!ggml_gallocr_alloc_graph(proj_sg.alloc, proj_sg.gf)) {
         step_graph_destroy(proj_sg);
@@ -1131,19 +1138,23 @@ bool Qwen35MoeBackend::hybrid_forward_one_token(int32_t tok, int kv_pos,
         step_graph_destroy(proj_sg);
         return false;
     }
-    std::vector<float> logits_buf((size_t)vocab);
-    ggml_backend_tensor_get(proj_sg.logits, logits_buf.data(), 0, sizeof(float) * (size_t)vocab);
-    step_graph_destroy(proj_sg);
-
-    // Argmax
-    argmax_out = 0;
-    float best = logits_buf[0];
-    for (int j = 1; j < vocab; ++j) {
-        if (logits_buf[(size_t)j] > best) {
-            best = logits_buf[(size_t)j];
-            argmax_out = j;
+    if (kGpuArgmax) {
+        int32_t tok_i = 0;
+        ggml_backend_tensor_get(proj_sg.argmax_tokens, &tok_i, 0, sizeof(int32_t));
+        argmax_out = tok_i;
+    } else {
+        std::vector<float> logits_buf((size_t)vocab);
+        ggml_backend_tensor_get(proj_sg.logits, logits_buf.data(), 0, sizeof(float) * (size_t)vocab);
+        argmax_out = 0;
+        float best = logits_buf[0];
+        for (int j = 1; j < vocab; ++j) {
+            if (logits_buf[(size_t)j] > best) {
+                best = logits_buf[(size_t)j];
+                argmax_out = j;
+            }
         }
     }
+    step_graph_destroy(proj_sg);
     return true;
 }
 
