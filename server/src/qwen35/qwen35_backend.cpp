@@ -1008,6 +1008,15 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
             return false;
         }
 
+        // Set kv_write_rows: [1, n_head_kv] i64 filled with kv_start so
+        // ggml_set_rows writes to the correct cache slot at graph execution time.
+        if (sg_.kv_write_rows) {
+            const int n_head_kv = w_.n_head_kv;
+            std::vector<int64_t> row_vals(n_head_kv, (int64_t)committed);
+            ggml_backend_tensor_set(sg_.kv_write_rows, row_vals.data(), 0,
+                                    sizeof(int64_t) * n_head_kv);
+        }
+
         auto st = ggml_backend_graph_compute(target_backend_, sg_.gf);
         if (st != GGML_STATUS_SUCCESS) return false;
 

@@ -547,6 +547,11 @@ struct QwenGraphInputs {
     int           fa_window = 0;  // sliding window for FA layers: 0 = full attention
     bool          last_token_logits_only = false; // if true, only compute logits for last token (prefill optimization)
     ggml_tensor * parent_ids = nullptr; // [n_tokens] i32; tree mode when non-null
+    // CUDA-graph-compatible KV write: when non-null, use ggml_set_rows instead
+    // of view-offset-based ggml_cpy so graph topology is step-invariant.
+    // Shape [n_tokens, n_head_kv] i64; caller writes kv_start value into it
+    // via ggml_backend_tensor_set before each graph execution.
+    ggml_tensor * kv_write_rows = nullptr;
 };
 
 struct QwenGraphOutputs {

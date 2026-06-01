@@ -269,6 +269,21 @@ bool build_target_step(
 
     sg.gf = ggml_new_graph_custom(sg.ctx, 16384, false);
 
+    // CUDA-graph-compatible KV write path: active when n_tokens==1 and the graph
+    // topology is otherwise step-invariant (no mask, no capture, no fa_window).
+    // Creates a [n_tokens, n_head_kv] i64 input tensor whose VALUE is updated
+    // via ggml_backend_tensor_set each step; the tensor's DATA POINTER stays
+    // constant (gallocr reuses the same buffer position), keeping the graph valid
+    // for cudaGraphExecUpdate pointer-patch.
+    const bool use_kv_write_rows = (n_tokens == 1 && fa_window == 0 &&
+                                    !with_mask && !capture && !capture_delta_intermediate);
+    if (use_kv_write_rows) {
+        sg.kv_write_rows = ggml_new_tensor_2d(sg.ctx, GGML_TYPE_I64,
+                                              n_tokens, w.n_head_kv);
+        ggml_set_name(sg.kv_write_rows, "kv_write_rows");
+        ggml_set_input(sg.kv_write_rows);
+    }
+
     QwenGraphInputs gi{};
     gi.inp_embed                  = sg.inp_embed;
     gi.positions                  = sg.positions;
@@ -280,6 +295,7 @@ bool build_target_step(
     gi.capture_moe_router         = capture_moe_router;
     gi.fa_window                  = fa_window;
     gi.last_token_logits_only     = last_token_logits_only;
+    gi.kv_write_rows              = sg.kv_write_rows;
 
     QwenGraphOutputs go = build_qwen35_graph(sg.ctx, sg.gf, w, cache, gi);
     if (!go.logits) return false;
