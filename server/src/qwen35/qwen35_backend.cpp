@@ -1022,13 +1022,26 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
 
         after_target_compute(sg_, committed, 1);
 
-        ggml_backend_tensor_get(sg_.logits, logits_buf.data(), 0,
-                                sizeof(float) * vocab);
+        // GPU-side argmax: read 4 bytes instead of 970 KB + CPU loop.
+        // Default-on for greedy (temp==0, no penalties) — bit-exact by construction.
+        // Escape: DFLASH_GPU_ARGMAX=0.
+        static const bool kGpuArgmaxAR = []() {
+            const char * v = std::getenv("DFLASH_GPU_ARGMAX");
+            return v == nullptr || v[0] != '0';
+        }();
         int32_t next_tok;
         if (sampler_.needs_logit_processing()) {
+            ggml_backend_tensor_get(sg_.logits, logits_buf.data(), 0,
+                                    sizeof(float) * vocab);
             next_tok = sample_logits(logits_buf.data(), vocab, sampler_,
                                       out_tokens, sampler_rng_);
+        } else if (kGpuArgmaxAR && sg_.argmax_tokens) {
+            int32_t tok_i = 0;
+            ggml_backend_tensor_get(sg_.argmax_tokens, &tok_i, 0, sizeof(int32_t));
+            next_tok = tok_i;
         } else {
+            ggml_backend_tensor_get(sg_.logits, logits_buf.data(), 0,
+                                    sizeof(float) * vocab);
             next_tok = 0;
             float best = logits_buf[0];
             for (int j = 1; j < vocab; j++) {
