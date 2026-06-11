@@ -1119,10 +1119,16 @@ python3 optimizations/lsa/raw_dataset.py /tmp/lsa-canary/raw-1024-qwen36 \
           <p>
             Current state: CUDA works outside the sandbox with
             <code>LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:/usr/lib/wsl/lib</code>.
-            The Qwen3.6 27B Q3 1024-token capture completed. Online QK with
-            mean score pooling beat recency and the seeded random baseline at
+            The Qwen3.6 27B Q3 16K capture completed with normal LSA cold-history
+            rules. Online QK beat recency and the seeded random baseline at
             10%, 20%, and 50% active cold-history budgets.
           </p>
+          <table>
+            <tr><th>Budget</th><th>QK recall</th><th>Recency</th><th>Random</th></tr>
+            <tr><td>10%</td><td>0.357</td><td>0.195</td><td>0.201</td></tr>
+            <tr><td>20%</td><td>0.488</td><td>0.259</td><td>0.314</td></tr>
+            <tr><td>50%</td><td>0.720</td><td>0.463</td><td>0.549</td></tr>
+          </table>
         </article>
       </div>
     </section>

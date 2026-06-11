@@ -273,11 +273,20 @@ env LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:/usr/lib/wsl/lib \
   /tmp/lsa-canary/raw-1024-qwen36
 ```
 
-On the 1024-token canary, `online_qk.py --score-pooling mean` produced
-`qk_recall@0.100=0.318`, `qk_recall@0.200=0.391`, and
-`qk_recall@0.500=0.649`, beating both recency and the seeded random baseline
-at all three budgets. This is not a production-quality benchmark yet; it is a
-green light to run the 16K+ pilot before spending tokens on training.
+The first meaningful 16K canary also completed with normal LSA cold-history
+rules (`sink_tokens=64`, `recent_tokens=8192`). It produced eight oracle
+examples and averaged 63 candidate cold blocks. The strongest no-training QK
+variant so far is `--score-pooling max --layer-aggregation mean`:
+
+| Budget | QK recall | Recency recall | Random recall |
+|---|---:|---:|---:|
+| 10% | 0.357 | 0.195 | 0.201 |
+| 20% | 0.488 | 0.259 | 0.314 |
+| 50% | 0.720 | 0.463 | 0.549 |
+
+This is still a canary, not a production-quality benchmark. It is enough signal
+to push the no-training MVP to a 64-document 16K-128K pilot before spending
+tokens on training.
 
 The first gate is mass-recall at a fixed block budget against random,
 recency-only, online QK, and direct hidden-to-key projection baselines. Do not
