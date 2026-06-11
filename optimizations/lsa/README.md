@@ -116,6 +116,30 @@ The observation fields are `memory_pressure`, `score_entropy`,
 `no_context_probability`, and `long_memory_hint`. Adaptation only changes `k`,
 `interval`, and `policy` within the already planned maximum arena.
 
+## No-Training MVP
+
+The fastest shippable path is not an untrained hidden-state encoder. It is a
+native online QK selector:
+
+1. Capture post-RoPE Q/K from the same full-attention layers used by the oracle.
+2. Mean-pool sealed cold K blocks per layer and KV head.
+3. Score cold blocks by current/future Q against pooled post-RoPE K.
+4. Aggregate scores across layers, then select a fixed top-K or keep ratio.
+5. Compare mass recall against recency and random baselines before any training.
+
+`online_qk.py` implements this evaluator for raw capture directories:
+
+```bash
+python3 online_qk.py /tmp/lsa-canary/raw-256 \
+  --keep-ratios 0.10 0.20 0.50 \
+  --output /tmp/lsa-canary/online_qk_report.json
+```
+
+This path can ship earlier than a trained encoder if it beats recency/random
+with enough margin at an acceptable active-KV budget. It will probably need a
+wider budget than the paper's trained indexer, but it is model-native and has
+zero training dependency.
+
 ## NPZ Shard V1
 
 One shard contains one source sequence:
@@ -232,9 +256,16 @@ python3 raw_dataset.py /tmp/lsa-pilot/raw/pilot-0000 \
   --output /tmp/lsa-pilot/npz/pilot-0000.npz --device cuda --verify-checksums
 ```
 
+Current canary note: a 256-token local prompt was generated at
+`/tmp/lsa-canary/qwen35-canary.tokens.i32`, and `lsa_extract_qwen35` builds in
+`/tmp/lsa-server-build-gcc11` when configured with `g++-11`. The first runtime
+attempt failed before model load with `CUDA driver version is insufficient for
+CUDA runtime version`, despite an idle RTX 3090 in `nvidia-smi`. Resolve the
+WSL CUDA runtime/driver mismatch, then rerun the same `flock` command.
+
 The first gate is mass-recall at a fixed block budget against random,
-recency-only, and direct hidden-to-key projection baselines. Do not integrate
-the learned selector into production unless it wins that offline gate and an
+recency-only, online QK, and direct hidden-to-key projection baselines. Do not
+integrate any selector into production unless it wins that offline gate and an
 all-chunks packed-KV oracle reproduces dense Qwen logits.
 
 PR274/FlowKV prefix snapshots remain useful infrastructure, but they restore a

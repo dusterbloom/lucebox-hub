@@ -727,6 +727,18 @@
             <li><strong>C++:</strong> runtime and packed-KV unit tests previously passed.</li>
           </ul>
         </article>
+
+        <article class="card span-4">
+          <div class="card-title">
+            <h3>No-training QK evaluator</h3>
+            <span class="status done">Done</span>
+          </div>
+          <ul class="list">
+            <li><strong>Tool:</strong> <code>online_qk.py</code> scores raw Q/K captures.</li>
+            <li><strong>Baselines:</strong> fixed-budget recency and random recall.</li>
+            <li><strong>Purpose:</strong> decide whether an ASAP no-training MVP is viable.</li>
+          </ul>
+        </article>
       </div>
     </section>
 
@@ -766,20 +778,20 @@
               verification.
             </p>
           </div>
-          <span class="status blocked">GPU lock</span>
+          <span class="status blocked">CUDA mismatch</span>
         </article>
 
         <article class="step">
           <div class="step-no">3</div>
           <div>
-            <h3>Train and evaluate a tiny Qwen-specific encoder</h3>
+            <h3>Evaluate online QK before training</h3>
             <p>
-              Train from the canary shard first. Compare mass recall against
-              random, recency-only, direct hidden-to-key projection, and the
-              existing adaptive keep-ratio behavior.
+              Run <code>online_qk.py</code> against the raw canary. If it beats
+              random and recency at 20-50% active cold history, ship the
+              no-training MVP path first.
             </p>
           </div>
-          <span class="status planned">Planned</span>
+          <span class="status pending">Next after raw capture</span>
         </article>
 
         <article class="step">
@@ -1089,7 +1101,7 @@ python3 corpus_plan.py /tmp/lsa-pilot/corpus_plan.json --write-boundaries</code>
         <article class="card span-12">
           <div class="card-title">
             <h3>First GPU canary</h3>
-            <span class="status blocked">Wait for GPU</span>
+            <span class="status blocked">CUDA mismatch</span>
           </div>
           <pre><code>flock /tmp/dflash_gpu.lock build/lsa_extract_qwen35 \
   model.gguf /tmp/lsa-pilot/prompts/pilot-0000.tokens.i32 \
@@ -1100,6 +1112,13 @@ python3 optimizations/lsa/raw_dataset.py /tmp/lsa-pilot/raw/pilot-0000 \
   --output /tmp/lsa-pilot/npz/pilot-0000.npz \
   --device cuda \
   --verify-checksums</code></pre>
+          <p>
+            Current state: the RTX 3090 is idle, a 256-token canary prompt
+            exists at <code>/tmp/lsa-canary/qwen35-canary.tokens.i32</code>, and
+            <code>lsa_extract_qwen35</code> builds under
+            <code>/tmp/lsa-server-build-gcc11</code>. Runtime CUDA init currently
+            fails with <code>CUDA driver version is insufficient for CUDA runtime version</code>.
+          </p>
         </article>
       </div>
     </section>
