@@ -60,6 +60,16 @@ class OnlineQkTest(unittest.TestCase):
         )
         selected = top_budget_indices(scores, budget=1)
         self.assertEqual(selected.tolist(), [1])
+        lse_scores = qk_block_scores(
+            query,
+            keys,
+            boundary_position=4,
+            block_size=2,
+            sink_tokens=0,
+            recent_tokens=0,
+            pooling="logsumexp",
+        )
+        self.assertEqual(tuple(lse_scores.shape), tuple(scores.shape))
 
     def test_aggregate_layer_scores_validates_shapes(self) -> None:
         merged = aggregate_layer_scores(

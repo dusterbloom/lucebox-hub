@@ -256,12 +256,28 @@ python3 raw_dataset.py /tmp/lsa-pilot/raw/pilot-0000 \
   --output /tmp/lsa-pilot/npz/pilot-0000.npz --device cuda --verify-checksums
 ```
 
-Current canary note: a 256-token local prompt was generated at
-`/tmp/lsa-canary/qwen35-canary.tokens.i32`, and `lsa_extract_qwen35` builds in
-`/tmp/lsa-server-build-gcc11` when configured with `g++-11`. The first runtime
-attempt failed before model load with `CUDA driver version is insufficient for
-CUDA runtime version`, despite an idle RTX 3090 in `nvidia-smi`. Resolve the
-WSL CUDA runtime/driver mismatch, then rerun the same `flock` command.
+Current canary note: CUDA works when the command runs outside the sandbox with
+`LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:/usr/lib/wsl/lib`. A tiny runtime
+probe reports driver API `13020`, CUDA runtime `12060`, and one visible RTX
+3090. A fresh extractor build exists at `/tmp/lsa-server-build-gcc11`.
+
+The 0.8B GGUF canary is not compatible with the Qwen target loader tensor names.
+The compatible local Qwen3.6 27B Q3 canary completed:
+
+```bash
+env LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:/usr/lib/wsl/lib \
+  flock /tmp/dflash_gpu.lock \
+  /tmp/lsa-server-build-gcc11/lsa_extract_qwen35 \
+  /home/peppi/models/qwen3.6-27b-q3ks/Qwen3.6-27B-Q3_K_S.gguf \
+  /tmp/lsa-canary/qwen36-canary-1024.tokens.i32 \
+  /tmp/lsa-canary/raw-1024-qwen36
+```
+
+On the 1024-token canary, `online_qk.py --score-pooling mean` produced
+`qk_recall@0.100=0.318`, `qk_recall@0.200=0.391`, and
+`qk_recall@0.500=0.649`, beating both recency and the seeded random baseline
+at all three budgets. This is not a production-quality benchmark yet; it is a
+green light to run the 16K+ pilot before spending tokens on training.
 
 The first gate is mass-recall at a fixed block budget against random,
 recency-only, online QK, and direct hidden-to-key projection baselines. Do not

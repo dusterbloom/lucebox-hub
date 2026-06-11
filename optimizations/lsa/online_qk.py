@@ -119,7 +119,8 @@ def qk_block_scores(
         return per_query.amax(dim=(0, 2))
     if pooling == "mean":
         return per_query.mean(dim=(0, 2))
-    return torch.logsumexp(per_query.flatten(start_dim=1), dim=0)
+    per_block = per_query.permute(1, 0, 2).flatten(start_dim=1)
+    return torch.logsumexp(per_block, dim=-1)
 
 
 def aggregate_layer_scores(

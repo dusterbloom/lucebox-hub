@@ -778,7 +778,7 @@
               verification.
             </p>
           </div>
-          <span class="status blocked">CUDA mismatch</span>
+          <span class="status done">Canary passed</span>
         </article>
 
         <article class="step">
@@ -791,7 +791,7 @@
               no-training MVP path first.
             </p>
           </div>
-          <span class="status pending">Next after raw capture</span>
+          <span class="status done">Canary passed</span>
         </article>
 
         <article class="step">
@@ -1101,23 +1101,27 @@ python3 corpus_plan.py /tmp/lsa-pilot/corpus_plan.json --write-boundaries</code>
         <article class="card span-12">
           <div class="card-title">
             <h3>First GPU canary</h3>
-            <span class="status blocked">CUDA mismatch</span>
+            <span class="status done">Canary passed</span>
           </div>
-          <pre><code>flock /tmp/dflash_gpu.lock build/lsa_extract_qwen35 \
-  model.gguf /tmp/lsa-pilot/prompts/pilot-0000.tokens.i32 \
-  /tmp/lsa-pilot/raw/pilot-0000 \
-  /tmp/lsa-pilot/boundaries/pilot-0000.txt
+          <pre><code>env LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:/usr/lib/wsl/lib \
+  flock /tmp/dflash_gpu.lock \
+  /tmp/lsa-server-build-gcc11/lsa_extract_qwen35 \
+  /home/peppi/models/qwen3.6-27b-q3ks/Qwen3.6-27B-Q3_K_S.gguf \
+  /tmp/lsa-canary/qwen36-canary-1024.tokens.i32 \
+  /tmp/lsa-canary/raw-1024-qwen36
 
-python3 optimizations/lsa/raw_dataset.py /tmp/lsa-pilot/raw/pilot-0000 \
-  --output /tmp/lsa-pilot/npz/pilot-0000.npz \
-  --device cuda \
+python3 optimizations/lsa/raw_dataset.py /tmp/lsa-canary/raw-1024-qwen36 \
+  --output /tmp/lsa-canary/qwen36-1024.npz \
+  --device cpu \
+  --sink-tokens 0 \
+  --recent-tokens 0 \
   --verify-checksums</code></pre>
           <p>
-            Current state: the RTX 3090 is idle, a 256-token canary prompt
-            exists at <code>/tmp/lsa-canary/qwen35-canary.tokens.i32</code>, and
-            <code>lsa_extract_qwen35</code> builds under
-            <code>/tmp/lsa-server-build-gcc11</code>. Runtime CUDA init currently
-            fails with <code>CUDA driver version is insufficient for CUDA runtime version</code>.
+            Current state: CUDA works outside the sandbox with
+            <code>LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:/usr/lib/wsl/lib</code>.
+            The Qwen3.6 27B Q3 1024-token capture completed. Online QK with
+            mean score pooling beat recency and the seeded random baseline at
+            10%, 20%, and 50% active cold-history budgets.
           </p>
         </article>
       </div>
