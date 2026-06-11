@@ -4,18 +4,18 @@
 from __future__ import annotations
 
 import argparse
-import json
 import random
-from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
 import torch
 
 try:
+    from .artifact import write_encoder_artifact
     from .dataset import LsaExampleDataset
     from .model import CompactQwen35Encoder, focal_mass_loss
 except ImportError:
+    from artifact import write_encoder_artifact
     from dataset import LsaExampleDataset
     from model import CompactQwen35Encoder, focal_mass_loss
 
@@ -81,39 +81,7 @@ def train(args: argparse.Namespace) -> None:
         if args.max_steps and step >= args.max_steps:
             break
 
-    args.output.mkdir(parents=True, exist_ok=True)
-    state = model.state_dict()
-    torch.save(state, args.output / "encoder.pt")
-    down = state["down.weight"].detach().cpu().to(torch.float16).numpy()
-    up = state["up.weight"].detach().cpu().to(torch.float16).numpy()
-    with (args.output / "encoder.f16.bin").open("wb") as output:
-        output.write(down.tobytes(order="C"))
-        output.write(up.tobytes(order="C"))
-    config = {
-        "schema": "luce.lsa.qwen35.encoder.v1",
-        "dataset": asdict(metadata),
-        "rank": args.rank,
-        "score_temperature": args.score_temperature,
-        "decision_threshold": args.decision_threshold,
-        "logit_scale": args.logit_scale,
-        "parameters": model.parameter_count(),
-        "weight_file": {
-            "name": "encoder.f16.bin",
-            "dtype": "float16-le",
-            "layout": [
-                {"name": "down.weight", "shape": list(down.shape), "offset_bytes": 0},
-                {
-                    "name": "up.weight",
-                    "shape": list(up.shape),
-                    "offset_bytes": down.nbytes,
-                },
-            ],
-            "size_bytes": down.nbytes + up.nbytes,
-        },
-    }
-    (args.output / "encoder.json").write_text(
-        json.dumps(config, indent=2, sort_keys=True) + "\n"
-    )
+    write_encoder_artifact(args.output, model, metadata)
     print(f"wrote {args.output} ({model.parameter_count():,} parameters)")
 
 

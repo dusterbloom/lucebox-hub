@@ -70,6 +70,12 @@ boundaries. This is important: archiving Q for every token would dominate the
 dataset size. Each finalized directory contains a geometry manifest, file
 sizes, and FNV-1a checksums.
 
+Training emits a `luce.lsa.qwen35.encoder.v1` directory containing
+`encoder.json` and `encoder.f16.bin`. The F16 file is the single source of
+truth for both Python evaluation and the C++ runtime loader; the manifest
+records tensor shapes, offsets, and an FNV-1a checksum. This avoids evaluating
+an FP32 checkpoint that differs from the deployed compact encoder.
+
 Extraction and conversion are separate so GPU capture can be reprocessed
 without another target-model forward:
 
@@ -121,6 +127,12 @@ The first gate is mass-recall at a fixed block budget against random,
 recency-only, and direct hidden-to-key projection baselines. Do not integrate
 the learned selector into production unless it wins that offline gate and an
 all-chunks packed-KV oracle reproduces dense Qwen logits.
+
+PR274/FlowKV prefix snapshots remain useful infrastructure, but they restore a
+complete compressed-prefix state, including exact DeltaNet SSM and convolution
+state. They are not an arbitrary sparse-block KV store. LSA should reuse their
+validated tensor strip-copy and snapshot ownership patterns while keeping a
+separate archival full-attention KV source and fixed-capacity active view.
 
 Reject the pilot if it misses 90% oracle-mass recall at 20% cold-history keep,
 80% recall at 10% keep, or retains more than 5% of cold chunks on local-only

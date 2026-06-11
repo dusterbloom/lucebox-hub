@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from artifact import load_encoder_artifact, write_encoder_artifact
 from dataset import LsaExampleDataset, float_to_bf16_bits, load_shard
 from evaluate import mass_recall, top_indices
 from make_synthetic import make_shard
@@ -68,6 +69,49 @@ class LsaToolingTest(unittest.TestCase):
     def test_qwen_parameter_budget(self) -> None:
         model = CompactQwen35Encoder()
         self.assertEqual(model.parameter_count(), 1_572_864)
+
+    def test_encoder_artifact_round_trip_and_checksum(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            shard_path = Path(directory) / "source.npz"
+            make_shard(
+                shard_path,
+                seed=9,
+                examples=1,
+                blocks=2,
+                hidden_size=8,
+                kv_heads=2,
+                head_dim=4,
+            )
+            shard = load_shard(shard_path)
+            model = CompactQwen35Encoder(
+                hidden_size=8, rank=4, kv_heads=2, head_dim=4
+            )
+            artifact = Path(directory) / "encoder"
+            config = write_encoder_artifact(artifact, model, shard.metadata)
+            self.assertEqual(
+                config["schema"], "luce.lsa.qwen35.encoder.v1"
+            )
+            loaded = load_encoder_artifact(artifact, torch.device("cpu"))
+            for expected, actual in zip(
+                model.parameters(), loaded.parameters(), strict=True
+            ):
+                self.assertTrue(
+                    torch.equal(expected.detach().to(torch.float16), actual)
+                )
+            self.assertFalse((artifact / "encoder.pt").exists())
+
+            weight = artifact / "encoder.f16.bin"
+            data = bytearray(weight.read_bytes())
+            data[0] ^= 1
+            weight.write_bytes(data)
+            with self.assertRaisesRegex(ValueError, "checksum"):
+                load_encoder_artifact(artifact, torch.device("cpu"))
+
+            mismatched = CompactQwen35Encoder(
+                hidden_size=16, rank=4, kv_heads=2, head_dim=4
+            )
+            with self.assertRaisesRegex(ValueError, "geometry"):
+                write_encoder_artifact(artifact, mismatched, shard.metadata)
 
     def test_mass_recall_and_top_budget(self) -> None:
         target = torch.tensor([0.1, 0.2, 0.7])

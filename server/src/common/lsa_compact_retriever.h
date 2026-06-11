@@ -19,11 +19,14 @@ struct LsaCompactConfig {
 
 class LsaCompactRetriever final : public LsaRetriever {
 public:
+    LsaCompactRetriever() = default;
     explicit LsaCompactRetriever(LsaCompactConfig config);
 
     int hidden_size() const override { return config_.hidden_size; }
     int key_size() const override { return config_.kv_heads * config_.head_dim; }
+    const LsaCompactConfig & config() const { return config_; }
 
+    bool load_artifact(const std::string & path, std::string & error);
     bool load_f16_weights(const std::string & path, std::string & error);
     bool set_weights(std::vector<float> down, std::vector<float> up,
                      std::string & error);

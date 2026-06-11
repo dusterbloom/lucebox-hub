@@ -13,11 +13,11 @@ import numpy as np
 import torch
 
 try:
+    from .artifact import load_encoder_artifact
     from .dataset import LsaExampleDataset
-    from .model import CompactQwen35Encoder
 except ImportError:
+    from artifact import load_encoder_artifact
     from dataset import LsaExampleDataset
-    from model import CompactQwen35Encoder
 
 
 def mass_recall(target: torch.Tensor, selected: torch.Tensor) -> float:
@@ -32,28 +32,10 @@ def top_indices(scores: torch.Tensor, keep_ratio: float) -> torch.Tensor:
     return torch.topk(scores, count, sorted=False).indices
 
 
-def load_model(directory: Path, device: torch.device) -> CompactQwen35Encoder:
-    config = json.loads((directory / "encoder.json").read_text())
-    dataset = config["dataset"]
-    model = CompactQwen35Encoder(
-        hidden_size=dataset["hidden_size"],
-        rank=config["rank"],
-        kv_heads=dataset["kv_heads"],
-        head_dim=dataset["head_dim"],
-        score_temperature=config["score_temperature"],
-        decision_threshold=config["decision_threshold"],
-        logit_scale=config["logit_scale"],
-    )
-    model.load_state_dict(
-        torch.load(directory / "encoder.pt", map_location="cpu", weights_only=True)
-    )
-    return model.to(device).eval()
-
-
 def evaluate(args: argparse.Namespace) -> dict[str, object]:
     dataset = LsaExampleDataset(args.shards)
     device = torch.device(args.device)
-    model = load_model(args.model, device)
+    model = load_encoder_artifact(args.model, device)
     generator = torch.Generator().manual_seed(args.seed)
     metrics: dict[str, list[float]] = defaultdict(list)
 

@@ -97,6 +97,34 @@ void test_original_position_causal_mask() {
     CHECK(mask[8 + 4] == F16_NEG_INF);
 }
 
+void test_step_plan_appends_current_tokens_and_write_rows() {
+    LsaPackedPlan history;
+    history.committed_tokens = 12;
+    history.token_capacity = 8;
+    history.source_positions = {0, 2, 5, 9};
+
+    LsaPackedStepPlan step;
+    std::vector<uint16_t> mask;
+    std::string error;
+    CHECK(build_lsa_packed_step_plan(
+        history, {12, 13}, 2, 4, step, mask, error, 8));
+    CHECK(step.historical_tokens == 4);
+    CHECK(step.key_positions ==
+          std::vector<int>({0, 2, 5, 9, 12, 13}));
+    CHECK(step.write_rows ==
+          std::vector<int64_t>({4, 5, 4, 5}));
+    CHECK(mask[4] == F16_ZERO);
+    CHECK(mask[5] == F16_NEG_INF);
+    CHECK(mask[8 + 4] == F16_ZERO);
+    CHECK(mask[8 + 5] == F16_ZERO);
+    CHECK(mask[8 + 6] == F16_NEG_INF);
+
+    history.token_capacity = 5;
+    CHECK(!build_lsa_packed_step_plan(
+        history, {12, 13}, 2, 4, step, mask, error, 8));
+    CHECK(error.find("exceeds") != std::string::npos);
+}
+
 void test_token_axis_gather_preserves_head_layout() {
     constexpr int head_dim = 2;
     constexpr int source_tokens = 5;
@@ -139,6 +167,48 @@ void test_token_axis_gather_preserves_head_layout() {
     CHECK(packed[second_head + 1] == 111);
     CHECK(packed[second_head + 2] == 140);
     CHECK(packed[second_head + 3] == 141);
+}
+
+void test_stride_aware_gather_supports_quantized_rows() {
+    LsaTokenAxisLayout layout;
+    layout.source_tokens = 3;
+    layout.heads = 2;
+    layout.row_bytes = 3;
+    layout.token_stride_bytes = 5;
+    layout.head_stride_bytes = 17;
+    std::vector<uint8_t> source(37, 0xee);
+    for (int head = 0; head < layout.heads; ++head) {
+        for (int token = 0; token < layout.source_tokens; ++token) {
+            const size_t offset =
+                static_cast<size_t>(head) * layout.head_stride_bytes +
+                static_cast<size_t>(token) * layout.token_stride_bytes;
+            for (size_t byte = 0; byte < layout.row_bytes; ++byte) {
+                source[offset + byte] = static_cast<uint8_t>(
+                    head * 100 + token * 10 + static_cast<int>(byte));
+            }
+        }
+    }
+
+    LsaPackedPlan plan;
+    plan.committed_tokens = 3;
+    plan.token_capacity = 3;
+    plan.source_positions = {2, 0};
+    std::vector<uint8_t> packed;
+    std::string error;
+    CHECK(gather_lsa_token_rows(
+        source.data(), source.size(), layout, plan, packed, error));
+    CHECK(packed.size() == 18);
+    CHECK(packed[0] == 20);
+    CHECK(packed[1] == 21);
+    CHECK(packed[2] == 22);
+    CHECK(packed[3] == 0);
+    CHECK(packed[4] == 1);
+    CHECK(packed[5] == 2);
+    CHECK(packed[6] == 0);
+    const size_t second_head = 9;
+    CHECK(packed[second_head + 0] == 120);
+    CHECK(packed[second_head + 3] == 100);
+    CHECK(packed[second_head + 6] == 0);
 }
 
 void test_all_chunks_attention_matches_dense() {
@@ -212,7 +282,9 @@ int main() {
     test_plan_combines_retrieval_sink_and_recent();
     test_all_chunks_matches_dense_order();
     test_original_position_causal_mask();
+    test_step_plan_appends_current_tokens_and_write_rows();
     test_token_axis_gather_preserves_head_layout();
+    test_stride_aware_gather_supports_quantized_rows();
     test_all_chunks_attention_matches_dense();
     if (failures != 0) {
         std::fprintf(stderr, "%d packed KV test(s) failed\n", failures);

@@ -2,8 +2,14 @@
 #include "common/lsa_compact_retriever.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <nlohmann/json.hpp>
 #include <set>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -263,6 +269,86 @@ void test_compact_retriever_scores_matching_key_first() {
     CHECK(error.find("not loaded") != std::string::npos);
 }
 
+uint64_t fnv1a64(const std::vector<uint16_t> & values) {
+    uint64_t checksum = 14695981039346656037ULL;
+    const auto * bytes = reinterpret_cast<const uint8_t *>(values.data());
+    for (size_t index = 0;
+         index < values.size() * sizeof(uint16_t); ++index) {
+        checksum ^= bytes[index];
+        checksum *= 1099511628211ULL;
+    }
+    return checksum;
+}
+
+void test_compact_retriever_artifact_contract() {
+    namespace fs = std::filesystem;
+    const fs::path directory =
+        fs::temp_directory_path() / "lsa-compact-artifact-test";
+    fs::remove_all(directory);
+    fs::create_directories(directory);
+    const std::vector<uint16_t> weights = {
+        0x3c00, 0x0000, 0x0000, 0x3c00,
+        0x3c00, 0x0000, 0x0000, 0x3c00,
+    };
+    {
+        std::ofstream output(
+            directory / "encoder.f16.bin", std::ios::binary);
+        output.write(reinterpret_cast<const char *>(weights.data()),
+                     static_cast<std::streamsize>(
+                         weights.size() * sizeof(uint16_t)));
+    }
+    std::ostringstream checksum;
+    checksum << std::hex << std::setfill('0') << std::setw(16)
+             << fnv1a64(weights);
+    nlohmann::json manifest = {
+        {"schema", "luce.lsa.qwen35.encoder.v1"},
+        {"dataset",
+         {{"hidden_size", 2}, {"kv_heads", 1}, {"head_dim", 2}}},
+        {"rank", 2},
+        {"score_temperature", 0.1},
+        {"decision_threshold", 0.0},
+        {"logit_scale", 12.0},
+        {"weight_file",
+         {{"name", "encoder.f16.bin"},
+          {"dtype", "float16-le"},
+          {"fnv1a64", checksum.str()},
+          {"size_bytes", weights.size() * sizeof(uint16_t)},
+          {"layout",
+           {{{"name", "down.weight"},
+             {"shape", {2, 2}},
+             {"offset_bytes", 0}},
+            {{"name", "up.weight"},
+             {"shape", {2, 2}},
+             {"offset_bytes", 4 * sizeof(uint16_t)}}}}}},
+    };
+    {
+        std::ofstream output(directory / "encoder.json");
+        output << manifest.dump(2) << '\n';
+    }
+
+    LsaCompactRetriever retriever;
+    std::string error;
+    CHECK(retriever.load_artifact(directory.string(), error));
+    CHECK(retriever.hidden_size() == 2);
+    CHECK(retriever.key_size() == 2);
+    std::vector<float> scores;
+    CHECK(retriever.score(
+        {1.0f, 0.0f}, {make_chunk(0, 1.0f, 0.0f)}, scores, error));
+
+    {
+        std::fstream output(
+            directory / "encoder.f16.bin",
+            std::ios::binary | std::ios::in | std::ios::out);
+        const uint16_t corrupt = 0;
+        output.write(reinterpret_cast<const char *>(&corrupt),
+                     sizeof(corrupt));
+    }
+    LsaCompactRetriever corrupt;
+    CHECK(!corrupt.load_artifact(directory.string(), error));
+    CHECK(error.find("checksum") != std::string::npos);
+    fs::remove_all(directory);
+}
+
 }  // namespace
 
 int main() {
@@ -271,6 +357,7 @@ int main() {
     test_threshold_selection_and_validation();
     test_interval_crossing_and_chunk_order();
     test_compact_retriever_scores_matching_key_first();
+    test_compact_retriever_artifact_contract();
     if (failures != 0) {
         std::fprintf(stderr, "%d LSA runtime test(s) failed\n", failures);
         return 1;

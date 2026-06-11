@@ -4,8 +4,10 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <limits>
+#include <nlohmann/json.hpp>
 #include <utility>
 
 namespace dflash::common {
@@ -47,10 +49,168 @@ bool valid_config(const LsaCompactConfig & config) {
            std::isfinite(config.logit_scale) && config.logit_scale > 0;
 }
 
+uint64_t fnv1a64(const std::vector<uint8_t> & bytes) {
+    uint64_t value = 14695981039346656037ULL;
+    for (uint8_t byte : bytes) {
+        value ^= byte;
+        value *= 1099511628211ULL;
+    }
+    return value;
+}
+
+std::string hex64(uint64_t value) {
+    constexpr char digits[] = "0123456789abcdef";
+    std::string result(16, '0');
+    for (int index = 15; index >= 0; --index) {
+        result[static_cast<size_t>(index)] = digits[value & 0xfU];
+        value >>= 4;
+    }
+    return result;
+}
+
 }  // namespace
 
 LsaCompactRetriever::LsaCompactRetriever(LsaCompactConfig config)
     : config_(config) {}
+
+bool LsaCompactRetriever::load_artifact(const std::string & path,
+                                        std::string & error) {
+    namespace fs = std::filesystem;
+    error.clear();
+    fs::path manifest_path(path);
+    std::error_code fs_error;
+    if (fs::is_directory(manifest_path, fs_error)) {
+        manifest_path /= "encoder.json";
+    }
+    std::ifstream input(manifest_path);
+    if (!input) {
+        error = "failed to open compact retriever manifest";
+        return false;
+    }
+
+    nlohmann::json manifest;
+    try {
+        input >> manifest;
+    } catch (const std::exception &) {
+        error = "failed to parse compact retriever manifest";
+        return false;
+    }
+    try {
+        if (manifest.at("schema").get<std::string>() !=
+            "luce.lsa.qwen35.encoder.v1") {
+            error = "unsupported compact retriever schema";
+            return false;
+        }
+        const auto & dataset = manifest.at("dataset");
+        LsaCompactConfig parsed;
+        parsed.hidden_size = dataset.at("hidden_size").get<int>();
+        parsed.rank = manifest.at("rank").get<int>();
+        parsed.kv_heads = dataset.at("kv_heads").get<int>();
+        parsed.head_dim = dataset.at("head_dim").get<int>();
+        parsed.score_temperature =
+            manifest.at("score_temperature").get<float>();
+        parsed.decision_threshold =
+            manifest.at("decision_threshold").get<float>();
+        parsed.logit_scale = manifest.at("logit_scale").get<float>();
+        if (!valid_config(parsed)) {
+            error = "compact retriever manifest configuration is invalid";
+            return false;
+        }
+        if (parsed.kv_heads >
+            std::numeric_limits<int>::max() / parsed.head_dim) {
+            error = "compact retriever manifest key size overflows";
+            return false;
+        }
+
+        const auto & weight = manifest.at("weight_file");
+        if (weight.at("dtype").get<std::string>() != "float16-le") {
+            error = "compact retriever weight dtype is unsupported";
+            return false;
+        }
+        const std::string name = weight.at("name").get<std::string>();
+        const fs::path relative(name);
+        if (relative.empty() || relative.is_absolute() ||
+            relative.filename() != relative) {
+            error = "compact retriever weight path is unsafe";
+            return false;
+        }
+
+        const size_t hidden_size = static_cast<size_t>(parsed.hidden_size);
+        const size_t rank = static_cast<size_t>(parsed.rank);
+        const size_t kv_heads = static_cast<size_t>(parsed.kv_heads);
+        const size_t head_dim = static_cast<size_t>(parsed.head_dim);
+        if (rank > std::numeric_limits<size_t>::max() / hidden_size ||
+            kv_heads > std::numeric_limits<size_t>::max() / head_dim) {
+            error = "compact retriever manifest weight size overflows";
+            return false;
+        }
+        const size_t down_count = rank * hidden_size;
+        const size_t key_size = kv_heads * head_dim;
+        if (key_size > std::numeric_limits<size_t>::max() / rank) {
+            error = "compact retriever manifest weight size overflows";
+            return false;
+        }
+        const size_t up_count = key_size * rank;
+        if (down_count > std::numeric_limits<size_t>::max() - up_count ||
+            down_count + up_count >
+                std::numeric_limits<size_t>::max() / sizeof(uint16_t)) {
+            error = "compact retriever manifest weight size overflows";
+            return false;
+        }
+        const size_t expected_size =
+            (down_count + up_count) * sizeof(uint16_t);
+        if (weight.at("size_bytes").get<size_t>() != expected_size) {
+            error = "compact retriever manifest weight size is invalid";
+            return false;
+        }
+        const auto & layout = weight.at("layout");
+        if (!layout.is_array() || layout.size() != 2 ||
+            layout[0].at("name").get<std::string>() != "down.weight" ||
+            layout[1].at("name").get<std::string>() != "up.weight" ||
+            layout[0].at("shape") !=
+                nlohmann::json::array({parsed.rank, parsed.hidden_size}) ||
+            layout[1].at("shape") !=
+                nlohmann::json::array(
+                    {static_cast<int>(key_size), parsed.rank}) ||
+            layout[0].at("offset_bytes").get<size_t>() != 0 ||
+            layout[1].at("offset_bytes").get<size_t>() !=
+                down_count * sizeof(uint16_t)) {
+            error = "compact retriever manifest layout is invalid";
+            return false;
+        }
+
+        const fs::path weight_path = manifest_path.parent_path() / relative;
+        std::ifstream weights(weight_path, std::ios::binary | std::ios::ate);
+        if (!weights || weights.tellg() < 0 ||
+            static_cast<size_t>(weights.tellg()) != expected_size) {
+            error = "compact retriever artifact weight size is invalid";
+            return false;
+        }
+        weights.seekg(0);
+        std::vector<uint8_t> bytes(expected_size);
+        weights.read(reinterpret_cast<char *>(bytes.data()),
+                     static_cast<std::streamsize>(bytes.size()));
+        if (!weights) {
+            error = "failed to read compact retriever artifact weights";
+            return false;
+        }
+        if (hex64(fnv1a64(bytes)) !=
+            weight.at("fnv1a64").get<std::string>()) {
+            error = "compact retriever artifact checksum mismatch";
+            return false;
+        }
+
+        LsaCompactRetriever candidate(parsed);
+        if (!candidate.load_f16_weights(weight_path.string(), error)) {
+            return false;
+        }
+        *this = std::move(candidate);
+        return true;
+    } catch (const std::exception &) {
+        error = "compact retriever manifest is incomplete";
+        return false;
+    }
+}
 
 bool LsaCompactRetriever::set_weights(std::vector<float> down,
                                       std::vector<float> up,

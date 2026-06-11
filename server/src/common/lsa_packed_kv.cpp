@@ -169,6 +169,78 @@ bool build_lsa_packed_causal_mask(const LsaPackedPlan & plan,
     return true;
 }
 
+bool build_lsa_packed_step_plan(const LsaPackedPlan & history,
+                                const std::vector<int> & query_positions,
+                                int kv_heads,
+                                int kq_stride_pad,
+                                LsaPackedStepPlan & step,
+                                std::vector<uint16_t> & mask,
+                                std::string & error,
+                                int kv_pad_override) {
+    step = {};
+    mask.clear();
+    error.clear();
+    if (history.committed_tokens < 0 || history.token_capacity <= 0 ||
+        history.active_tokens() > history.token_capacity ||
+        query_positions.empty() || kv_heads <= 0) {
+        error = "packed KV step geometry is invalid";
+        return false;
+    }
+    if (!std::is_sorted(history.source_positions.begin(),
+                        history.source_positions.end()) ||
+        std::adjacent_find(history.source_positions.begin(),
+                           history.source_positions.end()) !=
+            history.source_positions.end() ||
+        std::any_of(history.source_positions.begin(),
+                    history.source_positions.end(),
+                    [&](int position) {
+                        return position < 0 ||
+                               position >= history.committed_tokens;
+                    })) {
+        error =
+            "packed KV history positions must be sorted, unique, and committed";
+        return false;
+    }
+    if (!std::is_sorted(query_positions.begin(), query_positions.end()) ||
+        std::adjacent_find(query_positions.begin(), query_positions.end()) !=
+            query_positions.end() ||
+        query_positions.front() < history.committed_tokens ||
+        query_positions.back() == std::numeric_limits<int>::max()) {
+        error = "packed KV query positions must be sorted new positions";
+        return false;
+    }
+    const size_t remaining_capacity =
+        static_cast<size_t>(history.token_capacity - history.active_tokens());
+    if (query_positions.size() > remaining_capacity) {
+        error = "packed KV step exceeds fixed token capacity";
+        return false;
+    }
+
+    step.token_capacity = history.token_capacity;
+    step.historical_tokens = history.active_tokens();
+    step.key_positions = history.source_positions;
+    step.key_positions.insert(step.key_positions.end(),
+                              query_positions.begin(),
+                              query_positions.end());
+    step.write_rows.reserve(
+        query_positions.size() * static_cast<size_t>(kv_heads));
+    for (int head = 0; head < kv_heads; ++head) {
+        for (size_t token = 0; token < query_positions.size(); ++token) {
+            step.write_rows.push_back(
+                static_cast<int64_t>(history.active_tokens() + token));
+        }
+    }
+
+    LsaPackedPlan visible;
+    visible.committed_tokens =
+        std::max(history.committed_tokens, query_positions.back() + 1);
+    visible.token_capacity = history.token_capacity;
+    visible.source_positions = step.key_positions;
+    return build_lsa_packed_causal_mask(
+        visible, query_positions, kq_stride_pad, mask, error,
+        kv_pad_override);
+}
+
 bool gather_lsa_token_axis(const void * source,
                            size_t source_bytes,
                            int head_dim,
@@ -178,10 +250,39 @@ bool gather_lsa_token_axis(const void * source,
                            const LsaPackedPlan & plan,
                            std::vector<uint8_t> & packed,
                            std::string & error) {
+    if (head_dim <= 0 || source_tokens < 0 || heads <= 0 ||
+        element_size == 0) {
+        packed.clear();
+        error = "packed KV source geometry is invalid";
+        return false;
+    }
+    size_t row_bytes = 0;
+    size_t head_stride = 0;
+    if (!checked_mul(static_cast<size_t>(head_dim), element_size, row_bytes) ||
+        !checked_mul(row_bytes, static_cast<size_t>(source_tokens),
+                     head_stride)) {
+        packed.clear();
+        error = "packed KV tensor size overflows";
+        return false;
+    }
+    return gather_lsa_token_rows(
+        source, source_bytes,
+        {source_tokens, heads, row_bytes, row_bytes, head_stride},
+        plan, packed, error);
+}
+
+bool gather_lsa_token_rows(const void * source,
+                           size_t source_bytes,
+                           const LsaTokenAxisLayout & layout,
+                           const LsaPackedPlan & plan,
+                           std::vector<uint8_t> & packed,
+                           std::string & error) {
     packed.clear();
     error.clear();
-    if (!source || head_dim <= 0 || source_tokens < 0 || heads <= 0 ||
-        element_size == 0) {
+    if (!source || layout.source_tokens <= 0 || layout.heads <= 0 ||
+        layout.row_bytes == 0 ||
+        layout.token_stride_bytes < layout.row_bytes ||
+        layout.head_stride_bytes < layout.token_stride_bytes) {
         error = "packed KV source geometry is invalid";
         return false;
     }
@@ -192,29 +293,39 @@ bool gather_lsa_token_axis(const void * source,
     }
     if (std::any_of(plan.source_positions.begin(), plan.source_positions.end(),
                     [&](int position) {
-                        return position < 0 || position >= source_tokens;
+                        return position < 0 ||
+                               position >= layout.source_tokens;
                     })) {
         error = "packed KV source position is outside the source tensor";
         return false;
     }
 
-    size_t row_bytes = 0;
-    size_t source_plane_bytes = 0;
-    size_t required_source_bytes = 0;
+    size_t last_head_offset = 0;
+    size_t last_token_offset = 0;
     size_t packed_plane_bytes = 0;
     size_t packed_bytes = 0;
-    if (!checked_mul(static_cast<size_t>(head_dim), element_size, row_bytes) ||
-        !checked_mul(row_bytes, static_cast<size_t>(source_tokens),
-                     source_plane_bytes) ||
-        !checked_mul(source_plane_bytes, static_cast<size_t>(heads),
-                     required_source_bytes) ||
-        !checked_mul(row_bytes, static_cast<size_t>(plan.token_capacity),
+    if (!checked_mul(layout.head_stride_bytes,
+                     static_cast<size_t>(layout.heads - 1),
+                     last_head_offset) ||
+        !checked_mul(layout.token_stride_bytes,
+                     static_cast<size_t>(
+                         std::max(0, layout.source_tokens - 1)),
+                     last_token_offset) ||
+        last_head_offset >
+            std::numeric_limits<size_t>::max() - last_token_offset ||
+        last_head_offset + last_token_offset >
+            std::numeric_limits<size_t>::max() - layout.row_bytes ||
+        !checked_mul(layout.row_bytes,
+                     static_cast<size_t>(plan.token_capacity),
                      packed_plane_bytes) ||
-        !checked_mul(packed_plane_bytes, static_cast<size_t>(heads),
+        !checked_mul(packed_plane_bytes,
+                     static_cast<size_t>(layout.heads),
                      packed_bytes)) {
         error = "packed KV tensor size overflows";
         return false;
     }
+    const size_t required_source_bytes =
+        last_head_offset + last_token_offset + layout.row_bytes;
     if (source_bytes < required_source_bytes) {
         error = "packed KV source buffer is smaller than its geometry";
         return false;
@@ -223,9 +334,9 @@ bool gather_lsa_token_axis(const void * source,
     packed.assign(packed_bytes, uint8_t{0});
     const auto * source_bytes_ptr =
         static_cast<const uint8_t *>(source);
-    for (int head = 0; head < heads; ++head) {
+    for (int head = 0; head < layout.heads; ++head) {
         const size_t source_head =
-            static_cast<size_t>(head) * source_plane_bytes;
+            static_cast<size_t>(head) * layout.head_stride_bytes;
         const size_t packed_head =
             static_cast<size_t>(head) * packed_plane_bytes;
         for (size_t destination = 0;
@@ -233,11 +344,12 @@ bool gather_lsa_token_axis(const void * source,
             const size_t source_offset =
                 source_head +
                 static_cast<size_t>(plan.source_positions[destination]) *
-                    row_bytes;
+                    layout.token_stride_bytes;
             const size_t destination_offset =
-                packed_head + destination * row_bytes;
+                packed_head + destination * layout.row_bytes;
             std::memcpy(packed.data() + destination_offset,
-                        source_bytes_ptr + source_offset, row_bytes);
+                        source_bytes_ptr + source_offset,
+                        layout.row_bytes);
         }
     }
     return true;
