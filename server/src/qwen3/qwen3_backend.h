@@ -19,6 +19,7 @@
 
 #include "ggml.h"
 #include "ggml-backend.h"
+#include "ggml-alloc.h"
 
 #include <random>
 #include <string>
@@ -113,6 +114,8 @@ private:
     Qwen3DrafterWeights   w_;
     Qwen3Cache            cache_;
     bool                  parked_ = false;
+    ggml_gallocr_t        step_galloc_  = nullptr;  // persistent allocator for do_step graph
+    ggml_gallocr_t        embed_galloc_ = nullptr;  // persistent allocator for embedding graphs
 
     // Pflash drafter (lazy-loaded, reuses the same model for compress)
     DrafterContext         drafter_ctx_;

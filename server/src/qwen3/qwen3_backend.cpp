@@ -314,13 +314,13 @@ bool Qwen3Backend::do_step(const float * embed, int n_tokens, int kv_start,
     ggml_set_name(logits, "logits");
     ggml_build_forward_expand(gf, logits);
 
-    // Allocate and compute
-    ggml_gallocr_t galloc = ggml_gallocr_new(
-        ggml_backend_get_default_buffer_type(backend_));
-    if (!ggml_gallocr_alloc_graph(galloc, gf)) {
+    // Allocate and compute (persistent allocator auto-grows; no free per call)
+    if (!step_galloc_)
+        step_galloc_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend_));
+    if (!ggml_gallocr_alloc_graph(step_galloc_, gf)) {
         std::fprintf(stderr, "[qwen3] graph alloc failed (n_tokens=%d, kv_start=%d, kv_len=%d)\n",
                      n_tokens, kv_start, kv_len);
-        ggml_gallocr_free(galloc);
+        ggml_gallocr_free(step_galloc_); step_galloc_ = nullptr;
         ggml_free(ctx);
         return false;
     }
@@ -355,7 +355,6 @@ bool Qwen3Backend::do_step(const float * embed, int n_tokens, int kv_start,
     if (st != GGML_STATUS_SUCCESS) {
         std::fprintf(stderr, "[qwen3] graph compute failed (status=%d, n_tokens=%d, kv_start=%d, kv_len=%d)\n",
                      (int)st, n_tokens, kv_start, kv_len);
-        ggml_gallocr_free(galloc);
         ggml_free(ctx);
         return false;
     }
@@ -365,7 +364,6 @@ bool Qwen3Backend::do_step(const float * embed, int n_tokens, int kv_start,
     ggml_backend_tensor_get(logits, out_logits.data(), 0,
                             sizeof(float) * vocab);
 
-    ggml_gallocr_free(galloc);
     ggml_free(ctx);
     return true;
 }
@@ -402,10 +400,10 @@ int Qwen3Backend::do_prefill(const std::vector<int32_t> & tokens,
             ggml_cgraph * gf = ggml_new_graph(ectx);
             ggml_build_forward_expand(gf, cpy);
 
-            ggml_gallocr_t galloc = ggml_gallocr_new(
-                ggml_backend_get_default_buffer_type(backend_));
-            if (!ggml_gallocr_alloc_graph(galloc, gf)) {
-                ggml_gallocr_free(galloc);
+            if (!embed_galloc_)
+                embed_galloc_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend_));
+            if (!ggml_gallocr_alloc_graph(embed_galloc_, gf)) {
+                ggml_gallocr_free(embed_galloc_); embed_galloc_ = nullptr;
                 ggml_free(ectx);
                 return -1;
             }
@@ -414,7 +412,6 @@ int Qwen3Backend::do_prefill(const std::vector<int32_t> & tokens,
             ggml_backend_graph_compute(backend_, gf);
             ggml_backend_tensor_get(cpy, embed_buf.data(), 0,
                                     sizeof(float) * (size_t)hidden * n);
-            ggml_gallocr_free(galloc);
             ggml_free(ectx);
         }
 
@@ -486,10 +483,10 @@ bool Qwen3Backend::do_decode(int committed, int n_gen,
             ggml_set_output(cpy);
             ggml_cgraph * gf = ggml_new_graph(ectx);
             ggml_build_forward_expand(gf, cpy);
-            ggml_gallocr_t galloc = ggml_gallocr_new(
-                ggml_backend_get_default_buffer_type(backend_));
-            if (!ggml_gallocr_alloc_graph(galloc, gf)) {
-                ggml_gallocr_free(galloc);
+            if (!embed_galloc_)
+                embed_galloc_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend_));
+            if (!ggml_gallocr_alloc_graph(embed_galloc_, gf)) {
+                ggml_gallocr_free(embed_galloc_); embed_galloc_ = nullptr;
                 ggml_free(ectx);
                 return false;
             }
@@ -497,7 +494,6 @@ bool Qwen3Backend::do_decode(int committed, int n_gen,
             ggml_backend_graph_compute(backend_, gf);
             ggml_backend_tensor_get(cpy, embed_buf.data(), 0,
                                     sizeof(float) * hidden);
-            ggml_gallocr_free(galloc);
             ggml_free(ectx);
         }
 
@@ -563,16 +559,16 @@ GenerateResult Qwen3Backend::generate_impl(const GenerateRequest & req,
             ggml_set_output(cpy);
             ggml_cgraph * gf = ggml_new_graph(ectx);
             ggml_build_forward_expand(gf, cpy);
-            ggml_gallocr_t galloc = ggml_gallocr_new(
-                ggml_backend_get_default_buffer_type(backend_));
-            if (!ggml_gallocr_alloc_graph(galloc, gf)) {
-                ggml_gallocr_free(galloc); ggml_free(ectx);
+            if (!embed_galloc_)
+                embed_galloc_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend_));
+            if (!ggml_gallocr_alloc_graph(embed_galloc_, gf)) {
+                ggml_gallocr_free(embed_galloc_); embed_galloc_ = nullptr;
+                ggml_free(ectx);
                 result.error = "embed alloc"; return result;
             }
             ggml_backend_tensor_set(ids, &last_tok, 0, sizeof(int32_t));
             ggml_backend_graph_compute(backend_, gf);
             ggml_backend_tensor_get(cpy, embed_buf.data(), 0, sizeof(float) * hidden);
-            ggml_gallocr_free(galloc);
             ggml_free(ectx);
         }
 
@@ -626,16 +622,16 @@ GenerateResult Qwen3Backend::generate_impl(const GenerateRequest & req,
                 ggml_set_output(cpy2);
                 ggml_cgraph * gf2 = ggml_new_graph(ectx2);
                 ggml_build_forward_expand(gf2, cpy2);
-                ggml_gallocr_t galloc2 = ggml_gallocr_new(
-                    ggml_backend_get_default_buffer_type(backend_));
-                if (!ggml_gallocr_alloc_graph(galloc2, gf2)) {
-                    ggml_gallocr_free(galloc2); ggml_free(ectx2);
+                if (!embed_galloc_)
+                    embed_galloc_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend_));
+                if (!ggml_gallocr_alloc_graph(embed_galloc_, gf2)) {
+                    ggml_gallocr_free(embed_galloc_); embed_galloc_ = nullptr;
+                    ggml_free(ectx2);
                     result.error = "embed2 alloc"; return result;
                 }
                 ggml_backend_tensor_set(ids2, &ft, 0, sizeof(int32_t));
                 ggml_backend_graph_compute(backend_, gf2);
                 ggml_backend_tensor_get(cpy2, embed_buf.data(), 0, sizeof(float) * hidden);
-                ggml_gallocr_free(galloc2);
                 ggml_free(ectx2);
             }
             if (!do_step(embed_buf.data(), 1, cur_committed, last_logits_)) {
@@ -730,16 +726,16 @@ GenerateResult Qwen3Backend::restore_and_generate_impl(int slot,
             ggml_set_output(cpy);
             ggml_cgraph * gf = ggml_new_graph(ectx);
             ggml_build_forward_expand(gf, cpy);
-            ggml_gallocr_t galloc = ggml_gallocr_new(
-                ggml_backend_get_default_buffer_type(backend_));
-            if (!ggml_gallocr_alloc_graph(galloc, gf)) {
-                ggml_gallocr_free(galloc); ggml_free(ectx);
+            if (!embed_galloc_)
+                embed_galloc_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend_));
+            if (!ggml_gallocr_alloc_graph(embed_galloc_, gf)) {
+                ggml_gallocr_free(embed_galloc_); embed_galloc_ = nullptr;
+                ggml_free(ectx);
                 result.error = "embed alloc"; return result;
             }
             ggml_backend_tensor_set(ids, &last_tok, 0, sizeof(int32_t));
             ggml_backend_graph_compute(backend_, gf);
             ggml_backend_tensor_get(cpy, embed_buf.data(), 0, sizeof(float) * hidden);
-            ggml_gallocr_free(galloc);
             ggml_free(ectx);
         }
 
@@ -792,16 +788,16 @@ GenerateResult Qwen3Backend::restore_and_generate_impl(int slot,
                 ggml_set_output(cpy2);
                 ggml_cgraph * gf2 = ggml_new_graph(ectx2);
                 ggml_build_forward_expand(gf2, cpy2);
-                ggml_gallocr_t galloc2 = ggml_gallocr_new(
-                    ggml_backend_get_default_buffer_type(backend_));
-                if (!ggml_gallocr_alloc_graph(galloc2, gf2)) {
-                    ggml_gallocr_free(galloc2); ggml_free(ectx2);
+                if (!embed_galloc_)
+                    embed_galloc_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend_));
+                if (!ggml_gallocr_alloc_graph(embed_galloc_, gf2)) {
+                    ggml_gallocr_free(embed_galloc_); embed_galloc_ = nullptr;
+                    ggml_free(ectx2);
                     result.error = "embed2 alloc"; return result;
                 }
                 ggml_backend_tensor_set(ids2, &ft, 0, sizeof(int32_t));
                 ggml_backend_graph_compute(backend_, gf2);
                 ggml_backend_tensor_get(cpy2, embed_buf.data(), 0, sizeof(float) * hidden);
-                ggml_gallocr_free(galloc2);
                 ggml_free(ectx2);
             }
             if (!do_step(embed_buf.data(), 1, cur_committed, last_logits_)) {
@@ -1039,6 +1035,8 @@ bool Qwen3Backend::try_handle_command(const std::string & /*line*/,
 
 void Qwen3Backend::shutdown() {
     free_drafter();
+    if (step_galloc_)  { ggml_gallocr_free(step_galloc_);  step_galloc_  = nullptr; }
+    if (embed_galloc_) { ggml_gallocr_free(embed_galloc_); embed_galloc_ = nullptr; }
     for (int i = 0; i < PREFIX_SLOTS; ++i) {
         free_qwen3_snapshot(snapshots_[i]);
     }
