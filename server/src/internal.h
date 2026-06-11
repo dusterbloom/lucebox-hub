@@ -545,6 +545,12 @@ struct QwenGraphInputs {
     ggml_tensor * parent_ids = nullptr; // [n_tokens] i32; tree mode when non-null
     // [n_tokens,n_head_kv] i64; non-null = step-invariant KV write via ggml_set_rows (carries kv_start).
     ggml_tensor * kv_write_rows = nullptr;
+    // LSA teacher extraction. Disabled by default. The hidden capture is the
+    // post-FFN output of one layer; qk_capture_mask selects full-attention
+    // layers whose normalized pre-RoPE K and post-RoPE Q/K tensors should be
+    // materialized.
+    int           lsa_hidden_capture_layer = -1;
+    uint64_t      lsa_qk_capture_mask = 0;
 };
 
 struct QwenGraphOutputs {
@@ -557,6 +563,11 @@ struct QwenGraphOutputs {
     // One entry per target layer. Populated only when capture_moe_router is
     // true; qwen35 dense layers and non-MoE models leave entries null.
     std::vector<ggml_tensor *> moe_selected;
+    ggml_tensor * lsa_hidden = nullptr; // [hidden, n_tokens] f32
+    // Indexed by target layer. Empty when lsa_qk_capture_mask is zero.
+    std::vector<ggml_tensor *> lsa_k_pre_rope;
+    std::vector<ggml_tensor *> lsa_q_post_rope;
+    std::vector<ggml_tensor *> lsa_k_post_rope;
 };
 
 struct QwenLayerPrefnOutputs {

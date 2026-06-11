@@ -215,6 +215,9 @@ add_library(dflash_common STATIC
     src/errors.cpp
     src/qwen35/gguf_target_loader.cpp
     src/qwen35/qwen35_target_graph.cpp
+    src/qwen35/qwen35_lsa_capture.cpp
+    src/qwen35/qwen35_lsa_raw_writer.cpp
+    src/qwen35/qwen35_lsa_teacher.cpp
     src/draft/draft_gguf_loader.cpp
     src/draft/draft_safetensors_loader.cpp
     src/draft/draft_graph.cpp
@@ -247,6 +250,10 @@ add_library(dflash_common STATIC
     src/common/pflash_drafter_ipc.cpp
     src/common/dflash_draft_graph.cpp
     src/common/dflash_spec_decode.cpp
+    src/common/lsa_attention_oracle.cpp
+    src/common/lsa_compact_retriever.cpp
+    src/common/lsa_packed_kv.cpp
+    src/common/lsa_runtime.cpp
     src/common/layer_split_backend.cpp
     src/common/layer_split_runtime.cpp
     src/qwen35/graph_builders.cpp
@@ -558,6 +565,12 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/pflash_daemon.cpp")
     target_link_libraries(pflash_daemon PRIVATE dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/lsa_extract_qwen35.cpp")
+    add_executable(lsa_extract_qwen35 test/lsa_extract_qwen35.cpp)
+    target_include_directories(lsa_extract_qwen35 PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+    target_link_libraries(lsa_extract_qwen35 PRIVATE dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+endif()
+
 # ─── Tests (numerics vs oracle) ────────────────────────────────────
 
 option(DFLASH27B_TESTS "Build numerics tests" ON)
@@ -583,6 +596,32 @@ if(DFLASH27B_TESTS)
         target_include_directories(test_adaptive_keep_ratio PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
         target_link_libraries(test_adaptive_keep_ratio PRIVATE dflash_common)
         add_test(NAME adaptive_keep COMMAND test_adaptive_keep_ratio)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_lsa_runtime.cpp")
+        add_executable(test_lsa_runtime test/test_lsa_runtime.cpp)
+        target_include_directories(test_lsa_runtime PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_lsa_runtime PRIVATE dflash_common)
+        add_test(NAME lsa_runtime COMMAND test_lsa_runtime)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_lsa_packed_kv.cpp")
+        add_executable(test_lsa_packed_kv
+            test/test_lsa_packed_kv.cpp
+            src/common/lsa_packed_kv.cpp
+            src/common/lsa_attention_oracle.cpp)
+        target_include_directories(test_lsa_packed_kv PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        add_test(NAME lsa_packed_kv COMMAND test_lsa_packed_kv)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_qwen35_lsa_capture.cpp")
+        add_executable(test_qwen35_lsa_capture test/test_qwen35_lsa_capture.cpp)
+        target_include_directories(test_qwen35_lsa_capture PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_qwen35_lsa_capture PRIVATE dflash_common)
+        add_test(NAME qwen35_lsa_capture COMMAND test_qwen35_lsa_capture)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_qwen35_lsa_raw_writer.cpp")
+        add_executable(test_qwen35_lsa_raw_writer test/test_qwen35_lsa_raw_writer.cpp)
+        target_include_directories(test_qwen35_lsa_raw_writer PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_qwen35_lsa_raw_writer PRIVATE dflash_common)
+        add_test(NAME qwen35_lsa_raw_writer COMMAND test_qwen35_lsa_raw_writer)
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_derived_scalars.cpp")
         add_executable(test_derived_scalars test/test_derived_scalars.cpp)

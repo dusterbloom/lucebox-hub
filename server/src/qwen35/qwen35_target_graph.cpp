@@ -471,7 +471,10 @@ static ggml_tensor * build_full_attn_block(
     int fa_window = 0,
     ggml_tensor * q_tail_capture = nullptr,
     int q_tail_start = 0,
-    ggml_tensor * kv_write_rows = nullptr
+    ggml_tensor * kv_write_rows = nullptr,
+    ggml_tensor ** k_pre_rope_capture = nullptr,
+    ggml_tensor ** q_post_rope_capture = nullptr,
+    ggml_tensor ** k_post_rope_capture = nullptr
 ) {
     const int head_dim = w.n_embd_head_k;
     const int n_head = w.n_head;
@@ -505,6 +508,11 @@ static ggml_tensor * build_full_attn_block(
 
     Kcur = ggml_reshape_3d(ctx, Kcur, head_dim, n_head_kv, n_tokens);
     Kcur = rms_norm_mul(ctx, Kcur, L.k_norm, w.rms_eps);
+    if (k_pre_rope_capture) {
+        *k_pre_rope_capture = ggml_cont(ctx, Kcur);
+        ggml_set_output(*k_pre_rope_capture);
+        ggml_build_forward_expand(gf, *k_pre_rope_capture);
+    }
     Vcur = ggml_reshape_3d(ctx, Vcur, head_dim, n_head_kv, n_tokens);
 
     // ── M-RoPE (multi-axis rotary). n_rot = HEAD_DIM/4 * 4 ? Actually
@@ -522,6 +530,16 @@ static ggml_tensor * build_full_attn_block(
                            n_rot, sections, GGML_ROPE_TYPE_MROPE,
                            0, w.rope_theta, 1.0f,
                            0.0f, 1.0f, 0.0f, 0.0f);
+    if (q_post_rope_capture) {
+        *q_post_rope_capture = ggml_cont(ctx, Q);
+        ggml_set_output(*q_post_rope_capture);
+        ggml_build_forward_expand(gf, *q_post_rope_capture);
+    }
+    if (k_post_rope_capture) {
+        *k_post_rope_capture = ggml_cont(ctx, Kcur);
+        ggml_set_output(*k_post_rope_capture);
+        ggml_build_forward_expand(gf, *k_post_rope_capture);
+    }
 
     if (q_tail_capture) {
         const int chunk_lo = kv_start;
@@ -969,7 +987,11 @@ static ggml_tensor * build_single_layer(
                                     cache.kv_k_type, cache.kv_v_type,
                                     cache.kv_k_rotated,
                                     fa_window,
-                                    q_tail_capture, q_tail_start);
+                                    q_tail_capture, q_tail_start,
+                                    /*kv_write_rows=*/nullptr,
+                                    /*k_pre_rope_capture=*/nullptr,
+                                    /*q_post_rope_capture=*/nullptr,
+                                    /*k_post_rope_capture=*/nullptr);
     } else {
         int dn_idx = 0;
         for (int il = 0; il < layer_idx; il++) {
@@ -1059,6 +1081,11 @@ QwenGraphOutputs build_qwen35_graph(
     if (in.capture_moe_router && w.is_moe) {
         og_early.moe_selected.assign((size_t)w.n_layer, nullptr);
     }
+    if (in.lsa_qk_capture_mask != 0) {
+        og_early.lsa_k_pre_rope.assign((size_t)w.n_layer, nullptr);
+        og_early.lsa_q_post_rope.assign((size_t)w.n_layer, nullptr);
+        og_early.lsa_k_post_rope.assign((size_t)w.n_layer, nullptr);
+    }
 
     // DFlash target layer IDs for feature capture (from TargetWeights config).
     const int * CAPTURE_LAYERS = w.capture_layer_ids;
@@ -1078,6 +1105,12 @@ QwenGraphOutputs build_qwen35_graph(
         ggml_tensor * cur = rms_norm_mul(ctx, inp_f32, L.attn_norm, eps);
 
         if (is_attn) {
+            const bool capture_lsa_qk =
+                il < 64 &&
+                (in.lsa_qk_capture_mask & (uint64_t{1} << il)) != 0;
+            ggml_tensor * lsa_k_pre_rope = nullptr;
+            ggml_tensor * lsa_q_post_rope = nullptr;
+            ggml_tensor * lsa_k_post_rope = nullptr;
             cur = build_full_attn_block(ctx, gf, w, L, cur, in.positions, w.rope_sections,
                                         cache.attn_k[fa_idx], cache.attn_v[fa_idx],
                                         in.attn_mask, in.kv_start, n_tokens,
@@ -1086,7 +1119,22 @@ QwenGraphOutputs build_qwen35_graph(
                                         in.fa_window,
                                         /*q_tail_capture=*/nullptr,
                                         /*q_tail_start=*/0,
-                                        in.kv_write_rows);
+                                        in.kv_write_rows,
+                                        capture_lsa_qk ? &lsa_k_pre_rope : nullptr,
+                                        capture_lsa_qk ? &lsa_q_post_rope : nullptr,
+                                        capture_lsa_qk ? &lsa_k_post_rope : nullptr);
+            if (capture_lsa_qk) {
+                char name[64];
+                std::snprintf(name, sizeof(name), "lsa_k_pre_rope_%d", il);
+                ggml_set_name(lsa_k_pre_rope, name);
+                std::snprintf(name, sizeof(name), "lsa_q_post_rope_%d", il);
+                ggml_set_name(lsa_q_post_rope, name);
+                std::snprintf(name, sizeof(name), "lsa_k_post_rope_%d", il);
+                ggml_set_name(lsa_k_post_rope, name);
+                og_early.lsa_k_pre_rope[(size_t)il] = lsa_k_pre_rope;
+                og_early.lsa_q_post_rope[(size_t)il] = lsa_q_post_rope;
+                og_early.lsa_k_post_rope[(size_t)il] = lsa_k_post_rope;
+            }
             fa_idx++;
         } else {
             DeltaNetCapture * cap_ptr = nullptr;
@@ -1123,6 +1171,15 @@ QwenGraphOutputs build_qwen35_graph(
             og_early.moe_selected[(size_t)il] = moe_selected;
         }
         cur = ggml_add(ctx, ffn, ffn_residual);
+
+        if (in.lsa_hidden_capture_layer == il) {
+            ggml_tensor * lsa_hidden =
+                ggml_cont_2d(ctx, cur, hidden, n_tokens);
+            ggml_set_name(lsa_hidden, "lsa_hidden");
+            ggml_set_output(lsa_hidden);
+            ggml_build_forward_expand(gf, lsa_hidden);
+            og_early.lsa_hidden = lsa_hidden;
+        }
 
         // ── DFlash layer feature capture ──
         // Write `cur` into the rolling target_feat buffer. The buffer is a
@@ -1275,7 +1332,10 @@ QwenLayerPrefnOutputs build_qwen35_layer_prefn(
                                     cache.kv_k_rotated,
                                     fa_window,
                                     /*q_tail_capture=*/nullptr, /*q_tail_start=*/0,
-                                    kv_write_rows);
+                                    kv_write_rows,
+                                    /*k_pre_rope_capture=*/nullptr,
+                                    /*q_post_rope_capture=*/nullptr,
+                                    /*k_post_rope_capture=*/nullptr);
     } else {
         int dn_idx = 0;
         for (int il = 0; il < layer_idx; il++) {
