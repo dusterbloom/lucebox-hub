@@ -1,0 +1,1122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lucebox LSA Implementation Status</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #071018;
+      --panel: rgba(16, 28, 43, 0.84);
+      --panel-strong: rgba(20, 35, 55, 0.95);
+      --line: rgba(148, 163, 184, 0.20);
+      --text: #e5eef8;
+      --muted: #9fb0c4;
+      --soft: #6f8299;
+      --blue: #62a8ff;
+      --cyan: #32d3ee;
+      --green: #4ade80;
+      --yellow: #facc15;
+      --orange: #fb923c;
+      --red: #fb7185;
+      --shadow: 0 24px 90px rgba(0, 0, 0, 0.36);
+      --radius: 22px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family:
+        Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(50, 211, 238, 0.18), transparent 34rem),
+        radial-gradient(circle at top right, rgba(98, 168, 255, 0.18), transparent 32rem),
+        linear-gradient(135deg, #071018 0%, #0b1420 52%, #0a1020 100%);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    code {
+      padding: 0.16rem 0.38rem;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 0.45rem;
+      background: rgba(2, 6, 23, 0.55);
+      color: #d9f2ff;
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 0;
+      overflow-x: auto;
+      white-space: pre;
+    }
+
+    pre code {
+      display: block;
+      padding: 1rem;
+      border-radius: 1rem;
+      font-size: 0.85rem;
+      line-height: 1.55;
+    }
+
+    .page {
+      width: min(1180px, calc(100% - 2rem));
+      margin: 0 auto;
+      padding: 1rem 0 4rem;
+    }
+
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      margin: 0 -0.25rem 2rem;
+      padding: 0.85rem 0.25rem;
+      backdrop-filter: blur(18px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+      color: var(--muted);
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .brand-mark {
+      width: 2.25rem;
+      height: 2.25rem;
+      border: 1px solid rgba(98, 168, 255, 0.35);
+      border-radius: 0.85rem;
+      background:
+        linear-gradient(135deg, rgba(98, 168, 255, 0.8), rgba(50, 211, 238, 0.45)),
+        rgba(255, 255, 255, 0.08);
+      box-shadow: 0 0 32px rgba(98, 168, 255, 0.22);
+    }
+
+    .nav-links {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 0.45rem;
+    }
+
+    .nav-links a,
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 2rem;
+      padding: 0.42rem 0.72rem;
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.48);
+      color: var(--muted);
+      font-size: 0.86rem;
+      font-weight: 650;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
+      gap: 1.25rem;
+      align-items: stretch;
+    }
+
+    .hero-card,
+    .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .hero-card {
+      padding: 2rem;
+      background:
+        linear-gradient(135deg, rgba(50, 211, 238, 0.16), transparent 42%),
+        linear-gradient(165deg, rgba(98, 168, 255, 0.14), transparent 52%),
+        var(--panel-strong);
+    }
+
+    .eyebrow {
+      margin: 0 0 1rem;
+      color: var(--cyan);
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin: 0;
+      line-height: 1.08;
+      letter-spacing: -0.04em;
+    }
+
+    h1 {
+      max-width: 820px;
+      font-size: clamp(2.45rem, 6vw, 5.6rem);
+    }
+
+    h2 {
+      font-size: clamp(1.65rem, 3.3vw, 2.4rem);
+    }
+
+    h3 {
+      font-size: 1.08rem;
+      letter-spacing: -0.02em;
+    }
+
+    .hero-card p {
+      max-width: 760px;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.7rem;
+      margin-top: 1.5rem;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.72rem 1rem;
+      border: 1px solid rgba(98, 168, 255, 0.38);
+      border-radius: 999px;
+      background: rgba(98, 168, 255, 0.15);
+      color: #dbeafe;
+      font-weight: 780;
+    }
+
+    .button.secondary {
+      border-color: rgba(148, 163, 184, 0.20);
+      background: rgba(15, 23, 42, 0.55);
+      color: var(--muted);
+    }
+
+    .scorecard {
+      display: grid;
+      gap: 0.85rem;
+      padding: 1rem;
+    }
+
+    .metric {
+      padding: 1rem;
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 1.1rem;
+      background: rgba(2, 6, 23, 0.34);
+    }
+
+    .metric .label {
+      color: var(--soft);
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .metric .value {
+      margin-top: 0.15rem;
+      font-size: 1.55rem;
+      font-weight: 850;
+      letter-spacing: -0.04em;
+    }
+
+    .metric .note {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    section {
+      margin-top: 1.25rem;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: end;
+      margin: 2.25rem 0 1rem;
+    }
+
+    .section-head p {
+      max-width: 650px;
+      margin: 0.45rem 0 0;
+      color: var(--muted);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 1rem;
+    }
+
+    .card {
+      padding: 1.05rem;
+    }
+
+    .span-3 {
+      grid-column: span 3;
+    }
+
+    .span-4 {
+      grid-column: span 4;
+    }
+
+    .span-5 {
+      grid-column: span 5;
+    }
+
+    .span-6 {
+      grid-column: span 6;
+    }
+
+    .span-7 {
+      grid-column: span 7;
+    }
+
+    .span-12 {
+      grid-column: span 12;
+    }
+
+    .card-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 0.8rem;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.28rem 0.55rem;
+      border-radius: 999px;
+      font-size: 0.74rem;
+      font-weight: 850;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .status::before {
+      content: "";
+      width: 0.44rem;
+      height: 0.44rem;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .done {
+      border: 1px solid rgba(74, 222, 128, 0.28);
+      background: rgba(74, 222, 128, 0.10);
+      color: var(--green);
+    }
+
+    .pending {
+      border: 1px solid rgba(250, 204, 21, 0.28);
+      background: rgba(250, 204, 21, 0.10);
+      color: var(--yellow);
+    }
+
+    .blocked {
+      border: 1px solid rgba(251, 113, 133, 0.28);
+      background: rgba(251, 113, 133, 0.10);
+      color: var(--red);
+    }
+
+    .planned {
+      border: 1px solid rgba(98, 168, 255, 0.28);
+      background: rgba(98, 168, 255, 0.10);
+      color: var(--blue);
+    }
+
+    .list {
+      display: grid;
+      gap: 0.65rem;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .list li {
+      position: relative;
+      padding-left: 1.1rem;
+      color: var(--muted);
+    }
+
+    .list li::before {
+      content: "";
+      position: absolute;
+      top: 0.62rem;
+      left: 0;
+      width: 0.42rem;
+      height: 0.42rem;
+      border-radius: 50%;
+      background: var(--blue);
+      box-shadow: 0 0 18px rgba(98, 168, 255, 0.4);
+    }
+
+    .list strong {
+      color: var(--text);
+    }
+
+    .timeline {
+      display: grid;
+      gap: 0.8rem;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 2.2rem 1fr auto;
+      gap: 0.8rem;
+      align-items: start;
+      padding: 0.9rem;
+      border: 1px solid rgba(148, 163, 184, 0.15);
+      border-radius: 1rem;
+      background: rgba(2, 6, 23, 0.28);
+    }
+
+    .step-no {
+      display: grid;
+      place-items: center;
+      width: 2.1rem;
+      height: 2.1rem;
+      border-radius: 0.75rem;
+      background: rgba(98, 168, 255, 0.13);
+      color: #bfdbfe;
+      font-weight: 850;
+    }
+
+    .step p {
+      margin: 0.25rem 0 0;
+      color: var(--muted);
+    }
+
+    .diagram {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 0.65rem;
+      align-items: stretch;
+    }
+
+    .node {
+      min-height: 112px;
+      padding: 0.9rem;
+      border: 1px solid rgba(98, 168, 255, 0.22);
+      border-radius: 1rem;
+      background: rgba(15, 23, 42, 0.58);
+    }
+
+    .node small {
+      display: block;
+      margin-bottom: 0.4rem;
+      color: var(--cyan);
+      font-weight: 850;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .node p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .table {
+      display: grid;
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 1rem;
+      overflow: hidden;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1.15fr 1.8fr 0.9fr;
+      border-top: 1px solid rgba(148, 163, 184, 0.12);
+    }
+
+    .row:first-child {
+      border-top: 0;
+      background: rgba(98, 168, 255, 0.10);
+      color: var(--text);
+      font-weight: 850;
+    }
+
+    .row > div {
+      padding: 0.72rem 0.85rem;
+      color: var(--muted);
+    }
+
+    .row:first-child > div {
+      color: var(--text);
+    }
+
+    .callout {
+      border: 1px solid rgba(250, 204, 21, 0.28);
+      border-radius: 1rem;
+      background: rgba(250, 204, 21, 0.08);
+      padding: 1rem;
+      color: #fde68a;
+    }
+
+    .footer {
+      margin-top: 2rem;
+      padding: 1rem;
+      color: var(--soft);
+      text-align: center;
+      font-size: 0.9rem;
+    }
+
+    @media (max-width: 980px) {
+      .hero {
+        grid-template-columns: 1fr;
+      }
+
+      .span-3,
+      .span-4,
+      .span-5,
+      .span-6,
+      .span-7 {
+        grid-column: span 12;
+      }
+
+      .diagram {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .page {
+        width: min(100% - 1rem, 1180px);
+      }
+
+      .nav {
+        position: static;
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .hero-card {
+        padding: 1.3rem;
+      }
+
+      .section-head {
+        display: block;
+      }
+
+      .step {
+        grid-template-columns: 2.2rem 1fr;
+      }
+
+      .step .status {
+        grid-column: 2;
+        width: fit-content;
+      }
+
+      .row {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <nav class="nav" aria-label="Page sections">
+      <a class="brand" href="#top" aria-label="Lucebox LSA status home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>Lucebox LSA</span>
+      </a>
+      <div class="nav-links">
+        <a href="#snapshot">Snapshot</a>
+        <a href="#done">Done</a>
+        <a href="#left">Left</a>
+        <a href="#dataset">Dataset</a>
+        <a href="#auto">Auto</a>
+        <a href="#commands">Commands</a>
+      </div>
+    </nav>
+
+    <header id="top" class="hero">
+      <div class="hero-card">
+        <p class="eyebrow">Implementation status page</p>
+        <h1>Qwen3.5 Lookahead Sparse Attention for Lucebox</h1>
+        <p>
+          This page summarizes the current LSA branch state for teammates:
+          what has been built, what remains blocked or unvalidated, and the
+          next concrete steps for the GPU extraction canary and compact encoder.
+        </p>
+        <div class="hero-actions">
+          <a class="button" href="#left">View remaining work</a>
+          <a class="button secondary" href="README.md">Open technical README</a>
+        </div>
+      </div>
+
+      <aside class="hero-card scorecard" id="snapshot">
+        <div class="metric">
+          <div class="label">Branch</div>
+          <div class="value">feat/LSA</div>
+          <div class="note">Worktree: <code>.claude/worktrees/LSA</code></div>
+        </div>
+        <div class="metric">
+          <div class="label">Current milestone</div>
+          <div class="value">GPU canary next</div>
+          <div class="note">Blocked until <code>/tmp/dflash_gpu.lock</code> clears.</div>
+        </div>
+        <div class="metric">
+          <div class="label">Pilot corpus plan</div>
+          <div class="value">64 docs / 512 boundaries</div>
+          <div class="note">2,621,440 source tokens, 48/8/8 split.</div>
+        </div>
+      </aside>
+    </header>
+
+    <section aria-labelledby="architecture-title">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Architecture</p>
+          <h2 id="architecture-title">What we are building</h2>
+          <p>
+            The target is a trained, Qwen-specific compact query encoder that
+            selects cold full-attention blocks while preserving exact DeltaNet
+            SSM and convolution state outside the LSA path.
+          </p>
+        </div>
+        <span class="pill">Labels come from Qwen teacher/oracle extraction</span>
+      </div>
+
+      <div class="card span-12">
+        <div class="diagram" aria-label="LSA data flow">
+          <div class="node">
+            <small>1. Source</small>
+            <strong>Long Qwen token streams</strong>
+            <p>HF/local documents become little-endian int32 token files.</p>
+          </div>
+          <div class="node">
+            <small>2. Teacher</small>
+            <strong>Frozen Qwen capture</strong>
+            <p>Capture layer-46 hidden, pre-RoPE keys, and post-RoPE Q/K.</p>
+          </div>
+          <div class="node">
+            <small>3. Oracle</small>
+            <strong>Future attention labels</strong>
+            <p>Compute cold block mass with full causal softmax denominator.</p>
+          </div>
+          <div class="node">
+            <small>4. Encoder</small>
+            <strong>Compact retriever</strong>
+            <p>Train a small query encoder and emit deployable F16 weights.</p>
+          </div>
+          <div class="node">
+            <small>5. Runtime</small>
+            <strong>Active packed KV view</strong>
+            <p>Use selected blocks first, then add CPU/GPU residency later.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="done" aria-labelledby="done-title">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Completed</p>
+          <h2 id="done-title">What is already in the branch</h2>
+          <p>
+            These pieces are implemented as foundations and have CPU-side test
+            coverage. CUDA/model extraction is intentionally not claimed yet.
+          </p>
+        </div>
+      </div>
+
+      <div class="grid">
+        <article class="card span-4">
+          <div class="card-title">
+            <h3>Qwen graph taps</h3>
+            <span class="status done">Done</span>
+          </div>
+          <ul class="list">
+            <li><strong>Hidden tap:</strong> layer 46 post-FFN hidden state.</li>
+            <li><strong>Key tap:</strong> layer 47 K after norm, before M-RoPE.</li>
+            <li><strong>Teacher taps:</strong> post-RoPE Q/K for oracle layers.</li>
+          </ul>
+        </article>
+
+        <article class="card span-4">
+          <div class="card-title">
+            <h3>Teacher data path</h3>
+            <span class="status done">Done</span>
+          </div>
+          <ul class="list">
+            <li><strong>Raw writer:</strong> <code>luce.lsa.qwen35.raw.v1</code>.</li>
+            <li><strong>Converter:</strong> raw capture to NPZ training shard.</li>
+            <li><strong>Oracle:</strong> cross-layer voting over future attention mass.</li>
+          </ul>
+        </article>
+
+        <article class="card span-4">
+          <div class="card-title">
+            <h3>Encoder artifact</h3>
+            <span class="status done">Done</span>
+          </div>
+          <ul class="list">
+            <li><strong>Schema:</strong> <code>luce.lsa.qwen35.encoder.v1</code>.</li>
+            <li><strong>Weights:</strong> single-source <code>encoder.f16.bin</code>.</li>
+            <li><strong>Loader:</strong> Python and C++ checksum-validated loading.</li>
+          </ul>
+        </article>
+
+        <article class="card span-4">
+          <div class="card-title">
+            <h3>Runtime primitives</h3>
+            <span class="status done">Done</span>
+          </div>
+          <ul class="list">
+            <li><strong>Selection policy:</strong> common LSA planning primitives.</li>
+            <li><strong>Packed KV:</strong> sorted token plans and stride-aware gather.</li>
+            <li><strong>Oracle parity helpers:</strong> dense and packed references.</li>
+          </ul>
+        </article>
+
+        <article class="card span-4">
+          <div class="card-title">
+            <h3>Corpus planning</h3>
+            <span class="status done">Done</span>
+          </div>
+          <ul class="list">
+            <li><strong>Manifest:</strong> <code>luce.lsa.qwen35.corpus_plan.v1</code>.</li>
+            <li><strong>Pilot:</strong> 16K, 32K, 64K, and 128K source strata.</li>
+            <li><strong>Boundaries:</strong> eight aligned extraction points per doc.</li>
+          </ul>
+        </article>
+
+        <article class="card span-4">
+          <div class="card-title">
+            <h3>CPU validation</h3>
+            <span class="status done">Done</span>
+          </div>
+          <ul class="list">
+            <li><strong>Python:</strong> 13 LSA tests passing after corpus planner.</li>
+            <li><strong>Smoke:</strong> synthetic train/evaluate path previously passed.</li>
+            <li><strong>C++:</strong> runtime and packed-KV unit tests previously passed.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section id="left" aria-labelledby="left-title">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Roadmap</p>
+          <h2 id="left-title">What is left to do</h2>
+          <p>
+            The order matters. We should validate the data path and all-chunks
+            parity before adding real sparse residency or production wiring.
+          </p>
+        </div>
+      </div>
+
+      <div class="timeline">
+        <article class="step">
+          <div class="step-no">1</div>
+          <div>
+            <h3>Create the first real Qwen token prompt</h3>
+            <p>
+              Fill <code>/tmp/lsa-pilot/prompts/pilot-0000.tokens.i32</code>
+              from a real source document using the same Qwen model fingerprint
+              that the extractor will load.
+            </p>
+          </div>
+          <span class="status pending">Pending</span>
+        </article>
+
+        <article class="step">
+          <div class="step-no">2</div>
+          <div>
+            <h3>Run the single-document GPU extraction canary</h3>
+            <p>
+              Use <code>lsa_extract_qwen35</code> with the generated boundary
+              file, then convert raw output to an NPZ shard with checksum
+              verification.
+            </p>
+          </div>
+          <span class="status blocked">GPU lock</span>
+        </article>
+
+        <article class="step">
+          <div class="step-no">3</div>
+          <div>
+            <h3>Train and evaluate a tiny Qwen-specific encoder</h3>
+            <p>
+              Train from the canary shard first. Compare mass recall against
+              random, recency-only, direct hidden-to-key projection, and the
+              existing adaptive keep-ratio behavior.
+            </p>
+          </div>
+          <span class="status planned">Planned</span>
+        </article>
+
+        <article class="step">
+          <div class="step-no">4</div>
+          <div>
+            <h3>Prove all-chunks packed-KV parity</h3>
+            <p>
+              Build the active packed view while selecting all historical
+              chunks. It should reproduce dense Qwen logits before sparse
+              selection or CPU offload is allowed into production.
+            </p>
+          </div>
+          <span class="status planned">Planned</span>
+        </article>
+
+        <article class="step">
+          <div class="step-no">5</div>
+          <div>
+            <h3>Add production active-KV integration</h3>
+            <p>
+              Introduce an explicit active-cache abstraction for full-attention
+              layers. Keep Qwen SSM and convolution state exact, and do not
+              treat FlowKV snapshots as a sparse-block KV store.
+            </p>
+          </div>
+          <span class="status planned">Planned</span>
+        </article>
+
+        <article class="step">
+          <div class="step-no">6</div>
+          <div>
+            <h3>Scale the dataset and run gate benchmarks</h3>
+            <p>
+              Move from the canary to the 64-document pilot, then to the 384-doc
+              scale-up only if offline mass-recall and local-only false-positive
+              gates pass.
+            </p>
+          </div>
+          <span class="status planned">Planned</span>
+        </article>
+      </div>
+    </section>
+
+    <section id="dataset" aria-labelledby="dataset-title">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Dataset plan</p>
+          <h2 id="dataset-title">Paper-aligned training material</h2>
+          <p>
+            HF datasets are useful as source/eval material. The LSA labels
+            should come from Qwen teacher extraction, not benchmark answers.
+          </p>
+        </div>
+      </div>
+
+      <div class="grid">
+        <article class="card span-7">
+          <div class="card-title">
+            <h3>Pilot and scale budgets</h3>
+            <span class="status pending">Awaiting real tokens</span>
+          </div>
+          <div class="table" role="table" aria-label="Corpus budgets">
+            <div class="row" role="row">
+              <div role="columnheader">Plan</div>
+              <div role="columnheader">Shape</div>
+              <div role="columnheader">Purpose</div>
+            </div>
+            <div class="row" role="row">
+              <div>Canary</div>
+              <div>1 source doc, 8 boundaries</div>
+              <div>Validate extractor and raw-to-NPZ path</div>
+            </div>
+            <div class="row" role="row">
+              <div>Pilot</div>
+              <div>64 docs, 2.62M tokens, 512 boundaries</div>
+              <div>First useful encoder and baseline comparison</div>
+            </div>
+            <div class="row" role="row">
+              <div>Scale-up</div>
+              <div>384 docs, 16.78M tokens, 3,072 boundaries</div>
+              <div>Longer, more stable training and eval gates</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="card span-5">
+          <div class="card-title">
+            <h3>Source mix</h3>
+            <span class="status planned">Planned</span>
+          </div>
+          <ul class="list">
+            <li><strong>40%:</strong> long agent and coding traces.</li>
+            <li><strong>30%:</strong> synthetic needle and scattered-evidence retrieval.</li>
+            <li><strong>20%:</strong> technical docs, repos, legal/code/meeting sets.</li>
+            <li><strong>10%:</strong> local-only and no-context controls.</li>
+          </ul>
+        </article>
+
+        <article class="card span-12">
+          <div class="card-title">
+            <h3>Candidate public sources</h3>
+            <span class="status planned">Source only</span>
+          </div>
+          <div class="table" role="table" aria-label="Candidate source datasets">
+            <div class="row" role="row">
+              <div role="columnheader">Dataset</div>
+              <div role="columnheader">Use</div>
+              <div role="columnheader">Caution</div>
+            </div>
+            <div class="row" role="row">
+              <div>THUDM/LongBench-v2</div>
+              <div>Realistic long-context source and eval gate.</div>
+              <div>Use contexts, not answer labels, for training.</div>
+            </div>
+            <div class="row" role="row">
+              <div>opencompass/NeedleBench</div>
+              <div>Synthetic single-needle and multi-needle retrieval.</div>
+              <div>Good for gates, but too narrow alone.</div>
+            </div>
+            <div class="row" role="row">
+              <div>L4NLP/LEval</div>
+              <div>Small technical/legal/meeting/code material.</div>
+              <div>Useful pilot filler, not enough by itself.</div>
+            </div>
+            <div class="row" role="row">
+              <div>tau/scrolls and deepmind/pg19</div>
+              <div>Long document diversity and raw text controls.</div>
+              <div>Lower match to coding-agent traffic.</div>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section aria-labelledby="risks-title">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Risks</p>
+          <h2 id="risks-title">Known constraints and guardrails</h2>
+        </div>
+      </div>
+
+      <div class="grid">
+        <article class="card span-6">
+          <div class="card-title">
+            <h3>Do not skip training</h3>
+            <span class="status pending">Important</span>
+          </div>
+          <p>
+            Adaptive keep ratio and recency policies are useful baselines, but
+            they are not paper-faithful LSA. The compact retriever must learn
+            from Qwen teacher/oracle labels before we can claim LSA behavior.
+          </p>
+        </article>
+
+        <article class="card span-6">
+          <div class="card-title">
+            <h3>Keep SSM state exact</h3>
+            <span class="status pending">Boundary</span>
+          </div>
+          <p>
+            LSA should only select full-attention K/V blocks. DeltaNet SSM and
+            convolution state remain exact and separate from sparse retrieval.
+          </p>
+        </article>
+
+        <article class="card span-6">
+          <div class="card-title">
+            <h3>FlowKV is not the active sparse store</h3>
+            <span class="status pending">Boundary</span>
+          </div>
+          <p>
+            FlowKV and PR274 restore compressed-prefix state and offer useful
+            strip-copy/snapshot patterns. LSA still needs its own archival
+            full-attention source and fixed-capacity active view.
+          </p>
+        </article>
+
+        <article class="card span-6">
+          <div class="card-title">
+            <h3>MRCR-style dense retrieval can fail</h3>
+            <span class="status planned">Eval gate</span>
+          </div>
+          <p>
+            The learned selector must be tested on scattered, dense-memory
+            workloads where many distant chunks are simultaneously relevant.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section id="auto" aria-labelledby="auto-title">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">User experience</p>
+          <h2 id="auto-title">The intended interface is --lsa-auto</h2>
+          <p>
+            LSA should deliver value without asking users to understand arena
+            sizing, retrieval cadence, CUDA graph constraints, or benchmark
+            failure modes. Manual flags remain for experiments; the product
+            path should tune conservatively by default.
+          </p>
+        </div>
+      </div>
+
+      <div class="grid">
+        <article class="card span-6">
+          <div class="card-title">
+            <h3>Pre-run calibration</h3>
+            <span class="status planned">Planned</span>
+          </div>
+          <ul class="list">
+            <li><strong>Match artifacts:</strong> validate model fingerprint,
+              encoder schema, and calibration manifest.</li>
+            <li><strong>Estimate budget:</strong> model size, context length,
+              TQ3/F16 cache type, draft residency, local window, and headroom.</li>
+            <li><strong>Choose start plan:</strong> safe mode, bounded
+              <code>K</code>, policy, interval, and fallback before generation.</li>
+          </ul>
+        </article>
+
+        <article class="card span-6">
+          <div class="card-title">
+            <h3>Runtime adaptation</h3>
+            <span class="status planned">Planned</span>
+          </div>
+          <ul class="list">
+            <li><strong>Adapt only safe knobs:</strong> active slots inside a
+              preallocated maximum, stratified slots, cadence, and fallback.</li>
+            <li><strong>Watch live signals:</strong> score entropy, top-score
+              margin, selected-set churn, memory pressure, and DFlash accept rate.</li>
+            <li><strong>Fail closed:</strong> no matching trained encoder means
+              no silent untrained retrieval.</li>
+          </ul>
+        </article>
+
+        <article class="card span-12">
+          <div class="card-title">
+            <h3>Offline planner exists now</h3>
+            <span class="status done">Done</span>
+          </div>
+          <p>
+            The current worktree implements the fail-closed planner as
+            <code>auto_plan.py</code>. It emits a versioned JSON recommendation
+            for the future server flag, and it can apply telemetry observations
+            to graph-safe knobs. It does not change live inference.
+          </p>
+          <pre><code>python3 auto_plan.py \
+  --encoder /tmp/lsa-encoder \
+  --calibration /tmp/lsa-calibration.json \
+  --max-ctx 131072 \
+  --agentic \
+  --output /tmp/lsa-auto-plan.json</code></pre>
+          <p>
+            Optional observation input can adapt <code>k</code>,
+            <code>interval</code>, and <code>policy</code> using memory pressure,
+            selector confidence, selected-set churn, DFlash acceptance,
+            no-context detection, and explicit long-memory hints.
+          </p>
+        </article>
+
+        <article class="card span-12">
+          <div class="card-title">
+            <h3>Manual overrides stay experimental</h3>
+            <span class="status pending">Design contract</span>
+          </div>
+          <pre><code>--lsa-auto
+--lsa-indexer /path/to/encoder
+--lsa-mode oracle|host-cache
+--lsa-policy topk|threshold-capped|topk-stratified
+--lsa-k 256
+--lsa-interval 64
+--lsa-local-window 8192</code></pre>
+        </article>
+      </div>
+    </section>
+
+    <section id="commands" aria-labelledby="commands-title">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Commands</p>
+          <h2 id="commands-title">How to reproduce the current state</h2>
+        </div>
+      </div>
+
+      <div class="grid">
+        <article class="card span-6">
+          <div class="card-title">
+            <h3>CPU validation</h3>
+            <span class="status done">Passed</span>
+          </div>
+          <pre><code>cd optimizations/lsa
+python3 -m unittest -v test_corpus_plan.py test_lsa.py
+python3 -m py_compile corpus_plan.py test_corpus_plan.py
+git diff --check</code></pre>
+        </article>
+
+        <article class="card span-6">
+          <div class="card-title">
+            <h3>Generate pilot plan</h3>
+            <span class="status done">Works</span>
+          </div>
+          <pre><code>cd optimizations/lsa
+python3 corpus_plan.py /tmp/lsa-pilot/corpus_plan.json --write-boundaries</code></pre>
+        </article>
+
+        <article class="card span-12">
+          <div class="card-title">
+            <h3>First GPU canary</h3>
+            <span class="status blocked">Wait for GPU</span>
+          </div>
+          <pre><code>flock /tmp/dflash_gpu.lock build/lsa_extract_qwen35 \
+  model.gguf /tmp/lsa-pilot/prompts/pilot-0000.tokens.i32 \
+  /tmp/lsa-pilot/raw/pilot-0000 \
+  /tmp/lsa-pilot/boundaries/pilot-0000.txt
+
+python3 optimizations/lsa/raw_dataset.py /tmp/lsa-pilot/raw/pilot-0000 \
+  --output /tmp/lsa-pilot/npz/pilot-0000.npz \
+  --device cuda \
+  --verify-checksums</code></pre>
+        </article>
+      </div>
+    </section>
+
+    <section aria-label="Definition of done">
+      <div class="callout">
+        <strong>MVP gate:</strong>
+        do not wire the learned selector into production until offline mass
+        recall beats random, recency-only, direct-projection, and adaptive
+        keep-ratio baselines, and an all-chunks packed-KV oracle reproduces
+        dense Qwen logits.
+      </div>
+    </section>
+
+    <footer class="footer">
+      Last updated: 2026-06-11. Static page, no external assets, no runtime dependency.
+    </footer>
+  </main>
+</body>
+</html>

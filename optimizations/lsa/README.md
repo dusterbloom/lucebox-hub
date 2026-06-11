@@ -4,6 +4,8 @@ This directory contains the offline half of the minimum viable Qwen3.5
 Lookahead Sparse Attention implementation. It deliberately does not modify the
 production Qwen graph yet.
 
+For a team-readable one-page status view, open `status.html` in this directory.
+
 ## Frozen Contract
 
 - Query input: Qwen3.5 post-layer-46 hidden state, BF16, 5120 values. Lucebox
@@ -44,6 +46,75 @@ Freeze one selection across DFlash verification and accepted-token replay, and
 advance the 64-token cadence only from committed tokens. If FlowKV has already
 rewritten the effective prompt, construct the LSA catalog from that resulting
 token sequence.
+
+## Runtime Product Plan
+
+The paper-faithful path for Lucebox is a trained Qwen retriever plus a
+graph-friendly active-cache runtime:
+
+1. Build Qwen teacher labels from frozen-model oracle extraction.
+2. Train the compact query encoder against frozen pre-RoPE block keys.
+3. Score all cold historical blocks at a fixed committed-token cadence.
+4. Materialize a fixed-capacity active K/V view for full-attention layers.
+5. Keep local window, decoded tokens, DeltaNet SSM, and convolution state exact.
+6. Add CPU-hosted cold K/V only after all-chunks packed-KV parity passes.
+
+The production UX should expose a single `--lsa-auto` entrypoint. Users should
+not need to choose arena size, retrieval policy, interval, or fallback mode by
+hand. `--lsa-auto` should run in two stages:
+
+- **Pre-run calibration:** match the model fingerprint to an encoder artifact
+  and calibration manifest, estimate memory headroom from model size, context
+  length, local window, draft residency, and cache quantization, then select a
+  conservative starting plan: `mode=oracle` until parity is proven,
+  `mode=host-cache` only after offload validation, `policy=topk-capped`, a
+  bounded `K`, and a 64-token committed cadence.
+- **Runtime adaptation:** adjust only policy knobs that preserve fixed graph
+  shapes, such as active-slot budget within a preallocated maximum, stratified
+  safety slots, interval, and fallback to recency/local-only. Signals should be
+  score entropy, top-score margin, selected-set churn, memory pressure,
+  DFlash acceptance, no-context detection, and explicit long-memory task hints.
+
+Manual flags still matter for experiments, but they should be overrides:
+`--lsa-indexer`, `--lsa-mode oracle|host-cache`, `--lsa-policy
+topk|threshold-capped|topk-stratified`, `--lsa-k`, `--lsa-interval`, and
+`--lsa-local-window`. The default user-facing path should be `--lsa-auto`.
+If there is no matching encoder artifact or calibration data, auto must fail
+closed by leaving LSA disabled or running `oracle` diagnostics, not by silently
+using untrained retrieval.
+
+The current worktree implements the CPU-only planning contract as
+`auto_plan.py`. It does not alter live server inference yet:
+
+```bash
+python3 auto_plan.py \
+  --encoder /tmp/lsa-encoder \
+  --calibration /tmp/lsa-calibration.json \
+  --max-ctx 131072 \
+  --agentic \
+  --output /tmp/lsa-auto-plan.json
+```
+
+The output schema is `luce.lsa.qwen35.auto_plan.v1`. It is intentionally
+fail-closed: missing encoder, weak recall gates, missing all-chunks parity, or
+context length beyond calibration produce `enabled=false`.
+
+`auto_plan.py` also accepts a telemetry observation file so future runtime code
+can adapt graph-safe knobs without recapturing CUDA graphs:
+
+```bash
+python3 auto_plan.py \
+  --encoder /tmp/lsa-encoder \
+  --calibration /tmp/lsa-calibration.json \
+  --max-ctx 131072 \
+  --agentic \
+  --observation /tmp/lsa-observation.json
+```
+
+The observation fields are `memory_pressure`, `score_entropy`,
+`top_score_margin`, `selected_churn`, `dflash_acceptance`,
+`no_context_probability`, and `long_memory_hint`. Adaptation only changes `k`,
+`interval`, and `policy` within the already planned maximum arena.
 
 ## NPZ Shard V1
 
@@ -122,6 +193,44 @@ Suggested source mixture:
 - 30% synthetic needle, multi-hop, and scattered evidence retrieval.
 - 20% long technical documents and repositories.
 - 10% local-only or no-context controls to measure false retrieval.
+
+The DeepSeek LSA paper does not describe training the memory indexer from
+LongBench or other benchmark answer labels. Those datasets are useful source
+material and evaluation gates, but the retriever labels come from offline
+teacher/oracle extraction on long documents. For Lucebox, that means every
+pilot document must be tokenized for the exact Qwen model fingerprint, then
+passed through `lsa_extract_qwen35` to generate raw captures before
+`raw_dataset.py` builds NPZ shards.
+
+Generate the deterministic pilot manifest and boundary files while the GPU is
+busy:
+
+```bash
+cd optimizations/lsa
+python3 corpus_plan.py /tmp/lsa-pilot/corpus_plan.json --write-boundaries
+```
+
+The manifest uses `luce.lsa.qwen35.corpus_plan.v1` and records the source mix,
+length strata, extraction contract, candidate HF sources, and per-document
+paths:
+
+- `prompts/<document>.tokens.i32`: little-endian int32 token IDs, created later
+  from the chosen source document and Qwen tokenizer.
+- `boundaries/<document>.txt`: eight 64-token-aligned committed-token positions
+  that leave a full 64-token future window.
+- `raw/<document>`: output directory for `lsa_extract_qwen35`.
+- `npz/<document>.npz`: converted training shard from `raw_dataset.py`.
+
+First GPU canary once `/tmp/dflash_gpu.lock` clears:
+
+```bash
+flock /tmp/dflash_gpu.lock build/lsa_extract_qwen35 \
+  model.gguf /tmp/lsa-pilot/prompts/pilot-0000.tokens.i32 \
+  /tmp/lsa-pilot/raw/pilot-0000 \
+  /tmp/lsa-pilot/boundaries/pilot-0000.txt
+python3 raw_dataset.py /tmp/lsa-pilot/raw/pilot-0000 \
+  --output /tmp/lsa-pilot/npz/pilot-0000.npz --device cuda --verify-checksums
+```
 
 The first gate is mass-recall at a fixed block budget against random,
 recency-only, and direct hidden-to-key projection baselines. Do not integrate
