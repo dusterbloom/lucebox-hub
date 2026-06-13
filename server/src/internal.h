@@ -426,6 +426,17 @@ struct PrefixSnapshot {
     //     [HEAD_DIM, kv_end-kv_start, N_HEAD_KV] (smaller than cache).
     //   - ssm_state_snap, conv_state_snap, target_feat_snap are NOT
     //     allocated (THIN snapshots are KV-only).
+
+    // KVFlash: when the target runs a bounded KV pool, the cache holds only
+    // a slice of the logical KV, so the snapshot's KV is carried as the
+    // pager's serialized chunk blob (full logical KV, host RAM) instead of
+    // the right-sized tensors above. Recurrent state + target_feat are
+    // still captured normally (they are never paged). Empty for non-pooled
+    // snapshots.
+    bool is_pooled = false;
+    int  pooled_chunk_tokens = 0;
+    std::vector<uint8_t> pooled_kv;   // KvFlashPager::serialize()
+    std::vector<uint8_t> pooled_qk;   // KvFlashQkPool::serialize() (qk policy only)
 };
 
 // Snapshot the slim state of `cache` into `snap`. KV tensors are RIGHT-SIZED
@@ -433,16 +444,22 @@ struct PrefixSnapshot {
 // cur_pos matches the previous snapshot; otherwise freed and reallocated
 // (right-sized allocations are tiny — KB for short prefixes). Returns false
 // on allocation failure (and sets last_error).
+// `include_kv` may be set false by KVFlash callers that carry the KV as a
+// pager blob instead; recurrent state + target_feat are captured regardless.
 bool snapshot_target_cache(const TargetWeights & w,
                            const TargetCache & cache,
                            ggml_backend_t backend,
-                           PrefixSnapshot & snap);
+                           PrefixSnapshot & snap,
+                           bool include_kv = true);
 
 // Restore `cache` from `snap`. cache must already exist (created via
 // create_target_cache) and have matching shapes. Sets cache.cur_pos =
 // snap.cur_pos. Does NOT touch ssm_intermediate / conv_input_cache —
 // those will be repopulated by the first decode step's verify forward.
-bool restore_target_cache(const PrefixSnapshot & snap, TargetCache & cache);
+// `include_kv` mirrors snapshot_target_cache: false skips the KV copy for
+// KVFlash callers that restore the pool from a pager blob instead.
+bool restore_target_cache(const PrefixSnapshot & snap, TargetCache & cache,
+                          bool include_kv = true);
 
 // Free the snapshot's GPU buffers.
 void free_prefix_snapshot(PrefixSnapshot & snap);

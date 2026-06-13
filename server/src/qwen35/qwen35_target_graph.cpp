@@ -1339,7 +1339,8 @@ QwenLayerPrefnOutputs build_qwen35_layer_prefn(
 bool snapshot_target_cache(const TargetWeights & w,
                            const TargetCache & cache,
                            ggml_backend_t backend,
-                           PrefixSnapshot & snap) {
+                           PrefixSnapshot & snap,
+                           bool include_kv) {
     const int n_full_attn = w.n_layer / w.full_attention_interval; // 16
     const int n_delta     = w.n_layer - n_full_attn;               // 48
     const int snap_pos    = cache.cur_pos;
@@ -1369,18 +1370,22 @@ bool snapshot_target_cache(const TargetWeights & w,
         snap.ssm_state_snap.assign(n_delta, nullptr);
         snap.conv_state_snap.assign(n_delta, nullptr);
 
-        // Right-sized KV: [head_dim, snap_pos, n_head_kv]
-        for (int i = 0; i < n_full_attn; i++) {
-            ggml_tensor * sk = cache.attn_k[i];
-            ggml_tensor * sv = cache.attn_v[i];
-            if (!sk || !sv) continue;
-            ggml_tensor * K = ggml_new_tensor_3d(snap.ctx, sk->type, sk->ne[0], snap_pos, sk->ne[2]);
-            ggml_tensor * V = ggml_new_tensor_3d(snap.ctx, sv->type, sv->ne[0], snap_pos, sv->ne[2]);
-            char name[64];
-            std::snprintf(name, sizeof(name), "snap_cache_k_%d", i); ggml_set_name(K, name);
-            std::snprintf(name, sizeof(name), "snap_cache_v_%d", i); ggml_set_name(V, name);
-            snap.attn_k_snap[i] = K;
-            snap.attn_v_snap[i] = V;
+        // Right-sized KV: [head_dim, snap_pos, n_head_kv]. Skipped for pooled
+        // (KVFlash) snapshots — the KV travels as the pager blob instead, so
+        // attn_*_snap stay null and the copy loop below is a no-op.
+        if (include_kv) {
+            for (int i = 0; i < n_full_attn; i++) {
+                ggml_tensor * sk = cache.attn_k[i];
+                ggml_tensor * sv = cache.attn_v[i];
+                if (!sk || !sv) continue;
+                ggml_tensor * K = ggml_new_tensor_3d(snap.ctx, sk->type, sk->ne[0], snap_pos, sk->ne[2]);
+                ggml_tensor * V = ggml_new_tensor_3d(snap.ctx, sv->type, sv->ne[0], snap_pos, sv->ne[2]);
+                char name[64];
+                std::snprintf(name, sizeof(name), "snap_cache_k_%d", i); ggml_set_name(K, name);
+                std::snprintf(name, sizeof(name), "snap_cache_v_%d", i); ggml_set_name(V, name);
+                snap.attn_k_snap[i] = K;
+                snap.attn_v_snap[i] = V;
+            }
         }
 
         // SSM / conv: full-size (position-independent recurrent state).
@@ -1426,6 +1431,9 @@ bool snapshot_target_cache(const TargetWeights & w,
     }
 
     // Copy KV strip-by-strip (right-sized snapshot is smaller than cache).
+    // Pooled snapshots (include_kv == false) leave attn_*_snap null and carry
+    // the KV as the pager blob instead.
+    if (include_kv)
     for (int i = 0; i < n_full_attn; i++) {
         ggml_tensor * sk = cache.attn_k[i];
         ggml_tensor * dk = snap.attn_k_snap[i];
@@ -1471,7 +1479,8 @@ bool snapshot_target_cache(const TargetWeights & w,
     return true;
 }
 
-bool restore_target_cache(const PrefixSnapshot & snap, TargetCache & cache) {
+bool restore_target_cache(const PrefixSnapshot & snap, TargetCache & cache,
+                          bool include_kv) {
     if (snap.kv_k_type != cache.kv_k_type) {
         set_last_error("restore_target_cache: kv_k_type mismatch");
         return false;
@@ -1501,6 +1510,10 @@ bool restore_target_cache(const PrefixSnapshot & snap, TargetCache & cache) {
     const int snap_pos    = snap.cur_pos;
 
     // KV: strip-by-strip copy from right-sized snapshot into full-size cache.
+    // Pooled snapshots (include_kv == false) restore KV from the pager blob
+    // instead — attn_*_snap are null, so this block is skipped entirely (the
+    // null-vs-non-null shard check below would otherwise fire spuriously).
+    if (include_kv)
     for (int i = 0; i < n_full_attn; i++) {
         ggml_tensor * sk = snap.attn_k_snap[i];
         ggml_tensor * dk = cache.attn_k[i];
@@ -1567,6 +1580,12 @@ void free_prefix_snapshot(PrefixSnapshot & snap) {
     snap.is_thin         = false;
     snap.kv_start        = 0;
     snap.kv_end          = 0;
+    snap.is_pooled       = false;
+    snap.pooled_chunk_tokens = 0;
+    snap.pooled_kv.clear();
+    snap.pooled_kv.shrink_to_fit();
+    snap.pooled_qk.clear();
+    snap.pooled_qk.shrink_to_fit();
 }
 
 bool snapshot_target_cache_thin(const TargetWeights & w,
