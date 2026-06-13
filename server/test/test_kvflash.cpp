@@ -1121,6 +1121,48 @@ int main(int argc, char ** argv) {
             free_target_cache(cs);
         }
 
+        // G1b: chunk-UNALIGNED prefix round-trip + resume slot allocation,
+        // pager-level (no model forward). Pins the prefix-skip resume edges:
+        // a snapshot taken mid-chunk and a suffix prefilled after restore with
+        // live eviction must not corrupt the page table or fail allocation.
+        {
+            const int pool = 8 * 64;
+            TargetCache cs, cd;
+            if (!create_target_cache(w, pool, 0, backend, cs, /*prefill_only=*/true) ||
+                !create_target_cache(w, pool, 0, backend, cd, /*prefill_only=*/true)) {
+                std::fprintf(stderr, "cache G1b: %s\n", dflash27b_last_error()); return 1;
+            }
+            KvFlashPager ps; KvFlashConfig pc; pc.pool_tokens = pool;
+            if (!ps.attach(pc, cs.attn_k, cs.attn_v)) return 1;
+            const int Nu = 9 * 64 + 30;   // unaligned: last chunk is partial
+            bool prefill_ok = true;
+            for (int p = 0; p < Nu; p++) if (ps.slot_for(p) < 0) { prefill_ok = false; break; }
+            std::vector<uint8_t> b1; ps.serialize(b1);
+            const int64_t po = ps.stats().page_outs;
+
+            KvFlashPager pd; if (!pd.attach(pc, cd.attn_k, cd.attn_v)) return 1;
+            const int nb = pool / pc.chunk_tokens;
+            std::vector<int> ord(nb);
+            for (int i = 0; i < nb; i++) ord[i] = i;
+            std::swap(ord[0], ord[4]); std::swap(ord[2], ord[7]);
+            pd.set_block_order(ord);
+            const bool ok = pd.deserialize(b1, Nu);
+            std::vector<uint8_t> b2; if (ok) pd.serialize(b2);
+            const bool exact = ok && b1 == b2;
+            bool resume_ok = true;          // suffix prefill with live eviction
+            for (int p = Nu; p < Nu + 200; p++) if (pd.slot_for(p) < 0) { resume_ok = false; break; }
+            const bool floor = pd.is_resident(0) && pd.is_resident((Nu + 199) / 64);
+            std::printf("[G1b] unaligned N=%d (tail=%d) page_outs=%" PRId64
+                        ", reserialize-exact=%s, resume+200=%s, floor=%d\n",
+                        Nu, Nu % 64, po, exact ? "yes" : "no",
+                        resume_ok ? "ok" : "FAIL", floor);
+            std::printf("%s unaligned-prefix restore + resume (pager-level)\n",
+                        (prefill_ok && exact && resume_ok && floor && po > 0) ? "PASS" : "FAIL");
+            if (!(prefill_ok && exact && resume_ok && floor && po > 0)) hard_failures++;
+            free_target_cache(cd);
+            free_target_cache(cs);
+        }
+
         // G2: continuation equivalence — restore a relocated prefix and
         // teacher-force the baseline; argmax must track A within run B's bound.
         {
