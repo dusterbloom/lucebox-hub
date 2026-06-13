@@ -208,6 +208,7 @@ set(DFLASH27B_SRC_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/laguna
     ${CMAKE_CURRENT_SOURCE_DIR}/src/qwen3
     ${CMAKE_CURRENT_SOURCE_DIR}/src/gemma4
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/diffusion
     ${CMAKE_CURRENT_SOURCE_DIR}/src/server
 )
 
@@ -230,6 +231,10 @@ add_library(dflash_common STATIC
     src/gemma4/gemma4_daemon.cpp
     src/gemma4/gemma4_dflash_target.cpp
     src/gemma4/gemma4_layer_split_adapter.cpp
+    # ── Abstracted diffusion (dLLM) module ──
+    src/diffusion/diffusion_decoder.cpp
+    src/diffusion/diffusion_backend.cpp
+    src/diffusion/diffusion_registry.cpp
     src/flashprefill_q8.cpp
     src/kv_cache.cpp
     src/kv_quant.cpp
@@ -590,6 +595,13 @@ if(DFLASH27B_TESTS)
         add_executable(test_derived_scalars test/test_derived_scalars.cpp)
         target_include_directories(test_derived_scalars PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
         add_test(NAME derived_scalars COMMAND test_derived_scalars)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_diffusion_decoder.cpp")
+        # CPU-only numerics test for the model-agnostic diffusion decode loop.
+        add_executable(test_diffusion_decoder test/test_diffusion_decoder.cpp)
+        target_include_directories(test_diffusion_decoder PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_diffusion_decoder PRIVATE dflash_common)
+        add_test(NAME diffusion_decoder COMMAND test_diffusion_decoder)
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_bandit_integration.cpp")
         add_executable(test_bandit_integration test/test_bandit_integration.cpp)
