@@ -17,6 +17,7 @@
 #include "deepseek4_layer_split_adapter.h"
 #include "layer_split_backend.h"
 #include "qwen35_layer_split_adapter.h"
+#include "diffusion/diffusion_registry.h"
 
 #include <cstdio>
 #include <algorithm>
@@ -402,6 +403,27 @@ std::unique_ptr<ModelBackend> construct_backend(
         auto backend = std::make_unique<LayerSplitBackend>(std::move(adapter));
         if (!backend->init()) {
             std::fprintf(stderr, "[backend_factory] LayerSplitBackend(deepseek4) init failed\n");
+            return nullptr;
+        }
+        return backend;
+
+    } else if (arch == "diffusiongemma" || arch == "nemotron_diffusion"
+               || arch == "nemotron-diffusion") {
+        // Diffusion (dLLM) families all share one DiffusionBackend, constructed
+        // via the diffusion sub-factory (diffusion_registry). Decode knobs
+        // default here for now; model-card -> DiffusionConfig plumbing is a
+        // follow-up. The per-family forward graphs are wired in later phases —
+        // until then the sub-factory returns nullptr with a clear diagnostic.
+        DiffusionModelArgs dargs;
+        dargs.model_path = model.path;
+        dargs.device     = placement.target;
+        dargs.max_ctx    = placement.target.max_ctx;
+
+        auto backend = create_diffusion_backend(arch, dargs);
+        if (!backend) {
+            std::fprintf(stderr,
+                "[backend_factory] diffusion backend (%s) init failed\n",
+                arch.c_str());
             return nullptr;
         }
         return backend;

@@ -1,0 +1,19 @@
+{
+  "name": "Nemotron-Labs-Diffusion 8B",
+  "source": "https://huggingface.co/blog/nvidia/nemotron-labs-diffusion",
+  "verified_at": "2026-06-13",
+  "notes": "NVIDIA tri-mode (autoregressive / diffusion / self-speculation) dLLM; family repos nvidia/Nemotron-Labs-Diffusion-{3B,8B,14B}. lucebox serves the parallel diffusion mode via DiffusionBackend; self-speculation (diffusion draft + AR verify on a shared KV cache) maps onto the existing DFlash/DDTree path and is a follow-up. The `diffusion`/`sampling` blocks are engineering starting points, NOT a verbatim card transcription — verify against the source. mask_token_id is left as -1 to resolve from GGUF metadata at load.",
+  "max_tokens": 8192,
+  "sampling": {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "top_k": 0
+  },
+  "diffusion": {
+    "block_size": 32,
+    "steps": 16,
+    "remasking": "low_confidence",
+    "noise_scheme": "masked",
+    "mask_token_id": -1
+  }
+}
