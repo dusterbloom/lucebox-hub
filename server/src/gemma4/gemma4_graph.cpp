@@ -1081,6 +1081,181 @@ bool gemma4_verify_batch(
     return true;
 }
 
+// ── gemma4_denoise_batch ────────────────────────────────────────────────
+// Bidirectional (diffusion decoder-mode) forward over a canvas.
+//
+// Unlike gemma4_verify_batch (causal), every query attends to every key in
+// [0, n_tokens): DiffusionGemma's decoder mode is globally bidirectional over
+// the canvas. The noised canvas changes every denoising step, so there is no
+// causal KV to reuse — this runs a fresh full recompute from position 0 and
+// returns logits for the sub-range [out_begin, out_begin+out_len) (the active
+// block). Reuses build_gemma4_layer for the exact gemma4 computation (iSWA,
+// MoE, per-layer embeddings, softcap); only the mask + readout differ.
+//
+// First cut — GPU-build-gated (not compiled in CPU-only envs). Constraints,
+// documented as follow-up optimizations:
+//   - n_tokens must fit the caches: <= cache.max_ctx and (when SWA layers are
+//     present) <= cache.swa_size, so the single offset-view KV write does not
+//     wrap the ring. Longer canvases need a warm-prefix + block-incremental
+//     path (warm the prompt KV once, recompute only the active block).
+//   - Recomputes the whole canvas each call (O(canvas^2) per denoising step).
+bool gemma4_denoise_batch(
+    ggml_backend_t          backend,
+    const Gemma4Weights &   w,
+    Gemma4Cache &           cache,
+    const float *           embed,       // [n_embd, n_tokens] scaled by sqrt(n_embd)
+    const int32_t *         token_ids,   // [n_tokens]
+    int                     n_tokens,
+    int                     out_begin,
+    int                     out_len,
+    std::vector<float> &    out_logits)
+{
+    const int kv_start = 0;  // fresh full recompute each call
+
+    if (n_tokens <= 0 || out_len <= 0 || out_begin < 0 ||
+        out_begin + out_len > n_tokens) {
+        std::fprintf(stderr, "gemma4_denoise_batch: bad range (n=%d out=[%d,%d))\n",
+                     n_tokens, out_begin, out_begin + out_len);
+        return false;
+    }
+    if (n_tokens > cache.max_ctx) {
+        std::fprintf(stderr, "gemma4_denoise_batch: canvas %d exceeds max_ctx %d\n",
+                     n_tokens, cache.max_ctx);
+        return false;
+    }
+    if (cache.swa_size > 0 && n_tokens > cache.swa_size) {
+        std::fprintf(stderr,
+            "gemma4_denoise_batch: canvas %d exceeds SWA ring %d "
+            "(warm-prefix path not yet implemented)\n", n_tokens, cache.swa_size);
+        return false;
+    }
+
+    ggml_init_params ip{};
+    ip.mem_size = ggml_tensor_overhead() * 16384 + ggml_graph_overhead() + 16 * 1024 * 1024;
+    ip.no_alloc = true;
+    ggml_context * ctx = ggml_init(ip);
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx, 16384, false);
+
+    ggml_tensor * ie = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, w.n_embd, n_tokens);
+    ggml_set_input(ie);
+    ggml_tensor * pp = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_tokens);
+    ggml_set_input(pp);
+
+    ggml_tensor * tok_ids = nullptr;
+    if (token_ids && w.per_layer_tok_embd && w.per_layer_model_proj && w.n_embd_per_layer > 0) {
+        tok_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_tokens);
+        ggml_set_input(tok_ids);
+    }
+
+    const int kv_len_raw    = kv_start + n_tokens;
+    const int kv_len_padded = (kv_len_raw + 255) & ~255;
+    ggml_tensor * mk_full = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, kv_len_padded, n_tokens, 1, 1);
+    ggml_set_input(mk_full);
+    ggml_tensor * mk_full_f16 = ggml_cast(ctx, mk_full, GGML_TYPE_F16);
+
+    const int swa_size       = cache.swa_size;
+    const int swa_len_raw    = swa_size > 0 ? std::min(kv_start + n_tokens, swa_size) : n_tokens;
+    const int swa_len_padded = (swa_len_raw + 255) & ~255;
+    ggml_tensor * mk_swa = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, swa_len_padded, n_tokens, 1, 1);
+    ggml_set_input(mk_swa);
+    ggml_tensor * mk_swa_f16 = ggml_cast(ctx, mk_swa, GGML_TYPE_F16);
+
+    // Per-layer embeddings (identical to gemma4_step / gemma4_verify_batch).
+    ggml_tensor * per_layer_all = nullptr;
+    if (tok_ids) {
+        const int D = w.n_embd_per_layer;
+        const int L = w.n_layer;
+        ggml_tensor * inp_pl = ggml_get_rows(ctx, w.per_layer_tok_embd, tok_ids);
+        inp_pl = ggml_reshape_3d(ctx, inp_pl, D, L, n_tokens);
+        inp_pl = ggml_scale(ctx, inp_pl, std::sqrt((float)D));
+        ggml_tensor * proj = ggml_mul_mat(ctx, w.per_layer_model_proj, ie);
+        proj = ggml_scale(ctx, proj, 1.0f / std::sqrt((float)w.n_embd));
+        proj = ggml_reshape_3d(ctx, proj, D, L, n_tokens);
+        proj = ggml_rms_norm(ctx, rms_norm_input_f32(ctx, proj), w.norm_eps);
+        ggml_tensor * norm_w = ggml_reshape_2d(ctx, w.per_layer_proj_norm, D, L);
+        proj = ggml_mul(ctx, proj, norm_w);
+        per_layer_all = ggml_add(ctx, proj, inp_pl);
+        per_layer_all = ggml_scale(ctx, per_layer_all, 1.0f / std::sqrt(2.0f));
+        per_layer_all = ggml_cont(ctx, ggml_permute(ctx, per_layer_all, 0, 2, 1, 3));
+    }
+
+    ggml_tensor * cur = ie;
+    for (int il = 0; il < w.n_layer; ++il) {
+        ggml_tensor * pl_input = nullptr;
+        if (per_layer_all) pl_input = gemma4_view_2d_slice(ctx, per_layer_all, il);
+        cur = build_gemma4_layer(ctx, gf, w, cache, il, cur, pp,
+                                   mk_full_f16, mk_swa_f16, pl_input,
+                                   kv_start, n_tokens, /*capture_idx=*/-1);
+    }
+
+    cur = gemma4_rms_norm_mul(ctx, cur, w.out_norm, w.norm_eps);
+
+    // Slice to the active block before lm_head to bound logits memory
+    // (matches gemma4_step's last-token slice pattern).
+    if (out_begin > 0 || out_len < n_tokens) {
+        cur = ggml_view_2d(ctx, cur, w.n_embd, out_len,
+                           cur->nb[1], (size_t)out_begin * cur->nb[1]);
+    }
+
+    cur = ggml_mul_mat(ctx, w.output, cur);  // [vocab, out_len]
+    if (w.final_logit_softcap > 0.0f) {
+        cur = ggml_scale(ctx, cur, 1.0f / w.final_logit_softcap);
+        cur = ggml_tanh(ctx, cur);
+        cur = ggml_scale(ctx, cur, w.final_logit_softcap);
+    }
+    ggml_set_output(cur);
+    ggml_build_forward_expand(gf, cur);
+
+    static ggml_gallocr_t galloc_denoise = nullptr;
+    if (!galloc_denoise)
+        galloc_denoise = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    if (!ggml_gallocr_alloc_graph(galloc_denoise, gf)) {
+        std::fprintf(stderr, "gemma4_denoise_batch: gallocr_alloc_graph failed\n");
+        ggml_free(ctx);
+        return false;
+    }
+
+    ggml_backend_tensor_set(ie, embed, 0, ggml_nbytes(ie));
+    std::vector<int32_t> pos((size_t)n_tokens);
+    for (int i = 0; i < n_tokens; ++i) pos[i] = kv_start + i;
+    ggml_backend_tensor_set(pp, pos.data(), 0, ggml_nbytes(pp));
+    if (tok_ids && token_ids) {
+        ggml_backend_tensor_set(tok_ids, token_ids, 0, (size_t)n_tokens * sizeof(int32_t));
+    }
+
+    // Bidirectional full mask: every query attends to every key in [0,kv_len_raw).
+    std::vector<float> mfull((size_t)kv_len_padded * n_tokens, -INFINITY);
+    for (int q = 0; q < n_tokens; ++q)
+        for (int k = 0; k < kv_len_raw; ++k)
+            mfull[(size_t)q * kv_len_padded + k] = 0.0f;
+    ggml_backend_tensor_set(mk_full, mfull.data(), 0, ggml_nbytes(mk_full));
+
+    // Bidirectional SWA mask: with n_tokens <= swa_size there is no ring wrap,
+    // so each query attends to every key in [0,n_tokens) (global within the
+    // canvas — diffusion decode is bidirectional, not windowed).
+    std::vector<float> mswa((size_t)swa_len_padded * n_tokens, -INFINITY);
+    for (int q = 0; q < n_tokens; ++q) {
+        for (int abs_k = 0; abs_k < n_tokens; ++abs_k) {
+            const int slot = (swa_size > 0) ? (abs_k % swa_size) : abs_k;
+            if (slot < swa_len_raw) mswa[(size_t)q * swa_len_padded + slot] = 0.0f;
+        }
+    }
+    ggml_backend_tensor_set(mk_swa, mswa.data(), 0, ggml_nbytes(mk_swa));
+
+    if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+        std::fprintf(stderr, "gemma4_denoise_batch: graph_compute failed\n");
+        ggml_free(ctx);
+        return false;
+    }
+
+    out_logits.resize((size_t)w.n_vocab * (size_t)out_len);
+    ggml_backend_tensor_get(cur, out_logits.data(), 0, sizeof(float) * out_logits.size());
+
+    cache.cur_pos = kv_len_raw;
+    ggml_free(ctx);
+    return true;
+}
+
 // ── gemma4_project_hidden ───────────────────────────────────────────────
 // Runs out_norm + lm_head + softcap + argmax on external hidden states.
 
