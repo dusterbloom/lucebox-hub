@@ -304,6 +304,66 @@ public:
         return events;
     }
 
+    // ── Prefix-cache interop ────────────────────────────────────────────
+    //
+    // A pooled prefix snapshot is the ordered concatenation of every
+    // materialized chunk's canonical bytes — the SAME bytes page_out writes
+    // to host_data. They are position-independent (RoPE is baked into K rows
+    // at write time) and relocatable (proven by the relocation-equivalence
+    // test), so a snapshot taken at one pool size restores into ANY pool
+    // >= min_pool_tokens with a different block order. cur_pos is the only
+    // metadata the caller must keep; nothing pool-specific is stored.
+
+    // Total bytes serialize() will emit for the current chunk count.
+    size_t serialized_bytes() const { return (size_t)n_chunks() * chunk_bytes_; }
+
+    void serialize(std::vector<uint8_t> & out) const {
+        const int n = n_chunks();
+        out.resize((size_t)n * chunk_bytes_);
+        for (int c = 0; c < n; c++) {
+            uint8_t * dst = out.data() + (size_t)c * chunk_bytes_;
+            const ChunkState & st = chunks_[c];
+            if (st.block >= 0)        gather_block(st.block, dst);            // resident
+            else if (st.on_host)      std::memcpy(dst, st.host_data.data(), chunk_bytes_);
+            else                      std::memset(dst, 0, chunk_bytes_);      // unreachable for c<n
+        }
+    }
+
+    // Rebuild pager state from a blob produced by serialize(): chunks
+    // [0, n_blocks_) load resident at their identity slot, the rest become
+    // host-backed. This is exactly the state the pager reaches by prefilling
+    // the same prefix, so the post-restore invariant is identical by
+    // construction. `cur_pos` is the logical length the blob was taken at.
+    // Returns false (without mutating) if the pager is unattached or the
+    // blob length does not match this cache's chunk geometry.
+    bool deserialize(const std::vector<uint8_t> & in, int cur_pos) {
+        if (!attached() || cur_pos <= 0) return false;
+        const int ct = cfg_.chunk_tokens;
+        const int n  = (cur_pos + ct - 1) / ct;
+        if (in.size() != (size_t)n * chunk_bytes_) return false;  // wrong model/quant/ctx
+        reset();                                                  // identity free list, epoch++
+        chunks_.assign((size_t)n, ChunkState{});
+        cur_chunk_ = n - 1;
+        const int resident = std::min(n, n_blocks_);
+        for (int c = 0; c < n; c++) {
+            const uint8_t * src = in.data() + (size_t)c * chunk_bytes_;
+            if (c < resident) {
+                chunks_[(size_t)c].block = c;
+                scatter_block(c, src);
+            } else {
+                chunks_[(size_t)c].host_data.assign(src, src + chunk_bytes_);
+                chunks_[(size_t)c].on_host = true;
+                stats_.host_bytes += (int64_t)chunk_bytes_;
+            }
+            chunks_[(size_t)c].last_use = ++clock_;
+        }
+        free_blocks_.clear();
+        for (int b = n_blocks_ - 1; b >= resident; b--) free_blocks_.push_back(b);
+        zero_free_blocks();   // maskless (qwen35moe) consumers need ~0 stale rows
+        epoch_++;
+        return true;
+    }
+
 private:
     struct ChunkState {
         int      block = -1;       // pool block index, -1 = not resident
