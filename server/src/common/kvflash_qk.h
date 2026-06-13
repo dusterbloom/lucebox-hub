@@ -156,6 +156,54 @@ public:
         return true;
     }
 
+    // ── Prefix-cache interop ────────────────────────────────────────────
+    // Pooled keys are position-independent (mean-pooled, L2-normalized post-
+    // RoPE K), so they travel with a prefix snapshot unchanged. Paged-out
+    // chunks are not in the cache to re-pool from after a restore, so the
+    // qk policy must persist them alongside the pager blob. Drafter / LRU
+    // policies need none of this.
+    void serialize(std::vector<uint8_t> & out) const {
+        const int32_t n = (int32_t)keys_.size();
+        const size_t row = (size_t)dims_.n_layers * dims_.n_kv_heads * dims_.head_dim;
+        out.clear();
+        auto put = [&](const void * p, size_t b) {
+            const uint8_t * c = (const uint8_t *)p;
+            out.insert(out.end(), c, c + b);
+        };
+        put(&dims_, sizeof(dims_));
+        put(&n, sizeof(n));
+        for (int c = 0; c < n; c++) {
+            const uint8_t present = keys_[(size_t)c].size() == row ? 1 : 0;
+            put(&present, 1);
+            if (present) put(keys_[(size_t)c].data(), row * sizeof(float));
+        }
+    }
+
+    // Restore pooled keys; validates the blob describes this model's dims.
+    bool deserialize(const std::vector<uint8_t> & in) {
+        const size_t row = (size_t)dims_.n_layers * dims_.n_kv_heads * dims_.head_dim;
+        size_t p = 0;
+        auto get = [&](void * d, size_t b) -> bool {
+            if (p + b > in.size()) return false;
+            std::memcpy(d, in.data() + p, b); p += b; return true;
+        };
+        KvFlashQkDims d{};
+        int32_t n = 0;
+        if (!get(&d, sizeof(d)) || !get(&n, sizeof(n)) || n < 0) return false;
+        if (d.n_layers != dims_.n_layers || d.n_kv_heads != dims_.n_kv_heads ||
+            d.n_q_heads != dims_.n_q_heads || d.head_dim != dims_.head_dim) return false;
+        keys_.assign((size_t)n, {});
+        for (int c = 0; c < n; c++) {
+            uint8_t present = 0;
+            if (!get(&present, 1)) return false;
+            if (present) {
+                keys_[(size_t)c].resize(row);
+                if (!get(keys_[(size_t)c].data(), row * sizeof(float))) return false;
+            }
+        }
+        return p == in.size();
+    }
+
 private:
     KvFlashQkDims dims_;
     std::vector<std::vector<float>> keys_;   // [chunk][L*Hkv*D], empty = missing
