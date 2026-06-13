@@ -329,27 +329,41 @@ public:
         }
     }
 
-    // Rebuild pager state from a blob produced by serialize(): chunks
-    // [0, n_blocks_) load resident at their identity slot, the rest become
-    // host-backed. This is exactly the state the pager reaches by prefilling
-    // the same prefix, so the post-restore invariant is identical by
-    // construction. `cur_pos` is the logical length the blob was taken at.
-    // Returns false (without mutating) if the pager is unattached or the
-    // blob length does not match this cache's chunk geometry.
+    // Rebuild pager state from a blob produced by serialize(). The resident
+    // set is the pager's protection floor — the sink chunks plus the most
+    // recent chunks filling the pool — with everything in between host-backed.
+    // That is the residency a real prefill+decode converges to, so resumed
+    // decode is immediately coherent (the tail window the model attends to is
+    // resident) and the next reselect() refines residency from fresh scores.
+    // `cur_pos` is the logical length the blob was taken at. Returns false
+    // (without mutating) if the pager is unattached or the blob length does
+    // not match this cache's chunk geometry.
     bool deserialize(const std::vector<uint8_t> & in, int cur_pos) {
         if (!attached() || cur_pos <= 0) return false;
         const int ct = cfg_.chunk_tokens;
         const int n  = (cur_pos + ct - 1) / ct;
         if (in.size() != (size_t)n * chunk_bytes_) return false;  // wrong model/quant/ctx
-        reset();                                                  // identity free list, epoch++
+        reset();                                                  // clears chunks, epoch++
         chunks_.assign((size_t)n, ChunkState{});
         cur_chunk_ = n - 1;
-        const int resident = std::min(n, n_blocks_);
+
+        // Choose the resident chunk set: sinks first, then the most recent
+        // chunks until the pool is full (so the tail window is always resident).
+        std::vector<uint8_t> keep((size_t)n, 0);
+        int budget = n_blocks_;
+        for (int c = 0; c < n && c < cfg_.sink_chunks && budget > 0; c++) {
+            keep[(size_t)c] = 1; budget--;
+        }
+        for (int c = n - 1; c >= 0 && budget > 0; c--) {
+            if (!keep[(size_t)c]) { keep[(size_t)c] = 1; budget--; }
+        }
+
+        int next_block = 0;
         for (int c = 0; c < n; c++) {
             const uint8_t * src = in.data() + (size_t)c * chunk_bytes_;
-            if (c < resident) {
-                chunks_[(size_t)c].block = c;
-                scatter_block(c, src);
+            if (keep[(size_t)c]) {
+                chunks_[(size_t)c].block = next_block++;
+                scatter_block(chunks_[(size_t)c].block, src);
             } else {
                 chunks_[(size_t)c].host_data.assign(src, src + chunk_bytes_);
                 chunks_[(size_t)c].on_host = true;
@@ -358,7 +372,7 @@ public:
             chunks_[(size_t)c].last_use = ++clock_;
         }
         free_blocks_.clear();
-        for (int b = n_blocks_ - 1; b >= resident; b--) free_blocks_.push_back(b);
+        for (int b = n_blocks_ - 1; b >= next_block; b--) free_blocks_.push_back(b);
         zero_free_blocks();   // maskless (qwen35moe) consumers need ~0 stale rows
         epoch_++;
         return true;
