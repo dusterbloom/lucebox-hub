@@ -333,36 +333,52 @@ private:
         return victim >= 0 && page_out(victim);
     }
 
-    // Move one chunk between pool slots and host backing. Segment order is
-    // fixed (layer-major, K then V, head-minor) so offsets are stable.
-    void copy_chunk(int c, int block, bool to_host) {
-        ChunkState & st = chunks_[c];
-        uint8_t * p = st.host_data.data();
+    // Canonical chunk traversal: layer-major, K then V, head-minor. EVERY
+    // pool<->host movement (page out/in, snapshot serialize/deserialize,
+    // zeroing) routes through here, so the on-host byte layout is identical
+    // everywhere by construction. `fn(tensor, tensor_offset, seg_bytes,
+    // buf_offset)` runs once per contiguous (layer, K|V, head) segment;
+    // `buf_offset` is the running offset into a chunk_bytes_-sized host blob.
+    template <class Fn>
+    void for_each_segment(int block, Fn && fn) const {
+        size_t boff = 0;
         for (size_t l = 0; l < attn_k_.size(); l++) {
             for (int kv = 0; kv < 2; kv++) {
                 ggml_tensor * t = kv == 0 ? attn_k_[l] : attn_v_[l];
                 const size_t seg = kv == 0 ? k_seg_bytes_ : v_seg_bytes_;
                 for (int h = 0; h < n_head_kv_; h++) {
-                    const size_t off = (size_t)block * cfg_.chunk_tokens * t->nb[1] + (size_t)h * t->nb[2];
-                    if (to_host) ggml_backend_tensor_get(t, p, off, seg);
-                    else         ggml_backend_tensor_set(t, p, off, seg);
-                    p += seg;
+                    const size_t off = (size_t)block * cfg_.chunk_tokens * t->nb[1]
+                                     + (size_t)h * t->nb[2];
+                    fn(t, off, seg, boff);
+                    boff += seg;
                 }
             }
         }
     }
 
+    // Pool block <-> contiguous host buffer (chunk_bytes_), canonical layout.
+    void gather_block(int block, uint8_t * buf) const {
+        for_each_segment(block, [&](ggml_tensor * t, size_t off, size_t seg, size_t b) {
+            ggml_backend_tensor_get(t, buf + b, off, seg);
+        });
+    }
+    void scatter_block(int block, const uint8_t * buf) {
+        for_each_segment(block, [&](ggml_tensor * t, size_t off, size_t seg, size_t b) {
+            ggml_backend_tensor_set(t, buf + b, off, seg);
+        });
+    }
+
+    // Move one chunk between its pool slot and its host backing store.
+    void copy_chunk(int c, int block, bool to_host) {
+        uint8_t * p = chunks_[c].host_data.data();
+        if (to_host) gather_block(block, p);
+        else         scatter_block(block, p);
+    }
+
     void zero_block(int block) {
-        for (size_t l = 0; l < attn_k_.size(); l++) {
-            for (int kv = 0; kv < 2; kv++) {
-                ggml_tensor * t = kv == 0 ? attn_k_[l] : attn_v_[l];
-                const size_t seg = kv == 0 ? k_seg_bytes_ : v_seg_bytes_;
-                for (int h = 0; h < n_head_kv_; h++) {
-                    const size_t off = (size_t)block * cfg_.chunk_tokens * t->nb[1] + (size_t)h * t->nb[2];
-                    ggml_backend_tensor_set(t, zero_buf_.data(), off, seg);
-                }
-            }
-        }
+        for_each_segment(block, [&](ggml_tensor * t, size_t off, size_t seg, size_t) {
+            ggml_backend_tensor_set(t, zero_buf_.data(), off, seg);
+        });
     }
 
     KvFlashConfig cfg_;
