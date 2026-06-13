@@ -478,6 +478,7 @@ set(LUCE_SRC_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/qwen3
     ${CMAKE_CURRENT_SOURCE_DIR}/src/gemma4
     ${CMAKE_CURRENT_SOURCE_DIR}/src/deepseek4
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/diffusion
     ${CMAKE_CURRENT_SOURCE_DIR}/src/server
 )
 
@@ -529,6 +530,10 @@ add_library(luce_common STATIC
     src/deepseek4/deepseek4_image_admission.cpp
     src/deepseek4/deepseek4_image_policy.cpp
     src/server/image_input.cpp
+    # ── Abstracted diffusion (dLLM) module ──
+    src/diffusion/diffusion_decoder.cpp
+    src/diffusion/diffusion_backend.cpp
+    src/diffusion/diffusion_registry.cpp
     src/flashprefill_q8.cpp
     src/kv_cache.cpp
     src/kv_quant.cpp
@@ -1338,6 +1343,19 @@ if(LUCE_TESTS)
                 PROPERTIES SKIP_RETURN_CODE 77)
         endforeach()
         unset(_maskless_mode)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_diffusion_decoder.cpp")
+        # CPU-only numerics test for the model-agnostic diffusion decode loop.
+        add_executable(test_diffusion_decoder test/test_diffusion_decoder.cpp)
+        target_include_directories(test_diffusion_decoder PRIVATE ${LUCE_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_diffusion_decoder PRIVATE luce_common)
+        add_test(NAME diffusion_decoder COMMAND test_diffusion_decoder)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_bandit_integration.cpp")
+        add_executable(test_bandit_integration test/test_bandit_integration.cpp)
+        target_include_directories(test_bandit_integration PRIVATE ${LUCE_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_bandit_integration PRIVATE luce_common)
+        add_test(NAME bandit_integration COMMAND test_bandit_integration)
     endif()
     # HIP-only standalone build; CUDA backend is covered by aggregated test_server_unit.
     if(LUCE_GPU_BACKEND STREQUAL "hip" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_draft_topk_cuda.cpp")
