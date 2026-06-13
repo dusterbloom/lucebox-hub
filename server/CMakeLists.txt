@@ -534,6 +534,7 @@ add_library(luce_common STATIC
     src/diffusion/diffusion_decoder.cpp
     src/diffusion/diffusion_backend.cpp
     src/diffusion/diffusion_registry.cpp
+    src/diffusion/diffusiongemma/diffusion_gemma.cpp
     src/flashprefill_q8.cpp
     src/kv_cache.cpp
     src/kv_quant.cpp
