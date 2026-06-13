@@ -20,8 +20,8 @@ Target families (both shipped mid-2026):
 DiffusionBackend  : ModelBackend      diffusion_backend.{h,cpp}
   └─ run_diffusion_generate(...)      diffusion_decoder.{h,cpp}   ← the abstraction
        └─ DiffusionModelGraph (seam)  diffusion_model.h
-            ├─ DiffusionGemmaGraph    diffusion/diffusiongemma/   (phase 2)
-            └─ NemotronDiffusionGraph diffusion/nemotron/         (phase 3)
+            ├─ DiffusionGemmaGraph    diffusion/diffusiongemma/   (implemented)
+            └─ NemotronDiffusionGraph diffusion/nemotron/         (pending)
   DiffusionConfig / enums             diffusion_types.h
   family sub-factory                  diffusion_registry.{h,cpp}
 ```
@@ -54,22 +54,29 @@ DiffusionBackend  : ModelBackend      diffusion_backend.{h,cpp}
 
 - **Phase 1 (done, CPU-tested):** the abstraction, the decode loop, the backend
   + registry scaffolding, and `test/test_diffusion_decoder.cpp` (17 cases).
-- **Phase 2 (DiffusionGemma):** implement `DiffusionGemmaGraph` wrapping
-  `Gemma4Weights` (reuse `load_gemma4_gguf`, `gemma4_internal.h`). The forward
-  needs a **bidirectional block mask + per-position logits**: the gemma4 graph
-  already takes host-built masks as graph inputs and `gemma4_verify_batch` /
-  `compute_gemma4_split_projection` already emit per-position logits/argmax — add
-  a `gemma4_denoise_batch` that (a) attends the block to the prefix KV + within
-  the block (non-causal) and (b) does **not** persist the noised block into the
-  causal KV cache across steps.
-- **Phase 3 (Nemotron):** dense backbone loader/graph (start from the qwen3
-  dense loader/graph); causal mask = AR mode, bidirectional = diffusion mode.
-- **Phase 4:** model-card → `DiffusionConfig` plumbing; server smoke
-  (`smoke_diffusion_forward`) + `/v1/chat/completions` e2e.
+- **Phase 2 (DiffusionGemma — implemented, GPU-build-gated, not yet run):**
+  `diffusiongemma/diffusion_gemma.{h,cpp}` wraps `Gemma4Weights` (reuses
+  `load_gemma4_gguf` + cache) and runs `gemma4_denoise_batch` — a bidirectional
+  variant of `gemma4_verify_batch` (every query attends to every key; per-block
+  logit readout), reusing `build_gemma4_layer` for the exact gemma4 compute. The
+  registry + backend_factory route `general.architecture == "diffusiongemma"` to
+  it. **First-cut caveats to verify on GPU with real weights:** (a) stateless
+  full-recompute per step, limited to `canvas <= SWA ring` (warm-prefix +
+  block-incremental is the optimization follow-up); (b) the exact DiffusionGemma
+  denoising contract (timestep/noise-level conditioning, schedule) is not modeled
+  — the loop feeds uniform-state noise and reads logits, which must be validated
+  against the published model behaviour.
+- **Phase 3 (Nemotron — pending):** needs a dedicated dense backbone
+  loader/graph (its arch differs from qwen3); best implemented against the real
+  model config + a GPU build rather than fabricated blind. The registry branch is
+  stubbed (`create_diffusion_model` returns nullptr with a diagnostic).
+- **Phase 4:** model-card → `DiffusionConfig` plumbing through `BackendArgs`;
+  server smoke (`smoke_diffusion_forward`) + `/v1/chat/completions` e2e.
 
-> Phases 2–4 touch the ggml/CUDA graph and require a GPU build (the CI runners)
-> to compile and test — they cannot be built in a CPU-only container. Phase 1's
-> loop is verified independently via the CPU CTest.
+> The ggml/CUDA code (Phase 2 + factory wiring) requires a GPU build (the CI
+> runners or a local CUDA/ggml toolchain) to compile and test — it cannot be
+> built in a CPU-only container. Phase 1's loop is verified independently via the
+> CPU CTest, which is the gate that runs here.
 
 ## Build & test
 

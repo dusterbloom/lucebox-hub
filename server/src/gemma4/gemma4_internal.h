@@ -262,6 +262,21 @@ bool gemma4_verify_batch(
     std::vector<int32_t> &  out_argmax,
     const class KvFlashPager * kvflash = nullptr);
 
+// Bidirectional (diffusion decoder-mode) forward over a canvas. Every query
+// attends to every key in [0, n_tokens); returns logits for the sub-range
+// [out_begin, out_begin+out_len). Used by the DiffusionGemma backend. See
+// gemma4_graph.cpp for the (canvas <= SWA ring) constraint on this first cut.
+bool gemma4_denoise_batch(
+    ggml_backend_t          backend,
+    const Gemma4Weights &   w,
+    Gemma4Cache &           cache,
+    const float *           embed,
+    const int32_t *         token_ids,
+    int                     n_tokens,
+    int                     out_begin,
+    int                     out_len,
+    std::vector<float> &    out_logits);
+
 // Project hidden states through lm_head (out_norm + output + softcap + argmax).
 // Used by DFlash draft to convert draft hidden states to token IDs.
 bool gemma4_project_hidden(
