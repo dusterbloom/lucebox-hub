@@ -77,6 +77,19 @@
         "max":    { "type": "integer", "minimum": 1 }
       }
     },
+    "diffusion": {
+      "type": "object",
+      "description": "Optional. Present on diffusion (dLLM) model cards. Decode defaults for the diffusion backend's denoising loop (server/src/diffusion/diffusion_decoder.cpp). All fields optional; the backend resolves unset values from arch defaults or GGUF metadata.",
+      "additionalProperties": false,
+      "properties": {
+        "block_size":           { "type": "integer", "minimum": 1, "description": "Semi-autoregressive block / canvas width." },
+        "steps":                { "type": "integer", "minimum": 1, "description": "Denoising steps per block (<=0 or unset => block_size)." },
+        "remasking":            { "type": "string", "enum": ["low_confidence", "random", "parallel_threshold"], "description": "Policy for finalizing/remasking positions between steps." },
+        "confidence_threshold": { "type": "number", "description": "Probability cutoff for the parallel_threshold policy." },
+        "noise_scheme":         { "type": "string", "enum": ["masked", "uniform_state"], "description": "How undetermined positions are represented: an absorbing [MASK] token or a random vocab token (uniform-state)." },
+        "mask_token_id":        { "type": "integer", "description": "Token id used for the masked scheme. Omit (or -1) to resolve from the model graph / GGUF." }
+      }
+    },
     "notes": {
       "type": "string",
       "description": "Optional. Free-form notes about provenance, caveats, or non-card-derived choices."

@@ -12,6 +12,7 @@
 #include "gemma4_layer_split_adapter.h"
 #include "layer_split_backend.h"
 #include "qwen35_layer_split_adapter.h"
+#include "diffusion/diffusion_registry.h"
 
 #include <cstdio>
 #include <algorithm>
@@ -199,6 +200,27 @@ std::unique_ptr<ModelBackend> create_backend(const BackendArgs & args) {
         auto backend = std::make_unique<Gemma4Backend>(gcfg);
         if (!backend->init()) {
             std::fprintf(stderr, "[backend_factory] Gemma4Backend init failed\n");
+            return nullptr;
+        }
+        return backend;
+
+    } else if (arch == "diffusiongemma" || arch == "nemotron_diffusion"
+               || arch == "nemotron-diffusion") {
+        // Diffusion (dLLM) families all share one DiffusionBackend, constructed
+        // via the diffusion sub-factory (diffusion_registry). Decode knobs
+        // default here for now; model-card -> DiffusionConfig plumbing is a
+        // follow-up. The per-family forward graphs are wired in later phases —
+        // until then the sub-factory returns nullptr with a clear diagnostic.
+        DiffusionModelArgs dargs;
+        dargs.model_path = args.model_path;
+        dargs.device     = args.device;
+        dargs.max_ctx    = args.device.max_ctx;
+
+        auto backend = create_diffusion_backend(arch, dargs);
+        if (!backend) {
+            std::fprintf(stderr,
+                "[backend_factory] diffusion backend (%s) init failed\n",
+                arch.c_str());
             return nullptr;
         }
         return backend;
