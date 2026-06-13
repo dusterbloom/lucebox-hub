@@ -12,6 +12,7 @@
 #include "common/restore_delta.h"
 #include "qwen3/qwen3_drafter.h"
 #include "qwen3/qwen3_kvflash_scorer.h"
+#include "qwen3/anchor_scan.h"
 
 #include "ggml-cuda.h"
 #include "common/snapshot_backend.h"
@@ -267,6 +268,12 @@ bool Qwen35Backend::init() {
                         : "lru (recency-only: no Qwen3-0.6B drafter found "
                           "next to the model or in --prefill-drafter)");
         std::fflush(stdout);
+
+        kvflash_pin_header_chunks_ = env_int_or_default("DFLASH_KVFLASH_PIN_HEADER", 0);
+        kvflash_pin_needle_        = env_int_or_default("DFLASH_KVFLASH_PIN_NEEDLE", 0) != 0;
+        kvflash_pin_enabled_       = kvflash_qk_policy_ && (kvflash_pin_header_chunks_ > 0 || kvflash_pin_needle_);
+        if (kvflash_pin_enabled_) fprintf(stderr, "[kvflash] pinning ON: header=%d needle=%d\n",
+                                          kvflash_pin_header_chunks_, kvflash_pin_needle_ ? 1 : 0);
     }
 
     // Init feature mirror when draft model is available (needed for spec decode).
@@ -403,6 +410,8 @@ bool Qwen35Backend::snapshot_save(int slot) {
         snap.pooled_chunk_tokens = kvflash_pager_.chunk_tokens();
         if (kvflash_qk_policy_) kvflash_qk_pool_.serialize(snap.pooled_qk);
         else                    snap.pooled_qk.clear();
+        if (kvflash_pin_enabled_) kvflash_pager_.export_pins(snap.pinned_chunks);
+        else                      snap.pinned_chunks.clear();
     }
     return true;
 }
@@ -437,6 +446,10 @@ bool Qwen35Backend::restore_target_cache_from_snapshot(int slot) {
         if (kvflash_qk_policy_) {
             kvflash_qk_pool_.deserialize(snap.pooled_qk);
             kvflash_qk_pooled_upto_ = snap.cur_pos / kvflash_pager_.chunk_tokens();
+        }
+        if (kvflash_pin_enabled_) {
+            kvflash_pager_.import_pins(snap.pinned_chunks);
+            kvflash_pinned_upto_ = snap.cur_pos / kvflash_pager_.chunk_tokens();
         }
         kvflash_upload_mask();   // epoch moved — refresh slot mask before next compute
     }
@@ -997,6 +1010,8 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             if (kvflash_qk_policy_) {
                 kvflash_qk_pool_.reset(kvflash_qk_pool_.dims());
                 kvflash_qk_pooled_upto_ = 0;
+                kvflash_pinned_upto_ = 0;
+                kvflash_needle_forced_.clear();
             }
         }
         std::printf("[kvflash] pooled prefill%s: %d %s tokens through a %d-token "
@@ -1188,6 +1203,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         // QK policy: pool the post-RoPE keys of chunks this batch sealed
         // (they are resident — sealed inside the protected tail window).
         if (kvflash_active() && kvflash_qk_policy_) kvflash_qk_pool_to(committed);
+        if (kvflash_pin_enabled_) kvflash_apply_pins(committed);
 
         // Sync draft-side features if active.
         if (remote_draft_.active() && !draft_parked_) {
@@ -1269,7 +1285,10 @@ void Qwen35Backend::kvflash_sync_prefill(int committed,
     if (kvflash_qk_policy_) {
         kvflash_qk_pool_.reset(kvflash_qk_pool_.dims());
         kvflash_qk_pooled_upto_ = 0;
+        kvflash_pinned_upto_ = 0;
+        kvflash_needle_forced_.clear();
         kvflash_qk_pool_to(committed);
+        if (kvflash_pin_enabled_) kvflash_apply_pins(committed);
     }
 }
 
@@ -1288,6 +1307,51 @@ void Qwen35Backend::kvflash_qk_pool_to(int committed) {
         }
     }
     kvflash_qk_pooled_upto_ = std::max(kvflash_qk_pooled_upto_, sealed);
+}
+
+void Qwen35Backend::kvflash_apply_pins(int committed) {
+    if (!kvflash_pin_enabled_) return;
+    const int ct = kvflash_pager_.chunk_tokens();
+    if (ct <= 0) return;
+    const int sealed = committed / ct;
+    if (sealed <= 0) return;
+
+    if (kvflash_pin_needle_) {
+        // Rare-token / n-gram salience over the full history; answer-blind.
+        dflash::qwen3::AnchorScanCfg cfg;
+        cfg.chunk_size          = ct;
+        cfg.anchor_radius       = 1;
+        cfg.max_anchor_hits     = 64;
+        cfg.ngram               = 4;
+        cfg.rare_token_max_freq = 8;
+        cfg.max_forced_count    = std::max(1, kvflash_pager_.pool_tokens() / ct);
+        const int body_end = std::min<int>((int)kvflash_history_.size(), sealed * ct);
+        std::vector<int32_t> query_pool;
+        const int qn = 96;
+        const int hstart = std::max(0, (int)kvflash_history_.size() - qn);
+        for (int i = hstart; i < (int)kvflash_history_.size(); i++)
+            query_pool.push_back(kvflash_history_[(size_t)i]);
+        kvflash_needle_forced_.assign((size_t)sealed, 0);
+        dflash::qwen3::scan_and_force_transitive(kvflash_history_, body_end,
+                                                  query_pool, cfg,
+                                                  /*max_iters=*/2,
+                                                  kvflash_needle_forced_);
+    }
+
+    for (int c = 0; c < sealed; c++) {
+        if (dflash::common::kvflash_chunk_should_pin(c, kvflash_pin_header_chunks_,
+                                                      kvflash_pin_needle_,
+                                                      kvflash_needle_forced_))
+            kvflash_pager_.pin_chunk(c);
+    }
+    kvflash_pinned_upto_ = std::max(kvflash_pinned_upto_, sealed);
+
+    int n_pinned = 0, lowest = -1;
+    for (int c = 0; c < sealed; c++) {
+        if (kvflash_pager_.is_pinned(c)) { n_pinned++; if (lowest < 0) lowest = c; }
+    }
+    std::fprintf(stderr, "[kvflash] apply_pins: sealed=%d pinned=%d lowest_pinned_chunk=%d (header=%d needle=%d)\n",
+                 sealed, n_pinned, lowest, kvflash_pin_header_chunks_, kvflash_pin_needle_ ? 1 : 0);
 }
 
 void Qwen35Backend::kvflash_upload_mask() {
@@ -1611,6 +1675,7 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
         if (pool) {
             kvflash_history_.push_back(next_tok);
             if (kvflash_qk_policy_) kvflash_qk_pool_to(committed);
+            if (kvflash_pin_enabled_) kvflash_apply_pins(committed);
             kvflash_maybe_reselect((int)(out_tokens.size() - out_tokens_at_entry));
         }
         if (io.cancelled) break;

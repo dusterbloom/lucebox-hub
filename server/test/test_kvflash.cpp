@@ -1493,6 +1493,267 @@ int main(int argc, char ** argv) {
         }
     }
 
+    // ── Run H: pinned protected class ──────────────────────────────
+    // Pool geometry: pool=8*64=512 tokens, sink_chunks=1, tail_window_chunks=4.
+    // max_pins = 8 - 1 - 4 - 1 = 2 (two non-sink, non-tail marginal slots).
+    {
+        const int chunk      = 64;
+        const int pool_h     = 8 * chunk;
+        const int sink_h     = 1;
+        const int tail_h     = 4;
+        // max_pins = n_blocks - sink - tail - 1 = 8-1-4-1 = 2
+        const int max_pins_h = 8 - sink_h - tail_h - 1;  // = 2
+
+        // H1 — pin survives full pool-pressure eviction
+        {
+            TargetCache ch1;
+            if (!create_target_cache(w, pool_h, 0, backend, ch1, /*prefill_only=*/true)) {
+                std::fprintf(stderr, "cache H1: %s\n", dflash27b_last_error()); return 1;
+            }
+            KvFlashPager ph1;
+            KvFlashConfig pc_h1;
+            pc_h1.pool_tokens        = pool_h;
+            pc_h1.sink_chunks        = sink_h;
+            pc_h1.tail_window_chunks = tail_h;
+            if (!ph1.attach(pc_h1, ch1.attn_k, ch1.attn_v)) return 1;
+
+            // materialize chunks 0..7 (fills the pool)
+            for (int p = 0; p < pool_h; p++) ph1.slot_for(p);
+            // pin chunk 2 (non-sink, non-tail at this point)
+            ph1.pin_chunk(2);
+            const bool is_pinned_before = ph1.is_pinned(2);
+            const bool res_before = ph1.is_resident(2);
+
+            // drive past chunk 11 to force eviction — pool=8 blocks, cur_chunk
+            // will be >7 so tail window covers last 4, sink covers 0, victim
+            // pool must evict something. Chunks 1..3 are the mid-evictable ones.
+            for (int p = pool_h; p < 12 * chunk; p++) ph1.slot_for(p);
+
+            const bool still_pinned  = ph1.is_pinned(2);
+            const bool still_resident = ph1.is_resident(2);
+            const bool evictions_ran  = ph1.stats().page_outs >= 1;
+            // chunk 3 is NOT pinned → should have been a victim
+            const bool c3_evicted = !ph1.is_resident(3);
+            std::printf("[H1] pinned_before=%d res_before=%d still_pinned=%d "
+                        "still_resident=%d evictions=%lld c3_evicted=%d\n",
+                        (int)is_pinned_before, (int)res_before, (int)still_pinned,
+                        (int)still_resident, (long long)ph1.stats().page_outs,
+                        (int)c3_evicted);
+            const bool h1_pass = is_pinned_before && res_before &&
+                                 still_pinned && still_resident &&
+                                 evictions_ran && c3_evicted;
+            std::printf("%s H1: pin survives full pool-pressure eviction\n",
+                        h1_pass ? "PASS" : "FAIL");
+            if (!h1_pass) hard_failures++;
+            free_target_cache(ch1);
+        }
+
+        // H2 — pin survives adversarial reselect()
+        {
+            TargetCache ch2;
+            if (!create_target_cache(w, pool_h, 0, backend, ch2, /*prefill_only=*/true)) {
+                std::fprintf(stderr, "cache H2: %s\n", dflash27b_last_error()); return 1;
+            }
+            KvFlashPager ph2;
+            KvFlashConfig pc_h2;
+            pc_h2.pool_tokens        = pool_h;
+            pc_h2.sink_chunks        = sink_h;
+            pc_h2.tail_window_chunks = tail_h;
+            if (!ph2.attach(pc_h2, ch2.attn_k, ch2.attn_v)) return 1;
+
+            // fill pool fully so reselect has something to evict
+            for (int p = 0; p < pool_h; p++) ph2.slot_for(p);
+            ph2.pin_chunk(2);
+            // score_hook gives chunk 2 the worst possible score
+            ph2.score_hook = [](int c) { return c == 2 ? -1e30f : 1.0f; };
+            ph2.reselect();
+            ph2.score_hook = nullptr;
+            const bool h2_pass = ph2.is_resident(2);
+            std::printf("%s H2: pin survives adversarial reselect() (is_resident=%d)\n",
+                        h2_pass ? "PASS" : "FAIL", (int)h2_pass);
+            if (!h2_pass) hard_failures++;
+            free_target_cache(ch2);
+        }
+
+        // H3 — pin survives serialize/deserialize via export/import (NOT in KV blob)
+        {
+            TargetCache cs3, cd3;
+            if (!create_target_cache(w, pool_h, 0, backend, cs3, /*prefill_only=*/true) ||
+                !create_target_cache(w, pool_h, 0, backend, cd3, /*prefill_only=*/true)) {
+                std::fprintf(stderr, "cache H3: %s\n", dflash27b_last_error()); return 1;
+            }
+            KvFlashPager ps3;
+            KvFlashConfig pc_h3;
+            pc_h3.pool_tokens        = pool_h;
+            pc_h3.sink_chunks        = sink_h;
+            pc_h3.tail_window_chunks = tail_h;
+            if (!ps3.attach(pc_h3, cs3.attn_k, cs3.attn_v)) return 1;
+
+            const int Nu3 = 11 * chunk + 30;  // unaligned
+            for (int p = 0; p < Nu3; p++) ps3.slot_for(p);
+            ps3.pin_chunk(5);
+            std::vector<uint8_t> blob3;
+            ps3.serialize(blob3);
+            std::vector<uint8_t> pins3;
+            ps3.export_pins(pins3);
+
+            // fresh pager on a new cache
+            KvFlashPager pd3;
+            if (!pd3.attach(pc_h3, cd3.attn_k, cd3.attn_v)) return 1;
+            const bool deser_ok = pd3.deserialize(blob3, Nu3);
+            // pins must NOT be in the KV blob
+            const bool pin_absent = !pd3.is_pinned(5);
+            // import pins then drive suffix eviction
+            pd3.import_pins(pins3);
+            bool slot_ok = true;
+            for (int p = Nu3; p < Nu3 + 300; p++) {
+                if (pd3.slot_for(p) < 0) { slot_ok = false; break; }
+            }
+            const bool h3_pass = deser_ok && pin_absent && slot_ok &&
+                                 pd3.is_resident(5) && pd3.is_pinned(5);
+            std::printf("[H3] deser=%d pin_absent_before_import=%d slot_ok=%d "
+                        "resident_after=%d pinned_after=%d\n",
+                        (int)deser_ok, (int)pin_absent, (int)slot_ok,
+                        (int)pd3.is_resident(5), (int)pd3.is_pinned(5));
+            std::printf("%s H3: pin survives export/import (not in KV blob)\n",
+                        h3_pass ? "PASS" : "FAIL");
+            if (!h3_pass) hard_failures++;
+            free_target_cache(cs3);
+            free_target_cache(cd3);
+        }
+
+        // H4 — deadlock guard: max_pins=2, third pin refused, no deadlock
+        {
+            TargetCache ch4;
+            if (!create_target_cache(w, pool_h, 0, backend, ch4, /*prefill_only=*/true)) {
+                std::fprintf(stderr, "cache H4: %s\n", dflash27b_last_error()); return 1;
+            }
+            KvFlashPager ph4;
+            KvFlashConfig pc_h4;
+            pc_h4.pool_tokens        = pool_h;
+            pc_h4.sink_chunks        = sink_h;
+            pc_h4.tail_window_chunks = tail_h;
+            if (!ph4.attach(pc_h4, ch4.attn_k, ch4.attn_v)) return 1;
+
+            // materialize chunks 0..7
+            for (int p = 0; p < pool_h; p++) ph4.slot_for(p);
+
+            // At this point cur_chunk_=7; tail_window protects [8-1-4..7]=[3..7].
+            // sink protects chunk 0. Chunks 1,2 are the marginal evictable ones.
+            ph4.pin_chunk(1);
+            ph4.pin_chunk(2);
+            ph4.pin_chunk(3);  // 3 is tail-protected, so marginal count=2 → refused? No —
+                               // 3 is in tail window → n_pinned_marginal skips it → budget NOT consumed
+                               // So pin_chunk(3) of a tail-protected chunk succeeds but is free.
+                               // Then pin_chunk(4) would be the 3rd marginal → refused.
+            // Let's push far enough that 3 is no longer tail-protected,
+            // then try pinning a 3rd marginal chunk.
+            // After filling past chunk 11: cur_chunk_=11, tail=[7..10], sink=[0]
+            // marginal = pinned chunks NOT in sink/tail
+            // Let's get to cur_chunk_ >= 9 first: fill to chunk 9
+            for (int p = pool_h; p < 9 * chunk; p++) ph4.slot_for(p);
+            // Now cur_chunk_=8 (pos 8*64..8*64+63 → c=8), tail_window=[8-4..7]?
+            // Wait: cur_chunk_ = 8, tail=[cur_chunk_-1-tail_h .. cur_chunk_-1] = [3..7]
+            // So chunks 1,2 are marginal. chunk 3 is in tail → not marginal.
+            // Pins on 1 and 2: n_pinned_marginal = 2 = max_pins → pin of chunk 3 would
+            // be marginal too once it leaves tail. Let's extend further.
+            for (int p = 9 * chunk; p < 12 * chunk; p++) ph4.slot_for(p);
+            // cur_chunk_=11, tail=[11-1-4..10]=[6..10]
+            // Chunks 1,2 pinned AND not in sink/tail → marginal=2 = max_pins
+            // chunk 3 no longer in tail → pinning it would make marginal=3 → refused
+            ph4.pin_chunk(3);  // this should now be refused
+            const bool c1_pinned = ph4.is_pinned(1);
+            const bool c2_pinned = ph4.is_pinned(2);
+            const bool c3_refused = !ph4.is_pinned(3);
+
+            // drive even more tokens — no slot_for should return -1
+            bool no_deadlock = true;
+            for (int p = 12 * chunk; p < 20 * chunk; p++) {
+                if (ph4.slot_for(p) < 0) { no_deadlock = false; break; }
+            }
+            const bool c1_still = ph4.is_resident(1);
+            const bool c2_still = ph4.is_resident(2);
+            std::printf("[H4] c1_pinned=%d c2_pinned=%d c3_refused=%d "
+                        "no_deadlock=%d c1_resident=%d c2_resident=%d max_pins=%d\n",
+                        (int)c1_pinned, (int)c2_pinned, (int)c3_refused,
+                        (int)no_deadlock, (int)c1_still, (int)c2_still, max_pins_h);
+            const bool h4_pass = c1_pinned && c2_pinned && c3_refused &&
+                                 no_deadlock && c1_still && c2_still;
+            std::printf("%s H4: deadlock guard + pin budget enforced\n",
+                        h4_pass ? "PASS" : "FAIL");
+            if (!h4_pass) hard_failures++;
+            free_target_cache(ch4);
+        }
+
+        // H5 — bounds + idempotency
+        {
+            TargetCache ch5;
+            if (!create_target_cache(w, pool_h, 0, backend, ch5, /*prefill_only=*/true)) {
+                std::fprintf(stderr, "cache H5: %s\n", dflash27b_last_error()); return 1;
+            }
+            KvFlashPager ph5;
+            KvFlashConfig pc_h5;
+            pc_h5.pool_tokens        = pool_h;
+            pc_h5.sink_chunks        = sink_h;
+            pc_h5.tail_window_chunks = tail_h;
+            if (!ph5.attach(pc_h5, ch5.attn_k, ch5.attn_v)) return 1;
+
+            for (int p = 0; p < pool_h; p++) ph5.slot_for(p);
+
+            // OOB: no crash
+            const bool oob_safe = !ph5.is_pinned(9999);
+
+            // idempotent: double-pin of chunk 2 consumes budget once
+            ph5.pin_chunk(2);
+            ph5.pin_chunk(2);  // second call — idempotent, no budget consumed twice
+            // budget should still allow one more marginal pin
+            // At cur_chunk_=7, tail=[7-1-4..6]=[2..6], so chunk 2 IS in tail → marginal=0
+            // Need to extend so chunk 2 is out of tail window
+            for (int p = pool_h; p < 12 * chunk; p++) ph5.slot_for(p);
+            // cur_chunk_=11, tail=[6..10], chunk 2 now marginal, pinned → marginal=1
+            // pin chunk 3 (also marginal) — should succeed since budget=2 and we only used 1
+            ph5.pin_chunk(3);
+            const bool c2_pinned = ph5.is_pinned(2);
+            const bool c3_also_pinned = ph5.is_pinned(3);
+
+            std::printf("[H5] oob_safe=%d c2_pinned=%d c3_also_pinned=%d\n",
+                        (int)oob_safe, (int)c2_pinned, (int)c3_also_pinned);
+            const bool h5_pass = oob_safe && c2_pinned && c3_also_pinned;
+            std::printf("%s H5: bounds safe + idempotency preserves pin budget\n",
+                        h5_pass ? "PASS" : "FAIL");
+            if (!h5_pass) hard_failures++;
+            free_target_cache(ch5);
+        }
+
+        // ── Pure-function test: kvflash_chunk_should_pin ──────────────
+        {
+            std::vector<uint8_t> needle(10, 0);
+            needle[3] = 1; needle[7] = 1;
+
+            // header window: pin_header_chunks=2 → c<2 pinned
+            const bool hdr0 = kvflash_chunk_should_pin(0, 2, false, {});
+            const bool hdr1 = kvflash_chunk_should_pin(1, 2, false, {});
+            const bool hdr2 = !kvflash_chunk_should_pin(2, 2, false, {});  // boundary: c==2 not pinned
+
+            // needle bitmask
+            const bool ndl3 = kvflash_chunk_should_pin(3, 0, true, needle);
+            const bool ndl4 = !kvflash_chunk_should_pin(4, 0, true, needle);
+            const bool ndl7 = kvflash_chunk_should_pin(7, 0, true, needle);
+
+            // empty bitmask + no header → no pin
+            const bool none = !kvflash_chunk_should_pin(5, 0, true, {});
+
+            std::printf("[H-pure] hdr0=%d hdr1=%d hdr2_boundary=%d "
+                        "ndl3=%d ndl4=%d ndl7=%d none=%d\n",
+                        (int)hdr0, (int)hdr1, (int)hdr2,
+                        (int)ndl3, (int)ndl4, (int)ndl7, (int)none);
+            const bool pure_pass = hdr0 && hdr1 && hdr2 && ndl3 && ndl4 && ndl7 && none;
+            std::printf("%s H-pure: kvflash_chunk_should_pin pure function\n",
+                        pure_pass ? "PASS" : "FAIL");
+            if (!pure_pass) hard_failures++;
+        }
+    }
+
     // ── Memory verdict ──────────────────────────────────────────────
     const double red_kv = 100.0 * (1.0 - (double)mem_c_kv / (double)mem_a_kv);
     std::printf("\n=== KV MEMORY ===\n");

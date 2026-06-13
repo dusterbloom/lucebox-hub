@@ -435,8 +435,9 @@ struct PrefixSnapshot {
     // snapshots.
     bool is_pooled = false;
     int  pooled_chunk_tokens = 0;
-    std::vector<uint8_t> pooled_kv;   // KvFlashPager::serialize()
-    std::vector<uint8_t> pooled_qk;   // KvFlashQkPool::serialize() (qk policy only)
+    std::vector<uint8_t> pooled_kv;      // KvFlashPager::serialize()
+    std::vector<uint8_t> pooled_qk;      // KvFlashQkPool::serialize() (qk policy only)
+    std::vector<uint8_t> pinned_chunks;  // KvFlashPager::export_pins (qk + pin policy only)
 };
 
 // Snapshot the slim state of `cache` into `snap`. KV tensors are RIGHT-SIZED

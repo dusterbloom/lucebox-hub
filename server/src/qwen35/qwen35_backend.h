@@ -189,8 +189,14 @@ protected:
     KvFlashQkPool           kvflash_qk_pool_;
     KvFlashTargetQkScorer * kvflash_qk_scorer_ = nullptr;  // owned by kvflash_scorer_
     int                     kvflash_qk_pooled_upto_ = 0;   // chunks pooled so far
+    int                     kvflash_pinned_upto_       = 0;
+    bool                    kvflash_pin_enabled_       = false;
+    int                     kvflash_pin_header_chunks_ = 0;
+    bool                    kvflash_pin_needle_        = false;
+    std::vector<uint8_t>    kvflash_needle_forced_;   // per-chunk needle bitmask
     // Pool keys for every chunk sealed before `committed` not pooled yet.
     void kvflash_qk_pool_to(int committed);
+    void kvflash_apply_pins(int committed);
     // Rebuild pager mapping after (re)prefill: positions [0, committed)
     // occupy pool slots identity-mapped (prefill is contiguous).
     void kvflash_sync_prefill(int committed, const std::vector<int32_t> & tokens,

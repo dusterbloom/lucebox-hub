@@ -80,6 +80,18 @@ inline void kvflash_qk_chunk_scores(
     }
 }
 
+// Pure pin decision for chunk c: pinned if it falls in the header window
+// (tool-defs / system prompt) OR a precomputed needle bitmask flags it.
+// needle_forced may be empty (needle pinning disabled). Answer-blind:
+// keys only on position and the externally-computed salience bitmask.
+inline bool kvflash_chunk_should_pin(int c, int pin_header_chunks,
+                                     bool pin_needle,
+                                     const std::vector<uint8_t> & needle_forced) {
+    if (pin_header_chunks > 0 && c < pin_header_chunks) return true;
+    if (pin_needle && c >= 0 && c < (int)needle_forced.size() && needle_forced[(size_t)c]) return true;
+    return false;
+}
+
 } // namespace dflash::common
 
 // ── Cache plumbing (needs ggml) ─────────────────────────────────────────

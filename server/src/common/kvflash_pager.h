@@ -144,6 +144,34 @@ public:
     // Optional external relevance score; higher = keep. Falls back to LRU.
     std::function<float(int /*chunk*/)> score_hook;
 
+    // ── Critical-chunk pinning (3rd protected class) ────────────────────
+    // Pinned chunks are protected from eviction exactly like sink/tail
+    // chunks. Pins are monotonic within a request (cleared by reset/attach).
+    void pin_chunk(int c) {
+        if (c < 0 || c >= (int)chunks_.size()) return;
+        if (chunks_[c].pinned) return;                          // idempotent
+        const int max_pins = n_blocks_ - cfg_.sink_chunks - cfg_.tail_window_chunks - 1;
+        if (n_pinned_marginal() >= max_pins) {                  // deadlock guard
+            std::fprintf(stderr,
+                "[kvflash] refusing to pin chunk %d: pin budget %d exhausted "
+                "(pool %d blocks, %d sink + %d tail reserved)\n",
+                c, max_pins, n_blocks_, cfg_.sink_chunks, cfg_.tail_window_chunks);
+            return;
+        }
+        chunks_[c].pinned = true;
+    }
+    bool is_pinned(int c) const {
+        return c >= 0 && c < (int)chunks_.size() && chunks_[c].pinned;
+    }
+    void export_pins(std::vector<uint8_t> & out) const {
+        out.assign(chunks_.size(), 0);
+        for (size_t c = 0; c < chunks_.size(); c++) out[c] = chunks_[c].pinned ? 1 : 0;
+    }
+    void import_pins(const std::vector<uint8_t> & in) {
+        for (size_t c = 0; c < in.size() && c < chunks_.size(); c++)
+            if (in[c]) chunks_[c].pinned = true;
+    }
+
     // Allocate slots for [kv_start, kv_start + n_tok) ahead of a forward
     // step (evicting LRU/low-score chunks as needed). False — with a
     // diagnostic — if the pool has no evictable block left.
@@ -284,7 +312,8 @@ public:
             const ChunkState & st = chunks_[c];
             if (st.block < 0 && !st.on_host) continue;     // never materialized
             const bool prot = c < cfg_.sink_chunks ||
-                              c > cur_chunk_ - 1 - cfg_.tail_window_chunks;
+                              c > cur_chunk_ - 1 - cfg_.tail_window_chunks ||
+                              chunks_[c].pinned;
             cands.push_back({c, prot ? 3.4e38f : score_hook(c)});
         }
         std::sort(cands.begin(), cands.end(),
@@ -382,9 +411,22 @@ private:
     struct ChunkState {
         int      block = -1;       // pool block index, -1 = not resident
         bool     on_host = false;  // backing store holds valid bytes
+        bool     pinned = false;   // 3rd protected class: never evict while resident
         uint64_t last_use = 0;
         std::vector<uint8_t> host_data;
     };
+
+    // Pins already covered by sink/tail cost no marginal evictable capacity.
+    int n_pinned_marginal() const {
+        int n = 0;
+        for (int c = 0; c < (int)chunks_.size(); c++) {
+            if (!chunks_[c].pinned) continue;
+            if (c < cfg_.sink_chunks) continue;
+            if (c > cur_chunk_ - 1 - cfg_.tail_window_chunks) continue;
+            n++;
+        }
+        return n;
+    }
 
     bool ensure_free_block() {
         if (!free_blocks_.empty()) return true;
@@ -397,6 +439,7 @@ private:
             if (chunks_[c].block < 0) continue;
             if (c < cfg_.sink_chunks) continue;
             if (c > cur_chunk_ - 1 - cfg_.tail_window_chunks) continue;
+            if (chunks_[c].pinned) continue;            // pinned: never a victim
             if (score_hook) {
                 const float s = score_hook(c);
                 if (victim < 0 || s < v_score) { victim = c; v_score = s; }
