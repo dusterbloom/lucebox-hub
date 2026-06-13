@@ -763,6 +763,15 @@ if(DFLASH27B_TESTS)
         add_executable(test_kvflash_qk test/test_kvflash_qk.cpp)
         target_include_directories(test_kvflash_qk PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
     endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_tool_name_resolve.cpp")
+        # Pure-logic unit test for resolve_tool_name() + Levenshtein helper.
+        # Links dflash_common (provides tool_parser.cpp) + nlohmann_json. No GPU needed.
+        add_executable(test_tool_name_resolve
+            test/test_tool_name_resolve.cpp)
+        target_include_directories(test_tool_name_resolve PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_tool_name_resolve PRIVATE dflash_common nlohmann_json::nlohmann_json)
+        add_test(NAME tool_name_resolve COMMAND test_tool_name_resolve)
+    endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_restore_delta.cpp")
         add_executable(test_restore_delta test/test_restore_delta.cpp)
         target_include_directories(test_restore_delta PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})

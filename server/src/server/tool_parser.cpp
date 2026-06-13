@@ -15,6 +15,7 @@
 // the inner JSON from pattern 6's view via `overlaps()`.
 
 #include "tool_parser.h"
+#include "tool_parser_internal.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -23,6 +24,7 @@
 #include <random>
 #include <regex>
 #include <sstream>
+#include <unordered_map>
 
 namespace dflash::common {
 
@@ -48,6 +50,126 @@ static bool tool_allowed(const json & tools, const std::string & name) {
         if (fn.is_object() && fn.value("name", "") == name) return true;
     }
     return false;
+}
+
+// ─── Tool name resolver ──────────────────────────────────────────────────
+
+static std::string to_lower(const std::string & s) {
+    std::string out = s;
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return out;
+}
+
+// Standard DP Levenshtein distance (non-static — exposed for testing).
+size_t tool_name_levenshtein(const std::string & a, const std::string & b) {
+    const size_t m = a.size();
+    const size_t n = b.size();
+    // row-only allocation (O(n) space)
+    std::vector<size_t> row(n + 1);
+    for (size_t j = 0; j <= n; j++) row[j] = j;
+    for (size_t i = 1; i <= m; i++) {
+        size_t prev = i;
+        for (size_t j = 1; j <= n; j++) {
+            size_t val;
+            if (a[i - 1] == b[j - 1]) {
+                val = row[j - 1];
+            } else {
+                val = 1 + std::min({row[j - 1], row[j], prev});
+            }
+            row[j - 1] = prev;
+            prev = val;
+        }
+        row[n] = prev;
+    }
+    return row[n];
+}
+
+// Synonym table: lowercased hallucinated name → ordered list of candidate
+// valid-tool names (lowercased). First candidate present in the tools list
+// wins.
+static const std::unordered_map<std::string, std::vector<std::string>> &
+synonym_table() {
+    static const std::unordered_map<std::string, std::vector<std::string>> tbl = {
+        {"execute",      {"bash", "shell", "run_command", "terminal"}},
+        {"shell",        {"bash", "run_command", "terminal"}},
+        {"run",          {"bash", "run_command", "execute_command"}},
+        {"exec",         {"bash", "run_command"}},
+        {"cmd",          {"bash", "run_command"}},
+        {"terminal",     {"bash", "run_command"}},
+    };
+    return tbl;
+}
+
+// Collect all valid tool names from the tools array (handles both shapes).
+static std::vector<std::string> collect_valid_names(const json & tools) {
+    std::vector<std::string> names;
+    if (tools.is_null() || !tools.is_array()) return names;
+    for (const auto & t : tools) {
+        const auto & fn = t.contains("function") ? t["function"] : t;
+        if (fn.is_object() && fn.contains("name") && fn["name"].is_string()) {
+            names.push_back(fn["name"].get<std::string>());
+        }
+    }
+    return names;
+}
+
+// Map a (potentially hallucinated) name to the nearest valid tool name.
+// Returns "" when no confident mapping exists.
+// HARD INVARIANT: the returned string (if non-empty) is always present in tools.
+std::string resolve_tool_name(const json & tools, const std::string & name) {
+    // 1. Fast path: already a valid tool name.
+    if (tool_allowed(tools, name)) return name;
+
+    const std::vector<std::string> valid = collect_valid_names(tools);
+    if (valid.empty()) {
+        // Empty tools = allow-list disabled; caller passes raw name.
+        return name;
+    }
+
+    const std::string lower_name = to_lower(name);
+
+    // 2. Case-insensitive exact match.
+    for (const auto & v : valid) {
+        if (to_lower(v) == lower_name) return v;
+    }
+
+    // 3. Synonym table lookup.
+    const auto & tbl = synonym_table();
+    auto it = tbl.find(lower_name);
+    if (it != tbl.end()) {
+        for (const auto & candidate : it->second) {
+            // Find candidate in valid names (case-insensitive).
+            for (const auto & v : valid) {
+                if (to_lower(v) == candidate) return v;
+            }
+        }
+        // Synonym matched but target not in tools — refuse (hard invariant).
+        return "";
+    }
+
+    // 4. Edit-distance fallback (kMaxDist=2, length-diff guard ≤2, single winner).
+    static constexpr size_t kMaxDist = 2;
+    std::string best;
+    size_t best_dist = kMaxDist + 1;
+    bool ambiguous = false;
+    for (const auto & v : valid) {
+        // Length-diff guard: skip if lengths differ by more than kMaxDist.
+        size_t len_diff = (name.size() > v.size()) ? name.size() - v.size()
+                                                    : v.size() - name.size();
+        if (len_diff > kMaxDist) continue;
+        size_t d = tool_name_levenshtein(lower_name, to_lower(v));
+        if (d < best_dist) {
+            best_dist = d;
+            best = v;
+            ambiguous = false;
+        } else if (d == best_dist && d <= kMaxDist) {
+            ambiguous = true;
+        }
+    }
+    if (!ambiguous && best_dist <= kMaxDist) return best;
+
+    return "";
 }
 
 // Find parameter schema properties for a function.
@@ -155,6 +277,19 @@ static const std::regex & re_tool_call_parameter() {
 
 static const std::regex & re_bare_function_xml() {
     static std::regex r(R"(<function=([A-Za-z_][\w.\-]*?)>([\s\S]*?)</function>(?:\s*</tool_call>)?)");
+    return r;
+}
+
+// Pattern 2b: bracket-less `function=NAME>` (missing leading `<`).
+// High-confidence guard: requires at least one </parameter> AND a </function>
+// in the body to avoid false-positives on prose. The leading capture group
+// (^|\n) avoids using a lookbehind (not supported by std::regex ECMAScript).
+// Group 1: newline prefix (may be empty at start-of-string).
+// Group 2: tool name.
+// Group 3: parameter region.
+static const std::regex & re_bracketless_function_xml() {
+    static std::regex r(
+        R"((^|\n)function=([A-Za-z_][\w.\-]*?)>([\s\S]*?</parameter>[\s\S]*?)</function>)");
     return r;
 }
 
@@ -460,9 +595,14 @@ ToolParseResult parse_tool_calls(const std::string & text, const json & tools) {
     ToolParseResult result;
     std::vector<Span> removals;
 
-    auto add_call = [&](const std::string & fn_name, const json & args,
+    auto add_call = [&](const std::string & fn_name_in, const json & args,
                         size_t start, size_t end) {
-        if (!tool_allowed(tools, fn_name)) return;
+        std::string fn_name = resolve_tool_name(tools, fn_name_in);
+        if (fn_name.empty()) return;
+        if (fn_name != fn_name_in) {
+            fprintf(stderr, "[tool] name corrected: '%s' -> '%s'\n",
+                    fn_name_in.c_str(), fn_name.c_str());
+        }
         ToolCall tc;
         tc.id = generate_call_id();
         tc.name = fn_name;
@@ -504,6 +644,29 @@ ToolParseResult parse_tool_calls(const std::string & text, const json & tools) {
             size_t removal_start = include_preceding_tool_call_open(text, pos);
             add_call(fn_name, parse_xml_params(params, fn_name, tools),
                      removal_start, pos + it->length());
+        }
+    }
+
+    // Pattern 2b: bracket-less `function=NAME>...params...</function>`.
+    // Guarded: only fires when both </parameter> and </function> are present
+    // in the span (high-confidence structure), so prose like "function=foo"
+    // never produces false positives.
+    // Groups: [1]=newline-prefix [2]=tool-name [3]=params-region
+    {
+        auto begin = std::sregex_iterator(text.begin(), text.end(), re_bracketless_function_xml());
+        auto end   = std::sregex_iterator();
+        for (auto it = begin; it != end; ++it) {
+            // The match starts at the optional leading '\n'; the actual
+            // `function=` keyword starts one char into the match when the
+            // prefix group captured a '\n', or at match start otherwise.
+            size_t prefix_len = (*it)[1].length();  // 0 or 1
+            size_t fn_pos     = it->position() + prefix_len;
+            if (overlaps(removals, fn_pos)) continue;
+            std::string fn_name = (*it)[2].str();
+            std::string params  = (*it)[3].str();
+            size_t removal_start = include_preceding_tool_call_open(text, fn_pos);
+            add_call(fn_name, parse_xml_params(params, fn_name, tools),
+                     removal_start, it->position() + it->length());
         }
     }
 
