@@ -823,8 +823,14 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
     // not leftovers from the previous request. cudaMemset is ~0.2ms.
     if (cache_.base_buf) ggml_backend_buffer_clear(cache_.base_buf, 0);
 
-    // Restore snapshot
-    restore_target_cache(prefix_snapshots_[slot], cache_);
+    // Restore snapshot (single entry point — handles pooled KVFlash
+    // snapshots: recurrent state via restore_target_cache + KV via the pager
+    // blob). Runs after the clear above so the restored rows survive.
+    if (!restore_target_cache_from_snapshot(slot)) {
+        result.error = "snapshot restore failed";
+        out_io.emit(-1);
+        return result;
+    }
 
     // Now generate from restored state
     sampler_ = req.sampler;
