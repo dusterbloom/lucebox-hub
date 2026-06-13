@@ -1,0 +1,20 @@
+{
+  "name": "DiffusionGemma 26B",
+  "source": "https://ai.google.dev/gemma/docs/diffusiongemma/model_card",
+  "verified_at": "2026-06-13",
+  "notes": "Diffusion (dLLM) variant on a Gemma 4 MoE backbone: a bidirectional decoder mode with Uniform-State Diffusion generates a block of tokens in parallel and refines it over a few denoising steps (shared weights with an encoder/causal mode that warms the KV cache). lucebox serves it via DiffusionBackend over the existing gemma4 graph. The `diffusion`/`sampling` blocks below are engineering starting points for the diffusion decoder, NOT a verbatim transcription of the upstream card — verify against the source before production use.",
+  "max_tokens": 8192,
+  "sampling": {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "top_k": 0,
+    "min_p": 0.0
+  },
+  "diffusion": {
+    "block_size": 32,
+    "steps": 16,
+    "remasking": "parallel_threshold",
+    "confidence_threshold": 0.9,
+    "noise_scheme": "uniform_state"
+  }
+}
