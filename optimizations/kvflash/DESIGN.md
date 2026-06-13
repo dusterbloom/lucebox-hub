@@ -161,9 +161,12 @@ The pool is wired into the qwen35 backend behind `--kvflash <tokens>`
   transposed fill scrambles per-head row targets for every multi-token
   write while single-token fills (all entries equal) hide the bug
   completely.
-- Post-generation snapshots are skipped once cur_pos exceeds the pool
-  (pooled snapshots need page-table serialization; prefill-time
-  snapshots still work).
+- Pooled snapshots are now serialized (KvFlashPager::serialize emits the
+  ordered chunk bytes, resident + host-backed; deserialize rebuilds the
+  pool). Save AND restore work past the pool, and a restored prefix is
+  prefix-skipped on the next turn (pooled prefill resumes from kv_offset
+  instead of reprocessing the prompt). The qk pool's pooled keys travel
+  with the snapshot so the qk policy survives a restore.
 
 ## Production smokes (dflash_server on lucebox 3090, 2026-06-11)
 
@@ -250,7 +253,10 @@ Snapshots on laguna/gemma4 are refused once a chunk has relocated
    only the new τ tokens through the drafter; kills the ~240 ms re-prefill).
 2. Pooled chunked prefill (prompt > pool with eviction during prefill).
 3. Spec-decode verify on the pool (block-aligned multi-token writes).
-4. Pooled snapshot save/restore (serialize the page table + host store).
+4. ~~Pooled snapshot save/restore~~ DONE (qwen35): KvFlashPager
+   serialize/deserialize + qk-pool serialize; restore_and_generate resumes a
+   pooled prefix and prefix-skips the suffix. qwen35moe/laguna/gemma4 backend
+   wiring still pending (the common pager API is ready).
 5. Async paging on a copy stream (currently synchronous
    ggml_backend_tensor_get/set between steps).
 6. Quality benches through the harness (NIAH-64K, accept-rate) with the
