@@ -100,8 +100,9 @@ tail-window/normalization tuning).
 ## Known limits
 
 - DDTree tree-verify is not pool-aware (falls back to AR with KVFlash).
-- Post-generation snapshots are skipped once cur_pos exceeds the pool
-  (pooled snapshots need page-table serialization).
+- Pooled snapshots are serialized (qwen35): save and restore work past the
+  pool, and a restored prefix is prefix-skipped on the next turn rather than
+  reprocessed. qwen35moe/laguna/gemma4 backend wiring still pending.
 - Paging is synchronous (copy-stream overlap is a follow-up).
 - Memory-dense tasks needing the entire context at once (MRCR-style) are
   a paradigm limit shared with FlashMemory; size the pool up for those.
