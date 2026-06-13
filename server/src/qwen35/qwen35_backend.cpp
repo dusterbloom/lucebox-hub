@@ -979,29 +979,31 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     // mapping, normal chunking). A LARGER prompt switches to POOLED CHUNKED
     // PREFILL: pager-chunk-sized batches whose KV rows are slot-mapped via
     // set_rows, with a slot-space mask per chunk and live eviction as the
-    // pool fills (constant VRAM, linear time). Restore offsets are not
-    // supported in the pooled path (a relocated prefix cannot be restored
-    // identity-style in the first place).
+    // pool fills (constant VRAM, linear time).
     const bool kvf_paged = kvflash_active() &&
         kv_offset + prompt_len > kvflash_tokens_ - kvflash_pager_.chunk_tokens();
-    if (kvf_paged && kv_offset != 0) {
-        std::fprintf(stderr,
-            "[kvflash] restored prefix (%d) + prompt (%d) exceeds pool %d; "
-            "pooled prefill requires a fresh request\n",
-            kv_offset, prompt_len, kvflash_tokens_);
-        set_last_error("kvflash: restore + pooled prefill unsupported");
-        return -1;
-    }
+    // kv_offset != 0 under the paged path means we are RESUMING from a
+    // restored prefix: restore_target_cache_from_snapshot already repopulated
+    // the pager (and qk pool) via deserialize, so the restored prefix chunks
+    // are the context the suffix attends to. Do NOT reset — just prefill the
+    // passed suffix tokens at kv_pos = kv_offset + start, exactly the prefix-
+    // skip the non-pooled path gets for free. (This was previously rejected;
+    // pooler serialize/deserialize now make a relocated restore well-defined.)
+    const bool kvf_resume = kvf_paged && kv_offset != 0;
     if (kvf_paged) {
         prefill_ubatch = kvflash_pager_.chunk_tokens();
-        kvflash_pager_.reset();
-        if (kvflash_qk_policy_) {
-            kvflash_qk_pool_.reset(kvflash_qk_pool_.dims());
-            kvflash_qk_pooled_upto_ = 0;
+        if (!kvf_resume) {
+            kvflash_pager_.reset();
+            if (kvflash_qk_policy_) {
+                kvflash_qk_pool_.reset(kvflash_qk_pool_.dims());
+                kvflash_qk_pooled_upto_ = 0;
+            }
         }
-        std::printf("[kvflash] pooled prefill: %d tokens through a %d-token pool "
-                    "(%d-token chunks, evicting)\n",
-                    prompt_len, kvflash_tokens_, prefill_ubatch);
+        std::printf("[kvflash] pooled prefill%s: %d %s tokens through a %d-token "
+                    "pool (%d-token chunks, evicting)\n",
+                    kvf_resume ? " (resume)" : "", prompt_len,
+                    kvf_resume ? "fresh-suffix" : "prompt",
+                    kvflash_tokens_, prefill_ubatch);
         std::fflush(stdout);
     }
 
@@ -1036,16 +1038,18 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         // incl. the user message -> a different user msg restores garbage.)
         if (snap_slot >= 0 && snap_pos >= 0 &&
             kv_pos <= snap_pos && snap_pos < kv_pos + n_tokens) {
-            if (kv_pos > kv_offset && !kvf_paged) {   // skip degenerate / relocated
+            if (kv_pos > kv_offset) {   // skip degenerate (empty-prefix) save
+                // Pooled snapshots are relocation-proof: the pager serialize
+                // reads resident AND host-backed chunks alike, so the paged
+                // path snapshots here too — this is what lets the NEXT turn
+                // restore the prefix and skip re-prefilling it.
                 cache_.cur_pos = kv_pos;
                 if (snapshot_save(snap_slot)) {
-                    std::printf("[snap] boundary slot=%d cur_pos=%d (req snap_pos=%d)\n",
-                                snap_slot, kv_pos, snap_pos);
+                    std::printf("[snap] boundary slot=%d cur_pos=%d (req snap_pos=%d)%s\n",
+                                snap_slot, kv_pos, snap_pos,
+                                kvf_paged ? " [pooled]" : "");
                     std::fflush(stdout);
                 }
-            } else if (kvf_paged) {
-                std::fprintf(stderr, "[kvflash] boundary snapshot skipped: pooled "
-                                     "prefill relocates chunks\n");
             }
             snap_pos = -1;
             snap_slot = -1;
@@ -1198,9 +1202,19 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
 
     if (kvflash_active()) {
         if (kvf_paged) {
-            // The pager mapping was built live during the pooled prefill;
-            // only the history / hygiene parts of the sync apply.
-            kvflash_history_.assign(tokens.begin(), tokens.end());
+            // The pager mapping was built live during the pooled prefill (and,
+            // on resume, seeded by deserialize); only the history / hygiene
+            // parts of the sync apply. Mirror kvflash_sync_prefill's kv_offset
+            // handling so the scorer's chunk indices stay aligned to logical
+            // positions: the restored prefix occupies [0, kv_offset) (ids
+            // unknown -> placeholder), the suffix follows.
+            if (kv_offset == 0) {
+                kvflash_history_.assign(tokens.begin(), tokens.end());
+            } else {
+                kvflash_history_.resize((size_t)kv_offset, 0);
+                kvflash_history_.insert(kvflash_history_.end(),
+                                        tokens.begin(), tokens.end());
+            }
             kvflash_pager_.zero_free_blocks();
             kvflash_mask_epoch_ = (uint64_t)-1;
         } else {
