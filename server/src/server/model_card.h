@@ -16,6 +16,8 @@
 
 #include <string>
 
+#include "diffusion/diffusion_types.h"
+
 namespace dflash::common {
 
 // Phase-1 reasoning budgets per `reasoning.effort` tier.
@@ -88,6 +90,12 @@ struct ModelCard {
     // Phase-1 ceiling derived from `max_tokens - hard_limit_reply_budget`.
     // Convenience: also the spec's `think_max` quantity (§3.3 formula).
     int think_max_tokens = 15488;
+
+    // Diffusion (dLLM) decode defaults from the card's optional `diffusion`
+    // block. `has_diffusion` is true only when the sidecar supplied one; the
+    // server copies `diffusion` into BackendArgs for diffusion arches.
+    DiffusionConfig diffusion;
+    bool            has_diffusion = false;
 
     // Raw parsed sidecar JSON, populated on successful sidecar load.
     // Null (`raw_json.is_null() == true`) when family fallback or hard

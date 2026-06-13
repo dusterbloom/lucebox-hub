@@ -47,8 +47,10 @@ DiffusionBackend  : ModelBackend      diffusion_backend.{h,cpp}
   `gguf_inspect.cpp` to disambiguate — a small follow-up.)
 - **Model cards** — `share/model_cards/{diffusiongemma-26b,nemotron-diffusion-8b}.json`
   carry decode defaults under a `diffusion` block (schema in `_schema.json`).
-  Plumbing card → `DiffusionConfig` through `BackendArgs` is a follow-up; the
-  factory currently constructs a default `DiffusionConfig`.
+  Wired end to end: `resolve_model_card` parses the block (string enums via the
+  tested helpers in `diffusion_config.cpp`), the server copies it into
+  `BackendArgs.diffusion` for diffusion arches, and the factory threads it into
+  the `DiffusionBackend`.
 
 ## Status
 
@@ -70,8 +72,10 @@ DiffusionBackend  : ModelBackend      diffusion_backend.{h,cpp}
   loader/graph (its arch differs from qwen3); best implemented against the real
   model config + a GPU build rather than fabricated blind. The registry branch is
   stubbed (`create_diffusion_model` returns nullptr with a diagnostic).
-- **Phase 4:** model-card → `DiffusionConfig` plumbing through `BackendArgs`;
-  server smoke (`smoke_diffusion_forward`) + `/v1/chat/completions` e2e.
+- **Phase 4 (partial):** model-card → `DiffusionConfig` plumbing **done**
+  (`BackendArgs.diffusion` + server wiring + CPU-tested string↔enum helpers).
+  Remaining: warm-prefix KV path (lifts the `canvas <= SWA ring` limit), a
+  `smoke_diffusion_forward` harness, and `/v1/chat/completions` e2e.
 
 > The ggml/CUDA code (Phase 2 + factory wiring) requires a GPU build (the CI
 > runners or a local CUDA/ggml toolchain) to compile and test — it cannot be

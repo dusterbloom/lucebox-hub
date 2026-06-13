@@ -14,6 +14,7 @@
 #include "placement/placement_config.h"
 #include "placement/remote_draft_config.h"
 #include "placement/remote_target_shard_config.h"
+#include "diffusion/diffusion_types.h"
 
 #include <memory>
 #include <string>
@@ -55,6 +56,11 @@ struct BackendArgs {
     float           ddtree_temp      = 1.0f;
     bool            ddtree_chain_seed = true;
     bool            use_feature_mirror = false;
+
+    // Diffusion (dLLM) decode defaults — used only by diffusion arches. The
+    // server fills this from the model card's `diffusion` block before
+    // create_backend; otherwise the DiffusionConfig defaults apply.
+    DiffusionConfig diffusion;
 };
 
 // ─── Factory function ───────────────────────────────────────────────────

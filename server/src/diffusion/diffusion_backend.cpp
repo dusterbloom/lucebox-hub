@@ -17,11 +17,10 @@ DiffusionBackend::DiffusionBackend(std::unique_ptr<DiffusionModelGraph> model,
 DiffusionBackend::~DiffusionBackend() = default;
 
 void DiffusionBackend::print_ready_banner() const {
-    const char * scheme = (cfg_.noise_scheme == DiffusionNoise::UniformState)
-                              ? "uniform-state" : "masked";
-    std::printf("[%s-diffusion-daemon] ready (block=%d steps=%d noise=%s)\n",
+    std::printf("[%s-diffusion-daemon] ready (block=%d steps=%d noise=%s remask=%s)\n",
                 arch_label_.c_str(), cfg_.block_size,
-                cfg_.n_steps > 0 ? cfg_.n_steps : cfg_.block_size, scheme);
+                cfg_.n_steps > 0 ? cfg_.n_steps : cfg_.block_size,
+                to_string(cfg_.noise_scheme), to_string(cfg_.remasking));
 }
 
 bool DiffusionBackend::park(const std::string & /*what*/) { return true; }

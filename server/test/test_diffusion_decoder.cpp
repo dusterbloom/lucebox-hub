@@ -37,6 +37,9 @@ struct SyntheticModel : DiffusionModelGraph {
     int                  prefix_ = 0;
     int                  n_ctx_  = 0;       // 0 = unlimited
     std::vector<int32_t> gen_targets;       // target for absolute position prefix_+i
+    std::vector<int>     weak_idx;          // gen indices given a low-confidence peak
+    float                strong_logit = 20.0f;  // softmax prob ~= 1.0
+    float                weak_logit   = 1.0f;    // softmax prob well below 0.9
     int                  forwards = 0;
 
     int     vocab() const override     { return vocab_; }
@@ -60,7 +63,9 @@ struct SyntheticModel : DiffusionModelGraph {
             const int idx = abs - prefix_;
             int tgt = 0;
             if (idx >= 0 && idx < (int)gen_targets.size()) tgt = gen_targets[idx];
-            out[(size_t)j * vocab_ + tgt] = 20.0f;  // softmax prob ~= 1.0
+            bool weak = false;
+            for (int wi : weak_idx) if (wi == idx) { weak = true; break; }
+            out[(size_t)j * vocab_ + tgt] = weak ? weak_logit : strong_logit;
         }
         return true;
     }
@@ -193,6 +198,86 @@ int main() {
         std::vector<int32_t> streamed;
         auto r = run_diffusion_generate(m, {}, 4, cfg, greedy, false, collect(streamed));
         check(!r.ok && !r.error.empty(), "guard: rejects masked scheme without mask id");
+    }
+
+    // ── 7. Stochastic sampling path (do_sample) on a peaked model ─────────
+    {
+        SyntheticModel m;
+        m.gen_targets = iota_targets(12);
+        DiffusionConfig cfg;
+        cfg.block_size = 6;
+        cfg.n_steps    = 6;
+        SamplerCfg samp{};
+        samp.temp = 0.8f;
+        samp.seed = 123;
+        std::vector<int32_t> streamed;
+        auto r = run_diffusion_generate(m, {}, 12, cfg, samp, /*do_sample=*/true, collect(streamed));
+        check(r.ok && r.tokens == m.gen_targets,
+              "sample: peaked logits still decode targets under sampling");
+    }
+
+    // ── 8. Random remasking is seed-deterministic ─────────────────────────
+    {
+        auto run = [](uint64_t seed) {
+            SyntheticModel m; m.gen_targets = iota_targets(16);
+            DiffusionConfig cfg; cfg.block_size = 8; cfg.n_steps = 8;
+            cfg.remasking = DiffusionRemask::Random; cfg.seed = seed;
+            std::vector<int32_t> s;
+            return run_diffusion_generate(m, {}, 16, cfg, SamplerCfg{}, false, collect(s)).tokens;
+        };
+        auto a = run(42), b = run(42), c = run(7);
+        check(a == b, "random: same seed -> identical output");
+        check(a == iota_targets(16) && c == iota_targets(16),
+              "random: decodes targets regardless of seed");
+    }
+
+    // ── 9. ParallelThreshold with mixed confidence finalizes over >1 step ─
+    {
+        SyntheticModel m;
+        m.gen_targets = iota_targets(8);
+        m.weak_idx = {1, 4, 6};  // below threshold -> finalized in later steps
+        DiffusionConfig cfg;
+        cfg.block_size = 8;
+        cfg.n_steps    = 8;
+        cfg.remasking  = DiffusionRemask::ParallelThreshold;
+        cfg.confidence_threshold = 0.9f;
+        std::vector<int32_t> streamed;
+        auto r = run_diffusion_generate(m, {}, 8, cfg, greedy, false, collect(streamed));
+        check(r.ok && r.tokens == m.gen_targets, "threshold-mixed: tokens correct");
+        check(r.stats.forward_passes >= 2 && r.stats.forward_passes <= cfg.n_steps,
+              "threshold-mixed: low-confidence positions take extra steps",
+              "got " + std::to_string(r.stats.forward_passes));
+    }
+
+    // ── 10. n_ctx_max guard stops at the context limit ────────────────────
+    {
+        SyntheticModel m;
+        m.n_ctx_ = 10;
+        m.gen_targets = iota_targets(20);
+        DiffusionConfig cfg; cfg.block_size = 8; cfg.n_steps = 4;
+        std::vector<int32_t> streamed;
+        auto r = run_diffusion_generate(m, {}, 20, cfg, greedy, false, collect(streamed));
+        check(r.ok, "ctx: ok");
+        check((int)r.tokens.size() == 8, "ctx: stops at the block boundary under ctx limit",
+              "got " + std::to_string(r.tokens.size()));
+    }
+
+    // ── 11. String <-> enum config helpers (model-card mapping) ──────────
+    {
+        DiffusionRemask rm; DiffusionNoise ns;
+        check(remask_from_string("low_confidence", rm) && rm == DiffusionRemask::LowConfidence &&
+              remask_from_string("random", rm) && rm == DiffusionRemask::Random &&
+              remask_from_string("parallel_threshold", rm) && rm == DiffusionRemask::ParallelThreshold,
+              "helpers: remask parses all policies");
+        check(noise_from_string("masked", ns) && ns == DiffusionNoise::Masked &&
+              noise_from_string("uniform_state", ns) && ns == DiffusionNoise::UniformState,
+              "helpers: noise parses both schemes");
+        DiffusionRemask before = DiffusionRemask::LowConfidence;
+        check(!remask_from_string("nope", before) && before == DiffusionRemask::LowConfidence,
+              "helpers: invalid string rejected, out untouched");
+        check(std::string(to_string(DiffusionRemask::ParallelThreshold)) == "parallel_threshold" &&
+              std::string(to_string(DiffusionNoise::UniformState)) == "uniform_state",
+              "helpers: to_string round-trips");
     }
 
     std::printf("\nResults: %d/%d passed, %d failed\n",

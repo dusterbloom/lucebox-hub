@@ -229,6 +229,26 @@ static bool load_sidecar(const std::string & path, ModelCard & out, std::string 
         pick("max",    out.effort_tiers.max);
     }
 
+    // Optional diffusion (dLLM) decode defaults. Enum strings are mapped via
+    // the shared helpers (diffusion_config.cpp); unrecognized values leave the
+    // DiffusionConfig default in place.
+    if (j.contains("diffusion") && j["diffusion"].is_object()) {
+        const auto & d = j["diffusion"];
+        out.has_diffusion = true;
+        if (d.contains("block_size") && d["block_size"].is_number_integer())
+            out.diffusion.block_size = d["block_size"].get<int>();
+        if (d.contains("steps") && d["steps"].is_number_integer())
+            out.diffusion.n_steps = d["steps"].get<int>();
+        if (d.contains("confidence_threshold") && d["confidence_threshold"].is_number())
+            out.diffusion.confidence_threshold = d["confidence_threshold"].get<float>();
+        if (d.contains("mask_token_id") && d["mask_token_id"].is_number_integer())
+            out.diffusion.mask_token_id = d["mask_token_id"].get<int>();
+        if (d.contains("remasking") && d["remasking"].is_string())
+            remask_from_string(d["remasking"].get<std::string>(), out.diffusion.remasking);
+        if (d.contains("noise_scheme") && d["noise_scheme"].is_string())
+            noise_from_string(d["noise_scheme"].get<std::string>(), out.diffusion.noise_scheme);
+    }
+
     return true;
 }
 

@@ -215,6 +215,7 @@ std::unique_ptr<ModelBackend> create_backend(const BackendArgs & args) {
         dargs.model_path = args.model_path;
         dargs.device     = args.device;
         dargs.max_ctx    = args.device.max_ctx;
+        dargs.cfg        = args.diffusion;  // decode defaults (from model card)
 
         auto backend = create_diffusion_backend(arch, dargs);
         if (!backend) {

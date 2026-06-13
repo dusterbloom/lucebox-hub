@@ -737,6 +737,38 @@ int main(int argc, char ** argv) {
                 arch.c_str());
         }
     }
+    // Diffusion (dLLM) arches: resolve the model card's decode defaults BEFORE
+    // constructing the backend so create_backend wires them into the
+    // DiffusionBackend. The full card resolution below runs again for the
+    // ServerConfig fields; this targeted pass only fills bargs.diffusion and is
+    // gated on diffusion arches, so non-diffusion startup is unaffected.
+    if (arch == "diffusiongemma" || arch == "nemotron_diffusion" ||
+        arch == "nemotron-diffusion") {
+        std::string dg_name;
+        gguf_init_params dg_gip{};
+        dg_gip.no_alloc = true;
+        dg_gip.ctx = nullptr;
+        gguf_context * dg_ctx = gguf_init_from_file(bargs.model_path, dg_gip);
+        if (dg_ctx) {
+            int64_t nid = gguf_find_key(dg_ctx, "general.name");
+            if (nid >= 0) { const char * v = gguf_get_val_str(dg_ctx, nid); if (v) dg_name = v; }
+            gguf_free(dg_ctx);
+        }
+        ModelCard dcard = resolve_model_card(
+            bargs.model_path ? bargs.model_path : "", dg_name, arch, /*repo_root_hint=*/"");
+        if (dcard.has_diffusion) {
+            bargs.diffusion = dcard.diffusion;
+            std::fprintf(stderr,
+                "[server] diffusion decode defaults from card: block=%d steps=%d "
+                "remask=%s noise=%s\n",
+                bargs.diffusion.block_size,
+                bargs.diffusion.n_steps > 0 ? bargs.diffusion.n_steps
+                                            : bargs.diffusion.block_size,
+                to_string(bargs.diffusion.remasking),
+                to_string(bargs.diffusion.noise_scheme));
+        }
+    }
+
     auto backend = create_backend(bargs);
     if (!backend) {
         std::fprintf(stderr, "[server] backend creation failed\n");

@@ -13,6 +13,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 namespace dflash::common {
 
@@ -53,5 +54,14 @@ struct DiffusionStats {
     int blocks         = 0;  // committed semi-AR blocks
     int tokens         = 0;  // committed tokens
 };
+
+// ─── String <-> enum helpers ─────────────────────────────────────────────
+// Canonical tokens match the model-card `diffusion` block (share/model_cards/
+// _schema.json) so cards, banners and logs agree. Parsers return false and
+// leave `out` untouched on an unrecognized string.
+const char * to_string(DiffusionRemask r);
+const char * to_string(DiffusionNoise  n);
+bool remask_from_string(const std::string & s, DiffusionRemask & out);
+bool noise_from_string (const std::string & s, DiffusionNoise  & out);
 
 }  // namespace dflash::common

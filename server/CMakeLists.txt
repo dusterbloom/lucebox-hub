@@ -232,6 +232,7 @@ add_library(dflash_common STATIC
     src/gemma4/gemma4_dflash_target.cpp
     src/gemma4/gemma4_layer_split_adapter.cpp
     # ── Abstracted diffusion (dLLM) module ──
+    src/diffusion/diffusion_config.cpp
     src/diffusion/diffusion_decoder.cpp
     src/diffusion/diffusion_backend.cpp
     src/diffusion/diffusion_registry.cpp
