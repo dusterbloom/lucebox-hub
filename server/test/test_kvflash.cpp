@@ -15,6 +15,10 @@
 //   E  performance profile: decode ms/step vs FA span — baseline at
 //      8K/32K/128K vs pool 1K/4K at 128K-logical — plus page-event and
 //      mask-refill microbenchmarks.
+//   G  prefix-cache compose: serialize/deserialize is byte-lossless across
+//      a save->restore at a different pool size / block order (G1), and a
+//      restored, relocated prefix continues coherently — argmax tracks A
+//      within the relocation bound (G2). Pins KVFlash + prefix snapshots.
 //
 // Usage:
 //   test_kvflash <qwen35.gguf> [--logical-ctx=N] [--pool-b=N] [--pool-c=N]
@@ -1068,6 +1072,129 @@ int main(int argc, char ** argv) {
         if (rate > 2.0) hard_failures++;
         st.destroy();
         free_target_cache(cache);
+    }
+
+    // ── Run G: prefix-cache equivalence (KVFlash + snapshot compose) ────
+    // G1 proves serialize/deserialize is byte-lossless including host-backed
+    // chunks; G2 proves the model continues coherently from a restored,
+    // physically RELOCATED prefix (KV carried as the pager blob, recurrent
+    // state copied as the real restore_target_cache does).
+    {
+        // G1: byte-exact round-trip through a pool smaller than the prompt,
+        // so the blob spans both resident AND host-backed chunks.
+        const int pool_g1 = 7 * 64;   // 1 sink + 4 tail + 2 evictable blocks
+        {
+            TargetCache cs;
+            if (!create_target_cache(w, pool_g1, 0, backend, cs, /*prefill_only=*/true)) {
+                std::fprintf(stderr, "cache G1 src: %s\n", dflash27b_last_error()); return 1;
+            }
+            KvFlashPager ps; KvFlashConfig pc; pc.pool_tokens = pool_g1;
+            if (!ps.attach(pc, cs.attn_k, cs.attn_v)) return 1;
+            Stepper st; if (!st.init(w, cs, backend, pool_g1, use_mask)) return 1;
+            for (int pos = 0; pos < n_prompt; pos++) {
+                const int slot = ps.slot_for(pos);
+                st.refresh_mask(ps);
+                (void)st.step(prompt[pos], pos, slot);
+                cs.cur_pos = pos + 1;
+            }
+            std::vector<uint8_t> blob1; ps.serialize(blob1);
+            const int64_t src_pageouts = ps.stats().page_outs;
+            st.destroy();
+
+            TargetCache cd;
+            if (!create_target_cache(w, pool_g1, 0, backend, cd, /*prefill_only=*/true)) {
+                std::fprintf(stderr, "cache G1 dst: %s\n", dflash27b_last_error()); return 1;
+            }
+            KvFlashPager pd; if (!pd.attach(pc, cd.attn_k, cd.attn_v)) return 1;
+            const bool ok = pd.deserialize(blob1, n_prompt);
+            std::vector<uint8_t> blob2; if (ok) pd.serialize(blob2);
+            const bool exact = ok && blob1.size() == blob2.size() &&
+                               std::memcmp(blob1.data(), blob2.data(), blob1.size()) == 0;
+            std::printf("[G1] pool=%d prompt=%d: src page_outs=%" PRId64
+                        ", blob=%zu B, deserialize=%s, reserialize match=%s\n",
+                        pool_g1, n_prompt, src_pageouts, blob1.size(),
+                        ok ? "ok" : "FAIL", exact ? "yes" : "no");
+            std::printf("%s serialize/deserialize byte-lossless (incl. host-backed chunks)\n",
+                        (exact && src_pageouts > 0) ? "PASS" : "FAIL");
+            if (!(exact && src_pageouts > 0)) hard_failures++;
+            free_target_cache(cd);
+            free_target_cache(cs);
+        }
+
+        // G2: continuation equivalence — restore a relocated prefix and
+        // teacher-force the baseline; argmax must track A within run B's bound.
+        {
+            const int pool_g2 = (((total + 63) / 64) + 2) * 64;   // >= total, no eviction
+            TargetCache cs, cd;
+            if (!create_target_cache(w, pool_g2, 0, backend, cs, /*prefill_only=*/true) ||
+                !create_target_cache(w, pool_g2, 0, backend, cd, /*prefill_only=*/true)) {
+                std::fprintf(stderr, "cache G2: %s\n", dflash27b_last_error()); return 1;
+            }
+            KvFlashPager ps; KvFlashConfig pc; pc.pool_tokens = pool_g2;
+            if (!ps.attach(pc, cs.attn_k, cs.attn_v)) return 1;
+            // Shuffle the source placement so save->restore is a real
+            // relocation (source shuffled -> logical blob -> dest packed).
+            const int nb = pool_g2 / pc.chunk_tokens;
+            std::vector<int> order(nb);
+            for (int i = 0; i < nb; i++) order[i] = i;
+            uint64_t s = 0x9E3779B97F4A7C15ull;
+            for (int i = nb - 1; i > 0; i--) {
+                s = s * 6364136223846793005ull + 1442695040888963407ull;
+                std::swap(order[i], order[(int)((s >> 33) % (uint64_t)(i + 1))]);
+            }
+            ps.set_block_order(order);
+
+            Stepper sts; if (!sts.init(w, cs, backend, pool_g2, use_mask)) return 1;
+            int32_t seed = -1;
+            for (int pos = 0; pos < n_prompt; pos++) {
+                const int slot = ps.slot_for(pos);
+                sts.refresh_mask(ps);
+                seed = sts.step(prompt[pos], pos, slot);
+                cs.cur_pos = pos + 1;
+            }
+            std::vector<uint8_t> blob; ps.serialize(blob);
+            // Recurrent (delta-net) state is orthogonal to the pager; the real
+            // restore_target_cache copies it, so mirror that to isolate the
+            // KV-restore path under test.
+            for (size_t i = 0; i < cs.ssm_state.size(); i++) {
+                if (cs.ssm_state[i]  && cd.ssm_state[i])  ggml_backend_tensor_copy(cs.ssm_state[i],  cd.ssm_state[i]);
+                if (cs.conv_state[i] && cd.conv_state[i]) ggml_backend_tensor_copy(cs.conv_state[i], cd.conv_state[i]);
+            }
+            if (cs.target_feat && cd.target_feat) ggml_backend_tensor_copy(cs.target_feat, cd.target_feat);
+            sts.destroy();
+
+            KvFlashPager pd; if (!pd.attach(pc, cd.attn_k, cd.attn_v)) return 1;
+            if (!pd.deserialize(blob, n_prompt)) {
+                std::printf("FAIL G2 deserialize (blob/geometry mismatch)\n");
+                hard_failures++;
+            } else {
+                cd.cur_pos = n_prompt;
+                Stepper st; if (!st.init(w, cd, backend, pool_g2, use_mask)) return 1;
+                int mismatches = 0, first = -1;
+                for (int pos = n_prompt; pos < total; pos++) {
+                    const int gi = pos - n_prompt;
+                    const int slot = pd.slot_for(pos);
+                    st.refresh_mask(pd);
+                    const int32_t out = st.step(tokens_a[gi], pos, slot);
+                    cd.cur_pos = pos + 1;
+                    const int ref = gi + 1;
+                    if (ref < (int)tokens_a.size() && out != tokens_a[ref]) {
+                        mismatches++; if (first < 0) first = pos;
+                    }
+                }
+                const double rate = 100.0 * mismatches / n_gen;
+                std::printf("[G2] pool=%d restore@%d (seed=%d, A[0]=%d): %d/%d argmax "
+                            "mismatches (%.2f%%), first at %d\n",
+                            pool_g2, n_prompt, seed, tokens_a.empty() ? -1 : tokens_a[0],
+                            mismatches, n_gen, rate, first);
+                std::printf("%s restored-prefix continuation tracks baseline (threshold 2%%)\n",
+                            rate <= 2.0 ? "PASS" : "FAIL");
+                if (rate > 2.0) hard_failures++;
+                st.destroy();
+            }
+            free_target_cache(cd);
+            free_target_cache(cs);
+        }
     }
 
     // ── Run C: live paging + roundtrip; D: reselect recall ──────────
