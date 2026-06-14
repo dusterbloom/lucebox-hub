@@ -54,6 +54,17 @@ struct DiffusionModelGraph {
                                bool bidirectional,
                                std::vector<float> & out_logits) = 0;
 
+    // Self-conditioning state injection (DiffusionGemma entropy-bound path).
+    // Called by the EB decode loop once per step before forward_block.
+    // sc_logits: [n_vocab * block_len] F32 raw canvas logits from the previous
+    //            step. Borrowed — must remain valid until forward_block returns.
+    //            Pass nullptr to disable SC (step 0).
+    // sc_use:    0.0 on step 0 (zeroes SC signal), 1.0 thereafter.
+    // sc_temp_inv: 1/t from the previous step's temperature.
+    // Default is a no-op for non-DiffusionGemma families.
+    virtual void set_sc(const float * /*sc_logits*/, float /*sc_use*/,
+                        float /*sc_temp_inv*/) {}
+
     // Release per-request scratch (e.g. KV cache contents) before the next prompt.
     virtual void reset() {}
 };

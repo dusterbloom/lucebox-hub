@@ -50,7 +50,8 @@ static ggml_tensor * build_gemma4_dense_ffn(ggml_context * ctx, ggml_tensor * cu
                                               const Gemma4Layer & L) {
     ggml_tensor * gate = ggml_mul_mat(ctx, L.ffn_gate, cur);
     ggml_tensor * up   = ggml_mul_mat(ctx, L.ffn_up,   cur);
-    ggml_tensor * gu   = ggml_mul(ctx, ggml_gelu(ctx, gate), up);
+    // Use fused geglu_split to match ref build_ffn(LLM_FFN_GELU, LLM_FFN_PAR)
+    ggml_tensor * gu   = ggml_geglu_split(ctx, gate, up);
     return ggml_mul_mat(ctx, L.ffn_down, gu);
 }
 
@@ -68,7 +69,8 @@ static ggml_tensor * build_gemma4_moe_block(ggml_context * ctx, ggml_tensor * at
     // ---- Shared expert (GELU-gated MLP) ----
     ggml_tensor * sh_gate = ggml_mul_mat(ctx, L.ffn_gate, cur_normed);
     ggml_tensor * sh_up   = ggml_mul_mat(ctx, L.ffn_up,   cur_normed);
-    ggml_tensor * sh_gu   = ggml_mul(ctx, ggml_gelu(ctx, sh_gate), sh_up);
+    // Use fused geglu_split to match ref build_ffn(LLM_FFN_GELU, LLM_FFN_PAR)
+    ggml_tensor * sh_gu   = ggml_geglu_split(ctx, sh_gate, sh_up);
     ggml_tensor * shared  = ggml_mul_mat(ctx, L.ffn_down, sh_gu);
 
     if (L.ffn_post_norm_1) {
@@ -98,13 +100,20 @@ static ggml_tensor * build_gemma4_moe_block(ggml_context * ctx, ggml_tensor * at
     // Softmax over experts
     ggml_tensor * probs = ggml_soft_max(ctx, logits);
 
-    // Top-k selection
-    ggml_tensor * selected = ggml_top_k(ctx, probs, n_used);
+    // Top-k selection — use argsort_top_k to match reference (argsort DESC + view)
+    ggml_tensor * selected = ggml_argsort_top_k(ctx, probs, n_used);
 
     // Gather weights at selected indices
     ggml_tensor * probs_3d = ggml_reshape_3d(ctx, probs, 1, n_expert, n_tokens);
     ggml_tensor * weights  = ggml_get_rows(ctx, probs_3d, selected);
     weights = ggml_reshape_2d(ctx, weights, n_used, n_tokens);
+
+    // Fix 1: renormalize top-k routed weights by their sum (ref llama-graph.cpp norm_w path)
+    {
+        ggml_tensor * weights_sum = ggml_sum_rows(ctx, weights); // [1, n_tokens]
+        weights_sum = ggml_clamp(ctx, weights_sum, 6.103515625e-5f, INFINITY);
+        weights = ggml_div(ctx, weights, weights_sum); // [n_used, n_tokens]
+    }
 
     // Routed expert forward via mul_mat_id with fused gate+up
     ggml_tensor * cur_3d = ggml_reshape_3d(ctx, cur_moe, n_embd, 1, n_tokens);
@@ -120,8 +129,20 @@ static ggml_tensor * build_gemma4_moe_block(ggml_context * ctx, ggml_tensor * at
         (size_t)n_ff_exp * ggml_element_size(gate_up_e));
     gate_e = ggml_cont(ctx, gate_e);
     up_e = ggml_cont(ctx, up_e);
-    ggml_tensor * gu = ggml_mul(ctx, ggml_gelu(ctx, gate_e), up_e);
+    // Use fused geglu_split (matches ref ggml_geglu_split → same table-GELU kernel)
+    ggml_tensor * gu = ggml_geglu_split(ctx, gate_e, up_e);
     ggml_tensor * experts = ggml_mul_mat_id(ctx, L.ffn_down_exps, gu, selected);
+
+    // Apply per-expert down scale (ref llama-model.cpp:1364-1365 generic pass loads
+    // ffn_down_exps_s even though diffusion-gemma load_arch_tensors doesn't explicitly
+    // request it; ref llama-graph.cpp:1758-1764 applies it before the weighted sum).
+    if (L.ffn_down_exps_s) {
+        // down_exps_s: [n_expert] → gather selected rows → [1, n_used, n_tokens]
+        ggml_tensor * s = ggml_reshape_3d(ctx, L.ffn_down_exps_s, 1, n_expert, 1);
+        s = ggml_repeat_4d(ctx, s, 1, n_expert, n_tokens, 1);
+        s = ggml_get_rows(ctx, s, selected);   // [1, n_used, n_tokens]
+        experts = ggml_mul(ctx, experts, s);   // [n_embd, n_used, n_tokens]
+    }
 
     // Weighted sum of expert outputs
     ggml_tensor * w_view = ggml_reshape_3d(ctx, weights, 1, n_used, n_tokens);
@@ -144,6 +165,9 @@ static ggml_tensor * build_gemma4_moe_block(ggml_context * ctx, ggml_tensor * at
 }
 
 // Attention block for a single layer (handles both full and SWA).
+// When no_cache=true the K/V tensors are used directly in F32 without a
+// cache round-trip (matches the reference unified forward which never writes
+// to the F16 KV cache during denoise).
 static ggml_tensor * build_gemma4_attn_block(
     ggml_context * ctx,
     ggml_cgraph * gf,
@@ -158,7 +182,10 @@ static ggml_tensor * build_gemma4_attn_block(
     int kv_start,
     int n_tokens,
     ggml_tensor * kv_idx_full = nullptr,   // [n_tokens] I32 absolute rows (graph input)
-    ggml_tensor * kv_idx_swa  = nullptr)   // [n_tokens] I32 ring rows pos%swa_size (graph input)
+    ggml_tensor * kv_idx_swa  = nullptr,   // [n_tokens] I32 ring rows pos%swa_size (graph input)
+    bool no_cache = false,                  // bypass F16 cache; use K/V in F32 directly
+    ggml_tensor * attn_mask_full_f32 = nullptr,  // F32 mask for no-cache standard attention
+    ggml_tensor * attn_mask_swa_f32  = nullptr)  // F32 SWA mask for no-cache standard attention
 {
     const int head_dim   = gemma4_head_dim(w, il);
     const int n_head     = w.n_head;
@@ -190,8 +217,87 @@ static ggml_tensor * build_gemma4_attn_block(
     ggml_tensor * cache_v = cache.v[cache_il];
     const int cache_len = (int)cache_k->ne[1];  // max_ctx for full, swa_size for SWA
 
-    if (has_kv) {
-        // K/V projection + norm + RoPE + write to cache
+    // K/V tensors for FA: populated by cache path or no_cache direct path.
+    ggml_tensor * Kfa = nullptr;
+    ggml_tensor * Vfa = nullptr;
+    int kv_len = 0;
+
+    if (no_cache && has_kv) {
+        // ── No-cache path (denoise unified forward) ────────────────────────
+        // Use standard (non-flash) attention to match the reference exactness.
+        // The reference diffusion-gemma-eval runs with flash_attn DISABLED by
+        // default (ref diffusion-gemma-eval.cpp:93-95), which is what the golden
+        // logits were generated with. Standard attention gives cosine=1.000 vs
+        // the golden; FA gives cosine~0.967 due to F16 intermediates.
+        //
+        // Standard attention path (mirrors reference llama-graph.cpp:2106-2162):
+        //   Q: [head_dim, n_head, n_tokens] → permute → [head_dim, n_tokens, n_head]
+        //   K: [head_dim, n_head_kv, n_tokens] → permute → [head_dim, n_tokens, n_head_kv]
+        //   V: [head_dim, n_head_kv, n_tokens] → permute → [head_dim, n_tokens, n_head_kv]
+        //   kq = mul_mat(K, Q)   [n_tokens, n_tokens, n_head, 1]  (GQA broadcast)
+        //   kq = soft_max_ext(kq, mask, kq_scale)
+        //   kqv = mul_mat(V, kq)  [head_dim, n_tokens, n_head, 1]
+        //   out = permute(kqv, 0,2,1,3) → [head_dim, n_head, n_tokens, 1]
+        //   out = reshape_2d(out, q_dim, n_tokens)
+        //   return mul_mat(wo, out)
+
+        ggml_tensor * Kcur = ggml_mul_mat(ctx, L.wk, cur);
+        ggml_tensor * Vcur = L.wv ? ggml_mul_mat(ctx, L.wv, cur) : Kcur;
+
+        Kcur = ggml_reshape_3d(ctx, Kcur, head_dim, n_head_kv, n_tokens);
+        Vcur = ggml_reshape_3d(ctx, Vcur, head_dim, n_head_kv, n_tokens);
+
+        if (L.k_norm) {
+            Kcur = gemma4_rms_norm_mul(ctx, Kcur, L.k_norm, w.norm_eps);
+        }
+        Vcur = ggml_rms_norm(ctx, rms_norm_input_f32(ctx, Vcur), w.norm_eps);
+
+        Kcur = ggml_rope_ext(ctx, Kcur, positions, freq_factors,
+                              head_dim, GGML_ROPE_TYPE_NEOX,
+                              0, rope_base, 1.0f,
+                              0.0f, 1.0f, 32.0f, 1.0f);
+
+        // Permute all to [head_dim, n_tokens, n_head/n_head_kv]
+        ggml_tensor * Qp = ggml_permute(ctx, Qcur, 0, 2, 1, 3);   // [head_dim, n_tokens, n_head]
+        ggml_tensor * Kp = ggml_permute(ctx, Kcur, 0, 2, 1, 3);   // [head_dim, n_tokens, n_head_kv]
+        ggml_tensor * Vp = ggml_permute(ctx, Vcur, 0, 2, 1, 3);   // [head_dim, n_tokens, n_head_kv]
+
+        // kq = K^T @ Q: [n_tokens_k, n_tokens_q, n_head, 1]
+        // ggml_mul_mat(K, Q) = K^T @ Q  (ne[0] of K = head_dim matches ne[0] of Q = head_dim)
+        // GQA: n_head_kv broadcast to n_head
+        ggml_tensor * kq = ggml_mul_mat(ctx, Kp, Qp);              // [n_tokens, n_tokens, n_head]
+        ggml_mul_mat_set_prec(kq, GGML_PREC_F32);  // ref: default to F32 accumulation
+
+        // Mask: for standard attention ggml_soft_max_ext requires mask->ne[0] == kq->ne[0].
+        // kq->ne[0] = n_tokens (unpadded). The padded F16 masks have ne[0]=kv_len_padded.
+        // Use the caller-supplied F32 masks (unpadded) if available; otherwise pass nullptr.
+        // (nullptr mask = no masking, which is correct for full bidirectional diffusion attention.)
+        const float kq_scale_nc = 1.0f;
+        ggml_tensor * std_mask = nullptr;
+        if (is_swa && attn_mask_swa_f32)  std_mask = attn_mask_swa_f32;
+        else if (!is_swa && attn_mask_full_f32) std_mask = attn_mask_full_f32;
+        ggml_tensor * kq_sm = ggml_soft_max_ext(ctx, kq, std_mask, kq_scale_nc, 0.0f);
+
+        // kqv: matches reference non-FA path (llama-graph.cpp build_attn_mha lines 2144-2162).
+        // After permute(0,2,1,3), Vp = [head_dim, n_tokens, n_head_kv, 1].
+        // v_trans = (Vp->nb[1] > Vp->nb[2]) = false since permute makes nb[1] < nb[2].
+        // Reference: "if (!v_trans) v = ggml_cont(transpose(v))"
+        // After cont(transpose(Vp)): shape = [n_tokens, head_dim, n_head_kv, 1].
+        ggml_tensor * Vt = ggml_cont(ctx, ggml_transpose(ctx, Vp));  // [n_tokens, head_dim, n_head_kv]
+
+        // mul_mat(Vt, kq_sm) contracts Vt.ne[0]=n_tokens with kq_sm.ne[0]=n_tokens.
+        // Result: [head_dim, n_tokens_q, n_head, 1]
+        ggml_tensor * kqv = ggml_mul_mat(ctx, Vt, kq_sm);
+
+        // Permute and reshape: reference lines 2159-2162
+        // kqv: [head_dim, n_tokens_q, n_head, 1]
+        // permute(0,2,1,3): [head_dim, n_head, n_tokens_q, 1]
+        ggml_tensor * kqv_out = ggml_permute(ctx, kqv, 0, 2, 1, 3);
+        ggml_tensor * out = ggml_cont_2d(ctx, kqv_out, q_dim, n_tokens); // [q_dim, n_tokens]
+        return ggml_mul_mat(ctx, L.wo, out);                              // [n_embd, n_tokens]
+    } else if (has_kv) {
+        // ── Cache path (autoregressive decode) ────────────────────────────
+        // K/V projection + norm + RoPE + write to F16 cache
         ggml_tensor * Kcur = ggml_mul_mat(ctx, L.wk, cur);
         ggml_tensor * Vcur = L.wv ? ggml_mul_mat(ctx, L.wv, cur) : Kcur;
 
@@ -239,36 +345,50 @@ static ggml_tensor * build_gemma4_attn_block(
             ggml_build_forward_expand(gf, ggml_cpy(ctx, Kcur_T, k_slot));
             ggml_build_forward_expand(gf, ggml_cpy(ctx, Vcur_T, v_slot));
         }
+
+        // Read back from F16 cache for flash attention
+        const int fa_window_l = cache.fa_window;
+        const int full_win_start_l = (!is_swa && fa_window_l > 0 && kv_start > fa_window_l)
+                                         ? (kv_start - fa_window_l) : 0;
+        const int kv_len_raw = is_swa ? std::min(kv_start + n_tokens, cache_len)
+                                      : (kv_start + n_tokens - full_win_start_l);
+        kv_len = std::min((kv_len_raw + 255) & ~255, cache_len);
+
+        const size_t cache_offset = is_swa ? 0 : (cache_k->nb[1] * (size_t)full_win_start_l);
+        Kfa = ggml_view_3d(ctx, cache_k,
+            head_dim, kv_len, n_head_kv,
+            cache_k->nb[1], cache_k->nb[2], cache_offset);
+        Vfa = ggml_view_3d(ctx, cache_v,
+            head_dim, kv_len, n_head_kv,
+            cache_v->nb[1], cache_v->nb[2], cache_offset);
+    } else {
+        // ── KV-sharing: cache already written by source layer ─────────────
+        const int fa_window_l = cache.fa_window;
+        const int full_win_start_l = (!is_swa && fa_window_l > 0 && kv_start > fa_window_l)
+                                         ? (kv_start - fa_window_l) : 0;
+        const int kv_len_raw = is_swa ? std::min(kv_start + n_tokens, cache_len)
+                                      : (kv_start + n_tokens - full_win_start_l);
+        kv_len = std::min((kv_len_raw + 255) & ~255, cache_len);
+
+        const size_t cache_offset = is_swa ? 0 : (cache_k->nb[1] * (size_t)full_win_start_l);
+        Kfa = ggml_view_3d(ctx, cache_k,
+            head_dim, kv_len, n_head_kv,
+            cache_k->nb[1], cache_k->nb[2], cache_offset);
+        Vfa = ggml_view_3d(ctx, cache_v,
+            head_dim, kv_len, n_head_kv,
+            cache_v->nb[1], cache_v->nb[2], cache_offset);
     }
-    // else: KV-sharing layer — cache already written by source layer
 
-    // Flash attention
-    // For SWA layers: read entire ring buffer (cache_len positions)
-    // For full layers: read all positions (or windowed if fa_window > 0)
-    const int fa_window = cache.fa_window;
-    const int full_win_start = (!is_swa && fa_window > 0 && kv_start > fa_window)
-                                   ? (kv_start - fa_window) : 0;
-    const int kv_len_raw = is_swa ? std::min(kv_start + n_tokens, cache_len)
-                                  : (kv_start + n_tokens - full_win_start);
-    // Pad to 256 for CUDA FA, clamped to the tensor's physical capacity
-    // (kvflash pools allocate full layers below max_ctx; the slot mask keeps
-    // the clamped span exact).
-    const int kv_len = std::min((kv_len_raw + 255) & ~255, cache_len);
-
-    ggml_tensor * Qfa = ggml_permute(ctx, Qcur, 0, 2, 1, 3);
-    Qfa = ggml_cont(ctx, Qfa);
-
-    const size_t cache_offset = is_swa ? 0 : (cache_k->nb[1] * (size_t)full_win_start);
-    ggml_tensor * Kfa = ggml_view_3d(ctx, cache_k,
-        head_dim, kv_len, n_head_kv,
-        cache_k->nb[1], cache_k->nb[2], cache_offset);
-    ggml_tensor * Vfa = ggml_view_3d(ctx, cache_v,
-        head_dim, kv_len, n_head_kv,
-        cache_v->nb[1], cache_v->nb[2], cache_offset);
+    ggml_tensor * Qfa = ggml_cont(ctx, ggml_permute(ctx, Qcur, 0, 2, 1, 3));
 
     // Gemma4 uses self.scaling = 1.0 (no QK scaling) because Q/K are already
     // RMS-normed per-head. Standard 1/sqrt(head_dim) is NOT used here.
     const float kq_scale = 1.0f;
+
+    // For the windowed cache path, the mask may need to be offset to match the
+    // KV window start. Re-derive full_win_start here from cache.fa_window.
+    const int full_win_start = (!no_cache && !is_swa && cache.fa_window > 0 && kv_start > cache.fa_window)
+                                   ? (kv_start - cache.fa_window) : 0;
     ggml_tensor * use_mask;
     if (is_swa) {
         use_mask = attn_mask_swa;
@@ -283,6 +403,9 @@ static ggml_tensor * build_gemma4_attn_block(
     }
     ggml_tensor * attn = ggml_flash_attn_ext(ctx, Qfa, Kfa, Vfa, use_mask,
                                               kq_scale, 0.0f, 0.0f);
+    // Match reference: set F32 precision for the FA accumulator to avoid
+    // compounding F16-accumulation errors across 30 layers.
+    ggml_flash_attn_ext_set_prec(attn, GGML_PREC_F32);
 
     // Reshape to [q_dim, n_tokens] and output projection
     attn = ggml_reshape_2d(ctx, attn, q_dim, n_tokens);
@@ -305,7 +428,10 @@ static ggml_tensor * build_gemma4_layer(
     int n_tokens,
     int capture_idx = -1,  // >=0: write to target_feat at this capture slot
     ggml_tensor * kv_idx_full = nullptr,
-    ggml_tensor * kv_idx_swa  = nullptr)
+    ggml_tensor * kv_idx_swa  = nullptr,
+    bool no_cache = false,  // bypass F16 cache in attention block
+    ggml_tensor * attn_mask_full_f32 = nullptr,  // F32 [n_tokens,n_tokens] mask for no-cache path
+    ggml_tensor * attn_mask_swa_f32  = nullptr)  // F32 [n_tokens,n_tokens] SWA mask for no-cache path
 {
     const Gemma4Layer & L = w.layers[il];
     ggml_tensor * inp_f32 = graph_tensor_f32(ctx, inp);
@@ -316,7 +442,8 @@ static ggml_tensor * build_gemma4_layer(
     // Attention
     cur = build_gemma4_attn_block(ctx, gf, w, L, cache, il, cur,
                                     positions, attn_mask_full, attn_mask_swa,
-                                    kv_start, n_tokens, kv_idx_full, kv_idx_swa);
+                                    kv_start, n_tokens, kv_idx_full, kv_idx_swa,
+                                    no_cache, attn_mask_full_f32, attn_mask_swa_f32);
 
     // Post-attn norm
     if (L.attn_post_norm) {
@@ -1082,85 +1209,128 @@ bool gemma4_verify_batch(
 }
 
 // ── gemma4_denoise_batch ────────────────────────────────────────────────
-// Bidirectional (diffusion decoder-mode) forward over a canvas.
+// Region-aware bidirectional forward over [prompt | canvas] for DiffusionGemma.
 //
-// Unlike gemma4_verify_batch (causal), every query attends to every key in
-// [0, n_tokens): DiffusionGemma's decoder mode is globally bidirectional over
-// the canvas. The noised canvas changes every denoising step, so there is no
-// causal KV to reuse — this runs a fresh full recompute from position 0 and
-// returns logits for the sub-range [out_begin, out_begin+out_len) (the active
-// block). Reuses build_gemma4_layer for the exact gemma4 computation (iSWA,
-// MoE, per-layer embeddings, softcap); only the mask + readout differ.
-//
-// First cut — GPU-build-gated (not compiled in CPU-only envs). Constraints,
-// documented as follow-up optimizations:
-//   - n_tokens must fit the caches: <= cache.max_ctx and (when SWA layers are
-//     present) <= cache.swa_size, so the single offset-view KV write does not
-//     wrap the ring. Longer canvases need a warm-prefix + block-incremental
-//     path (warm the prompt KV once, recompute only the active block).
-//   - Recomputes the whole canvas each call (O(canvas^2) per denoising step).
+// Three region-aware behaviours (matching diffusion-gemma.cpp from PR #24423):
+//   1. Canvas embed: rms_norm_noscale + optional SC MLP injection (ref :347-360).
+//   2. Attention mask: prompt-causal / canvas-bidirectional split per-layer SWA
+//      pattern (ref :28-81).
+//   3. Per-layer scalar: enc_out_scale for prompt rows, out_scale for canvas rows
+//      (ref :474-487).
+// Returns full canvas logits [n_vocab, C] F32. Phase-2 unified path (no KV cache).
 bool gemma4_denoise_batch(
     ggml_backend_t          backend,
     const Gemma4Weights &   w,
     Gemma4Cache &           cache,
     const float *           embed,       // [n_embd, n_tokens] scaled by sqrt(n_embd)
     const int32_t *         token_ids,   // [n_tokens]
-    int                     n_tokens,
-    int                     out_begin,
-    int                     out_len,
-    std::vector<float> &    out_logits)
+    int                     n_tokens,    // P + C (prompt + canvas)
+    int                     n_prompt,    // P: number of prompt tokens; canvas = n_tokens-P
+    const float *           sc_logits,   // [n_vocab, C] F32 prev-step logits; nullptr = SC-off
+    float                   sc_use,      // 0.0 = SC-off (step 0), 1.0 = SC-on
+    float                   sc_temp_inv, // 1/temperature for SC softmax
+    ggml_tensor *           sc_embT,     // {n_vocab, n_embd} F16 device tensor; nullptr = SC-off
+    std::vector<float> &    out_logits)  // [n_vocab, C] F32 — all canvas positions
 {
-    const int kv_start = 0;  // fresh full recompute each call
+    // P = prompt, C = canvas
+    const int P = n_prompt;
+    const int C = n_tokens - P;
 
-    if (n_tokens <= 0 || out_len <= 0 || out_begin < 0 ||
-        out_begin + out_len > n_tokens) {
-        std::fprintf(stderr, "gemma4_denoise_batch: bad range (n=%d out=[%d,%d))\n",
-                     n_tokens, out_begin, out_begin + out_len);
+    if (n_tokens <= 0 || C <= 0 || P < 0) {
+        std::fprintf(stderr, "gemma4_denoise_batch: bad split (n=%d P=%d C=%d)\n",
+                     n_tokens, P, C);
         return false;
     }
-    if (n_tokens > cache.max_ctx) {
-        std::fprintf(stderr, "gemma4_denoise_batch: canvas %d exceeds max_ctx %d\n",
-                     n_tokens, cache.max_ctx);
+    // max_ctx must be at least (n_tokens+255)&~255 because build_gemma4_attn_block
+    // pads the full-attn kv_len to a 256 boundary and views the cache at that size.
+    const int min_ctx = (n_tokens + 255) & ~255;
+    if (cache.max_ctx < min_ctx) {
+        std::fprintf(stderr,
+            "gemma4_denoise_batch: max_ctx %d < min required %d for n_tokens=%d\n",
+            cache.max_ctx, min_ctx, n_tokens);
         return false;
     }
     if (cache.swa_size > 0 && n_tokens > cache.swa_size) {
         std::fprintf(stderr,
-            "gemma4_denoise_batch: canvas %d exceeds SWA ring %d "
+            "gemma4_denoise_batch: n_tokens %d exceeds SWA ring %d "
             "(warm-prefix path not yet implemented)\n", n_tokens, cache.swa_size);
         return false;
     }
 
+    const bool do_sc = (sc_logits != nullptr && sc_embT != nullptr && w.sc_pre_norm != nullptr &&
+                        w.sc_gate != nullptr && w.sc_up != nullptr && w.sc_down != nullptr);
+
+    // Graph context. The graph includes per-layer embeddings, SC MLP, 30 layers,
+    // final norm, lm_head — budget amply for 8192 nodes.
     ggml_init_params ip{};
-    ip.mem_size = ggml_tensor_overhead() * 16384 + ggml_graph_overhead() + 16 * 1024 * 1024;
+    ip.mem_size = ggml_tensor_overhead() * 32768 + ggml_graph_overhead() + 32 * 1024 * 1024;
     ip.no_alloc = true;
     ggml_context * ctx = ggml_init(ip);
-    ggml_cgraph * gf = ggml_new_graph_custom(ctx, 16384, false);
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx, 32768, false);
 
+    // ── Input tensors ─────────────────────────────────────────────────
+
+    // Full embedded input [n_embd, P+C] (prompt already scaled by caller)
     ggml_tensor * ie = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, w.n_embd, n_tokens);
     ggml_set_input(ie);
+
+    // RoPE positions: prompt = 0..P-1, canvas = P..P+C-1 (ref: canvas continues
+    // past prompt, does NOT restart at 0). (plan.md §RoPE positions)
     ggml_tensor * pp = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_tokens);
     ggml_set_input(pp);
 
+    // Token IDs for per-layer embedding lookup
     ggml_tensor * tok_ids = nullptr;
     if (token_ids && w.per_layer_tok_embd && w.per_layer_model_proj && w.n_embd_per_layer > 0) {
         tok_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_tokens);
         ggml_set_input(tok_ids);
     }
 
-    const int kv_len_raw    = kv_start + n_tokens;
+    // ── SC logits input [n_vocab, C] ─────────────────────────────────
+    ggml_tensor * sc_logits_t = nullptr;
+    if (do_sc) {
+        sc_logits_t = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, w.n_vocab, C);
+        ggml_set_input(sc_logits_t);
+    }
+
+    // ── Attention masks ───────────────────────────────────────────────
+    // Unified square [P+C, P+C] mask: separate full-attn and SWA variants.
+    // Built on the host in set_input below (ref diffusion-gemma.cpp:28-81).
+    const int kv_len_raw    = n_tokens;
     const int kv_len_padded = (kv_len_raw + 255) & ~255;
     ggml_tensor * mk_full = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, kv_len_padded, n_tokens, 1, 1);
     ggml_set_input(mk_full);
     ggml_tensor * mk_full_f16 = ggml_cast(ctx, mk_full, GGML_TYPE_F16);
 
     const int swa_size       = cache.swa_size;
-    const int swa_len_raw    = swa_size > 0 ? std::min(kv_start + n_tokens, swa_size) : n_tokens;
+    const int swa_len_raw    = swa_size > 0 ? std::min(n_tokens, swa_size) : n_tokens;
     const int swa_len_padded = (swa_len_raw + 255) & ~255;
     ggml_tensor * mk_swa = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, swa_len_padded, n_tokens, 1, 1);
     ggml_set_input(mk_swa);
     ggml_tensor * mk_swa_f16 = ggml_cast(ctx, mk_swa, GGML_TYPE_F16);
 
-    // Per-layer embeddings (identical to gemma4_step / gemma4_verify_batch).
+    // Unpadded F32 masks for standard (non-FA) no-cache attention path.
+    // ggml_soft_max_ext requires mask->ne[0] == kq->ne[0] = n_tokens exactly.
+    // Pre-allocate the mask data in host vectors and back the tensors with CPU
+    // buffers created from pointers. This avoids the gallocr buffer-not-set issue
+    // that occurs when fresh input tensors are created but the CUDA gallocr doesn't
+    // allocate them into a device buffer before ggml_backend_tensor_set is called.
+    //
+    // Unpadded F32 masks for standard (non-FA) no-cache attention path.
+    // ggml_soft_max_ext requires mask->ne[0] == kq->ne[0] = n_tokens exactly.
+    // Extract [n_tokens, n_tokens] from the padded F32 masks via cont(view).
+    // The padded mask has nb[1] = kv_len_padded * sizeof(float), so a view of
+    // ne[0]=n_tokens with the same nb[1] extracts the first n_tokens columns.
+    ggml_tensor * mk_full_f32_sq = (kv_len_padded == n_tokens)
+        ? mk_full
+        : ggml_cont(ctx, ggml_view_4d(ctx, mk_full, n_tokens, n_tokens, 1, 1,
+                                       mk_full->nb[1], mk_full->nb[2], mk_full->nb[3], 0));
+    ggml_tensor * mk_swa_f32_sq  = (swa_len_padded == n_tokens)
+        ? mk_swa
+        : ggml_cont(ctx, ggml_view_4d(ctx, mk_swa, n_tokens, n_tokens, 1, 1,
+                                       mk_swa->nb[1], mk_swa->nb[2], mk_swa->nb[3], 0));
+
+    // ── Per-layer embeddings (same as gemma4_step) ────────────────────
     ggml_tensor * per_layer_all = nullptr;
     if (tok_ids) {
         const int D = w.n_embd_per_layer;
@@ -1179,25 +1349,165 @@ bool gemma4_denoise_batch(
         per_layer_all = ggml_cont(ctx, ggml_permute(ctx, per_layer_all, 0, 2, 1, 3));
     }
 
-    ggml_tensor * cur = ie;
+    // ── Canvas embedding: bare rms_norm + optional SC MLP ────────────
+    // Prompt rows are already scaled (sqrt(n_embd) applied in caller). Canvas
+    // rows get rms_norm_noscale — the SC MLP result is added to the canvas
+    // embedding before that norm. (ref diffusion-gemma.cpp:361-384)
+    //
+    // self_cond MLP (ref :347-360):
+    //   probs = softmax(sc_logits * sc_temp_inv)
+    //   soft  = sc_embT @ probs ; soft *= sqrt(n_embd)
+    //   normed = rms_norm(soft, sc_pre_norm)
+    //   g = gelu(sc_gate @ normed) ; u = sc_up @ normed
+    //   sc_sig = sc_down @ (g * u) ; sc_sig *= sc_use
+    //   canvas = rms_norm(canvas + sc_sig)           // bare, no scale weight
+
+    ggml_tensor * cur_embed = ie;
+
+    if (P > 0 && C > 0) {
+        // Split prompt and canvas embedding rows
+        ggml_tensor * prompt_embed = ggml_view_2d(ctx, ie, w.n_embd, P,
+                                                   ie->nb[1], 0);
+        ggml_tensor * canvas_embed = ggml_view_2d(ctx, ie, w.n_embd, C,
+                                                   ie->nb[1], (size_t)P * ie->nb[1]);
+        canvas_embed = ggml_cont(ctx, canvas_embed);
+
+        if (do_sc) {
+            // SC MLP subgraph (ref diffusion-gemma.cpp:347-360)
+            ggml_tensor * probs = ggml_soft_max(ctx,
+                ggml_scale(ctx, sc_logits_t, sc_temp_inv));           // [n_vocab, C]
+            // sc_embT {n_vocab, n_embd} F16; ggml_mul_mat(A,B)=A^T@B
+            // A={n_vocab,n_embd}: A^T={n_embd,n_vocab}; B={n_vocab,C} → [n_embd,C]
+            ggml_tensor * soft = ggml_mul_mat(ctx, sc_embT, probs);    // [n_embd, C]
+            soft = ggml_scale(ctx, soft, std::sqrt((float)w.n_embd));  // ref :352
+            // SC MLP pre-norm (with weight sc_pre_norm)
+            ggml_tensor * normed = gemma4_rms_norm_mul(ctx, soft, w.sc_pre_norm, w.norm_eps); // ref :354
+            // gate path: ggml_gelu = tanh-approx GELU (same as backbone; ref :355)
+            ggml_tensor * g = ggml_gelu(ctx, ggml_mul_mat(ctx, w.sc_gate, normed)); // [n_ff, C]
+            ggml_tensor * u = ggml_mul_mat(ctx, w.sc_up, normed);                   // [n_ff, C]
+            ggml_tensor * sc_sig = ggml_mul_mat(ctx, w.sc_down,
+                                                ggml_mul(ctx, g, u));               // [n_embd, C]
+            sc_sig = ggml_scale(ctx, sc_sig, sc_use);                               // ref :358; 0.0 on step 0
+            canvas_embed = ggml_add(ctx, canvas_embed, sc_sig);
+        }
+        // Bare rms_norm (no scale weight) for canvas (ref :360 / :383)
+        canvas_embed = ggml_rms_norm(ctx, canvas_embed, w.norm_eps);
+
+        // Reassemble [prompt | canvas]
+        cur_embed = ggml_concat(ctx, ggml_cont(ctx, prompt_embed),
+                                ggml_cont(ctx, canvas_embed), 1);
+    } else if (P == 0) {
+        // Pure-canvas (no prompt): SC + rms_norm
+        if (do_sc) {
+            ggml_tensor * canvas_all = ggml_cont(ctx, ie);
+            ggml_tensor * probs = ggml_soft_max(ctx,
+                ggml_scale(ctx, sc_logits_t, sc_temp_inv));
+            ggml_tensor * soft  = ggml_mul_mat(ctx, sc_embT, probs);
+            soft = ggml_scale(ctx, soft, std::sqrt((float)w.n_embd));
+            ggml_tensor * normed = gemma4_rms_norm_mul(ctx, soft, w.sc_pre_norm, w.norm_eps);
+            ggml_tensor * g = ggml_gelu(ctx, ggml_mul_mat(ctx, w.sc_gate, normed));
+            ggml_tensor * u = ggml_mul_mat(ctx, w.sc_up, normed);
+            ggml_tensor * sc_sig = ggml_mul_mat(ctx, w.sc_down, ggml_mul(ctx, g, u));
+            sc_sig = ggml_scale(ctx, sc_sig, sc_use);
+            canvas_all = ggml_add(ctx, canvas_all, sc_sig);
+            cur_embed  = ggml_rms_norm(ctx, canvas_all, w.norm_eps);
+        } else {
+            cur_embed = ggml_rms_norm(ctx, ggml_cont(ctx, ie), w.norm_eps);
+        }
+    }
+    // P == n_tokens (all prompt, no canvas) would be caught by C<=0 guard above.
+
+    // ── Transformer layers ────────────────────────────────────────────
+    ggml_tensor * cur = cur_embed;
     for (int il = 0; il < w.n_layer; ++il) {
         ggml_tensor * pl_input = nullptr;
         if (per_layer_all) pl_input = gemma4_view_2d_slice(ctx, per_layer_all, il);
-        cur = build_gemma4_layer(ctx, gf, w, cache, il, cur, pp,
-                                   mk_full_f16, mk_swa_f16, pl_input,
-                                   kv_start, n_tokens, /*capture_idx=*/-1);
+
+        // build_gemma4_layer handles attn_norm, Q/K/V, RoPE, FA, post_norm,
+        // residual, FFN, ffn_post_norm, per_layer_inject — but NOT out_scale
+        // (we handle it here region-aware instead of the uniform path in the layer).
+        // Pass the SWA-appropriate mask; the layer selects the right one via is_swa.
+        ggml_tensor * layer_out = build_gemma4_layer(ctx, gf, w, cache, il, cur, pp,
+                                                      mk_full_f16, mk_swa_f16, pl_input,
+                                                      /*kv_start=*/0, n_tokens,
+                                                      /*capture_idx=*/-1,
+                                                      /*kv_idx_full=*/nullptr,
+                                                      /*kv_idx_swa=*/nullptr,
+                                                      /*no_cache=*/true,
+                                                      /*attn_mask_full_f32=*/mk_full_f32_sq,
+                                                      /*attn_mask_swa_f32=*/mk_swa_f32_sq);
+
+        // ── Region-aware per-layer scalar (ref diffusion-gemma.cpp:474-487) ──
+        // enc_out_scale for prompt rows, out_scale for canvas rows.
+        // build_gemma4_layer already applied out_scale (its own residual path);
+        // we need to override: remove the uniform out_scale it applies and redo
+        // region-split. BUT: build_gemma4_layer applies out_scale internally for
+        // the branch's existing tensors. Looking at the implementation, out_scale
+        // is applied inside build_gemma4_layer at the end. Since enc_out_scale
+        // for the branch != out_scale for prompt rows, we must NOT call
+        // build_gemma4_layer's internal out_scale application for the prompt rows.
+        //
+        // Solution: build_gemma4_layer applies L.out_scale (if non-null) after FFN.
+        // We temporarily disable it by treating the returned value as already having
+        // out_scale applied to ALL rows (which is wrong for prompt), then:
+        //   prompt_corrected = prompt_rows * (enc_out_scale / out_scale)  — NOT clean.
+        //
+        // Cleaner: since build_gemma4_layer already multiplies by out_scale, and we
+        // want enc_out_scale on prompt:
+        //   prompt_corrected = prompt_rows * enc_out_scale / out_scale
+        // But scalar division is tricky. Instead, don't use build_gemma4_layer's
+        // out_scale application for this forward — we duplicate the layer logic here.
+        //
+        // Actually, inspect build_gemma4_layer: it applies L.out_scale at the end.
+        // The scale is a 1-element tensor. We need to divide the prompt portion back
+        // out and multiply by enc_out_scale. Given out_scale is a device scalar we
+        // can't easily read it on CPU. The correct approach is to duplicate the layer
+        // body without out_scale and apply region-aware scales ourselves.
+        //
+        // For Phase-2 correctness, we undo the uniform out_scale on prompt rows and
+        // reapply enc_out_scale. Canvas rows already have the correct out_scale.
+        // Undo on prompt: multiply by (1/out_scale) then by enc_out_scale.
+        // ggml doesn't have div-by-tensor, but we can do mul(layer_out, recip).
+        // Since we need 1/out_scale on the GPU and out_scale is a [1] tensor, we use
+        // a workaround: apply enc_out_scale / out_scale via ggml_div.
+
+        const Gemma4Layer & L = w.layers[il];
+        if (P > 0 && C > 0 && L.out_scale && L.enc_out_scale) {
+            // layer_out has out_scale applied to ALL rows by build_gemma4_layer.
+            // Correct prompt rows: multiply by enc_out_scale * (1/out_scale).
+            // ggml_div(enc_out_scale, out_scale) gives the correction factor [1].
+            ggml_tensor * prompt_rows = ggml_cont(ctx,
+                ggml_view_2d(ctx, layer_out, w.n_embd, P, layer_out->nb[1], 0));
+            ggml_tensor * canvas_rows = ggml_cont(ctx,
+                ggml_view_2d(ctx, layer_out, w.n_embd, C,
+                             layer_out->nb[1], (size_t)P * layer_out->nb[1]));
+            // correction = enc_out_scale / out_scale
+            ggml_tensor * correction = ggml_div(ctx, L.enc_out_scale, L.out_scale);
+            prompt_rows = ggml_mul(ctx, prompt_rows, correction);
+            cur = ggml_concat(ctx, prompt_rows, canvas_rows, 1);
+        } else if (P == 0 && L.out_scale) {
+            // All canvas — build_gemma4_layer already applied out_scale, correct.
+            cur = layer_out;
+        } else if (C == 0 && L.out_scale && L.enc_out_scale) {
+            // All prompt — need enc_out_scale, but build_gemma4_layer applied out_scale.
+            ggml_tensor * correction = ggml_div(ctx, L.enc_out_scale, L.out_scale);
+            cur = ggml_mul(ctx, layer_out, correction);
+        } else {
+            cur = layer_out;
+        }
     }
 
+    // ── Final norm + lm_head over canvas rows only ────────────────────
     cur = gemma4_rms_norm_mul(ctx, cur, w.out_norm, w.norm_eps);
 
-    // Slice to the active block before lm_head to bound logits memory
-    // (matches gemma4_step's last-token slice pattern).
-    if (out_begin > 0 || out_len < n_tokens) {
-        cur = ggml_view_2d(ctx, cur, w.n_embd, out_len,
-                           cur->nb[1], (size_t)out_begin * cur->nb[1]);
+    // Slice to canvas rows before lm_head (ref plan.md §CANVAS-LOGITS RETURN)
+    if (P > 0) {
+        cur = ggml_cont(ctx,
+            ggml_view_2d(ctx, cur, w.n_embd, C,
+                         cur->nb[1], (size_t)P * cur->nb[1]));
     }
 
-    cur = ggml_mul_mat(ctx, w.output, cur);  // [vocab, out_len]
+    cur = ggml_mul_mat(ctx, w.output, cur);  // [n_vocab, C]
     if (w.final_logit_softcap > 0.0f) {
         cur = ggml_scale(ctx, cur, 1.0f / w.final_logit_softcap);
         cur = ggml_tanh(ctx, cur);
@@ -1206,52 +1516,108 @@ bool gemma4_denoise_batch(
     ggml_set_output(cur);
     ggml_build_forward_expand(gf, cur);
 
-    static ggml_gallocr_t galloc_denoise = nullptr;
-    if (!galloc_denoise)
-        galloc_denoise = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    // ── Allocate ──────────────────────────────────────────────────────
+    // galloc is NOT static/reused: the graph shape changes with n_tokens/P/C and
+    // whether SC is active, so we allocate fresh each call. (Phase-3 will cache.)
+    ggml_gallocr_t galloc_denoise = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
     if (!ggml_gallocr_alloc_graph(galloc_denoise, gf)) {
         std::fprintf(stderr, "gemma4_denoise_batch: gallocr_alloc_graph failed\n");
+        ggml_gallocr_free(galloc_denoise);
         ggml_free(ctx);
         return false;
     }
 
+    // ── Upload inputs ─────────────────────────────────────────────────
     ggml_backend_tensor_set(ie, embed, 0, ggml_nbytes(ie));
+
+    // RoPE: prompt = 0..P-1, canvas = P..P+C-1 (ref plan.md §RoPE positions)
     std::vector<int32_t> pos((size_t)n_tokens);
-    for (int i = 0; i < n_tokens; ++i) pos[i] = kv_start + i;
+    for (int i = 0; i < n_tokens; ++i) pos[i] = i;  // absolute position for all
     ggml_backend_tensor_set(pp, pos.data(), 0, ggml_nbytes(pp));
+
     if (tok_ids && token_ids) {
         ggml_backend_tensor_set(tok_ids, token_ids, 0, (size_t)n_tokens * sizeof(int32_t));
     }
 
-    // Bidirectional full mask: every query attends to every key in [0,kv_len_raw).
-    std::vector<float> mfull((size_t)kv_len_padded * n_tokens, -INFINITY);
-    for (int q = 0; q < n_tokens; ++q)
-        for (int k = 0; k < kv_len_raw; ++k)
-            mfull[(size_t)q * kv_len_padded + k] = 0.0f;
-    ggml_backend_tensor_set(mk_full, mfull.data(), 0, ggml_nbytes(mk_full));
-
-    // Bidirectional SWA mask: with n_tokens <= swa_size there is no ring wrap,
-    // so each query attends to every key in [0,n_tokens) (global within the
-    // canvas — diffusion decode is bidirectional, not windowed).
-    std::vector<float> mswa((size_t)swa_len_padded * n_tokens, -INFINITY);
-    for (int q = 0; q < n_tokens; ++q) {
-        for (int abs_k = 0; abs_k < n_tokens; ++abs_k) {
-            const int slot = (swa_size > 0) ? (abs_k % swa_size) : abs_k;
-            if (slot < swa_len_raw) mswa[(size_t)q * swa_len_padded + slot] = 0.0f;
-        }
+    if (do_sc && sc_logits_t) {
+        ggml_backend_tensor_set(sc_logits_t, sc_logits, 0,
+                                (size_t)w.n_vocab * (size_t)C * sizeof(float));
     }
-    ggml_backend_tensor_set(mk_swa, mswa.data(), 0, ggml_nbytes(mk_swa));
 
+    // ── Region-aware attention mask (ref diffusion-gemma.cpp:28-81) ──
+    // prompt q:  causal over prompt keys only (SWA-clipped if swa layer).
+    // canvas q, global:  attend all P+C keys.
+    // canvas q, SWA:     attend all C canvas keys + last (n_swa-1) prompt keys.
+    //
+    // We build two masks (full-attn and SWA); build_gemma4_layer selects the right
+    // one per layer based on is_swa. The masks are [kv_len_padded, n_tokens].
+    // The canvas_prompt_lo = P - (sliding_window - 1) for SWA canvas queries.
+    const int n_swa = w.sliding_window;
+    const int canvas_prompt_lo = P - (n_swa > 0 ? n_swa - 1 : 0);
+
+    // Full-attention mask (global layers: canvas sees all, prompt is causal).
+    {
+        std::vector<float> mfull((size_t)kv_len_padded * n_tokens, -INFINITY);
+        for (int q = 0; q < n_tokens; ++q) {
+            const bool q_is_canvas = (q >= P);
+            for (int k = 0; k < kv_len_raw; ++k) {
+                const bool k_is_canvas = (k >= P);
+                bool allow;
+                if (q_is_canvas) {
+                    allow = true;  // canvas global: attend all prompt+canvas
+                } else {
+                    // prompt causal: only earlier/equal prompt positions, never canvas
+                    allow = (!k_is_canvas) && (k <= q);
+                }
+                if (allow) mfull[(size_t)q * kv_len_padded + k] = 0.0f;
+            }
+        }
+        ggml_backend_tensor_set(mk_full, mfull.data(), 0, ggml_nbytes(mk_full));
+    }
+
+    // SWA mask (sliding-window layers): canvas sees last (n_swa-1) prompt + all canvas;
+    // prompt queries causal + SWA-clipped (no farther than n_swa positions).
+    {
+        std::vector<float> mswa((size_t)swa_len_padded * n_tokens, -INFINITY);
+        for (int q = 0; q < n_tokens; ++q) {
+            const bool q_is_canvas = (q >= P);
+            for (int k = 0; k < kv_len_raw; ++k) {
+                const bool k_is_canvas = (k >= P);
+                bool allow;
+                if (q_is_canvas) {
+                    // SWA canvas: all canvas keys + last (n_swa-1) prompt positions
+                    allow = k_is_canvas || (k >= canvas_prompt_lo);
+                } else {
+                    // SWA prompt: causal + sliding window
+                    allow = (!k_is_canvas) && (k <= q) &&
+                            (n_swa <= 0 || q - k < n_swa);
+                }
+                if (allow) {
+                    const int slot = (swa_size > 0) ? (k % swa_size) : k;
+                    if (slot < swa_len_raw) mswa[(size_t)q * swa_len_padded + slot] = 0.0f;
+                }
+            }
+        }
+        ggml_backend_tensor_set(mk_swa, mswa.data(), 0, ggml_nbytes(mk_swa));
+    }
+
+    // (Square masks mk_full_f32_sq / mk_swa_f32_sq are derived from mk_full / mk_swa
+    //  via ggml_cont(view) — no separate fill needed.)
+
+    // ── Compute ───────────────────────────────────────────────────────
     if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
         std::fprintf(stderr, "gemma4_denoise_batch: graph_compute failed\n");
+        ggml_gallocr_free(galloc_denoise);
         ggml_free(ctx);
         return false;
     }
 
-    out_logits.resize((size_t)w.n_vocab * (size_t)out_len);
+    // ── Read canvas logits [n_vocab, C] ──────────────────────────────
+    out_logits.resize((size_t)w.n_vocab * (size_t)C);
     ggml_backend_tensor_get(cur, out_logits.data(), 0, sizeof(float) * out_logits.size());
 
-    cache.cur_pos = kv_len_raw;
+    cache.cur_pos = n_tokens;
+    ggml_gallocr_free(galloc_denoise);
     ggml_free(ctx);
     return true;
 }
@@ -1664,18 +2030,8 @@ bool gemma4_prefill_bsa(
         }
 
         // ── Attention ──
-        // Determine which K/V to use (KV sharing).
-        const int kv_source_il = cache.kv_source[il];
-        // If this layer reuses another layer's KV, the source layer's K/V is
-        // already in K_buf/V_buf from when that layer was processed.
-        // For BSA we need the source layer's buffers, but since we process
-        // layers sequentially and overwrite K_buf/V_buf each layer, we need
-        // to handle sharing differently.
-        //
-        // Simplification: KV-sharing layers have the same head_dim and n_head_kv
-        // as their source. During BSA prefill, we DON'T overwrite K_buf/V_buf
-        // for layers without has_kv, so they still hold the source layer's data.
-        // This works because kv_source[il] < il for sharing layers.
+        // KV-sharing: layers without has_kv don't overwrite K_buf/V_buf, so they
+        // still hold the source layer's data (kv_source[il] < il for sharing layers).
 
         bool used_bsa = false;
         if (is_swa && D == 128) {

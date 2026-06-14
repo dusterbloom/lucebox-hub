@@ -799,6 +799,37 @@ if(DFLASH27B_TESTS)
         endif()
     endif()
 
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_diffusion_gemma_forward.cpp" AND DFLASH27B_GPU_BACKEND STREQUAL "cuda")
+        add_executable(smoke_diffusion_gemma_forward test/smoke_diffusion_gemma_forward.cpp)
+        target_include_directories(smoke_diffusion_gemma_forward PRIVATE
+            ${DFLASH27B_SRC_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/diffusion/diffusiongemma)
+        target_link_libraries(smoke_diffusion_gemma_forward PRIVATE dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_diffusion_gemma_sc_on.cpp" AND DFLASH27B_GPU_BACKEND STREQUAL "cuda")
+        add_executable(smoke_diffusion_gemma_sc_on test/smoke_diffusion_gemma_sc_on.cpp)
+        target_include_directories(smoke_diffusion_gemma_sc_on PRIVATE
+            ${DFLASH27B_SRC_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/diffusion/diffusiongemma)
+        target_link_libraries(smoke_diffusion_gemma_sc_on PRIVATE dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_eb_generate.cpp" AND DFLASH27B_GPU_BACKEND STREQUAL "cuda")
+        add_executable(smoke_eb_generate test/smoke_eb_generate.cpp)
+        target_include_directories(smoke_eb_generate PRIVATE
+            ${DFLASH27B_SRC_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/diffusion/diffusiongemma)
+        target_link_libraries(smoke_eb_generate PRIVATE dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_gemma4_ar.cpp" AND DFLASH27B_GPU_BACKEND STREQUAL "cuda")
+        add_executable(smoke_gemma4_ar test/smoke_gemma4_ar.cpp)
+        target_include_directories(smoke_gemma4_ar PRIVATE
+            ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(smoke_gemma4_ar PRIVATE dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+    endif()
+
     # ─── dflash_server: native C++ HTTP server ─────────────────────────
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/server/server_main.cpp")
         find_package(CURL QUIET)

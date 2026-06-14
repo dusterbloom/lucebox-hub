@@ -122,6 +122,13 @@ static bool should_load_gemma4_tensor(const char * name,
         std::strcmp(name, "per_layer_proj_norm.weight") == 0) {
         return true;
     }
+    // Self-conditioning tensors (diffusion-gemma global weights)
+    if (std::strcmp(name, "self_cond_pre_norm.weight") == 0 ||
+        std::strcmp(name, "self_cond_gate.weight") == 0 ||
+        std::strcmp(name, "self_cond_up.weight") == 0 ||
+        std::strcmp(name, "self_cond_down.weight") == 0) {
+        return true;
+    }
     int layer_id = -1;
     if (parse_block_tensor_name(name, layer_id)) {
         return layer_id >= plan.layer_begin && layer_id < plan.layer_end;
@@ -156,47 +163,68 @@ bool load_gemma4_gguf_partial(const std::string & path,
     gguf_context * gctx = gguf_init_from_file(path.c_str(), gip);
     if (!gctx) { set_last_error("gguf_init failed: " + path); return false; }
 
-    // Validate arch
+    // Validate arch — accept gemma4 (AR) and diffusion-gemma (dLLM)
+    std::string arch_str;
     {
         int64_t aid = gguf_find_key(gctx, "general.architecture");
         if (aid < 0) { set_last_error("missing general.architecture"); gguf_free(gctx); return false; }
         const char * arch = gguf_get_val_str(gctx, aid);
-        if (std::string(arch) != "gemma4") {
-            set_last_error(std::string("unexpected arch: ") + arch + " (expected gemma4)");
+        arch_str = arch ? arch : "";
+        if (arch_str != "gemma4" && arch_str != "diffusion-gemma") {
+            set_last_error(std::string("unexpected arch: ") + arch_str + " (expected gemma4 or diffusion-gemma)");
             gguf_free(gctx); return false;
         }
     }
+    const bool is_diffusion_gemma = (arch_str == "diffusion-gemma");
+    // Key namespace: "gemma4.*" for AR, "diffusion-gemma.*" for dLLM
+    const std::string pfx = is_diffusion_gemma ? "diffusion-gemma." : "gemma4.";
+
+    // Helper lambdas that prepend the correct arch prefix
+    auto kv_u32 = [&](const char * suffix, uint32_t def) -> uint32_t {
+        return get_u32_or(gctx, (pfx + suffix).c_str(), def);
+    };
+    auto kv_f32 = [&](const char * suffix, float def) -> float {
+        return get_f32_or(gctx, (pfx + suffix).c_str(), def);
+    };
+    auto kv_u32_arr = [&](const char * suffix) -> std::vector<uint32_t> {
+        return get_u32_arr(gctx, (pfx + suffix).c_str());
+    };
 
     // Read hparams
-    const uint32_t n_layer       = get_u32_or(gctx, "gemma4.block_count", 0);
-    const uint32_t n_embd        = get_u32_or(gctx, "gemma4.embedding_length", 0);
-    const uint32_t n_ff          = get_u32_or(gctx, "gemma4.feed_forward_length", 0);
-    const uint32_t n_ff_exp      = get_u32_or(gctx, "gemma4.expert_feed_forward_length", 0);
-    const uint32_t n_head        = get_u32_or(gctx, "gemma4.attention.head_count", 0);
-    const uint32_t n_head_kv     = get_u32_or(gctx, "gemma4.attention.head_count_kv", 0);
-    const uint32_t head_dim_full = get_u32_or(gctx, "gemma4.attention.key_length", 128);
-    const uint32_t head_dim_swa  = get_u32_or(gctx, "gemma4.attention.key_length_swa", head_dim_full);
-    const uint32_t n_expert      = get_u32_or(gctx, "gemma4.expert_count", 0);
-    const uint32_t n_expert_used = get_u32_or(gctx, "gemma4.expert_used_count", 0);
-    const uint32_t n_dense_lead  = get_u32_or(gctx, "gemma4.leading_dense_block_count", 0);
-    const uint32_t sliding_win   = get_u32_or(gctx, "gemma4.attention.sliding_window", 0);
-    const uint32_t shared_kv     = get_u32_or(gctx, "gemma4.attention.shared_kv_layers", 0);
-    const uint32_t n_embd_pl     = get_u32_or(gctx, "gemma4.embedding_length_per_layer_input", 0);
+    const uint32_t n_layer       = kv_u32("block_count", 0);
+    const uint32_t n_embd        = kv_u32("embedding_length", 0);
+    const uint32_t n_ff          = kv_u32("feed_forward_length", 0);
+    const uint32_t n_ff_exp      = kv_u32("expert_feed_forward_length", 0);
+    const uint32_t n_head        = kv_u32("attention.head_count", 0);
+    const uint32_t n_head_kv     = kv_u32("attention.head_count_kv", 0);
+    const uint32_t head_dim_full = kv_u32("attention.key_length", 128);
+    const uint32_t head_dim_swa  = kv_u32("attention.key_length_swa", head_dim_full);
+    const uint32_t n_expert      = kv_u32("expert_count", 0);
+    const uint32_t n_expert_used = kv_u32("expert_used_count", 0);
+    const uint32_t n_dense_lead  = kv_u32("leading_dense_block_count", 0);
+    const uint32_t sliding_win   = kv_u32("attention.sliding_window", 0);
+    const uint32_t shared_kv     = kv_u32("attention.shared_kv_layers", 0);
+    const uint32_t n_embd_pl     = kv_u32("embedding_length_per_layer_input", 0);
 
     // Per-layer head_count_kv (may be array or scalar)
-    std::vector<uint32_t> head_kv_arr = get_u32_arr(gctx, "gemma4.attention.head_count_kv");
+    std::vector<uint32_t> head_kv_arr = kv_u32_arr("attention.head_count_kv");
 
     // Get vocab size from token_embd tensor shape (not always in metadata)
-    uint32_t n_vocab = get_u32_or(gctx, "gemma4.vocab_size", 0);
+    uint32_t n_vocab = kv_u32("vocab_size", 0);
     if (n_vocab == 0) {
         ggml_tensor * tok_embd = find_tensor(meta_ctx, "token_embd.weight");
         if (tok_embd) n_vocab = (uint32_t)tok_embd->ne[1];
     }
 
-    const float rope_base_full   = get_f32_or(gctx, "gemma4.rope.freq_base", 1000000.0f);
-    const float rope_base_swa    = get_f32_or(gctx, "gemma4.rope.freq_base_swa", 10000.0f);
-    const float norm_eps         = get_f32_or(gctx, "gemma4.attention.layer_norm_rms_epsilon", 1e-6f);
-    const float logit_softcap    = get_f32_or(gctx, "gemma4.final_logit_softcapping", 0.0f);
+    const float rope_base_full   = kv_f32("rope.freq_base", 1000000.0f);
+    const float rope_base_swa    = kv_f32("rope.freq_base_swa", 10000.0f);
+    const float norm_eps         = kv_f32("attention.layer_norm_rms_epsilon", 1e-6f);
+    const float logit_softcap    = kv_f32("final_logit_softcapping", 0.0f);
+
+    // diffusion-gemma specific: canvas_length and mask token
+    const uint32_t canvas_length = is_diffusion_gemma
+        ? get_u32_or(gctx, "diffusion.canvas_length", 0) : 0;
+    const uint32_t mask_token_id = get_u32_or(gctx, "tokenizer.ggml.mask_token_id", 0xFFFFFFFFu);
 
     if (n_layer == 0 || n_embd == 0 || n_head == 0 || n_head_kv == 0 || n_vocab == 0) {
         set_last_error("gemma4: missing essential hparams");
@@ -248,7 +276,8 @@ bool load_gemma4_gguf_partial(const std::string & path,
     // SWA pattern from GGUF (array of bools indicating SWA layers)
     out.swa_layers.resize(n_layer, false);
     {
-        int64_t pat_id = gguf_find_key(gctx, "gemma4.attention.sliding_window_pattern");
+        const std::string pat_key = pfx + "attention.sliding_window_pattern";
+        int64_t pat_id = gguf_find_key(gctx, pat_key.c_str());
         if (pat_id >= 0 && gguf_get_kv_type(gctx, pat_id) == GGUF_TYPE_ARRAY) {
             const size_t n = gguf_get_arr_n(gctx, pat_id);
             if (n > 0) {
@@ -289,13 +318,19 @@ bool load_gemma4_gguf_partial(const std::string & path,
     if (out.bos_id == (int32_t)miss) out.bos_id = 2;
     if (out.eos_id == (int32_t)miss) out.eos_id = 1;
     if (out.eos_chat_id == (int32_t)miss) out.eos_chat_id = -1;
+    out.mask_id     = (mask_token_id == miss) ? -1 : (int32_t)mask_token_id;
+    out.canvas_length = (int)canvas_length;
 
-    std::printf("[gemma4-loader] n_layer=%u n_embd=%u head_dim_swa=%u head_dim_full=%u n_head=%u n_head_kv=%u\n",
-                n_layer, n_embd, head_dim_swa, head_dim_full, n_head, n_head_kv);
+    std::printf("[gemma4-loader] arch=%s n_layer=%u n_embd=%u head_dim_swa=%u head_dim_full=%u n_head=%u n_head_kv=%u\n",
+                arch_str.c_str(), n_layer, n_embd, head_dim_swa, head_dim_full, n_head, n_head_kv);
     std::printf("[gemma4-loader] n_expert=%u used=%u dense_lead=%u sliding_window=%u\n",
                 n_expert, n_expert_used, n_dense_lead, sliding_win);
     std::printf("[gemma4-loader] kv_sharing_start=%d per_layer_embd=%u logit_softcap=%g\n",
                 out.kv_sharing_start, n_embd_pl, logit_softcap);
+    if (is_diffusion_gemma) {
+        std::printf("[gemma4-loader] diffusion: canvas_length=%u mask_token_id=%d\n",
+                    canvas_length, out.mask_id);
+    }
     std::fflush(stdout);
 
     TargetLoadPlan plan = plan_in;
@@ -409,6 +444,14 @@ bool load_gemma4_gguf_partial(const std::string & path,
     out.per_layer_model_proj = find_tensor(meta_ctx, "per_layer_model_proj.weight");
     out.per_layer_proj_norm  = find_tensor(meta_ctx, "per_layer_proj_norm.weight");
 
+    // Self-conditioning tensors (present only for diffusion-gemma)
+    if (is_diffusion_gemma) {
+        out.sc_pre_norm = find_tensor(meta_ctx, "self_cond_pre_norm.weight");
+        out.sc_gate     = find_tensor(meta_ctx, "self_cond_gate.weight");
+        out.sc_up       = find_tensor(meta_ctx, "self_cond_up.weight");
+        out.sc_down     = find_tensor(meta_ctx, "self_cond_down.weight");
+    }
+
     out.layers.resize(n_layer);
     char buf[256];
     for (uint32_t il = 0; il < n_layer; ++il) {
@@ -454,7 +497,11 @@ bool load_gemma4_gguf_partial(const std::string & path,
         L.per_layer_proj      = get("per_layer_proj.weight");
         L.per_layer_post_norm = get("per_layer_post_norm.weight");
 
-        L.out_scale = get("layer_output_scale.weight");
+        L.out_scale     = get("layer_output_scale.weight");
+        // Encoder (prompt) output scale — diffusion-gemma only
+        if (is_diffusion_gemma) {
+            L.enc_out_scale = get("enc_layer_output_scale.weight");
+        }
     }
 
     std::printf("[gemma4-loader] loaded %zu/%d tensors, vocab=%d layers=[%d,%d) output=%d\n",
