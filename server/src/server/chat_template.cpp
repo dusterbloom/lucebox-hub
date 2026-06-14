@@ -282,10 +282,17 @@ std::string render_chat_template(
             if (!system_content.empty()) {
                 result += system_content;
             }
-            // TODO: tool definitions block (`<|tool>…<tool|>`) goes here
-            // when tools_json is non-empty. Out of scope for the
-            // budget-signaling fix.
-            (void)tools_json;
+            // Tool definitions. Gemma4 has no native tool block, so inject the
+            // same self-describing preamble the tool_parser already understands
+            // (<tool_call><function=…>). It's model-agnostic format guidance —
+            // an instruction-following model emits that shape on request.
+            if (has_tools) {
+                if (!system_content.empty()) result += "\n\n";
+                result += QWEN3_TOOL_PREAMBLE;
+                result += '\n';
+                result += tools_json;
+                result += QWEN3_TOOL_SUFFIX;
+            }
             result += "<turn|>\n";
         }
 
