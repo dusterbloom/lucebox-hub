@@ -95,11 +95,18 @@ static DiffusionDecodeResult run_eb_generate(
     }
 
     const int P0 = prefix_len;          // prompt prefix length (fixed)
-    const int S  = std::max(1, cfg.eb_max_steps);
+    int S  = std::max(1, cfg.eb_max_steps);
     // Schedule horizon: temperature decays t_max→t_min over this many steps,
     // then clamps at t_min. Independent of the hard cap S so a large S does
     // not thin out the schedule and delay convergence.
-    const int SH = std::max(1, cfg.eb_schedule_steps);
+    int SH = std::max(1, cfg.eb_schedule_steps);
+    // DG_EB_MAX_STEPS: training-free step-count override (fewer denoise passes =
+    // faster, lower quality). Compress the temperature horizon to match so t fully
+    // decays within S steps — otherwise a short run would denoise at high temp only.
+    if (const char * se = std::getenv("DG_EB_MAX_STEPS")) {
+        const int v = std::atoi(se);
+        if (v > 0) { S = v; SH = std::min(SH, v); }
+    }
 
     // Canvas-block cap. The full-canvas EB path (C = n_gen) falls off a step-time
     // cliff above C≈1024 (swept 2026-06-15: 187ms/step @512 → 6457ms @2048),
