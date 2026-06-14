@@ -12,7 +12,7 @@ namespace dflash::common {
 std::unique_ptr<DiffusionModelGraph> create_diffusion_model(
         const std::string & family, const DiffusionModelArgs & args) {
 
-    if (family == "diffusiongemma") {
+    if (family == "diffusiongemma" || family == "diffusion-gemma") {
         // DiffusionGemma reuses the gemma4 backbone (loader + weights + cache)
         // and runs the bidirectional denoising forward (gemma4_denoise_batch).
         DiffusionGemmaConfig gcfg;

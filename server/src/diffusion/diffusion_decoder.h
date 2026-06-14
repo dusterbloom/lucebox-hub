@@ -47,6 +47,11 @@ struct DiffusionDecodeResult {
 // are committed, EOS is produced, the context limit is hit, or the stream is
 // aborted. `sampler`/`do_sample` follow the same semantics as the AR backends
 // (do_sample false => greedy/argmax). `stream.on_token` may be empty.
+//
+// When cfg.remasking == DiffusionRemask::EntropyBound the entropy-bound
+// denoiser (DiffusionGemma-style) is used: single canvas of `n_gen` tokens,
+// uniform-random init, linear temperature schedule, acceptance by sorted
+// Shannon entropy within the MI bound, self-conditioning via model.set_sc().
 DiffusionDecodeResult run_diffusion_generate(
     DiffusionModelGraph &        model,
     const std::vector<int32_t> & prompt,
