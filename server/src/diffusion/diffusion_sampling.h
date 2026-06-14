@@ -16,7 +16,7 @@
 //   argmax   = argmax(row)
 
 #pragma once
-#ifdef DFLASH27B_BACKEND_CUDA
+#ifdef LUCE_BACKEND_CUDA
 
 #include <cstdint>
 #include <cuda_runtime.h>
@@ -50,4 +50,4 @@ void diffusion_sample_gpu(
 
 }  // namespace dflash::diffusion
 
-#endif  // DFLASH27B_BACKEND_CUDA
+#endif  // LUCE_BACKEND_CUDA

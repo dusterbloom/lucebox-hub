@@ -15,7 +15,7 @@
 #include "diffusion_types.h"
 #include "diffusion_model.h"
 
-namespace dflash::common {
+namespace luce::common {
 
 struct DiffusionModelArgs {
     const char *    model_path = nullptr;     // target .gguf (or safetensors dir)
@@ -37,4 +37,4 @@ std::unique_ptr<DiffusionModelGraph> create_diffusion_model(
 std::unique_ptr<ModelBackend> create_diffusion_backend(
     const std::string & family, const DiffusionModelArgs & args);
 
-}  // namespace dflash::common
+}  // namespace luce::common

@@ -7,7 +7,7 @@
 #include <cstdio>
 #include <utility>
 
-namespace dflash::common {
+namespace luce::common {
 
 std::unique_ptr<DiffusionModelGraph> create_diffusion_model(
         const std::string & family, const DiffusionModelArgs & args) {
@@ -44,4 +44,4 @@ std::unique_ptr<ModelBackend> create_diffusion_backend(
     return std::make_unique<DiffusionBackend>(std::move(model), args.cfg, family);
 }
 
-}  // namespace dflash::common
+}  // namespace luce::common
