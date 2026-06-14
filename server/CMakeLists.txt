@@ -535,6 +535,7 @@ add_library(luce_common STATIC
     src/diffusion/diffusion_backend.cpp
     src/diffusion/diffusion_registry.cpp
     src/diffusion/diffusiongemma/diffusion_gemma.cpp
+    src/diffusion/diffusion_sampling.cu
     src/flashprefill_q8.cpp
     src/kv_cache.cpp
     src/kv_quant.cpp
@@ -2637,6 +2638,10 @@ if(LUCE_SERVER)
         target_include_directories(smoke_diffusion_gemma_forward PRIVATE
             ${LUCE_SRC_INCLUDE_DIRS}
             ${CMAKE_CURRENT_SOURCE_DIR}/src/diffusion/diffusiongemma)
+        target_compile_definitions(smoke_diffusion_gemma_forward PRIVATE
+            LUCE_BACKEND_CUDA=1
+            LUCE_CUDA_MIN_SM=${_luce_cuda_min_sm}
+            LUCE_MIN_SM=${_luce_cuda_min_sm})
         target_link_libraries(smoke_diffusion_gemma_forward PRIVATE luce_common ggml ${LUCE_GGML_BACKEND_TARGET})
     endif()
 
@@ -2645,6 +2650,10 @@ if(LUCE_SERVER)
         target_include_directories(smoke_diffusion_gemma_sc_on PRIVATE
             ${LUCE_SRC_INCLUDE_DIRS}
             ${CMAKE_CURRENT_SOURCE_DIR}/src/diffusion/diffusiongemma)
+        target_compile_definitions(smoke_diffusion_gemma_sc_on PRIVATE
+            LUCE_BACKEND_CUDA=1
+            LUCE_CUDA_MIN_SM=${_luce_cuda_min_sm}
+            LUCE_MIN_SM=${_luce_cuda_min_sm})
         target_link_libraries(smoke_diffusion_gemma_sc_on PRIVATE luce_common ggml ${LUCE_GGML_BACKEND_TARGET})
     endif()
 
@@ -2653,6 +2662,14 @@ if(LUCE_SERVER)
         target_include_directories(smoke_eb_generate PRIVATE
             ${LUCE_SRC_INCLUDE_DIRS}
             ${CMAKE_CURRENT_SOURCE_DIR}/src/diffusion/diffusiongemma)
+        # Must mirror luce_common's LUCE_BACKEND_CUDA define so that
+        # DiffusionGemmaGraph has the same class layout in both TUs.
+        # Without this, sizeof(DiffusionGemmaGraph) disagrees (ODR violation):
+        # the CUDA members are absent here, causing stack overlap in main().
+        target_compile_definitions(smoke_eb_generate PRIVATE
+            LUCE_BACKEND_CUDA=1
+            LUCE_CUDA_MIN_SM=${_luce_cuda_min_sm}
+            LUCE_MIN_SM=${_luce_cuda_min_sm})
         target_link_libraries(smoke_eb_generate PRIVATE luce_common ggml ${LUCE_GGML_BACKEND_TARGET})
     endif()
 
