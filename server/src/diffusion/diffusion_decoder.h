@@ -26,7 +26,7 @@
 #include "diffusion_model.h"
 #include "sampler.h"
 
-namespace dflash::common {
+namespace luce::common {
 
 // Streaming sink. on_token is invoked once per committed token, in output
 // order. Return false to abort generation (e.g. client disconnect); the loop
@@ -59,6 +59,7 @@ DiffusionDecodeResult run_diffusion_generate(
     const DiffusionConfig &      cfg,
     const SamplerCfg &           sampler,
     bool                         do_sample,
-    const DiffusionStream &      stream);
+    const DiffusionStream &      stream,
+    int                          prepared_prefix_len = -1);
 
-}  // namespace dflash::common
+}  // namespace luce::common

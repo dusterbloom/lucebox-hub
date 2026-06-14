@@ -10,7 +10,7 @@
 //
 // No warp divergence on the hot path (vocab stride is warp-friendly).
 
-#ifdef DFLASH27B_BACKEND_CUDA
+#ifdef LUCE_BACKEND_CUDA
 
 #include "diffusion_sampling.h"
 
@@ -279,4 +279,4 @@ void diffusion_sample_gpu(
 
 }  // namespace dflash::diffusion
 
-#endif  // DFLASH27B_BACKEND_CUDA
+#endif  // LUCE_BACKEND_CUDA

@@ -13,11 +13,11 @@
 #include <thread>
 #include <vector>
 
-#ifdef DFLASH27B_BACKEND_CUDA
+#ifdef LUCE_BACKEND_CUDA
 #include <cuda_runtime.h>
 #endif
 
-namespace dflash::common {
+namespace luce::common {
 
 DiffusionGemmaGraph::DiffusionGemmaGraph(const DiffusionGemmaConfig & cfg) : cfg_(cfg) {}
 
@@ -25,7 +25,7 @@ DiffusionGemmaGraph::~DiffusionGemmaGraph() {
     if (sc_embT_buf_) { ggml_backend_buffer_free(sc_embT_buf_); sc_embT_buf_ = nullptr; }
     if (sc_embT_ctx_) { ggml_free(sc_embT_ctx_);                sc_embT_ctx_ = nullptr; }
     sc_embT_ = nullptr;
-#ifdef DFLASH27B_BACKEND_CUDA
+#ifdef LUCE_BACKEND_CUDA
     if (sc_dev_buf_a_) { ggml_backend_buffer_free(sc_dev_buf_a_); sc_dev_buf_a_ = nullptr; }
     if (sc_dev_ctx_a_) { ggml_free(sc_dev_ctx_a_);               sc_dev_ctx_a_ = nullptr; }
     sc_dev_ten_a_ = nullptr;
@@ -101,6 +101,64 @@ bool DiffusionGemmaGraph::prepare(const std::vector<int32_t> & prompt, int & out
 
     prompt_cached_ = true;
     std::fprintf(stderr, "[diffusiongemma] L0: prompt KV cached (%d tokens)\n", P);
+    std::fflush(stderr);
+    return true;
+}
+
+void DiffusionGemmaGraph::mark_prompt_cache_restored(int prefix_len) {
+    prefix_len_    = prefix_len;
+    prompt_cached_ = (prefix_len > 0);
+    sc_logits_ptr_ = nullptr;
+    sc_use_        = 0.0f;
+    sc_temp_inv_   = 1.0f;
+#ifdef LUCE_BACKEND_CUDA
+    sc_dev_a_is_cur_ = true;
+#endif
+}
+
+bool DiffusionGemmaGraph::prepare_delta_from_cache(
+        const std::vector<int32_t> & prompt,
+        int cached_prefix_len,
+        int & out_prefix_len) {
+    if (!loaded_) return false;
+    if (cached_prefix_len < 0 || cached_prefix_len > (int)prompt.size()) return false;
+    if (cache_.cur_pos != cached_prefix_len) {
+        std::fprintf(stderr,
+            "[diffusiongemma] restore delta: cache.cur_pos=%d != cached_prefix_len=%d\n",
+            cache_.cur_pos, cached_prefix_len);
+        return false;
+    }
+
+    const int prompt_len = (int)prompt.size();
+    const int delta_len  = prompt_len - cached_prefix_len;
+    if (delta_len > 0) {
+        const int hidden = w_.n_embd;
+        std::vector<float> delta_embed((size_t)delta_len * hidden);
+        const int32_t * delta_tokens = prompt.data() + cached_prefix_len;
+        if (!w_.embedder.embed(delta_tokens, delta_len, delta_embed.data())) {
+            std::fprintf(stderr,
+                "[diffusiongemma] restore delta: embed failed (delta=%d)\n",
+                delta_len);
+            return false;
+        }
+        const float scale = std::sqrt((float)hidden);
+        for (float & v : delta_embed) v *= scale;
+
+        if (!gemma4_prefill_prompt_for_denoise(backend_, w_, cache_,
+                                               delta_embed.data(), delta_tokens,
+                                               delta_len, cached_prefix_len)) {
+            std::fprintf(stderr,
+                "[diffusiongemma] restore delta: prefill failed (snap=%d delta=%d)\n",
+                cached_prefix_len, delta_len);
+            return false;
+        }
+    }
+
+    out_prefix_len = prompt_len;
+    mark_prompt_cache_restored(prompt_len);
+    std::fprintf(stderr,
+        "[diffusiongemma] L1: restored prompt KV reused (snap=%d prompt=%d delta=%d)\n",
+        cached_prefix_len, prompt_len, delta_len);
     std::fflush(stderr);
     return true;
 }
@@ -239,12 +297,12 @@ void DiffusionGemmaGraph::reset() {
     sc_logits_ptr_ = nullptr;
     sc_use_        = 0.0f;
     sc_temp_inv_   = 1.0f;
-#ifdef DFLASH27B_BACKEND_CUDA
+#ifdef LUCE_BACKEND_CUDA
     sc_dev_a_is_cur_ = true;  // reset double-buffer state
 #endif
 }
 
-#ifdef DFLASH27B_BACKEND_CUDA
+#ifdef LUCE_BACKEND_CUDA
 // GPU-accelerated forward + sample. Overrides the default CPU fallback in
 // DiffusionModelGraph. Keeps logits device-resident; copies only ~3 KB to host.
 bool DiffusionGemmaGraph::forward_block_dev(
@@ -389,6 +447,6 @@ bool DiffusionGemmaGraph::forward_block_dev(
     // out.logits intentionally left empty (logits stay device-resident).
     return ok;
 }
-#endif  // DFLASH27B_BACKEND_CUDA
+#endif  // LUCE_BACKEND_CUDA
 
-}  // namespace dflash::common
+}  // namespace luce::common

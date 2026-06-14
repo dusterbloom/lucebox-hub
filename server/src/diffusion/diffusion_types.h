@@ -14,7 +14,7 @@
 
 #include <cstdint>
 
-namespace dflash::common {
+namespace luce::common {
 
 // How corrupted/undetermined canvas positions are represented between steps.
 enum class DiffusionNoise {
@@ -67,4 +67,4 @@ struct DiffusionStats {
     int tokens         = 0;  // committed tokens
 };
 
-}  // namespace dflash::common
+}  // namespace luce::common

@@ -18,11 +18,11 @@
 #include "ggml-backend.h"
 #include "ggml.h"
 
-#ifdef DFLASH27B_BACKEND_CUDA
+#ifdef LUCE_BACKEND_CUDA
 #include <cuda_runtime.h>
 #endif
 
-namespace dflash::common {
+namespace luce::common {
 
 struct DiffusionGemmaConfig {
     const char * model_path = nullptr;
@@ -46,6 +46,15 @@ public:
     int     n_ctx_max() const override { return cfg_.max_ctx; }
 
     bool prepare(const std::vector<int32_t> & prompt, int & out_prefix_len) override;
+
+    Gemma4Cache & cache_for_snapshot() { return cache_; }
+    const Gemma4Cache & cache_for_snapshot() const { return cache_; }
+    ggml_backend_t backend_for_snapshot() const { return backend_; }
+
+    void mark_prompt_cache_restored(int prefix_len);
+    bool prepare_delta_from_cache(const std::vector<int32_t> & prompt,
+                                  int cached_prefix_len,
+                                  int & out_prefix_len);
 
     // forward_block: canvas = full [prompt|canvas] token sequence; block_begin is
     // the first canvas position (= prompt length), block_len is C. SC state is
@@ -103,7 +112,7 @@ private:
     ggml_backend_buffer_t sc_embT_buf_ = nullptr;
     ggml_tensor *         sc_embT_     = nullptr;
 
-#ifdef DFLASH27B_BACKEND_CUDA
+#ifdef LUCE_BACKEND_CUDA
     // Device-resident SC double-buffers: [n_vocab, C] F32.
     // Allocated via ggml (same VMM pool as weights/cache) to avoid raw cudaMalloc
     // conflicting with ggml's VMM reservation on sm_86 (RTX 3090).
@@ -127,4 +136,4 @@ private:
 #endif
 };
 
-}  // namespace dflash::common
+}  // namespace luce::common
