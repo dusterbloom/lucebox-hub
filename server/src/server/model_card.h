@@ -94,6 +94,11 @@ struct ModelCard {
     // fallback was used. Exposed verbatim under `/props.model_card`
     // (see docs/specs/props-endpoint.md §4.9).
     nlohmann::json raw_json = nullptr;
+
+    // Diffusion decoder knobs (parsed from "diffusion" block, 0 = unset).
+    // Used by backend_factory to populate DiffusionConfig when the arch is
+    // a dLLM family (diffusion-gemma, nemotron-diffusion, …).
+    int diffusion_steps = 0;  // maps to DiffusionConfig::eb_max_steps when > 0
 };
 
 // Normalize a GGUF `general.name` value to a model-card filename stem.

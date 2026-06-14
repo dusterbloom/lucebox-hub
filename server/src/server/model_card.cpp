@@ -217,6 +217,13 @@ static bool load_sidecar(const std::string & path, ModelCard & out, std::string 
         pick_f("repetition_penalty", out.sampling.repetition_penalty, out.sampling.has_repetition_penalty);
     }
 
+    if (j.contains("diffusion") && j["diffusion"].is_object()) {
+        const auto & d = j["diffusion"];
+        if (d.contains("steps") && d["steps"].is_number_integer()) {
+            out.diffusion_steps = d["steps"].get<int>();
+        }
+    }
+
     if (j.contains("reasoning_effort_tiers") && j["reasoning_effort_tiers"].is_object()) {
         const auto & rt = j["reasoning_effort_tiers"];
         auto pick = [&](const char * k, int & v) {
@@ -255,6 +262,12 @@ static bool family_fallback(const std::string & arch, ModelCard & out) {
         out.max_tokens                 = 16384;
         out.complex_problem_max_tokens = 0;
         out.source_label = "family:gemma4";
+        return true;
+    }
+    if (arch == "diffusion-gemma" || arch == "diffusiongemma") {
+        out.max_tokens      = 8192;
+        out.diffusion_steps = 16;   // validated good-quality fast config
+        out.source_label    = "family:diffusion-gemma";
         return true;
     }
     if (arch == "laguna") {
@@ -304,6 +317,41 @@ ModelCard resolve_model_card(const std::string & gguf_path,
             } else {
                 std::fprintf(stderr,
                     "[model_card] sidecar not found at %s\n", path.c_str());
+            }
+        }
+    }
+
+    // Arch-to-sidecar fallback: when general.name doesn't match any card
+    // (e.g. "Dg_Rc0P1_Patched" for diffusion-gemma), try the canonical
+    // sidecar name for the architecture. Only probed when name-based lookup
+    // already failed.
+    if (!resolved) {
+        static const struct { const char * arch; const char * stem; }
+        kArchSidecars[] = {
+            { "diffusion-gemma",  "diffusiongemma-26b" },
+            { "diffusiongemma",   "diffusiongemma-26b" },
+        };
+        std::string dir = find_model_cards_dir(repo_root_hint);
+        for (const auto & entry : kArchSidecars) {
+            if (general_architecture == entry.arch && !dir.empty()) {
+                std::string path = dir + "/" + entry.stem + ".json";
+                std::fprintf(stderr,
+                    "[model_card] probing arch sidecar: %s (from arch='%s')\n",
+                    path.c_str(), entry.arch);
+                if (file_exists(path)) {
+                    std::string err;
+                    ModelCard sidecar;
+                    if (load_sidecar(path, sidecar, err)) {
+                        sidecar.source_label = path;
+                        card = sidecar;
+                        resolved = true;
+                    } else {
+                        std::fprintf(stderr,
+                            "[model_card] arch sidecar parse failed (%s): %s\n",
+                            path.c_str(), err.c_str());
+                    }
+                }
+                break;
             }
         }
     }

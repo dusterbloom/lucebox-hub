@@ -29,8 +29,13 @@ std::unique_ptr<DiffusionModelGraph> create_diffusion_model(
         // The default DiffusionConfig leaves noise_scheme=Masked which triggers
         // "Masked scheme requires a mask token id" at runtime because there is no
         // mask token in the vocab.
-        args.cfg.noise_scheme = DiffusionNoise::UniformState;
-        args.cfg.remasking    = DiffusionRemask::EntropyBound;
+        args.cfg.noise_scheme      = DiffusionNoise::UniformState;
+        args.cfg.remasking         = DiffusionRemask::EntropyBound;
+        // Measured sweet spot: eb_schedule_steps=12 (schedule hits t_min at step 11;
+        // entropy-bound early-stop fires at ~9-12 steps on typical prompts),
+        // eb_max_steps=16 (model card diffusion.steps=16; default 48 wastes 4×).
+        args.cfg.eb_max_steps      = 16;
+        args.cfg.eb_schedule_steps = 12;
         return g;
     }
     if (family == "nemotron-diffusion" || family == "nemotron_diffusion") {
