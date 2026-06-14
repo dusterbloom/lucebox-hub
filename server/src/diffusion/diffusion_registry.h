@@ -28,13 +28,14 @@ struct DiffusionModelArgs {
 
 // Construct the per-family forward graph (e.g. "diffusiongemma",
 // "nemotron-diffusion"). Returns nullptr (diagnostic on stderr) for unknown or
-// not-yet-wired families.
+// not-yet-wired families. May write family-specific defaults into args.cfg
+// (e.g. noise_scheme, remasking) so the caller gets the right DiffusionBackend.
 std::unique_ptr<DiffusionModelGraph> create_diffusion_model(
-    const std::string & family, const DiffusionModelArgs & args);
+    const std::string & family, DiffusionModelArgs & args);
 
 // Build the family graph and wrap it in a DiffusionBackend. Returns nullptr on
 // failure.
 std::unique_ptr<ModelBackend> create_diffusion_backend(
-    const std::string & family, const DiffusionModelArgs & args);
+    const std::string & family, DiffusionModelArgs & args);
 
 }  // namespace dflash::common

@@ -10,7 +10,7 @@
 namespace dflash::common {
 
 std::unique_ptr<DiffusionModelGraph> create_diffusion_model(
-        const std::string & family, const DiffusionModelArgs & args) {
+        const std::string & family, DiffusionModelArgs & args) {
 
     if (family == "diffusiongemma" || family == "diffusion-gemma") {
         // DiffusionGemma reuses the gemma4 backbone (loader + weights + cache)
@@ -24,6 +24,13 @@ std::unique_ptr<DiffusionModelGraph> create_diffusion_model(
             std::fprintf(stderr, "[diffusion] diffusiongemma init failed\n");
             return nullptr;
         }
+        // Set DiffusionGemma family defaults. DiffusionGemma uses uniform-state
+        // noise (no dedicated [MASK] token) and EntropyBound remasking (EB decode).
+        // The default DiffusionConfig leaves noise_scheme=Masked which triggers
+        // "Masked scheme requires a mask token id" at runtime because there is no
+        // mask token in the vocab.
+        args.cfg.noise_scheme = DiffusionNoise::UniformState;
+        args.cfg.remasking    = DiffusionRemask::EntropyBound;
         return g;
     }
     if (family == "nemotron-diffusion" || family == "nemotron_diffusion") {
@@ -38,7 +45,7 @@ std::unique_ptr<DiffusionModelGraph> create_diffusion_model(
 }
 
 std::unique_ptr<ModelBackend> create_diffusion_backend(
-        const std::string & family, const DiffusionModelArgs & args) {
+        const std::string & family, DiffusionModelArgs & args) {
     auto model = create_diffusion_model(family, args);
     if (!model) return nullptr;
     return std::make_unique<DiffusionBackend>(std::move(model), args.cfg, family);
