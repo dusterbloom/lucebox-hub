@@ -237,6 +237,7 @@ add_library(dflash_common STATIC
     src/diffusion/diffusion_backend.cpp
     src/diffusion/diffusion_registry.cpp
     src/diffusion/diffusiongemma/diffusion_gemma.cpp
+    src/diffusion/diffusion_sampling.cu
     src/flashprefill_q8.cpp
     src/kv_cache.cpp
     src/kv_quant.cpp
@@ -804,6 +805,10 @@ if(DFLASH27B_TESTS)
         target_include_directories(smoke_diffusion_gemma_forward PRIVATE
             ${DFLASH27B_SRC_INCLUDE_DIRS}
             ${CMAKE_CURRENT_SOURCE_DIR}/src/diffusion/diffusiongemma)
+        target_compile_definitions(smoke_diffusion_gemma_forward PRIVATE
+            DFLASH27B_BACKEND_CUDA=1
+            DFLASH27B_CUDA_MIN_SM=${_dflash_cuda_min_sm}
+            DFLASH27B_MIN_SM=${_dflash_cuda_min_sm})
         target_link_libraries(smoke_diffusion_gemma_forward PRIVATE dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
     endif()
 
@@ -812,6 +817,10 @@ if(DFLASH27B_TESTS)
         target_include_directories(smoke_diffusion_gemma_sc_on PRIVATE
             ${DFLASH27B_SRC_INCLUDE_DIRS}
             ${CMAKE_CURRENT_SOURCE_DIR}/src/diffusion/diffusiongemma)
+        target_compile_definitions(smoke_diffusion_gemma_sc_on PRIVATE
+            DFLASH27B_BACKEND_CUDA=1
+            DFLASH27B_CUDA_MIN_SM=${_dflash_cuda_min_sm}
+            DFLASH27B_MIN_SM=${_dflash_cuda_min_sm})
         target_link_libraries(smoke_diffusion_gemma_sc_on PRIVATE dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
     endif()
 
@@ -820,6 +829,14 @@ if(DFLASH27B_TESTS)
         target_include_directories(smoke_eb_generate PRIVATE
             ${DFLASH27B_SRC_INCLUDE_DIRS}
             ${CMAKE_CURRENT_SOURCE_DIR}/src/diffusion/diffusiongemma)
+        # Must mirror dflash_common's DFLASH27B_BACKEND_CUDA define so that
+        # DiffusionGemmaGraph has the same class layout in both TUs.
+        # Without this, sizeof(DiffusionGemmaGraph) disagrees (ODR violation):
+        # the CUDA members are absent here, causing stack overlap in main().
+        target_compile_definitions(smoke_eb_generate PRIVATE
+            DFLASH27B_BACKEND_CUDA=1
+            DFLASH27B_CUDA_MIN_SM=${_dflash_cuda_min_sm}
+            DFLASH27B_MIN_SM=${_dflash_cuda_min_sm})
         target_link_libraries(smoke_eb_generate PRIVATE dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
     endif()
 

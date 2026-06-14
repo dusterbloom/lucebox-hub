@@ -21,6 +21,10 @@
 #include "internal.h"  // CpuEmbedder
 #include "common/layer_split_utils.h"
 
+#ifdef DFLASH27B_BACKEND_CUDA
+#include <cuda_runtime.h>
+#endif
+
 namespace dflash::common {
 
 struct Gemma4Layer {
@@ -274,28 +278,48 @@ bool gemma4_verify_batch(
     std::vector<int32_t> &  out_argmax,
     const class KvFlashPager * kvflash = nullptr);
 
+#ifdef DFLASH27B_BACKEND_CUDA
+// GPU-sampling descriptor for gemma4_denoise_batch.
+// When passed as `dev` (non-null), gemma4_denoise_batch skips the D2H of full
+// logits and instead: (1) D2D-copies sc_dev_in into the SC input tensor before
+// compute (eliminating the 268 MB H2D of host SC), (2) after compute: D2D-copies
+// cur->data to sc_dev_out (persisting SC device-side for the next step), and
+// (3) runs the CUDA sampling kernel on cur->data, copying only ~3 KB to host.
+struct DenoiseBatchGpuMode {
+    const float *         sc_dev_in;   // device SC logits from prev step (or nullptr step 0)
+    float *               sc_dev_out;  // device buffer to store this step's logits for SC
+    const float *         u_dev;       // device float[C] uniforms in [0,1)
+    float                 temp_inv;    // 1/temperature for sampling
+    std::vector<int32_t> * out_sampled; // [C] sampled token IDs (host, pre-allocated)
+    std::vector<float>   * out_entropy; // [C] Shannon entropy per position (host, pre-allocated)
+    std::vector<int32_t> * out_argmax;  // [C] greedy argmax per position (host, pre-allocated)
+};
+#endif  // DFLASH27B_BACKEND_CUDA
+
 // Bidirectional (diffusion decoder-mode) forward over [prompt | canvas].
-// n_prompt prompt tokens (causal mask) followed by C = n_tokens-n_prompt canvas
-// tokens (bidirectional). Returns logits for all C canvas positions as
-// [n_vocab, C] row-major F32. SC MLP is injected before layer 0 when
-// sc_logits != nullptr; sc_use=0 zeroes it out (step 0 / SC-off path).
-// Per-layer enc_out_scale is applied to prompt rows, out_scale to canvas rows.
-// sc_embT: tok_embd transposed+dequantized to {n_vocab, n_embd} F16 (host-built
-//   once by the caller; pass nullptr to skip SC even when sc_logits != nullptr).
-// Phase-2 unified path only (no KV cache). Phase-3 adds prompt-KV prefill/decode.
+// When dev != nullptr (CUDA builds only), runs in GPU-sampling mode:
+//   - SC input is read from dev->sc_dev_in (D2D, no H2D).
+//   - After compute, cur->data is D2D-copied to dev->sc_dev_out.
+//   - CUDA sampling kernel runs on cur->data; only ~3 KB copied to host.
+//   - out_logits is NOT populated (stays empty).
+// When dev == nullptr (default), performs the original D2H of full logits.
 bool gemma4_denoise_batch(
     ggml_backend_t          backend,
     const Gemma4Weights &   w,
     Gemma4Cache &           cache,
-    const float *           embed,       // [n_embd, n_tokens] scaled by sqrt(n_embd)
-    const int32_t *         token_ids,   // [n_tokens]
-    int                     n_tokens,    // P + C (prompt + canvas)
-    int                     n_prompt,    // P: prompt token count (canvas = n_tokens-P)
-    const float *           sc_logits,   // [n_vocab, C] F32 prev-step logits; nullptr = SC-off
-    float                   sc_use,      // 0.0 = SC-off (step 0), 1.0 = SC-on
-    float                   sc_temp_inv, // 1/temperature for SC softmax
-    ggml_tensor *           sc_embT,     // {n_vocab, n_embd} F16 device tensor; nullptr = SC-off
-    std::vector<float> &    out_logits); // [n_vocab, C] F32
+    const float *           embed,
+    const int32_t *         token_ids,
+    int                     n_tokens,
+    int                     n_prompt,
+    const float *           sc_logits,
+    float                   sc_use,
+    float                   sc_temp_inv,
+    ggml_tensor *           sc_embT,
+    std::vector<float> &    out_logits
+#ifdef DFLASH27B_BACKEND_CUDA
+    , DenoiseBatchGpuMode * dev = nullptr
+#endif
+    );
 
 // Project hidden states through lm_head (out_norm + output + softcap + argmax).
 // Used by DFlash draft to convert draft hidden states to token IDs.
@@ -362,5 +386,43 @@ bool gemma4_prefill_bsa(
     const int32_t *         token_ids,   // [S] (for per-layer embedding)
     int                     S,           // total prompt length
     std::vector<float> &    out_logits);
+
+// ── L0 prefix-KV cached diffusion forward ──────────────────────────────────
+//
+// gemma4_prefill_prompt_for_denoise: populate the KV cache with the prompt
+// hidden states.  Call once per generation in prepare().  embed[0..P-1] is
+// the pre-scaled ([* sqrt(n_embd)]) prompt embedding.  After success,
+// cache.cur_pos == P.
+//
+// gemma4_denoise_canvas: canvas-only forward using the cached prompt KV.
+// embed[P..P+C-1] are the canvas embeddings (unscaled; this function applies
+// bare rms_norm + optional SC internally, matching gemma4_denoise_batch).
+// kv_start must equal cache.cur_pos == P.  Returns canvas logits [n_vocab, C].
+// The dev GPU-sampling mode is supported identically to gemma4_denoise_batch.
+bool gemma4_prefill_prompt_for_denoise(
+    ggml_backend_t          backend,
+    const Gemma4Weights &   w,
+    Gemma4Cache &           cache,
+    const float *           embed,       // [n_embd, P] scaled (sqrt(n_embd) already applied)
+    const int32_t *         token_ids,   // [P] for per-layer embeddings (may be nullptr)
+    int                     P);          // prompt length
+
+bool gemma4_denoise_canvas(
+    ggml_backend_t          backend,
+    const Gemma4Weights &   w,
+    Gemma4Cache &           cache,
+    const float *           embed,       // [n_embd, P+C] full embed (canvas portion used)
+    const int32_t *         token_ids,   // [P+C] full token ids
+    int                     n_tokens,    // P + C
+    int                     n_prompt,    // P (== cache.cur_pos)
+    const float *           sc_logits,   // [n_vocab * C] SC from prev step (or nullptr)
+    float                   sc_use,
+    float                   sc_temp_inv,
+    ggml_tensor *           sc_embT,
+    std::vector<float> &    out_logits
+#ifdef DFLASH27B_BACKEND_CUDA
+    , DenoiseBatchGpuMode * dev = nullptr
+#endif
+    );
 
 }  // namespace dflash::common
