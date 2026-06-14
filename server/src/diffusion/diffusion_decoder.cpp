@@ -285,6 +285,12 @@ DiffusionDecodeResult run_diffusion_generate(
     };
 
     const int n_ctx = model.n_ctx_max();
+    // L2′ inter-block snapshot: enabled by cfg.enable_l2_interblock (default true)
+    // unless the environment variable DG_NO_L2=1 overrides it.
+    // When enabled, after each committed block the model saves a KV snapshot;
+    // the next block restores it so it only forwards C new tokens (not P+b*C).
+    const bool use_l2 = cfg.enable_l2_interblock &&
+                        (std::getenv("DG_NO_L2") == nullptr);
     int  emitted = 0;
     bool stop    = false;
 
@@ -298,6 +304,13 @@ DiffusionDecodeResult run_diffusion_generate(
         const int block_len   = std::min(cfg.block_size, n_gen - emitted);
         const int block_begin = committed;
         if (n_ctx > 0 && block_begin + block_len > n_ctx) break;  // context exhausted
+
+        // L2′: before block b+1, restore the snapshot saved after block b so the
+        // model sees only the committed prefix as its cached KV.  The first block
+        // (block_begin == prefix_len) never needs a restore — there is no prior block.
+        if (use_l2 && block_begin > prefix_len) {
+            model.on_block_starting(block_begin);
+        }
 
         // Seed the block with noise.
         canvas.resize((size_t)block_begin + block_len);
@@ -383,6 +396,12 @@ DiffusionDecodeResult run_diffusion_generate(
         }
         committed += block_len;
         res.stats.blocks++;
+
+        // L2′: after committing, prefill+snapshot the KV at position `committed`
+        // so the next block only forwards its C new tokens.
+        if (use_l2 && !stop) {
+            model.on_block_committed(canvas, committed);
+        }
     }
 
     res.stats.tokens = (int)res.tokens.size();

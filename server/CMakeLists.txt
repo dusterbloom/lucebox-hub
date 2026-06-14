@@ -2685,6 +2685,18 @@ if(LUCE_SERVER)
         target_link_libraries(smoke_diffusion_l1_snapshot PRIVATE luce_common ggml ${LUCE_GGML_BACKEND_TARGET})
     endif()
 
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_diffusion_l2_snapshot.cpp" AND LUCE_GPU_BACKEND STREQUAL "cuda")
+        add_executable(smoke_diffusion_l2_snapshot test/smoke_diffusion_l2_snapshot.cpp)
+        target_include_directories(smoke_diffusion_l2_snapshot PRIVATE
+            ${LUCE_SRC_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/diffusion/diffusiongemma)
+        target_compile_definitions(smoke_diffusion_l2_snapshot PRIVATE
+            LUCE_BACKEND_CUDA=1
+            LUCE_CUDA_MIN_SM=${_luce_cuda_min_sm}
+            LUCE_MIN_SM=${_luce_cuda_min_sm})
+        target_link_libraries(smoke_diffusion_l2_snapshot PRIVATE luce_common ggml ${LUCE_GGML_BACKEND_TARGET})
+    endif()
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_gemma4_ar.cpp" AND LUCE_GPU_BACKEND STREQUAL "cuda")
         add_executable(smoke_gemma4_ar test/smoke_gemma4_ar.cpp)
         target_include_directories(smoke_gemma4_ar PRIVATE
