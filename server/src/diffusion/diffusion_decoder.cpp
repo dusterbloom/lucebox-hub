@@ -37,6 +37,35 @@ int target_finalized_after(int s, int steps, int block_len) {
     return t;
 }
 
+bool resolve_prefix(DiffusionModelGraph &        model,
+                    const std::vector<int32_t> & prompt,
+                    int                          prepared_prefix_len,
+                    const char *                 error_prefix,
+                    int &                        out_prefix_len,
+                    DiffusionDecodeResult &      res) {
+    if (prepared_prefix_len >= 0) {
+        if (prepared_prefix_len > (int)prompt.size()) {
+            res.error = (error_prefix && error_prefix[0] != '\0')
+                      ? (std::string(error_prefix) + ": prepared prefix longer than prompt")
+                      : "prepared prefix longer than prompt";
+            return false;
+        }
+        out_prefix_len = prepared_prefix_len;
+        return true;
+    }
+
+    if (!model.prepare(prompt, out_prefix_len)) {
+        res.error = (error_prefix && error_prefix[0] != '\0')
+                  ? (std::string(error_prefix) + ": prepare")
+                  : "prepare";
+        return false;
+    }
+    if (out_prefix_len < 0 || out_prefix_len > (int)prompt.size()) {
+        out_prefix_len = (int)prompt.size();
+    }
+    return true;
+}
+
 }  // namespace
 
 // ── Entropy-bound denoiser (DiffusionGemma-style) ──────────────────────────
@@ -50,7 +79,8 @@ static DiffusionDecodeResult run_eb_generate(
     int                          n_gen,
     const DiffusionConfig &      cfg,
     uint64_t                     seed,
-    const DiffusionStream &      stream) {
+    const DiffusionStream &      stream,
+    int                          prepared_prefix_len) {
 
     DiffusionDecodeResult res;
 
@@ -58,11 +88,11 @@ static DiffusionDecodeResult run_eb_generate(
     if (vocab <= 0) { res.error = "eb: model vocab() must be > 0"; return res; }
     if (n_gen <= 0) { res.ok = true; return res; }
 
-    // Prepare: record prefix length (no KV prefill in Phase 2 — full recompute).
     int prefix_len = 0;
-    if (!model.prepare(prompt, prefix_len)) { res.error = "eb: prepare"; return res; }
-    if (prefix_len < 0 || prefix_len > (int)prompt.size())
-        prefix_len = (int)prompt.size();
+    if (!resolve_prefix(model, prompt, prepared_prefix_len, "eb",
+                        prefix_len, res)) {
+        return res;
+    }
 
     const int C = n_gen;               // canvas length
     const int P = prefix_len;          // prompt prefix length
@@ -202,7 +232,8 @@ DiffusionDecodeResult run_diffusion_generate(
     const DiffusionConfig &      cfg_in,
     const SamplerCfg &           sampler,
     bool                         do_sample,
-    const DiffusionStream &      stream) {
+    const DiffusionStream &      stream,
+    int                          prepared_prefix_len) {
 
     DiffusionDecodeResult res;
 
@@ -210,7 +241,8 @@ DiffusionDecodeResult run_diffusion_generate(
     if (cfg_in.remasking == DiffusionRemask::EntropyBound) {
         const uint64_t seed = cfg_in.seed ? cfg_in.seed
                             : (sampler.seed ? sampler.seed : 0x9E3779B97F4A7C15ULL);
-        return run_eb_generate(model, prompt, n_gen, cfg_in, seed, stream);
+        return run_eb_generate(model, prompt, n_gen, cfg_in, seed, stream,
+                               prepared_prefix_len);
     }
 
     // ── Resolve / validate config ────────────────────────────────────
@@ -231,8 +263,10 @@ DiffusionDecodeResult run_diffusion_generate(
     if (n_gen <= 0) { res.ok = true; return res; }  // nothing to generate
 
     int prefix_len = 0;
-    if (!model.prepare(prompt, prefix_len)) { res.error = "prepare"; return res; }
-    if (prefix_len < 0 || prefix_len > (int)prompt.size()) prefix_len = (int)prompt.size();
+    if (!resolve_prefix(model, prompt, prepared_prefix_len, "",
+                        prefix_len, res)) {
+        return res;
+    }
 
     // Canvas = prompt prefix, grown one committed block at a time.
     std::vector<int32_t> canvas(prompt.begin(), prompt.begin() + prefix_len);

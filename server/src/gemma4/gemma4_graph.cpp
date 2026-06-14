@@ -1796,12 +1796,13 @@ bool gemma4_denoise_batch(
 }
 
 // ── L0: gemma4_prefill_prompt_for_denoise ──────────────────────────────────
-// Populates the KV cache with the P prompt tokens.  Must be called once per
-// generation before the canvas loop.  After success, cache.cur_pos == P.
+// Populates the KV cache with prompt tokens.  Cold prefill uses kv_start=0;
+// restore prefill appends a prompt delta at kv_start=snapshot.cur_pos.  After
+// success, cache.cur_pos == kv_start + P.
 //
 // Builds a graph over P tokens with:
 //   - causal mask (same as AR step)
-//   - no_cache = false → writes K/V to cache[0..P-1]
+//   - no_cache = false → writes K/V to cache[kv_start..kv_start+P-1]
 //   - per-layer embeddings computed for P tokens
 // Does NOT compute logits (we only need the KV side-effect).
 bool gemma4_prefill_prompt_for_denoise(
@@ -1810,14 +1811,24 @@ bool gemma4_prefill_prompt_for_denoise(
     Gemma4Cache &           cache,
     const float *           embed,
     const int32_t *         token_ids,
-    int                     P)
+    int                     P,
+    int                     kv_start)
 {
-    if (P <= 0) { cache.cur_pos = 0; return true; }  // no-op for empty prompt
+    if (kv_start < 0) return false;
+    if (P <= 0) { cache.cur_pos = kv_start; return true; }
+    if (cache.cur_pos != kv_start) {
+        std::fprintf(stderr,
+            "gemma4_prefill_prompt_for_denoise: cache.cur_pos=%d != kv_start=%d\n",
+            cache.cur_pos, kv_start);
+        return false;
+    }
 
-    const int min_ctx = (P + 255) & ~255;
+    const int total   = kv_start + P;
+    const int min_ctx = (total + 255) & ~255;
     if (cache.max_ctx < min_ctx) {
-        std::fprintf(stderr, "gemma4_prefill_prompt_for_denoise: max_ctx %d < %d for P=%d\n",
-                     cache.max_ctx, min_ctx, P);
+        std::fprintf(stderr,
+            "gemma4_prefill_prompt_for_denoise: max_ctx %d < %d for total=%d\n",
+            cache.max_ctx, min_ctx, total);
         return false;
     }
 
@@ -1832,7 +1843,7 @@ bool gemma4_prefill_prompt_for_denoise(
     ggml_tensor * ie = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, w.n_embd, P);
     ggml_set_input(ie);
 
-    // RoPE positions [0..P-1]
+    // RoPE positions [kv_start..kv_start+P-1]
     ggml_tensor * pp = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, P);
     ggml_set_input(pp);
 
@@ -1850,9 +1861,9 @@ bool gemma4_prefill_prompt_for_denoise(
     }
 
     // Attention masks (causal for prompt)
-    const int kv_len_padded  = (P + 255) & ~255;
+    const int kv_len_padded  = (total + 255) & ~255;
     const int swa_size       = cache.swa_size;
-    const int swa_len_raw    = swa_size > 0 ? std::min(P, swa_size) : P;
+    const int swa_len_raw    = swa_size > 0 ? std::min(total, swa_size) : total;
     const int swa_len_padded = (swa_len_raw + 255) & ~255;
 
     ggml_tensor * mk_full = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, kv_len_padded, P, 1, 1);
@@ -1890,7 +1901,7 @@ bool gemma4_prefill_prompt_for_denoise(
 
         ggml_tensor * layer_out = build_gemma4_layer(ctx, gf, w, cache, il, cur, pp,
                                                       mk_full_f16, mk_swa_f16, pl_input,
-                                                      /*kv_start=*/0, P,
+                                                      kv_start, P,
                                                       /*capture_idx=*/-1,
                                                       kvi_full, kvi_swa,
                                                       /*no_cache=*/false);
@@ -1920,12 +1931,12 @@ bool gemma4_prefill_prompt_for_denoise(
     // Upload inputs
     ggml_backend_tensor_set(ie, embed, 0, (size_t)w.n_embd * P * sizeof(float));
     std::vector<int32_t> pos(P);
-    for (int i = 0; i < P; ++i) pos[i] = i;
+    for (int i = 0; i < P; ++i) pos[i] = kv_start + i;
     ggml_backend_tensor_set(pp, pos.data(), 0, (size_t)P * sizeof(int32_t));
     ggml_backend_tensor_set(kvi_full, pos.data(), 0, (size_t)P * sizeof(int32_t));
     if (swa_size > 0) {
         std::vector<int32_t> ring(P);
-        for (int i = 0; i < P; ++i) ring[i] = i % swa_size;
+        for (int i = 0; i < P; ++i) ring[i] = (kv_start + i) % swa_size;
         ggml_backend_tensor_set(kvi_swa, ring.data(), 0, (size_t)P * sizeof(int32_t));
     } else {
         ggml_backend_tensor_set(kvi_swa, pos.data(), 0, (size_t)P * sizeof(int32_t));
@@ -1938,7 +1949,10 @@ bool gemma4_prefill_prompt_for_denoise(
     {
         std::vector<float> mfull((size_t)kv_len_padded * P, -INFINITY);
         for (int q = 0; q < P; ++q) {
-            for (int k = 0; k <= q; ++k) mfull[(size_t)q * kv_len_padded + k] = 0.0f;
+            const int abs_q = kv_start + q;
+            for (int k = 0; k <= abs_q; ++k) {
+                mfull[(size_t)q * kv_len_padded + k] = 0.0f;
+            }
         }
         ggml_backend_tensor_set(mk_full, mfull.data(), 0, ggml_nbytes(mk_full));
     }
@@ -1947,8 +1961,9 @@ bool gemma4_prefill_prompt_for_denoise(
         const int W = w.sliding_window;
         std::vector<float> mswa((size_t)swa_len_padded * P, -INFINITY);
         for (int q = 0; q < P; ++q) {
-            const int win_lo = (W > 0) ? std::max(0, q - W + 1) : 0;
-            for (int k = win_lo; k <= q; ++k) {
+            const int abs_q = kv_start + q;
+            const int win_lo = (W > 0) ? std::max(0, abs_q - W + 1) : 0;
+            for (int k = win_lo; k <= abs_q; ++k) {
                 const int slot = (swa_size > 0) ? (k % swa_size) : k;
                 if (slot < swa_len_raw) mswa[(size_t)q * swa_len_padded + slot] = 0.0f;
             }
@@ -1962,7 +1977,7 @@ bool gemma4_prefill_prompt_for_denoise(
         return false;
     }
 
-    cache.cur_pos = P;
+    cache.cur_pos = total;
     ggml_free(ctx);
     return true;
 }

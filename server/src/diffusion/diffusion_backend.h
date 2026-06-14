@@ -6,11 +6,9 @@
 // so the daemon loop, native HTTP server and OpenAI/Anthropic SSE layer need no
 // diffusion-specific plumbing.
 //
-// The AR-only surface of ModelBackend (KV snapshots, pflash compress, DFlash
-// speculative decode, park/unpark of a draft model) does not apply to the
-// diffusion path yet and is stubbed: snapshots report "unused", compress is
-// rejected, and supports_dflash_spec_decode() keeps its false default. (Nemotron
-// self-speculation can later light up the DFlash hooks — see the module plan.)
+// The AR-only surface of ModelBackend mostly does not apply to diffusion:
+// pflash compress and DFlash speculative decode are rejected/disabled. Prefix
+// KV snapshots are supported for DiffusionGemma prompt reuse.
 
 #pragma once
 
@@ -20,6 +18,8 @@
 #include "common/model_backend.h"
 #include "diffusion_types.h"
 #include "diffusion_model.h"
+#include "gemma4_internal.h"
+#include "ggml-backend.h"
 
 namespace dflash::common {
 
@@ -43,7 +43,6 @@ public:
     GenerateResult generate_impl(const GenerateRequest & req,
                                  const DaemonIO & io) override;
 
-    // Snapshots are not supported by the diffusion path (no causal KV reuse).
     bool snapshot_save(int slot) override;
     void snapshot_free(int slot) override;
     bool snapshot_used(int slot) const override;
@@ -61,6 +60,11 @@ private:
     std::unique_ptr<DiffusionModelGraph> model_;
     DiffusionConfig                      cfg_;
     std::string                          arch_label_;
+
+    static constexpr int PREFIX_SLOTS = ModelBackend::kMaxSlots;
+    ggml_backend_t                      snap_backend_ = nullptr;
+    ggml_backend_t                      snap_compute_backend_ = nullptr;
+    Gemma4Snapshot                      snapshots_[PREFIX_SLOTS];
 };
 
 }  // namespace dflash::common

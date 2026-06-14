@@ -59,6 +59,7 @@ DiffusionDecodeResult run_diffusion_generate(
     const DiffusionConfig &      cfg,
     const SamplerCfg &           sampler,
     bool                         do_sample,
-    const DiffusionStream &      stream);
+    const DiffusionStream &      stream,
+    int                          prepared_prefix_len = -1);
 
 }  // namespace dflash::common

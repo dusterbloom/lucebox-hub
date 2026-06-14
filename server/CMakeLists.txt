@@ -840,6 +840,18 @@ if(DFLASH27B_TESTS)
         target_link_libraries(smoke_eb_generate PRIVATE dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
     endif()
 
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_diffusion_l1_snapshot.cpp" AND DFLASH27B_GPU_BACKEND STREQUAL "cuda")
+        add_executable(smoke_diffusion_l1_snapshot test/smoke_diffusion_l1_snapshot.cpp)
+        target_include_directories(smoke_diffusion_l1_snapshot PRIVATE
+            ${DFLASH27B_SRC_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/diffusion/diffusiongemma)
+        target_compile_definitions(smoke_diffusion_l1_snapshot PRIVATE
+            DFLASH27B_BACKEND_CUDA=1
+            DFLASH27B_CUDA_MIN_SM=${_dflash_cuda_min_sm}
+            DFLASH27B_MIN_SM=${_dflash_cuda_min_sm})
+        target_link_libraries(smoke_diffusion_l1_snapshot PRIVATE dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+    endif()
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_gemma4_ar.cpp" AND DFLASH27B_GPU_BACKEND STREQUAL "cuda")
         add_executable(smoke_gemma4_ar test/smoke_gemma4_ar.cpp)
         target_include_directories(smoke_gemma4_ar PRIVATE

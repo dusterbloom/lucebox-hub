@@ -16,7 +16,9 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
+#include <cmath>
 #include <vector>
 
 namespace dflash::common {
@@ -53,6 +55,73 @@ struct DiffusionModelGraph {
                                int block_begin, int block_len,
                                bool bidirectional,
                                std::vector<float> & out_logits) = 0;
+
+    struct DevSampleResult {
+        std::vector<int32_t> sampled;
+        std::vector<float>   entropy;
+        std::vector<int32_t> argmax;
+        std::vector<float>   logits;
+    };
+
+    virtual bool forward_block_dev(const std::vector<int32_t> & canvas,
+                                   int block_begin, int block_len,
+                                   bool bidirectional,
+                                   const std::vector<float> & u,
+                                   float temp_inv,
+                                   DevSampleResult & out) {
+        if (!forward_block(canvas, block_begin, block_len,
+                           bidirectional, out.logits)) {
+            return false;
+        }
+
+        const int V = vocab();
+        if (V <= 0 || block_len < 0 ||
+            (int)out.logits.size() < block_len * V) {
+            return false;
+        }
+
+        out.sampled.resize(block_len);
+        out.entropy.resize(block_len);
+        out.argmax.resize(block_len);
+
+        for (int j = 0; j < block_len; ++j) {
+            const float * row = out.logits.data() + (size_t)j * V;
+            int best = 0;
+            float best_logit = row[0];
+            float max_scaled = row[0] * temp_inv;
+            for (int v = 1; v < V; ++v) {
+                if (row[v] > best_logit) {
+                    best_logit = row[v];
+                    best = v;
+                }
+                max_scaled = std::max(max_scaled, row[v] * temp_inv);
+            }
+
+            double denom = 0.0;
+            for (int v = 0; v < V; ++v) {
+                denom += std::exp((double)row[v] * (double)temp_inv -
+                                  (double)max_scaled);
+            }
+            if (denom <= 0.0) return false;
+
+            const float draw = (j < (int)u.size()) ? u[(size_t)j] : 0.0f;
+            double cdf = 0.0;
+            double entropy = 0.0;
+            int sampled = V - 1;
+            for (int v = 0; v < V; ++v) {
+                const double p = std::exp((double)row[v] * (double)temp_inv -
+                                          (double)max_scaled) / denom;
+                if (p > 0.0) entropy -= p * std::log(p);
+                cdf += p;
+                if (draw <= cdf && sampled == V - 1) sampled = v;
+            }
+
+            out.argmax[(size_t)j] = (int32_t)best;
+            out.sampled[(size_t)j] = (int32_t)sampled;
+            out.entropy[(size_t)j] = (float)entropy;
+        }
+        return true;
+    }
 
     // Self-conditioning state injection (DiffusionGemma entropy-bound path).
     // Called by the EB decode loop once per step before forward_block.

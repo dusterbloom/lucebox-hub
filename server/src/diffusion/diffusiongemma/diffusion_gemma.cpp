@@ -105,6 +105,64 @@ bool DiffusionGemmaGraph::prepare(const std::vector<int32_t> & prompt, int & out
     return true;
 }
 
+void DiffusionGemmaGraph::mark_prompt_cache_restored(int prefix_len) {
+    prefix_len_    = prefix_len;
+    prompt_cached_ = (prefix_len > 0);
+    sc_logits_ptr_ = nullptr;
+    sc_use_        = 0.0f;
+    sc_temp_inv_   = 1.0f;
+#ifdef DFLASH27B_BACKEND_CUDA
+    sc_dev_a_is_cur_ = true;
+#endif
+}
+
+bool DiffusionGemmaGraph::prepare_delta_from_cache(
+        const std::vector<int32_t> & prompt,
+        int cached_prefix_len,
+        int & out_prefix_len) {
+    if (!loaded_) return false;
+    if (cached_prefix_len < 0 || cached_prefix_len > (int)prompt.size()) return false;
+    if (cache_.cur_pos != cached_prefix_len) {
+        std::fprintf(stderr,
+            "[diffusiongemma] restore delta: cache.cur_pos=%d != cached_prefix_len=%d\n",
+            cache_.cur_pos, cached_prefix_len);
+        return false;
+    }
+
+    const int prompt_len = (int)prompt.size();
+    const int delta_len  = prompt_len - cached_prefix_len;
+    if (delta_len > 0) {
+        const int hidden = w_.n_embd;
+        std::vector<float> delta_embed((size_t)delta_len * hidden);
+        const int32_t * delta_tokens = prompt.data() + cached_prefix_len;
+        if (!w_.embedder.embed(delta_tokens, delta_len, delta_embed.data())) {
+            std::fprintf(stderr,
+                "[diffusiongemma] restore delta: embed failed (delta=%d)\n",
+                delta_len);
+            return false;
+        }
+        const float scale = std::sqrt((float)hidden);
+        for (float & v : delta_embed) v *= scale;
+
+        if (!gemma4_prefill_prompt_for_denoise(backend_, w_, cache_,
+                                               delta_embed.data(), delta_tokens,
+                                               delta_len, cached_prefix_len)) {
+            std::fprintf(stderr,
+                "[diffusiongemma] restore delta: prefill failed (snap=%d delta=%d)\n",
+                cached_prefix_len, delta_len);
+            return false;
+        }
+    }
+
+    out_prefix_len = prompt_len;
+    mark_prompt_cache_restored(prompt_len);
+    std::fprintf(stderr,
+        "[diffusiongemma] L1: restored prompt KV reused (snap=%d prompt=%d delta=%d)\n",
+        cached_prefix_len, prompt_len, delta_len);
+    std::fflush(stderr);
+    return true;
+}
+
 void DiffusionGemmaGraph::set_sc(const float * sc_logits, float sc_use, float sc_temp_inv) {
     sc_logits_ptr_ = sc_logits;
     sc_use_        = sc_use;

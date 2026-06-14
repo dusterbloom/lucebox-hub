@@ -47,6 +47,15 @@ public:
 
     bool prepare(const std::vector<int32_t> & prompt, int & out_prefix_len) override;
 
+    Gemma4Cache & cache_for_snapshot() { return cache_; }
+    const Gemma4Cache & cache_for_snapshot() const { return cache_; }
+    ggml_backend_t backend_for_snapshot() const { return backend_; }
+
+    void mark_prompt_cache_restored(int prefix_len);
+    bool prepare_delta_from_cache(const std::vector<int32_t> & prompt,
+                                  int cached_prefix_len,
+                                  int & out_prefix_len);
+
     // forward_block: canvas = full [prompt|canvas] token sequence; block_begin is
     // the first canvas position (= prompt length), block_len is C. SC state is
     // threaded in via set_sc() (called by the EB decode loop each step).

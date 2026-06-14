@@ -405,7 +405,8 @@ bool gemma4_prefill_prompt_for_denoise(
     Gemma4Cache &           cache,
     const float *           embed,       // [n_embd, P] scaled (sqrt(n_embd) already applied)
     const int32_t *         token_ids,   // [P] for per-layer embeddings (may be nullptr)
-    int                     P);          // prompt length
+    int                     P,           // prompt/delta length
+    int                     kv_start = 0);
 
 bool gemma4_denoise_canvas(
     ggml_backend_t          backend,
