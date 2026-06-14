@@ -18,6 +18,10 @@
 #include "ggml-backend.h"
 #include "ggml.h"
 
+#ifdef DFLASH27B_BACKEND_CUDA
+#include <cuda_runtime.h>
+#endif
+
 namespace dflash::common {
 
 struct DiffusionGemmaConfig {
@@ -50,6 +54,15 @@ public:
                        int block_len, bool bidirectional,
                        std::vector<float> & out_logits) override;
 
+    // GPU-accelerated forward + sample (CUDA builds). Runs the sampling kernel
+    // on device; copies only ~3 KB to host. SC stays device-resident.
+    bool forward_block_dev(const std::vector<int32_t> & canvas,
+                           int block_begin, int block_len,
+                           bool bidirectional,
+                           const std::vector<float> & u,
+                           float temp_inv,
+                           DevSampleResult & out) override;
+
     // Self-conditioning state setters (called by the EB decode loop each step).
     // sc_logits: [n_vocab * C] F32, prev-step raw canvas logits. Must remain valid
     //            until the next forward_block call completes.
@@ -74,6 +87,11 @@ private:
     // Prompt length from last prepare() call — used as P in the unified forward.
     int prefix_len_ = 0;
 
+    // L0 prefix-KV cache state.
+    // When true, the prompt KV was prefilled in prepare() and subsequent
+    // forward_block[_dev] calls use gemma4_denoise_canvas (canvas-only forward).
+    bool prompt_cached_ = false;
+
     // Self-conditioning state (updated by set_sc each step)
     const float * sc_logits_ptr_ = nullptr;  // borrowed, valid for one forward
     float         sc_use_        = 0.0f;
@@ -84,6 +102,29 @@ private:
     ggml_context *        sc_embT_ctx_ = nullptr;
     ggml_backend_buffer_t sc_embT_buf_ = nullptr;
     ggml_tensor *         sc_embT_     = nullptr;
+
+#ifdef DFLASH27B_BACKEND_CUDA
+    // Device-resident SC double-buffers: [n_vocab, C] F32.
+    // Allocated via ggml (same VMM pool as weights/cache) to avoid raw cudaMalloc
+    // conflicting with ggml's VMM reservation on sm_86 (RTX 3090).
+    ggml_context *        sc_dev_ctx_a_ = nullptr;
+    ggml_backend_buffer_t sc_dev_buf_a_ = nullptr;
+    ggml_tensor *         sc_dev_ten_a_ = nullptr;
+
+    ggml_context *        sc_dev_ctx_b_ = nullptr;
+    ggml_backend_buffer_t sc_dev_buf_b_ = nullptr;
+    ggml_tensor *         sc_dev_ten_b_ = nullptr;
+
+    bool     sc_dev_a_is_cur_ = true;   // which tensor holds last step's logits
+    int      sc_dev_C_     = 0;         // allocated C (reallocate if C changes)
+
+    // Device uniform buffer for sampling: [C] F32.
+    // Also ggml-allocated to stay in the same VMM space.
+    ggml_context *        u_dev_ctx_ = nullptr;
+    ggml_backend_buffer_t u_dev_buf_ = nullptr;
+    ggml_tensor *         u_dev_ten_ = nullptr;
+    int                   u_dev_C_   = 0;  // allocated C for u_dev_ten_
+#endif
 };
 
 }  // namespace dflash::common

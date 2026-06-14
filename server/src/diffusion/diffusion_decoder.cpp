@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 #include <numeric>
 #include <random>
 #include <utility>
@@ -80,8 +79,9 @@ static DiffusionDecodeResult run_eb_generate(
     for (int i = 0; i < C; ++i) canvas[(size_t)P + i] = vocab_dist(rng);
 
     // Buffers for per-step processing.
-    std::vector<float>   logits;               // [C * vocab] canvas rows packed
-    std::vector<float>   sc_buffer((size_t)C * vocab, 0.0f);  // prev-step raw logits
+    // sc_buffer holds prev-step raw logits for the CPU-fallback SC path.
+    // The CUDA override keeps SC device-resident and ignores sc_buffer.
+    std::vector<float>   sc_buffer;  // populated by CPU fallback; empty for CUDA path
     std::vector<int32_t> argmax_canvas(C, 0);
     std::vector<int32_t> prev_argmax(C, -1);   // -1 => step 0 always differs
     std::vector<float>   entropy_vec(C, 0.0f);
@@ -102,22 +102,13 @@ static DiffusionDecodeResult run_eb_generate(
         const float temp_inv = 1.0f / t;
 
         // ref diffusion.cpp:550-551: SC gate and prev-step temp_inv
-        // sc_use=0 on step 0 (no prior step), sc_use=1 thereafter
-        model.set_sc(step_idx == 0 ? nullptr : sc_buffer.data(),
-                     step_idx == 0 ? 0.0f : 1.0f,
-                     prev_temp_inv);
-
-        // ref diffusion.cpp:537-546: batch = [prompt | current canvas]
-        if (!model.forward_block(canvas, P, C, /*bidirectional=*/true, logits)) {
-            res.error = "eb: forward";
-            return res;
-        }
-        res.stats.forward_passes++;
-
-        if ((int)logits.size() < C * vocab) {
-            res.error = "eb: short logits";
-            return res;
-        }
+        // sc_use=0 on step 0 (no prior step), sc_use=1 thereafter.
+        // For the GPU path (DiffusionGemmaGraph CUDA override), set_sc() records
+        // the sc_use/temp_inv scalars; the SC device buffer is handled internally.
+        // For the CPU fallback path, sc_buffer.data() supplies the host logits.
+        const float * sc_ptr = (step_idx == 0 || sc_buffer.empty())
+                             ? nullptr : sc_buffer.data();
+        model.set_sc(sc_ptr, step_idx == 0 ? 0.0f : 1.0f, prev_temp_inv);
 
         // ref diffusion.cpp:672-708: pre-draw step randomness for reproducibility
         std::vector<float>   u(C);
@@ -127,41 +118,29 @@ static DiffusionDecodeResult run_eb_generate(
             renoise[pos] = vocab_dist(rng);
         }
 
-        // ref diffusion.cpp:678-708: per-position: argmax, entropy, multinomial sample
+        // forward_block_dev: runs the forward pass AND sampling in one call.
+        // The CUDA override (DiffusionGemmaGraph) keeps logits device-resident,
+        // runs the multinomial+entropy kernel on GPU, and copies only ~3 KB to host.
+        // The default fallback calls forward_block then CPU-samples from host logits.
+        DiffusionModelGraph::DevSampleResult sample_res;
+        if (!model.forward_block_dev(canvas, P, C, /*bidirectional=*/true,
+                                     u, temp_inv, sample_res)) {
+            res.error = "eb: forward_block_dev";
+            return res;
+        }
+        res.stats.forward_passes++;
+
         for (int pos = 0; pos < C; ++pos) {
-            const float * row = logits.data() + (size_t)pos * vocab;
+            entropy_vec[pos]   = sample_res.entropy[pos];
+            argmax_canvas[pos] = sample_res.argmax[pos];
+            denoiser[pos]      = sample_res.sampled[pos];
+        }
 
-            // Numerically-stable softmax(row / t): find max, compute Z
-            float m    = row[0] * temp_inv;
-            int   amax = 0;
-            for (int v = 1; v < vocab; ++v) {
-                const float z = row[v] * temp_inv;
-                if (z > m) { m = z; amax = v; }
-            }
-            float Z = 0.0f;
-            for (int v = 0; v < vocab; ++v) Z += std::exp(row[v] * temp_inv - m);
-
-            // Multinomial sample via CDF walk (ref diffusion.cpp:693-698)
-            const float target = u[pos] * Z;
-            float   cum      = 0.0f;
-            float   H        = 0.0f;
-            int32_t sampled  = vocab - 1;
-            bool    picked   = false;
-            for (int v = 0; v < vocab; ++v) {
-                const float e = std::exp(row[v] * temp_inv - m);
-                const float p = e / Z;
-                if (p > 0.0f) H -= p * std::log(p);  // Shannon entropy accumulation
-                cum += e;
-                if (!picked && cum >= target) { sampled = v; picked = true; }
-            }
-
-            entropy_vec[pos]    = H;
-            argmax_canvas[pos]  = amax;
-            denoiser[pos]       = sampled;
-
-            // Save this step's raw logits for SC next step (ref diffusion.cpp:704-706)
-            std::memcpy(sc_buffer.data() + (size_t)pos * vocab, row,
-                        (size_t)vocab * sizeof(float));
+        // SC host buffer: the CPU fallback populates sample_res.logits with the
+        // full [C*vocab] F32 logits; copy to sc_buffer for next step's set_sc().
+        // The CUDA override leaves sample_res.logits empty (SC is device-resident).
+        if (!sample_res.logits.empty()) {
+            sc_buffer = std::move(sample_res.logits);
         }
 
         // ref diffusion.cpp:739-747: acceptance — sort positions ascending by entropy,
