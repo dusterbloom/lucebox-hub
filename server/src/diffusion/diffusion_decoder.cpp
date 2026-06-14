@@ -94,140 +94,143 @@ static DiffusionDecodeResult run_eb_generate(
         return res;
     }
 
-    const int C  = n_gen;               // canvas length
-    const int P  = prefix_len;          // prompt prefix length
+    const int P0 = prefix_len;          // prompt prefix length (fixed)
     const int S  = std::max(1, cfg.eb_max_steps);
     // Schedule horizon: temperature decays t_max→t_min over this many steps,
     // then clamps at t_min. Independent of the hard cap S so a large S does
     // not thin out the schedule and delay convergence.
     const int SH = std::max(1, cfg.eb_schedule_steps);
 
-    // Full canvas: [prompt | canvas_tokens]; canvas positions [P, P+C)
-    std::vector<int32_t> canvas(prompt.begin(), prompt.begin() + P);
-    canvas.resize((size_t)P + C);
+    // Canvas-block cap. The full-canvas EB path (C = n_gen) falls off a step-time
+    // cliff above C≈1024 (swept 2026-06-15: 187ms/step @512 → 6457ms @2048),
+    // emits empty content at C≥1024, and aborts under load. Denoising in ≤cap blocks
+    // with KV-prefix reuse keeps every forward in the linear regime (~168-180 tok/s)
+    // and fixes all three. ponytail: env-tunable; 512 is the swept sweet spot.
+    const char * cap_env   = std::getenv("DG_EB_BLOCK_CAP");
+    const int    BLOCK_CAP = (cap_env && std::atoi(cap_env) > 0) ? std::atoi(cap_env) : 512;
+    const bool   use_l2    = cfg.enable_l2_interblock && (std::getenv("DG_NO_L2") == nullptr);
 
-    // ref diffusion.cpp:469-473: init canvas to uniform random vocab tokens
     std::mt19937                            rng(seed);
     std::uniform_int_distribution<int32_t> vocab_dist(0, vocab - 1);
     std::uniform_real_distribution<float>  uni01(0.0f, 1.0f);
-    for (int i = 0; i < C; ++i) canvas[(size_t)P + i] = vocab_dist(rng);
 
-    // Buffers for per-step processing.
-    // sc_buffer holds prev-step raw logits for the CPU-fallback SC path.
-    // The CUDA override keeps SC device-resident and ignores sc_buffer.
-    std::vector<float>   sc_buffer;  // populated by CPU fallback; empty for CUDA path
-    std::vector<int32_t> argmax_canvas(C, 0);
-    std::vector<int32_t> prev_argmax(C, -1);   // -1 => step 0 always differs
-    std::vector<float>   entropy_vec(C, 0.0f);
-    std::vector<int32_t> denoiser(C, 0);       // multinomial-sampled token per pos
-    std::vector<int32_t> order(C);             // entropy sort order
+    // Canvas grows one committed block at a time; starts as the prompt prefix.
+    std::vector<int32_t> canvas(prompt.begin(), prompt.begin() + P0);
 
-    float prev_temp_inv = 1.0f;
-    int   held          = 0;
-    bool  finished      = false;
+    int  committed = P0;
+    int  emitted   = 0;
+    bool stop      = false;
 
-    // ref diffusion.cpp:522: loop cur_step from S down to 1
-    for (int cur_step = S; cur_step >= 1 && !finished; --cur_step) {
-        const int   step_idx = S - cur_step;  // 0-based index (ref:523)
-        // Temperature decays t_max→t_min over eb_schedule_steps steps, then
-        // clamps at t_min. Using step_idx/( SH-1) means t hits t_min exactly
-        // at step_idx == SH-1 and stays there for all later steps.
-        const float sched_frac = (SH <= 1)
-            ? 1.0f
-            : std::min(1.0f, (float)step_idx / (float)(SH - 1));
-        const float t = cfg.eb_t_max - (cfg.eb_t_max - cfg.eb_t_min) * sched_frac;
-        const float temp_inv = 1.0f / t;
+    while (emitted < n_gen && !stop) {
+        const int block_len   = std::min(BLOCK_CAP, n_gen - emitted);
+        const int block_begin = committed;
 
-        // ref diffusion.cpp:550-551: SC gate and prev-step temp_inv
-        // sc_use=0 on step 0 (no prior step), sc_use=1 thereafter.
-        // For the GPU path (DiffusionGemmaGraph CUDA override), set_sc() records
-        // the sc_use/temp_inv scalars; the SC device buffer is handled internally.
-        // For the CPU fallback path, sc_buffer.data() supplies the host logits.
-        const float * sc_ptr = (step_idx == 0 || sc_buffer.empty())
-                             ? nullptr : sc_buffer.data();
-        model.set_sc(sc_ptr, step_idx == 0 ? 0.0f : 1.0f, prev_temp_inv);
+        // L2′: restore the KV snapshot so the model sees only the committed prefix as
+        // cached KV — each forward then processes just block_len positions (off the cliff).
+        if (use_l2 && block_begin > P0) model.on_block_starting(block_begin);
 
-        // ref diffusion.cpp:672-708: pre-draw step randomness for reproducibility
-        std::vector<float>   u(C);
-        std::vector<int32_t> renoise(C);
-        for (int pos = 0; pos < C; ++pos) {
-            u[pos]       = uni01(rng);
-            renoise[pos] = vocab_dist(rng);
+        // Seed this block's canvas region with uniform-random noise.
+        canvas.resize((size_t)block_begin + block_len);
+        for (int i = 0; i < block_len; ++i) canvas[block_begin + i] = vocab_dist(rng);
+
+        // Per-block EB state (sized to block_len).
+        std::vector<float>   sc_buffer;
+        std::vector<int32_t> argmax_canvas(block_len, 0);
+        std::vector<int32_t> prev_argmax(block_len, -1);   // -1 => step 0 always differs
+        std::vector<float>   entropy_vec(block_len, 0.0f);
+        std::vector<int32_t> denoiser(block_len, 0);
+        std::vector<int32_t> order(block_len);
+        float prev_temp_inv = 1.0f;
+        int   held          = 0;
+        bool  finished      = false;
+
+        // ref diffusion.cpp:522: loop cur_step from S down to 1
+        for (int cur_step = S; cur_step >= 1 && !finished; --cur_step) {
+            const int   step_idx = S - cur_step;  // 0-based index (ref:523)
+            const float sched_frac = (SH <= 1)
+                ? 1.0f
+                : std::min(1.0f, (float)step_idx / (float)(SH - 1));
+            const float t        = cfg.eb_t_max - (cfg.eb_t_max - cfg.eb_t_min) * sched_frac;
+            const float temp_inv = 1.0f / t;
+
+            const float * sc_ptr = (step_idx == 0 || sc_buffer.empty())
+                                 ? nullptr : sc_buffer.data();
+            model.set_sc(sc_ptr, step_idx == 0 ? 0.0f : 1.0f, prev_temp_inv);
+
+            // ref diffusion.cpp:672-708: pre-draw step randomness for reproducibility
+            std::vector<float>   u(block_len);
+            std::vector<int32_t> renoise(block_len);
+            for (int pos = 0; pos < block_len; ++pos) {
+                u[pos]       = uni01(rng);
+                renoise[pos] = vocab_dist(rng);
+            }
+
+            // forward_block_dev runs forward + on-GPU sampling; with the committed
+            // prefix served from cached KV it processes only block_len positions.
+            DiffusionModelGraph::DevSampleResult sample_res;
+            if (!model.forward_block_dev(canvas, block_begin, block_len, /*bidirectional=*/true,
+                                         u, temp_inv, sample_res)) {
+                res.error = "eb: forward_block_dev";
+                return res;
+            }
+            res.stats.forward_passes++;
+
+            for (int pos = 0; pos < block_len; ++pos) {
+                entropy_vec[pos]   = sample_res.entropy[pos];
+                argmax_canvas[pos] = sample_res.argmax[pos];
+                denoiser[pos]      = sample_res.sampled[pos];
+            }
+            if (!sample_res.logits.empty()) sc_buffer = std::move(sample_res.logits);
+
+            // ref diffusion.cpp:739-747: accept ascending-entropy while cumulative
+            // entropy of strictly-prior accepted <= entropy_bound.
+            std::iota(order.begin(), order.end(), 0);
+            std::sort(order.begin(), order.end(),
+                      [&](int a, int b) { return entropy_vec[a] < entropy_vec[b]; });
+
+            std::vector<char> accepted(block_len, 0);
+            double cumE = 0.0;
+            for (int k = 0; k < block_len; ++k) {
+                const int pos = order[k];
+                if (cumE <= (double)cfg.eb_entropy_bound) { accepted[pos] = 1; }
+                cumE += (double)entropy_vec[pos];
+            }
+
+            // ref diffusion.cpp:750-755: renoise rejected, output is argmax canvas.
+            float entropy_sum = 0.0f;
+            for (int pos = 0; pos < block_len; ++pos) {
+                canvas[(size_t)block_begin + pos] = accepted[pos] ? denoiser[pos] : renoise[pos];
+                entropy_sum += entropy_vec[pos];
+            }
+
+            // ref diffusion.cpp:757-760: adaptive stop within this block.
+            const bool same = (prev_argmax == argmax_canvas);
+            held = same ? held + 1 : 0;
+            const float mean_entropy = entropy_sum / (float)block_len;
+            if (held >= cfg.eb_stability_threshold &&
+                mean_entropy < cfg.eb_confidence_threshold) {
+                finished = true;
+            }
+            prev_argmax   = argmax_canvas;
+            prev_temp_inv = temp_inv;
         }
 
-        // forward_block_dev: runs the forward pass AND sampling in one call.
-        // The CUDA override (DiffusionGemmaGraph) keeps logits device-resident,
-        // runs the multinomial+entropy kernel on GPU, and copies only ~3 KB to host.
-        // The default fallback calls forward_block then CPU-samples from host logits.
-        DiffusionModelGraph::DevSampleResult sample_res;
-        if (!model.forward_block_dev(canvas, P, C, /*bidirectional=*/true,
-                                     u, temp_inv, sample_res)) {
-            res.error = "eb: forward_block_dev";
-            return res;
+        // Commit the block's argmax left-to-right; stream tokens (callback handles EOS/length).
+        for (int pos = 0; pos < block_len; ++pos) {
+            const int32_t tok = argmax_canvas[pos];
+            canvas[(size_t)block_begin + pos] = tok;
+            res.tokens.push_back(tok);
+            ++emitted;
+            if (stream.on_token && !stream.on_token(tok)) { stop = true; break; }
         }
-        res.stats.forward_passes++;
+        committed += block_len;
+        res.stats.blocks++;
 
-        for (int pos = 0; pos < C; ++pos) {
-            entropy_vec[pos]   = sample_res.entropy[pos];
-            argmax_canvas[pos] = sample_res.argmax[pos];
-            denoiser[pos]      = sample_res.sampled[pos];
-        }
-
-        // SC host buffer: the CPU fallback populates sample_res.logits with the
-        // full [C*vocab] F32 logits; copy to sc_buffer for next step's set_sc().
-        // The CUDA override leaves sample_res.logits empty (SC is device-resident).
-        if (!sample_res.logits.empty()) {
-            sc_buffer = std::move(sample_res.logits);
-        }
-
-        // ref diffusion.cpp:739-747: acceptance — sort positions ascending by entropy,
-        // accept while cumulative entropy of STRICTLY-PRIOR accepted <= entropy_bound
-        std::iota(order.begin(), order.end(), 0);
-        std::sort(order.begin(), order.end(),
-                  [&](int a, int b) { return entropy_vec[a] < entropy_vec[b]; });
-
-        std::vector<char> accepted(C, 0);
-        double cumE = 0.0;
-        for (int k = 0; k < C; ++k) {
-            const int pos = order[k];
-            // Accept if cumulative entropy BEFORE this position <= bound
-            // (ref diffusion.cpp:745-746: cumE - entropy[pos] <= bound)
-            if (cumE <= (double)cfg.eb_entropy_bound) { accepted[pos] = 1; }
-            cumE += (double)entropy_vec[pos];
-        }
-
-        // ref diffusion.cpp:750-755: renoise rejected, output is argmax canvas
-        float entropy_sum = 0.0f;
-        for (int pos = 0; pos < C; ++pos) {
-            canvas[(size_t)P + pos] = accepted[pos] ? denoiser[pos] : renoise[pos];
-            entropy_sum += entropy_vec[pos];
-        }
-
-        // ref diffusion.cpp:757-760: adaptive stop
-        // argmax stable for stability_threshold consecutive steps AND mean entropy low
-        const bool same = (prev_argmax == argmax_canvas);
-        held = same ? held + 1 : 0;
-        const float mean_entropy = entropy_sum / (float)C;
-        if (held >= cfg.eb_stability_threshold &&
-            mean_entropy < cfg.eb_confidence_threshold) {
-            finished = true;
-        }
-        prev_argmax   = argmax_canvas;
-        prev_temp_inv = temp_inv;
-
-        // Step callback (via stream) — not applicable for plain stream sink;
-        // stream is invoked only when committing the final canvas.
+        // L2′: prefill + snapshot KV at `committed` so the next block forwards only its new tokens.
+        if (use_l2 && !stop) model.on_block_committed(canvas, committed);
     }
 
-    // Commit the argmax canvas as output
-    res.tokens = std::vector<int32_t>(argmax_canvas.begin(), argmax_canvas.end());
-    res.stats.blocks  = 1;
-    res.stats.tokens  = C;
-
-    for (int pos = 0; pos < C; ++pos) {
-        if (stream.on_token && !stream.on_token(argmax_canvas[pos])) break;
-    }
-
+    res.stats.tokens = (int)res.tokens.size();
     res.ok = true;
     return res;
 }
