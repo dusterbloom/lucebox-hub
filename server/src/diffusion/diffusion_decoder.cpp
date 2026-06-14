@@ -94,9 +94,13 @@ static DiffusionDecodeResult run_eb_generate(
         return res;
     }
 
-    const int C = n_gen;               // canvas length
-    const int P = prefix_len;          // prompt prefix length
-    const int S = std::max(1, cfg.eb_max_steps);
+    const int C  = n_gen;               // canvas length
+    const int P  = prefix_len;          // prompt prefix length
+    const int S  = std::max(1, cfg.eb_max_steps);
+    // Schedule horizon: temperature decays t_max→t_min over this many steps,
+    // then clamps at t_min. Independent of the hard cap S so a large S does
+    // not thin out the schedule and delay convergence.
+    const int SH = std::max(1, cfg.eb_schedule_steps);
 
     // Full canvas: [prompt | canvas_tokens]; canvas positions [P, P+C)
     std::vector<int32_t> canvas(prompt.begin(), prompt.begin() + P);
@@ -125,10 +129,13 @@ static DiffusionDecodeResult run_eb_generate(
     // ref diffusion.cpp:522: loop cur_step from S down to 1
     for (int cur_step = S; cur_step >= 1 && !finished; --cur_step) {
         const int   step_idx = S - cur_step;  // 0-based index (ref:523)
-        // ref diffusion.cpp:524: t = t_min + (t_max - t_min) * (cur_step / S)
-        const float t        = cfg.eb_t_min +
-                               (cfg.eb_t_max - cfg.eb_t_min) *
-                               ((float)cur_step / (float)S);
+        // Temperature decays t_max→t_min over eb_schedule_steps steps, then
+        // clamps at t_min. Using step_idx/( SH-1) means t hits t_min exactly
+        // at step_idx == SH-1 and stays there for all later steps.
+        const float sched_frac = (SH <= 1)
+            ? 1.0f
+            : std::min(1.0f, (float)step_idx / (float)(SH - 1));
+        const float t = cfg.eb_t_max - (cfg.eb_t_max - cfg.eb_t_min) * sched_frac;
         const float temp_inv = 1.0f / t;
 
         // ref diffusion.cpp:550-551: SC gate and prev-step temp_inv
