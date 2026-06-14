@@ -191,6 +191,7 @@ struct ParsedRequest {
     std::vector<int32_t>      prompt_tokens;  // tokenized prompt
     int                       max_output   = 4096;
     bool                      stream       = true;
+    bool                      include_usage = false;  // stream_options.include_usage
     SamplerCfg                sampler;
     std::string               model;
     // Tool definitions (stored as JSON for response formatting)

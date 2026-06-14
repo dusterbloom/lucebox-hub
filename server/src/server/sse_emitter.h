@@ -85,6 +85,10 @@ public:
     // Check if a stop sequence was hit (signals caller to stop generation).
     bool stop_hit() const { return stop_hit_; }
 
+    // OpenAI: only emit the terminal usage chunk when the client opts in via
+    // stream_options.include_usage (default off, matching the OpenAI API).
+    void set_include_usage(bool v) { include_usage_ = v; }
+
     // Get accumulated content (for non-streaming).
     const std::string & accumulated_text() const { return accumulated_content_; }
 
@@ -169,6 +173,7 @@ private:
     std::vector<std::string> stop_sequences_;
     size_t       stop_holdback_ = 0;  // max length of any stop sequence
     bool         stop_hit_ = false;
+    bool         include_usage_ = false;  // stream_options.include_usage (OpenAI usage-chunk gate)
 
     int64_t      created_at_;
 

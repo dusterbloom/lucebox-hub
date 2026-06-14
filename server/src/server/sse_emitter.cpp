@@ -615,23 +615,26 @@ std::vector<std::string> SseEmitter::emit_finish(int completion_tokens,
     case ApiFormat::OPENAI_CHAT: {
         // Finish reason chunk
         out.push_back(format_openai_delta(json::object(), fr.c_str()));
-        // Usage chunk — includes timings sub-object when caller supplied
-        // generation wall-clock breakdown (see spec §6.3).
-        json usage_body = {
-            {"prompt_tokens", prompt_tokens_},
-            {"completion_tokens", completion_tokens},
-            {"total_tokens", prompt_tokens_ + completion_tokens}
-        };
-        if (timings) {
-            usage_body["timings"] = build_timings_json(*timings, completion_tokens);
+        // Usage chunk — OpenAI emits it ONLY when the client sets
+        // stream_options.include_usage. Default off keeps the canonical shape
+        // (…content deltas → finish_reason chunk → [DONE]) for strict clients.
+        if (include_usage_) {
+            json usage_body = {
+                {"prompt_tokens", prompt_tokens_},
+                {"completion_tokens", completion_tokens},
+                {"total_tokens", prompt_tokens_ + completion_tokens}
+            };
+            if (timings) {
+                usage_body["timings"] = build_timings_json(*timings, completion_tokens);
+            }
+            json usage = {
+                {"id", request_id_}, {"object", "chat.completion.chunk"},
+                {"created", created_at_}, {"model", model_name_},
+                {"choices", json::array()},
+                {"usage", usage_body}
+            };
+            out.push_back(sse_data(usage.dump()));
         }
-        json usage = {
-            {"id", request_id_}, {"object", "chat.completion.chunk"},
-            {"created", created_at_}, {"model", model_name_},
-            {"choices", json::array()},
-            {"usage", usage_body}
-        };
-        out.push_back(sse_data(usage.dump()));
         out.push_back(sse_data("[DONE]"));
         break;
     }
