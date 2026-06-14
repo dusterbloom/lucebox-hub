@@ -50,6 +50,11 @@ struct DiffusionConfig {
     bool            semi_ar              = true; // advance block-by-block (vs one canvas)
     uint64_t        seed                 = 0;    // Random remask / uniform-state noise
 
+    // L2′ inter-block snapshot: after each committed block, cache the KV so
+    // the next block only forwards its C new tokens. Set DG_NO_L2=1 env or
+    // enable_l2_interblock=false to disable (useful for correctness baselines).
+    bool enable_l2_interblock    = true;
+
     // EntropyBound params (DiffusionGemma-style entropy-bound denoiser).
     // Effective when remasking == DiffusionRemask::EntropyBound.
     int   eb_max_steps           = 48;    // max denoising steps (S)
