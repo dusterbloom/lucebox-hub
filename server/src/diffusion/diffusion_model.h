@@ -136,6 +136,21 @@ struct DiffusionModelGraph {
 
     // Release per-request scratch (e.g. KV cache contents) before the next prompt.
     virtual void reset() {}
+
+    // ── L2′ inter-block snapshot hooks (default: no-op) ─────────────────────
+    // Called by run_diffusion_generate after each committed block. `canvas`
+    // holds the full sequence (prompt + committed blocks); `committed` is the
+    // total number of stable tokens (prompt + b*C). Implementations may prefill
+    // the committed block into the KV cache and snapshot it so that the next
+    // block's denoising loop only computes the new C tokens.
+    virtual void on_block_committed(const std::vector<int32_t> & /*canvas*/,
+                                    int /*committed*/) {}
+
+    // Called before each block's denoising loop starts (except the first block).
+    // `block_begin` is the first canvas position of the upcoming block.
+    // Implementations restore the snapshot saved by on_block_committed so the
+    // model sees the committed prefix as its cached KV.
+    virtual void on_block_starting(int /*block_begin*/) {}
 };
 
 }  // namespace dflash::common

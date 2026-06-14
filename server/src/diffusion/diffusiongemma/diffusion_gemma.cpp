@@ -2,6 +2,7 @@
 
 #include "diffusion_gemma.h"
 
+#include "common/snapshot_backend.h"
 #include "dflash27b.h"   // dflash27b_last_error
 #include "ggml-cuda.h"   // ggml_backend_cuda_init
 
@@ -41,6 +42,9 @@ DiffusionGemmaGraph::~DiffusionGemmaGraph() {
         free_gemma4_weights(w_);
         loaded_ = false;
     }
+    free_gemma4_snapshot(l2_snap_);
+    free_snapshot_backend(l2_snap_backend_, backend_);
+    l2_snap_backend_ = nullptr;
     if (backend_) { ggml_backend_free(backend_); backend_ = nullptr; }
 }
 
@@ -300,6 +304,186 @@ void DiffusionGemmaGraph::reset() {
 #ifdef DFLASH27B_BACKEND_CUDA
     sc_dev_a_is_cur_ = true;  // reset double-buffer state
 #endif
+    l2_snapshot_free();
+    l2_snap_pos_ = -1;
+}
+
+// ── L2′ inter-block snapshot ─────────────────────────────────────────────────
+
+void DiffusionGemmaGraph::l2_snapshot_free() {
+    free_gemma4_snapshot(l2_snap_);
+    // l2_snap_backend_ is owned for its lifetime by the graph (CPU backend),
+    // freed in the destructor path via DiffusionGemmaGraph::~DiffusionGemmaGraph.
+}
+
+// Prefill the just-committed block into the KV cache, then snapshot KV at
+// position `committed`. After this: cache_.cur_pos == committed, l2_snap_pos_
+// == committed. The next block's on_block_starting(committed) restores it so
+// gemma4_denoise_canvas sees committed tokens as the stable KV prefix.
+void DiffusionGemmaGraph::on_block_committed(
+        const std::vector<int32_t> & canvas, int committed) {
+    if (!loaded_ || committed <= 0) return;
+
+    // canvas[prefix_len_ .. committed) are the newly-committed block tokens.
+    const int block_start = prefix_len_;
+    const int block_len   = committed - prefix_len_;
+    if (block_len <= 0) return;  // first call: nothing to prefill beyond prompt
+
+    // Step 1: prefill the committed block tokens starting from prefix_len_.
+    //   gemma4_prefill_prompt_for_denoise requires cache_.cur_pos == kv_start;
+    //   gemma4_denoise_canvas leaves cache_.cur_pos == prefix_len_, so this is met.
+    if (cache_.cur_pos != prefix_len_) {
+        std::fprintf(stderr,
+            "[diffusiongemma] L2: unexpected cur_pos=%d (expected=%d); "
+            "skipping snapshot\n", cache_.cur_pos, prefix_len_);
+        return;
+    }
+
+    const int hidden = w_.n_embd;
+    const int32_t * block_toks = canvas.data() + block_start;
+    std::vector<float> block_embed((size_t)block_len * hidden);
+    if (!w_.embedder.embed(block_toks, block_len, block_embed.data())) {
+        std::fprintf(stderr, "[diffusiongemma] L2: embed failed (block_len=%d)\n",
+                     block_len);
+        return;
+    }
+    const float scale = std::sqrt((float)hidden);
+    for (float & v : block_embed) v *= scale;
+
+    if (!gemma4_prefill_prompt_for_denoise(backend_, w_, cache_,
+                                            block_embed.data(),
+                                            block_toks, block_len,
+                                            /*kv_start=*/prefix_len_)) {
+        std::fprintf(stderr, "[diffusiongemma] L2: block prefill failed "
+                     "(block_start=%d block_len=%d)\n", block_start, block_len);
+        return;
+    }
+    // Now cache_.cur_pos == prefix_len_ + block_len == committed.
+
+    // Step 2: snapshot KV at `committed`.
+    if (!l2_snap_backend_) {
+        l2_snap_backend_ = create_snapshot_backend(backend_);
+        if (!l2_snap_backend_) {
+            std::fprintf(stderr, "[diffusiongemma] L2: snapshot backend init failed\n");
+            return;
+        }
+    }
+
+    const int n_layer  = cache_.n_layer;
+    const int snap_pos = cache_.cur_pos;  // == committed
+
+    const bool needs_alloc =
+        (l2_snap_.ctx == nullptr) || (l2_snap_.cur_pos != snap_pos);
+    if (needs_alloc) {
+        free_gemma4_snapshot(l2_snap_);
+
+        ggml_init_params ip{};
+        ip.mem_size = ggml_tensor_overhead() * (size_t)(n_layer * 2 + 4) + 4096;
+        ip.no_alloc = true;
+        l2_snap_.ctx = ggml_init(ip);
+        if (!l2_snap_.ctx) {
+            std::fprintf(stderr, "[diffusiongemma] L2: ggml_init failed\n");
+            return;
+        }
+
+        l2_snap_.k_snap.assign(n_layer, nullptr);
+        l2_snap_.v_snap.assign(n_layer, nullptr);
+        for (int il = 0; il < n_layer; ++il) {
+            if (!cache_.k[il] || !cache_.v[il]) continue;
+            ggml_tensor * ck    = cache_.k[il];
+            const int cache_len = (int)ck->ne[1];
+            const int save_pos  = std::min(snap_pos, cache_len);
+            l2_snap_.k_snap[il] = ggml_new_tensor_3d(l2_snap_.ctx, ck->type,
+                                                      ck->ne[0], save_pos, ck->ne[2]);
+            l2_snap_.v_snap[il] = ggml_new_tensor_3d(l2_snap_.ctx, ck->type,
+                                                      ck->ne[0], save_pos, ck->ne[2]);
+        }
+        l2_snap_.feat_snap = nullptr;
+        l2_snap_.feat_cap  = 0;
+
+        l2_snap_.buf = ggml_backend_alloc_ctx_tensors(l2_snap_.ctx, l2_snap_backend_);
+        if (!l2_snap_.buf) {
+            std::fprintf(stderr, "[diffusiongemma] L2: snapshot alloc failed\n");
+            ggml_free(l2_snap_.ctx); l2_snap_.ctx = nullptr;
+            l2_snap_.k_snap.clear(); l2_snap_.v_snap.clear();
+            return;
+        }
+    }
+
+    for (int il = 0; il < n_layer; ++il) {
+        if (!cache_.k[il] || !cache_.v[il] ||
+            !l2_snap_.k_snap[il] || !l2_snap_.v_snap[il]) {
+            continue;
+        }
+        ggml_tensor * ck          = cache_.k[il];
+        const int D               = (int)ck->ne[0];
+        const int Hk              = (int)ck->ne[2];
+        const int cache_len       = (int)ck->ne[1];
+        const int save_pos        = std::min(snap_pos, cache_len);
+        const size_t elem_sz      = ggml_element_size(ck);
+        const size_t bytes_src    = (size_t)D * cache_len * elem_sz;  // full row stride
+        const size_t bytes_save   = (size_t)D * save_pos  * elem_sz;  // slice to copy
+
+        for (int h = 0; h < Hk; ++h) {
+            ggml_backend_tensor_get(cache_.k[il],
+                (char *)l2_snap_.k_snap[il]->data + h * bytes_save,
+                h * bytes_src, bytes_save);
+            ggml_backend_tensor_get(cache_.v[il],
+                (char *)l2_snap_.v_snap[il]->data + h * bytes_save,
+                h * bytes_src, bytes_save);
+        }
+    }
+    l2_snap_.cur_pos  = snap_pos;
+    l2_snap_.last_tok = cache_.last_tok;
+    l2_snap_pos_      = snap_pos;
+    std::fprintf(stderr, "[diffusiongemma] L2: prefill+snapshot pos=%d\n", snap_pos);
+}
+
+// Restore l2_snap_ into cache_ and update prefix_len_ so gemma4_denoise_canvas
+// treats the committed prefix (prompt + prior blocks) as the stable KV prefix.
+void DiffusionGemmaGraph::on_block_starting(int block_begin) {
+    if (!loaded_ || l2_snap_pos_ < 0 || l2_snap_.ctx == nullptr) return;
+    if (l2_snap_pos_ != block_begin) {
+        std::fprintf(stderr,
+            "[diffusiongemma] L2: restore skipped (snap_pos=%d != block_begin=%d)\n",
+            l2_snap_pos_, block_begin);
+        return;
+    }
+
+    const int n_layer = cache_.n_layer;
+    for (int il = 0; il < n_layer; ++il) {
+        if (!cache_.k[il] || !cache_.v[il] ||
+            il >= (int)l2_snap_.k_snap.size() ||
+            !l2_snap_.k_snap[il] || !l2_snap_.v_snap[il]) {
+            continue;
+        }
+        ggml_tensor * ck        = cache_.k[il];
+        const int D             = (int)ck->ne[0];
+        const int Hk            = (int)ck->ne[2];
+        const int cache_len     = (int)ck->ne[1];
+        const int save_pos      = (int)l2_snap_.k_snap[il]->ne[1];
+        const size_t elem_sz    = ggml_element_size(ck);
+        const size_t bytes_dst  = (size_t)D * cache_len * elem_sz;
+        const size_t bytes_snap = (size_t)D * save_pos  * elem_sz;
+
+        for (int h = 0; h < Hk; ++h) {
+            ggml_backend_tensor_set(cache_.k[il],
+                (const char *)l2_snap_.k_snap[il]->data + h * bytes_snap,
+                h * bytes_dst, bytes_snap);
+            ggml_backend_tensor_set(cache_.v[il],
+                (const char *)l2_snap_.v_snap[il]->data + h * bytes_snap,
+                h * bytes_dst, bytes_snap);
+        }
+    }
+    cache_.cur_pos  = l2_snap_.cur_pos;   // == block_begin
+    cache_.last_tok = l2_snap_.last_tok;
+
+    // Update prefix_len_ to the extended prefix so forward_block[_dev] calls
+    // gemma4_denoise_canvas with P=block_begin (prompt + committed blocks).
+    prefix_len_    = block_begin;
+    prompt_cached_ = true;  // already true; make explicit for clarity
+
+    std::fprintf(stderr, "[diffusiongemma] L2: restored prefix_len=%d\n", block_begin);
 }
 
 #ifdef DFLASH27B_BACKEND_CUDA

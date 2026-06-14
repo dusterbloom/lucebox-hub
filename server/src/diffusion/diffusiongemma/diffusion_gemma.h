@@ -81,7 +81,17 @@ public:
 
     void reset() override;
 
+    // L2′ inter-block snapshot hooks (DiffusionModelGraph overrides).
+    // on_block_committed saves the KV prefix at position `committed`; called
+    // by run_diffusion_generate after each committed block (b=1,2,...).
+    // on_block_starting restores the snapshot saved at `block_begin` so block
+    // b+1 only forwards its new C tokens.
+    void on_block_committed(const std::vector<int32_t> & canvas,
+                            int committed) override;
+    void on_block_starting(int block_begin) override;
+
 private:
+    void l2_snapshot_free();
     // Lazily build sc_embT_: tok_embd transposed + dequantized to {n_vocab, n_embd}
     // F16 on the device. Called once on first SC-enabled forward.
     bool ensure_sc_embT();
@@ -134,6 +144,13 @@ private:
     ggml_tensor *         u_dev_ten_ = nullptr;
     int                   u_dev_C_   = 0;  // allocated C for u_dev_ten_
 #endif
+
+    // L2′ inter-block snapshot: one Gemma4Snapshot kept inside the graph so
+    // future dLLM families only need to override on_block_committed/on_block_starting.
+    // Allocated lazily on first on_block_committed call; freed in reset()/destructor.
+    Gemma4Snapshot        l2_snap_;
+    ggml_backend_t        l2_snap_backend_ = nullptr;  // CPU-resident; set once in init
+    int                   l2_snap_pos_     = -1;        // pos saved in l2_snap_, -1 = invalid
 };
 
 }  // namespace dflash::common
