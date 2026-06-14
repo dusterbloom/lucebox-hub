@@ -418,6 +418,62 @@ int main() {
         check(m.sc_nonnull_on_step1, "eb-prev-logits: step 1 passes non-null SC + use=1");
     }
 
+    // ── 13. eb_schedule_steps decouples convergence from the hard cap ────────
+    // With eb_max_steps=48 (large cap) and eb_schedule_steps=12 (decay horizon),
+    // a peaked model should still converge in <=12 steps — not the ~17 steps that
+    // the old t=t_min+(t_max-t_min)*(cur_step/S) schedule would take with S=48.
+    {
+        EBModel m;
+        m.prefix_ = 0;
+        m.gen_targets = iota_targets(8);
+        DiffusionConfig cfg;
+        cfg.remasking              = DiffusionRemask::EntropyBound;
+        cfg.noise_scheme           = DiffusionNoise::UniformState;
+        cfg.eb_max_steps           = 48;          // large cap
+        cfg.eb_schedule_steps      = 12;          // decay horizon
+        cfg.eb_t_min               = 0.4f;
+        cfg.eb_t_max               = 0.8f;
+        cfg.eb_entropy_bound       = 0.1f;
+        cfg.eb_stability_threshold = 1;
+        cfg.eb_confidence_threshold = 0.005f;
+        cfg.seed = 42;
+
+        std::vector<int32_t> streamed;
+        auto r = run_diffusion_generate(m, {}, 8, cfg, greedy, false, collect(streamed));
+        check(r.ok, "eb-schedule: ok");
+        check(r.tokens == m.gen_targets, "eb-schedule: tokens correct");
+        // Must converge well within the schedule horizon (not ~17 as with old formula)
+        check(r.stats.forward_passes <= 12, "eb-schedule: converges within schedule_steps=12",
+              "got " + std::to_string(r.stats.forward_passes));
+        // Sanity: at least 1 step
+        check(r.stats.forward_passes >= 1, "eb-schedule: at least 1 forward pass",
+              "got " + std::to_string(r.stats.forward_passes));
+    }
+
+    // ── 14. eb_schedule_steps=1: temperature is always t_min (max cold) ──────
+    // With schedule_steps=1, sched_frac clamps to 1 on step 0, so t=t_min always.
+    {
+        EBModel m;
+        m.prefix_ = 0;
+        m.gen_targets = iota_targets(4);
+        DiffusionConfig cfg;
+        cfg.remasking              = DiffusionRemask::EntropyBound;
+        cfg.noise_scheme           = DiffusionNoise::UniformState;
+        cfg.eb_max_steps           = 8;
+        cfg.eb_schedule_steps      = 1;           // instant clamp to t_min
+        cfg.eb_t_min               = 0.4f;
+        cfg.eb_t_max               = 0.8f;
+        cfg.eb_entropy_bound       = 10.0f;       // wide: accept all
+        cfg.eb_stability_threshold = 1;
+        cfg.eb_confidence_threshold = 0.005f;
+        cfg.seed = 3;
+
+        std::vector<int32_t> streamed;
+        auto r = run_diffusion_generate(m, {}, 4, cfg, greedy, false, collect(streamed));
+        check(r.ok, "eb-sched1: ok with schedule_steps=1");
+        check(r.tokens == m.gen_targets, "eb-sched1: tokens correct");
+    }
+
     std::printf("\nResults: %d/%d passed, %d failed\n",
                 g_passed, g_passed + g_failed, g_failed);
     return g_failed == 0 ? 0 : 1;

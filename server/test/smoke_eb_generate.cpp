@@ -84,18 +84,19 @@ static std::string sp_decode(const std::vector<int32_t> & ids,
 int main(int argc, char ** argv) {
     if (argc < 3) {
         std::fprintf(stderr,
-            "usage: %s <model.gguf> <prompt.bin> [n_gen=256] [seed=42] [max_steps=16]\n",
+            "usage: %s <model.gguf> <prompt.bin> [n_gen=256] [seed=42] [max_steps=48] [schedule_steps=12]\n",
             argv[0]);
         return 2;
     }
-    const char * model_path = argv[1];
-    const char * prompt_path = argv[2];
-    const int    n_gen       = argc > 3 ? std::atoi(argv[3]) : 256;
-    const uint64_t seed      = argc > 4 ? (uint64_t)std::atoi(argv[4]) : 42ULL;
-    const int    max_steps   = argc > 5 ? std::atoi(argv[5]) : 16;  // default 16 for speed
+    const char * model_path     = argv[1];
+    const char * prompt_path    = argv[2];
+    const int    n_gen          = argc > 3 ? std::atoi(argv[3]) : 256;
+    const uint64_t seed         = argc > 4 ? (uint64_t)std::atoi(argv[4]) : 42ULL;
+    const int    max_steps      = argc > 5 ? std::atoi(argv[5]) : 48;
+    const int    schedule_steps = argc > 6 ? std::atoi(argv[6]) : 12;
 
-    std::printf("[eb-gen] model=%s  prompt=%s  n_gen=%d  seed=%llu  max_steps=%d\n",
-                model_path, prompt_path, n_gen, (unsigned long long)seed, max_steps);
+    std::printf("[eb-gen] model=%s  prompt=%s  n_gen=%d  seed=%llu  max_steps=%d  schedule_steps=%d\n",
+                model_path, prompt_path, n_gen, (unsigned long long)seed, max_steps, schedule_steps);
     std::fflush(stdout);
 
     // Load prompt
@@ -112,9 +113,9 @@ int main(int argc, char ** argv) {
     std::printf("[eb-gen] vocab: %d tokens\n", (int)vocab.size());
 
     // Build model — max_ctx must be >= the attention min (sliding_window=1024 for SWA layers).
-    // Use the model's minimum: max(prompt+canvas, 512) rounded up to the next multiple of 64.
+    // Use at least 1024 (SWA requirement) rounded up to the next multiple of 64.
     const int min_ctx = (int)prompt.size() + n_gen;
-    const int max_ctx = ((std::max(min_ctx, 512) + 63) / 64) * 64;
+    const int max_ctx = ((std::max(min_ctx, 1024) + 63) / 64) * 64;
     DiffusionGemmaConfig gcfg;
     gcfg.model_path = model_path;
     gcfg.gpu        = 0;
@@ -135,6 +136,7 @@ int main(int argc, char ** argv) {
     cfg.block_size             = n_gen;         // single canvas block
     cfg.seed                   = seed;
     cfg.eb_max_steps           = max_steps;
+    cfg.eb_schedule_steps      = schedule_steps;
     cfg.eb_t_min               = 0.4f;
     cfg.eb_t_max               = 0.8f;
     cfg.eb_entropy_bound       = 0.1f;
@@ -150,8 +152,8 @@ int main(int argc, char ** argv) {
         return true;
     };
 
-    std::printf("[eb-gen] running EB decode (n_gen=%d, max_steps=%d)...\n",
-                n_gen, max_steps);
+    std::printf("[eb-gen] running EB decode (n_gen=%d, max_steps=%d, schedule_steps=%d)...\n",
+                n_gen, max_steps, schedule_steps);
     std::fflush(stdout);
 
     DiffusionDecodeResult r = run_diffusion_generate(

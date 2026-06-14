@@ -57,7 +57,13 @@ struct DiffusionConfig {
 
     // EntropyBound params (DiffusionGemma-style entropy-bound denoiser).
     // Effective when remasking == DiffusionRemask::EntropyBound.
-    int   eb_max_steps           = 48;    // max denoising steps (S)
+    int   eb_max_steps           = 48;    // hard cap: max denoising steps (S)
+    int   eb_schedule_steps      = 12;    // temperature decay horizon: t reaches t_min at
+                                          // step eb_schedule_steps-1 and stays there.
+                                          // Independent of the hard cap, so a large cap
+                                          // does not stretch the schedule and delay
+                                          // convergence. Default 12 matches the empirical
+                                          // ~9-step early-stop on typical agentic prompts.
     float eb_t_min               = 0.4f;  // temperature schedule minimum
     float eb_t_max               = 0.8f;  // temperature schedule maximum
     float eb_entropy_bound       = 0.1f;  // cumulative-prior-entropy acceptance gate
