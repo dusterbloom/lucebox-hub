@@ -2632,6 +2632,37 @@ endif()
 
 if(LUCE_SERVER)
 
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_diffusion_gemma_forward.cpp" AND LUCE_GPU_BACKEND STREQUAL "cuda")
+        add_executable(smoke_diffusion_gemma_forward test/smoke_diffusion_gemma_forward.cpp)
+        target_include_directories(smoke_diffusion_gemma_forward PRIVATE
+            ${LUCE_SRC_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/diffusion/diffusiongemma)
+        target_link_libraries(smoke_diffusion_gemma_forward PRIVATE luce_common ggml ${LUCE_GGML_BACKEND_TARGET})
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_diffusion_gemma_sc_on.cpp" AND LUCE_GPU_BACKEND STREQUAL "cuda")
+        add_executable(smoke_diffusion_gemma_sc_on test/smoke_diffusion_gemma_sc_on.cpp)
+        target_include_directories(smoke_diffusion_gemma_sc_on PRIVATE
+            ${LUCE_SRC_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/diffusion/diffusiongemma)
+        target_link_libraries(smoke_diffusion_gemma_sc_on PRIVATE luce_common ggml ${LUCE_GGML_BACKEND_TARGET})
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_eb_generate.cpp" AND LUCE_GPU_BACKEND STREQUAL "cuda")
+        add_executable(smoke_eb_generate test/smoke_eb_generate.cpp)
+        target_include_directories(smoke_eb_generate PRIVATE
+            ${LUCE_SRC_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/diffusion/diffusiongemma)
+        target_link_libraries(smoke_eb_generate PRIVATE luce_common ggml ${LUCE_GGML_BACKEND_TARGET})
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_gemma4_ar.cpp" AND LUCE_GPU_BACKEND STREQUAL "cuda")
+        add_executable(smoke_gemma4_ar test/smoke_gemma4_ar.cpp)
+        target_include_directories(smoke_gemma4_ar PRIVATE
+            ${LUCE_SRC_INCLUDE_DIRS})
+        target_link_libraries(smoke_gemma4_ar PRIVATE luce_common ggml ${LUCE_GGML_BACKEND_TARGET})
+    endif()
+
     # ─── luce_server: native C++ HTTP server ─────────────────────────
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/server/server_main.cpp")
         find_package(CURL QUIET)

@@ -31,6 +31,10 @@ enum class DiffusionRemask {
     Random,            // finalize a random subset per step (ancestral sampling)
     ParallelThreshold, // finalize every position whose top probability exceeds
                        // `confidence_threshold` (Fast-dLLM-style parallel decode)
+    EntropyBound,      // DiffusionGemma entropy-bound denoiser: uniform-random canvas
+                       // init, linear temperature schedule, accept positions sorted by
+                       // Shannon entropy while cumulative prior entropy <= entropy_bound;
+                       // renoise the rest to fresh uniform random tokens each step
 };
 
 // Per-request decoding knobs. Populated from the model card defaults, then
@@ -45,6 +49,15 @@ struct DiffusionConfig {
                                                 // (<0 => resolve from the model graph)
     bool            semi_ar              = true; // advance block-by-block (vs one canvas)
     uint64_t        seed                 = 0;    // Random remask / uniform-state noise
+
+    // EntropyBound params (DiffusionGemma-style entropy-bound denoiser).
+    // Effective when remasking == DiffusionRemask::EntropyBound.
+    int   eb_max_steps           = 48;    // max denoising steps (S)
+    float eb_t_min               = 0.4f;  // temperature schedule minimum
+    float eb_t_max               = 0.8f;  // temperature schedule maximum
+    float eb_entropy_bound       = 0.1f;  // cumulative-prior-entropy acceptance gate
+    int   eb_stability_threshold = 1;     // argmax-stable steps required to stop early
+    float eb_confidence_threshold = 0.005f; // mean-entropy ceiling for early stop
 };
 
 // Lightweight per-request counters surfaced to the server for /status + bench.

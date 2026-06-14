@@ -407,8 +407,8 @@ std::unique_ptr<ModelBackend> construct_backend(
         }
         return backend;
 
-    } else if (arch == "diffusiongemma" || arch == "nemotron_diffusion"
-               || arch == "nemotron-diffusion") {
+    } else if (arch == "diffusion-gemma" || arch == "diffusiongemma"
+               || arch == "nemotron_diffusion" || arch == "nemotron-diffusion") {
         // Diffusion (dLLM) families all share one DiffusionBackend, constructed
         // via the diffusion sub-factory (diffusion_registry). Decode knobs
         // default here for now; model-card -> DiffusionConfig plumbing is a

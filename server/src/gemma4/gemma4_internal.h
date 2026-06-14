@@ -68,6 +68,8 @@ struct Gemma4Layer {
 
     // Layer output scale
     ggml_tensor * out_scale       = nullptr;  // scalar or [1]
+    // Encoder (prompt) layer output scale (diffusion-gemma only)
+    ggml_tensor * enc_out_scale   = nullptr;  // scalar or [1]
 
     // RoPE freq factors (full-attention layers only)
     ggml_tensor * rope_freqs      = nullptr;
@@ -86,6 +88,12 @@ struct Gemma4Weights {
     ggml_tensor * per_layer_tok_embd     = nullptr;  // [n_embd_per_layer * n_layer, n_vocab]
     ggml_tensor * per_layer_model_proj   = nullptr;  // [n_embd, n_embd_per_layer * n_layer]
     ggml_tensor * per_layer_proj_norm    = nullptr;  // [n_embd_per_layer * n_layer]
+
+    // Self-conditioning tensors (diffusion-gemma only; nullptr for gemma4 AR)
+    ggml_tensor * sc_pre_norm            = nullptr;  // [n_embd]
+    ggml_tensor * sc_gate                = nullptr;  // [n_embd, n_ff]
+    ggml_tensor * sc_up                  = nullptr;  // [n_embd, n_ff]
+    ggml_tensor * sc_down                = nullptr;  // [n_ff, n_embd]
 
     std::vector<Gemma4Layer> layers;
 
@@ -127,8 +135,12 @@ struct Gemma4Weights {
     int32_t bos_id      = 2;
     int32_t eos_id      = 1;
     int32_t eos_chat_id = -1;
+    int32_t mask_id     = -1;   // diffusion-gemma mask token (<mask> = 4)
 
     float   norm_eps    = 1e-6f;
+
+    // Diffusion-specific (0 for gemma4 AR)
+    int     canvas_length = 0;  // diffusion.canvas_length
 };
 
 inline bool gemma4_is_swa_layer(const Gemma4Weights & w, int il) {
@@ -262,20 +274,28 @@ bool gemma4_verify_batch(
     std::vector<int32_t> &  out_argmax,
     const class KvFlashPager * kvflash = nullptr);
 
-// Bidirectional (diffusion decoder-mode) forward over a canvas. Every query
-// attends to every key in [0, n_tokens); returns logits for the sub-range
-// [out_begin, out_begin+out_len). Used by the DiffusionGemma backend. See
-// gemma4_graph.cpp for the (canvas <= SWA ring) constraint on this first cut.
+// Bidirectional (diffusion decoder-mode) forward over [prompt | canvas].
+// n_prompt prompt tokens (causal mask) followed by C = n_tokens-n_prompt canvas
+// tokens (bidirectional). Returns logits for all C canvas positions as
+// [n_vocab, C] row-major F32. SC MLP is injected before layer 0 when
+// sc_logits != nullptr; sc_use=0 zeroes it out (step 0 / SC-off path).
+// Per-layer enc_out_scale is applied to prompt rows, out_scale to canvas rows.
+// sc_embT: tok_embd transposed+dequantized to {n_vocab, n_embd} F16 (host-built
+//   once by the caller; pass nullptr to skip SC even when sc_logits != nullptr).
+// Phase-2 unified path only (no KV cache). Phase-3 adds prompt-KV prefill/decode.
 bool gemma4_denoise_batch(
     ggml_backend_t          backend,
     const Gemma4Weights &   w,
     Gemma4Cache &           cache,
-    const float *           embed,
-    const int32_t *         token_ids,
-    int                     n_tokens,
-    int                     out_begin,
-    int                     out_len,
-    std::vector<float> &    out_logits);
+    const float *           embed,       // [n_embd, n_tokens] scaled by sqrt(n_embd)
+    const int32_t *         token_ids,   // [n_tokens]
+    int                     n_tokens,    // P + C (prompt + canvas)
+    int                     n_prompt,    // P: prompt token count (canvas = n_tokens-P)
+    const float *           sc_logits,   // [n_vocab, C] F32 prev-step logits; nullptr = SC-off
+    float                   sc_use,      // 0.0 = SC-off (step 0), 1.0 = SC-on
+    float                   sc_temp_inv, // 1/temperature for SC softmax
+    ggml_tensor *           sc_embT,     // {n_vocab, n_embd} F16 device tensor; nullptr = SC-off
+    std::vector<float> &    out_logits); // [n_vocab, C] F32
 
 // Project hidden states through lm_head (out_norm + output + softcap + argmax).
 // Used by DFlash draft to convert draft hidden states to token IDs.

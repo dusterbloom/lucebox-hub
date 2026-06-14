@@ -4,8 +4,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <numeric>
 #include <random>
 #include <utility>
+#include <vector>
 
 namespace dflash::common {
 
@@ -37,6 +40,182 @@ int target_finalized_after(int s, int steps, int block_len) {
 
 }  // namespace
 
+// ── Entropy-bound denoiser (DiffusionGemma-style) ──────────────────────────
+// Implements diffusion_generate_entropy_bound from the reference
+// (diffusion.cpp:442-672). Single canvas, uniform-random init, linear temp
+// schedule, accept by sorted Shannon entropy within MI bound. SC threaded via
+// model.set_sc() before each forward_block call.
+static DiffusionDecodeResult run_eb_generate(
+    DiffusionModelGraph &        model,
+    const std::vector<int32_t> & prompt,
+    int                          n_gen,
+    const DiffusionConfig &      cfg,
+    uint64_t                     seed,
+    const DiffusionStream &      stream) {
+
+    DiffusionDecodeResult res;
+
+    const int vocab = model.vocab();
+    if (vocab <= 0) { res.error = "eb: model vocab() must be > 0"; return res; }
+    if (n_gen <= 0) { res.ok = true; return res; }
+
+    // Prepare: record prefix length (no KV prefill in Phase 2 — full recompute).
+    int prefix_len = 0;
+    if (!model.prepare(prompt, prefix_len)) { res.error = "eb: prepare"; return res; }
+    if (prefix_len < 0 || prefix_len > (int)prompt.size())
+        prefix_len = (int)prompt.size();
+
+    const int C = n_gen;               // canvas length
+    const int P = prefix_len;          // prompt prefix length
+    const int S = std::max(1, cfg.eb_max_steps);
+
+    // Full canvas: [prompt | canvas_tokens]; canvas positions [P, P+C)
+    std::vector<int32_t> canvas(prompt.begin(), prompt.begin() + P);
+    canvas.resize((size_t)P + C);
+
+    // ref diffusion.cpp:469-473: init canvas to uniform random vocab tokens
+    std::mt19937                            rng(seed);
+    std::uniform_int_distribution<int32_t> vocab_dist(0, vocab - 1);
+    std::uniform_real_distribution<float>  uni01(0.0f, 1.0f);
+    for (int i = 0; i < C; ++i) canvas[(size_t)P + i] = vocab_dist(rng);
+
+    // Buffers for per-step processing.
+    std::vector<float>   logits;               // [C * vocab] canvas rows packed
+    std::vector<float>   sc_buffer((size_t)C * vocab, 0.0f);  // prev-step raw logits
+    std::vector<int32_t> argmax_canvas(C, 0);
+    std::vector<int32_t> prev_argmax(C, -1);   // -1 => step 0 always differs
+    std::vector<float>   entropy_vec(C, 0.0f);
+    std::vector<int32_t> denoiser(C, 0);       // multinomial-sampled token per pos
+    std::vector<int32_t> order(C);             // entropy sort order
+
+    float prev_temp_inv = 1.0f;
+    int   held          = 0;
+    bool  finished      = false;
+
+    // ref diffusion.cpp:522: loop cur_step from S down to 1
+    for (int cur_step = S; cur_step >= 1 && !finished; --cur_step) {
+        const int   step_idx = S - cur_step;  // 0-based index (ref:523)
+        // ref diffusion.cpp:524: t = t_min + (t_max - t_min) * (cur_step / S)
+        const float t        = cfg.eb_t_min +
+                               (cfg.eb_t_max - cfg.eb_t_min) *
+                               ((float)cur_step / (float)S);
+        const float temp_inv = 1.0f / t;
+
+        // ref diffusion.cpp:550-551: SC gate and prev-step temp_inv
+        // sc_use=0 on step 0 (no prior step), sc_use=1 thereafter
+        model.set_sc(step_idx == 0 ? nullptr : sc_buffer.data(),
+                     step_idx == 0 ? 0.0f : 1.0f,
+                     prev_temp_inv);
+
+        // ref diffusion.cpp:537-546: batch = [prompt | current canvas]
+        if (!model.forward_block(canvas, P, C, /*bidirectional=*/true, logits)) {
+            res.error = "eb: forward";
+            return res;
+        }
+        res.stats.forward_passes++;
+
+        if ((int)logits.size() < C * vocab) {
+            res.error = "eb: short logits";
+            return res;
+        }
+
+        // ref diffusion.cpp:672-708: pre-draw step randomness for reproducibility
+        std::vector<float>   u(C);
+        std::vector<int32_t> renoise(C);
+        for (int pos = 0; pos < C; ++pos) {
+            u[pos]       = uni01(rng);
+            renoise[pos] = vocab_dist(rng);
+        }
+
+        // ref diffusion.cpp:678-708: per-position: argmax, entropy, multinomial sample
+        for (int pos = 0; pos < C; ++pos) {
+            const float * row = logits.data() + (size_t)pos * vocab;
+
+            // Numerically-stable softmax(row / t): find max, compute Z
+            float m    = row[0] * temp_inv;
+            int   amax = 0;
+            for (int v = 1; v < vocab; ++v) {
+                const float z = row[v] * temp_inv;
+                if (z > m) { m = z; amax = v; }
+            }
+            float Z = 0.0f;
+            for (int v = 0; v < vocab; ++v) Z += std::exp(row[v] * temp_inv - m);
+
+            // Multinomial sample via CDF walk (ref diffusion.cpp:693-698)
+            const float target = u[pos] * Z;
+            float   cum      = 0.0f;
+            float   H        = 0.0f;
+            int32_t sampled  = vocab - 1;
+            bool    picked   = false;
+            for (int v = 0; v < vocab; ++v) {
+                const float e = std::exp(row[v] * temp_inv - m);
+                const float p = e / Z;
+                if (p > 0.0f) H -= p * std::log(p);  // Shannon entropy accumulation
+                cum += e;
+                if (!picked && cum >= target) { sampled = v; picked = true; }
+            }
+
+            entropy_vec[pos]    = H;
+            argmax_canvas[pos]  = amax;
+            denoiser[pos]       = sampled;
+
+            // Save this step's raw logits for SC next step (ref diffusion.cpp:704-706)
+            std::memcpy(sc_buffer.data() + (size_t)pos * vocab, row,
+                        (size_t)vocab * sizeof(float));
+        }
+
+        // ref diffusion.cpp:739-747: acceptance — sort positions ascending by entropy,
+        // accept while cumulative entropy of STRICTLY-PRIOR accepted <= entropy_bound
+        std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(),
+                  [&](int a, int b) { return entropy_vec[a] < entropy_vec[b]; });
+
+        std::vector<char> accepted(C, 0);
+        double cumE = 0.0;
+        for (int k = 0; k < C; ++k) {
+            const int pos = order[k];
+            // Accept if cumulative entropy BEFORE this position <= bound
+            // (ref diffusion.cpp:745-746: cumE - entropy[pos] <= bound)
+            if (cumE <= (double)cfg.eb_entropy_bound) { accepted[pos] = 1; }
+            cumE += (double)entropy_vec[pos];
+        }
+
+        // ref diffusion.cpp:750-755: renoise rejected, output is argmax canvas
+        float entropy_sum = 0.0f;
+        for (int pos = 0; pos < C; ++pos) {
+            canvas[(size_t)P + pos] = accepted[pos] ? denoiser[pos] : renoise[pos];
+            entropy_sum += entropy_vec[pos];
+        }
+
+        // ref diffusion.cpp:757-760: adaptive stop
+        // argmax stable for stability_threshold consecutive steps AND mean entropy low
+        const bool same = (prev_argmax == argmax_canvas);
+        held = same ? held + 1 : 0;
+        const float mean_entropy = entropy_sum / (float)C;
+        if (held >= cfg.eb_stability_threshold &&
+            mean_entropy < cfg.eb_confidence_threshold) {
+            finished = true;
+        }
+        prev_argmax   = argmax_canvas;
+        prev_temp_inv = temp_inv;
+
+        // Step callback (via stream) — not applicable for plain stream sink;
+        // stream is invoked only when committing the final canvas.
+    }
+
+    // Commit the argmax canvas as output
+    res.tokens = std::vector<int32_t>(argmax_canvas.begin(), argmax_canvas.end());
+    res.stats.blocks  = 1;
+    res.stats.tokens  = C;
+
+    for (int pos = 0; pos < C; ++pos) {
+        if (stream.on_token && !stream.on_token(argmax_canvas[pos])) break;
+    }
+
+    res.ok = true;
+    return res;
+}
+
 DiffusionDecodeResult run_diffusion_generate(
     DiffusionModelGraph &        model,
     const std::vector<int32_t> & prompt,
@@ -47,6 +226,13 @@ DiffusionDecodeResult run_diffusion_generate(
     const DiffusionStream &      stream) {
 
     DiffusionDecodeResult res;
+
+    // ── EntropyBound path ─────────────────────────────────────────────
+    if (cfg_in.remasking == DiffusionRemask::EntropyBound) {
+        const uint64_t seed = cfg_in.seed ? cfg_in.seed
+                            : (sampler.seed ? sampler.seed : 0x9E3779B97F4A7C15ULL);
+        return run_eb_generate(model, prompt, n_gen, cfg_in, seed, stream);
+    }
 
     // ── Resolve / validate config ────────────────────────────────────
     DiffusionConfig cfg = cfg_in;
