@@ -68,6 +68,8 @@ ChatFormat chat_format_for_arch(const std::string & arch) {
     if (arch == "laguna") return ChatFormat::LAGUNA;
     if (arch == "gemma4") return ChatFormat::GEMMA4;
     if (arch == "bailingmoe3") return ChatFormat::BAILINGMOE3;
+    // diffusion-gemma shares the Gemma4 chat template (same tokenizer/turn markers)
+    if (arch == "diffusion-gemma") return ChatFormat::GEMMA4;
     // qwen35, qwen3 use the Qwen3/ChatML format
     return ChatFormat::QWEN3;
 }
