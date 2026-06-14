@@ -2046,6 +2046,9 @@ json HttpServer::model_routing_status() {
 bool HttpServer::parse_common_request_fields(
         SocketHandle fd, const json & body, ParsedRequest & req) {
     req.stream = body.value("stream", false);
+    if (body.contains("stream_options") && body["stream_options"].is_object()) {
+        req.include_usage = body["stream_options"].value("include_usage", false);
+    }
     req.model = config_.model_name;
     req.disk_cache_policy = config_.disk_cache_policy;
 
@@ -4574,6 +4577,8 @@ void HttpServer::process_job(ServerJob * job) {
                        &tool_memory_,
                        req.stop_sequences,
                        req.started_in_thinking);
+    // OpenAI emits the terminal usage chunk only when the client opts in.
+    emitter.set_include_usage(req.include_usage);
 
     // Emit initial SSE events only for local generation. The upstream owns
     // the proxied event sequence.
