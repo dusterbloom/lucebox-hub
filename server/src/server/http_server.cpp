@@ -1594,6 +1594,104 @@ bool HttpServer::route_request(int fd, const HttpRequest & hr) {
             tools_json = req.tools.dump();
         }
 
+        // ponytail: recency contract for long prompts on diffusion-gemma.
+        // DiffusionGemma has an attention salience break around 1400 tokens:
+        // the model stops attending to system-turn content and reverts to
+        // its base identity ("I am Gemma 4…").  When the rendered prompt
+        // would exceed the threshold, prepend a compact directive to the
+        // LAST user turn so it lands in the high-salience window just before
+        // generation.  This is intentionally user-turn-adjacent (NOT a new
+        // system turn) so the model doesn't treat it as something to "answer"
+        // and emit EOS.
+        if (config_.arch == "diffusion-gemma" && !chat_msgs.empty()) {
+            // Estimate prompt length in chars / 3.5 ≈ tokens.
+            size_t estimated_chars = 0;
+            for (const auto & cm : chat_msgs) estimated_chars += cm.content.size();
+            if (!tools_json.empty()) estimated_chars += tools_json.size();
+            const size_t recency_threshold_chars = 1200 * 4;  // ~1200 tokens * ~4 chars/tok
+            if (estimated_chars > recency_threshold_chars) {
+                // Extract agent name and first directive from system prompt.
+                // Pattern: first non-empty non-header line after the first header line
+                // often is "You are <name>, a <role>." — extract just the agent name.
+                std::string agent_name;
+                std::string sys_role_line;
+                for (const auto & cm : chat_msgs) {
+                    if (cm.role != "system") continue;
+                    // Walk lines to find "You are X" or "# NAME" header
+                    std::istringstream iss(cm.content);
+                    std::string line;
+                    while (std::getline(iss, line)) {
+                        // Strip leading whitespace
+                        size_t ls = line.find_first_not_of(" \t\r");
+                        if (ls == std::string::npos) continue;
+                        line = line.substr(ls);
+                        // First "# <Name>" heading gives the agent name
+                        if (line.size() > 2 && line[0] == '#' && line[1] == ' ') {
+                            agent_name = line.substr(2);
+                            // Strip trailing whitespace
+                            while (!agent_name.empty() && (agent_name.back()==' '||agent_name.back()=='\r'))
+                                agent_name.pop_back();
+                            continue;
+                        }
+                        // First "You are X" line gives the role sentence
+                        if (line.size() > 7 && line.substr(0,7) == "You are" && sys_role_line.empty()) {
+                            // Take up to the first '.' or newline
+                            size_t dot = line.find('.');
+                            sys_role_line = (dot != std::string::npos) ? line.substr(0, dot+1) : line;
+                            break;
+                        }
+                    }
+                    break;  // only look at first system message
+                }
+
+                // Build the contract: role sentence + tool names list.
+                std::string tool_names;
+                if (req.tools.is_array()) {
+                    for (const auto & t : req.tools) {
+                        const auto & fn = t.contains("function") ? t["function"] : t;
+                        if (!tool_names.empty()) tool_names += ", ";
+                        tool_names += fn.value("name", std::string());
+                    }
+                }
+                // Build compact contract text.
+                std::string contract;
+                if (!sys_role_line.empty()) {
+                    contract = sys_role_line;
+                } else if (!agent_name.empty()) {
+                    contract = "You are ";
+                    contract += agent_name;
+                    contract += ".";
+                } else {
+                    contract = "You are the assistant defined in the system prompt above.";
+                }
+                if (!tool_names.empty()) {
+                    contract += " Tools: ";
+                    contract += tool_names;
+                    contract += ".";
+                }
+                contract += " Respond in character to the next user message.";
+                // Insert a brief system turn immediately before the last user turn
+                // so it lands in the high-salience window nearest generation.
+                // The GGUF Jinja template renders system messages as <|turn>system\n...<turn|>
+                // which the model reads as context, NOT as something it should reply to.
+                int last_user_idx = -1;
+                for (int ci = (int)chat_msgs.size() - 1; ci >= 0; --ci) {
+                    if (chat_msgs[ci].role == "user") { last_user_idx = ci; break; }
+                }
+                if (last_user_idx >= 0) {
+                    ChatMessage rc_msg;
+                    rc_msg.role = "system";
+                    rc_msg.content = contract;
+                    chat_msgs.insert(chat_msgs.begin() + last_user_idx, rc_msg);
+                    std::fprintf(stderr,
+                        "[server] recency-contract injected as system turn at idx %d "
+                        "(estimated ~%zu chars, threshold ~%zu chars, agent='%s')\n",
+                        last_user_idx, estimated_chars, recency_threshold_chars,
+                        agent_name.c_str());
+                }
+            }
+        }
+
         std::string rendered;
         if (!config_.chat_template_src.empty()) {
             // Jinja path: caller supplied a chat template file via
@@ -2612,6 +2710,11 @@ void HttpServer::worker_loop() {
         // (`</function>`), or at an end-of-turn that isn't mid-tool-call.
         std::string tool_scan;
         bool in_tool_call = false;
+        // ponytail: when thinking is disabled, the model may re-emit the
+        // no-think sentinel <|channel>thought\n<channel|> as its first output.
+        // Suppress that entire sequence so it never reaches the emitter
+        // (avoids spurious reasoning_content:"thought\n" in the response).
+        bool suppress_thought_channel = false;  // true while inside suppressed sentinel
 
         io.on_token = [&](int32_t token) -> bool {
             if (client_disconnected) return false;
@@ -2633,7 +2736,14 @@ void HttpServer::worker_loop() {
             const std::string & raw = tokenizer_.raw_token(token);
 
             // Gemma4 thinking channel: map <|channel> → <think>, <channel|> → </think>\n
+            // ponytail: when thinking is disabled, suppress the no-think sentinel
+            // <|channel>thought\n<channel|> that the model may re-emit verbatim.
             if (raw == "<|channel>") {
+                if (!req.thinking_enabled) {
+                    // Enter suppression: eat this token and all text until <channel|>.
+                    suppress_thought_channel = true;
+                    return true;
+                }
                 visible_output_seen = true;
                 broadcast_token("<think>");
                 if (req.stream) {
@@ -2644,6 +2754,11 @@ void HttpServer::worker_loop() {
                 return true;
             }
             if (raw == "<channel|>") {
+                if (suppress_thought_channel) {
+                    // End of suppressed sentinel; resume normal output.
+                    suppress_thought_channel = false;
+                    return true;
+                }
                 visible_output_seen = true;
                 broadcast_token("</think>\n");
                 if (req.stream) {
@@ -2653,6 +2768,8 @@ void HttpServer::worker_loop() {
                 }
                 return true;
             }
+            // Drop tokens that fall inside the suppressed thought channel.
+            if (suppress_thought_channel) return true;
 
             // Qwen3.6 thinking tokens: <think> (id 248068) and </think> (id 248069)
             // are SINGLE special tokens in the added_tokens vocab. Without this
@@ -2904,14 +3021,26 @@ void HttpServer::worker_loop() {
         } else if (!req.stream && !client_disconnected) {
             // Non-streaming: build complete response using emitter state.
             // Feed all tokens through emitter (skip specials like streaming path).
+            bool ns_suppress_thought = false;  // ponytail: suppress no-think sentinel
             auto feed_tokens = [&](const std::vector<int32_t> & toks) -> bool {
                 for (int32_t tok : toks) {
                     const std::string & raw = tokenizer_.raw_token(tok);
                     if (tok == tokenizer_.eos_id()) continue;
                     if (tok == tokenizer_.eos_chat_id()) continue;
-                    // Gemma4 channel → think mapping
-                    if (raw == "<|channel>") { emitter.emit_token("<think>"); continue; }
-                    if (raw == "<channel|>") { emitter.emit_token("</think>\n"); continue; }
+                    // Gemma4 channel → think mapping.
+                    // ponytail: suppress <|channel>thought\n<channel|> sentinel
+                    // when thinking is disabled (mirrors the streaming-path fix).
+                    if (raw == "<|channel>") {
+                        if (!req.thinking_enabled) { ns_suppress_thought = true; continue; }
+                        emitter.emit_token("<think>");
+                        continue;
+                    }
+                    if (raw == "<channel|>") {
+                        if (ns_suppress_thought) { ns_suppress_thought = false; continue; }
+                        emitter.emit_token("</think>\n");
+                        continue;
+                    }
+                    if (ns_suppress_thought) continue;  // eat sentinel body text
                     // Gemma 4 native tool tokens → Qwen wrapper the parser handles.
                     if (raw == "<|tool_call>") { emitter.emit_token("<tool_call>"); continue; }
                     if (raw == "<tool_call|>") { emitter.emit_token("</tool_call>"); continue; }
