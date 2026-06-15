@@ -164,6 +164,8 @@ inline int gemma4_n_head_kv(const Gemma4Weights & w, int il) {
     return w.n_head_kv;
 }
 
+static constexpr float GEMMA4_EPS = 1e-6f;
+
 bool load_gemma4_gguf(const std::string & path,
                        ggml_backend_t backend,
                        Gemma4Weights & out);
@@ -237,6 +239,62 @@ struct Gemma4Snapshot {
 };
 
 void free_gemma4_snapshot(Gemma4Snapshot & s);
+
+// ── Forward declarations for shared graph-building helpers ──────────────
+// Defined in gemma4_graph.cpp; used by diffusiongemma4_graph.cpp.
+
+ggml_tensor * gemma4_rms_norm_mul(ggml_context * ctx, ggml_tensor * x,
+                                   ggml_tensor * weight, float eps = GEMMA4_EPS);
+
+ggml_tensor * build_gemma4_dense_ffn(ggml_context * ctx, ggml_tensor * cur,
+                                      const Gemma4Layer & L);
+
+ggml_tensor * build_gemma4_moe_block(ggml_context * ctx, ggml_tensor * attn_out,
+                                      ggml_tensor * cur_normed,
+                                      const Gemma4Weights & w,
+                                      const Gemma4Layer & L,
+                                      int n_tokens);
+
+ggml_tensor * build_gemma4_attn_block(
+    ggml_context * ctx,
+    ggml_cgraph * gf,
+    const Gemma4Weights & w,
+    const Gemma4Layer & L,
+    Gemma4Cache & cache,
+    int il,
+    ggml_tensor * cur,
+    ggml_tensor * positions,
+    ggml_tensor * attn_mask_full,
+    ggml_tensor * attn_mask_swa,
+    int kv_start,
+    int n_tokens,
+    ggml_tensor * kv_idx_full = nullptr,
+    ggml_tensor * kv_idx_swa  = nullptr,
+    bool no_cache = false,
+    ggml_tensor * attn_mask_full_f32 = nullptr,
+    ggml_tensor * attn_mask_swa_f32  = nullptr);
+
+ggml_tensor * build_gemma4_layer(
+    ggml_context * ctx,
+    ggml_cgraph * gf,
+    const Gemma4Weights & w,
+    Gemma4Cache & cache,
+    int il,
+    ggml_tensor * inp,
+    ggml_tensor * positions,
+    ggml_tensor * attn_mask_full,
+    ggml_tensor * attn_mask_swa,
+    ggml_tensor * per_layer_input,
+    int kv_start,
+    int n_tokens,
+    int capture_idx = -1,
+    ggml_tensor * kv_idx_full = nullptr,
+    ggml_tensor * kv_idx_swa  = nullptr,
+    bool no_cache = false,
+    ggml_tensor * attn_mask_full_f32 = nullptr,
+    ggml_tensor * attn_mask_swa_f32  = nullptr);
+
+ggml_tensor * gemma4_view_2d_slice(ggml_context * ctx, ggml_tensor * x, int idx);
 
 // Forward: run a single step (prefill chunk or decode token).
 // Returns logits for last token.
