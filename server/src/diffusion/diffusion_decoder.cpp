@@ -222,7 +222,11 @@ static DiffusionDecodeResult run_eb_generate(
             prev_temp_inv = temp_inv;
         }
 
-        // Commit the block's argmax left-to-right; stream tokens (callback handles EOS/length).
+        // Commit the block's argmax left-to-right; stream tokens. The on_token
+        // callback decides where to stop — diffusion fills EVERY canvas position, so
+        // truncating at a raw EOS is unsafe (a bidirectionally-placed EOS can precede
+        // tool-call args). The callback stops after a COMPLETE tool call, or at a clean
+        // end-of-turn that isn't mid-tool-call.
         for (int pos = 0; pos < block_len; ++pos) {
             const int32_t tok = argmax_canvas[pos];
             canvas[(size_t)block_begin + pos] = tok;

@@ -4197,22 +4197,60 @@ void HttpServer::configure_generation_io(
             broadcast_status();
         }
 
+        // Content-aware stop for diffusion (the canvas fills every position; a
+        // raw EOS can be placed before tool-call args by the bidirectional
+        // denoiser). A clean end-of-turn stops generation, but only when we
+        // are not mid-tool-call — the closing tag may still be coming.
+        {
+            const int32_t eos = tokenizer_.eos_id();
+            const int32_t eot = tokenizer_.eos_chat_id();
+            if (token == eos || token == eot) return output.in_tool_call;
+        }
+
         std::string text;
         const TokenDelivery delivery =
             classify_generated_token(tokenizer_, emitter, token, text);
         if (delivery == TokenDelivery::kSkip) return true;
 
+        // Track tool-call structure for the content-aware stop (open tag).
+        if (!text.empty()) {
+            output.tool_scan += text;
+            if (output.tool_scan.size() > 4096) {
+                // Bounded window.
+                output.tool_scan.erase(0, output.tool_scan.size() - 4096);
+            }
+            if (!output.in_tool_call &&
+                (output.tool_scan.find("<tool_call>") != std::string::npos ||
+                 output.tool_scan.find("<function=") != std::string::npos)) {
+                output.in_tool_call = true;
+            }
+        }
+
         if (!text.empty()) {
             output.visible_output_seen = true;
             broadcast_token(text);
         }
-        if (!req.stream || text.empty()) return true;
+        if (!req.stream || text.empty()) {
+            // Content-aware stop: a complete tool call has been emitted
+            // (`</function>` closes it, after the args).
+            if (output.in_tool_call &&
+                output.tool_scan.find("</function>") != std::string::npos) {
+                return false;
+            }
+            return true;
+        }
 
         for (const auto & chunk : emitter.emit_token(text)) {
             if (!send_job_bytes(job, chunk.data(), chunk.size())) {
                 output.client_disconnected = true;
                 return false;
             }
+        }
+        // Content-aware stop: a complete tool call has been emitted
+        // (`</function>` closes it, after the args).
+        if (output.in_tool_call &&
+            output.tool_scan.find("</function>") != std::string::npos) {
+            return false;
         }
         // Only ordinary text is checked against stop sequences — think-tag
         // markers never terminate generation.

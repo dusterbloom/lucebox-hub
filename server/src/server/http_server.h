@@ -500,6 +500,11 @@ private:
         int completion_tokens = 0;
         bool visible_output_seen = false;
         bool client_disconnected = false;
+        // Content-aware stop for diffusion (the canvas fills every position; a raw
+        // EOS can be placed before tool-call args). Stop after a COMPLETE tool call
+        // (`</function>`), or at a clean end-of-turn that isn't mid-tool-call.
+        std::string tool_scan;
+        bool in_tool_call = false;
     };
 
     void prepare_generation_inputs(
