@@ -197,6 +197,11 @@ bool DiffusionBackend::snapshot_save(int slot) {
                                                       ck->ne[0], save_pos, ck->ne[2]);
                 snap.v_snap[il] = ggml_new_tensor_3d(snap.ctx, ck->type,
                                                       ck->ne[0], save_pos, ck->ne[2]);
+                char name[64];
+                std::snprintf(name, sizeof(name), "snap_k_%d", il);
+                ggml_set_name(snap.k_snap[il], name);
+                std::snprintf(name, sizeof(name), "snap_v_%d", il);
+                ggml_set_name(snap.v_snap[il], name);
             }
         }
         snap.feat_snap = nullptr;
@@ -253,6 +258,72 @@ bool DiffusionBackend::snapshot_used(int slot) const {
 int DiffusionBackend::snapshot_cur_pos(int slot) const {
     if (slot < 0 || slot >= PREFIX_SLOTS || !snapshots_[slot].ctx) return 0;
     return snapshots_[slot].cur_pos;
+}
+
+ModelBackend::SnapshotRef DiffusionBackend::snapshot_ref(int slot) const {
+    SnapshotRef ref;
+    if (slot < 0 || slot >= PREFIX_SLOTS) return ref;
+    const auto & snap = snapshots_[slot];
+    if (!snap.ctx) return ref;
+    ref.ctx      = snap.ctx;
+    ref.buf      = snap.buf;
+    ref.cur_pos  = snap.cur_pos;
+    ref.last_tok = snap.last_tok;
+    return ref;
+}
+
+bool DiffusionBackend::snapshot_adopt(int slot, ggml_context * ctx,
+                                      ggml_backend_buffer_t buf, int cur_pos,
+                                      int32_t last_tok) {
+    if (slot < 0 || slot >= PREFIX_SLOTS) return false;
+    auto * dg = as_diffusion_gemma(model_.get());
+    if (!dg) return false;
+
+    snapshot_free(slot);
+
+    Gemma4Cache & cache = dg->cache_for_snapshot();
+    const int n_layer = cache.n_layer;
+
+    auto & snap = snapshots_[slot];
+    snap.k_snap.resize(n_layer, nullptr);
+    snap.v_snap.resize(n_layer, nullptr);
+
+    // Rebind tensors by name (snap_k_<il> / snap_v_<il>).
+    for (ggml_tensor * t = ggml_get_first_tensor(ctx);
+         t; t = ggml_get_next_tensor(ctx, t)) {
+        if (!t->name[0]) continue;
+        int il = -1;
+        if (std::sscanf(t->name, "snap_k_%d", &il) == 1 &&
+            il >= 0 && il < n_layer) {
+            snap.k_snap[il] = t;
+        } else if (std::sscanf(t->name, "snap_v_%d", &il) == 1 &&
+                   il >= 0 && il < n_layer) {
+            snap.v_snap[il] = t;
+        }
+    }
+
+    // Validate: every layer that has KV in the live cache must be bound.
+    for (int il = 0; il < n_layer; ++il) {
+        if (!cache.k[il]) continue;  // KV-reuse layer — no snapshot tensor expected
+        if (!snap.k_snap[il] || !snap.v_snap[il]) {
+            std::fprintf(stderr,
+                "[diffusion] snapshot_adopt slot=%d: missing tensors for layer %d\n",
+                slot, il);
+            snap.k_snap.clear();
+            snap.v_snap.clear();
+            return false;
+        }
+    }
+
+    snap.ctx      = ctx;
+    snap.buf      = buf;
+    snap.cur_pos  = cur_pos;
+    snap.last_tok = last_tok;
+    snap.feat_snap = nullptr;
+    snap.feat_cap  = 0;
+    std::fprintf(stderr, "[diffusion] snapshot adopted slot=%d pos=%d\n",
+                 slot, cur_pos);
+    return true;
 }
 
 GenerateResult DiffusionBackend::restore_and_generate_impl(
