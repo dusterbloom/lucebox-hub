@@ -237,6 +237,7 @@ add_library(dflash_common STATIC
     src/diffusion/diffusion_backend.cpp
     src/diffusion/diffusion_registry.cpp
     src/diffusion/diffusiongemma/diffusion_gemma.cpp
+    src/diffusion/diffusiongemma/diffusiongemma4_graph.cpp
     src/diffusion/diffusion_sampling.cu
     src/flashprefill_q8.cpp
     src/kv_cache.cpp
