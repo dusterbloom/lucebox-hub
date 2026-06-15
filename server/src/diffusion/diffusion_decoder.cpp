@@ -195,11 +195,14 @@ static DiffusionDecodeResult run_eb_generate(
             std::sort(order.begin(), order.end(),
                       [&](int a, int b) { return entropy_vec[a] < entropy_vec[b]; });
 
+            // ponytail: scale entropy budget by canvas length so the acceptance
+            // fraction (~eb_entropy_bound / mean_entropy) is constant at any C.
+            const double effective_bound = (double)cfg.eb_entropy_bound * block_len;
             std::vector<char> accepted(block_len, 0);
             double cumE = 0.0;
             for (int k = 0; k < block_len; ++k) {
                 const int pos = order[k];
-                if (cumE <= (double)cfg.eb_entropy_bound) { accepted[pos] = 1; }
+                if (cumE <= effective_bound) { accepted[pos] = 1; }
                 cumE += (double)entropy_vec[pos];
             }
 
