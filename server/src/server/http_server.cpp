@@ -2493,6 +2493,108 @@ bool HttpServer::handle_model_request(SocketHandle fd, ParsedRequest & req,
             }
         }
 
+        // ponytail: recency contract for long prompts on diffusion-gemma.
+        // DiffusionGemma has an attention salience break around 1400 tokens:
+        // the model stops attending to system-turn content and reverts to
+        // its base identity ("I am Gemma 4…").  When the rendered prompt
+        // would exceed the threshold, prepend a compact directive to the
+        // LAST user turn so it lands in the high-salience window just before
+        // generation.  This is intentionally user-turn-adjacent (NOT a new
+        // system turn) so the model doesn't treat it as something to "answer"
+        // and emit EOS.
+        if (config_.arch == "diffusion-gemma" && !render_messages.empty()) {
+            // Estimate prompt length in chars / 3.5 ≈ tokens.
+            size_t estimated_chars = 0;
+            for (const auto & cm : render_messages) estimated_chars += cm.content.size();
+            std::string tools_json_for_estimate;
+            if (req.tools.is_array() && !req.tools.empty()) {
+                tools_json_for_estimate = req.tools.dump();
+            }
+            estimated_chars += tools_json_for_estimate.size();
+            const size_t recency_threshold_chars = 1200 * 4;  // ~1200 tokens * ~4 chars/tok
+            if (estimated_chars > recency_threshold_chars) {
+                // Extract agent name and first directive from system prompt.
+                // Pattern: first non-empty non-header line after the first header line
+                // often is "You are <name>, a <role>." — extract just the agent name.
+                std::string agent_name;
+                std::string sys_role_line;
+                for (const auto & cm : render_messages) {
+                    if (cm.role != "system") continue;
+                    // Walk lines to find "You are X" or "# NAME" header
+                    std::istringstream iss(cm.content);
+                    std::string line;
+                    while (std::getline(iss, line)) {
+                        // Strip leading whitespace
+                        size_t ls = line.find_first_not_of(" \t\r");
+                        if (ls == std::string::npos) continue;
+                        line = line.substr(ls);
+                        // First "# <Name>" heading gives the agent name
+                        if (line.size() > 2 && line[0] == '#' && line[1] == ' ') {
+                            agent_name = line.substr(2);
+                            // Strip trailing whitespace
+                            while (!agent_name.empty() && (agent_name.back()==' '||agent_name.back()=='\r'))
+                                agent_name.pop_back();
+                            continue;
+                        }
+                        // First "You are X" line gives the role sentence
+                        if (line.size() > 7 && line.substr(0,7) == "You are" && sys_role_line.empty()) {
+                            // Take up to the first '.' or newline
+                            size_t dot = line.find('.');
+                            sys_role_line = (dot != std::string::npos) ? line.substr(0, dot+1) : line;
+                            break;
+                        }
+                    }
+                    break;  // only look at first system message
+                }
+
+                // Build the contract: role sentence + tool names list.
+                std::string tool_names;
+                if (req.tools.is_array()) {
+                    for (const auto & t : req.tools) {
+                        const auto & fn = t.contains("function") ? t["function"] : t;
+                        if (!tool_names.empty()) tool_names += ", ";
+                        tool_names += fn.value("name", std::string());
+                    }
+                }
+                // Build compact contract text.
+                std::string contract;
+                if (!sys_role_line.empty()) {
+                    contract = sys_role_line;
+                } else if (!agent_name.empty()) {
+                    contract = "You are ";
+                    contract += agent_name;
+                    contract += ".";
+                } else {
+                    contract = "You are the assistant defined in the system prompt above.";
+                }
+                if (!tool_names.empty()) {
+                    contract += " Tools: ";
+                    contract += tool_names;
+                    contract += ".";
+                }
+                contract += " Respond in character to the next user message.";
+                // Insert a brief system turn immediately before the last user turn
+                // so it lands in the high-salience window nearest generation.
+                // The GGUF Jinja template renders system messages as <|turn>system\n...<turn|>
+                // which the model reads as context, NOT as something it should reply to.
+                int last_user_idx = -1;
+                for (int ci = (int)render_messages.size() - 1; ci >= 0; --ci) {
+                    if (render_messages[ci].role == "user") { last_user_idx = ci; break; }
+                }
+                if (last_user_idx >= 0) {
+                    ChatMessage rc_msg;
+                    rc_msg.role = "system";
+                    rc_msg.content = contract;
+                    render_messages.insert(render_messages.begin() + last_user_idx, rc_msg);
+                    std::fprintf(stderr,
+                        "[server] recency-contract injected as system turn at idx %d "
+                        "(estimated ~%zu chars, threshold ~%zu chars, agent='%s')\n",
+                        last_user_idx, estimated_chars, recency_threshold_chars,
+                        agent_name.c_str());
+                }
+            }
+        }
+
         if (!render_and_tokenize_request(fd, render_messages, req)) return true;
 
         std::string image_error;
@@ -2621,8 +2723,22 @@ TokenDelivery classify_generated_token(
 
 CompletionTokenCounts feed_non_streaming_tokens(
         const std::vector<int32_t> & tokens, Tokenizer & tokenizer,
-        SseEmitter & emitter) {
+        SseEmitter & emitter, bool thinking_enabled = true) {
+    // ponytail: mirror the streaming path's no-think sentinel suppression
+    // (<|channel>thought\n<channel|>) so non-streaming replies don't leak
+    // it into reasoning_content when thinking is disabled.
+    bool suppress_thought_channel = false;
     for (int32_t token : tokens) {
+        if (!thinking_enabled) {
+            const std::string & raw = tokenizer.raw_token(token);
+            if (raw == "<|channel>") { suppress_thought_channel = true; continue; }
+            if (raw == "<channel|>" && suppress_thought_channel) {
+                suppress_thought_channel = false;
+                continue;
+            }
+            if (suppress_thought_channel) continue;
+        }
+
         std::string text;
         const TokenDelivery delivery =
             classify_generated_token(tokenizer, emitter, token, text);
@@ -2899,7 +3015,7 @@ json build_non_streaming_response(
         int generation_cap, const GenTimings & timings, Tokenizer & tokenizer,
         SseEmitter & emitter) {
     const CompletionTokenCounts counts = feed_non_streaming_tokens(
-        result.tokens, tokenizer, emitter);
+        result.tokens, tokenizer, emitter, req.thinking_enabled);
     return build_non_streaming_response(
         req, result, generation_cap, timings, counts, emitter, &tokenizer);
 }
@@ -4213,6 +4329,23 @@ void HttpServer::configure_generation_io(
             const int32_t eos = tokenizer_.eos_id();
             const int32_t eot = tokenizer_.eos_chat_id();
             if (token == eos || token == eot) return output.in_tool_call;
+        }
+
+        // ponytail: when thinking is disabled, suppress the no-think sentinel
+        // <|channel>thought\n<channel|> that the model may re-emit verbatim.
+        // Mirrors the mapping classify_generated_token would otherwise apply,
+        // but eats the whole sequence instead of forwarding it as <think>...
+        {
+            const std::string & raw = tokenizer_.raw_token(token);
+            if (raw == "<|channel>" && !req.thinking_enabled) {
+                output.suppress_thought_channel = true;
+                return true;
+            }
+            if (raw == "<channel|>" && output.suppress_thought_channel) {
+                output.suppress_thought_channel = false;
+                return true;
+            }
+            if (output.suppress_thought_channel) return true;
         }
 
         std::string text;

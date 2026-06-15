@@ -505,6 +505,11 @@ private:
         // (`</function>`), or at a clean end-of-turn that isn't mid-tool-call.
         std::string tool_scan;
         bool in_tool_call = false;
+        // ponytail: when thinking is disabled, the model may re-emit the
+        // no-think sentinel <|channel>thought\n<channel|> as its first output.
+        // Suppress that entire sequence so it never reaches the emitter
+        // (avoids spurious reasoning_content:"thought\n" in the response).
+        bool suppress_thought_channel = false;
     };
 
     void prepare_generation_inputs(
