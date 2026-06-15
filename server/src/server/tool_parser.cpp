@@ -660,6 +660,20 @@ ToolParseResult parse_tool_calls(const std::string & text, const json & tools) {
         }
     }
 
+    // Strip leftover tool-wrapper literals (e.g. empty <tool_call></tool_call> from
+    // a Gemma call whose inner `call:…` was matched by pattern 5, not <function=>).
+    if (!result.tool_calls.empty()) {
+        for (const std::string & w : {std::string("<tool_call>"), std::string("</tool_call>")}) {
+            size_t p;
+            while ((p = result.cleaned_text.find(w)) != std::string::npos)
+                result.cleaned_text.erase(p, w.size());
+        }
+        size_t s = result.cleaned_text.find_first_not_of(" \t\n\r");
+        size_t e = result.cleaned_text.find_last_not_of(" \t\n\r");
+        result.cleaned_text = (s == std::string::npos) ? std::string()
+                            : result.cleaned_text.substr(s, e - s + 1);
+    }
+
     return result;
 }
 

@@ -2673,14 +2673,23 @@ void HttpServer::worker_loop() {
                 return true;
             }
 
-            // Skip other special tokens (starting with <|, or any <...> except byte-fallback)
-            if (raw.size() >= 2 && raw[0] == '<' && raw[1] == '|') return true;
-            if (raw.size() >= 2 && raw[0] == '<' && raw.back() == '>') {
-                if (!(raw.size() == 6 && raw[1] == '0' && raw[2] == 'x'))
-                    return true;
+            // Gemma 4 native tool tokens → reuse the Qwen wrapper the emitter + parser
+            // already understand (<tool_call>…call:NAME{…}…</tool_call>, pattern 5).
+            std::string mapped;
+            if      (raw == "<|tool_call>") mapped = "<tool_call>";
+            else if (raw == "<tool_call|>") mapped = "</tool_call>";
+            else if (raw == "<|\"|>")       mapped = "\"";  // Gemma string-value delimiter
+
+            // Skip other special tokens (unless we just mapped a Gemma tool token).
+            if (mapped.empty()) {
+                if (raw.size() >= 2 && raw[0] == '<' && raw[1] == '|') return true;
+                if (raw.size() >= 2 && raw[0] == '<' && raw.back() == '>') {
+                    if (!(raw.size() == 6 && raw[1] == '0' && raw[2] == 'x'))
+                        return true;
+                }
             }
 
-            std::string text = tokenizer_.token_text(token);
+            std::string text = mapped.empty() ? tokenizer_.token_text(token) : mapped;
 
             // Track tool-call structure for the content-aware stop (open tag).
             if (!text.empty()) {
@@ -2715,7 +2724,8 @@ void HttpServer::worker_loop() {
             // closes it). Args sit between `<function=…>` and `</function>`, so they
             // are fully captured before we stop — robust against the bidirectional
             // canvas placing an EOS ahead of the arguments.
-            if (in_tool_call && tool_scan.find("</function>") != std::string::npos) {
+            if (in_tool_call && (tool_scan.find("</function>") != std::string::npos ||
+                                 tool_scan.find("</tool_call>") != std::string::npos)) {
                 return false;
             }
             return true;
@@ -2902,6 +2912,10 @@ void HttpServer::worker_loop() {
                     // Gemma4 channel → think mapping
                     if (raw == "<|channel>") { emitter.emit_token("<think>"); continue; }
                     if (raw == "<channel|>") { emitter.emit_token("</think>\n"); continue; }
+                    // Gemma 4 native tool tokens → Qwen wrapper the parser handles.
+                    if (raw == "<|tool_call>") { emitter.emit_token("<tool_call>"); continue; }
+                    if (raw == "<tool_call|>") { emitter.emit_token("</tool_call>"); continue; }
+                    if (raw == "<|\"|>")       { emitter.emit_token("\""); continue; }
                     // Qwen3.6 thinking tokens (id 248068 / 248069) — must
                     // forward as text so the emitter transitions
                     // reasoning→content. Without this the generic <...>

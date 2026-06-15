@@ -53,6 +53,48 @@ ChatFormat chat_format_for_arch(const std::string & arch) {
     return ChatFormat::QWEN3;
 }
 
+// Render OpenAI tool defs into Gemma 4 native declaration syntax:
+//   <|tool>declaration:NAME{description:<|"|>D<|"|>,parameters:{...}}<tool|>
+// Strings use the <|"|> delimiter, object keys are bare, `type` values uppercased.
+static std::string gemma_qq(const std::string & s) { return "<|\"|>" + s + "<|\"|>"; }
+static std::string gemma_val(const nlohmann::json & v, bool upper) {
+    if (v.is_string()) {
+        std::string s = v.get<std::string>();
+        if (upper) for (char & c : s) if (c >= 'a' && c <= 'z') c -= 32;
+        return gemma_qq(s);
+    }
+    if (v.is_boolean()) return v.get<bool>() ? "true" : "false";
+    if (v.is_number())  return v.dump();
+    if (v.is_array()) {
+        std::string o = "[";
+        for (size_t i = 0; i < v.size(); ++i) { if (i) o += ","; o += gemma_val(v[i], false); }
+        return o + "]";
+    }
+    if (v.is_object()) {
+        std::string o = "{"; bool first = true;
+        for (auto it = v.begin(); it != v.end(); ++it) {
+            if (!first) o += ","; first = false;
+            o += it.key() + ":" + gemma_val(it.value(), it.key() == "type");
+        }
+        return o + "}";
+    }
+    return "null";
+}
+static std::string render_gemma_tools(const std::string & tools_json) {
+    std::string out;
+    try {
+        for (const auto & t : nlohmann::json::parse(tools_json)) {
+            const auto & fn = t.contains("function") ? t["function"] : t;
+            out += "<|tool>declaration:" + fn.value("name", std::string());
+            out += "{description:" + gemma_qq(fn.value("description", std::string()));
+            if (fn.contains("parameters"))
+                out += ",parameters:" + gemma_val(fn["parameters"], false);
+            out += "}<tool|>\n";
+        }
+    } catch (...) {}  // ponytail: malformed tools_json → emit nothing, model just won't see tools
+    return out;
+}
+
 std::string render_chat_template(
     const std::vector<ChatMessage> & messages,
     ChatFormat format,
@@ -282,16 +324,13 @@ std::string render_chat_template(
             if (!system_content.empty()) {
                 result += system_content;
             }
-            // Tool definitions. Gemma4 has no native tool block, so inject the
-            // same self-describing preamble the tool_parser already understands
-            // (<tool_call><function=…>). It's model-agnostic format guidance —
-            // an instruction-following model emits that shape on request.
+            // Tool definitions in Gemma 4's NATIVE format (the model was trained on
+            // this, not Qwen XML). The model then emits <|tool_call>call:NAME{...}
+            // <tool_call|> — those special tokens get skipped by the on_token filter,
+            // leaving `call:NAME{...}` which tool_parser pattern 5 already reads.
             if (has_tools) {
                 if (!system_content.empty()) result += "\n\n";
-                result += QWEN3_TOOL_PREAMBLE;
-                result += '\n';
-                result += tools_json;
-                result += QWEN3_TOOL_SUFFIX;
+                result += render_gemma_tools(tools_json);
             }
             result += "<turn|>\n";
         }
