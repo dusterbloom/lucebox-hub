@@ -31,10 +31,10 @@ std::unique_ptr<DiffusionModelGraph> create_diffusion_model(
         // mask token in the vocab.
         args.cfg.noise_scheme      = DiffusionNoise::UniformState;
         args.cfg.remasking         = DiffusionRemask::EntropyBound;
-        // Measured sweet spot: eb_schedule_steps=12 (schedule hits t_min at step 11;
-        // entropy-bound early-stop fires at ~9-12 steps on typical prompts),
-        // eb_max_steps=16 (model card diffusion.steps=16; default 48 wastes 4×).
-        args.cfg.eb_max_steps      = 16;
+        // Measured under Fix A (entropy budget scaled by canvas length): eb_max_steps=6
+        // holds 10/10 clean code at C=512 (3 samples × 10 prompts) and is ~1.3× faster
+        // than 16; 4 degrades (deterministic), so 6 is the clean floor. schedule stays 12.
+        args.cfg.eb_max_steps      = 6;
         args.cfg.eb_schedule_steps = 12;
         return g;
     }
