@@ -2597,6 +2597,14 @@ TokenDelivery classify_generated_token(
         return TokenDelivery::kText;
     }
 
+    // Gemma 4 native tool tokens → reuse the Qwen wrapper the emitter + tool_parser
+    // pattern 5 already understand (<tool_call>…call:NAME{…}…</tool_call>).
+    // DiffusionGemma was trained on this native protocol, not Qwen XML; mapping
+    // the special tokens onto the wrapper avoids re-implementing the parser.
+    if (raw == "<|tool_call>") { text = "<tool_call>"; return TokenDelivery::kText; }
+    if (raw == "<tool_call|>") { text = "</tool_call>"; return TokenDelivery::kText; }
+    if (raw == "<|\"|>")       { text = "\""; return TokenDelivery::kText; }
+
     // Other special tokens are internal control markers. Byte-fallback
     // tokens such as <0xAB> are text and must still reach the emitter.
     if (raw.size() >= 2 && raw[0] == '<' && raw[1] == '|') {
@@ -4234,7 +4242,8 @@ void HttpServer::configure_generation_io(
             // Content-aware stop: a complete tool call has been emitted
             // (`</function>` closes it, after the args).
             if (output.in_tool_call &&
-                output.tool_scan.find("</function>") != std::string::npos) {
+                (output.tool_scan.find("</function>") != std::string::npos ||
+                 output.tool_scan.find("</tool_call>") != std::string::npos)) {
                 return false;
             }
             return true;
@@ -4249,7 +4258,8 @@ void HttpServer::configure_generation_io(
         // Content-aware stop: a complete tool call has been emitted
         // (`</function>` closes it, after the args).
         if (output.in_tool_call &&
-            output.tool_scan.find("</function>") != std::string::npos) {
+            (output.tool_scan.find("</function>") != std::string::npos ||
+             output.tool_scan.find("</tool_call>") != std::string::npos)) {
             return false;
         }
         // Only ordinary text is checked against stop sequences — think-tag
