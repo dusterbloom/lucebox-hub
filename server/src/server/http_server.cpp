@@ -2607,6 +2607,11 @@ void HttpServer::worker_loop() {
         int completion_tokens = 0;
         bool visible_output_seen = false;
         bool client_disconnected = false;
+        // Content-aware stop for diffusion (the canvas fills every position; a raw
+        // EOS can be placed before tool-call args). Stop after a COMPLETE tool call
+        // (`</function>`), or at an end-of-turn that isn't mid-tool-call.
+        std::string tool_scan;
+        bool in_tool_call = false;
 
         io.on_token = [&](int32_t token) -> bool {
             if (client_disconnected) return false;
@@ -2618,10 +2623,12 @@ void HttpServer::worker_loop() {
                 broadcast_status();
             }
 
-            // Skip EOS/EOT/special tokens — don't forward to SSE.
+            // Skip EOS/EOT/special tokens — don't forward to SSE. A clean end-of-turn
+            // stops generation, but only when we're not mid-tool-call (the close tag
+            // may still be coming in the bidirectional canvas).
             int32_t eos = tokenizer_.eos_id();
             int32_t eot = tokenizer_.eos_chat_id();
-            if (token == eos || token == eot) return true;
+            if (token == eos || token == eot) return in_tool_call;
 
             const std::string & raw = tokenizer_.raw_token(token);
 
@@ -2675,6 +2682,18 @@ void HttpServer::worker_loop() {
 
             std::string text = tokenizer_.token_text(token);
 
+            // Track tool-call structure for the content-aware stop (open tag).
+            if (!text.empty()) {
+                tool_scan += text;
+                if (tool_scan.size() > 4096)
+                    tool_scan.erase(0, tool_scan.size() - 4096);  // bounded window
+                if (!in_tool_call &&
+                    (tool_scan.find("<tool_call>") != std::string::npos ||
+                     tool_scan.find("<function=") != std::string::npos)) {
+                    in_tool_call = true;
+                }
+            }
+
             // Send token text to status page clients (browser accumulates).
             if (!text.empty()) {
                 visible_output_seen = true;
@@ -2691,6 +2710,13 @@ void HttpServer::worker_loop() {
                 }
                 // Stop generation if a stop sequence was hit.
                 if (emitter.stop_hit()) return false;
+            }
+            // Content-aware stop: a complete tool call has been emitted (`</function>`
+            // closes it). Args sit between `<function=…>` and `</function>`, so they
+            // are fully captured before we stop — robust against the bidirectional
+            // canvas placing an EOS ahead of the arguments.
+            if (in_tool_call && tool_scan.find("</function>") != std::string::npos) {
+                return false;
             }
             return true;
         };
