@@ -1173,6 +1173,35 @@ int main(int argc, char ** argv) {
         }
     }
 
+    // ponytail: for diffusion-gemma, default to the GGUF-embedded chat template
+    // instead of the hand-written GEMMA4 (ChatML) renderer, which emits the wrong
+    // <|im_start|> markers.  --chat-template-file stays as an explicit override.
+    if (arch == "diffusion-gemma" && sconfig.chat_template_src.empty()) {
+        gguf_init_params gip{};
+        gip.no_alloc = true;
+        gip.ctx      = nullptr;
+        gguf_context * gctx = gguf_init_from_file(bargs.model_path, gip);
+        if (gctx) {
+            int64_t tmpl_id = gguf_find_key(gctx, "tokenizer.chat_template");
+            if (tmpl_id >= 0) {
+                const char * v = gguf_get_val_str(gctx, tmpl_id);
+                if (v && *v) {
+                    sconfig.chat_template_src = v;
+                    std::fprintf(stderr,
+                        "[server] diffusion-gemma: loaded embedded chat template "
+                        "from GGUF (%zu chars)\n",
+                        sconfig.chat_template_src.size());
+                }
+            }
+            gguf_free(gctx);
+        }
+        if (sconfig.chat_template_src.empty()) {
+            std::fprintf(stderr,
+                "[server] diffusion-gemma: embedded tokenizer.chat_template not found; "
+                "falling back to GEMMA4 renderer\n");
+        }
+    }
+
     HttpServer server(*backend, tokenizer, sconfig);
     server.set_chat_format(chat_format_for_arch(arch));
     g_server = &server;
