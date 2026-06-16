@@ -1,0 +1,6 @@
+server/deps/
+server/build/
+server/models/
+.harness-work/
+.gitnexus/
+deploy/
