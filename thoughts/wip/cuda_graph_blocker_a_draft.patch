@@ -1,0 +1,252 @@
+diff --git a/server/src/qwen35/qwen35_backend.cpp b/server/src/qwen35/qwen35_backend.cpp
+index 02847f57..efbca607 100644
+--- a/server/src/qwen35/qwen35_backend.cpp
++++ b/server/src/qwen35/qwen35_backend.cpp
+@@ -83,6 +83,14 @@ static int env_int_or_default(const char * name, int fallback) {
+     return fallback;
+ }
+ 
++static int qwen35_ar_decode_kv_end_padded(const TargetCache & cache, int kv_end) {
++    int phys_ctx = cache.max_ctx;
++    for (ggml_tensor * t : cache.attn_k) {
++        if (t) { phys_ctx = std::min(phys_ctx, (int)t->ne[1]); break; }
++    }
++    return std::min(align_up(kv_end, 256), phys_ctx);
++}
++
+ static int dflash_min_tokens_floor() {
+     static const int value = env_int_or_default("DFLASH_MIN_TOKENS", 0);
+     return value;
+@@ -979,6 +987,15 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
+             return result;
+         }
+         apply_kvflash_pins();
++        // Phase 2: seed the QK scorer from the restored ledger scores so chunks
++        // that were relevant on the previous turn keep their ranking immediately,
++        // without waiting for a re-prefill or re-pool pass.  kvflash_qk_pool_to
++        // will overwrite entries with freshly-computed cosine scores as chunks
++        // are re-sealed during the upcoming prefill.
++        if (kvflash_qk_policy_) {
++            kvflash_qk_pool_.rebuild_pool_from_ledger(kvflash_pager_);
++            kvflash_qk_pooled_upto_ = 0;
++        }
+     }
+ 
+     // Now generate from restored state
+@@ -1012,16 +1029,40 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
+ 
+     // Daemon receives the FULL prompt; slice off the cached prefix and prefill
+     // only the delta at KV positions [snap_pos, snap_pos + delta.size()).
+-    // Pooled snapshots: do_prefill with kv_offset != 0 is unsupported when
+-    // the pool is already full; fall back to full re-prefill from position 0.
++    // Pooled snapshots:
++    //   KVFLASH_RESTORE_CONSUME=0 (default): full re-prefill from position 0
++    //     (original "clobber" path — bit-identical golden for identity check).
++    //   KVFLASH_RESTORE_CONSUME=1: consume the deserialized KV for [0,snap_pos)
++    //     and prefill only the suffix [snap_pos,prompt_len). The snapshot
++    //     boundary is chunk-aligned (enforced by snapshot_save_pooled_at), so
++    //     the suffix chunks start at the same alignment as the full-prompt path
++    //     → same batch shapes → bit-identical greedy output (the Phase-3 gate).
++    static const bool kv_restore_consume = []() {
++        const char * e = std::getenv("KVFLASH_RESTORE_CONSUME");
++        return e && e[0] == '1';
++    }();
+     int committed = snap_pos;
+     const int prompt_len = (int)req.prompt.size();
+     if (prompt_len > snap_pos) {
+         auto t_prefill_start = std::chrono::steady_clock::now();
+         if (snap_pooled && kvflash_active()) {
+-            reset_recurrent_state(cache_);
+-            cache_.cur_pos = 0;
+-            committed = do_prefill(req.prompt, out_io, req.snap_pos, req.snap_slot);
++            if (kv_restore_consume) {
++                // Phase 3: consume path — pager already holds deserialized KV
++                // for [0, snap_pos). Prefill only the suffix; do NOT reset pager
++                // or recurrent state (restored by restore_target_cache above).
++                std::fprintf(stderr,
++                    "[kvflash] restore-consume: snap_pos=%d prompt=%d "
++                    "(suffix prefill only)\n", snap_pos, prompt_len);
++                std::fflush(stderr);
++                std::vector<int32_t> suffix = restore_prompt_delta(req.prompt, snap_pos);
++                committed = do_prefill(suffix, out_io, req.snap_pos, req.snap_slot,
++                                       /*kv_offset=*/snap_pos);
++            } else {
++                // Legacy path: discard deserialized KV, re-prefill from token 0.
++                reset_recurrent_state(cache_);
++                cache_.cur_pos = 0;
++                committed = do_prefill(req.prompt, out_io, req.snap_pos, req.snap_slot);
++            }
+         } else {
+             std::vector<int32_t> delta = restore_prompt_delta(req.prompt, snap_pos);
+             committed = do_prefill(delta, out_io, req.snap_pos, req.snap_slot, /*kv_offset=*/snap_pos);
+@@ -1141,20 +1182,35 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
+     // mapping, normal chunking). A LARGER prompt switches to POOLED CHUNKED
+     // PREFILL: pager-chunk-sized batches whose KV rows are slot-mapped via
+     // set_rows, with a slot-space mask per chunk and live eviction as the
+-    // pool fills (constant VRAM, linear time). Restore offsets are not
+-    // supported in the pooled path (a relocated prefix cannot be restored
+-    // identity-style in the first place).
++    // pool fills (constant VRAM, linear time).
++    //
++    // Restore-consume (KVFLASH_RESTORE_CONSUME=1): kv_offset == snap_pos
++    // (chunk-aligned); the pager already holds the deserialized prefix KV.
++    // Treat this as a suffix-only pooled prefill — do NOT reset the pager.
++    // For the legacy re-prefill path or cold starts, kv_offset is always 0.
+     const bool kvf_paged = kvflash_active() &&
+         kv_offset + prompt_len > kvflash_tokens_ - kvflash_pager_.chunk_tokens();
+-    if (kvf_paged && kv_offset != 0) {
+-        std::fprintf(stderr,
+-            "[kvflash] restored prefix (%d) + prompt (%d) exceeds pool %d; "
+-            "pooled prefill requires a fresh request\n",
+-            kv_offset, prompt_len, kvflash_tokens_);
+-        set_last_error("kvflash: restore + pooled prefill unsupported");
+-        return -1;
+-    }
+-    if (kvf_paged) {
++    // restore-consume: kv_offset != 0 means the caller passed a suffix after
++    // deserializing the prefix KV; allow it in the pooled path without reset.
++    const bool kvf_restore_suffix = kvf_paged && kv_offset != 0;
++    if (kvf_restore_suffix) {
++        // Suffix pooled prefill: pager was seeded by deserialize(); just set
++        // ubatch size and skip reset. Log to distinguish from the cold path.
++        prefill_ubatch = kvflash_pager_.chunk_tokens();
++        // Verify kv_offset is chunk-aligned (snapshot boundary contract).
++        if (kv_offset % prefill_ubatch != 0) {
++            std::fprintf(stderr,
++                "[kvflash] restore-consume: kv_offset=%d not chunk-aligned "
++                "(chunk_tokens=%d) — falling back to re-prefill\n",
++                kv_offset, prefill_ubatch);
++            set_last_error("kvflash: restore-consume misaligned offset");
++            return -1;
++        }
++        std::printf("[kvflash] restore-consume suffix: offset=%d suffix=%d "
++                    "pool=%d chunk=%d\n",
++                    kv_offset, prompt_len, kvflash_tokens_, prefill_ubatch);
++        std::fflush(stdout);
++    } else if (kvf_paged) {
+         prefill_ubatch = kvflash_pager_.chunk_tokens();
+         kvflash_pager_.reset();
+         if (kvflash_qk_policy_) {
+@@ -1380,7 +1436,14 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
+         if (kvf_paged) {
+             // The pager mapping was built live during the pooled prefill;
+             // only the history / hygiene parts of the sync apply.
+-            kvflash_history_.assign(tokens.begin(), tokens.end());
++            if (kvf_restore_suffix) {
++                // Restore-consume: tokens is the suffix; rebuild full history
++                // so chunk-count computed from history matches committed.
++                kvflash_history_.resize((size_t)kv_offset, 0); // prefix ids unknown
++                kvflash_history_.insert(kvflash_history_.end(), tokens.begin(), tokens.end());
++            } else {
++                kvflash_history_.assign(tokens.begin(), tokens.end());
++            }
+             kvflash_pager_.zero_free_blocks();
+             kvflash_mask_epoch_ = (uint64_t)-1;
+         } else {
+@@ -1636,6 +1699,8 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
+         }
+     };
+     if (n_gen <= 0) return true;
++    ar_decode_graph_cached_ = false;
++    ar_decode_graph_kv_end_padded_ = 0;
+ 
+     auto t_dec0_ar = std::chrono::steady_clock::now();
+     const size_t out_tokens_at_entry = out_tokens.size();
+@@ -1690,27 +1755,48 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
+     for (int i = initial_emitted; i < n_gen; i++) {
+         int32_t tok = out_tokens.back();
+ 
+-        if (!w_.embedder.embed(&tok, 1, embed_buf)) return false;
+-        ggml_backend_tensor_set(sg_.inp_embed, embed_buf, 0, sizeof(float) * hidden);
+-        int32_t pos4[4] = {committed, committed, committed, 0};
+-        ggml_backend_tensor_set(sg_.positions, pos4, 0, sizeof(int32_t) * 4);
+-
+         // kvflash: graph carries a slot-validity mask alongside the
+         // step-invariant set_rows write; the FA span clamps to the pool.
+         const bool pool = kvflash_active();
+-        if (!build_target_step(sg_, w_, cache_, target_backend_,
+-                               /*kv_start=*/committed, /*n_tokens=*/1,
+-                               /*with_mask=*/pool, /*capture=*/false,
+-                               /*capture_delta_intermediate=*/false,
+-                               /*fa_window=*/0,
+-                               /*last_token_logits_only=*/false,
+-                               cfg_.kq_stride_pad,
+-                               should_capture_moe_router(),
+-                               /*kvflash_mask=*/pool,
+-                               /*capture_qk=*/pool && kvflash_qk_policy_)) {
+-            return false;
++        const int ar_n_tokens = 1;
++        const int ar_fa_window = 0;
++        const bool ar_with_mask = pool;
++        const bool ar_capture_moe_router = should_capture_moe_router();
++        const bool can_reuse_ar_graph =
++            ar_n_tokens == 1 && ar_fa_window == 0 &&
++            !ar_with_mask && !ar_capture_moe_router;
++        const int ar_kv_end_padded =
++            qwen35_ar_decode_kv_end_padded(cache_, committed + ar_n_tokens);
++        const bool reuse_ar_graph =
++            can_reuse_ar_graph &&
++            ar_decode_graph_cached_ &&
++            sg_.gf && sg_.alloc && sg_.inp_embed && sg_.positions &&
++            committed + ar_n_tokens <= ar_decode_graph_kv_end_padded_;
++        if (!reuse_ar_graph) {
++            ar_decode_graph_cached_ = false;
++            if (!build_target_step(sg_, w_, cache_, target_backend_,
++                                   /*kv_start=*/committed, ar_n_tokens,
++                                   ar_with_mask, /*capture=*/false,
++                                   /*capture_delta_intermediate=*/false,
++                                   ar_fa_window,
++                                   /*last_token_logits_only=*/false,
++                                   cfg_.kq_stride_pad,
++                                   ar_capture_moe_router,
++                                   /*kvflash_mask=*/pool,
++                                   /*capture_qk=*/pool && kvflash_qk_policy_)) {
++                return false;
++            }
++            if (can_reuse_ar_graph && sg_.kv_write_rows) {
++                ar_decode_graph_cached_ = true;
++                ar_decode_graph_kv_end_padded_ = ar_kv_end_padded;
++            }
+         }
+ 
++        if (!w_.embedder.embed(&tok, 1, embed_buf)) return false;
++        ggml_backend_tensor_set(sg_.inp_embed, embed_buf, 0, sizeof(float) * hidden);
++        int32_t pos4[4] = {committed, committed, committed, 0};
++        ggml_backend_tensor_set(sg_.positions, pos4, 0, sizeof(int32_t) * 4);
++
+         // Fill kv_write_rows with this step's cache slot for set_rows:
+         // the logical position directly, or its pool slot in kvflash mode.
+         if (sg_.kv_write_rows) {
+diff --git a/server/src/qwen35/qwen35_backend.h b/server/src/qwen35/qwen35_backend.h
+index a8ba253d..609d1b12 100644
+--- a/server/src/qwen35/qwen35_backend.h
++++ b/server/src/qwen35/qwen35_backend.h
+@@ -255,6 +255,8 @@ private:
+     StepGraph      sg_;           // target forward (verify / prefill)
+     StepGraph      draft_sg_;    // draft forward
+     StepGraph      proj_sg_;     // lm-head projection (remote-lm-head mode)
++    bool           ar_decode_graph_cached_ = false;
++    int            ar_decode_graph_kv_end_padded_ = 0;
+ 
+     // ── Draft feature mirror (cross-GPU feature transfer) ────────────
+     DraftFeatureMirror feature_mirror_;
+diff --git a/server/src/qwen35/qwen35_target_graph.cpp b/server/src/qwen35/qwen35_target_graph.cpp
+index 9f9c15fc..209fb17c 100644
+--- a/server/src/qwen35/qwen35_target_graph.cpp
++++ b/server/src/qwen35/qwen35_target_graph.cpp
+@@ -651,6 +651,7 @@ static ggml_tensor * build_full_attn_block(
+         ggml_build_forward_expand(gf, ggml_set_rows(ctx, cache_v, Vcur_cont, kv_write_rows));
+     } else {
+         // Legacy: kv_start as literal view offset (not step-invariant; prefill/verify/non-graph).
++        // Blocker C seam: replace this baked kv_start view offset with a SET_ROWS index tensor.
+         ggml_tensor * k_slot = ggml_view_3d(ctx, cache_k,
+             head_dim, n_tokens, n_head_kv,
+             cache_k->nb[1], cache_k->nb[2],
+@@ -678,6 +679,7 @@ static ggml_tensor * build_full_attn_block(
+     // TQ3_0 path: the cache is zero-initialised, so padded rows contribute
+     // exp(-row_max) ~ 0 to the (mask-less) softmax denominator.
+     const bool  step_invariant = (kv_write_rows != nullptr);
++    // Blocker D seam: replace this fixed FA span padding with 4096-step bucket sizing.
+     const int fattn_stride  = (kv_k_type == GGML_TYPE_TQ3_0 || kv_v_type == GGML_TYPE_TQ3_0 ||
+                                step_invariant) ? 256 : 1;
+     int win_len_padded = ((win_len + fattn_stride - 1) / fattn_stride) * fattn_stride;
