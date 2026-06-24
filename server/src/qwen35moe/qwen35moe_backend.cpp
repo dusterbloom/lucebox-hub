@@ -110,12 +110,27 @@ bool Qwen35MoeBackend::load_target_model(ggml_backend_t backend, TargetWeights &
     // Record the placement result so post_kvflash_init_gate() can disable
     // the kvflash pool — moe_hybrid will be null on this path (no cold storage
     // needed), so the gate cannot detect all-hot from the hybrid pointer alone.
-    if (placement.total_hot >= out.n_layer * out.n_expert) {
+    //
+    // Env override: DFLASH_MOE_ALLHOT_HYBRID=1 skips the early return and builds
+    // moe_hybrid storage even with 0 cold experts. This routes both AR and spec
+    // through the MoE-specific paths (pipelined decode / do_hybrid_spec_decode)
+    // instead of the base Qwen35Backend paths, which use the slow DFlashTarget
+    // adapter verify. The pipelined verify is ~0.9ms/tok vs ~4.5ms/tok batched.
+    static const bool kForceMoeHybrid = []() {
+        const char * e = std::getenv("DFLASH_MOE_ALLHOT_HYBRID");
+        return e != nullptr && std::string(e) == "1";
+    }();
+    placement_all_hot_ = (placement.total_hot >= out.n_layer * out.n_expert);
+    if (placement_all_hot_ && !kForceMoeHybrid) {
         std::printf("[qwen35moe] all experts fit in VRAM, loading fully to GPU\n");
         std::fflush(stdout);
-        placement_all_hot_ = true;
         free_target_weights(out);
         return load_target_gguf(cfg_.target_path, backend, out);
+    }
+    if (placement_all_hot_ && kForceMoeHybrid) {
+        std::printf("[qwen35moe] all experts fit in VRAM but building moe_hybrid "
+                    "(DFLASH_MOE_ALLHOT_HYBRID=1) to enable pipelined spec-decode verify\n");
+        std::fflush(stdout);
     }
 
     if (const char * telemetry = std::getenv("DFLASH_QWEN35MOE_TELEMETRY")) {
@@ -1303,6 +1318,8 @@ GenerateResult Qwen35MoeBackend::generate_impl(const GenerateRequest & req,
                         decode_tel_accum.total_us += tel.total_us;
                         decode_tel_accum.prefn_graph_build_us += tel.prefn_graph_build_us;
                         decode_tel_accum.prefn_compute_us += tel.prefn_compute_us;
+                        decode_tel_accum.prefn_ssm_us += tel.prefn_ssm_us;
+                        decode_tel_accum.prefn_attn_us += tel.prefn_attn_us;
                         decode_tel_accum.routing_readback_us += tel.routing_readback_us;
                         decode_tel_accum.ffn_us += tel.ffn_us;
                         decode_tel_accum.ffn_allhot_us += tel.ffn_allhot_us;
@@ -1411,6 +1428,9 @@ GenerateResult Qwen35MoeBackend::generate_impl(const GenerateRequest & req,
                                     decode_tel_accum.prefn_compute_us / 1000.0 / n_dec,
                                     decode_tel_accum.routing_readback_us / 1000.0 / n_dec,
                                     decode_tel_accum.ffn_us / 1000.0 / n_dec);
+                        std::printf("  per-token avg: prefn_SSM=%.2fms (30 DeltaNet) prefn_ATTN=%.2fms (10 full-attn)\n",
+                                    decode_tel_accum.prefn_ssm_us / 1000.0 / n_dec,
+                                    decode_tel_accum.prefn_attn_us / 1000.0 / n_dec);
                         std::printf("  per-token avg: tensor_io=%.2fms combine=%.2fms cold_cpu=%.2fms cold_compute=%.2fms\n",
                                     decode_tel_accum.tensor_io_us / 1000.0 / n_dec,
                                     decode_tel_accum.combine_overhead_us / 1000.0 / n_dec,
@@ -1642,6 +1662,45 @@ GenerateResult Qwen35MoeBackend::restore_and_generate_impl(int slot,
 
 // ── Hybrid spec-decode: draft → verify via hybrid forward → accept ──────────
 
+// Ensure the persistent 1-token logits graph (rms_norm + out_norm + mul_mat + argmax)
+// is built. Called from hybrid_forward_one_token.
+bool Qwen35MoeBackend::ensure_moe_hybrid_logits_sg() {
+    if (moe_hybrid_logits_sg_.ctx) return true;
+    const int hidden = target_weights().n_embd;
+    ggml_init_params ip{};
+    ip.mem_size = 4 * 1024 * 1024;  // 4MB
+    ip.no_alloc = true;
+    moe_hybrid_logits_sg_.ctx = ggml_init(ip);
+    if (!moe_hybrid_logits_sg_.ctx) return false;
+    moe_hybrid_logits_sg_.hidden_input = ggml_new_tensor_3d(
+        moe_hybrid_logits_sg_.ctx, GGML_TYPE_F32, hidden, 1, 1);
+    ggml_set_input(moe_hybrid_logits_sg_.hidden_input);
+    moe_hybrid_logits_sg_.gf = ggml_new_graph_custom(moe_hybrid_logits_sg_.ctx, 1024, false);
+    ggml_tensor * normed = ggml_rms_norm(
+        moe_hybrid_logits_sg_.ctx,
+        rms_norm_input_f32(moe_hybrid_logits_sg_.ctx, moe_hybrid_logits_sg_.hidden_input),
+        target_weights().rms_eps);
+    normed = ggml_mul(
+        moe_hybrid_logits_sg_.ctx, normed,
+        graph_tensor_f32(moe_hybrid_logits_sg_.ctx, target_weights().out_norm));
+    moe_hybrid_logits_sg_.logits = ggml_mul_mat(
+        moe_hybrid_logits_sg_.ctx, target_weights().output, normed);
+    ggml_set_output(moe_hybrid_logits_sg_.logits);
+    moe_hybrid_logits_sg_.argmax_tokens = ggml_argmax(
+        moe_hybrid_logits_sg_.ctx, moe_hybrid_logits_sg_.logits);
+    ggml_set_output(moe_hybrid_logits_sg_.argmax_tokens);
+    ggml_build_forward_expand(moe_hybrid_logits_sg_.gf, moe_hybrid_logits_sg_.argmax_tokens);
+    if (!moe_hybrid_logits_sg_.alloc) {
+        moe_hybrid_logits_sg_.alloc = ggml_gallocr_new(
+            ggml_backend_get_default_buffer_type(target_backend()));
+    }
+    if (!ggml_gallocr_alloc_graph(moe_hybrid_logits_sg_.alloc, moe_hybrid_logits_sg_.gf)) {
+        step_graph_destroy(moe_hybrid_logits_sg_);
+        return false;
+    }
+    return true;
+}
+
 bool Qwen35MoeBackend::hybrid_forward_one_token(int32_t tok, int kv_pos,
                                                  std::vector<float> & act_cur,
                                                  int32_t & argmax_out,
@@ -1686,54 +1745,28 @@ bool Qwen35MoeBackend::hybrid_forward_one_token(int32_t tok, int kv_pos,
         }
     }
 
-    // Project to logits and get argmax
+    // Project to logits and get argmax via persistent 1-token graph.
+    if (!ensure_moe_hybrid_logits_sg()) return false;
     const int vocab = target_weights().n_vocab;
-    StepGraph proj_sg;
-    ggml_init_params ip{};
-    ip.mem_size = 64 * 1024 * 1024;
-    ip.mem_buffer = nullptr;
-    ip.no_alloc = true;
-    proj_sg.ctx = ggml_init(ip);
-    if (!proj_sg.ctx) return false;
-    proj_sg.hidden_input = ggml_new_tensor_3d(proj_sg.ctx, GGML_TYPE_F32, hidden, 1, 1);
-    ggml_set_input(proj_sg.hidden_input);
-    proj_sg.gf = ggml_new_graph_custom(proj_sg.ctx, 1024, false);
-    ggml_tensor * normed = ggml_rms_norm(
-        proj_sg.ctx,
-        rms_norm_input_f32(proj_sg.ctx, proj_sg.hidden_input),
-        target_weights().rms_eps);
-    normed = ggml_mul(
-        proj_sg.ctx, normed,
-        graph_tensor_f32(proj_sg.ctx, target_weights().out_norm));
-    proj_sg.logits = ggml_mul_mat(proj_sg.ctx, target_weights().output, normed);
-    ggml_set_output(proj_sg.logits);
-    ggml_build_forward_expand(proj_sg.gf, proj_sg.logits);
-    proj_sg.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(target_backend()));
-    if (!ggml_gallocr_alloc_graph(proj_sg.alloc, proj_sg.gf)) {
-        step_graph_destroy(proj_sg);
-        return false;
-    }
-    ggml_backend_tensor_set(proj_sg.hidden_input, act_cur.data(), 0, sizeof(float) * (size_t)hidden);
-    auto proj_st = ggml_backend_graph_compute(target_backend(), proj_sg.gf);
-    if (proj_st != GGML_STATUS_SUCCESS) {
-        step_graph_destroy(proj_sg);
-        return false;
-    }
-    std::vector<float> logits_buf((size_t)vocab);
-    ggml_backend_tensor_get(proj_sg.logits, logits_buf.data(), 0, sizeof(float) * (size_t)vocab);
-    step_graph_destroy(proj_sg);
-    if (logits_out) {
-        *logits_out = logits_buf;
-    }
+    ggml_backend_tensor_set(moe_hybrid_logits_sg_.hidden_input, act_cur.data(), 0,
+                            sizeof(float) * (size_t)hidden);
+    auto proj_st = ggml_backend_graph_compute(target_backend(), moe_hybrid_logits_sg_.gf);
+    if (proj_st != GGML_STATUS_SUCCESS) return false;
 
-    // Argmax
-    argmax_out = 0;
-    float best = logits_buf[0];
-    for (int j = 1; j < vocab; ++j) {
-        if (logits_buf[(size_t)j] > best) {
-            best = logits_buf[(size_t)j];
-            argmax_out = j;
+    if (logits_out) {
+        // Caller wants full logits (rare — only prefill, not verify/replay).
+        logits_out->resize((size_t)vocab);
+        ggml_backend_tensor_get(moe_hybrid_logits_sg_.logits, logits_out->data(), 0,
+                                sizeof(float) * (size_t)vocab);
+        int am = 0; float best = (*logits_out)[0];
+        for (int j = 1; j < vocab; ++j) {
+            if ((*logits_out)[(size_t)j] > best) { best = (*logits_out)[(size_t)j]; am = j; }
         }
+        argmax_out = am;
+    } else {
+        // Fast path: GPU argmax, read 4 bytes.
+        ggml_backend_tensor_get(moe_hybrid_logits_sg_.argmax_tokens, &argmax_out, 0,
+                                sizeof(int32_t));
     }
     return true;
 }
@@ -2047,24 +2080,24 @@ bool Qwen35MoeBackend::hybrid_forward_batch(
     // readback + host argmax was a large per-step D2H cost in the verify and
     // replay forwards (vocab ~152k x n_tokens x 4B, twice per spec step).
     argmax_out.resize(n_tokens);
-    StepGraph proj_sg;
+    StepGraph moe_proj_sg_;
     const auto lm_build_t0 = HybridClock::now();
-    if (!build_lm_head_projection_step(proj_sg, target_weights(), target_backend(), n_tokens)) {
+    if (!build_lm_head_projection_step(moe_proj_sg_, target_weights(), target_backend(), n_tokens)) {
         return false;
     }
     prof.lm_head_graph_build_us += elapsed_us(lm_build_t0, HybridClock::now());
-    ggml_backend_tensor_set(proj_sg.hidden_input, embed_all.data(), 0,
+    ggml_backend_tensor_set(moe_proj_sg_.hidden_input, embed_all.data(), 0,
                             sizeof(float) * (size_t)n_tokens * (size_t)hidden);
     const auto lm_compute_t0 = HybridClock::now();
-    auto proj_st = ggml_backend_graph_compute(target_backend(), proj_sg.gf);
+    auto proj_st = ggml_backend_graph_compute(target_backend(), moe_proj_sg_.gf);
     if (proj_st != GGML_STATUS_SUCCESS) {
-        step_graph_destroy(proj_sg);
+        step_graph_destroy(moe_proj_sg_);
         return false;
     }
-    ggml_backend_tensor_get(proj_sg.argmax_tokens, argmax_out.data(), 0,
+    ggml_backend_tensor_get(moe_proj_sg_.argmax_tokens, argmax_out.data(), 0,
                             sizeof(int32_t) * (size_t)n_tokens);
     prof.lm_head_compute_us += elapsed_us(lm_compute_t0, HybridClock::now());
-    step_graph_destroy(proj_sg);
+    step_graph_destroy(moe_proj_sg_);
     prof.total_us = elapsed_us(batch_t0, HybridClock::now());
 
     if (hybrid_spec_profile_enabled()) {
@@ -2118,7 +2151,6 @@ bool Qwen35MoeBackend::do_hybrid_spec_decode(int committed, int n_gen,
     int32_t last_tok = target_cache().last_tok;
     std::vector<float> act_cur((size_t)hidden);
 
-    StepGraph draft_sg;
     std::vector<float>   noise_embed((size_t)hidden * q_len);
     std::vector<int32_t> noise_ids(q_len);
     std::vector<int32_t> draft_tok(q_len);
@@ -2127,7 +2159,6 @@ bool Qwen35MoeBackend::do_hybrid_spec_decode(int committed, int n_gen,
     std::vector<int32_t> pos_k;
     std::vector<float>   local_hidden;
 
-    int n_generated = 0;
     int n_draft_steps = 0;
     int n_accept_sum = 0;
 
@@ -2136,14 +2167,106 @@ bool Qwen35MoeBackend::do_hybrid_spec_decode(int committed, int n_gen,
     // and rejected draft tokens leak into the recurrent state, collapsing output.
     if (!ensure_ssm_snapshot(target_cache(), target_backend())) {
         std::fprintf(stderr, "[hybrid-spec] ensure_ssm_snapshot failed\n");
-        step_graph_destroy(draft_sg);
+        step_graph_destroy(moe_draft_sg_);
         return false;
+    }
+
+    // ── Realized-speedup gate config (mirrors qwen35_backend.cpp) ───────────
+    static const bool kSpecGate = []() {
+        const char * e = std::getenv("DFLASH_SPEC_GATE");
+        if (!e) e = std::getenv("DFLASH_ENTROPY_GATE");
+        return e ? std::atoi(e) != 0 : true;
+    }();
+    static const double kGateMargin = []() {
+        const char * e = std::getenv("DFLASH_SPEC_GATE_MARGIN");
+        return e ? std::atof(e) : 1.0;
+    }();
+    static const int kGateSustain = []() {
+        const char * e = std::getenv("DFLASH_SPEC_GATE_SUSTAIN");
+        return e ? std::atoi(e) : 3;
+    }();
+    static const int kGateWarmup = []() {
+        const char * e = std::getenv("DFLASH_SPEC_GATE_WARMUP");
+        return e ? std::atoi(e) : 2;
+    }();
+    static const bool kGateDbg = []() {
+        return std::getenv("DFLASH_SPEC_GATE_DEBUG") != nullptr;
+    }();
+
+    const bool gate_active = kSpecGate;
+
+    // Realized-speedup gate state
+    double t_ar           = 0.0;   // measured AR per-token time (seconds)
+    double ema_ratio      = 2.0;   // EMA of realized speedup; init optimistic
+    int    gate_low_streak = 0;
+    int    eg_ar_tokens   = 0;
+    int    eg_spec_steps  = 0;
+
+    // ── AR warmup / t_ar cache ───────────────────────────────────────────
+    // t_ar is a backend property; measured once, cached in gate_t_ar_ so
+    // all subsequent turns skip the warmup. See qwen35_backend.cpp for rationale.
+    //
+    // Skip warmup and spec loop entirely if only 3 or fewer tokens requested.
+    if (n_gen <= 3) {
+        bool ok = run_ar_decode_path(committed, n_gen, out_tokens, io);
+        io.emit(-1);
+        return ok;
+    }
+    int n_generated;
+    if (gate_t_ar_ > 0.0) {
+        // Cached: skip warmup. Spec loop starts at n_generated=0 with
+        // last_tok=target_cache().last_tok already set above.
+        t_ar = gate_t_ar_;
+        n_generated = 0;
+    } else {
+        // First call: run the 3-token AR warmup to measure t_ar.
+        // Token 1: free (prefill logits already ready), untimed.
+        bool ok1 = run_ar_decode_path(committed, 1, out_tokens, io);
+        if (!ok1) { io.emit(-1); return false; }
+        committed = target_cache().cur_pos;
+        last_tok  = out_tokens.back();
+        // Tokens 2-3: real forwards, timed.
+        auto t_ar0 = std::chrono::steady_clock::now();
+        bool ok2 = run_ar_decode_path(committed, 2, out_tokens, io);
+        auto t_ar1 = std::chrono::steady_clock::now();
+        if (!ok2) { io.emit(-1); return false; }
+        t_ar = std::chrono::duration<double>(t_ar1 - t_ar0).count() / 2.0;
+        // Sanity clamp: guard against implausibly small values (e.g. tiny model).
+        if (t_ar < 0.0005) t_ar = 0.005;
+        gate_t_ar_ = t_ar;  // cache for all future turns
+        committed = target_cache().cur_pos;
+        last_tok  = out_tokens.back();
+        n_generated = 3;
     }
 
     auto t_dec0 = std::chrono::steady_clock::now();
 
     while (n_generated < n_gen) {
         const int need_commit_budget = n_gen - n_generated;
+
+        // ── Realized-speedup gate ────────────────────────────────────────
+        if (gate_active && n_draft_steps >= kGateWarmup && gate_low_streak >= kGateSustain) {
+            step_graph_destroy(moe_draft_sg_);
+            target_cache().cur_pos  = committed;
+            target_cache().last_tok = out_tokens.empty() ? last_tok : out_tokens.back();
+            eg_ar_tokens = n_gen - n_generated;
+            std::fprintf(stderr,
+                "[spec-gate] floor reason=slow ema_ratio=%.2f t_ar=%.4f "
+                "ar_tokens=%d spec_tokens=%d spec_steps=%d\n",
+                ema_ratio, t_ar, eg_ar_tokens, n_generated - 1, eg_spec_steps);
+            const int ar_n_gen = n_gen - n_generated;
+            if (ar_n_gen <= 0) {
+                io.emit(-1);
+                return true;
+            }
+            bool ok = run_ar_decode_path(committed, ar_n_gen, out_tokens, io);
+            io.emit(-1);
+            return ok;
+        }
+        // ── End realized-speedup gate ─────────────────────────────────────
+
+        auto t_step0 = std::chrono::steady_clock::now();
+
         const int verify_width = forced_verify_width > 0
             ? forced_verify_width
             : std::min(q_len, std::max(6, observed_max_accept + 2));
@@ -2153,7 +2276,7 @@ bool Qwen35MoeBackend::do_hybrid_spec_decode(int committed, int n_gen,
         for (int i = 1; i < q_len; i++) noise_ids[i] = target_weights().mask_token_id;
         if (!target_weights().embedder.embed(noise_ids.data(), q_len, noise_embed.data())) {
             std::fprintf(stderr, "[hybrid-spec] noise embed failed\n");
-            step_graph_destroy(draft_sg);
+            step_graph_destroy(moe_draft_sg_);
             return false;
         }
 
@@ -2167,70 +2290,80 @@ bool Qwen35MoeBackend::do_hybrid_spec_decode(int committed, int n_gen,
         const bool use_mirror_view =
             draft_feature_mirror_can_view(feature_mirror(), committed, draft_ctx, mirror_slot0);
 
-        if (!build_draft_step(draft_sg, draft_weights(), /*lm_head=*/nullptr, draft_backend(),
+        if (!build_draft_step(moe_draft_sg_, draft_weights(), /*lm_head=*/nullptr, draft_backend(),
                               draft_ctx, use_mirror_view ? &feature_mirror() : nullptr,
                               committed,
                               std::min(ring_cap, std::max(DRAFT_CTX_MAX_DEFAULT, cfg_.draft_ctx_max)))) {
             std::fprintf(stderr, "[hybrid-spec] draft build failed\n");
-            step_graph_destroy(draft_sg);
+            step_graph_destroy(moe_draft_sg_);
             return false;
         }
         if (!use_mirror_view &&
-            !copy_feature_ring_range_to_tensor(feature_mirror(), draft_sg.target_hidden_cat,
+            !copy_feature_ring_range_to_tensor(feature_mirror(), moe_draft_sg_.target_hidden_cat,
                                                draft_start, draft_ctx)) {
             std::fprintf(stderr, "[hybrid-spec] feature copy failed\n");
-            step_graph_destroy(draft_sg);
+            step_graph_destroy(moe_draft_sg_);
             return false;
         }
-        ggml_backend_tensor_set(draft_sg.inp_embed, noise_embed.data(), 0,
+        ggml_backend_tensor_set(moe_draft_sg_.inp_embed, noise_embed.data(), 0,
                                  sizeof(float) * noise_embed.size());
         pos_k.resize((size_t)draft_ctx + q_len);
         for (int i = 0; i < q_len; i++) pos_q[i] = draft_ctx + i;
         for (int i = 0; i < draft_ctx + q_len; i++) pos_k[i] = i;
-        ggml_backend_tensor_set(draft_sg.positions, pos_q.data(), 0,
+        ggml_backend_tensor_set(moe_draft_sg_.positions, pos_q.data(), 0,
                                  sizeof(int32_t) * pos_q.size());
-        ggml_backend_tensor_set(draft_sg.positions_k, pos_k.data(), 0,
+        ggml_backend_tensor_set(moe_draft_sg_.positions_k, pos_k.data(), 0,
                                  sizeof(int32_t) * pos_k.size());
 
-        auto st = ggml_backend_graph_compute(draft_backend(), draft_sg.gf);
-        if (st != GGML_STATUS_SUCCESS) {
-            std::fprintf(stderr, "[hybrid-spec] draft compute failed\n");
-            step_graph_destroy(draft_sg);
-            return false;
+        {
+            auto t_b0 = std::chrono::steady_clock::now();
+            auto st = ggml_backend_graph_compute(draft_backend(), moe_draft_sg_.gf);
+            auto t_b1 = std::chrono::steady_clock::now();
+            std::fprintf(stderr, "[hybrid-spec-step%d] build=%.1fms compute=%.1fms\n",
+                         n_draft_steps,
+                         std::chrono::duration<double, std::milli>(t_b0 - t_dec0).count(),
+                         std::chrono::duration<double, std::milli>(t_b1 - t_b0).count());
+            fflush(stderr);
+            if (st != GGML_STATUS_SUCCESS) {
+                std::fprintf(stderr, "[hybrid-spec] draft compute failed\n");
+                step_graph_destroy(moe_draft_sg_);
+                return false;
+            }
         }
 
         // Read draft hidden states
         local_hidden.resize((size_t)hidden * q_len);
-        ggml_backend_tensor_get(draft_sg.hidden_states, local_hidden.data(), 0,
+        ggml_backend_tensor_get(moe_draft_sg_.hidden_states, local_hidden.data(), 0,
                                  sizeof(float) * local_hidden.size());
 
         // 3. Project draft hidden → token IDs via target LM head
-        // Use a simple LM head projection graph
-        {
-            StepGraph proj_sg;
-            if (!build_lm_head_projection_step(proj_sg, target_weights(), target_backend(), q_len)) {
+        // 3. Project draft hidden → token IDs via target LM head.
+        // Persistent moe_proj_sg_: build once (q_len is constant across steps),
+        // reuse the graph + allocation. Only update input data each step.
+        if (!moe_proj_sg_.ctx) {
+            if (!build_lm_head_projection_step(moe_proj_sg_, target_weights(), target_backend(), q_len)) {
                 std::fprintf(stderr, "[hybrid-spec] projection build failed\n");
-                step_graph_destroy(draft_sg);
+                step_graph_destroy(moe_draft_sg_);
                 return false;
             }
-            ggml_backend_tensor_set(proj_sg.hidden_input, local_hidden.data(), 0,
-                                     sizeof(float) * local_hidden.size());
-            auto ps = ggml_backend_graph_compute(target_backend(), proj_sg.gf);
-            if (ps != GGML_STATUS_SUCCESS) {
-                std::fprintf(stderr, "[hybrid-spec] projection compute failed\n");
-                step_graph_destroy(proj_sg);
-                step_graph_destroy(draft_sg);
-                return false;
-            }
-            draft_tok.resize(q_len);
-            ggml_backend_tensor_get(proj_sg.argmax_tokens, draft_tok.data(), 0,
-                                     sizeof(int32_t) * q_len);
-            step_graph_destroy(proj_sg);
         }
+        ggml_backend_tensor_set(moe_proj_sg_.hidden_input, local_hidden.data(), 0,
+                                 sizeof(float) * local_hidden.size());
+        auto ps = ggml_backend_graph_compute(target_backend(), moe_proj_sg_.gf);
+        if (ps != GGML_STATUS_SUCCESS) {
+            std::fprintf(stderr, "[hybrid-spec] projection compute failed\n");
+            step_graph_destroy(moe_draft_sg_);
+            return false;
+        }
+        draft_tok.resize(q_len);
+        ggml_backend_tensor_get(moe_proj_sg_.argmax_tokens, draft_tok.data(), 0,
+                                 sizeof(int32_t) * q_len);
         draft_tok[0] = last_tok;
 
-        // 4. Verify: snapshot recurrent state, then run draft tokens via pipelined AR path.
-        // Sequential single-token pipelined forward (~0.9ms/tok) vs batched hybrid (~4.5ms/tok).
+        // 4. Verify: snapshot recurrent state, then run draft tokens via batched forward.
+        // On all-hot (DFLASH_MOE_ALLHOT_HYBRID), all experts are GPU-resident so
+        // a single batched forward over verify_width tokens is far faster than
+        // verify_width sequential per-token forwards (~30ms vs ~96ms for 8 tokens).
         // Feature capture suppressed during verify (positions would overwrite valid prefill cache).
         snapshot_ssm_state(target_cache());
 
@@ -2238,17 +2371,14 @@ bool Qwen35MoeBackend::do_hybrid_spec_decode(int committed, int n_gen,
         {
             ggml_tensor * saved_feat = target_cache().target_feat;
             target_cache().target_feat = nullptr;  // suppress feature capture during verify
-            bool verify_ok = true;
-            for (int i = 0; i < verify_width && verify_ok; i++) {
-                int32_t argmax;
-                verify_ok = hybrid_forward_one_token(draft_tok[i], committed + i, act_cur, argmax);
-                if (verify_ok) target_tok[i] = argmax;
-            }
+            std::vector<float> verify_act;  // unused — we need argmax, not hidden
+            bool verify_ok = hybrid_forward_batch(draft_tok.data(), verify_width, committed,
+                                                  verify_act, target_tok, /*capture_features=*/false);
             target_cache().target_feat = saved_feat;
             if (!verify_ok) {
                 std::fprintf(stderr, "[hybrid-spec] verify failed\n");
                 restore_ssm_state(target_cache());
-                step_graph_destroy(draft_sg);
+                step_graph_destroy(moe_draft_sg_);
                 return false;
             }
         }
@@ -2267,7 +2397,7 @@ bool Qwen35MoeBackend::do_hybrid_spec_decode(int committed, int n_gen,
             if (commit_n <= accept_n) bonus_tok = -1;
         }
 
-        // 6. Restore SSM state and replay accepted tokens via pipelined path.
+        // 6. Restore SSM state and replay accepted tokens via batched forward.
         // Replay overwrites KV at committed..committed+commit_n-1 with correct values
         // and captures features for the next draft step.
         restore_ssm_state(target_cache());
@@ -2278,15 +2408,15 @@ bool Qwen35MoeBackend::do_hybrid_spec_decode(int committed, int n_gen,
         }
 
         {
-            int32_t last_argmax = last_tok;
-            for (int i = 0; i < commit_n; i++) {
-                if (!hybrid_forward_one_token(replay_tok[i], committed + i, act_cur, last_argmax)) {
-                    std::fprintf(stderr, "[hybrid-spec] replay failed\n");
-                    step_graph_destroy(draft_sg);
-                    return false;
-                }
+            std::vector<int32_t> replay_argmax;
+            bool replay_ok = hybrid_forward_batch(replay_tok.data(), commit_n, committed,
+                                                  act_cur, replay_argmax, /*capture_features=*/true);
+            if (!replay_ok || (int)replay_argmax.size() < commit_n) {
+                std::fprintf(stderr, "[hybrid-spec] replay failed\n");
+                step_graph_destroy(moe_draft_sg_);
+                return false;
             }
-            last_tok = last_argmax;
+            last_tok = replay_argmax[commit_n - 1];
         }
 
         // 7. Sync features to mirror for next draft step
@@ -2318,11 +2448,29 @@ bool Qwen35MoeBackend::do_hybrid_spec_decode(int committed, int n_gen,
         n_generated += emitted;
         n_accept_sum += std::min(accept_n, emitted);
         n_draft_steps++;
+        eg_spec_steps++;
+
+        // ── Per-step speedup EMA update ───────────────────────────────────
+        {
+            const double step_wall = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - t_step0).count();
+            const double ratio = (t_ar > 0.0 && step_wall > 0.0)
+                ? ((double)emitted * t_ar / step_wall) : 2.0;
+            ema_ratio = 0.5 * ema_ratio + 0.5 * ratio;
+            if (ema_ratio < kGateMargin) gate_low_streak++;
+            else gate_low_streak = 0;
+            if (kGateDbg) {
+                std::fprintf(stderr,
+                    "[spec-gate] step=%d commit=%d step_wall=%.4f ratio=%.2f ema=%.2f streak=%d\n",
+                    n_draft_steps - 1, emitted, step_wall, ratio, ema_ratio, gate_low_streak);
+            }
+        }
+
         if (io.cancelled) break;
         if (hit_eos) break;
     }
 
-    step_graph_destroy(draft_sg);
+    step_graph_destroy(moe_draft_sg_);
 
     auto t_dec1 = std::chrono::steady_clock::now();
     const double decode_s = std::chrono::duration<double>(t_dec1 - t_dec0).count();
@@ -2331,6 +2479,10 @@ bool Qwen35MoeBackend::do_hybrid_spec_decode(int committed, int n_gen,
     if (accept_rate_out) {
         *accept_rate_out = total_draft_pos > 0
             ? (float)((double)n_accept_sum / (double)total_draft_pos) : 0.0f;
+    }
+    if (gate_active) {
+        std::fprintf(stderr, "[spec-gate] held spec_steps=%d ema_ratio=%.2f\n",
+                     eg_spec_steps, ema_ratio);
     }
     std::fprintf(stderr, "[hybrid-spec] tokens=%d time=%.3f s speed=%.2f tok/s "
                  "steps=%d accepted=%d/%d (%.1f%%) avg_commit=%.2f AL=%.2f\n",

@@ -198,6 +198,24 @@ bool Qwen35Backend::init() {
         return false;
     }
 
+    // Early-read drafter capture config so the target graph is built with
+    // the correct fc_in = n_capture_layers * n_embd. Newer 8-tap drafters
+    // need 8 captured layers; without this sync the default 5 would cause
+    // a runtime shape mismatch on the drafter's fc projection.
+    if (cfg_.draft_path) {
+        std::string dp(cfg_.draft_path);
+        if (dp.size() >= 5 && dp.substr(dp.size() - 5) == ".gguf") {
+            int n_cap = 0;
+            int cap_ids[DFLASH_MAX_CAPTURE_LAYERS];
+            if (read_draft_capture_config(cfg_.draft_path, n_cap, cap_ids,
+                                          DFLASH_MAX_CAPTURE_LAYERS)) {
+                w_.n_capture_layers = n_cap;
+                for (int k = 0; k < n_cap && k < DFLASH_MAX_CAPTURE_LAYERS; k++)
+                    w_.capture_layer_ids[k] = cap_ids[k];
+            }
+        }
+    }
+
     // Load target
     if (!load_target_model(target_backend_, w_)) {
         std::fprintf(stderr, "target load: %s\n", dflash27b_last_error());
@@ -231,6 +249,16 @@ bool Qwen35Backend::init() {
             return false;
         }
         std::printf("[draft]  loaded\n");
+
+        // Propagate the draft's mask_token_id to the target weights. The
+        // noise-generation code (which fills MASK tokens for block diffusion)
+        // reads target_weights().mask_token_id, so it must match the drafter's
+        // trained mask token (248077 for Qwen3.6, vs the old 248070 default).
+        if (dw_.mask_token_id != w_.mask_token_id) {
+            std::printf("[draft]  mask_token_id %d -> %d (from draft GGUF)\n",
+                        w_.mask_token_id, dw_.mask_token_id);
+            w_.mask_token_id = dw_.mask_token_id;
+        }
 
         if (cfg_.draft_swa_window > 0) {
             dw_.swa_window = cfg_.draft_swa_window;
@@ -337,7 +365,12 @@ bool Qwen35Backend::init() {
     // Init feature mirror when draft model is available (needed for spec decode).
     // On single-GPU, this is an F32 conversion buffer; on split-GPU, a cross-device mirror.
     if (cfg_.draft_path && !use_remote_draft) {
-        const int mirror_cap = std::min({cfg_.draft_ctx_max, cfg_.device.max_ctx,
+        // Honor DFLASH_FEAT_RING_CAP for the mirror cap as well (not just target_feat).
+        int effective_draft_ctx_max = cfg_.draft_ctx_max;
+        if (const char * e = std::getenv("DFLASH_FEAT_RING_CAP")) {
+            effective_draft_ctx_max = std::max(cfg_.draft_ctx_max, std::atoi(e));
+        }
+        const int mirror_cap = std::min({effective_draft_ctx_max, cfg_.device.max_ctx,
                                          cache_.target_feat_cap > 0 ? cache_.target_feat_cap : cfg_.device.max_ctx});
         if (!draft_feature_mirror_init(feature_mirror_, draft_backend_,
                                        cfg_.draft_gpu, cfg_.device.gpu, mirror_cap,
@@ -2005,30 +2038,6 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
 
     out_spec_ran = true;
 
-    // Sampled-verify: cache_.last_tok is do_prefill's argmax, and the spec
-    // loop commits it verbatim as the first generated token. The first token
-    // is the highest-entropy decision of the whole generation (e.g. "answer
-    // with text" vs "open a tool call"), so it must be sampled like every
-    // other committed token — mirror do_ar_decode's first-token sampling.
-    if (sampled_verify && out_tokens.empty() && prefill_last_logits_valid_) {
-        std::vector<float> first_logits(w_.n_vocab);
-        ggml_backend_tensor_get(sg_.logits, first_logits.data(),
-                                prefill_last_logits_offset_,
-                                sizeof(float) * (size_t)w_.n_vocab);
-        if (std::getenv("DFLASH_SV_DEBUG")) {
-            int am = 0; float best = first_logits[0];
-            for (int v = 1; v < w_.n_vocab; v++)
-                if (first_logits[v] > best) { best = first_logits[v]; am = v; }
-            std::fprintf(stderr,
-                "[sv-debug] first-token: logits_argmax=%d cache_last_tok=%d "
-                "(match=%d) top_logit=%.3f\n",
-                am, cache_.last_tok, am == cache_.last_tok, best);
-        }
-        last_tok = sample_logits(first_logits.data(), w_.n_vocab, sampler_,
-                                 out_tokens, sampler_rng_);
-        cache_.last_tok = last_tok;
-    }
-
     const int _min_floor = dflash_min_tokens_floor();
 
     // ── DFlash spec-decode: draft → verify → accept → replay ──────────
@@ -2049,7 +2058,35 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         }
     }
 
-    StepGraph draft_sg;
+    // ── Realized-speedup gate config (read once) ─────────────────────────
+    // Replaces the old p1-entropy gate with a self-calibrating timing gate:
+    // measure actual AR per-token wall time, then floor to AR whenever the
+    // EMA of (spec tok/s / AR tok/s) stays below kGateMargin for
+    // kGateSustain consecutive steps. No per-model threshold tuning needed.
+    static const bool kSpecGate = []() {
+        // Accept old name DFLASH_ENTROPY_GATE as alias for compatibility.
+        const char * e = std::getenv("DFLASH_SPEC_GATE");
+        if (!e) e = std::getenv("DFLASH_ENTROPY_GATE");
+        return e ? std::atoi(e) != 0 : true;
+    }();
+    static const double kGateMargin = []() {
+        const char * e = std::getenv("DFLASH_SPEC_GATE_MARGIN");
+        return e ? std::atof(e) : 1.0;
+    }();
+    static const int kGateSustain = []() {
+        const char * e = std::getenv("DFLASH_SPEC_GATE_SUSTAIN");
+        return e ? std::atoi(e) : 3;
+    }();
+    static const int kGateWarmup = []() {
+        const char * e = std::getenv("DFLASH_SPEC_GATE_WARMUP");
+        return e ? std::atoi(e) : 2;
+    }();
+    static const bool kGateDbg = []() {
+        return std::getenv("DFLASH_SPEC_GATE_DEBUG") != nullptr;
+    }();
+    // Gate disabled for sampled_verify: the acceptance walk is distribution-
+    // preserving and timing routing would change the sampled distribution.
+    const bool gate_active = kSpecGate && !sampled_verify;
 
     std::vector<float>   noise_embed((size_t)hidden * q_len);
     std::vector<int32_t> noise_ids(q_len);
@@ -2061,12 +2098,21 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
     std::vector<int32_t> pos_k;
     std::vector<float>   local_hidden;
 
-    int n_generated     = 0;
-    int n_draft_steps   = 0;
-    int n_accept_sum    = 0;
-    int n_hint_proposed = 0;
-    int n_hint_accepted = 0;
-    int target_forwards = 0;
+    int n_generated      = 0;
+    int n_draft_steps    = 0;
+    int n_spec_positions = 0;  // cumulative step_block sum for accept-rate denominator
+    int n_accept_sum     = 0;
+    int n_hint_proposed  = 0;
+    int n_hint_accepted  = 0;
+    int target_forwards  = 0;
+
+    // Realized-speedup gate state
+    int    eg_ar_tokens   = 0;
+    int    eg_spec_tokens = 0;
+    int    eg_spec_steps  = 0;
+    double t_ar           = 0.0;   // measured AR per-token time (seconds)
+    double ema_ratio      = 2.0;   // EMA of realized speedup; init optimistic
+    int    gate_low_streak = 0;
 
     auto log_target_forward_stats = [&]() {
         std::fprintf(stderr, "[spec-decode] target_forwards=%d forwards_per_token=%.6f forwards_per_step=%.3f\n",
@@ -2084,6 +2130,52 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         (void)kvflash_pager_.alloc_span(0, committed);
     }
 
+    // ── AR warmup / t_ar cache ───────────────────────────────────────────
+    // t_ar is a backend property (scales with KV size, not prompt content).
+    // We measure it once on the FIRST decode call and cache it on the backend
+    // so all subsequent turns skip the warmup entirely.
+    //
+    // Turn 1 (gate_t_ar_ == 0.0): emit the first 3 tokens via AR to measure
+    //   t_ar, cache it in gate_t_ar_, and enter the spec loop at n_generated=3.
+    // Turn 2+ (gate_t_ar_ > 0.0): skip the warmup; spec loop starts at
+    //   n_generated=0 with last_tok=cache_.last_tok (same as pre-gate behavior).
+    //
+    // Skip warmup and entire spec loop if only 3 or fewer tokens requested.
+    if (n_gen <= 3) {
+        bool ok = do_ar_decode(committed, n_gen, out_tokens, io,
+                               budget_hook ? *budget_hook : BudgetHook{},
+                               forced_close_out, degenerate_close_out);
+        log_target_forward_stats();
+        io.emit(-1);
+        return ok;
+    }
+    if (gate_t_ar_ > 0.0) {
+        // Cached: skip warmup. Use previously measured t_ar; spec loop starts
+        // from n_generated=0 with last_tok already set from cache_.last_tok above.
+        t_ar = gate_t_ar_;
+        // n_generated stays 0; committed and last_tok are already initialized.
+    } else {
+        // First call: run the 3-token AR warmup to measure t_ar.
+        // Token 1: free (prefill logits already ready), untimed.
+        bool ok1 = do_ar_decode(committed, 1, out_tokens, io, BudgetHook{}, nullptr, nullptr);
+        if (!ok1) { io.emit(-1); return false; }
+        committed = cache_.cur_pos;
+        last_tok  = out_tokens.back();
+        n_generated = 1;
+        // Tokens 2-3: real forwards, timed.
+        auto t_ar0 = std::chrono::steady_clock::now();
+        bool ok2 = do_ar_decode(committed, 2, out_tokens, io, BudgetHook{}, nullptr, nullptr);
+        auto t_ar1 = std::chrono::steady_clock::now();
+        if (!ok2) { io.emit(-1); return false; }
+        t_ar = std::chrono::duration<double>(t_ar1 - t_ar0).count() / 2.0;
+        // Sanity clamp: guard against implausibly small values (e.g. tiny model).
+        if (t_ar < 0.0005) t_ar = 0.005;
+        gate_t_ar_ = t_ar;  // cache for all future turns
+        committed = cache_.cur_pos;
+        last_tok  = out_tokens.back();
+        n_generated = 3;
+    }
+
     auto t_dec0 = std::chrono::steady_clock::now();
 
     while (n_generated < n_gen) {
@@ -2099,7 +2191,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
                 "[spec-decode] invalid draft seed %d after %d emitted tokens; "
                 "switching to AR\n",
                 last_tok, (int)out_tokens.size());
-            step_graph_destroy(draft_sg);
+            step_graph_destroy(draft_sg_);
             cache_.last_tok = out_tokens.back();
             const int ar_n_gen = n_gen - n_generated;
             if (ar_n_gen <= 0) {
@@ -2116,21 +2208,71 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             return ok;
         }
 
+        // ── Realized-speedup gate ────────────────────────────────────────
+        // Updated at the TOP of each loop iteration (before draft/verify work)
+        // so cache_.cur_pos == committed and no KV restore is needed on floor.
+        // The gate state (ema_ratio, gate_low_streak) was updated at the END
+        // of the previous iteration (after commit_n is known); on the first
+        // iteration both remain at their init values so the warmup probe runs.
+        const int step_block = q_len;  // always full block; gate decides spec vs floor, not block size
+        if (gate_active && n_draft_steps >= kGateWarmup && gate_low_streak >= kGateSustain) {
+            // Floor: hand rest of turn to do_ar_decode.
+            // KV is already at committed (top of loop, no draft/verify done).
+            step_graph_destroy(draft_sg_);
+            cache_.cur_pos  = committed;
+            cache_.last_tok = out_tokens.empty() ? last_tok : out_tokens.back();
+            const int total_draft_pos = std::max(1, n_spec_positions);
+            out_accept_rate = (float)((double)n_accept_sum / (double)total_draft_pos);
+            eg_ar_tokens = n_gen - n_generated;
+            std::fprintf(stderr,
+                "[spec-gate] floor reason=slow ema_ratio=%.2f t_ar=%.4f "
+                "ar_tokens=%d spec_tokens=%d spec_steps=%d\n",
+                ema_ratio, t_ar, eg_ar_tokens, eg_spec_tokens, eg_spec_steps);
+            const int ar_n_gen = n_gen - n_generated;
+            if (ar_n_gen <= 0) {
+                log_target_forward_stats();
+                io.emit(-1);
+                return true;
+            }
+            BudgetHook tail_hook = budget_hook ? *budget_hook : BudgetHook{};
+            bool ok = do_ar_decode(committed, ar_n_gen, out_tokens, io,
+                                   tail_hook, forced_close_out,
+                                   degenerate_close_out);
+            log_target_forward_stats();
+            io.emit(-1);
+            return ok;
+        }
+        // ── End realized-speedup gate ─────────────────────────────────────
+
+        auto t_step0 = std::chrono::steady_clock::now();
+
         // 1. Build noise input for draft
         noise_ids[0] = last_tok;
         for (int i = 1; i < q_len; i++) noise_ids[i] = target->mask_token_id();
         if (!target->embed_tokens(noise_ids.data(), q_len, noise_embed.data())) {
             std::fprintf(stderr, "spec-decode: noise embed failed (last_tok=%d mask=%d q_len=%d)\n",
                          last_tok, target->mask_token_id(), q_len);
-            step_graph_destroy(draft_sg);
+            step_graph_destroy(draft_sg_);
             return false;
         }
 
         // 2. Draft compute
+        // The block-diffusion drafter's prediction collapses when it self-attends
+        // more than ~2048 tokens (measured: 93% accept at draft_ctx<=2048 vs 6%
+        // at 4096, independent of total context). Cap its self-attention window at
+        // 2048 so spec-decode keeps working at long context for recent-derived
+        // output. DFLASH_DRAFT_CTX_MAX overrides for drafters with a larger limit.
         constexpr int DRAFT_CTX_MAX_DEFAULT = 2048;
+        static const int kDraftCtxCap = []() {
+            if (const char * e = std::getenv("DFLASH_DRAFT_CTX_MAX")) {
+                int v = std::atoi(e);
+                if (v > 0) return v;
+            }
+            return -1; // sentinel: use the default cap
+        }();
         const int ring_cap = use_remote_draft ? remote_draft_.ring_cap() : feature_mirror_.cap;
-        const int draft_ctx = std::min(committed,
-            std::min(ring_cap, std::max(DRAFT_CTX_MAX_DEFAULT, cfg_.draft_ctx_max)));
+        const int draft_ctx_cap = (kDraftCtxCap > 0) ? kDraftCtxCap : DRAFT_CTX_MAX_DEFAULT;
+        const int draft_ctx = std::min(committed, std::min(ring_cap, draft_ctx_cap));
         const int draft_start = committed - draft_ctx;
         int mirror_slot0 = 0;
         const bool use_mirror_view =
@@ -2141,52 +2283,52 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             local_hidden.clear();
             if (!remote_draft_.propose(committed, draft_ctx, noise_embed, local_hidden)) {
                 std::fprintf(stderr, "spec-decode: remote draft propose failed\n");
-                step_graph_destroy(draft_sg);
+                step_graph_destroy(draft_sg_);
                 return false;
             }
         } else {
-            if (!build_draft_step(draft_sg, dw_, /*lm_head=*/nullptr, draft_backend_,
+            if (!build_draft_step(draft_sg_, dw_, /*lm_head=*/nullptr, draft_backend_,
                                   draft_ctx, use_mirror_view ? &feature_mirror_ : nullptr,
                                   committed,
-                                  /*ctx_len_max=*/std::min(ring_cap, std::max(DRAFT_CTX_MAX_DEFAULT, cfg_.draft_ctx_max)))) {
+                                  /*ctx_len_max=*/std::min(ring_cap, draft_ctx_cap))) {
                 std::fprintf(stderr, "spec-decode: draft build failed\n");
-                step_graph_destroy(draft_sg);
+                step_graph_destroy(draft_sg_);
                 return false;
             }
             if (!use_mirror_view &&
-                !copy_feature_ring_range_to_tensor(feature_mirror_, draft_sg.target_hidden_cat,
+                !copy_feature_ring_range_to_tensor(feature_mirror_, draft_sg_.target_hidden_cat,
                                                    draft_start, draft_ctx)) {
                 std::fprintf(stderr, "spec-decode: feature copy failed\n");
-                step_graph_destroy(draft_sg);
+                step_graph_destroy(draft_sg_);
                 return false;
             }
-            ggml_backend_tensor_set(draft_sg.inp_embed, noise_embed.data(), 0,
+            ggml_backend_tensor_set(draft_sg_.inp_embed, noise_embed.data(), 0,
                                     sizeof(float) * noise_embed.size());
             pos_k.resize((size_t)draft_ctx + q_len);
             for (int i = 0; i < q_len; i++) pos_q[i] = draft_ctx + i;
             for (int i = 0; i < draft_ctx + q_len; i++) pos_k[i] = i;
-            ggml_backend_tensor_set(draft_sg.positions, pos_q.data(), 0,
+            ggml_backend_tensor_set(draft_sg_.positions, pos_q.data(), 0,
                                     sizeof(int32_t) * pos_q.size());
-            ggml_backend_tensor_set(draft_sg.positions_k, pos_k.data(), 0,
+            ggml_backend_tensor_set(draft_sg_.positions_k, pos_k.data(), 0,
                                     sizeof(int32_t) * pos_k.size());
 
-            auto st = ggml_backend_graph_compute(draft_backend_, draft_sg.gf);
+            auto st = ggml_backend_graph_compute(draft_backend_, draft_sg_.gf);
             if (st != GGML_STATUS_SUCCESS) {
                 std::fprintf(stderr, "spec-decode: draft compute failed\n");
-                step_graph_destroy(draft_sg);
+                step_graph_destroy(draft_sg_);
                 return false;
             }
 
             // Read draft hidden states to host for LM-head projection.
             local_hidden.resize((size_t)hidden * q_len);
-            ggml_backend_tensor_get(draft_sg.hidden_states, local_hidden.data(), 0,
+            ggml_backend_tensor_get(draft_sg_.hidden_states, local_hidden.data(), 0,
                                     sizeof(float) * local_hidden.size());
         }
 
-        // 3. Project draft hidden → token IDs via target LM head
-        if (!target->project_hidden_to_tokens(local_hidden.data(), q_len, draft_tok)) {
+        // 3. Project draft hidden → token IDs via target LM head (step_block positions)
+        if (!target->project_hidden_to_tokens(local_hidden.data(), step_block, draft_tok)) {
             std::fprintf(stderr, "spec-decode: projection failed\n");
-            step_graph_destroy(draft_sg);
+            step_graph_destroy(draft_sg_);
             return false;
         }
         draft_tok[0] = last_tok;
@@ -2228,7 +2370,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             if (!target->project_hidden_to_topk(local_hidden.data(), q_len, K,
                                                 cfg_.ddtree_temp, top_lp, top_ids)) {
                 std::fprintf(stderr, "spec-decode: ddtree topk projection failed\n");
-                step_graph_destroy(draft_sg);
+                step_graph_destroy(draft_sg_);
                 return false;
             }
             // Tree depth L draws from draft rows 1..q_len-1 (row 0 = the seed).
@@ -2244,7 +2386,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             for (int i = 0; i < tree.n_nodes; i++) flat_tokens[1 + i] = tree.token_ids[i];
 
             if (!sampled_verify && !target->snapshot_kv()) {
-                step_graph_destroy(draft_sg);
+                step_graph_destroy(draft_sg_);
                 return false;
             }
 
@@ -2253,7 +2395,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             if (!target->verify_tree(committed, tree, flat_tokens, N, posterior,
                                      sampled_verify ? &node_logits : nullptr)) {
                 std::fprintf(stderr, "spec-decode: verify_tree failed\n");
-                step_graph_destroy(draft_sg);
+                step_graph_destroy(draft_sg_);
                 return false;
             }
             target_forwards++;
@@ -2286,7 +2428,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
 
             int accepted_n = (int)accepted.size();        // root + accepted children
             if (accepted_n > need_commit_budget) accepted_n = need_commit_budget;
-            if (accepted_n <= 0) { step_graph_destroy(draft_sg); break; }
+            if (accepted_n <= 0) { step_graph_destroy(draft_sg_); break; }
 
             // Emit the accepted path: slot 0 = last_tok (pending from prev iter),
             // each subsequent accepted node = its tree token.
@@ -2305,7 +2447,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             // Telemetry: accepted children (exclude the always-committed root).
             n_accept_sum += std::max(0, accepted_emitted - 1);
 
-            if (accepted_emitted <= 0) { step_graph_destroy(draft_sg); break; }
+            if (accepted_emitted <= 0) { step_graph_destroy(draft_sg_); break; }
 
             if (!sampled_verify) {
                 const int root_last_tok = last_tok;
@@ -2321,7 +2463,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
                                                         accepted.begin() + accepted_emitted);
                     if (!target->rollback_to_tree(committed, tree, accepted_committed)) {
                         std::fprintf(stderr, "spec-decode: rollback_to_tree failed\n");
-                        step_graph_destroy(draft_sg);
+                        step_graph_destroy(draft_sg_);
                         return false;
                     }
                     last_tok = next_token;
@@ -2335,6 +2477,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
                     cache_.cur_pos = committed;
                     n_generated += accepted_emitted;
                     n_draft_steps++;
+                    n_spec_positions += q_len;
                     if (hit_eos || io.cancelled || n_generated >= n_gen ||
                         last_tok < 0 || target->is_eos(last_tok)) {
                         break;
@@ -2359,13 +2502,13 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
                 if (can_commit_bonus) replay_batch.push_back(next_token);
 
                 if (!target->restore_kv()) {
-                    step_graph_destroy(draft_sg);
+                    step_graph_destroy(draft_sg_);
                     return false;
                 }
                 int replay_last_tok = -1;
                 if (!target->verify_batch(replay_batch, committed, replay_last_tok, nullptr)) {
                     std::fprintf(stderr, "spec-decode: tree replay failed\n");
-                    step_graph_destroy(draft_sg);
+                    step_graph_destroy(draft_sg_);
                     return false;
                 }
                 target_forwards++;
@@ -2391,6 +2534,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
                 cache_.cur_pos = committed;
                 n_generated += total_emitted;
                 n_draft_steps++;
+                n_spec_positions += q_len;
                 if (hit_eos || io.cancelled || n_generated >= n_gen ||
                     last_tok < 0 || target->is_eos(last_tok)) {
                     break;
@@ -2404,7 +2548,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
                                                 accepted.begin() + accepted_emitted);
             if (!target->rollback_to_tree(committed, tree, accepted_committed)) {
                 std::fprintf(stderr, "spec-decode: rollback_to_tree failed\n");
-                step_graph_destroy(draft_sg);
+                step_graph_destroy(draft_sg_);
                 return false;
             }
 
@@ -2419,18 +2563,18 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
                 std::vector<int32_t> bonus_vec(1, next_token);
                 if (!target->verify_batch(bonus_vec, bonus_pos, bonus_last_tok, nullptr)) {
                     std::fprintf(stderr, "spec-decode: tree bonus replay failed\n");
-                    step_graph_destroy(draft_sg);
+                    step_graph_destroy(draft_sg_);
                     return false;
                 }
                 target_forwards++;
                 if (!target->read_verify_logits(1, bonus_logits)) {
                     std::fprintf(stderr, "spec-decode: tree bonus logits read failed\n");
-                    step_graph_destroy(draft_sg);
+                    step_graph_destroy(draft_sg_);
                     return false;
                 }
                 if (bonus_logits.empty()) {
                     std::fprintf(stderr, "spec-decode: tree bonus logits empty\n");
-                    step_graph_destroy(draft_sg);
+                    step_graph_destroy(draft_sg_);
                     return false;
                 }
 
@@ -2460,6 +2604,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             cache_.cur_pos = committed;
             n_generated += total_emitted;
             n_draft_steps++;
+            n_spec_positions += q_len;
             if (hit_eos || io.cancelled || n_generated >= n_gen || last_tok < 0) {
                 break;
             }
@@ -2471,7 +2616,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         int hint_fill = 0;
         if (hint_tokens && n_generated < (int)hint_tokens->size()) {
             const int hint_avail = (int)hint_tokens->size() - n_generated;
-            hint_fill = std::min(hint_avail, q_len - 1);
+            hint_fill = std::min(hint_avail, step_block - 1);
             for (int i = 0; i < hint_fill; i++) {
                 draft_tok[1 + i] = (*hint_tokens)[n_generated + i];
             }
@@ -2484,16 +2629,18 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
 
         // 4. Verify: snapshot KV, run target forward over draft tokens
         if (!target->snapshot_kv()) {
-            step_graph_destroy(draft_sg);
+            step_graph_destroy(draft_sg_);
             return false;
         }
 
         int verify_last_tok = -1;
-        if (!target->verify_batch(draft_tok, committed, verify_last_tok, &target_tok,
+        // Pass only step_block tokens to verify; buffers are max-sized but we use a prefix.
+        const std::vector<int32_t> verify_in(draft_tok.begin(), draft_tok.begin() + step_block);
+        if (!target->verify_batch(verify_in, committed, verify_last_tok, &target_tok,
                                    /*capture_ssm_intermediates=*/true)) {
             std::fprintf(stderr, "spec-decode: verify failed\n");
             target->restore_kv();
-            step_graph_destroy(draft_sg);
+            step_graph_destroy(draft_sg_);
             return false;
         }
         target_forwards++;
@@ -2506,13 +2653,13 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         int accept_n = 1;
         int bonus_tok = -1;
         if (sampled_verify) {
-            if (!target->read_verify_logits(q_len, verify_logits)) {
+            if (!target->read_verify_logits(step_block, verify_logits)) {
                 std::fprintf(stderr, "spec-decode: verify logits read failed\n");
                 target->restore_kv();
-                step_graph_destroy(draft_sg);
+                step_graph_destroy(draft_sg_);
                 return false;
             }
-            const int vocab_v = (int)(verify_logits.size() / (size_t)q_len);
+            const int vocab_v = (int)(verify_logits.size() / (size_t)step_block);
             static const bool kSvDebug = []() {
                 const char * e = std::getenv("DFLASH_SV_DEBUG");
                 return e != nullptr && std::string(e) == "1";
@@ -2521,7 +2668,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
                 // Row-alignment check: CPU argmax over each bulk-read row must
                 // equal the GPU argmax (target_tok). Divergence = misaligned
                 // or stale bulk read.
-                for (int i = 0; i < q_len; i++) {
+                for (int i = 0; i < step_block; i++) {
                     const float * row = verify_logits.data() + (size_t)i * vocab_v;
                     int am = 0; float best = row[0];
                     for (int v = 1; v < vocab_v; v++)
@@ -2546,7 +2693,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             verify_history = out_tokens;
             verify_history.push_back(draft_tok[0]);
             bool mismatched = false;
-            for (int i = 0; i < q_len - 1; i++) {
+            for (int i = 0; i < step_block - 1; i++) {
                 const int s = sample_logits(
                     verify_logits.data() + (size_t)i * vocab_v, vocab_v,
                     sampler_, verify_history, sampler_rng_);
@@ -2567,11 +2714,11 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             }
             (void)mismatched;
         } else {
-            for (int i = 0; i < q_len - 1; i++) {
+            for (int i = 0; i < step_block - 1; i++) {
                 if (draft_tok[i + 1] == target_tok[i]) accept_n++;
                 else break;
             }
-            bonus_tok = (accept_n < q_len) ? target_tok[accept_n - 1] : -1;
+            bonus_tok = (accept_n < step_block) ? target_tok[accept_n - 1] : -1;
         }
         // Track hint acceptance telemetry.
         if (hint_fill > 0) {
@@ -2589,7 +2736,11 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         //    accept_n is large enough that skipping the replay saves more compute
         //    than the cost of deferring the bonus to the next step. Breakeven
         //    is around accept_n ≈ 5. Below that, legacy replay is cheaper.
-        constexpr int kFastRollbackThreshold = 5;
+        //    Env-tunable (DFLASH_FAST_ROLLBACK_MIN) for A/B; default 5.
+        static const int kFastRollbackThreshold = []() {
+            const char * e = std::getenv("DFLASH_FAST_ROLLBACK_MIN");
+            return e ? std::atoi(e) : 5;
+        }();
         const bool use_fast_rollback =
             target->supports_fast_rollback() && (accept_n >= kFastRollbackThreshold);
 
@@ -2620,7 +2771,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             // (When falling back from fast-rollback, bonus_tok is -1 and commit_n
             //  is the budget-clamped accepted count.)
             if (!target->restore_kv()) {
-                step_graph_destroy(draft_sg);
+                step_graph_destroy(draft_sg_);
                 return false;
             }
             std::vector<int32_t> replay_batch((size_t)commit_n);
@@ -2629,7 +2780,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             }
             if (!target->verify_batch(replay_batch, committed, replay_last_tok, nullptr)) {
                 std::fprintf(stderr, "spec-decode: replay failed\n");
-                step_graph_destroy(draft_sg);
+                step_graph_destroy(draft_sg_);
                 return false;
             }
             target_forwards++;
@@ -2644,7 +2795,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         // 7. Sync features for replayed range to mirror (needed for next draft step)
         if (use_remote_draft && cache_.target_feat) {
             if (!sync_remote_draft_features(committed, commit_n)) {
-                step_graph_destroy(draft_sg);
+                step_graph_destroy(draft_sg_);
                 return false;
             }
         } else if (feature_mirror_.target_feat && cache_.target_feat) {
@@ -2729,7 +2880,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         int injected = 0;
         if (floor_to_ar) {
             if (!target->restore_kv()) {
-                step_graph_destroy(draft_sg);
+                step_graph_destroy(draft_sg_);
                 return false;
             }
             cache_.cur_pos = committed;
@@ -2740,7 +2891,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
                 if (!target->verify_batch(replay_prefix, committed,
                                           prefix_last_tok, nullptr)) {
                     std::fprintf(stderr, "spec-decode: floor prefix replay failed\n");
-                    step_graph_destroy(draft_sg);
+                    step_graph_destroy(draft_sg_);
                     return false;
                 }
                 target_forwards++;
@@ -2752,7 +2903,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
                 if (!target->verify_batch(*stall_tool_prefix_tokens, committed,
                                           tool_prefix_last_tok, nullptr)) {
                     std::fprintf(stderr, "spec-decode: tool prefix replay failed\n");
-                    step_graph_destroy(draft_sg);
+                    step_graph_destroy(draft_sg_);
                     return false;
                 }
                 target_forwards++;
@@ -2790,8 +2941,28 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         }
         cache_.cur_pos = committed;
         n_generated += emitted + injected;
+        eg_spec_tokens += emitted + injected;
         n_accept_sum += std::min(accept_n, emitted);
         n_draft_steps++;
+        n_spec_positions += step_block;
+        eg_spec_steps++;
+
+        // ── Per-step speedup EMA update ───────────────────────────────────
+        {
+            const double step_wall = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - t_step0).count();
+            const int commit_n_this = emitted + injected;
+            const double ratio = (t_ar > 0.0 && step_wall > 0.0)
+                ? ((double)commit_n_this * t_ar / step_wall) : 2.0;
+            ema_ratio = 0.5 * ema_ratio + 0.5 * ratio;
+            if (ema_ratio < kGateMargin) gate_low_streak++;
+            else gate_low_streak = 0;
+            if (kGateDbg) {
+                std::fprintf(stderr,
+                    "[spec-gate] step=%d commit=%d step_wall=%.4f ratio=%.2f ema=%.2f streak=%d\n",
+                    n_draft_steps - 1, commit_n_this, step_wall, ratio, ema_ratio, gate_low_streak);
+            }
+        }
 
         // Notify observer with accepted tokens for this step.
         if (io.observer) {
@@ -2800,9 +2971,9 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
 
         if (io.cancelled) break;
         if (floor_to_ar) {
-            step_graph_destroy(draft_sg);
+            step_graph_destroy(draft_sg_);
             cache_.last_tok = out_tokens.empty() ? last_tok : out_tokens.back();
-            const int total_draft_pos = std::max(1, n_draft_steps * q_len);
+            const int total_draft_pos = std::max(1, n_spec_positions);
             out_accept_rate =
                 (float)((double)n_accept_sum / (double)total_draft_pos);
             const int ar_n_gen = n_gen - n_generated;
@@ -2825,7 +2996,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         // the emitted output before AR takes over.
         if (budget_close_fired) {
             if (!target->restore_kv()) {
-                step_graph_destroy(draft_sg);
+                step_graph_destroy(draft_sg_);
                 return false;
             }
             cache_.cur_pos = committed;
@@ -2836,16 +3007,16 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
                 if (!target->verify_batch(replay_prefix, committed,
                                           prefix_last_tok, nullptr)) {
                     std::fprintf(stderr, "spec-decode: budget-close prefix replay failed\n");
-                    step_graph_destroy(draft_sg);
+                    step_graph_destroy(draft_sg_);
                     return false;
                 }
                 target_forwards++;
             }
             committed += emitted;
             cache_.cur_pos = committed;
-            step_graph_destroy(draft_sg);
+            step_graph_destroy(draft_sg_);
             cache_.last_tok = out_tokens.empty() ? last_tok : out_tokens.back();
-            const int total_draft_pos = std::max(1, n_draft_steps * q_len);
+            const int total_draft_pos = std::max(1, n_spec_positions);
             out_accept_rate =
                 (float)((double)n_accept_sum / (double)total_draft_pos);
             const int ar_n_gen = n_gen - n_generated;
@@ -2866,13 +3037,17 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         if (hit_eos) break;
     }
 
-    step_graph_destroy(draft_sg);
+    step_graph_destroy(draft_sg_);
 
     auto t_dec1 = std::chrono::steady_clock::now();
     const double decode_s = std::chrono::duration<double>(t_dec1 - t_dec0).count();
-    const int total_draft_pos = std::max(1, n_draft_steps * q_len);
+    const int total_draft_pos = std::max(1, n_spec_positions);
     const double accept_pct = 100.0 * (double)n_accept_sum / (double)total_draft_pos;
     out_accept_rate = (float)((double)n_accept_sum / (double)total_draft_pos);
+    if (gate_active) {
+        std::fprintf(stderr, "[spec-gate] held spec_steps=%d ema_ratio=%.2f\n",
+                     eg_spec_steps, ema_ratio);
+    }
     std::fprintf(stderr, "[spec-decode] tokens=%d time=%.3f s speed=%.2f tok/s "
                  "steps=%d accepted=%d/%d (%.1f%%) avg_commit=%.2f\n",
                  n_generated, decode_s,
