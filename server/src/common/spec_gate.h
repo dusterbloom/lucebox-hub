@@ -19,7 +19,11 @@ struct SpecGateConfig {
 
 // Mutable EMA state.  Promoted to backend member so state persists across turns.
 struct SpecGateState {
-    double ema_ratio      = 0.0; // EMA of realized speedup; pessimistic init (gates fast on losers)
+    double ema_ratio      = 2.0; // EMA of realized speedup; OPTIMISTIC init so spec survives
+                                 // the slow cold-expert/warmup steps before its high-avg_commit
+                                 // steady state (a pessimistic 0.0 init floored real winners —
+                                 // the 05bebe70 regression). Sustained losers still floor via the
+                                 // streak + hard paths within a few steps.
     int    gate_low_streak = 0;
     int    n_ema_updates   = 0;  // total updates; gates hard-floor until warmup complete
 };

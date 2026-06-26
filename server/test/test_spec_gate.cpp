@@ -172,21 +172,23 @@ int main() {
         check(st.gate_low_streak == 0, "step_wall=0: ratio defaults to 2.0, streak stays 0");
     }
 
-    // ── Test A: 2x-slower spec floors by end of warmup ──────────────────────
-    // MoE scenario: t_ar=0.008 (125 tok/s AR), spec step commits 3 tokens
-    // but takes 0.054s → ratio = 3*0.008/0.054 ≈ 0.44 (spec ~2× slower than AR).
-    // After `warmup` such steps the gate MUST floor (ema_ratio << margin).
+    // ── Test A: a sustained 2x-slower spec MUST floor (loser protection) ─────
+    // MoE scenario: t_ar=0.008 (125 tok/s AR), spec step commits 3 tokens but
+    // takes 0.054s → ratio ≈ 0.44 (spec ~2× slower). With the optimistic
+    // bootstrap (ema init 2.0) the gate gives warmup a chance, then floors a
+    // SUSTAINED loser via the streak/hard paths within a few steps.
     {
         const SpecGateConfig cfg { /*enabled=*/true, /*margin=*/1.0, /*sustain=*/3, /*warmup=*/2 };
         SpecGateState st;
         double t_ar    = 0.008;
         double t_step  = 0.054;
         int    commit  = 3;
-        for (int i = 0; i < cfg.warmup; ++i) {
+        bool   floored = false;
+        for (int i = 0; i < 8; ++i) {
             spec_gate_ema_update(cfg, st, commit, t_step, t_ar);
+            if (spec_gate_active(cfg, st, i + 1, /*sampled_verify=*/false)) { floored = true; break; }
         }
-        check(spec_gate_active(cfg, st, cfg.warmup, /*sampled_verify=*/false),
-              "Test A: 2x-slower MoE spec must floor by end of warmup");
+        check(floored, "Test A: sustained 2x-slower MoE spec must floor");
     }
 
     // ── Test B: high-accept spec never floors (no-regression guard) ─────────
@@ -204,6 +206,24 @@ int main() {
         }
         check(!spec_gate_active(cfg, st, 20, /*sampled_verify=*/false),
               "Test B: high-accept spec (ratio~9.6) must never floor");
+    }
+
+    // ── Test C: winning profile — slow warmup then high steady-state must NOT
+    // floor (the 05bebe70 pessimistic-init regression killed this; the DDTree
+    // win on Q3 all-hot needs spec to survive the cold-expert warmup steps). ──
+    {
+        const SpecGateConfig cfg { /*enabled=*/true, /*margin=*/1.0, /*sustain=*/3, /*warmup=*/2 };
+        SpecGateState st;
+        double t_ar = 0.008;
+        // 2 slow warmup steps (cold experts on the first turn): ratio ≈ 0.44.
+        spec_gate_ema_update(cfg, st, 3, 0.054, t_ar);
+        spec_gate_ema_update(cfg, st, 3, 0.054, t_ar);
+        check(!spec_gate_active(cfg, st, 2, /*sampled_verify=*/false),
+              "Test C: slow warmup steps must NOT floor before steady state");
+        // steady state: high avg_commit (14 tokens in 0.012s → ratio ≈ 9.3).
+        for (int i = 0; i < 8; ++i) spec_gate_ema_update(cfg, st, 14, 0.012, t_ar);
+        check(!spec_gate_active(cfg, st, 10, /*sampled_verify=*/false),
+              "Test C: winning steady-state (avg_commit 14) must never floor");
     }
 
     if (failures == 0) {
