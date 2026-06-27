@@ -928,6 +928,8 @@ static ggml_tensor * build_delta_net_block(
     ggml_tensor * output = nullptr;
     ggml_tensor * new_state = nullptr;
 
+    const bool pure_ar = !use_chunked && parent_ids == nullptr && persist_inter == nullptr;
+
     if (use_chunked) {
         auto r = build_delta_net_chunked(ctx, q_c, k_c, v_c, g_tensor, beta, s);
         output    = r.output;
@@ -941,7 +943,9 @@ static ggml_tensor * build_delta_net_block(
             ? ggml_gated_delta_net_tree_persist(ctx, q_c, k_c, v_c, g_tensor, beta, s, parent_ids, persist_inter)
             : (parent_ids
                 ? ggml_gated_delta_net_tree(ctx, q_c, k_c, v_c, g_tensor, beta, s, parent_ids)
-                : ggml_gated_delta_net     (ctx, q_c, k_c, v_c, g_tensor, beta, s));
+                : (pure_ar
+                    ? ggml_gated_delta_net_inplace(ctx, q_c, k_c, v_c, g_tensor, beta, s)
+                    : ggml_gated_delta_net     (ctx, q_c, k_c, v_c, g_tensor, beta, s)));
 
     // Slice output and new_state out of the packed result
     {
@@ -961,8 +965,11 @@ static ggml_tensor * build_delta_net_block(
         S_v * S_v * H_v * r_elt,
         S_v * H_v * n_seq_tokens * n_seqs * r_elt);
 
-    // Persist new_state back to cache
-    ggml_build_forward_expand(gf, ggml_cpy(ctx, new_state, ssm_state));
+    // Persist new_state back to cache. Skip in pure AR (inplace kernel wrote
+    // directly to ssm_state — no copy needed, saves 2 graph nodes/layer).
+    if (!pure_ar) {
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, new_state, ssm_state));
+    }
 
     // Expose per-step intermediate states for spec-decode rollback. The patched
     // ggml_gated_delta_net kernel appends an intermediate-states region to the
