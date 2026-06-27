@@ -1547,7 +1547,7 @@ void Qwen35Backend::kvflash_upload_mask() {
     const size_t need = (size_t)sg_.attn_mask->ne[0] * sg_.attn_mask->ne[1];
     if (kvflash_mask_buf_.size() != need || kvflash_pager_.epoch() != kvflash_mask_epoch_) {
         kvflash_mask_buf_.assign(need, F16_NEG_INF);
-        kvflash_pager_.fill_slot_mask_cached(kvflash_mask_buf_.data());  // q row 0; pager caches
+        kvflash_pager_.fill_slot_mask(kvflash_mask_buf_.data());  // q row 0; pager caches
         kvflash_mask_epoch_ = kvflash_pager_.epoch();
     }
     // Upload before EVERY compute: the input tensor's buffer region is
@@ -1789,15 +1789,13 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
     int ar_diag_n = 0;
     using ar_clock = std::chrono::steady_clock;
 
-    // Graph reuse + props-check skip via thread-local C function call
-    // (zero overhead: no env vars, no syscalls, ~1ns per call).
-    // Set once before the loop — the warmup_complete + instance guards
-    // inside ggml-cuda prevent stale replay on the first capture cycle.
-    // After the first 2 steps (warmup), all subsequent steps skip the
-    // O(n_nodes) props check entirely.
-    if (ar_graph_reuse) {
-        ggml_cuda_set_skip_props_check(true);
-    }
+    // Props-check skip: set ONCE before the loop. The warmup_complete guard
+    // inside ggml-cuda handles the initial capture correctly (needs 2 stable
+    // steps → direct exec → capture → skip). After capture, ALL steps skip.
+    // Safe for decodes <256 tokens (no bucket boundary crossing).
+    // For long decodes, the per-step rebuild toggles the flag off via the
+    // need_rebuild check below.
+    ggml_cuda_set_skip_props_check(ar_graph_reuse);
 
     for (int i = initial_emitted; i < n_gen; i++) {
         int32_t tok = out_tokens.back();
@@ -1852,12 +1850,13 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
         if (pool) kvflash_upload_mask();
         auto _t3 = ar_clock::now();
 
-        // Per-step toggle: false on rebuild (re-validates after gallocr
-        // reassignment), true on stable (skips O(n_nodes) loop).
-        // Thread-local bool write = ~1ns. No env/syscall overhead.
-        ggml_cuda_set_skip_props_check(ar_graph_reuse && !need_rebuild);
+        // On rebuild steps (bucket boundary), temporarily disable skip
+        // so the full props check runs → warmup reset → re-capture.
+        if (need_rebuild) ggml_cuda_set_skip_props_check(false);
 
         auto st = ggml_backend_graph_compute(target_backend_, sg_.gf);
+        // Re-enable after the rebuild step's compute.
+        if (need_rebuild) ggml_cuda_set_skip_props_check(ar_graph_reuse);
         if (st != GGML_STATUS_SUCCESS) return false;
 
         after_target_compute(sg_, committed, 1);
