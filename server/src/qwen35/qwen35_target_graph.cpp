@@ -131,7 +131,11 @@ bool create_target_cache_partial(const TargetWeights & w,
     // Graph-level FWHT K-rotation (TurboQuant-style outlier spreading with
     // standard quant types that keep fast FA kernel paths on all arches).
     // Skip for TQ3_0 K cache — that type already applies WHT during quantization.
-    out.kv_k_rotated = (kv_k_type != GGML_TYPE_TQ3_0);
+    // DFLASH_NO_WHT=1 disables the rotation entirely: q4_0 KV doesn't need the
+    // outlier spreading on Ampere, and the FWHT is ~16 extra kernels/token that
+    // llama never runs (~+3% decode). Cached (read once).
+    static const bool no_wht = (std::getenv("DFLASH_NO_WHT") != nullptr);
+    out.kv_k_rotated = (kv_k_type != GGML_TYPE_TQ3_0) && !no_wht;
 
     const bool needs_256_stride =
         kv_k_type == GGML_TYPE_TQ3_0 || kv_v_type == GGML_TYPE_TQ3_0;
@@ -870,9 +874,14 @@ static ggml_tensor * build_delta_net_block(
     q_c = ggml_l2_norm(ctx, q_c, w.rms_eps);
     k_c = ggml_l2_norm(ctx, k_c, w.rms_eps);
 
-    // Repeat Q and K from num_k_heads to num_v_heads so they match V's layout
-    // (only needed if not using the fused op's broadcast support).
-    if (num_k_heads != num_v_heads) {
+    // Repeat Q and K from num_k_heads to num_v_heads so they match V's layout.
+    // In pure AR (cap==nullptr, parent_ids==nullptr) the kernel's fastmodulo
+    // broadcast handles the head mismatch natively — skip the repeat to save
+    // one tensor allocation and a memory-bandwidth copy per SSM layer per step.
+    // In tree/capture mode keep the repeat: the DFS parent-reload in the kernel
+    // indexes intermediate states by h_idx (v-head), so Q/K must already be
+    // in the expanded [num_v_heads] layout before the kernel runs.
+    if (num_k_heads != num_v_heads && (cap != nullptr || parent_ids != nullptr)) {
         q_c = ggml_repeat_4d(ctx, q_c, head_k_dim, num_v_heads, n_seq_tokens, n_seqs);
         k_c = ggml_repeat_4d(ctx, k_c, head_k_dim, num_v_heads, n_seq_tokens, n_seqs);
     }
@@ -971,6 +980,16 @@ static ggml_tensor * build_delta_net_block(
         // its own result region (i.e. when we did NOT use _tree_persist).
         // The _tree_persist variant writes directly to the cache buffer and
         // this cpy becomes redundant, saving ~5-10 ms per verify step.
+        //
+        // INVARIANT: this path requires parent_ids != nullptr so that the
+        // ggml_gated_delta_net_tree call above allocated K=n_tokens (with the
+        // embedded intermediate-state region). If parent_ids is null and cap is
+        // set without persist_inter, the result tensor was allocated with K=1
+        // (no intermediate region) and the inter_view below would be out-of-bounds.
+        // All current callers set parent_ids whenever capture_delta_intermediate
+        // is true, so this assertion guards against future regressions.
+        GGML_ASSERT(parent_ids != nullptr &&
+                    "inter cpy path requires tree mode (parent_ids): K=n_tokens allocation needed");
         const size_t inter_offset =
             S_v * H_v * n_seq_tokens * n_seqs * r_elt        // attn output region
           + S_v * S_v * H_v * n_seqs * r_elt;                // final-state region
