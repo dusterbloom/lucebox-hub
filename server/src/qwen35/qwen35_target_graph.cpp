@@ -829,13 +829,6 @@ static ggml_tensor * build_delta_net_block(
         ggml_build_forward_expand(gf, ggml_cpy(ctx, conv_input, dst));
     }
 
-    // ── Save the last (kernel-1) steps back to conv_state
-    ggml_tensor * last_conv = ggml_view_3d(ctx, conv_input,
-        w.ssm_d_conv - 1, conv_channels, n_seqs,
-        conv_input->nb[1], conv_input->nb[2],
-        (conv_input->ne[0] - (w.ssm_d_conv - 1)) * ggml_element_size(conv_input));
-    ggml_build_forward_expand(gf, ggml_cpy(ctx, last_conv, conv_state));
-
     // ── 1D conv + silu
     //    Tree mode: use the parent-chain-aware variant so sibling nodes gather
     //    their conv window from their actual tree parent instead of the DFS
@@ -844,6 +837,23 @@ static ggml_tensor * build_delta_net_block(
     ggml_tensor * conv_out = parent_ids
         ? ggml_ssm_conv_tree(ctx, conv_input, L.ssm_conv1d, parent_ids)
         : ggml_ssm_conv     (ctx, conv_input, L.ssm_conv1d);
+
+    // In pure AR (no tree mode), set conv_state as an in-place output of
+    // the ssm_conv op. The CUDA op function copies the conv_input tail
+    // (last d_conv-1 rows) directly to conv_state via cudaMemcpyAsync,
+    // eliminating the downstream ggml_cpy node. Correct by construction:
+    // same bytes copied, just no separate graph node.
+    if (!parent_ids) {
+        conv_out->src[3] = conv_state;
+    } else {
+        // Tree mode: explicit cpy (needed for rollback snapshots).
+        ggml_tensor * last_conv = ggml_view_3d(ctx, conv_input,
+            w.ssm_d_conv - 1, conv_channels, n_seqs,
+            conv_input->nb[1], conv_input->nb[2],
+            (conv_input->ne[0] - (w.ssm_d_conv - 1)) * ggml_element_size(conv_input));
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, last_conv, conv_state));
+    }
+
     conv_out = ggml_silu(ctx, conv_out);
 
     // conv_out: [conv_channels, n_tokens, n_seqs]
