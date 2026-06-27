@@ -1780,13 +1780,29 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
     const bool ar_graph_reuse = std::getenv("DFLASH_AR_NO_REUSE") == nullptr;
     ar_decode_fa_bucket_ = -1;  // force first-step build
 
+    // Diagnostic timing
+    static const bool ar_diag = std::getenv("DFLASH_AR_DIAG") != nullptr;
+    double db_prep = 0, db_build = 0, db_inputs = 0, db_compute = 0, db_get = 0;
+    int ar_diag_n = 0;
+    using ar_clock = std::chrono::steady_clock;
+
+    // Enable props-check skip for the decode loop only (toggled off after).
+    // The ggml-cuda backend reads this env var dynamically on each
+    // graph_compute call. Only skip when graph reuse is active (the
+    // topology is stable within a 256-token FA bucket).
+    // NOTE: the env is toggled per-step below — only on non-rebuild steps.
+    // On rebuild steps (bucket boundary) the gallocr reallocates buffers,
+    // so the captured graph instance is stale and MUST be re-validated.
+
     for (int i = initial_emitted; i < n_gen; i++) {
         int32_t tok = out_tokens.back();
+        auto _t0 = ar_clock::now();
 
         if (!w_.embedder.embed(&tok, 1, embed_buf)) return false;
         ggml_backend_tensor_set(sg_.inp_embed, embed_buf, 0, sizeof(float) * hidden);
         int32_t pos4[4] = {committed, committed, committed, 0};
         ggml_backend_tensor_set(sg_.positions, pos4, 0, sizeof(int32_t) * 4);
+        auto _t1 = ar_clock::now();
 
         // kvflash: graph carries a slot-validity mask alongside the
         // step-invariant set_rows write; the FA span clamps to the pool.
@@ -1809,6 +1825,7 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
             }
             ar_decode_fa_bucket_ = fa_bucket;
         }
+        auto _t2 = ar_clock::now();
 
         // Fill kv_write_rows with this step's cache slot for set_rows:
         // the logical position directly, or its pool slot in kvflash mode.
@@ -1828,11 +1845,23 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
                                     sizeof(int64_t) * n_head_kv);
         }
         if (pool) kvflash_upload_mask();
+        auto _t3 = ar_clock::now();
+
+        // Only skip the props check on non-rebuild steps (the graph
+        // instance is valid and topology is unchanged). On rebuild steps
+        // the gallocr may reallocate buffers, invalidating the instance.
+        if (ar_graph_reuse && !need_rebuild) {
+            setenv("DFLASH_SKIP_PROPS_CHECK", "1", 0);
+        } else {
+            unsetenv("DFLASH_SKIP_PROPS_CHECK");
+        }
 
         auto st = ggml_backend_graph_compute(target_backend_, sg_.gf);
+        unsetenv("DFLASH_SKIP_PROPS_CHECK");  // always unset after compute
         if (st != GGML_STATUS_SUCCESS) return false;
 
         after_target_compute(sg_, committed, 1);
+        auto _t4 = ar_clock::now();
 
         // GPU argmax: read 4 bytes, skip the 970 KB logit D2H. Escape: DFLASH_GPU_ARGMAX=0.
         static const bool kGpuArgmaxAR = []() {
@@ -1844,7 +1873,7 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
             ggml_backend_tensor_get(sg_.logits, logits_buf.data(), 0,
                                     sizeof(float) * vocab);
             next_tok = sample_logits(logits_buf.data(), vocab, sampler_,
-                                      out_tokens, sampler_rng_);
+                                       out_tokens, sampler_rng_);
         } else if (kGpuArgmaxAR && sg_.argmax_tokens) {
             int32_t tok_i = 0;
             ggml_backend_tensor_get(sg_.argmax_tokens, &tok_i, 0, sizeof(int32_t));
@@ -1857,6 +1886,14 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
             for (int j = 1; j < vocab; j++) {
                 if (logits_buf[j] > best) { best = logits_buf[j]; next_tok = j; }
             }
+        }
+        auto _t5 = ar_clock::now();
+        if (ar_diag) {
+            auto _us = [](ar_clock::time_point a, ar_clock::time_point b){
+                return std::chrono::duration<double, std::micro>(b - a).count(); };
+            db_prep += _us(_t0,_t1); db_build += _us(_t1,_t2); db_inputs += _us(_t2,_t3);
+            db_compute += _us(_t3,_t4); db_get += _us(_t4,_t5);
+            ar_diag_n++;
         }
 
         // MIN_TOKENS_BEFORE_EOS (env DFLASH_MIN_TOKENS, default 0=off): if the
@@ -1960,6 +1997,20 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
     std::fprintf(stderr, "[ar-decode] tokens=%d time=%.3f s speed=%.2f tok/s\n",
                  ar_tokens, ar_decode_s,
                  ar_tokens > 0 && ar_decode_s > 0 ? ar_tokens / ar_decode_s : 0.0);
+    if (ar_diag && ar_diag_n > 0) {
+        std::fprintf(stderr, "[ardiag] n=%d prep=%.1f build=%.1f inputs=%.1f compute=%.1f get=%.1f us/step (sum=%.1f)\n",
+                     ar_diag_n, db_prep/ar_diag_n, db_build/ar_diag_n, db_inputs/ar_diag_n,
+                     db_compute/ar_diag_n, db_get/ar_diag_n,
+                     (db_prep + db_build + db_inputs + db_compute + db_get) / ar_diag_n);
+        int nn = ggml_graph_n_nodes(sg_.gf);
+        int opcnt[256] = {0};
+        for (int i = 0; i < nn; i++) { ggml_tensor * n = ggml_graph_node(sg_.gf, i); if (n) { int o=(int)n->op; if(o>=0&&o<256) opcnt[o]++; } }
+        std::fprintf(stderr, "[ardiag-ops]");
+        for (int o = 0; o < 256; o++) if (opcnt[o] > 0)
+            std::fprintf(stderr, " %s:%d", ggml_op_name((ggml_op)o), opcnt[o]);
+        std::fprintf(stderr, "\n");
+        std::fprintf(stderr, "[ardiag-nnodes] total=%d\n", nn);
+    }
     return true;
 }
 
