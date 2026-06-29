@@ -92,6 +92,51 @@ int main() {
         expect(d.pool_reduced,     "C6: laguna pool reduction engaged");
     }
 
-    std::printf("PASS: kvflash placement decision (6 cases)\n");
+    // Case 7 — the MoE gate must trust actual hybrid placement over the
+    // pre-cap full-KV flag. DFLASH_EXPERT_BUDGET_MB can force cold experts
+    // after all_hot_full_kv was computed; disabling KVFlash here makes the
+    // paged warm-restore path unreachable and the snapshot-chain gate invalid.
+    {
+        expect(!kvflash_moe_should_disable_pool(
+                   /*kvflash_active=*/true,
+                   /*all_hot_full_kv=*/true,
+                   /*has_hybrid=*/true,
+                   /*total_cold_experts=*/2518),
+               "C7: actual cold hybrid experts keep kvflash active");
+        expect(kvflash_moe_should_disable_pool(
+                   /*kvflash_active=*/true,
+                   /*all_hot_full_kv=*/true,
+                   /*has_hybrid=*/true,
+                   /*total_cold_experts=*/0),
+               "C7: hybrid with zero cold experts disables redundant kvflash");
+        expect(kvflash_moe_should_disable_pool(
+                   /*kvflash_active=*/true,
+                   /*all_hot_full_kv=*/true,
+                   /*has_hybrid=*/false,
+                   /*total_cold_experts=*/0),
+               "C7: all-hot full-KV early return disables redundant kvflash");
+    }
+
+    // Case 8 — an explicit force mode must keep the pool alive even when the
+    // automatic MoE gate would consider it redundant. This gives us a deliberate
+    // all-hot KVFlash control arm without changing default production behavior.
+    {
+        expect(!kvflash_moe_should_disable_pool(
+                   /*kvflash_active=*/true,
+                   /*all_hot_full_kv=*/true,
+                   /*has_hybrid=*/true,
+                   /*total_cold_experts=*/0,
+                   /*force_pool=*/true),
+               "C8: forced all-hot hybrid keeps kvflash active");
+        expect(!kvflash_moe_should_disable_pool(
+                   /*kvflash_active=*/true,
+                   /*all_hot_full_kv=*/true,
+                   /*has_hybrid=*/false,
+                   /*total_cold_experts=*/0,
+                   /*force_pool=*/true),
+               "C8: forced all-hot early return keeps kvflash active");
+    }
+
+    std::printf("PASS: kvflash placement decision (8 cases)\n");
     return 0;
 }
