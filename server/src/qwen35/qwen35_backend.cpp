@@ -1,5 +1,6 @@
 #include "qwen35_backend.h"
 #include "placement/skip_park_guard.h"
+#include "qwen35/prefill_logits_policy.h"
 #include "qwen35_dflash_target.h"
 #include "graph_builders.h"
 #include "dflash_feature_ring.h"
@@ -1115,12 +1116,14 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         // positions encode the complete context — critical for tool
         // definitions at prompt start to propagate into KV values that
         // decode-time windowed attention will later read.
+        const Qwen35PrefillLogitsPolicy logits_policy =
+            qwen35_prefill_logits_policy(n_tokens, vocab);
         if (!build_target_step(sg_, w_, cache_, target_backend_,
                                /*kv_start=*/kv_pos, /*n_tokens=*/n_tokens,
                                with_mask, /*capture=*/true,
                                /*capture_delta_intermediate=*/false,
                                /*fa_window=*/0,
-                               /*last_token_logits_only=*/(start + n_tokens < prompt_len),
+                               logits_policy.last_token_logits_only,
                                cfg_.kq_stride_pad,
                                should_capture_moe_router(),
                                /*kvflash_mask=*/kvf_paged)) {
@@ -1210,12 +1213,12 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
 
         int32_t last_tok = -1;
         const bool is_final_chunk = (start + n_tokens >= prompt_len);
-        const size_t argmax_off =
-            is_final_chunk ? sizeof(int32_t) * (size_t)(n_tokens - 1) : 0;
-        ggml_backend_tensor_get(sg_.argmax_tokens, &last_tok, argmax_off, sizeof(int32_t));
+        ggml_backend_tensor_get(sg_.argmax_tokens, &last_tok,
+                                logits_policy.argmax_offset_bytes,
+                                sizeof(int32_t));
         cache_.last_tok = last_tok;
         if (is_final_chunk) {
-            prefill_last_logits_offset_ = (size_t)(n_tokens - 1) * (size_t)vocab * sizeof(float);
+            prefill_last_logits_offset_ = logits_policy.logits_offset_bytes;
             prefill_last_logits_valid_ = true;
         }
 

@@ -29,6 +29,8 @@
 #include "common/kvflash_pager.h"
 #include "placement/draft_residency.h"
 #include "common/gguf_bounds.h"
+#include "qwen35/prefill_logits_policy.h"
+#include "qwen35/qwen35_graph_options.h"
 #include "ggml-cpu.h"
 #include "server/prompt_normalize.h"
 #include "qwen3_drafter_model.h"
@@ -2265,6 +2267,41 @@ static void test_layer_split_backend_capability_proxy() {
     TEST_ASSERT(backend.supports_mixed_backend_layer_split());
 }
 
+static void test_qwen35_prefill_final_chunk_projects_only_last_token() {
+    const int n_tokens = 768;
+    const int vocab = 248320;
+
+    auto policy = qwen35_prefill_logits_policy(n_tokens, vocab);
+
+    TEST_ASSERT(policy.last_token_logits_only);
+    TEST_ASSERT(policy.argmax_offset_bytes == 0);
+    TEST_ASSERT(policy.logits_offset_bytes == 0);
+}
+
+static void test_qwen35_prefill_single_token_policy_is_offset_zero() {
+    auto policy = qwen35_prefill_logits_policy(1, 248320);
+
+    TEST_ASSERT(policy.last_token_logits_only);
+    TEST_ASSERT(policy.argmax_offset_bytes == 0);
+    TEST_ASSERT(policy.logits_offset_bytes == 0);
+}
+
+static void test_qwen35_q4_0_k_cache_skips_graph_wht_by_default() {
+    unsetenv("DFLASH_NO_WHT");
+    unsetenv("DFLASH_FORCE_WHT");
+
+    TEST_ASSERT(!qwen35_should_use_graph_wht_k_rotation(GGML_TYPE_Q4_0));
+}
+
+static void test_qwen35_force_wht_restores_graph_wht_for_q4_0() {
+    unsetenv("DFLASH_NO_WHT");
+    setenv("DFLASH_FORCE_WHT", "1", 1);
+
+    TEST_ASSERT(qwen35_should_use_graph_wht_k_rotation(GGML_TYPE_Q4_0));
+
+    unsetenv("DFLASH_FORCE_WHT");
+}
+
 // Disk Prefix Cache Tests
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -4417,6 +4454,10 @@ int main() {
     RUN_TEST(test_layer_split_compress_rejects_bad_keep_ratio);
     RUN_TEST(test_layer_split_backend_shutdown_is_idempotent);
     RUN_TEST(test_layer_split_backend_capability_proxy);
+    RUN_TEST(test_qwen35_prefill_final_chunk_projects_only_last_token);
+    RUN_TEST(test_qwen35_prefill_single_token_policy_is_offset_zero);
+    RUN_TEST(test_qwen35_q4_0_k_cache_skips_graph_wht_by_default);
+    RUN_TEST(test_qwen35_force_wht_restores_graph_wht_for_q4_0);
 
     std::fprintf(stderr, "\n── Disk prefix cache ──\n");
     RUN_TEST(test_disk_cache_config_defaults);
