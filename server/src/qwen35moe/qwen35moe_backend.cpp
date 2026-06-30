@@ -855,7 +855,9 @@ GenerateResult Qwen35MoeBackend::generate_impl(const GenerateRequest & req,
     const bool kvf_paged = kvflash_active() &&
         prompt_len > kvflash_tokens_ - kvflash_pager_.chunk_tokens();
     int pooled_snap_boundary = -1;
-    bool pooled_snap_saved = false;
+    bool boundary_snap_saved = false;
+    const bool kvf_inline_snap = kvflash_active() &&
+        req.snap_slot >= 0 && req.snap_pos > 0 && req.snap_pos < prompt_len;
     if (kvf_paged) {
         kvflash_pager_.reset();
         // Apply pins BEFORE the eviction loop so pinned chunks survive
@@ -872,12 +874,12 @@ GenerateResult Qwen35MoeBackend::generate_impl(const GenerateRequest & req,
         }
         if (!chunked_prefill(req.prompt.data(), 0, prompt_len, act_cur, committed,
                              req.snap_slot, pooled_snap_boundary,
-                             &pooled_snap_saved)) {
+                             &boundary_snap_saved)) {
             result.error = "kvf_paged_prefill";
             cleanup_graphs();
             return result;
         }
-        if (pooled_snap_boundary > 0 && !pooled_snap_saved) {
+        if (pooled_snap_boundary > 0 && !boundary_snap_saved) {
             std::fprintf(stderr,
                 "[snap] hybrid pooled boundary save failed at snap_boundary=%d\n",
                 pooled_snap_boundary);
@@ -886,6 +888,24 @@ GenerateResult Qwen35MoeBackend::generate_impl(const GenerateRequest & req,
         kvflash_pager_.zero_free_blocks();
         kvflash_mask_epoch_ = (uint64_t)-1;
         // Re-apply pins (zero_free_blocks doesn't touch pinned_ but be explicit)
+        apply_kvflash_pins();
+    } else if (kvf_inline_snap) {
+        kvflash_pager_.reset();
+        apply_kvflash_pins();
+        if (!chunked_prefill(req.prompt.data(), 0, prompt_len, act_cur, committed,
+                             req.snap_slot, req.snap_pos, &boundary_snap_saved)) {
+            result.error = "kvf_inline_snap_prefill";
+            cleanup_graphs();
+            return result;
+        }
+        if (!boundary_snap_saved) {
+            std::fprintf(stderr,
+                "[snap] hybrid inline boundary save failed at snap_boundary=%d\n",
+                req.snap_pos);
+        }
+        kvflash_history_.assign(req.prompt.begin(), req.prompt.end());
+        kvflash_pager_.zero_free_blocks();
+        kvflash_mask_epoch_ = (uint64_t)-1;
         apply_kvflash_pins();
     } else {
 
@@ -1167,7 +1187,7 @@ GenerateResult Qwen35MoeBackend::generate_impl(const GenerateRequest & req,
                      committed);
         }
     } else if (req.snap_slot >= 0 && req.snap_pos > 0) {
-        if (!pooled_snap_saved) {
+        if (!boundary_snap_saved) {
             std::fprintf(stderr,
                          "[snap] hybrid skip unsafe boundary slot=%d req_snap_pos=%d cur_pos=%d\n",
                          req.snap_slot, req.snap_pos, committed);
@@ -1554,16 +1574,24 @@ GenerateResult Qwen35MoeBackend::restore_and_generate_impl(int slot,
         // snapshots AT the chunk boundary (cur_pos==boundary -> recurrent state
         // correct); the restore path historically omitted them, so after turn 1 no
         // new snapshot was committed (snap=MISSING) and the warm-restore chain died.
-        // The boundary must fall in the suffix (snap_pos, prompt_len) to be hit by
-        // the chunk loop; it is chunk-aligned to match the loop stride.
+        // The boundary must fall in the suffix (snap_pos, prompt_len). Identity
+        // mapped restores can exact-save that boundary; pooled restores still use
+        // chunk-aligned snapshots because pooled serialization is chunk-granular.
         int  resnap_boundary = -1;
         bool resnap_saved    = false;
-        if (kvflash_active() && req.snap_slot >= 0) {
-            const int cfg_chunk = kvflash_pager_.chunk_tokens();
-            if (cfg_chunk > 0) {
-                resnap_boundary = (req.snap_pos / cfg_chunk) * cfg_chunk;
-                if (resnap_boundary <= snap_pos || resnap_boundary >= prompt_len)
-                    resnap_boundary = -1;
+        if (kvflash_active() && req.snap_slot >= 0 &&
+            req.snap_pos > snap_pos && req.snap_pos < prompt_len) {
+            const bool identity_resnap = !snap_pooled &&
+                prompt_len <= kvflash_tokens_ - kvflash_pager_.chunk_tokens();
+            if (identity_resnap) {
+                resnap_boundary = req.snap_pos;
+            } else {
+                const int cfg_chunk = kvflash_pager_.chunk_tokens();
+                if (cfg_chunk > 0) {
+                    resnap_boundary = (req.snap_pos / cfg_chunk) * cfg_chunk;
+                    if (resnap_boundary <= snap_pos || resnap_boundary >= prompt_len)
+                        resnap_boundary = -1;
+                }
             }
         }
         if (!chunked_prefill(req.prompt.data(), snap_pos, prompt_len, act_cur, committed,
@@ -1754,14 +1782,27 @@ bool Qwen35MoeBackend::chunked_prefill(const int32_t * tokens, int start_pos,
     const int ct = kvflash_active()
         ? kvflash_pager_.chunk_tokens()
         : std::min(128, end_pos - start_pos);
+    if (ct <= 0) return false;
     std::vector<int32_t> chunk_argmax;
-    for (int start = start_pos; start < end_pos; start += ct) {
-        const int n = std::min(ct, end_pos - start);
+    for (int start = start_pos; start < end_pos; ) {
         if (snap_slot >= 0 && snap_boundary > 0 && start == snap_boundary) {
             target_cache().cur_pos = start;
-            if (snapshot_save_pooled_at(snap_slot, snap_boundary)) {
+            bool saved = false;
+            if (kvflash_active() && !kvflash_pager_.is_identity()) {
+                const int cfg_chunk = kvflash_pager_.chunk_tokens();
+                if (cfg_chunk > 0 && snap_boundary % cfg_chunk == 0) {
+                    saved = snapshot_save_pooled_at(snap_slot, snap_boundary);
+                } else {
+                    std::fprintf(stderr,
+                        "[snap] hybrid pooled boundary unaligned: snap_boundary=%d chunk=%d\n",
+                        snap_boundary, cfg_chunk);
+                }
+            } else {
+                saved = snapshot_save(snap_slot);
+            }
+            if (saved) {
                 if (snap_saved) *snap_saved = true;
-                std::printf("[snap] hybrid pooled boundary slot=%d cur_pos=%d "
+                std::printf("[snap] hybrid chunk boundary slot=%d cur_pos=%d "
                             "(chunk start)\n",
                             snap_slot, snap_boundary);
                 std::fflush(stdout);
@@ -1773,12 +1814,17 @@ bool Qwen35MoeBackend::chunked_prefill(const int32_t * tokens, int start_pos,
             snap_slot = -1;
             snap_boundary = -1;
         }
+        int n = std::min(ct, end_pos - start);
+        if (snap_slot >= 0 && snap_boundary > start && snap_boundary < start + n) {
+            n = snap_boundary - start;
+        }
         if (!hybrid_forward_batch(tokens + start, n, start, act_cur, chunk_argmax,
                                   /*capture_features=*/true))
             return false;
         committed = start + n;
         target_cache().cur_pos = committed;
         target_cache().last_tok = chunk_argmax.back();
+        start += n;
     }
     return true;
 }
