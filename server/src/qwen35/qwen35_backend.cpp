@@ -37,6 +37,67 @@
 namespace dflash::common {
 
 namespace {
+using Qwen35Clock = std::chrono::steady_clock;
+
+static uint64_t qwen35_elapsed_us(Qwen35Clock::time_point start,
+                                  Qwen35Clock::time_point end) {
+    return (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+}
+
+static bool qwen35_prefill_telemetry_enabled() {
+    if (const char * s = std::getenv("DFLASH_QWEN35_PREFILL_TELEMETRY")) {
+        return std::atoi(s) != 0;
+    }
+    if (const char * s = std::getenv("DFLASH_PREFILL_TELEMETRY")) {
+        return std::atoi(s) != 0;
+    }
+    return false;
+}
+
+struct Qwen35PrefillProfile {
+    bool enabled = false;
+    Qwen35Clock::time_point start{};
+    uint64_t migrate_us = 0;
+    uint64_t snapshot_us = 0;
+    uint64_t slot_us = 0;
+    uint64_t build_us = 0;
+    uint64_t kv_rows_us = 0;
+    uint64_t embed_us = 0;
+    uint64_t positions_us = 0;
+    uint64_t mask_us = 0;
+    uint64_t compute_us = 0;
+    uint64_t post_us = 0;
+    uint64_t argmax_us = 0;
+    uint64_t kvsync_us = 0;
+    uint64_t final_snapshot_us = 0;
+    int chunks = 0;
+    int snapshot_count = 0;
+};
+
+static void qwen35_prefill_profile_print(const Qwen35PrefillProfile & p,
+                                         int prompt_len,
+                                         int kv_offset,
+                                         int prefill_ubatch,
+                                         bool kvf_paged,
+                                         bool capture_features) {
+    if (!p.enabled) return;
+    const uint64_t total_us = qwen35_elapsed_us(p.start, Qwen35Clock::now());
+    std::fprintf(stderr,
+        "[qwen35-prefill-prof] tokens=%d kv_offset=%d ubatch=%d chunks=%d "
+        "kvf_paged=%d capture_features=%d total=%.3fms migrate=%.3fms "
+        "snapshots=%d/%.3fms slot=%.3fms build=%.3fms kv_rows=%.3fms "
+        "embed=%.3fms positions=%.3fms mask=%.3fms compute=%.3fms "
+        "post=%.3fms argmax=%.3fms kvsync=%.3fms final_snapshot=%.3fms\n",
+        prompt_len, kv_offset, prefill_ubatch, p.chunks,
+        (int)kvf_paged, (int)capture_features,
+        total_us / 1000.0, p.migrate_us / 1000.0,
+        p.snapshot_count, p.snapshot_us / 1000.0,
+        p.slot_us / 1000.0, p.build_us / 1000.0, p.kv_rows_us / 1000.0,
+        p.embed_us / 1000.0, p.positions_us / 1000.0, p.mask_us / 1000.0,
+        p.compute_us / 1000.0, p.post_us / 1000.0, p.argmax_us / 1000.0,
+        p.kvsync_us / 1000.0, p.final_snapshot_us / 1000.0);
+}
+
 static float bf16_bits_to_f32(uint16_t bits) {
     union {
         uint32_t u;
@@ -451,6 +512,10 @@ bool Qwen35Backend::unpark(const std::string & what) {
     return true;
 }
 
+bool Qwen35Backend::needs_target_feature_cache() const {
+    return cfg_.draft_path != nullptr && cfg_.draft_path[0] != '\0';
+}
+
 // ── Snapshots ───────────────────────────────────────────────────────────
 
 bool Qwen35Backend::snapshot_save_pooled_at(int slot, int snap_boundary) {
@@ -467,7 +532,8 @@ bool Qwen35Backend::snapshot_save_pooled_at(int slot, int snap_boundary) {
     }
     std::vector<uint8_t> blob = kvflash_pager_.serialize(max_chunks);
     PrefixSnapshot & snap = prefix_snapshots_[slot];
-    if (!snapshot_target_cache(w_, cache_, snap_backend_, snap, /*skip_kv=*/true, &blob)) {
+    if (!snapshot_target_cache(w_, cache_, snap_backend_, snap, /*skip_kv=*/true, &blob,
+                               /*skip_target_feat=*/!needs_target_feature_cache())) {
         return false;
     }
     snap.is_pooled    = true;
@@ -482,13 +548,16 @@ bool Qwen35Backend::snapshot_save(int slot) {
     PrefixSnapshot & snap = prefix_snapshots_[slot];
     if (pooled) {
         std::vector<uint8_t> blob = kvflash_pager_.serialize();
-        if (!snapshot_target_cache(w_, cache_, snap_backend_, snap, /*skip_kv=*/true, &blob)) return false;
+        if (!snapshot_target_cache(w_, cache_, snap_backend_, snap, /*skip_kv=*/true, &blob,
+                                   /*skip_target_feat=*/!needs_target_feature_cache())) return false;
         snap.is_pooled    = true;
         snap.kvflash_blob = std::move(blob);   // keep for same-request restore
         return true;
     }
     snap.is_pooled = false;
-    return snapshot_target_cache(w_, cache_, snap_backend_, snap);
+    return snapshot_target_cache(w_, cache_, snap_backend_, snap,
+                                 /*skip_kv=*/false, /*kvflash_blob=*/nullptr,
+                                 /*skip_target_feat=*/!needs_target_feature_cache());
 }
 
 void Qwen35Backend::snapshot_free(int slot) {
@@ -594,7 +663,7 @@ bool Qwen35Backend::snapshot_adopt(int slot, ggml_context * ctx,
             return false;
         }
     }
-    if (!snap.target_feat_snap) {
+    if (needs_target_feature_cache() && !snap.target_feat_snap) {
         snap.attn_k_snap.clear(); snap.attn_v_snap.clear();
         snap.ssm_state_snap.clear(); snap.conv_state_snap.clear();
         return false;
@@ -1130,6 +1199,10 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     }
     const int prompt_len = (int)tokens.size();
     prefill_last_logits_valid_ = false;
+    Qwen35PrefillProfile prof;
+    prof.enabled = qwen35_prefill_telemetry_enabled();
+    if (prof.enabled) prof.start = Qwen35Clock::now();
+    const bool capture_features = needs_target_feature_cache();
 
     // kvflash: a prompt that fits the pool prefills contiguously (identity
     // mapping, normal chunking). A LARGER prompt switches to POOLED CHUNKED
@@ -1183,12 +1256,16 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         const int max_verify_tokens = cfg_.ddtree_mode
             ? std::max<int>(dw_.block_size, cfg_.ddtree_budget + 1)
             : dw_.block_size;
+        const auto migrate_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
         if (!migrate_prefill_cache(w_, cfg_.device.max_ctx,
                                    max_verify_tokens,
                                    target_backend_, cache_)) {
             std::fprintf(stderr, "prefill: rollback cache migration failed: %s\n",
                          dflash27b_last_error());
             return -1;
+        }
+        if (prof.enabled) {
+            prof.migrate_us += qwen35_elapsed_us(migrate_t0, Qwen35Clock::now());
         }
     }
 
@@ -1214,10 +1291,17 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             kv_pos <= snap_pos && snap_pos < kv_pos + n_tokens) {
             if (kv_pos > kv_offset && !kvf_paged) {   // skip degenerate / relocated
                 cache_.cur_pos = kv_pos;
+                const auto snap_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
                 if (snapshot_save(snap_slot)) {
+                    if (prof.enabled) {
+                        prof.snapshot_count++;
+                        prof.snapshot_us += qwen35_elapsed_us(snap_t0, Qwen35Clock::now());
+                    }
                     std::printf("[snap] boundary slot=%d cur_pos=%d (req snap_pos=%d)\n",
                                 snap_slot, kv_pos, snap_pos);
                     std::fflush(stdout);
+                } else if (prof.enabled) {
+                    prof.snapshot_us += qwen35_elapsed_us(snap_t0, Qwen35Clock::now());
                 }
             } else if (kvf_paged && kv_pos > kv_offset) {
                 // kv_pos is always chunk-aligned here (prefill_ubatch == chunk_tokens
@@ -1225,12 +1309,20 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
                 const int cfg_chunk = kvflash_pager_.chunk_tokens();
                 const int max_chunks = kv_pos / cfg_chunk;
                 if (max_chunks > 0) {
+                    const auto snap_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
                     if (snapshot_save_pooled_at(snap_slot, kv_pos)) {
+                        if (prof.enabled) {
+                            prof.snapshot_count++;
+                            prof.snapshot_us += qwen35_elapsed_us(snap_t0, Qwen35Clock::now());
+                        }
                         std::printf("[snap] pooled boundary slot=%d cur_pos=%d "
                                     "(req snap_pos=%d max_chunks=%d)\n",
                                     snap_slot, kv_pos, snap_pos, max_chunks);
                         std::fflush(stdout);
                     } else {
+                        if (prof.enabled) {
+                            prof.snapshot_us += qwen35_elapsed_us(snap_t0, Qwen35Clock::now());
+                        }
                         std::fprintf(stderr, "[kvflash] pooled boundary snapshot failed"
                                              " at kv_pos=%d\n", kv_pos);
                     }
@@ -1246,11 +1338,15 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         // (evicting the lowest-priority resident chunk once the pool fills).
         std::vector<int> kvf_slots;
         if (kvf_paged) {
+            const auto slot_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
             kvf_slots.resize((size_t)n_tokens);
             bool ok = true;
             for (int i = 0; i < n_tokens; i++) {
                 kvf_slots[(size_t)i] = kvflash_pager_.slot_for(kv_pos + i);
                 if (kvf_slots[(size_t)i] < 0) { ok = false; break; }
+            }
+            if (prof.enabled) {
+                prof.slot_us += qwen35_elapsed_us(slot_t0, Qwen35Clock::now());
             }
             if (!ok) {
                 std::fprintf(stderr, "[kvflash] pooled prefill: slot alloc failed @%d\n", kv_pos);
@@ -1265,9 +1361,10 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         // decode-time windowed attention will later read.
         const Qwen35PrefillLogitsPolicy logits_policy =
             qwen35_prefill_logits_policy(n_tokens, vocab);
+        const auto build_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
         if (!build_target_step(sg_, w_, cache_, target_backend_,
                                /*kv_start=*/kv_pos, /*n_tokens=*/n_tokens,
-                               with_mask, /*capture=*/true,
+                               with_mask, /*capture=*/capture_features,
                                /*capture_delta_intermediate=*/false,
                                /*fa_window=*/0,
                                logits_policy.last_token_logits_only,
@@ -1277,7 +1374,11 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             std::fprintf(stderr, "prefill build @%d\n", kv_pos);
             return -1;
         }
+        if (prof.enabled) {
+            prof.build_us += qwen35_elapsed_us(build_t0, Qwen35Clock::now());
+        }
         if (kvf_paged) {
+            const auto kvrows_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
             if (!sg_.kv_write_rows) {
                 std::fprintf(stderr, "[kvflash] pooled prefill requires the set_rows path\n");
                 return -1;
@@ -1291,16 +1392,24 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             }
             ggml_backend_tensor_set(sg_.kv_write_rows, rows.data(), 0,
                                     sizeof(int64_t) * rows.size());
+            if (prof.enabled) {
+                prof.kv_rows_us += qwen35_elapsed_us(kvrows_t0, Qwen35Clock::now());
+            }
         }
 
         // Embed
+        const auto embed_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
         if (!w_.embedder.embed(tokens.data() + start, n_tokens, embed_buf.data())) {
             return -1;
         }
         ggml_backend_tensor_set(sg_.inp_embed, embed_buf.data(), 0,
                                 sizeof(float) * (size_t)hidden * n_tokens);
+        if (prof.enabled) {
+            prof.embed_us += qwen35_elapsed_us(embed_t0, Qwen35Clock::now());
+        }
 
         // Positions (M-RoPE)
+        const auto pos_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
         std::vector<int32_t> pos_buf((size_t)4 * n_tokens, 0);
         for (int i = 0; i < n_tokens; i++) {
             const int p = kv_pos + i;
@@ -1311,8 +1420,12 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         }
         ggml_backend_tensor_set(sg_.positions, pos_buf.data(), 0,
                                 sizeof(int32_t) * pos_buf.size());
+        if (prof.enabled) {
+            prof.positions_us += qwen35_elapsed_us(pos_t0, Qwen35Clock::now());
+        }
 
         // Mask — full attention during prefill (no windowing)
+        const auto mask_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
         if (sg_.attn_mask && kvf_paged) {
             // Slot-space mask (same recipe as verify_batch): row q attends
             // (a) the slots of resident chunks holding positions < kv_pos
@@ -1349,20 +1462,35 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             ggml_backend_tensor_set(sg_.attn_mask, mask_buf.data(), 0,
                                     sizeof(uint16_t) * mask_buf.size());
         }
+        if (prof.enabled) {
+            prof.mask_us += qwen35_elapsed_us(mask_t0, Qwen35Clock::now());
+        }
 
         // Compute
+        const auto compute_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
         auto st = ggml_backend_graph_compute(target_backend_, sg_.gf);
+        if (prof.enabled) {
+            prof.compute_us += qwen35_elapsed_us(compute_t0, Qwen35Clock::now());
+        }
         if (st != GGML_STATUS_SUCCESS) {
             std::fprintf(stderr, "prefill compute @%d failed\n", kv_pos);
             return -1;
         }
+        const auto post_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
         after_target_compute(sg_, kv_pos, n_tokens);
+        if (prof.enabled) {
+            prof.post_us += qwen35_elapsed_us(post_t0, Qwen35Clock::now());
+        }
 
         int32_t last_tok = -1;
         const bool is_final_chunk = (start + n_tokens >= prompt_len);
+        const auto argmax_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
         ggml_backend_tensor_get(sg_.argmax_tokens, &last_tok,
                                 logits_policy.argmax_offset_bytes,
                                 sizeof(int32_t));
+        if (prof.enabled) {
+            prof.argmax_us += qwen35_elapsed_us(argmax_t0, Qwen35Clock::now());
+        }
         cache_.last_tok = last_tok;
         if (is_final_chunk) {
             prefill_last_logits_offset_ = logits_policy.logits_offset_bytes;
@@ -1374,6 +1502,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
 
         // QK policy: pool the post-RoPE keys of chunks this batch sealed
         // (they are resident — sealed inside the protected tail window).
+        const auto aux_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
         if (kvflash_active() && kvflash_qk_policy_) kvflash_qk_pool_to(committed);
 
         // Sync draft-side features if active.
@@ -1383,11 +1512,16 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             draft_feature_mirror_sync_range(cache_.target_feat, cache_.target_feat_cap,
                                             feature_mirror_, kv_pos, n_tokens);
         }
+        if (prof.enabled) {
+            prof.post_us += qwen35_elapsed_us(aux_t0, Qwen35Clock::now());
+            prof.chunks++;
+        }
 
         start += n_tokens;
     }
 
     if (kvflash_active()) {
+        const auto kvsync_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
         if (kvf_paged) {
             // The pager mapping was built live during the pooled prefill;
             // only the history / hygiene parts of the sync apply.
@@ -1414,6 +1548,9 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             kvflash_sync_prefill(committed, tokens, kv_offset, full_prompt);
         }
         apply_kvflash_pins();
+        if (prof.enabled) {
+            prof.kvsync_us += qwen35_elapsed_us(kvsync_t0, Qwen35Clock::now());
+        }
     }
 
     // End-of-prefill snapshot: scoped disk-cache saves (auto/fixed policy)
@@ -1422,13 +1559,19 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     // nothing about the prefill computation; it only persists the final state
     // (cache_.cur_pos == committed).
     if (snap_slot >= 0 && snap_pos == committed) {
+        const auto final_snap_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
         if (snapshot_save(snap_slot)) {
             std::printf("[snap] end-of-prefill slot=%d cur_pos=%d\n",
                         snap_slot, committed);
             std::fflush(stdout);
         }
+        if (prof.enabled) {
+            prof.final_snapshot_us += qwen35_elapsed_us(final_snap_t0, Qwen35Clock::now());
+        }
     }
 
+    qwen35_prefill_profile_print(prof, prompt_len, kv_offset, prefill_ubatch,
+                                 kvf_paged, capture_features);
     return committed;
 }
 

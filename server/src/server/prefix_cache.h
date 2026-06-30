@@ -97,14 +97,24 @@ public:
 
     // ── Inline prefix cache ─────────────────────────────────────────
 
-    // Look up the longest cached prefix. Returns (slot, prefix_len) or (-1, 0).
-    std::pair<int, int> lookup(const std::vector<int32_t> & prompt_ids);
+    struct InlineLookup {
+        int slot = -1;
+        // Logical key length that matched the prompt. This is usually a chat
+        // boundary and can be longer than the physical snapshot when a backend
+        // rounds snapshots down to a chunk boundary.
+        int key_len = 0;
+        // Actual backend snapshot position to restore from.
+        int snapshot_len = 0;
+    };
+
+    // Look up the longest cached prefix. Returns slot/key/snapshot metadata.
+    InlineLookup lookup(const std::vector<int32_t> & prompt_ids);
 
     // Prepare an inline snapshot. Returns (slot, target_cut) or (-1, 0).
     std::pair<int, int> prepare_inline_snap(const std::vector<int32_t> & prompt_ids);
 
     // Confirm after daemon successfully saved the snapshot.
-    void confirm_inline_snap(int slot, int target_cut,
+    void confirm_inline_snap(int slot, int target_cut, int snapshot_len,
                              const std::vector<int32_t> & prompt_ids);
 
     // Abort if the snapshot failed.
@@ -166,6 +176,8 @@ private:
     struct LruEntry {
         PrefixHash           hash;
         int                  slot;
+        int                  key_len;
+        int                  snapshot_len;
         std::vector<int32_t> ids;  // prefix tokens [0, target_cut) for prefix-aware eviction
     };
     std::vector<LruEntry> entries_;

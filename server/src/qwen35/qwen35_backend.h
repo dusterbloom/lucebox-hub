@@ -236,6 +236,8 @@ protected:
     void apply_kvflash_pins();
 
 private:
+    bool needs_target_feature_cache() const;
+
     // ── GPU backends ─────────────────────────────────────────────────
     ggml_backend_t target_backend_ = nullptr;
     ggml_backend_t draft_backend_  = nullptr;

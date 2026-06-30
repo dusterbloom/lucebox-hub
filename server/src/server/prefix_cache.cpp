@@ -224,30 +224,32 @@ void PrefixCache::move_full_to_end(int idx) {
 
 // ── Inline prefix cache ─────────────────────────────────────────────────
 
-std::pair<int, int> PrefixCache::lookup(const std::vector<int32_t> & prompt_ids) {
-    if (disabled_) return {-1, 0};
+PrefixCache::InlineLookup PrefixCache::lookup(const std::vector<int32_t> & prompt_ids) {
+    if (disabled_) return {};
 
     auto boundaries = find_all_boundaries(prompt_ids, markers_);
-    int best_slot = -1, best_len = 0;
+    InlineLookup best;
 
     for (int cut : boundaries) {
         auto key = hash_prefix(prompt_ids.data(), cut);
         int idx = find_entry(key);
         if (idx >= 0) {
-            if (cut > best_len) {
-                best_slot = entries_[idx].slot;
-                best_len = cut;
+            if (cut > best.key_len) {
+                best.slot = entries_[idx].slot;
+                best.key_len = cut;
+                best.snapshot_len = entries_[idx].snapshot_len;
             }
             move_to_end(idx);
         }
     }
 
-    if (best_slot >= 0) {
+    if (best.slot >= 0) {
         lifetime_hits_.fetch_add(1, std::memory_order_relaxed);
-        std::fprintf(stderr, "[pc] lookup hit slot=%d prefix_len=%d (of %zu total)\n",
-                     best_slot, best_len, prompt_ids.size());
+        std::fprintf(stderr,
+                     "[pc] lookup hit slot=%d key_len=%d snapshot_len=%d (of %zu total)\n",
+                     best.slot, best.key_len, best.snapshot_len, prompt_ids.size());
     }
-    return {best_slot, best_len};
+    return best;
 }
 
 std::pair<int, int> PrefixCache::prepare_inline_snap(
@@ -292,9 +294,17 @@ std::pair<int, int> PrefixCache::prepare_inline_snap(
     return {slot, target_cut};
 }
 
-void PrefixCache::confirm_inline_snap(int slot, int target_cut,
+void PrefixCache::confirm_inline_snap(int slot, int target_cut, int snapshot_len,
                                       const std::vector<int32_t> & prompt_ids) {
     if (disabled_) return;
+    if (target_cut <= 0 || target_cut > (int)prompt_ids.size() ||
+        snapshot_len <= 0 || snapshot_len > target_cut) {
+        std::fprintf(stderr,
+            "[pc] refusing inline-snap slot=%d key_len=%d snapshot_len=%d prompt=%zu\n",
+            slot, target_cut, snapshot_len, prompt_ids.size());
+        abort_inline_snap(slot);
+        return;
+    }
 
     // Evict the reserved entry (if any).
     if (has_pending_evict_) {
@@ -323,10 +333,11 @@ void PrefixCache::confirm_inline_snap(int slot, int target_cut,
 
     auto key = hash_prefix(prompt_ids.data(), target_cut);
     std::vector<int32_t> ids(prompt_ids.begin(), prompt_ids.begin() + target_cut);
-    entries_.push_back({key, slot, std::move(ids)});
+    entries_.push_back({key, slot, target_cut, snapshot_len, std::move(ids)});
     entries_size_count_.fetch_add(1, std::memory_order_relaxed);
-    std::fprintf(stderr, "[pc] inline-snap committed slot=%d prefix_len=%d\n",
-                 slot, target_cut);
+    std::fprintf(stderr,
+                 "[pc] inline-snap committed slot=%d key_len=%d snapshot_len=%d\n",
+                 slot, target_cut, snapshot_len);
 }
 
 void PrefixCache::abort_inline_snap(int /*slot*/) {

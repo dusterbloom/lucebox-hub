@@ -1444,7 +1444,8 @@ bool snapshot_target_cache(const TargetWeights & w,
                            ggml_backend_t backend,
                            PrefixSnapshot & snap,
                            bool skip_kv,
-                           const std::vector<uint8_t> * kvflash_blob) {
+                           const std::vector<uint8_t> * kvflash_blob,
+                           bool skip_target_feat) {
     const int n_full_attn = w.n_layer / w.full_attention_interval; // 16
     const int n_delta     = w.n_layer - n_full_attn;               // 48
     const int snap_pos    = cache.cur_pos;
@@ -1458,13 +1459,18 @@ bool snapshot_target_cache(const TargetWeights & w,
     // Right-sized KV tensors use [head_dim, cur_pos, n_head_kv] — orders of
     // magnitude smaller than [head_dim, max_ctx, n_head_kv] for short prefixes.
     // skip_kv: pooled path — KV lives in the pager blob; omit attn_k/v tensors.
-    const bool needs_alloc = (snap.ctx == nullptr) || (snap.cur_pos != snap_pos);
+    const bool wants_target_feat = cache.target_feat && !skip_target_feat;
+    const bool needs_alloc = (snap.ctx == nullptr) ||
+                             (snap.cur_pos != snap_pos) ||
+                             ((snap.target_feat_snap != nullptr) != wants_target_feat);
     if (needs_alloc) {
         free_prefix_snapshot(snap);
 
         const int kv_tensors   = skip_kv ? 0 : 2 * n_full_attn;
         const bool has_blob    = (kvflash_blob != nullptr && !kvflash_blob->empty());
-        const int total_tensors = kv_tensors + 2 * n_delta + 1 + (has_blob ? 1 : 0);
+        const bool has_target_feat = wants_target_feat;
+        const int total_tensors =
+            kv_tensors + 2 * n_delta + (has_target_feat ? 1 : 0) + (has_blob ? 1 : 0);
         ggml_init_params ip{};
         ip.mem_size   = (size_t)(total_tensors + 16) * ggml_tensor_overhead();
         ip.mem_buffer = nullptr;
@@ -1508,7 +1514,7 @@ bool snapshot_target_cache(const TargetWeights & w,
         }
 
         // Right-sized target_feat: [fc_in, min(snap_pos, target_feat_cap)]
-        if (cache.target_feat) {
+        if (has_target_feat) {
             ggml_tensor * tf = cache.target_feat;
             const int feat_len = std::min(snap_pos, cache.target_feat_cap);
             snap.target_feat_snap = ggml_new_tensor_2d(snap.ctx, tf->type, tf->ne[0], feat_len);
@@ -1537,10 +1543,12 @@ bool snapshot_target_cache(const TargetWeights & w,
             snap.target_feat_snap = nullptr;
             return false;
         }
-        std::fprintf(stderr, "[snap] alloc right-sized: cur_pos=%d buf=%.2f MiB backend=%s skip_kv=%d blob=%zu\n",
+        std::fprintf(stderr,
+                     "[snap] alloc right-sized: cur_pos=%d buf=%.2f MiB backend=%s "
+                     "skip_kv=%d skip_target_feat=%d blob=%zu\n",
                      snap_pos,
                      (double)ggml_backend_buffer_get_size(snap.buf) / 1024.0 / 1024.0,
-                     ggml_backend_name(backend), (int)skip_kv,
+                     ggml_backend_name(backend), (int)skip_kv, (int)skip_target_feat,
                      has_blob ? kvflash_blob->size() : (size_t)0);
 
         // Upload blob bytes into the allocated tensor.

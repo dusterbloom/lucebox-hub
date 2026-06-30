@@ -2460,12 +2460,14 @@ void HttpServer::worker_loop() {
         // Full-prompt cache: exact raw-prompt hit skips most/all prefill.
         int cache_slot = full_cache_hit_slot;
         int prefix_len = full_cache_hit_len;
+        int prefix_key_len = full_cache_hit_len;
         bool using_restore = (cache_slot >= 0);
         if (!using_restore) {
             auto [full_slot, full_len] = prefix_cache_.lookup_full(req.prompt_tokens);
             if (full_slot >= 0) {
                 cache_slot = full_slot;
                 prefix_len = full_len;
+                prefix_key_len = full_len;
                 using_restore = true;
                 if (pflash_compressed) {
                     effective_prompt.assign((size_t)full_len, 0);
@@ -2477,9 +2479,10 @@ void HttpServer::worker_loop() {
         // Inline prefix cache: check for cached turn-boundary KV state if no
         // exact full-prompt cache was available.
         if (!using_restore) {
-            auto [inline_slot, inline_len] = prefix_cache_.lookup(effective_prompt);
-            cache_slot = inline_slot;
-            prefix_len = inline_len;
+            auto inline_hit = prefix_cache_.lookup(effective_prompt);
+            cache_slot = inline_hit.slot;
+            prefix_len = inline_hit.snapshot_len;
+            prefix_key_len = inline_hit.key_len;
             using_restore = (cache_slot >= 0);
         }
 
@@ -2581,6 +2584,7 @@ void HttpServer::worker_loop() {
                         continue;
                     }
                     using_restore = true;
+                    prefix_key_len = lookup_len;
                     disk_hit = true;
                     std::fprintf(stderr,
                         "[disk-cache] hit policy=%s len=%d slot=%d pos=%d\n",
@@ -2617,7 +2621,8 @@ void HttpServer::worker_loop() {
                     const bool saved =
                         disk_cache_.save(DISK_STAGING_SLOT, scoped_req.prompt);
                     cache_slot = DISK_STAGING_SLOT;
-                    prefix_len = scoped_boundary;
+                    prefix_len = backend_.snapshot_cur_pos(DISK_STAGING_SLOT);
+                    prefix_key_len = scoped_boundary;
                     using_restore = true;
                     disk_hit = true;
                     std::fprintf(stderr,
@@ -2642,6 +2647,7 @@ void HttpServer::worker_loop() {
                     cache_slot, snap_len, effective_prompt.size());
                 cache_slot = -1;
                 prefix_len = 0;
+                prefix_key_len = 0;
                 using_restore = false;
                 disk_hit = false;
             }
@@ -2675,7 +2681,8 @@ void HttpServer::worker_loop() {
                     disk_cache_.save(DISK_STAGING_SLOT, prefix_tokens);
                     // Use this cold snapshot as restore point for full generation.
                     cache_slot = DISK_STAGING_SLOT;
-                    prefix_len = cold_boundary;
+                    prefix_len = backend_.snapshot_cur_pos(DISK_STAGING_SLOT);
+                    prefix_key_len = cold_boundary;
                     using_restore = true;
                     disk_hit = true;  // ensure staging slot is freed after use
                     std::fprintf(stderr, "[disk-cache] cold prefix saved, restoring from %d\n",
@@ -2718,13 +2725,14 @@ void HttpServer::worker_loop() {
 
         std::fprintf(stderr,
             "[server] chat CACHE %s restore=%s slot=%d prefix_len=%d "
-            "effective_prompt=%zu pflash=%s disk_policy=%s disk_hit=%s "
+            "effective_prompt=%zu prefix_key_len=%d pflash=%s disk_policy=%s disk_hit=%s "
             "snap_slot=%d snap_pos=%d full_snap_slot=%d full_snap_pos=%d\n",
             req.response_id.c_str(),
             using_restore ? "true" : "false",
             cache_slot,
             prefix_len,
             effective_prompt.size(),
+            prefix_key_len,
             pflash_compressed ? "true" : "false",
             disk_prefix_cache_policy_name(disk_policy).c_str(),
             disk_hit ? "true" : "false",
@@ -2918,16 +2926,26 @@ void HttpServer::worker_loop() {
             if (prefix_cache_should_commit_snapshot(
                     result.ok, completion_tokens, client_disconnected,
                     backend_.snapshot_used(snap_slot))) {
-                prefix_cache_.confirm_inline_snap(snap_slot, snap_cut, effective_prompt);
-                // Track for shutdown save.
-                slot_tokens_[snap_slot] = std::vector<int32_t>(
-                    effective_prompt.begin(), effective_prompt.begin() + snap_cut);
-                // Save to disk cache if threshold met.
-                if (!disk_cache_.disabled()) {
-                    disk_cache_.learn_layout(snap_slot);
-                    if (disk_policy.mode == DiskPrefixCacheMode::Full) {
-                        disk_cache_.save(snap_slot, effective_prompt);
+                const int saved_pos = backend_.snapshot_cur_pos(snap_slot);
+                if (saved_pos > 0 && saved_pos <= snap_cut) {
+                    prefix_cache_.confirm_inline_snap(snap_slot, snap_cut, saved_pos,
+                                                      effective_prompt);
+                    // Track the logical cache key for shutdown saves. The
+                    // snapshot's cur_pos remains the physical restore truth.
+                    slot_tokens_[snap_slot] = std::vector<int32_t>(
+                        effective_prompt.begin(), effective_prompt.begin() + snap_cut);
+                    // Save to disk cache if threshold met.
+                    if (!disk_cache_.disabled()) {
+                        disk_cache_.learn_layout(snap_slot);
+                        if (disk_policy.mode == DiskPrefixCacheMode::Full) {
+                            disk_cache_.save(snap_slot, effective_prompt);
+                        }
                     }
+                } else {
+                    std::fprintf(stderr,
+                        "[pc] inline-snap saved_pos invalid slot=%d key_len=%d saved_pos=%d\n",
+                        snap_slot, snap_cut, saved_pos);
+                    prefix_cache_.abort_inline_snap(snap_slot);
                 }
             } else {
                 prefix_cache_.abort_inline_snap(snap_slot);
