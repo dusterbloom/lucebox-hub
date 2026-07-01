@@ -1,0 +1,5 @@
+{"messages":[{"role":"user","content":"Say hello in one short sentence."}],"max_tokens":16,"temperature":0,"stream":false}
+{"messages":[{"role":"user","content":"Name one Unix shell."}],"max_tokens":16,"temperature":0,"stream":false}
+{"messages":[{"role":"user","content":"Return the word ready."}],"max_tokens":16,"temperature":0,"stream":false}
+{"messages":[{"role":"user","content":"What file extension is used for Python source files?"}],"max_tokens":16,"temperature":0,"stream":false}
+{"messages":[{"role":"user","content":"Answer with the number 42."}],"max_tokens":16,"temperature":0,"stream":false}

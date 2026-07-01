@@ -1034,6 +1034,7 @@ def launch_server(
     log_path: Path,
     port: int = PORT,
     max_ctx: int = MAX_CTX,
+    pin_decode_tokens: Optional[int] = None,
 ) -> tuple:
     """Start server for given arm. Returns (proc, log_file_handle).
 
@@ -1067,6 +1068,11 @@ def launch_server(
     env["DFLASH_DRAFT_BLOCK_SIZE"] = "16"
     env["DFLASH_FEAT_RING_CAP"] = "16384"
     env.update(arm_cfg["env"])
+    if pin_decode_tokens is not None:
+        env["DFLASH_MIN_TOKENS"] = str(pin_decode_tokens)
+        env["DFLASH_DEGENERATE_RUN_TOKENS"] = "0"
+        print(f"[pin-decode] DFLASH_MIN_TOKENS={pin_decode_tokens}")
+        print("[pin-decode] DFLASH_DEGENERATE_RUN_TOKENS=0")
 
     # Per-arm model override (used by BENCH_35B / BENCH_27B / lucebox arms)
     target_model = arm_cfg.get("model_target", TGT)
@@ -1284,12 +1290,17 @@ def send_request(
     req_body: dict,
     port: int,
     server_type: str = "dflash",
+    pin_decode_length: bool = False,
 ) -> tuple[dict, float, Optional[str]]:
     """POST request to server. Returns (response_body, wall_s, error_str).
 
     server_type='dflash'    -> POST /v1/messages  (Anthropic format)
     server_type='llama_cpp' -> POST /v1/chat/completions  (OpenAI format)
     """
+    requested_max_tokens = request_max_tokens(req_body)
+    if pin_decode_length and requested_max_tokens is None:
+        return {}, 0.0, "pin_decode_length requires a positive integer max_tokens"
+
     if server_type == "llama_cpp":
         # Convert Anthropic trace format -> OpenAI messages format
         sys_prompt = req_body.get("system")
@@ -1313,6 +1324,12 @@ def send_request(
             "max_tokens": req_body.get("max_tokens", 1024),
             "stream": False,
         }
+        if pin_decode_length:
+            # llama.cpp treats max_tokens as an upper bound unless EOS is masked.
+            # n_predict wins if both aliases are present in this server build.
+            body_out["max_tokens"] = requested_max_tokens
+            body_out["n_predict"] = requested_max_tokens
+            body_out["ignore_eos"] = True
         raw_tools = req_body.get("tools")
         if raw_tools:
             try:
@@ -1352,6 +1369,28 @@ def send_request(
         return {}, time.time() - t0, str(ex)
 
 
+def request_max_tokens(req_body: dict) -> Optional[int]:
+    """Return a positive integer request max_tokens, or None when unusable."""
+    raw = req_body.get("max_tokens")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def out_tokens_match_requested(metrics: dict, requested_out_tokens: Optional[int]) -> Optional[bool]:
+    if requested_out_tokens is None or metrics.get("out_tokens") is None:
+        return None
+    try:
+        actual = int(round(float(metrics["out_tokens"])))
+    except (TypeError, ValueError):
+        return None
+    return actual == requested_out_tokens
+
+
 def llama_slot_action(
     port: int,
     action: str,
@@ -1388,6 +1427,7 @@ def run_trace_repeat(
     smoke: bool = False,
     repeat_idx: int = 0,
     arm_cfg: Optional[dict] = None,
+    pin_decode_length: bool = False,
 ) -> list[dict]:
     """Run all turns in the trace; parse server log per turn.
 
@@ -1418,7 +1458,14 @@ def run_trace_repeat(
             req_body = dict(req_body)
             req_body["temperature"] = arm_temp
 
-        resp_body, wall_s, err = send_request(req_body, port, server_type=server_type)
+        requested_out_tokens = request_max_tokens(req_body)
+
+        resp_body, wall_s, err = send_request(
+            req_body,
+            port,
+            server_type=server_type,
+            pin_decode_length=pin_decode_length,
+        )
 
         if err:
             print(f"ERROR: {err}")
@@ -1427,6 +1474,7 @@ def run_trace_repeat(
                 "repeat": repeat_idx + 1,
                 "error": err,
                 "wall_s": wall_s,
+                "requested_out_tokens": requested_out_tokens,
             })
             continue
 
@@ -1471,6 +1519,8 @@ def run_trace_repeat(
             "turn": turn_num,
             "repeat": repeat_idx + 1,
             "wall_s": round(wall_s, 2),
+            "requested_out_tokens": requested_out_tokens,
+            "out_tokens_match_requested": out_tokens_match_requested(metrics, requested_out_tokens),
             **metrics,
             "tool_call_valid": tool_valid,
             "tool_detail": tool_detail,
@@ -1486,6 +1536,7 @@ def run_trace_repeat(
         fp     = metrics.get("fresh_prefill", "?")
         hr     = metrics.get("cache_hit_ratio")
         pfs    = metrics.get("prefill_s")
+        out    = metrics.get("out_tokens")
         dec    = metrics.get("decode_tps")
         mode   = metrics.get("decode_mode", "?")
         acc    = metrics.get("accept_rate")
@@ -1501,6 +1552,7 @@ def run_trace_repeat(
             f"wall={wall_s:.1f}s  pt={pt}  eff={eff}  "
             f"prefix_len={pl} ({hr_str} hit)  "
             f"fresh={fp}  prefill={pfs_str}  "
+            f"out={out}/{requested_out_tokens if requested_out_tokens is not None else '?'}  "
             f"decode={dec_str}tok/s[{mode}] {acc_str}  "
             f"{pfl_str}  tool={tool_valid}"
         )
@@ -1543,6 +1595,15 @@ def aggregate_turns(all_records: list[dict], n_turns: int) -> list[dict]:
             round(sum(1 for r in disk_hits if r["disk_hit"]) / len(disk_hits), 4)
             if disk_hits else None
         )
+        out_match_vals = [
+            r["out_tokens_match_requested"]
+            for r in recs
+            if r.get("out_tokens_match_requested") is not None
+        ]
+        out_match_rate = (
+            round(sum(1 for v in out_match_vals if v) / len(out_match_vals), 4)
+            if out_match_vals else None
+        )
 
         agg.append({
             "turn": t,
@@ -1552,7 +1613,12 @@ def aggregate_turns(all_records: list[dict], n_turns: int) -> list[dict]:
             "wall_s": med("wall_s"),
             "prompt_tokens": med("prompt_tokens"),
             "effective_in": med("effective_in"),
+            "requested_out_tokens": med("requested_out_tokens"),
             "out_tokens": med("out_tokens"),
+            "out_tokens_match_requested_rate": out_match_rate,
+            "out_token_mismatch_count": (
+                sum(1 for v in out_match_vals if not v) if out_match_vals else None
+            ),
             "prefix_len": med("prefix_len"),
             "prefix_key_len": med("prefix_key_len"),
             "fresh_prefill": med("fresh_prefill"),
@@ -1605,8 +1671,25 @@ def aggregate_arm(per_turn: list[dict]) -> dict:
     # disk_hit_rate: only non-None when --restart-per-turn was used.
     disk_hit_vals = [t["disk_hit_rate"] for t in valid if t.get("disk_hit_rate") is not None]
     mean_disk_hit_rate = round(mean(disk_hit_vals), 4) if disk_hit_vals else None
+    out_mismatch_counts = [
+        int(t["out_token_mismatch_count"])
+        for t in valid
+        if t.get("out_token_mismatch_count") is not None
+    ]
+    out_token_mismatch_count = sum(out_mismatch_counts) if out_mismatch_counts else None
+    sum_requested_out_tokens = safe_int_sum("requested_out_tokens")
     censored = total_errors > 0 or valid_turns < expected_turns
     ok = expected_turns > 0 and valid_turns == expected_turns and total_errors == 0
+    out_tokens_match_requested = (
+        out_token_mismatch_count == 0
+        if out_token_mismatch_count is not None and sum_requested_out_tokens is not None
+        else None
+    )
+    pin_decode_ok = (
+        ok and out_tokens_match_requested and safe_int_sum("out_tokens") == sum_requested_out_tokens
+        if out_tokens_match_requested is not None
+        else None
+    )
 
     return {
         "ok": ok,
@@ -1621,7 +1704,11 @@ def aggregate_arm(per_turn: list[dict]) -> dict:
         "sum_prompt_tokens": safe_int_sum("prompt_tokens"),
         "sum_effective_in_tokens": safe_int_sum("effective_in"),
         "sum_fresh_prefill_tokens": safe_sum("fresh_prefill"),
+        "sum_requested_out_tokens": sum_requested_out_tokens,
         "sum_out_tokens": safe_int_sum("out_tokens"),
+        "out_token_mismatch_count": out_token_mismatch_count,
+        "out_tokens_match_requested": out_tokens_match_requested,
+        "pin_decode_ok": pin_decode_ok,
         "mean_cache_hit_ratio": safe_mean("cache_hit_ratio"),
         "mean_prefill_tps": safe_mean("prefill_tps"),
         "mean_decode_tps": safe_mean("decode_tps"),
@@ -1652,7 +1739,9 @@ def write_report(
     lines = []
     lines.append(f"# ABC Cache Harness — {arm_name}")
     lines.append(f"Generated: {ts}")
-    lines.append(f"Mode: {'SMOKE (first 3 turns, N=1)' if smoke else 'FULL (all turns, N=3)'}")
+    n_repeats = provenance.get("n_repeats", "?")
+    mode_label = "SMOKE (first 3 turns, N=1)" if smoke else f"FULL (all turns, N={n_repeats})"
+    lines.append(f"Mode: {mode_label}")
     lines.append("")
     lines.append("## Provenance")
     lines.append("```")
@@ -1668,10 +1757,12 @@ def write_report(
     lines.append("")
     lines.append("## Per-Turn Cache Trace")
     has_disk_hit = any(t.get("disk_hit_rate") is not None for t in per_turn)
+    has_requested_out = any(t.get("requested_out_tokens") is not None for t in per_turn)
     header = (
         f"{'turn':>4} {'pt':>7} {'eff_in':>7} {'prefix_len':>11} "
         f"{'fresh_pf':>9} {'hr':>6} {'pf_s':>6} {'pf_tps':>7} "
-        f"{'dec_tps':>8} {'mode':>5} {'accept':>7} {'pflash%':>8} "
+        + (f"{'out/req':>9} " if has_requested_out else "")
+        + f"{'dec_tps':>8} {'mode':>5} {'accept':>7} {'pflash%':>8} "
         + (f"{'disk_hit':>9} " if has_disk_hit else "")
         + f"{'tool':>5} {'wall_s':>7}"
     )
@@ -1696,7 +1787,11 @@ def write_report(
         ptps_str2 = f"{ptps_val:.0f}" if ptps_val else "?"
         dtps_str2 = f"{dtps_val:.1f}" if dtps_val else "?"
         dhr_str   = f"{dhr:.1%}" if dhr is not None else "-"
-        lines.append(
+        out_req_str = (
+            f"{str(t.get('out_tokens','?'))}/{str(t.get('requested_out_tokens','?'))}"
+            if has_requested_out else ""
+        )
+        row = (
             f"{t['turn']:>4} "
             f"{str(t.get('prompt_tokens','?')):>7} "
             f"{str(t.get('effective_in','?')):>7} "
@@ -1705,14 +1800,16 @@ def write_report(
             f"{f'{hr:.1%}' if hr is not None else '?':>6} "
             f"{pfs_str2:>6} "
             f"{ptps_str2:>7} "
-            f"{dtps_str2:>8} "
+            + (f"{out_req_str:>9} " if has_requested_out else "")
+            + f"{dtps_str2:>8} "
             f"{str(t.get('decode_mode','?')):>5} "
             f"{f'{acc:.1f}%' if acc is not None else 'AR':>7} "
             f"{f'{pfl:.1f}%' if pfl is not None else '-':>8} "
             + (f"{dhr_str:>9} " if has_disk_hit else "")
             + f"{'Y' if tool_rate and tool_rate > 0 else 'N':>5} "
-            f"{str(t.get('wall_s','?')):>7}"
+            + f"{str(t.get('wall_s','?')):>7}"
         )
+        lines.append(row)
     lines.append("")
     lines.append("## Arm Aggregate")
     lines.append("```")
@@ -1737,6 +1834,8 @@ def run_trace_restart_per_turn(
     max_ctx: int = MAX_CTX,
     smoke: bool = False,
     repeat_idx: int = 0,
+    pin_decode_length: bool = False,
+    pin_decode_tokens: Optional[int] = None,
 ) -> list[dict]:
     """Restart-per-turn mode: each turn gets a fresh server process.
 
@@ -1769,7 +1868,14 @@ def run_trace_restart_per_turn(
               f"(~{len(json.dumps(req_body))//3:,} est_tok) — launching server...")
 
         # Step 1: launch fresh server
-        proc, log_f = launch_server(arm_name, arm_cfg, log_path, port=port, max_ctx=max_ctx)
+        proc, log_f = launch_server(
+            arm_name,
+            arm_cfg,
+            log_path,
+            port=port,
+            max_ctx=max_ctx,
+            pin_decode_tokens=pin_decode_tokens,
+        )
 
         try:
             # Step 2: wait for ready
@@ -1811,7 +1917,14 @@ def run_trace_restart_per_turn(
                 req_body = dict(req_body)
                 req_body["temperature"] = arm_temp
 
-            resp_body, wall_s, err = send_request(req_body, port, server_type=server_type)
+            requested_out_tokens = request_max_tokens(req_body)
+
+            resp_body, wall_s, err = send_request(
+                req_body,
+                port,
+                server_type=server_type,
+                pin_decode_length=pin_decode_length,
+            )
 
             if err:
                 print(f"ERROR: {err}")
@@ -1821,6 +1934,7 @@ def run_trace_restart_per_turn(
                     "error": err,
                     "wall_s": wall_s,
                     "disk_hit": False,
+                    "requested_out_tokens": requested_out_tokens,
                 })
                 continue
 
@@ -1871,6 +1985,8 @@ def run_trace_restart_per_turn(
                 "disk_hit": disk_hit,
                 "slot_restore_ok": slot_restore_ok,
                 "slot_save_ok": slot_save_ok,
+                "requested_out_tokens": requested_out_tokens,
+                "out_tokens_match_requested": out_tokens_match_requested(metrics, requested_out_tokens),
                 **metrics,
                 "tool_call_valid": tool_valid,
                 "tool_detail": tool_detail,
@@ -1888,6 +2004,7 @@ def run_trace_restart_per_turn(
             fp     = metrics.get("fresh_prefill", "?")
             hr     = metrics.get("cache_hit_ratio")
             pfs    = metrics.get("prefill_s")
+            out    = metrics.get("out_tokens")
             dec    = metrics.get("decode_tps")
             mode   = metrics.get("decode_mode", "?")
             acc    = metrics.get("accept_rate")
@@ -1903,6 +2020,7 @@ def run_trace_restart_per_turn(
                 f"wall={wall_s:.1f}s  pt={pt}  eff={eff}  "
                 f"prefix_len={pl} ({hr_str} hit)  "
                 f"fresh={fp}  prefill={pfs_str}  "
+                f"out={out}/{requested_out_tokens if requested_out_tokens is not None else '?'}  "
                 f"decode={dec_str}tok/s[{mode}] {acc_str}  "
                 f"{pfl_str}  disk_hit={disk_hit}  tool={tool_valid}"
             )
@@ -2053,6 +2171,27 @@ def run_selftest() -> None:
     assert sample_agg["weighted_decode_tps"] == 80.0, f"weighted decode tps wrong: {sample_agg}"
     print("  (b7) aggregate quality/weighted metrics: PASS")
 
+    # (b7a) Pinned decode accounting: aggregate proves exact output workload.
+    assert request_max_tokens({"max_tokens": "20"}) == 20, "string max_tokens should coerce"
+    assert request_max_tokens({"max_tokens": 0}) is None, "zero max_tokens must be rejected"
+    pin_records = [
+        {"turn": 1, "repeat": 1, "wall_s": 1.0, "prompt_tokens": 100,
+         "fresh_prefill": 100, "prefill_s": 0.5, "out_tokens": 20,
+         "requested_out_tokens": 20, "out_tokens_match_requested": True,
+         "decode_s": 0.25, "decode_tps": 80.0, "tool_call_valid": False},
+    ]
+    pin_turns = aggregate_turns(pin_records, 1)
+    pin_agg = aggregate_arm(pin_turns)
+    assert pin_turns[0]["out_tokens_match_requested_rate"] == 1.0, f"pin turn bad: {pin_turns}"
+    assert pin_agg["sum_requested_out_tokens"] == 20, f"pin requested sum bad: {pin_agg}"
+    assert pin_agg["sum_out_tokens"] == 20, f"pin out sum bad: {pin_agg}"
+    assert pin_agg["pin_decode_ok"] is True, f"pin ok should be true: {pin_agg}"
+    mismatch_records = [dict(pin_records[0], out_tokens=19, out_tokens_match_requested=False)]
+    mismatch_agg = aggregate_arm(aggregate_turns(mismatch_records, 1))
+    assert mismatch_agg["out_token_mismatch_count"] == 1, f"mismatch count bad: {mismatch_agg}"
+    assert mismatch_agg["pin_decode_ok"] is False, f"pin ok should fail: {mismatch_agg}"
+    print("  (b7a) pinned decode accounting: PASS")
+
     # (b8) dflash generation errors must censor a row even when HTTP succeeds.
     error_log = (
         "[server] chat CACHE msg_0 restore=false slot=-1 prefix_len=0 "
@@ -2138,6 +2277,14 @@ def main() -> None:
                         "cache is the ONLY cross-turn reuse path.  Measures the "
                         "claude-code-reconnects-each-turn / cross-session disk-hit scenario."
                     ))
+    ap.add_argument("--pin-decode-length", action="store_true",
+                    help=(
+                        "Force each turn to decode exactly its trace max_tokens when the "
+                        "engine supports it. llama_cpp uses per-request ignore_eos+n_predict; "
+                        "dflash uses process-wide DFLASH_MIN_TOKENS and therefore requires "
+                        "a uniform max_tokens trace. Aggregate output-token equality is "
+                        "reported as pin_decode_ok."
+                    ))
     args = ap.parse_args()
 
     if args.selftest:
@@ -2186,6 +2333,24 @@ def main() -> None:
     trace_path = Path(args.trace)
     turns = [json.loads(line) for line in trace_path.read_text().splitlines() if line.strip()]
     print(f"Loaded {len(turns)} turns from {trace_path}")
+    pin_decode_tokens: Optional[int] = None
+    trace_max_tokens_unique: list[int] = []
+    if args.pin_decode_length:
+        trace_max_tokens = []
+        for i, turn in enumerate(turns, start=1):
+            mt = request_max_tokens(turn)
+            if mt is None:
+                ap.error(f"--pin-decode-length requires positive integer max_tokens on turn {i}")
+            trace_max_tokens.append(mt)
+        trace_max_tokens_unique = sorted(set(trace_max_tokens))
+        if server_type == "dflash" and len(trace_max_tokens_unique) != 1:
+            ap.error(
+                "--pin-decode-length on dflash requires uniform trace max_tokens "
+                "because DFLASH_MIN_TOKENS is process-wide"
+            )
+        if len(trace_max_tokens_unique) == 1:
+            pin_decode_tokens = trace_max_tokens_unique[0]
+        print(f"[pin-decode] trace max_tokens unique={trace_max_tokens_unique}")
 
     # Provenance
     git = git_info(REPO_DIR)
@@ -2215,6 +2380,14 @@ def main() -> None:
         "n_repeats": n_repeats,
         "smoke": args.smoke,
         "restart_per_turn": restart_per_turn,
+        "pin_decode_length": args.pin_decode_length,
+        "trace_max_tokens_unique": trace_max_tokens_unique,
+        "pin_decode_tokens_process": pin_decode_tokens,
+        "pin_decode_mechanism": (
+            "DFLASH_MIN_TOKENS+DFLASH_DEGENERATE_RUN_TOKENS=0" if args.pin_decode_length and server_type == "dflash"
+            else "ignore_eos+n_predict" if args.pin_decode_length and server_type == "llama_cpp"
+            else None
+        ),
         "port": port,
         "trace": str(trace_path),
         "n_turns_in_trace": len(turns),
@@ -2268,7 +2441,14 @@ def main() -> None:
       if not restart_per_turn:
         # ── single-session mode (default) ────────────────────────────────────
         log_path = BENCH_DIR / f"srv_{args.arm}_{ts_str}.log"
-        proc, log_f = launch_server(args.arm, arm_cfg, log_path, port=port, max_ctx=max_ctx)
+        proc, log_f = launch_server(
+            args.arm,
+            arm_cfg,
+            log_path,
+            port=port,
+            max_ctx=max_ctx,
+            pin_decode_tokens=pin_decode_tokens,
+        )
 
         try:
             print(f"Waiting for server on port {port}...", end=" ", flush=True)
@@ -2295,6 +2475,7 @@ def main() -> None:
                     turns, port, log_path, args.arm,
                     smoke=args.smoke, repeat_idx=rep,
                     arm_cfg=arm_cfg,
+                    pin_decode_length=args.pin_decode_length,
                 )
                 all_records.extend(recs)
 
@@ -2316,6 +2497,8 @@ def main() -> None:
             recs = run_trace_restart_per_turn(
                 turns, port, args.arm, arm_cfg, log_dir,
                 max_ctx=max_ctx, smoke=args.smoke, repeat_idx=rep,
+                pin_decode_length=args.pin_decode_length,
+                pin_decode_tokens=pin_decode_tokens,
             )
             all_records.extend(recs)
 
@@ -2357,6 +2540,10 @@ def main() -> None:
     print(f"total_prefill_s           : {arm_agg.get('total_prefill_s')}")
     print(f"total_decode_s            : {arm_agg.get('total_decode_s')}")
     print(f"sum_fresh_prefill_tokens  : {arm_agg.get('sum_fresh_prefill_tokens')}")
+    print(f"sum_requested_out_tokens  : {arm_agg.get('sum_requested_out_tokens')}")
+    print(f"sum_out_tokens            : {arm_agg.get('sum_out_tokens')}")
+    print(f"out_token_mismatch_count  : {arm_agg.get('out_token_mismatch_count')}")
+    print(f"pin_decode_ok             : {arm_agg.get('pin_decode_ok')}")
     print(f"mean_cache_hit_ratio      : {arm_agg.get('mean_cache_hit_ratio')}")
     print(f"mean_decode_tps           : {arm_agg.get('mean_decode_tps')}")
     print(f"weighted_prompt_prefill_tps: {arm_agg.get('weighted_prompt_prefill_tps')}")
@@ -2377,7 +2564,27 @@ def main() -> None:
         t2 = next((t for t in per_turn if t["turn"] == 2), {})
         pl1 = t1.get("prefix_len", 0)
         pl2 = t2.get("prefix_len")
-        if restart_per_turn:
+        if server_type == "llama_cpp" and not restart_per_turn:
+            # llama.cpp reports prompt_n as fresh prompt work after slot/cache reuse,
+            # not as the full logical prompt length. Reuse is therefore visible as
+            # reduced post-cold prompt eval and in checkpoint restore logs.
+            p1 = t1.get("prompt_tokens")
+            prompt_reuse = p1 is not None and any(
+                t.get("prompt_tokens") is not None and t.get("prompt_tokens") < p1
+                for t in per_turn
+                if t.get("turn", 0) > 1
+            )
+            try:
+                llama_log_text = log_path.read_text(errors="replace")
+            except Exception:
+                llama_log_text = ""
+            log_reuse = "restored context checkpoint" in llama_log_text
+            reuse_ok = bool(prompt_reuse or log_reuse)
+            print(
+                f"llama prompt-cache reuse after cold turn: "
+                f"{'PASS' if reuse_ok else 'FAIL (cache reuse not visible)'}"
+            )
+        elif restart_per_turn:
             # Disk cache stores chunked checkpoints; the first reconnect hit can appear
             # after turn 2 on short traces.
             cold_ok = pl1 in (0, None)
@@ -2411,8 +2618,11 @@ def main() -> None:
         # Check parser not returning all nulls
         any_metrics = any(t.get("prompt_tokens") is not None for t in per_turn)
         print(f"parser extracting data:  {'PASS' if any_metrics else 'FAIL (all nulls)'}")
+        pin_ok = (not args.pin_decode_length) or arm_agg.get("pin_decode_ok") is True
+        if args.pin_decode_length:
+            print(f"pin_decode_ok:           {'PASS' if pin_ok else 'FAIL (out-token mismatch)'}")
 
-        if not reuse_ok or not dec_ok or not any_metrics:
+        if not reuse_ok or not dec_ok or not any_metrics or not pin_ok:
             print("\nSMOKE FAILED — do NOT proceed to full run.")
             print("Debug info:")
             for t in per_turn:
