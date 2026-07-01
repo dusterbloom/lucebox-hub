@@ -54,10 +54,64 @@ jobs:
           nvidia-smi --query-gpu=name,driver_version,memory.total,power.limit --format=csv
           # Locking clocks makes the numbers comparable run-to-run. Safe to skip if the
           # runner user can't run nvidia-smi -lgc; the profiler still records the power cap.
-          sudo nvidia-smi -lgc 1395 2>/dev/null || echo "clock lock not permitted; continuing"
+          sudo -n nvidia-smi -lgc 1395 2>/dev/null || echo "clock lock not permitted; continuing"
+
+      - name: Check GPU memory headroom
+        id: gpu_memory
+        run: |
+          required="${LUCEBOX_SPEED_MIN_FREE_MB:-18000}"
+          gpu_csv="$(nvidia-smi --query-gpu=memory.free,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null || true)"
+          free_mb="$(printf '%s\n' "$gpu_csv" | awk -F, 'NR == 1 { gsub(/[[:space:]]/, "", $1); print $1 }')"
+          used_mb="$(printf '%s\n' "$gpu_csv" | awk -F, 'NR == 1 { gsub(/[[:space:]]/, "", $2); print $2 }')"
+          total_mb="$(printf '%s\n' "$gpu_csv" | awk -F, 'NR == 1 { gsub(/[[:space:]]/, "", $3); print $3 }')"
+
+          if [ -z "$free_mb" ] || [ -z "$used_mb" ] || [ -z "$total_mb" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## 🏎️ Speed profile — skipped (GPU memory unavailable)"
+              echo ""
+              echo "The report-only profiler could not read RTX 3090 memory state."
+              echo "Build/unit/GPU smoke checks remain authoritative."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=Speed profile skipped::Could not read GPU memory state."
+            exit 0
+          fi
+
+          echo "free_mb=$free_mb" >> "$GITHUB_OUTPUT"
+          echo "used_mb=$used_mb" >> "$GITHUB_OUTPUT"
+          echo "total_mb=$total_mb" >> "$GITHUB_OUTPUT"
+
+          if [ "$free_mb" -lt "$required" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## 🏎️ Speed profile — skipped (insufficient free VRAM)"
+              echo ""
+              echo "The 27B target + draft profile needs a mostly-free RTX 3090."
+              echo "Another workload is currently using the shared GPU, so the"
+              echo "report-only profile is skipped instead of failing the PR check."
+              echo ""
+              echo "- free: \`${free_mb} MiB\`"
+              echo "- used: \`${used_mb} MiB\`"
+              echo "- total: \`${total_mb} MiB\`"
+              echo "- required free: \`${required} MiB\`"
+              echo ""
+              echo "Current CUDA processes:"
+              echo ""
+              echo '```text'
+              nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=Speed profile skipped::Only ${free_mb} MiB free on the shared RTX 3090; need ${required} MiB."
+            exit 0
+          fi
+
+          echo "available=true" >> "$GITHUB_OUTPUT"
+        env:
+          LUCEBOX_SPEED_MIN_FREE_MB: ${{ vars.LUCEBOX_SPEED_MIN_FREE_MB || '' }}
 
       - name: Check model weights are staged on the runner
         id: models
+        if: steps.gpu_memory.outputs.available == 'true'
         run: |
           # The weights are staged on the self-hosted runner out of band. If they are
           # absent the engine binary aborts with a cryptic gguf "No such file" error, so
@@ -95,7 +149,7 @@ jobs:
           fi
 
       - name: Build engine binaries (sm_86, Release)
-        if: steps.models.outputs.present == 'true'
+        if: steps.gpu_memory.outputs.available == 'true' && steps.models.outputs.present == 'true'
         run: |
           cd server
           cmake -B build \
@@ -106,7 +160,7 @@ jobs:
           cmake --build build --target test_dflash test_generate -j"$(nproc)"
 
       - name: Install profiler Python deps (isolated, pinned venv)
-        if: steps.models.outputs.present == 'true'
+        if: steps.gpu_memory.outputs.available == 'true' && steps.models.outputs.present == 'true'
         run: |
           cd server
           # The profiler only needs a tokenizer, so we use a tiny isolated venv
@@ -123,7 +177,7 @@ jobs:
             protobuf==6.31.1
 
       - name: Run speed profiler
-        if: steps.models.outputs.present == 'true'
+        if: steps.gpu_memory.outputs.available == 'true' && steps.models.outputs.present == 'true'
         run: |
           cd server
           # Use a committed baseline if one is staged so the report can flag a
@@ -188,7 +242,7 @@ jobs:
           LUCEBOX_SPEED_NOISE_RSD_PCT: ${{ vars.LUCEBOX_SPEED_NOISE_RSD_PCT || '' }}
 
       - name: Publish report to the run summary
-        if: always() && steps.models.outputs.present == 'true'
+        if: always() && steps.gpu_memory.outputs.available == 'true' && steps.models.outputs.present == 'true'
         run: |
           if [ -f server/profile.md ]; then
             { echo "## 🏎️ Speed profile"; echo ""; cat server/profile.md; } >> "$GITHUB_STEP_SUMMARY"
@@ -197,7 +251,7 @@ jobs:
           fi
 
       - name: Flag losslessness / regressions (annotations, non-blocking)
-        if: always() && steps.models.outputs.present == 'true'
+        if: always() && steps.gpu_memory.outputs.available == 'true' && steps.models.outputs.present == 'true'
         run: |
           [ -f server/profile.json ] || exit 0
           # Report-only: emit warnings, never fail. A losslessness FAIL means the fast
@@ -223,7 +277,7 @@ jobs:
 
       - name: Reset GPU clocks
         if: always()
-        run: sudo nvidia-smi -rgc 2>/dev/null || true
+        run: sudo -n nvidia-smi -rgc 2>/dev/null || true
 
       - name: Upload artifacts (json + markdown + nsys trace)
         if: always()
