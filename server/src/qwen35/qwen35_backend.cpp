@@ -1,6 +1,7 @@
 #include "qwen35_backend.h"
 #include "placement/skip_park_guard.h"
 #include "qwen35/prefill_logits_policy.h"
+#include "qwen35/scoped_skip_props_check.h"
 #include "qwen35_dflash_target.h"
 #include "graph_builders.h"
 #include "dflash_feature_ring.h"
@@ -33,6 +34,12 @@
 #endif
 
 #include "kv_quant.h"
+
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP) || defined(GGML_USE_HIP)
+extern "C" void ggml_cuda_set_skip_props_check(bool skip);
+#else
+static void ggml_cuda_set_skip_props_check(bool) {}
+#endif
 
 namespace dflash::common {
 
@@ -1876,6 +1883,9 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
     const bool ar_graph_reuse = std::getenv("DFLASH_AR_NO_REUSE") == nullptr;
     ar_decode_fa_bucket_ = -1;  // force first-step build
 
+    dflash::qwen35::ScopedSkipPropsCheck skip_props_guard(
+        &ggml_cuda_set_skip_props_check, ar_graph_reuse);
+
     for (int i = initial_emitted; i < n_gen; i++) {
         int32_t tok = out_tokens.back();
 
@@ -1925,7 +1935,9 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
         }
         if (pool) kvflash_upload_mask();
 
+        if (need_rebuild) skip_props_guard.set(false);
         auto st = ggml_backend_graph_compute(target_backend_, sg_.gf);
+        if (need_rebuild) skip_props_guard.set(ar_graph_reuse);
         if (st != GGML_STATUS_SUCCESS) return false;
 
         after_target_compute(sg_, committed, 1);
