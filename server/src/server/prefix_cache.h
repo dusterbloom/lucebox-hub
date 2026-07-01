@@ -102,8 +102,8 @@ public:
         int slot = -1;
         // Logical prompt boundary that matched the cache key.
         int key_len = 0;
-        // Physical KV length saved in the backend snapshot. This can be shorter
-        // than key_len when a newer boundary aliases an older restored snapshot.
+        // Physical KV length saved in the backend snapshot. Inline entries are
+        // only published when key_len == snapshot_len.
         int snapshot_len = 0;
     };
 
@@ -117,9 +117,9 @@ public:
     void confirm_inline_snap(int slot, int target_cut, int snapshot_len,
                              const std::vector<int32_t> & prompt_ids);
 
-    // Add a logical cache key that restores from an existing physical snapshot.
-    // Used when the backend did not need to materialize a fresh snapshot because
-    // the requested boundary fell inside the first restored delta chunk.
+    // Release a prepared inline snapshot without publishing a logical alias.
+    // Inline cache entries require key_len == snapshot_len; a shorter physical
+    // snapshot must not masquerade as a longer reusable prefix.
     void alias_inline_snap(int slot, int target_cut, int snapshot_len,
                            const std::vector<int32_t> & prompt_ids);
 

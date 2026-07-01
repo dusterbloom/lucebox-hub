@@ -297,7 +297,7 @@ void PrefixCache::insert_inline_entry(int slot, int target_cut, int snapshot_len
                                       const std::vector<int32_t> & prompt_ids,
                                       bool replace_slot_entries) {
     if (slot < 0 || target_cut <= 0 || snapshot_len <= 0 ||
-        target_cut > (int)prompt_ids.size() || snapshot_len > target_cut) {
+        target_cut > (int)prompt_ids.size() || snapshot_len != target_cut) {
         std::fprintf(stderr,
             "[pc] ignoring invalid inline entry slot=%d key_len=%d snapshot_len=%d prompt=%zu\n",
             slot, target_cut, snapshot_len, prompt_ids.size());
@@ -424,8 +424,8 @@ std::pair<int, int> PrefixCache::prepare_inline_snap(
 void PrefixCache::confirm_inline_snap(int slot, int target_cut, int snapshot_len,
                                       const std::vector<int32_t> & prompt_ids) {
     if (disabled_) return;
-    if (target_cut <= 0 || target_cut > (int)prompt_ids.size() ||
-        snapshot_len <= 0 || snapshot_len > target_cut) {
+    if (slot < 0 || target_cut <= 0 || snapshot_len <= 0 ||
+        target_cut > (int)prompt_ids.size() || snapshot_len != target_cut) {
         std::fprintf(stderr,
             "[pc] refusing inline-snap slot=%d key_len=%d snapshot_len=%d prompt=%zu\n",
             slot, target_cut, snapshot_len, prompt_ids.size());
@@ -448,13 +448,11 @@ void PrefixCache::alias_inline_snap(int slot, int target_cut, int snapshot_len,
     if (disabled_) return;
 
     // A failed prepared snap may have reserved an eviction victim. Release that
-    // reservation before publishing a logical alias to an existing snapshot.
+    // reservation. Do not publish a logical key for a shorter physical snapshot:
+    // restore must materialize exactly the key length by construction.
     evict_pending_inline();
-
-    insert_inline_entry(slot, target_cut, snapshot_len, prompt_ids,
-                        /*replace_slot_entries=*/false);
     std::fprintf(stderr,
-        "[pc] inline-snap aliased slot=%d key_len=%d snapshot_len=%d\n",
+        "[pc] inline-snap alias skipped slot=%d key_len=%d snapshot_len=%d\n",
         slot, target_cut, snapshot_len);
 }
 

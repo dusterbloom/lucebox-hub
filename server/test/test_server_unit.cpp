@@ -1371,7 +1371,7 @@ static void test_prefix_cache_lookup_grows_chain_from_exact_prefix() {
     TEST_ASSERT(miss.snapshot_len == 0);
 }
 
-static void test_prefix_cache_aliases_new_boundary_to_restored_snapshot() {
+static void test_prefix_cache_rejects_shorter_snapshot_alias() {
     auto markers = synthetic_chat_markers();
     PrefixCache cache(4, markers);
     std::vector<int32_t> base = {1, 100, 2, 3, 200};
@@ -1387,9 +1387,9 @@ static void test_prefix_cache_aliases_new_boundary_to_restored_snapshot() {
     TEST_ASSERT(longer_prep.first == 1);
     TEST_ASSERT(longer_prep.second == 7);
 
-    // Simulate Qwen's restored first-delta path: no new physical snapshot was
-    // materialized, but the logical conversation boundary is still safe to
-    // remember as an alias to the restored slot at its older physical length.
+    // Simulate a restored path where no new physical snapshot was materialized.
+    // The cache must not publish the longer logical boundary as a hit to the
+    // shorter physical snapshot: key_len must equal snapshot_len by construction.
     cache.abort_inline_snap(longer_prep.first);
     cache.alias_inline_snap(base_prep.first, longer_prep.second,
                             base_prep.second, longer);
@@ -1399,46 +1399,34 @@ static void test_prefix_cache_aliases_new_boundary_to_restored_snapshot() {
     };
     auto hit = cache.lookup(appended);
     TEST_ASSERT(hit.slot == base_prep.first);
-    TEST_ASSERT(hit.key_len == 7);
-    TEST_ASSERT(hit.snapshot_len == 4);
-
-    auto base_hit = cache.lookup(base);
-    TEST_ASSERT(base_hit.slot == base_prep.first);
-    TEST_ASSERT(base_hit.key_len == 4);
-    TEST_ASSERT(base_hit.snapshot_len == 4);
+    TEST_ASSERT(hit.key_len == base_prep.second);
+    TEST_ASSERT(hit.snapshot_len == base_prep.second);
+    TEST_ASSERT(hit.key_len == hit.snapshot_len);
 }
 
-static void test_prefix_cache_alias_eviction_preserves_shared_ancestor_slot() {
+static void test_prefix_cache_rejects_mismatched_confirm() {
     auto markers = synthetic_chat_markers();
     PrefixCache cache(2, markers);
-    std::vector<int32_t> base = {1, 100, 2, 3, 200};
+    std::vector<int32_t> ids = {1, 100, 2, 3, 200, 2, 3, 300};
 
-    auto base_prep = cache.prepare_inline_snap(base);
-    TEST_ASSERT(base_prep.first == 0);
-    TEST_ASSERT(base_prep.second == 4);
-    cache.confirm_inline_snap(base_prep.first, base_prep.second,
-                              base_prep.second, base);
+    auto prep = cache.prepare_inline_snap(ids);
+    TEST_ASSERT(prep.first == 0);
+    TEST_ASSERT(prep.second == 7);
 
-    std::vector<int32_t> branch_a = {1, 100, 2, 3, 200, 2, 3, 300};
-    cache.alias_inline_snap(base_prep.first, 7, 4, branch_a);
+    cache.confirm_inline_snap(prep.first, prep.second, 4, ids);
 
-    std::vector<int32_t> branch_b = {1, 100, 2, 3, 201, 2, 3, 301};
-    auto branch_b_prep = cache.prepare_inline_snap(branch_b);
-    TEST_ASSERT(branch_b_prep.first == 1);
-    TEST_ASSERT(branch_b_prep.second == 7);
-    cache.confirm_inline_snap(branch_b_prep.first, branch_b_prep.second,
-                              branch_b_prep.second, branch_b);
+    std::vector<int32_t> appended = {
+        1, 100, 2, 3, 200, 2, 3, 300, 2, 3, 400
+    };
+    auto hit = cache.lookup(appended);
+    TEST_ASSERT(hit.slot == -1);
+    TEST_ASSERT(hit.key_len == 0);
+    TEST_ASSERT(hit.snapshot_len == 0);
 
-    std::vector<int32_t> branch_c = {1, 100, 2, 3, 202, 2, 3, 302};
-    auto branch_c_prep = cache.prepare_inline_snap(branch_c);
-    TEST_ASSERT(branch_c_prep.first == branch_b_prep.first);
-    TEST_ASSERT(branch_c_prep.first != base_prep.first);
-    cache.abort_inline_snap(branch_c_prep.first);
-
-    auto base_hit = cache.lookup(base);
-    TEST_ASSERT(base_hit.slot == base_prep.first);
-    TEST_ASSERT(base_hit.key_len == 4);
-    TEST_ASSERT(base_hit.snapshot_len == 4);
+    auto retry = cache.prepare_inline_snap(ids);
+    TEST_ASSERT(retry.first >= 0);
+    TEST_ASSERT(retry.second == prep.second);
+    cache.abort_inline_snap(retry.first);
 }
 
 // ── Prefix-aware eviction policy (model-free) ───────────────────────────
@@ -4536,8 +4524,8 @@ int main() {
     RUN_TEST(test_find_boundaries_skips_unmatched_content_markers);
     RUN_TEST(test_prefix_cache_prepares_newest_boundary);
     RUN_TEST(test_prefix_cache_lookup_grows_chain_from_exact_prefix);
-    RUN_TEST(test_prefix_cache_aliases_new_boundary_to_restored_snapshot);
-    RUN_TEST(test_prefix_cache_alias_eviction_preserves_shared_ancestor_slot);
+    RUN_TEST(test_prefix_cache_rejects_shorter_snapshot_alias);
+    RUN_TEST(test_prefix_cache_rejects_mismatched_confirm);
     RUN_TEST(test_evict_empty_is_zero);
     RUN_TEST(test_evict_single_is_zero);
     RUN_TEST(test_evict_chain_keeps_ancestors);

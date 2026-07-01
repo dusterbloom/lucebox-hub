@@ -2654,8 +2654,7 @@ void HttpServer::worker_loop() {
                 disk_hit = false;
                 inline_restore_hit = false;
             } else {
-                // Always account and restore from physical backend truth. Inline
-                // entries may have a newer logical key_len than snapshot_len.
+                // Always account and restore from physical backend truth.
                 prefix_len = snap_len;
             }
         }
@@ -2938,7 +2937,7 @@ void HttpServer::worker_loop() {
                 prefix_cache_should_commit_snapshot(
                     result.ok, completion_tokens, client_disconnected,
                     backend_.snapshot_used(snap_slot));
-            auto alias_to_inline_restore = [&]() {
+            auto release_inline_restore_prepare = [&]() {
                 if (!can_commit_inline || !inline_restore_hit || cache_slot < 0 ||
                     !backend_.snapshot_used(cache_slot)) {
                     return;
@@ -2954,7 +2953,7 @@ void HttpServer::worker_loop() {
                 const int saved_pos = backend_.snapshot_cur_pos(snap_slot);
                 if (saved_pos <= 0 || saved_pos > snap_cut) {
                     prefix_cache_.abort_inline_snap(snap_slot);
-                    alias_to_inline_restore();
+                    release_inline_restore_prepare();
                 } else {
                     const bool refreshed_snapshot =
                         !snap_slot_preexisting || saved_pos != snap_slot_old_pos;
@@ -2962,7 +2961,7 @@ void HttpServer::worker_loop() {
                         inline_restore_hit && snap_slot == cache_slot;
                     if (!refreshed_snapshot && !reused_restore_slot) {
                         prefix_cache_.abort_inline_snap(snap_slot);
-                        alias_to_inline_restore();
+                        release_inline_restore_prepare();
                     } else if (reused_restore_slot && saved_pos < snap_cut) {
                         prefix_cache_.alias_inline_snap(snap_slot, snap_cut, saved_pos,
                                                         effective_prompt);
@@ -2986,7 +2985,7 @@ void HttpServer::worker_loop() {
                 }
             } else {
                 prefix_cache_.abort_inline_snap(snap_slot);
-                alias_to_inline_restore();
+                release_inline_restore_prepare();
             }
         }
 
