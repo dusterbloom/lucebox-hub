@@ -103,7 +103,8 @@ public:
         // Logical prompt boundary that matched the cache key.
         int key_len = 0;
         // Physical KV length saved in the backend snapshot. Inline entries are
-        // only published when key_len == snapshot_len.
+        // keyed by the exact saved prefix, so key_len == snapshot_len even when
+        // the originally requested chat boundary was slightly later.
         int snapshot_len = 0;
     };
 
@@ -117,9 +118,9 @@ public:
     void confirm_inline_snap(int slot, int target_cut, int snapshot_len,
                              const std::vector<int32_t> & prompt_ids);
 
-    // Release a prepared inline snapshot without publishing a logical alias.
-    // Inline cache entries require key_len == snapshot_len; a shorter physical
-    // snapshot must not masquerade as a longer reusable prefix.
+    // Release a prepared inline snapshot without publishing the longer logical
+    // boundary. If the shorter physical snapshot is itself a valid prompt
+    // prefix, it may be published under that exact shorter key.
     void alias_inline_snap(int slot, int target_cut, int snapshot_len,
                            const std::vector<int32_t> & prompt_ids);
 

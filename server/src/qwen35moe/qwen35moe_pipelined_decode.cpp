@@ -34,6 +34,8 @@ void CachedPrefnGraph::free() {
     positions = nullptr;
     kv_write_rows = nullptr;
     kv_win = 0;
+    kv_write_row_base = 0;
+    kv_write_pooled = false;
 }
 
 
@@ -112,6 +114,7 @@ static bool build_cached_attn_prefn(
     TargetCache & cache,
     int layer_idx,
     int kv_win,                 // 256-aligned FA span to bake in
+    bool pooled_kvflash,
     int kq_stride_pad) {
 
     ggml_gallocr_t keep_alloc = out.alloc;  // reuse allocator across rebuilds
@@ -138,6 +141,8 @@ static bool build_cached_attn_prefn(
     out.kv_write_rows = ggml_new_tensor_2d(out.ctx, GGML_TYPE_I64, 1, w.n_head_kv);
     ggml_set_name(out.kv_write_rows, "kv_write_rows");
     ggml_set_input(out.kv_write_rows);
+    out.kv_write_pooled = pooled_kvflash;
+    out.kv_write_row_base = pooled_kvflash ? 0 : ((kv_win - 1) & ~255);
 
     // Bake the FA span: build with kv_start = kv_win-1 so win_len_padded == kv_win.
     // The actual write/read positions come from kv_write_rows + positions DATA.
@@ -147,7 +152,8 @@ static bool build_cached_attn_prefn(
         out.inp_embed, out.positions, /*attn_mask=*/nullptr,
         /*kv_start=*/kv_win - 1, /*n_tokens=*/1, /*fa_window=*/0,
         out.kv_write_rows,
-        /*skip_gdn_intermediate=*/true);
+        /*skip_gdn_intermediate=*/true,
+        out.kv_write_row_base);
     if (!go.residual || !go.post) { out.free(); return false; }
 
     out.ffn_residual = go.residual;
@@ -522,20 +528,25 @@ bool pipelined_decode_one_token(
         bool attn_cached_ok = false;
         if (is_attn && !g_no_kvpad) {
             auto & cpg = state.cached_prefn[(size_t)il];
+            const bool pooled_kvflash = kv_slot >= 0;
             // Clamp the baked FA span to the cache tensor's physical capacity:
             // with kvflash the tensors are pool-sized, so the window stops
             // growing at the pool (and the cached graph never rebuilds again).
             const int kv_phys = (int)cache.attn_k[0]->ne[1];
             const int kv_win_needed =
                 std::min(((kv_pos + 1) + 255) & ~255, kv_phys);
-            if (!cpg.valid() || cpg.kv_win < kv_win_needed) {
+            if (!cpg.valid() || cpg.kv_win < kv_win_needed ||
+                cpg.kv_write_pooled != pooled_kvflash) {
                 if (!build_cached_attn_prefn(cpg, backend, w, cache, il,
-                                             kv_win_needed, kq_stride_pad)) {
+                                             kv_win_needed, pooled_kvflash,
+                                             kq_stride_pad)) {
                     std::fprintf(stderr,
                         "[pipelined] cached attn prefn build failed (layer %d); dyn fallback\n", il);
                 }
             }
-            attn_cached_ok = cpg.valid() && cpg.kv_win >= kv_win_needed;
+            attn_cached_ok = cpg.valid() &&
+                              cpg.kv_win >= kv_win_needed &&
+                              cpg.kv_write_pooled == pooled_kvflash;
         }
 
         if (attn_cached_ok) {
@@ -543,7 +554,16 @@ bool pipelined_decode_one_token(
             ggml_backend_tensor_copy_async(backend, backend, state.gpu_state.act_cur, cpg.inp_embed);
             int32_t pos4[4] = {kv_pos, kv_pos, kv_pos, 0};
             ggml_backend_tensor_set_async(backend, cpg.positions, pos4, 0, sizeof(pos4));
-            std::vector<int64_t> row_vals((size_t)w.n_head_kv, (int64_t)kv_row);
+            const int64_t write_row = (kv_slot >= 0)
+                ? (int64_t)kv_row
+                : (int64_t)kv_row - (int64_t)cpg.kv_write_row_base;
+            if (write_row < 0 || (kv_slot < 0 && write_row >= 256)) {
+                std::fprintf(stderr,
+                    "[pipelined] invalid bucket-local KV row (pos=%d base=%d row=%lld)\n",
+                    kv_pos, cpg.kv_write_row_base, (long long)write_row);
+                return false;
+            }
+            std::vector<int64_t> row_vals((size_t)w.n_head_kv, write_row);
             ggml_backend_tensor_set_async(backend, cpg.kv_write_rows, row_vals.data(), 0,
                                           sizeof(int64_t) * row_vals.size());
 

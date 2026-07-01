@@ -1404,7 +1404,7 @@ static void test_prefix_cache_rejects_shorter_snapshot_alias() {
     TEST_ASSERT(hit.key_len == hit.snapshot_len);
 }
 
-static void test_prefix_cache_rejects_mismatched_confirm() {
+static void test_prefix_cache_commits_shorter_snapshot_prefix() {
     auto markers = synthetic_chat_markers();
     PrefixCache cache(2, markers);
     std::vector<int32_t> ids = {1, 100, 2, 3, 200, 2, 3, 300};
@@ -1413,7 +1413,39 @@ static void test_prefix_cache_rejects_mismatched_confirm() {
     TEST_ASSERT(prep.first == 0);
     TEST_ASSERT(prep.second == 7);
 
-    cache.confirm_inline_snap(prep.first, prep.second, 4, ids);
+    // KVFlash snapshots can land at the previous pool chunk boundary rather
+    // than the requested chat boundary. Reuse is still correct if the cache key
+    // is the exact saved prefix, followed by suffix prefill.
+    cache.confirm_inline_snap(prep.first, prep.second, 6, ids);
+
+    std::vector<int32_t> appended = {
+        1, 100, 2, 3, 200, 2, 3, 300, 2, 3, 400
+    };
+    auto hit = cache.lookup(appended);
+    TEST_ASSERT(hit.slot == prep.first);
+    TEST_ASSERT(hit.key_len == 6);
+    TEST_ASSERT(hit.snapshot_len == 6);
+    TEST_ASSERT(hit.key_len == hit.snapshot_len);
+
+    std::vector<int32_t> sibling = {
+        1, 100, 2, 3, 201, 2, 3, 300, 2, 3, 400
+    };
+    auto miss = cache.lookup(sibling);
+    TEST_ASSERT(miss.slot == -1);
+    TEST_ASSERT(miss.key_len == 0);
+    TEST_ASSERT(miss.snapshot_len == 0);
+}
+
+static void test_prefix_cache_rejects_oversized_confirm() {
+    auto markers = synthetic_chat_markers();
+    PrefixCache cache(2, markers);
+    std::vector<int32_t> ids = {1, 100, 2, 3, 200, 2, 3, 300};
+
+    auto prep = cache.prepare_inline_snap(ids);
+    TEST_ASSERT(prep.first == 0);
+    TEST_ASSERT(prep.second == 7);
+
+    cache.confirm_inline_snap(prep.first, prep.second, 8, ids);
 
     std::vector<int32_t> appended = {
         1, 100, 2, 3, 200, 2, 3, 300, 2, 3, 400
@@ -4525,7 +4557,8 @@ int main() {
     RUN_TEST(test_prefix_cache_prepares_newest_boundary);
     RUN_TEST(test_prefix_cache_lookup_grows_chain_from_exact_prefix);
     RUN_TEST(test_prefix_cache_rejects_shorter_snapshot_alias);
-    RUN_TEST(test_prefix_cache_rejects_mismatched_confirm);
+    RUN_TEST(test_prefix_cache_commits_shorter_snapshot_prefix);
+    RUN_TEST(test_prefix_cache_rejects_oversized_confirm);
     RUN_TEST(test_evict_empty_is_zero);
     RUN_TEST(test_evict_single_is_zero);
     RUN_TEST(test_evict_chain_keeps_ancestors);
