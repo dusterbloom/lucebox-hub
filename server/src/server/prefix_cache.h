@@ -100,15 +100,14 @@ public:
 
     struct InlineLookup {
         int slot = -1;
-        // Logical key length that matched the prompt. This is usually a chat
-        // boundary and can be longer than the physical snapshot when a backend
-        // rounds snapshots down to a chunk boundary.
+        // Logical prompt boundary that matched the cache key.
         int key_len = 0;
-        // Actual backend snapshot position to restore from.
+        // Physical KV length saved in the backend snapshot. This can be shorter
+        // than key_len when a newer boundary aliases an older restored snapshot.
         int snapshot_len = 0;
     };
 
-    // Look up the longest cached prefix. Returns slot/key/snapshot metadata.
+    // Look up the longest cached prefix.
     InlineLookup lookup(const std::vector<int32_t> & prompt_ids);
 
     // Prepare an inline snapshot. Returns (slot, target_cut) or (-1, 0).
@@ -117,6 +116,12 @@ public:
     // Confirm after daemon successfully saved the snapshot.
     void confirm_inline_snap(int slot, int target_cut, int snapshot_len,
                              const std::vector<int32_t> & prompt_ids);
+
+    // Add a logical cache key that restores from an existing physical snapshot.
+    // Used when the backend did not need to materialize a fresh snapshot because
+    // the requested boundary fell inside the first restored delta chunk.
+    void alias_inline_snap(int slot, int target_cut, int snapshot_len,
+                           const std::vector<int32_t> & prompt_ids);
 
     // Abort if the snapshot failed.
     void abort_inline_snap(int slot);
@@ -177,7 +182,6 @@ private:
     struct LruEntry {
         PrefixHash           hash;
         int                  slot;
-        int                  key_len;
         int                  snapshot_len;
         std::vector<int32_t> ids;  // prefix tokens [0, target_cut) for prefix-aware eviction
     };
@@ -218,6 +222,11 @@ private:
     // Helpers
     int find_entry(const PrefixHash & h) const;
     void move_to_end(int idx);
+    void erase_inline_at(int idx);
+    void evict_pending_inline();
+    void insert_inline_entry(int slot, int target_cut, int snapshot_len,
+                             const std::vector<int32_t> & prompt_ids,
+                             bool replace_slot_entries);
     int find_full_entry(const PrefixHash & h) const;
     void move_full_to_end(int idx);
 };
