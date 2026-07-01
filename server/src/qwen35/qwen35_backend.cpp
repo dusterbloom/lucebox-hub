@@ -105,6 +105,53 @@ static void qwen35_prefill_profile_print(const Qwen35PrefillProfile & p,
         p.kvsync_us / 1000.0, p.final_snapshot_us / 1000.0);
 }
 
+static bool qwen35_upload_kv_write_rows(StepGraph & sg,
+                                        int n_tokens,
+                                        int n_head_kv,
+                                        int kv_pos,
+                                        int cache_rows,
+                                        const int * pooled_slots,
+                                        const char * path) {
+    if (!sg.kv_write_rows) return true;
+    if (n_tokens <= 0 || n_head_kv <= 0 || cache_rows <= 0) return false;
+
+    const bool pooled = pooled_slots != nullptr;
+    int row_cap = cache_rows;
+    if (!pooled && sg.kv_write_row_base > 0) {
+        if (sg.kv_write_row_base >= cache_rows) {
+            std::fprintf(stderr,
+                         "[qwen35] invalid KV row base in %s "
+                         "(base=%d cache_rows=%d)\n",
+                         path, sg.kv_write_row_base, cache_rows);
+            set_last_error("qwen35: invalid KV row base");
+            return false;
+        }
+        row_cap = std::min(256, cache_rows - sg.kv_write_row_base);
+    }
+
+    std::vector<int64_t> rows((size_t)n_tokens * n_head_kv);
+    for (int h = 0; h < n_head_kv; h++) {
+        for (int i = 0; i < n_tokens; i++) {
+            const int64_t row = pooled
+                ? (int64_t)pooled_slots[i]
+                : (int64_t)kv_pos + i - (int64_t)sg.kv_write_row_base;
+            if (row < 0 || row >= row_cap) {
+                std::fprintf(stderr,
+                             "[qwen35] invalid KV write row in %s "
+                             "(pos=%d base=%d row=%lld cap=%d pooled=%d)\n",
+                             path, kv_pos + i, sg.kv_write_row_base,
+                             (long long)row, row_cap, (int)pooled);
+                set_last_error("qwen35: invalid KV write row");
+                return false;
+            }
+            rows[(size_t)h * n_tokens + i] = row;
+        }
+    }
+    ggml_backend_tensor_set(sg.kv_write_rows, rows.data(), 0,
+                            sizeof(int64_t) * rows.size());
+    return true;
+}
+
 static float bf16_bits_to_f32(uint16_t bits) {
     union {
         uint32_t u;
@@ -1396,21 +1443,22 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         if (prof.enabled) {
             prof.build_us += qwen35_elapsed_us(build_t0, Qwen35Clock::now());
         }
-        if (kvf_paged) {
+        if (kvf_paged && !sg_.kv_write_rows) {
+            std::fprintf(stderr, "[kvflash] pooled prefill requires the set_rows path\n");
+            return -1;
+        }
+        if (sg_.kv_write_rows) {
             const auto kvrows_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
-            if (!sg_.kv_write_rows) {
-                std::fprintf(stderr, "[kvflash] pooled prefill requires the set_rows path\n");
+            const int cache_rows = cache_.attn_k.empty() || !cache_.attn_k[0]
+                ? cache_.max_ctx
+                : (int)cache_.attn_k[0]->ne[1];
+            const int * pooled_rows = kvf_paged ? kvf_slots.data() : nullptr;
+            if (!qwen35_upload_kv_write_rows(sg_, n_tokens, w_.n_head_kv,
+                                             kv_pos, cache_rows, pooled_rows,
+                                             kvf_paged ? "pooled prefill"
+                                                       : "non-pooled prefill")) {
                 return -1;
             }
-            // [n_tokens, n_head_kv] ne0-major (see verify_batch).
-            std::vector<int64_t> rows((size_t)n_tokens * w_.n_head_kv);
-            for (int h = 0; h < w_.n_head_kv; h++) {
-                for (int i = 0; i < n_tokens; i++) {
-                    rows[(size_t)h * n_tokens + i] = kvf_slots[(size_t)i];
-                }
-            }
-            ggml_backend_tensor_set(sg_.kv_write_rows, rows.data(), 0,
-                                    sizeof(int64_t) * rows.size());
             if (prof.enabled) {
                 prof.kv_rows_us += qwen35_elapsed_us(kvrows_t0, Qwen35Clock::now());
             }
@@ -1929,31 +1977,29 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
             ar_decode_fa_bucket_ = sg_.kv_write_rows ? fa_bucket : -1;
         }
 
-        // Fill kv_write_rows with this step's cache slot for set_rows:
-        // a pooled physical slot, or a bucket-local logical row in non-pool mode.
         if (sg_.kv_write_rows) {
-            const int n_head_kv = w_.n_head_kv;
-            const int64_t slot = pool
-                ? (int64_t)kvflash_pager_.slot_for(committed)
-                : (int64_t)committed - (int64_t)sg_.kv_write_row_base;
-            if (slot < 0 || (!pool && slot >= 256)) {
+            const int cache_rows = cache_.attn_k.empty() || !cache_.attn_k[0]
+                ? cache_.max_ctx
+                : (int)cache_.attn_k[0]->ne[1];
+            int pooled_slot = -1;
+            const int * pooled_rows = nullptr;
+            if (pool) {
+                pooled_slot = kvflash_pager_.slot_for(committed);
+                pooled_rows = &pooled_slot;
+            }
+            if (!qwen35_upload_kv_write_rows(sg_, 1, w_.n_head_kv,
+                                             committed, cache_rows,
+                                             pooled_rows,
+                                             pool ? "pooled decode"
+                                                  : "non-pooled decode")) {
                 if (pool) {
                     std::fprintf(stderr, "[kvflash] no pool slot at pos %d "
-                                         "(pool %d exhausted)\n",
+                                          "(pool %d exhausted)\n",
                                  committed, kvflash_tokens_);
-                } else {
-                    std::fprintf(stderr, "[qwen35] invalid bucket-local KV row "
-                                         "(pos=%d base=%d row=%lld)\n",
-                                 committed, sg_.kv_write_row_base,
-                                 (long long)slot);
                 }
-                set_last_error(pool ? "kvflash: no evictable pool block"
-                                    : "qwen35: invalid bucket-local KV row");
+                if (pool) set_last_error("kvflash: no evictable pool block");
                 return false;
             }
-            std::vector<int64_t> row_vals(n_head_kv, slot);
-            ggml_backend_tensor_set(sg_.kv_write_rows, row_vals.data(), 0,
-                                    sizeof(int64_t) * n_head_kv);
         }
         if (pool) kvflash_upload_mask();
 

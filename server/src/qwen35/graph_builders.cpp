@@ -3,19 +3,9 @@
 #include "ggml-alloc.h"
 
 #include <algorithm>
-#include <cstdio>
 #include <cstdlib>
 
 namespace dflash::common {
-
-static int qwen35_non_pooled_kvpad_max_row() {
-    const char * env = std::getenv("DFLASH_QWEN35_KVPAD_MAX_ROW");
-    if (env) return std::atoi(env);
-    // q4_0 full-cache SET_ROWS is not reliable in the full long-context Qwen
-    // AR graph near 89k rows on CUDA. Keep the fast path below the observed
-    // cliff and use the exact legacy copy graph above it.
-    return 88000;
-}
 
 // ── build_layer_step ────────────────────────────────────────────
 
@@ -339,27 +329,11 @@ bool build_target_step(
     // multi-token, and feature-capturing forwards (decode AND spec verify).
     const bool non_pooled_step_kv_write =
         n_tokens == 1 && fa_window == 0 && !with_mask && !capture;
-    const bool q4_full_cache_kv =
-        !kvflash_mask &&
-        (cache.kv_k_type == GGML_TYPE_Q4_0 || cache.kv_v_type == GGML_TYPE_Q4_0);
-    const int non_pooled_kvpad_max_row = qwen35_non_pooled_kvpad_max_row();
-    const bool non_pooled_step_kv_write_safe =
-        !q4_full_cache_kv || non_pooled_kvpad_max_row <= 0 ||
-        kv_start < non_pooled_kvpad_max_row;
-    static bool s_logged_q4_guard = false;
-    if (non_pooled_step_kv_write && q4_full_cache_kv &&
-        !non_pooled_step_kv_write_safe && !s_logged_q4_guard) {
-        std::fprintf(stderr,
-            "[qwen35] q4_0 non-pooled KV write fallback at row=%d "
-            "(DFLASH_QWEN35_KVPAD_MAX_ROW=%d)\n",
-            kv_start, non_pooled_kvpad_max_row);
-        s_logged_q4_guard = true;
-    }
     const bool use_kv_write_rows =
         !g_no_kvpad && !capture_delta_intermediate &&
         (kvflash_mask
              ? (fa_window == 0)
-             : (non_pooled_step_kv_write && non_pooled_step_kv_write_safe));
+             : non_pooled_step_kv_write);
     if (use_kv_write_rows) {
         sg.kv_write_rows = ggml_new_tensor_2d(sg.ctx, GGML_TYPE_I64,
                                               n_tokens, w.n_head_kv);
