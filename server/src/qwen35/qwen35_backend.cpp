@@ -1279,38 +1279,40 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     // Chunked prefill
     std::vector<float> embed_buf((size_t)hidden * prefill_ubatch);
     int committed = kv_offset;
+    auto save_inline_snapshot = [&](int cur_pos) {
+        if (snap_slot < 0 || snap_pos < 0 || snap_pos != cur_pos) return;
+        if (kvf_paged) {
+            std::fprintf(stderr, "[kvflash] boundary snapshot skipped: pooled "
+                                 "prefill relocates chunks\n");
+        } else if (cur_pos > kv_offset) {
+            cache_.cur_pos = cur_pos;
+            if (snapshot_save(snap_slot)) {
+                std::printf("[snap] boundary slot=%d cur_pos=%d\n",
+                            snap_slot, cur_pos);
+                std::fflush(stdout);
+            }
+        } else {
+            snap_pos = -1;
+            snap_slot = -1;
+            return;
+        }
+        snap_pos = -1;
+        snap_slot = -1;
+    };
+    save_inline_snapshot(committed);
     for (int start = 0; start < prompt_len;) {
         const int kv_pos = kv_offset + start;
 
         int n_tokens = std::min(prefill_ubatch, prompt_len - start);
-        // FIX(bug2): do NOT shrink the prefill chunk to snap_pos. Shrinking
-        // realigns every subsequent chunk, changing GPU batch sizes vs the
-        // no-cache path -> FP-nondeterministic state divergence -> different
-        // greedy output on cache hits. Keep uniform chunks. When snap_pos falls
-        // inside this chunk, snapshot at the chunk START boundary kv_pos: the
-        // largest chunk boundary <= snap_pos. That stays (a) chunk-aligned, so
-        // the prefill is bit-identical to the no-cache path, and (b) strictly
-        // within the requested prefix, so a later request that shares only the
-        // system-prompt prefix still restores a valid cross-request hit.
-        // (Rounding UP would push the snapshot to prompt end -> the full prompt
-        // incl. the user message -> a different user msg restores garbage.)
-        if (snap_slot >= 0 && snap_pos >= 0 &&
+        if (!kvf_paged && prefill_ubatch > 0) {
+            const int phase = kv_pos % prefill_ubatch;
+            if (phase > 0) {
+                n_tokens = std::min(n_tokens, prefill_ubatch - phase);
+            }
+        }
+        if (kvf_paged && snap_slot >= 0 && snap_pos >= 0 &&
             kv_pos <= snap_pos && snap_pos < kv_pos + n_tokens) {
-            if (kv_pos > kv_offset && !kvf_paged) {   // skip degenerate / relocated
-                cache_.cur_pos = kv_pos;
-                const auto snap_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
-                if (snapshot_save(snap_slot)) {
-                    if (prof.enabled) {
-                        prof.snapshot_count++;
-                        prof.snapshot_us += qwen35_elapsed_us(snap_t0, Qwen35Clock::now());
-                    }
-                    std::printf("[snap] boundary slot=%d cur_pos=%d (req snap_pos=%d)\n",
-                                snap_slot, kv_pos, snap_pos);
-                    std::fflush(stdout);
-                } else if (prof.enabled) {
-                    prof.snapshot_us += qwen35_elapsed_us(snap_t0, Qwen35Clock::now());
-                }
-            } else if (kvf_paged && kv_pos > kv_offset) {
+            if (kv_pos > kv_offset) {
                 // kv_pos is always chunk-aligned here (prefill_ubatch == chunk_tokens
                 // in pooled path). Serialize only chunks [0, kv_pos/chunk_tokens).
                 const int cfg_chunk = kvflash_pager_.chunk_tokens();
@@ -1337,6 +1339,16 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             }
             snap_pos = -1;
             snap_slot = -1;
+        }
+        // Inline prefix-cache entries are exact by construction: the snapshot
+        // must physically materialize the requested chat boundary. If the
+        // boundary lands inside this ubatch, split once, save at snap_pos, then
+        // resume on the same absolute ubatch phase. A restored delta starting
+        // at snap_pos will take the same short first chunk and rejoin the
+        // regular ubatch grid at the next boundary.
+        if (!kvf_paged && snap_slot >= 0 && snap_pos > kv_pos &&
+            snap_pos < kv_pos + n_tokens) {
+            n_tokens = snap_pos - kv_pos;
         }
         const bool with_mask = kvf_paged ||
             (cfg_.kq_stride_pad > KQ_MASK_PAD) || (n_tokens > 1);
@@ -1506,6 +1518,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
 
         committed = kv_pos + n_tokens;
         cache_.cur_pos = committed;
+        save_inline_snapshot(committed);
 
         // QK policy: pool the post-RoPE keys of chunks this batch sealed
         // (they are resident — sealed inside the protected tail window).
@@ -1560,11 +1573,8 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         }
     }
 
-    // End-of-prefill snapshot: scoped disk-cache saves (auto/fixed policy)
-    // request snap_pos == prompt end, which never falls inside a chunk so the
-    // boundary branch above cannot fire. Taking the snapshot here changes
-    // nothing about the prefill computation; it only persists the final state
-    // (cache_.cur_pos == committed).
+    // Defensive end-of-prefill snapshot for callers that request exactly the
+    // final committed position and did not already consume the inline save.
     if (snap_slot >= 0 && snap_pos == committed) {
         const auto final_snap_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
         if (snapshot_save(snap_slot)) {
