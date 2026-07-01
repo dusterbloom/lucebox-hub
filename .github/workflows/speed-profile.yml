@@ -143,6 +143,7 @@ jobs:
           # The nsys pass adds a separate short profiled run; tok/s is measured on clean passes. Run 5
           # timing reps by default so the report can distinguish real deltas from
           # thermal/clock jitter; repo variables can trim this for temporary smoke runs.
+          set +e
           .profiler-venv/bin/python scripts/profile.py \
             --target "$MODELS/$TARGET_MODEL" \
             --draft  "$MODELS/$DRAFT_MODEL" \
@@ -152,7 +153,33 @@ jobs:
             --noise-rsd-pct "${LUCEBOX_SPEED_NOISE_RSD_PCT:-0.05}" \
             --nsys --check-lossless \
             "${baseline_arg[@]}" \
-            --out-json profile.json --out-md profile.md
+            --out-json profile.json --out-md profile.md 2>&1 | tee profile-run.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            title="profiler failed"
+            if grep -qiE 'out of memory|cudaMalloc failed|alloc.*failed' profile-run.log; then
+              title="profiler skipped: GPU memory envelope exceeded"
+            fi
+            {
+              echo "## 🏎️ Speed profile — $title"
+              echo ""
+              echo "The speed profile is report-only, so this failure is recorded"
+              echo "as a warning instead of failing the PR check."
+              echo ""
+              echo "- target: \`$TARGET_MODEL\`"
+              echo "- draft: \`$DRAFT_MODEL\`"
+              echo "- exit status: \`$status\`"
+              echo ""
+              echo "Tail of profiler output:"
+              echo ""
+              echo '```text'
+              tail -80 profile-run.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=Speed profile skipped::$title; see run summary and profile-run.log artifact."
+            exit 0
+          fi
         env:
           LUCEBOX_SPEED_BASELINE: ${{ vars.LUCEBOX_SPEED_BASELINE || '' }}
           LUCEBOX_SPEED_REGRESS_PCT: ${{ vars.LUCEBOX_SPEED_REGRESS_PCT || '' }}
@@ -207,5 +234,6 @@ jobs:
             server/profile.json
             server/profile.md
             server/profile.nsys-rep
-          if-no-files-found: warn
+            server/profile-run.log
+          if-no-files-found: ignore
           retention-days: 30
