@@ -1270,36 +1270,45 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     // For the legacy re-prefill path or cold starts, kv_offset is always 0.
     const bool kvf_paged = kvflash_active() &&
         kv_offset + prompt_len > kvflash_tokens_ - kvflash_pager_.chunk_tokens();
+    auto kvflash_prefill_ubatch = [&]() {
+        const int chunk = kvflash_pager_.chunk_tokens();
+        int ubatch = std::max(prefill_ubatch, chunk);
+        ubatch = (ubatch / chunk) * chunk;
+        return std::max(ubatch, chunk);
+    };
     // restore-consume: kv_offset != 0 means the caller passed a suffix after
     // deserializing the prefix KV; allow it in the pooled path without reset.
     const bool kvf_restore_suffix = kvf_paged && kv_offset != 0;
     if (kvf_restore_suffix) {
         // Suffix pooled prefill: pager was seeded by deserialize(); just set
         // ubatch size and skip reset. Log to distinguish from the cold path.
-        prefill_ubatch = kvflash_pager_.chunk_tokens();
+        const int kvf_chunk = kvflash_pager_.chunk_tokens();
+        prefill_ubatch = kvflash_prefill_ubatch();
         // Verify kv_offset is chunk-aligned (snapshot boundary contract).
-        if (kv_offset % prefill_ubatch != 0) {
+        if (kv_offset % kvf_chunk != 0) {
             std::fprintf(stderr,
                 "[kvflash] restore-consume: kv_offset=%d not chunk-aligned "
                 "(chunk_tokens=%d) — falling back to re-prefill\n",
-                kv_offset, prefill_ubatch);
+                kv_offset, kvf_chunk);
             set_last_error("kvflash: restore-consume misaligned offset");
             return -1;
         }
         std::printf("[kvflash] restore-consume suffix: offset=%d suffix=%d "
-                    "pool=%d chunk=%d\n",
-                    kv_offset, prompt_len, kvflash_tokens_, prefill_ubatch);
+                    "pool=%d chunk=%d ubatch=%d\n",
+                    kv_offset, prompt_len, kvflash_tokens_, kvf_chunk,
+                    prefill_ubatch);
         std::fflush(stdout);
     } else if (kvf_paged) {
-        prefill_ubatch = kvflash_pager_.chunk_tokens();
+        const int kvf_chunk = kvflash_pager_.chunk_tokens();
+        prefill_ubatch = kvflash_prefill_ubatch();
         kvflash_pager_.reset();
         if (kvflash_qk_policy_) {
             kvflash_qk_pool_.reset(kvflash_qk_pool_.dims());
             kvflash_qk_pooled_upto_ = 0;
         }
         std::printf("[kvflash] pooled prefill: %d tokens through a %d-token pool "
-                    "(%d-token chunks, evicting)\n",
-                    prompt_len, kvflash_tokens_, prefill_ubatch);
+                    "(%d-token chunks, ubatch=%d, evicting)\n",
+                    prompt_len, kvflash_tokens_, kvf_chunk, prefill_ubatch);
         std::fflush(stdout);
     }
 
@@ -1327,11 +1336,9 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     std::vector<float> embed_buf((size_t)hidden * prefill_ubatch);
     int committed = kv_offset;
     auto save_inline_snapshot = [&](int cur_pos) {
+        if (kvf_paged) return;
         if (snap_slot < 0 || snap_pos < 0 || snap_pos != cur_pos) return;
-        if (kvf_paged) {
-            std::fprintf(stderr, "[kvflash] boundary snapshot skipped: pooled "
-                                 "prefill relocates chunks\n");
-        } else if (cur_pos > kv_offset) {
+        if (cur_pos > kv_offset) {
             cache_.cur_pos = cur_pos;
             if (snapshot_save(snap_slot)) {
                 std::printf("[snap] boundary slot=%d cur_pos=%d\n",
@@ -1346,7 +1353,47 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         snap_pos = -1;
         snap_slot = -1;
     };
+    auto pooled_snapshot_boundary = [&]() {
+        if (!kvf_paged || snap_slot < 0 || snap_pos < 0) return -1;
+        const int chunk = kvflash_pager_.chunk_tokens();
+        return (snap_pos / chunk) * chunk;
+    };
+    auto save_pooled_snapshot = [&](int cur_pos) {
+        const int boundary = pooled_snapshot_boundary();
+        if (boundary < 0 || cur_pos != boundary) return;
+        if (cur_pos <= kv_offset) {
+            snap_pos = -1;
+            snap_slot = -1;
+            return;
+        }
+
+        const int cfg_chunk = kvflash_pager_.chunk_tokens();
+        const int max_chunks = cur_pos / cfg_chunk;
+        const int requested_snap_pos = snap_pos;
+        if (max_chunks > 0) {
+            const auto snap_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
+            if (snapshot_save_pooled_at(snap_slot, cur_pos)) {
+                if (prof.enabled) {
+                    prof.snapshot_count++;
+                    prof.snapshot_us += qwen35_elapsed_us(snap_t0, Qwen35Clock::now());
+                }
+                std::printf("[snap] pooled boundary slot=%d cur_pos=%d "
+                            "(req snap_pos=%d max_chunks=%d)\n",
+                            snap_slot, cur_pos, requested_snap_pos, max_chunks);
+                std::fflush(stdout);
+            } else {
+                if (prof.enabled) {
+                    prof.snapshot_us += qwen35_elapsed_us(snap_t0, Qwen35Clock::now());
+                }
+                std::fprintf(stderr, "[kvflash] pooled boundary snapshot failed"
+                                     " at cur_pos=%d\n", cur_pos);
+            }
+        }
+        snap_pos = -1;
+        snap_slot = -1;
+    };
     save_inline_snapshot(committed);
+    save_pooled_snapshot(committed);
     for (int start = 0; start < prompt_len;) {
         const int kv_pos = kv_offset + start;
 
@@ -1357,35 +1404,9 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
                 n_tokens = std::min(n_tokens, prefill_ubatch - phase);
             }
         }
-        if (kvf_paged && snap_slot >= 0 && snap_pos >= 0 &&
-            kv_pos <= snap_pos && snap_pos < kv_pos + n_tokens) {
-            if (kv_pos > kv_offset) {
-                // kv_pos is always chunk-aligned here (prefill_ubatch == chunk_tokens
-                // in pooled path). Serialize only chunks [0, kv_pos/chunk_tokens).
-                const int cfg_chunk = kvflash_pager_.chunk_tokens();
-                const int max_chunks = kv_pos / cfg_chunk;
-                if (max_chunks > 0) {
-                    const auto snap_t0 = prof.enabled ? Qwen35Clock::now() : Qwen35Clock::time_point{};
-                    if (snapshot_save_pooled_at(snap_slot, kv_pos)) {
-                        if (prof.enabled) {
-                            prof.snapshot_count++;
-                            prof.snapshot_us += qwen35_elapsed_us(snap_t0, Qwen35Clock::now());
-                        }
-                        std::printf("[snap] pooled boundary slot=%d cur_pos=%d "
-                                    "(req snap_pos=%d max_chunks=%d)\n",
-                                    snap_slot, kv_pos, snap_pos, max_chunks);
-                        std::fflush(stdout);
-                    } else {
-                        if (prof.enabled) {
-                            prof.snapshot_us += qwen35_elapsed_us(snap_t0, Qwen35Clock::now());
-                        }
-                        std::fprintf(stderr, "[kvflash] pooled boundary snapshot failed"
-                                             " at kv_pos=%d\n", kv_pos);
-                    }
-                }
-            }
-            snap_pos = -1;
-            snap_slot = -1;
+        const int pooled_snap = pooled_snapshot_boundary();
+        if (pooled_snap > kv_pos && pooled_snap < kv_pos + n_tokens) {
+            n_tokens = pooled_snap - kv_pos;
         }
         // Inline prefix-cache entries are exact by construction: the snapshot
         // must physically materialize the requested chat boundary. If the
@@ -1567,6 +1588,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         committed = kv_pos + n_tokens;
         cache_.cur_pos = committed;
         save_inline_snapshot(committed);
+        save_pooled_snapshot(committed);
 
         // QK policy: pool the post-RoPE keys of chunks this batch sealed
         // (they are resident — sealed inside the protected tail window).
