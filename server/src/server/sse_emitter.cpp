@@ -62,6 +62,7 @@ static bool has_balanced_top_level_json(const std::string & text) {
 static bool tool_buffer_has_complete_candidate(const std::string & text) {
     if (text.find("</tool_call>") != std::string::npos) return true;
     if (text.find("</function>") != std::string::npos) return true;
+    if (tool_text_has_named_function_close(text)) return true;
     if (text.find("</tool_code>") != std::string::npos) return true;
     return has_balanced_top_level_json(text);
 }

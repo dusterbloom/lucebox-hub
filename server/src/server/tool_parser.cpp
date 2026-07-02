@@ -18,6 +18,7 @@
 #include "tool_parser.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
@@ -159,6 +160,11 @@ static const std::regex & re_bare_function_xml() {
     return r;
 }
 
+static const std::regex & re_bare_function_open() {
+    static std::regex r(R"(<function=([A-Za-z_][\w.\-]*?)>)");
+    return r;
+}
+
 static const std::regex & re_function_signature() {
     static std::regex r(R"(<function=([A-Za-z_][\w.\-]*?)\(([\s\S]*?)\)</function>)");
     return r;
@@ -217,6 +223,61 @@ static size_t balanced_braces_end(const std::string & text, size_t open) {
         }
     }
     return std::string::npos;
+}
+
+static std::string lower_ascii(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+    return s;
+}
+
+static bool close_tag_matches_function(const std::string & close_name,
+                                       const std::string & fn_name) {
+    const std::string got = lower_ascii(close_name);
+    const std::string want = lower_ascii(fn_name);
+    if (got == want) return true;
+    if (got.size() <= want.size()) return false;
+    if (got.compare(0, want.size(), want) != 0) return false;
+    const char sep = got[want.size()];
+    return sep == '_' || sep == '-' || sep == '.';
+}
+
+static bool find_named_function_close(const std::string & text,
+                                      const std::string & fn_name,
+                                      size_t start,
+                                      size_t & close_start,
+                                      size_t & close_end) {
+    const std::string want = lower_ascii(fn_name);
+    for (size_t pos = text.find("</", start);
+         pos != std::string::npos;
+         pos = text.find("</", close_end)) {
+        size_t gt = text.find('>', pos + 2);
+        if (gt == std::string::npos) return false;
+        std::string got = text.substr(pos + 2, gt - (pos + 2));
+        while (!got.empty() && got.back() == ' ') got.pop_back();
+        while (!got.empty() && got.front() == ' ') got.erase(got.begin());
+        close_end = gt + 1;
+        if (close_tag_matches_function(got, want)) {
+            close_start = pos;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool tool_text_has_named_function_close(const std::string & text) {
+    auto begin = std::sregex_iterator(text.begin(), text.end(), re_bare_function_open());
+    auto end = std::sregex_iterator();
+    for (auto it = begin; it != end; ++it) {
+        std::string fn_name = (*it)[1].str();
+        size_t body_start = it->position() + it->length();
+        size_t close_start = std::string::npos;
+        size_t close_end = std::string::npos;
+        if (find_named_function_close(text, fn_name, body_start, close_start, close_end)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // Try strict json::parse first; on failure rewrite single- and
@@ -621,7 +682,29 @@ ToolParseResult parse_tool_calls(const std::string & text, const json & tools) {
         }
     }
 
-    // Pattern 3: <function=NAME(args)></function>
+    // Pattern 3: <function=NAME>...</NAME> (Qwen sometimes closes with
+    // the tool name, e.g. </agent>, instead of the generic </function>).
+    {
+        auto begin = std::sregex_iterator(text.begin(), text.end(), re_bare_function_open());
+        auto end = std::sregex_iterator();
+        for (auto it = begin; it != end; ++it) {
+            size_t pos = it->position();
+            if (overlaps(removals, pos)) continue;
+            std::string fn_name = (*it)[1].str();
+            size_t body_start = pos + it->length();
+            size_t close_start = std::string::npos;
+            size_t close_end = std::string::npos;
+            if (!find_named_function_close(text, fn_name, body_start, close_start, close_end)) {
+                continue;
+            }
+            std::string params = text.substr(body_start, close_start - body_start);
+            size_t removal_start = include_preceding_tool_call_open(text, pos);
+            add_call(fn_name, parse_xml_params(params, fn_name, tools),
+                     removal_start, close_end);
+        }
+    }
+
+    // Pattern 4: <function=NAME(args)></function>
     {
         auto begin = std::sregex_iterator(text.begin(), text.end(), re_function_signature());
         auto end = std::sregex_iterator();
@@ -634,7 +717,7 @@ ToolParseResult parse_tool_calls(const std::string & text, const json & tools) {
         }
     }
 
-    // Pattern 4: <tool_code>{JSON}</tool_code>
+    // Pattern 5: <tool_code>{JSON}</tool_code>
     {
         auto begin = std::sregex_iterator(text.begin(), text.end(), re_tool_code());
         auto end = std::sregex_iterator();
@@ -659,7 +742,7 @@ ToolParseResult parse_tool_calls(const std::string & text, const json & tools) {
         }
     }
 
-    // Pattern 5: call:<ns>?<verb>{relaxed-JSON args}
+    // Pattern 6: call:<ns>?<verb>{relaxed-JSON args}
     //
     // Runs before the bare-JSON sweep so that inner JSON of the form
     //   call:outer{"name": "inner", "arguments": {}}
@@ -697,7 +780,7 @@ ToolParseResult parse_tool_calls(const std::string & text, const json & tools) {
         }
     }
 
-    // Pattern 6: Bare JSON objects
+    // Pattern 7: Bare JSON objects
     {
         size_t cursor = 0;
         while (cursor < text.size()) {

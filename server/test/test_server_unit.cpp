@@ -140,6 +140,26 @@ static json shell_tools() {
     });
 }
 
+static json agent_tools() {
+    return json::array({
+        {{"type", "function"},
+         {"function", {
+             {"name", "Agent"},
+             {"description", "Launch a sub-agent for parallel work."},
+             {"parameters", {
+                 {"type", "object"},
+                 {"properties", {
+                     {"description", {{"type", "string"}}},
+                     {"prompt", {{"type", "string"}}},
+                     {"agent", {{"type", "string"}}}
+                 }},
+                 {"required", json::array({"description", "prompt"})},
+                 {"additionalProperties", true}
+             }}
+         }}}
+    });
+}
+
 static SseEmitter make_emitter(ApiFormat fmt, json tools = json::array(),
                                bool started_in_thinking = false) {
     return SseEmitter(fmt, "test_id_001", "test-model", 10,
@@ -393,6 +413,52 @@ static void test_parse_tool_allowed_filter() {
     auto result = parse_tool_calls(text, tools);
     // Tool not in allow-list should be filtered
     TEST_ASSERT(result.tool_calls.empty());
+}
+
+static void test_parse_named_function_close_xml() {
+    std::string text =
+        "<function=Agent>\n"
+        "<parameter=description>\n"
+        "Verify git state\n"
+        "</parameter>\n"
+        "<parameter=agent>\n"
+        "Check branch, HEAD, and submodule status.\n"
+        "</parameter>\n"
+        "</agent>";
+    auto result = parse_tool_calls(text, agent_tools());
+    TEST_ASSERT(result.tool_calls.size() == 1);
+    if (!result.tool_calls.empty()) {
+        TEST_ASSERT(result.tool_calls[0].name == "Agent");
+        auto args = json::parse(result.tool_calls[0].arguments);
+        TEST_ASSERT(args["description"] == "Verify git state");
+        TEST_ASSERT(args["agent"] == "Check branch, HEAD, and submodule status.");
+    }
+    TEST_ASSERT(result.cleaned_text.empty());
+}
+
+static void test_parse_named_function_close_with_suffix_xml() {
+    std::string text =
+        "<function=Agent>\n"
+        "<parameter=description>\n"
+        "Phase 1 fix\n"
+        "</parameter>\n"
+        "<parameter=prompt>\n"
+        "Apply minimal server changes.\n"
+        "</parameter>\n"
+        "<parameter=subagent_type>\n"
+        "sisyphus-junior\n"
+        "</parameter>\n"
+        "</agent_info>";
+    auto result = parse_tool_calls(text, agent_tools());
+    TEST_ASSERT(result.tool_calls.size() == 1);
+    if (!result.tool_calls.empty()) {
+        TEST_ASSERT(result.tool_calls[0].name == "Agent");
+        auto args = json::parse(result.tool_calls[0].arguments);
+        TEST_ASSERT(args["description"] == "Phase 1 fix");
+        TEST_ASSERT(args["prompt"] == "Apply minimal server changes.");
+        TEST_ASSERT(args["subagent_type"] == "sisyphus-junior");
+    }
+    TEST_ASSERT(result.cleaned_text.empty());
 }
 
 // ─── Pattern 5: call:<verb>{...} plain-text tool calls ─────────────────
@@ -1043,6 +1109,63 @@ static void test_emitter_parses_tool_call_missing_outer_close() {
     }
     TEST_ASSERT(em.accumulated_text().find("<tool_call>") == std::string::npos);
     TEST_ASSERT(em.accumulated_text().find("<function=terminal>") == std::string::npos);
+}
+
+static void test_emitter_stops_on_named_function_close() {
+    auto em = make_emitter(ApiFormat::OPENAI_CHAT, agent_tools());
+    em.emit_start();
+    em.emit_token("<function=Agent>\n"
+                  "<parameter=description>\n"
+                  "Phase 2 implementation\n"
+                  "</parameter>\n");
+    TEST_ASSERT(!em.stop_hit());
+    em.emit_token("<parameter=agent>\n"
+                  "Implement serialize/deserialize.\n"
+                  "</parameter>\n"
+                  "</agent>");
+
+    TEST_ASSERT(em.stop_hit());
+    TEST_ASSERT(em.tool_calls().size() == 1);
+    if (!em.tool_calls().empty()) {
+        TEST_ASSERT(em.tool_calls()[0].name == "Agent");
+        auto args = json::parse(em.tool_calls()[0].arguments);
+        TEST_ASSERT(args["description"] == "Phase 2 implementation");
+        TEST_ASSERT(args["agent"] == "Implement serialize/deserialize.");
+    }
+
+    std::string finish = concat(em.emit_finish(32));
+    TEST_ASSERT(finish.find("\"finish_reason\":\"tool_calls\"") != std::string::npos);
+    TEST_ASSERT(em.accumulated_text().find("<function=Agent>") == std::string::npos);
+}
+
+static void test_emitter_stops_on_named_function_suffix_close() {
+    auto em = make_emitter(ApiFormat::OPENAI_CHAT, agent_tools());
+    em.emit_start();
+    em.emit_token("<function=Agent>\n"
+                  "<parameter=description>\n"
+                  "Phase 1 fix\n"
+                  "</parameter>\n"
+                  "<parameter=prompt>\n"
+                  "Apply minimal server changes.\n"
+                  "</parameter>\n");
+    TEST_ASSERT(!em.stop_hit());
+    em.emit_token("<parameter=subagent_type>\n"
+                  "sisyphus-junior\n"
+                  "</parameter>\n"
+                  "</agent_info>");
+
+    TEST_ASSERT(em.stop_hit());
+    TEST_ASSERT(em.tool_calls().size() == 1);
+    if (!em.tool_calls().empty()) {
+        TEST_ASSERT(em.tool_calls()[0].name == "Agent");
+        auto args = json::parse(em.tool_calls()[0].arguments);
+        TEST_ASSERT(args["prompt"] == "Apply minimal server changes.");
+        TEST_ASSERT(args["subagent_type"] == "sisyphus-junior");
+    }
+
+    std::string finish = concat(em.emit_finish(48));
+    TEST_ASSERT(finish.find("\"finish_reason\":\"tool_calls\"") != std::string::npos);
+    TEST_ASSERT(em.accumulated_text().find("<function=Agent>") == std::string::npos);
 }
 
 static void test_emitter_no_tools_keeps_tool_like_text() {
@@ -4575,6 +4698,8 @@ int main() {
     RUN_TEST(test_parse_no_tools);
     RUN_TEST(test_parse_tool_code_wrapper);
     RUN_TEST(test_parse_tool_allowed_filter);
+    RUN_TEST(test_parse_named_function_close_xml);
+    RUN_TEST(test_parse_named_function_close_with_suffix_xml);
     RUN_TEST(test_parse_call_verb_empty_args);
     RUN_TEST(test_parse_call_verb_strict_json_args);
     RUN_TEST(test_parse_call_verb_namespaced_verb);
@@ -4619,6 +4744,8 @@ int main() {
     RUN_TEST(test_emitter_bare_function_tool_buffer_detection);
     RUN_TEST(test_emitter_does_not_leak_malformed_tool_xml);
     RUN_TEST(test_emitter_parses_tool_call_missing_outer_close);
+    RUN_TEST(test_emitter_stops_on_named_function_close);
+    RUN_TEST(test_emitter_stops_on_named_function_suffix_close);
     RUN_TEST(test_emitter_no_tools_keeps_tool_like_text);
     RUN_TEST(test_emitter_anthropic_structure);
     RUN_TEST(test_emitter_responses_structure);
