@@ -777,6 +777,8 @@ std::vector<ChatMessage> normalize_chat_messages(
                 if (!raw.empty()) {
                     cm.content = raw;
                     replayed = true;
+                } else {
+                    cm.tool_calls_json = m["tool_calls"].dump();
                 }
             }
 

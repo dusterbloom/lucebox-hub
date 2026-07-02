@@ -1843,6 +1843,23 @@ static void test_jinja_render_tools_injected() {
     TEST_ASSERT(out.find("TOOLS_PRESENT:my_tool") != std::string::npos);
 }
 
+static void test_jinja_render_message_tool_calls() {
+    static const char TPL[] =
+        "{%- for m in messages -%}"
+        "{%- if m.tool_calls -%}"
+        "CALL:{{ m.tool_calls[0].function.name }}:"
+        "{{ m.tool_calls[0].function.arguments }}"
+        "{%- endif -%}"
+        "{%- endfor -%}";
+    std::vector<ChatMessage> msgs = {
+        {"assistant", "", "", R"([{"id":"call_1","type":"function","function":{"name":"Bash","arguments":"{\"command\":\"pwd\"}"}}])"},
+    };
+    std::string out = render_chat_template_jinja(
+        TPL, msgs, "", "", false, false, "");
+    TEST_ASSERT(out.find("CALL:Bash:") != std::string::npos);
+    TEST_ASSERT(out.find("pwd") != std::string::npos);
+}
+
 static void test_jinja_render_empty_tools_skipped() {
     // tools_json == "[]" must NOT define `tools` in the template context.
     static const char TPL[] =
@@ -4603,6 +4620,7 @@ int main() {
     RUN_TEST(test_jinja_render_basic);
     RUN_TEST(test_jinja_render_no_gen_prompt);
     RUN_TEST(test_jinja_render_tools_injected);
+    RUN_TEST(test_jinja_render_message_tool_calls);
     RUN_TEST(test_jinja_render_empty_tools_skipped);
     RUN_TEST(test_jinja_render_bos_eos_threaded);
     RUN_TEST(test_jinja_render_empty_template_throws);

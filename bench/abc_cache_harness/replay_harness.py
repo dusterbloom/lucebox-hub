@@ -1457,7 +1457,12 @@ def send_request(
                     if isinstance(b, dict) and b.get("type") == "text"
                 ]
                 content = " ".join(text_parts)
-            messages.append({"role": msg["role"], "content": content})
+            out_msg = {"role": msg["role"], "content": content}
+            if "tool_calls" in msg:
+                out_msg["tool_calls"] = msg["tool_calls"]
+            if "tool_call_id" in msg:
+                out_msg["tool_call_id"] = msg["tool_call_id"]
+            messages.append(out_msg)
 
         body_out: dict = {
             "model": req_body.get("model", "luce-dflash"),
@@ -1479,6 +1484,8 @@ def send_request(
                 body_out["tools"] = _anthropic_to_openai_tools(raw_tools)
             except Exception:
                 pass  # best-effort; S1 trace has no tools
+        if "tool_choice" in req_body:
+            body_out["tool_choice"] = req_body["tool_choice"]
 
         url = f"http://{HOST}:{port}/v1/chat/completions"
         payload = json.dumps(body_out, ensure_ascii=False).encode("utf-8")

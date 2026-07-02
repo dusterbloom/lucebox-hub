@@ -380,6 +380,14 @@ std::string render_chat_template_jinja(
         if (!m.tool_call_id.empty()) {
             mj["tool_call_id"] = m.tool_call_id;
         }
+        if (!m.tool_calls_json.empty()) {
+            try {
+                mj["tool_calls"] = nlohmann::ordered_json::parse(m.tool_calls_json);
+            } catch (const std::exception & e) {
+                throw std::runtime_error(
+                    std::string("render_chat_template_jinja: failed to parse message tool_calls JSON: ") + e.what());
+            }
+        }
         messages_j.push_back(std::move(mj));
     }
 
