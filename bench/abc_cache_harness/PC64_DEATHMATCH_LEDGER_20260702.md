@@ -7,15 +7,17 @@ reviewer asks for them.
 ## Provenance
 
 - Branch: `bench/upstream-pr469-473-plus-468`
-- Commit: `bd981d81f905abd84931cc943ff6dca2529cae15`
+- Commit: `e0e8573ac59a43fdb108005ef2bf9082dec3c629`
 - dflash binary: `server/build-pr468-int-cuda126/dflash_server`
-- dflash sha256: `945062af480acbd2d2bb4a5de32b7f132ef5f7c2d5540b6e79585e3bee9c87e8`
+- dflash sha256: `60b410d695af802ecb391d387220562a37fd3c2005a69a087c0b092bc80e3887`
 - llama binary: `/home/peppi/llama.cpp/build-cuda/bin/llama-server`
 - llama sha256: `feedd55326b13fd4156dd0c7d7086fb94201cceeda5ef3eabc43fb26e2adc06b`
 - Model: `/home/peppi/models/qwen3.6-35b-a3b/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`
 - Chat template: `/home/peppi/models/qwen3-coder-chat-template.jinja`
 - KV cache: `q4_0/q4_0`
 - Max context: `131072`
+- Trace rows set `temperature: 0`. The raw artifact provenance still reports
+  the harness default temperature field; request bodies are the source of truth.
 
 ## Trace Inventory
 
@@ -23,75 +25,92 @@ reviewer asks for them.
   - sha256: `304323148614e0e1004aeba118efeb315a932528e962e6af7634cfca36f21af9`
   - 38 turns, every row carries `tools`, `tool_choice`, `expect_tool_call`, and
     `expected_tool_name`.
-- Cap trace used for faithful tool-stop runs:
-  `bench/abc_cache_harness/traces/deep_tool_structured_38_cap2048.jsonl`
+  - Uniform `max_tokens: 256`; usable for pinned equal-workload speed runs.
+- Cap trace: `bench/abc_cache_harness/traces/deep_tool_structured_38_cap2048.jsonl`
   - sha256: `812fb810d70546eabba4b7df641e54e32382f775e81392c4c373de8ae91dcca0`
   - Derived mechanically with:
     `jq -c '.max_tokens = 2048' deep_tool_structured_38.jsonl > deep_tool_structured_38_cap2048.jsonl`
   - Same content as the deep tool trace except `max_tokens`.
+  - Used to avoid clipping long natural tool calls.
 - Guard-retirement trace: `bench/abc_cache_harness/traces/real_session_long_38.jsonl`
 - Local quality probe trace: `bench/abc_cache_harness/traces/charbench_code_tool.jsonl`
 
+## Parser Fix
+
+Commit `e0e8573a` fixes the Qwen XML tool-call parser/emitter for real outputs
+seen in the deep trace:
+
+- `<function=Agent>...</agent>`
+- `<function=Agent>...</agent_info>`
+
+The parser now recognizes named close tags that match the function name
+case-insensitively, including suffixes separated by `_`, `-`, or `.`. The SSE
+emitter uses the same completion detector, so generation stops once these calls
+are complete instead of running to `max_tokens` and suppressing the buffer.
+
+Verification:
+
+- `server/build-pr468-int-cuda126/test_server_unit`: 2130 assertions, 0 failures
+- Four-row repro of old failing turns: 4/4 valid after the parser fix
+- Full native cap2048 run: 38/38 expected tool calls valid
+
 ## Current Evidence
 
-| Run | Trace | Wall s | Prefill s | Decode s | Out toks | Tool valid | Fresh pf tok/s | Decode tok/s | Last-8 decode med | Raw artifact |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `AR_35B_KVF_FORCE` | `deep_tool_structured_38_cap2048` | 212.8 | 55.1 | 124.3 | 16787 | 34/38 | 2094.9 | 135.1 | 135.3 | `results/AR_35B_KVF_FORCE_20260702_104011_full_raw.json` |
-| `AR_35B_KVF_FORCE_OPENAI` | `deep_tool_structured_38_cap2048` | 214.7 | 55.0 | 130.4 | 17621 | 33/38 | 2098.7 | 135.1 | 135.4 | `results/AR_35B_KVF_FORCE_OPENAI_20260702_105240_full_raw.json` |
-| `AR_LLAMA_35B_SLOTCACHE` | `deep_tool_structured_38_cap2048` | 430.2 | 55.326 | 330.702 | 27766 | 20/38 | 2203.6 | 84.0 | 73.1 | `results/AR_LLAMA_35B_SLOTCACHE_20260702_104448_full_raw.json` |
-| `AR_35B_KVF` guard-off env | `real_session_long_38` | 100.4 | 48.9 | 37.3 | 3518 | n/a | 1826.5 | 94.3 | 83.7 | `results/AR_35B_KVF_20260702_105844_full_raw.json` |
-| `AR_35B_KVF_FORCE` quality probe | `charbench_code_tool` | 1.1 | 0.5 | 1.0 | 136 | 1/1 tool prompt | 852.0 | 136.0 | n/a | `results/AR_35B_KVF_FORCE_20260702_105807_quality_raw.json` |
-
-Failed expected tool turns on the cap trace:
-
-- dflash native: `4:Agent:42`, `6:Agent:1229`, `7:Agent:39`, `22:Agent:2048`
-- dflash OpenAI endpoint: `4:Agent:42`, `6:Agent:1229`, `7:Agent:91`,
-  `22:Agent:665`, `25:Agent:2048`
-- llama slot-cache: `2:Workflow:144`, `4:Agent:1283`, `6:Agent:190`,
-  `7:Agent:636`, `9:TaskCreate:1727`, `10:TaskCreate:124`,
-  `16:Agent:179`, `20:TaskUpdate:384`, `21:Agent:176`, `22:Agent:322`,
-  `23:Bash:2048`, `24:Bash:1767`, `27:Agent:99`, `29:TaskUpdate:58`,
-  `33:Agent:246`, `34:Bash:253`, `35:AskUserQuestion:63`,
-  `36:TaskUpdate:1528`
+| Workload | Arm | Wall s | Prefill s | Decode s | Out toks | Pin | Tool valid | Fresh pf tok/s | Decode tok/s | Last-8 decode med | Raw artifact |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Natural, cap2048 | `AR_35B_KVF_FORCE` | 177.2 | 59.5 | 95.3 | 12086 | false | 38/38 | 1940.0 | 126.8 | 127.7 | `results/AR_35B_KVF_FORCE_20260702_193234_full_raw.json` |
+| Natural, cap2048 | `AR_35B_KVF_FORCE_OPENAI` | 212.0 | 60.9 | 124.5 | 15602 | false | 37/38 | 1895.4 | 125.3 | 124.9 | `results/AR_35B_KVF_FORCE_OPENAI_20260702_193847_full_raw.json` |
+| Natural, cap2048 | `AR_LLAMA_35B_SLOTCACHE` | 440.5 | 58.718 | 353.721 | 27766 | false | 20/38 | 2076.3 | 78.5 | 68.8 | `results/AR_LLAMA_35B_SLOTCACHE_20260702_194357_full_raw.json` |
+| Pinned 256 | `AR_35B_KVF_FORCE` | 157.9 | 59.6 | 76.6 | 9728 | true | 26/38 | 1936.7 | 127.0 | 125.5 | `results/AR_35B_KVF_FORCE_20260702_195412_full_raw.json` |
+| Pinned 256 | `AR_LLAMA_35B_SLOTCACHE` | 195.4 | 58.363 | 121.073 | 9728 | true | 20/38 | 2088.9 | 80.3 | 69.0 | `results/AR_LLAMA_35B_SLOTCACHE_20260702_195722_full_raw.json` |
+| Guard-off, non-forced | `AR_35B_KVF` | 100.4 | 48.9 | 37.3 | 3518 | false | n/a | 1826.5 | 94.3 | 83.7 | `results/AR_35B_KVF_20260702_105844_full_raw.json` |
+| Local quality smoke | `AR_35B_KVF_FORCE` | 1.1 | 0.5 | 1.0 | 136 | false | 1/1 tool prompt | 852.0 | 136.0 | n/a | `results/AR_35B_KVF_FORCE_20260702_105807_quality_raw.json` |
 
 ## Gate Status
 
-- P1 tool-schema root cause: native dflash and dflash OpenAI endpoint are close
-  to each other on the deep tool trace, so the remaining failures are not mainly
-  a native endpoint wrapper issue. The earlier 0.447 native result is stale after
-  `bd981d81` stopped decode on complete tool buffers and consumed AR tool hints.
-- P2 canonical deep-context tool trace: present and exercised. The cap2048 run is
-  faithful to long tool arguments but is not pinned equal decode work, so it is
-  not a decisive victory claim.
+- P1 tool-schema root cause: improved. The old native `0.447` result is stale.
+  Native dflash is now 38/38 on the deep cap2048 trace. The OpenAI-compatible
+  dflash path is 37/38; the remaining miss is turn 35, a forced
+  `AskUserQuestion` row that generated a malformed 2048-token tool-like buffer.
+  llama is 20/38 on the same trace.
+- P2 equal-workload speed: green as a speed row. On pinned 256, both arms emit
+  exactly 9728 tokens. dflash wall is 157.9s vs llama 195.4s, and weighted
+  decode is 127.0 vs 80.3 tok/s. This is a 19.2% wall win and 1.58x decode win.
+- Pinned tool-valid decisive claim: not green. Forcing exactly 256 output tokens
+  distorts natural tool-call stopping. dflash drops to 26/38 tool-valid under
+  pinning; llama remains 20/38.
+- Natural tool-valid claim: green for dflash native on this run, but not an
+  equal-output workload. Natural cap2048 has dflash 38/38 tool-valid and 126.8
+  tok/s decode, while llama has 20/38 and 78.5 tok/s. Wall also favors dflash
+  here, but output totals differ: 12086 vs 27766.
 - Guard retirement: `DFLASH_QWEN35_KVPAD_MAX_ROW` / row-88000 guard is absent on
   this branch. A non-forced 38-turn run with `DFLASH_QWEN35_KVPAD_MAX_ROW=0`
   completed 38/38, no crash, turn 38 at 89K context decoded at 82.3 tok/s.
-- Quality: local `charbench_code_tool` probe passed, including the single tool
-  prompt. This is a small local gate, not a full external charbench suite.
-- Real-client Open WebUI tools: both client modes are green after fixing the
-  harness request/validation shape.
-  - Native mode: `rc=0`, non-streaming request, returned OpenAI `tool_calls`
-    for `get_lucebox_harness_marker`.
-    Artifact: `.harness-work/runs/20260702-openwebui-tools-native2/`.
-  - Default execution mode: `rc=0`, streaming request, Open WebUI executed the
-    tool and wrote `OPENWEBUI_TOOL_OK` to `openwebui-tool-exec.log`; server log
-    shows the initial tool-call turn and the post-tool follow-up turn.
-    Artifact: `.harness-work/runs/20260702-openwebui-tools-default-stream2/`.
-  - Harness note: Open WebUI v0.10.2 executes tools in its streaming chat
-    middleware. Non-streaming requests can validate returned native tool calls,
-    but do not run the tool execution loop.
+- Quality: only the local two-row `charbench_code_tool` smoke exists in this
+  worktree, and it passes `charbench_valid_rate=1.0`. The full external
+  charbench gate with the 85.2%/53.1% thresholds is still missing here.
 
 ## Claim Discipline
 
-Current fair claim: on the deep-context tool-schema cap2048 trace, dflash forced
-KVFlash has much higher decode throughput than llama and better tool validity in
-this one run. It is not yet a decisive deathmatch claim because output lengths
-differ, the run is temp 0.7/N=1, and dflash still has 4/38 invalid expected tool
-calls.
+Valid claims now:
 
-The `harness/benchmarks` README covers small generation/correctness/speed
-checks. The `harness/clients` README covers real client protocol paths,
-including OpenAI Chat Completions tools, OpenAI Responses/Codex, Anthropic
-Messages/Claude Code, and Open WebUI tool execution. The replay harness remains
-the model-output deathmatch gate; `harness/clients/run_openwebui_tools.sh` is
-the separate real-client tool execution gate.
+- On the deep-context tools-on natural trace, dflash native forced KVFlash is
+  38/38 tool-valid and decodes 1.62x faster than llama in this run.
+- On the deep-context pinned 256 equal-workload trace, dflash forced KVFlash has
+  lower wall time than llama and 1.58x weighted decode throughput.
+
+Not yet valid:
+
+- No decisive victory claim, because the single run that is pinned/equal-output
+  is not tool-valid on dflash (26/38).
+- No default-ship quality claim, because the full charbench quality suite is not
+  present in this worktree.
+
+Next required work:
+
+1. Decide how the harness should define pinned tool-call workloads. Exact fixed
+   decode length and early tool stopping are in tension; the current pinned
+   speed row is scientifically useful, but it is not a tool-valid claim.
+2. Bring in or reconstruct the full charbench quality suite and run the forced
+   KVFlash arm against the 85.2% code-complete / 53.1% tool-call floor.
+3. After those two gates are clean, start the dFlash/spec-decode campaign.
