@@ -130,3 +130,21 @@ Generated trace as of 2026-07-02:
 - max_tokens: 256 on every row
 - temperature: 0 on every row
 - SHA-256: `dda519be228be47c2076725c215c467e9d38230ba2538876b366934e17664244`
+
+For natural tool-behavior runs, use the cap2048 variant so long XML tool calls
+are not clipped before their closing tags:
+
+```bash
+python3 - <<'PY'
+import json
+src = "/tmp/luce_mixed_candidate_0_fixed_38.jsonl"
+dst = "/tmp/luce_mixed_candidate_0_fixed_38_cap2048.jsonl"
+with open(src, encoding="utf-8") as f, open(dst, "w", encoding="utf-8") as out:
+    for line in f:
+        row = json.loads(line)
+        row["max_tokens"] = 2048
+        out.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+PY
+```
+
+- SHA-256: `e67a612bce5e97a50689a0fc49d044befe22af48dba1813f639272daf62efed4`

@@ -48,6 +48,11 @@ reviewer asks for them.
     on expected rows only. The structurer now adds permissive schemas for any
     observed source-session tool names before writing `tool_choice`, so a trace
     cannot name a missing tool by construction.
+  - Cap2048 variant: local `/tmp/luce_mixed_candidate_0_fixed_38_cap2048.jsonl`,
+    sha256 `e67a612bce5e97a50689a0fc49d044befe22af48dba1813f639272daf62efed4`.
+    Derived mechanically by changing only `max_tokens` from 256 to 2048. This
+    is the valid natural tool-behavior trace; the 256-token version can clip
+    long XML tool calls before their closing tags.
 
 ## Parser Fix
 
@@ -77,8 +82,10 @@ Verification:
 | Natural, cap2048 | `AR_LLAMA_35B_SLOTCACHE` | 440.5 | 58.718 | 353.721 | 27766 | false | 20/38 | 2076.3 | 78.5 | 68.8 | `results/AR_LLAMA_35B_SLOTCACHE_20260702_194357_full_raw.json` |
 | Pinned 256 | `AR_35B_KVF_FORCE` | 157.9 | 59.6 | 76.6 | 9728 | true | 26/38 | 1936.7 | 127.0 | 125.5 | `results/AR_35B_KVF_FORCE_20260702_195412_full_raw.json` |
 | Pinned 256 | `AR_LLAMA_35B_SLOTCACHE` | 195.4 | 58.363 | 121.073 | 9728 | true | 20/38 | 2088.9 | 80.3 | 69.0 | `results/AR_LLAMA_35B_SLOTCACHE_20260702_195722_full_raw.json` |
-| Mixed real session, natural | `AR_35B_KVF_FORCE` | 146.0 | 64.5 | 61.7 | 7840 | false | 15/29, unexpected 2/9 | 1934.7 | 127.1 | 124.1 | `results/AR_35B_KVF_FORCE_20260702_205039_full_raw.json` |
-| Mixed real session, natural | `AR_LLAMA_35B_SLOTCACHE` | 168.2 | 64.436 | 89.851 | 7797 | false | 19/29, unexpected 6/9 | 2068.4 | 86.8 | 68.6 | `results/AR_LLAMA_35B_SLOTCACHE_20260702_205341_full_raw.json` |
+| Mixed real session, cap256 natural diagnostic | `AR_35B_KVF_FORCE` | 146.0 | 64.5 | 61.7 | 7840 | false | 15/29 clipped, unexpected 2/9 | 1934.7 | 127.1 | 124.1 | `results/AR_35B_KVF_FORCE_20260702_205039_full_raw.json` |
+| Mixed real session, cap256 natural diagnostic | `AR_LLAMA_35B_SLOTCACHE` | 168.2 | 64.436 | 89.851 | 7797 | false | 19/29 clipped, unexpected 6/9 | 2068.4 | 86.8 | 68.6 | `results/AR_LLAMA_35B_SLOTCACHE_20260702_205341_full_raw.json` |
+| Mixed real session, cap2048 natural | `AR_35B_KVF_FORCE` | 255.8 | 60.2 | 170.7 | 21953 | false | 26/29, unexpected 2/9 | 2072.9 | 128.6 | 128.9 | `results/AR_35B_KVF_FORCE_20260702_211640_full_raw.json` |
+| Mixed real session, cap2048 natural | `AR_LLAMA_35B_SLOTCACHE` | 272.0 | 63.918 | 186.381 | 15543 | false | 19/29, unexpected 6/9 | 2085.1 | 83.4 | 68.5 | `results/AR_LLAMA_35B_SLOTCACHE_20260702_212133_full_raw.json` |
 | Mixed real session, pinned 256 | `AR_35B_KVF_FORCE` | 161.1 | 62.5 | 75.5 | 9728 | true | 15/29, unexpected 2/9 | 1996.6 | 128.8 | 126.8 | `results/AR_35B_KVF_FORCE_20260702_205707_full_raw.json` |
 | Mixed real session, pinned 256 | `AR_LLAMA_35B_SLOTCACHE` | 193.7 | 64.194 | 112.594 | 9728 | true | 19/29, unexpected 6/9 | 2076.2 | 86.4 | 66.8 | `results/AR_LLAMA_35B_SLOTCACHE_20260702_210021_full_raw.json` |
 | Guard-off, non-forced cap2048 | `AR_35B_KVF` | 388.7 | 68.3 | 296.2 | 24613 | false | 37/38 | 1671.5 | 83.1 | 71.3 | `results/AR_35B_KVF_20260702_201047_full_raw.json` |
@@ -111,6 +118,12 @@ Both engines emitted exactly 9728/9728 tokens and `pin_decode_non_tool_ok=true`
 on the pinned pair, but expected tool rows are still a tool-stop conflict under
 forced length. Treat these rows as equal-output speed evidence, not decisive
 tool correctness.
+
+The mixed cap256 natural rows are also diagnostic only for tool correctness.
+A six-turn debug repro showed turn 6 generated
+`<function=Bash><parameter=command>...` but hit `max_tokens=256` before closing
+the XML, so the emitter correctly suppressed the incomplete tool buffer. The
+cap2048 mixed rows supersede cap256 for natural tool behavior.
 
 ## In-Tree OpenAI Client Bench Smoke
 
@@ -178,11 +191,11 @@ not replace the missing charbench `code_complete` / `tool_call` threshold gate.
   equal-output workload. Natural cap2048 has dflash 38/38 tool-valid and 126.8
   tok/s decode, while llama has 20/38 and 78.5 tok/s. Wall also favors dflash
   here, but output totals differ: 12086 vs 27766.
-- Mixed natural tool behavior: not green as a decisive correctness row.
-  On a harder real-session mixed trace, dflash is 15/29 expected tools with
-  2/9 unexpected tool calls; llama is 19/29 expected tools with 6/9 unexpected
-  tool calls. Luce still wins wall and decode on this trace, but tool policy is
-  an open quality issue rather than a solved gate.
+- Mixed natural tool behavior: green on the corrected cap2048 trace. Dflash is
+  26/29 expected tools with 2/9 unexpected tool calls; llama is 19/29 expected
+  tools with 6/9 unexpected tool calls. Dflash also wins natural wall
+  (255.8s vs 272.0s) despite producing more output tokens
+  (21,953 vs 15,543), and weighted decode is 128.6 vs 83.4 tok/s.
 - Guard retirement: `DFLASH_QWEN35_KVPAD_MAX_ROW` / row-88000 guard is absent on
   this branch. A non-forced 38-turn run with `DFLASH_QWEN35_KVPAD_MAX_ROW=0`
   on the deep cap2048 tool trace completed 38/38 with zero crashes and every
@@ -205,25 +218,24 @@ Valid claims now:
   lower wall time than llama and 1.58x weighted decode throughput.
 - On the mixed real-session pinned 256 trace, dflash forced KVFlash has lower
   wall time than llama and 1.49x weighted decode throughput with equal output
-  tokens. The natural mixed trace shows the same decode direction, but tool
-  behavior is not yet decisive.
+  tokens.
+- On the corrected mixed real-session cap2048 natural trace, dflash has higher
+  expected-tool validity, lower unexpected-tool rate, lower wall time, and
+  1.54x weighted decode throughput than llama.
 
 Not yet valid:
 
-- No decisive victory claim, because the single run that is pinned/equal-output
-  is not tool-valid on dflash (26/38).
-- No decisive mixed-session tool claim, because dflash exact expected-tool rate
-  is lower than llama on the mixed trace (15/29 vs 19/29), even though llama
-  over-calls tools more often (6/9 unexpected vs dflash 2/9).
+- No single-row decisive victory claim, because the equal-output run is pinned
+  and therefore conflicts with natural tool stopping, while the corrected
+  natural tool run has unequal output lengths.
 - No default-ship quality claim, because the full charbench quality suite is not
   present in this worktree.
 
 Next required work:
 
-1. Tighten tool policy on the mixed real-session trace. The speed story is now
-   reproducible on a mixed trace, but exact tool selection still needs root
-   cause: dflash misses more expected tool names, while llama calls tools on
-   more non-tool rows.
+1. Preserve claim discipline: use the mixed cap2048 trace for natural tool
+   behavior and the mixed pinned-256 trace for equal-output speed. Do not cite
+   the cap256 natural row as a tool-quality result.
 2. Bring in or reconstruct the full charbench quality suite and run the forced
    KVFlash arm against the 85.2% code-complete / 53.1% tool-call floor.
 3. After those two gates are clean, start the dFlash/spec-decode campaign.
