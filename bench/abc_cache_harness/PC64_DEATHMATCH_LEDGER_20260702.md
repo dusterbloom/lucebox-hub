@@ -68,6 +68,32 @@ Verification:
 | Guard-off, non-forced cap2048 | `AR_35B_KVF` | 388.7 | 68.3 | 296.2 | 24613 | false | 37/38 | 1671.5 | 83.1 | 71.3 | `results/AR_35B_KVF_20260702_201047_full_raw.json` |
 | Local quality smoke | `AR_35B_KVF_FORCE` | 1.4 | 0.6 | 1.0 | 136 | false | 1/1 tool prompt | 710.0 | 136.0 | n/a | `results/AR_35B_KVF_FORCE_20260702_200342_quality_raw.json` |
 
+## In-Tree OpenAI Client Bench Smoke
+
+The checked-in `harness/client_test_runner.py bench` suite was run against the
+same forced-KVFlash OpenAI-compatible server profile:
+
+```
+python3 harness/client_test_runner.py bench \
+  --url http://127.0.0.1:19099 \
+  --model luce-dflash \
+  --suite all \
+  --json-out .harness-work/runs/forced_kvflash_openai_bench_20260702.json
+```
+
+Summary:
+
+| Suite | OK | Mean wall s | Mean TTFT s | Mean prefill tok/s | Mean output tok/s | Score |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `he` | 10/10 | 1.372 | 0.170 | 816.5 | 138.06 | 10/10 |
+| `gsm` | 10/10 | 2.371 | 0.121 | 622.5 | 137.57 | 6/10 |
+| `math` | 10/10 | 5.073 | 0.122 | 535.8 | 135.94 | 7/10 |
+| `agent` | 6/6 | 3.182 | 0.562 | 2052.3 | 138.11 | n/a |
+
+This is a useful endpoint/streaming/usage/correctness smoke over existing
+project prompts. It is not the full charbench threshold gate and should not be
+cited as that.
+
 ## Gate Status
 
 - P1 tool-schema root cause: improved. The old native `0.447` result is stale.
@@ -91,9 +117,10 @@ Verification:
   turn recorded. The run crossed the old crash band: turn 23 reached 88,186
   prompt tokens at 79.7 tok/s; turn 38 reached 113,944 prompt tokens at 71.0
   tok/s. There was no hidden half-speed fallback after 88K.
-- Quality: only the local two-row `charbench_code_tool` smoke exists in this
-  worktree, and it passes `charbench_valid_rate=1.0`. The full external
-  charbench gate with the 85.2%/53.1% thresholds is still missing here.
+- Quality: the local two-row `charbench_code_tool` smoke passes
+  `charbench_valid_rate=1.0`, and the in-tree OpenAI client bench smoke above
+  completed 36/36 requests with HE 10/10. The full external charbench gate with
+  the 85.2%/53.1% thresholds is still missing here.
 
 ## Claim Discipline
 
