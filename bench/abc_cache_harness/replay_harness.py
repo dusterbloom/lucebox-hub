@@ -35,6 +35,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1499,6 +1500,9 @@ def send_request(
             with urllib.request.urlopen(http_req, timeout=900) as r:
                 resp = json.loads(r.read())
             return resp, time.time() - t0, None
+        except urllib.error.HTTPError as ex:
+            detail = ex.read().decode("utf-8", errors="replace").strip()
+            return {}, time.time() - t0, f"HTTP {ex.code}: {detail[:1000]}"
         except Exception as ex:
             return {}, time.time() - t0, str(ex)
 
@@ -1515,6 +1519,9 @@ def send_request(
         with urllib.request.urlopen(http_req, timeout=900) as r:
             body = json.loads(r.read())
         return body, time.time() - t0, None
+    except urllib.error.HTTPError as ex:
+        detail = ex.read().decode("utf-8", errors="replace").strip()
+        return {}, time.time() - t0, f"HTTP {ex.code}: {detail[:1000]}"
     except Exception as ex:
         return {}, time.time() - t0, str(ex)
 
@@ -2745,11 +2752,14 @@ def main() -> None:
         arm_agg["censored"] = True
         arm_agg["invalid_reason"] = "pin_decode_length_violation"
 
-    # Write results
-    BENCH_DIR.joinpath("results").mkdir(exist_ok=True)
+    # Write results. Censored runs are useful for diagnosis but must not sit
+    # beside valid benchmark rows where they can be cited by accident.
     suffix = "smoke" if args.smoke else "quality" if quality_probe else "full"
-    report_path = BENCH_DIR / "results" / f"{args.arm}_{ts_str}_{suffix}.md"
-    raw_path    = BENCH_DIR / "results" / f"{args.arm}_{ts_str}_{suffix}_raw.json"
+    artifact_dir = BENCH_DIR / ("quarantine" if arm_agg.get("censored") else "results")
+    artifact_dir.mkdir(exist_ok=True)
+    artifact_suffix = f"{suffix}_invalid" if arm_agg.get("censored") else suffix
+    report_path = artifact_dir / f"{args.arm}_{ts_str}_{artifact_suffix}.md"
+    raw_path    = artifact_dir / f"{args.arm}_{ts_str}_{artifact_suffix}_raw.json"
 
     raw_path.write_text(json.dumps({
         "provenance": provenance,
@@ -2885,7 +2895,7 @@ def main() -> None:
             print("\nSMOKE PASSED — safe to run full sweep.")
 
     if not args.smoke and not arm_agg.get("ok", False):
-        print("\nRUN CENSORED — artifacts written, but this arm is not a valid speed row.")
+        print("\nRUN CENSORED — artifacts quarantined; this arm is not a valid speed row.")
         sys.exit(3)
 
 

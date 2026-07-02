@@ -1847,8 +1847,11 @@ static void test_jinja_render_message_tool_calls() {
     static const char TPL[] =
         "{%- for m in messages -%}"
         "{%- if m.tool_calls -%}"
-        "CALL:{{ m.tool_calls[0].function.name }}:"
-        "{{ m.tool_calls[0].function.arguments }}"
+        "{%- set tool_call = m.tool_calls[0].function -%}"
+        "CALL:{{ tool_call.name }}:"
+        "{%- for args_name, args_value in tool_call.arguments|items -%}"
+        "{{ args_name }}={{ args_value }}"
+        "{%- endfor -%}"
         "{%- endif -%}"
         "{%- endfor -%}";
     std::vector<ChatMessage> msgs = {
@@ -1857,7 +1860,7 @@ static void test_jinja_render_message_tool_calls() {
     std::string out = render_chat_template_jinja(
         TPL, msgs, "", "", false, false, "");
     TEST_ASSERT(out.find("CALL:Bash:") != std::string::npos);
-    TEST_ASSERT(out.find("pwd") != std::string::npos);
+    TEST_ASSERT(out.find("command=pwd") != std::string::npos);
 }
 
 static void test_jinja_render_empty_tools_skipped() {

@@ -351,6 +351,34 @@ static std::shared_ptr<jinja::program> get_or_parse(const std::string & template
     return prog;
 }
 
+static void normalize_tool_call_arguments_for_jinja(nlohmann::ordered_json & tool_calls) {
+    if (!tool_calls.is_array()) return;
+
+    auto normalize_fn = [](nlohmann::ordered_json & fn) {
+        if (!fn.is_object() || !fn.contains("arguments") || !fn["arguments"].is_string()) {
+            return;
+        }
+        const std::string raw = fn["arguments"].get<std::string>();
+        try {
+            auto parsed = nlohmann::ordered_json::parse(raw);
+            fn["arguments"] = parsed.is_object()
+                ? std::move(parsed)
+                : nlohmann::ordered_json{{"value", std::move(parsed)}};
+        } catch (const std::exception &) {
+            fn["arguments"] = nlohmann::ordered_json{{"value", raw}};
+        }
+    };
+
+    for (auto & tc : tool_calls) {
+        if (!tc.is_object()) continue;
+        if (tc.contains("function") && tc["function"].is_object()) {
+            normalize_fn(tc["function"]);
+        } else {
+            normalize_fn(tc);
+        }
+    }
+}
+
 }  // namespace
 
 std::string render_chat_template_jinja(
@@ -382,7 +410,9 @@ std::string render_chat_template_jinja(
         }
         if (!m.tool_calls_json.empty()) {
             try {
-                mj["tool_calls"] = nlohmann::ordered_json::parse(m.tool_calls_json);
+                auto tool_calls = nlohmann::ordered_json::parse(m.tool_calls_json);
+                normalize_tool_call_arguments_for_jinja(tool_calls);
+                mj["tool_calls"] = std::move(tool_calls);
             } catch (const std::exception & e) {
                 throw std::runtime_error(
                     std::string("render_chat_template_jinja: failed to parse message tool_calls JSON: ") + e.what());
