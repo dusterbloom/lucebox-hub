@@ -12,6 +12,7 @@ reviewer asks for them.
     recorded `dflash_server` binary.
 - dflash binary: `server/build-pr468-int-cuda126/dflash_server`
 - dflash sha256: `60b410d695af802ecb391d387220562a37fd3c2005a69a087c0b092bc80e3887`
+- Harness claim-scope commit: `a2bd6d60`
 - llama binary: `/home/peppi/llama.cpp/build-cuda/bin/llama-server`
 - llama sha256: `feedd55326b13fd4156dd0c7d7086fb94201cceeda5ef3eabc43fb26e2adc06b`
 - Model: `/home/peppi/models/qwen3.6-35b-a3b/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`
@@ -68,6 +69,27 @@ Verification:
 | Guard-off, non-forced cap2048 | `AR_35B_KVF` | 388.7 | 68.3 | 296.2 | 24613 | false | 37/38 | 1671.5 | 83.1 | 71.3 | `results/AR_35B_KVF_20260702_201047_full_raw.json` |
 | Local quality smoke | `AR_35B_KVF_FORCE` | 1.4 | 0.6 | 1.0 | 136 | false | 1/1 tool prompt | 710.0 | 136.0 | n/a | `results/AR_35B_KVF_FORCE_20260702_200342_quality_raw.json` |
 
+## Pinned Tool-Stop Contract
+
+The deep tool traces have `expect_tool_call: true` on all 38 turns. Exact
+fixed-length pinning and natural tool-stop correctness are therefore separate
+claims on this trace: forcing exactly 256 output tokens is useful for decode
+and wall equal-work speed, but it is not a decisive tool-valid claim.
+
+Harness commit `a2bd6d60` makes this explicit in future artifacts by reporting:
+
+- `pin_decode_claim_scope`
+- `pin_decode_tool_turns`
+- `pin_decode_non_tool_turns`
+- `pin_decode_tool_stop_conflict`
+- `pin_decode_non_tool_ok`
+
+Validation smoke:
+`results/AR_35B_KVF_FORCE_20260702_204157_smoke_raw.json`
+
+Result: `pin_decode_ok=true`, `tool_expected_valid=3/3`, and
+`pin_decode_claim_scope=speed_only_tool_stop_conflict`.
+
 ## In-Tree OpenAI Client Bench Smoke
 
 The checked-in `harness/client_test_runner.py bench` suite was run against the
@@ -123,7 +145,9 @@ not replace the missing charbench `code_complete` / `tool_call` threshold gate.
   decode is 127.0 vs 80.3 tok/s. This is a 19.2% wall win and 1.58x decode win.
 - Pinned tool-valid decisive claim: not green. Forcing exactly 256 output tokens
   distorts natural tool-call stopping. dflash drops to 26/38 tool-valid under
-  pinning; llama remains 20/38.
+  pinning; llama remains 20/38. Harness commit `a2bd6d60` now labels these
+  pinned all-tool runs as `speed_only_tool_stop_conflict` in newly generated
+  artifacts.
 - Natural tool-valid claim: green for dflash native on this run, but not an
   equal-output workload. Natural cap2048 has dflash 38/38 tool-valid and 126.8
   tok/s decode, while llama has 20/38 and 78.5 tok/s. Wall also favors dflash
@@ -159,8 +183,11 @@ Not yet valid:
 Next required work:
 
 1. Decide how the harness should define pinned tool-call workloads. Exact fixed
-   decode length and early tool stopping are in tension; the current pinned
-   speed row is scientifically useful, but it is not a tool-valid claim.
+   decode length and early tool stopping are in tension on all-tool traces. The
+   current pinned speed row is scientifically useful, but it is not a
+   tool-valid claim. A future decisive trace needs mixed turns, or a
+   pre-declared two-axis gate: natural tool validity plus separate pinned
+   speed.
 2. Bring in or reconstruct the full charbench quality suite and run the forced
    KVFlash arm against the 85.2% code-complete / 53.1% tool-call floor.
 3. After those two gates are clean, start the dFlash/spec-decode campaign.
