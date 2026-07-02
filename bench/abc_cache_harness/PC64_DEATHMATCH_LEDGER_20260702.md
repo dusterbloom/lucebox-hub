@@ -94,6 +94,23 @@ This is a useful endpoint/streaming/usage/correctness smoke over existing
 project prompts. It is not the full charbench threshold gate and should not be
 cited as that.
 
+## HumanEval+ Code Quality Smoke
+
+The existing HumanEval+ dataset and grader under `server/eval` /
+`server/scripts/quality_humaneval_plus.py` were run against the same forced
+KVFlash OpenAI-compatible profile.
+
+Summary artifact:
+`.harness-work/runs/humanevalplus_forced_kvf_full_20260702_summary.json`
+
+| Bench | Passed | Total | pass@1 | Request errors | Completion tokens | Generation wall s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| HumanEval+ full | 143 | 164 | 0.872 | 0 | 42392 | 336.373 |
+
+The first-20 smoke passed 20/20 before the full run. This is stronger than the
+two-row local charbench smoke for code-generation quality, but it still does
+not replace the missing charbench `code_complete` / `tool_call` threshold gate.
+
 ## Gate Status
 
 - P1 tool-schema root cause: improved. The old native `0.447` result is stale.
@@ -118,9 +135,10 @@ cited as that.
   prompt tokens at 79.7 tok/s; turn 38 reached 113,944 prompt tokens at 71.0
   tok/s. There was no hidden half-speed fallback after 88K.
 - Quality: the local two-row `charbench_code_tool` smoke passes
-  `charbench_valid_rate=1.0`, and the in-tree OpenAI client bench smoke above
-  completed 36/36 requests with HE 10/10. The full external charbench gate with
-  the 85.2%/53.1% thresholds is still missing here.
+  `charbench_valid_rate=1.0`, the in-tree OpenAI client bench smoke above
+  completed 36/36 requests with HE 10/10, and HumanEval+ full scored 143/164
+  pass@1 with zero request errors. The full external charbench gate with the
+  85.2%/53.1% thresholds is still missing here.
 
 ## Claim Discipline
 
