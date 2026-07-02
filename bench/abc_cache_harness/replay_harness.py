@@ -1309,6 +1309,13 @@ def check_tool_call(body: dict) -> tuple[bool, str]:
     return False, "no tool_use block"
 
 
+def request_expects_tool_call(req_body: dict) -> Optional[bool]:
+    for key in ("expect_tool_call", "tool_call_expected", "should_call_tool"):
+        if key in req_body:
+            return bool(req_body[key])
+    return None
+
+
 def extract_response_text(body: dict) -> str:
     """Return assistant text from either Anthropic or OpenAI-compatible responses."""
     try:
@@ -1649,6 +1656,7 @@ def run_trace_repeat(
 
         # Check tool_call validity
         tool_valid, tool_detail = check_tool_call(resp_body)
+        tool_expected = request_expects_tool_call(req_body)
         charbench_valid, charbench_detail = check_charbench_quality(req_body, resp_body)
         response_text = extract_response_text(resp_body)
         request_failure = classify_request_failure(server_type, resp_body, metrics)
@@ -1660,6 +1668,7 @@ def run_trace_repeat(
             "requested_out_tokens": requested_out_tokens,
             "out_tokens_match_requested": out_tokens_match_requested(metrics, requested_out_tokens),
             **metrics,
+            "tool_call_expected": tool_expected,
             "tool_call_valid": tool_valid,
             "tool_detail": tool_detail,
             "charbench_valid": charbench_valid,
@@ -1754,6 +1763,37 @@ def aggregate_turns(all_records: list[dict], n_turns: int) -> list[dict]:
             round(sum(1 for v in charbench_vals if v) / len(charbench_vals), 4)
             if charbench_vals else None
         )
+        expected_vals = [
+            r.get("tool_call_expected")
+            for r in recs
+            if r.get("tool_call_expected") is not None
+        ]
+        if expected_vals:
+            expected_count = sum(1 for v in expected_vals if v)
+            unexpected_count = len(expected_vals) - expected_count
+            expected_valid_count = sum(
+                1 for r in recs
+                if r.get("tool_call_expected") is True and r.get("tool_call_valid")
+            )
+            unexpected_valid_count = sum(
+                1 for r in recs
+                if r.get("tool_call_expected") is False and r.get("tool_call_valid")
+            )
+            tool_call_valid_rate = (
+                expected_valid_count / expected_count if expected_count else None
+            )
+            unexpected_tool_call_rate = (
+                unexpected_valid_count / unexpected_count if unexpected_count else None
+            )
+            tool_call_expected_rate = expected_count / len(expected_vals)
+        else:
+            expected_count = None
+            expected_valid_count = None
+            unexpected_tool_call_rate = None
+            tool_call_expected_rate = None
+            tool_call_valid_rate = sum(
+                1 for r in recs if r.get("tool_call_valid")
+            ) / len(recs)
 
         agg.append({
             "turn": t,
@@ -1783,7 +1823,11 @@ def aggregate_turns(all_records: list[dict], n_turns: int) -> list[dict]:
             "avg_commit": med("avg_commit"),
             "pflash_kept_pct": med("pflash_kept_pct"),
             "disk_hit_rate": disk_hit_rate,
-            "tool_call_valid_rate": sum(1 for r in recs if r.get("tool_call_valid")) / len(recs),
+            "tool_call_expected_rate": tool_call_expected_rate,
+            "tool_call_expected_count": expected_count,
+            "tool_call_expected_valid_count": expected_valid_count,
+            "tool_call_valid_rate": tool_call_valid_rate,
+            "unexpected_tool_call_rate": unexpected_tool_call_rate,
             "charbench_valid_rate": charbench_valid_rate,
         })
     return agg
@@ -1870,7 +1914,10 @@ def aggregate_arm(per_turn: list[dict]) -> dict:
         "spec_engagement_rate": round(len(spec_turns) / len(valid), 3) if valid else None,
         "mean_accept_rate": safe_mean("accept_rate"),
         "mean_disk_hit_rate": mean_disk_hit_rate,
+        "sum_tool_expected_turns": safe_int_sum("tool_call_expected_count"),
+        "sum_tool_expected_valid_turns": safe_int_sum("tool_call_expected_valid_count"),
         "tool_call_valid_rate": safe_mean("tool_call_valid_rate"),
+        "unexpected_tool_call_rate": safe_mean("unexpected_tool_call_rate"),
         "charbench_valid_rate": safe_mean("charbench_valid_rate"),
     }
 
@@ -1914,6 +1961,13 @@ def write_report(
     lines.append(f"- censored: {arm_agg.get('censored')}")
     lines.append(f"- valid_turns: {arm_agg.get('valid_turns')}/{arm_agg.get('expected_turns')}")
     lines.append(f"- error_count: {arm_agg.get('error_count')}")
+    if arm_agg.get("sum_tool_expected_turns") is not None:
+        lines.append(
+            f"- tool_expected_valid: "
+            f"{arm_agg.get('sum_tool_expected_valid_turns')}/"
+            f"{arm_agg.get('sum_tool_expected_turns')}"
+        )
+        lines.append(f"- unexpected_tool_call_rate: {arm_agg.get('unexpected_tool_call_rate')}")
     lines.append("")
     lines.append("## Per-Turn Cache Trace")
     has_disk_hit = any(t.get("disk_hit_rate") is not None for t in per_turn)
@@ -2132,6 +2186,7 @@ def run_trace_restart_per_turn(
 
             # Check tool_call validity
             tool_valid, tool_detail = check_tool_call(resp_body)
+            tool_expected = request_expects_tool_call(req_body)
             charbench_valid, charbench_detail = check_charbench_quality(req_body, resp_body)
             response_text = extract_response_text(resp_body)
             request_failure = classify_request_failure(server_type, resp_body, metrics)
@@ -2146,6 +2201,7 @@ def run_trace_restart_per_turn(
                 "requested_out_tokens": requested_out_tokens,
                 "out_tokens_match_requested": out_tokens_match_requested(metrics, requested_out_tokens),
                 **metrics,
+                "tool_call_expected": tool_expected,
                 "tool_call_valid": tool_valid,
                 "tool_detail": tool_detail,
                 "charbench_valid": charbench_valid,
@@ -2725,6 +2781,13 @@ def main() -> None:
     print(f"mean_accept_rate          : {arm_agg.get('mean_accept_rate')}")
     if arm_agg.get('mean_disk_hit_rate') is not None:
         print(f"mean_disk_hit_rate        : {arm_agg.get('mean_disk_hit_rate')}")
+    if arm_agg.get('sum_tool_expected_turns') is not None:
+        print(
+            "tool_expected_valid       : "
+            f"{arm_agg.get('sum_tool_expected_valid_turns')}/"
+            f"{arm_agg.get('sum_tool_expected_turns')}"
+        )
+        print(f"unexpected_tool_call_rate : {arm_agg.get('unexpected_tool_call_rate')}")
     print(f"tool_call_valid_rate      : {arm_agg.get('tool_call_valid_rate')}")
     print(f"charbench_valid_rate      : {arm_agg.get('charbench_valid_rate')}")
     print(f"\nRaw:    {raw_path}")
