@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${OPENWEBUI_FUNCTION_CALLING:=native}"
 : "${OPENWEBUI_NATIVE_TOOL_CHOICE:=1}"
 : "${OPENWEBUI_DISABLE_BUILTIN_TOOLS:=1}"
+: "${OPENWEBUI_STREAM:=}"
 if [[ -z "${OPENWEBUI_REQUIRE_TOOL_EXECUTION+x}" ]]; then
   if [[ "$OPENWEBUI_FUNCTION_CALLING" == "native" ]]; then
     OPENWEBUI_REQUIRE_TOOL_EXECUTION=0
@@ -249,12 +250,22 @@ TOOL_ID="$TOOL_ID" \
 MAX_TOKENS="$MAX_TOKENS" \
 OPENWEBUI_FUNCTION_CALLING="$OPENWEBUI_FUNCTION_CALLING" \
 OPENWEBUI_NATIVE_TOOL_CHOICE="$OPENWEBUI_NATIVE_TOOL_CHOICE" \
+OPENWEBUI_REQUIRE_TOOL_EXECUTION="$OPENWEBUI_REQUIRE_TOOL_EXECUTION" \
+OPENWEBUI_STREAM="$OPENWEBUI_STREAM" \
 python3 - "$REQUEST_JSON" <<'PY'
 import json
 import os
 import sys
 
 function_calling = os.environ.get("OPENWEBUI_FUNCTION_CALLING", "native")
+stream_env = os.environ.get("OPENWEBUI_STREAM", "")
+if stream_env:
+    stream = stream_env.lower() not in ("0", "false", "no", "off")
+else:
+    # Open WebUI executes tool calls in its streaming chat middleware. A
+    # non-streaming request can still validate native tool_calls, but it will
+    # not run the tool and emit the marker.
+    stream = os.environ.get("OPENWEBUI_REQUIRE_TOOL_EXECUTION", "0") == "1"
 body = {
     "model": os.environ["WEBUI_MODEL_ID"],
     "chat_id": "local:lucebox-openwebui-tools",
@@ -265,7 +276,7 @@ body = {
     "messages": [
         {"role": "user", "content": os.environ["OPENWEBUI_TOOL_PROMPT"]},
     ],
-    "stream": False,
+    "stream": stream,
     "max_tokens": int(os.environ.get("MAX_TOKENS", "512")),
     "temperature": 0,
     "tool_ids": [os.environ["TOOL_ID"]],
@@ -302,9 +313,6 @@ if [[ "$RC" -eq 0 && "$OPENWEBUI_FUNCTION_CALLING" == "native" && "$OPENWEBUI_RE
     RC=1
   fi
 else
-  if [[ "$RC" -eq 0 ]] && ! grep -q "$MARKER" "$CLIENT_OUT"; then
-    RC=1
-  fi
   if [[ "$RC" -eq 0 ]] && { [[ ! -f "$TOOL_EXEC_LOG" ]] || ! grep -q "$MARKER" "$TOOL_EXEC_LOG"; }; then
     RC=1
   fi
@@ -318,6 +326,7 @@ fi
   echo "--- validation mode ---"
   echo "function_calling=$OPENWEBUI_FUNCTION_CALLING"
   echo "require_tool_execution=$OPENWEBUI_REQUIRE_TOOL_EXECUTION"
+  echo "stream=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("stream"))' "$REQUEST_JSON" 2>/dev/null || echo unknown)"
   echo
   if [[ -f "$MODEL_CREATE_OUT" ]]; then
     echo

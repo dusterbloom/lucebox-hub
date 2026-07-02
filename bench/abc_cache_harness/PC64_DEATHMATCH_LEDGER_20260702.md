@@ -68,6 +68,18 @@ Failed expected tool turns on the cap trace:
   completed 38/38, no crash, turn 38 at 89K context decoded at 82.3 tok/s.
 - Quality: local `charbench_code_tool` probe passed, including the single tool
   prompt. This is a small local gate, not a full external charbench suite.
+- Real-client Open WebUI tools: both client modes are green after fixing the
+  harness request/validation shape.
+  - Native mode: `rc=0`, non-streaming request, returned OpenAI `tool_calls`
+    for `get_lucebox_harness_marker`.
+    Artifact: `.harness-work/runs/20260702-openwebui-tools-native2/`.
+  - Default execution mode: `rc=0`, streaming request, Open WebUI executed the
+    tool and wrote `OPENWEBUI_TOOL_OK` to `openwebui-tool-exec.log`; server log
+    shows the initial tool-call turn and the post-tool follow-up turn.
+    Artifact: `.harness-work/runs/20260702-openwebui-tools-default-stream2/`.
+  - Harness note: Open WebUI v0.10.2 executes tools in its streaming chat
+    middleware. Non-streaming requests can validate returned native tool calls,
+    but do not run the tool execution loop.
 
 ## Claim Discipline
 
