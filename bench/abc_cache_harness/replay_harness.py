@@ -71,6 +71,14 @@ LLAMA_CUDA_LIB = Path("/home/peppi/llama.cpp/build-cuda/bin")
 
 GPU_LOCK_FILE = "/tmp/lucebox_gpu.lock"
 
+
+def is_dflash_server(server_type: str) -> bool:
+    return server_type in {"dflash", "dflash_openai"}
+
+
+def uses_openai_chat_api(server_type: str) -> bool:
+    return server_type in {"llama_cpp", "dflash_openai"}
+
 # ---------------------------------------------------------------------------
 # Arm definitions
 # ---------------------------------------------------------------------------
@@ -769,6 +777,30 @@ ARMS: dict[str, dict] = {
         "extra_args": ["--kvflash", "8192", "--kvflash-policy", "qk"],
         "env": {"KVFLASH_RESTORE_CONSUME": "1"},
     },
+    "AR_35B_KVF_OPENAI": {
+        "description": "dflash 35B-A3B MoE Q4_K_M + KVFlash requested; OpenAI chat path; NO spec; q4_0 KV",
+        "server": "dflash_openai",
+        "model_target": TGT_35B,
+        "kv_cache_types": ("q4_0", "q4_0"),
+        "extra_args": ["--kvflash", "8192", "--kvflash-policy", "qk"],
+        "env": {"KVFLASH_RESTORE_CONSUME": "1"},
+    },
+    "AR_35B_KVF_FORCE": {
+        "description": "dflash 35B-A3B MoE Q4_K_M + forced KVFlash pooled-QK decode; pure AR; q4_0 KV",
+        "server": "dflash",
+        "model_target": TGT_35B,
+        "kv_cache_types": ("q4_0", "q4_0"),
+        "extra_args": ["--kvflash", "8192", "--kvflash-policy", "qk", "--kvflash-force"],
+        "env": {"KVFLASH_RESTORE_CONSUME": "1"},
+    },
+    "AR_35B_KVF_FORCE_OPENAI": {
+        "description": "dflash 35B-A3B MoE Q4_K_M + forced KVFlash pooled-QK decode; pure AR; OpenAI chat path",
+        "server": "dflash_openai",
+        "model_target": TGT_35B,
+        "kv_cache_types": ("q4_0", "q4_0"),
+        "extra_args": ["--kvflash", "8192", "--kvflash-policy", "qk", "--kvflash-force"],
+        "env": {"KVFLASH_RESTORE_CONSUME": "1"},
+    },
     "AR_35B_KVF_DISK": {
         "description": "dflash 35B-A3B MoE Q4_K_M + KVFlash + disk prefix cache; pure AR; q4_0 KV",
         "server": "dflash",
@@ -916,19 +948,43 @@ def nvidia_smi_vram() -> tuple[Optional[int], Optional[int]]:
         return None, None
 
 
-def wait_for_server(port: int, timeout: int = 360) -> bool:
+def tail_log_lines(log_path: Path, n: int = 5) -> list[str]:
+    try:
+        return log_path.read_text(errors="replace").splitlines()[-n:]
+    except Exception:
+        return []
+
+
+def wait_for_server(
+    port: int,
+    timeout: int = 360,
+    proc: Optional[subprocess.Popen] = None,
+    log_path: Optional[Path] = None,
+) -> tuple[bool, Optional[str]]:
     deadline = time.time() + timeout
     while time.time() < deadline:
+        if proc is not None and proc.poll() is not None:
+            lines = tail_log_lines(log_path, 5) if log_path is not None else []
+            detail = [f"server exited before health check passed (rc={proc.returncode})"]
+            if lines:
+                detail.append("last 5 log lines:")
+                detail.extend(f"  {line}" for line in lines)
+            return False, "\n".join(detail)
         try:
             with urllib.request.urlopen(
                 f"http://{HOST}:{port}/health", timeout=3
             ) as r:
                 if r.status == 200:
-                    return True
+                    return True, None
         except Exception:
             pass
         time.sleep(2)
-    return False
+    lines = tail_log_lines(log_path, 5) if log_path is not None else []
+    detail = [f"server did not become healthy within {timeout}s"]
+    if lines:
+        detail.append("last 5 log lines:")
+        detail.extend(f"  {line}" for line in lines)
+    return False, "\n".join(detail)
 
 
 def build_llama_cpp_cmd(arm_cfg: dict, port: int, max_ctx: int) -> list[str]:
@@ -1253,12 +1309,86 @@ def check_tool_call(body: dict) -> tuple[bool, str]:
     return False, "no tool_use block"
 
 
+def extract_response_text(body: dict) -> str:
+    """Return assistant text from either Anthropic or OpenAI-compatible responses."""
+    try:
+        content = body.get("content", [])
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = [
+                block.get("text", "")
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            if parts:
+                return "\n".join(parts)
+
+        choices = body.get("choices", [])
+        if choices:
+            msg = choices[0].get("message", {})
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                return "\n".join(
+                    block.get("text", "")
+                    for block in content
+                    if isinstance(block, dict)
+                )
+    except Exception:
+        pass
+    return ""
+
+
+def check_charbench_quality(req_body: dict, body: dict) -> tuple[Optional[bool], Optional[str]]:
+    """Small deterministic checks for the two charbench quality-gate prompts."""
+    prompt = " ".join(
+        str(msg.get("content", ""))
+        for msg in req_body.get("messages", [])
+        if isinstance(msg, dict)
+    )
+    text = extract_response_text(body)
+    low = text.lower()
+
+    if "def quicksort(arr)" in prompt:
+        ok = (
+            "def quicksort" in low
+            and "return" in low
+            and ("quicksort(" in low or "sort(" in low)
+            and ("pivot" in low or "left" in low or "right" in low)
+        )
+        return ok, "code_complete: quicksort structure" if ok else "code_complete: missing quicksort structure"
+
+    tools = req_body.get("tools", [])
+    has_read_file_tool = any(
+        isinstance(t, dict)
+        and (
+            t.get("name") == "read_file"
+            or t.get("function", {}).get("name") == "read_file"
+        )
+        for t in tools
+    )
+    if (("read_file" in prompt or has_read_file_tool) and "/etc/hostname" in prompt):
+        structured_tool, _ = check_tool_call(body)
+        exact_text_tool = (
+            "<tool_call>" in text
+            and "read_file" in text
+            and "/etc/hostname" in text
+            and "\"path\"" in text
+        )
+        ok = structured_tool or exact_text_tool
+        return ok, "tool_call: read_file request" if ok else "tool_call: missing read_file request"
+
+    return None, None
+
+
 def classify_request_failure(server_type: str, body: dict, metrics: dict) -> Optional[str]:
     """Return a benchmark-invalid reason when transport succeeded but generation failed."""
     if isinstance(body, dict) and body.get("error"):
         return f"response_error: {body.get('error')}"
 
-    if server_type == "dflash":
+    if is_dflash_server(server_type):
         finish = metrics.get("finish_reason")
         if metrics.get("chat_ok") is False or finish == "error":
             detail = metrics.get("chat_error") or finish or "unknown"
@@ -1277,6 +1407,9 @@ def _anthropic_to_openai_tools(tools: list) -> list:
     for t in tools:
         if not isinstance(t, dict):
             continue
+        if t.get("type") == "function" and isinstance(t.get("function"), dict):
+            out.append(t)
+            continue
         fn: dict = {
             "name": t.get("name", ""),
             "description": t.get("description", ""),
@@ -1294,14 +1427,15 @@ def send_request(
 ) -> tuple[dict, float, Optional[str]]:
     """POST request to server. Returns (response_body, wall_s, error_str).
 
-    server_type='dflash'    -> POST /v1/messages  (Anthropic format)
-    server_type='llama_cpp' -> POST /v1/chat/completions  (OpenAI format)
+    server_type='dflash'        -> POST /v1/messages  (Anthropic format)
+    server_type='dflash_openai' -> POST /v1/chat/completions  (OpenAI format)
+    server_type='llama_cpp'     -> POST /v1/chat/completions  (OpenAI format)
     """
     requested_max_tokens = request_max_tokens(req_body)
     if pin_decode_length and requested_max_tokens is None:
         return {}, 0.0, "pin_decode_length requires a positive integer max_tokens"
 
-    if server_type == "llama_cpp":
+    if uses_openai_chat_api(server_type):
         # Convert Anthropic trace format -> OpenAI messages format
         sys_prompt = req_body.get("system")
         messages: list = []
@@ -1319,17 +1453,19 @@ def send_request(
             messages.append({"role": msg["role"], "content": content})
 
         body_out: dict = {
+            "model": req_body.get("model", "luce-dflash"),
             "messages": messages,
             "temperature": req_body.get("temperature", 0),
             "max_tokens": req_body.get("max_tokens", 1024),
             "stream": False,
         }
         if pin_decode_length:
-            # llama.cpp treats max_tokens as an upper bound unless EOS is masked.
-            # n_predict wins if both aliases are present in this server build.
             body_out["max_tokens"] = requested_max_tokens
-            body_out["n_predict"] = requested_max_tokens
-            body_out["ignore_eos"] = True
+            if server_type == "llama_cpp":
+                # llama.cpp treats max_tokens as an upper bound unless EOS is masked.
+                # n_predict wins if both aliases are present in this server build.
+                body_out["n_predict"] = requested_max_tokens
+                body_out["ignore_eos"] = True
         raw_tools = req_body.get("tools")
         if raw_tools:
             try:
@@ -1437,7 +1573,7 @@ def run_trace_repeat(
 
     arm_temp    = arm_cfg.get("temperature") if arm_cfg else None
     server_type = arm_cfg.get("server", "dflash") if arm_cfg else "dflash"
-    is_dflash   = server_type == "dflash"
+    is_dflash   = is_dflash_server(server_type)
 
     # Wait for log file to exist and server to be settled (dflash only)
     if is_dflash:
@@ -1513,6 +1649,8 @@ def run_trace_repeat(
 
         # Check tool_call validity
         tool_valid, tool_detail = check_tool_call(resp_body)
+        charbench_valid, charbench_detail = check_charbench_quality(req_body, resp_body)
+        response_text = extract_response_text(resp_body)
         request_failure = classify_request_failure(server_type, resp_body, metrics)
 
         rec = {
@@ -1524,6 +1662,9 @@ def run_trace_repeat(
             **metrics,
             "tool_call_valid": tool_valid,
             "tool_detail": tool_detail,
+            "charbench_valid": charbench_valid,
+            "charbench_detail": charbench_detail,
+            "response_text": response_text,
         }
         if request_failure:
             rec["error"] = request_failure
@@ -1604,6 +1745,15 @@ def aggregate_turns(all_records: list[dict], n_turns: int) -> list[dict]:
             round(sum(1 for v in out_match_vals if v) / len(out_match_vals), 4)
             if out_match_vals else None
         )
+        charbench_vals = [
+            r["charbench_valid"]
+            for r in recs
+            if r.get("charbench_valid") is not None
+        ]
+        charbench_valid_rate = (
+            round(sum(1 for v in charbench_vals if v) / len(charbench_vals), 4)
+            if charbench_vals else None
+        )
 
         agg.append({
             "turn": t,
@@ -1634,6 +1784,7 @@ def aggregate_turns(all_records: list[dict], n_turns: int) -> list[dict]:
             "pflash_kept_pct": med("pflash_kept_pct"),
             "disk_hit_rate": disk_hit_rate,
             "tool_call_valid_rate": sum(1 for r in recs if r.get("tool_call_valid")) / len(recs),
+            "charbench_valid_rate": charbench_valid_rate,
         })
     return agg
 
@@ -1720,6 +1871,7 @@ def aggregate_arm(per_turn: list[dict]) -> dict:
         "mean_accept_rate": safe_mean("accept_rate"),
         "mean_disk_hit_rate": mean_disk_hit_rate,
         "tool_call_valid_rate": safe_mean("tool_call_valid_rate"),
+        "charbench_valid_rate": safe_mean("charbench_valid_rate"),
     }
 
 
@@ -1734,13 +1886,19 @@ def write_report(
     provenance: dict,
     out_path: Path,
     smoke: bool,
+    run_kind: str = "full",
 ) -> None:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = []
     lines.append(f"# ABC Cache Harness — {arm_name}")
     lines.append(f"Generated: {ts}")
     n_repeats = provenance.get("n_repeats", "?")
-    mode_label = "SMOKE (first 3 turns, N=1)" if smoke else f"FULL (all turns, N={n_repeats})"
+    if smoke:
+        mode_label = "SMOKE (first 3 turns, N=1)"
+    elif run_kind == "quality":
+        mode_label = f"QUALITY PROBE (all trace turns, N={n_repeats})"
+    else:
+        mode_label = f"FULL (all turns, N={n_repeats})"
     lines.append(f"Mode: {mode_label}")
     lines.append("")
     lines.append("## Provenance")
@@ -1751,6 +1909,8 @@ def write_report(
     lines.append("## Run Quality")
     lines.append("")
     lines.append(f"- ok: {arm_agg.get('ok')}")
+    if arm_agg.get("invalid_reason"):
+        lines.append(f"- invalid_reason: {arm_agg.get('invalid_reason')}")
     lines.append(f"- censored: {arm_agg.get('censored')}")
     lines.append(f"- valid_turns: {arm_agg.get('valid_turns')}/{arm_agg.get('expected_turns')}")
     lines.append(f"- error_count: {arm_agg.get('error_count')}")
@@ -1879,18 +2039,14 @@ def run_trace_restart_per_turn(
 
         try:
             # Step 2: wait for ready
-            ok = wait_for_server(port, timeout=360)
+            ok, start_error = wait_for_server(
+                port, timeout=360, proc=proc, log_path=log_path
+            )
             if not ok:
-                print(f"  ERROR: server did not come up for turn {turn_num}. "
-                      f"Check {log_path}", file=sys.stderr)
-                results.append({
-                    "turn": turn_num,
-                    "repeat": repeat_idx + 1,
-                    "error": "server_timeout",
-                    "wall_s": 0.0,
-                    "disk_hit": False,
-                })
-                continue
+                raise RuntimeError(
+                    f"server did not come up for turn {turn_num}; log={log_path}\n"
+                    f"{start_error or ''}"
+                )
 
             slot_restore_ok = None
             slot_restore_detail = None
@@ -1947,7 +2103,7 @@ def run_trace_restart_per_turn(
             except Exception:
                 log_text = ""
 
-            if server_type == "dflash":
+            if is_dflash_server(server_type):
                 metrics, _, _, _, _, _, _ = parse_log_for_request(
                     log_text, 0, 0, 0, 0, 0, 0
                 )
@@ -1962,7 +2118,7 @@ def run_trace_restart_per_turn(
 
             # disk_hit: in restart-per-turn mode, restore=true can ONLY come from the
             # on-disk prefix cache (no in-RAM cache survives a fresh process).
-            if server_type == "dflash":
+            if is_dflash_server(server_type):
                 disk_hit = bool(metrics.get("restore", False))
             else:
                 disk_hit = bool(slot_restore_ok)
@@ -1976,6 +2132,8 @@ def run_trace_restart_per_turn(
 
             # Check tool_call validity
             tool_valid, tool_detail = check_tool_call(resp_body)
+            charbench_valid, charbench_detail = check_charbench_quality(req_body, resp_body)
+            response_text = extract_response_text(resp_body)
             request_failure = classify_request_failure(server_type, resp_body, metrics)
 
             rec = {
@@ -1990,6 +2148,9 @@ def run_trace_restart_per_turn(
                 **metrics,
                 "tool_call_valid": tool_valid,
                 "tool_detail": tool_detail,
+                "charbench_valid": charbench_valid,
+                "charbench_detail": charbench_detail,
+                "response_text": response_text,
             }
             if request_failure:
                 rec["error"] = request_failure
@@ -2312,7 +2473,7 @@ def main() -> None:
     restart_per_turn = args.restart_per_turn
 
     # Verify binary (dflash arms only; llama_cpp arms use arm_cfg["binary"])
-    if server_type == "dflash":
+    if is_dflash_server(server_type):
         if not SERVER_BIN.exists():
             print(f"ERROR: server binary not found: {SERVER_BIN}", file=sys.stderr)
             sys.exit(1)
@@ -2332,6 +2493,7 @@ def main() -> None:
     # Load trace
     trace_path = Path(args.trace)
     turns = [json.loads(line) for line in trace_path.read_text().splitlines() if line.strip()]
+    quality_probe = trace_path.name.startswith("charbench_") and not args.smoke
     print(f"Loaded {len(turns)} turns from {trace_path}")
     pin_decode_tokens: Optional[int] = None
     trace_max_tokens_unique: list[int] = []
@@ -2343,7 +2505,7 @@ def main() -> None:
                 ap.error(f"--pin-decode-length requires positive integer max_tokens on turn {i}")
             trace_max_tokens.append(mt)
         trace_max_tokens_unique = sorted(set(trace_max_tokens))
-        if server_type == "dflash" and len(trace_max_tokens_unique) != 1:
+        if is_dflash_server(server_type) and len(trace_max_tokens_unique) != 1:
             ap.error(
                 "--pin-decode-length on dflash requires uniform trace max_tokens "
                 "because DFLASH_MIN_TOKENS is process-wide"
@@ -2359,7 +2521,7 @@ def main() -> None:
     _arm_temp = arm_cfg.get("temperature",   TEMP)
 
     provenance = {
-        "binary": str(SERVER_BIN) if server_type == "dflash" else arm_cfg.get("binary", str(LLAMA_BIN)),
+        "binary": str(SERVER_BIN) if is_dflash_server(server_type) else arm_cfg.get("binary", str(LLAMA_BIN)),
         "binary_sha256": bin_sha,
         "git_branch": git["branch"],
         "git_commit": git["commit"],
@@ -2380,11 +2542,12 @@ def main() -> None:
         "n_repeats": n_repeats,
         "smoke": args.smoke,
         "restart_per_turn": restart_per_turn,
+        "quality_probe": quality_probe,
         "pin_decode_length": args.pin_decode_length,
         "trace_max_tokens_unique": trace_max_tokens_unique,
         "pin_decode_tokens_process": pin_decode_tokens,
         "pin_decode_mechanism": (
-            "DFLASH_MIN_TOKENS+DFLASH_DEGENERATE_RUN_TOKENS=0" if args.pin_decode_length and server_type == "dflash"
+            "DFLASH_MIN_TOKENS+DFLASH_DEGENERATE_RUN_TOKENS=0" if args.pin_decode_length and is_dflash_server(server_type)
             else "ignore_eos+n_predict" if args.pin_decode_length and server_type == "llama_cpp"
             else None
         ),
@@ -2398,7 +2561,12 @@ def main() -> None:
     print(f"ARM: {args.arm} — {arm_cfg['description']}  [{server_type}]")
     print(f"Binary SHA: {bin_sha[:16]}...")
     print(f"Branch: {git['branch']} @ {git['commit'][:12]}")
-    mode_str = "SMOKE (turns 1-3, N=1)" if args.smoke else f"FULL ({n_repeats} repeats)"
+    if args.smoke:
+        mode_str = "SMOKE (turns 1-3, N=1)"
+    elif quality_probe:
+        mode_str = f"QUALITY PROBE ({len(turns)} turns, N={n_repeats})"
+    else:
+        mode_str = f"FULL ({n_repeats} repeats)"
     if restart_per_turn:
         mode_str += " [restart-per-turn: disk-cache cross-session mode]"
     print(f"Mode: {mode_str}")
@@ -2452,17 +2620,14 @@ def main() -> None:
 
         try:
             print(f"Waiting for server on port {port}...", end=" ", flush=True)
-            ok = wait_for_server(port, timeout=360)
+            ok, start_error = wait_for_server(
+                port, timeout=360, proc=proc, log_path=log_path
+            )
             if not ok:
                 print("FAILED")
                 print(f"Server did not come up. Check {log_path}", file=sys.stderr)
-                try:
-                    lines = log_path.read_text().splitlines()
-                    print("Last 30 log lines:", file=sys.stderr)
-                    for ln in lines[-30:]:
-                        print(f"  {ln}", file=sys.stderr)
-                except Exception:
-                    pass
+                if start_error:
+                    print(start_error, file=sys.stderr)
                 sys.exit(1)
             print("READY")
 
@@ -2512,10 +2677,14 @@ def main() -> None:
     n_turns_ran = min(3, len(turns)) if args.smoke else len(turns)
     per_turn = aggregate_turns(all_records, n_turns_ran)
     arm_agg  = aggregate_arm(per_turn)
+    if args.pin_decode_length and arm_agg.get("pin_decode_ok") is False:
+        arm_agg["ok"] = False
+        arm_agg["censored"] = True
+        arm_agg["invalid_reason"] = "pin_decode_length_violation"
 
     # Write results
     BENCH_DIR.joinpath("results").mkdir(exist_ok=True)
-    suffix = "smoke" if args.smoke else "full"
+    suffix = "smoke" if args.smoke else "quality" if quality_probe else "full"
     report_path = BENCH_DIR / "results" / f"{args.arm}_{ts_str}_{suffix}.md"
     raw_path    = BENCH_DIR / "results" / f"{args.arm}_{ts_str}_{suffix}_raw.json"
 
@@ -2526,7 +2695,10 @@ def main() -> None:
         "all_records": all_records,
     }, indent=2, default=str))
 
-    write_report(args.arm, per_turn, arm_agg, provenance, report_path, smoke=args.smoke)
+    write_report(
+        args.arm, per_turn, arm_agg, provenance, report_path,
+        smoke=args.smoke, run_kind=suffix,
+    )
 
     # Print summary
     print("\n" + "=" * 72)
@@ -2554,6 +2726,7 @@ def main() -> None:
     if arm_agg.get('mean_disk_hit_rate') is not None:
         print(f"mean_disk_hit_rate        : {arm_agg.get('mean_disk_hit_rate')}")
     print(f"tool_call_valid_rate      : {arm_agg.get('tool_call_valid_rate')}")
+    print(f"charbench_valid_rate      : {arm_agg.get('charbench_valid_rate')}")
     print(f"\nRaw:    {raw_path}")
     print(f"Report: {report_path}")
 
