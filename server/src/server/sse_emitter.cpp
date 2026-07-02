@@ -34,6 +34,38 @@ static bool starts_with_potential_bare_json_tool(const std::string & text,
     return first != std::string::npos && text[first] == '{';
 }
 
+static bool has_balanced_top_level_json(const std::string & text) {
+    size_t first = text.find_first_not_of(" \t\n\r");
+    if (first == std::string::npos || text[first] != '{') return false;
+
+    int depth = 0;
+    bool in_string = false;
+    for (size_t i = first; i < text.size(); i++) {
+        char c = text[i];
+        if (in_string) {
+            if (c == '\\') { i++; continue; }
+            if (c == '"') in_string = false;
+            continue;
+        }
+        if (c == '"') {
+            in_string = true;
+        } else if (c == '{') {
+            depth++;
+        } else if (c == '}') {
+            depth--;
+            if (depth == 0) return true;
+        }
+    }
+    return false;
+}
+
+static bool tool_buffer_has_complete_candidate(const std::string & text) {
+    if (text.find("</tool_call>") != std::string::npos) return true;
+    if (text.find("</function>") != std::string::npos) return true;
+    if (text.find("</tool_code>") != std::string::npos) return true;
+    return has_balanced_top_level_json(text);
+}
+
 static bool find_tool_start(const std::string & text, size_t & pos) {
     size_t idx = text.find('<');
     while (idx != std::string::npos) {
@@ -46,6 +78,20 @@ static bool find_tool_start(const std::string & text, size_t & pos) {
         idx = text.find('<', idx + 1);
     }
     return false;
+}
+
+bool SseEmitter::try_complete_tool_buffer() {
+    if (tool_buffer_complete_) return true;
+    if (!tool_buffer_has_complete_candidate(tool_buffer_)) return false;
+
+    auto parsed = parse_tool_calls(tool_buffer_, tools_);
+    if (parsed.tool_calls.empty()) return false;
+
+    tool_calls_ = std::move(parsed.tool_calls);
+    tool_buffer_cleaned_text_ = std::move(parsed.cleaned_text);
+    tool_buffer_complete_ = true;
+    stop_hit_ = true;
+    return true;
 }
 
 static std::string gen_item_id() {
@@ -299,6 +345,7 @@ std::vector<std::string> SseEmitter::emit_token(const std::string & raw_piece) {
         if (mode_ == StreamMode::TOOL_BUFFER) {
             tool_buffer_ += window_;
             window_.clear();
+            try_complete_tool_buffer();
             break;
         }
 
@@ -523,8 +570,12 @@ std::vector<std::string> SseEmitter::emit_finish(int completion_tokens,
     // Parse tool calls from buffer
     std::string fr = "stop";
     if (mode_ == StreamMode::TOOL_BUFFER && !tool_buffer_.empty()) {
-        auto parsed = parse_tool_calls(tool_buffer_, tools_);
-        tool_calls_ = std::move(parsed.tool_calls);
+        if (!tool_buffer_complete_) {
+            auto parsed = parse_tool_calls(tool_buffer_, tools_);
+            tool_calls_ = std::move(parsed.tool_calls);
+            tool_buffer_cleaned_text_ = std::move(parsed.cleaned_text);
+            tool_buffer_complete_ = !tool_calls_.empty();
+        }
 
         if (!tool_calls_.empty()) {
             // Remember for tool memory
@@ -535,9 +586,9 @@ std::vector<std::string> SseEmitter::emit_finish(int completion_tokens,
             }
 
             // Emit any cleaned text from the tool buffer
-            if (!parsed.cleaned_text.empty()) {
-                accumulated_content_ += parsed.cleaned_text;
-                emit_content_delta(out, parsed.cleaned_text);
+            if (!tool_buffer_cleaned_text_.empty()) {
+                accumulated_content_ += tool_buffer_cleaned_text_;
+                emit_content_delta(out, tool_buffer_cleaned_text_);
             }
 
             fr = "tool_calls";

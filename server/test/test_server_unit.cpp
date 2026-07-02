@@ -900,6 +900,38 @@ static void test_emitter_tool_buffer_detection() {
     TEST_ASSERT(em.accumulated_text().find("<tool_call>") == std::string::npos);
 }
 
+static void test_emitter_stops_on_complete_tool_buffer() {
+    auto em = make_emitter(ApiFormat::OPENAI_CHAT, weather_tools());
+    em.emit_start();
+    em.emit_token("<tool_call>\n<function=terminal>\n");
+    TEST_ASSERT(!em.stop_hit());
+    em.emit_token("<parameter=command>ls -la /tmp</parameter>\n"
+                  "</function>\n");
+
+    TEST_ASSERT(em.stop_hit());
+    TEST_ASSERT(em.tool_calls().size() == 1);
+    if (!em.tool_calls().empty()) {
+        TEST_ASSERT(em.tool_calls()[0].name == "terminal");
+        auto args = json::parse(em.tool_calls()[0].arguments);
+        TEST_ASSERT(args["command"] == "ls -la /tmp");
+    }
+
+    std::string finish = concat(em.emit_finish(12));
+    TEST_ASSERT(finish.find("\"finish_reason\":\"tool_calls\"") != std::string::npos);
+    TEST_ASSERT(em.accumulated_text().find("<tool_call>") == std::string::npos);
+}
+
+static void test_emitter_waits_for_incomplete_tool_buffer() {
+    auto em = make_emitter(ApiFormat::OPENAI_CHAT, weather_tools());
+    em.emit_start();
+    em.emit_token("<tool_call>\n"
+                  "<function=terminal>\n"
+                  "<parameter=command>ls -la /tmp");
+
+    TEST_ASSERT(!em.stop_hit());
+    TEST_ASSERT(em.tool_calls().empty());
+}
+
 static void test_emitter_anthropic_tool_use_blocks() {
     // The Anthropic streaming tool-use branch used to be a no-op; the model
     // would emit a <tool_call>...</tool_call> block, the parser would detect
@@ -4580,6 +4612,8 @@ int main() {
     RUN_TEST(test_emitter_reasoning_strips_leading_think_tag);
     RUN_TEST(test_emitter_content_only_no_thinking);
     RUN_TEST(test_emitter_tool_buffer_detection);
+    RUN_TEST(test_emitter_stops_on_complete_tool_buffer);
+    RUN_TEST(test_emitter_waits_for_incomplete_tool_buffer);
     RUN_TEST(test_emitter_anthropic_tool_use_blocks);
     RUN_TEST(test_emitter_single_tool_bare_json_args);
     RUN_TEST(test_emitter_bare_function_tool_buffer_detection);
