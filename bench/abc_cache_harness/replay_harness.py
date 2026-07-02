@@ -1826,6 +1826,14 @@ def aggregate_turns(all_records: list[dict], n_turns: int) -> list[dict]:
             tool_call_valid_rate = sum(
                 1 for r in recs if r.get("tool_call_valid")
             ) / len(recs)
+        requested_out_vals = [
+            r.get("requested_out_tokens")
+            for r in recs
+            if r.get("requested_out_tokens") is not None
+        ]
+        pin_decode_turn = bool(requested_out_vals)
+        pin_decode_tool_turn = bool(pin_decode_turn and expected_count and expected_count > 0)
+        pin_decode_non_tool_turn = bool(pin_decode_turn and not pin_decode_tool_turn)
 
         agg.append({
             "turn": t,
@@ -1860,6 +1868,9 @@ def aggregate_turns(all_records: list[dict], n_turns: int) -> list[dict]:
             "tool_call_expected_valid_count": expected_valid_count,
             "tool_call_valid_rate": tool_call_valid_rate,
             "unexpected_tool_call_rate": unexpected_tool_call_rate,
+            "pin_decode_turn": pin_decode_turn,
+            "pin_decode_tool_turn": pin_decode_tool_turn,
+            "pin_decode_non_tool_turn": pin_decode_non_tool_turn,
             "charbench_valid_rate": charbench_valid_rate,
         })
     return agg
@@ -1917,6 +1928,29 @@ def aggregate_arm(per_turn: list[dict]) -> dict:
         if out_tokens_match_requested is not None
         else None
     )
+    pin_turns = [t for t in valid if t.get("pin_decode_turn")]
+    pin_tool_turns = [t for t in pin_turns if t.get("pin_decode_tool_turn")]
+    pin_non_tool_turns = [t for t in pin_turns if t.get("pin_decode_non_tool_turn")]
+    pin_non_tool_mismatch_count = sum(
+        int(t.get("out_token_mismatch_count") or 0)
+        for t in pin_non_tool_turns
+    ) if pin_non_tool_turns else None
+    pin_non_tool_ok = (
+        ok and pin_non_tool_mismatch_count == 0
+        if pin_non_tool_mismatch_count is not None
+        else None
+    )
+    pin_tool_stop_conflict = bool(pin_tool_turns)
+    pin_decode_claim_scope = None
+    if pin_turns:
+        if pin_tool_stop_conflict:
+            pin_decode_claim_scope = (
+                "speed_only_tool_stop_conflict"
+                if not pin_non_tool_turns
+                else "mixed_tool_and_non_tool"
+            )
+        else:
+            pin_decode_claim_scope = "exact_output_workload"
 
     return {
         "ok": ok,
@@ -1936,6 +1970,13 @@ def aggregate_arm(per_turn: list[dict]) -> dict:
         "out_token_mismatch_count": out_token_mismatch_count,
         "out_tokens_match_requested": out_tokens_match_requested,
         "pin_decode_ok": pin_decode_ok,
+        "pin_decode_turns": len(pin_turns) if pin_turns else None,
+        "pin_decode_tool_turns": len(pin_tool_turns) if pin_turns else None,
+        "pin_decode_non_tool_turns": len(pin_non_tool_turns) if pin_turns else None,
+        "pin_decode_non_tool_mismatch_count": pin_non_tool_mismatch_count,
+        "pin_decode_non_tool_ok": pin_non_tool_ok,
+        "pin_decode_tool_stop_conflict": pin_tool_stop_conflict if pin_turns else None,
+        "pin_decode_claim_scope": pin_decode_claim_scope,
         "mean_cache_hit_ratio": safe_mean("cache_hit_ratio"),
         "mean_prefill_tps": safe_mean("prefill_tps"),
         "mean_decode_tps": safe_mean("decode_tps"),
@@ -1993,6 +2034,12 @@ def write_report(
     lines.append(f"- censored: {arm_agg.get('censored')}")
     lines.append(f"- valid_turns: {arm_agg.get('valid_turns')}/{arm_agg.get('expected_turns')}")
     lines.append(f"- error_count: {arm_agg.get('error_count')}")
+    if arm_agg.get("pin_decode_claim_scope") is not None:
+        lines.append(f"- pin_decode_claim_scope: {arm_agg.get('pin_decode_claim_scope')}")
+        lines.append(f"- pin_decode_tool_turns: {arm_agg.get('pin_decode_tool_turns')}")
+        lines.append(f"- pin_decode_non_tool_turns: {arm_agg.get('pin_decode_non_tool_turns')}")
+        lines.append(f"- pin_decode_tool_stop_conflict: {arm_agg.get('pin_decode_tool_stop_conflict')}")
+        lines.append(f"- pin_decode_non_tool_ok: {arm_agg.get('pin_decode_non_tool_ok')}")
     if arm_agg.get("sum_tool_expected_turns") is not None:
         lines.append(
             f"- tool_expected_valid: "
@@ -2447,10 +2494,33 @@ def run_selftest() -> None:
     assert pin_agg["sum_requested_out_tokens"] == 20, f"pin requested sum bad: {pin_agg}"
     assert pin_agg["sum_out_tokens"] == 20, f"pin out sum bad: {pin_agg}"
     assert pin_agg["pin_decode_ok"] is True, f"pin ok should be true: {pin_agg}"
+    assert pin_agg["pin_decode_claim_scope"] == "exact_output_workload", pin_agg
+    assert pin_agg["pin_decode_tool_stop_conflict"] is False, pin_agg
+    assert pin_agg["pin_decode_non_tool_ok"] is True, pin_agg
     mismatch_records = [dict(pin_records[0], out_tokens=19, out_tokens_match_requested=False)]
     mismatch_agg = aggregate_arm(aggregate_turns(mismatch_records, 1))
     assert mismatch_agg["out_token_mismatch_count"] == 1, f"mismatch count bad: {mismatch_agg}"
     assert mismatch_agg["pin_decode_ok"] is False, f"pin ok should fail: {mismatch_agg}"
+    tool_pin_records = [
+        dict(pin_records[0], tool_call_expected=True, tool_call_valid=True),
+    ]
+    tool_pin_agg = aggregate_arm(aggregate_turns(tool_pin_records, 1))
+    assert tool_pin_agg["pin_decode_ok"] is True, f"tool pin exactness bad: {tool_pin_agg}"
+    assert tool_pin_agg["pin_decode_tool_stop_conflict"] is True, tool_pin_agg
+    assert tool_pin_agg["pin_decode_tool_turns"] == 1, tool_pin_agg
+    assert tool_pin_agg["pin_decode_non_tool_turns"] == 0, tool_pin_agg
+    assert tool_pin_agg["pin_decode_non_tool_ok"] is None, tool_pin_agg
+    assert tool_pin_agg["pin_decode_claim_scope"] == "speed_only_tool_stop_conflict", tool_pin_agg
+    mixed_pin_records = [
+        dict(pin_records[0], turn=1, tool_call_expected=True, tool_call_valid=True,
+             out_tokens=12, out_tokens_match_requested=False),
+        dict(pin_records[0], turn=2, tool_call_expected=False, tool_call_valid=False),
+    ]
+    mixed_pin_agg = aggregate_arm(aggregate_turns(mixed_pin_records, 2))
+    assert mixed_pin_agg["pin_decode_ok"] is False, mixed_pin_agg
+    assert mixed_pin_agg["pin_decode_tool_stop_conflict"] is True, mixed_pin_agg
+    assert mixed_pin_agg["pin_decode_non_tool_ok"] is True, mixed_pin_agg
+    assert mixed_pin_agg["pin_decode_claim_scope"] == "mixed_tool_and_non_tool", mixed_pin_agg
     print("  (b7a) pinned decode accounting: PASS")
 
     # (b8) dflash generation errors must censor a row even when HTTP succeeds.
@@ -2819,6 +2889,12 @@ def main() -> None:
     print(f"sum_out_tokens            : {arm_agg.get('sum_out_tokens')}")
     print(f"out_token_mismatch_count  : {arm_agg.get('out_token_mismatch_count')}")
     print(f"pin_decode_ok             : {arm_agg.get('pin_decode_ok')}")
+    if arm_agg.get("pin_decode_claim_scope") is not None:
+        print(f"pin_decode_claim_scope    : {arm_agg.get('pin_decode_claim_scope')}")
+        print(f"pin_decode_tool_turns     : {arm_agg.get('pin_decode_tool_turns')}")
+        print(f"pin_decode_non_tool_turns : {arm_agg.get('pin_decode_non_tool_turns')}")
+        print(f"pin_decode_tool_stop_conflict: {arm_agg.get('pin_decode_tool_stop_conflict')}")
+        print(f"pin_decode_non_tool_ok    : {arm_agg.get('pin_decode_non_tool_ok')}")
     print(f"mean_cache_hit_ratio      : {arm_agg.get('mean_cache_hit_ratio')}")
     print(f"mean_decode_tps           : {arm_agg.get('mean_decode_tps')}")
     print(f"weighted_prompt_prefill_tps: {arm_agg.get('weighted_prompt_prefill_tps')}")
