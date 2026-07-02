@@ -103,6 +103,56 @@ TOOLS = [
 ]
 
 
+def tool_def_name(tool_def: dict) -> str | None:
+    if not isinstance(tool_def, dict):
+        return None
+    if isinstance(tool_def.get("function"), dict):
+        name = tool_def["function"].get("name")
+        return str(name) if name else None
+    name = tool_def.get("name")
+    return str(name) if name else None
+
+
+def replay_tool(name: str) -> dict:
+    return tool(
+        name,
+        "Replay schema for a tool observed in the source Claude session.",
+        {},
+    )
+
+
+def tool_names_from_messages(messages: list[dict]) -> set[str]:
+    names: set[str] = set()
+    for msg in messages:
+        for call in msg.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            fn = call.get("function", {})
+            if isinstance(fn, dict) and fn.get("name"):
+                names.add(str(fn["name"]))
+    return names
+
+
+def with_observed_tools(rows: list[dict]) -> list[dict]:
+    """Ensure every expected/history tool name is present in each row schema."""
+    observed: set[str] = set()
+    for row in rows:
+        expected = row.get("expected_tool_name")
+        if expected:
+            observed.add(str(expected))
+        observed.update(tool_names_from_messages(row.get("messages", [])))
+
+    known = {name for name in (tool_def_name(t) for t in TOOLS) if name}
+    extra = [replay_tool(name) for name in sorted(observed - known)]
+    if not extra:
+        return rows
+
+    expanded = [*TOOLS, *extra]
+    for row in rows:
+        row["tools"] = expanded
+    return rows
+
+
 def normalize_tool_args(value: Any) -> str:
     if not isinstance(value, dict):
         value = {"value": value}
@@ -408,7 +458,7 @@ def build_trace_from_raw_session(
         else:
             history.append(msg)
 
-    return out_rows
+    return with_observed_tools(out_rows)
 
 
 def build_trace_from_flattened(
@@ -443,7 +493,7 @@ def build_trace_from_flattened(
             converted.pop("tool_choice", None)
 
         out_rows.append(converted)
-    return out_rows
+    return with_observed_tools(out_rows)
 
 
 def main() -> int:

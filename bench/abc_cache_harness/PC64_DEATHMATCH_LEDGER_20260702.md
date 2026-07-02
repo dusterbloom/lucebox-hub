@@ -37,6 +37,17 @@ reviewer asks for them.
   - Used to avoid clipping long natural tool calls.
 - Guard-retirement trace: `bench/abc_cache_harness/traces/real_session_long_38.jsonl`
 - Local quality probe trace: `bench/abc_cache_harness/traces/charbench_code_tool.jsonl`
+- Mixed real-session tool trace: local `/tmp/luce_mixed_candidate_0_fixed_38.jsonl`
+  - sha256: `dda519be228be47c2076725c215c467e9d38230ba2538876b366934e17664244`
+  - Source transcript: `b324020e-f90c-45f3-8055-55dd5fe723c3.jsonl`
+    from `replay_inventory.md`, source sha256
+    `481ad5bff31a0e95d11945b08e3fd7e7e8a5c1c3d9723664b39d465f5608b1ce`.
+  - Generated with `structure_claude_replay_trace.py --source-kind raw-session
+    --turns 38 --max-tokens 256`.
+  - 38 turns: 29 expected tool-call rows, 9 non-tool rows, exact `tool_choice`
+    on expected rows only. The structurer now adds permissive schemas for any
+    observed source-session tool names before writing `tool_choice`, so a trace
+    cannot name a missing tool by construction.
 
 ## Parser Fix
 
@@ -66,6 +77,10 @@ Verification:
 | Natural, cap2048 | `AR_LLAMA_35B_SLOTCACHE` | 440.5 | 58.718 | 353.721 | 27766 | false | 20/38 | 2076.3 | 78.5 | 68.8 | `results/AR_LLAMA_35B_SLOTCACHE_20260702_194357_full_raw.json` |
 | Pinned 256 | `AR_35B_KVF_FORCE` | 157.9 | 59.6 | 76.6 | 9728 | true | 26/38 | 1936.7 | 127.0 | 125.5 | `results/AR_35B_KVF_FORCE_20260702_195412_full_raw.json` |
 | Pinned 256 | `AR_LLAMA_35B_SLOTCACHE` | 195.4 | 58.363 | 121.073 | 9728 | true | 20/38 | 2088.9 | 80.3 | 69.0 | `results/AR_LLAMA_35B_SLOTCACHE_20260702_195722_full_raw.json` |
+| Mixed real session, natural | `AR_35B_KVF_FORCE` | 146.0 | 64.5 | 61.7 | 7840 | false | 15/29, unexpected 2/9 | 1934.7 | 127.1 | 124.1 | `results/AR_35B_KVF_FORCE_20260702_205039_full_raw.json` |
+| Mixed real session, natural | `AR_LLAMA_35B_SLOTCACHE` | 168.2 | 64.436 | 89.851 | 7797 | false | 19/29, unexpected 6/9 | 2068.4 | 86.8 | 68.6 | `results/AR_LLAMA_35B_SLOTCACHE_20260702_205341_full_raw.json` |
+| Mixed real session, pinned 256 | `AR_35B_KVF_FORCE` | 161.1 | 62.5 | 75.5 | 9728 | true | 15/29, unexpected 2/9 | 1996.6 | 128.8 | 126.8 | `results/AR_35B_KVF_FORCE_20260702_205707_full_raw.json` |
+| Mixed real session, pinned 256 | `AR_LLAMA_35B_SLOTCACHE` | 193.7 | 64.194 | 112.594 | 9728 | true | 19/29, unexpected 6/9 | 2076.2 | 86.4 | 66.8 | `results/AR_LLAMA_35B_SLOTCACHE_20260702_210021_full_raw.json` |
 | Guard-off, non-forced cap2048 | `AR_35B_KVF` | 388.7 | 68.3 | 296.2 | 24613 | false | 37/38 | 1671.5 | 83.1 | 71.3 | `results/AR_35B_KVF_20260702_201047_full_raw.json` |
 | Local quality smoke | `AR_35B_KVF_FORCE` | 1.4 | 0.6 | 1.0 | 136 | false | 1/1 tool prompt | 710.0 | 136.0 | n/a | `results/AR_35B_KVF_FORCE_20260702_200342_quality_raw.json` |
 
@@ -89,6 +104,13 @@ Validation smoke:
 
 Result: `pin_decode_ok=true`, `tool_expected_valid=3/3`, and
 `pin_decode_claim_scope=speed_only_tool_stop_conflict`.
+
+On the mixed real-session trace, pinned rows are now classified as
+`mixed_tool_and_non_tool` instead of `speed_only_tool_stop_conflict`.
+Both engines emitted exactly 9728/9728 tokens and `pin_decode_non_tool_ok=true`
+on the pinned pair, but expected tool rows are still a tool-stop conflict under
+forced length. Treat these rows as equal-output speed evidence, not decisive
+tool correctness.
 
 ## In-Tree OpenAI Client Bench Smoke
 
@@ -143,6 +165,10 @@ not replace the missing charbench `code_complete` / `tool_call` threshold gate.
 - P2 equal-workload speed: green as a speed row. On pinned 256, both arms emit
   exactly 9728 tokens. dflash wall is 157.9s vs llama 195.4s, and weighted
   decode is 127.0 vs 80.3 tok/s. This is a 19.2% wall win and 1.58x decode win.
+  The mixed real-session pinned row repeats the result with non-tool turns in
+  the trace: dflash wall is 161.1s vs llama 193.7s, and weighted decode is
+  128.8 vs 86.4 tok/s. This is a 16.8% wall win and 1.49x decode win with
+  exactly 9728 output tokens on both arms.
 - Pinned tool-valid decisive claim: not green. Forcing exactly 256 output tokens
   distorts natural tool-call stopping. dflash drops to 26/38 tool-valid under
   pinning; llama remains 20/38. Harness commit `a2bd6d60` now labels these
@@ -152,6 +178,11 @@ not replace the missing charbench `code_complete` / `tool_call` threshold gate.
   equal-output workload. Natural cap2048 has dflash 38/38 tool-valid and 126.8
   tok/s decode, while llama has 20/38 and 78.5 tok/s. Wall also favors dflash
   here, but output totals differ: 12086 vs 27766.
+- Mixed natural tool behavior: not green as a decisive correctness row.
+  On a harder real-session mixed trace, dflash is 15/29 expected tools with
+  2/9 unexpected tool calls; llama is 19/29 expected tools with 6/9 unexpected
+  tool calls. Luce still wins wall and decode on this trace, but tool policy is
+  an open quality issue rather than a solved gate.
 - Guard retirement: `DFLASH_QWEN35_KVPAD_MAX_ROW` / row-88000 guard is absent on
   this branch. A non-forced 38-turn run with `DFLASH_QWEN35_KVPAD_MAX_ROW=0`
   on the deep cap2048 tool trace completed 38/38 with zero crashes and every
@@ -172,22 +203,27 @@ Valid claims now:
   38/38 tool-valid and decodes 1.62x faster than llama in this run.
 - On the deep-context pinned 256 equal-workload trace, dflash forced KVFlash has
   lower wall time than llama and 1.58x weighted decode throughput.
+- On the mixed real-session pinned 256 trace, dflash forced KVFlash has lower
+  wall time than llama and 1.49x weighted decode throughput with equal output
+  tokens. The natural mixed trace shows the same decode direction, but tool
+  behavior is not yet decisive.
 
 Not yet valid:
 
 - No decisive victory claim, because the single run that is pinned/equal-output
   is not tool-valid on dflash (26/38).
+- No decisive mixed-session tool claim, because dflash exact expected-tool rate
+  is lower than llama on the mixed trace (15/29 vs 19/29), even though llama
+  over-calls tools more often (6/9 unexpected vs dflash 2/9).
 - No default-ship quality claim, because the full charbench quality suite is not
   present in this worktree.
 
 Next required work:
 
-1. Decide how the harness should define pinned tool-call workloads. Exact fixed
-   decode length and early tool stopping are in tension on all-tool traces. The
-   current pinned speed row is scientifically useful, but it is not a
-   tool-valid claim. A future decisive trace needs mixed turns, or a
-   pre-declared two-axis gate: natural tool validity plus separate pinned
-   speed.
+1. Tighten tool policy on the mixed real-session trace. The speed story is now
+   reproducible on a mixed trace, but exact tool selection still needs root
+   cause: dflash misses more expected tool names, while llama calls tools on
+   more non-tool rows.
 2. Bring in or reconstruct the full charbench quality suite and run the forced
    KVFlash arm against the 85.2% code-complete / 53.1% tool-call floor.
 3. After those two gates are clean, start the dFlash/spec-decode campaign.

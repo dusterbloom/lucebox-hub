@@ -69,6 +69,13 @@ both `>=38` rows and tool schemas.
   chat JSONL for direct compat testing. For the deathmatch, keep one canonical
   trace and apply identical per-turn `max_tokens`, temperature, seed, model
   path, KV type, and cache checks to both engines.
+- `structure_claude_replay_trace.py` is the preferred converter when a raw
+  Claude Code session should retain real assistant/tool history. It rewrites
+  historical tool calls into structured `assistant.tool_calls` / `tool`
+  messages, labels whether the next recorded assistant turn used a tool, and
+  adds permissive schemas for observed session-specific tools before emitting
+  `tool_choice`. This keeps generated traces valid even when the source session
+  used MCP or other tools that are not in the small default schema list.
 - Tool-call validity must come from structured `tool_use` / `tool_calls`, not
   text parsing. The six-turn tool traces are smoke tests only; decisive claims
   need a 38+ turn trace with real tool schemas and nonzero valid tool calls on
@@ -99,3 +106,27 @@ Generated trace as of 2026-07-02:
 - max_tokens: 256 on every row
 - temperature: 0 on every row
 - SHA-256: `94e464d9846d51b69dd3dbbb00df44c9051c96b02baff23e6a003f4a4bf9e0db`
+
+## Rebuild the current mixed real-session trace
+
+The mixed trace used for the later two-axis natural/pinned runs is also
+generated under `/tmp` from the same private source transcript:
+
+```bash
+python3 bench/abc_cache_harness/structure_claude_replay_trace.py \
+  --in /home/peppi/.claude/projects/-home-peppi-Dev-lucebox-hub/b324020e-f90c-45f3-8055-55dd5fe723c3.jsonl \
+  --out /tmp/luce_mixed_candidate_0_fixed_38.jsonl \
+  --turns 38 \
+  --max-tokens 256 \
+  --source-kind raw-session
+```
+
+Generated trace as of 2026-07-02:
+
+- rows: 38
+- expected tool-call rows: 29
+- non-tool rows: 9
+- exact `tool_choice` rows: 29
+- max_tokens: 256 on every row
+- temperature: 0 on every row
+- SHA-256: `dda519be228be47c2076725c215c467e9d38230ba2538876b366934e17664244`
