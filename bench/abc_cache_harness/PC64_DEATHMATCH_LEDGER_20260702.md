@@ -64,7 +64,7 @@ Verification:
 | Pinned 256 | `AR_35B_KVF_FORCE` | 157.9 | 59.6 | 76.6 | 9728 | true | 26/38 | 1936.7 | 127.0 | 125.5 | `results/AR_35B_KVF_FORCE_20260702_195412_full_raw.json` |
 | Pinned 256 | `AR_LLAMA_35B_SLOTCACHE` | 195.4 | 58.363 | 121.073 | 9728 | true | 20/38 | 2088.9 | 80.3 | 69.0 | `results/AR_LLAMA_35B_SLOTCACHE_20260702_195722_full_raw.json` |
 | Guard-off, non-forced | `AR_35B_KVF` | 100.4 | 48.9 | 37.3 | 3518 | false | n/a | 1826.5 | 94.3 | 83.7 | `results/AR_35B_KVF_20260702_105844_full_raw.json` |
-| Local quality smoke | `AR_35B_KVF_FORCE` | 1.1 | 0.5 | 1.0 | 136 | false | 1/1 tool prompt | 852.0 | 136.0 | n/a | `results/AR_35B_KVF_FORCE_20260702_105807_quality_raw.json` |
+| Local quality smoke | `AR_35B_KVF_FORCE` | 1.4 | 0.6 | 1.0 | 136 | false | 1/1 tool prompt | 710.0 | 136.0 | n/a | `results/AR_35B_KVF_FORCE_20260702_200342_quality_raw.json` |
 
 ## Gate Status
 
