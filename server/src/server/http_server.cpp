@@ -2721,7 +2721,10 @@ void HttpServer::worker_loop() {
         int snap_slot = -1;
         int snap_cut = 0;
         if (!full_snap_prepared) {
-            auto prepared = prefix_cache_.prepare_inline_snap(effective_prompt);
+            const int preferred_inline_slot =
+                inline_restore_hit ? cache_slot : -1;
+            auto prepared = prefix_cache_.prepare_inline_snap(
+                effective_prompt, preferred_inline_slot);
             snap_slot = prepared.first;
             snap_cut = prepared.second;
         }
@@ -2964,7 +2967,8 @@ void HttpServer::worker_loop() {
                     if (!refreshed_snapshot && !reused_restore_slot) {
                         prefix_cache_.abort_inline_snap(snap_slot);
                         release_inline_restore_prepare();
-                    } else if (reused_restore_slot && saved_pos < snap_cut) {
+                    } else if (reused_restore_slot && !refreshed_snapshot &&
+                               saved_pos < snap_cut) {
                         prefix_cache_.alias_inline_snap(snap_slot, snap_cut, saved_pos,
                                                         effective_prompt);
                     } else {

@@ -1436,6 +1436,44 @@ static void test_prefix_cache_commits_shorter_snapshot_prefix() {
     TEST_ASSERT(miss.snapshot_len == 0);
 }
 
+static void test_prefix_cache_reuses_restore_slot_for_linear_growth() {
+    auto markers = synthetic_chat_markers();
+    PrefixCache cache(4, markers);
+    std::vector<int32_t> base = {1, 100, 2, 3, 200};
+
+    auto base_prep = cache.prepare_inline_snap(base);
+    TEST_ASSERT(base_prep.first == 0);
+    TEST_ASSERT(base_prep.second == 4);
+    cache.confirm_inline_snap(base_prep.first, base_prep.second,
+                              base_prep.second, base);
+
+    std::vector<int32_t> longer = {1, 100, 2, 3, 200, 2, 3, 300};
+    auto grow_prep = cache.prepare_inline_snap(longer, base_prep.first);
+    TEST_ASSERT(grow_prep.first == base_prep.first);
+    TEST_ASSERT(grow_prep.second == 7);
+
+    // KVFlash can save at a chunk boundary before the requested chat boundary.
+    // Because the physical slot is overwritten, the old shorter key must be
+    // removed; otherwise a sibling branch would restore stale slot contents.
+    cache.confirm_inline_snap(grow_prep.first, grow_prep.second, 6, longer);
+
+    std::vector<int32_t> appended = {
+        1, 100, 2, 3, 200, 2, 3, 300, 2, 3, 400
+    };
+    auto hit = cache.lookup(appended);
+    TEST_ASSERT(hit.slot == base_prep.first);
+    TEST_ASSERT(hit.key_len == 6);
+    TEST_ASSERT(hit.snapshot_len == 6);
+
+    std::vector<int32_t> sibling = {
+        1, 100, 2, 3, 201, 2, 3, 400
+    };
+    auto miss = cache.lookup(sibling);
+    TEST_ASSERT(miss.slot == -1);
+    TEST_ASSERT(miss.key_len == 0);
+    TEST_ASSERT(miss.snapshot_len == 0);
+}
+
 static void test_prefix_cache_rejects_oversized_confirm() {
     auto markers = synthetic_chat_markers();
     PrefixCache cache(2, markers);
@@ -4578,6 +4616,7 @@ int main() {
     RUN_TEST(test_prefix_cache_lookup_grows_chain_from_exact_prefix);
     RUN_TEST(test_prefix_cache_rejects_shorter_snapshot_alias);
     RUN_TEST(test_prefix_cache_commits_shorter_snapshot_prefix);
+    RUN_TEST(test_prefix_cache_reuses_restore_slot_for_linear_growth);
     RUN_TEST(test_prefix_cache_rejects_oversized_confirm);
     RUN_TEST(test_evict_empty_is_zero);
     RUN_TEST(test_evict_single_is_zero);

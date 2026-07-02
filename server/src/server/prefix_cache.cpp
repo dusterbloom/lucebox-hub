@@ -376,7 +376,8 @@ PrefixCache::InlineLookup PrefixCache::lookup(const std::vector<int32_t> & promp
 }
 
 std::pair<int, int> PrefixCache::prepare_inline_snap(
-        const std::vector<int32_t> & prompt_ids) {
+        const std::vector<int32_t> & prompt_ids,
+        int preferred_slot) {
     if (disabled_) return {-1, 0};
 
     auto candidates = find_all_boundaries(prompt_ids, markers_);
@@ -390,7 +391,16 @@ std::pair<int, int> PrefixCache::prepare_inline_snap(
     if (find_entry(key) >= 0) return {-1, 0};  // already cached
 
     int slot = -1;
-    if (count_inline_slots() >= cap_) {
+    if (preferred_slot >= 0 && preferred_slot < cap_ &&
+        inline_slot_in_use(preferred_slot)) {
+        // Linear continuation: refresh the restored slot in-place so a long
+        // single session keeps one live pooled blob instead of retaining every
+        // ancestor snapshot.  Do not mark a pending eviction here; if snapshot
+        // save fails, the old entry remains valid.
+        slot = preferred_slot;
+        pending_evict_slot_ = -1;
+        has_pending_evict_ = false;
+    } else if (count_inline_slots() >= cap_) {
         // At physical-slot capacity: reserve an entire slot group without
         // evicting yet. The group selector protects ancestors that are still
         // shared by entries on other physical slots.

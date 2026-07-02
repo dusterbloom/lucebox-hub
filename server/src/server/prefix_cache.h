@@ -112,7 +112,8 @@ public:
     InlineLookup lookup(const std::vector<int32_t> & prompt_ids);
 
     // Prepare an inline snapshot. Returns (slot, target_cut) or (-1, 0).
-    std::pair<int, int> prepare_inline_snap(const std::vector<int32_t> & prompt_ids);
+    std::pair<int, int> prepare_inline_snap(const std::vector<int32_t> & prompt_ids,
+                                            int preferred_slot = -1);
 
     // Confirm after daemon successfully saved the snapshot.
     void confirm_inline_snap(int slot, int target_cut, int snapshot_len,
