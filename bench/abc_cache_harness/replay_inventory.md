@@ -76,3 +76,26 @@ both `>=38` rows and tool schemas.
 - Raw Claude transcripts should not be pushed unless explicitly reviewed for
   privacy. This manifest keeps enough provenance to find and convert them
   later.
+
+## Rebuild the current 38-turn tool-schema trace
+
+The current Gate-1 38-turn trace is intentionally generated under `/tmp`
+rather than committed, because it derives from a private local transcript. The
+exporter is committed so the trace can be regenerated with provenance:
+
+```bash
+python3 bench/abc_cache_harness/export_claude_session_trace.py \
+  --session /home/peppi/.claude/projects/-home-peppi-Dev-lucebox-hub/b324020e-f90c-45f3-8055-55dd5fe723c3.jsonl \
+  --out /tmp/real_session_tool_schema_38.jsonl \
+  --turns 38 \
+  --max-tokens 256 \
+  --temperature 0
+```
+
+Generated trace as of 2026-07-02:
+
+- rows: 38
+- tool-schema rows: 38
+- max_tokens: 256 on every row
+- temperature: 0 on every row
+- SHA-256: `94e464d9846d51b69dd3dbbb00df44c9051c96b02baff23e6a003f4a4bf9e0db`
