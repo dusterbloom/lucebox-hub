@@ -1066,7 +1066,11 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
         // are re-sealed during the upcoming prefill.
         if (kvflash_qk_policy_) {
             kvflash_qk_pool_.rebuild_pool_from_ledger(kvflash_pager_);
-            kvflash_qk_pooled_upto_ = 0;
+            // Restored chunks are already represented by the serialized score
+            // ledger.  Only newly sealed suffix chunks need physical key
+            // pooling; starting at zero would walk historical host-backed
+            // chunks and try to pool rows that are intentionally non-resident.
+            kvflash_qk_pooled_upto_ = kvflash_pager_.n_chunks();
         }
     }
 
@@ -1714,7 +1718,8 @@ void Qwen35Backend::kvflash_qk_pool_to(int committed) {
     const int sealed = committed / ct;
     for (int c = kvflash_qk_pooled_upto_; c < sealed; c++) {
         const int blk = kvflash_pager_.block_of(c);
-        if (blk < 0 || !kvflash_qk_pool_.pool_chunk(cache_.attn_k, blk, ct, c)) {
+        if (blk < 0) continue;
+        if (!kvflash_qk_pool_.pool_chunk(cache_.attn_k, blk, ct, c)) {
             std::fprintf(stderr, "[kvflash-qk] pool_chunk failed for chunk %d "
                                  "(block %d); chunk scores as missing\n", c, blk);
         }
@@ -1800,6 +1805,9 @@ void Qwen35Backend::kvflash_maybe_reselect(int generated) {
     }
     if (!kvflash_scorer_->score_chunks(kvflash_history_, kvflash_pager_.chunk_tokens(), kvflash_scores_)) {
         return;  // scorer failure -> keep LRU behavior this round
+    }
+    for (int c = 0; c < (int)kvflash_scores_.size() && c < kvflash_pager_.n_chunks(); c++) {
+        kvflash_pager_.set_chunk_score(c, kvflash_scores_[(size_t)c]);
     }
     kvflash_pager_.score_hook = [this](int c) {
         return c < (int)kvflash_scores_.size() ? kvflash_scores_[c] : 1e30f;
