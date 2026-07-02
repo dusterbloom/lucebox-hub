@@ -7,7 +7,9 @@ reviewer asks for them.
 ## Provenance
 
 - Branch: `bench/upstream-pr469-473-plus-468`
-- Commit: `e0e8573ac59a43fdb108005ef2bf9082dec3c629`
+- Binary source commit: `e0e8573ac59a43fdb108005ef2bf9082dec3c629`
+  - Later commits in this branch update only this ledger; they do not affect the
+    recorded `dflash_server` binary.
 - dflash binary: `server/build-pr468-int-cuda126/dflash_server`
 - dflash sha256: `60b410d695af802ecb391d387220562a37fd3c2005a69a087c0b092bc80e3887`
 - llama binary: `/home/peppi/llama.cpp/build-cuda/bin/llama-server`
@@ -63,7 +65,7 @@ Verification:
 | Natural, cap2048 | `AR_LLAMA_35B_SLOTCACHE` | 440.5 | 58.718 | 353.721 | 27766 | false | 20/38 | 2076.3 | 78.5 | 68.8 | `results/AR_LLAMA_35B_SLOTCACHE_20260702_194357_full_raw.json` |
 | Pinned 256 | `AR_35B_KVF_FORCE` | 157.9 | 59.6 | 76.6 | 9728 | true | 26/38 | 1936.7 | 127.0 | 125.5 | `results/AR_35B_KVF_FORCE_20260702_195412_full_raw.json` |
 | Pinned 256 | `AR_LLAMA_35B_SLOTCACHE` | 195.4 | 58.363 | 121.073 | 9728 | true | 20/38 | 2088.9 | 80.3 | 69.0 | `results/AR_LLAMA_35B_SLOTCACHE_20260702_195722_full_raw.json` |
-| Guard-off, non-forced | `AR_35B_KVF` | 100.4 | 48.9 | 37.3 | 3518 | false | n/a | 1826.5 | 94.3 | 83.7 | `results/AR_35B_KVF_20260702_105844_full_raw.json` |
+| Guard-off, non-forced cap2048 | `AR_35B_KVF` | 388.7 | 68.3 | 296.2 | 24613 | false | 37/38 | 1671.5 | 83.1 | 71.3 | `results/AR_35B_KVF_20260702_201047_full_raw.json` |
 | Local quality smoke | `AR_35B_KVF_FORCE` | 1.4 | 0.6 | 1.0 | 136 | false | 1/1 tool prompt | 710.0 | 136.0 | n/a | `results/AR_35B_KVF_FORCE_20260702_200342_quality_raw.json` |
 
 ## Gate Status
@@ -85,7 +87,10 @@ Verification:
   here, but output totals differ: 12086 vs 27766.
 - Guard retirement: `DFLASH_QWEN35_KVPAD_MAX_ROW` / row-88000 guard is absent on
   this branch. A non-forced 38-turn run with `DFLASH_QWEN35_KVPAD_MAX_ROW=0`
-  completed 38/38, no crash, turn 38 at 89K context decoded at 82.3 tok/s.
+  on the deep cap2048 tool trace completed 38/38 with zero crashes and every
+  turn recorded. The run crossed the old crash band: turn 23 reached 88,186
+  prompt tokens at 79.7 tok/s; turn 38 reached 113,944 prompt tokens at 71.0
+  tok/s. There was no hidden half-speed fallback after 88K.
 - Quality: only the local two-row `charbench_code_tool` smoke exists in this
   worktree, and it passes `charbench_valid_rate=1.0`. The full external
   charbench gate with the 85.2%/53.1% thresholds is still missing here.
