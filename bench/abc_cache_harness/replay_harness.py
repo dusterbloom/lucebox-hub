@@ -1284,27 +1284,41 @@ def parse_log_for_request(
 # Check tool_use in response
 # ---------------------------------------------------------------------------
 
-def check_tool_call(body: dict) -> tuple[bool, str]:
-    """Return (valid, detail) — did the response contain a well-formed tool_use?"""
-    try:
-        content = body.get("content", [])
-        if isinstance(content, str):
-            # Shouldn't happen with Anthropic API but guard anyway
-            return False, "content is string not list"
+def extract_tool_call_names(body: dict) -> list[str]:
+    """Return well-formed tool-call names from Anthropic or OpenAI responses."""
+    names: list[str] = []
+    content = body.get("content", [])
+    if isinstance(content, list):
         for block in content:
-            if isinstance(block, dict) and block.get("type") == "tool_use":
-                name = block.get("name", "")
-                inp  = block.get("input", {})
-                if name and isinstance(inp, dict):
-                    return True, f"tool={name}"
-                return False, f"malformed tool_use block: {block}"
-        # Also check OpenAI-compat format (tool_calls)
-        choices = body.get("choices", [])
-        if choices:
-            msg = choices[0].get("message", {})
-            tcs = msg.get("tool_calls", [])
-            if tcs:
-                return True, f"tool={tcs[0].get('function',{}).get('name','?')}"
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            name = block.get("name", "")
+            inp = block.get("input", {})
+            if name and isinstance(inp, dict):
+                names.append(name)
+
+    choices = body.get("choices", [])
+    if choices:
+        msg = choices[0].get("message", {})
+        for tc in msg.get("tool_calls", []) or []:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function", {})
+            if isinstance(fn, dict) and fn.get("name"):
+                names.append(fn["name"])
+    return names
+
+
+def check_tool_call(body: dict, expected_name: Optional[str] = None) -> tuple[bool, str]:
+    """Return (valid, detail) for a structured tool call, optionally exact-name."""
+    try:
+        names = extract_tool_call_names(body)
+        if expected_name:
+            if expected_name in names:
+                return True, f"tool={expected_name}"
+            return False, f"expected={expected_name} got={names or 'none'}"
+        if names:
+            return True, f"tool={names[0]}"
     except Exception as e:
         return False, f"exception: {e}"
     return False, "no tool_use block"
@@ -1668,9 +1682,11 @@ def run_trace_repeat(
             accept_m, llama_mtp_off = parse_llama_cpp_accept(log_text, llama_mtp_off, extra_args)
             metrics.update(accept_m)
 
-        # Check tool_call validity
-        tool_valid, tool_detail = check_tool_call(resp_body)
         tool_expected = request_expects_tool_call(req_body)
+        expected_tool_name = req_body.get("expected_tool_name")
+        # Check tool_call validity.  Replay rows with an expected tool name
+        # require that exact tool; "any structured call" is not enough.
+        tool_valid, tool_detail = check_tool_call(resp_body, expected_tool_name)
         charbench_valid, charbench_detail = check_charbench_quality(req_body, resp_body)
         response_text = extract_response_text(resp_body)
         request_failure = classify_request_failure(server_type, resp_body, metrics)
@@ -1683,6 +1699,8 @@ def run_trace_repeat(
             "out_tokens_match_requested": out_tokens_match_requested(metrics, requested_out_tokens),
             **metrics,
             "tool_call_expected": tool_expected,
+            "expected_tool_name": expected_tool_name,
+            "tool_call_names": extract_tool_call_names(resp_body),
             "tool_call_valid": tool_valid,
             "tool_detail": tool_detail,
             "charbench_valid": charbench_valid,
@@ -2198,9 +2216,11 @@ def run_trace_restart_per_turn(
                     port, "save", llama_slot_file, slot_id=llama_slot_id
                 )
 
-            # Check tool_call validity
-            tool_valid, tool_detail = check_tool_call(resp_body)
             tool_expected = request_expects_tool_call(req_body)
+            expected_tool_name = req_body.get("expected_tool_name")
+            # Check tool_call validity.  Replay rows with an expected tool name
+            # require that exact tool; "any structured call" is not enough.
+            tool_valid, tool_detail = check_tool_call(resp_body, expected_tool_name)
             charbench_valid, charbench_detail = check_charbench_quality(req_body, resp_body)
             response_text = extract_response_text(resp_body)
             request_failure = classify_request_failure(server_type, resp_body, metrics)
@@ -2216,6 +2236,8 @@ def run_trace_restart_per_turn(
                 "out_tokens_match_requested": out_tokens_match_requested(metrics, requested_out_tokens),
                 **metrics,
                 "tool_call_expected": tool_expected,
+                "expected_tool_name": expected_tool_name,
+                "tool_call_names": extract_tool_call_names(resp_body),
                 "tool_call_valid": tool_valid,
                 "tool_detail": tool_detail,
                 "charbench_valid": charbench_valid,
@@ -2318,6 +2340,14 @@ def run_selftest() -> None:
     assert "accept_rate" not in no_log_m, f"accept_rate should be absent when log line not found"
     assert no_log_off == 0, f"offset should not advance when no log line"
     print(f"  (b2) parse_llama_cpp_accept: PASS  {am}")
+
+    # (b2a) strict expected tool matching — a wrong structured tool is still invalid.
+    tool_body = {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": "pwd"}}]}
+    ok, detail = check_tool_call(tool_body, "Bash")
+    assert ok and detail == "tool=Bash", (ok, detail)
+    ok, detail = check_tool_call(tool_body, "Read")
+    assert not ok and "expected=Read" in detail and "Bash" in detail, (ok, detail)
+    print("  (b2a) strict expected tool matching: PASS")
 
     # (b3) LLAMA_BIN points to build-cuda path
     assert "build-cuda" in str(LLAMA_BIN), f"LLAMA_BIN must point to build-cuda, got {LLAMA_BIN}"

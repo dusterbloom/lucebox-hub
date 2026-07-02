@@ -76,6 +76,14 @@ TOOLS = [
         "subagent_type": {"type": "string"},
         "run_in_background": {"type": "boolean"},
     }, ["description", "prompt"]),
+    tool("Workflow", "Run a structured local workflow script.", {
+        "script": {"type": "string"},
+    }, ["script"]),
+    tool("TaskOutput", "Wait for or fetch output from a background task.", {
+        "task_id": {"type": "string"},
+        "block": {"type": "boolean"},
+        "timeout": {"type": "integer"},
+    }, ["task_id"]),
     tool("TaskCreate", "Create a tracked task.", {
         "subject": {"type": "string"},
         "description": {"type": "string"},
