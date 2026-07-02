@@ -112,6 +112,10 @@ struct GenerateRequest {
     // When non-null, the spec decode loop uses these as draft overrides,
     // bypassing draft model computation for covered positions.
     const std::vector<int32_t> * hint_tokens = nullptr;
+    // Same constraint, but anchored at the start of AR output. Spec hints start
+    // after the model has emitted <tool_call>; AR has no draft anchor, so the
+    // forced prefix includes <tool_call> itself.
+    const std::vector<int32_t> * ar_hint_tokens = nullptr;
     // Optional env-gated dflash stall recovery: when spec decode is about to
     // emit early EOS after an action preamble, inject a bare tool-call XML
     // prefix and continue in AR with KV state intact.

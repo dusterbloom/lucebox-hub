@@ -998,12 +998,14 @@ GenerateResult Qwen35Backend::generate_impl(const GenerateRequest & req,
             decode_ok = do_ar_decode(committed, req.n_gen, result.tokens, out_io,
                                      req.budget_hook,
                                      &result.budget_forced_close,
-                                     &result.degenerate_decode_close);
+                                     &result.degenerate_decode_close,
+                                     req.ar_hint_tokens);
             out_io.emit(-1);
         } else {
             decode_ok = do_spec_decode(committed, req.n_gen, result.tokens, out_io,
                                        result.accept_rate, result.spec_decode_ran,
                                        req.hint_tokens,
+                                       req.ar_hint_tokens,
                                        req.stall_tool_prefix_tokens,
                                        req.stall_action_suffix_tokens,
                                        req.stall_skip_tokens,
@@ -1207,12 +1209,14 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
             decode_ok = do_ar_decode(committed, req.n_gen, result.tokens, out_io,
                                      req.budget_hook,
                                      &result.budget_forced_close,
-                                     &result.degenerate_decode_close);
+                                     &result.degenerate_decode_close,
+                                     req.ar_hint_tokens);
             out_io.emit(-1);
         } else {
             decode_ok = do_spec_decode(committed, req.n_gen, result.tokens, out_io,
                                        result.accept_rate, result.spec_decode_ran,
                                        req.hint_tokens,
+                                       req.ar_hint_tokens,
                                        req.stall_tool_prefix_tokens,
                                        req.stall_action_suffix_tokens,
                                        req.stall_skip_tokens,
@@ -1826,7 +1830,8 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
                                   const DaemonIO & io,
                                   const BudgetHook & budget_hook,
                                   bool * forced_close_out,
-                                  bool * degenerate_close_out) {
+                                  bool * degenerate_close_out,
+                                  const std::vector<int32_t> * ar_hint_tokens) {
     // Budget hook state.
     //   - budget_close_started: true once we've begun injecting the close
     //     sequence. Prevents re-triggering on continued forward generation.
@@ -1926,6 +1931,12 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
     std::vector<float> embed_buf_vec(hidden);
     float * embed_buf = embed_buf_vec.data();
 
+    auto apply_ar_hint = [&](int32_t & tok) {
+        if (!ar_hint_tokens) return;
+        const size_t idx = out_tokens.size();
+        if (idx < ar_hint_tokens->size()) tok = (*ar_hint_tokens)[idx];
+    };
+
     // First token: consume the final prefill position.  Do not derive this
     // offset from committed/KV position: restore paths can prefill a delta at
     // nonzero KV offsets, and committed then no longer describes chunk size.
@@ -1950,6 +1961,7 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
         } else {
             first_tok = cache_.last_tok;
         }
+        apply_ar_hint(first_tok);
         maybe_force_close(first_tok, committed);
         out_tokens.push_back(first_tok);
         io.emit(first_tok);
@@ -2065,6 +2077,7 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
             }
         }
 
+        apply_ar_hint(next_tok);
         // MIN_TOKENS_BEFORE_EOS (env DFLASH_MIN_TOKENS, default 0=off): if the
         // model tries to stop before producing N tokens in this decode call,
         // suppress EOS and take the best NON-eos token instead. Targets the Q4
@@ -2210,6 +2223,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
                                     float & out_accept_rate,
                                     bool & out_spec_ran,
                                     const std::vector<int32_t> * hint_tokens,
+                                    const std::vector<int32_t> * ar_hint_tokens,
                                     const std::vector<int32_t> * stall_tool_prefix_tokens,
                                     const std::vector<int32_t> * stall_action_suffix_tokens,
                                     const std::vector<int32_t> * stall_skip_tokens,
@@ -2274,7 +2288,8 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         // still fires when spec-decode is unavailable.
         bool ok = do_ar_decode(committed, n_gen, out_tokens, io,
                                 budget_hook ? *budget_hook : BudgetHook{},
-                                forced_close_out, degenerate_close_out);
+                                forced_close_out, degenerate_close_out,
+                                ar_hint_tokens);
         io.emit(-1);
         return ok;
     }
@@ -2386,7 +2401,8 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             BudgetHook tail_hook = budget_hook ? *budget_hook : BudgetHook{};
             bool ok = do_ar_decode(committed, ar_n_gen, out_tokens, io,
                                     tail_hook, forced_close_out,
-                                    degenerate_close_out);
+                                    degenerate_close_out,
+                                    ar_hint_tokens);
             log_target_forward_stats();
             io.emit(-1);
             return ok;
@@ -3090,7 +3106,8 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             BudgetHook tail_hook = budget_hook ? *budget_hook : BudgetHook{};
             bool ok = do_ar_decode(committed, ar_n_gen, out_tokens, io,
                                     tail_hook, forced_close_out,
-                                    degenerate_close_out);
+                                    degenerate_close_out,
+                                    ar_hint_tokens);
             log_target_forward_stats();
             io.emit(-1);
             return ok;
@@ -3134,7 +3151,8 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             tail_hook.close_token_ids.clear();
             bool ok = do_ar_decode(committed, ar_n_gen, out_tokens, io,
                                     tail_hook, forced_close_out,
-                                    degenerate_close_out);
+                                    degenerate_close_out,
+                                    ar_hint_tokens);
             log_target_forward_stats();
             io.emit(-1);
             return ok;

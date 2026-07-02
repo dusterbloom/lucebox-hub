@@ -315,6 +315,7 @@ private:
                         float & out_accept_rate,
                         bool & out_spec_ran,
                         const std::vector<int32_t> * hint_tokens = nullptr,
+                        const std::vector<int32_t> * ar_hint_tokens = nullptr,
                         const std::vector<int32_t> * stall_tool_prefix_tokens = nullptr,
                         const std::vector<int32_t> * stall_action_suffix_tokens = nullptr,
                         const std::vector<int32_t> * stall_skip_tokens = nullptr,
@@ -340,7 +341,8 @@ private:
                       const DaemonIO & io,
                       const BudgetHook & budget_hook = {},
                       bool * forced_close_out = nullptr,
-                      bool * degenerate_close_out = nullptr);
+                      bool * degenerate_close_out = nullptr,
+                      const std::vector<int32_t> * ar_hint_tokens = nullptr);
 
     bool sync_remote_draft_features(int start_pos, int n_tokens);
 

@@ -2418,12 +2418,18 @@ void HttpServer::worker_loop() {
         // Tool call hint generation: pre-tokenize predictable structural tokens
         // to accelerate spec decode when tool_choice constrains the output.
         std::vector<int32_t> hint_tokens_storage;
+        std::vector<int32_t> ar_hint_tokens_storage;
         if (!req.tools.empty() && !req.tool_choice.is_null()) {
             ToolHintGenerator hint_gen(tokenizer_);
             auto hint = hint_gen.build_hint(req.tools, req.tool_choice);
             if (!hint.empty()) {
                 hint_tokens_storage = std::move(hint.prefix_tokens);
                 gen_req.hint_tokens = &hint_tokens_storage;
+                ar_hint_tokens_storage = tokenizer_.encode("<tool_call>");
+                ar_hint_tokens_storage.insert(ar_hint_tokens_storage.end(),
+                                             hint_tokens_storage.begin(),
+                                             hint_tokens_storage.end());
+                gen_req.ar_hint_tokens = &ar_hint_tokens_storage;
             }
         }
         std::vector<int32_t> stall_tool_prefix_tokens_storage;
