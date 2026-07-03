@@ -20,7 +20,7 @@ namespace dflash::common {
 class Qwen35MoeBackend : public Qwen35Backend {
 public:
     explicit Qwen35MoeBackend(const Qwen35Config & cfg);
-    ~Qwen35MoeBackend() override = default;
+    ~Qwen35MoeBackend() override;
 
     bool init() override;
 
@@ -30,6 +30,7 @@ public:
                                              const GenerateRequest & req,
                                              const DaemonIO & io) override;
     bool supports_dflash_spec_decode() const override { return true; }
+    bool park(const std::string & what) override;
 
     bool set_routing_collector(MoeRoutingCollector * c) override { routing_collector_ = c; return true; }
     const MoeHybridRoutingStats * get_routing_stats() const override { return routing_stats_.get(); }
@@ -65,7 +66,16 @@ private:
     MoeHybridStreamEngine stream_engine_;
     MoeRoutingCollector * routing_collector_ = nullptr;
 
+    // Persistent MoE hybrid-spec projection graphs. These avoid rebuilding the
+    // same small LM-head/argmax graphs on every draft, verify, and replay step.
+    StepGraph moe_draft_proj_sg_;
+    int       moe_draft_proj_tokens_ = 0;
+    StepGraph moe_batch_proj_sg_;
+    int       moe_batch_proj_tokens_ = 0;
+    StepGraph moe_hybrid_logits_sg_;
+
     void maybe_post_request_swap();
+    void destroy_spec_graphs();
     bool load_dynamic_placement(const char * hotness_path,
                                 ggml_backend_t backend,
                                 const TargetWeights & w,

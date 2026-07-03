@@ -72,10 +72,51 @@ static int qwen35moe_prefill_chunk_limit(int prompt_len) {
     return std::min(value, prompt_len);
 }
 
+static bool ensure_projection_graph(StepGraph & sg,
+                                    int & cached_tokens,
+                                    const TargetWeights & w,
+                                    ggml_backend_t backend,
+                                    int n_tokens) {
+    if (sg.gf && sg.hidden_input && cached_tokens == n_tokens) {
+        return true;
+    }
+    if (!build_lm_head_projection_step(sg, w, backend, n_tokens)) {
+        cached_tokens = 0;
+        return false;
+    }
+    cached_tokens = n_tokens;
+    return true;
+}
+
 } // namespace
 
 Qwen35MoeBackend::Qwen35MoeBackend(const Qwen35Config & cfg)
     : Qwen35Backend(cfg) {}
+
+Qwen35MoeBackend::~Qwen35MoeBackend() {
+    destroy_spec_graphs();
+}
+
+void Qwen35MoeBackend::destroy_spec_graphs() {
+    step_graph_destroy(moe_draft_proj_sg_);
+    step_graph_destroy(moe_batch_proj_sg_);
+    step_graph_destroy(moe_hybrid_logits_sg_);
+    moe_draft_proj_tokens_ = 0;
+    moe_batch_proj_tokens_ = 0;
+}
+
+bool Qwen35MoeBackend::park(const std::string & what) {
+    const bool want_draft  = (what.empty() || what == "all" || what == "draft");
+    const bool want_target = (what.empty() || what == "all" || what == "target");
+
+    if (want_target) {
+        destroy_spec_graphs();
+    } else if (want_draft) {
+        step_graph_destroy(moe_draft_proj_sg_);
+        moe_draft_proj_tokens_ = 0;
+    }
+    return Qwen35Backend::park(what);
+}
 
 bool Qwen35MoeBackend::init() {
     if (!Qwen35Backend::init()) {
@@ -1596,53 +1637,54 @@ bool Qwen35MoeBackend::hybrid_forward_one_token(int32_t tok, int kv_pos,
 
     // Project to logits and get argmax
     const int vocab = target_weights().n_vocab;
-    StepGraph proj_sg;
-    ggml_init_params ip{};
-    ip.mem_size = 64 * 1024 * 1024;
-    ip.mem_buffer = nullptr;
-    ip.no_alloc = true;
-    proj_sg.ctx = ggml_init(ip);
-    if (!proj_sg.ctx) return false;
-    proj_sg.hidden_input = ggml_new_tensor_3d(proj_sg.ctx, GGML_TYPE_F32, hidden, 1, 1);
-    ggml_set_input(proj_sg.hidden_input);
-    proj_sg.gf = ggml_new_graph_custom(proj_sg.ctx, 1024, false);
-    ggml_tensor * normed = ggml_rms_norm(
-        proj_sg.ctx,
-        rms_norm_input_f32(proj_sg.ctx, proj_sg.hidden_input),
-        target_weights().rms_eps);
-    normed = ggml_mul(
-        proj_sg.ctx, normed,
-        graph_tensor_f32(proj_sg.ctx, target_weights().out_norm));
-    proj_sg.logits = ggml_mul_mat(proj_sg.ctx, target_weights().output, normed);
-    ggml_set_output(proj_sg.logits);
-    ggml_build_forward_expand(proj_sg.gf, proj_sg.logits);
-    proj_sg.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(target_backend()));
-    if (!ggml_gallocr_alloc_graph(proj_sg.alloc, proj_sg.gf)) {
-        step_graph_destroy(proj_sg);
-        return false;
-    }
-    ggml_backend_tensor_set(proj_sg.hidden_input, act_cur.data(), 0, sizeof(float) * (size_t)hidden);
-    auto proj_st = ggml_backend_graph_compute(target_backend(), proj_sg.gf);
-    if (proj_st != GGML_STATUS_SUCCESS) {
-        step_graph_destroy(proj_sg);
-        return false;
-    }
-    std::vector<float> logits_buf((size_t)vocab);
-    ggml_backend_tensor_get(proj_sg.logits, logits_buf.data(), 0, sizeof(float) * (size_t)vocab);
-    step_graph_destroy(proj_sg);
-    if (logits_out) {
-        *logits_out = logits_buf;
-    }
-
-    // Argmax
-    argmax_out = 0;
-    float best = logits_buf[0];
-    for (int j = 1; j < vocab; ++j) {
-        if (logits_buf[(size_t)j] > best) {
-            best = logits_buf[(size_t)j];
-            argmax_out = j;
+    if (!moe_hybrid_logits_sg_.ctx) {
+        ggml_init_params ip{};
+        ip.mem_size = 64 * 1024 * 1024;
+        ip.mem_buffer = nullptr;
+        ip.no_alloc = true;
+        moe_hybrid_logits_sg_.ctx = ggml_init(ip);
+        if (!moe_hybrid_logits_sg_.ctx) return false;
+        moe_hybrid_logits_sg_.hidden_input =
+            ggml_new_tensor_3d(moe_hybrid_logits_sg_.ctx, GGML_TYPE_F32, hidden, 1, 1);
+        ggml_set_input(moe_hybrid_logits_sg_.hidden_input);
+        moe_hybrid_logits_sg_.gf =
+            ggml_new_graph_custom(moe_hybrid_logits_sg_.ctx, 1024, false);
+        ggml_tensor * normed = ggml_rms_norm(
+            moe_hybrid_logits_sg_.ctx,
+            rms_norm_input_f32(moe_hybrid_logits_sg_.ctx, moe_hybrid_logits_sg_.hidden_input),
+            target_weights().rms_eps);
+        normed = ggml_mul(
+            moe_hybrid_logits_sg_.ctx, normed,
+            graph_tensor_f32(moe_hybrid_logits_sg_.ctx, target_weights().out_norm));
+        moe_hybrid_logits_sg_.logits =
+            ggml_mul_mat(moe_hybrid_logits_sg_.ctx, target_weights().output, normed);
+        ggml_set_output(moe_hybrid_logits_sg_.logits);
+        moe_hybrid_logits_sg_.argmax_tokens =
+            ggml_argmax(moe_hybrid_logits_sg_.ctx, moe_hybrid_logits_sg_.logits);
+        ggml_set_output(moe_hybrid_logits_sg_.argmax_tokens);
+        ggml_build_forward_expand(moe_hybrid_logits_sg_.gf,
+                                  moe_hybrid_logits_sg_.argmax_tokens);
+        moe_hybrid_logits_sg_.alloc =
+            ggml_gallocr_new(ggml_backend_get_default_buffer_type(target_backend()));
+        if (!ggml_gallocr_alloc_graph(moe_hybrid_logits_sg_.alloc,
+                                      moe_hybrid_logits_sg_.gf)) {
+            step_graph_destroy(moe_hybrid_logits_sg_);
+            return false;
         }
     }
+    ggml_backend_tensor_set(moe_hybrid_logits_sg_.hidden_input, act_cur.data(), 0,
+                            sizeof(float) * (size_t)hidden);
+    auto proj_st = ggml_backend_graph_compute(target_backend(), moe_hybrid_logits_sg_.gf);
+    if (proj_st != GGML_STATUS_SUCCESS) {
+        return false;
+    }
+    if (logits_out) {
+        logits_out->resize((size_t)vocab);
+        ggml_backend_tensor_get(moe_hybrid_logits_sg_.logits, logits_out->data(), 0,
+                                sizeof(float) * (size_t)vocab);
+    }
+    ggml_backend_tensor_get(moe_hybrid_logits_sg_.argmax_tokens, &argmax_out, 0,
+                            sizeof(int32_t));
     return true;
 }
 
@@ -1914,20 +1956,18 @@ bool Qwen35MoeBackend::hybrid_forward_batch(
     // readback + host argmax was a large per-step D2H cost in the verify and
     // replay forwards (vocab ~152k x n_tokens x 4B, twice per spec step).
     argmax_out.resize(n_tokens);
-    StepGraph proj_sg;
-    if (!build_lm_head_projection_step(proj_sg, target_weights(), target_backend(), n_tokens)) {
+    if (!ensure_projection_graph(moe_batch_proj_sg_, moe_batch_proj_tokens_,
+                                 target_weights(), target_backend(), n_tokens)) {
         return false;
     }
-    ggml_backend_tensor_set(proj_sg.hidden_input, embed_all.data(), 0,
+    ggml_backend_tensor_set(moe_batch_proj_sg_.hidden_input, embed_all.data(), 0,
                             sizeof(float) * (size_t)n_tokens * (size_t)hidden);
-    auto proj_st = ggml_backend_graph_compute(target_backend(), proj_sg.gf);
+    auto proj_st = ggml_backend_graph_compute(target_backend(), moe_batch_proj_sg_.gf);
     if (proj_st != GGML_STATUS_SUCCESS) {
-        step_graph_destroy(proj_sg);
         return false;
     }
-    ggml_backend_tensor_get(proj_sg.argmax_tokens, argmax_out.data(), 0,
+    ggml_backend_tensor_get(moe_batch_proj_sg_.argmax_tokens, argmax_out.data(), 0,
                             sizeof(int32_t) * (size_t)n_tokens);
-    step_graph_destroy(proj_sg);
     return true;
 }
 
@@ -2046,28 +2086,23 @@ bool Qwen35MoeBackend::do_hybrid_spec_decode(int committed, int n_gen,
                                  sizeof(float) * local_hidden.size());
 
         // 3. Project draft hidden → token IDs via target LM head
-        // Use a simple LM head projection graph
-        {
-            StepGraph proj_sg;
-            if (!build_lm_head_projection_step(proj_sg, target_weights(), target_backend(), q_len)) {
-                std::fprintf(stderr, "[hybrid-spec] projection build failed\n");
-                step_graph_destroy(draft_sg);
-                return false;
-            }
-            ggml_backend_tensor_set(proj_sg.hidden_input, local_hidden.data(), 0,
-                                     sizeof(float) * local_hidden.size());
-            auto ps = ggml_backend_graph_compute(target_backend(), proj_sg.gf);
-            if (ps != GGML_STATUS_SUCCESS) {
-                std::fprintf(stderr, "[hybrid-spec] projection compute failed\n");
-                step_graph_destroy(proj_sg);
-                step_graph_destroy(draft_sg);
-                return false;
-            }
-            draft_tok.resize(q_len);
-            ggml_backend_tensor_get(proj_sg.argmax_tokens, draft_tok.data(), 0,
-                                     sizeof(int32_t) * q_len);
-            step_graph_destroy(proj_sg);
+        if (!ensure_projection_graph(moe_draft_proj_sg_, moe_draft_proj_tokens_,
+                                     target_weights(), target_backend(), q_len)) {
+            std::fprintf(stderr, "[hybrid-spec] projection build failed\n");
+            step_graph_destroy(draft_sg);
+            return false;
         }
+        ggml_backend_tensor_set(moe_draft_proj_sg_.hidden_input, local_hidden.data(), 0,
+                                sizeof(float) * local_hidden.size());
+        auto ps = ggml_backend_graph_compute(target_backend(), moe_draft_proj_sg_.gf);
+        if (ps != GGML_STATUS_SUCCESS) {
+            std::fprintf(stderr, "[hybrid-spec] projection compute failed\n");
+            step_graph_destroy(draft_sg);
+            return false;
+        }
+        draft_tok.resize(q_len);
+        ggml_backend_tensor_get(moe_draft_proj_sg_.argmax_tokens, draft_tok.data(), 0,
+                                sizeof(int32_t) * q_len);
         draft_tok[0] = last_tok;
 
         // 4. Verify: snapshot recurrent state, then run ALL draft tokens batched
