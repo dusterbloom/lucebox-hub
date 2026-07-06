@@ -168,6 +168,24 @@ static json agent_tools() {
     });
 }
 
+static json workflow_tools() {
+    return json::array({
+        {{"type", "function"},
+         {"function", {
+             {"name", "Workflow"},
+             {"description", "Run a structured local workflow script."},
+             {"parameters", {
+                 {"type", "object"},
+                 {"properties", {
+                     {"script", {{"type", "string"}}}
+                 }},
+                 {"required", json::array({"script"})},
+                 {"additionalProperties", true}
+             }}
+         }}}
+    });
+}
+
 static json ask_user_tools() {
     return json::array({
         {{"type", "function"},
@@ -545,6 +563,27 @@ static void test_parse_open_function_closed_params_at_eof_xml() {
         TEST_ASSERT(args["description"] == "Run G1 bit-identity gate");
         TEST_ASSERT(args["subagent"] == "Run the default gate once.");
         TEST_ASSERT(args["subagent_type"] == "sisyphus-junior");
+    }
+    TEST_ASSERT(result.cleaned_text.empty());
+}
+
+static void test_parse_open_function_unclosed_param_at_eof_xml() {
+    std::string text =
+        "<function=Workflow>\n"
+        "<parameter=script>\n"
+        "name: \"Phase 1 — KVFlash pooled chunked prefill for qwen35moe\"\n"
+        "steps:\n"
+        "  - name: \"S1.1 — Locate & read key files\"\n"
+        "phase_commit: \"kvflash: implement pooled prefill for qwen35moe hybrid\"\n"
+        "</agent_plan>";
+    auto result = parse_tool_calls(text, workflow_tools());
+    TEST_ASSERT(result.tool_calls.size() == 1);
+    if (!result.tool_calls.empty()) {
+        TEST_ASSERT(result.tool_calls[0].name == "Workflow");
+        auto args = json::parse(result.tool_calls[0].arguments);
+        TEST_ASSERT(args.contains("script"));
+        TEST_ASSERT(args["script"].get<std::string>().find("phase_commit") != std::string::npos);
+        TEST_ASSERT(args["script"].get<std::string>().find("</agent_plan>") != std::string::npos);
     }
     TEST_ASSERT(result.cleaned_text.empty());
 }
@@ -1340,6 +1379,27 @@ static void test_emitter_finishes_open_function_with_closed_params() {
     }
     TEST_ASSERT(finish.find("\"finish_reason\":\"tool_calls\"") != std::string::npos);
     TEST_ASSERT(em.accumulated_text().find("<function=Agent>") == std::string::npos);
+}
+
+static void test_emitter_finishes_open_function_with_unclosed_param() {
+    auto em = make_emitter(ApiFormat::OPENAI_CHAT, workflow_tools());
+    em.emit_start();
+    em.emit_token("<function=Workflow>\n"
+                  "<parameter=script>\n"
+                  "name: \"Phase 1 — KVFlash pooled chunked prefill for qwen35moe\"\n"
+                  "phase_commit: \"kvflash: implement pooled prefill for qwen35moe hybrid\"\n"
+                  "</agent_plan>");
+    TEST_ASSERT(!em.stop_hit());
+
+    std::string finish = concat(em.emit_finish(899));
+    TEST_ASSERT(em.tool_calls().size() == 1);
+    if (!em.tool_calls().empty()) {
+        TEST_ASSERT(em.tool_calls()[0].name == "Workflow");
+        auto args = json::parse(em.tool_calls()[0].arguments);
+        TEST_ASSERT(args["script"].get<std::string>().find("phase_commit") != std::string::npos);
+    }
+    TEST_ASSERT(finish.find("\"finish_reason\":\"tool_calls\"") != std::string::npos);
+    TEST_ASSERT(em.accumulated_text().find("<function=Workflow>") == std::string::npos);
 }
 
 static void test_emitter_no_tools_keeps_tool_like_text() {
@@ -4734,6 +4794,7 @@ int main() {
     RUN_TEST(test_parse_named_function_close_with_suffix_xml);
     RUN_TEST(test_parse_named_function_close_id_suffix_xml);
     RUN_TEST(test_parse_open_function_closed_params_at_eof_xml);
+    RUN_TEST(test_parse_open_function_unclosed_param_at_eof_xml);
     RUN_TEST(test_parse_named_function_close_snake_case_xml);
     RUN_TEST(test_parse_call_verb_empty_args);
     RUN_TEST(test_parse_call_verb_strict_json_args);
@@ -4784,6 +4845,7 @@ int main() {
     RUN_TEST(test_emitter_stops_on_named_function_suffix_close);
     RUN_TEST(test_emitter_stops_on_named_function_id_suffix_close);
     RUN_TEST(test_emitter_finishes_open_function_with_closed_params);
+    RUN_TEST(test_emitter_finishes_open_function_with_unclosed_param);
     RUN_TEST(test_emitter_no_tools_keeps_tool_like_text);
     RUN_TEST(test_emitter_anthropic_structure);
     RUN_TEST(test_emitter_responses_structure);

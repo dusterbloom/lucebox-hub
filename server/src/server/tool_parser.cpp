@@ -410,20 +410,46 @@ static json parse_xml_params(const std::string & region, const std::string & fn_
     return args;
 }
 
-static bool xml_parameter_blocks_closed_to_eof(const std::string & region) {
+static bool xml_parameter_payload_recoverable_to_eof(const std::string & region) {
     size_t pos = 0;
     bool saw_param = false;
+    bool saw_value = false;
     while (true) {
         size_t open = region.find("<parameter=", pos);
         if (open == std::string::npos) break;
         size_t gt = region.find('>', open + std::strlen("<parameter="));
         if (gt == std::string::npos) return false;
-        size_t close = region.find("</parameter>", gt + 1);
-        if (close == std::string::npos) return false;
+        std::string key = region.substr(open + std::strlen("<parameter="),
+                                        gt - (open + std::strlen("<parameter=")));
+        while (!key.empty() && key.back() == ' ') key.pop_back();
+        while (!key.empty() && key.front() == ' ') key.erase(key.begin());
+        if (key.empty()) return false;
+
+        const size_t value_start = gt + 1;
+        size_t close = region.find("</parameter>", value_start);
+        size_t next = region.find("<parameter=", value_start);
+        size_t value_end = std::string::npos;
+        if (close != std::string::npos &&
+            (next == std::string::npos || close < next)) {
+            value_end = close;
+            pos = close + std::strlen("</parameter>");
+        } else if (next != std::string::npos) {
+            value_end = next;
+            pos = next;
+        } else {
+            value_end = region.size();
+            pos = region.size();
+        }
+        for (size_t i = value_start; i < value_end; i++) {
+            const char c = region[i];
+            if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+                saw_value = true;
+                break;
+            }
+        }
         saw_param = true;
-        pos = close + std::strlen("</parameter>");
     }
-    return saw_param;
+    return saw_param && saw_value;
 }
 
 // ─── JSON tool call parser ──────────────────────────────────────────────
@@ -734,9 +760,9 @@ ToolParseResult parse_tool_calls(const std::string & text, const json & tools) {
         }
     }
 
-    // Pattern 4: <function=NAME>...EOF with every parameter closed. Some Qwen
-    // traces emit a complete function payload but trail into a malformed role
-    // close instead of closing the function tag. This path is only reached by
+    // Pattern 4: <function=NAME>...EOF with parameter payloads. Some Qwen
+    // traces emit a complete function payload but omit the XML close tags or
+    // trail into a malformed/content close tag. This path is only reached by
     // emit_finish unless another complete tool marker was already present.
     {
         auto begin = std::sregex_iterator(text.begin(), text.end(), re_bare_function_open());
@@ -747,7 +773,7 @@ ToolParseResult parse_tool_calls(const std::string & text, const json & tools) {
             std::string fn_name = (*it)[1].str();
             size_t body_start = pos + it->length();
             std::string params = text.substr(body_start);
-            if (!xml_parameter_blocks_closed_to_eof(params)) continue;
+            if (!xml_parameter_payload_recoverable_to_eof(params)) continue;
             size_t removal_start = include_preceding_tool_call_open(text, pos);
             if (removal_start != pos) continue;
             add_call(fn_name, parse_xml_params(params, fn_name, tools),
