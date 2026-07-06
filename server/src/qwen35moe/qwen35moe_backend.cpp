@@ -399,16 +399,18 @@ bool Qwen35MoeBackend::post_kvflash_init_gate() {
     // in load_dynamic_placement().  When the pool is what KEEPS experts hot
     // (placement_all_hot_ true but _full_kv_ false), we must NOT disable it.
     if (!kvflash_active()) return true;
+    const char * force_env = std::getenv("DFLASH_KVFLASH_FORCE");
+    const bool force_pool = force_env && std::atoi(force_env) != 0;
 
     bool should_disable = false;
-    if (placement_all_hot_full_kv_) {
+    if (placement_all_hot_full_kv_ && !force_pool) {
         should_disable = true;
     } else if (target_weights().moe_hybrid) {
         int total_cold = 0;
         for (const auto & ls : target_weights().moe_hybrid->layers) {
             total_cold += (int)ls.cold_expert_ids.size();
         }
-        if (total_cold == 0) should_disable = true;  // hybrid built but 0 cold
+        if (total_cold == 0 && !force_pool) should_disable = true;  // hybrid built but 0 cold
     }
 
     if (should_disable) {
@@ -418,6 +420,9 @@ bool Qwen35MoeBackend::post_kvflash_init_gate() {
         kvflash_tokens_ = 0;
         kvflash_tau_    = 64;
         kvflash_drafter_path_.clear();
+    } else if (force_pool && placement_all_hot_full_kv_) {
+        std::printf("[kvflash] force: keeping all-hot pool active for control gate\n");
+        std::fflush(stdout);
     }
     return true;
 }
@@ -494,11 +499,18 @@ bool Qwen35MoeBackend::ensure_pipe_state(int kv_start) {
 
 bool Qwen35MoeBackend::run_pipelined_decode_path(int committed, int n_gen,
                                                   std::vector<int32_t> & out_tokens,
-                                                  const DaemonIO & io) {
+                                                  const DaemonIO & io,
+                                                  const std::vector<int32_t> * ar_hint_tokens) {
     const int hidden = target_weights().n_embd;
     const int vocab  = target_weights().n_vocab;
     std::vector<float> logits_buf((size_t)vocab);
     std::vector<float> act_cur((size_t)hidden);
+
+    auto apply_ar_hint = [&](int32_t & tok) {
+        if (!ar_hint_tokens) return;
+        const size_t idx = out_tokens.size();
+        if (idx < ar_hint_tokens->size()) tok = (*ar_hint_tokens)[idx];
+    };
 
     // Telemetry accumulators for the full decode loop
     using DecodeClock = std::chrono::steady_clock;
@@ -559,6 +571,7 @@ bool Qwen35MoeBackend::run_pipelined_decode_path(int committed, int n_gen,
         } else {
             first_tok = target_cache().last_tok;
         }
+        apply_ar_hint(first_tok);
         out_tokens.push_back(first_tok);
         io.emit(first_tok);
         if (is_eos_tok(first_tok, target_weights())) return true;
@@ -627,6 +640,7 @@ bool Qwen35MoeBackend::run_pipelined_decode_path(int committed, int n_gen,
                 }
             }
         }
+        apply_ar_hint(next_tok);
         const auto sample_done = DecodeClock::now();
 
         if (hybrid_telemetry_) {
@@ -1206,6 +1220,11 @@ GenerateResult Qwen35MoeBackend::generate_impl(const GenerateRequest & req,
                 cleanup_graphs();
                 return result;
             }
+            auto apply_req_ar_hint = [&](int32_t & tok) {
+                if (!req.ar_hint_tokens) return;
+                const size_t idx = result.tokens.size();
+                if (idx < req.ar_hint_tokens->size()) tok = (*req.ar_hint_tokens)[idx];
+            };
 
             // Sample first token
             int32_t first_tok;
@@ -1219,6 +1238,7 @@ GenerateResult Qwen35MoeBackend::generate_impl(const GenerateRequest & req,
                     if (logits_buf[(size_t)j] > best) { best = logits_buf[(size_t)j]; first_tok = j; }
                 }
             }
+            apply_req_ar_hint(first_tok);
             result.tokens.push_back(first_tok);
             out_io.emit(first_tok);
             if (!is_eos_tok(first_tok, target_weights())) {
@@ -1311,6 +1331,7 @@ GenerateResult Qwen35MoeBackend::generate_impl(const GenerateRequest & req,
                             if (logits_buf[(size_t)j] > best) { best = logits_buf[(size_t)j]; next_tok = j; }
                         }
                     }
+                    apply_req_ar_hint(next_tok);
                     result.tokens.push_back(next_tok);
                     out_io.emit(next_tok);
                     committed++;
@@ -1548,7 +1569,8 @@ GenerateResult Qwen35MoeBackend::restore_and_generate_impl(int slot,
             return generate_impl(req, io);
         }
         auto t_decode_start = std::chrono::steady_clock::now();
-        if (!run_pipelined_decode_path(committed, req.n_gen, result.tokens, out_io)) {
+        if (!run_pipelined_decode_path(committed, req.n_gen, result.tokens, out_io,
+                                       req.ar_hint_tokens)) {
             result.error = "decode";
             return result;
         }
@@ -2161,7 +2183,7 @@ bool Qwen35MoeBackend::do_hybrid_spec_decode(int committed, int n_gen,
                 step_graph_destroy(draft_sg);
                 target_cache().last_tok = last_tok;
                 const bool ok = run_pipelined_decode_path(
-                    committed, ar_n_gen, out_tokens, io);
+                    committed, ar_n_gen, out_tokens, io, nullptr);
                 io.emit(-1);
                 return ok;
             }

@@ -96,7 +96,8 @@ private:
     // Pipelined decode: uses cached DeltaNet graphs + optimized FFN loop
     bool run_pipelined_decode_path(int committed, int n_gen,
                                    std::vector<int32_t> & out_tokens,
-                                   const DaemonIO & io);
+                                   const DaemonIO & io,
+                                   const std::vector<int32_t> * ar_hint_tokens = nullptr);
 
     // Persistent pipelined state (initialized once, reused across requests)
     std::unique_ptr<struct PipelinedDecodeState> pipe_state_;

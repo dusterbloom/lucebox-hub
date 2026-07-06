@@ -3,6 +3,7 @@
 #include "ggml-alloc.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstdio>
 
 namespace dflash::common {

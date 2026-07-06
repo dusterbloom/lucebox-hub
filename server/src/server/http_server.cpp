@@ -777,6 +777,8 @@ std::vector<ChatMessage> normalize_chat_messages(
                 if (!raw.empty()) {
                     cm.content = raw;
                     replayed = true;
+                } else {
+                    cm.tool_calls_json = m["tool_calls"].dump();
                 }
             }
 
@@ -2416,12 +2418,18 @@ void HttpServer::worker_loop() {
         // Tool call hint generation: pre-tokenize predictable structural tokens
         // to accelerate spec decode when tool_choice constrains the output.
         std::vector<int32_t> hint_tokens_storage;
+        std::vector<int32_t> ar_hint_tokens_storage;
         if (!req.tools.empty() && !req.tool_choice.is_null()) {
             ToolHintGenerator hint_gen(tokenizer_);
             auto hint = hint_gen.build_hint(req.tools, req.tool_choice);
             if (!hint.empty()) {
                 hint_tokens_storage = std::move(hint.prefix_tokens);
                 gen_req.hint_tokens = &hint_tokens_storage;
+                ar_hint_tokens_storage = tokenizer_.encode("<tool_call>");
+                ar_hint_tokens_storage.insert(ar_hint_tokens_storage.end(),
+                                             hint_tokens_storage.begin(),
+                                             hint_tokens_storage.end());
+                gen_req.ar_hint_tokens = &ar_hint_tokens_storage;
             }
         }
         std::vector<int32_t> stall_tool_prefix_tokens_storage;
@@ -2460,12 +2468,15 @@ void HttpServer::worker_loop() {
         // Full-prompt cache: exact raw-prompt hit skips most/all prefill.
         int cache_slot = full_cache_hit_slot;
         int prefix_len = full_cache_hit_len;
+        int prefix_key_len = full_cache_hit_len;
         bool using_restore = (cache_slot >= 0);
+        bool inline_restore_hit = false;
         if (!using_restore) {
             auto [full_slot, full_len] = prefix_cache_.lookup_full(req.prompt_tokens);
             if (full_slot >= 0) {
                 cache_slot = full_slot;
                 prefix_len = full_len;
+                prefix_key_len = full_len;
                 using_restore = true;
                 if (pflash_compressed) {
                     effective_prompt.assign((size_t)full_len, 0);
@@ -2477,10 +2488,12 @@ void HttpServer::worker_loop() {
         // Inline prefix cache: check for cached turn-boundary KV state if no
         // exact full-prompt cache was available.
         if (!using_restore) {
-            auto [inline_slot, inline_len] = prefix_cache_.lookup(effective_prompt);
-            cache_slot = inline_slot;
-            prefix_len = inline_len;
+            auto inline_hit = prefix_cache_.lookup(effective_prompt);
+            cache_slot = inline_hit.slot;
+            prefix_len = inline_hit.snapshot_len;
+            prefix_key_len = inline_hit.key_len;
             using_restore = (cache_slot >= 0);
+            inline_restore_hit = using_restore;
         }
 
         // Disk prefix cache: try disk if memory missed.
@@ -2582,6 +2595,7 @@ void HttpServer::worker_loop() {
                     }
                     using_restore = true;
                     disk_hit = true;
+                    prefix_key_len = lookup_len;
                     std::fprintf(stderr,
                         "[disk-cache] hit policy=%s len=%d slot=%d pos=%d\n",
                         disk_prefix_cache_policy_name(disk_policy).c_str(), lookup_len,
@@ -2617,7 +2631,8 @@ void HttpServer::worker_loop() {
                     const bool saved =
                         disk_cache_.save(DISK_STAGING_SLOT, scoped_req.prompt);
                     cache_slot = DISK_STAGING_SLOT;
-                    prefix_len = scoped_boundary;
+                    prefix_len = backend_.snapshot_cur_pos(DISK_STAGING_SLOT);
+                    prefix_key_len = scoped_boundary;
                     using_restore = true;
                     disk_hit = true;
                     std::fprintf(stderr,
@@ -2636,14 +2651,19 @@ void HttpServer::worker_loop() {
         // pointless snapshot copy-in.
         if (using_restore) {
             const int snap_len = backend_.snapshot_cur_pos(cache_slot);
-            if (snap_len > (int)effective_prompt.size()) {
+            if (snap_len <= 0 || snap_len > (int)effective_prompt.size()) {
                 std::fprintf(stderr,
-                    "[pc] slot=%d snapshot pos=%d > prompt=%zu — treating as miss\n",
+                    "[pc] slot=%d invalid snapshot pos=%d prompt=%zu — treating as miss\n",
                     cache_slot, snap_len, effective_prompt.size());
                 cache_slot = -1;
                 prefix_len = 0;
+                prefix_key_len = 0;
                 using_restore = false;
                 disk_hit = false;
+                inline_restore_hit = false;
+            } else {
+                // Always account and restore from physical backend truth.
+                prefix_len = snap_len;
             }
         }
 
@@ -2675,7 +2695,8 @@ void HttpServer::worker_loop() {
                     disk_cache_.save(DISK_STAGING_SLOT, prefix_tokens);
                     // Use this cold snapshot as restore point for full generation.
                     cache_slot = DISK_STAGING_SLOT;
-                    prefix_len = cold_boundary;
+                    prefix_len = backend_.snapshot_cur_pos(DISK_STAGING_SLOT);
+                    prefix_key_len = cold_boundary;
                     using_restore = true;
                     disk_hit = true;  // ensure staging slot is freed after use
                     std::fprintf(stderr, "[disk-cache] cold prefix saved, restoring from %d\n",
@@ -2706,25 +2727,33 @@ void HttpServer::worker_loop() {
         int snap_slot = -1;
         int snap_cut = 0;
         if (!full_snap_prepared) {
-            auto prepared = prefix_cache_.prepare_inline_snap(effective_prompt);
+            const int preferred_inline_slot =
+                inline_restore_hit ? cache_slot : -1;
+            auto prepared = prefix_cache_.prepare_inline_snap(
+                effective_prompt, preferred_inline_slot);
             snap_slot = prepared.first;
             snap_cut = prepared.second;
         }
         bool snap_prepared = (snap_slot >= 0);
+        bool snap_slot_preexisting = false;
+        int snap_slot_old_pos = 0;
         if (snap_prepared) {
+            snap_slot_preexisting = backend_.snapshot_used(snap_slot);
+            snap_slot_old_pos = backend_.snapshot_cur_pos(snap_slot);
             gen_req.snap_slot = snap_slot;
             gen_req.snap_pos = snap_cut;
         }
 
         std::fprintf(stderr,
             "[server] chat CACHE %s restore=%s slot=%d prefix_len=%d "
-            "effective_prompt=%zu pflash=%s disk_policy=%s disk_hit=%s "
+            "effective_prompt=%zu prefix_key_len=%d pflash=%s disk_policy=%s disk_hit=%s "
             "snap_slot=%d snap_pos=%d full_snap_slot=%d full_snap_pos=%d\n",
             req.response_id.c_str(),
             using_restore ? "true" : "false",
             cache_slot,
             prefix_len,
             effective_prompt.size(),
+            prefix_key_len,
             pflash_compressed ? "true" : "false",
             disk_prefix_cache_policy_name(disk_policy).c_str(),
             disk_hit ? "true" : "false",
@@ -2755,6 +2784,25 @@ void HttpServer::worker_loop() {
         int completion_tokens = 0;
         bool visible_output_seen = false;
         bool client_disconnected = false;
+        bool emitter_fed_live = false;
+        static const bool kNonStreamLiveEmitter =
+            std::getenv("DFLASH_NONSTREAM_LIVE_EMITTER") != nullptr;
+        const bool live_emitter_enabled = req.stream || kNonStreamLiveEmitter;
+
+        auto feed_emitter_live = [&](const std::string & text) -> bool {
+            if (!live_emitter_enabled) return true;
+            auto chunks = emitter.emit_token(text);
+            emitter_fed_live = true;
+            if (req.stream) {
+                for (const auto & chunk : chunks) {
+                    if (!send_all(fd, chunk.data(), chunk.size())) {
+                        client_disconnected = true;
+                        return false;
+                    }
+                }
+            }
+            return !emitter.stop_hit();
+        };
 
         io.on_token = [&](int32_t token) -> bool {
             if (client_disconnected) return false;
@@ -2777,22 +2825,12 @@ void HttpServer::worker_loop() {
             if (raw == "<|channel>") {
                 visible_output_seen = true;
                 broadcast_token("<think>");
-                if (req.stream) {
-                    auto chunks = emitter.emit_token("<think>");
-                    for (const auto & chunk : chunks)
-                        if (!send_all(fd, chunk.data(), chunk.size())) { client_disconnected = true; return false; }
-                }
-                return true;
+                return feed_emitter_live("<think>");
             }
             if (raw == "<channel|>") {
                 visible_output_seen = true;
                 broadcast_token("</think>\n");
-                if (req.stream) {
-                    auto chunks = emitter.emit_token("</think>\n");
-                    for (const auto & chunk : chunks)
-                        if (!send_all(fd, chunk.data(), chunk.size())) { client_disconnected = true; return false; }
-                }
-                return true;
+                return feed_emitter_live("</think>\n");
             }
 
             // Qwen3.6 thinking tokens: <think> (id 248068) and </think> (id 248069)
@@ -2805,13 +2843,7 @@ void HttpServer::worker_loop() {
             if (raw == "<think>" || raw == "</think>") {
                 visible_output_seen = true;
                 broadcast_token(raw == "</think>" ? "</think>\n" : "<think>");
-                if (req.stream) {
-                    auto chunks = emitter.emit_token(
-                        raw == "</think>" ? "</think>\n" : "<think>");
-                    for (const auto & chunk : chunks)
-                        if (!send_all(fd, chunk.data(), chunk.size())) { client_disconnected = true; return false; }
-                }
-                return true;
+                return feed_emitter_live(raw == "</think>" ? "</think>\n" : "<think>");
             }
 
             // Skip other special tokens (starting with <|, or any <...> except byte-fallback)
@@ -2829,16 +2861,12 @@ void HttpServer::worker_loop() {
                 broadcast_token(text);
             }
 
-            if (req.stream && !text.empty()) {
-                auto chunks = emitter.emit_token(text);
-                for (const auto & chunk : chunks) {
-                    if (!send_all(fd, chunk.data(), chunk.size())) {
-                        client_disconnected = true;
-                        return false;
-                    }
-                }
-                // Stop generation if a stop sequence was hit.
-                if (emitter.stop_hit()) return false;
+            if (!text.empty()) {
+                // Streaming uses live emitter feedback to send chunks and stop
+                // decode. Non-stream live cancellation is opt-in because it
+                // changes benchmark token counts and needs separate tool-arg
+                // correctness evidence.
+                if (!feed_emitter_live(text)) return false;
             }
             return true;
         };
@@ -2898,8 +2926,9 @@ void HttpServer::worker_loop() {
 
         // Confirm or abort the full-prompt snapshot.
         if (full_snap_prepared) {
-            if (completion_tokens > 0 && visible_output_seen && !client_disconnected &&
-                backend_.snapshot_used(full_snap_slot)) {
+            if (prefix_cache_should_commit_snapshot(
+                    result.ok, completion_tokens, client_disconnected,
+                    backend_.snapshot_used(full_snap_slot))) {
                 int saved_pos = backend_.snapshot_cur_pos(full_snap_slot);
                 if (saved_pos > 0) {
                     prefix_cache_.confirm_full_snap(full_snap_slot, req.prompt_tokens,
@@ -2914,21 +2943,60 @@ void HttpServer::worker_loop() {
 
         // Confirm or abort the inline snapshot.
         if (snap_prepared) {
-            if (completion_tokens > 0 && visible_output_seen && !client_disconnected &&
-                backend_.snapshot_used(snap_slot)) {
-                prefix_cache_.confirm_inline_snap(snap_slot, snap_cut, effective_prompt);
-                // Track for shutdown save.
-                slot_tokens_[snap_slot] = std::vector<int32_t>(
-                    effective_prompt.begin(), effective_prompt.begin() + snap_cut);
-                // Save to disk cache if threshold met.
-                if (!disk_cache_.disabled()) {
-                    disk_cache_.learn_layout(snap_slot);
-                    if (disk_policy.mode == DiskPrefixCacheMode::Full) {
-                        disk_cache_.save(snap_slot, effective_prompt);
+            const bool can_commit_inline =
+                prefix_cache_should_commit_snapshot(
+                    result.ok, completion_tokens, client_disconnected,
+                    backend_.snapshot_used(snap_slot));
+            auto release_inline_restore_prepare = [&]() {
+                if (!can_commit_inline || !inline_restore_hit || cache_slot < 0 ||
+                    !backend_.snapshot_used(cache_slot)) {
+                    return;
+                }
+                const int alias_pos = backend_.snapshot_cur_pos(cache_slot);
+                if (alias_pos > 0 && alias_pos <= snap_cut) {
+                    prefix_cache_.alias_inline_snap(cache_slot, snap_cut, alias_pos,
+                                                    effective_prompt);
+                }
+            };
+
+            if (can_commit_inline && backend_.snapshot_used(snap_slot)) {
+                const int saved_pos = backend_.snapshot_cur_pos(snap_slot);
+                if (saved_pos <= 0 || saved_pos > snap_cut) {
+                    prefix_cache_.abort_inline_snap(snap_slot);
+                    release_inline_restore_prepare();
+                } else {
+                    const bool refreshed_snapshot =
+                        !snap_slot_preexisting || saved_pos != snap_slot_old_pos;
+                    const bool reused_restore_slot =
+                        inline_restore_hit && snap_slot == cache_slot;
+                    if (!refreshed_snapshot && !reused_restore_slot) {
+                        prefix_cache_.abort_inline_snap(snap_slot);
+                        release_inline_restore_prepare();
+                    } else if (reused_restore_slot && !refreshed_snapshot &&
+                               saved_pos < snap_cut) {
+                        prefix_cache_.alias_inline_snap(snap_slot, snap_cut, saved_pos,
+                                                        effective_prompt);
+                    } else {
+                        prefix_cache_.confirm_inline_snap(snap_slot, snap_cut, saved_pos,
+                                                          effective_prompt);
+                        // Track the exact physical snapshot prefix for shutdown
+                        // saves. Shorter pooled snapshots are published only
+                        // under their saved length, never as the later boundary.
+                        slot_tokens_[snap_slot] = std::vector<int32_t>(
+                            effective_prompt.begin(), effective_prompt.begin() + saved_pos);
+                        // Do not persist alias-style entries as if the slot
+                        // physically contained the longer prepared boundary.
+                        if (!disk_cache_.disabled() && saved_pos == snap_cut) {
+                            disk_cache_.learn_layout(snap_slot);
+                            if (disk_policy.mode == DiskPrefixCacheMode::Full) {
+                                disk_cache_.save(snap_slot, effective_prompt);
+                            }
+                        }
                     }
                 }
             } else {
                 prefix_cache_.abort_inline_snap(snap_slot);
+                release_inline_restore_prepare();
             }
         }
 
@@ -3051,7 +3119,9 @@ void HttpServer::worker_loop() {
                 return true;
             };
 
-            feed_tokens(result.tokens);
+            if (!emitter_fed_live) {
+                feed_tokens(result.tokens);
+            }
             const int total_completion_tokens = (int)result.tokens.size();
             emitter.emit_finish(total_completion_tokens);
 

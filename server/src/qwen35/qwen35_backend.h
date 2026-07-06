@@ -133,6 +133,7 @@ protected:
                                     std::vector<int32_t> & out_tokens,
                                     const DaemonIO & io);
     virtual bool should_capture_moe_router() const { return false; }
+    bool needs_target_feature_cache() const;
     // Hook after kvflash pool sizing, before create_target_cache: a subclass
     // may disable the pool (kvflash_tokens_=0) when it is redundant. Default no-op.
     virtual bool post_kvflash_init_gate() { return true; }
@@ -152,6 +153,9 @@ protected:
     bool prefill_logits_valid() const { return prefill_last_logits_valid_; }
     std::size_t prefill_logits_offset() const { return prefill_last_logits_offset_; }
     bool restore_target_cache_from_snapshot(int slot);
+    bool snapshot_is_pooled(int slot) const;
+    const std::vector<uint8_t> & snapshot_kvflash_blob(int slot) const;
+    bool snapshot_save_pooled_at(int slot, int snap_boundary);
 
     // Accessors for draft/spec-decode state (needed by hybrid spec-decode in subclass)
     DraftWeights & draft_weights() { return dw_; }
@@ -203,7 +207,8 @@ protected:
     // Rebuild pager mapping after (re)prefill: positions [0, committed)
     // occupy pool slots identity-mapped (prefill is contiguous).
     void kvflash_sync_prefill(int committed, const std::vector<int32_t> & tokens,
-                              int kv_offset);
+                              int kv_offset,
+                              const std::vector<int32_t> * full_prompt = nullptr);
     // Upload the slot-validity mask (host rebuild on epoch change, device
     // upload every step — the input's buffer region is reused by compute).
     void kvflash_upload_mask();
@@ -266,7 +271,8 @@ private:
     int do_prefill(const std::vector<int32_t> & tokens,
                    const DaemonIO & io,
                    int snap_pos = -1, int snap_slot = -1,
-                   int kv_offset = 0);
+                   int kv_offset = 0,
+                   const std::vector<int32_t> * full_prompt = nullptr);
 
     // Speculative decode loop: draft → verify → accept until EOS/max.
     // When budget_hook is non-null and (n_gen - generated) drops to the
@@ -284,6 +290,7 @@ private:
                         float & out_accept_rate,
                         bool & out_spec_ran,
                         const std::vector<int32_t> * hint_tokens = nullptr,
+                        const std::vector<int32_t> * ar_hint_tokens = nullptr,
                         const std::vector<int32_t> * stall_tool_prefix_tokens = nullptr,
                         const std::vector<int32_t> * stall_action_suffix_tokens = nullptr,
                         const std::vector<int32_t> * stall_skip_tokens = nullptr,
@@ -309,7 +316,8 @@ private:
                       const DaemonIO & io,
                       const BudgetHook & budget_hook = {},
                       bool * forced_close_out = nullptr,
-                      bool * degenerate_close_out = nullptr);
+                      bool * degenerate_close_out = nullptr,
+                      const std::vector<int32_t> * ar_hint_tokens = nullptr);
 
     bool sync_remote_draft_features(int start_pos, int n_tokens);
 

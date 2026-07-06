@@ -1,5 +1,7 @@
 #include "qwen35_backend.h"
 #include "placement/skip_park_guard.h"
+#include "qwen35/prefill_logits_policy.h"
+#include "qwen35/scoped_skip_props_check.h"
 #include "qwen35_dflash_target.h"
 #include "graph_builders.h"
 #include "dflash_feature_ring.h"
@@ -33,9 +35,19 @@
 
 #include "kv_quant.h"
 
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP) || defined(GGML_USE_HIP)
+extern "C" void ggml_cuda_set_skip_props_check(bool skip);
+#else
+static void ggml_cuda_set_skip_props_check(bool) {}
+#endif
+
 namespace dflash::common {
 
 namespace {
+static void qwen35_set_skip_props_check(bool skip) {
+    ggml_cuda_set_skip_props_check(skip);
+}
+
 static float bf16_bits_to_f32(uint16_t bits) {
     union {
         uint32_t u;
@@ -424,28 +436,57 @@ bool Qwen35Backend::unpark(const std::string & what) {
     return true;
 }
 
+bool Qwen35Backend::needs_target_feature_cache() const {
+    return cfg_.draft_path != nullptr && cfg_.draft_path[0] != '\0';
+}
+
 // ── Snapshots ───────────────────────────────────────────────────────────
+
+bool Qwen35Backend::snapshot_save_pooled_at(int slot, int snap_boundary) {
+    if (slot < 0 || slot >= PREFIX_SLOTS || snap_boundary <= 0) return false;
+    if (!kvflash_active()) return false;
+    const int chunk = kvflash_pager_.chunk_tokens();
+    const int max_chunks = snap_boundary / chunk;
+    if (max_chunks <= 0) return false;
+    if (cache_.cur_pos != snap_boundary) {
+        std::fprintf(stderr,
+                     "[snap] pooled boundary mismatch: cur_pos=%d snap_boundary=%d\n",
+                     cache_.cur_pos, snap_boundary);
+        return false;
+    }
+    std::vector<uint8_t> blob = kvflash_pager_.serialize(max_chunks);
+    PrefixSnapshot & snap = prefix_snapshots_[slot];
+    if (!snapshot_target_cache(w_, cache_, snap_backend_, snap,
+                               /*skip_kv=*/true, &blob,
+                               /*skip_target_feat=*/!needs_target_feature_cache())) {
+        return false;
+    }
+    snap.is_pooled = true;
+    snap.kvflash_blob = std::move(blob);
+    return true;
+}
 
 bool Qwen35Backend::snapshot_save(int slot) {
     if (slot < 0 || slot >= PREFIX_SLOTS) return false;
-    // kvflash: snapshots right-size to cur_pos, which is a LOGICAL position
-    // that can exceed the physical pool once decode has paged, and they copy
-    // rows assuming the identity layout, which pooled prefill / eviction
-    // breaks. Snapshots of pooled state need page-table serialization
-    // (follow-up); identity-mapped prefill-time snapshots remain valid.
-    if (kvflash_active() &&
-        (cache_.cur_pos > kvflash_tokens_ || !kvflash_pager_.is_identity())) {
-        static bool warned = false;
-        if (!warned) {
-            std::fprintf(stderr, "[kvflash] snapshot skipped: cur_pos %d exceeds "
-                                 "pool %d (pooled snapshots are a follow-up)\n",
-                         cache_.cur_pos, kvflash_tokens_);
-            warned = true;
-        }
-        return false;
-    }
+    const bool pooled = kvflash_active() &&
+        (cache_.cur_pos > kvflash_tokens_ || !kvflash_pager_.is_identity());
     PrefixSnapshot & snap = prefix_snapshots_[slot];
-    return snapshot_target_cache(w_, cache_, snap_backend_, snap);
+    if (pooled) {
+        std::vector<uint8_t> blob = kvflash_pager_.serialize();
+        if (!snapshot_target_cache(w_, cache_, snap_backend_, snap,
+                                   /*skip_kv=*/true, &blob,
+                                   /*skip_target_feat=*/!needs_target_feature_cache())) {
+            return false;
+        }
+        snap.is_pooled = true;
+        snap.kvflash_blob = std::move(blob);
+        return true;
+    }
+    snap.is_pooled = false;
+    snap.kvflash_blob.clear();
+    return snapshot_target_cache(w_, cache_, snap_backend_, snap,
+                                 /*skip_kv=*/false, /*kvflash_blob=*/nullptr,
+                                 /*skip_target_feat=*/!needs_target_feature_cache());
 }
 
 void Qwen35Backend::snapshot_free(int slot) {
@@ -460,7 +501,19 @@ bool Qwen35Backend::snapshot_used(int slot) const {
 
 bool Qwen35Backend::restore_target_cache_from_snapshot(int slot) {
     if (slot < 0 || slot >= PREFIX_SLOTS || !prefix_snapshots_[slot].ctx) return false;
-    return restore_target_cache(prefix_snapshots_[slot], cache_);
+    const PrefixSnapshot & snap = prefix_snapshots_[slot];
+    return restore_target_cache(snap, cache_, snap.is_pooled);
+}
+
+bool Qwen35Backend::snapshot_is_pooled(int slot) const {
+    if (slot < 0 || slot >= PREFIX_SLOTS) return false;
+    return prefix_snapshots_[slot].is_pooled;
+}
+
+static const std::vector<uint8_t> kEmptyKvflashBlob;
+const std::vector<uint8_t> & Qwen35Backend::snapshot_kvflash_blob(int slot) const {
+    if (slot < 0 || slot >= PREFIX_SLOTS) return kEmptyKvflashBlob;
+    return prefix_snapshots_[slot].kvflash_blob;
 }
 
 int Qwen35Backend::snapshot_cur_pos(int slot) const {
@@ -512,16 +565,22 @@ bool Qwen35Backend::snapshot_adopt(int slot, ggml_context * ctx,
             snap.conv_state_snap[idx] = t;
         } else if (std::strcmp(t->name, "snap_target_feat") == 0) {
             snap.target_feat_snap = t;
+        } else if (std::strcmp(t->name, "snap_kvflash_blob") == 0) {
+            snap.is_pooled = true;
+            snap.kvflash_blob.resize(ggml_nbytes(t));
+            ggml_backend_tensor_get(t, snap.kvflash_blob.data(), 0, ggml_nbytes(t));
         }
     }
 
     // Validate all required tensors are present.
-    for (int i = 0; i < n_full_attn; ++i) {
-        if (!snap.attn_k_snap[i] || !snap.attn_v_snap[i]) {
-            snap.attn_k_snap.clear(); snap.attn_v_snap.clear();
-            snap.ssm_state_snap.clear(); snap.conv_state_snap.clear();
-            snap.target_feat_snap = nullptr;
-            return false;
+    if (!snap.is_pooled) {
+        for (int i = 0; i < n_full_attn; ++i) {
+            if (!snap.attn_k_snap[i] || !snap.attn_v_snap[i]) {
+                snap.attn_k_snap.clear(); snap.attn_v_snap.clear();
+                snap.ssm_state_snap.clear(); snap.conv_state_snap.clear();
+                snap.target_feat_snap = nullptr;
+                return false;
+            }
         }
     }
     for (int i = 0; i < n_delta; ++i) {
@@ -532,9 +591,10 @@ bool Qwen35Backend::snapshot_adopt(int slot, ggml_context * ctx,
             return false;
         }
     }
-    if (!snap.target_feat_snap) {
+    if (needs_target_feature_cache() && !snap.target_feat_snap) {
         snap.attn_k_snap.clear(); snap.attn_v_snap.clear();
         snap.ssm_state_snap.clear(); snap.conv_state_snap.clear();
+        snap.target_feat_snap = nullptr;
         return false;
     }
 
@@ -813,12 +873,14 @@ GenerateResult Qwen35Backend::generate_impl(const GenerateRequest & req,
             decode_ok = do_ar_decode(committed, req.n_gen, result.tokens, out_io,
                                      req.budget_hook,
                                      &result.budget_forced_close,
-                                     &result.degenerate_decode_close);
+                                     &result.degenerate_decode_close,
+                                     req.ar_hint_tokens);
             out_io.emit(-1);
         } else {
             decode_ok = do_spec_decode(committed, req.n_gen, result.tokens, out_io,
                                        result.accept_rate, result.spec_decode_ran,
                                        req.hint_tokens,
+                                       req.ar_hint_tokens,
                                        req.stall_tool_prefix_tokens,
                                        req.stall_action_suffix_tokens,
                                        req.stall_skip_tokens,
@@ -860,8 +922,38 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
     // not leftovers from the previous request. cudaMemset is ~0.2ms.
     if (cache_.base_buf) ggml_backend_buffer_clear(cache_.base_buf, 0);
 
-    // Restore snapshot
-    restore_target_cache(prefix_snapshots_[slot], cache_);
+    // Restore snapshot. Pooled snapshots keep KV in the KVFlash pager blob;
+    // only recurrent state and target features are restored through
+    // TargetCache.
+    const PrefixSnapshot & snap_ref = prefix_snapshots_[slot];
+    const bool snap_pooled = snap_ref.is_pooled;
+    if (!restore_target_cache(snap_ref, cache_, snap_pooled)) {
+        result.error = "restore";
+        out_io.emit(-1);
+        return result;
+    }
+
+    if (snap_pooled && !kvflash_active()) {
+        result.error = "kvflash: pooled snapshot requires active pager";
+        out_io.emit(-1);
+        return result;
+    }
+    if (snap_pooled && kvflash_active()) {
+        if (!kvflash_pager_.deserialize(snap_ref.kvflash_blob.data(),
+                                        snap_ref.kvflash_blob.size())) {
+            result.error = "kvflash: pager deserialize failed";
+            out_io.emit(-1);
+            return result;
+        }
+        kvflash_mask_epoch_ = (uint64_t)-1;
+        if (kvflash_qk_policy_) {
+            // Seed the QK scorer from the restored ledger so chunks that were
+            // relevant on the previous turn keep their ranking immediately,
+            // without waiting for a re-prefill/re-pool pass.
+            kvflash_qk_pool_.rebuild_pool_from_ledger(kvflash_pager_);
+            kvflash_qk_pooled_upto_ = kvflash_pager_.n_chunks();
+        }
+    }
 
     // Now generate from restored state
     sampler_ = req.sampler;
@@ -869,7 +961,7 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
         sampler_rng_.seed(sampler_.seed);
     }
 
-    const int snap_pos = prefix_snapshots_[slot].cur_pos;
+    const int snap_pos = snap_ref.cur_pos;
     cache_.cur_pos = snap_pos;
 
     // FIX(prefix-cache + spec-decode): restore_target_cache brings back KV /
@@ -898,8 +990,29 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
     const int prompt_len = (int)req.prompt.size();
     if (prompt_len > snap_pos) {
         auto t_prefill_start = std::chrono::steady_clock::now();
-        std::vector<int32_t> delta = restore_prompt_delta(req.prompt, snap_pos);
-        committed = do_prefill(delta, out_io, req.snap_pos, req.snap_slot, /*kv_offset=*/snap_pos);
+        if (snap_pooled && kvflash_active()) {
+            static const bool kv_restore_consume = []() {
+                const char * e = std::getenv("KVFLASH_RESTORE_CONSUME");
+                return !(e && e[0] == '0');
+            }();
+            if (kv_restore_consume) {
+                std::fprintf(stderr,
+                             "[kvflash] restore-consume: snap_pos=%d prompt=%d "
+                             "(suffix prefill only)\n",
+                             snap_pos, prompt_len);
+                std::vector<int32_t> suffix = restore_prompt_delta(req.prompt, snap_pos);
+                committed = do_prefill(suffix, out_io, req.snap_pos, req.snap_slot,
+                                       /*kv_offset=*/snap_pos, &req.prompt);
+            } else {
+                reset_recurrent_state(cache_);
+                cache_.cur_pos = 0;
+                committed = do_prefill(req.prompt, out_io, req.snap_pos, req.snap_slot);
+            }
+        } else {
+            std::vector<int32_t> delta = restore_prompt_delta(req.prompt, snap_pos);
+            committed = do_prefill(delta, out_io, req.snap_pos, req.snap_slot,
+                                   /*kv_offset=*/snap_pos, &req.prompt);
+        }
         if (committed < 0) {
             result.error = "prefill";
             return result;
@@ -961,12 +1074,14 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
             decode_ok = do_ar_decode(committed, req.n_gen, result.tokens, out_io,
                                      req.budget_hook,
                                      &result.budget_forced_close,
-                                     &result.degenerate_decode_close);
+                                     &result.degenerate_decode_close,
+                                     req.ar_hint_tokens);
             out_io.emit(-1);
         } else {
             decode_ok = do_spec_decode(committed, req.n_gen, result.tokens, out_io,
                                        result.accept_rate, result.spec_decode_ran,
                                        req.hint_tokens,
+                                       req.ar_hint_tokens,
                                        req.stall_tool_prefix_tokens,
                                        req.stall_action_suffix_tokens,
                                        req.stall_skip_tokens,
@@ -999,7 +1114,8 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
 int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
                                const DaemonIO & io,
                                int snap_pos, int snap_slot,
-                               int kv_offset) {
+                               int kv_offset,
+                               const std::vector<int32_t> * full_prompt) {
     (void)io;
 
     const int hidden = w_.n_embd;
@@ -1010,34 +1126,48 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     }
     const int prompt_len = (int)tokens.size();
     prefill_last_logits_valid_ = false;
+    const bool capture_features = needs_target_feature_cache();
 
     // kvflash: a prompt that fits the pool prefills contiguously (identity
     // mapping, normal chunking). A LARGER prompt switches to POOLED CHUNKED
     // PREFILL: pager-chunk-sized batches whose KV rows are slot-mapped via
     // set_rows, with a slot-space mask per chunk and live eviction as the
-    // pool fills (constant VRAM, linear time). Restore offsets are not
-    // supported in the pooled path (a relocated prefix cannot be restored
-    // identity-style in the first place).
+    // pool fills (constant VRAM, linear time).
     const bool kvf_paged = kvflash_active() &&
         kv_offset + prompt_len > kvflash_tokens_ - kvflash_pager_.chunk_tokens();
-    if (kvf_paged && kv_offset != 0) {
-        std::fprintf(stderr,
-            "[kvflash] restored prefix (%d) + prompt (%d) exceeds pool %d; "
-            "pooled prefill requires a fresh request\n",
-            kv_offset, prompt_len, kvflash_tokens_);
-        set_last_error("kvflash: restore + pooled prefill unsupported");
-        return -1;
-    }
-    if (kvf_paged) {
-        prefill_ubatch = kvflash_pager_.chunk_tokens();
+    auto kvflash_prefill_ubatch = [&]() {
+        const int chunk = kvflash_pager_.chunk_tokens();
+        int ubatch = std::max(prefill_ubatch, chunk);
+        ubatch = (ubatch / chunk) * chunk;
+        return std::max(ubatch, chunk);
+    };
+    const bool kvf_restore_suffix = kvf_paged && kv_offset != 0;
+    if (kvf_restore_suffix) {
+        const int chunk = kvflash_pager_.chunk_tokens();
+        if (kv_offset % chunk != 0) {
+            std::fprintf(stderr,
+                         "[kvflash] restore-consume: kv_offset=%d not chunk-aligned "
+                         "(chunk_tokens=%d)\n",
+                         kv_offset, chunk);
+            set_last_error("kvflash: restore-consume misaligned offset");
+            return -1;
+        }
+        prefill_ubatch = kvflash_prefill_ubatch();
+        std::printf("[kvflash] restore-consume suffix: offset=%d suffix=%d "
+                    "pool=%d chunk=%d ubatch=%d\n",
+                    kv_offset, prompt_len, kvflash_tokens_, chunk, prefill_ubatch);
+        std::fflush(stdout);
+    } else if (kvf_paged) {
+        const int chunk = kvflash_pager_.chunk_tokens();
+        prefill_ubatch = kvflash_prefill_ubatch();
         kvflash_pager_.reset();
         if (kvflash_qk_policy_) {
             kvflash_qk_pool_.reset(kvflash_qk_pool_.dims());
             kvflash_qk_pooled_upto_ = 0;
         }
         std::printf("[kvflash] pooled prefill: %d tokens through a %d-token pool "
-                    "(%d-token chunks, evicting)\n",
-                    prompt_len, kvflash_tokens_, prefill_ubatch);
+                    "(%d-token chunks, ubatch=%d, evicting)\n",
+                    prompt_len, kvflash_tokens_, chunk, prefill_ubatch);
         std::fflush(stdout);
     }
 
@@ -1060,36 +1190,70 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     // Chunked prefill
     std::vector<float> embed_buf((size_t)hidden * prefill_ubatch);
     int committed = kv_offset;
+    auto save_inline_snapshot = [&](int cur_pos) {
+        if (kvf_paged) return;
+        if (snap_slot < 0 || snap_pos < 0 || snap_pos != cur_pos) return;
+        if (cur_pos > kv_offset) {
+            cache_.cur_pos = cur_pos;
+            if (snapshot_save(snap_slot)) {
+                std::printf("[snap] boundary slot=%d cur_pos=%d\n",
+                            snap_slot, cur_pos);
+                std::fflush(stdout);
+            }
+        }
+        snap_pos = -1;
+        snap_slot = -1;
+    };
+    auto pooled_snapshot_boundary = [&]() {
+        if (!kvf_paged || snap_slot < 0 || snap_pos < 0) return -1;
+        const int chunk = kvflash_pager_.chunk_tokens();
+        return (snap_pos / chunk) * chunk;
+    };
+    auto save_pooled_snapshot = [&](int cur_pos) {
+        const int boundary = pooled_snapshot_boundary();
+        if (boundary < 0 || cur_pos != boundary) return;
+        if (cur_pos <= kv_offset) {
+            snap_pos = -1;
+            snap_slot = -1;
+            return;
+        }
+        const int chunk = kvflash_pager_.chunk_tokens();
+        const int max_chunks = cur_pos / chunk;
+        const int requested_snap_pos = snap_pos;
+        if (max_chunks > 0) {
+            if (snapshot_save_pooled_at(snap_slot, cur_pos)) {
+                std::printf("[snap] pooled boundary slot=%d cur_pos=%d "
+                            "(req snap_pos=%d max_chunks=%d)\n",
+                            snap_slot, cur_pos, requested_snap_pos, max_chunks);
+                std::fflush(stdout);
+            } else {
+                std::fprintf(stderr,
+                             "[kvflash] pooled boundary snapshot failed at cur_pos=%d\n",
+                             cur_pos);
+            }
+        }
+        snap_pos = -1;
+        snap_slot = -1;
+    };
+    save_inline_snapshot(committed);
+    save_pooled_snapshot(committed);
     for (int start = 0; start < prompt_len;) {
         const int kv_pos = kv_offset + start;
 
         int n_tokens = std::min(prefill_ubatch, prompt_len - start);
-        // FIX(bug2): do NOT shrink the prefill chunk to snap_pos. Shrinking
-        // realigns every subsequent chunk, changing GPU batch sizes vs the
-        // no-cache path -> FP-nondeterministic state divergence -> different
-        // greedy output on cache hits. Keep uniform chunks. When snap_pos falls
-        // inside this chunk, snapshot at the chunk START boundary kv_pos: the
-        // largest chunk boundary <= snap_pos. That stays (a) chunk-aligned, so
-        // the prefill is bit-identical to the no-cache path, and (b) strictly
-        // within the requested prefix, so a later request that shares only the
-        // system-prompt prefix still restores a valid cross-request hit.
-        // (Rounding UP would push the snapshot to prompt end -> the full prompt
-        // incl. the user message -> a different user msg restores garbage.)
-        if (snap_slot >= 0 && snap_pos >= 0 &&
-            kv_pos <= snap_pos && snap_pos < kv_pos + n_tokens) {
-            if (kv_pos > kv_offset && !kvf_paged) {   // skip degenerate / relocated
-                cache_.cur_pos = kv_pos;
-                if (snapshot_save(snap_slot)) {
-                    std::printf("[snap] boundary slot=%d cur_pos=%d (req snap_pos=%d)\n",
-                                snap_slot, kv_pos, snap_pos);
-                    std::fflush(stdout);
-                }
-            } else if (kvf_paged) {
-                std::fprintf(stderr, "[kvflash] boundary snapshot skipped: pooled "
-                                     "prefill relocates chunks\n");
+        if (!kvf_paged && prefill_ubatch > 0) {
+            const int phase = kv_pos % prefill_ubatch;
+            if (phase > 0) {
+                n_tokens = std::min(n_tokens, prefill_ubatch - phase);
             }
-            snap_pos = -1;
-            snap_slot = -1;
+        }
+        const int pooled_snap = pooled_snapshot_boundary();
+        if (pooled_snap > kv_pos && pooled_snap < kv_pos + n_tokens) {
+            n_tokens = pooled_snap - kv_pos;
+        }
+        if (!kvf_paged && snap_slot >= 0 && snap_pos > kv_pos &&
+            snap_pos < kv_pos + n_tokens) {
+            n_tokens = snap_pos - kv_pos;
         }
         const bool with_mask = kvf_paged ||
             (cfg_.kq_stride_pad > KQ_MASK_PAD) || (n_tokens > 1);
@@ -1115,12 +1279,14 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         // positions encode the complete context — critical for tool
         // definitions at prompt start to propagate into KV values that
         // decode-time windowed attention will later read.
+        const Qwen35PrefillLogitsPolicy logits_policy =
+            qwen35_prefill_logits_policy(n_tokens, vocab);
         if (!build_target_step(sg_, w_, cache_, target_backend_,
                                /*kv_start=*/kv_pos, /*n_tokens=*/n_tokens,
-                               with_mask, /*capture=*/true,
+                               with_mask, /*capture=*/capture_features,
                                /*capture_delta_intermediate=*/false,
                                /*fa_window=*/0,
-                               /*last_token_logits_only=*/(start + n_tokens < prompt_len),
+                               logits_policy.last_token_logits_only,
                                cfg_.kq_stride_pad,
                                should_capture_moe_router(),
                                /*kvflash_mask=*/kvf_paged)) {
@@ -1210,17 +1376,19 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
 
         int32_t last_tok = -1;
         const bool is_final_chunk = (start + n_tokens >= prompt_len);
-        const size_t argmax_off =
-            is_final_chunk ? sizeof(int32_t) * (size_t)(n_tokens - 1) : 0;
-        ggml_backend_tensor_get(sg_.argmax_tokens, &last_tok, argmax_off, sizeof(int32_t));
+        ggml_backend_tensor_get(sg_.argmax_tokens, &last_tok,
+                                logits_policy.argmax_offset_bytes,
+                                sizeof(int32_t));
         cache_.last_tok = last_tok;
         if (is_final_chunk) {
-            prefill_last_logits_offset_ = (size_t)(n_tokens - 1) * (size_t)vocab * sizeof(float);
+            prefill_last_logits_offset_ = logits_policy.logits_offset_bytes;
             prefill_last_logits_valid_ = true;
         }
 
         committed = kv_pos + n_tokens;
         cache_.cur_pos = committed;
+        save_inline_snapshot(committed);
+        save_pooled_snapshot(committed);
 
         // QK policy: pool the post-RoPE keys of chunks this batch sealed
         // (they are resident — sealed inside the protected tail window).
@@ -1241,11 +1409,21 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         if (kvf_paged) {
             // The pager mapping was built live during the pooled prefill;
             // only the history / hygiene parts of the sync apply.
-            kvflash_history_.assign(tokens.begin(), tokens.end());
+            if (kvf_restore_suffix) {
+                if (full_prompt && (int)full_prompt->size() >= kv_offset) {
+                    kvflash_history_.assign(full_prompt->begin(),
+                                            full_prompt->begin() + kv_offset);
+                } else {
+                    kvflash_history_.resize((size_t)kv_offset, 0);
+                }
+                kvflash_history_.insert(kvflash_history_.end(), tokens.begin(), tokens.end());
+            } else {
+                kvflash_history_.assign(tokens.begin(), tokens.end());
+            }
             kvflash_pager_.zero_free_blocks();
             kvflash_mask_epoch_ = (uint64_t)-1;
         } else {
-            kvflash_sync_prefill(committed, tokens, kv_offset);
+            kvflash_sync_prefill(committed, tokens, kv_offset, full_prompt);
         }
     }
 
@@ -1269,7 +1447,8 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
 
 void Qwen35Backend::kvflash_sync_prefill(int committed,
                                          const std::vector<int32_t> & tokens,
-                                         int kv_offset) {
+                                         int kv_offset,
+                                         const std::vector<int32_t> * full_prompt) {
     // Prefill (and snapshot restore) place rows physically contiguous at
     // [0, committed): rebuild the pager mapping identity-style and reset
     // the token history to match.
@@ -1286,7 +1465,12 @@ void Qwen35Backend::kvflash_sync_prefill(int committed,
     if (kv_offset == 0) {
         kvflash_history_.assign(tokens.begin(), tokens.end());
     } else {
-        kvflash_history_.resize((size_t)kv_offset, 0);  // restored prefix ids unknown
+        if (full_prompt && (int)full_prompt->size() >= kv_offset) {
+            kvflash_history_.assign(full_prompt->begin(),
+                                    full_prompt->begin() + kv_offset);
+        } else {
+            kvflash_history_.resize((size_t)kv_offset, 0);
+        }
         kvflash_history_.insert(kvflash_history_.end(), tokens.begin(), tokens.end());
     }
     // Slots past the prompt still hold the previous request's rows; the
@@ -1381,6 +1565,9 @@ void Qwen35Backend::kvflash_maybe_reselect(int generated) {
     if (!kvflash_scorer_->score_chunks(kvflash_history_, kvflash_pager_.chunk_tokens(), kvflash_scores_)) {
         return;  // scorer failure -> keep LRU behavior this round
     }
+    for (int c = 0; c < (int)kvflash_scores_.size() && c < kvflash_pager_.n_chunks(); c++) {
+        kvflash_pager_.set_chunk_score(c, kvflash_scores_[(size_t)c]);
+    }
     kvflash_pager_.score_hook = [this](int c) {
         return c < (int)kvflash_scores_.size() ? kvflash_scores_[c] : 1e30f;
     };
@@ -1398,7 +1585,8 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
                                   const DaemonIO & io,
                                   const BudgetHook & budget_hook,
                                   bool * forced_close_out,
-                                  bool * degenerate_close_out) {
+                                  bool * degenerate_close_out,
+                                  const std::vector<int32_t> * ar_hint_tokens) {
     // Budget hook state.
     //   - budget_close_started: true once we've begun injecting the close
     //     sequence. Prevents re-triggering on continued forward generation.
@@ -1498,6 +1686,41 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
     std::vector<float> embed_buf_vec(hidden);
     float * embed_buf = embed_buf_vec.data();
 
+    auto apply_ar_hint = [&](int32_t & tok) {
+        if (!ar_hint_tokens) return;
+        const size_t idx = out_tokens.size();
+        if (idx < ar_hint_tokens->size()) tok = (*ar_hint_tokens)[idx];
+    };
+
+    auto suppress_eos_under_floor = [&](int32_t & tok, size_t logits_offset,
+                                        const char * phase) {
+        if (_min_floor <= 0 || (int)out_tokens.size() >= _min_floor ||
+            !IS_EOS_TOK(tok, w_)) {
+            return;
+        }
+        if (!sg_.logits) return;
+        ggml_backend_tensor_get(sg_.logits, logits_buf.data(), logits_offset,
+                                sizeof(float) * (size_t)vocab);
+        int alt = -1;
+        float altbest = -1e30f;
+        for (int v = 0; v < vocab; v++) {
+            if (IS_EOS_TOK(v, w_)) continue;
+            if (logits_buf[(size_t)v] > altbest) {
+                altbest = logits_buf[(size_t)v];
+                alt = v;
+            }
+        }
+        if (alt >= 0) {
+            FILE * f = open_dflash_floor_log();
+            if (f) {
+                std::fprintf(f, "[floor] %s eos@%d -> alt=%d\n",
+                             phase, (int)out_tokens.size(), alt);
+                std::fclose(f);
+            }
+            tok = alt;
+        }
+    };
+
     // First token: consume the final prefill position.  Do not derive this
     // offset from committed/KV position: restore paths can prefill a delta at
     // nonzero KV offsets, and committed then no longer describes chunk size.
@@ -1522,6 +1745,10 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
         } else {
             first_tok = cache_.last_tok;
         }
+        apply_ar_hint(first_tok);
+        if (prefill_last_logits_valid_) {
+            suppress_eos_under_floor(first_tok, prefill_last_logits_offset_, "prefill");
+        }
         maybe_force_close(first_tok, committed);
         out_tokens.push_back(first_tok);
         io.emit(first_tok);
@@ -1531,7 +1758,16 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
         cache_.cur_pos = committed;
     }
 
-    // AR decode loop for remaining tokens
+    // AR decode loop for remaining tokens. In KVFlash pooled mode the graph is
+    // step-invariant inside each 256-row FA bucket: mutable inputs carry the
+    // token, position, slot rows, and mask. Reuse avoids per-token CUDA graph
+    // warmup churn on the long agentic path.
+    const bool ar_graph_reuse =
+        kvflash_active() && std::getenv("DFLASH_AR_NO_REUSE") == nullptr;
+    int ar_decode_fa_bucket = -1;
+    dflash::qwen35::ScopedSkipPropsCheck skip_props_guard(
+        &qwen35_set_skip_props_check, ar_graph_reuse);
+
     for (int i = initial_emitted; i < n_gen; i++) {
         int32_t tok = out_tokens.back();
 
@@ -1543,17 +1779,23 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
         // kvflash: graph carries a slot-validity mask alongside the
         // step-invariant set_rows write; the FA span clamps to the pool.
         const bool pool = kvflash_active();
-        if (!build_target_step(sg_, w_, cache_, target_backend_,
-                               /*kv_start=*/committed, /*n_tokens=*/1,
-                               /*with_mask=*/pool, /*capture=*/false,
-                               /*capture_delta_intermediate=*/false,
-                               /*fa_window=*/0,
-                               /*last_token_logits_only=*/false,
-                               cfg_.kq_stride_pad,
-                               should_capture_moe_router(),
-                               /*kvflash_mask=*/pool,
-                               /*capture_qk=*/pool && kvflash_qk_policy_)) {
-            return false;
+        const int fa_bucket = committed >> 8;
+        const bool need_rebuild =
+            !ar_graph_reuse || fa_bucket != ar_decode_fa_bucket;
+        if (need_rebuild) {
+            if (!build_target_step(sg_, w_, cache_, target_backend_,
+                                   /*kv_start=*/committed, /*n_tokens=*/1,
+                                   /*with_mask=*/pool, /*capture=*/false,
+                                   /*capture_delta_intermediate=*/false,
+                                   /*fa_window=*/0,
+                                   /*last_token_logits_only=*/false,
+                                   cfg_.kq_stride_pad,
+                                   should_capture_moe_router(),
+                                   /*kvflash_mask=*/pool,
+                                   /*capture_qk=*/pool && kvflash_qk_policy_)) {
+                return false;
+            }
+            ar_decode_fa_bucket = sg_.kv_write_rows ? fa_bucket : -1;
         }
 
         // Fill kv_write_rows with this step's cache slot for set_rows:
@@ -1575,7 +1817,9 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
         }
         if (pool) kvflash_upload_mask();
 
+        if (need_rebuild) skip_props_guard.set(false);
         auto st = ggml_backend_graph_compute(target_backend_, sg_.gf);
+        if (need_rebuild) skip_props_guard.set(ar_graph_reuse);
         if (st != GGML_STATUS_SUCCESS) return false;
 
         after_target_compute(sg_, committed, 1);
@@ -1605,29 +1849,11 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
             }
         }
 
+        apply_ar_hint(next_tok);
         // MIN_TOKENS_BEFORE_EOS (env DFLASH_MIN_TOKENS, default 0=off): if the
         // model tries to stop before producing N tokens in this decode call,
-        // suppress EOS and take the best NON-eos token instead. Targets the Q4
-        // 'preamble then stop, no tool_call' agentic stall. Env-gated so the
-        // default production lane is byte-for-byte unchanged.
-        {
-            if (_min_floor > 0 && (int)out_tokens.size() < _min_floor && IS_EOS_TOK(next_tok, w_)) {
-                int alt = -1; float altbest = -1e30f;
-                for (int v = 0; v < vocab; v++) {
-                    if (IS_EOS_TOK(v, w_)) continue;
-                    if (logits_buf[v] > altbest) { altbest = logits_buf[v]; alt = v; }
-                }
-                if (alt >= 0) {
-                    // Debug-only diagnostic: writes happen exclusively when the
-                    // operator opts into DFLASH_MIN_TOKENS, so the default
-                    // production lane never touches /tmp/dflash_floor.log.
-                    // Bound the local evidence file before appending.
-                    FILE* _d = open_dflash_floor_log();
-                    if (_d) { std::fprintf(_d, "[floor] eos@%d -> alt=%d\n", (int)out_tokens.size(), alt); std::fclose(_d); }
-                    next_tok = alt;
-                }
-            }
-        }
+        // suppress EOS and take the best NON-eos token instead.
+        suppress_eos_under_floor(next_tok, 0, "decode");
 
         maybe_force_close(next_tok, committed);
 
@@ -1750,6 +1976,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
                                     float & out_accept_rate,
                                     bool & out_spec_ran,
                                     const std::vector<int32_t> * hint_tokens,
+                                    const std::vector<int32_t> * ar_hint_tokens,
                                     const std::vector<int32_t> * stall_tool_prefix_tokens,
                                     const std::vector<int32_t> * stall_action_suffix_tokens,
                                     const std::vector<int32_t> * stall_skip_tokens,
@@ -1814,7 +2041,8 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         // still fires when spec-decode is unavailable.
         bool ok = do_ar_decode(committed, n_gen, out_tokens, io,
                                 budget_hook ? *budget_hook : BudgetHook{},
-                                forced_close_out, degenerate_close_out);
+                                forced_close_out, degenerate_close_out,
+                                ar_hint_tokens);
         io.emit(-1);
         return ok;
     }
@@ -1926,7 +2154,8 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             BudgetHook tail_hook = budget_hook ? *budget_hook : BudgetHook{};
             bool ok = do_ar_decode(committed, ar_n_gen, out_tokens, io,
                                     tail_hook, forced_close_out,
-                                    degenerate_close_out);
+                                    degenerate_close_out,
+                                    ar_hint_tokens);
             log_target_forward_stats();
             io.emit(-1);
             return ok;
@@ -2630,7 +2859,8 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             BudgetHook tail_hook = budget_hook ? *budget_hook : BudgetHook{};
             bool ok = do_ar_decode(committed, ar_n_gen, out_tokens, io,
                                     tail_hook, forced_close_out,
-                                    degenerate_close_out);
+                                    degenerate_close_out,
+                                    ar_hint_tokens);
             log_target_forward_stats();
             io.emit(-1);
             return ok;
@@ -2674,7 +2904,8 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             tail_hook.close_token_ids.clear();
             bool ok = do_ar_decode(committed, ar_n_gen, out_tokens, io,
                                     tail_hook, forced_close_out,
-                                    degenerate_close_out);
+                                    degenerate_close_out,
+                                    ar_hint_tokens);
             log_target_forward_stats();
             io.emit(-1);
             return ok;

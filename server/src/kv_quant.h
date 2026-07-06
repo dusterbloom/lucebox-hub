@@ -27,7 +27,7 @@ void validate_kv_pair_or_abort(ggml_type k, ggml_type v, const char * who);
 // Precedence (high -> low):
 //   1. DFLASH27B_KV_K=<type> / DFLASH27B_KV_V=<type>  (independent override)
 //   2. DFLASH27B_KV_F16 / _KV_Q4 / _KV_TQ3            (legacy shorthand, K==V)
-//   3. Default: GGML_TYPE_Q4_0 for both (with FWHT K-rotation)
+//   3. Default: GGML_TYPE_Q4_0 for both (Qwen35 graph WHT is policy-gated)
 // On invalid input or unsupported (K,V) pair, prints an explanatory message
 // and calls std::abort(). Returns the resolved pair via out params.
 void resolve_kv_types(ggml_type & k_out, ggml_type & v_out);

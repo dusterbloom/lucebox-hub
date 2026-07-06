@@ -147,6 +147,46 @@ static json shell_tools() {
     });
 }
 
+static json agent_tools() {
+    return json::array({
+        {{"type", "function"},
+         {"function", {
+             {"name", "Agent"},
+             {"description", "Launch a sub-agent for parallel work."},
+             {"parameters", {
+                 {"type", "object"},
+                 {"properties", {
+                     {"description", {{"type", "string"}}},
+                     {"prompt", {{"type", "string"}}},
+                     {"agent", {{"type", "string"}}},
+                     {"subagent_type", {{"type", "string"}}}
+                 }},
+                 {"required", json::array({"description", "prompt"})},
+                 {"additionalProperties", true}
+             }}
+         }}}
+    });
+}
+
+static json ask_user_tools() {
+    return json::array({
+        {{"type", "function"},
+         {"function", {
+             {"name", "AskUserQuestion"},
+             {"description", "Ask the user a blocking or clarifying question."},
+             {"parameters", {
+                 {"type", "object"},
+                 {"properties", {
+                     {"question", {{"type", "string"}}},
+                     {"options", {{"type", "array"}}}
+                 }},
+                 {"required", json::array({"question"})},
+                 {"additionalProperties", true}
+             }}
+         }}}
+    });
+}
+
 static json optional_shell_tools() {
     json tools = shell_tools();
     tools[0]["input_schema"].erase("required");
@@ -418,6 +458,112 @@ static void test_parse_tool_allowed_filter() {
     auto result = parse_tool_calls(text, tools);
     // Tool not in allow-list should be filtered
     TEST_ASSERT(result.tool_calls.empty());
+}
+
+static void test_parse_named_function_close_xml() {
+    std::string text =
+        "<function=Agent>\n"
+        "<parameter=description>\n"
+        "Phase 2: cherry-pick 53f63767 and implement serialize/deserialize for KvFlashPager"
+        "</parameter>\n"
+        "</agent>";
+    auto result = parse_tool_calls(text, agent_tools());
+    TEST_ASSERT(result.tool_calls.size() == 1);
+    if (!result.tool_calls.empty()) {
+        TEST_ASSERT(result.tool_calls[0].name == "Agent");
+        auto args = json::parse(result.tool_calls[0].arguments);
+        TEST_ASSERT(args["description"] ==
+                    "Phase 2: cherry-pick 53f63767 and implement serialize/deserialize for KvFlashPager");
+    }
+    TEST_ASSERT(result.cleaned_text.empty());
+}
+
+static void test_parse_named_function_close_with_suffix_xml() {
+    std::string text =
+        "<function=Agent>\n"
+        "<parameter=description>\n"
+        "Phase 1 fix\n"
+        "</parameter>\n"
+        "<parameter=prompt>\n"
+        "Apply minimal server changes.\n"
+        "</parameter>\n"
+        "<parameter=subagent_type>\n"
+        "sisyphus-junior\n"
+        "</parameter>\n"
+        "</agent_info>";
+    auto result = parse_tool_calls(text, agent_tools());
+    TEST_ASSERT(result.tool_calls.size() == 1);
+    if (!result.tool_calls.empty()) {
+        TEST_ASSERT(result.tool_calls[0].name == "Agent");
+        auto args = json::parse(result.tool_calls[0].arguments);
+        TEST_ASSERT(args["description"] == "Phase 1 fix");
+        TEST_ASSERT(args["prompt"] == "Apply minimal server changes.");
+        TEST_ASSERT(args["subagent_type"] == "sisyphus-junior");
+    }
+    TEST_ASSERT(result.cleaned_text.empty());
+}
+
+static void test_parse_named_function_close_id_suffix_xml() {
+    std::string text =
+        "<function=Agent>\n"
+        "<parameter=description>\n"
+        "Run G1 bit-identity gate\n"
+        "</parameter>\n"
+        "<parameter=subagent_type>\n"
+        "sisyphus-junior\n"
+        "</parameter>\n"
+        "</agentId>";
+    auto result = parse_tool_calls(text, agent_tools());
+    TEST_ASSERT(result.tool_calls.size() == 1);
+    if (!result.tool_calls.empty()) {
+        TEST_ASSERT(result.tool_calls[0].name == "Agent");
+        auto args = json::parse(result.tool_calls[0].arguments);
+        TEST_ASSERT(args["description"] == "Run G1 bit-identity gate");
+        TEST_ASSERT(args["subagent_type"] == "sisyphus-junior");
+    }
+    TEST_ASSERT(result.cleaned_text.empty());
+}
+
+static void test_parse_open_function_closed_params_at_eof_xml() {
+    std::string text =
+        "<function=Agent>\n"
+        "<parameter=description>\n"
+        "Run G1 bit-identity gate\n"
+        "</parameter>\n"
+        "<parameter=subagent>\n"
+        "Run the default gate once.\n"
+        "</parameter>\n"
+        "<parameter=subagent_type>\n"
+        "sisyphus-junior\n"
+        "</parameter>\n"
+        "</user";
+    auto result = parse_tool_calls(text, agent_tools());
+    TEST_ASSERT(result.tool_calls.size() == 1);
+    if (!result.tool_calls.empty()) {
+        TEST_ASSERT(result.tool_calls[0].name == "Agent");
+        auto args = json::parse(result.tool_calls[0].arguments);
+        TEST_ASSERT(args["description"] == "Run G1 bit-identity gate");
+        TEST_ASSERT(args["subagent"] == "Run the default gate once.");
+        TEST_ASSERT(args["subagent_type"] == "sisyphus-junior");
+    }
+    TEST_ASSERT(result.cleaned_text.empty());
+}
+
+static void test_parse_named_function_close_snake_case_xml() {
+    std::string text =
+        "<function=AskUserQuestion>\n"
+        "<parameter=question>\n"
+        "Should I continue with the full rerun?\n"
+        "</parameter>\n"
+        "</ask_user_question>";
+    auto result = parse_tool_calls(text, ask_user_tools());
+    TEST_ASSERT(result.tool_calls.size() == 1);
+    if (!result.tool_calls.empty()) {
+        TEST_ASSERT(result.tool_calls[0].name == "AskUserQuestion");
+        auto args = json::parse(result.tool_calls[0].arguments);
+        TEST_ASSERT(args["question"] == "Should I continue with the full rerun?");
+    }
+    TEST_ASSERT(result.cleaned_text.empty());
 }
 
 // ─── Pattern 5: call:<verb>{...} plain-text tool calls ─────────────────
@@ -925,6 +1071,38 @@ static void test_emitter_tool_buffer_detection() {
     TEST_ASSERT(em.accumulated_text().find("<tool_call>") == std::string::npos);
 }
 
+static void test_emitter_stops_on_complete_tool_buffer() {
+    auto em = make_emitter(ApiFormat::OPENAI_CHAT, weather_tools());
+    em.emit_start();
+    em.emit_token("<tool_call>\n<function=terminal>\n");
+    TEST_ASSERT(!em.stop_hit());
+    em.emit_token("<parameter=command>ls -la /tmp</parameter>\n"
+                  "</function>\n");
+
+    TEST_ASSERT(em.stop_hit());
+    TEST_ASSERT(em.tool_calls().size() == 1);
+    if (!em.tool_calls().empty()) {
+        TEST_ASSERT(em.tool_calls()[0].name == "terminal");
+        auto args = json::parse(em.tool_calls()[0].arguments);
+        TEST_ASSERT(args["command"] == "ls -la /tmp");
+    }
+
+    std::string finish = concat(em.emit_finish(12));
+    TEST_ASSERT(finish.find("\"finish_reason\":\"tool_calls\"") != std::string::npos);
+    TEST_ASSERT(em.accumulated_text().find("<tool_call>") == std::string::npos);
+}
+
+static void test_emitter_waits_for_incomplete_tool_buffer() {
+    auto em = make_emitter(ApiFormat::OPENAI_CHAT, weather_tools());
+    em.emit_start();
+    em.emit_token("<tool_call>\n"
+                  "<function=terminal>\n"
+                  "<parameter=command>ls -la /tmp");
+
+    TEST_ASSERT(!em.stop_hit());
+    TEST_ASSERT(em.tool_calls().empty());
+}
+
 static void test_emitter_anthropic_tool_use_blocks() {
     // The Anthropic streaming tool-use branch used to be a no-op; the model
     // would emit a <tool_call>...</tool_call> block, the parser would detect
@@ -1050,6 +1228,118 @@ static void test_emitter_parses_tool_call_missing_outer_close() {
     }
     TEST_ASSERT(em.accumulated_text().find("<tool_call>") == std::string::npos);
     TEST_ASSERT(em.accumulated_text().find("<function=terminal>") == std::string::npos);
+}
+
+static void test_emitter_stops_on_named_function_close() {
+    auto em = make_emitter(ApiFormat::OPENAI_CHAT, agent_tools());
+    em.emit_start();
+    em.emit_token("<function=Agent>\n"
+                  "<parameter=description>\n"
+                  "Phase 2 implementation\n"
+                  "</parameter>\n");
+    TEST_ASSERT(!em.stop_hit());
+    em.emit_token("<parameter=agent>\n"
+                  "Implement serialize/deserialize.\n"
+                  "</parameter>\n"
+                  "</agent>");
+
+    TEST_ASSERT(em.stop_hit());
+    TEST_ASSERT(em.tool_calls().size() == 1);
+    if (!em.tool_calls().empty()) {
+        TEST_ASSERT(em.tool_calls()[0].name == "Agent");
+        auto args = json::parse(em.tool_calls()[0].arguments);
+        TEST_ASSERT(args["description"] == "Phase 2 implementation");
+        TEST_ASSERT(args["agent"] == "Implement serialize/deserialize.");
+    }
+
+    std::string finish = concat(em.emit_finish(32));
+    TEST_ASSERT(finish.find("\"finish_reason\":\"tool_calls\"") != std::string::npos);
+    TEST_ASSERT(em.accumulated_text().find("<function=Agent>") == std::string::npos);
+}
+
+static void test_emitter_stops_on_named_function_suffix_close() {
+    auto em = make_emitter(ApiFormat::OPENAI_CHAT, agent_tools());
+    em.emit_start();
+    em.emit_token("<function=Agent>\n"
+                  "<parameter=description>\n"
+                  "Phase 1 fix\n"
+                  "</parameter>\n"
+                  "<parameter=prompt>\n"
+                  "Apply minimal server changes.\n"
+                  "</parameter>\n");
+    TEST_ASSERT(!em.stop_hit());
+    em.emit_token("<parameter=subagent_type>\n"
+                  "sisyphus-junior\n"
+                  "</parameter>\n"
+                  "</agent_info>");
+
+    TEST_ASSERT(em.stop_hit());
+    TEST_ASSERT(em.tool_calls().size() == 1);
+    if (!em.tool_calls().empty()) {
+        TEST_ASSERT(em.tool_calls()[0].name == "Agent");
+        auto args = json::parse(em.tool_calls()[0].arguments);
+        TEST_ASSERT(args["prompt"] == "Apply minimal server changes.");
+        TEST_ASSERT(args["subagent_type"] == "sisyphus-junior");
+    }
+
+    std::string finish = concat(em.emit_finish(48));
+    TEST_ASSERT(finish.find("\"finish_reason\":\"tool_calls\"") != std::string::npos);
+    TEST_ASSERT(em.accumulated_text().find("<function=Agent>") == std::string::npos);
+}
+
+static void test_emitter_stops_on_named_function_id_suffix_close() {
+    auto em = make_emitter(ApiFormat::OPENAI_CHAT, agent_tools());
+    em.emit_start();
+    em.emit_token("<function=Agent>\n"
+                  "<parameter=description>\n"
+                  "Run G1 bit-identity gate\n"
+                  "</parameter>\n"
+                  "<parameter=subagent_type>\n"
+                  "sisyphus-junior\n"
+                  "</parameter>\n");
+    TEST_ASSERT(!em.stop_hit());
+    em.emit_token("</agentId>");
+
+    TEST_ASSERT(em.stop_hit());
+    TEST_ASSERT(em.tool_calls().size() == 1);
+    if (!em.tool_calls().empty()) {
+        TEST_ASSERT(em.tool_calls()[0].name == "Agent");
+        auto args = json::parse(em.tool_calls()[0].arguments);
+        TEST_ASSERT(args["description"] == "Run G1 bit-identity gate");
+        TEST_ASSERT(args["subagent_type"] == "sisyphus-junior");
+    }
+
+    std::string finish = concat(em.emit_finish(48));
+    TEST_ASSERT(finish.find("\"finish_reason\":\"tool_calls\"") != std::string::npos);
+    TEST_ASSERT(em.accumulated_text().find("<function=Agent>") == std::string::npos);
+}
+
+static void test_emitter_finishes_open_function_with_closed_params() {
+    auto em = make_emitter(ApiFormat::OPENAI_CHAT, agent_tools());
+    em.emit_start();
+    em.emit_token("<function=Agent>\n"
+                  "<parameter=description>\n"
+                  "Run G1 bit-identity gate\n"
+                  "</parameter>\n"
+                  "<parameter=subagent>\n"
+                  "Run the default gate once.\n"
+                  "</parameter>\n"
+                  "<parameter=subagent_type>\n"
+                  "sisyphus-junior\n"
+                  "</parameter>\n"
+                  "</user");
+    TEST_ASSERT(!em.stop_hit());
+
+    std::string finish = concat(em.emit_finish(256));
+    TEST_ASSERT(em.tool_calls().size() == 1);
+    if (!em.tool_calls().empty()) {
+        TEST_ASSERT(em.tool_calls()[0].name == "Agent");
+        auto args = json::parse(em.tool_calls()[0].arguments);
+        TEST_ASSERT(args["description"] == "Run G1 bit-identity gate");
+        TEST_ASSERT(args["subagent"] == "Run the default gate once.");
+    }
+    TEST_ASSERT(finish.find("\"finish_reason\":\"tool_calls\"") != std::string::npos);
+    TEST_ASSERT(em.accumulated_text().find("<function=Agent>") == std::string::npos);
 }
 
 static void test_emitter_no_tools_keeps_tool_like_text() {
@@ -1351,6 +1641,41 @@ static void test_find_boundaries_empty() {
     std::vector<int32_t> ids;
     auto bounds = find_all_boundaries(ids, markers);
     TEST_ASSERT(bounds.empty());
+}
+
+static ChatMarkers synthetic_chat_markers() {
+    ChatMarkers markers;
+    markers.family = "synthetic";
+    markers.sys_role_prefix = {1};
+    markers.end_msg_seqs = {{2}};
+    markers.next_role_starts = {{3}};
+    return markers;
+}
+
+static void test_find_boundaries_skips_unmatched_content_markers() {
+    auto markers = synthetic_chat_markers();
+    std::vector<int32_t> ids = {
+        1, 100, 2, 3,
+        200, 2, 901, 902, 903, 904, 905, 201, 2, 3, 202
+    };
+
+    auto bounds = find_all_boundaries(ids, markers);
+    TEST_ASSERT(bounds.size() == 2);
+    TEST_ASSERT(bounds[0] == 4);
+    TEST_ASSERT(bounds[1] == 14);
+}
+
+static void test_prefix_cache_prepares_newest_boundary_after_stale_content_marker() {
+    auto markers = synthetic_chat_markers();
+    PrefixCache cache(2, markers);
+    std::vector<int32_t> ids = {
+        1, 100, 2, 3,
+        200, 2, 901, 902, 903, 904, 905, 201, 2, 3, 202
+    };
+
+    auto prep = cache.prepare_inline_snap(ids);
+    TEST_ASSERT(prep.first == 0);
+    TEST_ASSERT(prep.second == 14);
 }
 
 // ── Prefix-aware eviction policy (model-free) ───────────────────────────
@@ -1733,6 +2058,26 @@ static void test_jinja_render_tools_injected() {
     std::string out = render_chat_template_jinja(
         TPL, msgs, "", "", false, false, tools);
     TEST_ASSERT(out.find("TOOLS_PRESENT:my_tool") != std::string::npos);
+}
+
+static void test_jinja_render_message_tool_calls() {
+    static const char TPL[] =
+        "{%- for m in messages -%}"
+        "{%- if m.tool_calls -%}"
+        "{%- set tool_call = m.tool_calls[0].function -%}"
+        "CALL:{{ tool_call.name }}:"
+        "{%- for args_name, args_value in tool_call.arguments|items -%}"
+        "{{ args_name }}={{ args_value }}"
+        "{%- endfor -%}"
+        "{%- endif -%}"
+        "{%- endfor -%}";
+    std::vector<ChatMessage> msgs = {
+        {"assistant", "", "", R"([{"id":"call_1","type":"function","function":{"name":"Bash","arguments":"{\"command\":\"pwd\"}"}}])"},
+    };
+    std::string out = render_chat_template_jinja(
+        TPL, msgs, "", "", false, false, "");
+    TEST_ASSERT(out.find("CALL:Bash:") != std::string::npos);
+    TEST_ASSERT(out.find("command=pwd") != std::string::npos);
 }
 
 static void test_jinja_render_empty_tools_skipped() {
@@ -4385,6 +4730,11 @@ int main() {
     RUN_TEST(test_parse_no_tools);
     RUN_TEST(test_parse_tool_code_wrapper);
     RUN_TEST(test_parse_tool_allowed_filter);
+    RUN_TEST(test_parse_named_function_close_xml);
+    RUN_TEST(test_parse_named_function_close_with_suffix_xml);
+    RUN_TEST(test_parse_named_function_close_id_suffix_xml);
+    RUN_TEST(test_parse_open_function_closed_params_at_eof_xml);
+    RUN_TEST(test_parse_named_function_close_snake_case_xml);
     RUN_TEST(test_parse_call_verb_empty_args);
     RUN_TEST(test_parse_call_verb_strict_json_args);
     RUN_TEST(test_parse_call_verb_namespaced_verb);
@@ -4422,12 +4772,18 @@ int main() {
     RUN_TEST(test_emitter_reasoning_strips_leading_think_tag);
     RUN_TEST(test_emitter_content_only_no_thinking);
     RUN_TEST(test_emitter_tool_buffer_detection);
+    RUN_TEST(test_emitter_stops_on_complete_tool_buffer);
+    RUN_TEST(test_emitter_waits_for_incomplete_tool_buffer);
     RUN_TEST(test_emitter_anthropic_tool_use_blocks);
     RUN_TEST(test_emitter_single_tool_bare_json_args);
     RUN_TEST(test_emitter_bare_json_args_do_not_trigger_after_content);
     RUN_TEST(test_emitter_bare_function_tool_buffer_detection);
     RUN_TEST(test_emitter_does_not_leak_malformed_tool_xml);
     RUN_TEST(test_emitter_parses_tool_call_missing_outer_close);
+    RUN_TEST(test_emitter_stops_on_named_function_close);
+    RUN_TEST(test_emitter_stops_on_named_function_suffix_close);
+    RUN_TEST(test_emitter_stops_on_named_function_id_suffix_close);
+    RUN_TEST(test_emitter_finishes_open_function_with_closed_params);
     RUN_TEST(test_emitter_no_tools_keeps_tool_like_text);
     RUN_TEST(test_emitter_anthropic_structure);
     RUN_TEST(test_emitter_responses_structure);
@@ -4454,6 +4810,8 @@ int main() {
     RUN_TEST(test_hash_prefix_different_lengths);
     RUN_TEST(test_hash_prefix_empty);
     RUN_TEST(test_find_boundaries_empty);
+    RUN_TEST(test_find_boundaries_skips_unmatched_content_markers);
+    RUN_TEST(test_prefix_cache_prepares_newest_boundary_after_stale_content_marker);
     RUN_TEST(test_evict_empty_is_zero);
     RUN_TEST(test_evict_single_is_zero);
     RUN_TEST(test_evict_chain_keeps_ancestors);
@@ -4496,6 +4854,7 @@ int main() {
     RUN_TEST(test_jinja_render_basic);
     RUN_TEST(test_jinja_render_no_gen_prompt);
     RUN_TEST(test_jinja_render_tools_injected);
+    RUN_TEST(test_jinja_render_message_tool_calls);
     RUN_TEST(test_jinja_render_empty_tools_skipped);
     RUN_TEST(test_jinja_render_bos_eos_threaded);
     RUN_TEST(test_jinja_render_empty_template_throws);

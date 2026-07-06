@@ -56,6 +56,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -418,11 +419,176 @@ public:
         return events;
     }
 
+    // Snapshot resident+paged-out chunks into a flat byte blob.
+    // Layout (magic "KVFLASH1"):
+    //   8-byte magic
+    //   8 x uint32 header:
+    //     nc, chunk_tokens, n_head_kv, k_seg_bytes, v_seg_bytes,
+    //     chunk_bytes, kv_k_type_u32, has_ledger
+    //   nc x chunk_bytes raw KV bytes
+    //   nc x 8-byte ledger entries when has_ledger=1:
+    //     uint8 was_resident, 3 pad bytes, float score
+    std::vector<uint8_t> serialize(int max_chunks = -1) const {
+        static constexpr uint64_t kMagic = 0x4b56464c41534831ULL; // "KVFLASH1"
+        const int nc = (max_chunks >= 0 && max_chunks < (int)chunks_.size())
+            ? max_chunks
+            : (int)chunks_.size();
+        const size_t hdr = sizeof(uint64_t) + 8 * sizeof(uint32_t);
+        const size_t ledger_entry = 8;
+        const size_t total = hdr + (size_t)nc * chunk_bytes_ + (size_t)nc * ledger_entry;
+        std::vector<uint8_t> out(total, 0);
+
+        uint8_t * p = out.data();
+        std::memcpy(p, &kMagic, sizeof(kMagic));
+        p += sizeof(kMagic);
+        auto w32 = [&](uint32_t v) {
+            std::memcpy(p, &v, sizeof(v));
+            p += sizeof(v);
+        };
+        w32((uint32_t)nc);
+        w32((uint32_t)cfg_.chunk_tokens);
+        w32((uint32_t)n_head_kv_);
+        w32((uint32_t)k_seg_bytes_);
+        w32((uint32_t)v_seg_bytes_);
+        w32((uint32_t)chunk_bytes_);
+        const uint32_t kv_k_type = (!attn_k_.empty() && attn_k_[0])
+            ? (uint32_t)attn_k_[0]->type
+            : (uint32_t)GGML_TYPE_F16;
+        w32(kv_k_type);
+        w32(1u); // has_ledger
+
+        for (int c = 0; c < nc; ++c) {
+            uint8_t * dst = out.data() + hdr + (size_t)c * chunk_bytes_;
+            const ChunkState & st = chunks_[c];
+            if (st.block >= 0) {
+                uint8_t * q = dst;
+                for (size_t l = 0; l < attn_k_.size(); ++l) {
+                    for (int kv = 0; kv < 2; ++kv) {
+                        ggml_tensor * t = kv == 0 ? attn_k_[l] : attn_v_[l];
+                        const size_t seg = kv == 0 ? k_seg_bytes_ : v_seg_bytes_;
+                        for (int h = 0; h < n_head_kv_; ++h) {
+                            const size_t off =
+                                (size_t)st.block * cfg_.chunk_tokens * t->nb[1] +
+                                (size_t)h * t->nb[2];
+                            ggml_backend_tensor_get(t, q, off, seg);
+                            q += seg;
+                        }
+                    }
+                }
+            } else if (st.on_host) {
+#ifdef KVFLASH_HAS_ASYNC_DMA
+                std::memcpy(dst, st.host_data, chunk_bytes_);
+#else
+                std::memcpy(dst, st.host_data.data(), chunk_bytes_);
+#endif
+            }
+        }
+
+        uint8_t * lp = out.data() + hdr + (size_t)nc * chunk_bytes_;
+        for (int c = 0; c < nc; ++c) {
+            const ChunkState & st = chunks_[c];
+            const uint8_t was_res = st.block >= 0 ? 1u : 0u;
+            std::memcpy(lp, &was_res, 1);
+            lp += 4;
+            std::memcpy(lp, &st.score, sizeof(st.score));
+            lp += sizeof(st.score);
+        }
+        return out;
+    }
+
+    bool deserialize(const uint8_t * data, size_t n) {
+        static constexpr uint64_t kMagic = 0x4b56464c41534831ULL; // "KVFLASH1"
+        const size_t hdr = sizeof(uint64_t) + 8 * sizeof(uint32_t);
+        if (n < hdr) return false;
+
+        const uint8_t * p = data;
+        uint64_t magic = 0;
+        std::memcpy(&magic, p, sizeof(magic));
+        p += sizeof(magic);
+        if (magic != kMagic) return false;
+        auto r32 = [&]() {
+            uint32_t v = 0;
+            std::memcpy(&v, p, sizeof(v));
+            p += sizeof(v);
+            return v;
+        };
+        const int nc          = (int)r32();
+        const int ct          = (int)r32();
+        const int nhkv        = (int)r32();
+        const size_t kseg     = (size_t)r32();
+        const size_t vseg     = (size_t)r32();
+        const size_t cb       = (size_t)r32();
+        const uint32_t k_type = r32();
+        const uint32_t has_led = r32();
+
+        if (ct != cfg_.chunk_tokens || nhkv != n_head_kv_ ||
+            kseg != k_seg_bytes_ || vseg != v_seg_bytes_ || cb != chunk_bytes_) {
+            return false;
+        }
+        const uint32_t live_k_type = (!attn_k_.empty() && attn_k_[0])
+            ? (uint32_t)attn_k_[0]->type
+            : (uint32_t)GGML_TYPE_F16;
+        if (k_type != live_k_type) return false;
+
+        const size_t ledger_entry = 8;
+        const size_t kv_section = (size_t)nc * chunk_bytes_;
+        const size_t expected = hdr + kv_section + (has_led ? (size_t)nc * ledger_entry : 0);
+        if (n < expected) return false;
+
+        std::vector<uint8_t> ledger_was_res((size_t)nc, 1u);
+        std::vector<float> ledger_scores((size_t)nc, -std::numeric_limits<float>::infinity());
+        if (has_led) {
+            const uint8_t * lp = data + hdr + kv_section;
+            for (int c = 0; c < nc; ++c) {
+                std::memcpy(&ledger_was_res[(size_t)c], lp, 1);
+                lp += 4;
+                std::memcpy(&ledger_scores[(size_t)c], lp, sizeof(float));
+                lp += sizeof(float);
+            }
+        }
+
+        reset();
+        last_serialized_kv_k_type_ = k_type;
+        chunks_.resize((size_t)nc);
+        for (int c = 0; c < nc; ++c) {
+            const uint8_t * src = data + hdr + (size_t)c * chunk_bytes_;
+            ChunkState & st = chunks_[(size_t)c];
+#ifdef KVFLASH_HAS_ASYNC_DMA
+            if (!st.host_data) {
+                if (cudaMallocHost(&st.host_data, chunk_bytes_) != cudaSuccess) return false;
+                stats_.host_bytes += (int64_t)chunk_bytes_;
+            }
+            std::memcpy(st.host_data, src, chunk_bytes_);
+#else
+            st.host_data.assign(src, src + chunk_bytes_);
+#endif
+            st.on_host = true;
+            st.score = ledger_scores[(size_t)c];
+            if (ledger_was_res[(size_t)c]) {
+                if (slot_for((int64_t)c * cfg_.chunk_tokens) < 0) return false;
+            }
+        }
+#ifdef KVFLASH_HAS_ASYNC_DMA
+        if (has_pending_page_in_) synchronize_paging();
+#endif
+        return true;
+    }
+
+    void set_chunk_score(int c, float s) {
+        if (c >= 0 && c < (int)chunks_.size()) chunks_[(size_t)c].score = s;
+    }
+    float chunk_score(int c) const {
+        if (c >= 0 && c < (int)chunks_.size()) return chunks_[(size_t)c].score;
+        return -std::numeric_limits<float>::infinity();
+    }
+    uint32_t serialized_kv_k_type() const { return last_serialized_kv_k_type_; }
+
 private:
     struct ChunkState {
         int      block    = -1;       // pool block index, -1 = not resident
         bool     on_host  = false;    // backing store holds valid bytes
         uint64_t last_use = 0;
+        float    score    = -std::numeric_limits<float>::infinity();
 #ifdef KVFLASH_HAS_ASYNC_DMA
         void *   host_data = nullptr; // cudaMallocHost-pinned; allocated on first page_out
 #else
@@ -571,6 +737,7 @@ private:
     int n_blocks_ = 0, n_head_kv_ = 0, cur_chunk_ = 0;
     uint64_t clock_ = 0;
     uint64_t epoch_ = 0;
+    uint32_t last_serialized_kv_k_type_ = (uint32_t)GGML_TYPE_F16;
 
 #ifdef KVFLASH_HAS_ASYNC_DMA
     cudaStream_t page_stream_ = nullptr;

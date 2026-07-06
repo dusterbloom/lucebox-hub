@@ -18,6 +18,8 @@ struct ChatMessage {
     std::string content;    // message text
     // Optional tool_call_id for tool result messages.
     std::string tool_call_id;
+    // Optional OpenAI-style assistant tool_calls array, serialized as JSON.
+    std::string tool_calls_json;
 };
 
 // Chat template format.
