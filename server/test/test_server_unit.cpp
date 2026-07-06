@@ -1353,6 +1353,41 @@ static void test_find_boundaries_empty() {
     TEST_ASSERT(bounds.empty());
 }
 
+static ChatMarkers synthetic_chat_markers() {
+    ChatMarkers markers;
+    markers.family = "synthetic";
+    markers.sys_role_prefix = {1};
+    markers.end_msg_seqs = {{2}};
+    markers.next_role_starts = {{3}};
+    return markers;
+}
+
+static void test_find_boundaries_skips_unmatched_content_markers() {
+    auto markers = synthetic_chat_markers();
+    std::vector<int32_t> ids = {
+        1, 100, 2, 3,
+        200, 2, 901, 902, 903, 904, 905, 201, 2, 3, 202
+    };
+
+    auto bounds = find_all_boundaries(ids, markers);
+    TEST_ASSERT(bounds.size() == 2);
+    TEST_ASSERT(bounds[0] == 4);
+    TEST_ASSERT(bounds[1] == 14);
+}
+
+static void test_prefix_cache_prepares_newest_boundary_after_stale_content_marker() {
+    auto markers = synthetic_chat_markers();
+    PrefixCache cache(2, markers);
+    std::vector<int32_t> ids = {
+        1, 100, 2, 3,
+        200, 2, 901, 902, 903, 904, 905, 201, 2, 3, 202
+    };
+
+    auto prep = cache.prepare_inline_snap(ids);
+    TEST_ASSERT(prep.first == 0);
+    TEST_ASSERT(prep.second == 14);
+}
+
 // ── Prefix-aware eviction policy (model-free) ───────────────────────────
 
 static void test_evict_empty_is_zero() {
@@ -4454,6 +4489,8 @@ int main() {
     RUN_TEST(test_hash_prefix_different_lengths);
     RUN_TEST(test_hash_prefix_empty);
     RUN_TEST(test_find_boundaries_empty);
+    RUN_TEST(test_find_boundaries_skips_unmatched_content_markers);
+    RUN_TEST(test_prefix_cache_prepares_newest_boundary_after_stale_content_marker);
     RUN_TEST(test_evict_empty_is_zero);
     RUN_TEST(test_evict_single_is_zero);
     RUN_TEST(test_evict_chain_keeps_ancestors);

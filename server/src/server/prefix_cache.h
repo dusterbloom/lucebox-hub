@@ -20,6 +20,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace dflash::common {
@@ -44,6 +45,18 @@ std::vector<int> find_all_boundaries(const std::vector<int32_t> & ids,
 // SHA-1 hash of a prefix (truncated to 16 bytes).
 using PrefixHash = std::array<uint8_t, 16>;
 PrefixHash hash_prefix(const int32_t * ids, int count);
+
+// A prompt snapshot is valid if the request completed, produced at least one
+// token, the client stayed connected, and the backend actually saved the slot.
+// Visibility is not part of this predicate: tool calls often suppress visible
+// content, but the snapshot still captures a correct prompt boundary.
+inline bool prefix_cache_should_commit_snapshot(
+    bool result_ok, int completion_tokens,
+    bool client_disconnected, bool snapshot_used)
+{
+    return result_ok && completion_tokens > 0 &&
+        !client_disconnected && snapshot_used;
+}
 
 // Prefix-aware inline eviction policy. Given the cached prefixes in LRU order
 // (index 0 = oldest), return the index of the eviction victim: the oldest entry
@@ -76,6 +89,7 @@ public:
 
     // cap = number of prefix-cache slots (0 disables).
     PrefixCache(int cap, const Tokenizer & tokenizer);
+    PrefixCache(int cap, ChatMarkers markers);
 
     bool disabled() const { return disabled_; }
 
@@ -84,15 +98,32 @@ public:
 
     // ── Inline prefix cache ─────────────────────────────────────────
 
-    // Look up the longest cached prefix. Returns (slot, prefix_len) or (-1, 0).
-    std::pair<int, int> lookup(const std::vector<int32_t> & prompt_ids);
+    struct InlineLookup {
+        int slot = -1;
+        // Logical prompt boundary that matched the cache key.
+        int key_len = 0;
+        // Physical KV length saved in the backend snapshot. Inline entries are
+        // keyed by exact physical snapshot length, so restore knows how much KV
+        // is actually resident even when a later requested boundary rounded down.
+        int snapshot_len = 0;
+    };
+
+    // Look up the longest cached prefix.
+    InlineLookup lookup(const std::vector<int32_t> & prompt_ids);
 
     // Prepare an inline snapshot. Returns (slot, target_cut) or (-1, 0).
-    std::pair<int, int> prepare_inline_snap(const std::vector<int32_t> & prompt_ids);
+    std::pair<int, int> prepare_inline_snap(const std::vector<int32_t> & prompt_ids,
+                                            int preferred_slot = -1);
 
     // Confirm after daemon successfully saved the snapshot.
-    void confirm_inline_snap(int slot, int target_cut,
+    void confirm_inline_snap(int slot, int target_cut, int snapshot_len,
                              const std::vector<int32_t> & prompt_ids);
+
+    // Release a prepared inline snapshot without publishing the longer logical
+    // boundary. If the shorter physical snapshot is itself a valid prompt
+    // prefix, publish it under that exact shorter key.
+    void alias_inline_snap(int slot, int target_cut, int snapshot_len,
+                           const std::vector<int32_t> & prompt_ids);
 
     // Abort if the snapshot failed.
     void abort_inline_snap(int slot);
@@ -153,11 +184,12 @@ private:
     struct LruEntry {
         PrefixHash           hash;
         int                  slot;
+        int                  snapshot_len;
         std::vector<int32_t> ids;  // prefix tokens [0, target_cut) for prefix-aware eviction
     };
     std::vector<LruEntry> entries_;
     int next_slot_ = 0;
-    PrefixHash pending_evict_key_{};
+    int pending_evict_slot_ = -1;
     bool has_pending_evict_ = false;
 
     // Full-cache state
@@ -186,12 +218,23 @@ private:
     // data race per the C++ memory model. Bump these alongside every
     // push_back / erase / clear so the public introspection counters
     // stay well-defined. (Codex r1 P2 follow-up.)
-    std::atomic<int64_t> entries_size_count_{0};       // mirrors entries_.size()
+    std::atomic<int64_t> entries_size_count_{0};       // mirrors logical entries_.size()
+    std::atomic<int64_t> inline_slot_count_{0};        // mirrors distinct physical inline slots
     std::atomic<int64_t> full_entries_size_count_{0};  // mirrors full_entries_.size()
 
     // Helpers
     int find_entry(const PrefixHash & h) const;
     void move_to_end(int idx);
+    void erase_inline_at(int idx);
+    void erase_inline_slot(int slot);
+    void evict_pending_inline();
+    bool inline_slot_in_use(int slot) const;
+    int count_inline_slots() const;
+    int select_inline_evict_slot() const;
+    void publish_inline_counts();
+    void insert_inline_entry(int slot, int target_cut, int snapshot_len,
+                             const std::vector<int32_t> & prompt_ids,
+                             bool replace_slot_entries);
     int find_full_entry(const PrefixHash & h) const;
     void move_full_to_end(int idx);
 };
