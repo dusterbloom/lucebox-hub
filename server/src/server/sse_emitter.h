@@ -131,6 +131,7 @@ private:
 
     // Emit a content delta (format-specific).
     void emit_content_delta(std::vector<std::string> & out, const std::string & text);
+    bool try_complete_tool_buffer();
 
     // SSE data line
     static std::string sse_data(const std::string & json_str);
@@ -147,6 +148,8 @@ private:
     std::string  window_;           // holdback buffer
     std::string  tool_buffer_;      // accumulated tool text
     bool         tool_buffer_fallback_to_content_ = false;
+    bool         tool_buffer_complete_ = false;
+    std::string  tool_buffer_cleaned_text_;
     std::string  accumulated_content_;
     std::string  accumulated_raw_;  // all raw text for tool memory
     std::string  reasoning_text_;

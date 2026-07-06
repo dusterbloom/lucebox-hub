@@ -36,4 +36,9 @@ struct ToolParseResult {
 ToolParseResult parse_tool_calls(const std::string & text,
                                  const json & tools = json());
 
+// Return true when text contains a complete `<function=NAME>...</NAME>`
+// style call, including Qwen's occasional suffixed close tag such as
+// `</agent_info>` for `<function=Agent>`.
+bool tool_text_has_named_function_close(const std::string & text);
+
 }  // namespace dflash::common
