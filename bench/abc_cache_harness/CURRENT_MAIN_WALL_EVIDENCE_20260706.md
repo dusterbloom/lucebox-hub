@@ -21,14 +21,22 @@ natural-correctness row because tool validity is 17/38.
 
 | Arm | Wall s | Prefill s | Decode s | Weighted decode tok/s | Out tok | Fresh prefill tok | Tools | Fair row | Energy J | Evidence |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | --- |
-| `AR_35B_KVF_FORCE` current fixed | 211.4 | 58.5 | 130.0 | 129.462 | 16830 | 115430 | 38/38 | true | 62127.038 | `results/AR_35B_KVF_FORCE_20260706_120151_full_raw.json` |
-| `AR_35B_KVF_FORCE` best local | 177.2 | 59.5 | 95.3 | 126.821 | 12086 | 115430 | 38/38 | n/a older schema | n/a | `results/AR_35B_KVF_FORCE_20260702_193234_full_raw.json` |
+| `AR_35B_KVF_FORCE` current fixed, seeded | 211.4 | 58.5 | 130.0 | 129.462 | 16830 | 115430 | 38/38 | true | 62127.038 | `results/AR_35B_KVF_FORCE_20260706_120151_full_raw.json` |
+| `AR_35B_KVF_FORCE` best local, unseeded | 177.2 | 59.5 | 95.3 | 126.821 | 12086 | 115430 | 38/38 | n/a older schema | n/a | `results/AR_35B_KVF_FORCE_20260702_193234_full_raw.json` |
 | `AR_LLAMA_35B_SLOTCACHE` | 440.5 | 58.718 | 353.721 | 78.497 | 27766 | 121915 | 20/38 | n/a older schema | n/a | `results/AR_LLAMA_35B_SLOTCACHE_20260702_194357_full_raw.json` |
 
 MoE conclusion: dFlash wins wall-to-wall on the same 38-turn trace against the
 available llama.cpp slot-cache baseline. Current fixed row is 211.4s vs 440.5s;
 best local row is 177.2s vs 440.5s. It also wins weighted decode throughput and
 tool correctness.
+
+The 211.4s vs 177.2s gap is natural-output length, not slower decode. Both rows
+use the same trace bytes, model, chat template, ctx, q4_0 KV, `--kvflash-force`,
+fresh prefill tokens (115430), and cache hit ratio (0.941). The current seeded
+run generated 4744 more output tokens (16830 vs 12086), adding 34.7s decode
+time; prefill was actually 1.0s faster and weighted decode was slightly higher
+(129.462 vs 126.821 tok/s). The old 177.2s harness did not send request seeds;
+the current rerun did (`--send-seed`).
 
 ## Caveats
 
@@ -40,3 +48,7 @@ tool correctness.
 - The 35B best local and llama baseline are older-schema rows imported from the
   prior deathmatch worktree so the current branch keeps the comparison evidence
   together.
+- The 35B best local 177.2s row is not a current-provenance seeded reproduction.
+  Treat 211.4s as the conservative current-head seeded headline and 177.2s as
+  the best local unseeded wall result until rerun on the WIP branch under an
+  explicitly chosen no-seed contract.
