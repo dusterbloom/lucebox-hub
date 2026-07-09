@@ -8,8 +8,10 @@
 #
 # Both arms use --kvflash with prompt >> pool so the chunk loop + eviction run
 # (cold experts via DFLASH_EXPERT_BUDGET_MB keep moe_hybrid active so the MoE
-# chunk loop is the live path). max_ctx 131072 keeps the gate from disabling
-# KVFlash. This is the silent-corruption gate for PR A.
+# chunk loop is the live path). DFLASH_KVFLASH_FORCE keeps the pool active even
+# when the model fits all-hot on the card (otherwise the pool is auto-disabled
+# as pure overhead and the eviction path is never exercised). This is the
+# silent-corruption gate for PR A.
 #
 # Hardware-gated. TARGET=/path/...Q3_K_M.gguf bash test_kvflash_moe_paged.sh
 set -euo pipefail
@@ -49,7 +51,7 @@ PY
 # Asserts the chunk loop actually ran (pooled prefill + cold experts).
 generate() {
     local pool="$1" log out; log="$(mktemp)"; out="$(mktemp)"
-    ( flock "$LOCK" env DFLASH_EXPERT_BUDGET_MB="$EXPERT_CAP" "$SERVER_BIN" "$TARGET" \
+    ( flock "$LOCK" env DFLASH_EXPERT_BUDGET_MB="$EXPERT_CAP" DFLASH_KVFLASH_FORCE=1 "$SERVER_BIN" "$TARGET" \
         --host "$HOST" --port "$PORT" --max-ctx 131072 --kvflash "$pool" --model-name luce \
         --chat-template-file "$CHAT_TEMPLATE" >"$log" 2>&1 ) &
     local pid=$!

@@ -441,6 +441,21 @@ bool Qwen35MoeBackend::post_kvflash_init_gate() {
     // also gate off.
     if (!kvflash_active()) return true;
 
+    // DFLASH_KVFLASH_FORCE: keep the pool active even when placement is all-hot,
+    // so the pooled chunked-prefill (eviction) path can be exercised/benchmarked
+    // on hardware where the model otherwise fits all-hot (and the pool would be
+    // auto-disabled as pure overhead). Diagnostics/benchmarking only — the pool
+    // IS pure overhead when the model fits, so do not set in production.
+    if (std::getenv("DFLASH_KVFLASH_FORCE")) {
+        if (placement_all_hot_full_kv_) {
+            std::printf("[kvflash] force-active via DFLASH_KVFLASH_FORCE "
+                        "(would have disabled: all-hot at max_ctx %d)\n",
+                        cfg_.device.max_ctx);
+            std::fflush(stdout);
+        }
+        return true;
+    }
+
     bool should_disable = false;
 
     if (placement_all_hot_full_kv_) {
