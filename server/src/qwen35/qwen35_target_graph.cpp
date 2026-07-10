@@ -234,9 +234,14 @@ bool create_target_cache_partial(const TargetWeights & w,
                                                        head_v_dim, head_v_dim, w.ssm_dt_rank);
                 ggml_tensor * Cn = ggml_new_tensor_2d(out.rollback_ctx, GGML_TYPE_F32,
                                                        w.ssm_d_conv - 1, conv_ch);
-                ggml_tensor * Si = ggml_new_tensor_4d(out.rollback_ctx, GGML_TYPE_Q8_0,
+                // I0 domain: ne[3] is the root-inclusive flat verify-token
+                // domain. Tree capture writes t=0 synthetic root through the
+                // final/padded flat slot directly into slot t.
+                ggml_tensor * Si = ggml_new_tensor_4d(out.rollback_ctx, GGML_TYPE_F32,
                                                        head_v_dim, head_v_dim,
                                                        w.ssm_dt_rank, max_verify_tokens);
+                // I0 domain: ne[0] is [K_conv-1 prefix rows |
+                // root-inclusive verify rows].
                 ggml_tensor * Ci = ggml_new_tensor_3d(out.rollback_ctx, GGML_TYPE_F32,
                                                        (w.ssm_d_conv - 1) + max_verify_tokens,
                                                        conv_ch, 1);
@@ -254,6 +259,23 @@ bool create_target_cache_partial(const TargetWeights & w,
         }
 
         out.rollback_buf = ggml_backend_alloc_ctx_tensors(out.rollback_ctx, backend);
+        if (std::getenv("DFLASH_SPLIT_CHAIN_ROLLBACK_DIAG")) {
+            int owned_delta_layers = 0;
+            for (int il = 0; il < w.n_layer; ++il) {
+                if (((il + 1) % w.full_attention_interval) != 0 && il >= layer_begin && il < layer_end) {
+                    owned_delta_layers++;
+                }
+            }
+            const size_t elems_per_slot_per_layer = (size_t)head_v_dim * (size_t)head_v_dim * (size_t)w.ssm_dt_rank;
+            const size_t f32_bytes_per_slot_per_layer = elems_per_slot_per_layer * sizeof(float);
+            const size_t q8_bytes_per_slot_per_layer = ((elems_per_slot_per_layer + 31) / 32) * 34;
+            const size_t f32_total = f32_bytes_per_slot_per_layer * (size_t)max_verify_tokens * (size_t)owned_delta_layers;
+            const size_t q8_total = q8_bytes_per_slot_per_layer * (size_t)max_verify_tokens * (size_t)owned_delta_layers;
+            std::fprintf(stderr,
+                "[target-split][chain-rollback] split_ssm_intermediate_dtype=F32 split_ssm_intermediate_persist_dtype_dst=F32 split_ssm_intermediate_persist_quantized=0 layer_begin=%d layer_end=%d owned_delta_layers=%d max_verify_tokens=%d split_ssm_intermediate_f32_bytes=%zu split_ssm_intermediate_incremental_bytes_over_q8=%zu\n",
+                layer_begin, layer_end, owned_delta_layers, max_verify_tokens, f32_total,
+                f32_total > q8_total ? f32_total - q8_total : 0);
+        }
         if (!out.rollback_buf) {
             set_last_error("ggml_backend_alloc_ctx_tensors failed for rollback cache");
             ggml_free(out.rollback_ctx);
@@ -792,6 +814,9 @@ static ggml_tensor * build_delta_net_block(
     ggml_tensor * qkv_T = ggml_transpose(ctx, qkv_mixed);
 
     ggml_tensor * conv_input = ggml_concat(ctx, conv_states_r, qkv_T, 0);
+    // I0 domain: [0,K_conv-2] are prefix-history rows; tree token flat slot t
+    // (root-inclusive, including synthetic root t=0) is stored at
+    // conv_input row (K_conv-1)+t.
     // conv_input: [kernel-1 + n_tokens, conv_channels, n_seqs]
 
     // For spec-decode rollback: copy the full conv_input into the persistent
@@ -888,13 +913,12 @@ static ggml_tensor * build_delta_net_block(
     // path which handles F32→Q8_0 quantization automatically.
     // persist_inter: when capture is requested, route the kernel's per-token
     // intermediate-state writes DIRECTLY into the persistent cache buffer via
-    // src[7], avoiding the legacy result-region cpy. Works for BOTH tree and
-    // non-tree (chain-verify) capture — the kernel checks src[7] regardless of
-    // tree mode, and write_inter is forced true whenever src[7] is non-null.
-    // This also keeps non-tree capture safe if the result tensor is compacted
-    // and no longer embeds per-token intermediate states.
-    // Q8_0 intermediates fall through (persist requires F32/F16); the legacy
-    // cpy path below handles F32→Q8_0 quantization for that case (guarded).
+    // src[7], avoiding the legacy result-region cpy. This works for both tree
+    // and non-tree (chain-verify) capture and preserves upstream #469 semantics.
+    // Stage 2 split-chain rollback allocates F32 intermediates, so its checkpoint
+    // path is never quantized. In tree mode, n_seq_tokens is root-inclusive and
+    // flat slot t is persisted directly at ne[3] slot t.
+    // Q8_0 intermediates fall through to the guarded legacy copy path below.
     ggml_tensor * persist_inter = (cap && cap->ssm_intermediate_states
                                    && (cap->ssm_intermediate_states->type == GGML_TYPE_F32
                                        || cap->ssm_intermediate_states->type == GGML_TYPE_F16))
@@ -1044,7 +1068,8 @@ static ggml_tensor * build_single_layer(
     ggml_tensor *         q_tail_capture = nullptr,
     int                   q_tail_start = 0,
     ggml_tensor **        moe_selected_out = nullptr,
-    ggml_tensor *         kv_write_rows = nullptr)
+    ggml_tensor *         kv_write_rows = nullptr,
+    ggml_tensor *         parent_ids = nullptr)
 {
     const int hidden = w.n_embd;
     const float eps   = w.rms_eps;
@@ -1076,9 +1101,16 @@ static ggml_tensor * build_single_layer(
         for (int il = 0; il < layer_idx; il++) {
             if (((il + 1) % w.full_attention_interval) != 0) dn_idx++;
         }
+        DeltaNetCapture cap{};
+        DeltaNetCapture * cap_ptr = nullptr;
+        if (capture) {
+            cap_ptr = &cap;
+            cap_ptr->ssm_intermediate_states = cache.ssm_intermediate[dn_idx];
+            cap_ptr->conv_input              = cache.conv_input_cache[dn_idx];
+        }
         cur = build_delta_net_block(ctx, gf, w, L, cur,
                                     cache.conv_state[dn_idx], cache.ssm_state[dn_idx],
-                                    n_tokens, nullptr, nullptr,
+                                    n_tokens, cap_ptr, parent_ids,
                                     /*skip_gdn_intermediate=*/true);
     }
 
@@ -1334,12 +1366,13 @@ ggml_tensor * build_qwen35_layer(
     int                   fa_window,
     ggml_tensor *         q_tail_capture,
     int                   q_tail_start,
-    ggml_tensor *         kv_write_rows)
+    ggml_tensor *         kv_write_rows,
+    ggml_tensor *         parent_ids)
 {
     return build_single_layer(ctx, gf, w, cache, layer_idx, inp, positions,
                               attn_mask, kv_start, n_tokens, capture, fa_window,
                               q_tail_capture, q_tail_start, nullptr,
-                              kv_write_rows);
+                              kv_write_rows, parent_ids);
 }
 
 ggml_tensor * build_qwen35_layer(
@@ -1358,12 +1391,13 @@ ggml_tensor * build_qwen35_layer(
     ggml_tensor *         q_tail_capture,
     int                   q_tail_start,
     ggml_tensor **        moe_selected_out,
-    ggml_tensor *         kv_write_rows)
+    ggml_tensor *         kv_write_rows,
+    ggml_tensor *         parent_ids)
 {
     return build_single_layer(ctx, gf, w, cache, layer_idx, inp, positions,
                               attn_mask, kv_start, n_tokens, capture, fa_window,
                               q_tail_capture, q_tail_start, moe_selected_out,
-                              kv_write_rows);
+                              kv_write_rows, parent_ids);
 }
 
 QwenLayerPrefnOutputs build_qwen35_layer_prefn(
