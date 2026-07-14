@@ -48,7 +48,7 @@ Each one is self-contained with setup instructions and benchmark notes.
 
 ## Supported Models & Drafters
 
-All speedups measured vs vendored llama.cpp (`-fa 1`, matching KV quant). Combined = geometric mean √(TTFT × decode) where both phases benched; otherwise the single-phase speedup. Drafters published on [huggingface.co/Lucebox](https://huggingface.co/Lucebox).
+Unless noted, speedups are measured vs vendored llama.cpp (`-fa 1`, matching KV quant). Combined = geometric mean √(TTFT × decode) where both phases benched; otherwise the single-phase speedup. Drafters are linked at their publishing organization.
 
 <table>
 <tr>
@@ -63,6 +63,7 @@ All speedups measured vs vendored llama.cpp (`-fa 1`, matching KV quant). Combin
 | Laguna-XS-2.1 33B + DFlash | **1.7×** @256K |
 | Qwen 3.6-27B HIP | **~2.6×** |
 | Gemma-4-26B-A4B | **1.31×** |
+| Bonsai-27B Q1_0 + native DSpark | **1.21×†** |
 
 </td>
 <td valign="top">
@@ -72,11 +73,15 @@ All speedups measured vs vendored llama.cpp (`-fa 1`, matching KV quant). Combin
 | [`Qwen3.6-27B`](https://huggingface.co/Lucebox/Qwen3.6-27B-DFlash-GGUF) | decode |
 | [`gemma-4-26B-A4B`](https://huggingface.co/Lucebox/gemma-4-26B-A4B-it-DFlash-GGUF) | decode |
 | [`gemma-4-31B`](https://huggingface.co/Lucebox/gemma-4-31B-it-DFlash-GGUF) | decode |
+| [`Bonsai-27B DSpark`](https://huggingface.co/prism-ml/Bonsai-27B-gguf) | decode |
 | [`Qwen3-0.6B`](https://huggingface.co/Qwen/Qwen3-0.6B) | prefill |
 
 </td>
 </tr>
 </table>
+
+† Single 256-token code prompt on RTX 3090 versus Lucebox target-only AR;
+see the [Bonsai validation notes](server/RESULTS.md#bonsai-27b-q1_0-native-dspark).
 
 ## Tested Machines (GPU/APU)
 

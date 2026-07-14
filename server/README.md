@@ -36,6 +36,7 @@ This repo provides the GGUF target path and runtime pieces needed to run that st
 
 - C++/CUDA decode loop on top of ggml, without libllama or PyTorch at runtime.
 - Qwen3.5/Qwen3.6 `qwen35` GGUF target support.
+- Bonsai-27B Q1_0 targets with their native four-proposal DSpark GGUF drafter.
 - DFlash draft loading from GGUF or safetensors.
 - DDTree verify with tree-aware SSM rollback kernels.
 - TQ3_0 and asymmetric K/V cache quantization for long context.
@@ -142,6 +143,38 @@ DFLASH_TARGET=models/Qwen3.6-27B-Q4_K_M.gguf python3 scripts/bench_he.py --n-gen
 ```
 
 The default draft path is discovered under `models/draft/`. Scripts prefer `dflash-draft-*.gguf`, then any `.gguf`, then `model.safetensors`. Explicit `.gguf` and safetensors drafts still work via `DFLASH_DRAFT` / `--draft`; qwen35-compatible targets remain swappable via `DFLASH_TARGET` / `--target`.
+
+## Bonsai-27B Q1_0 native DSpark
+
+The public `prism-ml/Bonsai-27B-gguf` repository contains both the 1-bit
+Qwen3.6-derived target and its matched Q4_1 DSpark drafter. Lucebox detects the
+drafter's `general.architecture=dspark` metadata and uses its native contract:
+four proposal rows, a five-token target verify batch (anchor plus proposals),
+the drafter's output head and Markov correction, and its log-SNR conditioning.
+
+```bash
+hf download prism-ml/Bonsai-27B-gguf \
+  Bonsai-27B-Q1_0.gguf Bonsai-27B-dspark-Q4_1.gguf \
+  --local-dir models/bonsai/
+
+./build/dflash_server models/bonsai/Bonsai-27B-Q1_0.gguf \
+  --draft models/bonsai/Bonsai-27B-dspark-Q4_1.gguf \
+  --host 127.0.0.1 --port 18080 --max-ctx 16384 \
+  --model-name bonsai-27b
+```
+
+Native DSpark currently runs as a local chain with an unsplit target; target
+and draft may still use different local GPUs. It deliberately fails closed
+with `--ddtree`, `--draft-swa`, remote draft execution, or target layer
+splitting; those paths require separate DSpark-aware state contracts.
+This integration is text-only and does not load Bonsai's optional vision
+projector. `--no-fast-rollback` forces restore-and-replay for diagnostics.
+
+As with other speculative paths, a greedy batched verify is mathematically
+lossless but is not guaranteed to be byte-identical to token-at-a-time CUDA AR
+when the top logits are nearly tied; the different GEMM shapes can flip an
+argmax. See [the losslessness gate](../docs/specs/speed-profile.md#losslessness-gate-and-why-a-bit-exact-compare-is-too-strict-on-its-own)
+and [the measured Bonsai result](RESULTS.md#bonsai-27b-q1_0-native-dspark).
 
 ## Native C++ HTTP server
 

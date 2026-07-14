@@ -698,7 +698,14 @@ void free_draft_weights(DraftWeights & w) {
     w.fc = nullptr;
     w.hidden_norm = nullptr;
     w.out_norm = nullptr;
+    w.output = nullptr;
+    w.context_length = 0;
+    w.vocab_size = 0;
+    w.capture_layer_ids.clear();
+    w.proposal_layout = DraftProposalLayout::seed_then_proposals;
     w.domino = DraftDominoWeights{};
+    w.dspark = DraftDSparkWeights{};
+    w.log_snr = DraftLogSnrWeights{};
 }
 
 } // namespace dflash::common

@@ -18,6 +18,33 @@ AR = autoregressive target-only decode via `test_generate`.
 DFlash = block-diffusion draft + DDTree budget 22 verify + fast rollback.
 AL = mean committed tokens per draft/verify step (acceptance length).
 
+## Bonsai-27B Q1_0 native DSpark
+
+Validation run on an RTX 3090 (CUDA 12.6, greedy, concurrency 1) using the
+public `prism-ml/Bonsai-27B-gguf` pair at Hugging Face revision
+`0cf7e3d21581b169b4df1de8bf01316000e2fbb7`:
+
+- target `Bonsai-27B-Q1_0.gguf`, SHA-256
+  `17ef842e47450caeb8eaa3ebfbbab5d2f2278b62b79be107985fb69a2f819aa0`
+- drafter `Bonsai-27B-dspark-Q4_1.gguf`, SHA-256
+  `25e73f9f7ab5d1f7f1336711496dbc12da674e639ec88d579dc8683045befb1b`
+
+One 256-token Python code-generation prompt, after warmup:
+
+| Mode | Decode tok/s | Time | Accepted verify positions | Avg commit | Speedup |
+|------|-------------:|-----:|--------------------------:|-----------:|--------:|
+| target-only AR | 66.5 | 3.850 s | — | 1.00 | 1.00× |
+| native DSpark | **80.4** | **3.185 s** | 231/295 (78.3%) | 4.34 | **1.21×** |
+| native DSpark, `--no-fast-rollback` | 60.5 | 4.230 s | 231/295 (78.3%) | 4.34 | 0.91× |
+
+This is a focused bring-up measurement, not a multi-prompt headline suite.
+The AR control reproduced byte-for-byte across two target-only runs. Native
+DSpark diverged at a close greedy decision because width-5 CUDA verify and
+width-1 AR use different floating-point reduction shapes; every committed
+proposal was still accepted against the target's corresponding verify row.
+Use the repository speed profiler's determinism/logit-gap triage before making
+a strict bit-identical claim across batched and token-at-a-time execution.
+
 Datasets pulled live via HuggingFace `datasets`:
 - HumanEval — `openai_humaneval`, `prompt` field
 - GSM8K    — `gsm8k` main split, `Question: … Answer: ` format

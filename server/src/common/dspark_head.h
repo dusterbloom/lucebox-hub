@@ -8,6 +8,18 @@
 
 namespace dflash::common {
 
+// Append native DSpark's sequential Markov correction to an existing draft
+// graph. Every base-logit row is a proposal: row 0 is corrected from the
+// accepted anchor token, and each later row is corrected from the actual
+// argmax selected at the previous row.
+bool build_dspark_native_proposal_graph(
+    ggml_context * ctx,
+    ggml_cgraph * gf,
+    const DraftWeights & dw,
+    ggml_tensor * base_logits,
+    ggml_tensor * seed_token,
+    std::vector<ggml_tensor *> & proposal_tokens);
+
 bool dspark_markov_correct_greedy_chain(const DraftWeights & dw,
                                         ggml_backend_t backend,
                                         DFlashTarget & target,

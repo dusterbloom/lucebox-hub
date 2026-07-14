@@ -55,6 +55,14 @@ static bool build_draft_graph_internal(
     ggml_set_name(sg.inp_embed, "inp_embed");
     ggml_set_input(sg.inp_embed);
 
+    sg.noise_conditioning = nullptr;
+    if (dw.log_snr.enabled) {
+        sg.noise_conditioning = ggml_new_tensor_2d(
+            sg.ctx, GGML_TYPE_F32, 128, q_len);
+        ggml_set_name(sg.noise_conditioning, "draft_log_snr_features");
+        ggml_set_input(sg.noise_conditioning);
+    }
+
     if (mirror_view) {
         const size_t stride = mirror->target_feat->nb[1];
         sg.target_hidden_cat = ggml_view_3d(
@@ -110,6 +118,7 @@ static bool build_draft_graph_internal(
     DraftGraphInputs gi{};
     gi.ctx_len           = ctx_len;
     gi.noise_embed       = sg.inp_embed;
+    gi.noise_conditioning = sg.noise_conditioning;
     gi.target_hidden_cat = sg.target_hidden_cat;
     gi.positions_q       = sg.positions;
     gi.positions_k       = sg.positions_k;
@@ -247,6 +256,18 @@ bool build_draft_step(
 
     if (!ggml_gallocr_alloc_graph(sg.alloc, sg.gf)) {
         return false;
+    }
+
+    if (sg.noise_conditioning) {
+        std::vector<float> features;
+        if (!make_dspark_log_snr_features(dw.block_size,
+                                          dw.log_snr.min_log_snr,
+                                          dw.log_snr.max_log_snr,
+                                          features)) {
+            return false;
+        }
+        ggml_backend_tensor_set(sg.noise_conditioning, features.data(), 0,
+                                sizeof(float) * features.size());
     }
 
     if (do_pad) {

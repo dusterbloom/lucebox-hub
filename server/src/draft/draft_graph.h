@@ -12,6 +12,7 @@ struct DraftWeights; // fwd
 struct DraftGraphInputs {
     int           ctx_len;          // length of target_hidden_cat along ne[1]
     ggml_tensor * noise_embed;      // [hidden, q_len=16, 1] f32
+    ggml_tensor * noise_conditioning = nullptr; // optional [128, q_len] f32 LogSnrEmbed input
     ggml_tensor * target_hidden_cat;// [5*hidden, ctx_len, 1] f32
     ggml_tensor * positions_q;      // [q_len] i32   values [ctx_len..ctx_len+q_len-1]
     ggml_tensor * positions_k;      // [ctx_len+q_len] i32   values [0..ctx_len+q_len-1]
@@ -79,6 +80,7 @@ bool build_draft_kv_append(
 // masks carry window membership, causality and slot validity.
 struct DraftKvStepInputs {
     ggml_tensor * noise_embed = nullptr; // [hidden, q_len] f32
+    ggml_tensor * noise_conditioning = nullptr; // optional [128, q_len] f32
     ggml_tensor * positions_q = nullptr; // [q_len] i32, absolute
     ggml_tensor * noise_rows = nullptr;  // [q_len] i32, scratch cache slots
     ggml_tensor * mask_full = nullptr;   // [kv_total, q_len] f16 (non-SWA layers)

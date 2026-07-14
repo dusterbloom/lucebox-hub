@@ -25,6 +25,7 @@
 #include "gguf.h"
 
 #include "dflash27b.h"
+#include "draft/draft_contract.h"
 
 namespace dflash::common {
 
@@ -279,6 +280,17 @@ struct DraftDSparkWeights {
     ggml_tensor * confidence_b = nullptr;  // [1] f32
 };
 
+struct DraftLogSnrWeights {
+    bool enabled = false;
+    float min_log_snr = 0.0f;
+    float max_log_snr = 0.0f;
+
+    ggml_tensor * fc1_w = nullptr;  // [128, n_embd]
+    ggml_tensor * fc1_b = nullptr;  // [n_embd]
+    ggml_tensor * fc2_w = nullptr;  // [n_embd, n_embd]
+    ggml_tensor * fc2_b = nullptr;  // [n_embd]
+};
+
 struct DraftWeights {
     ggml_context *    ctx = nullptr;
     ggml_backend_t    backend = nullptr;
@@ -290,6 +302,7 @@ struct DraftWeights {
     bool context_kv_layer_norm = false;             // Laguna DFlash: per-layer input norm before context K/V
     std::vector<DraftLayer> layers;                 // size = n_layer
     ggml_tensor *          out_norm    = nullptr;   // [hidden]
+    ggml_tensor *          output      = nullptr;   // native draft LM head [hidden, vocab]
 
     // Architecture metadata (populated by loader).
     int n_layer   = DFLASH27B_DRAFT_LAYERS;           // 5
@@ -298,6 +311,8 @@ struct DraftWeights {
     int head_dim  = DFLASH27B_TARGET_HEAD_DIM;         // 128
     int n_embd    = DFLASH27B_TARGET_HIDDEN;           // 5120
     int n_ff      = DFLASH27B_TARGET_INTERMEDIATE;     // 17408
+    int context_length = 0;
+    int vocab_size = 0;
     int swa_window = 0;  // sliding window size (0 = disabled)
     float rope_theta = 0.0f;  // RoPE frequency base (must come from GGUF)
 
@@ -314,6 +329,16 @@ struct DraftWeights {
     int n_target_layers = DFLASH27B_DRAFT_N_TARGET_LAYERS;  // captured target layers (5)
     std::vector<int> capture_layer_ids;                     // explicit captured target-layer ids (GGUF dflash.target_layer_ids); empty = derive from count
     int mask_token_id   = DFLASH27B_DRAFT_MASK_TOKEN_ID;    // noise mask token
+    DraftProposalLayout proposal_layout = DraftProposalLayout::seed_then_proposals;
+
+    bool is_native_dspark() const {
+        return proposal_layout == DraftProposalLayout::proposals_only;
+    }
+    DraftProposalShape proposal_shape() const {
+        return DraftProposalShape{block_size, proposal_layout};
+    }
+    int proposal_count() const { return proposal_shape().proposal_count(); }
+    int verify_width() const { return proposal_shape().verify_width(); }
 
     // Optional Domino causal correction head. When present, greedy chain
     // speculative decode corrects each draft token with a lightweight GRU
@@ -323,6 +348,7 @@ struct DraftWeights {
     // Optional DSpark/DeepSpec-style Markov correction head. When present,
     // greedy chain decode adds a low-rank previous-token bias before argmax.
     DraftDSparkWeights dspark;
+    DraftLogSnrWeights log_snr;
 };
 
 bool load_draft_safetensors(const std::string & path,
