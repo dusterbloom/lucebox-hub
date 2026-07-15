@@ -1,4 +1,5 @@
 #include "graph_builders.h"
+#include "runtime_policy.h"
 
 #include "ggml-alloc.h"
 
@@ -272,8 +273,16 @@ bool build_target_step(
     int kq_stride_pad,
     bool capture_moe_router,
     bool kvflash_mask,
-    bool capture_qk) {
+    bool capture_qk,
+    bool dynamic_rows) {
     step_graph_free(sg);
+
+    static const bool g_no_kvpad =
+        std::getenv("DFLASH_QWEN35_NO_KVPAD") != nullptr;
+    const Qwen35TargetStepPolicy step_policy = qwen35_target_step_policy(
+        g_no_kvpad, kvflash_mask, fa_window, n_tokens, capture,
+        dynamic_rows);
+    if (step_policy.force_validity_mask) with_mask = true;
 
     // Persistent thread_local arena: rebuilt step graphs land at identical
     // addresses, keeping the ggml-cuda CUDA-graph cache key (nodes[0]) and
@@ -321,18 +330,12 @@ bool build_target_step(
     // Step-invariant KV write: only when topology can't vary per step.
     // DFLASH_QWEN35_NO_KVPAD=1 restores the legacy cpy append + exact-length
     // FA span (per-step node properties -> no CUDA-graph replay).
-    static const bool g_no_kvpad = (std::getenv("DFLASH_QWEN35_NO_KVPAD") != nullptr);
     // kvflash_mask: kvflash mode. The mask carries pool slot validity
     // (uploaded by the caller before EVERY compute — the input's buffer
     // region is reused by graph execution) and set_rows carries per-token
     // physical slots, so the slot-mapped write stays active for masked,
     // multi-token, and feature-capturing forwards (decode AND spec verify).
-    const bool use_kv_write_rows =
-        !g_no_kvpad && !capture_delta_intermediate &&
-        (kvflash_mask
-             ? (fa_window == 0)
-             : (n_tokens == 1 && fa_window == 0 && !with_mask && !capture));
-    if (use_kv_write_rows) {
+    if (step_policy.use_kv_write_rows) {
         sg.kv_write_rows = ggml_new_tensor_2d(sg.ctx, GGML_TYPE_I64,
                                               n_tokens, w.n_head_kv);
         ggml_set_name(sg.kv_write_rows, "kv_write_rows");

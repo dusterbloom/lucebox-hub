@@ -1546,12 +1546,13 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
         int32_t pos4[4] = {committed, committed, committed, 0};
         ggml_backend_tensor_set(sg_.positions, pos4, 0, sizeof(int32_t) * 4);
 
-        // kvflash: graph carries a slot-validity mask alongside the
-        // step-invariant set_rows write; the FA span clamps to the pool.
+        // A step-invariant set_rows append pads the FA span. Both contiguous
+        // and kvflash decode therefore carry a validity mask: contiguous mode
+        // masks padding, while kvflash masks physical slots.
         const bool pool = kvflash_active();
         if (!build_target_step(sg_, w_, cache_, target_backend_,
                                /*kv_start=*/committed, /*n_tokens=*/1,
-                               /*with_mask=*/pool, /*capture=*/false,
+                               /*with_mask=*/true, /*capture=*/false,
                                /*capture_delta_intermediate=*/false,
                                /*fa_window=*/0,
                                /*last_token_logits_only=*/false,
@@ -1579,7 +1580,17 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
             ggml_backend_tensor_set(sg_.kv_write_rows, row_vals.data(), 0,
                                     sizeof(int64_t) * n_head_kv);
         }
-        if (pool) kvflash_upload_mask();
+        if (pool) {
+            kvflash_upload_mask();
+        } else if (sg_.attn_mask) {
+            std::vector<uint16_t> mask_row;
+            build_causal_mask_row(mask_row,
+                                  (int)sg_.attn_mask->ne[0],
+                                  committed + 1,
+                                  committed);
+            ggml_backend_tensor_set(sg_.attn_mask, mask_row.data(), 0,
+                                    sizeof(uint16_t) * mask_row.size());
+        }
 
         auto st = ggml_backend_graph_compute(target_backend_, sg_.gf);
         if (st != GGML_STATUS_SUCCESS) return false;

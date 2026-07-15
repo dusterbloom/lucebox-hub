@@ -7,6 +7,7 @@
 
 #include "ddtree.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -45,6 +46,22 @@ inline void build_causal_mask(std::vector<uint16_t> & out,
         for (int k = min_k; k <= max_k && k < abs_end; k++) {
             out[(size_t)q * kv_pad + (k - win_start)] = F16_ZERO;
         }
+    }
+}
+
+// Flash attention reads one row for a single-query decode. Build only that
+// active row instead of uploading the unused padded query rows.
+inline void build_causal_mask_row(std::vector<uint16_t> & out,
+                                  int kv_pad,
+                                  int kv_len,
+                                  int query_pos,
+                                  int win_start = 0) {
+    out.assign((std::size_t)kv_pad, F16_NEG_INF);
+    const int abs_end = win_start + kv_len;
+    const int min_k = std::max(0, win_start);
+    const int max_k = std::min(query_pos, abs_end - 1);
+    for (int k = min_k; k <= max_k; ++k) {
+        out[(std::size_t)(k - win_start)] = F16_ZERO;
     }
 }
 
