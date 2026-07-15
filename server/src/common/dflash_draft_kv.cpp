@@ -1,4 +1,6 @@
 #include "dflash_draft_kv.h"
+#include "dspark_proposal_graph.h"
+#include "draft/dspark_features.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -35,7 +37,7 @@ bool draft_kv_init(DraftKvState & st,
     }
 
     // ── persistent memory: caches + inputs (outside gallocr, stable, zeroed)
-    const size_t n_mem_tensors = 2 * (size_t)dw.n_layer + 10;
+    const size_t n_mem_tensors = 2 * (size_t)dw.n_layer + 12;
     ggml_init_params ip{};
     ip.mem_size = ggml_tensor_overhead() * n_mem_tensors;
     ip.no_alloc = true;
@@ -51,6 +53,13 @@ bool draft_kv_init(DraftKvState & st,
         st.cache.v[il] = ggml_new_tensor_2d(st.mem_ctx, GGML_TYPE_F16, kv_row, st.kv_total);
     }
     st.inp_embed  = ggml_new_tensor_2d(st.mem_ctx, GGML_TYPE_F32, dw.n_embd, st.q_len);
+    if (dw.log_snr.enabled) {
+        st.noise_conditioning = ggml_new_tensor_2d(
+            st.mem_ctx, GGML_TYPE_F32, 128, st.q_len);
+    }
+    if (dw.is_bonsai_dspark()) {
+        st.seed_token = ggml_new_tensor_1d(st.mem_ctx, GGML_TYPE_I32, 1);
+    }
     st.pos_q      = ggml_new_tensor_1d(st.mem_ctx, GGML_TYPE_I32, st.q_len);
     st.noise_rows = ggml_new_tensor_1d(st.mem_ctx, GGML_TYPE_I32, st.q_len);
     if (st.any_full)
@@ -90,6 +99,7 @@ bool draft_kv_init(DraftKvState & st,
 
     DraftKvStepInputs si{};
     si.noise_embed = st.inp_embed;
+    si.noise_conditioning = st.noise_conditioning;
     si.positions_q = st.pos_q;
     si.noise_rows  = st.noise_rows;
     si.mask_full   = st.mask_full;
@@ -99,6 +109,15 @@ bool draft_kv_init(DraftKvState & st,
     if (!go.hidden_states) return false;
     st.hidden_states = go.hidden_states;
     st.logits        = go.logits;
+    if (dw.is_bonsai_dspark() &&
+        (!st.logits || !st.seed_token ||
+         !build_dspark_proposal_chain(
+             st.g_ctx, st.gf, dw.dspark,
+             dw.proposal_shape().proposal_count(), st.logits, st.seed_token,
+             st.proposal_tokens))) {
+        std::fprintf(stderr, "[draft-kv] Bonsai DSpark proposal graph build failed\n");
+        return false;
+    }
     ggml_set_output(st.hidden_states);
     ggml_build_forward_expand(st.gf, st.hidden_states);
     if (st.logits) {
@@ -110,6 +129,19 @@ bool draft_kv_init(DraftKvState & st,
     if (!st.galloc || !ggml_gallocr_alloc_graph(st.galloc, st.gf)) {
         std::fprintf(stderr, "[draft-kv] graph alloc failed\n");
         return false;
+    }
+
+    if (st.noise_conditioning) {
+        std::vector<float> features;
+        if (!make_dspark_log_snr_features(dw.block_size,
+                                          dw.log_snr.min_log_snr,
+                                          dw.log_snr.max_log_snr,
+                                          features)) {
+            std::fprintf(stderr, "[draft-kv] invalid Bonsai DSpark log-SNR metadata\n");
+            return false;
+        }
+        ggml_backend_tensor_set(st.noise_conditioning, features.data(), 0,
+                                sizeof(float) * features.size());
     }
 
     // static noise scratch slots
@@ -143,6 +175,9 @@ void draft_kv_free(DraftKvState & st) {
     st.meta_arena.clear();
     st.meta_arena.shrink_to_fit();
     st.hidden_states = st.logits = nullptr;
+    st.noise_conditioning = nullptr;
+    st.seed_token = nullptr;
+    st.proposal_tokens.clear();
     st.cache.k.clear();
     st.cache.v.clear();
     st.slot_pos.clear();

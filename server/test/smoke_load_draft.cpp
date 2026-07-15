@@ -2,7 +2,7 @@
 // context. Prints tensor count, total bytes, and a checksum-ish spot check
 // on one tensor. Exit 0 on success, nonzero on any failure.
 //
-// Usage: smoke_load_draft <path/to/model.safetensors>
+// Usage: smoke_load_draft <path/to/model.safetensors|model.gguf>
 
 #include "dflash27b.h"
 #include "internal.h"
@@ -15,13 +15,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 
 using namespace dflash::common;
 
 int main(int argc, char ** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <model.safetensors>\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <draft.gguf|model.safetensors>\n", argv[0]);
         return 2;
     }
     const char * path = argv[1];
@@ -35,8 +36,14 @@ int main(int argc, char ** argv) {
     std::printf("cuda backend: %s\n", ggml_backend_name(backend));
 
     DraftWeights w;
-    if (!load_draft_safetensors(path, backend, w)) {
-        std::fprintf(stderr, "load_draft_safetensors failed: %s\n",
+    const std::string path_s(path);
+    const bool is_gguf = path_s.size() >= 5 &&
+        path_s.substr(path_s.size() - 5) == ".gguf";
+    const bool loaded = is_gguf
+        ? load_draft_gguf(path, backend, w)
+        : load_draft_safetensors(path, backend, w);
+    if (!loaded) {
+        std::fprintf(stderr, "draft load failed: %s\n",
                      dflash27b_last_error());
         ggml_backend_free(backend);
         return 1;
@@ -52,6 +59,10 @@ int main(int argc, char ** argv) {
     }
     std::printf("loaded %zu tensors, total %.2f GiB\n",
                 n_tensors, total_bytes / (1024.0 * 1024.0 * 1024.0));
+    const DraftProposalShape shape = w.proposal_shape();
+    std::printf("layout: bonsai_dspark=%d draft_rows=%d proposals=%d verify_width=%d mask=%d\n",
+                (int)w.is_bonsai_dspark(), shape.draft_rows,
+                shape.proposal_count(), shape.verify_width(), w.mask_token_id);
 
     // Spot check: the `fc` tensor should be [25600 -> 5120] (in ggml ne[0]=25600 ne[1]=5120).
     std::printf("fc: ne=[%" PRId64 ", %" PRId64 ", %" PRId64 ", %" PRId64 "] type=%s nbytes=%zu\n",

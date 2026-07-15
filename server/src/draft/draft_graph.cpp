@@ -72,6 +72,24 @@ static ggml_tensor * draft_fuse_features(
     return target_feat;
 }
 
+static ggml_tensor * draft_apply_noise_conditioning(
+        ggml_context * ctx,
+        const DraftWeights & w,
+        ggml_tensor * h,
+        ggml_tensor * features) {
+    if (!w.log_snr.enabled) return h;
+    GGML_ASSERT(features != nullptr);
+
+    ggml_tensor * cond = ggml_mul_mat(ctx, w.log_snr.fc1_w, features);
+    cond = ggml_add(ctx, cond, w.log_snr.fc1_b);
+    cond = ggml_silu(ctx, cond);
+    cond = ggml_mul_mat(ctx, w.log_snr.fc2_w, cond);
+    cond = ggml_add(ctx, cond, w.log_snr.fc2_b);
+    cond = ggml_add(ctx, h, cond);
+    ggml_set_name(cond, "draft_noise_conditioned");
+    return cond;
+}
+
 DraftGraphOutputs build_draft_graph(
     ggml_context *            ctx,
     const DraftWeights &      w,
@@ -105,7 +123,8 @@ DraftGraphOutputs build_draft_graph(
     ggml_set_name(target_feat, "target_feat");
 
     // ── 2. Decoder layers
-    ggml_tensor * h = in.noise_embed;  // [hidden, q_len, 1]
+    ggml_tensor * h = draft_apply_noise_conditioning(
+        ctx, w, in.noise_embed, in.noise_conditioning);  // [hidden, q_len, 1]
 
     for (int il = 0; il < w.n_layer; il++) {
         const DraftLayer & L = w.layers[il];
@@ -364,7 +383,8 @@ DraftGraphOutputs build_draft_kv_step(
     static const bool disable_swa =
         std::getenv("DFLASH_DISABLE_DRAFT_SWA") != nullptr;
 
-    ggml_tensor * h = in.noise_embed;  // [hidden, q_len]
+    ggml_tensor * h = draft_apply_noise_conditioning(
+        ctx, w, in.noise_embed, in.noise_conditioning);  // [hidden, q_len]
     char probe_name[64];
 
     for (int il = 0; il < w.n_layer; il++) {

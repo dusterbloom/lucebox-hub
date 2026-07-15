@@ -272,6 +272,7 @@ add_library(dflash_common STATIC
     src/common/backend_ipc.cpp
     src/common/domino_head.cpp
     src/common/dspark_head.cpp
+    src/common/dspark_proposal_graph.cpp
     src/common/target_shard_ipc.cpp
     src/common/target_shard_ipc_daemon.cpp
     src/common/dflash_feature_ring.cpp
@@ -1009,6 +1010,21 @@ if(DFLASH27B_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     add_test(NAME draft_contract COMMAND test_draft_contract)
 
+    # Pure Bonsai DSpark conditioning test: no ggml, GPU, or model files.
+    add_executable(test_dspark_features test/test_dspark_features.cpp)
+    target_include_directories(test_dspark_features PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    add_test(NAME dspark_features COMMAND test_dspark_features)
+
+    add_executable(test_dspark_proposal_graph test/test_dspark_proposal_graph.cpp)
+    target_sources(test_dspark_proposal_graph PRIVATE
+        src/common/dspark_proposal_graph.cpp)
+    target_include_directories(test_dspark_proposal_graph PRIVATE
+        ${DFLASH27B_SRC_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(test_dspark_proposal_graph PRIVATE ggml-base)
+    add_test(NAME dspark_proposal_graph COMMAND test_dspark_proposal_graph)
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_server_unit.cpp")
         add_executable(test_server_unit test/test_server_unit.cpp)
         target_sources(test_server_unit PRIVATE
@@ -1041,7 +1057,11 @@ if(DFLASH27B_TESTS)
 
     # 'make check' — builds test targets then runs ctest
     if(TARGET test_server_unit)
-        set(_check_deps test_server_unit test_draft_contract)
+        set(_check_deps
+            test_server_unit
+            test_draft_contract
+            test_dspark_features
+            test_dspark_proposal_graph)
         if(TARGET test_deepseek4_unit)
             list(APPEND _check_deps test_deepseek4_unit)
         endif()
@@ -1053,7 +1073,10 @@ if(DFLASH27B_TESTS)
     else()
         add_custom_target(check
             COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-            DEPENDS test_draft_contract
+            DEPENDS
+                test_draft_contract
+                test_dspark_features
+                test_dspark_proposal_graph
             COMMENT "Building and running unit tests (server unit tests skipped — CURL not found)"
         )
     endif()
