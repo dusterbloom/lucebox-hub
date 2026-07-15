@@ -35,6 +35,7 @@
 #include "kv_quant.h"
 #include "qwen35_ops.h"
 #include "qwen35moe_ffn.h"
+#include "runtime_policy.h"
 
 #include <cmath>
 #include <cstdio>
@@ -68,6 +69,20 @@ constexpr int CONV_CHANNELS = SSM_D_INNER + 2 * SSM_N_GROUP * SSM_D_STATE; // 61
 constexpr float EPS         = 1e-6f;
 constexpr float ROPE_THETA  = 10000000.0f;
 }  // namespace q35
+
+static ggml_type qwen35_rollback_intermediate_type() {
+    const char * raw = std::getenv("DFLASH_QWEN35_ROLLBACK_DTYPE");
+    if (raw && raw[0] != '\0' &&
+        std::strcmp(raw, "f32") != 0 && std::strcmp(raw, "f16") != 0) {
+        std::fprintf(stderr,
+            "[qwen35] ignoring invalid DFLASH_QWEN35_ROLLBACK_DTYPE=%s; using f32\n",
+            raw);
+    }
+    return qwen35_rollback_storage_from_string(raw) ==
+            Qwen35RollbackStorage::F16
+        ? GGML_TYPE_F16
+        : GGML_TYPE_F32;
+}
 
 // ─── TargetCache allocation ─────────────────────────────────────────
 
@@ -111,6 +126,8 @@ bool create_target_cache_partial(const TargetWeights & w,
     const int head_dim    = w.n_embd_head_k;
     const int head_v_dim  = w.ssm_d_inner / w.ssm_dt_rank;
     const int conv_ch     = w.ssm_d_inner + 2 * w.ssm_n_group * w.ssm_d_state;
+    const ggml_type rollback_intermediate_type =
+        qwen35_rollback_intermediate_type();
 
     out.attn_k.assign(n_full_attn, nullptr);
     out.attn_v.assign(n_full_attn, nullptr);
@@ -234,7 +251,8 @@ bool create_target_cache_partial(const TargetWeights & w,
                                                        head_v_dim, head_v_dim, w.ssm_dt_rank);
                 ggml_tensor * Cn = ggml_new_tensor_2d(out.rollback_ctx, GGML_TYPE_F32,
                                                        w.ssm_d_conv - 1, conv_ch);
-                ggml_tensor * Si = ggml_new_tensor_4d(out.rollback_ctx, GGML_TYPE_Q8_0,
+                ggml_tensor * Si = ggml_new_tensor_4d(out.rollback_ctx,
+                                                       rollback_intermediate_type,
                                                        head_v_dim, head_v_dim,
                                                        w.ssm_dt_rank, max_verify_tokens);
                 ggml_tensor * Ci = ggml_new_tensor_3d(out.rollback_ctx, GGML_TYPE_F32,
@@ -360,6 +378,8 @@ bool migrate_prefill_cache(const TargetWeights & w,
     const int n_delta = (int)cache.ssm_state.size(); // 48
     const int head_v_dim = w.ssm_d_inner / w.ssm_dt_rank;
     const int conv_ch = w.ssm_d_inner + 2 * w.ssm_n_group * w.ssm_d_state;
+    const ggml_type rollback_intermediate_type =
+        qwen35_rollback_intermediate_type();
     if (max_verify_tokens <= 0) {
         max_verify_tokens = DFLASH27B_DRAFT_BLOCK_SIZE;
     }
@@ -384,7 +404,8 @@ bool migrate_prefill_cache(const TargetWeights & w,
                                                    head_v_dim, head_v_dim, w.ssm_dt_rank);
             ggml_tensor * Cn = ggml_new_tensor_2d(cache.rollback_ctx, GGML_TYPE_F32,
                                                    w.ssm_d_conv - 1, conv_ch);
-            ggml_tensor * Si = ggml_new_tensor_4d(cache.rollback_ctx, GGML_TYPE_F16,
+            ggml_tensor * Si = ggml_new_tensor_4d(cache.rollback_ctx,
+                                                   rollback_intermediate_type,
                                                    head_v_dim, head_v_dim,
                                                    w.ssm_dt_rank, max_verify_tokens);
             ggml_tensor * Ci = ggml_new_tensor_3d(cache.rollback_ctx, GGML_TYPE_F32,

@@ -22,6 +22,50 @@ extern "C++" to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type);
 
 namespace dflash::common {
 
+static bool restore_ssm_intermediate(
+        const DeltaNetCapture & capture,
+        int index,
+        ggml_tensor * live_state,
+        cudaStream_t stream,
+        const char * operation,
+        int layer) {
+    if (!capture.ssm_intermediate_states || !live_state ||
+        live_state->type != GGML_TYPE_F32) {
+        std::fprintf(stderr, "%s: invalid SSM tensors (layer %d)\n",
+                     operation, layer);
+        return false;
+    }
+
+    const size_t n = ggml_nelements(live_state);
+    const size_t src_offset =
+        (size_t)index * capture.ssm_intermediate_states->nb[3];
+    const void * src =
+        (const char *)capture.ssm_intermediate_states->data + src_offset;
+
+    if (capture.ssm_intermediate_states->type == GGML_TYPE_F32) {
+        const cudaError_t error = cudaMemcpyAsync(
+            live_state->data, src, n * sizeof(float),
+            cudaMemcpyDeviceToDevice, stream);
+        if (error != cudaSuccess) {
+            std::fprintf(stderr, "%s: F32 state copy failed at layer %d: %s\n",
+                         operation, layer, cudaGetErrorString(error));
+            return false;
+        }
+        return true;
+    }
+
+    const auto to_fp32 =
+        ggml_get_to_fp32_cuda(capture.ssm_intermediate_states->type);
+    if (!to_fp32) {
+        std::fprintf(stderr, "%s: no F32 converter for type %d (layer %d)\n",
+                     operation,
+                     (int)capture.ssm_intermediate_states->type, layer);
+        return false;
+    }
+    to_fp32(src, (float *)live_state->data, (int64_t)n, stream);
+    return true;
+}
+
 Qwen35DFlashTarget::~Qwen35DFlashTarget() {
     step_graph_destroy(proj_sg_);
 }
@@ -367,22 +411,11 @@ bool Qwen35DFlashTarget::rollback_to_tree(
                          rollback_dfs, (int)cap.ssm_intermediate_states->ne[3], il);
             return false;
         }
-        // SSM state ← intermediate[rollback_dfs] (dequantize Q8_0/F16 → f32).
-        const size_t ssm_elems =
-            (size_t)cache_.ssm_state[il]->ne[0] *
-            (size_t)cache_.ssm_state[il]->ne[1] *
-            (size_t)cache_.ssm_state[il]->ne[2];
-        const size_t ssm_src_offset =
-            (size_t)rollback_dfs * cap.ssm_intermediate_states->nb[3];
-        const void * ssm_src =
-            (const char *)cap.ssm_intermediate_states->data + ssm_src_offset;
-        const auto to_fp32 = ggml_get_to_fp32_cuda(cap.ssm_intermediate_states->type);
-        if (!to_fp32) {
-            std::fprintf(stderr, "rollback_to_tree: no fp32 converter for type %d (layer %d)\n",
-                         (int)cap.ssm_intermediate_states->type, il);
+        if (!restore_ssm_intermediate(cap, rollback_dfs,
+                                      cache_.ssm_state[il], stream,
+                                      "rollback_to_tree", il)) {
             return false;
         }
-        to_fp32(ssm_src, (float *)cache_.ssm_state[il]->data, (int64_t)ssm_elems, stream);
 
         // Conv state ← the K-1 most recent inputs along rollback_dfs's ancestry.
         const int K_conv = 4;
@@ -580,25 +613,11 @@ bool Qwen35DFlashTarget::rollback_to(int base_pos, int commit_n) {
             return false;
         }
 
-        // SSM rollback: copy intermediate[rollback_idx] → cache.ssm_state[il]
-        const size_t ssm_elems =
-            (size_t)cache_.ssm_state[il]->ne[0] *
-            (size_t)cache_.ssm_state[il]->ne[1] *
-            (size_t)cache_.ssm_state[il]->ne[2];
-        const size_t ssm_src_offset =
-            (size_t)rollback_idx * cap.ssm_intermediate_states->nb[3];
-        const void * ssm_src =
-            (const char *)cap.ssm_intermediate_states->data + ssm_src_offset;
-        const auto to_fp32 = ggml_get_to_fp32_cuda(cap.ssm_intermediate_states->type);
-        if (!to_fp32) {
-            if (kFastRollbackDiag) {
-                std::fprintf(stderr, "rollback_to: no fp32 converter type=%d layer=%d\n",
-                             (int)cap.ssm_intermediate_states->type, il);
-            }
+        if (!restore_ssm_intermediate(cap, rollback_idx,
+                                      cache_.ssm_state[il], stream,
+                                      "rollback_to", il)) {
             return false;
         }
-        to_fp32(ssm_src, (float *)cache_.ssm_state[il]->data,
-                (int64_t)ssm_elems, stream);
 
         // Conv rollback: copy conv_input[commit_n..commit_n+K-2, :, :]
         // into cache.conv_state[il].

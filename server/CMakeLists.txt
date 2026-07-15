@@ -1030,6 +1030,15 @@ if(DFLASH27B_TESTS)
     target_include_directories(test_qwen35_draft_policy PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     add_test(NAME qwen35_draft_policy COMMAND test_qwen35_draft_policy)
+    add_executable(test_qwen35_runtime_policy test/test_qwen35_runtime_policy.cpp)
+    target_include_directories(test_qwen35_runtime_policy PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    add_test(NAME qwen35_runtime_policy COMMAND test_qwen35_runtime_policy)
+
+    add_executable(test_attn_mask_row test/test_attn_mask_row.cpp)
+    target_include_directories(test_attn_mask_row PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    add_test(NAME attn_mask_row COMMAND test_attn_mask_row)
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_server_unit.cpp")
         add_executable(test_server_unit test/test_server_unit.cpp)
@@ -1068,7 +1077,9 @@ if(DFLASH27B_TESTS)
             test_draft_contract
             test_dspark_features
             test_dspark_proposal_graph
-            test_qwen35_draft_policy)
+            test_qwen35_draft_policy
+            test_qwen35_runtime_policy
+            test_attn_mask_row)
         if(TARGET test_deepseek4_unit)
             list(APPEND _check_deps test_deepseek4_unit)
         endif()
@@ -1085,6 +1096,8 @@ if(DFLASH27B_TESTS)
                 test_dspark_features
                 test_dspark_proposal_graph
                 test_qwen35_draft_policy
+                test_qwen35_runtime_policy
+                test_attn_mask_row
             COMMENT "Building and running unit tests (server unit tests skipped — CURL not found)"
         )
     endif()
