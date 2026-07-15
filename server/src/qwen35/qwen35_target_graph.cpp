@@ -438,12 +438,36 @@ void snapshot_ssm_state(TargetCache & c) {
     }
 }
 
+void snapshot_ssm_state_async(TargetCache & c, ggml_backend_t backend) {
+    GGML_ASSERT(backend != nullptr);
+    for (size_t i = 0; i < c.ssm_state.size(); i++) {
+        if (!c.ssm_state[i] || !c.ssm_state_snap[i]) continue;
+        ggml_backend_tensor_copy_async(backend, backend,
+                                       c.ssm_state[i], c.ssm_state_snap[i]);
+        if (!c.conv_state[i] || !c.conv_state_snap[i]) continue;
+        ggml_backend_tensor_copy_async(backend, backend,
+                                       c.conv_state[i], c.conv_state_snap[i]);
+    }
+}
+
 void restore_ssm_state(TargetCache & c) {
     for (size_t i = 0; i < c.ssm_state.size(); i++) {
         if (!c.ssm_state_snap[i] || !c.ssm_state[i]) continue;
         ggml_backend_tensor_copy(c.ssm_state_snap[i], c.ssm_state[i]);
         if (!c.conv_state_snap[i] || !c.conv_state[i]) continue;
         ggml_backend_tensor_copy(c.conv_state_snap[i], c.conv_state[i]);
+    }
+}
+
+void restore_ssm_state_async(TargetCache & c, ggml_backend_t backend) {
+    GGML_ASSERT(backend != nullptr);
+    for (size_t i = 0; i < c.ssm_state.size(); i++) {
+        if (!c.ssm_state_snap[i] || !c.ssm_state[i]) continue;
+        ggml_backend_tensor_copy_async(backend, backend,
+                                       c.ssm_state_snap[i], c.ssm_state[i]);
+        if (!c.conv_state_snap[i] || !c.conv_state[i]) continue;
+        ggml_backend_tensor_copy_async(backend, backend,
+                                       c.conv_state_snap[i], c.conv_state[i]);
     }
 }
 
@@ -1165,6 +1189,8 @@ QwenGraphOutputs build_qwen35_graph(
     // DFlash target layer IDs for feature capture (from TargetWeights config).
     const int * CAPTURE_LAYERS = w.capture_layer_ids;
     const int N_CAPTURE = w.n_capture_layers;
+    std::vector<ggml_tensor *> capture_slices(
+        in.target_feat_rows ? (size_t)N_CAPTURE : 0, nullptr);
 
     const int hidden = w.n_embd;
     const float eps  = w.rms_eps;
@@ -1256,42 +1282,63 @@ QwenGraphOutputs build_qwen35_graph(
                 if (CAPTURE_LAYERS[k] == il) { capture_idx = k; break; }
             }
             if (capture_idx >= 0) {
-                const size_t elt        = ggml_element_size(cache.target_feat);
-                const size_t col_stride = cache.target_feat->nb[1];
-                const int    cap        = cache.target_feat_cap;
-                const int    slot_start = in.kv_start % cap;
-                const int    pre_n      = std::min(n_tokens, cap - slot_start);
-                const int    post_n    = n_tokens - pre_n;
-
                 ggml_tensor * cur_2d = ggml_reshape_2d(ctx, cur, hidden, n_tokens);
+                if (in.target_feat_rows) {
+                    capture_slices[(size_t)capture_idx] = cur_2d;
+                } else {
+                    const size_t elt        = ggml_element_size(cache.target_feat);
+                    const size_t col_stride = cache.target_feat->nb[1];
+                    const int    cap        = cache.target_feat_cap;
+                    const int    slot_start = in.kv_start % cap;
+                    const int    pre_n      = std::min(n_tokens, cap - slot_start);
+                    const int    post_n     = n_tokens - pre_n;
 
-                // First slice: [slot_start..slot_start+pre_n) in the ring.
-                {
-                    const size_t offset =
-                        (size_t)slot_start * col_stride +
-                        (size_t)capture_idx * hidden * elt;
-                    ggml_tensor * slot = ggml_view_2d(ctx, cache.target_feat,
-                        hidden, pre_n, col_stride, offset);
-                    ggml_tensor * src  = ggml_view_2d(ctx, cur_2d,
-                        hidden, pre_n, cur_2d->nb[1], 0);
-                    ggml_build_forward_expand(gf, ggml_cpy(ctx, src, slot));
-                }
+                    // First slice: [slot_start..slot_start+pre_n) in the ring.
+                    {
+                        const size_t offset =
+                            (size_t)slot_start * col_stride +
+                            (size_t)capture_idx * hidden * elt;
+                        ggml_tensor * slot = ggml_view_2d(ctx, cache.target_feat,
+                            hidden, pre_n, col_stride, offset);
+                        ggml_tensor * src  = ggml_view_2d(ctx, cur_2d,
+                            hidden, pre_n, cur_2d->nb[1], 0);
+                        ggml_build_forward_expand(gf, ggml_cpy(ctx, src, slot));
+                    }
 
-                // Second slice: wrap-around at [0..post_n) if needed.
-                if (post_n > 0) {
-                    const size_t offset =
-                        (size_t)capture_idx * hidden * elt;
-                    ggml_tensor * slot = ggml_view_2d(ctx, cache.target_feat,
-                        hidden, post_n, col_stride, offset);
-                    ggml_tensor * src  = ggml_view_2d(ctx, cur_2d,
-                        hidden, post_n, cur_2d->nb[1],
-                        (size_t)pre_n * cur_2d->nb[1]);
-                    ggml_build_forward_expand(gf, ggml_cpy(ctx, src, slot));
+                    // Second slice: wrap-around at [0..post_n) if needed.
+                    if (post_n > 0) {
+                        const size_t offset =
+                            (size_t)capture_idx * hidden * elt;
+                        ggml_tensor * slot = ggml_view_2d(ctx, cache.target_feat,
+                            hidden, post_n, col_stride, offset);
+                        ggml_tensor * src  = ggml_view_2d(ctx, cur_2d,
+                            hidden, post_n, cur_2d->nb[1],
+                            (size_t)pre_n * cur_2d->nb[1]);
+                        ggml_build_forward_expand(gf, ggml_cpy(ctx, src, slot));
+                    }
                 }
             }
         }
 
         inpL = cur;
+    }
+
+    if (in.target_feat_rows && !capture_slices.empty()) {
+        bool have_all = true;
+        for (ggml_tensor * slice : capture_slices) {
+            if (!slice) { have_all = false; break; }
+        }
+        if (have_all) {
+            ggml_tensor * feat_cat = capture_slices[0];
+            for (int k = 1; k < N_CAPTURE; ++k) {
+                feat_cat = ggml_concat(ctx, feat_cat,
+                                       capture_slices[(size_t)k], 0);
+            }
+            feat_cat = ggml_cont(ctx, feat_cat);
+            ggml_build_forward_expand(
+                gf, ggml_set_rows(ctx, cache.target_feat,
+                                  feat_cat, in.target_feat_rows));
+        }
     }
 
     // 2. Final norm

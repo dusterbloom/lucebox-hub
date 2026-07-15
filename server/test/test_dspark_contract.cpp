@@ -35,6 +35,21 @@ int main() {
     CHECK(!draft_can_keep_full_verify(native, true, 4, 5));
     CHECK(!draft_can_keep_full_verify(native, true, 5, 4));
     CHECK(!draft_can_keep_full_verify(legacy, true, 16, 16));
+    CHECK(draft_requires_ssm_intermediate_capture(native, true));
+    CHECK(!draft_requires_ssm_intermediate_capture(native, false));
+    CHECK(draft_requires_ssm_intermediate_capture(legacy, true));
+    CHECK(draft_requires_ssm_intermediate_capture(legacy, false));
+    CHECK(draft_can_rollback_partial_verify(native, true, 1));
+    CHECK(draft_can_rollback_partial_verify(native, true, 4));
+    CHECK(!draft_can_rollback_partial_verify(native, true, 5));
+    CHECK(!draft_can_rollback_partial_verify(native, false, 4));
+    CHECK(!draft_can_rollback_partial_verify(legacy, true, 15));
+    CHECK(!draft_requires_preverify_snapshot(native, true));
+    CHECK(draft_requires_preverify_snapshot(native, false));
+    CHECK(draft_requires_preverify_snapshot(legacy, true));
+    CHECK(draft_requires_preverify_snapshot(legacy, false));
+    CHECK(draft_kv_append_width(native) == 5);
+    CHECK(draft_kv_append_width(legacy) == 34);
 
     std::vector<float> feat;
     CHECK(make_dspark_log_snr_features(4, -9.0f, 9.0f, feat));

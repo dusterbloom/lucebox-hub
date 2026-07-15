@@ -15,6 +15,7 @@
 #include "ggml.h"
 #include "ggml-backend.h"
 
+#include <map>
 #include <vector>
 
 namespace dflash::common {
@@ -104,6 +105,12 @@ private:
 
     // LM-head projection graph (lazily built).
     StepGraph proj_sg_;
+
+    // One stable metadata arena per chain width. Width-5 verify and shorter
+    // replay forwards otherwise overwrite the same tensor addresses and keep
+    // invalidating each other's CUDA graph captures.
+    std::map<int, StepGraph> chain_sg_;
+    StepGraph * last_verify_sg_ = nullptr;
 };
 
 }  // namespace dflash::common

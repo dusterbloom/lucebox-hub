@@ -24,6 +24,10 @@ namespace dflash::common {
 
 Qwen35DFlashTarget::~Qwen35DFlashTarget() {
     step_graph_destroy(proj_sg_);
+    for (auto & [width, graph] : chain_sg_) {
+        (void)width;
+        step_graph_destroy(graph);
+    }
 }
 
 Qwen35DFlashTarget::Qwen35DFlashTarget(
@@ -66,12 +70,15 @@ bool Qwen35DFlashTarget::verify_batch(
         }
     }
 
-    // kvflash's set_rows KV-write is mutually exclusive with delta-intermediate
-    // capture (graph_builders gates use_kv_write_rows on !capture_delta_intermediate);
-    // skip capture under the pager so --ddtree + --kvflash doesn't fail verify.
+    // The pager path deliberately skips recurrent intermediates: DDTree owns
+    // its separate capture graph there. Contiguous local verification can
+    // combine dynamic K/V + feature rows with recurrent-state capture; the
+    // writes target independent tensors and this keeps the width graph stable.
     const bool do_capture = fast_rollback_ && capture_ssm_intermediates && pager_ == nullptr;
+    const bool dynamic_rows = pager_ == nullptr && fa_window_ == 0;
+    StepGraph & step = dynamic_rows ? chain_sg_[n_tokens] : sg_;
 
-    if (!build_target_step(sg_, w_, cache_, backend_,
+    if (!build_target_step(step, w_, cache_, backend_,
                            /*kv_start=*/base_pos, n_tokens,
                            need_mask, /*capture=*/true,
                            /*capture_delta_intermediate=*/do_capture,
@@ -79,11 +86,13 @@ bool Qwen35DFlashTarget::verify_batch(
                            /*last_token_logits_only=*/false,
                            kq_stride_pad_,
                            /*capture_moe_router=*/false,
-                           /*kvflash_mask=*/pool)) {
+                           /*kvflash_mask=*/pool,
+                           /*capture_qk=*/false,
+                           /*dynamic_rows=*/dynamic_rows)) {
         std::fprintf(stderr, "verify_batch: build_target_step failed (base=%d n=%d)\n", base_pos, n_tokens);
         return false;
     }
-    if (pool && !sg_.kv_write_rows) {
+    if (pool && !step.kv_write_rows) {
         std::fprintf(stderr, "verify_batch: kvflash requires set_rows path\n");
         return false;
     }
@@ -98,8 +107,25 @@ bool Qwen35DFlashTarget::verify_batch(
                 rows[(size_t)h * n_tokens + i] = slots[i];
             }
         }
-        ggml_backend_tensor_set(sg_.kv_write_rows, rows.data(), 0,
+        ggml_backend_tensor_set(step.kv_write_rows, rows.data(), 0,
                                 sizeof(int64_t) * rows.size());
+    } else if (dynamic_rows) {
+        std::vector<int64_t> rows((size_t)n_tokens * w_.n_head_kv);
+        for (int h = 0; h < w_.n_head_kv; ++h) {
+            for (int i = 0; i < n_tokens; ++i) {
+                rows[(size_t)h * n_tokens + i] = base_pos + i;
+            }
+        }
+        ggml_backend_tensor_set(step.kv_write_rows, rows.data(), 0,
+                                sizeof(int64_t) * rows.size());
+        if (step.target_feat_rows) {
+            std::vector<int32_t> feat_rows((size_t)n_tokens);
+            for (int i = 0; i < n_tokens; ++i) {
+                feat_rows[(size_t)i] = (base_pos + i) % cache_.target_feat_cap;
+            }
+            ggml_backend_tensor_set(step.target_feat_rows, feat_rows.data(), 0,
+                                    sizeof(int32_t) * feat_rows.size());
+        }
     }
 
     // Embed input tokens and fill positions.
@@ -108,7 +134,7 @@ bool Qwen35DFlashTarget::verify_batch(
         std::fprintf(stderr, "verify_batch: embed failed (n=%d)\n", n_tokens);
         return false;
     }
-    ggml_backend_tensor_set(sg_.inp_embed, embed.data(), 0,
+    ggml_backend_tensor_set(step.inp_embed, embed.data(), 0,
                             sizeof(float) * embed.size());
 
     // Qwen35 uses interleaved positions: 4 ints per token.
@@ -119,17 +145,17 @@ bool Qwen35DFlashTarget::verify_batch(
         pos[4 * i + 2] = base_pos + i;
         pos[4 * i + 3] = 0;
     }
-    ggml_backend_tensor_set(sg_.positions, pos.data(), 0,
+    ggml_backend_tensor_set(step.positions, pos.data(), 0,
                             sizeof(int32_t) * pos.size());
 
     // Fill the attention mask.
-    if (sg_.attn_mask && pool) {
+    if (step.attn_mask && pool) {
         // Slot-space mask: row q attends (a) slots of committed positions
         // (pos < base_pos) of resident chunks — this exactly excludes
         // slots holding rejected drafts from earlier rounds — and (b) the
         // verify tokens' own slots, causally.
-        const size_t kvd = (size_t)sg_.attn_mask->ne[0];
-        const int q_pad = (int)sg_.attn_mask->ne[1];
+        const size_t kvd = (size_t)step.attn_mask->ne[0];
+        const int q_pad = (int)step.attn_mask->ne[1];
         std::vector<uint16_t> mask_buf((size_t)kvd * q_pad, F16_NEG_INF);
         const int ct = pager_->chunk_tokens();
         for (int c = 0; c < pager_->n_chunks(); c++) {
@@ -148,21 +174,21 @@ bool Qwen35DFlashTarget::verify_batch(
                 mask_buf[(size_t)q * kvd + slots[i]] = F16_ZERO;
             }
         }
-        ggml_backend_tensor_set(sg_.attn_mask, mask_buf.data(), 0,
+        ggml_backend_tensor_set(step.attn_mask, mask_buf.data(), 0,
                                 sizeof(uint16_t) * mask_buf.size());
-    } else if (sg_.attn_mask) {
+    } else if (step.attn_mask) {
         const int win_start = (fa_window_ > 0 && base_pos > fa_window_)
                                   ? (base_pos - fa_window_) : 0;
         const int kv_len = base_pos + n_tokens - win_start;
         std::vector<uint16_t> mask_buf;
-        const int kv_pad_override = (int)sg_.attn_mask->ne[0];
+        const int kv_pad_override = (int)step.attn_mask->ne[0];
         build_causal_mask(mask_buf, kv_len, n_tokens, base_pos,
                           kq_stride_pad_, win_start, kv_pad_override);
-        ggml_backend_tensor_set(sg_.attn_mask, mask_buf.data(), 0,
+        ggml_backend_tensor_set(step.attn_mask, mask_buf.data(), 0,
                                 sizeof(uint16_t) * mask_buf.size());
     }
 
-    auto st = ggml_backend_graph_compute(backend_, sg_.gf);
+    auto st = ggml_backend_graph_compute(backend_, step.gf);
     if (st != GGML_STATUS_SUCCESS) {
         std::fprintf(stderr, "verify_batch: compute failed (status=%d)\n", (int)st);
         return false;
@@ -170,7 +196,7 @@ bool Qwen35DFlashTarget::verify_batch(
 
     // Read argmax results from GPU.
     std::vector<int32_t> argmax_buf(n_tokens);
-    ggml_backend_tensor_get(sg_.argmax_tokens, argmax_buf.data(), 0,
+    ggml_backend_tensor_get(step.argmax_tokens, argmax_buf.data(), 0,
                             sizeof(int32_t) * n_tokens);
     last_tok = argmax_buf[n_tokens - 1];
 
@@ -178,16 +204,18 @@ bool Qwen35DFlashTarget::verify_batch(
         *all_argmax = std::move(argmax_buf);
     }
 
+    last_verify_sg_ = &step;
     cache_.cur_pos = base_pos + n_tokens;
     return true;
 }
 
 bool Qwen35DFlashTarget::read_verify_logits(int n_tokens, std::vector<float> & out) {
-    if (!sg_.logits || n_tokens <= 0) return false;
-    const int64_t vocab = sg_.logits->ne[0];
-    if (n_tokens > (int)sg_.logits->ne[1]) return false;
+    StepGraph * graph = last_verify_sg_;
+    if (!graph || !graph->logits || n_tokens <= 0) return false;
+    const int64_t vocab = graph->logits->ne[0];
+    if (n_tokens > (int)graph->logits->ne[1]) return false;
     out.resize((size_t)n_tokens * (size_t)vocab);
-    ggml_backend_tensor_get(sg_.logits, out.data(), 0,
+    ggml_backend_tensor_get(graph->logits, out.data(), 0,
                             sizeof(float) * out.size());
     return true;
 }
@@ -493,12 +521,12 @@ bool Qwen35DFlashTarget::rollback_to_tree(
 }
 
 bool Qwen35DFlashTarget::snapshot_kv() {
-    snapshot_ssm_state(cache_);
+    snapshot_ssm_state_async(cache_, backend_);
     return true;
 }
 
 bool Qwen35DFlashTarget::restore_kv() {
-    restore_ssm_state(cache_);
+    restore_ssm_state_async(cache_, backend_);
     return true;
 }
 
@@ -536,7 +564,8 @@ bool Qwen35DFlashTarget::rollback_to(int base_pos, int commit_n) {
         return false;
     }
 
-    const int n_delta = (int)sg_.delta_captures.size();
+    const StepGraph * graph = last_verify_sg_;
+    const int n_delta = graph ? (int)graph->delta_captures.size() : 0;
     if (n_delta == 0) {
         if (kFastRollbackDiag) {
             std::fprintf(stderr, "rollback_to: no delta_captures\n");
@@ -556,7 +585,7 @@ bool Qwen35DFlashTarget::rollback_to(int base_pos, int commit_n) {
     cudaStream_t stream = nullptr;
 
     for (int il = 0; il < n_delta; il++) {
-        const DeltaNetCapture & cap = sg_.delta_captures[il];
+        const DeltaNetCapture & cap = graph->delta_captures[il];
         if (!cap.ssm_intermediate_states) {
             if (kFastRollbackDiag) {
                 std::fprintf(stderr, "rollback_to: null ssm_intermediate_states layer=%d\n",

@@ -272,19 +272,19 @@ bool build_target_step(
     int kq_stride_pad,
     bool capture_moe_router,
     bool kvflash_mask,
-    bool capture_qk) {
+    bool capture_qk,
+    bool dynamic_rows) {
     step_graph_free(sg);
 
-    // Persistent thread_local arena: rebuilt step graphs land at identical
+    // Persistent per-StepGraph arena: rebuilt step graphs land at identical
     // addresses, keeping the ggml-cuda CUDA-graph cache key (nodes[0]) and
     // every node property stable across AR decode steps -> captured graph
     // replays instead of re-launching every kernel. Pairs with the
     // step-invariant set_rows KV write (kv_write_rows) below.
     ggml_init_params ip{};
-    ip.mem_size   = 512 * 1024 * 1024;
-    static thread_local std::vector<uint8_t> g_step_arena;
-    if (g_step_arena.size() < ip.mem_size) g_step_arena.resize(ip.mem_size);
-    ip.mem_buffer = g_step_arena.data();
+    ip.mem_size   = 64 * 1024 * 1024;
+    if (sg.meta_arena.size() < ip.mem_size) sg.meta_arena.resize(ip.mem_size);
+    ip.mem_buffer = sg.meta_arena.data();
     ip.no_alloc   = true;
     sg.ctx = ggml_init(ip);
     if (!sg.ctx) return false;
@@ -328,15 +328,22 @@ bool build_target_step(
     // physical slots, so the slot-mapped write stays active for masked,
     // multi-token, and feature-capturing forwards (decode AND spec verify).
     const bool use_kv_write_rows =
-        !g_no_kvpad && !capture_delta_intermediate &&
+        !g_no_kvpad &&
         (kvflash_mask
              ? (fa_window == 0)
-             : (n_tokens == 1 && fa_window == 0 && !with_mask && !capture));
+             : (fa_window == 0 &&
+                (dynamic_rows || (n_tokens == 1 && !with_mask && !capture))));
     if (use_kv_write_rows) {
         sg.kv_write_rows = ggml_new_tensor_2d(sg.ctx, GGML_TYPE_I64,
                                               n_tokens, w.n_head_kv);
         ggml_set_name(sg.kv_write_rows, "kv_write_rows");
         ggml_set_input(sg.kv_write_rows);
+    }
+    if (dynamic_rows && capture && cache.target_feat) {
+        sg.target_feat_rows = ggml_new_tensor_1d(
+            sg.ctx, GGML_TYPE_I32, n_tokens);
+        ggml_set_name(sg.target_feat_rows, "target_feat_rows");
+        ggml_set_input(sg.target_feat_rows);
     }
 
     QwenGraphInputs gi{};
@@ -351,6 +358,7 @@ bool build_target_step(
     gi.fa_window                  = fa_window;
     gi.last_token_logits_only     = last_token_logits_only;
     gi.kv_write_rows              = sg.kv_write_rows;
+    gi.target_feat_rows           = sg.target_feat_rows;
     gi.q_capture                  = capture_qk;
 
     QwenGraphOutputs go = build_qwen35_graph(sg.ctx, sg.gf, w, cache, gi);

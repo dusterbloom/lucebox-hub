@@ -13,6 +13,7 @@
 #include <random>
 #endif
 #include "common/io_utils.h"
+#include "common/prof_env.h"
 #include "common/gguf_inspect.h"
 #include "common/restore_delta.h"
 #include "qwen3/qwen3_drafter.h"
@@ -337,8 +338,10 @@ bool Qwen35Backend::init() {
         std::fflush(stdout);
     }
 
-    // Init feature mirror when draft model is available (needed for spec decode).
-    // On single-GPU, this is an F32 conversion buffer; on split-GPU, a cross-device mirror.
+    // Init feature mirror when a draft model is available. Preserve the target
+    // feature ring's native storage type by default: Qwen captures BF16, so a
+    // same-GPU mirror can use a direct device copy and defer BF16 -> F32 until
+    // the drafter consumes the row. DFLASH_FEATURE_DTYPE remains an override.
     if (cfg_.draft_path && !use_remote_draft) {
         const int draft_context_cap = dw_.context_length > 0
             ? std::min(cfg_.draft_ctx_max, dw_.context_length)
@@ -348,7 +351,10 @@ bool Qwen35Backend::init() {
         if (!draft_feature_mirror_init(feature_mirror_, draft_backend_,
                                        cfg_.draft_gpu, cfg_.device.gpu, mirror_cap,
                                        w_.n_capture_layers,
-                                       w_.n_embd)) {
+                                       w_.n_embd,
+                                       cache_.target_feat
+                                           ? cache_.target_feat->type
+                                           : GGML_TYPE_F32)) {
             std::fprintf(stderr, "warning: feature mirror init failed, spec decode will use AR fallback\n");
         }
     }
@@ -1965,6 +1971,15 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
     int n_hint_accepted = 0;
     int target_forwards = 0;
 
+    const bool prof_step = dflash_prof_enabled("step");
+    double prof_draft_ms = 0.0;
+    double prof_snapshot_ms = 0.0;
+    double prof_verify_ms = 0.0;
+    double prof_accept_ms = 0.0;
+    double prof_state_ms = 0.0;
+    double prof_mirror_ms = 0.0;
+    double prof_emit_ms = 0.0;
+
     auto log_target_forward_stats = [&]() {
         std::fprintf(stderr, "[spec-decode] target_forwards=%d forwards_per_token=%.6f forwards_per_step=%.3f\n",
                      target_forwards,
@@ -1984,6 +1999,14 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
     auto t_dec0 = std::chrono::steady_clock::now();
 
     while (n_generated < n_gen) {
+        auto prof_lap = std::chrono::steady_clock::now();
+        auto prof_take_lap = [&](double & accumulator_ms) {
+            if (!prof_step) return;
+            const auto now = std::chrono::steady_clock::now();
+            accumulator_ms += std::chrono::duration<double, std::milli>(
+                now - prof_lap).count();
+            prof_lap = now;
+        };
         const int need_commit_budget = n_gen - n_generated;
 
         // Budget hook: no tail-off here. The close-token injection fires
@@ -2445,22 +2468,35 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         if (io.observer) {
             io.observer("draft", draft_tok);
         }
+        prof_take_lap(prof_draft_ms);
 
-        // 4. Verify: snapshot KV, run target forward over draft tokens
-        if (!target->snapshot_kv()) {
-            step_graph_destroy(draft_sg);
-            return false;
+        // 4. Verify. Native DSpark's anchor guarantees at least one committed
+        // verify row, so fast rollback can restore every partial block from
+        // captured intermediates and full blocks keep the verify state. Skip
+        // the otherwise-dead recurrent snapshot on that path.
+        const bool can_fast_rollback = target->supports_fast_rollback();
+        const bool have_preverify_snapshot =
+            draft_requires_preverify_snapshot(draft_shape, can_fast_rollback);
+        if (have_preverify_snapshot) {
+            if (!target->snapshot_kv()) {
+                step_graph_destroy(draft_sg);
+                return false;
+            }
+            prof_take_lap(prof_snapshot_ms);
         }
-
         int verify_last_tok = -1;
         if (!target->verify_batch(draft_tok, committed, verify_last_tok, &target_tok,
-                                   /*capture_ssm_intermediates=*/true)) {
+                                   draft_requires_ssm_intermediate_capture(
+                                       draft_shape, can_fast_rollback))) {
             std::fprintf(stderr, "spec-decode: verify failed\n");
-            target->restore_kv();
+            if (have_preverify_snapshot) {
+                target->restore_kv();
+            }
             step_graph_destroy(draft_sg);
             return false;
         }
         target_forwards++;
+        prof_take_lap(prof_verify_ms);
 
         // 5. Acceptance. Greedy: longest matching prefix between draft and
         // target argmax. Sampled-verify: walk the chain drawing each next
@@ -2472,7 +2508,9 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         if (sampled_verify) {
             if (!target->read_verify_logits(verify_width, verify_logits)) {
                 std::fprintf(stderr, "spec-decode: verify logits read failed\n");
-                target->restore_kv();
+                if (have_preverify_snapshot) {
+                    target->restore_kv();
+                }
                 step_graph_destroy(draft_sg);
                 return false;
             }
@@ -2547,6 +2585,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             commit_n = need_commit_budget;
             if (commit_n <= accept_n) bonus_tok = -1;
         }
+        prof_take_lap(prof_accept_ms);
 
         // 6. Fix state: adaptive fast-rollback vs legacy replay.
         //    Fast-rollback (implicit bonus, skip replay) is profitable when
@@ -2555,10 +2594,12 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         //    is around accept_n ≈ 5. Below that, legacy replay is cheaper.
         constexpr int kFastRollbackThreshold = 5;
         const bool use_fast_rollback =
-            !native_dspark && target->supports_fast_rollback() &&
-            (accept_n >= kFastRollbackThreshold);
+            draft_can_rollback_partial_verify(
+                draft_shape, can_fast_rollback, accept_n) ||
+            (!native_dspark && can_fast_rollback &&
+             accept_n >= kFastRollbackThreshold);
         const bool keep_native_full_verify = draft_can_keep_full_verify(
-            draft_shape, target->supports_fast_rollback(), accept_n,
+            draft_shape, can_fast_rollback, accept_n,
             need_commit_budget);
 
         int replay_last_tok = -1;
@@ -2584,6 +2625,13 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
                 replay_last_tok = target_tok[commit_n - 1];
                 fast_rolled_back = true;
             } else {
+                if (!have_preverify_snapshot) {
+                    std::fprintf(stderr,
+                        "spec-decode: native rollback_to failed without a "
+                        "pre-verify snapshot\n");
+                    step_graph_destroy(draft_sg);
+                    return false;
+                }
                 // Rollback failed (CUDA error / unsupported state type). The
                 // pre-verify snapshot is still valid, so degrade to the legacy
                 // restore+replay path below instead of aborting the request.
@@ -2610,6 +2658,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             }
             target_forwards++;
         }
+        prof_take_lap(prof_state_ms);
 
         // Build replay_tok for emitting committed tokens.
         std::vector<int32_t> replay_tok((size_t)commit_n);
@@ -2627,6 +2676,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             draft_feature_mirror_sync_range(cache_.target_feat, cache_.target_feat_cap,
                                             feature_mirror_, committed, commit_n);
         }
+        prof_take_lap(prof_mirror_ms);
 
         // 8. Emit committed tokens (stop at EOS)
         bool hit_eos = false;
@@ -2839,6 +2889,7 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             io.emit(-1);
             return ok;
         }
+        prof_take_lap(prof_emit_ms);
         if (hit_eos) break;
     }
 
@@ -2856,6 +2907,22 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
                  n_draft_steps, n_accept_sum, total_draft_pos, accept_pct,
                  n_draft_steps > 0 ? (double)n_generated / (double)n_draft_steps : 0.0);
     log_target_forward_stats();
+    if (prof_step && n_draft_steps > 0) {
+        const double inv_steps = 1.0 / (double)n_draft_steps;
+        std::fprintf(stderr,
+            "[prof-step] avg_ms draft=%.3f snapshot=%.3f verify=%.3f "
+            "accept=%.3f state=%.3f mirror=%.3f emit=%.3f total=%.3f\n",
+            prof_draft_ms * inv_steps,
+            prof_snapshot_ms * inv_steps,
+            prof_verify_ms * inv_steps,
+            prof_accept_ms * inv_steps,
+            prof_state_ms * inv_steps,
+            prof_mirror_ms * inv_steps,
+            prof_emit_ms * inv_steps,
+            (prof_draft_ms + prof_snapshot_ms + prof_verify_ms +
+             prof_accept_ms + prof_state_ms + prof_mirror_ms +
+             prof_emit_ms) * inv_steps);
+    }
     if (n_hint_proposed > 0) {
         std::fprintf(stderr, "[spec-decode] hint tokens: %d/%d accepted (%.1f%%)\n",
                      n_hint_accepted, n_hint_proposed,

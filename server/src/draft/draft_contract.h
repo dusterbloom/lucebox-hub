@@ -52,6 +52,47 @@ inline bool draft_can_keep_full_verify(
            remaining_budget >= accepted;
 }
 
+// Native DSpark can restore a partially accepted recurrent state from the
+// target's per-token intermediates, just like the legacy speculative path.
+// Capturing those rows is only useful when fast rollback is enabled; legacy
+// drafters retain their historical capture policy.
+inline bool draft_requires_ssm_intermediate_capture(
+        const DraftProposalShape & shape,
+        bool fast_rollback_enabled) {
+    return shape.layout != DraftProposalLayout::proposals_only ||
+           fast_rollback_enabled;
+}
+
+inline bool draft_can_rollback_partial_verify(
+        const DraftProposalShape & shape,
+        bool fast_rollback_enabled,
+        int accepted) {
+    return shape.layout == DraftProposalLayout::proposals_only &&
+           fast_rollback_enabled && accepted > 0 &&
+           accepted < shape.verify_width();
+}
+
+// Native DSpark always commits its anchor, so captured recurrent
+// intermediates cover every partial-accept path; a fully accepted block keeps
+// the verify state directly. A pre-verify snapshot is only needed when that
+// fast rollback capability is unavailable. Legacy proposal layouts retain
+// their replay fallback and therefore still require a snapshot.
+inline bool draft_requires_preverify_snapshot(
+        const DraftProposalShape & shape,
+        bool fast_rollback_enabled) {
+    return shape.layout != DraftProposalLayout::proposals_only ||
+           !fast_rollback_enabled;
+}
+
+// The cached drafter folds newly committed target features into its KV cache.
+// Legacy DFlash can advance by up to two draft blocks plus a bonus; native
+// DSpark advances by at most its target verify width (anchor + proposals).
+inline int draft_kv_append_width(const DraftProposalShape & shape) {
+    return shape.layout == DraftProposalLayout::proposals_only
+        ? shape.verify_width()
+        : 2 * shape.draft_width + 2;
+}
+
 // Build the deterministic 128-wide GIDD LogSnrEmbed input used by DSpark.
 // Row zero of each block is the clean anchor (t=1000); all remaining rows
 // are masked/noisy (t=0). The returned storage is row-major by draft row.
