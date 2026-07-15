@@ -485,6 +485,47 @@ static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int 
     return 1;
 }
 
+struct q1_0_mmvq_fragment {
+    float d;
+    int bits[8];
+};
+
+static __device__ __forceinline__ q1_0_mmvq_fragment load_q1_0_mmvq_fragment(
+        const void * __restrict__ vx, const int kbx, const int iqs) {
+    const block_q1_0 * block = (const block_q1_0 *) vx + kbx;
+    const int offset = iqs * 4;
+    const uint32_t packed =
+        (uint32_t)block->qs[offset + 0] |
+        ((uint32_t)block->qs[offset + 1] << 8) |
+        ((uint32_t)block->qs[offset + 2] << 16) |
+        ((uint32_t)block->qs[offset + 3] << 24);
+
+    q1_0_mmvq_fragment fragment;
+    fragment.d = block->d;
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+        const uint32_t bits4 = (packed >> (j * 4)) & 0x0f;
+        fragment.bits[j] =
+            ((bits4 >> 0) & 1) |
+            (((bits4 >> 1) & 1) << 8) |
+            (((bits4 >> 2) & 1) << 16) |
+            (((bits4 >> 3) & 1) << 24);
+    }
+    return fragment;
+}
+
+static __device__ __forceinline__ float dot_q1_0_mmvq_fragment(
+        const q1_0_mmvq_fragment & fragment,
+        const block_q8_1 * __restrict__ activation) {
+    int sum = 0;
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+        sum = ggml_cuda_dp4a(fragment.bits[j], get_int_b4(activation->qs, j), sum);
+    }
+    const float2 ds = __half22float2(activation->ds);
+    return fragment.d * (2.0f * sum * ds.x - ds.y);
+}
+
 template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false>
 __launch_bounds__(calc_nwarps(type, ncols_dst, get_device_table_id())*ggml_cuda_get_physical_warp_size(), 1)
 static __global__ void mul_mat_vec_q(
@@ -591,17 +632,71 @@ static __global__ void mul_mat_vec_q(
         // x block quant index when casting the quants to int
         const int kqs = vdr * (tid % (qi/vdr));
 
+        if constexpr (type == GGML_TYPE_Q1_0 && ncols_dst > 1) {
+            // Dense DSpark verification reuses one packed Q1_0 row across all
+            // token columns. The generic loop below reloads and expands that
+            // one-bit fragment once per column. Hoist it here so width-5
+            // verification pays the unpack cost once while retaining the
+            // independent per-column MMVQ reduction order used by AR decode.
+            if (!ids_multi_col) {
+                const int kbx_offset = sample_x*stride_sample_x +
+                    channel_x*stride_channel_x + row0*stride_row_x;
 #pragma unroll
-        for (int j = 0; j < ncols_dst; ++j) {
-            const int kbx_offset = sample_x*stride_sample_x + channel_xs[j]*stride_channel_x + row0*stride_row_x;
+                for (int i = 0; i < rows_per_cuda_block; ++i) {
+                    const int row_kbx = kbx_offset + i*stride_row_x + kbx;
+                    const q1_0_mmvq_fragment x_fragment =
+                        load_q1_0_mmvq_fragment(vx, row_kbx, kqs);
+                    q1_0_mmvq_fragment gate_fragment;
+                    if constexpr (has_fusion) {
+                        if (use_gate) {
+                            gate_fragment = load_q1_0_mmvq_fragment(
+                                vgate, row_kbx, kqs);
+                        }
+                    }
 #pragma unroll
-            for (int i = 0; i < rows_per_cuda_block; ++i) {
-                tmp[j][i] += vec_dot_q_cuda(
-                    vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
-                if constexpr (has_fusion) {
-                    if (use_gate) {
-                        tmp_gate[j][i] += vec_dot_q_cuda(
-                            vgate, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                    for (int j = 0; j < ncols_dst; ++j) {
+                        const block_q8_1 * activation =
+                            &y[j*stride_col_y + kby + kqs];
+                        tmp[j][i] += dot_q1_0_mmvq_fragment(
+                            x_fragment, activation);
+                        if constexpr (has_fusion) {
+                            if (use_gate) {
+                                tmp_gate[j][i] += dot_q1_0_mmvq_fragment(
+                                    gate_fragment, activation);
+                            }
+                        }
+                    }
+                }
+            } else {
+#pragma unroll
+                for (int j = 0; j < ncols_dst; ++j) {
+                    const int kbx_offset = sample_x*stride_sample_x + channel_xs[j]*stride_channel_x + row0*stride_row_x;
+#pragma unroll
+                    for (int i = 0; i < rows_per_cuda_block; ++i) {
+                        tmp[j][i] += vec_dot_q_cuda(
+                            vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                        if constexpr (has_fusion) {
+                            if (use_gate) {
+                                tmp_gate[j][i] += vec_dot_q_cuda(
+                                    vgate, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+#pragma unroll
+            for (int j = 0; j < ncols_dst; ++j) {
+                const int kbx_offset = sample_x*stride_sample_x + channel_xs[j]*stride_channel_x + row0*stride_row_x;
+#pragma unroll
+                for (int i = 0; i < rows_per_cuda_block; ++i) {
+                    tmp[j][i] += vec_dot_q_cuda(
+                        vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                    if constexpr (has_fusion) {
+                        if (use_gate) {
+                            tmp_gate[j][i] += vec_dot_q_cuda(
+                                vgate, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                        }
                     }
                 }
             }

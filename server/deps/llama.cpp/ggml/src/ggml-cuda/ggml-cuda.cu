@@ -2480,9 +2480,17 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         const int v = e ? atoi(e) : 3;
         return v > 0 ? v : MMVQ_MAX_BATCH_SIZE;
     }();
+    static const int luce_q1_mmvq_max_ncols = []() {
+        const char * e = getenv("LUCE_Q1_MMVQ_MAX_NCOLS");
+        const int v = e ? atoi(e) : 5;
+        return v > 0 ? v : MMVQ_MAX_BATCH_SIZE;
+    }();
+    const int mmvq_max_ncols = src0->type == GGML_TYPE_Q1_0
+        ? luce_q1_mmvq_max_ncols
+        : luce_mmvq_max_ncols;
     bool use_mul_mat_vec_q = ggml_is_quantized(src0->type) && !bad_padding_clear
         && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32
-        && src1->ne[1] <= luce_mmvq_max_ncols;
+        && src1->ne[1] <= mmvq_max_ncols;
     bool use_mul_mat_q     = ggml_is_quantized(src0->type) && !bad_padding_clear
         && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32;
 
