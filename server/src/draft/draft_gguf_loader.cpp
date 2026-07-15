@@ -30,6 +30,7 @@
 #include "common/gguf_bounds.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
@@ -57,6 +58,12 @@ uint32_t get_u32_or(const gguf_context * g, const char * key, uint32_t fallback)
     return gguf_get_val_u32(g, id);
 }
 
+bool get_bool_or(const gguf_context * g, const char * key, bool fallback) {
+    int64_t id = gguf_find_key(g, key);
+    if (id < 0) return fallback;
+    return gguf_get_val_bool(g, id);
+}
+
 int count_swa_layers(const DraftWeights & w) {
     int n_swa = 0;
     for (const DraftLayer & layer : w.layers) {
@@ -75,7 +82,7 @@ int count_attn_gate_layers(const DraftWeights & w) {
 
 bool check_shape_1d(const ggml_tensor * t, int64_t ne0, const char * name, char * buf, size_t buf_sz) {
     if (!t || t->ne[0] != ne0) {
-        std::snprintf(buf, buf_sz, "draft GGUF: Domino tensor %s shape mismatch: got [%lld], expected [%lld]",
+        std::snprintf(buf, buf_sz, "draft GGUF: tensor %s shape mismatch: got [%lld], expected [%lld]",
                       name, t ? (long long)t->ne[0] : -1LL, (long long)ne0);
         return false;
     }
@@ -86,7 +93,7 @@ bool check_shape_2d(const ggml_tensor * t, int64_t ne0, int64_t ne1,
                     const char * name, char * buf, size_t buf_sz) {
     if (!t || t->ne[0] != ne0 || t->ne[1] != ne1) {
         std::snprintf(buf, buf_sz,
-                      "draft GGUF: Domino tensor %s shape mismatch: got [%lld,%lld], expected [%lld,%lld]",
+                      "draft GGUF: tensor %s shape mismatch: got [%lld,%lld], expected [%lld,%lld]",
                       name,
                       t ? (long long)t->ne[0] : -1LL,
                       t ? (long long)t->ne[1] : -1LL,
@@ -125,11 +132,12 @@ bool load_draft_gguf(const std::string & path,
         }
         const char * arch = gguf_get_val_str(gctx, arch_id);
         arch_s = arch;
-        if (arch_s != "qwen35-dflash-draft" &&
+        if (arch_s != "dspark" &&
+            arch_s != "qwen35-dflash-draft" &&
             arch_s != "dflash-draft" &&
             arch_s != "gemma4-dflash-draft") {
             set_last_error(std::string("unexpected draft arch: ") + arch +
-                           " (expected qwen35-dflash-draft, dflash-draft, or gemma4-dflash-draft)");
+                           " (expected dspark or a DFlash draft architecture)");
             gguf_free(gctx);
             return false;
         }
@@ -137,6 +145,7 @@ bool load_draft_gguf(const std::string & path,
 
     // Read dimensions from GGUF metadata
     const char * A = arch_s.c_str();
+    const bool native_dspark = arch_s == "dspark";
     char key[128];
 
     auto read_u32 = [&](const char * suffix, uint32_t fallback) -> uint32_t {
@@ -149,6 +158,10 @@ bool load_draft_gguf(const std::string & path,
         if (id < 0) return fallback;
         return gguf_get_val_f32(gctx, id);
     };
+    auto read_bool = [&](const char * suffix, bool fallback) -> bool {
+        std::snprintf(key, sizeof(key), "%s.%s", A, suffix);
+        return get_bool_or(gctx, key, fallback);
+    };
 
     const uint32_t n_embd    = read_u32("embedding_length",        0);
     const uint32_t n_layer   = read_u32("block_count",             0);
@@ -156,21 +169,37 @@ bool load_draft_gguf(const std::string & path,
     const uint32_t n_head    = read_u32("attention.head_count",    0);
     const uint32_t n_head_kv = read_u32("attention.head_count_kv", 0);
     const uint32_t head_dim  = read_u32("attention.key_length",    0);
-    const uint32_t block_sz  = read_u32("dflash.block_size",       0);
-    uint32_t n_tgt_lay       = read_u32("dflash.n_target_layers",  0);
+    const uint32_t context_length = read_u32("context_length", 0);
+    const uint32_t block_sz  = read_u32(native_dspark ? "dspark.block_size" : "dflash.block_size", 0);
+    const uint32_t mask_token_id = read_u32(native_dspark ? "dspark.mask_token_id" : "dflash.mask_token_id", 0);
+    uint32_t n_tgt_lay = native_dspark ? 0 : read_u32("dflash.n_target_layers", 0);
     const uint32_t domino_meta_enabled = read_u32("dflash.domino.enabled", 0);
     const uint32_t domino_meta_gru     = read_u32("dflash.domino.gru_hidden_dim", 0);
     const uint32_t domino_meta_emb     = read_u32("dflash.domino.emb_dim", 0);
     const uint32_t domino_meta_vocab   = read_u32("dflash.domino.vocab_size", 0);
-    const uint32_t dspark_meta_enabled = read_u32("dflash.dspark.enabled", 0);
-    const uint32_t dspark_meta_rank    = read_u32("dflash.dspark.markov_rank", 0);
-    const uint32_t dspark_meta_vocab   = read_u32("dflash.dspark.vocab_size", 0);
-    const uint32_t dspark_meta_conf    = read_u32("dflash.dspark.confidence_dim", 0);
+    const uint32_t dspark_meta_enabled = native_dspark ? 1 : read_u32("dflash.dspark.enabled", 0);
+    const uint32_t dspark_meta_rank = read_u32(
+        native_dspark ? "dspark.markov_rank" : "dflash.dspark.markov_rank", 0);
+    const uint32_t dspark_meta_vocab = native_dspark
+        ? read_u32("vocab_size", 0)
+        : read_u32("dflash.dspark.vocab_size", 0);
+    const bool dspark_meta_confidence = native_dspark && read_bool("dspark.confidence_head", false);
+    const bool dspark_confidence_with_markov =
+        native_dspark && read_bool("dspark.confidence_head_with_markov", false);
+    const uint32_t dspark_meta_conf = native_dspark
+        ? (dspark_meta_confidence
+            ? n_embd + (dspark_confidence_with_markov ? dspark_meta_rank : 0)
+            : 0)
+        : read_u32("dflash.dspark.confidence_dim", 0);
+    const bool log_snr_enabled = native_dspark && read_bool("dspark.log_snr_conditioning", false);
+    const float min_log_snr = read_f32("dspark.min_log_snr", 0.0f);
+    const float max_log_snr = read_f32("dspark.max_log_snr", 0.0f);
     // Explicit captured target-layer ids (data-driven). Lets any DFlash drafter
     // load without a hardcoded per-arch set; the array length also backstops
     // n_target_layers when the scalar KV is absent.
     {
-        std::snprintf(key, sizeof(key), "%s.%s", A, "dflash.target_layer_ids");
+        std::snprintf(key, sizeof(key), "%s.%s", A,
+                      native_dspark ? "dspark.target_layers" : "dflash.target_layer_ids");
         const int64_t target_ids_id = gguf_find_key(gctx, key);
         if (target_ids_id >= 0 &&
             gguf_get_kv_type(gctx, target_ids_id) == GGUF_TYPE_ARRAY &&
@@ -202,11 +231,21 @@ bool load_draft_gguf(const std::string & path,
     }
 
     // Store GGUF-declared config into DraftWeights (replaces hardcoded defaults).
+    out.architecture = native_dspark
+        ? DraftArchitecture::BonsaiDSpark
+        : DraftArchitecture::DFlash;
     out.block_size = (int)block_sz;
     out.n_target_layers = (int)n_tgt_lay;
+    out.context_length = (int)context_length;
+    out.vocab_size = (int)dspark_meta_vocab;
+    out.proposal_layout = native_dspark
+        ? DraftProposalLayout::ProposalsOnly
+        : DraftProposalLayout::SeedThenProposals;
 
     // Propagate target model properties if available.
-    if (target) {
+    if (native_dspark) {
+        out.mask_token_id = (int)mask_token_id;
+    } else if (target) {
         out.mask_token_id = target->mask_token_id;
     }
 
@@ -255,13 +294,26 @@ bool load_draft_gguf(const std::string & path,
         return g(b);
     };
 
-    out.fc          = g_any("dflash.fc.weight", "dflash_fc.weight");
-    out.hidden_norm = g_any("dflash.hidden_norm.weight", "dflash_hidden_norm.weight");
+    out.fc = native_dspark
+        ? g("dspark.fc.weight")
+        : g_any("dflash.fc.weight", "dflash_fc.weight");
+    out.hidden_norm = native_dspark
+        ? g("dspark.hidden_norm.weight")
+        : g_any("dflash.hidden_norm.weight", "dflash_hidden_norm.weight");
     out.out_norm    = g("output_norm.weight");
+    out.output      = native_dspark ? g("output.weight") : nullptr;
     if (!out.fc || !out.hidden_norm || !out.out_norm) {
-        set_last_error("draft GGUF: missing top-level tensors "
-                       "(dflash.fc|dflash_fc / dflash.hidden_norm|dflash_hidden_norm / output_norm)");
+        set_last_error(native_dspark
+            ? "draft GGUF: missing Bonsai DSpark trunk tensors"
+            : "draft GGUF: missing top-level DFlash trunk tensors");
         ggml_free(meta_ctx);  // out.ctx: free the metadata arena on early failure
+        out.ctx = nullptr;
+        gguf_free(gctx);
+        return false;
+    }
+    if (native_dspark && !out.output) {
+        set_last_error("draft GGUF: missing Bonsai DSpark output.weight");
+        ggml_free(meta_ctx);
         out.ctx = nullptr;
         gguf_free(gctx);
         return false;
@@ -389,10 +441,18 @@ bool load_draft_gguf(const std::string & path,
     }
 
     out.dspark = DraftDSparkWeights{};
-    out.dspark.markov_w1    = g("dflash.dspark.markov.w1");
-    out.dspark.markov_w2    = g("dflash.dspark.markov.w2");
-    out.dspark.confidence_w = g("dflash.dspark.confidence.weight");
-    out.dspark.confidence_b = g("dflash.dspark.confidence.bias");
+    out.dspark.markov_w1 = g(native_dspark
+        ? "dspark.markov_head_a.weight"
+        : "dflash.dspark.markov.w1");
+    out.dspark.markov_w2 = g(native_dspark
+        ? "dspark.markov_head_b.weight"
+        : "dflash.dspark.markov.w2");
+    out.dspark.confidence_w = g(native_dspark
+        ? "dspark.confidence_head.weight"
+        : "dflash.dspark.confidence.weight");
+    out.dspark.confidence_b = g(native_dspark
+        ? "dspark.confidence_head.bias"
+        : "dflash.dspark.confidence.bias");
 
     const bool dspark_any =
         out.dspark.markov_w1 || out.dspark.markov_w2 ||
@@ -449,6 +509,87 @@ bool load_draft_gguf(const std::string & path,
         std::fprintf(stderr, "[draft GGUF] DSpark Markov head enabled: rank=%d vocab=%d confidence_dim=%d\n",
                      out.dspark.markov_rank, out.dspark.vocab_size,
                      out.dspark.confidence_dim);
+    }
+
+    out.log_snr = DraftLogSnrWeights{};
+    if (log_snr_enabled) {
+        out.log_snr.enabled = true;
+        out.log_snr.min_log_snr = min_log_snr;
+        out.log_snr.max_log_snr = max_log_snr;
+        out.log_snr.fc1_w = g("dspark.log_snr_fc1.weight");
+        out.log_snr.fc1_b = g("dspark.log_snr_fc1.bias");
+        out.log_snr.fc2_w = g("dspark.log_snr_fc2.weight");
+        out.log_snr.fc2_b = g("dspark.log_snr_fc2.bias");
+        char shape_err[320];
+        if (!std::isfinite(min_log_snr) || !std::isfinite(max_log_snr) ||
+            max_log_snr <= min_log_snr ||
+            !check_shape_2d(out.log_snr.fc1_w, 128, out.n_embd,
+                            "dspark.log_snr_fc1.weight", shape_err, sizeof(shape_err)) ||
+            !check_shape_1d(out.log_snr.fc1_b, out.n_embd,
+                            "dspark.log_snr_fc1.bias", shape_err, sizeof(shape_err)) ||
+            !check_shape_2d(out.log_snr.fc2_w, out.n_embd, out.n_embd,
+                            "dspark.log_snr_fc2.weight", shape_err, sizeof(shape_err)) ||
+            !check_shape_1d(out.log_snr.fc2_b, out.n_embd,
+                            "dspark.log_snr_fc2.bias", shape_err, sizeof(shape_err))) {
+            set_last_error(!std::isfinite(min_log_snr) || !std::isfinite(max_log_snr) ||
+                           max_log_snr <= min_log_snr
+                ? "draft GGUF: invalid Bonsai DSpark log-SNR bounds"
+                : shape_err);
+            ggml_free(meta_ctx);
+            out.ctx = nullptr;
+            gguf_free(gctx);
+            return false;
+        }
+    }
+
+    if (native_dspark) {
+        if (out.block_size <= 0 || out.proposal_shape().proposal_count() <= 0 ||
+            out.vocab_size <= 0 || out.mask_token_id < 0 ||
+            out.mask_token_id >= out.vocab_size) {
+            set_last_error("draft GGUF: invalid Bonsai DSpark proposal metadata");
+            ggml_free(meta_ctx);
+            out.ctx = nullptr;
+            gguf_free(gctx);
+            return false;
+        }
+        char shape_err[320];
+        if (!check_shape_2d(out.output, out.n_embd, out.vocab_size,
+                            "output.weight", shape_err, sizeof(shape_err))) {
+            set_last_error(shape_err);
+            ggml_free(meta_ctx);
+            out.ctx = nullptr;
+            gguf_free(gctx);
+            return false;
+        }
+        if (target) {
+            if (target->n_embd != out.n_embd || target->n_vocab != out.vocab_size) {
+                char buf[256];
+                std::snprintf(buf, sizeof(buf),
+                    "draft GGUF: Bonsai DSpark target mismatch: hidden %d/%d vocab %d/%d",
+                    out.n_embd, target->n_embd, out.vocab_size, target->n_vocab);
+                set_last_error(buf);
+                ggml_free(meta_ctx);
+                out.ctx = nullptr;
+                gguf_free(gctx);
+                return false;
+            }
+            if ((int)out.capture_layer_ids.size() != target->n_capture_layers) {
+                set_last_error("draft GGUF: Bonsai DSpark capture-layer count does not match target");
+                ggml_free(meta_ctx);
+                out.ctx = nullptr;
+                gguf_free(gctx);
+                return false;
+            }
+            for (int i = 0; i < target->n_capture_layers; ++i) {
+                if (out.capture_layer_ids[(size_t)i] != target->capture_layer_ids[i]) {
+                    set_last_error("draft GGUF: Bonsai DSpark capture layers do not match target");
+                    ggml_free(meta_ctx);
+                    out.ctx = nullptr;
+                    gguf_free(gctx);
+                    return false;
+                }
+            }
+        }
     }
 
     // GGUF Qwen3.6 drafters carry SWA metadata emitted by the converter:

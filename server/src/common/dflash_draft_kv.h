@@ -51,6 +51,8 @@ struct DraftKvState {
     ggml_backend_buffer_t mem_buf = nullptr;
     DraftKvCacheRefs      cache;
     ggml_tensor * inp_embed  = nullptr;  // [hidden, q_len] f32 (caller fills)
+    ggml_tensor * noise_conditioning = nullptr; // [128, q_len] f32 (static)
+    ggml_tensor * seed_token = nullptr;  // [1] i32 (native DSpark anchor)
     ggml_tensor * pos_q      = nullptr;  // [q_len] i32
     ggml_tensor * noise_rows = nullptr;  // [q_len] i32 (static)
     ggml_tensor * mask_full  = nullptr;  // [kv_total, q_len] f16
@@ -66,6 +68,7 @@ struct DraftKvState {
     ggml_gallocr_t  galloc = nullptr;
     ggml_tensor *   hidden_states = nullptr;
     ggml_tensor *   logits        = nullptr;  // iff lm_head passed at init
+    std::vector<ggml_tensor *> proposal_tokens; // native DSpark corrected argmaxes
 
     // host bookkeeping
     const void *          built_for = nullptr;  // DraftWeights the graph was built against
