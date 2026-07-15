@@ -53,23 +53,14 @@ static bool ensure_staging(DraftFeatureMirror & mirror, size_t bytes) {
     return true;
 }
 
-static ggml_type parse_feature_dtype() {
+static ggml_type parse_feature_dtype(ggml_type preferred_storage_type) {
     const char * s = std::getenv("DFLASH_FEATURE_DTYPE");
-    if (!s || !s[0] || std::strcmp(s, "f32") == 0 || std::strcmp(s, "F32") == 0) {
-        return GGML_TYPE_F32;
+    if (!draft_feature_storage_override_supported(s)) {
+        std::fprintf(stderr,
+            "[dflash-feature] ignoring unsupported DFLASH_FEATURE_DTYPE=%s\n",
+            s);
     }
-    if (std::strcmp(s, "f16") == 0 || std::strcmp(s, "F16") == 0) {
-        return GGML_TYPE_F16;
-    }
-    if (std::strcmp(s, "bf16") == 0 || std::strcmp(s, "BF16") == 0) {
-        return GGML_TYPE_BF16;
-    }
-    if (std::strcmp(s, "q8_0") == 0 || std::strcmp(s, "Q8_0") == 0 ||
-        std::strcmp(s, "q8") == 0 || std::strcmp(s, "Q8") == 0) {
-        return GGML_TYPE_Q8_0;
-    }
-    std::fprintf(stderr, "[dflash-feature] ignoring unsupported DFLASH_FEATURE_DTYPE=%s\n", s);
-    return GGML_TYPE_F32;
+    return draft_feature_storage_type(s, preferred_storage_type);
 }
 
 static bool check_feature_width_compatible(ggml_type type, int width) {
@@ -274,14 +265,15 @@ bool draft_feature_mirror_init(DraftFeatureMirror & mirror,
                                int target_device,
                                int cap,
                                int n_target_layers,
-                               int hidden_size) {
+                               int hidden_size,
+                               ggml_type preferred_storage_type) {
     draft_feature_mirror_free(mirror);
     if (cap <= 0 || n_target_layers <= 0 || hidden_size <= 0) return false;
     mirror.device = device;
     mirror.target_device = target_device;
     mirror.n_target_layers = n_target_layers;
     mirror.hidden_size = hidden_size;
-    mirror.storage_type = parse_feature_dtype();
+    mirror.storage_type = parse_feature_dtype(preferred_storage_type);
     if (!check_feature_width_compatible(mirror.storage_type, hidden_size) ||
         !check_feature_width_compatible(mirror.storage_type, n_target_layers * hidden_size)) {
         std::fprintf(stderr,

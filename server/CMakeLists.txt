@@ -1046,6 +1046,12 @@ if(DFLASH27B_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     add_test(NAME qwen35_verify_graph_key COMMAND test_qwen35_verify_graph_key)
 
+    add_executable(test_draft_cache_policy test/test_draft_cache_policy.cpp)
+    target_include_directories(test_draft_cache_policy PRIVATE
+        ${DFLASH27B_SRC_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include)
+    add_test(NAME draft_cache_policy COMMAND test_draft_cache_policy)
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_server_unit.cpp")
         add_executable(test_server_unit test/test_server_unit.cpp)
         target_sources(test_server_unit PRIVATE
@@ -1086,7 +1092,8 @@ if(DFLASH27B_TESTS)
             test_qwen35_draft_policy
             test_qwen35_runtime_policy
             test_attn_mask_row
-            test_qwen35_verify_graph_key)
+            test_qwen35_verify_graph_key
+            test_draft_cache_policy)
         if(TARGET test_deepseek4_unit)
             list(APPEND _check_deps test_deepseek4_unit)
         endif()
@@ -1106,6 +1113,7 @@ if(DFLASH27B_TESTS)
                 test_qwen35_runtime_policy
                 test_attn_mask_row
                 test_qwen35_verify_graph_key
+                test_draft_cache_policy
             COMMENT "Building and running unit tests (server unit tests skipped — CURL not found)"
         )
     endif()
