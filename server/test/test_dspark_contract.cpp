@@ -1,4 +1,6 @@
 #include "draft/draft_contract.h"
+#include "common/attn_masks.h"
+#include "qwen35/runtime_policy.h"
 
 #include <cmath>
 #include <cstdio>
@@ -19,6 +21,62 @@ bool check(bool condition, const char * expression, int line) {
 #define CHECK(expr) do { if (!check((expr), #expr, __LINE__)) return 1; } while (false)
 
 int main() {
+    {
+        const auto ar = qwen35_target_step_policy(
+            /*no_kvpad=*/false, /*kvflash_mask=*/false,
+            /*fa_window=*/0, /*n_tokens=*/1,
+            /*capture=*/false, /*dynamic_rows=*/false);
+        CHECK(ar.use_kv_write_rows);
+        CHECK(ar.force_validity_mask);
+
+        const auto exact_ar = qwen35_target_step_policy(
+            /*no_kvpad=*/true, /*kvflash_mask=*/false,
+            /*fa_window=*/0, /*n_tokens=*/1,
+            /*capture=*/false, /*dynamic_rows=*/false);
+        CHECK(!exact_ar.use_kv_write_rows);
+        CHECK(!exact_ar.force_validity_mask);
+
+        const auto verify = qwen35_target_step_policy(
+            /*no_kvpad=*/false, /*kvflash_mask=*/false,
+            /*fa_window=*/0, /*n_tokens=*/5,
+            /*capture=*/true, /*dynamic_rows=*/true);
+        CHECK(verify.use_kv_write_rows);
+        CHECK(verify.force_validity_mask);
+
+        const auto windowed = qwen35_target_step_policy(
+            /*no_kvpad=*/false, /*kvflash_mask=*/false,
+            /*fa_window=*/4096, /*n_tokens=*/1,
+            /*capture=*/false, /*dynamic_rows=*/false);
+        CHECK(!windowed.use_kv_write_rows);
+        CHECK(!windowed.force_validity_mask);
+    }
+
+    {
+        std::vector<uint16_t> row;
+        build_causal_mask_row(row, /*kv_pad=*/8, /*kv_len=*/3,
+                              /*query_pos=*/2, /*win_start=*/0);
+        CHECK(row.size() == 8);
+        CHECK(row[0] == F16_ZERO);
+        CHECK(row[1] == F16_ZERO);
+        CHECK(row[2] == F16_ZERO);
+        for (size_t i = 3; i < row.size(); ++i) {
+            CHECK(row[i] == F16_NEG_INF);
+        }
+    }
+
+    {
+        CHECK(qwen35_rollback_storage_from_string(nullptr) ==
+              Qwen35RollbackStorage::f32);
+        CHECK(qwen35_rollback_storage_from_string("") ==
+              Qwen35RollbackStorage::f32);
+        CHECK(qwen35_rollback_storage_from_string("f32") ==
+              Qwen35RollbackStorage::f32);
+        CHECK(qwen35_rollback_storage_from_string("f16") ==
+              Qwen35RollbackStorage::f16);
+        CHECK(qwen35_rollback_storage_from_string("invalid") ==
+              Qwen35RollbackStorage::f32);
+    }
+
     const DraftProposalShape legacy{16, DraftProposalLayout::seed_then_proposals};
     CHECK(legacy.first_proposal_row() == 1);
     CHECK(legacy.proposal_count() == 15);

@@ -48,6 +48,23 @@ inline void build_causal_mask(std::vector<uint16_t> & out,
     }
 }
 
+// Build only the active row for a single-query decode mask. Flash attention
+// reads one mask row when Q has one token, so uploading the aligned KV row is
+// sufficient and avoids transferring the unused 31 padded query rows.
+inline void build_causal_mask_row(std::vector<uint16_t> & out,
+                                  int kv_pad,
+                                  int kv_len,
+                                  int query_pos,
+                                  int win_start = 0) {
+    out.assign((size_t)kv_pad, F16_NEG_INF);
+    const int abs_end = win_start + kv_len;
+    const int min_k = std::max(0, win_start);
+    const int max_k = std::min(query_pos, abs_end - 1);
+    for (int k = min_k; k <= max_k; ++k) {
+        out[(size_t)(k - win_start)] = F16_ZERO;
+    }
+}
+
 // Build an ancestor-only attention mask for DDTree tree-structured verify.
 // Each query position i can attend to its ancestors in the tree (including
 // itself) plus all past KV positions.

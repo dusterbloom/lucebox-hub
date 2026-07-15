@@ -1327,6 +1327,15 @@ static void mul_mat_vec_q_switch_ncols_dst(
         return e && e[0] == '1' && e[1] == '\0';
     }();
 
+    // Construction-equivalent Q1 target verification: evaluate each dense
+    // column with the same width-1 specialization used by AR decode. Unlike
+    // DFLASH_CUDA_MMVQ_TOKENWISE, this leaves non-Q1 work (notably the Q4
+    // DSpark draft) on its tuned multi-column kernels.
+    static const bool use_q1_ar_parity = []() {
+        const char * e = std::getenv("DFLASH_CUDA_Q1_AR_PARITY");
+        return e && e[0] == '1' && e[1] == '\0';
+    }();
+
     if (use_tokenwise_mmid && has_ids && ncols_dst > 1) {
         constexpr int c_ncols_dst = 1;
         const bool use_small_k = should_use_small_k(c_ncols_dst);
@@ -1351,7 +1360,8 @@ static void mul_mat_vec_q_switch_ncols_dst(
         return;
     }
 
-    if (use_tokenwise_mm && !has_ids && ncols_dst > 1 && nsamples_dst == 1) {
+    if ((use_tokenwise_mm || (type == GGML_TYPE_Q1_0 && use_q1_ar_parity)) &&
+            !has_ids && ncols_dst > 1 && nsamples_dst == 1) {
         constexpr int c_ncols_dst = 1;
         const bool use_small_k = should_use_small_k(c_ncols_dst);
         const uint3 token_sample_ratio_fd = init_fastdiv_values(ncols_dst);

@@ -545,7 +545,11 @@ void ggml_cuda_flash_attn_ext_vec_case(ggml_backend_cuda_context & ctx, ggml_ten
     float logit_softcap;
     memcpy(&logit_softcap, (const float *) KQV->op_params + 2, sizeof(float));
 
-    if (Q->ne[1] == 1) {
+    static const bool q1_ar_parity = [] {
+        const char * e = getenv("DFLASH_CUDA_Q1_AR_PARITY");
+        return e != nullptr && strcmp(e, "1") == 0;
+    }();
+    if (Q->ne[1] == 1 || q1_ar_parity) {
         constexpr int cols_per_block = 1;
         if (logit_softcap == 0.0f) {
             constexpr bool use_logit_softcap = false;

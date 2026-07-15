@@ -144,6 +144,13 @@ consolidation of this list into CLI flags is tracked as follow-up work.
 - `DFLASH_QWEN35MOE_SWAP_MIN_GAIN` - qwen35moe_backend.cpp
 - `DFLASH_QWEN35MOE_TELEMETRY` - qwen35moe_backend.cpp
 - `DFLASH_QWEN35_NO_KVPAD` - graph_builders.cpp
+- `DFLASH_QWEN35_ROLLBACK_DTYPE` - `f32` (default, exact recurrent-state
+  checkpoints) or `f16` (lossy lower-memory experimental lane) -
+  qwen35_target_graph.cpp
+- `DFLASH_CUDA_Q1_AR_PARITY=1` - Q1 diagnostic/correctness lane for short
+  speculative-verify batches. Dense Q1 matmuls and quantized-KV attention use
+  the same width-1 CUDA specializations as AR decode. This can substantially
+  reduce speculative throughput and is not the default - mmvq.cu, fattn.cu
 - `DFLASH_SAMPLED_VERIFY` - laguna_backend.cpp, qwen35_backend.cpp
 - `DFLASH_SHARE_DIR` - http_server.cpp
 - `DFLASH_SPARK` - laguna_backend.cpp, qwen35moe_backend.cpp

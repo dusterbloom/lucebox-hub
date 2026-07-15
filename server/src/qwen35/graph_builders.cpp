@@ -1,4 +1,5 @@
 #include "graph_builders.h"
+#include "runtime_policy.h"
 
 #include "ggml-alloc.h"
 
@@ -276,6 +277,14 @@ bool build_target_step(
     bool dynamic_rows) {
     step_graph_free(sg);
 
+    // DFLASH_QWEN35_NO_KVPAD=1 restores the legacy cpy append + exact-length
+    // FA span (per-step node properties -> no CUDA-graph replay).
+    static const bool g_no_kvpad =
+        (std::getenv("DFLASH_QWEN35_NO_KVPAD") != nullptr);
+    const Qwen35TargetStepPolicy step_policy = qwen35_target_step_policy(
+        g_no_kvpad, kvflash_mask, fa_window, n_tokens, capture, dynamic_rows);
+    if (step_policy.force_validity_mask) with_mask = true;
+
     // Persistent per-StepGraph arena: rebuilt step graphs land at identical
     // addresses, keeping the ggml-cuda CUDA-graph cache key (nodes[0]) and
     // every node property stable across AR decode steps -> captured graph
@@ -319,21 +328,12 @@ bool build_target_step(
     sg.gf = ggml_new_graph_custom(sg.ctx, 16384, false);
 
     // Step-invariant KV write: only when topology can't vary per step.
-    // DFLASH_QWEN35_NO_KVPAD=1 restores the legacy cpy append + exact-length
-    // FA span (per-step node properties -> no CUDA-graph replay).
-    static const bool g_no_kvpad = (std::getenv("DFLASH_QWEN35_NO_KVPAD") != nullptr);
     // kvflash_mask: kvflash mode. The mask carries pool slot validity
     // (uploaded by the caller before EVERY compute — the input's buffer
     // region is reused by graph execution) and set_rows carries per-token
     // physical slots, so the slot-mapped write stays active for masked,
     // multi-token, and feature-capturing forwards (decode AND spec verify).
-    const bool use_kv_write_rows =
-        !g_no_kvpad &&
-        (kvflash_mask
-             ? (fa_window == 0)
-             : (fa_window == 0 &&
-                (dynamic_rows || (n_tokens == 1 && !with_mask && !capture))));
-    if (use_kv_write_rows) {
+    if (step_policy.use_kv_write_rows) {
         sg.kv_write_rows = ggml_new_tensor_2d(sg.ctx, GGML_TYPE_I64,
                                               n_tokens, w.n_head_kv);
         ggml_set_name(sg.kv_write_rows, "kv_write_rows");

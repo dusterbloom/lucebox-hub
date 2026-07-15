@@ -418,7 +418,9 @@ struct TargetCache {
     // persistent cache memory (not tracked by the per-call gallocr), matching
     // SGLang's mamba_caches.intermediate_ssm / intermediate_conv_window pattern.
     //
-    //   ssm_intermediate: [S_v, S_v, H_v, max_q_len] f32, one per delta layer.
+    //   ssm_intermediate: [S_v, S_v, H_v, max_q_len] f32 by default, one per
+    //     delta layer. DFLASH_QWEN35_ROLLBACK_DTYPE=f16 enables a lossy,
+    //     lower-memory experimental lane.
     //     Element t on axis 3 holds the DeltaNet recurrent state after
     //     processing verify token t. Spec decode commits t = commit_n - 1.
     //   conv_input_cache: [(kernel-1) + max_q_len, conv_channels] f32, one per
@@ -611,7 +613,8 @@ bool migrate_prefill_cache(const TargetWeights & w,
 // mamba_caches.intermediate_ssm / intermediate_conv_window pattern:
 // persistent memory, not managed by the per-call gallocr.
 //
-//   ssm_intermediate_states: [S_v, S_v, H_v, q_len] f32
+//   ssm_intermediate_states: [S_v, S_v, H_v, q_len] f32 by default; optional
+//       f16 storage is lossy and intended only for explicit performance A/Bs.
 //       Element t on axis 3 holds the DeltaNet state after processing verify
 //       token t. Rollback reads offset (commit_n-1) * S_v*S_v*H*elt.
 //   conv_input: [(kernel-1) + q_len, conv_channels, 1] f32
