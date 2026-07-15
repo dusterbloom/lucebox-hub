@@ -843,6 +843,19 @@ if(DFLASH27B_TESTS)
         endif()
         add_test(NAME deepseek4_unit COMMAND test_deepseek4_unit)
     endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_dspark_fused_confidence.cpp")
+        add_executable(test_dspark_fused_confidence
+            test/test_dspark_fused_confidence.cpp
+            src/common/dspark_head.cpp
+            src/common/ddtree.cpp)
+        target_include_directories(test_dspark_fused_confidence PRIVATE
+            ${DFLASH27B_SRC_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+        target_link_libraries(test_dspark_fused_confidence PRIVATE
+            ggml-cpu ggml-base)
+        add_test(NAME dspark_fused_confidence COMMAND test_dspark_fused_confidence)
+    endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_load_draft.cpp")
         add_executable(smoke_load_draft test/smoke_load_draft.cpp)
         target_include_directories(smoke_load_draft PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
