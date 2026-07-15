@@ -74,6 +74,7 @@ private:
     // Snapshots
     static constexpr int PREFIX_SLOTS = 64;
     DeepSeek4Snapshot      snapshots_[PREFIX_SLOTS];
+    std::vector<float>     snapshot_last_logits_[PREFIX_SLOTS];
     std::vector<float>     last_logits_;
 
     // Prefill prompt tokens in chunks, return absolute committed position.

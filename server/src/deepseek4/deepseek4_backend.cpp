@@ -470,6 +470,7 @@ bool DeepSeek4Backend::park(const std::string & what) {
     maybe_save_routing_stats();
     for (int i = 0; i < PREFIX_SLOTS; ++i) {
         free_deepseek4_snapshot(snapshots_[i]);
+        snapshot_last_logits_[i].clear();
     }
     last_logits_.clear();
     free_deepseek4_cache(cache_);
@@ -705,13 +706,18 @@ GenerateResult DeepSeek4Backend::generate_impl(const GenerateRequest & req,
 
 bool DeepSeek4Backend::snapshot_save(int slot) {
     if (slot < 0 || slot >= PREFIX_SLOTS) return false;
-    // TODO: Implement snapshot save (copy KV cache + HC state to CPU)
-    return false;
+    if (!deepseek4_snapshot_save(cache_, snap_backend_, snapshots_[slot])) {
+        snapshot_last_logits_[slot].clear();
+        return false;
+    }
+    snapshot_last_logits_[slot] = last_logits_;
+    return true;
 }
 
 void DeepSeek4Backend::snapshot_free(int slot) {
     if (slot < 0 || slot >= PREFIX_SLOTS) return;
     free_deepseek4_snapshot(snapshots_[slot]);
+    snapshot_last_logits_[slot].clear();
 }
 
 bool DeepSeek4Backend::snapshot_used(int slot) const {
@@ -726,9 +732,86 @@ int DeepSeek4Backend::snapshot_cur_pos(int slot) const {
 
 GenerateResult DeepSeek4Backend::restore_and_generate_impl(
         int slot, const GenerateRequest & req, const DaemonIO & io) {
-    // TODO: Implement snapshot restore + generate
-    (void)slot;
-    return generate_impl(req, io);
+    GenerateResult result;
+    if (parked_) {
+        result.fail(GenerateErrorCode::ModelParked);
+        return result;
+    }
+
+    DaemonIO out_io = io.with_token_callback(req.on_token);
+    if (slot < 0 || slot >= PREFIX_SLOTS || !snapshots_[slot].ctx) {
+        result.fail(GenerateErrorCode::InvalidSnapshotSlot);
+        out_io.emit(-1);
+        return result;
+    }
+
+    const int snap_pos = snapshots_[slot].cur_pos;
+    const int prompt_len = (int)req.prompt.size();
+    const int max_ctx = cfg_.max_ctx > 0 ? cfg_.max_ctx : 8192;
+
+    if (prompt_len < snap_pos) {
+        free_deepseek4_cache(cache_);
+        if (!create_deepseek4_cache(backend_, w_, max_ctx, cache_)) {
+            result.fail(GenerateErrorCode::BackendSpecific, "restore_reset");
+            return result;
+        }
+        last_logits_.clear();
+        return generate_impl(req, io);
+    }
+
+    sampler_ = req.sampler;
+    if (req.do_sample && sampler_.seed != 0) {
+        sampler_rng_.seed(sampler_.seed);
+    }
+
+    if (!deepseek4_snapshot_restore(snapshots_[slot], cache_)) {
+        result.fail(GenerateErrorCode::BackendSpecific, "restore");
+        return result;
+    }
+    last_logits_ = snapshot_last_logits_[slot];
+
+    int committed = snap_pos;
+    result.prefill_s = 0.0;
+
+    if (prompt_len > snap_pos) {
+        std::vector<int32_t> delta(req.prompt.begin() + snap_pos, req.prompt.end());
+        auto t0 = Clock::now();
+        committed = do_prefill(delta, out_io, /*kv_offset=*/snap_pos);
+        if (committed < 0) {
+            result.fail(GenerateErrorCode::PrefillFailed);
+            return result;
+        }
+        result.prefill_s = elapsed_s(t0);
+    } else if (prompt_len == snap_pos) {
+        if (snapshot_last_logits_[slot].empty() && snap_pos > 0) {
+            result.fail(GenerateErrorCode::BackendSpecific, "restore_logits");
+            return result;
+        }
+    }
+
+    if (req.n_gen <= 0) {
+        result.succeed();
+        maybe_save_routing_stats();
+        return result;
+    }
+
+    auto t1 = Clock::now();
+    std::vector<int32_t> gen_tokens;
+    gen_tokens.reserve(req.n_gen);
+
+    bool forced_close = false;
+    if (!do_decode(committed, req.n_gen, gen_tokens, out_io,
+                   req.budget_hook, &forced_close)) {
+        result.fail(GenerateErrorCode::DecodeFailed);
+        return result;
+    }
+
+    result.succeed();
+    result.tokens = std::move(gen_tokens);
+    result.decode_s = elapsed_s(t1);
+    result.budget_forced_close = forced_close;
+    maybe_save_routing_stats();
+    return result;
 }
 
 bool DeepSeek4Backend::handle_compress(const std::string & line,
@@ -755,6 +838,7 @@ void DeepSeek4Backend::shutdown() {
     maybe_save_routing_stats();
     for (int i = 0; i < PREFIX_SLOTS; i++) {
         free_deepseek4_snapshot(snapshots_[i]);
+        snapshot_last_logits_[i].clear();
     }
     free_deepseek4_cache(cache_);
     stream_engine_.destroy();
