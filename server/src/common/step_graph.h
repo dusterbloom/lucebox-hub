@@ -50,6 +50,8 @@ struct StepGraph {
     ggml_tensor *   hidden_input = nullptr;        // lm-head projection only
     // [n_tokens,n_head_kv] i64; step-invariant KV write (carries kv_start). Null on non-graph paths.
     ggml_tensor *   kv_write_rows = nullptr;
+    // [n_tokens] i32; dynamic target-feature ring rows for persistent verify.
+    ggml_tensor *   target_feat_rows = nullptr;
 
     // Output
     ggml_tensor *   logits = nullptr;
@@ -81,6 +83,7 @@ inline void step_graph_free(StepGraph & sg) {
     sg.hidden_input = nullptr;
     sg.parent_ids = nullptr;
     sg.kv_write_rows = nullptr;
+    sg.target_feat_rows = nullptr;
     sg.logits = nullptr;
     sg.hidden_states = nullptr;
     sg.argmax_tokens = nullptr;

@@ -11,10 +11,12 @@
 #include "step_graph.h"
 #include "graph_builders.h"
 #include "kvflash_pager.h"
+#include "verify_graph_key.h"
 
 #include "ggml.h"
 #include "ggml-backend.h"
 
+#include <map>
 #include <vector>
 
 namespace dflash::common {
@@ -104,6 +106,11 @@ private:
 
     // LM-head projection graph (lazily built).
     StepGraph proj_sg_;
+
+    // A stable metadata arena per verify topology. Width, recurrent capture,
+    // and mask shape all affect the graph and therefore the CUDA graph key.
+    std::map<Qwen35VerifyGraphKey, StepGraph> chain_sg_;
+    StepGraph * last_verify_sg_ = nullptr;
 };
 
 }  // namespace dflash::common

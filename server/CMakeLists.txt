@@ -1040,6 +1040,12 @@ if(DFLASH27B_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     add_test(NAME attn_mask_row COMMAND test_attn_mask_row)
 
+    add_executable(test_qwen35_verify_graph_key
+        test/test_qwen35_verify_graph_key.cpp)
+    target_include_directories(test_qwen35_verify_graph_key PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    add_test(NAME qwen35_verify_graph_key COMMAND test_qwen35_verify_graph_key)
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_server_unit.cpp")
         add_executable(test_server_unit test/test_server_unit.cpp)
         target_sources(test_server_unit PRIVATE
@@ -1079,7 +1085,8 @@ if(DFLASH27B_TESTS)
             test_dspark_proposal_graph
             test_qwen35_draft_policy
             test_qwen35_runtime_policy
-            test_attn_mask_row)
+            test_attn_mask_row
+            test_qwen35_verify_graph_key)
         if(TARGET test_deepseek4_unit)
             list(APPEND _check_deps test_deepseek4_unit)
         endif()
@@ -1098,6 +1105,7 @@ if(DFLASH27B_TESTS)
                 test_qwen35_draft_policy
                 test_qwen35_runtime_policy
                 test_attn_mask_row
+                test_qwen35_verify_graph_key
             COMMENT "Building and running unit tests (server unit tests skipped — CURL not found)"
         )
     endif()
