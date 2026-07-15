@@ -1025,6 +1025,12 @@ if(DFLASH27B_TESTS)
     target_link_libraries(test_dspark_proposal_graph PRIVATE ggml-base)
     add_test(NAME dspark_proposal_graph COMMAND test_dspark_proposal_graph)
 
+    # Pure Qwen3.5 draft scheduling policy test: no ggml, GPU, or models.
+    add_executable(test_qwen35_draft_policy test/test_qwen35_draft_policy.cpp)
+    target_include_directories(test_qwen35_draft_policy PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    add_test(NAME qwen35_draft_policy COMMAND test_qwen35_draft_policy)
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_server_unit.cpp")
         add_executable(test_server_unit test/test_server_unit.cpp)
         target_sources(test_server_unit PRIVATE
@@ -1061,7 +1067,8 @@ if(DFLASH27B_TESTS)
             test_server_unit
             test_draft_contract
             test_dspark_features
-            test_dspark_proposal_graph)
+            test_dspark_proposal_graph
+            test_qwen35_draft_policy)
         if(TARGET test_deepseek4_unit)
             list(APPEND _check_deps test_deepseek4_unit)
         endif()
@@ -1077,6 +1084,7 @@ if(DFLASH27B_TESTS)
                 test_draft_contract
                 test_dspark_features
                 test_dspark_proposal_graph
+                test_qwen35_draft_policy
             COMMENT "Building and running unit tests (server unit tests skipped — CURL not found)"
         )
     endif()
