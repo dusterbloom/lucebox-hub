@@ -634,16 +634,21 @@ bool DeepSeek4Backend::do_decode(int committed, int n_gen,
                 steps++;
             }
         }
+        last_logits_ = logits;
 
-        // Sample (argmax for now)
         int32_t next_token = 0;
         {
             const auto sample_t0 = Clock::now();
-            float max_val = logits[0];
-            for (int i = 1; i < w_.n_vocab; i++) {
-                if (logits[i] > max_val) {
-                    max_val = logits[i];
-                    next_token = i;
+            if (sampler_.needs_logit_processing()) {
+                next_token = sample_logits(logits.data(), w_.n_vocab, sampler_,
+                                           out_tokens, sampler_rng_);
+            } else {
+                float max_val = logits[0];
+                for (int i = 1; i < w_.n_vocab; i++) {
+                    if (logits[i] > max_val) {
+                        max_val = logits[i];
+                        next_token = i;
+                    }
                 }
             }
             if (timing) tel_acc.sample_us += elapsed_us(sample_t0, Clock::now());
@@ -706,6 +711,10 @@ GenerateResult DeepSeek4Backend::generate_impl(const GenerateRequest & req,
 
 bool DeepSeek4Backend::snapshot_save(int slot) {
     if (slot < 0 || slot >= PREFIX_SLOTS) return false;
+    if (cache_.cur_pos <= 0) {
+        snapshot_last_logits_[slot].clear();
+        return false;
+    }
     if (!deepseek4_snapshot_save(cache_, snap_backend_, snapshots_[slot])) {
         snapshot_last_logits_[slot].clear();
         return false;
@@ -756,7 +765,7 @@ GenerateResult DeepSeek4Backend::restore_and_generate_impl(
             return result;
         }
         last_logits_.clear();
-        return generate_impl(req, io);
+        return generate_impl(req, out_io);
     }
 
     sampler_ = req.sampler;
