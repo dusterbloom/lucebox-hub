@@ -50,6 +50,11 @@ std::unique_ptr<ModelBackend> create_backend(const BackendArgs & args) {
 
     if (arch == "qwen35") {
         if (args.device.is_layer_split()) {
+            if (args.draft_path && detect_arch(args.draft_path) == "dspark") {
+                std::fprintf(stderr,
+                    "[backend_factory] native DSpark does not yet support target layer splitting\n");
+                return nullptr;
+            }
             Qwen35LayerSplitAdapterConfig cfg;
             cfg.target_path        = args.model_path;
             cfg.draft_path         = args.draft_path;
