@@ -30,4 +30,35 @@ constexpr bool qwen35_can_keep_full_dspark_verify(
            remaining_budget >= accepted;
 }
 
+constexpr bool qwen35_requires_ssm_intermediate_capture(
+        DraftProposalShape shape,
+        bool fast_rollback_enabled) noexcept {
+    return shape.layout != DraftProposalLayout::ProposalsOnly ||
+           fast_rollback_enabled;
+}
+
+constexpr int qwen35_dspark_retained_rows(
+        int accepted,
+        int remaining_budget) noexcept {
+    if (accepted <= 0 || remaining_budget <= 0) return 0;
+    return accepted < remaining_budget ? accepted : remaining_budget;
+}
+
+constexpr bool qwen35_can_rollback_dspark_verify(
+        DraftProposalShape shape,
+        bool fast_rollback_enabled,
+        int retained) noexcept {
+    return shape.layout == DraftProposalLayout::ProposalsOnly &&
+           fast_rollback_enabled &&
+           retained > 0 &&
+           retained < shape.verify_width();
+}
+
+constexpr bool qwen35_requires_preverify_snapshot(
+        DraftProposalShape shape,
+        bool fast_rollback_enabled) noexcept {
+    return shape.layout != DraftProposalLayout::ProposalsOnly ||
+           !fast_rollback_enabled;
+}
+
 }  // namespace dflash::common
