@@ -19,6 +19,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 namespace dflash::common {
@@ -37,6 +38,32 @@ struct DraftFeatureMirror {
     ggml_type storage_type = GGML_TYPE_F32;
 };
 
+inline bool draft_feature_storage_override_supported(const char * value) {
+    return !value || !value[0] ||
+           std::strcmp(value, "f32") == 0 || std::strcmp(value, "F32") == 0 ||
+           std::strcmp(value, "f16") == 0 || std::strcmp(value, "F16") == 0 ||
+           std::strcmp(value, "bf16") == 0 || std::strcmp(value, "BF16") == 0 ||
+           std::strcmp(value, "q8_0") == 0 || std::strcmp(value, "Q8_0") == 0 ||
+           std::strcmp(value, "q8") == 0 || std::strcmp(value, "Q8") == 0;
+}
+
+inline ggml_type draft_feature_storage_type(
+        const char * value,
+        ggml_type preferred_storage_type) {
+    if (!value || !value[0]) return preferred_storage_type;
+    if (std::strcmp(value, "f16") == 0 || std::strcmp(value, "F16") == 0) {
+        return GGML_TYPE_F16;
+    }
+    if (std::strcmp(value, "bf16") == 0 || std::strcmp(value, "BF16") == 0) {
+        return GGML_TYPE_BF16;
+    }
+    if (std::strcmp(value, "q8_0") == 0 || std::strcmp(value, "Q8_0") == 0 ||
+        std::strcmp(value, "q8") == 0 || std::strcmp(value, "Q8") == 0) {
+        return GGML_TYPE_Q8_0;
+    }
+    return GGML_TYPE_F32;
+}
+
 void draft_feature_mirror_free(DraftFeatureMirror & mirror);
 
 bool draft_feature_mirror_init(DraftFeatureMirror & mirror,
@@ -45,7 +72,8 @@ bool draft_feature_mirror_init(DraftFeatureMirror & mirror,
                                int target_device,
                                int cap,
                                int n_target_layers,
-                               int hidden_size);
+                               int hidden_size,
+                               ggml_type preferred_storage_type = GGML_TYPE_F32);
 
 // Check whether the mirror ring buffer can provide a contiguous view of
 // ctx_len slots ending at committed. Returns true and writes slot0 (the
@@ -55,9 +83,9 @@ bool draft_feature_mirror_can_view(const DraftFeatureMirror & mirror,
                                    int ctx_len,
                                    int & slot0);
 
-// Copy and convert BF16→F32 for n_tokens starting at start_pos from a
-// target-side BF16 feature ring (`src_target_feat` / `src_cap`) into the
-// draft-side mirror ring buffer.
+// Copy n_tokens starting at start_pos from a target-side BF16 feature ring
+// (`src_target_feat` / `src_cap`) into the draft-side mirror, converting only
+// when its configured storage type differs.
 bool draft_feature_mirror_sync_range(const ggml_tensor * src_target_feat,
                                      int src_cap,
                                      DraftFeatureMirror & mirror,

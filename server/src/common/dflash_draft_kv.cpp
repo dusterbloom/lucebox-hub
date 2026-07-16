@@ -1,4 +1,5 @@
 #include "dflash_draft_kv.h"
+#include "dflash_draft_kv_policy.h"
 #include "dspark_proposal_graph.h"
 #include "draft/dspark_features.h"
 
@@ -26,7 +27,8 @@ bool draft_kv_init(DraftKvState & st,
 
     st.cap        = cap;
     st.q_len      = dw.block_size;
-    st.a_step     = 2 * dw.block_size + 2;
+    st.a_step     = draft_kv_append_capacity(
+        dw.block_size, dw.is_bonsai_dspark());
     st.trash_slot = cap + dw.block_size;
     st.kv_total   = mask_align_up(cap + dw.block_size + 1, MASK_KV_PAD);
     st.fc_in      = dw.n_target_layers * dw.n_embd;

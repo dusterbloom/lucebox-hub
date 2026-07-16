@@ -339,8 +339,10 @@ bool Qwen35Backend::init() {
         std::fflush(stdout);
     }
 
-    // Init feature mirror when draft model is available (needed for spec decode).
-    // On single-GPU, this is an F32 conversion buffer; on split-GPU, a cross-device mirror.
+    // Bonsai's cached drafter consumes copied rows, so keep Qwen's native BF16
+    // capture representation and defer conversion until the append graph.
+    // Legacy DFlash keeps its F32 mirror/view fast path. The environment
+    // override remains authoritative for both lanes.
     if (cfg_.draft_path && !use_remote_draft) {
         const int draft_context_cap = dw_.context_length > 0
             ? std::min(cfg_.draft_ctx_max, dw_.context_length)
@@ -350,7 +352,10 @@ bool Qwen35Backend::init() {
         if (!draft_feature_mirror_init(feature_mirror_, draft_backend_,
                                        cfg_.draft_gpu, cfg_.device.gpu, mirror_cap,
                                        w_.n_capture_layers,
-                                       w_.n_embd)) {
+                                       w_.n_embd,
+                                       dw_.is_bonsai_dspark() && cache_.target_feat
+                                           ? cache_.target_feat->type
+                                           : GGML_TYPE_F32)) {
             std::fprintf(stderr, "warning: feature mirror init failed, spec decode will use AR fallback\n");
         }
     }
