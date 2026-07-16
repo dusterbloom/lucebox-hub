@@ -637,6 +637,8 @@ struct QwenGraphInputs {
     ggml_tensor * parent_ids = nullptr; // [n_tokens] i32; tree mode when non-null
     // [n_tokens,n_head_kv] i64; non-null = step-invariant KV write via ggml_set_rows (carries kv_start).
     ggml_tensor * kv_write_rows = nullptr;
+    // [n_tokens] i32; non-null = step-invariant target-feature ring rows.
+    ggml_tensor * target_feat_rows = nullptr;
     // Capture the LAST token's post-RoPE/post-rotation Q per full-attention
     // layer into cache.q_cap (KVFlash target-QK scorer). Step-invariant:
     // node properties depend only on n_tokens and the layer index.
