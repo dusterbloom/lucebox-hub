@@ -2458,18 +2458,27 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         if (io.observer) {
             io.observer("draft", draft_tok);
         }
-
-        // 4. Verify: snapshot KV, run target forward over draft tokens
-        if (!target->snapshot_kv()) {
-            step_graph_destroy(draft_sg);
-            return false;
+        // 4. Verify. Native DSpark's anchor guarantees at least one committed
+        // verify row, so fast rollback can restore every partial block from
+        // captured intermediates and full blocks keep the verify state. Skip
+        // the otherwise-dead recurrent snapshot on that path.
+        const bool can_fast_rollback = target->supports_fast_rollback();
+        const bool have_preverify_snapshot =
+            qwen35_requires_preverify_snapshot(draft_shape, can_fast_rollback);
+        if (have_preverify_snapshot) {
+            if (!target->snapshot_kv()) {
+                step_graph_destroy(draft_sg);
+                return false;
+            }
         }
-
         int verify_last_tok = -1;
         if (!target->verify_batch(draft_tok, committed, verify_last_tok, &target_tok,
-                                   /*capture_ssm_intermediates=*/true)) {
+                                   qwen35_requires_ssm_intermediate_capture(
+                                       draft_shape, can_fast_rollback))) {
             std::fprintf(stderr, "spec-decode: verify failed\n");
-            target->restore_kv();
+            if (have_preverify_snapshot) {
+                target->restore_kv();
+            }
             step_graph_destroy(draft_sg);
             return false;
         }
@@ -2485,7 +2494,9 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         if (sampled_verify) {
             if (!target->read_verify_logits(verify_width, verify_logits)) {
                 std::fprintf(stderr, "spec-decode: verify logits read failed\n");
-                target->restore_kv();
+                if (have_preverify_snapshot) {
+                    target->restore_kv();
+                }
                 step_graph_destroy(draft_sg);
                 return false;
             }
@@ -2567,11 +2578,15 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
         //    than the cost of deferring the bonus to the next step. Breakeven
         //    is around accept_n ≈ 5. Below that, legacy replay is cheaper.
         constexpr int kFastRollbackThreshold = 5;
+        const int retained_accept_n = qwen35_dspark_retained_rows(
+            accept_n, need_commit_budget);
         const bool use_fast_rollback =
-            !native_dspark && target->supports_fast_rollback() &&
-            (accept_n >= kFastRollbackThreshold);
+            qwen35_can_rollback_dspark_verify(
+                draft_shape, can_fast_rollback, retained_accept_n) ||
+            (!native_dspark && can_fast_rollback &&
+             accept_n >= kFastRollbackThreshold);
         const bool keep_native_full_verify = qwen35_can_keep_full_dspark_verify(
-            draft_shape, target->supports_fast_rollback(), accept_n,
+            draft_shape, can_fast_rollback, accept_n,
             need_commit_budget);
 
         int replay_last_tok = -1;
@@ -2592,11 +2607,18 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
             // Respect the generation budget: accept_n may exceed the remaining
             // budget (need_commit_budget), so committing accept_n would emit
             // more tokens than requested. commit_n was already clamped above.
-            commit_n = std::min(accept_n, need_commit_budget);
+            commit_n = retained_accept_n;
             if (target->rollback_to(committed, commit_n)) {
                 replay_last_tok = target_tok[commit_n - 1];
                 fast_rolled_back = true;
             } else {
+                if (!have_preverify_snapshot) {
+                    std::fprintf(stderr,
+                        "spec-decode: native rollback_to failed without a "
+                        "pre-verify snapshot\n");
+                    step_graph_destroy(draft_sg);
+                    return false;
+                }
                 // Rollback failed (CUDA error / unsupported state type). The
                 // pre-verify snapshot is still valid, so degrade to the legacy
                 // restore+replay path below instead of aborting the request.
