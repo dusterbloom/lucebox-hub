@@ -33,11 +33,12 @@ class FormalPlanTest(unittest.TestCase):
                 "prefix-cache-abort-hole",
                 "prefix-cache-full-lifecycle",
                 "spec-commit-exactness",
+                "kvflash-residency-map",
             ],
         )
         self.assertEqual(
             [target["policy"] for target in registry["targets"]],
-            ["advisory", "advisory", "advisory", "advisory"],
+            ["advisory", "advisory", "advisory", "advisory", "advisory"],
         )
         prefix_area = next(
             area for area in registry["critical_paths"] if area["id"] == "prefix-cache"
@@ -48,6 +49,13 @@ class FormalPlanTest(unittest.TestCase):
             "server/src/server/*eviction*.h",
             prefix_area["watch_paths"],
         )
+        kvflash_area = next(
+            area
+            for area in registry["critical_paths"]
+            if area["id"] == "kvflash-residency"
+        )
+        self.assertEqual(kvflash_area["policy"], "advisory")
+        self.assertEqual(kvflash_area["include_roots"], ["server/src"])
 
     def test_registry_and_legacy_manifest_pin_the_same_toolchain(self) -> None:
         registry = formal_plan.load_registry(REGISTRY, ROOT)
@@ -113,6 +121,44 @@ class FormalPlanTest(unittest.TestCase):
         )
         self.assertEqual(plan["coverage_gaps"], [])
 
+    def test_kvflash_fixture_selects_residency_target_and_bounds(self) -> None:
+        plan = self.plan_fixture("kvflash-change.json")
+        self.assertEqual(
+            [target["id"] for target in plan["targets"]],
+            ["kvflash-residency-map"],
+        )
+        target = plan["targets"][0]
+        self.assertEqual(target["timeout_seconds"], 180)
+        self.assertEqual(target["nightly_timeout_seconds"], 240)
+        self.assertEqual(target["pr_defines"], ["LUCEBOX_FORMAL_BLOCKS=4"])
+        self.assertEqual(target["nightly_defines"], ["LUCEBOX_FORMAL_BLOCKS=5"])
+        self.assertEqual(
+            target["pr_esbmc_args"],
+            ["--quiet", "--boolector", "--unwind", "14", "--overflow-check"],
+        )
+        self.assertEqual(plan["coverage_gaps"], [])
+
+    def test_nightly_timeout_defaults_and_rejects_invalid_overrides(self) -> None:
+        registry = formal_plan.load_registry(REGISTRY, ROOT)
+        for target in registry["targets"][:4]:
+            self.assertEqual(
+                target["nightly_timeout_seconds"],
+                target["timeout_seconds"],
+            )
+        source = REGISTRY.read_text(encoding="utf-8")
+        for invalid in ("179", "3601", '"240"'):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as temp:
+                candidate = Path(temp) / "registry.toml"
+                candidate.write_text(
+                    source.replace(
+                        "nightly_timeout_seconds = 240",
+                        f"nightly_timeout_seconds = {invalid}",
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaises(formal_plan.RegistryError):
+                    formal_plan.load_registry(candidate, ROOT)
+
     def test_registry_execution_matches_legacy_capsules_during_dual_run(self) -> None:
         registry = formal_plan.load_registry(REGISTRY, ROOT)
         manifest = tomllib.loads((ROOT / "formal" / "manifest.toml").read_text())
@@ -123,6 +169,10 @@ class FormalPlanTest(unittest.TestCase):
             self.assertEqual(target["entry_function"], capsule["entry_function"])
             self.assertEqual(target["include_dirs"], capsule["include_dirs"])
             self.assertEqual(target["timeout_seconds"], capsule["timeout_seconds"])
+            self.assertEqual(
+                target["nightly_timeout_seconds"],
+                capsule.get("nightly_timeout_seconds", capsule["timeout_seconds"]),
+            )
             self.assertEqual(target["pr_defines"], capsule["defines"])
             self.assertEqual(target["nightly_defines"], capsule["nightly_defines"])
             self.assertEqual(target["pr_esbmc_args"], capsule["esbmc_args"])

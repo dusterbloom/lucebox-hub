@@ -166,3 +166,44 @@ contract_paths = [
 ]
 native_test = "test_spec_commit"
 native_test_source = "server/test/test_spec_commit.cpp"
+
+[[capsules]]
+id = "kvflash-residency-map"
+description = "KVFlash identity map, callback rollback, protected LRU eviction, logical bounds, and slot masks"
+harness = "formal/kvflash/residency_map_harness.cpp"
+entry_function = "main"
+include_dirs = ["server/src", "formal"]
+timeout_seconds = 180
+nightly_timeout_seconds = 240
+defines = [
+  "LUCEBOX_FORMAL_BLOCKS=4",
+]
+nightly_defines = [
+  "LUCEBOX_FORMAL_BLOCKS=5",
+]
+esbmc_args = [
+  "--quiet",
+  "--boolector",
+  "--unwind", "14",
+  "--overflow-check",
+]
+trigger_paths = [
+  "formal/**",
+  "server/src/common/kvflash_residency_map.h",
+  "server/src/common/kvflash_pager.h",
+  "server/test/test_kvflash_residency_map.cpp",
+  "server/test/test_kvflash.cpp",
+]
+mutable_paths = [
+  "server/src/common/kvflash_residency_map.h",
+]
+contract_paths = [
+  "formal/manifest.toml",
+  "formal/kvflash/residency_map_harness.cpp",
+  "formal/kvflash/residency_map_harness_body.h",
+  "formal/contracts/mutations/kvflash-capacity-off-by-one.patch",
+  "formal/kvflash/RESIDENCY_MAP_PROPERTIES.md",
+  "server/test/test_kvflash_residency_map.cpp",
+]
+native_test = "test_kvflash_residency_map"
+native_test_source = "server/test/test_kvflash_residency_map.cpp"

@@ -65,7 +65,7 @@ jobs:
             --out /plan
 
       - id: scope
-        name: Confirm the three-target nightly scope
+        name: Confirm the five-target nightly scope
         if: steps.plan.outcome == 'success'
         continue-on-error: true
         run: |
@@ -80,6 +80,7 @@ jobs:
               "prefix-cache-abort-hole",
               "prefix-cache-full-lifecycle",
               "spec-commit-exactness",
+              "kvflash-residency-map",
           ]
           if actual != expected:
               raise SystemExit(f"unexpected nightly targets: {actual!r}")

@@ -1,14 +1,15 @@
 # Advisory formal-verification pilot
 
-This directory defines four deterministic proof capsules and the planning tools
+This directory defines five deterministic proof capsules and the planning tools
 that select them. `Formal Verification (advisory)` runs the same capsules for
 proposed changes, while `Formal Verification Nightly (advisory)` exercises
 their extended bounds and mutation sensitivity on accepted revisions. Neither
 workflow is required: this pilot adds no branch-protection rule, credentials,
 AI integration, or repair execution.
 
-The capsules run against the production prefix-cache and shared speculative
-commit boundaries included in this cumulative change.
+The capsules run against the production prefix-cache, shared speculative
+commit, and KVFlash residency-map boundaries included in this cumulative
+change.
 
 ## Current capsules
 
@@ -37,6 +38,14 @@ optional bonus, commit-budget, and safe token-selection decision. It is
 advisory and is documented in
 [`spec_commit/PROPERTIES.md`](spec_commit/PROPERTIES.md).
 
+`kvflash-residency-map` is an advisory capsule for the production KVFlash CPU
+ownership map. It checks identity fill, rejected-eviction rollback, protected
+LRU eviction, logical bounds, and slot masks; GPU DMA and wider integration
+behavior remain outside the model. The exact claims and exclusions are in
+[`kvflash/RESIDENCY_MAP_PROPERTIES.md`](kvflash/RESIDENCY_MAP_PROPERTIES.md).
+Its PR bound is four blocks with a 180-second timeout; the nightly soak widens
+to five blocks with a 240-second timeout.
+
 Only behavior named in the property documents is claimed as checked.
 
 ## Policy files
@@ -44,13 +53,13 @@ Only behavior named in the property documents is claimed as checked.
 [`manifest.toml`](manifest.toml) is the compatibility description consumed by
 the verifier's legacy local mode.
 
-[`contracts/registry.toml`](contracts/registry.toml) records the same four
+[`contracts/registry.toml`](contracts/registry.toml) records the same five
 capsules as deterministic templates, along with their source triggers, bounds,
 mutable implementation paths, immutable contract paths, and critical-path
 routing metadata. [`contracts/README.md`](contracts/README.md) describes the
 registry and planner in detail.
 
-All four targets use `policy = "advisory"` during the proving period. The
+All five targets use `policy = "advisory"` during the proving period. The
 workflow records failures and preserves their evidence, but the policy does
 not make the check a merge requirement. Promoting an individual target to a
 failing or required check is a separate contract-review PR and
@@ -84,6 +93,8 @@ python3 scripts/formal_plan.py plan \
   --changed-path server/src/server/prefix_cache_state.h
 python3 scripts/formal_plan.py plan \
   --changed-path server/src/qwen35/qwen35_backend.cpp
+python3 scripts/formal_plan.py plan \
+  --changed-path server/src/common/kvflash_pager.h
 python3 -m unittest formal/contracts/tests/test_formal_plan.py -v
 ```
 
