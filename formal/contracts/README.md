@@ -24,6 +24,10 @@ head. A PR therefore cannot change the policy or template used to judge
 itself. The workflow separately records the base, head, and repositories in
 the result artifact.
 
+The separate nightly soak evaluates the accepted revision with extended
+bounds and replays mutation sensitivity. Its outcomes and artifacts remain
+advisory.
+
 ## Registered boundaries
 
 The registry contains two complementary prefix-cache capsules:

@@ -50,17 +50,28 @@ class FormalPlanTest(unittest.TestCase):
         manifest = tomllib.loads((ROOT / manifest_path).read_text())
         self.assertEqual(registry["toolchain"], manifest["toolchain"])
 
-    def test_deterministic_workflow_uses_only_the_pinned_verifier(self) -> None:
+    def test_workflows_use_only_the_pinned_verifier(self) -> None:
         toolchain = formal_plan.load_registry(REGISTRY, ROOT)["toolchain"]
-        workflow = (ROOT / ".github" / "workflows" / "formal.yml").read_text()
-        assignments = re.findall(
-            r"^\s*(VERIFIER_IMAGE|REPAIR_IMAGE):\s*(\S+)\s*$",
-            workflow,
-            re.MULTILINE,
-        )
-        self.assertEqual({name for name, _ in assignments}, {"VERIFIER_IMAGE"})
-        verifier_values = [value for name, value in assignments if name == "VERIFIER_IMAGE"]
-        self.assertEqual(verifier_values, [toolchain["verifier_image"]] * 3)
+        for relative in ("formal.yml", "formal-nightly.yml"):
+            workflow = (ROOT / ".github" / "workflows" / relative).read_text()
+            assignments = re.findall(
+                r"^\s*(VERIFIER_IMAGE|REPAIR_IMAGE):\s*(\S+)\s*$",
+                workflow,
+                re.MULTILINE,
+            )
+            self.assertEqual(
+                {name for name, _ in assignments},
+                {"VERIFIER_IMAGE"},
+                relative,
+            )
+            verifier_values = [
+                value for name, value in assignments if name == "VERIFIER_IMAGE"
+            ]
+            self.assertEqual(
+                verifier_values,
+                [toolchain["verifier_image"]] * 3,
+                relative,
+            )
 
     def test_prefix_cache_fixture_selects_approved_targets(self) -> None:
         plan = self.plan_fixture("prefix-cache-change.json")

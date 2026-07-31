@@ -1,10 +1,11 @@
 # Advisory formal-verification pilot
 
 This directory defines two deterministic proof capsules and the planning tools
-that select them. The `Formal Verification (advisory)` workflow runs the same
-two capsules for proposed changes. It is deliberately non-required: this
-change adds no branch-protection rule, credentials, AI integration, or repair
-execution.
+that select them. `Formal Verification (advisory)` runs the same capsules for
+proposed changes, while `Formal Verification Nightly (advisory)` exercises
+their extended bounds and mutation sensitivity on accepted revisions. Neither
+workflow is required: this pilot adds no branch-protection rule, credentials,
+AI integration, or repair execution.
 
 The capsules run against the production prefix-cache transition boundary
 introduced by the preceding prefix-cache correctness change. On a standalone
@@ -58,6 +59,10 @@ writable, and verifier containers run without network access, Linux
 capabilities, or a writable root. Plans, results, and source/base SHA metadata
 are retained as workflow artifacts. The legacy manifest run remains an
 advisory comparison during migration.
+
+The nightly workflow applies the same verifier-only boundary to the exact
+scheduled or manually dispatched revision. It records generated, legacy, and
+mutation outcomes without turning a soak failure into merge policy.
 
 ## Local validation
 
