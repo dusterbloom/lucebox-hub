@@ -32,11 +32,12 @@ class FormalPlanTest(unittest.TestCase):
                 "prefix-cache-inline",
                 "prefix-cache-abort-hole",
                 "prefix-cache-full-lifecycle",
+                "spec-commit-exactness",
             ],
         )
         self.assertEqual(
             [target["policy"] for target in registry["targets"]],
-            ["advisory", "advisory", "advisory"],
+            ["advisory", "advisory", "advisory", "advisory"],
         )
         prefix_area = next(
             area for area in registry["critical_paths"] if area["id"] == "prefix-cache"
@@ -68,9 +69,7 @@ class FormalPlanTest(unittest.TestCase):
                 {"VERIFIER_IMAGE"},
                 relative,
             )
-            verifier_values = [
-                value for name, value in assignments if name == "VERIFIER_IMAGE"
-            ]
+            verifier_values = [value for name, value in assignments if name == "VERIFIER_IMAGE"]
             self.assertEqual(
                 verifier_values,
                 [toolchain["verifier_image"]] * 3,
@@ -106,6 +105,14 @@ class FormalPlanTest(unittest.TestCase):
         )
         self.assertIn(mutation, capsule["contract_paths"])
 
+    def test_spec_commit_fixture_selects_exactness_target(self) -> None:
+        plan = self.plan_fixture("spec-commit-change.json")
+        self.assertEqual(
+            [target["id"] for target in plan["targets"]],
+            ["spec-commit-exactness"],
+        )
+        self.assertEqual(plan["coverage_gaps"], [])
+
     def test_registry_execution_matches_legacy_capsules_during_dual_run(self) -> None:
         registry = formal_plan.load_registry(REGISTRY, ROOT)
         manifest = tomllib.loads((ROOT / "formal" / "manifest.toml").read_text())
@@ -136,8 +143,7 @@ class FormalPlanTest(unittest.TestCase):
             for include in re.findall(r'#include\s+"([^"]+)"', template):
                 candidates = [template_path.parent / include]
                 candidates.extend(
-                    ROOT / directory / include
-                    for directory in target["include_dirs"]
+                    ROOT / directory / include for directory in target["include_dirs"]
                 )
                 resolved = None
                 for candidate in candidates:

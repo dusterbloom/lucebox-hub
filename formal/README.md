@@ -1,14 +1,14 @@
 # Advisory formal-verification pilot
 
-This directory defines three deterministic proof capsules and the planning tools
+This directory defines four deterministic proof capsules and the planning tools
 that select them. `Formal Verification (advisory)` runs the same capsules for
 proposed changes, while `Formal Verification Nightly (advisory)` exercises
 their extended bounds and mutation sensitivity on accepted revisions. Neither
 workflow is required: this pilot adds no branch-protection rule, credentials,
 AI integration, or repair execution.
 
-The capsules run against the production prefix-cache transition boundaries,
-including the full lifecycle extraction added in this cumulative change.
+The capsules run against the production prefix-cache and shared speculative
+commit boundaries included in this cumulative change.
 
 ## Current capsules
 
@@ -32,20 +32,25 @@ native regression are documented in
 The production extraction and native test are included in this cumulative
 change.
 
-Only behavior named in those property documents is claimed as checked.
+`spec-commit-exactness` checks the shared linear speculative acceptance,
+optional bonus, commit-budget, and safe token-selection decision. It is
+advisory and is documented in
+[`spec_commit/PROPERTIES.md`](spec_commit/PROPERTIES.md).
+
+Only behavior named in the property documents is claimed as checked.
 
 ## Policy files
 
 [`manifest.toml`](manifest.toml) is the compatibility description consumed by
 the verifier's legacy local mode.
 
-[`contracts/registry.toml`](contracts/registry.toml) records the same three
+[`contracts/registry.toml`](contracts/registry.toml) records the same four
 capsules as deterministic templates, along with their source triggers, bounds,
 mutable implementation paths, immutable contract paths, and critical-path
 routing metadata. [`contracts/README.md`](contracts/README.md) describes the
 registry and planner in detail.
 
-All three targets use `policy = "advisory"` during the proving period. The
+All four targets use `policy = "advisory"` during the proving period. The
 workflow records failures and preserves their evidence, but the policy does
 not make the check a merge requirement. Promoting an individual target to a
 failing or required check is a separate contract-review PR and
@@ -77,6 +82,8 @@ Registry and planner validation do not require Docker:
 python3 scripts/formal_plan.py validate
 python3 scripts/formal_plan.py plan \
   --changed-path server/src/server/prefix_cache_state.h
+python3 scripts/formal_plan.py plan \
+  --changed-path server/src/qwen35/qwen35_backend.cpp
 python3 -m unittest formal/contracts/tests/test_formal_plan.py -v
 ```
 

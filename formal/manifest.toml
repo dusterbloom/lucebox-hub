@@ -122,3 +122,47 @@ contract_paths = [
 ]
 native_test = "test_full_prefix_cache_state"
 native_test_source = "server/test/test_full_prefix_cache_state.cpp"
+
+[[capsules]]
+id = "spec-commit-exactness"
+description = "Linear speculative acceptance, bonus availability, budget clipping, and safe token selection"
+harness = "formal/spec_commit/spec_commit_harness.cpp"
+entry_function = "main"
+include_dirs = ["server/src", "formal"]
+timeout_seconds = 120
+defines = [
+  "LUCEBOX_FORMAL_MAX_WIDTH=4",
+]
+nightly_defines = [
+  "LUCEBOX_FORMAL_MAX_WIDTH=8",
+]
+esbmc_args = [
+  "--quiet",
+  "--z3",
+  "--unwind", "17",
+  "--memory-leak-check",
+  "--overflow-check",
+]
+trigger_paths = [
+  "formal/**",
+  "server/src/common/spec_commit.h",
+  "server/src/common/dflash_spec_decode.cpp",
+  "server/src/qwen35/qwen35_backend.cpp",
+  "server/src/qwen35moe/qwen35moe_backend.cpp",
+  "server/src/laguna/laguna_backend.cpp",
+  "server/src/gemma4/gemma4_backend.cpp",
+  "server/test/test_spec_commit.cpp",
+]
+mutable_paths = [
+  "server/src/common/spec_commit.h",
+]
+contract_paths = [
+  "formal/manifest.toml",
+  "formal/spec_commit/spec_commit_harness.cpp",
+  "formal/spec_commit/spec_commit_harness_body.h",
+  "formal/contracts/mutations/spec-commit-invert-prefix-match.patch",
+  "formal/spec_commit/PROPERTIES.md",
+  "server/test/test_spec_commit.cpp",
+]
+native_test = "test_spec_commit"
+native_test_source = "server/test/test_spec_commit.cpp"

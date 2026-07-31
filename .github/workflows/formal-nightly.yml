@@ -79,6 +79,7 @@ jobs:
               "prefix-cache-inline",
               "prefix-cache-abort-hole",
               "prefix-cache-full-lifecycle",
+              "spec-commit-exactness",
           ]
           if actual != expected:
               raise SystemExit(f"unexpected nightly targets: {actual!r}")

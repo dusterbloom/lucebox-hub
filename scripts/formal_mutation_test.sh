@@ -126,3 +126,70 @@ if native.get("status") != "counterexample":
 
 cat "$full_results/summary.md"
 echo "full prefix-cache lifecycle mutation sensitivity: PASS"
+
+# Keep the spec-commit mutation isolated from the prefix-cache clones and
+# result sets so each target proves sensitivity to only its own defect.
+spec_mutated_repo="$temporary_root/spec-commit/repo"
+spec_results="$temporary_root/spec-commit/results"
+spec_mutation="$repo_root/formal/contracts/mutations/spec-commit-invert-prefix-match.patch"
+mkdir -p "$(dirname "$spec_mutated_repo")"
+
+git clone --quiet --no-local "$repo_root" "$spec_mutated_repo"
+git -C "$spec_mutated_repo" checkout --quiet --detach "$base_sha"
+if ! git -C "$spec_mutated_repo" apply --check "$spec_mutation"; then
+    echo "spec-commit-exactness: mutation patch no longer applies to exact HEAD" >&2
+    exit 1
+fi
+git -C "$spec_mutated_repo" apply "$spec_mutation"
+git -C "$spec_mutated_repo" config user.email "formal-mutation@example.invalid"
+git -C "$spec_mutated_repo" config user.name "Formal Mutation Test"
+git -C "$spec_mutated_repo" add server/src/common/spec_commit.h
+git -C "$spec_mutated_repo" commit --quiet \
+    -m "test: invert speculative prefix match"
+
+spec_native_binary="$temporary_root/spec-commit/native-test"
+c++ -std=c++17 -O0 -Wall -Wextra -Werror \
+    -I "$spec_mutated_repo/server/src" \
+    "$spec_mutated_repo/server/test/test_spec_commit.cpp" \
+    -o "$spec_native_binary"
+set +e
+"$spec_native_binary"
+spec_native_status=$?
+set -e
+if [[ "$spec_native_status" -eq 0 ]]; then
+    echo "spec-commit-exactness: native regression survived mutation" >&2
+    exit 1
+fi
+
+set +e
+LUCEBOX_FORMAL_RESULTS="$spec_results" \
+    "$spec_mutated_repo/scripts/formal.sh" --base-sha "$base_sha"
+spec_verification_status=$?
+set -e
+
+if [[ "$spec_verification_status" -ne 10 ]]; then
+    if [[ -f "$spec_results/summary.md" ]]; then
+        cat "$spec_results/summary.md" >&2
+    fi
+    echo "spec-commit-exactness: expected counterexample exit 10, got $spec_verification_status" >&2
+    exit 1
+fi
+
+python3 -c '
+import json
+import sys
+
+report = json.load(open(sys.argv[1], encoding="utf-8"))
+results = {item["id"]: item for item in report["results"]}
+if report.get("conclusion") != "counterexample":
+    raise SystemExit("spec-commit mutation did not produce a counterexample")
+spec = results["spec-commit-exactness"]
+if spec["status"] != "counterexample":
+    raise SystemExit("spec-commit target did not reject its mutation")
+native = spec.get("assumptions", {}).get("native_test")
+if native is not None and native.get("status") != "counterexample":
+    raise SystemExit("spec-commit native result was not a counterexample")
+' "$spec_results/report.json"
+
+cat "$spec_results/summary.md"
+echo "spec-commit exactness mutation sensitivity: PASS"

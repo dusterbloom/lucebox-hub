@@ -30,7 +30,8 @@ advisory.
 
 ## Registered boundaries
 
-The registry contains three complementary prefix-cache capsules:
+The registry contains three complementary prefix-cache capsules and one
+advisory spec-commit capsule:
 
 - `prefix-cache-inline` maps to the prepare, confirm, and exact-lookup
   harness.
@@ -40,12 +41,16 @@ The registry contains three complementary prefix-cache capsules:
   is an explicit immutable patch under `mutations/`.
 - `prefix-cache-full-lifecycle` is advisory while its full snapshot lifecycle
   proof and mutation sensitivity are evaluated.
+- `spec-commit-exactness` checks the shared speculative acceptance, optional
+  bonus, commit budget, and safe token-selection boundary at widths four and
+  eight.
 
-All three templates call production code rather than duplicate it. The full
+All four templates call production code rather than duplicate it. The full
 lifecycle production state extraction and native regression are included in
 this cumulative change. The full lifecycle wrapper's quoted harness-body
 include is also an immutable contract path and trigger, so protected template
-inputs cover that transitive formal source.
+inputs cover that transitive formal source. The spec-commit wrapper's shared
+harness body receives the same protection.
 
 `[[critical_paths]]` also describes narrow state-machine areas that deserve
 review when changed without a matching target. An unmatched critical path is
@@ -58,6 +63,8 @@ reported as an advisory coverage gap, never as verified. `watch_paths` and
 python3 scripts/formal_plan.py validate
 python3 scripts/formal_plan.py plan \
   --changed-path server/src/server/prefix_cache_state.h
+python3 scripts/formal_plan.py plan \
+  --changed-path server/src/qwen35/qwen35_backend.cpp
 python3 -m unittest formal/contracts/tests/test_formal_plan.py -v
 ```
 
