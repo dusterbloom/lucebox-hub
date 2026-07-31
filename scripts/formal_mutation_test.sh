@@ -60,3 +60,69 @@ if native.get("status") != "counterexample":
 
 cat "$results/summary.md"
 echo "abort-hole call-site mutation sensitivity: PASS"
+
+full_mutated_repo="$temporary_root/full-lifecycle-repo"
+full_results="$temporary_root/full-lifecycle-results"
+full_mutation="$repo_root/formal/contracts/mutations/prefix-cache-full-bypass-free-slot.patch"
+
+git clone --quiet --no-local "$repo_root" "$full_mutated_repo"
+git -C "$full_mutated_repo" checkout --quiet --detach "$base_sha"
+if ! git -C "$full_mutated_repo" apply --check "$full_mutation"; then
+    echo "full lifecycle mutation patch no longer applies to exact HEAD" >&2
+    exit 1
+fi
+git -C "$full_mutated_repo" apply "$full_mutation"
+git -C "$full_mutated_repo" config user.email "formal-mutation@example.invalid"
+git -C "$full_mutated_repo" config user.name "Formal Mutation Test"
+git -C "$full_mutated_repo" add server/src/server/prefix_cache_state.h
+git -C "$full_mutated_repo" commit --quiet \
+    -m "test: bypass full prefix-cache free-slot selector"
+
+full_native_binary="$temporary_root/test-full-prefix-cache-state"
+c++ -std=c++17 -O0 -Wall -Wextra -Werror \
+    -I "$full_mutated_repo/server/src" \
+    "$full_mutated_repo/server/test/test_full_prefix_cache_state.cpp" \
+    -o "$full_native_binary"
+set +e
+"$full_native_binary"
+full_native_status=$?
+set -e
+if [[ "$full_native_status" -eq 0 ]]; then
+    echo "full lifecycle native regression survived mutation" >&2
+    exit 1
+fi
+
+set +e
+LUCEBOX_FORMAL_RESULTS="$full_results" \
+    "$full_mutated_repo/scripts/formal.sh" --base-sha "$base_sha"
+full_verification_status=$?
+set -e
+
+if [[ "$full_verification_status" -ne 10 ]]; then
+    if [[ -f "$full_results/summary.md" ]]; then
+        cat "$full_results/summary.md" >&2
+    fi
+    echo "expected full lifecycle counterexample exit 10, got $full_verification_status" >&2
+    exit 1
+fi
+
+python3 -c '
+import json
+import sys
+
+report = json.load(open(sys.argv[1], encoding="utf-8"))
+results = {item["id"]: item for item in report["results"]}
+if report.get("conclusion") != "counterexample":
+    raise SystemExit("full lifecycle mutation did not produce a counterexample")
+if results["prefix-cache-inline"]["status"] != "verified":
+    raise SystemExit("unrelated inline contract did not remain verified")
+full = results["prefix-cache-full-lifecycle"]
+if full["status"] != "counterexample":
+    raise SystemExit("full lifecycle target did not reject the mutation")
+native = full.get("assumptions", {}).get("native_test", {})
+if native.get("status") != "counterexample":
+    raise SystemExit("full lifecycle native regression did not catch the mutation")
+' "$full_results/report.json"
+
+cat "$full_results/summary.md"
+echo "full prefix-cache lifecycle mutation sensitivity: PASS"

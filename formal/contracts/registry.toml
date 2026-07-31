@@ -173,3 +173,53 @@ contract_paths = [
 ]
 native_test = "test_prefix_cache_state"
 native_test_source = "server/test/test_prefix_cache_state.cpp"
+
+[[targets]]
+id = "prefix-cache-full-lifecycle"
+policy = "advisory"
+description = "Full prefix-cache fresh boundary/confirm proof with exact-head lifecycle regression"
+source_paths = [
+  "server/src/server/prefix_cache_state.h",
+]
+trigger_paths = [
+  "formal/contracts/registry.toml",
+  "formal/contracts/templates/prefix-cache-full-lifecycle.cpp.in",
+  "formal/contracts/mutations/prefix-cache-full-bypass-free-slot.patch",
+  "formal/prefix_cache/full_lifecycle_harness_body.h",
+  "formal/prefix_cache/FULL_LIFECYCLE_PROPERTIES.md",
+  "server/src/server/prefix_cache_state.h",
+  "server/src/server/prefix_cache.h",
+  "server/src/server/prefix_cache.cpp",
+  "server/test/test_full_prefix_cache_state.cpp",
+]
+symbol = "dflash::common::FullPrefixCacheState"
+signature = "class dflash::common::FullPrefixCacheState"
+template = "formal/contracts/templates/prefix-cache-full-lifecycle.cpp.in"
+entry_function = "main"
+include_dirs = ["server/src", "formal"]
+timeout_seconds = 120
+pr_defines = ["LUCEBOX_FORMAL_CAP=2"]
+nightly_defines = ["LUCEBOX_FORMAL_CAP=4"]
+pr_esbmc_args = [
+  "--quiet",
+  "--boolector",
+  "--unwind", "5",
+  "--overflow-check",
+]
+nightly_esbmc_args = [
+  "--quiet",
+  "--boolector",
+  "--unwind", "5",
+  "--overflow-check",
+]
+mutable_paths = ["server/src/server/prefix_cache_state.h"]
+contract_paths = [
+  "formal/contracts/registry.toml",
+  "formal/contracts/templates/prefix-cache-full-lifecycle.cpp.in",
+  "formal/contracts/mutations/prefix-cache-full-bypass-free-slot.patch",
+  "formal/prefix_cache/full_lifecycle_harness_body.h",
+  "formal/prefix_cache/FULL_LIFECYCLE_PROPERTIES.md",
+  "server/test/test_full_prefix_cache_state.cpp",
+]
+native_test = "test_full_prefix_cache_state"
+native_test_source = "server/test/test_full_prefix_cache_state.cpp"

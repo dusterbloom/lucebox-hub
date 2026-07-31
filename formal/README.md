@@ -1,16 +1,14 @@
 # Advisory formal-verification pilot
 
-This directory defines two deterministic proof capsules and the planning tools
+This directory defines three deterministic proof capsules and the planning tools
 that select them. `Formal Verification (advisory)` runs the same capsules for
 proposed changes, while `Formal Verification Nightly (advisory)` exercises
 their extended bounds and mutation sensitivity on accepted revisions. Neither
 workflow is required: this pilot adds no branch-protection rule, credentials,
 AI integration, or repair execution.
 
-The capsules run against the production prefix-cache transition boundary
-introduced by the preceding prefix-cache correctness change. On a standalone
-checkout of this component branch, registry and planner checks are meaningful,
-but compiling or verifying the capsules requires that production change.
+The capsules run against the production prefix-cache transition boundaries,
+including the full lifecycle extraction added in this cumulative change.
 
 ## Current capsules
 
@@ -27,6 +25,13 @@ prepare/confirm/prepare/abort/prepare sequence. The formal and native
 guarantees are separated in
 [`prefix_cache/ABORT_HOLE_PROPERTIES.md`](prefix_cache/ABORT_HOLE_PROPERTIES.md).
 
+`prefix-cache-full-lifecycle` is an advisory capsule for the full snapshot
+key/slot/boundary/victim lifecycle. Its fresh formal trace and wider exact-head
+native regression are documented in
+[`prefix_cache/FULL_LIFECYCLE_PROPERTIES.md`](prefix_cache/FULL_LIFECYCLE_PROPERTIES.md).
+The production extraction and native test are included in this cumulative
+change.
+
 Only behavior named in those property documents is claimed as checked.
 
 ## Policy files
@@ -34,17 +39,17 @@ Only behavior named in those property documents is claimed as checked.
 [`manifest.toml`](manifest.toml) is the compatibility description consumed by
 the verifier's legacy local mode.
 
-[`contracts/registry.toml`](contracts/registry.toml) records the same two
+[`contracts/registry.toml`](contracts/registry.toml) records the same three
 capsules as deterministic templates, along with their source triggers, bounds,
 mutable implementation paths, immutable contract paths, and critical-path
 routing metadata. [`contracts/README.md`](contracts/README.md) describes the
 registry and planner in detail.
 
-Both targets use `policy = "advisory"` during the proving period. The workflow
-records failures and preserves their evidence, but the policy does not make
-the check a merge requirement. Promoting an individual target to a failing or
-required check is a separate contract-review PR and repository-administrator
-decision.
+All three targets use `policy = "advisory"` during the proving period. The
+workflow records failures and preserves their evidence, but the policy does
+not make the check a merge requirement. Promoting an individual target to a
+failing or required check is a separate contract-review PR and
+repository-administrator decision.
 
 ## CI trust boundary
 

@@ -82,3 +82,43 @@ contract_paths = [
 ]
 native_test = "test_prefix_cache_state"
 native_test_source = "server/test/test_prefix_cache_state.cpp"
+
+[[capsules]]
+id = "prefix-cache-full-lifecycle"
+description = "Full prefix-cache fresh boundary/confirm proof with exact-head lifecycle regression"
+harness = "formal/prefix_cache/full_lifecycle_harness.cpp"
+entry_function = "main"
+include_dirs = ["server/src", "formal"]
+timeout_seconds = 120
+defines = [
+  "LUCEBOX_FORMAL_CAP=2",
+]
+nightly_defines = [
+  "LUCEBOX_FORMAL_CAP=4",
+]
+esbmc_args = [
+  "--quiet",
+  "--boolector",
+  "--unwind", "5",
+  "--overflow-check",
+]
+trigger_paths = [
+  "formal/**",
+  "server/src/server/prefix_cache_state.h",
+  "server/src/server/prefix_cache.h",
+  "server/src/server/prefix_cache.cpp",
+  "server/test/test_full_prefix_cache_state.cpp",
+]
+mutable_paths = [
+  "server/src/server/prefix_cache_state.h",
+]
+contract_paths = [
+  "formal/manifest.toml",
+  "formal/prefix_cache/full_lifecycle_harness.cpp",
+  "formal/prefix_cache/full_lifecycle_harness_body.h",
+  "formal/contracts/mutations/prefix-cache-full-bypass-free-slot.patch",
+  "formal/prefix_cache/FULL_LIFECYCLE_PROPERTIES.md",
+  "server/test/test_full_prefix_cache_state.cpp",
+]
+native_test = "test_full_prefix_cache_state"
+native_test_source = "server/test/test_full_prefix_cache_state.cpp"

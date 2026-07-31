@@ -28,11 +28,15 @@ class FormalPlanTest(unittest.TestCase):
         self.assertEqual(registry["schema_version"], 1)
         self.assertEqual(
             [target["id"] for target in registry["targets"]],
-            ["prefix-cache-inline", "prefix-cache-abort-hole"],
+            [
+                "prefix-cache-inline",
+                "prefix-cache-abort-hole",
+                "prefix-cache-full-lifecycle",
+            ],
         )
         self.assertEqual(
             [target["policy"] for target in registry["targets"]],
-            ["advisory", "advisory"],
+            ["advisory", "advisory", "advisory"],
         )
         prefix_area = next(
             area for area in registry["critical_paths"] if area["id"] == "prefix-cache"
@@ -77,7 +81,11 @@ class FormalPlanTest(unittest.TestCase):
         plan = self.plan_fixture("prefix-cache-change.json")
         self.assertEqual(
             [target["id"] for target in plan["targets"]],
-            ["prefix-cache-inline", "prefix-cache-abort-hole"],
+            [
+                "prefix-cache-inline",
+                "prefix-cache-abort-hole",
+                "prefix-cache-full-lifecycle",
+            ],
         )
         self.assertEqual(plan["coverage_gaps"], [])
 
@@ -119,6 +127,36 @@ class FormalPlanTest(unittest.TestCase):
                 capsule.get("native_test_source"),
             )
 
+    def test_transitive_quoted_template_includes_are_protected(self) -> None:
+        registry = formal_plan.load_registry(REGISTRY, ROOT)
+        repository_root = ROOT.resolve()
+        for target in registry["targets"]:
+            template_path = ROOT / target["template"]
+            template = template_path.read_text(encoding="utf-8")
+            for include in re.findall(r'#include\s+"([^"]+)"', template):
+                candidates = [template_path.parent / include]
+                candidates.extend(
+                    ROOT / directory / include
+                    for directory in target["include_dirs"]
+                )
+                resolved = None
+                for candidate in candidates:
+                    candidate = candidate.resolve()
+                    try:
+                        relative = candidate.relative_to(repository_root)
+                    except ValueError:
+                        continue
+                    if candidate.is_file():
+                        resolved = relative.as_posix()
+                        break
+                self.assertIsNotNone(
+                    resolved,
+                    f"{target['id']}: unresolved include {include}",
+                )
+                if resolved.startswith("formal/"):
+                    self.assertIn(resolved, target["contract_paths"], target["id"])
+                    self.assertIn(resolved, target["trigger_paths"], target["id"])
+
     def test_uncovered_critical_path_is_advisory_gap(self) -> None:
         plan = self.plan_fixture("uncovered-streaming-change.json")
         self.assertEqual(plan["targets"], [])
@@ -131,7 +169,7 @@ class FormalPlanTest(unittest.TestCase):
             output = Path(temporary)
             formal_plan._emit_templates(plan, ROOT, output)
             emitted = plan["generated_harnesses"]
-            self.assertEqual(len(emitted), 2)
+            self.assertEqual(len(emitted), 3)
             for item in emitted:
                 self.assertTrue((output / item["path"]).is_file())
                 self.assertEqual(len(item["sha256"]), 64)

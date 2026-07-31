@@ -30,7 +30,7 @@ advisory.
 
 ## Registered boundaries
 
-The registry contains two complementary prefix-cache capsules:
+The registry contains three complementary prefix-cache capsules:
 
 - `prefix-cache-inline` maps to the prepare, confirm, and exact-lookup
   harness.
@@ -38,10 +38,14 @@ The registry contains two complementary prefix-cache capsules:
   pairs it with the base-approved native regression for the production
   prepare/abort/prepare integration point. Its historical call-site mutation
   is an explicit immutable patch under `mutations/`.
+- `prefix-cache-full-lifecycle` is advisory while its full snapshot lifecycle
+  proof and mutation sensitivity are evaluated.
 
-Both templates call production code rather than duplicate it. The component
-depends on the production state extraction and regression from the preceding
-prefix-cache correctness PR.
+All three templates call production code rather than duplicate it. The full
+lifecycle production state extraction and native regression are included in
+this cumulative change. The full lifecycle wrapper's quoted harness-body
+include is also an immutable contract path and trigger, so protected template
+inputs cover that transitive formal source.
 
 `[[critical_paths]]` also describes narrow state-machine areas that deserve
 review when changed without a matching target. An unmatched critical path is
