@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan approved minimal-core formal contracts for a local Lucebox change.
+"""Plan approved minimal-core formal contracts for a Lucebox change.
 
 This intentionally small, dependency-free tool is a Luce-side fixture
 validator for the per-PR formal planner.  It does not invent contracts: it
@@ -7,8 +7,9 @@ selects only targets declared in a supplied registry, renders their approved
 templates deterministically, and reports edits to critical paths that have no
 approved target as advisory gaps.
 
-This script installs no CI integration.  A later integration must separately
-define trusted base-revision loading and exact-head verification.
+The companion CI planner owns base-revision blob loading and exact-head
+verification. This local tool validates the same registry shape and selection
+rules; it is not the authoritative CI implementation.
 """
 
 from __future__ import annotations
@@ -115,9 +116,7 @@ def load_registry(registry_path: Path, root: Path) -> dict[str, Any]:
         )
         area_policy = area.get("policy", "advisory")
         if area_policy not in POLICIES:
-            raise RegistryError(
-                f"{area_id}: unsupported critical-path policy {area_policy!r}"
-            )
+            raise RegistryError(f"{area_id}: unsupported critical-path policy {area_policy!r}")
         area["policy"] = area_policy
     if not isinstance(data.get("toolchain"), dict):
         raise RegistryError("toolchain table is required")
@@ -133,9 +132,7 @@ def load_registry(registry_path: Path, root: Path) -> dict[str, Any]:
             raise RegistryError("targets entries must be tables")
         missing = TARGET_REQUIRED_FIELDS - target.keys()
         if missing:
-            raise RegistryError(
-                f"target missing required fields: {', '.join(sorted(missing))}"
-            )
+            raise RegistryError(f"target missing required fields: {', '.join(sorted(missing))}")
         target_id = target["id"]
         if not isinstance(target_id, str) or not target_id:
             raise RegistryError("target.id must be a non-empty string")
@@ -147,7 +144,10 @@ def load_registry(registry_path: Path, root: Path) -> dict[str, Any]:
         for field in ("description", "symbol", "signature", "entry_function"):
             if not isinstance(target[field], str) or not target[field]:
                 raise RegistryError(f"{target_id}: {field} must be a non-empty string")
-        if not isinstance(target["timeout_seconds"], int) or not 0 < target["timeout_seconds"] <= 3600:
+        if (
+            not isinstance(target["timeout_seconds"], int)
+            or not 0 < target["timeout_seconds"] <= 3600
+        ):
             raise RegistryError(f"{target_id}: timeout_seconds must be between 1 and 3600")
         for field in (
             "source_paths",
@@ -171,9 +171,7 @@ def load_registry(registry_path: Path, root: Path) -> dict[str, Any]:
                 f"{target_id}.native_test_source",
             )
             if native_source not in target["contract_paths"]:
-                raise RegistryError(
-                    f"{target_id}: contract_paths must include native_test_source"
-                )
+                raise RegistryError(f"{target_id}: contract_paths must include native_test_source")
         target["native_test"] = native_test
         target["native_test_source"] = native_source
         for field in (
@@ -186,8 +184,7 @@ def load_registry(registry_path: Path, root: Path) -> dict[str, Any]:
         target["template"] = _repo_path(target["template"], f"{target_id}.template")
         variables = target.get("template_variables", {})
         if not isinstance(variables, dict) or not all(
-            isinstance(key, str) and isinstance(value, str)
-            for key, value in variables.items()
+            isinstance(key, str) and isinstance(value, str) for key, value in variables.items()
         ):
             raise RegistryError(f"{target_id}: template_variables must be a string map")
         target["template_variables"] = variables
@@ -325,9 +322,7 @@ def _emit_templates(plan: dict[str, Any], root: Path, output: Path) -> None:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd())
-    parser.add_argument(
-        "--registry", type=Path, default=Path("formal/contracts/registry.toml")
-    )
+    parser.add_argument("--registry", type=Path, default=Path("formal/contracts/registry.toml"))
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("validate")
     for command in ("plan", "emit"):
@@ -350,9 +345,7 @@ def main() -> int:
             print(f"valid registry: {registry.relative_to(root)}")
             return 0
         changed_paths = (
-            _changed_paths_from_git(root, args.base_sha)
-            if args.base_sha
-            else args.changed_path
+            _changed_paths_from_git(root, args.base_sha) if args.base_sha else args.changed_path
         )
         plan = make_plan(registry, root, changed_paths)
         if args.command == "emit":

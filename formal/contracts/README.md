@@ -1,8 +1,8 @@
-# Local formal-contract registry
+# Approved advisory formal contracts
 
-`registry.toml` is the source of truth for deterministic local selection of
-the approved minimal formal boundaries. It coexists with `../manifest.toml`,
-which preserves compatibility with the verifier's legacy local mode.
+`registry.toml` is the source of truth for deterministic selection of the
+approved minimal formal boundaries. It coexists with `../manifest.toml`, which
+preserves compatibility with the verifier's legacy comparison mode.
 
 Each target records the exact production symbol and signature, approved
 template, execution bounds, mutable implementation paths, immutable contract
@@ -10,9 +10,19 @@ paths, and paired native regression. Templates use only literal `{{ID}}`,
 `{{SYMBOL}}`, `{{SIGNATURE}}`, and optional declared variables. The planner
 substitutes those tokens deterministically; it does not generate contracts.
 
-This PR does not install a workflow or alter branch protection. The targets'
-`policy = "required"` values are planner metadata for a possible future
-integration, not repository enforcement.
+The current targets have `policy = "advisory"`. The workflow may report a
+failure, but this change neither makes its status required nor alters branch
+protection. Promotion to a failing or required check is a separate per-target
+contract-review PR and repository-administrator decision.
+
+## Trust boundary
+
+For a pull request, the companion planner reads this registry and every
+selected contract blob from the exact trusted base revision. It records the
+immutable inputs in the plan, then evaluates them against the exact proposed
+head. A PR therefore cannot change the policy or template used to judge
+itself. The workflow separately records the base, head, and repositories in
+the result artifact.
 
 ## Registered boundaries
 
@@ -21,8 +31,9 @@ The registry contains two complementary prefix-cache capsules:
 - `prefix-cache-inline` maps to the prepare, confirm, and exact-lookup
   harness.
 - `prefix-cache-abort-hole` checks the bounded scalar free-slot selector and
-  pairs it with the native regression for the production
-  prepare/abort/prepare integration point.
+  pairs it with the base-approved native regression for the production
+  prepare/abort/prepare integration point. Its historical call-site mutation
+  is an explicit immutable patch under `mutations/`.
 
 Both templates call production code rather than duplicate it. The component
 depends on the production state extraction and regression from the preceding
@@ -44,14 +55,3 @@ python3 -m unittest formal/contracts/tests/test_formal_plan.py -v
 
 The `emit` command renders selected templates into an output directory and
 records their hashes. It does not invoke ESBMC or modify the manifest lane.
-
-## Boundary for a later CI change
-
-If maintainers later approve CI integration, that change must load the
-registry and selected template blobs from the accepted merge base (or an
-equivalent protected artifact), verify the exact proposed source revision, and
-record the immutable inputs in its plan. A contract-changing PR must not be
-allowed to redefine the policy used to judge itself.
-
-Those trust and enforcement mechanics are intentionally absent here. They
-belong in a separate CI/security review and rollout.

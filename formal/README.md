@@ -1,10 +1,10 @@
-# Local formal-contract pilot
+# Advisory formal-verification pilot
 
-This directory defines two deterministic proof capsules and the local planning
-tools that select them. This change is deliberately inert at repository level:
-it adds no GitHub Actions workflow, required status check, branch-protection
-rule, credentials, or AI integration. CI integration is a separate, later
-change for maintainers to review.
+This directory defines two deterministic proof capsules and the planning tools
+that select them. The `Formal Verification (advisory)` workflow runs the same
+two capsules for proposed changes. It is deliberately non-required: this
+change adds no branch-protection rule, credentials, AI integration, or repair
+execution.
 
 The capsules run against the production prefix-cache transition boundary
 introduced by the preceding prefix-cache correctness change. On a standalone
@@ -39,11 +39,25 @@ mutable implementation paths, immutable contract paths, and critical-path
 routing metadata. [`contracts/README.md`](contracts/README.md) describes the
 registry and planner in detail.
 
-The targets retain `policy = "required"` as their intended planner
-classification. In this PR that value is data used only by local tools: nothing
-invokes the planner automatically and it has no effect on merges. Any future
-CI change must define and review the trust boundary separately before relying
-on this metadata.
+Both targets use `policy = "advisory"` during the proving period. The workflow
+records failures and preserves their evidence, but the policy does not make
+the check a merge requirement. Promoting an individual target to a failing or
+required check is a separate contract-review PR and repository-administrator
+decision.
+
+## CI trust boundary
+
+For pull requests, the workflow itself runs from the target branch. It reads
+the registry and templates from the exact trusted base commit, checks out the
+exact proposed head without persisting credentials, and refuses a SHA
+mismatch. The only container image it executes is the verifier image whose
+digest is pinned both in the workflow and in base policy.
+
+The repository is mounted read-only. Only plan and result directories are
+writable, and verifier containers run without network access, Linux
+capabilities, or a writable root. Plans, results, and source/base SHA metadata
+are retained as workflow artifacts. The legacy manifest run remains an
+advisory comparison during migration.
 
 ## Local validation
 
@@ -57,8 +71,7 @@ python3 -m unittest formal/contracts/tests/test_formal_plan.py -v
 ```
 
 The full local verifier uses the immutable verifier image declared in the
-registry. It requires Docker and a committed checkout containing the preceding
-prefix-cache production change:
+registry. It requires Docker and a committed checkout:
 
 ```bash
 ./scripts/formal.sh --all
@@ -75,11 +88,9 @@ Results are written to `.formal-results/`. Set
 `LUCEBOX_FORMAL_IMAGE` only when deliberately testing a different companion
 image.
 
-Local verifier containers run without network access or Linux capabilities,
-with a read-only repository mount and writable temporary plan/result
-directories. Immutable image digests make local runs reproducible; accepting
-the companion image's source, ownership, and release process remains an
-explicit maintainer decision before CI integration.
+Local verifier containers use the same networkless, capability-free,
+read-only-workspace boundary as CI. Immutable image digests make the runs
+reproducible.
 
 ## Adding a contract
 
@@ -92,9 +103,11 @@ explicit maintainer decision before CI integration.
 4. Declare exact symbols, triggers, PR/nightly bounds, mutable paths, and
    contract paths in the registry.
 5. Keep the compatibility manifest and registry execution settings aligned.
-6. Run both bounds and demonstrate mutation sensitivity.
+6. Run both bounds and demonstrate mutation sensitivity using an external
+   patch under `contracts/mutations/`.
+7. Keep new targets advisory until their bounds, failure behavior, and
+   artifacts have been reviewed.
 
-A later CI proposal may build on these files, but it must independently review
-base-locked policy loading, exact-head verification, failure behavior,
-artifact handling, and branch-enforcement rollout. No such integration is part
-of this PR.
+Promotion from advisory reporting to a failing or required check is performed
+per target in a separate reviewed change; this pilot does not alter repository
+settings.

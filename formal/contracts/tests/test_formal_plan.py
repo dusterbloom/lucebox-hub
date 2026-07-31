@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import tempfile
 import tomllib
 import unittest
@@ -19,9 +20,7 @@ spec.loader.exec_module(formal_plan)
 
 class FormalPlanTest(unittest.TestCase):
     def plan_fixture(self, name: str) -> dict:
-        fixture = json.loads(
-            (ROOT / "formal" / "contracts" / "fixtures" / name).read_text()
-        )
+        fixture = json.loads((ROOT / "formal" / "contracts" / "fixtures" / name).read_text())
         return formal_plan.make_plan(REGISTRY, ROOT, fixture["changed_paths"])
 
     def test_registry_is_valid(self) -> None:
@@ -33,12 +32,10 @@ class FormalPlanTest(unittest.TestCase):
         )
         self.assertEqual(
             [target["policy"] for target in registry["targets"]],
-            ["required", "required"],
+            ["advisory", "advisory"],
         )
         prefix_area = next(
-            area
-            for area in registry["critical_paths"]
-            if area["id"] == "prefix-cache"
+            area for area in registry["critical_paths"] if area["id"] == "prefix-cache"
         )
         self.assertEqual(prefix_area["policy"], "advisory")
         self.assertEqual(prefix_area["include_roots"], ["server/src"])
@@ -53,6 +50,18 @@ class FormalPlanTest(unittest.TestCase):
         manifest = tomllib.loads((ROOT / manifest_path).read_text())
         self.assertEqual(registry["toolchain"], manifest["toolchain"])
 
+    def test_deterministic_workflow_uses_only_the_pinned_verifier(self) -> None:
+        toolchain = formal_plan.load_registry(REGISTRY, ROOT)["toolchain"]
+        workflow = (ROOT / ".github" / "workflows" / "formal.yml").read_text()
+        assignments = re.findall(
+            r"^\s*(VERIFIER_IMAGE|REPAIR_IMAGE):\s*(\S+)\s*$",
+            workflow,
+            re.MULTILINE,
+        )
+        self.assertEqual({name for name, _ in assignments}, {"VERIFIER_IMAGE"})
+        verifier_values = [value for name, value in assignments if name == "VERIFIER_IMAGE"]
+        self.assertEqual(verifier_values, [toolchain["verifier_image"]] * 3)
+
     def test_prefix_cache_fixture_selects_approved_targets(self) -> None:
         plan = self.plan_fixture("prefix-cache-change.json")
         self.assertEqual(
@@ -60,6 +69,23 @@ class FormalPlanTest(unittest.TestCase):
             ["prefix-cache-inline", "prefix-cache-abort-hole"],
         )
         self.assertEqual(plan["coverage_gaps"], [])
+
+    def test_abort_hole_contract_tracks_external_mutation(self) -> None:
+        registry = formal_plan.load_registry(REGISTRY, ROOT)
+        target = next(
+            target for target in registry["targets"] if target["id"] == "prefix-cache-abort-hole"
+        )
+        mutation = "formal/contracts/mutations/prefix-cache-bypass-selector.patch"
+        self.assertIn(mutation, target["trigger_paths"])
+        self.assertIn(mutation, target["contract_paths"])
+        self.assertTrue((ROOT / mutation).is_file())
+        manifest = tomllib.loads((ROOT / "formal" / "manifest.toml").read_text())
+        capsule = next(
+            capsule
+            for capsule in manifest["capsules"]
+            if capsule["id"] == "prefix-cache-abort-hole"
+        )
+        self.assertIn(mutation, capsule["contract_paths"])
 
     def test_registry_execution_matches_legacy_capsules_during_dual_run(self) -> None:
         registry = formal_plan.load_registry(REGISTRY, ROOT)

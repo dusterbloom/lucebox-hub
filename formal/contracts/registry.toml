@@ -1,16 +1,17 @@
-# Approved minimal-core formal contracts for local planning.
+# Approved minimal-core formal contracts for advisory CI planning.
 #
 # This registry is deliberately separate from formal/manifest.toml.  The
 # latter remains the compatibility manifest for the verifier's legacy local
-# mode while the planner uses this file to select approved templates.  This PR
-# adds no CI integration or repository enforcement.
+# mode while the planner uses the base revision of this file to select
+# approved templates.  The workflow is advisory and installs no repository
+# enforcement.
 schema_version = 1
 
 # An edit below changes the definition of formal coverage, not merely a new
-# test.  A later CI integration must load accepted policy from its merge base
-# rather than allowing a change to judge itself.
+# test.  CI loads accepted policy from its trusted base revision rather than
+# allowing a change to judge itself.
 [registry]
-description = "Approved Lucebox minimal-core contracts for deterministic local planning"
+description = "Approved Lucebox minimal-core contracts for advisory per-PR planning"
 compatibility_manifest = "formal/manifest.toml"
 
 [toolchain]
@@ -75,12 +76,11 @@ paths = [
   "server/src/server/tool_hint.cpp",
 ]
 
-# Target policies are inert planner metadata in this PR.  They express the
-# intended result classification if a separately reviewed integration later
-# invokes this registry; they do not install or require a repository check.
+# Target policies are deliberately advisory during the proving period.  The
+# workflow reports outcomes and preserves artifacts but does not gate merges.
 [[targets]]
 id = "prefix-cache-inline"
-policy = "required"
+policy = "advisory"
 description = "Inline prefix-cache prepare, confirm, exact lookup, and structural invariants"
 source_paths = [
   "server/src/server/prefix_cache_state.h",
@@ -126,7 +126,7 @@ contract_paths = [
 
 [[targets]]
 id = "prefix-cache-abort-hole"
-policy = "required"
+policy = "advisory"
 description = "Inline prefix-cache free-slot selection after an aborted reservation"
 source_paths = [
   "server/src/server/prefix_cache_state.h",
@@ -134,6 +134,7 @@ source_paths = [
 trigger_paths = [
   "formal/contracts/registry.toml",
   "formal/contracts/templates/prefix-cache-abort-hole.cpp.in",
+  "formal/contracts/mutations/prefix-cache-bypass-selector.patch",
   "formal/prefix_cache/ABORT_HOLE_PROPERTIES.md",
   "server/src/server/prefix_cache_state.h",
   "server/src/server/prefix_cache.h",
@@ -166,6 +167,7 @@ mutable_paths = ["server/src/server/prefix_cache_state.h"]
 contract_paths = [
   "formal/contracts/registry.toml",
   "formal/contracts/templates/prefix-cache-abort-hole.cpp.in",
+  "formal/contracts/mutations/prefix-cache-bypass-selector.patch",
   "formal/prefix_cache/ABORT_HOLE_PROPERTIES.md",
   "server/test/test_prefix_cache_state.cpp",
 ]

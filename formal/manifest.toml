@@ -76,6 +76,7 @@ mutable_paths = [
 contract_paths = [
   "formal/manifest.toml",
   "formal/prefix_cache/abort_hole_harness.cpp",
+  "formal/contracts/mutations/prefix-cache-bypass-selector.patch",
   "formal/prefix_cache/ABORT_HOLE_PROPERTIES.md",
   "server/test/test_prefix_cache_state.cpp",
 ]

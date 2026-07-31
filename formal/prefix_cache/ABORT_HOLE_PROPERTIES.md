@@ -3,7 +3,7 @@
 The capsule enforces a native ESBMC function contract around the scalar
 `select_inline_free_slot` helper for every bounded cursor and occupancy
 pattern. The deterministic plan also compiles and runs an immutable
-baseline regression against the selected local checkout. That regression
+base-revision regression against the exact proposed head. That regression
 drives the production `InlinePrefixCacheState` through the historical defect
 sequence: commit slot zero, reserve and abort slot one, then call `prepare`
 again while the round-robin cursor points at occupied slot zero.
@@ -22,12 +22,12 @@ model-checked properties.
 
 ## Bounded operating envelope
 
-The formal capsule covers capacities 1–4 in default local runs and 1–16 in
+The formal capsule covers capacities 1–4 in pull requests and 1–16 in
 extended local runs. The native regression fixes capacity at two, the smallest
 state that reproduces the production call-site defect. `PrefixCache` clamps
 inline capacity to 64 slots; the formal capsule does not claim coverage beyond
 its declared bound.
 
-On a contract violation, the local verifier writes ESBMC's native,
-self-contained HTML counterexample report and textual trace to the configured
-results directory.
+On a contract violation, the advisory lane publishes ESBMC's native,
+self-contained HTML counterexample report and textual trace in the formal
+results artifact.

@@ -1,4 +1,4 @@
-// Generated from the approved prefix-cache-abort-hole contract template.
+// Generated from the base-approved prefix-cache-abort-hole contract template.
 // This wrapper delegates directly to the production free-slot selector.
 
 #include "server/prefix_cache_state.h"
