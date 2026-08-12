@@ -2270,6 +2270,7 @@ bool eval_moe_streamed_experts(
     // expert N compute can overlap the upload of N+1. This removes the hot-path
     // host boundary without changing routing, formats, or prefill behavior.
     bool all_selected_resident = runtime.config.fused_decode &&
+        batch.expert_observer == nullptr &&
         batch.n_tokens == 1 && unique_experts.size() > 1;
     if (all_selected_resident) {
         for (const int32_t expert : unique_experts) {
@@ -2424,7 +2425,8 @@ bool eval_moe_streamed_experts(
     // to preserve the previous floating-point result.
     std::vector<int32_t> execution_experts = unique_experts;
     bool cache_first_reordered = false;
-    if (runtime.config.cache_first_decode && batch.n_tokens == 1 &&
+    if (runtime.config.cache_first_decode &&
+        batch.expert_observer == nullptr && batch.n_tokens == 1 &&
         execution_experts.size() > 1) {
         const auto is_device_resident = [&](int32_t expert) {
             const auto found = runtime.device_index.find(
@@ -2640,6 +2642,24 @@ bool eval_moe_streamed_experts(
         if (!graph->finish(result, err)) {
             release_current();
             return false;
+        }
+        if (batch.expert_observer) {
+            for (size_t i = 0; i < hits.size(); ++i) {
+                const float * observed_input = compact_input.data() +
+                    i * (size_t) spec.input_dim;
+                const float * observed_output = result.data() +
+                    i * (size_t) spec.output_dim;
+                if (!batch.expert_observer->observe(
+                        batch.layer, hits[i].token, expert,
+                        hits[i].weight, observed_input, spec.input_dim,
+                        observed_output, spec.output_dim, err)) {
+                    if (err && err->empty()) {
+                        *err = "streamed expert observer rejected an observation";
+                    }
+                    release_current();
+                    return false;
+                }
+            }
         }
         const size_t original_expert_index = cache_first_reordered
             ? (size_t) std::distance(
@@ -2907,6 +2927,12 @@ bool MoeStreamDualOwnerExecutor::eval(
         std::string * err) {
     if (!runtime_) {
         if (err) *err = "dual-owner executor is not initialized";
+        return false;
+    }
+    if (batch.expert_observer) {
+        if (err) {
+            *err = "streamed expert observation requires single-owner execution";
+        }
         return false;
     }
     Runtime & runtime = *runtime_;

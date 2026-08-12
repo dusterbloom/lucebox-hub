@@ -27,6 +27,7 @@ struct MoeHybridRoutingStats;
 
 class MoeHybridStreamEngine;
 class MoeStreamDualOwnerExecutor;
+class MoeStreamExpertObserver;
 struct MoeStreamDualOwnerPolicy;
 
 struct KimiK3Layer {
@@ -172,11 +173,27 @@ struct KimiK3Cache {
 // Model-neutral forward result shape used by the Kimi DFlash adapter.  Capture
 // rows are capture-major, then token-major:
 //   [capture_layer][token][hidden].
+struct KimiK3MoePanelCapture {
+    int layer = -1;          // zero-indexed model layer
+    int base_pos = 0;
+    int n_tokens = 0;
+    int latent_dimension = 0;
+    int top_k = 0;
+    std::vector<float> latent;       // token-major exact z = W_down h
+    std::vector<int32_t> expert_ids; // token-major native router IDs
+    std::vector<float> router_weights;
+};
+
 struct KimiK3ForwardOptions {
     const std::vector<int> * capture_layer_ids = nullptr;
     bool capture_replay = false;
     bool read_logits = false;
     bool read_argmax = true;
+    // A non-negative model-layer index stops after its exact latent/router
+    // preparation and before any routed expert for that layer is requested.
+    int stop_before_moe_layer = -1;
+    KimiK3MoePanelCapture * panel_capture = nullptr;
+    MoeStreamExpertObserver * expert_observer = nullptr;
 };
 
 struct KimiK3ForwardResult {

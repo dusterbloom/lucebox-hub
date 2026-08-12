@@ -500,6 +500,9 @@ bool streamed_kimi_k3_forward(
     const size_t hidden_values =
         static_cast<size_t>(w.n_embd) * static_cast<size_t>(n_tokens);
     std::vector<float> hidden(hidden_values);
+    if (options.panel_capture) {
+        *options.panel_capture = KimiK3MoePanelCapture{};
+    }
 
     std::vector<int> capture_at_layer(static_cast<size_t>(w.n_layer), -1);
     const int n_capture = options.capture_layer_ids
@@ -699,6 +702,20 @@ bool streamed_kimi_k3_forward(
             }
         }
 
+        if (options.stop_before_moe_layer == il) {
+            KimiK3MoePanelCapture & capture = *options.panel_capture;
+            capture.layer = il;
+            capture.base_pos = base_pos;
+            capture.n_tokens = n_tokens;
+            capture.latent_dimension = w.n_expert_latent;
+            capture.top_k = w.n_expert_used;
+            capture.latent = std::move(routed_input_host);
+            capture.expert_ids = std::move(selected);
+            capture.router_weights = std::move(route_weights);
+            cache.cur_pos = base_pos + n_tokens;
+            return true;
+        }
+
         MoeStreamExpertSpec spec;
         spec.input_dim = w.n_expert_latent;
         spec.intermediate_dim = w.n_ff_exp;
@@ -718,6 +735,7 @@ bool streamed_kimi_k3_forward(
         route_batch.inputs = routed_input_host.data();
         route_batch.selected_ids = selected.data();
         route_batch.selected_weights = route_weights.data();
+        route_batch.expert_observer = options.expert_observer;
         if (routing_stats && !routing_stats->observe(
                 route_batch.layer, selected.data(),
                 static_cast<int>(selected.size()))) {
@@ -729,7 +747,8 @@ bool streamed_kimi_k3_forward(
         std::vector<float> routed_output;
         std::string stream_error;
         MoeStreamDualOwnerStats owner_stats;
-        const bool dual_owner = dual_stream_executor != nullptr;
+        const bool dual_owner = dual_stream_executor != nullptr &&
+            options.expert_observer == nullptr;
         const bool route_ok = dual_owner
             ? dual_stream_executor->eval(
                 spec, route_batch, *stream_owner_policy,
@@ -955,10 +974,28 @@ bool kimi_k3_forward(ggml_backend_t backend,
                      MoeHybridRoutingStats * routing_stats) {
     result = KimiK3ForwardResult{};
     const int n_tokens = static_cast<int>(tokens.size());
+    const bool panel_stop = options.stop_before_moe_layer >= 0;
     if (!backend || !w.ctx || !cache.ctx || n_tokens <= 0 || base_pos < 0 ||
         base_pos != cache.cur_pos || base_pos + n_tokens > cache.max_ctx ||
-        (!options.read_logits && !options.read_argmax)) {
+        (!options.read_logits && !options.read_argmax && !panel_stop)) {
         set_last_error("Kimi-K3 forward: invalid backend, output, or cache span");
+        return false;
+    }
+    if (panel_stop &&
+        (!options.panel_capture || options.read_logits || options.read_argmax ||
+         options.stop_before_moe_layer < w.n_dense_lead ||
+         options.stop_before_moe_layer >= w.n_layer)) {
+        set_last_error("Kimi-K3 forward: invalid pre-expert panel capture request");
+        return false;
+    }
+    if (!panel_stop && options.panel_capture) {
+        set_last_error("Kimi-K3 forward: panel capture requires a stop layer");
+        return false;
+    }
+    if (!w.routed_experts_streamed &&
+        (panel_stop || options.expert_observer)) {
+        set_last_error(
+            "Kimi-K3 forward: panel capture/observation requires streamed experts");
         return false;
     }
     for (int32_t token : tokens) {

@@ -284,6 +284,47 @@ std::vector<float> cpu_reference(
     return output;
 }
 
+struct RecordedExpertObservation {
+    int layer = -1;
+    int token = -1;
+    int expert = -1;
+    float router_weight = 0.0f;
+    std::vector<float> input;
+    std::vector<float> output;
+};
+
+class RecordingExpertObserver final : public MoeStreamExpertObserver {
+public:
+    bool observe(
+            int layer,
+            int token,
+            int expert,
+            float router_weight,
+            const float * input,
+            int input_dimension,
+            const float * expert_output,
+            int output_dimension,
+            std::string * err) override {
+        if (!input || !expert_output || input_dimension <= 0 ||
+            output_dimension <= 0) {
+            if (err) *err = "invalid synthetic expert observation";
+            return false;
+        }
+        RecordedExpertObservation observation;
+        observation.layer = layer;
+        observation.token = token;
+        observation.expert = expert;
+        observation.router_weight = router_weight;
+        observation.input.assign(input, input + input_dimension);
+        observation.output.assign(
+            expert_output, expert_output + output_dimension);
+        observations.push_back(std::move(observation));
+        return true;
+    }
+
+    std::vector<RecordedExpertObservation> observations;
+};
+
 void run_fused_decode_case(ggml_backend_t backend, bool mxfp4) {
     std::vector<float> gate;
     std::vector<float> up;
@@ -424,6 +465,24 @@ void run_fused_decode_case(ggml_backend_t backend, bool mxfp4) {
     STREAM_REQUIRE(second.graph_launches == cold.graph_launches + 2);
     STREAM_REQUIRE(second.fused_decode_launches == 2);
     STREAM_REQUIRE(second.fused_decode_experts == 2 * kDecodeTopK);
+
+    // Observation must expose each unweighted branch. Even with every expert
+    // resident, it deliberately bypasses the fused reduction so the observer
+    // sees individual outputs in deterministic single-owner order.
+    RecordingExpertObserver observer;
+    batch.expert_observer = &observer;
+    STREAM_REQUIRE(eval_moe_streamed_experts(
+        engine, spec, batch, actual, &error));
+    batch.expert_observer = nullptr;
+    require_close(expected_rebound);
+    STREAM_REQUIRE(observer.observations.size() == kDecodeTopK);
+    const MoeStreamComputeStats observed = engine.compute_stats();
+    STREAM_REQUIRE(observed.graph_launches ==
+                   second.graph_launches + kDecodeTopK);
+    STREAM_REQUIRE(observed.fused_decode_launches ==
+                   second.fused_decode_launches);
+    STREAM_REQUIRE(observed.fused_decode_experts ==
+                   second.fused_decode_experts);
     engine.destroy();
 }
 
@@ -496,8 +555,53 @@ void run_layout_case(ggml_backend_t backend, bool expert_major) {
     const MoeStreamComputeStats first = engine.compute_stats();
     STREAM_REQUIRE(first.graph_builds == 2);
     STREAM_REQUIRE(first.graph_launches == 3);
+
+    const std::vector<float> exact_without_observer = actual;
+    RecordingExpertObserver observer;
+    batch.expert_observer = &observer;
     STREAM_REQUIRE(eval_moe_streamed_experts(
         engine, spec, batch, actual, &error));
+    batch.expert_observer = nullptr;
+    STREAM_REQUIRE(actual.size() == exact_without_observer.size());
+    STREAM_REQUIRE(std::memcmp(
+        actual.data(), exact_without_observer.data(),
+        actual.size() * sizeof(float)) == 0);
+    STREAM_REQUIRE(observer.observations.size() == kTokens * kTopK);
+    for (int token = 0; token < kTokens; ++token) {
+        for (int rank = 0; rank < kTopK; ++rank) {
+            const int expert = ids[token * kTopK + rank];
+            const auto found = std::find_if(
+                observer.observations.begin(), observer.observations.end(),
+                [&](const RecordedExpertObservation & observation) {
+                    return observation.token == token &&
+                           observation.expert == expert;
+                });
+            STREAM_REQUIRE(found != observer.observations.end());
+            STREAM_REQUIRE(found->layer == 0);
+            STREAM_REQUIRE(found->router_weight ==
+                           weights[token * kTopK + rank]);
+            STREAM_REQUIRE(found->input.size() == kInput);
+            STREAM_REQUIRE(std::memcmp(
+                found->input.data(),
+                input.data() + (size_t) token * kInput,
+                kInput * sizeof(float)) == 0);
+
+            const std::vector<float> one_input(
+                input.begin() + (size_t) token * kInput,
+                input.begin() + (size_t) (token + 1) * kInput);
+            const float unit_weight = 1.0f;
+            const std::vector<float> expected_expert = cpu_reference(
+                gate, up, down, one_input, &expert, &unit_weight, 1, 1);
+            STREAM_REQUIRE(found->output.size() == expected_expert.size());
+            for (size_t i = 0; i < expected_expert.size(); ++i) {
+                const float tolerance =
+                    2.0e-5f + 2.0e-4f * std::fabs(expected_expert[i]);
+                STREAM_REQUIRE(
+                    std::fabs(found->output[i] - expected_expert[i]) <=
+                    tolerance);
+            }
+        }
+    }
     const MoeStreamComputeStats second = engine.compute_stats();
     STREAM_REQUIRE(second.graph_builds == first.graph_builds);
     STREAM_REQUIRE(second.graph_cache_hits > first.graph_cache_hits);

@@ -70,6 +70,26 @@ struct MoeStreamExpertSpec {
     float gate_up_scale = 1.0f;
 };
 
+// Optional research/debug boundary for observing one exact expert before its
+// native router weight is applied. Production route batches leave this null,
+// so the optimized fused and cache-first paths retain their existing cost.
+// Observer mode is deliberately single-owner and deterministic.
+class MoeStreamExpertObserver {
+public:
+    virtual ~MoeStreamExpertObserver() = default;
+
+    virtual bool observe(
+        int layer,
+        int token,
+        int expert,
+        float router_weight,
+        const float * input,
+        int input_dimension,
+        const float * expert_output,
+        int output_dimension,
+        std::string * err = nullptr) = 0;
+};
+
 // Build the common contract from an existing model's ordinary MoE metadata.
 // New adapters may either use this helper or populate MoeStreamExpertSpec
 // directly when their latent input/output dimensions differ.
@@ -101,6 +121,7 @@ struct MoeStreamRouteBatch {
     const float * selected_weights = nullptr;
     const int32_t * resident_local_by_global = nullptr;
     size_t resident_map_size = 0;
+    MoeStreamExpertObserver * expert_observer = nullptr;
 };
 
 struct MoeStreamComputeStats {
