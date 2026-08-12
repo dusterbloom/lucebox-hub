@@ -22,6 +22,7 @@
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -321,8 +322,29 @@ json summarize_values(std::vector<double> values) {
     };
     const double mean = std::accumulate(
         values.begin(), values.end(), 0.0) / values.size();
+    std::mt19937_64 random(0x4b33424f4f545354ULL ^ values.size());
+    std::uniform_int_distribution<size_t> draw(0, values.size() - 1);
+    std::vector<double> bootstrap_means(2000);
+    for (double & bootstrap_mean : bootstrap_means) {
+        double sum = 0.0;
+        for (size_t sample = 0; sample < values.size(); ++sample) {
+            sum += values[draw(random)];
+        }
+        bootstrap_mean = sum / values.size();
+    }
+    std::sort(bootstrap_means.begin(), bootstrap_means.end());
+    const auto bootstrap_quantile = [&](double probability) {
+        const double position = probability * (bootstrap_means.size() - 1);
+        const size_t lower = static_cast<size_t>(std::floor(position));
+        const size_t upper = static_cast<size_t>(std::ceil(position));
+        const double fraction = position - lower;
+        return bootstrap_means[lower] * (1.0 - fraction) +
+            bootstrap_means[upper] * fraction;
+    };
     return {
         {"mean", mean},
+        {"mean_bootstrap_95_percent", {
+            bootstrap_quantile(0.025), bootstrap_quantile(0.975)}},
         {"median", quantile(0.5)},
         {"p01", quantile(0.01)},
         {"p05", quantile(0.05)},
@@ -569,6 +591,25 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr,
             "[kimi-panel-fit] capture needs calibration and validation tokens\n");
         return 1;
+    }
+    std::vector<float> validation_router_confidence(
+        static_cast<size_t>(validation_tokens));
+    for (size_t record_index = 0;
+         record_index < artifact.records.size(); ++record_index) {
+        const auto & record = artifact.records[record_index];
+        if (record.split != 1) continue;
+        for (size_t token = 0; token < record.tokens.size(); ++token) {
+            const size_t validation_token = static_cast<size_t>(
+                validation_index[record_index][token]);
+            float confidence = 0.0f;
+            for (uint32_t rank = 0; rank < artifact.header.top_k; ++rank) {
+                confidence = std::max(
+                    confidence,
+                    record.router_weights[
+                        token * artifact.header.top_k + rank]);
+            }
+            validation_router_confidence[validation_token] = confidence;
+        }
     }
 
     ggml_backend_t backend = ggml_backend_cuda_init(gpu);
@@ -1009,10 +1050,82 @@ int main(int argc, char ** argv) {
                 projected_metrics, error)) {
             return false;
         }
+        std::vector<size_t> confidence_order(
+            static_cast<size_t>(validation_tokens));
+        std::iota(confidence_order.begin(), confidence_order.end(), 0);
+        std::stable_sort(
+            confidence_order.begin(), confidence_order.end(),
+            [&](size_t left, size_t right) {
+                return validation_router_confidence[left] <
+                    validation_router_confidence[right];
+            });
+        json confidence_quartiles = json::array();
+        for (size_t quartile = 0; quartile < 4; ++quartile) {
+            const size_t begin = confidence_order.size() * quartile / 4;
+            const size_t end = confidence_order.size() * (quartile + 1) / 4;
+            if (end == begin) continue;
+            MetricValues quartile_metrics;
+            float minimum_confidence = std::numeric_limits<float>::infinity();
+            float maximum_confidence = 0.0f;
+            for (size_t position = begin; position < end; ++position) {
+                const size_t token = confidence_order[position];
+                append_pair_metric(
+                    exact_aggregate.data() + token * dimension,
+                    approximate.data() + token * dimension,
+                    dimension, quartile_metrics);
+                minimum_confidence = std::min(
+                    minimum_confidence,
+                    validation_router_confidence[token]);
+                maximum_confidence = std::max(
+                    maximum_confidence,
+                    validation_router_confidence[token]);
+            }
+            confidence_quartiles.push_back({
+                {"quartile", quartile + 1},
+                {"tokens", end - begin},
+                {"minimum_max_route_weight", minimum_confidence},
+                {"maximum_max_route_weight", maximum_confidence},
+                {"routed_aggregate", metric_summary(quartile_metrics)},
+            });
+        }
+
+        json sequence_metrics = json::array();
+        for (size_t record_index = 0;
+             record_index < artifact.records.size(); ++record_index) {
+            const auto & record = artifact.records[record_index];
+            if (record.split != 1) continue;
+            MetricValues sequence_values;
+            for (size_t token = 0; token < record.tokens.size(); ++token) {
+                const size_t validation_token = static_cast<size_t>(
+                    validation_index[record_index][token]);
+                append_pair_metric(
+                    exact_aggregate.data() + validation_token * dimension,
+                    approximate.data() + validation_token * dimension,
+                    dimension, sequence_values);
+            }
+            sequence_metrics.push_back({
+                {"id", record.id},
+                {"tokens", record.tokens.size()},
+                {"routed_aggregate", metric_summary(sequence_values)},
+            });
+        }
+        std::sort(
+            sequence_metrics.begin(), sequence_metrics.end(),
+            [](const json & left, const json & right) {
+                return left["routed_aggregate"]["cosine"]["mean"]
+                           .get<double>() <
+                       right["routed_aggregate"]["cosine"]["mean"]
+                           .get<double>();
+            });
+        if (sequence_metrics.size() > 10) sequence_metrics.erase(
+            sequence_metrics.begin() + 10, sequence_metrics.end());
+
         variants[name] = {
             {"routed_aggregate", metric_summary(raw_metrics)},
             {"post_routed_normalization", metric_summary(normalized_metrics)},
             {"post_routed_up_projection", metric_summary(projected_metrics)},
+            {"router_confidence_quartiles", confidence_quartiles},
+            {"worst_sequences", sequence_metrics},
         };
         return true;
     };
@@ -1042,6 +1155,24 @@ int main(int argc, char ** argv) {
     } else {
         verdict = "RED";
     }
+    std::vector<int> expert_coverage_order(weights.n_expert);
+    std::iota(
+        expert_coverage_order.begin(), expert_coverage_order.end(), 0);
+    std::stable_sort(
+        expert_coverage_order.begin(), expert_coverage_order.end(),
+        [&](int left, int right) {
+            return calibration_hits[left] < calibration_hits[right];
+        });
+    json least_observed_experts = json::array();
+    for (size_t rank = 0;
+         rank < std::min<size_t>(10, expert_coverage_order.size()); ++rank) {
+        const int expert = expert_coverage_order[rank];
+        least_observed_experts.push_back({
+            {"expert", expert},
+            {"calibration_hits", calibration_hits[expert]},
+            {"validation_hits", validation_hits[expert]},
+        });
+    }
 
     json result = {
         {"schema", "kimi-k3-layer-panel-fit-v1"},
@@ -1057,6 +1188,7 @@ int main(int argc, char ** argv) {
         {"missing_calibration_experts", missing_experts},
         {"unweighted_degenerate_coordinates", unweighted_degenerate},
         {"weighted_degenerate_coordinates", weighted_degenerate},
+        {"least_observed_experts", least_observed_experts},
         {"variants", variants},
         {"storage", {
             {"io_backend", io_backend_name},
