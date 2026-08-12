@@ -10,6 +10,13 @@ gpu="${KIMI_PANEL_GPU:-0}"
 prompt="${KIMI_EXACT_PROMPT:-According to all known laws}"
 generated_tokens="${KIMI_EXACT_GENERATED_TOKENS:-4}"
 max_context="${KIMI_EXACT_MAX_CONTEXT:-512}"
+gpu_lock="${KIMI_GPU_LOCK_FILE:-/tmp/lucebox-gpu-$gpu.lock}"
+
+exec 9>"$gpu_lock"
+if ! flock -n 9; then
+    echo "Another cooperating job holds the graphics-card lease: $gpu_lock" >&2
+    exit 1
+fi
 
 if pgrep -f '[h]f download unsloth/Kimi-K3-GGUF' >/dev/null; then
     echo "The Kimi checkpoint download is still using the model drive." >&2

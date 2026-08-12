@@ -13,6 +13,13 @@ result_prefix="${KIMI_PANEL_RESULT_PREFIX:-/mnt/kimi-k3/results/kimi_layer01_pan
 panel_artifact="${KIMI_PANEL_ARTIFACT:-/mnt/kimi-k3/results/kimi_layer01_panel.safetensors}"
 total_tokens="${KIMI_PANEL_TOTAL_TOKENS:-2048}"
 gpu="${KIMI_PANEL_GPU:-0}"
+gpu_lock="${KIMI_GPU_LOCK_FILE:-/tmp/lucebox-gpu-$gpu.lock}"
+
+exec 9>"$gpu_lock"
+if ! flock -n 9; then
+    echo "Another cooperating job holds the graphics-card lease: $gpu_lock" >&2
+    exit 1
+fi
 
 if pgrep -f '[h]f download unsloth/Kimi-K3-GGUF' >/dev/null; then
     echo "The Kimi checkpoint download is still using the model drive." >&2
