@@ -1,5 +1,6 @@
 #include "internal.h"
 #include "kimi_k3/kimi_k3_internal.h"
+#include "kimi_k3/kimi_k3_panel_artifact.h"
 #include "server/tokenizer.h"
 
 #include "ggml-cuda.h"
@@ -28,25 +29,6 @@ using json = nlohmann::json;
 using namespace dflash::common;
 
 namespace {
-
-constexpr std::array<char, 8> kCaptureMagic = {
-    'K', '3', 'P', 'N', 'L', '0', '0', '1'};
-constexpr uint32_t kCaptureVersion = 1;
-
-struct CaptureHeader {
-    std::array<char, 8> magic = kCaptureMagic;
-    uint32_t version = kCaptureVersion;
-    int32_t model_layer = -1;
-    uint32_t latent_dimension = 0;
-    uint32_t top_k = 0;
-    uint64_t sequence_count = 0;
-    uint64_t token_count = 0;
-    uint32_t latent_storage = 1; // 1 = bfloat16
-    uint32_t route_weight_storage = 0; // 0 = float32
-    std::array<uint64_t, 4> reserved{};
-};
-static_assert(sizeof(CaptureHeader) == 80,
-              "panel capture header must remain byte-stable");
 
 struct InputSequence {
     std::string id;
@@ -232,7 +214,7 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    CaptureHeader header;
+    KimiK3PanelCaptureHeader header;
     header.model_layer = model_layer;
     header.latent_dimension = static_cast<uint32_t>(weights.n_expert_latent);
     header.top_k = static_cast<uint32_t>(weights.n_expert_used);

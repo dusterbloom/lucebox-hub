@@ -8,6 +8,9 @@ build_dir="${KIMI_PANEL_BUILD_DIR:-$repo_dir/server/build-k3-panel-cuda126}"
 output_dir="${KIMI_PANEL_OUTPUT_DIR:-/mnt/kimi-k3/captures}"
 corpus_path="${KIMI_PANEL_CORPUS:-$output_dir/kimi_panel_smoke.jsonl}"
 capture_path="${KIMI_PANEL_CAPTURE:-$output_dir/kimi_layer01_2048.bin}"
+fit_state_dir="${KIMI_PANEL_FIT_STATE:-/mnt/kimi-k3/fit-state/kimi_layer01}"
+result_prefix="${KIMI_PANEL_RESULT_PREFIX:-/mnt/kimi-k3/results/kimi_layer01_panel}"
+panel_artifact="${KIMI_PANEL_ARTIFACT:-/mnt/kimi-k3/results/kimi_layer01_panel.safetensors}"
 total_tokens="${KIMI_PANEL_TOTAL_TOKENS:-2048}"
 gpu="${KIMI_PANEL_GPU:-0}"
 
@@ -41,10 +44,31 @@ python3 "$repo_dir/scripts/prepare_kimi_panel_corpus.py" \
     --code "$repo_dir/server/eval/humaneval_plus/humanevalplus.jsonl" \
     --output "$corpus_path"
 
-cmake --build "$build_dir" --target capture_kimi_k3_panel -j4
+cmake --build "$build_dir" --target \
+    capture_kimi_k3_panel fit_kimi_k3_panel -j4
 
-"$build_dir/capture_kimi_k3_panel" \
-    "$model_path" "$corpus_path" "$capture_path" \
-    "$gpu" 1 "$total_tokens" 4096 128
+python3 "$repo_dir/scripts/run_with_telemetry.py" \
+    --output-json "$capture_path.telemetry.json" \
+    --samples-csv "$capture_path.telemetry.csv" \
+    --mount-path "$model_dir" --gpu "$gpu" -- \
+    "$build_dir/capture_kimi_k3_panel" \
+        "$model_path" "$corpus_path" "$capture_path" \
+        "$gpu" 1 "$total_tokens" 4096 128
 
-sha256sum "$capture_path" "$capture_path.json"
+python3 "$repo_dir/scripts/run_with_telemetry.py" \
+    --output-json "$result_prefix.fit.telemetry.json" \
+    --samples-csv "$result_prefix.fit.telemetry.csv" \
+    --mount-path "$model_dir" --gpu "$gpu" -- \
+    "$build_dir/fit_kimi_k3_panel" \
+        "$model_path" "$capture_path" "$fit_state_dir" "$result_prefix" \
+        "$gpu" 128
+
+python3 "$repo_dir/scripts/export_kimi_panel_safetensors.py" \
+    "$result_prefix.panel.f32" "$panel_artifact"
+
+sha256sum \
+    "$capture_path" "$capture_path.json" \
+    "$capture_path.telemetry.json" "$capture_path.telemetry.csv" \
+    "$result_prefix.json" "$result_prefix.csv" \
+    "$result_prefix.fit.telemetry.json" "$result_prefix.fit.telemetry.csv" \
+    "$result_prefix.panel.f32" "$panel_artifact"

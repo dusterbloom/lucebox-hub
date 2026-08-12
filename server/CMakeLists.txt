@@ -399,6 +399,8 @@ add_library(dflash_common STATIC
     src/deepseek4/deepseek4_dspark_spec.cpp
     # Kimi-K3 hybrid KDA/MLA + latent-MoE target arch
     src/kimi_k3/kimi_k3_loader.cpp
+    src/kimi_k3/kimi_k3_panel_artifact.cpp
+    src/kimi_k3/kimi_k3_panel_fit.cpp
     src/kimi_k3/kimi_k3_graph.cpp
     src/kimi_k3/kimi_k3_dflash_target.cpp
     src/kimi_k3/kimi_k3_backend.cpp
@@ -1192,6 +1194,17 @@ if(DFLASH27B_TESTS)
             target_link_libraries(capture_kimi_k3_panel PRIVATE hip::host)
         endif()
     endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/fit_kimi_k3_panel.cpp")
+        add_executable(fit_kimi_k3_panel test/fit_kimi_k3_panel.cpp)
+        target_include_directories(fit_kimi_k3_panel PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(fit_kimi_k3_panel PRIVATE
+            dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+        if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
+            target_link_libraries(fit_kimi_k3_panel PRIVATE CUDA::cudart)
+        else()
+            target_link_libraries(fit_kimi_k3_panel PRIVATE hip::host)
+        endif()
+    endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_kimi_k3_selective_load.cpp")
         add_executable(test_kimi_k3_selective_load
             test/test_kimi_k3_selective_load.cpp)
@@ -1205,6 +1218,34 @@ if(DFLASH27B_TESTS)
             target_link_libraries(test_kimi_k3_selective_load PRIVATE hip::host)
         endif()
         add_test(NAME kimi_k3_selective_load COMMAND test_kimi_k3_selective_load)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_kimi_k3_panel_artifact.cpp")
+        add_executable(test_kimi_k3_panel_artifact
+            test/test_kimi_k3_panel_artifact.cpp)
+        target_include_directories(test_kimi_k3_panel_artifact PRIVATE
+            ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_kimi_k3_panel_artifact PRIVATE
+            dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+        if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
+            target_link_libraries(test_kimi_k3_panel_artifact PRIVATE CUDA::cudart)
+        else()
+            target_link_libraries(test_kimi_k3_panel_artifact PRIVATE hip::host)
+        endif()
+        add_test(NAME kimi_k3_panel_artifact COMMAND test_kimi_k3_panel_artifact)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_kimi_k3_panel_fit.cpp")
+        add_executable(test_kimi_k3_panel_fit
+            test/test_kimi_k3_panel_fit.cpp)
+        target_include_directories(test_kimi_k3_panel_fit PRIVATE
+            ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_kimi_k3_panel_fit PRIVATE
+            dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+        if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
+            target_link_libraries(test_kimi_k3_panel_fit PRIVATE CUDA::cudart)
+        else()
+            target_link_libraries(test_kimi_k3_panel_fit PRIVATE hip::host)
+        endif()
+        add_test(NAME kimi_k3_panel_fit COMMAND test_kimi_k3_panel_fit)
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_vs_oracle.cpp")
         add_executable(test_vs_oracle test/test_vs_oracle.cpp)
