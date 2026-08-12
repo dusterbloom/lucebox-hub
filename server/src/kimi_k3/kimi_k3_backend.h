@@ -25,6 +25,10 @@ struct KimiK3BackendConfig {
     int draft_ctx_max = 4096;
     bool fast_rollback = true;
     int stream_fd = -1;
+    // Optional research trace. When set, ordinary autoregressive generation
+    // atomically writes every full-vocabulary logit row produced by the
+    // target. Null keeps production behavior and overhead unchanged.
+    const char * logits_trace_path = nullptr;
     // -1 resolves DFLASH_MOE_TP_GPU and otherwise keeps the primary device
     // index. DFLASH_MOE_TP_BACKEND may select a different in-process runtime
     // (for example CUDA beside a HIP primary). A different backend or device
@@ -71,6 +75,9 @@ private:
     bool init_draft();
     void release_expert_backend();
     void maybe_save_routing_stats();
+    bool write_logits_trace(const GenerateRequest & request,
+                            const GenerateResult & result,
+                            const std::vector<float> & rows) const;
 
     int32_t choose_token(const std::vector<float> & logits,
                          const SamplerCfg & sampler,

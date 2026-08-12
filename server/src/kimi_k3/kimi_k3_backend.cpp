@@ -43,6 +43,22 @@ namespace {
 
 constexpr int kMaxDsparkBlockSize = 16;
 
+constexpr char kKimiLogitsTraceMagic[8] = {
+    'K', '3', 'L', 'O', 'G', '0', '0', '1'};
+
+struct KimiLogitsTraceHeader {
+    char magic[8];
+    uint32_t version = 1;
+    uint32_t vocabulary = 0;
+    uint64_t rows = 0;
+    uint64_t prompt_tokens = 0;
+    uint64_t generated_tokens = 0;
+    uint32_t storage = 0; // 0 = float32
+    uint32_t reserved = 0;
+};
+static_assert(sizeof(KimiLogitsTraceHeader) == 48,
+              "Kimi logits trace header must remain byte-stable");
+
 void close_file_descriptor(int fd) {
 #if defined(_WIN32)
     ::_close(fd);
@@ -161,6 +177,20 @@ bool publish_package(const std::string & temporary,
             std::strerror(errno);
 #endif
     return false;
+}
+
+bool sync_path(const std::string & path) {
+#if defined(_WIN32)
+    const int fd = ::_open(path.c_str(), _O_RDONLY | _O_BINARY);
+    if (fd < 0) return false;
+    const bool ok = ::_commit(fd) == 0;
+#else
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    const bool ok = ::fsync(fd) == 0;
+#endif
+    close_file_descriptor(fd);
+    return ok;
 }
 
 } // namespace
@@ -876,6 +906,79 @@ int32_t KimiK3Backend::choose_token(const std::vector<float> & logits,
         std::max_element(logits.begin(), logits.end())));
 }
 
+bool KimiK3Backend::write_logits_trace(
+        const GenerateRequest & request,
+        const GenerateResult & result,
+        const std::vector<float> & rows) const {
+    if (!cfg_.logits_trace_path || !*cfg_.logits_trace_path) return true;
+    if (weights_.n_vocab <= 0 ||
+        rows.size() % static_cast<size_t>(weights_.n_vocab) != 0) {
+        std::fprintf(stderr, "[kimi-k3] invalid logits trace shape\n");
+        return false;
+    }
+    const std::string destination = cfg_.logits_trace_path;
+    const std::string temporary = package_temporary_path(destination);
+#if defined(_WIN32)
+    const int fd = ::_open(
+        temporary.c_str(), _O_CREAT | _O_TRUNC | _O_WRONLY | _O_BINARY,
+        _S_IREAD | _S_IWRITE);
+#else
+    const int fd = ::open(
+        temporary.c_str(), O_CREAT | O_TRUNC | O_WRONLY | O_CLOEXEC, 0644);
+#endif
+    if (fd < 0) {
+        std::fprintf(stderr, "[kimi-k3] cannot create logits trace %s: %s\n",
+                     temporary.c_str(), std::strerror(errno));
+        return false;
+    }
+    auto write_all = [&](const void * data, size_t bytes) {
+        const auto * source = static_cast<const uint8_t *>(data);
+        while (bytes > 0) {
+#if defined(_WIN32)
+            const int chunk = static_cast<int>(std::min<size_t>(
+                bytes, static_cast<size_t>(std::numeric_limits<int>::max())));
+            const int written = ::_write(fd, source, chunk);
+#else
+            const ssize_t written = ::write(fd, source, bytes);
+#endif
+            if (written <= 0) return false;
+            source += written;
+            bytes -= static_cast<size_t>(written);
+        }
+        return true;
+    };
+    KimiLogitsTraceHeader header;
+    std::memcpy(header.magic, kKimiLogitsTraceMagic, sizeof(header.magic));
+    header.vocabulary = static_cast<uint32_t>(weights_.n_vocab);
+    header.rows = rows.size() / static_cast<size_t>(weights_.n_vocab);
+    header.prompt_tokens = request.prompt.size();
+    header.generated_tokens = result.tokens.size();
+    const bool write_ok = write_all(&header, sizeof(header)) &&
+        write_all(rows.data(), rows.size() * sizeof(float));
+#if defined(_WIN32)
+    const bool close_ok = ::_close(fd) == 0;
+#else
+    const bool close_ok = ::fsync(fd) == 0 && ::close(fd) == 0;
+#endif
+    if (!write_ok || !close_ok || !sync_path(temporary)) {
+        (void) std::remove(temporary.c_str());
+        std::fprintf(stderr, "[kimi-k3] cannot finish logits trace %s\n",
+                     destination.c_str());
+        return false;
+    }
+    std::string publish_error;
+    if (!publish_package(temporary, destination, publish_error)) {
+        (void) std::remove(temporary.c_str());
+        std::fprintf(stderr, "[kimi-k3] %s\n", publish_error.c_str());
+        return false;
+    }
+    std::fprintf(stderr,
+        "[kimi-k3] wrote logits trace rows=%llu vocab=%u path=%s\n",
+        static_cast<unsigned long long>(header.rows), header.vocabulary,
+        destination.c_str());
+    return true;
+}
+
 bool KimiK3Backend::supports_dflash_spec_decode() const {
     return draft_backend_ && draft_weights_.ctx && feature_ring_.target_feat;
 }
@@ -930,6 +1033,21 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
 
     reset_kimi_k3_cache(cache_);
     std::vector<float> logits;
+    std::vector<float> logits_trace;
+    const bool trace_logits =
+        cfg_.logits_trace_path && *cfg_.logits_trace_path;
+    if (trace_logits) {
+        const size_t expected_rows = req.prompt.size() +
+            static_cast<size_t>(std::max(0, req.n_gen - 1));
+        logits_trace.reserve(
+            expected_rows * static_cast<size_t>(weights_.n_vocab));
+    }
+    const auto append_logits_trace = [&]() {
+        if (trace_logits) {
+            logits_trace.insert(
+                logits_trace.end(), logits.begin(), logits.end());
+        }
+    };
     auto * spec_target = static_cast<KimiK3DFlashTarget *>(dflash_target());
     const auto prefill_begin = std::chrono::steady_clock::now();
     for (size_t i = 0; i < req.prompt.size(); ++i) {
@@ -948,6 +1066,7 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
             out_io.emit(-1);
             return result;
         }
+        append_logits_trace();
     }
     const auto prefill_end = std::chrono::steady_clock::now();
     result.prefill_s = std::chrono::duration<double>(prefill_end - prefill_begin).count();
@@ -956,11 +1075,16 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
         maybe_save_routing_stats();
         out_io.emit(-1);
         result.succeed();
+        if (!write_logits_trace(req, result, logits_trace)) {
+            result.fail(GenerateErrorCode::DecodeFailed,
+                        "failed to write Kimi logits trace");
+        }
         return result;
     }
 
     const auto decode_begin = std::chrono::steady_clock::now();
-    const bool can_spec = spec_target && !req.force_ar_decode &&
+    const bool can_spec = spec_target && !trace_logits &&
+        !req.force_ar_decode &&
         req.budget_hook.close_token_ids.empty() &&
         !req.sampler.needs_logit_processing();
     if (can_spec) {
@@ -1032,6 +1156,7 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
                 out_io.emit(-1);
                 return result;
             }
+            append_logits_trace();
         }
     }
     const auto decode_end = std::chrono::steady_clock::now();
@@ -1039,6 +1164,10 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
     maybe_save_routing_stats();
     out_io.emit(-1);
     result.succeed();
+    if (!write_logits_trace(req, result, logits_trace)) {
+        result.fail(GenerateErrorCode::DecodeFailed,
+                    "failed to write Kimi logits trace");
+    }
     return result;
 }
 

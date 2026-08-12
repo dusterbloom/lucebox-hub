@@ -38,6 +38,12 @@ int main(int argc, char ** argv) {
     config.model_path = model;
     config.device.gpu = gpu;
     config.device.max_ctx = 4096;
+    if (const char * raw = std::getenv("DFLASH_KIMI_SMOKE_MAX_CTX")) {
+        const int requested = std::atoi(raw);
+        if (requested > 0) config.device.max_ctx = requested;
+    }
+    config.logits_trace_path =
+        std::getenv("DFLASH_KIMI_LOGITS_TRACE_OUT");
     config.moe_storage = argc <= 5 || std::atoi(argv[5]) != 0
         ? MoeStoragePolicy::Ssd
         : MoeStoragePolicy::Resident;

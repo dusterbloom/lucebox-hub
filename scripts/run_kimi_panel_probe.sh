@@ -50,6 +50,8 @@ cmake --build "$build_dir" --target \
 python3 "$repo_dir/scripts/run_with_telemetry.py" \
     --output-json "$capture_path.telemetry.json" \
     --samples-csv "$capture_path.telemetry.csv" \
+    --stdout "$capture_path.stdout.log" \
+    --stderr "$capture_path.stderr.log" \
     --mount-path "$model_dir" --gpu "$gpu" -- \
     "$build_dir/capture_kimi_k3_panel" \
         "$model_path" "$corpus_path" "$capture_path" \
@@ -58,6 +60,8 @@ python3 "$repo_dir/scripts/run_with_telemetry.py" \
 python3 "$repo_dir/scripts/run_with_telemetry.py" \
     --output-json "$result_prefix.fit.telemetry.json" \
     --samples-csv "$result_prefix.fit.telemetry.csv" \
+    --stdout "$result_prefix.fit.stdout.log" \
+    --stderr "$result_prefix.fit.stderr.log" \
     --mount-path "$model_dir" --gpu "$gpu" -- \
     "$build_dir/fit_kimi_k3_panel" \
         "$model_path" "$capture_path" "$fit_state_dir" "$result_prefix" \
@@ -69,6 +73,8 @@ python3 "$repo_dir/scripts/export_kimi_panel_safetensors.py" \
 sha256sum \
     "$capture_path" "$capture_path.json" \
     "$capture_path.telemetry.json" "$capture_path.telemetry.csv" \
+    "$capture_path.stdout.log" "$capture_path.stderr.log" \
     "$result_prefix.json" "$result_prefix.csv" \
     "$result_prefix.fit.telemetry.json" "$result_prefix.fit.telemetry.csv" \
+    "$result_prefix.fit.stdout.log" "$result_prefix.fit.stderr.log" \
     "$result_prefix.panel.f32" "$panel_artifact"

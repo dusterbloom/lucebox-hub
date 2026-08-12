@@ -118,6 +118,12 @@ not by itself authorize converting another layer.
   host memory, graphics memory, graphics power, and elapsed time. Energy is
   integrated from sampled power when a direct cumulative counter is absent.
 
+`scripts/run_kimi_exact_baseline.sh` performs two serial exact runs, writes a
+full-vocabulary float32 trace for every forward step, and requires the two
+traces and their generated behavior to be byte-identical. The accompanying
+comparison reports teacher-to-candidate probability divergence and top-choice
+agreement; the same format will compare exact and panel modes later.
+
 ## Current tests
 
 - `test_moe_stream_compute`: exact individual expert observation and

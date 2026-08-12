@@ -167,6 +167,8 @@ def main() -> int:
     parser.add_argument("--mount-path", type=Path, required=True)
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--interval", type=float, default=0.5)
+    parser.add_argument("--stdout", type=Path)
+    parser.add_argument("--stderr", type=Path)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command
@@ -184,7 +186,17 @@ def main() -> int:
 
     started_wall = time.time()
     started = time.monotonic()
-    process = subprocess.Popen(command)
+    if args.stdout:
+        args.stdout.parent.mkdir(parents=True, exist_ok=True)
+    if args.stderr:
+        args.stderr.parent.mkdir(parents=True, exist_ok=True)
+    stdout_handle = args.stdout.open("w") if args.stdout else None
+    stderr_handle = args.stderr.open("w") if args.stderr else None
+    process = subprocess.Popen(
+        command,
+        stdout=stdout_handle,
+        stderr=stderr_handle,
+    )
     samples: list[dict[str, Any]] = []
     graphics_energy_joules = 0.0
     previous_graphics_time: float | None = None
@@ -230,6 +242,11 @@ def main() -> int:
         process.terminate()
         process.wait()
         raise
+    finally:
+        if stdout_handle:
+            stdout_handle.close()
+        if stderr_handle:
+            stderr_handle.close()
 
     ended = time.monotonic()
     block_after = block_sample(block_device)
