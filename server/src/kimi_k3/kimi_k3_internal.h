@@ -202,6 +202,22 @@ struct KimiK3ForwardResult {
     std::vector<float> captured_hidden;
 };
 
+struct KimiK3LoadOptions {
+    bool stream_routed_experts = false;
+    // When non-negative, allocate only the tensors required to reach this
+    // layer's native router and routed-down projection.  The layer itself is
+    // not evaluated beyond that boundary.  This is a research capture mode;
+    // ordinary full-model loading leaves it at -1.
+    int stop_before_moe_layer = -1;
+};
+
+bool kimi_k3_capture_tensor_required(const std::string & name,
+                                     int stop_before_moe_layer);
+
+bool load_kimi_k3_gguf(const std::string & path,
+                       ggml_backend_t backend,
+                       KimiK3Weights & out,
+                       const KimiK3LoadOptions & options);
 bool load_kimi_k3_gguf(const std::string & path,
                        ggml_backend_t backend,
                        KimiK3Weights & out,

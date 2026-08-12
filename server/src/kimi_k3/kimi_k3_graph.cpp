@@ -492,7 +492,7 @@ bool streamed_kimi_k3_forward(
         int base_pos,
         const KimiK3ForwardOptions & options,
         KimiK3ForwardResult & result,
-        MoeHybridStreamEngine & stream_engine,
+        MoeHybridStreamEngine * stream_engine,
         MoeStreamDualOwnerExecutor * dual_stream_executor,
         const MoeStreamDualOwnerPolicy * stream_owner_policy,
         MoeHybridRoutingStats * routing_stats) {
@@ -649,38 +649,61 @@ bool streamed_kimi_k3_forward(
             ggml_cont(ctx, router.selected);
         ggml_tensor * route_weights_out =
             ggml_cont(ctx, router.weights_2d);
-        ggml_tensor * shared_gate =
-            ggml_mul_mat(ctx, layer.ffn_gate_shexp, cur);
-        ggml_tensor * shared_up =
-            ggml_mul_mat(ctx, layer.ffn_up_shexp, cur);
-        ggml_tensor * shared = situ(
-            ctx, shared_gate, shared_up,
-            w.situ_beta, w.situ_linear_beta);
-        shared = ggml_mul_mat(
-            ctx, layer.ffn_down_shexp, shared);
+        const bool stop_at_capture_boundary =
+            options.stop_before_moe_layer == il;
+        ggml_tensor * shared = nullptr;
+        if (!stop_at_capture_boundary) {
+            ggml_tensor * shared_gate =
+                ggml_mul_mat(ctx, layer.ffn_gate_shexp, cur);
+            ggml_tensor * shared_up =
+                ggml_mul_mat(ctx, layer.ffn_up_shexp, cur);
+            shared = situ(
+                ctx, shared_gate, shared_up,
+                w.situ_beta, w.situ_linear_beta);
+            shared = ggml_mul_mat(
+                ctx, layer.ffn_down_shexp, shared);
+        }
 
-        std::vector<float> prefix_host(hidden_values);
+        std::vector<float> prefix_host;
         std::vector<float> routed_input_host(
             static_cast<size_t>(w.n_expert_latent) * n_tokens);
         std::vector<int32_t> selected(
             static_cast<size_t>(w.n_expert_used) * n_tokens);
         std::vector<float> route_weights(
             static_cast<size_t>(w.n_expert_used) * n_tokens);
-        std::vector<float> shared_host(hidden_values);
-        const bool prep_ok = run_host_boundary_graph(
-            backend, ctx, graph, inputs,
-            {
-                {prefix, prefix_host.data(),
-                 prefix_host.size() * sizeof(float)},
+        std::vector<float> shared_host;
+        std::vector<GraphOutput> preparation_outputs;
+        if (!stop_at_capture_boundary) {
+            prefix_host.resize(hidden_values);
+            shared_host.resize(hidden_values);
+            preparation_outputs = {{
+                prefix, prefix_host.data(),
+                prefix_host.size() * sizeof(float)}};
+            preparation_outputs.push_back({
+                routed_in, routed_input_host.data(),
+                routed_input_host.size() * sizeof(float)});
+            preparation_outputs.push_back({
+                selected_out, selected.data(),
+                selected.size() * sizeof(int32_t)});
+            preparation_outputs.push_back({
+                route_weights_out, route_weights.data(),
+                route_weights.size() * sizeof(float)});
+            preparation_outputs.push_back({
+                shared, shared_host.data(),
+                shared_host.size() * sizeof(float)});
+        } else {
+            preparation_outputs = {
                 {routed_in, routed_input_host.data(),
                  routed_input_host.size() * sizeof(float)},
                 {selected_out, selected.data(),
                  selected.size() * sizeof(int32_t)},
                 {route_weights_out, route_weights.data(),
                  route_weights.size() * sizeof(float)},
-                {shared, shared_host.data(),
-                 shared_host.size() * sizeof(float)},
-            },
+            };
+        }
+        const bool prep_ok = run_host_boundary_graph(
+            backend, ctx, graph, inputs,
+            preparation_outputs,
             "routed layer preparation");
         ggml_free(ctx);
         if (!prep_ok) return false;
@@ -702,7 +725,7 @@ bool streamed_kimi_k3_forward(
             }
         }
 
-        if (options.stop_before_moe_layer == il) {
+        if (stop_at_capture_boundary) {
             KimiK3MoePanelCapture & capture = *options.panel_capture;
             capture.layer = il;
             capture.base_pos = base_pos;
@@ -749,12 +772,17 @@ bool streamed_kimi_k3_forward(
         MoeStreamDualOwnerStats owner_stats;
         const bool dual_owner = dual_stream_executor != nullptr &&
             options.expert_observer == nullptr;
+        if (!stream_engine) {
+            set_last_error(
+                "Kimi-K3 routed layer: no streamed expert engine");
+            return false;
+        }
         const bool route_ok = dual_owner
             ? dual_stream_executor->eval(
                 spec, route_batch, *stream_owner_policy,
                 routed_output, &owner_stats, &stream_error)
             : eval_moe_streamed_experts(
-                stream_engine, spec, route_batch,
+                *stream_engine, spec, route_batch,
                 routed_output, &stream_error);
         if (!route_ok) {
             set_last_error(
@@ -1025,7 +1053,7 @@ bool kimi_k3_forward(ggml_backend_t backend,
     }
 
     if (w.routed_experts_streamed) {
-        if (!stream_engine || !stream_engine->is_bound()) {
+        if (!panel_stop && (!stream_engine || !stream_engine->is_bound())) {
             set_last_error(
                 "Kimi-K3 forward: file-backed experts require a bound stream engine");
             return false;
@@ -1039,7 +1067,7 @@ bool kimi_k3_forward(ggml_backend_t backend,
         }
         if (!streamed_kimi_k3_forward(
                 backend, w, cache, tokens, base_pos, options, result,
-                *stream_engine, dual_stream_executor,
+                stream_engine, dual_stream_executor,
                 stream_owner_policy, routing_stats)) {
             return false;
         }

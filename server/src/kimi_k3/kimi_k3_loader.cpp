@@ -88,6 +88,32 @@ bool is_routed_expert_tensor(const std::string & name) {
            name.find(".ffn_gate_up_exps.weight") != std::string::npos;
 }
 
+int tensor_model_layer(const std::string & name) {
+    int layer = -1;
+    int consumed = 0;
+    if (std::sscanf(name.c_str(), "blk.%d.%n", &layer, &consumed) != 1 ||
+        consumed <= 0) {
+        return -1;
+    }
+    return layer;
+}
+
+bool capture_boundary_tensor_required_impl(const std::string & name,
+                                           int stop_before_moe_layer) {
+    if (name == "token_embd.weight") return true;
+    const int layer = tensor_model_layer(name);
+    if (layer < 0 || layer > stop_before_moe_layer) return false;
+    if (is_routed_expert_tensor(name)) return false;
+    if (layer < stop_before_moe_layer) return true;
+
+    // The stop layer needs its complete attention side plus the native router
+    // and z = W_down h.  Its shared expert, latent join, and routed bank occur
+    // strictly after the capture boundary and are deliberately not resident.
+    return name.find(".ffn_gate_shexp.weight") == std::string::npos &&
+           name.find(".ffn_up_shexp.weight") == std::string::npos &&
+           name.find(".ffn_down_shexp.weight") == std::string::npos;
+}
+
 size_t align_up(size_t value, size_t alignment) {
     if (alignment == 0) return value;
     const size_t remainder = value % alignment;
@@ -169,10 +195,16 @@ struct TensorSource {
 
 } // namespace
 
+bool kimi_k3_capture_tensor_required(const std::string & name,
+                                     int stop_before_moe_layer) {
+    return capture_boundary_tensor_required_impl(
+        name, stop_before_moe_layer);
+}
+
 bool load_kimi_k3_gguf(const std::string & path,
                        ggml_backend_t backend,
                        KimiK3Weights & out,
-                       bool stream_routed_experts) {
+                       const KimiK3LoadOptions & options) {
     free_kimi_k3_weights(out);
 
     ggml_context * first_meta = nullptr;
@@ -288,7 +320,7 @@ bool load_kimi_k3_gguf(const std::string & path,
     out.ctx       = out.contexts.front();
     out.backend   = backend;
     out.shard_paths = shard_paths;
-    out.routed_experts_streamed = stream_routed_experts;
+    out.routed_experts_streamed = options.stream_routed_experts;
     out.n_layer   = static_cast<int>(u32("block_count"));
     out.n_embd    = static_cast<int>(u32("embedding_length"));
     out.n_ff      = static_cast<int>(u32("feed_forward_length"));
@@ -361,6 +393,12 @@ bool load_kimi_k3_gguf(const std::string & path,
         out.attn_res_block_size <= 0 || out.kv_lora_rank <= 0 ||
         out.mla_k_head_dim <= out.rope_dim || out.mla_v_head_dim <= 0) {
         return fail("invalid or incomplete architecture metadata");
+    }
+    if (options.stop_before_moe_layer >= 0 &&
+        (!options.stream_routed_experts ||
+         options.stop_before_moe_layer < out.n_dense_lead ||
+         options.stop_before_moe_layer >= out.n_layer)) {
+        return fail("invalid selective pre-expert capture layer");
     }
     if (!tensor_shape_is(out.tok_embd, out.n_embd, out.n_vocab) ||
         !tensor_shape_is(out.output, out.n_embd, out.n_vocab) ||
@@ -529,8 +567,13 @@ bool load_kimi_k3_gguf(const std::string & path,
             ggml_tensor * tensor = ggml_get_tensor(meta, tensor_name);
             const size_t bytes = gguf_get_tensor_size(gguf, tid);
             if (!tensor) continue;
-            if (stream_routed_experts &&
-                is_routed_expert_tensor(tensor_name)) {
+            const bool omit_routed = options.stream_routed_experts &&
+                is_routed_expert_tensor(tensor_name);
+            const bool omit_after_capture_boundary =
+                options.stop_before_moe_layer >= 0 &&
+                !kimi_k3_capture_tensor_required(
+                    tensor_name, options.stop_before_moe_layer);
+            if (omit_routed || omit_after_capture_boundary) {
                 skipped += bytes;
                 continue;
             }
@@ -607,6 +650,15 @@ bool load_kimi_k3_gguf(const std::string & path,
         out.n_expert_latent, out.n_vocab);
     std::fflush(stderr);
     return true;
+}
+
+bool load_kimi_k3_gguf(const std::string & path,
+                       ggml_backend_t backend,
+                       KimiK3Weights & out,
+                       bool stream_routed_experts) {
+    KimiK3LoadOptions options;
+    options.stream_routed_experts = stream_routed_experts;
+    return load_kimi_k3_gguf(path, backend, out, options);
 }
 
 void free_kimi_k3_weights(KimiK3Weights & w) {
