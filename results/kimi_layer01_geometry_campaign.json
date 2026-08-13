@@ -46,6 +46,29 @@
       "p05_cosine": 0.9736574523556082,
       "nominal_exact_traffic_fraction": 0.75
     },
+    "adaptive_96_of_192_neuron_slabs": {
+      "mean_cosine": 0.976688038223327,
+      "p05_cosine": 0.9391171870395222,
+      "post_shared_up_mean_cosine": 0.9728409647941589,
+      "nominal_exact_traffic_fraction": 0.5
+    },
+    "adaptive_144_of_192_neuron_slabs": {
+      "mean_cosine": 0.9910223513995012,
+      "p05_cosine": 0.9744353790453785,
+      "post_shared_up_mean_cosine": 0.9897004961967468,
+      "nominal_exact_traffic_fraction": 0.75
+    },
+    "published_halfwidth_all_sixteen_routes": {
+      "mean_cosine": 0.9090171669489904,
+      "p05_cosine": 0.8227074925758666,
+      "nominal_exact_traffic_fraction": 0.5
+    },
+    "progressive_slab_direct_io_gib_per_second": {
+      "first": 5.631671511054507,
+      "repeat": 5.280339917055108,
+      "whole_expert_first": 5.38849731806551,
+      "whole_expert_repeat": 5.201082212402046
+    },
     "lossless_zstandard_compressed_fraction": 1.0000283668154761,
     "lru_64_experts_per_layer_hit_fraction": 0.24034722222222227,
     "oracle_keep_half_internal_channels_native_cosine": 0.9968418478965759
@@ -111,6 +134,31 @@
         "reported_high_water_rss_kib": 1544180,
         "peak_graphics_memory_mib": 1405.0,
         "graphics_energy_joules": 604.6757032655486
+      },
+      "neuron_slab_frontier": {
+        "elapsed_seconds": 635.1570672079979,
+        "reported_high_water_rss_kib": 8247544,
+        "peak_graphics_memory_mib": 1525.0,
+        "graphics_energy_joules": 74060.23022139099,
+        "disk_read_bytes": 5183709184,
+        "disk_write_bytes": 350146560
+      },
+      "published_halfwidth_frontier": {
+        "elapsed_seconds": 96.40563412000483,
+        "reported_high_water_rss_kib": 6508896,
+        "peak_graphics_memory_mib": 1486.0,
+        "graphics_energy_joules": 11272.22732721022
+      },
+      "progressive_slab_sidecar_build": {
+        "elapsed_seconds": 10.539076461005607,
+        "reported_high_water_rss_kib": 3706024,
+        "disk_write_bytes": 5954125824
+      },
+      "progressive_slab_direct_io": {
+        "elapsed_seconds": 6.193207452000934,
+        "reported_high_water_rss_kib": 1027340,
+        "disk_read_bytes": 26427408384,
+        "direct_io": true
       }
     },
     "telemetry_note": "Graphics energy is board-power integration and includes idle board power during processor-only probes. Zero device reads on response-only probes means the operating-system page cache served the files, not that the artifacts had zero logical input bytes. Full telemetry and samples remain under /mnt/kimi-k3/results."
@@ -118,6 +166,9 @@
   "decision": {
     "bank_free_58_gb_deployment_supported": false,
     "faster_full_checkpoint_mixed_rate_deployment_supported_for_end_to_end_test": true,
-    "next_gate": "Repeated byte-identical complete exact generation, followed by frozen one-layer 8-exact and 12-exact mean-tail substitutions with final-token probability divergence and top-choice agreement."
+    "best_measured_allocation_unit": "adaptive importance-ordered 256-neuron slab prefixes",
+    "uniform_published_halfwidth_dominates_at_equal_bytes": false,
+    "progressive_slab_storage_gate_passed": true,
+    "next_gate": "Repeated byte-identical complete exact generation, followed by frozen one-layer 96-slab and 144-slab substitutions with whole-expert equal-byte controls, final-token probability divergence, and top-choice agreement."
   }
 }

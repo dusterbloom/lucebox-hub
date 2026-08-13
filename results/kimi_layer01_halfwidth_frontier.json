@@ -1,0 +1,994 @@
+{
+  "schema": "kimi-k3-layer01-halfwidth-refinement-frontier-v1",
+  "status": "EXPLORATORY",
+  "source_repository": "vcruz305/Kimi-K3-GGUF",
+  "source_revision": "6c27987818cb244ef8b57ea5ed14d31fe9482c27",
+  "model_layer": 1,
+  "halfwidth_shard": "/mnt/kimi-k3/models/vcruz305-Kimi-K3-GGUF/partial-layer01/Kimi-K3-UD-IQ1_S-00001-of-00009.partial.gguf",
+  "teacher_spine_shard": "/mnt/kimi-k3/models/unsloth-Kimi-K3-GGUF/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00002-of-00014.gguf",
+  "capture": "/mnt/kimi-k3/captures/kimi_layer01_10000.bin",
+  "teacher": "/mnt/kimi-k3/results/kimi_layer01_exactness_final.teacher.f32",
+  "calibration_tokens": 8200,
+  "validation_tokens": 1800,
+  "sequence_disjoint_validation": true,
+  "expert_widths": {
+    "full_teacher": 3072,
+    "published_halfwidth": 1536
+  },
+  "halfwidth_all_routes_against_teacher": {
+    "cosine": {
+      "mean": 0.9090171669489904,
+      "median": 0.91731876855747,
+      "p01": 0.7241414708657817,
+      "p05": 0.8227074925758666,
+      "minimum": 0.4204690158348116,
+      "maximum": 0.9966555237433397
+    },
+    "relative_l2": {
+      "mean": 0.40196722745895386,
+      "median": 0.39940905570983887,
+      "p01": 0.14825323224067688,
+      "p05": 0.2357052117586136,
+      "minimum": 0.08447903394699097,
+      "maximum": 0.9122493267059326
+    }
+  },
+  "methods": {
+    "calibration_delta_refinement": {
+      "description": "router weight times calibration mean full-minus-half output norm",
+      "diagnostic_uses_heldout_answers": false,
+      "ladder": [
+        {
+          "fullwidth_refinements": 0,
+          "halfwidth_routes": 16,
+          "routed_payload_fraction": 0.5,
+          "nominal_routed_gib_per_token": 4.422,
+          "metrics_against_native_fullwidth_teacher": {
+            "routed_aggregate": {
+              "cosine": {
+                "mean": 0.9090171669489904,
+                "median": 0.91731876855747,
+                "p01": 0.7241414708657817,
+                "p05": 0.8227074925758666,
+                "minimum": 0.4204690158348116,
+                "maximum": 0.9966555237433397
+              },
+              "relative_l2": {
+                "mean": 0.40196722745895386,
+                "median": 0.39940905570983887,
+                "p01": 0.14825323224067688,
+                "p05": 0.2357052117586136,
+                "minimum": 0.08447903394699097,
+                "maximum": 0.9122493267059326
+              }
+            },
+            "post_rmsnorm": {
+              "cosine": {
+                "mean": 0.9091821312904358,
+                "median": 0.9172448515892029,
+                "p01": 0.722528338432312,
+                "p05": 0.8233493566513062,
+                "minimum": 0.42167773842811584,
+                "maximum": 0.9966188669204712
+              },
+              "relative_l2": {
+                "mean": 0.41135963797569275,
+                "median": 0.4065014719963074,
+                "p01": 0.1472497433423996,
+                "p05": 0.23718559741973877,
+                "minimum": 0.0822494700551033,
+                "maximum": 1.079445481300354
+              }
+            },
+            "post_shared_up_projection": {
+              "cosine": {
+                "mean": 0.9168745875358582,
+                "median": 0.9236915111541748,
+                "p01": 0.7559521794319153,
+                "p05": 0.8410261869430542,
+                "minimum": 0.4945608079433441,
+                "maximum": 0.990900993347168
+              },
+              "relative_l2": {
+                "mean": 0.3940345346927643,
+                "median": 0.3911358118057251,
+                "p01": 0.16789144277572632,
+                "p05": 0.23815244436264038,
+                "minimum": 0.1347130984067917,
+                "maximum": 0.9847903251647949
+              }
+            }
+          }
+        },
+        {
+          "fullwidth_refinements": 4,
+          "halfwidth_routes": 12,
+          "routed_payload_fraction": 0.625,
+          "nominal_routed_gib_per_token": 5.5275,
+          "metrics_against_native_fullwidth_teacher": {
+            "routed_aggregate": {
+              "cosine": {
+                "mean": 0.9774176045298262,
+                "median": 0.981837635625836,
+                "p01": 0.9210165917657018,
+                "p05": 0.9415829455081547,
+                "minimum": 0.8822805872298652,
+                "maximum": 0.9998542853149507
+              },
+              "relative_l2": {
+                "mean": 0.1953837275505066,
+                "median": 0.19036906957626343,
+                "p01": 0.03360721841454506,
+                "p05": 0.06687843054533005,
+                "minimum": 0.01707341894507408,
+                "maximum": 0.47076550126075745
+              }
+            },
+            "post_rmsnorm": {
+              "cosine": {
+                "mean": 0.9774636626243591,
+                "median": 0.9818474650382996,
+                "p01": 0.9207125902175903,
+                "p05": 0.941582441329956,
+                "minimum": 0.8822671175003052,
+                "maximum": 0.9998554587364197
+              },
+              "relative_l2": {
+                "mean": 0.19606536626815796,
+                "median": 0.190520778298378,
+                "p01": 0.0337100513279438,
+                "p05": 0.06667111814022064,
+                "minimum": 0.017001153901219368,
+                "maximum": 0.48410409688949585
+              }
+            },
+            "post_shared_up_projection": {
+              "cosine": {
+                "mean": 0.9774631857872009,
+                "median": 0.9828066229820251,
+                "p01": 0.9127476811408997,
+                "p05": 0.9383736848831177,
+                "minimum": 0.8691958785057068,
+                "maximum": 0.9999047517776489
+              },
+              "relative_l2": {
+                "mean": 0.1934916228055954,
+                "median": 0.18608541786670685,
+                "p01": 0.02800523303449154,
+                "p05": 0.061492081731557846,
+                "minimum": 0.013805433176457882,
+                "maximum": 0.5067681074142456
+              }
+            }
+          }
+        },
+        {
+          "fullwidth_refinements": 8,
+          "halfwidth_routes": 8,
+          "routed_payload_fraction": 0.75,
+          "nominal_routed_gib_per_token": 6.632999999999999,
+          "metrics_against_native_fullwidth_teacher": {
+            "routed_aggregate": {
+              "cosine": {
+                "mean": 0.9885472377050082,
+                "median": 0.9916692420614633,
+                "p01": 0.9560283401690444,
+                "p05": 0.9674974156714801,
+                "minimum": 0.9289056612636132,
+                "maximum": 0.9999592660452538
+              },
+              "relative_l2": {
+                "mean": 0.13724064826965332,
+                "median": 0.1293717920780182,
+                "p01": 0.021594833582639694,
+                "p05": 0.04281501844525337,
+                "minimum": 0.00902299489825964,
+                "maximum": 0.370728462934494
+              }
+            },
+            "post_rmsnorm": {
+              "cosine": {
+                "mean": 0.9885711073875427,
+                "median": 0.9916684627532959,
+                "p01": 0.9558343291282654,
+                "p05": 0.9674786925315857,
+                "minimum": 0.9277465343475342,
+                "maximum": 0.999959409236908
+              },
+              "relative_l2": {
+                "mean": 0.1373155564069748,
+                "median": 0.12909409403800964,
+                "p01": 0.021656179800629616,
+                "p05": 0.04280462861061096,
+                "minimum": 0.009011010639369488,
+                "maximum": 0.37995705008506775
+              }
+            },
+            "post_shared_up_projection": {
+              "cosine": {
+                "mean": 0.9884493947029114,
+                "median": 0.9918251037597656,
+                "p01": 0.9511212110519409,
+                "p05": 0.96541428565979,
+                "minimum": 0.9297378063201904,
+                "maximum": 0.9999698400497437
+              },
+              "relative_l2": {
+                "mean": 0.136006161570549,
+                "median": 0.12813210487365723,
+                "p01": 0.018807392567396164,
+                "p05": 0.03750569373369217,
+                "minimum": 0.007771785836666822,
+                "maximum": 0.3762845993041992
+              }
+            }
+          }
+        },
+        {
+          "fullwidth_refinements": 12,
+          "halfwidth_routes": 4,
+          "routed_payload_fraction": 0.875,
+          "nominal_routed_gib_per_token": 7.738499999999999,
+          "metrics_against_native_fullwidth_teacher": {
+            "routed_aggregate": {
+              "cosine": {
+                "mean": 0.9953444113138782,
+                "median": 0.9967403309157037,
+                "p01": 0.9801135053329695,
+                "p05": 0.9859882342243395,
+                "minimum": 0.9704216169391705,
+                "maximum": 0.9999858540290367
+              },
+              "relative_l2": {
+                "mean": 0.08672066777944565,
+                "median": 0.08077506721019745,
+                "p01": 0.013403738848865032,
+                "p05": 0.02566145360469818,
+                "minimum": 0.0053199660032987595,
+                "maximum": 0.24171330034732819
+              }
+            },
+            "post_rmsnorm": {
+              "cosine": {
+                "mean": 0.9953551292419434,
+                "median": 0.9967577457427979,
+                "p01": 0.9801056385040283,
+                "p05": 0.9860397577285767,
+                "minimum": 0.9704985618591309,
+                "maximum": 0.9999859929084778
+              },
+              "relative_l2": {
+                "mean": 0.08664196729660034,
+                "median": 0.08052648603916168,
+                "p01": 0.013439965434372425,
+                "p05": 0.025876237079501152,
+                "minimum": 0.005300309509038925,
+                "maximum": 0.24272489547729492
+              }
+            },
+            "post_shared_up_projection": {
+              "cosine": {
+                "mean": 0.9952878355979919,
+                "median": 0.9968768358230591,
+                "p01": 0.9782476425170898,
+                "p05": 0.9848572611808777,
+                "minimum": 0.9698054194450378,
+                "maximum": 0.9999897480010986
+              },
+              "relative_l2": {
+                "mean": 0.08589564263820648,
+                "median": 0.07908744364976883,
+                "p01": 0.01122384611517191,
+                "p05": 0.021666502580046654,
+                "minimum": 0.004508926533162594,
+                "maximum": 0.24531513452529907
+              }
+            }
+          }
+        },
+        {
+          "fullwidth_refinements": 16,
+          "halfwidth_routes": 0,
+          "routed_payload_fraction": 1.0,
+          "nominal_routed_gib_per_token": 8.844,
+          "metrics_against_native_fullwidth_teacher": {
+            "routed_aggregate": {
+              "cosine": {
+                "mean": 0.9999999999139143,
+                "median": 1.0000000018275066,
+                "p01": 0.9999998471048741,
+                "p05": 0.9999998838259669,
+                "minimum": 0.9999997683329319,
+                "maximum": 1.0000001833919914
+              },
+              "relative_l2": {
+                "mean": 1.1526403653761008e-07,
+                "median": 1.1429819579689138e-07,
+                "p01": 9.743038731357956e-08,
+                "p05": 1.0229570079900441e-07,
+                "minimum": 8.607153745288088e-08,
+                "maximum": 1.5043774226342066e-07
+              }
+            },
+            "post_rmsnorm": {
+              "cosine": {
+                "mean": 1.0,
+                "median": 1.0,
+                "p01": 0.9999998807907104,
+                "p05": 0.9999998807907104,
+                "minimum": 0.9999998211860657,
+                "maximum": 1.000000238418579
+              },
+              "relative_l2": {
+                "mean": 1.242772640352996e-07,
+                "median": 1.212934819250222e-07,
+                "p01": 1.0379289250295187e-07,
+                "p05": 1.0864347643746441e-07,
+                "minimum": 9.510419829439343e-08,
+                "maximum": 2.1295301166901481e-07
+              }
+            },
+            "post_shared_up_projection": {
+              "cosine": {
+                "mean": 1.0,
+                "median": 1.0,
+                "p01": 0.9999998807907104,
+                "p05": 0.9999998807907104,
+                "minimum": 0.9999997615814209,
+                "maximum": 1.000000238418579
+              },
+              "relative_l2": {
+                "mean": 3.422476311243372e-07,
+                "median": 3.389428115951887e-07,
+                "p01": 2.828768117524305e-07,
+                "p05": 2.9565578074652876e-07,
+                "minimum": 2.6661999186217145e-07,
+                "maximum": 5.856876441612258e-07
+              }
+            }
+          }
+        }
+      ]
+    },
+    "calibration_full_contribution_refinement": {
+      "description": "router weight times calibration mean full output norm",
+      "diagnostic_uses_heldout_answers": false,
+      "ladder": [
+        {
+          "fullwidth_refinements": 0,
+          "halfwidth_routes": 16,
+          "routed_payload_fraction": 0.5,
+          "nominal_routed_gib_per_token": 4.422,
+          "metrics_against_native_fullwidth_teacher": {
+            "routed_aggregate": {
+              "cosine": {
+                "mean": 0.9090171669489904,
+                "median": 0.91731876855747,
+                "p01": 0.7241414708657817,
+                "p05": 0.8227074925758666,
+                "minimum": 0.4204690158348116,
+                "maximum": 0.9966555237433397
+              },
+              "relative_l2": {
+                "mean": 0.40196722745895386,
+                "median": 0.39940905570983887,
+                "p01": 0.14825323224067688,
+                "p05": 0.2357052117586136,
+                "minimum": 0.08447903394699097,
+                "maximum": 0.9122493267059326
+              }
+            },
+            "post_rmsnorm": {
+              "cosine": {
+                "mean": 0.9091821312904358,
+                "median": 0.9172448515892029,
+                "p01": 0.722528338432312,
+                "p05": 0.8233493566513062,
+                "minimum": 0.42167773842811584,
+                "maximum": 0.9966188669204712
+              },
+              "relative_l2": {
+                "mean": 0.41135963797569275,
+                "median": 0.4065014719963074,
+                "p01": 0.1472497433423996,
+                "p05": 0.23718559741973877,
+                "minimum": 0.0822494700551033,
+                "maximum": 1.079445481300354
+              }
+            },
+            "post_shared_up_projection": {
+              "cosine": {
+                "mean": 0.9168745875358582,
+                "median": 0.9236915111541748,
+                "p01": 0.7559521794319153,
+                "p05": 0.8410261869430542,
+                "minimum": 0.4945608079433441,
+                "maximum": 0.990900993347168
+              },
+              "relative_l2": {
+                "mean": 0.3940345346927643,
+                "median": 0.3911358118057251,
+                "p01": 0.16789144277572632,
+                "p05": 0.23815244436264038,
+                "minimum": 0.1347130984067917,
+                "maximum": 0.9847903251647949
+              }
+            }
+          }
+        },
+        {
+          "fullwidth_refinements": 4,
+          "halfwidth_routes": 12,
+          "routed_payload_fraction": 0.625,
+          "nominal_routed_gib_per_token": 5.5275,
+          "metrics_against_native_fullwidth_teacher": {
+            "routed_aggregate": {
+              "cosine": {
+                "mean": 0.9770248348896217,
+                "median": 0.9815182432868665,
+                "p01": 0.920300767686299,
+                "p05": 0.9394562098963082,
+                "minimum": 0.880197386810626,
+                "maximum": 0.9998542853149507
+              },
+              "relative_l2": {
+                "mean": 0.19702768325805664,
+                "median": 0.19231903553009033,
+                "p01": 0.03360721841454506,
+                "p05": 0.0670195147395134,
+                "minimum": 0.01707341894507408,
+                "maximum": 0.47505930066108704
+              }
+            },
+            "post_rmsnorm": {
+              "cosine": {
+                "mean": 0.9770792126655579,
+                "median": 0.9814766645431519,
+                "p01": 0.920193076133728,
+                "p05": 0.9397730231285095,
+                "minimum": 0.8788536190986633,
+                "maximum": 0.9998554587364197
+              },
+              "relative_l2": {
+                "mean": 0.19772230088710785,
+                "median": 0.19248753786087036,
+                "p01": 0.0337100513279438,
+                "p05": 0.0672704428434372,
+                "minimum": 0.017001153901219368,
+                "maximum": 0.4917800724506378
+              }
+            },
+            "post_shared_up_projection": {
+              "cosine": {
+                "mean": 0.9770562052726746,
+                "median": 0.9823609590530396,
+                "p01": 0.9076358079910278,
+                "p05": 0.9363117814064026,
+                "minimum": 0.8691958785057068,
+                "maximum": 0.9999047517776489
+              },
+              "relative_l2": {
+                "mean": 0.1952100694179535,
+                "median": 0.18756923079490662,
+                "p01": 0.02800523303449154,
+                "p05": 0.06106974184513092,
+                "minimum": 0.013805433176457882,
+                "maximum": 0.5067681074142456
+              }
+            }
+          }
+        },
+        {
+          "fullwidth_refinements": 8,
+          "halfwidth_routes": 8,
+          "routed_payload_fraction": 0.75,
+          "nominal_routed_gib_per_token": 6.632999999999999,
+          "metrics_against_native_fullwidth_teacher": {
+            "routed_aggregate": {
+              "cosine": {
+                "mean": 0.9882166009160523,
+                "median": 0.9913556105923901,
+                "p01": 0.954737875057457,
+                "p05": 0.9664474168711215,
+                "minimum": 0.9289056612636132,
+                "maximum": 0.9999600900078447
+              },
+              "relative_l2": {
+                "mean": 0.13923975825309753,
+                "median": 0.1315106749534607,
+                "p01": 0.02331622503697872,
+                "p05": 0.043516695499420166,
+                "minimum": 0.008941574953496456,
+                "maximum": 0.370728462934494
+              }
+            },
+            "post_rmsnorm": {
+              "cosine": {
+                "mean": 0.9882388710975647,
+                "median": 0.9913976192474365,
+                "p01": 0.9544344544410706,
+                "p05": 0.9665153622627258,
+                "minimum": 0.9277465343475342,
+                "maximum": 0.99996018409729
+              },
+              "relative_l2": {
+                "mean": 0.13933266699314117,
+                "median": 0.1311480551958084,
+                "p01": 0.02317775972187519,
+                "p05": 0.04344934970140457,
+                "minimum": 0.008921881206333637,
+                "maximum": 0.37995705008506775
+              }
+            },
+            "post_shared_up_projection": {
+              "cosine": {
+                "mean": 0.9880780577659607,
+                "median": 0.9915571212768555,
+                "p01": 0.9485700726509094,
+                "p05": 0.9643062949180603,
+                "minimum": 0.9296821355819702,
+                "maximum": 0.9999701976776123
+              },
+              "relative_l2": {
+                "mean": 0.13816265761852264,
+                "median": 0.130094975233078,
+                "p01": 0.018953561782836914,
+                "p05": 0.03755854442715645,
+                "minimum": 0.007713617756962776,
+                "maximum": 0.3762845993041992
+              }
+            }
+          }
+        },
+        {
+          "fullwidth_refinements": 12,
+          "halfwidth_routes": 4,
+          "routed_payload_fraction": 0.875,
+          "nominal_routed_gib_per_token": 7.738499999999999,
+          "metrics_against_native_fullwidth_teacher": {
+            "routed_aggregate": {
+              "cosine": {
+                "mean": 0.9951495879566846,
+                "median": 0.9966652801802316,
+                "p01": 0.9792254470778754,
+                "p05": 0.9855420881129001,
+                "minimum": 0.9700972398799815,
+                "maximum": 0.9999858540290367
+              },
+              "relative_l2": {
+                "mean": 0.088436558842659,
+                "median": 0.08170110732316971,
+                "p01": 0.013696701265871525,
+                "p05": 0.026059061288833618,
+                "minimum": 0.0053199660032987595,
+                "maximum": 0.24272969365119934
+              }
+            },
+            "post_rmsnorm": {
+              "cosine": {
+                "mean": 0.9951609969139099,
+                "median": 0.996671199798584,
+                "p01": 0.9793689846992493,
+                "p05": 0.9855839014053345,
+                "minimum": 0.9704321622848511,
+                "maximum": 0.9999859929084778
+              },
+              "relative_l2": {
+                "mean": 0.08836082369089127,
+                "median": 0.08158990740776062,
+                "p01": 0.013620952144265175,
+                "p05": 0.026106083765625954,
+                "minimum": 0.005300309509038925,
+                "maximum": 0.2429882287979126
+              }
+            },
+            "post_shared_up_projection": {
+              "cosine": {
+                "mean": 0.9950763583183289,
+                "median": 0.996758222579956,
+                "p01": 0.9770663976669312,
+                "p05": 0.9844508767127991,
+                "minimum": 0.9698054194450378,
+                "maximum": 0.9999897480010986
+              },
+              "relative_l2": {
+                "mean": 0.08770594000816345,
+                "median": 0.08069181442260742,
+                "p01": 0.011270811781287193,
+                "p05": 0.02205115556716919,
+                "minimum": 0.004508926533162594,
+                "maximum": 0.24531513452529907
+              }
+            }
+          }
+        },
+        {
+          "fullwidth_refinements": 16,
+          "halfwidth_routes": 0,
+          "routed_payload_fraction": 1.0,
+          "nominal_routed_gib_per_token": 8.844,
+          "metrics_against_native_fullwidth_teacher": {
+            "routed_aggregate": {
+              "cosine": {
+                "mean": 0.9999999999139143,
+                "median": 1.0000000018275066,
+                "p01": 0.9999998471048741,
+                "p05": 0.9999998838259669,
+                "minimum": 0.9999997683329319,
+                "maximum": 1.0000001833919914
+              },
+              "relative_l2": {
+                "mean": 1.1526403653761008e-07,
+                "median": 1.1429819579689138e-07,
+                "p01": 9.743038731357956e-08,
+                "p05": 1.0229570079900441e-07,
+                "minimum": 8.607153745288088e-08,
+                "maximum": 1.5043774226342066e-07
+              }
+            },
+            "post_rmsnorm": {
+              "cosine": {
+                "mean": 1.0,
+                "median": 1.0,
+                "p01": 0.9999998807907104,
+                "p05": 0.9999998807907104,
+                "minimum": 0.9999998211860657,
+                "maximum": 1.000000238418579
+              },
+              "relative_l2": {
+                "mean": 1.242772640352996e-07,
+                "median": 1.212934819250222e-07,
+                "p01": 1.0379289250295187e-07,
+                "p05": 1.0864347643746441e-07,
+                "minimum": 9.510419829439343e-08,
+                "maximum": 2.1295301166901481e-07
+              }
+            },
+            "post_shared_up_projection": {
+              "cosine": {
+                "mean": 1.0,
+                "median": 1.0,
+                "p01": 0.9999998807907104,
+                "p05": 0.9999998807907104,
+                "minimum": 0.9999997615814209,
+                "maximum": 1.000000238418579
+              },
+              "relative_l2": {
+                "mean": 3.422476311243372e-07,
+                "median": 3.389428115951887e-07,
+                "p01": 2.828768117524305e-07,
+                "p05": 2.9565578074652876e-07,
+                "minimum": 2.6661999186217145e-07,
+                "maximum": 5.856876441612258e-07
+              }
+            }
+          }
+        }
+      ]
+    },
+    "heldout_delta_norm_refinement": {
+      "description": "actual held-out weighted full-minus-half output norm",
+      "diagnostic_uses_heldout_answers": true,
+      "ladder": [
+        {
+          "fullwidth_refinements": 0,
+          "halfwidth_routes": 16,
+          "routed_payload_fraction": 0.5,
+          "nominal_routed_gib_per_token": 4.422,
+          "metrics_against_native_fullwidth_teacher": {
+            "routed_aggregate": {
+              "cosine": {
+                "mean": 0.9090171669489904,
+                "median": 0.91731876855747,
+                "p01": 0.7241414708657817,
+                "p05": 0.8227074925758666,
+                "minimum": 0.4204690158348116,
+                "maximum": 0.9966555237433397
+              },
+              "relative_l2": {
+                "mean": 0.40196722745895386,
+                "median": 0.39940905570983887,
+                "p01": 0.14825323224067688,
+                "p05": 0.2357052117586136,
+                "minimum": 0.08447903394699097,
+                "maximum": 0.9122493267059326
+              }
+            },
+            "post_rmsnorm": {
+              "cosine": {
+                "mean": 0.9091821312904358,
+                "median": 0.9172448515892029,
+                "p01": 0.722528338432312,
+                "p05": 0.8233493566513062,
+                "minimum": 0.42167773842811584,
+                "maximum": 0.9966188669204712
+              },
+              "relative_l2": {
+                "mean": 0.41135963797569275,
+                "median": 0.4065014719963074,
+                "p01": 0.1472497433423996,
+                "p05": 0.23718559741973877,
+                "minimum": 0.0822494700551033,
+                "maximum": 1.079445481300354
+              }
+            },
+            "post_shared_up_projection": {
+              "cosine": {
+                "mean": 0.9168745875358582,
+                "median": 0.9236915111541748,
+                "p01": 0.7559521794319153,
+                "p05": 0.8410261869430542,
+                "minimum": 0.4945608079433441,
+                "maximum": 0.990900993347168
+              },
+              "relative_l2": {
+                "mean": 0.3940345346927643,
+                "median": 0.3911358118057251,
+                "p01": 0.16789144277572632,
+                "p05": 0.23815244436264038,
+                "minimum": 0.1347130984067917,
+                "maximum": 0.9847903251647949
+              }
+            }
+          }
+        },
+        {
+          "fullwidth_refinements": 4,
+          "halfwidth_routes": 12,
+          "routed_payload_fraction": 0.625,
+          "nominal_routed_gib_per_token": 5.5275,
+          "metrics_against_native_fullwidth_teacher": {
+            "routed_aggregate": {
+              "cosine": {
+                "mean": 0.9778925331449616,
+                "median": 0.982188536535307,
+                "p01": 0.9236304474892323,
+                "p05": 0.9425051633029086,
+                "minimum": 0.8914418050070754,
+                "maximum": 0.9998542853149507
+              },
+              "relative_l2": {
+                "mean": 0.19341467320919037,
+                "median": 0.1884724199771881,
+                "p01": 0.033385951071977615,
+                "p05": 0.06579316407442093,
+                "minimum": 0.01707341894507408,
+                "maximum": 0.45322659611701965
+              }
+            },
+            "post_rmsnorm": {
+              "cosine": {
+                "mean": 0.977940559387207,
+                "median": 0.9822524785995483,
+                "p01": 0.9235650300979614,
+                "p05": 0.9428160786628723,
+                "minimum": 0.8910069465637207,
+                "maximum": 0.9998554587364197
+              },
+              "relative_l2": {
+                "mean": 0.19403444230556488,
+                "median": 0.1883038729429245,
+                "p01": 0.03337174654006958,
+                "p05": 0.06587561964988708,
+                "minimum": 0.017001153901219368,
+                "maximum": 0.46589359641075134
+              }
+            },
+            "post_shared_up_projection": {
+              "cosine": {
+                "mean": 0.9779360890388489,
+                "median": 0.9830241203308105,
+                "p01": 0.9155507683753967,
+                "p05": 0.9397691488265991,
+                "minimum": 0.8843961954116821,
+                "maximum": 0.9999047517776489
+              },
+              "relative_l2": {
+                "mean": 0.19152796268463135,
+                "median": 0.1847061812877655,
+                "p01": 0.02739565819501877,
+                "p05": 0.06015821546316147,
+                "minimum": 0.013805433176457882,
+                "maximum": 0.47914063930511475
+              }
+            }
+          }
+        },
+        {
+          "fullwidth_refinements": 8,
+          "halfwidth_routes": 8,
+          "routed_payload_fraction": 0.75,
+          "nominal_routed_gib_per_token": 6.632999999999999,
+          "metrics_against_native_fullwidth_teacher": {
+            "routed_aggregate": {
+              "cosine": {
+                "mean": 0.9889448293376891,
+                "median": 0.9918676404700377,
+                "p01": 0.9586901405636233,
+                "p05": 0.9685602190784177,
+                "minimum": 0.9392223702712191,
+                "maximum": 0.9999592660452538
+              },
+              "relative_l2": {
+                "mean": 0.13502663373947144,
+                "median": 0.12758269906044006,
+                "p01": 0.021342486143112183,
+                "p05": 0.042099691927433014,
+                "minimum": 0.00902299489825964,
+                "maximum": 0.3435886800289154
+              }
+            },
+            "post_rmsnorm": {
+              "cosine": {
+                "mean": 0.9889669418334961,
+                "median": 0.9918781518936157,
+                "p01": 0.9585100412368774,
+                "p05": 0.9687183499336243,
+                "minimum": 0.9395942687988281,
+                "maximum": 0.999959409236908
+              },
+              "relative_l2": {
+                "mean": 0.13508054614067078,
+                "median": 0.12746840715408325,
+                "p01": 0.021345950663089752,
+                "p05": 0.04189907759428024,
+                "minimum": 0.009011010639369488,
+                "maximum": 0.34716859459877014
+              }
+            },
+            "post_shared_up_projection": {
+              "cosine": {
+                "mean": 0.988845944404602,
+                "median": 0.9921281933784485,
+                "p01": 0.9528798460960388,
+                "p05": 0.9664528965950012,
+                "minimum": 0.9370207190513611,
+                "maximum": 0.9999698400497437
+              },
+              "relative_l2": {
+                "mean": 0.13382166624069214,
+                "median": 0.125750333070755,
+                "p01": 0.018391648307442665,
+                "p05": 0.0364057719707489,
+                "minimum": 0.007771785836666822,
+                "maximum": 0.3547869324684143
+              }
+            }
+          }
+        },
+        {
+          "fullwidth_refinements": 12,
+          "halfwidth_routes": 4,
+          "routed_payload_fraction": 0.875,
+          "nominal_routed_gib_per_token": 7.738499999999999,
+          "metrics_against_native_fullwidth_teacher": {
+            "routed_aggregate": {
+              "cosine": {
+                "mean": 0.9955849017776299,
+                "median": 0.9968957232037943,
+                "p01": 0.9818917894699019,
+                "p05": 0.9868799247339562,
+                "minimum": 0.9732419100642083,
+                "maximum": 0.9999858540290367
+              },
+              "relative_l2": {
+                "mean": 0.08457242697477341,
+                "median": 0.07891356945037842,
+                "p01": 0.012939906679093838,
+                "p05": 0.025219079107046127,
+                "minimum": 0.0053199660032987595,
+                "maximum": 0.23008039593696594
+              }
+            },
+            "post_rmsnorm": {
+              "cosine": {
+                "mean": 0.995593786239624,
+                "median": 0.9968944787979126,
+                "p01": 0.9818597435951233,
+                "p05": 0.9869374632835388,
+                "minimum": 0.9733333587646484,
+                "maximum": 0.9999859929084778
+              },
+              "relative_l2": {
+                "mean": 0.08449941128492355,
+                "median": 0.07881025224924088,
+                "p01": 0.012819398194551468,
+                "p05": 0.02534629963338375,
+                "minimum": 0.005300309509038925,
+                "maximum": 0.23080073297023773
+              }
+            },
+            "post_shared_up_projection": {
+              "cosine": {
+                "mean": 0.9955242276191711,
+                "median": 0.997015118598938,
+                "p01": 0.9797763824462891,
+                "p05": 0.9860823154449463,
+                "minimum": 0.9723342061042786,
+                "maximum": 0.9999897480010986
+              },
+              "relative_l2": {
+                "mean": 0.08382117748260498,
+                "median": 0.07737384736537933,
+                "p01": 0.010489501059055328,
+                "p05": 0.02150440774857998,
+                "minimum": 0.004508926533162594,
+                "maximum": 0.23569785058498383
+              }
+            }
+          }
+        },
+        {
+          "fullwidth_refinements": 16,
+          "halfwidth_routes": 0,
+          "routed_payload_fraction": 1.0,
+          "nominal_routed_gib_per_token": 8.844,
+          "metrics_against_native_fullwidth_teacher": {
+            "routed_aggregate": {
+              "cosine": {
+                "mean": 0.9999999999139143,
+                "median": 1.0000000018275066,
+                "p01": 0.9999998471048741,
+                "p05": 0.9999998838259669,
+                "minimum": 0.9999997683329319,
+                "maximum": 1.0000001833919914
+              },
+              "relative_l2": {
+                "mean": 1.1526403653761008e-07,
+                "median": 1.1429819579689138e-07,
+                "p01": 9.743038731357956e-08,
+                "p05": 1.0229570079900441e-07,
+                "minimum": 8.607153745288088e-08,
+                "maximum": 1.5043774226342066e-07
+              }
+            },
+            "post_rmsnorm": {
+              "cosine": {
+                "mean": 1.0,
+                "median": 1.0,
+                "p01": 0.9999998807907104,
+                "p05": 0.9999998807907104,
+                "minimum": 0.9999998211860657,
+                "maximum": 1.000000238418579
+              },
+              "relative_l2": {
+                "mean": 1.242772640352996e-07,
+                "median": 1.212934819250222e-07,
+                "p01": 1.0379289250295187e-07,
+                "p05": 1.0864347643746441e-07,
+                "minimum": 9.510419829439343e-08,
+                "maximum": 2.1295301166901481e-07
+              }
+            },
+            "post_shared_up_projection": {
+              "cosine": {
+                "mean": 1.0,
+                "median": 1.0,
+                "p01": 0.9999998807907104,
+                "p05": 0.9999998807907104,
+                "minimum": 0.9999997615814209,
+                "maximum": 1.000000238418579
+              },
+              "relative_l2": {
+                "mean": 3.422476311243372e-07,
+                "median": 3.389428115951887e-07,
+                "p01": 2.828768117524305e-07,
+                "p05": 2.9565578074652876e-07,
+                "minimum": 2.6661999186217145e-07,
+                "maximum": 5.856876441612258e-07
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "warnings": [
+    "The published half-width artifact is a different model and cannot preserve full-width bit exactness.",
+    "The external expert outputs use Python-dequantized IQ1_S weights while the teacher responses use Lucebox native quantized kernels.",
+    "This isolates the routed expert boundary on the same latent inputs and routes; it does not reproduce the external model's own upstream hidden-state distribution.",
+    "Routed RMS normalization and the shared up projection come from the full-width teacher, so only the routed expert provider changes.",
+    "Layer-one directional agreement is not final-logit quality."
+  ],
+  "elapsed_seconds": 91.73168272800103
+}

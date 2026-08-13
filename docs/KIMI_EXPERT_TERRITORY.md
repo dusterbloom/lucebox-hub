@@ -3,8 +3,8 @@
 ## Outcome
 
 The real layer-one data rules out a broad class of tiny bank-free substitutes,
-but reveals one credible performance path: compute a deliberately chosen subset
-of routed experts exactly and approximate their aggregate remainder.
+but reveals one credible performance path: allocate exact bytes adaptively over
+important internal expert-neuron slabs and approximate their aggregate remainder.
 
 The distinction matters. A full replacement tries to infer
 
@@ -19,10 +19,11 @@ without reading the expert bank. The measured hybrid instead computes a set
 r_S=\sum_{i\notin S}p_i E_i(z).
 \]
 
-On held-out real Kimi layer-one streams, one calibration scalar per expert is
-already enough to choose \(S\) almost as well as an oracle. This changes the
-shortest road from “find a miraculous tiny expert model” to “find the smallest
-exact traffic fraction whose complete-model probability divergence is safe.”
+On held-out real Kimi layer-one streams, one calibration scalar per expert and
+slab is enough to improve on whole-expert allocation at the same bytes. This
+changes the shortest road from “find a miraculous tiny expert model” to “find
+the smallest progressive exact-byte fraction whose complete-model probability
+divergence is safe.”
 
 These are exploratory layer-boundary measurements. They do not revise the
 registered diagonal-panel verdict, and they cannot report final-token
@@ -42,6 +43,11 @@ probability divergence until complete-model execution is available.
 | separate response basis per expert | rank 64, about 34.84 GiB | mean `0.81067`, p05 `0.43985` | optimistic projection using the exact answer | insufficient even before address error |
 | exact subset plus mean tail | 8 of 16 experts | mean `0.97583`, p05 `0.93685` | 50% exact expert traffic | first serious full-model candidate |
 | exact subset plus mean tail | 12 of 16 experts | mean `0.99075`, p05 `0.97366` | 75% exact expert traffic | conservative full-model candidate |
+| adaptive 256-neuron slabs plus slab-mean tail | 96 of 192 active slabs | mean `0.97669`, p05 `0.93912` | 50% exact weight bytes; 6.60 GiB all-layer BF16 slab means | best measured equal-byte point |
+| adaptive 256-neuron slabs plus slab-mean tail | 144 of 192 active slabs | mean `0.99102`, p05 `0.97444` | 75% exact weight bytes | best measured conservative point |
+| published uniform half-width bank | 16 half-width experts | mean `0.90902`, p05 `0.82271` | 50% exact weight bytes | rejected at equal bytes |
+| published half-width + 8 full refinements | 8 half + 8 full experts | mean `0.98855`, p05 `0.96750` | 75% exact weight bytes | dominated by adaptive slabs and 12 full experts |
+| progressive slab sidecar, direct NVMe | 96 slabs, 128-token trace | 5.63 / 5.28 GiB/s repeats | 1,399 reads versus 1,024 whole-expert reads | physical layout gate passed |
 | oracle active internal channels | strongest 25% | individual mean `0.97648` | ideal byte fraction 75%, at most 1.33 times faster | secondary only |
 | oracle active internal channels | strongest 50% | individual mean `0.99684` | ideal byte fraction 83.3%, at most 1.20 times faster | secondary only |
 | generic lossless compression | Zstandard levels -5, 1, 3 | compressed fraction `1.000028` | sampled IQ1_S bytes become larger | conclusively rejected |
@@ -60,6 +66,57 @@ The underlying result files are:
 - `results/kimi_layer01_route_locality.json`;
 - `results/kimi_layer01_lossless.json`;
 - `results/kimi_layer01_expert_channels.json`.
+- `results/kimi_layer01_neuron_slabs.json`;
+- `results/kimi_layer01_halfwidth_frontier.json`;
+- `results/kimi_layer01_halfwidth_source.json`;
+- `results/kimi_layer01_slab_io.json`.
+
+## The progressive-slab result
+
+Each full Kimi routed expert is exactly additive over 3,072 internal neurons.
+IQ1_S makes 256 neurons a natural byte-aligned unit, giving twelve slabs per
+expert and 192 active slabs per token. Twelve independently dequantized slabs
+reconstruct one unsplit dequantized expert at mean cosine effectively `1.0`
+and mean relative error `7.01e-7`.
+
+At exactly 50% routed weight bytes:
+
+| allocation | mean cosine | p05 cosine | post-up mean cosine |
+| --- | ---: | ---: | ---: |
+| eight complete experts + expert-mean tail | `0.975828` | `0.936845` | `0.971578` |
+| uniform six slabs from every expert | `0.892040` | `0.760674` | `0.883697` |
+| adaptive 96 slabs + slab-mean tail | **`0.976688`** | **`0.939117`** | **`0.972841`** |
+| held-out residual-norm diagnostic | `0.981070` | `0.949815` | `0.978457` |
+
+The deployable selector is only router weight times each slab's calibration
+mean residual norm. Because slab importance has a fixed order inside an expert,
+global selection produces a prefix length per active expert. A repacked runtime
+therefore needs at most one progressive range per active expert rather than 96
+unrelated reads.
+
+The real layer-one sidecar contains 5,780,303,872 bytes and preserves every
+IQ1_S weight byte, merely reordering it. Over two direct-I/O passes on 128 held-
+out tokens, adaptive prefixes sustained `5.632` and `5.280 GiB/s`, versus
+`5.388` and `5.201 GiB/s` for eight whole experts. Alignment overhead was only
+1,183,744 bytes over 6.606 GB. Thus the finer allocation did not sacrifice
+storage bandwidth in the first physical test.
+
+The BF16 slab-mean table costs 6.60 GiB across all 92 layers. That is material
+but modest beside the 495 GiB routed bank, and it can be replaced later by a
+smaller aggregate-tail model if end-to-end probability divergence passes.
+
+## Published half-width model control
+
+The pinned `vcruz305/Kimi-K3-GGUF` layer-one range confirms a 1,536-neuron
+expert width with all sixteen routes retained. On the same full-teacher latent
+states and routes, it reaches only `0.90902` mean and `0.82271` p05 cosine at
+the same 50% routed bytes. Replacing its four most discrepant experts with full
+experts reaches `0.97742` at 62.5% bytes; replacing eight reaches `0.98855` at
+75%. Both are below the adaptive-slab curve near the same budgets.
+
+This does not judge the published model on its own co-adapted hidden-state
+distribution. It answers the narrower question relevant to Lucebox: uniform
+half-width experts are not the best drop-in provider for the full-width teacher.
 
 ## What the geometry says
 
@@ -92,7 +149,7 @@ Larger calibration would improve coverage only while increasing both costs.
 Learned or indexed addressing remains technically underexplored, but the oracle
 control moves it below the exact-subset hybrid in priority.
 
-### 3. Routed contributions are unequal even when expert load is balanced
+### 3. Routed contributions and internal slabs are unequal even when expert load is balanced
 
 The router emits sixteen experts, but their actual contribution to the final
 sum is not equal. Selecting by
@@ -104,6 +161,11 @@ p_i\,\mathbb{E}_{\mathrm{cal}}\|E_i(z)\|
 beats native router order and nearly saturates the exact-contribution oracle.
 At eight exact routes the cheap selector reaches `0.97583` versus the greedy
 oracle's `0.97817`; at twelve it reaches `0.99075` versus `0.99181`.
+
+The slab experiment sharpens this: whole experts are not the optimal atomic
+unit. At every matched whole-expert point—25%, 50%, and 75%—adaptive slabs
+improve both mean and lower-tail direction. The gains are modest but consistent,
+and a residual-norm diagnostic shows additional selection headroom.
 
 This means selection itself does not need a large model. The open problem is
 whether the remaining directional error survives routed normalization, the
@@ -152,10 +214,12 @@ cannot be the compression mechanism.
    Record prompt and generation rates, solid-state-drive and memory traffic,
    graphics memory, energy, output identities, and the full-vocabulary logits.
 
-2. Add only one layer-one mixed-rate provider. Test two frozen points:
+2. Add only one layer-one progressive provider. Test two frozen points:
 
-   - eight exact experts selected by expected contribution plus a mean tail;
-   - twelve exact experts selected the same way plus a mean tail.
+   - 96 adaptive exact slabs plus a slab-mean tail;
+   - 144 adaptive exact slabs plus a slab-mean tail.
+
+   Retain eight and twelve whole experts as equal-byte controls.
 
    Measure final-token probability divergence and top-choice agreement against
    exact execution. Do not convert a second layer yet.
@@ -182,22 +246,21 @@ Kimi evidence. All tested compact response models remain too inaccurate at the
 first routed layer, including storage-heavy answer lookup and optimistic
 low-rank response projections.
 
-A faster 594 GB deployment is more plausible. Eight exact routes cut the
-nominal `8.844 GiB` routed payload per token in half while retaining `0.97583`
-layer-one direction with a negligible mean-tail table. Twelve routes retain
-`0.99075` while cutting traffic by one quarter. Whether either point improves
+A faster 594 GB deployment is more plausible. Adaptive slabs cut the nominal
+`8.844 GiB` routed payload per token in half while retaining `0.97669`
+layer-one direction, or retain `0.99102` at 75% traffic. Whether either point improves
 useful generation speed without unacceptable probability divergence is now an
 end-to-end question, not a geometry question.
 
 The strongest research bet is therefore a mixed-rate cascade:
 
 \[
-\boxed{\text{cheap contribution ranking}
-\rightarrow \text{selected exact reads}
+\boxed{\text{cheap slab importance ranking}
+\rightarrow \text{progressive exact prefixes}
 \rightarrow \text{one learned aggregate tail}
 \rightarrow \text{adaptive exact fallback}}
 \]
 
-It is less spectacular than deleting every expert, but it is the first path
-whose quality and physical savings are both supported by measurements on the
-real Kimi checkpoint.
+It is less spectacular than deleting every expert, but it is now the first path
+whose quality, byte allocation, repacked storage layout, and direct-NVMe
+bandwidth are all supported by measurements on the real Kimi checkpoint.

@@ -1,0 +1,59 @@
+{
+  "schema": "kimi-k3-layer01-progressive-slab-direct-io-v1",
+  "status": "EXPLORATORY",
+  "sidecar": "/mnt/kimi-k3/artifacts/kimi_layer01_progressive_slabs.k3slab",
+  "model_layer": 1,
+  "validation_tokens": 128,
+  "workers": 16,
+  "direct_io": true,
+  "slab_budget": 96,
+  "active_slabs": 192,
+  "nominal_payload_fraction": 0.5,
+  "results": [
+    {
+      "name": "adaptive_slab_prefix",
+      "tokens": 128,
+      "read_operations": 1399,
+      "physical_bytes": 6607212544,
+      "logical_bytes": 6606028800,
+      "alignment_overhead_bytes": 1183744,
+      "elapsed_seconds": 1.0926500569912605,
+      "gib_per_second": 5.631671511054507,
+      "tokens_per_second_if_one_layer": 117.14638111351309
+    },
+    {
+      "name": "whole_expert",
+      "tokens": 128,
+      "read_operations": 1024,
+      "physical_bytes": 6606028800,
+      "logical_bytes": 6606028800,
+      "alignment_overhead_bytes": 0,
+      "elapsed_seconds": 1.1417549990001135,
+      "gib_per_second": 5.38849731806551,
+      "tokens_per_second_if_one_layer": 112.10811436087023
+    },
+    {
+      "name": "whole_expert_repeat",
+      "tokens": 128,
+      "read_operations": 1024,
+      "physical_bytes": 6606028800,
+      "logical_bytes": 6606028800,
+      "alignment_overhead_bytes": 0,
+      "elapsed_seconds": 1.1828968469926622,
+      "gib_per_second": 5.201082212402046,
+      "tokens_per_second_if_one_layer": 108.20892821332714
+    },
+    {
+      "name": "adaptive_slab_prefix_repeat",
+      "tokens": 128,
+      "read_operations": 1399,
+      "physical_bytes": 6607212544,
+      "logical_bytes": 6606028800,
+      "alignment_overhead_bytes": 1183744,
+      "elapsed_seconds": 1.165350392999244,
+      "gib_per_second": 5.280339917055108,
+      "tokens_per_second_if_one_layer": 109.83820897899079
+    }
+  ],
+  "warning": "This isolates direct storage reads for one layer; it does not include dequantization, GPU transfer, or expert arithmetic."
+}

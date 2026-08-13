@@ -325,3 +325,20 @@ agreement; the same format will compare exact and panel modes later.
   ladders.
 - `train_kimi_d0_d3.py`: shared-core D0-D3 screen, causal controls, capacity
   accounting, and deterministic seeds.
+
+## Progressive slab follow-up
+
+The matched-byte campaign changes the preferred mixed provider. Each
+3,072-neuron expert was split into twelve byte-exact 256-neuron slabs.
+Calibration-only importance followed by global router-weighted water filling
+selects 96 of 192 active slabs at 50% bytes. It reaches `0.976688` mean and
+`0.939117` p05 held-out cosine, improving on eight complete experts at
+`0.975828` / `0.936845`. At 75%, 144 adaptive slabs reach `0.991022` /
+`0.974435`, also improving on twelve complete experts.
+
+A 5,780,303,872-byte layer-one sidecar reordered the unchanged IQ1_S bytes into
+per-expert importance prefixes. Direct NVMe reads sustained `5.632` and `5.280
+GiB/s`, versus `5.388` and `5.201 GiB/s` for matched-byte whole experts. The
+finer allocation therefore survives the first physical layout test. The next
+complete-model gate should test 96 and 144 slab prefixes, retaining 8 and 12
+whole experts as equal-byte controls.

@@ -1,0 +1,51 @@
+{
+  "schema": "kimi-k3-layer01-halfwidth-range-source-v1",
+  "status": "VERIFIED",
+  "repository": "vcruz305/Kimi-K3-GGUF",
+  "revision": "6c27987818cb244ef8b57ea5ed14d31fe9482c27",
+  "file": "Kimi-K3-UD-IQ1_S-00001-of-00009.gguf",
+  "file_bytes": 39400290592,
+  "linked_etag": "9ec85b92900b3db21004bccfe332792255c25f66faf757889f44494fc94af72a",
+  "header_range": {
+    "begin": 0,
+    "end_exclusive": 16777216,
+    "sha256": "687092096cc3608b21da98c850b9a46be14901d48f5696f7fc67b449ed16ca3d"
+  },
+  "gguf_data_offset": 6952352,
+  "layer_one_routed_range": {
+    "begin": 6641504928,
+    "end_exclusive": 9531642528,
+    "bytes": 2890137600,
+    "gib": 2.691650390625,
+    "sha256": "7e4b5462d7d8b2430609a65c7392d2b8355fc28aa13815ca8a514b38eaba36b3"
+  },
+  "tensors": [
+    {
+      "name": "blk.1.ffn_gate_exps.weight",
+      "shape": [3584, 1536, 896],
+      "absolute_offset": 6641504928,
+      "bytes": 963379200,
+      "type": "IQ1_S"
+    },
+    {
+      "name": "blk.1.ffn_up_exps.weight",
+      "shape": [3584, 1536, 896],
+      "absolute_offset": 7604884128,
+      "bytes": 963379200,
+      "type": "IQ1_S"
+    },
+    {
+      "name": "blk.1.ffn_down_exps.weight",
+      "shape": [1536, 3584, 896],
+      "absolute_offset": 8568263328,
+      "bytes": 963379200,
+      "type": "IQ1_S"
+    }
+  ],
+  "verification": {
+    "http_accept_ranges": "bytes",
+    "downloaded_range_rehashed_after_sparse_placement": true,
+    "placed_range_sha256": "7e4b5462d7d8b2430609a65c7392d2b8355fc28aa13815ca8a514b38eaba36b3",
+    "all_three_tensor_shapes_verified_from_pinned_header": true
+  }
+}
