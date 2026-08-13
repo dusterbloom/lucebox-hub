@@ -107,6 +107,50 @@ is most effective on the highest-confidence routes, matching the quartile
 diagnostic, but also requires too much exact work to rescue the compression
 claim.
 
+A later exact-response export tested a stronger, still trivial selector:
+router weight times the expert's calibration mean output norm, with a fixed
+calibration mean for every omitted expert. This nearly saturates the held-out
+oracle and improves the useful middle of the ladder:
+
+| exact experts per token | exact traffic | mean cosine | p05 cosine | greedy-oracle mean |
+| ---: | ---: | ---: | ---: | ---: |
+| 4 | 25% | 0.946460 | 0.873143 | 0.950789 |
+| 8 | 50% | 0.975828 | 0.936845 | 0.978166 |
+| 12 | 75% | 0.990747 | 0.973657 | 0.991812 |
+| 15 | 93.75% | 0.998154 | 0.994543 | 0.998372 |
+
+The small oracle gap means expert-subset selection is not the main remaining
+problem. Eight- and twelve-exact-route points are now the first candidates for
+one-layer complete-model probability-divergence tests; neither is declared
+safe from this layer-boundary measurement.
+
+### Storage-heavy and exact systems follow-ups
+
+The optional exact-response exporter retained all 160,000 individual routed
+answers from the same 10,000-token capture without changing the exact teacher
+checksum. It enabled lookup, response-subspace, sparse-route, locality,
+lossless-compression, and internal-channel controls. The full measured map and
+next-road decision are in `docs/KIMI_EXPERT_TERRITORY.md`.
+
+The central negative controls are:
+
+- every calibration answer plus latent-cosine interpolation reaches only
+  `0.752808` mean and `0.250058` p05 cosine;
+- even a perfect output-cosine address over those stored answers reaches only
+  `0.781160` mean and `0.364061` p05, so address learning is not the dominant
+  missing piece at this scale;
+- an optimistic rank-64 response subspace fitted separately per expert reaches
+  `0.810673` mean and `0.439854` p05 before any address error;
+- Zstandard makes sampled real IQ1_S expert components `0.0028%` larger;
+- a 64-expert-per-layer least-recently-used cache hits `24.03%` and projects to
+  `35.37 GiB` across all layers;
+- oracle internal-channel pruning can save at most one third of expert bytes,
+  because gate and up must be read before active down channels are known.
+
+These results reject plain “store the answer” and generic exact compression as
+the missing solution. They support an exact-subset cascade followed by one
+learned aggregate omitted-tail model and adaptive exact fallback.
+
 ### Real Kimi shared nonlinear D0-D3
 
 The Smol-Kimi architecture was transferred directly: one shared native-width
@@ -231,7 +275,9 @@ once, evaluate all captured inputs routed to it in bounded batches, and fit:
 3. squared-router-weighted diagonal affine.
 
 Sufficient statistics use 64-bit floating point and are checkpointed after
-every expert. Full individual expert outputs are not retained.
+every expert. Registered runs do not retain full individual expert outputs. An
+explicit optional research directory can export them as atomic per-expert
+files; leaving that argument absent preserves registered behavior and cost.
 
 ## Registered primary gate
 

@@ -1,0 +1,196 @@
+{
+  "schema": "kimi-k3-layer01-shared-input-charts-v1",
+  "status": "EXPLORATORY",
+  "capture": "/mnt/kimi-k3/captures/kimi_layer01_10000.bin",
+  "teacher": "/mnt/kimi-k3/results/kimi_layer01_exactness_final.teacher.f32",
+  "response_directory": "/mnt/kimi-k3/responses/kimi_layer01_10000",
+  "model_layer": 1,
+  "dimension": 3584,
+  "top_k": 16,
+  "tokens": 10000,
+  "calibration_tokens": 8200,
+  "validation_tokens": 1800,
+  "ridge_fraction_of_mean_gram_eigenvalue": 0.01,
+  "pca_iterations": 4,
+  "seed": 260813,
+  "training_routes_per_expert": {
+    "mean": 146.42857142857142,
+    "median": 128.0,
+    "p01": 21.0,
+    "p05": 43.0,
+    "minimum": 1.0,
+    "maximum": 745.0
+  },
+  "validation_routes_per_expert": {
+    "mean": 32.142857142857146,
+    "median": 28.0,
+    "p01": 4.0,
+    "p05": 7.0,
+    "minimum": 2.0,
+    "maximum": 161.0
+  },
+  "best_variant": "shared_pca_rank16",
+  "variants": {
+    "mean": {
+      "rank": 0,
+      "pca_cumulative_input_energy": 0.0,
+      "projected_bfloat16_all_layers_bytes": 591532032,
+      "projected_bfloat16_bytes_per_token": 10551296,
+      "multiply_accumulates_per_token": 0,
+      "routed_aggregate_cosine": {
+        "mean": 0.6184498425874896,
+        "median": 0.666307339770907,
+        "p01": 0.10424051167665406,
+        "p05": 0.2331036086972297,
+        "minimum": 0.072644886761948,
+        "maximum": 0.9821586086843049
+      },
+      "individual_expert_cosine": {
+        "mean": 0.3982282876968384,
+        "median": 0.3704984188079834,
+        "p01": 0.12098241597414017,
+        "p05": 0.1919374316930771,
+        "minimum": -0.006509474013000727,
+        "maximum": 0.9872088432312012
+      }
+    },
+    "shared_pca_rank02": {
+      "rank": 2,
+      "pca_cumulative_input_energy": 0.05988451838493347,
+      "projected_bfloat16_all_layers_bytes": 1775255552,
+      "projected_bfloat16_bytes_per_token": 31665664,
+      "multiply_accumulates_per_token": 10551296,
+      "routed_aggregate_cosine": {
+        "mean": 0.6449236636612189,
+        "median": 0.6895614949881388,
+        "p01": 0.10982187274348205,
+        "p05": 0.2504210980572465,
+        "minimum": 0.05513190154134375,
+        "maximum": 0.9871003190132636
+      },
+      "individual_expert_cosine": {
+        "mean": 0.43133074045181274,
+        "median": 0.38675931096076965,
+        "p01": 0.11972857266664505,
+        "p05": 0.1875123828649521,
+        "minimum": -0.004814719315618277,
+        "maximum": 0.9934253692626953
+      }
+    },
+    "shared_pca_rank04": {
+      "rank": 4,
+      "pca_cumulative_input_energy": 0.09637999534606934,
+      "projected_bfloat16_all_layers_bytes": 2958979072,
+      "projected_bfloat16_bytes_per_token": 52780032,
+      "multiply_accumulates_per_token": 21102592,
+      "routed_aggregate_cosine": {
+        "mean": 0.6604874675245817,
+        "median": 0.706802471184639,
+        "p01": 0.11514701124111634,
+        "p05": 0.2466044476527319,
+        "minimum": 0.06980218158401985,
+        "maximum": 0.9876894120056819
+      },
+      "individual_expert_cosine": {
+        "mean": 0.4474981427192688,
+        "median": 0.3951946496963501,
+        "p01": 0.11540625989437103,
+        "p05": 0.18213556706905365,
+        "minimum": -0.05325942486524582,
+        "maximum": 0.9997966885566711
+      }
+    },
+    "shared_pca_rank08": {
+      "rank": 8,
+      "pca_cumulative_input_energy": 0.1369277983903885,
+      "projected_bfloat16_all_layers_bytes": 5326426112,
+      "projected_bfloat16_bytes_per_token": 95008768,
+      "multiply_accumulates_per_token": 42205184,
+      "routed_aggregate_cosine": {
+        "mean": 0.6732287035086397,
+        "median": 0.7194234142466549,
+        "p01": 0.10489875146668216,
+        "p05": 0.24707176102520872,
+        "minimum": 0.05968783402592551,
+        "maximum": 0.9885485827165265
+      },
+      "individual_expert_cosine": {
+        "mean": 0.4584824740886688,
+        "median": 0.39865028858184814,
+        "p01": 0.09571294486522675,
+        "p05": 0.1646289974451065,
+        "minimum": -0.12920178472995758,
+        "maximum": 0.999886155128479
+      }
+    },
+    "shared_pca_rank16": {
+      "rank": 16,
+      "pca_cumulative_input_energy": 0.19540351629257202,
+      "projected_bfloat16_all_layers_bytes": 10061320192,
+      "projected_bfloat16_bytes_per_token": 179466240,
+      "multiply_accumulates_per_token": 84410368,
+      "routed_aggregate_cosine": {
+        "mean": 0.6819032106714543,
+        "median": 0.7260791764325505,
+        "p01": 0.10622138186906721,
+        "p05": 0.24585809017885582,
+        "minimum": 0.04062190879993577,
+        "maximum": 0.9929744121078847
+      },
+      "individual_expert_cosine": {
+        "mean": 0.46265196800231934,
+        "median": 0.39874234795570374,
+        "p01": 0.07503051310777664,
+        "p05": 0.13419759273529053,
+        "minimum": -0.07989039272069931,
+        "maximum": 0.9999754428863525
+      }
+    },
+    "shared_pca_rank32": {
+      "rank": 32,
+      "pca_cumulative_input_energy": 0.276312917470932,
+      "projected_bfloat16_all_layers_bytes": 19531108352,
+      "projected_bfloat16_bytes_per_token": 348381184,
+      "multiply_accumulates_per_token": 168820736,
+      "routed_aggregate_cosine": {
+        "mean": 0.6811156713482377,
+        "median": 0.7284372991754389,
+        "p01": 0.0852324018495179,
+        "p05": 0.21416181600585107,
+        "minimum": 0.00848096882733991,
+        "maximum": 0.998599010338824
+      },
+      "individual_expert_cosine": {
+        "mean": 0.45905789732933044,
+        "median": 0.38776344060897827,
+        "p01": 0.04829198867082596,
+        "p05": 0.10003043711185455,
+        "minimum": -0.12210817635059357,
+        "maximum": 0.9999985694885254
+      }
+    },
+    "shared_pca_rank64": {
+      "rank": 64,
+      "pca_cumulative_input_energy": 0.3768344819545746,
+      "projected_bfloat16_all_layers_bytes": 38470684672,
+      "projected_bfloat16_bytes_per_token": 686211072,
+      "multiply_accumulates_per_token": 337641472,
+      "routed_aggregate_cosine": {
+        "mean": 0.6635859022454915,
+        "median": 0.7076842667243833,
+        "p01": 0.06512727374100177,
+        "p05": 0.1798810162432534,
+        "minimum": -0.03857114479363244,
+        "maximum": 0.9999033788363875
+      },
+      "individual_expert_cosine": {
+        "mean": 0.443578839302063,
+        "median": 0.355673611164093,
+        "p01": 0.023096896708011627,
+        "p05": 0.06781712919473648,
+        "minimum": -0.12033593654632568,
+        "maximum": 1.0
+      }
+    }
+  }
+}

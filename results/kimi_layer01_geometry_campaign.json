@@ -1,0 +1,123 @@
+{
+  "schema": "kimi-k3-layer01-geometry-campaign-v1",
+  "status": "EXPLORATORY",
+  "registered_primary_verdict": "RED",
+  "model_layer": 1,
+  "tokens": 10000,
+  "calibration_tokens": 8200,
+  "validation_tokens": 1800,
+  "sequence_split": true,
+  "exactness": {
+    "teacher_sha256": "c3dbc469663ae31da0d483f0d19d31f66e6c532545097e5090355eb9b1aa2f78",
+    "teacher_checksum_unchanged_after_response_export": true,
+    "observer_disabled_vs_enabled_bit_exact": true,
+    "observer_reconstruction_bit_exact": true
+  },
+  "response_dataset": {
+    "experts": 896,
+    "route_records": 160000,
+    "storage": "float32",
+    "files": 896,
+    "bytes": 2296370176,
+    "location": "/mnt/kimi-k3/responses/kimi_layer01_10000"
+  },
+  "headline_results": {
+    "diagonal_panel_mean_cosine": 0.6247489353594318,
+    "native_width_d3_mean_cosine": 0.6436645785967509,
+    "latent_address_all_answers_n16": {
+      "mean_cosine": 0.7528078278085215,
+      "p05_cosine": 0.25005820235658593
+    },
+    "oracle_address_all_answers_n16": {
+      "mean_cosine": 0.781159570185574,
+      "p05_cosine": 0.36406075272562344
+    },
+    "per_expert_response_rank64": {
+      "mean_cosine": 0.8106729390140721,
+      "p05_cosine": 0.4398539580681009
+    },
+    "expected_contribution_eight_exact_mean_tail": {
+      "mean_cosine": 0.9758283052586639,
+      "p05_cosine": 0.9368453171390967,
+      "nominal_exact_traffic_fraction": 0.5
+    },
+    "expected_contribution_twelve_exact_mean_tail": {
+      "mean_cosine": 0.9907471394626735,
+      "p05_cosine": 0.9736574523556082,
+      "nominal_exact_traffic_fraction": 0.75
+    },
+    "lossless_zstandard_compressed_fraction": 1.0000283668154761,
+    "lru_64_experts_per_layer_hit_fraction": 0.24034722222222227,
+    "oracle_keep_half_internal_channels_native_cosine": 0.9968418478965759
+  },
+  "systems": {
+    "prefill_tokens_per_second": null,
+    "decode_tokens_per_second": null,
+    "rate_unavailable_reason": "Every campaign probe stops at the first routed layer or operates on its exported responses; none is complete model generation.",
+    "telemetry": {
+      "exact_response_export": {
+        "elapsed_seconds": 14.893740996005363,
+        "reported_high_water_rss_kib": 2631312,
+        "peak_graphics_memory_mib": 3516.0,
+        "graphics_energy_joules": 1344.3119223810056,
+        "disk_read_bytes": 5791313920,
+        "disk_write_bytes": 5230764032
+      },
+      "response_atlas_with_oracle_controls": {
+        "elapsed_seconds": 11.666376132998266,
+        "reported_high_water_rss_kib": 1959088,
+        "peak_graphics_memory_mib": 1570.0,
+        "graphics_energy_joules": 1414.338536031254,
+        "disk_read_bytes": 0,
+        "disk_write_bytes": 6348800
+      },
+      "shared_input_charts": {
+        "elapsed_seconds": 8.064604589002556,
+        "reported_high_water_rss_kib": 1731196,
+        "peak_graphics_memory_mib": 1858.0,
+        "graphics_energy_joules": 942.7667827028774
+      },
+      "shared_response_basis": {
+        "elapsed_seconds": 5.9522884100006195,
+        "reported_high_water_rss_kib": 2089988,
+        "peak_graphics_memory_mib": 2022.0,
+        "graphics_energy_joules": 699.2648952614187
+      },
+      "per_expert_response_basis": {
+        "elapsed_seconds": 10.82622658899345,
+        "reported_high_water_rss_kib": 1581220,
+        "peak_graphics_memory_mib": 1340.0,
+        "graphics_energy_joules": 1425.3649552293168
+      },
+      "sparse_exact_routes": {
+        "elapsed_seconds": 10.644367707005586,
+        "reported_high_water_rss_kib": 4113044,
+        "peak_graphics_memory_mib": 1450.0,
+        "graphics_energy_joules": 1294.2522786293207
+      },
+      "route_locality": {
+        "elapsed_seconds": 1.4365130340011092,
+        "reported_high_water_rss_kib": 526568,
+        "graphics_energy_joules": 155.47656981994368
+      },
+      "lossless_64_expert_sample": {
+        "elapsed_seconds": 3.8589147460006643,
+        "reported_high_water_rss_kib": 862984,
+        "graphics_energy_joules": 255.80862584195359,
+        "disk_read_bytes": 471859200
+      },
+      "internal_channels_16_expert_sample": {
+        "elapsed_seconds": 6.899287940002978,
+        "reported_high_water_rss_kib": 1544180,
+        "peak_graphics_memory_mib": 1405.0,
+        "graphics_energy_joules": 604.6757032655486
+      }
+    },
+    "telemetry_note": "Graphics energy is board-power integration and includes idle board power during processor-only probes. Zero device reads on response-only probes means the operating-system page cache served the files, not that the artifacts had zero logical input bytes. Full telemetry and samples remain under /mnt/kimi-k3/results."
+  },
+  "decision": {
+    "bank_free_58_gb_deployment_supported": false,
+    "faster_full_checkpoint_mixed_rate_deployment_supported_for_end_to_end_test": true,
+    "next_gate": "Repeated byte-identical complete exact generation, followed by frozen one-layer 8-exact and 12-exact mean-tail substitutions with final-token probability divergence and top-choice agreement."
+  }
+}

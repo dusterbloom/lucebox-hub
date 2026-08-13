@@ -1,0 +1,300 @@
+{
+  "schema": "kimi-k3-layer01-expert-channel-sparsity-v1",
+  "status": "EXPLORATORY",
+  "shard": "/mnt/kimi-k3/models/unsloth-Kimi-K3-GGUF/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00002-of-00014.gguf",
+  "capture": "/mnt/kimi-k3/captures/kimi_layer01_10000.bin",
+  "response_directory": "/mnt/kimi-k3/responses/kimi_layer01_10000",
+  "model_layer": 1,
+  "sample_experts": [
+    0,
+    59,
+    119,
+    179,
+    238,
+    298,
+    358,
+    417,
+    477,
+    537,
+    596,
+    656,
+    716,
+    775,
+    835,
+    895
+  ],
+  "sample_validation_routes": 546,
+  "validation_routes_per_sampled_expert": {
+    "mean": 34.125,
+    "median": 28.5,
+    "p01": 12.6,
+    "p05": 15.0,
+    "minimum": 12.0,
+    "maximum": 77.0
+  },
+  "dequantized_full_vs_native_exact_cosine": {
+    "mean": 0.999847412109375,
+    "median": 0.999886155128479,
+    "p01": 0.9994262456893921,
+    "p05": 0.9996033310890198,
+    "minimum": 0.9990525245666504,
+    "maximum": 0.999966025352478
+  },
+  "selection": "oracle top absolute SiTU-GLU activation per route",
+  "variants": {
+    "keep_0.01": {
+      "channel_fraction": 0.01,
+      "channels": 31,
+      "activation_energy_fraction": {
+        "mean": 0.4586767554283142,
+        "median": 0.3895544409751892,
+        "p01": 0.2496371865272522,
+        "p05": 0.26687073707580566,
+        "minimum": 0.22427447140216827,
+        "maximum": 0.9362779855728149
+      },
+      "cosine_to_dequantized_full_output": {
+        "mean": 0.6907349228858948,
+        "median": 0.6568349003791809,
+        "p01": 0.5070576071739197,
+        "p05": 0.5308317542076111,
+        "minimum": 0.47818440198898315,
+        "maximum": 0.9757202863693237
+      },
+      "cosine_to_native_exact_output": {
+        "mean": 0.6905770301818848,
+        "median": 0.6571502685546875,
+        "p01": 0.5078332424163818,
+        "p05": 0.5295079946517944,
+        "minimum": 0.477692574262619,
+        "maximum": 0.9756372570991516
+      },
+      "ideal_expert_payload_fraction": 0.6699999999999999,
+      "ideal_expert_payload_gib_per_token": 5.925479999999999,
+      "ideal_maximum_speedup_if_only_io_bound": 1.492537313432836
+    },
+    "keep_0.02": {
+      "channel_fraction": 0.02,
+      "channels": 61,
+      "activation_energy_fraction": {
+        "mean": 0.5557252168655396,
+        "median": 0.49985551834106445,
+        "p01": 0.3595971167087555,
+        "p05": 0.3790585994720459,
+        "minimum": 0.33250075578689575,
+        "maximum": 0.9516434073448181
+      },
+      "cosine_to_dequantized_full_output": {
+        "mean": 0.7604812979698181,
+        "median": 0.7357271909713745,
+        "p01": 0.6077438592910767,
+        "p05": 0.6297976970672607,
+        "minimum": 0.5927742719650269,
+        "maximum": 0.9836266040802002
+      },
+      "cosine_to_native_exact_output": {
+        "mean": 0.7603108882904053,
+        "median": 0.7361379861831665,
+        "p01": 0.6076366305351257,
+        "p05": 0.629564106464386,
+        "minimum": 0.5927284359931946,
+        "maximum": 0.9835005402565002
+      },
+      "ideal_expert_payload_fraction": 0.6733333333333333,
+      "ideal_expert_payload_gib_per_token": 5.95496,
+      "ideal_maximum_speedup_if_only_io_bound": 1.4851485148514851
+    },
+    "keep_0.05": {
+      "channel_fraction": 0.05,
+      "channels": 154,
+      "activation_energy_fraction": {
+        "mean": 0.708297848701477,
+        "median": 0.6722507476806641,
+        "p01": 0.5547816157341003,
+        "p05": 0.5733364224433899,
+        "minimum": 0.5376585721969604,
+        "maximum": 0.9729077816009521
+      },
+      "cosine_to_dequantized_full_output": {
+        "mean": 0.8545651435852051,
+        "median": 0.8412368297576904,
+        "p01": 0.7501722574234009,
+        "p05": 0.7658651471138,
+        "minimum": 0.7350823879241943,
+        "maximum": 0.9917608499526978
+      },
+      "cosine_to_native_exact_output": {
+        "mean": 0.854401171207428,
+        "median": 0.8412469625473022,
+        "p01": 0.7502496838569641,
+        "p05": 0.7659087181091309,
+        "minimum": 0.7342933416366577,
+        "maximum": 0.9916782379150391
+      },
+      "ideal_expert_payload_fraction": 0.6833333333333333,
+      "ideal_expert_payload_gib_per_token": 6.0434,
+      "ideal_maximum_speedup_if_only_io_bound": 1.4634146341463414
+    },
+    "keep_0.1": {
+      "channel_fraction": 0.1,
+      "channels": 307,
+      "activation_energy_fraction": {
+        "mean": 0.8244830369949341,
+        "median": 0.8049300312995911,
+        "p01": 0.7167165875434875,
+        "p05": 0.7329719066619873,
+        "minimum": 0.6998991370201111,
+        "maximum": 0.9853244423866272
+      },
+      "cosine_to_dequantized_full_output": {
+        "mean": 0.916942298412323,
+        "median": 0.9108713865280151,
+        "p01": 0.8494400978088379,
+        "p05": 0.8629058003425598,
+        "minimum": 0.843061089515686,
+        "maximum": 0.9957098960876465
+      },
+      "cosine_to_native_exact_output": {
+        "mean": 0.9167775511741638,
+        "median": 0.9106072187423706,
+        "p01": 0.8490745425224304,
+        "p05": 0.8630136251449585,
+        "minimum": 0.8429028391838074,
+        "maximum": 0.9956504702568054
+      },
+      "ideal_expert_payload_fraction": 0.7,
+      "ideal_expert_payload_gib_per_token": 6.190799999999999,
+      "ideal_maximum_speedup_if_only_io_bound": 1.4285714285714286
+    },
+    "keep_0.25": {
+      "channel_fraction": 0.25,
+      "channels": 768,
+      "activation_energy_fraction": {
+        "mean": 0.9481027722358704,
+        "median": 0.9427800178527832,
+        "p01": 0.9092081189155579,
+        "p05": 0.9175256490707397,
+        "minimum": 0.8986802697181702,
+        "maximum": 0.9962835907936096
+      },
+      "cosine_to_dequantized_full_output": {
+        "mean": 0.9766329526901245,
+        "median": 0.9748878479003906,
+        "p01": 0.9534456729888916,
+        "p05": 0.9595124125480652,
+        "minimum": 0.9496615529060364,
+        "maximum": 0.9989722371101379
+      },
+      "cosine_to_native_exact_output": {
+        "mean": 0.97648024559021,
+        "median": 0.974711000919342,
+        "p01": 0.9532877802848816,
+        "p05": 0.9593879580497742,
+        "minimum": 0.9494515657424927,
+        "maximum": 0.9989215135574341
+      },
+      "ideal_expert_payload_fraction": 0.75,
+      "ideal_expert_payload_gib_per_token": 6.632999999999999,
+      "ideal_maximum_speedup_if_only_io_bound": 1.3333333333333333
+    },
+    "keep_0.5": {
+      "channel_fraction": 0.5,
+      "channels": 1536,
+      "activation_energy_fraction": {
+        "mean": 0.9931893348693848,
+        "median": 0.9925020933151245,
+        "p01": 0.987019419670105,
+        "p05": 0.9884470701217651,
+        "minimum": 0.9853572845458984,
+        "maximum": 0.9996909499168396
+      },
+      "cosine_to_dequantized_full_output": {
+        "mean": 0.9969947338104248,
+        "median": 0.9968015551567078,
+        "p01": 0.9937108159065247,
+        "p05": 0.9945083856582642,
+        "minimum": 0.9930954575538635,
+        "maximum": 0.9999167919158936
+      },
+      "cosine_to_native_exact_output": {
+        "mean": 0.9968418478965759,
+        "median": 0.996650218963623,
+        "p01": 0.9935556650161743,
+        "p05": 0.9943225979804993,
+        "minimum": 0.9929547309875488,
+        "maximum": 0.999866247177124
+      },
+      "ideal_expert_payload_fraction": 0.8333333333333333,
+      "ideal_expert_payload_gib_per_token": 7.369999999999999,
+      "ideal_maximum_speedup_if_only_io_bound": 1.2000000000000002
+    },
+    "keep_0.75": {
+      "channel_fraction": 0.75,
+      "channels": 2304,
+      "activation_energy_fraction": {
+        "mean": 0.9996346831321716,
+        "median": 0.9995901584625244,
+        "p01": 0.9991699457168579,
+        "p05": 0.9992867112159729,
+        "minimum": 0.9990779161453247,
+        "maximum": 0.9999958872795105
+      },
+      "cosine_to_dequantized_full_output": {
+        "mean": 0.9998390078544617,
+        "median": 0.9998314380645752,
+        "p01": 0.9995997548103333,
+        "p05": 0.9996575713157654,
+        "minimum": 0.9995586276054382,
+        "maximum": 0.9999990463256836
+      },
+      "cosine_to_native_exact_output": {
+        "mean": 0.9996866583824158,
+        "median": 0.9996902942657471,
+        "p01": 0.9991756677627563,
+        "p05": 0.9994041323661804,
+        "minimum": 0.9988918304443359,
+        "maximum": 0.9999634027481079
+      },
+      "ideal_expert_payload_fraction": 0.9166666666666666,
+      "ideal_expert_payload_gib_per_token": 8.107,
+      "ideal_maximum_speedup_if_only_io_bound": 1.090909090909091
+    },
+    "keep_1": {
+      "channel_fraction": 1.0,
+      "channels": 3072,
+      "activation_energy_fraction": {
+        "mean": 1.0,
+        "median": 1.0,
+        "p01": 0.9999998211860657,
+        "p05": 0.9999998807907104,
+        "minimum": 0.9999997019767761,
+        "maximum": 1.000000238418579
+      },
+      "cosine_to_dequantized_full_output": {
+        "mean": 1.0,
+        "median": 1.0,
+        "p01": 0.9999998211860657,
+        "p05": 0.9999998807907104,
+        "minimum": 0.9999997615814209,
+        "maximum": 1.000000238418579
+      },
+      "cosine_to_native_exact_output": {
+        "mean": 0.999847412109375,
+        "median": 0.999886155128479,
+        "p01": 0.9994262456893921,
+        "p05": 0.9996033310890198,
+        "minimum": 0.9990525245666504,
+        "maximum": 0.999966025352478
+      },
+      "ideal_expert_payload_fraction": 1.0,
+      "ideal_expert_payload_gib_per_token": 8.844,
+      "ideal_maximum_speedup_if_only_io_bound": 1.0
+    }
+  },
+  "warnings": [
+    "Oracle channel selection is an upper bound, not an implementable predictor.",
+    "Gate and up tensors must still be read before exact active channels are known.",
+    "Quantized down rows are block packed, so practical scattered reads may exceed the ideal byte fraction.",
+    "Python dequantization may not be bit-identical to the native GPU quantized kernel."
+  ]
+}

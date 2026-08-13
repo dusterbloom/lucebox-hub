@@ -53,6 +53,8 @@ constexpr std::array<char, 8> kTeacherMagic = {
     'K', '3', 'T', 'G', 'T', '0', '0', '1'};
 constexpr std::array<char, 8> kRankTeacherMagic = {
     'K', '3', 'R', 'N', 'K', '0', '0', '1'};
+constexpr std::array<char, 8> kExpertResponseMagic = {
+    'K', '3', 'R', 'S', 'P', '0', '0', '1'};
 constexpr uint32_t kFitVersion = 1;
 constexpr int kAggregateCheckpointExperts = 16;
 
@@ -122,6 +124,28 @@ struct RankTeacherHeader {
 };
 static_assert(sizeof(RankTeacherHeader) == 64,
               "rank teacher header must remain byte-stable");
+
+struct ExpertResponseHeader {
+    std::array<char, 8> magic = kExpertResponseMagic;
+    uint32_t version = kFitVersion;
+    int32_t model_layer = -1;
+    int32_t expert = -1;
+    uint32_t dimension = 0;
+    uint64_t route_count = 0;
+    uint32_t storage = 0; // 0 = float32
+    uint32_t reserved = 0;
+    std::array<uint64_t, 2> reserved64{};
+};
+static_assert(sizeof(ExpertResponseHeader) == 56,
+              "expert response header must remain byte-stable");
+
+struct ExpertResponseRecord {
+    uint64_t token_index = 0;
+    uint32_t rank = 0;
+    float router_weight = 0.0f;
+};
+static_assert(sizeof(ExpertResponseRecord) == 16,
+              "expert response record must remain byte-stable");
 
 struct ExpertStatsPair {
     ExpertStatsHeader header;
@@ -392,6 +416,13 @@ std::string expert_state_path(const std::filesystem::path & directory,
                               int expert) {
     char name[64];
     std::snprintf(name, sizeof(name), "expert_%04d.stats", expert);
+    return (directory / name).string();
+}
+
+std::string expert_response_path(const std::filesystem::path & directory,
+                                 int expert) {
+    char name[64];
+    std::snprintf(name, sizeof(name), "expert_%04d.responses.f32", expert);
     return (directory / name).string();
 }
 
@@ -748,7 +779,8 @@ int main(int argc, char ** argv) {
     if (argc < 5) {
         std::fprintf(stderr,
             "usage: %s <first-model-shard.gguf> <capture.bin> "
-            "<fit-state-directory> <output-prefix> [gpu=0] [batch=128]\n",
+            "<fit-state-directory> <output-prefix> [gpu=0] [batch=128] "
+            "[expert-response-directory]\n",
             argv[0]);
         return 2;
     }
@@ -758,6 +790,8 @@ int main(int argc, char ** argv) {
     const std::string output_prefix = argv[4];
     int gpu = 0;
     int batch_tokens = 128;
+    const std::filesystem::path response_directory =
+        argc > 7 ? std::filesystem::path(argv[7]) : std::filesystem::path{};
     if ((argc > 5 && !parse_nonnegative_int(argv[5], gpu)) ||
         (argc > 6 && !parse_positive_int(argv[6], batch_tokens))) {
         std::fprintf(stderr, "[kimi-panel-fit] invalid numeric argument\n");
@@ -903,6 +937,17 @@ int main(int argc, char ** argv) {
                      filesystem_error.message().c_str());
         cleanup_weights();
         return 1;
+    }
+    if (!response_directory.empty()) {
+        std::filesystem::create_directories(
+            response_directory, filesystem_error);
+        if (filesystem_error) {
+            std::fprintf(stderr,
+                "[kimi-panel-fit] cannot create expert responses: %s\n",
+                filesystem_error.message().c_str());
+            cleanup_weights();
+            return 1;
+        }
     }
     const std::filesystem::path output_parent =
         std::filesystem::path(output_prefix).parent_path();
@@ -1100,6 +1145,26 @@ int main(int argc, char ** argv) {
         cleanup_weights();
         return 1;
     }
+    if (!response_directory.empty()) {
+        for (int expert = 0; expert <= completed_expert; ++expert) {
+            std::error_code size_error;
+            const std::string path =
+                expert_response_path(response_directory, expert);
+            const uintmax_t bytes = std::filesystem::file_size(
+                path, size_error);
+            if (size_error || bytes <= sizeof(ExpertResponseHeader)) {
+                std::fprintf(stderr,
+                    "[kimi-panel-fit] response export cannot resume: "
+                    "expert %d is absent or truncated; use its original "
+                    "response directory or a fresh fit state\n",
+                    expert);
+                engine.destroy();
+                close_sources();
+                cleanup_weights();
+                return 1;
+            }
+        }
+    }
 
     const int local_layer = model_layer - weights.n_dense_lead;
     for (int expert = completed_expert + 1;
@@ -1110,6 +1175,12 @@ int main(int argc, char ** argv) {
         pair.unweighted.reset(dimension);
         pair.weighted.reset(dimension);
         const auto & expert_routes = routes[static_cast<size_t>(expert)];
+        std::vector<ExpertResponseRecord> response_records;
+        std::vector<float> response_outputs;
+        if (!response_directory.empty()) {
+            response_records.reserve(expert_routes.size());
+            response_outputs.reserve(expert_routes.size() * dimension);
+        }
         for (size_t begin = 0; begin < expert_routes.size();
              begin += static_cast<size_t>(batch_tokens)) {
             const size_t count = std::min(
@@ -1150,6 +1221,15 @@ int main(int argc, char ** argv) {
                 const auto & record = artifact.records[reference.record];
                 const float * input = inputs.data() + item * dimension;
                 const float * output = outputs.data() + item * dimension;
+                if (!response_directory.empty()) {
+                    response_records.push_back({
+                        all_token_index[reference.record][reference.token],
+                        reference.rank,
+                        reference.router_weight,
+                    });
+                    response_outputs.insert(
+                        response_outputs.end(), output, output + dimension);
+                }
                 float * all_aggregate = all_exact_aggregate.data() +
                     static_cast<size_t>(
                         all_token_index[reference.record][reference.token]) *
@@ -1207,6 +1287,30 @@ int main(int argc, char ** argv) {
         }
         pair.header.unweighted_s0 = pair.unweighted.s0;
         pair.header.weighted_s0 = pair.weighted.s0;
+        if (!response_directory.empty()) {
+            ExpertResponseHeader response_header;
+            response_header.model_layer = model_layer;
+            response_header.expert = expert;
+            response_header.dimension = static_cast<uint32_t>(dimension);
+            response_header.route_count = response_records.size();
+            if (response_outputs.size() !=
+                    response_records.size() * dimension ||
+                !atomic_binary_write(
+                    expert_response_path(response_directory, expert),
+                    [&](std::ofstream & output) {
+                        return write_value(output, response_header) &&
+                               write_vector(output, response_records) &&
+                               write_vector(output, response_outputs);
+                    }, error)) {
+                std::fprintf(stderr,
+                    "[kimi-panel-fit] expert %d response export failed: %s\n",
+                    expert, error.c_str());
+                engine.destroy();
+                close_sources();
+                cleanup_weights();
+                return 1;
+            }
+        }
         if (!write_stats(
                 expert_state_path(state_directory, expert), pair, error)) {
             std::fprintf(stderr, "[kimi-panel-fit] %s\n", error.c_str());
@@ -1578,6 +1682,9 @@ int main(int argc, char ** argv) {
         {"verdict", verdict},
         {"model_path", model_path},
         {"capture_path", capture_path},
+        {"expert_response_directory",
+         response_directory.empty() ? "" : response_directory.string()},
+        {"expert_response_storage", "float32"},
         {"model_layer", model_layer},
         {"expert_count", weights.n_expert},
         {"top_k", weights.n_expert_used},

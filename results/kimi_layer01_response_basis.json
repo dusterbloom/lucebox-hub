@@ -1,0 +1,224 @@
+{
+  "schema": "kimi-k3-layer01-shared-response-basis-v1",
+  "status": "EXPLORATORY",
+  "capture": "/mnt/kimi-k3/captures/kimi_layer01_10000.bin",
+  "teacher": "/mnt/kimi-k3/results/kimi_layer01_exactness_final.teacher.f32",
+  "response_directory": "/mnt/kimi-k3/responses/kimi_layer01_10000",
+  "model_layer": 1,
+  "dimension": 3584,
+  "top_k": 16,
+  "calibration_route_count": 131200,
+  "validation_route_count": 28800,
+  "sample_routes_requested": 16384,
+  "sample_routes_used": 16384,
+  "pca_iterations": 4,
+  "seed": 260813,
+  "basis": "centered exact individual routed-expert responses",
+  "best_variant": "shared_response_rank256",
+  "variants": {
+    "shared_response_rank008": {
+      "rank": 8,
+      "sample_cumulative_centered_energy": 0.09584145992994308,
+      "routed_aggregate_cosine": {
+        "mean": 0.5549614868756051,
+        "median": 0.5841746587368946,
+        "p01": 0.11061646175315752,
+        "p05": 0.19753585751075706,
+        "minimum": 0.07142423439882875,
+        "maximum": 0.9806108172018139
+      },
+      "individual_expert_cosine": {
+        "mean": 0.25855109095573425,
+        "median": 0.23465359210968018,
+        "p01": 0.0934784784913063,
+        "p05": 0.1331375688314438,
+        "minimum": 0.009792917408049107,
+        "maximum": 0.9961780905723572
+      },
+      "atlas_projection": {
+        "k64": {
+          "entries_layer": 57344,
+          "projected_bfloat16_all_layers_bytes": 90345472,
+          "projected_bfloat16_one_response_bytes_per_token": 23552,
+          "reconstruction_multiply_accumulates_per_token": 42205184
+        },
+        "kall_calibration": {
+          "entries_layer": 131200,
+          "projected_bfloat16_all_layers_bytes": 199061504,
+          "projected_bfloat16_one_response_bytes_per_token": 23552,
+          "reconstruction_multiply_accumulates_per_token": 42205184
+        }
+      }
+    },
+    "shared_response_rank016": {
+      "rank": 16,
+      "sample_cumulative_centered_energy": 0.12458661943674088,
+      "routed_aggregate_cosine": {
+        "mean": 0.5780684826002299,
+        "median": 0.6045779596921201,
+        "p01": 0.12709234818106482,
+        "p05": 0.21027945307387955,
+        "minimum": 0.09989443264751374,
+        "maximum": 0.9844715922303382
+      },
+      "individual_expert_cosine": {
+        "mean": 0.2735816240310669,
+        "median": 0.24694231152534485,
+        "p01": 0.11312360316514969,
+        "p05": 0.14735257625579834,
+        "minimum": 0.053644344210624695,
+        "maximum": 0.9963403344154358
+      },
+      "atlas_projection": {
+        "k64": {
+          "entries_layer": 57344,
+          "projected_bfloat16_all_layers_bytes": 180031488,
+          "projected_bfloat16_one_response_bytes_per_token": 47104,
+          "reconstruction_multiply_accumulates_per_token": 84410368
+        },
+        "kall_calibration": {
+          "entries_layer": 131200,
+          "projected_bfloat16_all_layers_bytes": 397463552,
+          "projected_bfloat16_one_response_bytes_per_token": 47104,
+          "reconstruction_multiply_accumulates_per_token": 84410368
+        }
+      }
+    },
+    "shared_response_rank032": {
+      "rank": 32,
+      "sample_cumulative_centered_energy": 0.1599520742893219,
+      "routed_aggregate_cosine": {
+        "mean": 0.6026784127421845,
+        "median": 0.6254623328294315,
+        "p01": 0.156047742499053,
+        "p05": 0.2421568649209603,
+        "minimum": 0.12327131788085642,
+        "maximum": 0.9856699990673097
+      },
+      "individual_expert_cosine": {
+        "mean": 0.2973783016204834,
+        "median": 0.26734963059425354,
+        "p01": 0.14376913011074066,
+        "p05": 0.17128083109855652,
+        "minimum": 0.09153887629508972,
+        "maximum": 0.9967283010482788
+      },
+      "atlas_projection": {
+        "k64": {
+          "entries_layer": 57344,
+          "projected_bfloat16_all_layers_bytes": 359403520,
+          "projected_bfloat16_one_response_bytes_per_token": 94208,
+          "reconstruction_multiply_accumulates_per_token": 168820736
+        },
+        "kall_calibration": {
+          "entries_layer": 131200,
+          "projected_bfloat16_all_layers_bytes": 794267648,
+          "projected_bfloat16_one_response_bytes_per_token": 94208,
+          "reconstruction_multiply_accumulates_per_token": 168820736
+        }
+      }
+    },
+    "shared_response_rank064": {
+      "rank": 64,
+      "sample_cumulative_centered_energy": 0.20922516286373138,
+      "routed_aggregate_cosine": {
+        "mean": 0.6329277694493208,
+        "median": 0.6548896682293193,
+        "p01": 0.2079708762864792,
+        "p05": 0.2891497213033439,
+        "minimum": 0.17052583850051184,
+        "maximum": 0.9890118589493695
+      },
+      "individual_expert_cosine": {
+        "mean": 0.33429989218711853,
+        "median": 0.3003237843513489,
+        "p01": 0.18440502882003784,
+        "p05": 0.20771732926368713,
+        "minimum": 0.13010117411613464,
+        "maximum": 0.9969004392623901
+      },
+      "atlas_projection": {
+        "k64": {
+          "entries_layer": 57344,
+          "projected_bfloat16_all_layers_bytes": 718147584,
+          "projected_bfloat16_one_response_bytes_per_token": 188416,
+          "reconstruction_multiply_accumulates_per_token": 337641472
+        },
+        "kall_calibration": {
+          "entries_layer": 131200,
+          "projected_bfloat16_all_layers_bytes": 1587875840,
+          "projected_bfloat16_one_response_bytes_per_token": 188416,
+          "reconstruction_multiply_accumulates_per_token": 337641472
+        }
+      }
+    },
+    "shared_response_rank128": {
+      "rank": 128,
+      "sample_cumulative_centered_energy": 0.27843281626701355,
+      "routed_aggregate_cosine": {
+        "mean": 0.6725168919342712,
+        "median": 0.696647586100035,
+        "p01": 0.27167688022540737,
+        "p05": 0.35240849861695306,
+        "minimum": 0.24187506166859554,
+        "maximum": 0.9920410351338719
+      },
+      "individual_expert_cosine": {
+        "mean": 0.3881594240665436,
+        "median": 0.3514981269836426,
+        "p01": 0.2422553300857544,
+        "p05": 0.26170259714126587,
+        "minimum": 0.19015413522720337,
+        "maximum": 0.9971165657043457
+      },
+      "atlas_projection": {
+        "k64": {
+          "entries_layer": 57344,
+          "projected_bfloat16_all_layers_bytes": 1435635712,
+          "projected_bfloat16_one_response_bytes_per_token": 376832,
+          "reconstruction_multiply_accumulates_per_token": 675282944
+        },
+        "kall_calibration": {
+          "entries_layer": 131200,
+          "projected_bfloat16_all_layers_bytes": 3175092224,
+          "projected_bfloat16_one_response_bytes_per_token": 376832,
+          "reconstruction_multiply_accumulates_per_token": 675282944
+        }
+      }
+    },
+    "shared_response_rank256": {
+      "rank": 256,
+      "sample_cumulative_centered_energy": 0.3709729015827179,
+      "routed_aggregate_cosine": {
+        "mean": 0.7171335017250495,
+        "median": 0.7347345223447178,
+        "p01": 0.3736136564713976,
+        "p05": 0.43271426611219277,
+        "minimum": 0.3327057007363125,
+        "maximum": 0.9937209773183486
+      },
+      "individual_expert_cosine": {
+        "mean": 0.46259331703186035,
+        "median": 0.4259161353111267,
+        "p01": 0.3236587643623352,
+        "p05": 0.33997803926467896,
+        "minimum": 0.25863075256347656,
+        "maximum": 0.9983877539634705
+      },
+      "atlas_projection": {
+        "k64": {
+          "entries_layer": 57344,
+          "projected_bfloat16_all_layers_bytes": 2870611968,
+          "projected_bfloat16_one_response_bytes_per_token": 753664,
+          "reconstruction_multiply_accumulates_per_token": 1350565888
+        },
+        "kall_calibration": {
+          "entries_layer": 131200,
+          "projected_bfloat16_all_layers_bytes": 6349524992,
+          "projected_bfloat16_one_response_bytes_per_token": 753664,
+          "reconstruction_multiply_accumulates_per_token": 1350565888
+        }
+      }
+    }
+  }
+}

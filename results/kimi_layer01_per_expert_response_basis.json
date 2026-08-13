@@ -1,0 +1,306 @@
+{
+  "schema": "kimi-k3-layer01-per-expert-response-basis-v1",
+  "status": "EXPLORATORY",
+  "capture": "/mnt/kimi-k3/captures/kimi_layer01_10000.bin",
+  "teacher": "/mnt/kimi-k3/results/kimi_layer01_exactness_final.teacher.f32",
+  "response_directory": "/mnt/kimi-k3/responses/kimi_layer01_10000",
+  "model_layer": 1,
+  "dimension": 3584,
+  "top_k": 16,
+  "tokens": 10000,
+  "calibration_tokens": 8200,
+  "validation_tokens": 1800,
+  "pca_iterations": 2,
+  "seed": 260813,
+  "training_routes_per_expert": {
+    "mean": 146.42857142857142,
+    "median": 128.0,
+    "p01": 21.0,
+    "p05": 43.0,
+    "minimum": 1.0,
+    "maximum": 745.0
+  },
+  "best_variant": "per_expert_rank64",
+  "variants": {
+    "per_expert_rank01": {
+      "requested_rank": 1,
+      "realized_rank_per_expert": {
+        "mean": 0.9988839285714286,
+        "median": 1.0,
+        "p01": 1.0,
+        "p05": 1.0,
+        "minimum": 0.0,
+        "maximum": 1.0
+      },
+      "validation_route_weighted_average_rank": 0.9999305555555555,
+      "routed_aggregate_cosine": {
+        "mean": 0.6768627816579439,
+        "median": 0.7257850259144227,
+        "p01": 0.11178764194089066,
+        "p05": 0.2516439058474332,
+        "minimum": 0.07575925458449305,
+        "maximum": 0.9944935631618677
+      },
+      "individual_expert_cosine": {
+        "mean": 0.4340892732143402,
+        "median": 0.39104312658309937,
+        "p01": 0.14128035306930542,
+        "p05": 0.20916388928890228,
+        "minimum": 0.00873803161084652,
+        "maximum": 0.9999997019767761
+      },
+      "atlas_projection": {
+        "k64": {
+          "projected_bfloat16_all_layers_bytes": 1191203488,
+          "projected_mean_coordinate_bytes_per_token": 2943.7955555555554,
+          "reconstruction_multiply_accumulates_per_token": 5275281.635555556
+        },
+        "kall_calibration": {
+          "projected_bfloat16_all_layers_bytes": 1205226312,
+          "projected_mean_coordinate_bytes_per_token": 2943.7955555555554,
+          "reconstruction_multiply_accumulates_per_token": 5275281.635555556
+        }
+      }
+    },
+    "per_expert_rank02": {
+      "requested_rank": 2,
+      "realized_rank_per_expert": {
+        "mean": 1.9977678571428572,
+        "median": 2.0,
+        "p01": 2.0,
+        "p05": 2.0,
+        "minimum": 0.0,
+        "maximum": 2.0
+      },
+      "validation_route_weighted_average_rank": 1.999861111111111,
+      "routed_aggregate_cosine": {
+        "mean": 0.698286634449096,
+        "median": 0.7479982882389644,
+        "p01": 0.11907890604084448,
+        "p05": 0.2643196569263514,
+        "minimum": 0.08177075084880119,
+        "maximum": 0.9992516432694357
+      },
+      "individual_expert_cosine": {
+        "mean": 0.45593979954719543,
+        "median": 0.4040758013725281,
+        "p01": 0.14902731776237488,
+        "p05": 0.2165648639202118,
+        "minimum": 0.011068323627114296,
+        "maximum": 0.9999997615814209
+      },
+      "atlas_projection": {
+        "k64": {
+          "projected_bfloat16_all_layers_bytes": 1791534400,
+          "projected_mean_coordinate_bytes_per_token": 5887.591111111111,
+          "reconstruction_multiply_accumulates_per_token": 10550563.271111112
+        },
+        "kall_calibration": {
+          "projected_bfloat16_all_layers_bytes": 1819580048,
+          "projected_mean_coordinate_bytes_per_token": 5887.591111111111,
+          "reconstruction_multiply_accumulates_per_token": 10550563.271111112
+        }
+      }
+    },
+    "per_expert_rank04": {
+      "requested_rank": 4,
+      "realized_rank_per_expert": {
+        "mean": 3.9955357142857144,
+        "median": 4.0,
+        "p01": 4.0,
+        "p05": 4.0,
+        "minimum": 0.0,
+        "maximum": 4.0
+      },
+      "validation_route_weighted_average_rank": 3.999722222222222,
+      "routed_aggregate_cosine": {
+        "mean": 0.7208107759835727,
+        "median": 0.7770243303241302,
+        "p01": 0.1289238815496344,
+        "p05": 0.283899444197758,
+        "minimum": 0.09029916141902837,
+        "maximum": 0.9997137433098768
+      },
+      "individual_expert_cosine": {
+        "mean": 0.48484939336776733,
+        "median": 0.4231029152870178,
+        "p01": 0.16151300072669983,
+        "p05": 0.22659055888652802,
+        "minimum": 0.037688981741666794,
+        "maximum": 0.9999998807907104
+      },
+      "atlas_projection": {
+        "k64": {
+          "projected_bfloat16_all_layers_bytes": 2992196224,
+          "projected_mean_coordinate_bytes_per_token": 11775.182222222222,
+          "reconstruction_multiply_accumulates_per_token": 21101126.542222224
+        },
+        "kall_calibration": {
+          "projected_bfloat16_all_layers_bytes": 3048287520,
+          "projected_mean_coordinate_bytes_per_token": 11775.182222222222,
+          "reconstruction_multiply_accumulates_per_token": 21101126.542222224
+        }
+      }
+    },
+    "per_expert_rank08": {
+      "requested_rank": 8,
+      "realized_rank_per_expert": {
+        "mean": 7.989955357142857,
+        "median": 8.0,
+        "p01": 8.0,
+        "p05": 8.0,
+        "minimum": 0.0,
+        "maximum": 8.0
+      },
+      "validation_route_weighted_average_rank": 7.999270833333333,
+      "routed_aggregate_cosine": {
+        "mean": 0.7448916300597043,
+        "median": 0.8033725694252112,
+        "p01": 0.14283073664124915,
+        "p05": 0.3148630546787027,
+        "minimum": 0.10129477100909653,
+        "maximum": 0.9997843282283394
+      },
+      "individual_expert_cosine": {
+        "mean": 0.5184942483901978,
+        "median": 0.4534175395965576,
+        "p01": 0.17737849056720734,
+        "p05": 0.23979584872722626,
+        "minimum": 0.059034563601017,
+        "maximum": 0.9999997615814209
+      },
+      "atlas_projection": {
+        "k64": {
+          "projected_bfloat16_all_layers_bytes": 5392858944,
+          "projected_mean_coordinate_bytes_per_token": 23549.853333333333,
+          "reconstruction_multiply_accumulates_per_token": 42201337.17333333
+        },
+        "kall_calibration": {
+          "projected_bfloat16_all_layers_bytes": 5505041536,
+          "projected_mean_coordinate_bytes_per_token": 23549.853333333333,
+          "reconstruction_multiply_accumulates_per_token": 42201337.17333333
+        }
+      }
+    },
+    "per_expert_rank16": {
+      "requested_rank": 16,
+      "realized_rank_per_expert": {
+        "mean": 15.957589285714286,
+        "median": 16.0,
+        "p01": 16.0,
+        "p05": 16.0,
+        "minimum": 0.0,
+        "maximum": 16.0
+      },
+      "validation_route_weighted_average_rank": 15.995763888888888,
+      "routed_aggregate_cosine": {
+        "mean": 0.7678724775283404,
+        "median": 0.8301866957387735,
+        "p01": 0.16586741086054935,
+        "p05": 0.339691328635988,
+        "minimum": 0.12649822623149573,
+        "maximum": 0.9999892147926891
+      },
+      "individual_expert_cosine": {
+        "mean": 0.5550292730331421,
+        "median": 0.4939876198768616,
+        "p01": 0.19725148379802704,
+        "p05": 0.25831103324890137,
+        "minimum": 0.06856556236743927,
+        "maximum": 1.0
+      },
+      "atlas_projection": {
+        "k64": {
+          "projected_bfloat16_all_layers_bytes": 10181616816,
+          "projected_mean_coordinate_bytes_per_token": 47091.52888888889,
+          "reconstruction_multiply_accumulates_per_token": 84388019.76888889
+        },
+        "kall_calibration": {
+          "projected_bfloat16_all_layers_bytes": 10405982000,
+          "projected_mean_coordinate_bytes_per_token": 47091.52888888889,
+          "reconstruction_multiply_accumulates_per_token": 84388019.76888889
+        }
+      }
+    },
+    "per_expert_rank32": {
+      "requested_rank": 32,
+      "realized_rank_per_expert": {
+        "mean": 31.649553571428573,
+        "median": 32.0,
+        "p01": 20.0,
+        "p05": 32.0,
+        "minimum": 0.0,
+        "maximum": 32.0
+      },
+      "validation_route_weighted_average_rank": 31.933368055555555,
+      "routed_aggregate_cosine": {
+        "mean": 0.7899440887166584,
+        "median": 0.8512063731405315,
+        "p01": 0.20952109121165807,
+        "p05": 0.3819419843763522,
+        "minimum": 0.15680103809577475,
+        "maximum": 0.9999983607814208
+      },
+      "individual_expert_cosine": {
+        "mean": 0.5924400687217712,
+        "median": 0.5426947474479675,
+        "p01": 0.22932234406471252,
+        "p05": 0.28568539023399353,
+        "minimum": 0.11791987717151642,
+        "maximum": 1.0000001192092896
+      },
+      "atlas_projection": {
+        "k64": {
+          "projected_bfloat16_all_layers_bytes": 19614500096,
+          "projected_mean_coordinate_bytes_per_token": 94011.83555555555,
+          "reconstruction_multiply_accumulates_per_token": 168469209.31555554
+        },
+        "kall_calibration": {
+          "projected_bfloat16_all_layers_bytes": 20063230464,
+          "projected_mean_coordinate_bytes_per_token": 94011.83555555555,
+          "reconstruction_multiply_accumulates_per_token": 168469209.31555554
+        }
+      }
+    },
+    "per_expert_rank64": {
+      "requested_rank": 64,
+      "realized_rank_per_expert": {
+        "mean": 61.237723214285715,
+        "median": 64.0,
+        "p01": 20.0,
+        "p05": 42.0,
+        "minimum": 0.0,
+        "maximum": 64.0
+      },
+      "validation_route_weighted_average_rank": 63.18364583333334,
+      "routed_aggregate_cosine": {
+        "mean": 0.8106729390140721,
+        "median": 0.8679655470279355,
+        "p01": 0.26562419425615014,
+        "p05": 0.4398539580681009,
+        "minimum": 0.2075963989490098,
+        "maximum": 0.9999994157943385
+      },
+      "individual_expert_cosine": {
+        "mean": 0.6305835247039795,
+        "median": 0.5915523171424866,
+        "p01": 0.2712195813655853,
+        "p05": 0.3248502314090729,
+        "minimum": 0.14084826409816742,
+        "maximum": 1.0000001192092896
+      },
+      "atlas_projection": {
+        "k64": {
+          "projected_bfloat16_all_layers_bytes": 37406639168,
+          "projected_mean_coordinate_bytes_per_token": 186012.65333333335,
+          "reconstruction_multiply_accumulates_per_token": 333334674.7733334
+        },
+        "kall_calibration": {
+          "projected_bfloat16_all_layers_bytes": 38304099904,
+          "projected_mean_coordinate_bytes_per_token": 186012.65333333335,
+          "reconstruction_multiply_accumulates_per_token": 333334674.7733334
+        }
+      }
+    }
+  }
+}

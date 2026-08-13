@@ -1,0 +1,138 @@
+{
+  "schema": "kimi-k3-layer01-route-locality-v1",
+  "status": "EXPLORATORY",
+  "capture": "/mnt/kimi-k3/captures/kimi_layer01_10000.bin",
+  "model_layer": 1,
+  "top_k": 16,
+  "calibration_sequences": 88,
+  "validation_sequences": 21,
+  "validation_tokens": 1800,
+  "history_set_recall": {
+    "previous_1_tokens": {
+      "mean": 0.12928611579539068,
+      "median": 0.125,
+      "p01": 0.0,
+      "p05": 0.0,
+      "minimum": 0.0,
+      "maximum": 0.6875
+    },
+    "previous_2_tokens": {
+      "mean": 0.16599118316268488,
+      "median": 0.125,
+      "p01": 0.0,
+      "p05": 0.0,
+      "minimum": 0.0,
+      "maximum": 0.6875
+    },
+    "previous_4_tokens": {
+      "mean": 0.239729020979021,
+      "median": 0.1875,
+      "p01": 0.0,
+      "p05": 0.0625,
+      "minimum": 0.0,
+      "maximum": 1.0
+    }
+  },
+  "consecutive_exact_route_set_repeat_fraction": 0.0,
+  "static_calibration_frequency_prefetch": {
+    "top_16": {
+      "mean": 0.058090277777777775,
+      "median": 0.0625,
+      "p01": 0.0,
+      "p05": 0.0,
+      "minimum": 0.0,
+      "maximum": 0.375
+    },
+    "top_32": {
+      "mean": 0.10086805555555556,
+      "median": 0.0625,
+      "p01": 0.0,
+      "p05": 0.0,
+      "minimum": 0.0,
+      "maximum": 0.5625
+    },
+    "top_64": {
+      "mean": 0.17378472222222222,
+      "median": 0.125,
+      "p01": 0.0,
+      "p05": 0.0,
+      "minimum": 0.0,
+      "maximum": 0.75
+    }
+  },
+  "calibration_transition_prefetch": {
+    "predict_16": {
+      "mean": 0.2420601461495222,
+      "median": 0.1875,
+      "p01": 0.0,
+      "p05": 0.0,
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "predict_32": {
+      "mean": 0.335300730747611,
+      "median": 0.25,
+      "p01": 0.0,
+      "p05": 0.0,
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "predict_64": {
+      "mean": 0.44164558740865656,
+      "median": 0.375,
+      "p01": 0.0,
+      "p05": 0.0625,
+      "minimum": 0.0,
+      "maximum": 1.0
+    }
+  },
+  "validation_lru_cache": {
+    "capacity_16": {
+      "miss_fraction": 0.9357986111111111,
+      "hit_fraction": 0.06420138888888893,
+      "one_layer_cache_gib": 0.096125,
+      "same_capacity_each_of_92_layers_gib": 8.8435,
+      "projected_expert_payload_gib_per_token": 8.276202916666666
+    },
+    "capacity_32": {
+      "miss_fraction": 0.8475347222222223,
+      "hit_fraction": 0.15246527777777774,
+      "one_layer_cache_gib": 0.19225,
+      "same_capacity_each_of_92_layers_gib": 17.687,
+      "projected_expert_payload_gib_per_token": 7.495597083333333
+    },
+    "capacity_64": {
+      "miss_fraction": 0.7596527777777777,
+      "hit_fraction": 0.24034722222222227,
+      "one_layer_cache_gib": 0.3845,
+      "same_capacity_each_of_92_layers_gib": 35.374,
+      "projected_expert_payload_gib_per_token": 6.718369166666665
+    },
+    "capacity_128": {
+      "miss_fraction": 0.6537847222222222,
+      "hit_fraction": 0.34621527777777783,
+      "one_layer_cache_gib": 0.769,
+      "same_capacity_each_of_92_layers_gib": 70.748,
+      "projected_expert_payload_gib_per_token": 5.782072083333333
+    },
+    "capacity_256": {
+      "miss_fraction": 0.48506944444444444,
+      "hit_fraction": 0.5149305555555556,
+      "one_layer_cache_gib": 1.538,
+      "same_capacity_each_of_92_layers_gib": 141.496,
+      "projected_expert_payload_gib_per_token": 4.289954166666666
+    },
+    "capacity_512": {
+      "miss_fraction": 0.3790625,
+      "hit_fraction": 0.6209374999999999,
+      "one_layer_cache_gib": 3.076,
+      "same_capacity_each_of_92_layers_gib": 282.992,
+      "projected_expert_payload_gib_per_token": 3.35242875
+    }
+  },
+  "warnings": [
+    "Only layer one is measured.",
+    "Prefetch recall can hide latency but does not remove bandwidth.",
+    "The all-layer cache projection assumes the same expert capacity per layer."
+  ]
+}

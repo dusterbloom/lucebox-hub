@@ -1,0 +1,895 @@
+{
+  "schema": "kimi-k3-layer01-sparse-exact-routes-v1",
+  "status": "EXPLORATORY",
+  "capture": "/mnt/kimi-k3/captures/kimi_layer01_10000.bin",
+  "teacher": "/mnt/kimi-k3/results/kimi_layer01_exactness_final.teacher.f32",
+  "response_directory": "/mnt/kimi-k3/responses/kimi_layer01_10000",
+  "model_layer": 1,
+  "dimension": 3584,
+  "top_k": 16,
+  "validation_tokens": 1800,
+  "full_model_exact_expert_payload_gib_per_token": 8.844,
+  "warning": "Layer-one directional agreement is not final-logit quality.",
+  "methods": {
+    "router_zero_tail": {
+      "selection": "native router order",
+      "tail": "zero",
+      "ladder": [
+        {
+          "exact_routes": 0,
+          "exact_fraction": 0.0,
+          "projected_exact_expert_bytes_per_token": 0.0,
+          "routed_aggregate_cosine": {
+            "mean": 0.0,
+            "median": 0.0,
+            "p01": 0.0,
+            "p05": 0.0,
+            "minimum": 0.0,
+            "maximum": 0.0
+          }
+        },
+        {
+          "exact_routes": 1,
+          "exact_fraction": 0.0625,
+          "projected_exact_expert_bytes_per_token": 593510793.216,
+          "routed_aggregate_cosine": {
+            "mean": 0.6873195712747068,
+            "median": 0.6861614972660901,
+            "p01": 0.3314933655407278,
+            "p05": 0.4173770549838406,
+            "minimum": 0.11186314681403962,
+            "maximum": 0.9984702099560575
+          }
+        },
+        {
+          "exact_routes": 2,
+          "exact_fraction": 0.125,
+          "projected_exact_expert_bytes_per_token": 1187021586.432,
+          "routed_aggregate_cosine": {
+            "mean": 0.8120794618143302,
+            "median": 0.8267482469945312,
+            "p01": 0.5123088921938413,
+            "p05": 0.5909940445376011,
+            "minimum": 0.34013599024958124,
+            "maximum": 0.9986803366610533
+          }
+        },
+        {
+          "exact_routes": 4,
+          "exact_fraction": 0.25,
+          "projected_exact_expert_bytes_per_token": 2374043172.864,
+          "routed_aggregate_cosine": {
+            "mean": 0.9016596574939717,
+            "median": 0.9155157645318345,
+            "p01": 0.6849081848516569,
+            "p05": 0.7601156165074943,
+            "minimum": 0.5871235973351763,
+            "maximum": 0.9992793851608369
+          }
+        },
+        {
+          "exact_routes": 8,
+          "exact_fraction": 0.5,
+          "projected_exact_expert_bytes_per_token": 4748086345.728,
+          "routed_aggregate_cosine": {
+            "mean": 0.9593519472931762,
+            "median": 0.9689167966917729,
+            "p01": 0.8513775274824046,
+            "p05": 0.8897028964365614,
+            "minimum": 0.7732740357985712,
+            "maximum": 0.9998148910046104
+          }
+        },
+        {
+          "exact_routes": 12,
+          "exact_fraction": 0.75,
+          "projected_exact_expert_bytes_per_token": 7122129518.591999,
+          "routed_aggregate_cosine": {
+            "mean": 0.9846232968457116,
+            "median": 0.9886559717000551,
+            "p01": 0.9383492941648331,
+            "p05": 0.9575526606305119,
+            "minimum": 0.8991620153165285,
+            "maximum": 0.9999191218773403
+          }
+        },
+        {
+          "exact_routes": 15,
+          "exact_fraction": 0.9375,
+          "projected_exact_expert_bytes_per_token": 8902661898.24,
+          "routed_aggregate_cosine": {
+            "mean": 0.996772611047832,
+            "median": 0.9978970181859511,
+            "p01": 0.9834689119965172,
+            "p05": 0.9902934767590647,
+            "minimum": 0.9523719766952843,
+            "maximum": 0.9999926009959379
+          }
+        },
+        {
+          "exact_routes": 16,
+          "exact_fraction": 1.0,
+          "projected_exact_expert_bytes_per_token": 9496172691.456,
+          "routed_aggregate_cosine": {
+            "mean": 1.0000000003245038,
+            "median": 1.0000000018142439,
+            "p01": 0.9999998424319134,
+            "p05": 0.9999998830803306,
+            "minimum": 0.9999997653969508,
+            "maximum": 1.000000179758741
+          }
+        }
+      ]
+    },
+    "expected_norm_zero_tail": {
+      "selection": "router weight times calibration mean response norm",
+      "tail": "zero",
+      "ladder": [
+        {
+          "exact_routes": 0,
+          "exact_fraction": 0.0,
+          "projected_exact_expert_bytes_per_token": 0.0,
+          "routed_aggregate_cosine": {
+            "mean": 0.0,
+            "median": 0.0,
+            "p01": 0.0,
+            "p05": 0.0,
+            "minimum": 0.0,
+            "maximum": 0.0
+          }
+        },
+        {
+          "exact_routes": 1,
+          "exact_fraction": 0.0625,
+          "projected_exact_expert_bytes_per_token": 593510793.216,
+          "routed_aggregate_cosine": {
+            "mean": 0.7007192127338833,
+            "median": 0.6976683247185276,
+            "p01": 0.33633334759493994,
+            "p05": 0.45153999615383944,
+            "minimum": 0.21984297063616134,
+            "maximum": 0.9984702099560575
+          }
+        },
+        {
+          "exact_routes": 2,
+          "exact_fraction": 0.125,
+          "projected_exact_expert_bytes_per_token": 1187021586.432,
+          "routed_aggregate_cosine": {
+            "mean": 0.8209706692656109,
+            "median": 0.8345360914181602,
+            "p01": 0.5200689646880484,
+            "p05": 0.6146544834183275,
+            "minimum": 0.4280156366335909,
+            "maximum": 0.9987006558528928
+          }
+        },
+        {
+          "exact_routes": 4,
+          "exact_fraction": 0.25,
+          "projected_exact_expert_bytes_per_token": 2374043172.864,
+          "routed_aggregate_cosine": {
+            "mean": 0.908251550468974,
+            "median": 0.9212732638145218,
+            "p01": 0.7116180839363961,
+            "p05": 0.7761979038374082,
+            "minimum": 0.612294721280421,
+            "maximum": 0.999385162419247
+          }
+        },
+        {
+          "exact_routes": 8,
+          "exact_fraction": 0.5,
+          "projected_exact_expert_bytes_per_token": 4748086345.728,
+          "routed_aggregate_cosine": {
+            "mean": 0.9651080287980929,
+            "median": 0.973686377057287,
+            "p01": 0.8734450150305262,
+            "p05": 0.9063319576297248,
+            "minimum": 0.8313506561303964,
+            "maximum": 0.9998695292690372
+          }
+        },
+        {
+          "exact_routes": 12,
+          "exact_fraction": 0.75,
+          "projected_exact_expert_bytes_per_token": 7122129518.591999,
+          "routed_aggregate_cosine": {
+            "mean": 0.9884173824763217,
+            "median": 0.9917905547224999,
+            "p01": 0.9523190919691039,
+            "p05": 0.9670111681670185,
+            "minimum": 0.9368196612986034,
+            "maximum": 0.9999524473141251
+          }
+        },
+        {
+          "exact_routes": 15,
+          "exact_fraction": 0.9375,
+          "projected_exact_expert_bytes_per_token": 8902661898.24,
+          "routed_aggregate_cosine": {
+            "mean": 0.9978967860738658,
+            "median": 0.9985765344046447,
+            "p01": 0.9899806026056412,
+            "p05": 0.9937736414322238,
+            "minimum": 0.9828339669342484,
+            "maximum": 0.9999925999021617
+          }
+        },
+        {
+          "exact_routes": 16,
+          "exact_fraction": 1.0,
+          "projected_exact_expert_bytes_per_token": 9496172691.456,
+          "routed_aggregate_cosine": {
+            "mean": 1.0000000007951708,
+            "median": 1.000000002199854,
+            "p01": 0.9999998489639478,
+            "p05": 0.9999998846499798,
+            "minimum": 0.9999997660899731,
+            "maximum": 1.0000002006689421
+          }
+        }
+      ]
+    },
+    "oracle_norm_zero_tail": {
+      "selection": "held-out exact contribution norm (oracle)",
+      "tail": "zero",
+      "ladder": [
+        {
+          "exact_routes": 0,
+          "exact_fraction": 0.0,
+          "projected_exact_expert_bytes_per_token": 0.0,
+          "routed_aggregate_cosine": {
+            "mean": 0.0,
+            "median": 0.0,
+            "p01": 0.0,
+            "p05": 0.0,
+            "minimum": 0.0,
+            "maximum": 0.0
+          }
+        },
+        {
+          "exact_routes": 1,
+          "exact_fraction": 0.0625,
+          "projected_exact_expert_bytes_per_token": 593510793.216,
+          "routed_aggregate_cosine": {
+            "mean": 0.7249148256816706,
+            "median": 0.7220986794063804,
+            "p01": 0.43456988352301756,
+            "p05": 0.5034320559162765,
+            "minimum": 0.33204795467345033,
+            "maximum": 0.9984702099560575
+          }
+        },
+        {
+          "exact_routes": 2,
+          "exact_fraction": 0.125,
+          "projected_exact_expert_bytes_per_token": 1187021586.432,
+          "routed_aggregate_cosine": {
+            "mean": 0.8352132968678029,
+            "median": 0.8431567625927916,
+            "p01": 0.5858872226522477,
+            "p05": 0.6490832669205491,
+            "minimum": 0.5036698052261582,
+            "maximum": 0.9986803366610533
+          }
+        },
+        {
+          "exact_routes": 4,
+          "exact_fraction": 0.25,
+          "projected_exact_expert_bytes_per_token": 2374043172.864,
+          "routed_aggregate_cosine": {
+            "mean": 0.9156550906052563,
+            "median": 0.9276470064128683,
+            "p01": 0.741356619667537,
+            "p05": 0.795755766963294,
+            "minimum": 0.6783980418975832,
+            "maximum": 0.999385162419247
+          }
+        },
+        {
+          "exact_routes": 8,
+          "exact_fraction": 0.5,
+          "projected_exact_expert_bytes_per_token": 4748086345.728,
+          "routed_aggregate_cosine": {
+            "mean": 0.9688594994729431,
+            "median": 0.9762020820921208,
+            "p01": 0.8869999191318788,
+            "p05": 0.9162190661248685,
+            "minimum": 0.8623526926167256,
+            "maximum": 0.9998695294669175
+          }
+        },
+        {
+          "exact_routes": 12,
+          "exact_fraction": 0.75,
+          "projected_exact_expert_bytes_per_token": 7122129518.591999,
+          "routed_aggregate_cosine": {
+            "mean": 0.989868935994679,
+            "median": 0.9926071054356406,
+            "p01": 0.959808886573528,
+            "p05": 0.9710021479227139,
+            "minimum": 0.9468959248933342,
+            "maximum": 0.9999570664437394
+          }
+        },
+        {
+          "exact_routes": 15,
+          "exact_fraction": 0.9375,
+          "projected_exact_expert_bytes_per_token": 8902661898.24,
+          "routed_aggregate_cosine": {
+            "mean": 0.9981667087919646,
+            "median": 0.9987416571210764,
+            "p01": 0.9920177386165884,
+            "p05": 0.9945437718706891,
+            "minimum": 0.9892309084828848,
+            "maximum": 0.9999926003736622
+          }
+        },
+        {
+          "exact_routes": 16,
+          "exact_fraction": 1.0,
+          "projected_exact_expert_bytes_per_token": 9496172691.456,
+          "routed_aggregate_cosine": {
+            "mean": 1.0000000006334357,
+            "median": 1.0000000021063364,
+            "p01": 0.9999998491468557,
+            "p05": 0.999999883942807,
+            "minimum": 0.9999997852361256,
+            "maximum": 1.0000001785068007
+          }
+        }
+      ]
+    },
+    "oracle_greedy_zero_tail": {
+      "selection": "held-out greedy cosine improvement (oracle)",
+      "tail": "zero",
+      "ladder": [
+        {
+          "exact_routes": 0,
+          "exact_fraction": 0.0,
+          "projected_exact_expert_bytes_per_token": 0.0,
+          "routed_aggregate_cosine": {
+            "mean": 0.0,
+            "median": 0.0,
+            "p01": 0.0,
+            "p05": 0.0,
+            "minimum": 0.0,
+            "maximum": 0.0
+          }
+        },
+        {
+          "exact_routes": 1,
+          "exact_fraction": 0.0625,
+          "projected_exact_expert_bytes_per_token": 593510793.216,
+          "routed_aggregate_cosine": {
+            "mean": 0.7313645949805283,
+            "median": 0.7254664419056167,
+            "p01": 0.4668436542769848,
+            "p05": 0.5149664246569128,
+            "minimum": 0.40761796136947065,
+            "maximum": 0.9984702099560575
+          }
+        },
+        {
+          "exact_routes": 2,
+          "exact_fraction": 0.125,
+          "projected_exact_expert_bytes_per_token": 1187021586.432,
+          "routed_aggregate_cosine": {
+            "mean": 0.8385858784996415,
+            "median": 0.8459619975767558,
+            "p01": 0.6046544242962117,
+            "p05": 0.6592670485707509,
+            "minimum": 0.5514644731068324,
+            "maximum": 0.9987006558528928
+          }
+        },
+        {
+          "exact_routes": 4,
+          "exact_fraction": 0.25,
+          "projected_exact_expert_bytes_per_token": 2374043172.864,
+          "routed_aggregate_cosine": {
+            "mean": 0.9170302355002079,
+            "median": 0.9290299122720165,
+            "p01": 0.7501842333144625,
+            "p05": 0.8012735047668919,
+            "minimum": 0.7159051620223295,
+            "maximum": 0.999385162419247
+          }
+        },
+        {
+          "exact_routes": 8,
+          "exact_fraction": 0.5,
+          "projected_exact_expert_bytes_per_token": 4748086345.728,
+          "routed_aggregate_cosine": {
+            "mean": 0.9691977917507392,
+            "median": 0.9763630071591824,
+            "p01": 0.8916458830829166,
+            "p05": 0.9176041809322104,
+            "minimum": 0.8655971919724628,
+            "maximum": 0.9998695294669175
+          }
+        },
+        {
+          "exact_routes": 12,
+          "exact_fraction": 0.75,
+          "projected_exact_expert_bytes_per_token": 7122129518.591999,
+          "routed_aggregate_cosine": {
+            "mean": 0.9899163899026635,
+            "median": 0.9926639443606396,
+            "p01": 0.9599800566073844,
+            "p05": 0.9710130121430847,
+            "minimum": 0.9475774686956882,
+            "maximum": 0.9999570661913644
+          }
+        },
+        {
+          "exact_routes": 15,
+          "exact_fraction": 0.9375,
+          "projected_exact_expert_bytes_per_token": 8902661898.24,
+          "routed_aggregate_cosine": {
+            "mean": 0.9981675382690987,
+            "median": 0.9987431154868145,
+            "p01": 0.9920177343304858,
+            "p05": 0.9945437745573144,
+            "minimum": 0.989230907022472,
+            "maximum": 0.9999926000884115
+          }
+        },
+        {
+          "exact_routes": 16,
+          "exact_fraction": 1.0,
+          "projected_exact_expert_bytes_per_token": 9496172691.456,
+          "routed_aggregate_cosine": {
+            "mean": 1.0000000008540766,
+            "median": 1.0000000027948632,
+            "p01": 0.9999998470560367,
+            "p05": 0.9999998849237766,
+            "minimum": 0.9999997852473943,
+            "maximum": 1.0000001772542189
+          }
+        }
+      ]
+    },
+    "router_mean_tail": {
+      "selection": "native router order",
+      "tail": "calibration expert mean",
+      "ladder": [
+        {
+          "exact_routes": 0,
+          "exact_fraction": 0.0,
+          "projected_exact_expert_bytes_per_token": 0.0,
+          "routed_aggregate_cosine": {
+            "mean": 0.6184498423454041,
+            "median": 0.6663073415291336,
+            "p01": 0.10424051396133258,
+            "p05": 0.23310360864295934,
+            "minimum": 0.0726448832329539,
+            "maximum": 0.9821585988321233
+          }
+        },
+        {
+          "exact_routes": 1,
+          "exact_fraction": 0.0625,
+          "projected_exact_expert_bytes_per_token": 593510793.216,
+          "routed_aggregate_cosine": {
+            "mean": 0.8479114219857696,
+            "median": 0.855942756430978,
+            "p01": 0.6095094690101177,
+            "p05": 0.7004602884522824,
+            "minimum": 0.17668153697400338,
+            "maximum": 0.9989338375620808
+          }
+        },
+        {
+          "exact_routes": 2,
+          "exact_fraction": 0.125,
+          "projected_exact_expert_bytes_per_token": 1187021586.432,
+          "routed_aggregate_cosine": {
+            "mean": 0.9035865507751487,
+            "median": 0.9083833507403594,
+            "p01": 0.7398449285301979,
+            "p05": 0.8023416766381167,
+            "minimum": 0.6288615299747303,
+            "maximum": 0.9990873108692182
+          }
+        },
+        {
+          "exact_routes": 4,
+          "exact_fraction": 0.25,
+          "projected_exact_expert_bytes_per_token": 2374043172.864,
+          "routed_aggregate_cosine": {
+            "mean": 0.943239283241252,
+            "median": 0.9498271344591838,
+            "p01": 0.8176078491452878,
+            "p05": 0.86576108176233,
+            "minimum": 0.7153146093462499,
+            "maximum": 0.9995655901740081
+          }
+        },
+        {
+          "exact_routes": 8,
+          "exact_fraction": 0.5,
+          "projected_exact_expert_bytes_per_token": 4748086345.728,
+          "routed_aggregate_cosine": {
+            "mean": 0.9715179877507938,
+            "median": 0.977590562794223,
+            "p01": 0.8875508764038654,
+            "p05": 0.9244097224574852,
+            "minimum": 0.8333354003579899,
+            "maximum": 0.999890856546521
+          }
+        },
+        {
+          "exact_routes": 12,
+          "exact_fraction": 0.75,
+          "projected_exact_expert_bytes_per_token": 7122129518.591999,
+          "routed_aggregate_cosine": {
+            "mean": 0.9873529329833131,
+            "median": 0.9908314086712615,
+            "p01": 0.9456415196494844,
+            "p05": 0.9652992836246064,
+            "minimum": 0.9241753923827086,
+            "maximum": 0.9999330145211553
+          }
+        },
+        {
+          "exact_routes": 15,
+          "exact_fraction": 0.9375,
+          "projected_exact_expert_bytes_per_token": 8902661898.24,
+          "routed_aggregate_cosine": {
+            "mean": 0.9969677859533003,
+            "median": 0.9980502048996811,
+            "p01": 0.9816479037110054,
+            "p05": 0.9904340269987252,
+            "minimum": 0.9589200815463175,
+            "maximum": 0.9999924792338074
+          }
+        },
+        {
+          "exact_routes": 16,
+          "exact_fraction": 1.0,
+          "projected_exact_expert_bytes_per_token": 9496172691.456,
+          "routed_aggregate_cosine": {
+            "mean": 0.9999999996501429,
+            "median": 1.0000000011557928,
+            "p01": 0.999999849931606,
+            "p05": 0.9999998851484697,
+            "minimum": 0.9999997680899215,
+            "maximum": 1.0000001827361222
+          }
+        }
+      ]
+    },
+    "expected_norm_mean_tail": {
+      "selection": "router weight times calibration mean response norm",
+      "tail": "calibration expert mean",
+      "ladder": [
+        {
+          "exact_routes": 0,
+          "exact_fraction": 0.0,
+          "projected_exact_expert_bytes_per_token": 0.0,
+          "routed_aggregate_cosine": {
+            "mean": 0.6184498423454041,
+            "median": 0.6663073415291336,
+            "p01": 0.10424051396133258,
+            "p05": 0.23310360864295934,
+            "minimum": 0.0726448832329539,
+            "maximum": 0.9821585988321233
+          }
+        },
+        {
+          "exact_routes": 1,
+          "exact_fraction": 0.0625,
+          "projected_exact_expert_bytes_per_token": 593510793.216,
+          "routed_aggregate_cosine": {
+            "mean": 0.8500712585831066,
+            "median": 0.8585656846005512,
+            "p01": 0.6169919671027795,
+            "p05": 0.7056732577331513,
+            "minimum": 0.4784143752702055,
+            "maximum": 0.9989338375620808
+          }
+        },
+        {
+          "exact_routes": 2,
+          "exact_fraction": 0.125,
+          "projected_exact_expert_bytes_per_token": 1187021586.432,
+          "routed_aggregate_cosine": {
+            "mean": 0.9056509097745581,
+            "median": 0.9116308063559504,
+            "p01": 0.7428195795225345,
+            "p05": 0.8051655625874062,
+            "minimum": 0.5868508816406935,
+            "maximum": 0.9990607113344881
+          }
+        },
+        {
+          "exact_routes": 4,
+          "exact_fraction": 0.25,
+          "projected_exact_expert_bytes_per_token": 2374043172.864,
+          "routed_aggregate_cosine": {
+            "mean": 0.9464602804244862,
+            "median": 0.9532617362472544,
+            "p01": 0.8308249203945312,
+            "p05": 0.8731427195594401,
+            "minimum": 0.7685486250219143,
+            "maximum": 0.9995655901740081
+          }
+        },
+        {
+          "exact_routes": 8,
+          "exact_fraction": 0.5,
+          "projected_exact_expert_bytes_per_token": 4748086345.728,
+          "routed_aggregate_cosine": {
+            "mean": 0.9758283052586639,
+            "median": 0.9811955604793876,
+            "p01": 0.9134360678471607,
+            "p05": 0.9368453171390967,
+            "minimum": 0.8739804041771138,
+            "maximum": 0.9999131155168246
+          }
+        },
+        {
+          "exact_routes": 12,
+          "exact_fraction": 0.75,
+          "projected_exact_expert_bytes_per_token": 7122129518.591999,
+          "routed_aggregate_cosine": {
+            "mean": 0.9907471394626735,
+            "median": 0.9932195360257172,
+            "p01": 0.9619076574093158,
+            "p05": 0.9736574523556082,
+            "minimum": 0.9440041236845216,
+            "maximum": 0.9999689142578335
+          }
+        },
+        {
+          "exact_routes": 15,
+          "exact_fraction": 0.9375,
+          "projected_exact_expert_bytes_per_token": 8902661898.24,
+          "routed_aggregate_cosine": {
+            "mean": 0.998154352116855,
+            "median": 0.9987068300963446,
+            "p01": 0.9913853001457986,
+            "p05": 0.9945432144565101,
+            "minimum": 0.9838246378657182,
+            "maximum": 0.9999929242710204
+          }
+        },
+        {
+          "exact_routes": 16,
+          "exact_fraction": 1.0,
+          "projected_exact_expert_bytes_per_token": 9496172691.456,
+          "routed_aggregate_cosine": {
+            "mean": 1.000000000495607,
+            "median": 1.0000000014914971,
+            "p01": 0.9999998485926295,
+            "p05": 0.9999998860160356,
+            "minimum": 0.9999997877779291,
+            "maximum": 1.0000001763358517
+          }
+        }
+      ]
+    },
+    "oracle_norm_mean_tail": {
+      "selection": "held-out exact contribution norm (oracle)",
+      "tail": "calibration expert mean",
+      "ladder": [
+        {
+          "exact_routes": 0,
+          "exact_fraction": 0.0,
+          "projected_exact_expert_bytes_per_token": 0.0,
+          "routed_aggregate_cosine": {
+            "mean": 0.6184498423454041,
+            "median": 0.6663073415291336,
+            "p01": 0.10424051396133258,
+            "p05": 0.23310360864295934,
+            "minimum": 0.0726448832329539,
+            "maximum": 0.9821585988321233
+          }
+        },
+        {
+          "exact_routes": 1,
+          "exact_fraction": 0.0625,
+          "projected_exact_expert_bytes_per_token": 593510793.216,
+          "routed_aggregate_cosine": {
+            "mean": 0.8610979649918079,
+            "median": 0.8625622120589276,
+            "p01": 0.696490633821141,
+            "p05": 0.7501633326847486,
+            "minimum": 0.597876235027599,
+            "maximum": 0.9989338375620808
+          }
+        },
+        {
+          "exact_routes": 2,
+          "exact_fraction": 0.125,
+          "projected_exact_expert_bytes_per_token": 1187021586.432,
+          "routed_aggregate_cosine": {
+            "mean": 0.9124575044577988,
+            "median": 0.9163688279346348,
+            "p01": 0.783169253633394,
+            "p05": 0.8273097675121514,
+            "minimum": 0.7065251009324258,
+            "maximum": 0.9990873108692182
+          }
+        },
+        {
+          "exact_routes": 4,
+          "exact_fraction": 0.25,
+          "projected_exact_expert_bytes_per_token": 2374043172.864,
+          "routed_aggregate_cosine": {
+            "mean": 0.9496223328669406,
+            "median": 0.9556548622381322,
+            "p01": 0.850167229416512,
+            "p05": 0.8821969789183343,
+            "minimum": 0.781367511093071,
+            "maximum": 0.9995655901740081
+          }
+        },
+        {
+          "exact_routes": 8,
+          "exact_fraction": 0.5,
+          "projected_exact_expert_bytes_per_token": 4748086345.728,
+          "routed_aggregate_cosine": {
+            "mean": 0.9772051131255954,
+            "median": 0.9821122275952243,
+            "p01": 0.9137278689475048,
+            "p05": 0.9403467923012351,
+            "minimum": 0.8859867791125581,
+            "maximum": 0.9999131153297325
+          }
+        },
+        {
+          "exact_routes": 12,
+          "exact_fraction": 0.75,
+          "projected_exact_expert_bytes_per_token": 7122129518.591999,
+          "routed_aggregate_cosine": {
+            "mean": 0.9914410971384722,
+            "median": 0.993693018052966,
+            "p01": 0.9654953061193203,
+            "p05": 0.9752421490825567,
+            "minimum": 0.9433711235408486,
+            "maximum": 0.9999661150354503
+          }
+        },
+        {
+          "exact_routes": 15,
+          "exact_fraction": 0.9375,
+          "projected_exact_expert_bytes_per_token": 8902661898.24,
+          "routed_aggregate_cosine": {
+            "mean": 0.9982736621692414,
+            "median": 0.9988255663837107,
+            "p01": 0.992271221328309,
+            "p05": 0.9950200815402527,
+            "minimum": 0.9610161277335497,
+            "maximum": 0.9999924801707308
+          }
+        },
+        {
+          "exact_routes": 16,
+          "exact_fraction": 1.0,
+          "projected_exact_expert_bytes_per_token": 9496172691.456,
+          "routed_aggregate_cosine": {
+            "mean": 1.0000000011183605,
+            "median": 1.000000001741304,
+            "p01": 0.9999998493090306,
+            "p05": 0.9999998909142561,
+            "minimum": 0.9999997679742366,
+            "maximum": 1.0000001977671995
+          }
+        }
+      ]
+    },
+    "oracle_greedy_mean_tail": {
+      "selection": "held-out greedy cosine improvement (oracle)",
+      "tail": "calibration expert mean",
+      "ladder": [
+        {
+          "exact_routes": 0,
+          "exact_fraction": 0.0,
+          "projected_exact_expert_bytes_per_token": 0.0,
+          "routed_aggregate_cosine": {
+            "mean": 0.6184498424606464,
+            "median": 0.6663073396220232,
+            "p01": 0.10424051461031507,
+            "p05": 0.23310360753151982,
+            "minimum": 0.07264488525050487,
+            "maximum": 0.9821585977909234
+          }
+        },
+        {
+          "exact_routes": 1,
+          "exact_fraction": 0.0625,
+          "projected_exact_expert_bytes_per_token": 593510793.216,
+          "routed_aggregate_cosine": {
+            "mean": 0.8624514454728011,
+            "median": 0.8640003098098736,
+            "p01": 0.6990699487294145,
+            "p05": 0.750478422098281,
+            "minimum": 0.6453345095962567,
+            "maximum": 0.9989338369787327
+          }
+        },
+        {
+          "exact_routes": 2,
+          "exact_fraction": 0.125,
+          "projected_exact_expert_bytes_per_token": 1187021586.432,
+          "routed_aggregate_cosine": {
+            "mean": 0.9135558120885547,
+            "median": 0.9170438626402813,
+            "p01": 0.7822316270908873,
+            "p05": 0.8283202212718271,
+            "minimum": 0.7065250989882751,
+            "maximum": 0.9990873102575167
+          }
+        },
+        {
+          "exact_routes": 4,
+          "exact_fraction": 0.25,
+          "projected_exact_expert_bytes_per_token": 2374043172.864,
+          "routed_aggregate_cosine": {
+            "mean": 0.9507889428023754,
+            "median": 0.956971139673969,
+            "p01": 0.8520420746754023,
+            "p05": 0.8843474896832436,
+            "minimum": 0.7813675911061922,
+            "maximum": 0.9995655899428081
+          }
+        },
+        {
+          "exact_routes": 8,
+          "exact_fraction": 0.5,
+          "projected_exact_expert_bytes_per_token": 4748086345.728,
+          "routed_aggregate_cosine": {
+            "mean": 0.9781662553796289,
+            "median": 0.9826520851569536,
+            "p01": 0.9215875894515873,
+            "p05": 0.9419154070659644,
+            "minimum": 0.8907040787263847,
+            "maximum": 0.9999131160125168
+          }
+        },
+        {
+          "exact_routes": 12,
+          "exact_fraction": 0.75,
+          "projected_exact_expert_bytes_per_token": 7122129518.591999,
+          "routed_aggregate_cosine": {
+            "mean": 0.9918121147884211,
+            "median": 0.9938093087536017,
+            "p01": 0.9672767176550517,
+            "p05": 0.9769545251175187,
+            "minimum": 0.9526966527587218,
+            "maximum": 0.9999689147767984
+          }
+        },
+        {
+          "exact_routes": 15,
+          "exact_fraction": 0.9375,
+          "projected_exact_expert_bytes_per_token": 8902661898.24,
+          "routed_aggregate_cosine": {
+            "mean": 0.9983722150663271,
+            "median": 0.998840988046382,
+            "p01": 0.9930372462291372,
+            "p05": 0.9952675095431717,
+            "minimum": 0.9894218047099321,
+            "maximum": 0.9999941243697233
+          }
+        },
+        {
+          "exact_routes": 16,
+          "exact_fraction": 1.0,
+          "projected_exact_expert_bytes_per_token": 9496172691.456,
+          "routed_aggregate_cosine": {
+            "mean": 1.000000001238829,
+            "median": 1.0000000032205376,
+            "p01": 0.9999998492941553,
+            "p05": 0.99999988705553,
+            "minimum": 0.9999998038886977,
+            "maximum": 1.0000001994491867
+          }
+        }
+      ]
+    }
+  }
+}
