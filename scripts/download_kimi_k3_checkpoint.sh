@@ -30,9 +30,9 @@ while :; do
     echo "$(timestamp) starting resumable Kimi checkpoint transfer attempt $attempt"
 
     set +e
-    HF_HOME="$hf_home" \
-    HF_TOKEN_PATH="${HF_TOKEN_PATH:-$HOME/.cache/huggingface/token}" \
-    HF_HUB_DISABLE_XET=1 \
+    env -u HF_HUB_DISABLE_XET \
+        HF_HOME="$hf_home" \
+        HF_TOKEN_PATH="${HF_TOKEN_PATH:-$HOME/.cache/huggingface/token}" \
         hf download "$repo" \
             --revision "$revision" \
             --include 'UD-IQ1_S/*' \
