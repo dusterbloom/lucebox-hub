@@ -1,0 +1,86 @@
+{
+  "schema": "kimi-k3-h16-exact-baseline-v1",
+  "status": "BLOCKED",
+  "claim_status": "MEASURED",
+  "go_no_go": "NO-GO",
+  "protocol_stop_after": "step_1_complete_model_exact_baseline",
+  "recorded_at": "2026-08-14T00:13:48+02:00",
+  "repository": {
+    "branch": "experiment/kimi-k3-panel-probe",
+    "commit": "0a18d2db3c3c8d70a48c02ebf8aaa24ce9032ec6",
+    "base_commit": "e9aa6bd13702dabc042292341b46fe9f06e46734",
+    "worktree_clean_before_attempt": true
+  },
+  "checkpoint": {
+    "repository": "unsloth/Kimi-K3-GGUF",
+    "quantization": "UD-IQ1_S",
+    "shards": 14,
+    "expected_total_bytes": 594040923616,
+    "sha256_manifest": "scripts/kimi_k3_ud_iq1s.sha256",
+    "sha256_manifest_sha256": "10a41a35e9673b2c74d1f74a85074e966412e958b1008db43bc7ee715aa5da14",
+    "all_shards_sha256_verified_before_attempt": true
+  },
+  "command": "scripts/run_kimi_exact_baseline.sh",
+  "configuration": {
+    "model_path": "/mnt/kimi-k3/models/unsloth-Kimi-K3-GGUF/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00001-of-00014.gguf",
+    "graphics_device": 0,
+    "generated_tokens_requested": 4,
+    "prompt": "According to all known laws",
+    "maximum_context": 512,
+    "routed_experts": "file_backed_single_owner",
+    "expert_device": -1,
+    "build_type": "Release",
+    "cuda_architecture": 86,
+    "ggml_cuda": true,
+    "binary_sha256": "66432bc7347287c56f45c60c3036aae7dc7ddf5de33afa98bb4bb56e0035306a",
+    "runner_sha256": "3931d031c6f4f0f1bdf7f351f79be6c3bf20742ac02ff496eaeb274c46298eeb"
+  },
+  "host": {
+    "kernel": "Linux 5.15.167.4-microsoft-standard-WSL2 x86_64",
+    "host_memory_bytes": 29430136832,
+    "swap_bytes": 7516192768,
+    "graphics_device": "NVIDIA GeForce RTX 3090",
+    "graphics_memory_mib": 24576,
+    "driver": "610.88"
+  },
+  "attempt_1": {
+    "exit_code": 1,
+    "elapsed_seconds": 15.756050511001376,
+    "failure_stage": "model_load_shard_8",
+    "failure": "cudaMalloc failed while allocating a 3777.69 MiB resident tensor buffer",
+    "peak_process_rss_kib": 6573800,
+    "reported_process_high_water_rss_kib": 6762472,
+    "peak_graphics_memory_mib": 24199.0,
+    "peak_graphics_utilization_percent": 39.0,
+    "peak_graphics_power_watts": 146.83,
+    "sampled_graphics_energy_joules": 2086.409652653436,
+    "nvme_read_operations": 217833,
+    "nvme_read_bytes": 25229496320,
+    "nvme_busy_milliseconds": 11670,
+    "stderr": "/mnt/kimi-k3/results/kimi-exact-baseline/exact-run-1.stderr.log",
+    "stderr_sha256": "7d0208a84f9bdd55b7270ff9e8cd384a4c366c7853dc06be5e31ee19dc1b8bb6",
+    "telemetry": "/mnt/kimi-k3/results/kimi-exact-baseline/exact-run-1.telemetry.json",
+    "telemetry_sha256": "d7e025214d1575af558f358db5e9e86774d6ef44a5acf577cac5083780e7a319"
+  },
+  "unavailable_because_model_never_loaded": [
+    "prompt_token_ids",
+    "full_final_logits",
+    "generated_token_ids",
+    "prefill_timing",
+    "decode_timing",
+    "exact_repeatability_run_2"
+  ],
+  "diagnosis": {
+    "checkpoint_corruption": false,
+    "graphics_memory_exhaustion": true,
+    "host_memory_increase_alone_sufficient_for_current_cuda_backend": false,
+    "reason": "The current Kimi backend creates one CUDA backend and allocates every non-routed resident tensor on that backend. It has no CPU or mixed host/device placement path."
+  },
+  "h16_actions_not_run": [
+    "frozen_one_layer_interventions",
+    "low_rank_behavioral_metric_fit",
+    "fisher_weighted_slab_ordering",
+    "minimum_safe_byte_fraction",
+    "aggregate_tail_training"
+  ]
+}

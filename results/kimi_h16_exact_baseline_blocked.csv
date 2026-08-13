@@ -1,0 +1,2 @@
+status,protocol_stop_after,exit_code,failure_stage,allocation_mib,peak_vram_mib,elapsed_seconds,nvme_read_bytes,nvme_busy_ms,commit
+BLOCKED,step_1_complete_model_exact_baseline,1,model_load_shard_8,3777.69,24199.0,15.756050511001376,25229496320,11670,0a18d2db3c3c8d70a48c02ebf8aaa24ce9032ec6
