@@ -17,10 +17,40 @@ struct ggml_backend;
 
 namespace dflash::common {
 
+enum class KimiK3CorePlacement {
+    Accelerator,
+    Cpu,
+};
+
+inline const char * kimi_k3_core_placement_name(
+        KimiK3CorePlacement placement) {
+    return placement == KimiK3CorePlacement::Cpu ? "cpu" : "accelerator";
+}
+
+inline bool parse_kimi_k3_core_placement(
+        const std::string & value, KimiK3CorePlacement & out) {
+    if (value == "accelerator") {
+        out = KimiK3CorePlacement::Accelerator;
+        return true;
+    }
+    if (value == "cpu") {
+        out = KimiK3CorePlacement::Cpu;
+        return true;
+    }
+    return false;
+}
+
+// Initialize the backend that owns KDA, MLA, shared experts, and the output
+// head. Routed experts may independently use the exact NVMe stream engine on
+// an accelerator.
+ggml_backend_t init_kimi_k3_core_backend(
+    KimiK3CorePlacement placement, int gpu, std::string * error = nullptr);
+
 struct KimiK3BackendConfig {
     const char * model_path = nullptr;
     const char * draft_path = nullptr;
     DevicePlacement device;
+    KimiK3CorePlacement core_placement = KimiK3CorePlacement::Accelerator;
     int draft_gpu = 0;
     int draft_ctx_max = 4096;
     bool fast_rollback = true;

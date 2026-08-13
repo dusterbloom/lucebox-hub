@@ -4,6 +4,8 @@
 #include "common/gguf_mmap.h"
 #include "internal.h"
 
+#include "ggml-cpu.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -555,6 +557,7 @@ bool load_kimi_k3_gguf(const std::string & path,
         ggml_backend_get_default_buffer_type(backend);
     const size_t alignment = ggml_backend_buft_get_alignment(buft);
     size_t copied = 0;
+    size_t mapped = 0;
     size_t skipped = 0;
     for (size_t shard = 0; shard < shard_ggufs.size(); ++shard) {
         gguf_context * gguf = shard_ggufs[shard];
@@ -589,6 +592,42 @@ bool load_kimi_k3_gguf(const std::string & path,
             allocs.push_back(allocation);
         }
         if (allocs.empty()) continue;
+
+        if (options.mmap_resident_tensors) {
+            GgufMmap mmap;
+            std::string mmap_error;
+            if (!mmap.open(shard_paths[shard], mmap_error)) {
+                return fail(mmap_error);
+            }
+            void * mapping_base = const_cast<void *>(mmap.data());
+            ggml_backend_buffer_t buffer =
+                ggml_backend_cpu_buffer_from_ptr(mapping_base, mmap.size());
+            if (!buffer) {
+                return fail("unable to bind mapped resident tensor buffer for shard " +
+                            std::to_string(shard + 1));
+            }
+            ggml_backend_buffer_set_usage(
+                buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+            out.buffers.push_back(buffer);
+            char * base = static_cast<char *>(mapping_base);
+            for (const ResidentAlloc & allocation : allocs) {
+                if (allocation.file_offset > mmap.size() ||
+                    allocation.file_size >
+                        mmap.size() - allocation.file_offset) {
+                    return fail("mapped resident tensor range is outside GGUF shard " +
+                                std::to_string(shard + 1));
+                }
+                if (ggml_backend_tensor_alloc(
+                        buffer, allocation.tensor,
+                        base + allocation.file_offset) !=
+                    GGML_STATUS_SUCCESS) {
+                    return fail("unable to bind a mapped resident tensor");
+                }
+                mapped += allocation.file_size;
+            }
+            out.mapped_shards.push_back(std::move(mmap));
+            continue;
+        }
 
         ggml_backend_buffer_t buffer =
             ggml_backend_alloc_buffer(backend, allocation_bytes);
@@ -635,10 +674,12 @@ bool load_kimi_k3_gguf(const std::string & path,
     for (gguf_context * gguf : shard_ggufs) gguf_free(gguf);
     shard_ggufs.clear();
     std::fprintf(stderr,
-        "[kimi-k3] loaded resident=%.2f GiB file-backed-experts=%.2f GiB "
+        "[kimi-k3] loaded resident=%.2f GiB mapped-core=%.2f GiB "
+        "file-backed-experts=%.2f GiB "
         "shards=%zu layers=%d (KDA=%zu MLA=%zu) hidden=%d "
         "experts=%d top=%d latent=%d vocab=%d\n",
         static_cast<double>(copied) / (1024.0 * 1024.0 * 1024.0),
+        static_cast<double>(mapped) / (1024.0 * 1024.0 * 1024.0),
         static_cast<double>(skipped) / (1024.0 * 1024.0 * 1024.0),
         out.shard_paths.size(),
         out.n_layer,
@@ -668,6 +709,7 @@ void free_kimi_k3_weights(KimiK3Weights & w) {
     for (ggml_context * context : w.contexts) {
         if (context) ggml_free(context);
     }
+    w.mapped_shards.clear();
     w = KimiK3Weights{};
 }
 

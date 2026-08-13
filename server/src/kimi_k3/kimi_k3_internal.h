@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include "common/gguf_mmap.h"
 #include "common/moe_hybrid_storage.h"
 
 #include "ggml.h"
@@ -94,6 +95,9 @@ struct KimiK3Weights {
     ggml_backend_buffer_t buf     = nullptr;
     std::vector<ggml_context *> contexts;
     std::vector<ggml_backend_buffer_t> buffers;
+    // CPU-core capacity mode binds resident tensors directly to immutable
+    // GGUF mappings. Buffers are non-owning; mappings outlive every tensor.
+    std::vector<GgufMmap> mapped_shards;
     std::vector<std::string> shard_paths;
 
     // The routed stacks may remain file-backed. Regions use MoE-layer-local
@@ -204,6 +208,10 @@ struct KimiK3ForwardResult {
 
 struct KimiK3LoadOptions {
     bool stream_routed_experts = false;
+    // Bind non-routed tensors directly to read-only GGUF mappings instead of
+    // allocating and copying them. This is valid for the CPU core backend and
+    // keeps the full 57.94 GiB core executable under a smaller RAM ceiling.
+    bool mmap_resident_tensors = false;
     // When non-negative, allocate only the tensors required to reach this
     // layer's native router and routed-down projection.  The layer itself is
     // not evaluated beyond that boundary.  This is a research capture mode;

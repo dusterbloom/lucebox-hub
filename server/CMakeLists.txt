@@ -1219,6 +1219,20 @@ if(DFLASH27B_TESTS)
         endif()
         add_test(NAME kimi_k3_selective_load COMMAND test_kimi_k3_selective_load)
     endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_kimi_k3_core_placement.cpp")
+        add_executable(test_kimi_k3_core_placement
+            test/test_kimi_k3_core_placement.cpp)
+        target_include_directories(test_kimi_k3_core_placement PRIVATE
+            ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_kimi_k3_core_placement PRIVATE
+            dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+        if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
+            target_link_libraries(test_kimi_k3_core_placement PRIVATE CUDA::cudart)
+        else()
+            target_link_libraries(test_kimi_k3_core_placement PRIVATE hip::host)
+        endif()
+        add_test(NAME kimi_k3_core_placement COMMAND test_kimi_k3_core_placement)
+    endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_kimi_k3_panel_artifact.cpp")
         add_executable(test_kimi_k3_panel_artifact
             test/test_kimi_k3_panel_artifact.cpp)

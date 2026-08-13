@@ -1,0 +1,95 @@
+{
+  "schema": "kimi-k3-h16-exact-baseline-v2",
+  "status": "PASS",
+  "claim_status": "MEASURED",
+  "repository_commit_before_changes": "b638c7e",
+  "checkpoint": {
+    "repository": "unsloth/Kimi-K3-GGUF",
+    "quantization": "UD-IQ1_S",
+    "shards": 14,
+    "expected_total_bytes": 594040923616,
+    "all_shards_sha256_verified": true
+  },
+  "placement": {
+    "core": "cpu",
+    "core_weight_storage": "read-only GGUF mmap",
+    "mapped_non_routed_tensor_payload_gib": 45.34,
+    "routed_experts": "exact IQ1_S, file-backed, io_uring plus direct I/O",
+    "routed_expert_compute": "NVIDIA GeForce RTX 3090",
+    "expert_device_cache_mib": 16384,
+    "reported_expert_device_cache_mib": 16377.9,
+    "maximum_context": 512,
+    "cpu_threads": 18
+  },
+  "prompt": {
+    "text": "According to all known laws",
+    "token_ids": [18805, 308, 799, 5624, 12524],
+    "generated_tokens_requested": 4
+  },
+  "runs": [
+    {
+      "run": 1,
+      "output_ids": [198, 1587, 57195, 422],
+      "text": "According to all known laws\nof aviation,\n",
+      "prefill_seconds": 107.905,
+      "prefill_tokens_per_second": 0.05,
+      "decode_seconds": 66.605,
+      "decode_tokens_per_second": 0.06,
+      "elapsed_seconds": 176.66868290200364,
+      "high_water_rss_kib": 23416632,
+      "peak_graphics_memory_mib": 17358.0,
+      "graphics_energy_joules": 20605.838446257214,
+      "model_drive_read_bytes": 432716976128,
+      "model_drive_busy_milliseconds": 139870,
+      "expert_payload_gib": 55.978,
+      "expert_active_io_gib_per_second": 4.404,
+      "expert_cache_hit_percent": 8.6,
+      "expert_io_errors": 0,
+      "expert_io_timeouts": 0
+    },
+    {
+      "run": 2,
+      "output_ids": [198, 1587, 57195, 422],
+      "text": "According to all known laws\nof aviation,\n",
+      "prefill_seconds": 106.395,
+      "prefill_tokens_per_second": 0.05,
+      "decode_seconds": 66.658,
+      "decode_tokens_per_second": 0.06,
+      "elapsed_seconds": 177.0890841599903,
+      "high_water_rss_kib": 25598588,
+      "peak_graphics_memory_mib": 17358.0,
+      "graphics_energy_joules": 20686.52911961614,
+      "model_drive_read_bytes": 432661725184,
+      "model_drive_busy_milliseconds": 141410,
+      "expert_payload_gib": 56.151,
+      "expert_active_io_gib_per_second": 4.705,
+      "expert_cache_hit_percent": 8.9,
+      "expert_io_errors": 0,
+      "expert_io_timeouts": 0
+    }
+  ],
+  "repeatability": {
+    "behavior_byte_identical": true,
+    "logit_trace_byte_identical": true,
+    "logit_rows": 8,
+    "vocabulary": 163840,
+    "maximum_absolute_logit_difference": 0.0,
+    "teacher_to_candidate_kl_mean": 0.0,
+    "teacher_to_candidate_kl_maximum": 0.0,
+    "top_choice_agreement": "8/8"
+  },
+  "artifacts": {
+    "directory": "/mnt/kimi-k3/results/kimi-exact-baseline-local-cpu",
+    "exact_run_1_logits_sha256": "66ab2dea90fd84d991170fcde70255a36ae9f93c2362f61551286af369bea3b4",
+    "exact_run_2_logits_sha256": "66ab2dea90fd84d991170fcde70255a36ae9f93c2362f61551286af369bea3b4",
+    "comparison_sha256": "8ecd75442b3dd76469604980ac761d285ecf28b89e5243c9e4f39ba7105a021c"
+  },
+  "backend_control": {
+    "accelerator_prefix_matches_registered_capture_byte_for_byte": true,
+    "cpu_prefix_repeatable_byte_for_byte": true,
+    "cpu_and_cuda_prefixes_bit_identical": false,
+    "cpu_cuda_layer_one_latent_mean_cosine": 0.996000227632514,
+    "cpu_cuda_layer_one_expert_set_agreement": 0.9908088235294118,
+    "interpretation": "The local CPU-core deployment is a deterministic exact-weight teacher, but it is a distinct numerical backend from the registered CUDA-core capture. All H16 candidates must compare against this locked CPU-core teacher."
+  }
+}

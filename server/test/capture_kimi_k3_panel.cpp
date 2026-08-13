@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "kimi_k3/kimi_k3_backend.h"
 #include "kimi_k3/kimi_k3_internal.h"
 #include "kimi_k3/kimi_k3_panel_artifact.h"
 #include "server/tokenizer.h"
@@ -136,7 +137,8 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr,
             "usage: %s <first-model-shard.gguf> <sequences.jsonl> "
             "<capture.bin> [gpu=0] [layer=1] [total_tokens=2048] "
-            "[max_context=4096] [chunk_tokens=128]\n",
+            "[max_context=4096] [chunk_tokens=128] "
+            "[core=accelerator|cpu]\n",
             argv[0]);
         return 2;
     }
@@ -149,11 +151,15 @@ int main(int argc, char ** argv) {
     int total_token_limit = 2048;
     int max_context = 4096;
     int chunk_tokens = 128;
+    KimiK3CorePlacement core_placement =
+        KimiK3CorePlacement::Accelerator;
     if ((argc > 4 && !parse_nonnegative_int(argv[4], gpu)) ||
         (argc > 5 && !parse_positive_int(argv[5], model_layer)) ||
         (argc > 6 && !parse_positive_int(argv[6], total_token_limit)) ||
         (argc > 7 && !parse_positive_int(argv[7], max_context)) ||
-        (argc > 8 && !parse_positive_int(argv[8], chunk_tokens))) {
+        (argc > 8 && !parse_positive_int(argv[8], chunk_tokens)) ||
+        (argc > 9 && !parse_kimi_k3_core_placement(
+            argv[9], core_placement))) {
         std::fprintf(stderr, "[kimi-panel-capture] invalid numeric argument\n");
         return 2;
     }
@@ -175,16 +181,20 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    ggml_backend_t backend = ggml_backend_cuda_init(gpu);
+    ggml_backend_t backend = init_kimi_k3_core_backend(
+        core_placement, gpu, &error);
     if (!backend) {
         std::fprintf(stderr,
-                     "[kimi-panel-capture] graphics backend init failed\n");
+                     "[kimi-panel-capture] core backend init failed: %s\n",
+                     error.c_str());
         return 1;
     }
 
     KimiK3Weights weights;
     KimiK3LoadOptions load_options;
     load_options.stream_routed_experts = true;
+    load_options.mmap_resident_tensors =
+        core_placement == KimiK3CorePlacement::Cpu;
     load_options.stop_before_moe_layer = model_layer;
     if (!load_kimi_k3_gguf(
             model_path, backend, weights, load_options)) {

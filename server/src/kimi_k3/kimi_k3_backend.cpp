@@ -13,6 +13,7 @@
 #include "common/sampler.h"
 #include "dflash27b.h"
 
+#include "ggml-cpu.h"
 #include "ggml-cuda.h"
 
 #include <algorithm>
@@ -23,6 +24,7 @@
 #include <cstring>
 #include <limits>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -195,6 +197,36 @@ bool sync_path(const std::string & path) {
 
 } // namespace
 
+ggml_backend_t init_kimi_k3_core_backend(
+        KimiK3CorePlacement placement, int gpu, std::string * error) {
+    if (placement == KimiK3CorePlacement::Accelerator) {
+        ggml_backend_t backend = ggml_backend_cuda_init(gpu);
+        if (!backend && error) {
+            *error = "accelerator backend init failed for device " +
+                std::to_string(gpu);
+        }
+        return backend;
+    }
+
+    ggml_backend_t backend = ggml_backend_cpu_init();
+    if (!backend) {
+        if (error) *error = "CPU backend init failed";
+        return nullptr;
+    }
+    int threads = std::max(1, static_cast<int>(
+        std::thread::hardware_concurrency()));
+    if (const char * raw = std::getenv("DFLASH_KIMI_CPU_THREADS")) {
+        char * end = nullptr;
+        const long parsed = std::strtol(raw, &end, 10);
+        if (end != raw && *end == '\0' && parsed > 0 && parsed <= 1024) {
+            threads = static_cast<int>(parsed);
+        }
+    }
+    ggml_backend_cpu_set_n_threads(backend, threads);
+    std::fprintf(stderr, "[kimi-k3] CPU core backend threads=%d\n", threads);
+    return backend;
+}
+
 KimiK3Backend::KimiK3Backend(const KimiK3BackendConfig & cfg) : cfg_(cfg) {}
 
 KimiK3Backend::~KimiK3Backend() {
@@ -232,10 +264,14 @@ bool KimiK3Backend::init_streaming() {
         return false;
     }
     expert_gpu_ = owner.expert_gpu;
-    const PlacementBackend primary_kind =
-        cfg_.device.backend == PlacementBackend::Auto
-            ? compiled_placement_backend() : cfg_.device.backend;
-    PlacementBackend expert_kind = primary_kind;
+    const bool cpu_core =
+        cfg_.core_placement == KimiK3CorePlacement::Cpu;
+    const PlacementBackend primary_kind = cpu_core
+        ? PlacementBackend::Auto
+        : (cfg_.device.backend == PlacementBackend::Auto
+            ? compiled_placement_backend() : cfg_.device.backend);
+    PlacementBackend expert_kind = cpu_core
+        ? compiled_placement_backend() : primary_kind;
     if (const char * raw = std::getenv("DFLASH_MOE_TP_BACKEND")) {
         if (*raw && (!parse_placement_backend(raw, expert_kind) ||
                      expert_kind == PlacementBackend::Auto)) {
@@ -245,6 +281,7 @@ bool KimiK3Backend::init_streaming() {
             return false;
         }
     }
+    const bool accelerator_only_stream = cpu_core;
     const bool heterogeneous =
         expert_kind != primary_kind || owner.heterogeneous();
     if (heterogeneous) {
@@ -260,12 +297,14 @@ bool KimiK3Backend::init_streaming() {
         }
         expert_backend_kind_ = expert_kind;
         std::fprintf(stderr,
-                     "[kimi-k3] in-process routed owners primary=%s:%d "
-                     "secondary=%s:%d transfer=backend-staged\n",
-                     placement_backend_name(primary_kind),
+                     "[kimi-k3] in-process routed placement core=%s:%d "
+                     "expert=%s:%d transfer=backend-staged\n",
+                     cpu_core ? "cpu" : placement_backend_name(primary_kind),
                      cfg_.device.primary_gpu(),
                      placement_backend_name(expert_kind), expert_gpu_);
     }
+    const bool dual_owner_streams =
+        expert_backend_ && !accelerator_only_stream;
     auto fail_streaming = [&]() {
         dual_stream_executor_.destroy();
         stream_engine_.destroy();
@@ -516,17 +555,24 @@ bool KimiK3Backend::init_streaming() {
                 (1024.0 * 1024.0));
     }
 
+    ggml_backend_t stream_backend = accelerator_only_stream
+        ? expert_backend_ : backend_;
+    const PlacementBackend stream_kind = accelerator_only_stream
+        ? expert_backend_kind_ : primary_kind;
+    const int stream_gpu = accelerator_only_stream
+        ? expert_gpu_ : cfg_.device.primary_gpu();
     const MoeStreamConfig primary_config = stream_config_for(
-        backend_, cfg_.device.primary_gpu(), primary_kind, "primary");
+        stream_backend, stream_gpu, stream_kind,
+        accelerator_only_stream ? "accelerator" : "primary");
     if (!stream_engine_.init(
-            backend_, max_streamed_expert_bytes,
+            stream_backend, max_streamed_expert_bytes,
             primary_config, &error)) {
         std::fprintf(stderr,
                      "[kimi-k3] primary stream engine initialization failed: %s\n",
                      error.c_str());
         return fail_streaming();
     }
-    if (expert_backend_) {
+    if (dual_owner_streams) {
         const MoeStreamConfig secondary_config = stream_config_for(
             expert_backend_, expert_gpu_, expert_backend_kind_, "secondary");
         if (!secondary_stream_engine_.init(
@@ -543,7 +589,7 @@ bool KimiK3Backend::init_streaming() {
         *active_sources, *active_regions, &error);
     bool secondary_bound = true;
     std::string secondary_error;
-    if (primary_bound && expert_backend_) {
+    if (primary_bound && dual_owner_streams) {
         secondary_bound = secondary_stream_engine_.bind_sources(
             *active_sources, *active_regions, &secondary_error);
     }
@@ -668,10 +714,10 @@ bool KimiK3Backend::init_streaming() {
 
     if (!warm_owner(
             stream_engine_,
-            expert_backend_ ? MoeStreamCacheOwner::Primary
-                            : MoeStreamCacheOwner::All,
+            dual_owner_streams ? MoeStreamCacheOwner::Primary
+                               : MoeStreamCacheOwner::All,
             "primary") ||
-        (expert_backend_ &&
+        (dual_owner_streams &&
          !warm_owner(secondary_stream_engine_,
                      MoeStreamCacheOwner::Secondary,
                      "secondary"))) {
@@ -681,7 +727,7 @@ bool KimiK3Backend::init_streaming() {
         return fail_streaming();
     }
 
-    if (expert_backend_ && !dual_stream_executor_.init(
+    if (dual_owner_streams && !dual_stream_executor_.init(
             stream_engine_, secondary_stream_engine_, &error)) {
         std::fprintf(stderr,
                      "[kimi-k3] dual-owner executor initialization failed: %s\n",
@@ -704,7 +750,7 @@ bool KimiK3Backend::init_streaming() {
                 routing_stats_out_path_.c_str());
         }
     }
-    if (expert_backend_) {
+    if (dual_owner_streams) {
         std::fprintf(stderr,
             "[kimi-k3] routed experts dual-owner: shards=%zu layers=%zu "
             "primary=%s:%d/%s/%.2fGiB secondary=%s:%d/%s/%.2fGiB "
@@ -724,11 +770,11 @@ bool KimiK3Backend::init_streaming() {
     } else {
         std::fprintf(stderr,
             "[kimi-k3] routed experts file-backed: shards=%zu layers=%zu "
-            "io=%s gpu=%d cache=%.2f GiB\n",
+            "io=%s compute=%s:%d cache=%.2f GiB\n",
             weights_.shard_paths.size(),
             weights_.streamed_layer_regions.size(),
             stream_engine_.io_backend_name(),
-            cfg_.device.primary_gpu(),
+            placement_backend_name(stream_kind), stream_gpu,
             static_cast<double>(stream_engine_.device_cache_bytes()) /
                 (1024.0 * 1024.0 * 1024.0));
     }
@@ -811,17 +857,21 @@ bool KimiK3Backend::init() {
         std::fprintf(stderr, "[kimi-k3] model path is null\n");
         return false;
     }
-    backend_ = ggml_backend_cuda_init(cfg_.device.primary_gpu());
+    std::string backend_error;
+    backend_ = init_kimi_k3_core_backend(
+        cfg_.core_placement, cfg_.device.primary_gpu(), &backend_error);
     if (!backend_) {
-        std::fprintf(stderr, "[kimi-k3] GPU backend init failed for device %d\n",
-                     cfg_.device.primary_gpu());
+        std::fprintf(stderr, "[kimi-k3] %s\n", backend_error.c_str());
         return false;
     }
     const bool stream_routed_experts =
         cfg_.moe_storage != MoeStoragePolicy::Resident;
+    KimiK3LoadOptions load_options;
+    load_options.stream_routed_experts = stream_routed_experts;
+    load_options.mmap_resident_tensors =
+        cfg_.core_placement == KimiK3CorePlacement::Cpu;
     if (!load_kimi_k3_gguf(
-            cfg_.model_path, backend_, weights_,
-            stream_routed_experts)) {
+            cfg_.model_path, backend_, weights_, load_options)) {
         std::fprintf(stderr, "[kimi-k3] model load failed: %s\n",
                      dflash27b_last_error());
         return false;
@@ -838,11 +888,14 @@ bool KimiK3Backend::init() {
     }
     if (weights_.routed_experts_streamed && !init_streaming()) return false;
     std::fprintf(stderr,
-        "[kimi-k3] native backend ready on device %d (max_ctx=%d, "
+        "[kimi-k3] native backend ready core=%s:%d (max_ctx=%d, "
         "experts=%s, correctness-first sequential prefill)\n",
+        kimi_k3_core_placement_name(cfg_.core_placement),
         cfg_.device.primary_gpu(), max_ctx,
         !weights_.routed_experts_streamed ? "resident" :
-            (expert_backend_ ? "nvme-dual-owner" : "nvme-single-owner"));
+            (cfg_.core_placement == KimiK3CorePlacement::Cpu
+                ? "nvme-accelerator" :
+                (expert_backend_ ? "nvme-dual-owner" : "nvme-single-owner")));
     std::fflush(stderr);
     return true;
 }

@@ -1,0 +1,3 @@
+run,elapsed_seconds,prefill_seconds,prefill_tokens_per_second,decode_seconds,decode_tokens_per_second,high_water_rss_kib,peak_vram_mib,nvme_read_bytes,nvme_busy_ms,gpu_energy_joules,output_ids
+1,176.66868290200364,107.905,0.05,66.605,0.06,23416632,17358.0,432716976128,139870,20605.838446257214,"198 1587 57195 422"
+2,177.0890841599903,106.395,0.05,66.658,0.06,25598588,17358.0,432661725184,141410,20686.52911961614,"198 1587 57195 422"

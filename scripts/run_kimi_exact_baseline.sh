@@ -10,7 +10,13 @@ gpu="${KIMI_PANEL_GPU:-0}"
 prompt="${KIMI_EXACT_PROMPT:-According to all known laws}"
 generated_tokens="${KIMI_EXACT_GENERATED_TOKENS:-4}"
 max_context="${KIMI_EXACT_MAX_CONTEXT:-512}"
+core="${KIMI_EXACT_CORE:-accelerator}"
 gpu_lock="${KIMI_GPU_LOCK_FILE:-/tmp/lucebox-gpu-$gpu.lock}"
+
+if [[ "$core" != accelerator && "$core" != cpu ]]; then
+    echo "KIMI_EXACT_CORE must be accelerator or cpu" >&2
+    exit 2
+fi
 
 exec 9>"$gpu_lock"
 if ! flock -n 9; then
@@ -51,7 +57,7 @@ for run in 1 2; do
             DFLASH_KIMI_LOGITS_TRACE_OUT="$prefix.logits.f32" \
             "$build_dir/smoke_kimi_k3_forward" \
                 "$model_path" "$gpu" "$generated_tokens" "$prompt" \
-                1 -1
+                1 -1 "" "$gpu" "$core"
     rg '^\[kimi-k3-smoke\] (prompt_ids|output_ids|text):' \
         "$prefix.stdout.log" >"$prefix.behavior.txt"
 done
