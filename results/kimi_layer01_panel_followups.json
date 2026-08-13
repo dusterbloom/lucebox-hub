@@ -1,0 +1,83 @@
+{
+  "schema": "kimi-k3-layer01-panel-followups-v1",
+  "primary_registered_verdict": "RED",
+  "primary": {
+    "tokens": 10000,
+    "calibration_tokens": 8200,
+    "validation_tokens": 1800,
+    "sequence_split": true,
+    "capture_sha256": "5dc24f94da22a854eb9d67888174abdb157fd66d6d627e53ebe5168be72d0d9d",
+    "codeword_mean_cosine": 0.6184498433371007,
+    "unweighted_diagonal_mean_cosine": 0.6247489353594318,
+    "router_weighted_diagonal_mean_cosine": 0.6047203001863825,
+    "panel_sha256": "905624b74dce9add6251ed2eb290f3de958355c667d07e2eb6f904f3ed930b2c",
+    "teacher_sha256": "c3dbc469663ae31da0d483f0d19d31f66e6c532545097e5090355eb9b1aa2f78"
+  },
+  "exactness": {
+    "independent_capture_byte_identical": true,
+    "independent_teacher_export_byte_identical": true,
+    "independent_panel_fit_byte_identical": true,
+    "host_embedding_vs_cpu_get_rows_bit_exact": true,
+    "real_observer_disabled_vs_enabled_bit_exact": true,
+    "real_observer_reconstruction_bit_exact": true
+  },
+  "systems": {
+    "capture": {
+      "elapsed_seconds": 7.1894268930045655,
+      "reported_high_water_rss_kib": 2589604,
+      "peak_graphics_memory_mib": 4174.0,
+      "graphics_energy_joules": 1208.019643288967
+    },
+    "complete_expert_fit": {
+      "elapsed_seconds": 13.805041208004695,
+      "reported_high_water_rss_kib": 2627368,
+      "peak_graphics_memory_mib": 3516.0,
+      "graphics_energy_joules": 1452.216104002365,
+      "expert_payload_bytes": 5780275200,
+      "storage_errors": 0,
+      "storage_timeouts": 0
+    },
+    "native_width_d0_d3_three_seed_total": {
+      "elapsed_seconds": 36.94707200398261,
+      "graphics_energy_joules": 9781.229288909522,
+      "maximum_peak_graphics_memory_mib": 2192.0
+    },
+    "prefill_tokens_per_second": null,
+    "decode_tokens_per_second": null,
+    "rate_unavailable_reason": "The bounded layer-one capture is not a complete prefill or autoregressive decode."
+  },
+  "exploratory_directional_refit": {
+    "status": "does_not_replace_registered_primary_verdict",
+    "initial_mean_cosine": 0.624748945236206,
+    "trained_mean_cosine": 0.6450535655021667,
+    "verdict": "RED"
+  },
+  "exploratory_exact_rank_ladder": [
+    {"exact_ranks": 0, "exact_fraction": 0.0, "mean_cosine": 0.624748945236206},
+    {"exact_ranks": 1, "exact_fraction": 0.0625, "mean_cosine": 0.8492287993431091},
+    {"exact_ranks": 2, "exact_fraction": 0.125, "mean_cosine": 0.9041042327880859},
+    {"exact_ranks": 4, "exact_fraction": 0.25, "mean_cosine": 0.9433287978172302},
+    {"exact_ranks": 8, "exact_fraction": 0.5, "mean_cosine": 0.9714041948318481},
+    {"exact_ranks": 12, "exact_fraction": 0.75, "mean_cosine": 0.9872451424598694},
+    {"exact_ranks": 13, "exact_fraction": 0.8125, "mean_cosine": 0.9906401634216309},
+    {"exact_ranks": 15, "exact_fraction": 0.9375, "mean_cosine": 0.996917724609375},
+    {"exact_ranks": 16, "exact_fraction": 1.0, "mean_cosine": 1.0}
+  ],
+  "exploratory_d0_d3_native_width": {
+    "seeds": [260731, 260732, 260733],
+    "D0_mean_cosine": 0.6363715728123983,
+    "D3_mean_cosine": 0.6436645785967509,
+    "D3_min_cosine": 0.6413270831108093,
+    "D3_max_cosine": 0.6449859142303467,
+    "D3_permuted_card_mean_cosine": 0.6299600402514139,
+    "D3_uniform_route_mean_cosine": 0.641052265961965,
+    "verdict": "RED"
+  },
+  "exploratory_d3_capacity": [
+    {"hidden_width": 768, "mean_cosine": 0.6385736465454102, "bfloat16_bytes_per_layer": 29360128},
+    {"hidden_width": 3072, "mean_cosine": 0.6413270831108093, "bfloat16_bytes_per_layer": 78905344},
+    {"hidden_width": 6144, "mean_cosine": 0.6474319100379944, "bfloat16_bytes_per_layer": 144965632}
+  ],
+  "final_logit_kl": null,
+  "final_logit_kl_unavailable_reason": "The bounded capture stops before the remaining ninety-one model layers; full-model execution requires the planned WSL memory increase."
+}

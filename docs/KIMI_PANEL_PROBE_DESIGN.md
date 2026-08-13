@@ -1,12 +1,153 @@
+VERDICT: RED
+
 # Kimi K3 first-layer panel probe
 
-## Verdict
+The registered 10,000-token layer-one test is complete on the pinned fourteen-
+shard Unsloth checkpoint. The best registered diagonal arm reaches only
+`0.624748935` mean direction agreement on held-out sequences, far below the
+preliminary `0.99` yellow gate. This rules out the proposed codeword-plus-
+diagonal panel as a drop-in replacement for the first routed expert bank.
 
-VERDICT: BLOCKED
+The red result is numerical, not operational. Every expert was covered by the
+calibration set, all model reads completed without errors or timeouts, and the
+real exactness audits below pass. Exploratory follow-ups are reported
+separately and do not overwrite the registered verdict.
 
-The implementation and fixture tests are ready. The real verdict remains
-blocked only until all fourteen pinned model shards finish downloading and
-pass their expected hashes. No model-quality conclusion has been drawn.
+## Executed registered result
+
+- Corpus: 109 sequence-preserving conversational and code streams, 10,000
+  tokens total.
+- Calibration: 8,200 tokens; validation: 1,800 tokens. Splitting is by whole
+  sequence.
+- Exact routed weights read for the fit: 5,780,275,200 payload bytes, one
+  complete first-layer expert bank.
+- Fixed-vector mean held-out cosine: `0.618449843`.
+- Unweighted diagonal mean held-out cosine: `0.624748935`.
+- squared-router-weighted diagonal mean held-out cosine: `0.604720300`.
+- The unweighted diagonal is best, contrary to the original expectation that
+  squared route weighting would help.
+- Router confidence is inversely associated with panel fidelity. The four
+  confidence quartiles score `0.77261`, `0.68723`, `0.61500`, and `0.42417`
+  respectively.
+
+## Exactness lock
+
+- Two independent real captures are byte-identical.
+- Two independent complete expert passes produce byte-identical fitted panels
+  and byte-identical 10,000-token exact teacher aggregates.
+- The real Q6_K token-embedding host fallback is byte-identical to processor
+  `GET_ROWS` on selected real rows.
+- Real quantized expert evaluation is byte-identical with the observer disabled
+  and enabled.
+- Reconstructing the real expert output from observer callbacks is byte-
+  identical to the native evaluator aggregate.
+- Timing counters are intentionally not expected to be identical. The two
+  repeated registered fits differed only in measured storage busy-time.
+
+The complete capture SHA-256 is
+`5dc24f94da22a854eb9d67888174abdb157fd66d6d627e53ebe5168be72d0d9d`;
+the fitted panel SHA-256 is
+`905624b74dce9add6251ed2eb290f3de958355c667d07e2eb6f904f3ed930b2c`;
+the exact teacher aggregate SHA-256 is
+`c3dbc469663ae31da0d483f0d19d31f66e6c532545097e5090355eb9b1aa2f78`.
+The full paths and telemetry remain in the mounted result artifacts.
+
+## Systems accounting
+
+The selective 10,000-token capture took `7.19` seconds, peaked at `4,174 MiB`
+of graphics memory, reported a `2.47 GiB` process high-water mark, and consumed
+about `1.21 kJ` of sampled graphics-card energy. The complete expert fit took
+`13.81` seconds, peaked at `3,516 MiB` of graphics memory, reported a `2.51 GiB`
+process high-water mark, and consumed about `1.45 kJ`. Its exact storage engine
+read `5.383 GiB` of expert payload with no errors or timeouts.
+
+The three native-width D0-D3 replications took `36.95` seconds and about
+`9.78 kJ` in aggregate. Their maximum observed graphics memory was `2,192 MiB`.
+They did not read the model drive because they operate on the exported exact
+teacher artifact.
+
+Prefill rate, decode rate, and final-token probability divergence are marked
+unavailable for these bounded layer-boundary experiments: they do not execute
+the complete model. Reporting a token rate here would conflate capture batching
+with generation and would be misleading.
+
+## Exploratory low-memory follow-ups
+
+These tests use an internal sequence-disjoint development subset for model
+selection and preserve the original validation sequences for final reporting.
+They are scientific follow-ups, not revisions to the registered primary gate.
+
+### Direct directional refit
+
+Training the same diagonal representation directly for aggregate direction,
+rather than individual-expert squared error, improves held-out mean cosine from
+`0.624748945` to `0.645053566` at a conservative learning rate. A larger
+learning rate overfits immediately. The improvement is real but remains red.
+
+### Exact fallback ladder
+
+Keeping the highest-ranked exact experts and approximating the rest gives:
+
+| exact experts per token | exact traffic | mean held-out cosine |
+| ---: | ---: | ---: |
+| 0 | 0% | 0.624749 |
+| 1 | 6.25% | 0.849229 |
+| 2 | 12.5% | 0.904104 |
+| 4 | 25% | 0.943329 |
+| 8 | 50% | 0.971404 |
+| 12 | 75% | 0.987245 |
+| 13 | 81.25% | 0.990640 |
+| 15 | 93.75% | 0.996918 |
+| 16 | 100% | 1.000000 |
+
+The first exact expert has large value for a speculative or tiered system, but
+the yellow gate requires retaining thirteen of sixteen exact expert
+evaluations. No partly approximate point clears `0.9998`. Whole-token fallback
+is most effective on the highest-confidence routes, matching the quartile
+diagnostic, but also requires too much exact work to rescue the compression
+claim.
+
+### Real Kimi shared nonlinear D0-D3
+
+The Smol-Kimi architecture was transferred directly: one shared native-width
+SiTU-GLU core, then router-mixed shift and scale cards. Three native-width
+seeds give:
+
+- shared core D0 mean: `0.636372`;
+- full scale-and-shift D3 mean: `0.643665`;
+- D3 range: `0.641327` to `0.644986`;
+- permuted-card control mean: `0.629960`;
+- uniform-route control mean: `0.641052`.
+
+The expert cards carry real route-specific information because permutation
+hurts, but their contribution is small. Shift provides almost all of the gain;
+scale alone is negligible.
+
+A width bracket also flattens quickly:
+
+| shared hidden width | D3 held-out cosine | BF16 bytes per layer |
+| ---: | ---: | ---: |
+| 768 | 0.638574 | 29,360,128 |
+| 3,072 | 0.641327 | 78,905,344 |
+| 6,144 | 0.647432 | 144,965,632 |
+
+Doubling beyond native expert width buys only about `0.0061` cosine while
+nearly doubling storage. Blindly increasing shared-core capacity is therefore
+not a credible route to the target.
+
+## What is still blocked by current WSL memory
+
+This layer-boundary capture cannot measure final-token probability divergence,
+top-choice agreement, generation quality, or autoregressive stability because
+it stops before the remaining ninety-one model layers. Those are deliberately
+recorded as unavailable, not zero. The next valid gate is full exact end-to-end
+execution after WSL has enough memory to place the roughly 58 GiB non-routed
+core across host and graphics memory.
+
+The current evidence changes the next full-model experiment: do not implement
+an all-layer diagonal panel. First validate exact end-to-end execution and its
+bit-exact repeat, then test at most one layer with the strongest D3 artifact or
+a one-exact-expert hybrid while recording final-token probability divergence.
 
 ## Scientific question
 
@@ -130,6 +271,11 @@ agreement; the same format will compare exact and panel modes later.
   byte-identical aggregate with observation enabled.
 - `kimi_k3_selective_load`: pure policy test proving the intended tensor
   inclusion and exclusion boundary.
-
-The first real capture is intentionally not runnable until the model download
-is complete and the graphics card and model drive are uncontended.
+- Real fit startup: host-decoded embeddings versus processor `GET_ROWS`, and
+  observer-disabled versus observer-enabled real quantized experts.
+- `train_kimi_panel_directional.py`: sequence-disjoint aggregate-direction
+  refit with early stopping.
+- `evaluate_kimi_panel_fallback.py`: exact-rank and confidence fallback
+  ladders.
+- `train_kimi_d0_d3.py`: shared-core D0-D3 screen, causal controls, capacity
+  accounting, and deterministic seeds.

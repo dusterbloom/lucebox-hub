@@ -92,4 +92,5 @@ sha256sum \
     "$result_prefix.json" "$result_prefix.csv" \
     "$result_prefix.fit.telemetry.json" "$result_prefix.fit.telemetry.csv" \
     "$result_prefix.fit.stdout.log" "$result_prefix.fit.stderr.log" \
-    "$result_prefix.panel.f32" "$panel_artifact"
+    "$result_prefix.panel.f32" "$result_prefix.teacher.f32" \
+    "$result_prefix.validation_by_rank.f32" "$panel_artifact"

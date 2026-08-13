@@ -944,6 +944,13 @@ bool streamed_kimi_k3_forward(
 
 } // namespace
 
+bool kimi_k3_read_token_embeddings_on_host(
+        const KimiK3Weights & w,
+        const std::vector<int32_t> & tokens,
+        std::vector<float> & hidden) {
+    return read_token_embeddings_on_host(w, tokens, hidden);
+}
+
 bool create_kimi_k3_cache(ggml_backend_t backend,
                           const KimiK3Weights & w,
                           int max_ctx,

@@ -5,6 +5,7 @@
 #include "common/moe_hybrid_stream.h"
 
 #include "ggml-alloc.h"
+#include "ggml-cpu.h"
 #include "ggml-cuda.h"
 
 #include <nlohmann/json.hpp>
@@ -48,12 +49,17 @@ constexpr std::array<char, 8> kAggregateMagic = {
     'K', '3', 'A', 'G', 'G', '0', '0', '1'};
 constexpr std::array<char, 8> kPanelMagic = {
     'K', '3', 'F', 'I', 'T', '0', '0', '1'};
+constexpr std::array<char, 8> kTeacherMagic = {
+    'K', '3', 'T', 'G', 'T', '0', '0', '1'};
+constexpr std::array<char, 8> kRankTeacherMagic = {
+    'K', '3', 'R', 'N', 'K', '0', '0', '1'};
 constexpr uint32_t kFitVersion = 1;
 constexpr int kAggregateCheckpointExperts = 16;
 
 struct RouteReference {
     uint32_t record = 0;
     uint32_t token = 0;
+    uint32_t rank = 0;
     float router_weight = 0.0f;
 };
 
@@ -90,6 +96,33 @@ struct PanelHeader {
 static_assert(sizeof(PanelHeader) == 32,
               "panel fit header must remain byte-stable");
 
+struct TeacherHeader {
+    std::array<char, 8> magic = kTeacherMagic;
+    uint32_t version = kFitVersion;
+    int32_t model_layer = -1;
+    uint32_t dimension = 0;
+    uint32_t storage = 0; // 0 = float32
+    uint64_t sequence_count = 0;
+    uint64_t token_count = 0;
+    std::array<uint64_t, 2> reserved{};
+};
+static_assert(sizeof(TeacherHeader) == 56,
+              "panel teacher header must remain byte-stable");
+
+struct RankTeacherHeader {
+    std::array<char, 8> magic = kRankTeacherMagic;
+    uint32_t version = kFitVersion;
+    int32_t model_layer = -1;
+    uint32_t dimension = 0;
+    uint32_t top_k = 0;
+    uint64_t validation_tokens = 0;
+    uint32_t storage = 0; // 0 = float32
+    uint32_t reserved = 0;
+    std::array<uint64_t, 3> reserved64{};
+};
+static_assert(sizeof(RankTeacherHeader) == 64,
+              "rank teacher header must remain byte-stable");
+
 struct ExpertStatsPair {
     ExpertStatsHeader header;
     KimiK3DiagonalStats unweighted;
@@ -107,6 +140,73 @@ struct PanelArrays {
     std::vector<float> unweighted_gain;
     std::vector<float> weighted_offset;
     std::vector<float> weighted_gain;
+};
+
+class AggregateAuditObserver final : public MoeStreamExpertObserver {
+public:
+    AggregateAuditObserver(int expected_layer,
+                           int expected_expert,
+                           int input_dimension,
+                           int output_dimension,
+                           int token_count,
+                           const float * expected_inputs)
+        : expected_layer_(expected_layer),
+          expected_expert_(expected_expert),
+          input_dimension_(input_dimension),
+          output_dimension_(output_dimension),
+          token_count_(token_count),
+          expected_inputs_(expected_inputs),
+          aggregate_(static_cast<size_t>(token_count) * output_dimension,
+                     0.0f),
+          seen_(static_cast<size_t>(token_count), false) {}
+
+    bool observe(int layer,
+                 int token,
+                 int expert,
+                 float router_weight,
+                 const float * input,
+                 int input_dimension,
+                 const float * expert_output,
+                 int output_dimension,
+                 std::string * error) override {
+        if (layer != expected_layer_ || expert != expected_expert_ ||
+            token < 0 || token >= token_count_ ||
+            input_dimension != input_dimension_ ||
+            output_dimension != output_dimension_ ||
+            router_weight != 1.0f || !input || !expert_output ||
+            seen_[static_cast<size_t>(token)] ||
+            std::memcmp(
+                input,
+                expected_inputs_ + static_cast<size_t>(token) *
+                    input_dimension_,
+                static_cast<size_t>(input_dimension_) * sizeof(float)) != 0) {
+            if (error) *error = "real expert observer metadata/input mismatch";
+            return false;
+        }
+        seen_[static_cast<size_t>(token)] = true;
+        std::memcpy(
+            aggregate_.data() + static_cast<size_t>(token) * output_dimension_,
+            expert_output,
+            static_cast<size_t>(output_dimension_) * sizeof(float));
+        return true;
+    }
+
+    bool complete() const {
+        return std::all_of(seen_.begin(), seen_.end(),
+                           [](bool value) { return value; });
+    }
+
+    const std::vector<float> & aggregate() const { return aggregate_; }
+
+private:
+    int expected_layer_ = -1;
+    int expected_expert_ = -1;
+    int input_dimension_ = 0;
+    int output_dimension_ = 0;
+    int token_count_ = 0;
+    const float * expected_inputs_ = nullptr;
+    std::vector<float> aggregate_;
+    std::vector<bool> seen_;
 };
 
 int process_id() {
@@ -540,6 +640,108 @@ bool open_model_sources(const std::vector<std::string> & paths,
     return true;
 }
 
+bool audit_host_embeddings_against_cpu(
+        const KimiK3Weights & weights,
+        const KimiK3PanelCaptureArtifact & artifact,
+        bool & bit_exact,
+        std::string & error) {
+    bit_exact = false;
+    if (!weights.tok_embd || artifact.records.empty()) {
+        error = "embedding audit has no tensor or captured tokens";
+        return false;
+    }
+    const auto & source_tokens = artifact.records.front().tokens;
+    const size_t token_count = std::min<size_t>(8, source_tokens.size());
+    if (token_count == 0) {
+        error = "embedding audit has no captured tokens";
+        return false;
+    }
+    std::vector<int32_t> tokens(
+        source_tokens.begin(), source_tokens.begin() + token_count);
+    std::vector<float> host_decoded(
+        token_count * static_cast<size_t>(weights.n_embd));
+    if (std::any_of(tokens.begin(), tokens.end(), [&](int32_t token) {
+            return token < 0 || token >= weights.n_vocab;
+        })) {
+        error = "embedding audit captured an out-of-range token";
+        return false;
+    }
+    if (!kimi_k3_read_token_embeddings_on_host(
+            weights, tokens, host_decoded)) {
+        error = dflash27b_last_error();
+        return false;
+    }
+
+    ggml_backend_t cpu = ggml_backend_cpu_init();
+    if (!cpu) {
+        error = "embedding audit could not initialize CPU backend";
+        return false;
+    }
+    ggml_init_params params{};
+    params.mem_size = 2U << 20;
+    params.no_alloc = true;
+    ggml_context * context = ggml_init(params);
+    if (!context) {
+        ggml_backend_free(cpu);
+        error = "embedding audit could not allocate graph context";
+        return false;
+    }
+    ggml_tensor * compact = ggml_new_tensor_2d(
+        context, weights.tok_embd->type, weights.n_embd,
+        static_cast<int64_t>(token_count));
+    ggml_tensor * ids = ggml_new_tensor_1d(
+        context, GGML_TYPE_I32, static_cast<int64_t>(token_count));
+    ggml_tensor * rows = ggml_get_rows(context, compact, ids);
+    ggml_cgraph * graph = ggml_new_graph_custom(context, 64, false);
+    ggml_build_forward_expand(graph, rows);
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(
+        context, cpu);
+    if (!buffer) {
+        ggml_free(context);
+        ggml_backend_free(cpu);
+        error = "embedding audit could not allocate CPU tensors";
+        return false;
+    }
+
+    const size_t row_bytes = ggml_row_size(
+        weights.tok_embd->type, weights.n_embd);
+    std::vector<uint8_t> compact_bytes(ggml_nbytes(compact), 0);
+    std::vector<int32_t> compact_ids(token_count);
+    std::iota(compact_ids.begin(), compact_ids.end(), 0);
+    for (size_t token = 0; token < token_count; ++token) {
+        ggml_backend_tensor_get(
+            weights.tok_embd,
+            compact_bytes.data() + token * compact->nb[1],
+            static_cast<size_t>(tokens[token]) * weights.tok_embd->nb[1],
+            row_bytes);
+    }
+    ggml_backend_tensor_set(
+        compact, compact_bytes.data(), 0, compact_bytes.size());
+    ggml_backend_tensor_set(
+        ids, compact_ids.data(), 0,
+        compact_ids.size() * sizeof(int32_t));
+    std::vector<float> cpu_decoded(host_decoded.size());
+    const bool compute_ok =
+        ggml_backend_graph_compute(cpu, graph) == GGML_STATUS_SUCCESS;
+    if (compute_ok) {
+        ggml_backend_tensor_get(
+            rows, cpu_decoded.data(), 0,
+            cpu_decoded.size() * sizeof(float));
+    }
+    ggml_backend_buffer_free(buffer);
+    ggml_free(context);
+    ggml_backend_free(cpu);
+    if (!compute_ok) {
+        error = "embedding audit CPU GET_ROWS failed";
+        return false;
+    }
+    bit_exact = host_decoded.size() == cpu_decoded.size() &&
+        std::memcmp(host_decoded.data(), cpu_decoded.data(),
+                    host_decoded.size() * sizeof(float)) == 0;
+    if (!bit_exact) error = "host embedding decoder differs from CPU GET_ROWS";
+    return bit_exact;
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {
@@ -572,12 +774,19 @@ int main(int argc, char ** argv) {
     const int model_layer = artifact.header.model_layer;
     uint64_t calibration_tokens = 0;
     uint64_t validation_tokens = 0;
+    uint64_t all_tokens = 0;
     std::vector<std::vector<int64_t>> validation_index;
+    std::vector<std::vector<uint64_t>> all_token_index;
     validation_index.resize(artifact.records.size());
+    all_token_index.resize(artifact.records.size());
     for (size_t record_index = 0;
          record_index < artifact.records.size(); ++record_index) {
         const auto & record = artifact.records[record_index];
         validation_index[record_index].assign(record.tokens.size(), -1);
+        all_token_index[record_index].resize(record.tokens.size());
+        for (size_t token = 0; token < record.tokens.size(); ++token) {
+            all_token_index[record_index][token] = all_tokens++;
+        }
         if (record.split == 0) {
             calibration_tokens += record.tokens.size();
         } else {
@@ -639,6 +848,17 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    bool host_embedding_cpu_bit_exact = false;
+    if (!audit_host_embeddings_against_cpu(
+            weights, artifact, host_embedding_cpu_bit_exact, error)) {
+        std::fprintf(stderr, "[kimi-panel-fit] %s\n", error.c_str());
+        cleanup_weights();
+        return 1;
+    }
+    std::fprintf(stderr,
+        "[kimi-panel-fit] host embedding decoder is bit-exact with CPU "
+        "GET_ROWS\n");
+
     std::vector<std::vector<RouteReference>> routes(
         static_cast<size_t>(weights.n_expert));
     bool routes_valid = true;
@@ -659,7 +879,8 @@ int main(int argc, char ** argv) {
                 }
                 routes[static_cast<size_t>(expert)].push_back({
                     static_cast<uint32_t>(record_index),
-                    static_cast<uint32_t>(token), route_weight});
+                    static_cast<uint32_t>(token),
+                    static_cast<uint32_t>(rank), route_weight});
                 route_sum += route_weight;
             }
             if (!routes_valid || std::fabs(route_sum - 1.0) > 2.0e-3) {
@@ -736,21 +957,141 @@ int main(int argc, char ** argv) {
     specification.situ_beta = weights.situ_beta;
     specification.situ_linear_beta = weights.situ_linear_beta;
 
+    bool observer_disabled_vs_enabled_bit_exact = false;
+    bool observer_reconstruction_bit_exact = false;
+    for (int expert = 0; expert < weights.n_expert; ++expert) {
+        const auto & expert_routes = routes[static_cast<size_t>(expert)];
+        if (expert_routes.empty()) continue;
+        const size_t count = std::min(
+            static_cast<size_t>(batch_tokens), expert_routes.size());
+        std::vector<float> inputs(count * dimension);
+        std::vector<int32_t> selected(count, expert);
+        std::vector<float> unit_weights(count, 1.0f);
+        for (size_t item = 0; item < count; ++item) {
+            const RouteReference & reference = expert_routes[item];
+            const auto & record = artifact.records[reference.record];
+            ggml_bf16_to_fp32_row(
+                record.latent.data() +
+                    static_cast<size_t>(reference.token) * dimension,
+                inputs.data() + item * dimension, dimension);
+        }
+        MoeStreamRouteBatch audit_batch;
+        audit_batch.layer = model_layer - weights.n_dense_lead;
+        audit_batch.n_expert = weights.n_expert;
+        audit_batch.top_k = 1;
+        audit_batch.n_tokens = static_cast<int>(count);
+        audit_batch.inputs = inputs.data();
+        audit_batch.selected_ids = selected.data();
+        audit_batch.selected_weights = unit_weights.data();
+        std::vector<float> observer_disabled;
+        std::vector<float> observer_enabled;
+        if (!eval_moe_streamed_experts(
+                engine, specification, audit_batch,
+                observer_disabled, &error)) {
+            std::fprintf(stderr,
+                "[kimi-panel-fit] real observer audit baseline failed: %s\n",
+                error.c_str());
+            engine.destroy();
+            close_sources();
+            cleanup_weights();
+            return 1;
+        }
+        AggregateAuditObserver observer(
+            audit_batch.layer, expert, specification.input_dim,
+            specification.output_dim, static_cast<int>(count), inputs.data());
+        audit_batch.expert_observer = &observer;
+        if (!eval_moe_streamed_experts(
+                engine, specification, audit_batch,
+                observer_enabled, &error) || !observer.complete()) {
+            std::fprintf(stderr,
+                "[kimi-panel-fit] real observer audit failed: %s\n",
+                error.c_str());
+            engine.destroy();
+            close_sources();
+            cleanup_weights();
+            return 1;
+        }
+        const size_t output_bytes = observer_disabled.size() * sizeof(float);
+        observer_disabled_vs_enabled_bit_exact =
+            observer_disabled.size() == observer_enabled.size() &&
+            std::memcmp(observer_disabled.data(), observer_enabled.data(),
+                        output_bytes) == 0;
+        observer_reconstruction_bit_exact =
+            observer_disabled.size() == observer.aggregate().size() &&
+            std::memcmp(observer_disabled.data(), observer.aggregate().data(),
+                        output_bytes) == 0;
+        if (!observer_disabled_vs_enabled_bit_exact ||
+            !observer_reconstruction_bit_exact) {
+            std::fprintf(stderr,
+                "[kimi-panel-fit] real observer audit is not bit-exact\n");
+            engine.destroy();
+            close_sources();
+            cleanup_weights();
+            return 1;
+        }
+        std::fprintf(stderr,
+            "[kimi-panel-fit] real observer audit bit-exact expert=%d tokens=%zu\n",
+            expert, count);
+        break;
+    }
+
     const std::string aggregate_path =
         (state_directory / "validation_exact_aggregate.state").string();
+    const std::string all_aggregate_path =
+        (state_directory / "all_exact_aggregate.state").string();
+    const std::string rank_aggregate_path =
+        (state_directory / "validation_exact_by_rank.state").string();
     std::vector<float> exact_aggregate(
         static_cast<size_t>(validation_tokens) * dimension, 0.0f);
+    std::vector<float> all_exact_aggregate(
+        static_cast<size_t>(all_tokens) * dimension, 0.0f);
+    std::vector<float> validation_exact_by_rank(
+        static_cast<size_t>(weights.n_expert_used) * validation_tokens *
+            dimension,
+        0.0f);
     int completed_expert = -1;
-    if (std::filesystem::exists(aggregate_path) &&
-        !read_aggregate_state(
-            aggregate_path, validation_tokens,
-            static_cast<uint32_t>(dimension), completed_expert,
-            exact_aggregate, error)) {
-        std::fprintf(stderr, "[kimi-panel-fit] %s\n", error.c_str());
-        engine.destroy();
-        close_sources();
-        cleanup_weights();
-        return 1;
+    const bool has_validation_aggregate =
+        std::filesystem::exists(aggregate_path);
+    const bool has_all_aggregate =
+        std::filesystem::exists(all_aggregate_path);
+    const bool has_rank_aggregate =
+        std::filesystem::exists(rank_aggregate_path);
+    if (has_validation_aggregate && has_all_aggregate &&
+        has_rank_aggregate) {
+        int all_completed_expert = -1;
+        int rank_completed_expert = -1;
+        if (!read_aggregate_state(
+                aggregate_path, validation_tokens,
+                static_cast<uint32_t>(dimension), completed_expert,
+                exact_aggregate, error) ||
+            !read_aggregate_state(
+                all_aggregate_path, all_tokens,
+                static_cast<uint32_t>(dimension), all_completed_expert,
+                all_exact_aggregate, error) ||
+            !read_aggregate_state(
+                rank_aggregate_path,
+                validation_tokens *
+                    static_cast<uint64_t>(weights.n_expert_used),
+                static_cast<uint32_t>(dimension), rank_completed_expert,
+                validation_exact_by_rank, error) ||
+            all_completed_expert != completed_expert ||
+            rank_completed_expert != completed_expert) {
+            std::fprintf(stderr, "[kimi-panel-fit] %s\n", error.c_str());
+            engine.destroy();
+            close_sources();
+            cleanup_weights();
+            return 1;
+        }
+    } else if (has_validation_aggregate || has_all_aggregate ||
+               has_rank_aggregate) {
+        std::fprintf(stderr,
+            "[kimi-panel-fit] incomplete aggregate checkpoint pair; "
+            "rebuilding both exact aggregates\n");
+        exact_aggregate.assign(exact_aggregate.size(), 0.0f);
+        all_exact_aggregate.assign(all_exact_aggregate.size(), 0.0f);
+        validation_exact_by_rank.assign(
+            validation_exact_by_rank.size(), 0.0f);
+        completed_expert = -1;
     }
     if (completed_expert >= weights.n_expert) {
         std::fprintf(stderr, "[kimi-panel-fit] invalid completed expert state\n");
@@ -809,6 +1150,15 @@ int main(int argc, char ** argv) {
                 const auto & record = artifact.records[reference.record];
                 const float * input = inputs.data() + item * dimension;
                 const float * output = outputs.data() + item * dimension;
+                float * all_aggregate = all_exact_aggregate.data() +
+                    static_cast<size_t>(
+                        all_token_index[reference.record][reference.token]) *
+                    dimension;
+                for (size_t coordinate = 0;
+                     coordinate < dimension; ++coordinate) {
+                    all_aggregate[coordinate] +=
+                        reference.router_weight * output[coordinate];
+                }
                 if (record.split == 0) {
                     if (!pair.unweighted.observe(
                             input, output, dimension, 1.0, &error) ||
@@ -840,9 +1190,16 @@ int main(int argc, char ** argv) {
                     }
                     float * aggregate = exact_aggregate.data() +
                         static_cast<size_t>(validation_token) * dimension;
+                    float * rank_aggregate =
+                        validation_exact_by_rank.data() +
+                        (static_cast<size_t>(reference.rank) *
+                             validation_tokens +
+                         static_cast<size_t>(validation_token)) * dimension;
                     for (size_t coordinate = 0;
                          coordinate < dimension; ++coordinate) {
                         aggregate[coordinate] +=
+                            reference.router_weight * output[coordinate];
+                        rank_aggregate[coordinate] +=
                             reference.router_weight * output[coordinate];
                     }
                 }
@@ -860,9 +1217,21 @@ int main(int argc, char ** argv) {
         }
         if ((expert + 1) % kAggregateCheckpointExperts == 0 ||
             expert + 1 == weights.n_expert) {
+            const bool final_expert = expert + 1 == weights.n_expert;
             if (!write_aggregate_state(
                     aggregate_path, expert, validation_tokens,
-                    static_cast<uint32_t>(dimension), exact_aggregate, error)) {
+                    static_cast<uint32_t>(dimension), exact_aggregate, error) ||
+                (final_expert &&
+                 (!write_aggregate_state(
+                      all_aggregate_path, expert, all_tokens,
+                      static_cast<uint32_t>(dimension), all_exact_aggregate,
+                      error) ||
+                  !write_aggregate_state(
+                      rank_aggregate_path, expert,
+                      validation_tokens * static_cast<uint64_t>(
+                          weights.n_expert_used),
+                      static_cast<uint32_t>(dimension),
+                      validation_exact_by_rank, error)))) {
                 std::fprintf(stderr, "[kimi-panel-fit] %s\n", error.c_str());
                 engine.destroy();
                 close_sources();
@@ -966,6 +1335,36 @@ int main(int argc, char ** argv) {
                        write_vector(output, panels.unweighted_gain) &&
                        write_vector(output, panels.weighted_offset) &&
                        write_vector(output, panels.weighted_gain);
+            }, error)) {
+        std::fprintf(stderr, "[kimi-panel-fit] %s\n", error.c_str());
+        cleanup_weights();
+        return 1;
+    }
+
+    TeacherHeader teacher_header;
+    teacher_header.model_layer = model_layer;
+    teacher_header.dimension = static_cast<uint32_t>(dimension);
+    teacher_header.sequence_count = artifact.records.size();
+    teacher_header.token_count = all_tokens;
+    if (!atomic_binary_write(output_prefix + ".teacher.f32",
+            [&](std::ofstream & output) {
+                return write_value(output, teacher_header) &&
+                       write_vector(output, all_exact_aggregate);
+            }, error)) {
+        std::fprintf(stderr, "[kimi-panel-fit] %s\n", error.c_str());
+        cleanup_weights();
+        return 1;
+    }
+
+    RankTeacherHeader rank_teacher_header;
+    rank_teacher_header.model_layer = model_layer;
+    rank_teacher_header.dimension = static_cast<uint32_t>(dimension);
+    rank_teacher_header.top_k = static_cast<uint32_t>(weights.n_expert_used);
+    rank_teacher_header.validation_tokens = validation_tokens;
+    if (!atomic_binary_write(output_prefix + ".validation_by_rank.f32",
+            [&](std::ofstream & output) {
+                return write_value(output, rank_teacher_header) &&
+                       write_vector(output, validation_exact_by_rank);
             }, error)) {
         std::fprintf(stderr, "[kimi-panel-fit] %s\n", error.c_str());
         cleanup_weights();
@@ -1189,6 +1588,14 @@ int main(int argc, char ** argv) {
         {"unweighted_degenerate_coordinates", unweighted_degenerate},
         {"weighted_degenerate_coordinates", weighted_degenerate},
         {"least_observed_experts", least_observed_experts},
+        {"exactness", {
+            {"host_embedding_vs_cpu_get_rows_bit_exact",
+             host_embedding_cpu_bit_exact},
+            {"real_observer_disabled_vs_enabled_bit_exact",
+             observer_disabled_vs_enabled_bit_exact},
+            {"real_observer_reconstruction_bit_exact",
+             observer_reconstruction_bit_exact},
+        }},
         {"variants", variants},
         {"storage", {
             {"io_backend", io_backend_name},

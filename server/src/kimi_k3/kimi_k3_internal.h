@@ -224,6 +224,14 @@ bool load_kimi_k3_gguf(const std::string & path,
                        bool stream_routed_experts = false);
 void free_kimi_k3_weights(KimiK3Weights & w);
 
+// Decode selected embedding rows with the format's canonical scalar decoder.
+// This is the fallback used when a device backend does not implement GET_ROWS
+// for the checkpoint's quantized embedding type.
+bool kimi_k3_read_token_embeddings_on_host(
+    const KimiK3Weights & w,
+    const std::vector<int32_t> & tokens,
+    std::vector<float> & hidden);
+
 bool create_kimi_k3_cache(ggml_backend_t backend,
                           const KimiK3Weights & w,
                           int max_ctx,
