@@ -405,6 +405,42 @@ struct GraphOutput {
     size_t bytes = 0;
 };
 
+bool read_token_embeddings_on_host(
+        const KimiK3Weights & w,
+        const std::vector<int32_t> & tokens,
+        std::vector<float> & hidden) {
+    if (!w.tok_embd || w.tok_embd->ne[0] != w.n_embd ||
+        w.tok_embd->ne[1] != w.n_vocab ||
+        hidden.size() != tokens.size() * static_cast<size_t>(w.n_embd)) {
+        set_last_error("Kimi-K3 embedding: invalid host fallback shape");
+        return false;
+    }
+
+    const ggml_type_traits * traits =
+        ggml_get_type_traits(w.tok_embd->type);
+    const size_t row_bytes =
+        ggml_row_size(w.tok_embd->type, w.n_embd);
+    if (!traits || !traits->to_float || row_bytes == 0 ||
+        w.tok_embd->nb[1] < row_bytes) {
+        set_last_error(std::string("Kimi-K3 embedding: no host decoder for ") +
+                       ggml_type_name(w.tok_embd->type));
+        return false;
+    }
+
+    std::vector<uint8_t> row(row_bytes);
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        const size_t offset =
+            static_cast<size_t>(tokens[i]) * w.tok_embd->nb[1];
+        ggml_backend_tensor_get(
+            w.tok_embd, row.data(), offset, row.size());
+        traits->to_float(
+            row.data(),
+            hidden.data() + i * static_cast<size_t>(w.n_embd),
+            w.n_embd);
+    }
+    return true;
+}
+
 bool run_host_boundary_graph(ggml_backend_t backend,
                              ggml_context * ctx,
                              ggml_cgraph * graph,
@@ -535,12 +571,14 @@ bool streamed_kimi_k3_forward(
         ggml_set_input(ids);
         ggml_tensor * embedding =
             ggml_get_rows(ctx, w.tok_embd, ids);
-        const bool ok = run_host_boundary_graph(
-            backend, ctx, graph,
-            {{ids, tokens.data(), sizeof(int32_t) * tokens.size()}},
-            {{embedding, hidden.data(),
-              hidden.size() * sizeof(float)}},
-            "embedding");
+        const bool ok = ggml_backend_supports_op(backend, embedding)
+            ? run_host_boundary_graph(
+                backend, ctx, graph,
+                {{ids, tokens.data(), sizeof(int32_t) * tokens.size()}},
+                {{embedding, hidden.data(),
+                  hidden.size() * sizeof(float)}},
+                "embedding")
+            : read_token_embeddings_on_host(w, tokens, hidden);
         ggml_free(ctx);
         if (!ok) return false;
     }
