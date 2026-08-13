@@ -14,6 +14,9 @@ panel_artifact="${KIMI_PANEL_ARTIFACT:-/mnt/kimi-k3/results/kimi_layer01_panel.s
 total_tokens="${KIMI_PANEL_TOTAL_TOKENS:-2048}"
 gpu="${KIMI_PANEL_GPU:-0}"
 gpu_lock="${KIMI_GPU_LOCK_FILE:-/tmp/lucebox-gpu-$gpu.lock}"
+revision="a0836360ce58dfec088d966a97f2ddc8a606279b"
+model_root="${KIMI_PANEL_MODEL_ROOT:-/mnt/kimi-k3/models/unsloth-Kimi-K3-GGUF}"
+complete_marker="${KIMI_PANEL_DOWNLOAD_MARKER:-$model_root/.ud-iq1s-$revision.complete}"
 
 exec 9>"$gpu_lock"
 if ! flock -n 9; then
@@ -21,9 +24,14 @@ if ! flock -n 9; then
     exit 1
 fi
 
-if pgrep -f '[h]f download unsloth/Kimi-K3-GGUF' >/dev/null; then
+if pgrep -f '^(python3|/usr/bin/python3) .*/hf download unsloth/Kimi-K3-GGUF([[:space:]]|$)' >/dev/null; then
     echo "The Kimi checkpoint download is still using the model drive." >&2
     echo "Wait for it to finish before capture so storage measurements are uncontended." >&2
+    exit 1
+fi
+
+if [[ ! -f "$complete_marker" ]]; then
+    echo "The pinned Kimi checkpoint does not have its completion marker: $complete_marker" >&2
     exit 1
 fi
 

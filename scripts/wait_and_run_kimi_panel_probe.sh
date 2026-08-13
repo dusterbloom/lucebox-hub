@@ -4,6 +4,9 @@ set -euo pipefail
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 gpu="${KIMI_PANEL_GPU:-0}"
 poll_seconds="${KIMI_PANEL_POLL_SECONDS:-60}"
+revision="a0836360ce58dfec088d966a97f2ddc8a606279b"
+model_root="${KIMI_PANEL_MODEL_ROOT:-/mnt/kimi-k3/models/unsloth-Kimi-K3-GGUF}"
+complete_marker="${KIMI_PANEL_DOWNLOAD_MARKER:-$model_root/.ud-iq1s-$revision.complete}"
 
 timestamp() {
     date --iso-8601=seconds
@@ -15,11 +18,15 @@ if [[ ! "$poll_seconds" =~ ^[0-9]+$ ]] || (( poll_seconds < 5 || poll_seconds > 
 fi
 
 echo "$(timestamp) waiting for the Kimi checkpoint transfer"
-while pgrep -f '[h]f download unsloth/Kimi-K3-GGUF' >/dev/null; do
+while [[ ! -f "$complete_marker" ]]; do
+    if ! tmux has-session -t k3-download 2>/dev/null; then
+        echo "$(timestamp) download session ended without a completion marker" >&2
+        exit 1
+    fi
     sleep "$poll_seconds"
 done
 
-echo "$(timestamp) transfer process ended; waiting for an idle graphics card"
+echo "$(timestamp) pinned transfer completed; waiting for an idle graphics card"
 idle_samples=0
 while (( idle_samples < 3 )); do
     if nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits \
