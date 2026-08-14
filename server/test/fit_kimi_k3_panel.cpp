@@ -780,7 +780,7 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr,
             "usage: %s <first-model-shard.gguf> <capture.bin> "
             "<fit-state-directory> <output-prefix> [gpu=0] [batch=128] "
-            "[expert-response-directory]\n",
+            "[expert-response-directory] [core=cuda|cpu]\n",
             argv[0]);
         return 2;
     }
@@ -792,10 +792,22 @@ int main(int argc, char ** argv) {
     int batch_tokens = 128;
     const std::filesystem::path response_directory =
         argc > 7 ? std::filesystem::path(argv[7]) : std::filesystem::path{};
+    bool cpu_mapped_core = false;
     if ((argc > 5 && !parse_nonnegative_int(argv[5], gpu)) ||
         (argc > 6 && !parse_positive_int(argv[6], batch_tokens))) {
         std::fprintf(stderr, "[kimi-panel-fit] invalid numeric argument\n");
         return 2;
+    }
+    if (argc > 8) {
+        const std::string core = argv[8];
+        if (core == "cpu") {
+            cpu_mapped_core = true;
+        } else if (core != "cuda") {
+            std::fprintf(stderr,
+                "[kimi-panel-fit] invalid core placement '%s'; "
+                "expected cuda or cpu\n", argv[8]);
+            return 2;
+        }
     }
 
     KimiK3PanelCaptureArtifact artifact;
@@ -855,23 +867,42 @@ int main(int argc, char ** argv) {
         }
     }
 
-    ggml_backend_t backend = ggml_backend_cuda_init(gpu);
+    ggml_backend_t backend = cpu_mapped_core
+        ? ggml_backend_cpu_init()
+        : ggml_backend_cuda_init(gpu);
     if (!backend) {
-        std::fprintf(stderr, "[kimi-panel-fit] graphics backend init failed\n");
+        std::fprintf(stderr, "[kimi-panel-fit] %s core backend init failed\n",
+                     cpu_mapped_core ? "CPU" : "graphics");
         return 1;
     }
+    ggml_backend_t expert_backend = backend;
+    if (cpu_mapped_core) {
+        expert_backend = ggml_backend_cuda_init(gpu);
+        if (!expert_backend) {
+            std::fprintf(stderr,
+                "[kimi-panel-fit] graphics expert backend init failed\n");
+            ggml_backend_free(backend);
+            return 1;
+        }
+    }
+    std::fprintf(stderr,
+        "[kimi-panel-fit] core=%s experts=cuda:%d\n",
+        cpu_mapped_core ? "cpu-mapped" : "cuda", gpu);
     KimiK3Weights weights;
     KimiK3LoadOptions load_options;
     load_options.stream_routed_experts = true;
     load_options.stop_before_moe_layer = model_layer;
+    load_options.mmap_resident_tensors = cpu_mapped_core;
     if (!load_kimi_k3_gguf(model_path, backend, weights, load_options)) {
         std::fprintf(stderr, "[kimi-panel-fit] selective load failed: %s\n",
                      dflash27b_last_error());
+        if (expert_backend != backend) ggml_backend_free(expert_backend);
         ggml_backend_free(backend);
         return 1;
     }
     const auto cleanup_weights = [&]() {
         free_kimi_k3_weights(weights);
+        if (expert_backend != backend) ggml_backend_free(expert_backend);
         ggml_backend_free(backend);
     };
     if (weights.n_expert_latent != static_cast<int>(dimension) ||
@@ -979,7 +1010,7 @@ int main(int argc, char ** argv) {
     stream_config.cache_first_decode = false;
     stream_config.graph_cache_entries = 4;
     MoeHybridStreamEngine engine;
-    if (!engine.init(backend, weights.max_streamed_expert_bytes,
+    if (!engine.init(expert_backend, weights.max_streamed_expert_bytes,
                      stream_config, &error) ||
         !engine.bind_sources(sources, weights.streamed_layer_regions, &error)) {
         std::fprintf(stderr, "[kimi-panel-fit] stream engine failed: %s\n",
@@ -1686,6 +1717,7 @@ int main(int argc, char ** argv) {
          response_directory.empty() ? "" : response_directory.string()},
         {"expert_response_storage", "float32"},
         {"model_layer", model_layer},
+        {"core_placement", cpu_mapped_core ? "cpu-mapped" : "cuda"},
         {"expert_count", weights.n_expert},
         {"top_k", weights.n_expert_used},
         {"latent_dimension", dimension},
