@@ -1,0 +1,12 @@
+{"id":"science-photosynthesis","split":"calibration","text":"Explain photosynthesis in one short sentence."}
+{"id":"math-multiply","split":"calibration","text":"What is 37 times 19? Answer with the integer."}
+{"id":"code-sum","split":"calibration","text":"Complete this Python expression: sum([2, 3, 5]) ="}
+{"id":"fact-capital","split":"calibration","text":"Name the capital of Japan and nothing else."}
+{"id":"logic-raven","split":"calibration","text":"All ravens are birds. Ari is a raven. What is Ari?"}
+{"id":"translation-italian","split":"calibration","text":"Translate good morning into Italian."}
+{"id":"word-synonym","split":"calibration","text":"Give one synonym for resilient."}
+{"id":"writing-moonlight","split":"calibration","text":"Write a five-word description of moonlight."}
+{"id":"science-ice","split":"validation","text":"Why does ice float on water? One sentence."}
+{"id":"math-power","split":"validation","text":"Compute two to the tenth power. Answer only."}
+{"id":"computer-queue","split":"test","text":"What data structure uses first in, first out ordering?"}
+{"id":"grammar-apples","split":"test","text":"Fix the grammar: She don't like apples."}
