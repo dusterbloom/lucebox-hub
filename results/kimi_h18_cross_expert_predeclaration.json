@@ -1,0 +1,33 @@
+{
+  "schema": "kimi-k3-h18-cross-expert-predeclaration-v1",
+  "status": "PREDECLARED_BEFORE_REDUNDANCY_MEASUREMENT",
+  "model_layer": 1,
+  "expert_width": 3072,
+  "experts": {
+    "top16_by_total_registered_route_count": [64, 720, 290, 313, 7, 741, 284, 522, 736, 26, 708, 466, 885, 552, 205, 5],
+    "random16": [303, 470, 876, 543, 744, 445, 630, 156, 237, 128, 96, 80, 89, 461, 655, 250],
+    "random_eligibility": "at least 50 routes on registered validation sequences and not in top16",
+    "random_seed": 260814,
+    "random_candidate_count": 120,
+    "random_replay": "enumerate eligible expert IDs in ascending numeric order, then numpy.random.default_rng(260814).choice(candidate_ids, size=16, replace=False); preserve returned order"
+  },
+  "common_probe": {
+    "count": 512,
+    "source": "registered 10000-token layer-one capture calibration sequences only",
+    "selection": "exclude calibration sequences shorter than six tokens; sequence round-robin over the remaining sequences; six evenly spaced token positions per sequence, ordered by round then capture sequence; truncate after 512",
+    "validation_sequences_excluded": true
+  },
+  "gate": {
+    "weak_no_go_extreme_pooling": "fewer than 50 percent of neurons have normalized replacement cost C <= 0.10",
+    "strong": "at least 75 percent have C <= 0.10 AND at least 50 percent have C <= 0.05",
+    "ambiguous": "between weak and strong; run one predeclared 64-expert replication before clustering"
+  },
+  "capture": {
+    "path": "/mnt/kimi-k3/captures/kimi_layer01_10000.bin",
+    "sha256": "5dc24f94da22a854eb9d67888174abdb157fd66d6d627e53ebe5168be72d0d9d"
+  },
+  "model_shard": {
+    "path": "/mnt/kimi-k3/models/unsloth-Kimi-K3-GGUF/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00002-of-00014.gguf",
+    "sha256": "dbcc677f04a20f2be5a060c428be61230939e877749004ac6d9a528e905c7bc6"
+  }
+}
