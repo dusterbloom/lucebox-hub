@@ -1,0 +1,32 @@
+{
+  "schema": "kimi-k3-h18-lane-b-predeclaration-v1",
+  "status": "PREDECLARED_BEFORE_COMPRESSION",
+  "model_layer": 1,
+  "expert_id": 64,
+  "selection_rule": "maximum total route count in the registered 10000-token layer-one capture",
+  "route_counts": {
+    "total": 887,
+    "train": 719,
+    "development": 26,
+    "test": 142
+  },
+  "conditional_replication_experts": [720, 290, 313, 7, 741, 284, 522],
+  "conditional_replication_rule": "next seven experts by total route count in the same capture; evaluate only if expert 64 clears the k=192 major-go gate",
+  "split_policy": "existing load_data whole-sequence split: calibration sequences are divided deterministically into train and development; registered validation sequences are untouched test",
+  "capture": {
+    "path": "/mnt/kimi-k3/captures/kimi_layer01_10000.bin",
+    "sha256": "5dc24f94da22a854eb9d67888174abdb157fd66d6d627e53ebe5168be72d0d9d"
+  },
+  "teacher": {
+    "path": "/mnt/kimi-k3/results/kimi_layer01_panel_10000_teacher.teacher.f32",
+    "sha256": "c3dbc469663ae31da0d483f0d19d31f66e6c532545097e5090355eb9b1aa2f78"
+  },
+  "expert_responses": {
+    "path": "/mnt/kimi-k3/responses/kimi_layer01_10000/expert_0064.responses.f32",
+    "sha256": "c44f51a143a82bc1ba188064ba3cc9ed590944acfd1f2a2cc42f42174ee955f1"
+  },
+  "model_shard": {
+    "path": "/mnt/kimi-k3/models/unsloth-Kimi-K3-GGUF/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00002-of-00014.gguf",
+    "sha256": "dbcc677f04a20f2be5a060c428be61230939e877749004ac6d9a528e905c7bc6"
+  }
+}
