@@ -42,7 +42,14 @@ FULL_ROUTED_GIB_PER_TOKEN = 8.844
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("shard", type=Path)
+    parser.add_argument(
+        "shard",
+        type=Path,
+        help=(
+            "any GGUF shard in the model directory (or the directory itself); "
+            "the requested layer tensors are resolved across all sibling shards"
+        ),
+    )
     parser.add_argument("capture", type=Path)
     parser.add_argument("teacher", type=Path)
     parser.add_argument("response_directory", type=Path)
@@ -91,6 +98,54 @@ def summarize_pair(left: np.ndarray, right: np.ndarray) -> dict[str, object]:
 def dequantize_part(data: np.ndarray, tensor_type: object) -> torch.Tensor:
     contiguous = np.ascontiguousarray(data)
     return torch.from_numpy(quants.dequantize(contiguous, tensor_type))
+
+
+def resolve_layer_tensors(
+    shard_or_directory: Path,
+    layer: int,
+) -> tuple[dict[str, object], dict[str, Path], list[GGUFReader]]:
+    """Find one K3 layer's tensors in its split GGUF model directory.
+
+    The IQ1_S model distributes routed layers across fourteen files.  The
+    original layer-one probe happened to work when given shard 1, but later
+    layers are not guaranteed to live there.  Scan only GGUF headers and keep
+    the exact source file for every tensor in the result metadata.
+    """
+    model_directory = (
+        shard_or_directory if shard_or_directory.is_dir() else shard_or_directory.parent
+    )
+    shards = sorted(model_directory.glob("*.gguf"))
+    if not shards:
+        raise FileNotFoundError(f"no GGUF shards in {model_directory}")
+    names = (
+        f"blk.{layer}.ffn_gate_exps.weight",
+        f"blk.{layer}.ffn_up_exps.weight",
+        f"blk.{layer}.ffn_down_exps.weight",
+        f"blk.{layer}.ffn_routed_norm.weight",
+        f"blk.{layer}.ffn_routed_up.weight",
+    )
+    wanted = set(names)
+    tensors: dict[str, object] = {}
+    sources: dict[str, Path] = {}
+    readers: list[GGUFReader] = []
+    for shard in shards:
+        reader = GGUFReader(shard, "r")
+        readers.append(reader)
+        for tensor in reader.tensors:
+            if tensor.name not in wanted:
+                continue
+            if tensor.name in tensors:
+                raise ValueError(f"tensor {tensor.name} occurs in multiple shards")
+            tensors[tensor.name] = tensor
+            sources[tensor.name] = shard
+        if len(tensors) == len(names):
+            break
+    missing = [name for name in names if name not in tensors]
+    if missing:
+        raise KeyError(
+            f"layer {layer} tensors missing from {model_directory}: {missing}"
+        )
+    return tensors, sources, readers
 
 
 def situ_expert(
@@ -301,8 +356,9 @@ def main() -> int:
             "enable exact fallback"
         )
 
-    reader = GGUFReader(args.shard, "r")
-    tensors = {tensor.name: tensor for tensor in reader.tensors}
+    tensors, tensor_sources, _tensor_readers = resolve_layer_tensors(
+        args.shard, args.layer
+    )
     gate_tensor = tensors[f"blk.{args.layer}.ffn_gate_exps.weight"]
     up_tensor = tensors[f"blk.{args.layer}.ffn_up_exps.weight"]
     down_tensor = tensors[f"blk.{args.layer}.ffn_down_exps.weight"]
@@ -808,6 +864,9 @@ def main() -> int:
         "capture": str(args.capture),
         "teacher": str(args.teacher),
         "shard": str(args.shard),
+        "tensor_sources": {
+            name: str(path) for name, path in sorted(tensor_sources.items())
+        },
         "response_directory": str(args.response_directory),
         "calibration_tokens": int(data.latent.shape[0] - validation_count),
         "validation_tokens": int(validation_count),
