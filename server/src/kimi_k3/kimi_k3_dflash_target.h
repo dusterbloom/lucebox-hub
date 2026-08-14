@@ -36,6 +36,9 @@ public:
     // Sequential prefill/AR entry point that shares the same feature-capture
     // code as speculative verification.
     bool forward_token(int32_t token, int position, std::vector<float> & logits);
+    void set_routed_output_provider(KimiK3RoutedOutputProvider * provider) {
+        routed_output_provider_ = provider;
+    }
 
     bool verify_batch(const std::vector<int32_t> & tokens,
                       int base_pos,
@@ -83,6 +86,7 @@ private:
     MoeStreamDualOwnerExecutor * dual_stream_executor_ = nullptr;
     const MoeStreamDualOwnerPolicy * stream_owner_policy_ = nullptr;
     MoeHybridRoutingStats * routing_stats_ = nullptr;
+    KimiK3RoutedOutputProvider * routed_output_provider_ = nullptr;
     mutable StepGraph embedding_graph_;
     StepGraph projection_graph_;
 };

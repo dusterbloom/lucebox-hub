@@ -107,7 +107,8 @@ private:
     void maybe_save_routing_stats();
     bool write_logits_trace(const GenerateRequest & request,
                             const GenerateResult & result,
-                            const std::vector<float> & rows) const;
+                            const std::vector<float> & rows,
+                            const char * destination_path = nullptr) const;
 
     int32_t choose_token(const std::vector<float> & logits,
                          const SamplerCfg & sampler,
@@ -126,6 +127,7 @@ private:
     std::unique_ptr<class KimiK3DFlashTarget> dflash_target_;
     MoeHybridStreamEngine stream_engine_;
     MoeHybridStreamEngine secondary_stream_engine_;
+    std::unique_ptr<class KimiK3RoutedOutputProvider> routed_output_provider_;
     MoeStreamDualOwnerExecutor dual_stream_executor_;
     MoeHybridPlacement stream_placement_;
     MoeStreamDualOwnerPolicy stream_owner_policy_;

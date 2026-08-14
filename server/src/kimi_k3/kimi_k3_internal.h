@@ -29,6 +29,7 @@ struct MoeHybridRoutingStats;
 class MoeHybridStreamEngine;
 class MoeStreamDualOwnerExecutor;
 class MoeStreamExpertObserver;
+class KimiK3RoutedOutputProvider;
 struct MoeStreamDualOwnerPolicy;
 
 struct KimiK3Layer {
@@ -198,6 +199,7 @@ struct KimiK3ForwardOptions {
     int stop_before_moe_layer = -1;
     KimiK3MoePanelCapture * panel_capture = nullptr;
     MoeStreamExpertObserver * expert_observer = nullptr;
+    KimiK3RoutedOutputProvider * routed_output_provider = nullptr;
 };
 
 struct KimiK3ForwardResult {
@@ -283,6 +285,7 @@ bool kimi_k3_step(ggml_backend_t backend,
                   MoeHybridStreamEngine * stream_engine = nullptr,
                   MoeStreamDualOwnerExecutor * dual_stream_executor = nullptr,
                   const MoeStreamDualOwnerPolicy * stream_owner_policy = nullptr,
-                  MoeHybridRoutingStats * routing_stats = nullptr);
+                  MoeHybridRoutingStats * routing_stats = nullptr,
+                  KimiK3RoutedOutputProvider * routed_output_provider = nullptr);
 
 } // namespace dflash::common

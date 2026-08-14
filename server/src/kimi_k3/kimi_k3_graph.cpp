@@ -1,4 +1,5 @@
 #include "kimi_k3_internal.h"
+#include "kimi_k3_progressive_provider.h"
 
 #include "common/moe_hybrid_routing_stats.h"
 #include "common/moe_hybrid_stream.h"
@@ -808,15 +809,20 @@ bool streamed_kimi_k3_forward(
         std::vector<float> routed_output;
         std::string stream_error;
         MoeStreamDualOwnerStats owner_stats;
+        const bool alternate_provider = options.routed_output_provider &&
+            options.routed_output_provider->handles_layer(il);
         const bool dual_owner = dual_stream_executor != nullptr &&
-            options.expert_observer == nullptr;
+            options.expert_observer == nullptr && !alternate_provider;
         if (!stream_engine) {
             set_last_error(
                 "Kimi-K3 routed layer: no streamed expert engine");
             return false;
         }
-        const bool route_ok = dual_owner
-            ? dual_stream_executor->eval(
+        const bool route_ok = alternate_provider
+            ? options.routed_output_provider->evaluate(
+                il, base_pos, spec, route_batch, *stream_engine,
+                routed_output, &stream_error)
+            : dual_owner ? dual_stream_executor->eval(
                 spec, route_batch, *stream_owner_policy,
                 routed_output, &owner_stats, &stream_error)
             : eval_moe_streamed_experts(
@@ -1373,10 +1379,12 @@ bool kimi_k3_step(ggml_backend_t backend,
                   MoeHybridStreamEngine * stream_engine,
                   MoeStreamDualOwnerExecutor * dual_stream_executor,
                   const MoeStreamDualOwnerPolicy * stream_owner_policy,
-                  MoeHybridRoutingStats * routing_stats) {
+                  MoeHybridRoutingStats * routing_stats,
+                  KimiK3RoutedOutputProvider * routed_output_provider) {
     KimiK3ForwardOptions options;
     options.read_logits = true;
     options.read_argmax = false;
+    options.routed_output_provider = routed_output_provider;
     KimiK3ForwardResult result;
     if (!kimi_k3_forward(
             backend, w, cache, std::vector<int32_t>{token}, position,

@@ -71,6 +71,7 @@ bool KimiK3DFlashTarget::forward_token(
     options.capture_layer_ids = &capture_layer_ids_;
     options.read_logits = true;
     options.read_argmax = false;
+    options.routed_output_provider = routed_output_provider_;
     KimiK3ForwardResult result;
     if (!kimi_k3_forward(
             backend_, weights_, cache_, std::vector<int32_t>{token}, position,
@@ -94,6 +95,7 @@ bool KimiK3DFlashTarget::verify_batch(
     options.capture_replay = fast_rollback_ && capture_ssm_intermediates;
     options.read_logits = false;
     options.read_argmax = true;
+    options.routed_output_provider = routed_output_provider_;
     KimiK3ForwardResult result;
     if (!kimi_k3_forward(
             backend_, weights_, cache_, tokens, base_pos,

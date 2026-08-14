@@ -2,6 +2,7 @@
 #include "kimi_k3/kimi_k3_backend.h"
 #include "kimi_k3/kimi_k3_internal.h"
 #include "kimi_k3/kimi_k3_panel_artifact.h"
+#include "common/moe_hybrid_stream.h"
 #include "server/tokenizer.h"
 
 #include "ggml-cuda.h"
@@ -21,8 +22,12 @@
 #include <vector>
 
 #if defined(_WIN32)
+#include <fcntl.h>
 #include <process.h>
+#include <sys/stat.h>
 #else
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -130,6 +135,50 @@ std::string partial_path_for(const std::string & output) {
     return output + ".partial." + std::to_string(process_id);
 }
 
+void close_descriptor(int descriptor) {
+#if defined(_WIN32)
+    _close(descriptor);
+#else
+    close(descriptor);
+#endif
+}
+
+bool open_model_sources(const std::vector<std::string> & paths,
+                        std::vector<int> & descriptors,
+                        std::vector<MoeNvmeSource> & sources,
+                        std::string & error) {
+    for (const std::string & path : paths) {
+#if defined(_WIN32)
+        const int descriptor = _open(path.c_str(), _O_RDONLY | _O_BINARY);
+        struct _stat64 status{};
+        const bool stat_ok = descriptor >= 0 &&
+            _fstat64(descriptor, &status) == 0 && status.st_size > 0;
+#else
+        const int descriptor = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        struct stat status{};
+        const bool stat_ok = descriptor >= 0 &&
+            fstat(descriptor, &status) == 0 && status.st_size > 0;
+#endif
+        if (!stat_ok) {
+            if (descriptor >= 0) close_descriptor(descriptor);
+            error = "cannot open model source " + path;
+            return false;
+        }
+        descriptors.push_back(descriptor);
+        sources.push_back({nullptr, static_cast<size_t>(status.st_size),
+                           descriptor});
+    }
+    return true;
+}
+
+void maybe_release_mapped_pages(const KimiK3Weights & weights) {
+    const char * raw = std::getenv("DFLASH_KIMI_MMAP_DROP_PAGES");
+    if (!raw || !*raw || std::strcmp(raw, "0") == 0) return;
+    for (const GgufMmap & mapping : weights.mapped_shards) {
+        mapping.advise_dontneed();
+    }
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {
@@ -213,11 +262,63 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    // An interior-layer capture must evaluate every preceding routed layer
+    // exactly. Reuse the production file-backed evaluator so the capture stays
+    // on the same numerical and storage path as ordinary Kimi inference.
+    ggml_backend_t expert_backend = nullptr;
+    MoeHybridStreamEngine stream_engine;
+    std::vector<int> source_descriptors;
+    std::vector<MoeNvmeSource> model_sources;
+    const bool needs_streaming = model_layer > weights.n_dense_lead;
+    if (needs_streaming) {
+        expert_backend = core_placement == KimiK3CorePlacement::Cpu
+            ? ggml_backend_cuda_init(gpu) : backend;
+        if (!expert_backend) {
+            std::fprintf(stderr,
+                         "[kimi-panel-capture] expert backend init failed\n");
+            free_kimi_k3_cache(cache);
+            free_kimi_k3_weights(weights);
+            ggml_backend_free(backend);
+            return 1;
+        }
+        MoeStreamConfig stream_config = MoeStreamConfig::from_env();
+        if (!open_model_sources(weights.shard_paths, source_descriptors,
+                                model_sources, error) ||
+            !stream_engine.init(expert_backend,
+                                weights.max_streamed_expert_bytes,
+                                stream_config, &error) ||
+            !stream_engine.bind_sources(
+                model_sources, weights.streamed_layer_regions, &error)) {
+            std::fprintf(stderr,
+                         "[kimi-panel-capture] stream engine failed: %s\n",
+                         error.c_str());
+            stream_engine.destroy();
+            for (int descriptor : source_descriptors) {
+                close_descriptor(descriptor);
+            }
+            if (expert_backend != backend && expert_backend) {
+                ggml_backend_free(expert_backend);
+            }
+            free_kimi_k3_cache(cache);
+            free_kimi_k3_weights(weights);
+            ggml_backend_free(backend);
+            return 1;
+        }
+        std::fprintf(stderr,
+            "[kimi-panel-capture] exact NVMe prefix enabled through layer %d\n",
+            model_layer - 1);
+    }
+
     const std::string temporary_path = partial_path_for(output_path);
     FILE * output = std::fopen(temporary_path.c_str(), "wb+");
     if (!output) {
         std::fprintf(stderr, "[kimi-panel-capture] cannot create %s: %s\n",
                      temporary_path.c_str(), std::strerror(errno));
+        stream_engine.destroy();
+        for (int descriptor : source_descriptors) close_descriptor(descriptor);
+        if (expert_backend != backend && expert_backend) {
+            ggml_backend_free(expert_backend);
+        }
         free_kimi_k3_cache(cache);
         free_kimi_k3_weights(weights);
         ggml_backend_free(backend);
@@ -277,7 +378,8 @@ int main(int argc, char ** argv) {
             KimiK3ForwardResult result;
             ok = kimi_k3_forward(
                 backend, weights, cache, chunk, static_cast<int>(begin),
-                forward_options, result);
+                forward_options, result,
+                needs_streaming ? &stream_engine : nullptr);
             if (!ok) {
                 error = dflash27b_last_error();
                 break;
@@ -309,6 +411,7 @@ int main(int argc, char ** argv) {
             router_weights.insert(router_weights.end(),
                                   capture.router_weights.begin(),
                                   capture.router_weights.end());
+            maybe_release_mapped_pages(weights);
         }
         if (!ok) break;
 
@@ -397,6 +500,11 @@ int main(int argc, char ** argv) {
             output_path.c_str());
     }
 
+    stream_engine.destroy();
+    for (int descriptor : source_descriptors) close_descriptor(descriptor);
+    if (expert_backend != backend && expert_backend) {
+        ggml_backend_free(expert_backend);
+    }
     free_kimi_k3_cache(cache);
     free_kimi_k3_weights(weights);
     ggml_backend_free(backend);

@@ -41,6 +41,11 @@ public:
     // No-op if not open or range is invalid. Safe to call from any thread.
     void advise_willneed(size_t offset, size_t length) const;
 
+    // Release clean mapped pages after a memory-intensive sequential pass.
+    // The mapping and tensor addresses remain valid; later access faults the
+    // bytes back from storage. This is useful for bounded-memory WSL runs.
+    void advise_dontneed() const;
+
     // Transfer ownership of the mmap'd region to the caller.
     // After release() this object is empty (is_open() == false).
     // The caller is responsible for unmapping on POSIX or UnmapViewOfFile on
@@ -218,6 +223,17 @@ inline void GgufMmap::advise_willneed(size_t offset, size_t length) const {
     const size_t aligned_length = length + (offset - aligned_offset);
     ::madvise(const_cast<uint8_t *>(static_cast<const uint8_t *>(data_)) + aligned_offset,
               aligned_length, MADV_WILLNEED);
+#endif
+}
+
+inline void GgufMmap::advise_dontneed() const {
+    if (!data_ || size_ == 0) return;
+#if defined(_WIN32)
+    // Windows manages clean mapped-file residency itself. Keep this hint a
+    // no-op there rather than requiring a newer kernel32 API at link time.
+    return;
+#else
+    ::madvise(const_cast<void *>(data_), size_, MADV_DONTNEED);
 #endif
 }
 

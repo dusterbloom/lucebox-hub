@@ -4,6 +4,7 @@
 
 #include "kimi_k3_backend.h"
 #include "kimi_k3_dflash_target.h"
+#include "kimi_k3_progressive_provider.h"
 
 #include "common/dynamic_backend.h"
 #include "common/dflash_spec_decode.h"
@@ -47,6 +48,36 @@ constexpr int kMaxDsparkBlockSize = 16;
 
 constexpr char kKimiLogitsTraceMagic[8] = {
     'K', '3', 'L', 'O', 'G', '0', '0', '1'};
+
+bool parse_teacher_forced_tokens(const char * raw,
+                                 std::vector<int32_t> & out) {
+    out.clear();
+    if (!raw || !*raw) return true;
+    const char * cursor = raw;
+    while (*cursor) {
+        char * end = nullptr;
+        errno = 0;
+        const long value = std::strtol(cursor, &end, 10);
+        if (errno != 0 || end == cursor || value < 0 ||
+            value > std::numeric_limits<int32_t>::max()) {
+            return false;
+        }
+        out.push_back(static_cast<int32_t>(value));
+        if (*end == '\0') return true;
+        if (*end != ',') return false;
+        cursor = end + 1;
+        if (*cursor == '\0') return false;
+    }
+    return true;
+}
+
+void maybe_release_kimi_mapped_pages(const KimiK3Weights & weights) {
+    const char * raw = std::getenv("DFLASH_KIMI_MMAP_DROP_PAGES");
+    if (!raw || !*raw || std::strcmp(raw, "0") == 0) return;
+    for (const GgufMmap & mapping : weights.mapped_shards) {
+        mapping.advise_dontneed();
+    }
+}
 
 struct KimiLogitsTraceHeader {
     char magic[8];
@@ -306,6 +337,7 @@ bool KimiK3Backend::init_streaming() {
     const bool dual_owner_streams =
         expert_backend_ && !accelerator_only_stream;
     auto fail_streaming = [&]() {
+        routed_output_provider_.reset();
         dual_stream_executor_.destroy();
         stream_engine_.destroy();
         secondary_stream_engine_.destroy();
@@ -750,6 +782,13 @@ bool KimiK3Backend::init_streaming() {
                 routing_stats_out_path_.c_str());
         }
     }
+    if (!create_kimi_k3_progressive_provider_from_env(
+            stream_engine_.compute_backend(), routed_output_provider_, &error)) {
+        std::fprintf(stderr,
+                     "[kimi-k3] H16 routed provider initialization failed: %s\n",
+                     error.c_str());
+        return fail_streaming();
+    }
     if (dual_owner_streams) {
         std::fprintf(stderr,
             "[kimi-k3] routed experts dual-owner: shards=%zu layers=%zu "
@@ -878,8 +917,12 @@ bool KimiK3Backend::init() {
     }
     if (!init_draft()) return false;
     const int max_ctx = std::max(1, cfg_.device.max_ctx);
-    const int max_verify_tokens = draft_weights_.ctx
+    int max_verify_tokens = draft_weights_.ctx
         ? draft_weights_.max_chain_verify_tokens() : 0;
+    if (const char * paired =
+            std::getenv("DFLASH_KIMI_H16_CANDIDATE_LOGITS_OUT")) {
+        if (*paired) max_verify_tokens = std::max(max_verify_tokens, 1);
+    }
     if (!create_kimi_k3_cache(
             backend_, weights_, max_ctx, cache_, max_verify_tokens)) {
         std::fprintf(stderr, "[kimi-k3] cache allocation failed (max_ctx=%d)\n",
@@ -917,6 +960,7 @@ bool KimiK3Backend::park(ParkTarget target) {
     if (park_target_includes_target_model(target) && !parked_) {
         dflash_target_.reset();
         maybe_save_routing_stats();
+        routed_output_provider_.reset();
         dual_stream_executor_.destroy();
         stream_engine_.destroy();
         secondary_stream_engine_.destroy();
@@ -962,14 +1006,17 @@ int32_t KimiK3Backend::choose_token(const std::vector<float> & logits,
 bool KimiK3Backend::write_logits_trace(
         const GenerateRequest & request,
         const GenerateResult & result,
-        const std::vector<float> & rows) const {
-    if (!cfg_.logits_trace_path || !*cfg_.logits_trace_path) return true;
+        const std::vector<float> & rows,
+        const char * destination_path) const {
+    const char * selected_path = destination_path
+        ? destination_path : cfg_.logits_trace_path;
+    if (!selected_path || !*selected_path) return true;
     if (weights_.n_vocab <= 0 ||
         rows.size() % static_cast<size_t>(weights_.n_vocab) != 0) {
         std::fprintf(stderr, "[kimi-k3] invalid logits trace shape\n");
         return false;
     }
-    const std::string destination = cfg_.logits_trace_path;
+    const std::string destination = selected_path;
     const std::string temporary = package_temporary_path(destination);
 #if defined(_WIN32)
     const int fd = ::_open(
@@ -1047,6 +1094,10 @@ DFlashTarget * KimiK3Backend::dflash_target() {
             dual_stream_executor_.is_ready()
                 ? &dual_stream_executor_ : nullptr,
             &stream_owner_policy_, routing_stats_.get());
+        // DFlash is disabled while tracing logits, but keep the provider wired
+        // for completeness when a research run explicitly supplies a draft.
+        dflash_target_->set_routed_output_provider(
+            routed_output_provider_.get());
     }
     return dflash_target_.get();
 }
@@ -1065,6 +1116,18 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
                                             const DaemonIO & io) {
     GenerateResult result;
     DaemonIO out_io = io.with_token_callback(req.on_token);
+    std::vector<int32_t> teacher_forced_tokens;
+    const char * teacher_forced_raw =
+        std::getenv("DFLASH_KIMI_TEACHER_FORCED_TOKENS");
+    if (!parse_teacher_forced_tokens(
+            teacher_forced_raw, teacher_forced_tokens) ||
+        (!teacher_forced_tokens.empty() &&
+         teacher_forced_tokens.size() < static_cast<size_t>(req.n_gen))) {
+        result.fail(GenerateErrorCode::BackendSpecific,
+                    "invalid or too-short Kimi teacher-forced token list");
+        out_io.emit(-1);
+        return result;
+    }
     if (parked_) {
         result.fail(GenerateErrorCode::ModelParked);
         out_io.emit(-1);
@@ -1087,6 +1150,18 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
     reset_kimi_k3_cache(cache_);
     std::vector<float> logits;
     std::vector<float> logits_trace;
+    std::vector<float> paired_candidate_trace;
+    const char * paired_candidate_path =
+        std::getenv("DFLASH_KIMI_H16_CANDIDATE_LOGITS_OUT");
+    const bool paired_interventions =
+        paired_candidate_path && *paired_candidate_path;
+    if (paired_interventions &&
+        (!routed_output_provider_ || cache_.max_verify_tokens < 1)) {
+        result.fail(GenerateErrorCode::BackendSpecific,
+                    "paired H16 mode requires a routed provider and cache snapshot");
+        out_io.emit(-1);
+        return result;
+    }
     const bool trace_logits =
         cfg_.logits_trace_path && *cfg_.logits_trace_path;
     if (trace_logits) {
@@ -1094,6 +1169,10 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
             static_cast<size_t>(std::max(0, req.n_gen - 1));
         logits_trace.reserve(
             expected_rows * static_cast<size_t>(weights_.n_vocab));
+        if (paired_interventions) {
+            paired_candidate_trace.reserve(
+                expected_rows * static_cast<size_t>(weights_.n_vocab));
+        }
     }
     const auto append_logits_trace = [&]() {
         if (trace_logits) {
@@ -1102,20 +1181,65 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
         }
     };
     auto * spec_target = static_cast<KimiK3DFlashTarget *>(dflash_target());
-    const auto prefill_begin = std::chrono::steady_clock::now();
-    for (size_t i = 0; i < req.prompt.size(); ++i) {
-        const bool ok = spec_target
-            ? spec_target->forward_token(
-                req.prompt[i], static_cast<int>(i), logits)
-            : kimi_k3_step(
-                backend_, weights_, cache_, req.prompt[i],
-                static_cast<int>(i), logits, &stream_engine_,
+    std::string paired_failure;
+    const auto forward_token = [&](int32_t token, int position) -> bool {
+        if (!paired_interventions) {
+            return spec_target
+                ? spec_target->forward_token(token, position, logits)
+                : kimi_k3_step(
+                    backend_, weights_, cache_, token, position, logits,
+                    &stream_engine_,
+                    dual_stream_executor_.is_ready()
+                        ? &dual_stream_executor_ : nullptr,
+                    &stream_owner_policy_, routing_stats_.get(),
+                    routed_output_provider_.get());
+        }
+        if (spec_target) {
+            paired_failure = "paired H16 mode is incompatible with DFlash";
+            return false;
+        }
+        if (!kimi_k3_replay_snapshot(backend_, cache_)) {
+            paired_failure = "cannot snapshot exact Kimi state";
+            return false;
+        }
+        std::vector<float> candidate;
+        if (!kimi_k3_step(
+                backend_, weights_, cache_, token, position, candidate,
+                &stream_engine_, nullptr, &stream_owner_policy_,
+                routing_stats_.get(), routed_output_provider_.get())) {
+            paired_failure = dflash27b_last_error();
+            return false;
+        }
+        if (!kimi_k3_replay_restore(backend_, cache_)) {
+            paired_failure = "cannot restore exact Kimi state";
+            return false;
+        }
+        if (!kimi_k3_step(
+                backend_, weights_, cache_, token, position, logits,
+                &stream_engine_,
                 dual_stream_executor_.is_ready()
                     ? &dual_stream_executor_ : nullptr,
-                &stream_owner_policy_, routing_stats_.get());
+                &stream_owner_policy_, routing_stats_.get(), nullptr)) {
+            paired_failure = dflash27b_last_error();
+            return false;
+        }
+        maybe_release_kimi_mapped_pages(weights_);
+        paired_candidate_trace.insert(
+            paired_candidate_trace.end(), candidate.begin(), candidate.end());
+        return true;
+    };
+    const auto write_paired_trace = [&]() {
+        return !paired_interventions || write_logits_trace(
+            req, result, paired_candidate_trace, paired_candidate_path);
+    };
+    const auto prefill_begin = std::chrono::steady_clock::now();
+    for (size_t i = 0; i < req.prompt.size(); ++i) {
+        const bool ok = forward_token(
+            req.prompt[i], static_cast<int>(i));
         if (!ok) {
             result.fail(GenerateErrorCode::PrefillFailed,
-                        dflash27b_last_error());
+                        paired_failure.empty()
+                            ? dflash27b_last_error() : paired_failure);
             out_io.emit(-1);
             return result;
         }
@@ -1128,7 +1252,8 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
         maybe_save_routing_stats();
         out_io.emit(-1);
         result.succeed();
-        if (!write_logits_trace(req, result, logits_trace)) {
+        if (!write_logits_trace(req, result, logits_trace) ||
+            !write_paired_trace()) {
             result.fail(GenerateErrorCode::DecodeFailed,
                         "failed to write Kimi logits trace");
         }
@@ -1172,6 +1297,9 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
     size_t close_inject_pos = 0;
     for (int i = 0; i < req.n_gen; ++i) {
         int32_t next = choose_token(logits, req.sampler, result.tokens);
+        if (!teacher_forced_tokens.empty()) {
+            next = teacher_forced_tokens[static_cast<size_t>(i)];
+        }
 
         // Preserve the shared Level-2 budget contract even before speculative
         // decode support lands for Kimi-K3.
@@ -1198,14 +1326,10 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
         out_io.emit(next);
         if (out_io.cancelled || next == weights_.eos_token_id) break;
         if (i + 1 < req.n_gen) {
-            if (!kimi_k3_step(
-                    backend_, weights_, cache_, next,
-                    cache_.cur_pos, logits, &stream_engine_,
-                    dual_stream_executor_.is_ready()
-                        ? &dual_stream_executor_ : nullptr,
-                    &stream_owner_policy_, routing_stats_.get())) {
+            if (!forward_token(next, cache_.cur_pos)) {
                 result.fail(GenerateErrorCode::DecodeFailed,
-                            dflash27b_last_error());
+                            paired_failure.empty()
+                                ? dflash27b_last_error() : paired_failure);
                 out_io.emit(-1);
                 return result;
             }
@@ -1217,7 +1341,8 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
     maybe_save_routing_stats();
     out_io.emit(-1);
     result.succeed();
-    if (!write_logits_trace(req, result, logits_trace)) {
+    if (!write_logits_trace(req, result, logits_trace) ||
+        !write_paired_trace()) {
         result.fail(GenerateErrorCode::DecodeFailed,
                     "failed to write Kimi logits trace");
     }
@@ -1264,6 +1389,7 @@ bool KimiK3Backend::handle_compress(const std::string & line,
 void KimiK3Backend::shutdown() {
     free_drafter();
     maybe_save_routing_stats();
+    routed_output_provider_.reset();
     dual_stream_executor_.destroy();
     stream_engine_.destroy();
     secondary_stream_engine_.destroy();

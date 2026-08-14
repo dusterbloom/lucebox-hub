@@ -401,6 +401,7 @@ add_library(dflash_common STATIC
     src/kimi_k3/kimi_k3_loader.cpp
     src/kimi_k3/kimi_k3_panel_artifact.cpp
     src/kimi_k3/kimi_k3_panel_fit.cpp
+    src/kimi_k3/kimi_k3_progressive_provider.cpp
     src/kimi_k3/kimi_k3_graph.cpp
     src/kimi_k3/kimi_k3_dflash_target.cpp
     src/kimi_k3/kimi_k3_backend.cpp
@@ -1260,6 +1261,17 @@ if(DFLASH27B_TESTS)
             target_link_libraries(test_kimi_k3_panel_fit PRIVATE hip::host)
         endif()
         add_test(NAME kimi_k3_panel_fit COMMAND test_kimi_k3_panel_fit)
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_kimi_k3_progressive_provider.cpp")
+        add_executable(test_kimi_k3_progressive_provider
+            test/test_kimi_k3_progressive_provider.cpp)
+        target_include_directories(test_kimi_k3_progressive_provider PRIVATE
+            ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(test_kimi_k3_progressive_provider PRIVATE
+            dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+        add_test(NAME kimi_k3_progressive_provider
+            COMMAND test_kimi_k3_progressive_provider)
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_vs_oracle.cpp")
         add_executable(test_vs_oracle test/test_vs_oracle.cpp)
