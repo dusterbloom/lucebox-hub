@@ -693,6 +693,125 @@ private:
 // decomposition can be composed through every routed layer. The ordinary
 // exact evaluator remains immutable and is evaluated alongside the slab sum
 // so every layer receives a direct numerical control.
+class GroupedSlabObserver final : public MoeStreamExpertObserver {
+public:
+    bool init(int n_tokens, const std::vector<int32_t> & selected_ids,
+              std::string * err) {
+        constexpr int kActiveSlabs = kNativeTopK * kSlabCount;
+        if (n_tokens <= 0 || selected_ids.size() !=
+                static_cast<size_t>(n_tokens * kActiveSlabs)) {
+            if (err) *err = "grouped slab observer received invalid routes";
+            return false;
+        }
+        n_tokens_ = n_tokens;
+        slot_by_token_slab_.assign(
+            static_cast<size_t>(n_tokens) * kExpertCount * kSlabCount, -1);
+        outputs_.assign(
+            static_cast<size_t>(n_tokens) * kActiveSlabs * kDimension, 0.0f);
+        seen_.assign(static_cast<size_t>(n_tokens) * kActiveSlabs, false);
+        for (int token = 0; token < n_tokens; ++token) {
+            for (int slot = 0; slot < kActiveSlabs; ++slot) {
+                const int slab = selected_ids[
+                    static_cast<size_t>(token) * kActiveSlabs + slot];
+                if (slab < 0 || slab >= kExpertCount * kSlabCount) {
+                    if (err) *err = "grouped slab observer saw invalid slab ID";
+                    return false;
+                }
+                int & mapped = slot_by_token_slab_[
+                    static_cast<size_t>(token) * kExpertCount * kSlabCount +
+                    slab];
+                if (mapped >= 0) {
+                    if (err) *err = "grouped slab observer saw duplicate slab ID";
+                    return false;
+                }
+                mapped = slot;
+            }
+        }
+        return true;
+    }
+
+    bool observe(int, int token, int slab, float,
+                 const float *, int input_dimension,
+                 const float * expert_output, int output_dimension,
+                 std::string * err) override {
+        constexpr int kActiveSlabs = kNativeTopK * kSlabCount;
+        if (token < 0 || token >= n_tokens_ || slab < 0 ||
+            slab >= kExpertCount * kSlabCount || !expert_output ||
+            input_dimension != kDimension || output_dimension != kDimension) {
+            if (err) *err = "grouped slab observer received invalid output";
+            return false;
+        }
+        const int slot = slot_by_token_slab_[
+            static_cast<size_t>(token) * kExpertCount * kSlabCount + slab];
+        if (slot < 0 || slot >= kActiveSlabs) {
+            if (err) *err = "grouped slab observer saw an unrequested slab";
+            return false;
+        }
+        const size_t observation =
+            static_cast<size_t>(token) * kActiveSlabs + slot;
+        if (seen_[observation]) {
+            if (err) *err = "grouped slab observer saw a duplicate output";
+            return false;
+        }
+        std::memcpy(
+            outputs_.data() + observation * kDimension,
+            expert_output, sizeof(float) * kDimension);
+        seen_[observation] = true;
+        return true;
+    }
+
+    bool complete() const {
+        return std::all_of(seen_.begin(), seen_.end(),
+                           [](bool value) { return value; });
+    }
+
+    const float * output(int token, int active_slot) const {
+        constexpr int kActiveSlabs = kNativeTopK * kSlabCount;
+        return outputs_.data() +
+            (static_cast<size_t>(token) * kActiveSlabs + active_slot) *
+                kDimension;
+    }
+
+private:
+    int n_tokens_ = 0;
+    std::vector<int> slot_by_token_slab_;
+    std::vector<float> outputs_;
+    std::vector<bool> seen_;
+};
+
+enum class AllSlabsMode {
+    Direct,
+    Grouped,
+    StaticNatural96,
+    OracleNatural96,
+    OracleNatural144,
+};
+
+const char * all_slabs_mode_name(AllSlabsMode mode) {
+    switch (mode) {
+        case AllSlabsMode::Direct: return "all-slabs";
+        case AllSlabsMode::Grouped: return "all-slabs-grouped";
+        case AllSlabsMode::StaticNatural96:
+            return "all-slabs-static-natural96-zero-tail";
+        case AllSlabsMode::OracleNatural96:
+            return "all-slabs-oracle-natural96-zero-tail";
+        case AllSlabsMode::OracleNatural144:
+            return "all-slabs-oracle-natural144-zero-tail";
+    }
+    return "all-slabs-unknown";
+}
+
+int all_slabs_mode_budget(AllSlabsMode mode) {
+    switch (mode) {
+        case AllSlabsMode::StaticNatural96:
+        case AllSlabsMode::OracleNatural96: return 96;
+        case AllSlabsMode::OracleNatural144: return 144;
+        case AllSlabsMode::Direct:
+        case AllSlabsMode::Grouped: return kNativeTopK * kSlabCount;
+    }
+    return 0;
+}
+
 class AllSlabsProvider final : public KimiK3RoutedOutputProvider {
 public:
     ~AllSlabsProvider() override {
@@ -701,7 +820,8 @@ public:
     }
 
     bool init(ggml_backend_t expert_backend, const std::string & directory,
-              const char * metrics_path, std::string * err) {
+              const char * metrics_path, AllSlabsMode mode,
+              std::string * err) {
         if (!expert_backend || directory.empty()) {
             if (err) *err = "all-slab provider needs a backend and sidecar directory";
             return false;
@@ -817,10 +937,12 @@ public:
             return false;
         }
         metrics_path_ = metrics_path && *metrics_path ? metrics_path : "";
+        mode_ = mode;
         numerics_.resize(kLastRoutedLayer + 1);
         std::fprintf(stderr,
-            "[kimi-k3-h17] provider=all-slabs budget=192 layers=1..92 "
+            "[kimi-k3-h17] provider=%s budget=%d layers=1..92 "
             "sidecars=%s metrics=%s\n",
+            all_slabs_mode_name(mode_), all_slabs_mode_budget(mode_),
             directory.c_str(),
             metrics_path_.empty() ? "stderr" : metrics_path_.c_str());
         return true;
@@ -882,10 +1004,134 @@ public:
         slab_routes.top_k = kActiveSlabs;
         slab_routes.selected_ids = ids.data();
         slab_routes.selected_weights = weights.data();
-        slab_routes.expert_observer = nullptr;
+        GroupedSlabObserver grouped_observer;
+        const bool needs_individual_slabs = mode_ != AllSlabsMode::Direct;
+        if (needs_individual_slabs &&
+            !grouped_observer.init(routes.n_tokens, ids, err)) {
+            return false;
+        }
+        slab_routes.expert_observer = needs_individual_slabs
+            ? &grouped_observer : nullptr;
         if (!eval_moe_streamed_experts(
                 slab_engine_, slab_spec, slab_routes, output, err)) {
             return false;
+        }
+        if (needs_individual_slabs) {
+            if (!grouped_observer.complete()) {
+                if (err) *err = "grouped slab reduction missed an output";
+                return false;
+            }
+            output.assign(
+                static_cast<size_t>(routes.n_tokens) * kDimension, 0.0f);
+            std::vector<int> route_order(kNativeTopK);
+            std::vector<float> expert_sum(kDimension);
+            std::vector<float> full_grouped(kDimension);
+            std::vector<float> remaining(kDimension);
+            std::vector<int> prefix_lengths(kNativeTopK);
+            for (int token = 0; token < routes.n_tokens; ++token) {
+                std::iota(route_order.begin(), route_order.end(), 0);
+                const size_t route_offset =
+                    static_cast<size_t>(token) * kNativeTopK;
+                std::stable_sort(
+                    route_order.begin(), route_order.end(),
+                    [&](int left, int right) {
+                        return routes.selected_ids[route_offset + left] <
+                            routes.selected_ids[route_offset + right];
+                    });
+                const auto recompose = [&](const std::vector<int> & prefixes,
+                                           float * destination) {
+                    std::fill(destination, destination + kDimension, 0.0f);
+                    for (const int route : route_order) {
+                        std::fill(
+                            expert_sum.begin(), expert_sum.end(), 0.0f);
+                        for (int rank = 0;
+                             rank < prefixes[static_cast<size_t>(route)];
+                             ++rank) {
+                            const float * contribution =
+                                grouped_observer.output(
+                                    token, route * kSlabCount + rank);
+                            for (int dimension = 0;
+                                 dimension < kDimension; ++dimension) {
+                                expert_sum[static_cast<size_t>(dimension)] +=
+                                    contribution[dimension];
+                            }
+                        }
+                        const float weight =
+                            routes.selected_weights[route_offset + route];
+                        for (int dimension = 0;
+                             dimension < kDimension; ++dimension) {
+                            destination[dimension] += weight *
+                                expert_sum[static_cast<size_t>(dimension)];
+                        }
+                    }
+                };
+
+                if (mode_ == AllSlabsMode::Direct ||
+                    mode_ == AllSlabsMode::Grouped) {
+                    std::fill(
+                        prefix_lengths.begin(), prefix_lengths.end(),
+                        kSlabCount);
+                } else if (mode_ == AllSlabsMode::StaticNatural96) {
+                    std::fill(prefix_lengths.begin(), prefix_lengths.end(), 6);
+                } else {
+                    std::fill(prefix_lengths.begin(), prefix_lengths.end(), 0);
+                    std::vector<int> full_prefixes(kNativeTopK, kSlabCount);
+                    recompose(full_prefixes, full_grouped.data());
+                    remaining = full_grouped;
+                    const int budget = all_slabs_mode_budget(mode_);
+                    for (int selected_count = 0;
+                         selected_count < budget; ++selected_count) {
+                        int best_route = -1;
+                        double best_reduction =
+                            -std::numeric_limits<double>::infinity();
+                        for (int route = 0;
+                             route < kNativeTopK; ++route) {
+                            const int rank = prefix_lengths[
+                                static_cast<size_t>(route)];
+                            if (rank >= kSlabCount) continue;
+                            const float * contribution =
+                                grouped_observer.output(
+                                    token, route * kSlabCount + rank);
+                            const double weight = routes.selected_weights[
+                                route_offset + route];
+                            double dot = 0.0;
+                            double norm2 = 0.0;
+                            for (int dimension = 0;
+                                 dimension < kDimension; ++dimension) {
+                                const double value =
+                                    weight * contribution[dimension];
+                                dot += remaining[
+                                    static_cast<size_t>(dimension)] * value;
+                                norm2 += value * value;
+                            }
+                            const double reduction = 2.0 * dot - norm2;
+                            if (reduction > best_reduction) {
+                                best_reduction = reduction;
+                                best_route = route;
+                            }
+                        }
+                        if (best_route < 0) {
+                            if (err) *err =
+                                "oracle prefix exhausted before its budget";
+                            return false;
+                        }
+                        const int rank = prefix_lengths[
+                            static_cast<size_t>(best_route)]++;
+                        const float * contribution = grouped_observer.output(
+                            token, best_route * kSlabCount + rank);
+                        const float weight = routes.selected_weights[
+                            route_offset + best_route];
+                        for (int dimension = 0;
+                             dimension < kDimension; ++dimension) {
+                            remaining[static_cast<size_t>(dimension)] -=
+                                weight * contribution[dimension];
+                        }
+                    }
+                }
+                recompose(
+                    prefix_lengths,
+                    output.data() + static_cast<size_t>(token) * kDimension);
+            }
         }
         observe_numerics(model_layer, routes.n_tokens, native_exact, output);
         return true;
@@ -959,6 +1205,7 @@ private:
     size_t max_slab_bytes_ = 0;
     std::vector<LayerNumerics> numerics_;
     std::string metrics_path_;
+    AllSlabsMode mode_ = AllSlabsMode::Direct;
 };
 
 bool parse_positive_int(const char * raw, int & value) {
@@ -1042,7 +1289,22 @@ bool create_kimi_k3_progressive_provider_from_env(
     if (!raw_kind || !*raw_kind || std::strcmp(raw_kind, "exact") == 0) {
         return true;
     }
+    AllSlabsMode all_slabs_mode = AllSlabsMode::Direct;
+    bool is_all_slabs = true;
     if (std::strcmp(raw_kind, "all-slabs") == 0) {
+        all_slabs_mode = AllSlabsMode::Direct;
+    } else if (std::strcmp(raw_kind, "all-slabs-grouped") == 0) {
+        all_slabs_mode = AllSlabsMode::Grouped;
+    } else if (std::strcmp(raw_kind, "all-slabs-static96") == 0) {
+        all_slabs_mode = AllSlabsMode::StaticNatural96;
+    } else if (std::strcmp(raw_kind, "all-slabs-oracle96") == 0) {
+        all_slabs_mode = AllSlabsMode::OracleNatural96;
+    } else if (std::strcmp(raw_kind, "all-slabs-oracle144") == 0) {
+        all_slabs_mode = AllSlabsMode::OracleNatural144;
+    } else {
+        is_all_slabs = false;
+    }
+    if (is_all_slabs) {
         const char * directory =
             std::getenv("DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR");
         if (!directory || !*directory) {
@@ -1053,7 +1315,8 @@ bool create_kimi_k3_progressive_provider_from_env(
         auto provider = std::make_unique<AllSlabsProvider>();
         if (!provider->init(
                 expert_backend, directory,
-                std::getenv("DFLASH_KIMI_ALL_SLAB_METRICS_OUT"), err)) {
+                std::getenv("DFLASH_KIMI_ALL_SLAB_METRICS_OUT"),
+                all_slabs_mode, err)) {
             return false;
         }
         out = std::move(provider);
@@ -1064,7 +1327,9 @@ bool create_kimi_k3_progressive_provider_from_env(
     else if (std::strcmp(raw_kind, "whole") == 0) kind = ProviderKind::Whole;
     else {
         if (err) *err =
-            "DFLASH_KIMI_LAYER1_PROVIDER must be exact, slabs, whole, or all-slabs";
+            "DFLASH_KIMI_LAYER1_PROVIDER must be exact, slabs, whole, "
+            "all-slabs, all-slabs-grouped, all-slabs-static96, "
+            "all-slabs-oracle96, or all-slabs-oracle144";
         return false;
     }
     int budget = 0;

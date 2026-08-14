@@ -1,0 +1,70 @@
+{
+  "schema": "kimi-k3-h17-divergence-localization-summary-v1",
+  "claim_status": "MEASURED",
+  "identity_gate": "FAILED",
+  "repository_base_commit": "cf61371bf998211c5754f3ed8fe4ae9adf7249b8",
+  "prompt": "According to all known laws",
+  "trace_records": 736,
+  "native_trace_matches_locked_logits": true,
+  "direct_slab192": {
+    "first_numerical_divergence": {
+      "model_layer": 1,
+      "stage": "routed_latent",
+      "relative_l2": 2.883166590483227e-7,
+      "maximum_absolute_error": 4.0978193283081055e-8,
+      "cosine": 0.9999999999999589
+    },
+    "first_large_amplification": {
+      "model_layer": 4,
+      "pre_router_relative_l2": 1.2472546306308038e-7,
+      "routed_latent_relative_l2": 1.9838513245078122e-4,
+      "post_moe_relative_l2": 5.607413053810173e-4,
+      "router_top16_set_equal": true
+    },
+    "first_router_order_divergence": {
+      "model_layer": 6,
+      "top16_set_overlap": 16,
+      "pre_router_hidden_relative_l2": 0.004456064575823425,
+      "pre_router_hidden_maximum_absolute_error": 0.003424525260925293
+    },
+    "first_router_membership_divergence": {
+      "model_layer": 7,
+      "top16_set_overlap": 15,
+      "pre_router_hidden_relative_l2": 0.004094310242473797,
+      "pre_router_hidden_maximum_absolute_error": 0.0044405460357666016,
+      "routed_latent_relative_l2": 0.1817440606953187
+    },
+    "terminal_native_to_slab192_kl": {
+      "mean": 0.03977832676177906,
+      "median": 0.004735044009421189,
+      "maximum": 0.27496762231877436
+    },
+    "terminal_top_choice_agreement": "8/8"
+  },
+  "grouped_router_weight_control": {
+    "change": "Sum twelve slabs per expert, apply router weight once, then accumulate experts in native expert-ID order.",
+    "first_numerical_divergence": {
+      "model_layer": 1,
+      "stage": "routed_latent",
+      "relative_l2": 1.0141378596209626e-7,
+      "maximum_absolute_error": 7.450580596923828e-9
+    },
+    "first_router_membership_divergence_layer": 8,
+    "terminal_native_to_grouped_kl": {
+      "mean": 0.01627084145663113,
+      "median": 0.0038601407596648143,
+      "maximum": 0.09923377525503556
+    },
+    "terminal_top_choice_agreement": "8/8",
+    "verdict": "IMPROVES_BUT_DOES_NOT_FIX_PARITY"
+  },
+  "error_growth": "JUMPS_AT_LAYER_4_BEFORE_ROUTER_MEMBERSHIP_DIVERGENCE",
+  "likely_remaining_cause": "The native expert uses one full 3072-neuron down reduction; slab recomposition uses twelve independent 256-neuron reductions with different FP32 association.",
+  "next_identity_action": "Reproduce the native full-width reduction semantics while retaining slab observability, or treat slab192 as a non-identical diagnostic teacher only.",
+  "raw_artifacts": {
+    "direct": "/mnt/kimi-k3/results/kimi-h17-divergence-trace",
+    "grouped": "/mnt/kimi-k3/results/kimi-h17-grouped-parity",
+    "direct_divergence_sha256": "4d93dcf116a75868e53a07c0fdc38c6bf176b0458aae464e4146178f628e222f",
+    "grouped_divergence_sha256": "c1abba4f5b9d799ada9be2c24efd1e9062f2ad19b3f7516c1d2a4e3e09349d10"
+  }
+}

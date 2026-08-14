@@ -122,7 +122,7 @@ int main(int argc, char ** argv) {
     if (argc < 4) {
         std::fprintf(stderr,
             "usage: %s <first-model-shard.gguf> <suite.jsonl> <output-dir> "
-            "[gpu=0] [max-context=256] [paired=0] [core=cpu]\n",
+            "[gpu=0] [max-context=256] [paired=0] [core=cpu] [n-gen=1]\n",
             argv[0]);
         return 2;
     }
@@ -132,8 +132,9 @@ int main(int argc, char ** argv) {
     const int gpu = argc > 4 ? std::atoi(argv[4]) : 0;
     const int max_context = argc > 5 ? std::atoi(argv[5]) : 256;
     const bool paired = argc > 6 && std::atoi(argv[6]) != 0;
+    const int n_gen = argc > 8 ? std::atoi(argv[8]) : 1;
     KimiK3CorePlacement core_placement = KimiK3CorePlacement::Cpu;
-    if (gpu < 0 || max_context <= 0 ||
+    if (gpu < 0 || max_context <= 0 || n_gen <= 0 || n_gen >= max_context ||
         (argc > 7 && !parse_kimi_k3_core_placement(
             argv[7], core_placement))) {
         std::fprintf(stderr, "[kimi-h16-suite] invalid argument\n");
@@ -147,11 +148,11 @@ int main(int argc, char ** argv) {
         return 1;
     }
     const char * provider = std::getenv("DFLASH_KIMI_LAYER1_PROVIDER");
-    const bool provider_enabled = provider && *provider;
-    if (paired != provider_enabled) {
+    const bool provider_enabled = provider && *provider &&
+        std::string(provider) != "exact";
+    if (paired && !provider_enabled) {
         std::fprintf(stderr,
-            "[kimi-h16-suite] paired mode and routed provider must be "
-            "enabled together\n");
+            "[kimi-h16-suite] paired mode requires a routed provider\n");
         return 2;
     }
 
@@ -208,6 +209,7 @@ int main(int argc, char ** argv) {
     manifest["paired"] = paired;
     manifest["provider"] = provider_enabled ? provider : "exact";
     manifest["max_context"] = max_context;
+    manifest["n_gen"] = n_gen;
     manifest["core_placement"] = argc > 7 ? argv[7] : "cpu";
     manifest["gpu"] = gpu;
     const auto record_environment = [&](const char * key) {
@@ -225,6 +227,9 @@ int main(int argc, char ** argv) {
     record_environment("KIMI_H16_REPOSITORY_COMMIT");
     record_environment("KIMI_H16_REPOSITORY_STATUS");
     record_environment("KIMI_H16_SUITE_SHA256");
+    record_environment("KIMI_H17_RUNNER_SHA256");
+    record_environment("KIMI_H17_QUALITY_LABEL");
+    record_environment("KIMI_H17_PROVIDER_SCOPE");
     manifest["sequences"] = json::array();
 
     DaemonIO io;
@@ -257,7 +262,7 @@ int main(int argc, char ** argv) {
 
         GenerateRequest request;
         request.prompt = prompt_ids;
-        request.n_gen = 1;
+        request.n_gen = n_gen;
         request.do_sample = false;
         GenerateResult result = backend.generate(request, io);
         if (!result.ok()) {
@@ -284,7 +289,9 @@ int main(int argc, char ** argv) {
             {"prompt_tokens", prompt_ids},
             {"prompt_token_count", prompt_ids.size()},
             {"output_tokens", result.tokens},
+            {"output_text", tokenizer.decode(result.tokens)},
             {"teacher_logits", teacher_destination.string()},
+            {"output_logits", teacher_destination.string()},
             {"candidate_logits",
              paired ? candidate_destination.string() : ""},
             {"prefill_seconds", result.prefill_s},
@@ -296,9 +303,10 @@ int main(int argc, char ** argv) {
         });
         if (paired) intervention_record_start += prompt_ids.size();
         std::fprintf(stderr,
-            "[kimi-h16-suite] id=%s split=%s tokens=%zu prefill=%.3fs\n",
+            "[kimi-h16-suite] id=%s split=%s prompt=%zu generated=%zu "
+            "prefill=%.3fs decode=%.3fs\n",
             entry.id.c_str(), entry.split.c_str(), prompt_ids.size(),
-            result.prefill_s);
+            result.tokens.size(), result.prefill_s, result.decode_s);
     }
     backend.shutdown();
 

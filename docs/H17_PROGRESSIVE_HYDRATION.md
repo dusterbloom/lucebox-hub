@@ -68,10 +68,7 @@ exact routed output on the candidate's current state and native routes:
 Therefore the stored weights, mixed quantization handling, and additive slab
 decomposition agree locally to floating-point roundoff. Nevertheless, the
 different accumulation path is not behaviorally identical after recurrent
-composition through depth and token state. A first router or hidden-state
-bifurcation was not captured, so its layer and precise cause remain **OPEN**.
-It would be incorrect to attribute the terminal failure to a particular route
-flip without that trace.
+composition through depth and token state.
 
 The control took 237.01 seconds, read 520.09 GB from the drive, peaked at
 17,066 MiB of graphics memory, used about 0.88 GB anonymous host memory plus
@@ -82,16 +79,65 @@ Machine-readable summary: `results/kimi_h17_all_slabs_control.json`. Raw
 artifacts and their checksums are under
 `/mnt/kimi-k3/results/kimi-h17-all-slabs-control`.
 
+## Divergence localization
+
+A paired native-versus-all-192 trace then captured 736 routed-layer records for
+the same frozen prompt. The traced native run remained byte-identical to the
+locked exact logits, so the instrumentation itself did not perturb the teacher.
+
+| event | first layer | measurement at that point |
+| --- | ---: | --- |
+| numerical difference | 1 | routed latent relL2 `2.88317e-7`, maxabs `4.09782e-8` |
+| large conditional amplification | 4 | routed latent relL2 `1.98385e-4`; route set still identical |
+| router ordering change | 6 | set overlap `16/16`; pre-router hidden relL2 `0.00445606` |
+| router membership change | 7 | set overlap `15/16`; pre-router hidden relL2 `0.00409431` |
+
+The error does not grow smoothly. Layers 1--3 remain near rounding error. At
+layer 4 the routed result jumps by roughly three orders of magnitude without a
+route change, layer 5 grows further, layer 6 swaps two route ranks, and layer 7
+changes one expert and produces a routed-output relL2 of `0.181744`. The
+post-MoE state and the next layer input were byte-identical within each run, so
+there is no hidden copy or insertion discrepancy between those boundaries.
+
+The likely cause is now narrow. The native path performs one 3,072-neuron down
+reduction for each expert, applies its router weight once, and accumulates the
+16 experts. The original slab path performs twelve independent 256-neuron down
+reductions, applies the router weight to each partial result, and accumulates
+192 partial results. These are algebraically equal but not floating-point
+equivalent.
+
+One surgical control grouped the twelve slab outputs per expert, applied the
+router weight once, and accumulated experts in native expert-ID order. It
+improved but did not solve parity:
+
+| measurement | direct 192 | grouped 192 |
+| --- | ---: | ---: |
+| layer-1 routed relL2 | `2.88317e-7` | `1.01414e-7` |
+| first route membership change | layer 7 | layer 8 |
+| terminal mean KL | `0.0397783` | `0.0162708` |
+| terminal maximum KL | `0.274968` | `0.0992338` |
+
+This falsifies router-weight placement as the entire explanation while showing
+that it materially contributes. The remaining mismatch is consistent with the
+twelve split down reductions themselves. Exact identity likely requires the
+native full-width reduction semantics, not another selector or tail model.
+
+Machine-readable localization summary:
+`results/kimi_h17_divergence_localization.json`. Reproducible raw traces,
+logits, telemetry, and checksums are under
+`/mnt/kimi-k3/results/kimi-h17-divergence-trace` and
+`/mnt/kimi-k3/results/kimi-h17-grouped-parity`.
+
 ## Interpretation and next gate
 
 The 96/144 progressive-hydration hypothesis is neither validated nor
 falsified by this run. The all-192 evaluator failed as a numerical identity
 control, so a smaller-budget result would mix deliberate omission error with a
-known change in arithmetic trajectory. The next single experiment is a paired
-native-versus-all-slab trace of hidden states and router selections that locates
-the first behavioral bifurcation. No selector, tail corrector, Fisher fit, or
-Observer should be trained before this control is understood or made
-behaviorally equivalent.
+known change in arithmetic trajectory. The registered identity gate therefore
+remains stopped. A separately requested free-generation screen is allowed only
+as **exploratory practical quality**, and every 96/144 result must be labelled
+**EXPLORATORY — confounded by all-192 arithmetic divergence**. No selector,
+tail corrector, Fisher fit, or Observer training follows from that screen.
 
 ## Deferred Observer constraint
 

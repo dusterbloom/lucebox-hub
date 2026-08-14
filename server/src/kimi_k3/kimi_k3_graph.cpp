@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -18,6 +19,127 @@
 
 namespace dflash::common {
 namespace {
+
+struct KimiDivergenceTraceFileHeader {
+    char magic[8] = {'K', '3', 'D', 'V', 'T', '0', '0', '1'};
+    uint32_t version = 1;
+    uint32_t hidden_dimension = 0;
+    uint32_t latent_dimension = 0;
+    uint32_t expert_count = 0;
+    uint32_t top_k = 0;
+    uint32_t attn_res_block_size = 0;
+    uint32_t reserved = 0;
+};
+
+struct KimiDivergenceTraceRecordHeader {
+    int32_t model_layer = -1;
+    int32_t base_position = 0;
+    int32_t token_count = 0;
+    uint32_t flags = 0;
+};
+
+static_assert(sizeof(KimiDivergenceTraceFileHeader) == 36);
+static_assert(sizeof(KimiDivergenceTraceRecordHeader) == 16);
+
+constexpr uint32_t kDivergenceTraceAttnResBoundary = 1U << 0;
+
+// H17-only trace writer. An unset environment variable leaves the production
+// path untouched. Records contain exactly the five requested comparison
+// boundaries plus the layer input needed to identify AttnRes amplification.
+class KimiDivergenceTraceWriter {
+public:
+    explicit KimiDivergenceTraceWriter(const KimiK3Weights & w) {
+        const char * path = std::getenv("DFLASH_KIMI_DIVERGENCE_TRACE_OUT");
+        if (!path || !*path) return;
+        requested_ = true;
+        path_ = path;
+        file_ = std::fopen(path, "wb");
+        if (!file_) return;
+        KimiDivergenceTraceFileHeader header;
+        header.hidden_dimension = static_cast<uint32_t>(w.n_embd);
+        header.latent_dimension = static_cast<uint32_t>(w.n_expert_latent);
+        header.expert_count = static_cast<uint32_t>(w.n_expert);
+        header.top_k = static_cast<uint32_t>(w.n_expert_used);
+        header.attn_res_block_size =
+            static_cast<uint32_t>(w.attn_res_block_size);
+        if (!write(&header, sizeof(header))) close_failed();
+    }
+
+    ~KimiDivergenceTraceWriter() {
+        if (file_) {
+            (void) std::fflush(file_);
+            (void) std::fclose(file_);
+        }
+    }
+
+    bool requested() const { return requested_; }
+    bool good() const { return file_ != nullptr && !failed_; }
+    const std::string & path() const { return path_; }
+
+    bool append(
+            int model_layer,
+            int base_position,
+            int token_count,
+            bool attn_res_boundary,
+            const std::vector<float> & layer_input,
+            const std::vector<float> & pre_moe_hidden,
+            const std::vector<float> & router_logits,
+            const std::vector<int32_t> & selected_ids,
+            const std::vector<float> & routed_latent,
+            const std::vector<float> & moe_output,
+            const std::vector<float> & post_moe_hidden) {
+        if (!good()) return false;
+        KimiDivergenceTraceRecordHeader header;
+        header.model_layer = model_layer;
+        header.base_position = base_position;
+        header.token_count = token_count;
+        header.flags = attn_res_boundary
+            ? kDivergenceTraceAttnResBoundary : 0;
+        const bool ok =
+            write(&header, sizeof(header)) &&
+            write_vector(layer_input) &&
+            write_vector(pre_moe_hidden) &&
+            write_vector(router_logits) &&
+            write_vector(selected_ids) &&
+            write_vector(routed_latent) &&
+            write_vector(moe_output) &&
+            write_vector(post_moe_hidden) &&
+            std::fflush(file_) == 0;
+        if (!ok) close_failed();
+        return ok;
+    }
+
+private:
+    bool write(const void * data, size_t bytes) {
+        return file_ && bytes > 0 &&
+            std::fwrite(data, 1, bytes, file_) == bytes;
+    }
+
+    template <typename T>
+    bool write_vector(const std::vector<T> & values) {
+        return !values.empty() &&
+            write(values.data(), values.size() * sizeof(T));
+    }
+
+    void close_failed() {
+        failed_ = true;
+        if (file_) {
+            (void) std::fclose(file_);
+            file_ = nullptr;
+        }
+    }
+
+    FILE * file_ = nullptr;
+    bool requested_ = false;
+    bool failed_ = false;
+    std::string path_;
+};
+
+KimiDivergenceTraceWriter & kimi_divergence_trace_writer(
+        const KimiK3Weights & w) {
+    static KimiDivergenceTraceWriter writer(w);
+    return writer;
+}
 
 ggml_tensor * rms_norm(ggml_context * ctx,
                        ggml_tensor * x,
@@ -322,9 +444,11 @@ TopKMoeRouterResult build_kimi_router(ggml_context * ctx,
                                       ggml_cgraph * graph,
                                       const KimiK3Weights & w,
                                       const KimiK3Layer & layer,
-                                      ggml_tensor * cur) {
+                                      ggml_tensor * cur,
+                                      ggml_tensor ** raw_logits = nullptr) {
     const int n_tokens = static_cast<int>(cur->ne[1]);
     ggml_tensor * logits = ggml_mul_mat(ctx, layer.ffn_gate_inp, cur);
+    if (raw_logits) *raw_logits = logits;
     TopKMoeRouterResult router;
     if (w.expert_gating_func == 2) {
         router = build_sigmoid_topk_moe_router(ctx, graph, logits,
@@ -537,6 +661,15 @@ bool streamed_kimi_k3_forward(
     const size_t hidden_values =
         static_cast<size_t>(w.n_embd) * static_cast<size_t>(n_tokens);
     std::vector<float> hidden(hidden_values);
+    KimiDivergenceTraceWriter & divergence_trace =
+        kimi_divergence_trace_writer(w);
+    if (divergence_trace.requested() && !divergence_trace.good()) {
+        set_last_error(
+            "Kimi-K3 cannot open H17 divergence trace " +
+            divergence_trace.path());
+        return false;
+    }
+    const bool trace_divergence = divergence_trace.good();
     if (options.panel_capture) {
         *options.panel_capture = KimiK3MoePanelCapture{};
     }
@@ -679,8 +812,9 @@ bool streamed_kimi_k3_forward(
 
         ggml_tensor * routed_in =
             ggml_mul_mat(ctx, layer.ffn_routed_down, cur);
+        ggml_tensor * router_logits = nullptr;
         TopKMoeRouterResult router =
-            build_kimi_router(ctx, graph, w, layer, cur);
+            build_kimi_router(ctx, graph, w, layer, cur, &router_logits);
         // argsort_top_k returns a strided view of the full argsort result.
         // Materialize the tiny host-boundary tensors so the graph allocator
         // cannot recycle their backing storage before the readback.
@@ -688,6 +822,8 @@ bool streamed_kimi_k3_forward(
             ggml_cont(ctx, router.selected);
         ggml_tensor * route_weights_out =
             ggml_cont(ctx, router.weights_2d);
+        ggml_tensor * router_logits_out = trace_divergence
+            ? ggml_cont(ctx, router_logits) : nullptr;
         const bool stop_at_capture_boundary =
             options.stop_before_moe_layer == il;
         ggml_tensor * shared = nullptr;
@@ -711,6 +847,8 @@ bool streamed_kimi_k3_forward(
         std::vector<float> route_weights(
             static_cast<size_t>(w.n_expert_used) * n_tokens);
         std::vector<float> shared_host;
+        std::vector<float> pre_moe_hidden_host;
+        std::vector<float> router_logits_host;
         std::vector<GraphOutput> preparation_outputs;
         if (!stop_at_capture_boundary) {
             prefix_host.resize(hidden_values);
@@ -730,6 +868,17 @@ bool streamed_kimi_k3_forward(
             preparation_outputs.push_back({
                 shared, shared_host.data(),
                 shared_host.size() * sizeof(float)});
+            if (trace_divergence) {
+                pre_moe_hidden_host.resize(hidden_values);
+                router_logits_host.resize(
+                    static_cast<size_t>(w.n_expert) * n_tokens);
+                preparation_outputs.push_back({
+                    cur, pre_moe_hidden_host.data(),
+                    pre_moe_hidden_host.size() * sizeof(float)});
+                preparation_outputs.push_back({
+                    router_logits_out, router_logits_host.data(),
+                    router_logits_host.size() * sizeof(float)});
+            }
         } else {
             preparation_outputs = {
                 {routed_in, routed_input_host.data(),
@@ -877,6 +1026,16 @@ bool streamed_kimi_k3_forward(
         ggml_tensor * hidden_out =
             ggml_add(ctx, prefix_in, moe_shared);
         std::vector<float> next_hidden(hidden_values);
+        std::vector<float> moe_output_host;
+        std::vector<GraphOutput> join_outputs = {{
+            hidden_out, next_hidden.data(),
+            next_hidden.size() * sizeof(float)}};
+        if (trace_divergence) {
+            moe_output_host.resize(hidden_values);
+            join_outputs.push_back({
+                moe_shared, moe_output_host.data(),
+                moe_output_host.size() * sizeof(float)});
+        }
         const bool join_ok = run_host_boundary_graph(
             backend, ctx, graph,
             {
@@ -887,11 +1046,20 @@ bool streamed_kimi_k3_forward(
                 {shared_in, shared_host.data(),
                  shared_host.size() * sizeof(float)},
             },
-            {{hidden_out, next_hidden.data(),
-              next_hidden.size() * sizeof(float)}},
+            join_outputs,
             "routed layer join");
         ggml_free(ctx);
         if (!join_ok) return false;
+        if (trace_divergence && !divergence_trace.append(
+                il, base_pos, n_tokens, banked,
+                checkpoint_value, pre_moe_hidden_host,
+                router_logits_host, selected, routed_output,
+                moe_output_host, next_hidden)) {
+            set_last_error(
+                "Kimi-K3 cannot append H17 divergence trace " +
+                divergence_trace.path());
+            return false;
+        }
         hidden.swap(next_hidden);
         const int capture_idx = capture_at_layer[static_cast<size_t>(il)];
         if (capture_idx >= 0) {
