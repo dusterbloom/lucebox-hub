@@ -198,6 +198,12 @@ struct KimiK3ForwardOptions {
     // preparation and before any routed expert for that layer is requested.
     int stop_before_moe_layer = -1;
     KimiK3MoePanelCapture * panel_capture = nullptr;
+    // Optional bounded full-forward capture. Each requested routed layer is
+    // captured at the same pre-expert boundary as panel_capture, while exact
+    // execution continues through the model. The result vector follows the
+    // caller-provided layer order and is replaced on every forward call.
+    const std::vector<int> * panel_capture_layer_ids = nullptr;
+    std::vector<KimiK3MoePanelCapture> * panel_captures = nullptr;
     MoeStreamExpertObserver * expert_observer = nullptr;
     KimiK3RoutedOutputProvider * routed_output_provider = nullptr;
 };

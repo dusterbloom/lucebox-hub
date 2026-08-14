@@ -673,6 +673,19 @@ bool streamed_kimi_k3_forward(
     if (options.panel_capture) {
         *options.panel_capture = KimiK3MoePanelCapture{};
     }
+    std::vector<int> panel_capture_at_layer(
+        static_cast<size_t>(w.n_layer), -1);
+    if (options.panel_captures) {
+        options.panel_captures->assign(
+            options.panel_capture_layer_ids->size(),
+            KimiK3MoePanelCapture{});
+        for (size_t index = 0;
+             index < options.panel_capture_layer_ids->size(); ++index) {
+            panel_capture_at_layer[static_cast<size_t>(
+                (*options.panel_capture_layer_ids)[index])] =
+                    static_cast<int>(index);
+        }
+    }
 
     std::vector<int> capture_at_layer(static_cast<size_t>(w.n_layer), -1);
     const int n_capture = options.capture_layer_ids
@@ -911,6 +924,22 @@ bool streamed_kimi_k3_forward(
                     ": native router returned a non-finite weight");
                 return false;
             }
+        }
+
+        const int panel_capture_index =
+            panel_capture_at_layer[static_cast<size_t>(il)];
+        if (panel_capture_index >= 0) {
+            KimiK3MoePanelCapture & capture =
+                (*options.panel_captures)[
+                    static_cast<size_t>(panel_capture_index)];
+            capture.layer = il;
+            capture.base_pos = base_pos;
+            capture.n_tokens = n_tokens;
+            capture.latent_dimension = w.n_expert_latent;
+            capture.top_k = w.n_expert_used;
+            capture.latent = routed_input_host;
+            capture.expert_ids = selected;
+            capture.router_weights = route_weights;
         }
 
         if (stop_at_capture_boundary) {
@@ -1222,6 +1251,10 @@ bool kimi_k3_forward(ggml_backend_t backend,
     result = KimiK3ForwardResult{};
     const int n_tokens = static_cast<int>(tokens.size());
     const bool panel_stop = options.stop_before_moe_layer >= 0;
+    const bool panel_multi_requested =
+        options.panel_capture_layer_ids || options.panel_captures;
+    const bool panel_multi =
+        options.panel_capture_layer_ids && options.panel_captures;
     if (!backend || !w.ctx || !cache.ctx || n_tokens <= 0 || base_pos < 0 ||
         base_pos != cache.cur_pos || base_pos + n_tokens > cache.max_ctx ||
         (!options.read_logits && !options.read_argmax && !panel_stop)) {
@@ -1239,8 +1272,27 @@ bool kimi_k3_forward(ggml_backend_t backend,
         set_last_error("Kimi-K3 forward: panel capture requires a stop layer");
         return false;
     }
+    if (panel_multi_requested &&
+        (!panel_multi || panel_stop || options.panel_capture ||
+         options.panel_capture_layer_ids->empty())) {
+        set_last_error("Kimi-K3 forward: invalid multi-layer panel capture request");
+        return false;
+    }
+    if (panel_multi) {
+        std::vector<bool> seen(static_cast<size_t>(w.n_layer), false);
+        for (int layer : *options.panel_capture_layer_ids) {
+            if (layer < w.n_dense_lead || layer >= w.n_layer ||
+                seen[static_cast<size_t>(layer)]) {
+                set_last_error(
+                    "Kimi-K3 forward: invalid or duplicate multi-layer "
+                    "panel capture layer");
+                return false;
+            }
+            seen[static_cast<size_t>(layer)] = true;
+        }
+    }
     if (!w.routed_experts_streamed &&
-        (panel_stop || options.expert_observer)) {
+        (panel_stop || panel_multi || options.expert_observer)) {
         set_last_error(
             "Kimi-K3 forward: panel capture/observation requires streamed experts");
         return false;

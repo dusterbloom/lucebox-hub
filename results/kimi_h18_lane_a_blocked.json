@@ -1,6 +1,6 @@
 {
   "schema": "kimi-k3-h18-fast-lane-a-v1",
-  "status": "BLOCKED",
+  "status": "CAPTURE_SUBSTRATE_READY_LANE_A_METRICS_BLOCKED",
   "claim": "The requested calibrated 96/144 comparison across all 92 routed layers cannot be run from the current artifacts without inventing or transferring calibration.",
   "repository_head_at_audit": "13edbfae68db9ebe903dc35edb3e33f6a911385f",
   "available_all_layer_sidecars": {
@@ -38,8 +38,21 @@
     "projected_single_pass_capture_hours_10000_tokens": 5.28,
     "projected_remaining_layer_fit_hours": 5.04,
     "projection_basis": "Layer-12 10K capture: 2296.964 s through 11 exact routed layers; layer-12 calibration fit: 201.723 s and 5.580 GB read. Projections are linear planning estimates, not measurements.",
+    "implemented_all_layer_capture_command": "KIMI_H18_CAPTURE_TOKENS=10000 KIMI_H18_CAPTURE_ROOT=/mnt/kimi-k3/captures/kimi-h18-all-layer-10000 bash scripts/run_kimi_h18_all_layer_capture.sh",
     "current_per_layer_capture_template": "capture_kimi_k3_panel MODEL CORPUS CAPTURE 0 LAYER 10000 512 8 cpu",
     "current_per_layer_fit_template": "python3 scripts/probe_kimi_neuron_slabs.py SHARD CAPTURE TEACHER RESPONSES RESULT --fit-state FIT_STATE --calibration-only --exact-fallback-uncalibrated --layer LAYER --device cuda"
+  },
+  "capture_smoke": {
+    "status": "PASS",
+    "tokens": 8,
+    "layers": 92,
+    "elapsed_seconds": 45.85600152400002,
+    "peak_vram_mib": 17087,
+    "streamed_physical_gib": 42.776,
+    "stream_errors": 0,
+    "layer1_same_shape_bit_exact": true,
+    "layer12_registered_prefix_bit_exact": true,
+    "comparison": "results/kimi_h18_multilayer_capture_smoke.json"
   },
   "lane_a_requested_metrics": null,
   "lane_a_verdict": "BLOCKED_BY_MISSING_ALL_LAYER_CALIBRATION"
