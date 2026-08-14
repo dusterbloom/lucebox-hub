@@ -1,6 +1,7 @@
 # H17: Whole-model progressive hydration
 
-**STATUS: RUNNING — exact baseline locked; all-192 control in preparation.**
+**STATUS: STOP — exact baseline locked; all-192 control failed the predeclared
+whole-model numerical gate.**
 
 H17 asks whether progressive 256-neuron routed-expert blocks survive on-policy
 composition through all 92 routed Kimi K3 layers. It uses the production Kimi
@@ -33,6 +34,64 @@ Failure stops H17 before partial-budget calibration. Passing permits creation
 of real all-layer means and fixed importance orderings for the 96/144 runs.
 The shadow control reads both the native expert and every slab, so it has no
 expected speedup.
+
+## All-192 result
+
+The control executed on-policy through all 92 routed layers at commit
+`8ec862e38c9853987ae450c2ffee83c859347ddb`. It retained every one of the 192
+active 256-neuron blocks at every routed layer. The prompt was `According to all
+known laws`; four teacher-forced continuation tokens produced eight aligned
+full-vocabulary logit rows.
+
+| measurement | result | gate |
+| --- | ---: | ---: |
+| mean teacher-to-candidate KL | `0.0397783268` | `<= 1e-6` |
+| maximum KL | `0.2749676223` | `<= 1e-5` |
+| maximum absolute logit difference | `2.55742836` | diagnostic |
+| top-choice agreement | `8/8` | `8/8` |
+
+This is a measured **STOP**. Static-96, prefix-oracle-96, and
+prefix-oracle-144 were not run, exactly as required by the locked protocol.
+The generated continuation under aligned teacher tokens remained
+`\nof aviation,\n`, but this is not a free-generation quality result.
+
+The control also produced an important falsification result. At each layer,
+the progressive evaluator's all-slab routed output was compared with the native
+exact routed output on the candidate's current state and native routes:
+
+| local measurement across 92 routed layers | result |
+| --- | ---: |
+| mean of per-layer mean relative L2 | `2.4571771e-7` |
+| worst token relative L2 | `3.37597e-7` (layer 28) |
+| printed mean cosine | `1.0` at every layer |
+
+Therefore the stored weights, mixed quantization handling, and additive slab
+decomposition agree locally to floating-point roundoff. Nevertheless, the
+different accumulation path is not behaviorally identical after recurrent
+composition through depth and token state. A first router or hidden-state
+bifurcation was not captured, so its layer and precise cause remain **OPEN**.
+It would be incorrect to attribute the terminal failure to a particular route
+flip without that trace.
+
+The control took 237.01 seconds, read 520.09 GB from the drive, peaked at
+17,066 MiB of graphics memory, used about 0.88 GB anonymous host memory plus
+25.4 GB file-backed mappings, and consumed 26.78 kJ of measured graphics-board
+energy. It is a deliberately doubled shadow path, not a speed measurement.
+
+Machine-readable summary: `results/kimi_h17_all_slabs_control.json`. Raw
+artifacts and their checksums are under
+`/mnt/kimi-k3/results/kimi-h17-all-slabs-control`.
+
+## Interpretation and next gate
+
+The 96/144 progressive-hydration hypothesis is neither validated nor
+falsified by this run. The all-192 evaluator failed as a numerical identity
+control, so a smaller-budget result would mix deliberate omission error with a
+known change in arithmetic trajectory. The next single experiment is a paired
+native-versus-all-slab trace of hidden states and router selections that locates
+the first behavioral bifurcation. No selector, tail corrector, Fisher fit, or
+Observer should be trained before this control is understood or made
+behaviorally equivalent.
 
 ## Deferred Observer constraint
 

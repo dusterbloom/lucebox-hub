@@ -1,0 +1,132 @@
+{
+  "schema": "kimi-k3-h17-all-slabs-control-summary-v1",
+  "claim_status": "MEASURED",
+  "verdict": "STOP",
+  "reason": "The all-192 control exceeded the terminal numerical gate locked before execution.",
+  "repository": {
+    "commit": "8ec862e38c9853987ae450c2ffee83c859347ddb",
+    "status_at_execution": "clean"
+  },
+  "model": {
+    "checkpoint": "vcruz305/Kimi-K3-UD-IQ1_S-GGUF",
+    "local_first_shard": "/mnt/kimi-k3/models/unsloth-Kimi-K3-GGUF/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00001-of-00014.gguf",
+    "total_layers": 93,
+    "routed_layers": 92,
+    "active_experts_per_token": 16,
+    "slabs_per_expert": 12,
+    "active_slabs_per_token": 192,
+    "neurons_per_slab": 256
+  },
+  "exact_baseline": {
+    "repeatability": "PASS",
+    "registered_suite_sequences": 12,
+    "registered_suite_full_vocabulary_rows": 126,
+    "repeat_passes_byte_identical": true,
+    "maximum_logit_difference": 0.0,
+    "teacher_to_repeat_kl": 0.0,
+    "reference_trace": "/mnt/kimi-k3/results/kimi-exact-baseline-local-cpu/exact-run-1.logits.f32",
+    "reference_trace_sha256": "66ab2dea90fd84d991170fcde70255a36ae9f93c2362f61551286af369bea3b4"
+  },
+  "sidecars": {
+    "directory": "/mnt/kimi-k3/artifacts/kimi-h17-natural-sidecars",
+    "layer_count": 92,
+    "total_bytes": 545352335360,
+    "minimum_layer_bytes": 5780303872,
+    "maximum_layer_bytes": 7013429248,
+    "ordering": "natural neuron order",
+    "manifest": "/mnt/kimi-k3/artifacts/kimi-h17-natural-sidecars/all_layers_manifest.json",
+    "manifest_sha256": "192efad90c790b8a8230e71bca56c260eee3baf6846108d71c9ec598f6762b7c"
+  },
+  "protocol": {
+    "execution": "on-policy through all 92 routed layers",
+    "prompt": "According to all known laws",
+    "prompt_token_ids": [18805, 308, 799, 5624, 12524],
+    "teacher_forced_continuation_token_ids": [198, 1587, 57195, 422],
+    "scored_full_vocabulary_rows": 8,
+    "provider": "all-slabs",
+    "slab_budget": 192,
+    "expected_speedup": "NONE"
+  },
+  "locked_terminal_gate": {
+    "mean_teacher_to_candidate_kl_max": 0.000001,
+    "maximum_teacher_to_candidate_kl_max": 0.00001,
+    "top_choice_agreement_min": 1.0
+  },
+  "terminal_result": {
+    "logits_byte_identical": false,
+    "maximum_absolute_logit_difference": 2.5574283599853516,
+    "teacher_to_candidate_kl": {
+      "mean": 0.03977832676177906,
+      "median": 0.004735044009421189,
+      "maximum": 0.27496762231877436,
+      "by_row": [
+        0.0009160595460640374,
+        0.0009037393666386262,
+        0.009466751613551878,
+        0.006419231542356644,
+        0.020636680807529596,
+        0.27496762231877436,
+        0.0018656724228315563,
+        0.003050856476485735
+      ]
+    },
+    "top_choice_agreement": {
+      "count": 8,
+      "denominator": 8,
+      "rate": 1.0,
+      "reference_ids": [308, 276, 276, 12524, 198, 1587, 57195, 422],
+      "candidate_ids": [308, 276, 276, 12524, 198, 1587, 57195, 422]
+    },
+    "aligned_text": "According to all known laws\nof aviation,\n",
+    "free_generation_tested": false
+  },
+  "local_routed_output_result": {
+    "comparison_basis": "candidate current state and native router selections",
+    "layers": 92,
+    "mean_of_layer_mean_relative_l2": 2.45717706522e-7,
+    "worst_token_relative_l2": 3.37597e-7,
+    "worst_token_layer": 28,
+    "printed_mean_cosine_at_every_layer": 1.0,
+    "interpretation": "All-slab decomposition agrees locally with native routed evaluation to floating-point roundoff, but the changed arithmetic trajectory is not whole-model identical."
+  },
+  "telemetry": {
+    "elapsed_seconds": 237.00953911499892,
+    "prefill_seconds": 144.130,
+    "decode_seconds": 86.287,
+    "peak_rss_kib": 26422612,
+    "peak_rss_anon_kib": 877724,
+    "peak_rss_file_kib": 25396644,
+    "system_peak_used_kib": 2820832,
+    "peak_graphics_memory_mib": 17066.0,
+    "graphics_energy_joules": 26782.11707636022,
+    "disk_read_bytes": 520089149440,
+    "native_expert_stream_payload_gib": 55.235,
+    "native_expert_stream_physical_gib": 55.338,
+    "native_expert_stream_rate_gib_per_second": 4.697,
+    "slab_stream_payload_gib": 72.557,
+    "slab_stream_physical_gib": 72.961,
+    "slab_stream_rate_gib_per_second": 2.914
+  },
+  "artifact_directory": "/mnt/kimi-k3/results/kimi-h17-all-slabs-control",
+  "artifact_checksums": {
+    "aligned.logits.f32": "44c8ef7f9613598cc125ed839b6154cf027b7eab877cec35317a49be86cf420a",
+    "comparison.json": "a50617961646fa5642d3690ecd0dd6b1553a3df91dda44bf1088466bc188fa21",
+    "layer-numerics.tsv": "dd6cfeb0fc6ae0096742095542e167feedee17048438ce0b075137750e58e55e",
+    "stderr.log": "b1293a5cdad3d5e67fb752db6f216185f5f7cd3ab3cafc40234d04e0961c38df",
+    "stdout.log": "b0189267f0ae0efc4729f367aebcdb847f0f006e0014efaef1629da79c9ed44f",
+    "telemetry.csv": "01dc92bc583cdbc9643b82c7ab9231e90ce754376eee7c4d64e544b9b7b710c3",
+    "telemetry.json": "ac8740685c5c22130a4c8250591e743f06a51cea1c76a550947603da73b64c71",
+    "verdict.json": "c476f5467c1c31f1482cb8520f0abbcd3351bea0a93b2644af0bbb20c0072138"
+  },
+  "not_run_due_to_stop_rule": [
+    "static-96",
+    "prefix-oracle-96",
+    "prefix-oracle-144"
+  ],
+  "first_router_or_hidden_state_divergence": {
+    "status": "OPEN",
+    "reason": "The all-192 run did not capture a paired exact trajectory at every layer."
+  },
+  "next_single_experiment": "Capture paired native and all-slab hidden states plus router selections to locate the first behavioral bifurcation before any partial-budget or Observer work.",
+  "deferred_observer_constraint": "If H17 later succeeds, private Observer carry first predicts live exact slab prefixes; exact slabs execute; only if needed an aggregate omitted-tail correction conditioned on the exact live result enters the existing MoE output slot. Private Observer state never enters the K3 residual or latent stream directly."
+}
