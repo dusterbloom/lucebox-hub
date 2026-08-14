@@ -32,6 +32,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("output", type=Path)
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--layer", type=int, default=1)
+    parser.add_argument("--gate-shard", type=Path)
+    parser.add_argument("--up-shard", type=Path)
+    parser.add_argument("--down-shard", type=Path)
+    parser.add_argument(
+        "--natural-order",
+        action="store_true",
+        help=(
+            "store slabs in physical neuron order; the fit-state positional "
+            "argument is ignored. This is intended only for the all-192 "
+            "numerical control, where ordering cannot affect selection."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -50,22 +62,56 @@ def align(value: int, alignment: int) -> int:
 def main() -> int:
     args = parse_args()
     started = time.monotonic()
-    reader = GGUFReader(args.shard, "r")
-    tensors = {tensor.name: tensor for tensor in reader.tensors}
-    gate = tensors[f"blk.{args.layer}.ffn_gate_exps.weight"]
-    up = tensors[f"blk.{args.layer}.ffn_up_exps.weight"]
-    down = tensors[f"blk.{args.layer}.ffn_down_exps.weight"]
+    shard_paths = {
+        "gate": args.gate_shard or args.shard,
+        "up": args.up_shard or args.shard,
+        "down": args.down_shard or args.shard,
+    }
+    readers: dict[Path, GGUFReader] = {}
+    tensor_names = {
+        "gate": f"blk.{args.layer}.ffn_gate_exps.weight",
+        "up": f"blk.{args.layer}.ffn_up_exps.weight",
+        "down": f"blk.{args.layer}.ffn_down_exps.weight",
+    }
+    selected_tensors: dict[str, object] = {}
+    for component, shard_path in shard_paths.items():
+        if shard_path not in readers:
+            readers[shard_path] = GGUFReader(shard_path, "r")
+        reader = readers[shard_path]
+        tensors = {tensor.name: tensor for tensor in reader.tensors}
+        if tensor_names[component] not in tensors:
+            raise KeyError(
+                f"{tensor_names[component]} is absent from {shard_path}"
+            )
+        selected_tensors[component] = tensors[tensor_names[component]]
+    gate = selected_tensors["gate"]
+    up = selected_tensors["up"]
+    down = selected_tensors["down"]
     if gate.data.shape != (EXPERT_COUNT, EXPERT_WIDTH, 700):
         raise ValueError(f"unexpected gate layout: {gate.data.shape}")
     if up.data.shape != gate.data.shape:
         raise ValueError("up layout disagrees")
     if down.data.shape != (EXPERT_COUNT, DIMENSION, 600):
         raise ValueError(f"unexpected down layout: {down.data.shape}")
-    with np.load(args.fit_state, allow_pickle=False) as state:
-        importance = state["slab_expected_residual_norm"]
-    if importance.shape != (EXPERT_COUNT, SLAB_COUNT):
-        raise ValueError("fit-state slab importance shape disagrees")
-    order = np.argsort(-importance, axis=1, kind="stable").astype("<u2")
+    if args.natural_order:
+        order = np.broadcast_to(
+            np.arange(SLAB_COUNT, dtype="<u2"),
+            (EXPERT_COUNT, SLAB_COUNT),
+        ).copy()
+        fit_state_path = None
+        fit_state_sha256 = None
+        ordering = "natural neuron order (all-192 numerical control only)"
+    else:
+        with np.load(args.fit_state, allow_pickle=False) as state:
+            importance = state["slab_expected_residual_norm"]
+        if importance.shape != (EXPERT_COUNT, SLAB_COUNT):
+            raise ValueError("fit-state slab importance shape disagrees")
+        order = np.argsort(-importance, axis=1, kind="stable").astype("<u2")
+        fit_state_path = str(args.fit_state)
+        fit_state_sha256 = sha256(args.fit_state)
+        ordering = (
+            "descending calibration mean slab residual norm within expert"
+        )
 
     component_slab_bytes = SLAB_SIZE * 700
     down_slab_bytes = DIMENSION * 50
@@ -141,8 +187,15 @@ def main() -> int:
         "status": "EXPERIMENTAL",
         "source_shard": str(args.shard),
         "source_shard_bytes": args.shard.stat().st_size,
-        "fit_state": str(args.fit_state),
-        "fit_state_sha256": sha256(args.fit_state),
+        "source_shards": {
+            component: {
+                "path": str(path),
+                "bytes": path.stat().st_size,
+            }
+            for component, path in shard_paths.items()
+        },
+        "fit_state": fit_state_path,
+        "fit_state_sha256": fit_state_sha256,
         "output": str(args.output),
         "output_bytes": file_bytes,
         "output_sha256": digest.hexdigest(),
@@ -159,7 +212,7 @@ def main() -> int:
         "index_bytes": index_bytes,
         "payload_offset": payload_offset,
         "payload_bytes": payload_bytes,
-        "ordering": "descending calibration mean slab residual norm within expert",
+        "ordering": ordering,
         "quantized_weight_bytes_unchanged": True,
         "elapsed_seconds": time.monotonic() - started,
     }

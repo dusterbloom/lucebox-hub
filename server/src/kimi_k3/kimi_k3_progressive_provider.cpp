@@ -9,6 +9,7 @@
 #include <fstream>
 #include <limits>
 #include <numeric>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -103,6 +104,13 @@ struct Calibration {
 };
 
 enum class ProviderKind : uint32_t { Slabs = 1, Whole = 2 };
+
+struct LayerNumerics {
+    uint64_t tokens = 0;
+    double cosine_sum = 0.0;
+    double relative_l2_sum = 0.0;
+    double maximum_relative_l2 = 0.0;
+};
 
 bool checked_span(uint64_t offset, uint64_t bytes, uint64_t file_bytes) {
     return offset <= file_bytes && bytes <= file_bytes - offset;
@@ -239,6 +247,34 @@ bool read_exact_at(int fd, void * destination, size_t bytes, uint64_t offset) {
     return ::pread(fd, destination, bytes, static_cast<off_t>(offset)) ==
            static_cast<ssize_t>(bytes);
 #endif
+}
+
+std::string natural_sidecar_path(const std::string & directory,
+                                 int model_layer) {
+    char name[96];
+    std::snprintf(name, sizeof(name),
+                  "kimi_layer%02d_natural_slabs.k3slab", model_layer);
+    if (directory.empty() || directory.back() == '/' ||
+        directory.back() == '\\') {
+        return directory + name;
+    }
+    return directory + "/" + name;
+}
+
+bool valid_slab_order(const std::vector<uint16_t> & order) {
+    if (order.size() != static_cast<size_t>(kExpertCount * kSlabCount)) {
+        return false;
+    }
+    for (int expert = 0; expert < kExpertCount; ++expert) {
+        bool seen[kSlabCount]{};
+        for (int rank = 0; rank < kSlabCount; ++rank) {
+            const uint16_t slab = order[
+                static_cast<size_t>(expert) * kSlabCount + rank];
+            if (slab >= kSlabCount || seen[slab]) return false;
+            seen[slab] = true;
+        }
+    }
+    return true;
 }
 
 struct Candidate {
@@ -630,6 +666,254 @@ private:
     uint64_t trace_records_ = 0;
 };
 
+// H17's first gate deliberately selects every slab. It needs no calibration
+// means or learned ordering: it only asks whether the byte-aligned numerical
+// decomposition can be composed through every routed layer. The ordinary
+// exact evaluator remains immutable and is evaluated alongside the slab sum
+// so every layer receives a direct numerical control.
+class AllSlabsProvider final : public KimiK3RoutedOutputProvider {
+public:
+    ~AllSlabsProvider() override {
+        finish_metrics();
+        slab_engine_.destroy();
+    }
+
+    bool init(ggml_backend_t expert_backend, const std::string & directory,
+              const char * metrics_path, std::string * err) {
+        if (!expert_backend || directory.empty()) {
+            if (err) *err = "all-slab provider needs a backend and sidecar directory";
+            return false;
+        }
+        std::vector<MoeNvmeSource> sources;
+        std::vector<LayerExpertRegions> regions(kRoutedLayerCount);
+        std::vector<int> descriptors;
+        sources.reserve(kRoutedLayerCount);
+        descriptors.reserve(kRoutedLayerCount);
+        const auto close_descriptors = [&]() {
+            for (int fd : descriptors) close_fd(fd);
+            descriptors.clear();
+        };
+
+        for (int model_layer = kFirstRoutedLayer;
+             model_layer <= kLastRoutedLayer; ++model_layer) {
+            const std::string path = natural_sidecar_path(
+                directory, model_layer);
+            const int fd = open_read_only(path);
+            if (fd < 0) {
+                close_descriptors();
+                if (err) *err = "cannot open all-slab sidecar " + path +
+                    ": " + std::strerror(errno);
+                return false;
+            }
+            uint64_t bytes = 0;
+            SlabSidecarHeader header{};
+            std::vector<uint16_t> order(
+                static_cast<size_t>(kExpertCount * kSlabCount));
+            const bool valid = file_size(fd, bytes) &&
+                read_exact_at(fd, &header, sizeof(header), 0) &&
+                std::memcmp(header.magic, "K3SLB001", 8) == 0 &&
+                header.version == 1 &&
+                header.model_layer == static_cast<uint32_t>(model_layer) &&
+                header.expert_count == kExpertCount &&
+                header.dimension == kDimension &&
+                header.expert_width == kSlabSize * kSlabCount &&
+                header.slab_size == kSlabSize &&
+                header.slab_count == kSlabCount &&
+                header.alignment == kAlignment &&
+                header.slab_bytes == kSlabBytes &&
+                header.record_bytes == kExpertRecordBytes &&
+                header.order_bytes == order.size() * sizeof(uint16_t) &&
+                checked_span(
+                    header.payload_offset,
+                    static_cast<uint64_t>(kExpertCount) * kExpertRecordBytes,
+                    bytes) &&
+                read_exact_at(fd, order.data(),
+                              order.size() * sizeof(uint16_t),
+                              header.order_offset) &&
+                valid_slab_order(order);
+            if (!valid) {
+                close_fd(fd);
+                close_descriptors();
+                if (err) *err = "incompatible all-slab sidecar " + path;
+                return false;
+            }
+            const uint32_t source_index =
+                static_cast<uint32_t>(sources.size());
+            sources.push_back({nullptr, static_cast<size_t>(bytes), fd});
+            descriptors.push_back(fd);
+
+            LayerExpertRegions & layer =
+                regions[static_cast<size_t>(model_layer - 1)];
+            layer.expert_bytes_gate = kSlabComponentBytes;
+            layer.expert_bytes_up = kSlabComponentBytes;
+            layer.expert_bytes_down = kSlabComponentBytes;
+            layer.expert_major.enabled = true;
+            layer.expert_major.experts = {
+                static_cast<size_t>(header.payload_offset),
+                static_cast<size_t>(kExpertCount) * kExpertRecordBytes,
+                source_index};
+            layer.expert_major.expert_stride = kSlabBytes;
+            layer.expert_major.gate_offset = 0;
+            layer.expert_major.up_offset = kSlabComponentBytes;
+            layer.expert_major.down_offset = 2 * kSlabComponentBytes;
+        }
+
+        MoeStreamConfig config = MoeStreamConfig::from_env();
+        config.device_cache_bytes = 0;
+        config.device_slots = std::max(2, config.device_slots);
+        config.fused_decode = true;
+        const bool initialized = slab_engine_.init(
+            expert_backend, kSlabBytes, config, err) &&
+            slab_engine_.bind_sources(sources, regions, err);
+        close_descriptors();
+        if (!initialized) {
+            slab_engine_.destroy();
+            return false;
+        }
+        metrics_path_ = metrics_path && *metrics_path ? metrics_path : "";
+        numerics_.resize(kLastRoutedLayer + 1);
+        std::fprintf(stderr,
+            "[kimi-k3-h17] provider=all-slabs budget=192 layers=1..92 "
+            "sidecars=%s metrics=%s\n",
+            directory.c_str(),
+            metrics_path_.empty() ? "stderr" : metrics_path_.c_str());
+        return true;
+    }
+
+    bool handles_layer(int model_layer) const override {
+        return model_layer >= kFirstRoutedLayer &&
+            model_layer <= kLastRoutedLayer;
+    }
+
+    bool evaluate(int model_layer, int base_pos,
+                  const MoeStreamExpertSpec & exact_spec,
+                  const MoeStreamRouteBatch & routes,
+                  MoeHybridStreamEngine & exact_engine,
+                  std::vector<float> & output,
+                  std::string * err) override {
+        (void) base_pos;
+        if (!handles_layer(model_layer) || routes.n_expert != kExpertCount ||
+            routes.top_k != kNativeTopK ||
+            exact_spec.input_dim != kDimension ||
+            exact_spec.output_dim != kDimension) {
+            if (err) *err = "H17 all-slab provider received an incompatible batch";
+            return false;
+        }
+
+        std::vector<float> native_exact;
+        if (!eval_moe_streamed_experts(
+                exact_engine, exact_spec, routes, native_exact, err)) {
+            return false;
+        }
+
+        constexpr int kActiveSlabs = kNativeTopK * kSlabCount;
+        std::vector<int32_t> ids(
+            static_cast<size_t>(routes.n_tokens) * kActiveSlabs);
+        std::vector<float> weights(ids.size());
+        for (int token = 0; token < routes.n_tokens; ++token) {
+            const size_t route_offset =
+                static_cast<size_t>(token) * kNativeTopK;
+            const size_t slab_offset =
+                static_cast<size_t>(token) * kActiveSlabs;
+            int cursor = 0;
+            for (int route = 0; route < kNativeTopK; ++route) {
+                const int expert = routes.selected_ids[route_offset + route];
+                const float weight =
+                    routes.selected_weights[route_offset + route];
+                for (int rank = 0; rank < kSlabCount; ++rank) {
+                    ids[slab_offset + cursor] = expert * kSlabCount + rank;
+                    weights[slab_offset + cursor] = weight;
+                    ++cursor;
+                }
+            }
+        }
+
+        MoeStreamExpertSpec slab_spec = exact_spec;
+        slab_spec.intermediate_dim = kSlabSize;
+        MoeStreamRouteBatch slab_routes = routes;
+        slab_routes.layer = model_layer - kFirstRoutedLayer;
+        slab_routes.n_expert = kExpertCount * kSlabCount;
+        slab_routes.top_k = kActiveSlabs;
+        slab_routes.selected_ids = ids.data();
+        slab_routes.selected_weights = weights.data();
+        slab_routes.expert_observer = nullptr;
+        if (!eval_moe_streamed_experts(
+                slab_engine_, slab_spec, slab_routes, output, err)) {
+            return false;
+        }
+        observe_numerics(model_layer, routes.n_tokens, native_exact, output);
+        return true;
+    }
+
+private:
+    void observe_numerics(int model_layer, int n_tokens,
+                          const std::vector<float> & exact,
+                          const std::vector<float> & candidate) {
+        LayerNumerics & total = numerics_[static_cast<size_t>(model_layer)];
+        for (int token = 0; token < n_tokens; ++token) {
+            const size_t offset = static_cast<size_t>(token) * kDimension;
+            double dot = 0.0;
+            double exact_norm2 = 0.0;
+            double candidate_norm2 = 0.0;
+            double error_norm2 = 0.0;
+            for (int d = 0; d < kDimension; ++d) {
+                const double left = exact[offset + d];
+                const double right = candidate[offset + d];
+                const double difference = right - left;
+                dot += left * right;
+                exact_norm2 += left * left;
+                candidate_norm2 += right * right;
+                error_norm2 += difference * difference;
+            }
+            const double cosine = dot /
+                std::sqrt(std::max(1.0e-300, exact_norm2 * candidate_norm2));
+            const double relative_l2 = std::sqrt(
+                error_norm2 / std::max(1.0e-300, exact_norm2));
+            ++total.tokens;
+            total.cosine_sum += cosine;
+            total.relative_l2_sum += relative_l2;
+            total.maximum_relative_l2 = std::max(
+                total.maximum_relative_l2, relative_l2);
+        }
+    }
+
+    void finish_metrics() {
+        if (numerics_.empty()) return;
+        std::ostringstream report;
+        report << "model_layer\ttokens\tmean_cosine\tmean_relative_l2"
+                  "\tmaximum_relative_l2\n";
+        for (int layer = kFirstRoutedLayer;
+             layer <= kLastRoutedLayer; ++layer) {
+            const LayerNumerics & value =
+                numerics_[static_cast<size_t>(layer)];
+            if (value.tokens == 0) continue;
+            report << layer << '\t' << value.tokens << '\t'
+                   << value.cosine_sum / value.tokens << '\t'
+                   << value.relative_l2_sum / value.tokens << '\t'
+                   << value.maximum_relative_l2 << '\n';
+        }
+        if (!metrics_path_.empty()) {
+            std::ofstream output(metrics_path_);
+            output << report.str();
+            if (!output) {
+                std::fprintf(stderr,
+                    "[kimi-k3-h17] cannot write numerical metrics %s\n",
+                    metrics_path_.c_str());
+            }
+        } else {
+            std::fprintf(stderr, "%s", report.str().c_str());
+        }
+        numerics_.clear();
+    }
+
+    static constexpr int kFirstRoutedLayer = 1;
+    static constexpr int kLastRoutedLayer = 92;
+    static constexpr int kRoutedLayerCount = 92;
+    MoeHybridStreamEngine slab_engine_;
+    std::vector<LayerNumerics> numerics_;
+    std::string metrics_path_;
+};
+
 bool parse_positive_int(const char * raw, int & value) {
     if (!raw || !*raw) return false;
     char * end = nullptr;
@@ -711,11 +995,29 @@ bool create_kimi_k3_progressive_provider_from_env(
     if (!raw_kind || !*raw_kind || std::strcmp(raw_kind, "exact") == 0) {
         return true;
     }
+    if (std::strcmp(raw_kind, "all-slabs") == 0) {
+        const char * directory =
+            std::getenv("DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR");
+        if (!directory || !*directory) {
+            if (err) *err =
+                "DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR is required for all-slabs";
+            return false;
+        }
+        auto provider = std::make_unique<AllSlabsProvider>();
+        if (!provider->init(
+                expert_backend, directory,
+                std::getenv("DFLASH_KIMI_ALL_SLAB_METRICS_OUT"), err)) {
+            return false;
+        }
+        out = std::move(provider);
+        return true;
+    }
     ProviderKind kind;
     if (std::strcmp(raw_kind, "slabs") == 0) kind = ProviderKind::Slabs;
     else if (std::strcmp(raw_kind, "whole") == 0) kind = ProviderKind::Whole;
     else {
-        if (err) *err = "DFLASH_KIMI_LAYER1_PROVIDER must be exact, slabs, or whole";
+        if (err) *err =
+            "DFLASH_KIMI_LAYER1_PROVIDER must be exact, slabs, whole, or all-slabs";
         return false;
     }
     int budget = 0;
