@@ -1184,7 +1184,7 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
     std::string paired_failure;
     const auto forward_token = [&](int32_t token, int position) -> bool {
         if (!paired_interventions) {
-            return spec_target
+            const bool ok = spec_target
                 ? spec_target->forward_token(token, position, logits)
                 : kimi_k3_step(
                     backend_, weights_, cache_, token, position, logits,
@@ -1193,6 +1193,8 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
                         ? &dual_stream_executor_ : nullptr,
                     &stream_owner_policy_, routing_stats_.get(),
                     routed_output_provider_.get());
+            if (ok) maybe_release_kimi_mapped_pages(weights_);
+            return ok;
         }
         if (spec_target) {
             paired_failure = "paired H16 mode is incompatible with DFlash";

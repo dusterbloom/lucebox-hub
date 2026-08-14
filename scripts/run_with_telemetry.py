@@ -36,6 +36,10 @@ def process_sample(pid: int) -> dict[str, int | None]:
     return {
         "rss_kib": status.get("VmRSS"),
         "high_water_rss_kib": status.get("VmHWM"),
+        "rss_anon_kib": status.get("RssAnon"),
+        "rss_file_kib": status.get("RssFile"),
+        "rss_shmem_kib": status.get("RssShmem"),
+        "swap_kib": status.get("VmSwap"),
         "read_bytes": io.get("read_bytes"),
         "write_bytes": io.get("write_bytes"),
     }
@@ -278,6 +282,10 @@ def main() -> int:
             "reported_high_water_rss_kib": maximum(
                 samples, "high_water_rss_kib"
             ),
+            "peak_rss_anon_kib": maximum(samples, "rss_anon_kib"),
+            "peak_rss_file_kib": maximum(samples, "rss_file_kib"),
+            "peak_rss_shmem_kib": maximum(samples, "rss_shmem_kib"),
+            "peak_swap_kib": maximum(samples, "swap_kib"),
             "last_read_bytes": last_process_io.get("read_bytes"),
             "last_write_bytes": last_process_io.get("write_bytes"),
         },
