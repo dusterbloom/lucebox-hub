@@ -1,0 +1,109 @@
+{
+  "schema": "kimi-k3-h17-arithmetic-identity-v1",
+  "claim_status": "MEASURED",
+  "verdict": "PASS",
+  "implementation_commit": "6ebb49b54a1f414791a1a153d116c41a85c0edeb",
+  "model": {
+    "checkpoint": "vcruz305/Kimi-K3-UD-IQ1_S-GGUF",
+    "routed_layers": 92,
+    "active_experts_per_token": 16,
+    "expert_width": 3072,
+    "slab_width": 256,
+    "slabs_per_expert": 12
+  },
+  "historical_split_result": {
+    "terminal_kl": {
+      "mean": 0.03977832676177906,
+      "maximum": 0.27496762231877436
+    },
+    "first_numerical_divergence_layer": 1,
+    "first_router_membership_divergence_layer": 7
+  },
+  "predown_probe": {
+    "artifact_prefix": "/mnt/kimi-k3/results/kimi-h17-predown-probe/predown",
+    "active_experts_tested": 16,
+    "native_vs_concatenated_slab_activation": {
+      "bit_identical_experts": 16,
+      "denominator": 16,
+      "maximum_absolute_difference": 0.0,
+      "maximum_relative_l2": 0.0
+    },
+    "same_native_full_width_down_kernel": {
+      "bit_identical_experts": 16,
+      "denominator": 16,
+      "maximum_absolute_difference": 0.0,
+      "maximum_relative_l2": 0.0
+    },
+    "production_aggregate_self_check": {
+      "bit_identical": true,
+      "maximum_absolute_difference": 0.0,
+      "relative_l2": 0.0
+    },
+    "twelve_split_down_projections": {
+      "bit_identical": false,
+      "aggregate_maximum_absolute_difference": 2.2351741790771484e-08,
+      "aggregate_relative_l2": 9.372983605929574e-08
+    },
+    "artifact_sha256": {
+      "predown_bin": "d0219c122782018ffb5acdad96071aab719f7339636fc04ebde34eb9d209da14",
+      "predown_tsv": "332617572ba3bf2bbf374eb47193ff4e07b8de1943c140d6bca6dcbe052daee5"
+    },
+    "telemetry": {
+      "elapsed_seconds": 31.54569053400337,
+      "peak_graphics_memory_mib": 17059.0,
+      "graphics_energy_joules": 3717.791616349677
+    }
+  },
+  "full_width_recomposition": {
+    "provider": "all-slabs-recomposed",
+    "description": "Rebuild complete gate/up/down expert tensors from the natural sidecar and execute the unchanged 3072-neuron native arithmetic path.",
+    "expected_speedup": "NONE; this is an arithmetic identity control",
+    "one_token_control": {
+      "full_trace_byte_identical": true,
+      "terminal_logits_byte_identical": true,
+      "terminal_kl_mean": 0.0,
+      "terminal_kl_maximum": 0.0
+    },
+    "frozen_eight_row_control": {
+      "prompt": "According to all known laws",
+      "teacher_forced_tokens": [198, 1587, 57195, 422],
+      "scored_rows": 8,
+      "all_92_layer_trace_byte_identical": true,
+      "terminal_logits_byte_identical": true,
+      "maximum_absolute_logit_difference": 0.0,
+      "terminal_kl": {
+        "mean": 0.0,
+        "median": 0.0,
+        "maximum": 0.0
+      },
+      "top_choice_agreement": {
+        "count": 8,
+        "denominator": 8
+      },
+      "reference_and_candidate_logit_sha256": "66ab2dea90fd84d991170fcde70255a36ae9f93c2362f61551286af369bea3b4",
+      "reference_and_candidate_trace_sha256": "1117017d54bb70295b7692176b18a10204b70f0a57027675142f8d7f6cd14db8",
+      "artifact_directory": "/mnt/kimi-k3/results/kimi-h17-recomposed-frozen",
+      "elapsed_seconds": 261.7503645359975,
+      "peak_graphics_memory_mib": 17072.0,
+      "graphics_energy_joules": 30508.078880556728,
+      "drive_read_bytes": 509182455808
+    }
+  },
+  "exploratory_static96": {
+    "label": "EXPLORATORY — confounded by the old split all-192 arithmetic path",
+    "provider": "natural contiguous six-of-twelve slabs per active expert with zero tail; not the calibrated selector",
+    "token_exact_vs_native": {
+      "count": 0,
+      "denominator": 12
+    },
+    "strict_task_success": {
+      "candidate": 4,
+      "native": 4,
+      "denominator": 12
+    },
+    "degeneration_count": 2,
+    "first_row_kl_range": [0.16715, 0.427541]
+  },
+  "conclusion": "The progressive sidecar is byte-correct and its gate/up activations are exactly composable. The entire all-192 divergence came from evaluating twelve separately rounded 256-neuron down projections instead of one native 3072-neuron reduction.",
+  "next_single_experiment": "Evaluate a 96-slab partial provider that preserves full-width reduction semantics by placing selected slab bytes in their native positions and representing omitted positions without changing the 3072-neuron kernel shape."
+}

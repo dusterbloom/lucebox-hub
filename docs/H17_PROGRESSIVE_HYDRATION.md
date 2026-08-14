@@ -1,7 +1,9 @@
 # H17: Whole-model progressive hydration
 
-**STATUS: STOP — exact baseline locked; all-192 control failed the predeclared
-whole-model numerical gate.**
+**STATUS: ARITHMETIC IDENTITY RECOVERED — the original split all-192 path
+failed, but sidecar recomposition through the native full-width kernel is now
+byte-identical through all 92 routed layers and at terminal logits. Partial
+96/144 budgets remain open.**
 
 H17 asks whether progressive 256-neuron routed-expert blocks survive on-policy
 composition through all 92 routed Kimi K3 layers. It uses the production Kimi
@@ -128,16 +130,83 @@ logits, telemetry, and checksums are under
 `/mnt/kimi-k3/results/kimi-h17-divergence-trace` and
 `/mnt/kimi-k3/results/kimi-h17-grouped-parity`.
 
+## Pre-down isolation and arithmetic identity recovery
+
+An environment-gated probe at layer 1, token 0 captured the complete
+3,072-value post-gate/up activation for every one of the 16 active experts. It
+also concatenated the twelve corresponding 256-neuron slab activations and
+ran both vectors through the same native full-width down-projection kernel.
+
+| measurement | result |
+| --- | ---: |
+| native versus concatenated-slab activation | bit-identical for `16/16` experts |
+| native activation versus slab activation through native full down | bit-identical for `16/16` experts |
+| standalone native aggregate versus production routed aggregate | bit-identical |
+| twelve split down projections, aggregate relL2 | `9.3729836e-8` |
+| twelve split down projections, aggregate maxabs | `2.2351742e-8` |
+
+This is decisive. Gate/up tiling, quantized byte slicing, SiTU activation, and
+the slab ordering are exact. The mismatch begins only when one 3,072-neuron
+down reduction is replaced with twelve separately rounded 256-neuron
+reductions. It is execution-arithmetic sensitivity, not semantic slab error.
+
+The next control rebuilt complete gate/up/down tensors from the natural slab
+sidecars and executed them through the unchanged full-width expert arithmetic.
+It intentionally reads all slab bytes and has no speed claim. On both a fresh
+one-token control and the original frozen eight-row trajectory:
+
+| identity measurement | result |
+| --- | ---: |
+| routed/local trace across all 92 layers | byte-identical |
+| terminal logits | byte-identical |
+| maximum absolute logit difference | `0` |
+| teacher-to-candidate KL, mean/median/maximum | `0 / 0 / 0` |
+| top-choice agreement | `8/8` |
+
+The native and recomposed frozen logits share SHA-256
+`66ab2dea90fd84d991170fcde70255a36ae9f93c2362f61551286af369bea3b4`.
+The complete traces share SHA-256
+`1117017d54bb70295b7692176b18a10204b70f0a57027675142f8d7f6cd14db8`.
+Raw artifacts are under `/mnt/kimi-k3/results/kimi-h17-predown-probe`,
+`/mnt/kimi-k3/results/kimi-h17-recomposed-control`, and
+`/mnt/kimi-k3/results/kimi-h17-recomposed-frozen`. The machine-readable
+summary is `results/kimi_h17_arithmetic_identity.json`.
+
+The frozen recomposition run took 261.75 seconds, peaked at 17,072 MiB of
+graphics memory, consumed 30.51 kJ of measured board energy, and caused about
+509.18 GB of drive reads because the research provider deliberately evaluates
+the exact teacher and rebuilds every active expert. These are control costs,
+not projected serving costs.
+
+## Exploratory natural-prefix screen
+
+At the user's request, a practical free-generation screen also ran a natural
+six-of-twelve prefix per expert with a zero omitted tail. It is **not** the
+calibrated all-layer selector and used the old split arithmetic, so it remains
+**EXPLORATORY — confounded by all-192 arithmetic divergence**.
+
+It matched `0/12` native token sequences, triggered the simple degeneration
+flag on `2/12`, and produced first-position KL values from about `0.167` to
+`0.428`. A small answer checker scored `4/12`, equal to native and preserving
+all four native successes, but that weak task score does not outweigh the
+large distributional divergence. This specific zero-tail natural-prefix mode
+is not viable.
+
 ## Interpretation and next gate
 
-The 96/144 progressive-hydration hypothesis is neither validated nor
-falsified by this run. The all-192 evaluator failed as a numerical identity
-control, so a smaller-budget result would mix deliberate omission error with a
-known change in arithmetic trajectory. The registered identity gate therefore
-remains stopped. A separately requested free-generation screen is allowed only
-as **exploratory practical quality**, and every 96/144 result must be labelled
-**EXPLORATORY — confounded by all-192 arithmetic divergence**. No selector,
-tail corrector, Fisher fit, or Observer training follows from that screen.
+The arithmetic confound is now removable. A partial provider should place
+selected slab bytes in their native neuron positions, represent omitted
+positions without changing the 3,072-neuron kernel shape, and perform one
+full-width down reduction per expert. This retains native accumulation order
+while permitting physical reads to remain progressive. The first such control
+should use budget 96 and no learned component; its purpose is to separate true
+omission error from the eliminated split-reduction error.
+
+The 96/144 quality hypothesis remains neither validated nor falsified. The
+next run must first prove that its 192-budget form stays byte-identical and then
+compare terminal KL at the matched partial budget. Fisher, Observer, and tail
+training remain deferred until this arithmetic-stable partial provider is
+measured.
 
 ## Deferred Observer constraint
 
