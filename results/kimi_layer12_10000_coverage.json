@@ -1,0 +1,51 @@
+{
+  "schema": "kimi-k3-capture-coverage-v1",
+  "status": "MEASURED",
+  "capture": "/mnt/kimi-k3/captures/kimi_layer12_10000.bin",
+  "capture_bytes": 73003157,
+  "capture_sha256": "59ba419b83c2d6ab1274cfe35f7b317b9f4c3814093fa94e1c2b893a246ee544",
+  "header": {
+    "model_layer": 12,
+    "dimension": 3584,
+    "top_k": 16,
+    "sequence_count": 109,
+    "token_count": 10000
+  },
+  "sequence_disjoint_split": true,
+  "split_tokens": {
+    "calibration": 8200,
+    "validation": 1800
+  },
+  "split_sequences": {
+    "calibration": 88,
+    "validation": 21
+  },
+  "router_sum_maximum_absolute_error": 1.1920928955078125e-07,
+  "all_values_finite": true,
+  "calibration_routes_per_expert": {
+    "minimum": 0.0,
+    "p01": 0.0,
+    "p05": 1.0,
+    "p25": 13.0,
+    "median": 43.5,
+    "p75": 136.25,
+    "p95": 638.25,
+    "p99": 1716.9499999999973,
+    "maximum": 3921.0
+  },
+  "validation_routes_per_expert": {
+    "minimum": 0.0,
+    "p01": 0.0,
+    "p05": 0.0,
+    "p25": 2.0,
+    "median": 9.0,
+    "p75": 29.25,
+    "p95": 135.25,
+    "p99": 379.69999999999936,
+    "maximum": 866.0
+  },
+  "experts_without_calibration_routes": 40,
+  "experts_without_validation_routes": 128,
+  "validation_experts_unseen_in_calibration": 2,
+  "validation_routes_through_uncalibrated_experts": 2
+}

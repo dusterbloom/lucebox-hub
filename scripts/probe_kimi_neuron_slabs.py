@@ -35,7 +35,7 @@ EXPERT_COUNT = 896
 MODEL_MOE_LAYERS = 92
 ORIGINAL_EXPERT_WIDTH = 3072
 DEFAULT_SLAB_SIZE = 256
-SLAB_BUDGETS = (48, 64, 80, 96, 112, 128, 144, 160, 176, 192)
+SLAB_BUDGETS = (48, 72, 96, 120, 144, 168, 192)
 WHOLE_ROUTE_SLAB_BUDGETS = (48, 96, 144, 192)
 FULL_ROUTED_GIB_PER_TOKEN = 8.844
 
@@ -50,6 +50,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-csv", type=Path)
     parser.add_argument("--fit-state", type=Path)
     parser.add_argument("--calibration-only", action="store_true")
+    parser.add_argument(
+        "--exact-fallback-uncalibrated",
+        action="store_true",
+        help=(
+            "keep validation routes through experts absent from calibration "
+            "exact and report their additional byte cost"
+        ),
+    )
     parser.add_argument("--layer", type=int, default=1)
     parser.add_argument("--slab-size", type=int, default=DEFAULT_SLAB_SIZE)
     parser.add_argument("--audit-experts", type=int, default=16)
@@ -276,6 +284,22 @@ def main() -> int:
     validation_mask[data.validation_indices] = True
     validation_position = np.full(data.latent.shape[0], -1, dtype=np.int64)
     validation_position[data.validation_indices] = np.arange(validation_count)
+    calibration_route_counts = np.bincount(
+        data.expert_ids[~validation_mask].reshape(-1), minlength=EXPERT_COUNT
+    )
+    validation_route_counts = np.bincount(
+        data.expert_ids[validation_mask].reshape(-1), minlength=EXPERT_COUNT
+    )
+    capture_calibrated_experts = calibration_route_counts > 0
+    missing_calibration_experts = int(
+        np.count_nonzero(~capture_calibrated_experts)
+    )
+    if missing_calibration_experts and not args.exact_fallback_uncalibrated:
+        raise ValueError(
+            f"capture has {missing_calibration_experts} experts without "
+            "calibration routes; use more calibration data or explicitly "
+            "enable exact fallback"
+        )
 
     reader = GGUFReader(args.shard, "r")
     tensors = {tensor.name: tensor for tensor in reader.tensors}
@@ -339,12 +363,23 @@ def main() -> int:
         "native_means": (EXPERT_COUNT, data.dimension),
         "native_expected_norm": (EXPERT_COUNT,),
     }
+    calibrated_state_shape = (EXPERT_COUNT,)
     if args.fit_state and args.fit_state.exists():
         print(f"[slabs] loading calibration state {args.fit_state}", flush=True)
         with np.load(args.fit_state, allow_pickle=False) as state:
-            if set(state.files) != set(expected_state_shapes):
+            state_fields = set(state.files)
+            expected_fields = set(expected_state_shapes)
+            if state_fields not in (
+                expected_fields,
+                expected_fields | {"calibrated_experts"},
+            ):
                 raise ValueError("calibration state fields disagree")
             loaded = {name: state[name] for name in expected_state_shapes}
+            loaded_calibrated = (
+                state["calibrated_experts"]
+                if "calibrated_experts" in state.files
+                else np.ones(calibrated_state_shape, dtype=np.uint8)
+            )
         for name, shape in expected_state_shapes.items():
             if loaded[name].shape != shape or loaded[name].dtype != np.float32:
                 raise ValueError(f"calibration state shape/type disagrees: {name}")
@@ -355,6 +390,19 @@ def main() -> int:
         slab_expected_residual_norm = loaded["slab_expected_residual_norm"]
         native_means = loaded["native_means"]
         native_expected_norm = loaded["native_expected_norm"]
+        if (
+            loaded_calibrated.shape != calibrated_state_shape
+            or loaded_calibrated.dtype != np.uint8
+            or not np.all((loaded_calibrated == 0) | (loaded_calibrated == 1))
+        ):
+            raise ValueError("calibrated expert mask disagrees")
+        calibrated_experts = loaded_calibrated.astype(bool, copy=False)
+        if not np.array_equal(
+            calibrated_experts, capture_calibrated_experts
+        ):
+            raise ValueError(
+                "calibration-state expert coverage disagrees with capture"
+            )
     else:
         slab_means = np.zeros(
             expected_state_shapes["slab_means"], dtype=np.float32
@@ -369,9 +417,12 @@ def main() -> int:
         native_expected_norm = np.zeros(
             expected_state_shapes["native_expected_norm"], dtype=np.float32
         )
+        calibrated_experts = capture_calibrated_experts
 
         print("[slabs] pass 1/3: calibration means and importance", flush=True)
         for expert in range(EXPERT_COUNT):
+            if not calibrated_experts[expert]:
+                continue
             records, native_outputs = read_expert_responses(
                 response_path(args.response_directory, expert),
                 data.model_layer,
@@ -422,6 +473,7 @@ def main() -> int:
                 slab_expected_residual_norm=slab_expected_residual_norm,
                 native_means=native_means,
                 native_expected_norm=native_expected_norm,
+                calibrated_experts=calibrated_experts.astype(np.uint8),
             )
             temporary.replace(args.fit_state)
             print(f"[slabs] saved calibration state {args.fit_state}", flush=True)
@@ -447,6 +499,11 @@ def main() -> int:
         validation_weights[:, :, None]
         * slab_expected_residual_norm[validation_ids]
     )
+    adaptive_scores = np.where(
+        calibrated_experts[validation_ids, None],
+        adaptive_scores,
+        -np.inf,
+    )
     adaptive_rank = inverse_order(
         np.argsort(
             -adaptive_scores.reshape(validation_count, -1),
@@ -455,6 +512,9 @@ def main() -> int:
         )
     ).reshape(validation_count, data.top_k, slab_count)
     whole_scores = validation_weights * native_expected_norm[validation_ids]
+    whole_scores = np.where(
+        calibrated_experts[validation_ids], whole_scores, -np.inf
+    )
     whole_rank = inverse_order(
         np.argsort(-whole_scores, axis=1, kind="stable")
     )
@@ -469,6 +529,7 @@ def main() -> int:
         budget: native_base.copy() for budget in WHOLE_ROUTE_SLAB_BUDGETS
     }
     dequantized_teacher = np.zeros_like(slab_base)
+    exact_fallback_aggregate = np.zeros_like(slab_base)
     actual_residual_norm = np.zeros(
         (validation_count, data.top_k, slab_count), dtype=np.float32
     )
@@ -478,6 +539,11 @@ def main() -> int:
 
     print("[slabs] pass 2/3: causal policies and held-out norms", flush=True)
     for expert in range(EXPERT_COUNT):
+        if (
+            not calibrated_experts[expert]
+            and validation_route_counts[expert] == 0
+        ):
+            continue
         records, native_outputs = read_expert_responses(
             response_path(args.response_directory, expert),
             data.model_layer,
@@ -493,6 +559,16 @@ def main() -> int:
         positions = validation_position[token_indices[rows]]
         ranks = route_ranks[rows]
         weights = route_weights[rows]
+        if not calibrated_experts[expert]:
+            exact_contribution = weights[:, None] * native_outputs[rows]
+            exact_fallback_aggregate[positions] += exact_contribution
+            dequantized_teacher[positions] += exact_contribution
+            for estimates in (
+                static_estimates, adaptive_estimates, whole_estimates
+            ):
+                for estimate in estimates.values():
+                    estimate[positions] += exact_contribution
+            continue
         native_correction = weights[:, None] * (
             native_outputs[rows] - native_means[expert]
         )
@@ -555,11 +631,14 @@ def main() -> int:
         )
     ).reshape(validation_count, data.top_k, slab_count)
     oracle_estimates = {
-        budget: slab_base.copy() for budget in SLAB_BUDGETS
+        budget: slab_base.copy() + exact_fallback_aggregate
+        for budget in SLAB_BUDGETS
     }
 
     print("[slabs] pass 3/3: held-out residual-norm diagnostic", flush=True)
     for expert in range(EXPERT_COUNT):
+        if not calibrated_experts[expert]:
+            continue
         records, _ = read_expert_responses(
             response_path(args.response_directory, expert),
             data.model_layer,
@@ -603,7 +682,7 @@ def main() -> int:
         raise ValueError("the twelve-slab reconstruction failed its numerical gate")
 
     gamma = torch.from_numpy(
-        np.asarray(norm_tensor.data, dtype=np.float32)
+        np.asarray(norm_tensor.data, dtype=np.float32).copy()
     ).to(device)
     projection = dequantize_part(
         projection_tensor.data, projection_tensor.tensor_type
@@ -611,6 +690,17 @@ def main() -> int:
     teacher = data.teacher[data.validation_indices]
     methods: dict[str, dict[str, object]] = {}
     csv_rows: list[dict[str, object]] = []
+    fallback_routes = int(
+        validation_route_counts[~calibrated_experts].sum()
+    )
+    fallback_route_mask = ~calibrated_experts[validation_ids]
+    fallback_tokens = int(np.count_nonzero(fallback_route_mask.any(axis=1)))
+    fallback_slab_equivalents_per_token = (
+        fallback_routes * slab_count / max(1, validation_count)
+    )
+    minimum_active_expert_calibration_hits = calibration_route_counts[
+        validation_ids
+    ].min(axis=1)
 
     def register(
         name: str,
@@ -628,10 +718,27 @@ def main() -> int:
                 "slab_budget": budget,
                 "active_slabs": active_slab_count,
                 "routed_payload_fraction": budget / active_slab_count,
+                "measured_payload_fraction_with_exact_fallback": (
+                    budget + fallback_slab_equivalents_per_token
+                ) / active_slab_count,
                 "nominal_routed_gib_per_token": (
                     FULL_ROUTED_GIB_PER_TOKEN * budget / active_slab_count
                 ),
                 "metrics_against_native_teacher": metrics,
+                "routed_aggregate_by_minimum_active_expert_calibration_hits": {
+                    str(threshold): {
+                        "tokens": int(np.count_nonzero(mask)),
+                        "metrics": summarize_pair(
+                            estimate[mask], teacher[mask]
+                        )["cosine"],
+                    }
+                    for threshold in (1, 5, 10, 30, 100)
+                    if np.any(
+                        mask := (
+                            minimum_active_expert_calibration_hits >= threshold
+                        )
+                    )
+                },
             }
             if name == "whole_expert_expected_mean_tail":
                 row["complete_experts"] = budget // slab_count
@@ -643,6 +750,9 @@ def main() -> int:
                     "method": name,
                     "slab_budget": budget,
                     "payload_fraction": budget / active_slab_count,
+                    "payload_fraction_with_exact_fallback": (
+                        budget + fallback_slab_equivalents_per_token
+                    ) / active_slab_count,
                     "nominal_gib_per_token": (
                         FULL_ROUTED_GIB_PER_TOKEN * budget / active_slab_count
                     ),
@@ -692,7 +802,7 @@ def main() -> int:
         MODEL_MOE_LAYERS * EXPERT_COUNT * slab_count * data.dimension * 2
     )
     result = {
-        "schema": "kimi-k3-layer01-neuron-slab-frontier-v1",
+        "schema": "kimi-k3-neuron-slab-frontier-v2",
         "status": "EXPLORATORY",
         "model_layer": data.model_layer,
         "capture": str(args.capture),
@@ -702,6 +812,25 @@ def main() -> int:
         "calibration_tokens": int(data.latent.shape[0] - validation_count),
         "validation_tokens": int(validation_count),
         "sequence_disjoint_validation": True,
+        "expert_coverage": {
+            "calibrated_experts": int(np.count_nonzero(calibrated_experts)),
+            "uncalibrated_experts": int(np.count_nonzero(~calibrated_experts)),
+            "exact_fallback_enabled": args.exact_fallback_uncalibrated,
+            "validation_exact_fallback_routes": fallback_routes,
+            "validation_exact_fallback_tokens": fallback_tokens,
+            "validation_routes": int(validation_count * data.top_k),
+            "mean_extra_slab_equivalents_per_token": (
+                fallback_slab_equivalents_per_token
+            ),
+            "validation_tokens_by_minimum_active_expert_calibration_hits": {
+                str(threshold): int(
+                    np.count_nonzero(
+                        minimum_active_expert_calibration_hits >= threshold
+                    )
+                )
+                for threshold in (1, 5, 10, 30, 100)
+            },
+        },
         "layout": {
             "expert_width": ORIGINAL_EXPERT_WIDTH,
             "slab_size": args.slab_size,
@@ -739,6 +868,7 @@ def main() -> int:
             "Physical progressive reads require an expert-slab sidecar or repacked bank; standard GGUF tensor layout is not the intended serving layout.",
             "The held-out residual-norm ranking is diagnostic and is not an oracle for cosine-optimal subset selection.",
             "The slab mean tail adds storage and memory traffic beyond the routed IQ1_S payload; its all-layer BF16 size is reported explicitly.",
+            "Experts absent from calibration remain exact on validation when explicit fallback is enabled; their additional routed bytes are reported and are not included in the nominal budget.",
         ],
         "elapsed_seconds": time.monotonic() - started,
     }

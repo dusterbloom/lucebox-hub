@@ -1,0 +1,80 @@
+{
+  "schema": "kimi-k3-neuron-block-cross-layer-summary-v1",
+  "status": "MEASURED",
+  "verdict": "NO-GO for the current slab-mean-tail provider at model layer 12",
+  "terminology": "slab means one aligned 256-neuron routed-expert block",
+  "model_layer": 12,
+  "capture": {
+    "tokens": 10000,
+    "calibration_tokens": 8200,
+    "validation_tokens": 1800,
+    "sequences": 109,
+    "sha256": "59ba419b83c2d6ab1274cfe35f7b317b9f4c3814093fa94e1c2b893a246ee544"
+  },
+  "expert_coverage": {
+    "calibrated_experts": 856,
+    "uncalibrated_experts": 40,
+    "validation_routes": 28800,
+    "exact_fallback_routes": 2,
+    "exact_fallback_tokens": 2,
+    "mean_extra_slab_equivalents_per_token": 0.013333333333333334,
+    "tokens_with_minimum_30_calibration_routes_per_active_expert": 1251,
+    "tokens_with_minimum_100_calibration_routes_per_active_expert": 379
+  },
+  "exactness_controls": {
+    "host_embedding_vs_cpu_get_rows_bit_exact": true,
+    "observer_disabled_vs_enabled_bit_exact": true,
+    "observer_reconstruction_bit_exact": true,
+    "twelve_blocks_vs_one_full_dequantized_expert_mean_cosine": 1.0000000043716597,
+    "twelve_blocks_vs_one_full_dequantized_expert_mean_relative_l2": 9.86027544058743e-7,
+    "all_blocks_vs_native_quantized_teacher_mean_cosine": 0.9998244775420623
+  },
+  "matched_frontier": {
+    "whole_experts_50_percent": {
+      "mean_cosine": 0.8663339468166671,
+      "p05_cosine": 0.8021769434756044
+    },
+    "adaptive_blocks_50_percent": {
+      "mean_cosine": 0.8655325935232637,
+      "p05_cosine": 0.801299856928645
+    },
+    "heldout_residual_oracle_50_percent": {
+      "mean_cosine": 0.879894898940945,
+      "p05_cosine": 0.8246823936272284
+    },
+    "whole_experts_75_percent": {
+      "mean_cosine": 0.9386693116205889,
+      "p05_cosine": 0.909167349934435
+    },
+    "adaptive_blocks_75_percent": {
+      "mean_cosine": 0.9377328330272764,
+      "p05_cosine": 0.9074229293194855
+    },
+    "heldout_residual_oracle_75_percent": {
+      "mean_cosine": 0.9479228613819143,
+      "p05_cosine": 0.9260688536454309
+    }
+  },
+  "coverage_falsification": {
+    "adaptive_50_percent_mean_cosine_minimum_30_hits": 0.8716181905113518,
+    "adaptive_75_percent_mean_cosine_minimum_30_hits": 0.9405684891525038,
+    "adaptive_50_percent_mean_cosine_minimum_100_hits": 0.8818662706053254,
+    "adaptive_75_percent_mean_cosine_minimum_100_hits": 0.9452149376695936
+  },
+  "artifacts": {
+    "teacher_sha256": "161cfc260b8c0fd4d9e1b2d1205e9a7f4afb65478dc3267b5119edca4d51caf6",
+    "calibration_state_sha256": "3a118fb1ba2d0f120baac7881b14ffd15a7f6ca8b75da3cded262ab3b85c2f1a",
+    "full_result_sha256": "f6531eaa7ead1fc9447091c57c9d10ed690611e12683ab5a10fd5e7eba9ce035",
+    "csv_sha256": "a18cceb409ac0fc303fec796d45c7699a24b7911aca3be38a4369d32f76693bf",
+    "telemetry_sha256": "8c54abab4e40b39ddd276a8db823cdea2251d25f9bdc15c1fb8f2b7fef236174"
+  },
+  "capture_telemetry": {
+    "elapsed_seconds": 2296.963885325,
+    "physical_nvme_read_bytes": 5954316365824,
+    "active_nvme_gib_per_second": 4.691,
+    "nvme_errors": 0,
+    "peak_rss_kib": 7790712,
+    "peak_vram_mib": 13003,
+    "sampled_gpu_energy_joules": 271363.87663741934
+  }
+}
