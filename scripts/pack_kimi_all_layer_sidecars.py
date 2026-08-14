@@ -20,7 +20,7 @@ from gguf import GGUFReader
 
 FIRST_ROUTED_LAYER = 1
 LAST_ROUTED_LAYER = 92
-SIDECAR_BYTES = 5_780_303_872
+CONSERVATIVE_SIDECAR_BYTES = 7_000_000_000
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,7 +63,7 @@ def discover_tensor_shards(model_directory: Path) -> dict[str, Path]:
 
 
 def complete(output: Path, manifest: Path, layer: int) -> bool:
-    if not output.is_file() or output.stat().st_size != SIDECAR_BYTES:
+    if not output.is_file():
         return False
     if not manifest.is_file():
         return False
@@ -73,7 +73,7 @@ def complete(output: Path, manifest: Path, layer: int) -> bool:
         return False
     return (
         record.get("model_layer") == layer
-        and record.get("output_bytes") == SIDECAR_BYTES
+        and record.get("output_bytes") == output.stat().st_size
         and record.get("ordering")
         == "natural neuron order (all-192 numerical control only)"
     )
@@ -94,7 +94,7 @@ def main() -> int:
         manifest = args.output_directory / f"kimi_layer{layer:02d}_natural_slabs.json"
         if not complete(output, manifest, layer):
             pending.append((layer, output, manifest))
-    required = len(pending) * SIDECAR_BYTES
+    required = len(pending) * CONSERVATIVE_SIDECAR_BYTES
     free = shutil.disk_usage(args.output_directory).free
     print(
         f"[all-slab-pack] pending={len(pending)} required={required} free={free}",
@@ -137,6 +137,15 @@ def main() -> int:
         )
         subprocess.run(command, check=True)
 
+    layer_manifests = [
+        json.loads(
+            (
+                args.output_directory
+                / f"kimi_layer{layer:02d}_natural_slabs.json"
+            ).read_text()
+        )
+        for layer in range(args.first_layer, args.last_layer + 1)
+    ]
     aggregate = {
         "schema": "kimi-k3-all-layer-natural-slab-sidecars-v1",
         "status": "EXPERIMENTAL_NUMERICAL_CONTROL_ONLY",
@@ -144,9 +153,12 @@ def main() -> int:
         "first_layer": args.first_layer,
         "last_layer": args.last_layer,
         "layer_count": args.last_layer - args.first_layer + 1,
-        "sidecar_bytes_per_layer": SIDECAR_BYTES,
-        "total_sidecar_bytes": (
-            (args.last_layer - args.first_layer + 1) * SIDECAR_BYTES
+        "sidecar_bytes_per_layer": {
+            "minimum": min(record["output_bytes"] for record in layer_manifests),
+            "maximum": max(record["output_bytes"] for record in layer_manifests),
+        },
+        "total_sidecar_bytes": sum(
+            record["output_bytes"] for record in layer_manifests
         ),
         "path_pattern": str(
             args.output_directory / "kimi_layer%02d_natural_slabs.k3slab"

@@ -21,7 +21,8 @@ DIMENSION = 3584
 SLAB_SIZE = 256
 SLAB_COUNT = 12
 BLOCK_ALIGNMENT = 4096
-HEADER = struct.Struct("<8s8I5Q")
+HEADER_V1 = struct.Struct("<8s8I5Q")
+HEADER_V2 = struct.Struct("<8s8I8Q")
 MAGIC = b"K3SLB001"
 
 
@@ -87,11 +88,11 @@ def main() -> int:
     gate = selected_tensors["gate"]
     up = selected_tensors["up"]
     down = selected_tensors["down"]
-    if gate.data.shape != (EXPERT_COUNT, EXPERT_WIDTH, 700):
+    if gate.data.shape[:2] != (EXPERT_COUNT, EXPERT_WIDTH):
         raise ValueError(f"unexpected gate layout: {gate.data.shape}")
-    if up.data.shape != gate.data.shape:
-        raise ValueError("up layout disagrees")
-    if down.data.shape != (EXPERT_COUNT, DIMENSION, 600):
+    if up.data.shape[:2] != (EXPERT_COUNT, EXPERT_WIDTH):
+        raise ValueError(f"unexpected up layout: {up.data.shape}")
+    if down.data.shape[:2] != (EXPERT_COUNT, DIMENSION):
         raise ValueError(f"unexpected down layout: {down.data.shape}")
     if args.natural_order:
         order = np.broadcast_to(
@@ -113,11 +114,15 @@ def main() -> int:
             "descending calibration mean slab residual norm within expert"
         )
 
-    component_slab_bytes = SLAB_SIZE * 700
-    down_slab_bytes = DIMENSION * 50
-    if component_slab_bytes != down_slab_bytes:
-        raise ValueError("Kimi slab components are not byte balanced")
-    slab_bytes = 3 * component_slab_bytes
+    gate_row_bytes = int(gate.data.shape[2])
+    up_row_bytes = int(up.data.shape[2])
+    down_row_bytes = int(down.data.shape[2])
+    if down_row_bytes % SLAB_COUNT:
+        raise ValueError("down tensor rows do not split into twelve byte blocks")
+    gate_slab_bytes = SLAB_SIZE * gate_row_bytes
+    up_slab_bytes = SLAB_SIZE * up_row_bytes
+    down_slab_bytes = DIMENSION * (down_row_bytes // SLAB_COUNT)
+    slab_bytes = gate_slab_bytes + up_slab_bytes + down_slab_bytes
     record_bytes = SLAB_COUNT * slab_bytes
     if record_bytes % BLOCK_ALIGNMENT:
         raise ValueError("expert record is not direct-I/O aligned")
@@ -130,9 +135,10 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_suffix(args.output.suffix + ".tmp")
     digest = hashlib.sha256()
-    header = HEADER.pack(
+    header_struct = HEADER_V2 if args.natural_order else HEADER_V1
+    header_values = [
         MAGIC,
-        1,
+        2 if args.natural_order else 1,
         args.layer,
         EXPERT_COUNT,
         DIMENSION,
@@ -145,7 +151,12 @@ def main() -> int:
         payload_offset,
         slab_bytes,
         record_bytes,
-    )
+    ]
+    if args.natural_order:
+        header_values.extend(
+            [gate_slab_bytes, up_slab_bytes, down_slab_bytes]
+        )
+    header = header_struct.pack(*header_values)
     with temporary.open("wb", buffering=0) as output:
         header_block = header + bytes(BLOCK_ALIGNMENT - len(header))
         output.write(header_block)
@@ -161,8 +172,9 @@ def main() -> int:
                 slab = int(slab_raw)
                 begin = slab * SLAB_SIZE
                 end = begin + SLAB_SIZE
-                byte_begin = slab * 50
-                byte_end = byte_begin + 50
+                down_block_bytes = down_row_bytes // SLAB_COUNT
+                byte_begin = slab * down_block_bytes
+                byte_end = byte_begin + down_block_bytes
                 for raw in (
                     gate.data[expert, begin:end].tobytes(order="C"),
                     up.data[expert, begin:end].tobytes(order="C"),
@@ -206,6 +218,9 @@ def main() -> int:
         "slab_size": SLAB_SIZE,
         "slabs_per_expert": SLAB_COUNT,
         "slab_bytes": slab_bytes,
+        "gate_slab_bytes": gate_slab_bytes,
+        "up_slab_bytes": up_slab_bytes,
+        "down_slab_bytes": down_slab_bytes,
         "record_bytes": record_bytes,
         "alignment": BLOCK_ALIGNMENT,
         "index_offset": index_offset,

@@ -80,6 +80,28 @@ struct SlabSidecarHeader {
 static_assert(sizeof(SlabSidecarHeader) == 80,
               "slab sidecar header must remain byte-stable");
 
+struct SlabSidecarHeaderV2 {
+    char magic[8];
+    uint32_t version;
+    uint32_t model_layer;
+    uint32_t expert_count;
+    uint32_t dimension;
+    uint32_t expert_width;
+    uint32_t slab_size;
+    uint32_t slab_count;
+    uint32_t alignment;
+    uint64_t order_offset;
+    uint64_t order_bytes;
+    uint64_t payload_offset;
+    uint64_t slab_bytes;
+    uint64_t record_bytes;
+    uint64_t gate_slab_bytes;
+    uint64_t up_slab_bytes;
+    uint64_t down_slab_bytes;
+};
+static_assert(sizeof(SlabSidecarHeaderV2) == 104,
+              "slab sidecar v2 header must remain byte-stable");
+
 struct InterventionTraceHeader {
     char magic[8];
     uint32_t version;
@@ -706,13 +728,27 @@ public:
                 return false;
             }
             uint64_t bytes = 0;
-            SlabSidecarHeader header{};
+            SlabSidecarHeaderV2 header{};
             std::vector<uint16_t> order(
                 static_cast<size_t>(kExpertCount * kSlabCount));
-            const bool valid = file_size(fd, bytes) &&
-                read_exact_at(fd, &header, sizeof(header), 0) &&
+            const bool prefix_valid = file_size(fd, bytes) &&
+                read_exact_at(fd, &header, sizeof(SlabSidecarHeader), 0) &&
                 std::memcmp(header.magic, "K3SLB001", 8) == 0 &&
-                header.version == 1 &&
+                (header.version == 1 || header.version == 2);
+            if (prefix_valid && header.version == 2 &&
+                !read_exact_at(fd, &header, sizeof(header), 0)) {
+                close_fd(fd);
+                close_descriptors();
+                if (err) *err = "short all-slab v2 header " + path;
+                return false;
+            }
+            const uint64_t gate_slab_bytes = header.version == 1
+                ? kSlabComponentBytes : header.gate_slab_bytes;
+            const uint64_t up_slab_bytes = header.version == 1
+                ? kSlabComponentBytes : header.up_slab_bytes;
+            const uint64_t down_slab_bytes = header.version == 1
+                ? kSlabComponentBytes : header.down_slab_bytes;
+            const bool valid = prefix_valid &&
                 header.model_layer == static_cast<uint32_t>(model_layer) &&
                 header.expert_count == kExpertCount &&
                 header.dimension == kDimension &&
@@ -720,8 +756,11 @@ public:
                 header.slab_size == kSlabSize &&
                 header.slab_count == kSlabCount &&
                 header.alignment == kAlignment &&
-                header.slab_bytes == kSlabBytes &&
-                header.record_bytes == kExpertRecordBytes &&
+                gate_slab_bytes > 0 && up_slab_bytes > 0 &&
+                down_slab_bytes > 0 &&
+                header.slab_bytes ==
+                    gate_slab_bytes + up_slab_bytes + down_slab_bytes &&
+                header.record_bytes == header.slab_bytes * kSlabCount &&
                 header.order_bytes == order.size() * sizeof(uint16_t) &&
                 checked_span(
                     header.payload_offset,
@@ -742,20 +781,27 @@ public:
             sources.push_back({nullptr, static_cast<size_t>(bytes), fd});
             descriptors.push_back(fd);
 
+            max_slab_bytes_ = std::max(
+                max_slab_bytes_, static_cast<size_t>(header.slab_bytes));
+
             LayerExpertRegions & layer =
                 regions[static_cast<size_t>(model_layer - 1)];
-            layer.expert_bytes_gate = kSlabComponentBytes;
-            layer.expert_bytes_up = kSlabComponentBytes;
-            layer.expert_bytes_down = kSlabComponentBytes;
+            layer.expert_bytes_gate = static_cast<size_t>(gate_slab_bytes);
+            layer.expert_bytes_up = static_cast<size_t>(up_slab_bytes);
+            layer.expert_bytes_down = static_cast<size_t>(down_slab_bytes);
             layer.expert_major.enabled = true;
             layer.expert_major.experts = {
                 static_cast<size_t>(header.payload_offset),
-                static_cast<size_t>(kExpertCount) * kExpertRecordBytes,
+                static_cast<size_t>(kExpertCount) *
+                    static_cast<size_t>(header.record_bytes),
                 source_index};
-            layer.expert_major.expert_stride = kSlabBytes;
+            layer.expert_major.expert_stride =
+                static_cast<size_t>(header.slab_bytes);
             layer.expert_major.gate_offset = 0;
-            layer.expert_major.up_offset = kSlabComponentBytes;
-            layer.expert_major.down_offset = 2 * kSlabComponentBytes;
+            layer.expert_major.up_offset =
+                static_cast<size_t>(gate_slab_bytes);
+            layer.expert_major.down_offset = static_cast<size_t>(
+                gate_slab_bytes + up_slab_bytes);
         }
 
         MoeStreamConfig config = MoeStreamConfig::from_env();
@@ -763,7 +809,7 @@ public:
         config.device_slots = std::max(2, config.device_slots);
         config.fused_decode = true;
         const bool initialized = slab_engine_.init(
-            expert_backend, kSlabBytes, config, err) &&
+            expert_backend, max_slab_bytes_, config, err) &&
             slab_engine_.bind_sources(sources, regions, err);
         close_descriptors();
         if (!initialized) {
@@ -910,6 +956,7 @@ private:
     static constexpr int kLastRoutedLayer = 92;
     static constexpr int kRoutedLayerCount = 92;
     MoeHybridStreamEngine slab_engine_;
+    size_t max_slab_bytes_ = 0;
     std::vector<LayerNumerics> numerics_;
     std::string metrics_path_;
 };
