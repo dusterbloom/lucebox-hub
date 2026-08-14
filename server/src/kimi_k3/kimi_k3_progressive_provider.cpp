@@ -784,6 +784,8 @@ enum class AllSlabsMode {
     Direct,
     Grouped,
     Recomposed,
+    RecomposedNatural96,
+    RecomposedNatural144,
     StaticNatural96,
     OracleNatural96,
     OracleNatural144,
@@ -794,6 +796,10 @@ const char * all_slabs_mode_name(AllSlabsMode mode) {
         case AllSlabsMode::Direct: return "all-slabs";
         case AllSlabsMode::Grouped: return "all-slabs-grouped";
         case AllSlabsMode::Recomposed: return "all-slabs-recomposed";
+        case AllSlabsMode::RecomposedNatural96:
+            return "all-slabs-recomposed-natural96-zero-tail";
+        case AllSlabsMode::RecomposedNatural144:
+            return "all-slabs-recomposed-natural144-zero-tail";
         case AllSlabsMode::StaticNatural96:
             return "all-slabs-static-natural96-zero-tail";
         case AllSlabsMode::OracleNatural96:
@@ -808,6 +814,8 @@ int all_slabs_mode_budget(AllSlabsMode mode) {
     switch (mode) {
         case AllSlabsMode::StaticNatural96:
         case AllSlabsMode::OracleNatural96: return 96;
+        case AllSlabsMode::RecomposedNatural96: return 96;
+        case AllSlabsMode::RecomposedNatural144: return 144;
         case AllSlabsMode::OracleNatural144: return 144;
         case AllSlabsMode::Direct:
         case AllSlabsMode::Grouped:
@@ -1033,6 +1041,7 @@ bool evaluate_host_recomposed_expert(
         const std::vector<uint8_t> & gate_bytes,
         const std::vector<uint8_t> & up_bytes,
         const std::vector<uint8_t> & down_bytes,
+        int retained_natural_prefix,
         std::vector<float> & result,
         std::string * err) {
     if (!backend || spec.fused_gate_up || !input_data) {
@@ -1065,6 +1074,22 @@ bool evaluate_host_recomposed_expert(
         context, ggml_mul_mat(context, up, input), spec.up_scale);
     ggml_tensor * activated = probe_gated_activation(
         context, spec, gate_value, up_value);
+    ggml_tensor * activation_mask = nullptr;
+    std::vector<float> mask_values;
+    if (retained_natural_prefix < spec.intermediate_dim) {
+        if (retained_natural_prefix < 0) {
+            if (err) *err = "H18 retained-neuron prefix is invalid";
+            ggml_free(context);
+            return false;
+        }
+        activation_mask = ggml_new_tensor_1d(
+            context, GGML_TYPE_F32, spec.intermediate_dim);
+        ggml_set_input(activation_mask);
+        activated = ggml_mul(context, activated, activation_mask);
+        mask_values.assign(
+            static_cast<size_t>(spec.intermediate_dim), 0.0f);
+        std::fill_n(mask_values.begin(), retained_natural_prefix, 1.0f);
+    }
     ggml_tensor * output = probe_scale_tensor(
         context, ggml_mul_mat(context, down, activated), spec.down_scale);
     if (gate_bytes.size() != ggml_nbytes(gate) ||
@@ -1091,6 +1116,11 @@ bool evaluate_host_recomposed_expert(
     ggml_backend_tensor_set(gate, gate_bytes.data(), 0, gate_bytes.size());
     ggml_backend_tensor_set(up, up_bytes.data(), 0, up_bytes.size());
     ggml_backend_tensor_set(down, down_bytes.data(), 0, down_bytes.size());
+    if (activation_mask) {
+        ggml_backend_tensor_set(
+            activation_mask, mask_values.data(), 0,
+            mask_values.size() * sizeof(float));
+    }
     result.resize(static_cast<size_t>(spec.output_dim));
     const ggml_status status =
         ggml_backend_graph_compute(backend, graph);
@@ -1267,19 +1297,27 @@ public:
             return false;
         }
 
+        const bool partial_recomposition =
+            mode_ == AllSlabsMode::RecomposedNatural96 ||
+            mode_ == AllSlabsMode::RecomposedNatural144;
         std::vector<float> native_exact;
-        if (!eval_moe_streamed_experts(
+        if (!partial_recomposition &&
+            !eval_moe_streamed_experts(
                 exact_engine, exact_spec, routes, native_exact, err)) {
             return false;
         }
-        if (mode_ == AllSlabsMode::Recomposed) {
+        if (mode_ == AllSlabsMode::Recomposed ||
+            mode_ == AllSlabsMode::RecomposedNatural96 ||
+            mode_ == AllSlabsMode::RecomposedNatural144) {
             if (!evaluate_recomposed(
                     model_layer, exact_spec, routes,
                     exact_engine.compute_backend(), output, err)) {
                 return false;
             }
-            observe_numerics(
-                model_layer, routes.n_tokens, native_exact, output);
+            if (!partial_recomposition) {
+                observe_numerics(
+                    model_layer, routes.n_tokens, native_exact, output);
+            }
             return true;
         }
 
@@ -1528,6 +1566,10 @@ private:
         std::vector<uint8_t> slab_down(
             static_cast<size_t>(down_slab_bytes));
         std::vector<float> expert_output;
+        const int retained_slabs = mode_ == AllSlabsMode::RecomposedNatural96
+            ? 6
+            : mode_ == AllSlabsMode::RecomposedNatural144 ? 9 : kSlabCount;
+        const int retained_neurons = retained_slabs * kSlabSize;
         output.assign(
             static_cast<size_t>(routes.n_tokens) * spec.output_dim, 0.0f);
 
@@ -1593,6 +1635,7 @@ private:
                 }
                 if (!evaluate_host_recomposed_expert(
                         backend, spec, input, gate, up, down,
+                        retained_neurons,
                         expert_output, err)) {
                     close_fd(descriptor);
                     return false;
@@ -1986,6 +2029,12 @@ bool create_kimi_k3_progressive_provider_from_env(
         all_slabs_mode = AllSlabsMode::Grouped;
     } else if (std::strcmp(raw_kind, "all-slabs-recomposed") == 0) {
         all_slabs_mode = AllSlabsMode::Recomposed;
+    } else if (std::strcmp(
+                   raw_kind, "all-slabs-recomposed-natural96") == 0) {
+        all_slabs_mode = AllSlabsMode::RecomposedNatural96;
+    } else if (std::strcmp(
+                   raw_kind, "all-slabs-recomposed-natural144") == 0) {
+        all_slabs_mode = AllSlabsMode::RecomposedNatural144;
     } else if (std::strcmp(raw_kind, "all-slabs-static96") == 0) {
         all_slabs_mode = AllSlabsMode::StaticNatural96;
     } else if (std::strcmp(raw_kind, "all-slabs-oracle96") == 0) {
@@ -2020,6 +2069,8 @@ bool create_kimi_k3_progressive_provider_from_env(
         if (err) *err =
             "DFLASH_KIMI_LAYER1_PROVIDER must be exact, slabs, whole, "
             "all-slabs, all-slabs-grouped, all-slabs-recomposed, "
+            "all-slabs-recomposed-natural96, "
+            "all-slabs-recomposed-natural144, "
             "all-slabs-static96, "
             "all-slabs-oracle96, or all-slabs-oracle144";
         return false;

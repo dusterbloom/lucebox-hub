@@ -28,6 +28,24 @@ case "$mode" in
             "DFLASH_KIMI_ALL_SLAB_METRICS_OUT=$output_dir/local.tsv"
         )
         ;;
+    recomposed-natural96)
+        quality_label="H18 UNCALIBRATED FALLBACK — full-width arithmetic"
+        provider_scope="natural contiguous six-of-twelve activation prefix per active expert with zero omitted tail; full-width down reduction; not calibrated"
+        provider_environment=(
+            DFLASH_KIMI_LAYER1_PROVIDER=all-slabs-recomposed-natural96
+            "DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR=$sidecar_dir"
+            "DFLASH_KIMI_ALL_SLAB_METRICS_OUT=$output_dir/local.tsv"
+        )
+        ;;
+    recomposed-natural144)
+        quality_label="H18 UNCALIBRATED FALLBACK — full-width arithmetic"
+        provider_scope="natural contiguous nine-of-twelve activation prefix per active expert with zero omitted tail; full-width down reduction; not calibrated"
+        provider_environment=(
+            DFLASH_KIMI_LAYER1_PROVIDER=all-slabs-recomposed-natural144
+            "DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR=$sidecar_dir"
+            "DFLASH_KIMI_ALL_SLAB_METRICS_OUT=$output_dir/local.tsv"
+        )
+        ;;
     static96)
         quality_label="EXPLORATORY — confounded by all-192 arithmetic divergence"
         provider_scope="natural contiguous six-of-twelve prefix per active expert with zero omitted tail; not the unavailable calibrated all-layer selector"

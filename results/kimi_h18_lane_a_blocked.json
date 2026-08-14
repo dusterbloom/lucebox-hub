@@ -1,0 +1,46 @@
+{
+  "schema": "kimi-k3-h18-fast-lane-a-v1",
+  "status": "BLOCKED",
+  "claim": "The requested calibrated 96/144 comparison across all 92 routed layers cannot be run from the current artifacts without inventing or transferring calibration.",
+  "repository_head_at_audit": "13edbfae68db9ebe903dc35edb3e33f6a911385f",
+  "available_all_layer_sidecars": {
+    "manifest": "/mnt/kimi-k3/artifacts/kimi-h17-natural-sidecars/all_layers_manifest.json",
+    "manifest_sha256": "192efad90c790b8a8230e71bca56c260eee3baf6846108d71c9ec598f6762b7c",
+    "ordering": "natural neuron order",
+    "registered_valid_budget": 192,
+    "calibration_or_tail_statistics": false
+  },
+  "available_calibration_layers": [1, 12],
+  "fit_states": {
+    "layer_1": {
+      "path": "/mnt/kimi-k3/fit-state/kimi_layer01_neuron_slabs_calibration.npz",
+      "sha256": "f8e73b19760061d7e7052b0083708810449ab95bdeca2f3fc8ffb8281ecf6776"
+    },
+    "layer_12": {
+      "path": "/mnt/kimi-k3/fit-state/kimi_layer12_neuron_slabs_calibration.npz",
+      "sha256": "3a118fb1ba2d0f120baac7881b14ffd15a7f6ca8b75da3cded262ab3b85c2f1a"
+    }
+  },
+  "missing_calibration_layer_count": 90,
+  "why_transfer_is_invalid": "Expert functions, response means, and residual importance are layer-specific. Layer 12 also measured the existing mean-tail provider as NO-GO, so copying layer-1 calibration across depth would be both mislabeled and contradicted by a measured control.",
+  "attempted_fallback": {
+    "provider": "natural prefix with zero tail and arithmetic-stable full-width down reduction",
+    "status": "INTERRUPTED_BY_REQUEST_BEFORE_FIRST_PROMPT_COMPLETED",
+    "scientific_result": null,
+    "gpu_released": true
+  },
+  "minimum_substrate": {
+    "description": "Capture exact pre-expert inputs and routes for all 92 layers in one full-model pass over the registered calibration corpus, then reuse the existing expert-batched slab fitter independently per layer.",
+    "estimated_capture_storage_gib": 6.7,
+    "estimated_fit_state_storage_gib": 15.0,
+    "estimated_aux_or_runtime_tail_storage_gib": 15.0,
+    "available_nvme_tib": 2.4,
+    "projected_single_pass_capture_hours_10000_tokens": 5.28,
+    "projected_remaining_layer_fit_hours": 5.04,
+    "projection_basis": "Layer-12 10K capture: 2296.964 s through 11 exact routed layers; layer-12 calibration fit: 201.723 s and 5.580 GB read. Projections are linear planning estimates, not measurements.",
+    "current_per_layer_capture_template": "capture_kimi_k3_panel MODEL CORPUS CAPTURE 0 LAYER 10000 512 8 cpu",
+    "current_per_layer_fit_template": "python3 scripts/probe_kimi_neuron_slabs.py SHARD CAPTURE TEACHER RESPONSES RESULT --fit-state FIT_STATE --calibration-only --exact-fallback-uncalibrated --layer LAYER --device cuda"
+  },
+  "lane_a_requested_metrics": null,
+  "lane_a_verdict": "BLOCKED_BY_MISSING_ALL_LAYER_CALIBRATION"
+}
