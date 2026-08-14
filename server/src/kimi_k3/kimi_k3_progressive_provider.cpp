@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <numeric>
 #include <sstream>
@@ -782,6 +783,7 @@ private:
 enum class AllSlabsMode {
     Direct,
     Grouped,
+    Recomposed,
     StaticNatural96,
     OracleNatural96,
     OracleNatural144,
@@ -791,6 +793,7 @@ const char * all_slabs_mode_name(AllSlabsMode mode) {
     switch (mode) {
         case AllSlabsMode::Direct: return "all-slabs";
         case AllSlabsMode::Grouped: return "all-slabs-grouped";
+        case AllSlabsMode::Recomposed: return "all-slabs-recomposed";
         case AllSlabsMode::StaticNatural96:
             return "all-slabs-static-natural96-zero-tail";
         case AllSlabsMode::OracleNatural96:
@@ -807,9 +810,299 @@ int all_slabs_mode_budget(AllSlabsMode mode) {
         case AllSlabsMode::OracleNatural96: return 96;
         case AllSlabsMode::OracleNatural144: return 144;
         case AllSlabsMode::Direct:
-        case AllSlabsMode::Grouped: return kNativeTopK * kSlabCount;
+        case AllSlabsMode::Grouped:
+        case AllSlabsMode::Recomposed:
+            return kNativeTopK * kSlabCount;
     }
     return 0;
+}
+
+struct ProbeDifference {
+    bool bit_equal = false;
+    double maximum_absolute = 0.0;
+    double relative_l2 = 0.0;
+};
+
+ProbeDifference compare_probe_vectors(const float * reference,
+                                      const float * candidate,
+                                      size_t count) {
+    ProbeDifference result;
+    result.bit_equal = std::memcmp(
+        reference, candidate, count * sizeof(float)) == 0;
+    double reference_norm2 = 0.0;
+    double error_norm2 = 0.0;
+    for (size_t index = 0; index < count; ++index) {
+        const double left = reference[index];
+        const double difference =
+            static_cast<double>(candidate[index]) - left;
+        reference_norm2 += left * left;
+        error_norm2 += difference * difference;
+        result.maximum_absolute = std::max(
+            result.maximum_absolute, std::abs(difference));
+    }
+    result.relative_l2 = std::sqrt(
+        error_norm2 / std::max(1.0e-300, reference_norm2));
+    return result;
+}
+
+ggml_tensor * probe_scale_tensor(ggml_context * context,
+                                 ggml_tensor * value,
+                                 float scale) {
+    return scale == 1.0f ? value : ggml_scale(context, value, scale);
+}
+
+ggml_tensor * probe_gated_activation(
+        ggml_context * context,
+        const MoeStreamExpertSpec & spec,
+        ggml_tensor * gate,
+        ggml_tensor * up) {
+    if (spec.gated_activation == MoeGatedActivation::Situ) {
+        ggml_tensor * nonlinear = ggml_scale(
+            context, gate, 1.0f / spec.situ_beta);
+        nonlinear = ggml_tanh(context, nonlinear);
+        nonlinear = ggml_scale(context, nonlinear, spec.situ_beta);
+        nonlinear = ggml_mul(
+            context, nonlinear, ggml_sigmoid(context, gate));
+        ggml_tensor * linear = ggml_scale(
+            context, up, 1.0f / spec.situ_linear_beta);
+        linear = ggml_tanh(context, linear);
+        linear = ggml_scale(context, linear, spec.situ_linear_beta);
+        return ggml_mul(context, nonlinear, linear);
+    }
+    if (spec.swiglu_clamp > 0.0f) {
+        return ggml_swiglu_ds4_split(
+            context, gate, up, spec.swiglu_clamp);
+    }
+    return ggml_swiglu_split(context, gate, up);
+}
+
+bool capture_probe_activation(MoeHybridStreamEngine & engine,
+                              int layer,
+                              int expert,
+                              const MoeStreamExpertSpec & spec,
+                              const float * input_data,
+                              std::vector<float> & activation,
+                              std::string * err) {
+    if (!engine.stream_expert_sync(layer, expert, err)) return false;
+    ggml_backend_t backend = engine.compute_backend();
+    ggml_init_params parameters{};
+    parameters.mem_size = 32 * 1024 * 1024;
+    parameters.no_alloc = true;
+    ggml_context * context = ggml_init(parameters);
+    if (!context) {
+        if (err) *err = "H17 pre-down probe ggml_init failed";
+        return false;
+    }
+
+    ggml_tensor * input = ggml_new_tensor_2d(
+        context, GGML_TYPE_F32, spec.input_dim, 1);
+    ggml_set_input(input);
+    ggml_tensor * gate = nullptr;
+    ggml_tensor * up = nullptr;
+    ggml_tensor * gate_up = nullptr;
+    ggml_tensor * activated = nullptr;
+    if (spec.fused_gate_up) {
+        gate_up = ggml_new_tensor_2d(
+            context, spec.gate_up_type,
+            spec.input_dim, 2 * spec.intermediate_dim);
+        ggml_set_input(gate_up);
+        ggml_tensor * combined = probe_scale_tensor(
+            context, ggml_mul_mat(context, gate_up, input),
+            spec.gate_up_scale);
+        ggml_tensor * gate_part = ggml_view_2d(
+            context, combined, spec.intermediate_dim, 1,
+            combined->nb[1], 0);
+        ggml_tensor * up_part = ggml_view_2d(
+            context, combined, spec.intermediate_dim, 1,
+            combined->nb[1],
+            static_cast<size_t>(spec.intermediate_dim) * sizeof(float));
+        activated = probe_gated_activation(
+            context, spec, ggml_cont(context, gate_part),
+            ggml_cont(context, up_part));
+    } else {
+        gate = ggml_new_tensor_2d(
+            context, spec.gate_type,
+            spec.input_dim, spec.intermediate_dim);
+        up = ggml_new_tensor_2d(
+            context, spec.up_type,
+            spec.input_dim, spec.intermediate_dim);
+        ggml_set_input(gate);
+        ggml_set_input(up);
+        ggml_tensor * gate_value = probe_scale_tensor(
+            context, ggml_mul_mat(context, gate, input), spec.gate_scale);
+        ggml_tensor * up_value = probe_scale_tensor(
+            context, ggml_mul_mat(context, up, input), spec.up_scale);
+        activated = probe_gated_activation(
+            context, spec, gate_value, up_value);
+    }
+    ggml_cgraph * graph = ggml_new_graph_custom(context, 256, false);
+    activation.resize(static_cast<size_t>(spec.intermediate_dim));
+    ggml_set_output(activated);
+    ggml_build_forward_expand(graph, activated);
+    ggml_gallocr_t allocator = ggml_gallocr_new(
+        ggml_backend_get_default_buffer_type(backend));
+    if (!allocator || !ggml_gallocr_alloc_graph(allocator, graph)) {
+        if (err) *err = "H17 activation probe allocation failed";
+        if (allocator) ggml_gallocr_free(allocator);
+        ggml_free(context);
+        return false;
+    }
+    ggml_backend_tensor_set(
+        input, input_data, 0,
+        static_cast<size_t>(spec.input_dim) * sizeof(float));
+    if (gate_up) {
+        gate_up->data = const_cast<void *>(engine.scratch_gate_data());
+    } else {
+        gate->data = const_cast<void *>(engine.scratch_gate_data());
+        up->data = const_cast<void *>(engine.scratch_up_data());
+    }
+    const ggml_status status =
+        ggml_backend_graph_compute(backend, graph);
+    if (status == GGML_STATUS_SUCCESS) {
+        ggml_backend_tensor_get(
+            activated, activation.data(), 0,
+            activation.size() * sizeof(float));
+    } else if (err) {
+        *err = "H17 activation probe compute failed";
+    }
+    ggml_gallocr_free(allocator);
+    ggml_free(context);
+    return status == GGML_STATUS_SUCCESS;
+}
+
+bool project_probe_down(MoeHybridStreamEngine & engine,
+                        int layer,
+                        int expert,
+                        const MoeStreamExpertSpec & spec,
+                        const float * activation,
+                        std::vector<float> & projected,
+                        std::string * err) {
+    if (!engine.stream_expert_sync(layer, expert, err)) return false;
+    ggml_backend_t backend = engine.compute_backend();
+    ggml_init_params parameters{};
+    parameters.mem_size = 8 * 1024 * 1024;
+    parameters.no_alloc = true;
+    ggml_context * context = ggml_init(parameters);
+    if (!context) {
+        if (err) *err = "H17 down probe ggml_init failed";
+        return false;
+    }
+    ggml_tensor * input = ggml_new_tensor_2d(
+        context, GGML_TYPE_F32, spec.intermediate_dim, 1);
+    ggml_set_input(input);
+    ggml_tensor * down = ggml_new_tensor_2d(
+        context, spec.down_type,
+        spec.intermediate_dim, spec.output_dim);
+    ggml_set_input(down);
+    ggml_tensor * output = probe_scale_tensor(
+        context, ggml_mul_mat(context, down, input), spec.down_scale);
+    ggml_cgraph * graph = ggml_new_graph_custom(context, 128, false);
+    ggml_set_output(output);
+    ggml_build_forward_expand(graph, output);
+    ggml_gallocr_t allocator = ggml_gallocr_new(
+        ggml_backend_get_default_buffer_type(backend));
+    if (!allocator || !ggml_gallocr_alloc_graph(allocator, graph)) {
+        if (err) *err = "H17 down probe allocation failed";
+        if (allocator) ggml_gallocr_free(allocator);
+        ggml_free(context);
+        return false;
+    }
+    ggml_backend_tensor_set(
+        input, activation, 0,
+        static_cast<size_t>(spec.intermediate_dim) * sizeof(float));
+    down->data = const_cast<void *>(engine.scratch_down_data());
+    projected.resize(static_cast<size_t>(spec.output_dim));
+    const ggml_status status =
+        ggml_backend_graph_compute(backend, graph);
+    if (status == GGML_STATUS_SUCCESS) {
+        ggml_backend_tensor_get(
+            output, projected.data(), 0,
+            projected.size() * sizeof(float));
+    } else if (err) {
+        *err = "H17 down probe compute failed";
+    }
+    ggml_gallocr_free(allocator);
+    ggml_free(context);
+    return status == GGML_STATUS_SUCCESS;
+}
+
+bool evaluate_host_recomposed_expert(
+        ggml_backend_t backend,
+        const MoeStreamExpertSpec & spec,
+        const float * input_data,
+        const std::vector<uint8_t> & gate_bytes,
+        const std::vector<uint8_t> & up_bytes,
+        const std::vector<uint8_t> & down_bytes,
+        std::vector<float> & result,
+        std::string * err) {
+    if (!backend || spec.fused_gate_up || !input_data) {
+        if (err) *err = "H17 recomposed expert requires separate gate/up tensors";
+        return false;
+    }
+    ggml_init_params parameters{};
+    parameters.mem_size = 32 * 1024 * 1024;
+    parameters.no_alloc = true;
+    ggml_context * context = ggml_init(parameters);
+    if (!context) {
+        if (err) *err = "H17 recomposed expert ggml_init failed";
+        return false;
+    }
+    ggml_tensor * input = ggml_new_tensor_2d(
+        context, GGML_TYPE_F32, spec.input_dim, 1);
+    ggml_tensor * gate = ggml_new_tensor_2d(
+        context, spec.gate_type, spec.input_dim, spec.intermediate_dim);
+    ggml_tensor * up = ggml_new_tensor_2d(
+        context, spec.up_type, spec.input_dim, spec.intermediate_dim);
+    ggml_tensor * down = ggml_new_tensor_2d(
+        context, spec.down_type, spec.intermediate_dim, spec.output_dim);
+    ggml_set_input(input);
+    ggml_set_input(gate);
+    ggml_set_input(up);
+    ggml_set_input(down);
+    ggml_tensor * gate_value = probe_scale_tensor(
+        context, ggml_mul_mat(context, gate, input), spec.gate_scale);
+    ggml_tensor * up_value = probe_scale_tensor(
+        context, ggml_mul_mat(context, up, input), spec.up_scale);
+    ggml_tensor * activated = probe_gated_activation(
+        context, spec, gate_value, up_value);
+    ggml_tensor * output = probe_scale_tensor(
+        context, ggml_mul_mat(context, down, activated), spec.down_scale);
+    if (gate_bytes.size() != ggml_nbytes(gate) ||
+        up_bytes.size() != ggml_nbytes(up) ||
+        down_bytes.size() != ggml_nbytes(down)) {
+        if (err) *err = "H17 recomposed expert byte size mismatch";
+        ggml_free(context);
+        return false;
+    }
+    ggml_cgraph * graph = ggml_new_graph_custom(context, 512, false);
+    ggml_set_output(output);
+    ggml_build_forward_expand(graph, output);
+    ggml_gallocr_t allocator = ggml_gallocr_new(
+        ggml_backend_get_default_buffer_type(backend));
+    if (!allocator || !ggml_gallocr_alloc_graph(allocator, graph)) {
+        if (err) *err = "H17 recomposed expert graph allocation failed";
+        if (allocator) ggml_gallocr_free(allocator);
+        ggml_free(context);
+        return false;
+    }
+    ggml_backend_tensor_set(
+        input, input_data, 0,
+        static_cast<size_t>(spec.input_dim) * sizeof(float));
+    ggml_backend_tensor_set(gate, gate_bytes.data(), 0, gate_bytes.size());
+    ggml_backend_tensor_set(up, up_bytes.data(), 0, up_bytes.size());
+    ggml_backend_tensor_set(down, down_bytes.data(), 0, down_bytes.size());
+    result.resize(static_cast<size_t>(spec.output_dim));
+    const ggml_status status =
+        ggml_backend_graph_compute(backend, graph);
+    if (status == GGML_STATUS_SUCCESS) {
+        ggml_backend_tensor_get(
+            output, result.data(), 0, result.size() * sizeof(float));
+    } else if (err) {
+        *err = "H17 recomposed expert graph compute failed";
+    }
+    ggml_gallocr_free(allocator);
+    ggml_free(context);
+    return status == GGML_STATUS_SUCCESS;
 }
 
 class AllSlabsProvider final : public KimiK3RoutedOutputProvider {
@@ -937,14 +1230,20 @@ public:
             return false;
         }
         metrics_path_ = metrics_path && *metrics_path ? metrics_path : "";
+        sidecar_directory_ = directory;
+        if (const char * probe =
+                std::getenv("DFLASH_KIMI_H17_DOWN_PROBE")) {
+            probe_prefix_ = probe;
+        }
         mode_ = mode;
         numerics_.resize(kLastRoutedLayer + 1);
         std::fprintf(stderr,
             "[kimi-k3-h17] provider=%s budget=%d layers=1..92 "
-            "sidecars=%s metrics=%s\n",
+            "sidecars=%s metrics=%s down-probe=%s\n",
             all_slabs_mode_name(mode_), all_slabs_mode_budget(mode_),
             directory.c_str(),
-            metrics_path_.empty() ? "stderr" : metrics_path_.c_str());
+            metrics_path_.empty() ? "stderr" : metrics_path_.c_str(),
+            probe_prefix_.empty() ? "disabled" : probe_prefix_.c_str());
         return true;
     }
 
@@ -972,6 +1271,16 @@ public:
         if (!eval_moe_streamed_experts(
                 exact_engine, exact_spec, routes, native_exact, err)) {
             return false;
+        }
+        if (mode_ == AllSlabsMode::Recomposed) {
+            if (!evaluate_recomposed(
+                    model_layer, exact_spec, routes,
+                    exact_engine.compute_backend(), output, err)) {
+                return false;
+            }
+            observe_numerics(
+                model_layer, routes.n_tokens, native_exact, output);
+            return true;
         }
 
         constexpr int kActiveSlabs = kNativeTopK * kSlabCount;
@@ -1005,7 +1314,8 @@ public:
         slab_routes.selected_ids = ids.data();
         slab_routes.selected_weights = weights.data();
         GroupedSlabObserver grouped_observer;
-        const bool needs_individual_slabs = mode_ != AllSlabsMode::Direct;
+        const bool needs_individual_slabs =
+            mode_ != AllSlabsMode::Direct || !probe_prefix_.empty();
         if (needs_individual_slabs &&
             !grouped_observer.init(routes.n_tokens, ids, err)) {
             return false;
@@ -1133,11 +1443,387 @@ public:
                     output.data() + static_cast<size_t>(token) * kDimension);
             }
         }
+        if (!probe_completed_ && !probe_prefix_.empty() &&
+            model_layer == kFirstRoutedLayer && base_pos == 0) {
+            if (!run_predown_probe(
+                    model_layer, base_pos, exact_spec, slab_spec, routes,
+                    exact_engine, grouped_observer, native_exact, err)) {
+                return false;
+            }
+            probe_completed_ = true;
+        }
         observe_numerics(model_layer, routes.n_tokens, native_exact, output);
         return true;
     }
 
 private:
+    bool evaluate_recomposed(
+            int model_layer,
+            const MoeStreamExpertSpec & spec,
+            const MoeStreamRouteBatch & routes,
+            ggml_backend_t backend,
+            std::vector<float> & output,
+            std::string * err) {
+        const std::string path = natural_sidecar_path(
+            sidecar_directory_, model_layer);
+        const int descriptor = open_read_only(path);
+        if (descriptor < 0) {
+            if (err) *err = "cannot open H17 recomposition sidecar " + path;
+            return false;
+        }
+        SlabSidecarHeaderV2 header{};
+        bool header_ok = read_exact_at(
+            descriptor, &header, sizeof(SlabSidecarHeader), 0) &&
+            std::memcmp(header.magic, "K3SLB001", 8) == 0 &&
+            (header.version == 1 || header.version == 2);
+        if (header_ok && header.version == 2) {
+            header_ok = read_exact_at(
+                descriptor, &header, sizeof(header), 0);
+        }
+        header_ok = header_ok &&
+            header.model_layer == static_cast<uint32_t>(model_layer) &&
+            header.slab_count == kSlabCount &&
+            header.slab_size == kSlabSize &&
+            header.expert_count == kExpertCount;
+        if (!header_ok) {
+            close_fd(descriptor);
+            if (err) *err = "invalid H17 recomposition sidecar " + path;
+            return false;
+        }
+        const uint64_t gate_slab_bytes = header.version == 1
+            ? kSlabComponentBytes : header.gate_slab_bytes;
+        const uint64_t up_slab_bytes = header.version == 1
+            ? kSlabComponentBytes : header.up_slab_bytes;
+        const uint64_t down_slab_bytes = header.version == 1
+            ? kSlabComponentBytes : header.down_slab_bytes;
+        const size_t gate_full_bytes = static_cast<size_t>(
+            gate_slab_bytes * kSlabCount);
+        const size_t up_full_bytes = static_cast<size_t>(
+            up_slab_bytes * kSlabCount);
+        const size_t down_full_row_bytes = ggml_row_size(
+            spec.down_type, spec.intermediate_dim);
+        if (down_slab_bytes % spec.output_dim != 0 ||
+            gate_full_bytes != ggml_row_size(
+                spec.gate_type, spec.input_dim) *
+                    static_cast<size_t>(spec.intermediate_dim) ||
+            up_full_bytes != ggml_row_size(
+                spec.up_type, spec.input_dim) *
+                    static_cast<size_t>(spec.intermediate_dim)) {
+            close_fd(descriptor);
+            if (err) *err = "H17 recomposition tensor geometry mismatch";
+            return false;
+        }
+        const size_t down_slab_row_bytes = static_cast<size_t>(
+            down_slab_bytes / spec.output_dim);
+        if (down_slab_row_bytes * kSlabCount != down_full_row_bytes) {
+            close_fd(descriptor);
+            if (err) *err = "H17 recomposition down-row geometry mismatch";
+            return false;
+        }
+        const size_t down_full_bytes =
+            down_full_row_bytes * static_cast<size_t>(spec.output_dim);
+        std::vector<uint8_t> gate(gate_full_bytes);
+        std::vector<uint8_t> up(up_full_bytes);
+        std::vector<uint8_t> down(down_full_bytes);
+        std::vector<uint8_t> slab_down(
+            static_cast<size_t>(down_slab_bytes));
+        std::vector<float> expert_output;
+        output.assign(
+            static_cast<size_t>(routes.n_tokens) * spec.output_dim, 0.0f);
+
+        for (int token = 0; token < routes.n_tokens; ++token) {
+            std::vector<int> route_order(routes.top_k);
+            std::iota(route_order.begin(), route_order.end(), 0);
+            const size_t route_offset =
+                static_cast<size_t>(token) * routes.top_k;
+            std::stable_sort(
+                route_order.begin(), route_order.end(),
+                [&](int left, int right) {
+                    return routes.selected_ids[route_offset + left] <
+                        routes.selected_ids[route_offset + right];
+                });
+            float * destination = output.data() +
+                static_cast<size_t>(token) * spec.output_dim;
+            const float * input = routes.inputs +
+                static_cast<size_t>(token) * spec.input_dim;
+            for (const int route : route_order) {
+                const int expert = routes.selected_ids[route_offset + route];
+                for (int rank = 0; rank < kSlabCount; ++rank) {
+                    const uint64_t record = header.payload_offset +
+                        static_cast<uint64_t>(
+                            expert * kSlabCount + rank) *
+                            header.slab_bytes;
+                    if (!read_exact_at(
+                            descriptor,
+                            gate.data() +
+                                static_cast<size_t>(rank) *
+                                    gate_slab_bytes,
+                            static_cast<size_t>(gate_slab_bytes),
+                            record) ||
+                        !read_exact_at(
+                            descriptor,
+                            up.data() +
+                                static_cast<size_t>(rank) *
+                                    up_slab_bytes,
+                            static_cast<size_t>(up_slab_bytes),
+                            record + gate_slab_bytes) ||
+                        !read_exact_at(
+                            descriptor, slab_down.data(),
+                            slab_down.size(),
+                            record + gate_slab_bytes +
+                                up_slab_bytes)) {
+                        close_fd(descriptor);
+                        if (err) *err =
+                            "short read while recomposing H17 expert";
+                        return false;
+                    }
+                    for (int dimension = 0;
+                         dimension < spec.output_dim; ++dimension) {
+                        std::memcpy(
+                            down.data() +
+                                static_cast<size_t>(dimension) *
+                                    down_full_row_bytes +
+                                static_cast<size_t>(rank) *
+                                    down_slab_row_bytes,
+                            slab_down.data() +
+                                static_cast<size_t>(dimension) *
+                                    down_slab_row_bytes,
+                            down_slab_row_bytes);
+                    }
+                }
+                if (!evaluate_host_recomposed_expert(
+                        backend, spec, input, gate, up, down,
+                        expert_output, err)) {
+                    close_fd(descriptor);
+                    return false;
+                }
+                const float weight =
+                    routes.selected_weights[route_offset + route];
+                for (int dimension = 0;
+                     dimension < spec.output_dim; ++dimension) {
+                    destination[dimension] +=
+                        weight * expert_output[
+                            static_cast<size_t>(dimension)];
+                }
+            }
+        }
+        close_fd(descriptor);
+        return true;
+    }
+
+    bool run_predown_probe(
+            int model_layer,
+            int base_pos,
+            const MoeStreamExpertSpec & exact_spec,
+            const MoeStreamExpertSpec & slab_spec,
+            const MoeStreamRouteBatch & routes,
+            MoeHybridStreamEngine & exact_engine,
+            const GroupedSlabObserver & grouped_observer,
+            const std::vector<float> & native_exact,
+            std::string * err) {
+        if (routes.n_tokens <= 0 || !grouped_observer.complete()) {
+            if (err) *err = "H17 pre-down probe requires complete slab outputs";
+            return false;
+        }
+        struct RouteProbe {
+            int expert = -1;
+            float weight = 0.0f;
+            std::vector<float> native_activation;
+            std::vector<float> slab_activation;
+            std::vector<float> native_full_down;
+            std::vector<float> slab_full_down;
+            std::vector<float> slab_split_down;
+        };
+        std::vector<RouteProbe> probes(kNativeTopK);
+        const float * token_input = routes.inputs;
+        for (int route = 0; route < kNativeTopK; ++route) {
+            RouteProbe & probe = probes[static_cast<size_t>(route)];
+            probe.expert = routes.selected_ids[route];
+            probe.weight = routes.selected_weights[route];
+            if (!capture_probe_activation(
+                    exact_engine, routes.layer, probe.expert, exact_spec,
+                    token_input, probe.native_activation, err)) {
+                return false;
+            }
+            probe.slab_activation.resize(
+                static_cast<size_t>(exact_spec.intermediate_dim));
+            for (int rank = 0; rank < kSlabCount; ++rank) {
+                std::vector<float> slab_part;
+                if (!capture_probe_activation(
+                        slab_engine_, routes.layer,
+                        probe.expert * kSlabCount + rank,
+                        slab_spec, token_input, slab_part, err)) {
+                    return false;
+                }
+                if (slab_part.size() != kSlabSize) {
+                    if (err) *err = "H17 slab activation has wrong size";
+                    return false;
+                }
+                std::copy(
+                    slab_part.begin(), slab_part.end(),
+                    probe.slab_activation.begin() +
+                        static_cast<size_t>(rank * kSlabSize));
+            }
+            if (!project_probe_down(
+                    exact_engine, routes.layer, probe.expert, exact_spec,
+                    probe.native_activation.data(),
+                    probe.native_full_down, err) ||
+                !project_probe_down(
+                    exact_engine, routes.layer, probe.expert, exact_spec,
+                    probe.slab_activation.data(),
+                    probe.slab_full_down, err)) {
+                return false;
+            }
+            probe.slab_split_down.assign(kDimension, 0.0f);
+            for (int rank = 0; rank < kSlabCount; ++rank) {
+                const float * contribution = grouped_observer.output(
+                    0, route * kSlabCount + rank);
+                for (int dimension = 0;
+                     dimension < kDimension; ++dimension) {
+                    probe.slab_split_down[static_cast<size_t>(dimension)] +=
+                        contribution[dimension];
+                }
+            }
+        }
+
+        std::vector<int> route_order(kNativeTopK);
+        std::iota(route_order.begin(), route_order.end(), 0);
+        std::stable_sort(
+            route_order.begin(), route_order.end(),
+            [&](int left, int right) {
+                return probes[static_cast<size_t>(left)].expert <
+                    probes[static_cast<size_t>(right)].expert;
+            });
+        std::vector<float> aggregate_native(kDimension, 0.0f);
+        std::vector<float> aggregate_slab_full(kDimension, 0.0f);
+        std::vector<float> aggregate_slab_split(kDimension, 0.0f);
+        for (const int route : route_order) {
+            const RouteProbe & probe = probes[static_cast<size_t>(route)];
+            for (int dimension = 0; dimension < kDimension; ++dimension) {
+                const size_t index = static_cast<size_t>(dimension);
+                aggregate_native[index] +=
+                    probe.weight * probe.native_full_down[index];
+                aggregate_slab_full[index] +=
+                    probe.weight * probe.slab_full_down[index];
+                aggregate_slab_split[index] +=
+                    probe.weight * probe.slab_split_down[index];
+            }
+        }
+
+        const std::string raw_path = probe_prefix_ + ".bin";
+        const std::string table_path = probe_prefix_ + ".tsv";
+        std::ofstream raw(raw_path, std::ios::binary);
+        if (!raw) {
+            if (err) *err = "cannot create H17 pre-down probe " + raw_path;
+            return false;
+        }
+        const char magic[8] = {'K','3','P','D','N','0','0','1'};
+        const uint32_t version = 1;
+        const uint32_t layer = static_cast<uint32_t>(model_layer);
+        const uint32_t position = static_cast<uint32_t>(base_pos);
+        const uint32_t route_count = kNativeTopK;
+        const uint32_t activation_dimension =
+            static_cast<uint32_t>(exact_spec.intermediate_dim);
+        const uint32_t output_dimension = kDimension;
+        raw.write(magic, sizeof(magic));
+        for (const uint32_t value : {
+                 version, layer, position, route_count,
+                 activation_dimension, output_dimension}) {
+            raw.write(
+                reinterpret_cast<const char *>(&value), sizeof(value));
+        }
+        for (int route = 0; route < kNativeTopK; ++route) {
+            const RouteProbe & probe = probes[static_cast<size_t>(route)];
+            const int32_t route_index = route;
+            const int32_t expert = probe.expert;
+            raw.write(reinterpret_cast<const char *>(&route_index),
+                      sizeof(route_index));
+            raw.write(reinterpret_cast<const char *>(&expert), sizeof(expert));
+            raw.write(reinterpret_cast<const char *>(&probe.weight),
+                      sizeof(probe.weight));
+            const uint32_t reserved = 0;
+            raw.write(reinterpret_cast<const char *>(&reserved),
+                      sizeof(reserved));
+            for (const std::vector<float> * values : {
+                     &probe.native_activation, &probe.slab_activation,
+                     &probe.native_full_down, &probe.slab_full_down,
+                     &probe.slab_split_down}) {
+                raw.write(
+                    reinterpret_cast<const char *>(values->data()),
+                    static_cast<std::streamsize>(
+                        values->size() * sizeof(float)));
+            }
+        }
+        if (!raw) {
+            if (err) *err = "failed to write H17 pre-down probe " + raw_path;
+            return false;
+        }
+
+        std::ofstream table(table_path);
+        if (!table) {
+            if (err) *err = "cannot create H17 pre-down table " + table_path;
+            return false;
+        }
+        table << std::setprecision(17)
+              << "route\texpert\tweight\tactivation_bit_equal"
+                 "\tactivation_maxabs\tactivation_rel_l2"
+                 "\tfull_down_bit_equal\tfull_down_maxabs"
+                 "\tfull_down_rel_l2\tsplit_down_bit_equal"
+                 "\tsplit_down_maxabs\tsplit_down_rel_l2\n";
+        for (int route = 0; route < kNativeTopK; ++route) {
+            const RouteProbe & probe = probes[static_cast<size_t>(route)];
+            const ProbeDifference activation = compare_probe_vectors(
+                probe.native_activation.data(),
+                probe.slab_activation.data(),
+                probe.native_activation.size());
+            const ProbeDifference full_down = compare_probe_vectors(
+                probe.native_full_down.data(),
+                probe.slab_full_down.data(),
+                probe.native_full_down.size());
+            const ProbeDifference split_down = compare_probe_vectors(
+                probe.native_full_down.data(),
+                probe.slab_split_down.data(),
+                probe.native_full_down.size());
+            table << route << '\t' << probe.expert << '\t' << probe.weight
+                  << '\t' << activation.bit_equal
+                  << '\t' << activation.maximum_absolute
+                  << '\t' << activation.relative_l2
+                  << '\t' << full_down.bit_equal
+                  << '\t' << full_down.maximum_absolute
+                  << '\t' << full_down.relative_l2
+                  << '\t' << split_down.bit_equal
+                  << '\t' << split_down.maximum_absolute
+                  << '\t' << split_down.relative_l2 << '\n';
+        }
+        const ProbeDifference production_self_check = compare_probe_vectors(
+            native_exact.data(), aggregate_native.data(), kDimension);
+        const ProbeDifference aggregate_full_down = compare_probe_vectors(
+            aggregate_native.data(), aggregate_slab_full.data(), kDimension);
+        const ProbeDifference aggregate_split_down = compare_probe_vectors(
+            aggregate_native.data(), aggregate_slab_split.data(), kDimension);
+        table << "aggregate\t-1\t1\t"
+              << production_self_check.bit_equal << '\t'
+              << production_self_check.maximum_absolute << '\t'
+              << production_self_check.relative_l2 << '\t'
+              << aggregate_full_down.bit_equal << '\t'
+              << aggregate_full_down.maximum_absolute << '\t'
+              << aggregate_full_down.relative_l2 << '\t'
+              << aggregate_split_down.bit_equal << '\t'
+              << aggregate_split_down.maximum_absolute << '\t'
+              << aggregate_split_down.relative_l2 << '\n';
+        if (!table) {
+            if (err) *err = "failed to write H17 pre-down table " + table_path;
+            return false;
+        }
+        std::fprintf(stderr,
+            "[kimi-k3-h17] pre-down probe wrote %s and %s "
+            "activation-full-down-rel=%.9g split-down-rel=%.9g\n",
+            raw_path.c_str(), table_path.c_str(),
+            aggregate_full_down.relative_l2,
+            aggregate_split_down.relative_l2);
+        return true;
+    }
+
     void observe_numerics(int model_layer, int n_tokens,
                           const std::vector<float> & exact,
                           const std::vector<float> & candidate) {
@@ -1205,6 +1891,9 @@ private:
     size_t max_slab_bytes_ = 0;
     std::vector<LayerNumerics> numerics_;
     std::string metrics_path_;
+    std::string sidecar_directory_;
+    std::string probe_prefix_;
+    bool probe_completed_ = false;
     AllSlabsMode mode_ = AllSlabsMode::Direct;
 };
 
@@ -1295,6 +1984,8 @@ bool create_kimi_k3_progressive_provider_from_env(
         all_slabs_mode = AllSlabsMode::Direct;
     } else if (std::strcmp(raw_kind, "all-slabs-grouped") == 0) {
         all_slabs_mode = AllSlabsMode::Grouped;
+    } else if (std::strcmp(raw_kind, "all-slabs-recomposed") == 0) {
+        all_slabs_mode = AllSlabsMode::Recomposed;
     } else if (std::strcmp(raw_kind, "all-slabs-static96") == 0) {
         all_slabs_mode = AllSlabsMode::StaticNatural96;
     } else if (std::strcmp(raw_kind, "all-slabs-oracle96") == 0) {
@@ -1328,7 +2019,8 @@ bool create_kimi_k3_progressive_provider_from_env(
     else {
         if (err) *err =
             "DFLASH_KIMI_LAYER1_PROVIDER must be exact, slabs, whole, "
-            "all-slabs, all-slabs-grouped, all-slabs-static96, "
+            "all-slabs, all-slabs-grouped, all-slabs-recomposed, "
+            "all-slabs-static96, "
             "all-slabs-oracle96, or all-slabs-oracle144";
         return false;
     }
