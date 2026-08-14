@@ -19,9 +19,17 @@ for required in "$model_path" "$corpus"; do
         exit 1
     fi
 done
-if [[ -e "$capture_root/all_layers_capture_manifest.json" ]]; then
-    echo "refusing to overwrite completed H18 capture: $capture_root" >&2
-    exit 1
+if [[ -e "$capture_root" ]]; then
+    if [[ ! -d "$capture_root" ]]; then
+        echo "H18 capture root exists and is not a directory: $capture_root" >&2
+        exit 1
+    fi
+    first_existing="$(find "$capture_root" -mindepth 1 -maxdepth 1 -print -quit)"
+    if [[ -n "$first_existing" ]]; then
+        echo "refusing to reuse nonempty H18 capture root: $capture_root" >&2
+        echo "first existing entry: $first_existing" >&2
+        exit 1
+    fi
 fi
 
 # 92 copies of the existing v1 token record. Payload per token/layer is:
