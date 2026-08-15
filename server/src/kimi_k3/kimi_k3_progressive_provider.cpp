@@ -51,6 +51,8 @@ constexpr size_t kSlabComponentBytes = 179200;
 constexpr size_t kSlabBytes = 3 * kSlabComponentBytes;
 constexpr size_t kExpertRecordBytes = kSlabCount * kSlabBytes;
 
+bool parse_positive_int(const char * raw, int & value);
+
 // P20's first layer-wide direct-I/O implementation created and destroyed 16
 // operating-system threads at every routed layer.  The reads themselves were
 // honest, but that lifecycle cost is part of the storage critical path.  Keep
@@ -2638,8 +2640,23 @@ public:
                 }
             }
         }
-        if (const char * raw_budget =
-                std::getenv("DFLASH_KIMI_P20_SLAB_BUDGET")) {
+        const char * raw_budget =
+            std::getenv("DFLASH_KIMI_P20_SLAB_BUDGET");
+        const char * raw_budget_table =
+            std::getenv("DFLASH_KIMI_H22_LAYER_BUDGETS");
+        if (raw_budget_table && *raw_budget_table) {
+            if (route_prefix_depth_ != 0 || (raw_budget && *raw_budget)) {
+                if (err) *err =
+                    "DFLASH_KIMI_H22_LAYER_BUDGETS is incompatible with "
+                    "route-prefix policies and DFLASH_KIMI_P20_SLAB_BUDGET";
+                return false;
+            }
+            if (!parse_kimi_k3_layer_budget_table(
+                    raw_budget_table, layer_budgets_, err)) {
+                return false;
+            }
+            layer_budget_path_ = raw_budget_table;
+        } else if (raw_budget && *raw_budget) {
             char * end = nullptr;
             const long parsed = std::strtol(raw_budget, &end, 10);
             if (end == raw_budget || *end != '\0' ||
@@ -2652,6 +2669,27 @@ public:
                 return false;
             }
             budget_ = static_cast<int>(parsed);
+        }
+        if (const char * dynamic =
+                std::getenv("DFLASH_KIMI_H22_DYNAMIC_ACTIVE_LAYER")) {
+            if (std::strcmp(dynamic, "1") != 0 || route_prefix_depth_ != 0 ||
+                !layer_budgets_.empty()) {
+                if (err) *err =
+                    "DFLASH_KIMI_H22_DYNAMIC_ACTIVE_LAYER must be 1 and "
+                    "cannot be combined with route-prefix or budget-table modes";
+                return false;
+            }
+            int initial_layer = 0;
+            if (!parse_positive_int(
+                    std::getenv("DFLASH_KIMI_H22_ACTIVE_LAYER"),
+                    initial_layer) ||
+                initial_layer < kFirstRoutedLayer ||
+                initial_layer > kLastRoutedLayer) {
+                if (err) *err =
+                    "dynamic H22 sweep requires DFLASH_KIMI_H22_ACTIVE_LAYER in 1..92";
+                return false;
+            }
+            dynamic_active_layer_ = true;
         }
         if (const char * layout =
                 std::getenv("DFLASH_KIMI_P20_PHYSICAL_LAYOUT")) {
@@ -2730,16 +2768,19 @@ public:
             }
         }
         metrics_path_ = metrics_path && *metrics_path ? metrics_path : "";
+        const std::string budget_description = layer_budgets_.empty()
+            ? std::to_string(budget_) : "table:" + layer_budget_path_;
         std::fprintf(stderr,
             "[kimi-k3-calibrated96] status=PILOT policy=%s quality-certified=false "
-            "speed-claim=false requested-budget=%d layer-phase=%s physical-layout=%s "
+            "speed-claim=false requested-budget=%s layer-phase=%s dynamic-layer=%s physical-layout=%s "
             "io-backend=%s "
             "valid-layers=%d/92 "
             "invalid-layer-action=exact insufficient-expert-action=exact\n",
             route_prefix_depth_ == 6 ? "four-route-half" :
                 route_prefix_depth_ == 12 ? "four-route-full" :
                 "calibrated-slabs",
-            budget_, layer_phase_name(),
+            budget_description.c_str(), layer_phase_name(),
+            dynamic_active_layer_ ? "enabled" : "disabled",
             sparse_scratch_ ? "scratch" : "reference",
             direct_pread_ ? "direct-pread" : "current", valid_layers);
         return true;
@@ -2747,7 +2788,8 @@ public:
 
     bool handles_layer(int model_layer) const override {
         return model_layer >= kFirstRoutedLayer &&
-            model_layer <= kLastRoutedLayer && selected_layer(model_layer);
+            model_layer <= kLastRoutedLayer && selected_layer(model_layer) &&
+            budget_for_layer(model_layer) < kNativeTopK * kSlabCount;
     }
 
     bool evaluate(int model_layer, int base_pos,
@@ -2767,7 +2809,8 @@ public:
             !geometry_matches(state, spec)) {
             const bool ok = eval_moe_streamed_experts(
                 exact_engine, spec, routes, output, err);
-            if (ok) observe_exact_layer(state, routes.n_tokens, spec);
+            if (ok) observe_exact_layer(
+                state, routes.n_tokens, spec, budget_for_layer(model_layer));
             return ok;
         }
         return evaluate_calibrated(
@@ -2784,6 +2827,13 @@ private:
     };
 
     bool selected_layer(int model_layer) const {
+        if (dynamic_active_layer_) {
+            int active_layer = 0;
+            return parse_positive_int(
+                       std::getenv("DFLASH_KIMI_H22_ACTIVE_LAYER"),
+                       active_layer) &&
+                active_layer == model_layer;
+        }
         if (route_prefix_depth_ == 0 || layer_phase_ == LayerPhase::All) {
             return true;
         }
@@ -2795,6 +2845,15 @@ private:
             return phase == 0 && model_layer >= 12 && model_layer <= 84;
         }
         return phase == 6 && model_layer >= 6 && model_layer <= 78;
+    }
+
+    int budget_for_layer(int model_layer) const {
+        if (layer_budgets_.empty()) return budget_;
+        if (model_layer < kFirstRoutedLayer ||
+            model_layer > kLastRoutedLayer) {
+            return kNativeTopK * kSlabCount;
+        }
+        return layer_budgets_[static_cast<size_t>(model_layer - 1)];
     }
 
     const char * layer_phase_name() const {
@@ -3068,11 +3127,12 @@ private:
     }
 
     void observe_exact_layer(LayerState & state, int n_tokens,
-                             const MoeStreamExpertSpec & spec) {
+                             const MoeStreamExpertSpec & spec,
+                             int requested_budget) {
         const uint64_t routes = static_cast<uint64_t>(n_tokens) * kNativeTopK;
         state.traffic.tokens += n_tokens;
         state.traffic.requested_nominal_slabs +=
-            static_cast<uint64_t>(n_tokens) * budget_;
+            static_cast<uint64_t>(n_tokens) * requested_budget;
         state.traffic.exact_fallback_routes += routes;
         state.traffic.exact_fallback_bytes +=
             routes * exact_record_bytes(spec);
@@ -3399,6 +3459,7 @@ private:
             const MoeStreamRouteBatch & routes,
             MoeHybridStreamEngine & exact_engine,
             std::vector<float> & output, std::string * err) {
+        const int layer_budget = budget_for_layer(model_layer);
         const int aux_fd = open_read_only(state.aux_path);
         const int sidecar_fd = direct_pread_
             ? open_read_only_direct(state.sidecar_path)
@@ -3413,7 +3474,8 @@ private:
             state.valid = false;
             const bool ok = eval_moe_streamed_experts(
                 exact_engine, spec, routes, output, err);
-            if (ok) observe_exact_layer(state, routes.n_tokens, spec);
+            if (ok) observe_exact_layer(
+                state, routes.n_tokens, spec, layer_budget);
             return ok;
         }
         const auto exact_layer_fallback = [&](const char * reason) {
@@ -3425,7 +3487,8 @@ private:
             const bool ok = eval_moe_streamed_experts(
                 exact_engine, spec, routes, output, &exact_error);
             if (ok) {
-                observe_exact_layer(state, routes.n_tokens, spec);
+                observe_exact_layer(
+                    state, routes.n_tokens, spec, layer_budget);
                 if (err) err->clear();
                 std::fprintf(stderr,
                     "[kimi-k3-calibrated96] layer=%d action=exact "
@@ -3463,7 +3526,7 @@ private:
             const size_t route_offset =
                 static_cast<size_t>(token) * kNativeTopK;
             std::vector<uint8_t> effective_calibrated = state.calibrated;
-            if (budget_ == kNativeTopK * kSlabCount) {
+            if (layer_budget == kNativeTopK * kSlabCount) {
                 std::fill(
                     effective_calibrated.begin(),
                     effective_calibrated.end(), static_cast<uint8_t>(1));
@@ -3479,7 +3542,7 @@ private:
                     routes.selected_ids + route_offset,
                     routes.selected_weights + route_offset, kNativeTopK,
                     state.importance.data(), effective_calibrated.data(),
-                    kExpertCount, kSlabCount, budget_);
+                    kExpertCount, kSlabCount, layer_budget);
             std::vector<int> calibrated_routes;
             std::vector<int> fallback_routes;
             for (int route = 0; route < kNativeTopK; ++route) {
@@ -3749,7 +3812,7 @@ private:
             }
 
             ++state.traffic.tokens;
-            state.traffic.requested_nominal_slabs += budget_;
+            state.traffic.requested_nominal_slabs += layer_budget;
             state.traffic.selected_slab_records += selected_count;
             state.traffic.calibrated_routes += calibrated_routes.size();
             state.traffic.exact_fallback_routes += fallback_routes.size();
@@ -3854,6 +3917,9 @@ private:
     bool direct_pread_ = false;
     std::unique_ptr<P20DirectReadPool> direct_read_pool_;
     int budget_ = 96;
+    std::vector<int32_t> layer_budgets_;
+    std::string layer_budget_path_;
+    bool dynamic_active_layer_ = false;
     uint64_t reference_full_weight_h2d_bytes_ = 0;
     uint64_t authoritative_h2d_bytes_ = 0;
     uint64_t metadata_h2d_bytes_ = 0;
@@ -3875,6 +3941,50 @@ bool parse_positive_int(const char * raw, int & value) {
 }
 
 } // namespace
+
+bool parse_kimi_k3_layer_budget_table(
+        const std::string & path, std::vector<int32_t> & budgets,
+        std::string * err) {
+    constexpr int kLayers = 92;
+    const auto allowed = [](int budget) {
+        return budget >= 48 && budget <= 192 && budget % 24 == 0;
+    };
+    std::ifstream input(path);
+    if (!input) {
+        if (err) *err = "cannot open H22 layer budget table " + path;
+        return false;
+    }
+    std::vector<int32_t> parsed(kLayers, 0);
+    std::vector<uint8_t> seen(kLayers, 0);
+    std::string line;
+    int line_number = 0;
+    while (std::getline(input, line)) {
+        ++line_number;
+        const size_t comment = line.find('#');
+        if (comment != std::string::npos) line.resize(comment);
+        std::istringstream row(line);
+        int layer = 0;
+        int budget = 0;
+        if (!(row >> layer)) continue;
+        std::string trailing;
+        if (!(row >> budget) || (row >> trailing) || layer < 1 ||
+            layer > kLayers || !allowed(budget) ||
+            seen[static_cast<size_t>(layer - 1)] != 0) {
+            if (err) *err = "invalid H22 layer budget row " +
+                std::to_string(line_number);
+            return false;
+        }
+        parsed[static_cast<size_t>(layer - 1)] = budget;
+        seen[static_cast<size_t>(layer - 1)] = 1;
+    }
+    if (!input.eof() || std::any_of(
+            seen.begin(), seen.end(), [](uint8_t value) { return value == 0; })) {
+        if (err) *err = "H22 layer budget table must name layers 1..92 exactly once";
+        return false;
+    }
+    budgets = std::move(parsed);
+    return true;
+}
 
 std::vector<int32_t> select_kimi_k3_slab_prefix_ids(
         const int32_t * expert_ids, const float * router_weights, int top_k,

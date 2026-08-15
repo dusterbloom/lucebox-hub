@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <vector>
 
 using namespace dflash::common;
@@ -83,13 +85,32 @@ int main() {
     assert(route_plan.selected_slab_ids == std::vector<int32_t>({0, 1}));
     assert(route_plan.exact_route_indices == std::vector<int32_t>({0}));
 
+    std::string error;
+    const std::filesystem::path budget_path =
+        std::filesystem::temp_directory_path() /
+        "kimi_k3_h22_layer_budget_test.txt";
+    {
+        std::ofstream table(budget_path);
+        for (int layer = 1; layer <= 92; ++layer) {
+            table << layer << ' ' << (layer == 24 ? 144 : 96) << '\n';
+        }
+        assert(table.good());
+    }
+    std::vector<int32_t> layer_budgets;
+    assert(parse_kimi_k3_layer_budget_table(
+        budget_path.string(), layer_budgets, &error));
+    assert(layer_budgets.size() == 92);
+    assert(layer_budgets[0] == 96);
+    assert(layer_budgets[23] == 144);
+    std::filesystem::remove(budget_path);
+
 #if defined(_WIN32)
     _putenv_s("DFLASH_KIMI_LAYER1_PROVIDER", "exact");
 #else
     setenv("DFLASH_KIMI_LAYER1_PROVIDER", "exact", 1);
 #endif
     std::unique_ptr<KimiK3RoutedOutputProvider> provider;
-    std::string error;
+    error.clear();
     assert(create_kimi_k3_progressive_provider_from_env(
         nullptr, provider, &error));
     assert(!provider);

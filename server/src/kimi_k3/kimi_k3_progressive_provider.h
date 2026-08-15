@@ -33,6 +33,16 @@ bool create_kimi_k3_progressive_provider_from_env(
     std::unique_ptr<KimiK3RoutedOutputProvider> & out,
     std::string * err = nullptr);
 
+// H22 uses a strict, provenance-hashable text file rather than a long
+// environment string.  The file must contain exactly one "layer budget" row
+// for routed layers 1..92.  Budgets are drawn from the preregistered
+// progressive ladder 48,72,...,192.  The returned vector is indexed by
+// model_layer - 1.
+bool parse_kimi_k3_layer_budget_table(
+    const std::string & path,
+    std::vector<int32_t> & budgets,
+    std::string * err = nullptr);
+
 // Deterministic policy helpers kept public for GPU-free regression tests.
 std::vector<int32_t> select_kimi_k3_slab_prefix_ids(
     const int32_t * expert_ids,

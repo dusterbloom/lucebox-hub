@@ -26,6 +26,7 @@ struct SuiteEntry {
     std::string id;
     std::string split;
     std::string text;
+    int model_layer = 0;
 };
 
 bool valid_id(const std::string & value) {
@@ -73,6 +74,19 @@ bool read_suite(const std::filesystem::path & path,
                 row["split"].get<std::string>(),
                 row["text"].get<std::string>(),
             };
+            if (row.contains("model_layer")) {
+                if (!row["model_layer"].is_number_integer()) {
+                    error = "suite line " + std::to_string(line_number) +
+                        " model_layer must be an integer";
+                    return false;
+                }
+                entry.model_layer = row["model_layer"].get<int>();
+                if (entry.model_layer < 1 || entry.model_layer > 92) {
+                    error = "suite line " + std::to_string(line_number) +
+                        " model_layer must be in 1..92";
+                    return false;
+                }
+            }
             if (!valid_id(entry.id) || entry.split.empty() ||
                 entry.text.empty() || !identifiers.insert(entry.id).second) {
                 error = "suite line " + std::to_string(line_number) +
@@ -147,6 +161,25 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "[kimi-h16-suite] %s\n", error.c_str());
         return 1;
     }
+    if (const char * sweep = std::getenv("DFLASH_KIMI_H22_SWEEP_LAYERS");
+        sweep && *sweep) {
+        if (std::string(sweep) != "1" || entries.size() != 1 ||
+            entries.front().model_layer != 0) {
+            std::fprintf(stderr,
+                "[kimi-h16-suite] H22 sweep requires one entry without model_layer\n");
+            return 2;
+        }
+        const SuiteEntry seed = entries.front();
+        entries.clear();
+        for (int layer = 1; layer <= 92; ++layer) {
+            SuiteEntry entry = seed;
+            char suffix[8];
+            std::snprintf(suffix, sizeof(suffix), "-l%02d", layer);
+            entry.id += suffix;
+            entry.model_layer = layer;
+            entries.push_back(std::move(entry));
+        }
+    }
     const char * provider = std::getenv("DFLASH_KIMI_LAYER1_PROVIDER");
     const bool provider_enabled = provider && *provider &&
         std::string(provider) != "exact";
@@ -154,6 +187,16 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr,
             "[kimi-h16-suite] paired mode requires a routed provider\n");
         return 2;
+    }
+    const char * dynamic_layer =
+        std::getenv("DFLASH_KIMI_H22_DYNAMIC_ACTIVE_LAYER");
+    if (dynamic_layer && std::string(dynamic_layer) == "1" &&
+        entries.front().model_layer > 0 &&
+        !set_environment("DFLASH_KIMI_H22_ACTIVE_LAYER",
+                         std::to_string(entries.front().model_layer))) {
+        std::fprintf(stderr,
+            "[kimi-h16-suite] cannot initialize dynamic model layer\n");
+        return 1;
     }
 
     std::error_code filesystem_error;
@@ -220,6 +263,8 @@ int main(int argc, char ** argv) {
     record_environment("DFLASH_KIMI_LAYER1_BUDGET");
     record_environment("DFLASH_KIMI_PROVIDER_LAYER");
     record_environment("DFLASH_KIMI_LAYER1_ACTIVE_POSITION");
+    record_environment("DFLASH_KIMI_H22_DYNAMIC_ACTIVE_LAYER");
+    record_environment("DFLASH_KIMI_H22_SWEEP_LAYERS");
     record_environment("DFLASH_MOE_NVME_DIRECT");
     record_environment("DFLASH_MOE_NVME_DEVICE_CACHE_MB");
     record_environment("DFLASH_KIMI_CPU_THREADS");
@@ -235,6 +280,15 @@ int main(int argc, char ** argv) {
     DaemonIO io;
     size_t intervention_record_start = 0;
     for (const SuiteEntry & entry : entries) {
+        if (entry.model_layer > 0 &&
+            !set_environment("DFLASH_KIMI_H22_ACTIVE_LAYER",
+                             std::to_string(entry.model_layer))) {
+            std::fprintf(stderr,
+                "[kimi-h16-suite] cannot select model layer %d\n",
+                entry.model_layer);
+            backend.shutdown();
+            return 1;
+        }
         std::vector<int32_t> prompt_ids = tokenizer.encode(entry.text);
         if (prompt_ids.empty() ||
             prompt_ids.size() > static_cast<size_t>(max_context)) {
@@ -286,6 +340,7 @@ int main(int argc, char ** argv) {
             {"id", entry.id},
             {"split", entry.split},
             {"text", entry.text},
+            {"model_layer", entry.model_layer},
             {"prompt_tokens", prompt_ids},
             {"prompt_token_count", prompt_ids.size()},
             {"output_tokens", result.tokens},
