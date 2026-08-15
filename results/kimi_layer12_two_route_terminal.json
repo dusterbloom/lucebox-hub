@@ -54,8 +54,10 @@
       },
       "top1_agreement": {"count": 8, "denominator": 10, "rate": 0.8},
       "first_generated_token_divergence": 1,
-      "native_task_success": true,
+      "native_task_success": false,
       "candidate_task_success": false,
+      "prompt_protocol": "raw non-chat prompt; unsuitable for task-quality claims",
+      "native_token_4415_decodes_as": " No",
       "elapsed_seconds": 197.7853834230009,
       "disk_read_bytes": 530638278656,
       "gpu_energy_joules": 23018.905058572083,
@@ -72,7 +74,7 @@
     "local_cosine_is_a_pessimistic_terminal_proxy": true,
     "terminal_behavioral_attenuation_is_measured": true,
     "long_horizon_greedy_speculative_draft_is_viable": false,
-    "reason": "the heldout hard prompt rejects at its first generated token",
+    "reason": "the heldout raw-prompt control rejects at its first generated token; neither arm is a valid task-quality result",
     "next_test": "measure route-budget versus terminal top1 margin at layer 12, beginning with 4 and 8 complete routes, before any all-layer or batching implementation"
   }
 }

@@ -26,10 +26,12 @@ intervention, so this run measures behavior and not speed.
 | `According to all known laws` | 0.7106 atlas reference | 0.00984 / 0.03277 | 7/8 | first 3/4 tokens match |
 | held-out `Compute two to the tenth power` | 0.7106 atlas reference | 0.02833 / 0.08486 | 8/10 | first answer token differs |
 
-For the held-out math prompt, native chooses token `4415`, the known exact
-suite answer token for `1024`. The two-route intervention chooses token
-`50339` instead. It therefore fails the task and would be rejected at the
-first speculative token.
+For the held-out math control, native chooses token `4415` and the two-route
+intervention chooses token `50339`. It would therefore be rejected at the
+first speculative token. This frozen suite predates the official-chat-template
+correction: token `4415` decodes to ` No`, not `1024`, so native also fails the
+mathematics task. This row measures exact-teacher behavioral agreement only;
+it is not evidence about retained task correctness.
 
 ## Interpretation
 
@@ -56,4 +58,3 @@ can provide useful speculative batches before any all-layer runtime work.
   `26737b38967a41579b678d60ff08ab22ec9aca45ccdb23d384dcfbd9c8182d6f`
 - machine-readable result: `results/kimi_layer12_two_route_terminal.json`
 - raw runs: `/tmp/kimi-k3-100x-terminal-layer12-whole2*`
-

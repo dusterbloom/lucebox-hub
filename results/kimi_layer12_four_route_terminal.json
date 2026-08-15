@@ -1,0 +1,73 @@
+{
+  "schema": "kimi-k3-layer12-four-route-terminal-v1",
+  "status": "MEASURED_EIGHT_TOKEN_EXACT_TEACHER_ACCEPTANCE",
+  "implementation_commit": "bbd66cdba4878b4925e81e9719a8a08cc0fe6e1f",
+  "intervention": {
+    "model_layer_zero_indexed": 12,
+    "other_routed_layers": "native exact",
+    "selected_routes": 4,
+    "selection": "router weight times calibration native-response norm",
+    "selected_route_execution": "complete native expert",
+    "omitted_routes": 12,
+    "omitted_route_replacement": "frozen native expert mean",
+    "runtime_note": "legacy shadow provider also evaluates the exact layer; no speed claim"
+  },
+  "controls": [
+    {
+      "id": "math-power-one-token",
+      "scored_rows": 10,
+      "generated_tokens": 1,
+      "generated_tokens_identical": true,
+      "top1_agreement": {"count": 10, "denominator": 10, "rate": 1.0},
+      "terminal_kl": {
+        "mean": 0.016940295360092044,
+        "median": 0.017572909926809863,
+        "maximum": 0.03306436994641008
+      },
+      "candidate_logits_sha256": "5b4c81c3ee96a4ce1f0083595b6d2b8c03fa4b68cbfbf76fc2338433837b0559"
+    },
+    {
+      "id": "aviation-four-token",
+      "scored_rows": 8,
+      "generated_tokens": 4,
+      "generated_tokens_identical": true,
+      "top1_agreement": {"count": 8, "denominator": 8, "rate": 1.0},
+      "terminal_kl": {
+        "mean": 0.06070084679634232,
+        "median": 0.008487354563910102,
+        "maximum": 0.3453443115512499
+      },
+      "candidate_logits_sha256": "9ed70b71e02a67d04c295540a584cad83b069716bb121b584e46ca1f40b8cab5"
+    },
+    {
+      "id": "math-power-eight-token",
+      "prompt_protocol": "raw non-chat prompt; exact-teacher acceptance only",
+      "scored_rows": 17,
+      "generated_tokens": 8,
+      "native_output_ids": [4415, 28220, 13, 4415, 97531, 13, 4415, 7030],
+      "candidate_output_ids": [4415, 28220, 13, 4415, 97531, 13, 4415, 7030],
+      "generated_tokens_identical": true,
+      "top1_agreement": {"count": 17, "denominator": 17, "rate": 1.0},
+      "terminal_kl": {
+        "mean": 0.022184634988156867,
+        "median": 0.02445406438531221,
+        "maximum": 0.0450399687431911
+      },
+      "elapsed_seconds": 348.2788019890031,
+      "disk_read_bytes": 933292011520,
+      "gpu_energy_joules": 40568.437628112624,
+      "peak_gpu_memory_mib": 17110.0,
+      "candidate_logits_sha256": "5a979b582c067e5e17620834a0cb7f73abe41c95fdbdefeda761b79689074f5e",
+      "native_logits_sha256": "3fa007f1d75f383eb1c35e297b1d226e57440f6cca8d2c6f3121a64a93beeb95"
+    }
+  ],
+  "interpretation": {
+    "measured": "four complete routes plus means at layer 12 preserved all 35 scored greedy choices across the three controls",
+    "task_quality_claim": false,
+    "reason_no_task_claim": "the longer math control uses the legacy raw prompt and native itself produces an unsuitable answer",
+    "speculative_signal": true,
+    "speed_claim": false,
+    "all_layer_claim": false,
+    "next_gate": "correctly templated prompt with independently verified native task success, followed by ordinary-layer four-route half-slab intervention"
+  }
+}
