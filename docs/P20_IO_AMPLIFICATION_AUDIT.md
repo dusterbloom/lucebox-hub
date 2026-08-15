@@ -2,8 +2,9 @@
 
 **STATUS: COMPLETE FOR THE TWO-ROW PRODUCTION TRACE.**
 
-The frozen all-layer calibrated96 quality result completed before P20.  This
-audit changes data movement only.
+The frozen all-layer calibrated96 behavioral smoke and policy lock completed
+before P20.  Broad quality remains open.  This audit changes data movement
+only.
 
 ## What the old 8.69x number meant
 

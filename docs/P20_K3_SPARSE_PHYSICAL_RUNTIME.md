@@ -58,12 +58,14 @@ over the same one-token trace without changing one logit byte.
 | --- | --- | --- |
 | raw zero IQ1_S and IQ2_XXS blocks | exact numeric zero | native dequantization unit test |
 | full192, all 92 routed layers | byte-identical logits, KL 0 | one-token native vs scratch192 |
-| calibrated96 reference vs scratch | byte-identical logits, KL 0 | one-token all-92 control |
+| calibrated96 reference implementation vs sparse scratch | byte-identical logits, KL 0 | one-token all-92 control |
 | calibrated96 real decode transition | two rows byte-identical, KL 0 | two-token reference vs scratch |
 | generated tokens | `11 374` in both arms | prompt `Hi`, text `Hi, I` |
 
 The earlier split-down arithmetic path is not used.  Full-width native down
-reduction is preserved.
+reduction is preserved.  This proves that sparse delivery preserves the frozen
+calibrated96 implementation; it does not prove calibrated96 broadly equals the
+native model.
 
 ## D. Measured physical and transfer accounting
 
@@ -91,11 +93,12 @@ DMA occurs for a partial calibrated expert.
 | reference buffered/full H2D | process counter 9.93x | confounded | 1.45x selected path | 29.056 s decode transition | baseline |
 | scratch + per-layer O_DIRECT threads | 1.0015 expert total | 4.46 selected | 1.0009 | 30.02 s one row | superseded |
 | scratch + persistent layer-batch O_DIRECT | **1.0015** | **5.34 selected / 5.26 combined** | **1.0009** | **26.976 s decode transition** | best |
-| CUDA VMM | not run hot | n/a | n/a | n/a | killed by 2 MiB granularity |
-| cuFile direct | unavailable | n/a | n/a | n/a | WSL compatibility mode only |
+| CUDA VMM on RTX 3090/WSL | not run hot | n/a | n/a | n/a | one-map-per-slab killed by 2 MiB granularity |
+| cuFile direct on RTX 3090/WSL | unavailable | n/a | n/a | n/a | compatibility mode only |
 
-The two-token control improved the single measured decode transition by 7.2%
-(29.056 s to 26.976 s) and total elapsed by 5.6%, while remaining byte-exact.
+The two-token control reduced the latency of the single measured decode
+transition by 7.2% (29.056 s to 26.976 s) and total elapsed by 5.6%, while
+remaining byte-exact.
 This is not a steady-state benchmark; a longer trace remains open.
 
 ## F. Roofline and binding bottleneck
@@ -103,27 +106,36 @@ This is not a steady-state benchmark; a longer trace remains open.
 - logical expert traffic: 4.9875 GiB/row
 - measured combined expert storage bandwidth: 5.2573 GiB/s
 - expert-only storage roofline: 1.0541 token/s
-- runner-reported short decode rate: 0.07 token/s
-- achieved / expert-only roofline: 7.0%
+- actual measured transition rate: 0.0371 token/s
+- achieved / expert-only roofline: 3.52%
 - measured whole-process storage: about 49.52 GiB/row
 
+The smoke runner prints 0.07 token/s because it divides both emitted tokens by
+the timer for the single autoregressive transition after prefill.  That display
+is not used as the measured transition rate or in the roofline comparison.
+
 The expert path is no longer the binding storage path in this WSL
-configuration.  K3's non-routed core is mapped at 45.34 GiB while WSL exposes
-only 27 GiB RAM.  The two-row run incurred 95.14 GB of inferred mapped-core or
-otherwise untracked reads.  The core is therefore refaulted on every pass and
-dominates the roughly 27-second step.  More provider-side concurrency cannot
-make the 70% expert-roofline gate meaningful until the core is resident or
-placed differently.
+configuration.  The local run maps 45.34 GiB of non-routed tensor payload while
+WSL exposes only 27 GiB RAM; broader deployment accounting is approximately
+57.94 GiB and must be used for capacity planning.  The two-row run incurred
+95.14 GB of inferred mapped-core or otherwise untracked reads.  Its near-one
+mapped-payload pass per row strongly supports refaulting, but causality remains
+qualified because the residual is inferred by subtraction.  More
+provider-side concurrency cannot make the 70% expert-roofline gate meaningful
+until the core is resident or placed differently.
 
 ## G. VMM, GDS, and cache decisions
 
-CUDA VMM is supported, but its minimum mapping granularity is 2 MiB.  P20 slab
+CUDA VMM is supported on the measured RTX 3090/WSL system, but its minimum
+mapping granularity is 2 MiB.  P20 slab
 records are 537,600--652,288 bytes, producing 221%--290% padding, so VMM fails
-the preregistered 10% gate.
+the preregistered 10% gate for one mapping per slab.  This does not reject a
+future grouped/superpage layout on another platform.
 
 cuFile reports compatibility mode and no usable WSL PCI topology; true direct
-GPU storage is unavailable.  The honest backend is O_DIRECT host staging plus
-selected-only H2D.
+GPU storage is unavailable on this measured system.  The honest backend here
+is O_DIRECT host staging plus selected-only H2D; this is not an AMD-platform
+finding.
 
 On the two-row trace, even a perfect unlimited selected-slab cache can remove at
 most 631,314,432 repeated bytes, 6.48% of selected traffic.  That upper bound is
@@ -132,12 +144,14 @@ longer trace can revisit this result, but not override the current measurement.
 
 ## H. Verdict
 
-- **MEASURED:** full192 and calibrated96 semantic parity pass.
+- **MEASURED:** full192 equals native, and sparse calibrated96 equals its
+  calibrated96 reference implementation.
 - **MEASURED:** expert physical/logical 1.0015 and H2D/logical 1.0009 pass.
 - **MEASURED:** storage throughput gate passes at 5.26 GiB/s combined.
-- **MEASURED:** one decode transition improves 7.2% but reaches only 7% of the
-  expert-only roofline.
-- **FAILED:** CUDA VMM and true cuFile direct storage on this platform.
+- **MEASURED:** one decode transition latency improves 7.2% but reaches only
+  3.52% of the expert-only roofline.
+- **FAILED:** one-map-per-slab CUDA VMM and true cuFile direct storage on the
+  measured RTX 3090/WSL platform.
 - **OPEN:** steady-state easy/hard generation and the frozen 12-prompt suite.
 - **NEXT:** expose enough WSL RAM to keep the 45.34-GiB core resident, then rerun
   the identical two-token trace before optimizing graph reuse or overlap.

@@ -27,8 +27,10 @@
     "metadata_h2d": 48984064,
     "total_h2d_upper_bound": 10720453165,
     "h2d_over_logical": 1.0009255253921323,
-    "whole_process_disk_read_bytes": 106343342080,
-    "whole_process_disk_gib_per_row": 49.52090835571289
+    "block_device_read_bytes": 106343342080,
+    "process_self_read_bytes": 106348482560,
+    "block_device_read_gib_per_row": 49.52090835571289,
+    "counter_difference_bytes": 5140480
   },
   "storage": {
     "selected_direct_io_seconds": 1.708451574,
@@ -42,13 +44,16 @@
     "reference_decode_seconds": 29.056,
     "sparse_prefill_seconds": 26.842,
     "sparse_decode_seconds": 26.976,
-    "decode_transition_speedup_fraction": 0.077105575326216,
+    "decode_transition_latency_reduction_fraction": 0.0715859030837005,
+    "decode_transition_throughput_gain_fraction": 0.07710557532621598,
     "total_elapsed_reference_seconds": 59.52363931599939,
     "total_elapsed_sparse_seconds": 56.1684225959998,
-    "total_elapsed_speedup_fraction": 0.0597349287184459,
+    "total_elapsed_latency_reduction_fraction": 0.05636780207922765,
+    "total_elapsed_throughput_gain_fraction": 0.05973492871844588,
     "runner_reported_decode_tokens_per_second": 0.07,
-    "achieved_over_expert_roofline": 0.0703354438981181,
-    "note": "Only one autoregressive transition is timed; use a longer trace for steady-state throughput."
+    "actual_measured_transition_tokens_per_second": 0.037069988137603795,
+    "achieved_over_expert_roofline": 0.03516772194905905,
+    "note": "Only one autoregressive transition is timed. The runner's 0.07 display divides two emitted tokens by that one-transition timer and is not used for the roofline. Use a longer trace for steady-state throughput."
   },
   "artifacts": {
     "reference": "/mnt/kimi-k3/results/kimi-p20-reference96-two-token-20260815",

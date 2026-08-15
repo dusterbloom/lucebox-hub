@@ -41,7 +41,9 @@
       "combined_expert_gib_s": 5.257263242095205,
       "reference_decode_seconds": 29.056,
       "scratch_decode_seconds": 26.976,
-      "single_transition_speedup_fraction": 0.077105575326216
+      "single_transition_latency_reduction_fraction": 0.0715859030837005,
+      "single_transition_throughput_gain_fraction": 0.07710557532621598,
+      "actual_transition_tokens_per_second": 0.037069988137603795
     }
   },
   "artifacts": {
