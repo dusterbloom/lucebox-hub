@@ -1,0 +1,121 @@
+{
+  "schema": "kimi-k3-h22-adaptive-quality-v1",
+  "status": "MEASURED",
+  "provenance": {
+    "native_manifest_sha256": "8971e2d8faa5b2bd85fee94c6b0d227e0bd5ee7228a52a57a66a324c85f60c9b",
+    "candidate_manifest_sha256": "58aaae5baf866f55377b6e80ae1fea607cdf191d9d542a4338d8ddc5aa183bf0",
+    "budget_table": "/mnt/kimi-k3/artifacts/kimi-h22-layer-budgets-20260816/h22_behavioral_avg96.txt",
+    "budget_table_sha256": "907c3a37026f3a2803e10e872f6cefe0c434b94acf8e23f450575f2bd877c8e4"
+  },
+  "allocation": {
+    "budget_counts": {
+      "48": 8,
+      "72": 27,
+      "96": 28,
+      "120": 15,
+      "144": 14
+    },
+    "evaluated_model_positions": 39,
+    "partial_provider_bytes": 234609586176,
+    "native_exact_layer_bytes": 0,
+    "total_logical_routed_bytes": 234609586176,
+    "exact_baseline_routed_bytes": 379797110784,
+    "logical_fraction": 0.6177234621182474
+  },
+  "runtime": {
+    "elapsed_seconds": 1105.8896746309983,
+    "disk_read_bytes": 2078089302016,
+    "peak_ram_kib": 27082300,
+    "peak_vram_mib": 17118.0,
+    "gpu_energy_joules": 127297.04343501602
+  },
+  "task_success": {
+    "count": 2,
+    "denominator": 2
+  },
+  "token_exact_count": 1,
+  "sequences": [
+    {
+      "id": "fact-capital",
+      "prompt": "Name the capital of Japan and nothing else.",
+      "native_text": " The answer is Tokyo. The answer is",
+      "candidate_text": "\",\"answer\":\"Tokyo\",\"tags\":[\"",
+      "native_tokens": [
+        646,
+        7574,
+        387,
+        40484,
+        13,
+        646,
+        7574,
+        387
+      ],
+      "candidate_tokens": [
+        3923,
+        26921,
+        7471,
+        39818,
+        18009,
+        3923,
+        20086,
+        46890
+      ],
+      "first_generated_token_divergence": 0,
+      "token_exact": false,
+      "native_task_success": true,
+      "candidate_task_success": true,
+      "terminal": {
+        "aligned_rows": 9,
+        "mean_kl": 0.026820100650560307,
+        "median_kl": 0.022811066597392907,
+        "maximum_kl": 0.05750679059398008,
+        "decision_row_kl": 0.05750679059398008,
+        "top1_agreement": 8,
+        "top1_denominator": 9
+      }
+    },
+    {
+      "id": "logic-raven",
+      "prompt": "All ravens are birds. Ari is a raven. What is Ari?",
+      "native_text": " Ari is a bird. All ravens",
+      "candidate_text": " Ari is a bird. All ravens",
+      "native_tokens": [
+        71615,
+        387,
+        261,
+        14167,
+        13,
+        3123,
+        76060,
+        991
+      ],
+      "candidate_tokens": [
+        71615,
+        387,
+        261,
+        14167,
+        13,
+        3123,
+        76060,
+        991
+      ],
+      "first_generated_token_divergence": null,
+      "token_exact": true,
+      "native_task_success": true,
+      "candidate_task_success": true,
+      "terminal": {
+        "aligned_rows": 23,
+        "mean_kl": 0.04867165899893358,
+        "median_kl": 0.020253134894985796,
+        "maximum_kl": 0.2614678133247247,
+        "decision_row_kl": 0.1334398489333388,
+        "top1_agreement": 23,
+        "top1_denominator": 23
+      }
+    }
+  ],
+  "warnings": [
+    "KL is reported only through the last row conditioned on a shared generated history.",
+    "This two-prompt screen is decision evidence, not broad quality certification."
+  ]
+}
