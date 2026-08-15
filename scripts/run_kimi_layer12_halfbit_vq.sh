@@ -17,7 +17,7 @@ for required in "$model" "$capture" "$teacher" "$baseline_json" "$baseline_npz" 
     "$responses/expert_0000.responses.f32"; do
     [[ -f "$required" ]] || { echo "missing required input: $required" >&2; exit 2; }
 done
-for output in "$prefix.json" "$prefix.csv" "$prefix.stdout.log" "$prefix.stderr.log" \
+for output in "$prefix.json" "$prefix.csv" "$prefix.npz" "$prefix.stdout.log" "$prefix.stderr.log" \
     "$prefix.telemetry.json" "$prefix.telemetry.csv"; do
     [[ ! -e "$output" ]] || { echo "refusing to overwrite: $output" >&2; exit 2; }
 done
@@ -33,6 +33,6 @@ exec python3 "$repo_dir/scripts/run_with_telemetry.py" \
     --mount-path /mnt/kimi-k3 --gpu "$gpu" --interval 1 -- \
     python3 "$repo_dir/scripts/probe_kimi_layer12_halfbit_vq.py" \
         "$model" "$capture" "$teacher" "$responses" "$prefix.json" \
-        --output-csv "$prefix.csv" \
+        --output-csv "$prefix.csv" --output-npz "$prefix.npz" \
         --baseline-json "$baseline_json" --baseline-npz "$baseline_npz" \
         --layer 12 --device cuda

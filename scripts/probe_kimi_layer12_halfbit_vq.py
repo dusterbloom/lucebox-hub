@@ -70,6 +70,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("response_directory", type=Path)
     parser.add_argument("output_json", type=Path)
     parser.add_argument("--output-csv", type=Path)
+    parser.add_argument("--output-npz", type=Path)
     parser.add_argument("--baseline-json", type=Path, required=True)
     parser.add_argument("--baseline-npz", type=Path, required=True)
     parser.add_argument("--layer", type=int, default=12)
@@ -367,7 +368,7 @@ def main() -> int:
         raise ValueError("invalid layer or sample count")
     if args.kmeans_iterations <= 0 or args.nearest_batch <= 0:
         raise ValueError("invalid VQ settings")
-    for output in (args.output_json, args.output_csv):
+    for output in (args.output_json, args.output_csv, args.output_npz):
         if output and output.exists():
             raise FileExistsError(f"refusing to overwrite: {output}")
     for input_path in (args.shard, args.capture, args.teacher, args.baseline_json, args.baseline_npz):
@@ -483,12 +484,12 @@ def main() -> int:
         },
         "comparisons": comparison,
         "row_metrics": {
-            "full_dequantized_cosine": full_cosine,
-            "full_dequantized_relative_l2": full_rel,
-            "vq_cosine": vq_cosine,
-            "vq_relative_l2": vq_rel,
-            "vq_vs_full_cosine": vq_full_cosine,
-            "vq_vs_full_relative_l2": vq_full_rel,
+            "storage": str(args.output_npz) if args.output_npz else "not persisted",
+            "fields": [
+                "full_dequantized_cosine", "full_dequantized_relative_l2",
+                "vq_cosine", "vq_relative_l2", "vq_vs_full_cosine",
+                "vq_vs_full_relative_l2",
+            ],
         },
         "elapsed_seconds": time.monotonic() - started,
         "warnings": [
@@ -500,6 +501,17 @@ def main() -> int:
     }
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     args.output_json.write_text(json.dumps(result, indent=2) + "\n")
+    if args.output_npz:
+        args.output_npz.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            args.output_npz,
+            full_dequantized_cosine=full_cosine,
+            full_dequantized_relative_l2=full_rel,
+            vq_cosine=vq_cosine,
+            vq_relative_l2=vq_rel,
+            vq_vs_full_cosine=vq_full_cosine,
+            vq_vs_full_relative_l2=vq_full_rel,
+        )
     if args.output_csv:
         args.output_csv.parent.mkdir(parents=True, exist_ok=True)
         with args.output_csv.open("w", newline="") as output:
