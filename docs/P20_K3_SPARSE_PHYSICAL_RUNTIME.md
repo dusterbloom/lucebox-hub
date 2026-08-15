@@ -124,6 +124,29 @@ qualified because the residual is inferred by subtraction.  More
 provider-side concurrency cannot make the 70% expert-roofline gate meaningful
 until the core is resident or placed differently.
 
+### Page-retention control on the same machine
+
+The registered cold diagnostic set `DFLASH_KIMI_MMAP_DROP_PAGES=1`, which
+advises the kernel to discard every mapped shard after each forward.  A paired
+two-row control disabled that advice without changing any model, provider,
+cache, or expert-delivery setting.  Logits remained byte-identical (SHA-256
+`7be0aa8a…`), but retaining pages did not improve the 27-GiB configuration:
+
+| measurement | drop pages | retain pages | change |
+| --- | ---: | ---: | ---: |
+| prefill row | 26.842 s | 26.851 s | +0.03% |
+| one decode transition | 26.976 s | 28.256 s | +4.74% |
+| total elapsed | 56.168 s | 57.222 s | +1.88% |
+| block-device reads | 106.343 GB | 106.468 GB | +0.12% |
+
+This is a **MEASURED NO-GAIN** for ordinary page retention under the current
+memory ceiling.  It is consistent with a cyclic scan whose 45.34-GiB mapped
+working set exceeds available RAM: retaining the tail of one pass does not
+create useful reuse when the next pass begins at the start.  It strengthens
+the case for either more memory, explicit partial residency, or an asynchronous
+core-streaming path; it does not show that page retention is useless once the
+core fits.
+
 ## G. VMM, GDS, and cache decisions
 
 CUDA VMM is supported on the measured RTX 3090/WSL system, but its minimum

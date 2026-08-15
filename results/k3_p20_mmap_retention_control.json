@@ -1,0 +1,33 @@
+{
+  "schema": "k3-p20-mmap-retention-control-v1",
+  "date": "2026-08-15",
+  "status": "MEASURED_NO_GAIN_AT_27_GIB",
+  "scope": "one prefill row plus one autoregressive transition",
+  "invariant": {
+    "reference_logits_sha256": "7be0aa8a727bd7749b51c104f54b7cee457208c82fe7989a59d4fb35ed8caccb",
+    "retained_pages_logits_sha256": "7be0aa8a727bd7749b51c104f54b7cee457208c82fe7989a59d4fb35ed8caccb",
+    "byte_identical": true
+  },
+  "drop_pages": {
+    "prefill_seconds": 26.842,
+    "decode_transition_seconds": 26.976,
+    "elapsed_seconds": 56.1684225959998,
+    "block_device_read_bytes": 106343342080,
+    "gpu_energy_joules": 6415.844593939892
+  },
+  "retain_pages": {
+    "prefill_seconds": 26.851,
+    "decode_transition_seconds": 28.256,
+    "elapsed_seconds": 57.22170308100067,
+    "block_device_read_bytes": 106467950592,
+    "gpu_energy_joules": 6646.277929670776
+  },
+  "relative_change": {
+    "prefill_fraction": 0.00033529543253017974,
+    "decode_transition_fraction": 0.04744958481613293,
+    "elapsed_fraction": 0.01875218203254092,
+    "block_device_reads_fraction": 0.0011717565910827066,
+    "gpu_energy_fraction": 0.03591629010910591
+  },
+  "interpretation": "Ordinary page retention does not create reuse when the mapped 45.34-GiB core cyclically exceeds the 27-GiB WSL memory ceiling. More memory, explicit partial residency, or faster asynchronous core streaming remains required."
+}
