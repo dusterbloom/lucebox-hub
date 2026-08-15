@@ -2,7 +2,8 @@
 
 ## Status
 
-**MEASURED — one frozen prompt; the 12-prompt identity control is in progress.**
+**MEASURED — the 12-prompt identity control passed; the 96-slab suite was
+interrupted after four completed prompts by a WSL restart.**
 
 H19 removes the numerical confound from the earlier progressive provider. It
 reads selected 256-neuron records from the calibration-ordered sidecar, maps
@@ -15,16 +16,16 @@ because the current tracing wrapper also evaluates the native teacher output.
 ## Arithmetic gate
 
 At model layer 12, with all 192 active slabs retained, the recomposed provider
-is byte-identical to native K3 on the frozen prompt and four teacher-forced
-positions:
+is byte-identical to native K3 on the complete frozen 12-prompt suite. This
+extends the original one-prompt control to 126 full-vocabulary scored rows:
 
 | metric | result |
 | --- | ---: |
 | routed-output relative L2 | 0 |
 | terminal logit KL | 0 |
 | logit bytes | identical |
-| top-1 | 8 / 8 |
-| generated tokens | identical |
+| top-1 | 126 / 126 |
+| prompt suites | 12 / 12 byte-identical |
 
 This is the required difference from the older split-down `slabs` provider,
 whose all-192 arithmetic was locally near-identical but accumulated observable
@@ -48,6 +49,31 @@ although selected sidecar records are only 50% / 75% of the per-layer slab
 payload, the current evaluator still runs native exact output for trace
 comparison.
 
+## Recovered 96-slab suite prefix
+
+The broader 96-slab run completed four of twelve registered prompts before WSL
+restarted. The NVMe filesystem and all four paired terminal-logit traces
+survived and were re-read after remounting. Only complete prompt files are
+included below; the unfinished intervention suffix is excluded.
+
+| metric | recovered result |
+| --- | ---: |
+| completed prompts | 4 / 12 |
+| scored full-vocabulary rows | 48 |
+| terminal KL mean | 0.009591237 |
+| terminal KL median | 0.003095670 |
+| terminal KL p95 | 0.041416174 |
+| terminal KL maximum | 0.059467876 |
+| top-1 agreement | 46 / 48 |
+| first generated-token agreement | 3 / 4 |
+
+This is genuine positive evidence that a 50% retained-slab intervention at the
+adversarial block-start layer 12 can remain behaviorally close on several
+prompts. It is not an all-layer result: the other 91 routed layers were native
+exact, and the suite did not complete. The nominal selected slab fraction is
+50%, but the tracing configuration also evaluates the native teacher and does
+not establish production bytes skipped or a speedup.
+
 ## Reproduction
 
 ```bash
@@ -65,6 +91,8 @@ recognition fix is commit `3beed06`.
 
 ## Next gate
 
-Complete the already-running 12-prompt / 126-row recomposed-192 control. Only
-if it remains byte-identical should the matched recomposed-96 and recomposed-144
-suite runs be interpreted as broader layer-12 terminal-KL evidence.
+Resume the 96-slab suite in a new output directory, then run the matched
+144-slab suite. If those layer-12 results remain acceptable, calibrate the
+remaining layers and test selective budgets on-policy through all 92 routed
+layers. Only after that gate should the runtime skip omitted physical reads and
+measure serving throughput.
