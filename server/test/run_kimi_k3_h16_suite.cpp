@@ -265,6 +265,7 @@ int main(int argc, char ** argv) {
     record_environment("DFLASH_KIMI_LAYER1_ACTIVE_POSITION");
     record_environment("DFLASH_KIMI_H22_DYNAMIC_ACTIVE_LAYER");
     record_environment("DFLASH_KIMI_H22_SWEEP_LAYERS");
+    record_environment("DFLASH_KIMI_H22_LAYER_BUDGETS");
     record_environment("DFLASH_MOE_NVME_DIRECT");
     record_environment("DFLASH_MOE_NVME_DEVICE_CACHE_MB");
     record_environment("DFLASH_KIMI_CPU_THREADS");
