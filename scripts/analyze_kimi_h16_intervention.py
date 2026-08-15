@@ -69,7 +69,7 @@ def load_intervention(path: Path) -> tuple[dict[str, int], dict[str, np.ndarray]
     if (
         magic != MAGIC
         or version != 1
-        or provider not in (1, 2)
+        or provider not in (1, 2, 3)
         or dimension != 3584
         or top_k != 16
         or model_layer < 1
@@ -181,7 +181,11 @@ def main() -> int:
             "candidate_top1": int(candidate_top[row]),
             "top1_agreement": bool(agreement[row]),
         })
-    provider_name = "slabs" if intervention_header["provider"] == 1 else "whole"
+    provider_name = {
+        1: "slabs",
+        2: "whole",
+        3: "slabs-recomposed",
+    }[intervention_header["provider"]]
     result = {
         "schema": "kimi-h16-frozen-intervention-v1",
         "status": "MEASURED",
@@ -189,7 +193,7 @@ def main() -> int:
         "budget": intervention_header["budget"],
         "exact_byte_fraction": (
             intervention_header["budget"] / 192
-            if provider_name == "slabs"
+            if provider_name in ("slabs", "slabs-recomposed")
             else intervention_header["budget"] / 16
         ),
         "artifacts": {
