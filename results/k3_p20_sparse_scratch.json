@@ -1,0 +1,52 @@
+{
+  "schema": "k3-p20-sparse-scratch-v1",
+  "status": "MEASURED_ONE_AND_TWO_ROW_ALL_92_LAYERS",
+  "implementation_commit": "07aa813",
+  "prompt": "Hi",
+  "prompt_tokens": 1,
+  "generated_tokens": 1,
+  "full192": {
+    "native_vs_scratch_logits_byte_identical": true,
+    "maximum_absolute_logit_difference": 0.0,
+    "teacher_to_candidate_kl_mean": 0.0,
+    "teacher_to_candidate_kl_maximum": 0.0,
+    "generated_tokens_identical": true,
+    "scratch_authoritative_h2d_bytes": 9738387456,
+    "scratch_device_zero_bytes": 9738387456,
+    "scratch_metadata_h2d_bytes": 21102592,
+    "scratch_elapsed_seconds": 48.09531297400099,
+    "native_elapsed_seconds": 23.077850167999713,
+    "speed_claim": false
+  },
+  "calibrated96": {
+    "reference_vs_scratch_logits_byte_identical": true,
+    "maximum_absolute_logit_difference": 0.0,
+    "reference_to_scratch_kl_mean": 0.0,
+    "reference_to_scratch_kl_maximum": 0.0,
+    "generated_tokens_identical": true,
+    "selected_authoritative_h2d_bytes": 4869193728,
+    "reference_full_reconstructed_h2d_bytes": 7871668224,
+    "metadata_h2d_bytes": 25071616,
+    "device_zero_bytes": 7871668224,
+    "authoritative_weight_h2d_reduction_fraction": 0.3814354440207667,
+    "scratch_elapsed_seconds": 35.71899634300098,
+    "reference_elapsed_seconds": 33.5834730330007,
+    "speed_claim": false,
+    "persistent_layer_batch": {
+      "reference_vs_scratch_logits_byte_identical": true,
+      "two_row_logits_byte_identical": true,
+      "selected_direct_physical_over_logical": 1.0055721553743036,
+      "expert_total_physical_over_logical": 1.0015187247853616,
+      "selected_direct_gib_s": 5.338235702020548,
+      "combined_expert_gib_s": 5.257263242095205,
+      "reference_decode_seconds": 29.056,
+      "scratch_decode_seconds": 26.976,
+      "single_transition_speedup_fraction": 0.077105575326216
+    }
+  },
+  "artifacts": {
+    "full192_comparison": "/mnt/kimi-k3/results/kimi-p20-scratch192-parity-20260815/native-vs-scratch192.json",
+    "calibrated96_comparison": "/mnt/kimi-k3/results/kimi-p20-scratch96-parity-20260815/reference96-vs-scratch96.json"
+  },
+  "verdict": "SEMANTIC_AND_EXPERT_DELIVERY_GATES_PASS_WHOLE_SYSTEM_PERFORMANCE_BLOCKED_BY_MAPPED_CORE"
+}

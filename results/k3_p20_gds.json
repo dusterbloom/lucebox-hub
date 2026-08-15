@@ -1,0 +1,15 @@
+{
+  "schema": "k3-p20-gds-v1",
+  "status": "MEASURED",
+  "platform": "WSL2 5.15.167.4, RTX 3090, CUDA 12.6",
+  "cufile_initialization": "failed",
+  "compatibility_mode_observed": true,
+  "pci_resource_topology_available": false,
+  "true_direct_gpu_storage_available": false,
+  "evidence": [
+    "cuFile log: running in compatible mode",
+    "cuFile log: cannot open PCI resource path",
+    "gdscheck: cuFile initialization failed"
+  ],
+  "verdict": "NO_GO_DIRECT_GDS_USE_HOST_O_DIRECT_STAGING"
+}

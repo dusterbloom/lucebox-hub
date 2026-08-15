@@ -1,0 +1,59 @@
+{
+  "schema": "k3-p20-integrated-v1",
+  "status": "MEASURED_TWO_ROW_ALL_92_LAYERS",
+  "implementation_commit": "07aa813",
+  "prompt": "Hi",
+  "prompt_tokens": 1,
+  "generated_tokens": 2,
+  "semantic_parity": {
+    "reference96_vs_sparse_logits_byte_identical": true,
+    "maximum_absolute_logit_difference": 0.0,
+    "kl_mean": 0.0,
+    "kl_maximum": 0.0,
+    "generated_tokens_identical": true,
+    "output_ids": [11, 374],
+    "text": "Hi, I"
+  },
+  "bytes": {
+    "logical_policy_total": 10710540288,
+    "logical_gib_per_row": 4.987483978271484,
+    "selected_direct_physical": 9792651264,
+    "native_fallback_physical": 934155387,
+    "expert_physical_total": 10726806651,
+    "expert_physical_gib_per_row": 4.995058593805879,
+    "expert_physical_over_logical": 1.0015187247853616,
+    "selected_authoritative_h2d": 9738387456,
+    "native_fallback_h2d_upper_bound": 933081645,
+    "metadata_h2d": 48984064,
+    "total_h2d_upper_bound": 10720453165,
+    "h2d_over_logical": 1.0009255253921323,
+    "whole_process_disk_read_bytes": 106343342080,
+    "whole_process_disk_gib_per_row": 49.52090835571289
+  },
+  "storage": {
+    "selected_direct_io_seconds": 1.708451574,
+    "selected_direct_gib_s": 5.338235702020548,
+    "native_fallback_active_io_gib_s": 4.536,
+    "combined_expert_gib_s": 5.257263242095205,
+    "expert_only_roofline_tokens_per_second": 1.0540912542273908
+  },
+  "runtime": {
+    "reference_prefill_seconds": 28.330,
+    "reference_decode_seconds": 29.056,
+    "sparse_prefill_seconds": 26.842,
+    "sparse_decode_seconds": 26.976,
+    "decode_transition_speedup_fraction": 0.077105575326216,
+    "total_elapsed_reference_seconds": 59.52363931599939,
+    "total_elapsed_sparse_seconds": 56.1684225959998,
+    "total_elapsed_speedup_fraction": 0.0597349287184459,
+    "runner_reported_decode_tokens_per_second": 0.07,
+    "achieved_over_expert_roofline": 0.0703354438981181,
+    "note": "Only one autoregressive transition is timed; use a longer trace for steady-state throughput."
+  },
+  "artifacts": {
+    "reference": "/mnt/kimi-k3/results/kimi-p20-reference96-two-token-20260815",
+    "sparse": "/mnt/kimi-k3/results/kimi-p20-scratch96-two-token-20260815",
+    "comparison": "/mnt/kimi-k3/results/kimi-p20-scratch96-two-token-20260815/reference96-vs-scratch.json"
+  },
+  "verdict": "EXPERT_PHYSICAL_AND_SEMANTIC_GATES_PASS_WHOLE_SYSTEM_ROOFLINE_BLOCKED_BY_MAPPED_CORE"
+}

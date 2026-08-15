@@ -1,0 +1,15 @@
+{
+  "schema": "k3-p20-cache-upper-bound-v1",
+  "status": "MEASURED_TWO_ROW_UPPER_BOUND",
+  "trace": "/mnt/kimi-k3/results/kimi-p20-scratch96-two-token-20260815/io_trace.tsv",
+  "selected_range_instances": 52992,
+  "unique_selected_ranges": 49542,
+  "selected_logical_bytes": 9738387456,
+  "repeated_selected_bytes": 631314432,
+  "perfect_unlimited_cache_maximum_avoidable_fraction": 0.06482741477272727,
+  "proceed_gate_fraction": 0.30,
+  "individual_policy_simulation_needed": false,
+  "reason": "Even a perfect unlimited cache cannot reach the proceed gate on this trace, so LRU/static/TinyLFU implementations cannot earn integration.",
+  "limitation": "Two rows are not a steady-state workload; repeat on a longer frozen trace before making a general cache claim.",
+  "verdict": "NO_GO_ON_CURRENT_TRACE"
+}

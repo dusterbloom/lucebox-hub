@@ -1,0 +1,32 @@
+{
+  "schema": "k3-p20-vmm-v1",
+  "status": "MEASURED",
+  "environment": "WSL2 Linux 5.15.167.4, NVIDIA GeForce RTX 3090",
+  "cuda_driver_api_version": 13030,
+  "virtual_address_management_supported": true,
+  "minimum_allocation_granularity_bytes": 2097152,
+  "recommended_allocation_granularity_bytes": 2097152,
+  "slab_layouts": [
+    {
+      "name": "IQ1_S gate/up/down",
+      "slab_bytes": 537600,
+      "one_mapping_padded_bytes": 2097152,
+      "padding_overhead_fraction": 2.9017857142857144
+    },
+    {
+      "name": "IQ2_XXS gate/up + IQ1_S down",
+      "slab_bytes": 652288,
+      "one_mapping_padded_bytes": 2097152,
+      "padding_overhead_fraction": 2.215070173177909
+    },
+    {
+      "name": "IQ1_S gate/up + IQ2_XXS down",
+      "slab_bytes": 594944,
+      "one_mapping_padded_bytes": 2097152,
+      "padding_overhead_fraction": 2.5250099168997413
+    }
+  ],
+  "padding_gate_maximum_fraction": 0.10,
+  "verdict": "NO_GO_HOT_PATH_GRANULARITY",
+  "reason": "The 2 MiB mapping granularity creates 221% to 290% padding per selected slab, far above the 10% gate. Sparse scratch already preserves semantics without this expansion."
+}

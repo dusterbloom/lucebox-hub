@@ -1,0 +1,145 @@
+{
+  "schema": "k3-p20-io-audit-v1",
+  "status": "MEASURED_WITH_INFERRED_PROCESS_RESIDUAL",
+  "inputs": {
+    "trace": "/mnt/kimi-k3/results/kimi-p20-phase-a-20260815/io_trace.tsv",
+    "traffic": "/mnt/kimi-k3/results/kimi-p20-phase-a-20260815/traffic.tsv",
+    "process": "/mnt/kimi-k3/results/kimi-p20-phase-a-20260815/traffic.tsv.process.tsv",
+    "stderr": "/mnt/kimi-k3/results/kimi-p20-phase-a-20260815/stderr.log",
+    "telemetry": "/mnt/kimi-k3/results/kimi-p20-phase-a-20260815/telemetry.json"
+  },
+  "logical": {
+    "selected_sidecar_bytes": 4869193728,
+    "exact_fallback_bytes": 399028224,
+    "total_policy_bytes": 5268221952
+  },
+  "provider_explicit": {
+    "selected_sidecar_bytes": 4869193728,
+    "auxiliary_mean_bytes": 242737152,
+    "all_explicit_bytes": 5111930880,
+    "request_counts_by_region": {
+      "slab-mean": 1411,
+      "gate": 8832,
+      "up": 8832,
+      "down": 8832,
+      "native-exact-expert": 61
+    }
+  },
+  "native_scheduler": {
+    "raw": "[moe-nvme] io=io_uring+direct requests=122 reads=183 payload=0.372 GiB physical=0.372 GiB active-io-rate=4.633 GiB/s cache-hit=11.5% mean-demand-wait=0.597 ms dedupe=47 upgrades=0 dropped-prefetch=0 timeouts=0 errors=0 device-cache=16377.9 MiB slots=2194 pinned=0 hits=0 misses=61 evictions=0 graphs=3 graph-hits=58 graph-evictions=0 launches=61 fused-decode-launches=0 fused-decode-experts=0 cache-first-reorders=0 cache-first-experts=0",
+    "payload_bytes": 399431959,
+    "physical_bytes": 399431959,
+    "active_io_gib_s": 4.633,
+    "requests": 122,
+    "reads": 183,
+    "cache_hit": 11.5,
+    "hits": 0,
+    "misses": 61,
+    "evictions": 0
+  },
+  "process": {
+    "explicit_provider_read_bytes": 5111930880,
+    "process_read_bytes": 54142902272,
+    "process_rchar": 5121650213,
+    "process_read_syscalls": 28635,
+    "minor_faults": 637658,
+    "major_faults": 427019
+  },
+  "amplification": {
+    "process_over_policy": 10.277262948544807,
+    "provider_selected_explicit_over_selected_logical": 1.0,
+    "inferred_mapped_core_or_untracked_process_bytes": 48631539433,
+    "attributed_or_bounded_fraction": 1.0
+  },
+  "h2d": {
+    "reference_full_reconstructed_weight_bytes": 7871668224,
+    "native_scheduler_payload_bytes_upper_bound": 399431959,
+    "reference_weight_over_policy": 1.5699984280009318,
+    "note": "native payload is an upper bound on fallback H2D because it includes the native scheduler's serving activity",
+    "p20_runtime_counters": {
+      "reference_full_weight_h2d": 7871668224,
+      "sparse_authoritative_h2d": 0,
+      "metadata_h2d": 0,
+      "device_zero_bytes": 0,
+      "explicit_provider_reads": 5111930880
+    }
+  },
+  "duplicates": {
+    "selected_range_instances": 26496,
+    "unique_selected_ranges": 26496,
+    "duplicate_instances": 0,
+    "duplicate_bytes": 0
+  },
+  "telemetry": {
+    "schema": "lucebox-command-telemetry-v1",
+    "command": [
+      "env",
+      "DFLASH_MOE_NVME_DIRECT=on",
+      "DFLASH_MOE_NVME_DEVICE_CACHE_MB=16384",
+      "DFLASH_KIMI_CPU_THREADS=18",
+      "DFLASH_KIMI_MMAP_DROP_PAGES=1",
+      "DFLASH_KIMI_SMOKE_MAX_CTX=128",
+      "DFLASH_KIMI_LAYER1_PROVIDER=all-layers-calibrated96",
+      "DFLASH_KIMI_CALIBRATED96_AUX_DIR=/mnt/kimi-k3/artifacts/kimi-h20-calibrated96-runtime",
+      "DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR=/mnt/kimi-k3/artifacts/kimi-h17-natural-sidecars",
+      "DFLASH_KIMI_CALIBRATED96_METRICS_OUT=/mnt/kimi-k3/results/kimi-p20-phase-a-20260815/traffic.tsv",
+      "DFLASH_KIMI_P20_PHYSICAL_LAYOUT=reference",
+      "DFLASH_KIMI_P20_SLAB_BUDGET=96",
+      "DFLASH_KIMI_P20_IO_TRACE=/mnt/kimi-k3/results/kimi-p20-phase-a-20260815/io_trace.tsv",
+      "DFLASH_KIMI_P20_PROMPT_ID=phase-a-smoke",
+      "/home/peppi/Dev/kimi-033/work/lucebox-k3-p20/server/build-k3-p20-cuda126b/smoke_kimi_k3_forward",
+      "/mnt/kimi-k3/models/unsloth-Kimi-K3-GGUF/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00001-of-00014.gguf",
+      "0",
+      "1",
+      "Hi",
+      "1",
+      "-1",
+      "",
+      "0",
+      "cpu"
+    ],
+    "command_shell": "env DFLASH_MOE_NVME_DIRECT=on DFLASH_MOE_NVME_DEVICE_CACHE_MB=16384 DFLASH_KIMI_CPU_THREADS=18 DFLASH_KIMI_MMAP_DROP_PAGES=1 DFLASH_KIMI_SMOKE_MAX_CTX=128 DFLASH_KIMI_LAYER1_PROVIDER=all-layers-calibrated96 DFLASH_KIMI_CALIBRATED96_AUX_DIR=/mnt/kimi-k3/artifacts/kimi-h20-calibrated96-runtime DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR=/mnt/kimi-k3/artifacts/kimi-h17-natural-sidecars DFLASH_KIMI_CALIBRATED96_METRICS_OUT=/mnt/kimi-k3/results/kimi-p20-phase-a-20260815/traffic.tsv DFLASH_KIMI_P20_PHYSICAL_LAYOUT=reference DFLASH_KIMI_P20_SLAB_BUDGET=96 DFLASH_KIMI_P20_IO_TRACE=/mnt/kimi-k3/results/kimi-p20-phase-a-20260815/io_trace.tsv DFLASH_KIMI_P20_PROMPT_ID=phase-a-smoke /home/peppi/Dev/kimi-033/work/lucebox-k3-p20/server/build-k3-p20-cuda126b/smoke_kimi_k3_forward /mnt/kimi-k3/models/unsloth-Kimi-K3-GGUF/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00001-of-00014.gguf 0 1 Hi 1 -1 '' 0 cpu",
+    "pid": 74825,
+    "exit_code": 0,
+    "started_unix_seconds": 1786815713.7754521,
+    "elapsed_seconds": 29.102300346999073,
+    "sample_interval_seconds": 0.5,
+    "sample_count": 49,
+    "process": {
+      "peak_rss_kib": 25528176,
+      "reported_high_water_rss_kib": 25553944,
+      "peak_rss_anon_kib": 775928,
+      "peak_rss_file_kib": 24617664,
+      "peak_rss_shmem_kib": 141312,
+      "peak_swap_kib": 0,
+      "last_read_bytes": null,
+      "last_write_bytes": null
+    },
+    "system_memory": {
+      "peak_used_kib": 2385940
+    },
+    "graphics": {
+      "index": 0,
+      "available": true,
+      "peak_memory_mib": 17118.0,
+      "peak_utilization_percent": 37.0,
+      "peak_power_watts": 145.14,
+      "integrated_energy_joules": 3408.0643296018648,
+      "energy_method": "trapezoidal integration of sampled board power"
+    },
+    "processor_energy": {
+      "available": false,
+      "joules_by_domain": {},
+      "reason": "no readable processor energy counter was exposed"
+    },
+    "disk": {
+      "device": "sdd",
+      "available": true,
+      "read_operations": 496448,
+      "read_bytes": 54152773632,
+      "write_operations": 73,
+      "write_bytes": 5537792,
+      "busy_milliseconds": 23780
+    }
+  }
+}

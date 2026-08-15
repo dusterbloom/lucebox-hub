@@ -1,0 +1,24 @@
+{
+  "submitted_bytes": 4869193728,
+  "os_physical_bytes": 5765349376,
+  "elapsed_seconds": 0.9042859080000198,
+  "submitted_gib_s": 5.014774640347929,
+  "os_physical_gib_s": 5.9377238735140665,
+  "request_latency_ms": {
+    "mean": 1.7244412942682927,
+    "p50": 1.586531,
+    "p95": 2.736015,
+    "p99": 4.733825
+  },
+  "schema": "k3-progressive-io-replay-v1",
+  "backend": "batched-pread",
+  "destination_mode": "ordinary-host-buffer",
+  "cold_cache_requested": true,
+  "queue_depth": 16,
+  "input_requests": 26496,
+  "submitted_requests": 8200,
+  "logical_bytes": 4869193728,
+  "unresolved_exact_fallback_bytes": 399028224,
+  "physical_over_logical": 1.1840460039301193,
+  "note": "exact fallback model-shard ranges are not replayed by this sidecar-only baseline"
+}
