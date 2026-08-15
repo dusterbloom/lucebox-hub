@@ -126,7 +126,14 @@ struct Calibration {
     std::vector<float> native_importance;
 };
 
-enum class ProviderKind : uint32_t { Slabs = 1, Whole = 2 };
+enum class ProviderKind : uint32_t {
+    Slabs = 1,
+    Whole = 2,
+    // Reads only selected slab records but restores their natural positions
+    // and performs one full-width down projection.  This is the partial-byte
+    // counterpart to H17's all-192 recomposition control.
+    RecomposedSlabs = 3,
+};
 
 struct LayerNumerics {
     uint64_t tokens = 0;
@@ -314,6 +321,19 @@ bool better_candidate(const Candidate & left, const Candidate & right) {
     return left.route < right.route;
 }
 
+// Defined below with the H17 arithmetic probes.  The progressive provider also
+// uses it for H19's selected-slab/full-down execution contract.
+bool evaluate_host_recomposed_expert(
+        ggml_backend_t backend,
+        const MoeStreamExpertSpec & spec,
+        const float * input_data,
+        const std::vector<uint8_t> & gate_bytes,
+        const std::vector<uint8_t> & up_bytes,
+        const std::vector<uint8_t> & down_bytes,
+        const std::vector<float> * activation_mask_values,
+        std::vector<float> & result,
+        std::string * err);
+
 class ProgressiveProvider final : public KimiK3RoutedOutputProvider {
 public:
     ~ProgressiveProvider() override {
@@ -331,7 +351,8 @@ public:
         active_position_ = active_position;
         if (!load_calibration(
                 aux_path, model_layer_, calibration_, err)) return false;
-        if (kind_ == ProviderKind::Slabs && !init_sidecar(
+        if ((kind_ == ProviderKind::Slabs ||
+             kind_ == ProviderKind::RecomposedSlabs) && !init_sidecar(
                 expert_backend, sidecar_path, err)) {
             return false;
         }
@@ -341,7 +362,9 @@ public:
         std::fprintf(stderr,
             "[kimi-k3-h16] provider=%s budget=%d model-layer=1 "
             "teacher=exact model-layer=%d active-position=%d trace=%s\n",
-            kind_ == ProviderKind::Slabs ? "slabs" : "whole",
+            kind_ == ProviderKind::Slabs ? "slabs" :
+            kind_ == ProviderKind::RecomposedSlabs ? "slabs-recomposed" :
+            "whole",
             budget_, model_layer_, active_position_,
             trace_path && *trace_path ? trace_path : "disabled");
         return true;
@@ -382,7 +405,11 @@ public:
         }
         const bool ok = kind_ == ProviderKind::Slabs
             ? evaluate_slabs(exact_spec, routes, output, err)
-            : evaluate_whole(exact_spec, routes, exact_engine, output, err);
+            : kind_ == ProviderKind::RecomposedSlabs
+                ? evaluate_recomposed_slabs(
+                    exact_spec, routes, exact_engine.compute_backend(),
+                    output, err)
+                : evaluate_whole(exact_spec, routes, exact_engine, output, err);
         if (!ok) return false;
         if (!append_trace(base_pos, routes, exact, output, err)) return false;
         return true;
@@ -599,6 +626,235 @@ private:
             return false;
         }
         for (size_t i = 0; i < vectors; ++i) output[i] += exact_selected[i];
+        return true;
+    }
+
+    bool evaluate_recomposed_slabs(
+            const MoeStreamExpertSpec & spec,
+            const MoeStreamRouteBatch & routes,
+            ggml_backend_t backend,
+            std::vector<float> & output,
+            std::string * err) {
+        // H19 arithmetic contract:
+        //
+        //   selected sidecar bytes -> natural tensor positions -> one native
+        //   full-width down reduction -> aggregate mean tail.
+        //
+        // The predecessor `evaluate_slabs` uses twelve independent 256-wide
+        // down reductions.  That is mathematically additive but not execution
+        // identical on K3's quantized kernels; the all-192 control amplified
+        // the resulting ~1e-6 routed error into terminal KL.  Here only the
+        // selected slab records are read.  Missing records become zero-weight
+        // rows/blocks locally, and the one full-width down graph sees an
+        // explicit activation mask.  At budget 192 every byte is restored in
+        // natural order and the mask is omitted, providing the identity gate.
+        if (!backend || spec.fused_gate_up || sidecar_path_.empty()) {
+            if (err) *err = "H19 recomposed slabs need separate K3 gate/up sidecar";
+            return false;
+        }
+        const int descriptor = open_read_only(sidecar_path_);
+        if (descriptor < 0) {
+            if (err) *err = "cannot open H19 slab sidecar " + sidecar_path_;
+            return false;
+        }
+        SlabSidecarHeader header{};
+        uint64_t file_bytes = 0;
+        const bool header_ok = file_size(descriptor, file_bytes) &&
+            read_exact_at(descriptor, &header, sizeof(header), 0) &&
+            std::memcmp(header.magic, "K3SLB001", 8) == 0 &&
+            header.version == 1 &&
+            header.model_layer == static_cast<uint32_t>(model_layer_) &&
+            header.expert_count == kExpertCount &&
+            header.dimension == kDimension &&
+            header.expert_width == kSlabSize * kSlabCount &&
+            header.slab_size == kSlabSize &&
+            header.slab_count == kSlabCount &&
+            header.slab_bytes == kSlabBytes &&
+            header.record_bytes == kExpertRecordBytes &&
+            checked_span(
+                header.payload_offset,
+                static_cast<uint64_t>(kExpertCount) * kExpertRecordBytes,
+                file_bytes);
+        if (!header_ok) {
+            close_fd(descriptor);
+            if (err) *err = "H19 progressive sidecar header is incompatible";
+            return false;
+        }
+        const size_t gate_full_bytes = ggml_row_size(
+            spec.gate_type, spec.input_dim) *
+            static_cast<size_t>(spec.intermediate_dim);
+        const size_t up_full_bytes = ggml_row_size(
+            spec.up_type, spec.input_dim) *
+            static_cast<size_t>(spec.intermediate_dim);
+        const size_t down_full_row_bytes = ggml_row_size(
+            spec.down_type, spec.intermediate_dim);
+        const size_t down_full_bytes = down_full_row_bytes *
+            static_cast<size_t>(spec.output_dim);
+        const size_t down_slab_row_bytes = kSlabComponentBytes /
+            static_cast<size_t>(spec.output_dim);
+        if (gate_full_bytes != kSlabComponentBytes * kSlabCount ||
+            up_full_bytes != kSlabComponentBytes * kSlabCount ||
+            down_slab_row_bytes * kSlabCount != down_full_row_bytes) {
+            close_fd(descriptor);
+            if (err) *err = "H19 recomposed tensor geometry mismatch";
+            return false;
+        }
+        output.assign(
+            static_cast<size_t>(routes.n_tokens) * spec.output_dim, 0.0f);
+        std::vector<uint8_t> gate(gate_full_bytes, 0);
+        std::vector<uint8_t> up(up_full_bytes, 0);
+        std::vector<uint8_t> down(down_full_bytes, 0);
+        std::vector<uint8_t> slab_down(kSlabComponentBytes);
+        std::vector<float> activation_mask(
+            static_cast<size_t>(spec.intermediate_dim), 0.0f);
+        std::vector<float> expert_output;
+
+        for (int token = 0; token < routes.n_tokens; ++token) {
+            const size_t route_offset =
+                static_cast<size_t>(token) * kNativeTopK;
+            const std::vector<int32_t> selected =
+                select_kimi_k3_slab_prefix_ids(
+                    routes.selected_ids + route_offset,
+                    routes.selected_weights + route_offset,
+                    kNativeTopK, calibration_.slab_importance.data(),
+                    kExpertCount, kSlabCount, budget_);
+            if (selected.size() != static_cast<size_t>(budget_)) {
+                close_fd(descriptor);
+                if (err) *err = "H19 slab selector returned the wrong budget";
+                return false;
+            }
+            std::vector<uint8_t> selected_by_route(
+                static_cast<size_t>(kNativeTopK * kSlabCount), 0);
+            float * destination = output.data() +
+                static_cast<size_t>(token) * spec.output_dim;
+            // Start from the calibrated aggregate tail, then replace exactly
+            // the selected per-expert/rank cards with live computations.
+            // At full budget there is no tail.  Do not add and subtract its
+            // cards: that harmless-looking cancellation would make the H19
+            // full-width identity control depend on F32 rounding.
+            const bool use_mean_tail = budget_ < kNativeTopK * kSlabCount;
+            if (use_mean_tail) {
+                for (int route = 0; route < kNativeTopK; ++route) {
+                    const int expert = routes.selected_ids[route_offset + route];
+                    const float weight = routes.selected_weights[route_offset + route];
+                    for (int rank = 0; rank < kSlabCount; ++rank) {
+                        const float * mean = calibration_.slab_means.data() +
+                            (static_cast<size_t>(expert) * kSlabCount + rank) *
+                                kDimension;
+                        for (int dimension = 0; dimension < kDimension; ++dimension) {
+                            destination[dimension] += weight * mean[dimension];
+                        }
+                    }
+                }
+            }
+            for (const int32_t pseudo : selected) {
+                const int expert = pseudo / kSlabCount;
+                const int rank = pseudo % kSlabCount;
+                int route = 0;
+                while (route < kNativeTopK &&
+                       routes.selected_ids[route_offset + route] != expert) {
+                    ++route;
+                }
+                if (route == kNativeTopK) {
+                    close_fd(descriptor);
+                    if (err) *err = "H19 selected slab has no active expert route";
+                    return false;
+                }
+                uint8_t & present = selected_by_route[
+                    static_cast<size_t>(route * kSlabCount + rank)];
+                if (present) {
+                    close_fd(descriptor);
+                    if (err) *err = "H19 selector returned a duplicate slab";
+                    return false;
+                }
+                present = 1;
+                if (use_mean_tail) {
+                    const float weight = routes.selected_weights[route_offset + route];
+                    const float * mean = calibration_.slab_means.data() +
+                        (static_cast<size_t>(expert) * kSlabCount + rank) *
+                            kDimension;
+                    for (int dimension = 0; dimension < kDimension; ++dimension) {
+                        destination[dimension] -= weight * mean[dimension];
+                    }
+                }
+            }
+            std::vector<int> route_order(kNativeTopK);
+            std::iota(route_order.begin(), route_order.end(), 0);
+            std::stable_sort(route_order.begin(), route_order.end(),
+                [&](int left, int right) {
+                    return routes.selected_ids[route_offset + left] <
+                        routes.selected_ids[route_offset + right];
+                });
+            const float * input = routes.inputs +
+                static_cast<size_t>(token) * spec.input_dim;
+            for (const int route : route_order) {
+                const int expert = routes.selected_ids[route_offset + route];
+                std::fill(gate.begin(), gate.end(), 0);
+                std::fill(up.begin(), up.end(), 0);
+                std::fill(down.begin(), down.end(), 0);
+                std::fill(activation_mask.begin(), activation_mask.end(), 0.0f);
+                int retained = 0;
+                for (int rank = 0; rank < kSlabCount; ++rank) {
+                    if (!selected_by_route[
+                            static_cast<size_t>(route * kSlabCount + rank)]) {
+                        continue;
+                    }
+                    const uint16_t natural = calibration_.order[
+                        static_cast<size_t>(expert) * kSlabCount + rank];
+                    const uint64_t record = header.payload_offset +
+                        static_cast<uint64_t>(expert * kSlabCount + rank) *
+                            header.slab_bytes;
+                    if (!read_exact_at(
+                            descriptor,
+                            gate.data() + static_cast<size_t>(natural) *
+                                kSlabComponentBytes,
+                            kSlabComponentBytes, record) ||
+                        !read_exact_at(
+                            descriptor,
+                            up.data() + static_cast<size_t>(natural) *
+                                kSlabComponentBytes,
+                            kSlabComponentBytes,
+                            record + kSlabComponentBytes) ||
+                        !read_exact_at(
+                            descriptor, slab_down.data(), slab_down.size(),
+                            record + 2 * kSlabComponentBytes)) {
+                        close_fd(descriptor);
+                        if (err) *err = "short read while restoring H19 slab";
+                        return false;
+                    }
+                    for (int dimension = 0; dimension < spec.output_dim;
+                         ++dimension) {
+                        std::memcpy(
+                            down.data() +
+                                static_cast<size_t>(dimension) * down_full_row_bytes +
+                                static_cast<size_t>(natural) * down_slab_row_bytes,
+                            slab_down.data() +
+                                static_cast<size_t>(dimension) * down_slab_row_bytes,
+                            down_slab_row_bytes);
+                    }
+                    std::fill_n(
+                        activation_mask.begin() +
+                            static_cast<size_t>(natural) * kSlabSize,
+                        kSlabSize, 1.0f);
+                    ++retained;
+                }
+                const std::vector<float> * mask = retained == kSlabCount
+                    ? nullptr : &activation_mask;
+                if (!evaluate_host_recomposed_expert(
+                        backend, spec, input, gate, up, down, mask,
+                        expert_output, err)) {
+                    close_fd(descriptor);
+                    return false;
+                }
+                const float weight = routes.selected_weights[route_offset + route];
+                for (int dimension = 0; dimension < spec.output_dim;
+                     ++dimension) {
+                    destination[dimension] +=
+                        weight * expert_output[static_cast<size_t>(dimension)];
+                }
+            }
+        }
+        close_fd(descriptor);
         return true;
     }
 
@@ -1041,7 +1297,7 @@ bool evaluate_host_recomposed_expert(
         const std::vector<uint8_t> & gate_bytes,
         const std::vector<uint8_t> & up_bytes,
         const std::vector<uint8_t> & down_bytes,
-        int retained_natural_prefix,
+        const std::vector<float> * activation_mask_values,
         std::vector<float> & result,
         std::string * err) {
     if (!backend || spec.fused_gate_up || !input_data) {
@@ -1075,10 +1331,10 @@ bool evaluate_host_recomposed_expert(
     ggml_tensor * activated = probe_gated_activation(
         context, spec, gate_value, up_value);
     ggml_tensor * activation_mask = nullptr;
-    std::vector<float> mask_values;
-    if (retained_natural_prefix < spec.intermediate_dim) {
-        if (retained_natural_prefix < 0) {
-            if (err) *err = "H18 retained-neuron prefix is invalid";
+    if (activation_mask_values) {
+        if (activation_mask_values->size() !=
+                static_cast<size_t>(spec.intermediate_dim)) {
+            if (err) *err = "H19 recomposed activation mask has wrong size";
             ggml_free(context);
             return false;
         }
@@ -1086,9 +1342,6 @@ bool evaluate_host_recomposed_expert(
             context, GGML_TYPE_F32, spec.intermediate_dim);
         ggml_set_input(activation_mask);
         activated = ggml_mul(context, activated, activation_mask);
-        mask_values.assign(
-            static_cast<size_t>(spec.intermediate_dim), 0.0f);
-        std::fill_n(mask_values.begin(), retained_natural_prefix, 1.0f);
     }
     ggml_tensor * output = probe_scale_tensor(
         context, ggml_mul_mat(context, down, activated), spec.down_scale);
@@ -1118,8 +1371,8 @@ bool evaluate_host_recomposed_expert(
     ggml_backend_tensor_set(down, down_bytes.data(), 0, down_bytes.size());
     if (activation_mask) {
         ggml_backend_tensor_set(
-            activation_mask, mask_values.data(), 0,
-            mask_values.size() * sizeof(float));
+            activation_mask, activation_mask_values->data(), 0,
+            activation_mask_values->size() * sizeof(float));
     }
     result.resize(static_cast<size_t>(spec.output_dim));
     const ggml_status status =
@@ -1570,6 +1823,12 @@ private:
             ? 6
             : mode_ == AllSlabsMode::RecomposedNatural144 ? 9 : kSlabCount;
         const int retained_neurons = retained_slabs * kSlabSize;
+        std::vector<float> retained_prefix_mask;
+        if (retained_neurons < spec.intermediate_dim) {
+            retained_prefix_mask.assign(
+                static_cast<size_t>(spec.intermediate_dim), 0.0f);
+            std::fill_n(retained_prefix_mask.begin(), retained_neurons, 1.0f);
+        }
         output.assign(
             static_cast<size_t>(routes.n_tokens) * spec.output_dim, 0.0f);
 
@@ -1635,7 +1894,8 @@ private:
                 }
                 if (!evaluate_host_recomposed_expert(
                         backend, spec, input, gate, up, down,
-                        retained_neurons,
+                        retained_prefix_mask.empty()
+                            ? nullptr : &retained_prefix_mask,
                         expert_output, err)) {
                     close_fd(descriptor);
                     return false;
@@ -2064,10 +2324,14 @@ bool create_kimi_k3_progressive_provider_from_env(
     }
     ProviderKind kind;
     if (std::strcmp(raw_kind, "slabs") == 0) kind = ProviderKind::Slabs;
+    else if (std::strcmp(raw_kind, "slabs-recomposed") == 0) {
+        kind = ProviderKind::RecomposedSlabs;
+    }
     else if (std::strcmp(raw_kind, "whole") == 0) kind = ProviderKind::Whole;
     else {
         if (err) *err =
-            "DFLASH_KIMI_LAYER1_PROVIDER must be exact, slabs, whole, "
+            "DFLASH_KIMI_LAYER1_PROVIDER must be exact, slabs, "
+            "slabs-recomposed, whole, "
             "all-slabs, all-slabs-grouped, all-slabs-recomposed, "
             "all-slabs-recomposed-natural96, "
             "all-slabs-recomposed-natural144, "
@@ -2078,7 +2342,9 @@ bool create_kimi_k3_progressive_provider_from_env(
     int budget = 0;
     if (!parse_positive_int(
             std::getenv("DFLASH_KIMI_LAYER1_BUDGET"), budget) ||
-        (kind == ProviderKind::Slabs && budget > kNativeTopK * kSlabCount) ||
+        ((kind == ProviderKind::Slabs ||
+          kind == ProviderKind::RecomposedSlabs) &&
+         budget > kNativeTopK * kSlabCount) ||
         (kind == ProviderKind::Whole && budget > kNativeTopK)) {
         if (err) *err = "invalid DFLASH_KIMI_LAYER1_BUDGET for provider";
         return false;
@@ -2089,7 +2355,9 @@ bool create_kimi_k3_progressive_provider_from_env(
         return false;
     }
     const char * sidecar = std::getenv("DFLASH_KIMI_SLAB_SIDECAR");
-    if (kind == ProviderKind::Slabs && (!sidecar || !*sidecar)) {
+    if ((kind == ProviderKind::Slabs ||
+         kind == ProviderKind::RecomposedSlabs) &&
+        (!sidecar || !*sidecar)) {
         if (err) *err = "DFLASH_KIMI_SLAB_SIDECAR is required for slabs";
         return false;
     }

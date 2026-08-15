@@ -56,6 +56,9 @@ for name in $modes; do
         # measures the provider's arithmetic footprint at an isolated layer
         # before interpreting any partial-budget terminal KL.
         slabs192) provider=slabs; budget=192 ;;
+        recomposed96) provider=slabs-recomposed; budget=96 ;;
+        recomposed144) provider=slabs-recomposed; budget=144 ;;
+        recomposed192) provider=slabs-recomposed; budget=192 ;;
         whole8)   provider=whole; budget=8 ;;
         whole12)  provider=whole; budget=12 ;;
         *) echo "Unknown KIMI_H16_MODES entry: $name" >&2; exit 2 ;;
