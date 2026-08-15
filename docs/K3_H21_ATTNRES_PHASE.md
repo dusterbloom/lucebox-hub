@@ -1,6 +1,6 @@
 # H21 — AttnRes phase pilot
 
-VERDICT: PHASE MATTERS; BLOCK ENDS ARE PROMISING BUT NOT A UNIVERSAL TOKEN FIREBREAK.
+VERDICT: PHASE MATTERS; BLOCK ENDS FAIL THE REGISTERED EXACT-DRAFT GATE.
 
 The same four-complete-route intervention was placed at three equal-size,
 pre-registered layer sets.  All other routed layers remained native exact.
@@ -28,6 +28,15 @@ starts flipped the aviation decision even though their mean KL was lower than
 both ends and middles.  The phase changes which terminal margin directions are
 perturbed.  It does not yet prove that block ends always attenuate error.
 
-The next earned experiment is a small registered multi-prompt, one-token phase
-screen.  Do not grow backward from block ends or call this an architectural law
-until that replication passes.
+The registered one-token block-end replication used four fixed domains: code,
+factual recall, logic and grammar.  Across 51 shared rows, mean KL was 0.04554,
+maximum KL was 0.43226 and top choice agreement was 43/51.  Only 2/4 first
+generated tokens matched native.  Code and grammar matched; Japan answered
+`Tokyo` directly; logic began `A` instead of native `Ari` and is not task-
+scoreable from one token.
+
+Therefore block ends are not a reliable exact speculative-draft firebreak, and
+the approximation should not grow backward from them on that premise.  If this
+branch continues, the next earned experiment is explicitly practical: use a
+byte-meaningful placement, generate enough tokens to score tasks, and keep task
+success separate from native-token agreement and KL.

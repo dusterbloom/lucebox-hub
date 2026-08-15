@@ -71,12 +71,32 @@
     "post_divergence_kl_reported": false,
     "logits_sha256": "75a3c0c7106b190b398f9126a976f38a88d1e68e129ca28c8f96d2523a859235"
   },
-  "verdict": "ATTNRES_PHASE_SIGNAL_NOT_UNIVERSAL_TOKEN_FIREBREAK",
+  "registered_block_end_one_token_suite": {
+    "fixture": "server/test/fixtures/kimi_k3_h21_phase_pilot.jsonl",
+    "fixture_commit": "71acf7f",
+    "prompt_count": 4,
+    "shared_rows": 51,
+    "teacher_to_candidate_kl": {
+      "mean": 0.04554459311624896,
+      "median": 0.028085334689078385,
+      "maximum": 0.4322576149334831
+    },
+    "top_choice_agreement": {"count": 43, "denominator": 51},
+    "first_generated_token_agreement": {"count": 2, "denominator": 4},
+    "prompts": {
+      "code-sum": {"mean_kl": 0.07248271623074085, "top_choice": "13/16", "first_token_match": true, "candidate_text": " ?"},
+      "fact-capital": {"mean_kl": 0.028946321326093132, "top_choice": "7/9", "first_token_match": false, "candidate_text": " Tokyo", "task_answer_correct": true},
+      "logic-raven": {"mean_kl": 0.02803717938853765, "top_choice": "14/16", "first_token_match": false, "candidate_text": " A", "task_success_scored": false},
+      "grammar-apples": {"mean_kl": 0.04539390270854035, "top_choice": "9/10", "first_token_match": true, "candidate_text": " →"}
+    }
+  },
+  "verdict": "ATTNRES_PHASE_SIGNAL_BLOCK_END_EXACT_DRAFT_GATE_FAILED",
   "interpretation": [
     "Equal-size phase sets behave differently at the native decision margin.",
     "Block starts flipped the aviation token despite lower mean KL than block ends.",
     "Block ends preserved four aviation tokens but changed the wording of the Japan answer while retaining task correctness.",
-    "One prompt cannot establish a block-end law; practical task scoring and terminal distribution must both be retained."
+    "The registered block-end screen matches only two of four first generated tokens, so block ends are not a reliable exact-draft firebreak.",
+    "Practical task scoring and terminal distribution must both be retained; the Japan mismatch is nevertheless a correct direct answer."
   ],
-  "next": "Run a small registered multi-prompt one-token phase screen before growing approximation backward from block ends."
+  "next": "Do not grow backward for exact drafting. If the branch continues, run a short multi-token practical task screen at a byte-meaningful placement and score task success separately from native-token agreement."
 }
