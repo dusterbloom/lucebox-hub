@@ -67,13 +67,16 @@ def read_expert_responses(
             reserved0,
             reserved1,
         ) = RESPONSE_HEADER.unpack(raw)
+        # An expert can legitimately receive no routes in a bounded capture.
+        # Its file still carries a complete, self-identifying header and
+        # represents an empty response table; callers that aggregate only
+        # observed routes must be able to skip it.
         if (
             magic != RESPONSE_MAGIC
             or version != 1
             or model_layer != expected_layer
             or expert != expected_expert
             or dimension != expected_dimension
-            or route_count <= 0
             or storage != 0
             or reserved != 0
             or reserved0 != 0
