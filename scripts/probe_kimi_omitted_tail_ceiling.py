@@ -36,6 +36,7 @@ from train_kimi_panel_directional import load_data
 
 SLAB_BUDGETS = (96, 120, 144, 168, 192)
 RIDGE_MULTIPLIERS = (1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1, 1.0, 10.0, 100.0)
+PCA_ORACLE_RANKS = (8, 16, 32, 64, 128, 256, 512)
 
 
 def parse_args() -> argparse.Namespace:
@@ -215,6 +216,66 @@ def ridge_tail_ceiling(
     if device.type == "cuda":
         torch.cuda.empty_cache()
     return result, np.stack((cosine, relative_l2), axis=0)
+
+
+def pca_oracle_tail_ceiling(
+    residual: np.ndarray,
+    train: np.ndarray,
+    validation: np.ndarray,
+    base: np.ndarray,
+    device: torch.device,
+    batch_size: int,
+) -> dict[int, tuple[dict[str, object], np.ndarray]]:
+    """Measure the train-derived low-rank *subspace* ceiling for a tail.
+
+    Validation coefficients are deliberately projected from the true held-out
+    residual.  This is not a predictor and cannot be deployed.  It isolates
+    whether a compact aggregate-tail fold exists at all before we spend time
+    trying to predict its coefficients from retained computation.
+    """
+    max_rank = min(max(PCA_ORACLE_RANKS), residual.shape[1], train.size - 1)
+    if max_rank < min(PCA_ORACLE_RANKS):
+        raise ValueError("not enough training rows for registered PCA ranks")
+    torch.manual_seed(260815)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    y_train = torch.from_numpy(residual[train]).to(device=device, dtype=torch.float32)
+    y_validation = torch.from_numpy(residual[validation]).to(
+        device=device, dtype=torch.float32)
+    mean = y_train.mean(dim=0, keepdim=True)
+    # Fixed seed and iteration count make the randomized range finder a
+    # reproducible diagnostic, while avoiding a full dense SVD for 7.5k rows.
+    _, _, basis = torch.pca_lowrank(y_train - mean, q=max_rank, center=False, niter=4)
+    results: dict[int, tuple[dict[str, object], np.ndarray]] = {}
+    for rank in PCA_ORACLE_RANKS:
+        if rank > max_rank:
+            continue
+        components = basis[:, :rank]
+        reconstructed_residual = np.empty(
+            (validation.size, residual.shape[1]), dtype=np.float32)
+        with torch.no_grad():
+            for begin in range(0, validation.size, batch_size):
+                end = min(validation.size, begin + batch_size)
+                centered = y_validation[begin:end] - mean
+                projected = (centered @ components) @ components.T + mean
+                reconstructed_residual[begin:end] = projected.cpu().numpy()
+        metrics, cosine, relative_l2 = pair_metrics(
+            base[validation] + reconstructed_residual,
+            base[validation] + residual[validation],
+        )
+        results[rank] = ({
+            "method": "train_derived_pca_oracle_tail_subspace",
+            "rank": rank,
+            "target": "native routed aggregate minus slab-mean-tail reconstruction",
+            "basis_fit": "training sequences only",
+            "heldout_coefficients": "oracle projection of the true residual",
+            "runtime_deployable": False,
+            "heldout_metrics_against_native": metrics,
+        }, np.stack((cosine, relative_l2), axis=0))
+    del y_train, y_validation, mean, basis
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    return results
 
 
 def main() -> int:
@@ -454,6 +515,34 @@ def main() -> int:
         })
         del residual
 
+    for budget in (96, 144):
+        residual = data.teacher - adaptive_approximations[budget]
+        for rank, (ceiling, errors) in pca_oracle_tail_ceiling(
+            residual,
+            data.train_indices,
+            validation,
+            adaptive_approximations[budget],
+            device,
+            args.metric_batch,
+        ).items():
+            key = f"pca_oracle_tail_{budget}_r{rank}"
+            methods[key] = ceiling | {
+                "budget": budget,
+                "exact_byte_fraction": budget / active_slabs,
+            }
+            row_errors[f"{key}_cosine"] = errors[0]
+            row_errors[f"{key}_relative_l2"] = errors[1]
+            metrics = ceiling["heldout_metrics_against_native"]
+            csv_rows.append({
+                "method": f"pca_oracle_tail_r{rank}", "budget": budget,
+                "exact_byte_fraction": budget / active_slabs,
+                "mean_cosine": metrics["cosine"]["mean"],
+                "p05_cosine": metrics["cosine"]["p05"],
+                "mean_relative_l2": metrics["relative_l2"]["mean"],
+                "diagnostic": True,
+            })
+        del residual
+
     def recovery(budget: int) -> dict[str, float]:
         baseline = methods[f"adaptive_{budget}"]["heldout_metrics_against_native"]
         ceiling = methods[f"linear_tail_ceiling_{budget}"]["heldout_metrics_against_native"]
@@ -482,6 +571,7 @@ def main() -> int:
         "interpretation": [
             "A large oracle-versus-adaptive gap indicates selector headroom, not a deployable result.",
             "A large held-out dense-linear recovery indicates aggregate omitted-tail predictability, not a runtime design.",
+            "The PCA oracle exposes only train-derived subspace capacity; it sees true held-out tail coefficients and is never deployable.",
             "This measures routed-output geometry only. Final-logit KL remains a later whole-model gate.",
         ],
     }
