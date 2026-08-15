@@ -20,7 +20,8 @@ KimiK3DFlashTarget::KimiK3DFlashTarget(
         MoeHybridStreamEngine * stream_engine,
         MoeStreamDualOwnerExecutor * dual_stream_executor,
         const MoeStreamDualOwnerPolicy * stream_owner_policy,
-        MoeHybridRoutingStats * routing_stats)
+        MoeHybridRoutingStats * routing_stats,
+        KimiK3MoeCoreOffload * moe_core_offload)
     : weights_(weights),
       cache_(cache),
       backend_(backend),
@@ -31,7 +32,8 @@ KimiK3DFlashTarget::KimiK3DFlashTarget(
       stream_engine_(stream_engine),
       dual_stream_executor_(dual_stream_executor),
       stream_owner_policy_(stream_owner_policy),
-      routing_stats_(routing_stats) {}
+      routing_stats_(routing_stats),
+      moe_core_offload_(moe_core_offload) {}
 
 KimiK3DFlashTarget::~KimiK3DFlashTarget() {
     step_graph_destroy(embedding_graph_);
@@ -72,6 +74,7 @@ bool KimiK3DFlashTarget::forward_token(
     options.read_logits = true;
     options.read_argmax = false;
     options.routed_output_provider = routed_output_provider_;
+    options.moe_core_offload = moe_core_offload_;
     KimiK3ForwardResult result;
     if (!kimi_k3_forward(
             backend_, weights_, cache_, std::vector<int32_t>{token}, position,
@@ -96,6 +99,7 @@ bool KimiK3DFlashTarget::verify_batch(
     options.read_logits = false;
     options.read_argmax = true;
     options.routed_output_provider = routed_output_provider_;
+    options.moe_core_offload = moe_core_offload_;
     KimiK3ForwardResult result;
     if (!kimi_k3_forward(
             backend_, weights_, cache_, tokens, base_pos,

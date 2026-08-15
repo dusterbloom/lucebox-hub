@@ -27,7 +27,8 @@ public:
         MoeHybridStreamEngine * stream_engine,
         MoeStreamDualOwnerExecutor * dual_stream_executor,
         const MoeStreamDualOwnerPolicy * stream_owner_policy,
-        MoeHybridRoutingStats * routing_stats);
+        MoeHybridRoutingStats * routing_stats,
+        KimiK3MoeCoreOffload * moe_core_offload);
     ~KimiK3DFlashTarget() override;
 
     KimiK3DFlashTarget(const KimiK3DFlashTarget &) = delete;
@@ -86,6 +87,7 @@ private:
     MoeStreamDualOwnerExecutor * dual_stream_executor_ = nullptr;
     const MoeStreamDualOwnerPolicy * stream_owner_policy_ = nullptr;
     MoeHybridRoutingStats * routing_stats_ = nullptr;
+    KimiK3MoeCoreOffload * moe_core_offload_ = nullptr;
     KimiK3RoutedOutputProvider * routed_output_provider_ = nullptr;
     mutable StepGraph embedding_graph_;
     StepGraph projection_graph_;

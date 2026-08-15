@@ -265,6 +265,7 @@ KimiK3Backend::~KimiK3Backend() {
 }
 
 void KimiK3Backend::release_expert_backend() {
+    free_kimi_k3_moe_core_offload(moe_core_offload_);
     if (expert_backend_) {
         ggml_backend_free(expert_backend_);
         expert_backend_ = nullptr;
@@ -346,6 +347,21 @@ bool KimiK3Backend::init_streaming() {
         release_expert_backend();
         return false;
     };
+
+    const char * moe_core_raw =
+        std::getenv("DFLASH_KIMI_MOE_CORE_OFFLOAD");
+    const bool moe_core_requested = cpu_core && expert_backend_ &&
+        moe_core_raw && *moe_core_raw &&
+        std::strcmp(moe_core_raw, "0") != 0;
+    if (moe_core_requested) {
+        if (!init_kimi_k3_moe_core_offload(
+                expert_backend_, weights_, moe_core_offload_, &error)) {
+            std::fprintf(stderr,
+                "[kimi-k3] accelerator MoE-core offload failed: %s\n",
+                error.c_str());
+            return fail_streaming();
+        }
+    }
 
     size_t routed_pool_bytes = 0;
     for (const LayerExpertRegions & regions :
@@ -1093,7 +1109,8 @@ DFlashTarget * KimiK3Backend::dflash_target() {
             weights_.routed_experts_streamed ? &stream_engine_ : nullptr,
             dual_stream_executor_.is_ready()
                 ? &dual_stream_executor_ : nullptr,
-            &stream_owner_policy_, routing_stats_.get());
+            &stream_owner_policy_, routing_stats_.get(),
+            moe_core_offload_.enabled() ? &moe_core_offload_ : nullptr);
         // DFlash is disabled while tracing logits, but keep the provider wired
         // for completeness when a research run explicitly supplies a draft.
         dflash_target_->set_routed_output_provider(
@@ -1192,7 +1209,9 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
                     dual_stream_executor_.is_ready()
                         ? &dual_stream_executor_ : nullptr,
                     &stream_owner_policy_, routing_stats_.get(),
-                    routed_output_provider_.get());
+                    routed_output_provider_.get(),
+                    moe_core_offload_.enabled()
+                        ? &moe_core_offload_ : nullptr);
             if (ok) maybe_release_kimi_mapped_pages(weights_);
             return ok;
         }
@@ -1208,7 +1227,9 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
         if (!kimi_k3_step(
                 backend_, weights_, cache_, token, position, candidate,
                 &stream_engine_, nullptr, &stream_owner_policy_,
-                routing_stats_.get(), routed_output_provider_.get())) {
+                routing_stats_.get(), routed_output_provider_.get(),
+                moe_core_offload_.enabled()
+                    ? &moe_core_offload_ : nullptr)) {
             paired_failure = dflash27b_last_error();
             return false;
         }
@@ -1221,7 +1242,9 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
                 &stream_engine_,
                 dual_stream_executor_.is_ready()
                     ? &dual_stream_executor_ : nullptr,
-                &stream_owner_policy_, routing_stats_.get(), nullptr)) {
+                &stream_owner_policy_, routing_stats_.get(), nullptr,
+                moe_core_offload_.enabled()
+                    ? &moe_core_offload_ : nullptr)) {
             paired_failure = dflash27b_last_error();
             return false;
         }

@@ -1,0 +1,76 @@
+{
+  "schema": "k3-p20-moe-core-offload-v1",
+  "date": "2026-08-15",
+  "status": "MEASURED_SYSTEMS_GO_SEMANTIC_GATE_OPEN",
+  "scope": "one prefill row plus one autoregressive transition through all 92 routed layers",
+  "base_commit": "89ab92d",
+  "placement": {
+    "opt_in_environment": "DFLASH_KIMI_MOE_CORE_OFFLOAD=1",
+    "accelerator": "NVIDIA GeForce RTX 3090 24 GiB",
+    "offloaded_layers": 92,
+    "offloaded_tensors": 736,
+    "offloaded_weight_bytes": 16213714944,
+    "offloaded_weight_gib": 15.100198745727539,
+    "families": [
+      "router matrix and bias",
+      "routed latent down/up projections and normalization",
+      "full shared expert gate/up/down"
+    ],
+    "remaining_core": "attention, KDA/MLA recurrent state, embeddings, dense layer 0, output head",
+    "routed_expert_cache_mib": 2048,
+    "peak_vram_mib": 18250.0,
+    "peak_process_rss_kib": 26955152
+  },
+  "registered_baseline": {
+    "source": "results/k3_p20_integrated.json",
+    "prefill_seconds": 26.842,
+    "decode_transition_seconds": 26.976,
+    "elapsed_seconds": 56.1684225959998,
+    "block_device_read_bytes": 106343342080,
+    "gpu_energy_joules": 6415.844593939892,
+    "transition_tokens_per_second": 0.037069988137603795
+  },
+  "offload": {
+    "artifact_root": "/tmp/kimi-p20-moe-core-offload-direct-20260815",
+    "prefill_seconds": 21.512,
+    "decode_transition_seconds": 20.648,
+    "elapsed_seconds": 51.289483589000156,
+    "block_device_read_bytes": 84481122304,
+    "gpu_energy_joules": 5979.270202034177,
+    "transition_tokens_per_second": 0.048430840759395584,
+    "output_ids": [11, 374],
+    "text": "Hi, I"
+  },
+  "relative_to_registered_baseline": {
+    "prefill_latency_reduction_fraction": 0.1985694061545339,
+    "decode_latency_reduction_fraction": 0.23457888493475682,
+    "decode_throughput_gain_fraction": 0.30647036032545527,
+    "elapsed_reduction_fraction": 0.0868626673405479,
+    "block_device_read_reduction_fraction": 0.20558146235006874,
+    "gpu_energy_reduction_fraction": 0.06804628533522816
+  },
+  "semantic_comparison": {
+    "reference": "/tmp/kimi-p20-nodrop-20260815/logits.f32",
+    "candidate": "/tmp/kimi-p20-moe-core-offload-direct-20260815/logits.f32",
+    "candidate_logits_sha256": "bc3142017971262eac88499942f252ae1bf5a6b8151fc382222e432bd8960902",
+    "repeat_candidate_logits_sha256": "bc3142017971262eac88499942f252ae1bf5a6b8151fc382222e432bd8960902",
+    "deterministic_across_two_io_backends": true,
+    "generated_tokens_identical": true,
+    "top1_agreement_count": 2,
+    "top1_agreement_denominator": 2,
+    "logits_byte_identical": false,
+    "maximum_absolute_logit_difference": 0.6559040546417236,
+    "teacher_to_candidate_kl_mean": 0.00376891283633023,
+    "teacher_to_candidate_kl_maximum": 0.00621833354014121
+  },
+  "interpretation": {
+    "measured": "Moving the repeatedly used 15.10-GiB routed-layer core to the 3090 materially reduces whole-device reads and one-transition latency on the 27-GiB WSL machine.",
+    "not_proven": "The two-row smoke is not a steady-state or broad quality result, and CUDA execution is not byte-identical to the registered CPU-core arithmetic.",
+    "next_gate": "Keep the native CPU router and isolate shared-expert versus latent-projection offload before any longer quality suite."
+  },
+  "tests": {
+    "smoke_target_build": "PASS",
+    "test_moe_stream_gpu": "PASS",
+    "default_path": "unchanged unless DFLASH_KIMI_MOE_CORE_OFFLOAD is nonzero"
+  }
+}

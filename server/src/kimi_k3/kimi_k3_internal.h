@@ -145,6 +145,34 @@ struct KimiK3Weights {
     int32_t eos_token_id       = 2;
 };
 
+// Optional accelerator copy of the always-used MoE core.  Routed expert
+// stacks remain governed by the ordinary stream provider; this structure owns
+// only the native router, latent projections, and full-width shared expert for
+// each routed layer.  The CPU tensors remain immutable and are the default
+// path.  This copy is enabled only by the explicit research environment gate.
+struct KimiK3MoeCoreOffloadLayer {
+    ggml_tensor * ffn_gate_inp    = nullptr;
+    ggml_tensor * ffn_exp_probs_b = nullptr;
+    ggml_tensor * ffn_routed_down = nullptr;
+    ggml_tensor * ffn_routed_up   = nullptr;
+    ggml_tensor * ffn_routed_norm = nullptr;
+    ggml_tensor * ffn_gate_shexp  = nullptr;
+    ggml_tensor * ffn_up_shexp    = nullptr;
+    ggml_tensor * ffn_down_shexp  = nullptr;
+};
+
+struct KimiK3MoeCoreOffload {
+    ggml_context * ctx = nullptr;
+    ggml_backend_buffer_t buf = nullptr;
+    ggml_backend_t backend = nullptr; // non-owning
+    std::vector<KimiK3MoeCoreOffloadLayer> layers;
+    size_t weight_bytes = 0;
+
+    bool enabled() const {
+        return backend && buf && !layers.empty();
+    }
+};
+
 struct KimiK3LayerCache {
     ggml_tensor * conv_state = nullptr; // [d_conv-1, 3*d_inner], F32
     ggml_tensor * ssm_state  = nullptr; // [head_dim, head_dim, n_head], F32
@@ -206,6 +234,9 @@ struct KimiK3ForwardOptions {
     std::vector<KimiK3MoePanelCapture> * panel_captures = nullptr;
     MoeStreamExpertObserver * expert_observer = nullptr;
     KimiK3RoutedOutputProvider * routed_output_provider = nullptr;
+    // Experimental CPU-core / accelerator-MoE split. Null preserves the
+    // established single-backend arithmetic and placement.
+    KimiK3MoeCoreOffload * moe_core_offload = nullptr;
 };
 
 struct KimiK3ForwardResult {
@@ -239,6 +270,12 @@ bool load_kimi_k3_gguf(const std::string & path,
                        KimiK3Weights & out,
                        bool stream_routed_experts = false);
 void free_kimi_k3_weights(KimiK3Weights & w);
+
+bool init_kimi_k3_moe_core_offload(ggml_backend_t accelerator_backend,
+                                   const KimiK3Weights & weights,
+                                   KimiK3MoeCoreOffload & out,
+                                   std::string * error = nullptr);
+void free_kimi_k3_moe_core_offload(KimiK3MoeCoreOffload & offload);
 
 // Decode selected embedding rows with the format's canonical scalar decoder.
 // This is the fallback used when a device backend does not implement GET_ROWS
@@ -292,6 +329,7 @@ bool kimi_k3_step(ggml_backend_t backend,
                   MoeStreamDualOwnerExecutor * dual_stream_executor = nullptr,
                   const MoeStreamDualOwnerPolicy * stream_owner_policy = nullptr,
                   MoeHybridRoutingStats * routing_stats = nullptr,
-                  KimiK3RoutedOutputProvider * routed_output_provider = nullptr);
+                  KimiK3RoutedOutputProvider * routed_output_provider = nullptr,
+                  KimiK3MoeCoreOffload * moe_core_offload = nullptr);
 
 } // namespace dflash::common

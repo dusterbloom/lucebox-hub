@@ -702,6 +702,135 @@ bool load_kimi_k3_gguf(const std::string & path,
     return load_kimi_k3_gguf(path, backend, out, options);
 }
 
+void free_kimi_k3_moe_core_offload(KimiK3MoeCoreOffload & offload) {
+    if (offload.buf) ggml_backend_buffer_free(offload.buf);
+    if (offload.ctx) ggml_free(offload.ctx);
+    offload = KimiK3MoeCoreOffload{};
+}
+
+bool init_kimi_k3_moe_core_offload(
+        ggml_backend_t accelerator_backend,
+        const KimiK3Weights & weights,
+        KimiK3MoeCoreOffload & out,
+        std::string * error) {
+    free_kimi_k3_moe_core_offload(out);
+    auto fail = [&](const std::string & message) {
+        if (error) *error = message;
+        free_kimi_k3_moe_core_offload(out);
+        return false;
+    };
+    if (!accelerator_backend || weights.layers.empty() ||
+        weights.n_dense_lead < 0 ||
+        weights.n_dense_lead >= weights.n_layer) {
+        return fail("invalid accelerator backend or K3 routed-layer shape");
+    }
+
+    const size_t tensor_count =
+        static_cast<size_t>(weights.n_layer - weights.n_dense_lead) * 8;
+    ggml_init_params params{};
+    params.mem_size = ggml_tensor_overhead() * (tensor_count + 64) +
+        256 * 1024;
+    params.no_alloc = true;
+    out.ctx = ggml_init(params);
+    if (!out.ctx) return fail("cannot allocate MoE-core metadata context");
+    out.backend = accelerator_backend;
+    out.layers.resize(weights.layers.size());
+
+    struct CopyPair {
+        const ggml_tensor * source = nullptr;
+        ggml_tensor * destination = nullptr;
+    };
+    std::vector<CopyPair> copies;
+    copies.reserve(tensor_count);
+    auto duplicate = [&](const ggml_tensor * source,
+                         const char * suffix) -> ggml_tensor * {
+        if (!source) return nullptr;
+        ggml_tensor * destination = ggml_dup_tensor(out.ctx, source);
+        if (!destination) return nullptr;
+        std::string name = std::string("k3_moe_core.") +
+            std::to_string(copies.size()) + "." + suffix;
+        ggml_set_name(destination, name.c_str());
+        copies.push_back({source, destination});
+        out.weight_bytes += ggml_nbytes(source);
+        return destination;
+    };
+
+    for (int il = weights.n_dense_lead; il < weights.n_layer; ++il) {
+        const KimiK3Layer & source =
+            weights.layers[static_cast<size_t>(il)];
+        KimiK3MoeCoreOffloadLayer & destination =
+            out.layers[static_cast<size_t>(il)];
+        destination.ffn_gate_inp =
+            duplicate(source.ffn_gate_inp, "router");
+        destination.ffn_exp_probs_b =
+            duplicate(source.ffn_exp_probs_b, "router_bias");
+        destination.ffn_routed_down =
+            duplicate(source.ffn_routed_down, "latent_down");
+        destination.ffn_routed_up =
+            duplicate(source.ffn_routed_up, "latent_up");
+        destination.ffn_routed_norm =
+            duplicate(source.ffn_routed_norm, "latent_norm");
+        destination.ffn_gate_shexp =
+            duplicate(source.ffn_gate_shexp, "shared_gate");
+        destination.ffn_up_shexp =
+            duplicate(source.ffn_up_shexp, "shared_up");
+        destination.ffn_down_shexp =
+            duplicate(source.ffn_down_shexp, "shared_down");
+        if (!destination.ffn_gate_inp ||
+            !destination.ffn_exp_probs_b ||
+            !destination.ffn_routed_down ||
+            !destination.ffn_routed_up ||
+            !destination.ffn_gate_shexp ||
+            !destination.ffn_up_shexp ||
+            !destination.ffn_down_shexp) {
+            return fail("routed layer " + std::to_string(il) +
+                        " has incomplete MoE-core tensors");
+        }
+    }
+
+    size_t free_bytes = 0;
+    size_t total_bytes = 0;
+    if (ggml_backend_dev_t device =
+            ggml_backend_get_device(accelerator_backend)) {
+        ggml_backend_dev_memory(device, &free_bytes, &total_bytes);
+    }
+    constexpr size_t kReserveBytes = 2ULL * 1024 * 1024 * 1024;
+    if (free_bytes != 0 &&
+        (out.weight_bytes > free_bytes ||
+         free_bytes - out.weight_bytes < kReserveBytes)) {
+        return fail("MoE-core offload requires " +
+                    std::to_string(out.weight_bytes) +
+                    " bytes but accelerator free memory is " +
+                    std::to_string(free_bytes) +
+                    " bytes (2-GiB reserve required)");
+    }
+
+    out.buf = ggml_backend_alloc_ctx_tensors(
+        out.ctx, accelerator_backend);
+    if (!out.buf) return fail("cannot allocate accelerator MoE-core weights");
+    ggml_backend_buffer_set_usage(
+        out.buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    std::fprintf(stderr,
+        "[kimi-k3] loading accelerator MoE core tensors=%zu "
+        "bytes=%zu (%.2f GiB)\n",
+        copies.size(), out.weight_bytes,
+        static_cast<double>(out.weight_bytes) /
+            (1024.0 * 1024.0 * 1024.0));
+    std::fflush(stderr);
+    for (const CopyPair & copy : copies) {
+        ggml_backend_tensor_copy(copy.source, copy.destination);
+    }
+    ggml_backend_synchronize(accelerator_backend);
+    std::fprintf(stderr,
+        "[kimi-k3] accelerator MoE core ready layers=%d "
+        "bytes=%zu (%.2f GiB)\n",
+        weights.n_layer - weights.n_dense_lead, out.weight_bytes,
+        static_cast<double>(out.weight_bytes) /
+            (1024.0 * 1024.0 * 1024.0));
+    std::fflush(stderr);
+    return true;
+}
+
 void free_kimi_k3_weights(KimiK3Weights & w) {
     for (ggml_backend_buffer_t buffer : w.buffers) {
         if (buffer) ggml_backend_buffer_free(buffer);

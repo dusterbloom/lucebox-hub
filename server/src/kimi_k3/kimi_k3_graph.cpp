@@ -616,6 +616,147 @@ bool run_host_boundary_graph(ggml_backend_t backend,
     return true;
 }
 
+ggml_context * new_kimi_step_context();
+
+bool run_offloaded_moe_preparation(
+        KimiK3MoeCoreOffload & offload,
+        const KimiK3Weights & w,
+        int model_layer,
+        int n_tokens,
+        const std::vector<float> & normalized_hidden,
+        std::vector<float> & routed_input,
+        std::vector<int32_t> & selected,
+        std::vector<float> & route_weights,
+        std::vector<float> * shared_output,
+        std::vector<float> * router_logits_output) {
+    if (!offload.enabled() || model_layer < w.n_dense_lead ||
+        model_layer >= static_cast<int>(offload.layers.size()) ||
+        normalized_hidden.size() !=
+            static_cast<size_t>(w.n_embd) * n_tokens) {
+        set_last_error("Kimi-K3 accelerator MoE preparation: invalid input");
+        return false;
+    }
+    const KimiK3MoeCoreOffloadLayer & source =
+        offload.layers[static_cast<size_t>(model_layer)];
+    KimiK3Layer layer;
+    layer.ffn_gate_inp = source.ffn_gate_inp;
+    layer.ffn_exp_probs_b = source.ffn_exp_probs_b;
+    layer.ffn_routed_down = source.ffn_routed_down;
+    layer.ffn_gate_shexp = source.ffn_gate_shexp;
+    layer.ffn_up_shexp = source.ffn_up_shexp;
+    layer.ffn_down_shexp = source.ffn_down_shexp;
+
+    ggml_context * ctx = new_kimi_step_context();
+    if (!ctx) {
+        set_last_error("Kimi-K3 accelerator MoE preparation: context failed");
+        return false;
+    }
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 8192, false);
+    ggml_tensor * hidden_in = ggml_new_tensor_2d(
+        ctx, GGML_TYPE_F32, w.n_embd, n_tokens);
+    ggml_set_input(hidden_in);
+    ggml_tensor * routed =
+        ggml_mul_mat(ctx, layer.ffn_routed_down, hidden_in);
+    ggml_tensor * raw_logits = nullptr;
+    TopKMoeRouterResult router = build_kimi_router(
+        ctx, graph, w, layer, hidden_in,
+        router_logits_output ? &raw_logits : nullptr);
+    ggml_tensor * selected_out = ggml_cont(ctx, router.selected);
+    ggml_tensor * weights_out = ggml_cont(ctx, router.weights_2d);
+    ggml_tensor * shared = nullptr;
+    if (shared_output) {
+        ggml_tensor * gate =
+            ggml_mul_mat(ctx, layer.ffn_gate_shexp, hidden_in);
+        ggml_tensor * up =
+            ggml_mul_mat(ctx, layer.ffn_up_shexp, hidden_in);
+        shared = situ(ctx, gate, up, w.situ_beta, w.situ_linear_beta);
+        shared = ggml_mul_mat(ctx, layer.ffn_down_shexp, shared);
+    }
+    std::vector<GraphOutput> outputs = {
+        {routed, routed_input.data(), routed_input.size() * sizeof(float)},
+        {selected_out, selected.data(), selected.size() * sizeof(int32_t)},
+        {weights_out, route_weights.data(),
+         route_weights.size() * sizeof(float)},
+    };
+    if (shared_output) {
+        outputs.push_back({
+            shared, shared_output->data(),
+            shared_output->size() * sizeof(float)});
+    }
+    if (router_logits_output) {
+        outputs.push_back({
+            raw_logits, router_logits_output->data(),
+            router_logits_output->size() * sizeof(float)});
+    }
+    const bool ok = run_host_boundary_graph(
+        offload.backend, ctx, graph,
+        {{hidden_in, normalized_hidden.data(),
+          normalized_hidden.size() * sizeof(float)}},
+        outputs, "accelerator MoE preparation");
+    ggml_free(ctx);
+    return ok;
+}
+
+bool run_offloaded_moe_join(
+        KimiK3MoeCoreOffload & offload,
+        const KimiK3Weights & w,
+        int model_layer,
+        int n_tokens,
+        const std::vector<float> & prefix,
+        const std::vector<float> & routed_output,
+        const std::vector<float> & shared_output,
+        std::vector<float> & hidden_output,
+        std::vector<float> * moe_output) {
+    if (!offload.enabled() || model_layer < w.n_dense_lead ||
+        model_layer >= static_cast<int>(offload.layers.size())) {
+        set_last_error("Kimi-K3 accelerator MoE join: invalid layer");
+        return false;
+    }
+    const KimiK3MoeCoreOffloadLayer & layer =
+        offload.layers[static_cast<size_t>(model_layer)];
+    ggml_context * ctx = new_kimi_step_context();
+    if (!ctx) {
+        set_last_error("Kimi-K3 accelerator MoE join: context failed");
+        return false;
+    }
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 4096, false);
+    ggml_tensor * prefix_in = ggml_new_tensor_2d(
+        ctx, GGML_TYPE_F32, w.n_embd, n_tokens);
+    ggml_tensor * routed_in = ggml_new_tensor_2d(
+        ctx, GGML_TYPE_F32, w.n_expert_latent, n_tokens);
+    ggml_tensor * shared_in = ggml_new_tensor_2d(
+        ctx, GGML_TYPE_F32, w.n_embd, n_tokens);
+    ggml_set_input(prefix_in);
+    ggml_set_input(routed_in);
+    ggml_set_input(shared_in);
+    ggml_tensor * routed = routed_in;
+    if (layer.ffn_routed_norm) {
+        routed = rms_norm(
+            ctx, routed, layer.ffn_routed_norm, w.rms_eps);
+    }
+    routed = ggml_mul_mat(ctx, layer.ffn_routed_up, routed);
+    ggml_tensor * combined = ggml_add(ctx, routed, shared_in);
+    ggml_tensor * hidden = ggml_add(ctx, prefix_in, combined);
+    std::vector<GraphOutput> outputs = {{
+        hidden, hidden_output.data(), hidden_output.size() * sizeof(float)}};
+    if (moe_output) {
+        outputs.push_back({
+            combined, moe_output->data(), moe_output->size() * sizeof(float)});
+    }
+    const bool ok = run_host_boundary_graph(
+        offload.backend, ctx, graph,
+        {
+            {prefix_in, prefix.data(), prefix.size() * sizeof(float)},
+            {routed_in, routed_output.data(),
+             routed_output.size() * sizeof(float)},
+            {shared_in, shared_output.data(),
+             shared_output.size() * sizeof(float)},
+        },
+        outputs, "accelerator MoE join");
+    ggml_free(ctx);
+    return ok;
+}
+
 void populate_attn_res_bank(
         ggml_context * ctx,
         const KimiK3Weights & w,
@@ -823,36 +964,46 @@ bool streamed_kimi_k3_forward(
             continue;
         }
 
-        ggml_tensor * routed_in =
-            ggml_mul_mat(ctx, layer.ffn_routed_down, cur);
-        ggml_tensor * router_logits = nullptr;
-        TopKMoeRouterResult router =
-            build_kimi_router(ctx, graph, w, layer, cur, &router_logits);
-        // argsort_top_k returns a strided view of the full argsort result.
-        // Materialize the tiny host-boundary tensors so the graph allocator
-        // cannot recycle their backing storage before the readback.
-        ggml_tensor * selected_out =
-            ggml_cont(ctx, router.selected);
-        ggml_tensor * route_weights_out =
-            ggml_cont(ctx, router.weights_2d);
-        ggml_tensor * router_logits_out = trace_divergence
-            ? ggml_cont(ctx, router_logits) : nullptr;
+        const bool core_offloaded =
+            options.moe_core_offload &&
+            options.moe_core_offload->enabled() &&
+            il < static_cast<int>(options.moe_core_offload->layers.size()) &&
+            options.moe_core_offload->layers[
+                static_cast<size_t>(il)].ffn_gate_inp;
         const bool stop_at_capture_boundary =
             options.stop_before_moe_layer == il;
+        ggml_tensor * routed_in = nullptr;
+        ggml_tensor * selected_out = nullptr;
+        ggml_tensor * route_weights_out = nullptr;
+        ggml_tensor * router_logits_out = nullptr;
         ggml_tensor * shared = nullptr;
-        if (!stop_at_capture_boundary) {
-            ggml_tensor * shared_gate =
-                ggml_mul_mat(ctx, layer.ffn_gate_shexp, cur);
-            ggml_tensor * shared_up =
-                ggml_mul_mat(ctx, layer.ffn_up_shexp, cur);
-            shared = situ(
-                ctx, shared_gate, shared_up,
-                w.situ_beta, w.situ_linear_beta);
-            shared = ggml_mul_mat(
-                ctx, layer.ffn_down_shexp, shared);
+        if (!core_offloaded) {
+            routed_in = ggml_mul_mat(ctx, layer.ffn_routed_down, cur);
+            ggml_tensor * router_logits = nullptr;
+            TopKMoeRouterResult router = build_kimi_router(
+                ctx, graph, w, layer, cur, &router_logits);
+            // argsort_top_k returns a strided view of the full argsort result.
+            // Materialize the tiny host-boundary tensors so the graph allocator
+            // cannot recycle their backing storage before the readback.
+            selected_out = ggml_cont(ctx, router.selected);
+            route_weights_out = ggml_cont(ctx, router.weights_2d);
+            router_logits_out = trace_divergence
+                ? ggml_cont(ctx, router_logits) : nullptr;
+            if (!stop_at_capture_boundary) {
+                ggml_tensor * shared_gate =
+                    ggml_mul_mat(ctx, layer.ffn_gate_shexp, cur);
+                ggml_tensor * shared_up =
+                    ggml_mul_mat(ctx, layer.ffn_up_shexp, cur);
+                shared = situ(
+                    ctx, shared_gate, shared_up,
+                    w.situ_beta, w.situ_linear_beta);
+                shared = ggml_mul_mat(
+                    ctx, layer.ffn_down_shexp, shared);
+            }
         }
 
         std::vector<float> prefix_host;
+        std::vector<float> normalized_hidden_host;
         std::vector<float> routed_input_host(
             static_cast<size_t>(w.n_expert_latent) * n_tokens);
         std::vector<int32_t> selected(
@@ -863,7 +1014,23 @@ bool streamed_kimi_k3_forward(
         std::vector<float> pre_moe_hidden_host;
         std::vector<float> router_logits_host;
         std::vector<GraphOutput> preparation_outputs;
-        if (!stop_at_capture_boundary) {
+        if (core_offloaded) {
+            normalized_hidden_host.resize(hidden_values);
+            preparation_outputs.push_back({
+                cur, normalized_hidden_host.data(),
+                normalized_hidden_host.size() * sizeof(float)});
+            if (!stop_at_capture_boundary) {
+                prefix_host.resize(hidden_values);
+                shared_host.resize(hidden_values);
+                preparation_outputs.push_back({
+                    prefix, prefix_host.data(),
+                    prefix_host.size() * sizeof(float)});
+            }
+            if (trace_divergence) {
+                router_logits_host.resize(
+                    static_cast<size_t>(w.n_expert) * n_tokens);
+            }
+        } else if (!stop_at_capture_boundary) {
             prefix_host.resize(hidden_values);
             shared_host.resize(hidden_values);
             preparation_outputs = {{
@@ -908,6 +1075,19 @@ bool streamed_kimi_k3_forward(
             "routed layer preparation");
         ggml_free(ctx);
         if (!prep_ok) return false;
+        if (core_offloaded) {
+            if (trace_divergence) {
+                pre_moe_hidden_host = normalized_hidden_host;
+            }
+            if (!run_offloaded_moe_preparation(
+                    *options.moe_core_offload, w, il, n_tokens,
+                    normalized_hidden_host, routed_input_host, selected,
+                    route_weights,
+                    stop_at_capture_boundary ? nullptr : &shared_host,
+                    trace_divergence ? &router_logits_host : nullptr)) {
+                return false;
+            }
+        }
         if (banked) checkpoints.push_back(checkpoint_value);
         for (size_t route = 0; route < selected.size(); ++route) {
             if (selected[route] < 0 || selected[route] >= w.n_expert) {
@@ -1027,57 +1207,67 @@ bool streamed_kimi_k3_forward(
                 owner_stats.wall_us / 1000.0);
         }
 
-        ctx = new_kimi_step_context();
-        if (!ctx) {
-            set_last_error(
-                "Kimi-K3 routed layer join: context allocation failed");
-            return false;
-        }
-        graph = ggml_new_graph_custom(ctx, 4096, false);
-        ggml_tensor * prefix_in = ggml_new_tensor_2d(
-            ctx, GGML_TYPE_F32, w.n_embd, n_tokens);
-        ggml_tensor * routed_out_in = ggml_new_tensor_2d(
-            ctx, GGML_TYPE_F32, w.n_expert_latent, n_tokens);
-        ggml_tensor * shared_in = ggml_new_tensor_2d(
-            ctx, GGML_TYPE_F32, w.n_embd, n_tokens);
-        ggml_set_input(prefix_in);
-        ggml_set_input(routed_out_in);
-        ggml_set_input(shared_in);
-        ggml_tensor * routed = routed_out_in;
-        if (layer.ffn_routed_norm) {
-            routed = rms_norm(
-                ctx, routed, layer.ffn_routed_norm, w.rms_eps);
-        }
-        routed = ggml_mul_mat(
-            ctx, layer.ffn_routed_up, routed);
-        ggml_tensor * moe_shared =
-            ggml_add(ctx, routed, shared_in);
-        ggml_tensor * hidden_out =
-            ggml_add(ctx, prefix_in, moe_shared);
         std::vector<float> next_hidden(hidden_values);
         std::vector<float> moe_output_host;
-        std::vector<GraphOutput> join_outputs = {{
-            hidden_out, next_hidden.data(),
-            next_hidden.size() * sizeof(float)}};
         if (trace_divergence) {
             moe_output_host.resize(hidden_values);
-            join_outputs.push_back({
-                moe_shared, moe_output_host.data(),
-                moe_output_host.size() * sizeof(float)});
         }
-        const bool join_ok = run_host_boundary_graph(
-            backend, ctx, graph,
-            {
-                {prefix_in, prefix_host.data(),
-                 prefix_host.size() * sizeof(float)},
-                {routed_out_in, routed_output.data(),
-                 routed_output.size() * sizeof(float)},
-                {shared_in, shared_host.data(),
-                 shared_host.size() * sizeof(float)},
-            },
-            join_outputs,
-            "routed layer join");
-        ggml_free(ctx);
+        bool join_ok = false;
+        if (core_offloaded) {
+            join_ok = run_offloaded_moe_join(
+                *options.moe_core_offload, w, il, n_tokens,
+                prefix_host, routed_output, shared_host, next_hidden,
+                trace_divergence ? &moe_output_host : nullptr);
+        } else {
+            ctx = new_kimi_step_context();
+            if (!ctx) {
+                set_last_error(
+                    "Kimi-K3 routed layer join: context allocation failed");
+                return false;
+            }
+            graph = ggml_new_graph_custom(ctx, 4096, false);
+            ggml_tensor * prefix_in = ggml_new_tensor_2d(
+                ctx, GGML_TYPE_F32, w.n_embd, n_tokens);
+            ggml_tensor * routed_out_in = ggml_new_tensor_2d(
+                ctx, GGML_TYPE_F32, w.n_expert_latent, n_tokens);
+            ggml_tensor * shared_in = ggml_new_tensor_2d(
+                ctx, GGML_TYPE_F32, w.n_embd, n_tokens);
+            ggml_set_input(prefix_in);
+            ggml_set_input(routed_out_in);
+            ggml_set_input(shared_in);
+            ggml_tensor * routed = routed_out_in;
+            if (layer.ffn_routed_norm) {
+                routed = rms_norm(
+                    ctx, routed, layer.ffn_routed_norm, w.rms_eps);
+            }
+            routed = ggml_mul_mat(
+                ctx, layer.ffn_routed_up, routed);
+            ggml_tensor * moe_shared =
+                ggml_add(ctx, routed, shared_in);
+            ggml_tensor * hidden_out =
+                ggml_add(ctx, prefix_in, moe_shared);
+            std::vector<GraphOutput> join_outputs = {{
+                hidden_out, next_hidden.data(),
+                next_hidden.size() * sizeof(float)}};
+            if (trace_divergence) {
+                join_outputs.push_back({
+                    moe_shared, moe_output_host.data(),
+                    moe_output_host.size() * sizeof(float)});
+            }
+            join_ok = run_host_boundary_graph(
+                backend, ctx, graph,
+                {
+                    {prefix_in, prefix_host.data(),
+                     prefix_host.size() * sizeof(float)},
+                    {routed_out_in, routed_output.data(),
+                     routed_output.size() * sizeof(float)},
+                    {shared_in, shared_host.data(),
+                     shared_host.size() * sizeof(float)},
+                },
+                join_outputs,
+                "routed layer join");
+            ggml_free(ctx);
+        }
         if (!join_ok) return false;
         if (trace_divergence && !divergence_trace.append(
                 il, base_pos, n_tokens, banked,
@@ -1600,11 +1790,13 @@ bool kimi_k3_step(ggml_backend_t backend,
                   MoeStreamDualOwnerExecutor * dual_stream_executor,
                   const MoeStreamDualOwnerPolicy * stream_owner_policy,
                   MoeHybridRoutingStats * routing_stats,
-                  KimiK3RoutedOutputProvider * routed_output_provider) {
+                  KimiK3RoutedOutputProvider * routed_output_provider,
+                  KimiK3MoeCoreOffload * moe_core_offload) {
     KimiK3ForwardOptions options;
     options.read_logits = true;
     options.read_argmax = false;
     options.routed_output_provider = routed_output_provider;
+    options.moe_core_offload = moe_core_offload;
     KimiK3ForwardResult result;
     if (!kimi_k3_forward(
             backend, w, cache, std::vector<int32_t>{token}, position,

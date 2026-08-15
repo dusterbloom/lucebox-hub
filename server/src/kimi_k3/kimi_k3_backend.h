@@ -121,6 +121,7 @@ private:
     PlacementBackend expert_backend_kind_ = PlacementBackend::Auto;
     int expert_gpu_ = -1;
     KimiK3Weights weights_;
+    KimiK3MoeCoreOffload moe_core_offload_;
     KimiK3Cache cache_;
     DraftWeights draft_weights_;
     DraftFeatureMirror feature_ring_;
