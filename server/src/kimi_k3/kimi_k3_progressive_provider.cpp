@@ -243,6 +243,11 @@ enum class ProviderKind : uint32_t {
     // and performs one full-width down projection.  This is the partial-byte
     // counterpart to H17's all-192 recomposition control.
     RecomposedSlabs = 3,
+    // H21 one-shot gate: select four complete expert routes by calibrated
+    // native-response importance, then keep a six-slab prefix of each route.
+    // Omitted selected-route slabs use slab means; all other routes use their
+    // native expert means. Native-width arithmetic is preserved.
+    FourRouteHalfSlabsRecomposed = 4,
 };
 
 struct LayerNumerics {
@@ -515,7 +520,8 @@ public:
         if (!load_calibration(
                 aux_path, model_layer_, calibration_, err)) return false;
         if ((kind_ == ProviderKind::Slabs ||
-             kind_ == ProviderKind::RecomposedSlabs) && !init_sidecar(
+             kind_ == ProviderKind::RecomposedSlabs ||
+             kind_ == ProviderKind::FourRouteHalfSlabsRecomposed) && !init_sidecar(
                 expert_backend, sidecar_path, err)) {
             return false;
         }
@@ -527,6 +533,8 @@ public:
             "teacher=exact model-layer=%d active-position=%d trace=%s\n",
             kind_ == ProviderKind::Slabs ? "slabs" :
             kind_ == ProviderKind::RecomposedSlabs ? "slabs-recomposed" :
+            kind_ == ProviderKind::FourRouteHalfSlabsRecomposed
+                ? "four-route-half-slabs-recomposed" :
             "whole",
             budget_, model_layer_, active_position_,
             trace_path && *trace_path ? trace_path : "disabled");
@@ -568,7 +576,8 @@ public:
         }
         const bool ok = kind_ == ProviderKind::Slabs
             ? evaluate_slabs(exact_spec, routes, output, err)
-            : kind_ == ProviderKind::RecomposedSlabs
+            : (kind_ == ProviderKind::RecomposedSlabs ||
+               kind_ == ProviderKind::FourRouteHalfSlabsRecomposed)
                 ? evaluate_recomposed_slabs(
                     exact_spec, routes, exact_engine.compute_backend(),
                     output, err)
@@ -875,8 +884,15 @@ private:
         for (int token = 0; token < routes.n_tokens; ++token) {
             const size_t route_offset =
                 static_cast<size_t>(token) * kNativeTopK;
-            const std::vector<int32_t> selected =
-                select_kimi_k3_slab_prefix_ids(
+            const bool route_prefix_policy =
+                kind_ == ProviderKind::FourRouteHalfSlabsRecomposed;
+            const std::vector<int32_t> selected = route_prefix_policy
+                ? select_kimi_k3_route_slab_prefix_ids(
+                    routes.selected_ids + route_offset,
+                    routes.selected_weights + route_offset, kNativeTopK,
+                    calibration_.native_importance.data(), kExpertCount,
+                    kSlabCount, 4, 6)
+                : select_kimi_k3_slab_prefix_ids(
                     routes.selected_ids + route_offset,
                     routes.selected_weights + route_offset,
                     kNativeTopK, calibration_.slab_importance.data(),
@@ -888,6 +904,8 @@ private:
             }
             std::vector<uint8_t> selected_by_route(
                 static_cast<size_t>(kNativeTopK * kSlabCount), 0);
+            std::vector<uint8_t> selected_route(
+                static_cast<size_t>(kNativeTopK), 0);
             float * destination = output.data() +
                 static_cast<size_t>(token) * spec.output_dim;
             // Start from the calibrated aggregate tail, then replace exactly
@@ -897,9 +915,27 @@ private:
             // full-width identity control depend on F32 rounding.
             const bool use_mean_tail = budget_ < kNativeTopK * kSlabCount;
             if (use_mean_tail) {
+                for (const int32_t pseudo : selected) {
+                    const int expert = pseudo / kSlabCount;
+                    for (int route = 0; route < kNativeTopK; ++route) {
+                        if (routes.selected_ids[route_offset + route] == expert) {
+                            selected_route[static_cast<size_t>(route)] = 1;
+                            break;
+                        }
+                    }
+                }
                 for (int route = 0; route < kNativeTopK; ++route) {
                     const int expert = routes.selected_ids[route_offset + route];
                     const float weight = routes.selected_weights[route_offset + route];
+                    if (route_prefix_policy &&
+                        !selected_route[static_cast<size_t>(route)]) {
+                        const float * mean = calibration_.native_means.data() +
+                            static_cast<size_t>(expert) * kDimension;
+                        for (int dimension = 0; dimension < kDimension; ++dimension) {
+                            destination[dimension] += weight * mean[dimension];
+                        }
+                        continue;
+                    }
                     for (int rank = 0; rank < kSlabCount; ++rank) {
                         const float * mean = calibration_.slab_means.data() +
                             (static_cast<size_t>(expert) * kSlabCount + rank) *
@@ -1003,6 +1039,7 @@ private:
                 }
                 const std::vector<float> * mask = retained == kSlabCount
                     ? nullptr : &activation_mask;
+                if (retained == 0) continue;
                 if (!evaluate_host_recomposed_expert(
                         backend, spec, input, gate, up, down, mask,
                         expert_output, err)) {
@@ -3695,6 +3732,29 @@ std::vector<int32_t> select_kimi_k3_whole_expert_routes(
     return selected;
 }
 
+std::vector<int32_t> select_kimi_k3_route_slab_prefix_ids(
+        const int32_t * expert_ids, const float * router_weights, int top_k,
+        const float * expert_importance, int expert_count,
+        int slabs_per_expert, int route_budget, int slabs_per_route) {
+    if (slabs_per_expert <= 0 || slabs_per_route <= 0 ||
+        slabs_per_route > slabs_per_expert) {
+        return {};
+    }
+    const std::vector<int32_t> routes = select_kimi_k3_whole_expert_routes(
+        expert_ids, router_weights, top_k, expert_importance, expert_count,
+        route_budget);
+    if (routes.size() != static_cast<size_t>(route_budget)) return {};
+    std::vector<int32_t> selected;
+    selected.reserve(static_cast<size_t>(route_budget * slabs_per_route));
+    for (const int32_t route : routes) {
+        const int expert = expert_ids[route];
+        for (int rank = 0; rank < slabs_per_route; ++rank) {
+            selected.push_back(expert * slabs_per_expert + rank);
+        }
+    }
+    return selected;
+}
+
 KimiK3CalibratedSlabPlan plan_kimi_k3_calibrated_slabs(
         const int32_t * expert_ids, const float * router_weights, int top_k,
         const float * ordered_importance,
@@ -3814,11 +3874,14 @@ bool create_kimi_k3_progressive_provider_from_env(
     else if (std::strcmp(raw_kind, "slabs-recomposed") == 0) {
         kind = ProviderKind::RecomposedSlabs;
     }
+    else if (std::strcmp(raw_kind, "four-route-half-slabs-recomposed") == 0) {
+        kind = ProviderKind::FourRouteHalfSlabsRecomposed;
+    }
     else if (std::strcmp(raw_kind, "whole") == 0) kind = ProviderKind::Whole;
     else {
         if (err) *err =
             "DFLASH_KIMI_LAYER1_PROVIDER must be exact, slabs, "
-            "slabs-recomposed, whole, "
+            "slabs-recomposed, four-route-half-slabs-recomposed, whole, "
             "all-layers-calibrated96, "
             "all-slabs, all-slabs-grouped, all-slabs-recomposed, "
             "all-slabs-recomposed-natural96, "
@@ -3827,9 +3890,10 @@ bool create_kimi_k3_progressive_provider_from_env(
             "all-slabs-oracle96, or all-slabs-oracle144";
         return false;
     }
-    int budget = 0;
-    if (!parse_positive_int(
-            std::getenv("DFLASH_KIMI_LAYER1_BUDGET"), budget) ||
+    int budget = kind == ProviderKind::FourRouteHalfSlabsRecomposed ? 24 : 0;
+    if ((kind != ProviderKind::FourRouteHalfSlabsRecomposed &&
+         !parse_positive_int(
+            std::getenv("DFLASH_KIMI_LAYER1_BUDGET"), budget)) ||
         ((kind == ProviderKind::Slabs ||
           kind == ProviderKind::RecomposedSlabs) &&
          budget > kNativeTopK * kSlabCount) ||
@@ -3844,7 +3908,8 @@ bool create_kimi_k3_progressive_provider_from_env(
     }
     const char * sidecar = std::getenv("DFLASH_KIMI_SLAB_SIDECAR");
     if ((kind == ProviderKind::Slabs ||
-         kind == ProviderKind::RecomposedSlabs) &&
+         kind == ProviderKind::RecomposedSlabs ||
+         kind == ProviderKind::FourRouteHalfSlabsRecomposed) &&
         (!sidecar || !*sidecar)) {
         if (err) *err = "DFLASH_KIMI_SLAB_SIDECAR is required for slabs";
         return false;

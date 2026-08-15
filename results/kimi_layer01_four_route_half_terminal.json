@@ -1,0 +1,62 @@
+{
+  "schema": "kimi-k3-layer01-four-route-half-terminal-v1",
+  "status": "MEASURED_SINGLE_LAYER_EXACT_TEACHER_ACCEPTANCE",
+  "base_commit": "6862842",
+  "provider": {
+    "name": "four-route-half-slabs-recomposed",
+    "model_layer": 1,
+    "active_routes": 16,
+    "selected_routes": 4,
+    "slabs_per_selected_route": 6,
+    "selected_slabs": 24,
+    "total_active_slabs": 192,
+    "selected_fraction": 0.125,
+    "selected_route_tail": "calibrated slab means",
+    "unselected_route_tail": "calibrated native expert means",
+    "arithmetic": "native-width full-down recomposition"
+  },
+  "tests": [
+    {
+      "id": "aviation-four-generated",
+      "reference": "/mnt/kimi-k3/results/kimi-exact-baseline-local-cpu/exact-run-1.logits.f32",
+      "candidate": "/tmp/kimi-k3-terminal-layer01-four-route-half-aviation/logits.f32",
+      "prompt_tokens": 5,
+      "generated_tokens": 4,
+      "scored_rows": 8,
+      "teacher_to_candidate_kl": {
+        "mean": 0.045144692120674665,
+        "median": 0.006329794616736032,
+        "maximum": 0.27905652879380627
+      },
+      "top_choice_agreement": {"count": 8, "denominator": 8},
+      "candidate_output_ids": [198, 1587, 57195, 422],
+      "generated_ids_match_native": true,
+      "candidate_logits_sha256": "c4f1a1937ac54ae80377cbaf10ab7efb8f776b1827aa81fafaab7a7f16a5d69d"
+    },
+    {
+      "id": "raw-math-eight-generated",
+      "reference": "/mnt/kimi-k3/results/kimi-h17-quality/native/math-power.teacher.logits.f32",
+      "candidate": "/tmp/kimi-k3-terminal-layer01-four-route-half-math-8tok/logits.f32",
+      "prompt_tokens": 10,
+      "generated_tokens": 8,
+      "scored_rows": 17,
+      "teacher_to_candidate_kl": {
+        "mean": 0.07494374176169319,
+        "median": 0.05428014391856909,
+        "maximum": 0.2523350110496385
+      },
+      "top_choice_agreement": {"count": 14, "denominator": 17},
+      "candidate_output_ids": [4415, 28220, 13, 4415, 97531, 13, 4415, 7030],
+      "generated_ids_match_native": true,
+      "candidate_logits_sha256": "8ac733cbaaa06546d5a130b2e11cc935842e017278ccb260051ab6b8f7606a73",
+      "task_quality_claim": false,
+      "task_quality_caveat": "The frozen raw prompt is not chat-templated and the native teacher itself does not answer 1024; this measures exact-teacher acceptance only."
+    }
+  ],
+  "verdict": "POSITIVE_SINGLE_LAYER_SIGNAL_EARNS_SMALL_ALL_LAYER_COMPOSITION_SMOKE",
+  "limitations": [
+    "Only routed layer 1 was approximated; the other 91 routed layers were exact.",
+    "The shadow provider evaluates additional exact work and makes no throughput claim.",
+    "Identical greedy continuations do not establish distributional or task-quality parity."
+  ]
+}

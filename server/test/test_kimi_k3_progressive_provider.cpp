@@ -60,6 +60,13 @@ int main() {
         experts, weights, 2, whole_importance, 3, 1);
     assert(whole == std::vector<int32_t>{0});
 
+    const std::vector<int32_t> route_prefix =
+        select_kimi_k3_route_slab_prefix_ids(
+            experts, weights, 2, whole_importance, 3, 3, 1, 2);
+    assert(route_prefix == std::vector<int32_t>({0, 1}));
+    assert(select_kimi_k3_route_slab_prefix_ids(
+        experts, weights, 2, whole_importance, 3, 3, 1, 4).empty());
+
     // Nominal 4-slab request with one uncalibrated route: the uncalibrated
     // route is exact and only the three available calibrated slabs are read.
     const uint8_t calibrated[] = {1, 0, 0};
