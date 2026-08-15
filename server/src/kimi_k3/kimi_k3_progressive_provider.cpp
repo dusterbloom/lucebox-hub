@@ -1,17 +1,29 @@
 #include "kimi_k3_progressive_provider.h"
+#include "device_runtime.h"
+
+#include "ggml-cuda.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <fstream>
+#include <functional>
+#include <future>
 #include <iomanip>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <numeric>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -21,6 +33,7 @@
 #include <sys/stat.h>
 #else
 #include <fcntl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -37,6 +50,68 @@ constexpr size_t kAlignment = 4096;
 constexpr size_t kSlabComponentBytes = 179200;
 constexpr size_t kSlabBytes = 3 * kSlabComponentBytes;
 constexpr size_t kExpertRecordBytes = kSlabCount * kSlabBytes;
+
+// P20's first layer-wide direct-I/O implementation created and destroyed 16
+// operating-system threads at every routed layer.  The reads themselves were
+// honest, but that lifecycle cost is part of the storage critical path.  Keep
+// one deliberately small pool for the lifetime of the opt-in provider.  Jobs
+// never outlive their layer call: callers wait on every returned future before
+// any captured payload or file descriptor can be released.
+class P20DirectReadPool {
+public:
+    explicit P20DirectReadPool(size_t workers) {
+        threads_.reserve(workers);
+        for (size_t worker = 0; worker < workers; ++worker) {
+            threads_.emplace_back([this]() { run(); });
+        }
+    }
+
+    ~P20DirectReadPool() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        ready_.notify_all();
+        for (std::thread & thread : threads_) thread.join();
+    }
+
+    P20DirectReadPool(const P20DirectReadPool &) = delete;
+    P20DirectReadPool & operator=(const P20DirectReadPool &) = delete;
+
+    std::future<void> submit(std::function<void()> function) {
+        std::packaged_task<void()> task(std::move(function));
+        std::future<void> future = task.get_future();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            tasks_.push_back(std::move(task));
+        }
+        ready_.notify_one();
+        return future;
+    }
+
+private:
+    void run() {
+        for (;;) {
+            std::packaged_task<void()> task;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                ready_.wait(lock, [this]() {
+                    return stopping_ || !tasks_.empty();
+                });
+                if (stopping_ && tasks_.empty()) return;
+                task = std::move(tasks_.front());
+                tasks_.pop_front();
+            }
+            task();
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable ready_;
+    std::deque<std::packaged_task<void()>> tasks_;
+    std::vector<std::thread> threads_;
+    bool stopping_ = false;
+};
 
 struct SlabAuxHeader {
     char magic[8];
@@ -283,6 +358,15 @@ int open_read_only(const std::string & path) {
 #endif
 }
 
+int open_read_only_direct(const std::string & path) {
+#if defined(_WIN32) || !defined(O_DIRECT)
+    (void) path;
+    return -1;
+#else
+    return ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECT);
+#endif
+}
+
 void close_fd(int fd) {
 #if defined(_WIN32)
     ::_close(fd);
@@ -312,6 +396,38 @@ bool read_exact_at(int fd, void * destination, size_t bytes, uint64_t offset) {
     return ::pread(fd, destination, bytes, static_cast<off_t>(offset)) ==
            static_cast<ssize_t>(bytes);
 #endif
+}
+
+struct ProcessIoSnapshot {
+    uint64_t read_bytes = 0;
+    uint64_t rchar = 0;
+    uint64_t syscr = 0;
+    uint64_t minor_faults = 0;
+    uint64_t major_faults = 0;
+};
+
+ProcessIoSnapshot process_io_snapshot() {
+    ProcessIoSnapshot result;
+#if !defined(_WIN32)
+    std::ifstream input("/proc/self/io");
+    std::string key;
+    uint64_t value = 0;
+    while (input >> key >> value) {
+        if (key == "read_bytes:") result.read_bytes = value;
+        else if (key == "rchar:") result.rchar = value;
+        else if (key == "syscr:") result.syscr = value;
+    }
+    struct rusage usage{};
+    if (::getrusage(RUSAGE_SELF, &usage) == 0) {
+        result.minor_faults = static_cast<uint64_t>(usage.ru_minflt);
+        result.major_faults = static_cast<uint64_t>(usage.ru_majflt);
+    }
+#endif
+    return result;
+}
+
+uint64_t saturating_delta(uint64_t end, uint64_t begin) {
+    return end >= begin ? end - begin : 0;
 }
 
 std::string natural_sidecar_path(const std::string & directory,
@@ -1435,6 +1551,160 @@ bool evaluate_host_recomposed_expert(
     return status == GGML_STATUS_SUCCESS;
 }
 
+struct SparseSlabPayload {
+    uint16_t natural = 0;
+    std::vector<uint8_t> gate;
+    std::vector<uint8_t> up;
+    std::vector<uint8_t> down;
+};
+
+// P20's first production-shaped baseline keeps the native full-width graph but
+// initializes its device tensors in place and patches only selected slab bytes.
+// The activation mask makes the omitted gate/up/down bytes semantically inert.
+// In particular, no reconstructed full expert crosses PCIe.
+bool evaluate_sparse_device_expert(
+        ggml_backend_t backend,
+        const MoeStreamExpertSpec & spec,
+        const float * input_data,
+        const std::vector<SparseSlabPayload> & slabs,
+        const std::vector<float> & activation_mask_values,
+        size_t down_slab_row_bytes,
+        std::vector<float> & result,
+        uint64_t & authoritative_h2d_bytes,
+        uint64_t & metadata_h2d_bytes,
+        uint64_t & device_zero_bytes,
+        std::string * err) {
+#if !defined(DFLASH27B_BACKEND_CUDA)
+    (void) backend; (void) spec; (void) input_data; (void) slabs;
+    (void) activation_mask_values; (void) down_slab_row_bytes; (void) result;
+    (void) authoritative_h2d_bytes; (void) metadata_h2d_bytes;
+    (void) device_zero_bytes;
+    if (err) *err = "P20 sparse scratch currently requires a CUDA backend";
+    return false;
+#else
+    if (!backend || !ggml_backend_is_cuda(backend) || spec.fused_gate_up ||
+        !input_data || activation_mask_values.size() !=
+            static_cast<size_t>(spec.intermediate_dim)) {
+        if (err) *err = "P20 sparse scratch received an incompatible expert";
+        return false;
+    }
+    ggml_init_params parameters{};
+    parameters.mem_size = 32 * 1024 * 1024;
+    parameters.no_alloc = true;
+    ggml_context * context = ggml_init(parameters);
+    if (!context) {
+        if (err) *err = "P20 sparse scratch ggml_init failed";
+        return false;
+    }
+    ggml_tensor * input = ggml_new_tensor_2d(
+        context, GGML_TYPE_F32, spec.input_dim, 1);
+    ggml_tensor * gate = ggml_new_tensor_2d(
+        context, spec.gate_type, spec.input_dim, spec.intermediate_dim);
+    ggml_tensor * up = ggml_new_tensor_2d(
+        context, spec.up_type, spec.input_dim, spec.intermediate_dim);
+    ggml_tensor * down = ggml_new_tensor_2d(
+        context, spec.down_type, spec.intermediate_dim, spec.output_dim);
+    const bool needs_mask = slabs.size() != kSlabCount;
+    ggml_tensor * activation_mask = needs_mask
+        ? ggml_new_tensor_1d(context, GGML_TYPE_F32, spec.intermediate_dim)
+        : nullptr;
+    ggml_set_input(input);
+    ggml_set_input(gate);
+    ggml_set_input(up);
+    ggml_set_input(down);
+    if (activation_mask) ggml_set_input(activation_mask);
+    ggml_tensor * gate_value = probe_scale_tensor(
+        context, ggml_mul_mat(context, gate, input), spec.gate_scale);
+    ggml_tensor * up_value = probe_scale_tensor(
+        context, ggml_mul_mat(context, up, input), spec.up_scale);
+    ggml_tensor * activated = probe_gated_activation(
+        context, spec, gate_value, up_value);
+    if (activation_mask) activated = ggml_mul(context, activated, activation_mask);
+    ggml_tensor * output = probe_scale_tensor(
+        context, ggml_mul_mat(context, down, activated), spec.down_scale);
+    ggml_cgraph * graph = ggml_new_graph_custom(context, 512, false);
+    ggml_set_output(output);
+    ggml_build_forward_expand(graph, output);
+    ggml_gallocr_t allocator = ggml_gallocr_new(
+        ggml_backend_get_default_buffer_type(backend));
+    if (!allocator || !ggml_gallocr_alloc_graph(allocator, graph)) {
+        if (err) *err = "P20 sparse scratch graph allocation failed";
+        if (allocator) ggml_gallocr_free(allocator);
+        ggml_free(context);
+        return false;
+    }
+
+    auto cuda_ok = [&](cudaError_t status, const char * operation) {
+        if (status == cudaSuccess) return true;
+        if (err) {
+            *err = std::string("P20 ") + operation + " failed: " +
+                cudaGetErrorString(status);
+        }
+        return false;
+    };
+    bool ok =
+        cuda_ok(cudaMemset(gate->data, 0, ggml_nbytes(gate)), "gate zero") &&
+        cuda_ok(cudaMemset(up->data, 0, ggml_nbytes(up)), "up zero") &&
+        cuda_ok(cudaMemset(down->data, 0, ggml_nbytes(down)), "down zero");
+    device_zero_bytes += ggml_nbytes(gate) + ggml_nbytes(up) +
+        ggml_nbytes(down);
+    for (const SparseSlabPayload & slab : slabs) {
+        if (!ok || slab.natural >= kSlabCount ||
+            slab.gate.empty() || slab.up.empty() || slab.down.empty()) {
+            ok = false;
+            if (err && err->empty()) *err = "P20 invalid sparse slab payload";
+            break;
+        }
+        const size_t gate_offset =
+            static_cast<size_t>(slab.natural) * slab.gate.size();
+        const size_t up_offset =
+            static_cast<size_t>(slab.natural) * slab.up.size();
+        const size_t down_offset =
+            static_cast<size_t>(slab.natural) * down_slab_row_bytes;
+        ok = cuda_ok(cudaMemcpy(
+                static_cast<uint8_t *>(gate->data) + gate_offset,
+                slab.gate.data(), slab.gate.size(), cudaMemcpyHostToDevice),
+                "gate slab upload") &&
+            cuda_ok(cudaMemcpy(
+                static_cast<uint8_t *>(up->data) + up_offset,
+                slab.up.data(), slab.up.size(), cudaMemcpyHostToDevice),
+                "up slab upload") &&
+            cuda_ok(cudaMemcpy2D(
+                static_cast<uint8_t *>(down->data) + down_offset,
+                down->nb[1], slab.down.data(), down_slab_row_bytes,
+                down_slab_row_bytes, static_cast<size_t>(spec.output_dim),
+                cudaMemcpyHostToDevice), "down slab upload");
+        authoritative_h2d_bytes +=
+            slab.gate.size() + slab.up.size() + slab.down.size();
+    }
+    if (ok) {
+        ggml_backend_tensor_set(
+            input, input_data, 0,
+            static_cast<size_t>(spec.input_dim) * sizeof(float));
+        if (activation_mask) {
+            ggml_backend_tensor_set(
+                activation_mask, activation_mask_values.data(), 0,
+                activation_mask_values.size() * sizeof(float));
+        }
+        metadata_h2d_bytes +=
+            static_cast<uint64_t>(spec.input_dim) * sizeof(float) +
+            (activation_mask
+                ? activation_mask_values.size() * sizeof(float) : 0);
+        const ggml_status status = ggml_backend_graph_compute(backend, graph);
+        ok = status == GGML_STATUS_SUCCESS;
+        if (!ok && err) *err = "P20 sparse scratch graph compute failed";
+    }
+    if (ok) {
+        result.resize(static_cast<size_t>(spec.output_dim));
+        ggml_backend_tensor_get(
+            output, result.data(), 0, result.size() * sizeof(float));
+    }
+    ggml_gallocr_free(allocator);
+    ggml_free(context);
+    return ok;
+#endif
+}
+
 class AllSlabsProvider final : public KimiK3RoutedOutputProvider {
 public:
     ~AllSlabsProvider() override {
@@ -2265,6 +2535,71 @@ public:
             return false;
         }
         backend_ = backend;
+        if (const char * raw_budget =
+                std::getenv("DFLASH_KIMI_P20_SLAB_BUDGET")) {
+            char * end = nullptr;
+            const long parsed = std::strtol(raw_budget, &end, 10);
+            if (end == raw_budget || *end != '\0' ||
+                (parsed != 96 && parsed != 192)) {
+                if (err) *err =
+                    "DFLASH_KIMI_P20_SLAB_BUDGET must be 96 or 192";
+                return false;
+            }
+            budget_ = static_cast<int>(parsed);
+        }
+        if (const char * layout =
+                std::getenv("DFLASH_KIMI_P20_PHYSICAL_LAYOUT")) {
+            if (std::strcmp(layout, "reference") == 0 || *layout == '\0') {
+                sparse_scratch_ = false;
+            } else if (std::strcmp(layout, "scratch") == 0) {
+                sparse_scratch_ = true;
+            } else {
+                if (err) *err =
+                    "DFLASH_KIMI_P20_PHYSICAL_LAYOUT must be reference or scratch";
+                return false;
+            }
+        }
+        if (const char * io_backend =
+                std::getenv("DFLASH_KIMI_P20_IO_BACKEND")) {
+            if (std::strcmp(io_backend, "current") == 0 ||
+                *io_backend == '\0') {
+                direct_pread_ = false;
+            } else if (std::strcmp(io_backend, "direct-pread") == 0) {
+                direct_pread_ = true;
+            } else {
+                if (err) *err =
+                    "DFLASH_KIMI_P20_IO_BACKEND must be current or direct-pread";
+                return false;
+            }
+        }
+        if (direct_pread_ && !sparse_scratch_) {
+            if (err) *err =
+                "P20 direct-pread currently requires the scratch layout";
+            return false;
+        }
+        if (direct_pread_) {
+            direct_read_pool_ = std::make_unique<P20DirectReadPool>(16);
+        }
+        if (const char * trace_path = std::getenv("DFLASH_KIMI_P20_IO_TRACE")) {
+            if (*trace_path) {
+                io_trace_.open(trace_path, std::ios::out | std::ios::trunc);
+                if (!io_trace_) {
+                    if (err) *err = std::string("cannot create P20 I/O trace ") +
+                        trace_path;
+                    return false;
+                }
+                io_trace_ <<
+                    "request_id\tprompt_id\tbase_pos\ttoken_index\tmodel_layer"
+                    "\texpert_id\tregion\tqtype\tprefix_depth\texact_fallback"
+                    "\tfile_path\tfile_offset\tlogical_length\taligned_offset"
+                    "\taligned_length\tdestination_kind\tdestination_offset"
+                    "\texplicit_read_bytes\n";
+                process_io_start_ = process_io_snapshot();
+                const char * prompt_id =
+                    std::getenv("DFLASH_KIMI_P20_PROMPT_ID");
+                prompt_id_ = prompt_id && *prompt_id ? prompt_id : "0";
+            }
+        }
         layers_.resize(kLastRoutedLayer + 1);
         int valid_layers = 0;
         for (int layer = kFirstRoutedLayer; layer <= kLastRoutedLayer; ++layer) {
@@ -2287,9 +2622,12 @@ public:
         metrics_path_ = metrics_path && *metrics_path ? metrics_path : "";
         std::fprintf(stderr,
             "[kimi-k3-calibrated96] status=PILOT quality-certified=false "
-            "speed-claim=false requested-budget=96 valid-layers=%d/92 "
+            "speed-claim=false requested-budget=%d physical-layout=%s "
+            "io-backend=%s "
+            "valid-layers=%d/92 "
             "invalid-layer-action=exact insufficient-expert-action=exact\n",
-            valid_layers);
+            budget_, sparse_scratch_ ? "scratch" : "reference",
+            direct_pread_ ? "direct-pread" : "current", valid_layers);
         return true;
     }
 
@@ -2298,7 +2636,7 @@ public:
             model_layer <= kLastRoutedLayer;
     }
 
-    bool evaluate(int model_layer, int,
+    bool evaluate(int model_layer, int base_pos,
                   const MoeStreamExpertSpec & spec,
                   const MoeStreamRouteBatch & routes,
                   MoeHybridStreamEngine & exact_engine,
@@ -2319,7 +2657,8 @@ public:
             return ok;
         }
         return evaluate_calibrated(
-            model_layer, state, spec, routes, exact_engine, output, err);
+            model_layer, base_pos, state, spec, routes, exact_engine, output,
+            err);
     }
 
 private:
@@ -2524,25 +2863,342 @@ private:
                 ggml_row_size(spec.down_type, spec.intermediate_dim);
     }
 
-    static void observe_exact_layer(LayerState & state, int n_tokens,
-                                    const MoeStreamExpertSpec & spec) {
+    void observe_exact_layer(LayerState & state, int n_tokens,
+                             const MoeStreamExpertSpec & spec) {
         const uint64_t routes = static_cast<uint64_t>(n_tokens) * kNativeTopK;
         state.traffic.tokens += n_tokens;
         state.traffic.requested_nominal_slabs +=
-            static_cast<uint64_t>(n_tokens) * kNominalBudget;
+            static_cast<uint64_t>(n_tokens) * budget_;
         state.traffic.exact_fallback_routes += routes;
         state.traffic.exact_fallback_bytes +=
             routes * exact_record_bytes(spec);
     }
 
+    bool traced_read_exact_at(
+            int fd, void * destination, size_t bytes, uint64_t offset,
+            int model_layer, int base_pos, int token_index, int expert,
+            const char * region, const char * qtype, int prefix_depth,
+            bool exact_fallback, const std::string & path,
+            const char * destination_kind, uint64_t destination_offset) {
+        const bool ok = read_exact_at(fd, destination, bytes, offset);
+        explicit_read_bytes_ += ok ? bytes : 0;
+        if (!io_trace_) return ok;
+        const uint64_t aligned_offset = offset & ~(kAlignment - 1);
+        const uint64_t end = offset + bytes;
+        const uint64_t aligned_end =
+            (end + kAlignment - 1) & ~(static_cast<uint64_t>(kAlignment) - 1);
+        io_trace_ << next_request_id_++ << '\t' << prompt_id_ << '\t'
+                  << base_pos << '\t' << token_index << '\t' << model_layer
+                  << '\t' << expert << '\t' << region << '\t' << qtype
+                  << '\t' << prefix_depth << '\t'
+                  << (exact_fallback ? 1 : 0) << '\t' << path << '\t'
+                  << offset << '\t' << bytes << '\t' << aligned_offset
+                  << '\t' << aligned_end - aligned_offset << '\t'
+                  << destination_kind << '\t' << destination_offset << '\t'
+                  << (ok ? bytes : 0) << '\n';
+        return ok;
+    }
+
+    void trace_fallback(int model_layer, int base_pos, int token_index,
+                        int expert, const MoeStreamExpertSpec & spec) {
+        if (!io_trace_) return;
+        io_trace_ << next_request_id_++ << '\t' << prompt_id_ << '\t'
+                  << base_pos << '\t' << token_index << '\t' << model_layer
+                  << '\t' << expert
+                  << "\tnative-exact-expert\tmixed\t12\t1"
+                  << "\t<native-model-shards>\t-1\t"
+                  << exact_record_bytes(spec)
+                  << "\t-1\t-1\tmoe-stream-engine\t0\t0\n";
+    }
+
+    bool read_sparse_payloads_direct(
+            int fd, const LayerState & state,
+            const MoeStreamExpertSpec & spec, int model_layer, int base_pos,
+            int token_index, int expert, int prefix_depth,
+            std::vector<SparseSlabPayload> & slabs, std::string * err) {
+#if defined(_WIN32) || !defined(O_DIRECT)
+        (void) fd; (void) state; (void) spec; (void) model_layer;
+        (void) base_pos; (void) token_index; (void) expert;
+        (void) prefix_depth; (void) slabs;
+        if (err) *err = "P20 direct-pread is unavailable on this platform";
+        return false;
+#else
+        struct Completion {
+            bool ok = false;
+            uint64_t aligned_offset = 0;
+            size_t aligned_bytes = 0;
+        };
+        std::vector<Completion> completions(slabs.size());
+        const auto io_started = std::chrono::steady_clock::now();
+        std::atomic<size_t> next{0};
+        std::atomic<bool> failed{false};
+        const size_t workers = std::min<size_t>(16, slabs.size());
+        std::vector<std::future<void>> workers_done;
+        workers_done.reserve(workers);
+        for (size_t worker = 0; worker < workers; ++worker) {
+            workers_done.push_back(direct_read_pool_->submit([&]() {
+                for (;;) {
+                    const size_t index = next.fetch_add(1);
+                    if (index >= slabs.size()) break;
+                    SparseSlabPayload & slab = slabs[index];
+                    const uint64_t record = state.payload_offset +
+                        static_cast<uint64_t>(
+                            expert * kSlabCount + slab.natural) *
+                            state.slab_bytes;
+                    const uint64_t aligned_offset =
+                        record & ~(static_cast<uint64_t>(kAlignment) - 1);
+                    const size_t prefix = static_cast<size_t>(
+                        record - aligned_offset);
+                    const size_t aligned_bytes = static_cast<size_t>(
+                        (prefix + state.slab_bytes + kAlignment - 1) &
+                        ~(static_cast<uint64_t>(kAlignment) - 1));
+                    void * raw = nullptr;
+                    if (::posix_memalign(&raw, kAlignment, aligned_bytes) != 0) {
+                        failed = true;
+                        break;
+                    }
+                    const ssize_t got = ::pread(
+                        fd, raw, aligned_bytes,
+                        static_cast<off_t>(aligned_offset));
+                    if (got == static_cast<ssize_t>(aligned_bytes)) {
+                        const auto * payload =
+                            static_cast<const uint8_t *>(raw) + prefix;
+                        std::memcpy(
+                            slab.gate.data(), payload, slab.gate.size());
+                        std::memcpy(
+                            slab.up.data(), payload + slab.gate.size(),
+                            slab.up.size());
+                        std::memcpy(
+                            slab.down.data(),
+                            payload + slab.gate.size() + slab.up.size(),
+                            slab.down.size());
+                        completions[index] = {
+                            true, aligned_offset, aligned_bytes};
+                    } else {
+                        failed = true;
+                    }
+                    std::free(raw);
+                    if (failed.load()) break;
+                }
+            }));
+        }
+        for (std::future<void> & done : workers_done) done.get();
+        direct_io_ns_ += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - io_started).count());
+        if (failed.load() || std::any_of(
+                completions.begin(), completions.end(),
+                [](const Completion & value) { return !value.ok; })) {
+            if (err) *err = "P20 aligned direct sidecar read failed";
+            return false;
+        }
+        for (size_t index = 0; index < slabs.size(); ++index) {
+            const SparseSlabPayload & slab = slabs[index];
+            const uint64_t record = state.payload_offset +
+                static_cast<uint64_t>(expert * kSlabCount + slab.natural) *
+                    state.slab_bytes;
+            explicit_read_bytes_ += completions[index].aligned_bytes;
+            direct_physical_bytes_ += completions[index].aligned_bytes;
+            if (!io_trace_) continue;
+            const auto emit = [&](const char * region, const char * qtype,
+                                  uint64_t offset, size_t logical,
+                                  uint64_t destination_offset,
+                                  uint64_t explicit_bytes) {
+                io_trace_ << next_request_id_++ << '\t' << prompt_id_ << '\t'
+                          << base_pos << '\t' << token_index << '\t'
+                          << model_layer << '\t' << expert << '\t' << region
+                          << '\t' << qtype << '\t' << prefix_depth
+                          << "\t0\t" << state.sidecar_path << '\t' << offset
+                          << '\t' << logical << '\t'
+                          << completions[index].aligned_offset << '\t'
+                          << completions[index].aligned_bytes
+                          << "\thost-compact-slab\t" << destination_offset
+                          << '\t' << explicit_bytes << '\n';
+            };
+            emit("gate", ggml_type_name(spec.gate_type), record,
+                 slab.gate.size(), 0, completions[index].aligned_bytes);
+            emit("up", ggml_type_name(spec.up_type),
+                 record + slab.gate.size(), slab.up.size(),
+                 slab.gate.size(), 0);
+            emit("down", ggml_type_name(spec.down_type),
+                 record + slab.gate.size() + slab.up.size(), slab.down.size(),
+                 slab.gate.size() + slab.up.size(), 0);
+        }
+        return true;
+#endif
+    }
+
+    bool read_sparse_payloads_direct_batch(
+            int fd, const LayerState & state,
+            const MoeStreamExpertSpec & spec, int model_layer, int base_pos,
+            int token_index, size_t route_offset,
+            const MoeStreamRouteBatch & routes,
+            const std::vector<int> & calibrated_routes,
+            const std::vector<uint8_t> & selected_by_route,
+            std::vector<std::vector<SparseSlabPayload>> & payloads,
+            std::string * err) {
+#if defined(_WIN32) || !defined(O_DIRECT)
+        (void) fd; (void) state; (void) spec; (void) model_layer;
+        (void) base_pos; (void) token_index; (void) route_offset;
+        (void) routes; (void) calibrated_routes; (void) selected_by_route;
+        (void) payloads;
+        if (err) *err = "P20 direct-pread is unavailable on this platform";
+        return false;
+#else
+        struct Task {
+            int route = 0;
+            int expert = 0;
+            int prefix_depth = 0;
+            size_t slab_index = 0;
+            uint64_t aligned_offset = 0;
+            size_t aligned_bytes = 0;
+            bool ok = false;
+        };
+        payloads.clear();
+        payloads.resize(kNativeTopK);
+        std::vector<Task> tasks;
+        for (const int route : calibrated_routes) {
+            const int expert = routes.selected_ids[route_offset + route];
+            int prefix_depth = 0;
+            for (int rank = 0; rank < kSlabCount; ++rank) {
+                if (selected_by_route[
+                        static_cast<size_t>(route * kSlabCount + rank)]) {
+                    ++prefix_depth;
+                }
+            }
+            std::vector<SparseSlabPayload> & route_payloads =
+                payloads[static_cast<size_t>(route)];
+            route_payloads.reserve(static_cast<size_t>(prefix_depth));
+            for (int rank = 0; rank < kSlabCount; ++rank) {
+                if (!selected_by_route[
+                        static_cast<size_t>(route * kSlabCount + rank)]) {
+                    continue;
+                }
+                SparseSlabPayload slab;
+                slab.natural = state.order[
+                    static_cast<size_t>(expert) * kSlabCount + rank];
+                slab.gate.resize(
+                    static_cast<size_t>(state.gate_slab_bytes));
+                slab.up.resize(static_cast<size_t>(state.up_slab_bytes));
+                slab.down.resize(
+                    static_cast<size_t>(state.down_slab_bytes));
+                const size_t slab_index = route_payloads.size();
+                route_payloads.push_back(std::move(slab));
+                tasks.push_back({route, expert, prefix_depth, slab_index});
+            }
+        }
+        const auto io_started = std::chrono::steady_clock::now();
+        std::atomic<size_t> next{0};
+        std::atomic<bool> failed{false};
+        const size_t workers = std::min<size_t>(16, tasks.size());
+        std::vector<std::future<void>> workers_done;
+        workers_done.reserve(workers);
+        for (size_t worker = 0; worker < workers; ++worker) {
+            workers_done.push_back(direct_read_pool_->submit([&]() {
+                for (;;) {
+                    const size_t task_index = next.fetch_add(1);
+                    if (task_index >= tasks.size()) break;
+                    Task & task = tasks[task_index];
+                    SparseSlabPayload & slab = payloads[
+                        static_cast<size_t>(task.route)][task.slab_index];
+                    const uint64_t record = state.payload_offset +
+                        static_cast<uint64_t>(
+                            task.expert * kSlabCount + slab.natural) *
+                            state.slab_bytes;
+                    task.aligned_offset =
+                        record & ~(static_cast<uint64_t>(kAlignment) - 1);
+                    const size_t prefix = static_cast<size_t>(
+                        record - task.aligned_offset);
+                    task.aligned_bytes = static_cast<size_t>(
+                        (prefix + state.slab_bytes + kAlignment - 1) &
+                        ~(static_cast<uint64_t>(kAlignment) - 1));
+                    void * raw = nullptr;
+                    if (::posix_memalign(
+                            &raw, kAlignment, task.aligned_bytes) != 0) {
+                        failed = true;
+                        break;
+                    }
+                    const ssize_t got = ::pread(
+                        fd, raw, task.aligned_bytes,
+                        static_cast<off_t>(task.aligned_offset));
+                    if (got == static_cast<ssize_t>(task.aligned_bytes)) {
+                        const auto * source =
+                            static_cast<const uint8_t *>(raw) + prefix;
+                        std::memcpy(
+                            slab.gate.data(), source, slab.gate.size());
+                        std::memcpy(
+                            slab.up.data(), source + slab.gate.size(),
+                            slab.up.size());
+                        std::memcpy(
+                            slab.down.data(),
+                            source + slab.gate.size() + slab.up.size(),
+                            slab.down.size());
+                        task.ok = true;
+                    } else {
+                        failed = true;
+                    }
+                    std::free(raw);
+                    if (failed.load()) break;
+                }
+            }));
+        }
+        for (std::future<void> & done : workers_done) done.get();
+        direct_io_ns_ += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - io_started).count());
+        if (failed.load() || std::any_of(
+                tasks.begin(), tasks.end(),
+                [](const Task & task) { return !task.ok; })) {
+            if (err) *err = "P20 aligned layer-batch sidecar read failed";
+            return false;
+        }
+        for (const Task & task : tasks) {
+            const SparseSlabPayload & slab = payloads[
+                static_cast<size_t>(task.route)][task.slab_index];
+            const uint64_t record = state.payload_offset +
+                static_cast<uint64_t>(
+                    task.expert * kSlabCount + slab.natural) *
+                    state.slab_bytes;
+            explicit_read_bytes_ += task.aligned_bytes;
+            direct_physical_bytes_ += task.aligned_bytes;
+            if (!io_trace_) continue;
+            const auto emit = [&](const char * region, const char * qtype,
+                                  uint64_t offset, size_t logical,
+                                  uint64_t destination_offset,
+                                  uint64_t explicit_bytes) {
+                io_trace_ << next_request_id_++ << '\t' << prompt_id_ << '\t'
+                          << base_pos << '\t' << token_index << '\t'
+                          << model_layer << '\t' << task.expert << '\t'
+                          << region << '\t' << qtype << '\t'
+                          << task.prefix_depth << "\t0\t"
+                          << state.sidecar_path << '\t' << offset << '\t'
+                          << logical << '\t' << task.aligned_offset << '\t'
+                          << task.aligned_bytes
+                          << "\thost-compact-slab\t" << destination_offset
+                          << '\t' << explicit_bytes << '\n';
+            };
+            emit("gate", ggml_type_name(spec.gate_type), record,
+                 slab.gate.size(), 0, task.aligned_bytes);
+            emit("up", ggml_type_name(spec.up_type),
+                 record + slab.gate.size(), slab.up.size(), slab.gate.size(), 0);
+            emit("down", ggml_type_name(spec.down_type),
+                 record + slab.gate.size() + slab.up.size(), slab.down.size(),
+                 slab.gate.size() + slab.up.size(), 0);
+        }
+        return true;
+#endif
+    }
+
     bool evaluate_calibrated(
-            int model_layer, LayerState & state,
+            int model_layer, int base_pos, LayerState & state,
             const MoeStreamExpertSpec & spec,
             const MoeStreamRouteBatch & routes,
             MoeHybridStreamEngine & exact_engine,
             std::vector<float> & output, std::string * err) {
         const int aux_fd = open_read_only(state.aux_path);
-        const int sidecar_fd = open_read_only(state.sidecar_path);
+        const int sidecar_fd = direct_pread_
+            ? open_read_only_direct(state.sidecar_path)
+            : open_read_only(state.sidecar_path);
         if (aux_fd < 0 || sidecar_fd < 0) {
             if (aux_fd >= 0) close_fd(aux_fd);
             if (sidecar_fd >= 0) close_fd(sidecar_fd);
@@ -2578,9 +3234,11 @@ private:
         const size_t down_slab_row_bytes = static_cast<size_t>(
             state.down_slab_bytes / spec.output_dim);
         const size_t down_full_row_bytes = down_slab_row_bytes * kSlabCount;
-        std::vector<uint8_t> gate(gate_full_bytes, 0);
-        std::vector<uint8_t> up(up_full_bytes, 0);
-        std::vector<uint8_t> down(
+        std::vector<uint8_t> gate(
+            sparse_scratch_ ? 0 : gate_full_bytes, 0);
+        std::vector<uint8_t> up(
+            sparse_scratch_ ? 0 : up_full_bytes, 0);
+        std::vector<uint8_t> down(sparse_scratch_ ? 0 :
             down_full_row_bytes * static_cast<size_t>(spec.output_dim), 0);
         std::vector<uint8_t> slab_down(
             static_cast<size_t>(state.down_slab_bytes));
@@ -2595,12 +3253,18 @@ private:
         for (int token = 0; token < routes.n_tokens; ++token) {
             const size_t route_offset =
                 static_cast<size_t>(token) * kNativeTopK;
+            std::vector<uint8_t> effective_calibrated = state.calibrated;
+            if (budget_ == kNativeTopK * kSlabCount) {
+                std::fill(
+                    effective_calibrated.begin(),
+                    effective_calibrated.end(), static_cast<uint8_t>(1));
+            }
             const KimiK3CalibratedSlabPlan plan =
                 plan_kimi_k3_calibrated_slabs(
                     routes.selected_ids + route_offset,
                     routes.selected_weights + route_offset, kNativeTopK,
-                    state.importance.data(), state.calibrated.data(),
-                    kExpertCount, kSlabCount, kNominalBudget);
+                    state.importance.data(), effective_calibrated.data(),
+                    kExpertCount, kSlabCount, budget_);
             std::vector<int> calibrated_routes;
             std::vector<int> fallback_routes;
             for (int route = 0; route < kNativeTopK; ++route) {
@@ -2610,7 +3274,7 @@ private:
                     if (err) *err = "calibrated96 saw an invalid expert id";
                     return false;
                 }
-                (state.calibrated[static_cast<size_t>(expert)]
+                (effective_calibrated[static_cast<size_t>(expert)]
                     ? calibrated_routes : fallback_routes).push_back(route);
             }
             const int selected_count = static_cast<int>(
@@ -2638,6 +3302,14 @@ private:
                 selected_by_route[
                     static_cast<size_t>(*found * kSlabCount + rank)] = 1;
             }
+            std::vector<std::vector<SparseSlabPayload>> direct_payloads;
+            if (direct_pread_ && !read_sparse_payloads_direct_batch(
+                    sidecar_fd, state, spec, model_layer, base_pos, token,
+                    route_offset, routes, calibrated_routes,
+                    selected_by_route, direct_payloads, err)) {
+                return exact_layer_fallback(
+                    "P20 direct layer-batch sidecar read failed");
+            }
 
             std::vector<int> stable_routes = calibrated_routes;
             std::stable_sort(stable_routes.begin(), stable_routes.end(),
@@ -2654,8 +3326,17 @@ private:
                 const uint64_t mean_offset = state.means_offset +
                     static_cast<uint64_t>(expert) * kSlabCount * kDimension *
                         sizeof(float);
-                if (!read_exact_at(aux_fd, means.data(),
-                        means.size() * sizeof(float), mean_offset)) {
+                const int prefix_depth = static_cast<int>(std::count(
+                    selected_by_route.begin() +
+                        static_cast<ptrdiff_t>(route * kSlabCount),
+                    selected_by_route.begin() +
+                        static_cast<ptrdiff_t>((route + 1) * kSlabCount),
+                    static_cast<uint8_t>(1)));
+                if (!traced_read_exact_at(
+                        aux_fd, means.data(), means.size() * sizeof(float),
+                        mean_offset, model_layer, base_pos, token, expert,
+                        "slab-mean", "f32", prefix_depth, false,
+                        state.aux_path, "host-mean", 0)) {
                     return exact_layer_fallback("short calibrated mean read");
                 }
                 const float weight =
@@ -2678,8 +3359,20 @@ private:
                 std::fill(up.begin(), up.end(), 0);
                 std::fill(down.begin(), down.end(), 0);
                 std::fill(mask.begin(), mask.end(), 0.0f);
-                int retained = 0;
-                for (int rank = 0; rank < kSlabCount; ++rank) {
+                std::vector<SparseSlabPayload> sparse_slabs = direct_pread_
+                    ? std::move(direct_payloads[static_cast<size_t>(route)])
+                    : std::vector<SparseSlabPayload>{};
+                sparse_slabs.reserve(kSlabCount);
+                int retained = static_cast<int>(sparse_slabs.size());
+                if (direct_pread_) {
+                    for (const SparseSlabPayload & slab : sparse_slabs) {
+                        std::fill_n(mask.begin() +
+                            static_cast<size_t>(slab.natural) * kSlabSize,
+                            kSlabSize, 1.0f);
+                    }
+                }
+                for (int rank = 0; !direct_pread_ && rank < kSlabCount;
+                     ++rank) {
                     if (!selected_by_route[
                             static_cast<size_t>(route * kSlabCount + rank)]) {
                         continue;
@@ -2689,42 +3382,96 @@ private:
                     const uint64_t record = state.payload_offset +
                         static_cast<uint64_t>(expert * kSlabCount + natural) *
                             state.slab_bytes;
-                    if (!read_exact_at(sidecar_fd,
-                            gate.data() + static_cast<size_t>(natural) *
-                                state.gate_slab_bytes,
-                            static_cast<size_t>(state.gate_slab_bytes), record) ||
-                        !read_exact_at(sidecar_fd,
-                            up.data() + static_cast<size_t>(natural) *
-                                state.up_slab_bytes,
+                    SparseSlabPayload sparse;
+                    if (sparse_scratch_) {
+                        sparse.natural = natural;
+                        sparse.gate.resize(
+                            static_cast<size_t>(state.gate_slab_bytes));
+                        sparse.up.resize(
+                            static_cast<size_t>(state.up_slab_bytes));
+                        sparse.down.resize(
+                            static_cast<size_t>(state.down_slab_bytes));
+                    }
+                    uint8_t * gate_destination = sparse_scratch_
+                        ? sparse.gate.data()
+                        : gate.data() + static_cast<size_t>(natural) *
+                            state.gate_slab_bytes;
+                    uint8_t * up_destination = sparse_scratch_
+                        ? sparse.up.data()
+                        : up.data() + static_cast<size_t>(natural) *
+                            state.up_slab_bytes;
+                    uint8_t * down_destination = sparse_scratch_
+                        ? sparse.down.data() : slab_down.data();
+                    const char * host_destination = sparse_scratch_
+                        ? "host-compact-slab" : "host-full-width";
+                    if (!traced_read_exact_at(
+                            sidecar_fd, gate_destination,
+                            static_cast<size_t>(state.gate_slab_bytes), record,
+                            model_layer, base_pos, token, expert, "gate",
+                            ggml_type_name(spec.gate_type), prefix_depth, false,
+                            state.sidecar_path, host_destination,
+                            sparse_scratch_ ? 0 :
+                                static_cast<uint64_t>(natural) *
+                                    state.gate_slab_bytes) ||
+                        !traced_read_exact_at(
+                            sidecar_fd, up_destination,
                             static_cast<size_t>(state.up_slab_bytes),
-                            record + state.gate_slab_bytes) ||
-                        !read_exact_at(sidecar_fd, slab_down.data(),
-                            slab_down.size(), record + state.gate_slab_bytes +
-                                state.up_slab_bytes)) {
+                            record + state.gate_slab_bytes, model_layer,
+                            base_pos, token, expert, "up",
+                            ggml_type_name(spec.up_type), prefix_depth, false,
+                            state.sidecar_path, host_destination,
+                            sparse_scratch_ ? 0 :
+                                static_cast<uint64_t>(natural) *
+                                    state.up_slab_bytes) ||
+                        !traced_read_exact_at(
+                            sidecar_fd, down_destination,
+                            static_cast<size_t>(state.down_slab_bytes),
+                            record + state.gate_slab_bytes +
+                                state.up_slab_bytes, model_layer, base_pos,
+                            token, expert, "down",
+                            ggml_type_name(spec.down_type), prefix_depth, false,
+                            state.sidecar_path,
+                            sparse_scratch_ ? "host-compact-slab" :
+                                "host-compact-down", 0)) {
                         return exact_layer_fallback(
                             "short mixed-layout slab read");
                     }
-                    for (int d = 0; d < spec.output_dim; ++d) {
-                        std::memcpy(
-                            down.data() + static_cast<size_t>(d) *
-                                down_full_row_bytes +
-                                static_cast<size_t>(natural) *
+                    if (sparse_scratch_) {
+                        sparse_slabs.push_back(std::move(sparse));
+                    } else {
+                        for (int d = 0; d < spec.output_dim; ++d) {
+                            std::memcpy(
+                                down.data() + static_cast<size_t>(d) *
+                                    down_full_row_bytes +
+                                    static_cast<size_t>(natural) *
+                                        down_slab_row_bytes,
+                                slab_down.data() + static_cast<size_t>(d) *
                                     down_slab_row_bytes,
-                            slab_down.data() + static_cast<size_t>(d) *
-                                down_slab_row_bytes,
-                            down_slab_row_bytes);
+                                down_slab_row_bytes);
+                        }
                     }
                     std::fill_n(mask.begin() +
                         static_cast<size_t>(natural) * kSlabSize,
                         kSlabSize, 1.0f);
                     ++retained;
                 }
-                if (retained > 0 && !evaluate_host_recomposed_expert(
+                const bool evaluated = retained == 0 || (sparse_scratch_
+                    ? evaluate_sparse_device_expert(
+                        backend_, spec, input, sparse_slabs, mask,
+                        down_slab_row_bytes, expert_output,
+                        authoritative_h2d_bytes_, metadata_h2d_bytes_,
+                        device_zero_bytes_, err)
+                    : evaluate_host_recomposed_expert(
                         backend_, spec, input, gate, up, down,
                         retained == kSlabCount ? nullptr : &mask,
-                        expert_output, err)) {
+                        expert_output, err));
+                if (retained > 0 && !evaluated) {
                     return exact_layer_fallback(
                         "full-width recomposition failed");
+                }
+                if (!sparse_scratch_ && retained > 0) {
+                    reference_full_weight_h2d_bytes_ +=
+                        gate.size() + up.size() + down.size();
                 }
                 if (retained > 0) {
                     for (int d = 0; d < spec.output_dim; ++d) {
@@ -2750,6 +3497,10 @@ private:
                 fallback.selected_ids = fallback_ids.data();
                 fallback.selected_weights = fallback_weights.data();
                 fallback.expert_observer = nullptr;
+                for (const int route : fallback_routes) {
+                    trace_fallback(model_layer, base_pos, token,
+                        routes.selected_ids[route_offset + route], spec);
+                }
                 std::vector<float> exact;
                 if (!eval_moe_streamed_experts(
                         exact_engine, spec, fallback, exact, err)) {
@@ -2762,7 +3513,7 @@ private:
             }
 
             ++state.traffic.tokens;
-            state.traffic.requested_nominal_slabs += kNominalBudget;
+            state.traffic.requested_nominal_slabs += budget_;
             state.traffic.selected_slab_records += selected_count;
             state.traffic.calibrated_routes += calibrated_routes.size();
             state.traffic.exact_fallback_routes += fallback_routes.size();
@@ -2810,15 +3561,66 @@ private:
                     metrics_path_.c_str());
             }
         }
+        if (io_trace_) {
+            io_trace_.flush();
+            const ProcessIoSnapshot end = process_io_snapshot();
+            std::ofstream summary(metrics_path_.empty()
+                ? "k3_p20_io_process.tsv"
+                : metrics_path_ + ".process.tsv");
+            summary << "explicit_provider_read_bytes\tprocess_read_bytes"
+                       "\tprocess_rchar\tprocess_read_syscalls"
+                       "\tminor_faults\tmajor_faults\n"
+                    << explicit_read_bytes_ << '\t'
+                    << saturating_delta(
+                           end.read_bytes, process_io_start_.read_bytes) << '\t'
+                    << saturating_delta(end.rchar, process_io_start_.rchar)
+                    << '\t'
+                    << saturating_delta(end.syscr, process_io_start_.syscr)
+                    << '\t'
+                    << saturating_delta(
+                           end.minor_faults, process_io_start_.minor_faults)
+                    << '\t'
+                    << saturating_delta(
+                           end.major_faults, process_io_start_.major_faults)
+                    << '\n';
+        }
+        std::fprintf(stderr,
+            "[kimi-k3-p20] physical-layout=%s "
+            "reference-full-weight-h2d=%llu "
+            "sparse-authoritative-h2d=%llu metadata-h2d=%llu "
+            "device-zero-bytes=%llu explicit-provider-reads=%llu "
+            "direct-physical-bytes=%llu direct-io-ns=%llu\n",
+            sparse_scratch_ ? "scratch" : "reference",
+            static_cast<unsigned long long>(reference_full_weight_h2d_bytes_),
+            static_cast<unsigned long long>(authoritative_h2d_bytes_),
+            static_cast<unsigned long long>(metadata_h2d_bytes_),
+            static_cast<unsigned long long>(device_zero_bytes_),
+            static_cast<unsigned long long>(explicit_read_bytes_),
+            static_cast<unsigned long long>(direct_physical_bytes_),
+            static_cast<unsigned long long>(direct_io_ns_));
         layers_.clear();
     }
 
     static constexpr int kFirstRoutedLayer = 1;
     static constexpr int kLastRoutedLayer = 92;
-    static constexpr int kNominalBudget = 96;
     ggml_backend_t backend_ = nullptr;
     std::vector<LayerState> layers_;
     std::string metrics_path_;
+    std::ofstream io_trace_;
+    std::string prompt_id_ = "0";
+    ProcessIoSnapshot process_io_start_{};
+    uint64_t next_request_id_ = 0;
+    uint64_t explicit_read_bytes_ = 0;
+    bool sparse_scratch_ = false;
+    bool direct_pread_ = false;
+    std::unique_ptr<P20DirectReadPool> direct_read_pool_;
+    int budget_ = 96;
+    uint64_t reference_full_weight_h2d_bytes_ = 0;
+    uint64_t authoritative_h2d_bytes_ = 0;
+    uint64_t metadata_h2d_bytes_ = 0;
+    uint64_t device_zero_bytes_ = 0;
+    uint64_t direct_physical_bytes_ = 0;
+    uint64_t direct_io_ns_ = 0;
 };
 
 bool parse_positive_int(const char * raw, int & value) {
