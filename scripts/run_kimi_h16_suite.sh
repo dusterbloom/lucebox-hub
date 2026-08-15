@@ -23,6 +23,9 @@ case "$mode" in
     exact) ;;
     slabs96) provider=slabs; budget=96; paired=1 ;;
     slabs144) provider=slabs; budget=144; paired=1 ;;
+    recomposed96) provider=slabs-recomposed; budget=96; paired=1 ;;
+    recomposed144) provider=slabs-recomposed; budget=144; paired=1 ;;
+    recomposed192) provider=slabs-recomposed; budget=192; paired=1 ;;
     whole8) provider=whole; budget=8; paired=1 ;;
     whole12) provider=whole; budget=12; paired=1 ;;
     *) echo "unknown H16 suite mode: $mode" >&2; exit 2 ;;
@@ -38,7 +41,7 @@ if [[ "$paired" == 1 ]]; then
         "DFLASH_KIMI_PROVIDER_LAYER=${KIMI_H16_LAYER:-1}"
         "DFLASH_KIMI_SLAB_AUX=$aux"
     )
-    if [[ "$provider" == slabs ]]; then
+    if [[ "$provider" == slabs || "$provider" == slabs-recomposed ]]; then
         provider_environment+=("DFLASH_KIMI_SLAB_SIDECAR=$sidecar")
     fi
 fi
