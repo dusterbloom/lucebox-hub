@@ -173,7 +173,11 @@ def eval_slab(
 ) -> np.ndarray:
     begin = slab * slab_size
     end = begin + slab_size
-    block_bytes = slab_size * 50 // 256
+    slab_count = ORIGINAL_EXPERT_WIDTH // slab_size
+    down_row_bytes = int(down_tensor.data.shape[2])
+    if down_row_bytes % slab_count:
+        raise ValueError("down expert rows do not split into byte-aligned slabs")
+    block_bytes = down_row_bytes // slab_count
     byte_begin = slab * block_bytes
     byte_end = byte_begin + block_bytes
     gate = dequantize_part(
@@ -364,14 +368,16 @@ def main() -> int:
     down_tensor = tensors[f"blk.{args.layer}.ffn_down_exps.weight"]
     norm_tensor = tensors[f"blk.{args.layer}.ffn_routed_norm.weight"]
     projection_tensor = tensors[f"blk.{args.layer}.ffn_routed_up.weight"]
-    expected_gate_shape = (EXPERT_COUNT, ORIGINAL_EXPERT_WIDTH, 700)
-    expected_down_shape = (EXPERT_COUNT, data.dimension, 600)
-    if gate_tensor.data.shape != expected_gate_shape:
-        raise ValueError(f"unexpected gate bytes: {gate_tensor.data.shape}")
-    if up_tensor.data.shape != expected_gate_shape:
-        raise ValueError(f"unexpected up bytes: {up_tensor.data.shape}")
-    if down_tensor.data.shape != expected_down_shape:
-        raise ValueError(f"unexpected down bytes: {down_tensor.data.shape}")
+    expected_gate_shape = (EXPERT_COUNT, ORIGINAL_EXPERT_WIDTH)
+    expected_down_shape = (EXPERT_COUNT, data.dimension)
+    if gate_tensor.data.shape[:2] != expected_gate_shape:
+        raise ValueError(f"unexpected gate layout: {gate_tensor.data.shape}")
+    if up_tensor.data.shape[:2] != expected_gate_shape:
+        raise ValueError(f"unexpected up layout: {up_tensor.data.shape}")
+    if down_tensor.data.shape[:2] != expected_down_shape:
+        raise ValueError(f"unexpected down layout: {down_tensor.data.shape}")
+    if int(down_tensor.data.shape[2]) % slab_count:
+        raise ValueError("down expert layout is not byte-aligned at twelve slabs")
 
     device = torch.device(args.device)
     if args.smoke_expert >= 0:
@@ -852,8 +858,10 @@ def main() -> int:
         True,
     )
 
-    bytes_per_component_slab = args.slab_size * 3584 * 50 // 256
-    bytes_per_slab = 3 * bytes_per_component_slab
+    gate_slab_bytes = args.slab_size * int(gate_tensor.data.shape[2])
+    up_slab_bytes = args.slab_size * int(up_tensor.data.shape[2])
+    down_slab_bytes = data.dimension * (int(down_tensor.data.shape[2]) // slab_count)
+    bytes_per_slab = gate_slab_bytes + up_slab_bytes + down_slab_bytes
     mean_tail_bf16_bytes = (
         MODEL_MOE_LAYERS * EXPERT_COUNT * slab_count * data.dimension * 2
     )
@@ -896,7 +904,9 @@ def main() -> int:
             "slabs_per_expert": slab_count,
             "active_experts": data.top_k,
             "active_slabs": active_slab_count,
-            "iq1_s_bytes_per_component_slab": bytes_per_component_slab,
+            "gate_bytes_per_slab": gate_slab_bytes,
+            "up_bytes_per_slab": up_slab_bytes,
+            "down_bytes_per_slab": down_slab_bytes,
             "iq1_s_bytes_per_complete_slab": bytes_per_slab,
             "iq1_s_bytes_per_complete_expert": bytes_per_slab * slab_count,
             "all_layer_bf16_slab_mean_tail_bytes": mean_tail_bf16_bytes,

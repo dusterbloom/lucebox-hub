@@ -243,9 +243,14 @@ def main() -> int:
     gate = tensors[f"blk.{args.layer}.ffn_gate_exps.weight"]
     up = tensors[f"blk.{args.layer}.ffn_up_exps.weight"]
     down = tensors[f"blk.{args.layer}.ffn_down_exps.weight"]
-    expected_gate = (EXPERT_COUNT, ORIGINAL_EXPERT_WIDTH, 700)
-    expected_down = (EXPERT_COUNT, data.dimension, 600)
-    if gate.data.shape != expected_gate or up.data.shape != expected_gate or down.data.shape != expected_down:
+    expected_gate = (EXPERT_COUNT, ORIGINAL_EXPERT_WIDTH)
+    expected_down = (EXPERT_COUNT, data.dimension)
+    if (
+        gate.data.shape[:2] != expected_gate
+        or up.data.shape[:2] != expected_gate
+        or down.data.shape[:2] != expected_down
+        or int(down.data.shape[2]) % slab_count
+    ):
         raise ValueError("unexpected routed-expert IQ1_S tensor shape")
 
     token_count = data.latent.shape[0]
