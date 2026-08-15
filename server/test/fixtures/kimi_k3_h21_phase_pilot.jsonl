@@ -1,0 +1,4 @@
+{"id":"code-sum","split":"calibration","text":"Complete this Python expression: sum([2, 3, 5]) ="}
+{"id":"fact-capital","split":"calibration","text":"Name the capital of Japan and nothing else."}
+{"id":"logic-raven","split":"calibration","text":"All ravens are birds. Ari is a raven. What is Ari?"}
+{"id":"grammar-apples","split":"test","text":"Fix the grammar: She don't like apples."}
