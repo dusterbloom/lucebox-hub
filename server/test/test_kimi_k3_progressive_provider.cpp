@@ -39,6 +39,15 @@ int main() {
         experts, weights, 2, whole_importance, 3, 1);
     assert(whole == std::vector<int32_t>{0});
 
+    // Nominal 4-slab request with one uncalibrated route: the uncalibrated
+    // route is exact and only the three available calibrated slabs are read.
+    const uint8_t calibrated[] = {1, 0, 0};
+    const KimiK3CalibratedSlabPlan plan = plan_kimi_k3_calibrated_slabs(
+        experts, weights, 2, importance, calibrated, 3, 3, 4);
+    assert(plan.requested_budget == 4);
+    assert(plan.selected_slab_ids == std::vector<int32_t>({0, 1, 2}));
+    assert(plan.exact_route_indices == std::vector<int32_t>({0}));
+
 #if defined(_WIN32)
     _putenv_s("DFLASH_KIMI_LAYER1_PROVIDER", "exact");
 #else

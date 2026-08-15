@@ -51,4 +51,23 @@ std::vector<int32_t> select_kimi_k3_whole_expert_routes(
     int expert_count,
     int budget);
 
+struct KimiK3CalibratedSlabPlan {
+    int requested_budget = 0;
+    std::vector<int32_t> selected_slab_ids;
+    std::vector<int32_t> exact_route_indices;
+};
+
+// Experts whose calibrated flag is zero never enter the slab selector.  They
+// are returned as native route indices for exact evaluation, and the actual
+// selected count may therefore be below the requested nominal budget.
+KimiK3CalibratedSlabPlan plan_kimi_k3_calibrated_slabs(
+    const int32_t * expert_ids,
+    const float * router_weights,
+    int top_k,
+    const float * ordered_importance,
+    const uint8_t * calibrated_experts,
+    int expert_count,
+    int slabs_per_expert,
+    int requested_budget);
+
 } // namespace dflash::common

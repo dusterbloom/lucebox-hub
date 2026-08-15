@@ -62,6 +62,41 @@ struct SlabAuxHeader {
 static_assert(sizeof(SlabAuxHeader) == 120,
               "slab runtime header must remain byte-stable");
 
+// v2 keeps the v1 prefix byte-for-byte and appends the honesty/provenance
+// fields required by the all-layer calibrated provider.  Means stay on disk;
+// loading all 92 copies would consume roughly 14 GiB of host RAM.
+struct SlabAuxHeaderV2 {
+    char magic[8];
+    uint32_t version;
+    uint32_t model_layer;
+    uint32_t expert_count;
+    uint32_t dimension;
+    uint32_t slab_size;
+    uint32_t slab_count;
+    uint32_t storage;
+    uint32_t alignment;
+    uint64_t order_offset;
+    uint64_t order_bytes;
+    uint64_t slab_means_offset;
+    uint64_t slab_means_bytes;
+    uint64_t slab_importance_offset;
+    uint64_t slab_importance_bytes;
+    uint64_t native_means_offset;
+    uint64_t native_means_bytes;
+    uint64_t native_importance_offset;
+    uint64_t native_importance_bytes;
+    uint64_t calibrated_experts_offset;
+    uint64_t calibrated_experts_bytes;
+    uint64_t calibration_hit_counts_offset;
+    uint64_t calibration_hit_counts_bytes;
+    uint8_t fit_state_sha256[32];
+    uint8_t capture_sha256[32];
+    uint8_t sidecar_sha256[32];
+    uint8_t model_registry_sha256[32];
+};
+static_assert(sizeof(SlabAuxHeaderV2) == 280,
+              "slab runtime v2 header must remain byte-stable");
+
 struct SlabSidecarHeader {
     char magic[8];
     uint32_t version;
@@ -284,6 +319,18 @@ std::string natural_sidecar_path(const std::string & directory,
     char name[96];
     std::snprintf(name, sizeof(name),
                   "kimi_layer%02d_natural_slabs.k3slab", model_layer);
+    if (directory.empty() || directory.back() == '/' ||
+        directory.back() == '\\') {
+        return directory + name;
+    }
+    return directory + "/" + name;
+}
+
+std::string calibrated_aux_path(const std::string & directory,
+                                int model_layer) {
+    char name[96];
+    std::snprintf(name, sizeof(name),
+                  "kimi_layer%02d_calibrated96.k3aux", model_layer);
     if (directory.empty() || directory.back() == '/' ||
         directory.back() == '\\') {
         return directory + name;
@@ -2200,6 +2247,580 @@ private:
     AllSlabsMode mode_ = AllSlabsMode::Direct;
 };
 
+// Honest H20 substrate: each routed layer owns independent calibration cards.
+// Any absent, malformed, or provenance-free layer stays exact.  Within a valid
+// layer, experts below the exporter's minimum-hit threshold also stay exact.
+// The requested budget is 96 slab records, while measured traffic separately
+// reports selected sidecar bytes and exact-fallback expert bytes.
+class CalibratedAllLayerProvider final : public KimiK3RoutedOutputProvider {
+public:
+    ~CalibratedAllLayerProvider() override { finish_metrics(); }
+
+    bool init(ggml_backend_t backend, const std::string & aux_directory,
+              const std::string & sidecar_directory, const char * metrics_path,
+              std::string * err) {
+        if (!backend || aux_directory.empty() || sidecar_directory.empty()) {
+            if (err) *err =
+                "calibrated96 needs a compute backend, aux directory, and sidecars";
+            return false;
+        }
+        backend_ = backend;
+        layers_.resize(kLastRoutedLayer + 1);
+        int valid_layers = 0;
+        for (int layer = kFirstRoutedLayer; layer <= kLastRoutedLayer; ++layer) {
+            LayerState & state = layers_[static_cast<size_t>(layer)];
+            state.aux_path = calibrated_aux_path(aux_directory, layer);
+            state.sidecar_path = natural_sidecar_path(sidecar_directory, layer);
+            std::string layer_error;
+            if (load_layer(layer, state, &layer_error)) {
+                state.valid = true;
+                ++valid_layers;
+            } else {
+                // Exact is the safe state, including startup with a partially
+                // generated all-layer export.  Do not turn one bad layer into
+                // a process-wide failure.
+                std::fprintf(stderr,
+                    "[kimi-k3-calibrated96] layer=%d action=exact reason=%s\n",
+                    layer, layer_error.c_str());
+            }
+        }
+        metrics_path_ = metrics_path && *metrics_path ? metrics_path : "";
+        std::fprintf(stderr,
+            "[kimi-k3-calibrated96] status=PILOT quality-certified=false "
+            "speed-claim=false requested-budget=96 valid-layers=%d/92 "
+            "invalid-layer-action=exact insufficient-expert-action=exact\n",
+            valid_layers);
+        return true;
+    }
+
+    bool handles_layer(int model_layer) const override {
+        return model_layer >= kFirstRoutedLayer &&
+            model_layer <= kLastRoutedLayer;
+    }
+
+    bool evaluate(int model_layer, int,
+                  const MoeStreamExpertSpec & spec,
+                  const MoeStreamRouteBatch & routes,
+                  MoeHybridStreamEngine & exact_engine,
+                  std::vector<float> & output,
+                  std::string * err) override {
+        if (!handles_layer(model_layer) || routes.n_expert != kExpertCount ||
+            routes.top_k != kNativeTopK || spec.input_dim != kDimension ||
+            spec.output_dim != kDimension) {
+            if (err) *err = "calibrated96 received an incompatible routed batch";
+            return false;
+        }
+        LayerState & state = layers_[static_cast<size_t>(model_layer)];
+        if (!state.valid || spec.fused_gate_up ||
+            !geometry_matches(state, spec)) {
+            const bool ok = eval_moe_streamed_experts(
+                exact_engine, spec, routes, output, err);
+            if (ok) observe_exact_layer(state, routes.n_tokens, spec);
+            return ok;
+        }
+        return evaluate_calibrated(
+            model_layer, state, spec, routes, exact_engine, output, err);
+    }
+
+private:
+    struct Traffic {
+        uint64_t tokens = 0;
+        uint64_t requested_nominal_slabs = 0;
+        uint64_t selected_slab_records = 0;
+        uint64_t calibrated_routes = 0;
+        uint64_t exact_fallback_routes = 0;
+        uint64_t selected_sidecar_bytes = 0;
+        uint64_t exact_fallback_bytes = 0;
+    };
+
+    struct LayerState {
+        bool valid = false;
+        std::string aux_path;
+        std::string sidecar_path;
+        uint64_t means_offset = 0;
+        uint64_t means_bytes = 0;
+        uint64_t payload_offset = 0;
+        uint64_t slab_bytes = 0;
+        uint64_t record_bytes = 0;
+        uint64_t gate_slab_bytes = 0;
+        uint64_t up_slab_bytes = 0;
+        uint64_t down_slab_bytes = 0;
+        std::vector<uint16_t> order;
+        std::vector<float> importance;
+        std::vector<uint8_t> calibrated;
+        std::vector<uint32_t> hit_counts;
+        Traffic traffic;
+    };
+
+    static bool nonzero_digest(const uint8_t * digest) {
+        for (int i = 0; i < 32; ++i) if (digest[i] != 0) return true;
+        return false;
+    }
+
+    bool load_layer(int model_layer, LayerState & state, std::string * err) {
+        std::ifstream input(state.aux_path, std::ios::binary | std::ios::ate);
+        if (!input) {
+            if (err) *err = "missing runtime aux " + state.aux_path;
+            return false;
+        }
+        const uint64_t aux_bytes = static_cast<uint64_t>(input.tellg());
+        input.seekg(0);
+        SlabAuxHeaderV2 aux{};
+        input.read(reinterpret_cast<char *>(&aux), sizeof(aux));
+        const uint64_t expected_order =
+            static_cast<uint64_t>(kExpertCount * kSlabCount) * sizeof(uint16_t);
+        const uint64_t expected_means =
+            static_cast<uint64_t>(kExpertCount) * kSlabCount * kDimension *
+            sizeof(float);
+        const uint64_t expected_importance =
+            static_cast<uint64_t>(kExpertCount * kSlabCount) * sizeof(float);
+        const bool aux_valid = input &&
+            std::memcmp(aux.magic, "K3AUX001", 8) == 0 && aux.version == 2 &&
+            aux.model_layer == static_cast<uint32_t>(model_layer) &&
+            aux.expert_count == kExpertCount && aux.dimension == kDimension &&
+            aux.slab_size == kSlabSize && aux.slab_count == kSlabCount &&
+            aux.storage == 0 && aux.alignment == kAlignment &&
+            aux.order_bytes == expected_order &&
+            aux.slab_means_bytes == expected_means &&
+            aux.slab_importance_bytes == expected_importance &&
+            aux.calibrated_experts_bytes == kExpertCount &&
+            aux.calibration_hit_counts_bytes ==
+                static_cast<uint64_t>(kExpertCount) * sizeof(uint32_t) &&
+            checked_span(aux.order_offset, aux.order_bytes, aux_bytes) &&
+            checked_span(aux.slab_means_offset, aux.slab_means_bytes, aux_bytes) &&
+            checked_span(aux.slab_importance_offset,
+                         aux.slab_importance_bytes, aux_bytes) &&
+            checked_span(aux.calibrated_experts_offset,
+                         aux.calibrated_experts_bytes, aux_bytes) &&
+            checked_span(aux.calibration_hit_counts_offset,
+                         aux.calibration_hit_counts_bytes, aux_bytes) &&
+            nonzero_digest(aux.fit_state_sha256) &&
+            nonzero_digest(aux.capture_sha256) &&
+            nonzero_digest(aux.sidecar_sha256) &&
+            nonzero_digest(aux.model_registry_sha256);
+        if (!aux_valid) {
+            if (err) *err = "invalid or provenance-free runtime aux";
+            return false;
+        }
+        if (!read_array(input, aux.order_offset, aux.order_bytes,
+                        state.order, err) ||
+            !read_array(input, aux.slab_importance_offset,
+                        aux.slab_importance_bytes, state.importance, err) ||
+            !read_array(input, aux.calibrated_experts_offset,
+                        aux.calibrated_experts_bytes, state.calibrated, err) ||
+            !read_array(input, aux.calibration_hit_counts_offset,
+                        aux.calibration_hit_counts_bytes,
+                        state.hit_counts, err) ||
+            !valid_slab_order(state.order)) {
+            if (err && err->empty()) *err = "invalid calibrated layer arrays";
+            return false;
+        }
+        for (int expert = 0; expert < kExpertCount; ++expert) {
+            const uint8_t flag = state.calibrated[static_cast<size_t>(expert)];
+            if (flag > 1 || (flag != 0 &&
+                    state.hit_counts[static_cast<size_t>(expert)] == 0)) {
+                if (err) *err = "calibrated mask disagrees with hit counts";
+                return false;
+            }
+            for (int rank = 0; rank < kSlabCount; ++rank) {
+                const float score = state.importance[
+                    static_cast<size_t>(expert) * kSlabCount + rank];
+                if (!std::isfinite(score) || score < 0.0f) {
+                    if (err) *err = "invalid calibrated slab importance";
+                    return false;
+                }
+            }
+        }
+        state.means_offset = aux.slab_means_offset;
+        state.means_bytes = aux.slab_means_bytes;
+
+        const int fd = open_read_only(state.sidecar_path);
+        if (fd < 0) {
+            if (err) *err = "missing natural sidecar " + state.sidecar_path;
+            return false;
+        }
+        uint64_t file_bytes = 0;
+        SlabSidecarHeaderV2 sidecar{};
+        bool header_ok = file_size(fd, file_bytes) &&
+            read_exact_at(fd, &sidecar, sizeof(SlabSidecarHeader), 0) &&
+            std::memcmp(sidecar.magic, "K3SLB001", 8) == 0 &&
+            (sidecar.version == 1 || sidecar.version == 2);
+        if (header_ok && sidecar.version == 2) {
+            header_ok = read_exact_at(fd, &sidecar, sizeof(sidecar), 0);
+        }
+        const uint64_t gate_bytes = sidecar.version == 1
+            ? kSlabComponentBytes : sidecar.gate_slab_bytes;
+        const uint64_t up_bytes = sidecar.version == 1
+            ? kSlabComponentBytes : sidecar.up_slab_bytes;
+        const uint64_t down_bytes = sidecar.version == 1
+            ? kSlabComponentBytes : sidecar.down_slab_bytes;
+        std::vector<uint16_t> natural(
+            static_cast<size_t>(kExpertCount * kSlabCount));
+        const bool sidecar_valid = header_ok &&
+            sidecar.model_layer == static_cast<uint32_t>(model_layer) &&
+            sidecar.expert_count == kExpertCount &&
+            sidecar.dimension == kDimension &&
+            sidecar.expert_width == kSlabSize * kSlabCount &&
+            sidecar.slab_size == kSlabSize &&
+            sidecar.slab_count == kSlabCount &&
+            sidecar.alignment == kAlignment &&
+            gate_bytes > 0 && up_bytes > 0 && down_bytes > 0 &&
+            sidecar.slab_bytes == gate_bytes + up_bytes + down_bytes &&
+            sidecar.record_bytes == sidecar.slab_bytes * kSlabCount &&
+            sidecar.order_bytes == natural.size() * sizeof(uint16_t) &&
+            checked_span(sidecar.payload_offset,
+                static_cast<uint64_t>(kExpertCount) * sidecar.record_bytes,
+                file_bytes) &&
+            read_exact_at(fd, natural.data(),
+                natural.size() * sizeof(uint16_t), sidecar.order_offset);
+        close_fd(fd);
+        if (!sidecar_valid) {
+            if (err) *err = "invalid mixed-layout natural sidecar";
+            return false;
+        }
+        for (int expert = 0; expert < kExpertCount; ++expert) {
+            for (int rank = 0; rank < kSlabCount; ++rank) {
+                if (natural[static_cast<size_t>(expert) * kSlabCount + rank] !=
+                        rank) {
+                    if (err) *err = "sidecar is not in natural slab order";
+                    return false;
+                }
+            }
+        }
+        state.payload_offset = sidecar.payload_offset;
+        state.slab_bytes = sidecar.slab_bytes;
+        state.record_bytes = sidecar.record_bytes;
+        state.gate_slab_bytes = gate_bytes;
+        state.up_slab_bytes = up_bytes;
+        state.down_slab_bytes = down_bytes;
+        return true;
+    }
+
+    static uint64_t exact_record_bytes(const MoeStreamExpertSpec & spec) {
+        if (spec.fused_gate_up) {
+            return ggml_row_size(spec.gate_up_type, spec.input_dim) *
+                    static_cast<uint64_t>(2 * spec.intermediate_dim) +
+                ggml_row_size(spec.down_type, spec.intermediate_dim) *
+                    static_cast<uint64_t>(spec.output_dim);
+        }
+        return ggml_row_size(spec.gate_type, spec.input_dim) *
+                static_cast<uint64_t>(spec.intermediate_dim) +
+            ggml_row_size(spec.up_type, spec.input_dim) *
+                static_cast<uint64_t>(spec.intermediate_dim) +
+            ggml_row_size(spec.down_type, spec.intermediate_dim) *
+                static_cast<uint64_t>(spec.output_dim);
+    }
+
+    static bool geometry_matches(const LayerState & state,
+                                 const MoeStreamExpertSpec & spec) {
+        if (state.down_slab_bytes % spec.output_dim != 0) return false;
+        return state.gate_slab_bytes * kSlabCount ==
+                ggml_row_size(spec.gate_type, spec.input_dim) *
+                    static_cast<uint64_t>(spec.intermediate_dim) &&
+            state.up_slab_bytes * kSlabCount ==
+                ggml_row_size(spec.up_type, spec.input_dim) *
+                    static_cast<uint64_t>(spec.intermediate_dim) &&
+            (state.down_slab_bytes / spec.output_dim) * kSlabCount ==
+                ggml_row_size(spec.down_type, spec.intermediate_dim);
+    }
+
+    static void observe_exact_layer(LayerState & state, int n_tokens,
+                                    const MoeStreamExpertSpec & spec) {
+        const uint64_t routes = static_cast<uint64_t>(n_tokens) * kNativeTopK;
+        state.traffic.tokens += n_tokens;
+        state.traffic.requested_nominal_slabs +=
+            static_cast<uint64_t>(n_tokens) * kNominalBudget;
+        state.traffic.exact_fallback_routes += routes;
+        state.traffic.exact_fallback_bytes +=
+            routes * exact_record_bytes(spec);
+    }
+
+    bool evaluate_calibrated(
+            int model_layer, LayerState & state,
+            const MoeStreamExpertSpec & spec,
+            const MoeStreamRouteBatch & routes,
+            MoeHybridStreamEngine & exact_engine,
+            std::vector<float> & output, std::string * err) {
+        const int aux_fd = open_read_only(state.aux_path);
+        const int sidecar_fd = open_read_only(state.sidecar_path);
+        if (aux_fd < 0 || sidecar_fd < 0) {
+            if (aux_fd >= 0) close_fd(aux_fd);
+            if (sidecar_fd >= 0) close_fd(sidecar_fd);
+            state.valid = false;
+            const bool ok = eval_moe_streamed_experts(
+                exact_engine, spec, routes, output, err);
+            if (ok) observe_exact_layer(state, routes.n_tokens, spec);
+            return ok;
+        }
+        const auto exact_layer_fallback = [&](const char * reason) {
+            close_fd(aux_fd);
+            close_fd(sidecar_fd);
+            state.valid = false;
+            std::string exact_error;
+            const bool ok = eval_moe_streamed_experts(
+                exact_engine, spec, routes, output, &exact_error);
+            if (ok) {
+                observe_exact_layer(state, routes.n_tokens, spec);
+                if (err) err->clear();
+                std::fprintf(stderr,
+                    "[kimi-k3-calibrated96] layer=%d action=exact "
+                    "runtime-reason=%s\n", model_layer, reason);
+            } else if (err) {
+                *err = std::string(reason) + "; exact fallback failed: " +
+                    exact_error;
+            }
+            return ok;
+        };
+        const size_t gate_full_bytes = static_cast<size_t>(
+            state.gate_slab_bytes * kSlabCount);
+        const size_t up_full_bytes = static_cast<size_t>(
+            state.up_slab_bytes * kSlabCount);
+        const size_t down_slab_row_bytes = static_cast<size_t>(
+            state.down_slab_bytes / spec.output_dim);
+        const size_t down_full_row_bytes = down_slab_row_bytes * kSlabCount;
+        std::vector<uint8_t> gate(gate_full_bytes, 0);
+        std::vector<uint8_t> up(up_full_bytes, 0);
+        std::vector<uint8_t> down(
+            down_full_row_bytes * static_cast<size_t>(spec.output_dim), 0);
+        std::vector<uint8_t> slab_down(
+            static_cast<size_t>(state.down_slab_bytes));
+        std::vector<float> mask(
+            static_cast<size_t>(spec.intermediate_dim), 0.0f);
+        std::vector<float> means(
+            static_cast<size_t>(kSlabCount * kDimension));
+        std::vector<float> expert_output;
+        output.assign(
+            static_cast<size_t>(routes.n_tokens) * spec.output_dim, 0.0f);
+
+        for (int token = 0; token < routes.n_tokens; ++token) {
+            const size_t route_offset =
+                static_cast<size_t>(token) * kNativeTopK;
+            const KimiK3CalibratedSlabPlan plan =
+                plan_kimi_k3_calibrated_slabs(
+                    routes.selected_ids + route_offset,
+                    routes.selected_weights + route_offset, kNativeTopK,
+                    state.importance.data(), state.calibrated.data(),
+                    kExpertCount, kSlabCount, kNominalBudget);
+            std::vector<int> calibrated_routes;
+            std::vector<int> fallback_routes;
+            for (int route = 0; route < kNativeTopK; ++route) {
+                const int expert = routes.selected_ids[route_offset + route];
+                if (expert < 0 || expert >= kExpertCount) {
+                    close_fd(aux_fd); close_fd(sidecar_fd);
+                    if (err) *err = "calibrated96 saw an invalid expert id";
+                    return false;
+                }
+                (state.calibrated[static_cast<size_t>(expert)]
+                    ? calibrated_routes : fallback_routes).push_back(route);
+            }
+            const int selected_count = static_cast<int>(
+                plan.selected_slab_ids.size());
+            if (plan.exact_route_indices.size() != fallback_routes.size() ||
+                !std::equal(plan.exact_route_indices.begin(),
+                            plan.exact_route_indices.end(),
+                            fallback_routes.begin())) {
+                return exact_layer_fallback("calibrated96 planner failed");
+            }
+            std::vector<uint8_t> selected_by_route(
+                static_cast<size_t>(kNativeTopK * kSlabCount), 0);
+            for (const int pseudo : plan.selected_slab_ids) {
+                const int expert = pseudo / kSlabCount;
+                const int rank = pseudo % kSlabCount;
+                const auto found = std::find_if(
+                    calibrated_routes.begin(), calibrated_routes.end(),
+                    [&](int route) {
+                        return routes.selected_ids[route_offset + route] == expert;
+                    });
+                if (found == calibrated_routes.end()) {
+                    return exact_layer_fallback(
+                        "selected slab has no calibrated route");
+                }
+                selected_by_route[
+                    static_cast<size_t>(*found * kSlabCount + rank)] = 1;
+            }
+
+            std::vector<int> stable_routes = calibrated_routes;
+            std::stable_sort(stable_routes.begin(), stable_routes.end(),
+                [&](int left, int right) {
+                    return routes.selected_ids[route_offset + left] <
+                        routes.selected_ids[route_offset + right];
+                });
+            float * destination = output.data() +
+                static_cast<size_t>(token) * spec.output_dim;
+            const float * input = routes.inputs +
+                static_cast<size_t>(token) * spec.input_dim;
+            for (const int route : stable_routes) {
+                const int expert = routes.selected_ids[route_offset + route];
+                const uint64_t mean_offset = state.means_offset +
+                    static_cast<uint64_t>(expert) * kSlabCount * kDimension *
+                        sizeof(float);
+                if (!read_exact_at(aux_fd, means.data(),
+                        means.size() * sizeof(float), mean_offset)) {
+                    return exact_layer_fallback("short calibrated mean read");
+                }
+                const float weight =
+                    routes.selected_weights[route_offset + route];
+                // Add omitted cards directly.  Avoid add/subtract cancellation
+                // so the full-width path has stable arithmetic.
+                for (int rank = 0; rank < kSlabCount; ++rank) {
+                    if (selected_by_route[
+                            static_cast<size_t>(route * kSlabCount + rank)]) {
+                        continue;
+                    }
+                    const float * mean = means.data() +
+                        static_cast<size_t>(rank) * kDimension;
+                    for (int d = 0; d < kDimension; ++d) {
+                        destination[d] += weight * mean[d];
+                    }
+                }
+
+                std::fill(gate.begin(), gate.end(), 0);
+                std::fill(up.begin(), up.end(), 0);
+                std::fill(down.begin(), down.end(), 0);
+                std::fill(mask.begin(), mask.end(), 0.0f);
+                int retained = 0;
+                for (int rank = 0; rank < kSlabCount; ++rank) {
+                    if (!selected_by_route[
+                            static_cast<size_t>(route * kSlabCount + rank)]) {
+                        continue;
+                    }
+                    const uint16_t natural = state.order[
+                        static_cast<size_t>(expert) * kSlabCount + rank];
+                    const uint64_t record = state.payload_offset +
+                        static_cast<uint64_t>(expert * kSlabCount + natural) *
+                            state.slab_bytes;
+                    if (!read_exact_at(sidecar_fd,
+                            gate.data() + static_cast<size_t>(natural) *
+                                state.gate_slab_bytes,
+                            static_cast<size_t>(state.gate_slab_bytes), record) ||
+                        !read_exact_at(sidecar_fd,
+                            up.data() + static_cast<size_t>(natural) *
+                                state.up_slab_bytes,
+                            static_cast<size_t>(state.up_slab_bytes),
+                            record + state.gate_slab_bytes) ||
+                        !read_exact_at(sidecar_fd, slab_down.data(),
+                            slab_down.size(), record + state.gate_slab_bytes +
+                                state.up_slab_bytes)) {
+                        return exact_layer_fallback(
+                            "short mixed-layout slab read");
+                    }
+                    for (int d = 0; d < spec.output_dim; ++d) {
+                        std::memcpy(
+                            down.data() + static_cast<size_t>(d) *
+                                down_full_row_bytes +
+                                static_cast<size_t>(natural) *
+                                    down_slab_row_bytes,
+                            slab_down.data() + static_cast<size_t>(d) *
+                                down_slab_row_bytes,
+                            down_slab_row_bytes);
+                    }
+                    std::fill_n(mask.begin() +
+                        static_cast<size_t>(natural) * kSlabSize,
+                        kSlabSize, 1.0f);
+                    ++retained;
+                }
+                if (retained > 0 && !evaluate_host_recomposed_expert(
+                        backend_, spec, input, gate, up, down,
+                        retained == kSlabCount ? nullptr : &mask,
+                        expert_output, err)) {
+                    return exact_layer_fallback(
+                        "full-width recomposition failed");
+                }
+                if (retained > 0) {
+                    for (int d = 0; d < spec.output_dim; ++d) {
+                        destination[d] += weight *
+                            expert_output[static_cast<size_t>(d)];
+                    }
+                }
+            }
+
+            if (!fallback_routes.empty()) {
+                std::vector<int32_t> fallback_ids;
+                std::vector<float> fallback_weights;
+                for (const int route : fallback_routes) {
+                    fallback_ids.push_back(
+                        routes.selected_ids[route_offset + route]);
+                    fallback_weights.push_back(
+                        routes.selected_weights[route_offset + route]);
+                }
+                MoeStreamRouteBatch fallback = routes;
+                fallback.n_tokens = 1;
+                fallback.top_k = static_cast<int>(fallback_routes.size());
+                fallback.inputs = input;
+                fallback.selected_ids = fallback_ids.data();
+                fallback.selected_weights = fallback_weights.data();
+                fallback.expert_observer = nullptr;
+                std::vector<float> exact;
+                if (!eval_moe_streamed_experts(
+                        exact_engine, spec, fallback, exact, err)) {
+                    close_fd(aux_fd); close_fd(sidecar_fd);
+                    return false;
+                }
+                for (int d = 0; d < spec.output_dim; ++d) {
+                    destination[d] += exact[static_cast<size_t>(d)];
+                }
+            }
+
+            ++state.traffic.tokens;
+            state.traffic.requested_nominal_slabs += kNominalBudget;
+            state.traffic.selected_slab_records += selected_count;
+            state.traffic.calibrated_routes += calibrated_routes.size();
+            state.traffic.exact_fallback_routes += fallback_routes.size();
+            state.traffic.selected_sidecar_bytes +=
+                static_cast<uint64_t>(selected_count) * state.slab_bytes;
+            state.traffic.exact_fallback_bytes +=
+                static_cast<uint64_t>(fallback_routes.size()) *
+                    state.record_bytes;
+        }
+        close_fd(aux_fd);
+        close_fd(sidecar_fd);
+        (void) model_layer;
+        return true;
+    }
+
+    void finish_metrics() {
+        if (layers_.empty()) return;
+        std::ostringstream report;
+        report << "model_layer\ttokens\trequested_nominal_slabs"
+                  "\tselected_slab_records\tcalibrated_routes"
+                  "\texact_fallback_routes\tselected_sidecar_bytes"
+                  "\texact_fallback_bytes\ttotal_provider_bytes\n";
+        for (int layer = kFirstRoutedLayer; layer <= kLastRoutedLayer; ++layer) {
+            const Traffic & value =
+                layers_[static_cast<size_t>(layer)].traffic;
+            if (value.tokens == 0) continue;
+            report << layer << '\t' << value.tokens << '\t'
+                   << value.requested_nominal_slabs << '\t'
+                   << value.selected_slab_records << '\t'
+                   << value.calibrated_routes << '\t'
+                   << value.exact_fallback_routes << '\t'
+                   << value.selected_sidecar_bytes << '\t'
+                   << value.exact_fallback_bytes << '\t'
+                   << value.selected_sidecar_bytes + value.exact_fallback_bytes
+                   << '\n';
+        }
+        if (metrics_path_.empty()) {
+            std::fprintf(stderr, "%s", report.str().c_str());
+        } else {
+            std::ofstream output(metrics_path_);
+            output << report.str();
+            if (!output) {
+                std::fprintf(stderr,
+                    "[kimi-k3-calibrated96] cannot write traffic metrics %s\n",
+                    metrics_path_.c_str());
+            }
+        }
+        layers_.clear();
+    }
+
+    static constexpr int kFirstRoutedLayer = 1;
+    static constexpr int kLastRoutedLayer = 92;
+    static constexpr int kNominalBudget = 96;
+    ggml_backend_t backend_ = nullptr;
+    std::vector<LayerState> layers_;
+    std::string metrics_path_;
+};
+
 bool parse_positive_int(const char * raw, int & value) {
     if (!raw || !*raw) return false;
     char * end = nullptr;
@@ -2272,6 +2893,48 @@ std::vector<int32_t> select_kimi_k3_whole_expert_routes(
     return selected;
 }
 
+KimiK3CalibratedSlabPlan plan_kimi_k3_calibrated_slabs(
+        const int32_t * expert_ids, const float * router_weights, int top_k,
+        const float * ordered_importance,
+        const uint8_t * calibrated_experts, int expert_count,
+        int slabs_per_expert, int requested_budget) {
+    KimiK3CalibratedSlabPlan result;
+    result.requested_budget = requested_budget;
+    if (!expert_ids || !router_weights || !ordered_importance ||
+        !calibrated_experts || top_k <= 0 || expert_count <= 0 ||
+        slabs_per_expert <= 0 || requested_budget <= 0) {
+        return result;
+    }
+    std::vector<int32_t> selected_experts;
+    std::vector<float> selected_weights;
+    selected_experts.reserve(static_cast<size_t>(top_k));
+    selected_weights.reserve(static_cast<size_t>(top_k));
+    for (int route = 0; route < top_k; ++route) {
+        const int expert = expert_ids[route];
+        if (expert < 0 || expert >= expert_count) {
+            result.selected_slab_ids.clear();
+            result.exact_route_indices.clear();
+            return result;
+        }
+        if (calibrated_experts[expert] != 0) {
+            selected_experts.push_back(expert);
+            selected_weights.push_back(router_weights[route]);
+        } else {
+            result.exact_route_indices.push_back(route);
+        }
+    }
+    const int actual_budget = std::min(
+        requested_budget,
+        static_cast<int>(selected_experts.size()) * slabs_per_expert);
+    if (actual_budget > 0) {
+        result.selected_slab_ids = select_kimi_k3_slab_prefix_ids(
+            selected_experts.data(), selected_weights.data(),
+            static_cast<int>(selected_experts.size()), ordered_importance,
+            expert_count, slabs_per_expert, actual_budget);
+    }
+    return result;
+}
+
 bool create_kimi_k3_progressive_provider_from_env(
         ggml_backend_t expert_backend,
         std::unique_ptr<KimiK3RoutedOutputProvider> & out,
@@ -2279,6 +2942,28 @@ bool create_kimi_k3_progressive_provider_from_env(
     out.reset();
     const char * raw_kind = std::getenv("DFLASH_KIMI_LAYER1_PROVIDER");
     if (!raw_kind || !*raw_kind || std::strcmp(raw_kind, "exact") == 0) {
+        return true;
+    }
+    if (std::strcmp(raw_kind, "all-layers-calibrated96") == 0) {
+        const char * aux_directory =
+            std::getenv("DFLASH_KIMI_CALIBRATED96_AUX_DIR");
+        const char * sidecar_directory =
+            std::getenv("DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR");
+        if (!aux_directory || !*aux_directory ||
+            !sidecar_directory || !*sidecar_directory) {
+            if (err) *err =
+                "all-layers-calibrated96 requires "
+                "DFLASH_KIMI_CALIBRATED96_AUX_DIR and "
+                "DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR";
+            return false;
+        }
+        auto provider = std::make_unique<CalibratedAllLayerProvider>();
+        if (!provider->init(
+                expert_backend, aux_directory, sidecar_directory,
+                std::getenv("DFLASH_KIMI_CALIBRATED96_METRICS_OUT"), err)) {
+            return false;
+        }
+        out = std::move(provider);
         return true;
     }
     AllSlabsMode all_slabs_mode = AllSlabsMode::Direct;
@@ -2332,6 +3017,7 @@ bool create_kimi_k3_progressive_provider_from_env(
         if (err) *err =
             "DFLASH_KIMI_LAYER1_PROVIDER must be exact, slabs, "
             "slabs-recomposed, whole, "
+            "all-layers-calibrated96, "
             "all-slabs, all-slabs-grouped, all-slabs-recomposed, "
             "all-slabs-recomposed-natural96, "
             "all-slabs-recomposed-natural144, "
