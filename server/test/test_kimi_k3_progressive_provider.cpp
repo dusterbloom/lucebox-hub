@@ -76,6 +76,13 @@ int main() {
     assert(plan.selected_slab_ids == std::vector<int32_t>({0, 1, 2}));
     assert(plan.exact_route_indices == std::vector<int32_t>({0}));
 
+    const KimiK3CalibratedSlabPlan route_plan =
+        plan_kimi_k3_calibrated_route_prefixes(
+            experts, weights, 2, whole_importance, calibrated, 3, 3, 1, 2);
+    assert(route_plan.requested_budget == 2);
+    assert(route_plan.selected_slab_ids == std::vector<int32_t>({0, 1}));
+    assert(route_plan.exact_route_indices == std::vector<int32_t>({0}));
+
 #if defined(_WIN32)
     _putenv_s("DFLASH_KIMI_LAYER1_PROVIDER", "exact");
 #else

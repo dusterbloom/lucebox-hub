@@ -82,4 +82,18 @@ KimiK3CalibratedSlabPlan plan_kimi_k3_calibrated_slabs(
     int slabs_per_expert,
     int requested_budget);
 
+// As above, but first chooses whole calibrated routes using the native expert
+// importance and then keeps an equal calibrated slab prefix from each.  Routes
+// without sufficient calibration are returned for exact evaluation.
+KimiK3CalibratedSlabPlan plan_kimi_k3_calibrated_route_prefixes(
+    const int32_t * expert_ids,
+    const float * router_weights,
+    int top_k,
+    const float * expert_importance,
+    const uint8_t * calibrated_experts,
+    int expert_count,
+    int slabs_per_expert,
+    int route_budget,
+    int slabs_per_route);
+
 } // namespace dflash::common

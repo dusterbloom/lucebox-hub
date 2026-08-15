@@ -1,0 +1,100 @@
+{
+  "schema": "kimi-k3-h21-all-layer-four-route-v1",
+  "status": "MEASURED_PILOT",
+  "base_commit": "265fa29d774e39821a7a9f844e23a0138ba0d49e",
+  "model": "/mnt/kimi-k3/models/unsloth-Kimi-K3-GGUF/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00001-of-00014.gguf",
+  "calibration": {
+    "tokens": 2048,
+    "valid_layers": 92,
+    "route_stats_bytes": 1182451712,
+    "route_stats_manifest_sha256": "96e074762cf2ae20cdeb816bc5b7f1850473153c718f698d5a62a5c4a9321527",
+    "insufficient_expert_action": "exact fallback"
+  },
+  "exact_routed_geometry_bytes_per_model_position": 9738387456,
+  "prompt": {
+    "text": "According to all known laws",
+    "prompt_ids": [18805, 308, 799, 5624, 12524],
+    "native_four_token_ids": [198, 1587, 57195, 422]
+  },
+  "arms": [
+    {
+      "id": "four-routes-six-of-twelve-slabs",
+      "policy": {
+        "selected_routes": 4,
+        "slabs_per_selected_route": 6,
+        "selected_slabs": 24,
+        "active_slabs": 192,
+        "unselected_calibrated_routes": "native expert mean",
+        "weakly_calibrated_routes": "exact fallback"
+      },
+      "shared_context_rows": 5,
+      "teacher_to_candidate_kl": {
+        "mean": 1.4357414821806274,
+        "median": 0.8655100135696885,
+        "maximum": 3.3121114197992174
+      },
+      "top_choice_agreement": {"count": 2, "denominator": 5},
+      "native_first_generated_id": 198,
+      "candidate_first_generated_id": 673,
+      "candidate_first_generated_text": " by",
+      "logical_routed_gib_per_model_position": 2.129,
+      "logical_fraction_of_exact": 0.2347,
+      "exact_fallback_route_fraction": 0.10896739130434782,
+      "candidate_logits_sha256": "cb052752b36a37a9036b22f378ef87f35311d69dae402f8ea91e6efb659692cb",
+      "verdict": "NO_GO_UNIFORM_ALL_LAYER_HALF_SLAB_PREFIX"
+    },
+    {
+      "id": "four-complete-routes-one-token",
+      "policy": {
+        "selected_routes": 4,
+        "slabs_per_selected_route": 12,
+        "selected_slabs": 48,
+        "active_slabs": 192,
+        "unselected_calibrated_routes": "native expert mean",
+        "weakly_calibrated_routes": "exact fallback"
+      },
+      "shared_context_rows": 5,
+      "teacher_to_candidate_kl": {
+        "mean": 0.12810454352187173,
+        "median": 0.07622334917275371,
+        "maximum": 0.36134411405676853
+      },
+      "top_choice_agreement": {"count": 3, "denominator": 5},
+      "native_first_generated_id": 198,
+      "candidate_first_generated_id": 318,
+      "candidate_first_generated_text": " of",
+      "logical_routed_gib_per_model_position": 3.3499992370605467,
+      "logical_fraction_of_exact": 0.369365,
+      "exact_fallback_route_fraction": 0.11861413043478261,
+      "candidate_logits_sha256": "a15626afe6852030cc3b6ff1ae76be1f3c7cf67fa1472b395c8f61d50cc1424a",
+      "verdict": "TOKEN_DIVERGENT_BUT_COHERENT"
+    },
+    {
+      "id": "four-complete-routes-four-token-generation",
+      "candidate_output_ids": [318, 57195, 11, 1459],
+      "candidate_text": "According to all known laws of aviation, there",
+      "native_output_ids": [198, 1587, 57195, 422],
+      "native_text": "According to all known laws\nof aviation,\n",
+      "generated_token_exact_match": false,
+      "obvious_degeneration": false,
+      "logical_routed_gib_per_model_position": 3.4632067680358887,
+      "logical_fraction_of_exact": 0.381845,
+      "exact_fallback_route_fraction": 0.1311990489130435,
+      "prefill_seconds": 117.435,
+      "decode_seconds_for_three_transitions": 69.203,
+      "seconds_per_decode_transition": 23.067666666666668,
+      "decode_transitions_per_second": 0.04335072178951779,
+      "process_disk_gib_per_model_position": 47.27544546127319,
+      "gpu_energy_kilojoules": 21.910726566061342,
+      "candidate_logits_sha256": "b466a78def1f1e904ade5e5ab49be47b8cea6f541195aacaad8ab083f50e0692",
+      "verdict": "PRACTICALLY_ALIVE_NOT_QUALITY_PRESERVED"
+    }
+  ],
+  "conclusion": "Halving the four selected routes is the dominant additional error. Four complete routes plus native means remain coherent across all 92 routed layers, but do not preserve native tokens or terminal distribution. Uniform all-layer 12.5 percent slab execution is rejected; AttnRes-phase or layer-adaptive allocation is the next earned experiment.",
+  "claims_not_made": [
+    "No task-quality preservation claim from one memorized continuation.",
+    "No 100x throughput claim.",
+    "No terminal KL comparison after generated histories diverge.",
+    "No claim that 2,048 calibration tokens cover all domains or experts."
+  ]
+}

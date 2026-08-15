@@ -172,6 +172,28 @@ struct SlabAuxHeaderV2 {
 static_assert(sizeof(SlabAuxHeaderV2) == 280,
               "slab runtime v2 header must remain byte-stable");
 
+// The calibrated96 artifacts deliberately omitted native expert means to keep
+// their all-layer footprint small.  The four-route experiment needs those
+// means for routes that are not read at all, plus one scalar importance per
+// expert.  Keep that additional information in a compact, provenance-bound
+// companion instead of rewriting the 14 GiB calibrated96 substrate.
+struct RouteStatsHeader {
+    char magic[8];
+    uint32_t version;
+    uint32_t model_layer;
+    uint32_t expert_count;
+    uint32_t dimension;
+    uint32_t storage;
+    uint32_t alignment;
+    uint64_t native_means_offset;
+    uint64_t native_means_bytes;
+    uint64_t native_importance_offset;
+    uint64_t native_importance_bytes;
+    uint8_t fit_state_sha256[32];
+};
+static_assert(sizeof(RouteStatsHeader) == 96,
+              "route stats header must remain byte-stable");
+
 struct SlabSidecarHeader {
     char magic[8];
     uint32_t version;
@@ -452,6 +474,18 @@ std::string calibrated_aux_path(const std::string & directory,
     char name[96];
     std::snprintf(name, sizeof(name),
                   "kimi_layer%02d_calibrated96.k3aux", model_layer);
+    if (directory.empty() || directory.back() == '/' ||
+        directory.back() == '\\') {
+        return directory + name;
+    }
+    return directory + "/" + name;
+}
+
+std::string route_stats_path(const std::string & directory,
+                             int model_layer) {
+    char name[96];
+    std::snprintf(name, sizeof(name),
+                  "kimi_layer%02d_route_stats.k3route", model_layer);
     if (directory.empty() || directory.back() == '/' ||
         directory.back() == '\\') {
         return directory + name;
@@ -2564,22 +2598,39 @@ public:
     ~CalibratedAllLayerProvider() override { finish_metrics(); }
 
     bool init(ggml_backend_t backend, const std::string & aux_directory,
-              const std::string & sidecar_directory, const char * metrics_path,
+              const std::string & sidecar_directory,
+              const std::string & route_stats_directory,
+              int route_prefix_depth, const char * metrics_path,
               std::string * err) {
         if (!backend || aux_directory.empty() || sidecar_directory.empty()) {
             if (err) *err =
                 "calibrated96 needs a compute backend, aux directory, and sidecars";
             return false;
         }
+        if (route_prefix_depth != 0 && route_prefix_depth != 6 &&
+            route_prefix_depth != 12) {
+            if (err) *err = "route prefix depth must be 0, 6, or 12";
+            return false;
+        }
+        if (route_prefix_depth != 0 && route_stats_directory.empty()) {
+            if (err) *err =
+                "four-route prefix policy needs a route-stats directory";
+            return false;
+        }
         backend_ = backend;
+        route_prefix_depth_ = route_prefix_depth;
+        budget_ = route_prefix_depth_ > 0 ? 4 * route_prefix_depth_ : 96;
         if (const char * raw_budget =
                 std::getenv("DFLASH_KIMI_P20_SLAB_BUDGET")) {
             char * end = nullptr;
             const long parsed = std::strtol(raw_budget, &end, 10);
             if (end == raw_budget || *end != '\0' ||
-                (parsed != 96 && parsed != 192)) {
+                (route_prefix_depth_ > 0 ? parsed != budget_ :
+                    (parsed != 96 && parsed != 192))) {
                 if (err) *err =
-                    "DFLASH_KIMI_P20_SLAB_BUDGET must be 96 or 192";
+                    route_prefix_depth_ > 0
+                        ? "DFLASH_KIMI_P20_SLAB_BUDGET disagrees with the four-route prefix policy"
+                        : "DFLASH_KIMI_P20_SLAB_BUDGET must be 96 or 192";
                 return false;
             }
             budget_ = static_cast<int>(parsed);
@@ -2643,6 +2694,10 @@ public:
             LayerState & state = layers_[static_cast<size_t>(layer)];
             state.aux_path = calibrated_aux_path(aux_directory, layer);
             state.sidecar_path = natural_sidecar_path(sidecar_directory, layer);
+            if (route_prefix_depth_ > 0) {
+                state.route_stats_path = route_stats_path(
+                    route_stats_directory, layer);
+            }
             std::string layer_error;
             if (load_layer(layer, state, &layer_error)) {
                 state.valid = true;
@@ -2658,11 +2713,14 @@ public:
         }
         metrics_path_ = metrics_path && *metrics_path ? metrics_path : "";
         std::fprintf(stderr,
-            "[kimi-k3-calibrated96] status=PILOT quality-certified=false "
+            "[kimi-k3-calibrated96] status=PILOT policy=%s quality-certified=false "
             "speed-claim=false requested-budget=%d physical-layout=%s "
             "io-backend=%s "
             "valid-layers=%d/92 "
             "invalid-layer-action=exact insufficient-expert-action=exact\n",
+            route_prefix_depth_ == 6 ? "four-route-half" :
+                route_prefix_depth_ == 12 ? "four-route-full" :
+                "calibrated-slabs",
             budget_, sparse_scratch_ ? "scratch" : "reference",
             direct_pread_ ? "direct-pread" : "current", valid_layers);
         return true;
@@ -2713,8 +2771,11 @@ private:
         bool valid = false;
         std::string aux_path;
         std::string sidecar_path;
+        std::string route_stats_path;
         uint64_t means_offset = 0;
         uint64_t means_bytes = 0;
+        uint64_t native_means_offset = 0;
+        uint64_t native_means_bytes = 0;
         uint64_t payload_offset = 0;
         uint64_t slab_bytes = 0;
         uint64_t record_bytes = 0;
@@ -2723,6 +2784,7 @@ private:
         uint64_t down_slab_bytes = 0;
         std::vector<uint16_t> order;
         std::vector<float> importance;
+        std::vector<float> native_importance;
         std::vector<uint8_t> calibrated;
         std::vector<uint32_t> hit_counts;
         Traffic traffic;
@@ -2809,6 +2871,64 @@ private:
         }
         state.means_offset = aux.slab_means_offset;
         state.means_bytes = aux.slab_means_bytes;
+
+        if (route_prefix_depth_ > 0) {
+            std::ifstream route_stats(
+                state.route_stats_path, std::ios::binary | std::ios::ate);
+            if (!route_stats) {
+                if (err) *err = "missing route stats " +
+                    state.route_stats_path;
+                return false;
+            }
+            const uint64_t route_stats_bytes =
+                static_cast<uint64_t>(route_stats.tellg());
+            route_stats.seekg(0);
+            RouteStatsHeader header{};
+            route_stats.read(reinterpret_cast<char *>(&header), sizeof(header));
+            const uint64_t expected_native_means =
+                static_cast<uint64_t>(kExpertCount) * kDimension *
+                    sizeof(float);
+            const uint64_t expected_native_importance =
+                static_cast<uint64_t>(kExpertCount) * sizeof(float);
+            const bool header_valid = route_stats &&
+                std::memcmp(header.magic, "K3ROUTE1", 8) == 0 &&
+                header.version == 1 &&
+                header.model_layer == static_cast<uint32_t>(model_layer) &&
+                header.expert_count == kExpertCount &&
+                header.dimension == kDimension && header.storage == 0 &&
+                header.alignment == kAlignment &&
+                header.native_means_bytes == expected_native_means &&
+                header.native_importance_bytes == expected_native_importance &&
+                checked_span(header.native_means_offset,
+                             header.native_means_bytes, route_stats_bytes) &&
+                checked_span(header.native_importance_offset,
+                             header.native_importance_bytes,
+                             route_stats_bytes) &&
+                header.native_importance_offset +
+                    header.native_importance_bytes == route_stats_bytes &&
+                std::memcmp(header.fit_state_sha256,
+                            aux.fit_state_sha256, 32) == 0;
+            if (!header_valid || !read_array(
+                    route_stats, header.native_importance_offset,
+                    header.native_importance_bytes,
+                    state.native_importance, err)) {
+                if (err && err->empty()) {
+                    *err = "invalid or stale route stats";
+                }
+                return false;
+            }
+            if (state.native_importance.size() != kExpertCount ||
+                std::any_of(state.native_importance.begin(),
+                            state.native_importance.end(),
+                            [](float value) {
+                                return !std::isfinite(value) || value < 0.0f;
+                            })) {
+                if (err) *err = "invalid native route importance";
+                return false;
+            }
+            state.native_means_offset = header.native_means_offset;
+            state.native_means_bytes = header.native_means_bytes;
+        }
 
         const int fd = open_read_only(state.sidecar_path);
         if (fd < 0) {
@@ -3236,9 +3356,13 @@ private:
         const int sidecar_fd = direct_pread_
             ? open_read_only_direct(state.sidecar_path)
             : open_read_only(state.sidecar_path);
-        if (aux_fd < 0 || sidecar_fd < 0) {
+        const int route_stats_fd = route_prefix_depth_ > 0
+            ? open_read_only(state.route_stats_path) : -1;
+        if (aux_fd < 0 || sidecar_fd < 0 ||
+            (route_prefix_depth_ > 0 && route_stats_fd < 0)) {
             if (aux_fd >= 0) close_fd(aux_fd);
             if (sidecar_fd >= 0) close_fd(sidecar_fd);
+            if (route_stats_fd >= 0) close_fd(route_stats_fd);
             state.valid = false;
             const bool ok = eval_moe_streamed_experts(
                 exact_engine, spec, routes, output, err);
@@ -3248,6 +3372,7 @@ private:
         const auto exact_layer_fallback = [&](const char * reason) {
             close_fd(aux_fd);
             close_fd(sidecar_fd);
+            if (route_stats_fd >= 0) close_fd(route_stats_fd);
             state.valid = false;
             std::string exact_error;
             const bool ok = eval_moe_streamed_experts(
@@ -3296,8 +3421,14 @@ private:
                     effective_calibrated.begin(),
                     effective_calibrated.end(), static_cast<uint8_t>(1));
             }
-            const KimiK3CalibratedSlabPlan plan =
-                plan_kimi_k3_calibrated_slabs(
+            const KimiK3CalibratedSlabPlan plan = route_prefix_depth_ > 0
+                ? plan_kimi_k3_calibrated_route_prefixes(
+                    routes.selected_ids + route_offset,
+                    routes.selected_weights + route_offset, kNativeTopK,
+                    state.native_importance.data(),
+                    effective_calibrated.data(), kExpertCount, kSlabCount,
+                    4, route_prefix_depth_)
+                : plan_kimi_k3_calibrated_slabs(
                     routes.selected_ids + route_offset,
                     routes.selected_weights + route_offset, kNativeTopK,
                     state.importance.data(), effective_calibrated.data(),
@@ -3308,6 +3439,7 @@ private:
                 const int expert = routes.selected_ids[route_offset + route];
                 if (expert < 0 || expert >= kExpertCount) {
                     close_fd(aux_fd); close_fd(sidecar_fd);
+                    if (route_stats_fd >= 0) close_fd(route_stats_fd);
                     if (err) *err = "calibrated96 saw an invalid expert id";
                     return false;
                 }
@@ -3369,6 +3501,27 @@ private:
                     selected_by_route.begin() +
                         static_cast<ptrdiff_t>((route + 1) * kSlabCount),
                     static_cast<uint8_t>(1)));
+                const float weight =
+                    routes.selected_weights[route_offset + route];
+                if (route_prefix_depth_ > 0 && prefix_depth == 0) {
+                    const uint64_t native_mean_offset =
+                        state.native_means_offset +
+                        static_cast<uint64_t>(expert) * kDimension *
+                            sizeof(float);
+                    if (!traced_read_exact_at(
+                            route_stats_fd, means.data(),
+                            static_cast<size_t>(kDimension) * sizeof(float),
+                            native_mean_offset, model_layer, base_pos, token,
+                            expert, "native-mean", "f32", 0, false,
+                            state.route_stats_path, "host-native-mean", 0)) {
+                        return exact_layer_fallback(
+                            "short native route mean read");
+                    }
+                    for (int d = 0; d < kDimension; ++d) {
+                        destination[d] += weight * means[static_cast<size_t>(d)];
+                    }
+                    continue;
+                }
                 if (!traced_read_exact_at(
                         aux_fd, means.data(), means.size() * sizeof(float),
                         mean_offset, model_layer, base_pos, token, expert,
@@ -3376,8 +3529,6 @@ private:
                         state.aux_path, "host-mean", 0)) {
                     return exact_layer_fallback("short calibrated mean read");
                 }
-                const float weight =
-                    routes.selected_weights[route_offset + route];
                 // Add omitted cards directly.  Avoid add/subtract cancellation
                 // so the full-width path has stable arithmetic.
                 for (int rank = 0; rank < kSlabCount; ++rank) {
@@ -3542,6 +3693,7 @@ private:
                 if (!eval_moe_streamed_experts(
                         exact_engine, spec, fallback, exact, err)) {
                     close_fd(aux_fd); close_fd(sidecar_fd);
+                    if (route_stats_fd >= 0) close_fd(route_stats_fd);
                     return false;
                 }
                 for (int d = 0; d < spec.output_dim; ++d) {
@@ -3562,6 +3714,7 @@ private:
         }
         close_fd(aux_fd);
         close_fd(sidecar_fd);
+        if (route_stats_fd >= 0) close_fd(route_stats_fd);
         (void) model_layer;
         return true;
     }
@@ -3648,6 +3801,7 @@ private:
     ProcessIoSnapshot process_io_start_{};
     uint64_t next_request_id_ = 0;
     uint64_t explicit_read_bytes_ = 0;
+    int route_prefix_depth_ = 0;
     bool sparse_scratch_ = false;
     bool direct_pread_ = false;
     std::unique_ptr<P20DirectReadPool> direct_read_pool_;
@@ -3797,6 +3951,49 @@ KimiK3CalibratedSlabPlan plan_kimi_k3_calibrated_slabs(
     return result;
 }
 
+KimiK3CalibratedSlabPlan plan_kimi_k3_calibrated_route_prefixes(
+        const int32_t * expert_ids, const float * router_weights, int top_k,
+        const float * expert_importance,
+        const uint8_t * calibrated_experts, int expert_count,
+        int slabs_per_expert, int route_budget, int slabs_per_route) {
+    KimiK3CalibratedSlabPlan result;
+    result.requested_budget = route_budget * slabs_per_route;
+    if (!expert_ids || !router_weights || !expert_importance ||
+        !calibrated_experts || top_k <= 0 || expert_count <= 0 ||
+        slabs_per_expert <= 0 || route_budget <= 0 ||
+        slabs_per_route <= 0 || slabs_per_route > slabs_per_expert) {
+        return result;
+    }
+    std::vector<int32_t> calibrated_ids;
+    std::vector<float> calibrated_weights;
+    calibrated_ids.reserve(static_cast<size_t>(top_k));
+    calibrated_weights.reserve(static_cast<size_t>(top_k));
+    for (int route = 0; route < top_k; ++route) {
+        const int expert = expert_ids[route];
+        if (expert < 0 || expert >= expert_count) {
+            result.selected_slab_ids.clear();
+            result.exact_route_indices.clear();
+            return result;
+        }
+        if (calibrated_experts[expert] != 0) {
+            calibrated_ids.push_back(expert);
+            calibrated_weights.push_back(router_weights[route]);
+        } else {
+            result.exact_route_indices.push_back(route);
+        }
+    }
+    const int selected_routes = std::min(
+        route_budget, static_cast<int>(calibrated_ids.size()));
+    if (selected_routes > 0) {
+        result.selected_slab_ids = select_kimi_k3_route_slab_prefix_ids(
+            calibrated_ids.data(), calibrated_weights.data(),
+            static_cast<int>(calibrated_ids.size()), expert_importance,
+            expert_count, slabs_per_expert, selected_routes,
+            slabs_per_route);
+    }
+    return result;
+}
+
 bool create_kimi_k3_progressive_provider_from_env(
         ggml_backend_t expert_backend,
         std::unique_ptr<KimiK3RoutedOutputProvider> & out,
@@ -3806,22 +4003,39 @@ bool create_kimi_k3_progressive_provider_from_env(
     if (!raw_kind || !*raw_kind || std::strcmp(raw_kind, "exact") == 0) {
         return true;
     }
-    if (std::strcmp(raw_kind, "all-layers-calibrated96") == 0) {
+    const bool all_layers_calibrated96 =
+        std::strcmp(raw_kind, "all-layers-calibrated96") == 0;
+    const bool all_layers_four_route_half =
+        std::strcmp(raw_kind,
+                    "all-layers-four-route-half-slabs") == 0;
+    const bool all_layers_four_route_full =
+        std::strcmp(raw_kind,
+                    "all-layers-four-route-full-slabs") == 0;
+    if (all_layers_calibrated96 || all_layers_four_route_half ||
+        all_layers_four_route_full) {
         const char * aux_directory =
             std::getenv("DFLASH_KIMI_CALIBRATED96_AUX_DIR");
         const char * sidecar_directory =
             std::getenv("DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR");
+        const char * route_stats_directory =
+            std::getenv("DFLASH_KIMI_ROUTE_STATS_DIR");
         if (!aux_directory || !*aux_directory ||
-            !sidecar_directory || !*sidecar_directory) {
+            !sidecar_directory || !*sidecar_directory ||
+            ((all_layers_four_route_half || all_layers_four_route_full) &&
+                (!route_stats_directory || !*route_stats_directory))) {
             if (err) *err =
-                "all-layers-calibrated96 requires "
+                "all-layer calibrated providers require "
                 "DFLASH_KIMI_CALIBRATED96_AUX_DIR and "
-                "DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR";
+                "DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR; four-route policies also "
+                "requires DFLASH_KIMI_ROUTE_STATS_DIR";
             return false;
         }
         auto provider = std::make_unique<CalibratedAllLayerProvider>();
         if (!provider->init(
                 expert_backend, aux_directory, sidecar_directory,
+                route_stats_directory ? route_stats_directory : "",
+                all_layers_four_route_half ? 6 :
+                    all_layers_four_route_full ? 12 : 0,
                 std::getenv("DFLASH_KIMI_CALIBRATED96_METRICS_OUT"), err)) {
             return false;
         }
