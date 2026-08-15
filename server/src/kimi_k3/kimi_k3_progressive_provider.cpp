@@ -2620,6 +2620,24 @@ public:
         backend_ = backend;
         route_prefix_depth_ = route_prefix_depth;
         budget_ = route_prefix_depth_ > 0 ? 4 * route_prefix_depth_ : 96;
+        if (route_prefix_depth_ > 0) {
+            if (const char * raw_phase =
+                    std::getenv("DFLASH_KIMI_H21_LAYER_PHASE")) {
+                if (*raw_phase == '\0' || std::strcmp(raw_phase, "all") == 0) {
+                    layer_phase_ = LayerPhase::All;
+                } else if (std::strcmp(raw_phase, "block-ends") == 0) {
+                    layer_phase_ = LayerPhase::BlockEnds;
+                } else if (std::strcmp(raw_phase, "block-starts") == 0) {
+                    layer_phase_ = LayerPhase::BlockStarts;
+                } else if (std::strcmp(raw_phase, "block-middles") == 0) {
+                    layer_phase_ = LayerPhase::BlockMiddles;
+                } else {
+                    if (err) *err =
+                        "DFLASH_KIMI_H21_LAYER_PHASE must be all, block-ends, block-starts, or block-middles";
+                    return false;
+                }
+            }
+        }
         if (const char * raw_budget =
                 std::getenv("DFLASH_KIMI_P20_SLAB_BUDGET")) {
             char * end = nullptr;
@@ -2714,21 +2732,22 @@ public:
         metrics_path_ = metrics_path && *metrics_path ? metrics_path : "";
         std::fprintf(stderr,
             "[kimi-k3-calibrated96] status=PILOT policy=%s quality-certified=false "
-            "speed-claim=false requested-budget=%d physical-layout=%s "
+            "speed-claim=false requested-budget=%d layer-phase=%s physical-layout=%s "
             "io-backend=%s "
             "valid-layers=%d/92 "
             "invalid-layer-action=exact insufficient-expert-action=exact\n",
             route_prefix_depth_ == 6 ? "four-route-half" :
                 route_prefix_depth_ == 12 ? "four-route-full" :
                 "calibrated-slabs",
-            budget_, sparse_scratch_ ? "scratch" : "reference",
+            budget_, layer_phase_name(),
+            sparse_scratch_ ? "scratch" : "reference",
             direct_pread_ ? "direct-pread" : "current", valid_layers);
         return true;
     }
 
     bool handles_layer(int model_layer) const override {
         return model_layer >= kFirstRoutedLayer &&
-            model_layer <= kLastRoutedLayer;
+            model_layer <= kLastRoutedLayer && selected_layer(model_layer);
     }
 
     bool evaluate(int model_layer, int base_pos,
@@ -2757,6 +2776,34 @@ public:
     }
 
 private:
+    enum class LayerPhase {
+        All,
+        BlockEnds,
+        BlockStarts,
+        BlockMiddles,
+    };
+
+    bool selected_layer(int model_layer) const {
+        if (route_prefix_depth_ == 0 || layer_phase_ == LayerPhase::All) {
+            return true;
+        }
+        const int phase = model_layer % 12;
+        if (layer_phase_ == LayerPhase::BlockEnds) {
+            return phase == 11 && model_layer <= 83;
+        }
+        if (layer_phase_ == LayerPhase::BlockStarts) {
+            return phase == 0 && model_layer >= 12 && model_layer <= 84;
+        }
+        return phase == 6 && model_layer >= 6 && model_layer <= 78;
+    }
+
+    const char * layer_phase_name() const {
+        if (layer_phase_ == LayerPhase::BlockEnds) return "block-ends";
+        if (layer_phase_ == LayerPhase::BlockStarts) return "block-starts";
+        if (layer_phase_ == LayerPhase::BlockMiddles) return "block-middles";
+        return "all";
+    }
+
     struct Traffic {
         uint64_t tokens = 0;
         uint64_t requested_nominal_slabs = 0;
@@ -3802,6 +3849,7 @@ private:
     uint64_t next_request_id_ = 0;
     uint64_t explicit_read_bytes_ = 0;
     int route_prefix_depth_ = 0;
+    LayerPhase layer_phase_ = LayerPhase::All;
     bool sparse_scratch_ = false;
     bool direct_pread_ = false;
     std::unique_ptr<P20DirectReadPool> direct_read_pool_;

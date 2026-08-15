@@ -1,0 +1,82 @@
+{
+  "schema": "kimi-k3-h21-attnres-phase-v1",
+  "status": "MEASURED_TWO_PROMPT_PILOT",
+  "base_commit": "c90c3ec4f4e21645efedbe3474638f77d1ddb428",
+  "policy": {
+    "selected_routes": 4,
+    "slabs_per_selected_route": 12,
+    "unselected_calibrated_routes": "native expert mean",
+    "weakly_calibrated_routes": "exact fallback",
+    "other_routed_layers": "native exact"
+  },
+  "phase_sets": {
+    "block_ends": [11, 23, 35, 47, 59, 71, 83],
+    "block_starts": [12, 24, 36, 48, 60, 72, 84],
+    "block_middles": [6, 18, 30, 42, 54, 66, 78]
+  },
+  "aviation": {
+    "reference": "/mnt/kimi-k3/results/kimi-exact-baseline-local-cpu/exact-run-1.logits.f32",
+    "block_ends": {
+      "teacher_to_candidate_kl": {
+        "mean": 0.04100897965634894,
+        "median": 0.023578117518793996,
+        "maximum": 0.1553171342768922
+      },
+      "top_choice_agreement": {"count": 8, "denominator": 8},
+      "generated_ids": [198, 1587, 57195, 422],
+      "generated_ids_match_native": true,
+      "logical_routed_gib_per_position": 8.597930431365967,
+      "logical_saving_fraction": 0.05200347124081406,
+      "logits_sha256": "93945be3308eb8b4910b627073b541f8e30481469bbda43d1dea634bd2e28335"
+    },
+    "block_starts_one_token": {
+      "teacher_to_candidate_kl": {
+        "mean": 0.007641609200924706,
+        "median": 0.005624077409090549,
+        "maximum": 0.019784572708405227
+      },
+      "top_choice_agreement": {"count": 4, "denominator": 5},
+      "candidate_first_generated_id": 318,
+      "native_first_generated_id": 198,
+      "logits_sha256": "71c1881c1447fcd0f8627130763f3c6e47328a354953ceb13c822d134033c761"
+    },
+    "block_middles_one_token": {
+      "teacher_to_candidate_kl": {
+        "mean": 0.010639167260992725,
+        "median": 0.008520601924067752,
+        "maximum": 0.02989778666270873
+      },
+      "top_choice_agreement": {"count": 5, "denominator": 5},
+      "candidate_first_generated_id": 198,
+      "native_first_generated_id": 198,
+      "logits_sha256": "01d898fb15c185807fcb8e947171875d08279473cde2c6b1164de145a46670ea"
+    }
+  },
+  "capital_japan_block_ends": {
+    "reference": "/mnt/kimi-k3/results/kimi-h17-quality/native/fact-capital.teacher.logits.f32",
+    "shared_prompt_trajectory_rows": 9,
+    "teacher_to_candidate_kl": {
+      "mean": 0.028946321326093132,
+      "median": 0.02811694769909356,
+      "maximum": 0.055538743787093024
+    },
+    "top_choice_agreement": {"count": 7, "denominator": 9},
+    "native_first_generated_id": 646,
+    "candidate_first_generated_id": 40484,
+    "native_continuation": " The answer is Tokyo.",
+    "candidate_output_ids": [40484, 198, 1263, 276],
+    "candidate_continuation": " Tokyo\nName the",
+    "task_answer_correct": true,
+    "obvious_degeneration": false,
+    "post_divergence_kl_reported": false,
+    "logits_sha256": "75a3c0c7106b190b398f9126a976f38a88d1e68e129ca28c8f96d2523a859235"
+  },
+  "verdict": "ATTNRES_PHASE_SIGNAL_NOT_UNIVERSAL_TOKEN_FIREBREAK",
+  "interpretation": [
+    "Equal-size phase sets behave differently at the native decision margin.",
+    "Block starts flipped the aviation token despite lower mean KL than block ends.",
+    "Block ends preserved four aviation tokens but changed the wording of the Japan answer while retaining task correctness.",
+    "One prompt cannot establish a block-end law; practical task scoring and terminal distribution must both be retained."
+  ],
+  "next": "Run a small registered multi-prompt one-token phase screen before growing approximation backward from block ends."
+}
