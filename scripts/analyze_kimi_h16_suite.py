@@ -295,13 +295,17 @@ def main() -> int:
             "top1_agreement_rate": float(agreement_all[indices].mean()),
         }
 
-    provider_name = "slabs" if intervention_header["provider"] == 1 else "whole"
+    provider_name = {
+        1: "slabs",
+        2: "whole",
+        3: "slabs-recomposed",
+    }[intervention_header["provider"]]
     result.update({
         "provider": provider_name,
         "budget": intervention_header["budget"],
         "exact_byte_fraction": (
             intervention_header["budget"] / 192
-            if provider_name == "slabs"
+            if provider_name in ("slabs", "slabs-recomposed")
             else intervention_header["budget"] / 16
         ),
         "intervention_trace": str(intervention_path),
