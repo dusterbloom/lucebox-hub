@@ -1,0 +1,78 @@
+{
+  "schema": "kimi-k3-layer12-two-route-terminal-v1",
+  "status": "MEASURED_TERMINAL_ATTENUATION_BUT_SPECULATIVE_NO_GO",
+  "implementation_commit": "276907fe3a585425507d54f76c24bed806220d49",
+  "intervention": {
+    "model_layer_zero_indexed": 12,
+    "other_routed_layers": "native exact",
+    "selected_routes": 2,
+    "selection": "router weight times calibration native-response norm",
+    "selected_route_execution": "complete native expert",
+    "omitted_routes": 14,
+    "omitted_route_replacement": "frozen native expert mean",
+    "runtime_note": "legacy shadow provider also evaluates the exact layer; no speed claim"
+  },
+  "local_reference": {
+    "heldout_tokens": 1800,
+    "post_routed_up_cosine_mean": 0.710627,
+    "post_routed_up_cosine_p05": 0.532157,
+    "post_routed_up_relative_l2_mean": 0.700432
+  },
+  "prompts": [
+    {
+      "id": "aviation-continuation",
+      "prompt": "According to all known laws",
+      "scored_rows": 8,
+      "native_output_ids": [198, 1587, 57195, 422],
+      "candidate_output_ids": [198, 1587, 57195, 15898],
+      "matching_generated_prefix_tokens": 3,
+      "terminal_kl": {
+        "mean": 0.009841218849976555,
+        "median": 0.006280955076632707,
+        "maximum": 0.03277418806262475
+      },
+      "top1_agreement": {"count": 7, "denominator": 8, "rate": 0.875},
+      "first_generated_token_divergence": 4,
+      "elapsed_seconds": 162.03514951099896,
+      "disk_read_bytes": 425502375936,
+      "gpu_energy_joules": 18797.873636913413,
+      "peak_gpu_memory_mib": 17110.0,
+      "candidate_logits_sha256": "61ae1d5d92f575f7044656f12f7ba0baf2f7239c7a737dc2d3a877704afb3533",
+      "native_logits_sha256": "66ab2dea90fd84d991170fcde70255a36ae9f93c2362f61551286af369bea3b4"
+    },
+    {
+      "id": "math-power-heldout",
+      "prompt": "Compute two to the tenth power. Answer only.",
+      "scored_rows": 10,
+      "native_output_ids": [4415],
+      "candidate_output_ids": [50339],
+      "matching_generated_prefix_tokens": 0,
+      "terminal_kl": {
+        "mean": 0.02833023117183738,
+        "median": 0.021611716251809118,
+        "maximum": 0.08485710393796501
+      },
+      "top1_agreement": {"count": 8, "denominator": 10, "rate": 0.8},
+      "first_generated_token_divergence": 1,
+      "native_task_success": true,
+      "candidate_task_success": false,
+      "elapsed_seconds": 197.7853834230009,
+      "disk_read_bytes": 530638278656,
+      "gpu_energy_joules": 23018.905058572083,
+      "peak_gpu_memory_mib": 17110.0,
+      "candidate_logits_sha256": "22d7c39637e79f21bbb724bf5581ee179e15954d950bb0a595da7c128ac6e665",
+      "native_logits_sha256": "a033798a19057a73dc813e4dcd32ab582419981163c16335f4bed3f2ac9200ad"
+    }
+  ],
+  "calibration_aux": {
+    "path": "/mnt/kimi-k3/artifacts/kimi_layer12_slab_runtime.k3aux",
+    "sha256": "26737b38967a41579b678d60ff08ab22ec9aca45ccdb23d384dcfbd9c8182d6f"
+  },
+  "decision": {
+    "local_cosine_is_a_pessimistic_terminal_proxy": true,
+    "terminal_behavioral_attenuation_is_measured": true,
+    "long_horizon_greedy_speculative_draft_is_viable": false,
+    "reason": "the heldout hard prompt rejects at its first generated token",
+    "next_test": "measure route-budget versus terminal top1 margin at layer 12, beginning with 4 and 8 complete routes, before any all-layer or batching implementation"
+  }
+}
