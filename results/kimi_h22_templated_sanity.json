@@ -1,0 +1,56 @@
+{
+  "schema": "kimi-k3-h22-templated-sanity-v1",
+  "status": "MEASURED_POSITIVE_SANITY",
+  "commit": "f0d0f64",
+  "protocol": {
+    "chat_template": "gguf-jinja-thinking-off",
+    "prompt": "Name the capital of Japan and nothing else.",
+    "prompt_tokens": 30,
+    "generated_tokens": 4,
+    "routed_layers_approximated": 92,
+    "allocation": "behavioral-average-96"
+  },
+  "provenance": {
+    "native_manifest_sha256": "56be8be6943a87d6b377706a4b207166d266aff8172fc82bfedaeb9ce4e123d1",
+    "adaptive_manifest_sha256": "ef9403334b509352619d9c14ce4bfef07dab639efa1f832d551028e69fe9f254",
+    "native_logits_sha256": "7e0fbc3463ca85c92d052ebf575aff74cc7b77beed17b8b90202e1f6bf8b35dc",
+    "adaptive_logits_sha256": "efc5f4d72787c20bf63f304f6d703c8c49fb83d60210f6430fc24f6d73c61cce",
+    "budget_table_sha256": "907c3a37026f3a2803e10e872f6cefe0c434b94acf8e23f450575f2bd877c8e4"
+  },
+  "generation": {
+    "native_text": "Tokyo<|close|>response",
+    "adaptive_text": "Tokyo<|close|>response",
+    "native_tokens": [39818, 18009, 163588, 12092],
+    "adaptive_tokens": [39818, 18009, 163588, 12092],
+    "token_exact": true,
+    "generation_top1_agreement": "4/4",
+    "generation_row_kl": [
+      0.00340191298745055,
+      0.000025476396399231742,
+      0.027978279913489522,
+      0.00004093153063428731
+    ],
+    "generation_mean_kl": 0.007861650206993398
+  },
+  "full_trace": {
+    "rows": 33,
+    "top1_agreement": "27/33",
+    "mean_kl": 0.15263916351747034,
+    "median_kl": 0.037729954653950536,
+    "maximum_kl": 1.4081201847121632,
+    "maximum_absolute_logit_difference": 7.114739179611206
+  },
+  "bytes": {
+    "adaptive_logical_routed": 204805902336,
+    "exact_logical_routed": 321366786048,
+    "logical_fraction": 0.6372964202511263,
+    "logical_saving": 0.3627035797488737
+  },
+  "timing_seconds": {
+    "native_prefill": 677.131474605,
+    "native_decode_four_tokens": 68.534432169,
+    "adaptive_prefill": 864.555427133,
+    "adaptive_decode_four_tokens": 84.288114621
+  },
+  "verdict": "The official-chat one-prompt gate passes exactly at the generated-token level. Broad templated quality remains open. Timing is dominated by mapped-core refaults under the 27-GiB WSL memory limit and is not a speed claim."
+}

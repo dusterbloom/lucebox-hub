@@ -1,6 +1,6 @@
 # H22 — behaviorally priced layer-adaptive progressive slabs
 
-STATUS: BEHAVIORAL ATLAS MEASURED / HELD-OUT COMPOSITION POSITIVE PILOT
+STATUS: BEHAVIORAL ATLAS MEASURED / OFFICIAL-CHAT SANITY POSITIVE / BROAD QUALITY OPEN
 
 Uniform calibrated96 is an archived control and will not be rerun to select
 this policy.  H22 asks whether the same progressive representation becomes
@@ -75,22 +75,27 @@ falls from `0.32334` to `0.22961`, a projected reduction of about 29%.  This is
 not an end-to-end quality claim.  The immutable table SHA-256 is
 `907c3a37026f3a2803e10e872f6cefe0c434b94acf8e23f450575f2bd877c8e4`.
 
-## Measured held-out composition pilot
+## Legacy raw-token composition probe
 
 The frozen average-96 table was then applied on-policy at all 92 routed layers
 through the sparse-physical, full-width native expert path. Neither prompt was
 used by the atlas or the dynamic program.
+
+This historical probe encoded each fixture string directly and did **not**
+apply the GGUF's official Kimi K3 chat template. Its numerical comparisons
+remain valid on the registered raw-token trajectories, but the apparent task
+success is not valid chat-quality evidence. The malformed continuations found
+in the larger legacy suite were caused by this protocol error, and that suite
+was stopped after three prompts.
 
 | prompt | native output | adaptive output | task | token exact | aligned KL mean / max | top-1 |
 |---|---|---|---:|---:|---:|---:|
 | capital of Japan | `The answer is Tokyo...` | `"answer":"Tokyo"...` | PASS | no | 0.02682 / 0.05751 | 8/9 |
 | raven syllogism | `Ari is a bird. All ravens` | identical | PASS | yes | 0.04867 / 0.26147 | 23/23 |
 
-This is a measured `2/2` task pass and `1/2` exact-generation match. It is the
-first positive on-policy evidence for unequal progressive budgets across all
-92 routed layers. It is not broad quality certification: the suite has only
-two short prompts and KL is comparable only through the last shared generated
-history.
+This is a measured `2/2` raw-continuation content pass and `1/2`
+exact-generation match, not a chat-quality claim. KL is comparable only
+through the last shared generated history.
 
 Across the 39 evaluated model positions, the exact routed baseline was
 `379,797,110,784` bytes and the adaptive policy requested
@@ -106,3 +111,28 @@ sparse expert path separately reported `198,935,887,872` explicit provider
 bytes and `190,236,917,760` direct physical bytes, with no full-weight host to
 device transfer. More RAM or additional resident-core placement remains a
 systems prerequisite for useful decode speed on this box.
+
+## Official-chat sanity gate
+
+The runner now reads `tokenizer.chat_template` from the GGUF and renders one
+user message with `add_generation_prompt=true` and thinking disabled. The
+registered prompt becomes a 30-token official K3 envelope ending in an open
+assistant response, rather than nine unframed text tokens.
+
+On `Name the capital of Japan and nothing else.`, native exact and the frozen
+average-96 policy both generated the identical four tokens:
+
+```text
+Tokyo<|close|>response
+```
+
+The four generation-decision rows had `4/4` top-one agreement and KL values
+`0.003402`, `0.000025`, `0.027978`, and `0.000041` (mean `0.007862`). Across
+all 33 prompt and generation rows, top-one agreement was `27/33`, mean KL was
+`0.152639`, and maximum KL was `1.408120`.
+
+The adaptive arm requested `204,805,902,336` logical routed bytes versus
+`321,366,786,048` exact bytes: `63.73%` of exact, or a `36.27%` saving after
+honest exact fallbacks. This is the first valid chat-templated, all-92-layer
+adaptive success. One factual prompt is a sanity gate, not broad quality
+certification; a new templated diverse suite is still required.
