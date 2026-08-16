@@ -1,4 +1,5 @@
 #include "kimi_k3/kimi_k3_backend.h"
+#include "server/chat_template.h"
 #include "server/tokenizer.h"
 
 #include <nlohmann/json.hpp>
@@ -183,6 +184,10 @@ int main(int argc, char ** argv) {
     const char * provider = std::getenv("DFLASH_KIMI_LAYER1_PROVIDER");
     const bool provider_enabled = provider && *provider &&
         std::string(provider) != "exact";
+    const char * chat_template_environment =
+        std::getenv("DFLASH_KIMI_H16_CHAT_TEMPLATE");
+    const bool use_chat_template = chat_template_environment &&
+        std::string(chat_template_environment) == "1";
     if (paired && !provider_enabled) {
         std::fprintf(stderr,
             "[kimi-h16-suite] paired mode requires a routed provider\n");
@@ -232,6 +237,11 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "[kimi-h16-suite] tokenizer load failed\n");
         return 1;
     }
+    if (use_chat_template && tokenizer.chat_template().empty()) {
+        std::fprintf(stderr,
+            "[kimi-h16-suite] GGUF chat template requested but unavailable\n");
+        return 1;
+    }
     KimiK3BackendConfig config;
     config.model_path = model_path.c_str();
     config.device.gpu = gpu;
@@ -251,6 +261,8 @@ int main(int argc, char ** argv) {
     manifest["suite_path"] = suite_path.string();
     manifest["paired"] = paired;
     manifest["provider"] = provider_enabled ? provider : "exact";
+    manifest["chat_template"] =
+        use_chat_template ? "gguf-jinja-thinking-off" : "raw-text";
     manifest["max_context"] = max_context;
     manifest["n_gen"] = n_gen;
     manifest["core_placement"] = argc > 7 ? argv[7] : "cpu";
@@ -266,6 +278,7 @@ int main(int argc, char ** argv) {
     record_environment("DFLASH_KIMI_H22_DYNAMIC_ACTIVE_LAYER");
     record_environment("DFLASH_KIMI_H22_SWEEP_LAYERS");
     record_environment("DFLASH_KIMI_H22_LAYER_BUDGETS");
+    record_environment("DFLASH_KIMI_H16_CHAT_TEMPLATE");
     record_environment("DFLASH_MOE_NVME_DIRECT");
     record_environment("DFLASH_MOE_NVME_DEVICE_CACHE_MB");
     record_environment("DFLASH_KIMI_CPU_THREADS");
@@ -290,7 +303,27 @@ int main(int argc, char ** argv) {
             backend.shutdown();
             return 1;
         }
-        std::vector<int32_t> prompt_ids = tokenizer.encode(entry.text);
+        std::string rendered_prompt = entry.text;
+        if (use_chat_template) {
+            const std::string bos = tokenizer.bos_id() >= 0
+                ? tokenizer.raw_token(tokenizer.bos_id()) : std::string();
+            const std::string eos = tokenizer.eos_id() >= 0
+                ? tokenizer.raw_token(tokenizer.eos_id()) : std::string();
+            try {
+                rendered_prompt = render_chat_template_jinja(
+                    tokenizer.chat_template(),
+                    {{"user", entry.text, ""}}, bos, eos,
+                    /*add_generation_prompt=*/true,
+                    /*enable_thinking=*/false, "");
+            } catch (const std::exception & exception) {
+                std::fprintf(stderr,
+                    "[kimi-h16-suite] chat template failed for %s: %s\n",
+                    entry.id.c_str(), exception.what());
+                backend.shutdown();
+                return 1;
+            }
+        }
+        std::vector<int32_t> prompt_ids = tokenizer.encode(rendered_prompt);
         if (prompt_ids.empty() ||
             prompt_ids.size() > static_cast<size_t>(max_context)) {
             std::fprintf(stderr,
@@ -341,6 +374,7 @@ int main(int argc, char ** argv) {
             {"id", entry.id},
             {"split", entry.split},
             {"text", entry.text},
+            {"rendered_prompt", rendered_prompt},
             {"model_layer", entry.model_layer},
             {"prompt_tokens", prompt_ids},
             {"prompt_token_count", prompt_ids.size()},

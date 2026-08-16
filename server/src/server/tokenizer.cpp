@@ -624,6 +624,13 @@ bool Tokenizer::load_from_gguf(const char * model_path) {
         if (eot != token_to_id_.end()) eos_chat_id_ = eot->second;
     }
 
+    const int chat_template_key =
+        gguf_find_key(gctx, "tokenizer.chat_template");
+    if (chat_template_key >= 0) {
+        const char * value = gguf_get_val_str(gctx, chat_template_key);
+        chat_template_ = value ? value : "";
+    }
+
     gguf_free(gctx);
 
     std::fprintf(stderr, "[tokenizer] loaded vocab=%d merges=%zu bos=%d eos=%d eot=%d pre=%s sp=%s\n",

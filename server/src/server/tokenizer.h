@@ -50,6 +50,10 @@ public:
     int32_t bos_id() const { return bos_id_; }
     int32_t vocab_size() const { return (int32_t)id_to_token_.size(); }
 
+    // Literal tokenizer.chat_template metadata from the GGUF. Empty when the
+    // model does not publish one.
+    const std::string & chat_template() const { return chat_template_; }
+
     // Look up a token by its exact string. Returns -1 if not found.
     int32_t token_to_id(const std::string & token) const;
 
@@ -77,6 +81,8 @@ private:
     int32_t bos_id_ = -1;
     int32_t eos_id_ = -1;
     int32_t eos_chat_id_ = -1;  // <|im_end|> for Qwen3
+
+    std::string chat_template_;
 
     // Pre-tokenizer type
     enum class PreTokenizer { QWEN2, QWEN35 };
