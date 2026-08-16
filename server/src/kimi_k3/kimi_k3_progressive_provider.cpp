@@ -4673,7 +4673,8 @@ private:
                 std::fill(up.begin(), up.end(), 0);
                 std::fill(down.begin(), down.end(), 0);
                 std::fill(mask.begin(), mask.end(), 0.0f);
-                std::vector<SparseSlabPayload> sparse_slabs = direct_pread_
+                std::vector<SparseSlabPayload> sparse_slabs =
+                    direct_pread_ && !oracle_hit
                     ? std::move(direct_payloads[static_cast<size_t>(route)])
                     : std::vector<SparseSlabPayload>{};
                 const SparseCompactPayload * prepacked_compact = nullptr;
