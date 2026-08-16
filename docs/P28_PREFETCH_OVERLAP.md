@@ -1,6 +1,6 @@
 # P28 — Oracle delivery-overlap ceiling
 
-VERDICT: TRACE STRONG GO; INTEGRATED ORACLE REPLAY REQUIRED
+VERDICT: TRACE STRONG GO; INTEGRATED IMPLEMENTATION NO-GO; ORACLE CEILING OPEN
 
 ## Question
 
@@ -115,9 +115,9 @@ amortization remain necessary.
 P28 is worthwhile as a bounded systems optimization. It is not a substitute
 for H23's target of materially fewer authoritative bytes.
 
-## Integrated oracle implementation — BUILD-READY, NOT YET MEASURED
+## Integrated oracle replay — MEASURED NO-GO
 
-The minimum one-layer replay is now implemented behind:
+The minimum one-layer replay was measured behind:
 
 ```text
 DFLASH_KIMI_P28_ORACLE_TRACE=<archived-P27-io_trace.tsv>
@@ -141,8 +141,58 @@ changing their live router arithmetic. The additional buffer is one contiguous
 pinned arena which grows only to the maximum future selected-layer payload; the
 runtime reports its actual high-water capacity.
 
-The implementation and CPU controls compile and pass. The integrated GPU gate
-has deliberately not run while H23/S0 own the shared GPU. Reproduce it with:
+The accepted run is archived at:
+
+```text
+/mnt/kimi-k3/results/kimi-p28-oracle-32-row-20260816-r3
+```
+
+It preserved the P27 logits byte-for-byte, but failed the performance gate:
+
+| item | measured result |
+|---|---:|
+| P27 reference | 0.3330 transition/s |
+| P28 integrated | 0.2150 transition/s |
+| gain | **-35.42%** |
+| oracle launches / accepted | 2,943 / 385 |
+| oracle physical bytes | 156.427 GB |
+| rejected/wasted bytes | 136.152 GB |
+| demand wait | 0.240 s |
+| extra pinned buffer | 62,620,160 bytes |
+| logits | **byte-identical** |
+
+The low acceptance is **not route unpredictability**. A CPU trace-to-live diff
+found the same 2,944 `(position, layer)` keys in the same execution order and
+the same expert/slab address sets at every key (zero set mismatches). The trace
+schema records a calibrated route only when at least one slab byte is read. The
+live verifier included calibrated zero-prefix routes in its match vector, so it
+rejected an otherwise exact address prediction whenever any selected expert
+received zero slabs. The 385 accepted cases are precisely the cases where that
+representation happened to compare equal; their trace order differs because
+the oracle canonicalizes natural slab IDs.
+
+Thus this run falsifies the **current integrated matcher/schedule**, not the
+40.8% analytical oracle ceiling. It nevertheless does not earn predictor work:
+the preregistered gate was an integrated gain of at least 25%, and the measured
+implementation regressed. Correcting the trace schema/matcher and rerunning is
+OPEN, deliberately deferred behind the higher-value H23 and S0 lanes.
+
+Two earlier attempts are retained as rejected diagnostics:
+
+```text
+/mnt/kimi-k3/results/kimi-p28-oracle-32-row-20260816
+/mnt/kimi-k3/results/kimi-p28-oracle-32-row-20260816-r2
+```
+
+Both crashed before a scored row at the same first layer-2 oracle hit. R1 also
+showed WSL `dxg` allocation errors, so pinned staging was conservatively moved
+from the read worker to the initialization thread. R2 still crashed and
+localized the actual fault: oracle-hit bookkeeping indexed the empty
+synchronous payload vector. Oracle hits no longer touch that vector. The
+corrected r3 completed normally, proving the deterministic crash fixed; the
+allocation change is hardening rather than the established primary cause.
+
+Reproduce the integrated arm with:
 
 ```bash
 scripts/gpu_lease.sh run P28 -- \
@@ -152,5 +202,5 @@ scripts/gpu_lease.sh run P28 -- \
 
 `scripts/analyze_kimi_p28_integrated.py` requires byte-identical frozen logits
 and at least 25% measured throughput gain before it labels predictor research
-earned. Until that command passes, the implementation status remains OPEN and
-the 40.8% value above remains only a ceiling.
+earned. R3 passed exactness and failed speed. The 40.8% value remains a trace
+ceiling, not a measured speedup.

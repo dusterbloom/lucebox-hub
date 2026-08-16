@@ -1,0 +1,43 @@
+{
+  "schema": "k3-p28-integrated-oracle-v1",
+  "verdict": "NO_GO",
+  "classification": "MEASURED_INTEGRATED_IMPLEMENTATION_FAILURE_ORACLE_CEILING_OPEN",
+  "artifact": "/mnt/kimi-k3/results/kimi-p28-oracle-32-row-20260816-r3",
+  "semantic_gate": {
+    "bit_equal": true,
+    "reference_logits_sha256": "c1330897e6819c1b0ae289155e76a2359fca1c55a95b44985cb91e179d3f2e44",
+    "candidate_logits_sha256": "c1330897e6819c1b0ae289155e76a2359fca1c55a95b44985cb91e179d3f2e44"
+  },
+  "performance": {
+    "transitions": 31,
+    "reference_decode_seconds": 93.10653500000001,
+    "candidate_decode_seconds": 144.166259,
+    "reference_transitions_per_second": 0.3329519243735147,
+    "candidate_transitions_per_second": 0.21502950978286814,
+    "throughput_gain_fraction": -0.35417249746350143,
+    "gate_fraction": 0.25
+  },
+  "oracle": {
+    "launches": 2943,
+    "hits": 385,
+    "misses": 2558,
+    "read_seconds": 33.959025891,
+    "demand_wait_seconds": 0.240455551,
+    "physical_bytes": 156426633216,
+    "wasted_bytes": 136151826432,
+    "extra_pinned_bytes": 62620160
+  },
+  "cpu_trace_diff": {
+    "reference_layer_keys": 2944,
+    "candidate_layer_keys": 2944,
+    "execution_order_mismatches": 0,
+    "expert_slab_address_set_mismatches": 0,
+    "diagnosis": "The archived trace omits calibrated routes with zero selected slab bytes, while the live matcher retained those zero-prefix routes. The misses are false representation mismatches, not route unpredictability."
+  },
+  "rejected_crash_artifacts": [
+    "/mnt/kimi-k3/results/kimi-p28-oracle-32-row-20260816",
+    "/mnt/kimi-k3/results/kimi-p28-oracle-32-row-20260816-r2"
+  ],
+  "predictor_research_earned": false,
+  "oracle_ceiling_status": "OPEN_UNMEASURED"
+}
