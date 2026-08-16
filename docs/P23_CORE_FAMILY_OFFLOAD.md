@@ -94,3 +94,26 @@ The storage path is no longer the dominant term on the short trace.
 
 Machine-readable evidence is in
 `results/k3_p23_core_family_ablation.json`.
+
+## Stage profile: the next bottleneck
+
+An opt-in `DFLASH_KIMI_STAGE_PROFILE=1` timer classifies each real forward
+without changing its graph. On the leading arm's 9.247-second decode row:
+
+| stage | time | fraction |
+| --- | ---: | ---: |
+| routed preparation (attention/recurrent + CPU router) | 2.843 s | 30.7% |
+| calibrated sparse expert provider | 6.229 s | 67.4% |
+| latent/shared accelerator preparation | 0.072 s | 0.8% |
+| routed join | 0.031 s | 0.3% |
+| output head | 0.037 s | 0.4% |
+
+Direct NVMe work averages only about 0.79 seconds per row. Inspection explains
+the remaining provider cost: the P20 correctness baseline creates, allocates,
+computes, and synchronously reads back a separate full-width zero-filled graph
+for every calibrated route—up to 16 times per routed layer. The next earned
+systems step is persistent graph/buffer reuse followed by one layer-batched
+expert graph, while preserving the frozen expert-ID accumulation order.
+
+Machine-readable stage evidence is in
+`results/k3_p23_stage_profile.json`.

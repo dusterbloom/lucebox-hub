@@ -46,13 +46,15 @@ python3 "$repo_dir/scripts/run_with_telemetry.py" \
     --output-json "$output/telemetry.json" \
     --samples-csv "$output/telemetry.csv" \
     --stdout "$output/stdout.log" --stderr "$output/stderr.log" \
-    --mount-path /mnt/kimi-k3 --gpu "$gpu" -- \
+    --mount-path /mnt/kimi-k3 --gpu "$gpu" \
+    --interval "${KIMI_P23_TELEMETRY_INTERVAL:-5}" -- \
     env \
       DFLASH_MOE_NVME_DIRECT=on \
       DFLASH_MOE_NVME_DEVICE_CACHE_MB="$device_cache_mb" \
       DFLASH_KIMI_CPU_THREADS="${KIMI_P23_CPU_THREADS:-18}" \
       DFLASH_KIMI_MMAP_DROP_PAGES=0 \
       DFLASH_KIMI_MOE_CORE_OFFLOAD="$mode" \
+      DFLASH_KIMI_STAGE_PROFILE="${KIMI_P23_STAGE_PROFILE:-0}" \
       DFLASH_KIMI_SMOKE_MAX_CTX=128 \
       DFLASH_KIMI_LOGITS_TRACE_OUT="$output/logits.f32" \
       DFLASH_KIMI_LAYER1_PROVIDER=all-layers-calibrated96 \

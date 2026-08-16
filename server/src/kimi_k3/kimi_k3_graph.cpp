@@ -9,6 +9,7 @@
 #include "ggml-alloc.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -810,6 +811,25 @@ bool streamed_kimi_k3_forward(
         MoeStreamDualOwnerExecutor * dual_stream_executor,
         const MoeStreamDualOwnerPolicy * stream_owner_policy,
         MoeHybridRoutingStats * routing_stats) {
+    using ProfileClock = std::chrono::steady_clock;
+    const char * profile_environment =
+        std::getenv("DFLASH_KIMI_STAGE_PROFILE");
+    const bool profile_stages = profile_environment &&
+        *profile_environment && std::strcmp(profile_environment, "0") != 0;
+    const ProfileClock::time_point profile_forward_start =
+        profile_stages ? ProfileClock::now() : ProfileClock::time_point{};
+    uint64_t profile_embedding_ns = 0;
+    uint64_t profile_dense_ns = 0;
+    uint64_t profile_routed_preparation_ns = 0;
+    uint64_t profile_offloaded_preparation_ns = 0;
+    uint64_t profile_expert_ns = 0;
+    uint64_t profile_join_ns = 0;
+    uint64_t profile_output_ns = 0;
+    const auto profile_elapsed_ns = [](ProfileClock::time_point start) {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                ProfileClock::now() - start).count());
+    };
     const int n_tokens = static_cast<int>(tokens.size());
     const size_t hidden_values =
         static_cast<size_t>(w.n_embd) * static_cast<size_t>(n_tokens);
@@ -859,6 +879,8 @@ bool streamed_kimi_k3_forward(
     }
 
     {
+        const ProfileClock::time_point profile_start =
+            profile_stages ? ProfileClock::now() : ProfileClock::time_point{};
         ggml_context * ctx = new_kimi_step_context();
         if (!ctx) {
             set_last_error("Kimi-K3 embedding: context allocation failed");
@@ -881,6 +903,9 @@ bool streamed_kimi_k3_forward(
             : read_token_embeddings_on_host(w, tokens, hidden);
         ggml_free(ctx);
         if (!ok) return false;
+        if (profile_stages) {
+            profile_embedding_ns += profile_elapsed_ns(profile_start);
+        }
     }
 
     std::vector<std::vector<float>> checkpoints;
@@ -945,6 +970,9 @@ bool streamed_kimi_k3_forward(
             ctx, cur, layer.ffn_norm, w.rms_eps);
 
         if (il < w.n_dense_lead) {
+            const ProfileClock::time_point profile_start =
+                profile_stages ? ProfileClock::now() :
+                    ProfileClock::time_point{};
             ggml_tensor * gate =
                 ggml_mul_mat(ctx, layer.ffn_gate, cur);
             ggml_tensor * up =
@@ -964,6 +992,9 @@ bool streamed_kimi_k3_forward(
                 "dense layer");
             ggml_free(ctx);
             if (!ok) return false;
+            if (profile_stages) {
+                profile_dense_ns += profile_elapsed_ns(profile_start);
+            }
             if (banked) checkpoints.push_back(checkpoint_value);
             hidden.swap(next_hidden);
             const int capture_idx = capture_at_layer[static_cast<size_t>(il)];
@@ -1085,16 +1116,26 @@ bool streamed_kimi_k3_forward(
                     router_logits_host.size() * sizeof(float)});
             }
         }
+        const ProfileClock::time_point profile_preparation_start =
+            profile_stages ? ProfileClock::now() :
+                ProfileClock::time_point{};
         const bool prep_ok = run_host_boundary_graph(
             backend, ctx, graph, inputs,
             preparation_outputs,
             "routed layer preparation");
         ggml_free(ctx);
         if (!prep_ok) return false;
+        if (profile_stages) {
+            profile_routed_preparation_ns +=
+                profile_elapsed_ns(profile_preparation_start);
+        }
         if (preparation_offloaded) {
             if (trace_divergence) {
                 pre_moe_hidden_host = normalized_hidden_host;
             }
+            const ProfileClock::time_point profile_offload_start =
+                profile_stages ? ProfileClock::now() :
+                    ProfileClock::time_point{};
             if (!run_offloaded_moe_preparation(
                     *core_offload, w, il, n_tokens,
                     normalized_hidden_host, routed_input_host, selected,
@@ -1102,6 +1143,10 @@ bool streamed_kimi_k3_forward(
                     stop_at_capture_boundary ? nullptr : &shared_host,
                     trace_divergence ? &router_logits_host : nullptr)) {
                 return false;
+            }
+            if (profile_stages) {
+                profile_offloaded_preparation_ns +=
+                    profile_elapsed_ns(profile_offload_start);
             }
         }
         if (banked) checkpoints.push_back(checkpoint_value);
@@ -1192,6 +1237,9 @@ bool streamed_kimi_k3_forward(
                 "Kimi-K3 routed layer: no streamed expert engine");
             return false;
         }
+        const ProfileClock::time_point profile_expert_start =
+            profile_stages ? ProfileClock::now() :
+                ProfileClock::time_point{};
         const bool route_ok = alternate_provider
             ? options.routed_output_provider->evaluate(
                 il, base_pos, spec, route_batch, *stream_engine,
@@ -1209,6 +1257,9 @@ bool streamed_kimi_k3_forward(
                 ": streamed expert evaluation failed: " +
                 stream_error);
             return false;
+        }
+        if (profile_stages) {
+            profile_expert_ns += profile_elapsed_ns(profile_expert_start);
         }
         const char * trace = std::getenv("DFLASH_MOE_DUAL_STREAM_TRACE");
         if (dual_owner && trace && *trace && std::strcmp(trace, "0") != 0) {
@@ -1229,6 +1280,9 @@ bool streamed_kimi_k3_forward(
             moe_output_host.resize(hidden_values);
         }
         bool join_ok = false;
+        const ProfileClock::time_point profile_join_start =
+            profile_stages ? ProfileClock::now() :
+                ProfileClock::time_point{};
         if (join_offloaded) {
             join_ok = run_offloaded_moe_join(
                 *core_offload, w, il, n_tokens,
@@ -1285,6 +1339,9 @@ bool streamed_kimi_k3_forward(
             ggml_free(ctx);
         }
         if (!join_ok) return false;
+        if (profile_stages) {
+            profile_join_ns += profile_elapsed_ns(profile_join_start);
+        }
         if (trace_divergence && !divergence_trace.append(
                 il, base_pos, n_tokens, banked,
                 checkpoint_value, pre_moe_hidden_host,
@@ -1340,12 +1397,37 @@ bool streamed_kimi_k3_forward(
         outputs.push_back({
             argmax, result.argmax.data(), result.argmax.size() * sizeof(int32_t)});
     }
+    const ProfileClock::time_point profile_output_start =
+        profile_stages ? ProfileClock::now() : ProfileClock::time_point{};
     const bool output_ok = run_host_boundary_graph(
         backend, ctx, graph, inputs,
         outputs,
         "output");
     ggml_free(ctx);
     if (!output_ok) return false;
+    if (profile_stages) {
+        profile_output_ns += profile_elapsed_ns(profile_output_start);
+        const uint64_t total_ns =
+            profile_elapsed_ns(profile_forward_start);
+        const uint64_t classified_ns =
+            profile_embedding_ns + profile_dense_ns +
+            profile_routed_preparation_ns +
+            profile_offloaded_preparation_ns + profile_expert_ns +
+            profile_join_ns + profile_output_ns;
+        const uint64_t other_ns = total_ns > classified_ns
+            ? total_ns - classified_ns : 0;
+        std::fprintf(stderr,
+            "[kimi-k3-stage] position=%d tokens=%d total_ms=%.3f "
+            "embedding_ms=%.3f dense_ms=%.3f routed_prep_ms=%.3f "
+            "offload_prep_ms=%.3f experts_ms=%.3f join_ms=%.3f "
+            "output_ms=%.3f other_ms=%.3f\n",
+            base_pos, n_tokens, total_ns / 1.0e6,
+            profile_embedding_ns / 1.0e6, profile_dense_ns / 1.0e6,
+            profile_routed_preparation_ns / 1.0e6,
+            profile_offloaded_preparation_ns / 1.0e6,
+            profile_expert_ns / 1.0e6, profile_join_ns / 1.0e6,
+            profile_output_ns / 1.0e6, other_ns / 1.0e6);
+    }
 
     cache.cur_pos = base_pos + n_tokens;
     return true;
