@@ -1,4 +1,5 @@
 #include "kimi_k3_progressive_provider.h"
+#include "kimi_k3_sparse_scatter.h"
 #include "device_runtime.h"
 
 #include "ggml-cuda.h"
@@ -1654,12 +1655,14 @@ public:
             uint64_t & authoritative_h2d_bytes,
             uint64_t & metadata_h2d_bytes,
             uint64_t & device_zero_bytes,
+            bool compact_upload,
             std::string * err) {
 #if !defined(DFLASH27B_BACKEND_CUDA)
         (void) backend; (void) spec; (void) input_data; (void) slabs;
         (void) activation_mask_values; (void) down_slab_row_bytes;
         (void) result; (void) authoritative_h2d_bytes;
         (void) metadata_h2d_bytes; (void) device_zero_bytes;
+        (void) compact_upload;
         if (err) *err = "P23 sparse scratch currently requires CUDA";
         return false;
 #else
@@ -1686,49 +1689,106 @@ public:
             }
             return false;
         };
-        bool ok =
-            cuda_ok(cudaMemset(
-                entry->gate->data, 0, ggml_nbytes(entry->gate)),
-                "gate zero") &&
-            cuda_ok(cudaMemset(
-                entry->up->data, 0, ggml_nbytes(entry->up)),
-                "up zero") &&
-            cuda_ok(cudaMemset(
-                entry->down->data, 0, ggml_nbytes(entry->down)),
-                "down zero");
+        bool ok = true;
         device_zero_bytes += ggml_nbytes(entry->gate) +
             ggml_nbytes(entry->up) + ggml_nbytes(entry->down);
-        for (const SparseSlabPayload & slab : slabs) {
-            if (!ok || slab.natural >= kSlabCount || slab.gate.empty() ||
-                slab.up.empty() || slab.down.empty()) {
-                ok = false;
-                if (err && err->empty()) {
-                    *err = "P23 invalid sparse slab payload";
-                }
-                break;
+        if (compact_upload) {
+            constexpr size_t metadata_bytes = 32;
+            if (slabs.empty()) {
+                if (err) *err = "P25 compact upload received no slabs";
+                return false;
             }
-            const size_t gate_offset =
-                static_cast<size_t>(slab.natural) * slab.gate.size();
-            const size_t up_offset =
-                static_cast<size_t>(slab.natural) * slab.up.size();
-            const size_t down_offset =
-                static_cast<size_t>(slab.natural) * down_slab_row_bytes;
-            ok = cuda_ok(cudaMemcpy(
-                    static_cast<uint8_t *>(entry->gate->data) + gate_offset,
-                    slab.gate.data(), slab.gate.size(), cudaMemcpyHostToDevice),
-                    "gate slab upload") &&
-                cuda_ok(cudaMemcpy(
-                    static_cast<uint8_t *>(entry->up->data) + up_offset,
-                    slab.up.data(), slab.up.size(), cudaMemcpyHostToDevice),
-                    "up slab upload") &&
-                cuda_ok(cudaMemcpy2D(
-                    static_cast<uint8_t *>(entry->down->data) + down_offset,
-                    entry->down->nb[1], slab.down.data(),
-                    down_slab_row_bytes, down_slab_row_bytes,
-                    static_cast<size_t>(spec.output_dim),
-                    cudaMemcpyHostToDevice), "down slab upload");
-            authoritative_h2d_bytes +=
-                slab.gate.size() + slab.up.size() + slab.down.size();
+            const size_t gate_slab_bytes = slabs.front().gate.size();
+            const size_t up_slab_bytes = slabs.front().up.size();
+            const size_t down_slab_bytes = slabs.front().down.size();
+            const size_t record_bytes =
+                gate_slab_bytes + up_slab_bytes + down_slab_bytes;
+            std::vector<uint8_t> compact(
+                metadata_bytes + slabs.size() * record_bytes, 0);
+            size_t payload_offset = metadata_bytes;
+            for (size_t index = 0; index < slabs.size(); ++index) {
+                const SparseSlabPayload & slab = slabs[index];
+                if (slab.natural >= kSlabCount ||
+                    slab.gate.size() != gate_slab_bytes ||
+                    slab.up.size() != up_slab_bytes ||
+                    slab.down.size() != down_slab_bytes) {
+                    if (err) *err = "P25 compact upload has uneven slabs";
+                    return false;
+                }
+                std::memcpy(
+                    compact.data() + index * sizeof(uint16_t),
+                    &slab.natural, sizeof(uint16_t));
+                std::memcpy(
+                    compact.data() + payload_offset,
+                    slab.gate.data(), slab.gate.size());
+                payload_offset += slab.gate.size();
+                std::memcpy(
+                    compact.data() + payload_offset,
+                    slab.up.data(), slab.up.size());
+                payload_offset += slab.up.size();
+                std::memcpy(
+                    compact.data() + payload_offset,
+                    slab.down.data(), slab.down.size());
+                payload_offset += slab.down.size();
+            }
+            if (!ensure_compact_staging(*entry, compact.size(), err)) {
+                return false;
+            }
+            ok = kimi_k3_sparse_scatter_upload(
+                entry->gate->data, ggml_nbytes(entry->gate),
+                entry->up->data, ggml_nbytes(entry->up),
+                entry->down->data, ggml_nbytes(entry->down),
+                entry->compact_staging, entry->compact_capacity,
+                compact.data(), compact.size(),
+                static_cast<int>(slabs.size()), metadata_bytes,
+                gate_slab_bytes, up_slab_bytes, down_slab_bytes,
+                down_slab_row_bytes, entry->down->nb[1], spec.output_dim);
+            if (!ok && err) *err = "P25 compact sparse scatter failed";
+            authoritative_h2d_bytes += slabs.size() * record_bytes;
+            metadata_h2d_bytes += metadata_bytes;
+        } else {
+            ok =
+                cuda_ok(cudaMemset(
+                    entry->gate->data, 0, ggml_nbytes(entry->gate)),
+                    "gate zero") &&
+                cuda_ok(cudaMemset(
+                    entry->up->data, 0, ggml_nbytes(entry->up)),
+                    "up zero") &&
+                cuda_ok(cudaMemset(
+                    entry->down->data, 0, ggml_nbytes(entry->down)),
+                    "down zero");
+            for (const SparseSlabPayload & slab : slabs) {
+                if (!ok || slab.natural >= kSlabCount || slab.gate.empty() ||
+                    slab.up.empty() || slab.down.empty()) {
+                    ok = false;
+                    if (err && err->empty()) {
+                        *err = "P23 invalid sparse slab payload";
+                    }
+                    break;
+                }
+                const size_t gate_offset =
+                    static_cast<size_t>(slab.natural) * slab.gate.size();
+                const size_t up_offset =
+                    static_cast<size_t>(slab.natural) * slab.up.size();
+                const size_t down_offset =
+                    static_cast<size_t>(slab.natural) * down_slab_row_bytes;
+                ok = cuda_ok(cudaMemcpy(
+                        static_cast<uint8_t *>(entry->gate->data) + gate_offset,
+                        slab.gate.data(), slab.gate.size(),
+                        cudaMemcpyHostToDevice), "gate slab upload") &&
+                    cuda_ok(cudaMemcpy(
+                        static_cast<uint8_t *>(entry->up->data) + up_offset,
+                        slab.up.data(), slab.up.size(),
+                        cudaMemcpyHostToDevice), "up slab upload") &&
+                    cuda_ok(cudaMemcpy2D(
+                        static_cast<uint8_t *>(entry->down->data) + down_offset,
+                        entry->down->nb[1], slab.down.data(),
+                        down_slab_row_bytes, down_slab_row_bytes,
+                        static_cast<size_t>(spec.output_dim),
+                        cudaMemcpyHostToDevice), "down slab upload");
+                authoritative_h2d_bytes +=
+                    slab.gate.size() + slab.up.size() + slab.down.size();
+            }
         }
         if (ok) {
             ggml_backend_tensor_set(
@@ -1764,6 +1824,7 @@ private:
 #if defined(DFLASH27B_BACKEND_CUDA)
     struct Entry {
         ~Entry() {
+            if (compact_staging) cudaFree(compact_staging);
             if (allocator) ggml_gallocr_free(allocator);
             if (context) ggml_free(context);
         }
@@ -1780,6 +1841,8 @@ private:
         ggml_tensor * down = nullptr;
         ggml_tensor * activation_mask = nullptr;
         ggml_tensor * output = nullptr;
+        void * compact_staging = nullptr;
+        size_t compact_capacity = 0;
     };
 
     static bool same_spec(
@@ -1883,6 +1946,22 @@ private:
         return entries_.back().get();
     }
 
+    static bool ensure_compact_staging(
+            Entry & entry, size_t bytes, std::string * err) {
+        if (entry.compact_capacity >= bytes) return true;
+        if (entry.compact_staging) {
+            cudaFree(entry.compact_staging);
+            entry.compact_staging = nullptr;
+            entry.compact_capacity = 0;
+        }
+        if (cudaMalloc(&entry.compact_staging, bytes) != cudaSuccess) {
+            if (err) *err = "P25 compact staging allocation failed";
+            return false;
+        }
+        entry.compact_capacity = bytes;
+        return true;
+    }
+
     std::vector<std::unique_ptr<Entry>> entries_;
 #endif
 };
@@ -1903,6 +1982,7 @@ bool evaluate_sparse_device_expert(
         uint64_t & authoritative_h2d_bytes,
         uint64_t & metadata_h2d_bytes,
         uint64_t & device_zero_bytes,
+        bool compact_upload,
         std::string * err) {
     SparseDeviceExpertEvaluator one_shot_evaluator;
     SparseDeviceExpertEvaluator & evaluator = persistent_evaluator
@@ -1910,7 +1990,7 @@ bool evaluate_sparse_device_expert(
     return evaluator.evaluate(
         backend, spec, input_data, slabs, activation_mask_values,
         down_slab_row_bytes, result, authoritative_h2d_bytes,
-        metadata_h2d_bytes, device_zero_bytes, err);
+        metadata_h2d_bytes, device_zero_bytes, compact_upload, err);
 }
 
 class AllSlabsProvider final : public KimiK3RoutedOutputProvider {
@@ -2871,6 +2951,22 @@ public:
                 "P23 persistent scratch requires the scratch layout";
             return false;
         }
+        if (const char * compact =
+                std::getenv("DFLASH_KIMI_P25_COMPACT_UPLOAD")) {
+            if (std::strcmp(compact, "1") == 0) {
+                compact_upload_ = true;
+            } else if (std::strcmp(compact, "0") != 0 && *compact) {
+                if (err) *err =
+                    "DFLASH_KIMI_P25_COMPACT_UPLOAD must be 0 or 1";
+                return false;
+            }
+        }
+        if (compact_upload_ && (!persistent_sparse_ || !sparse_scratch_ ||
+                !direct_pread_)) {
+            if (err) *err =
+                "P25 compact upload requires persistent scratch and direct-pread";
+            return false;
+        }
         if (direct_pread_) {
             direct_read_pool_ = std::make_unique<P20DirectReadPool>(16);
         }
@@ -2923,7 +3019,7 @@ public:
         std::fprintf(stderr,
             "[kimi-k3-calibrated96] status=PILOT policy=%s quality-certified=false "
             "speed-claim=false requested-budget=%s layer-phase=%s dynamic-layer=%s physical-layout=%s "
-            "io-backend=%s persistent-scratch=%s "
+            "io-backend=%s persistent-scratch=%s compact-upload=%s "
             "valid-layers=%d/92 "
             "invalid-layer-action=exact insufficient-expert-action=exact\n",
             route_prefix_depth_ == 6 ? "four-route-half" :
@@ -2933,7 +3029,8 @@ public:
             dynamic_active_layer_ ? "enabled" : "disabled",
             sparse_scratch_ ? "scratch" : "reference",
             direct_pread_ ? "direct-pread" : "current",
-            persistent_sparse_ ? "enabled" : "disabled", valid_layers);
+            persistent_sparse_ ? "enabled" : "disabled",
+            compact_upload_ ? "enabled" : "disabled", valid_layers);
         return true;
     }
 
@@ -3911,7 +4008,7 @@ private:
                         sparse_slabs, mask,
                         down_slab_row_bytes, expert_output,
                         authoritative_h2d_bytes_, metadata_h2d_bytes_,
-                        device_zero_bytes_, err)
+                        device_zero_bytes_, compact_upload_, err)
                     : evaluate_host_recomposed_expert(
                         backend_, spec, input, gate, up, down,
                         retained == kSlabCount ? nullptr : &mask,
@@ -4069,6 +4166,7 @@ private:
     bool sparse_scratch_ = false;
     SparseDeviceExpertEvaluator sparse_device_evaluator_;
     bool persistent_sparse_ = false;
+    bool compact_upload_ = false;
     bool direct_pread_ = false;
     std::unique_ptr<P20DirectReadPool> direct_read_pool_;
     int budget_ = 96;

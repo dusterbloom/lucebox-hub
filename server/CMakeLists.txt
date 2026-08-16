@@ -517,6 +517,7 @@ endif()
 if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
     target_sources(dflash_common PRIVATE
         src/cuda_cross_device_copy.cpp
+        src/kimi_k3/kimi_k3_sparse_scatter.cu
         src/deepseek4/deepseek4_hc_cuda.cu)
     set_target_properties(dflash_common PROPERTIES CUDA_ARCHITECTURES "${_dflash_archs}")
     list(GET _dflash_archs 0 _dflash_cuda_min_sm)

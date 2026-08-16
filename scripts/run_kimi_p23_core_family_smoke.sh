@@ -64,6 +64,7 @@ python3 "$repo_dir/scripts/run_with_telemetry.py" \
       DFLASH_KIMI_P20_PHYSICAL_LAYOUT=scratch \
       DFLASH_KIMI_P20_IO_BACKEND=direct-pread \
       DFLASH_KIMI_P23_PERSISTENT_SCRATCH="${KIMI_P23_PERSISTENT_SCRATCH:-0}" \
+      DFLASH_KIMI_P25_COMPACT_UPLOAD="${KIMI_P25_COMPACT_UPLOAD:-0}" \
       DFLASH_KIMI_P20_SLAB_BUDGET=96 \
       DFLASH_KIMI_P20_IO_TRACE="$output/io_trace.tsv" \
       DFLASH_KIMI_P20_PROMPT_ID="p23-core-$mode" \

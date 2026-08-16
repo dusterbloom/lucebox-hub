@@ -1,0 +1,64 @@
+{
+  "schema": "k3-p25-compact-slab-upload-v1",
+  "verdict": "GO",
+  "base_commit": "075d7e246eb8ae3b0973cd2ad063253e841a6e9a",
+  "branch": "experiment/kimi-k3-p20-sparse-physical",
+  "configuration": {
+    "provider": "all-layers-calibrated96",
+    "physical_layout": "scratch",
+    "io_backend": "direct-pread",
+    "core_offload": ["latent", "shared"],
+    "persistent_scratch": true,
+    "compact_env": "DFLASH_KIMI_P25_COMPACT_UPLOAD"
+  },
+  "semantic_gate": {
+    "two_row_logits_sha256": "f4f694d31d6d00c3b0d941b66440f9c271be60e560f8c0e87ea25d230e3848af",
+    "two_row_byte_identical": true,
+    "eight_row_logits_sha256": "8daa924c13dd94489541f5d259eb2b72873b9cd49a074aee348aecd5dae90ca7",
+    "eight_row_byte_identical": true,
+    "eight_row_output_ids": [11, 374, 4936, 261, 814, 2742, 316, 374]
+  },
+  "adjacent_eight_row": {
+    "decoded_transitions": 7,
+    "compact_off": {
+      "decode_seconds": 58.701439,
+      "seconds_per_transition": 8.385920,
+      "transitions_per_second": 0.119248,
+      "routed_prep_seconds": 18.242291,
+      "expert_stage_seconds": 39.205924,
+      "direct_io_seconds": 6.583170184,
+      "prefill_seconds": 11.606,
+      "peak_vram_mib": 15989,
+      "energy_joules": 8787.632399213848
+    },
+    "compact": {
+      "decode_seconds": 31.284346,
+      "seconds_per_transition": 4.469192,
+      "transitions_per_second": 0.223754,
+      "routed_prep_seconds": 8.750520,
+      "expert_stage_seconds": 21.381845,
+      "direct_io_seconds": 6.347738045,
+      "prefill_seconds": 5.309,
+      "peak_vram_mib": 16035,
+      "energy_joules": 5463.259201150322
+    },
+    "latency_reduction_percent": 46.706,
+    "throughput_increase_percent": 87.638,
+    "routed_prep_reduction_percent": 52.032,
+    "expert_stage_reduction_percent": 45.463,
+    "energy_reduction_percent": 37.830
+  },
+  "transfer_granularity": {
+    "selected_slab_records": 70596,
+    "routed_expert_evaluations": 8178,
+    "estimated_submission_reduction_x": 25.897,
+    "authoritative_h2d_bytes_unchanged": true
+  },
+  "independent_layer_batch_control": {
+    "semantic_parity": true,
+    "verdict": "NO_GO",
+    "relative_latency_change_percent": 7.0,
+    "additional_peak_vram_mib": 1288
+  },
+  "next_single_action": "profile compact upload/scatter separately, then overlap expert N+1 upload with expert N native execution"
+}
