@@ -71,6 +71,85 @@ bool parse_teacher_forced_tokens(const char * raw,
     return true;
 }
 
+uint64_t process_storage_read_bytes() {
+#if defined(_WIN32)
+    return 0;
+#else
+    std::FILE * input = std::fopen("/proc/self/io", "r");
+    if (!input) return 0;
+    char key[64]{};
+    unsigned long long value = 0;
+    uint64_t result = 0;
+    while (std::fscanf(input, "%63s %llu", key, &value) == 2) {
+        if (std::strcmp(key, "read_bytes:") == 0) {
+            result = static_cast<uint64_t>(value);
+            break;
+        }
+    }
+    std::fclose(input);
+    return result;
+#endif
+}
+
+uint64_t fnv1a_update(uint64_t hash, const void * data, size_t bytes) {
+    const auto * input = static_cast<const uint8_t *>(data);
+    for (size_t index = 0; index < bytes; ++index) {
+        hash ^= input[index];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+uint64_t hash_tensor_bytes(ggml_tensor * tensor, size_t offset,
+                           size_t bytes, uint64_t hash) {
+    constexpr size_t kChunkBytes = 1024 * 1024;
+    std::vector<uint8_t> chunk(std::min(kChunkBytes, bytes));
+    size_t consumed = 0;
+    while (consumed < bytes) {
+        const size_t count = std::min(chunk.size(), bytes - consumed);
+        ggml_backend_tensor_get(
+            tensor, chunk.data(), offset + consumed, count);
+        hash = fnv1a_update(hash, chunk.data(), count);
+        consumed += count;
+    }
+    return hash;
+}
+
+uint64_t recurrent_cache_hash(const KimiK3Cache & cache) {
+    uint64_t hash = UINT64_C(14695981039346656037);
+    for (size_t layer_index = 0; layer_index < cache.layers.size();
+         ++layer_index) {
+        const KimiK3LayerCache & layer = cache.layers[layer_index];
+        if (!layer.ssm_state) continue;
+        hash = fnv1a_update(hash, &layer_index, sizeof(layer_index));
+        hash = hash_tensor_bytes(
+            layer.conv_state, 0, ggml_nbytes(layer.conv_state), hash);
+        hash = hash_tensor_bytes(
+            layer.ssm_state, 0, ggml_nbytes(layer.ssm_state), hash);
+    }
+    return hash;
+}
+
+uint64_t mla_rows_hash(const KimiK3Cache & cache, int base_pos,
+                       int n_tokens) {
+    uint64_t hash = UINT64_C(14695981039346656037);
+    for (size_t layer_index = 0; layer_index < cache.layers.size();
+         ++layer_index) {
+        const KimiK3LayerCache & layer = cache.layers[layer_index];
+        if (!layer.mla_k) continue;
+        hash = fnv1a_update(hash, &layer_index, sizeof(layer_index));
+        const size_t row_bytes =
+            ggml_row_size(layer.mla_k->type, layer.mla_k->ne[0]);
+        for (int token = 0; token < n_tokens; ++token) {
+            const size_t offset = static_cast<size_t>(base_pos + token) *
+                layer.mla_k->nb[2];
+            hash = hash_tensor_bytes(
+                layer.mla_k, offset, row_bytes, hash);
+        }
+    }
+    return hash;
+}
+
 void maybe_release_kimi_mapped_pages(const KimiK3Weights & weights) {
     const char * raw = std::getenv("DFLASH_KIMI_MMAP_DROP_PAGES");
     if (!raw || !*raw || std::strcmp(raw, "0") == 0) return;
@@ -935,6 +1014,8 @@ bool KimiK3Backend::init() {
     const int max_ctx = std::max(1, cfg_.device.max_ctx);
     int max_verify_tokens = draft_weights_.ctx
         ? draft_weights_.max_chain_verify_tokens() : 0;
+    max_verify_tokens = std::max(
+        max_verify_tokens, std::max(0, cfg_.oracle_verify_tokens));
     if (const char * paired =
             std::getenv("DFLASH_KIMI_H16_CANDIDATE_LOGITS_OUT")) {
         if (*paired) max_verify_tokens = std::max(max_verify_tokens, 1);
@@ -956,6 +1037,154 @@ bool KimiK3Backend::init() {
                 ? "nvme-accelerator" :
                 (expert_backend_ ? "nvme-dual-owner" : "nvme-single-owner")));
     std::fflush(stderr);
+    return true;
+}
+
+bool KimiK3Backend::benchmark_oracle_verify(
+        const std::vector<int32_t> & prompt,
+        const std::vector<int32_t> & oracle_tokens,
+        KimiK3OracleVerifyResult & result,
+        std::string * error) {
+    result = KimiK3OracleVerifyResult{};
+    result.width = static_cast<int>(oracle_tokens.size());
+    const int width = result.width;
+    const int base_pos = static_cast<int>(prompt.size());
+    const auto fail = [&](const std::string & message) {
+        if (error) *error = message;
+        return false;
+    };
+    if (!backend_ || !weights_.ctx || !cache_.ctx || prompt.empty() ||
+        width <= 0 || width > cache_.max_verify_tokens ||
+        base_pos + width > cache_.max_ctx) {
+        return fail("S0 oracle verify received an invalid prompt/span or "
+                    "insufficient verify-cache capacity");
+    }
+    for (int32_t token : prompt) {
+        if (token < 0 || token >= weights_.n_vocab) {
+            return fail("S0 prompt token is outside the vocabulary");
+        }
+    }
+    for (int32_t token : oracle_tokens) {
+        if (token < 0 || token >= weights_.n_vocab) {
+            return fail("S0 oracle token is outside the vocabulary");
+        }
+    }
+
+    const auto forward = [&](const std::vector<int32_t> & tokens,
+                             int position, bool capture_replay,
+                             KimiK3ForwardResult & forward_result) {
+        KimiK3ForwardOptions options;
+        options.capture_replay = capture_replay;
+        options.read_logits = true;
+        options.read_argmax = true;
+        options.routed_output_provider = routed_output_provider_.get();
+        options.moe_core_offload = moe_core_offload_.enabled()
+            ? &moe_core_offload_ : nullptr;
+        const bool ok = kimi_k3_forward(
+            backend_, weights_, cache_, tokens, position, options,
+            forward_result, &stream_engine_,
+            dual_stream_executor_.is_ready()
+                ? &dual_stream_executor_ : nullptr,
+            &stream_owner_policy_, routing_stats_.get());
+        if (ok) maybe_release_kimi_mapped_pages(weights_);
+        return ok;
+    };
+    const auto rebuild_prompt = [&]() {
+        reset_kimi_k3_cache(cache_);
+        for (size_t index = 0; index < prompt.size(); ++index) {
+            KimiK3ForwardResult ignored;
+            if (!forward({prompt[index]}, static_cast<int>(index), false,
+                         ignored)) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    if (!rebuild_prompt()) {
+        return fail(std::string("S0 sequential prompt rebuild failed: ") +
+                    dflash27b_last_error());
+    }
+    std::vector<float> sequential_logits;
+    std::vector<int32_t> sequential_argmax;
+    sequential_logits.reserve(
+        static_cast<size_t>(width) * weights_.n_vocab);
+    sequential_argmax.reserve(static_cast<size_t>(width));
+    const uint64_t sequential_read_start = process_storage_read_bytes();
+    const auto sequential_start = std::chrono::steady_clock::now();
+    for (int token = 0; token < width; ++token) {
+        KimiK3ForwardResult row;
+        if (!forward({oracle_tokens[static_cast<size_t>(token)]},
+                     base_pos + token, false, row)) {
+            return fail(std::string("S0 sequential oracle row failed: ") +
+                        dflash27b_last_error());
+        }
+        sequential_logits.insert(
+            sequential_logits.end(), row.logits.begin(), row.logits.end());
+        sequential_argmax.push_back(row.argmax.front());
+    }
+    result.sequential_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - sequential_start).count();
+    const uint64_t sequential_read_end = process_storage_read_bytes();
+    result.sequential_storage_bytes = sequential_read_end >= sequential_read_start
+        ? sequential_read_end - sequential_read_start : 0;
+    result.sequential_recurrent_hash = recurrent_cache_hash(cache_);
+    result.sequential_mla_hash = mla_rows_hash(cache_, base_pos, width);
+
+    if (!rebuild_prompt()) {
+        return fail(std::string("S0 verify prompt rebuild failed: ") +
+                    dflash27b_last_error());
+    }
+    if (!kimi_k3_replay_snapshot(backend_, cache_)) {
+        return fail("S0 ReplaySSM snapshot failed");
+    }
+    const uint64_t verify_read_start = process_storage_read_bytes();
+    const auto verify_start = std::chrono::steady_clock::now();
+    KimiK3ForwardResult verified;
+    if (!forward(oracle_tokens, base_pos, true, verified)) {
+        (void) kimi_k3_replay_restore(backend_, cache_);
+        return fail(std::string("S0 causal verify batch failed: ") +
+                    dflash27b_last_error());
+    }
+    result.verify_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - verify_start).count();
+    const auto commit_start = std::chrono::steady_clock::now();
+    if (!kimi_k3_replay_commit(
+            backend_, weights_, cache_, base_pos, width)) {
+        return fail("S0 ReplaySSM commit failed");
+    }
+    result.commit_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - commit_start).count();
+    const uint64_t verify_read_end = process_storage_read_bytes();
+    result.verify_storage_bytes = verify_read_end >= verify_read_start
+        ? verify_read_end - verify_read_start : 0;
+    result.verify_recurrent_hash = recurrent_cache_hash(cache_);
+    result.verify_mla_hash = mla_rows_hash(cache_, base_pos, width);
+
+    result.logits_bit_equal = sequential_logits.size() == verified.logits.size() &&
+        std::memcmp(sequential_logits.data(), verified.logits.data(),
+                    sequential_logits.size() * sizeof(float)) == 0;
+    result.argmax_bit_equal = sequential_argmax == verified.argmax;
+    double reference_norm2 = 0.0;
+    double error_norm2 = 0.0;
+    if (sequential_logits.size() != verified.logits.size()) {
+        return fail("S0 sequential and verify logits have different shapes");
+    }
+    for (size_t index = 0; index < sequential_logits.size(); ++index) {
+        const double reference = sequential_logits[index];
+        const double difference =
+            static_cast<double>(verified.logits[index]) - reference;
+        reference_norm2 += reference * reference;
+        error_norm2 += difference * difference;
+        result.logits_max_abs = std::max(
+            result.logits_max_abs, std::abs(difference));
+    }
+    result.logits_rel_l2 = std::sqrt(
+        error_norm2 / std::max(reference_norm2, 1.0e-300));
+    result.recurrent_state_hash_equal =
+        result.sequential_recurrent_hash == result.verify_recurrent_hash;
+    result.mla_rows_hash_equal =
+        result.sequential_mla_hash == result.verify_mla_hash;
     return true;
 }
 

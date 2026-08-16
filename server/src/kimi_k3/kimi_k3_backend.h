@@ -68,6 +68,28 @@ struct KimiK3BackendConfig {
     // Auto uses Kimi's capacity-safe file-backed routed experts. Resident is
     // retained as a deterministic oracle for small architecture fixtures.
     MoeStoragePolicy moe_storage = MoeStoragePolicy::Auto;
+    // Opt-in capacity for diagnostic/oracle verification without requiring a
+    // draft checkpoint. Zero preserves the ordinary runtime configuration.
+    int oracle_verify_tokens = 0;
+};
+
+struct KimiK3OracleVerifyResult {
+    int width = 0;
+    double sequential_seconds = 0.0;
+    double verify_seconds = 0.0;
+    double commit_seconds = 0.0;
+    uint64_t sequential_storage_bytes = 0;
+    uint64_t verify_storage_bytes = 0;
+    bool logits_bit_equal = false;
+    bool argmax_bit_equal = false;
+    bool recurrent_state_hash_equal = false;
+    bool mla_rows_hash_equal = false;
+    double logits_max_abs = 0.0;
+    double logits_rel_l2 = 0.0;
+    uint64_t sequential_recurrent_hash = 0;
+    uint64_t verify_recurrent_hash = 0;
+    uint64_t sequential_mla_hash = 0;
+    uint64_t verify_mla_hash = 0;
 };
 
 class KimiK3Backend final : public ModelBackend {
@@ -76,6 +98,17 @@ public:
     ~KimiK3Backend() override;
 
     bool init();
+
+    // S0 research-only oracle ceiling. Both arms start from a freshly rebuilt
+    // prompt state. The sequential arm processes oracle_tokens one row at a
+    // time; the verify arm processes the same rows in one causal batch and
+    // commits its recurrent KDA state through ReplaySSM. Default generation
+    // never calls this entry point.
+    bool benchmark_oracle_verify(
+        const std::vector<int32_t> & prompt,
+        const std::vector<int32_t> & oracle_tokens,
+        KimiK3OracleVerifyResult & result,
+        std::string * error = nullptr);
 
     void print_ready_banner() const override;
     bool park(ParkTarget target) override;

@@ -1,0 +1,69 @@
+{
+  "schema": "k3-s0-oracle-kda-verify-v1",
+  "base_revision": "17fc1e970b9f88e5dfb1167736f8d9f4355f9300",
+  "prompt_ids": [18699],
+  "oracle_input_ids": [11, 374, 4936, 261, 814, 2742, 316, 374],
+  "verdict": "STOP_WIDTH4_PARITY_FAILURE",
+  "measurements": [
+    {
+      "provider": "calibrated96_p27",
+      "width": 2,
+      "sequential_seconds": 7.112531326,
+      "verify_seconds": 4.144770927,
+      "commit_seconds": 0.453839715,
+      "V_m_verify_only": 1.7160251920479659,
+      "V_m_committed": 1.546669609520727,
+      "sequential_storage_bytes": 12998828032,
+      "verify_storage_bytes": 9792663552,
+      "logits_bit_equal": true,
+      "argmax_bit_equal": true,
+      "recurrent_state_hash_equal": true,
+      "mla_rows_hash_equal": true,
+      "artifact": "/mnt/kimi-k3/results/kimi-s0-oracle-m2-20260816/s0.json",
+      "artifact_sha256": "f7fd44f37f99294f2ab284e1616d14678c3bd7e39d92501f3dcf57417b243154"
+    },
+    {
+      "provider": "calibrated96_p27",
+      "width": 4,
+      "sequential_seconds": 13.139224131,
+      "verify_seconds": 8.714153947,
+      "commit_seconds": 0.510100451,
+      "V_m_verify_only": 1.5078026175476746,
+      "V_m_committed": 1.4244212663788678,
+      "sequential_storage_bytes": 22725984256,
+      "verify_storage_bytes": 21481353216,
+      "logits_bit_equal": false,
+      "argmax_bit_equal": true,
+      "logits_max_abs": 0.6266591548919678,
+      "logits_rel_l2": 0.0232909313482172,
+      "recurrent_state_hash_equal": false,
+      "mla_rows_hash_equal": false,
+      "artifact": "/mnt/kimi-k3/results/kimi-s0-oracle-m4-20260816/s0.json",
+      "artifact_sha256": "33b2c28d9cf731c6377770f1465a3600db3b1f2907528fdded46a8c8c866842b"
+    },
+    {
+      "provider": "native_streamed",
+      "width": 4,
+      "sequential_seconds": 15.919528433,
+      "verify_seconds": 9.876221469,
+      "commit_seconds": 0.502802813,
+      "V_m_verify_only": 1.6119047636759714,
+      "V_m_committed": 1.5338174379848704,
+      "sequential_storage_bytes": 39468597248,
+      "verify_storage_bytes": 26112602112,
+      "logits_bit_equal": false,
+      "argmax_bit_equal": true,
+      "logits_max_abs": 0.4811668395996094,
+      "logits_rel_l2": 0.024395037659588708,
+      "recurrent_state_hash_equal": false,
+      "mla_rows_hash_equal": false,
+      "artifact": "/mnt/kimi-k3/results/kimi-s0-native-m4-20260816/s0.json",
+      "artifact_sha256": "aa2cc22ea6fe64608ce02985d594f36a73a088557ff7852ab43b54f0af7793ab"
+    }
+  ],
+  "width8": {
+    "status": "NOT_RUN",
+    "reason": "width-four correctness gate failed"
+  },
+  "next_single_action": "localize first width-four KDA/causal-batch divergence before any drafter work"
+}
