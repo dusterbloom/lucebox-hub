@@ -1644,6 +1644,11 @@ public:
     SparseDeviceExpertEvaluator & operator=(
         const SparseDeviceExpertEvaluator &) = delete;
 
+    uint64_t compact_pack_ns() const { return compact_pack_ns_; }
+    uint64_t compact_scatter_ns() const { return compact_scatter_ns_; }
+    uint64_t expert_graph_ns() const { return expert_graph_ns_; }
+    uint64_t expert_readback_ns() const { return expert_readback_ns_; }
+
     bool evaluate(
             ggml_backend_t backend,
             const MoeStreamExpertSpec & spec,
@@ -1656,13 +1661,14 @@ public:
             uint64_t & metadata_h2d_bytes,
             uint64_t & device_zero_bytes,
             bool compact_upload,
+            bool pinned_compact,
             std::string * err) {
 #if !defined(DFLASH27B_BACKEND_CUDA)
         (void) backend; (void) spec; (void) input_data; (void) slabs;
         (void) activation_mask_values; (void) down_slab_row_bytes;
         (void) result; (void) authoritative_h2d_bytes;
         (void) metadata_h2d_bytes; (void) device_zero_bytes;
-        (void) compact_upload;
+        (void) compact_upload; (void) pinned_compact;
         if (err) *err = "P23 sparse scratch currently requires CUDA";
         return false;
 #else
@@ -1693,6 +1699,7 @@ public:
         device_zero_bytes += ggml_nbytes(entry->gate) +
             ggml_nbytes(entry->up) + ggml_nbytes(entry->down);
         if (compact_upload) {
+            const auto pack_started = std::chrono::steady_clock::now();
             constexpr size_t metadata_bytes = 32;
             if (slabs.empty()) {
                 if (err) *err = "P25 compact upload received no slabs";
@@ -1703,8 +1710,22 @@ public:
             const size_t down_slab_bytes = slabs.front().down.size();
             const size_t record_bytes =
                 gate_slab_bytes + up_slab_bytes + down_slab_bytes;
-            std::vector<uint8_t> compact(
-                metadata_bytes + slabs.size() * record_bytes, 0);
+            const size_t compact_bytes =
+                metadata_bytes + slabs.size() * record_bytes;
+            if (!ensure_compact_staging(
+                    *entry, compact_bytes, pinned_compact, err)) {
+                return false;
+            }
+            std::vector<uint8_t> pageable_compact;
+            uint8_t * compact_host = nullptr;
+            if (pinned_compact) {
+                compact_host = static_cast<uint8_t *>(
+                    entry->compact_host_staging);
+                std::memset(compact_host, 0, metadata_bytes);
+            } else {
+                pageable_compact.assign(compact_bytes, 0);
+                compact_host = pageable_compact.data();
+            }
             size_t payload_offset = metadata_bytes;
             for (size_t index = 0; index < slabs.size(); ++index) {
                 const SparseSlabPayload & slab = slabs[index];
@@ -1716,33 +1737,37 @@ public:
                     return false;
                 }
                 std::memcpy(
-                    compact.data() + index * sizeof(uint16_t),
+                    compact_host + index * sizeof(uint16_t),
                     &slab.natural, sizeof(uint16_t));
                 std::memcpy(
-                    compact.data() + payload_offset,
+                    compact_host + payload_offset,
                     slab.gate.data(), slab.gate.size());
                 payload_offset += slab.gate.size();
                 std::memcpy(
-                    compact.data() + payload_offset,
+                    compact_host + payload_offset,
                     slab.up.data(), slab.up.size());
                 payload_offset += slab.up.size();
                 std::memcpy(
-                    compact.data() + payload_offset,
+                    compact_host + payload_offset,
                     slab.down.data(), slab.down.size());
                 payload_offset += slab.down.size();
             }
-            if (!ensure_compact_staging(*entry, compact.size(), err)) {
-                return false;
-            }
+            compact_pack_ns_ += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - pack_started).count());
+            const auto scatter_started = std::chrono::steady_clock::now();
             ok = kimi_k3_sparse_scatter_upload(
                 entry->gate->data, ggml_nbytes(entry->gate),
                 entry->up->data, ggml_nbytes(entry->up),
                 entry->down->data, ggml_nbytes(entry->down),
                 entry->compact_staging, entry->compact_capacity,
-                compact.data(), compact.size(),
+                compact_host, compact_bytes,
                 static_cast<int>(slabs.size()), metadata_bytes,
                 gate_slab_bytes, up_slab_bytes, down_slab_bytes,
                 down_slab_row_bytes, entry->down->nb[1], spec.output_dim);
+            compact_scatter_ns_ += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - scatter_started).count());
             if (!ok && err) *err = "P25 compact sparse scatter failed";
             authoritative_h2d_bytes += slabs.size() * record_bytes;
             metadata_h2d_bytes += metadata_bytes;
@@ -1803,8 +1828,12 @@ public:
                 static_cast<uint64_t>(spec.input_dim) * sizeof(float) +
                 (entry->activation_mask
                     ? activation_mask_values.size() * sizeof(float) : 0);
+            const auto graph_started = std::chrono::steady_clock::now();
             const ggml_status status =
                 ggml_backend_graph_compute(backend, entry->graph);
+            expert_graph_ns_ += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - graph_started).count());
             ok = status == GGML_STATUS_SUCCESS;
             if (!ok && err) {
                 *err = "P23 persistent sparse graph compute failed";
@@ -1812,9 +1841,13 @@ public:
         }
         if (ok) {
             result.resize(static_cast<size_t>(spec.output_dim));
+            const auto readback_started = std::chrono::steady_clock::now();
             ggml_backend_tensor_get(
                 entry->output, result.data(), 0,
                 result.size() * sizeof(float));
+            expert_readback_ns_ += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - readback_started).count());
         }
         return ok;
 #endif
@@ -1824,6 +1857,7 @@ private:
 #if defined(DFLASH27B_BACKEND_CUDA)
     struct Entry {
         ~Entry() {
+            if (compact_host_staging) cudaFreeHost(compact_host_staging);
             if (compact_staging) cudaFree(compact_staging);
             if (allocator) ggml_gallocr_free(allocator);
             if (context) ggml_free(context);
@@ -1842,6 +1876,7 @@ private:
         ggml_tensor * activation_mask = nullptr;
         ggml_tensor * output = nullptr;
         void * compact_staging = nullptr;
+        void * compact_host_staging = nullptr;
         size_t compact_capacity = 0;
     };
 
@@ -1947,15 +1982,29 @@ private:
     }
 
     static bool ensure_compact_staging(
-            Entry & entry, size_t bytes, std::string * err) {
-        if (entry.compact_capacity >= bytes) return true;
+            Entry & entry, size_t bytes, bool pinned_host,
+            std::string * err) {
+        if (entry.compact_capacity >= bytes &&
+            (!pinned_host || entry.compact_host_staging)) return true;
         if (entry.compact_staging) {
             cudaFree(entry.compact_staging);
             entry.compact_staging = nullptr;
-            entry.compact_capacity = 0;
         }
+        if (entry.compact_host_staging) {
+            cudaFreeHost(entry.compact_host_staging);
+            entry.compact_host_staging = nullptr;
+        }
+        entry.compact_capacity = 0;
         if (cudaMalloc(&entry.compact_staging, bytes) != cudaSuccess) {
             if (err) *err = "P25 compact staging allocation failed";
+            return false;
+        }
+        if (pinned_host && cudaHostAlloc(
+                &entry.compact_host_staging, bytes,
+                cudaHostAllocDefault) != cudaSuccess) {
+            cudaFree(entry.compact_staging);
+            entry.compact_staging = nullptr;
+            if (err) *err = "P26 pinned compact staging allocation failed";
             return false;
         }
         entry.compact_capacity = bytes;
@@ -1964,6 +2013,10 @@ private:
 
     std::vector<std::unique_ptr<Entry>> entries_;
 #endif
+    uint64_t compact_pack_ns_ = 0;
+    uint64_t compact_scatter_ns_ = 0;
+    uint64_t expert_graph_ns_ = 0;
+    uint64_t expert_readback_ns_ = 0;
 };
 
 // P20's first production-shaped baseline keeps the native full-width graph but
@@ -1983,6 +2036,7 @@ bool evaluate_sparse_device_expert(
         uint64_t & metadata_h2d_bytes,
         uint64_t & device_zero_bytes,
         bool compact_upload,
+        bool pinned_compact,
         std::string * err) {
     SparseDeviceExpertEvaluator one_shot_evaluator;
     SparseDeviceExpertEvaluator & evaluator = persistent_evaluator
@@ -1990,7 +2044,8 @@ bool evaluate_sparse_device_expert(
     return evaluator.evaluate(
         backend, spec, input_data, slabs, activation_mask_values,
         down_slab_row_bytes, result, authoritative_h2d_bytes,
-        metadata_h2d_bytes, device_zero_bytes, compact_upload, err);
+        metadata_h2d_bytes, device_zero_bytes, compact_upload,
+        pinned_compact, err);
 }
 
 class AllSlabsProvider final : public KimiK3RoutedOutputProvider {
@@ -2967,6 +3022,21 @@ public:
                 "P25 compact upload requires persistent scratch and direct-pread";
             return false;
         }
+        if (const char * pinned =
+                std::getenv("DFLASH_KIMI_P26_PINNED_COMPACT")) {
+            if (std::strcmp(pinned, "1") == 0) {
+                pinned_compact_ = true;
+            } else if (std::strcmp(pinned, "0") != 0 && *pinned) {
+                if (err) *err =
+                    "DFLASH_KIMI_P26_PINNED_COMPACT must be 0 or 1";
+                return false;
+            }
+        }
+        if (pinned_compact_ && !compact_upload_) {
+            if (err) *err =
+                "P26 pinned compact staging requires compact upload";
+            return false;
+        }
         if (direct_pread_) {
             direct_read_pool_ = std::make_unique<P20DirectReadPool>(16);
         }
@@ -3020,6 +3090,7 @@ public:
             "[kimi-k3-calibrated96] status=PILOT policy=%s quality-certified=false "
             "speed-claim=false requested-budget=%s layer-phase=%s dynamic-layer=%s physical-layout=%s "
             "io-backend=%s persistent-scratch=%s compact-upload=%s "
+            "pinned-compact=%s "
             "valid-layers=%d/92 "
             "invalid-layer-action=exact insufficient-expert-action=exact\n",
             route_prefix_depth_ == 6 ? "four-route-half" :
@@ -3030,7 +3101,8 @@ public:
             sparse_scratch_ ? "scratch" : "reference",
             direct_pread_ ? "direct-pread" : "current",
             persistent_sparse_ ? "enabled" : "disabled",
-            compact_upload_ ? "enabled" : "disabled", valid_layers);
+            compact_upload_ ? "enabled" : "disabled",
+            pinned_compact_ ? "enabled" : "disabled", valid_layers);
         return true;
     }
 
@@ -4008,7 +4080,8 @@ private:
                         sparse_slabs, mask,
                         down_slab_row_bytes, expert_output,
                         authoritative_h2d_bytes_, metadata_h2d_bytes_,
-                        device_zero_bytes_, compact_upload_, err)
+                        device_zero_bytes_, compact_upload_,
+                        pinned_compact_, err)
                     : evaluate_host_recomposed_expert(
                         backend_, spec, input, gate, up, down,
                         retained == kSlabCount ? nullptr : &mask,
@@ -4139,7 +4212,9 @@ private:
             "reference-full-weight-h2d=%llu "
             "sparse-authoritative-h2d=%llu metadata-h2d=%llu "
             "device-zero-bytes=%llu explicit-provider-reads=%llu "
-            "direct-physical-bytes=%llu direct-io-ns=%llu\n",
+            "direct-physical-bytes=%llu direct-io-ns=%llu "
+            "compact-pack-ns=%llu compact-scatter-ns=%llu "
+            "expert-graph-ns=%llu expert-readback-ns=%llu\n",
             sparse_scratch_ ? "scratch" : "reference",
             static_cast<unsigned long long>(reference_full_weight_h2d_bytes_),
             static_cast<unsigned long long>(authoritative_h2d_bytes_),
@@ -4147,7 +4222,15 @@ private:
             static_cast<unsigned long long>(device_zero_bytes_),
             static_cast<unsigned long long>(explicit_read_bytes_),
             static_cast<unsigned long long>(direct_physical_bytes_),
-            static_cast<unsigned long long>(direct_io_ns_));
+            static_cast<unsigned long long>(direct_io_ns_),
+            static_cast<unsigned long long>(
+                sparse_device_evaluator_.compact_pack_ns()),
+            static_cast<unsigned long long>(
+                sparse_device_evaluator_.compact_scatter_ns()),
+            static_cast<unsigned long long>(
+                sparse_device_evaluator_.expert_graph_ns()),
+            static_cast<unsigned long long>(
+                sparse_device_evaluator_.expert_readback_ns()));
         layers_.clear();
     }
 
@@ -4167,6 +4250,7 @@ private:
     SparseDeviceExpertEvaluator sparse_device_evaluator_;
     bool persistent_sparse_ = false;
     bool compact_upload_ = false;
+    bool pinned_compact_ = false;
     bool direct_pread_ = false;
     std::unique_ptr<P20DirectReadPool> direct_read_pool_;
     int budget_ = 96;

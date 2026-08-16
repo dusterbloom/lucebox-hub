@@ -1,0 +1,70 @@
+{
+  "schema": "k3-p26-pinned-compact-staging-v1",
+  "verdict": "GO",
+  "base_commit": "debd0e5f1a37344b917e95903d3c901d75148aa8",
+  "branch": "experiment/kimi-k3-p20-sparse-physical",
+  "configuration": {
+    "provider": "all-layers-calibrated96",
+    "physical_layout": "scratch",
+    "io_backend": "direct-pread",
+    "core_offload": ["latent", "shared"],
+    "persistent_scratch": true,
+    "compact_upload": true,
+    "pinned_env": "DFLASH_KIMI_P26_PINNED_COMPACT"
+  },
+  "semantic_gate": {
+    "two_row_byte_identical": true,
+    "eight_row_byte_identical": true,
+    "thirty_two_row_byte_identical": true,
+    "two_row_logits_sha256": "f4f694d31d6d00c3b0d941b66440f9c271be60e560f8c0e87ea25d230e3848af",
+    "eight_row_logits_sha256": "8daa924c13dd94489541f5d259eb2b72873b9cd49a074aee348aecd5dae90ca7",
+    "thirty_two_row_logits_sha256": "c1330897e6819c1b0ae289155e76a2359fca1c55a95b44985cb91e179d3f2e44"
+  },
+  "eight_row_substage_seconds": {
+    "pageable": {
+      "compact_pack": 4.513174554,
+      "compact_scatter": 3.164006978,
+      "expert_graph": 0.475934317,
+      "expert_readback": 0.181029622,
+      "decode_expert_stage": 21.249920
+    },
+    "pinned": {
+      "compact_pack": 3.206013360,
+      "compact_scatter": 2.596746022,
+      "expert_graph": 0.477615201,
+      "expert_readback": 0.186333540,
+      "decode_expert_stage": 20.136475
+    }
+  },
+  "thirty_two_row": {
+    "decoded_transitions": 31,
+    "pageable": {
+      "decode_seconds": 146.181899,
+      "transitions_per_second": 0.212065,
+      "last_16_transitions_per_second": 0.206982,
+      "last_8_transitions_per_second": 0.209095,
+      "direct_io_seconds": 24.859989110,
+      "peak_vram_mib": 16035,
+      "energy_joules": 19053.080205948772
+    },
+    "pinned": {
+      "decode_seconds": 138.367974,
+      "transitions_per_second": 0.224040,
+      "last_16_transitions_per_second": 0.222650,
+      "last_8_transitions_per_second": 0.222824,
+      "direct_io_seconds": 24.891437172,
+      "peak_vram_mib": 16035,
+      "energy_joules": 18007.830980747225,
+      "compact_pack_seconds": 12.770152998,
+      "compact_scatter_seconds": 10.232380507,
+      "expert_graph_seconds": 1.850573096,
+      "expert_readback_seconds": 0.709037782
+    },
+    "latency_reduction_percent": 5.345,
+    "throughput_increase_percent": 5.647,
+    "last_16_throughput_increase_percent": 7.569,
+    "last_8_throughput_increase_percent": 6.566,
+    "energy_reduction_percent": 5.486
+  },
+  "next_single_action": "read selected sidecar records directly into reusable pinned route buffers, removing the host repack"
+}
