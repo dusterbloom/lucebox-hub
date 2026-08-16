@@ -92,7 +92,7 @@ int main() {
     {
         std::ofstream table(budget_path);
         for (int layer = 1; layer <= 92; ++layer) {
-            table << layer << ' ' << (layer == 24 ? 144 : 96) << '\n';
+            table << layer << ' ' << (layer == 24 ? 24 : 96) << '\n';
         }
         assert(table.good());
     }
@@ -101,7 +101,7 @@ int main() {
         budget_path.string(), layer_budgets, &error));
     assert(layer_budgets.size() == 92);
     assert(layer_budgets[0] == 96);
-    assert(layer_budgets[23] == 144);
+    assert(layer_budgets[23] == 24);
     std::filesystem::remove(budget_path);
 
 #if defined(_WIN32)

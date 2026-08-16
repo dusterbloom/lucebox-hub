@@ -62,7 +62,7 @@ def main() -> None:
                 route_stats[key]["fallback"] = max(
                     route_stats[key]["fallback"], int(row["logical_length"])
                 )
-            else:
+            elif row["region"] in {"gate", "up", "down"}:
                 route_stats[key]["logical"] += int(row["logical_length"])
                 route_stats[key]["physical"] += int(row["explicit_read_bytes"])
 

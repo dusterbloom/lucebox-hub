@@ -19,6 +19,7 @@
 #include <future>
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <numeric>
@@ -1641,7 +1642,7 @@ struct SparseCompactPayload {
     SparseCompactPayload & operator=(const SparseCompactPayload &) = delete;
     ~SparseCompactPayload() {
 #if defined(DFLASH27B_BACKEND_CUDA)
-        if (data) cudaFreeHost(data);
+        if (data && owns_data) cudaFreeHost(data);
 #endif
     }
 
@@ -1651,8 +1652,8 @@ struct SparseCompactPayload {
         if (err) *err = "P27 direct pinned payload requires CUDA";
         return false;
 #else
-        if (capacity >= requested) return true;
-        if (data) {
+        if (owns_data && capacity >= requested) return true;
+        if (data && owns_data) {
             cudaFreeHost(data);
             data = nullptr;
             capacity = 0;
@@ -1663,8 +1664,18 @@ struct SparseCompactPayload {
             return false;
         }
         capacity = requested;
+        owns_data = true;
         return true;
 #endif
+    }
+
+    void set_external(void * pointer, size_t available) {
+#if defined(DFLASH27B_BACKEND_CUDA)
+        if (data && owns_data) cudaFreeHost(data);
+#endif
+        data = pointer;
+        capacity = available;
+        owns_data = false;
     }
 
     void * data = nullptr;
@@ -1675,6 +1686,57 @@ struct SparseCompactPayload {
     size_t gate_slab_bytes = 0;
     size_t up_slab_bytes = 0;
     size_t down_slab_bytes = 0;
+    bool owns_data = true;
+};
+
+struct P28PinnedArena {
+    ~P28PinnedArena() {
+#if defined(DFLASH27B_BACKEND_CUDA)
+        if (data) cudaFreeHost(data);
+#endif
+    }
+    bool ensure(size_t requested, std::string * err) {
+#if !defined(DFLASH27B_BACKEND_CUDA)
+        (void) requested;
+        if (err) *err = "P28 pinned arena requires CUDA";
+        return false;
+#else
+        if (capacity >= requested) return true;
+        if (data) cudaFreeHost(data);
+        data = nullptr;
+        capacity = 0;
+        if (cudaHostAlloc(&data, requested, cudaHostAllocDefault) !=
+                cudaSuccess) {
+            if (err) *err = "P28 layer pinned arena allocation failed";
+            return false;
+        }
+        capacity = requested;
+        return true;
+#endif
+    }
+    void * data = nullptr;
+    size_t capacity = 0;
+};
+
+// P28 is deliberately an oracle replay, not a predictor.  A frozen P27 trace
+// names the selected experts and natural slab records for a future layer.  The
+// live route is validated before any prefetched payload can affect execution.
+struct P28OracleRoute {
+    int expert = -1;
+    std::vector<uint16_t> naturals;
+};
+
+struct P28OracleLayer {
+    int base_pos = -1;
+    int model_layer = -1;
+    std::vector<P28OracleRoute> routes;
+};
+
+struct P28OracleReadResult {
+    bool ok = false;
+    uint64_t physical_bytes = 0;
+    uint64_t elapsed_ns = 0;
+    std::string error;
 };
 
 // P23 keeps the P20 full-width arithmetic intact while removing repeated
@@ -2943,7 +3005,10 @@ private:
 // reports selected sidecar bytes and exact-fallback expert bytes.
 class CalibratedAllLayerProvider final : public KimiK3RoutedOutputProvider {
 public:
-    ~CalibratedAllLayerProvider() override { finish_metrics(); }
+    ~CalibratedAllLayerProvider() override {
+        finish_oracle_prefetch();
+        finish_metrics();
+    }
 
     bool init(ggml_backend_t backend, const std::string & aux_directory,
               const std::string & sidecar_directory,
@@ -3129,6 +3194,15 @@ public:
                 "P27 direct pinned compact requires P26 pinned compact";
             return false;
         }
+        if (const char * oracle_trace =
+                std::getenv("DFLASH_KIMI_P28_ORACLE_TRACE")) {
+            if (*oracle_trace) oracle_trace_path_ = oracle_trace;
+        }
+        if (!oracle_trace_path_.empty() && !direct_pinned_compact_) {
+            if (err) *err =
+                "P28 oracle replay requires P27 direct pinned compact";
+            return false;
+        }
         if (direct_pread_) {
             direct_read_pool_ = std::make_unique<P20DirectReadPool>(16);
         }
@@ -3175,6 +3249,9 @@ public:
                     layer, layer_error.c_str());
             }
         }
+        if (!oracle_trace_path_.empty() && !load_oracle_trace(err)) {
+            return false;
+        }
         metrics_path_ = metrics_path && *metrics_path ? metrics_path : "";
         const std::string budget_description = layer_budgets_.empty()
             ? std::to_string(budget_) : "table:" + layer_budget_path_;
@@ -3182,7 +3259,7 @@ public:
             "[kimi-k3-calibrated96] status=PILOT policy=%s quality-certified=false "
             "speed-claim=false requested-budget=%s layer-phase=%s dynamic-layer=%s physical-layout=%s "
             "io-backend=%s persistent-scratch=%s compact-upload=%s "
-            "pinned-compact=%s direct-pinned-compact=%s "
+            "pinned-compact=%s direct-pinned-compact=%s p28-oracle=%s "
             "valid-layers=%d/92 "
             "invalid-layer-action=exact insufficient-expert-action=exact\n",
             route_prefix_depth_ == 6 ? "four-route-half" :
@@ -3195,7 +3272,9 @@ public:
             persistent_sparse_ ? "enabled" : "disabled",
             compact_upload_ ? "enabled" : "disabled",
             pinned_compact_ ? "enabled" : "disabled",
-            direct_pinned_compact_ ? "enabled" : "disabled", valid_layers);
+            direct_pinned_compact_ ? "enabled" : "disabled",
+            oracle_trace_path_.empty() ? "disabled" : "one-layer",
+            valid_layers);
         return true;
     }
 
@@ -3308,6 +3387,135 @@ private:
         std::vector<uint32_t> hit_counts;
         Traffic traffic;
     };
+
+    static uint64_t oracle_key(int base_pos, int model_layer) {
+        return (static_cast<uint64_t>(static_cast<uint32_t>(base_pos)) << 8) |
+            static_cast<uint64_t>(model_layer & 0xff);
+    }
+
+    static std::vector<std::string> split_tsv(const std::string & line) {
+        std::vector<std::string> fields;
+        size_t begin = 0;
+        for (;;) {
+            const size_t tab = line.find('\t', begin);
+            fields.push_back(line.substr(
+                begin, tab == std::string::npos
+                    ? std::string::npos : tab - begin));
+            if (tab == std::string::npos) break;
+            begin = tab + 1;
+        }
+        return fields;
+    }
+
+    bool load_oracle_trace(std::string * err) {
+        std::ifstream input(oracle_trace_path_);
+        if (!input) {
+            if (err) *err = "cannot open P28 oracle trace " +
+                oracle_trace_path_;
+            return false;
+        }
+        std::string line;
+        if (!std::getline(input, line) ||
+            line.find("request_id\tprompt_id\tbase_pos") != 0) {
+            if (err) *err = "P28 oracle trace has an invalid header";
+            return false;
+        }
+        size_t rows = 0;
+        try {
+            while (std::getline(input, line)) {
+                const std::vector<std::string> fields = split_tsv(line);
+                if (fields.size() < 18) continue;
+                const int base_pos = std::stoi(fields[2]);
+                const int model_layer = std::stoi(fields[4]);
+                const int expert = std::stoi(fields[5]);
+                if (model_layer < kFirstRoutedLayer ||
+                    model_layer > kLastRoutedLayer || expert < 0 ||
+                    expert >= kExpertCount) {
+                    continue;
+                }
+                const std::string & region = fields[6];
+                if (region != "gate" &&
+                    region != "native-exact-expert") continue;
+                const uint64_t key = oracle_key(base_pos, model_layer);
+                P28OracleLayer & layer = oracle_layers_[key];
+                layer.base_pos = base_pos;
+                layer.model_layer = model_layer;
+                auto route = std::find_if(
+                    layer.routes.begin(), layer.routes.end(),
+                    [&](const P28OracleRoute & value) {
+                        return value.expert == expert;
+                    });
+                if (route == layer.routes.end()) {
+                    layer.routes.push_back({expert, {}});
+                    route = std::prev(layer.routes.end());
+                }
+                if (region == "gate") {
+                    const LayerState & state =
+                        layers_[static_cast<size_t>(model_layer)];
+                    const uint64_t offset = std::stoull(fields[11]);
+                    const uint64_t expert_base = state.payload_offset +
+                        static_cast<uint64_t>(expert) * state.record_bytes;
+                    if (offset < expert_base || state.slab_bytes == 0 ||
+                        (offset - expert_base) % state.slab_bytes != 0) {
+                        if (err) *err =
+                            "P28 oracle gate offset is not a slab boundary";
+                        return false;
+                    }
+                    const uint64_t natural =
+                        (offset - expert_base) / state.slab_bytes;
+                    if (natural >= kSlabCount) {
+                        if (err) *err =
+                            "P28 oracle natural slab is out of range";
+                        return false;
+                    }
+                    route->naturals.push_back(
+                        static_cast<uint16_t>(natural));
+                }
+                ++rows;
+            }
+        } catch (const std::exception & exception) {
+            if (err) *err = std::string("P28 oracle trace parse failed: ") +
+                exception.what();
+            return false;
+        }
+        if (!input.eof() || oracle_layers_.empty()) {
+            if (err) *err = "P28 oracle trace is empty or unreadable";
+            return false;
+        }
+        for (auto & item : oracle_layers_) {
+            P28OracleLayer & layer = item.second;
+            std::sort(layer.routes.begin(), layer.routes.end(),
+                [](const P28OracleRoute & left,
+                   const P28OracleRoute & right) {
+                    return left.expert < right.expert;
+                });
+            if (layer.routes.empty() || layer.routes.size() > kNativeTopK) {
+                if (err) *err =
+                    "P28 oracle layer has an invalid unique-expert count";
+                return false;
+            }
+            for (P28OracleRoute & route : layer.routes) {
+                std::sort(route.naturals.begin(), route.naturals.end());
+                if (route.naturals.size() > kSlabCount ||
+                    std::adjacent_find(
+                        route.naturals.begin(), route.naturals.end()) !=
+                            route.naturals.end()) {
+                    if (err) *err =
+                        "P28 oracle route has invalid selected slabs";
+                    return false;
+                }
+            }
+            oracle_order_.push_back(item.first);
+        }
+        for (size_t index = 1; index < oracle_order_.size(); ++index) {
+            oracle_next_[oracle_order_[index - 1]] = oracle_order_[index];
+        }
+        std::fprintf(stderr,
+            "[kimi-k3-p28] oracle-trace=%s layer-rows=%zu source-rows=%zu "
+            "lookahead=1 predictor=none\n",
+            oracle_trace_path_.c_str(), oracle_layers_.size(), rows);
+        return true;
+    }
 
     static bool nonzero_digest(const uint8_t * digest) {
         for (int i = 0; i < 32; ++i) if (digest[i] != 0) return true;
@@ -3915,6 +4123,334 @@ private:
 #endif
     }
 
+    std::array<SparseCompactPayload, kNativeTopK> & oracle_slot(int slot) {
+        return slot == 0 ? direct_compact_payloads_ :
+            oracle_compact_payloads_;
+    }
+
+    P28OracleReadResult read_oracle_layer(
+            uint64_t key, int slot) {
+        P28OracleReadResult result;
+#if defined(_WIN32) || !defined(O_DIRECT)
+        (void) key; (void) slot;
+        result.error = "P28 oracle direct read is unavailable";
+        return result;
+#else
+        const auto found = oracle_layers_.find(key);
+        if (found == oracle_layers_.end()) {
+            result.error = "P28 oracle layer is absent";
+            return result;
+        }
+        const P28OracleLayer & plan = found->second;
+        const LayerState & state =
+            layers_[static_cast<size_t>(plan.model_layer)];
+        const int fd = open_read_only_direct(state.sidecar_path);
+        if (fd < 0) {
+            result.error = "P28 cannot open oracle sidecar";
+            return result;
+        }
+        struct Task {
+            size_t route_index = 0;
+            size_t slab_index = 0;
+            int expert = -1;
+            uint16_t natural = 0;
+            uint64_t aligned_offset = 0;
+            size_t aligned_bytes = 0;
+            bool ok = false;
+        };
+        std::array<SparseCompactPayload, kNativeTopK> & payloads =
+            oracle_slot(slot);
+        std::vector<Task> tasks;
+        std::string setup_error;
+        size_t arena_bytes = 0;
+        if (slot == 1) {
+            for (const P28OracleRoute & route : plan.routes) {
+                if (!route.naturals.empty()) {
+                    arena_bytes += 32 +
+                        route.naturals.size() * state.slab_bytes;
+                }
+            }
+            if (!oracle_compact_arena_.ensure(arena_bytes, &setup_error)) {
+                close_fd(fd);
+                result.error = setup_error;
+                return result;
+            }
+        }
+        size_t arena_offset = 0;
+        for (size_t route_index = 0;
+             route_index < plan.routes.size(); ++route_index) {
+            const P28OracleRoute & route = plan.routes[route_index];
+            SparseCompactPayload & compact = payloads[route_index];
+            compact.slab_count = static_cast<int>(route.naturals.size());
+            compact.gate_slab_bytes =
+                static_cast<size_t>(state.gate_slab_bytes);
+            compact.up_slab_bytes =
+                static_cast<size_t>(state.up_slab_bytes);
+            compact.down_slab_bytes =
+                static_cast<size_t>(state.down_slab_bytes);
+            compact.bytes = compact.metadata_bytes +
+                route.naturals.size() * state.slab_bytes;
+            if (!route.naturals.empty()) {
+                if (slot == 1) {
+                    compact.set_external(
+                        static_cast<uint8_t *>(oracle_compact_arena_.data) +
+                            arena_offset,
+                        compact.bytes);
+                    arena_offset += compact.bytes;
+                } else if (!compact.ensure(compact.bytes, &setup_error)) {
+                    close_fd(fd);
+                    result.error = setup_error;
+                    return result;
+                }
+            }
+            if (!route.naturals.empty()) {
+                std::memset(compact.data, 0, compact.metadata_bytes);
+            }
+            for (size_t slab_index = 0;
+                 slab_index < route.naturals.size(); ++slab_index) {
+                const uint16_t natural = route.naturals[slab_index];
+                std::memcpy(
+                    static_cast<uint8_t *>(compact.data) +
+                        slab_index * sizeof(uint16_t),
+                    &natural, sizeof(natural));
+                tasks.push_back({route_index, slab_index, route.expert,
+                                 natural});
+            }
+        }
+        const auto started = std::chrono::steady_clock::now();
+        std::atomic<size_t> next{0};
+        std::atomic<bool> failed{false};
+        const size_t workers = std::min<size_t>(16, tasks.size());
+        std::vector<std::future<void>> done;
+        done.reserve(workers);
+        for (size_t worker = 0; worker < workers; ++worker) {
+            done.push_back(direct_read_pool_->submit([&]() {
+                for (;;) {
+                    const size_t index = next.fetch_add(1);
+                    if (index >= tasks.size()) break;
+                    Task & task = tasks[index];
+                    const uint64_t record = state.payload_offset +
+                        static_cast<uint64_t>(
+                            task.expert * kSlabCount + task.natural) *
+                            state.slab_bytes;
+                    task.aligned_offset = record &
+                        ~(static_cast<uint64_t>(kAlignment) - 1);
+                    const size_t prefix = static_cast<size_t>(
+                        record - task.aligned_offset);
+                    task.aligned_bytes = static_cast<size_t>(
+                        (prefix + state.slab_bytes + kAlignment - 1) &
+                        ~(static_cast<uint64_t>(kAlignment) - 1));
+                    void * raw = nullptr;
+                    if (::posix_memalign(
+                            &raw, kAlignment, task.aligned_bytes) != 0) {
+                        failed = true;
+                        break;
+                    }
+                    const ssize_t got = ::pread(
+                        fd, raw, task.aligned_bytes,
+                        static_cast<off_t>(task.aligned_offset));
+                    if (got == static_cast<ssize_t>(task.aligned_bytes)) {
+                        const uint64_t record_prefix =
+                            record - task.aligned_offset;
+                        SparseCompactPayload & compact =
+                            payloads[task.route_index];
+                        std::memcpy(
+                            static_cast<uint8_t *>(compact.data) +
+                                compact.metadata_bytes +
+                                task.slab_index * state.slab_bytes,
+                            static_cast<const uint8_t *>(raw) + record_prefix,
+                            static_cast<size_t>(state.slab_bytes));
+                        task.ok = true;
+                    } else {
+                        failed = true;
+                    }
+                    std::free(raw);
+                    if (failed.load()) break;
+                }
+            }));
+        }
+        for (std::future<void> & value : done) value.get();
+        result.elapsed_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - started).count());
+        close_fd(fd);
+        result.physical_bytes = std::accumulate(
+            tasks.begin(), tasks.end(), uint64_t{0},
+            [](uint64_t total, const Task & task) {
+                return total + task.aligned_bytes;
+            });
+        result.ok = !failed.load() && std::all_of(
+            tasks.begin(), tasks.end(),
+            [](const Task & task) { return task.ok; });
+        if (!result.ok) result.error = "P28 aligned oracle read failed";
+        return result;
+#endif
+    }
+
+    bool oracle_matches_live_plan(
+            const P28OracleLayer & oracle, const LayerState & state,
+            size_t route_offset, const MoeStreamRouteBatch & routes,
+            const std::vector<uint8_t> & selected_by_route) const {
+        std::vector<P28OracleRoute> live;
+        live.reserve(kNativeTopK);
+        for (int route = 0; route < kNativeTopK; ++route) {
+            const int expert = routes.selected_ids[route_offset + route];
+            auto found = std::find_if(
+                live.begin(), live.end(),
+                [&](const P28OracleRoute & value) {
+                    return value.expert == expert;
+                });
+            if (found == live.end()) {
+                live.push_back({expert, {}});
+                found = std::prev(live.end());
+            }
+            for (int rank = 0; rank < kSlabCount; ++rank) {
+                if (selected_by_route[
+                        static_cast<size_t>(route * kSlabCount + rank)]) {
+                    found->naturals.push_back(state.order[
+                        static_cast<size_t>(expert) * kSlabCount +
+                            rank]);
+                }
+            }
+        }
+        for (P28OracleRoute & value : live) {
+            std::sort(value.naturals.begin(), value.naturals.end());
+            value.naturals.erase(
+                std::unique(value.naturals.begin(), value.naturals.end()),
+                value.naturals.end());
+        }
+        std::sort(live.begin(), live.end(),
+            [](const P28OracleRoute & left, const P28OracleRoute & right) {
+                return left.expert < right.expert;
+            });
+        if (live.size() != oracle.routes.size()) return false;
+        for (size_t index = 0; index < live.size(); ++index) {
+            if (live[index].expert != oracle.routes[index].expert ||
+                live[index].naturals != oracle.routes[index].naturals) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void account_oracle_result(
+            const P28OracleReadResult & result, bool useful) {
+        oracle_read_ns_ += result.elapsed_ns;
+        explicit_read_bytes_ += result.physical_bytes;
+        direct_physical_bytes_ += result.physical_bytes;
+        oracle_physical_bytes_ += result.physical_bytes;
+        if (!useful) oracle_wasted_bytes_ += result.physical_bytes;
+    }
+
+    void trace_oracle_layer(
+            const P28OracleLayer & plan, const LayerState & state,
+            const MoeStreamExpertSpec & spec) {
+        if (!io_trace_) return;
+        for (const P28OracleRoute & route : plan.routes) {
+            const int prefix_depth =
+                static_cast<int>(route.naturals.size());
+            for (const uint16_t natural : route.naturals) {
+                const uint64_t record = state.payload_offset +
+                    static_cast<uint64_t>(
+                        route.expert * kSlabCount + natural) *
+                        state.slab_bytes;
+                const uint64_t aligned_offset = record &
+                    ~(static_cast<uint64_t>(kAlignment) - 1);
+                const uint64_t record_prefix = record - aligned_offset;
+                const uint64_t aligned_bytes =
+                    (record_prefix + state.slab_bytes + kAlignment - 1) &
+                    ~(static_cast<uint64_t>(kAlignment) - 1);
+                const auto emit = [&](const char * region,
+                                      const char * qtype, uint64_t offset,
+                                      uint64_t logical,
+                                      uint64_t destination_offset,
+                                      uint64_t explicit_bytes) {
+                    io_trace_ << next_request_id_++ << '\t' << prompt_id_
+                              << '\t' << plan.base_pos << "\t0\t"
+                              << plan.model_layer << '\t' << route.expert
+                              << '\t' << region << '\t' << qtype << '\t'
+                              << prefix_depth << "\t0\t"
+                              << state.sidecar_path << '\t' << offset << '\t'
+                              << logical << '\t' << aligned_offset << '\t'
+                              << aligned_bytes
+                              << "\thost-compact-slab\t"
+                              << destination_offset << '\t'
+                              << explicit_bytes << '\n';
+                };
+                emit("gate", ggml_type_name(spec.gate_type), record,
+                     state.gate_slab_bytes, 0, aligned_bytes);
+                emit("up", ggml_type_name(spec.up_type),
+                     record + state.gate_slab_bytes,
+                     state.up_slab_bytes, state.gate_slab_bytes, 0);
+                emit("down", ggml_type_name(spec.down_type),
+                     record + state.gate_slab_bytes + state.up_slab_bytes,
+                     state.down_slab_bytes,
+                     state.gate_slab_bytes + state.up_slab_bytes, 0);
+            }
+        }
+    }
+
+    bool consume_oracle_prefetch(
+            uint64_t key, const LayerState & state, size_t route_offset,
+            const MoeStreamRouteBatch & routes,
+            const std::vector<uint8_t> & selected_by_route,
+            const MoeStreamExpertSpec & spec,
+            int & slot) {
+        if (!oracle_future_.valid()) return false;
+        const auto wait_started = std::chrono::steady_clock::now();
+        const P28OracleReadResult result = oracle_future_.get();
+        oracle_wait_ns_ += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - wait_started).count());
+        slot = oracle_future_slot_;
+        if (oracle_future_key_ != key) {
+            account_oracle_result(result, false);
+            ++oracle_misses_;
+            oracle_future_key_ = 0;
+            return false;
+        }
+        const auto found = oracle_layers_.find(key);
+        const bool useful = result.ok && found != oracle_layers_.end() &&
+            oracle_matches_live_plan(
+                found->second, state, route_offset, routes,
+                selected_by_route);
+        account_oracle_result(result, useful);
+        if (useful) {
+            ++oracle_hits_;
+            trace_oracle_layer(found->second, state, spec);
+        } else {
+            ++oracle_misses_;
+            if (!result.ok) {
+                std::fprintf(stderr,
+                    "[kimi-k3-p28] action=sync-fallback reason=%s\n",
+                    result.error.c_str());
+            }
+        }
+        oracle_future_key_ = 0;
+        return useful;
+    }
+
+    void launch_oracle_next(uint64_t current_key, int current_slot) {
+        if (oracle_trace_path_.empty() || oracle_future_.valid()) return;
+        const auto next = oracle_next_.find(current_key);
+        if (next == oracle_next_.end()) return;
+        oracle_future_key_ = next->second;
+        oracle_future_slot_ = 1 - current_slot;
+        const uint64_t key = oracle_future_key_;
+        const int slot = oracle_future_slot_;
+        oracle_future_ = std::async(
+            std::launch::async,
+            [this, key, slot]() { return read_oracle_layer(key, slot); });
+        ++oracle_launches_;
+    }
+
+    void finish_oracle_prefetch() {
+        if (!oracle_future_.valid()) return;
+        const P28OracleReadResult result = oracle_future_.get();
+        account_oracle_result(result, false);
+        oracle_future_key_ = 0;
+    }
+
     bool evaluate_calibrated(
             int model_layer, int base_pos, LayerState & state,
             const MoeStreamExpertSpec & spec,
@@ -4044,14 +4580,29 @@ private:
                     static_cast<size_t>(*found * kSlabCount + rank)] = 1;
             }
             std::vector<std::vector<SparseSlabPayload>> direct_payloads;
-            if (direct_pread_ && !read_sparse_payloads_direct_batch(
+            int compact_slot_index = 0;
+            const uint64_t current_oracle_key =
+                oracle_key(base_pos, model_layer);
+            const bool oracle_hit = !oracle_trace_path_.empty() &&
+                routes.n_tokens == 1 && consume_oracle_prefetch(
+                    current_oracle_key, state, route_offset, routes,
+                    selected_by_route, spec, compact_slot_index);
+            std::array<SparseCompactPayload, kNativeTopK> &
+                current_compact_payloads = oracle_slot(compact_slot_index);
+            if (direct_pread_ && !oracle_hit &&
+                !read_sparse_payloads_direct_batch(
                     sidecar_fd, state, spec, model_layer, base_pos, token,
                     route_offset, routes, calibrated_routes,
                     selected_by_route, direct_payloads,
-                    direct_pinned_compact_ ? &direct_compact_payloads_ : nullptr,
+                    direct_pinned_compact_
+                        ? &current_compact_payloads : nullptr,
                     err)) {
                 return exact_layer_fallback(
                     "P20 direct layer-batch sidecar read failed");
+            }
+            if (!oracle_trace_path_.empty() && routes.n_tokens == 1) {
+                launch_oracle_next(
+                    current_oracle_key, compact_slot_index);
             }
 
             std::vector<int> stable_routes = calibrated_routes;
@@ -4124,10 +4675,33 @@ private:
                 std::vector<SparseSlabPayload> sparse_slabs = direct_pread_
                     ? std::move(direct_payloads[static_cast<size_t>(route)])
                     : std::vector<SparseSlabPayload>{};
-                const SparseCompactPayload * prepacked_compact =
-                    direct_pinned_compact_
-                    ? &direct_compact_payloads_[static_cast<size_t>(route)]
-                    : nullptr;
+                const SparseCompactPayload * prepacked_compact = nullptr;
+                if (direct_pinned_compact_ && !oracle_hit) {
+                    prepacked_compact = &current_compact_payloads[
+                        static_cast<size_t>(route)];
+                } else if (direct_pinned_compact_ && oracle_hit) {
+                    const auto found = oracle_layers_.find(
+                        current_oracle_key);
+                    if (found != oracle_layers_.end()) {
+                        const auto planned = std::find_if(
+                            found->second.routes.begin(),
+                            found->second.routes.end(),
+                            [&](const P28OracleRoute & value) {
+                                return value.expert == expert;
+                            });
+                        if (planned != found->second.routes.end()) {
+                            const size_t index = static_cast<size_t>(
+                                std::distance(
+                                    found->second.routes.begin(), planned));
+                            prepacked_compact =
+                                &current_compact_payloads[index];
+                        }
+                    }
+                    if (!prepacked_compact) {
+                        return exact_layer_fallback(
+                            "P28 matched oracle route has no payload");
+                    }
+                }
                 sparse_slabs.reserve(kSlabCount);
                 int retained = prepacked_compact
                     ? prepacked_compact->slab_count
@@ -4395,6 +4969,20 @@ private:
                 sparse_device_evaluator_.expert_graph_ns()),
             static_cast<unsigned long long>(
                 sparse_device_evaluator_.expert_readback_ns()));
+        if (!oracle_trace_path_.empty()) {
+            std::fprintf(stderr,
+                "[kimi-k3-p28] launches=%llu hits=%llu misses=%llu "
+                "oracle-read-ns=%llu demand-wait-ns=%llu "
+                "physical-bytes=%llu wasted-bytes=%llu extra-pinned-bytes=%zu\n",
+                static_cast<unsigned long long>(oracle_launches_),
+                static_cast<unsigned long long>(oracle_hits_),
+                static_cast<unsigned long long>(oracle_misses_),
+                static_cast<unsigned long long>(oracle_read_ns_),
+                static_cast<unsigned long long>(oracle_wait_ns_),
+                static_cast<unsigned long long>(oracle_physical_bytes_),
+                static_cast<unsigned long long>(oracle_wasted_bytes_),
+                oracle_compact_arena_.capacity);
+        }
         layers_.clear();
     }
 
@@ -4420,6 +5008,23 @@ private:
     std::unique_ptr<P20DirectReadPool> direct_read_pool_;
     std::array<SparseCompactPayload, kNativeTopK>
         direct_compact_payloads_;
+    std::array<SparseCompactPayload, kNativeTopK>
+        oracle_compact_payloads_;
+    P28PinnedArena oracle_compact_arena_;
+    std::string oracle_trace_path_;
+    std::map<uint64_t, P28OracleLayer> oracle_layers_;
+    std::vector<uint64_t> oracle_order_;
+    std::map<uint64_t, uint64_t> oracle_next_;
+    std::future<P28OracleReadResult> oracle_future_;
+    uint64_t oracle_future_key_ = 0;
+    int oracle_future_slot_ = 0;
+    uint64_t oracle_launches_ = 0;
+    uint64_t oracle_hits_ = 0;
+    uint64_t oracle_misses_ = 0;
+    uint64_t oracle_read_ns_ = 0;
+    uint64_t oracle_wait_ns_ = 0;
+    uint64_t oracle_physical_bytes_ = 0;
+    uint64_t oracle_wasted_bytes_ = 0;
     int budget_ = 96;
     std::vector<int32_t> layer_budgets_;
     std::string layer_budget_path_;
@@ -4451,7 +5056,7 @@ bool parse_kimi_k3_layer_budget_table(
         std::string * err) {
     constexpr int kLayers = 92;
     const auto allowed = [](int budget) {
-        return budget >= 48 && budget <= 192 && budget % 24 == 0;
+        return budget >= 24 && budget <= 192 && budget % 24 == 0;
     };
     std::ifstream input(path);
     if (!input) {

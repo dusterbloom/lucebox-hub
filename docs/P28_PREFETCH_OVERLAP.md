@@ -43,18 +43,18 @@ not time native fallback fetches per route.
 | exact-fallback logical bytes | 1.256 GiB/row |
 | mean/max selected layer payload | 50.41 / 59.67 MiB |
 
-The I/O trace records 163.462 GB of aligned submissions. The P27 footer reports
-156.479 GB of actual direct physical bytes and 155.611 GB of authoritative H2D,
-so the analyzer does not mistake trace alignment bookkeeping for bytes that
-actually crossed storage or PCIe.
+The I/O trace and P27 footer both record 156.479 GB of aligned direct sidecar
+submissions; authoritative H2D is 155.611 GB. Buffered mean-card reads are
+excluded from this direct-read stage instead of being misclassified as compact
+expert payload.
 
 ## Oracle ceilings
 
 | schedule | hidden read | lower-bound decode | projected rate | gain | extra pinned memory |
 |---|---:|---:|---:|---:|---:|
 | current P27 | 0 | 93.107 s | 0.3330/s | — | — |
-| within-layer route pipeline | 11.670 s | 81.436 s | 0.3807/s | **14.3%** | ≤59.67 MiB |
-| one-layer oracle read lookahead | 26.984 s | 66.122 s | 0.4688/s | **40.8%** | ≤59.67 MiB |
+| within-layer route pipeline | 11.615 s | 81.491 s | 0.3804/s | **14.3%** | ≤59.72 MiB |
+| one-layer oracle read lookahead | 26.984 s | 66.122 s | 0.4688/s | **40.8%** | ≤59.72 MiB |
 | two-layer oracle read lookahead | same | 66.122 s | 0.4688/s | 0% beyond one | ≤119.33 MiB |
 
 The within-layer trace replay preserves a barrier after each routed layer and
@@ -63,8 +63,8 @@ pays route-pipeline startup/drain 2,944 times. It misses the 15% GO gate narrowl
 has no further steady-state value because one layer already contains enough
 useful work to cover the average selected read.
 
-Byte-attributed selected-read exposure is 9.17 ms/layer on average, 10.79 ms at
-p95 and 10.84 ms maximum. The measured non-read remainder averages 22.46
+Byte-attributed selected-read exposure is 9.17 ms/layer on average and 10.85 ms
+at both p95 and maximum. The measured non-read remainder averages 22.46
 ms/layer. This supports the one-layer ceiling, but per-layer non-read timing was
 not captured, so only an integrated oracle replay can prove that the overlap is
 real rather than resource-contended.
@@ -114,3 +114,43 @@ amortization remain necessary.
 
 P28 is worthwhile as a bounded systems optimization. It is not a substitute
 for H23's target of materially fewer authoritative bytes.
+
+## Integrated oracle implementation — BUILD-READY, NOT YET MEASURED
+
+The minimum one-layer replay is now implemented behind:
+
+```text
+DFLASH_KIMI_P28_ORACLE_TRACE=<archived-P27-io_trace.tsv>
+```
+
+It is accepted only with the complete P27 opt-in stack. At startup it reduces
+the archived trace to `(position, layer, expert, natural slabs)` addresses. For
+each live layer it:
+
+1. waits for the one-layer-ahead read, if present;
+2. verifies every unique live expert and selected natural slab against the
+   frozen oracle;
+3. consumes the pinned compact payload only on an exact address match;
+4. otherwise counts the read as wasted and executes unchanged synchronous P27;
+5. launches exactly one future layer into the other buffer;
+6. leaves mean-tail arithmetic, native graph execution and final expert-ID
+   accumulation unchanged.
+
+Duplicate native route slots are handled as one unique expert address without
+changing their live router arithmetic. The additional buffer is one contiguous
+pinned arena which grows only to the maximum future selected-layer payload; the
+runtime reports its actual high-water capacity.
+
+The implementation and CPU controls compile and pass. The integrated GPU gate
+has deliberately not run while H23/S0 own the shared GPU. Reproduce it with:
+
+```bash
+scripts/gpu_lease.sh run P28 -- \
+  scripts/run_kimi_p28_oracle.sh \
+  /mnt/kimi-k3/results/kimi-p28-oracle-32-row-YYYYMMDD 32
+```
+
+`scripts/analyze_kimi_p28_integrated.py` requires byte-identical frozen logits
+and at least 25% measured throughput gain before it labels predictor research
+earned. Until that command passes, the implementation status remains OPEN and
+the 40.8% value above remains only a ceiling.

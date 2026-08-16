@@ -9,25 +9,25 @@
     "rows": 32,
     "decoded_transitions": 31,
     "routed_layer_rows": 2944,
-    "calibrated_routes": 40594
+    "calibrated_routes": 31723
   },
   "bytes": {
     "selected_logical": 155611459584,
-    "compact_trace_bytes": 162594926592,
-    "submitted_aligned_bytes": 163462004736,
+    "compact_trace_bytes": 155611459584,
+    "submitted_aligned_bytes": 156478537728,
     "actual_direct_physical_bytes": 156478537728,
     "authoritative_h2d_bytes": 155611459584,
     "fallback_logical_opaque": 43143733248,
     "selected_logical_gib_per_row": 4.528889536857605,
     "fallback_logical_gib_per_row": 1.255647897720337,
-    "mean_selected_layer_mib": 50.408510237932205,
-    "p95_selected_layer_mib": 59.35204601287842,
-    "max_selected_layer_mib": 59.66607856750488,
-    "mean_provider_layer_mib": 64.38441727342813,
-    "max_provider_layer_mib": 118.45590019226074,
+    "mean_selected_layer_mib": 50.408509627632476,
+    "p95_selected_layer_mib": 59.71875,
+    "max_selected_layer_mib": 59.71875,
+    "mean_provider_layer_mib": 64.38441666312839,
+    "max_provider_layer_mib": 119.4375,
     "mean_attributed_read_ms_per_layer": 9.168891095108695,
-    "p95_attributed_read_ms_per_layer": 10.787081850137252,
-    "max_attributed_read_ms_per_layer": 10.843898684562353,
+    "p95_attributed_read_ms_per_layer": 10.853030029086897,
+    "max_attributed_read_ms_per_layer": 10.853030029086897,
     "mean_nonread_ms_per_layer": 22.45696997826087
   },
   "measured_baseline": {
@@ -67,12 +67,12 @@
     }
   },
   "within_layer_route_pipeline": {
-    "lower_bound_decode_seconds": 81.43621872599003,
-    "transitions_per_second": 0.38066600445075033,
-    "throughput_gain_fraction": 0.14330621505496577,
-    "hidden_selected_read_seconds": 11.670316274009963,
+    "lower_bound_decode_seconds": 81.49141009835228,
+    "transitions_per_second": 0.38040819225714695,
+    "throughput_gain_fraction": 0.14253189247344444,
+    "hidden_selected_read_seconds": 11.615124901647711,
     "hidden_h2d_seconds": 0.0,
-    "extra_pinned_mib": 59.66607856750488,
+    "extra_pinned_mib": 59.71875,
     "extra_speculative_bytes": 0,
     "gate": "NO_GO_BORDERLINE",
     "scheduling": "two-resource flow shop, frozen expert-ID order, barrier after every routed layer"
@@ -83,7 +83,7 @@
     "throughput_gain_fraction": 0.40809181720390675,
     "hidden_selected_read_seconds": 26.98404649290489,
     "hidden_h2d_seconds": 0.0,
-    "extra_pinned_mib": 59.66607856750488,
+    "extra_pinned_mib": 59.71875,
     "extra_speculative_bytes": 0,
     "gate": "STRONG_GO"
   },
@@ -91,7 +91,7 @@
     "lower_bound_decode_seconds": 66.12248850709511,
     "transitions_per_second": 0.4688268802326401,
     "incremental_gain_over_one_layer": 0.0,
-    "extra_pinned_mib": 119.33215713500977,
+    "extra_pinned_mib": 119.4375,
     "extra_speculative_bytes": 0,
     "verdict": "NO_INCREMENTAL_VALUE_AT_THIS_CEILING"
   },
