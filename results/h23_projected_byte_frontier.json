@@ -1,0 +1,97 @@
+{
+  "schema": "kimi-k3-h23-projected-byte-frontier-v1",
+  "status": "MEASURED_BYTES_PROJECTED_BEHAVIOR_INCOMPLETE_ROUTE_AXIS",
+  "provenance": {
+    "h22_atlas": "results/kimi_h22_layer_behavior_atlas.json",
+    "h22_atlas_sha256": "a492f0842f49455e4c0c9def33ce72e1383b44f63db369c4d797e5b96c3ef475",
+    "p27_io_trace": "/mnt/kimi-k3/results/kimi-p27-direct-pinned-32-row-20260816/io_trace.tsv",
+    "p27_io_trace_sha256": "63354e24f0de2962db4cf7acaa744c623752f99374ef3254e24560b68a90710c",
+    "p27_traffic": "/mnt/kimi-k3/results/kimi-p27-direct-pinned-32-row-20260816/traffic.tsv",
+    "p27_traffic_sha256": "d103e491583bf06f3cee92fdf86489fc0e5c36889e5b43b475322454ef2b6a5a"
+  },
+  "method": {
+    "byte_cost": "measured P27 route trace, exact fallback decisions, and mixed-qtype bytes",
+    "behavioral_anchor": "measured isolated terminal KL at budget 96",
+    "other_budget_cost": "PROJECTED via frozen H22 omitted-residual curve squared",
+    "optimization": "exact layer choice dynamic program with conservative 1 MiB byte bins",
+    "slab_budgets": [
+      24,
+      48,
+      72,
+      96,
+      120,
+      144,
+      168,
+      192
+    ],
+    "route_axis": "NOT OPTIMIZED: no per-layer terminal-damage atlas exists for route counts 4/6/8/12"
+  },
+  "trace": {
+    "model_positions": 32,
+    "exact_routed_gib_per_position": 9.069580078125,
+    "observed_exact_fallback_floor_gib_per_position": 1.255647897720337,
+    "observed_exact_fallback_fraction": 0.13844608977529677,
+    "minimum_registered_budget_gib_per_position": 2.389345407485962
+  },
+  "policies": {
+    "SAFE": {
+      "status": "PROJECTED_POLICY_REQUIRES_END_TO_END_QUALITY_RUN",
+      "target_gib_per_position": 4.0,
+      "measured_trace_bytes_gib_per_position": 3.966299057006836,
+      "fraction_of_exact_trace_bytes": 0.43731893018654605,
+      "projected_additive_behavioral_cost": 0.7608389812275895,
+      "average_nominal_slabs": 57.65217391304348,
+      "budget_counts": {
+        "24": 24,
+        "48": 31,
+        "72": 18,
+        "96": 14,
+        "120": 5,
+        "144": 0,
+        "168": 0,
+        "192": 0
+      },
+      "table": "results/h23_policies/h23_safe_4_0gib.txt",
+      "table_sha256": "d92192c9cdff9ec61adc274fd3cf553b1481a46cadc93ebeba9b11da56daa57f"
+    },
+    "MEDIUM": {
+      "status": "PROJECTED_POLICY_REQUIRES_END_TO_END_QUALITY_RUN",
+      "target_gib_per_position": 2.5,
+      "measured_trace_bytes_gib_per_position": 2.4532721042633057,
+      "fraction_of_exact_trace_bytes": 0.2704945634892595,
+      "projected_additive_behavioral_cost": 2.423023323628735,
+      "average_nominal_slabs": 25.304347826086957,
+      "budget_counts": {
+        "24": 87,
+        "48": 5,
+        "72": 0,
+        "96": 0,
+        "120": 0,
+        "144": 0,
+        "168": 0,
+        "192": 0
+      },
+      "table": "results/h23_policies/h23_medium_2_5gib.txt",
+      "table_sha256": "c3ffb2c68e85751079d77a41fd0844ecade4a78acd02cb07d438891e33de876c"
+    },
+    "AGGRESSIVE": {
+      "status": "INFEASIBLE_WITH_REGISTERED_BUDGETS_AND_OBSERVED_FALLBACKS",
+      "target_gib_per_position": 1.8,
+      "minimum_registered_budget_gib_per_position": 2.389345407485962,
+      "observed_exact_fallback_floor_gib_per_position": 1.255647897720337
+    },
+    "MOONSHOT": {
+      "status": "INFEASIBLE_WITH_REGISTERED_BUDGETS_AND_OBSERVED_FALLBACKS",
+      "target_gib_per_position": 1.2,
+      "minimum_registered_budget_gib_per_position": 2.389345407485962,
+      "observed_exact_fallback_floor_gib_per_position": 1.255647897720337
+    }
+  },
+  "hard_gaps": [
+    "Only budget 96 has measured isolated terminal KL per layer; every other slab budget is projected.",
+    "The 32-position P27 trace is one trajectory, not a domain-balanced byte distribution.",
+    "No per-layer behavioral atlas exists for exact-route counts 4, 6, 8, or 12, so route/slab choices cannot yet be safely mixed.",
+    "The registered 24-slab minimum and observed exact-fallback floor make 1.8 and 1.2 GiB targets infeasible on this trace.",
+    "No projected policy has broad official-template quality evidence."
+  ]
+}
