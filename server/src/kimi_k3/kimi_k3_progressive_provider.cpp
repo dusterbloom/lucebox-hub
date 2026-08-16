@@ -3482,6 +3482,7 @@ private:
             if (err) *err = "P28 oracle trace is empty or unreadable";
             return false;
         }
+        size_t max_arena_bytes = 0;
         for (auto & item : oracle_layers_) {
             P28OracleLayer & layer = item.second;
             std::sort(layer.routes.begin(), layer.routes.end(),
@@ -3505,15 +3506,29 @@ private:
                     return false;
                 }
             }
+            const LayerState & state =
+                layers_[static_cast<size_t>(layer.model_layer)];
+            const size_t layer_arena_bytes = std::accumulate(
+                layer.routes.begin(), layer.routes.end(), size_t{0},
+                [&](size_t total, const P28OracleRoute & route) {
+                    return route.naturals.empty() ? total :
+                        total + 32 + route.naturals.size() * state.slab_bytes;
+                });
+            max_arena_bytes = std::max(max_arena_bytes, layer_arena_bytes);
             oracle_order_.push_back(item.first);
         }
         for (size_t index = 1; index < oracle_order_.size(); ++index) {
             oracle_next_[oracle_order_[index - 1]] = oracle_order_[index];
         }
+        // CUDA host allocation from the asynchronous read worker proved unsafe
+        // under WSL's dxg bridge.  P28 has a frozen trace, so reserve its exact
+        // high-water mark once on the initializing thread instead.
+        if (!oracle_compact_arena_.ensure(max_arena_bytes, err)) return false;
         std::fprintf(stderr,
             "[kimi-k3-p28] oracle-trace=%s layer-rows=%zu source-rows=%zu "
-            "lookahead=1 predictor=none\n",
-            oracle_trace_path_.c_str(), oracle_layers_.size(), rows);
+            "lookahead=1 predictor=none pinned-high-water=%zu\n",
+            oracle_trace_path_.c_str(), oracle_layers_.size(), rows,
+            max_arena_bytes);
         return true;
     }
 
@@ -4162,20 +4177,6 @@ private:
             oracle_slot(slot);
         std::vector<Task> tasks;
         std::string setup_error;
-        size_t arena_bytes = 0;
-        if (slot == 1) {
-            for (const P28OracleRoute & route : plan.routes) {
-                if (!route.naturals.empty()) {
-                    arena_bytes += 32 +
-                        route.naturals.size() * state.slab_bytes;
-                }
-            }
-            if (!oracle_compact_arena_.ensure(arena_bytes, &setup_error)) {
-                close_fd(fd);
-                result.error = setup_error;
-                return result;
-            }
-        }
         size_t arena_offset = 0;
         for (size_t route_index = 0;
              route_index < plan.routes.size(); ++route_index) {
