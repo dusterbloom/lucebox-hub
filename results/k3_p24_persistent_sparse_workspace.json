@@ -1,0 +1,55 @@
+{
+  "schema": "k3-p24-persistent-sparse-workspace-v1",
+  "verdict": "GO",
+  "base_commit": "b794548d0548096ccaacf434070e99955500b080",
+  "branch": "experiment/kimi-k3-p20-sparse-physical",
+  "configuration": {
+    "provider": "all-layers-calibrated96",
+    "physical_layout": "scratch",
+    "io_backend": "direct-pread",
+    "core_offload": ["latent", "shared"],
+    "persistent_env": "DFLASH_KIMI_P23_PERSISTENT_SCRATCH"
+  },
+  "semantic_gate": {
+    "two_row_logits_sha256": "f4f694d31d6d00c3b0d941b66440f9c271be60e560f8c0e87ea25d230e3848af",
+    "two_row_byte_identical": true,
+    "eight_row_logits_sha256": "8daa924c13dd94489541f5d259eb2b72873b9cd49a074aee348aecd5dae90ca7",
+    "eight_row_byte_identical": true,
+    "eight_row_output_ids": [11, 374, 4936, 261, 814, 2742, 316, 374]
+  },
+  "controlled_two_row": {
+    "baseline_first": {
+      "decode_transition_seconds": 9.068487,
+      "expert_stage_seconds": 6.232100,
+      "direct_io_seconds": 1.569759520,
+      "peak_vram_mib": 15949
+    },
+    "persistent": {
+      "decode_transition_seconds": 7.451756,
+      "expert_stage_seconds": 5.142444,
+      "direct_io_seconds": 1.580205759,
+      "peak_vram_mib": 15989
+    },
+    "baseline_repeated": {
+      "decode_transition_seconds": 9.165512,
+      "expert_stage_seconds": 6.171091,
+      "direct_io_seconds": 1.664179124,
+      "peak_vram_mib": 15949
+    },
+    "persistent_latency_reduction_percent_range": [17.8, 18.7],
+    "persistent_throughput_increase_percent_range": [21.7, 23.0]
+  },
+  "eight_row": {
+    "prechange_decode_seconds": 65.191,
+    "persistent_decode_seconds": 58.932,
+    "decoded_transitions": 7,
+    "prechange_seconds_per_transition": 9.313,
+    "persistent_seconds_per_transition": 8.419,
+    "prechange_transitions_per_second": 0.1074,
+    "persistent_transitions_per_second": 0.1188,
+    "latency_reduction_percent": 9.6,
+    "throughput_increase_percent": 10.6,
+    "persistent_peak_vram_mib": 15989
+  },
+  "next_single_action": "batch selected-slab upload and expert execution per layer while preserving expert-ID accumulation"
+}

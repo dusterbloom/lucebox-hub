@@ -1631,11 +1631,268 @@ struct SparseSlabPayload {
     std::vector<uint8_t> down;
 };
 
+// P23 keeps the P20 full-width arithmetic intact while removing repeated
+// ggml graph allocation and CUDA buffer allocation from the per-route hot
+// path.  A small cache entry is retained for each qtype/mask geometry seen by
+// the model.  Evaluation remains sequential, so expert-ID accumulation order
+// and the frozen calibrated96 semantics do not change.
+class SparseDeviceExpertEvaluator {
+public:
+    SparseDeviceExpertEvaluator() = default;
+    SparseDeviceExpertEvaluator(const SparseDeviceExpertEvaluator &) = delete;
+    SparseDeviceExpertEvaluator & operator=(
+        const SparseDeviceExpertEvaluator &) = delete;
+
+    bool evaluate(
+            ggml_backend_t backend,
+            const MoeStreamExpertSpec & spec,
+            const float * input_data,
+            const std::vector<SparseSlabPayload> & slabs,
+            const std::vector<float> & activation_mask_values,
+            size_t down_slab_row_bytes,
+            std::vector<float> & result,
+            uint64_t & authoritative_h2d_bytes,
+            uint64_t & metadata_h2d_bytes,
+            uint64_t & device_zero_bytes,
+            std::string * err) {
+#if !defined(DFLASH27B_BACKEND_CUDA)
+        (void) backend; (void) spec; (void) input_data; (void) slabs;
+        (void) activation_mask_values; (void) down_slab_row_bytes;
+        (void) result; (void) authoritative_h2d_bytes;
+        (void) metadata_h2d_bytes; (void) device_zero_bytes;
+        if (err) *err = "P23 sparse scratch currently requires CUDA";
+        return false;
+#else
+        if (!backend || !ggml_backend_is_cuda(backend) ||
+            spec.fused_gate_up || !input_data ||
+            activation_mask_values.size() !=
+                static_cast<size_t>(spec.intermediate_dim)) {
+            if (err) *err =
+                "P23 sparse scratch received an incompatible expert";
+            return false;
+        }
+        const bool needs_mask = slabs.size() != kSlabCount;
+        Entry * entry = find(backend, spec, needs_mask);
+        if (!entry) {
+            entry = create(backend, spec, needs_mask, err);
+            if (!entry) return false;
+        }
+
+        auto cuda_ok = [&](cudaError_t status, const char * operation) {
+            if (status == cudaSuccess) return true;
+            if (err) {
+                *err = std::string("P23 ") + operation + " failed: " +
+                    cudaGetErrorString(status);
+            }
+            return false;
+        };
+        bool ok =
+            cuda_ok(cudaMemset(
+                entry->gate->data, 0, ggml_nbytes(entry->gate)),
+                "gate zero") &&
+            cuda_ok(cudaMemset(
+                entry->up->data, 0, ggml_nbytes(entry->up)),
+                "up zero") &&
+            cuda_ok(cudaMemset(
+                entry->down->data, 0, ggml_nbytes(entry->down)),
+                "down zero");
+        device_zero_bytes += ggml_nbytes(entry->gate) +
+            ggml_nbytes(entry->up) + ggml_nbytes(entry->down);
+        for (const SparseSlabPayload & slab : slabs) {
+            if (!ok || slab.natural >= kSlabCount || slab.gate.empty() ||
+                slab.up.empty() || slab.down.empty()) {
+                ok = false;
+                if (err && err->empty()) {
+                    *err = "P23 invalid sparse slab payload";
+                }
+                break;
+            }
+            const size_t gate_offset =
+                static_cast<size_t>(slab.natural) * slab.gate.size();
+            const size_t up_offset =
+                static_cast<size_t>(slab.natural) * slab.up.size();
+            const size_t down_offset =
+                static_cast<size_t>(slab.natural) * down_slab_row_bytes;
+            ok = cuda_ok(cudaMemcpy(
+                    static_cast<uint8_t *>(entry->gate->data) + gate_offset,
+                    slab.gate.data(), slab.gate.size(), cudaMemcpyHostToDevice),
+                    "gate slab upload") &&
+                cuda_ok(cudaMemcpy(
+                    static_cast<uint8_t *>(entry->up->data) + up_offset,
+                    slab.up.data(), slab.up.size(), cudaMemcpyHostToDevice),
+                    "up slab upload") &&
+                cuda_ok(cudaMemcpy2D(
+                    static_cast<uint8_t *>(entry->down->data) + down_offset,
+                    entry->down->nb[1], slab.down.data(),
+                    down_slab_row_bytes, down_slab_row_bytes,
+                    static_cast<size_t>(spec.output_dim),
+                    cudaMemcpyHostToDevice), "down slab upload");
+            authoritative_h2d_bytes +=
+                slab.gate.size() + slab.up.size() + slab.down.size();
+        }
+        if (ok) {
+            ggml_backend_tensor_set(
+                entry->input, input_data, 0,
+                static_cast<size_t>(spec.input_dim) * sizeof(float));
+            if (entry->activation_mask) {
+                ggml_backend_tensor_set(
+                    entry->activation_mask, activation_mask_values.data(), 0,
+                    activation_mask_values.size() * sizeof(float));
+            }
+            metadata_h2d_bytes +=
+                static_cast<uint64_t>(spec.input_dim) * sizeof(float) +
+                (entry->activation_mask
+                    ? activation_mask_values.size() * sizeof(float) : 0);
+            const ggml_status status =
+                ggml_backend_graph_compute(backend, entry->graph);
+            ok = status == GGML_STATUS_SUCCESS;
+            if (!ok && err) {
+                *err = "P23 persistent sparse graph compute failed";
+            }
+        }
+        if (ok) {
+            result.resize(static_cast<size_t>(spec.output_dim));
+            ggml_backend_tensor_get(
+                entry->output, result.data(), 0,
+                result.size() * sizeof(float));
+        }
+        return ok;
+#endif
+    }
+
+private:
+#if defined(DFLASH27B_BACKEND_CUDA)
+    struct Entry {
+        ~Entry() {
+            if (allocator) ggml_gallocr_free(allocator);
+            if (context) ggml_free(context);
+        }
+
+        ggml_backend_t backend = nullptr;
+        MoeStreamExpertSpec spec{};
+        bool needs_mask = false;
+        ggml_context * context = nullptr;
+        ggml_gallocr_t allocator = nullptr;
+        ggml_cgraph * graph = nullptr;
+        ggml_tensor * input = nullptr;
+        ggml_tensor * gate = nullptr;
+        ggml_tensor * up = nullptr;
+        ggml_tensor * down = nullptr;
+        ggml_tensor * activation_mask = nullptr;
+        ggml_tensor * output = nullptr;
+    };
+
+    static bool same_spec(
+            const MoeStreamExpertSpec & left,
+            const MoeStreamExpertSpec & right) {
+        return left.input_dim == right.input_dim &&
+            left.intermediate_dim == right.intermediate_dim &&
+            left.output_dim == right.output_dim &&
+            left.gate_type == right.gate_type &&
+            left.up_type == right.up_type &&
+            left.down_type == right.down_type &&
+            left.fused_gate_up == right.fused_gate_up &&
+            left.gated_activation == right.gated_activation &&
+            left.situ_beta == right.situ_beta &&
+            left.situ_linear_beta == right.situ_linear_beta &&
+            left.gate_scale == right.gate_scale &&
+            left.up_scale == right.up_scale &&
+            left.down_scale == right.down_scale;
+    }
+
+    Entry * find(
+            ggml_backend_t backend, const MoeStreamExpertSpec & spec,
+            bool needs_mask) {
+        for (const std::unique_ptr<Entry> & entry : entries_) {
+            if (entry->backend == backend &&
+                entry->needs_mask == needs_mask &&
+                same_spec(entry->spec, spec)) {
+                return entry.get();
+            }
+        }
+        return nullptr;
+    }
+
+    Entry * create(
+            ggml_backend_t backend, const MoeStreamExpertSpec & spec,
+            bool needs_mask, std::string * err) {
+        auto entry = std::make_unique<Entry>();
+        entry->backend = backend;
+        entry->spec = spec;
+        entry->needs_mask = needs_mask;
+        ggml_init_params parameters{};
+        parameters.mem_size = 32 * 1024 * 1024;
+        parameters.no_alloc = true;
+        entry->context = ggml_init(parameters);
+        if (!entry->context) {
+            if (err) *err = "P23 persistent sparse ggml_init failed";
+            return nullptr;
+        }
+        entry->input = ggml_new_tensor_2d(
+            entry->context, GGML_TYPE_F32, spec.input_dim, 1);
+        entry->gate = ggml_new_tensor_2d(
+            entry->context, spec.gate_type,
+            spec.input_dim, spec.intermediate_dim);
+        entry->up = ggml_new_tensor_2d(
+            entry->context, spec.up_type,
+            spec.input_dim, spec.intermediate_dim);
+        entry->down = ggml_new_tensor_2d(
+            entry->context, spec.down_type,
+            spec.intermediate_dim, spec.output_dim);
+        entry->activation_mask = needs_mask
+            ? ggml_new_tensor_1d(
+                entry->context, GGML_TYPE_F32, spec.intermediate_dim)
+            : nullptr;
+        ggml_set_input(entry->input);
+        ggml_set_input(entry->gate);
+        ggml_set_input(entry->up);
+        ggml_set_input(entry->down);
+        if (entry->activation_mask) {
+            ggml_set_input(entry->activation_mask);
+        }
+        ggml_tensor * gate_value = probe_scale_tensor(
+            entry->context,
+            ggml_mul_mat(entry->context, entry->gate, entry->input),
+            spec.gate_scale);
+        ggml_tensor * up_value = probe_scale_tensor(
+            entry->context,
+            ggml_mul_mat(entry->context, entry->up, entry->input),
+            spec.up_scale);
+        ggml_tensor * activated = probe_gated_activation(
+            entry->context, spec, gate_value, up_value);
+        if (entry->activation_mask) {
+            activated = ggml_mul(
+                entry->context, activated, entry->activation_mask);
+        }
+        entry->output = probe_scale_tensor(
+            entry->context,
+            ggml_mul_mat(entry->context, entry->down, activated),
+            spec.down_scale);
+        entry->graph = ggml_new_graph_custom(entry->context, 512, false);
+        ggml_set_output(entry->output);
+        ggml_build_forward_expand(entry->graph, entry->output);
+        entry->allocator = ggml_gallocr_new(
+            ggml_backend_get_default_buffer_type(backend));
+        if (!entry->allocator ||
+            !ggml_gallocr_alloc_graph(entry->allocator, entry->graph)) {
+            if (err) *err =
+                "P23 persistent sparse graph allocation failed";
+            return nullptr;
+        }
+        entries_.push_back(std::move(entry));
+        return entries_.back().get();
+    }
+
+    std::vector<std::unique_ptr<Entry>> entries_;
+#endif
+};
+
 // P20's first production-shaped baseline keeps the native full-width graph but
 // initializes its device tensors in place and patches only selected slab bytes.
 // The activation mask makes the omitted gate/up/down bytes semantically inert.
 // In particular, no reconstructed full expert crosses PCIe.
 bool evaluate_sparse_device_expert(
+        SparseDeviceExpertEvaluator * persistent_evaluator,
         ggml_backend_t backend,
         const MoeStreamExpertSpec & spec,
         const float * input_data,
@@ -1647,135 +1904,13 @@ bool evaluate_sparse_device_expert(
         uint64_t & metadata_h2d_bytes,
         uint64_t & device_zero_bytes,
         std::string * err) {
-#if !defined(DFLASH27B_BACKEND_CUDA)
-    (void) backend; (void) spec; (void) input_data; (void) slabs;
-    (void) activation_mask_values; (void) down_slab_row_bytes; (void) result;
-    (void) authoritative_h2d_bytes; (void) metadata_h2d_bytes;
-    (void) device_zero_bytes;
-    if (err) *err = "P20 sparse scratch currently requires a CUDA backend";
-    return false;
-#else
-    if (!backend || !ggml_backend_is_cuda(backend) || spec.fused_gate_up ||
-        !input_data || activation_mask_values.size() !=
-            static_cast<size_t>(spec.intermediate_dim)) {
-        if (err) *err = "P20 sparse scratch received an incompatible expert";
-        return false;
-    }
-    ggml_init_params parameters{};
-    parameters.mem_size = 32 * 1024 * 1024;
-    parameters.no_alloc = true;
-    ggml_context * context = ggml_init(parameters);
-    if (!context) {
-        if (err) *err = "P20 sparse scratch ggml_init failed";
-        return false;
-    }
-    ggml_tensor * input = ggml_new_tensor_2d(
-        context, GGML_TYPE_F32, spec.input_dim, 1);
-    ggml_tensor * gate = ggml_new_tensor_2d(
-        context, spec.gate_type, spec.input_dim, spec.intermediate_dim);
-    ggml_tensor * up = ggml_new_tensor_2d(
-        context, spec.up_type, spec.input_dim, spec.intermediate_dim);
-    ggml_tensor * down = ggml_new_tensor_2d(
-        context, spec.down_type, spec.intermediate_dim, spec.output_dim);
-    const bool needs_mask = slabs.size() != kSlabCount;
-    ggml_tensor * activation_mask = needs_mask
-        ? ggml_new_tensor_1d(context, GGML_TYPE_F32, spec.intermediate_dim)
-        : nullptr;
-    ggml_set_input(input);
-    ggml_set_input(gate);
-    ggml_set_input(up);
-    ggml_set_input(down);
-    if (activation_mask) ggml_set_input(activation_mask);
-    ggml_tensor * gate_value = probe_scale_tensor(
-        context, ggml_mul_mat(context, gate, input), spec.gate_scale);
-    ggml_tensor * up_value = probe_scale_tensor(
-        context, ggml_mul_mat(context, up, input), spec.up_scale);
-    ggml_tensor * activated = probe_gated_activation(
-        context, spec, gate_value, up_value);
-    if (activation_mask) activated = ggml_mul(context, activated, activation_mask);
-    ggml_tensor * output = probe_scale_tensor(
-        context, ggml_mul_mat(context, down, activated), spec.down_scale);
-    ggml_cgraph * graph = ggml_new_graph_custom(context, 512, false);
-    ggml_set_output(output);
-    ggml_build_forward_expand(graph, output);
-    ggml_gallocr_t allocator = ggml_gallocr_new(
-        ggml_backend_get_default_buffer_type(backend));
-    if (!allocator || !ggml_gallocr_alloc_graph(allocator, graph)) {
-        if (err) *err = "P20 sparse scratch graph allocation failed";
-        if (allocator) ggml_gallocr_free(allocator);
-        ggml_free(context);
-        return false;
-    }
-
-    auto cuda_ok = [&](cudaError_t status, const char * operation) {
-        if (status == cudaSuccess) return true;
-        if (err) {
-            *err = std::string("P20 ") + operation + " failed: " +
-                cudaGetErrorString(status);
-        }
-        return false;
-    };
-    bool ok =
-        cuda_ok(cudaMemset(gate->data, 0, ggml_nbytes(gate)), "gate zero") &&
-        cuda_ok(cudaMemset(up->data, 0, ggml_nbytes(up)), "up zero") &&
-        cuda_ok(cudaMemset(down->data, 0, ggml_nbytes(down)), "down zero");
-    device_zero_bytes += ggml_nbytes(gate) + ggml_nbytes(up) +
-        ggml_nbytes(down);
-    for (const SparseSlabPayload & slab : slabs) {
-        if (!ok || slab.natural >= kSlabCount ||
-            slab.gate.empty() || slab.up.empty() || slab.down.empty()) {
-            ok = false;
-            if (err && err->empty()) *err = "P20 invalid sparse slab payload";
-            break;
-        }
-        const size_t gate_offset =
-            static_cast<size_t>(slab.natural) * slab.gate.size();
-        const size_t up_offset =
-            static_cast<size_t>(slab.natural) * slab.up.size();
-        const size_t down_offset =
-            static_cast<size_t>(slab.natural) * down_slab_row_bytes;
-        ok = cuda_ok(cudaMemcpy(
-                static_cast<uint8_t *>(gate->data) + gate_offset,
-                slab.gate.data(), slab.gate.size(), cudaMemcpyHostToDevice),
-                "gate slab upload") &&
-            cuda_ok(cudaMemcpy(
-                static_cast<uint8_t *>(up->data) + up_offset,
-                slab.up.data(), slab.up.size(), cudaMemcpyHostToDevice),
-                "up slab upload") &&
-            cuda_ok(cudaMemcpy2D(
-                static_cast<uint8_t *>(down->data) + down_offset,
-                down->nb[1], slab.down.data(), down_slab_row_bytes,
-                down_slab_row_bytes, static_cast<size_t>(spec.output_dim),
-                cudaMemcpyHostToDevice), "down slab upload");
-        authoritative_h2d_bytes +=
-            slab.gate.size() + slab.up.size() + slab.down.size();
-    }
-    if (ok) {
-        ggml_backend_tensor_set(
-            input, input_data, 0,
-            static_cast<size_t>(spec.input_dim) * sizeof(float));
-        if (activation_mask) {
-            ggml_backend_tensor_set(
-                activation_mask, activation_mask_values.data(), 0,
-                activation_mask_values.size() * sizeof(float));
-        }
-        metadata_h2d_bytes +=
-            static_cast<uint64_t>(spec.input_dim) * sizeof(float) +
-            (activation_mask
-                ? activation_mask_values.size() * sizeof(float) : 0);
-        const ggml_status status = ggml_backend_graph_compute(backend, graph);
-        ok = status == GGML_STATUS_SUCCESS;
-        if (!ok && err) *err = "P20 sparse scratch graph compute failed";
-    }
-    if (ok) {
-        result.resize(static_cast<size_t>(spec.output_dim));
-        ggml_backend_tensor_get(
-            output, result.data(), 0, result.size() * sizeof(float));
-    }
-    ggml_gallocr_free(allocator);
-    ggml_free(context);
-    return ok;
-#endif
+    SparseDeviceExpertEvaluator one_shot_evaluator;
+    SparseDeviceExpertEvaluator & evaluator = persistent_evaluator
+        ? *persistent_evaluator : one_shot_evaluator;
+    return evaluator.evaluate(
+        backend, spec, input_data, slabs, activation_mask_values,
+        down_slab_row_bytes, result, authoritative_h2d_bytes,
+        metadata_h2d_bytes, device_zero_bytes, err);
 }
 
 class AllSlabsProvider final : public KimiK3RoutedOutputProvider {
@@ -2721,6 +2856,21 @@ public:
                 "P20 direct-pread currently requires the scratch layout";
             return false;
         }
+        if (const char * persistent =
+                std::getenv("DFLASH_KIMI_P23_PERSISTENT_SCRATCH")) {
+            if (std::strcmp(persistent, "1") == 0) {
+                persistent_sparse_ = true;
+            } else if (std::strcmp(persistent, "0") != 0 && *persistent) {
+                if (err) *err =
+                    "DFLASH_KIMI_P23_PERSISTENT_SCRATCH must be 0 or 1";
+                return false;
+            }
+        }
+        if (persistent_sparse_ && !sparse_scratch_) {
+            if (err) *err =
+                "P23 persistent scratch requires the scratch layout";
+            return false;
+        }
         if (direct_pread_) {
             direct_read_pool_ = std::make_unique<P20DirectReadPool>(16);
         }
@@ -2773,7 +2923,7 @@ public:
         std::fprintf(stderr,
             "[kimi-k3-calibrated96] status=PILOT policy=%s quality-certified=false "
             "speed-claim=false requested-budget=%s layer-phase=%s dynamic-layer=%s physical-layout=%s "
-            "io-backend=%s "
+            "io-backend=%s persistent-scratch=%s "
             "valid-layers=%d/92 "
             "invalid-layer-action=exact insufficient-expert-action=exact\n",
             route_prefix_depth_ == 6 ? "four-route-half" :
@@ -2782,7 +2932,8 @@ public:
             budget_description.c_str(), layer_phase_name(),
             dynamic_active_layer_ ? "enabled" : "disabled",
             sparse_scratch_ ? "scratch" : "reference",
-            direct_pread_ ? "direct-pread" : "current", valid_layers);
+            direct_pread_ ? "direct-pread" : "current",
+            persistent_sparse_ ? "enabled" : "disabled", valid_layers);
         return true;
     }
 
@@ -3755,7 +3906,9 @@ private:
                 }
                 const bool evaluated = retained == 0 || (sparse_scratch_
                     ? evaluate_sparse_device_expert(
-                        backend_, spec, input, sparse_slabs, mask,
+                        persistent_sparse_ ? &sparse_device_evaluator_ : nullptr,
+                        backend_, spec, input,
+                        sparse_slabs, mask,
                         down_slab_row_bytes, expert_output,
                         authoritative_h2d_bytes_, metadata_h2d_bytes_,
                         device_zero_bytes_, err)
@@ -3914,6 +4067,8 @@ private:
     int route_prefix_depth_ = 0;
     LayerPhase layer_phase_ = LayerPhase::All;
     bool sparse_scratch_ = false;
+    SparseDeviceExpertEvaluator sparse_device_evaluator_;
+    bool persistent_sparse_ = false;
     bool direct_pread_ = false;
     std::unique_ptr<P20DirectReadPool> direct_read_pool_;
     int budget_ = 96;
