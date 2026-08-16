@@ -32,6 +32,37 @@ Therefore persistent graph metadata or allocator work cannot materially move
 the whole-transition rate.  The next compute investigation must profile the
 KDA/MLA/AttnRes/router work by layer and include mapped-weight residency.
 
+## Recovered per-layer atlas
+
+The frozen eight-row boundary log already contains one routed-preparation
+record per layer in deterministic model order.  The checkpoint metadata gives
+the exact per-layer KDA/MLA map.  `analyze_kimi_p29_layer_profile.py` joins
+those sources without another model run; it skips the first row and reports
+seven rows.
+
+| family | routed layers | CPU preparation weights | sum of per-layer median compute | robust time share |
+|---|---:|---:|---:|---:|
+| KDA | 68 | 24.882 GiB | 767.5 ms | 83.0% |
+| MLA | 24 | 4.868 GiB | 157.0 ms | 17.0% |
+
+The complete preparation working set is approximately 29.75 GiB after
+excluding the expert bank and the latent/shared/join families already placed
+on CUDA.  Median KDA boundaries are about 11.17 ms and MLA boundaries about
+6.36 ms.  Large row-to-row means come from mapped-weight refaults; medians are
+the useful placement statistic.
+
+This creates a hard capacity boundary.  Moving every KDA layer would require
+about 24.9 GiB, beyond the free RTX 3090 capacity.  A hypothetical perfect
+8-GiB placement can remove only roughly 0.25 seconds of the current transition
+before CUDA execution and synchronization are counted.  Selective attention
+placement is consequently a secondary single-digit/low-double-digit-percent
+opportunity, not the route to 4 token/s.  It also needs a behavioral gate
+because changing CPU/CUDA arithmetic may change logits.
+
+The attribution remains graph-level: each boundary includes AttnRes mixing,
+KDA or MLA, normalization and the CPU router.  It does not pretend to assign
+time to individual operators inside that graph.
+
 ## Adjacent CPU-thread control
 
 The machine exposes 18 logical processors as nine cores to WSL.  Three
@@ -73,7 +104,8 @@ forward.  These are mathematical ceilings, not projected integrated rates.
 ## Next gate
 
 1. Keep twelve CPU workers for the next same-machine control.
-2. Add only per-layer KDA-versus-MLA timing and mapped-read attribution.
+2. Use the recovered KDA/MLA layer atlas and add operator splits only if a
+   candidate placement needs them.
 3. Rank any selective accelerator placement by measured milliseconds saved per
    resident GiB, with an official-template quality gate because CPU/CUDA
    arithmetic can differ.
