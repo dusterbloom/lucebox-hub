@@ -98,6 +98,30 @@
     "leading_arm_speedup_vs_registered_cold": 2.897,
     "leading_arm_speedup_vs_resident_cpu_core": 1.627
   },
+  "official_chat_capital_gate": {
+    "artifact": "/mnt/kimi-k3/results/kimi-p23-latent-shared-capital-chat-quality-20260816",
+    "chat_template": "gguf-jinja-thinking-off",
+    "native_output_ids": [39818, 18009, 163588, 12092],
+    "candidate_first_four_output_ids": [39818, 18009, 163588, 12092],
+    "candidate_text": "Tokyo<|close|>response<|sep|><|close|>message<|sep|>",
+    "task_success": true,
+    "first_generated_token_divergence": 4,
+    "decision_row_kl": 0.0034355719657912023,
+    "aligned_row_kl_mean": 0.18580414062816691,
+    "aligned_row_kl_median": 0.040213103588601654,
+    "aligned_row_kl_max": 1.4911699757399135,
+    "aligned_top_choice_agreement": "26/33",
+    "logical_provider_fraction": 0.6388670591875086,
+    "prefill_seconds": 264.095501158,
+    "decode_seconds_for_eight_tokens": 60.453302362,
+    "status": "PASS_ONE_OFFICIAL_CHAT_PROMPT_BROAD_QUALITY_OPEN"
+  },
+  "raw_text_diagnostic": {
+    "status": "DIAGNOSTIC_NOT_QUALITY_EVIDENCE",
+    "latent_shared_task_success": "1/2",
+    "latent_only_capital_task_success": "1/1",
+    "reason": "These earlier controls explicitly recorded chat_template=raw-text."
+  },
   "interrupted_control": {
     "families": ["router"],
     "artifact": "/mnt/kimi-k3/results/kimi-p23-core-router-two-token-20260816",
@@ -106,7 +130,7 @@
   },
   "interpretation": {
     "measured": "Keeping routing on the CPU while moving latent projections and shared experts to the RTX 3090 retains the large placement speed gain and preserves all eight greedy choices on the short trace.",
-    "open": "The arithmetic is not byte-identical to CPU execution and requires a longer frozen quality suite before becoming a quality-qualified default.",
-    "next_gate": "Run the latent+shared partition on the registered quality prompts, then profile the remaining roughly nine seconds per transition by CPU/GPU stage."
+    "open": "The arithmetic is not byte-identical to CPU execution. One official-chat capital prompt passes, but code, reasoning, multilingual and longer-context quality remain unmeasured.",
+    "next_gate": "Profile the remaining roughly nine seconds per transition by CPU/GPU stage, then run a small correctly templated multi-domain suite before making this a default."
   }
 }

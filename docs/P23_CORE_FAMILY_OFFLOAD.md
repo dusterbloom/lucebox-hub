@@ -1,6 +1,6 @@
 # P23 K3 core-family offload
 
-**VERDICT: SHORT-TRACE SYSTEMS GO; BROAD QUALITY OPEN.**
+**VERDICT: SHORT-TRACE SYSTEMS GO; ONE OFFICIAL-CHAT PASS; BROAD QUALITY OPEN.**
 
 P23 makes the existing opt-in K3 routed-layer core placement selective. The
 router, routed latent projections, and shared experts can be placed on the
@@ -56,6 +56,27 @@ Across all eight scored rows:
 This is a real end-to-end all-92-layer result, but not a broad quality verdict.
 CPU-versus-CUDA reductions are deterministic yet not byte-identical.
 
+## Correctly templated quality gate
+
+The first two diagnostic runs accidentally reused the legacy raw-text fixture.
+They are retained only as arithmetic-sensitivity controls and are not quality
+evidence. The reproduction runner now enables the GGUF Jinja chat template by
+default and binds to the archived official-chat native reference.
+
+On the capital-of-Japan official-chat prompt, the CPU-router/GPU-latent+shared
+arm produced the same first four generated IDs as native:
+
+```text
+native:    Tokyo<|close|>response
+candidate: Tokyo<|close|>response<|sep|><|close|>message<|sep|>
+```
+
+The task passes, the first generated-token divergence is at position four—just
+after the native reference ends—and decision-row KL is 0.003436. Across the 33
+aligned prompt and generation rows, mean / median / max KL is
+0.185804 / 0.040213 / 1.491170 with 26/33 top-choice agreement. This is one
+correct official-chat sanity, not broad certification.
+
 ## Crash recovery
 
 The subsequent router-only control was interrupted during prefill by a WSL
@@ -66,11 +87,10 @@ broken background user service was stopped before the clean eight-row run.
 
 ## Next gate
 
-Run the CPU-router/GPU-latent+shared partition on the registered frozen quality
-prompts. If it preserves behavior, profile the remaining approximately nine
-seconds per transition by attention/recurrent CPU time, host boundaries,
-shared/latent CUDA time, expert CUDA time and I/O wait. The storage path is no
-longer the dominant term on this trace.
+Profile the remaining approximately nine seconds per transition by
+attention/recurrent CPU time, host boundaries, shared/latent CUDA time, expert
+CUDA time and I/O wait. Then run a small correctly templated multi-domain suite.
+The storage path is no longer the dominant term on the short trace.
 
 Machine-readable evidence is in
 `results/k3_p23_core_family_ablation.json`.

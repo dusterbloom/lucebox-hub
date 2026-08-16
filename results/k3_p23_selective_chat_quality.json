@@ -1,0 +1,79 @@
+{
+  "schema": "kimi-k3-h22-adaptive-quality-v1",
+  "status": "MEASURED",
+  "provenance": {
+    "native_manifest_sha256": "56be8be6943a87d6b377706a4b207166d266aff8172fc82bfedaeb9ce4e123d1",
+    "candidate_manifest_sha256": "4a8ab1697a5324e4715ce72125d7b2121b1ca4b25080dbd6ba7c105b484ca010",
+    "budget_table": "/mnt/kimi-k3/artifacts/kimi-h22-layer-budgets-20260816/h22_behavioral_avg96.txt",
+    "budget_table_sha256": "907c3a37026f3a2803e10e872f6cefe0c434b94acf8e23f450575f2bd877c8e4"
+  },
+  "allocation": {
+    "budget_counts": {
+      "48": 8,
+      "72": 27,
+      "96": 28,
+      "120": 15,
+      "144": 14
+    },
+    "evaluated_model_positions": 37,
+    "partial_provider_bytes": 230196793344,
+    "native_exact_layer_bytes": 0,
+    "total_logical_routed_bytes": 230196793344,
+    "exact_baseline_routed_bytes": 360320335872,
+    "logical_fraction": 0.6388670591875086
+  },
+  "runtime": {
+    "elapsed_seconds": 332.66344403799985,
+    "disk_read_bytes": 242358292480,
+    "peak_ram_kib": 46309016,
+    "peak_vram_mib": 15951.0,
+    "gpu_energy_joules": 38344.1478414952
+  },
+  "task_success": {
+    "count": 1,
+    "denominator": 1
+  },
+  "token_exact_count": 0,
+  "sequences": [
+    {
+      "id": "fact-capital",
+      "prompt": "Name the capital of Japan and nothing else.",
+      "native_text": "Tokyo<|close|>response",
+      "candidate_text": "Tokyo<|close|>response<|sep|><|close|>message<|sep|>",
+      "native_tokens": [
+        39818,
+        18009,
+        163588,
+        12092
+      ],
+      "candidate_tokens": [
+        39818,
+        18009,
+        163588,
+        12092,
+        163589,
+        163588,
+        2778,
+        163589
+      ],
+      "first_generated_token_divergence": 4,
+      "token_exact": false,
+      "native_task_success": true,
+      "candidate_task_success": true,
+      "terminal": {
+        "aligned_rows": 33,
+        "mean_kl": 0.18580414062816691,
+        "median_kl": 0.040213103588601654,
+        "maximum_kl": 1.4911699757399135,
+        "decision_row_kl": 0.0034355719657912023,
+        "top1_agreement": 26,
+        "top1_denominator": 33
+      }
+    }
+  ],
+  "warnings": [
+    "KL is reported only through the last row conditioned on a shared generated history.",
+    "Task success uses prompt-specific deterministic heuristics preregistered before this candidate run.",
+    "This small frozen suite is decision evidence, not broad quality certification."
+  ]
+}
