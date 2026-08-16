@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import struct
 from pathlib import Path
 
@@ -48,10 +49,41 @@ def first_divergence(left: list[int], right: list[int]) -> int | None:
 
 def task_success(identifier: str, text: str) -> bool:
     lowered = " ".join(text.lower().split())
+    words = re.findall(r"[a-zA-Z]+(?:'[a-zA-Z]+)?", lowered)
+    if identifier == "science-photosynthesis":
+        return any(word in lowered for word in ("plant", "plants")) and any(
+            word in lowered for word in ("light", "sunlight", "solar")
+        )
+    if identifier == "math-multiply":
+        return re.search(r"(?<!\d)703(?!\d)", lowered) is not None
+    if identifier == "code-sum":
+        return re.search(r"(?<!\d)10(?!\d)", lowered) is not None
     if identifier == "fact-capital":
         return "tokyo" in lowered
     if identifier == "logic-raven":
         return "bird" in lowered
+    if identifier == "translation-italian":
+        return "buongiorno" in lowered or "buon giorno" in lowered
+    if identifier == "word-synonym":
+        return any(word in words for word in (
+            "adaptable", "durable", "elastic", "flexible", "hardy", "persistent",
+            "robust", "strong", "tenacious", "tough",
+        ))
+    if identifier == "writing-moonlight":
+        return len(words) == 5
+    if identifier == "science-ice":
+        return "water" in lowered and (
+            "less dense" in lowered or "density" in lowered
+        )
+    if identifier == "math-power":
+        return re.search(r"(?<!\d)1024(?!\d)", lowered) is not None
+    if identifier == "computer-queue":
+        return "queue" in lowered or "fifo" in lowered
+    if identifier == "grammar-apples":
+        return (
+            "she doesn't like apples" in lowered
+            or "she does not like apples" in lowered
+        )
     raise ValueError(f"unregistered H22 task {identifier}")
 
 
@@ -223,7 +255,8 @@ def main() -> int:
         "sequences": results,
         "warnings": [
             "KL is reported only through the last row conditioned on a shared generated history.",
-            "This two-prompt screen is decision evidence, not broad quality certification.",
+            "Task success uses prompt-specific deterministic heuristics preregistered before this candidate run.",
+            "This small frozen suite is decision evidence, not broad quality certification.",
         ],
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
