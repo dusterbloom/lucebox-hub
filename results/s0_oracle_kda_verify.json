@@ -79,7 +79,41 @@
     "first_mla_row_mismatch_layer": 3,
     "artifact": "/mnt/kimi-k3/results/kimi-s0-native-m4-layer-localize-20260816/s0.json",
     "artifact_sha256": "c09202ebc97d506144d0cb47ed48f9178279fae38504c9c364e024274cce2517",
-    "interpretation": "Layer 1 hidden diverges while layer 1 KDA convolution and recurrent state remain equal. The precise layer-1 boundary remains open pending an uncontended paired trace."
+    "clean_boundary_trace": {
+      "layer1_layer_input_bit_equal": true,
+      "layer1_pre_moe_hidden_bit_equal": true,
+      "layer1_router_logits_bit_equal": true,
+      "first_differing_recorded_stage": "routed_latent",
+      "field_semantics": "The historical routed_latent trace field stores aggregate routed_output, not input z=W_down*h.",
+      "routed_output_rel_l2": 0.004570164040571624,
+      "routed_output_max_abs": 0.00030889641493558884,
+      "routed_output_cosine": 0.9999895943183783,
+      "first_router_order_divergence_layer": 2,
+      "first_router_order_divergence_token": 2,
+      "first_router_membership_divergence_layer": 3,
+      "first_router_membership_divergence_token": 1,
+      "artifact": "/mnt/kimi-k3/results/kimi-s0-native-m4-boundary-trace-clean-20260816/boundary_divergence.json",
+      "artifact_sha256": "074908d60dd0c0d97afc5a243ef953ec0cadc74a1fe15d99fb06c378b2422705",
+      "raw_trace_sha256": "a02326627c5c1237889e10c3bb8737f164bc580fa4e67bf86823bd4fd224cfe9"
+    },
+    "serial_expert_rows_control": {
+      "status": "FAILED",
+      "sequential_seconds": 15.232301578,
+      "verify_seconds": 25.615642187,
+      "commit_seconds": 4.916506967,
+      "V_m_committed": 0.4988938545128398,
+      "logits_bit_equal": false,
+      "argmax_bit_equal": true,
+      "logits_rel_l2": 0.024011861279345625,
+      "logits_max_abs": 0.4840116500854492,
+      "first_conv_state_mismatch_layer": 2,
+      "first_ssm_state_mismatch_layer": 2,
+      "first_mla_row_mismatch_layer": 3,
+      "artifact": "/mnt/kimi-k3/results/kimi-s0-native-m4-serial-expert-rows-20260816/s0.json",
+      "artifact_sha256": "6c6efc4ab0e4093fb7f375bd232658bd4bb4513b68e73278e71e71b78b9742a9",
+      "shipping_code": false
+    },
+    "interpretation": "Layer 1 input, pre-MoE hidden and router logits are exact. Divergence first appears in aggregate routed output. Forcing graph-batch-one expert arithmetic does not restore parity, leaving batched z=W_down*h as the next unmeasured boundary."
   },
   "rejected_runs": [
     {
@@ -88,5 +122,5 @@
       "reason": "H23 was still active in the host namespace; cross-sandbox process visibility incorrectly reported it absent. The S0 process was stopped and no output is used as evidence."
     }
   ],
-  "next_single_action": "run one uncontended native width-four layer-1 boundary trace before any parity patch or drafter work"
+  "next_single_action": "capture layer-1 input latent z=W_down*h before any further parity patch or drafter work"
 }

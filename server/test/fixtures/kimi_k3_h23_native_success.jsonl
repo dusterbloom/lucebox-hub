@@ -1,0 +1,6 @@
+{"id":"fact-capital","split":"calibration","text":"Name the capital of Japan. Answer with only the city name."}
+{"id":"code-sum","split":"calibration","text":"What does this Python expression evaluate to: sum([2, 3, 5])? Answer with only the integer."}
+{"id":"reasoning-marble","split":"calibration","text":"A box has 7 rows of 6 marbles. How many marbles are there? Answer with only the integer."}
+{"id":"grammar-apples","split":"validation","text":"Correct this sentence: She don't like apples. Answer with only the corrected sentence."}
+{"id":"translation-italian","split":"validation","text":"Translate 'good morning' into Italian. Answer with only the translation."}
+{"id":"extract-code","split":"test","text":"Context: The observatory access code is LIME-742. What is the observatory access code? Answer with only the code."}

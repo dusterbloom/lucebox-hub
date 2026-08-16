@@ -34,6 +34,7 @@ prefix through ReplaySSM. The timers exclude prompt rebuild and state hashing.
 | calibrated96/P27 | 2 | 7.113 s | 4.145 s | 0.454 s | **1.547x** | bit-equal | hash-equal | hash-equal |
 | calibrated96/P27 | 4 | 13.139 s | 8.714 s | 0.510 s | 1.424x | **FAIL**, relL2 0.02329 | **FAIL** | **FAIL** |
 | native streamed | 4 | 15.920 s | 9.876 s | 0.503 s | 1.534x | **FAIL**, relL2 0.02440 | **FAIL** | **FAIL** |
+| native, routed experts forced row-serial | 4 | 15.232 s | 25.616 s | 4.917 s | **0.499x** | **FAIL**, relL2 0.02401 | **FAIL** | **FAIL** |
 
 All width-four argmax rows happened to agree, but that does not satisfy the
 state or logit parity gate. Maximum logit error was 0.6267 for calibrated96 and
@@ -54,8 +55,7 @@ categories.
 
 ## First-divergence localization
 
-An opt-in all-layer hidden capture narrowed the native width-four failure before
-the more detailed boundary trace:
+An opt-in all-layer hidden capture narrowed the native width-four failure:
 
 - layer 0 output is byte-identical;
 - the first hidden mismatch is model layer 1, token offset 0;
@@ -69,12 +69,39 @@ Artifact:
 `/mnt/kimi-k3/results/kimi-s0-native-m4-layer-localize-20260816/s0.json`
 (`c09202ebc97d506144d0cb47ed48f9178279fae38504c9c364e024274cce2517`).
 
-This rules out the earlier hypothesis that the first failure is the layer-1
-KDA state transition. Layer 1 is the first routed-MoE layer, so the leading
-candidates are now its pre-MoE/router preparation, routed expert aggregate, or
-MoE join. The existing divergence trace already captures those boundaries; a
-paired sequential-versus-batch analyzer was added rather than adding broader
-instrumentation.
+The subsequent clean paired trace localized the first differing recorded stage
+at model layer 1:
+
+| stage | bit-identical | relL2 | maxabs |
+|---|---|---:|---:|
+| layer input | yes | 0 | 0 |
+| pre-MoE hidden | yes | 0 | 0 |
+| router logits | yes | 0 | 0 |
+| routed aggregate | **no** | **0.00457016** | **0.000308896** |
+| complete MoE output | no | 0.00642305 | 0.000387575 |
+| post-MoE hidden | no | 0.00401450 | 0.000387574 |
+
+The trace schema's historical field name is `routed_latent`, but the stored
+value is the aggregate `routed_output` returned by the expert evaluator. It is
+not the input latent `z = W_down h`.
+
+The first router ordering-only change occurs at layer 2/token 2 with full
+top-16 membership retained. The first membership change occurs at layer
+3/token 1. Clean artifacts:
+
+- `/mnt/kimi-k3/results/kimi-s0-native-m4-boundary-trace-clean-20260816/boundary_divergence.json`
+  (`074908d60dd0c0d97afc5a243ef953ec0cadc74a1fe15d99fb06c378b2422705`);
+- raw trace
+  (`a02326627c5c1237889e10c3bb8737f164bc580fa4e67bf86823bd4fd224cfe9`).
+
+One preregistered control kept the causal core batched but evaluated every
+routed expert row with graph-batch-one arithmetic. It did **not** restore
+parity: terminal relL2 remained `0.0240119`, recurrent state first differed at
+layer 2, and MLA rows first differed at layer 3. It was slower than sequential
+execution (`V4 = 0.499x`). The opt-in control code was removed after measurement
+and is not a shipping path. Artifact:
+`/mnt/kimi-k3/results/kimi-s0-native-m4-serial-expert-rows-20260816/s0.json`
+(`6c6efc4ab0e4093fb7f375bd232658bd4bb4513b68e73278e71e71b78b9742a9`).
 
 One attempted boundary-trace launch overlapped an H23 process that was hidden
 by cross-sandbox process visibility. It was stopped immediately. The partial
@@ -85,10 +112,12 @@ as **REJECTED-CONTENDED** and is not evidence.
 ## Interpretation
 
 The native control falsifies the hypothesis that calibrated96's token loop is
-causing the width-four numerical divergence. The all-layer capture further
-shows that the first persistent-state mismatch is downstream of the first
-hidden mismatch. It does not yet distinguish the layer-1 router/preparation,
-routed aggregate, and join; the clean boundary trace is the remaining gate.
+causing the width-four numerical divergence. The paired trace proves that the
+layer input, normalized hidden and router logits are exact and that divergence
+first appears by the aggregate routed output. The failed row-serial expert
+control means multi-row expert arithmetic alone is not the cause. The remaining
+unmeasured boundary is `z = W_down h`, computed by the batched accelerator
+offload before expert evaluation.
 
 AttnRes has no persistent cross-token cache. Exact terminal rows cover its
 accepted-boundary result. Persistent parity is checked separately for every
@@ -134,8 +163,8 @@ Authoritative artifacts and SHA-256:
 
 ## Next single S0 action
 
-Run one uncontended native width-four divergence trace and analyze the first
-non-identical stage at model layer 1. Only if the routed aggregate is proven to
-be the first mismatch should the diagnostic verifier evaluate routed experts
-with graph-batch-one, per-row arithmetic. Do not build a drafter or run width
-eight until width four is exact.
+Capture and compare the layer-1 routed input latent `z = W_down h` before expert
+evaluation. If `z` differs, isolate the accelerator latent projection's
+width-four arithmetic; if it is exact, inspect the expert input/output boundary
+without reviving the failed row-serial runtime. Do not build a drafter or run
+width eight until width four is exact.
