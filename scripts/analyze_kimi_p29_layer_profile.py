@@ -190,6 +190,34 @@ def main() -> None:
     row_totals = [
         sum(item["compute_ms"] for item in row) for row in used_rows
     ]
+    ranked_layers = sorted(
+        layers,
+        key=lambda item: item["median_ms_per_cpu_weight_gib"],
+        reverse=True,
+    )
+    placement_ceilings = {}
+    for budget_gib in (4, 6, 8):
+        used_bytes = 0
+        saved_ms = 0.0
+        selected_layers = []
+        for layer in ranked_layers:
+            layer_bytes = int(layer["cpu_preparation_weight_bytes"])
+            if used_bytes + layer_bytes > budget_gib * (1024 ** 3):
+                continue
+            used_bytes += layer_bytes
+            saved_ms += float(layer["median_ms"])
+            selected_layers.append(int(layer["model_layer"]))
+        placement_ceilings[str(budget_gib)] = {
+            "capacity_gib": budget_gib,
+            "used_gib": used_bytes / (1024 ** 3),
+            "selected_layers": selected_layers,
+            "selected_layer_count": len(selected_layers),
+            "perfect_cpu_compute_removed_ms": saved_ms,
+            "warning": (
+                "Optimistic CPU-time removal before CUDA compute, state "
+                "transfer, synchronization, and arithmetic-quality costs."
+            ),
+        }
     result = {
         "schema": "k3-p29-layer-profile-v1",
         "source_log": str(args.log),
@@ -218,11 +246,8 @@ def main() -> None:
         "top_layers_by_median": sorted(
             layers, key=lambda item: item["median_ms"], reverse=True
         )[:20],
-        "top_layers_by_median_ms_per_gib": sorted(
-            layers,
-            key=lambda item: item["median_ms_per_cpu_weight_gib"],
-            reverse=True,
-        )[:20],
+        "top_layers_by_median_ms_per_gib": ranked_layers[:20],
+        "greedy_placement_ceilings": placement_ceilings,
         "layers": layers,
         "interpretation_boundary": (
             "Each preparation graph contains AttnRes mixing, KDA or MLA, "

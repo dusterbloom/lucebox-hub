@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-lock_file="${KIMI_GPU_LEASE_LOCK:-/tmp/kimi-k3-gpu.lock}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+shared_root="$(cd -- "$script_dir/../../.." && pwd)"
+# Agent command sandboxes have private /tmp mounts.  Keep the default lock in
+# the shared project root so separate agent processes see the same inode.
+lock_file="${KIMI_GPU_LEASE_LOCK:-$shared_root/.kimi-k3-gpu.lock}"
 owner_file="${lock_file}.owner"
 
 usage() {

@@ -51,6 +51,16 @@ on CUDA.  Median KDA boundaries are about 11.17 ms and MLA boundaries about
 6.36 ms.  Large row-to-row means come from mapped-weight refaults; medians are
 the useful placement statistic.
 
+An optimistic greedy ranking by median milliseconds per resident GiB gives
+the following hard upper bounds before CUDA execution, state transfer,
+synchronization and arithmetic differences:
+
+| additional GPU capacity | layers fitting | perfect CPU time removed |
+|---:|---:|---:|
+| 4 GiB | 15 | 133.8 ms |
+| 6 GiB | 22 | 199.6 ms |
+| 8 GiB | 28 | 263.0 ms |
+
 This creates a hard capacity boundary.  Moving every KDA layer would require
 about 24.9 GiB, beyond the free RTX 3090 capacity.  A hypothetical perfect
 8-GiB placement can remove only roughly 0.25 seconds of the current transition
