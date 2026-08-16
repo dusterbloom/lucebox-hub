@@ -655,38 +655,50 @@ bool run_offloaded_moe_preparation(
     ggml_tensor * hidden_in = ggml_new_tensor_2d(
         ctx, GGML_TYPE_F32, w.n_embd, n_tokens);
     ggml_set_input(hidden_in);
-    ggml_tensor * routed =
-        ggml_mul_mat(ctx, layer.ffn_routed_down, hidden_in);
-    ggml_tensor * raw_logits = nullptr;
-    TopKMoeRouterResult router = build_kimi_router(
-        ctx, graph, w, layer, hidden_in,
-        router_logits_output ? &raw_logits : nullptr);
-    ggml_tensor * selected_out = ggml_cont(ctx, router.selected);
-    ggml_tensor * weights_out = ggml_cont(ctx, router.weights_2d);
-    ggml_tensor * shared = nullptr;
-    if (shared_output) {
+    std::vector<GraphOutput> outputs;
+    if (offload.latent) {
+        ggml_tensor * routed =
+            ggml_mul_mat(ctx, layer.ffn_routed_down, hidden_in);
+        outputs.push_back({
+            routed, routed_input.data(),
+            routed_input.size() * sizeof(float)});
+    }
+    if (offload.router) {
+        ggml_tensor * raw_logits = nullptr;
+        TopKMoeRouterResult router = build_kimi_router(
+            ctx, graph, w, layer, hidden_in,
+            router_logits_output ? &raw_logits : nullptr);
+        ggml_tensor * selected_out = ggml_cont(ctx, router.selected);
+        ggml_tensor * weights_out = ggml_cont(ctx, router.weights_2d);
+        outputs.push_back({
+            selected_out, selected.data(),
+            selected.size() * sizeof(int32_t)});
+        outputs.push_back({
+            weights_out, route_weights.data(),
+            route_weights.size() * sizeof(float)});
+        if (router_logits_output) {
+            outputs.push_back({
+                raw_logits, router_logits_output->data(),
+                router_logits_output->size() * sizeof(float)});
+        }
+    }
+    if (offload.shared && shared_output) {
         ggml_tensor * gate =
             ggml_mul_mat(ctx, layer.ffn_gate_shexp, hidden_in);
         ggml_tensor * up =
             ggml_mul_mat(ctx, layer.ffn_up_shexp, hidden_in);
-        shared = situ(ctx, gate, up, w.situ_beta, w.situ_linear_beta);
+        ggml_tensor * shared =
+            situ(ctx, gate, up, w.situ_beta, w.situ_linear_beta);
         shared = ggml_mul_mat(ctx, layer.ffn_down_shexp, shared);
-    }
-    std::vector<GraphOutput> outputs = {
-        {routed, routed_input.data(), routed_input.size() * sizeof(float)},
-        {selected_out, selected.data(), selected.size() * sizeof(int32_t)},
-        {weights_out, route_weights.data(),
-         route_weights.size() * sizeof(float)},
-    };
-    if (shared_output) {
         outputs.push_back({
             shared, shared_output->data(),
             shared_output->size() * sizeof(float)});
     }
-    if (router_logits_output) {
-        outputs.push_back({
-            raw_logits, router_logits_output->data(),
-            router_logits_output->size() * sizeof(float)});
+    if (outputs.empty()) {
+        ggml_free(ctx);
+        set_last_error(
+            "Kimi-K3 accelerator MoE preparation: no selected family");
+        return false;
     }
     const bool ok = run_host_boundary_graph(
         offload.backend, ctx, graph,
@@ -707,7 +719,7 @@ bool run_offloaded_moe_join(
         const std::vector<float> & shared_output,
         std::vector<float> & hidden_output,
         std::vector<float> * moe_output) {
-    if (!offload.enabled() || model_layer < w.n_dense_lead ||
+    if (!offload.join_enabled() || model_layer < w.n_dense_lead ||
         model_layer >= static_cast<int>(offload.layers.size())) {
         set_last_error("Kimi-K3 accelerator MoE join: invalid layer");
         return false;
@@ -964,21 +976,34 @@ bool streamed_kimi_k3_forward(
             continue;
         }
 
-        const bool core_offloaded =
+        KimiK3MoeCoreOffload * core_offload =
             options.moe_core_offload &&
             options.moe_core_offload->enabled() &&
-            il < static_cast<int>(options.moe_core_offload->layers.size()) &&
-            options.moe_core_offload->layers[
-                static_cast<size_t>(il)].ffn_gate_inp;
+            il < static_cast<int>(options.moe_core_offload->layers.size())
+                ? options.moe_core_offload : nullptr;
+        const bool router_offloaded =
+            core_offload && core_offload->router;
+        const bool latent_offloaded =
+            core_offload && core_offload->latent;
+        const bool shared_offloaded =
+            core_offload && core_offload->shared;
         const bool stop_at_capture_boundary =
             options.stop_before_moe_layer == il;
+        const bool preparation_offloaded =
+            core_offload &&
+            (router_offloaded || latent_offloaded ||
+             (shared_offloaded && !stop_at_capture_boundary));
+        const bool join_offloaded =
+            core_offload && core_offload->join_enabled();
         ggml_tensor * routed_in = nullptr;
         ggml_tensor * selected_out = nullptr;
         ggml_tensor * route_weights_out = nullptr;
         ggml_tensor * router_logits_out = nullptr;
         ggml_tensor * shared = nullptr;
-        if (!core_offloaded) {
+        if (!latent_offloaded) {
             routed_in = ggml_mul_mat(ctx, layer.ffn_routed_down, cur);
+        }
+        if (!router_offloaded) {
             ggml_tensor * router_logits = nullptr;
             TopKMoeRouterResult router = build_kimi_router(
                 ctx, graph, w, layer, cur, &router_logits);
@@ -989,17 +1014,17 @@ bool streamed_kimi_k3_forward(
             route_weights_out = ggml_cont(ctx, router.weights_2d);
             router_logits_out = trace_divergence
                 ? ggml_cont(ctx, router_logits) : nullptr;
-            if (!stop_at_capture_boundary) {
-                ggml_tensor * shared_gate =
-                    ggml_mul_mat(ctx, layer.ffn_gate_shexp, cur);
-                ggml_tensor * shared_up =
-                    ggml_mul_mat(ctx, layer.ffn_up_shexp, cur);
-                shared = situ(
-                    ctx, shared_gate, shared_up,
-                    w.situ_beta, w.situ_linear_beta);
-                shared = ggml_mul_mat(
-                    ctx, layer.ffn_down_shexp, shared);
-            }
+        }
+        if (!stop_at_capture_boundary && !shared_offloaded) {
+            ggml_tensor * shared_gate =
+                ggml_mul_mat(ctx, layer.ffn_gate_shexp, cur);
+            ggml_tensor * shared_up =
+                ggml_mul_mat(ctx, layer.ffn_up_shexp, cur);
+            shared = situ(
+                ctx, shared_gate, shared_up,
+                w.situ_beta, w.situ_linear_beta);
+            shared = ggml_mul_mat(
+                ctx, layer.ffn_down_shexp, shared);
         }
 
         std::vector<float> prefix_host;
@@ -1014,60 +1039,51 @@ bool streamed_kimi_k3_forward(
         std::vector<float> pre_moe_hidden_host;
         std::vector<float> router_logits_host;
         std::vector<GraphOutput> preparation_outputs;
-        if (core_offloaded) {
+        if (preparation_offloaded) {
             normalized_hidden_host.resize(hidden_values);
             preparation_outputs.push_back({
                 cur, normalized_hidden_host.data(),
                 normalized_hidden_host.size() * sizeof(float)});
-            if (!stop_at_capture_boundary) {
-                prefix_host.resize(hidden_values);
-                shared_host.resize(hidden_values);
-                preparation_outputs.push_back({
-                    prefix, prefix_host.data(),
-                    prefix_host.size() * sizeof(float)});
-            }
-            if (trace_divergence) {
-                router_logits_host.resize(
-                    static_cast<size_t>(w.n_expert) * n_tokens);
-            }
-        } else if (!stop_at_capture_boundary) {
+        }
+        if (!stop_at_capture_boundary) {
             prefix_host.resize(hidden_values);
             shared_host.resize(hidden_values);
-            preparation_outputs = {{
+            preparation_outputs.push_back({
                 prefix, prefix_host.data(),
-                prefix_host.size() * sizeof(float)}};
+                prefix_host.size() * sizeof(float)});
+        }
+        if (!latent_offloaded) {
             preparation_outputs.push_back({
                 routed_in, routed_input_host.data(),
                 routed_input_host.size() * sizeof(float)});
+        }
+        if (!router_offloaded) {
             preparation_outputs.push_back({
                 selected_out, selected.data(),
                 selected.size() * sizeof(int32_t)});
             preparation_outputs.push_back({
                 route_weights_out, route_weights.data(),
                 route_weights.size() * sizeof(float)});
+        }
+        if (!stop_at_capture_boundary && !shared_offloaded) {
             preparation_outputs.push_back({
                 shared, shared_host.data(),
                 shared_host.size() * sizeof(float)});
-            if (trace_divergence) {
+        }
+        if (trace_divergence) {
+            router_logits_host.resize(
+                static_cast<size_t>(w.n_expert) * n_tokens);
+            if (!preparation_offloaded) {
                 pre_moe_hidden_host.resize(hidden_values);
-                router_logits_host.resize(
-                    static_cast<size_t>(w.n_expert) * n_tokens);
                 preparation_outputs.push_back({
                     cur, pre_moe_hidden_host.data(),
                     pre_moe_hidden_host.size() * sizeof(float)});
+            }
+            if (!router_offloaded) {
                 preparation_outputs.push_back({
                     router_logits_out, router_logits_host.data(),
                     router_logits_host.size() * sizeof(float)});
             }
-        } else {
-            preparation_outputs = {
-                {routed_in, routed_input_host.data(),
-                 routed_input_host.size() * sizeof(float)},
-                {selected_out, selected.data(),
-                 selected.size() * sizeof(int32_t)},
-                {route_weights_out, route_weights.data(),
-                 route_weights.size() * sizeof(float)},
-            };
         }
         const bool prep_ok = run_host_boundary_graph(
             backend, ctx, graph, inputs,
@@ -1075,12 +1091,12 @@ bool streamed_kimi_k3_forward(
             "routed layer preparation");
         ggml_free(ctx);
         if (!prep_ok) return false;
-        if (core_offloaded) {
+        if (preparation_offloaded) {
             if (trace_divergence) {
                 pre_moe_hidden_host = normalized_hidden_host;
             }
             if (!run_offloaded_moe_preparation(
-                    *options.moe_core_offload, w, il, n_tokens,
+                    *core_offload, w, il, n_tokens,
                     normalized_hidden_host, routed_input_host, selected,
                     route_weights,
                     stop_at_capture_boundary ? nullptr : &shared_host,
@@ -1213,9 +1229,9 @@ bool streamed_kimi_k3_forward(
             moe_output_host.resize(hidden_values);
         }
         bool join_ok = false;
-        if (core_offloaded) {
+        if (join_offloaded) {
             join_ok = run_offloaded_moe_join(
-                *options.moe_core_offload, w, il, n_tokens,
+                *core_offload, w, il, n_tokens,
                 prefix_host, routed_output, shared_host, next_hidden,
                 trace_divergence ? &moe_output_host : nullptr);
         } else {

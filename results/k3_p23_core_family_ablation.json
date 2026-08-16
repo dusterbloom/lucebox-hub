@@ -1,0 +1,112 @@
+{
+  "schema": "k3-p23-core-family-ablation-v1",
+  "date": "2026-08-16",
+  "status": "MEASURED_SELECTIVE_OFFLOAD_GO_SHORT_TRACE",
+  "base_commit": "cb12fd8",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 3090 24 GiB",
+    "wsl_memory_gib": 47.05,
+    "storage": "WD_BLACK SN850X",
+    "provider": "all-layer calibrated96 sparse scratch/direct-pread",
+    "device_expert_cache_mib": 2048,
+    "mapped_page_release": false
+  },
+  "two_row_reference": {
+    "artifact": "/mnt/kimi-k3/results/kimi-p20-scratch96-two-token-20260815/logits.f32",
+    "arithmetic": "CPU router, CPU latent projections, CPU shared experts"
+  },
+  "two_row_arms": [
+    {
+      "families": ["router", "latent", "shared"],
+      "weight_bytes": 16213714944,
+      "prefill_seconds": 11.669,
+      "decode_transition_seconds": 10.922,
+      "elapsed_seconds": 27.34337668,
+      "peak_vram_mib": 18251,
+      "terminal_kl_mean": 0.00376891283633023,
+      "terminal_kl_max": 0.00621833354014121,
+      "maximum_absolute_logit_difference": 0.6559040546417236,
+      "top_choice_agreement": "2/2"
+    },
+    {
+      "families": ["shared"],
+      "weight_bytes": 9970974720,
+      "prefill_seconds": 12.448,
+      "decode_transition_seconds": 11.525,
+      "elapsed_seconds": 28.408353438,
+      "peak_vram_mib": 12297,
+      "terminal_kl_mean": 0.003712700437357169,
+      "terminal_kl_max": 0.005886337764665744,
+      "maximum_absolute_logit_difference": 0.6414912939071655,
+      "top_choice_agreement": "2/2"
+    },
+    {
+      "families": ["latent"],
+      "weight_bytes": 3878920192,
+      "prefill_seconds": 13.936,
+      "decode_transition_seconds": 12.151,
+      "elapsed_seconds": 29.342106256,
+      "peak_vram_mib": 6487,
+      "terminal_kl_mean": 0.0024906494681611185,
+      "terminal_kl_max": 0.003953910775091988,
+      "maximum_absolute_logit_difference": 0.7124617695808411,
+      "top_choice_agreement": "2/2"
+    },
+    {
+      "families": ["latent", "shared"],
+      "weight_bytes": 13849894912,
+      "prefill_seconds": 14.173,
+      "decode_transition_seconds": 11.035,
+      "elapsed_seconds": 31.313241108,
+      "peak_vram_mib": 15997,
+      "terminal_kl_mean": 0.0034885797988714585,
+      "terminal_kl_max": 0.005317933103971725,
+      "maximum_absolute_logit_difference": 0.5805559158325195,
+      "top_choice_agreement": "2/2"
+    }
+  ],
+  "eight_row_leading_arm": {
+    "families": ["latent", "shared"],
+    "artifact": "/mnt/kimi-k3/results/kimi-p23-core-latent-shared-eight-token-postrestart-20260816",
+    "reference": "/mnt/kimi-k3/results/kimi-p23-resident96-eight-token-20260816",
+    "output_ids": [11, 374, 4936, 261, 814, 2742, 316, 374],
+    "generated_text": "Hi, I’m a new user and I",
+    "prefill_seconds": 18.967,
+    "decode_seconds_for_seven_transitions": 65.191,
+    "decode_transition_seconds": 9.313,
+    "transition_rate_per_second": 0.10738,
+    "elapsed_seconds": 92.842038028,
+    "terminal_kl_mean": 0.006498352285625162,
+    "terminal_kl_median": 0.003011342820248104,
+    "terminal_kl_max": 0.03114367637641848,
+    "maximum_absolute_logit_difference": 1.6381525993347168,
+    "top_choice_agreement": "8/8",
+    "generated_token_agreement": "8/8",
+    "candidate_logits_sha256": "8daa924c13dd94489541f5d259eb2b72873b9cd49a074aee348aecd5dae90ca7",
+    "reference_logits_sha256": "c898cf65fb9738d10946df2b1263765e47c26d4758663df523be61b72a78d85a",
+    "peak_rss_kib": 46992248,
+    "peak_swap_kib": 0,
+    "peak_vram_mib": 15958,
+    "process_disk_read_bytes": 95599161344,
+    "explicit_provider_read_bytes": 40928845824,
+    "direct_physical_bytes": 39138164736,
+    "direct_io_seconds": 6.476172085
+  },
+  "comparisons": {
+    "registered_cold_decode_transition_seconds": 26.976,
+    "resident_cpu_core_decode_transition_seconds": 15.155,
+    "leading_arm_speedup_vs_registered_cold": 2.897,
+    "leading_arm_speedup_vs_resident_cpu_core": 1.627
+  },
+  "interrupted_control": {
+    "families": ["router"],
+    "artifact": "/mnt/kimi-k3/results/kimi-p23-core-router-two-token-20260816",
+    "status": "PARTIAL_NO_LOGITS_NO_RESULT",
+    "note": "WSL stopped during prefill; this arm is excluded from all claims."
+  },
+  "interpretation": {
+    "measured": "Keeping routing on the CPU while moving latent projections and shared experts to the RTX 3090 retains the large placement speed gain and preserves all eight greedy choices on the short trace.",
+    "open": "The arithmetic is not byte-identical to CPU execution and requires a longer frozen quality suite before becoming a quality-qualified default.",
+    "next_gate": "Run the latent+shared partition on the registered quality prompts, then profile the remaining roughly nine seconds per transition by CPU/GPU stage."
+  }
+}

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <iomanip>
@@ -725,8 +726,40 @@ bool init_kimi_k3_moe_core_offload(
         return fail("invalid accelerator backend or K3 routed-layer shape");
     }
 
+    const char * raw_policy =
+        std::getenv("DFLASH_KIMI_MOE_CORE_OFFLOAD");
+    const std::string policy = raw_policy ? raw_policy : "";
+    if (policy == "1" || policy == "all") {
+        out.router = true;
+        out.latent = true;
+        out.shared = true;
+    } else {
+        std::stringstream stream(policy);
+        std::string family;
+        while (std::getline(stream, family, ',')) {
+            if (family == "router") {
+                out.router = true;
+            } else if (family == "latent") {
+                out.latent = true;
+            } else if (family == "shared") {
+                out.shared = true;
+            } else {
+                return fail("DFLASH_KIMI_MOE_CORE_OFFLOAD must be all or a "
+                            "comma-separated subset of router,latent,shared");
+            }
+        }
+    }
+    if (!out.router && !out.latent && !out.shared) {
+        return fail("DFLASH_KIMI_MOE_CORE_OFFLOAD selected no families");
+    }
+
+    const size_t tensors_per_layer =
+        (out.router ? 2U : 0U) +
+        (out.latent ? 3U : 0U) +
+        (out.shared ? 3U : 0U);
     const size_t tensor_count =
-        static_cast<size_t>(weights.n_layer - weights.n_dense_lead) * 8;
+        static_cast<size_t>(weights.n_layer - weights.n_dense_lead) *
+        tensors_per_layer;
     ggml_init_params params{};
     params.mem_size = ggml_tensor_overhead() * (tensor_count + 64) +
         256 * 1024;
@@ -760,29 +793,38 @@ bool init_kimi_k3_moe_core_offload(
             weights.layers[static_cast<size_t>(il)];
         KimiK3MoeCoreOffloadLayer & destination =
             out.layers[static_cast<size_t>(il)];
-        destination.ffn_gate_inp =
-            duplicate(source.ffn_gate_inp, "router");
-        destination.ffn_exp_probs_b =
-            duplicate(source.ffn_exp_probs_b, "router_bias");
-        destination.ffn_routed_down =
-            duplicate(source.ffn_routed_down, "latent_down");
-        destination.ffn_routed_up =
-            duplicate(source.ffn_routed_up, "latent_up");
-        destination.ffn_routed_norm =
-            duplicate(source.ffn_routed_norm, "latent_norm");
-        destination.ffn_gate_shexp =
-            duplicate(source.ffn_gate_shexp, "shared_gate");
-        destination.ffn_up_shexp =
-            duplicate(source.ffn_up_shexp, "shared_up");
-        destination.ffn_down_shexp =
-            duplicate(source.ffn_down_shexp, "shared_down");
-        if (!destination.ffn_gate_inp ||
-            !destination.ffn_exp_probs_b ||
-            !destination.ffn_routed_down ||
-            !destination.ffn_routed_up ||
-            !destination.ffn_gate_shexp ||
-            !destination.ffn_up_shexp ||
-            !destination.ffn_down_shexp) {
+        if (out.router) {
+            destination.ffn_gate_inp =
+                duplicate(source.ffn_gate_inp, "router");
+            destination.ffn_exp_probs_b =
+                duplicate(source.ffn_exp_probs_b, "router_bias");
+        }
+        if (out.latent) {
+            destination.ffn_routed_down =
+                duplicate(source.ffn_routed_down, "latent_down");
+            destination.ffn_routed_up =
+                duplicate(source.ffn_routed_up, "latent_up");
+            destination.ffn_routed_norm =
+                duplicate(source.ffn_routed_norm, "latent_norm");
+        }
+        if (out.shared) {
+            destination.ffn_gate_shexp =
+                duplicate(source.ffn_gate_shexp, "shared_gate");
+            destination.ffn_up_shexp =
+                duplicate(source.ffn_up_shexp, "shared_up");
+            destination.ffn_down_shexp =
+                duplicate(source.ffn_down_shexp, "shared_down");
+        }
+        if ((out.router &&
+             (!destination.ffn_gate_inp ||
+              !destination.ffn_exp_probs_b)) ||
+            (out.latent &&
+             (!destination.ffn_routed_down ||
+              !destination.ffn_routed_up)) ||
+            (out.shared &&
+             (!destination.ffn_gate_shexp ||
+              !destination.ffn_up_shexp ||
+              !destination.ffn_down_shexp))) {
             return fail("routed layer " + std::to_string(il) +
                         " has incomplete MoE-core tensors");
         }
@@ -812,10 +854,13 @@ bool init_kimi_k3_moe_core_offload(
         out.buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
     std::fprintf(stderr,
         "[kimi-k3] loading accelerator MoE core tensors=%zu "
-        "bytes=%zu (%.2f GiB)\n",
+        "bytes=%zu (%.2f GiB) families=%s%s%s\n",
         copies.size(), out.weight_bytes,
         static_cast<double>(out.weight_bytes) /
-            (1024.0 * 1024.0 * 1024.0));
+            (1024.0 * 1024.0 * 1024.0),
+        out.router ? "router" : "",
+        out.latent ? (out.router ? ",latent" : "latent") : "",
+        out.shared ? ((out.router || out.latent) ? ",shared" : "shared") : "");
     std::fflush(stderr);
     for (const CopyPair & copy : copies) {
         ggml_backend_tensor_copy(copy.source, copy.destination);

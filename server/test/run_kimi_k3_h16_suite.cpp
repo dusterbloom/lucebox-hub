@@ -283,6 +283,7 @@ int main(int argc, char ** argv) {
     record_environment("DFLASH_MOE_NVME_DEVICE_CACHE_MB");
     record_environment("DFLASH_KIMI_CPU_THREADS");
     record_environment("DFLASH_KIMI_MMAP_DROP_PAGES");
+    record_environment("DFLASH_KIMI_MOE_CORE_OFFLOAD");
     record_environment("KIMI_H16_REPOSITORY_COMMIT");
     record_environment("KIMI_H16_REPOSITORY_STATUS");
     record_environment("KIMI_H16_SUITE_SHA256");

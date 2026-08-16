@@ -167,9 +167,24 @@ struct KimiK3MoeCoreOffload {
     ggml_backend_t backend = nullptr; // non-owning
     std::vector<KimiK3MoeCoreOffloadLayer> layers;
     size_t weight_bytes = 0;
+    // Execution families selected by DFLASH_KIMI_MOE_CORE_OFFLOAD.  Keeping
+    // these explicit lets the research path leave the numerically sensitive
+    // router on the CPU while independently measuring latent and shared-MoE
+    // placement.  "1" and "all" continue to select all three families.
+    bool router = false;
+    bool latent = false;
+    bool shared = false;
 
     bool enabled() const {
         return backend && buf && !layers.empty();
+    }
+
+    bool preparation_enabled() const {
+        return enabled() && (router || latent || shared);
+    }
+
+    bool join_enabled() const {
+        return enabled() && latent;
     }
 };
 
