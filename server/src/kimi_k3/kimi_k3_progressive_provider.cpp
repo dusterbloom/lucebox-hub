@@ -1632,6 +1632,51 @@ struct SparseSlabPayload {
     std::vector<uint8_t> down;
 };
 
+// P27 lets the direct-I/O workers build the exact P25 wire image once, in a
+// reusable pinned route buffer.  The evaluator can upload it without the
+// second slab-vector-to-compact-vector host copy.
+struct SparseCompactPayload {
+    SparseCompactPayload() = default;
+    SparseCompactPayload(const SparseCompactPayload &) = delete;
+    SparseCompactPayload & operator=(const SparseCompactPayload &) = delete;
+    ~SparseCompactPayload() {
+#if defined(DFLASH27B_BACKEND_CUDA)
+        if (data) cudaFreeHost(data);
+#endif
+    }
+
+    bool ensure(size_t requested, std::string * err) {
+#if !defined(DFLASH27B_BACKEND_CUDA)
+        (void) requested;
+        if (err) *err = "P27 direct pinned payload requires CUDA";
+        return false;
+#else
+        if (capacity >= requested) return true;
+        if (data) {
+            cudaFreeHost(data);
+            data = nullptr;
+            capacity = 0;
+        }
+        if (cudaHostAlloc(&data, requested, cudaHostAllocDefault) !=
+                cudaSuccess) {
+            if (err) *err = "P27 route pinned allocation failed";
+            return false;
+        }
+        capacity = requested;
+        return true;
+#endif
+    }
+
+    void * data = nullptr;
+    size_t capacity = 0;
+    size_t bytes = 0;
+    int slab_count = 0;
+    size_t metadata_bytes = 32;
+    size_t gate_slab_bytes = 0;
+    size_t up_slab_bytes = 0;
+    size_t down_slab_bytes = 0;
+};
+
 // P23 keeps the P20 full-width arithmetic intact while removing repeated
 // ggml graph allocation and CUDA buffer allocation from the per-route hot
 // path.  A small cache entry is retained for each qtype/mask geometry seen by
@@ -1654,6 +1699,7 @@ public:
             const MoeStreamExpertSpec & spec,
             const float * input_data,
             const std::vector<SparseSlabPayload> & slabs,
+            const SparseCompactPayload * prepacked_compact,
             const std::vector<float> & activation_mask_values,
             size_t down_slab_row_bytes,
             std::vector<float> & result,
@@ -1665,6 +1711,7 @@ public:
             std::string * err) {
 #if !defined(DFLASH27B_BACKEND_CUDA)
         (void) backend; (void) spec; (void) input_data; (void) slabs;
+        (void) prepacked_compact;
         (void) activation_mask_values; (void) down_slab_row_bytes;
         (void) result; (void) authoritative_h2d_bytes;
         (void) metadata_h2d_bytes; (void) device_zero_bytes;
@@ -1680,7 +1727,10 @@ public:
                 "P23 sparse scratch received an incompatible expert";
             return false;
         }
-        const bool needs_mask = slabs.size() != kSlabCount;
+        const size_t slab_count = prepacked_compact
+            ? static_cast<size_t>(prepacked_compact->slab_count)
+            : slabs.size();
+        const bool needs_mask = slab_count != kSlabCount;
         Entry * entry = find(backend, spec, needs_mask);
         if (!entry) {
             entry = create(backend, spec, needs_mask, err);
@@ -1701,24 +1751,40 @@ public:
         if (compact_upload) {
             const auto pack_started = std::chrono::steady_clock::now();
             constexpr size_t metadata_bytes = 32;
-            if (slabs.empty()) {
+            if (slab_count == 0) {
                 if (err) *err = "P25 compact upload received no slabs";
                 return false;
             }
-            const size_t gate_slab_bytes = slabs.front().gate.size();
-            const size_t up_slab_bytes = slabs.front().up.size();
-            const size_t down_slab_bytes = slabs.front().down.size();
+            const size_t gate_slab_bytes = prepacked_compact
+                ? prepacked_compact->gate_slab_bytes
+                : slabs.front().gate.size();
+            const size_t up_slab_bytes = prepacked_compact
+                ? prepacked_compact->up_slab_bytes
+                : slabs.front().up.size();
+            const size_t down_slab_bytes = prepacked_compact
+                ? prepacked_compact->down_slab_bytes
+                : slabs.front().down.size();
             const size_t record_bytes =
                 gate_slab_bytes + up_slab_bytes + down_slab_bytes;
             const size_t compact_bytes =
-                metadata_bytes + slabs.size() * record_bytes;
+                metadata_bytes + slab_count * record_bytes;
             if (!ensure_compact_staging(
-                    *entry, compact_bytes, pinned_compact, err)) {
+                    *entry, compact_bytes,
+                    pinned_compact && !prepacked_compact, err)) {
                 return false;
             }
             std::vector<uint8_t> pageable_compact;
             uint8_t * compact_host = nullptr;
-            if (pinned_compact) {
+            if (prepacked_compact) {
+                if (!prepacked_compact->data ||
+                    prepacked_compact->bytes != compact_bytes ||
+                    prepacked_compact->metadata_bytes != metadata_bytes) {
+                    if (err) *err = "P27 invalid prepacked compact payload";
+                    return false;
+                }
+                compact_host = static_cast<uint8_t *>(
+                    prepacked_compact->data);
+            } else if (pinned_compact) {
                 compact_host = static_cast<uint8_t *>(
                     entry->compact_host_staging);
                 std::memset(compact_host, 0, metadata_bytes);
@@ -1726,50 +1792,58 @@ public:
                 pageable_compact.assign(compact_bytes, 0);
                 compact_host = pageable_compact.data();
             }
-            size_t payload_offset = metadata_bytes;
-            for (size_t index = 0; index < slabs.size(); ++index) {
-                const SparseSlabPayload & slab = slabs[index];
-                if (slab.natural >= kSlabCount ||
-                    slab.gate.size() != gate_slab_bytes ||
-                    slab.up.size() != up_slab_bytes ||
-                    slab.down.size() != down_slab_bytes) {
-                    if (err) *err = "P25 compact upload has uneven slabs";
-                    return false;
+            if (!prepacked_compact) {
+                size_t payload_offset = metadata_bytes;
+                for (size_t index = 0; index < slabs.size(); ++index) {
+                    const SparseSlabPayload & slab = slabs[index];
+                    if (slab.natural >= kSlabCount ||
+                        slab.gate.size() != gate_slab_bytes ||
+                        slab.up.size() != up_slab_bytes ||
+                        slab.down.size() != down_slab_bytes) {
+                        if (err) *err =
+                            "P25 compact upload has uneven slabs";
+                        return false;
+                    }
+                    std::memcpy(
+                        compact_host + index * sizeof(uint16_t),
+                        &slab.natural, sizeof(uint16_t));
+                    std::memcpy(
+                        compact_host + payload_offset,
+                        slab.gate.data(), slab.gate.size());
+                    payload_offset += slab.gate.size();
+                    std::memcpy(
+                        compact_host + payload_offset,
+                        slab.up.data(), slab.up.size());
+                    payload_offset += slab.up.size();
+                    std::memcpy(
+                        compact_host + payload_offset,
+                        slab.down.data(), slab.down.size());
+                    payload_offset += slab.down.size();
                 }
-                std::memcpy(
-                    compact_host + index * sizeof(uint16_t),
-                    &slab.natural, sizeof(uint16_t));
-                std::memcpy(
-                    compact_host + payload_offset,
-                    slab.gate.data(), slab.gate.size());
-                payload_offset += slab.gate.size();
-                std::memcpy(
-                    compact_host + payload_offset,
-                    slab.up.data(), slab.up.size());
-                payload_offset += slab.up.size();
-                std::memcpy(
-                    compact_host + payload_offset,
-                    slab.down.data(), slab.down.size());
-                payload_offset += slab.down.size();
             }
             compact_pack_ns_ += static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - pack_started).count());
             const auto scatter_started = std::chrono::steady_clock::now();
+            const char * scatter_failure = nullptr;
             ok = kimi_k3_sparse_scatter_upload(
                 entry->gate->data, ggml_nbytes(entry->gate),
                 entry->up->data, ggml_nbytes(entry->up),
                 entry->down->data, ggml_nbytes(entry->down),
                 entry->compact_staging, entry->compact_capacity,
                 compact_host, compact_bytes,
-                static_cast<int>(slabs.size()), metadata_bytes,
+                static_cast<int>(slab_count), metadata_bytes,
                 gate_slab_bytes, up_slab_bytes, down_slab_bytes,
-                down_slab_row_bytes, entry->down->nb[1], spec.output_dim);
+                down_slab_row_bytes, entry->down->nb[1], spec.output_dim,
+                &scatter_failure);
             compact_scatter_ns_ += static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - scatter_started).count());
-            if (!ok && err) *err = "P25 compact sparse scatter failed";
-            authoritative_h2d_bytes += slabs.size() * record_bytes;
+            if (!ok && err) {
+                *err = std::string("P25 compact sparse scatter failed: ") +
+                    (scatter_failure ? scatter_failure : "unknown");
+            }
+            authoritative_h2d_bytes += slab_count * record_bytes;
             metadata_h2d_bytes += metadata_bytes;
         } else {
             ok =
@@ -2029,6 +2103,7 @@ bool evaluate_sparse_device_expert(
         const MoeStreamExpertSpec & spec,
         const float * input_data,
         const std::vector<SparseSlabPayload> & slabs,
+        const SparseCompactPayload * prepacked_compact,
         const std::vector<float> & activation_mask_values,
         size_t down_slab_row_bytes,
         std::vector<float> & result,
@@ -2042,7 +2117,8 @@ bool evaluate_sparse_device_expert(
     SparseDeviceExpertEvaluator & evaluator = persistent_evaluator
         ? *persistent_evaluator : one_shot_evaluator;
     return evaluator.evaluate(
-        backend, spec, input_data, slabs, activation_mask_values,
+        backend, spec, input_data, slabs, prepacked_compact,
+        activation_mask_values,
         down_slab_row_bytes, result, authoritative_h2d_bytes,
         metadata_h2d_bytes, device_zero_bytes, compact_upload,
         pinned_compact, err);
@@ -3037,6 +3113,22 @@ public:
                 "P26 pinned compact staging requires compact upload";
             return false;
         }
+        if (const char * direct_pinned =
+                std::getenv("DFLASH_KIMI_P27_DIRECT_PINNED_COMPACT")) {
+            if (std::strcmp(direct_pinned, "1") == 0) {
+                direct_pinned_compact_ = true;
+            } else if (std::strcmp(direct_pinned, "0") != 0 &&
+                       *direct_pinned) {
+                if (err) *err =
+                    "DFLASH_KIMI_P27_DIRECT_PINNED_COMPACT must be 0 or 1";
+                return false;
+            }
+        }
+        if (direct_pinned_compact_ && !pinned_compact_) {
+            if (err) *err =
+                "P27 direct pinned compact requires P26 pinned compact";
+            return false;
+        }
         if (direct_pread_) {
             direct_read_pool_ = std::make_unique<P20DirectReadPool>(16);
         }
@@ -3090,7 +3182,7 @@ public:
             "[kimi-k3-calibrated96] status=PILOT policy=%s quality-certified=false "
             "speed-claim=false requested-budget=%s layer-phase=%s dynamic-layer=%s physical-layout=%s "
             "io-backend=%s persistent-scratch=%s compact-upload=%s "
-            "pinned-compact=%s "
+            "pinned-compact=%s direct-pinned-compact=%s "
             "valid-layers=%d/92 "
             "invalid-layer-action=exact insufficient-expert-action=exact\n",
             route_prefix_depth_ == 6 ? "four-route-half" :
@@ -3102,7 +3194,8 @@ public:
             direct_pread_ ? "direct-pread" : "current",
             persistent_sparse_ ? "enabled" : "disabled",
             compact_upload_ ? "enabled" : "disabled",
-            pinned_compact_ ? "enabled" : "disabled", valid_layers);
+            pinned_compact_ ? "enabled" : "disabled",
+            direct_pinned_compact_ ? "enabled" : "disabled", valid_layers);
         return true;
     }
 
@@ -3620,12 +3713,13 @@ private:
             const std::vector<int> & calibrated_routes,
             const std::vector<uint8_t> & selected_by_route,
             std::vector<std::vector<SparseSlabPayload>> & payloads,
+            std::array<SparseCompactPayload, kNativeTopK> * compact_payloads,
             std::string * err) {
 #if defined(_WIN32) || !defined(O_DIRECT)
         (void) fd; (void) state; (void) spec; (void) model_layer;
         (void) base_pos; (void) token_index; (void) route_offset;
         (void) routes; (void) calibrated_routes; (void) selected_by_route;
-        (void) payloads;
+        (void) payloads; (void) compact_payloads;
         if (err) *err = "P20 direct-pread is unavailable on this platform";
         return false;
 #else
@@ -3634,6 +3728,7 @@ private:
             int expert = 0;
             int prefix_depth = 0;
             size_t slab_index = 0;
+            uint16_t natural = 0;
             uint64_t aligned_offset = 0;
             size_t aligned_bytes = 0;
             bool ok = false;
@@ -3653,22 +3748,55 @@ private:
             std::vector<SparseSlabPayload> & route_payloads =
                 payloads[static_cast<size_t>(route)];
             route_payloads.reserve(static_cast<size_t>(prefix_depth));
+            SparseCompactPayload * compact = compact_payloads
+                ? &(*compact_payloads)[static_cast<size_t>(route)] : nullptr;
+            if (compact) {
+                compact->slab_count = prefix_depth;
+                compact->gate_slab_bytes =
+                    static_cast<size_t>(state.gate_slab_bytes);
+                compact->up_slab_bytes =
+                    static_cast<size_t>(state.up_slab_bytes);
+                compact->down_slab_bytes =
+                    static_cast<size_t>(state.down_slab_bytes);
+                compact->bytes = compact->metadata_bytes +
+                    static_cast<size_t>(prefix_depth) * state.slab_bytes;
+                if (prefix_depth > 0 &&
+                    !compact->ensure(compact->bytes, err)) return false;
+                if (prefix_depth > 0) {
+                    std::memset(
+                        compact->data, 0, compact->metadata_bytes);
+                }
+            }
+            size_t compact_index = 0;
             for (int rank = 0; rank < kSlabCount; ++rank) {
                 if (!selected_by_route[
                         static_cast<size_t>(route * kSlabCount + rank)]) {
                     continue;
                 }
-                SparseSlabPayload slab;
-                slab.natural = state.order[
+                const uint16_t natural = state.order[
                     static_cast<size_t>(expert) * kSlabCount + rank];
-                slab.gate.resize(
-                    static_cast<size_t>(state.gate_slab_bytes));
-                slab.up.resize(static_cast<size_t>(state.up_slab_bytes));
-                slab.down.resize(
-                    static_cast<size_t>(state.down_slab_bytes));
                 const size_t slab_index = route_payloads.size();
-                route_payloads.push_back(std::move(slab));
-                tasks.push_back({route, expert, prefix_depth, slab_index});
+                if (compact) {
+                    std::memcpy(
+                        static_cast<uint8_t *>(compact->data) +
+                            compact_index * sizeof(uint16_t),
+                        &natural, sizeof(natural));
+                    tasks.push_back({route, expert, prefix_depth,
+                                     compact_index, natural});
+                    ++compact_index;
+                } else {
+                    SparseSlabPayload slab;
+                    slab.natural = natural;
+                    slab.gate.resize(
+                        static_cast<size_t>(state.gate_slab_bytes));
+                    slab.up.resize(
+                        static_cast<size_t>(state.up_slab_bytes));
+                    slab.down.resize(
+                        static_cast<size_t>(state.down_slab_bytes));
+                    route_payloads.push_back(std::move(slab));
+                    tasks.push_back({route, expert, prefix_depth,
+                                     slab_index, natural});
+                }
             }
         }
         const auto io_started = std::chrono::steady_clock::now();
@@ -3683,11 +3811,9 @@ private:
                     const size_t task_index = next.fetch_add(1);
                     if (task_index >= tasks.size()) break;
                     Task & task = tasks[task_index];
-                    SparseSlabPayload & slab = payloads[
-                        static_cast<size_t>(task.route)][task.slab_index];
                     const uint64_t record = state.payload_offset +
                         static_cast<uint64_t>(
-                            task.expert * kSlabCount + slab.natural) *
+                            task.expert * kSlabCount + task.natural) *
                             state.slab_bytes;
                     task.aligned_offset =
                         record & ~(static_cast<uint64_t>(kAlignment) - 1);
@@ -3708,15 +3834,29 @@ private:
                     if (got == static_cast<ssize_t>(task.aligned_bytes)) {
                         const auto * source =
                             static_cast<const uint8_t *>(raw) + prefix;
-                        std::memcpy(
-                            slab.gate.data(), source, slab.gate.size());
-                        std::memcpy(
-                            slab.up.data(), source + slab.gate.size(),
-                            slab.up.size());
-                        std::memcpy(
-                            slab.down.data(),
-                            source + slab.gate.size() + slab.up.size(),
-                            slab.down.size());
+                        if (compact_payloads) {
+                            SparseCompactPayload & compact =
+                                (*compact_payloads)[
+                                    static_cast<size_t>(task.route)];
+                            std::memcpy(
+                                static_cast<uint8_t *>(compact.data) +
+                                    compact.metadata_bytes +
+                                    task.slab_index * state.slab_bytes,
+                                source, static_cast<size_t>(state.slab_bytes));
+                        } else {
+                            SparseSlabPayload & slab = payloads[
+                                static_cast<size_t>(task.route)][
+                                    task.slab_index];
+                            std::memcpy(
+                                slab.gate.data(), source, slab.gate.size());
+                            std::memcpy(
+                                slab.up.data(), source + slab.gate.size(),
+                                slab.up.size());
+                            std::memcpy(
+                                slab.down.data(),
+                                source + slab.gate.size() + slab.up.size(),
+                                slab.down.size());
+                        }
                         task.ok = true;
                     } else {
                         failed = true;
@@ -3737,11 +3877,9 @@ private:
             return false;
         }
         for (const Task & task : tasks) {
-            const SparseSlabPayload & slab = payloads[
-                static_cast<size_t>(task.route)][task.slab_index];
             const uint64_t record = state.payload_offset +
                 static_cast<uint64_t>(
-                    task.expert * kSlabCount + slab.natural) *
+                    task.expert * kSlabCount + task.natural) *
                     state.slab_bytes;
             explicit_read_bytes_ += task.aligned_bytes;
             direct_physical_bytes_ += task.aligned_bytes;
@@ -3762,12 +3900,16 @@ private:
                           << '\t' << explicit_bytes << '\n';
             };
             emit("gate", ggml_type_name(spec.gate_type), record,
-                 slab.gate.size(), 0, task.aligned_bytes);
+                 static_cast<size_t>(state.gate_slab_bytes), 0,
+                 task.aligned_bytes);
             emit("up", ggml_type_name(spec.up_type),
-                 record + slab.gate.size(), slab.up.size(), slab.gate.size(), 0);
+                 record + state.gate_slab_bytes,
+                 static_cast<size_t>(state.up_slab_bytes),
+                 state.gate_slab_bytes, 0);
             emit("down", ggml_type_name(spec.down_type),
-                 record + slab.gate.size() + slab.up.size(), slab.down.size(),
-                 slab.gate.size() + slab.up.size(), 0);
+                 record + state.gate_slab_bytes + state.up_slab_bytes,
+                 static_cast<size_t>(state.down_slab_bytes),
+                 state.gate_slab_bytes + state.up_slab_bytes, 0);
         }
         return true;
 #endif
@@ -3905,7 +4047,9 @@ private:
             if (direct_pread_ && !read_sparse_payloads_direct_batch(
                     sidecar_fd, state, spec, model_layer, base_pos, token,
                     route_offset, routes, calibrated_routes,
-                    selected_by_route, direct_payloads, err)) {
+                    selected_by_route, direct_payloads,
+                    direct_pinned_compact_ ? &direct_compact_payloads_ : nullptr,
+                    err)) {
                 return exact_layer_fallback(
                     "P20 direct layer-batch sidecar read failed");
             }
@@ -3980,9 +4124,27 @@ private:
                 std::vector<SparseSlabPayload> sparse_slabs = direct_pread_
                     ? std::move(direct_payloads[static_cast<size_t>(route)])
                     : std::vector<SparseSlabPayload>{};
+                const SparseCompactPayload * prepacked_compact =
+                    direct_pinned_compact_
+                    ? &direct_compact_payloads_[static_cast<size_t>(route)]
+                    : nullptr;
                 sparse_slabs.reserve(kSlabCount);
-                int retained = static_cast<int>(sparse_slabs.size());
-                if (direct_pread_) {
+                int retained = prepacked_compact
+                    ? prepacked_compact->slab_count
+                    : static_cast<int>(sparse_slabs.size());
+                if (prepacked_compact && retained > 0) {
+                    const auto * natural = static_cast<const uint16_t *>(
+                        prepacked_compact->data);
+                    for (int index = 0; index < retained; ++index) {
+                        if (natural[index] >= kSlabCount) {
+                            return exact_layer_fallback(
+                                "P27 invalid natural slab index");
+                        }
+                        std::fill_n(mask.begin() +
+                            static_cast<size_t>(natural[index]) * kSlabSize,
+                            kSlabSize, 1.0f);
+                    }
+                } else if (direct_pread_) {
                     for (const SparseSlabPayload & slab : sparse_slabs) {
                         std::fill_n(mask.begin() +
                             static_cast<size_t>(slab.natural) * kSlabSize,
@@ -4077,7 +4239,7 @@ private:
                     ? evaluate_sparse_device_expert(
                         persistent_sparse_ ? &sparse_device_evaluator_ : nullptr,
                         backend_, spec, input,
-                        sparse_slabs, mask,
+                        sparse_slabs, prepacked_compact, mask,
                         down_slab_row_bytes, expert_output,
                         authoritative_h2d_bytes_, metadata_h2d_bytes_,
                         device_zero_bytes_, compact_upload_,
@@ -4087,8 +4249,10 @@ private:
                         retained == kSlabCount ? nullptr : &mask,
                         expert_output, err));
                 if (retained > 0 && !evaluated) {
-                    return exact_layer_fallback(
-                        "full-width recomposition failed");
+                    const std::string detail = err && !err->empty()
+                        ? "full-width recomposition failed: " + *err
+                        : "full-width recomposition failed";
+                    return exact_layer_fallback(detail.c_str());
                 }
                 if (!sparse_scratch_ && retained > 0) {
                     reference_full_weight_h2d_bytes_ +=
@@ -4251,8 +4415,11 @@ private:
     bool persistent_sparse_ = false;
     bool compact_upload_ = false;
     bool pinned_compact_ = false;
+    bool direct_pinned_compact_ = false;
     bool direct_pread_ = false;
     std::unique_ptr<P20DirectReadPool> direct_read_pool_;
+    std::array<SparseCompactPayload, kNativeTopK>
+        direct_compact_payloads_;
     int budget_ = 96;
     std::vector<int32_t> layer_budgets_;
     std::string layer_budget_path_;

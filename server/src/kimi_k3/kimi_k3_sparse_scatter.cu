@@ -52,24 +52,48 @@ bool kimi_k3_sparse_scatter_upload(
         int slab_count, size_t metadata_bytes,
         size_t gate_slab_bytes, size_t up_slab_bytes,
         size_t down_slab_bytes, size_t down_slab_row_bytes,
-        size_t down_full_row_bytes, int output_dim) {
-    if (!gate_device || !up_device || !down_device || !compact_device ||
-        !compact_host || slab_count <= 0 || slab_count > 12 ||
-        metadata_bytes < static_cast<size_t>(slab_count) * sizeof(uint16_t) ||
-        compact_bytes > compact_capacity || gate_slab_bytes == 0 ||
-        up_slab_bytes == 0 || down_slab_bytes == 0 ||
-        down_slab_row_bytes == 0 || down_full_row_bytes == 0 ||
-        output_dim <= 0 ||
-        down_slab_bytes !=
-            down_slab_row_bytes * static_cast<size_t>(output_dim)) {
+        size_t down_full_row_bytes, int output_dim,
+        const char ** failure_reason) {
+    if (failure_reason) *failure_reason = nullptr;
+    const auto invalid = [&](const char * reason) {
+        if (failure_reason) *failure_reason = reason;
+        return false;
+    };
+    if (!gate_device || !up_device || !down_device)
+        return invalid("null expert destination");
+    if (!compact_device || !compact_host)
+        return invalid("null compact buffer");
+    if (slab_count <= 0 || slab_count > 12)
+        return invalid("invalid slab count");
+    if (metadata_bytes <
+            static_cast<size_t>(slab_count) * sizeof(uint16_t))
+        return invalid("short metadata");
+    if (compact_bytes > compact_capacity)
+        return invalid("compact capacity");
+    if (gate_slab_bytes == 0 || up_slab_bytes == 0 || down_slab_bytes == 0)
+        return invalid("zero component bytes");
+    if (down_slab_row_bytes == 0 || down_full_row_bytes == 0 ||
+        output_dim <= 0)
+        return invalid("invalid down geometry");
+    if (down_slab_bytes !=
+            down_slab_row_bytes * static_cast<size_t>(output_dim))
+        return invalid("down slab extent mismatch");
+    cudaStream_t stream = nullptr;
+    if (cudaMemsetAsync(gate_device, 0, gate_full_bytes, stream) != cudaSuccess) {
+        if (failure_reason) *failure_reason = "gate memset";
         return false;
     }
-    cudaStream_t stream = nullptr;
-    if (cudaMemsetAsync(gate_device, 0, gate_full_bytes, stream) != cudaSuccess ||
-        cudaMemsetAsync(up_device, 0, up_full_bytes, stream) != cudaSuccess ||
-        cudaMemsetAsync(down_device, 0, down_full_bytes, stream) != cudaSuccess ||
-        cudaMemcpyAsync(compact_device, compact_host, compact_bytes,
+    if (cudaMemsetAsync(up_device, 0, up_full_bytes, stream) != cudaSuccess) {
+        if (failure_reason) *failure_reason = "up memset";
+        return false;
+    }
+    if (cudaMemsetAsync(down_device, 0, down_full_bytes, stream) != cudaSuccess) {
+        if (failure_reason) *failure_reason = "down memset";
+        return false;
+    }
+    if (cudaMemcpyAsync(compact_device, compact_host, compact_bytes,
                         cudaMemcpyHostToDevice, stream) != cudaSuccess) {
+        if (failure_reason) *failure_reason = "compact upload";
         return false;
     }
     const size_t record_bytes =
@@ -86,6 +110,13 @@ bool kimi_k3_sparse_scatter_upload(
         static_cast<const uint8_t *>(compact_device), slab_count,
         metadata_bytes, gate_slab_bytes, up_slab_bytes, down_slab_bytes,
         down_slab_row_bytes, down_full_row_bytes, output_dim);
-    if (cudaGetLastError() != cudaSuccess) return false;
-    return cudaStreamSynchronize(stream) == cudaSuccess;
+    if (cudaGetLastError() != cudaSuccess) {
+        if (failure_reason) *failure_reason = "scatter launch";
+        return false;
+    }
+    if (cudaStreamSynchronize(stream) != cudaSuccess) {
+        if (failure_reason) *failure_reason = "scatter synchronize";
+        return false;
+    }
+    return true;
 }

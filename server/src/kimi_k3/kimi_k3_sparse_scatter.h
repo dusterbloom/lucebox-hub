@@ -16,4 +16,5 @@ bool kimi_k3_sparse_scatter_upload(
     int slab_count, size_t metadata_bytes,
     size_t gate_slab_bytes, size_t up_slab_bytes,
     size_t down_slab_bytes, size_t down_slab_row_bytes,
-    size_t down_full_row_bytes, int output_dim);
+    size_t down_full_row_bytes, int output_dim,
+    const char ** failure_reason);

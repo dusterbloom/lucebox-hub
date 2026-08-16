@@ -1,0 +1,57 @@
+{
+  "schema": "k3-p27-direct-pinned-compact-v1",
+  "verdict": "MAJOR_GO",
+  "base_commit": "98160142a4e67cd16b02f8ae87abe7d7c97eedb7",
+  "branch": "experiment/kimi-k3-p20-sparse-physical",
+  "configuration": {
+    "provider": "all-layers-calibrated96",
+    "physical_layout": "scratch",
+    "io_backend": "direct-pread",
+    "core_offload": ["latent", "shared"],
+    "persistent_scratch": true,
+    "compact_upload": true,
+    "pinned_compact": true,
+    "direct_pinned_env": "DFLASH_KIMI_P27_DIRECT_PINNED_COMPACT"
+  },
+  "semantic_gate": {
+    "initial_plumbing_run_rejected": true,
+    "initial_failure": "empty legacy slab count triggered exact fallback",
+    "two_row_byte_identical_after_fix": true,
+    "thirty_two_row_byte_identical_after_fix": true,
+    "thirty_two_row_logits_sha256": "c1330897e6819c1b0ae289155e76a2359fca1c55a95b44985cb91e179d3f2e44"
+  },
+  "thirty_two_row": {
+    "decoded_transitions": 31,
+    "p26": {
+      "decode_seconds": 138.367974,
+      "transitions_per_second": 0.224040,
+      "last_16_transitions_per_second": 0.222650,
+      "last_8_transitions_per_second": 0.222824,
+      "direct_io_seconds": 24.891437172,
+      "compact_pack_seconds": 12.770152998,
+      "compact_scatter_seconds": 10.232380507,
+      "expert_graph_seconds": 1.850573096,
+      "expert_readback_seconds": 0.709037782,
+      "energy_joules": 18007.830980747225
+    },
+    "p27": {
+      "decode_seconds": 93.106535,
+      "transitions_per_second": 0.332952,
+      "last_16_transitions_per_second": 0.352152,
+      "last_8_transitions_per_second": 0.350671,
+      "direct_io_seconds": 26.993215384,
+      "compact_pack_seconds": 0.004946210,
+      "compact_scatter_seconds": 10.359349486,
+      "expert_graph_seconds": 1.867135849,
+      "expert_readback_seconds": 0.841592734,
+      "energy_joules": 12122.600934896383
+    },
+    "latency_reduction_percent": 32.711,
+    "throughput_increase_percent": 48.613,
+    "last_16_throughput_increase_percent": 58.164,
+    "last_8_throughput_increase_percent": 57.376,
+    "energy_reduction_percent": 32.682,
+    "peak_vram_mib": 16035
+  },
+  "next_single_action": "reuse one aligned O_DIRECT worker scratch buffer per persistent reader thread"
+}
