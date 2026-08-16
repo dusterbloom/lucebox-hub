@@ -54,11 +54,29 @@
     "estimated_submission_reduction_x": 25.897,
     "authoritative_h2d_bytes_unchanged": true
   },
+  "steady_state_32_row": {
+    "rows": 32,
+    "decoded_transitions": 31,
+    "decode_seconds": 146.181899,
+    "seconds_per_transition": 4.715545,
+    "transitions_per_second": 0.212065,
+    "last_16_seconds_per_transition": 4.831330,
+    "last_16_transitions_per_second": 0.206982,
+    "last_8_seconds_per_transition": 4.782526,
+    "last_8_transitions_per_second": 0.209095,
+    "last_16_expert_stage_seconds_per_transition": 3.268787,
+    "last_16_routed_prep_seconds_per_transition": 1.396612,
+    "peak_vram_mib": 16035,
+    "selected_direct_io_seconds": 24.859989110,
+    "logical_provider_bytes": 198755192832,
+    "first_eight_logit_payloads_byte_identical": true,
+    "trace_header_differs_only_by_row_count": true
+  },
   "independent_layer_batch_control": {
     "semantic_parity": true,
     "verdict": "NO_GO",
     "relative_latency_change_percent": 7.0,
     "additional_peak_vram_mib": 1288
   },
-  "next_single_action": "profile compact upload/scatter separately, then overlap expert N+1 upload with expert N native execution"
+  "next_single_action": "remove pageable host repacking with reusable pinned compact staging, then overlap expert N+1 delivery with expert N native execution"
 }

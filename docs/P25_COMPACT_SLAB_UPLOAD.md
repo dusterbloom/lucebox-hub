@@ -90,6 +90,28 @@ Direct-I/O time was 6.348 seconds in the compact arm and 6.583 seconds in the
 control. The latency gain therefore comes primarily from upload submission and
 device-layout overhead rather than reduced storage traffic.
 
+## 32-row steady-state check — MEASURED
+
+The compact path completed 32 rows / 31 real decode transitions in 146.182
+seconds:
+
+| window | seconds/transition | transitions/s |
+|---|---:|---:|
+| all 31 decode transitions | 4.716 | 0.2121 |
+| final 16 transitions | 4.831 | 0.2070 |
+| final 8 transitions | 4.783 | 0.2091 |
+
+Peak VRAM remained 16,035 MiB. The first eight logit payload rows were
+byte-identical to the established eight-row run; only the 48-byte trace header
+differs because it records the requested row count (32 versus 8).
+
+The 32-row trace requested 198,755,192,832 logical provider bytes, including
+exact fallbacks. Selected direct reads consumed 24.860 seconds; the separate
+exact-fallback stream reported 33.598 GiB at 4.640 GiB/s. Storage is therefore
+no longer the only or dominant serialized cost at this policy. The final 16
+rows averaged 3.269 seconds in the expert stage and 1.397 seconds in routed
+preparation.
+
 ## Interpretation
 
 This is a measured systems improvement with zero model-quality trade. It
@@ -101,6 +123,7 @@ The independently tested attempt to place all experts from a layer into one
 larger graph remained byte-identical but was about 7% slower and consumed about
 1.29 GiB more VRAM, so it is not part of this change.
 
-Next: separate compact packing, upload, scatter, and native expert compute with
-CUDA events, then overlap compact upload/scatter for one expert with native
-execution of another while retaining deterministic final accumulation.
+Next: eliminate the extra pageable host repack by reading/coalescing selected
+records into reusable pinned compact staging, instrument packing/upload/scatter
+with CUDA events, then overlap expert N+1 delivery with expert N native
+execution while retaining deterministic final accumulation.
