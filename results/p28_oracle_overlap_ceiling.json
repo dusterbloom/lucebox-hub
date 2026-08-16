@@ -1,0 +1,111 @@
+{
+  "schema": "k3-p28-oracle-overlap-ceiling-v1",
+  "classification": "PROJECTED_FROM_MEASURED_P27_TRACE",
+  "inputs": {
+    "trace": "/mnt/kimi-k3/results/kimi-p27-direct-pinned-32-row-20260816/io_trace.tsv",
+    "traffic": "/mnt/kimi-k3/results/kimi-p27-direct-pinned-32-row-20260816/traffic.tsv",
+    "stderr": "/mnt/kimi-k3/results/kimi-p27-direct-pinned-32-row-20260816/stderr.log",
+    "p27_results": "results/k3_p27_direct_pinned_compact.json",
+    "rows": 32,
+    "decoded_transitions": 31,
+    "routed_layer_rows": 2944,
+    "calibrated_routes": 40594
+  },
+  "bytes": {
+    "selected_logical": 155611459584,
+    "compact_trace_bytes": 162594926592,
+    "submitted_aligned_bytes": 163462004736,
+    "actual_direct_physical_bytes": 156478537728,
+    "authoritative_h2d_bytes": 155611459584,
+    "fallback_logical_opaque": 43143733248,
+    "selected_logical_gib_per_row": 4.528889536857605,
+    "fallback_logical_gib_per_row": 1.255647897720337,
+    "mean_selected_layer_mib": 50.408510237932205,
+    "p95_selected_layer_mib": 59.35204601287842,
+    "max_selected_layer_mib": 59.66607856750488,
+    "mean_provider_layer_mib": 64.38441727342813,
+    "max_provider_layer_mib": 118.45590019226074,
+    "mean_attributed_read_ms_per_layer": 9.168891095108695,
+    "p95_attributed_read_ms_per_layer": 10.787081850137252,
+    "max_attributed_read_ms_per_layer": 10.843898684562353,
+    "mean_nonread_ms_per_layer": 22.45696997826087
+  },
+  "measured_baseline": {
+    "decode_seconds": 93.106535,
+    "transitions_per_second": 0.33295192437351473,
+    "selected_read_seconds": 26.993215384,
+    "selected_upload_scatter_seconds": 10.359349486,
+    "selected_graph_seconds": 1.867135849,
+    "selected_readback_seconds": 0.841592734,
+    "opaque_serial_remainder_seconds": 53.045241546999996
+  },
+  "control_room_free_stage_ceilings": {
+    "selected_read_free": {
+      "lower_bound_decode_seconds": 66.113319616,
+      "transitions_per_second": 0.46889189924291336,
+      "maximum_speedup": 1.4082870976798962
+    },
+    "upload_scatter_free": {
+      "lower_bound_decode_seconds": 82.747185514,
+      "transitions_per_second": 0.37463509855274907,
+      "maximum_speedup": 1.1251927714719347
+    },
+    "selected_graph_free": {
+      "lower_bound_decode_seconds": 91.239399151,
+      "transitions_per_second": 0.3397654992082467,
+      "maximum_speedup": 1.0204641401233903
+    },
+    "selected_readback_free": {
+      "lower_bound_decode_seconds": 92.26494226599999,
+      "transitions_per_second": 0.33598893836216737,
+      "maximum_speedup": 1.0091214790074186
+    },
+    "read_plus_upload_scatter_free": {
+      "lower_bound_decode_seconds": 55.75397013,
+      "transitions_per_second": 0.5560142161664569,
+      "maximum_speedup": 1.6699534541290253
+    }
+  },
+  "within_layer_route_pipeline": {
+    "lower_bound_decode_seconds": 81.43621872599003,
+    "transitions_per_second": 0.38066600445075033,
+    "throughput_gain_fraction": 0.14330621505496577,
+    "hidden_selected_read_seconds": 11.670316274009963,
+    "hidden_h2d_seconds": 0.0,
+    "extra_pinned_mib": 59.66607856750488,
+    "extra_speculative_bytes": 0,
+    "gate": "NO_GO_BORDERLINE",
+    "scheduling": "two-resource flow shop, frozen expert-ID order, barrier after every routed layer"
+  },
+  "one_layer_oracle_read_lookahead": {
+    "lower_bound_decode_seconds": 66.12248850709511,
+    "transitions_per_second": 0.4688268802326401,
+    "throughput_gain_fraction": 0.40809181720390675,
+    "hidden_selected_read_seconds": 26.98404649290489,
+    "hidden_h2d_seconds": 0.0,
+    "extra_pinned_mib": 59.66607856750488,
+    "extra_speculative_bytes": 0,
+    "gate": "STRONG_GO"
+  },
+  "two_layer_oracle_read_lookahead": {
+    "lower_bound_decode_seconds": 66.12248850709511,
+    "transitions_per_second": 0.4688268802326401,
+    "incremental_gain_over_one_layer": 0.0,
+    "extra_pinned_mib": 119.33215713500977,
+    "extra_speculative_bytes": 0,
+    "verdict": "NO_INCREMENTAL_VALUE_AT_THIS_CEILING"
+  },
+  "ideal_read_plus_upload_scatter_bound": {
+    "lower_bound_decode_seconds": 55.766657821871604,
+    "transitions_per_second": 0.5558877151831366,
+    "throughput_gain_fraction": 0.6695735164441527,
+    "warning": "Upper bound only: the measured timer combines asynchronous H2D with a CUDA scatter."
+  },
+  "limitations": [
+    "No GPU or integrated replay was run; values are oracle ceilings, not measured speedups.",
+    "Exact-fallback storage/compute is retained inside the opaque serial remainder.",
+    "The trace contains no per-request latency, so aggregate P27 timers are byte-attributed.",
+    "One-layer oracle knowledge is not deployable until a predictor earns it.",
+    "Completion may be asynchronous, but final expert-ID accumulation must remain deterministic."
+  ]
+}
