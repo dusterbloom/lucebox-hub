@@ -573,6 +573,25 @@ bool run_host_boundary_graph(ggml_backend_t backend,
                              const std::vector<GraphInput> & inputs,
                              const std::vector<GraphOutput> & outputs,
                              const char * phase) {
+    using BoundaryProfileClock = std::chrono::steady_clock;
+    const char * boundary_profile_environment =
+        std::getenv("DFLASH_KIMI_BOUNDARY_PROFILE");
+    const bool profile_boundary = boundary_profile_environment &&
+        *boundary_profile_environment &&
+        std::strcmp(boundary_profile_environment, "0") != 0;
+    const BoundaryProfileClock::time_point boundary_start = profile_boundary
+        ? BoundaryProfileClock::now() : BoundaryProfileClock::time_point{};
+    BoundaryProfileClock::time_point boundary_mark = boundary_start;
+    uint64_t expand_ns = 0;
+    uint64_t allocate_ns = 0;
+    uint64_t input_ns = 0;
+    uint64_t compute_ns = 0;
+    uint64_t output_ns = 0;
+    const auto boundary_elapsed_ns = [](BoundaryProfileClock::time_point start) {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                BoundaryProfileClock::now() - start).count());
+    };
     for (const GraphOutput & output : outputs) {
         if (!output.tensor || !output.data || output.bytes == 0) {
             set_last_error(std::string("Kimi-K3 ") + phase +
@@ -582,6 +601,10 @@ bool run_host_boundary_graph(ggml_backend_t backend,
         ggml_set_output(output.tensor);
         ggml_build_forward_expand(graph, output.tensor);
     }
+    if (profile_boundary) {
+        expand_ns = boundary_elapsed_ns(boundary_mark);
+        boundary_mark = BoundaryProfileClock::now();
+    }
     ggml_gallocr_t allocator = ggml_gallocr_new(
         ggml_backend_get_default_buffer_type(backend));
     if (!allocator || !ggml_gallocr_alloc_graph(allocator, graph)) {
@@ -589,6 +612,10 @@ bool run_host_boundary_graph(ggml_backend_t backend,
                        ": graph allocation failed");
         if (allocator) ggml_gallocr_free(allocator);
         return false;
+    }
+    if (profile_boundary) {
+        allocate_ns = boundary_elapsed_ns(boundary_mark);
+        boundary_mark = BoundaryProfileClock::now();
     }
     for (const GraphInput & input : inputs) {
         if (!input.tensor || !input.data || input.bytes == 0) {
@@ -600,6 +627,10 @@ bool run_host_boundary_graph(ggml_backend_t backend,
         ggml_backend_tensor_set(
             input.tensor, input.data, 0, input.bytes);
     }
+    if (profile_boundary) {
+        input_ns = boundary_elapsed_ns(boundary_mark);
+        boundary_mark = BoundaryProfileClock::now();
+    }
     const ggml_status status =
         ggml_backend_graph_compute(backend, graph);
     if (status != GGML_STATUS_SUCCESS) {
@@ -609,9 +640,24 @@ bool run_host_boundary_graph(ggml_backend_t backend,
         ggml_gallocr_free(allocator);
         return false;
     }
+    if (profile_boundary) {
+        compute_ns = boundary_elapsed_ns(boundary_mark);
+        boundary_mark = BoundaryProfileClock::now();
+    }
     for (const GraphOutput & output : outputs) {
         ggml_backend_tensor_get(
             output.tensor, output.data, 0, output.bytes);
+    }
+    if (profile_boundary) {
+        output_ns = boundary_elapsed_ns(boundary_mark);
+        const uint64_t total_ns = boundary_elapsed_ns(boundary_start);
+        std::fprintf(stderr,
+            "[kimi-k3-boundary] phase=\"%s\" expand_ms=%.3f "
+            "allocate_ms=%.3f input_ms=%.3f compute_ms=%.3f "
+            "output_ms=%.3f total_ms=%.3f\n",
+            phase, expand_ns / 1.0e6, allocate_ns / 1.0e6,
+            input_ns / 1.0e6, compute_ns / 1.0e6,
+            output_ns / 1.0e6, total_ns / 1.0e6);
     }
     ggml_gallocr_free(allocator);
     return true;

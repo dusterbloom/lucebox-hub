@@ -1,0 +1,51 @@
+{
+  "schema": "k3-p29-cpu-boundary-profile-v1",
+  "base_commit": "d8aa029",
+  "status": "MEASURED",
+  "semantic_gates": {
+    "boundary_profile_eight_row_byte_identical": true,
+    "boundary_profile_logits_sha256": "8daa924c13dd94489541f5d259eb2b72873b9cd49a074aee348aecd5dae90ca7",
+    "thread_sweep_byte_identical": true,
+    "thread_sweep_logits_sha256": "6a35b1183b0d0a476f10ced598974059e0b827247a253e10cb0d6bac76f307a9"
+  },
+  "boundary_profile": {
+    "artifact": "/mnt/kimi-k3/results/kimi-p29-boundary-profile-eight-row-20260816",
+    "stable_routed_boundary_allocate_ms_per_position": 2.7,
+    "stable_routed_boundary_input_ms_per_position": 1.0,
+    "stable_routed_boundary_output_ms_per_position": 0.45,
+    "stable_routed_boundary_compute_ms_range_per_position": [1017.1, 1125.4],
+    "interpretation": "More than 99.5% of the routed preparation boundary is backend graph computation, not graph allocation or host copies."
+  },
+  "thread_sweep": [
+    {
+      "cpu_threads": 9,
+      "artifact": "/mnt/kimi-k3/results/kimi-p29-threads9-sixteen-row-20260816",
+      "decode_seconds_15_transitions": 41.027,
+      "final8_transitions_per_second": 0.362201,
+      "final8_routed_preparation_ms": 888.013,
+      "final8_expert_provider_ms": 1720.082
+    },
+    {
+      "cpu_threads": 12,
+      "artifact": "/mnt/kimi-k3/results/kimi-p29-threads12-sixteen-row-20260816",
+      "decode_seconds_15_transitions": 40.910,
+      "final8_transitions_per_second": 0.369636,
+      "final8_routed_preparation_ms": 876.760,
+      "final8_expert_provider_ms": 1677.537
+    },
+    {
+      "cpu_threads": 18,
+      "artifact": "/mnt/kimi-k3/results/kimi-p29-threads18-sixteen-row-20260816",
+      "decode_seconds_15_transitions": 45.455,
+      "final8_transitions_per_second": 0.339138,
+      "final8_routed_preparation_ms": 1022.769,
+      "final8_expert_provider_ms": 1772.603
+    }
+  ],
+  "decision": {
+    "machine_specific_cpu_threads": 12,
+    "final8_gain_vs_18_threads_fraction": 0.08993,
+    "persistent_cpu_graph_lifecycle": "NO_GO_BY_CEILING",
+    "next": "Profile KDA/MLA/AttnRes/router compute and mapped residency by layer before selective accelerator placement."
+  }
+}
