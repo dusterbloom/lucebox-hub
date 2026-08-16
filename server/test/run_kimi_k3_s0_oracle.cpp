@@ -65,6 +65,27 @@ nlohmann::json result_json(const KimiK3OracleVerifyResult & result) {
         {"verify_recurrent_hash", result.verify_recurrent_hash},
         {"sequential_mla_hash", result.sequential_mla_hash},
         {"verify_mla_hash", result.verify_mla_hash},
+        {"first_hidden_mismatch_layer",
+         result.first_hidden_mismatch_layer},
+        {"first_hidden_mismatch_token",
+         result.first_hidden_mismatch_token},
+        {"first_hidden_max_abs", result.first_hidden_max_abs},
+        {"first_hidden_rel_l2", result.first_hidden_rel_l2},
+        {"first_conv_state_mismatch_layer",
+         result.first_conv_state_mismatch_layer},
+        {"first_ssm_state_mismatch_layer",
+         result.first_ssm_state_mismatch_layer},
+        {"first_mla_row_mismatch_layer",
+         result.first_mla_row_mismatch_layer},
+        {"sequential_conv_layer_hashes",
+         result.sequential_conv_layer_hashes},
+        {"verify_conv_layer_hashes", result.verify_conv_layer_hashes},
+        {"sequential_ssm_layer_hashes",
+         result.sequential_ssm_layer_hashes},
+        {"verify_ssm_layer_hashes", result.verify_ssm_layer_hashes},
+        {"sequential_mla_layer_hashes",
+         result.sequential_mla_layer_hashes},
+        {"verify_mla_layer_hashes", result.verify_mla_layer_hashes},
     };
 }
 
@@ -94,6 +115,10 @@ int main(int argc, char ** argv) {
     config.device.gpu = argc > 5 ? std::atoi(argv[5]) : 0;
     config.device.max_ctx = 4096;
     config.oracle_verify_tokens = 8;
+    const char * layer_diagnostics =
+        std::getenv("DFLASH_KIMI_S0_LAYER_CAPTURE");
+    config.oracle_layer_diagnostics = layer_diagnostics &&
+        *layer_diagnostics && std::string(layer_diagnostics) != "0";
     config.moe_storage = MoeStoragePolicy::Ssd;
     if (argc > 6 && !parse_kimi_k3_core_placement(
             argv[6], config.core_placement)) {

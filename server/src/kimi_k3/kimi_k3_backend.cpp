@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <numeric>
 #include <string>
 #include <thread>
 #include <utility>
@@ -130,6 +131,23 @@ uint64_t recurrent_cache_hash(const KimiK3Cache & cache) {
     return hash;
 }
 
+std::vector<uint64_t> recurrent_layer_hashes(
+        const KimiK3Cache & cache, bool convolution) {
+    std::vector<uint64_t> hashes(cache.layers.size(), 0);
+    for (size_t layer_index = 0; layer_index < cache.layers.size();
+         ++layer_index) {
+        const KimiK3LayerCache & layer = cache.layers[layer_index];
+        ggml_tensor * tensor = convolution
+            ? layer.conv_state : layer.ssm_state;
+        if (!tensor) continue;
+        uint64_t hash = UINT64_C(14695981039346656037);
+        hash = fnv1a_update(hash, &layer_index, sizeof(layer_index));
+        hashes[layer_index] = hash_tensor_bytes(
+            tensor, 0, ggml_nbytes(tensor), hash);
+    }
+    return hashes;
+}
+
 uint64_t mla_rows_hash(const KimiK3Cache & cache, int base_pos,
                        int n_tokens) {
     uint64_t hash = UINT64_C(14695981039346656037);
@@ -148,6 +166,39 @@ uint64_t mla_rows_hash(const KimiK3Cache & cache, int base_pos,
         }
     }
     return hash;
+}
+
+std::vector<uint64_t> mla_layer_row_hashes(
+        const KimiK3Cache & cache, int base_pos, int n_tokens) {
+    std::vector<uint64_t> hashes(cache.layers.size(), 0);
+    for (size_t layer_index = 0; layer_index < cache.layers.size();
+         ++layer_index) {
+        const KimiK3LayerCache & layer = cache.layers[layer_index];
+        if (!layer.mla_k) continue;
+        uint64_t hash = UINT64_C(14695981039346656037);
+        hash = fnv1a_update(hash, &layer_index, sizeof(layer_index));
+        const size_t row_bytes =
+            ggml_row_size(layer.mla_k->type, layer.mla_k->ne[0]);
+        for (int token = 0; token < n_tokens; ++token) {
+            const size_t offset = static_cast<size_t>(base_pos + token) *
+                layer.mla_k->nb[2];
+            hash = hash_tensor_bytes(
+                layer.mla_k, offset, row_bytes, hash);
+        }
+        hashes[layer_index] = hash;
+    }
+    return hashes;
+}
+
+int first_hash_mismatch(const std::vector<uint64_t> & reference,
+                        const std::vector<uint64_t> & candidate) {
+    if (reference.size() != candidate.size()) return 0;
+    for (size_t index = 0; index < reference.size(); ++index) {
+        if (reference[index] != candidate[index]) {
+            return static_cast<int>(index);
+        }
+    }
+    return -1;
 }
 
 void maybe_release_kimi_mapped_pages(const KimiK3Weights & weights) {
@@ -1070,10 +1121,17 @@ bool KimiK3Backend::benchmark_oracle_verify(
         }
     }
 
+    std::vector<int> all_layer_ids(static_cast<size_t>(weights_.n_layer));
+    std::iota(all_layer_ids.begin(), all_layer_ids.end(), 0);
+
     const auto forward = [&](const std::vector<int32_t> & tokens,
                              int position, bool capture_replay,
+                             bool capture_layers,
                              KimiK3ForwardResult & forward_result) {
         KimiK3ForwardOptions options;
+        options.capture_layer_ids =
+            capture_layers && cfg_.oracle_layer_diagnostics
+                ? &all_layer_ids : nullptr;
         options.capture_replay = capture_replay;
         options.read_logits = true;
         options.read_argmax = true;
@@ -1093,7 +1151,7 @@ bool KimiK3Backend::benchmark_oracle_verify(
         reset_kimi_k3_cache(cache_);
         for (size_t index = 0; index < prompt.size(); ++index) {
             KimiK3ForwardResult ignored;
-            if (!forward({prompt[index]}, static_cast<int>(index), false,
+            if (!forward({prompt[index]}, static_cast<int>(index), false, false,
                          ignored)) {
                 return false;
             }
@@ -1107,6 +1165,13 @@ bool KimiK3Backend::benchmark_oracle_verify(
     }
     std::vector<float> sequential_logits;
     std::vector<int32_t> sequential_argmax;
+    const size_t capture_row_values = static_cast<size_t>(weights_.n_embd);
+    std::vector<float> sequential_hidden;
+    if (cfg_.oracle_layer_diagnostics) {
+        sequential_hidden.resize(
+            static_cast<size_t>(weights_.n_layer) * width *
+            capture_row_values);
+    }
     sequential_logits.reserve(
         static_cast<size_t>(width) * weights_.n_vocab);
     sequential_argmax.reserve(static_cast<size_t>(width));
@@ -1115,13 +1180,29 @@ bool KimiK3Backend::benchmark_oracle_verify(
     for (int token = 0; token < width; ++token) {
         KimiK3ForwardResult row;
         if (!forward({oracle_tokens[static_cast<size_t>(token)]},
-                     base_pos + token, false, row)) {
+                     base_pos + token, false, true, row)) {
             return fail(std::string("S0 sequential oracle row failed: ") +
                         dflash27b_last_error());
         }
         sequential_logits.insert(
             sequential_logits.end(), row.logits.begin(), row.logits.end());
         sequential_argmax.push_back(row.argmax.front());
+        if (cfg_.oracle_layer_diagnostics) {
+            const size_t expected_capture =
+                static_cast<size_t>(weights_.n_layer) * capture_row_values;
+            if (row.captured_hidden.size() != expected_capture) {
+                return fail("S0 sequential layer capture has the wrong shape");
+            }
+            for (int layer = 0; layer < weights_.n_layer; ++layer) {
+                std::memcpy(
+                    sequential_hidden.data() +
+                        (static_cast<size_t>(layer) * width + token) *
+                            capture_row_values,
+                    row.captured_hidden.data() +
+                        static_cast<size_t>(layer) * capture_row_values,
+                    capture_row_values * sizeof(float));
+            }
+        }
     }
     result.sequential_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - sequential_start).count();
@@ -1130,6 +1211,12 @@ bool KimiK3Backend::benchmark_oracle_verify(
         ? sequential_read_end - sequential_read_start : 0;
     result.sequential_recurrent_hash = recurrent_cache_hash(cache_);
     result.sequential_mla_hash = mla_rows_hash(cache_, base_pos, width);
+    result.sequential_conv_layer_hashes =
+        recurrent_layer_hashes(cache_, true);
+    result.sequential_ssm_layer_hashes =
+        recurrent_layer_hashes(cache_, false);
+    result.sequential_mla_layer_hashes =
+        mla_layer_row_hashes(cache_, base_pos, width);
 
     if (!rebuild_prompt()) {
         return fail(std::string("S0 verify prompt rebuild failed: ") +
@@ -1141,7 +1228,7 @@ bool KimiK3Backend::benchmark_oracle_verify(
     const uint64_t verify_read_start = process_storage_read_bytes();
     const auto verify_start = std::chrono::steady_clock::now();
     KimiK3ForwardResult verified;
-    if (!forward(oracle_tokens, base_pos, true, verified)) {
+    if (!forward(oracle_tokens, base_pos, true, true, verified)) {
         (void) kimi_k3_replay_restore(backend_, cache_);
         return fail(std::string("S0 causal verify batch failed: ") +
                     dflash27b_last_error());
@@ -1160,6 +1247,10 @@ bool KimiK3Backend::benchmark_oracle_verify(
         ? verify_read_end - verify_read_start : 0;
     result.verify_recurrent_hash = recurrent_cache_hash(cache_);
     result.verify_mla_hash = mla_rows_hash(cache_, base_pos, width);
+    result.verify_conv_layer_hashes = recurrent_layer_hashes(cache_, true);
+    result.verify_ssm_layer_hashes = recurrent_layer_hashes(cache_, false);
+    result.verify_mla_layer_hashes =
+        mla_layer_row_hashes(cache_, base_pos, width);
 
     result.logits_bit_equal = sequential_logits.size() == verified.logits.size() &&
         std::memcmp(sequential_logits.data(), verified.logits.data(),
@@ -1185,6 +1276,55 @@ bool KimiK3Backend::benchmark_oracle_verify(
         result.sequential_recurrent_hash == result.verify_recurrent_hash;
     result.mla_rows_hash_equal =
         result.sequential_mla_hash == result.verify_mla_hash;
+    result.first_conv_state_mismatch_layer = first_hash_mismatch(
+        result.sequential_conv_layer_hashes,
+        result.verify_conv_layer_hashes);
+    result.first_ssm_state_mismatch_layer = first_hash_mismatch(
+        result.sequential_ssm_layer_hashes,
+        result.verify_ssm_layer_hashes);
+    result.first_mla_row_mismatch_layer = first_hash_mismatch(
+        result.sequential_mla_layer_hashes,
+        result.verify_mla_layer_hashes);
+
+    if (cfg_.oracle_layer_diagnostics) {
+        const size_t expected_verified_capture =
+            static_cast<size_t>(weights_.n_layer) * width * capture_row_values;
+        if (verified.captured_hidden.size() != expected_verified_capture) {
+            return fail("S0 verify layer capture has the wrong shape");
+        }
+        for (int layer = 0;
+             layer < weights_.n_layer && result.first_hidden_mismatch_layer < 0;
+             ++layer) {
+            for (int token = 0; token < width; ++token) {
+                const size_t offset =
+                    (static_cast<size_t>(layer) * width + token) *
+                    capture_row_values;
+                const float * reference = sequential_hidden.data() + offset;
+                const float * candidate =
+                    verified.captured_hidden.data() + offset;
+                if (std::memcmp(reference, candidate,
+                                capture_row_values * sizeof(float)) == 0) {
+                    continue;
+                }
+                result.first_hidden_mismatch_layer = layer;
+                result.first_hidden_mismatch_token = token;
+                double reference_norm2 = 0.0;
+                double error_norm2 = 0.0;
+                for (size_t value = 0; value < capture_row_values; ++value) {
+                    const double left = reference[value];
+                    const double difference =
+                        static_cast<double>(candidate[value]) - left;
+                    reference_norm2 += left * left;
+                    error_norm2 += difference * difference;
+                    result.first_hidden_max_abs = std::max(
+                        result.first_hidden_max_abs, std::abs(difference));
+                }
+                result.first_hidden_rel_l2 = std::sqrt(
+                    error_norm2 / std::max(reference_norm2, 1.0e-300));
+                break;
+            }
+        }
+    }
     return true;
 }
 

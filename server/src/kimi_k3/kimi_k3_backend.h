@@ -71,6 +71,7 @@ struct KimiK3BackendConfig {
     // Opt-in capacity for diagnostic/oracle verification without requiring a
     // draft checkpoint. Zero preserves the ordinary runtime configuration.
     int oracle_verify_tokens = 0;
+    bool oracle_layer_diagnostics = false;
 };
 
 struct KimiK3OracleVerifyResult {
@@ -90,6 +91,19 @@ struct KimiK3OracleVerifyResult {
     uint64_t verify_recurrent_hash = 0;
     uint64_t sequential_mla_hash = 0;
     uint64_t verify_mla_hash = 0;
+    int first_hidden_mismatch_layer = -1;
+    int first_hidden_mismatch_token = -1;
+    double first_hidden_max_abs = 0.0;
+    double first_hidden_rel_l2 = 0.0;
+    int first_conv_state_mismatch_layer = -1;
+    int first_ssm_state_mismatch_layer = -1;
+    int first_mla_row_mismatch_layer = -1;
+    std::vector<uint64_t> sequential_conv_layer_hashes;
+    std::vector<uint64_t> verify_conv_layer_hashes;
+    std::vector<uint64_t> sequential_ssm_layer_hashes;
+    std::vector<uint64_t> verify_ssm_layer_hashes;
+    std::vector<uint64_t> sequential_mla_layer_hashes;
+    std::vector<uint64_t> verify_mla_layer_hashes;
 };
 
 class KimiK3Backend final : public ModelBackend {

@@ -65,5 +65,28 @@
     "status": "NOT_RUN",
     "reason": "width-four correctness gate failed"
   },
-  "next_single_action": "localize first width-four KDA/causal-batch divergence before any drafter work"
+  "first_divergence_localization": {
+    "status": "MEASURED",
+    "provider": "native_streamed",
+    "width": 4,
+    "layer0_hidden_bit_equal": true,
+    "first_hidden_mismatch_layer": 1,
+    "first_hidden_mismatch_token": 0,
+    "first_hidden_rel_l2": 0.0038716985209608654,
+    "first_hidden_max_abs": 0.0003340337425470352,
+    "first_conv_state_mismatch_layer": 2,
+    "first_ssm_state_mismatch_layer": 2,
+    "first_mla_row_mismatch_layer": 3,
+    "artifact": "/mnt/kimi-k3/results/kimi-s0-native-m4-layer-localize-20260816/s0.json",
+    "artifact_sha256": "c09202ebc97d506144d0cb47ed48f9178279fae38504c9c364e024274cce2517",
+    "interpretation": "Layer 1 hidden diverges while layer 1 KDA convolution and recurrent state remain equal. The precise layer-1 boundary remains open pending an uncontended paired trace."
+  },
+  "rejected_runs": [
+    {
+      "artifact_root": "/mnt/kimi-k3/results/kimi-s0-native-m4-boundary-trace-20260816",
+      "status": "REJECTED-CONTENDED",
+      "reason": "H23 was still active in the host namespace; cross-sandbox process visibility incorrectly reported it absent. The S0 process was stopped and no output is used as evidence."
+    }
+  ],
+  "next_single_action": "run one uncontended native width-four layer-1 boundary trace before any parity patch or drafter work"
 }

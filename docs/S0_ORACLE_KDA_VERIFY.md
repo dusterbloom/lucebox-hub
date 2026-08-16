@@ -52,13 +52,43 @@ These are operating-system physical-read counters, not logical provider or H2D
 bytes. The existing P20 I/O and traffic traces remain authoritative for those
 categories.
 
+## First-divergence localization
+
+An opt-in all-layer hidden capture narrowed the native width-four failure before
+the more detailed boundary trace:
+
+- layer 0 output is byte-identical;
+- the first hidden mismatch is model layer 1, token offset 0;
+- at that boundary, relL2 is `0.00387170` and max-absolute error is
+  `0.000334034`;
+- layer 1's KDA convolution and recurrent-state hashes are still identical;
+- the first convolution/state hash mismatch is layer 2;
+- the first MLA-row hash mismatch is layer 3.
+
+Artifact:
+`/mnt/kimi-k3/results/kimi-s0-native-m4-layer-localize-20260816/s0.json`
+(`c09202ebc97d506144d0cb47ed48f9178279fae38504c9c364e024274cce2517`).
+
+This rules out the earlier hypothesis that the first failure is the layer-1
+KDA state transition. Layer 1 is the first routed-MoE layer, so the leading
+candidates are now its pre-MoE/router preparation, routed expert aggregate, or
+MoE join. The existing divergence trace already captures those boundaries; a
+paired sequential-versus-batch analyzer was added rather than adding broader
+instrumentation.
+
+One attempted boundary-trace launch overlapped an H23 process that was hidden
+by cross-sandbox process visibility. It was stopped immediately. The partial
+root
+`/mnt/kimi-k3/results/kimi-s0-native-m4-boundary-trace-20260816` is registered
+as **REJECTED-CONTENDED** and is not evidence.
+
 ## Interpretation
 
 The native control falsifies the hypothesis that calibrated96's token loop is
-causing the width-four numerical divergence. The likely fault boundary is the
-shared width-dependent KDA/causal-batch execution (not yet localized); K3 uses
-a convolution width of four, making that boundary a useful first diagnostic.
-That is a hypothesis, not a measured cause.
+causing the width-four numerical divergence. The all-layer capture further
+shows that the first persistent-state mismatch is downstream of the first
+hidden mismatch. It does not yet distinguish the layer-1 router/preparation,
+routed aggregate, and join; the clean boundary trace is the remaining gate.
 
 AttnRes has no persistent cross-token cache. Exact terminal rows cover its
 accepted-boundary result. Persistent parity is checked separately for every
@@ -83,6 +113,15 @@ run_kimi_k3_s0_oracle MODEL PROMPT_IDS ORACLE_IDS RESULT_JSON \
   GPU CORE EXPERT_GPU MAX_WIDTH MIN_WIDTH
 ```
 
+The pending clean boundary localization is one command, after host-confirmed
+GPU release:
+
+```bash
+scripts/gpu_lease.sh run S0 -- \
+  scripts/run_kimi_s0_boundary_trace.sh \
+  /mnt/kimi-k3/results/kimi-s0-native-m4-boundary-trace-clean-20260816
+```
+
 Use the same P27 environment recorded in the P27 telemetry. `MAX_WIDTH=2` is
 the passing gate. A gated `MAX_WIDTH=8 MIN_WIDTH=2` run now stops automatically
 at the first parity failure and cannot silently proceed to width eight.
@@ -95,6 +134,8 @@ Authoritative artifacts and SHA-256:
 
 ## Next single S0 action
 
-Localize the first sequential-versus-width-four divergence inside one KDA
-layer, beginning with convolution inputs/outputs and state at the four-token
-boundary. Do not build a drafter or run width eight until width four is exact.
+Run one uncontended native width-four divergence trace and analyze the first
+non-identical stage at model layer 1. Only if the routed aggregate is proven to
+be the first mismatch should the diagnostic verifier evaluate routed experts
+with graph-batch-one, per-row arithmetic. Do not build a drafter or run width
+eight until width four is exact.
