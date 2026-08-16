@@ -1,0 +1,121 @@
+{
+  "schema": "kimi-k3-h23-10k-preflight-v1",
+  "status": "ONE_CHUNK_GATE_PASS_LONG_RUN_STOPPED",
+  "target": {
+    "tokens": 10000,
+    "routed_layers": 92,
+    "corpus_rows": 200,
+    "rows_per_crash_chunk": 8,
+    "maximum_planned_chunks": 25,
+    "typical_projected_chunks": 16,
+    "forward_chunk_tokens": 128,
+    "device_cache_mib": 2048,
+    "cpu_threads": 12
+  },
+  "surviving_artifacts": {
+    "complete_all_layer_10k_capture": false,
+    "failed_root": "/mnt/kimi-k3/captures/kimi-h18-all-layer-10000",
+    "partial_files": 92,
+    "partial_bytes": 22609920,
+    "observed_completed_sequence_before_failure": "conversation-81",
+    "observed_tokens_before_failure": 34,
+    "reuse_decision": "REJECTED_AS_SCIENTIFIC_INPUT; leave intact for forensics"
+  },
+  "measured_timing_anchors": {
+    "h23_chunk0_rows": 8,
+    "h23_chunk0_tokens": 640,
+    "h23_chunk0_calibration_rows": 7,
+    "h23_chunk0_validation_rows": 1,
+    "h23_chunk0_seconds": 691.778864173,
+    "h23_chunk0_tokens_per_second": 0.925151,
+    "h23_chunk0_manifest_sha256": "8a47803d4ff3cb3f066407b33de0754cb84918121c5d1f6849021cf05b7391cb",
+    "h23_chunk0_telemetry_sha256": "02418b1982e62f584807042105dfe259ab9e1b933a7ee4a1a05433bc7f0f51f3",
+    "h23_chunk0_validation_sha256": "643a146ebd02dd93147d6cb8b93355f4d3fe046eb878f3d5d545ead873d13752",
+    "h23_chunk0_disk_read_bytes": 1563403902976,
+    "h23_chunk0_peak_ram_kib": 47802920,
+    "h23_chunk0_peak_vram_mib": 2700,
+    "h23_chunk0_energy_joules": 80313.4588,
+    "all_layer_2048_chunk8_seconds": 10227.374942992,
+    "all_layer_2048_chunk8_telemetry_sha256": "05ad64a1087df7773b0eecfa6507d8dd5081ba8a3a576cc0ab9e1b0855790938",
+    "all_layer_34_chunk128_seconds": 75.230379001,
+    "all_layer_34_chunk128_telemetry_sha256": "d4cc44b834ee5f707cbd7bdacda944d3dc1dfd76da1d51b86baffdc077c10f33",
+    "layer12_10k_exact_response_fit_seconds": 11.26487099,
+    "layer12_10k_fit_telemetry_sha256": "44647d77f5eb8de7d09c735019a9fd4c9631b0e9d4f2ffc228407fd77de36741",
+    "layer12_10k_slab_calibration_seconds": 201.723417235,
+    "layer12_10k_calibration_telemetry_sha256": "66ca9a4e8bdd8c69a046ec1f3702dd6adc2f15f09b4dc5c219db0e268fa9bfd0"
+  },
+  "projected_time": {
+    "capture_hours_from_measured_chunk0": 3.0025,
+    "capture_hours_conservative_range": [3.0, 4.0],
+    "all_layer_response_fit_hours": 0.3,
+    "all_layer_slab_calibration_hours": 5.2,
+    "total_likely_hours_before_quality_rerun": [8.5, 9.5],
+    "qualification": "PROJECTED from one measured 640-token chunk plus real layer-12 fit/calibration anchors"
+  },
+  "storage_gib": {
+    "capture_chunks": 6.2513,
+    "merged_capture": 6.2513,
+    "expert_responses": 196.7525,
+    "fitter_expert_statistics": 29.108,
+    "teacher_aggregate": 2.4567,
+    "validation_by_rank": 39.3066,
+    "panel_outputs": 5.5,
+    "slab_calibration_states": 14.8,
+    "runtime_export": 14.0,
+    "projected_total": 314.43,
+    "enforced_free_space_reserve": 350.0,
+    "measured_available_at_preflight": 1827.0
+  },
+  "corpus": {
+    "path": "/mnt/kimi-k3/captures/kimi_panel_smoke.jsonl",
+    "sha256": "696032b4d971ef8b6d0933ebc8c9a6a537244c063ae684b2fe863f9b3a951b65",
+    "split_rule": "copy complete source rows in order; retain each row's calibration/validation label; only the final source row may be token-truncated by the global cap"
+  },
+  "resume_gates": {
+    "capture": "MEASURED_SYNTHETIC_TEST_PASS: immutable 8-row chunks, structural validation across all 92 layers, invalid active chunk quarantine",
+    "merge": "MEASURED_SYNTHETIC_TEST_PASS: exact record concatenation, per-layer receipts, global-manifest deletion and resume",
+    "expert_fit": "EXISTING: checkpoint every 16 experts and atomic expert response files",
+    "slab_calibration": "EXISTING: one atomic NPZ per layer and validated skip",
+    "runtime_export": "capture-token parameter added; no selector, tail, or fallback semantic change"
+  },
+  "moe_core_offload_safety_gate": {
+    "status": "FAILED_CAPTURE_PARITY_REJECTED",
+    "policy": "latent,shared",
+    "tokens": 34,
+    "sequences": 1,
+    "elapsed_seconds": 48.372896736,
+    "prior_34_token_cpu_anchor_seconds": 75.230379001,
+    "apparent_elapsed_reduction_fraction": 0.356999,
+    "offloaded_weight_bytes": 13849894912,
+    "peak_rss_kib": 46009620,
+    "reported_high_water_rss_kib": 47788516,
+    "chunk0_reported_high_water_rss_kib": 47848408,
+    "peak_vram_mib": 15891,
+    "telemetry_sha256": "81d9614e418cc0e233daeb3eccc9222deb9c811bfe8783cb089107462a0177f5",
+    "layer01_capture_sha256": "4839df5ea290ab977a810929ce217bce12f09e519e0a70d0cff02349a5226d3b",
+    "layer12_capture_sha256": "e17c71aa777d6f6842e26d3dbbc425978841fef4ef50cd59c3fed6f571457746",
+    "layer01": {
+      "latent_rel_l2": 0.088238429,
+      "latent_max_abs": 0.0407714844,
+      "latent_cosine": 0.996099558891,
+      "route_rows_exact": 34,
+      "route_rows_total": 34,
+      "route_ids_exact": 544,
+      "route_ids_total": 544,
+      "router_weight_rel_l2": 0.0
+    },
+    "layer12": {
+      "latent_rel_l2": 0.0994477125,
+      "latent_max_abs": 0.0302734375,
+      "latent_cosine": 0.99514546658,
+      "route_rows_exact": 0,
+      "route_rows_total": 34,
+      "route_ids_exact": 259,
+      "route_ids_total": 544,
+      "router_weight_rel_l2": 0.0416694306,
+      "router_weight_max_abs": 0.0170743577
+    },
+    "disposition": "capture-only offload plumbing reverted; authoritative run pins DFLASH_KIMI_MOE_CORE_OFFLOAD=0"
+  },
+  "next_gate": "Review the 45.6-GiB peak-RSS operational margin, then explicitly approve or reject resuming chunks 1..N. The long run remains stopped."
+}

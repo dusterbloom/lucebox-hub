@@ -149,6 +149,8 @@ knapsack would be false precision.
    fallback consumed 29.23% of provider bytes in the measured candidate and is
    already a measured 1.256-GiB projected floor.  Recompute the floor before
    changing any fallback semantics.  The 10K export has not been started.
+   Its crash-bounded capture preflight, storage ledger, and one-chunk timing
+   gate are specified in `H23_10K_CALIBRATION_RUNBOOK.md`.
 3. **Measure the missing route axis narrowly.**  Use isolated terminal KL—not
    cosine—for predeclared representative sensitive/tolerant layers at 4/8/12
    complete routes.  Expand to all layers only if route choices beat slab

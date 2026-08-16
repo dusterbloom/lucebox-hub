@@ -336,6 +336,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("output_root", type=Path)
     parser.add_argument("--model-checksums", type=Path, default=Path(__file__).with_name("kimi_k3_ud_iq1s.sha256"))
     parser.add_argument("--minimum-expert-hits", type=int, default=8)
+    parser.add_argument("--capture-tokens", type=int, default=2048)
     parser.add_argument("--first-layer", type=int, default=FIRST_ROUTED_LAYER)
     parser.add_argument("--last-layer", type=int, default=LAST_ROUTED_LAYER)
     parser.add_argument("--verify-sidecar-sha256", action="store_true")
@@ -349,6 +350,8 @@ def main() -> int:
         raise ValueError("layer range must be within 1..92")
     if args.minimum_expert_hits <= 0:
         raise ValueError("minimum expert hits must be positive")
+    if args.capture_tokens <= 0:
+        raise ValueError("capture token count must be positive")
     model_hashes = registered_model_hashes(args.model_checksums)
     model_registry_sha = sha256(args.model_checksums)
     records = []
@@ -356,7 +359,7 @@ def main() -> int:
         stem = f"kimi_layer{layer:02d}"
         paths = {
             "fit_state": args.fit_state_root / f"{stem}_neuron_slabs_calibration.npz",
-            "capture": args.capture_root / f"{stem}_2048.bin",
+            "capture": args.capture_root / f"{stem}_{args.capture_tokens}.bin",
             "sidecar": args.sidecar_root / f"{stem}_natural_slabs.k3slab",
             "sidecar_manifest": args.sidecar_root / f"{stem}_natural_slabs.json",
         }

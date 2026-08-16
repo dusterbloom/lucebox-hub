@@ -13,6 +13,7 @@ result_root="${KIMI_H18_RESULT_ROOT:-/mnt/kimi-k3/results}"
 state_root="${KIMI_H18_CALIBRATION_ROOT:-/mnt/kimi-k3/fit-state/kimi-h18-slab-calibration-2048}"
 first_layer="${KIMI_H18_FIRST_LAYER:-1}"
 last_layer="${KIMI_H18_LAST_LAYER:-92}"
+capture_tokens="${KIMI_H18_CAPTURE_TOKENS:-2048}"
 gpu="${KIMI_PANEL_GPU:-0}"
 gpu_lock="${KIMI_GPU_LOCK_FILE:-/tmp/lucebox-gpu-$gpu.lock}"
 
@@ -64,7 +65,7 @@ with np.load(sys.argv[1], allow_pickle=False) as values:
 
 for layer in $(seq "$first_layer" "$last_layer"); do
     padded="$(printf '%02d' "$layer")"
-    capture="$capture_root/kimi_layer${padded}_2048.bin"
+    capture="$capture_root/kimi_layer${padded}_${capture_tokens}.bin"
     responses="$response_root/layer${padded}"
     teacher="$result_root/kimi_h18_layer${padded}_native.teacher.f32"
     if [[ ! -f "$teacher" ]]; then
