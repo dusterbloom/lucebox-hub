@@ -98,8 +98,7 @@ else
         --budget-table "$table" \
         --calibration-manifest "$aux/all_layers_calibrated96_manifest.json" \
         --sidecar-manifest "$sidecars/all_layers_manifest.json" \
-        --warning "Native timing and peak VRAM are not a clean comparison because a brief external GPU run overlapped the native reasoning prompt; quality artifacts are unaffected." \
-        --warning "The archived first candidate attempt used a stale binary, rejected the 24-slab table before inference, and is not scored." \
+        --warning "This deterministic product-mode gate disables thinking and is not directly comparable to official K3 max-reasoning benchmark scores." \
         --output "$analysis_output" \
         | tee "$output/analysis.stdout.log"
 fi

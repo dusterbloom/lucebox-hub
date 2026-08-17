@@ -1,6 +1,6 @@
 # H23 broader native-success quality gate
 
-Status: `MEASURED NATIVE 12/12 PASS — 1.2201-GiB CANDIDATE NEXT`
+Status: `MEASURED MAJOR GO — BENCHMARK ALIGNMENT NEXT`
 
 This gate was frozen after the measured 1.2201-GiB six-task result and before
 opening any candidate output.  It reuses the official GGUF chat template, exact
@@ -46,6 +46,59 @@ tail, or exact fallback behavior.
   terminal KL, top-1 agreement, exact provider bytes, fallback rate, and timing.
 - Boundary: passing remains a useful medium-width screen, not a broad benchmark
   or long-context quality certificate.
+
+## 1.220-GiB candidate — measured pass
+
+The unchanged 10K-calibrated policy retained all 12/12 native-success tasks at
+1.2223 logical routed GiB/model position.  Nine of twelve generated sequences
+were token-identical.  The three divergences were behaviorally harmless:
+
+- `CO₂` instead of native `Carbon dioxide (CO₂)`;
+- `Buongiorno.` instead of native `Buongiorno`;
+- `Muchas gracias.` instead of native `Muchas gracias`.
+
+The initial scorer marked the Unicode `CO₂` answer wrong because it normalized
+ASCII digits but not Unicode subscripts.  The literal registered prompt allowed
+either the gas name or chemical formula.  A narrow subscript-digit
+normalization control accepts `CO2`, `CO₂`, and `carbon dioxide` while rejecting
+`oxygen`; no model output or policy changed.
+
+| Metric | Native | 1.220-GiB candidate |
+|---|---:|---:|
+| task successes | 12/12 | 12/12 |
+| token-identical generations | — | 9/12 |
+| prefill | 0.2956 tok/s | 0.6760 tok/s |
+| decode | 0.3299 tok/s | 0.7407 tok/s |
+| model compute wall | 2,303.83 s | 1,008.21 s |
+| end-to-end telemetry wall | 2,313.90 s | 1,018.46 s |
+
+Candidate terminal KL mean/median/p95/max is
+0.6849/0.3460/2.8427/5.3593 over 660 aligned-history rows; top-1 agreement is
+435/660.  Exact fallback is 0.97% of route occurrences and 7.25% of provider
+bytes.  The candidate uses 1.2223 GiB/position, 86.5% below the exact routed
+baseline.
+
+- Candidate manifest SHA-256:
+  `bfc2cdfe1f4771d5ec438428307009963b65ef0841766dc548ca36bcf752f2a0`
+- Candidate analysis SHA-256:
+  `c4b71281d16627be9ec180c6fa09ace27c4574f64cf43ffab1d14ae2679d5a7c`
+- Telemetry SHA-256:
+  `a6ba50372401d71e6e85834da9a411aa63bef5e3e319c22f5e33edc277f84382`
+
+## Benchmark alignment
+
+The official K3 model card and current Lucebox scored suites have no exact
+benchmark-name intersection.  K3 reports GPQA Diamond, HLE, DeepSWE and many
+agentic/vision suites; Lucebox currently has reusable HumanEval, GSM8K and
+Math500 scoring.  The shortest defensible bridge is a fixed preregistered
+GPQA-Diamond subset, with Lucebox's existing Math500 subset as a separately
+labelled companion.
+
+Official K3 results use thinking enabled at maximum reasoning effort.  This H23
+gate intentionally disables thinking for deterministic product-mode comparison,
+so it must not be presented as model-card score reproduction.  GPQA therefore
+requires a separate thinking-enabled protocol rather than changing this frozen
+gate after the fact.
 
 ## Reproduction
 
