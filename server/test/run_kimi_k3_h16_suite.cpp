@@ -188,6 +188,15 @@ int main(int argc, char ** argv) {
         std::getenv("DFLASH_KIMI_H16_CHAT_TEMPLATE");
     const bool use_chat_template = chat_template_environment &&
         std::string(chat_template_environment) == "1";
+    const char * thinking_environment =
+        std::getenv("DFLASH_KIMI_H16_ENABLE_THINKING");
+    const bool enable_thinking = thinking_environment &&
+        std::string(thinking_environment) == "1";
+    if (enable_thinking && !use_chat_template) {
+        std::fprintf(stderr,
+            "[kimi-h16-suite] thinking requires the GGUF chat template\n");
+        return 2;
+    }
     if (paired && !provider_enabled) {
         std::fprintf(stderr,
             "[kimi-h16-suite] paired mode requires a routed provider\n");
@@ -262,7 +271,11 @@ int main(int argc, char ** argv) {
     manifest["paired"] = paired;
     manifest["provider"] = provider_enabled ? provider : "exact";
     manifest["chat_template"] =
-        use_chat_template ? "gguf-jinja-thinking-off" : "raw-text";
+        use_chat_template
+            ? (enable_thinking ? "gguf-jinja-thinking-on"
+                               : "gguf-jinja-thinking-off")
+            : "raw-text";
+    manifest["thinking_enabled"] = enable_thinking;
     manifest["max_context"] = max_context;
     manifest["n_gen"] = n_gen;
     manifest["core_placement"] = argc > 7 ? argv[7] : "cpu";
@@ -279,6 +292,7 @@ int main(int argc, char ** argv) {
     record_environment("DFLASH_KIMI_H22_SWEEP_LAYERS");
     record_environment("DFLASH_KIMI_H22_LAYER_BUDGETS");
     record_environment("DFLASH_KIMI_H16_CHAT_TEMPLATE");
+    record_environment("DFLASH_KIMI_H16_ENABLE_THINKING");
     record_environment("DFLASH_MOE_NVME_DIRECT");
     record_environment("DFLASH_MOE_NVME_DEVICE_CACHE_MB");
     record_environment("DFLASH_KIMI_CPU_THREADS");
@@ -315,7 +329,7 @@ int main(int argc, char ** argv) {
                     tokenizer.chat_template(),
                     {{"user", entry.text, ""}}, bos, eos,
                     /*add_generation_prompt=*/true,
-                    /*enable_thinking=*/false, "");
+                    enable_thinking, "");
             } catch (const std::exception & exception) {
                 std::fprintf(stderr,
                     "[kimi-h16-suite] chat template failed for %s: %s\n",

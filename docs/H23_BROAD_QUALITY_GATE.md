@@ -100,6 +100,16 @@ so it must not be presented as model-card score reproduction.  GPQA therefore
 requires a separate thinking-enabled protocol rather than changing this frozen
 gate after the fact.
 
+The suite runner now exposes that separate protocol as an opt-in only:
+
+```bash
+DFLASH_KIMI_H16_CHAT_TEMPLATE=1 \
+DFLASH_KIMI_H16_ENABLE_THINKING=1 \
+  server/build-k3-p20-cuda126b/run_kimi_k3_h16_suite ...
+```
+
+The default remains thinking-off, preserving every frozen H23 reproduction.
+
 ## Reproduction
 
 ```bash
