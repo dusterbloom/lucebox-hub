@@ -17,6 +17,7 @@ aux="${KIMI_H23_AUX_DIR:-/mnt/kimi-k3/artifacts/kimi-h20-calibrated96-runtime}"
 sidecars="${KIMI_H23_SIDECAR_DIR:-/mnt/kimi-k3/artifacts/kimi-h17-natural-sidecars}"
 table="${KIMI_H23_BUDGET_TABLE:-$repo_dir/results/h23_policies/h23_safe_4_0gib.txt}"
 analysis_output="${KIMI_H23_ANALYSIS_OUTPUT:-$repo_dir/results/h23_safe4gib_quality.json}"
+native_analysis_output="${KIMI_H23_NATIVE_ANALYSIS_OUTPUT:-$repo_dir/results/h23_native_success.json}"
 prompt_id="${KIMI_H23_PROMPT_ID:-h23-safe4gib}"
 gpu="${KIMI_H23_GPU:-0}"
 n_gen="${KIMI_H23_N_GEN:-8}"
@@ -80,9 +81,9 @@ python3 "$repo_dir/scripts/run_with_telemetry.py" \
 
 if [[ "$mode" == native ]]; then
     python3 "$repo_dir/scripts/analyze_kimi_h23_quality.py" \
-        --native "$output/suite" --output "$repo_dir/results/h23_native_success.json" \
+        --native "$output/suite" --output "$native_analysis_output" \
         | tee "$output/analysis.stdout.log"
-    python3 - "$repo_dir/results/h23_native_success.json" <<'PY'
+    python3 - "$native_analysis_output" <<'PY'
 import json, sys
 result = json.load(open(sys.argv[1]))
 if not result["native"]["all_tasks_succeeded"]:
