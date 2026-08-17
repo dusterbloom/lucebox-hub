@@ -1,0 +1,18 @@
+[Unit]
+Description=Crash-resumable Kimi K3 H23 all-layer slab calibration
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+WorkingDirectory=/home/peppi/Dev/kimi-033/work/lucebox-k3-p20
+ExecStart=/usr/bin/bash /home/peppi/Dev/kimi-033/work/lucebox-k3-p20/scripts/run_kimi_h23_calibration_supervisor.sh
+Restart=on-failure
+RestartSec=30
+Nice=5
+OOMScoreAdjust=200
+MemoryHigh=12G
+MemoryMax=16G
+MemorySwapMax=2G
+
+[Install]
+WantedBy=default.target
