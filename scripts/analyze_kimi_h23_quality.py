@@ -31,17 +31,38 @@ def task_success(identifier: str, text: str) -> bool:
     value = normalized(text)
     if identifier == "fact-capital":
         return "tokyo" in value
+    if identifier == "fact-science":
+        return "carbon dioxide" in value or re.search(r"(?<![a-z0-9])co2(?![a-z0-9])", value) is not None
     if identifier == "code-sum":
         return re.search(r"(?<!\d)10(?!\d)", value) is not None
+    if identifier == "code-function":
+        compact = value.replace(" ", "")
+        return (
+            "defsquare_even_numbers(" in compact
+            and "%2" in compact
+            and (
+                "**2" in compact
+                or re.search(r"([a-z])\*\1for", compact) is not None
+            )
+        )
     if identifier == "reasoning-marble":
         return re.search(r"(?<!\d)42(?!\d)", value) is not None
+    if identifier == "reasoning-rate":
+        return re.search(r"(?<!\d)150(?!\d)", value) is not None
     if identifier == "grammar-apples":
         return "she doesn't like apples" in value or "she does not like apples" in value
+    if identifier == "grammar-agreement":
+        return "the list of items is on the table" in value
     if identifier == "translation-italian":
         return "buongiorno" in value or "buon giorno" in value
+    if identifier == "translation-spanish":
+        return "muchas gracias" in value
     if identifier == "extract-code":
         compact = re.sub(r"\s+", "", value)
         return "lime-742" in compact
+    if identifier == "extract-decoys":
+        compact = re.sub(r"\s+", "", value)
+        return "quartz-918" in compact
     raise ValueError(f"unregistered H23 task {identifier}")
 
 
@@ -258,7 +279,7 @@ def main() -> int:
         result["warnings"] = [
             "Primary quality is retained native-success tasks, not exact token match.",
             "KL is scored only while generated history remains aligned.",
-            "This six-task suite is a small decision gate, not broad quality certification.",
+            "This registered suite is a decision gate, not broad quality certification.",
         ] + args.warning
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n")

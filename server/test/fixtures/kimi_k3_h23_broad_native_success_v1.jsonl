@@ -1,0 +1,12 @@
+{"id":"fact-capital","split":"calibration","text":"Name the capital of Japan. Answer with only the city name."}
+{"id":"fact-science","split":"calibration","text":"Which gas do green plants absorb from the atmosphere during photosynthesis? Answer with only the gas name or chemical formula."}
+{"id":"code-sum","split":"calibration","text":"What does this Python expression evaluate to: sum([2, 3, 5])? Answer with only the integer."}
+{"id":"code-function","split":"calibration","text":"Write a Python function named square_even_numbers(values) that returns the squares of only the even integers in values. Return only the function code, with no explanation."}
+{"id":"reasoning-marble","split":"calibration","text":"A box has 7 rows of 6 marbles. How many marbles are there? Answer with only the integer."}
+{"id":"reasoning-rate","split":"calibration","text":"A train travels at a constant 60 kilometres per hour for 2.5 hours. How many kilometres does it travel? Answer with only the integer."}
+{"id":"grammar-apples","split":"validation","text":"Correct this sentence: She don't like apples. Answer with only the corrected sentence."}
+{"id":"grammar-agreement","split":"validation","text":"Correct this sentence: The list of items are on the table. Answer with only the corrected sentence."}
+{"id":"translation-italian","split":"validation","text":"Translate 'good morning' into Italian. Answer with only the translation."}
+{"id":"translation-spanish","split":"validation","text":"Translate 'thank you very much' into Spanish. Answer with only the translation."}
+{"id":"extract-code","split":"test","text":"Context: The observatory access code is LIME-742. What is the observatory access code? Answer with only the code."}
+{"id":"extract-decoys","split":"test","text":"Context: The red folder mentions ALPHA-103, an expired badge says RIVER-440, and the current equipment-locker code is QUARTZ-918. What is the current equipment-locker code? Answer with only the code."}
