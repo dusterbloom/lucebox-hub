@@ -16,7 +16,8 @@ import numpy as np
 
 FILE_HEADER = struct.Struct("<8s7I")
 RECORD_HEADER = struct.Struct("<iiiI")
-MAGIC = b"K3DVT001"
+MAGIC_V1 = b"K3DVT001"
+MAGIC_V2 = b"K3DVT002"
 ATTN_RES_BOUNDARY = 1 << 0
 
 
@@ -30,6 +31,7 @@ class TraceRecord:
     pre_moe_hidden: np.ndarray
     router_logits: np.ndarray
     selected_ids: np.ndarray
+    pre_expert_latent: np.ndarray | None
     routed_latent: np.ndarray
     moe_output: np.ndarray
     post_moe_hidden: np.ndarray
@@ -64,8 +66,11 @@ def load_trace(path: Path) -> tuple[dict[str, int], list[TraceRecord]]:
         block_size,
         reserved,
     ) = FILE_HEADER.unpack_from(raw)
-    if magic != MAGIC or version != 1 or reserved != 0:
+    if magic not in (MAGIC_V1, MAGIC_V2) or reserved != 0:
         raise ValueError(f"{path}: unsupported trace header")
+    expected_version = 1 if magic == MAGIC_V1 else 2
+    if version != expected_version:
+        raise ValueError(f"{path}: inconsistent trace magic/version")
     if min(hidden, latent, experts, top_k, block_size) <= 0:
         raise ValueError(f"{path}: invalid trace dimensions")
 
@@ -92,6 +97,11 @@ def load_trace(path: Path) -> tuple[dict[str, int], list[TraceRecord]]:
         selected_ids, offset = take_array(
             raw, offset, "<i4", (token_count, top_k)
         )
+        pre_expert_latent = None
+        if version >= 2:
+            pre_expert_latent, offset = take_array(
+                raw, offset, "<f4", (token_count, latent)
+            )
         routed_latent, offset = take_array(
             raw, offset, "<f4", (token_count, latent)
         )
@@ -111,6 +121,7 @@ def load_trace(path: Path) -> tuple[dict[str, int], list[TraceRecord]]:
                 pre_moe_hidden=pre_moe_hidden,
                 router_logits=router_logits,
                 selected_ids=selected_ids,
+                pre_expert_latent=pre_expert_latent,
                 routed_latent=routed_latent,
                 moe_output=moe_output,
                 post_moe_hidden=post_moe_hidden,
@@ -167,14 +178,14 @@ def main() -> int:
     if len(exact_records) != len(slab_records):
         raise ValueError("native and slab192 record counts differ")
 
-    stage_names = (
+    stage_names = [
         "layer_input",
         "pre_moe_hidden",
         "router_logits",
-        "routed_latent",
-        "moe_output",
-        "post_moe_hidden",
-    )
+    ]
+    if exact_header["version"] >= 2:
+        stage_names.append("pre_expert_latent")
+    stage_names.extend(("routed_latent", "moe_output", "post_moe_hidden"))
     rows: list[dict[str, object]] = []
     first_numerical: dict[str, object] | None = None
     first_router_order: dict[str, object] | None = None

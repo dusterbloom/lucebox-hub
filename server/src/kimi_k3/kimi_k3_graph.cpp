@@ -22,8 +22,8 @@ namespace dflash::common {
 namespace {
 
 struct KimiDivergenceTraceFileHeader {
-    char magic[8] = {'K', '3', 'D', 'V', 'T', '0', '0', '1'};
-    uint32_t version = 1;
+    char magic[8] = {'K', '3', 'D', 'V', 'T', '0', '0', '2'};
+    uint32_t version = 2;
     uint32_t hidden_dimension = 0;
     uint32_t latent_dimension = 0;
     uint32_t expert_count = 0;
@@ -86,6 +86,7 @@ public:
             const std::vector<float> & pre_moe_hidden,
             const std::vector<float> & router_logits,
             const std::vector<int32_t> & selected_ids,
+            const std::vector<float> & pre_expert_latent,
             const std::vector<float> & routed_latent,
             const std::vector<float> & moe_output,
             const std::vector<float> & post_moe_hidden) {
@@ -102,6 +103,7 @@ public:
             write_vector(pre_moe_hidden) &&
             write_vector(router_logits) &&
             write_vector(selected_ids) &&
+            write_vector(pre_expert_latent) &&
             write_vector(routed_latent) &&
             write_vector(moe_output) &&
             write_vector(post_moe_hidden) &&
@@ -1391,7 +1393,7 @@ bool streamed_kimi_k3_forward(
         if (trace_divergence && !divergence_trace.append(
                 il, base_pos, n_tokens, banked,
                 checkpoint_value, pre_moe_hidden_host,
-                router_logits_host, selected, routed_output,
+                router_logits_host, selected, routed_input_host, routed_output,
                 moe_output_host, next_hidden)) {
             set_last_error(
                 "Kimi-K3 cannot append H17 divergence trace " +

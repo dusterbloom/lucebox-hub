@@ -12,13 +12,10 @@ import numpy as np
 from analyze_kimi_h17_divergence import array_metrics, load_trace
 
 
-STAGES = (
+BASE_STAGES = (
     "layer_input",
     "pre_moe_hidden",
     "router_logits",
-    "routed_latent",
-    "moe_output",
-    "post_moe_hidden",
 )
 
 
@@ -64,7 +61,11 @@ def main() -> int:
         if any(record is None for record in seq_records):
             raise ValueError(f"incomplete sequential rows for layer {layer}")
         batch = batched[layer]
-        for stage in STAGES:
+        stages = list(BASE_STAGES)
+        if header["version"] >= 2:
+            stages.append("pre_expert_latent")
+        stages.extend(("routed_latent", "moe_output", "post_moe_hidden"))
+        for stage in stages:
             reference = np.concatenate(
                 [getattr(record, stage) for record in seq_records], axis=0
             )
