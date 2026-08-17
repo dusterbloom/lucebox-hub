@@ -1,0 +1,43 @@
+{
+  "schema": "k3-progressive-slab-page-cache-control-summary-v1",
+  "status": "HISTORICAL_CONTROL_NOT_DECISION_TRACE",
+  "trace": "/mnt/kimi-k3/results/kimi-p27-direct-pinned-32-row-20260816/io_trace.tsv",
+  "trace_sha256": "63354e24f0de2962db4cf7acaa744c623752f99374ef3254e24560b68a90710c",
+  "workload": "one 32-position calibrated96 trajectory",
+  "measured_phase": "all positions, including the initial/prefill position",
+  "reset_policy": "none; one LRU spans the whole trace",
+  "cache_scope": "slab-only",
+  "capacity_accounting": "exact cached source bytes; simulator metadata is excluded",
+  "runtime_mutation": false,
+  "accounting": {
+    "slab_page_requests": 282252,
+    "slab_page_request_bytes": 156478537728,
+    "mean_tail_rows_uncached": 40594,
+    "mean_tail_logical_bytes_uncached": 6983467008,
+    "exact_fallback_rows_uncached": 6510,
+    "exact_fallback_bytes_uncached": 43143733248
+  },
+  "policies": [
+    {
+      "capacity_gib": 2,
+      "byte_hit_fraction": 0.0,
+      "avoided_physical_read_bytes": 0
+    },
+    {
+      "capacity_gib": 4,
+      "byte_hit_fraction": 0.0,
+      "avoided_physical_read_bytes": 0
+    },
+    {
+      "capacity_gib": 8,
+      "byte_hit_fraction": 0.4955710015567458,
+      "avoided_physical_read_bytes": 77546225664
+    },
+    {
+      "capacity_gib": 16,
+      "byte_hit_fraction": 0.6285744006821705,
+      "avoided_physical_read_bytes": 98358403072
+    }
+  ],
+  "warning": "These figures are not comparable to revision40 without changing workload, phase, and reset policy."
+}
