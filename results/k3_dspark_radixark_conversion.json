@@ -1,0 +1,33 @@
+{
+  "schema": "k3-dspark-conversion-result-v1",
+  "status": "CONVERTED_RUNTIME_VALIDATION_OPEN",
+  "source": {
+    "repository": "RadixArk/Kimi-K3-DSpark",
+    "revision": "3c5bac301d9cf392706189d82ed947feca6c2f0f",
+    "file": "model.safetensors",
+    "bytes": 4498585858,
+    "sha256": "ecd746459b4a603ce0d2c64f73935efead29bd651b14439b99e57ee8b41b77ca"
+  },
+  "output": {
+    "local_path": "/mnt/kimi-k3/models/kimi-k3-dspark-radixark-q8_0.gguf",
+    "bytes": 2390153920,
+    "sha256": "6120005799a768239fe47edd05fc500672eb6eea2d22c089fcfa13e9de56de9a",
+    "file_type": "MOSTLY_Q8_0"
+  },
+  "quantization": {
+    "q8_parameter_count": 2249195520,
+    "q8_tensor_count": 38,
+    "f32_tensor_count": 24,
+    "sampled_relative_rmse_rms": 0.00544127252274911,
+    "sampled_relative_rmse_max": 0.005573317097232007,
+    "maximum_allowed_relative_rmse": 0.01
+  },
+  "runtime_validation": {
+    "status": "OPEN",
+    "blocker": "WSL CUDA device /dev/dxg absent"
+  },
+  "redistribution": {
+    "allowed": false,
+    "reason": "Source repository publishes no clear license file or model-card license field; internal evaluation only pending clarification."
+  }
+}
