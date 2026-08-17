@@ -14,7 +14,8 @@ On the revision-40 1.22-GiB progressive provider, exact width-four
 verification is **2.764x** faster than four sequential transitions. Width eight
 still fails at a later KDA/state boundary, so the real DSpark draft is capped at
 four rows for now. This cap produced exact archived outputs on two end-to-end
-prompts and a measured **1.365x** decode speedup on the 24-token code prompt.
+prompts and a measured **1.483x paired same-binary** decode speedup on the
+24-token code prompt (the older archived-reference comparison is 1.365x).
 
 ## 2026-08-18 recovery result
 

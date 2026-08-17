@@ -39,7 +39,9 @@ the target verifier is exact at width four after single-row MoE arithmetic is
 restored, while width eight still fails its state/logit parity gate. An opt-in
 four-row cap produced archived-token-exact output on two frozen prompts. The
 24-token code prompt accepted 24/24 proposals and reduced decode time from
-33.689 seconds to 24.675 seconds (1.365x). This remains a two-prompt smoke, not
+33.689 seconds to 24.675 seconds (1.365x). A paired autoregressive run using the
+same current binary produced the same 24 tokens in 36.588 seconds versus 24.678
+seconds with speculation, a **1.483x paired speedup**. This remains a two-prompt smoke, not
 a suite-wide speed claim.
 
 ## Reproduction

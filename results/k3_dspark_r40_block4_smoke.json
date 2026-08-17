@@ -35,6 +35,14 @@
       "reference_decode_seconds": 33.688636526,
       "speculative_decode_seconds": 24.675,
       "speedup": 1.3652942867679838,
+      "paired_same_binary_control": {
+        "autoregressive_decode_seconds": 36.588,
+        "speculative_decode_seconds": 24.678,
+        "speedup": 1.4826160953075613,
+        "output_tokens_equal": true,
+        "autoregressive_stdout_sha256": "61bdd5bbb186b35834a0922b3154343ed535a90341ca5c578f67475e6918f931",
+        "autoregressive_telemetry_sha256": "93d24b19de51f743ab126d3a003a35e63d1cb0a2fca1d255bddcc9c6f8e61e69"
+      },
       "speculative_emitted_tokens_per_second": 0.9726443768996961,
       "stdout_sha256": "401dadaf92714c77d148ac5324e7059fc89b1297cddb9c2fc53045b3ebf7c2df",
       "telemetry_sha256": "87004a9f09e8d57a45a8ff3562b8c2fb3b3e5a87713520d3a2f6999e0b0f222f"
@@ -42,7 +50,7 @@
   ],
   "interpretation": {
     "quality": "Both frozen outputs are token-exact to the archived revision-40 provider.",
-    "performance": "The short prompt is neutral/slightly slower; the 24-token code prompt is 1.365x faster. This is a two-prompt smoke, not a suite-wide throughput claim.",
+    "performance": "The short prompt is neutral/slightly slower. The 24-token code prompt is 1.365x faster than the older archived reference and 1.483x faster than a paired same-binary autoregressive control. This is a two-prompt smoke, not a suite-wide throughput claim.",
     "redistribution": "Internal evaluation only pending clarification of the RadixArk draft weight license."
   }
 }
