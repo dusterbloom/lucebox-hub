@@ -21,10 +21,15 @@ native_analysis_output="${KIMI_H23_NATIVE_ANALYSIS_OUTPUT:-$repo_dir/results/h23
 prompt_id="${KIMI_H23_PROMPT_ID:-h23-safe4gib}"
 gpu="${KIMI_H23_GPU:-0}"
 n_gen="${KIMI_H23_N_GEN:-8}"
+draft="${KIMI_H23_DRAFT:-}"
+draft_gpu="${KIMI_H23_DRAFT_GPU:-$gpu}"
 output="$native_root"
 [[ "$mode" == candidate ]] && output="$candidate_root"
 
 required=("$model" "$fixture")
+if [[ -n "$draft" ]]; then
+    required+=("$draft")
+fi
 if [[ "$mode" == candidate ]]; then
     required+=("$native_root/suite/suite-manifest.json" "$aux/all_layers_calibrated96_manifest.json"
                "$sidecars/all_layers_manifest.json" "$table")
@@ -77,7 +82,8 @@ python3 "$repo_dir/scripts/run_with_telemetry.py" \
     --mount-path /mnt/kimi-k3 --gpu "$gpu" --interval 2 -- \
     env "${common_env[@]}" "${mode_env[@]}" \
       "$build_dir/run_kimi_k3_h16_suite" \
-        "$model" "$fixture" "$output/suite" "$gpu" 256 0 cpu "$n_gen"
+        "$model" "$fixture" "$output/suite" "$gpu" 256 0 cpu "$n_gen" \
+        "$draft" "$draft_gpu"
 
 if [[ "$mode" == native ]]; then
     python3 "$repo_dir/scripts/analyze_kimi_h23_quality.py" \

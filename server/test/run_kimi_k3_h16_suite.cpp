@@ -137,7 +137,8 @@ int main(int argc, char ** argv) {
     if (argc < 4) {
         std::fprintf(stderr,
             "usage: %s <first-model-shard.gguf> <suite.jsonl> <output-dir> "
-            "[gpu=0] [max-context=256] [paired=0] [core=cpu] [n-gen=1]\n",
+            "[gpu=0] [max-context=256] [paired=0] [core=cpu] [n-gen=1] "
+            "[draft.gguf] [draft-gpu=0]\n",
             argv[0]);
         return 2;
     }
@@ -148,6 +149,8 @@ int main(int argc, char ** argv) {
     const int max_context = argc > 5 ? std::atoi(argv[5]) : 256;
     const bool paired = argc > 6 && std::atoi(argv[6]) != 0;
     const int n_gen = argc > 8 ? std::atoi(argv[8]) : 1;
+    const std::string draft_path = argc > 9 ? argv[9] : "";
+    const int draft_gpu = argc > 10 ? std::atoi(argv[10]) : gpu;
     KimiK3CorePlacement core_placement = KimiK3CorePlacement::Cpu;
     if (gpu < 0 || max_context <= 0 || n_gen <= 0 || n_gen >= max_context ||
         (argc > 7 && !parse_kimi_k3_core_placement(
@@ -253,6 +256,8 @@ int main(int argc, char ** argv) {
     }
     KimiK3BackendConfig config;
     config.model_path = model_path.c_str();
+    config.draft_path = draft_path.empty() ? nullptr : draft_path.c_str();
+    config.draft_gpu = draft_gpu;
     config.device.gpu = gpu;
     config.device.max_ctx = max_context;
     // Keep the owning string alive; config stores a non-owning pointer.
@@ -278,6 +283,8 @@ int main(int argc, char ** argv) {
     manifest["thinking_enabled"] = enable_thinking;
     manifest["max_context"] = max_context;
     manifest["n_gen"] = n_gen;
+    manifest["draft_path"] = draft_path;
+    manifest["draft_gpu"] = draft_gpu;
     manifest["core_placement"] = argc > 7 ? argv[7] : "cpu";
     manifest["gpu"] = gpu;
     const auto record_environment = [&](const char * key) {
@@ -298,6 +305,7 @@ int main(int argc, char ** argv) {
     record_environment("DFLASH_KIMI_CPU_THREADS");
     record_environment("DFLASH_KIMI_MMAP_DROP_PAGES");
     record_environment("DFLASH_KIMI_MOE_CORE_OFFLOAD");
+    record_environment("DFLASH_KIMI_DRAFT_MAX_BLOCK");
     record_environment("KIMI_H16_REPOSITORY_COMMIT");
     record_environment("KIMI_H16_REPOSITORY_STATUS");
     record_environment("KIMI_H16_SUITE_SHA256");
