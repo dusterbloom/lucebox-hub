@@ -1,0 +1,53 @@
+{
+  "schema": "k3-s0-exact-width4-recovery-v1",
+  "status": "MEASURED_WIDTH4_PASS_WIDTH8_FAIL",
+  "first_localization": {
+    "model_layer": 1,
+    "stage": "pre_expert_latent",
+    "relative_l2": 0.00020973601259180078,
+    "maximum_absolute_error": 0.00007761269807815552,
+    "artifact_sha256": "9a27db067b439d4661000dfedb13e97fc94992194ba47743a42cab6a2a3e70ce"
+  },
+  "compatibility_mode": {
+    "environment": {
+      "DFLASH_KIMI_S0_SERIAL_CORE_ROWS": "1",
+      "DFLASH_KIMI_S0_SERIAL_EXPERT_ROWS": "1"
+    },
+    "default_behavior_changed": false
+  },
+  "native_width4": {
+    "sequential_seconds": 16.73987247,
+    "verify_seconds": 10.32018761,
+    "commit_seconds": 0.478334276,
+    "committed_speedup": 1.550200355819328,
+    "logits_bit_equal": true,
+    "recurrent_state_hash_equal": true,
+    "mla_rows_hash_equal": true,
+    "artifact_sha256": "e701f49161eaf2152a9f360e248e1da80bd7dd8e01deb35f4516085ee3f91e2c"
+  },
+  "revision40_width4": {
+    "sequential_seconds": 10.405560128,
+    "verify_seconds": 3.291146183,
+    "commit_seconds": 0.47292866,
+    "committed_speedup": 2.764440284005267,
+    "sequential_storage_bytes": 11712450560,
+    "verify_storage_bytes": 4896591872,
+    "logits_bit_equal": true,
+    "recurrent_state_hash_equal": true,
+    "mla_rows_hash_equal": true,
+    "trace_first_numerical_divergence": null,
+    "trace_first_router_divergence": null,
+    "artifact_sha256": "e0c853aaf6d11350e715a38bce95cf3aa89c64f01dffb26ec4cd613c7ceeab5d"
+  },
+  "revision40_width8": {
+    "status": "FAILED",
+    "committed_speedup_diagnostic_only": 2.496136106288964,
+    "logits_relative_l2": 0.05939980793900487,
+    "logits_maximum_absolute_error": 2.0793299674987793,
+    "argmax_bit_equal": false,
+    "first_ssm_state_mismatch_layer": 8,
+    "first_conv_state_mismatch_layer": 9,
+    "first_mla_row_mismatch_layer": 11,
+    "artifact_sha256": "174397189282547d12c4c7d895a912097e37595287d0745bae97fc8b17b05086"
+  }
+}

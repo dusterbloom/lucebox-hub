@@ -984,6 +984,15 @@ bool KimiK3Backend::init_draft() {
         free_drafter();
         return false;
     }
+    if (const char * raw = std::getenv("DFLASH_KIMI_DRAFT_MAX_BLOCK")) {
+        const int requested = std::atoi(raw);
+        if (requested >= 2 && requested < draft_weights_.block_size) {
+            std::fprintf(stderr,
+                "[kimi-k3-dspark] limiting draft block %d -> %d\n",
+                draft_weights_.block_size, requested);
+            draft_weights_.block_size = requested;
+        }
+    }
 
     bool compatible =
         draft_weights_.n_embd == weights_.n_embd &&

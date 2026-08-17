@@ -667,6 +667,18 @@ bool run_host_boundary_graph(ggml_backend_t backend,
 
 ggml_context * new_kimi_step_context();
 
+bool serial_offloaded_moe_rows_enabled() {
+    const char * raw =
+        std::getenv("DFLASH_KIMI_S0_SERIAL_CORE_ROWS");
+    return raw && *raw && std::strcmp(raw, "0") != 0;
+}
+
+bool serial_streamed_expert_rows_enabled() {
+    const char * raw =
+        std::getenv("DFLASH_KIMI_S0_SERIAL_EXPERT_ROWS");
+    return raw && *raw && std::strcmp(raw, "0") != 0;
+}
+
 bool run_offloaded_moe_preparation(
         KimiK3MoeCoreOffload & offload,
         const KimiK3Weights & w,
@@ -684,6 +696,63 @@ bool run_offloaded_moe_preparation(
             static_cast<size_t>(w.n_embd) * n_tokens) {
         set_last_error("Kimi-K3 accelerator MoE preparation: invalid input");
         return false;
+    }
+    // S0 diagnostic: replay each row through the exact single-row accelerator
+    // graph.  This isolates batch-width arithmetic in the shared latent/router/
+    // shared-expert preparation without changing expert selection, weights, or
+    // accumulation order.  It is intentionally opt-in until the parity and
+    // performance consequences are measured on the real K3 verifier.
+    if (n_tokens > 1 && serial_offloaded_moe_rows_enabled()) {
+        const size_t hidden_width = static_cast<size_t>(w.n_embd);
+        const size_t latent_width = static_cast<size_t>(w.n_expert_latent);
+        const size_t route_width = static_cast<size_t>(w.n_expert_used);
+        const size_t router_width = static_cast<size_t>(w.n_expert);
+        for (int token = 0; token < n_tokens; ++token) {
+            const size_t token_index = static_cast<size_t>(token);
+            std::vector<float> hidden_row(
+                normalized_hidden.begin() + token_index * hidden_width,
+                normalized_hidden.begin() + (token_index + 1) * hidden_width);
+            std::vector<float> routed_row(latent_width);
+            std::vector<int32_t> selected_row(route_width);
+            std::vector<float> weights_row(route_width);
+            std::vector<float> shared_row;
+            std::vector<float> router_logits_row;
+            if (shared_output) shared_row.resize(hidden_width);
+            if (router_logits_output) router_logits_row.resize(router_width);
+            if (!run_offloaded_moe_preparation(
+                    offload, w, model_layer, 1, hidden_row, routed_row,
+                    selected_row, weights_row,
+                    shared_output ? &shared_row : nullptr,
+                    offload.router && router_logits_output
+                        ? &router_logits_row : nullptr)) {
+                return false;
+            }
+            if (offload.latent) {
+                std::copy(
+                    routed_row.begin(), routed_row.end(),
+                    routed_input.begin() + token_index * latent_width);
+            }
+            if (offload.router) {
+                std::copy(
+                    selected_row.begin(), selected_row.end(),
+                    selected.begin() + token_index * route_width);
+                std::copy(
+                    weights_row.begin(), weights_row.end(),
+                    route_weights.begin() + token_index * route_width);
+            }
+            if (shared_output) {
+                std::copy(
+                    shared_row.begin(), shared_row.end(),
+                    shared_output->begin() + token_index * hidden_width);
+            }
+            if (offload.router && router_logits_output) {
+                std::copy(
+                    router_logits_row.begin(), router_logits_row.end(),
+                    router_logits_output->begin() +
+                        token_index * router_width);
+            }
+        }
+        return true;
     }
     const KimiK3MoeCoreOffloadLayer & source =
         offload.layers[static_cast<size_t>(model_layer)];
@@ -772,6 +841,40 @@ bool run_offloaded_moe_join(
         model_layer >= static_cast<int>(offload.layers.size())) {
         set_last_error("Kimi-K3 accelerator MoE join: invalid layer");
         return false;
+    }
+    if (n_tokens > 1 && serial_offloaded_moe_rows_enabled()) {
+        const size_t hidden_width = static_cast<size_t>(w.n_embd);
+        const size_t latent_width = static_cast<size_t>(w.n_expert_latent);
+        for (int token = 0; token < n_tokens; ++token) {
+            const size_t token_index = static_cast<size_t>(token);
+            std::vector<float> prefix_row(
+                prefix.begin() + token_index * hidden_width,
+                prefix.begin() + (token_index + 1) * hidden_width);
+            std::vector<float> routed_row(
+                routed_output.begin() + token_index * latent_width,
+                routed_output.begin() + (token_index + 1) * latent_width);
+            std::vector<float> shared_row(
+                shared_output.begin() + token_index * hidden_width,
+                shared_output.begin() + (token_index + 1) * hidden_width);
+            std::vector<float> hidden_row(hidden_width);
+            std::vector<float> moe_row;
+            if (moe_output) moe_row.resize(hidden_width);
+            if (!run_offloaded_moe_join(
+                    offload, w, model_layer, 1, prefix_row, routed_row,
+                    shared_row, hidden_row,
+                    moe_output ? &moe_row : nullptr)) {
+                return false;
+            }
+            std::copy(
+                hidden_row.begin(), hidden_row.end(),
+                hidden_output.begin() + token_index * hidden_width);
+            if (moe_output) {
+                std::copy(
+                    moe_row.begin(), moe_row.end(),
+                    moe_output->begin() + token_index * hidden_width);
+            }
+        }
+        return true;
     }
     const KimiK3MoeCoreOffloadLayer & layer =
         offload.layers[static_cast<size_t>(model_layer)];
@@ -1288,16 +1391,50 @@ bool streamed_kimi_k3_forward(
         const ProfileClock::time_point profile_expert_start =
             profile_stages ? ProfileClock::now() :
                 ProfileClock::time_point{};
-        const bool route_ok = alternate_provider
-            ? options.routed_output_provider->evaluate(
-                il, base_pos, spec, route_batch, *stream_engine,
-                routed_output, &stream_error)
-            : dual_owner ? dual_stream_executor->eval(
-                spec, route_batch, *stream_owner_policy,
-                routed_output, &owner_stats, &stream_error)
-            : eval_moe_streamed_experts(
-                *stream_engine, spec, route_batch,
-                routed_output, &stream_error);
+        bool route_ok = false;
+        if (n_tokens > 1 && serial_streamed_expert_rows_enabled() &&
+            !dual_owner) {
+            routed_output.assign(
+                static_cast<size_t>(spec.output_dim) * n_tokens, 0.0f);
+            route_ok = true;
+            for (int token = 0; token < n_tokens; ++token) {
+                MoeStreamRouteBatch row = route_batch;
+                row.n_tokens = 1;
+                row.inputs = route_batch.inputs +
+                    static_cast<size_t>(token) * spec.input_dim;
+                row.selected_ids = route_batch.selected_ids +
+                    static_cast<size_t>(token) * route_batch.top_k;
+                row.selected_weights = route_batch.selected_weights +
+                    static_cast<size_t>(token) * route_batch.top_k;
+                std::vector<float> row_output;
+                const bool row_ok = alternate_provider
+                    ? options.routed_output_provider->evaluate(
+                        il, base_pos + token, spec, row, *stream_engine,
+                        row_output, &stream_error)
+                    : eval_moe_streamed_experts(
+                        *stream_engine, spec, row,
+                        row_output, &stream_error);
+                if (!row_ok) {
+                    route_ok = false;
+                    break;
+                }
+                std::copy(
+                    row_output.begin(), row_output.end(),
+                    routed_output.begin() +
+                        static_cast<size_t>(token) * spec.output_dim);
+            }
+        } else {
+            route_ok = alternate_provider
+                ? options.routed_output_provider->evaluate(
+                    il, base_pos, spec, route_batch, *stream_engine,
+                    routed_output, &stream_error)
+                : dual_owner ? dual_stream_executor->eval(
+                    spec, route_batch, *stream_owner_policy,
+                    routed_output, &owner_stats, &stream_error)
+                : eval_moe_streamed_experts(
+                    *stream_engine, spec, route_batch,
+                    routed_output, &stream_error);
+        }
         if (!route_ok) {
             set_last_error(
                 "Kimi-K3 routed layer " +

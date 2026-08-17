@@ -1,6 +1,6 @@
 # Kimi K3 DSpark draft provenance
 
-STATUS: CONVERTED / RUNTIME VALIDATION OPEN
+STATUS: RUNTIME LOADED / WIDTH-FOUR SPECULATIVE SMOKE PASSED
 
 The shortest compatible draft path is the five-layer
 `RadixArk/Kimi-K3-DSpark` safetensors checkpoint converted with Lucebox's
@@ -33,10 +33,14 @@ must not be redistributed until the weight license is clarified.
 - Sampled relative RMSE, maximum: `0.0055733171`
 - Converter ceiling: `0.01`
 
-The source hash and conversion error gate passed.  Static compatibility and
-conversion are measured complete.  Runtime loading, draft acceptance length,
-and end-to-end speculative speed remain open because the WSL CUDA device was
-not available after conversion.
+The source hash and conversion error gate passed. Runtime loading through the
+real K3 adapter also passed. The native seven-row draft block is not enabled:
+the target verifier is exact at width four after single-row MoE arithmetic is
+restored, while width eight still fails its state/logit parity gate. An opt-in
+four-row cap produced archived-token-exact output on two frozen prompts. The
+24-token code prompt accepted 24/24 proposals and reduced decode time from
+33.689 seconds to 24.675 seconds (1.365x). This remains a two-prompt smoke, not
+a suite-wide speed claim.
 
 ## Reproduction
 

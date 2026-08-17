@@ -2,15 +2,50 @@
 
 ## Verdict
 
-**STOP AT WIDTH FOUR.** The existing K3 target has a real causal multi-token
-forward and ReplaySSM commit path. Width two is bit-exact and gives a measured
-1.55x committed speedup on the frozen calibrated96/P27 path. Width four is not
-numerically correct. The same width-four failure occurs with native streamed
-experts, so it is in the shared K3 multi-token core rather than progressive
-slab batching.
+**WIDTH FOUR RECOVERED; WIDTH EIGHT STILL FAILS.** The existing K3 target has a
+real causal multi-token forward and ReplaySSM commit path. The original batched
+width-four implementation diverged because two MoE boundaries changed
+arithmetic with batch width: the shared pre-expert projection and the streamed
+expert graphs. An opt-in compatibility mode that evaluates those boundaries
+with the established single-row arithmetic restores byte-identical logits,
+recurrent state, MLA rows, every traced layer state, and every router decision.
 
-No width-eight run was performed after the mandatory correctness gate failed.
-No speculative drafter work is earned yet.
+On the revision-40 1.22-GiB progressive provider, exact width-four
+verification is **2.764x** faster than four sequential transitions. Width eight
+still fails at a later KDA/state boundary, so the real DSpark draft is capped at
+four rows for now. This cap produced exact archived outputs on two end-to-end
+prompts and a measured **1.365x** decode speedup on the 24-token code prompt.
+
+## 2026-08-18 recovery result
+
+The v2 divergence trace added the missing pre-expert latent
+`z = W_down h`. The original width-four run first differs there at model layer
+1 (`relL2=2.09736e-4`, `maxabs=7.76127e-5`). Serializing only the offloaded MoE
+core makes `z` exact and moves the first difference to the routed aggregate
+(`relL2=5.83717e-4`). Serializing both the offloaded core and streamed expert
+rows removes every recorded difference.
+
+| provider | width | sequential | verify + commit | committed V | terminal/state parity |
+|---|---:|---:|---:|---:|---|
+| native streamed | 4 | 16.740 s | 10.799 s | **1.550x** | bit/hash equal |
+| revision-40 progressive | 4 | 10.406 s | 3.764 s | **2.764x** | bit/hash equal |
+| revision-40 progressive | 8 |  |  | 2.496x | **FAIL**; logits/state differ |
+
+The width-eight run has no hidden mismatch in the MoE boundary trace, but its
+first SSM mismatch is layer 8, convolution mismatch layer 9, and MLA mismatch
+layer 11. Its speed number is therefore diagnostic only and cannot be used.
+
+Accepted width-four artifacts:
+
+- native S0 result:
+  `/mnt/kimi-k3/results/kimi-s0-native-m4-serial-core-experts-z-v2-20260818/s0.json`
+  (`e701f49161eaf2152a9f360e248e1da80bd7dd8e01deb35f4516085ee3f91e2c`);
+- revision-40 result:
+  `/mnt/kimi-k3/results/kimi-s0-r40-m4-serial-core-experts-20260818/s0.json`
+  (`e0c853aaf6d11350e715a38bce95cf3aa89c64f01dffb26ec4cd613c7ceeab5d`).
+
+The first serial-core attempt accidentally overwrote host router IDs for a
+non-offloaded router and is rejected. It was fixed before the accepted runs.
 
 ## Frozen input convention
 

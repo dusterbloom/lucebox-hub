@@ -1,0 +1,48 @@
+{
+  "schema": "k3-dspark-r40-block4-smoke-v1",
+  "status": "MEASURED",
+  "draft_sha256": "6120005799a768239fe47edd05fc500672eb6eea2d22c089fcfa13e9de56de9a",
+  "provider": "revision40-1.22GiB-progressive",
+  "verifier": {
+    "maximum_block_rows": 4,
+    "width4_parity_gate": "PASS",
+    "width8_parity_gate": "FAIL"
+  },
+  "prompts": [
+    {
+      "id": "fact-capital",
+      "output_token_count": 9,
+      "output_tokens_match_archived_revision40": true,
+      "accepted_draft_tokens": 9,
+      "proposed_draft_tokens": 10,
+      "draft_steps": 3,
+      "average_committed_per_step": 3.0,
+      "reference_decode_seconds": 11.669417862,
+      "speculative_decode_seconds": 11.863,
+      "speedup": 0.9836818563601113,
+      "speculative_emitted_tokens_per_second": 0.7586613841355475,
+      "stdout_sha256": "57f2024d03a7b81f32d0a29ebe95280ef686b817ce7a9977c2fa7776960294e5",
+      "telemetry_sha256": "1c7daf9bb94de205a8e5401b1e71ca71e39bacda8e8036c783142a2f52168ceb"
+    },
+    {
+      "id": "code-function",
+      "output_token_count": 24,
+      "output_tokens_match_archived_revision40": true,
+      "accepted_draft_tokens": 24,
+      "proposed_draft_tokens": 24,
+      "draft_steps": 5,
+      "average_committed_per_step": 4.8,
+      "reference_decode_seconds": 33.688636526,
+      "speculative_decode_seconds": 24.675,
+      "speedup": 1.3652942867679838,
+      "speculative_emitted_tokens_per_second": 0.9726443768996961,
+      "stdout_sha256": "401dadaf92714c77d148ac5324e7059fc89b1297cddb9c2fc53045b3ebf7c2df",
+      "telemetry_sha256": "87004a9f09e8d57a45a8ff3562b8c2fb3b3e5a87713520d3a2f6999e0b0f222f"
+    }
+  ],
+  "interpretation": {
+    "quality": "Both frozen outputs are token-exact to the archived revision-40 provider.",
+    "performance": "The short prompt is neutral/slightly slower; the 24-token code prompt is 1.365x faster. This is a two-prompt smoke, not a suite-wide throughput claim.",
+    "redistribution": "Internal evaluation only pending clarification of the RadixArk draft weight license."
+  }
+}

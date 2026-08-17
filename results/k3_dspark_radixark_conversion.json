@@ -1,6 +1,6 @@
 {
   "schema": "k3-dspark-conversion-result-v1",
-  "status": "CONVERTED_RUNTIME_VALIDATION_OPEN",
+  "status": "CONVERTED_RUNTIME_LOAD_PASS",
   "source": {
     "repository": "RadixArk/Kimi-K3-DSpark",
     "revision": "3c5bac301d9cf392706189d82ed947feca6c2f0f",
@@ -23,8 +23,11 @@
     "maximum_allowed_relative_rmse": 0.01
   },
   "runtime_validation": {
-    "status": "OPEN",
-    "blocker": "WSL CUDA device /dev/dxg absent"
+    "status": "LOAD_PASS",
+    "adapter": "KimiK3Backend generic DFlash/DSpark runtime",
+    "verified_maximum_block_rows": 4,
+    "width4_speculative_smoke": "PASS",
+    "width8_target_parity": "FAIL"
   },
   "redistribution": {
     "allowed": false,
