@@ -16,6 +16,8 @@ candidate_root="${KIMI_H23_CANDIDATE_ROOT:-/mnt/kimi-k3/results/kimi-h23-safe4gi
 aux="${KIMI_H23_AUX_DIR:-/mnt/kimi-k3/artifacts/kimi-h20-calibrated96-runtime}"
 sidecars="${KIMI_H23_SIDECAR_DIR:-/mnt/kimi-k3/artifacts/kimi-h17-natural-sidecars}"
 table="${KIMI_H23_BUDGET_TABLE:-$repo_dir/results/h23_policies/h23_safe_4_0gib.txt}"
+analysis_output="${KIMI_H23_ANALYSIS_OUTPUT:-$repo_dir/results/h23_safe4gib_quality.json}"
+prompt_id="${KIMI_H23_PROMPT_ID:-h23-safe4gib}"
 gpu="${KIMI_H23_GPU:-0}"
 output="$native_root"
 [[ "$mode" == candidate ]] && output="$candidate_root"
@@ -62,7 +64,7 @@ else
         DFLASH_KIMI_P26_PINNED_COMPACT=1
         DFLASH_KIMI_P27_DIRECT_PINNED_COMPACT=1
         DFLASH_KIMI_H22_LAYER_BUDGETS="$table"
-        DFLASH_KIMI_P20_PROMPT_ID=h23-safe4gib
+        DFLASH_KIMI_P20_PROMPT_ID="$prompt_id"
     )
 fi
 
@@ -96,7 +98,7 @@ else
         --sidecar-manifest "$sidecars/all_layers_manifest.json" \
         --warning "Native timing and peak VRAM are not a clean comparison because a brief external GPU run overlapped the native reasoning prompt; quality artifacts are unaffected." \
         --warning "The archived first candidate attempt used a stale binary, rejected the 24-slab table before inference, and is not scored." \
-        --output "$repo_dir/results/h23_safe4gib_quality.json" \
+        --output "$analysis_output" \
         | tee "$output/analysis.stdout.log"
 fi
 

@@ -144,6 +144,65 @@ def read_trace_fallbacks(path: Path) -> dict[int, list[int]]:
     return by_layer
 
 
+def read_trace_routes(path: Path) -> dict[int, list[list[int]]]:
+    """Return all 16 routed expert IDs for every layer/position group.
+
+    The physical I/O trace may contain multiple rows for one expert (for
+    example gate/up/down) or a metadata-only row for a zero-depth prefix.  A
+    set therefore recovers the logical route without counting physical tensor
+    regions.  This lets a newer calibration mask be replayed on the exact same
+    frozen trajectory instead of inheriting stale fallback decisions.
+    """
+    groups: dict[tuple[str, int, int, int], set[int]] = defaultdict(set)
+    with path.open(newline="") as source:
+        reader = csv.DictReader(source, delimiter="\t")
+        required = {
+            "prompt_id", "base_pos", "token_index", "model_layer", "expert_id",
+        }
+        if reader.fieldnames is None or not required.issubset(reader.fieldnames):
+            raise ValueError(f"incompatible I/O trace {path}")
+        for row in reader:
+            key = (
+                row["prompt_id"], int(row["base_pos"]),
+                int(row["token_index"]), int(row["model_layer"]),
+            )
+            groups[key].add(int(row["expert_id"]))
+    by_layer: dict[int, list[list[int]]] = {
+        layer: [] for layer in range(1, LAYERS + 1)
+    }
+    for key in sorted(groups):
+        routed = sorted(groups[key])
+        if len(routed) != TOP_K:
+            raise ValueError(
+                f"trace group {key} has {len(routed)} experts, expected {TOP_K}"
+            )
+        by_layer[key[3]].append(routed)
+    lengths = {len(values) for values in by_layer.values()}
+    if len(lengths) != 1 or not lengths or next(iter(lengths)) <= 0:
+        raise ValueError("route trace does not cover every layer equally")
+    return by_layer
+
+
+def recompute_trace_fallbacks(
+    path: Path, fit_root: Path
+) -> dict[int, list[int]]:
+    routes = read_trace_routes(path)
+    result: dict[int, list[int]] = {}
+    for layer in range(1, LAYERS + 1):
+        state_path = (
+            fit_root / f"kimi_layer{layer:02d}_neuron_slabs_calibration.npz"
+        )
+        with np.load(state_path, allow_pickle=False) as state:
+            calibrated = np.asarray(state["calibrated_experts"], dtype=bool)
+        if calibrated.shape != (EXPERTS,):
+            raise ValueError(f"invalid calibrated mask in {state_path}")
+        result[layer] = [
+            sum(not calibrated[expert] for expert in routed)
+            for routed in routes[layer]
+        ]
+    return result
+
+
 def read_layer_geometry(path: Path) -> dict[int, tuple[int, int]]:
     result: dict[int, tuple[int, int]] = {}
     with path.open(newline="") as source:
@@ -232,7 +291,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--atlas", type=Path, required=True)
     parser.add_argument("--capture-root", type=Path, required=True)
+    parser.add_argument("--capture-tokens", type=int, default=2048)
     parser.add_argument("--fit-root", type=Path, required=True)
+    parser.add_argument(
+        "--fallback-source", choices=("trace", "fit-state"), default="trace",
+        help="replay recorded fallback decisions or recompute them from fit masks",
+    )
     parser.add_argument("--io-trace", type=Path, required=True)
     parser.add_argument("--traffic", type=Path, required=True)
     parser.add_argument("--output-json", type=Path, required=True)
@@ -245,7 +309,11 @@ def main() -> int:
     if len(layers) != LAYERS:
         raise ValueError("H22 atlas must contain 92 layers")
     atlas_by_layer = {int(row["model_layer"]): row for row in layers}
-    fallbacks = read_trace_fallbacks(args.io_trace)
+    fallbacks = (
+        read_trace_fallbacks(args.io_trace)
+        if args.fallback_source == "trace"
+        else recompute_trace_fallbacks(args.io_trace, args.fit_root)
+    )
     geometry = read_layer_geometry(args.traffic)
 
     costs = np.zeros((LAYERS, BUDGETS.size), dtype=np.float64)
@@ -254,7 +322,7 @@ def main() -> int:
     for layer in range(1, LAYERS + 1):
         row = atlas_by_layer[layer]
         curve = local_proxy_curve(
-            args.capture_root / f"kimi_layer{layer:02d}_2048.bin",
+            args.capture_root / f"kimi_layer{layer:02d}_{args.capture_tokens}.bin",
             args.fit_root / f"kimi_layer{layer:02d}_neuron_slabs_calibration.npz",
             layer,
         )
@@ -341,9 +409,18 @@ def main() -> int:
             "p27_io_trace_sha256": sha256(args.io_trace),
             "p27_traffic": str(args.traffic),
             "p27_traffic_sha256": sha256(args.traffic),
+            "capture_root": str(args.capture_root),
+            "capture_tokens": args.capture_tokens,
+            "fit_root": str(args.fit_root),
+            "fit_manifest_sha256": sha256(
+                args.fit_root / "all_layers_calibration_manifest.json"
+            ),
         },
         "method": {
-            "byte_cost": "measured P27 route trace, exact fallback decisions, and mixed-qtype bytes",
+            "byte_cost": (
+                "measured P27 route trace and mixed-qtype bytes; fallback decisions "
+                f"sourced from {args.fallback_source}"
+            ),
             "behavioral_anchor": "measured isolated terminal KL at budget 96",
             "other_budget_cost": "PROJECTED via frozen H22 omitted-residual curve squared",
             "optimization": "exact layer choice dynamic program with conservative 1 MiB byte bins",
