@@ -1,0 +1,79 @@
+{
+  "schema": "kimi-k3-p33-core-boundary-profile-v1",
+  "status": "MEASURED",
+  "provenance": {
+    "boundary_log": "/mnt/kimi-k3/results/kimi-k3-p33-boundary-profile-20260818/stderr.log",
+    "boundary_log_sha256": "3d38830bef0c356d44535f9c472c29b774ac1c2545009765a3dd6371e2feee8d",
+    "requant_plan": "results/k3_p32_kda_requant_plan.json",
+    "requant_plan_sha256": "dabab40375652b196dddf8ed3f048eee7c7bb22c9d554d100c7c1c05f31db5c0",
+    "decode_start": 53
+  },
+  "thread_sweep": {
+    "t8": {
+      "artifact": "results/k3_p33_thread8_stage.json",
+      "artifact_sha256": "cc526bc5e136d4c63afd08f03a7169e2331afbc6db93da4d6b732a5a6a25c07c",
+      "decode_rows": 23,
+      "median_total_ms": 1453.667,
+      "median_routed_preparation_ms": 711.742,
+      "median_expert_ms": 590.775,
+      "transition_rate": 0.6879154579418808
+    },
+    "t12": {
+      "artifact": "results/k3_p32_kda_q4k_stage_profile.json",
+      "artifact_sha256": "0295d8351c000277da287ded396bebbbab2aef5df30cdf4c722cf6f0797a2e90",
+      "decode_rows": 23,
+      "median_total_ms": 1328.166,
+      "median_routed_preparation_ms": 634.375,
+      "median_expert_ms": 561.455,
+      "transition_rate": 0.7529179334510897
+    },
+    "t18": {
+      "artifact": "results/k3_p33_thread18_stage.json",
+      "artifact_sha256": "e55531c48d72a5fa5406741d23a46e746bd9b9e892cfa73af3f43ff93eaace15",
+      "decode_rows": 23,
+      "median_total_ms": 2068.043,
+      "median_routed_preparation_ms": 1127.245,
+      "median_expert_ms": 773.364,
+      "transition_rate": 0.4835489397464172
+    }
+  },
+  "boundary_all_positions": {
+    "positions": 56,
+    "routed_kda_layers": 68,
+    "routed_mla_layers": 24,
+    "kda_per_layer": {
+      "mean_ms": 8.470616859243698,
+      "median_ms": 8.038499999999999,
+      "minimum_ms": 7.46,
+      "maximum_ms": 161.485
+    },
+    "mla_per_layer": {
+      "mean_ms": 6.529029017857143,
+      "median_ms": 6.195,
+      "minimum_ms": 5.69,
+      "maximum_ms": 80.875
+    },
+    "kda_compute_ms_per_position": 576.0019464285714,
+    "mla_compute_ms_per_position": 156.6966964285714
+  },
+  "boundary_decode_positions": {
+    "positions": 3,
+    "routed_kda_layers": 68,
+    "routed_mla_layers": 24,
+    "kda_per_layer": {
+      "mean_ms": 8.421700980392156,
+      "median_ms": 8.0515,
+      "minimum_ms": 7.488,
+      "maximum_ms": 11.773
+    },
+    "mla_per_layer": {
+      "mean_ms": 6.630791666666667,
+      "median_ms": 6.358,
+      "minimum_ms": 5.788,
+      "maximum_ms": 9.789
+    },
+    "kda_compute_ms_per_position": 572.6756666666666,
+    "mla_compute_ms_per_position": 159.13899999999998
+  },
+  "interpretation": "Twelve CPU threads remain the measured optimum. Routed preparation is dominated by graph compute, and recurrent KDA layers dominate that compute; further host packing work cannot remove this stage."
+}
