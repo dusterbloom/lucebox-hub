@@ -56,9 +56,7 @@ common_env=(
     KIMI_H16_REPOSITORY_COMMIT="$(git -C "$repo_dir" rev-parse HEAD)"
     KIMI_H16_REPOSITORY_STATUS="$(git -C "$repo_dir" status --short | sha256sum | awk '{print $1}')"
 )
-if [[ "$skip_analysis" == 1 ]]; then
-    echo "H23 analysis intentionally skipped for performance-only run"
-elif [[ "$mode" == native ]]; then
+if [[ "$mode" == native ]]; then
     mode_env=(DFLASH_KIMI_LAYER1_PROVIDER=exact)
 else
     mode_env=(
@@ -88,7 +86,9 @@ python3 "$repo_dir/scripts/run_with_telemetry.py" \
         "$model" "$fixture" "$output/suite" "$gpu" 256 0 cpu "$n_gen" \
         "$draft" "$draft_gpu"
 
-if [[ "$mode" == native ]]; then
+if [[ "$skip_analysis" == 1 ]]; then
+    echo "H23 analysis intentionally skipped for performance-only run"
+elif [[ "$mode" == native ]]; then
     python3 "$repo_dir/scripts/analyze_kimi_h23_quality.py" \
         --native "$output/suite" --output "$native_analysis_output" \
         | tee "$output/analysis.stdout.log"
