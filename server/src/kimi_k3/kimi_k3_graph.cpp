@@ -1627,6 +1627,231 @@ bool kimi_k3_read_token_embeddings_on_host(
     return read_token_embeddings_on_host(w, tokens, hidden);
 }
 
+bool benchmark_kimi_k3_kda_layer(
+        ggml_backend_t cpu_backend,
+        ggml_backend_t accelerator_backend,
+        const KimiK3Weights & w,
+        int model_layer,
+        int iterations,
+        KimiK3KdaLayerBenchmarkResult & result,
+        std::string * error) {
+    result = KimiK3KdaLayerBenchmarkResult{};
+    auto fail = [&](const std::string & message) {
+        if (error) *error = message;
+        return false;
+    };
+    if (!cpu_backend || !accelerator_backend || model_layer < 0 ||
+        model_layer >= w.n_layer || iterations <= 0 || w.n_embd <= 0 ||
+        w.kda_head_dim <= 0 || w.n_head <= 0 || w.ssm_d_conv <= 1) {
+        return fail("invalid KDA layer benchmark configuration");
+    }
+    const KimiK3Layer & cpu_layer =
+        w.layers[static_cast<size_t>(model_layer)];
+    if (!cpu_layer.recurrent) {
+        return fail("selected model layer is not recurrent KDA");
+    }
+
+    const ggml_tensor * sources[] = {
+        cpu_layer.wq, cpu_layer.wk, cpu_layer.wv, cpu_layer.wo,
+        cpu_layer.ssm_q_conv, cpu_layer.ssm_k_conv,
+        cpu_layer.ssm_v_conv, cpu_layer.ssm_f_a, cpu_layer.ssm_f_b,
+        cpu_layer.ssm_beta, cpu_layer.ssm_a, cpu_layer.ssm_dt_b,
+        cpu_layer.ssm_g, cpu_layer.ssm_o_norm,
+    };
+    for (const ggml_tensor * source : sources) {
+        if (!source) return fail("selected KDA layer has a missing tensor");
+    }
+
+    ggml_context * accelerator_ctx = nullptr;
+    ggml_backend_buffer_t accelerator_buffer = nullptr;
+    ggml_context * cpu_state_ctx = nullptr;
+    ggml_backend_buffer_t cpu_state_buffer = nullptr;
+    auto cleanup = [&]() {
+        if (accelerator_buffer) ggml_backend_buffer_free(accelerator_buffer);
+        if (accelerator_ctx) ggml_free(accelerator_ctx);
+        if (cpu_state_buffer) ggml_backend_buffer_free(cpu_state_buffer);
+        if (cpu_state_ctx) ggml_free(cpu_state_ctx);
+    };
+
+    constexpr size_t tensor_count = sizeof(sources) / sizeof(sources[0]);
+    ggml_init_params accelerator_params{};
+    accelerator_params.mem_size =
+        ggml_tensor_overhead() * (tensor_count + 8) + 16384;
+    accelerator_params.no_alloc = true;
+    accelerator_ctx = ggml_init(accelerator_params);
+    if (!accelerator_ctx) return fail("cannot allocate accelerator metadata");
+
+    KimiK3Layer accelerator_layer;
+    ggml_tensor ** destinations[] = {
+        &accelerator_layer.wq, &accelerator_layer.wk,
+        &accelerator_layer.wv, &accelerator_layer.wo,
+        &accelerator_layer.ssm_q_conv, &accelerator_layer.ssm_k_conv,
+        &accelerator_layer.ssm_v_conv, &accelerator_layer.ssm_f_a,
+        &accelerator_layer.ssm_f_b, &accelerator_layer.ssm_beta,
+        &accelerator_layer.ssm_a, &accelerator_layer.ssm_dt_b,
+        &accelerator_layer.ssm_g, &accelerator_layer.ssm_o_norm,
+    };
+    size_t weight_bytes = 0;
+    for (size_t i = 0; i < tensor_count; ++i) {
+        *destinations[i] = ggml_dup_tensor(accelerator_ctx, sources[i]);
+        if (!*destinations[i]) {
+            cleanup();
+            return fail("cannot duplicate accelerator KDA tensor metadata");
+        }
+        weight_bytes += ggml_nbytes(sources[i]);
+    }
+    accelerator_layer.recurrent = true;
+
+    const int64_t d_inner =
+        static_cast<int64_t>(w.kda_head_dim) * w.n_head;
+    KimiK3LayerCache accelerator_cache;
+    accelerator_cache.conv_state = ggml_new_tensor_2d(
+        accelerator_ctx, GGML_TYPE_F32,
+        w.ssm_d_conv - 1, 3 * d_inner);
+    accelerator_cache.ssm_state = ggml_new_tensor_3d(
+        accelerator_ctx, GGML_TYPE_F32,
+        w.kda_head_dim, w.kda_head_dim, w.n_head);
+    if (!accelerator_cache.conv_state || !accelerator_cache.ssm_state) {
+        cleanup();
+        return fail("cannot allocate accelerator KDA state metadata");
+    }
+    accelerator_buffer = ggml_backend_alloc_ctx_tensors(
+        accelerator_ctx, accelerator_backend);
+    if (!accelerator_buffer) {
+        cleanup();
+        return fail("cannot allocate accelerator KDA tensor buffer");
+    }
+    for (size_t i = 0; i < tensor_count; ++i) {
+        ggml_backend_tensor_copy(sources[i], *destinations[i]);
+    }
+    ggml_backend_tensor_memset(
+        accelerator_cache.conv_state, 0, 0,
+        ggml_nbytes(accelerator_cache.conv_state));
+    ggml_backend_tensor_memset(
+        accelerator_cache.ssm_state, 0, 0,
+        ggml_nbytes(accelerator_cache.ssm_state));
+    ggml_backend_synchronize(accelerator_backend);
+
+    ggml_init_params cpu_state_params{};
+    cpu_state_params.mem_size = ggml_tensor_overhead() * 4 + 4096;
+    cpu_state_params.no_alloc = true;
+    cpu_state_ctx = ggml_init(cpu_state_params);
+    if (!cpu_state_ctx) {
+        cleanup();
+        return fail("cannot allocate CPU KDA state metadata");
+    }
+    KimiK3LayerCache cpu_cache;
+    cpu_cache.conv_state = ggml_new_tensor_2d(
+        cpu_state_ctx, GGML_TYPE_F32,
+        w.ssm_d_conv - 1, 3 * d_inner);
+    cpu_cache.ssm_state = ggml_new_tensor_3d(
+        cpu_state_ctx, GGML_TYPE_F32,
+        w.kda_head_dim, w.kda_head_dim, w.n_head);
+    cpu_state_buffer = ggml_backend_alloc_ctx_tensors(
+        cpu_state_ctx, cpu_backend);
+    if (!cpu_state_buffer) {
+        cleanup();
+        return fail("cannot allocate CPU KDA state buffer");
+    }
+    ggml_backend_buffer_clear(cpu_state_buffer, 0);
+
+    std::vector<float> input(static_cast<size_t>(w.n_embd));
+    constexpr double pi = 3.14159265358979323846;
+    for (size_t i = 0; i < input.size(); ++i) {
+        input[i] = static_cast<float>(
+            0.05 * std::sin((static_cast<double>(i) + 1.0) * pi / 180.0));
+    }
+    std::vector<float> cpu_output(input.size());
+    std::vector<float> accelerator_output(input.size());
+
+    auto run_once = [&](ggml_backend_t backend,
+                        const KimiK3Layer & layer,
+                        KimiK3LayerCache & cache,
+                        std::vector<float> & output,
+                        double & elapsed_ms) {
+        const auto start = std::chrono::steady_clock::now();
+        ggml_context * ctx = new_kimi_step_context();
+        if (!ctx) return false;
+        ggml_cgraph * graph = ggml_new_graph_custom(ctx, 8192, false);
+        ggml_tensor * hidden = ggml_new_tensor_2d(
+            ctx, GGML_TYPE_F32, w.n_embd, 1);
+        ggml_set_input(hidden);
+        ggml_tensor * kda = build_kda(
+            ctx, graph, w, layer, cache, hidden,
+            /*commit_state=*/false, /*capture_replay=*/false);
+        const bool ok = run_host_boundary_graph(
+            backend, ctx, graph,
+            {{hidden, input.data(), input.size() * sizeof(float)}},
+            {{kda, output.data(), output.size() * sizeof(float)}},
+            "isolated KDA benchmark");
+        ggml_free(ctx);
+        elapsed_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        return ok;
+    };
+
+    double warmup_ms = 0.0;
+    if (!run_once(cpu_backend, cpu_layer, cpu_cache, cpu_output, warmup_ms) ||
+        !run_once(accelerator_backend, accelerator_layer,
+                  accelerator_cache, accelerator_output, warmup_ms)) {
+        cleanup();
+        return fail("isolated KDA warmup graph failed");
+    }
+    std::vector<double> cpu_times;
+    std::vector<double> accelerator_times;
+    cpu_times.reserve(static_cast<size_t>(iterations));
+    accelerator_times.reserve(static_cast<size_t>(iterations));
+    for (int iteration = 0; iteration < iterations; ++iteration) {
+        double cpu_ms = 0.0;
+        double accelerator_ms = 0.0;
+        if (!run_once(cpu_backend, cpu_layer, cpu_cache, cpu_output, cpu_ms) ||
+            !run_once(accelerator_backend, accelerator_layer,
+                      accelerator_cache, accelerator_output,
+                      accelerator_ms)) {
+            cleanup();
+            return fail("isolated KDA measured graph failed");
+        }
+        cpu_times.push_back(cpu_ms);
+        accelerator_times.push_back(accelerator_ms);
+    }
+    const auto median = [](std::vector<double> values) {
+        std::sort(values.begin(), values.end());
+        const size_t middle = values.size() / 2;
+        return values.size() % 2 != 0
+            ? values[middle]
+            : 0.5 * (values[middle - 1] + values[middle]);
+    };
+    double squared_error = 0.0;
+    double squared_reference = 0.0;
+    double squared_candidate = 0.0;
+    double dot = 0.0;
+    double max_abs = 0.0;
+    for (size_t i = 0; i < cpu_output.size(); ++i) {
+        const double reference = cpu_output[i];
+        const double candidate = accelerator_output[i];
+        const double difference = candidate - reference;
+        squared_error += difference * difference;
+        squared_reference += reference * reference;
+        squared_candidate += candidate * candidate;
+        dot += reference * candidate;
+        max_abs = std::max(max_abs, std::abs(difference));
+    }
+    result.model_layer = model_layer;
+    result.iterations = iterations;
+    result.weight_bytes = weight_bytes;
+    result.cpu_median_ms = median(cpu_times);
+    result.accelerator_median_ms = median(accelerator_times);
+    result.speedup = result.accelerator_median_ms > 0.0
+        ? result.cpu_median_ms / result.accelerator_median_ms : 0.0;
+    result.relative_l2 = squared_reference > 0.0
+        ? std::sqrt(squared_error / squared_reference) : 0.0;
+    result.cosine = squared_reference > 0.0 && squared_candidate > 0.0
+        ? dot / std::sqrt(squared_reference * squared_candidate) : 0.0;
+    result.max_abs = max_abs;
+    cleanup();
+    return true;
+}
+
 bool create_kimi_k3_cache(ggml_backend_t backend,
                           const KimiK3Weights & w,
                           int max_ctx,

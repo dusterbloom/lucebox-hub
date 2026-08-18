@@ -1,0 +1,76 @@
+{
+  "schema": "kimi-k3-p34-kda-offload-ceiling-v1",
+  "status": "MEASURED_NO_GO_FOR_SPLIT_RUNTIME",
+  "model": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00001-of-00014.gguf",
+  "isolated_layers": [
+    {
+      "model_layer": 1,
+      "weight_bytes": 253542272,
+      "cpu_median_ms": 7.095486,
+      "cuda_median_ms": 1.407940,
+      "speedup": 5.03962242709,
+      "relative_l2": 0.023287886201,
+      "cosine": 0.999729815738
+    },
+    {
+      "model_layer": 40,
+      "weight_bytes": 253542272,
+      "cpu_median_ms": 7.074677,
+      "cuda_median_ms": 1.657131,
+      "speedup": 4.26923218502,
+      "relative_l2": 0.0150422980467,
+      "cosine": 0.999887121701
+    },
+    {
+      "model_layer": 73,
+      "weight_bytes": 253542272,
+      "cpu_median_ms": 7.291444,
+      "cuda_median_ms": 1.599940,
+      "speedup": 4.55732339963,
+      "relative_l2": 0.0186964250228,
+      "cosine": 0.999826071523
+    },
+    {
+      "model_layer": 88,
+      "weight_bytes": 253542272,
+      "cpu_median_ms": 7.302707,
+      "cuda_median_ms": 1.563565,
+      "speedup": 4.67054903378,
+      "relative_l2": 0.0141841442956,
+      "cosine": 0.999899718693
+    }
+  ],
+  "cpu_copy_control": {
+    "model_layer": 88,
+    "threads": 12,
+    "mapped_median_ms": 6.794950,
+    "copied_median_ms": 6.778341,
+    "speedup": 1.00245030458,
+    "bit_equal": true
+  },
+  "integrated_late18": {
+    "layers": [68, 69, 70, 72, 73, 74, 76, 77, 78, 80, 81, 82, 84, 85, 86, 88, 89, 90],
+    "weight_bytes": 4563760896,
+    "reference_transition_ms": 1328.166,
+    "candidate_transition_ms": 1289.787,
+    "reference_transition_rate": 0.7529179334510897,
+    "candidate_transition_rate": 0.775321816703068,
+    "throughput_gain_fraction": 0.029756072948886,
+    "peak_vram_mib": 20539,
+    "aligned_mean_kl": 0.04458304919426509,
+    "aligned_p95_kl": 0.254300304715797,
+    "aligned_max_kl": 0.6735144565839388,
+    "top1_agreement": "62/66",
+    "first_generated_token_divergence": 13,
+    "fixed_24_token_task_gate": "FAILED_TRUNCATED_AFTER_PERCENT_OPERATOR",
+    "raw_manifest_sha256": "42a5f89013545ad1deecbf626a5120cd2d1127c1136bb65fc9908ea6031ec6fb",
+    "raw_stderr_sha256": "73bc98114a81f27dd0971d98f5c834548ca556c54c0bfb016e2ee3baab402321",
+    "raw_telemetry_sha256": "630882d71407b6a99469f7ca7ed66a4324855cac517c463d48da99b90b2ec0f1"
+  },
+  "verdict": {
+    "isolated_cuda_kernel": "STRONG_CEILING",
+    "split_cpu_cuda_runtime": "NO_GO_BELOW_5_PERCENT_GATE",
+    "cpu_copy_repack": "NO_GO",
+    "next": "Do not ship per-layer split KDA. A future attempt must keep the complete selected layer preparation in one accelerator graph or stop."
+  }
+}

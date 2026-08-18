@@ -260,6 +260,31 @@ struct KimiK3ForwardResult {
     std::vector<float> captured_hidden;
 };
 
+// Isolated research measurement for one recurrent KDA layer.  This copies
+// only the selected layer's KDA tensors to the accelerator and compares the
+// same one-token graph against the mapped CPU tensors.  It does not alter the
+// production placement or model state.
+struct KimiK3KdaLayerBenchmarkResult {
+    int model_layer = -1;
+    int iterations = 0;
+    size_t weight_bytes = 0;
+    double cpu_median_ms = 0.0;
+    double accelerator_median_ms = 0.0;
+    double speedup = 0.0;
+    double relative_l2 = 0.0;
+    double cosine = 0.0;
+    double max_abs = 0.0;
+};
+
+bool benchmark_kimi_k3_kda_layer(
+    ggml_backend_t cpu_backend,
+    ggml_backend_t accelerator_backend,
+    const KimiK3Weights & weights,
+    int model_layer,
+    int iterations,
+    KimiK3KdaLayerBenchmarkResult & result,
+    std::string * error = nullptr);
+
 struct KimiK3LoadOptions {
     bool stream_routed_experts = false;
     // Bind non-routed tensors directly to read-only GGUF mappings instead of

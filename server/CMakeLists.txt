@@ -924,6 +924,20 @@ if(DFLASH27B_TESTS)
         endif()
     endif()
 
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/bench_kimi_k3_kda_offload.cpp")
+        add_executable(bench_kimi_k3_kda_offload
+            test/bench_kimi_k3_kda_offload.cpp)
+        target_include_directories(bench_kimi_k3_kda_offload PRIVATE
+            ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(bench_kimi_k3_kda_offload PRIVATE
+            dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+        if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
+            target_link_libraries(bench_kimi_k3_kda_offload PRIVATE CUDA::cudart)
+        else()
+            target_link_libraries(bench_kimi_k3_kda_offload PRIVATE hip::host)
+        endif()
+    endif()
+
     if(DFLASH27B_GPU_BACKEND STREQUAL "hip"
        AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_cuda_pool_shutdown.cpp")
         add_executable(test_cuda_pool_shutdown
