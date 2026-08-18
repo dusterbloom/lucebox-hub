@@ -99,3 +99,47 @@ copy); plain copies that materialize holes can consume the full apparent size.
 Transfer the self-contained package to Lucebox, verify the copied ranges and
 sparse allocation there, then run the same frozen fact prompt through HIP.
 Only after byte identity passes should throughput and cache measurements begin.
+
+## Lucebox4 capacity-safe materialization
+
+The integrated upstream-main revision is `43898ea859ad2a3cc29cad4d3dd0a4d2614aa09b`.
+It builds on Lucebox4 with ROCm 7.2.2 / `gfx1201` at `-j4`. The model-free Kimi
+provider, MoE stream, scheduler, package, and feature gates pass. The broad
+DeepSeek unit test has an upstream-baseline ROCm failure in the dual-device HC
+scratch test: untouched upstream `7bea91924969f697a3b28e8c19ce67b89a255f46`
+segfaults at the same call. This is registered as an upstream hardware/test
+issue, not hidden as a Kimi merge pass.
+
+Lucebox4 has 650,358,591,488 free bytes. The final P38 package consumes
+599,884,431,360 allocated bytes, so directly staging the 594 GB public teacher
+and the 545 GB sidecar bank at once is impossible. The local SSH uplink also
+measured only about 1.5--2.9 MB/s, while a bounded Lucebox4 Hugging Face range
+read measured 26,553,223 B/s.
+
+`scripts/materialize_kimi_k3_slab_bank.py` implements the bounded path:
+
+1. download one public Unsloth expert-containing shard with resumable `curl`;
+2. pack every newly available natural-order layer sidecar;
+3. compare its complete SHA-256 and byte count with the registered local
+   reference manifest;
+4. only then hole-punch those routed tensor ranges;
+5. remove a temporary public shard after all layers that depend on it have
+   verified sidecars.
+
+The script is marker-bound to a dedicated deployment root, refuses foreign
+nonempty roots, retains receipts, enforces a 32 GiB free-space reserve, and is
+safe to resume. It never reads, edits, or removes DeepSeek model data. The
+40.34 GB P32 sparse core and 14.19 GB calibrated auxiliary bank transfer
+separately with sparse-preserving `rsync`.
+
+```sh
+PYTHONPATH=server/deps/llama.cpp/gguf-py \
+python3 scripts/materialize_kimi_k3_slab_bank.py \
+  /home/duster/kimi-k3-deploy/streamed-bank \
+  /home/duster/kimi-k3-deploy/reference-manifests \
+  --download-base-url \
+  https://huggingface.co/unsloth/Kimi-K3-GGUF/resolve/main/UD-IQ1_S
+```
+
+The downloaded public source shards are temporary and intentionally retired;
+the transferred P32 sparse core remains the authoritative non-routed model.
