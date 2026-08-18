@@ -1,0 +1,1 @@
+{"id":"code-function","split":"calibration","text":"Write a Python function named square_even_numbers(values) that returns the squares of only the even integers in values. Return only the function code, with no explanation."}

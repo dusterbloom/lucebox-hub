@@ -18,6 +18,7 @@
 #include <functional>
 #include <future>
 #include <iomanip>
+#include <list>
 #include <limits>
 #include <map>
 #include <memory>
@@ -26,6 +27,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -115,6 +117,141 @@ private:
     std::deque<std::packaged_task<void()>> tasks_;
     std::vector<std::thread> threads_;
     bool stopping_ = false;
+};
+
+enum class P30ReadKind : uint8_t {
+    SidecarSlab = 0,
+    SlabMean = 1,
+    NativeMean = 2,
+};
+
+struct P30ReadKey {
+    int model_layer = 0;
+    P30ReadKind kind = P30ReadKind::SidecarSlab;
+    uint64_t offset = 0;
+    size_t bytes = 0;
+
+    bool operator==(const P30ReadKey & other) const {
+        return model_layer == other.model_layer && kind == other.kind &&
+            offset == other.offset && bytes == other.bytes;
+    }
+};
+
+struct P30ReadKeyHash {
+    size_t operator()(const P30ReadKey & key) const {
+        size_t value = std::hash<uint64_t>{}(key.offset);
+        value ^= std::hash<size_t>{}(key.bytes) + 0x9e3779b9U +
+            (value << 6) + (value >> 2);
+        value ^= std::hash<int>{}(key.model_layer) + 0x9e3779b9U +
+            (value << 6) + (value >> 2);
+        value ^= static_cast<size_t>(key.kind) + 0x9e3779b9U +
+            (value << 6) + (value >> 2);
+        return value;
+    }
+};
+
+// P30's first cache is deliberately simple and semantics-free: immutable
+// aligned sidecar records and immutable calibrated means are copied into a
+// bounded host LRU.  It never caches exact-fallback experts and never changes
+// selection, accumulation, or GPU arithmetic.  A new independent prompt
+// clears residency so suite measurements cannot borrow bytes across users.
+class P30BoundedReadCache {
+public:
+    struct Stats {
+        uint64_t hits = 0;
+        uint64_t misses = 0;
+        uint64_t hit_bytes = 0;
+        uint64_t inserted_bytes = 0;
+        uint64_t evicted_bytes = 0;
+        uint64_t sequence_resets = 0;
+        size_t resident_bytes = 0;
+        size_t entries = 0;
+    };
+
+    void set_capacity(size_t bytes) { capacity_ = bytes; }
+    bool enabled() const { return capacity_ > 0; }
+
+    bool get(const P30ReadKey & key, void * destination) {
+        if (!enabled()) return false;
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto found = entries_.find(key);
+        if (found == entries_.end()) {
+            ++misses_;
+            return false;
+        }
+        if (found->second.bytes.size() != key.bytes) {
+            ++misses_;
+            return false;
+        }
+        std::memcpy(destination, found->second.bytes.data(), key.bytes);
+        lru_.splice(lru_.begin(), lru_, found->second.position);
+        ++hits_;
+        hit_bytes_ += key.bytes;
+        return true;
+    }
+
+    void put(const P30ReadKey & key, const void * source) {
+        if (!enabled() || key.bytes == 0 || key.bytes > capacity_) return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto existing = entries_.find(key);
+        if (existing != entries_.end()) {
+            lru_.splice(lru_.begin(), lru_, existing->second.position);
+            return;
+        }
+        while (!lru_.empty() && resident_bytes_ + key.bytes > capacity_) {
+            const P30ReadKey victim = lru_.back();
+            const auto found = entries_.find(victim);
+            if (found != entries_.end()) {
+                resident_bytes_ -= found->second.bytes.size();
+                evicted_bytes_ += found->second.bytes.size();
+                entries_.erase(found);
+            }
+            lru_.pop_back();
+        }
+        lru_.push_front(key);
+        Entry entry;
+        entry.bytes.resize(key.bytes);
+        std::memcpy(entry.bytes.data(), source, key.bytes);
+        entry.position = lru_.begin();
+        resident_bytes_ += key.bytes;
+        inserted_bytes_ += key.bytes;
+        entries_.emplace(key, std::move(entry));
+    }
+
+    void reset_sequence() {
+        if (!enabled()) return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        entries_.clear();
+        lru_.clear();
+        resident_bytes_ = 0;
+        ++sequence_resets_;
+    }
+
+    Stats stats() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return {hits_, misses_, hit_bytes_, inserted_bytes_, evicted_bytes_,
+                sequence_resets_, resident_bytes_, entries_.size()};
+    }
+
+    size_t capacity() const { return capacity_; }
+
+private:
+    struct Entry {
+        std::vector<uint8_t> bytes;
+        std::list<P30ReadKey>::iterator position;
+    };
+
+    size_t capacity_ = 0;
+    mutable std::mutex mutex_;
+    std::list<P30ReadKey> lru_;
+    std::unordered_map<P30ReadKey, Entry, P30ReadKeyHash> entries_;
+    size_t resident_bytes_ = 0;
+    uint64_t hits_ = 0;
+    uint64_t misses_ = 0;
+    uint64_t hit_bytes_ = 0;
+    uint64_t inserted_bytes_ = 0;
+    uint64_t evicted_bytes_ = 0;
+    uint64_t sequence_resets_ = 0;
 };
 
 struct SlabAuxHeader {
@@ -3132,6 +3269,22 @@ public:
                 "P20 direct-pread currently requires the scratch layout";
             return false;
         }
+        if (const char * cache =
+                std::getenv("DFLASH_KIMI_P30_HOST_CACHE_MB")) {
+            int cache_mib = 0;
+            if (!parse_positive_int(cache, cache_mib) || cache_mib > 8192) {
+                if (err) *err =
+                    "DFLASH_KIMI_P30_HOST_CACHE_MB must be in 1..8192";
+                return false;
+            }
+            if (!direct_pread_) {
+                if (err) *err =
+                    "P30 host cache requires P20 direct-pread";
+                return false;
+            }
+            read_cache_.set_capacity(
+                static_cast<size_t>(cache_mib) * 1024 * 1024);
+        }
         if (const char * persistent =
                 std::getenv("DFLASH_KIMI_P23_PERSISTENT_SCRATCH")) {
             if (std::strcmp(persistent, "1") == 0) {
@@ -3260,6 +3413,7 @@ public:
             "speed-claim=false requested-budget=%s layer-phase=%s dynamic-layer=%s physical-layout=%s "
             "io-backend=%s persistent-scratch=%s compact-upload=%s "
             "pinned-compact=%s direct-pinned-compact=%s p28-oracle=%s "
+            "p30-host-cache-mib=%.1f "
             "valid-layers=%d/92 "
             "invalid-layer-action=exact insufficient-expert-action=exact\n",
             route_prefix_depth_ == 6 ? "four-route-half" :
@@ -3274,6 +3428,7 @@ public:
             pinned_compact_ ? "enabled" : "disabled",
             direct_pinned_compact_ ? "enabled" : "disabled",
             oracle_trace_path_.empty() ? "disabled" : "one-layer",
+            static_cast<double>(read_cache_.capacity()) / (1024.0 * 1024.0),
             valid_layers);
         return true;
     }
@@ -3780,8 +3935,23 @@ private:
             const char * region, const char * qtype, int prefix_depth,
             bool exact_fallback, const std::string & path,
             const char * destination_kind, uint64_t destination_offset) {
-        const bool ok = read_exact_at(fd, destination, bytes, offset);
-        explicit_read_bytes_ += ok ? bytes : 0;
+        const bool slab_mean = std::strcmp(region, "slab-mean") == 0;
+        const bool native_mean = std::strcmp(region, "native-mean") == 0;
+        const bool cacheable = read_cache_.enabled() &&
+            (slab_mean || native_mean);
+        const P30ReadKey cache_key{
+            model_layer,
+            native_mean ? P30ReadKind::NativeMean : P30ReadKind::SlabMean,
+            offset, bytes};
+        const bool cache_hit = cacheable &&
+            read_cache_.get(cache_key, destination);
+        const bool ok = cache_hit || read_exact_at(
+            fd, destination, bytes, offset);
+        if (ok && cacheable && !cache_hit) {
+            read_cache_.put(cache_key, destination);
+        }
+        const uint64_t physical_bytes = ok && !cache_hit ? bytes : 0;
+        explicit_read_bytes_ += physical_bytes;
         if (!io_trace_) return ok;
         const uint64_t aligned_offset = offset & ~(kAlignment - 1);
         const uint64_t end = offset + bytes;
@@ -3795,7 +3965,7 @@ private:
                   << offset << '\t' << bytes << '\t' << aligned_offset
                   << '\t' << aligned_end - aligned_offset << '\t'
                   << destination_kind << '\t' << destination_offset << '\t'
-                  << (ok ? bytes : 0) << '\n';
+                  << physical_bytes << '\n';
         return ok;
     }
 
@@ -3954,6 +4124,7 @@ private:
             uint16_t natural = 0;
             uint64_t aligned_offset = 0;
             size_t aligned_bytes = 0;
+            bool cache_hit = false;
             bool ok = false;
         };
         payloads.clear();
@@ -4051,10 +4222,16 @@ private:
                         failed = true;
                         break;
                     }
-                    const ssize_t got = ::pread(
-                        fd, raw, task.aligned_bytes,
-                        static_cast<off_t>(task.aligned_offset));
+                    const P30ReadKey cache_key{
+                        model_layer, P30ReadKind::SidecarSlab,
+                        task.aligned_offset, task.aligned_bytes};
+                    task.cache_hit = read_cache_.get(cache_key, raw);
+                    const ssize_t got = task.cache_hit
+                        ? static_cast<ssize_t>(task.aligned_bytes)
+                        : ::pread(fd, raw, task.aligned_bytes,
+                                  static_cast<off_t>(task.aligned_offset));
                     if (got == static_cast<ssize_t>(task.aligned_bytes)) {
+                        if (!task.cache_hit) read_cache_.put(cache_key, raw);
                         const auto * source =
                             static_cast<const uint8_t *>(raw) + prefix;
                         if (compact_payloads) {
@@ -4104,8 +4281,10 @@ private:
                 static_cast<uint64_t>(
                     task.expert * kSlabCount + task.natural) *
                     state.slab_bytes;
-            explicit_read_bytes_ += task.aligned_bytes;
-            direct_physical_bytes_ += task.aligned_bytes;
+            const uint64_t physical_bytes = task.cache_hit
+                ? 0 : task.aligned_bytes;
+            explicit_read_bytes_ += physical_bytes;
+            direct_physical_bytes_ += physical_bytes;
             if (!io_trace_) continue;
             const auto emit = [&](const char * region, const char * qtype,
                                   uint64_t offset, size_t logical,
@@ -4120,7 +4299,8 @@ private:
                           << logical << '\t' << task.aligned_offset << '\t'
                           << task.aligned_bytes
                           << "\thost-compact-slab\t" << destination_offset
-                          << '\t' << explicit_bytes << '\n';
+                          << '\t' << (task.cache_hit ? 0 : explicit_bytes)
+                          << '\n';
             };
             emit("gate", ggml_type_name(spec.gate_type), record,
                  static_cast<size_t>(state.gate_slab_bytes), 0,
@@ -4458,6 +4638,11 @@ private:
             const MoeStreamRouteBatch & routes,
             MoeHybridStreamEngine & exact_engine,
             std::vector<float> & output, std::string * err) {
+        if (read_cache_.enabled() && model_layer == kFirstRoutedLayer &&
+            base_pos == 0) {
+            if (cache_sequence_started_) read_cache_.reset_sequence();
+            cache_sequence_started_ = true;
+        }
         const int layer_budget = budget_for_layer(model_layer);
         const int aux_fd = open_read_only(state.aux_path);
         const int sidecar_fd = direct_pread_
@@ -4971,6 +5156,20 @@ private:
                 sparse_device_evaluator_.expert_graph_ns()),
             static_cast<unsigned long long>(
                 sparse_device_evaluator_.expert_readback_ns()));
+        if (read_cache_.enabled()) {
+            const P30BoundedReadCache::Stats cache = read_cache_.stats();
+            std::fprintf(stderr,
+                "[kimi-k3-p30] capacity-bytes=%zu resident-bytes=%zu "
+                "entries=%zu hits=%llu misses=%llu hit-bytes=%llu "
+                "inserted-bytes=%llu evicted-bytes=%llu sequence-resets=%llu\n",
+                read_cache_.capacity(), cache.resident_bytes, cache.entries,
+                static_cast<unsigned long long>(cache.hits),
+                static_cast<unsigned long long>(cache.misses),
+                static_cast<unsigned long long>(cache.hit_bytes),
+                static_cast<unsigned long long>(cache.inserted_bytes),
+                static_cast<unsigned long long>(cache.evicted_bytes),
+                static_cast<unsigned long long>(cache.sequence_resets));
+        }
         if (!oracle_trace_path_.empty()) {
             std::fprintf(stderr,
                 "[kimi-k3-p28] launches=%llu hits=%llu misses=%llu "
@@ -5037,6 +5236,8 @@ private:
     uint64_t device_zero_bytes_ = 0;
     uint64_t direct_physical_bytes_ = 0;
     uint64_t direct_io_ns_ = 0;
+    P30BoundedReadCache read_cache_;
+    bool cache_sequence_started_ = false;
 };
 
 bool parse_positive_int(const char * raw, int & value) {
