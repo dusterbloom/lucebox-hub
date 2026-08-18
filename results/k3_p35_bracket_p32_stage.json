@@ -1,0 +1,80 @@
+{
+  "schema": "kimi-k3-p31-current-stage-profile-v1",
+  "status": "MEASURED",
+  "provenance": {
+    "root": "/mnt/kimi-k3/results/kimi-k3-p35-bracket-p32-code-20260818",
+    "manifest_sha256": "9a58adf943ad4d8f1d268bdb91b4cfa69997a139eeb9f032820d37986597a751",
+    "telemetry_sha256": "c47536f46ac37c6b2ed3bf8b609d9220ebe5a2ba1217fc7cf4455277e249f063",
+    "stderr_sha256": "8cedc60d51565d8975e889306d3aba442c2463fd67fc3e29fcfe5e356d5dc421",
+    "repository_commit": "8dd426fa3e6a0a497230ddf5c0cfcdcbbc5720fa",
+    "provider": "all-layers-calibrated96",
+    "budget_table": "/home/peppi/Dev/kimi-033/work/lucebox-k3-p20/results/h23_10k_policies/h23_moonshot_1_2gib.txt"
+  },
+  "decode_rows": 23,
+  "stages": {
+    "total_ms": {
+      "mean_ms": 1336.251,
+      "median_ms": 1334.989,
+      "minimum_ms": 1302.019,
+      "maximum_ms": 1385.845
+    },
+    "embedding_ms": {
+      "mean_ms": 0.2272608695652174,
+      "median_ms": 0.201,
+      "minimum_ms": 0.172,
+      "maximum_ms": 0.568
+    },
+    "dense_ms": {
+      "mean_ms": 22.15404347826087,
+      "median_ms": 22.163,
+      "minimum_ms": 21.646,
+      "maximum_ms": 22.833
+    },
+    "routed_prep_ms": {
+      "mean_ms": 692.6642173913043,
+      "median_ms": 690.778,
+      "minimum_ms": 679.906,
+      "maximum_ms": 711.439
+    },
+    "offload_prep_ms": {
+      "mean_ms": 63.34891304347826,
+      "median_ms": 62.963,
+      "minimum_ms": 61.571,
+      "maximum_ms": 65.829
+    },
+    "experts_ms": {
+      "mean_ms": 479.2506956521739,
+      "median_ms": 478.884,
+      "minimum_ms": 461.527,
+      "maximum_ms": 504.501
+    },
+    "join_ms": {
+      "mean_ms": 43.07082608695652,
+      "median_ms": 42.531,
+      "minimum_ms": 39.131,
+      "maximum_ms": 48.234
+    },
+    "output_ms": {
+      "mean_ms": 23.831869565217392,
+      "median_ms": 23.828,
+      "minimum_ms": 23.4,
+      "maximum_ms": 24.463
+    },
+    "other_ms": {
+      "mean_ms": 11.70304347826087,
+      "median_ms": 11.712,
+      "minimum_ms": 10.792,
+      "maximum_ms": 12.569
+    }
+  },
+  "median_control_room": {
+    "measured_transition_rate": 0.749069842523047,
+    "routed_preparation_fraction": 0.5174409676783853,
+    "expert_provider_fraction": 0.35871756246680686,
+    "routed_preparation_free_rate": 1.5522864403122578,
+    "expert_provider_free_rate": 1.1680810180994154,
+    "both_free_rate": 6.0486187978975,
+    "target_4_tokens_per_second_ms": 250.0
+  },
+  "verdict": "BOTH_CORE_AND_EXPERT_PATHS_REQUIRE_MULTIPLICATIVE_ACCELERATION"
+}

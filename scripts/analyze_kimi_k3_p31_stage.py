@@ -53,12 +53,27 @@ def main() -> int:
     args = parser.parse_args()
     manifest_path = args.root / "suite" / "suite-manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    sequence = manifest["sequences"][0]
-    prompt_tokens = int(sequence["prompt_token_count"])
     rows = parse(args.root / "stderr.log")
-    decode = [row for row in rows if int(row["position"]) >= prompt_tokens]
-    if len(decode) != len(sequence["output_tokens"]) - 1:
-        raise ValueError("decode stage-row count does not match transitions")
+    decode = []
+    cursor = 0
+    for sequence in manifest["sequences"]:
+        prompt_tokens = int(sequence["prompt_token_count"])
+        generated_tokens = len(sequence["output_tokens"])
+        sequence_rows = prompt_tokens + generated_tokens - 1
+        chunk = rows[cursor : cursor + sequence_rows]
+        if len(chunk) != sequence_rows:
+            raise ValueError("stage-row count does not match suite manifest")
+        expected_positions = list(range(sequence_rows))
+        observed_positions = [int(row["position"]) for row in chunk]
+        if observed_positions != expected_positions:
+            raise ValueError("stage positions do not reset monotonically per sequence")
+        sequence_decode = chunk[prompt_tokens:]
+        if len(sequence_decode) != generated_tokens - 1:
+            raise ValueError("decode stage-row count does not match transitions")
+        decode.extend(sequence_decode)
+        cursor += sequence_rows
+    if cursor != len(rows):
+        raise ValueError("unassigned stage rows remain after suite parsing")
     fields = (
         "total_ms", "embedding_ms", "dense_ms", "routed_prep_ms",
         "offload_prep_ms", "experts_ms", "join_ms", "output_ms", "other_ms",

@@ -667,6 +667,14 @@ bool run_host_boundary_graph(ggml_backend_t backend,
 
 ggml_context * new_kimi_step_context();
 
+void populate_attn_res_bank(
+    ggml_context * ctx,
+    const KimiK3Weights & w,
+    int n_tokens,
+    const std::vector<std::vector<float>> & host_checkpoints,
+    AttnResBank & bank,
+    std::vector<GraphInput> & inputs);
+
 bool serial_offloaded_moe_rows_enabled() {
     const char * raw =
         std::getenv("DFLASH_KIMI_S0_SERIAL_CORE_ROWS");
@@ -921,6 +929,115 @@ bool run_offloaded_moe_join(
     return ok;
 }
 
+bool run_offloaded_complete_preparation(
+        KimiK3MoeCoreOffload & offload,
+        const KimiK3Weights & w,
+        int model_layer,
+        const std::vector<float> & hidden,
+        const std::vector<std::vector<float>> & checkpoints,
+        bool banked,
+        std::vector<float> & prefix_output,
+        std::vector<float> & normalized_hidden_output,
+        std::vector<float> & routed_input,
+        std::vector<int32_t> & selected,
+        std::vector<float> & route_weights,
+        std::vector<float> & shared_output) {
+    if (!offload.complete_preparation_enabled(model_layer) ||
+        hidden.size() != static_cast<size_t>(w.n_embd)) {
+        set_last_error("Kimi-K3 complete accelerator preparation: invalid input");
+        return false;
+    }
+    const KimiK3MoeCoreOffloadLayer & source =
+        offload.layers[static_cast<size_t>(model_layer)];
+    KimiK3Layer layer;
+    layer.recurrent = true;
+    layer.attn_norm = source.attn_norm;
+    layer.ffn_norm = source.ffn_norm;
+    layer.attn_res_score = source.attn_res_score;
+    layer.ffn_res_score = source.ffn_res_score;
+    layer.wq = source.wq;
+    layer.wk = source.wk;
+    layer.wv = source.wv;
+    layer.wo = source.wo;
+    layer.ssm_q_conv = source.ssm_q_conv;
+    layer.ssm_k_conv = source.ssm_k_conv;
+    layer.ssm_v_conv = source.ssm_v_conv;
+    layer.ssm_f_a = source.ssm_f_a;
+    layer.ssm_f_b = source.ssm_f_b;
+    layer.ssm_beta = source.ssm_beta;
+    layer.ssm_a = source.ssm_a;
+    layer.ssm_dt_b = source.ssm_dt_b;
+    layer.ssm_g = source.ssm_g;
+    layer.ssm_o_norm = source.ssm_o_norm;
+    layer.ffn_gate_inp = source.ffn_gate_inp;
+    layer.ffn_exp_probs_b = source.ffn_exp_probs_b;
+    layer.ffn_routed_down = source.ffn_routed_down;
+    layer.ffn_gate_shexp = source.ffn_gate_shexp;
+    layer.ffn_up_shexp = source.ffn_up_shexp;
+    layer.ffn_down_shexp = source.ffn_down_shexp;
+    KimiK3LayerCache cache;
+    cache.conv_state = source.conv_state;
+    cache.ssm_state = source.ssm_state;
+
+    ggml_context * ctx = new_kimi_step_context();
+    if (!ctx) {
+        set_last_error("Kimi-K3 complete accelerator preparation: context failed");
+        return false;
+    }
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 32768, false);
+    std::vector<GraphInput> inputs;
+    ggml_tensor * hidden_in = ggml_new_tensor_2d(
+        ctx, GGML_TYPE_F32, w.n_embd, 1);
+    ggml_set_input(hidden_in);
+    inputs.push_back({
+        hidden_in, hidden.data(), hidden.size() * sizeof(float)});
+    AttnResBank residuals;
+    populate_attn_res_bank(ctx, w, 1, checkpoints, residuals, inputs);
+    ggml_tensor * prefix = hidden_in;
+    ggml_tensor * cur = residuals.mix(prefix, layer.attn_res_score);
+    if (banked) residuals.push(prefix);
+    cur = rms_norm(ctx, cur, layer.attn_norm, w.rms_eps);
+    cur = build_kda(
+        ctx, graph, w, layer, cache, cur,
+        /*commit_state=*/true, /*capture_replay=*/false);
+    prefix = banked ? cur : ggml_add(ctx, prefix, cur);
+    cur = residuals.mix(prefix, layer.ffn_res_score);
+    cur = rms_norm(ctx, cur, layer.ffn_norm, w.rms_eps);
+    ggml_tensor * routed =
+        ggml_mul_mat(ctx, layer.ffn_routed_down, cur);
+    TopKMoeRouterResult router =
+        build_kimi_router(ctx, graph, w, layer, cur);
+    ggml_tensor * selected_out = ggml_cont(ctx, router.selected);
+    ggml_tensor * weights_out = ggml_cont(ctx, router.weights_2d);
+    ggml_tensor * shared_gate =
+        ggml_mul_mat(ctx, layer.ffn_gate_shexp, cur);
+    ggml_tensor * shared_up =
+        ggml_mul_mat(ctx, layer.ffn_up_shexp, cur);
+    ggml_tensor * shared = situ(
+        ctx, shared_gate, shared_up,
+        w.situ_beta, w.situ_linear_beta);
+    shared = ggml_mul_mat(ctx, layer.ffn_down_shexp, shared);
+    const bool ok = run_host_boundary_graph(
+        offload.backend, ctx, graph, inputs,
+        {
+            {prefix, prefix_output.data(),
+             prefix_output.size() * sizeof(float)},
+            {cur, normalized_hidden_output.data(),
+             normalized_hidden_output.size() * sizeof(float)},
+            {routed, routed_input.data(),
+             routed_input.size() * sizeof(float)},
+            {selected_out, selected.data(),
+             selected.size() * sizeof(int32_t)},
+            {weights_out, route_weights.data(),
+             route_weights.size() * sizeof(float)},
+            {shared, shared_output.data(),
+             shared_output.size() * sizeof(float)},
+        },
+        "complete accelerator routed preparation");
+    ggml_free(ctx);
+    return ok;
+}
+
 void populate_attn_res_bank(
         ggml_context * ctx,
         const KimiK3Weights & w,
@@ -1073,6 +1190,22 @@ bool streamed_kimi_k3_forward(
         const bool banked =
             il % w.attn_res_block_size == 0;
         const std::vector<float> checkpoint_value = hidden;
+        KimiK3MoeCoreOffload * core_offload =
+            options.moe_core_offload &&
+            options.moe_core_offload->enabled() &&
+            il < static_cast<int>(options.moe_core_offload->layers.size())
+                ? options.moe_core_offload : nullptr;
+        const bool complete_preparation = core_offload &&
+            core_offload->complete_preparation_enabled(il);
+        if (complete_preparation &&
+            (n_tokens != 1 || options.capture_replay || trace_divergence ||
+             options.stop_before_moe_layer == il)) {
+            set_last_error(
+                "Kimi-K3 complete accelerator preparation currently "
+                "supports only ordinary single-token execution without "
+                "replay or divergence tracing");
+            return false;
+        }
 
         ggml_context * ctx = new_kimi_step_context();
         if (!ctx) {
@@ -1089,36 +1222,38 @@ bool streamed_kimi_k3_forward(
             hidden_in, hidden.data(),
             hidden.size() * sizeof(float)});
 
-        AttnResBank residuals;
-        populate_attn_res_bank(
-            ctx, w, n_tokens, checkpoints, residuals, inputs);
         ggml_tensor * prefix = hidden_in;
-        ggml_tensor * cur =
-            residuals.mix(prefix, layer.attn_res_score);
-        if (banked) residuals.push(prefix);
+        ggml_tensor * cur = hidden_in;
+        if (!complete_preparation) {
+            AttnResBank residuals;
+            populate_attn_res_bank(
+                ctx, w, n_tokens, checkpoints, residuals, inputs);
+            cur = residuals.mix(prefix, layer.attn_res_score);
+            if (banked) residuals.push(prefix);
 
-        cur = rms_norm(
-            ctx, cur, layer.attn_norm, w.rms_eps);
-        if (layer.recurrent) {
-            cur = build_kda(
-                ctx, graph, w, layer, layer_cache, cur,
-                /*commit_state=*/!options.capture_replay,
-                options.capture_replay);
-        } else {
-            ggml_tensor * mask = ggml_new_tensor_2d(
-                ctx, GGML_TYPE_F32, kv_len, n_tokens);
-            ggml_set_input(mask);
-            inputs.push_back({
-                mask, mla_mask.data(), mla_mask.size() * sizeof(float)});
-            cur = build_mla(
-                ctx, graph, w, layer, layer_cache,
-                cur, base_pos, mask);
+            cur = rms_norm(
+                ctx, cur, layer.attn_norm, w.rms_eps);
+            if (layer.recurrent) {
+                cur = build_kda(
+                    ctx, graph, w, layer, layer_cache, cur,
+                    /*commit_state=*/!options.capture_replay,
+                    options.capture_replay);
+            } else {
+                ggml_tensor * mask = ggml_new_tensor_2d(
+                    ctx, GGML_TYPE_F32, kv_len, n_tokens);
+                ggml_set_input(mask);
+                inputs.push_back({
+                    mask, mla_mask.data(), mla_mask.size() * sizeof(float)});
+                cur = build_mla(
+                    ctx, graph, w, layer, layer_cache,
+                    cur, base_pos, mask);
+            }
+            prefix = banked
+                ? cur : ggml_add(ctx, prefix, cur);
+            cur = residuals.mix(prefix, layer.ffn_res_score);
+            cur = rms_norm(
+                ctx, cur, layer.ffn_norm, w.rms_eps);
         }
-        prefix = banked
-            ? cur : ggml_add(ctx, prefix, cur);
-        cur = residuals.mix(prefix, layer.ffn_res_score);
-        cur = rms_norm(
-            ctx, cur, layer.ffn_norm, w.rms_eps);
 
         if (il < w.n_dense_lead) {
             const ProfileClock::time_point profile_start =
@@ -1158,17 +1293,12 @@ bool streamed_kimi_k3_forward(
             continue;
         }
 
-        KimiK3MoeCoreOffload * core_offload =
-            options.moe_core_offload &&
-            options.moe_core_offload->enabled() &&
-            il < static_cast<int>(options.moe_core_offload->layers.size())
-                ? options.moe_core_offload : nullptr;
         const bool router_offloaded =
-            core_offload && core_offload->router;
+            core_offload && (core_offload->router || complete_preparation);
         const bool latent_offloaded =
-            core_offload && core_offload->latent;
+            core_offload && (core_offload->latent || complete_preparation);
         const bool shared_offloaded =
-            core_offload && core_offload->shared;
+            core_offload && (core_offload->shared || complete_preparation);
         const bool stop_at_capture_boundary =
             options.stop_before_moe_layer == il;
         const bool preparation_offloaded =
@@ -1223,16 +1353,20 @@ bool streamed_kimi_k3_forward(
         std::vector<GraphOutput> preparation_outputs;
         if (preparation_offloaded) {
             normalized_hidden_host.resize(hidden_values);
-            preparation_outputs.push_back({
-                cur, normalized_hidden_host.data(),
-                normalized_hidden_host.size() * sizeof(float)});
+            if (!complete_preparation) {
+                preparation_outputs.push_back({
+                    cur, normalized_hidden_host.data(),
+                    normalized_hidden_host.size() * sizeof(float)});
+            }
         }
         if (!stop_at_capture_boundary) {
             prefix_host.resize(hidden_values);
             shared_host.resize(hidden_values);
-            preparation_outputs.push_back({
-                prefix, prefix_host.data(),
-                prefix_host.size() * sizeof(float)});
+            if (!complete_preparation) {
+                preparation_outputs.push_back({
+                    prefix, prefix_host.data(),
+                    prefix_host.size() * sizeof(float)});
+            }
         }
         if (!latent_offloaded) {
             preparation_outputs.push_back({
@@ -1270,9 +1404,8 @@ bool streamed_kimi_k3_forward(
         const ProfileClock::time_point profile_preparation_start =
             profile_stages ? ProfileClock::now() :
                 ProfileClock::time_point{};
-        const bool prep_ok = run_host_boundary_graph(
-            backend, ctx, graph, inputs,
-            preparation_outputs,
+        const bool prep_ok = complete_preparation || run_host_boundary_graph(
+            backend, ctx, graph, inputs, preparation_outputs,
             "routed layer preparation");
         ggml_free(ctx);
         if (!prep_ok) return false;
@@ -1280,7 +1413,22 @@ bool streamed_kimi_k3_forward(
             profile_routed_preparation_ns +=
                 profile_elapsed_ns(profile_preparation_start);
         }
-        if (preparation_offloaded) {
+        if (complete_preparation) {
+            const ProfileClock::time_point profile_offload_start =
+                profile_stages ? ProfileClock::now() :
+                    ProfileClock::time_point{};
+            if (!run_offloaded_complete_preparation(
+                    *core_offload, w, il, hidden, checkpoints, banked,
+                    prefix_host, normalized_hidden_host,
+                    routed_input_host, selected, route_weights,
+                    shared_host)) {
+                return false;
+            }
+            if (profile_stages) {
+                profile_offloaded_preparation_ns +=
+                    profile_elapsed_ns(profile_offload_start);
+            }
+        } else if (preparation_offloaded) {
             if (trace_divergence) {
                 pre_moe_hidden_host = normalized_hidden_host;
             }
@@ -1848,6 +1996,339 @@ bool benchmark_kimi_k3_kda_layer(
     result.cosine = squared_reference > 0.0 && squared_candidate > 0.0
         ? dot / std::sqrt(squared_reference * squared_candidate) : 0.0;
     result.max_abs = max_abs;
+    cleanup();
+    return true;
+}
+
+bool benchmark_kimi_k3_routed_preparation(
+        ggml_backend_t cpu_backend,
+        ggml_backend_t accelerator_backend,
+        const KimiK3Weights & w,
+        int model_layer,
+        int iterations,
+        KimiK3RoutedPreparationBenchmarkResult & result,
+        std::string * error) {
+    result = KimiK3RoutedPreparationBenchmarkResult{};
+    auto fail = [&](const std::string & message) {
+        if (error) *error = message;
+        return false;
+    };
+    if (!cpu_backend || !accelerator_backend || model_layer < w.n_dense_lead ||
+        model_layer >= w.n_layer || iterations <= 0 || w.n_embd <= 0 ||
+        w.n_expert_latent <= 0 || w.n_expert_used <= 0 ||
+        w.attn_res_block_size <= 0) {
+        return fail("invalid routed-preparation benchmark configuration");
+    }
+    const KimiK3Layer & cpu_layer =
+        w.layers[static_cast<size_t>(model_layer)];
+    if (!cpu_layer.recurrent) {
+        return fail("selected routed-preparation layer is not recurrent KDA");
+    }
+
+    const ggml_tensor * sources[] = {
+        cpu_layer.attn_norm, cpu_layer.ffn_norm,
+        cpu_layer.attn_res_score, cpu_layer.ffn_res_score,
+        cpu_layer.wq, cpu_layer.wk, cpu_layer.wv, cpu_layer.wo,
+        cpu_layer.ssm_q_conv, cpu_layer.ssm_k_conv,
+        cpu_layer.ssm_v_conv, cpu_layer.ssm_f_a, cpu_layer.ssm_f_b,
+        cpu_layer.ssm_beta, cpu_layer.ssm_a, cpu_layer.ssm_dt_b,
+        cpu_layer.ssm_g, cpu_layer.ssm_o_norm,
+        cpu_layer.ffn_gate_inp, cpu_layer.ffn_exp_probs_b,
+        cpu_layer.ffn_routed_down, cpu_layer.ffn_gate_shexp,
+        cpu_layer.ffn_up_shexp, cpu_layer.ffn_down_shexp,
+    };
+    for (const ggml_tensor * source : sources) {
+        if (!source) {
+            return fail("selected routed-preparation layer has a missing tensor");
+        }
+    }
+
+    ggml_context * accelerator_ctx = nullptr;
+    ggml_backend_buffer_t accelerator_buffer = nullptr;
+    ggml_context * cpu_state_ctx = nullptr;
+    ggml_backend_buffer_t cpu_state_buffer = nullptr;
+    auto cleanup = [&]() {
+        if (accelerator_buffer) ggml_backend_buffer_free(accelerator_buffer);
+        if (accelerator_ctx) ggml_free(accelerator_ctx);
+        if (cpu_state_buffer) ggml_backend_buffer_free(cpu_state_buffer);
+        if (cpu_state_ctx) ggml_free(cpu_state_ctx);
+    };
+
+    constexpr size_t tensor_count = sizeof(sources) / sizeof(sources[0]);
+    ggml_init_params accelerator_params{};
+    accelerator_params.mem_size =
+        ggml_tensor_overhead() * (tensor_count + 8) + 32768;
+    accelerator_params.no_alloc = true;
+    accelerator_ctx = ggml_init(accelerator_params);
+    if (!accelerator_ctx) {
+        return fail("cannot allocate routed-preparation accelerator metadata");
+    }
+    KimiK3Layer accelerator_layer;
+    ggml_tensor ** destinations[] = {
+        &accelerator_layer.attn_norm, &accelerator_layer.ffn_norm,
+        &accelerator_layer.attn_res_score,
+        &accelerator_layer.ffn_res_score,
+        &accelerator_layer.wq, &accelerator_layer.wk,
+        &accelerator_layer.wv, &accelerator_layer.wo,
+        &accelerator_layer.ssm_q_conv,
+        &accelerator_layer.ssm_k_conv,
+        &accelerator_layer.ssm_v_conv,
+        &accelerator_layer.ssm_f_a, &accelerator_layer.ssm_f_b,
+        &accelerator_layer.ssm_beta, &accelerator_layer.ssm_a,
+        &accelerator_layer.ssm_dt_b, &accelerator_layer.ssm_g,
+        &accelerator_layer.ssm_o_norm,
+        &accelerator_layer.ffn_gate_inp,
+        &accelerator_layer.ffn_exp_probs_b,
+        &accelerator_layer.ffn_routed_down,
+        &accelerator_layer.ffn_gate_shexp,
+        &accelerator_layer.ffn_up_shexp,
+        &accelerator_layer.ffn_down_shexp,
+    };
+    size_t weight_bytes = 0;
+    for (size_t i = 0; i < tensor_count; ++i) {
+        *destinations[i] = ggml_dup_tensor(accelerator_ctx, sources[i]);
+        if (!*destinations[i]) {
+            cleanup();
+            return fail("cannot duplicate routed-preparation tensor metadata");
+        }
+        weight_bytes += ggml_nbytes(sources[i]);
+    }
+    accelerator_layer.recurrent = true;
+
+    const int64_t d_inner =
+        static_cast<int64_t>(w.kda_head_dim) * w.n_head;
+    KimiK3LayerCache accelerator_cache;
+    accelerator_cache.conv_state = ggml_new_tensor_2d(
+        accelerator_ctx, GGML_TYPE_F32,
+        w.ssm_d_conv - 1, 3 * d_inner);
+    accelerator_cache.ssm_state = ggml_new_tensor_3d(
+        accelerator_ctx, GGML_TYPE_F32,
+        w.kda_head_dim, w.kda_head_dim, w.n_head);
+    if (!accelerator_cache.conv_state || !accelerator_cache.ssm_state) {
+        cleanup();
+        return fail("cannot allocate routed-preparation accelerator state");
+    }
+    accelerator_buffer = ggml_backend_alloc_ctx_tensors(
+        accelerator_ctx, accelerator_backend);
+    if (!accelerator_buffer) {
+        cleanup();
+        return fail("cannot allocate routed-preparation accelerator buffer");
+    }
+    for (size_t i = 0; i < tensor_count; ++i) {
+        ggml_backend_tensor_copy(sources[i], *destinations[i]);
+    }
+    ggml_backend_tensor_memset(
+        accelerator_cache.conv_state, 0, 0,
+        ggml_nbytes(accelerator_cache.conv_state));
+    ggml_backend_tensor_memset(
+        accelerator_cache.ssm_state, 0, 0,
+        ggml_nbytes(accelerator_cache.ssm_state));
+    ggml_backend_synchronize(accelerator_backend);
+
+    ggml_init_params cpu_state_params{};
+    cpu_state_params.mem_size = ggml_tensor_overhead() * 4 + 4096;
+    cpu_state_params.no_alloc = true;
+    cpu_state_ctx = ggml_init(cpu_state_params);
+    if (!cpu_state_ctx) {
+        cleanup();
+        return fail("cannot allocate routed-preparation CPU state metadata");
+    }
+    KimiK3LayerCache cpu_cache;
+    cpu_cache.conv_state = ggml_new_tensor_2d(
+        cpu_state_ctx, GGML_TYPE_F32,
+        w.ssm_d_conv - 1, 3 * d_inner);
+    cpu_cache.ssm_state = ggml_new_tensor_3d(
+        cpu_state_ctx, GGML_TYPE_F32,
+        w.kda_head_dim, w.kda_head_dim, w.n_head);
+    cpu_state_buffer = ggml_backend_alloc_ctx_tensors(
+        cpu_state_ctx, cpu_backend);
+    if (!cpu_state_buffer) {
+        cleanup();
+        return fail("cannot allocate routed-preparation CPU state buffer");
+    }
+    ggml_backend_buffer_clear(cpu_state_buffer, 0);
+
+    const int checkpoint_count =
+        (model_layer + w.attn_res_block_size - 1) /
+        w.attn_res_block_size;
+    std::vector<float> hidden(static_cast<size_t>(w.n_embd));
+    constexpr double pi = 3.14159265358979323846;
+    for (size_t i = 0; i < hidden.size(); ++i) {
+        hidden[i] = static_cast<float>(
+            0.05 * std::sin((static_cast<double>(i) + 1.0) * pi / 180.0));
+    }
+    std::vector<std::vector<float>> checkpoints(
+        static_cast<size_t>(checkpoint_count),
+        std::vector<float>(static_cast<size_t>(w.n_embd)));
+    for (int checkpoint = 0; checkpoint < checkpoint_count; ++checkpoint) {
+        for (size_t i = 0; i < hidden.size(); ++i) {
+            checkpoints[static_cast<size_t>(checkpoint)][i] =
+                static_cast<float>(0.04 * std::cos(
+                    (static_cast<double>(i) + 1.0) *
+                    (checkpoint + 1.0) * pi / 256.0));
+        }
+    }
+
+    struct Outputs {
+        std::vector<float> prefix;
+        std::vector<float> routed;
+        std::vector<int32_t> selected;
+        std::vector<float> route_weights;
+        std::vector<float> shared;
+    };
+    auto make_outputs = [&]() {
+        Outputs out;
+        out.prefix.resize(static_cast<size_t>(w.n_embd));
+        out.routed.resize(static_cast<size_t>(w.n_expert_latent));
+        out.selected.resize(static_cast<size_t>(w.n_expert_used));
+        out.route_weights.resize(static_cast<size_t>(w.n_expert_used));
+        out.shared.resize(static_cast<size_t>(w.n_embd));
+        return out;
+    };
+    Outputs cpu_output = make_outputs();
+    Outputs accelerator_output = make_outputs();
+    const bool banked = model_layer % w.attn_res_block_size == 0;
+
+    auto run_once = [&](ggml_backend_t backend,
+                        const KimiK3Layer & layer,
+                        KimiK3LayerCache & cache,
+                        Outputs & output,
+                        double & elapsed_ms) {
+        const auto start = std::chrono::steady_clock::now();
+        ggml_context * ctx = new_kimi_step_context();
+        if (!ctx) return false;
+        ggml_cgraph * graph = ggml_new_graph_custom(ctx, 32768, false);
+        std::vector<GraphInput> inputs;
+        ggml_tensor * hidden_in = ggml_new_tensor_2d(
+            ctx, GGML_TYPE_F32, w.n_embd, 1);
+        ggml_set_input(hidden_in);
+        inputs.push_back({
+            hidden_in, hidden.data(), hidden.size() * sizeof(float)});
+        AttnResBank residuals;
+        populate_attn_res_bank(
+            ctx, w, 1, checkpoints, residuals, inputs);
+        ggml_tensor * prefix = hidden_in;
+        ggml_tensor * cur = residuals.mix(prefix, layer.attn_res_score);
+        if (banked) residuals.push(prefix);
+        cur = rms_norm(ctx, cur, layer.attn_norm, w.rms_eps);
+        cur = build_kda(
+            ctx, graph, w, layer, cache, cur,
+            /*commit_state=*/false, /*capture_replay=*/false);
+        prefix = banked ? cur : ggml_add(ctx, prefix, cur);
+        cur = residuals.mix(prefix, layer.ffn_res_score);
+        cur = rms_norm(ctx, cur, layer.ffn_norm, w.rms_eps);
+
+        ggml_tensor * routed =
+            ggml_mul_mat(ctx, layer.ffn_routed_down, cur);
+        TopKMoeRouterResult router =
+            build_kimi_router(ctx, graph, w, layer, cur);
+        ggml_tensor * selected = ggml_cont(ctx, router.selected);
+        ggml_tensor * route_weights = ggml_cont(ctx, router.weights_2d);
+        ggml_tensor * shared_gate =
+            ggml_mul_mat(ctx, layer.ffn_gate_shexp, cur);
+        ggml_tensor * shared_up =
+            ggml_mul_mat(ctx, layer.ffn_up_shexp, cur);
+        ggml_tensor * shared = situ(
+            ctx, shared_gate, shared_up,
+            w.situ_beta, w.situ_linear_beta);
+        shared = ggml_mul_mat(ctx, layer.ffn_down_shexp, shared);
+
+        const bool ok = run_host_boundary_graph(
+            backend, ctx, graph, inputs,
+            {
+                {prefix, output.prefix.data(),
+                 output.prefix.size() * sizeof(float)},
+                {routed, output.routed.data(),
+                 output.routed.size() * sizeof(float)},
+                {selected, output.selected.data(),
+                 output.selected.size() * sizeof(int32_t)},
+                {route_weights, output.route_weights.data(),
+                 output.route_weights.size() * sizeof(float)},
+                {shared, output.shared.data(),
+                 output.shared.size() * sizeof(float)},
+            },
+            "complete routed-preparation benchmark");
+        ggml_free(ctx);
+        elapsed_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        return ok;
+    };
+
+    double warmup_ms = 0.0;
+    if (!run_once(
+            cpu_backend, cpu_layer, cpu_cache, cpu_output, warmup_ms) ||
+        !run_once(
+            accelerator_backend, accelerator_layer,
+            accelerator_cache, accelerator_output, warmup_ms)) {
+        cleanup();
+        return fail("complete routed-preparation warmup graph failed");
+    }
+    std::vector<double> cpu_times;
+    std::vector<double> accelerator_times;
+    cpu_times.reserve(static_cast<size_t>(iterations));
+    accelerator_times.reserve(static_cast<size_t>(iterations));
+    for (int iteration = 0; iteration < iterations; ++iteration) {
+        double cpu_ms = 0.0;
+        double accelerator_ms = 0.0;
+        if (!run_once(
+                cpu_backend, cpu_layer, cpu_cache,
+                cpu_output, cpu_ms) ||
+            !run_once(
+                accelerator_backend, accelerator_layer,
+                accelerator_cache, accelerator_output, accelerator_ms)) {
+            cleanup();
+            return fail("complete routed-preparation measured graph failed");
+        }
+        cpu_times.push_back(cpu_ms);
+        accelerator_times.push_back(accelerator_ms);
+    }
+    const auto median = [](std::vector<double> values) {
+        std::sort(values.begin(), values.end());
+        const size_t middle = values.size() / 2;
+        return values.size() % 2 != 0
+            ? values[middle]
+            : 0.5 * (values[middle - 1] + values[middle]);
+    };
+    double max_abs = 0.0;
+    const auto relative_l2 = [&](const std::vector<float> & reference,
+                                 const std::vector<float> & candidate) {
+        double squared_error = 0.0;
+        double squared_reference = 0.0;
+        for (size_t i = 0; i < reference.size(); ++i) {
+            const double difference =
+                static_cast<double>(candidate[i]) - reference[i];
+            squared_error += difference * difference;
+            squared_reference +=
+                static_cast<double>(reference[i]) * reference[i];
+            max_abs = std::max(max_abs, std::abs(difference));
+        }
+        return squared_reference > 0.0
+            ? std::sqrt(squared_error / squared_reference) : 0.0;
+    };
+
+    result.model_layer = model_layer;
+    result.checkpoint_count = checkpoint_count;
+    result.iterations = iterations;
+    result.weight_bytes = weight_bytes;
+    result.cpu_median_ms = median(cpu_times);
+    result.accelerator_median_ms = median(accelerator_times);
+    result.speedup = result.accelerator_median_ms > 0.0
+        ? result.cpu_median_ms / result.accelerator_median_ms : 0.0;
+    result.prefix_relative_l2 = relative_l2(
+        cpu_output.prefix, accelerator_output.prefix);
+    result.routed_relative_l2 = relative_l2(
+        cpu_output.routed, accelerator_output.routed);
+    result.shared_relative_l2 = relative_l2(
+        cpu_output.shared, accelerator_output.shared);
+    result.route_weight_relative_l2 = relative_l2(
+        cpu_output.route_weights, accelerator_output.route_weights);
+    result.max_abs = max_abs;
+    result.selected_id_count = static_cast<int>(cpu_output.selected.size());
+    for (size_t i = 0; i < cpu_output.selected.size(); ++i) {
+        if (cpu_output.selected[i] == accelerator_output.selected[i]) {
+            ++result.selected_id_agreement;
+        }
+    }
     cleanup();
     return true;
 }

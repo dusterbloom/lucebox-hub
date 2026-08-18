@@ -1,0 +1,25 @@
+{
+  "schema": "kimi-logit-comparison-v1",
+  "reference": "/mnt/kimi-k3/results/kimi-k3-p35-bracket-p32-code-20260818/suite/code-function.teacher.logits.f32",
+  "candidate": "/mnt/kimi-k3/results/kimi-k3-p35-complete-prep-late18-code-r2-20260818/suite/code-function.teacher.logits.f32",
+  "header": {
+    "version": 1,
+    "vocabulary": 163840,
+    "rows": 76,
+    "prompt_tokens": 53,
+    "generated_tokens": 24
+  },
+  "byte_identical": false,
+  "logits_byte_identical": false,
+  "maximum_absolute_logit_difference": 2.790229558944702,
+  "teacher_to_candidate_divergence": {
+    "mean": 0.0065426203251473,
+    "median": 0.0015388205832874854,
+    "maximum": 0.11146831204379874
+  },
+  "top_choice_agreement": {
+    "count": 76,
+    "denominator": 76,
+    "rate": 1.0
+  }
+}

@@ -1158,6 +1158,7 @@ bool KimiK3Backend::benchmark_oracle_verify(
     };
     const auto rebuild_prompt = [&]() {
         reset_kimi_k3_cache(cache_);
+        reset_kimi_k3_moe_core_offload_state(moe_core_offload_);
         for (size_t index = 0; index < prompt.size(); ++index) {
             KimiK3ForwardResult ignored;
             if (!forward({prompt[index]}, static_cast<int>(index), false, false,
@@ -1543,6 +1544,7 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
     if (req.do_sample && req.sampler.seed != 0) rng_.seed(req.sampler.seed);
 
     reset_kimi_k3_cache(cache_);
+    reset_kimi_k3_moe_core_offload_state(moe_core_offload_);
     std::vector<float> logits;
     std::vector<float> logits_trace;
     std::vector<float> paired_candidate_trace;

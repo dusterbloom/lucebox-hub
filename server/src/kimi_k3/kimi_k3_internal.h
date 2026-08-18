@@ -151,6 +151,29 @@ struct KimiK3Weights {
 // each routed layer.  The CPU tensors remain immutable and are the default
 // path.  This copy is enabled only by the explicit research environment gate.
 struct KimiK3MoeCoreOffloadLayer {
+    // Present only for layers selected by
+    // DFLASH_KIMI_COMPLETE_PREP_LAYERS.  These tensors and recurrent states
+    // keep the complete pre-expert half of that routed layer on one backend.
+    ggml_tensor * attn_norm       = nullptr;
+    ggml_tensor * ffn_norm        = nullptr;
+    ggml_tensor * attn_res_score  = nullptr;
+    ggml_tensor * ffn_res_score   = nullptr;
+    ggml_tensor * wq              = nullptr;
+    ggml_tensor * wk              = nullptr;
+    ggml_tensor * wv              = nullptr;
+    ggml_tensor * wo              = nullptr;
+    ggml_tensor * ssm_q_conv      = nullptr;
+    ggml_tensor * ssm_k_conv      = nullptr;
+    ggml_tensor * ssm_v_conv      = nullptr;
+    ggml_tensor * ssm_f_a         = nullptr;
+    ggml_tensor * ssm_f_b         = nullptr;
+    ggml_tensor * ssm_beta        = nullptr;
+    ggml_tensor * ssm_a           = nullptr;
+    ggml_tensor * ssm_dt_b        = nullptr;
+    ggml_tensor * ssm_g           = nullptr;
+    ggml_tensor * ssm_o_norm      = nullptr;
+    ggml_tensor * conv_state      = nullptr;
+    ggml_tensor * ssm_state       = nullptr;
     ggml_tensor * ffn_gate_inp    = nullptr;
     ggml_tensor * ffn_exp_probs_b = nullptr;
     ggml_tensor * ffn_routed_down = nullptr;
@@ -167,6 +190,7 @@ struct KimiK3MoeCoreOffload {
     ggml_backend_t backend = nullptr; // non-owning
     std::vector<KimiK3MoeCoreOffloadLayer> layers;
     size_t weight_bytes = 0;
+    size_t state_bytes = 0;
     // Execution families selected by DFLASH_KIMI_MOE_CORE_OFFLOAD.  Keeping
     // these explicit lets the research path leave the numerically sensitive
     // router on the CPU while independently measuring latent and shared-MoE
@@ -174,6 +198,7 @@ struct KimiK3MoeCoreOffload {
     bool router = false;
     bool latent = false;
     bool shared = false;
+    std::vector<uint8_t> complete_preparation;
 
     bool enabled() const {
         return backend && buf && !layers.empty();
@@ -185,6 +210,12 @@ struct KimiK3MoeCoreOffload {
 
     bool join_enabled() const {
         return enabled() && latent;
+    }
+
+    bool complete_preparation_enabled(int model_layer) const {
+        return enabled() && model_layer >= 0 &&
+            model_layer < static_cast<int>(complete_preparation.size()) &&
+            complete_preparation[static_cast<size_t>(model_layer)] != 0;
     }
 };
 
@@ -285,6 +316,38 @@ bool benchmark_kimi_k3_kda_layer(
     KimiK3KdaLayerBenchmarkResult & result,
     std::string * error = nullptr);
 
+// Isolated ceiling for the complete pre-expert half of one recurrent routed
+// layer.  Unlike KimiK3KdaLayerBenchmarkResult this includes both AttnRes
+// mixes, their norms, KDA, the native router/latent projection, and the shared
+// expert.  It therefore measures the real CPU -> streamed-expert boundary:
+// prefix, routed latent, route IDs/weights, and shared output are read back.
+// Production execution remains unchanged.
+struct KimiK3RoutedPreparationBenchmarkResult {
+    int model_layer = -1;
+    int checkpoint_count = 0;
+    int iterations = 0;
+    size_t weight_bytes = 0;
+    double cpu_median_ms = 0.0;
+    double accelerator_median_ms = 0.0;
+    double speedup = 0.0;
+    double prefix_relative_l2 = 0.0;
+    double routed_relative_l2 = 0.0;
+    double shared_relative_l2 = 0.0;
+    double route_weight_relative_l2 = 0.0;
+    double max_abs = 0.0;
+    int selected_id_agreement = 0;
+    int selected_id_count = 0;
+};
+
+bool benchmark_kimi_k3_routed_preparation(
+    ggml_backend_t cpu_backend,
+    ggml_backend_t accelerator_backend,
+    const KimiK3Weights & weights,
+    int model_layer,
+    int iterations,
+    KimiK3RoutedPreparationBenchmarkResult & result,
+    std::string * error = nullptr);
+
 struct KimiK3LoadOptions {
     bool stream_routed_experts = false;
     // Bind non-routed tensors directly to read-only GGUF mappings instead of
@@ -316,6 +379,7 @@ bool init_kimi_k3_moe_core_offload(ggml_backend_t accelerator_backend,
                                    KimiK3MoeCoreOffload & out,
                                    std::string * error = nullptr);
 void free_kimi_k3_moe_core_offload(KimiK3MoeCoreOffload & offload);
+void reset_kimi_k3_moe_core_offload_state(KimiK3MoeCoreOffload & offload);
 
 // Decode selected embedding rows with the format's canonical scalar decoder.
 // This is the fallback used when a device backend does not implement GET_ROWS

@@ -709,6 +709,28 @@ void free_kimi_k3_moe_core_offload(KimiK3MoeCoreOffload & offload) {
     offload = KimiK3MoeCoreOffload{};
 }
 
+void reset_kimi_k3_moe_core_offload_state(KimiK3MoeCoreOffload & offload) {
+    if (!offload.enabled()) return;
+    bool cleared = false;
+    for (size_t il = 0; il < offload.layers.size(); ++il) {
+        if (!offload.complete_preparation_enabled(static_cast<int>(il))) {
+            continue;
+        }
+        KimiK3MoeCoreOffloadLayer & layer = offload.layers[il];
+        if (layer.conv_state) {
+            ggml_backend_tensor_memset(
+                layer.conv_state, 0, 0, ggml_nbytes(layer.conv_state));
+            cleared = true;
+        }
+        if (layer.ssm_state) {
+            ggml_backend_tensor_memset(
+                layer.ssm_state, 0, 0, ggml_nbytes(layer.ssm_state));
+            cleared = true;
+        }
+    }
+    if (cleared) ggml_backend_synchronize(offload.backend);
+}
+
 bool init_kimi_k3_moe_core_offload(
         ggml_backend_t accelerator_backend,
         const KimiK3Weights & weights,
@@ -753,13 +775,49 @@ bool init_kimi_k3_moe_core_offload(
         return fail("DFLASH_KIMI_MOE_CORE_OFFLOAD selected no families");
     }
 
+    out.complete_preparation.assign(
+        static_cast<size_t>(weights.n_layer), 0);
+    size_t complete_layer_count = 0;
+    if (const char * raw_complete =
+            std::getenv("DFLASH_KIMI_COMPLETE_PREP_LAYERS")) {
+        if (*raw_complete && std::strcmp(raw_complete, "0") != 0) {
+            if (!out.latent || !out.shared) {
+                return fail("complete preparation requires the existing "
+                            "latent,shared MoE-core placement");
+            }
+            std::stringstream stream(raw_complete);
+            std::string value;
+            while (std::getline(stream, value, ',')) {
+                if (value.empty()) {
+                    return fail("complete preparation layer list contains "
+                                "an empty entry");
+                }
+                char * end = nullptr;
+                const long parsed = std::strtol(value.c_str(), &end, 10);
+                if (!end || *end != '\0' || parsed < weights.n_dense_lead ||
+                    parsed >= weights.n_layer ||
+                    !weights.layers[static_cast<size_t>(parsed)].recurrent) {
+                    return fail("complete preparation requires comma-separated "
+                                "recurrent routed model-layer IDs");
+                }
+                uint8_t & selected = out.complete_preparation[
+                    static_cast<size_t>(parsed)];
+                if (!selected) {
+                    selected = 1;
+                    ++complete_layer_count;
+                }
+            }
+        }
+    }
+
     const size_t tensors_per_layer =
         (out.router ? 2U : 0U) +
         (out.latent ? 3U : 0U) +
         (out.shared ? 3U : 0U);
     const size_t tensor_count =
         static_cast<size_t>(weights.n_layer - weights.n_dense_lead) *
-        tensors_per_layer;
+        tensors_per_layer + complete_layer_count *
+            (20U + (out.router ? 0U : 2U));
     ggml_init_params params{};
     params.mem_size = ggml_tensor_overhead() * (tensor_count + 64) +
         256 * 1024;
@@ -793,7 +851,10 @@ bool init_kimi_k3_moe_core_offload(
             weights.layers[static_cast<size_t>(il)];
         KimiK3MoeCoreOffloadLayer & destination =
             out.layers[static_cast<size_t>(il)];
-        if (out.router) {
+        const bool complete = il >= 0 &&
+            il < static_cast<int>(out.complete_preparation.size()) &&
+            out.complete_preparation[static_cast<size_t>(il)] != 0;
+        if (out.router || complete) {
             destination.ffn_gate_inp =
                 duplicate(source.ffn_gate_inp, "router");
             destination.ffn_exp_probs_b =
@@ -815,7 +876,53 @@ bool init_kimi_k3_moe_core_offload(
             destination.ffn_down_shexp =
                 duplicate(source.ffn_down_shexp, "shared_down");
         }
-        if ((out.router &&
+        if (complete) {
+            destination.attn_norm =
+                duplicate(source.attn_norm, "complete_attn_norm");
+            destination.ffn_norm =
+                duplicate(source.ffn_norm, "complete_ffn_norm");
+            destination.attn_res_score =
+                duplicate(source.attn_res_score, "complete_attn_res");
+            destination.ffn_res_score =
+                duplicate(source.ffn_res_score, "complete_ffn_res");
+            destination.wq = duplicate(source.wq, "complete_wq");
+            destination.wk = duplicate(source.wk, "complete_wk");
+            destination.wv = duplicate(source.wv, "complete_wv");
+            destination.wo = duplicate(source.wo, "complete_wo");
+            destination.ssm_q_conv =
+                duplicate(source.ssm_q_conv, "complete_q_conv");
+            destination.ssm_k_conv =
+                duplicate(source.ssm_k_conv, "complete_k_conv");
+            destination.ssm_v_conv =
+                duplicate(source.ssm_v_conv, "complete_v_conv");
+            destination.ssm_f_a =
+                duplicate(source.ssm_f_a, "complete_f_a");
+            destination.ssm_f_b =
+                duplicate(source.ssm_f_b, "complete_f_b");
+            destination.ssm_beta =
+                duplicate(source.ssm_beta, "complete_beta");
+            destination.ssm_a = duplicate(source.ssm_a, "complete_a");
+            destination.ssm_dt_b =
+                duplicate(source.ssm_dt_b, "complete_dt_b");
+            destination.ssm_g = duplicate(source.ssm_g, "complete_g");
+            destination.ssm_o_norm =
+                duplicate(source.ssm_o_norm, "complete_o_norm");
+            const int64_t d_inner =
+                static_cast<int64_t>(weights.kda_head_dim) * weights.n_head;
+            destination.conv_state = ggml_new_tensor_2d(
+                out.ctx, GGML_TYPE_F32,
+                weights.ssm_d_conv - 1, 3 * d_inner);
+            destination.ssm_state = ggml_new_tensor_3d(
+                out.ctx, GGML_TYPE_F32, weights.kda_head_dim,
+                weights.kda_head_dim, weights.n_head);
+            if (destination.conv_state) {
+                out.state_bytes += ggml_nbytes(destination.conv_state);
+            }
+            if (destination.ssm_state) {
+                out.state_bytes += ggml_nbytes(destination.ssm_state);
+            }
+        }
+        if (((out.router || complete) &&
              (!destination.ffn_gate_inp ||
               !destination.ffn_exp_probs_b)) ||
             (out.latent &&
@@ -824,7 +931,18 @@ bool init_kimi_k3_moe_core_offload(
             (out.shared &&
              (!destination.ffn_gate_shexp ||
               !destination.ffn_up_shexp ||
-              !destination.ffn_down_shexp))) {
+              !destination.ffn_down_shexp)) ||
+            (complete &&
+             (!destination.attn_norm || !destination.ffn_norm ||
+              !destination.attn_res_score || !destination.ffn_res_score ||
+              !destination.wq || !destination.wk || !destination.wv ||
+              !destination.wo || !destination.ssm_q_conv ||
+              !destination.ssm_k_conv || !destination.ssm_v_conv ||
+              !destination.ssm_f_a || !destination.ssm_f_b ||
+              !destination.ssm_beta || !destination.ssm_a ||
+              !destination.ssm_dt_b || !destination.ssm_g ||
+              !destination.ssm_o_norm || !destination.conv_state ||
+              !destination.ssm_state))) {
             return fail("routed layer " + std::to_string(il) +
                         " has incomplete MoE-core tensors");
         }
@@ -838,10 +956,10 @@ bool init_kimi_k3_moe_core_offload(
     }
     constexpr size_t kReserveBytes = 2ULL * 1024 * 1024 * 1024;
     if (free_bytes != 0 &&
-        (out.weight_bytes > free_bytes ||
-         free_bytes - out.weight_bytes < kReserveBytes)) {
+        (out.weight_bytes + out.state_bytes > free_bytes ||
+         free_bytes - out.weight_bytes - out.state_bytes < kReserveBytes)) {
         return fail("MoE-core offload requires " +
-                    std::to_string(out.weight_bytes) +
+                    std::to_string(out.weight_bytes + out.state_bytes) +
                     " bytes but accelerator free memory is " +
                     std::to_string(free_bytes) +
                     " bytes (2-GiB reserve required)");
@@ -865,13 +983,16 @@ bool init_kimi_k3_moe_core_offload(
     for (const CopyPair & copy : copies) {
         ggml_backend_tensor_copy(copy.source, copy.destination);
     }
+    reset_kimi_k3_moe_core_offload_state(out);
     ggml_backend_synchronize(accelerator_backend);
     std::fprintf(stderr,
         "[kimi-k3] accelerator MoE core ready layers=%d "
-        "bytes=%zu (%.2f GiB)\n",
+        "weights=%zu state=%zu total=%.2f GiB complete-prep=%zu\n",
         weights.n_layer - weights.n_dense_lead, out.weight_bytes,
-        static_cast<double>(out.weight_bytes) /
-            (1024.0 * 1024.0 * 1024.0));
+        out.state_bytes,
+        static_cast<double>(out.weight_bytes + out.state_bytes) /
+            (1024.0 * 1024.0 * 1024.0),
+        complete_layer_count);
     std::fflush(stderr);
     return true;
 }

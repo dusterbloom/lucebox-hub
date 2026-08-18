@@ -1,0 +1,105 @@
+{
+  "schema": "k3_p35_complete_routed_preparation_v1",
+  "status": "MEASURED_PRACTICAL_GO",
+  "base_commit": "8dd426fa3e6a0a497230ddf5c0cfcdcbbc5720fa",
+  "policy": {
+    "model": "Kimi-K3-KDA-Q4_K (P32)",
+    "calibrated_slab_policy": "h23_moonshot_1_2gib",
+    "complete_preparation_layers": [
+      68, 69, 70, 72, 73, 74, 76, 77, 78,
+      80, 81, 82, 84, 85, 86, 88, 89, 90
+    ],
+    "layer_count": 18,
+    "semantics": "AttnRes mixing, normalization, KDA, router, routed latent and shared expert execute in one accelerator graph; streamed routed experts and the native full-width join remain unchanged",
+    "opt_in": true,
+    "speculative_verification_supported": false
+  },
+  "isolated_complete_preparation": [
+    {
+      "layer": 1,
+      "weight_bytes": 408804736,
+      "cpu_median_ms": 10.773495,
+      "accelerator_median_ms": 2.226478,
+      "speedup": 4.83880595272,
+      "selected_id_agreement": "16/16",
+      "artifact_sha256": "de89a672beb10dbdb023d298c11c209e6abc27732c88d8aff3018355c55c4aba"
+    },
+    {
+      "layer": 40,
+      "weight_bytes": 408804736,
+      "cpu_median_ms": 11.261773,
+      "accelerator_median_ms": 3.024262,
+      "speedup": 3.7238086515,
+      "selected_id_agreement": "16/16",
+      "artifact_sha256": "780d6721654a770beb72f0dce9e7e4c9d506cb229989278985ba82a4afbfd7e0"
+    },
+    {
+      "layer": 73,
+      "weight_bytes": 408804736,
+      "cpu_median_ms": 11.908566,
+      "accelerator_median_ms": 3.044948,
+      "speedup": 3.91092590087,
+      "selected_id_agreement": "16/16",
+      "artifact_sha256": "ebc93a88f9be0b3f5075071d24102ada4685cd44e98057155ab08d00fe27e2d5"
+    },
+    {
+      "layer": 88,
+      "weight_bytes": 408804736,
+      "cpu_median_ms": 11.755151,
+      "accelerator_median_ms": 3.278309,
+      "speedup": 3.58573612188,
+      "selected_id_agreement": "13/16 synthetic control",
+      "artifact_sha256": "0d5c293271397db11ccc034627572d3f552102af70c840006cb53ea1bf58a3da"
+    }
+  ],
+  "paired_code_gate": {
+    "p32_transition_rate": 0.749069842523047,
+    "p35_transition_rate": 0.7949473148667072,
+    "speedup": 1.0612459209265905,
+    "p32_median_transition_ms": 1334.989,
+    "p35_median_transition_ms": 1257.945,
+    "generated_tokens_identical": true,
+    "top1_agreement": "76/76",
+    "p32_to_p35_mean_kl": 0.0065426203251473,
+    "p32_to_p35_max_kl": 0.11146831204379874,
+    "task_success": true,
+    "p35_manifest_sha256": "0350a0672d76ac83dabbed005b187720e3e9853e6da5c56b402e0209990814d1"
+  },
+  "broad_12_prompt_gate": {
+    "p32_elapsed_seconds": 934.8202877340082,
+    "p35_elapsed_seconds": 863.6736048099992,
+    "wall_speedup": 1.0823768175011677,
+    "p32_true_decode_transitions": 129,
+    "p32_decode_seconds": 175.68968831899997,
+    "p32_true_decode_rate": 0.7342491254567801,
+    "p35_true_decode_transitions": 130,
+    "p35_decode_seconds": 162.371235555,
+    "p35_true_decode_rate": 0.8006344199799176,
+    "decode_speedup": 1.0904124938274034,
+    "stage_median_transition_ms": 1242.6515,
+    "stage_median_transition_rate": 0.8047308517311572,
+    "native_success_tasks_retained": "12/12",
+    "token_exact_vs_native": "8/12",
+    "token_exact_vs_p32": "11/12",
+    "p32_to_p35_mean_kl": 0.008731244920649693,
+    "p32_to_p35_median_kl": 0.0024786910327418876,
+    "p32_to_p35_p95_kl": 0.03821339627789921,
+    "p32_to_p35_max_kl": 0.43066697603282705,
+    "p32_to_p35_top1_agreement": "655/675",
+    "native_to_p35_mean_kl": 0.7048184113076938,
+    "native_to_p32_mean_kl": 0.6903441554478453,
+    "logical_provider_gib_per_position": 1.2209488597433589,
+    "peak_ram_kib": 40322004,
+    "peak_vram_mib": 21023,
+    "energy_joules": 105758.12124220848,
+    "p35_manifest_sha256": "33db00bcefc11767260901264758238a57ddf38072f017d272f695ca763ed6dd",
+    "p35_stderr_sha256": "fe286ca692063416cbcf24e9eb0e05d8e5a9c4c17fa00579721b4613e02c2ed1",
+    "p35_telemetry_sha256": "12885d0ff079d4487909cd77f0d4c8b5d2ee0b89f1d99a03dcd2123af00dd805"
+  },
+  "verdict": {
+    "systems": "PRACTICAL_GO",
+    "quality": "PRACTICAL_TASK_RETENTION_NOT_DISTRIBUTIONAL_EQUIVALENCE",
+    "production_default": false,
+    "reason": "The paired decode gate improves 6.12%, the broad true decode rate improves 9.04%, and 12/12 tasks survive. The additional CPU-vs-CUDA arithmetic raises native KL slightly and requires stronger thinking-enabled evaluation before default enablement."
+  }
+}
