@@ -48,6 +48,7 @@ class LayerSpec:
     output_name: str
     output_bytes: int
     output_sha256: str
+    header_version: int
     components: dict[str, SourceSpec]
 
 
@@ -89,6 +90,13 @@ def load_reference(reference_directory: Path) -> tuple[list[LayerSpec], dict[str
             raise ValueError(f"reference layer mismatch in {path}")
         if record.get("ordering") != "natural neuron order (all-192 numerical control only)":
             raise ValueError(f"reference ordering mismatch in {path}")
+        component_header_fields = [
+            f"{component}_slab_bytes" in record
+            for component in ("gate", "up", "down")
+        ]
+        if any(component_header_fields) and not all(component_header_fields):
+            raise ValueError(f"incomplete component geometry in {path}")
+        header_version = 2 if all(component_header_fields) else 1
         components: dict[str, SourceSpec] = {}
         for component in ("gate", "up", "down"):
             source_record = record["source_shards"][component]
@@ -107,6 +115,7 @@ def load_reference(reference_directory: Path) -> tuple[list[LayerSpec], dict[str
                 output_name=f"kimi_layer{layer:02d}_natural_slabs.k3slab",
                 output_bytes=int(record["output_bytes"]),
                 output_sha256=str(record["output_sha256"]),
+                header_version=header_version,
                 components=components,
             )
         )
@@ -363,6 +372,8 @@ def pack_layer(
             "--down-shard",
             str(sources["down"]),
         ]
+        if spec.header_version == 1:
+            command.append("--legacy-natural-v1")
         print(f"[materialize] pack layer={spec.layer}", flush=True)
         subprocess.run(command, check=True)
         if output.stat().st_size != spec.output_bytes:

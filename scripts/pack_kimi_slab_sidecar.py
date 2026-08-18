@@ -45,6 +45,15 @@ def parse_args() -> argparse.Namespace:
             "numerical control, where ordering cannot affect selection."
         ),
     )
+    parser.add_argument(
+        "--legacy-natural-v1",
+        action="store_true",
+        help=(
+            "emit the registered version-1 natural-order header used by the "
+            "uniform IQ1_S reference sidecars; requires --natural-order and "
+            "three equal legacy component sizes"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -62,6 +71,8 @@ def align(value: int, alignment: int) -> int:
 
 def main() -> int:
     args = parse_args()
+    if args.legacy_natural_v1 and not args.natural_order:
+        raise ValueError("--legacy-natural-v1 requires --natural-order")
     started = time.monotonic()
     shard_paths = {
         "gate": args.gate_shard or args.shard,
@@ -122,6 +133,16 @@ def main() -> int:
     gate_slab_bytes = SLAB_SIZE * gate_row_bytes
     up_slab_bytes = SLAB_SIZE * up_row_bytes
     down_slab_bytes = DIMENSION * (down_row_bytes // SLAB_COUNT)
+    if args.legacy_natural_v1:
+        legacy_component_bytes = SLAB_SIZE * 700
+        if (
+            gate_slab_bytes,
+            up_slab_bytes,
+            down_slab_bytes,
+        ) != (legacy_component_bytes,) * 3:
+            raise ValueError(
+                "legacy natural v1 requires equal IQ1_S slab component sizes"
+            )
     slab_bytes = gate_slab_bytes + up_slab_bytes + down_slab_bytes
     record_bytes = SLAB_COUNT * slab_bytes
     if record_bytes % BLOCK_ALIGNMENT:
@@ -135,10 +156,11 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_suffix(args.output.suffix + ".tmp")
     digest = hashlib.sha256()
-    header_struct = HEADER_V2 if args.natural_order else HEADER_V1
+    use_natural_v2 = args.natural_order and not args.legacy_natural_v1
+    header_struct = HEADER_V2 if use_natural_v2 else HEADER_V1
     header_values = [
         MAGIC,
-        2 if args.natural_order else 1,
+        2 if use_natural_v2 else 1,
         args.layer,
         EXPERT_COUNT,
         DIMENSION,
@@ -152,7 +174,7 @@ def main() -> int:
         slab_bytes,
         record_bytes,
     ]
-    if args.natural_order:
+    if use_natural_v2:
         header_values.extend(
             [gate_slab_bytes, up_slab_bytes, down_slab_bytes]
         )

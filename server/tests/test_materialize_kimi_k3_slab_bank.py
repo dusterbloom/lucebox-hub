@@ -33,6 +33,12 @@ class StreamedSlabMaterializerTest(unittest.TestCase):
                     "output_bytes": 1000 + layer,
                     "output_sha256": f"{layer:064x}",
                 }
+                if layer >= 11:
+                    record.update(
+                        gate_slab_bytes=179200,
+                        up_slab_bytes=179200,
+                        down_slab_bytes=179200,
+                    )
                 (references / f"kimi_layer{layer:02d}_natural_slabs.json").write_text(
                     json.dumps(record)
                 )
@@ -40,6 +46,9 @@ class StreamedSlabMaterializerTest(unittest.TestCase):
             self.assertEqual(len(layers), 92)
             self.assertEqual(layers[0].layer, 1)
             self.assertEqual(layers[-1].layer, 92)
+            self.assertEqual(layers[0].header_version, 1)
+            self.assertEqual(layers[9].header_version, 1)
+            self.assertEqual(layers[10].header_version, 2)
             self.assertGreater(len(sources), 1)
 
     def test_refuses_unmarked_nonempty_root(self) -> None:
