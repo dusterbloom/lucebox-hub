@@ -10,8 +10,10 @@
 
 #include "server/sse_emitter.h"
 #include "server/tool_parser.h"
+#include "server/model_card.h"
 #include "server/reasoning.h"
 #include "server/prefix_cache.h"
+#include "server/pin_friendly_prompt.h"
 #include "server/disk_prefix_cache.h"
 #include "server/freeze_history.h"
 #include "server/utf8_utils.h"
@@ -32,6 +34,8 @@
 #include "common/kvflash_pager.h"
 #include "placement/draft_residency.h"
 #include "common/gguf_bounds.h"
+#include "common/gguf_inspect.h"
+#include "qwen35/prefill_helpers.h"
 #include "ggml-cpu.h"
 #include "server/prompt_normalize.h"
 #include "qwen3_drafter_model.h"
@@ -39,7 +43,9 @@
 #include "gguf.h"
 #include <nlohmann/json.hpp>
 
+#include <filesystem>
 #include <cmath>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -52,6 +58,9 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <unistd.h>
+#if !defined(_WIN32)
+#include <sys/socket.h>
+#endif
 
 #if defined(_WIN32)
 #define dflash_setenv(name, value) _putenv_s(name, value)
@@ -90,6 +99,157 @@ struct ServerUnitFixture {};
             std::to_string(__LINE__) + ": " + #expr + " — " + std::string(msg)); \
     } \
 } while (0)
+
+TEST_CASE(ServerUnitFixture, test_api_format_names_are_total) {
+    CHECK(std::string(api_format_name(ApiFormat::OPENAI_CHAT)) == "chat");
+    CHECK(std::string(api_format_name(ApiFormat::ANTHROPIC)) == "anthropic");
+    CHECK(std::string(api_format_name(ApiFormat::RESPONSES)) == "responses");
+    CHECK(std::string(api_format_name(ApiFormat::COMPLETIONS)) == "completions");
+}
+
+TEST_CASE(ServerUnitFixture, test_daemon_io_external_cancellation_latches) {
+    bool cancel = false;
+    DaemonIO io;
+    io.should_cancel = [&cancel]() { return cancel; };
+
+    TEST_ASSERT(!io.is_cancelled());
+    cancel = true;
+    TEST_ASSERT(io.is_cancelled());
+    cancel = false;
+    TEST_ASSERT(io.is_cancelled());
+}
+
+#if !defined(_WIN32)
+TEST_CASE(ServerUnitFixture, test_http_peer_socket_probe_preserves_half_close) {
+    int sockets[2] = {-1, -1};
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    TEST_ASSERT(http_detail::inspect_peer_socket(sockets[0]) ==
+                http_detail::PeerSocketState::Connected);
+
+    const char byte = 'x';
+    TEST_ASSERT(write(sockets[1], &byte, 1) == 1);
+    TEST_ASSERT(http_detail::inspect_peer_socket(sockets[0]) ==
+                http_detail::PeerSocketState::Connected);
+
+    char received = 0;
+    TEST_ASSERT(read(sockets[0], &received, 1) == 1);
+    TEST_ASSERT(received == byte);
+
+    // Finishing the request direction must not cancel a response that the
+    // peer is still reading.
+    TEST_ASSERT(shutdown(sockets[1], SHUT_WR) == 0);
+    TEST_ASSERT(http_detail::inspect_peer_socket(sockets[0]) ==
+                http_detail::PeerSocketState::ReadClosed);
+    const char response = 'y';
+    TEST_ASSERT(write(sockets[0], &response, 1) == 1);
+    TEST_ASSERT(read(sockets[1], &received, 1) == 1);
+    TEST_ASSERT(received == response);
+
+    const int closed_fd = sockets[0];
+    close(closed_fd);
+    sockets[0] = -1;
+    TEST_ASSERT(http_detail::inspect_peer_socket(closed_fd) ==
+                http_detail::PeerSocketState::Disconnected);
+    close(sockets[1]);
+}
+
+TEST_CASE(ServerUnitFixture, test_http_heartbeat_never_waits_for_stalled_peer) {
+    int sockets[2] = {-1, -1};
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    TEST_ASSERT(fcntl(sockets[0], F_SETFL, O_NONBLOCK) == 0);
+    const int sndbuf = 4096;
+    TEST_ASSERT(setsockopt(sockets[0], SOL_SOCKET, SO_SNDBUF,
+                           &sndbuf, sizeof(sndbuf)) == 0);
+
+    const std::string fill(4096, 'x');
+    ssize_t sent = 0;
+    do {
+        sent = send(sockets[0], fill.data(), fill.size(), MSG_NOSIGNAL);
+    } while (sent > 0);
+    TEST_ASSERT(sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
+
+    const auto started = std::chrono::steady_clock::now();
+    size_t heartbeat_offset = 0;
+    TEST_ASSERT(http_detail::try_send_sse_heartbeat(
+                    sockets[0], heartbeat_offset) ==
+                http_detail::HeartbeatSendResult::Retry);
+    TEST_ASSERT(heartbeat_offset < sizeof(": keep-alive\n\n") - 1);
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    TEST_ASSERT(elapsed < std::chrono::milliseconds(100));
+
+    // Once the peer drains, retrying completes the same heartbeat rather than
+    // treating temporary backpressure as a disconnect.
+    char drained[8192];
+    while (recv(sockets[1], drained, sizeof(drained), MSG_DONTWAIT) > 0) {}
+    TEST_ASSERT(http_detail::try_send_sse_heartbeat(
+                    sockets[0], heartbeat_offset) ==
+                http_detail::HeartbeatSendResult::Complete);
+    TEST_ASSERT(heartbeat_offset == 0);
+    const std::string expected = ": keep-alive\n\n";
+    TEST_ASSERT(recv(sockets[1], drained, sizeof(drained), 0) ==
+                (ssize_t)expected.size());
+    TEST_ASSERT(std::memcmp(drained, expected.data(), expected.size()) == 0);
+
+    close(sockets[0]);
+    close(sockets[1]);
+}
+#endif
+
+TEST_CASE(ServerUnitFixture, test_http_sse_done_scanner_requires_terminal_line) {
+    std::string partial_line;
+    const std::string content =
+        "data: {\"delta\":{\"content\":\"data: [DONE]\"}}\n\n";
+    TEST_ASSERT(!http_detail::sse_chunk_has_done(
+        partial_line, content.data(), content.size()));
+    TEST_ASSERT(partial_line.empty());
+
+    const std::string embedded_first =
+        "data: {\"delta\":\"data: [DONE]";
+    TEST_ASSERT(!http_detail::sse_chunk_has_done(
+        partial_line, embedded_first.data(), embedded_first.size()));
+    const std::string embedded_second = " still content\"}\n\n";
+    TEST_ASSERT(!http_detail::sse_chunk_has_done(
+        partial_line, embedded_second.data(), embedded_second.size()));
+    TEST_ASSERT(partial_line.empty());
+
+    const std::string first = "data: [DO";
+    TEST_ASSERT(!http_detail::sse_chunk_has_done(
+        partial_line, first.data(), first.size()));
+    const std::string second = "NE]\r\n\r\n";
+    TEST_ASSERT(http_detail::sse_chunk_has_done(
+        partial_line, second.data(), second.size()));
+    TEST_ASSERT(partial_line.empty());
+}
+
+TEST_CASE(ServerUnitFixture, test_qwen35_mrope_positions_axis_major) {
+    std::vector<int32_t> standalone(4 * 5, -1);
+    fill_qwen35_mrope_positions(
+        standalone.data(), /*base_pos=*/7, /*n_tokens=*/5);
+    const std::vector<int32_t> expected{
+        7, 8, 9, 10, 11,
+        7, 8, 9, 10, 11,
+        7, 8, 9, 10, 11,
+        0, 0, 0, 0, 0,
+    };
+    TEST_ASSERT(standalone == expected);
+
+    constexpr int packed_tokens = 8;
+    std::vector<int32_t> packed(4 * packed_tokens, -1);
+    fill_qwen35_mrope_positions(
+        packed.data(), packed_tokens, /*token_offset=*/2,
+        /*base_pos=*/20, /*n_tokens=*/3);
+    for (int axis = 0; axis < 4; ++axis) {
+        for (int row = 0; row < packed_tokens; ++row) {
+            const bool in_segment = row >= 2 && row < 5;
+            const int expected_value = !in_segment
+                ? -1
+                : (axis < 3 ? 20 + row - 2 : 0);
+            TEST_ASSERT(
+                packed[(size_t)axis * packed_tokens + row] ==
+                expected_value);
+        }
+    }
+}
 
 // ─── Helper: create an SseEmitter with minimal config ──────────────────
 
@@ -686,6 +846,41 @@ TEST_CASE(ServerUnitFixture, test_parse_tool_code_wrapper) {
     }
 }
 
+TEST_CASE(ServerUnitFixture, test_parse_function_call_wrapper) {
+    std::string text =
+        "<function_call>\n"
+        "{\"name\": \"bash\", \"arguments\": {\"command\": \"echo 'hello'\"}}\n"
+        "</function_call>";
+    auto result = parse_tool_calls(text);
+    TEST_ASSERT(result.tool_calls.size() == 1);
+    if (!result.tool_calls.empty()) {
+        TEST_ASSERT(result.tool_calls[0].name == "bash");
+        auto args = json::parse(result.tool_calls[0].arguments);
+        TEST_ASSERT(args["command"] == "echo 'hello'");
+    }
+}
+
+TEST_CASE(ServerUnitFixture, test_parse_bare_function_json_with_parameters) {
+    std::string text =
+        "<function>\n"
+        "{\n"
+        "  \"name\": \"bash\",\n"
+        "  \"parameters\": {\n"
+        "    \"command\": \"ls -la \\\"/home/dpavlin/aimax project\\\"\"\n"
+        "  }\n"
+        "}\n"
+        "</function>";
+    auto result = parse_tool_calls(text);
+    TEST_ASSERT(result.tool_calls.size() == 1);
+    if (!result.tool_calls.empty()) {
+        TEST_ASSERT(result.tool_calls[0].name == "bash");
+        auto args = json::parse(result.tool_calls[0].arguments);
+        TEST_ASSERT(args["command"] == "ls -la \"/home/dpavlin/aimax project\"");
+    }
+}
+
+
+
 TEST_CASE(ServerUnitFixture, test_parse_tool_allowed_filter) {
     std::string text =
         "<function=blocked_tool>\n"
@@ -1203,6 +1398,49 @@ TEST_CASE(ServerUnitFixture, test_emitter_tool_buffer_detection) {
     // Tool call text should not leak into accumulated content
     TEST_ASSERT(em.accumulated_text().find("<tool_call>") == std::string::npos);
 }
+
+TEST_CASE(ServerUnitFixture, test_emitter_function_call_tool_buffer_detection) {
+    // When the emitter sees <function_call>, it should buffer and parse tools.
+    auto em = make_emitter(ApiFormat::OPENAI_CHAT, bash_tools());
+    em.emit_start();
+    em.emit_token("<function_call>\n"
+                  "{\"name\": \"bash\", \"arguments\": {\"command\": \"ls -la\"}}\n"
+                  "</function_call>");
+    em.emit_finish(20);
+
+    TEST_ASSERT(!em.tool_calls().empty());
+    if (!em.tool_calls().empty()) {
+        TEST_ASSERT(em.tool_calls()[0].name == "bash");
+    }
+    // Tool call text should not leak into accumulated content
+    TEST_ASSERT(em.accumulated_text().find("<function_call>") == std::string::npos);
+    TEST_ASSERT(em.accumulated_text().find("bash") == std::string::npos);
+}
+
+TEST_CASE(ServerUnitFixture, test_emitter_bare_function_json_tool_buffer_detection) {
+    // When the emitter sees <function>, it should buffer and parse tools.
+    auto em = make_emitter(ApiFormat::OPENAI_CHAT, bash_tools());
+    em.emit_start();
+    em.emit_token("<function>\n"
+                  "{\n"
+                  "  \"name\": \"bash\",\n"
+                  "  \"parameters\": {\n"
+                  "    \"command\": \"ls -la \\\"/home/dpavlin/aimax project\\\"\"\n"
+                  "  }\n"
+                  "}\n"
+                  "</function>");
+    em.emit_finish(20);
+
+    TEST_ASSERT(!em.tool_calls().empty());
+    if (!em.tool_calls().empty()) {
+        TEST_ASSERT(em.tool_calls()[0].name == "bash");
+    }
+    // Tool call text should not leak into accumulated content
+    TEST_ASSERT(em.accumulated_text().find("<function>") == std::string::npos);
+    TEST_ASSERT(em.accumulated_text().find("bash") == std::string::npos);
+}
+
+
 
 TEST_CASE(ServerUnitFixture, test_emitter_anthropic_tool_use_blocks) {
     // The Anthropic streaming tool-use branch used to be a no-op; the model
@@ -1851,6 +2089,183 @@ TEST_CASE(ServerUnitFixture, test_inline_snapshot_boundary_advances_past_restore
     TEST_ASSERT(select_inline_snapshot_boundary({100}, 0) == 100);
 }
 
+TEST_CASE(ServerUnitFixture, test_inline_snapshot_prefers_tools_boundary_until_restored) {
+    const std::vector<int> boundaries = {100, 240, 380, 520};
+    // Cold tool-heavy: pin system+tools head (first marker), not deepen cut.
+    TEST_ASSERT(select_inline_snapshot_boundary(boundaries, 0, true) == 100);
+    // After tools head is restored, deepen to second-to-last.
+    TEST_ASSERT(select_inline_snapshot_boundary(boundaries, 100, true) == 380);
+    TEST_ASSERT(select_inline_snapshot_boundary(boundaries, 380, true) == 0);
+    TEST_ASSERT(select_inline_snapshot_boundary({100}, 0, true) == 100);
+    TEST_ASSERT(select_inline_snapshot_boundary({100}, 100, true) == 0);
+}
+
+TEST_CASE(ServerUnitFixture, test_ppp_master_toggle_gates_tools_boundary_pinning) {
+    TEST_ASSERT(ppp_prefers_tools_boundary(true, true));
+    TEST_ASSERT(!ppp_prefers_tools_boundary(false, true));
+    TEST_ASSERT(!ppp_prefers_tools_boundary(true, false));
+    TEST_ASSERT(!ppp_prefers_tools_boundary(false, false));
+}
+
+// ── Pin-Friendly Prompt Processor (PPP) ─────────────────────────────────
+
+TEST_CASE(ServerUnitFixture, test_ppp_lcp_and_safe_boundary) {
+    const std::vector<int32_t> a = {1, 2, 3, 4, 5, 6};
+    const std::vector<int32_t> b = {1, 2, 3, 9, 9};
+    TEST_ASSERT(PinFriendlyPrompt::longest_common_prefix_len(a, b) == 3);
+    TEST_ASSERT(PinFriendlyPrompt::longest_common_prefix_len(a, a) == 6);
+    TEST_ASSERT(PinFriendlyPrompt::longest_common_prefix_len(a, {}) == 0);
+
+    const std::vector<int> boundaries = {100, 240, 380};
+    TEST_ASSERT(PinFriendlyPrompt::safe_boundary_cut(250, boundaries) == 240);
+    TEST_ASSERT(PinFriendlyPrompt::safe_boundary_cut(50, boundaries) == 0);
+    TEST_ASSERT(PinFriendlyPrompt::safe_boundary_cut(380, boundaries) == 380);
+}
+
+TEST_CASE(ServerUnitFixture, test_ppp_choose_pin_end_prefers_boundary_then_mid) {
+    const std::vector<int> boundaries = {100, 200};
+    // LCP past a boundary → pin at that boundary.
+    TEST_ASSERT(PinFriendlyPrompt::choose_pin_end(150, boundaries, 50) == 100);
+    // LCP past first boundary but short of second → still prefer boundary.
+    TEST_ASSERT(PinFriendlyPrompt::choose_pin_end(175, boundaries, 50) == 100);
+    // No boundary ≤ LCP → mid-message cut (tools-before-system layout).
+    TEST_ASSERT(PinFriendlyPrompt::choose_pin_end(80, boundaries, 50) == 80);
+    TEST_ASSERT(PinFriendlyPrompt::choose_pin_end(40, boundaries, 50) == 0);
+}
+
+TEST_CASE(ServerUnitFixture, test_ppp_annotate_against_recent_ring) {
+    // Shared tools+identity head, divergent session clock in the tail of the
+    // first turn (before any chat boundary at 200).
+    std::vector<int32_t> day1(180, 7);
+    day1.push_back(111);  // date token
+    day1.insert(day1.end(), {8, 8, 8});  // past boundary material
+    std::vector<int32_t> day2(180, 7);
+    day2.push_back(222);
+    day2.insert(day2.end(), {8, 8, 8});
+
+    std::vector<std::vector<int32_t>> ring = {day1};
+    const std::vector<int> boundaries = {200};
+    const int pin = PinFriendlyPrompt::annotate_pin_end(
+        day2, boundaries, ring, /*window=*/4, /*min=*/50);
+    TEST_ASSERT(pin == 180);  // mid-message LCP before date drift
+}
+
+TEST_CASE(ServerUnitFixture, test_ppp_diff_split_finds_middle_hunk) {
+    const std::vector<int32_t> a = {1, 2, 3, 100, 4, 5};
+    const std::vector<int32_t> b = {1, 2, 3, 999, 4, 5};
+    const auto split = PinFriendlyPrompt::diff_split(a, b);
+    TEST_ASSERT(split.prefix_len == 3);
+    TEST_ASSERT(split.suffix_len == 2);
+    TEST_ASSERT(split.middle_begin == 3);
+    TEST_ASSERT(split.middle_end == 4);
+}
+
+TEST_CASE(ServerUnitFixture, test_ppp_diff_rewrite_moves_volatile_after_stable) {
+    // Head: [stable…][TIME][stable_tail…][im_end]  →  [stable…][stable_tail…][TIME][im_end]
+    std::vector<int32_t> day1 = {7, 7, 7, 7, 111, 8, 8, 50};  // 50 = im_end
+    std::vector<int32_t> day2 = {7, 7, 7, 7, 222, 8, 8, 50};
+    // Transcript after first boundary.
+    day2.insert(day2.end(), {9, 9});
+
+    ChatMarkers markers;
+    markers.family = "test";
+    markers.end_msg_seqs = {{50}};
+
+    std::vector<std::vector<int32_t>> ring = {day1};
+    // Chat boundaries sit after the next role-start; DiffPin must still cut
+    // the rewrite head at the first im_end (index 8), not at boundaries.front().
+    const std::vector<int> boundaries = {10};
+    auto rw = PinFriendlyPrompt::diff_make_pin_friendly(
+        day2, boundaries, ring, markers,
+        /*window=*/4, /*min_pin=*/4, /*max_ephemeral=*/16);
+    TEST_ASSERT(rw.rewritten);
+    TEST_ASSERT(rw.prefix_len == 4);
+    TEST_ASSERT(rw.suffix_len == 2);  // {8,8} after peeling im_end trailer
+    TEST_ASSERT(rw.middle_len == 1);
+    // pin covers stable prefix+suffix; volatile then im_end follow.
+    TEST_ASSERT(rw.pin_end == 6);
+    // [7,7,7,7][8,8][222][50][9,9]
+    TEST_ASSERT(rw.tokens.size() == day2.size());
+    TEST_ASSERT((rw.tokens[0] == 7 && rw.tokens[3] == 7));
+    TEST_ASSERT(rw.tokens[4] == 8 && rw.tokens[5] == 8);
+    TEST_ASSERT(rw.tokens[6] == 222);
+    TEST_ASSERT(rw.tokens[7] == 50);
+    TEST_ASSERT(rw.tokens[8] == 9);
+}
+
+TEST_CASE(ServerUnitFixture, test_ppp_diff_rewrite_noop_without_boundaries) {
+    std::vector<int32_t> day1 = {7, 7, 7, 7, 111, 8, 8, 50};
+    std::vector<int32_t> day2 = {7, 7, 7, 7, 222, 8, 8, 50, 9, 9};
+    ChatMarkers markers;
+    markers.end_msg_seqs = {{50}};
+    std::vector<std::vector<int32_t>> ring = {day1};
+    auto rw = PinFriendlyPrompt::diff_make_pin_friendly(
+        day2, /*boundaries=*/{}, ring, markers,
+        /*window=*/4, /*min_pin=*/4, /*max_ephemeral=*/16);
+    TEST_ASSERT(!rw.rewritten);
+    TEST_ASSERT(rw.tokens == day2);
+}
+
+TEST_CASE(ServerUnitFixture, test_ppp_diff_rewrite_stops_before_next_role) {
+    // Realistic boundary: after user role-start (token 90), past im_end (50).
+    // Volatile middle must not float into the user turn.
+    std::vector<int32_t> day1 = {7, 7, 7, 7, 111, 8, 8, 50};
+    std::vector<int32_t> day2 = {7, 7, 7, 7, 222, 8, 8, 50, 90, 91, 92};
+    ChatMarkers markers;
+    markers.end_msg_seqs = {{50}};
+    std::vector<std::vector<int32_t>> ring = {day1};
+    const std::vector<int> boundaries = {11};  // after user role start
+    auto rw = PinFriendlyPrompt::diff_make_pin_friendly(
+        day2, boundaries, ring, markers,
+        /*window=*/4, /*min_pin=*/4, /*max_ephemeral=*/16);
+    TEST_ASSERT(rw.rewritten);
+    TEST_ASSERT(rw.tokens.size() == day2.size());
+    // Head rewritten; user role tokens untouched at the end.
+    TEST_ASSERT(rw.tokens[rw.tokens.size() - 3] == 90);
+    TEST_ASSERT(rw.tokens[rw.tokens.size() - 2] == 91);
+    TEST_ASSERT(rw.tokens[rw.tokens.size() - 1] == 92);
+    TEST_ASSERT(rw.tokens[6] == 222);
+    TEST_ASSERT(rw.tokens[7] == 50);
+}
+
+TEST_CASE(ServerUnitFixture, test_ppp_tools_system_head_end) {
+    ChatMarkers markers;
+    markers.end_msg_seqs = {{50}, {51, 52}};
+    std::vector<int32_t> ids = {1, 2, 50, 90, 91};
+    TEST_ASSERT(PinFriendlyPrompt::tools_system_head_end(ids, markers) == 3);
+    ids = {1, 2, 51, 52, 90};
+    TEST_ASSERT(PinFriendlyPrompt::tools_system_head_end(ids, markers) == 4);
+    TEST_ASSERT(PinFriendlyPrompt::tools_system_head_end({1, 2, 3}, markers) == 0);
+}
+
+TEST_CASE(ServerUnitFixture, test_ppp_split_and_rearrange_ephemeral_tail) {
+    const std::string system =
+        "You are Hermes.\n\n"
+        "Conversation started: Thursday, July 30, 2026 03:59 PM\n"
+        "Model: qwen\n";
+    auto [stable, ephemeral] =
+        PinFriendlyPrompt::split_ephemeral_system_tail(system);
+    TEST_ASSERT(stable == "You are Hermes.");
+    TEST_ASSERT(ephemeral.find("Conversation started:") == 0);
+
+    std::vector<ChatMessage> messages = {
+        {"system", system, ""},
+        {"user", "hi", ""},
+    };
+    auto off = PinFriendlyPrompt::rearrange(messages, false);
+    TEST_ASSERT(!off.rearranged);
+    TEST_ASSERT(off.messages.size() == 2);
+
+    auto on = PinFriendlyPrompt::rearrange(messages, true);
+    TEST_ASSERT(on.rearranged);
+    TEST_ASSERT(on.messages.size() == 3);
+    TEST_ASSERT(on.messages[0].role == "system");
+    TEST_ASSERT(on.messages[0].content == "You are Hermes.");
+    TEST_ASSERT(on.messages[1].role == "system");
+    TEST_ASSERT(on.messages[1].content.find("Conversation started:") == 0);
+    TEST_ASSERT(on.messages[2].role == "user");
+}
+
 // ── Prefix-aware eviction policy (model-free) ───────────────────────────
 
 TEST_CASE(ServerUnitFixture, test_evict_empty_is_zero) {
@@ -1885,6 +2300,19 @@ TEST_CASE(ServerUnitFixture, test_evict_branch_spares_shared_root) {
     TEST_ASSERT(v != 0);  // the shared root must be spared
 }
 
+TEST_CASE(ServerUnitFixture, test_evict_skips_protected_leaf) {
+    // Two unrelated leaves; oldest is protected → evict next unprotected leaf.
+    std::vector<std::vector<int32_t>> ids = {{1, 1}, {2, 2}, {3, 3}};
+    std::vector<bool> protect = {true, false, false};
+    TEST_ASSERT(select_inline_evict_victim(ids, &protect) == 1);
+}
+
+TEST_CASE(ServerUnitFixture, test_evict_all_protected_falls_back) {
+    std::vector<std::vector<int32_t>> ids = {{1, 1}, {2, 2}};
+    std::vector<bool> protect = {true, true};
+    TEST_ASSERT(select_inline_evict_victim(ids, &protect) == 0);
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // PFlash config tests (model-free)
 // ═══════════════════════════════════════════════════════════════════════
@@ -1897,6 +2325,38 @@ TEST_CASE(ServerUnitFixture, test_pflash_config_defaults) {
     TEST_ASSERT(cfg.pflash_drafter_path.empty());
     TEST_ASSERT(!cfg.pflash_skip_park);
     TEST_ASSERT(cfg.draft_residency == DraftResidencyPolicy::Auto);
+}
+
+TEST_CASE(ServerUnitFixture, test_concurrent_status_is_aggregate_only) {
+    ServerStatus status;
+    ServerStatus::RequestInfo info;
+    info.model = "classic-model";
+    status.set_running("classic prompt", 12, true, info);
+    json snapshot = status.to_json();
+    TEST_ASSERT(snapshot["active_requests"] == 0);
+    TEST_ASSERT(snapshot["current"]["model"] == "classic-model");
+
+    status.set_concurrent_requests(2, 2);
+    snapshot = status.to_json();
+    TEST_ASSERT(snapshot["phase"] == "prefill");
+    TEST_ASSERT(snapshot["active_requests"] == 2);
+    TEST_ASSERT(snapshot["current"].is_null());
+
+    status.set_concurrent_requests(2, 1);
+    snapshot = status.to_json();
+    TEST_ASSERT(snapshot["phase"] == "mixed");
+    TEST_ASSERT(snapshot["active_requests"] == 2);
+
+    status.set_concurrent_requests(2, 0);
+    snapshot = status.to_json();
+    TEST_ASSERT(snapshot["phase"] == "decode");
+    TEST_ASSERT(snapshot["active_requests"] == 2);
+
+    status.set_idle();
+    snapshot = status.to_json();
+    TEST_ASSERT(snapshot["phase"] == "idle");
+    TEST_ASSERT(snapshot["active_requests"] == 0);
+    TEST_ASSERT(snapshot["current"].is_null());
 }
 
 TEST_CASE(ServerUnitFixture, test_pflash_config_modes) {
@@ -2642,6 +3102,7 @@ struct MockLayerSplitAdapter : LayerSplitAdapter {
     int shutdown_calls = 0;
     ModelBackend::CompressRequest last_compress_req;
     int prefill_chunk = 0;
+    std::function<void()> on_prefill;
 
     const char * name() const override { return "mock"; }
     bool init() override { return true; }
@@ -2659,6 +3120,7 @@ struct MockLayerSplitAdapter : LayerSplitAdapter {
         current_pos = base_pos + (int)prompt.size();
         current_last = prompt.empty() ? current_last : prompt.back();
         last_tok = current_last;
+        if (on_prefill) on_prefill();
         return true;
     }
     bool decode_ar(int last_tok, int committed, int n_gen,
@@ -2836,6 +3298,29 @@ TEST_CASE(ServerUnitFixture, test_layer_split_backend_chunks_prefill_by_adapter_
     TEST_ASSERT(raw->prefill_sizes[2] == 2);
 }
 
+TEST_CASE(ServerUnitFixture, test_layer_split_backend_cancels_between_prefill_chunks) {
+    auto * raw = new MockLayerSplitAdapter();
+    raw->prefill_chunk = 3;
+    LayerSplitBackend backend{std::unique_ptr<LayerSplitAdapter>(raw)};
+
+    bool cancel = false;
+    raw->on_prefill = [&cancel]() { cancel = true; };
+    DaemonIO io;
+    io.should_cancel = [&cancel]() { return cancel; };
+
+    GenerateRequest req;
+    req.prompt = {1, 2, 3, 4, 5, 6, 7, 8};
+    req.n_gen = 4;
+    GenerateResult result = backend.generate(req, io);
+
+    TEST_ASSERT(result.ok());
+    TEST_ASSERT(io.is_cancelled());
+    TEST_ASSERT(raw->prefill_bases.size() == 1);
+    TEST_ASSERT(raw->prefill_sizes.size() == 1);
+    TEST_ASSERT(raw->prefill_sizes[0] == 3);
+    TEST_ASSERT(raw->emitted_tokens.empty());
+}
+
 TEST_CASE(ServerUnitFixture, test_layer_split_compress_nopark_uses_default_drafter_path) {
     const std::string ids_path = "/tmp/dflash_test_layer_split_compress_ids.bin";
     unlink(ids_path.c_str());
@@ -2912,6 +3397,33 @@ struct MockBackend : ModelBackend {
     void free_drafter() override {}
     void shutdown() override {}
 };
+
+struct MockBatchCompressBackend : MockBackend {
+    int compress_calls = 0;
+
+    CompressResult compress(const CompressRequest & request) override {
+        ++compress_calls;
+        CompressResult result;
+        result.ok = !request.input_ids.empty();
+        if (result.ok) result.compressed_ids = {request.input_ids.front()};
+        return result;
+    }
+};
+
+TEST_CASE(ServerUnitFixture, test_compress_batch_default_preserves_order) {
+    MockBatchCompressBackend backend;
+    std::vector<ModelBackend::CompressRequest> requests(3);
+    requests[0].input_ids = {11, 12};
+    requests[1].input_ids = {21, 22};
+    requests[2].input_ids = {31, 32};
+
+    const auto results = backend.compress_batch(requests);
+    TEST_ASSERT(results.size() == requests.size());
+    TEST_ASSERT(backend.compress_calls == 3);
+    TEST_ASSERT(results[0].compressed_ids == std::vector<int32_t>({11}));
+    TEST_ASSERT(results[1].compressed_ids == std::vector<int32_t>({21}));
+    TEST_ASSERT(results[2].compressed_ids == std::vector<int32_t>({31}));
+}
 
 struct MockMemoryOnlySnapshotBackend : MockBackend {
     bool snapshot_used(int slot) const override { return slot == 0; }
@@ -4149,6 +4661,61 @@ static ServerConfig make_props_config_with_sidecar(const json & sidecar) {
     return cfg;
 }
 
+TEST_CASE(ServerUnitFixture, test_model_card_env_override_beats_cwd) {
+    // DFLASH_MODEL_CARDS_DIR used to be the LAST candidate, tried after the cwd-relative
+    // "share/model_cards". Running from a directory that happened to contain one silently
+    // ignored the operator's explicit override. An explicit setting must win.
+    namespace fs = std::filesystem;
+    const auto root = fs::temp_directory_path() / "dflash-mc-env-test";
+    const auto envdir = root / "explicit";
+    fs::remove_all(root);
+    fs::create_directories(envdir);
+
+    // A card the resolver can only have found via the env var.
+    {
+        FILE * f = std::fopen((envdir / "env-probe-model.json").string().c_str(), "w");
+        TEST_ASSERT(f != nullptr);
+        std::fprintf(f, "{\"name\":\"env-probe-model\",\"source\":\"test\","
+                        "\"verified_at\":\"2026-08-04\",\"max_tokens\":4321}");
+        std::fclose(f);
+    }
+
+    const char * prev = std::getenv("DFLASH_MODEL_CARDS_DIR");
+    const std::string saved = prev ? prev : "";
+    setenv("DFLASH_MODEL_CARDS_DIR", envdir.string().c_str(), 1);
+
+    auto card = dflash::common::resolve_model_card("", "env-probe-model", "deepseek4", "");
+
+    if (saved.empty()) unsetenv("DFLASH_MODEL_CARDS_DIR");
+    else setenv("DFLASH_MODEL_CARDS_DIR", saved.c_str(), 1);
+    fs::remove_all(root);
+
+    // Resolved from the env dir, not the deepseek4 family fallback (which gives 32768).
+    TEST_ASSERT(card.max_tokens == 4321);
+    TEST_ASSERT(card.source_label != "family:deepseek4");
+}
+
+TEST_CASE(ServerUnitFixture, test_model_card_family_fallback_deepseek4) {
+    // deepseek4 had NO family entry, so every DeepSeek4 artifact -- including the
+    // published ROCmFPX GGUFs -- fell through to the hard fallback, taking a generic
+    // 16000-token ceiling that is a placeholder rather than a measured property of the
+    // model, and reporting model_card = null on /props.
+    //
+    // Pins the branch rather than the exact ceiling: an operator is expected to ship a
+    // sidecar for the real figures, and the fallback is deliberately conservative.
+    // What must not regress is that deepseek4 resolves to a FAMILY card at all, and
+    // carries the wider reply budget rather than the terse 512 default.
+    auto card = dflash::common::resolve_model_card("", "", "deepseek4", "");
+    TEST_ASSERT(card.source_label == "family:deepseek4");
+    TEST_ASSERT(card.max_tokens == 32768);
+    TEST_ASSERT(card.hard_limit_reply_budget == 4096);
+
+    // An unknown architecture must still fall through, or the safety net would mask
+    // genuinely unsupported models.
+    auto unknown = dflash::common::resolve_model_card("", "", "not-a-real-arch", "");
+    TEST_ASSERT(unknown.source_label != "family:not-a-real-arch");
+}
+
 TEST_CASE(ServerUnitFixture, test_props_model_card_wholesale_sidecar) {
     // When a sidecar was loaded, /props.model_card should be the parsed
     // sidecar JSON verbatim — *all* fields from the file, not just the
@@ -4178,7 +4745,6 @@ TEST_CASE(ServerUnitFixture, test_props_model_card_wholesale_sidecar) {
     PrefixCache  pc(0, tok);
     ToolMemory   tm;
     json body = build_props_body(cfg, pc, tm);
-
     TEST_ASSERT(body.contains("model_card"));
     TEST_ASSERT(!body["model_card"].is_null());
     // `source` is the upstream URL, NOT the filepath. The filepath label
@@ -4291,6 +4857,7 @@ TEST_CASE(ServerUnitFixture, test_props_runtime_shape) {
     cfg.chunk           = 512;
     cfg.target_device   = "auto:0";
     cfg.draft_device    = "auto:0";
+    TEST_ASSERT(cfg.admission_coalesce_ms == 20);
 
     Tokenizer    tok;
     PrefixCache  pc(0, tok);
@@ -4309,12 +4876,17 @@ TEST_CASE(ServerUnitFixture, test_props_runtime_shape) {
     TEST_ASSERT(rt["chunk"].get<int>()                   == 512);
     TEST_ASSERT(rt["target_device"].get<std::string>()   == "auto:0");
     TEST_ASSERT(rt["draft_device"].get<std::string>()    == "auto:0");
+    TEST_ASSERT(rt["continuous_batching"]["admission_coalesce_ms"]
+                    .get<int>() == 20);
     TEST_ASSERT(body["pflash"]["draft_residency"].get<std::string>() == "persistent");
 
     // draft_device is null when no draft model is loaded.
     cfg.draft_device.clear();
+    cfg.admission_coalesce_ms = 7;
     body = build_props_body(cfg, pc, tm);
     TEST_ASSERT(body["runtime"]["draft_device"].is_null());
+    TEST_ASSERT(body["runtime"]["continuous_batching"]
+                    ["admission_coalesce_ms"].get<int>() == 7);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -4755,10 +5327,15 @@ TEST_CASE(ServerUnitFixture, test_flowkv_T4_compress_true_policy_name_has_suffix
     TEST_ASSERT(name.find("+compress") != std::string::npos);
 }
 
-// T4: default DiskPrefixCachePolicy has compress=false (no-op).
+// T4: compression-aware disk clamping remains opt-in.
 TEST_CASE(ServerUnitFixture, test_flowkv_T4_default_no_compress) {
     DiskPrefixCachePolicy p;
-    TEST_ASSERT_MSG(!p.compress, "default compress must be false (byte-identical to pr364-base)");
+    TEST_ASSERT_MSG(!p.compress, "FlowKV disk clamping must default to off");
+    TEST_ASSERT(!http_detail::should_clamp_flowkv_disk_cache(true, p));
+
+    p.compress = true;
+    TEST_ASSERT(http_detail::should_clamp_flowkv_disk_cache(true, p));
+    TEST_ASSERT(!http_detail::should_clamp_flowkv_disk_cache(false, p));
 }
 
 // T6: frozen_block_key is deterministic — same tokens → same hash.
@@ -4878,16 +5455,40 @@ TEST_CASE(ServerUnitFixture, test_flowkv_T1_system_end_boundary_first) {
     }
 }
 
-// T5 (inert-guard): aged_token_estimate < 512 → FlowKV-OFF.
-// Tests the guard constant and comparison logic.
-TEST_CASE(ServerUnitFixture, test_flowkv_T5_inert_guard_token_count) {
-    static constexpr int kFkvInertMinTokens = 512;
-    // Below threshold: FlowKV should not fire.
-    TEST_ASSERT(400 < kFkvInertMinTokens);
-    TEST_ASSERT(511 < kFkvInertMinTokens);
-    // At or above threshold: FlowKV may fire.
-    TEST_ASSERT(512 >= kFkvInertMinTokens);
-    TEST_ASSERT(1024 >= kFkvInertMinTokens);
+// T5: exercise the production FlowKV activation decision and defaults.
+TEST_CASE(ServerUnitFixture, test_flowkv_T5_aggregate_activation_threshold) {
+    ServerConfig config;
+    config.pflash_mode = ServerConfig::PflashMode::AUTO;
+
+    TEST_ASSERT(http_detail::flowkv_activation_threshold(config) == 32000);
+    TEST_ASSERT(!http_detail::flowkv_should_activate(config, 13000));
+    TEST_ASSERT(http_detail::flowkv_should_activate(config, 32000));
+
+    config.pflash_threshold = 12000;
+    TEST_ASSERT(!http_detail::flowkv_should_activate(config, 11999));
+    TEST_ASSERT(http_detail::flowkv_should_activate(config, 13000));
+
+    config.pflash_mode = ServerConfig::PflashMode::ALWAYS;
+    TEST_ASSERT(http_detail::flowkv_activation_threshold(config) ==
+                http_detail::kFlowKvInertMinTokens);
+    TEST_ASSERT(http_detail::flowkv_should_activate(
+        config, http_detail::kFlowKvInertMinTokens));
+}
+
+// Session feedback overrides the static/curve ratio for both whole-prompt
+// PFlash and FlowKV.
+TEST_CASE(ServerUnitFixture, test_flowkv_session_keep_ratio_override) {
+    HttpServerSessions sessions;
+    sessions.update("adaptive", 0.95f);
+
+    const float configured_ratio = 0.05f;
+    const float static_ratio = http_detail::resolve_pflash_keep_ratio(
+        configured_ratio, "", sessions);
+    const float adaptive_ratio = http_detail::resolve_pflash_keep_ratio(
+        configured_ratio, "adaptive", sessions);
+
+    TEST_ASSERT(std::fabs(static_ratio - configured_ratio) < 1e-6f);
+    TEST_ASSERT(std::fabs(adaptive_ratio - 0.09f) < 1e-6f);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -5072,4 +5673,34 @@ TEST_CASE(ServerUnitFixture, test_gguf_bounds_error_reports_operands) {
     const std::string o = gguf_bounds_error("target GGUF", "t", "f32",
                                             kMax, 10, 10, 100);
     TEST_ASSERT(o.find("overflow") != std::string::npos);
+}
+
+TEST_CASE(ServerUnitFixture, test_qwen35_embedded_mtp_target_layer_count) {
+    uint32_t target_layers = 0;
+    std::string error;
+
+    TEST_ASSERT(derive_effective_target_layer_count(
+        "qwen35", 64, 0, target_layers, error));
+    TEST_ASSERT(target_layers == 64);
+
+    TEST_ASSERT(derive_effective_target_layer_count(
+        "qwen35", 65, 1, target_layers, error));
+    TEST_ASSERT(target_layers == 64);
+
+    TEST_ASSERT(derive_effective_target_layer_count(
+        "qwen35moe", 81, 1, target_layers, error));
+    TEST_ASSERT(target_layers == 80);
+
+    TEST_ASSERT(!derive_effective_target_layer_count(
+        "qwen35", 1, 1, target_layers, error));
+    TEST_ASSERT(error.find("smaller than block_count") != std::string::npos);
+
+    TEST_ASSERT(!derive_effective_target_layer_count(
+        "qwen35", 0, 0, target_layers, error));
+    TEST_ASSERT(error.find("greater than zero") != std::string::npos);
+
+    // Do not reinterpret similarly named metadata for unrelated architectures.
+    TEST_ASSERT(derive_effective_target_layer_count(
+        "laguna", 65, 1, target_layers, error));
+    TEST_ASSERT(target_layers == 65);
 }

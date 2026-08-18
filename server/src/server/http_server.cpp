@@ -21,6 +21,7 @@
 #include "sse_emitter.h"
 #include "prompt_normalize.h"
 #include "tool_hint.h"
+#include "pin_friendly_prompt.h"
 #include "common/sha1.h"
 #include "freeze_history.h"
 
@@ -33,6 +34,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -94,6 +96,96 @@ static inline bool sock_is_eagain(int e) { return e == EAGAIN || e == EWOULDBLOC
 
 namespace dflash::common {
 
+namespace {
+constexpr auto kClientMonitorInterval = std::chrono::milliseconds(250);
+constexpr auto kSseHeartbeatInterval = std::chrono::seconds(15);
+constexpr char kSseHeartbeat[] = ": keep-alive\n\n";
+}
+
+namespace http_detail {
+
+PeerSocketState inspect_peer_socket(SocketHandle fd) {
+    struct pollfd pfd = {fd, POLLIN, 0};
+#if defined(POLLRDHUP)
+    pfd.events |= POLLRDHUP;
+#endif
+
+    int ret;
+    do {
+        ret = poll(&pfd, 1, 0);
+    } while (ret < 0 && sock_is_eintr(sock_errno()));
+    if (ret == 0) return PeerSocketState::Connected;
+    if (ret < 0 || (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))) {
+        return PeerSocketState::Disconnected;
+    }
+    bool read_closed = false;
+#if defined(POLLRDHUP)
+    read_closed = (pfd.revents & POLLRDHUP) != 0;
+#endif
+    if (!(pfd.revents & POLLIN)) {
+        return read_closed ? PeerSocketState::ReadClosed
+                           : PeerSocketState::Connected;
+    }
+
+    char byte = 0;
+    const ssize_t n = recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+    if (n == 0) return PeerSocketState::ReadClosed;
+    if (n > 0) return PeerSocketState::Connected;
+    const int error = sock_errno();
+    return (sock_is_eintr(error) || sock_is_eagain(error))
+        ? PeerSocketState::Connected
+        : PeerSocketState::Disconnected;
+}
+
+bool sse_chunk_has_done(
+        std::string & partial_line, const char * data, size_t size) {
+    static constexpr char kDoneLine[] = "data: [DONE]";
+    static constexpr size_t kDoneLineSize = sizeof(kDoneLine) - 1;
+
+    bool found = false;
+    for (size_t i = 0; i < size; ++i) {
+        const char ch = data[i];
+        if (ch == '\r' || ch == '\n') {
+            found = found || partial_line == kDoneLine;
+            partial_line.clear();
+        } else if (partial_line.size() <= kDoneLineSize) {
+            // One byte beyond the marker length is an overflow sentinel. It
+            // prevents a non-terminal SSE line from growing without bound.
+            partial_line.push_back(ch);
+        }
+    }
+    return found;
+}
+
+HeartbeatSendResult try_send_sse_heartbeat(
+        SocketHandle fd, size_t & offset) {
+    constexpr size_t heartbeat_size = sizeof(kSseHeartbeat) - 1;
+    if (offset > heartbeat_size) {
+        offset = 0;
+        return HeartbeatSendResult::Disconnected;
+    }
+    while (offset < heartbeat_size) {
+        const ssize_t n = send(
+            fd, kSseHeartbeat + offset, heartbeat_size - offset,
+            MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (n > 0) {
+            offset += (size_t)n;
+            continue;
+        }
+        if (n < 0) {
+            const int error = sock_errno();
+            if (sock_is_eintr(error)) continue;
+            if (sock_is_eagain(error)) return HeartbeatSendResult::Retry;
+        }
+        offset = 0;
+        return HeartbeatSendResult::Disconnected;
+    }
+    offset = 0;
+    return HeartbeatSendResult::Complete;
+}
+
+}  // namespace http_detail
+
 static std::string context_overflow_message(int max_ctx, int prompt_tokens, int max_output) {
     const int requested_tokens = prompt_tokens + max_output;
     return "This model's maximum context length is " + std::to_string(max_ctx) +
@@ -133,24 +225,59 @@ static float pflash_keep_ratio(const ServerConfig & cfg, int n_tokens) {
     return curve.back().second;
 }
 
+namespace http_detail {
+
+int flowkv_activation_threshold(const ServerConfig & config) {
+    return config.pflash_mode == ServerConfig::PflashMode::ALWAYS
+        ? kFlowKvInertMinTokens
+        : std::max(kFlowKvInertMinTokens, config.pflash_threshold);
+}
+
+bool flowkv_should_activate(const ServerConfig & config,
+                            int aged_token_estimate) {
+    return aged_token_estimate >= flowkv_activation_threshold(config);
+}
+
+float resolve_pflash_keep_ratio(float configured_ratio,
+                                const std::string & session_id,
+                                const HttpServerSessions & sessions) {
+    return session_id.empty()
+        ? configured_ratio
+        : sessions.get_keep_ratio(session_id);
+}
+
+bool should_clamp_flowkv_disk_cache(
+        bool flowkv, const DiskPrefixCachePolicy & policy) {
+    return flowkv && policy.compress;
+}
+
+}  // namespace http_detail
+
 // ─── curl helpers for upstream proxy ─────────────────────────────────────
 #ifdef DFLASH_HAS_CURL
 
 struct CurlWriteCtx {
-    SocketHandle client_fd;
     bool streaming;
     bool first_chunk;
     bool chat_rewrite;   // rewrite completions → chat format
     std::string buffer;  // accumulates non-streaming response
+    std::string sse_partial_line;
     std::string response_id;
     std::string model;
+    std::function<bool(const void *, size_t)> send_bytes;
+    std::function<void()> stop_stream;
+    std::function<bool()> cancelled;
 };
 
 static size_t curl_write_passthrough(char * ptr, size_t size, size_t nmemb, void * userdata) {
     size_t total = size * nmemb;
     auto * ctx = static_cast<CurlWriteCtx *>(userdata);
     if (ctx->streaming) {
-        ::send(ctx->client_fd, ptr, total, MSG_NOSIGNAL);
+        if (http_detail::sse_chunk_has_done(
+                ctx->sse_partial_line, ptr, total)) {
+            ctx->stop_stream();
+        }
+        if (!ctx->send_bytes(ptr, total)) return 0;
     } else {
         ctx->buffer.append(ptr, total);
     }
@@ -177,19 +304,20 @@ static size_t curl_write_rewrite(char * ptr, size_t size, size_t nmemb, void * u
         pos = nl + 1;
         if (line.empty() || line == "\r") {
             std::string out = "\n";
-            ::send(ctx->client_fd, out.data(), out.size(), MSG_NOSIGNAL);
+            if (!ctx->send_bytes(out.data(), out.size())) return 0;
             continue;
         }
         if (line.size() > 0 && line.back() == '\r') line.pop_back();
         if (line.rfind("data: ", 0) != 0) {
             line += "\n";
-            ::send(ctx->client_fd, line.data(), line.size(), MSG_NOSIGNAL);
+            if (!ctx->send_bytes(line.data(), line.size())) return 0;
             continue;
         }
         std::string payload = line.substr(6);
         if (payload == "[DONE]") {
             std::string out = "data: [DONE]\n\n";
-            ::send(ctx->client_fd, out.data(), out.size(), MSG_NOSIGNAL);
+            ctx->stop_stream();
+            if (!ctx->send_bytes(out.data(), out.size())) return 0;
             continue;
         }
         try {
@@ -212,10 +340,10 @@ static size_t curl_write_rewrite(char * ptr, size_t size, size_t nmemb, void * u
                 }
             }
             std::string out = "data: " + j.dump() + "\n\n";
-            ::send(ctx->client_fd, out.data(), out.size(), MSG_NOSIGNAL);
+            if (!ctx->send_bytes(out.data(), out.size())) return 0;
         } catch (...) {
             std::string out = line + "\n";
-            ::send(ctx->client_fd, out.data(), out.size(), MSG_NOSIGNAL);
+            if (!ctx->send_bytes(out.data(), out.size())) return 0;
         }
     }
     buf.erase(0, pos);
@@ -244,11 +372,20 @@ static json rewrite_completions_to_chat(const json & comp_resp) {
     return chat_resp;
 }
 
-static bool curl_forward(SocketHandle client_fd, const std::string & url,
+static int curl_progress_cancelled(
+        void * userdata, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+    auto * ctx = static_cast<CurlWriteCtx *>(userdata);
+    return ctx->cancelled && ctx->cancelled() ? 1 : 0;
+}
+
+static bool curl_forward(const std::string & url,
                          const std::string & api_key, const json & body,
                          bool streaming, bool rewrite_to_chat,
                          const std::string & response_id,
-                         const std::string & model) {
+                         const std::string & model,
+                         std::function<bool(const void *, size_t)> send_bytes,
+                         std::function<void()> stop_stream,
+                         std::function<bool()> cancelled) {
     CURL * curl = curl_easy_init();
     if (!curl) return false;
 
@@ -262,19 +399,25 @@ static bool curl_forward(SocketHandle client_fd, const std::string & url,
     }
 
     CurlWriteCtx ctx;
-    ctx.client_fd = client_fd;
     ctx.streaming = streaming;
     ctx.first_chunk = true;
     ctx.chat_rewrite = rewrite_to_chat;
     ctx.response_id = response_id;
     ctx.model = model;
+    ctx.send_bytes = std::move(send_bytes);
+    ctx.stop_stream = std::move(stop_stream);
+    ctx.cancelled = std::move(cancelled);
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body_str.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body_str.size());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 3600L);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, curl_progress_cancelled);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &ctx);
 
     if (rewrite_to_chat) {
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_rewrite);
@@ -282,18 +425,10 @@ static bool curl_forward(SocketHandle client_fd, const std::string & url,
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_passthrough);
     }
 
-    if (streaming) {
-        std::string sse_header =
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: text/event-stream\r\n"
-            "Cache-Control: no-cache\r\n"
-            "Connection: keep-alive\r\n"
-            "\r\n";
-        ::send(client_fd, sse_header.data(), sse_header.size(), MSG_NOSIGNAL);
-    }
-
     CURLcode res = curl_easy_perform(curl);
+    if (streaming) ctx.stop_stream();
 
+    bool response_sent = true;
     if (!streaming && res == CURLE_OK) {
         // Non-streaming: send accumulated response.
         if (rewrite_to_chat) {
@@ -306,13 +441,13 @@ static bool curl_forward(SocketHandle client_fd, const std::string & url,
                     "Content-Type: application/json\r\n"
                     "Content-Length: " + std::to_string(out.size()) + "\r\n"
                     "\r\n" + out;
-                ::send(client_fd, http.data(), http.size(), MSG_NOSIGNAL);
+                response_sent = ctx.send_bytes(http.data(), http.size());
             } catch (...) {
                 std::string http =
                     "HTTP/1.1 502 Bad Gateway\r\n"
                     "Content-Type: application/json\r\n"
                     "\r\n{\"error\":\"upstream response parse failed\"}";
-                ::send(client_fd, http.data(), http.size(), MSG_NOSIGNAL);
+                response_sent = ctx.send_bytes(http.data(), http.size());
             }
         } else {
             std::string http =
@@ -320,13 +455,13 @@ static bool curl_forward(SocketHandle client_fd, const std::string & url,
                 "Content-Type: application/json\r\n"
                 "Content-Length: " + std::to_string(ctx.buffer.size()) + "\r\n"
                 "\r\n" + ctx.buffer;
-            ::send(client_fd, http.data(), http.size(), MSG_NOSIGNAL);
+            response_sent = ctx.send_bytes(http.data(), http.size());
         }
     }
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
-    return res == CURLE_OK;
+    return res == CURLE_OK && response_sent;
 }
 #endif // DFLASH_HAS_CURL
 
@@ -370,18 +505,6 @@ static std::string generate_id(const char * prefix) {
     return buf;
 }
 
-// Logging helpers shared by route_request() / worker_loop(). Kept static
-// (file-scope) so they don't leak into the public ABI; the chat lifecycle
-// logs that use them are part of #270's request-tracing instrumentation.
-static const char * api_format_name(ApiFormat format) {
-    switch (format) {
-    case ApiFormat::OPENAI_CHAT: return "chat";
-    case ApiFormat::ANTHROPIC:   return "anthropic";
-    case ApiFormat::RESPONSES:   return "responses";
-    default:                     return "unknown";
-    }
-}
-
 static size_t json_array_size(const json & value) {
     return value.is_array() ? value.size() : 0;
 }
@@ -397,6 +520,10 @@ int resolve_max_output_tokens(const json & body, int default_max_tokens) {
         return body.at("max_completion_tokens").get<int>();
     }
     return default_max_tokens;
+}
+
+bool ppp_prefers_tools_boundary(bool ppp_enabled, bool has_tools) {
+    return ppp_enabled && has_tools;
 }
 
 // Sampler parameters. When the request omits a value, fall back to the
@@ -656,6 +783,9 @@ json build_props_body(const ServerConfig & config,
             // (dflash/scripts/bench_http_capability.py) read
             // /props.runtime wholesale into result.json.server_info.
             {"chunk",           config.chunk},
+            {"continuous_batching", {
+                {"admission_coalesce_ms", config.admission_coalesce_ms},
+            }},
             // Device placement strings (e.g. "auto:0", "cuda:0"). Empty
             // string when no draft model is loaded.
             {"target_device",   config.target_device},
@@ -953,6 +1083,36 @@ HttpServer::HttpServer(ModelBackend & backend,
     }
     disk_cache_.init();
     status_html_path_ = resolve_status_html();
+
+    // PPP env overrides (operator-facing; no CLI flags required).
+    auto env_truthy = [](const char * v) -> bool {
+        if (!v || !*v) return false;
+        return !(v[0] == '0' && v[1] == '\0') &&
+               !(v[0] == 'f' || v[0] == 'F' || v[0] == 'n' || v[0] == 'N');
+    };
+    if (const char * e = std::getenv("DFLASH_PPP")) {
+        config_.ppp_enabled = env_truthy(e);
+    }
+    if (const char * e = std::getenv("DFLASH_PPP_REARRANGE")) {
+        config_.ppp_rearrange = env_truthy(e);
+    }
+    if (const char * e = std::getenv("DFLASH_PPP_LCP_WINDOW")) {
+        const int n = std::atoi(e);
+        if (n > 0) config_.ppp_lcp_window = n;
+    }
+    if (const char * e = std::getenv("DFLASH_PPP_MIN_PIN_TOKENS")) {
+        const int n = std::atoi(e);
+        if (n > 0) config_.ppp_min_pin_tokens = n;
+    }
+    if (const char * e = std::getenv("DFLASH_PPP_MAX_EPHEMERAL")) {
+        const int n = std::atoi(e);
+        if (n > 0) config_.ppp_max_ephemeral_tokens = n;
+    }
+    std::fprintf(stderr,
+        "[ppp] enabled=%d rearrange=%d lcp_window=%d min_pin=%d max_ephemeral=%d\n",
+        (int)config_.ppp_enabled, (int)config_.ppp_rearrange,
+        config_.ppp_lcp_window, config_.ppp_min_pin_tokens,
+        config_.ppp_max_ephemeral_tokens);
 }
 
 // Resolve path to share/status.html at startup.
@@ -1219,8 +1379,16 @@ int HttpServer::run() {
     std::fprintf(stderr, "[server] listening on http://%s:%d\n",
                  config_.host.c_str(), config_.port);
 
-    // Start worker thread.
-    worker_thread_ = std::thread([this]() { worker_loop(); });
+    // A backend-provided sequence engine replaces the one-request worker
+    // with the concurrent scheduler. Upstream forwarding stays on the
+    // classic path even when the local backend exposes an engine.
+    if (SeqEngine * engine = backend_.seq_engine();
+        engine && config_.pflash_upstream_base.empty()) {
+        worker_thread_ =
+            std::thread([this, engine]() { scheduler_loop(*engine); });
+    } else {
+        worker_thread_ = std::thread([this]() { worker_loop(); });
+    }
 
     // Accept loop.
     while (!stopping_.load()) {
@@ -1803,16 +1971,34 @@ void HttpServer::log_parsed_request(const ParsedRequest & req) const {
 
 void HttpServer::enqueue_request_and_wait(SocketHandle fd, ParsedRequest req) {
     // Set socket non-blocking for send() stall detection during streaming.
-    const int flags = sock_get_flags(fd);
-    if (flags >= 0) sock_set_nonblock(fd);
+    sock_set_nonblock(fd);
 
     ServerJob job;
     job.fd = fd;
     job.req = std::move(req);
     enqueue(&job);
 
+    // The worker can spend minutes in prefill before its first token. Keep the
+    // SSE response active and watch the read side independently so an orderly
+    // client close is observed before the kernel send buffer eventually fills.
     std::unique_lock<std::mutex> lock(job.mu);
-    job.cv.wait(lock, [&]() { return job.done; });
+    while (!job.done) {
+        if (job.cv.wait_for(lock, kClientMonitorInterval,
+                            [&]() { return job.done; })) {
+            break;
+        }
+
+        lock.unlock();
+        const auto peer_state = http_detail::inspect_peer_socket(fd);
+        if (peer_state == http_detail::PeerSocketState::Disconnected) {
+            job.client_disconnected.store(true, std::memory_order_release);
+        } else {
+            maybe_send_job_heartbeat(
+                &job,
+                peer_state == http_detail::PeerSocketState::ReadClosed);
+        }
+        lock.lock();
+    }
 }
 
 bool HttpServer::route_request(SocketHandle fd, const HttpRequest & hr) {
@@ -1837,7 +2023,32 @@ bool HttpServer::route_request(SocketHandle fd, const HttpRequest & hr) {
         apply_request_reasoning(body, req);
         // Bandit: parse session_id from extra_body (opt-in adaptive keep_ratio).
         req.session_id = parse_session_id_from_body(body);
-        if (!render_and_tokenize_request(fd, chat_messages, req)) return true;
+
+        // PPP rearrange (optional): peel ephemeral system banners into a
+        // following system message so the first chat boundary is stable.
+        std::vector<ChatMessage> render_messages = chat_messages;
+        if (config_.ppp_enabled && config_.ppp_rearrange && !req.tools.empty()) {
+            auto layout = PinFriendlyPrompt::rearrange(chat_messages, true);
+            if (layout.rearranged) {
+                render_messages = std::move(layout.messages);
+                // Keep FlowKV / response formatting aligned with the served
+                // layout (FlowKV re-renders from req.messages).
+                if (req.messages.is_array() && !req.messages.empty() &&
+                    req.messages[0].value("role", "") == "system" &&
+                    render_messages.size() >= 2) {
+                    req.messages[0]["content"] = render_messages[0].content;
+                    json meta = {
+                        {"role", "system"},
+                        {"content", render_messages[1].content},
+                    };
+                    req.messages.insert(req.messages.begin() + 1, std::move(meta));
+                }
+                std::fprintf(stderr,
+                    "[ppp] rearranged: peeled ephemeral system tail\n");
+            }
+        }
+
+        if (!render_and_tokenize_request(fd, render_messages, req)) return true;
 
         // count_tokens: short-circuit after tokenization. Skip generation
         // entirely — Anthropic's contract is just {"input_tokens": N}.
@@ -2174,10 +2385,8 @@ json build_responses_api_response(
 
 json build_non_streaming_response(
         const ParsedRequest & req, const GenerateResult & result,
-        int generation_cap, const GenTimings & timings, Tokenizer & tokenizer,
-        SseEmitter & emitter) {
-    const CompletionTokenCounts counts = feed_non_streaming_tokens(
-        result.tokens, tokenizer, emitter);
+        int generation_cap, const GenTimings & timings,
+        const CompletionTokenCounts & counts, SseEmitter & emitter) {
     switch (req.format) {
     case ApiFormat::OPENAI_CHAT:
         return build_openai_completion_response(
@@ -2191,6 +2400,16 @@ json build_non_streaming_response(
     default:
         return {{"text", emitter.accumulated_text()}};
     }
+}
+
+json build_non_streaming_response(
+        const ParsedRequest & req, const GenerateResult & result,
+        int generation_cap, const GenTimings & timings, Tokenizer & tokenizer,
+        SseEmitter & emitter) {
+    const CompletionTokenCounts counts = feed_non_streaming_tokens(
+        result.tokens, tokenizer, emitter);
+    return build_non_streaming_response(
+        req, result, generation_cap, timings, counts, emitter);
 }
 
 // Prompt preparation applies exactly one compression policy: FlowKV for
@@ -2244,122 +2463,179 @@ void HttpServer::apply_flowkv_compression(
     const int aged_begin = 1;
     const int aged_end = message_count - hot_window;
 
-    // Small aged bands cost more to compress than they save during prefill.
-    int aged_token_estimate = 0;
-    for (int index = aged_begin; index < aged_end; ++index) {
-        const auto & message = req.messages[index];
-        if (!message.is_object()) continue;
+    struct AgedMessage {
+        int index = -1;
+        std::vector<int32_t> drafter_ids;
+        PrefixHash cache_key{};
+    };
 
+    // FlowKV's curve follows the total request length, not the size of each
+    // individual message. This makes one configuration adapt consistently as
+    // a conversation grows.
+    const float keep_ratio = http_detail::resolve_pflash_keep_ratio(
+        pflash_keep_ratio(config_, (int) req.prompt_tokens.size()),
+        req.session_id, sessions_);
+
+    auto message_text = [](const json & message) {
         std::string content;
-        if (message.contains("content")) {
-            const auto & value = message["content"];
-            if (value.is_string()) {
-                content = value.get<std::string>();
-            } else if (value.is_array()) {
-                for (const auto & part : value) {
-                    if (!part.is_object()) continue;
-                    const std::string type = part.value("type", "");
-                    if (type == "text" || type == "input_text" ||
-                        type == "output_text") {
-                        content += part.value("text", "");
-                    }
+        if (!message.is_object() || !message.contains("content")) {
+            return content;
+        }
+        const auto & value = message["content"];
+        if (value.is_string()) {
+            content = value.get<std::string>();
+        } else if (value.is_array()) {
+            for (const auto & part : value) {
+                if (!part.is_object()) continue;
+                const std::string type = part.value("type", "");
+                if (type == "text" || type == "input_text" ||
+                    type == "output_text") {
+                    content += part.value("text", "");
                 }
             }
         }
-        if (!content.empty()) {
-            aged_token_estimate +=
-                (int) drafter_tokenizer_->encode(content).size();
-        }
+        return content;
+    };
+
+    // AUTO is based on the aggregate aged history, matching the total-prompt
+    // threshold users configure. Once active, avoid tiny per-message scoring
+    // jobs that cost more than they remove.
+    int aged_token_estimate = 0;
+    std::vector<AgedMessage> aged_messages;
+    for (int index = aged_begin; index < aged_end; ++index) {
+        const std::string content = message_text(req.messages[index]);
+        if (content.empty()) continue;
+
+        auto ids = drafter_tokenizer_->encode(content);
+        aged_token_estimate += (int) ids.size();
+        if ((int) ids.size() < http_detail::kFlowKvInertMinTokens) continue;
+
+        // The same aged message can be revisited at a different point on the
+        // context-length curve. Include the selected ratio in the cache key so
+        // a 10% result is not reused when the larger context asks for 2%.
+        ids.push_back((int32_t) std::lround(keep_ratio * 1000000.0f));
+        const PrefixHash key = frozen_block_key(
+            ids.data(), 0, (int) ids.size());
+        ids.pop_back();
+        aged_messages.push_back({index, std::move(ids), key});
     }
 
-    static constexpr int kFlowKvInertMinTokens = 512;
-    if (aged_token_estimate < kFlowKvInertMinTokens) {
+    const int activation_threshold =
+        http_detail::flowkv_activation_threshold(config_);
+    if (!http_detail::flowkv_should_activate(
+            config_, aged_token_estimate)) {
         std::fprintf(stderr,
-            "[flowkv] inert-guard: aged band %d toks < %d — skip\n",
-            aged_token_estimate, kFlowKvInertMinTokens);
+            "[flowkv] aged band %d toks < activation threshold %d — skip\n",
+            aged_token_estimate, activation_threshold);
+        return;
+    }
+    if (aged_messages.empty()) {
+        std::fprintf(stderr,
+            "[flowkv] no aged messages >= %d tokens — skip\n",
+            http_detail::kFlowKvInertMinTokens);
         return;
     }
 
     json modified_messages = req.messages;
     bool any_compressed = false;
     int cache_hits = 0;
+    const auto residency_action = resolve_draft_residency_action(
+        config_.draft_residency,
+        DraftResidencyContext{
+            DraftResidencyUse::PFlashCompress,
+            config_.lazy_draft,
+            !config_.draft_path.empty(),
+        });
 
-    for (int index = aged_begin; index < aged_end; ++index) {
-        auto & message = modified_messages[index];
-        if (!message.is_object()) continue;
+    std::vector<ModelBackend::CompressRequest> compress_requests;
+    std::vector<int> compress_message_indices;
+    std::vector<PrefixHash> compress_cache_keys;
+    compress_requests.reserve(aged_messages.size());
+    compress_message_indices.reserve(aged_messages.size());
+    compress_cache_keys.reserve(aged_messages.size());
 
-        std::string content;
-        if (message.contains("content")) {
-            const auto & value = message["content"];
-            if (value.is_string()) {
-                content = value.get<std::string>();
-            } else if (value.is_array()) {
-                for (const auto & part : value) {
-                    if (!part.is_object()) continue;
-                    const std::string type = part.value("type", "");
-                    if (type == "text" || type == "input_text" ||
-                        type == "output_text") {
-                        content += part.value("text", "");
-                    }
-                }
-            }
-        }
-        if (content.empty()) continue;
-
-        auto drafter_ids = drafter_tokenizer_->encode(content);
-        if ((int) drafter_ids.size() < config_.pflash_threshold) continue;
-
-        const PrefixHash cache_key = frozen_block_key(
-            drafter_ids.data(), 0, (int) drafter_ids.size());
-
-        std::string compressed_text;
-        auto cache_it = frozen_content_cache_.find(cache_key);
+    for (auto & aged : aged_messages) {
+        auto cache_it = frozen_content_cache_.find(aged.cache_key);
         if (cache_it != frozen_content_cache_.end()) {
-            compressed_text = cache_it->second;
+            modified_messages[aged.index]["content"] = cache_it->second;
+            any_compressed = true;
             ++cache_hits;
             std::fprintf(stderr,
                 "[flowkv] msg[%d] cache hit (%zu drafter toks)\n",
-                index, drafter_ids.size());
-        } else {
-            ModelBackend::CompressRequest compress_request;
-            compress_request.input_ids = std::move(drafter_ids);
-            compress_request.keep_ratio = pflash_keep_ratio(
-                config_, (int) compress_request.input_ids.size());
-            compress_request.drafter_path = config_.pflash_drafter_path;
-            compress_request.drafter_gpu = config_.pflash_drafter_gpu;
-            compress_request.skip_park = config_.pflash_skip_park;
-            compress_request.residency_action = resolve_draft_residency_action(
-                config_.draft_residency,
-                DraftResidencyContext{
-                    DraftResidencyUse::PFlashCompress,
-                    config_.lazy_draft,
-                    !config_.draft_path.empty(),
-                });
-
-            auto result = backend_.compress(compress_request);
-            if (!result.ok || result.compressed_ids.empty()) {
-                std::fprintf(stderr,
-                    "[flowkv] msg[%d] compress failed — kept verbatim\n",
-                    index);
-                continue;
-            }
-            compressed_text = drafter_tokenizer_->decode(result.compressed_ids);
-            std::fprintf(stderr,
-                "[flowkv] msg[%d] %zu → %zu drafter toks (keep=%.2f)\n",
-                index, compress_request.input_ids.size(),
-                result.compressed_ids.size(), compress_request.keep_ratio);
-
-            if (frozen_content_cache_.size() >= kFrozenCacheMax) {
-                std::fprintf(stderr,
-                    "[flowkv] cache full (%zu entries) — clearing\n",
-                    frozen_content_cache_.size());
-                frozen_content_cache_.clear();
-            }
-            frozen_content_cache_.emplace(cache_key, compressed_text);
+                aged.index, aged.drafter_ids.size());
+            continue;
         }
 
-        message["content"] = compressed_text;
+        ModelBackend::CompressRequest compress_request;
+        compress_request.input_ids = std::move(aged.drafter_ids);
+        compress_request.keep_ratio = keep_ratio;
+        compress_request.drafter_path = config_.pflash_drafter_path;
+        compress_request.drafter_gpu = config_.pflash_drafter_gpu;
+        compress_request.skip_park = config_.pflash_skip_park;
+        compress_request.residency_action = residency_action;
+        compress_requests.push_back(std::move(compress_request));
+        compress_message_indices.push_back(aged.index);
+        compress_cache_keys.push_back(aged.cache_key);
+    }
+
+    std::vector<ModelBackend::CompressResult> compress_results;
+    if (!compress_requests.empty()) {
+        if (config_.pflash_remote_drafter) {
+            compress_results.resize(compress_requests.size());
+            if (!pflash_remote_.active() &&
+                !pflash_remote_.start(config_.pflash_remote.ipc_bin,
+                                      config_.pflash_drafter_path,
+                                      config_.pflash_drafter_gpu,
+                                      config_.pflash_remote.work_dir)) {
+                std::fprintf(stderr,
+                    "[flowkv] remote PFlash drafter start failed\n");
+            } else {
+                for (size_t index = 0; index < compress_requests.size(); ++index) {
+                    auto & result = compress_results[index];
+                    result.ok = pflash_remote_.compress(
+                        compress_requests[index].input_ids,
+                        compress_requests[index].keep_ratio,
+                        result.compressed_ids);
+                }
+                if (residency_action == DraftResidencyAction::ReleaseAfterUse) {
+                    pflash_remote_.close();
+                }
+            }
+        } else {
+            compress_results = backend_.compress_batch(compress_requests);
+        }
+    }
+
+    for (size_t index = 0; index < compress_requests.size(); ++index) {
+        if (index >= compress_results.size() ||
+            !compress_results[index].ok ||
+            compress_results[index].compressed_ids.empty()) {
+            std::fprintf(stderr,
+                "[flowkv] msg[%d] compress failed — kept verbatim\n",
+                compress_message_indices[index]);
+            continue;
+        }
+
+        const auto & result = compress_results[index];
+        const std::string compressed_text =
+            drafter_tokenizer_->decode(result.compressed_ids);
+        modified_messages[compress_message_indices[index]]["content"] =
+            compressed_text;
         any_compressed = true;
+        std::fprintf(stderr,
+            "[flowkv] msg[%d] %zu → %zu drafter toks (keep=%.2f)\n",
+            compress_message_indices[index],
+            compress_requests[index].input_ids.size(),
+            result.compressed_ids.size(), compress_requests[index].keep_ratio);
+
+        if (frozen_content_cache_.size() >= kFrozenCacheMax) {
+            std::fprintf(stderr,
+                "[flowkv] cache full (%zu entries) — clearing\n",
+                frozen_content_cache_.size());
+            frozen_content_cache_.clear();
+        }
+        frozen_content_cache_.emplace(
+            compress_cache_keys[index], compressed_text);
     }
 
     if (!any_compressed) {
@@ -2403,11 +2679,12 @@ void HttpServer::apply_flowkv_compression(
     const int tokens_before = (int) prepared.tokens.size();
     prepared.tokens = tokenizer_.encode(rendered);
     prepared.compressed = true;
+    prepared.flowkv = true;
     std::fprintf(stderr,
         "[flowkv] %d → %d target toks "
-        "(%d aged msgs, %d cache hits, hot_window=%d)\n",
+        "(%zu eligible aged msgs, %d cache hits, keep=%.3f, hot_window=%d)\n",
         tokens_before, (int) prepared.tokens.size(),
-        aged_end - aged_begin, cache_hits, hot_window);
+        aged_messages.size(), cache_hits, keep_ratio, hot_window);
 }
 
 std::string HttpServer::apply_pflash_compression(
@@ -2435,9 +2712,8 @@ std::string HttpServer::apply_pflash_compression(
 
     ModelBackend::CompressRequest compress_request;
     compress_request.input_ids = std::move(drafter_ids);
-    compress_request.keep_ratio = req.session_id.empty()
-        ? pflash_keep_ratio(config_, prompt_tokens)
-        : sessions_.get_keep_ratio(req.session_id);
+    compress_request.keep_ratio = http_detail::resolve_pflash_keep_ratio(
+        pflash_keep_ratio(config_, prompt_tokens), req.session_id, sessions_);
     compress_request.drafter_path = config_.pflash_drafter_path;
     compress_request.drafter_gpu = config_.pflash_drafter_gpu;
     compress_request.skip_park = config_.pflash_skip_park;
@@ -2555,16 +2831,17 @@ HttpServer::PreparedPrompt HttpServer::prepare_prompt(
         const bool continuation = should_compress &&
             is_continuation_request(req.messages);
 
-        if (should_compress && continuation &&
-            req.disk_cache_policy.compress && req.messages.is_array()) {
-            // FlowKV owns continuation compression; falling back to whole-
-            // prompt compression would destroy the reusable prefix anchor.
+        if (should_compress && continuation && req.messages.is_array()) {
+            // FlowKV owns continuation compression automatically. Falling
+            // back to whole-prompt compression would destroy the reusable
+            // system/tool prefix anchor, and requiring a separate disk-cache
+            // flag made --prefill-compression auto silently do nothing.
             apply_flowkv_compression(req, prepared);
             should_compress = false;
         } else if (should_compress && continuation) {
             should_compress = false;
             std::fprintf(stderr,
-                "[pflash] skip-compress (continuation: prior assistant/tool history)\n");
+                "[pflash] skip-compress (continuation without messages array)\n");
         }
 
         if (should_compress && req.disk_cache_policy.compress) {
@@ -2597,7 +2874,7 @@ HttpServer::PreparedPrompt HttpServer::prepare_prompt(
 }
 
 bool HttpServer::forward_upstream(
-        SocketHandle fd, const ParsedRequest & req,
+        ServerJob * job, const ParsedRequest & req,
         const PreparedPrompt & prepared) {
 #ifdef DFLASH_HAS_CURL
     if (config_.pflash_upstream_base.empty()) return false;
@@ -2630,9 +2907,17 @@ bool HttpServer::forward_upstream(
             "[pflash-proxy] compressed forward → %s/completions  "
             "prompt=%zu tokens  model=%s\n",
             upstream.c_str(), prepared.tokens.size(), upstream_model.c_str());
-        curl_forward(fd, upstream + "/completions", upstream_key, body,
-                     req.stream, /*rewrite_to_chat=*/true,
-                     req.response_id, upstream_model);
+        curl_forward(
+            upstream + "/completions", upstream_key, body,
+            req.stream, /*rewrite_to_chat=*/true,
+            req.response_id, upstream_model,
+            [this, job](const void * data, size_t size) {
+                return send_job_bytes(job, data, size);
+            },
+            [this, job]() { stop_job_stream(job); },
+            [job]() {
+                return job->client_disconnected.load(std::memory_order_acquire);
+            });
     } else {
         json body = req.raw_body;
         body["model"] = upstream_model;
@@ -2640,13 +2925,21 @@ bool HttpServer::forward_upstream(
         std::fprintf(stderr,
             "[pflash-proxy] passthrough → %s/chat/completions  model=%s\n",
             upstream.c_str(), upstream_model.c_str());
-        curl_forward(fd, upstream + "/chat/completions", upstream_key, body,
-                     req.stream, /*rewrite_to_chat=*/false,
-                     req.response_id, upstream_model);
+        curl_forward(
+            upstream + "/chat/completions", upstream_key, body,
+            req.stream, /*rewrite_to_chat=*/false,
+            req.response_id, upstream_model,
+            [this, job](const void * data, size_t size) {
+                return send_job_bytes(job, data, size);
+            },
+            [this, job]() { stop_job_stream(job); },
+            [job]() {
+                return job->client_disconnected.load(std::memory_order_acquire);
+            });
     }
     return true;
 #else
-    (void) fd;
+    (void) job;
     (void) req;
     (void) prepared;
     return false;
@@ -2659,16 +2952,80 @@ HttpServer::GenerationCacheState HttpServer::prepare_generation_cache(
         const ParsedRequest & req, PreparedPrompt & prepared,
         GenerateRequest & generate_request) {
     auto & effective_prompt = prepared.tokens;
+    // Tool-heavy requests prefer the reusable system/tool boundary under eviction.
+    const bool prefer_inline_snap = !req.tools.empty();
+    const bool prefer_tools_boundary =
+        ppp_prefers_tools_boundary(config_.ppp_enabled, prefer_inline_snap);
+    int forced_cut = req.pin_end_token;
+
+    // PPP runs *before* lookup. Default (rearrange=0): annotate a sticky
+    // pin_end only — never mutate tokens. Token-level DiffPin rewrite
+    // (prefix|suffix|middle float) is opt-in via DFLASH_PPP_REARRANGE=1;
+    // unconstrained middle peels can scramble tool-schema JSON and yield
+    // empty post-tool completions.
+    bool ppp_rewrote = false;
+    if (config_.ppp_enabled && prefer_tools_boundary) {
+        const auto boundaries = find_all_boundaries(
+            effective_prompt, prefix_cache_.chat_markers());
+        if (config_.ppp_rearrange) {
+            auto rewrite = PinFriendlyPrompt::diff_make_pin_friendly(
+                effective_prompt, boundaries, recent_tool_prefixes_,
+                prefix_cache_.chat_markers(),
+                config_.ppp_lcp_window, config_.ppp_min_pin_tokens,
+                config_.ppp_max_ephemeral_tokens);
+            if (rewrite.rewritten) {
+                effective_prompt = std::move(rewrite.tokens);
+                generate_request.prompt = effective_prompt;
+                ppp_rewrote = true;
+                // Full-cache hits/keys from unrearranged tokens are stale.
+                prepared.full_cache_hit_slot = -1;
+                prepared.full_cache_hit_len = 0;
+                prepared.full_cache_served_tokens = -1;
+                std::fprintf(stderr,
+                    "[ppp] diff-rewrite prefix=%d suffix=%d middle=%d "
+                    "pin_end=%d prompt=%zu\n",
+                    rewrite.prefix_len, rewrite.suffix_len, rewrite.middle_len,
+                    rewrite.pin_end, effective_prompt.size());
+            }
+            if (forced_cut <= 0) forced_cut = rewrite.pin_end;
+            if (forced_cut > 0 && !rewrite.rewritten) {
+                std::fprintf(stderr,
+                    "[ppp] pin_end=%d (no rewrite; prompt=%zu)\n",
+                    forced_cut, effective_prompt.size());
+            }
+        } else if (forced_cut <= 0) {
+            forced_cut = PinFriendlyPrompt::annotate_pin_end(
+                effective_prompt, boundaries, recent_tool_prefixes_,
+                config_.ppp_lcp_window, config_.ppp_min_pin_tokens);
+            if (forced_cut > 0) {
+                std::fprintf(stderr,
+                    "[ppp] pin_end=%d (pin-only; prompt=%zu)\n",
+                    forced_cut, effective_prompt.size());
+            }
+        }
+        const auto remember_bounds = find_all_boundaries(
+            effective_prompt, prefix_cache_.chat_markers());
+        const int remember_n = !remember_bounds.empty()
+            ? remember_bounds.front()
+            : (int)effective_prompt.size();
+        PinFriendlyPrompt::remember_tool_prefix(
+            recent_tool_prefixes_, effective_prompt, remember_n,
+            config_.ppp_lcp_window);
+    }
+
     GenerationCacheState cache;
     cache.cache_slot = prepared.full_cache_hit_slot;
     cache.prefix_len = prepared.full_cache_hit_len;
     cache.using_restore = cache.cache_slot >= 0;
     cache.disk_policy = req.disk_cache_policy;
+    cache.full_snap_key_effective = ppp_rewrote;
 
-    // Exact raw-prompt snapshots take priority over inline turn boundaries.
+    // Exact full-prompt snapshots. After a DiffPin rewrite, key by the
+    // tokens we actually serve (effective_prompt), not the client wire form.
     if (!cache.using_restore) {
-        auto [full_slot, full_len] =
-            prefix_cache_.lookup_full(req.prompt_tokens);
+        const auto & full_key =
+            ppp_rewrote ? effective_prompt : req.prompt_tokens;
+        auto [full_slot, full_len] = prefix_cache_.lookup_full(full_key);
         if (full_slot >= 0) {
             cache.cache_slot = full_slot;
             cache.prefix_len = full_len;
@@ -2690,7 +3047,8 @@ HttpServer::GenerationCacheState HttpServer::prepare_generation_cache(
     // FlowKV may rewrite aged messages, so only its stable system prefix is
     // safe for scoped disk reuse. Whole-prompt PFlash requires Full scope.
     int system_end = 0;
-    if (prepared.compressed && req.disk_cache_policy.compress) {
+    if (http_detail::should_clamp_flowkv_disk_cache(
+            prepared.flowkv, req.disk_cache_policy)) {
         const auto boundaries = find_all_boundaries(
             effective_prompt, prefix_cache_.chat_markers());
         system_end = boundaries.empty() ? 0 : boundaries[0];
@@ -2706,7 +3064,7 @@ HttpServer::GenerationCacheState HttpServer::prepare_generation_cache(
                 "[flowkv] disk-clamp: system_end=%d < min=%d — disk off\n",
                 system_end, config_.disk_cache_min_tokens);
         }
-    } else if (prepared.compressed &&
+    } else if (prepared.compressed && !prepared.flowkv &&
                cache.disk_policy.mode != DiskPrefixCacheMode::Full) {
         cache.disk_policy.mode = DiskPrefixCacheMode::Off;
     }
@@ -2907,17 +3265,19 @@ HttpServer::GenerationCacheState HttpServer::prepare_generation_cache(
     // A generation can save only one snapshot during prefill. Tool-heavy
     // requests prefer the reusable system/tool boundary; otherwise an
     // enabled exact full-prompt cache retains its existing priority.
-    const bool prefer_inline_snap = !req.tools.empty();
     auto prepare_inline = [&]() {
         const auto prepared_snapshot = prefix_cache_.prepare_inline_snap(
             effective_prompt,
-            cache.using_restore ? cache.prefix_len : 0);
+            cache.using_restore ? cache.prefix_len : 0,
+            prefer_tools_boundary,
+            forced_cut);
         cache.snap_slot = prepared_snapshot.first;
         cache.snap_cut = prepared_snapshot.second;
     };
     auto prepare_full = [&]() {
-        cache.full_snap_slot =
-            prefix_cache_.prepare_full_snap(req.prompt_tokens);
+        const auto & full_key = cache.full_snap_key_effective
+            ? effective_prompt : req.prompt_tokens;
+        cache.full_snap_slot = prefix_cache_.prepare_full_snap(full_key);
         if (cache.full_snap_slot >= 0) {
             cache.full_snap_pos = (int) effective_prompt.size();
             generate_request.snap_slot = cache.full_snap_slot;
@@ -2994,8 +3354,10 @@ void HttpServer::finalize_generation_cache(
                 backend_.snapshot_cur_pos(cache.full_snap_slot);
             if (saved_position > 0 &&
                 saved_position <= cache.full_snap_pos) {
+                const auto & full_key = cache.full_snap_key_effective
+                    ? effective_prompt : req.prompt_tokens;
                 prefix_cache_.confirm_full_snap(
-                    cache.full_snap_slot, req.prompt_tokens, saved_position);
+                    cache.full_snap_slot, full_key, saved_position);
             } else {
                 backend_.snapshot_free(cache.full_snap_slot);
                 prefix_cache_.abort_full_snap(cache.full_snap_slot);
@@ -3066,7 +3428,7 @@ void HttpServer::finalize_generation_cache(
     if (!prepared.compressed) {
         recent_disk_prompts_.insert(
             recent_disk_prompts_.begin(), effective_prompt);
-    } else if (req.disk_cache_policy.compress) {
+    } else if (prepared.flowkv) {
         // FlowKV history is rewritten; retain the verbatim prompt for future
         // Auto-boundary comparisons.
         recent_disk_prompts_.insert(
@@ -3153,9 +3515,12 @@ void HttpServer::prepare_generation_inputs(
 }
 
 void HttpServer::configure_generation_io(
-        SocketHandle fd, const ParsedRequest & req, SseEmitter & emitter,
+        ServerJob * job, const ParsedRequest & req, SseEmitter & emitter,
         GenerationOutputState & output, DaemonIO & io) {
     io.stream_fd = -1;
+    io.should_cancel = [job]() {
+        return job->client_disconnected.load(std::memory_order_acquire);
+    };
     io.observer = [this](const char *, const std::vector<int32_t> & tokens) {
         std::vector<std::string> token_strings;
         token_strings.reserve(tokens.size());
@@ -3166,9 +3531,13 @@ void HttpServer::configure_generation_io(
         broadcast_status();
     };
 
-    io.on_token = [this, fd, &req, &emitter, &output](
+    io.on_token = [this, job, &req, &emitter, &output](
             int32_t token) -> bool {
-        if (output.client_disconnected) return false;
+        if (output.client_disconnected ||
+            job->client_disconnected.load(std::memory_order_acquire)) {
+            output.client_disconnected = true;
+            return false;
+        }
         ++output.completion_tokens;
 
         if (output.completion_tokens % 10 == 0) {
@@ -3188,7 +3557,7 @@ void HttpServer::configure_generation_io(
         if (!req.stream || text.empty()) return true;
 
         for (const auto & chunk : emitter.emit_token(text)) {
-            if (!send_all(fd, chunk.data(), chunk.size())) {
+            if (!send_job_bytes(job, chunk.data(), chunk.size())) {
                 output.client_disconnected = true;
                 return false;
             }
@@ -3197,6 +3566,74 @@ void HttpServer::configure_generation_io(
         // markers never terminate generation.
         return delivery == TokenDelivery::kThinkTag || !emitter.stop_hit();
     };
+}
+
+bool HttpServer::deliver_generation_token(
+        ServerJob * job, const ParsedRequest & req, SseEmitter & emitter,
+        int32_t token, int & completion_tokens,
+        ClientSendBuffer & send_buffer) {
+    ++completion_tokens;
+
+    std::string text;
+    const TokenDelivery delivery =
+        classify_generated_token(tokenizer_, token, text);
+    if (delivery == TokenDelivery::kSkip) return true;
+
+    // Non-stream replay counts every non-skipped token, including tokens
+    // whose decoded text is empty. Keep concurrent usage accounting aligned;
+    // streaming still has no frame to send for an empty string.
+    if (text.empty() && req.stream) return true;
+
+    const auto chunks = emitter.emit_token(text);
+    if (req.stream && !chunks.empty()) {
+        // Disable silent-prefill heartbeats only once there is a real frame
+        // to buffer. Complete a partial comment ahead of that frame.
+        stop_job_stream(job, &send_buffer);
+        for (const auto & chunk : chunks) {
+            send_buffer.append(chunk);
+        }
+    }
+    return delivery == TokenDelivery::kThinkTag || !emitter.stop_hit();
+}
+
+void HttpServer::send_nonstream_response(
+        const ParsedRequest & req, SocketHandle fd, SseEmitter & emitter,
+        const std::vector<int32_t> & gen_tokens, int n_gen_cap,
+        bool budget_forced_close, bool degenerate_decode_close,
+        const GenTimings & gen_timings,
+        ClientSendBuffer * send_buffer) {
+    CompletionTokenCounts counts;
+    counts.total = (int) gen_tokens.size();
+    emitter.emit_finish(counts.total);
+    const int first_content = emitter.first_content_token_index();
+    const int emitted = emitter.emit_token_count();
+    counts.reasoning = first_content < 0 ? emitted : first_content;
+    counts.content = first_content < 0 ? 0 : emitted - first_content;
+
+    GenerateResult result;
+    result.tokens = gen_tokens;
+    result.budget_forced_close = budget_forced_close;
+    result.degenerate_decode_close = degenerate_decode_close;
+
+    const json response = build_non_streaming_response(
+        req, result, n_gen_cap, gen_timings, counts, emitter);
+
+    const std::string body = response.dump() + "\n";
+    if (send_buffer) {
+        send_buffer->append(
+            format_http_response(200, "application/json", body));
+    } else {
+        send_response(fd, 200, "application/json", body);
+    }
+}
+
+std::array<std::string, 2> HttpServer::sse_error_close_chunks(
+        const std::string & message) {
+    const json err = {{"error", {
+        {"message", message},
+        {"type", "server_error"},
+    }}};
+    return {"data: " + err.dump() + "\n\n", "data: [DONE]\n\n"};
 }
 
 void HttpServer::worker_loop() {
@@ -3245,6 +3682,7 @@ void HttpServer::process_job(ServerJob * job) {
     StatusGuard status_guard{status_};
 
     auto finish_job = [&]() {
+        stop_job_stream(job);
         std::lock_guard<std::mutex> lk(job->mu);
         job->done = true;
         job->cv.notify_one();
@@ -3252,11 +3690,10 @@ void HttpServer::process_job(ServerJob * job) {
     auto fail_request = [&](int status, const std::string & message) {
         std::fprintf(stderr, "[server] request failed: %s\n", message.c_str());
         if (req.stream) {
-            json err = {{"error", {{"message", message}, {"type", "server_error"}}}};
-            const std::string chunk = "data: " + err.dump() + "\n\n";
-            send_all(fd, chunk.data(), chunk.size());
-            const char done[] = "data: [DONE]\n\n";
-            send_all(fd, done, sizeof(done) - 1);
+            stop_job_stream(job);
+            for (const std::string & chunk : sse_error_close_chunks(message)) {
+                send_job_bytes(job, chunk.data(), chunk.size());
+            }
         } else {
             send_error(fd, status, message);
         }
@@ -3273,9 +3710,10 @@ void HttpServer::process_job(ServerJob * job) {
         req.max_output,
         json_array_size(req.tools));
 
-    // Send SSE headers (skip when proxying — curl_forward handles its own headers).
-    if (req.stream && config_.pflash_upstream_base.empty()) {
-        if (!send_sse_headers(fd)) {
+    // The server owns the downstream SSE transport for local and proxied
+    // generation so both paths share heartbeat and disconnect handling.
+    if (req.stream) {
+        if (!send_sse_headers(job)) {
             finish_job();
             return;
         }
@@ -3288,11 +3726,12 @@ void HttpServer::process_job(ServerJob * job) {
                        req.stop_sequences,
                        req.started_in_thinking);
 
-    // Emit initial SSE events (skip when proxying).
+    // Emit initial SSE events only for local generation. The upstream owns
+    // the proxied event sequence.
     if (req.stream && config_.pflash_upstream_base.empty()) {
         bool start_ok = true;
         for (const auto & chunk : emitter.emit_start()) {
-            if (!send_all(fd, chunk.data(), chunk.size())) {
+            if (!send_job_bytes(job, chunk.data(), chunk.size())) {
                 start_ok = false;
                 break;
             }
@@ -3302,13 +3741,14 @@ void HttpServer::process_job(ServerJob * job) {
             return;
         }
     }
+    if (req.stream) start_job_stream(job);
 
     PreparedPrompt prepared = prepare_prompt(req);
     if (prepared.error_status != 0) {
         fail_request(prepared.error_status, prepared.error);
         return;
     }
-    if (forward_upstream(fd, req, prepared)) {
+    if (forward_upstream(job, req, prepared)) {
         finish_job();
         return;
     }
@@ -3329,7 +3769,7 @@ void HttpServer::process_job(ServerJob * job) {
 
     DaemonIO io;
     GenerationOutputState output;
-    configure_generation_io(fd, req, emitter, output, io);
+    configure_generation_io(job, req, emitter, output, io);
     int & completion_tokens = output.completion_tokens;
     bool & visible_output_seen = output.visible_output_seen;
     bool & client_disconnected = output.client_disconnected;
@@ -3366,6 +3806,10 @@ void HttpServer::process_job(ServerJob * job) {
     if (dflash_residency == DraftResidencyAction::ReleaseAfterUse &&
         !config_.draft_path.empty()) {
         backend_.park(ParkTarget::DraftModel);
+    }
+
+    if (job->client_disconnected.load(std::memory_order_acquire)) {
+        client_disconnected = true;
     }
 
     // Release oversized scratch buffers (gallocr, BSA cache) so VRAM
@@ -3432,10 +3876,16 @@ void HttpServer::process_job(ServerJob * job) {
         status_.update_completion_tokens(completion_tokens);
         broadcast_status();
     }
+    // Serialize final frames after disabling heartbeat comments so no comment
+    // can appear after the protocol's [DONE] marker.
+    stop_job_stream(job);
+    if (job->client_disconnected.load(std::memory_order_acquire)) {
+        client_disconnected = true;
+    }
     if (req.stream && !client_disconnected) {
         auto final_chunks = emitter.emit_finish(completion_tokens, &gen_timings);
         for (const auto & chunk : final_chunks) {
-            if (!send_all(fd, chunk.data(), chunk.size())) {
+            if (!send_job_bytes(job, chunk.data(), chunk.size())) {
                 client_disconnected = true;
                 break;
             }
@@ -3445,8 +3895,7 @@ void HttpServer::process_job(ServerJob * job) {
             req, result, n_gen_cap, gen_timings, tokenizer_, emitter);
         // Streaming uses non-blocking sends; restore blocking mode before
         // writing a complete JSON response on this shared socket path.
-        const int flags = sock_get_flags(fd);
-        if (flags >= 0) sock_set_block(fd);
+        sock_set_block(fd);
         send_response(fd, 200, "application/json",
                       response.dump() + "\n");
     }
@@ -3529,6 +3978,33 @@ ServerJob * HttpServer::dequeue() {
     if (!queue_head_) queue_tail_ = nullptr;
     j->next = nullptr;
     return j;
+}
+
+ServerJob * HttpServer::try_dequeue() {
+    std::lock_guard<std::mutex> lk(queue_mu_);
+    if (!queue_head_) return nullptr;
+    ServerJob * job = queue_head_;
+    queue_head_ = job->next;
+    if (!queue_head_) queue_tail_ = nullptr;
+    job->next = nullptr;
+    return job;
+}
+
+ServerJob * HttpServer::dequeue_for(
+        std::chrono::steady_clock::duration timeout) {
+    std::unique_lock<std::mutex> lk(queue_mu_);
+    if (!queue_head_ && !stopping_.load() &&
+        timeout > std::chrono::steady_clock::duration::zero()) {
+        queue_cv_.wait_for(lk, timeout, [&] {
+            return queue_head_ != nullptr || stopping_.load();
+        });
+    }
+    if (!queue_head_) return nullptr;
+    ServerJob * job = queue_head_;
+    queue_head_ = job->next;
+    if (!queue_head_) queue_tail_ = nullptr;
+    job->next = nullptr;
+    return job;
 }
 
 // ─── HTTP I/O ───────────────────────────────────────────────────────────
@@ -3667,9 +4143,87 @@ bool HttpServer::send_all(SocketHandle fd, const void * data, size_t len) {
     return true;
 }
 
-bool HttpServer::send_response(
-        SocketHandle fd, int status, const std::string & content_type,
-                               const std::string & body) {
+bool HttpServer::send_job_bytes(
+        ServerJob * job, const void * data, size_t len) {
+    std::lock_guard<std::mutex> lock(job->write_mu);
+    if (job->client_disconnected.load(std::memory_order_acquire)) {
+        return false;
+    }
+    // A heartbeat may have made a short write on the previous monitor tick.
+    // Finish that comment before writing an SSE data frame so their bytes
+    // cannot be interleaved on the stream.
+    if (job->heartbeat_offset > 0) {
+        constexpr size_t heartbeat_size = sizeof(kSseHeartbeat) - 1;
+        if (!send_all(job->fd, kSseHeartbeat + job->heartbeat_offset,
+                      heartbeat_size - job->heartbeat_offset)) {
+            job->heartbeat_offset = 0;
+            job->client_disconnected.store(true, std::memory_order_release);
+            return false;
+        }
+        job->heartbeat_offset = 0;
+    }
+    if (!send_all(job->fd, data, len)) {
+        job->client_disconnected.store(true, std::memory_order_release);
+        return false;
+    }
+    job->last_stream_write = std::chrono::steady_clock::now();
+    return true;
+}
+
+void HttpServer::start_job_stream(ServerJob * job) {
+    std::lock_guard<std::mutex> lock(job->write_mu);
+    if (job->client_disconnected.load(std::memory_order_acquire)) return;
+    job->stream_ready = true;
+    job->read_close_probe_sent = false;
+    job->heartbeat_offset = 0;
+    job->last_stream_write = std::chrono::steady_clock::now();
+}
+
+void HttpServer::stop_job_stream(
+        ServerJob * job, ClientSendBuffer * pending_output) {
+    std::lock_guard<std::mutex> lock(job->write_mu);
+    job->stream_ready = false;
+    if (pending_output && job->heartbeat_offset > 0) {
+        constexpr size_t heartbeat_size = sizeof(kSseHeartbeat) - 1;
+        pending_output->append(std::string_view(
+            kSseHeartbeat + job->heartbeat_offset,
+            heartbeat_size - job->heartbeat_offset));
+        job->heartbeat_offset = 0;
+    }
+}
+
+void HttpServer::maybe_send_job_heartbeat(
+        ServerJob * job, bool peer_read_closed) {
+    std::lock_guard<std::mutex> lock(job->write_mu);
+    if (!job->stream_ready ||
+        job->client_disconnected.load(std::memory_order_acquire)) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const bool probe_read_close =
+        peer_read_closed && !job->read_close_probe_sent;
+    if (!probe_read_close &&
+        now - job->last_stream_write < kSseHeartbeatInterval) {
+        return;
+    }
+
+    // The scheduler also takes write_mu when it switches from prefill
+    // heartbeats to buffered token output.  Never hold that shared mutex
+    // across send_all()'s 30-second stall window.
+    const auto result = http_detail::try_send_sse_heartbeat(
+        job->fd, job->heartbeat_offset);
+    if (result == http_detail::HeartbeatSendResult::Disconnected) {
+        job->client_disconnected.store(true, std::memory_order_release);
+        return;
+    }
+    if (result == http_detail::HeartbeatSendResult::Retry) return;
+    if (probe_read_close) job->read_close_probe_sent = true;
+    job->last_stream_write = now;
+}
+
+std::string HttpServer::format_http_response(
+        int status, const std::string & content_type,
+        const std::string & body) {
     const char * reason = "OK";
     switch (status) {
         case 200: reason = "OK"; break;
@@ -3693,7 +4247,15 @@ bool HttpServer::send_response(
     header += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     header += "Connection: close\r\n\r\n";
     header += body;
-    return send_all(fd, header.data(), header.size());
+    return header;
+}
+
+bool HttpServer::send_response(
+        SocketHandle fd, int status, const std::string & content_type,
+        const std::string & body) {
+    const std::string payload =
+        format_http_response(status, content_type, body);
+    return send_all(fd, payload.data(), payload.size());
 }
 
 bool HttpServer::send_error(
@@ -3702,7 +4264,7 @@ bool HttpServer::send_error(
     return send_response(fd, status, "application/json", err.dump() + "\n");
 }
 
-bool HttpServer::send_sse_headers(SocketHandle fd) {
+bool HttpServer::send_sse_headers(ServerJob * job) {
     std::string header = "HTTP/1.1 200 OK\r\n";
     if (config_.enable_cors) {
         header += "Access-Control-Allow-Origin: *\r\n";
@@ -3710,7 +4272,7 @@ bool HttpServer::send_sse_headers(SocketHandle fd) {
     header += "Content-Type: text/event-stream\r\n"
               "Cache-Control: no-cache\r\n"
               "Connection: keep-alive\r\n\r\n";
-    return send_all(fd, header.data(), header.size());
+    return send_job_bytes(job, header.data(), header.size());
 }
 
 }  // namespace dflash::common

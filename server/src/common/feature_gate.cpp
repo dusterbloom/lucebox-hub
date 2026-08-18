@@ -3,6 +3,9 @@
 #include "feature_gate.h"
 
 #include "model_capabilities.h"
+#include "paged_attention_config.h"
+
+#include <climits>
 
 namespace dflash::common {
 
@@ -175,6 +178,87 @@ std::string check_feature_compatibility(
         !arch_supports_pflash_compression(arch)) {
         return "model architecture '" + arch +
                "' does not support PFlash compression";
+    }
+
+    // ── --paged-attention × architecture, placement, and decode features
+    // Paged decode swaps the contiguous K/V cache for a block table owned by
+    // the monolithic qwen35 backend, so every rule below is about reaching
+    // that one code path. All are errors rather than warnings: running dense
+    // instead would hide the memory behavior the flag was chosen for.
+    if (args.paged_attention) {
+        if (!arch_supports_paged_attention(arch, /*is_layer_split=*/false)) {
+            return "--paged-attention requires a Qwen3.5/Qwen3.6 dense target "
+                   "(architecture '" + arch + "' has no paged decode path)";
+        }
+        // No rule for "requires a CUDA or HIP build": those are the only two
+        // backends this binary can be configured with, and GGML_OP_PAGED_ATTN
+        // is compiled into both.
+        if (args.device.is_layer_split() ||
+            args.remote_target_shard.enabled()) {
+            return "--paged-attention requires one local target device";
+        }
+        if (args.draft_path != nullptr || args.remote_draft.enabled() ||
+            args.ddtree_mode) {
+            return "--paged-attention requires autoregressive decode without a "
+                   "draft or DDTree";
+        }
+        if (args.fa_window != 0) {
+            return "--paged-attention requires full attention (--fa-window 0)";
+        }
+        if (features.pflash_enabled) {
+            return "--paged-attention cannot be combined with PFlash prefill "
+                   "compression";
+        }
+        if (features.kvflash_enabled) {
+            return "--paged-attention cannot be combined with KVFlash";
+        }
+        // The pool rounds max_ctx up to a whole number of blocks, so the top
+        // of the range is what can be rounded without overflowing int.
+        if (args.device.max_ctx <= 0 ||
+            args.device.max_ctx > INT_MAX - PAGED_BLOCK_SIZE + 1) {
+            return "--paged-attention requires a positive --max-ctx small "
+                   "enough to round up to whole blocks";
+        }
+    }
+
+    // ── --max-concurrency × paged attention
+    // Concurrent decode slots are currently implemented only by the paged
+    // qwen35 backend. The common scheduler does not require a particular
+    // model-state representation; each backend owns whatever per-slot state
+    // its graph needs alongside one block-table column per sequence.
+    // Everything the paged cluster above rejects is transitively rejected,
+    // so the rules here are only about the flag pair itself.
+    if (args.max_concurrency < 1) {
+        return "--max-concurrency must be at least 1";
+    }
+    if (args.max_concurrency > 1) {
+        if (!args.paged_attention) {
+            return "--max-concurrency requires --paged-attention";
+        }
+        // The paged pool addresses tokens with uint32; 64 slots is far above
+        // any batch the decode kernel has been sized for and keeps the
+        // fixed-width decode batch bounded.
+        if (args.max_concurrency > 64) {
+            return "--max-concurrency must be at most 64";
+        }
+        // Physical capacity is memory-derived and capped independently of the
+        // logical slot count, so max-concurrency no longer multiplies max_ctx
+        // in the pool's tensor address space.
+    }
+    if (args.kv_pool_tokens != 0) {
+        if (args.max_concurrency <= 1) {
+            return "--kv-pool-tokens requires --max-concurrency greater than 1";
+        }
+        // The cache appends one scratch block after the physical pool, and
+        // the requested pool itself is rounded up to a whole block. Cap the
+        // request at the largest aligned pool that leaves room for scratch.
+        const int64_t max_pool_tokens = paged_kv_address_cap();
+        if (args.kv_pool_tokens < PAGED_BLOCK_SIZE ||
+            args.kv_pool_tokens > max_pool_tokens) {
+            return "--kv-pool-tokens must be in [" +
+                   std::to_string(PAGED_BLOCK_SIZE) + ", " +
+                   std::to_string(max_pool_tokens) + "]";
+        }
     }
 
     // ── --ds4-prefill × architecture

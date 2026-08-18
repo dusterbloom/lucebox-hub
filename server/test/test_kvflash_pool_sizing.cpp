@@ -20,6 +20,15 @@ struct KvflashPoolSizingFixture {};
 }
 
 TEST_CASE(KvflashPoolSizingFixture, kvflash_pool_sizing_suite) {
+    REQUIRE(!kvflash_fixed_pool_requested(nullptr));
+    REQUIRE(!kvflash_fixed_pool_requested("0"));
+    REQUIRE(!kvflash_fixed_pool_requested("auto"));
+    REQUIRE(kvflash_fixed_pool_requested("4096"));
+
+    {
+        const luce_test::ScopedEnvVar kvflash_off("DFLASH_KVFLASH", "0");
+        REQUIRE(kvflash_pool_from_env(131072) == 0);
+    }
     const luce_test::ScopedEnvVar kvflash_mode("DFLASH_KVFLASH", "auto");
     const luce_test::ScopedEnvVar max_pool("DFLASH_KVFLASH_MAX_POOL", nullptr);
     const int max_ctx = 131072;

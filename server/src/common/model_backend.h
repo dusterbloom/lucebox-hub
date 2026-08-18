@@ -22,6 +22,7 @@
 #include "ggml.h"
 #include "ggml-backend.h"
 #include "sampler.h"
+#include "concurrency/seq_engine.h"
 #include "placement/draft_residency.h"
 
 namespace dflash::common {
@@ -80,6 +81,11 @@ constexpr bool park_target_includes_draft_model(ParkTarget target) {
 // Return true to continue generation, false to abort.
 using TokenCallback = std::function<bool(int32_t token)>;
 
+// Return true when an in-flight request should stop. Backends poll this at
+// their existing prefill/decode cancellation boundaries so cancellation does
+// not depend on filling the socket's send buffer first.
+using CancellationProbe = std::function<bool()>;
+
 // Inference observer callback for live status updates. Called by backends
 // at each spec-decode step to report phase/detail. When empty, backends
 // skip the call (zero overhead).
@@ -98,6 +104,11 @@ struct DaemonIO {
     TokenCallback on_token;
     mutable bool cancelled = false;
 
+    // Optional request-liveness probe. The native HTTP server uses this to
+    // propagate a peer disconnect detected by the client thread into backend
+    // prefill and decode loops.
+    CancellationProbe should_cancel;
+
     // Optional inference observer for /status page. When set, backends call
     // this at each spec-decode step with draft tokens and phase info.
     InferenceObserver observer;
@@ -106,6 +117,15 @@ struct DaemonIO {
     // Also invokes on_token if set. Sets cancelled=true if on_token
     // returns false (client disconnected).
     void emit(int32_t v) const;
+
+    // Poll external cancellation and latch the result locally. `cancelled`
+    // remains worker-thread-owned; the probe itself may read atomic state.
+    bool is_cancelled() const {
+        if (!cancelled && should_cancel && should_cancel()) {
+            cancelled = true;
+        }
+        return cancelled;
+    }
 
     // Return an IO handle that also invokes `cb` for emitted tokens.
     DaemonIO with_token_callback(const TokenCallback & cb) const;
@@ -302,6 +322,19 @@ struct ModelBackend {
     virtual GenerateResult generate_impl(const GenerateRequest & req,
                                          const DaemonIO & io) = 0;
 
+    // ── Concurrent serving ───────────────────────────────────────────
+    // Backends that can hold several live sequences at once and execute a
+    // batched decode over paged KV expose them as decode slots through a
+    // SeqEngine (common/concurrency/seq_engine.h). Any additional
+    // per-sequence model state is an implementation detail of that engine.
+    // nullptr — the
+    // default — means this backend serves one request at a time and the
+    // server drives it through generate().
+    //
+    // The engine is owned by the backend; the returned pointer is borrowed
+    // and stays valid until shutdown().
+    virtual SeqEngine * seq_engine() { return nullptr; }
+
     // ── Snapshots ────────────────────────────────────────────────────
     // With right-sized CPU-resident snapshots, each slot costs only
     // ~(cur_pos × 5 KB) of system RAM, so we can afford many slots.
@@ -398,6 +431,20 @@ struct ModelBackend {
 
     // Typed compress API (preferred for in-process callers).
     virtual CompressResult compress(const CompressRequest & req);
+
+    // Compress several independent prompt spans under one backend residency
+    // window. The default preserves existing behavior; backends that park
+    // large target/draft weights can override this to park once for the whole
+    // batch instead of once per span.
+    virtual std::vector<CompressResult> compress_batch(
+        const std::vector<CompressRequest> & requests) {
+        std::vector<CompressResult> results;
+        results.reserve(requests.size());
+        for (const auto & request : requests) {
+            results.push_back(compress(request));
+        }
+        return results;
+    }
 
     // Legacy string-based compress (for daemon_loop stdin protocol).
     // `line` is the full "compress ..." command line.

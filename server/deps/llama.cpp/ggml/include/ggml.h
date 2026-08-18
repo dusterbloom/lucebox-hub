@@ -435,6 +435,8 @@ extern "C" {
         GGML_TYPE_Q6_0_ROCMFPX      = 102,
         GGML_TYPE_Q8_0_ROCMFPX      = 103,
         GGML_TYPE_Q3_0_ROCMFPX      = 104,
+        GGML_TYPE_Q3_1_ROCMFP3_MIX  = 105, // per-expert mixed absmax/adaptive ROCmFP3 (P4); codebook in GGUF KV
+        GGML_TYPE_Q2_1_ROCMFP2_MIX  = 106, // per-expert mixed absmax/adaptive ROCmFP2 (gate/up); codebook in sidecar
         GGML_TYPE_Q2_0_ROCMFP2      = 107,
         GGML_TYPE_COUNT   = 108,
     };
@@ -612,6 +614,8 @@ extern "C" {
         // Keep extension operations appended so established GGML op ordinals
         // remain stable within a protocol generation.
         GGML_OP_MUL_MAT_GROUPED_SRC,
+
+        GGML_OP_PAGED_ATTN,
 
         GGML_OP_COUNT,
     };
@@ -1734,6 +1738,15 @@ extern "C" {
             struct ggml_tensor  * b,  // source
             struct ggml_tensor  * c); // row indices
 
+    // As ggml_set_rows, but negative row ids are ignored. Intended for
+    // fixed-shape graph buckets whose padding rows must not update state.
+    // Backends that do not implement masking must report this op unsupported.
+    GGML_API struct ggml_tensor * ggml_set_rows_masked(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * b,
+            struct ggml_tensor  * c);
+
     GGML_API struct ggml_tensor * ggml_diag(
         struct ggml_context     * ctx,
         struct ggml_tensor      * a);
@@ -2416,6 +2429,15 @@ extern "C" {
             int                  keep_rows,
             int                  block_size);
 
+    // Attach the exact DS4 compressed-row selection directly to flash
+    // attention. selected is I32 [keep_rows,n_batch] and indexes the
+    // compressed span (that is, rows after raw_rows). The DS4 HIP kernel sorts
+    // these score-ordered indices into physical-row order before reduction so
+    // the numerical topology stays identical to the mask-derived path.
+    GGML_API void ggml_flash_attn_ext_set_ds4_indexer_topk(
+            struct ggml_tensor * a,
+            struct ggml_tensor * selected);
+
     // Fuse DS4's inverse 64-d tail RoPE into the D=512 flash-attention
     // writeback. q_unrotated additionally asks the kernel to apply the forward
     // tail RoPE to Q from shared F32. This is exact-only plumbing: both paths
@@ -2458,6 +2480,41 @@ extern "C" {
             float                 scale,
             float                 alpha);
 
+    // Decode-only attention over independently allocated physical KV blocks.
+    // q:            [D, n_seq, n_head] F32 (one query per sequence)
+    // k/v:          [D, pool_tokens, n_head_kv]
+    // block_table:  [max_blocks, n_seq] I32
+    // kv_seq_lens: [n_seq] I32 (valid cached K/V tokens per sequence)
+    // max_kv_seq_len: host-known maximum of kv_seq_lens, used to size the
+    //                 CUDA/HIP launch without reading block-table capacity
+    // res:          [D, n_seq, n_head] F32
+    //
+    // A logical token t is read from physical row
+    // block_table[t/block_size, seq]*block_size + t%block_size.
+    // The initial CUDA/HIP implementation supports D=256 and independently
+    // typed F16, Q4_0, or Q8_0 K/V pools.
+    // active_slot_ids optionally maps compact query rows to physical block-
+    // table columns / length entries. A negative id is a padding row and
+    // produces a zero attention output. NULL selects row identity.
+    // query_positions optionally carries per-row inclusive causal positions
+    // (I32 [n_query], requires active_slot_ids): row i attends the first
+    // min(kv_seq_len, positions[i]+1) cached tokens of its sequence, so
+    // prefill chunks can attend the paged pool causally. A negative position
+    // marks a padding row. NULL keeps the decode semantics (full cached
+    // length per row).
+    GGML_API struct ggml_tensor * ggml_paged_attn_ext(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * k,
+            struct ggml_tensor  * v,
+            struct ggml_tensor  * block_table,
+            struct ggml_tensor  * kv_seq_lens,
+            struct ggml_tensor  * active_slot_ids,
+            struct ggml_tensor  * query_positions,
+            float                 scale,
+            int                   block_size,
+            int                   max_kv_seq_len);
+
     // TurboQuant FWHT rotation. direction: 0 = forward, 1 = inverse.
     // Applies signs1 -> FWHT -> signs2 (forward) or signs2 -> FWHT -> signs1 (inverse).
     // Used for KV cache rotation in TurboQuant quantization types (TQ3_0).
@@ -2476,6 +2533,7 @@ extern "C" {
         GGML_MOE_FUSED_DEFERRED_PEER_COPY = -3,
         GGML_MOE_FUSED_OWNER_SPLIT        = -4,
         GGML_MOE_FUSED_ALIGN_IDS          = -5,
+        GGML_MOE_FUSED_BALANCED_OWNER_IDS = -6,
     };
 
     // Word offsets in ggml_tensor::op_params for the deferred peer-copy op.
@@ -2545,6 +2603,20 @@ extern "C" {
             struct ggml_context * ctx,
             struct ggml_tensor  * expert_ids);
 
+    // Map global route IDs directly to one owner's compact expert stack while
+    // assigning a batch-wide main-resident quota encoded as four times the
+    // desired routes per token. The peer owner receives the exact complement.
+    // This fuses the former repeated-LUT lookup and route masking chain into
+    // one small device-local operation.
+    GGML_API struct ggml_tensor * ggml_ds4_moe_balanced_owner_ids(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * global_ids,
+            struct ggml_tensor  * router_weights,
+            struct ggml_tensor  * local_id_lut,
+            struct ggml_tensor  * main_candidate_lut,
+            int                   main_slots_x4,
+            bool                  main_owner);
+
     // Copy an F32 peer-GPU tensor only after a scheduler-provided device event
     // has completed. The scheduler writes the native event handle into the op
     // parameters and deliberately leaves src on its owner backend.
@@ -2580,7 +2652,8 @@ extern "C" {
 
     // Exact mode-1 variant for heterogeneous MoE verification. It computes
     // block_out[d] = peer_block[d] + main_block[d] inside the HC-post kernel,
-    // eliminating the standalone reduction and tokenwise CONT copies.
+    // eliminating the standalone reduction and tokenwise CONT copies. All
+    // non-base tensors may carry the same n_tokens second dimension.
     GGML_API struct ggml_tensor * ggml_ds4_hc_post_split(
             struct ggml_context * ctx,
             struct ggml_tensor  * residual_hc,
@@ -2617,6 +2690,17 @@ extern "C" {
             struct ggml_tensor  * q,
             struct ggml_tensor  * head_weights,
             struct ggml_tensor  * index_comp,
+            int                   kv_start,
+            int                   ratio);
+
+    // Masked variant for stable-shape decode graphs. visibility_mask is F32
+    // [n_comp,n_tokens], with values <= -1e20 marking rows as invisible.
+    GGML_API struct ggml_tensor * ggml_ds4_indexer_score_masked(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * head_weights,
+            struct ggml_tensor  * index_comp,
+            struct ggml_tensor  * visibility_mask,
             int                   kv_start,
             int                   ratio);
 
@@ -2785,6 +2869,19 @@ extern "C" {
             struct ggml_tensor  * g,
             struct ggml_tensor  * beta,
             struct ggml_tensor  * state);
+
+    // Compact-batch in-place recurrence. active_slot_ids maps the compact
+    // sequence axis to physical state slabs; negative or out-of-range ids
+    // use zero state and do not write back.
+    GGML_API struct ggml_tensor * ggml_gated_delta_net_active_inplace(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * k,
+            struct ggml_tensor  * v,
+            struct ggml_tensor  * g,
+            struct ggml_tensor  * beta,
+            struct ggml_tensor  * state,
+            struct ggml_tensor  * active_slot_ids);
 
     GGML_API void ggml_gated_delta_net_set_skip_intermediate(
             struct ggml_tensor * tensor,

@@ -15,7 +15,13 @@
 //
 // Placement matters as much as architecture: laguna and gemma4 forward a
 // draft model only when monolithic, so those entries are FeatureSupport
-// rather than bool.
+// rather than bool. qwen35 paged attention is Monolithic for the same reason:
+// only the single-device backend owns a paged K/V pool.
+//
+// qwen35 and qwen35moe share Qwen35Config, so their rows can differ on a
+// column the config carries — the moe backend simply never reads the field.
+// paged_attn is the one such column today; see the cross-check comment in
+// backend_factory.cpp for what that costs.
 //
 // Note on "qwen36": it is not a dispatchable architecture. model_card.cpp's
 // family fallback has a branch for it, but there is no factory case, so a
@@ -56,6 +62,7 @@ struct ArchCapabilities {
     FeatureSupport fa_window;     // --fa-window
     FeatureSupport draft_swa;     // --draft-swa
     FeatureSupport moe_ssd_storage; // --moe-storage ssd
+    FeatureSupport paged_attn;    // --paged-attention
 };
 
 inline constexpr FeatureSupport kNever = FeatureSupport::Never;
@@ -63,14 +70,14 @@ inline constexpr FeatureSupport kMono  = FeatureSupport::Monolithic;
 inline constexpr FeatureSupport kBoth  = FeatureSupport::Both;
 
 inline constexpr ArchCapabilities kArchCapabilities[] = {
-//   arch          split  rdraft pflash offload  draft  ddtree vwidth fa_win dswa   moe-ssd
-    {"qwen35",     true,  true,  true,  false,   kBoth, kBoth, kNever, kBoth, kBoth, kNever},
-    {"qwen35moe",  false, false, false, true,    kMono, kMono, kNever, kMono, kMono, kNever},
-    {"laguna",     true,  false, false, true,    kMono, kMono, kMono,  kNever, kNever, kNever},
-    {"qwen3",      false, false, true,  false,   kNever, kNever, kNever, kNever, kNever, kNever},
-    {"gemma4",     true,  false, false, false,   kMono, kNever, kNever, kBoth, kNever, kNever},
-    {"deepseek4",  true,  false, false, false,   kNever, kNever, kNever, kNever, kNever, kMono},
-    {"kimi-k3",    false, false, false, false,   kMono,  kNever, kNever, kNever, kNever, kMono},
+//   arch          split  rdraft pflash offload  draft  ddtree vwidth fa_win dswa    moe-ssd paged
+    {"qwen35",     true,  true,  true,  false,   kBoth, kBoth, kNever, kBoth, kBoth,  kNever, kMono},
+    {"qwen35moe",  false, false, false, true,    kMono, kMono, kNever, kMono, kMono,  kNever, kNever},
+    {"laguna",     true,  false, false, true,    kMono, kMono, kMono,  kNever, kNever, kNever, kNever},
+    {"qwen3",      false, false, true,  false,   kNever, kNever, kNever, kNever, kNever, kNever, kNever},
+    {"gemma4",     true,  false, false, false,   kMono, kNever, kNever, kBoth, kNever, kNever, kNever},
+    {"deepseek4",  true,  false, false, false,   kNever, kNever, kNever, kNever, kNever, kNever, kNever},
+    {"kimi-k3",    false, false, false, false,   kMono, kNever, kNever, kNever, kNever, kMono,  kNever},
 };
 
 inline constexpr std::size_t kArchCount =
@@ -109,7 +116,8 @@ constexpr bool row_has_both(const ArchCapabilities & c) {
            c.verify_width == FeatureSupport::Both ||
            c.fa_window    == FeatureSupport::Both ||
            c.draft_swa    == FeatureSupport::Both ||
-           c.moe_ssd_storage == FeatureSupport::Both;
+           c.moe_ssd_storage == FeatureSupport::Both ||
+           c.paged_attn   == FeatureSupport::Both;
 }
 
 constexpr bool table_rows_named() {
@@ -239,9 +247,14 @@ inline bool arch_supports_draft_swa(const std::string & arch,
 }
 
 inline bool arch_supports_moe_ssd_storage(const std::string & arch,
-                                          bool split_dispatch) {
+                                          bool is_layer_split) {
     return detail::arch_has(
-        arch, &ArchCapabilities::moe_ssd_storage, split_dispatch);
+        arch, &ArchCapabilities::moe_ssd_storage, is_layer_split);
+}
+
+inline bool arch_supports_paged_attention(const std::string & arch,
+                                          bool is_layer_split) {
+    return detail::arch_has(arch, &ArchCapabilities::paged_attn, is_layer_split);
 }
 
 }  // namespace dflash::common

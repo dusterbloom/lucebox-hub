@@ -45,10 +45,15 @@ consolidation of this list into CLI flags is tracked as follow-up work.
 | `DFLASH_MOE_PRIMARY_SHARE_PER_MILLE` | 500 | BURN-IN: deterministic primary route share when no explicit placement is supplied. |
 | `DFLASH_MOE_DUAL_STREAM_TRACE` | unset | DEBUG: per-layer dual-owner route counts and branch/wall timings. |
 | `DFLASH_MOE_STORAGE` | auto | Routed-MoE storage policy (`auto`, `resident`, `ssd`); prefer `--moe-storage`, which takes precedence. |
-| `DFLASH_MOE_NVME_COLD_TIER` | unset | DEPRECATED: DeepSeek compatibility alias (`auto`, `on`, `off`). |
+| `DFLASH_MOE_NVME_COLD_TIER` | unset | DEPRECATED: compatibility alias (`auto`, `on`, `off`). |
 | `DFLASH_MOE_NVME_*` | tuned defaults | BURN-IN: bounded MoE SSD scheduler/backend controls; see `MOE_NVME_STREAMING.md`. |
 | `DFLASH_MOE_EXPERT_PACKAGE` / `DFLASH_MOE_EXPERT_PACKAGE_BUILD` | unset | BURN-IN: use or explicitly build a validated, byte-exact expert-major SSD package. |
 | `DFLASH_MOE_ROUTE_STATS_OUT` / `DFLASH_MOE_HOTNESS_CSV` | unset | BURN-IN: capture native route counts, then profile-warm and pin valuable streamed experts. |
+| `DFLASH_DS4_TP_FUSED_CACHE_SLOTS` | 2 | BURN-IN: number of heterogeneous verifier schedulers retained; higher values retain substantially more scratch on both GPUs. |
+| `DFLASH_DS4_VERIFY_FORCE_GRAPH_REPLAY` | unset | OPT-IN: bypass graph property scans only after warmup; scheduler-generation checks remain mandatory. |
+| `DFLASH_DS4_ROCTX` | unset | DEBUG: on HIP builds, dynamically load ROCTX and emit semantic DS4 prefill, speculative-decode, and layer-range markers for external rocprof traces. No events, timing, or device synchronization are added. |
+| `DFLASH_QWEN35_ROCTX` | unset | DEBUG: on HIP builds, dynamically load ROCTX and mark Qwen concurrent steps, graph compute, and argmax readback with live, padded, and packed-prefill shape metadata. |
+| `GGML_DS4_FA_SERIAL_INDEX_SCAN` | unset | DEBUG/A-B: restore the serial indexed-attention mask scan instead of the long-context HIP parallel scan. |
 | `DFLASH_MOE_PREFILL_PERSISTENT_OWNER_ALLOC` | 1 for qualified long heterogeneous prefill | KILL SWITCH: =0 restores per-layer route/owner scratch allocation. |
 | `DFLASH_MOE_TP_*` / `DFLASH_MOE_HYBRID_PREFILL_EAGER` | unset | BURN-IN: model-neutral names for common heterogeneous-MoE scheduling and kernel policy. Existing `DFLASH_DS4_*` names remain compatibility aliases. |
 | `DFLASH_MMID_TELEMETRY` | unset | DEBUG: report MUL_MAT_ID dispatch, MMVQ variant, and per-node graph compatibility. |
@@ -113,6 +118,8 @@ consolidation of this list into CLI flags is tracked as follow-up work.
 - `DFLASH_DS4_MOE_TP_INPROC` - deepseek4_backend.cpp
 - `DFLASH_DS4_MOE_TP_PEER_HOT` - deepseek4_backend.cpp
 - `DFLASH_DS4_ROUTING_STATS_OUT` - deepseek4_backend.cpp
+- `DFLASH_DS4_ROCTX` - deepseek4_roctx.cpp
+- `DFLASH_QWEN35_ROCTX` - qwen35_roctx.cpp
 - `DFLASH_DS4_SEQ_VERIFY` - deepseek4_dspark_spec.cpp
 - `DFLASH_DS4_SPEC` - deepseek4_backend.cpp
 - `DFLASH_DS4_SPEC_REFERENCE_EXACT` - deepseek4_dspark_spec.cpp
@@ -122,6 +129,7 @@ consolidation of this list into CLI flags is tracked as follow-up work.
 - `DFLASH_DS4_TP_FUSED_CACHE_SLOTS` - deepseek4_fused_verify.inc
 - `DFLASH_DS4_TP_SCHEDULE_BRANCHES` - deepseek4_fused_verify.inc
 - `DFLASH_DS4_TP_TARGETED_JOIN_SPLIT` - moe_hybrid_ffn_eval.cpp
+- `DFLASH_DS4_VERIFY_FORCE_GRAPH_REPLAY` - deepseek4_fused_verify.inc
 - `DFLASH_DS4_TOPK` - deepseek4_graph.cpp
 - `DFLASH_EXPERT_BUDGET_MB` - deepseek4_backend.cpp, laguna_backend.cpp, qwen35moe_backend.cpp
 - `DFLASH_EXPERT_BUDGET_PCT` - laguna_backend.cpp
@@ -190,7 +198,6 @@ consolidation of this list into CLI flags is tracked as follow-up work.
 - `DFLASH_MODEL_CARDS_DIR` - model_card.cpp
 - `DFLASH_MOE_COLD_BACKEND` - deepseek4_loader.cpp
 - `DFLASH_MOE_COMPACT_MATERIALIZED` - moe_hybrid_ffn_eval.cpp
-- `DFLASH_MOE_DUAL_STREAM_TRACE` - kimi_k3_graph.cpp
 - `DFLASH_MOE_DUPLICATE_HOT_ON_COLD` - moe_hybrid_storage.cpp
 - `DFLASH_MOE_EXPERT_COMPUTE_DAEMON_TOKEN_LOOP` - moe_expert_compute_ipc.cpp
 - `DFLASH_MOE_EXPERT_COMPUTE_IPC_BATCH_CAPACITY` - moe_expert_compute_ipc.cpp
@@ -201,22 +208,16 @@ consolidation of this list into CLI flags is tracked as follow-up work.
 - `DFLASH_MOE_EXPERT_COMPUTE_IPC_SHARED_BYTES` - moe_expert_compute_ipc.cpp
 - `DFLASH_MOE_EXPERT_COMPUTE_IPC_TRANSPORT` - moe_expert_compute_ipc.cpp
 - `DFLASH_MOE_EXPERT_COMPUTE_THREADS` - moe_expert_compute_cpu.cpp
-- `DFLASH_MOE_EXPERT_PACKAGE` - kimi_k3_backend.cpp
-- `DFLASH_MOE_EXPERT_PACKAGE_BUILD` - kimi_k3_backend.cpp
 - `DFLASH_MOE_EXPERT_MAJOR_GPU_REDUCE` - moe_hybrid_ffn_eval.cpp
 - `DFLASH_MOE_EXPERT_MAJOR_PREFILL` - moe_hybrid_ffn_eval.cpp
 - `DFLASH_MOE_FIXED_SLOT_GRAPHS` - moe_hybrid_ffn_eval.cpp
 - `DFLASH_MOE_FIXED_SLOT_MAX` - moe_hybrid_ffn_eval.cpp
 - `DFLASH_MOE_FULL_COLD_PARALLEL` - moe_hybrid_ffn_eval.cpp
 - `DFLASH_MOE_FUSED_COMBINE` - moe_hybrid_ffn_eval.cpp
-- `DFLASH_MOE_HOTNESS_CSV` - kimi_k3_backend.cpp
-- `DFLASH_MOE_PLACEMENT` - kimi_k3_backend.cpp
 - `DFLASH_MOE_PREFILL_DEVICE_INPUT` - deepseek4_graph.cpp
 - `DFLASH_MOE_PREFILL_HOT_SUB_BATCH` - moe_hybrid_ffn_eval.cpp
 - `DFLASH_MOE_PREFILL_MASKED_COLD` - moe_hybrid_ffn_eval.cpp
 - `DFLASH_MOE_PREFILL_PERSISTENT_OWNER_ALLOC` - deepseek4_graph.cpp
-- `DFLASH_MOE_PRIMARY_SHARE_PER_MILLE` - moe_hybrid_stream.cpp
-- `DFLASH_MOE_ROUTE_STATS_OUT` - kimi_k3_backend.cpp
 - `DFLASH_MOE_TP_BACKEND` - deepseek4_backend.cpp
 - `DFLASH_NO_MASK` - laguna_backend.cpp
 - `DFLASH_NO_MOE_ROUTER_FUSE` - qwen35moe_ffn.cpp

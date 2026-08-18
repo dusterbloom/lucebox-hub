@@ -6,12 +6,15 @@
 //   - Per-client thread: parse HTTP request, enqueue job, wait for completion
 //   - Single worker thread: dequeue jobs, call ModelBackend::generate()
 //
-// Client disconnect detection: the worker writes SSE chunks via send().
-// If send() fails (EPIPE/ECONNRESET), generation aborts immediately.
+// Client disconnect detection: the client thread watches the socket while the
+// worker generates, and streaming writes provide a second failure signal.
+// Heartbeat comments keep long prefill phases alive through HTTP clients with
+// body-idle timeouts.
 
 #pragma once
 
 #include "socket_handle.h"
+#include "client_send_buffer.h"
 #include "common/model_backend.h"
 #include "tokenizer.h"
 #include "chat_template.h"
@@ -26,9 +29,12 @@
 #include "model_card.h"
 #include "adaptive_keep_ratio.h"
 #include "server_status.h"
+#include "sse_emitter.h"
 #include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <array>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -48,7 +54,33 @@ using json = nlohmann::json;
 
 // ─── Forward declarations ───────────────────────────────────────────────
 struct ServerJob;
-class SseEmitter;
+
+namespace http_detail {
+// Non-consuming peer-state probe used by the client-thread job monitor.
+// A read half-close is not a disconnect: HTTP clients may finish writing a
+// request and continue reading its response. Public for model-free tests.
+enum class PeerSocketState {
+    Connected,
+    ReadClosed,
+    Disconnected,
+};
+PeerSocketState inspect_peer_socket(SocketHandle fd);
+
+// Incrementally inspect complete SSE lines for the terminal data event.
+// `partial_line` carries an unterminated line across transport chunks.
+bool sse_chunk_has_done(std::string & partial_line,
+                        const char * data, size_t size);
+
+// Advance one heartbeat on an already-nonblocking job socket without waiting
+// for writability. `offset` preserves a partial write across monitor ticks.
+// Public for the model-free socket regression test.
+enum class HeartbeatSendResult {
+    Complete,
+    Retry,
+    Disconnected,
+};
+HeartbeatSendResult try_send_sse_heartbeat(SocketHandle fd, size_t & offset);
+}
 
 // ─── Server configuration ───────────────────────────────────────────────
 struct ServerConfig {
@@ -60,6 +92,16 @@ struct ServerConfig {
     std::string model_name  = "dflash";
     int         prefix_cache_cap = 32;  // prefix cache slots (0 disables)
     int         prefill_cache_cap = 0;  // full-prompt/prefill cache slots (0 disables)
+
+    // Pin-Friendly Prompt Processor (PPP): LCP pin_end + optional rearrange.
+    // See docs/PIN_FRIENDLY_PROMPT.md. Env: DFLASH_PPP=0|1,
+    // DFLASH_PPP_REARRANGE=0|1, DFLASH_PPP_LCP_WINDOW=N,
+    // DFLASH_PPP_MIN_PIN_TOKENS=N, DFLASH_PPP_MAX_EPHEMERAL=N.
+    bool        ppp_enabled = true;
+    bool        ppp_rearrange = false;
+    int         ppp_lcp_window = 8;
+    int         ppp_min_pin_tokens = 512;
+    int         ppp_max_ephemeral_tokens = 256;  // diff hunk relocate cap
 
     // Thinking-budget v2. Applied when a request opts in via
     // `thinking: {type: "enabled"}` or `reasoning: {effort: ...}`.
@@ -146,6 +188,9 @@ struct ServerConfig {
     // server_main after CLI parse.
     std::string target_device;
     std::string draft_device;
+    // Idle-to-busy batching window. It is ignored by single-slot engines and
+    // never delays an already decoding request.
+    int admission_coalesce_ms = 20;
 
     // PFlash (speculative prefill compression)
     enum class PflashMode { OFF, AUTO, ALWAYS };
@@ -189,6 +234,23 @@ struct ServerConfig {
     std::string collect_routing_path;
 };
 
+namespace http_detail {
+
+inline constexpr int kFlowKvInertMinTokens = 512;
+
+// Small policy helpers kept outside HttpServer so model-free unit tests use
+// the same decisions as the request path.
+int flowkv_activation_threshold(const ServerConfig & config);
+bool flowkv_should_activate(const ServerConfig & config,
+                            int aged_token_estimate);
+float resolve_pflash_keep_ratio(float configured_ratio,
+                                const std::string & session_id,
+                                const HttpServerSessions & sessions);
+bool should_clamp_flowkv_disk_cache(
+    bool flowkv, const DiskPrefixCachePolicy & policy);
+
+}  // namespace http_detail
+
 // ─── Parsed request ─────────────────────────────────────────────────────
 
 struct ParsedRequest {
@@ -228,6 +290,8 @@ struct ParsedRequest {
     // Bandit: per-session adaptive keep_ratio opt-in
     std::string               session_id;
     DiskPrefixCachePolicy     disk_cache_policy;
+    // PPP: stable pin cut for tool-heavy requests (0 = use default boundary).
+    int                       pin_end_token = 0;
 };
 
 // Parse request sampler fields, applying model-card defaults where present.
@@ -242,6 +306,10 @@ json require_messages_array(const json & body);
 // Resolve the supported output-token aliases in precedence order. Only the
 // selected field is parsed, so malformed lower-priority aliases are ignored.
 int resolve_max_output_tokens(const json & body, int default_max_tokens);
+
+// Sticky tools-boundary pinning is part of PPP and must follow its master
+// toggle. Kept as a small policy helper so the disabled path is testable.
+bool ppp_prefers_tools_boundary(bool ppp_enabled, bool has_tools);
 
 // Build the /props response body. Exposed (non-static) so unit tests
 // can assert on its shape without spinning up a real socket. See
@@ -294,6 +362,7 @@ private:
     struct PreparedPrompt {
         std::vector<int32_t> tokens;
         bool compressed = false;
+        bool flowkv = false;
         int full_cache_served_tokens = -1;
         int full_cache_hit_slot = -1;
         int full_cache_hit_len = 0;
@@ -308,7 +377,7 @@ private:
                                   PreparedPrompt & prepared);
     std::string apply_pflash_compression(const ParsedRequest & req,
                                          PreparedPrompt & prepared);
-    bool forward_upstream(SocketHandle fd, const ParsedRequest & req,
+    bool forward_upstream(ServerJob * job, const ParsedRequest & req,
                           const PreparedPrompt & prepared);
 
     struct GenerationCacheState {
@@ -320,6 +389,9 @@ private:
         int full_snap_slot = -1;
         int full_snap_pos = 0;
         bool full_snap_prepared = false;
+        // When DiffPin rewrote tokens, full-cache keys must use
+        // prepared.tokens (effective), not req.prompt_tokens.
+        bool full_snap_key_effective = false;
         int snap_slot = -1;
         int snap_cut = 0;
         bool snap_prepared = false;
@@ -353,8 +425,38 @@ private:
         const ParsedRequest & req, const PreparedPrompt & prepared,
         GenerationInputs & inputs);
     void configure_generation_io(
-        SocketHandle fd, const ParsedRequest & req, SseEmitter & emitter,
+        ServerJob * job, const ParsedRequest & req, SseEmitter & emitter,
         GenerationOutputState & output, DaemonIO & io);
+
+    // Worker thread, concurrent mode (the backend exposes a SeqEngine):
+    // iteration-level scheduler. Admission is claim-only; this baseline
+    // drains its pending prefill between decode iterations, then advances
+    // active slots together in one batched step.
+    void scheduler_loop(SeqEngine & engine);
+
+    // Non-blocking dequeue used for admission polling between decode steps.
+    ServerJob * try_dequeue();
+    // Bounded wait used only during an idle-to-busy admission window.
+    ServerJob * dequeue_for(
+        std::chrono::steady_clock::duration timeout);
+
+    // Concurrent-scheduler token delivery and shared response construction.
+    // A send buffer keeps slow clients off the shared decode loop.
+    bool deliver_generation_token(
+        ServerJob * job, const ParsedRequest & req, SseEmitter & emitter,
+        int32_t token, int & completion_tokens,
+        ClientSendBuffer & send_buffer);
+    void send_nonstream_response(
+        const ParsedRequest & req, SocketHandle fd, SseEmitter & emitter,
+        const std::vector<int32_t> & gen_tokens, int n_gen_cap,
+        bool budget_forced_close, bool degenerate_decode_close,
+        const GenTimings & gen_timings,
+        ClientSendBuffer * send_buffer = nullptr);
+    std::string format_http_response(
+        int status, const std::string & content_type,
+        const std::string & body);
+    static std::array<std::string, 2> sse_error_close_chunks(
+        const std::string & message);
 
     // Parse HTTP request from socket.
     struct HttpRequest {
@@ -387,10 +489,15 @@ private:
     bool send_response(SocketHandle fd, int status, const std::string & content_type,
                        const std::string & body);
     bool send_error(SocketHandle fd, int status, const std::string & message);
-    bool send_sse_headers(SocketHandle fd);
+    bool send_sse_headers(ServerJob * job);
 
     // Send raw bytes with stall detection.
     bool send_all(SocketHandle fd, const void * data, size_t len);
+    bool send_job_bytes(ServerJob * job, const void * data, size_t len);
+    void start_job_stream(ServerJob * job);
+    void stop_job_stream(ServerJob * job,
+                         ClientSendBuffer * pending_output = nullptr);
+    void maybe_send_job_heartbeat(ServerJob * job, bool peer_read_closed);
 
     // Job queue.
     void enqueue(ServerJob * job);
@@ -433,9 +540,11 @@ private:
     // Track prompt tokens for each snapshot slot (for shutdown save).
     std::unordered_map<int, std::vector<int32_t>> slot_tokens_;
     std::vector<std::vector<int32_t>> recent_disk_prompts_;
+    // Recent tool-bearing prompt prefixes for PPP LCP annotate.
+    std::vector<std::vector<int32_t>> recent_tool_prefixes_;
 
     // FlowKV freeze-history: per-message compression cache.
-    // Key: SHA-1 hash of the drafter-token slice for an aged message.
+    // Key: SHA-1 hash of the drafter-token slice and selected keep ratio.
     // Value: compressed content text (output of drafter_tokenizer_->decode).
     // Bounded to kFrozenCacheMax entries; cleared on overflow (simple eviction).
     static constexpr size_t kFrozenCacheMax = 256;
@@ -477,7 +586,25 @@ struct ServerJob {
     bool          done = false;
     std::mutex    mu;
     std::condition_variable cv;
+    // Streaming output is written by both the worker (SSE data) and the
+    // client-thread monitor (heartbeat comments). Serialize complete frames
+    // so their bytes can never interleave.
+    std::mutex    write_mu;
+    bool          stream_ready = false;
+    bool          read_close_probe_sent = false;
+    size_t        heartbeat_offset = 0;
+    std::chrono::steady_clock::time_point last_stream_write{};
+    std::atomic<bool> client_disconnected{false};
     ServerJob *   next = nullptr;
+
+    // Concurrent-scheduler state that survives a pool-full admission retry.
+    // The classic worker leaves these fields untouched.
+    bool          announced = false;
+    bool          sse_started = false;
+    // First concurrent-scheduler attempt; retained across busy deferrals so
+    // server-side prefill/elapsed telemetry does not erase queueing delay.
+    std::chrono::steady_clock::time_point parallel_started_at{};
+    std::unique_ptr<SseEmitter> emitter;
 };
 
 // ─── Parse session_id from a chat-completion JSON body ──────────────────
