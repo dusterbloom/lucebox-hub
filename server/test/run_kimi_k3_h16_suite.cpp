@@ -151,6 +151,10 @@ int main(int argc, char ** argv) {
     const int n_gen = argc > 8 ? std::atoi(argv[8]) : 1;
     const std::string draft_path = argc > 9 ? argv[9] : "";
     const int draft_gpu = argc > 10 ? std::atoi(argv[10]) : gpu;
+    const char * disable_logits_environment =
+        std::getenv("DFLASH_KIMI_SUITE_DISABLE_LOGITS");
+    const bool record_logits = !disable_logits_environment ||
+        std::string(disable_logits_environment) != "1";
     KimiK3CorePlacement core_placement = KimiK3CorePlacement::Cpu;
     if (gpu < 0 || max_context <= 0 || n_gen <= 0 || n_gen >= max_context ||
         (argc > 7 && !parse_kimi_k3_core_placement(
@@ -261,8 +265,10 @@ int main(int argc, char ** argv) {
     config.device.gpu = gpu;
     config.device.max_ctx = max_context;
     // Keep the owning string alive; config stores a non-owning pointer.
-    const std::string teacher_trace_path = current_teacher.string();
-    config.logits_trace_path = teacher_trace_path.c_str();
+    const std::string teacher_trace_path = record_logits
+        ? current_teacher.string() : std::string();
+    config.logits_trace_path = record_logits
+        ? teacher_trace_path.c_str() : nullptr;
     config.moe_storage = MoeStoragePolicy::Ssd;
     config.expert_gpu = -1;
     config.core_placement = core_placement;
@@ -285,6 +291,7 @@ int main(int argc, char ** argv) {
     manifest["n_gen"] = n_gen;
     manifest["draft_path"] = draft_path;
     manifest["draft_gpu"] = draft_gpu;
+    manifest["logits_recorded"] = record_logits;
     manifest["core_placement"] = argc > 7 ? argv[7] : "cpu";
     manifest["gpu"] = gpu;
     const auto record_environment = [&](const char * key) {
@@ -306,6 +313,7 @@ int main(int argc, char ** argv) {
     record_environment("DFLASH_KIMI_MMAP_DROP_PAGES");
     record_environment("DFLASH_KIMI_MOE_CORE_OFFLOAD");
     record_environment("DFLASH_KIMI_DRAFT_MAX_BLOCK");
+    record_environment("DFLASH_KIMI_SUITE_DISABLE_LOGITS");
     record_environment("KIMI_H16_REPOSITORY_COMMIT");
     record_environment("KIMI_H16_REPOSITORY_STATUS");
     record_environment("KIMI_H16_SUITE_SHA256");
@@ -385,8 +393,8 @@ int main(int argc, char ** argv) {
             backend.shutdown();
             return 1;
         }
-        if (!publish_current(
-                current_teacher, teacher_destination, error) ||
+        if ((record_logits && !publish_current(
+                current_teacher, teacher_destination, error)) ||
             (paired && !publish_current(
                 current_candidate, candidate_destination, error))) {
             std::fprintf(stderr, "[kimi-h16-suite] %s\n", error.c_str());
@@ -403,8 +411,10 @@ int main(int argc, char ** argv) {
             {"prompt_token_count", prompt_ids.size()},
             {"output_tokens", result.tokens},
             {"output_text", tokenizer.decode(result.tokens)},
-            {"teacher_logits", teacher_destination.string()},
-            {"output_logits", teacher_destination.string()},
+            {"teacher_logits",
+             record_logits ? teacher_destination.string() : ""},
+            {"output_logits",
+             record_logits ? teacher_destination.string() : ""},
             {"candidate_logits",
              paired ? candidate_destination.string() : ""},
             {"prefill_seconds", result.prefill_s},

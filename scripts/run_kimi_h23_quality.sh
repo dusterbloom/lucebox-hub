@@ -23,6 +23,7 @@ gpu="${KIMI_H23_GPU:-0}"
 n_gen="${KIMI_H23_N_GEN:-8}"
 draft="${KIMI_H23_DRAFT:-}"
 draft_gpu="${KIMI_H23_DRAFT_GPU:-$gpu}"
+skip_analysis="${KIMI_H23_SKIP_ANALYSIS:-0}"
 output="$native_root"
 [[ "$mode" == candidate ]] && output="$candidate_root"
 
@@ -55,7 +56,9 @@ common_env=(
     KIMI_H16_REPOSITORY_COMMIT="$(git -C "$repo_dir" rev-parse HEAD)"
     KIMI_H16_REPOSITORY_STATUS="$(git -C "$repo_dir" status --short | sha256sum | awk '{print $1}')"
 )
-if [[ "$mode" == native ]]; then
+if [[ "$skip_analysis" == 1 ]]; then
+    echo "H23 analysis intentionally skipped for performance-only run"
+elif [[ "$mode" == native ]]; then
     mode_env=(DFLASH_KIMI_LAYER1_PROVIDER=exact)
 else
     mode_env=(
