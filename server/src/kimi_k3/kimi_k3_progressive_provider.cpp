@@ -4471,7 +4471,8 @@ private:
     bool oracle_matches_live_plan(
             const P28OracleLayer & oracle, const LayerState & state,
             size_t route_offset, const MoeStreamRouteBatch & routes,
-            const std::vector<uint8_t> & selected_by_route) const {
+            const std::vector<uint8_t> & selected_by_route,
+            const std::vector<uint8_t> & effective_calibrated) const {
         std::vector<P28OracleRoute> live;
         live.reserve(kNativeTopK);
         for (int route = 0; route < kNativeTopK; ++route) {
@@ -4500,6 +4501,17 @@ private:
                 std::unique(value.naturals.begin(), value.naturals.end()),
                 value.naturals.end());
         }
+        // The P27 physical trace has no sidecar row for a calibrated route
+        // whose selected prefix is empty.  Exact-fallback routes do have a
+        // native-exact-expert row and must remain in the address plan.  Match
+        // physical requests rather than the larger logical route set.
+        live.erase(std::remove_if(live.begin(), live.end(),
+            [&](const P28OracleRoute & value) {
+                return !kimi_k3_prefetch_route_has_physical_request(
+                    effective_calibrated[
+                        static_cast<size_t>(value.expert)] != 0,
+                    static_cast<int>(value.naturals.size()));
+            }), live.end());
         std::sort(live.begin(), live.end(),
             [](const P28OracleRoute & left, const P28OracleRoute & right) {
                 return left.expert < right.expert;
@@ -4575,6 +4587,7 @@ private:
             uint64_t key, const LayerState & state, size_t route_offset,
             const MoeStreamRouteBatch & routes,
             const std::vector<uint8_t> & selected_by_route,
+            const std::vector<uint8_t> & effective_calibrated,
             const MoeStreamExpertSpec & spec,
             int & slot) {
         if (!oracle_future_.valid()) return false;
@@ -4594,7 +4607,7 @@ private:
         const bool useful = result.ok && found != oracle_layers_.end() &&
             oracle_matches_live_plan(
                 found->second, state, route_offset, routes,
-                selected_by_route);
+                selected_by_route, effective_calibrated);
         account_oracle_result(result, useful);
         if (useful) {
             ++oracle_hits_;
@@ -4772,7 +4785,8 @@ private:
             const bool oracle_hit = !oracle_trace_path_.empty() &&
                 routes.n_tokens == 1 && consume_oracle_prefetch(
                     current_oracle_key, state, route_offset, routes,
-                    selected_by_route, spec, compact_slot_index);
+                    selected_by_route, effective_calibrated, spec,
+                    compact_slot_index);
             std::array<SparseCompactPayload, kNativeTopK> &
                 current_compact_payloads = oracle_slot(compact_slot_index);
             if (direct_pread_ && !oracle_hit &&
@@ -4884,7 +4898,7 @@ private:
                                 &current_compact_payloads[index];
                         }
                     }
-                    if (!prepacked_compact) {
+                    if (!prepacked_compact && prefix_depth > 0) {
                         return exact_layer_fallback(
                             "P28 matched oracle route has no payload");
                     }
@@ -5253,6 +5267,11 @@ bool parse_positive_int(const char * raw, int & value) {
 }
 
 } // namespace
+
+bool kimi_k3_prefetch_route_has_physical_request(
+        bool calibrated, int selected_slab_count) {
+    return !calibrated || selected_slab_count > 0;
+}
 
 bool parse_kimi_k3_layer_budget_table(
         const std::string & path, std::vector<int32_t> & budgets,

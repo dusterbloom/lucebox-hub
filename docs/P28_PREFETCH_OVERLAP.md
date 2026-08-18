@@ -1,6 +1,6 @@
 # P28 — Oracle delivery-overlap ceiling
 
-VERDICT: TRACE STRONG GO; INTEGRATED IMPLEMENTATION NO-GO; ORACLE CEILING OPEN
+VERDICT: TRACE STRONG GO; ZERO-WASTE INTEGRATED ORACLE NO-GO
 
 ## Question
 
@@ -204,3 +204,40 @@ scripts/gpu_lease.sh run P28 -- \
 and at least 25% measured throughput gain before it labels predictor research
 earned. R3 passed exactness and failed speed. The 40.8% value remains a trace
 ceiling, not a measured speedup.
+
+## Zero-prefix repair and final gate
+
+The representation mismatch was repaired without changing the provider policy:
+calibrated routes with an empty selected prefix are now absent from the
+physical-address match, while exact-fallback routes remain. A focused unit
+test locks that distinction. The clean rerun is archived at:
+
+```text
+/mnt/kimi-k3/results/kimi-p28-oracle-32-row-zero-prefix-fix-20260818
+```
+
+It accepts every available lookahead and preserves the reference logits
+byte-for-byte:
+
+| item | measured result |
+|---|---:|
+| oracle launches / accepted / missed | 2,943 / 2,943 / 0 |
+| wasted prefetched bytes | **0** |
+| demand wait | 0.580 s |
+| oracle read service time | 53.510 s |
+| P27 reference | 0.3330 transition/s |
+| repaired P28 | 0.2724 transition/s |
+| throughput change | **-18.18%** |
+| logits | **byte-identical** |
+
+This falsifies the analytical overlap projection as an integrated optimization
+on the present single-drive, CPU-core-mapped runtime. The future reads are
+available when demanded, but issuing them concurrently contends with the
+mapped core and other storage work: selected-read service time grows enough to
+overwhelm the hidden demand wait. A learned predictor cannot fix that resource
+contention, so predictor work is not earned and P28 remains opt-in/off.
+
+This conclusion is deliberately scoped. A smaller resident core, a separate
+physical drive, or a materially different placement topology may change the
+contention boundary, but each would require its own paired replay; the current
+40.8% trace number is no longer an open speed claim for this runtime.

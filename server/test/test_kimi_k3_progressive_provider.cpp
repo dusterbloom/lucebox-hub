@@ -25,6 +25,13 @@ static void require_raw_zero_block_dequantizes_exactly(ggml_type type) {
 }
 
 int main() {
+    // P28 matches the physical P27 trace, not every logical route. A
+    // calibrated zero-prefix route has no sidecar request, while an exact
+    // fallback is retained as a native-expert request.
+    assert(!kimi_k3_prefetch_route_has_physical_request(true, 0));
+    assert(kimi_k3_prefetch_route_has_physical_request(true, 1));
+    assert(kimi_k3_prefetch_route_has_physical_request(false, 0));
+
     // Sparse scratch initializes every omitted native quant block with zero
     // bytes.  Verify that this is an exact numeric zero in every routed qtype
     // present in the K3 checkpoint rather than assuming a byte convention.

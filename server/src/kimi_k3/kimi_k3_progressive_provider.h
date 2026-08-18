@@ -106,4 +106,10 @@ KimiK3CalibratedSlabPlan plan_kimi_k3_calibrated_route_prefixes(
     int route_budget,
     int slabs_per_route);
 
+// A calibrated route with an empty selected prefix emits no authoritative
+// sidecar read. Exact-fallback routes remain physical requests even though
+// their slab list is empty in the P28 trace representation.
+bool kimi_k3_prefetch_route_has_physical_request(
+    bool calibrated, int selected_slab_count);
+
 } // namespace dflash::common
