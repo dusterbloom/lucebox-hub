@@ -16,6 +16,22 @@ from gguf import GGMLQuantizationType, GGUFReader
 QTYPE_NAMES = {value: value.name.lower() for value in GGMLQuantizationType}
 
 
+def shard_number(path: str) -> int:
+    match = re.search(r"-([0-9]{5})-of-[0-9]{5}\.gguf$", Path(path).name)
+    if not match:
+        raise ValueError(f"cannot extract split shard number: {path}")
+    return int(match.group(1))
+
+
+def parse_shards(raw: str | None) -> set[int] | None:
+    if raw is None:
+        return None
+    selected = {int(value) for value in raw.split(",") if value}
+    if not selected or any(value <= 0 for value in selected):
+        raise ValueError("--target-source-shards must select positive shard IDs")
+    return selected
+
+
 def split_paths(first: Path) -> list[Path]:
     match = re.match(r"^(.*-)[0-9]{5}(-of-[0-9]{5}\.gguf)$", first.name)
     if not match:
@@ -78,10 +94,32 @@ def main() -> int:
     parser.add_argument("result", type=Path)
     parser.add_argument("--window-bytes", type=int, default=4096)
     parser.add_argument("--hash-all-nontarget", action="store_true")
+    parser.add_argument(
+        "--target-source-shards",
+        help=(
+            "restrict plan targets to tensors physically stored in these "
+            "comma-separated source shards; used to verify split-file hybrids"
+        ),
+    )
     args = parser.parse_args()
 
     plan = json.loads(args.plan.read_text())
-    target_names = {row["name"] for row in plan["targets"]}
+    target_shards = parse_shards(args.target_source_shards)
+    target_rows = plan["targets"]
+    if target_shards is not None:
+        target_rows = [
+            row for row in target_rows
+            if shard_number(str(row["source_shard"])) in target_shards
+        ]
+        found_shards = {
+            shard_number(str(row["source_shard"])) for row in target_rows
+        }
+        if found_shards != target_shards:
+            raise ValueError(
+                f"selected target shards missing from plan: "
+                f"{sorted(target_shards - found_shards)}"
+            )
+    target_names = {row["name"] for row in target_rows}
     expected_type = plan["target_type"]
     expected_source_type = plan.get("source_type", "q6_k")
     source_paths = split_paths(args.source)
@@ -155,6 +193,9 @@ def main() -> int:
         "changed_tensor_names": sorted(changed_types),
         "target_type": expected_type,
         "source_type": expected_source_type,
+        "target_source_shards": (
+            sorted(target_shards) if target_shards is not None else None
+        ),
         "non_target_tensor_count": len(source) - len(changed_types),
         "non_target_sample_window_bytes": args.window_bytes,
         "non_target_sampled_bytes": sampled_bytes,

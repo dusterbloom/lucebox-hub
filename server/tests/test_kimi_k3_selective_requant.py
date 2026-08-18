@@ -10,7 +10,12 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from verify_kimi_k3_selective_requant import sampled_equal, window_offsets  # noqa: E402
+from verify_kimi_k3_selective_requant import (  # noqa: E402
+    parse_shards,
+    sampled_equal,
+    shard_number,
+    window_offsets,
+)
 from plan_kimi_k3_kda_requant import parse_layers  # noqa: E402
 
 
@@ -30,6 +35,15 @@ class SelectiveRequantVerifierTest(unittest.TestCase):
             parse_layers("3", {0, 1, 2, 4})
         with self.assertRaisesRegex(ValueError, "empty entry"):
             parse_layers("1,", {0, 1, 2, 4})
+
+    def test_shard_subset_parser(self) -> None:
+        self.assertIsNone(parse_shards(None))
+        self.assertEqual(parse_shards("13,12,13"), {12, 13})
+        self.assertEqual(
+            shard_number("Kimi-K3-KDA-Q4_K-00012-of-00014.gguf"), 12
+        )
+        with self.assertRaisesRegex(ValueError, "positive shard IDs"):
+            parse_shards("0")
 
     def test_windows_cover_edges_and_are_deterministic(self) -> None:
         first = window_offsets(10000, seed=17, window=4096)

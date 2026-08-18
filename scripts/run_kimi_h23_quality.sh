@@ -24,6 +24,7 @@ n_gen="${KIMI_H23_N_GEN:-8}"
 draft="${KIMI_H23_DRAFT:-}"
 draft_gpu="${KIMI_H23_DRAFT_GPU:-$gpu}"
 skip_analysis="${KIMI_H23_SKIP_ANALYSIS:-0}"
+resume="${KIMI_H23_RESUME:-0}"
 output="$native_root"
 [[ "$mode" == candidate ]] && output="$candidate_root"
 
@@ -38,7 +39,10 @@ fi
 for path in "${required[@]}"; do
     [[ -f "$path" ]] || { echo "missing H23 input: $path" >&2; exit 1; }
 done
-[[ ! -e "$output" ]] || { echo "refusing existing H23 output: $output" >&2; exit 1; }
+if [[ -e "$output" && "$resume" != 1 ]]; then
+    echo "refusing existing H23 output: $output" >&2
+    exit 1
+fi
 
 CCACHE_DIR=/tmp/kimi-p20-ccache cmake --build "$build_dir" -j4 \
     --target test_kimi_k3_progressive_provider run_kimi_k3_h16_suite
@@ -52,6 +56,7 @@ common_env=(
     DFLASH_KIMI_MMAP_DROP_PAGES=0
     DFLASH_KIMI_MOE_CORE_OFFLOAD=latent,shared
     DFLASH_KIMI_H16_CHAT_TEMPLATE=1
+    DFLASH_KIMI_H16_RESUME="$resume"
     KIMI_H16_SUITE_SHA256="$(sha256sum "$fixture" | awk '{print $1}')"
     KIMI_H16_REPOSITORY_COMMIT="$(git -C "$repo_dir" rev-parse HEAD)"
     KIMI_H16_REPOSITORY_STATUS="$(git -C "$repo_dir" status --short | sha256sum | awk '{print $1}')"

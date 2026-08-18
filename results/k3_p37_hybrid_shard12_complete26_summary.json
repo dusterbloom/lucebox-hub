@@ -1,0 +1,87 @@
+{
+  "schema": "kimi-k3-p37-depth-selective-q2q4-summary-v1",
+  "status": "MEASURED",
+  "verdict": "QUALITY_RECOVERY_AND_SPEED_GO_LEADING_PRODUCT_MODE_CANDIDATE",
+  "model": {
+    "source": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00001-of-00014.gguf",
+    "candidate": "/mnt/kimi-k3/models/kimi-k3-p37-hybrid-q2-shard12/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-of-00014.gguf",
+    "q2_source_shards": [12],
+    "changed_recurrent_layers": [77, 78, 80, 81, 82, 84],
+    "changed_tensors": 25,
+    "source_qtype": "Q4_K",
+    "candidate_qtype": "Q2_K",
+    "saved_file_bytes": 516096000,
+    "non_target_sample_result": "PASS",
+    "non_target_full_hash": "PASS"
+  },
+  "placement": {
+    "complete_preparation_layers": [57, 58, 60, 61, 62, 64, 65, 66, 68, 69, 70, 72, 73, 74, 76, 77, 78, 80, 81, 82, 84, 85, 86, 88, 89, 90],
+    "accelerator_weights_bytes": 20596915968,
+    "accelerator_state_bytes": 175079424,
+    "accelerator_total_gib": 19.345428228378296,
+    "peak_vram_mib": 23037.0
+  },
+  "quality": {
+    "native_success_tasks_retained": 12,
+    "native_success_tasks": 12,
+    "token_exact_sequences_vs_native": 9,
+    "native_mean_kl": 0.6847567404919209,
+    "native_median_kl": 0.34577849204193073,
+    "native_p95_kl": 2.6061027241555625,
+    "native_maximum_kl": 5.405907383108679,
+    "top1_agreement": 429,
+    "top1_denominator": 660,
+    "token_exact_sequences_vs_p35": 11,
+    "p35_mean_kl": 0.043449845236277776,
+    "p35_median_kl": 0.02347346246071004,
+    "p35_p95_kl": 0.13871798951340514,
+    "p35_maximum_kl": 0.7424369272887621,
+    "p35_top1_agreement": 600,
+    "p35_top1_denominator": 659,
+    "extract_code_expected": "LIME-742",
+    "extract_code_observed": "LIME-742",
+    "extract_decoys_expected": "QUARTZ-918",
+    "extract_decoys_observed": "QUARTZ-918"
+  },
+  "runtime": {
+    "model_positions": 682,
+    "generated_tokens": 142,
+    "autoregressive_transitions": 130,
+    "decode_seconds": 150.849232469,
+    "true_ar_transitions_per_second": 0.8617876131833512,
+    "prefill_positions": 552,
+    "prefill_seconds": 652.156167438,
+    "prefill_positions_per_second": 0.8464230311100726,
+    "elapsed_seconds": 814.8917903159999,
+    "speedup_vs_p32": 1.173699243462949,
+    "speedup_vs_p35": 1.0763809463887029,
+    "rate_fraction_vs_p36": 0.9685608461683125,
+    "peak_ram_kib": 39847916,
+    "gpu_energy_joules": 100866.84508701549
+  },
+  "median_stages_ms": {
+    "total": 1161.937,
+    "routed_preparation": 487.983,
+    "offloaded_preparation": 100.8195,
+    "expert_provider": 480.994,
+    "other_total": 92.1405
+  },
+  "provider": {
+    "logical_gib_per_position": 1.221129162919836,
+    "exact_fallback_route_fraction": 0.009602511793956395,
+    "exact_fallback_byte_fraction": 0.07159902147054908,
+    "process_read_to_logical_ratio": 1.006195331350814
+  },
+  "crash_recovery": {
+    "atomic_per_prompt_checkpoint": true,
+    "explicit_resume": true,
+    "clean_performance_run_used_resume": false,
+    "interrupted_partial_prompts_preserved": 6
+  },
+  "boundaries": [
+    "The registered suite is thinking-off and is not an official K3 benchmark.",
+    "Twelve small native-success tasks are evidence of practical utility, not broad quality preservation.",
+    "P35 remains the conservative all-Q4 fallback pending broader and thinking-enabled validation.",
+    "The 4 tok/s target remains unmeasured and open."
+  ]
+}

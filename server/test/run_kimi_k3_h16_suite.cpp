@@ -131,6 +131,31 @@ bool publish_current(const std::filesystem::path & current,
     return true;
 }
 
+bool write_manifest_checkpoint(const json & manifest,
+                               const std::filesystem::path & output_directory,
+                               std::string & error) {
+    const std::filesystem::path temporary =
+        output_directory / "suite-manifest.partial.json.tmp";
+    const std::filesystem::path checkpoint =
+        output_directory / "suite-manifest.partial.json";
+    {
+        std::ofstream output(temporary);
+        output << manifest.dump(2) << '\n';
+        if (!output) {
+            error = "cannot write partial suite manifest";
+            return false;
+        }
+    }
+    std::error_code filesystem_error;
+    std::filesystem::rename(temporary, checkpoint, filesystem_error);
+    if (filesystem_error) {
+        error = "cannot publish partial suite manifest: " +
+            filesystem_error.message();
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {
@@ -155,6 +180,10 @@ int main(int argc, char ** argv) {
         std::getenv("DFLASH_KIMI_SUITE_DISABLE_LOGITS");
     const bool record_logits = !disable_logits_environment ||
         std::string(disable_logits_environment) != "1";
+    const char * resume_environment =
+        std::getenv("DFLASH_KIMI_H16_RESUME");
+    const bool resume = resume_environment &&
+        std::string(resume_environment) == "1";
     KimiK3CorePlacement core_placement = KimiK3CorePlacement::Cpu;
     if (gpu < 0 || max_context <= 0 || n_gen <= 0 || n_gen >= max_context ||
         (argc > 7 && !parse_kimi_k3_core_placement(
@@ -235,6 +264,14 @@ int main(int argc, char ** argv) {
         output_directory / ".current.candidate.logits.f32";
     const std::filesystem::path intervention_trace =
         output_directory / "interventions.f32";
+    const std::filesystem::path partial_manifest =
+        output_directory / "suite-manifest.partial.json";
+    if (std::filesystem::exists(partial_manifest) && !resume) {
+        std::fprintf(stderr,
+            "[kimi-h16-suite] partial manifest exists; set "
+            "DFLASH_KIMI_H16_RESUME=1 to resume\n");
+        return 1;
+    }
     std::filesystem::remove(current_teacher, filesystem_error);
     filesystem_error.clear();
     std::filesystem::remove(current_candidate, filesystem_error);
@@ -317,6 +354,7 @@ int main(int argc, char ** argv) {
     record_environment("DFLASH_KIMI_S0_SERIAL_CORE_ROWS");
     record_environment("DFLASH_KIMI_S0_SERIAL_EXPERT_ROWS");
     record_environment("DFLASH_KIMI_SUITE_DISABLE_LOGITS");
+    record_environment("DFLASH_KIMI_H16_RESUME");
     record_environment("KIMI_H16_REPOSITORY_COMMIT");
     record_environment("KIMI_H16_REPOSITORY_STATUS");
     record_environment("KIMI_H16_SUITE_SHA256");
@@ -325,9 +363,72 @@ int main(int argc, char ** argv) {
     record_environment("KIMI_H17_PROVIDER_SCOPE");
     manifest["sequences"] = json::array();
 
+    size_t resume_count = 0;
+    if (resume && std::filesystem::exists(partial_manifest)) {
+        json resumed;
+        try {
+            std::ifstream input(partial_manifest);
+            input >> resumed;
+        } catch (const std::exception & exception) {
+            std::fprintf(stderr,
+                "[kimi-h16-suite] cannot parse partial manifest: %s\n",
+                exception.what());
+            backend.shutdown();
+            return 1;
+        }
+        static const std::vector<const char *> identity_keys = {
+            "schema", "model_path", "suite_path", "paired", "provider",
+            "chat_template", "max_context", "n_gen", "draft_path",
+            "draft_gpu", "logits_recorded", "core_placement", "gpu",
+        };
+        for (const char * key : identity_keys) {
+            if (!resumed.contains(key) || resumed[key] != manifest[key]) {
+                std::fprintf(stderr,
+                    "[kimi-h16-suite] resume identity mismatch: %s\n", key);
+                backend.shutdown();
+                return 1;
+            }
+        }
+        if (!resumed.contains("sequences") ||
+            !resumed["sequences"].is_array() ||
+            resumed["sequences"].size() > entries.size()) {
+            std::fprintf(stderr,
+                "[kimi-h16-suite] invalid partial sequence list\n");
+            backend.shutdown();
+            return 1;
+        }
+        resume_count = resumed["sequences"].size();
+        for (size_t index = 0; index < resume_count; ++index) {
+            const json & row = resumed["sequences"][index];
+            if (!row.contains("id") || !row.contains("split") ||
+                !row.contains("text") || !row.contains("model_layer") ||
+                row["id"] != entries[index].id ||
+                row["split"] != entries[index].split ||
+                row["text"] != entries[index].text ||
+                row["model_layer"] != entries[index].model_layer) {
+                std::fprintf(stderr,
+                    "[kimi-h16-suite] resume sequence mismatch at %zu\n",
+                    index);
+                backend.shutdown();
+                return 1;
+            }
+        }
+        manifest = std::move(resumed);
+        std::fprintf(stderr,
+            "[kimi-h16-suite] resuming completed sequences=%zu\n",
+            resume_count);
+    }
+
     DaemonIO io;
     size_t intervention_record_start = 0;
-    for (const SuiteEntry & entry : entries) {
+    if (paired) {
+        for (const json & row : manifest["sequences"]) {
+            intervention_record_start +=
+                row.value("intervention_record_count", size_t{0});
+        }
+    }
+    for (size_t entry_index = 0; entry_index < entries.size(); ++entry_index) {
+        const SuiteEntry & entry = entries[entry_index];
         if (entry.model_layer > 0 &&
             !set_environment("DFLASH_KIMI_H22_ACTIVE_LAYER",
                              std::to_string(entry.model_layer))) {
@@ -370,6 +471,25 @@ int main(int argc, char ** argv) {
             output_directory / (entry.id + ".teacher.logits.f32");
         const std::filesystem::path candidate_destination =
             output_directory / (entry.id + ".candidate.logits.f32");
+        if (entry_index < resume_count) {
+            const json & row = manifest["sequences"][entry_index];
+            const bool teacher_ok = !record_logits ||
+                std::filesystem::is_regular_file(teacher_destination);
+            const bool candidate_ok = !paired ||
+                std::filesystem::is_regular_file(candidate_destination);
+            if (!teacher_ok || !candidate_ok ||
+                !row.contains("prompt_tokens") ||
+                row["prompt_tokens"] != prompt_ids) {
+                std::fprintf(stderr,
+                    "[kimi-h16-suite] resumed artifact mismatch for %s\n",
+                    entry.id.c_str());
+                backend.shutdown();
+                return 1;
+            }
+            std::fprintf(stderr,
+                "[kimi-h16-suite] resume skip id=%s\n", entry.id.c_str());
+            continue;
+        }
         if (std::filesystem::exists(teacher_destination) ||
             (paired && std::filesystem::exists(candidate_destination))) {
             std::fprintf(stderr,
@@ -428,6 +548,11 @@ int main(int argc, char ** argv) {
              paired ? prompt_ids.size() : 0},
         });
         if (paired) intervention_record_start += prompt_ids.size();
+        if (!write_manifest_checkpoint(manifest, output_directory, error)) {
+            std::fprintf(stderr, "[kimi-h16-suite] %s\n", error.c_str());
+            backend.shutdown();
+            return 1;
+        }
         std::fprintf(stderr,
             "[kimi-h16-suite] id=%s split=%s prompt=%zu generated=%zu "
             "prefill=%.3fs decode=%.3fs\n",
@@ -436,21 +561,15 @@ int main(int argc, char ** argv) {
     }
     backend.shutdown();
 
-    const std::filesystem::path temporary_manifest =
-        output_directory / "suite-manifest.json.tmp";
     const std::filesystem::path final_manifest =
         output_directory / "suite-manifest.json";
-    {
-        std::ofstream output(temporary_manifest);
-        output << manifest.dump(2) << '\n';
-        if (!output) {
-            std::fprintf(stderr,
-                         "[kimi-h16-suite] cannot write manifest\n");
-            return 1;
-        }
+    if (!std::filesystem::exists(partial_manifest) &&
+        !write_manifest_checkpoint(manifest, output_directory, error)) {
+        std::fprintf(stderr, "[kimi-h16-suite] %s\n", error.c_str());
+        return 1;
     }
     std::filesystem::rename(
-        temporary_manifest, final_manifest, filesystem_error);
+        partial_manifest, final_manifest, filesystem_error);
     if (filesystem_error) {
         std::fprintf(stderr,
             "[kimi-h16-suite] cannot publish manifest: %s\n",

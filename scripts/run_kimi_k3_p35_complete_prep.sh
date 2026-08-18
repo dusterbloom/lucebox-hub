@@ -9,12 +9,16 @@ layers="${KIMI_P35_LAYERS:-68,69,70,72,73,74,76,77,78,80,81,82,84,85,86,88,89,90
 fixture="${KIMI_P35_FIXTURE:-$repo_dir/server/test/fixtures/kimi_k3_p30_cache_smoke.jsonl}"
 native_root="${KIMI_P35_NATIVE_ROOT:-/mnt/kimi-k3/results/kimi-k3-p31-stage-code-20260818}"
 n_gen="${KIMI_P35_N_GEN:-24}"
+resume="${KIMI_P35_RESUME:-0}"
 quality_output="${KIMI_P35_ANALYSIS_OUTPUT:-$repo_dir/results/k3_p35_complete_prep_late18_quality.json}"
 stage_output="${KIMI_P35_STAGE_OUTPUT:-$repo_dir/results/k3_p35_complete_prep_late18_stage.json}"
 lock="${KIMI_GPU_LOCK_FILE:-/tmp/lucebox-gpu-$gpu.lock}"
 
 [[ -f "$model" ]] || { echo "missing P35 model: $model" >&2; exit 1; }
-[[ ! -e "$output" ]] || { echo "refusing existing P35 output: $output" >&2; exit 1; }
+if [[ -e "$output" && "$resume" != 1 ]]; then
+  echo "refusing existing P35 output: $output" >&2
+  exit 1
+fi
 
 exec 9>"$lock"
 flock -n 9 || { echo "graphics-card lease is held" >&2; exit 1; }
@@ -42,6 +46,7 @@ env "${complete_env[@]}" \
   KIMI_H23_PROMPT_ID="p35-complete-prep-late18-code" \
   KIMI_H23_GPU="$gpu" \
   KIMI_H23_N_GEN="$n_gen" \
+  KIMI_H23_RESUME="$resume" \
   KIMI_H23_DEVICE_CACHE_MB=2048 \
   KIMI_H23_CPU_THREADS=12 \
   "$repo_dir/scripts/run_kimi_h23_quality.sh" candidate
