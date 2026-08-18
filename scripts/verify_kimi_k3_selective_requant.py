@@ -83,6 +83,7 @@ def main() -> int:
     plan = json.loads(args.plan.read_text())
     target_names = {row["name"] for row in plan["targets"]}
     expected_type = plan["target_type"]
+    expected_source_type = plan.get("source_type", "q6_k")
     source_paths = split_paths(args.source)
     candidate_paths = split_paths(args.candidate)
     source, source_readers = tensor_map(source_paths)
@@ -109,7 +110,7 @@ def main() -> int:
         left_type = QTYPE_NAMES[left.tensor_type]
         right_type = QTYPE_NAMES[right.tensor_type]
         if name in target_names:
-            if left_type != "q6_k" or right_type != expected_type:
+            if left_type != expected_source_type or right_type != expected_type:
                 raise ValueError(
                     f"target qtype mismatch: {name}: {left_type} -> {right_type}"
                 )
@@ -153,6 +154,7 @@ def main() -> int:
         "changed_tensor_count": len(changed_types),
         "changed_tensor_names": sorted(changed_types),
         "target_type": expected_type,
+        "source_type": expected_source_type,
         "non_target_tensor_count": len(source) - len(changed_types),
         "non_target_sample_window_bytes": args.window_bytes,
         "non_target_sampled_bytes": sampled_bytes,

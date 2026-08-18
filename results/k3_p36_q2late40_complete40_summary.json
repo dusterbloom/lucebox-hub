@@ -1,0 +1,73 @@
+{
+  "schema": "kimi-k3-p36-q2late40-complete40-summary-v1",
+  "status": "MEASURED",
+  "verdict": "EXPERIMENTAL_SPEED_GO_QUALITY_CAUTION_NOT_DEFAULT",
+  "model": {
+    "source": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00001-of-00014.gguf",
+    "candidate": "/mnt/kimi-k3/models/kimi-k3-kda-q2k-late40-p36/Kimi-K3-KDA-Q2_K-LATE40-00001-of-00014.gguf",
+    "changed_recurrent_layers": 40,
+    "changed_tensors": 200,
+    "source_qtype": "Q4_K",
+    "candidate_qtype": "Q2_K",
+    "saved_file_bytes": 4128768000,
+    "non_target_full_hash": "PASS"
+  },
+  "placement": {
+    "complete_preparation_layers": 40,
+    "accelerator_weights_bytes": 20895153152,
+    "accelerator_state_bytes": 269352960,
+    "accelerator_total_gib": 19.711,
+    "peak_vram_mib": 23091.0
+  },
+  "quality": {
+    "native_success_tasks_retained": 11,
+    "native_success_tasks": 12,
+    "token_exact_sequences_vs_native": 6,
+    "token_exact_sequences_vs_p35": 8,
+    "failed_task": "extract-code",
+    "expected": "LIME-742",
+    "observed": "LIME-7",
+    "native_mean_kl": 0.9208839842080163,
+    "native_median_kl": 0.5491832718003858,
+    "native_p95_kl": 3.380157359265906,
+    "native_maximum_kl": 5.577124204903242,
+    "p35_mean_kl": 0.2028912897004933,
+    "p35_median_kl": 0.1336479675087471,
+    "p35_p95_kl": 0.6334213487106638,
+    "p35_maximum_kl": 2.0538016514258692
+  },
+  "runtime": {
+    "positions": 684,
+    "generated_tokens": 144,
+    "autoregressive_transitions": 132,
+    "decode_seconds": 148.354455017,
+    "true_ar_transitions_per_second": 0.8897609443873733,
+    "prefill_positions": 552,
+    "prefill_seconds": 621.119765633,
+    "prefill_positions_per_second": 0.8887174914445716,
+    "elapsed_seconds": 775.3742787149968,
+    "speedup_vs_p32": 1.2117970775026101,
+    "speedup_vs_p35": 1.1113198760673957,
+    "peak_ram_kib": 36316960,
+    "gpu_energy_joules": 98326.02008091289
+  },
+  "median_stages_ms": {
+    "total": 1116.4435,
+    "routed_preparation": 388.497,
+    "offloaded_preparation": 127.521,
+    "expert_provider": 516.062,
+    "other_total": 84.3635
+  },
+  "provider": {
+    "logical_gib_per_position": 1.2206958469591642,
+    "exact_fallback_route_fraction": 0.009543645118230358,
+    "exact_fallback_byte_fraction": 0.0712694627496751,
+    "process_read_to_logical_ratio": 0.9775874440406362
+  },
+  "boundaries": [
+    "The registered suite is thinking-off and is not an official K3 benchmark.",
+    "Eleven of twelve small native-success tasks is evidence of practical utility, not broad quality preservation.",
+    "P36 is an opt-in performance ceiling; P35 remains the safer quality configuration.",
+    "The 4 tok/s target remains unmeasured and open."
+  ]
+}

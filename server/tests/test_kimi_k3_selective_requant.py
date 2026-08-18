@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from verify_kimi_k3_selective_requant import sampled_equal, window_offsets  # noqa: E402
+from plan_kimi_k3_kda_requant import parse_layers  # noqa: E402
 
 
 class FakeTensor:
@@ -19,6 +20,17 @@ class FakeTensor:
 
 
 class SelectiveRequantVerifierTest(unittest.TestCase):
+    def test_layer_subset_parser_defaults_to_all(self) -> None:
+        available = {0, 1, 2, 4}
+        self.assertEqual(parse_layers(None, available), available)
+        self.assertEqual(parse_layers("4,1,4", available), {1, 4})
+
+    def test_layer_subset_parser_rejects_invalid_selection(self) -> None:
+        with self.assertRaisesRegex(ValueError, "not a recurrent KDA layer"):
+            parse_layers("3", {0, 1, 2, 4})
+        with self.assertRaisesRegex(ValueError, "empty entry"):
+            parse_layers("1,", {0, 1, 2, 4})
+
     def test_windows_cover_edges_and_are_deterministic(self) -> None:
         first = window_offsets(10000, seed=17, window=4096)
         second = window_offsets(10000, seed=17, window=4096)

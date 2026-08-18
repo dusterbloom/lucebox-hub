@@ -1,0 +1,1814 @@
+{
+  "schema": "kimi-k3-selective-kda-requant-plan-v1",
+  "status": "PROJECTED_NOT_QUANTIZED",
+  "model": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00001-of-00014.gguf",
+  "shards": [
+    {
+      "path": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00001-of-00014.gguf",
+      "bytes": 6934144,
+      "registered_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4"
+    },
+    {
+      "path": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00002-of-00014.gguf",
+      "bytes": 46322919392,
+      "registered_sha256": "fc94d9eef4438dfaa25a010eb6b6595594226991ead0e1121ae708c79bbdeddc"
+    },
+    {
+      "path": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00003-of-00014.gguf",
+      "bytes": 48630280224,
+      "registered_sha256": "cbe4cdddb3589acf136c5ae342479e3fa0123ac2e849b2db8a8edfc5872711d4"
+    },
+    {
+      "path": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00004-of-00014.gguf",
+      "bytes": 47527487072,
+      "registered_sha256": "2fd4cad9d00189e44cc2de480f83f6459b8a682df96b26faaefbe5cbdabfe53a"
+    },
+    {
+      "path": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00005-of-00014.gguf",
+      "bytes": 47595397088,
+      "registered_sha256": "6f5c93fa86c3bee4113ea1297c3002d0e725356117051624f8d39e5e01f7c374"
+    },
+    {
+      "path": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00006-of-00014.gguf",
+      "bytes": 47347969824,
+      "registered_sha256": "f801afcc5f927881df24bf9773a7ac7a30475540152f0f69d461c4c548ad13d3"
+    },
+    {
+      "path": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "bytes": 47527487072,
+      "registered_sha256": "b0d4b585b6e5214704a43fca4bcfa6c166e0ffe4d6f500063e3ff7b99ff4287e"
+    },
+    {
+      "path": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "bytes": 50061647840,
+      "registered_sha256": "ba52dc2f5bc993485aca5227cdda6b183131fff50a6ccbd40840d37a8822f195"
+    },
+    {
+      "path": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "bytes": 51041168992,
+      "registered_sha256": "cdbf39c625724323c52caf4a3555f98459e0e56bec839e91ebe6958b8b99cd2f"
+    },
+    {
+      "path": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "bytes": 48760612448,
+      "registered_sha256": "191ac7e2b8abcbdfa7e55dfa5b42622985efa90d20a0972288c6a78b52113565"
+    },
+    {
+      "path": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "bytes": 51294773216,
+      "registered_sha256": "56db560ac4f6d0e0807cbf17661af1467a864ce985ce717a9b8d602a7ea44d7d"
+    },
+    {
+      "path": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "bytes": 47958355552,
+      "registered_sha256": "efce90e11c1e5846273a2bec3769817110c0400af9b97d6b16bd41e3f725d691"
+    },
+    {
+      "path": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "bytes": 48137872832,
+      "registered_sha256": "1534baf79cac6461ff584d93a44997166742aeb3e4903e3eacb30e1709cab73b"
+    },
+    {
+      "path": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00014-of-00014.gguf",
+      "bytes": 3993680640,
+      "registered_sha256": "d148f57cba6ce78ce2e500f47c17bdc81ae92581714d0fffb18a3d32322c4dc4"
+    }
+  ],
+  "checksum_file": "results/k3_p32_kda_q4k.sha256",
+  "checksum_file_sha256": "749061865c9510c693dc91ccd5c0e1f8937d67a8e81584eb5a247a2b998e90ba",
+  "tensor_count": 2573,
+  "kda_layers": [
+    0,
+    1,
+    2,
+    4,
+    5,
+    6,
+    8,
+    9,
+    10,
+    12,
+    13,
+    14,
+    16,
+    17,
+    18,
+    20,
+    21,
+    22,
+    24,
+    25,
+    26,
+    28,
+    29,
+    30,
+    32,
+    33,
+    34,
+    36,
+    37,
+    38,
+    40,
+    41,
+    42,
+    44,
+    45,
+    46,
+    48,
+    49,
+    50,
+    52,
+    53,
+    54,
+    56,
+    57,
+    58,
+    60,
+    61,
+    62,
+    64,
+    65,
+    66,
+    68,
+    69,
+    70,
+    72,
+    73,
+    74,
+    76,
+    77,
+    78,
+    80,
+    81,
+    82,
+    84,
+    85,
+    86,
+    88,
+    89,
+    90
+  ],
+  "selected_layers": [
+    38,
+    40,
+    41,
+    42,
+    44,
+    45,
+    46,
+    48,
+    49,
+    50,
+    52,
+    53,
+    54,
+    56,
+    57,
+    58,
+    60,
+    61,
+    62,
+    64,
+    65,
+    66,
+    68,
+    69,
+    70,
+    72,
+    73,
+    74,
+    76,
+    77,
+    78,
+    80,
+    81,
+    82,
+    84,
+    85,
+    86,
+    88,
+    89,
+    90
+  ],
+  "target_suffixes": [
+    "attn_k.weight",
+    "attn_output.weight",
+    "attn_q.weight",
+    "attn_v.weight",
+    "ssm_g.weight"
+  ],
+  "target_type": "q2_k",
+  "source_type": "q4_k",
+  "source_block_bytes": 144,
+  "target_block_bytes": 84,
+  "target_tensor_count": 200,
+  "all_input_tensor_bytes": 586199487872,
+  "target_input_bytes": 9909043200,
+  "projected_target_output_bytes": 5780275200,
+  "projected_saved_bytes": 4128768000,
+  "tensor_type_file": "/tmp/k3-p36-kda-q2k-late40-tensor-types.txt",
+  "tensor_type_file_sha256": "76a8b034ee8211b0923254c0d371648b084433f9a88100fb718ff5d051714369",
+  "targets": [
+    {
+      "name": "blk.38.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00006-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.38.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00006-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.38.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00006-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.38.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00006-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.38.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.40.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.40.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.40.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.40.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.40.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.41.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.41.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.41.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.41.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.41.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.42.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.42.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.42.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.42.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.42.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.44.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.44.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.44.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.44.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.44.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.45.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.45.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.45.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.45.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.45.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.46.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.46.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.46.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.46.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00007-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.46.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.48.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.48.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.48.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.48.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.48.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.49.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.49.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.49.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.49.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.49.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.50.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.50.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.50.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.50.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.50.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.52.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.52.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.52.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.52.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.52.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.53.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.53.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.53.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.53.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.53.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.54.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.54.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.54.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.54.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00008-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.54.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.56.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.56.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.56.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.56.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.56.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.57.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.57.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.57.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.57.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.57.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.58.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.58.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.58.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.58.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.58.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.60.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.60.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.60.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.60.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.60.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.61.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.61.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.61.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.61.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00009-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.61.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.62.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.62.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.62.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.62.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.62.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.64.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.64.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.64.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.64.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.64.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.65.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.65.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.65.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.65.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.65.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.66.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.66.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.66.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.66.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.66.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.68.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.68.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.68.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.68.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.68.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.69.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.69.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.69.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.69.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00010-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.69.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.70.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.70.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.70.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.70.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.70.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.72.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.72.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.72.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.72.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.72.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.73.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.73.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.73.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.73.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.73.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.74.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.74.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.74.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.74.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.74.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.76.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.76.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.76.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.76.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.76.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.77.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.77.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.77.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.77.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00011-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.77.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.78.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.78.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.78.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.78.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.78.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.80.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.80.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.80.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.80.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.80.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.81.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.81.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.81.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.81.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.81.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.82.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.82.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.82.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.82.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.82.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.84.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.84.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.84.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.84.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00012-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.84.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.85.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.85.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.85.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.85.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.85.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.86.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.86.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.86.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.86.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.86.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.88.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.88.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.88.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.88.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.88.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.89.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.89.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.89.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.89.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.89.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.90.attn_k.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.90.attn_output.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.90.attn_q.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.90.attn_v.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    },
+    {
+      "name": "blk.90.ssm_g.weight",
+      "source_shard": "/mnt/kimi-k3/models/kimi-k3-kda-q4k-p32/Kimi-K3-KDA-Q4_K-00013-of-00014.gguf",
+      "source_type": "q4_k",
+      "target_type": "q2_k",
+      "input_bytes": 49545216,
+      "projected_output_bytes": 28901376
+    }
+  ],
+  "hard_gate": "Every non-target tensor must remain byte-identical; routed expert and sidecar semantics are frozen. Quality and speed are OPEN."
+}
