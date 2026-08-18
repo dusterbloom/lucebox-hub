@@ -1,0 +1,46 @@
+{
+  "schema": "kimi-k3-p38-sidecar-authoritative-slim-core-v1",
+  "date": "2026-08-18",
+  "classification": "MEASURED_CUDA_PARITY_GO_HIP_RUNTIME_OPEN",
+  "source": {
+    "branch": "experiment/kimi-k3-p20-sparse-physical",
+    "base_commit": "811717f"
+  },
+  "sparse_core": {
+    "shards": 14,
+    "tensors": 2573,
+    "routed_tensors_replaced_by_holes": 276,
+    "logical_bytes": 585690490336,
+    "copied_bytes": 40340792800,
+    "allocated_bytes": 40341995520,
+    "non_routed_tensor_bytes": 40333694336,
+    "routed_tensor_hole_bytes": 545349697536,
+    "manifest_sha256": "cec0475e18fef7178037e237074cd13772e5ba48b33c6c720439425c362bbd8a"
+  },
+  "runtime": {
+    "sidecar_authoritative": true,
+    "valid_layers": 92,
+    "invalid_layer_action": "fail_closed",
+    "insufficient_expert_action": "all_12_sidecar_slabs_through_native_full_width_graph"
+  },
+  "frozen_control": {
+    "sequence_id": "fact-capital",
+    "prompt_tokens": 34,
+    "generated_tokens": 9,
+    "output_token_ids_equal": true,
+    "output_text_equal": true,
+    "logit_float_count": 6881292,
+    "logit_nonzero_differences": 0,
+    "logit_max_abs_difference": 0.0,
+    "reference_logits_sha256": "82dfa599691d1e89215f5a9603a0134380ae7467945e10bded30f243adde5085",
+    "sparse_core_logits_sha256": "82dfa599691d1e89215f5a9603a0134380ae7467945e10bded30f243adde5085",
+    "candidate_manifest_sha256": "ef328523e16b4b1bf0ba79b53a735a8b63023db3d27203fd89b7d849c9c1fcf4",
+    "io_trace_sha256": "e3681b37ab10814f5cf03769d5440bcc833e58b7dffa71c60c9ab0e8afef8d9d"
+  },
+  "hip": {
+    "build": "pass",
+    "runtime_parity": null,
+    "throughput": null
+  },
+  "next_gate": "sparse-preserving transfer to Lucebox and frozen HIP parity"
+}

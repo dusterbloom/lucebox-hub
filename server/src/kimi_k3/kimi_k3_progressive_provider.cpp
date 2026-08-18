@@ -3170,6 +3170,17 @@ public:
         backend_ = backend;
         route_prefix_depth_ = route_prefix_depth;
         budget_ = route_prefix_depth_ > 0 ? 4 * route_prefix_depth_ : 96;
+        if (const char * authoritative =
+                std::getenv("DFLASH_KIMI_SIDECAR_AUTHORITATIVE")) {
+            if (std::strcmp(authoritative, "1") == 0) {
+                sidecar_authoritative_ = true;
+            } else if (std::strcmp(authoritative, "0") != 0 &&
+                       *authoritative) {
+                if (err) *err =
+                    "DFLASH_KIMI_SIDECAR_AUTHORITATIVE must be 0 or 1";
+                return false;
+            }
+        }
         if (route_prefix_depth_ > 0) {
             if (const char * raw_phase =
                     std::getenv("DFLASH_KIMI_H21_LAYER_PHASE")) {
@@ -3402,6 +3413,11 @@ public:
                     layer, layer_error.c_str());
             }
         }
+        if (sidecar_authoritative_ && valid_layers != kLastRoutedLayer) {
+            if (err) *err =
+                "sidecar-authoritative mode requires 92 valid calibrated layers";
+            return false;
+        }
         if (!oracle_trace_path_.empty() && !load_oracle_trace(err)) {
             return false;
         }
@@ -3413,6 +3429,7 @@ public:
             "speed-claim=false requested-budget=%s layer-phase=%s dynamic-layer=%s physical-layout=%s "
             "io-backend=%s persistent-scratch=%s compact-upload=%s "
             "pinned-compact=%s direct-pinned-compact=%s p28-oracle=%s "
+            "exact-source=%s "
             "p30-host-cache-mib=%.1f "
             "valid-layers=%d/92 "
             "invalid-layer-action=exact insufficient-expert-action=exact\n",
@@ -3428,6 +3445,7 @@ public:
             pinned_compact_ ? "enabled" : "disabled",
             direct_pinned_compact_ ? "enabled" : "disabled",
             oracle_trace_path_.empty() ? "disabled" : "one-layer",
+            sidecar_authoritative_ ? "sidecar" : "native-model",
             static_cast<double>(read_cache_.capacity()) / (1024.0 * 1024.0),
             valid_layers);
         return true;
@@ -3436,7 +3454,8 @@ public:
     bool handles_layer(int model_layer) const override {
         return model_layer >= kFirstRoutedLayer &&
             model_layer <= kLastRoutedLayer && selected_layer(model_layer) &&
-            budget_for_layer(model_layer) < kNativeTopK * kSlabCount;
+            (sidecar_authoritative_ ||
+             budget_for_layer(model_layer) < kNativeTopK * kSlabCount);
     }
 
     bool evaluate(int model_layer, int base_pos,
@@ -3454,6 +3473,11 @@ public:
         LayerState & state = layers_[static_cast<size_t>(model_layer)];
         if (!state.valid || spec.fused_gate_up ||
             !geometry_matches(state, spec)) {
+            if (sidecar_authoritative_) {
+                if (err) *err =
+                    "sidecar-authoritative layer is invalid or has incompatible geometry";
+                return false;
+            }
             const bool ok = eval_moe_streamed_experts(
                 exact_engine, spec, routes, output, err);
             if (ok) observe_exact_layer(
@@ -3985,11 +4009,12 @@ private:
             int fd, const LayerState & state,
             const MoeStreamExpertSpec & spec, int model_layer, int base_pos,
             int token_index, int expert, int prefix_depth,
-            std::vector<SparseSlabPayload> & slabs, std::string * err) {
+            bool exact_fallback, std::vector<SparseSlabPayload> & slabs,
+            std::string * err) {
 #if defined(_WIN32) || !defined(O_DIRECT)
         (void) fd; (void) state; (void) spec; (void) model_layer;
         (void) base_pos; (void) token_index; (void) expert;
-        (void) prefix_depth; (void) slabs;
+        (void) prefix_depth; (void) exact_fallback; (void) slabs;
         if (err) *err = "P20 direct-pread is unavailable on this platform";
         return false;
 #else
@@ -4078,7 +4103,8 @@ private:
                           << base_pos << '\t' << token_index << '\t'
                           << model_layer << '\t' << expert << '\t' << region
                           << '\t' << qtype << '\t' << prefix_depth
-                          << "\t0\t" << state.sidecar_path << '\t' << offset
+                          << '\t' << (exact_fallback ? 1 : 0) << '\t'
+                          << state.sidecar_path << '\t' << offset
                           << '\t' << logical << '\t'
                           << completions[index].aligned_offset << '\t'
                           << completions[index].aligned_bytes
@@ -4645,6 +4671,132 @@ private:
         oracle_future_key_ = 0;
     }
 
+    bool evaluate_sidecar_exact_expert(
+            int sidecar_fd, int model_layer, int base_pos, int token_index,
+            const LayerState & state, const MoeStreamExpertSpec & spec,
+            int expert, const float * input, std::vector<float> & result,
+            std::string * err) {
+        const size_t gate_full_bytes = static_cast<size_t>(
+            state.gate_slab_bytes * kSlabCount);
+        const size_t up_full_bytes = static_cast<size_t>(
+            state.up_slab_bytes * kSlabCount);
+        const size_t down_slab_row_bytes = static_cast<size_t>(
+            state.down_slab_bytes / spec.output_dim);
+        const size_t down_full_row_bytes = down_slab_row_bytes * kSlabCount;
+        std::vector<float> full_mask(
+            static_cast<size_t>(spec.intermediate_dim), 1.0f);
+
+        if (sparse_scratch_) {
+            std::vector<SparseSlabPayload> slabs(kSlabCount);
+            for (int natural = 0; natural < kSlabCount; ++natural) {
+                SparseSlabPayload & slab = slabs[static_cast<size_t>(natural)];
+                slab.natural = static_cast<uint16_t>(natural);
+                slab.gate.resize(static_cast<size_t>(state.gate_slab_bytes));
+                slab.up.resize(static_cast<size_t>(state.up_slab_bytes));
+                slab.down.resize(static_cast<size_t>(state.down_slab_bytes));
+            }
+            if (direct_pread_) {
+                if (!read_sparse_payloads_direct(
+                        sidecar_fd, state, spec, model_layer, base_pos,
+                        token_index, expert, kSlabCount, true, slabs, err)) {
+                    return false;
+                }
+            } else {
+                for (SparseSlabPayload & slab : slabs) {
+                    const uint64_t record = state.payload_offset +
+                        static_cast<uint64_t>(expert * kSlabCount +
+                                              slab.natural) *
+                            state.slab_bytes;
+                    if (!traced_read_exact_at(
+                            sidecar_fd, slab.gate.data(), slab.gate.size(),
+                            record, model_layer, base_pos, token_index, expert,
+                            "gate", ggml_type_name(spec.gate_type),
+                            kSlabCount, true, state.sidecar_path,
+                            "host-compact-slab", 0) ||
+                        !traced_read_exact_at(
+                            sidecar_fd, slab.up.data(), slab.up.size(),
+                            record + state.gate_slab_bytes, model_layer,
+                            base_pos, token_index, expert, "up",
+                            ggml_type_name(spec.up_type), kSlabCount, true,
+                            state.sidecar_path, "host-compact-slab", 0) ||
+                        !traced_read_exact_at(
+                            sidecar_fd, slab.down.data(), slab.down.size(),
+                            record + state.gate_slab_bytes +
+                                state.up_slab_bytes,
+                            model_layer, base_pos, token_index, expert, "down",
+                            ggml_type_name(spec.down_type), kSlabCount, true,
+                            state.sidecar_path, "host-compact-slab", 0)) {
+                        if (err && err->empty()) {
+                            *err = "short sidecar exact-fallback read";
+                        }
+                        return false;
+                    }
+                }
+            }
+            return evaluate_sparse_device_expert(
+                persistent_sparse_ ? &sparse_device_evaluator_ : nullptr,
+                backend_, spec, input, slabs, nullptr, full_mask,
+                down_slab_row_bytes, result, authoritative_h2d_bytes_,
+                metadata_h2d_bytes_, device_zero_bytes_, compact_upload_,
+                pinned_compact_, err);
+        }
+
+        std::vector<uint8_t> gate(gate_full_bytes);
+        std::vector<uint8_t> up(up_full_bytes);
+        std::vector<uint8_t> down(
+            down_full_row_bytes * static_cast<size_t>(spec.output_dim));
+        std::vector<uint8_t> slab_down(
+            static_cast<size_t>(state.down_slab_bytes));
+        for (int natural = 0; natural < kSlabCount; ++natural) {
+            const uint64_t record = state.payload_offset +
+                static_cast<uint64_t>(expert * kSlabCount + natural) *
+                    state.slab_bytes;
+            if (!traced_read_exact_at(
+                    sidecar_fd,
+                    gate.data() + static_cast<size_t>(natural) *
+                        state.gate_slab_bytes,
+                    static_cast<size_t>(state.gate_slab_bytes), record,
+                    model_layer, base_pos, token_index, expert, "gate",
+                    ggml_type_name(spec.gate_type), kSlabCount, true,
+                    state.sidecar_path, "host-full-width",
+                    static_cast<uint64_t>(natural) * state.gate_slab_bytes) ||
+                !traced_read_exact_at(
+                    sidecar_fd,
+                    up.data() + static_cast<size_t>(natural) *
+                        state.up_slab_bytes,
+                    static_cast<size_t>(state.up_slab_bytes),
+                    record + state.gate_slab_bytes, model_layer, base_pos,
+                    token_index, expert, "up", ggml_type_name(spec.up_type),
+                    kSlabCount, true, state.sidecar_path, "host-full-width",
+                    static_cast<uint64_t>(natural) * state.up_slab_bytes) ||
+                !traced_read_exact_at(
+                    sidecar_fd, slab_down.data(), slab_down.size(),
+                    record + state.gate_slab_bytes + state.up_slab_bytes,
+                    model_layer, base_pos, token_index, expert, "down",
+                    ggml_type_name(spec.down_type), kSlabCount, true,
+                    state.sidecar_path, "host-compact-down", 0)) {
+                if (err && err->empty()) {
+                    *err = "short sidecar exact-fallback read";
+                }
+                return false;
+            }
+            for (int dimension = 0; dimension < spec.output_dim;
+                 ++dimension) {
+                std::memcpy(
+                    down.data() + static_cast<size_t>(dimension) *
+                        down_full_row_bytes +
+                        static_cast<size_t>(natural) * down_slab_row_bytes,
+                    slab_down.data() + static_cast<size_t>(dimension) *
+                        down_slab_row_bytes,
+                    down_slab_row_bytes);
+            }
+        }
+        reference_full_weight_h2d_bytes_ +=
+            gate.size() + up.size() + down.size();
+        return evaluate_host_recomposed_expert(
+            backend_, spec, input, gate, up, down, nullptr, result, err);
+    }
+
     bool evaluate_calibrated(
             int model_layer, int base_pos, LayerState & state,
             const MoeStreamExpertSpec & spec,
@@ -4669,6 +4821,11 @@ private:
             if (sidecar_fd >= 0) close_fd(sidecar_fd);
             if (route_stats_fd >= 0) close_fd(route_stats_fd);
             state.valid = false;
+            if (sidecar_authoritative_) {
+                if (err) *err =
+                    "sidecar-authoritative provider cannot open a required artifact";
+                return false;
+            }
             const bool ok = eval_moe_streamed_experts(
                 exact_engine, spec, routes, output, err);
             if (ok) observe_exact_layer(
@@ -4680,6 +4837,14 @@ private:
             close_fd(sidecar_fd);
             if (route_stats_fd >= 0) close_fd(route_stats_fd);
             state.valid = false;
+            if (sidecar_authoritative_) {
+                if (err) {
+                    *err = std::string(
+                        "sidecar-authoritative provider failed closed: ") +
+                        reason;
+                }
+                return false;
+            }
             std::string exact_error;
             const bool ok = eval_moe_streamed_experts(
                 exact_engine, spec, routes, output, &exact_error);
@@ -5042,31 +5207,62 @@ private:
             }
 
             if (!fallback_routes.empty()) {
-                std::vector<int32_t> fallback_ids;
-                std::vector<float> fallback_weights;
-                for (const int route : fallback_routes) {
-                    fallback_ids.push_back(
-                        routes.selected_ids[route_offset + route]);
-                    fallback_weights.push_back(
-                        routes.selected_weights[route_offset + route]);
-                }
-                MoeStreamRouteBatch fallback = routes;
-                fallback.n_tokens = 1;
-                fallback.top_k = static_cast<int>(fallback_routes.size());
-                fallback.inputs = input;
-                fallback.selected_ids = fallback_ids.data();
-                fallback.selected_weights = fallback_weights.data();
-                fallback.expert_observer = nullptr;
-                for (const int route : fallback_routes) {
-                    trace_fallback(model_layer, base_pos, token,
-                        routes.selected_ids[route_offset + route], spec);
-                }
                 std::vector<float> exact;
-                if (!eval_moe_streamed_experts(
-                        exact_engine, spec, fallback, exact, err)) {
-                    close_fd(aux_fd); close_fd(sidecar_fd);
-                    if (route_stats_fd >= 0) close_fd(route_stats_fd);
-                    return false;
+                if (sidecar_authoritative_) {
+                    exact.assign(static_cast<size_t>(spec.output_dim), 0.0f);
+                    std::vector<int> stable_fallback = fallback_routes;
+                    std::stable_sort(
+                        stable_fallback.begin(), stable_fallback.end(),
+                        [&](int left, int right) {
+                            return routes.selected_ids[route_offset + left] <
+                                routes.selected_ids[route_offset + right];
+                        });
+                    std::vector<float> exact_expert;
+                    for (const int route : stable_fallback) {
+                        const int expert =
+                            routes.selected_ids[route_offset + route];
+                        if (!evaluate_sidecar_exact_expert(
+                                sidecar_fd, model_layer, base_pos, token,
+                                state, spec, expert, input, exact_expert,
+                                err)) {
+                            close_fd(aux_fd); close_fd(sidecar_fd);
+                            if (route_stats_fd >= 0) close_fd(route_stats_fd);
+                            return false;
+                        }
+                        const float weight =
+                            routes.selected_weights[route_offset + route];
+                        for (int d = 0; d < spec.output_dim; ++d) {
+                            exact[static_cast<size_t>(d)] +=
+                                weight * exact_expert[static_cast<size_t>(d)];
+                        }
+                    }
+                } else {
+                    std::vector<int32_t> fallback_ids;
+                    std::vector<float> fallback_weights;
+                    for (const int route : fallback_routes) {
+                        fallback_ids.push_back(
+                            routes.selected_ids[route_offset + route]);
+                        fallback_weights.push_back(
+                            routes.selected_weights[route_offset + route]);
+                    }
+                    MoeStreamRouteBatch fallback = routes;
+                    fallback.n_tokens = 1;
+                    fallback.top_k =
+                        static_cast<int>(fallback_routes.size());
+                    fallback.inputs = input;
+                    fallback.selected_ids = fallback_ids.data();
+                    fallback.selected_weights = fallback_weights.data();
+                    fallback.expert_observer = nullptr;
+                    for (const int route : fallback_routes) {
+                        trace_fallback(model_layer, base_pos, token,
+                            routes.selected_ids[route_offset + route], spec);
+                    }
+                    if (!eval_moe_streamed_experts(
+                            exact_engine, spec, fallback, exact, err)) {
+                        close_fd(aux_fd); close_fd(sidecar_fd);
+                        if (route_stats_fd >= 0) close_fd(route_stats_fd);
+                        return false;
+                    }
                 }
                 for (int d = 0; d < spec.output_dim; ++d) {
                     destination[d] += exact[static_cast<size_t>(d)];
@@ -5220,6 +5416,7 @@ private:
     bool pinned_compact_ = false;
     bool direct_pinned_compact_ = false;
     bool direct_pread_ = false;
+    bool sidecar_authoritative_ = false;
     std::unique_ptr<P20DirectReadPool> direct_read_pool_;
     std::array<SparseCompactPayload, kNativeTopK>
         direct_compact_payloads_;
