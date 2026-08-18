@@ -1778,15 +1778,15 @@ struct SparseCompactPayload {
     SparseCompactPayload(const SparseCompactPayload &) = delete;
     SparseCompactPayload & operator=(const SparseCompactPayload &) = delete;
     ~SparseCompactPayload() {
-#if defined(DFLASH27B_BACKEND_CUDA)
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
         if (data && owns_data) cudaFreeHost(data);
 #endif
     }
 
     bool ensure(size_t requested, std::string * err) {
-#if !defined(DFLASH27B_BACKEND_CUDA)
+#if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
         (void) requested;
-        if (err) *err = "P27 direct pinned payload requires CUDA";
+        if (err) *err = "P27 direct pinned payload requires CUDA or HIP";
         return false;
 #else
         if (owns_data && capacity >= requested) return true;
@@ -1807,7 +1807,7 @@ struct SparseCompactPayload {
     }
 
     void set_external(void * pointer, size_t available) {
-#if defined(DFLASH27B_BACKEND_CUDA)
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
         if (data && owns_data) cudaFreeHost(data);
 #endif
         data = pointer;
@@ -1828,14 +1828,14 @@ struct SparseCompactPayload {
 
 struct P28PinnedArena {
     ~P28PinnedArena() {
-#if defined(DFLASH27B_BACKEND_CUDA)
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
         if (data) cudaFreeHost(data);
 #endif
     }
     bool ensure(size_t requested, std::string * err) {
-#if !defined(DFLASH27B_BACKEND_CUDA)
+#if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
         (void) requested;
-        if (err) *err = "P28 pinned arena requires CUDA";
+        if (err) *err = "P28 pinned arena requires CUDA or HIP";
         return false;
 #else
         if (capacity >= requested) return true;
@@ -1908,14 +1908,14 @@ public:
             bool compact_upload,
             bool pinned_compact,
             std::string * err) {
-#if !defined(DFLASH27B_BACKEND_CUDA)
+#if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
         (void) backend; (void) spec; (void) input_data; (void) slabs;
         (void) prepacked_compact;
         (void) activation_mask_values; (void) down_slab_row_bytes;
         (void) result; (void) authoritative_h2d_bytes;
         (void) metadata_h2d_bytes; (void) device_zero_bytes;
         (void) compact_upload; (void) pinned_compact;
-        if (err) *err = "P23 sparse scratch currently requires CUDA";
+        if (err) *err = "P23 sparse scratch currently requires CUDA or HIP";
         return false;
 #else
         if (!backend || !ggml_backend_is_cuda(backend) ||
@@ -2127,7 +2127,7 @@ public:
     }
 
 private:
-#if defined(DFLASH27B_BACKEND_CUDA)
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
     struct Entry {
         ~Entry() {
             if (compact_host_staging) cudaFreeHost(compact_host_staging);

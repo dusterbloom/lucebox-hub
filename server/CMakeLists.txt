@@ -532,7 +532,10 @@ if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
             DFLASH27B_BACKEND_MIXED=1)
     endif()
 elseif(DFLASH27B_GPU_BACKEND STREQUAL "hip")
-    target_sources(dflash_common PRIVATE src/deepseek4/deepseek4_hc_cuda.cu)
+    target_sources(dflash_common PRIVATE
+        src/kimi_k3/kimi_k3_sparse_scatter.cu
+        src/deepseek4/deepseek4_hc_cuda.cu)
+    set_source_files_properties(src/kimi_k3/kimi_k3_sparse_scatter.cu PROPERTIES LANGUAGE HIP)
     set_source_files_properties(src/deepseek4/deepseek4_hc_cuda.cu PROPERTIES LANGUAGE HIP)
     set_target_properties(dflash_common PROPERTIES HIP_ARCHITECTURES "${_dflash_archs}")
     target_compile_definitions(dflash_common PRIVATE DFLASH27B_BACKEND_HIP=1 GGML_USE_HIP)

@@ -1,0 +1,31 @@
+{
+  "schema": "kimi-k3-p38-hip-sparse-build-v1",
+  "date": "2026-08-18",
+  "classification": "MEASURED_BUILD_GO_RUNTIME_OPEN",
+  "source": {
+    "branch": "experiment/kimi-k3-p20-sparse-physical",
+    "base_commit": "03b2e0fd5d529f7f96f236df99e811556e870e8d"
+  },
+  "host": {
+    "hostname": "lucebox4",
+    "cpu": "AMD Ryzen AI Max+ 395",
+    "cpu_cores": 16,
+    "cpu_threads": 32,
+    "accelerator_arch": "gfx1201",
+    "accelerator_visible_vram_bytes": 34208743424,
+    "rocm": "7.2.2"
+  },
+  "gates": {
+    "baseline_hip_build": true,
+    "hip_sparse_scatter_build": true,
+    "hip_provider_unit_exit": 0,
+    "cuda_regression_build": true,
+    "cuda_provider_unit_exit": 0,
+    "full192_hip_native_parity": null,
+    "calibrated_p37_hip_reference_parity": null,
+    "hip_throughput": null
+  },
+  "semantic_changes": "none; backend enablement only",
+  "runtime_not_run_reason": "model package absent and protected accelerator workload active",
+  "next_gate": "sidecar-authoritative exact fallback and self-contained slim package"
+}
