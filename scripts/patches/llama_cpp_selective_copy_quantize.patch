@@ -1,0 +1,22 @@
+diff --git a/src/llama-quant.cpp b/src/llama-quant.cpp
+index 7f99e96..ac6180a 100644
+--- a/src/llama-quant.cpp
++++ b/src/llama-quant.cpp
+@@ -291 +291,5 @@ static bool tensor_allows_quantization(const llama_model_quantize_params * param
+-    if (params->only_copy)       return false;
++    // Keep COPY as the per-tensor default while still permitting explicit
++    // --tensor-type overrides. This local research build is used to make a
++    // selective Kimi-K3 core quantization control without touching the routed
++    // IQ1_S expert bank.
++    if (params->only_copy && params->tt_overrides == nullptr) return false;
+@@ -690 +694 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, const llama_mod
+-    ggml_type new_type = default_type;
++    ggml_type new_type = params->only_copy ? tensor->type : default_type;
+@@ -693 +697 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, const llama_mod
+-    if (ggml_is_quantized(default_type)) {
++    if (ggml_is_quantized(new_type)) {
+@@ -1058 +1062,3 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
+-        metadata[i].requires_imatrix = tensor_requires_imatrix(tensor->name, metadata[i].target_type, ftype);
++        metadata[i].requires_imatrix =
++            tensor->type != metadata[i].target_type &&
++            tensor_requires_imatrix(tensor->name, metadata[i].target_type, ftype);

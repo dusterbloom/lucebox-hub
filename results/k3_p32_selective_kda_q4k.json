@@ -1,0 +1,107 @@
+{
+  "schema": "kimi-k3-p32-selective-kda-q4k-v1",
+  "status": "MEASURED",
+  "verdict": "PRACTICAL_GO_BROAD_GATE__NOT_QUALITY_EQUIVALENCE",
+  "provenance": {
+    "plan": {
+      "path": "results/k3_p32_kda_requant_plan.json",
+      "sha256": "dabab40375652b196dddf8ed3f048eee7c7bb22c9d554d100c7c1c05f31db5c0"
+    },
+    "verification": {
+      "path": "results/k3_p32_kda_requant_verification.json",
+      "sha256": "89f33e00993cb253b5e6241f4154672771846184259aaf119100c58e8405a9d1"
+    },
+    "baseline_stage": {
+      "path": "results/k3_p31_current_stage_profile.json",
+      "sha256": "69630fadc7a0526339d6168138f21c4df4b68613b96a85cb45226a936389a44f"
+    },
+    "candidate_stage": {
+      "path": "results/k3_p32_kda_q4k_stage_profile.json",
+      "sha256": "0295d8351c000277da287ded396bebbbab2aef5df30cdf4c722cf6f0797a2e90"
+    },
+    "baseline_quality": {
+      "path": "results/h23_broad_moonshot1p2_quality_v1.json",
+      "sha256": "c4b71281d16627be9ec180c6fa09ace27c4574f64cf43ffab1d14ae2679d5a7c"
+    },
+    "candidate_quality": {
+      "path": "results/k3_p32_kda_q4k_broad12_quality.json",
+      "sha256": "6ed66393917612fb1f6d7f95ae82c82df23573a01643c4d8690a42fa471b77e1"
+    },
+    "baseline_stderr": {
+      "path": "/mnt/kimi-k3/results/kimi-k3-p31-stage-code-20260818/stderr.log",
+      "sha256": "5e7017667c25235b1e704bcfab85c429f61d37221f6c8755bdc5b50b1bfc1c68"
+    },
+    "candidate_stderr": {
+      "path": "/mnt/kimi-k3/results/kimi-k3-p32-kda-q4k-code-r2-20260818/stderr.log",
+      "sha256": "cc1fcd69dc17a09bfed8258f2b6eff9aaeff6e214bd51eb26058904e0b575564"
+    },
+    "candidate_checksums": {
+      "path": "results/k3_p32_kda_q4k.sha256",
+      "sha256": "749061865c9510c693dc91ccd5c0e1f8937d67a8e81584eb5a247a2b998e90ba"
+    }
+  },
+  "transformation": {
+    "target": "KDA-only q/k/v/g/output matrices in 69 recurrent layers",
+    "source_type": "Q6_K",
+    "target_type": "q4_k",
+    "changed_tensors": 345,
+    "untouched_tensors": 2228,
+    "untouched_full_hash": "PASS",
+    "source_file_bytes": 594040923616,
+    "candidate_file_bytes": 586206586336,
+    "saved_file_bytes": 7834337280,
+    "saved_file_gib": 7.296295166015625,
+    "mapped_core_gib_before": 45.34,
+    "mapped_core_gib_after": 38.04
+  },
+  "steady_decode_stage_profile": {
+    "rows": 23,
+    "median_total_ms_before": 1446.729,
+    "median_total_ms_after": 1328.166,
+    "transition_rate_before": 0.6912144568886087,
+    "transition_rate_after": 0.7529179334510897,
+    "throughput_ratio": 1.0892682089437615,
+    "median_routed_preparation_ms_before": 802.549,
+    "median_routed_preparation_ms_after": 634.375,
+    "routed_preparation_reduction_fraction": 0.20954982188003468
+  },
+  "frozen_12_prompt_gate": {
+    "baseline_task_successes": 12,
+    "candidate_task_successes": 12,
+    "task_denominator": 12,
+    "baseline_token_exact": 9,
+    "candidate_token_exact": 9,
+    "baseline_terminal": {
+      "rows": 660,
+      "mean_kl": 0.6849448559764403,
+      "median_kl": 0.3459768490697664,
+      "p95_kl": 2.8426829282418904,
+      "maximum_kl": 5.359323477371987,
+      "top1_agreement": 435,
+      "top1_denominator": 660
+    },
+    "candidate_terminal": {
+      "rows": 643,
+      "mean_kl": 0.6903441554478453,
+      "median_kl": 0.36669389940883057,
+      "p95_kl": 2.554568606202222,
+      "maximum_kl": 5.258423229547173,
+      "top1_agreement": 421,
+      "top1_denominator": 643
+    },
+    "baseline_elapsed_seconds": 1018.4562384009914,
+    "candidate_elapsed_seconds": 934.8202877340082,
+    "end_to_end_throughput_ratio": 1.0894674107573292,
+    "baseline_peak_ram_kib": 47388060,
+    "candidate_peak_ram_kib": 40115556,
+    "peak_ram_saved_gib": 6.935600280761719,
+    "baseline_energy_joules": 123614.72355274,
+    "candidate_energy_joules": 111786.85553277041
+  },
+  "limits": [
+    "The frozen gate has 12 deterministic thinking-disabled prompts; it is not a model-card benchmark.",
+    "Terminal KL is not zero and histories have different aligned-row counts after divergence.",
+    "The candidate is a combined KDA-Q4_K plus frozen slab-policy deployment test.",
+    "No four-token-per-second claim follows from this isolated 1.09x systems gain."
+  ]
+}
