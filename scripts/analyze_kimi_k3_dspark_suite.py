@@ -54,6 +54,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ar-root", type=Path, required=True)
     parser.add_argument("--spec-root", type=Path, required=True)
+    parser.add_argument("--delay-tokens", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -74,17 +75,30 @@ def main() -> int:
     if list(ar_rows) != list(spec_rows):
         raise ValueError("sequence order/identity mismatch")
     draft_rows = parse_draft(args.spec_root / "stdout.log")
-    if len(draft_rows) != len(ar_rows):
+    if args.delay_tokens < 0:
+        raise ValueError("delay tokens must be nonnegative")
+    if args.delay_tokens == 0 and len(draft_rows) != len(ar_rows):
         raise ValueError("draft-stat count does not match sequence count")
 
     rows = []
-    for (identifier, left), draft in zip(ar_rows.items(), draft_rows):
+    draft_index = 0
+    for identifier, left in ar_rows.items():
         right = spec_rows[identifier]
         for key in ("prompt_tokens", "prompt_token_count", "text"):
             if left[key] != right[key]:
                 raise ValueError(f"prompt mismatch for {identifier}: {key}")
         ar_tokens = [int(value) for value in left["output_tokens"]]
         spec_tokens = [int(value) for value in right["output_tokens"]]
+        activated = args.delay_tokens == 0 or (
+            len(spec_tokens) > args.delay_tokens + 1
+        )
+        if activated:
+            if draft_index >= len(draft_rows):
+                raise ValueError(f"missing draft stats for {identifier}")
+            draft = draft_rows[draft_index]
+            draft_index += 1
+        else:
+            draft = {"steps": 0, "accepted": 0, "proposed": 0}
         ar_seconds = float(left["decode_seconds"])
         spec_seconds = float(right["decode_seconds"])
         rows.append({
@@ -97,12 +111,17 @@ def main() -> int:
             "first_generated_token_divergence": first_divergence(ar_tokens, spec_tokens),
             "ar_task_success": task_success(identifier, str(left["output_text"])),
             "speculative_task_success": task_success(identifier, str(right["output_text"])),
+            "speculative_activated": activated,
             "ar_text": left["output_text"],
             "speculative_text": right["output_text"],
             **draft,
-            "acceptance_fraction": draft["accepted"] / draft["proposed"],
-            "commit_per_step": draft["accepted"] / draft["steps"],
+            "acceptance_fraction": (draft["accepted"] / draft["proposed"]
+                                    if draft["proposed"] else None),
+            "commit_per_step": (draft["accepted"] / draft["steps"]
+                                if draft["steps"] else None),
         })
+    if draft_index != len(draft_rows):
+        raise ValueError("unused draft-stat rows remain")
 
     ar_seconds = sum(row["ar_seconds"] for row in rows)
     spec_seconds = sum(row["speculative_seconds"] for row in rows)
@@ -112,10 +131,14 @@ def main() -> int:
     steps = sum(row["steps"] for row in rows)
     ar_telemetry = json.loads((args.ar_root / "telemetry.json").read_text())
     spec_telemetry = json.loads((args.spec_root / "telemetry.json").read_text())
+    speedup = ar_seconds / spec_seconds
+    delayed = args.delay_tokens > 0
     result = {
         "schema": "kimi-k3-dspark-broad-suite-v1",
         "status": "MEASURED",
-        "verdict": "ALWAYS_ON_NO_GO_SELECTIVE_LONG_OUTPUT_SIGNAL",
+        "verdict": (("DELAYED_GO" if speedup > 1.0 else "DELAYED_NO_GO")
+                    if delayed else
+                    "ALWAYS_ON_NO_GO_SELECTIVE_LONG_OUTPUT_SIGNAL"),
         "provenance": {
             "ar_root": str(args.ar_root),
             "speculative_root": str(args.spec_root),
@@ -131,6 +154,7 @@ def main() -> int:
             "layer_budget_table": ar["environment"]["DFLASH_KIMI_H22_LAYER_BUDGETS"],
             "chat_template": ar["chat_template"],
             "thinking": "disabled",
+            "draft_delay_tokens": args.delay_tokens,
         },
         "aggregate": {
             "tasks": len(rows),
@@ -140,14 +164,16 @@ def main() -> int:
             "true_autoregressive_transitions": transitions,
             "ar_decode_seconds": ar_seconds,
             "speculative_decode_seconds": spec_seconds,
-            "always_on_speedup": ar_seconds / spec_seconds,
+            "paired_speedup": speedup,
+            "always_on_speedup": speedup if not delayed else None,
             "ar_transition_rate": transitions / ar_seconds,
             "speculative_transition_rate": transitions / spec_seconds,
             "draft_steps": steps,
+            "speculative_activations": sum(row["speculative_activated"] for row in rows),
             "accepted_tokens": accepted,
             "proposed_tokens": proposed,
-            "acceptance_fraction": accepted / proposed,
-            "commit_per_step": accepted / steps,
+            "acceptance_fraction": accepted / proposed if proposed else None,
+            "commit_per_step": accepted / steps if steps else None,
             "ar_peak_vram_mib": ar_telemetry["graphics"]["peak_memory_mib"],
             "speculative_peak_vram_mib": spec_telemetry["graphics"]["peak_memory_mib"],
             "ar_peak_rss_kib": ar_telemetry["process"]["peak_rss_kib"],
@@ -155,10 +181,25 @@ def main() -> int:
         },
         "sequences": rows,
         "interpretation": {
-            "measured": "Always-on width-four DSpark is 5.5% slower over this mixed 12-task suite.",
-            "signal": "Both 16+ token answers speed up; the 24-token code answer is 1.46x faster.",
-            "quality": "11/12 speculative tasks succeed and 10/12 token sequences are identical; the 24-token code answer is truncated before becoming valid code.",
-            "open": "A delayed/length-aware activation policy is not implemented or measured.",
+            "measured": (
+                f"{args.delay_tokens}-token delayed width-four DSpark changes aggregate speed by {(speedup - 1) * 100:.2f}% over this mixed 12-task suite."
+                if delayed else
+                "Always-on width-four DSpark is 5.5% slower over this mixed 12-task suite."
+            ),
+            "signal": (
+                "Short replies remain autoregressive while continuing replies may use exact width-four verification."
+                if delayed else
+                "Both 16+ token answers speed up; the 24-token code answer is 1.46x faster."
+            ),
+            "quality": (
+                f"{sum(row['speculative_task_success'] for row in rows)}/12 tasks succeed and "
+                f"{sum(row['token_exact'] for row in rows)}/12 token sequences are identical."
+            ),
+            "open": (
+                "The delay was selected from prior suite behavior; broader held-out quality and throughput remain open."
+                if delayed else
+                "A delayed/length-aware activation policy is not implemented or measured."
+            ),
         },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

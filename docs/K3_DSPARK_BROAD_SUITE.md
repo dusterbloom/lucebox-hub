@@ -37,6 +37,35 @@ signal. The Italian difference was punctuation only and still passed.
   latency while capturing the long-answer gain; it needs a fresh quality and
   timing gate before integration.
 
+## Delayed-activation follow-up
+
+Two follow-ups tested that hypothesis in the same frozen suite. These are
+exploratory policy-selection results on the same tasks, not a held-out claim.
+
+| Mode | Exact arithmetic | Tasks | Token exact | Decode sum | vs AR |
+|---|---|---:|---:|---:|---:|
+| AR | native single-row | 12/12 | 12/12 | 187.089 s | 1.000x |
+| always-on width 4 | no compatibility mode | 11/12 | 10/12 | 197.947 s | 0.945x |
+| delay 8 | no compatibility mode | 11/12 | 11/12 | 201.887 s | 0.927x |
+| **delay 12** | **single-row compatibility** | **12/12** | **12/12** | 202.841 s | **0.922x** |
+
+The exact delay-12 arm activates speculation for only two continuing answers.
+Its code answer improves 1.049x in the suite (1.082x in an isolated repeat),
+but the 16-token grammar answer slows to 0.749x. Merely waiting for an answer to
+become long pays both the autoregressive prefix and the draft startup/capture
+costs. It is therefore not a useful default policy.
+
+The exact compatibility arm is scientifically valuable: it retains all 12
+task successes and all 12 token sequences. It should remain opt-in for requests
+known *before decoding* to have long continuations. A future predictor or API
+hint must earn activation before the first token; late activation is closed by
+this result.
+
+Registered follow-up results:
+
+- `results/k3_dspark_r40_delayed8_suite.json`;
+- `results/k3_dspark_r40_exact_delayed12_suite.json`.
+
 The registered machine-readable result is
 `results/k3_dspark_r40_broad_suite.json`. It binds both suite manifests,
 telemetry files, repository commit, prompt suite, model, draft, provider, and

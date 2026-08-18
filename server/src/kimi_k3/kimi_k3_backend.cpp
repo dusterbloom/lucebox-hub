@@ -1664,10 +1664,100 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
     }
 
     const auto decode_begin = std::chrono::steady_clock::now();
+    int draft_delay_tokens = 0;
+    if (const char * raw = std::getenv("DFLASH_KIMI_DRAFT_DELAY_TOKENS")) {
+        char * end = nullptr;
+        errno = 0;
+        const long value = std::strtol(raw, &end, 10);
+        if (errno != 0 || end == raw || *end != '\0' || value < 0 ||
+            value > std::numeric_limits<int>::max()) {
+            result.fail(GenerateErrorCode::BackendSpecific,
+                        "DFLASH_KIMI_DRAFT_DELAY_TOKENS must be a nonnegative integer");
+            out_io.emit(-1);
+            return result;
+        }
+        draft_delay_tokens = static_cast<int>(value);
+    }
     const bool can_spec = spec_target && !trace_logits &&
         !req.force_ar_decode &&
+        teacher_forced_tokens.empty() &&
         req.budget_hook.close_token_ids.empty() &&
         !req.sampler.needs_logit_processing();
+    if (can_spec && draft_delay_tokens > 0) {
+        const int ar_tokens = std::min(draft_delay_tokens, req.n_gen);
+        bool hit_eos = false;
+        for (int index = 0; index < ar_tokens; ++index) {
+            const int32_t next = choose_token(
+                logits, req.sampler, result.tokens);
+            result.tokens.push_back(next);
+            out_io.emit(next);
+            if (out_io.cancelled || next == weights_.eos_token_id) {
+                hit_eos = next == weights_.eos_token_id;
+                break;
+            }
+            if (static_cast<int>(result.tokens.size()) < req.n_gen) {
+                if (!forward_token(next, cache_.cur_pos)) {
+                    result.fail(GenerateErrorCode::DecodeFailed,
+                                dflash27b_last_error());
+                    out_io.emit(-1);
+                    return result;
+                }
+            }
+        }
+        const int remaining =
+            req.n_gen - static_cast<int>(result.tokens.size());
+        if (out_io.cancelled || hit_eos || remaining <= 0) {
+            result.decode_s = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - decode_begin).count();
+            maybe_save_routing_stats();
+            out_io.emit(-1);
+            result.succeed();
+            return result;
+        }
+
+        std::vector<int32_t> draft_context = req.prompt;
+        draft_context.insert(
+            draft_context.end(), result.tokens.begin(), result.tokens.end());
+        const int32_t seed = choose_token(
+            logits, req.sampler, result.tokens);
+        if (seed == weights_.eos_token_id) {
+            result.tokens.push_back(seed);
+            out_io.emit(seed);
+            result.decode_s = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - decode_begin).count();
+            maybe_save_routing_stats();
+            out_io.emit(-1);
+            result.succeed();
+            return result;
+        }
+        DaemonIO spec_io = out_io.with_token_callback(
+            [&](int32_t token) -> bool {
+                result.tokens.push_back(token);
+                return true;
+            });
+        std::fprintf(stderr,
+            "[kimi-k3-dspark] delayed activation ar-tokens=%zu remaining=%d\n",
+            result.tokens.size(), remaining);
+        double accept_rate = 0.0;
+        const bool ok = run_dflash_spec_decode(
+            *spec_target, draft_weights_, draft_backend_, feature_ring_,
+            draft_context, remaining, seed, /*out_path=*/nullptr,
+            cfg_.draft_ctx_max, spec_io, /*remote_draft=*/nullptr,
+            req.hint_tokens, /*base_pos=*/0, &accept_rate);
+        result.decode_s = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - decode_begin).count();
+        result.accept_rate = static_cast<float>(accept_rate);
+        result.spec_decode_ran = true;
+        maybe_save_routing_stats();
+        spec_io.emit(-1);
+        if (!ok) {
+            result.fail(GenerateErrorCode::DecodeFailed,
+                        dflash27b_last_error());
+            return result;
+        }
+        result.succeed();
+        return result;
+    }
     if (can_spec) {
         const int32_t seed = choose_token(logits, req.sampler, result.tokens);
         DaemonIO spec_io = out_io.with_token_callback(
