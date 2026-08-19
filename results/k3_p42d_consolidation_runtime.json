@@ -1,0 +1,243 @@
+{
+  "schema": "k3-p42d-consolidation-runtime-v1",
+  "status": "byte-exact-consolidation-go-throughput-preserved-under-adjacent-control",
+  "source": {
+    "repository_commit": "3f373b072e70791ef235df5002b0a9b130f470f1",
+    "worktree_state": "dirty-intended-p38-p42d-patch",
+    "baseline_snapshot": "/tmp/p42_consolidation_before",
+    "consolidated_source_sha256": {
+      "backend_cpp": "e327d9239d2b842fc95a92de644bae3da65ae3d88c02de89d09076e5b4150c3c",
+      "backend_h": "cf9abbb6e207aa9612d07fb14f2a6aae06d40914294bffff7d8f889a0df5a053",
+      "ordered_join_cu": "0e61faa371fd69aca01384ed3ed829ceff52ddf065145d830dab6d5d569fde78",
+      "ordered_join_h": "4821029f6c68b66e4e120ec00c72440bc5b447ffb91a1e35a81bf84c3550a8e3",
+      "provider_cpp": "fbc8f1fc7a149c2eefdeaae09157dfbb9b31b3f450c3de1644fb975b5140c3e1"
+    },
+    "rev58_source_sha256": {
+      "backend_cpp": "5ae7adf7283a502f5cfdb39cd3a32551b1da400aad2959aaf3c1195d69ee0a21",
+      "backend_h": "cf9abbb6e207aa9612d07fb14f2a6aae06d40914294bffff7d8f889a0df5a053",
+      "ordered_join_cu": "21d62ba89aa710aa69c2bd71cf7e8f41586ca88a6cb9271f469cec94996c78cf",
+      "ordered_join_h": "c6fc1599763882df4f7556f790af2d76d713779e328ba0ed4e6489d1d19ca310",
+      "provider_cpp": "94aa53a982889b1d2e42b8d496cca61a3a66db4b83556f1bafd12fb77cad7071"
+    }
+  },
+  "implementation": {
+    "slices": {
+      "c1": "remove production join reference; merge mean/transient/descriptor/output allocation; add device-output capability hardening",
+      "c2": "one typed compact-attempt outcome and counter path; parse P42 flag once at factory boundary"
+    },
+    "ordered_arithmetic_unchanged": true,
+    "sparse_k_unchanged": true,
+    "default_enabled": false,
+    "merged_allocation_bytes": 14181187328,
+    "allocation_breakdown_bytes": {
+      "resident_means": 14180941824,
+      "transient_rows": 229376,
+      "row_indices_padded": 896,
+      "weights_padded": 896,
+      "output": 14336
+    },
+    "allocation_size_checked_with_backend_buffer_type": true,
+    "eight_gib_reserve_checked": true,
+    "allocated_buffer_extent_checked": true,
+    "all_92_mean_cards_preloaded": true,
+    "c3_move_only_raii": {
+      "implemented": false,
+      "estimated_production_loc_reduction": "15-30",
+      "reason_deferred": "requires separate failure, pending-output, graph-publication and destruction lifecycle qualification"
+    }
+  },
+  "model_free_gate": {
+    "build_limit": "CCACHE_DISABLE=1 and -j4",
+    "diff_check": "PASS",
+    "local": {
+      "provider": "PASS",
+      "ordered_join": "SKIP_77_NO_VISIBLE_GPU"
+    },
+    "hip": {
+      "provider": "PASS",
+      "ordered_join_gfx1201": "PASS",
+      "ordered_join_gfx1151": "PASS",
+      "sparse_k_gfx1201": {"passed": 68, "failed": 0, "binary_unchanged": true},
+      "sparse_k_gfx1151": {"passed": 68, "failed": 0, "binary_unchanged": true}
+    },
+    "artifacts_sha256": {
+      "runner": "1c9a203030ce5650034196cadb9b4c4d83413e20ab4048093a077600e5c5a2a2",
+      "provider_test": "c8e0858c840bdcef8eb6f5d08aab64bf019ab61142b72a894f06e4f1305c9782",
+      "ordered_join_test": "c8cc17cbd3cd2c41f667234a57f9c289c96b4cd834a92dc8183354dbd69de6b3",
+      "sparse_k_test": "62e14f893d7f4b286bfb8f91da110aa99b4e890f560dc3ec790f8c75e2310278"
+    }
+  },
+  "identity": {
+    "tokens_equal": true,
+    "text_equal": true,
+    "logits_byte_equal": true,
+    "logits_sha256": "cce1bd031e90eb13928ffddfb7e9329d75d55419a8f73b6479a920fe6c561a69",
+    "traffic_byte_equal": true,
+    "traffic_sha256": "e2eb5fcca9e0138d326892710977f4bd5dad1b7166d37cce6ef3675b0a911f13",
+    "output_tokens": [39818, 18009, 163588, 12092, 163589, 163588, 2778, 163589, 163586],
+    "output_text": "Tokyo<|close|>response<|sep|><|close|>message<|sep|><|end_of_msg|>",
+    "counters": {
+      "p41_attempted": 17917,
+      "p41_completed": 17917,
+      "p41_fallbacks": 0,
+      "p41_invalid": 0,
+      "resident_mean_bytes": 14180941824,
+      "hot_mean_reads": 0,
+      "hot_mean_h2d_bytes": 0,
+      "expert_readback_ns": 0,
+      "expert_d2d_copies": 17917,
+      "expert_d2d_bytes": 256858112,
+      "join_launches": 3864,
+      "output_d2d_copies": 3864,
+      "output_d2d_bytes": 55394304,
+      "authoritative_h2d_bytes": 55976374272,
+      "metadata_h2d_bytes": 257718128,
+      "explicit_provider_read_bytes": 24106500096,
+      "direct_physical_bytes": 24106500096
+    }
+  },
+  "first_contaminated_fact": {
+    "root": "/home/duster/kimi-k3-deploy/p42c-c1c2-terminal-fact-20260819",
+    "runner_sha256": "1c9a203030ce5650034196cadb9b4c4d83413e20ab4048093a077600e5c5a2a2",
+    "true_decode_transitions": 8,
+    "prefill_seconds": 30.720145803,
+    "decode_seconds": 6.329393191,
+    "true_ar_transitions_per_second": 1.263944229,
+    "rate_change_vs_official_p42c": -0.137956635,
+    "decode_stage": {
+      "mean_total_ms": 790.7745,
+      "mean_routed_prep_ms": 272.05725,
+      "mean_experts_ms": 484.105625,
+      "mean_join_ms": 20.698625,
+      "mean_output_ms": 4.46875
+    },
+    "io_and_memory": {
+      "direct_io_ns": 13100131646,
+      "direct_io_change_vs_official": 0.441654541,
+      "process_read_bytes": 33784913920,
+      "minor_faults": 2667347,
+      "major_faults": 3554,
+      "peak_swap_kib": 181624,
+      "peak_vram_mib_gpu1": 61201.1171875,
+      "wall_seconds": 62.19280659602373
+    },
+    "interpretation": "exact allocation/preload evidence; throughput attribution rejected because direct I/O, major faults and swap differ materially from the official run",
+    "artifacts_sha256": {
+      "manifest": "b9de446cb4f55d335a224cd494f7dee3dce7ff38d17fd41edeedc48d34f143c4",
+      "io_trace": "25238790d783be89fd81970ad4cd8fe608510f122b5bd553f3e807fec5ebb41b",
+      "stderr": "4f59e243c196ab96845790fd5947d7e383b955a4e0e277778e80478cd9c663a9",
+      "telemetry": "e994cee1f4ce3296b45e97951dbd308eb2b38c2f407b99c23a1754cae7062a24",
+      "telemetry_csv": "a0dcc4c554b2ef5d3fdeefc597dac25280a5231923fc31af4bdb022244a4eb1d",
+      "traffic_process": "e7a167366fe620dfe181a50d043039b3c73808588639f5d72f8ac17edd24d1fd"
+    }
+  },
+  "adjacent_binary_control": {
+    "root": "/home/duster/kimi-k3-deploy/p42c-c1c2-adjacent-control-20260819",
+    "preflight": "no model/build jobs; GPUs idle; stable approximately 63 GiB available RAM; new arm held until seven consecutive seconds with zero swap-in/out",
+    "cache_policy": "no cache clearing; each process starts with an empty process-local P30 cache; direct-pread unchanged",
+    "run_count": 2,
+    "rev58_old": {
+      "root": "/home/duster/kimi-k3-deploy/p42c-c1c2-adjacent-control-20260819/old-rev58",
+      "runner_sha256": "e09e351af4795f7a2576647a5b4e0327696799c499183c654e402ee90daf038a",
+      "prefill_seconds": 27.28146971,
+      "decode_seconds": 6.257874753,
+      "true_ar_transitions_per_second": 1.278389280,
+      "decode_stage": {
+        "mean_total_ms": 781.98675,
+        "mean_routed_prep_ms": 272.89775,
+        "mean_experts_ms": 474.41575,
+        "mean_join_ms": 20.765625,
+        "mean_output_ms": 4.5285
+      },
+      "io_and_memory": {
+        "direct_io_ns": 11830528369,
+        "process_read_bytes": 33759875072,
+        "minor_faults": 2719253,
+        "major_faults": 802,
+        "peak_swap_kib": 71296,
+        "peak_vram_mib_gpu1": 61198.8203125,
+        "wall_seconds": 70.41649543200037
+      },
+      "artifacts_sha256": {
+        "manifest": "0239d67c83c818ace8d4d08bb751a71ac30d6779eaafbfce701a784b995b6fc1",
+        "io_trace": "c3a84140ad808fe058a41efea99895a551fed1fb66f957a7200bcdcca923284b",
+        "stderr": "32cf995e893c4342de245af599da212edef70925e3f805f4ceb9bddf66a4316a",
+        "telemetry": "579de6e6dae8833de0e6221ed1240d8785d029648a214a4da8e90a9d8a4d1f31",
+        "telemetry_csv": "67839b6c526b89581916e4a4be8820bfc073594d4626580633ed9e8baa13e246",
+        "traffic_process": "867cd81542b3a340cb982676857a9ef27a40bc5298e4b236580b8ff423c26e8d"
+      }
+    },
+    "c1c2_new": {
+      "root": "/home/duster/kimi-k3-deploy/p42c-c1c2-adjacent-control-20260819/new-c1c2",
+      "runner_sha256": "1c9a203030ce5650034196cadb9b4c4d83413e20ab4048093a077600e5c5a2a2",
+      "prefill_seconds": 29.208080198,
+      "decode_seconds": 5.503774952,
+      "true_ar_transitions_per_second": 1.453547805,
+      "rate_change_vs_rev58_old": 0.137015014,
+      "rate_change_vs_official_p42c": -0.008641986,
+      "decode_stage": {
+        "mean_total_ms": 687.702375,
+        "mean_routed_prep_ms": 273.891375,
+        "mean_experts_ms": 379.246125,
+        "mean_join_ms": 20.732875,
+        "mean_output_ms": 4.485375
+      },
+      "io_and_memory": {
+        "direct_io_ns": 9932298302,
+        "process_read_bytes": 38260224000,
+        "minor_faults": 2642501,
+        "major_faults": 849,
+        "peak_swap_kib": 100484,
+        "peak_vram_mib_gpu1": 61198.83984375,
+        "wall_seconds": 78.70055677401251
+      },
+      "artifacts_sha256": {
+        "manifest": "7531da7e5bc48a34ed268669135b704cb8723e7e068d6ae651a48b78b9d427f4",
+        "io_trace": "9c80d92d0fd44d7731d83430553411dff6017ae5a508b1e726b01ffc91f8ae5e",
+        "stderr": "e8da561e6dd175079718523bb8a92c6ff58a1d9ee0d9979c888c72476c24a51d",
+        "telemetry": "5439cfbef7208cc96f0efdde1a22e4072119c66c3c7c7e7918c0f18ddf131853",
+        "telemetry_csv": "666150e679be0fd9b2213d95422ca8c8ff9a5544927ecd9c9fd306a68ff98ecd",
+        "traffic_process": "ed0b4a4e5cf730917799d90b55072be46a1a83f9ef611cebab42bad187251689"
+      }
+    },
+    "comparison": {
+      "new_rate_change_vs_old": 0.137015014,
+      "new_rate_change_vs_official_p42c": -0.008641986,
+      "new_direct_io_change_vs_old": -0.160451842,
+      "new_process_read_bytes_change_vs_old": 0.133304668,
+      "code_regression_reproduced": false,
+      "intrinsic_speedup_claimed": false,
+      "reason": "current is faster than adjacent rev58 and within 1 percent of official P42c, but I/O and memory state still differ"
+    }
+  },
+  "loc_vs_pre_consolidation": {
+    "raw_numstat": {
+      "production": {"added": 103, "deleted": 188, "net": -85},
+      "tests": {"added": 5, "deleted": 24, "net": -19},
+      "total": {"added": 108, "deleted": 212, "net": -104}
+    },
+    "tokei_whole_file": {
+      "production": {"before_code": 9295, "after_code": 9218, "net_code": -77},
+      "tests": {"before_code": 526, "after_code": 508, "net_code": -18},
+      "total": {"before_code": 9821, "after_code": 9726, "net_code": -95},
+      "net_comments": -6,
+      "net_blanks": -3
+    }
+  },
+  "total_p42_stack": {
+    "before_consolidation_pure_code": 1279,
+    "after_consolidation_pure_code": 1184,
+    "after_split": {"production": 800, "tests": 348, "cmake": 36}
+  },
+  "gate_decision": {
+    "exactness": "GO",
+    "consolidation": "GO_NET_MINUS_95_PURE_LINES",
+    "throughput_regression": "NOT_REPRODUCED_IN_EXACT_ADJACENT_BINARY_CONTROL",
+    "intrinsic_speedup": "NOT_CLAIMED_IO_VARIED",
+    "broad": "OPEN_NOT_RUN",
+    "steady_state": "OPEN_NOT_RUN",
+    "c3": "DEFERRED_NOT_IMPLEMENTED",
+    "next": "SINGLE_OWNER_GPU1_COMPACT_SLAB_RESIDENCY_THEN_ROUTED_PREP_REDUCTION",
+    "ten_true_ar_per_second": "UNMET"
+  }
+}

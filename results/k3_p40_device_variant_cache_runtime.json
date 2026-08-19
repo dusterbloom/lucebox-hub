@@ -1,0 +1,217 @@
+{
+  "schema": "k3-p40-device-variant-cache-runtime-v1",
+  "status": "measured-byte-exact-marginal-throughput-go-compact-executor-next",
+  "source": {
+    "repository_commit": "3f373b072e70791ef235df5002b0a9b130f470f1",
+    "worktree_state": "dirty-intended-p40-patch",
+    "remote_diff_sha256": "a35964814e4de2c4ec0d912e5e8be7721723b302ad12c406fd78ff359b4223a7",
+    "runner_sha256": "a265848459082606b601745bdfca86c242cf83f1c2c5896382a986c165908dd4"
+  },
+  "platform": {
+    "host": "lucebox4",
+    "kernel": "Linux 7.0.0-28-generic x86_64",
+    "backend": "HIP",
+    "rocm": "7.2.2",
+    "architectures": ["gfx1201", "gfx1151"],
+    "core_placement": "accelerator:1",
+    "provider_device": "hip:1",
+    "device_cache_bytes": 8589934592,
+    "host_cache_bytes": 8589934592
+  },
+  "policy": {
+    "provider": "all-layers-calibrated96",
+    "sidecar_authoritative": true,
+    "physical_layout": "scratch",
+    "io_backend": "direct-pread",
+    "persistent_sparse": true,
+    "compact_upload": true,
+    "pinned_compact": true,
+    "direct_pinned_compact": true,
+    "p30_retained": true,
+    "p40_opt_in": "DFLASH_KIMI_P40_DEVICE_VARIANT_CACHE=1"
+  },
+  "short_fact_gate": {
+    "fixture_sha256": "58f72def4d1d94e036dd96b724e40b42b09bd8b048b095667aa6c725d36b8f3f",
+    "prompt_positions": 34,
+    "emitted_tokens": 9,
+    "true_decode_transitions": 8,
+    "off": {
+      "root": "/home/duster/kimi-k3-deploy/p40-off-cache8-20260818",
+      "prefill_seconds": 47.379032674,
+      "decode_seconds": 8.032715761,
+      "true_ar_transitions_per_second": 0.995927186,
+      "wall_seconds": 77.668137649,
+      "gpu_energy_joules": 2995.953618
+    },
+    "on": {
+      "root": "/home/duster/kimi-k3-deploy/p40-on-cache8-20260819",
+      "prefill_seconds": 28.702739366,
+      "decode_seconds": 5.607128801,
+      "true_ar_transitions_per_second": 1.426755169,
+      "wall_seconds": 47.794026730,
+      "gpu_energy_joules": 2403.079450,
+      "cache_events": 17917,
+      "full_hits": 5294,
+      "partial_extensions": 459,
+      "cold": 12164,
+      "aborted": 0,
+      "fallbacks": 0
+    },
+    "identity": {
+      "tokens_equal": true,
+      "text_equal": true,
+      "logits_byte_equal": true,
+      "logits_sha256": "cce1bd031e90eb13928ffddfb7e9329d75d55419a8f73b6479a920fe6c561a69",
+      "traffic_byte_equal": true,
+      "traffic_sha256": "e2eb5fcca9e0138d326892710977f4bd5dad1b7166d37cce6ef3675b0a911f13"
+    },
+    "interpretation": {
+      "observed_decode_speedup": 1.432590,
+      "cold_start_order_confounded": true,
+      "canonical_throughput_evidence": false,
+      "reason": "the later warm broad control reproduced approximately 1.4 true transitions/s with P40 disabled"
+    }
+  },
+  "broad_gate": {
+    "fixture_sha256": "6d1c0583df52738820559bef66f6a96839bcde44c0bae7bdc4bb7bbe7332d4cc",
+    "prompt_positions": 552,
+    "emitted_tokens": 141,
+    "true_decode_transitions": 129,
+    "model_positions": 681,
+    "logical_provider_bytes": 892584075264,
+    "logical_provider_gib_per_position": 1.220680909,
+    "ordered_pair": "P40-on then P40-off",
+    "repeated_pair": false,
+    "off": {
+      "root": "/home/duster/kimi-k3-deploy/p40-off-cache8-broad12-20260819",
+      "prefill_seconds": 420.210053465,
+      "prompt_positions_per_second": 1.313628733,
+      "decode_seconds": 92.834074682,
+      "true_ar_transitions_per_second": 1.389575977,
+      "wall_seconds": 534.174539124,
+      "gpu_energy_joules": 37060.143675,
+      "peak_vram_mib": 47628.316406,
+      "provider": {
+        "authoritative_h2d_bytes": 892584075264,
+        "device_zero_bytes": 1814769696768,
+        "explicit_provider_read_bytes": 473676021760,
+        "direct_physical_bytes": 407291797504,
+        "direct_io_ns": 152660718518,
+        "compact_pack_ns": 2008725603,
+        "compact_scatter_ns": 78407980114,
+        "expert_graph_ns": 26883345835,
+        "expert_readback_ns": 4899133826
+      },
+      "decode_stage": {
+        "mean_total_ms": 719.460760,
+        "median_total_ms": 710.029,
+        "mean_routed_prep_ms": 275.767597,
+        "median_routed_prep_ms": 275.520,
+        "mean_experts_ms": 408.965016,
+        "median_experts_ms": 398.783
+      }
+    },
+    "on": {
+      "root": "/home/duster/kimi-k3-deploy/p40-on-cache8-broad12-20260819",
+      "prefill_seconds": 398.788510441,
+      "prompt_positions_per_second": 1.384192336,
+      "decode_seconds": 90.271426108,
+      "true_ar_transitions_per_second": 1.429023619,
+      "wall_seconds": 506.880699694,
+      "gpu_energy_joules": 34992.637823,
+      "peak_vram_mib": 47633.066406,
+      "provider": {
+        "authoritative_h2d_bytes": 629238629376,
+        "device_zero_bytes": 1349171367936,
+        "explicit_provider_read_bytes": 400705462272,
+        "direct_physical_bytes": 337255587840,
+        "direct_io_ns": 128556666243,
+        "compact_pack_ns": 1456159895,
+        "compact_scatter_ns": 43874534427,
+        "expert_graph_ns": 28694128688,
+        "expert_readback_ns": 4596606289
+      },
+      "cache": {
+        "requested_slabs": 1618536,
+        "resident_before_slabs": 478419,
+        "events": 275008,
+        "full_hits": 70013,
+        "partial_extensions": 672,
+        "cold": 204323,
+        "unavailable": 0,
+        "completed": 275008,
+        "aborted": 0,
+        "fallbacks": 0,
+        "evictions": 203228,
+        "scatter_calls": 204995,
+        "scatter_calls_avoided": 70013,
+        "full_hit_rate": 0.254585321,
+        "resident_requested_slab_fraction": 0.295587494
+      },
+      "decode_stage": {
+        "mean_total_ms": 699.604829,
+        "median_total_ms": 693.315,
+        "mean_routed_prep_ms": 275.401605,
+        "median_routed_prep_ms": 275.280,
+        "mean_experts_ms": 388.099667,
+        "median_experts_ms": 378.808
+      }
+    },
+    "on_over_off": {
+      "decode_rate_speedup": 1.028388258,
+      "decode_time_reduction": 0.027604612,
+      "prefill_rate_speedup": 1.053716550,
+      "prefill_time_reduction": 0.050978178,
+      "wall_speedup": 1.053846673,
+      "wall_time_reduction": 0.051095358,
+      "gpu_energy_reduction": 0.055787853,
+      "authoritative_h2d_reduction": 0.295037132,
+      "device_zero_reduction": 0.256560560,
+      "explicit_read_reduction": 0.154051622,
+      "direct_physical_read_reduction": 0.171955856,
+      "direct_io_time_reduction": 0.157892957,
+      "scatter_time_reduction": 0.440432793,
+      "expert_graph_time_change": 0.067357049,
+      "significance_established": false,
+      "reason": "one ordered broad pair; the large short-pair speedup did not reproduce"
+    },
+    "quality": {
+      "p40_on_off_tokens_equal": true,
+      "p40_on_off_text_equal": true,
+      "p40_on_off_all_12_logits_byte_equal": true,
+      "native_success_tasks_retained": 11,
+      "native_success_denominator": 12,
+      "failed_task": "code-function",
+      "failure": "the 24-token output cap ends after `x %` before the required `2`",
+      "token_exact_vs_p37_cuda_candidate": 10,
+      "token_exact_denominator": 12,
+      "extract_code": "LIME-742",
+      "extract_decoys": "QUARTZ-918",
+      "p40_caused_quality_change": false
+    }
+  },
+  "artifacts": {
+    "on_manifest_sha256": "4ca0a8382452da14cfbb416287f253800c4ea4c605a82134f245a0d8aea91cfa",
+    "on_traffic_sha256": "54b76f99439d90ecb35d033c12dd1d1f219e30007248aaf77f913fc69d76f383",
+    "on_process_sha256": "a943b9e74c483a24c51cfc522db6bb0c339354ce9c34320a88ec62839f05ea5b",
+    "on_cache_trace_sha256": "19c51bb64bb178b33e1084422c73cbc2b3f67696f55c6f8eab0cefbd72da9854",
+    "on_io_trace_sha256": "cb0e3112e734b8b401afb42b9b88d08652a9b6131f234e1efed789675b8844f2",
+    "on_telemetry_sha256": "78263d62538c5e7d6005bfeaa11a7a42ccc5f377b4d86ad85922ac13ac368a11",
+    "on_stderr_sha256": "cfceeafeb14df7205bb3c5233f94b7207e1040284de3232bea0f799167eaefba",
+    "off_manifest_sha256": "c33fbf621068f82b361a5ebd1f514250fa867f60412788c071e3cb41f552a37a",
+    "off_traffic_sha256": "54b76f99439d90ecb35d033c12dd1d1f219e30007248aaf77f913fc69d76f383",
+    "off_process_sha256": "42c3b898557f7569abe082fe2b8f11072d39a002e8a66a16163d3ff2234783cf",
+    "off_io_trace_sha256": "dc22755790973b84044099ff7b59a86585784fca6c333ce55d976d7926d99c42",
+    "off_telemetry_sha256": "8c1efad8a18392737ff0918965167a49d8fc0b01d0e4b391df22a15dc8c8ac51",
+    "off_stderr_sha256": "b3f48efcbdca3e240f834b9f05b78d9a830547f62c227203deb8f3f1fa6f3ca5"
+  },
+  "verdict": {
+    "same_backend_bit_identity": "GO",
+    "broad_quality_vs_matched_off": "GO",
+    "broad_quality_vs_p37_12_of_12": "NO_GO_11_OF_12_HIP_BASELINE",
+    "device_overlay": "GO_AS_OPTIONAL_COMMON_PRIMITIVE",
+    "p30_retirement": "NO_GO",
+    "throughput_target": "NO_GO_MARGINAL_1.429_TRUE_AR_PER_SECOND",
+    "next_gate": "P41 component-major compact executor with virtual-K sparse down MMVQ"
+  }
+}

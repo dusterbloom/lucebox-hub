@@ -1,0 +1,167 @@
+{
+  "schema": "k3-p43a-single-secondary-peer-publication-runtime-v1",
+  "status": "byte-exact-throughput-no-go-implementation-removed",
+  "source": {
+    "repository_commit": "3f373b072e70791ef235df5002b0a9b130f470f1",
+    "worktree_state": "dirty-intended-p38-p43a-patch-at-measurement",
+    "measured_snapshot": "/tmp/p43a_pre_removal_snapshot",
+    "measured_source_sha256": {
+      "backend_cpp": "e1fc8f1aa115da76bb055d804dfb26ea052511ecd2fef88a3cd4cbe6331bc32a",
+      "backend_h": "4bcbafcd84da42899410f5f85a5d84f7250bca1bba6b0031b8961763a3f996f9",
+      "provider_cpp": "0d1254f69679acc99684d8d37817857a0c478178e2100533ec5c35e3ca34a413",
+      "ordered_join_test_cpp": "6c603305ee26de2b9b1f90f0fe60a0572bf5bef78cf9fd6b2d4686caf032819e",
+      "provider_test_cpp": "2b3a40eafdadbc8cccf73c94e10504bf7a3f92523683e6613f6dd128aa83e6fb"
+    },
+    "restored_p42c_source_sha256": {
+      "backend_cpp": "5ae7adf7283a502f5cfdb39cd3a32551b1da400aad2959aaf3c1195d69ee0a21",
+      "backend_h": "cf9abbb6e207aa9612d07fb14f2a6aae06d40914294bffff7d8f889a0df5a053",
+      "provider_cpp": "94aa53a982889b1d2e42b8d496cca61a3a66db4b83556f1bafd12fb77cad7071",
+      "ordered_join_test_cpp": "5992239329c7b53b24e2b5cc620ad77c0cb01423696cbad4f00ed5c4509c4623",
+      "provider_test_cpp": "b260587bed3f71664900064bf173027b93cf687bf9a03445b4e8874b116b9e3d"
+    },
+    "p43_removed_after_gate": true,
+    "generic_ggml_peer_support_unchanged": true
+  },
+  "implementation_measured": {
+    "source_owner": "HIP GPU0 gfx1201 P41 compact evaluator",
+    "destination_owner": "HIP GPU1 gfx1151 resident means, canonical arena/join and core",
+    "peer_batch_env": "GGML_BATCH_PEER_COPIES=1",
+    "source_preservation_rows": 16,
+    "publication": "one async peer copy per 3584-F32 expert result, consecutive at layer end, one destination barrier",
+    "resident_mean_bytes": 14180941824,
+    "global_order_unchanged": true,
+    "owner_local_partial_sums": false,
+    "default_enabled": false,
+    "measurement_boundary": "pre-consolidation dual-engine initialization retained an unused GPU1 expert engine/cache; no hotness profile was active"
+  },
+  "model_free_gate": {
+    "build": "CCACHE_DISABLE=1 cmake --build server/build-k3-hip-dual -j4 --target run_kimi_k3_h16_suite test_kimi_k3_ordered_join test_kimi_k3_progressive_provider test_sparse_k_mmvq_cuda",
+    "runner_sha256": "0a08ae3e17a8b3bbeec243cc95c27815d7db9fa5d52245969c17a07f069d55d5",
+    "ordered_join_test_sha256": "e0c4592272f137914087ca5fcaace051cb35f24ce5bc131c17c32c7c1c23c349",
+    "provider_test_sha256": "4077c6cc0deefcd5b70ffde948d9d950ce7b73ccc2a2b843b5c179fa06c0c7ee",
+    "sparse_k_test_sha256": "62e14f893d7f4b286bfb8f91da110aa99b4e890f560dc3ec790f8c75e2310278",
+    "ordered_join": {
+      "gfx1201": "PASS",
+      "gfx1151": "PASS",
+      "peer_reuse_and_publish": "PASS_16_ROWS_TWO_ITERATIONS_ONE_BATCH_EACH"
+    },
+    "provider": "PASS",
+    "sparse_k_mmvq": {
+      "gfx1201": {"passed": 68, "failed": 0},
+      "gfx1151": {"passed": 68, "failed": 0}
+    }
+  },
+  "fact_gate": {
+    "root": "/home/duster/kimi-k3-deploy/p43a-peer-fact-20260819",
+    "run_count": 1,
+    "true_decode_transitions": 8,
+    "prefill_seconds": 57.710854412,
+    "decode_seconds": 12.485984906,
+    "true_ar_transitions_per_second": 0.640718378,
+    "promotion_rate_floor": 1.667,
+    "promotion_total_ms_ceiling": 600.0,
+    "promotion_expert_ms_ceiling": 291.0,
+    "promotion_peer_wait_ms_per_position_ceiling": 5.0,
+    "rate_change_vs_p42c": -0.563013135,
+    "identity": {
+      "tokens_equal": true,
+      "text_equal": true,
+      "logits_byte_equal": true,
+      "logits_sha256": "cce1bd031e90eb13928ffddfb7e9329d75d55419a8f73b6479a920fe6c561a69",
+      "traffic_byte_equal": true,
+      "traffic_sha256": "e2eb5fcca9e0138d326892710977f4bd5dad1b7166d37cce6ef3675b0a911f13",
+      "output_text": "Tokyo<|close|>response<|sep|><|close|>message<|sep|><|end_of_msg|>"
+    },
+    "decode_stage": {
+      "mean_total_ms": 1560.50725,
+      "mean_routed_prep_ms": 305.189,
+      "mean_experts_ms": 1204.725,
+      "mean_join_ms": 36.513875,
+      "mean_output_ms": 4.728875
+    },
+    "counters": {
+      "p41_attempted": 17917,
+      "p41_completed": 17917,
+      "p41_fallbacks": 0,
+      "p41_invalid": 0,
+      "resident_mean_bytes": 14180941824,
+      "hot_mean_reads": 0,
+      "hot_mean_h2d_bytes": 0,
+      "expert_readback_ns": 0,
+      "peer_copies": 17917,
+      "peer_bytes": 256858112,
+      "peer_flush_waits": 3864,
+      "peer_wait_ns": 406645165,
+      "peer_wait_ms_per_position": 9.682027738,
+      "source_staging_copies": 17917,
+      "source_staging_bytes": 256858112,
+      "join_launches": 3864,
+      "output_d2d_copies": 3864,
+      "output_d2d_bytes": 55394304,
+      "source_direct_physical_bytes": 24106500096,
+      "source_payload_h2d_bytes": 55976374272,
+      "source_metadata_h2d_bytes": 257718128,
+      "source_direct_io_ns": 13791949807,
+      "source_compact_pack_ns": 1569577606,
+      "source_graph_plus_save_drain_ns": 1676194866
+    },
+    "telemetry": {
+      "wall_seconds": 104.524167562,
+      "peak_vram_mib_gpu1": 61028.5078125,
+      "peak_process_rss_kib": 10083928,
+      "peak_gpu1_utilization_percent": 23.0,
+      "peak_gpu1_power_watts": 39.016,
+      "gpu1_energy_joules": 3001.57844584
+    },
+    "artifacts": {
+      "manifest_sha256": "f64b34e0bd254ea9a18e8fa8dce45a724172e4c35567a3cd1c3ab92393b18415",
+      "logits_sha256": "cce1bd031e90eb13928ffddfb7e9329d75d55419a8f73b6479a920fe6c561a69",
+      "traffic_sha256": "e2eb5fcca9e0138d326892710977f4bd5dad1b7166d37cce6ef3675b0a911f13",
+      "traffic_process_sha256": "a91f832d2b4a34ab10af7119eddb4729558c0712d5a53076b7c5a54038e31800",
+      "io_trace_sha256": "d0d5a742f2f156f6470908c1dfaa62d3badeee28508309608b3e8e6558b6bef8",
+      "stderr_sha256": "59b04415edd4deb64ba2386b1596bb96a5a60bce673e23e26e21e64277d088de",
+      "telemetry_sha256": "06e02171d99ecc4c0a995b292d29fffb8973429c4c21c87c2ec115e8690d5da4",
+      "telemetry_csv_sha256": "0a457bb321a01633c6072076eb1e81cb6f8b6b1fee07a3e57059ce393b77295c"
+    }
+  },
+  "loc_vs_p42c": {
+    "method": "direct no-index diff between exact restored P42c files and retained measured P43 snapshot; Tokei on added/deleted snippets and whole-file totals",
+    "raw_numstat": {
+      "production": {"added": 331, "deleted": 48, "net": 283},
+      "tests": {"added": 167, "deleted": 0, "net": 167},
+      "total": {"added": 498, "deleted": 48, "net": 450}
+    },
+    "tokei": {
+      "production": {"added_code": 324, "deleted_code": 48, "net_code": 276},
+      "tests": {"added_code": 159, "deleted_code": 0, "net_code": 159},
+      "total_net_code": 435,
+      "net_comments": 9,
+      "net_blanks": 6
+    }
+  },
+  "post_removal_gate": {
+    "build": "CCACHE_DISABLE=1 cmake --build server/build-k3-hip-dual -j4 --target run_kimi_k3_h16_suite test_kimi_k3_ordered_join test_kimi_k3_progressive_provider test_sparse_k_mmvq_cuda",
+    "build_status": "PASS",
+    "provider": "PASS",
+    "ordered_join": {"gfx1201": "PASS", "gfx1151": "PASS"},
+    "sparse_k_mmvq": {
+      "gfx1201": {"passed": 68, "failed": 0},
+      "gfx1151": {"passed": 68, "failed": 0}
+    },
+    "runner_sha256": "e09e351af4795f7a2576647a5b4e0327696799c499183c654e402ee90daf038a",
+    "ordered_join_test_sha256": "f00fed0d7ee962b18b78c4b296300c744eab6c32c0e43ae7c974c7288ee85a55",
+    "provider_test_sha256": "80c232e62e1dffe65c7a9822b38a7aff833d5132154168b675f5a0745418bf26",
+    "sparse_k_test_sha256": "62e14f893d7f4b286bfb8f91da110aa99b4e890f560dc3ec790f8c75e2310278"
+  },
+  "gate_decision": {
+    "exactness": "GO",
+    "throughput": "NO_GO_0.640718_TRUE_AR_PER_SECOND",
+    "peer_wait": "NO_GO_9.682_MS_PER_POSITION",
+    "expert_stage": "NO_GO_1204.725_MS",
+    "broad": "STOPPED_NOT_RUN",
+    "concurrency": "STOPPED_NOT_RUN",
+    "implementation": "REMOVED_RESTORED_EXACT_P42C",
+    "pr600_heterogeneous_ownership": "STOP",
+    "next": "SINGLE_OWNER_COMPACT_DEVICE_SLAB_RESIDENCY_THEN_ROUTED_PREP_REDUCTION"
+  }
+}

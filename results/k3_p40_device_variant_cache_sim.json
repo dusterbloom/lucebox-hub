@@ -1,0 +1,124 @@
+{
+  "schema": "k3-p40-device-variant-cache-sim-v1",
+  "status": "device-overlay-go-p30-retirement-no-go",
+  "source_commit": "3f373b072e70791ef235df5002b0a9b130f470f1",
+  "trace": {
+    "host": "lucebox4",
+    "run": "p39-gpu1-core-dualarch-repeat-20260818",
+    "path": "/home/duster/kimi-k3-deploy/p39-gpu1-core-dualarch-repeat-20260818/io_trace.tsv",
+    "sha256": "70e26818cdfc67d32fc219fc983d526d06f5c4a6fa6e7cb9cc1663b1915497a7",
+    "request_rows": 365687,
+    "file_bytes": 76016268,
+    "model_positions": 42
+  },
+  "reconstruction": {
+    "group_key": [
+      "prompt_id",
+      "base_pos",
+      "token_index",
+      "model_layer",
+      "expert_id",
+      "exact_fallback"
+    ],
+    "natural_slab_formula": "(file_offset - (payload_offset + expert_id * record_bytes)) / slab_bytes",
+    "ambiguous_groups": 0,
+    "sidecar_events": 17917,
+    "calibrated_events": 17184,
+    "exact_fallback_events": 733,
+    "requested_slab_records": 101532,
+    "distinct_layer_expert_keys": 6889
+  },
+  "expanded_expert_bytes": {
+    "iq1_iq1_iq1": 6451200,
+    "iq2_xxs_iq2_xxs_iq1": 7827456,
+    "iq1_iq1_iq2_xxs": 7139328,
+    "backend_alignment_bytes": 128
+  },
+  "lru": [
+    {
+      "capacity_gib": 2,
+      "full_hits": 163,
+      "full_hit_rate": 0.0090975,
+      "partial_extensions": 43,
+      "extension_slabs": 170,
+      "cold_or_reloaded": 17711,
+      "slab_coverage": 0.0135,
+      "scatter_calls_avoided": 163,
+      "extension_traffic_gib": 0.085,
+      "evictions": 17388
+    },
+    {
+      "capacity_gib": 8,
+      "full_hits": 6569,
+      "full_hit_rate": 0.366635,
+      "partial_extensions": 1241,
+      "extension_slabs": 5862,
+      "cold_or_reloaded": 10107,
+      "slab_coverage": 0.4694,
+      "scatter_calls_avoided": 6569,
+      "extension_traffic_gib": 2.998,
+      "evictions": 8806,
+      "resident_variants_at_end": 1301,
+      "total_loaded_payload_gib": 27.709,
+      "cold_loaded_payload_gib": 24.711
+    },
+    {
+      "capacity_gib": 16,
+      "full_hits": 8534,
+      "full_hit_rate": 0.47631,
+      "partial_extensions": 1342,
+      "extension_slabs": 6077,
+      "cold_or_reloaded": 8041,
+      "slab_coverage": 0.5794,
+      "scatter_calls_avoided": 8534,
+      "extension_traffic_gib": 3.116,
+      "evictions": 5436
+    }
+  ],
+  "trace_ranked_pinned_hot_upper_bound": [
+    {
+      "capacity_gib": 2,
+      "full_hits": 4236,
+      "full_hit_rate": 0.2364,
+      "partial_extensions": 261,
+      "slab_coverage": 0.3314,
+      "scatter_calls_avoided": 4236
+    },
+    {
+      "capacity_gib": 8,
+      "full_hits": 7859,
+      "full_hit_rate": 0.4386,
+      "partial_extensions": 934,
+      "slab_coverage": 0.5481,
+      "scatter_calls_avoided": 7859
+    },
+    {
+      "capacity_gib": 16,
+      "full_hits": 9227,
+      "full_hit_rate": 0.5150,
+      "partial_extensions": 1359,
+      "slab_coverage": 0.6167,
+      "scatter_calls_avoided": 9227
+    }
+  ],
+  "p30_interaction": {
+    "uncached_aligned_sidecar_gib": 52.423,
+    "p30_8gib_aligned_sidecar_gib": 25.389,
+    "p30_physical_reduction": 0.51569,
+    "device_lru_8gib_suppressed_p30_gib": 1.807,
+    "device_lru_8gib_suppressed_p30_fraction": 0.0712,
+    "coupled_cache_forecast": false
+  },
+  "scatter_bound": {
+    "measured_p39_p30_scatter_seconds": 5.840529321,
+    "removable_seconds_by_event_coverage": 2.141,
+    "removable_seconds_by_slab_coverage": 2.741,
+    "wall_clock_or_decode_claim": false
+  },
+  "decision": {
+    "retain_p30": true,
+    "device_variant_cache_role": "scatter-and-h2d overlay",
+    "next_architecture": "compact fused expert executor",
+    "delete_p30_only_after_equal_or_better_compact_device_coverage": true
+  }
+}

@@ -1,0 +1,198 @@
+{
+  "schema": "k3-p41-compact-executor-runtime-v1",
+  "status": "measured-byte-exact-throughput-no-go-pr600-device-output-next",
+  "source": {
+    "repository_commit": "3f373b072e70791ef235df5002b0a9b130f470f1",
+    "worktree_state": "dirty-intended-p38-p41-patch",
+    "runner_sha256": "9cbd72fa83b31e833bb6144c7adcb0b5e9511d603225c68f742851b0eb07f32f",
+    "hip_library_sha256": "773a13a8f2274c75e8e28e3b76a6419635ebd1fdd570187569c28500a42075c4",
+    "mmvq_object_sha256": "a077cd3c4c79339e2cd42b98251a95041f27a600bad8a1ac6056cfa6af925993"
+  },
+  "platform": {
+    "host": "lucebox4",
+    "kernel": "Linux 7.0.0-28-generic x86_64",
+    "backend": "HIP",
+    "rocm": "7.2.2",
+    "architectures": ["gfx1201", "gfx1151"],
+    "core_placement": "accelerator:1",
+    "provider_device": "hip:1",
+    "host_cache_bytes": 8589934592
+  },
+  "policy": {
+    "provider": "all-layers-calibrated96",
+    "sidecar_authoritative": true,
+    "physical_layout": "scratch",
+    "io_backend": "direct-pread",
+    "persistent_sparse": true,
+    "compact_upload": true,
+    "pinned_compact": true,
+    "direct_pinned_compact": true,
+    "p30_retained": true,
+    "p40_enabled": false,
+    "p41_opt_in": "DFLASH_KIMI_P41_COMPACT_EXECUTOR=1",
+    "p41_requires_p27": true,
+    "p40_p41_mutually_exclusive_during_gate": true
+  },
+  "implementation": {
+    "wire_layout": "32-byte-natural-id-header-then-component-major-gate-up-down",
+    "gate_up": "ordinary-compact-ggml-mmvq",
+    "activation": "existing-unfused-situ",
+    "down": "ggml_mul_mat_sparse_k_blocks",
+    "virtual_k": 3072,
+    "natural_blocks": 12,
+    "block_k": 256,
+    "supported_qtypes": ["IQ1_S", "IQ2_XXS"],
+    "exactness_mechanism": "shared-native-one-column-mmvq-body-with-natural-block-lane-and-reduction-order",
+    "dense_isa_size_unchanged": true,
+    "dense_vgpr_count_unchanged": true
+  },
+  "micro_parity": {
+    "test_binary_sha256": "62e14f893d7f4b286bfb8f91da110aa99b4e890f560dc3ec790f8c75e2310278",
+    "comparison": "byte-exact-f32-output",
+    "cases_per_device": 68,
+    "gfx1201": {
+      "device": 0,
+      "passed": 68,
+      "failed": 0,
+      "status": "PASS"
+    },
+    "gfx1151": {
+      "device": 1,
+      "passed": 68,
+      "failed": 0,
+      "status": "PASS"
+    },
+    "coverage": [
+      "IQ1_S",
+      "IQ2_XXS",
+      "singletons-0-through-11",
+      "three-slab",
+      "same-lane-two",
+      "same-lane-three",
+      "first-four",
+      "six-slab",
+      "all-twelve",
+      "all-twelve-reversed",
+      "resident-counts-1-through-12",
+      "resident-superset",
+      "signed-zero-and-nan",
+      "production-3584-rows-reversed"
+    ],
+    "cuda_hardware_parity": "not-measured-local-test-skipped-no-compatible-device"
+  },
+  "fact_gate": {
+    "root": "/home/duster/kimi-k3-deploy/p41-compact-fact-20260819",
+    "fixture_sha256": "58f72def4d1d94e036dd96b724e40b42b09bd8b048b095667aa6c725d36b8f3f",
+    "prompt_positions": 34,
+    "emitted_tokens": 9,
+    "true_decode_transitions": 8,
+    "model_positions": 42,
+    "prefill_seconds": 29.940473213,
+    "prompt_positions_per_second": 1.135586594,
+    "decode_seconds": 6.271558505,
+    "true_ar_transitions_per_second": 1.275599995,
+    "wall_seconds": 58.328806893,
+    "gpu_energy_joules": 2482.728019,
+    "peak_vram_mib": 47690.300781,
+    "peak_process_rss_kib": 10003840,
+    "identity": {
+      "tokens_equal_to_p39_p40_controls": true,
+      "text_equal_to_p39_p40_controls": true,
+      "logits_byte_equal_to_p39_p40_controls": true,
+      "logits_sha256": "cce1bd031e90eb13928ffddfb7e9329d75d55419a8f73b6479a920fe6c561a69",
+      "traffic_byte_equal_to_p39_p40_controls": true,
+      "traffic_sha256": "e2eb5fcca9e0138d326892710977f4bd5dad1b7166d37cce6ef3675b0a911f13",
+      "output_text": "Tokyo<|close|>response<|sep|><|close|>message<|sep|><|end_of_msg|>"
+    },
+    "executor": {
+      "attempted": 17917,
+      "layouts": 17917,
+      "uploads": 17917,
+      "gate": 17917,
+      "up": 17917,
+      "situ": 17917,
+      "sparse_down": 17917,
+      "completed": 17917,
+      "fallbacks": 0,
+      "invalid": 0
+    },
+    "provider": {
+      "authoritative_h2d_bytes": 55976374272,
+      "metadata_h2d_bytes": 257718128,
+      "device_zero_bytes": 0,
+      "explicit_provider_read_bytes": 29496033280,
+      "direct_physical_bytes": 25424379904,
+      "direct_io_ns": 11625073503,
+      "component_major_pack_ns": 1554669860,
+      "compact_scatter_ns": 0,
+      "expert_graph_ns": 1770864425,
+      "expert_readback_ns": 347290594
+    },
+    "host_cache": {
+      "capacity_bytes": 8589934592,
+      "resident_bytes": 8589475840,
+      "entries": 20354,
+      "hits": 93154,
+      "misses": 69469,
+      "hit_bytes": 37301854208,
+      "inserted_bytes": 29496033280,
+      "evicted_bytes": 20906557440,
+      "sequence_resets": 0
+    },
+    "decode_stage": {
+      "mean_total_ms": 783.691500,
+      "median_total_ms": 787.901000,
+      "mean_routed_prep_ms": 275.247125,
+      "median_routed_prep_ms": 274.875000,
+      "mean_experts_ms": 469.140000,
+      "median_experts_ms": 472.483000,
+      "mean_join_ms": 25.069125,
+      "median_join_ms": 25.301500
+    }
+  },
+  "controls": {
+    "p39_host_cache_fact": {
+      "true_ar_transitions_per_second": 1.392766106,
+      "p41_rate_change": -0.084124757
+    },
+    "p40_on_fact": {
+      "true_ar_transitions_per_second": 1.426755169,
+      "prompt_positions_per_second": 1.184555926,
+      "p41_decode_rate_change": -0.105943316,
+      "p41_prefill_rate_change": -0.041339822,
+      "expert_graph_ns": 1898905464,
+      "p41_expert_graph_time_change": -0.067428864,
+      "component_pack_ns": 106206259,
+      "compact_scatter_ns": 2494280599,
+      "authoritative_h2d_bytes": 34361478144,
+      "direct_physical_bytes": 22763184128,
+      "direct_io_ns": 8190214380,
+      "comparison_caveat": "short ordered runs; storage/cache stage deltas are order-sensitive"
+    },
+    "p40_broad_off": {
+      "true_ar_transitions_per_second": 1.389575977,
+      "role": "canonical-warm-broad-baseline-context-not-an-adjacent-p41-pair"
+    },
+    "p40_broad_on": {
+      "true_ar_transitions_per_second": 1.429023619,
+      "role": "canonical-p40-broad-result-context-not-an-adjacent-p41-pair"
+    }
+  },
+  "artifacts": {
+    "manifest_sha256": "0f4979aec95a1ce0dc787f789031209793f91e3f0c7c8a221481b4515b48863e",
+    "traffic_sha256": "e2eb5fcca9e0138d326892710977f4bd5dad1b7166d37cce6ef3675b0a911f13",
+    "process_sha256": "59b288e0ba9276be74419a976b7e7a186388b974befb1c85e7a68b3a942d4969",
+    "io_trace_sha256": "9511f28c04838b21326e9b9dc0103af5c29383013e58ffc38415b0b94bd53a1a",
+    "telemetry_sha256": "41d50cf2156c089ac16b81e997df9c6b145c6634f5c1aff583f815c9614c463f",
+    "stderr_sha256": "cb6557a9d371b00a0a5139c3caf4724cbdc7054ca87cc53ae2a8d978b823379f"
+  },
+  "gate_decision": {
+    "same_device_hip_micro_bit_identity": "GO",
+    "integrated_same_placement_bit_identity": "GO",
+    "fact_throughput": "NO_GO_1.275600_TRUE_AR_PER_SECOND",
+    "broad_gate": "SKIPPED_FACT_PERFORMANCE_GATE_FAILED",
+    "legacy_path_deletion": "NO_GO",
+    "default_enablement": "NO_GO",
+    "next_gate": "PR600-derived globally ordered caller-owned device-output join before heterogeneous ownership"
+  }
+}

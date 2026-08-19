@@ -1,0 +1,92 @@
+{
+  "schema": "k3-p44a-compact-prefix-cache-runtime-v1",
+  "status": "byte-exact-resource-go-performance-no-go-implementation-removed",
+  "source": {
+    "repository_commit": "3f373b072e70791ef235df5002b0a9b130f470f1",
+    "final_root": "/home/duster/kimi-k3-deploy/p44a-final-aa48-aba-20260819",
+    "arms": ["a1-off", "b-on-8192", "a2-off"],
+    "runner_sha256": "aa48c84576ab825d9d7317b4149f4422f25d4aba0d0bb3eff62dd3b15c2941ba",
+    "initial_failure_root": "/home/duster/kimi-k3-deploy/p44a-current-aba-20260819/b-on-8g"
+  },
+  "trace_design": {
+    "events": 17917,
+    "requested_slab_depths": 101532,
+    "fixed_slot_8g_initial_prediction": {
+      "full_hit_rate": 0.3337,
+      "requested_slab_coverage": 0.4321
+    },
+    "resident_superset_replay": {
+      "rule": "executed_depth=max(requested_depth,resident_depth_before_lease)",
+      "executed_depths": 119417,
+      "graph_work_increase": 0.176151361,
+      "rough_fact_only_ceiling_true_ar_per_second": 1.49,
+      "caveat": "linear P41 graph scaling and proportional pack credit only; no unproven I/O-overlap or broad-workload claim"
+    }
+  },
+  "bounded_retry": {
+    "initial_functional_status": "FAIL_CLOSED_LAYER11_AFTER_58_COMPLETIONS",
+    "cause": "pool was sized for 6451200-byte layout but encountered 7827456-byte layout",
+    "retry_count": 1,
+    "final_slot_stride_bytes": 7827712,
+    "retry_outcome": "FUNCTIONAL_GO_17917_COMPLETED_ZERO_ABORT_ZERO_NONPREFIX"
+  },
+  "identity": {
+    "tokens_equal": true,
+    "text_equal": true,
+    "logits_byte_equal": true,
+    "logits_sha256": "cce1bd031e90eb13928ffddfb7e9329d75d55419a8f73b6479a920fe6c561a69",
+    "traffic_byte_equal": true,
+    "traffic_sha256": "e2eb5fcca9e0138d326892710977f4bd5dad1b7166d37cce6ef3675b0a911f13"
+  },
+  "final_aba_fact": {
+    "true_decode_transitions": 8,
+    "off_bracket": {
+      "decode_seconds": 6.198456887,
+      "true_ar_transitions_per_second": 1.290643808,
+      "control_spread_fraction": 0.0406515,
+      "maximum_valid_spread_fraction": 0.015
+    },
+    "promotion_rate_floor": 1.48,
+    "a1_off": {"decode_seconds": 6.324445294, "true_ar_transitions_per_second": 1.264933070, "total_ms": 790.317625, "routed_prep_ms": 272.461250, "expert_ms": 483.331500, "join_ms": 20.859625, "output_ms": 4.469750, "direct_io_ns": 12117785294, "component_pack_ns": 1547153745, "graph_ns": 1804650165, "major_faults": 19, "process_swap_kib": 0},
+    "b_on_8192": {"decode_seconds": 5.585389477, "true_ar_transitions_per_second": 1.432308353, "rate_change_vs_off_bracket": 0.109763, "rate_shortfall_vs_floor": -0.032224086, "total_ms": 697.940375, "routed_prep_ms": 271.273875, "expert_ms": 390.788625, "join_ms": 22.541000, "output_ms": 4.461500, "direct_io_ns": 11238732321, "component_pack_ns": 969386244, "graph_ns": 1863525316, "major_faults": 51, "process_swap_kib": 0},
+    "a2_off": {"decode_seconds": 6.072468479, "true_ar_transitions_per_second": 1.317421412, "total_ms": 758.827125, "routed_prep_ms": 274.027750, "expert_ms": 449.999250, "join_ms": 20.987750, "output_ms": 4.529625, "direct_io_ns": 13168403122, "component_pack_ns": 1549071478, "graph_ns": 3908980480, "major_faults": 2, "process_swap_kib": 0},
+    "system_swap_in_out": 0,
+    "interpretation": "B's 11.1-percent favorable direct-I/O skew invalidates comparative attribution; the independent 1.48/s absolute floor still fails"
+  },
+  "b_cache_counters": {
+    "pool_bytes": 8587000064,
+    "usable_pool_bytes": 8571344640,
+    "slots": 1097,
+    "slot_stride_bytes": 7827712,
+    "requested_slabs": 101532,
+    "resident_slabs": 39293,
+    "missing_slabs": 62239,
+    "full_hits": 5294,
+    "extensions": 459,
+    "cold_fills": 12164,
+    "unavailable": 0,
+    "evictions": 11069,
+    "completed": 17917,
+    "aborts": 0,
+    "nonprefix": 0,
+    "packs": 12623,
+    "executed_depths": 118971,
+    "logical_requested_payload_bytes": 55976374272,
+    "suppressed_payload_bytes": 21614896128,
+    "payload_h2d_bytes": 34361478144,
+    "direct_physical_bytes": 22095003648,
+    "resource_reduction_vs_off": {"payload_h2d_fraction": 0.386148, "direct_physical_fraction": 0.083443}
+  },
+  "removal": {
+    "measured_snapshot": "/tmp/p44a_final_measured_before_removal",
+    "manifest_sha256": "9b44a7186374fba10cd03dfecd215bb9fd06f65810d5ae3643962a5c5be89ecd",
+    "manifest_verified_artifacts": "9/9",
+    "restored_runner_sha256": "1c9a203030ce5650034196cadb9b4c4d83413e20ab4048093a077600e5c5a2a2",
+    "restored_source_sha256": {"cmake": "2f31094edbd005e5b90e465cc77b8b8586d49f787629e76a2953906f3763d184", "backend_cpp": "e327d9239d2b842fc95a92de644bae3da65ae3d88c02de89d09076e5b4150c3c", "provider_cpp": "fbc8f1fc7a149c2eefdeaae09157dfbb9b31b3f450c3de1644fb975b5140c3e1", "provider_h": "5ffdfe935f63faf9050813c7d54bf37f8993fce1c40f512c4d8af5425bced619", "common_cpp": "cf39d0a66ba17fd5ac98d5030c401cda692193552348c0e922068c6f67dbff8c", "common_h": "08125464feece1222997988c10f33dab814b0db12c145b7501bb3c5b8eb27469", "provider_test_cpp": "b260587bed3f71664900064bf173027b93cf687bf9a03445b4e8874b116b9e3d", "moe_test_cpp": "f6585056dfd3c0f4f9fbfe2b5efeb0c8ef21471e16003787fc5f9440974c5e29"},
+    "p44_strings_local_and_remote": 0,
+    "gates": "PASS provider; ordered join GPU0/GPU1; MoE GPU0/GPU1; sparse-K 68/68 GPU0 and GPU1",
+    "p44_delta_vs_p42d": {"raw_production_added": 859, "raw_production_deleted": 82, "raw_tests_added": 619, "raw_tests_deleted": 3, "raw_cmake_added": 8, "raw_cmake_deleted": 0, "raw_net": 1401, "pure_production": 740, "pure_tests": 606, "pure_cmake": 8, "pure_total": 1354, "comments": 11, "blanks": 36},
+    "removal_pure_total": -1354
+  },
+  "gate_decision": {"functional": "GO_AFTER_ONE_BOUNDED_PRESIZE_RETRY", "exactness": "GO", "resource": "GO", "comparative_performance": "INVALID_CONTROLS_SPREAD_4.06515_PERCENT", "absolute_performance": "NO_GO_1.432308_LT_1.480000", "broad": "STOPPED_NOT_RUN", "retention": "NO_GO", "implementation": "REMOVED_RESTORED_EXACT_P42D", "next": "BATCH_OR_PERSISTENT_EXECUTION_BOUNDARY_NOT_ANOTHER_CACHE", "ten_true_ar_per_second": "UNMET"}
+}

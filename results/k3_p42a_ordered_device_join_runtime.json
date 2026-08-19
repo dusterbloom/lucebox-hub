@@ -1,0 +1,213 @@
+{
+  "schema": "k3-p42a-ordered-device-join-runtime-v1",
+  "status": "byte-exact-go-throughput-no-go-device-mean-residency-next",
+  "source": {
+    "repository_commit": "3f373b072e70791ef235df5002b0a9b130f470f1",
+    "worktree_state": "dirty-intended-p38-p42a-patch",
+    "runner_sha256": "8759b8c20e8a9176eb48e4731b643afbbd5f25fbbaec3046493a1ec936870ad6",
+    "hip_library_sha256": "773a13a8f2274c75e8e28e3b76a6419635ebd1fdd570187569c28500a42075c4",
+    "ordered_join_object_sha256": "244303ddc272b0512549a2838829703789a9c945a167dac5a96b64179afdf586"
+  },
+  "platform": {
+    "host": "lucebox4",
+    "backend": "HIP",
+    "rocm": "7.2.2",
+    "architectures": ["gfx1201", "gfx1151"],
+    "core_placement": "accelerator:1",
+    "provider_device": "hip:1"
+  },
+  "policy": {
+    "provider": "all-layers-calibrated96",
+    "sidecar_authoritative": true,
+    "p30_host_cache_bytes": 8589934592,
+    "p40_enabled": false,
+    "p41_enabled": true,
+    "p42_opt_in": "DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN=1",
+    "p42_default": false,
+    "supported_tokens_per_forward": 1,
+    "required_destination_backend": "same GPU1 backend as P41",
+    "unsupported_action": "fail-closed"
+  },
+  "implementation": {
+    "output_boundary": "P41 compact device output copied immediately into a layer-owned device arena",
+    "calibrated_order": "stable expert-id order; omitted mean ranks 0..11 then selected output",
+    "fallback_order": "stable expert-id order into an exact subtotal, then one final destination add",
+    "kernel_shape": "one thread per output dimension; identical serial contribution list",
+    "arithmetic": "separate rounded FP32 multiply and add",
+    "stream_policy": "correctness-first default-stream synchronization after each expert D2D and final destination D2D",
+    "old_host_path_retained": true
+  },
+  "model_free_gate": {
+    "ordered_join_test_sha256": "4060dae1537f8e5e29ca4c59214c5840109552a0e924d756f984e6d6896abe5c",
+    "provider_test_sha256": "145f66a212557b8cbda5a55a20e4bc0e75e85f4adbd543875a556a437274ad30",
+    "moe_stream_test_sha256": "181ee39ad5ab129120244464f99cecd7134c9ca75a1bffcf5b334af1e499ab4b",
+    "ordered_join": {
+      "gfx1201": {"device": 0, "status": "PASS", "seconds": 0.26},
+      "gfx1151": {"device": 1, "status": "PASS", "seconds": 0.11},
+      "coverage": [
+        "mean-only",
+        "calibrated-means-selected-output-and-fallback-subtotal",
+        "duplicate rows",
+        "non-unit FMA-separating triple",
+        "signed zero",
+        "subnormal",
+        "quiet NaN",
+        "208-row-and-operation arena ceiling",
+        "output and descriptor reuse"
+      ]
+    },
+    "provider": {"status": "PASS", "seconds": 0.03},
+    "moe_stream_compute": {
+      "gfx1201": {"passed": 2, "failed": 0, "seconds": 0.25},
+      "gfx1151": {"passed": 2, "failed": 0, "seconds": 0.25}
+    },
+    "isa": {
+      "gfx1151": {
+        "private_segment_bytes": 0,
+        "vgpr_count": 11,
+        "sgpr_count": 28,
+        "fma_or_fmac_count": 0,
+        "scratch_or_flat_spill_operations": 0
+      },
+      "gfx1201": {
+        "private_segment_bytes": 0,
+        "vgpr_count": 11,
+        "sgpr_count": 30,
+        "fma_or_fmac_count": 0,
+        "scratch_or_flat_spill_operations": 0
+      },
+      "arithmetic_instructions": "separate v_mul_f32_e32 and v_add_f32_e32",
+      "compile_contract": "HIP -ffp-contract=off; CUDA --fmad=false"
+    }
+  },
+  "fact_gate": {
+    "root": "/home/duster/kimi-k3-deploy/p42a-ordered-fact-20260819",
+    "control_root": "/home/duster/kimi-k3-deploy/p41-compact-fact-20260819",
+    "fixture_sha256": "58f72def4d1d94e036dd96b724e40b42b09bd8b048b095667aa6c725d36b8f3f",
+    "prompt_positions": 34,
+    "emitted_tokens": 9,
+    "true_decode_transitions": 8,
+    "model_positions": 42,
+    "prefill_seconds": 30.016451554,
+    "decode_seconds": 6.874817375,
+    "true_ar_transitions_per_second": 1.163667275,
+    "wall_seconds": 53.301072805,
+    "gpu_energy_joules": 2358.052522,
+    "peak_vram_mib": 47689.039063,
+    "peak_process_rss_kib": 9950460,
+    "identity": {
+      "tokens_equal_to_p41": true,
+      "text_equal_to_p41": true,
+      "logits_byte_equal_to_p41": true,
+      "logits_sha256": "cce1bd031e90eb13928ffddfb7e9329d75d55419a8f73b6479a920fe6c561a69",
+      "traffic_byte_equal_to_p41": true,
+      "traffic_sha256": "e2eb5fcca9e0138d326892710977f4bd5dad1b7166d37cce6ef3675b0a911f13",
+      "output_text": "Tokyo<|close|>response<|sep|><|close|>message<|sep|><|end_of_msg|>"
+    },
+    "p42": {
+      "mean_rows": 733092,
+      "mean_h2d_bytes": 10509606912,
+      "expert_d2d_copies": 17917,
+      "expert_d2d_bytes": 256858112,
+      "join_launches": 3864,
+      "output_d2d_copies": 3864,
+      "output_d2d_bytes": 55394304
+    },
+    "p41": {
+      "attempted": 17917,
+      "layouts": 17917,
+      "uploads": 17917,
+      "gate": 17917,
+      "up": 17917,
+      "situ": 17917,
+      "sparse_down": 17917,
+      "completed": 17917,
+      "fallbacks": 0,
+      "invalid": 0
+    },
+    "provider": {
+      "authoritative_h2d_bytes": 55976374272,
+      "metadata_h2d_bytes": 257718128,
+      "device_zero_bytes": 0,
+      "explicit_provider_read_bytes": 29495492608,
+      "direct_physical_bytes": 25423839232,
+      "direct_io_ns": 10955880686,
+      "component_major_pack_ns": 1576742886,
+      "compact_scatter_ns": 0,
+      "expert_graph_ns": 2584765648,
+      "expert_readback_ns": 0
+    },
+    "host_cache": {
+      "capacity_bytes": 8589934592,
+      "resident_bytes": 8589475840,
+      "entries": 20354,
+      "hits": 93155,
+      "misses": 69468,
+      "hit_bytes": 37302394880,
+      "inserted_bytes": 29495492608,
+      "evicted_bytes": 20906016768,
+      "sequence_resets": 0
+    },
+    "decode_stage": {
+      "mean_total_ms": 859.108250,
+      "median_total_ms": 826.503000,
+      "mean_routed_prep_ms": 277.234625,
+      "median_routed_prep_ms": 277.446000,
+      "mean_experts_ms": 541.405875,
+      "median_experts_ms": 508.602500,
+      "mean_join_ms": 26.211250,
+      "median_join_ms": 26.414500
+    }
+  },
+  "control": {
+    "name": "P41 compact fact",
+    "runner_sha256": "9cbd72fa83b31e833bb6144c7adcb0b5e9511d603225c68f742851b0eb07f32f",
+    "prefill_seconds": 29.940473213,
+    "decode_seconds": 6.271558505,
+    "true_ar_transitions_per_second": 1.275599995,
+    "mean_decode_experts_ms": 469.140000,
+    "mean_decode_join_ms": 25.069125,
+    "expert_graph_ns": 1770864425,
+    "expert_readback_ns": 347290594,
+    "p42_rate_change": -0.087749076,
+    "p42_decode_time_change": 0.096189626,
+    "p42_prefill_time_change": 0.002537647,
+    "p42_expert_stage_change": 0.154039040,
+    "p42_join_stage_change": 0.045559029,
+    "comparison_caveat": "single short ordered run; wall, storage and cache counters remain order-sensitive"
+  },
+  "artifacts": {
+    "manifest_sha256": "d1e378e76a385d910c396c8cb41e0eb14b64b28e951b1540110ab2888f341890",
+    "logits_sha256": "cce1bd031e90eb13928ffddfb7e9329d75d55419a8f73b6479a920fe6c561a69",
+    "traffic_sha256": "e2eb5fcca9e0138d326892710977f4bd5dad1b7166d37cce6ef3675b0a911f13",
+    "process_sha256": "3f8dd9819f61f0500367f6415bbb9dcf9ca317a373b0c288fa4bd94a8e2a1cd6",
+    "io_trace_sha256": "947e5c1b8fca0e15c6199f01ef994239ea04565818e2155a52532243730be737",
+    "stderr_sha256": "d5e833c51a4c82a28c28864edfc83ae728c0b2e8c8cd786b1f679bc079c9bb78",
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "telemetry_sha256": "0c339c0142c7bc20e91d1486111dde34c0f306af7f3ced5af13edca12fc15836",
+    "telemetry_csv_sha256": "d292674560b9b577a25ca2d73e2e268865f67d0356a1c68dfca1ed1d36489d96"
+  },
+  "loc": {
+    "raw_numstat": {
+      "production": {"added": 829, "deleted": 40},
+      "tests": {"added": 310, "deleted": 1},
+      "cmake": {"added": 37, "deleted": 1},
+      "total": {"added": 1176, "deleted": 42}
+    },
+    "tokei_delta": {
+      "production": {"code": 741, "comments": 11, "blanks": 37},
+      "tests": {"code": 282, "comments": 11, "blanks": 16},
+      "cmake": {"code": 36, "comments": 0, "blanks": 0},
+      "total": {"code": 1059, "comments": 22, "blanks": 53}
+    }
+  },
+  "gate_decision": {
+    "same_device_hip_micro_bit_identity": "GO",
+    "integrated_same_placement_bit_identity": "GO",
+    "fact_throughput": "NO_GO_1.163667_TRUE_AR_PER_SECOND",
+    "broad_gate": "SKIPPED_FACT_PERFORMANCE_GATE_FAILED",
+    "default_enablement": "NO_GO",
+    "legacy_path_deletion": "NO_GO",
+    "next_gate": "device mean residency plus backend-stream event discipline before dual-owner split"
+  }
+}
