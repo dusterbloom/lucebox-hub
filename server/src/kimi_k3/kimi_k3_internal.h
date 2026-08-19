@@ -345,6 +345,17 @@ struct KimiK3RoutedPreparationBenchmarkResult {
     double cpu_median_ms = 0.0;
     double accelerator_median_ms = 0.0;
     double speedup = 0.0;
+    double persistent_accelerator_median_ms = 0.0;
+    double persistent_speedup_vs_transient = 0.0;
+    size_t persistent_compute_buffer_bytes = 0;
+    size_t persistent_metadata_bytes = 0;
+    int persistent_graph_nodes = 0;
+    bool persistent_prefix_byte_equal = false;
+    bool persistent_routed_byte_equal = false;
+    bool persistent_shared_byte_equal = false;
+    bool persistent_route_weight_byte_equal = false;
+    bool persistent_selected_id_equal = false;
+    double persistent_max_abs = 0.0;
     double prefix_relative_l2 = 0.0;
     double routed_relative_l2 = 0.0;
     double shared_relative_l2 = 0.0;

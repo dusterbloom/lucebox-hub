@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -177,13 +178,31 @@ int main() {
 
 #if defined(_WIN32)
     _putenv_s("DFLASH_KIMI_LAYER1_PROVIDER", "exact");
+    _putenv_s("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "0");
 #else
     setenv("DFLASH_KIMI_LAYER1_PROVIDER", "exact", 1);
+    setenv("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "0", 1);
 #endif
     std::unique_ptr<KimiK3RoutedOutputProvider> provider;
     error.clear();
     assert(create_kimi_k3_progressive_provider_from_env(
-        nullptr, provider, &error));
+        nullptr, nullptr, provider, &error));
     assert(!provider);
+#if defined(_WIN32)
+    _putenv_s("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "1");
+#else
+    setenv("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "1", 1);
+#endif
+    error.clear();
+    if (create_kimi_k3_progressive_provider_from_env(
+            nullptr, nullptr, provider, &error) || error.empty()) {
+        std::fprintf(stderr, "P42 exact-provider selection did not fail closed\n");
+        return 1;
+    }
+#if defined(_WIN32)
+    _putenv_s("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "0");
+#else
+    setenv("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "0", 1);
+#endif
     return 0;
 }

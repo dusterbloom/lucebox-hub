@@ -1,7 +1,9 @@
 #include "kimi_k3_progressive_provider.h"
+#include "kimi_k3_ordered_join.h"
 #include "kimi_k3_sparse_scatter.h"
 #include "device_runtime.h"
 
+#include "ggml-alloc.h"
 #include "ggml-cuda.h"
 
 #include <algorithm>
@@ -2117,6 +2119,343 @@ struct P28OracleReadResult {
     std::string error;
 };
 
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+struct P42MeanSource {
+    std::string path;
+    uint64_t offset = 0;
+    uint64_t bytes = 0;
+};
+
+class P42OrderedJoinArena {
+public:
+    ~P42OrderedJoinArena() {
+        release_backend_storage();
+    }
+
+    bool load_resident_means(
+            ggml_backend_t backend, int width,
+            const std::vector<P42MeanSource> & sources, std::string * err) {
+        BackendDeviceScope scope;
+        if (!scope.enter(backend, err)) return false;
+        const uint64_t layer_bytes = static_cast<uint64_t>(
+            kExpertCount) * kSlabCount * width * sizeof(float);
+        if (scope.device() != 1 || width != kDimension ||
+            sources.size() != kRoutedLayerCount || buffer_) {
+            if (err) *err = "P42c resident mean table geometry is invalid";
+            return false;
+        }
+        // GGML treats presence of this variable (including "0") as enabling
+        // managed allocation. P42c's qualification premise is fixed GPU1 VRAM.
+        if (std::getenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY")) {
+            if (err) *err =
+                "P42c resident means require unified memory to be unset";
+            return false;
+        }
+        for (const P42MeanSource & source : sources) {
+            if (source.path.empty() || source.bytes != layer_bytes) {
+                if (err) *err = "P42c resident mean source is invalid";
+                return false;
+            }
+        }
+        const size_t total_bytes = static_cast<size_t>(layer_bytes) *
+            sources.size();
+        constexpr size_t reserve_bytes = static_cast<size_t>(8) << 30;
+        ggml_init_params params{};
+        params.mem_size =
+            (kMaximumRows + 5) * ggml_tensor_overhead() + 1024;
+        params.no_alloc = true;
+        context_ = ggml_init(params);
+        if (context_) {
+            mean_tensor_ = ggml_new_tensor_2d(
+                context_, GGML_TYPE_F32, width, kResidentMeanRows);
+            rows_ = ggml_new_tensor_2d(
+                context_, GGML_TYPE_F32, width, kMaximumRows);
+            for (int row = 0; row < kMaximumRows; ++row) {
+                row_tensors_[static_cast<size_t>(row)] = ggml_view_1d(
+                    context_, rows_, width,
+                    static_cast<size_t>(row) * width * sizeof(float));
+            }
+            row_indices_tensor_ = ggml_new_tensor_1d(
+                context_, GGML_TYPE_I32, kMaximumOperations);
+            weights_tensor_ = ggml_new_tensor_1d(
+                context_, GGML_TYPE_F32, kMaximumOperations);
+            output_tensor_ = ggml_new_tensor_1d(
+                context_, GGML_TYPE_F32, width);
+        }
+        if (!context_ || !mean_tensor_ || !rows_ ||
+            !row_indices_tensor_ || !weights_tensor_ || !output_tensor_) {
+            release_backend_storage();
+            if (err) *err = "P42c resident arena allocation failed";
+            return false;
+        }
+        const ggml_backend_buffer_type_t buffer_type =
+            ggml_backend_get_default_buffer_type(backend);
+        const size_t required_bytes = buffer_type
+            ? ggml_backend_alloc_ctx_tensors_from_buft_size(
+                context_, buffer_type)
+            : 0;
+        size_t free_bytes = 0;
+        size_t total_device_bytes = 0;
+        const auto memory_status =
+#if defined(DFLASH27B_BACKEND_HIP)
+            hipMemGetInfo(&free_bytes, &total_device_bytes);
+#else
+            cudaMemGetInfo(&free_bytes, &total_device_bytes);
+#endif
+        if (!buffer_type || required_bytes == 0 ||
+            required_bytes > std::numeric_limits<size_t>::max() -
+                reserve_bytes ||
+            memory_status != cudaSuccess ||
+            free_bytes < required_bytes + reserve_bytes) {
+            release_backend_storage();
+            if (err) *err = "P42c resident arena violates the 8-GiB reserve";
+            return false;
+        }
+        buffer_ = ggml_backend_alloc_ctx_tensors_from_buft(
+            context_, buffer_type);
+        if (!buffer_ || ggml_backend_buffer_get_size(buffer_) < required_bytes ||
+            mean_tensor_->ne[0] != width ||
+            mean_tensor_->ne[1] != kResidentMeanRows ||
+            mean_tensor_->ne[2] != 1 || mean_tensor_->ne[3] != 1 ||
+            ggml_nbytes(mean_tensor_) != total_bytes) {
+            release_backend_storage();
+            if (err) *err = "P42c resident arena allocation failed";
+            return false;
+        }
+        ggml_backend_buffer_set_usage(
+            buffer_, GGML_BACKEND_BUFFER_USAGE_COMPUTE);
+        std::vector<uint8_t> layer(static_cast<size_t>(layer_bytes));
+        for (size_t index = 0; index < sources.size(); ++index) {
+            const P42MeanSource & source = sources[index];
+            std::ifstream input(source.path, std::ios::binary);
+            input.seekg(static_cast<std::streamoff>(source.offset));
+            input.read(
+                reinterpret_cast<char *>(layer.data()),
+                static_cast<std::streamsize>(layer.size()));
+            if (!input || input.gcount() !=
+                    static_cast<std::streamsize>(layer.size())) {
+                release_backend_storage();
+                if (err) *err = "P42c resident mean preload read failed";
+                return false;
+            }
+            ggml_backend_tensor_set(
+                mean_tensor_, layer.data(), index * layer.size(), layer.size());
+        }
+        backend_ = backend;
+        runtime_device_ = scope.device();
+        resident_mean_bytes_ = total_bytes;
+        return true;
+    }
+
+    bool begin(ggml_backend_t backend, int width, std::string * err) {
+        BackendDeviceScope scope;
+        if (!scope.enter(backend, err)) return false;
+        if (scope.device() != 1 || width != kDimension) {
+            if (err) *err = "P42 ordered join requires current backend GPU1";
+            return false;
+        }
+        if (backend_ && backend_ != backend) {
+            if (err) *err = "P42 ordered join backend changed";
+            return false;
+        }
+        if (pending_output_ || queued_backend_work_) {
+            if (err) *err = "P42 ordered join work was not consumed";
+            return false;
+        }
+        if (!buffer_ || !mean_tensor_ || !rows_ ||
+            !row_indices_tensor_ || !weights_tensor_ || !output_tensor_) {
+            if (err) *err = "P42c resident means were not initialized";
+            return false;
+        }
+        width_ = width;
+        row_count_ = 0;
+        row_indices_.clear();
+        weights_.clear();
+        calibrated_operations_ = -1;
+        return true;
+    }
+
+    bool stage_device_output(
+            const ggml_tensor * source, int & row, std::string * err) {
+        if (!source || source->type != GGML_TYPE_F32 || !source->data ||
+            !ggml_is_contiguous(source) || source->ne[0] != width_ ||
+            source->ne[1] != 1 || source->ne[2] != 1 ||
+            source->ne[3] != 1 ||
+            row_count_ >= kMaximumRows) {
+            if (err) *err = "P42 ordered join saw an invalid expert output";
+            return false;
+        }
+        row = row_count_++;
+        ggml_backend_tensor_copy_async(
+            backend_, backend_, source,
+            row_tensors_[static_cast<size_t>(row)]);
+        queued_backend_work_ = true;
+        ++expert_d2d_copies_;
+        expert_d2d_bytes_ += static_cast<uint64_t>(width_) * sizeof(float);
+        return true;
+    }
+
+    bool append(int row, float weight, std::string * err) {
+        if (row < 0 || row >= row_count_ ||
+            row_indices_.size() >= kMaximumOperations) {
+            if (err) *err = "P42 ordered join operation is invalid";
+            return false;
+        }
+        row_indices_.push_back(row);
+        weights_.push_back(weight);
+        return true;
+    }
+
+    bool append_resident_mean(
+            int model_layer, int expert, int rank, float weight,
+            std::string * err) {
+        const int64_t row = static_cast<int64_t>(
+            model_layer - kFirstModelLayer) * kExpertCount * kSlabCount +
+            static_cast<int64_t>(expert) * kSlabCount + rank;
+        if (model_layer < kFirstModelLayer ||
+            model_layer >= kFirstModelLayer + kRoutedLayerCount ||
+            expert < 0 || expert >= kExpertCount || rank < 0 ||
+            rank >= kSlabCount || row < 0 || row >= kResidentMeanRows ||
+            row_indices_.size() >= kMaximumOperations) {
+            if (err) *err = "P42c resident mean descriptor is invalid";
+            return false;
+        }
+        row_indices_.push_back(-1 - static_cast<int32_t>(row));
+        weights_.push_back(weight);
+        return true;
+    }
+
+    void seal_calibrated() {
+        if (calibrated_operations_ < 0) {
+            calibrated_operations_ = static_cast<int>(row_indices_.size());
+        }
+    }
+
+    bool finish(std::string * err) {
+        seal_calibrated();
+        if (row_indices_.empty()) {
+            if (err) *err = "P42 ordered join has no contributions";
+            return false;
+        }
+        const char * failure = nullptr;
+        ggml_backend_tensor_set_async(
+            backend_, row_indices_tensor_, row_indices_.data(), 0,
+            row_indices_.size() * sizeof(int32_t));
+        ggml_backend_tensor_set_async(
+            backend_, weights_tensor_, weights_.data(), 0,
+            weights_.size() * sizeof(float));
+        // All route copies and descriptor uploads share the backend stream.
+        // One barrier here protects the raw ordered-join launch without
+        // serializing each staged expert.
+        ggml_backend_synchronize(backend_);
+        queued_backend_work_ = false;
+        if (!kimi_k3_ordered_join_launch(
+                static_cast<const float *>(rows_->data), row_count_, width_,
+                static_cast<const float *>(mean_tensor_->data),
+                kResidentMeanRows,
+                static_cast<const int32_t *>(row_indices_tensor_->data),
+                static_cast<const float *>(weights_tensor_->data),
+                static_cast<int>(row_indices_.size()), calibrated_operations_,
+                static_cast<float *>(output_tensor_->data), &failure)) {
+            if (err) {
+                *err = std::string("P42 ordered join failed: ") +
+                    (failure ? failure : "unknown");
+            }
+            return false;
+        }
+        ++join_launches_;
+        pending_output_ = true;
+        return true;
+    }
+
+    bool copy_to(
+            ggml_backend_t destination_backend, ggml_tensor * destination,
+            std::string * err) {
+        BackendDeviceScope scope;
+        if (!scope.enter(destination_backend, err)) return false;
+        if (!pending_output_ || destination_backend != backend_ ||
+            scope.device() != runtime_device_ || !destination ||
+            destination->type != GGML_TYPE_F32 || !destination->data ||
+            !ggml_is_contiguous(destination) ||
+            destination->ne[0] != width_ || destination->ne[1] != 1 ||
+            destination->ne[2] != 1 || destination->ne[3] != 1) {
+            if (err) *err = "P42 ordered join destination is incompatible";
+            return false;
+        }
+        ggml_backend_tensor_copy_async(
+            backend_, destination_backend, output_tensor_, destination);
+        ++output_d2d_copies_;
+        output_d2d_bytes_ += static_cast<uint64_t>(width_) * sizeof(float);
+        pending_output_ = false;
+        return true;
+    }
+
+    void discard() {
+        if (queued_backend_work_ && backend_) {
+            ggml_backend_synchronize(backend_);
+        }
+        queued_backend_work_ = false;
+        pending_output_ = false;
+    }
+
+    uint64_t resident_mean_bytes() const { return resident_mean_bytes_; }
+    uint64_t expert_d2d_copies() const { return expert_d2d_copies_; }
+    uint64_t expert_d2d_bytes() const { return expert_d2d_bytes_; }
+    uint64_t join_launches() const { return join_launches_; }
+    uint64_t output_d2d_copies() const { return output_d2d_copies_; }
+    uint64_t output_d2d_bytes() const { return output_d2d_bytes_; }
+
+private:
+    void release_backend_storage() {
+        if (buffer_ && backend_) ggml_backend_synchronize(backend_);
+        if (buffer_) ggml_backend_buffer_free(buffer_);
+        if (context_) ggml_free(context_);
+        buffer_ = nullptr;
+        context_ = nullptr;
+        mean_tensor_ = nullptr;
+        rows_ = nullptr;
+        row_tensors_.fill(nullptr);
+        row_indices_tensor_ = nullptr;
+        weights_tensor_ = nullptr;
+        output_tensor_ = nullptr;
+        backend_ = nullptr;
+        runtime_device_ = -1;
+        queued_backend_work_ = false;
+    }
+
+    static constexpr int kFirstModelLayer = 1;
+    static constexpr int kRoutedLayerCount = 92;
+    static constexpr int kResidentMeanRows =
+        kRoutedLayerCount * kExpertCount * kSlabCount;
+    static constexpr int kMaximumRows = kNativeTopK;
+    static constexpr size_t kMaximumOperations =
+        static_cast<size_t>(kNativeTopK * (kSlabCount + 1));
+    ggml_backend_t backend_ = nullptr;
+    int runtime_device_ = -1;
+    int width_ = 0;
+    int row_count_ = 0;
+    int calibrated_operations_ = -1;
+    ggml_context * context_ = nullptr;
+    ggml_backend_buffer_t buffer_ = nullptr;
+    ggml_tensor * mean_tensor_ = nullptr;
+    ggml_tensor * rows_ = nullptr;
+    std::array<ggml_tensor *, kMaximumRows> row_tensors_{};
+    ggml_tensor * row_indices_tensor_ = nullptr;
+    ggml_tensor * weights_tensor_ = nullptr;
+    ggml_tensor * output_tensor_ = nullptr;
+    std::vector<int32_t> row_indices_;
+    std::vector<float> weights_;
+    bool queued_backend_work_ = false;
+    bool pending_output_ = false;
+    uint64_t resident_mean_bytes_ = 0;
+    uint64_t expert_d2d_copies_ = 0;
+    uint64_t expert_d2d_bytes_ = 0;
+    uint64_t join_launches_ = 0;
+    uint64_t output_d2d_copies_ = 0;
+    uint64_t output_d2d_bytes_ = 0;
+};
+#endif
+
 // P23 keeps the P20 full-width arithmetic intact while removing repeated
 // ggml graph allocation and CUDA buffer allocation from the per-route hot
 // path.  A small cache entry is retained for each qtype/mask geometry seen by
@@ -2213,6 +2552,25 @@ public:
                 std::chrono::steady_clock::now() - readback_started).count());
         return true;
 #endif
+    }
+
+    bool evaluate_compact_device(
+            ggml_backend_t backend,
+            const MoeStreamExpertSpec & spec,
+            const float * input_data,
+            const std::vector<SparseSlabPayload> & slabs,
+            const SparseCompactPayload * prepacked_compact,
+            uint16_t requested_mask,
+            size_t down_slab_row_bytes,
+            ggml_tensor *& device_output,
+            uint64_t & authoritative_h2d_bytes,
+            uint64_t & metadata_h2d_bytes,
+            bool & invalid,
+            std::string * err) {
+        return eval_compact_into(
+            backend, spec, input_data, slabs, prepacked_compact,
+            requested_mask, down_slab_row_bytes, device_output,
+            authoritative_h2d_bytes, metadata_h2d_bytes, invalid, err);
     }
 
     bool eval_into(
@@ -3824,7 +4182,8 @@ public:
     bool init(ggml_backend_t backend, const std::string & aux_directory,
               const std::string & sidecar_directory,
               const std::string & route_stats_directory,
-              int route_prefix_depth, const char * metrics_path,
+              int route_prefix_depth, bool ordered_device_join,
+              const char * metrics_path,
               std::string * err) {
         if (!backend || aux_directory.empty() || sidecar_directory.empty()) {
             if (err) *err =
@@ -4066,6 +4425,29 @@ public:
             return false;
         }
         compact_executor_ = enabled;
+        if (ordered_device_join && (!compact_executor_ || !sidecar_authoritative_ ||
+                layer_phase_ != LayerPhase::All || dynamic_active_layer_ ||
+                route_prefix_depth_ != 0)) {
+            if (err) {
+                *err = "P42 ordered join requires P41, authoritative sidecars, "
+                    "all routed layers, and calibrated96 slab mode";
+            }
+            return false;
+        }
+        if (ordered_device_join) {
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+            BackendDeviceScope scope;
+            if (!scope.enter(backend_, err)) return false;
+            if (scope.device() != 1) {
+                if (err) *err = "P42 ordered join is qualified only on GPU1";
+                return false;
+            }
+#else
+            if (err) *err = "P42 ordered join requires a GPU backend";
+            return false;
+#endif
+        }
+        ordered_device_join_ = ordered_device_join;
         if (const char * trace =
                 std::getenv("DFLASH_KIMI_P40_CACHE_TRACE")) {
             if (*trace && !device_variant_cache_) {
@@ -4143,6 +4525,27 @@ public:
                 "sidecar-authoritative mode requires 92 valid calibrated layers";
             return false;
         }
+        if (ordered_device_join_) {
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+            std::vector<P42MeanSource> mean_sources;
+            mean_sources.reserve(kLastRoutedLayer);
+            for (int layer = kFirstRoutedLayer;
+                 layer <= kLastRoutedLayer; ++layer) {
+                const LayerState & state = layers_[static_cast<size_t>(layer)];
+                mean_sources.push_back({
+                    state.aux_path, state.means_offset, state.means_bytes});
+            }
+            if (!ordered_join_arena_.load_resident_means(
+                    backend_, kDimension, mean_sources, err)) {
+                return false;
+            }
+            std::fprintf(stderr,
+                "[kimi-k3-p42c] resident-mean-bytes=%llu "
+                "hot-mean-reads=0 hot-mean-h2d-bytes=0\n",
+                static_cast<unsigned long long>(
+                    ordered_join_arena_.resident_mean_bytes()));
+#endif
+        }
         if (!oracle_trace_path_.empty() && !load_oracle_trace(err)) {
             return false;
         }
@@ -4154,7 +4557,7 @@ public:
             "speed-claim=false requested-budget=%s layer-phase=%s dynamic-layer=%s physical-layout=%s "
             "io-backend=%s persistent-scratch=%s compact-upload=%s "
             "pinned-compact=%s direct-pinned-compact=%s p28-oracle=%s "
-            "p40-device-cache=%s p41-compact-executor=%s "
+            "p40-device-cache=%s p41-compact-executor=%s p42-ordered-join=%s "
             "exact-source=%s "
             "p30-host-cache-mib=%.1f "
             "valid-layers=%d/92 "
@@ -4177,6 +4580,7 @@ public:
             oracle_trace_path_.empty() ? "disabled" : "one-layer",
             device_variant_cache_ ? "enabled" : "disabled",
             compact_executor_ ? "enabled" : "disabled",
+            ordered_device_join_ ? "enabled" : "disabled",
             sidecar_authoritative_ ? "sidecar" : "native-model",
             static_cast<double>(read_cache_.capacity()) / (1024.0 * 1024.0),
             valid_layers);
@@ -4196,6 +4600,10 @@ public:
                   MoeHybridStreamEngine & exact_engine,
                   std::vector<float> & output,
                   std::string * err) override {
+        if (ordered_device_join_) {
+            if (err) *err = "P42 ordered join requires the device-output API";
+            return false;
+        }
         if (!handles_layer(model_layer) || routes.n_expert != kExpertCount ||
             routes.top_k != kNativeTopK || spec.input_dim != kDimension ||
             spec.output_dim != kDimension) {
@@ -4226,10 +4634,80 @@ public:
         }
         return evaluate_calibrated(
             model_layer, base_pos, state, spec, routes, exact_engine, output,
-            err);
+            false, err);
+    }
+
+    bool requires_device_output() const override {
+        return ordered_device_join_;
+    }
+
+    bool evaluate_device(
+            int model_layer, int base_pos,
+            const MoeStreamExpertSpec & spec,
+            const MoeStreamRouteBatch & routes,
+            MoeHybridStreamEngine & exact_engine,
+            ggml_backend_t destination_backend,
+            std::string * err) override {
+#if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
+        (void) model_layer; (void) base_pos; (void) spec; (void) routes;
+        (void) exact_engine; (void) destination_backend;
+        if (err) *err = "P42 ordered join requires a GPU backend";
+        return false;
+#else
+        if (!ordered_device_join_ || destination_backend != backend_ ||
+            routes.n_tokens != 1 || !handles_layer(model_layer) ||
+            routes.n_expert != kExpertCount || routes.top_k != kNativeTopK ||
+            spec.input_dim != kDimension || spec.output_dim != kDimension) {
+            if (err) *err = "P42 ordered join received an incompatible request";
+            return false;
+        }
+        LayerState & state = layers_[static_cast<size_t>(model_layer)];
+        if (!state.valid || spec.fused_gate_up ||
+            !geometry_matches(state, spec)) {
+            if (err) *err = "P42 ordered join layer is incompatible";
+            return false;
+        }
+        std::vector<float> unused;
+        return evaluate_calibrated(
+            model_layer, base_pos, state, spec, routes, exact_engine, unused,
+            true, err);
+#endif
+    }
+
+    bool copy_device_output(
+            ggml_backend_t destination_backend,
+            ggml_tensor * destination,
+            std::string * err) override {
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+        return ordered_join_arena_.copy_to(
+            destination_backend, destination, err);
+#else
+        (void) destination_backend; (void) destination;
+        if (err) *err = "P42 ordered join requires a GPU backend";
+        return false;
+#endif
+    }
+
+    void discard_device_output() override {
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+        ordered_join_arena_.discard();
+#endif
     }
 
 private:
+    enum class CompactAttemptOutcome { Success, Invalid, FallbackMiss };
+
+    CompactAttemptOutcome account_compact_attempt(
+            bool success, bool invalid) {
+        ++p41_attempted_;
+        if (success) ++p41_completed_;
+        else if (invalid) ++p41_invalid_;
+        else ++p41_fallbacks_;
+        return success ? CompactAttemptOutcome::Success :
+            invalid ? CompactAttemptOutcome::Invalid :
+                      CompactAttemptOutcome::FallbackMiss;
+    }
+
     bool sparse_device() const {
         return sparse_workspace_ != SparseWorkspace::HostRecomposed;
     }
@@ -5477,29 +5955,25 @@ private:
         const uint16_t missing_before = cache_lease
             ? cache_lease->missing_mask() : 0;
         const uint64_t h2d_before = authoritative_h2d_bytes_;
-        bool compact_invalid = false;
         // A live P40 lease owns the expanded weight layout. Keep that
         // qualified path authoritative until compact parity is established;
         // P41 runs when the request is not being served by that cache.
         if (compact_executor_ && !cache_lease) {
-            ++p41_attempted_;
-            if (evaluator.evaluate(
-                    backend_, spec, input, slabs, compact, mask,
-                    down_slab_row_bytes, result, authoritative_h2d_bytes_,
-                    metadata_h2d_bytes_, device_zero_bytes_,
-                    kimi_k3_sparse_upload_for_call(
-                        sparse_delivery_, compact != nullptr), nullptr,
-                    requested_mask, true, compact_invalid, err)) {
-                ++p41_completed_;
-                return true;
-            }
-            if (compact_invalid) {
-                ++p41_invalid_;
-                return false;
-            }
-            ++p41_fallbacks_;
+            bool invalid = false;
+            const bool success = evaluator.evaluate(
+                backend_, spec, input, slabs, compact, mask,
+                down_slab_row_bytes, result, authoritative_h2d_bytes_,
+                metadata_h2d_bytes_, device_zero_bytes_,
+                kimi_k3_sparse_upload_for_call(
+                    sparse_delivery_, compact != nullptr), nullptr,
+                requested_mask, true, invalid, err);
+            const CompactAttemptOutcome outcome = account_compact_attempt(
+                success, invalid);
+            if (outcome == CompactAttemptOutcome::Success) return true;
+            if (outcome == CompactAttemptOutcome::Invalid) return false;
             if (err) err->clear();
         }
+        bool compact_invalid = false;
         const bool ok = evaluator.evaluate(
             backend_, spec, input, slabs, compact, mask, down_slab_row_bytes,
             result, authoritative_h2d_bytes_, metadata_h2d_bytes_,
@@ -5522,12 +5996,33 @@ private:
         return ok;
     }
 
+    bool evaluate_sparse_payload_device(
+            const MoeStreamExpertSpec & spec, const float * input,
+            const std::vector<SparseSlabPayload> & slabs,
+            const SparseCompactPayload * compact,
+            size_t down_slab_row_bytes, uint16_t requested_mask,
+            ggml_tensor *& device_output, std::string * err) {
+        device_output = nullptr;
+        if (!compact_executor_ || device_variant_cache_) {
+            if (err) *err = "P42 device output requires uncached P41";
+            return false;
+        }
+        bool invalid = false;
+        const bool success = sparse_device_evaluator_.evaluate_compact_device(
+            backend_, spec, input, slabs, compact, requested_mask,
+            down_slab_row_bytes, device_output,
+            authoritative_h2d_bytes_, metadata_h2d_bytes_, invalid, err);
+        return account_compact_attempt(success, invalid) ==
+            CompactAttemptOutcome::Success;
+    }
+
     bool evaluate_sidecar_exact_expert(
             int sidecar_fd, int model_layer, int base_pos, int token_index,
             const LayerState & state, const MoeStreamExpertSpec & spec,
             int local_layer, int expert, const float * input,
             MoeHybridStreamEngine & exact_engine,
-            std::vector<float> & result, std::string * err) {
+            std::vector<float> & result, ggml_tensor ** device_result,
+            std::string * err) {
         const size_t gate_full_bytes = static_cast<size_t>(
             state.gate_slab_bytes * kSlabCount);
         const size_t up_full_bytes = static_cast<size_t>(
@@ -5606,6 +6101,15 @@ private:
                     }
                 }
             }
+            if (device_result) {
+                if (cache_lease) {
+                    if (err) *err = "P42 exact output cannot use P40 cache";
+                    return false;
+                }
+                return evaluate_sparse_payload_device(
+                    spec, input, slabs, nullptr, down_slab_row_bytes,
+                    0x0fff, *device_result, err);
+            }
             return evaluate_sparse_payload(
                 spec, input, slabs, nullptr, full_mask,
                 down_slab_row_bytes, 0x0fff, result,
@@ -5664,6 +6168,10 @@ private:
         }
         reference_full_weight_h2d_bytes_ +=
             gate.size() + up.size() + down.size();
+        if (device_result) {
+            if (err) *err = "P42 exact output requires sparse device layout";
+            return false;
+        }
         return evaluate_host_recomposed_expert(
             backend_, spec, input, gate, up, down, nullptr, result, err);
     }
@@ -5673,7 +6181,8 @@ private:
             const MoeStreamExpertSpec & spec,
             const MoeStreamRouteBatch & routes,
             MoeHybridStreamEngine & exact_engine,
-            std::vector<float> & output, std::string * err) {
+            std::vector<float> & output, bool device_ordered,
+            std::string * err) {
         if (read_cache_.enabled() && model_layer == kFirstRoutedLayer &&
             base_pos == 0) {
             if (cache_sequence_started_) read_cache_.reset_sequence();
@@ -5732,6 +6241,12 @@ private:
             }
             return ok;
         };
+        const auto fail_device_join = [&]() {
+            close_fd(aux_fd);
+            close_fd(sidecar_fd);
+            if (route_stats_fd >= 0) close_fd(route_stats_fd);
+            return false;
+        };
         const size_t gate_full_bytes = static_cast<size_t>(
             state.gate_slab_bytes * kSlabCount);
         const size_t up_full_bytes = static_cast<size_t>(
@@ -5750,10 +6265,22 @@ private:
         std::vector<float> mask(
             static_cast<size_t>(spec.intermediate_dim), 0.0f);
         std::vector<float> means(
-            static_cast<size_t>(kSlabCount * kDimension));
+            device_ordered ? 0 : static_cast<size_t>(kSlabCount * kDimension));
         std::vector<float> expert_output;
-        output.assign(
-            static_cast<size_t>(routes.n_tokens) * spec.output_dim, 0.0f);
+        if (device_ordered) {
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+            if (!ordered_join_arena_.begin(backend_, spec.output_dim, err)) {
+                return fail_device_join();
+            }
+            output.clear();
+#else
+            if (err) *err = "P42 ordered join requires a GPU backend";
+            return fail_device_join();
+#endif
+        } else {
+            output.assign(
+                static_cast<size_t>(routes.n_tokens) * spec.output_dim, 0.0f);
+        }
 
         for (int token = 0; token < routes.n_tokens; ++token) {
             const size_t route_offset =
@@ -5887,7 +6414,7 @@ private:
                     return routes.selected_ids[route_offset + left] <
                         routes.selected_ids[route_offset + right];
                 });
-            float * destination = output.data() +
+            float * destination = device_ordered ? nullptr : output.data() +
                 static_cast<size_t>(token) * spec.output_dim;
             const float * input = routes.inputs +
                 static_cast<size_t>(token) * spec.input_dim;
@@ -5909,7 +6436,7 @@ private:
                         state.native_means_offset +
                         static_cast<uint64_t>(expert) * kDimension *
                             sizeof(float);
-                    if (!traced_read_exact_at(
+                    if (device_ordered || !traced_read_exact_at(
                             route_stats_fd, means.data(),
                             static_cast<size_t>(kDimension) * sizeof(float),
                             native_mean_offset, model_layer, base_pos, token,
@@ -5918,12 +6445,15 @@ private:
                         return exact_layer_fallback(
                             "short native route mean read");
                     }
-                    for (int d = 0; d < kDimension; ++d) {
-                        destination[d] += weight * means[static_cast<size_t>(d)];
+                    if (!device_ordered) {
+                        for (int d = 0; d < kDimension; ++d) {
+                            destination[d] +=
+                                weight * means[static_cast<size_t>(d)];
+                        }
                     }
                     continue;
                 }
-                if (!traced_read_exact_at(
+                if (!device_ordered && !traced_read_exact_at(
                         aux_fd, means.data(), means.size() * sizeof(float),
                         mean_offset, model_layer, base_pos, token, expert,
                         "slab-mean", "f32", prefix_depth, false,
@@ -5937,10 +6467,19 @@ private:
                             static_cast<size_t>(route * kSlabCount + rank)]) {
                         continue;
                     }
-                    const float * mean = means.data() +
-                        static_cast<size_t>(rank) * kDimension;
-                    for (int d = 0; d < kDimension; ++d) {
-                        destination[d] += weight * mean[d];
+                    if (device_ordered) {
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+                        if (!ordered_join_arena_.append_resident_mean(
+                                model_layer, expert, rank, weight, err)) {
+                            return fail_device_join();
+                        }
+#endif
+                    } else {
+                        const float * mean = means.data() +
+                            static_cast<size_t>(rank) * kDimension;
+                        for (int d = 0; d < kDimension; ++d) {
+                            destination[d] += weight * mean[d];
+                        }
                     }
                 }
 
@@ -6081,8 +6620,13 @@ private:
                         selected_by_route.data() +
                             static_cast<size_t>(route) * kSlabCount,
                         kSlabCount);
-                const bool evaluated = retained == 0 || (sparse_device()
-                    ? evaluate_sparse_payload(
+                ggml_tensor * device_expert_output = nullptr;
+                const bool evaluated = retained == 0 || (device_ordered
+                    ? evaluate_sparse_payload_device(
+                        spec, input, sparse_slabs, prepacked_compact,
+                        down_slab_row_bytes, requested_mask,
+                        device_expert_output, err)
+                    : sparse_device() ? evaluate_sparse_payload(
                         spec, input, sparse_slabs, prepacked_compact, mask,
                         down_slab_row_bytes, requested_mask, expert_output,
                         cache_leases[static_cast<size_t>(route)]
@@ -6104,17 +6648,37 @@ private:
                         gate.size() + up.size() + down.size();
                 }
                 if (retained > 0) {
-                    for (int d = 0; d < spec.output_dim; ++d) {
-                        destination[d] += weight *
-                            expert_output[static_cast<size_t>(d)];
+                    if (device_ordered) {
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+                        int expert_row = -1;
+                        if (!ordered_join_arena_.stage_device_output(
+                                device_expert_output, expert_row, err) ||
+                            !ordered_join_arena_.append(
+                                expert_row, weight, err)) {
+                            return fail_device_join();
+                        }
+#endif
+                    } else {
+                        for (int d = 0; d < spec.output_dim; ++d) {
+                            destination[d] += weight *
+                                expert_output[static_cast<size_t>(d)];
+                        }
                     }
                 }
             }
 
+            if (device_ordered) {
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+                ordered_join_arena_.seal_calibrated();
+#endif
+            }
             if (!fallback_routes.empty()) {
                 std::vector<float> exact;
                 if (sidecar_authoritative_) {
-                    exact.assign(static_cast<size_t>(spec.output_dim), 0.0f);
+                    if (!device_ordered) {
+                        exact.assign(
+                            static_cast<size_t>(spec.output_dim), 0.0f);
+                    }
                     std::vector<int> stable_fallback = fallback_routes;
                     std::stable_sort(
                         stable_fallback.begin(), stable_fallback.end(),
@@ -6126,22 +6690,41 @@ private:
                     for (const int route : stable_fallback) {
                         const int expert =
                             routes.selected_ids[route_offset + route];
+                        ggml_tensor * device_exact_output = nullptr;
                         if (!evaluate_sidecar_exact_expert(
                                 sidecar_fd, model_layer, base_pos, token,
                                 state, spec, routes.layer, expert, input,
-                                exact_engine, exact_expert, err)) {
-                            close_fd(aux_fd); close_fd(sidecar_fd);
-                            if (route_stats_fd >= 0) close_fd(route_stats_fd);
-                            return false;
+                                exact_engine, exact_expert,
+                                device_ordered ? &device_exact_output : nullptr,
+                                err)) {
+                            return fail_device_join();
                         }
                         const float weight =
                             routes.selected_weights[route_offset + route];
-                        for (int d = 0; d < spec.output_dim; ++d) {
-                            exact[static_cast<size_t>(d)] +=
-                                weight * exact_expert[static_cast<size_t>(d)];
+                        if (device_ordered) {
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+                            int exact_row = -1;
+                            if (!ordered_join_arena_.stage_device_output(
+                                    device_exact_output, exact_row, err) ||
+                                !ordered_join_arena_.append(
+                                    exact_row, weight, err)) {
+                                return fail_device_join();
+                            }
+#endif
+                        } else {
+                            for (int d = 0; d < spec.output_dim; ++d) {
+                                exact[static_cast<size_t>(d)] += weight *
+                                    exact_expert[static_cast<size_t>(d)];
+                            }
                         }
                     }
                 } else {
+                    if (device_ordered) {
+                        if (err) {
+                            *err = "P42 ordered join requires authoritative fallback";
+                        }
+                        return fail_device_join();
+                    }
                     std::vector<int32_t> fallback_ids;
                     std::vector<float> fallback_weights;
                     for (const int route : fallback_routes) {
@@ -6169,9 +6752,19 @@ private:
                         return false;
                     }
                 }
-                for (int d = 0; d < spec.output_dim; ++d) {
-                    destination[d] += exact[static_cast<size_t>(d)];
+                if (!device_ordered) {
+                    for (int d = 0; d < spec.output_dim; ++d) {
+                        destination[d] += exact[static_cast<size_t>(d)];
+                    }
                 }
+            }
+
+            if (device_ordered) {
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+                if (!ordered_join_arena_.finish(err)) {
+                    return fail_device_join();
+                }
+#endif
             }
 
             ++state.traffic.tokens;
@@ -6329,6 +6922,28 @@ private:
                 static_cast<unsigned long long>(p41_fallbacks_),
                 static_cast<unsigned long long>(p41_invalid_));
         }
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+        if (ordered_device_join_) {
+            std::fprintf(stderr,
+                "[kimi-k3-p42c] resident-mean-bytes=%llu "
+                "hot-mean-reads=0 hot-mean-h2d-bytes=0 "
+                "expert-d2d-copies=%llu expert-d2d-bytes=%llu "
+                "join-launches=%llu output-d2d-copies=%llu "
+                "output-d2d-bytes=%llu\n",
+                static_cast<unsigned long long>(
+                    ordered_join_arena_.resident_mean_bytes()),
+                static_cast<unsigned long long>(
+                    ordered_join_arena_.expert_d2d_copies()),
+                static_cast<unsigned long long>(
+                    ordered_join_arena_.expert_d2d_bytes()),
+                static_cast<unsigned long long>(
+                    ordered_join_arena_.join_launches()),
+                static_cast<unsigned long long>(
+                    ordered_join_arena_.output_d2d_copies()),
+                static_cast<unsigned long long>(
+                    ordered_join_arena_.output_d2d_bytes()));
+        }
+#endif
         if (!oracle_trace_path_.empty()) {
             std::fprintf(stderr,
                 "[kimi-k3-p28] launches=%llu hits=%llu misses=%llu "
@@ -6365,6 +6980,10 @@ private:
         KimiK3SparseDeliveryPolicy::BufferedSlabs;
     bool device_variant_cache_ = false;
     bool compact_executor_ = false;
+    bool ordered_device_join_ = false;
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+    P42OrderedJoinArena ordered_join_arena_;
+#endif
     size_t p40_device_bytes_ = 0;
     size_t p40_requested_device_bytes_ = 0;
     uint64_t p40_requested_slabs_ = 0;
@@ -6650,21 +7269,39 @@ KimiK3CalibratedSlabPlan plan_kimi_k3_calibrated_route_prefixes(
 
 bool create_kimi_k3_progressive_provider_from_env(
         ggml_backend_t expert_backend,
+        ggml_backend_t destination_backend,
         std::unique_ptr<KimiK3RoutedOutputProvider> & out,
         std::string * err) {
     out.reset();
     const char * raw_kind = std::getenv("DFLASH_KIMI_LAYER1_PROVIDER");
+    bool p42_requested = false;
+    if (!parse_binary_flag(
+            std::getenv("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN"),
+            p42_requested)) {
+        if (err) *err =
+            "DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN must be 0 or 1";
+        return false;
+    }
+    const bool all_layers_calibrated96 =
+        raw_kind && std::strcmp(raw_kind, "all-layers-calibrated96") == 0;
+    const bool all_layers_four_route_half =
+        raw_kind && std::strcmp(raw_kind,
+                    "all-layers-four-route-half-slabs") == 0;
+    const bool all_layers_four_route_full =
+        raw_kind && std::strcmp(raw_kind,
+                    "all-layers-four-route-full-slabs") == 0;
+    if (p42_requested && (!all_layers_calibrated96 ||
+            expert_backend != destination_backend)) {
+        if (err) {
+            *err = !all_layers_calibrated96
+                ? "P42c ordered join requires all-layers-calibrated96"
+                : "P42 ordered join requires identical expert and core backends";
+        }
+        return false;
+    }
     if (!raw_kind || !*raw_kind || std::strcmp(raw_kind, "exact") == 0) {
         return true;
     }
-    const bool all_layers_calibrated96 =
-        std::strcmp(raw_kind, "all-layers-calibrated96") == 0;
-    const bool all_layers_four_route_half =
-        std::strcmp(raw_kind,
-                    "all-layers-four-route-half-slabs") == 0;
-    const bool all_layers_four_route_full =
-        std::strcmp(raw_kind,
-                    "all-layers-four-route-full-slabs") == 0;
     if (all_layers_calibrated96 || all_layers_four_route_half ||
         all_layers_four_route_full) {
         const char * aux_directory =
@@ -6690,6 +7327,7 @@ bool create_kimi_k3_progressive_provider_from_env(
                 route_stats_directory ? route_stats_directory : "",
                 all_layers_four_route_half ? 6 :
                     all_layers_four_route_full ? 12 : 0,
+                p42_requested,
                 std::getenv("DFLASH_KIMI_CALIBRATED96_METRICS_OUT"), err)) {
             return false;
         }

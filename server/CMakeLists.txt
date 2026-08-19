@@ -563,8 +563,11 @@ endif()
 if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
     target_sources(dflash_common PRIVATE
         src/cuda_cross_device_copy.cpp
+        src/kimi_k3/kimi_k3_ordered_join.cu
         src/kimi_k3/kimi_k3_sparse_scatter.cu
         src/deepseek4/deepseek4_hc_cuda.cu)
+    set_property(SOURCE src/kimi_k3/kimi_k3_ordered_join.cu APPEND
+        PROPERTY COMPILE_OPTIONS --fmad=false)
     set_target_properties(dflash_common PROPERTIES CUDA_ARCHITECTURES "${_dflash_archs}")
     list(GET _dflash_archs 0 _dflash_cuda_min_sm)
     # Strip any trailing 'a' suffix (e.g. "121a" -> "121")
@@ -579,8 +582,12 @@ if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
     endif()
 elseif(DFLASH27B_GPU_BACKEND STREQUAL "hip")
     target_sources(dflash_common PRIVATE
+        src/kimi_k3/kimi_k3_ordered_join.cu
         src/kimi_k3/kimi_k3_sparse_scatter.cu
         src/deepseek4/deepseek4_hc_cuda.cu)
+    set_source_files_properties(src/kimi_k3/kimi_k3_ordered_join.cu PROPERTIES LANGUAGE HIP)
+    set_property(SOURCE src/kimi_k3/kimi_k3_ordered_join.cu APPEND
+        PROPERTY COMPILE_OPTIONS -ffp-contract=off)
     set_source_files_properties(src/kimi_k3/kimi_k3_sparse_scatter.cu PROPERTIES LANGUAGE HIP)
     set_source_files_properties(src/deepseek4/deepseek4_hc_cuda.cu PROPERTIES LANGUAGE HIP)
     set_target_properties(dflash_common PROPERTIES HIP_ARCHITECTURES "${_dflash_archs}")
@@ -1166,6 +1173,32 @@ if(DFLASH27B_TESTS)
         target_link_libraries(test_sparse_k_mmvq_cuda PRIVATE
             ggml ${DFLASH27B_GGML_BACKEND_TARGET})
         list(APPEND _raw_unit_test_targets test_sparse_k_mmvq_cuda)
+    endif()
+    if((DFLASH27B_GPU_BACKEND STREQUAL "cuda" OR
+        DFLASH27B_GPU_BACKEND STREQUAL "hip") AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_kimi_k3_ordered_join.cpp")
+        add_executable(test_kimi_k3_ordered_join
+            test/test_kimi_k3_ordered_join.cpp)
+        target_include_directories(test_kimi_k3_ordered_join PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(test_kimi_k3_ordered_join PRIVATE
+            dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+        if(DFLASH27B_GPU_BACKEND STREQUAL "hip")
+            set_source_files_properties(
+                test/test_kimi_k3_ordered_join.cpp PROPERTIES LANGUAGE HIP)
+            set_target_properties(test_kimi_k3_ordered_join PROPERTIES
+                HIP_ARCHITECTURES "${_dflash_archs}")
+            target_include_directories(test_kimi_k3_ordered_join PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/hip_compat)
+            target_compile_definitions(test_kimi_k3_ordered_join PRIVATE
+                DFLASH27B_BACKEND_HIP=1)
+            target_link_libraries(test_kimi_k3_ordered_join PRIVATE hip::host)
+        else()
+            target_compile_definitions(test_kimi_k3_ordered_join PRIVATE
+                DFLASH27B_BACKEND_CUDA=1)
+            target_link_libraries(test_kimi_k3_ordered_join PRIVATE CUDA::cudart)
+        endif()
+        list(APPEND _raw_unit_test_targets test_kimi_k3_ordered_join)
     endif()
     # HIP-only standalone build; CUDA backend is covered by aggregated test_server_unit.
     if(DFLASH27B_GPU_BACKEND STREQUAL "hip" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_draft_topk_cuda.cpp")
@@ -2083,6 +2116,8 @@ if(DFLASH27B_TESTS)
                     set(_unit_ctest_name deepseek4_mmid_grouped_cuda)
                 elseif(_unit_target STREQUAL "test_sparse_k_mmvq_cuda")
                     set(_unit_ctest_name sparse_k_mmvq_cuda)
+                elseif(_unit_target STREQUAL "test_kimi_k3_ordered_join")
+                    set(_unit_ctest_name kimi_k3_ordered_join)
                 elseif(_unit_target STREQUAL "test_draft_topk_cuda")
                     set(_unit_ctest_name draft_topk_cuda)
                 elseif(_unit_target STREQUAL "test_deepseek4_unit")

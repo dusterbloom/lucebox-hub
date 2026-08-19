@@ -25,12 +25,34 @@ public:
         MoeHybridStreamEngine & exact_engine,
         std::vector<float> & output,
         std::string * err = nullptr) = 0;
+
+    virtual bool requires_device_output() const { return false; }
+    virtual bool evaluate_device(
+        int,
+        int,
+        const MoeStreamExpertSpec &,
+        const MoeStreamRouteBatch &,
+        MoeHybridStreamEngine &,
+        ggml_backend_t,
+        std::string * err = nullptr) {
+        if (err) *err = "provider does not implement device output";
+        return false;
+    }
+    virtual bool copy_device_output(
+        ggml_backend_t,
+        ggml_tensor *,
+        std::string * err = nullptr) {
+        if (err) *err = "provider has no pending device output";
+        return false;
+    }
+    virtual void discard_device_output() {}
 };
 
 // An unset or "exact" DFLASH_KIMI_LAYER1_PROVIDER returns success with a null
 // provider. "slabs" and "whole" require the registered H16 runtime artifacts.
 bool create_kimi_k3_progressive_provider_from_env(
     ggml_backend_t expert_backend,
+    ggml_backend_t destination_backend,
     std::unique_ptr<KimiK3RoutedOutputProvider> & out,
     std::string * err = nullptr);
 

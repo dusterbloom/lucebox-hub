@@ -919,7 +919,8 @@ bool KimiK3Backend::init_streaming() {
         }
     }
     if (!create_kimi_k3_progressive_provider_from_env(
-            stream_engine_.compute_backend(), routed_output_provider_, &error)) {
+            stream_engine_.compute_backend(), backend_,
+            routed_output_provider_, &error)) {
         std::fprintf(stderr,
                      "[kimi-k3] H16 routed provider initialization failed: %s\n",
                      error.c_str());
@@ -1103,6 +1104,12 @@ bool KimiK3Backend::benchmark_oracle_verify(
         if (error) *error = message;
         return false;
     };
+    if (width > 1 && routed_output_provider_ &&
+        routed_output_provider_->requires_device_output()) {
+        return fail(
+            "S0 oracle multi-token verification is incompatible with a "
+            "device-output routed provider");
+    }
     if (!backend_ || !weights_.ctx || !cache_.ctx || prompt.empty() ||
         width <= 0 || width > cache_.max_verify_tokens ||
         base_pos + width > cache_.max_ctx) {
@@ -1465,7 +1472,9 @@ bool KimiK3Backend::write_logits_trace(
 }
 
 bool KimiK3Backend::supports_dflash_spec_decode() const {
-    return draft_backend_ && draft_weights_.ctx && feature_ring_.target_feat;
+    return draft_backend_ && draft_weights_.ctx && feature_ring_.target_feat &&
+        !(routed_output_provider_ &&
+          routed_output_provider_->requires_device_output());
 }
 
 DFlashTarget * KimiK3Backend::dflash_target() {

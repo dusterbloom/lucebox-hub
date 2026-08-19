@@ -4,6 +4,7 @@
 #include "common/moe_hybrid_routing_stats.h"
 #include "common/moe_hybrid_stream.h"
 #include "common/moe_router_graph.h"
+#include "common/cuda_graph_overrides.h"
 #include "internal.h"
 
 #include "ggml-alloc.h"
@@ -525,6 +526,19 @@ struct GraphInput {
     ggml_tensor * tensor = nullptr;
     const void * data = nullptr;
     size_t bytes = 0;
+    KimiK3RoutedOutputProvider * device_provider = nullptr;
+};
+
+class PendingDeviceOutputGuard {
+public:
+    explicit PendingDeviceOutputGuard(KimiK3RoutedOutputProvider * provider)
+        : provider_(provider) {}
+    ~PendingDeviceOutputGuard() {
+        if (provider_) provider_->discard_device_output();
+    }
+
+private:
+    KimiK3RoutedOutputProvider * provider_ = nullptr;
 };
 
 struct GraphOutput {
@@ -620,14 +634,27 @@ bool run_host_boundary_graph(ggml_backend_t backend,
         boundary_mark = BoundaryProfileClock::now();
     }
     for (const GraphInput & input : inputs) {
-        if (!input.tensor || !input.data || input.bytes == 0) {
+        if (!input.tensor || input.bytes == 0 ||
+            (!input.data && !input.device_provider) ||
+            (input.data && input.device_provider)) {
             set_last_error(std::string("Kimi-K3 ") + phase +
                            ": invalid graph input");
             ggml_gallocr_free(allocator);
             return false;
         }
-        ggml_backend_tensor_set(
-            input.tensor, input.data, 0, input.bytes);
+        if (input.device_provider) {
+            std::string copy_error;
+            if (!input.device_provider->copy_device_output(
+                    backend, input.tensor, &copy_error)) {
+                set_last_error(std::string("Kimi-K3 ") + phase +
+                    ": device input copy failed: " + copy_error);
+                ggml_gallocr_free(allocator);
+                return false;
+            }
+        } else {
+            ggml_backend_tensor_set(
+                input.tensor, input.data, 0, input.bytes);
+        }
     }
     if (profile_boundary) {
         input_ns = boundary_elapsed_ns(boundary_mark);
@@ -1520,6 +1547,10 @@ bool streamed_kimi_k3_forward(
         MoeStreamDualOwnerStats owner_stats;
         const bool alternate_provider = options.routed_output_provider &&
             options.routed_output_provider->handles_layer(il);
+        const bool device_routed_output = alternate_provider &&
+            options.routed_output_provider->requires_device_output();
+        PendingDeviceOutputGuard device_output_guard(
+            device_routed_output ? options.routed_output_provider : nullptr);
         const bool dual_owner = dual_stream_executor != nullptr &&
             options.expert_observer == nullptr && !alternate_provider;
         if (!stream_engine) {
@@ -1531,7 +1562,18 @@ bool streamed_kimi_k3_forward(
             profile_stages ? ProfileClock::now() :
                 ProfileClock::time_point{};
         bool route_ok = false;
-        if (n_tokens > 1 && serial_streamed_expert_rows_enabled() &&
+        if (device_routed_output &&
+            (n_tokens != 1 || join_offloaded || trace_divergence)) {
+            set_last_error(
+                "Kimi-K3 P42 device output requires one token, local join, "
+                "and divergence tracing disabled");
+            return false;
+        }
+        if (device_routed_output) {
+            route_ok = options.routed_output_provider->evaluate_device(
+                il, base_pos, spec, route_batch, *stream_engine, backend,
+                &stream_error);
+        } else if (n_tokens > 1 && serial_streamed_expert_rows_enabled() &&
             !dual_owner) {
             routed_output.assign(
                 static_cast<size_t>(spec.output_dim) * n_tokens, 0.0f);
@@ -1653,8 +1695,12 @@ bool streamed_kimi_k3_forward(
                 {
                     {prefix_in, prefix_host.data(),
                      prefix_host.size() * sizeof(float)},
-                    {routed_out_in, routed_output.data(),
-                     routed_output.size() * sizeof(float)},
+                    {routed_out_in,
+                     device_routed_output ? nullptr : routed_output.data(),
+                     static_cast<size_t>(w.n_expert_latent) * n_tokens *
+                         sizeof(float),
+                     device_routed_output
+                         ? options.routed_output_provider : nullptr},
                     {shared_in, shared_host.data(),
                      shared_host.size() * sizeof(float)},
                 },
@@ -2038,7 +2084,11 @@ bool benchmark_kimi_k3_routed_preparation(
     ggml_backend_buffer_t accelerator_buffer = nullptr;
     ggml_context * cpu_state_ctx = nullptr;
     ggml_backend_buffer_t cpu_state_buffer = nullptr;
+    ggml_context * persistent_ctx = nullptr;
+    ggml_gallocr_t persistent_allocator = nullptr;
     auto cleanup = [&]() {
+        if (persistent_allocator) ggml_gallocr_free(persistent_allocator);
+        if (persistent_ctx) ggml_free(persistent_ctx);
         if (accelerator_buffer) ggml_backend_buffer_free(accelerator_buffer);
         if (accelerator_ctx) ggml_free(accelerator_ctx);
         if (cpu_state_buffer) ggml_backend_buffer_free(cpu_state_buffer);
@@ -2178,8 +2228,99 @@ bool benchmark_kimi_k3_routed_preparation(
     };
     Outputs cpu_output = make_outputs();
     Outputs accelerator_output = make_outputs();
+    Outputs persistent_output = make_outputs();
     const bool banked = model_layer % w.attn_res_block_size == 0;
 
+    struct RoutedPreparationGraph {
+        ggml_cgraph * graph = nullptr;
+        std::vector<ggml_tensor *> inputs;
+        ggml_tensor * prefix = nullptr;
+        ggml_tensor * routed = nullptr;
+        ggml_tensor * selected = nullptr;
+        ggml_tensor * route_weights = nullptr;
+        ggml_tensor * shared = nullptr;
+    };
+    auto build_graph = [&](ggml_context * ctx,
+                           const KimiK3Layer & layer,
+                           KimiK3LayerCache & cache,
+                           RoutedPreparationGraph & built) {
+        built.graph = ggml_new_graph_custom(ctx, 32768, false);
+        ggml_tensor * hidden_in =
+            ggml_new_tensor_2d(ctx, GGML_TYPE_F32, w.n_embd, 1);
+        if (!built.graph || !hidden_in) return false;
+        ggml_set_input(hidden_in);
+        built.inputs.push_back(hidden_in);
+        AttnResBank residuals;
+        residuals.ctx = ctx;
+        residuals.eps = w.rms_eps;
+        residuals.n_embd = w.n_embd;
+        residuals.n_tokens = 1;
+        for (int checkpoint = 0; checkpoint < checkpoint_count; ++checkpoint) {
+            ggml_tensor * tensor =
+                ggml_new_tensor_2d(ctx, GGML_TYPE_F32, w.n_embd, 1);
+            if (!tensor) return false;
+            ggml_set_input(tensor);
+            built.inputs.push_back(tensor);
+            residuals.push(tensor);
+        }
+        built.prefix = hidden_in;
+        ggml_tensor * cur =
+            residuals.mix(built.prefix, layer.attn_res_score);
+        if (banked) residuals.push(built.prefix);
+        cur = rms_norm(ctx, cur, layer.attn_norm, w.rms_eps);
+        cur = build_kda(
+            ctx, built.graph, w, layer, cache, cur,
+            /*commit_state=*/false, /*capture_replay=*/false);
+        built.prefix = banked ? cur : ggml_add(ctx, built.prefix, cur);
+        cur = residuals.mix(built.prefix, layer.ffn_res_score);
+        cur = rms_norm(ctx, cur, layer.ffn_norm, w.rms_eps);
+
+        built.routed = ggml_mul_mat(ctx, layer.ffn_routed_down, cur);
+        TopKMoeRouterResult router =
+            build_kimi_router(ctx, built.graph, w, layer, cur);
+        built.selected = ggml_cont(ctx, router.selected);
+        built.route_weights = ggml_cont(ctx, router.weights_2d);
+        ggml_tensor * shared_gate =
+            ggml_mul_mat(ctx, layer.ffn_gate_shexp, cur);
+        ggml_tensor * shared_up =
+            ggml_mul_mat(ctx, layer.ffn_up_shexp, cur);
+        built.shared = situ(
+            ctx, shared_gate, shared_up,
+            w.situ_beta, w.situ_linear_beta);
+        built.shared =
+            ggml_mul_mat(ctx, layer.ffn_down_shexp, built.shared);
+        return built.prefix && built.routed && built.selected &&
+            built.route_weights && built.shared;
+    };
+    auto graph_inputs = [&](const RoutedPreparationGraph & built) {
+        std::vector<GraphInput> inputs;
+        inputs.reserve(built.inputs.size());
+        inputs.push_back({
+            built.inputs[0], hidden.data(), hidden.size() * sizeof(float)});
+        for (int checkpoint = 0; checkpoint < checkpoint_count; ++checkpoint) {
+            const std::vector<float> & values =
+                checkpoints[static_cast<size_t>(checkpoint)];
+            inputs.push_back({
+                built.inputs[static_cast<size_t>(checkpoint) + 1],
+                values.data(), values.size() * sizeof(float)});
+        }
+        return inputs;
+    };
+    auto graph_outputs = [&](const RoutedPreparationGraph & built,
+                             Outputs & output) {
+        return std::vector<GraphOutput>{
+            {built.prefix, output.prefix.data(),
+             output.prefix.size() * sizeof(float)},
+            {built.routed, output.routed.data(),
+             output.routed.size() * sizeof(float)},
+            {built.selected, output.selected.data(),
+             output.selected.size() * sizeof(int32_t)},
+            {built.route_weights, output.route_weights.data(),
+             output.route_weights.size() * sizeof(float)},
+            {built.shared, output.shared.data(),
+             output.shared.size() * sizeof(float)},
+        };
+    };
     auto run_once = [&](ggml_backend_t backend,
                         const KimiK3Layer & layer,
                         KimiK3LayerCache & cache,
@@ -2188,61 +2329,70 @@ bool benchmark_kimi_k3_routed_preparation(
         const auto start = std::chrono::steady_clock::now();
         ggml_context * ctx = new_kimi_step_context();
         if (!ctx) return false;
-        ggml_cgraph * graph = ggml_new_graph_custom(ctx, 32768, false);
-        std::vector<GraphInput> inputs;
-        ggml_tensor * hidden_in = ggml_new_tensor_2d(
-            ctx, GGML_TYPE_F32, w.n_embd, 1);
-        ggml_set_input(hidden_in);
-        inputs.push_back({
-            hidden_in, hidden.data(), hidden.size() * sizeof(float)});
-        AttnResBank residuals;
-        populate_attn_res_bank(
-            ctx, w, 1, checkpoints, residuals, inputs);
-        ggml_tensor * prefix = hidden_in;
-        ggml_tensor * cur = residuals.mix(prefix, layer.attn_res_score);
-        if (banked) residuals.push(prefix);
-        cur = rms_norm(ctx, cur, layer.attn_norm, w.rms_eps);
-        cur = build_kda(
-            ctx, graph, w, layer, cache, cur,
-            /*commit_state=*/false, /*capture_replay=*/false);
-        prefix = banked ? cur : ggml_add(ctx, prefix, cur);
-        cur = residuals.mix(prefix, layer.ffn_res_score);
-        cur = rms_norm(ctx, cur, layer.ffn_norm, w.rms_eps);
-
-        ggml_tensor * routed =
-            ggml_mul_mat(ctx, layer.ffn_routed_down, cur);
-        TopKMoeRouterResult router =
-            build_kimi_router(ctx, graph, w, layer, cur);
-        ggml_tensor * selected = ggml_cont(ctx, router.selected);
-        ggml_tensor * route_weights = ggml_cont(ctx, router.weights_2d);
-        ggml_tensor * shared_gate =
-            ggml_mul_mat(ctx, layer.ffn_gate_shexp, cur);
-        ggml_tensor * shared_up =
-            ggml_mul_mat(ctx, layer.ffn_up_shexp, cur);
-        ggml_tensor * shared = situ(
-            ctx, shared_gate, shared_up,
-            w.situ_beta, w.situ_linear_beta);
-        shared = ggml_mul_mat(ctx, layer.ffn_down_shexp, shared);
+        RoutedPreparationGraph built;
+        if (!build_graph(ctx, layer, cache, built)) {
+            ggml_free(ctx);
+            return false;
+        }
 
         const bool ok = run_host_boundary_graph(
-            backend, ctx, graph, inputs,
-            {
-                {prefix, output.prefix.data(),
-                 output.prefix.size() * sizeof(float)},
-                {routed, output.routed.data(),
-                 output.routed.size() * sizeof(float)},
-                {selected, output.selected.data(),
-                 output.selected.size() * sizeof(int32_t)},
-                {route_weights, output.route_weights.data(),
-                 output.route_weights.size() * sizeof(float)},
-                {shared, output.shared.data(),
-                 output.shared.size() * sizeof(float)},
-            },
+            backend, ctx, built.graph, graph_inputs(built),
+            graph_outputs(built, output),
             "complete routed-preparation benchmark");
         ggml_free(ctx);
         elapsed_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - start).count();
         return ok;
+    };
+
+    persistent_ctx = new_kimi_step_context();
+    RoutedPreparationGraph persistent_graph;
+    if (!persistent_ctx || !build_graph(
+            persistent_ctx, accelerator_layer,
+            accelerator_cache, persistent_graph)) {
+        cleanup();
+        return fail("cannot build persistent routed-preparation graph");
+    }
+    for (const GraphOutput & output :
+         graph_outputs(persistent_graph, persistent_output)) {
+        ggml_set_output(output.tensor);
+        ggml_build_forward_expand(persistent_graph.graph, output.tensor);
+    }
+    persistent_allocator = ggml_gallocr_new(
+        ggml_backend_get_default_buffer_type(accelerator_backend));
+    if (!persistent_allocator || !ggml_gallocr_alloc_graph(
+            persistent_allocator, persistent_graph.graph)) {
+        cleanup();
+        return fail("cannot allocate persistent routed-preparation graph");
+    }
+    result.persistent_compute_buffer_bytes =
+        ggml_gallocr_get_buffer_size(persistent_allocator, 0);
+    result.persistent_metadata_bytes = ggml_used_mem(persistent_ctx);
+    result.persistent_graph_nodes =
+        ggml_graph_n_nodes(persistent_graph.graph);
+    auto run_persistent_once = [&](double & elapsed_ms) {
+        const auto start = std::chrono::steady_clock::now();
+        for (const GraphInput & input : graph_inputs(persistent_graph)) {
+            ggml_backend_tensor_set(
+                input.tensor, input.data, 0, input.bytes);
+        }
+        ScopedCudaGraphOverrides replay_scope(
+            /*disable_graphs=*/false,
+            /*mmvq_max_ncols=*/0,
+            /*skip_property_check=*/true);
+        if (ggml_backend_graph_compute(
+                accelerator_backend,
+                persistent_graph.graph) != GGML_STATUS_SUCCESS) {
+            return false;
+        }
+        for (const GraphOutput & output :
+             graph_outputs(persistent_graph, persistent_output)) {
+            ggml_backend_tensor_get(
+                output.tensor, output.data, 0, output.bytes);
+        }
+        elapsed_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        return true;
     };
 
     double warmup_ms = 0.0;
@@ -2254,24 +2404,35 @@ bool benchmark_kimi_k3_routed_preparation(
         cleanup();
         return fail("complete routed-preparation warmup graph failed");
     }
+    for (int warmup = 0; warmup < 3; ++warmup) {
+        if (!run_persistent_once(warmup_ms)) {
+            cleanup();
+            return fail("persistent routed-preparation warmup graph failed");
+        }
+    }
     std::vector<double> cpu_times;
     std::vector<double> accelerator_times;
+    std::vector<double> persistent_times;
     cpu_times.reserve(static_cast<size_t>(iterations));
     accelerator_times.reserve(static_cast<size_t>(iterations));
+    persistent_times.reserve(static_cast<size_t>(iterations));
     for (int iteration = 0; iteration < iterations; ++iteration) {
         double cpu_ms = 0.0;
         double accelerator_ms = 0.0;
+        double persistent_ms = 0.0;
         if (!run_once(
                 cpu_backend, cpu_layer, cpu_cache,
                 cpu_output, cpu_ms) ||
             !run_once(
                 accelerator_backend, accelerator_layer,
-                accelerator_cache, accelerator_output, accelerator_ms)) {
+                accelerator_cache, accelerator_output, accelerator_ms) ||
+            !run_persistent_once(persistent_ms)) {
             cleanup();
             return fail("complete routed-preparation measured graph failed");
         }
         cpu_times.push_back(cpu_ms);
         accelerator_times.push_back(accelerator_ms);
+        persistent_times.push_back(persistent_ms);
     }
     const auto median = [](std::vector<double> values) {
         std::sort(values.begin(), values.end());
@@ -2305,6 +2466,45 @@ bool benchmark_kimi_k3_routed_preparation(
     result.accelerator_median_ms = median(accelerator_times);
     result.speedup = result.accelerator_median_ms > 0.0
         ? result.cpu_median_ms / result.accelerator_median_ms : 0.0;
+    result.persistent_accelerator_median_ms = median(persistent_times);
+    result.persistent_speedup_vs_transient =
+        result.persistent_accelerator_median_ms > 0.0
+            ? result.accelerator_median_ms /
+                result.persistent_accelerator_median_ms
+            : 0.0;
+    const auto byte_equal = [](const auto & lhs, const auto & rhs) {
+        return lhs.size() == rhs.size() &&
+            (lhs.empty() || std::memcmp(
+                lhs.data(), rhs.data(),
+                lhs.size() * sizeof(lhs[0])) == 0);
+    };
+    result.persistent_prefix_byte_equal = byte_equal(
+        accelerator_output.prefix, persistent_output.prefix);
+    result.persistent_routed_byte_equal = byte_equal(
+        accelerator_output.routed, persistent_output.routed);
+    result.persistent_shared_byte_equal = byte_equal(
+        accelerator_output.shared, persistent_output.shared);
+    result.persistent_route_weight_byte_equal = byte_equal(
+        accelerator_output.route_weights, persistent_output.route_weights);
+    result.persistent_selected_id_equal = byte_equal(
+        accelerator_output.selected, persistent_output.selected);
+    const auto accumulate_persistent_max_abs = [&](const auto & reference,
+                                                   const auto & candidate) {
+        for (size_t i = 0; i < reference.size(); ++i) {
+            result.persistent_max_abs = std::max(
+                result.persistent_max_abs,
+                std::abs(static_cast<double>(candidate[i]) -
+                         static_cast<double>(reference[i])));
+        }
+    };
+    accumulate_persistent_max_abs(
+        accelerator_output.prefix, persistent_output.prefix);
+    accumulate_persistent_max_abs(
+        accelerator_output.routed, persistent_output.routed);
+    accumulate_persistent_max_abs(
+        accelerator_output.shared, persistent_output.shared);
+    accumulate_persistent_max_abs(
+        accelerator_output.route_weights, persistent_output.route_weights);
     result.prefix_relative_l2 = relative_l2(
         cpu_output.prefix, accelerator_output.prefix);
     result.routed_relative_l2 = relative_l2(
