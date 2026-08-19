@@ -184,6 +184,9 @@ struct MoeStreamRouteBatch {
     int top_k = 0;
     int n_tokens = 0;
     const float * inputs = nullptr;
+    // Optional same-backend device copy of inputs. Model-neutral engines may
+    // ignore it; device-native providers can consume it without a host roundtrip.
+    const ggml_tensor * device_inputs = nullptr;
     const int32_t * selected_ids = nullptr;
     const float * selected_weights = nullptr;
     const int32_t * resident_local_by_global = nullptr;

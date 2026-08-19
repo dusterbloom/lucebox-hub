@@ -153,7 +153,10 @@ public:
         if (changed_) (void) cudaSetDevice(previous_);
     }
 
-    bool enter(ggml_backend_t backend, std::string * err) {
+    bool enter(
+            ggml_backend_t backend,
+            std::string * err,
+            bool restore_previous = true) {
         ggml_backend_dev_t device = backend
             ? ggml_backend_get_device(backend) : nullptr;
         ggml_backend_reg_t registry = device
@@ -169,12 +172,12 @@ public:
             }
         }
         if (ordinal < 0 || cudaGetDevice(&previous_) != cudaSuccess ||
-            cudaSetDevice(ordinal) != cudaSuccess) {
+            (previous_ != ordinal && cudaSetDevice(ordinal) != cudaSuccess)) {
             if (err) *err = "failed to select sparse expert backend device";
             return false;
         }
         device_ = ordinal;
-        changed_ = previous_ != ordinal;
+        changed_ = restore_previous && previous_ != ordinal;
         return true;
     }
 
@@ -1978,6 +1981,7 @@ struct SparseCompactPayload {
     size_t gate_slab_bytes = 0;
     size_t up_slab_bytes = 0;
     size_t down_slab_bytes = 0;
+    bool component_major = false;
     bool owns_data = true;
 };
 
@@ -2008,10 +2012,12 @@ bool pack_sparse_component_major(
     std::array<uint16_t, kSlabCount> naturals{};
     const size_t record_bytes =
         gate_slab_bytes + up_slab_bytes + down_slab_bytes;
+    const size_t prepacked_bytes = prepacked && prepacked->component_major
+        ? layout.total_bytes
+        : layout.metadata_bytes + slab_count * record_bytes;
     if (prepacked && (!prepacked->data ||
             prepacked->metadata_bytes != layout.metadata_bytes ||
-            prepacked->bytes !=
-                layout.metadata_bytes + slab_count * record_bytes)) {
+            prepacked->bytes != prepacked_bytes)) {
         if (err) *err = "compact executor received an invalid P27 payload";
         return false;
     }
@@ -2037,6 +2043,13 @@ bool pack_sparse_component_major(
             naturals.data(), static_cast<int>(slab_count), &uploaded_mask)) {
         if (err) *err = "compact executor received invalid or duplicate IDs";
         return false;
+    }
+
+    if (prepacked && prepacked->component_major) {
+        if (destination != prepacked->data) {
+            std::memcpy(destination, prepacked->data, layout.total_bytes);
+        }
+        return true;
     }
 
     auto * output = static_cast<uint8_t *>(destination);
@@ -2468,6 +2481,8 @@ public:
         uint64_t jobs = 0;
         uint64_t h2d_calls = 0;
         uint64_t h2d_bytes = 0;
+        uint64_t input_d2d_copies = 0;
+        uint64_t input_d2d_bytes = 0;
         uint64_t graph_enqueues = 0;
         uint64_t layer_flushes = 0;
         uint64_t abort_syncs = 0;
@@ -2499,9 +2514,10 @@ public:
     }
 
     bool begin_compact_async_batch(
-            ggml_backend_t backend, int max_jobs, std::string * err) {
+            ggml_backend_t backend, int max_jobs, std::string * err,
+            const ggml_tensor * device_input = nullptr) {
 #if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
-        (void) backend; (void) max_jobs;
+        (void) backend; (void) max_jobs; (void) device_input;
         if (err) *err = "P45 async compact queue requires CUDA or HIP";
         return false;
 #else
@@ -2516,6 +2532,8 @@ public:
         compact_async_limit_ = max_jobs;
         compact_async_jobs_ = 0;
         compact_async_active_ = true;
+        compact_async_device_input_ = device_input;
+        compact_async_input_ready_ = false;
         compact_async_started_ = {};
         ++compact_async_stats_.begins;
         return true;
@@ -2971,7 +2989,10 @@ public:
         if (err) *err = "compact sparse executor requires CUDA or HIP";
         return false;
 #else
-        if (!backend || !ggml_backend_is_cuda(backend) || !input_data ||
+        const bool device_input_available = compact_async_active_ &&
+            compact_async_device_input_ != nullptr;
+        if (!backend || !ggml_backend_is_cuda(backend) ||
+            (!input_data && !device_input_available) ||
             spec.fused_gate_up || spec.intermediate_dim != 3072 ||
             (spec.down_type != GGML_TYPE_IQ1_S &&
              spec.down_type != GGML_TYPE_IQ2_XXS)) {
@@ -2987,7 +3008,10 @@ public:
             return false;
         }
         BackendDeviceScope device_scope;
-        if (!device_scope.enter(backend, err)) return false;
+        if (!device_scope.enter(
+                backend, err, /* restore_previous = */ !compact_async_active_)) {
+            return false;
+        }
         CompactEntry * entry = find_compact(
             backend, spec, static_cast<int>(slab_count));
         if (!entry) {
@@ -3012,28 +3036,43 @@ public:
             static_cast<size_t>(spec.input_dim) * sizeof(float);
         constexpr size_t map_bytes =
             sizeof(std::array<int32_t, kSlabCount>);
+        const bool direct_component_wire = prepacked_compact &&
+            prepacked_compact->component_major;
+        const bool upload_device_input = device_input_available &&
+            !compact_async_input_ready_;
+        const bool upload_host_input = !compact_async_active_ ||
+            (!device_input_available && compact_async_input_source_ == nullptr);
         void * host_staging = nullptr;
         size_t host_capacity = 0;
         CompactAsyncSlot * async_slot = nullptr;
         if (compact_async_active_) {
             if (backend != compact_async_backend_ || compact_async_jobs_ < 0 ||
                 compact_async_jobs_ >= compact_async_limit_ ||
-                layout.total_bytes > std::numeric_limits<size_t>::max() -
-                    input_bytes ||
-                layout.total_bytes + input_bytes >
-                    std::numeric_limits<size_t>::max() - map_bytes) {
+                (!device_input_available && compact_async_input_source_ &&
+                 compact_async_input_source_ != input_data) ||
+                (upload_host_input && input_bytes >
+                    std::numeric_limits<size_t>::max() - map_bytes) ||
+                (!direct_component_wire &&
+                 layout.total_bytes > std::numeric_limits<size_t>::max() -
+                    (upload_host_input ? input_bytes : 0) - map_bytes)) {
                 if (err) *err = "P45 async compact queue capacity is invalid";
                 return false;
             }
             async_slot = &compact_async_slots_[
                 static_cast<size_t>(compact_async_jobs_)];
-            const size_t required =
-                layout.total_bytes + input_bytes + map_bytes;
+            const size_t required = (upload_host_input ? input_bytes : 0) +
+                map_bytes +
+                (direct_component_wire ? 0 : layout.total_bytes);
             if (!ensure_compact_async_slot(*async_slot, required, err)) {
                 return false;
             }
-            host_staging = async_slot->host_staging;
-            host_capacity = async_slot->host_capacity;
+            host_staging = direct_component_wire
+                ? prepacked_compact->data : async_slot->host_staging;
+            host_capacity = direct_component_wire
+                ? prepacked_compact->capacity : async_slot->host_capacity;
+        } else if (direct_component_wire) {
+            host_staging = prepacked_compact->data;
+            host_capacity = prepacked_compact->capacity;
         } else {
             if (!ensure_compact_host_staging(
                     *entry, layout.total_bytes, err)) return false;
@@ -3100,17 +3139,41 @@ public:
         ggml_status status = GGML_STATUS_FAILED;
         const auto graph_started = std::chrono::steady_clock::now();
         if (compact_async_active_) {
-            auto * input_staging = wire + layout.total_bytes;
-            auto * map_staging = input_staging + input_bytes;
-            std::memcpy(input_staging, input_data, input_bytes);
+            auto * input_staging = direct_component_wire
+                ? static_cast<uint8_t *>(async_slot->host_staging)
+                : wire + layout.total_bytes;
+            auto * map_staging = input_staging +
+                (upload_host_input ? input_bytes : 0);
+            if (upload_host_input) {
+                std::memcpy(input_staging, input_data, input_bytes);
+            }
             std::memcpy(
                 map_staging, natural_to_compact.data(),
                 sizeof(natural_to_compact));
             if (compact_async_jobs_ == 0) {
                 compact_async_started_ = graph_started;
             }
-            ggml_backend_tensor_set_async(
-                backend, entry->input, input_staging, 0, input_bytes);
+            if (upload_device_input) {
+                if (compact_async_device_input_->type != GGML_TYPE_F32 ||
+                    compact_async_device_input_->ne[0] != spec.input_dim ||
+                    compact_async_device_input_->ne[1] != 1 ||
+                    ggml_nbytes(compact_async_device_input_) != input_bytes) {
+                    if (err) *err =
+                        "P45 compact device input shape is incompatible";
+                    return false;
+                }
+                ggml_backend_tensor_copy_async(
+                    backend, backend, compact_async_device_input_,
+                    entry->input);
+                compact_async_input_ready_ = true;
+                ++compact_async_stats_.input_d2d_copies;
+                compact_async_stats_.input_d2d_bytes += input_bytes;
+            } else if (upload_host_input) {
+                ggml_backend_tensor_set_async(
+                    backend, entry->input, input_staging, 0, input_bytes);
+                compact_async_input_source_ = input_data;
+                compact_async_input_ready_ = true;
+            }
             ggml_backend_tensor_set_async(
                 backend, entry->gate, wire + layout.gate_offset, 0,
                 gate_slab_bytes * slab_count);
@@ -3130,9 +3193,11 @@ public:
             if (status == GGML_STATUS_SUCCESS) {
                 ++compact_async_jobs_;
                 ++compact_async_stats_.jobs;
-                compact_async_stats_.h2d_calls += 5;
+                compact_async_stats_.h2d_calls +=
+                    upload_host_input ? 5 : 4;
                 compact_async_stats_.h2d_bytes +=
-                    input_bytes + gate_slab_bytes * slab_count +
+                    (upload_host_input ? input_bytes : 0) +
+                    gate_slab_bytes * slab_count +
                     up_slab_bytes * slab_count +
                     down_slab_bytes * slab_count +
                     sizeof(natural_to_compact);
@@ -3164,7 +3229,7 @@ public:
         authoritative_h2d_bytes +=
             slab_count * (gate_slab_bytes + up_slab_bytes + down_slab_bytes);
         metadata_h2d_bytes +=
-            input_bytes +
+            (upload_host_input ? input_bytes : 0) +
             sizeof(natural_to_compact);
         ++compact_uploads_;
         if (status != GGML_STATUS_SUCCESS) {
@@ -3284,6 +3349,9 @@ private:
         compact_async_limit_ = 0;
         compact_async_jobs_ = 0;
         compact_async_active_ = false;
+        compact_async_input_source_ = nullptr;
+        compact_async_device_input_ = nullptr;
+        compact_async_input_ready_ = false;
         compact_async_started_ = {};
     }
 
@@ -3320,8 +3388,19 @@ private:
             if (err) *err = "compact sparse ggml_init failed";
             return nullptr;
         }
-        entry->input = ggml_new_tensor_2d(
-            entry->context, GGML_TYPE_F32, spec.input_dim, 1);
+        if (compact_shared_input_) {
+            if (compact_shared_input_backend_ != backend ||
+                compact_shared_input_->type != GGML_TYPE_F32 ||
+                compact_shared_input_->ne[0] != spec.input_dim ||
+                compact_shared_input_->ne[1] != 1) {
+                if (err) *err = "compact sparse shared input is incompatible";
+                return nullptr;
+            }
+            entry->input = compact_shared_input_;
+        } else {
+            entry->input = ggml_new_tensor_2d(
+                entry->context, GGML_TYPE_F32, spec.input_dim, 1);
+        }
         entry->gate = ggml_new_tensor_2d(
             entry->context, spec.gate_type, spec.input_dim,
             static_cast<int64_t>(slab_count) * kSlabSize);
@@ -3365,6 +3444,10 @@ private:
             !ggml_gallocr_alloc_graph(entry->allocator, entry->graph)) {
             if (err) *err = "compact sparse graph allocation failed";
             return nullptr;
+        }
+        if (!compact_shared_input_) {
+            compact_shared_input_ = entry->input;
+            compact_shared_input_backend_ = backend;
         }
         compact_entries_.push_back(std::move(entry));
         return compact_entries_.back().get();
@@ -3523,11 +3606,16 @@ private:
 
     std::vector<std::unique_ptr<Entry>> entries_;
     std::vector<std::unique_ptr<CompactEntry>> compact_entries_;
+    ggml_tensor * compact_shared_input_ = nullptr;
+    ggml_backend_t compact_shared_input_backend_ = nullptr;
     std::array<CompactAsyncSlot, kNativeTopK> compact_async_slots_{};
     ggml_backend_t compact_async_backend_ = nullptr;
     int compact_async_limit_ = 0;
     int compact_async_jobs_ = 0;
     bool compact_async_active_ = false;
+    const float * compact_async_input_source_ = nullptr;
+    const ggml_tensor * compact_async_device_input_ = nullptr;
+    bool compact_async_input_ready_ = false;
     std::chrono::steady_clock::time_point compact_async_started_{};
 #endif
     uint64_t compact_pack_ns_ = 0;
@@ -4505,9 +4593,9 @@ public:
         if (const char * cache =
                 std::getenv("DFLASH_KIMI_P30_HOST_CACHE_MB")) {
             int cache_mib = 0;
-            if (!parse_positive_int(cache, cache_mib) || cache_mib > 8192) {
+            if (!parse_positive_int(cache, cache_mib) || cache_mib > 16384) {
                 if (err) *err =
-                    "DFLASH_KIMI_P30_HOST_CACHE_MB must be in 1..8192";
+                    "DFLASH_KIMI_P30_HOST_CACHE_MB must be in 1..16384";
                 return false;
             }
             if (!direct_reads()) {
@@ -4855,7 +4943,8 @@ public:
         if (!ordered_device_join_ || destination_backend != backend_ ||
             routes.n_tokens != 1 || !handles_layer(model_layer) ||
             routes.n_expert != kExpertCount || routes.top_k != kNativeTopK ||
-            spec.input_dim != kDimension || spec.output_dim != kDimension) {
+            spec.input_dim != kDimension || spec.output_dim != kDimension ||
+            (routes.inputs == nullptr) == (routes.device_inputs == nullptr)) {
             if (err) *err = "P42 ordered join received an incompatible request";
             return false;
         }
@@ -5614,8 +5703,21 @@ private:
                     static_cast<size_t>(state.up_slab_bytes);
                 compact->down_slab_bytes =
                     static_cast<size_t>(state.down_slab_bytes);
-                compact->bytes = compact->metadata_bytes +
-                    static_cast<size_t>(prefix_depth) * state.slab_bytes;
+                compact->component_major = compact_executor_ &&
+                    prefix_depth > 0;
+                KimiK3CompactWireLayout compact_layout;
+                if (compact->component_major &&
+                    !kimi_k3_compact_wire_layout(
+                        prefix_depth, compact->gate_slab_bytes,
+                        compact->up_slab_bytes, compact->down_slab_bytes,
+                        &compact_layout)) {
+                    if (err) *err = "P41 direct compact layout is invalid";
+                    return false;
+                }
+                compact->bytes = compact->component_major
+                    ? compact_layout.total_bytes
+                    : compact->metadata_bytes +
+                        static_cast<size_t>(prefix_depth) * state.slab_bytes;
                 if (prefix_depth > 0 &&
                     !compact->ensure(compact->bytes, err)) return false;
                 if (prefix_depth > 0) {
@@ -5700,11 +5802,44 @@ private:
                             SparseCompactPayload & compact =
                                 (*compact_payloads)[
                                     static_cast<size_t>(task.route)];
-                            std::memcpy(
-                                static_cast<uint8_t *>(compact.data) +
-                                    compact.metadata_bytes +
-                                    task.slab_index * state.slab_bytes,
-                                source, static_cast<size_t>(state.slab_bytes));
+                            if (compact.component_major) {
+                                KimiK3CompactWireLayout layout;
+                                if (!kimi_k3_compact_wire_layout(
+                                        compact.slab_count,
+                                        compact.gate_slab_bytes,
+                                        compact.up_slab_bytes,
+                                        compact.down_slab_bytes, &layout)) {
+                                    failed = true;
+                                    std::free(raw);
+                                    break;
+                                }
+                                auto * destination =
+                                    static_cast<uint8_t *>(compact.data);
+                                std::memcpy(
+                                    destination + layout.gate_offset +
+                                        task.slab_index *
+                                            compact.gate_slab_bytes,
+                                    source, compact.gate_slab_bytes);
+                                std::memcpy(
+                                    destination + layout.up_offset +
+                                        task.slab_index * compact.up_slab_bytes,
+                                    source + compact.gate_slab_bytes,
+                                    compact.up_slab_bytes);
+                                std::memcpy(
+                                    destination + layout.down_offset +
+                                        task.slab_index *
+                                            compact.down_slab_bytes,
+                                    source + compact.gate_slab_bytes +
+                                        compact.up_slab_bytes,
+                                    compact.down_slab_bytes);
+                            } else {
+                                std::memcpy(
+                                    static_cast<uint8_t *>(compact.data) +
+                                        compact.metadata_bytes +
+                                        task.slab_index * state.slab_bytes,
+                                    source,
+                                    static_cast<size_t>(state.slab_bytes));
+                            }
                         } else {
                             SparseSlabPayload & slab = payloads[
                                 static_cast<size_t>(task.route)][
@@ -5748,6 +5883,30 @@ private:
             explicit_read_bytes_ += physical_bytes;
             direct_physical_bytes_ += physical_bytes;
             if (!io_trace_) continue;
+            uint64_t gate_destination_offset = 0;
+            uint64_t up_destination_offset = state.gate_slab_bytes;
+            uint64_t down_destination_offset =
+                state.gate_slab_bytes + state.up_slab_bytes;
+            if (compact_payloads) {
+                const SparseCompactPayload & compact =
+                    (*compact_payloads)[static_cast<size_t>(task.route)];
+                if (compact.component_major) {
+                    KimiK3CompactWireLayout layout;
+                    if (!kimi_k3_compact_wire_layout(
+                            compact.slab_count, compact.gate_slab_bytes,
+                            compact.up_slab_bytes, compact.down_slab_bytes,
+                            &layout)) {
+                        if (err) *err = "P41 trace compact layout is invalid";
+                        return false;
+                    }
+                    gate_destination_offset = layout.gate_offset +
+                        task.slab_index * compact.gate_slab_bytes;
+                    up_destination_offset = layout.up_offset +
+                        task.slab_index * compact.up_slab_bytes;
+                    down_destination_offset = layout.down_offset +
+                        task.slab_index * compact.down_slab_bytes;
+                }
+            }
             const auto emit = [&](const char * region, const char * qtype,
                                   uint64_t offset, size_t logical,
                                   uint64_t destination_offset,
@@ -5765,16 +5924,17 @@ private:
                           << '\n';
             };
             emit("gate", ggml_type_name(spec.gate_type), record,
-                 static_cast<size_t>(state.gate_slab_bytes), 0,
+                 static_cast<size_t>(state.gate_slab_bytes),
+                 gate_destination_offset,
                  task.aligned_bytes);
             emit("up", ggml_type_name(spec.up_type),
                  record + state.gate_slab_bytes,
                  static_cast<size_t>(state.up_slab_bytes),
-                 state.gate_slab_bytes, 0);
+                 up_destination_offset, 0);
             emit("down", ggml_type_name(spec.down_type),
                  record + state.gate_slab_bytes + state.up_slab_bytes,
                  static_cast<size_t>(state.down_slab_bytes),
-                 state.gate_slab_bytes + state.up_slab_bytes, 0);
+                 down_destination_offset, 0);
         }
         return true;
 #endif
@@ -6483,7 +6643,7 @@ private:
             }
             if (async_compact_queue_ &&
                 !sparse_device_evaluator_.begin_compact_async_batch(
-                    backend_, kNativeTopK, err)) {
+                    backend_, kNativeTopK, err, routes.device_inputs)) {
                 return fail_device_join();
             }
             output.clear();
@@ -6630,8 +6790,9 @@ private:
                 });
             float * destination = device_ordered ? nullptr : output.data() +
                 static_cast<size_t>(token) * spec.output_dim;
-            const float * input = routes.inputs +
-                static_cast<size_t>(token) * spec.input_dim;
+            const float * input = routes.inputs
+                ? routes.inputs + static_cast<size_t>(token) * spec.input_dim
+                : nullptr;
             for (const int route : stable_routes) {
                 const int expert = routes.selected_ids[route_offset + route];
                 const uint64_t mean_offset = state.means_offset +
@@ -7145,13 +7306,16 @@ private:
                 sparse_device_evaluator_.compact_async_stats();
             std::fprintf(stderr,
                 "[kimi-k3-p45] begins=%llu jobs=%llu h2d-calls=%llu "
-                "h2d-bytes=%llu graph-enqueues=%llu layer-flushes=%llu "
+                "h2d-bytes=%llu input-d2d-copies=%llu "
+                "input-d2d-bytes=%llu graph-enqueues=%llu layer-flushes=%llu "
                 "abort-syncs=%llu max-inflight=%llu submit-ns=%llu "
                 "device-window-ns=%llu\n",
                 static_cast<unsigned long long>(stats.begins),
                 static_cast<unsigned long long>(stats.jobs),
                 static_cast<unsigned long long>(stats.h2d_calls),
                 static_cast<unsigned long long>(stats.h2d_bytes),
+                static_cast<unsigned long long>(stats.input_d2d_copies),
+                static_cast<unsigned long long>(stats.input_d2d_bytes),
                 static_cast<unsigned long long>(stats.graph_enqueues),
                 static_cast<unsigned long long>(stats.layer_flushes),
                 static_cast<unsigned long long>(stats.abort_syncs),
