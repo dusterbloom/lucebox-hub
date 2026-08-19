@@ -262,6 +262,9 @@ struct KimiK3Cache {
     bool snapshot_valid = false;
     bool replay_valid = false;
     bool recurrent_state_pristine = false;
+    // Opaque graph-lifetime owner for the opt-in one-token persistent routed
+    // preparation path.  The concrete type remains private to graph.cpp.
+    void * persistent_routed_preparation = nullptr;
 };
 
 // Model-neutral forward result shape used by the Kimi DFlash adapter.  Capture
