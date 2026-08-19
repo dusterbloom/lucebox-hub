@@ -617,6 +617,8 @@ extern "C" {
 
         GGML_OP_PAGED_ATTN,
 
+        GGML_OP_MUL_MAT_SPARSE_K_BLOCKS,
+
         GGML_OP_COUNT,
     };
 
@@ -1476,6 +1478,17 @@ extern "C" {
 
     GGML_API int64_t ggml_mul_mat_grouped_src_groups(
             const struct ggml_tensor * tensor);
+
+    // Matrix-vector multiply over compact physical K blocks while retaining
+    // the native virtual-K MMVQ traversal. weight_blocks is
+    // [block_k, rows, resident_blocks], x_blocks is [block_k, resident_blocks],
+    // and natural_to_compact maps each virtual block to a resident slot or -1.
+    GGML_API struct ggml_tensor * ggml_mul_mat_sparse_k_blocks(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * weight_blocks,
+            struct ggml_tensor  * x_blocks,
+            struct ggml_tensor  * natural_to_compact,
+            int64_t               virtual_k);
 
     // change the precision of a matrix multiplication
     // set to GGML_PREC_F32 for higher precision (useful for phi-2)
