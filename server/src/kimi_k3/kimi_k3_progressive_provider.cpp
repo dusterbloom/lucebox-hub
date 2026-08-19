@@ -2463,7 +2463,23 @@ private:
 // and the frozen calibrated96 semantics do not change.
 class SparseDeviceExpertEvaluator {
 public:
+    struct CompactAsyncStats {
+        uint64_t begins = 0;
+        uint64_t jobs = 0;
+        uint64_t h2d_calls = 0;
+        uint64_t h2d_bytes = 0;
+        uint64_t graph_enqueues = 0;
+        uint64_t layer_flushes = 0;
+        uint64_t abort_syncs = 0;
+        uint64_t max_inflight = 0;
+        uint64_t submit_ns = 0;
+        uint64_t device_window_ns = 0;
+    };
+
     SparseDeviceExpertEvaluator() = default;
+    ~SparseDeviceExpertEvaluator() {
+        abort_compact_async_batch();
+    }
     SparseDeviceExpertEvaluator(const SparseDeviceExpertEvaluator &) = delete;
     SparseDeviceExpertEvaluator & operator=(
         const SparseDeviceExpertEvaluator &) = delete;
@@ -2478,6 +2494,65 @@ public:
     uint64_t compact_up_stages() const { return compact_up_stages_; }
     uint64_t compact_situ_stages() const { return compact_situ_stages_; }
     uint64_t compact_down_stages() const { return compact_down_stages_; }
+    const CompactAsyncStats & compact_async_stats() const {
+        return compact_async_stats_;
+    }
+
+    bool begin_compact_async_batch(
+            ggml_backend_t backend, int max_jobs, std::string * err) {
+#if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
+        (void) backend; (void) max_jobs;
+        if (err) *err = "P45 async compact queue requires CUDA or HIP";
+        return false;
+#else
+        BackendDeviceScope device_scope;
+        if (!device_scope.enter(backend, err)) return false;
+        if (compact_async_active_ || max_jobs <= 0 ||
+            max_jobs > kNativeTopK) {
+            if (err) *err = "P45 async compact queue state is invalid";
+            return false;
+        }
+        compact_async_backend_ = backend;
+        compact_async_limit_ = max_jobs;
+        compact_async_jobs_ = 0;
+        compact_async_active_ = true;
+        compact_async_started_ = {};
+        ++compact_async_stats_.begins;
+        return true;
+#endif
+    }
+
+    bool complete_compact_async_batch_after_sync(std::string * err) {
+#if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
+        if (err) *err = "P45 async compact queue requires CUDA or HIP";
+        return false;
+#else
+        if (!compact_async_active_) {
+            if (err) *err = "P45 async compact queue is not active";
+            return false;
+        }
+        if (compact_async_jobs_ > 0) {
+            compact_async_stats_.device_window_ns += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() -
+                    compact_async_started_).count());
+        }
+        ++compact_async_stats_.layer_flushes;
+        reset_compact_async_batch();
+        return true;
+#endif
+    }
+
+    void abort_compact_async_batch() {
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+        if (!compact_async_active_) return;
+        if (compact_async_jobs_ > 0 && compact_async_backend_) {
+            ggml_backend_synchronize(compact_async_backend_);
+            ++compact_async_stats_.abort_syncs;
+        }
+        reset_compact_async_batch();
+#endif
+    }
 
     bool acquire_cache_lease(
             ggml_backend_t backend, const MoeStreamExpertSpec & spec,
@@ -2933,13 +3008,43 @@ public:
             invalid = true;
             return false;
         }
-        if (!ensure_compact_host_staging(
-                *entry, layout.total_bytes, err)) return false;
+        const size_t input_bytes =
+            static_cast<size_t>(spec.input_dim) * sizeof(float);
+        constexpr size_t map_bytes =
+            sizeof(std::array<int32_t, kSlabCount>);
+        void * host_staging = nullptr;
+        size_t host_capacity = 0;
+        CompactAsyncSlot * async_slot = nullptr;
+        if (compact_async_active_) {
+            if (backend != compact_async_backend_ || compact_async_jobs_ < 0 ||
+                compact_async_jobs_ >= compact_async_limit_ ||
+                layout.total_bytes > std::numeric_limits<size_t>::max() -
+                    input_bytes ||
+                layout.total_bytes + input_bytes >
+                    std::numeric_limits<size_t>::max() - map_bytes) {
+                if (err) *err = "P45 async compact queue capacity is invalid";
+                return false;
+            }
+            async_slot = &compact_async_slots_[
+                static_cast<size_t>(compact_async_jobs_)];
+            const size_t required =
+                layout.total_bytes + input_bytes + map_bytes;
+            if (!ensure_compact_async_slot(*async_slot, required, err)) {
+                return false;
+            }
+            host_staging = async_slot->host_staging;
+            host_capacity = async_slot->host_capacity;
+        } else {
+            if (!ensure_compact_host_staging(
+                    *entry, layout.total_bytes, err)) return false;
+            host_staging = entry->host_staging;
+            host_capacity = entry->host_capacity;
+        }
         uint16_t uploaded_mask = 0;
         const auto pack_started = std::chrono::steady_clock::now();
         if (!pack_sparse_component_major(
-                slabs, prepacked_compact, entry->host_staging,
-                entry->host_capacity, layout, uploaded_mask, err)) {
+                slabs, prepacked_compact, host_staging,
+                host_capacity, layout, uploaded_mask, err)) {
             invalid = true;
             return false;
         }
@@ -2964,19 +3069,7 @@ public:
             return false;
         }
         ++compact_layouts_;
-        auto * wire = static_cast<uint8_t *>(entry->host_staging);
-        ggml_backend_tensor_set(
-            entry->input, input_data, 0,
-            static_cast<size_t>(spec.input_dim) * sizeof(float));
-        ggml_backend_tensor_set(
-            entry->gate, wire + layout.gate_offset, 0,
-            gate_slab_bytes * slab_count);
-        ggml_backend_tensor_set(
-            entry->up, wire + layout.up_offset, 0,
-            up_slab_bytes * slab_count);
-        ggml_backend_tensor_set(
-            entry->down, wire + layout.down_offset, 0,
-            down_slab_bytes * slab_count);
+        auto * wire = static_cast<uint8_t *>(host_staging);
         std::array<int32_t, kSlabCount> natural_to_compact;
         natural_to_compact.fill(-1);
         const auto * naturals = reinterpret_cast<const uint16_t *>(wire);
@@ -3004,21 +3097,76 @@ public:
             if (err) *err = "compact sparse natural map is empty";
             return false;
         }
-        ggml_backend_tensor_set(
-            entry->natural_to_compact, natural_to_compact.data(), 0,
-            sizeof(natural_to_compact));
+        ggml_status status = GGML_STATUS_FAILED;
+        const auto graph_started = std::chrono::steady_clock::now();
+        if (compact_async_active_) {
+            auto * input_staging = wire + layout.total_bytes;
+            auto * map_staging = input_staging + input_bytes;
+            std::memcpy(input_staging, input_data, input_bytes);
+            std::memcpy(
+                map_staging, natural_to_compact.data(),
+                sizeof(natural_to_compact));
+            if (compact_async_jobs_ == 0) {
+                compact_async_started_ = graph_started;
+            }
+            ggml_backend_tensor_set_async(
+                backend, entry->input, input_staging, 0, input_bytes);
+            ggml_backend_tensor_set_async(
+                backend, entry->gate, wire + layout.gate_offset, 0,
+                gate_slab_bytes * slab_count);
+            ggml_backend_tensor_set_async(
+                backend, entry->up, wire + layout.up_offset, 0,
+                up_slab_bytes * slab_count);
+            ggml_backend_tensor_set_async(
+                backend, entry->down, wire + layout.down_offset, 0,
+                down_slab_bytes * slab_count);
+            ggml_backend_tensor_set_async(
+                backend, entry->natural_to_compact, map_staging, 0,
+                sizeof(natural_to_compact));
+            status = ggml_backend_graph_compute_async(backend, entry->graph);
+            compact_async_stats_.submit_ns += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - graph_started).count());
+            if (status == GGML_STATUS_SUCCESS) {
+                ++compact_async_jobs_;
+                ++compact_async_stats_.jobs;
+                compact_async_stats_.h2d_calls += 5;
+                compact_async_stats_.h2d_bytes +=
+                    input_bytes + gate_slab_bytes * slab_count +
+                    up_slab_bytes * slab_count +
+                    down_slab_bytes * slab_count +
+                    sizeof(natural_to_compact);
+                ++compact_async_stats_.graph_enqueues;
+                compact_async_stats_.max_inflight = std::max<uint64_t>(
+                    compact_async_stats_.max_inflight,
+                    static_cast<uint64_t>(compact_async_jobs_));
+            }
+        } else {
+            ggml_backend_tensor_set(
+                entry->input, input_data, 0, input_bytes);
+            ggml_backend_tensor_set(
+                entry->gate, wire + layout.gate_offset, 0,
+                gate_slab_bytes * slab_count);
+            ggml_backend_tensor_set(
+                entry->up, wire + layout.up_offset, 0,
+                up_slab_bytes * slab_count);
+            ggml_backend_tensor_set(
+                entry->down, wire + layout.down_offset, 0,
+                down_slab_bytes * slab_count);
+            ggml_backend_tensor_set(
+                entry->natural_to_compact, natural_to_compact.data(), 0,
+                sizeof(natural_to_compact));
+            status = ggml_backend_graph_compute(backend, entry->graph);
+            expert_graph_ns_ += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - graph_started).count());
+        }
         authoritative_h2d_bytes +=
             slab_count * (gate_slab_bytes + up_slab_bytes + down_slab_bytes);
         metadata_h2d_bytes +=
-            static_cast<uint64_t>(spec.input_dim) * sizeof(float) +
+            input_bytes +
             sizeof(natural_to_compact);
         ++compact_uploads_;
-        const auto graph_started = std::chrono::steady_clock::now();
-        const ggml_status status =
-            ggml_backend_graph_compute(backend, entry->graph);
-        expert_graph_ns_ += static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - graph_started).count());
         if (status != GGML_STATUS_SUCCESS) {
             if (err) *err = "compact sparse executor graph failed";
             return false;
@@ -3105,6 +3253,39 @@ private:
         void * host_staging = nullptr;
         size_t host_capacity = 0;
     };
+
+    struct CompactAsyncSlot {
+        ~CompactAsyncSlot() {
+            if (host_staging) cudaFreeHost(host_staging);
+        }
+
+        void * host_staging = nullptr;
+        size_t host_capacity = 0;
+    };
+
+    static bool ensure_compact_async_slot(
+            CompactAsyncSlot & slot, size_t bytes, std::string * err) {
+        if (slot.host_capacity >= bytes) return true;
+        if (slot.host_staging) cudaFreeHost(slot.host_staging);
+        slot.host_staging = nullptr;
+        slot.host_capacity = 0;
+        if (cudaHostAlloc(
+                &slot.host_staging, bytes, cudaHostAllocDefault) !=
+                cudaSuccess) {
+            if (err) *err = "P45 async compact host slot allocation failed";
+            return false;
+        }
+        slot.host_capacity = bytes;
+        return true;
+    }
+
+    void reset_compact_async_batch() {
+        compact_async_backend_ = nullptr;
+        compact_async_limit_ = 0;
+        compact_async_jobs_ = 0;
+        compact_async_active_ = false;
+        compact_async_started_ = {};
+    }
 
     CompactEntry * find_compact(
             ggml_backend_t backend, const MoeStreamExpertSpec & spec,
@@ -3342,6 +3523,12 @@ private:
 
     std::vector<std::unique_ptr<Entry>> entries_;
     std::vector<std::unique_ptr<CompactEntry>> compact_entries_;
+    std::array<CompactAsyncSlot, kNativeTopK> compact_async_slots_{};
+    ggml_backend_t compact_async_backend_ = nullptr;
+    int compact_async_limit_ = 0;
+    int compact_async_jobs_ = 0;
+    bool compact_async_active_ = false;
+    std::chrono::steady_clock::time_point compact_async_started_{};
 #endif
     uint64_t compact_pack_ns_ = 0;
     uint64_t compact_scatter_ns_ = 0;
@@ -3353,6 +3540,7 @@ private:
     uint64_t compact_up_stages_ = 0;
     uint64_t compact_situ_stages_ = 0;
     uint64_t compact_down_stages_ = 0;
+    CompactAsyncStats compact_async_stats_{};
 };
 
 class AllSlabsProvider final : public KimiK3RoutedOutputProvider {
@@ -4183,6 +4371,7 @@ public:
               const std::string & sidecar_directory,
               const std::string & route_stats_directory,
               int route_prefix_depth, bool ordered_device_join,
+              bool async_compact_queue,
               const char * metrics_path,
               std::string * err) {
         if (!backend || aux_directory.empty() || sidecar_directory.empty()) {
@@ -4448,6 +4637,11 @@ public:
 #endif
         }
         ordered_device_join_ = ordered_device_join;
+        if (async_compact_queue && !ordered_device_join_) {
+            if (err) *err = "P45 async compact queue requires P42 ordered join";
+            return false;
+        }
+        async_compact_queue_ = async_compact_queue;
         if (const char * trace =
                 std::getenv("DFLASH_KIMI_P40_CACHE_TRACE")) {
             if (*trace && !device_variant_cache_) {
@@ -4467,6 +4661,10 @@ public:
         if (const char * oracle_trace =
                 std::getenv("DFLASH_KIMI_P28_ORACLE_TRACE")) {
             if (*oracle_trace) oracle_trace_path_ = oracle_trace;
+        }
+        if (async_compact_queue_ && !oracle_trace_path_.empty()) {
+            if (err) *err = "P45 async compact queue does not support P28 replay";
+            return false;
         }
         if (!oracle_trace_path_.empty() && sparse_delivery_ !=
                 KimiK3SparseDeliveryPolicy::DirectPinnedCompact) {
@@ -4690,6 +4888,7 @@ public:
 
     void discard_device_output() override {
 #if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+        sparse_device_evaluator_.abort_compact_async_batch();
         ordered_join_arena_.discard();
 #endif
     }
@@ -6213,6 +6412,12 @@ private:
             return ok;
         }
         const auto exact_layer_fallback = [&](const char * reason) {
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+            if (device_ordered) {
+                sparse_device_evaluator_.abort_compact_async_batch();
+                ordered_join_arena_.discard();
+            }
+#endif
             close_fd(aux_fd);
             close_fd(sidecar_fd);
             if (route_stats_fd >= 0) close_fd(route_stats_fd);
@@ -6242,6 +6447,10 @@ private:
             return ok;
         };
         const auto fail_device_join = [&]() {
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+            sparse_device_evaluator_.abort_compact_async_batch();
+            ordered_join_arena_.discard();
+#endif
             close_fd(aux_fd);
             close_fd(sidecar_fd);
             if (route_stats_fd >= 0) close_fd(route_stats_fd);
@@ -6270,6 +6479,11 @@ private:
         if (device_ordered) {
 #if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
             if (!ordered_join_arena_.begin(backend_, spec.output_dim, err)) {
+                return fail_device_join();
+            }
+            if (async_compact_queue_ &&
+                !sparse_device_evaluator_.begin_compact_async_batch(
+                    backend_, kNativeTopK, err)) {
                 return fail_device_join();
             }
             output.clear();
@@ -6761,7 +6975,11 @@ private:
 
             if (device_ordered) {
 #if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
-                if (!ordered_join_arena_.finish(err)) {
+                const bool joined = ordered_join_arena_.finish(err);
+                const bool queue_finished = !async_compact_queue_ ||
+                    sparse_device_evaluator_.
+                        complete_compact_async_batch_after_sync(err);
+                if (!joined || !queue_finished) {
                     return fail_device_join();
                 }
 #endif
@@ -6922,6 +7140,25 @@ private:
                 static_cast<unsigned long long>(p41_fallbacks_),
                 static_cast<unsigned long long>(p41_invalid_));
         }
+        if (async_compact_queue_) {
+            const SparseDeviceExpertEvaluator::CompactAsyncStats & stats =
+                sparse_device_evaluator_.compact_async_stats();
+            std::fprintf(stderr,
+                "[kimi-k3-p45] begins=%llu jobs=%llu h2d-calls=%llu "
+                "h2d-bytes=%llu graph-enqueues=%llu layer-flushes=%llu "
+                "abort-syncs=%llu max-inflight=%llu submit-ns=%llu "
+                "device-window-ns=%llu\n",
+                static_cast<unsigned long long>(stats.begins),
+                static_cast<unsigned long long>(stats.jobs),
+                static_cast<unsigned long long>(stats.h2d_calls),
+                static_cast<unsigned long long>(stats.h2d_bytes),
+                static_cast<unsigned long long>(stats.graph_enqueues),
+                static_cast<unsigned long long>(stats.layer_flushes),
+                static_cast<unsigned long long>(stats.abort_syncs),
+                static_cast<unsigned long long>(stats.max_inflight),
+                static_cast<unsigned long long>(stats.submit_ns),
+                static_cast<unsigned long long>(stats.device_window_ns));
+        }
 #if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
         if (ordered_device_join_) {
             std::fprintf(stderr,
@@ -6981,6 +7218,7 @@ private:
     bool device_variant_cache_ = false;
     bool compact_executor_ = false;
     bool ordered_device_join_ = false;
+    bool async_compact_queue_ = false;
 #if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
     P42OrderedJoinArena ordered_join_arena_;
 #endif
@@ -7050,7 +7288,18 @@ bool parse_positive_int(const char * raw, int & value) {
     return true;
 }
 
+#if defined(DFLASH_KIMI_P45_ASYNC_TEST_HOOK)
+#include "../../test/kimi_k3_p45_async_compact_sentinel.inc"
+#endif
+
 } // namespace
+
+#if defined(DFLASH_KIMI_P45_ASYNC_TEST_HOOK)
+bool kimi_k3_run_p45_async_compact_sentinel(
+        ggml_backend_t backend, std::string * err) {
+    return p45_async_compact_sentinel_impl(backend, err);
+}
+#endif
 
 bool kimi_k3_prefetch_route_has_physical_request(
         bool calibrated, int selected_slab_count) {
@@ -7282,6 +7531,19 @@ bool create_kimi_k3_progressive_provider_from_env(
             "DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN must be 0 or 1";
         return false;
     }
+    bool p45_requested = false;
+    if (!parse_binary_flag(
+            std::getenv("DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE"),
+            p45_requested)) {
+        if (err) *err =
+            "DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE must be 0 or 1";
+        return false;
+    }
+    if (p45_requested && !p42_requested) {
+        if (err) *err =
+            "P45 async compact queue requires P42 ordered join";
+        return false;
+    }
     const bool all_layers_calibrated96 =
         raw_kind && std::strcmp(raw_kind, "all-layers-calibrated96") == 0;
     const bool all_layers_four_route_half =
@@ -7327,7 +7589,7 @@ bool create_kimi_k3_progressive_provider_from_env(
                 route_stats_directory ? route_stats_directory : "",
                 all_layers_four_route_half ? 6 :
                     all_layers_four_route_full ? 12 : 0,
-                p42_requested,
+                p42_requested, p45_requested,
                 std::getenv("DFLASH_KIMI_CALIBRATED96_METRICS_OUT"), err)) {
             return false;
         }

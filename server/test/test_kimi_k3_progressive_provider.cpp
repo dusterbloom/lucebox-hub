@@ -1,6 +1,8 @@
 #include "kimi_k3/kimi_k3_progressive_provider.h"
+#include "device_runtime.h"
 
 #include "ggml.h"
+#include "ggml-cuda.h"
 
 #include <algorithm>
 #include <cassert>
@@ -12,6 +14,13 @@
 #include <vector>
 
 using namespace dflash::common;
+
+#if defined(DFLASH_KIMI_P45_ASYNC_TEST_HOOK)
+namespace dflash::common {
+bool kimi_k3_run_p45_async_compact_sentinel(
+    ggml_backend_t backend, std::string * err);
+}
+#endif
 
 static void require_raw_zero_block_dequantizes_exactly(ggml_type type) {
     constexpr int kElements = 256;
@@ -179,9 +188,11 @@ int main() {
 #if defined(_WIN32)
     _putenv_s("DFLASH_KIMI_LAYER1_PROVIDER", "exact");
     _putenv_s("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "0");
+    _putenv_s("DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE", "0");
 #else
     setenv("DFLASH_KIMI_LAYER1_PROVIDER", "exact", 1);
     setenv("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "0", 1);
+    setenv("DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE", "0", 1);
 #endif
     std::unique_ptr<KimiK3RoutedOutputProvider> provider;
     error.clear();
@@ -201,8 +212,68 @@ int main() {
     }
 #if defined(_WIN32)
     _putenv_s("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "0");
+    _putenv_s("DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE", "1");
 #else
     setenv("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "0", 1);
+    setenv("DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE", "1", 1);
+#endif
+    error.clear();
+    if (create_kimi_k3_progressive_provider_from_env(
+            nullptr, nullptr, provider, &error) ||
+        error != "P45 async compact queue requires P42 ordered join") {
+        std::fprintf(stderr, "P45 dependency did not fail closed: %s\n",
+            error.c_str());
+        return 1;
+    }
+#if defined(_WIN32)
+    _putenv_s("DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE", "2");
+#else
+    setenv("DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE", "2", 1);
+#endif
+    error.clear();
+    if (create_kimi_k3_progressive_provider_from_env(
+            nullptr, nullptr, provider, &error) ||
+        error != "DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE must be 0 or 1") {
+        std::fprintf(stderr, "P45 flag validation did not fail closed: %s\n",
+            error.c_str());
+        return 1;
+    }
+#if defined(_WIN32)
+    _putenv_s("DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE", "0");
+#else
+    setenv("DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE", "0", 1);
+#endif
+#if defined(DFLASH_KIMI_P45_ASYNC_TEST_HOOK)
+    int device_count = 0;
+    const bool explicit_device = std::getenv("DFLASH_TEST_GPU") != nullptr;
+    if (cudaGetDeviceCount(&device_count) != cudaSuccess ||
+        device_count == 0) {
+        std::fprintf(stderr, "SKIP: no GPU is visible\n");
+        return explicit_device ? 1 : 77;
+    }
+    int device = device_count > 1 ? 1 : 0;
+    if (const char * raw_device = std::getenv("DFLASH_TEST_GPU")) {
+        device = std::atoi(raw_device);
+    }
+    if (device < 0 || device >= device_count ||
+        cudaSetDevice(device) != cudaSuccess) {
+        std::fprintf(stderr, "SKIP: requested GPU %d is unavailable\n", device);
+        return explicit_device ? 1 : 77;
+    }
+    ggml_backend_t backend = ggml_backend_cuda_init(device);
+    if (!backend) {
+        std::fprintf(stderr, "P45 sentinel backend initialization failed\n");
+        return 1;
+    }
+    error.clear();
+    const bool sentinel_ok =
+        kimi_k3_run_p45_async_compact_sentinel(backend, &error);
+    ggml_backend_free(backend);
+    if (!sentinel_ok) {
+        std::fprintf(stderr, "P45 async compact sentinel failed: %s\n",
+            error.c_str());
+        return 1;
+    }
 #endif
     return 0;
 }

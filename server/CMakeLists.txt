@@ -1636,8 +1636,24 @@ if(DFLASH27B_TESTS)
             ${DFLASH27B_SRC_INCLUDE_DIRS})
         target_link_libraries(test_kimi_k3_progressive_provider PRIVATE
             dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+        if(DFLASH27B_GPU_BACKEND STREQUAL "cuda" OR
+           DFLASH27B_GPU_BACKEND STREQUAL "hip")
+            target_compile_definitions(dflash_common PRIVATE
+                DFLASH_KIMI_P45_ASYNC_TEST_HOOK=1)
+            target_compile_definitions(test_kimi_k3_progressive_provider PRIVATE
+                DFLASH_KIMI_P45_ASYNC_TEST_HOOK=1)
+            if(DFLASH27B_GPU_BACKEND STREQUAL "hip")
+                target_compile_definitions(test_kimi_k3_progressive_provider PRIVATE
+                    DFLASH27B_BACKEND_HIP=1 GGML_USE_HIP)
+                target_link_libraries(test_kimi_k3_progressive_provider PRIVATE hip::host)
+            else()
+                target_link_libraries(test_kimi_k3_progressive_provider PRIVATE CUDA::cudart)
+            endif()
+        endif()
         add_test(NAME kimi_k3_progressive_provider
             COMMAND test_kimi_k3_progressive_provider)
+        set_tests_properties(kimi_k3_progressive_provider PROPERTIES
+            SKIP_RETURN_CODE 77)
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_vs_oracle.cpp")
         add_executable(test_vs_oracle test/test_vs_oracle.cpp)
