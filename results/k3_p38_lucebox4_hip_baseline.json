@@ -1,0 +1,126 @@
+{
+  "schema": "k3-p38-lucebox4-hip-baseline-v1",
+  "source": {
+    "branch": "experiment/kimi-k3-p20-sparse-physical",
+    "commit": "3f373b072e70791ef235df5002b0a9b130f470f1",
+    "status": "clean-detached",
+    "runner_sha256": "112a79277c78db7a1fe62800378d6dd23a6cd8b862532070354ba682cb034e24"
+  },
+  "platform": {
+    "host": "lucebox4",
+    "cpu": "AMD Ryzen AI Max+ 395",
+    "accelerator": "gfx1201",
+    "visible_vram_bytes": 34208743424,
+    "rocm": "7.2.2",
+    "hip": "7.2.53211",
+    "build_architectures": ["gfx1201"]
+  },
+  "fixture": {
+    "sha256": "58f72def4d1d94e036dd96b724e40b42b09bd8b048b095667aa6c725d36b8f3f",
+    "prompt_tokens": 34,
+    "emitted_tokens": 9,
+    "true_decode_transitions": 8,
+    "output_text_suffix": "Tokyo."
+  },
+  "runtime_configuration": {
+    "core": "cpu",
+    "cpu_threads": 12,
+    "expert_backend": "hip:0",
+    "device_cache_mib": 2048,
+    "moe_core_offload": ["latent", "shared"],
+    "complete_preparation_layers": [
+      57, 58, 60, 61, 62, 64, 65, 66, 68, 69, 70, 72, 73,
+      74, 76, 77, 78, 80, 81, 82, 84, 85, 86, 88, 89, 90
+    ],
+    "provider": "all-layers-calibrated96",
+    "valid_calibrated_layers": 92,
+    "sidecar_authoritative": true,
+    "physical_layout": "scratch",
+    "io_backend": "direct-pread",
+    "persistent_scratch": true,
+    "compact_upload": true,
+    "pinned_compact": true,
+    "direct_pinned_compact": true,
+    "host_cache_mib": 0,
+    "stage_profile_enabled": false,
+    "amd_power_vram_telemetry_enabled": false,
+    "aux_directory": "/home/duster/kimi-k3-deploy/aux",
+    "sidecar_directory": "/home/duster/kimi-k3-deploy/streamed-bank/natural-sidecars",
+    "layer_budget_table": "/home/duster/lucebox-k3-p38/results/h23_10k_policies/h23_moonshot_1_2gib.txt"
+  },
+  "runs": [
+    {
+      "id": "p38-hip-fact-20260818",
+      "prefill_seconds": 56.519125673,
+      "decode_seconds": 13.278583947,
+      "true_ar_transitions_per_second": 0.602473881,
+      "legacy_emitted_tokens_per_second": 0.677783116,
+      "direct_io_ns": 11849058409,
+      "compact_pack_ns": 144155599,
+      "compact_scatter_ns": 33029860900,
+      "expert_graph_ns": 1496866044,
+      "expert_readback_ns": 1038443171
+    },
+    {
+      "id": "p38-hip-fact-repeat-20260818",
+      "prefill_seconds": 55.844740570,
+      "decode_seconds": 13.075050721,
+      "true_ar_transitions_per_second": 0.611852311,
+      "legacy_emitted_tokens_per_second": 0.688333850,
+      "direct_io_ns": 11567150491,
+      "compact_pack_ns": 150275254,
+      "compact_scatter_ns": 33021306103,
+      "expert_graph_ns": 1486925587,
+      "expert_readback_ns": 1063103293
+    }
+  ],
+  "traffic_each_run": {
+    "model_positions": 42,
+    "explicit_provider_read_bytes": 66937405440,
+    "logical_gib_per_position": 1.484293256,
+    "direct_physical_bytes": 56431411200,
+    "request_rows": 366422,
+    "traffic_sha256": "ebc46f90d156d8e6d16c14148bcb34cb3395daf880a3b7c606e29036a5c27e93"
+  },
+  "numerics": {
+    "hip_repeat_logits_bit_equal": true,
+    "hip_logits_sha256": "31c42a5a297db20330defc1200f50777e1ef916d201057a79d9fcbb0e5b0b049",
+    "cuda_reference_logits_sha256": "82dfa599691d1e89215f5a9603a0134380ae7467945e10bded30f243adde5085",
+    "cuda_hip_logits_bit_equal": false,
+    "generation_tokens_equal": true,
+    "maximum_absolute_logit_error": 3.55032325,
+    "mean_kl": 0.04134504,
+    "median_kl": 0.01892074,
+    "maximum_kl": 0.49156080,
+    "top1_equal_rows": 39,
+    "rows": 42,
+    "vocabulary": 163840,
+    "payload_logits": 6881280,
+    "trace_header_bytes": 48,
+    "cpu_isa_confound": true
+  },
+  "package_verification": {
+    "transfer_sparse_copy": true,
+    "transfer_time_copied_ranges_passed": 14,
+    "transfer_time_copied_ranges_total": 14,
+    "durable_remote_rehash_artifact": false
+  },
+  "successor_contract": {
+    "primary_metric": "true_ar_transitions_per_second",
+    "target": 10.0,
+    "prefill_token_not_counted_as_decode_transition": true,
+    "speculative_accepted_tokens_reported_separately": true,
+    "broad_suite_sha256": "6d1c0583df52738820559bef66f6a96839bcde44c0bae7bdc4bb7bbe7332d4cc",
+    "broad_suite_prompts": 12,
+    "generated_tokens_per_prompt": 24,
+    "required_quality_passes": 12,
+    "stage_profile_required": true,
+    "canonical_decode_numerator": "sum(max(0, emitted_tokens - 1))",
+    "baseline_runtime_build_code_lines": 9088,
+    "target_runtime_build_code_lines": 6500,
+    "production_loc_excludes": [
+      "tests", "comments", "blank lines", "generated files",
+      "dependencies", "build products", "binary artifacts"
+    ]
+  }
+}
