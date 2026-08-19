@@ -73,6 +73,17 @@ records are not reused. It reaches 1.849742412/s with 12.617750256 seconds of
 direct-I/O time. The temporary parser ceiling was reverted and the 16-GiB
 configuration restored.
 
+## P55 broad-12 follow-up
+
+The orderly current-main branch closes the missing broad gate in
+`docs/P55_K3_GPU1_DEVICE_CHAIN_BROAD12.md`. The exact P51 topology completes
+12 prompts and 129 true decode transitions at **1.856934565/s**, with every
+output, logits trace and logical traffic byte-identical to the prior HIP broad
+reference. Mean routed preparation/expert/join time is
+223.344/286.940/17.171 ms. Fixed-cap quality remains the same 11/12
+`code-function` boundary. The short 1.991574475/s ceiling remains valid;
+steady serving and measured 2/s remain open.
+
 ## Next boundary
 
 The immediate goal is a robust measured 2.0/s, followed by 4–5/s before

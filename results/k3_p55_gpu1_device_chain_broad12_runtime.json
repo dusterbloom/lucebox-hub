@@ -1,0 +1,137 @@
+{
+  "schema": "k3-p55-gpu1-device-chain-broad12-runtime-v1",
+  "status": "measured-byte-exact-broad12-no-speculation-go",
+  "source": {
+    "repository_commit": "2ce8a28b654473257d3d0d4acddd87da79ddefaa",
+    "branch": "agent/k3-gpu1-device-chain-orderly",
+    "runner_sha256": "e35bb15d822690c9583e976b6e930c43056b6850525d0cccd6d11421386592a7"
+  },
+  "platform": {
+    "host": "lucebox4",
+    "backend": "HIP",
+    "architectures": [
+      "gfx1201",
+      "gfx1151"
+    ],
+    "core_backend": "ROCm1_gfx1151",
+    "canonical_join_backend": "ROCm1_gfx1151",
+    "speculative_decode": false
+  },
+  "configuration": {
+    "provider": "all-layers-calibrated96",
+    "sidecar_authoritative": true,
+    "host_cache_mib": 16384,
+    "device_cache_mib": 8192,
+    "compact_executor": true,
+    "ordered_device_join": true,
+    "async_compact_queue": true,
+    "persistent_routed_preparation": true,
+    "persistent_routed_join": false,
+    "device_hidden_chain": false,
+    "gpu0_expert_helper": false
+  },
+  "suite": {
+    "fixture": "server/test/fixtures/kimi_k3_h23_broad_native_success_v1.jsonl",
+    "fixture_sha256": "6d1c0583df52738820559bef66f6a96839bcde44c0bae7bdc4bb7bbe7332d4cc",
+    "thinking_enabled": false,
+    "maximum_generated_tokens": 24,
+    "sequence_count": 12,
+    "prompt_positions": 552,
+    "emitted_tokens": 141,
+    "true_decode_transitions": 129,
+    "model_positions": 681,
+    "task_successes": 11,
+    "task_denominator": 12,
+    "failed_task": "code-function",
+    "failure_boundary": "the frozen 24-token cap ends after `x %` before the required `2`, matching the prior HIP broad reference"
+  },
+  "runtime": {
+    "prefill_seconds": 339.059029324,
+    "prompt_positions_per_second": 1.628035098,
+    "decode_seconds": 69.469329936,
+    "true_ar_transitions_per_second": 1.856934565,
+    "legacy_emitted_tokens_per_second": 2.029672665,
+    "wall_seconds": 444.405873081,
+    "decode_stage_mean_ms": {
+      "total": 538.359829,
+      "routed_preparation": 223.344364,
+      "experts": 286.940264,
+      "join": 17.171287,
+      "output": 4.461248
+    },
+    "decode_stage_median_ms": {
+      "total": 536.827,
+      "routed_preparation": 223.233,
+      "experts": 287.294,
+      "join": 16.864,
+      "output": 4.423
+    }
+  },
+  "identity": {
+    "reference_root": "/home/duster/kimi-k3-deploy/p40-off-cache8-broad12-20260819/suite",
+    "all_prompt_tokens_equal": true,
+    "all_output_tokens_equal": true,
+    "all_output_text_equal": true,
+    "all_12_logits_byte_equal": true,
+    "concatenated_logits_sha256": "f761bb7e9ffb614ce48fb5fc02c8cd2da44ff092ecb1d7d9bd318d14cd4fd06b",
+    "logical_traffic_byte_equal": true,
+    "logical_traffic_sha256": "54b76f99439d90ecb35d033c12dd1d1f219e30007248aaf77f913fc69d76f383"
+  },
+  "counters": {
+    "p41_attempted": 275008,
+    "p41_completed": 275008,
+    "p41_fallbacks": 0,
+    "p41_invalid": 0,
+    "p45_begins": 62652,
+    "p45_jobs": 275008,
+    "p45_h2d_calls": 1116376,
+    "p45_graph_enqueues": 275008,
+    "p45_layer_flushes": 62652,
+    "p45_abort_syncs": 0,
+    "p42_expert_d2d_copies": 275008,
+    "p42_join_launches": 62652,
+    "p42_output_d2d_copies": 62652,
+    "p46_graphs": 68,
+    "p46_executions": 46308,
+    "hot_mean_reads": 0,
+    "hot_mean_h2d_bytes": 0,
+    "physical_direct_read_bytes": 335504441344,
+    "direct_io_seconds": 161.035623745,
+    "logical_provider_bytes": 892584075264,
+    "logical_provider_gib_per_position": 1.220680909
+  },
+  "resources": {
+    "peak_process_rss_kib": 20747800,
+    "peak_process_swap_kib": 0,
+    "peak_system_used_kib": 85919880,
+    "peak_gpu1_memory_mib": 61174.210938,
+    "peak_gpu1_utilization_percent": 69.0,
+    "peak_gpu1_power_watts": 87.015,
+    "sampled_gpu1_energy_joules": 29250.442715
+  },
+  "comparison": {
+    "p40_off_true_ar_per_second": 1.389575977,
+    "p40_off_to_p55_speedup": 1.336331799,
+    "p40_on_true_ar_per_second": 1.429023619,
+    "p40_on_to_p55_speedup": 1.299442879,
+    "p51_short_fact_true_ar_per_second": 1.991574475,
+    "broad_below_short_fact_fraction": 0.067604758,
+    "remaining_mean_milliseconds_to_2_per_second": 38.359829
+  },
+  "artifacts": {
+    "remote_root": "/home/duster/kimi-k3-deploy/p51-orderly-broad12-2ce8a28-20260819",
+    "analysis_sha256": "8ab85c12e7eb412936d639a150ae451c85cf43f4125c4891b867235f87b18723",
+    "manifest_sha256": "124b6b119ce28418967d0f541b485f88f63077b01ae78dccbcf88a922ed211bb",
+    "traffic_sha256": "54b76f99439d90ecb35d033c12dd1d1f219e30007248aaf77f913fc69d76f383",
+    "telemetry_sha256": "012f585c23fc19bb88a5abea6ae74b545ba813afbb628f50af19d0974de2b13f",
+    "stderr_sha256": "24a85c4d3d89815ec9941bbc2872556f1fecd1b515cb6f9a298100de1c7f40e4"
+  },
+  "verdict": {
+    "broad_exactness": "GO",
+    "broad_runtime": "GO_1.856934565_TRUE_AR_PER_SECOND",
+    "measured_two_true_ar_per_second": false,
+    "quality_vs_prior_hip_reference": "UNCHANGED_11_OF_12_AT_FIXED_CAP",
+    "steady_state": "OPEN",
+    "next": "remove_at_least_38.36_ms_per_transition_for_2_per_second_then_attack_expert_and_routed_preparation_together_for_4_to_5_per_second"
+  }
+}
