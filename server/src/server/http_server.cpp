@@ -99,6 +99,7 @@ namespace dflash::common {
 namespace {
 constexpr auto kClientMonitorInterval = std::chrono::milliseconds(250);
 constexpr auto kSseHeartbeatInterval = std::chrono::seconds(15);
+constexpr auto kReadClosedProbeInterval = std::chrono::seconds(1);
 constexpr char kSseHeartbeat[] = ": keep-alive\n\n";
 }
 
@@ -510,14 +511,22 @@ static size_t json_array_size(const json & value) {
 }
 
 int resolve_max_output_tokens(const json & body, int default_max_tokens) {
+    // OpenAI-compatible clients (e.g. PocketPal's "Unlimited") send
+    // max_completion_tokens: -1 to mean "no explicit limit"; 0 is also
+    // invalid as a budget. Treat non-positive values as unset so they
+    // fall back to the server default instead of yielding zero tokens.
+    auto field_or_default = [&](const char * key) {
+        const int value = body.at(key).get<int>();
+        return value > 0 ? value : default_max_tokens;
+    };
     if (body.contains("max_tokens")) {
-        return body.at("max_tokens").get<int>();
+        return field_or_default("max_tokens");
     }
     if (body.contains("max_output_tokens")) {
-        return body.at("max_output_tokens").get<int>();
+        return field_or_default("max_output_tokens");
     }
     if (body.contains("max_completion_tokens")) {
-        return body.at("max_completion_tokens").get<int>();
+        return field_or_default("max_completion_tokens");
     }
     return default_max_tokens;
 }
@@ -664,7 +673,7 @@ json build_props_body(const ServerConfig & config,
     const bool is_qwen = (config.arch.rfind("qwen", 0) == 0);
     const bool reasoning_supported = is_qwen;
     const bool speculative_supported = is_qwen;
-    const bool tools_supported = is_qwen;
+    const bool tools_supported = is_qwen || config.arch == "deepseek4";
 
     auto pcs  = prefix_cache.stats();
     auto pcfs = prefix_cache.full_stats();
@@ -2244,8 +2253,9 @@ json build_openai_completion_response(
     // usage.completion_tokens_details.reasoning_tokens — OpenAI o1/o3
     // standard location; kept in sync with finish_details.thinking_tokens.
     // usage.timings — per-request prefill/decode wall clock, additive to
-    // the OpenAI shape (ignored by clients that don't recognize it). See
-    // docs/specs/thinking-budget.md §6.3.
+    // the OpenAI shape (ignored by clients that don't recognize it).
+    // spec_decode_ran disambiguates a real zero-acceptance speculative run
+    // from an autoregressive fallback. See docs/specs/thinking-budget.md §6.3.
     const int prompt_tokens = (int) req.prompt_tokens.size();
     const json usage = {
         {"prompt_tokens", prompt_tokens},
@@ -2256,6 +2266,7 @@ json build_openai_completion_response(
         }},
         {"timings", build_timings_json(timings, counts.total)},
         {"accept_rate", result.accept_rate},
+        {"spec_decode_ran", result.spec_decode_ran},
     };
     return {
         {"id", req.response_id},
@@ -2323,6 +2334,7 @@ json build_anthropic_response(
         {"output_tokens", counts.total},
         {"timings", build_timings_json(timings, counts.total)},
         {"accept_rate", result.accept_rate},
+        {"spec_decode_ran", result.spec_decode_ran},
     };
     return {
         {"id", req.response_id},
@@ -2372,6 +2384,7 @@ json build_responses_api_response(
         {"total_tokens", prompt_tokens + counts.total},
         {"timings", build_timings_json(timings, counts.total)},
         {"accept_rate", result.accept_rate},
+        {"spec_decode_ran", result.spec_decode_ran},
     };
     return {
         {"id", req.response_id},
@@ -4174,7 +4187,6 @@ void HttpServer::start_job_stream(ServerJob * job) {
     std::lock_guard<std::mutex> lock(job->write_mu);
     if (job->client_disconnected.load(std::memory_order_acquire)) return;
     job->stream_ready = true;
-    job->read_close_probe_sent = false;
     job->heartbeat_offset = 0;
     job->last_stream_write = std::chrono::steady_clock::now();
 }
@@ -4200,10 +4212,9 @@ void HttpServer::maybe_send_job_heartbeat(
         return;
     }
     const auto now = std::chrono::steady_clock::now();
-    const bool probe_read_close =
-        peer_read_closed && !job->read_close_probe_sent;
-    if (!probe_read_close &&
-        now - job->last_stream_write < kSseHeartbeatInterval) {
+    const auto heartbeat_interval =
+        peer_read_closed ? kReadClosedProbeInterval : kSseHeartbeatInterval;
+    if (now - job->last_stream_write < heartbeat_interval) {
         return;
     }
 
@@ -4217,7 +4228,6 @@ void HttpServer::maybe_send_job_heartbeat(
         return;
     }
     if (result == http_detail::HeartbeatSendResult::Retry) return;
-    if (probe_read_close) job->read_close_probe_sent = true;
     job->last_stream_write = now;
 }
 
