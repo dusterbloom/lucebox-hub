@@ -21,6 +21,8 @@
 
 namespace dflash::common {
 
+struct MoeStreamExternalLeaseControl;
+
 struct MoeStreamConfig {
     int prefill_threshold = 8;
     int prefetch_layers = 2;
@@ -68,6 +70,71 @@ struct MoeStreamExpertSpec {
     float up_scale = 1.0f;
     float down_scale = 1.0f;
     float gate_up_scale = 1.0f;
+};
+
+// One identity predicate for persistent graphs and device-resident weights.
+// Keeping every numerical field here prevents model adapters from silently
+// reusing a graph or cache entry with a different expert contract.
+bool same_moe_stream_expert_spec(
+    const MoeStreamExpertSpec & a,
+    const MoeStreamExpertSpec & b);
+
+// Identity for weights populated by a model adapter instead of the ordinary
+// MoeHybridStorage path. source_domain separates native weights from sidecars
+// and other artifacts; source_generation must change whenever that artifact is
+// replaced. layer is the adapter-local routed layer, not a model-global index.
+struct MoeStreamExternalKey {
+    uint64_t source_domain = 0;
+    uint64_t source_generation = 0;
+    int32_t layer = -1;
+    int32_t expert = -1;
+    MoeStreamExpertSpec spec{};
+};
+
+bool same_moe_stream_external_key(
+    const MoeStreamExternalKey & a,
+    const MoeStreamExternalKey & b);
+
+// An opaque, move-only pin on one slot in the common LFRU device pool. A hit
+// protects resident weights for compute. A fill lease additionally reserves
+// the slot against readers and eviction until commit() or destruction. The
+// adapter never owns or frees the underlying device allocation.
+class MoeStreamExternalLease {
+public:
+    MoeStreamExternalLease();
+    ~MoeStreamExternalLease();
+    MoeStreamExternalLease(const MoeStreamExternalLease &) = delete;
+    MoeStreamExternalLease & operator=(const MoeStreamExternalLease &) = delete;
+    MoeStreamExternalLease(MoeStreamExternalLease &&) noexcept;
+    MoeStreamExternalLease & operator=(MoeStreamExternalLease &&) noexcept;
+
+    explicit operator bool() const;
+    bool cache_hit() const;
+    bool evicted() const;
+    bool clear_required() const;
+    uint16_t resident_mask() const;
+    uint16_t missing_mask() const;
+    size_t capacity() const;
+
+    // Rebind an existing graph input to this lease without exposing the pool
+    // buffer. The tensor allocation must fit wholly within the leased slot.
+    bool bind_tensor(ggml_tensor * tensor, size_t offset,
+                     std::string * err = nullptr) const;
+
+    // Zero a prefix of the leased slot, including backend allocation padding.
+    // Cold fills use this before publishing any logical slab residency.
+    bool clear_prefix(size_t bytes, std::string * err = nullptr) const;
+
+    // Publish all requested missing bits after the adapter has completed and
+    // synchronized its external fill. A failed/abandoned fill preserves any
+    // previously resident bits and never exposes partially written data.
+    bool commit(uint16_t filled_mask, std::string * err = nullptr);
+    void reset();
+
+private:
+    friend class MoeHybridStreamEngine;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 // Optional research/debug boundary for observing one exact expert before its
@@ -230,8 +297,19 @@ public:
     void release_device_slot(int device_slot);
     int device_slot_count() const;
     size_t device_cache_bytes() const;
+    size_t external_device_cache_bytes() const;
     size_t pinned_expert_count() const;
     ggml_backend_t compute_backend() const;
+
+    // Acquire one externally populated cache variant. Lack of spare capacity
+    // or an oversized variant is a normal fallback: this returns true with an
+    // empty lease. Invalid identities and internal state errors return false.
+    bool acquire_external_device_lease(
+        const MoeStreamExternalKey & key,
+        size_t required_bytes,
+        uint16_t requested_mask,
+        MoeStreamExternalLease & lease,
+        std::string * err = nullptr);
 
     // Populate and protect the highest-value profile entries. Numerical specs
     // are supplied per layer so mixed-format models remain valid. At least
@@ -267,6 +345,7 @@ public:
     MoeStreamComputeStats compute_stats() const;
 
 private:
+    friend class MoeStreamExternalLease;
     friend bool eval_moe_streamed_experts(
         MoeHybridStreamEngine &,
         const MoeStreamExpertSpec &,
@@ -274,7 +353,9 @@ private:
         std::vector<float> &,
         std::string *);
     struct Runtime;
+    void release_external_device_lease(MoeStreamExternalLease::Impl & lease);
     std::unique_ptr<Runtime> runtime_;
+    std::shared_ptr<MoeStreamExternalLeaseControl> external_lease_control_;
 };
 
 // Persistent two-owner coordinator. The secondary compute worker is created

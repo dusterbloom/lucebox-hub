@@ -3,6 +3,7 @@
 #include "common/moe_hybrid_stream.h"
 
 #include "ggml-quants.h"
+#include "ggml-cpu.h"
 
 #include <algorithm>
 #include <cmath>
@@ -755,6 +756,116 @@ void run_pinned_cache_case(ggml_backend_t backend) {
     engine.destroy();
 }
 
+void run_external_variant_cache_case(ggml_backend_t backend) {
+    MoeStreamConfig config;
+    config.device_slots = 2;
+    config.device_cache_bytes = 4 * 4096;
+    config.graph_cache_entries = 0;
+    MoeHybridStreamEngine engine;
+    std::string error;
+    STREAM_REQUIRE(engine.init(backend, 4096, config, &error));
+    STREAM_REQUIRE(engine.device_slot_count() >= 4);
+    STREAM_REQUIRE(engine.external_device_cache_bytes() == 2 * 4096);
+
+    MoeStreamExternalKey key;
+    key.source_domain = 0x4b334e4154555241ULL;
+    key.source_generation = 11;
+    key.layer = 3;
+    key.expert = 7;
+    key.spec.input_dim = 256;
+    key.spec.intermediate_dim = 64;
+    key.spec.output_dim = 128;
+    key.spec.gate_type = GGML_TYPE_F32;
+    key.spec.up_type = GGML_TYPE_F32;
+    key.spec.down_type = GGML_TYPE_F32;
+
+    MoeStreamExternalLease first;
+    STREAM_REQUIRE(engine.acquire_external_device_lease(
+        key, 2048, 0x003, first, &error));
+    STREAM_REQUIRE(first && !first.cache_hit() && first.clear_required());
+    STREAM_REQUIRE(first.resident_mask() == 0);
+    STREAM_REQUIRE(first.missing_mask() == 0x003);
+
+    ggml_init_params params{};
+    params.mem_size = 4096;
+    params.no_alloc = true;
+    ggml_context * ctx = ggml_init(params);
+    STREAM_REQUIRE(ctx != nullptr);
+    ggml_tensor * tensor = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 256);
+    STREAM_REQUIRE(first.bind_tensor(tensor, 256, &error));
+    STREAM_REQUIRE(tensor->data != nullptr && tensor->buffer != nullptr);
+    STREAM_REQUIRE(!first.commit(0x007, &error));
+    error.clear();
+    STREAM_REQUIRE(!first.commit(0x001, &error));
+    error.clear();
+    STREAM_REQUIRE(first.commit(0x003, &error));
+    first.reset();
+
+    MoeStreamExternalLease hit;
+    STREAM_REQUIRE(engine.acquire_external_device_lease(
+        key, 2048, 0x001, hit, &error));
+    STREAM_REQUIRE(hit && hit.cache_hit() && hit.missing_mask() == 0);
+    hit.reset();
+
+    MoeStreamExternalLease partial;
+    STREAM_REQUIRE(engine.acquire_external_device_lease(
+        key, 2048, 0x007, partial, &error));
+    STREAM_REQUIRE(partial && !partial.cache_hit());
+    STREAM_REQUIRE(!partial.clear_required());
+    STREAM_REQUIRE(partial.resident_mask() == 0x003);
+    STREAM_REQUIRE(partial.missing_mask() == 0x004);
+    STREAM_REQUIRE(partial.commit(0x004, &error));
+    partial.reset();
+
+    MoeStreamExternalKey stale = key;
+    stale.source_generation = 12;
+    MoeStreamExternalLease replacement;
+    STREAM_REQUIRE(engine.acquire_external_device_lease(
+        stale, 2048, 0x001, replacement, &error));
+    STREAM_REQUIRE(replacement && !replacement.cache_hit() &&
+                   replacement.clear_required());
+    // Abandoning a new fill must never expose it as resident.
+    replacement.reset();
+    STREAM_REQUIRE(engine.acquire_external_device_lease(
+        stale, 2048, 0x001, replacement, &error));
+    STREAM_REQUIRE(replacement && replacement.clear_required());
+    STREAM_REQUIRE(replacement.commit(0x001, &error));
+    replacement.reset();
+
+    MoeStreamExternalKey other_layer = stale;
+    other_layer.layer = 4;
+    MoeStreamExternalLease separated;
+    STREAM_REQUIRE(engine.acquire_external_device_lease(
+        other_layer, 2048, 0x001, separated, &error));
+    STREAM_REQUIRE(separated && !separated.cache_hit());
+    separated.reset();
+
+    MoeStreamExternalLease move_lease;
+    STREAM_REQUIRE(engine.acquire_external_device_lease(
+        stale, 2048, 0x001, move_lease, &error));
+    STREAM_REQUIRE(move_lease);
+    MoeHybridStreamEngine moved_engine(std::move(engine));
+    STREAM_REQUIRE(move_lease);
+    STREAM_REQUIRE(move_lease.bind_tensor(tensor, 256, &error));
+    move_lease.reset();
+
+    MoeStreamExternalKey destroyed_key = stale;
+    destroyed_key.expert = 99;
+    MoeStreamExternalLease destroyed_lease;
+    STREAM_REQUIRE(moved_engine.acquire_external_device_lease(
+        destroyed_key, 2048, 0x008, destroyed_lease, &error));
+    STREAM_REQUIRE(destroyed_lease && !destroyed_lease.cache_hit());
+    moved_engine.destroy();
+    STREAM_REQUIRE(!destroyed_lease);
+    STREAM_REQUIRE(destroyed_lease.capacity() == 0);
+    STREAM_REQUIRE(!destroyed_lease.bind_tensor(tensor, 0, &error));
+    error.clear();
+    STREAM_REQUIRE(!destroyed_lease.commit(0x008, &error));
+    destroyed_lease.reset();
+
+    ggml_free(ctx);
+}
+
 } // namespace
 
 TEST_CASE(MoeStreamComputeFixture, persistent_graph_matches_cpu_and_padded_mxfp4) {
@@ -786,5 +897,12 @@ TEST_CASE(MoeStreamComputeFixture, persistent_graph_matches_cpu_and_padded_mxfp4
     run_fused_decode_case(backend, true);
     run_mxfp4_padding_case(backend);
     run_pinned_cache_case(backend);
+    ggml_backend_free(backend);
+}
+
+TEST_CASE(MoeStreamComputeFixture, external_variant_cache_identity_and_masks) {
+    ggml_backend_t backend = ggml_backend_cpu_init();
+    STREAM_REQUIRE(backend != nullptr);
+    run_external_variant_cache_case(backend);
     ggml_backend_free(backend);
 }
