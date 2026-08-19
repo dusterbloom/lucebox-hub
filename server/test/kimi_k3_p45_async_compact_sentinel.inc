@@ -43,16 +43,14 @@ bool p45_async_compact_sentinel_impl(
         }
         return true;
     };
-    std::array<std::vector<float>, jobs> inputs;
+    std::vector<float> input(static_cast<size_t>(input_dim));
+    for (int column = 0; column < input_dim; ++column) {
+        input[static_cast<size_t>(column)] =
+            static_cast<float>(((column * 5) % 37) - 18) / 19.0f;
+    }
     std::array<std::vector<SparseSlabPayload>, jobs> payloads;
     std::array<uint16_t, jobs> masks{};
     for (int job = 0; job < jobs; ++job) {
-        inputs[static_cast<size_t>(job)].resize(input_dim);
-        for (int column = 0; column < input_dim; ++column) {
-            inputs[static_cast<size_t>(job)][static_cast<size_t>(column)] =
-                static_cast<float>(((job * 11 + column * 5) % 37) - 18) /
-                19.0f;
-        }
         auto & payload = payloads[static_cast<size_t>(job)];
         payload.reserve(static_cast<size_t>(depths[static_cast<size_t>(job)]));
         for (int rank = 0; rank < depths[static_cast<size_t>(job)]; ++rank) {
@@ -71,6 +69,36 @@ bool p45_async_compact_sentinel_impl(
         }
     }
 
+    SparseCompactPayload component_major;
+    component_major.slab_count = depths[0];
+    component_major.gate_slab_bytes = payloads[0][0].gate.size();
+    component_major.up_slab_bytes = payloads[0][0].up.size();
+    component_major.down_slab_bytes = payloads[0][0].down.size();
+    component_major.component_major = true;
+    KimiK3CompactWireLayout component_layout;
+    uint16_t component_mask = 0;
+    if (!kimi_k3_compact_wire_layout(
+            component_major.slab_count, component_major.gate_slab_bytes,
+            component_major.up_slab_bytes, component_major.down_slab_bytes,
+            &component_layout) ||
+        !component_major.ensure(component_layout.total_bytes, err)) {
+        return false;
+    }
+    component_major.bytes = component_layout.total_bytes;
+    if (!pack_sparse_component_major(
+            payloads[0], nullptr, component_major.data,
+            component_major.capacity, component_layout, component_mask, err) ||
+        component_mask != masks[0]) {
+        if (err && err->empty()) {
+            *err = "P45 direct component wire construction failed";
+        }
+        return false;
+    }
+    const std::vector<uint8_t> component_snapshot(
+        static_cast<const uint8_t *>(component_major.data),
+        static_cast<const uint8_t *>(component_major.data) +
+            component_major.bytes);
+
     SparseDeviceExpertEvaluator teacher;
     SparseDeviceExpertEvaluator queued;
     std::vector<float> expected(static_cast<size_t>(jobs) * output_dim);
@@ -80,7 +108,7 @@ bool p45_async_compact_sentinel_impl(
         uint64_t metadata_h2d = 0;
         bool invalid = false;
         if (!teacher.evaluate_compact_device(
-                backend, spec, inputs[static_cast<size_t>(job)].data(),
+                backend, spec, input.data(),
                 payloads[static_cast<size_t>(job)], nullptr,
                 masks[static_cast<size_t>(job)], down_row_bytes, output,
                 weight_h2d, metadata_h2d, invalid, err) ||
@@ -100,6 +128,7 @@ bool p45_async_compact_sentinel_impl(
         ggml_context * context = nullptr;
         ggml_backend_buffer_t buffer = nullptr;
         ggml_tensor * rows = nullptr;
+        ggml_tensor * device_input = nullptr;
         std::array<ggml_tensor *, jobs> row{};
     } arena;
     ggml_init_params params{};
@@ -109,6 +138,8 @@ bool p45_async_compact_sentinel_impl(
     if (arena.context) {
         arena.rows = ggml_new_tensor_2d(
             arena.context, GGML_TYPE_F32, output_dim, jobs);
+        arena.device_input = ggml_new_tensor_2d(
+            arena.context, GGML_TYPE_F32, input_dim, 1);
         for (int job = 0; job < jobs; ++job) {
             arena.row[static_cast<size_t>(job)] = ggml_view_1d(
                 arena.context, arena.rows, output_dim,
@@ -116,18 +147,25 @@ bool p45_async_compact_sentinel_impl(
         }
         arena.buffer = ggml_backend_alloc_ctx_tensors(arena.context, backend);
     }
-    if (!arena.context || !arena.rows || !arena.buffer) {
+    if (!arena.context || !arena.rows || !arena.device_input ||
+        !arena.buffer) {
         if (err) *err = "P45 async sentinel output arena allocation failed";
         return false;
     }
-    const auto queue_job = [&](int job, ggml_tensor * destination) {
+    ggml_backend_tensor_set(
+        arena.device_input, input.data(), 0,
+        input.size() * sizeof(float));
+    const auto queue_job = [&](int job, ggml_tensor * destination,
+                               const float * input_data) {
         ggml_tensor * output = nullptr;
         uint64_t weight_h2d = 0;
         uint64_t metadata_h2d = 0;
         bool invalid = false;
+        const SparseCompactPayload * prepacked = job == 0
+            ? &component_major : nullptr;
         if (!queued.evaluate_compact_device(
-                backend, spec, inputs[static_cast<size_t>(job)].data(),
-                payloads[static_cast<size_t>(job)], nullptr,
+                backend, spec, input_data,
+                payloads[static_cast<size_t>(job)], prepacked,
                 masks[static_cast<size_t>(job)], down_row_bytes, output,
                 weight_h2d, metadata_h2d, invalid, err) ||
             invalid || !output) {
@@ -138,7 +176,8 @@ bool p45_async_compact_sentinel_impl(
     };
     if (!queued.begin_compact_async_batch(backend, jobs, err)) return false;
     for (int job = 0; job < jobs; ++job) {
-        if (!queue_job(job, arena.row[static_cast<size_t>(job)])) {
+        if (!queue_job(
+                job, arena.row[static_cast<size_t>(job)], input.data())) {
             queued.abort_compact_async_batch();
             return false;
         }
@@ -153,15 +192,21 @@ bool p45_async_compact_sentinel_impl(
         if (err) *err = "P45 async sentinel queued output mismatch";
         return false;
     }
+    if (std::memcmp(
+            component_major.data, component_snapshot.data(),
+            component_snapshot.size()) != 0) {
+        if (err) *err = "P45 direct component wire was mutated";
+        return false;
+    }
 
     if (!queued.begin_compact_async_batch(backend, 1, err) ||
-        !queue_job(0, arena.row[0])) {
+        !queue_job(0, arena.row[0], input.data())) {
         queued.abort_compact_async_batch();
         return false;
     }
     queued.abort_compact_async_batch();
     if (!queued.begin_compact_async_batch(backend, 1, err) ||
-        !queue_job(0, arena.row[0])) {
+        !queue_job(0, arena.row[0], input.data())) {
         queued.abort_compact_async_batch();
         return false;
     }
@@ -177,11 +222,30 @@ bool p45_async_compact_sentinel_impl(
         if (err) *err = "P45 async sentinel recovery output mismatch";
         return false;
     }
+    if (!queued.begin_compact_async_batch(
+            backend, 1, err, arena.device_input) ||
+        !queue_job(0, arena.row[0], nullptr)) {
+        queued.abort_compact_async_batch();
+        return false;
+    }
+    ggml_backend_synchronize(backend);
+    if (!queued.complete_compact_async_batch_after_sync(err)) return false;
+    ggml_backend_tensor_get(
+        arena.row[0], recovered.data(), 0,
+        recovered.size() * sizeof(float));
+    if (std::memcmp(
+            recovered.data(), expected.data(),
+            recovered.size() * sizeof(float)) != 0) {
+        if (err) *err = "P45 device-input output mismatch";
+        return false;
+    }
     const SparseDeviceExpertEvaluator::CompactAsyncStats & stats =
         queued.compact_async_stats();
-    if (stats.begins != 3 || stats.jobs != jobs + 2 ||
-        stats.h2d_calls != 5 * (jobs + 2) ||
-        stats.graph_enqueues != jobs + 2 || stats.layer_flushes != 2 ||
+    if (stats.begins != 4 || stats.jobs != jobs + 3 ||
+        stats.h2d_calls != 4 * (jobs + 3) + 3 ||
+        stats.input_d2d_copies != 1 ||
+        stats.input_d2d_bytes != input.size() * sizeof(float) ||
+        stats.graph_enqueues != jobs + 3 || stats.layer_flushes != 3 ||
         stats.abort_syncs != 1 || stats.max_inflight != jobs ||
         stats.h2d_bytes == 0 || stats.submit_ns == 0 ||
         stats.device_window_ns == 0) {
