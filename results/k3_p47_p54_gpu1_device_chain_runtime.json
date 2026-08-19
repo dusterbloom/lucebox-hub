@@ -1,0 +1,111 @@
+{
+  "schema": "k3-p47-p54-gpu1-device-chain-runtime-v1",
+  "status": "byte-exact-near-two-no-speculation-short-fact-go",
+  "topology": {
+    "core_backend": "ROCm1_gfx1151",
+    "core_resident_gib": 37.56,
+    "resident_means_bytes": 14180941824,
+    "canonical_join_backend": "ROCm1_gfx1151",
+    "gpu0_role_in_qualified_fast_path": "idle_reserved_for_future_bounded_expert_helper"
+  },
+  "identity": {
+    "tokens_equal": true,
+    "text_equal": true,
+    "logits_byte_equal": true,
+    "logits_sha256": "cce1bd031e90eb13928ffddfb7e9329d75d55419a8f73b6479a920fe6c561a69",
+    "traffic_byte_equal": true,
+    "traffic_sha256": "e2eb5fcca9e0138d326892710977f4bd5dad1b7166d37cce6ef3675b0a911f13"
+  },
+  "facts": {
+    "p51_first": {
+      "root": "/home/duster/kimi-k3-deploy/p51-routed-device-input-16g-noiotrace-20260819",
+      "decode_seconds": 5.116544910,
+      "true_ar_transitions_per_second": 1.563555122,
+      "direct_io_seconds": 11.269153311
+    },
+    "p51_adjacent_repeat": {
+      "root": "/home/duster/kimi-k3-deploy/p51-routed-device-input-r2-16g-noiotrace-20260819",
+      "prefill_seconds": 20.690480654,
+      "decode_seconds": 4.016922339,
+      "true_ar_transitions_per_second": 1.991574475,
+      "total_ms": 501.870625,
+      "routed_prep_ms": 223.022375,
+      "expert_ms": 246.644500,
+      "join_ms": 20.678250,
+      "output_ms": 4.507750,
+      "direct_io_seconds": 9.123191054
+    },
+    "p52_persistent_join_repeat": {
+      "root": "/home/duster/kimi-k3-deploy/p52-persistent-join-r2-16g-noiotrace-20260819",
+      "decode_seconds": 4.144776488,
+      "true_ar_transitions_per_second": 1.930140268,
+      "total_ms": 517.843500,
+      "routed_prep_ms": 224.464000,
+      "expert_ms": 265.534250,
+      "join_ms": 15.602125,
+      "output_ms": 4.502875,
+      "direct_io_seconds": 9.629947740,
+      "persistent_join_workspace_bytes": 100352
+    },
+    "p53_device_hidden_chain": {
+      "root": "/home/duster/kimi-k3-deploy/p53-device-hidden-16g-noiotrace-20260819",
+      "decode_seconds": 4.879480802,
+      "true_ar_transitions_per_second": 1.639518696,
+      "total_ms": 609.668125,
+      "routed_prep_ms": 224.382375,
+      "expert_ms": 359.258250,
+      "join_ms": 13.895875,
+      "output_ms": 4.545000,
+      "direct_io_seconds": 11.191448728
+    },
+    "p54_24g_host_cache": {
+      "root": "/home/duster/kimi-k3-deploy/p54-device-hidden-24g-noiotrace-r2-20260819",
+      "decode_seconds": 4.324926514,
+      "true_ar_transitions_per_second": 1.849742412,
+      "total_ms": 540.369625,
+      "routed_prep_ms": 223.927375,
+      "expert_ms": 290.404125,
+      "join_ms": 13.715625,
+      "output_ms": 4.500750,
+      "direct_io_seconds": 12.617750256,
+      "resident_cache_bytes": 20857053184,
+      "physical_direct_read_bytes": 20857053184,
+      "additional_physical_bytes_avoided_vs_16g": 100696064,
+      "decision": "configuration_no_go_reverted_to_16g"
+    }
+  },
+  "p51_counters": {
+    "p41_attempted": 17917,
+    "p41_completed": 17917,
+    "p41_fallbacks": 0,
+    "p41_invalid": 0,
+    "p45_begins": 3864,
+    "p45_jobs": 17917,
+    "p45_h2d_calls": 72676,
+    "p45_h2d_bytes": 55991684976,
+    "routed_input_d2d_copies": 2856,
+    "routed_input_d2d_bytes": 40943616,
+    "graph_enqueues": 17917,
+    "layer_flushes": 3864,
+    "abort_syncs": 0
+  },
+  "qualification": {
+    "hip_gfx1201_provider_and_ordered_join": "pass",
+    "hip_gfx1151_provider_and_ordered_join": "pass",
+    "sparse_k_gfx1201": "68_of_68_pass",
+    "sparse_k_gfx1151": "68_of_68_pass",
+    "restored_runner_sha256": "eb7a819777321d3e49851384898020e91f9dfe90def1820c5a492dca91ac1155"
+  },
+  "decision": {
+    "gpu1_full_core": "qualified_correct_topology",
+    "best_measured_no_speculation_true_ar_per_second": 1.991574475,
+    "measured_two_true_ar_per_second": false,
+    "persistent_join": "retain_default_off",
+    "device_hidden_chain": "retain_default_off",
+    "host_cache_24g": "no_go_reverted",
+    "host_cache_16g": "restored",
+    "broad": "open_not_run",
+    "steady_state": "open_not_run",
+    "next": "reduce_expert_work_or_add_only_cost_aware_concurrent_gpu0_expert_share"
+  }
+}

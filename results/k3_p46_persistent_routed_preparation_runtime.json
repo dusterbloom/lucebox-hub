@@ -1,0 +1,118 @@
+{
+  "schema": "k3-p46-persistent-routed-preparation-runtime-v1",
+  "status": "byte-exact-short-fact-go-new-measured-short-ceiling-default-off",
+  "source": {
+    "repository_commit": "3f373b072e70791ef235df5002b0a9b130f470f1",
+    "root": "/home/duster/kimi-k3-deploy/p46-persistent-routed-aba-20260819",
+    "arms": ["a1-off", "b-on", "a2-off"],
+    "runner_sha256": "528d722d294697140713f7466d62ac1279f87e9f4961215056d9d0551abd833b",
+    "graph_source_sha256": "636c0ff54644e115477695fb214683eaab11c0cff59a35c4db2c4f84ce8c15af",
+    "internal_header_sha256": "e850f46b6951183ffbcfe1afc7d8cfaca3d86236e8c0685cc409d321fa7e1499"
+  },
+  "identity": {
+    "tokens_equal": true,
+    "text_equal": true,
+    "logits_byte_equal": true,
+    "logits_sha256": "cce1bd031e90eb13928ffddfb7e9329d75d55419a8f73b6479a920fe6c561a69",
+    "traffic_byte_equal": true,
+    "traffic_sha256": "e2eb5fcca9e0138d326892710977f4bd5dad1b7166d37cce6ef3675b0a911f13"
+  },
+  "fact": {
+    "true_decode_transitions": 8,
+    "a1_off": {
+      "prefill_seconds": 24.887049536,
+      "decode_seconds": 5.148113908,
+      "true_ar_transitions_per_second": 1.553967170,
+      "total_ms": 643.277750,
+      "routed_prep_ms": 274.716250,
+      "expert_ms": 333.207000,
+      "join_ms": 21.509125,
+      "output_ms": 4.524250,
+      "direct_io_ns": 9438162819,
+      "peak_gpu_memory_mib": 61180.73828125,
+      "major_faults": 46,
+      "peak_swap_kib": 0
+    },
+    "b_persistent": {
+      "prefill_seconds": 24.505780368,
+      "decode_seconds": 4.765920678,
+      "true_ar_transitions_per_second": 1.678584379,
+      "rate_change_vs_a1": 0.0801929,
+      "total_ms": 595.498375,
+      "routed_prep_ms": 229.100250,
+      "routed_prep_change_vs_a1": -0.1660477,
+      "expert_ms": 332.835375,
+      "join_ms": 22.189125,
+      "output_ms": 4.494750,
+      "direct_io_ns": 9851803665,
+      "peak_gpu_memory_mib": 61200.859375,
+      "major_faults": 0,
+      "peak_swap_kib": 0
+    },
+    "a2_off": {
+      "prefill_seconds": 25.829965039,
+      "decode_seconds": 5.973579903,
+      "true_ar_transitions_per_second": 1.339230433,
+      "total_ms": 746.447750,
+      "routed_prep_ms": 275.276000,
+      "expert_ms": 435.314625,
+      "join_ms": 22.024875,
+      "output_ms": 4.501750,
+      "direct_io_ns": 12024833345,
+      "peak_gpu_memory_mib": 61200.87890625,
+      "major_faults": 4,
+      "peak_swap_kib": 0
+    }
+  },
+  "p46": {
+    "persistent_graphs": 68,
+    "executions": 2856,
+    "workspace_bytes": 6873856,
+    "metadata_bytes": 93649952,
+    "full_core_backend": "ROCm1_gfx1151",
+    "full_core_resident_gib": 37.56,
+    "offload_prep_ms": 0.0
+  },
+  "common_counters": {
+    "p41_attempted": 17917,
+    "p41_completed": 17917,
+    "p41_fallbacks": 0,
+    "p41_invalid": 0,
+    "p42_expert_d2d_copies": 17917,
+    "p42_join_launches": 3864,
+    "p45_jobs": 17917,
+    "p45_layer_flushes": 3864,
+    "p45_abort_syncs": 0,
+    "payload_h2d_bytes": 55976374272,
+    "metadata_h2d_bytes": 257718128,
+    "physical_direct_read_bytes": 24106500096
+  },
+  "size": {
+    "production_raw_added": 422,
+    "production_raw_deleted": 29,
+    "production_pure_net": 375,
+    "comments_net": 2,
+    "blanks_net": 16
+  },
+  "artifact_sha256": {
+    "a1_manifest": "156c55aba05160d20a3426e30c04972cec4ac5e8029d6563db5ff640a4a5c3b8",
+    "b_manifest": "198add891048cea579448f32131dac97cef3568ec690c98d9d025ee101e829d3",
+    "a2_manifest": "5180f5882416aed1975bf9ccbb9a60485bb8f3ee26793cf2bbd3e30572ca2041",
+    "a1_telemetry": "da6227522beb8cbd4ab1a49e10059f5636033e5c9b06b99606c9fca9b426baf4",
+    "b_telemetry": "f1ee1380409f9b302c2042099e47e1512e310f3900128c247612f4305638359f",
+    "a2_telemetry": "361f31f2ac18c460871fa302ad22df640bec034551482ff4fa959afe0f6bc5e2"
+  },
+  "decision": {
+    "placement": "GPU1_FULL_CORE_CONFIRMED_CORRECT",
+    "mechanism": "GO",
+    "exactness": "GO",
+    "absolute_short_fact": "NEW_MEASURED_CEILING_1.678584379_TRUE_AR_PER_SECOND",
+    "comparative_precision": "CONTROL_EXPERT_IO_NOISE_PRECLUDES_BRACKET_AVERAGE_UPLIFT",
+    "stage_attribution": "GO_45.896_MS_ROUTED_PREP_REDUCTION_WITH_MATCHED_A1_EXPERT_TIME",
+    "broad": "OPEN_NOT_RUN",
+    "default": "OFF_PENDING_CONSOLIDATION_AND_BROAD",
+    "next": "COST_AWARE_CONCURRENT_BALANCED_P43B",
+    "two_true_ar_per_second": "UNMET",
+    "speculative_decode": "NOT_USED"
+  }
+}

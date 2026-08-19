@@ -1,0 +1,227 @@
+{
+  "schema": "k3-p42b-stream-integrated-join-runtime-v1",
+  "status": "byte-exact-go-throughput-no-go-one-bounded-mean-residency-gate-justified",
+  "source": {
+    "repository_commit": "3f373b072e70791ef235df5002b0a9b130f470f1",
+    "worktree_state": "dirty-intended-p38-p42b-patch",
+    "runner_sha256": "e869d4da55d3885947604bb65ac293eff5a6b2babd428368503a4182db0bfed2",
+    "hip_library_sha256": "773a13a8f2274c75e8e28e3b76a6419635ebd1fdd570187569c28500a42075c4",
+    "ordered_join_object_sha256": "df3e248bca60a5217f5222e0ec827c2cfd0eb4e80891fab08d1381d3c59e192a"
+  },
+  "implementation": {
+    "arena": "one ggml backend buffer with contiguous rows, persistent row views, descriptors and output",
+    "expert_stage": "same-backend ggml_backend_tensor_copy_async without per-route synchronization",
+    "join_barrier": "one ggml_backend_synchronize after the final route copy and before the default-stream ordered join",
+    "join_completion": "one default-stream synchronize before publication",
+    "publication": "same-backend asynchronous copy into the graph-owned input, ordered before graph compute",
+    "mean_stage": "one synchronous contiguous tensor set per mean batch; no extra host repack",
+    "abort_policy": "queued backend work is tracked and synchronized before arena reuse on abort",
+    "arithmetic_and_order": "unchanged from qualified P42a",
+    "default_enabled": false
+  },
+  "model_free_gate": {
+    "build": "CCACHE_DISABLE=1 cmake --build server/build-k3-hip-dual -j4",
+    "ordered_join_test_sha256": "d481fe86afb80109f7f701367080689ae1f0f6d1a021de3ac32c2ddd0f654d2d",
+    "provider_test_sha256": "9e7ee7c1a156a66e114ed6b8fae3f6459747337b666cb0553881a8f58ce5e4dc",
+    "sparse_k_test_sha256": "62e14f893d7f4b286bfb8f91da110aa99b4e890f560dc3ec790f8c75e2310278",
+    "ordered_join": {
+      "gfx1201": "PASS",
+      "gfx1151": "PASS"
+    },
+    "provider": "PASS",
+    "sparse_k_mmvq": {
+      "gfx1201": {"passed": 68, "failed": 0},
+      "gfx1151": {"passed": 68, "failed": 0}
+    },
+    "known_unit_gap": "the arena abort and async-publish lifecycle is not directly exposed to a unit test; fail paths were statically reviewed and the integrated fact covers publication"
+  },
+  "fact_gate": {
+    "order": ["P42_OFF", "P42_ON", "P42_OFF"],
+    "fixture_sha256": "58f72def4d1d94e036dd96b724e40b42b09bd8b048b095667aa6c725d36b8f3f",
+    "true_decode_transitions": 8,
+    "identity": {
+      "tokens_equal": true,
+      "text_equal": true,
+      "logits_byte_equal": true,
+      "logits_sha256": "cce1bd031e90eb13928ffddfb7e9329d75d55419a8f73b6479a920fe6c561a69",
+      "traffic_byte_equal": true,
+      "traffic_sha256": "e2eb5fcca9e0138d326892710977f4bd5dad1b7166d37cce6ef3675b0a911f13",
+      "output_text": "Tokyo<|close|>response<|sep|><|close|>message<|sep|><|end_of_msg|>"
+    },
+    "arms": {
+      "a_off": {
+        "root": "/home/duster/kimi-k3-deploy/p42b-ab-a-off-20260819",
+        "prefill_seconds": 27.243261318,
+        "decode_seconds": 5.954410393,
+        "true_ar_transitions_per_second": 1.343541925,
+        "wall_seconds": 51.035104208,
+        "gpu_energy_joules": 2225.119505,
+        "peak_vram_mib": 47682.5625,
+        "peak_process_rss_kib": 9949276,
+        "decode_stage": {
+          "mean_total_ms": 744.058875,
+          "median_total_ms": 725.0855,
+          "mean_routed_prep_ms": 275.126375,
+          "mean_experts_ms": 429.744,
+          "median_experts_ms": 409.1235,
+          "mean_join_ms": 24.907,
+          "mean_output_ms": 4.518625
+        },
+        "provider": {
+          "explicit_read_bytes": 29496033280,
+          "physical_bytes": 25424379904,
+          "direct_io_ns": 9613105010,
+          "compact_pack_ns": 1535074680,
+          "expert_graph_ns": 1734073955,
+          "expert_readback_ns": 340361541
+        },
+        "artifacts": {
+          "manifest_sha256": "fea9da0ea42c1530b2c1293dc20234649c100f07d85b4054a6cf758dbf9ab819",
+          "process_sha256": "2020ce4a715199d45e5f09dce2fb2588dbdbec246940c04f512871ade6de2d67",
+          "io_trace_sha256": "68a1e106a2b3aa57dff171c6a511ff3b9d203757e12ab0f3c3737426ed628ad0",
+          "stderr_sha256": "204d0aa5d7814573bc3e618f3bf895dd22b5de3cd8322130b5e6e5f358835dfe",
+          "telemetry_sha256": "633dc3f764fc692dcb9f6381475f63081a5ba068d85184a77e4b3f02e871d2ef",
+          "telemetry_csv_sha256": "b61db87d751af4dfb1d681a2013588ff7535218b1e3d5a34db45688ae6ce3b87"
+        }
+      },
+      "b_on": {
+        "root": "/home/duster/kimi-k3-deploy/p42b-ab-b-on-20260819",
+        "prefill_seconds": 27.729889029,
+        "decode_seconds": 6.549417485,
+        "true_ar_transitions_per_second": 1.221482677,
+        "wall_seconds": 51.168158339,
+        "gpu_energy_joules": 2288.106781,
+        "peak_vram_mib": 47686.605469,
+        "peak_process_rss_kib": 9921792,
+        "decode_stage": {
+          "mean_total_ms": 818.41825,
+          "median_total_ms": 801.559,
+          "mean_routed_prep_ms": 274.62725,
+          "mean_experts_ms": 508.241,
+          "median_experts_ms": 491.167,
+          "mean_join_ms": 21.49775,
+          "mean_output_ms": 4.49
+        },
+        "p42": {
+          "mean_rows": 733092,
+          "mean_h2d_bytes": 10509606912,
+          "expert_d2d_copies": 17917,
+          "expert_d2d_bytes": 256858112,
+          "join_launches": 3864,
+          "output_d2d_copies": 3864,
+          "output_d2d_bytes": 55394304
+        },
+        "provider": {
+          "explicit_read_bytes": 29496033280,
+          "physical_bytes": 25424379904,
+          "direct_io_ns": 10928583968,
+          "compact_pack_ns": 1555152524,
+          "expert_graph_ns": 1527175390,
+          "expert_readback_ns": 0
+        },
+        "artifacts": {
+          "manifest_sha256": "ce1522c72b2dce3c0b9a8c32593f9053877b12ceefeb49e928875df8b973e738",
+          "process_sha256": "40328d79d7c1a7c787a4d1bca80f91013995ab4746299e5a1a72041a475e8bab",
+          "io_trace_sha256": "4fc0b9415bfec1fea9a977aab88ddd8ee2182f47837057181b9ccc7d98594f5a",
+          "stderr_sha256": "cddc8709a6a1edb57810b78bcf62dfa4ab2afcc8ad3cd769288ed864eeb0dfbd",
+          "telemetry_sha256": "3ada0f76e2996897b2b635e72f73cdcb72da1a5f61ec4445c9dc1fc1eca856df",
+          "telemetry_csv_sha256": "4e7c914d2c279bd59aac1a79251b752e4ec0a51b9d21bd9127c78fbc44a56c5c"
+        }
+      },
+      "c_off": {
+        "root": "/home/duster/kimi-k3-deploy/p42b-ab-c-off-20260819",
+        "prefill_seconds": 27.374391064,
+        "decode_seconds": 5.921353495,
+        "true_ar_transitions_per_second": 1.351042461,
+        "wall_seconds": 51.703754242,
+        "gpu_energy_joules": 2281.937147,
+        "peak_vram_mib": 47682.554688,
+        "peak_process_rss_kib": 9962060,
+        "decode_stage": {
+          "mean_total_ms": 739.91775,
+          "median_total_ms": 738.5195,
+          "mean_routed_prep_ms": 275.961,
+          "mean_experts_ms": 424.197125,
+          "median_experts_ms": 422.8845,
+          "mean_join_ms": 25.34725,
+          "mean_output_ms": 4.58825
+        },
+        "provider": {
+          "explicit_read_bytes": 29494951936,
+          "physical_bytes": 25423298560,
+          "direct_io_ns": 9721208406,
+          "compact_pack_ns": 1545508336,
+          "expert_graph_ns": 1732559644,
+          "expert_readback_ns": 341215874
+        },
+        "artifacts": {
+          "manifest_sha256": "4a301567b244c3332ec809c86da1da367c31c1187c02329d312aaa56561c3ed2",
+          "process_sha256": "115a1a08dff7b4eb17f4cfea6168dd8e652a9c33343ee3d983a14e666546ac14",
+          "io_trace_sha256": "ac96a685293b432a990740805726d95aa88e1326b9f3ac91efcfbcc9f67005fa",
+          "stderr_sha256": "d0246804f66f76e456b314b48882a600e41fcf69fdd8421f81deedce66ee91f7",
+          "telemetry_sha256": "9c6a259b14812a1dc209d6ea4515c714373f54dfe712ef5b7b5101154336aae2",
+          "telemetry_csv_sha256": "1d5b2d63f747027f0369878ee4694a38d5fc7861164f9d7174b28272edbb9baf"
+        }
+      }
+    },
+    "comparison": {
+      "bracketing_off_rate_mean": 1.347292193,
+      "p42b_rate_change": -0.093379533,
+      "bracketing_off_total_stage_mean_ms": 741.988313,
+      "p42b_total_stage_delta_ms": 76.429938,
+      "p42b_decode_time_change": 0.102988835,
+      "p42b_join_stage_delta_ms": -3.629375,
+      "p42b_expert_stage_delta_ms": 81.270438
+    },
+    "shared_counters": {
+      "p41_attempted_and_completed": 17917,
+      "p41_fallbacks": 0,
+      "p41_invalid": 0,
+      "authoritative_h2d_bytes": 55976374272,
+      "metadata_h2d_bytes": 257718128,
+      "device_zero_bytes": 0,
+      "p30_capacity_bytes": 8589934592,
+      "p30_resident_bytes": 8589475840,
+      "p30_entries": 20354
+    }
+  },
+  "loc_vs_p42a": {
+    "raw_numstat": {
+      "production": {"added": 120, "deleted": 105, "net": 15},
+      "tests": {"added": 25, "deleted": 15, "net": 10},
+      "total": {"added": 145, "deleted": 120, "net": 25}
+    },
+    "tokei_delta": {
+      "production": {"code": 9, "comments": 5, "blanks": 1},
+      "tests": {"code": 10, "comments": 0, "blanks": 0},
+      "total": {"code": 19, "comments": 5, "blanks": 1}
+    }
+  },
+  "p42c_decision": {
+    "full_mean_residency_gib": 13.207,
+    "projected_peak_vram_gib": 59.775951,
+    "projected_remaining_gpu1_vram_gib": 36.224049,
+    "diagnostic_rate_only": 1.30,
+    "promotion_rate": 1.343543,
+    "promotion_decode_seconds": 5.954410393,
+    "promotion_transition_ms": 744.301299,
+    "decode_reduction_needed_ms_per_transition": 74.375887,
+    "stage_reduction_needed_ms": 74.359375,
+    "measured_p42b_overhead_vs_bracketing_control_ms": 76.429938,
+    "required_fraction_of_overhead_removed": 0.972909,
+    "required_fraction_of_expert_stage_gap_removed": 0.914962,
+    "absolute_nonexpert_stage_ceiling_transitions_per_second": 3.223963,
+    "decision": "JUSTIFY_ONE_FINAL_BOUNDED_P42C_MEAN_RESIDENCY_FACT_GATE",
+    "scope": "mean residency only; no dual-owner and no broad before exact decode <=5.954410393 seconds (>=1.343543/s); 1.30/s is diagnostic only",
+    "failure_action": "remove P42a/P42b production integration while retaining evidence and the generic ordered-join test seam",
+    "ten_ar_assessment": "mean residency cannot reach 10 AR/s; even deleting the entire measured expert stage leaves about 310.18 ms/transition, a 3.22/s upper bound"
+  },
+  "gate_decision": {
+    "exactness": "GO",
+    "throughput": "NO_GO_1.221483_TRUE_AR_PER_SECOND",
+    "broad": "SKIPPED",
+    "default_enablement": "NO_GO",
+    "dual_owner": "STOP",
+    "next": "ONE_FINAL_P42C_FULL_DEVICE_MEAN_RESIDENCY_FACT_GATE_AT_1.343543_PER_SECOND"
+  }
+}

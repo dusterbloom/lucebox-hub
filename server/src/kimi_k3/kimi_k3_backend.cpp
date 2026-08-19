@@ -798,17 +798,7 @@ bool KimiK3Backend::init_streaming() {
                          "[kimi-k3] streamed layer is missing expert types\n");
             return fail_streaming();
         }
-        MoeStreamExpertSpec spec;
-        spec.input_dim = weights_.n_expert_latent;
-        spec.intermediate_dim = weights_.n_ff_exp;
-        spec.output_dim = weights_.n_expert_latent;
-        spec.gate_type = layer.ffn_gate_exps->type;
-        spec.up_type = layer.ffn_up_exps->type;
-        spec.down_type = layer.ffn_down_exps->type;
-        spec.gated_activation = MoeGatedActivation::Situ;
-        spec.situ_beta = weights_.situ_beta;
-        spec.situ_linear_beta = weights_.situ_linear_beta;
-        layer_specs.push_back(spec);
+        layer_specs.push_back(make_kimi_k3_stream_spec(weights_, layer));
         const LayerExpertRegions & regions =
             weights_.streamed_layer_regions[local_layer];
         layer_expert_bytes.push_back(
@@ -929,7 +919,11 @@ bool KimiK3Backend::init_streaming() {
         }
     }
     if (!create_kimi_k3_progressive_provider_from_env(
-            stream_engine_.compute_backend(), routed_output_provider_, &error)) {
+            stream_engine_.compute_backend(), backend_,
+            dual_owner_streams
+                ? secondary_stream_engine_.compute_backend() : nullptr,
+            dual_owner_streams ? &stream_owner_policy_ : nullptr,
+            routed_output_provider_, &error)) {
         std::fprintf(stderr,
                      "[kimi-k3] H16 routed provider initialization failed: %s\n",
                      error.c_str());
@@ -1113,6 +1107,12 @@ bool KimiK3Backend::benchmark_oracle_verify(
         if (error) *error = message;
         return false;
     };
+    if (width > 1 && routed_output_provider_ &&
+        routed_output_provider_->requires_device_output()) {
+        return fail(
+            "S0 oracle multi-token verification is incompatible with a "
+            "device-output routed provider");
+    }
     if (!backend_ || !weights_.ctx || !cache_.ctx || prompt.empty() ||
         width <= 0 || width > cache_.max_verify_tokens ||
         base_pos + width > cache_.max_ctx) {
@@ -1475,7 +1475,9 @@ bool KimiK3Backend::write_logits_trace(
 }
 
 bool KimiK3Backend::supports_dflash_spec_decode() const {
-    return draft_backend_ && draft_weights_.ctx && feature_ring_.target_feat;
+    return draft_backend_ && draft_weights_.ctx && feature_ring_.target_feat &&
+        !(routed_output_provider_ &&
+          routed_output_provider_->requires_device_output());
 }
 
 DFlashTarget * KimiK3Backend::dflash_target() {

@@ -25,6 +25,12 @@
 #endif
 
 namespace dflash::common {
+
+struct MoeStreamExternalLeaseControl {
+    std::mutex mutex;
+    MoeHybridStreamEngine * engine = nullptr;
+};
+
 namespace {
 
 // Allocate host staging through the selected ggml backend module. This is
@@ -154,8 +160,47 @@ bool valid_ggml_type(ggml_type type) {
     return type >= 0 && type < GGML_TYPE_COUNT;
 }
 
-bool same_stream_spec(const MoeStreamExpertSpec & a,
-                      const MoeStreamExpertSpec & b) {
+uint64_t device_key(int layer, int expert) {
+    return ((uint64_t) (uint32_t) layer << 32) | (uint32_t) expert;
+}
+
+uint64_t mix_external_hash(uint64_t value, uint64_t part) {
+    value ^= part + 0x9e3779b97f4a7c15ULL + (value << 6) + (value >> 2);
+    return value;
+}
+
+uint64_t external_key_hash(const MoeStreamExternalKey & key) {
+    uint64_t value = mix_external_hash(key.source_domain, key.source_generation);
+    value = mix_external_hash(value, (uint32_t) key.layer);
+    value = mix_external_hash(value, (uint32_t) key.expert);
+    const auto mix_float = [&](float part) {
+        uint32_t bits = 0;
+        if (part != 0.0f) std::memcpy(&bits, &part, sizeof(bits));
+        value = mix_external_hash(value, bits);
+    };
+    value = mix_external_hash(value, (uint32_t) key.spec.input_dim);
+    value = mix_external_hash(value, (uint32_t) key.spec.intermediate_dim);
+    value = mix_external_hash(value, (uint32_t) key.spec.output_dim);
+    value = mix_external_hash(value, (uint32_t) key.spec.gate_type);
+    value = mix_external_hash(value, (uint32_t) key.spec.up_type);
+    value = mix_external_hash(value, (uint32_t) key.spec.down_type);
+    value = mix_external_hash(value, (uint32_t) key.spec.gate_up_type);
+    value = mix_external_hash(value, key.spec.fused_gate_up ? 1 : 0);
+    value = mix_external_hash(value, (uint32_t) key.spec.gated_activation);
+    mix_float(key.spec.swiglu_clamp);
+    mix_float(key.spec.situ_beta);
+    mix_float(key.spec.situ_linear_beta);
+    mix_float(key.spec.gate_scale);
+    mix_float(key.spec.up_scale);
+    mix_float(key.spec.down_scale);
+    mix_float(key.spec.gate_up_scale);
+    return value;
+}
+
+} // namespace
+
+bool same_moe_stream_expert_spec(const MoeStreamExpertSpec & a,
+                                 const MoeStreamExpertSpec & b) {
     return a.input_dim == b.input_dim &&
            a.intermediate_dim == b.intermediate_dim &&
            a.output_dim == b.output_dim &&
@@ -174,11 +219,13 @@ bool same_stream_spec(const MoeStreamExpertSpec & a,
            a.gate_up_scale == b.gate_up_scale;
 }
 
-uint64_t device_key(int layer, int expert) {
-    return ((uint64_t) (uint32_t) layer << 32) | (uint32_t) expert;
+bool same_moe_stream_external_key(const MoeStreamExternalKey & a,
+                                  const MoeStreamExternalKey & b) {
+    return a.source_domain == b.source_domain &&
+           a.source_generation == b.source_generation &&
+           a.layer == b.layer && a.expert == b.expert &&
+           same_moe_stream_expert_spec(a.spec, b.spec);
 }
-
-} // namespace
 
 MoeStreamConfig MoeStreamConfig::from_env() {
     MoeStreamConfig config;
@@ -447,7 +494,7 @@ public:
     ~PersistentStreamExpertGraph() { destroy(); }
 
     bool matches(const MoeStreamExpertSpec & spec, int batch) const {
-        return batch_ == batch && same_stream_spec(spec_, spec);
+        return batch_ == batch && same_moe_stream_expert_spec(spec_, spec);
     }
 
     bool build(ggml_backend_t backend,
@@ -622,7 +669,7 @@ public:
     ~PersistentStreamMoEDecodeGraph() { destroy(); }
 
     bool matches(const MoeStreamExpertSpec & spec, int expert_count) const {
-        return expert_count_ == expert_count && same_stream_spec(spec_, spec);
+        return expert_count_ == expert_count && same_moe_stream_expert_spec(spec_, spec);
     }
 
     bool build(ggml_backend_t backend,
@@ -860,6 +907,12 @@ struct MoeHybridStreamEngine::Runtime {
         MoeNvmeLease host_lease;
         MoeExpertIoLayout layout{};
         DeviceExpertLayout device_layout{};
+        bool external = false;
+        MoeStreamExternalKey external_key{};
+        uint64_t external_hash = 0;
+        uint64_t external_epoch = 0;
+        size_t external_bytes = 0;
+        uint16_t resident_mask = 0;
     };
 
     ggml_backend_t backend = nullptr;
@@ -884,6 +937,7 @@ struct MoeHybridStreamEngine::Runtime {
     size_t device_pool_bytes = 0;
     std::vector<DeviceSlot> device_slots;
     std::unordered_map<uint64_t, int> device_index;
+    std::unordered_multimap<uint64_t, int> external_index;
     std::unordered_map<int, DeviceExpertLayout> layer_device_layouts;
     uint64_t device_clock = 0;
     uint64_t device_cache_hits = 0;
@@ -896,8 +950,57 @@ struct MoeHybridStreamEngine::Runtime {
         fused_decode_graph_cache;
     uint64_t graph_clock = 0;
     MoeStreamComputeStats compute_stats{};
-    std::mutex compute_mutex;
+    std::recursive_mutex compute_mutex;
 };
+
+struct MoeStreamExternalLease::Impl {
+    std::shared_ptr<MoeStreamExternalLeaseControl> control;
+    int slot = -1;
+    uint64_t epoch = 0;
+    uint64_t hash = 0;
+    uint16_t resident = 0;
+    uint16_t missing = 0;
+    bool hit = false;
+    bool clear = false;
+    bool fill = false;
+    bool eviction = false;
+};
+
+template <typename RuntimeT>
+void erase_external_slot(RuntimeT & runtime, int index) {
+    if (index < 0 || index >= (int) runtime.device_slots.size()) return;
+    const auto & slot = runtime.device_slots[(size_t) index];
+    if (!slot.external) return;
+    const auto range = runtime.external_index.equal_range(slot.external_hash);
+    for (auto it = range.first; it != range.second;) {
+        if (it->second == index) {
+            it = runtime.external_index.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+template <typename RuntimeT>
+void clear_slot_identity(RuntimeT & runtime, int index) {
+    auto & slot = runtime.device_slots[(size_t) index];
+    if (slot.external) {
+        erase_external_slot(runtime, index);
+    } else if (slot.cache_managed && slot.valid) {
+        runtime.device_index.erase(device_key(slot.key.layer, slot.key.expert));
+    }
+    slot.valid = false;
+    slot.cache_managed = false;
+    slot.pinned = false;
+    slot.external = false;
+    slot.key = {};
+    slot.external_key = {};
+    slot.external_hash = 0;
+    slot.external_bytes = 0;
+    slot.resident_mask = 0;
+    slot.layout = MoeExpertIoLayout{};
+    slot.device_layout = typename RuntimeT::DeviceExpertLayout{};
+}
 
 template <typename RuntimeT>
 void release_device_cache(RuntimeT & runtime) {
@@ -917,6 +1020,7 @@ void release_device_cache(RuntimeT & runtime) {
     }
     runtime.device_slots.clear();
     runtime.device_index.clear();
+    runtime.external_index.clear();
     runtime.pinned_experts = 0;
     runtime.active_slot = -1;
     if (runtime.device_pool_buffer) {
@@ -1157,7 +1261,7 @@ bool prepare_device_expert_layout(RuntimeT & runtime, int layer,
                                   std::string * err) {
     auto existing = runtime.layer_device_layouts.find(layer);
     if (existing != runtime.layer_device_layouts.end()) {
-        if (!same_stream_spec(existing->second.spec, spec)) {
+        if (!same_moe_stream_expert_spec(existing->second.spec, spec)) {
             if (err) *err = "streamed expert specification changed within one layer";
             return false;
         }
@@ -1182,10 +1286,34 @@ bool prepare_device_expert_layout(RuntimeT & runtime, int layer,
     return true;
 }
 
-MoeHybridStreamEngine::MoeHybridStreamEngine() = default;
+MoeHybridStreamEngine::MoeHybridStreamEngine()
+    : external_lease_control_(
+          std::make_shared<MoeStreamExternalLeaseControl>()) {
+    external_lease_control_->engine = this;
+}
 MoeHybridStreamEngine::~MoeHybridStreamEngine() { destroy(); }
-MoeHybridStreamEngine::MoeHybridStreamEngine(MoeHybridStreamEngine &&) noexcept = default;
-MoeHybridStreamEngine & MoeHybridStreamEngine::operator=(MoeHybridStreamEngine &&) noexcept = default;
+MoeHybridStreamEngine::MoeHybridStreamEngine(
+        MoeHybridStreamEngine && other) noexcept
+    : runtime_(std::move(other.runtime_)),
+      external_lease_control_(std::move(other.external_lease_control_)) {
+    if (external_lease_control_) {
+        std::lock_guard<std::mutex> guard(external_lease_control_->mutex);
+        external_lease_control_->engine = this;
+    }
+}
+MoeHybridStreamEngine & MoeHybridStreamEngine::operator=(
+        MoeHybridStreamEngine && other) noexcept {
+    if (this != &other) {
+        destroy();
+        runtime_ = std::move(other.runtime_);
+        external_lease_control_ = std::move(other.external_lease_control_);
+        if (external_lease_control_) {
+            std::lock_guard<std::mutex> guard(external_lease_control_->mutex);
+            external_lease_control_->engine = this;
+        }
+    }
+    return *this;
+}
 
 bool MoeHybridStreamEngine::init(ggml_backend_t gpu_backend, size_t max_expert_bytes,
                                  std::string * err) {
@@ -1197,6 +1325,9 @@ bool MoeHybridStreamEngine::init(ggml_backend_t gpu_backend,
                                  const MoeStreamConfig & config,
                                  std::string * err) {
     destroy();
+    external_lease_control_ =
+        std::make_shared<MoeStreamExternalLeaseControl>();
+    external_lease_control_->engine = this;
     if (!gpu_backend || max_expert_bytes == 0) {
         if (err) *err = "invalid arguments to stream engine init";
         return false;
@@ -1303,7 +1434,14 @@ bool MoeHybridStreamEngine::is_bound() const {
 }
 
 void MoeHybridStreamEngine::destroy() {
+    if (external_lease_control_) {
+        std::lock_guard<std::mutex> guard(external_lease_control_->mutex);
+        external_lease_control_->engine = nullptr;
+    }
+    external_lease_control_.reset();
     if (!runtime_) return;
+    std::unique_lock<std::recursive_mutex> runtime_guard(
+        runtime_->compute_mutex);
     const size_t device_cache_slot_count = runtime_->device_slots.size();
     const size_t device_cache_byte_count = runtime_->device_pool_bytes;
     if (runtime_->backend) ggml_backend_synchronize(runtime_->backend);
@@ -1391,12 +1529,14 @@ void MoeHybridStreamEngine::destroy() {
         ggml_backend_free(runtime_->transfer_backend);
         runtime_->transfer_backend = nullptr;
     }
+    runtime_guard.unlock();
     runtime_.reset();
 }
 
 void MoeHybridStreamEngine::request_experts(int layer, const int32_t * expert_ids,
                                              int count, MoeNvmePriority priority) {
     if (!is_bound() || !expert_ids || count <= 0) return;
+    std::lock_guard<std::recursive_mutex> guard(runtime_->compute_mutex);
     for (int i = 0; i < count; ++i) {
         if (expert_ids[i] < 0) continue;
         const uint64_t key = device_key(layer, expert_ids[i]);
@@ -1460,6 +1600,7 @@ bool MoeHybridStreamEngine::stage_expert_async(int layer, int expert_id,
         if (err) *err = "stream engine has no bound SSD model source";
         return false;
     }
+    std::lock_guard<std::recursive_mutex> guard(runtime_->compute_mutex);
     if (device_slot < 0 || device_slot >= (int) runtime_->device_slots.size()) {
         if (err) *err = "SSD device slot is out of range";
         return false;
@@ -1478,15 +1619,7 @@ bool MoeHybridStreamEngine::stage_expert_async(int layer, int expert_id,
         dst.pending = false;
         dst.host_lease.reset();
     }
-    if (dst.cache_managed && dst.valid) {
-        runtime_->device_index.erase(device_key(dst.key.layer, dst.key.expert));
-    }
-    dst.valid = false;
-    dst.cache_managed = false;
-    dst.pinned = false;
-    dst.key = {};
-    dst.layout = MoeExpertIoLayout{};
-    dst.device_layout = Runtime::DeviceExpertLayout{};
+    clear_slot_identity(*runtime_, device_slot);
 
     if (!dst.ready) {
         dst.ready = ggml_backend_event_new(
@@ -1609,6 +1742,7 @@ bool MoeHybridStreamEngine::stage_expert_cached_async(
         if (err) *err = "stream engine has no bound SSD model source";
         return false;
     }
+    std::lock_guard<std::recursive_mutex> guard(runtime_->compute_mutex);
 
     const uint64_t key = device_key(layer, expert_id);
     auto cached = runtime_->device_index.find(key);
@@ -1679,6 +1813,7 @@ bool MoeHybridStreamEngine::activate_device_slot(int device_slot,
         if (err) *err = "SSD device slot is out of range";
         return false;
     }
+    std::lock_guard<std::recursive_mutex> guard(runtime_->compute_mutex);
     Runtime::DeviceSlot & slot = runtime_->device_slots[(size_t) device_slot];
     if (slot.pending) {
         ggml_backend_event_synchronize(slot.ready);
@@ -1707,6 +1842,7 @@ void MoeHybridStreamEngine::release_device_slot(int device_slot) {
         device_slot >= (int) runtime_->device_slots.size()) {
         return;
     }
+    std::lock_guard<std::recursive_mutex> guard(runtime_->compute_mutex);
     Runtime::DeviceSlot & slot = runtime_->device_slots[(size_t) device_slot];
     if (slot.cache_managed && slot.compute_users > 0) --slot.compute_users;
     if (runtime_->active_slot == device_slot) runtime_->active_slot = -1;
@@ -1720,8 +1856,333 @@ size_t MoeHybridStreamEngine::device_cache_bytes() const {
     return runtime_ ? runtime_->device_pool_bytes : 0;
 }
 
+size_t MoeHybridStreamEngine::external_device_cache_bytes() const {
+    if (!runtime_) return 0;
+    std::lock_guard<std::recursive_mutex> guard(runtime_->compute_mutex);
+    const size_t reserve =
+        static_cast<size_t>(std::max(2, runtime_->config.device_slots));
+    size_t available_slots = 0;
+    for (size_t i = reserve; i < runtime_->device_slots.size(); ++i) {
+        if (!runtime_->device_slots[i].pinned) ++available_slots;
+    }
+    return available_slots * runtime_->device_stride;
+}
+
 size_t MoeHybridStreamEngine::pinned_expert_count() const {
     return runtime_ ? runtime_->pinned_experts : 0;
+}
+
+MoeStreamExternalLease::MoeStreamExternalLease() = default;
+MoeStreamExternalLease::~MoeStreamExternalLease() { reset(); }
+MoeStreamExternalLease::MoeStreamExternalLease(
+        MoeStreamExternalLease &&) noexcept = default;
+MoeStreamExternalLease & MoeStreamExternalLease::operator=(
+        MoeStreamExternalLease && other) noexcept {
+    if (this != &other) {
+        reset();
+        impl_ = std::move(other.impl_);
+    }
+    return *this;
+}
+
+MoeStreamExternalLease::operator bool() const {
+    if (!impl_ || !impl_->control || impl_->slot < 0) return false;
+    std::lock_guard<std::mutex> control_guard(impl_->control->mutex);
+    MoeHybridStreamEngine * engine = impl_->control->engine;
+    if (!engine || !engine->runtime_) return false;
+    std::lock_guard<std::recursive_mutex> runtime_guard(
+        engine->runtime_->compute_mutex);
+    if (impl_->slot >= (int) engine->runtime_->device_slots.size()) return false;
+    const auto & slot = engine->runtime_->device_slots[(size_t) impl_->slot];
+    return slot.external && slot.external_epoch == impl_->epoch &&
+           slot.external_hash == impl_->hash;
+}
+bool MoeStreamExternalLease::cache_hit() const {
+    return impl_ && impl_->hit;
+}
+bool MoeStreamExternalLease::evicted() const {
+    return impl_ && impl_->eviction;
+}
+bool MoeStreamExternalLease::clear_required() const {
+    return impl_ && impl_->clear;
+}
+uint16_t MoeStreamExternalLease::resident_mask() const {
+    return impl_ ? impl_->resident : 0;
+}
+uint16_t MoeStreamExternalLease::missing_mask() const {
+    return impl_ ? impl_->missing : 0;
+}
+size_t MoeStreamExternalLease::capacity() const {
+    if (!impl_ || !impl_->control) return 0;
+    std::lock_guard<std::mutex> control_guard(impl_->control->mutex);
+    MoeHybridStreamEngine * engine = impl_->control->engine;
+    if (!engine || !engine->runtime_) return 0;
+    std::lock_guard<std::recursive_mutex> runtime_guard(
+        engine->runtime_->compute_mutex);
+    return engine->runtime_->device_stride;
+}
+
+bool MoeStreamExternalLease::bind_tensor(
+        ggml_tensor * tensor, size_t offset, std::string * err) const {
+    if (!impl_ || !impl_->control || !tensor) {
+        if (err) *err = "external device lease cannot bind a null tensor";
+        return false;
+    }
+    std::lock_guard<std::mutex> control_guard(impl_->control->mutex);
+    MoeHybridStreamEngine * engine = impl_->control->engine;
+    if (!engine || !engine->runtime_) {
+        if (err) *err = "external device lease engine is no longer live";
+        return false;
+    }
+    auto & runtime = *engine->runtime_;
+    std::lock_guard<std::recursive_mutex> runtime_guard(runtime.compute_mutex);
+    if (impl_->slot >= (int) runtime.device_slots.size()) {
+        if (err) *err = "external device lease slot is stale";
+        return false;
+    }
+    auto & slot = runtime.device_slots[(size_t) impl_->slot];
+    const size_t bytes = ggml_backend_buft_get_alloc_size(
+        ggml_backend_buffer_get_type(runtime.device_pool_buffer), tensor);
+    if (!slot.external || slot.external_epoch != impl_->epoch ||
+        slot.external_hash != impl_->hash ||
+        offset > runtime.device_stride ||
+        bytes > runtime.device_stride - offset) {
+        if (err) *err = "external device tensor exceeds its leased slot";
+        return false;
+    }
+    tensor->buffer = runtime.device_pool_buffer;
+    tensor->data = static_cast<uint8_t *>(slot.data) + offset;
+    return true;
+}
+
+bool MoeStreamExternalLease::clear_prefix(
+        size_t bytes, std::string * err) const {
+    if (!impl_ || !impl_->control || bytes == 0) {
+        if (err) *err = "external device lease cannot clear an empty range";
+        return false;
+    }
+    std::lock_guard<std::mutex> control_guard(impl_->control->mutex);
+    MoeHybridStreamEngine * engine = impl_->control->engine;
+    if (!engine || !engine->runtime_) {
+        if (err) *err = "external device lease engine is no longer live";
+        return false;
+    }
+    auto & runtime = *engine->runtime_;
+    std::lock_guard<std::recursive_mutex> runtime_guard(runtime.compute_mutex);
+    if (impl_->slot < 0 || impl_->slot >= (int) runtime.device_slots.size()) {
+        if (err) *err = "external device lease slot is stale";
+        return false;
+    }
+    auto & slot = runtime.device_slots[(size_t) impl_->slot];
+    if (!slot.external || slot.external_epoch != impl_->epoch ||
+        slot.external_hash != impl_->hash || !impl_->fill ||
+        bytes > slot.external_bytes || !slot.transfer_tensor) {
+        if (err) *err = "external device lease cannot clear this slot";
+        return false;
+    }
+    ggml_backend_tensor_memset(slot.transfer_tensor, 0, 0, bytes);
+    return true;
+}
+
+bool MoeStreamExternalLease::commit(uint16_t filled_mask, std::string * err) {
+    if (!impl_ || !impl_->control || !impl_->fill) {
+        if (err) *err = "external device cache hit does not require commit";
+        return false;
+    }
+    std::lock_guard<std::mutex> control_guard(impl_->control->mutex);
+    MoeHybridStreamEngine * engine = impl_->control->engine;
+    if (!engine || !engine->runtime_) {
+        if (err) *err = "external device lease engine is no longer live";
+        return false;
+    }
+    auto & runtime = *engine->runtime_;
+    std::lock_guard<std::recursive_mutex> runtime_guard(runtime.compute_mutex);
+    if (impl_->slot >= (int) runtime.device_slots.size()) {
+        if (err) *err = "external device fill lease slot is stale";
+        return false;
+    }
+    auto & slot = runtime.device_slots[(size_t) impl_->slot];
+    if (slot.external_epoch != impl_->epoch || !slot.external ||
+        slot.external_hash != impl_->hash || !slot.pending ||
+        filled_mask != impl_->missing) {
+        if (err) *err = "external device fill did not publish every missing slab";
+        return false;
+    }
+    slot.resident_mask = static_cast<uint16_t>(slot.resident_mask | filled_mask);
+    slot.valid = slot.resident_mask != 0;
+    slot.pending = false;
+    slot.frequency = std::max<uint64_t>(1, slot.frequency);
+    slot.last_touch = ++runtime.device_clock;
+    impl_->resident = slot.resident_mask;
+    impl_->missing = 0;
+    impl_->fill = false;
+    return true;
+}
+
+void MoeStreamExternalLease::reset() {
+    if (impl_ && impl_->control) {
+        std::lock_guard<std::mutex> control_guard(impl_->control->mutex);
+        if (MoeHybridStreamEngine * engine = impl_->control->engine) {
+            engine->release_external_device_lease(*impl_);
+        }
+    }
+    impl_.reset();
+}
+
+void MoeHybridStreamEngine::release_external_device_lease(
+        MoeStreamExternalLease::Impl & lease) {
+    if (!runtime_) return;
+    std::lock_guard<std::recursive_mutex> runtime_guard(
+        runtime_->compute_mutex);
+    if (lease.slot < 0 ||
+        lease.slot >= (int) runtime_->device_slots.size()) return;
+    Runtime::DeviceSlot & slot = runtime_->device_slots[(size_t) lease.slot];
+    if (slot.external_epoch != lease.epoch || !slot.external ||
+        slot.external_hash != lease.hash) return;
+    if (lease.fill) {
+        slot.pending = false;
+        if (lease.clear) {
+            clear_slot_identity(*runtime_, lease.slot);
+        }
+    }
+    if (slot.compute_users > 0) --slot.compute_users;
+}
+
+bool MoeHybridStreamEngine::acquire_external_device_lease(
+        const MoeStreamExternalKey & key, size_t required_bytes,
+        uint16_t requested_mask, MoeStreamExternalLease & lease,
+        std::string * err) {
+    lease.reset();
+    if (!external_lease_control_ || !runtime_) {
+        if (err) *err = "external device cache engine is not live";
+        return false;
+    }
+    std::lock_guard<std::mutex> control_guard(
+        external_lease_control_->mutex);
+    if (external_lease_control_->engine != this) {
+        if (err) *err = "external device cache engine is not live";
+        return false;
+    }
+    std::lock_guard<std::recursive_mutex> runtime_guard(
+        runtime_->compute_mutex);
+    if (!is_ready() || key.source_domain == 0 ||
+        key.source_generation == 0 || key.layer < 0 || key.expert < 0 ||
+        requested_mask == 0) {
+        if (err) *err = "external device cache identity is invalid";
+        return false;
+    }
+    if (required_bytes > runtime_->device_stride) {
+        const bool busy = std::any_of(
+            runtime_->device_slots.begin(), runtime_->device_slots.end(),
+            [](const Runtime::DeviceSlot & slot) {
+                return slot.valid || slot.pending || slot.compute_users != 0;
+            });
+        if (busy) return true;
+        release_device_cache(*runtime_);
+        if (!allocate_device_cache(*runtime_, err, required_bytes)) {
+            return false;
+        }
+    }
+    const size_t reserve = (size_t) std::max(2, runtime_->config.device_slots);
+    if (runtime_->device_slots.size() <= reserve || required_bytes == 0 ||
+        required_bytes > runtime_->device_stride) {
+        return true;
+    }
+
+    const uint64_t hash = external_key_hash(key);
+    int existing = -1;
+    const auto range = runtime_->external_index.equal_range(hash);
+    for (auto it = range.first; it != range.second; ++it) {
+        if (it->second < 0 ||
+            it->second >= (int) runtime_->device_slots.size()) continue;
+        const Runtime::DeviceSlot & slot =
+            runtime_->device_slots[(size_t) it->second];
+        if (slot.external && slot.external_bytes == required_bytes &&
+            same_moe_stream_external_key(slot.external_key, key)) {
+            existing = it->second;
+            break;
+        }
+    }
+
+    if (existing >= 0) {
+        Runtime::DeviceSlot & slot =
+            runtime_->device_slots[(size_t) existing];
+        if (slot.pending || slot.compute_users != 0) return true;
+        const uint16_t missing = static_cast<uint16_t>(
+            requested_mask & ~slot.resident_mask);
+        ++slot.compute_users;
+        ++slot.frequency;
+        slot.last_touch = ++runtime_->device_clock;
+        auto state = std::make_unique<MoeStreamExternalLease::Impl>();
+        state->control = external_lease_control_;
+        state->slot = existing;
+        state->epoch = slot.external_epoch;
+        state->hash = slot.external_hash;
+        state->resident = slot.resident_mask;
+        state->missing = missing;
+        state->hit = missing == 0;
+        state->fill = missing != 0;
+        if (state->fill) slot.pending = true;
+        if (state->hit) ++runtime_->device_cache_hits;
+        else ++runtime_->device_cache_misses;
+        lease.impl_ = std::move(state);
+        return true;
+    }
+
+    ++runtime_->device_cache_misses;
+    int victim = -1;
+    for (size_t i = reserve; i < runtime_->device_slots.size(); ++i) {
+        const Runtime::DeviceSlot & slot = runtime_->device_slots[i];
+        if (!slot.valid && !slot.pending && slot.compute_users == 0) {
+            victim = (int) i;
+            break;
+        }
+    }
+    if (victim < 0) {
+        uint64_t best_score = std::numeric_limits<uint64_t>::max();
+        for (size_t i = reserve; i < runtime_->device_slots.size(); ++i) {
+            const Runtime::DeviceSlot & slot = runtime_->device_slots[i];
+            if (!slot.valid || slot.pending || slot.pinned ||
+                slot.compute_users != 0) continue;
+            const uint64_t age = runtime_->device_clock >= slot.last_touch
+                ? runtime_->device_clock - slot.last_touch : 0;
+            const uint64_t recency = age < 65535 ? 65535 - age : 0;
+            const uint64_t score = (slot.frequency << 16) | recency;
+            if (score < best_score) {
+                best_score = score;
+                victim = (int) i;
+            }
+        }
+    }
+    if (victim < 0) return true;
+
+    Runtime::DeviceSlot & slot = runtime_->device_slots[(size_t) victim];
+    const bool evicting = slot.valid;
+    clear_slot_identity(*runtime_, victim);
+    slot.external = true;
+    slot.cache_managed = true;
+    slot.external_key = key;
+    slot.external_hash = hash;
+    slot.external_bytes = required_bytes;
+    ++slot.external_epoch;
+    slot.pending = true;
+    slot.compute_users = 1;
+    slot.frequency = 1;
+    slot.last_touch = ++runtime_->device_clock;
+    runtime_->external_index.emplace(hash, victim);
+    if (evicting) ++runtime_->device_cache_evictions;
+
+    auto state = std::make_unique<MoeStreamExternalLease::Impl>();
+    state->control = external_lease_control_;
+    state->slot = victim;
+    state->epoch = slot.external_epoch;
+    state->hash = slot.external_hash;
+    state->missing = requested_mask;
+    state->clear = true;
+    state->fill = true;
+    state->eviction = evicting;
+    lease.impl_ = std::move(state);
+    return true;
 }
 
 bool MoeHybridStreamEngine::warm_and_pin_device_cache(
@@ -1739,7 +2200,8 @@ bool MoeHybridStreamEngine::warm_and_pin_device_cache(
     }
     reserve_slots = std::max(2, reserve_slots);
 
-    std::lock_guard<std::mutex> compute_guard(runtime_->compute_mutex);
+    std::lock_guard<std::recursive_mutex> compute_guard(
+        runtime_->compute_mutex);
 
     std::vector<MoeStreamCacheWarmEntry> candidates = entries;
     std::stable_sort(candidates.begin(), candidates.end(),
@@ -2222,7 +2684,8 @@ bool eval_moe_streamed_experts(
     out.assign(output_values, 0.0f);
 
     auto & runtime = *engine.runtime_;
-    std::lock_guard<std::mutex> compute_guard(runtime.compute_mutex);
+    std::lock_guard<std::recursive_mutex> compute_guard(
+        runtime.compute_mutex);
     if (!prepare_device_expert_layout(
             runtime, batch.layer, spec, err)) {
         return false;

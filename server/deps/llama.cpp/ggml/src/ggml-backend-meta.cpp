@@ -948,6 +948,9 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
                 // axis 1 while the grouped activation is mirrored.
                 split_state = handle_mul_mat(src_ss);
             } break;
+            case GGML_OP_MUL_MAT_SPARSE_K_BLOCKS: {
+                split_state = handle_mirrored(src_ss);
+            } break;
             case GGML_OP_OUT_PROD: {
                 split_state = handle_generic(src_ss, /*scalar_only =*/ true);
             } break;

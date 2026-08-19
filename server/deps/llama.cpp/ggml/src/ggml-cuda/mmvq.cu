@@ -722,7 +722,8 @@ static bool rocmfp4_x4_enabled() {
 template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false,
           int fixed_ncols_x = 0, bool unroll_k_loop_2 = false,
           bool reuse_rocmfp4_weights = false,
-          bool c_fp3_packed24 = false, bool c_fp4_x4 = false>
+          bool c_fp3_packed24 = false, bool c_fp4_x4 = false,
+          bool sparse_k = false>
 __launch_bounds__(calc_nwarps(type, ncols_dst, get_device_table_id())*ggml_cuda_get_physical_warp_size(), 1)
 static __global__ void mul_mat_vec_q(
         const void * __restrict__ vx, const void * __restrict__ vy, const int32_t * __restrict__ ids, const ggml_cuda_mm_fusion_args_device fusion, float * __restrict__ dst,
@@ -760,10 +761,15 @@ static __global__ void mul_mat_vec_q(
     static_assert(!c_fp4_x4 ||
                       (type == GGML_TYPE_Q4_0_ROCMFP4_FAST && ncols_dst == 4),
                   "FP4 x4 MMVQ specialization requires ROCmFP4-fast q4");
+    static_assert(!sparse_k ||
+                      ((type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ2_XXS) &&
+                       ncols_dst == 1 && !has_fusion && !small_k && fixed_ncols_x == 0 &&
+                       !unroll_k_loop_2 && !reuse_rocmfp4_weights && !c_fp3_packed24 && !c_fp4_x4),
+                  "sparse-K MMVQ is limited to the calibrated one-column IQ path");
 
     const uint32_t channel_dst = blockIdx.y;
 
-    const bool has_ids = ids != nullptr;
+    const bool has_ids = !sparse_k && ids != nullptr;
     const bool ids_multi_col = has_ids && ncols_dst > 1;
 
     const uint32_t sample_dst = blockIdx.z;
@@ -950,6 +956,25 @@ static __global__ void mul_mat_vec_q(
                         }
                     }
                 }
+            }
+        }
+    } else if constexpr (sparse_k) {
+        for (int kbx = tid / (qi/vdr); kbx < blocks_per_row_x; kbx += blocks_per_iter) {
+            const int slot = ids[kbx];
+            const uint32_t resident_blocks = stride_col_y / (qk/QK8_1);
+            const bool block_present = slot >= 0 && uint32_t(slot) < resident_blocks;
+            if (!block_present) {
+                continue;
+            }
+            const int kby = slot * (qk/QK8_1);
+            const int kqs = vdr * (tid % (qi/vdr));
+            const int kbx_offset = row0*stride_row_x;
+#pragma unroll
+            for (int i = 0; i < rows_per_cuda_block; ++i) {
+                const int weight_block =
+                    slot*stride_channel_x + kbx_offset + i*stride_row_x;
+                tmp[0][i] += vec_dot_q_mmvq<type, false>(
+                    vx, &y[kby], weight_block, kqs);
             }
         }
     } else {
@@ -2797,6 +2822,76 @@ void ggml_cuda_mul_mat_vec_q(
         ne01,              ncols_dst,     s01, stride_col_y,     stride_col_dst,
         ne02, nchannels_y, nchannels_dst, s02, stride_channel_y, stride_channel_dst,
         ne03,              ne3,           s03, s13,              s3,               ids_stride, stream);
+}
+
+void ggml_cuda_mul_mat_vec_sparse_k_blocks(
+        ggml_backend_cuda_context & ctx,
+        const ggml_tensor * weights,
+        const ggml_tensor * x_blocks,
+        const ggml_tensor * natural_to_compact,
+        ggml_tensor * dst) {
+    GGML_ASSERT(weights->type == GGML_TYPE_IQ1_S ||
+                weights->type == GGML_TYPE_IQ2_XXS);
+    GGML_ASSERT(x_blocks->type == GGML_TYPE_F32);
+    GGML_ASSERT(natural_to_compact->type == GGML_TYPE_I32);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(weights->ne[0] == 256 && weights->ne[3] == 1);
+    GGML_ASSERT(x_blocks->ne[0] == 256 && x_blocks->ne[1] == weights->ne[2]);
+    GGML_ASSERT(x_blocks->ne[2] == 1 && x_blocks->ne[3] == 1);
+    GGML_ASSERT(natural_to_compact->ne[0] == 12 &&
+                ggml_nrows(natural_to_compact) == 1);
+    GGML_ASSERT(weights->ne[2] >= 1 && weights->ne[2] <= 12);
+    GGML_ASSERT(dst->ne[0] == weights->ne[1] && ggml_nrows(dst) == 1);
+    GGML_ASSERT(ggml_is_contiguous(weights));
+    GGML_ASSERT(ggml_is_contiguous(x_blocks));
+    GGML_ASSERT(ggml_is_contiguous(natural_to_compact));
+    GGML_ASSERT(ggml_is_contiguous(dst));
+
+    cudaStream_t stream = ctx.stream();
+    const int64_t resident_blocks = weights->ne[2];
+    const int64_t block_k = weights->ne[0];
+    const size_t q8_bytes = resident_blocks*block_k*sizeof(block_q8_1)/QK8_1;
+    ggml_cuda_pool_alloc<char> x_q8(ctx.pool(), q8_bytes);
+
+    const int64_t sx1 = x_blocks->nb[1]/sizeof(float);
+    const int64_t sx2 = x_blocks->nb[2]/sizeof(float);
+    const int64_t sx3 = x_blocks->nb[3]/sizeof(float);
+    quantize_row_q8_1_cuda(
+        (const float *) x_blocks->data, nullptr, x_q8.ptr, weights->type,
+        block_k, sx1, sx2, sx3, block_k, resident_blocks, 1, 1, stream);
+
+    const int cc = ggml_cuda_info().devices[ctx.device].cc;
+    GGML_ASSERT(cc == GGML_CUDA_CC_OFFSET_AMD + 0x1201 ||
+                cc == GGML_CUDA_CC_OFFSET_AMD + 0x1151);
+    const int warp_size = ggml_cuda_info().devices[ctx.device].warp_size;
+    const mmvq_parameter_table_id table_id = get_device_table_id(cc);
+    const int nwarps = calc_nwarps(weights->type, 1, table_id);
+    const int rows_per_block = calc_rows_per_block(1, table_id, false, nwarps);
+    const dim3 block_nums((weights->ne[1] + rows_per_block - 1)/rows_per_block, 1, 1);
+    const dim3 block_dims(warp_size, nwarps, 1);
+    const ggml_cuda_mm_fusion_args_device fusion{};
+    const uint3 unit_ratio = init_fastdiv_values(1);
+
+#define GGML_SPARSE_K_LAUNCH(type_name)                                                       \
+    mul_mat_vec_q<type_name, 1, false, false, 0, false, false, false, false, true>             \
+        <<<block_nums, block_dims, 0, stream>>>(                                              \
+        weights->data, x_q8.ptr, (const int32_t *) natural_to_compact->data, fusion,          \
+        (float *) dst->data, 3072,                                                            \
+        make_uint3(0, 0, 0), 1, resident_blocks*block_k/QK8_1, weights->ne[1], unit_ratio,    \
+        weights->ne[1], 1, 1, unit_ratio, 1, 1, 1, 0, false)
+
+    switch (weights->type) {
+        case GGML_TYPE_IQ1_S:
+            GGML_SPARSE_K_LAUNCH(GGML_TYPE_IQ1_S);
+            break;
+        case GGML_TYPE_IQ2_XXS:
+            GGML_SPARSE_K_LAUNCH(GGML_TYPE_IQ2_XXS);
+            break;
+        default:
+            GGML_ABORT("unsupported sparse-K MMVQ type");
+    }
+#undef GGML_SPARSE_K_LAUNCH
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void ggml_cuda_op_mul_mat_vec_q(

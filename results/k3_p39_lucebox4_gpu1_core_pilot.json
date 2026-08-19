@@ -1,0 +1,100 @@
+{
+  "schema": "k3-p39-lucebox4-gpu1-core-pilot-v1",
+  "status": "measured-gpu1-and-host-cache-pilot-broad-open",
+  "source_commit": "3f373b072e70791ef235df5002b0a9b130f470f1",
+  "build": {
+    "backend": "hip",
+    "architectures": ["gfx1201", "gfx1151"],
+    "runner_sha256": "6c4f3e7af690c52d9ad5630ee00f56f238263d172c284844fbdcd3570e25e681",
+    "parallelism": 4,
+    "model_free_provider_test": "pass",
+    "gfx1201_only_gpu1_control_exit": 139,
+    "dual_architecture_gpu1_exit": 0
+  },
+  "placement": {
+    "core": "accelerator:1",
+    "core_device_architecture": "gfx1151",
+    "resident_core_gib": 37.56,
+    "calibrated_provider_device": "hip:1",
+    "device_cache_mib": 2048,
+    "dual_owner_active": false
+  },
+  "fixture": {
+    "sha256": "58f72def4d1d94e036dd96b724e40b42b09bd8b048b095667aa6c725d36b8f3f",
+    "prompt_tokens": 34,
+    "emitted_tokens": 9,
+    "true_decode_transitions": 8,
+    "tokens_equal_to_p38": true
+  },
+  "runs": [
+    {
+      "id": "p39-gpu1-core-dualarch-20260818",
+      "logits_recorded": false,
+      "prefill_seconds": 29.798073125,
+      "decode_seconds": 6.909151009,
+      "true_ar_transitions_per_second": 1.157884665,
+      "direct_io_ns": 12514005991,
+      "compact_pack_ns": 144406254,
+      "compact_scatter_ns": 5277163144,
+      "expert_graph_ns": 1895863480,
+      "expert_readback_ns": 326412492
+    },
+    {
+      "id": "p39-gpu1-core-dualarch-repeat-20260818",
+      "logits_recorded": true,
+      "prefill_seconds": 30.227512344,
+      "decode_seconds": 6.991637407,
+      "true_ar_transitions_per_second": 1.144224097,
+      "direct_io_ns": 12883083138,
+      "compact_pack_ns": 140330465,
+      "compact_scatter_ns": 6225860996,
+      "expert_graph_ns": 1894210717,
+      "expert_readback_ns": 328232916
+    }
+  ],
+  "aggregate": {
+    "decode_seconds": 13.900788416,
+    "true_decode_transitions": 16,
+    "true_ar_transitions_per_second": 1.151013851,
+    "speedup_over_p38_two_run_aggregate": 1.895837,
+    "scatter_speedup_over_p38_mean": 5.742070
+  },
+  "host_cache_8gib": {
+    "id": "p39-gpu1-hostcache8g-20260818",
+    "capacity_bytes": 8589934592,
+    "resident_bytes": 8589557760,
+    "entries": 20773,
+    "hits": 90539,
+    "misses": 63288,
+    "hit_bytes": 35587964928,
+    "prefill_seconds": 27.935616430,
+    "decode_seconds": 5.743965169,
+    "true_ar_transitions_per_second": 1.392766106,
+    "speedup_over_uncached_gpu1_aggregate": 1.210034,
+    "direct_physical_bytes": 27260755968,
+    "physical_byte_reduction_vs_repeat": 0.515694,
+    "direct_io_ns": 9744825809,
+    "direct_io_reduction_vs_uncached_mean": 0.232603,
+    "compact_scatter_ns": 5840529321,
+    "expert_graph_ns": 1803222914,
+    "expert_readback_ns": 320217760,
+    "logits_sha256": "cce1bd031e90eb13928ffddfb7e9329d75d55419a8f73b6479a920fe6c561a69",
+    "logits_equal_to_uncached_gpu1_repeat": true
+  },
+  "numerics_vs_p38_hip_cpu_core": {
+    "generation_tokens_equal": true,
+    "logits_bit_equal": false,
+    "logits_sha256": "cce1bd031e90eb13928ffddfb7e9329d75d55419a8f73b6479a920fe6c561a69",
+    "maximum_absolute_logit_difference": 3.801778554916382,
+    "mean_kl": 0.03901036363956317,
+    "median_kl": 0.014196466996569795,
+    "maximum_kl": 0.25907164911277214,
+    "top1_equal_rows": 38,
+    "rows": 42
+  },
+  "open_gates": [
+    "12-prompt quality and stage suite",
+    "64- or 128-token steady decode",
+    "AMD utilization, VRAM, power and energy telemetry"
+  ]
+}

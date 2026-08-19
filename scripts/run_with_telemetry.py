@@ -6,11 +6,11 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
 import shlex
+import shutil
 import subprocess
-import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +22,10 @@ def read_key_values(path: Path) -> dict[str, int]:
             if ":" not in line:
                 continue
             key, raw = line.split(":", 1)
-            field = raw.strip().split()[0]
+            fields = raw.strip().split()
+            if not fields:
+                continue
+            field = fields[0]
             if field.isdigit():
                 values[key] = int(field)
     except (FileNotFoundError, ProcessLookupError, PermissionError):
@@ -58,7 +61,14 @@ def system_memory_sample() -> dict[str, int | None]:
     }
 
 
-def graphics_sample(gpu: int) -> dict[str, float | None]:
+EMPTY_GRAPHICS_SAMPLE = {
+    "utilization_percent": None,
+    "memory_mib": None,
+    "power_watts": None,
+}
+
+
+def nvidia_graphics_sample(gpu: int) -> dict[str, float | None]:
     command = [
         "nvidia-smi",
         f"--id={gpu}",
@@ -82,11 +92,71 @@ def graphics_sample(gpu: int) -> dict[str, float | None]:
             "power_watts": float(fields[2]),
         }
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return EMPTY_GRAPHICS_SAMPLE.copy()
+
+
+def rocm_graphics_sample(gpu: int) -> dict[str, float | None]:
+    command = [
+        "rocm-smi",
+        "-d",
+        str(gpu),
+        "--showuse",
+        "--showpower",
+        "--showmeminfo",
+        "all",
+        "--json",
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        cards = json.loads(completed.stdout)
+        if not isinstance(cards, dict):
+            raise ValueError("unexpected ROCm graphics query shape")
+        card = cards.get(f"card{gpu}")
+        if not isinstance(card, dict) and len(cards) == 1:
+            card = next(iter(cards.values()))
+        if not isinstance(card, dict):
+            raise ValueError("unexpected ROCm graphics query shape")
+
+        def number(key: str) -> float | None:
+            value = card.get(key)
+            try:
+                return float(value) if value not in (None, "N/A") else None
+            except (TypeError, ValueError):
+                return None
+
+        vram = number("VRAM Total Used Memory (B)")
+        gtt = number("GTT Total Used Memory (B)")
         return {
-            "utilization_percent": None,
-            "memory_mib": None,
-            "power_watts": None,
+            "utilization_percent": number("GPU use (%)"),
+            "memory_mib": None
+            if vram is None and gtt is None
+            else ((vram or 0.0) + (gtt or 0.0)) / (1024.0 * 1024.0),
+            "power_watts": number("Average Graphics Package Power (W)"),
         }
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return EMPTY_GRAPHICS_SAMPLE.copy()
+
+
+def graphics_sampler(
+    gpu: int,
+) -> tuple[str | None, Callable[[int], dict[str, float | None]]]:
+    candidates: list[
+        tuple[str, Callable[[int], dict[str, float | None]]]
+    ] = []
+    if shutil.which("nvidia-smi"):
+        candidates.append(("nvidia-smi", nvidia_graphics_sample))
+    if shutil.which("rocm-smi"):
+        candidates.append(("rocm-smi", rocm_graphics_sample))
+    for name, sample in candidates:
+        if any(value is not None for value in sample(gpu).values()):
+            return name, sample
+    return None, lambda _: EMPTY_GRAPHICS_SAMPLE.copy()
 
 
 def resolve_block_device(mount_path: Path) -> str | None:
@@ -187,6 +257,7 @@ def main() -> int:
     block_before = block_sample(block_device)
     energy_domains = processor_energy_domains()
     processor_energy_before = energy_values(energy_domains)
+    graphics_backend, sample_graphics = graphics_sampler(args.gpu)
 
     started_wall = time.time()
     started = time.monotonic()
@@ -211,7 +282,7 @@ def main() -> int:
             now = time.monotonic()
             process_data = process_sample(process.pid)
             memory_data = system_memory_sample()
-            graphics_data = graphics_sample(args.gpu)
+            graphics_data = sample_graphics(args.gpu)
             power = graphics_data["power_watts"]
             if (
                 power is not None
@@ -294,8 +365,15 @@ def main() -> int:
         },
         "graphics": {
             "index": args.gpu,
+            "backend": graphics_backend,
             "available": any(
-                sample["graphics_power_watts"] is not None for sample in samples
+                sample[field] is not None
+                for sample in samples
+                for field in (
+                    "graphics_utilization_percent",
+                    "graphics_memory_mib",
+                    "graphics_power_watts",
+                )
             ),
             "peak_memory_mib": maximum(samples, "graphics_memory_mib"),
             "peak_utilization_percent": maximum(

@@ -1,0 +1,148 @@
+{
+  "schema": "k3-p42c-resident-mean-join-runtime-v1",
+  "status": "byte-exact-short-fact-throughput-go-broad-and-steady-state-open",
+  "source": {
+    "repository_commit": "3f373b072e70791ef235df5002b0a9b130f470f1",
+    "worktree_state": "dirty-intended-p38-p42c-patch",
+    "provider_source_sha256": "94aa53a982889b1d2e42b8d496cca61a3a66db4b83556f1bafd12fb77cad7071",
+    "ordered_join_source_sha256": "21d62ba89aa710aa69c2bd71cf7e8f41586ca88a6cb9271f469cec94996c78cf",
+    "ordered_join_header_sha256": "c6fc1599763882df4f7556f790af2d76d713779e328ba0ed4e6489d1d19ca310",
+    "ordered_join_object_sha256": "fa910e562bf7a9a52b9d716dea7e8f933604edd7bb3887014c710d7792a894d5",
+    "runner_sha256": "e09e351af4795f7a2576647a5b4e0327696799c499183c654e402ee90daf038a",
+    "hip_library_sha256": "773a13a8f2274c75e8e28e3b76a6419635ebd1fdd570187569c28500a42075c4"
+  },
+  "implementation": {
+    "resident_mean_bytes": 14180941824,
+    "resident_mean_gib": 13.20703125,
+    "resident_geometry": "92 layers x 896 experts x 12 ranks x 3584 F32 values",
+    "transient_rows": 16,
+    "maximum_operations": 208,
+    "descriptor_encoding": "nonnegative transient expert row; -1-resident_row for resident means",
+    "hot_mean_reads": 0,
+    "hot_mean_h2d_bytes": 0,
+    "allocation_policy": "fixed GPU1 backend allocation with 8-GiB free-memory reserve; unified-memory presence rejected",
+    "supported_policy": "all-layers-calibrated96, route_prefix_depth=0, sidecar-authoritative, P41, n_tokens=1, identical GPU1 backends",
+    "default_enabled": false
+  },
+  "model_free_gate": {
+    "build": "CCACHE_DISABLE=1 cmake --build server/build-k3-hip-dual -j4 --target run_kimi_k3_h16_suite test_kimi_k3_ordered_join test_kimi_k3_progressive_provider",
+    "ordered_join_test_sha256": "f00fed0d7ee962b18b78c4b296300c744eab6c32c0e43ae7c974c7288ee85a55",
+    "provider_test_sha256": "80c232e62e1dffe65c7a9822b38a7aff833d5132154168b675f5a0745418bf26",
+    "sparse_k_test_sha256": "62e14f893d7f4b286bfb8f91da110aa99b4e890f560dc3ec790f8c75e2310278",
+    "ordered_join": {
+      "gfx1201": "PASS",
+      "gfx1151": "PASS",
+      "coverage": "resident first/middle/last rows, resident-only zero-transient schedule, invalid upper bound, INT32_MIN, mixed 16-transient/192-resident 208-operation schedule, fallback subtotal, signed zero, subnormal, NaN, FMA separation and output reuse"
+    },
+    "provider": "PASS",
+    "sparse_k_mmvq": {
+      "binary_unchanged": true,
+      "gfx1201": {"passed": 68, "failed": 0},
+      "gfx1151": {"passed": 68, "failed": 0}
+    }
+  },
+  "fact_gate": {
+    "root": "/home/duster/kimi-k3-deploy/p42c-resident-fact-final-20260819",
+    "fixture_sha256": "58f72def4d1d94e036dd96b724e40b42b09bd8b048b095667aa6c725d36b8f3f",
+    "true_decode_transitions": 8,
+    "prefill_seconds": 27.52880979,
+    "decode_seconds": 5.456211406,
+    "true_ar_transitions_per_second": 1.466218848,
+    "promotion_decode_ceiling_seconds": 5.954410393,
+    "promotion_rate_floor": 1.343543,
+    "decode_margin_seconds": 0.498198987,
+    "rate_margin_fraction": 0.09130772,
+    "bracketing_p42_off_rate_mean": 1.347292193,
+    "rate_change_vs_bracketing_off_mean": 0.08827087,
+    "p42b_rate": 1.221482677,
+    "rate_change_vs_p42b": 0.20035992,
+    "identity": {
+      "tokens_equal": true,
+      "text_equal": true,
+      "logits_byte_equal": true,
+      "logits_sha256": "cce1bd031e90eb13928ffddfb7e9329d75d55419a8f73b6479a920fe6c561a69",
+      "traffic_byte_equal": true,
+      "traffic_sha256": "e2eb5fcca9e0138d326892710977f4bd5dad1b7166d37cce6ef3675b0a911f13",
+      "output_text": "Tokyo<|close|>response<|sep|><|close|>message<|sep|><|end_of_msg|>"
+    },
+    "decode_stage": {
+      "mean_total_ms": 681.785875,
+      "mean_routed_prep_ms": 274.13725,
+      "mean_experts_ms": 372.747625,
+      "mean_join_ms": 20.9515,
+      "mean_output_ms": 4.46775
+    },
+    "counters": {
+      "resident_mean_bytes": 14180941824,
+      "hot_mean_reads": 0,
+      "hot_mean_h2d_bytes": 0,
+      "expert_d2d_copies": 17917,
+      "expert_d2d_bytes": 256858112,
+      "join_launches": 3864,
+      "output_d2d_copies": 3864,
+      "output_d2d_bytes": 55394304,
+      "p41_attempted": 17917,
+      "p41_completed": 17917,
+      "p41_fallbacks": 0,
+      "p41_invalid": 0,
+      "authoritative_h2d_bytes": 55976374272,
+      "metadata_h2d_bytes": 257718128,
+      "explicit_provider_read_bytes": 24106500096,
+      "direct_physical_bytes": 24106500096,
+      "expert_readback_ns": 0
+    },
+    "telemetry": {
+      "wall_seconds": 55.946248363,
+      "peak_vram_mib": 61208.992188,
+      "peak_process_rss_kib": 9863300,
+      "gpu_energy_joules": 2547.104624
+    },
+    "artifacts": {
+      "manifest_sha256": "7579c0527e3a8226c5b67adc9a86d7fd6e7308e2872de9de3bafa1e0a77fdcb0",
+      "process_sha256": "45af1d6bb836b2ff9154651a5094d5ebe7d2b95898e94b338e647f8420087f8b",
+      "io_trace_sha256": "fdd7944891b2edf1b91e71e756cf660c617e95ddd37a36bd399e1c0885ec4dc2",
+      "stderr_sha256": "47ea295e9b010f92391bd45e04c1bf883725a58aefeeb22e13f352f22855fc3d",
+      "telemetry_sha256": "6de4b0b3f936664ed3cc1ee1b91890251613ba131d4fc0fb8424aab2a0ba5d3b",
+      "telemetry_csv_sha256": "3d5f5a4d7e0d741ef1dcaa11c1ebc6cd9f7cc266147808a41961da21c6f8d3a8"
+    }
+  },
+  "loc_vs_p42b": {
+    "method": "reconstruction-derived: current P42c versus retained P42a snapshot, minus the frozen published P42b delta; raw net cross-checks exactly against tokei code+comments+blanks",
+    "raw_numstat": {
+      "production": {"added": 193, "deleted": 64, "net": 129},
+      "tests": {"added": 82, "deleted": 5, "net": 77},
+      "total": {"added": 275, "deleted": 69, "net": 206}
+    },
+    "tokei_delta": {
+      "production": {"code": 127, "comments": 0, "blanks": 2},
+      "tests": {"code": 74, "comments": 2, "blanks": 1},
+      "total": {"code": 201, "comments": 2, "blanks": 3}
+    }
+  },
+  "total_p42_stack": {
+    "method": "sequential P42a isolated figures plus frozen P42b and reconstruction-derived P42c deltas",
+    "raw_numstat": {
+      "production": {"added": 1142, "deleted": 209, "net": 933},
+      "tests": {"added": 417, "deleted": 21, "net": 396},
+      "cmake": {"added": 37, "deleted": 1, "net": 36},
+      "total": {"added": 1596, "deleted": 231, "net": 1365}
+    },
+    "tokei_delta": {
+      "production_code": 877,
+      "test_code": 366,
+      "cmake_code": 36,
+      "total_code": 1279,
+      "comments": 29,
+      "blanks": 57
+    }
+  },
+  "gate_decision": {
+    "exactness": "GO",
+    "short_fact_throughput": "GO_1.466219_TRUE_AR_PER_SECOND",
+    "broad": "OPEN_NOT_RUN",
+    "steady_state": "OPEN_NOT_RUN",
+    "default_enablement": "OFF_PENDING_BROAD_AND_STEADY_STATE",
+    "p42_removal": "CANCELLED_BY_STRICT_GATE_PASS",
+    "next": "BROAD_AND_STEADY_STATE_QUALIFICATION_BEFORE_DEFAULT_OR_DUAL_OWNER"
+  }
+}

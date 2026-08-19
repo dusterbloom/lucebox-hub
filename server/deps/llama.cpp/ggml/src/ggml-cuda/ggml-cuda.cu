@@ -3185,6 +3185,10 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_MUL_MAT_ID:
             ggml_cuda_mul_mat_id(ctx, dst);
             break;
+        case GGML_OP_MUL_MAT_SPARSE_K_BLOCKS:
+            ggml_cuda_mul_mat_vec_sparse_k_blocks(
+                ctx, dst->src[0], dst->src[1], dst->src[2], dst);
+            break;
         case GGML_OP_OUT_PROD:
             ggml_cuda_out_prod(ctx, dst);
             break;
@@ -5561,6 +5565,28 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                    op->src[1]->type == GGML_TYPE_I32 &&
                    ggml_is_contiguous(op->src[0]) &&
                    ggml_is_contiguous(op->src[1]);
+        case GGML_OP_MUL_MAT_SPARSE_K_BLOCKS: {
+            const int cc = ggml_cuda_info().devices[dev_ctx->device].cc;
+            return (op->src[0]->type == GGML_TYPE_IQ1_S ||
+                    op->src[0]->type == GGML_TYPE_IQ2_XXS) &&
+                   (cc == GGML_CUDA_CC_OFFSET_AMD + 0x1201 ||
+                    cc == GGML_CUDA_CC_OFFSET_AMD + 0x1151) &&
+                   op->src[0]->ne[0] == 256 &&
+                   op->src[0]->ne[2] >= 1 && op->src[0]->ne[2] <= 12 &&
+                   op->src[0]->ne[2] == op->src[1]->ne[1] &&
+                   op->src[0]->ne[3] == 1 &&
+                   op->src[1]->type == GGML_TYPE_F32 &&
+                   op->src[1]->ne[0] == 256 &&
+                   op->src[1]->ne[2] == 1 && op->src[1]->ne[3] == 1 &&
+                   op->src[2]->type == GGML_TYPE_I32 &&
+                   op->src[2]->ne[0] == 12 && ggml_nrows(op->src[2]) == 1 &&
+                   op->type == GGML_TYPE_F32 &&
+                   ggml_get_op_params_i32(op, 0) == 3072 &&
+                   ggml_is_contiguous(op->src[0]) &&
+                   ggml_is_contiguous(op->src[1]) &&
+                   ggml_is_contiguous(op->src[2]) &&
+                   ggml_is_contiguous(op);
+        }
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_GROUPED_SRC:
         case GGML_OP_MUL_MAT_ID:

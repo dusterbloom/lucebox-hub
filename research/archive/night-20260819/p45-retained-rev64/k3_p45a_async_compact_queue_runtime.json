@@ -1,0 +1,151 @@
+{
+  "schema": "k3-p45a-async-compact-queue-runtime-v1",
+  "status": "byte-exact-mechanism-go-comparative-performance-inconclusive-default-off-retained",
+  "source": {
+    "repository_commit": "3f373b072e70791ef235df5002b0a9b130f470f1",
+    "root": "/home/duster/kimi-k3-deploy/p45a-final-aba-20260819",
+    "arms": ["a1-off", "b-on", "a2-off"],
+    "runner_sha256": "65f1a69c1b0567d842d2f39d3d5bd003ee0adfa196ccd02a8a25c9cf3d6abe64",
+    "launcher_sha256": "24df97da44ead8879a4d811c375110e422707bf8a72e4831f78de995f8d13d7e"
+  },
+  "identity": {
+    "tokens_equal": true,
+    "text_equal": true,
+    "logits_byte_equal": true,
+    "logits_sha256": "cce1bd031e90eb13928ffddfb7e9329d75d55419a8f73b6479a920fe6c561a69",
+    "traffic_byte_equal": true,
+    "traffic_sha256": "e2eb5fcca9e0138d326892710977f4bd5dad1b7166d37cce6ef3675b0a911f13"
+  },
+  "fact": {
+    "true_decode_transitions": 8,
+    "promotion_rate_floor": 1.5625,
+    "off_bracket": {
+      "decode_seconds": 6.285601990,
+      "true_ar_transitions_per_second": 1.272750011,
+      "control_spread_fraction": 0.06792160
+    },
+    "a1_off": {
+      "prefill_seconds": 31.095029865,
+      "decode_seconds": 6.072137912,
+      "true_ar_transitions_per_second": 1.317493133,
+      "total_ms": 758.772750,
+      "routed_prep_ms": 272.947625,
+      "expert_ms": 451.148500,
+      "join_ms": 20.903500,
+      "output_ms": 4.485875,
+      "direct_io_ns": 11491450154,
+      "component_pack_ns": 1548308511,
+      "peak_swap_kib": 0,
+      "peak_gpu_memory_mib": 61180.7109375
+    },
+    "b_async": {
+      "prefill_seconds": 26.416750060,
+      "decode_seconds": 5.428487591,
+      "true_ar_transitions_per_second": 1.473706970,
+      "rate_change_vs_off_bracket": 0.15789193,
+      "rate_shortfall_vs_floor": -0.05682754,
+      "total_ms": 678.277750,
+      "routed_prep_ms": 275.829125,
+      "expert_ms": 366.499250,
+      "expert_change_vs_off_bracket": -0.23217668,
+      "join_ms": 22.077750,
+      "output_ms": 4.485125,
+      "direct_io_ns": 10874084874,
+      "component_pack_ns": 1822106274,
+      "peak_swap_kib": 0,
+      "peak_gpu_memory_mib": 61200.76171875
+    },
+    "a2_off": {
+      "prefill_seconds": 29.765472033,
+      "decode_seconds": 6.499066068,
+      "true_ar_transitions_per_second": 1.230946095,
+      "total_ms": 812.139625,
+      "routed_prep_ms": 273.853125,
+      "expert_ms": 503.496250,
+      "join_ms": 20.871250,
+      "output_ms": 4.503375,
+      "direct_io_ns": 14626589186,
+      "component_pack_ns": 1551730793,
+      "peak_swap_kib": 0,
+      "peak_gpu_memory_mib": 61200.80859375
+    }
+  },
+  "common_counters": {
+    "p41_attempted": 17917,
+    "p41_completed": 17917,
+    "p41_fallbacks": 0,
+    "p41_invalid": 0,
+    "p42_expert_d2d_copies": 17917,
+    "p42_join_launches": 3864,
+    "p42_output_d2d_copies": 3864,
+    "payload_h2d_bytes": 55976374272,
+    "metadata_h2d_bytes": 257718128,
+    "physical_direct_read_bytes": 24106500096
+  },
+  "p45_counters": {
+    "begins": 3864,
+    "jobs": 17917,
+    "h2d_calls": 89585,
+    "h2d_bytes": 56234092400,
+    "graph_enqueues": 17917,
+    "layer_flushes": 3864,
+    "abort_syncs": 0,
+    "max_inflight": 16,
+    "submit_ns": 576114725,
+    "device_window_ns": 7643195175
+  },
+  "qualification": {
+    "provider_sentinel": "PASS_GFX1201_AND_GFX1151",
+    "ordered_join": "PASS_GFX1201_AND_GFX1151",
+    "moe_stream": "PASS_2_OF_2_GFX1201_AND_GFX1151",
+    "sparse_k": "PASS_68_OF_68_GFX1201_AND_GFX1151",
+    "binary_sha256": {
+      "runner": "65f1a69c1b0567d842d2f39d3d5bd003ee0adfa196ccd02a8a25c9cf3d6abe64",
+      "provider_sentinel": "49826c89f7a06e02b5969a27c9247b4a888bd64a0bc989c447d66b43b5b7df68",
+      "ordered_join": "f5214ceae8680c3e45fa36ead5474a1d41a080f84d839c05f20ca8dd55a846e9",
+      "moe_stream": "181ee39ad5ab129120244464f99cecd7134c9ca75a1bffcf5b334af1e499ab4b",
+      "sparse_k": "62e14f893d7f4b286bfb8f91da110aa99b4e890f560dc3ec790f8c75e2310278"
+    }
+  },
+  "retention": {
+    "qualified_snapshot": "/tmp/p45a_hip_qualified",
+    "snapshot_manifest_sha256": "9ea5583854debe4213c5106119b7ca79b0206384e47c3c03f69d65d842291b90",
+    "raw_production_added": 291,
+    "raw_production_deleted": 29,
+    "raw_existing_test_added": 71,
+    "raw_private_sentinel_lines": 193,
+    "raw_cmake_added": 16,
+    "pure_production": 252,
+    "pure_tests": 257,
+    "pure_cmake": 16,
+    "pure_total": 525,
+    "p42d_fallback_runner_sha256": "1c9a203030ce5650034196cadb9b4c4d83413e20ab4048093a077600e5c5a2a2",
+    "p42d_fallback_source_sha256": {
+      "provider_cpp": "fbc8f1fc7a149c2eefdeaae09157dfbb9b31b3f450c3de1644fb975b5140c3e1",
+      "provider_test_cpp": "b260587bed3f71664900064bf173027b93cf687bf9a03445b4e8874b116b9e3d",
+      "cmake": "2f31094edbd005e5b90e465cc77b8b8586d49f787629e76a2953906f3763d184"
+    },
+    "retained_mode": "DEFAULT_OFF_EXPERIMENTAL_COMPOSITION_PRIMITIVE",
+    "retained_gates": "PASS_LOCAL_BUILD; PASS_P45_SENTINEL_BOTH_HIP; PASS_ORDERED_JOIN_BOTH_HIP; PASS_MOE_BOTH_HIP; PASS_SPARSE_K_68_OF_68_BOTH_HIP"
+  },
+  "gate_decision": {
+    "mechanism": "GO",
+    "exactness": "GO",
+    "comparative_performance": "INVALID_CONTROL_SPREAD_6.79216_PERCENT",
+    "absolute_performance": "MISSED_STANDALONE_PROMOTION_FLOOR_1.473707_LT_1.562500",
+    "broad": "STOPPED_NOT_RUN",
+    "retention": "GO_DEFAULT_OFF_AS_COMPOSITION_PRIMITIVE",
+    "implementation": "RETAINED_NOT_PROMOTED",
+    "next": "COMPOSE_WITH_PERSISTENT_ONE_TOKEN_ROUTED_PREP_AND_STABLE_DEVICE_BOUNDARY",
+    "two_true_ar_per_second": "UNMET",
+    "ten_true_ar_per_second": "UNMET"
+  },
+  "artifact_sha256": {
+    "a1_manifest": "5834e3b6ae0302a4e953a7c68c1e1a5a0bfd208d23d218c9706aaa4aed32ee1c",
+    "b_manifest": "14fc6e11e38f4017c1255213b333bd8d4b2f4b52fb940ed6eb6f0c6d81cee98b",
+    "a2_manifest": "631b39e14c692597ae83294a478eb646adffaa99cb85a11b12744ad657777875",
+    "a1_telemetry": "c142b077221230bcf3395618d8083765d33b1594f0aba7bd5d4932e3b17b0d7c",
+    "b_telemetry": "c7398aac6399fdeca29b14bfb2687b405471ec728ac3d67d8955dc29115792c2",
+    "a2_telemetry": "32c3fd3efa15ee80d73b9fbb40c776ade26a0f660a51ac87b2a1a84ab98d42f5"
+  }
+}
