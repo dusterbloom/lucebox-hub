@@ -1496,16 +1496,7 @@ bool streamed_kimi_k3_forward(
             return true;
         }
 
-        MoeStreamExpertSpec spec;
-        spec.input_dim = w.n_expert_latent;
-        spec.intermediate_dim = w.n_ff_exp;
-        spec.output_dim = w.n_expert_latent;
-        spec.gate_type = layer.ffn_gate_exps->type;
-        spec.up_type = layer.ffn_up_exps->type;
-        spec.down_type = layer.ffn_down_exps->type;
-        spec.gated_activation = MoeGatedActivation::Situ;
-        spec.situ_beta = w.situ_beta;
-        spec.situ_linear_beta = w.situ_linear_beta;
+        const MoeStreamExpertSpec spec = make_kimi_k3_stream_spec(w, layer);
 
         MoeStreamRouteBatch route_batch;
         route_batch.layer = il - w.n_dense_lead;

@@ -798,17 +798,7 @@ bool KimiK3Backend::init_streaming() {
                          "[kimi-k3] streamed layer is missing expert types\n");
             return fail_streaming();
         }
-        MoeStreamExpertSpec spec;
-        spec.input_dim = weights_.n_expert_latent;
-        spec.intermediate_dim = weights_.n_ff_exp;
-        spec.output_dim = weights_.n_expert_latent;
-        spec.gate_type = layer.ffn_gate_exps->type;
-        spec.up_type = layer.ffn_up_exps->type;
-        spec.down_type = layer.ffn_down_exps->type;
-        spec.gated_activation = MoeGatedActivation::Situ;
-        spec.situ_beta = weights_.situ_beta;
-        spec.situ_linear_beta = weights_.situ_linear_beta;
-        layer_specs.push_back(spec);
+        layer_specs.push_back(make_kimi_k3_stream_spec(weights_, layer));
         const LayerExpertRegions & regions =
             weights_.streamed_layer_regions[local_layer];
         layer_expert_bytes.push_back(

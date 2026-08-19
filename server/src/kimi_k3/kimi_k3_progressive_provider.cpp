@@ -5,6 +5,7 @@
 #include "ggml-cuda.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -43,6 +44,94 @@
 #endif
 
 namespace dflash::common {
+
+KimiK3SparseUpload kimi_k3_sparse_upload_for_call(
+        KimiK3SparseDeliveryPolicy delivery, bool has_prepacked_payload) {
+    if (has_prepacked_payload) return KimiK3SparseUpload::PrepackedCompact;
+    return delivery == KimiK3SparseDeliveryPolicy::CompactPageable
+        ? KimiK3SparseUpload::PageableCompact
+        : delivery >= KimiK3SparseDeliveryPolicy::CompactPinned
+            ? KimiK3SparseUpload::PinnedCompact
+            : KimiK3SparseUpload::SlabCopies;
+}
+
+uint16_t kimi_k3_selected_natural_slab_mask(
+        const uint16_t * natural_by_rank,
+        const uint8_t * selected_by_rank,
+        int slab_count) {
+    uint16_t mask = 0;
+    if (!natural_by_rank || !selected_by_rank || slab_count <= 0) return mask;
+    for (int rank = 0; rank < slab_count; ++rank) {
+        if (selected_by_rank[rank] && natural_by_rank[rank] < 12) {
+            mask = static_cast<uint16_t>(
+                mask | (1u << natural_by_rank[rank]));
+        }
+    }
+    return mask;
+}
+
+void kimi_k3_suppress_resident_slab_ranks(
+        const uint16_t * natural_by_rank,
+        uint16_t missing_mask,
+        uint8_t * selected_by_rank,
+        int slab_count) {
+    if (!natural_by_rank || !selected_by_rank || slab_count <= 0) return;
+    for (int rank = 0; rank < slab_count; ++rank) {
+        if (natural_by_rank[rank] >= 12 ||
+            (missing_mask & (1u << natural_by_rank[rank])) == 0) {
+            selected_by_rank[rank] = 0;
+        }
+    }
+}
+
+bool kimi_k3_sparse_natural_mask(
+        const uint16_t * naturals, int slab_count, uint16_t * mask) {
+    if (mask) *mask = 0;
+    if (!naturals || !mask || slab_count <= 0 || slab_count > 12) return false;
+    uint16_t seen = 0;
+    for (int index = 0; index < slab_count; ++index) {
+        if (naturals[index] >= 12) return false;
+        const uint16_t bit = static_cast<uint16_t>(1u << naturals[index]);
+        if ((seen & bit) != 0) return false;
+        seen = static_cast<uint16_t>(seen | bit);
+    }
+    *mask = seen;
+    return true;
+}
+
+bool kimi_k3_compact_wire_layout(
+        int slab_count, size_t gate_slab_bytes, size_t up_slab_bytes,
+        size_t down_slab_bytes, KimiK3CompactWireLayout * layout) {
+    if (!layout || slab_count <= 0 || slab_count > 12 ||
+        gate_slab_bytes == 0 || up_slab_bytes == 0 ||
+        down_slab_bytes == 0) {
+        return false;
+    }
+    constexpr size_t metadata_bytes = 32;
+    const size_t count = static_cast<size_t>(slab_count);
+    const auto add_component = [count](
+            size_t cursor, size_t slab_bytes, size_t & next) {
+        if (slab_bytes >
+            (std::numeric_limits<size_t>::max() - cursor) / count) {
+            return false;
+        }
+        next = cursor + count * slab_bytes;
+        return true;
+    };
+    KimiK3CompactWireLayout value;
+    value.gate_offset = metadata_bytes;
+    if (!add_component(
+            value.gate_offset, gate_slab_bytes, value.up_offset) ||
+        !add_component(
+            value.up_offset, up_slab_bytes, value.down_offset) ||
+        !add_component(
+            value.down_offset, down_slab_bytes, value.total_bytes)) {
+        return false;
+    }
+    *layout = value;
+    return true;
+}
+
 namespace {
 
 constexpr int kExpertCount = 896;
@@ -55,7 +144,71 @@ constexpr size_t kSlabComponentBytes = 179200;
 constexpr size_t kSlabBytes = 3 * kSlabComponentBytes;
 constexpr size_t kExpertRecordBytes = kSlabCount * kSlabBytes;
 
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+class BackendDeviceScope {
+public:
+    ~BackendDeviceScope() {
+        if (changed_) (void) cudaSetDevice(previous_);
+    }
+
+    bool enter(ggml_backend_t backend, std::string * err) {
+        ggml_backend_dev_t device = backend
+            ? ggml_backend_get_device(backend) : nullptr;
+        ggml_backend_reg_t registry = device
+            ? ggml_backend_dev_backend_reg(device) : nullptr;
+        int ordinal = -1;
+        if (registry) {
+            const size_t count = ggml_backend_reg_dev_count(registry);
+            for (size_t index = 0; index < count; ++index) {
+                if (ggml_backend_reg_dev_get(registry, index) == device) {
+                    ordinal = static_cast<int>(index);
+                    break;
+                }
+            }
+        }
+        if (ordinal < 0 || cudaGetDevice(&previous_) != cudaSuccess ||
+            cudaSetDevice(ordinal) != cudaSuccess) {
+            if (err) *err = "failed to select sparse expert backend device";
+            return false;
+        }
+        device_ = ordinal;
+        changed_ = previous_ != ordinal;
+        return true;
+    }
+
+    int device() const { return device_; }
+
+private:
+    int previous_ = -1;
+    int device_ = -1;
+    bool changed_ = false;
+};
+#endif
+constexpr uint64_t kNaturalSidecarCacheDomain = 0x4b334e4154555241ULL;
+
+uint64_t artifact_generation(const uint8_t * digest, size_t bytes) {
+    uint64_t value = 1469598103934665603ULL;
+    for (size_t i = 0; i < bytes; ++i) {
+        value = (value ^ digest[i]) * 1099511628211ULL;
+    }
+    return value ? value : 1;
+}
+
+uint64_t slab_mask_count(uint16_t mask) {
+    uint64_t count = 0;
+    for (; mask != 0; mask = static_cast<uint16_t>(mask & (mask - 1))) {
+        ++count;
+    }
+    return count;
+}
+
+enum class SparseWorkspace : uint8_t { HostRecomposed, TransientDevice, PersistentDevice };
+
 bool parse_positive_int(const char * raw, int & value);
+bool parse_binary_flag(const char * raw, bool & enabled) {
+    enabled = raw && std::strcmp(raw, "1") == 0;
+    return !raw || !*raw || enabled || std::strcmp(raw, "0") == 0;
+}
 
 // P20's first layer-wide direct-I/O implementation created and destroyed 16
 // operating-system threads at every routed layer.  The reads themselves were
@@ -1826,6 +1979,94 @@ struct SparseCompactPayload {
     bool owns_data = true;
 };
 
+bool pack_sparse_component_major(
+        const std::vector<SparseSlabPayload> & slabs,
+        const SparseCompactPayload * prepacked,
+        void * destination, size_t capacity,
+        KimiK3CompactWireLayout & layout, uint16_t & uploaded_mask,
+        std::string * err) {
+    const size_t slab_count = prepacked
+        ? static_cast<size_t>(prepacked->slab_count) : slabs.size();
+    if (slab_count == 0 || slab_count > kSlabCount || !destination) {
+        if (err) *err = "compact executor received an invalid slab count";
+        return false;
+    }
+    const size_t gate_slab_bytes = prepacked
+        ? prepacked->gate_slab_bytes : slabs.front().gate.size();
+    const size_t up_slab_bytes = prepacked
+        ? prepacked->up_slab_bytes : slabs.front().up.size();
+    const size_t down_slab_bytes = prepacked
+        ? prepacked->down_slab_bytes : slabs.front().down.size();
+    if (!kimi_k3_compact_wire_layout(
+            static_cast<int>(slab_count), gate_slab_bytes, up_slab_bytes,
+            down_slab_bytes, &layout) || layout.total_bytes > capacity) {
+        if (err) *err = "compact executor wire image exceeds staging";
+        return false;
+    }
+    std::array<uint16_t, kSlabCount> naturals{};
+    const size_t record_bytes =
+        gate_slab_bytes + up_slab_bytes + down_slab_bytes;
+    if (prepacked && (!prepacked->data ||
+            prepacked->metadata_bytes != layout.metadata_bytes ||
+            prepacked->bytes !=
+                layout.metadata_bytes + slab_count * record_bytes)) {
+        if (err) *err = "compact executor received an invalid P27 payload";
+        return false;
+    }
+    for (size_t index = 0; index < slab_count; ++index) {
+        if (prepacked) {
+            std::memcpy(
+                &naturals[index],
+                static_cast<const uint8_t *>(prepacked->data) +
+                    index * sizeof(uint16_t),
+                sizeof(uint16_t));
+        } else {
+            const SparseSlabPayload & slab = slabs[index];
+            if (slab.gate.size() != gate_slab_bytes ||
+                slab.up.size() != up_slab_bytes ||
+                slab.down.size() != down_slab_bytes) {
+                if (err) *err = "compact executor received uneven slabs";
+                return false;
+            }
+            naturals[index] = slab.natural;
+        }
+    }
+    if (!kimi_k3_sparse_natural_mask(
+            naturals.data(), static_cast<int>(slab_count), &uploaded_mask)) {
+        if (err) *err = "compact executor received invalid or duplicate IDs";
+        return false;
+    }
+
+    auto * output = static_cast<uint8_t *>(destination);
+    std::memset(output, 0, layout.metadata_bytes);
+    std::memcpy(output, naturals.data(), slab_count * sizeof(uint16_t));
+    for (size_t index = 0; index < slab_count; ++index) {
+        const uint8_t * gate = nullptr;
+        const uint8_t * up = nullptr;
+        const uint8_t * down = nullptr;
+        if (prepacked) {
+            gate = static_cast<const uint8_t *>(prepacked->data) +
+                layout.metadata_bytes + index * record_bytes;
+            up = gate + gate_slab_bytes;
+            down = up + up_slab_bytes;
+        } else {
+            gate = slabs[index].gate.data();
+            up = slabs[index].up.data();
+            down = slabs[index].down.data();
+        }
+        std::memcpy(
+            output + layout.gate_offset + index * gate_slab_bytes,
+            gate, gate_slab_bytes);
+        std::memcpy(
+            output + layout.up_offset + index * up_slab_bytes,
+            up, up_slab_bytes);
+        std::memcpy(
+            output + layout.down_offset + index * down_slab_bytes,
+            down, down_slab_bytes);
+    }
+    return true;
+}
+
 struct P28PinnedArena {
     ~P28PinnedArena() {
 #if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
@@ -1892,6 +2133,36 @@ public:
     uint64_t compact_scatter_ns() const { return compact_scatter_ns_; }
     uint64_t expert_graph_ns() const { return expert_graph_ns_; }
     uint64_t expert_readback_ns() const { return expert_readback_ns_; }
+    uint64_t compact_layouts() const { return compact_layouts_; }
+    uint64_t compact_uploads() const { return compact_uploads_; }
+    uint64_t compact_gate_stages() const { return compact_gate_stages_; }
+    uint64_t compact_up_stages() const { return compact_up_stages_; }
+    uint64_t compact_situ_stages() const { return compact_situ_stages_; }
+    uint64_t compact_down_stages() const { return compact_down_stages_; }
+
+    bool acquire_cache_lease(
+            ggml_backend_t backend, const MoeStreamExpertSpec & spec,
+            bool needs_mask, MoeHybridStreamEngine & engine,
+            const MoeStreamExternalKey & key, uint16_t requested_mask,
+            MoeStreamExternalLease & lease, std::string * err) {
+#if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
+        (void) backend; (void) spec; (void) needs_mask; (void) engine;
+        (void) key; (void) requested_mask; (void) lease; (void) err;
+        return true;
+#else
+        if (backend != engine.compute_backend()) {
+            if (err) *err =
+                "P40 device cache backend does not match its stream engine";
+            return false;
+        }
+        BackendDeviceScope device_scope;
+        if (!device_scope.enter(backend, err)) return false;
+        Entry * entry = find(backend, spec, needs_mask);
+        if (!entry) entry = create(backend, spec, needs_mask, err);
+        return entry && engine.acquire_external_device_lease(
+            key, entry->weight_bytes, requested_mask, lease, err);
+#endif
+    }
 
     bool evaluate(
             ggml_backend_t backend,
@@ -1905,16 +2176,68 @@ public:
             uint64_t & authoritative_h2d_bytes,
             uint64_t & metadata_h2d_bytes,
             uint64_t & device_zero_bytes,
-            bool compact_upload,
-            bool pinned_compact,
+            KimiK3SparseUpload upload,
+            MoeStreamExternalLease * cache_lease,
+            uint16_t requested_mask,
+            bool compact_executor,
+            bool & compact_invalid,
             std::string * err) {
+        compact_invalid = false;
+        ggml_tensor * device_output = nullptr;
+        const bool evaluated = compact_executor
+            ? eval_compact_into(
+                backend, spec, input_data, slabs, prepacked_compact,
+                requested_mask, down_slab_row_bytes, device_output,
+                authoritative_h2d_bytes, metadata_h2d_bytes,
+                compact_invalid, err)
+            : eval_into(
+                backend, spec, input_data, slabs, prepacked_compact,
+                activation_mask_values, down_slab_row_bytes, device_output,
+                authoritative_h2d_bytes, metadata_h2d_bytes,
+                device_zero_bytes, upload, cache_lease, err);
+        if (!evaluated) {
+            return false;
+        }
+#if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
+        (void) result;
+        return false;
+#else
+        BackendDeviceScope device_scope;
+        if (!device_scope.enter(backend, err)) return false;
+        result.resize(static_cast<size_t>(spec.output_dim));
+        const auto readback_started = std::chrono::steady_clock::now();
+        ggml_backend_tensor_get(
+            device_output, result.data(), 0, result.size() * sizeof(float));
+        expert_readback_ns_ += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - readback_started).count());
+        return true;
+#endif
+    }
+
+    bool eval_into(
+            ggml_backend_t backend,
+            const MoeStreamExpertSpec & spec,
+            const float * input_data,
+            const std::vector<SparseSlabPayload> & slabs,
+            const SparseCompactPayload * prepacked_compact,
+            const std::vector<float> & activation_mask_values,
+            size_t down_slab_row_bytes,
+            ggml_tensor *& device_output,
+            uint64_t & authoritative_h2d_bytes,
+            uint64_t & metadata_h2d_bytes,
+            uint64_t & device_zero_bytes,
+            KimiK3SparseUpload upload,
+            MoeStreamExternalLease * cache_lease,
+            std::string * err) {
+        device_output = nullptr;
 #if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
         (void) backend; (void) spec; (void) input_data; (void) slabs;
         (void) prepacked_compact;
         (void) activation_mask_values; (void) down_slab_row_bytes;
-        (void) result; (void) authoritative_h2d_bytes;
+        (void) authoritative_h2d_bytes;
         (void) metadata_h2d_bytes; (void) device_zero_bytes;
-        (void) compact_upload; (void) pinned_compact;
+        (void) upload; (void) cache_lease;
         if (err) *err = "P23 sparse scratch currently requires CUDA or HIP";
         return false;
 #else
@@ -1926,14 +2249,36 @@ public:
                 "P23 sparse scratch received an incompatible expert";
             return false;
         }
+        BackendDeviceScope device_scope;
+        if (!device_scope.enter(backend, err)) return false;
         const size_t slab_count = prepacked_compact
             ? static_cast<size_t>(prepacked_compact->slab_count)
             : slabs.size();
-        const bool needs_mask = slab_count != kSlabCount;
+        const bool needs_mask = std::any_of(
+            activation_mask_values.begin(), activation_mask_values.end(),
+            [](float value) { return value == 0.0f; });
         Entry * entry = find(backend, spec, needs_mask);
         if (!entry) {
             entry = create(backend, spec, needs_mask, err);
             if (!entry) return false;
+        }
+        const bool cached = cache_lease && *cache_lease;
+        if (cached) {
+            if (!cache_lease->bind_tensor(
+                    entry->gate, entry->gate_offset, err) ||
+                !cache_lease->bind_tensor(
+                    entry->up, entry->up_offset, err) ||
+                !cache_lease->bind_tensor(
+                    entry->down, entry->down_offset, err)) {
+                return false;
+            }
+        } else {
+            entry->gate->buffer = entry->gate_owned_buffer;
+            entry->gate->data = entry->gate_owned_data;
+            entry->up->buffer = entry->up_owned_buffer;
+            entry->up->data = entry->up_owned_data;
+            entry->down->buffer = entry->down_owned_buffer;
+            entry->down->data = entry->down_owned_data;
         }
 
         auto cuda_ok = [&](cudaError_t status, const char * operation) {
@@ -1944,10 +2289,59 @@ public:
             }
             return false;
         };
+        const bool cache_hit = cached && cache_lease->missing_mask() == 0;
+        if (!cache_hit && (slab_count == 0 || slab_count > kSlabCount)) {
+            if (err) *err = "sparse payload slab count is outside 1..12";
+            return false;
+        }
         bool ok = true;
-        device_zero_bytes += ggml_nbytes(entry->gate) +
-            ggml_nbytes(entry->up) + ggml_nbytes(entry->down);
-        if (compact_upload) {
+        bool clear_destinations = !cached;
+        if (cached && cache_lease->clear_required()) {
+            ok = cache_lease->clear_prefix(entry->weight_bytes, err);
+            device_zero_bytes += entry->weight_bytes;
+        } else if (clear_destinations) {
+            device_zero_bytes += ggml_nbytes(entry->gate) +
+                ggml_nbytes(entry->up) + ggml_nbytes(entry->down);
+        }
+        uint16_t uploaded_mask = 0;
+        if (ok && !cache_hit) {
+            std::array<uint16_t, kSlabCount> uploaded_naturals{};
+            if (prepacked_compact) {
+                if (!prepacked_compact->data ||
+                    prepacked_compact->metadata_bytes <
+                        slab_count * sizeof(uint16_t) ||
+                    prepacked_compact->bytes <
+                        prepacked_compact->metadata_bytes) {
+                    if (err) *err = "P27 invalid prepacked compact payload";
+                    return false;
+                }
+                for (size_t index = 0; index < slab_count; ++index) {
+                    std::memcpy(
+                        &uploaded_naturals[index],
+                        static_cast<const uint8_t *>(
+                            prepacked_compact->data) +
+                            index * sizeof(uint16_t),
+                        sizeof(uint16_t));
+                }
+            } else {
+                for (size_t index = 0; index < slab_count; ++index) {
+                    uploaded_naturals[index] = slabs[index].natural;
+                }
+            }
+            if (!kimi_k3_sparse_natural_mask(
+                    uploaded_naturals.data(), static_cast<int>(slab_count),
+                    &uploaded_mask)) {
+                if (err) *err = "sparse payload has invalid natural slab metadata";
+                return false;
+            }
+            if (cached && uploaded_mask != cache_lease->missing_mask()) {
+                if (err) *err =
+                    "sparse payload does not match the device-cache fill mask";
+                return false;
+            }
+        }
+        if (ok && !cache_hit &&
+            upload != KimiK3SparseUpload::SlabCopies) {
             const auto pack_started = std::chrono::steady_clock::now();
             constexpr size_t metadata_bytes = 32;
             if (slab_count == 0) {
@@ -1969,7 +2363,7 @@ public:
                 metadata_bytes + slab_count * record_bytes;
             if (!ensure_compact_staging(
                     *entry, compact_bytes,
-                    pinned_compact && !prepacked_compact, err)) {
+                    upload == KimiK3SparseUpload::PinnedCompact, err)) {
                 return false;
             }
             std::vector<uint8_t> pageable_compact;
@@ -1983,7 +2377,7 @@ public:
                 }
                 compact_host = static_cast<uint8_t *>(
                     prepacked_compact->data);
-            } else if (pinned_compact) {
+            } else if (upload == KimiK3SparseUpload::PinnedCompact) {
                 compact_host = static_cast<uint8_t *>(
                     entry->compact_host_staging);
                 std::memset(compact_host, 0, metadata_bytes);
@@ -2025,7 +2419,7 @@ public:
                     std::chrono::steady_clock::now() - pack_started).count());
             const auto scatter_started = std::chrono::steady_clock::now();
             const char * scatter_failure = nullptr;
-            ok = kimi_k3_sparse_scatter_upload(
+            ok = kimi_k3_sparse_scatter_upload_incremental(
                 entry->gate->data, ggml_nbytes(entry->gate),
                 entry->up->data, ggml_nbytes(entry->up),
                 entry->down->data, ggml_nbytes(entry->down),
@@ -2034,6 +2428,7 @@ public:
                 static_cast<int>(slab_count), metadata_bytes,
                 gate_slab_bytes, up_slab_bytes, down_slab_bytes,
                 down_slab_row_bytes, entry->down->nb[1], spec.output_dim,
+                clear_destinations,
                 &scatter_failure);
             compact_scatter_ns_ += static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -2044,17 +2439,17 @@ public:
             }
             authoritative_h2d_bytes += slab_count * record_bytes;
             metadata_h2d_bytes += metadata_bytes;
-        } else {
+        } else if (ok && !cache_hit) {
             ok =
-                cuda_ok(cudaMemset(
+                (!clear_destinations || cuda_ok(cudaMemset(
                     entry->gate->data, 0, ggml_nbytes(entry->gate)),
-                    "gate zero") &&
-                cuda_ok(cudaMemset(
+                    "gate zero")) &&
+                (!clear_destinations || cuda_ok(cudaMemset(
                     entry->up->data, 0, ggml_nbytes(entry->up)),
-                    "up zero") &&
-                cuda_ok(cudaMemset(
+                    "up zero")) &&
+                (!clear_destinations || cuda_ok(cudaMemset(
                     entry->down->data, 0, ggml_nbytes(entry->down)),
-                    "down zero");
+                    "down zero"));
             for (const SparseSlabPayload & slab : slabs) {
                 if (!ok || slab.natural >= kSlabCount || slab.gate.empty() ||
                     slab.up.empty() || slab.down.empty()) {
@@ -2088,6 +2483,9 @@ public:
                     slab.gate.size() + slab.up.size() + slab.down.size();
             }
         }
+        if (ok && cached && cache_lease->missing_mask() != 0) {
+            ok = cache_lease->commit(uploaded_mask, err);
+        }
         if (ok) {
             ggml_backend_tensor_set(
                 entry->input, input_data, 0,
@@ -2112,17 +2510,167 @@ public:
                 *err = "P23 persistent sparse graph compute failed";
             }
         }
-        if (ok) {
-            result.resize(static_cast<size_t>(spec.output_dim));
-            const auto readback_started = std::chrono::steady_clock::now();
-            ggml_backend_tensor_get(
-                entry->output, result.data(), 0,
-                result.size() * sizeof(float));
-            expert_readback_ns_ += static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - readback_started).count());
-        }
+        if (ok) device_output = entry->output;
         return ok;
+#endif
+    }
+
+    bool eval_compact_into(
+            ggml_backend_t backend,
+            const MoeStreamExpertSpec & spec,
+            const float * input_data,
+            const std::vector<SparseSlabPayload> & slabs,
+            const SparseCompactPayload * prepacked_compact,
+            uint16_t requested_mask,
+            size_t down_slab_row_bytes,
+            ggml_tensor *& device_output,
+            uint64_t & authoritative_h2d_bytes,
+            uint64_t & metadata_h2d_bytes,
+            bool & invalid,
+            std::string * err) {
+        device_output = nullptr;
+        invalid = false;
+#if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
+        (void) backend; (void) spec; (void) input_data; (void) slabs;
+        (void) prepacked_compact; (void) requested_mask;
+        (void) down_slab_row_bytes; (void) authoritative_h2d_bytes;
+        (void) metadata_h2d_bytes;
+        if (err) *err = "compact sparse executor requires CUDA or HIP";
+        return false;
+#else
+        if (!backend || !ggml_backend_is_cuda(backend) || !input_data ||
+            spec.fused_gate_up || spec.intermediate_dim != 3072 ||
+            (spec.down_type != GGML_TYPE_IQ1_S &&
+             spec.down_type != GGML_TYPE_IQ2_XXS)) {
+            if (err) *err = "compact sparse executor geometry is unsupported";
+            return false;
+        }
+        const size_t slab_count = prepacked_compact
+            ? static_cast<size_t>(prepacked_compact->slab_count)
+            : slabs.size();
+        if (slab_count == 0 || slab_count > kSlabCount) {
+            invalid = true;
+            if (err) *err = "compact sparse executor slab count is invalid";
+            return false;
+        }
+        BackendDeviceScope device_scope;
+        if (!device_scope.enter(backend, err)) return false;
+        CompactEntry * entry = find_compact(
+            backend, spec, static_cast<int>(slab_count));
+        if (!entry) {
+            entry = create_compact(
+                backend, spec, static_cast<int>(slab_count), err);
+            if (!entry) return false;
+        }
+        const size_t gate_slab_bytes = prepacked_compact
+            ? prepacked_compact->gate_slab_bytes : slabs.front().gate.size();
+        const size_t up_slab_bytes = prepacked_compact
+            ? prepacked_compact->up_slab_bytes : slabs.front().up.size();
+        const size_t down_slab_bytes = prepacked_compact
+            ? prepacked_compact->down_slab_bytes : slabs.front().down.size();
+        KimiK3CompactWireLayout layout;
+        if (!kimi_k3_compact_wire_layout(
+                static_cast<int>(slab_count), gate_slab_bytes,
+                up_slab_bytes, down_slab_bytes, &layout)) {
+            invalid = true;
+            return false;
+        }
+        if (!ensure_compact_host_staging(
+                *entry, layout.total_bytes, err)) return false;
+        uint16_t uploaded_mask = 0;
+        const auto pack_started = std::chrono::steady_clock::now();
+        if (!pack_sparse_component_major(
+                slabs, prepacked_compact, entry->host_staging,
+                entry->host_capacity, layout, uploaded_mask, err)) {
+            invalid = true;
+            return false;
+        }
+        compact_pack_ns_ += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - pack_started).count());
+        if (requested_mask == 0 ||
+            (requested_mask & ~uploaded_mask) != 0) {
+            invalid = true;
+            if (err) {
+                *err = "compact sparse requested mask is not resident";
+            }
+            return false;
+        }
+        if (down_slab_bytes != down_slab_row_bytes *
+                static_cast<size_t>(spec.output_dim) ||
+            gate_slab_bytes * slab_count != ggml_nbytes(entry->gate) ||
+            up_slab_bytes * slab_count != ggml_nbytes(entry->up) ||
+            down_slab_bytes * slab_count != ggml_nbytes(entry->down)) {
+            invalid = true;
+            if (err) *err = "compact sparse tensor extents disagree with wire";
+            return false;
+        }
+        ++compact_layouts_;
+        auto * wire = static_cast<uint8_t *>(entry->host_staging);
+        ggml_backend_tensor_set(
+            entry->input, input_data, 0,
+            static_cast<size_t>(spec.input_dim) * sizeof(float));
+        ggml_backend_tensor_set(
+            entry->gate, wire + layout.gate_offset, 0,
+            gate_slab_bytes * slab_count);
+        ggml_backend_tensor_set(
+            entry->up, wire + layout.up_offset, 0,
+            up_slab_bytes * slab_count);
+        ggml_backend_tensor_set(
+            entry->down, wire + layout.down_offset, 0,
+            down_slab_bytes * slab_count);
+        std::array<int32_t, kSlabCount> natural_to_compact;
+        natural_to_compact.fill(-1);
+        const auto * naturals = reinterpret_cast<const uint16_t *>(wire);
+        for (size_t slot = 0; slot < slab_count; ++slot) {
+            if ((requested_mask & (1u << naturals[slot])) != 0) {
+                natural_to_compact[naturals[slot]] =
+                    static_cast<int32_t>(slot);
+            }
+        }
+        std::array<bool, kSlabCount> compact_slot_seen{};
+        bool any_requested = false;
+        for (const int32_t slot : natural_to_compact) {
+            if (slot == -1) continue;
+            if (slot < 0 || static_cast<size_t>(slot) >= slab_count ||
+                compact_slot_seen[static_cast<size_t>(slot)]) {
+                invalid = true;
+                if (err) *err = "compact sparse natural map is invalid";
+                return false;
+            }
+            compact_slot_seen[static_cast<size_t>(slot)] = true;
+            any_requested = true;
+        }
+        if (!any_requested) {
+            invalid = true;
+            if (err) *err = "compact sparse natural map is empty";
+            return false;
+        }
+        ggml_backend_tensor_set(
+            entry->natural_to_compact, natural_to_compact.data(), 0,
+            sizeof(natural_to_compact));
+        authoritative_h2d_bytes +=
+            slab_count * (gate_slab_bytes + up_slab_bytes + down_slab_bytes);
+        metadata_h2d_bytes +=
+            static_cast<uint64_t>(spec.input_dim) * sizeof(float) +
+            sizeof(natural_to_compact);
+        ++compact_uploads_;
+        const auto graph_started = std::chrono::steady_clock::now();
+        const ggml_status status =
+            ggml_backend_graph_compute(backend, entry->graph);
+        expert_graph_ns_ += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - graph_started).count());
+        if (status != GGML_STATUS_SUCCESS) {
+            if (err) *err = "compact sparse executor graph failed";
+            return false;
+        }
+        ++compact_gate_stages_;
+        ++compact_up_stages_;
+        ++compact_situ_stages_;
+        ++compact_down_stages_;
+        device_output = entry->output;
+        return true;
 #endif
     }
 
@@ -2130,13 +2678,20 @@ private:
 #if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
     struct Entry {
         ~Entry() {
+            int previous_device = -1;
+            const bool restore_device = runtime_device >= 0 &&
+                cudaGetDevice(&previous_device) == cudaSuccess &&
+                previous_device != runtime_device &&
+                cudaSetDevice(runtime_device) == cudaSuccess;
             if (compact_host_staging) cudaFreeHost(compact_host_staging);
             if (compact_staging) cudaFree(compact_staging);
             if (allocator) ggml_gallocr_free(allocator);
             if (context) ggml_free(context);
+            if (restore_device) (void) cudaSetDevice(previous_device);
         }
 
         ggml_backend_t backend = nullptr;
+        int runtime_device = -1;
         MoeStreamExpertSpec spec{};
         bool needs_mask = false;
         ggml_context * context = nullptr;
@@ -2148,27 +2703,148 @@ private:
         ggml_tensor * down = nullptr;
         ggml_tensor * activation_mask = nullptr;
         ggml_tensor * output = nullptr;
+        ggml_backend_buffer_t gate_owned_buffer = nullptr;
+        ggml_backend_buffer_t up_owned_buffer = nullptr;
+        ggml_backend_buffer_t down_owned_buffer = nullptr;
+        void * gate_owned_data = nullptr;
+        void * up_owned_data = nullptr;
+        void * down_owned_data = nullptr;
+        size_t gate_offset = 0;
+        size_t up_offset = 0;
+        size_t down_offset = 0;
+        size_t weight_bytes = 0;
         void * compact_staging = nullptr;
         void * compact_host_staging = nullptr;
         size_t compact_capacity = 0;
     };
 
-    static bool same_spec(
-            const MoeStreamExpertSpec & left,
-            const MoeStreamExpertSpec & right) {
-        return left.input_dim == right.input_dim &&
-            left.intermediate_dim == right.intermediate_dim &&
-            left.output_dim == right.output_dim &&
-            left.gate_type == right.gate_type &&
-            left.up_type == right.up_type &&
-            left.down_type == right.down_type &&
-            left.fused_gate_up == right.fused_gate_up &&
-            left.gated_activation == right.gated_activation &&
-            left.situ_beta == right.situ_beta &&
-            left.situ_linear_beta == right.situ_linear_beta &&
-            left.gate_scale == right.gate_scale &&
-            left.up_scale == right.up_scale &&
-            left.down_scale == right.down_scale;
+    struct CompactEntry {
+        ~CompactEntry() {
+            int previous_device = -1;
+            const bool restore_device = runtime_device >= 0 &&
+                cudaGetDevice(&previous_device) == cudaSuccess &&
+                previous_device != runtime_device &&
+                cudaSetDevice(runtime_device) == cudaSuccess;
+            if (host_staging) cudaFreeHost(host_staging);
+            if (allocator) ggml_gallocr_free(allocator);
+            if (context) ggml_free(context);
+            if (restore_device) (void) cudaSetDevice(previous_device);
+        }
+
+        ggml_backend_t backend = nullptr;
+        int runtime_device = -1;
+        MoeStreamExpertSpec spec{};
+        int slab_count = 0;
+        ggml_context * context = nullptr;
+        ggml_gallocr_t allocator = nullptr;
+        ggml_cgraph * graph = nullptr;
+        ggml_tensor * input = nullptr;
+        ggml_tensor * gate = nullptr;
+        ggml_tensor * up = nullptr;
+        ggml_tensor * down = nullptr;
+        ggml_tensor * natural_to_compact = nullptr;
+        ggml_tensor * output = nullptr;
+        void * host_staging = nullptr;
+        size_t host_capacity = 0;
+    };
+
+    CompactEntry * find_compact(
+            ggml_backend_t backend, const MoeStreamExpertSpec & spec,
+            int slab_count) {
+        for (const std::unique_ptr<CompactEntry> & entry : compact_entries_) {
+            if (entry->backend == backend && entry->slab_count == slab_count &&
+                same_moe_stream_expert_spec(entry->spec, spec)) {
+                return entry.get();
+            }
+        }
+        return nullptr;
+    }
+
+    CompactEntry * create_compact(
+            ggml_backend_t backend, const MoeStreamExpertSpec & spec,
+            int slab_count, std::string * err) {
+        if (slab_count <= 0 || slab_count > kSlabCount ||
+            spec.intermediate_dim != kSlabCount * kSlabSize) {
+            if (err) *err = "compact sparse graph geometry is invalid";
+            return nullptr;
+        }
+        auto entry = std::make_unique<CompactEntry>();
+        entry->backend = backend;
+        (void) cudaGetDevice(&entry->runtime_device);
+        entry->spec = spec;
+        entry->slab_count = slab_count;
+        ggml_init_params parameters{};
+        parameters.mem_size = 32 * 1024 * 1024;
+        parameters.no_alloc = true;
+        entry->context = ggml_init(parameters);
+        if (!entry->context) {
+            if (err) *err = "compact sparse ggml_init failed";
+            return nullptr;
+        }
+        entry->input = ggml_new_tensor_2d(
+            entry->context, GGML_TYPE_F32, spec.input_dim, 1);
+        entry->gate = ggml_new_tensor_2d(
+            entry->context, spec.gate_type, spec.input_dim,
+            static_cast<int64_t>(slab_count) * kSlabSize);
+        entry->up = ggml_new_tensor_2d(
+            entry->context, spec.up_type, spec.input_dim,
+            static_cast<int64_t>(slab_count) * kSlabSize);
+        entry->down = ggml_new_tensor_4d(
+            entry->context, spec.down_type, kSlabSize, spec.output_dim,
+            slab_count, 1);
+        entry->natural_to_compact = ggml_new_tensor_1d(
+            entry->context, GGML_TYPE_I32, kSlabCount);
+        ggml_set_input(entry->input);
+        ggml_set_input(entry->gate);
+        ggml_set_input(entry->up);
+        ggml_set_input(entry->down);
+        ggml_set_input(entry->natural_to_compact);
+        ggml_tensor * gate_value = probe_scale_tensor(
+            entry->context,
+            ggml_mul_mat(entry->context, entry->gate, entry->input),
+            spec.gate_scale);
+        ggml_tensor * up_value = probe_scale_tensor(
+            entry->context,
+            ggml_mul_mat(entry->context, entry->up, entry->input),
+            spec.up_scale);
+        ggml_tensor * activated = probe_gated_activation(
+            entry->context, spec, gate_value, up_value);
+        ggml_tensor * x_blocks = ggml_reshape_2d(
+            entry->context, activated, kSlabSize, slab_count);
+        entry->output = probe_scale_tensor(
+            entry->context,
+            ggml_mul_mat_sparse_k_blocks(
+                entry->context, entry->down, x_blocks,
+                entry->natural_to_compact, spec.intermediate_dim),
+            spec.down_scale);
+        entry->graph = ggml_new_graph_custom(entry->context, 512, false);
+        ggml_set_output(entry->output);
+        ggml_build_forward_expand(entry->graph, entry->output);
+        entry->allocator = ggml_gallocr_new(
+            ggml_backend_get_default_buffer_type(backend));
+        if (!entry->allocator ||
+            !ggml_gallocr_alloc_graph(entry->allocator, entry->graph)) {
+            if (err) *err = "compact sparse graph allocation failed";
+            return nullptr;
+        }
+        compact_entries_.push_back(std::move(entry));
+        return compact_entries_.back().get();
+    }
+
+    static bool ensure_compact_host_staging(
+            CompactEntry & entry, size_t bytes, std::string * err) {
+        if (entry.host_capacity >= bytes) return true;
+        if (entry.host_staging) cudaFreeHost(entry.host_staging);
+        entry.host_staging = nullptr;
+        entry.host_capacity = 0;
+        if (cudaHostAlloc(
+                &entry.host_staging, bytes, cudaHostAllocDefault) !=
+                cudaSuccess) {
+            if (err) *err = "compact sparse pinned staging allocation failed";
+            return false;
+        }
+        entry.host_capacity = bytes;
+        return true;
     }
 
     Entry * find(
@@ -2177,7 +2853,7 @@ private:
         for (const std::unique_ptr<Entry> & entry : entries_) {
             if (entry->backend == backend &&
                 entry->needs_mask == needs_mask &&
-                same_spec(entry->spec, spec)) {
+                same_moe_stream_expert_spec(entry->spec, spec)) {
                 return entry.get();
             }
         }
@@ -2189,6 +2865,7 @@ private:
             bool needs_mask, std::string * err) {
         auto entry = std::make_unique<Entry>();
         entry->backend = backend;
+        (void) cudaGetDevice(&entry->runtime_device);
         entry->spec = spec;
         entry->needs_mask = needs_mask;
         ggml_init_params parameters{};
@@ -2250,6 +2927,27 @@ private:
                 "P23 persistent sparse graph allocation failed";
             return nullptr;
         }
+        const ggml_backend_buffer_type_t buft =
+            ggml_backend_get_default_buffer_type(backend);
+        const size_t alignment = std::max<size_t>(
+            256, ggml_backend_buft_get_alignment(buft));
+        const auto place = [&](ggml_tensor * tensor, size_t & offset,
+                               size_t & cursor) {
+            offset = (cursor + alignment - 1) & ~(alignment - 1);
+            cursor = offset + ggml_backend_buft_get_alloc_size(buft, tensor);
+        };
+        size_t cursor = 0;
+        place(entry->gate, entry->gate_offset, cursor);
+        place(entry->up, entry->up_offset, cursor);
+        place(entry->down, entry->down_offset, cursor);
+        entry->weight_bytes =
+            (cursor + alignment - 1) & ~(alignment - 1);
+        entry->gate_owned_buffer = entry->gate->buffer;
+        entry->up_owned_buffer = entry->up->buffer;
+        entry->down_owned_buffer = entry->down->buffer;
+        entry->gate_owned_data = entry->gate->data;
+        entry->up_owned_data = entry->up->data;
+        entry->down_owned_data = entry->down->data;
         entries_.push_back(std::move(entry));
         return entries_.back().get();
     }
@@ -2285,43 +2983,19 @@ private:
     }
 
     std::vector<std::unique_ptr<Entry>> entries_;
+    std::vector<std::unique_ptr<CompactEntry>> compact_entries_;
 #endif
     uint64_t compact_pack_ns_ = 0;
     uint64_t compact_scatter_ns_ = 0;
     uint64_t expert_graph_ns_ = 0;
     uint64_t expert_readback_ns_ = 0;
+    uint64_t compact_layouts_ = 0;
+    uint64_t compact_uploads_ = 0;
+    uint64_t compact_gate_stages_ = 0;
+    uint64_t compact_up_stages_ = 0;
+    uint64_t compact_situ_stages_ = 0;
+    uint64_t compact_down_stages_ = 0;
 };
-
-// P20's first production-shaped baseline keeps the native full-width graph but
-// initializes its device tensors in place and patches only selected slab bytes.
-// The activation mask makes the omitted gate/up/down bytes semantically inert.
-// In particular, no reconstructed full expert crosses PCIe.
-bool evaluate_sparse_device_expert(
-        SparseDeviceExpertEvaluator * persistent_evaluator,
-        ggml_backend_t backend,
-        const MoeStreamExpertSpec & spec,
-        const float * input_data,
-        const std::vector<SparseSlabPayload> & slabs,
-        const SparseCompactPayload * prepacked_compact,
-        const std::vector<float> & activation_mask_values,
-        size_t down_slab_row_bytes,
-        std::vector<float> & result,
-        uint64_t & authoritative_h2d_bytes,
-        uint64_t & metadata_h2d_bytes,
-        uint64_t & device_zero_bytes,
-        bool compact_upload,
-        bool pinned_compact,
-        std::string * err) {
-    SparseDeviceExpertEvaluator one_shot_evaluator;
-    SparseDeviceExpertEvaluator & evaluator = persistent_evaluator
-        ? *persistent_evaluator : one_shot_evaluator;
-    return evaluator.evaluate(
-        backend, spec, input_data, slabs, prepacked_compact,
-        activation_mask_values,
-        down_slab_row_bytes, result, authoritative_h2d_bytes,
-        metadata_h2d_bytes, device_zero_bytes, compact_upload,
-        pinned_compact, err);
-}
 
 class AllSlabsProvider final : public KimiK3RoutedOutputProvider {
 public:
@@ -3253,9 +3927,9 @@ public:
         if (const char * layout =
                 std::getenv("DFLASH_KIMI_P20_PHYSICAL_LAYOUT")) {
             if (std::strcmp(layout, "reference") == 0 || *layout == '\0') {
-                sparse_scratch_ = false;
+                sparse_workspace_ = SparseWorkspace::HostRecomposed;
             } else if (std::strcmp(layout, "scratch") == 0) {
-                sparse_scratch_ = true;
+                sparse_workspace_ = SparseWorkspace::TransientDevice;
             } else {
                 if (err) *err =
                     "DFLASH_KIMI_P20_PHYSICAL_LAYOUT must be reference or scratch";
@@ -3266,16 +3940,16 @@ public:
                 std::getenv("DFLASH_KIMI_P20_IO_BACKEND")) {
             if (std::strcmp(io_backend, "current") == 0 ||
                 *io_backend == '\0') {
-                direct_pread_ = false;
+                sparse_delivery_ = KimiK3SparseDeliveryPolicy::BufferedSlabs;
             } else if (std::strcmp(io_backend, "direct-pread") == 0) {
-                direct_pread_ = true;
+                sparse_delivery_ = KimiK3SparseDeliveryPolicy::DirectSlabs;
             } else {
                 if (err) *err =
                     "DFLASH_KIMI_P20_IO_BACKEND must be current or direct-pread";
                 return false;
             }
         }
-        if (direct_pread_ && !sparse_scratch_) {
+        if (direct_reads() && !sparse_device()) {
             if (err) *err =
                 "P20 direct-pread currently requires the scratch layout";
             return false;
@@ -3288,7 +3962,7 @@ public:
                     "DFLASH_KIMI_P30_HOST_CACHE_MB must be in 1..8192";
                 return false;
             }
-            if (!direct_pread_) {
+            if (!direct_reads()) {
                 if (err) *err =
                     "P30 host cache requires P20 direct-pread";
                 return false;
@@ -3296,78 +3970,129 @@ public:
             read_cache_.set_capacity(
                 static_cast<size_t>(cache_mib) * 1024 * 1024);
         }
-        if (const char * persistent =
-                std::getenv("DFLASH_KIMI_P23_PERSISTENT_SCRATCH")) {
-            if (std::strcmp(persistent, "1") == 0) {
-                persistent_sparse_ = true;
-            } else if (std::strcmp(persistent, "0") != 0 && *persistent) {
-                if (err) *err =
-                    "DFLASH_KIMI_P23_PERSISTENT_SCRATCH must be 0 or 1";
-                return false;
-            }
+        bool enabled = false;
+        if (!parse_binary_flag(std::getenv(
+                "DFLASH_KIMI_P23_PERSISTENT_SCRATCH"), enabled)) {
+            if (err) *err =
+                "DFLASH_KIMI_P23_PERSISTENT_SCRATCH must be 0 or 1";
+            return false;
         }
-        if (persistent_sparse_ && !sparse_scratch_) {
+        if (enabled && !sparse_device()) {
             if (err) *err =
                 "P23 persistent scratch requires the scratch layout";
             return false;
         }
-        if (const char * compact =
-                std::getenv("DFLASH_KIMI_P25_COMPACT_UPLOAD")) {
-            if (std::strcmp(compact, "1") == 0) {
-                compact_upload_ = true;
-            } else if (std::strcmp(compact, "0") != 0 && *compact) {
-                if (err) *err =
-                    "DFLASH_KIMI_P25_COMPACT_UPLOAD must be 0 or 1";
-                return false;
-            }
+        if (enabled) sparse_workspace_ = SparseWorkspace::PersistentDevice;
+        if (!parse_binary_flag(std::getenv(
+                "DFLASH_KIMI_P25_COMPACT_UPLOAD"), enabled)) {
+            if (err) *err =
+                "DFLASH_KIMI_P25_COMPACT_UPLOAD must be 0 or 1";
+            return false;
         }
-        if (compact_upload_ && (!persistent_sparse_ || !sparse_scratch_ ||
-                !direct_pread_)) {
+        if (enabled && (sparse_workspace_ != SparseWorkspace::PersistentDevice ||
+                sparse_delivery_ != KimiK3SparseDeliveryPolicy::DirectSlabs)) {
             if (err) *err =
                 "P25 compact upload requires persistent scratch and direct-pread";
             return false;
         }
-        if (const char * pinned =
-                std::getenv("DFLASH_KIMI_P26_PINNED_COMPACT")) {
-            if (std::strcmp(pinned, "1") == 0) {
-                pinned_compact_ = true;
-            } else if (std::strcmp(pinned, "0") != 0 && *pinned) {
-                if (err) *err =
-                    "DFLASH_KIMI_P26_PINNED_COMPACT must be 0 or 1";
-                return false;
-            }
-        }
-        if (pinned_compact_ && !compact_upload_) {
+        if (enabled) sparse_delivery_ = KimiK3SparseDeliveryPolicy::CompactPageable;
+        if (!parse_binary_flag(std::getenv(
+                "DFLASH_KIMI_P26_PINNED_COMPACT"), enabled)) {
             if (err) *err =
-                "P26 pinned compact staging requires compact upload";
+                "DFLASH_KIMI_P26_PINNED_COMPACT must be 0 or 1";
             return false;
         }
-        if (const char * direct_pinned =
-                std::getenv("DFLASH_KIMI_P27_DIRECT_PINNED_COMPACT")) {
-            if (std::strcmp(direct_pinned, "1") == 0) {
-                direct_pinned_compact_ = true;
-            } else if (std::strcmp(direct_pinned, "0") != 0 &&
-                       *direct_pinned) {
-                if (err) *err =
-                    "DFLASH_KIMI_P27_DIRECT_PINNED_COMPACT must be 0 or 1";
+        if (enabled && sparse_delivery_ != KimiK3SparseDeliveryPolicy::CompactPageable) {
+            if (err) *err = "P26 pinned compact staging requires compact upload";
+            return false;
+        }
+        if (enabled) sparse_delivery_ = KimiK3SparseDeliveryPolicy::CompactPinned;
+        if (!parse_binary_flag(std::getenv(
+                "DFLASH_KIMI_P27_DIRECT_PINNED_COMPACT"), enabled)) {
+            if (err) *err =
+                "DFLASH_KIMI_P27_DIRECT_PINNED_COMPACT must be 0 or 1";
+            return false;
+        }
+        if (enabled && sparse_delivery_ != KimiK3SparseDeliveryPolicy::CompactPinned) {
+            if (err) *err = "P27 direct pinned compact requires P26 pinned compact";
+            return false;
+        }
+        if (enabled) sparse_delivery_ = KimiK3SparseDeliveryPolicy::DirectPinnedCompact;
+        if (!parse_binary_flag(std::getenv(
+                "DFLASH_KIMI_P40_DEVICE_VARIANT_CACHE"), enabled)) {
+            if (err) *err =
+                "DFLASH_KIMI_P40_DEVICE_VARIANT_CACHE must be 0 or 1";
+            return false;
+        }
+        if (enabled && (sparse_workspace_ != SparseWorkspace::PersistentDevice ||
+                !direct_reads())) {
+            if (err) *err =
+                "P40 device variant cache requires persistent direct sparse execution";
+            return false;
+        }
+        device_variant_cache_ = enabled;
+        if (device_variant_cache_) {
+            int cache_mib = 0;
+            if (!parse_positive_int(std::getenv(
+                    "DFLASH_MOE_NVME_DEVICE_CACHE_MB"), cache_mib) ||
+                (cache_mib != 8192 && cache_mib != 16384)) {
+                if (err) {
+                    *err = "P40 requires DFLASH_MOE_NVME_DEVICE_CACHE_MB=8192 or 16384";
+                }
                 return false;
             }
+            p40_requested_device_bytes_ =
+                static_cast<size_t>(cache_mib) * 1024 * 1024;
         }
-        if (direct_pinned_compact_ && !pinned_compact_) {
+        if (!parse_binary_flag(std::getenv(
+                "DFLASH_KIMI_P41_COMPACT_EXECUTOR"), enabled)) {
             if (err) *err =
-                "P27 direct pinned compact requires P26 pinned compact";
+                "DFLASH_KIMI_P41_COMPACT_EXECUTOR must be 0 or 1";
             return false;
+        }
+        if (enabled && (sparse_workspace_ != SparseWorkspace::PersistentDevice ||
+                sparse_delivery_ !=
+                    KimiK3SparseDeliveryPolicy::DirectPinnedCompact)) {
+            if (err) {
+                *err = "P41 compact executor requires the persistent P27 path";
+            }
+            return false;
+        }
+        if (enabled && device_variant_cache_) {
+            if (err) {
+                *err = "P41 compact executor and P40 device cache are "
+                    "mutually exclusive during parity qualification";
+            }
+            return false;
+        }
+        compact_executor_ = enabled;
+        if (const char * trace =
+                std::getenv("DFLASH_KIMI_P40_CACHE_TRACE")) {
+            if (*trace && !device_variant_cache_) {
+                if (err) *err = "P40 cache trace requires the P40 device cache";
+                return false;
+            }
+            if (*trace) {
+                p40_trace_.open(trace, std::ios::out | std::ios::trunc);
+                if (!p40_trace_) {
+                    if (err) *err = "cannot create P40 cache trace";
+                    return false;
+                }
+                p40_trace_ <<
+                    "requested\tresident_before\taction\tmissing\tdevice_bytes\n";
+            }
         }
         if (const char * oracle_trace =
                 std::getenv("DFLASH_KIMI_P28_ORACLE_TRACE")) {
             if (*oracle_trace) oracle_trace_path_ = oracle_trace;
         }
-        if (!oracle_trace_path_.empty() && !direct_pinned_compact_) {
+        if (!oracle_trace_path_.empty() && sparse_delivery_ !=
+                KimiK3SparseDeliveryPolicy::DirectPinnedCompact) {
             if (err) *err =
                 "P28 oracle replay requires P27 direct pinned compact";
             return false;
         }
-        if (direct_pread_) {
+        if (direct_reads()) {
             direct_read_pool_ = std::make_unique<P20DirectReadPool>(16);
         }
         if (const char * trace_path = std::getenv("DFLASH_KIMI_P20_IO_TRACE")) {
@@ -3429,6 +4154,7 @@ public:
             "speed-claim=false requested-budget=%s layer-phase=%s dynamic-layer=%s physical-layout=%s "
             "io-backend=%s persistent-scratch=%s compact-upload=%s "
             "pinned-compact=%s direct-pinned-compact=%s p28-oracle=%s "
+            "p40-device-cache=%s p41-compact-executor=%s "
             "exact-source=%s "
             "p30-host-cache-mib=%.1f "
             "valid-layers=%d/92 "
@@ -3438,13 +4164,19 @@ public:
                 "calibrated-slabs",
             budget_description.c_str(), layer_phase_name(),
             dynamic_active_layer_ ? "enabled" : "disabled",
-            sparse_scratch_ ? "scratch" : "reference",
-            direct_pread_ ? "direct-pread" : "current",
-            persistent_sparse_ ? "enabled" : "disabled",
-            compact_upload_ ? "enabled" : "disabled",
-            pinned_compact_ ? "enabled" : "disabled",
-            direct_pinned_compact_ ? "enabled" : "disabled",
+            sparse_device() ? "scratch" : "reference",
+            direct_reads() ? "direct-pread" : "current",
+            sparse_workspace_ == SparseWorkspace::PersistentDevice
+                ? "enabled" : "disabled",
+            sparse_delivery_ >= KimiK3SparseDeliveryPolicy::CompactPageable
+                ? "enabled" : "disabled",
+            sparse_delivery_ >= KimiK3SparseDeliveryPolicy::CompactPinned
+                ? "enabled" : "disabled",
+            sparse_delivery_ == KimiK3SparseDeliveryPolicy::DirectPinnedCompact
+                ? "enabled" : "disabled",
             oracle_trace_path_.empty() ? "disabled" : "one-layer",
+            device_variant_cache_ ? "enabled" : "disabled",
+            compact_executor_ ? "enabled" : "disabled",
             sidecar_authoritative_ ? "sidecar" : "native-model",
             static_cast<double>(read_cache_.capacity()) / (1024.0 * 1024.0),
             valid_layers);
@@ -3470,6 +4202,14 @@ public:
             if (err) *err = "calibrated96 received an incompatible routed batch";
             return false;
         }
+        constexpr size_t kP40AllocationTolerance = 64ULL * 1024 * 1024;
+        if (device_variant_cache_ && exact_engine.external_device_cache_bytes() +
+                kP40AllocationTolerance < p40_requested_device_bytes_) {
+            if (err) {
+                *err = "P40 shared device cache allocation fell below its requested budget";
+            }
+            return false;
+        }
         LayerState & state = layers_[static_cast<size_t>(model_layer)];
         if (!state.valid || spec.fused_gate_up ||
             !geometry_matches(state, spec)) {
@@ -3490,6 +4230,13 @@ public:
     }
 
 private:
+    bool sparse_device() const {
+        return sparse_workspace_ != SparseWorkspace::HostRecomposed;
+    }
+    bool direct_reads() const {
+        return sparse_delivery_ != KimiK3SparseDeliveryPolicy::BufferedSlabs;
+    }
+
     enum class LayerPhase {
         All,
         BlockEnds,
@@ -3559,6 +4306,7 @@ private:
         uint64_t gate_slab_bytes = 0;
         uint64_t up_slab_bytes = 0;
         uint64_t down_slab_bytes = 0;
+        uint64_t source_generation = 0;
         std::vector<uint16_t> order;
         std::vector<float> importance;
         std::vector<float> native_importance;
@@ -3910,6 +4658,8 @@ private:
         state.gate_slab_bytes = gate_bytes;
         state.up_slab_bytes = up_bytes;
         state.down_slab_bytes = down_bytes;
+        state.source_generation = artifact_generation(
+            aux.sidecar_sha256, sizeof(aux.sidecar_sha256));
         return true;
     }
 
@@ -4020,6 +4770,7 @@ private:
 #else
         struct Completion {
             bool ok = false;
+            bool cache_hit = false;
             uint64_t aligned_offset = 0;
             size_t aligned_bytes = 0;
         };
@@ -4052,10 +4803,16 @@ private:
                         failed = true;
                         break;
                     }
-                    const ssize_t got = ::pread(
-                        fd, raw, aligned_bytes,
-                        static_cast<off_t>(aligned_offset));
+                    const P30ReadKey cache_key{
+                        model_layer, P30ReadKind::SidecarSlab,
+                        aligned_offset, aligned_bytes};
+                    const bool cache_hit = read_cache_.get(cache_key, raw);
+                    const ssize_t got = cache_hit
+                        ? static_cast<ssize_t>(aligned_bytes)
+                        : ::pread(fd, raw, aligned_bytes,
+                                  static_cast<off_t>(aligned_offset));
                     if (got == static_cast<ssize_t>(aligned_bytes)) {
+                        if (!cache_hit) read_cache_.put(cache_key, raw);
                         const auto * payload =
                             static_cast<const uint8_t *>(raw) + prefix;
                         std::memcpy(
@@ -4068,7 +4825,7 @@ private:
                             payload + slab.gate.size() + slab.up.size(),
                             slab.down.size());
                         completions[index] = {
-                            true, aligned_offset, aligned_bytes};
+                            true, cache_hit, aligned_offset, aligned_bytes};
                     } else {
                         failed = true;
                     }
@@ -4092,8 +4849,10 @@ private:
             const uint64_t record = state.payload_offset +
                 static_cast<uint64_t>(expert * kSlabCount + slab.natural) *
                     state.slab_bytes;
-            explicit_read_bytes_ += completions[index].aligned_bytes;
-            direct_physical_bytes_ += completions[index].aligned_bytes;
+            const uint64_t physical_bytes = completions[index].cache_hit
+                ? 0 : completions[index].aligned_bytes;
+            explicit_read_bytes_ += physical_bytes;
+            direct_physical_bytes_ += physical_bytes;
             if (!io_trace_) continue;
             const auto emit = [&](const char * region, const char * qtype,
                                   uint64_t offset, size_t logical,
@@ -4112,7 +4871,7 @@ private:
                           << '\t' << explicit_bytes << '\n';
             };
             emit("gate", ggml_type_name(spec.gate_type), record,
-                 slab.gate.size(), 0, completions[index].aligned_bytes);
+                 slab.gate.size(), 0, physical_bytes);
             emit("up", ggml_type_name(spec.up_type),
                  record + slab.gate.size(), slab.up.size(),
                  slab.gate.size(), 0);
@@ -4671,11 +5430,104 @@ private:
         oracle_future_key_ = 0;
     }
 
+    void account_device_variant_lease(
+            const MoeStreamExternalLease & lease, uint16_t requested_mask,
+            size_t device_bytes) {
+        p40_requested_slabs_ += slab_mask_count(requested_mask);
+        p40_device_bytes_ = device_bytes;
+        const uint16_t resident = lease ? lease.resident_mask() : 0;
+        const uint16_t missing = lease
+            ? lease.missing_mask() : requested_mask;
+        const char * action = !lease ? "unavailable" :
+            lease.cache_hit() ? "hit" :
+            resident != 0 ? "extension" : "cold";
+        if (p40_trace_) {
+            p40_trace_ << requested_mask << '\t' << resident << '\t'
+                       << action << '\t' << missing << '\t'
+                       << device_bytes << '\n';
+        }
+        if (!lease) {
+            ++p40_unavailable_;
+            return;
+        }
+        p40_resident_before_slabs_ += slab_mask_count(
+            static_cast<uint16_t>(requested_mask & lease.resident_mask()));
+        if (lease.cache_hit()) {
+            ++p40_hits_;
+        } else if (lease.resident_mask() != 0) {
+            ++p40_extensions_;
+        } else {
+            ++p40_cold_;
+        }
+        if (lease.evicted()) ++p40_evictions_;
+    }
+
+    bool evaluate_sparse_payload(
+            const MoeStreamExpertSpec & spec, const float * input,
+            const std::vector<SparseSlabPayload> & slabs,
+            const SparseCompactPayload * compact,
+            const std::vector<float> & mask, size_t down_slab_row_bytes,
+            uint16_t requested_mask, std::vector<float> & result,
+            MoeStreamExternalLease * cache_lease,
+            std::string * err) {
+        SparseDeviceExpertEvaluator transient;
+        SparseDeviceExpertEvaluator & evaluator =
+            sparse_workspace_ == SparseWorkspace::PersistentDevice
+            ? sparse_device_evaluator_ : transient;
+        const uint16_t missing_before = cache_lease
+            ? cache_lease->missing_mask() : 0;
+        const uint64_t h2d_before = authoritative_h2d_bytes_;
+        bool compact_invalid = false;
+        // A live P40 lease owns the expanded weight layout. Keep that
+        // qualified path authoritative until compact parity is established;
+        // P41 runs when the request is not being served by that cache.
+        if (compact_executor_ && !cache_lease) {
+            ++p41_attempted_;
+            if (evaluator.evaluate(
+                    backend_, spec, input, slabs, compact, mask,
+                    down_slab_row_bytes, result, authoritative_h2d_bytes_,
+                    metadata_h2d_bytes_, device_zero_bytes_,
+                    kimi_k3_sparse_upload_for_call(
+                        sparse_delivery_, compact != nullptr), nullptr,
+                    requested_mask, true, compact_invalid, err)) {
+                ++p41_completed_;
+                return true;
+            }
+            if (compact_invalid) {
+                ++p41_invalid_;
+                return false;
+            }
+            ++p41_fallbacks_;
+            if (err) err->clear();
+        }
+        const bool ok = evaluator.evaluate(
+            backend_, spec, input, slabs, compact, mask, down_slab_row_bytes,
+            result, authoritative_h2d_bytes_, metadata_h2d_bytes_,
+            device_zero_bytes_, kimi_k3_sparse_upload_for_call(
+                sparse_delivery_, compact != nullptr), cache_lease,
+            requested_mask, false, compact_invalid, err);
+        if (cache_lease) {
+            if (ok) {
+                ++p40_completed_;
+                if (!*cache_lease) ++p40_fallbacks_;
+            } else {
+                ++p40_aborted_;
+            }
+        }
+        if (ok && cache_lease && *cache_lease) {
+            p40_h2d_bytes_ += authoritative_h2d_bytes_ - h2d_before;
+            if (missing_before != 0) ++p40_scatter_calls_;
+            else ++p40_scatter_avoided_;
+        }
+        return ok;
+    }
+
     bool evaluate_sidecar_exact_expert(
             int sidecar_fd, int model_layer, int base_pos, int token_index,
             const LayerState & state, const MoeStreamExpertSpec & spec,
-            int expert, const float * input, std::vector<float> & result,
-            std::string * err) {
+            int local_layer, int expert, const float * input,
+            MoeHybridStreamEngine & exact_engine,
+            std::vector<float> & result, std::string * err) {
         const size_t gate_full_bytes = static_cast<size_t>(
             state.gate_slab_bytes * kSlabCount);
         const size_t up_full_bytes = static_cast<size_t>(
@@ -4686,22 +5538,43 @@ private:
         std::vector<float> full_mask(
             static_cast<size_t>(spec.intermediate_dim), 1.0f);
 
-        if (sparse_scratch_) {
-            std::vector<SparseSlabPayload> slabs(kSlabCount);
+        if (sparse_device()) {
+            MoeStreamExternalLease cache_lease;
+            const MoeStreamExternalKey cache_key{
+                kNaturalSidecarCacheDomain, state.source_generation,
+                local_layer, expert, spec};
+            if (device_variant_cache_ &&
+                !sparse_device_evaluator_.acquire_cache_lease(
+                    backend_, spec, false, exact_engine, cache_key, 0x0fff,
+                    cache_lease, err)) {
+                return false;
+            }
+            if (device_variant_cache_) {
+                account_device_variant_lease(
+                    cache_lease, 0x0fff,
+                    exact_engine.external_device_cache_bytes());
+            }
+            const uint16_t missing = cache_lease
+                ? cache_lease.missing_mask() : 0x0fff;
+            std::vector<SparseSlabPayload> slabs;
+            slabs.reserve(kSlabCount);
             for (int natural = 0; natural < kSlabCount; ++natural) {
-                SparseSlabPayload & slab = slabs[static_cast<size_t>(natural)];
+                if ((missing & (1u << natural)) == 0) continue;
+                SparseSlabPayload slab;
                 slab.natural = static_cast<uint16_t>(natural);
                 slab.gate.resize(static_cast<size_t>(state.gate_slab_bytes));
                 slab.up.resize(static_cast<size_t>(state.up_slab_bytes));
                 slab.down.resize(static_cast<size_t>(state.down_slab_bytes));
+                slabs.push_back(std::move(slab));
             }
-            if (direct_pread_) {
+            if (!slabs.empty() && direct_reads()) {
                 if (!read_sparse_payloads_direct(
                         sidecar_fd, state, spec, model_layer, base_pos,
-                        token_index, expert, kSlabCount, true, slabs, err)) {
+                        token_index, expert, static_cast<int>(slabs.size()),
+                        true, slabs, err)) {
                     return false;
                 }
-            } else {
+            } else if (!slabs.empty()) {
                 for (SparseSlabPayload & slab : slabs) {
                     const uint64_t record = state.payload_offset +
                         static_cast<uint64_t>(expert * kSlabCount +
@@ -4733,12 +5606,10 @@ private:
                     }
                 }
             }
-            return evaluate_sparse_device_expert(
-                persistent_sparse_ ? &sparse_device_evaluator_ : nullptr,
-                backend_, spec, input, slabs, nullptr, full_mask,
-                down_slab_row_bytes, result, authoritative_h2d_bytes_,
-                metadata_h2d_bytes_, device_zero_bytes_, compact_upload_,
-                pinned_compact_, err);
+            return evaluate_sparse_payload(
+                spec, input, slabs, nullptr, full_mask,
+                down_slab_row_bytes, 0x0fff, result,
+                cache_lease ? &cache_lease : nullptr, err);
         }
 
         std::vector<uint8_t> gate(gate_full_bytes);
@@ -4810,7 +5681,7 @@ private:
         }
         const int layer_budget = budget_for_layer(model_layer);
         const int aux_fd = open_read_only(state.aux_path);
-        const int sidecar_fd = direct_pread_
+        const int sidecar_fd = direct_reads()
             ? open_read_only_direct(state.sidecar_path)
             : open_read_only(state.sidecar_path);
         const int route_stats_fd = route_prefix_depth_ > 0
@@ -4869,10 +5740,10 @@ private:
             state.down_slab_bytes / spec.output_dim);
         const size_t down_full_row_bytes = down_slab_row_bytes * kSlabCount;
         std::vector<uint8_t> gate(
-            sparse_scratch_ ? 0 : gate_full_bytes, 0);
+            sparse_device() ? 0 : gate_full_bytes, 0);
         std::vector<uint8_t> up(
-            sparse_scratch_ ? 0 : up_full_bytes, 0);
-        std::vector<uint8_t> down(sparse_scratch_ ? 0 :
+            sparse_device() ? 0 : up_full_bytes, 0);
+        std::vector<uint8_t> down(sparse_device() ? 0 :
             down_full_row_bytes * static_cast<size_t>(spec.output_dim), 0);
         std::vector<uint8_t> slab_down(
             static_cast<size_t>(state.down_slab_bytes));
@@ -4952,14 +5823,54 @@ private:
                     current_oracle_key, state, route_offset, routes,
                     selected_by_route, effective_calibrated, spec,
                     compact_slot_index);
+            std::vector<uint8_t> read_selected_by_route = selected_by_route;
+            std::array<MoeStreamExternalLease, kNativeTopK> cache_leases;
+            if (direct_reads() && !oracle_hit && device_variant_cache_) {
+                for (const int route : calibrated_routes) {
+                    const int expert =
+                        routes.selected_ids[route_offset + route];
+                    const uint16_t * natural_by_rank = state.order.data() +
+                        static_cast<size_t>(expert) * kSlabCount;
+                    const uint8_t * selected_by_rank =
+                        selected_by_route.data() +
+                        static_cast<size_t>(route) * kSlabCount;
+                    const uint16_t requested_mask =
+                        kimi_k3_selected_natural_slab_mask(
+                            natural_by_rank, selected_by_rank, kSlabCount);
+                    if (requested_mask == 0) continue;
+                    const MoeStreamExternalKey cache_key{
+                        kNaturalSidecarCacheDomain, state.source_generation,
+                        routes.layer, expert, spec};
+                    if (!sparse_device_evaluator_.acquire_cache_lease(
+                            backend_, spec, requested_mask != 0x0fff,
+                            exact_engine, cache_key, requested_mask,
+                            cache_leases[static_cast<size_t>(route)], err)) {
+                        return exact_layer_fallback(
+                            "device variant cache acquisition failed");
+                    }
+                    const MoeStreamExternalLease & lease =
+                        cache_leases[static_cast<size_t>(route)];
+                    account_device_variant_lease(
+                        lease, requested_mask,
+                        exact_engine.external_device_cache_bytes());
+                    if (!lease) continue;
+                    const uint16_t missing = lease.missing_mask();
+                    kimi_k3_suppress_resident_slab_ranks(
+                        natural_by_rank, missing,
+                        read_selected_by_route.data() +
+                            static_cast<size_t>(route) * kSlabCount,
+                        kSlabCount);
+                }
+            }
             std::array<SparseCompactPayload, kNativeTopK> &
                 current_compact_payloads = oracle_slot(compact_slot_index);
-            if (direct_pread_ && !oracle_hit &&
+            if (direct_reads() && !oracle_hit &&
                 !read_sparse_payloads_direct_batch(
                     sidecar_fd, state, spec, model_layer, base_pos, token,
                     route_offset, routes, calibrated_routes,
-                    selected_by_route, direct_payloads,
-                    direct_pinned_compact_
+                    read_selected_by_route, direct_payloads,
+                    sparse_delivery_ ==
+                        KimiK3SparseDeliveryPolicy::DirectPinnedCompact
                         ? &current_compact_payloads : nullptr,
                     err)) {
                 return exact_layer_fallback(
@@ -5038,14 +5949,18 @@ private:
                 std::fill(down.begin(), down.end(), 0);
                 std::fill(mask.begin(), mask.end(), 0.0f);
                 std::vector<SparseSlabPayload> sparse_slabs =
-                    direct_pread_ && !oracle_hit
+                    direct_reads() && !oracle_hit
                     ? std::move(direct_payloads[static_cast<size_t>(route)])
                     : std::vector<SparseSlabPayload>{};
                 const SparseCompactPayload * prepacked_compact = nullptr;
-                if (direct_pinned_compact_ && !oracle_hit) {
+                if (sparse_delivery_ ==
+                        KimiK3SparseDeliveryPolicy::DirectPinnedCompact &&
+                        !oracle_hit) {
                     prepacked_compact = &current_compact_payloads[
                         static_cast<size_t>(route)];
-                } else if (direct_pinned_compact_ && oracle_hit) {
+                } else if (sparse_delivery_ ==
+                        KimiK3SparseDeliveryPolicy::DirectPinnedCompact &&
+                        oracle_hit) {
                     const auto found = oracle_layers_.find(
                         current_oracle_key);
                     if (found != oracle_layers_.end()) {
@@ -5069,29 +5984,17 @@ private:
                     }
                 }
                 sparse_slabs.reserve(kSlabCount);
-                int retained = prepacked_compact
-                    ? prepacked_compact->slab_count
-                    : static_cast<int>(sparse_slabs.size());
-                if (prepacked_compact && retained > 0) {
-                    const auto * natural = static_cast<const uint16_t *>(
-                        prepacked_compact->data);
-                    for (int index = 0; index < retained; ++index) {
-                        if (natural[index] >= kSlabCount) {
-                            return exact_layer_fallback(
-                                "P27 invalid natural slab index");
-                        }
-                        std::fill_n(mask.begin() +
-                            static_cast<size_t>(natural[index]) * kSlabSize,
-                            kSlabSize, 1.0f);
-                    }
-                } else if (direct_pread_) {
-                    for (const SparseSlabPayload & slab : sparse_slabs) {
-                        std::fill_n(mask.begin() +
-                            static_cast<size_t>(slab.natural) * kSlabSize,
-                            kSlabSize, 1.0f);
-                    }
+                const int retained = prefix_depth;
+                for (int rank = 0; rank < kSlabCount; ++rank) {
+                    if (!selected_by_route[static_cast<size_t>(
+                            route * kSlabCount + rank)]) continue;
+                    const uint16_t natural = state.order[
+                        static_cast<size_t>(expert) * kSlabCount + rank];
+                    std::fill_n(mask.begin() +
+                        static_cast<size_t>(natural) * kSlabSize,
+                        kSlabSize, 1.0f);
                 }
-                for (int rank = 0; !direct_pread_ && rank < kSlabCount;
+                for (int rank = 0; !direct_reads() && rank < kSlabCount;
                      ++rank) {
                     if (!selected_by_route[
                             static_cast<size_t>(route * kSlabCount + rank)]) {
@@ -5103,7 +6006,7 @@ private:
                         static_cast<uint64_t>(expert * kSlabCount + natural) *
                             state.slab_bytes;
                     SparseSlabPayload sparse;
-                    if (sparse_scratch_) {
+                    if (sparse_device()) {
                         sparse.natural = natural;
                         sparse.gate.resize(
                             static_cast<size_t>(state.gate_slab_bytes));
@@ -5112,17 +6015,17 @@ private:
                         sparse.down.resize(
                             static_cast<size_t>(state.down_slab_bytes));
                     }
-                    uint8_t * gate_destination = sparse_scratch_
+                    uint8_t * gate_destination = sparse_device()
                         ? sparse.gate.data()
                         : gate.data() + static_cast<size_t>(natural) *
                             state.gate_slab_bytes;
-                    uint8_t * up_destination = sparse_scratch_
+                    uint8_t * up_destination = sparse_device()
                         ? sparse.up.data()
                         : up.data() + static_cast<size_t>(natural) *
                             state.up_slab_bytes;
-                    uint8_t * down_destination = sparse_scratch_
+                    uint8_t * down_destination = sparse_device()
                         ? sparse.down.data() : slab_down.data();
-                    const char * host_destination = sparse_scratch_
+                    const char * host_destination = sparse_device()
                         ? "host-compact-slab" : "host-full-width";
                     if (!traced_read_exact_at(
                             sidecar_fd, gate_destination,
@@ -5130,7 +6033,7 @@ private:
                             model_layer, base_pos, token, expert, "gate",
                             ggml_type_name(spec.gate_type), prefix_depth, false,
                             state.sidecar_path, host_destination,
-                            sparse_scratch_ ? 0 :
+                            sparse_device() ? 0 :
                                 static_cast<uint64_t>(natural) *
                                     state.gate_slab_bytes) ||
                         !traced_read_exact_at(
@@ -5140,7 +6043,7 @@ private:
                             base_pos, token, expert, "up",
                             ggml_type_name(spec.up_type), prefix_depth, false,
                             state.sidecar_path, host_destination,
-                            sparse_scratch_ ? 0 :
+                            sparse_device() ? 0 :
                                 static_cast<uint64_t>(natural) *
                                     state.up_slab_bytes) ||
                         !traced_read_exact_at(
@@ -5151,12 +6054,12 @@ private:
                             token, expert, "down",
                             ggml_type_name(spec.down_type), prefix_depth, false,
                             state.sidecar_path,
-                            sparse_scratch_ ? "host-compact-slab" :
+                            sparse_device() ? "host-compact-slab" :
                                 "host-compact-down", 0)) {
                         return exact_layer_fallback(
                             "short mixed-layout slab read");
                     }
-                    if (sparse_scratch_) {
+                    if (sparse_device()) {
                         sparse_slabs.push_back(std::move(sparse));
                     } else {
                         for (int d = 0; d < spec.output_dim; ++d) {
@@ -5170,20 +6073,22 @@ private:
                                 down_slab_row_bytes);
                         }
                     }
-                    std::fill_n(mask.begin() +
-                        static_cast<size_t>(natural) * kSlabSize,
-                        kSlabSize, 1.0f);
-                    ++retained;
                 }
-                const bool evaluated = retained == 0 || (sparse_scratch_
-                    ? evaluate_sparse_device_expert(
-                        persistent_sparse_ ? &sparse_device_evaluator_ : nullptr,
-                        backend_, spec, input,
-                        sparse_slabs, prepacked_compact, mask,
-                        down_slab_row_bytes, expert_output,
-                        authoritative_h2d_bytes_, metadata_h2d_bytes_,
-                        device_zero_bytes_, compact_upload_,
-                        pinned_compact_, err)
+                const uint16_t requested_mask =
+                    kimi_k3_selected_natural_slab_mask(
+                        state.order.data() +
+                            static_cast<size_t>(expert) * kSlabCount,
+                        selected_by_route.data() +
+                            static_cast<size_t>(route) * kSlabCount,
+                        kSlabCount);
+                const bool evaluated = retained == 0 || (sparse_device()
+                    ? evaluate_sparse_payload(
+                        spec, input, sparse_slabs, prepacked_compact, mask,
+                        down_slab_row_bytes, requested_mask, expert_output,
+                        cache_leases[static_cast<size_t>(route)]
+                            ? &cache_leases[static_cast<size_t>(route)]
+                            : nullptr,
+                        err)
                     : evaluate_host_recomposed_expert(
                         backend_, spec, input, gate, up, down,
                         retained == kSlabCount ? nullptr : &mask,
@@ -5194,7 +6099,7 @@ private:
                         : "full-width recomposition failed";
                     return exact_layer_fallback(detail.c_str());
                 }
-                if (!sparse_scratch_ && retained > 0) {
+                if (!sparse_device() && retained > 0) {
                     reference_full_weight_h2d_bytes_ +=
                         gate.size() + up.size() + down.size();
                 }
@@ -5223,8 +6128,8 @@ private:
                             routes.selected_ids[route_offset + route];
                         if (!evaluate_sidecar_exact_expert(
                                 sidecar_fd, model_layer, base_pos, token,
-                                state, spec, expert, input, exact_expert,
-                                err)) {
+                                state, spec, routes.layer, expert, input,
+                                exact_engine, exact_expert, err)) {
                             close_fd(aux_fd); close_fd(sidecar_fd);
                             if (route_stats_fd >= 0) close_fd(route_stats_fd);
                             return false;
@@ -5350,7 +6255,7 @@ private:
             "direct-physical-bytes=%llu direct-io-ns=%llu "
             "compact-pack-ns=%llu compact-scatter-ns=%llu "
             "expert-graph-ns=%llu expert-readback-ns=%llu\n",
-            sparse_scratch_ ? "scratch" : "reference",
+            sparse_device() ? "scratch" : "reference",
             static_cast<unsigned long long>(reference_full_weight_h2d_bytes_),
             static_cast<unsigned long long>(authoritative_h2d_bytes_),
             static_cast<unsigned long long>(metadata_h2d_bytes_),
@@ -5380,6 +6285,50 @@ private:
                 static_cast<unsigned long long>(cache.evicted_bytes),
                 static_cast<unsigned long long>(cache.sequence_resets));
         }
+        if (device_variant_cache_) {
+            std::fprintf(stderr,
+                "[kimi-k3-p40] requested-slabs=%llu resident-before-slabs=%llu "
+                "hits=%llu extensions=%llu cold=%llu unavailable=%llu "
+                "completed=%llu aborted=%llu fallbacks=%llu "
+                "evictions=%llu device-bytes=%zu h2d-bytes=%llu "
+                "scatter-calls=%llu scatter-avoided=%llu\n",
+                static_cast<unsigned long long>(p40_requested_slabs_),
+                static_cast<unsigned long long>(p40_resident_before_slabs_),
+                static_cast<unsigned long long>(p40_hits_),
+                static_cast<unsigned long long>(p40_extensions_),
+                static_cast<unsigned long long>(p40_cold_),
+                static_cast<unsigned long long>(p40_unavailable_),
+                static_cast<unsigned long long>(p40_completed_),
+                static_cast<unsigned long long>(p40_aborted_),
+                static_cast<unsigned long long>(p40_fallbacks_),
+                static_cast<unsigned long long>(p40_evictions_),
+                p40_device_bytes_,
+                static_cast<unsigned long long>(p40_h2d_bytes_),
+                static_cast<unsigned long long>(p40_scatter_calls_),
+                static_cast<unsigned long long>(p40_scatter_avoided_));
+        }
+        if (compact_executor_) {
+            std::fprintf(stderr,
+                "[kimi-k3-p41] attempted=%llu layouts=%llu uploads=%llu "
+                "gate=%llu up=%llu situ=%llu sparse-down=%llu "
+                "completed=%llu fallbacks=%llu invalid=%llu\n",
+                static_cast<unsigned long long>(p41_attempted_),
+                static_cast<unsigned long long>(
+                    sparse_device_evaluator_.compact_layouts()),
+                static_cast<unsigned long long>(
+                    sparse_device_evaluator_.compact_uploads()),
+                static_cast<unsigned long long>(
+                    sparse_device_evaluator_.compact_gate_stages()),
+                static_cast<unsigned long long>(
+                    sparse_device_evaluator_.compact_up_stages()),
+                static_cast<unsigned long long>(
+                    sparse_device_evaluator_.compact_situ_stages()),
+                static_cast<unsigned long long>(
+                    sparse_device_evaluator_.compact_down_stages()),
+                static_cast<unsigned long long>(p41_completed_),
+                static_cast<unsigned long long>(p41_fallbacks_),
+                static_cast<unsigned long long>(p41_invalid_));
+        }
         if (!oracle_trace_path_.empty()) {
             std::fprintf(stderr,
                 "[kimi-k3-p28] launches=%llu hits=%llu misses=%llu "
@@ -5403,19 +6352,38 @@ private:
     std::vector<LayerState> layers_;
     std::string metrics_path_;
     std::ofstream io_trace_;
+    std::ofstream p40_trace_;
     std::string prompt_id_ = "0";
     ProcessIoSnapshot process_io_start_{};
     uint64_t next_request_id_ = 0;
     uint64_t explicit_read_bytes_ = 0;
     int route_prefix_depth_ = 0;
     LayerPhase layer_phase_ = LayerPhase::All;
-    bool sparse_scratch_ = false;
+    SparseWorkspace sparse_workspace_ = SparseWorkspace::HostRecomposed;
     SparseDeviceExpertEvaluator sparse_device_evaluator_;
-    bool persistent_sparse_ = false;
-    bool compact_upload_ = false;
-    bool pinned_compact_ = false;
-    bool direct_pinned_compact_ = false;
-    bool direct_pread_ = false;
+    KimiK3SparseDeliveryPolicy sparse_delivery_ =
+        KimiK3SparseDeliveryPolicy::BufferedSlabs;
+    bool device_variant_cache_ = false;
+    bool compact_executor_ = false;
+    size_t p40_device_bytes_ = 0;
+    size_t p40_requested_device_bytes_ = 0;
+    uint64_t p40_requested_slabs_ = 0;
+    uint64_t p40_resident_before_slabs_ = 0;
+    uint64_t p40_hits_ = 0;
+    uint64_t p40_extensions_ = 0;
+    uint64_t p40_cold_ = 0;
+    uint64_t p40_unavailable_ = 0;
+    uint64_t p40_completed_ = 0;
+    uint64_t p40_aborted_ = 0;
+    uint64_t p40_fallbacks_ = 0;
+    uint64_t p40_evictions_ = 0;
+    uint64_t p40_h2d_bytes_ = 0;
+    uint64_t p40_scatter_calls_ = 0;
+    uint64_t p40_scatter_avoided_ = 0;
+    uint64_t p41_attempted_ = 0;
+    uint64_t p41_completed_ = 0;
+    uint64_t p41_fallbacks_ = 0;
+    uint64_t p41_invalid_ = 0;
     bool sidecar_authoritative_ = false;
     std::unique_ptr<P20DirectReadPool> direct_read_pool_;
     std::array<SparseCompactPayload, kNativeTopK>

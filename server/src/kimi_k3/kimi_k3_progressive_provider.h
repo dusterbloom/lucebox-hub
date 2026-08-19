@@ -2,6 +2,7 @@
 
 #include "common/moe_hybrid_stream.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -111,5 +112,47 @@ KimiK3CalibratedSlabPlan plan_kimi_k3_calibrated_route_prefixes(
 // their slab list is empty in the P28 trace representation.
 bool kimi_k3_prefetch_route_has_physical_request(
     bool calibrated, int selected_slab_count);
+
+enum class KimiK3SparseDeliveryPolicy : uint8_t { BufferedSlabs, DirectSlabs, CompactPageable, CompactPinned, DirectPinnedCompact };
+enum class KimiK3SparseUpload : uint8_t { SlabCopies, PageableCompact, PinnedCompact, PrepackedCompact };
+KimiK3SparseUpload kimi_k3_sparse_upload_for_call(KimiK3SparseDeliveryPolicy, bool has_prepacked_payload);
+
+// Convert rank-space route selection into the natural 12-bit cache mask and
+// suppress ranks already covered by a resident variant. Invalid natural IDs
+// are ignored here and rejected by artifact validation before execution.
+uint16_t kimi_k3_selected_natural_slab_mask(
+    const uint16_t * natural_by_rank,
+    const uint8_t * selected_by_rank,
+    int slab_count);
+void kimi_k3_suppress_resident_slab_ranks(
+    const uint16_t * natural_by_rank,
+    uint16_t missing_mask,
+    uint8_t * selected_by_rank,
+    int slab_count);
+
+// Validate one physical sparse payload and derive its exact natural-slab mask.
+// Every ID must be in [0, 12) and occur exactly once.
+bool kimi_k3_sparse_natural_mask(
+    const uint16_t * naturals,
+    int slab_count,
+    uint16_t * mask);
+
+struct KimiK3CompactWireLayout {
+    size_t metadata_bytes = 32;
+    size_t gate_offset = 0;
+    size_t up_offset = 0;
+    size_t down_offset = 0;
+    size_t total_bytes = 0;
+};
+
+// Phase-2 compact executor wire contract: a fixed 32-byte natural-ID header,
+// then all selected gate slabs, all selected up slabs, and all selected down
+// slabs. Returns false on invalid counts, zero extents, or size overflow.
+bool kimi_k3_compact_wire_layout(
+    int slab_count,
+    size_t gate_slab_bytes,
+    size_t up_slab_bytes,
+    size_t down_slab_bytes,
+    KimiK3CompactWireLayout * layout);
 
 } // namespace dflash::common

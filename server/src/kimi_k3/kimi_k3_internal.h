@@ -12,7 +12,7 @@
 #pragma once
 
 #include "common/gguf_mmap.h"
-#include "common/moe_hybrid_storage.h"
+#include "common/moe_hybrid_stream.h"
 
 #include "ggml.h"
 #include "ggml-backend.h"
@@ -144,6 +144,21 @@ struct KimiK3Weights {
     float situ_linear_beta     = 25.0f;
     int32_t eos_token_id       = 2;
 };
+
+inline MoeStreamExpertSpec make_kimi_k3_stream_spec(
+        const KimiK3Weights & weights, const KimiK3Layer & layer) {
+    MoeStreamExpertSpec spec;
+    spec.input_dim = weights.n_expert_latent;
+    spec.intermediate_dim = weights.n_ff_exp;
+    spec.output_dim = weights.n_expert_latent;
+    spec.gate_type = layer.ffn_gate_exps->type;
+    spec.up_type = layer.ffn_up_exps->type;
+    spec.down_type = layer.ffn_down_exps->type;
+    spec.gated_activation = MoeGatedActivation::Situ;
+    spec.situ_beta = weights.situ_beta;
+    spec.situ_linear_beta = weights.situ_linear_beta;
+    return spec;
+}
 
 // Optional accelerator copy of the always-used MoE core.  Routed expert
 // stacks remain governed by the ordinary stream provider; this structure owns

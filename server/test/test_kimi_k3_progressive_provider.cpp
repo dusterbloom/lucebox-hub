@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <vector>
 
 using namespace dflash::common;
@@ -25,12 +26,75 @@ static void require_raw_zero_block_dequantizes_exactly(ggml_type type) {
 }
 
 int main() {
+    using Delivery = KimiK3SparseDeliveryPolicy;
+    using Upload = KimiK3SparseUpload;
+    assert(kimi_k3_sparse_upload_for_call(
+        Delivery::BufferedSlabs, false) == Upload::SlabCopies);
+    assert(kimi_k3_sparse_upload_for_call(
+        Delivery::DirectSlabs, false) == Upload::SlabCopies);
+    assert(kimi_k3_sparse_upload_for_call(
+        Delivery::CompactPageable, false) == Upload::PageableCompact);
+    assert(kimi_k3_sparse_upload_for_call(
+        Delivery::CompactPinned, false) == Upload::PinnedCompact);
+    // An exact-fallback P27 call has no direct payload and must repack into
+    // pinned staging rather than silently degrading to slab-copy uploads.
+    assert(kimi_k3_sparse_upload_for_call(
+        Delivery::DirectPinnedCompact, false) == Upload::PinnedCompact);
+    for (Delivery delivery : {Delivery::BufferedSlabs, Delivery::DirectSlabs,
+             Delivery::CompactPageable, Delivery::CompactPinned,
+             Delivery::DirectPinnedCompact}) {
+        assert(kimi_k3_sparse_upload_for_call(delivery, true) ==
+            Upload::PrepackedCompact);
+    }
+
     // P28 matches the physical P27 trace, not every logical route. A
     // calibrated zero-prefix route has no sidecar request, while an exact
     // fallback is retained as a native-expert request.
     assert(!kimi_k3_prefetch_route_has_physical_request(true, 0));
     assert(kimi_k3_prefetch_route_has_physical_request(true, 1));
     assert(kimi_k3_prefetch_route_has_physical_request(false, 0));
+
+    const uint16_t natural_by_rank[] = {4, 1, 9, 2};
+    const uint8_t selected_ranks[] = {1, 1, 0, 1};
+    assert(kimi_k3_selected_natural_slab_mask(
+        natural_by_rank, selected_ranks, 4) ==
+        static_cast<uint16_t>((1u << 4) | (1u << 1) | (1u << 2)));
+    uint8_t missing_ranks[] = {1, 1, 0, 1};
+    kimi_k3_suppress_resident_slab_ranks(
+        natural_by_rank, static_cast<uint16_t>(1u << 2),
+        missing_ranks, 4);
+    assert(std::vector<uint8_t>(missing_ranks, missing_ranks + 4) ==
+        std::vector<uint8_t>({0, 0, 0, 1}));
+    uint16_t physical_mask = 0;
+    const uint16_t physical_naturals[] = {0, 5, 11};
+    assert(kimi_k3_sparse_natural_mask(
+        physical_naturals, 3, &physical_mask));
+    assert(physical_mask ==
+        static_cast<uint16_t>((1u << 0) | (1u << 5) | (1u << 11)));
+    const uint16_t duplicate_naturals[] = {2, 2};
+    assert(!kimi_k3_sparse_natural_mask(
+        duplicate_naturals, 2, &physical_mask));
+    const uint16_t invalid_naturals[] = {12};
+    assert(!kimi_k3_sparse_natural_mask(
+        invalid_naturals, 1, &physical_mask));
+    assert(!kimi_k3_sparse_natural_mask(nullptr, 1, &physical_mask));
+    assert(!kimi_k3_sparse_natural_mask(
+        physical_naturals, 0, &physical_mask));
+    assert(!kimi_k3_sparse_natural_mask(
+        physical_naturals, 13, &physical_mask));
+
+    KimiK3CompactWireLayout compact_layout;
+    assert(kimi_k3_compact_wire_layout(3, 10, 20, 30, &compact_layout));
+    assert(compact_layout.metadata_bytes == 32);
+    assert(compact_layout.gate_offset == 32);
+    assert(compact_layout.up_offset == 62);
+    assert(compact_layout.down_offset == 122);
+    assert(compact_layout.total_bytes == 212);
+    assert(!kimi_k3_compact_wire_layout(0, 10, 20, 30, &compact_layout));
+    assert(!kimi_k3_compact_wire_layout(13, 10, 20, 30, &compact_layout));
+    assert(!kimi_k3_compact_wire_layout(
+        12, std::numeric_limits<size_t>::max(), 20, 30,
+        &compact_layout));
 
     // Sparse scratch initializes every omitted native quant block with zero
     // bytes.  Verify that this is an exact numeric zero in every routed qtype
