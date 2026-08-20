@@ -1,0 +1,238 @@
+{
+  "schema": "k3-p60a-control-plane-census-v1",
+  "date": "2026-08-20",
+  "status": "HARD_STOP_LAYERPLAN_DESCRIPTOR_LANE",
+  "platform": "Lucebox4 ROCm/HIP gfx1201+gfx1151",
+  "default_enabled": false,
+  "model_run_count": 1,
+  "broad_suite_runs": 1,
+  "source": {
+    "local_closure_head": "e389b8141a7d54eefcf02c74c72bea4c651f1db2",
+    "remote_git_head_during_run": "0c7d9c6d156d48d4bde98d8e2ce8c649a39069c6",
+    "working_tree_snapshot": true,
+    "measured_source_manifest_sha256": "694464a23489d0652a72f8bad304364f4819afd698f31aeb9e556650fe4da1d660e",
+    "measured_files_sha256": {
+      "server/src/kimi_k3/kimi_k3_backend.cpp": "b78926e7ee8b5aa5f2c4dad7a53cceafedf7072856a99e8dbc6f38fafc147ae2",
+      "server/src/kimi_k3/kimi_k3_graph.cpp": "a70840bf36a907ff3ae23295d3cfda6ab3106b7669f1e30031fe1ee607fbcff3",
+      "server/src/kimi_k3/kimi_k3_progressive_provider.cpp": "80ec8762e634686a2debc18775fa72cc30a9c9bc054ecbe424cc61c239473bd1",
+      "server/src/kimi_k3/kimi_k3_progressive_provider.h": "6cdad909712dddbe102461d805d2956309ea0fcaa62ce590ee3425ee4c71d157",
+      "server/test/test_kimi_k3_progressive_provider.cpp": "83794ea1e51e105b6855a1878abac4f91778788c51c39d1455615aa43a6219c6",
+      "docs/P60A_K3_CONTROL_PLANE_CENSUS_PREREG.md": "e11efd01ea73fd09881539e8271b3d8a7c860221e495459e9b641924b7c2a4e1",
+      "scripts/analyze_kimi_k3_p60_control_census.py": "6094b07e5ee552eb1c1fb7a6907ff4ac2079031f8c24d93424416b7adcbd1471",
+      "server/tests/test_kimi_k3_p60_control_census.py": "1afa31c1173c8ed4b486a366b3cc7ab6dfe9107dc7c00bd1bce6a4e743745a9d"
+    },
+    "tracked_measured_diff_sha256": "5c9f247b097427c5b86a474f916cd0de22150ca81fafee1b2135826d71418f73",
+    "raw_loc_removed": {
+      "production_added": 311,
+      "production_deleted_restored": 15,
+      "existing_test_added": 74,
+      "temporary_prereg_analyzer_test_added": 408,
+      "total_added_lines_removed": 793,
+      "total_head_lines_restored": 15,
+      "net_experimental_lines_removed": 778
+    },
+    "post_decision": {
+      "instrumentation_removed": true,
+      "five_touched_existing_files_match_head": true,
+      "three_temporary_files_absent": true,
+      "retained_files": [
+        "docs/P60A_K3_CONTROL_PLANE_CENSUS.md",
+        "results/k3_p60a_control_plane_census.json",
+        "research/K3-ROADMAP.html"
+      ]
+    }
+  },
+  "contract": {
+    "lower_equation": "MLA route publication + validation + descriptor control",
+    "upper_equation": "lower + recurrent route publication + P42 publication",
+    "dependency_treatment": "necessary GPU completion wait; separate and excluded from candidate service-time bounds",
+    "bound_interpretation": "lower and upper are candidate measured service-time bounds, not an observed or guaranteed realizable speedup; replacement work remains and upper includes inserted-sync contamination",
+    "upper_bound_role": "zero-replacement-cost optimistic ceiling, not a throughput projection",
+    "realizable_speedup_projection": false,
+    "decode_aggregation": "all 12 prompts and 129 true decode transitions",
+    "decode_continue_ms_per_position": 50.0,
+    "decode_hard_floor_ms_per_position": 38.521937,
+    "decode_decision_rule": "lower>=50 continue safely; upper<38.521937 hard-stop; otherwise inconclusive",
+    "prefill_material_ms_per_position": 84.722396133,
+    "prefill_decision_rule": "separate 1.16x saving threshold; no decode label"
+  },
+  "suite": {
+    "sequence_count": 12,
+    "prompt_positions": 552,
+    "emitted_tokens": 141,
+    "true_decode_transitions": 129,
+    "model_positions": 681,
+    "speculative_decode": false,
+    "raw_records": {
+      "p56_p60_paired_records_per_phase": 12,
+      "paired_phase_records_total": 24
+    }
+  },
+  "measurement": {
+    "prefill": {
+      "positions": 552,
+      "components": {
+        "dependency": {"ns": 88343921690, "ms_per_position": 160.04333639492754, "candidate": false},
+        "recurrent_route_publication": {"ns": 885171629, "ms_per_position": 1.6035717916666666, "candidate_lower": false, "candidate_upper": true},
+        "mla_route_publication": {"ns": 309835506, "ms_per_position": 0.5612962065217392, "candidate_lower": true, "candidate_upper": true},
+        "validation": {"ns": 5341790, "ms_per_position": 0.00967715579710145, "candidate_lower": true, "candidate_upper": true},
+        "descriptor_control": {"ns": 978212569, "ms_per_position": 1.7721242192028985, "candidate_lower": true, "candidate_upper": true},
+        "p42_publication": {"ns": 900232295, "ms_per_position": 1.630855606884058, "candidate_lower": false, "candidate_upper": true}
+      },
+      "lower_ns": 1293389865,
+      "upper_ns": 3078793789,
+      "lower_ms_per_position": 2.343097581521739,
+      "upper_ms_per_position": 5.577524980072464,
+      "material_threshold_ms_per_position": 84.722396133,
+      "decision": "BELOW_MATERIAL"
+    },
+    "decode": {
+      "positions": 129,
+      "components": {
+        "dependency": {"ns": 20561774814, "ms_per_position": 159.39360320930233, "candidate": false},
+        "recurrent_route_publication": {"ns": 207646253, "ms_per_position": 1.6096608759689923, "candidate_lower": false, "candidate_upper": true},
+        "mla_route_publication": {"ns": 72407116, "ms_per_position": 0.561295472868217, "candidate_lower": true, "candidate_upper": true},
+        "validation": {"ns": 1112721, "ms_per_position": 0.008625744186046512, "candidate_lower": true, "candidate_upper": true},
+        "descriptor_control": {"ns": 287070545, "ms_per_position": 2.225353062015504, "candidate_lower": true, "candidate_upper": true},
+        "p42_publication": {"ns": 197189839, "ms_per_position": 1.5286034031007751, "candidate_lower": false, "candidate_upper": true}
+      },
+      "lower_ns": 360590382,
+      "upper_ns": 765426474,
+      "lower_ms_per_position": 2.7952742790697673,
+      "upper_ms_per_position": 5.933538558139535,
+      "hard_floor_ms_per_position": 38.521937,
+      "continue_ms_per_position": 50.0,
+      "decision": "HARD_STOP"
+    }
+  },
+  "frozen_identities": {
+    "prefill": {
+      "positions": 552,
+      "recurrent_layer_calls": 37536,
+      "mla_layer_calls": 13248,
+      "routed_layer_calls": 50784,
+      "compact_jobs": 223579,
+      "attempted": 223579,
+      "completed": 223579,
+      "async_jobs": 223579,
+      "graph_enqueues": 223579,
+      "expert_d2d_copies": 223579,
+      "compact_h2d_calls": 907564,
+      "logical_provider_bytes": 724784406528,
+      "physical_direct_read_bytes": 291245891584
+    },
+    "decode": {
+      "positions": 129,
+      "recurrent_layer_calls": 8772,
+      "mla_layer_calls": 3096,
+      "routed_layer_calls": 11868,
+      "compact_jobs": 51429,
+      "attempted": 51429,
+      "completed": 51429,
+      "async_jobs": 51429,
+      "graph_enqueues": 51429,
+      "expert_d2d_copies": 51429,
+      "compact_h2d_calls": 208812,
+      "logical_provider_bytes": 167799668736,
+      "physical_direct_read_bytes": 44258549760
+    },
+    "zero_failures": {
+      "fallbacks": 0,
+      "invalid": 0,
+      "queue_aborts": 0
+    },
+    "whole_suite_lifecycle": {
+      "p41_attempted": 275008,
+      "p41_completed": 275008,
+      "p45_begins": 62652,
+      "p45_jobs": 275008,
+      "p45_h2d_calls": 1116376,
+      "p45_graph_enqueues": 275008,
+      "p45_layer_flushes": 62652,
+      "p42_expert_d2d_copies": 275008,
+      "p42_join_launches": 62652,
+      "p42_output_d2d_copies": 62652,
+      "p46_graphs": 68,
+      "p46_executions": 46308,
+      "logical_provider_bytes": 892584075264,
+      "physical_direct_read_bytes": 335504441344
+    }
+  },
+  "qualification": {
+    "build": {
+      "type": "Release",
+      "ccache_disabled": true,
+      "parallelism_cap": 4,
+      "build_exit": 0,
+      "runner_binary_sha256": "d3688c446ea44a24e2a79b7e4d64c1bcfb99476a67b0c30923d3774c1a35c6bb"
+    },
+    "behavioral_budget_gate": {
+      "expected_routed_layers": 92,
+      "entries": 92,
+      "required_depth": 24,
+      "all_entries_match_required_depth": true,
+      "status": "PASS"
+    },
+    "model_free_gates": [
+      {"name": "test_kimi_k3_progressive_provider", "gpu": 0, "architecture": "gfx1201", "status": "PASS"},
+      {"name": "test_kimi_k3_progressive_provider", "gpu": 1, "architecture": "gfx1151", "status": "PASS"},
+      {"name": "test_kimi_k3_ordered_join", "gpu": 0, "architecture": "gfx1201", "status": "PASS"},
+      {"name": "test_kimi_k3_ordered_join", "gpu": 1, "architecture": "gfx1151", "status": "PASS"},
+      {"name": "test_moe_stream_compute", "gpu": 0, "architecture": "gfx1201", "status": "PASS_2_OF_2"},
+      {"name": "test_moe_stream_compute", "gpu": 1, "architecture": "gfx1151", "status": "PASS_2_OF_2"},
+      {"name": "test_sparse_k_mmvq_cuda", "gpu": 0, "architecture": "gfx1201", "status": "PASS_68_OF_68"},
+      {"name": "test_sparse_k_mmvq_cuda", "gpu": 1, "architecture": "gfx1151", "status": "PASS_68_OF_68"}
+    ],
+    "model_free_gate_invocations": 8,
+    "identity": {
+      "reference": "/home/duster/kimi-k3-deploy/p51-orderly-broad12-2ce8a28-20260819/suite",
+      "all_prompt_tokens_equal": true,
+      "all_output_tokens_equal": true,
+      "all_output_text_equal": true,
+      "traffic_byte_equal": true,
+      "traffic_sha256": "54b76f99439d90ecb35d033c12dd1d1f219e30007248aaf77f913fc69d76f383",
+      "fresh_logits_recorded": false,
+      "fresh_logits_claim": false,
+      "fresh_state_trace_recorded": false,
+      "fresh_state_hash_claim": false,
+      "reason": "P60 fails closed on incompatible H16/draft/P20-I/O/route-stat/perf-logit/state traces"
+    }
+  },
+  "diagnostic_runtime": {
+    "claim": "diagnostic-only wall; added synchronization makes this incomparable to canonical P55 performance",
+    "prefill_seconds": 373.614162879,
+    "prefill_positions_per_second": 1.4774600506211877,
+    "decode_seconds": 78.709662708,
+    "true_ar_transitions_per_second": 1.6389347325571568,
+    "whole_command_elapsed_seconds": 506.54009242400934,
+    "resources": {
+      "peak_process_rss_kib": 21520712,
+      "reported_high_water_rss_kib": 21528408,
+      "peak_process_swap_kib": 0,
+      "peak_system_used_kib": 93365072,
+      "gpu1_peak_memory_mib": 61295.921875,
+      "gpu1_peak_utilization_percent": 66.0,
+      "gpu1_peak_power_watts": 81.074,
+      "gpu1_integrated_energy_joules": 31713.70557580636
+    }
+  },
+  "artifacts": {
+    "root": "/home/duster/kimi-k3-deploy/p60a-control-census-20260820",
+    "artifact_manifest_sha256": "6cdfa06305b95f15a246381ffd9fbdb7ba07dc94d0277d6c8b00e6d32de9ebbc",
+    "analysis_json_sha256": "7bf6e3f74a9557e17d72fcf625adc36b77a4ce6d44dd3a26aad66b7fb4ae04c2",
+    "aggregate_json_sha256": "9d178b9a6c6561c04363da8ab08b528b25d3f88a50fffade53e4e228b01fd930",
+    "stderr_log_sha256": "a181c49c5a1095a9b330215abaf1b2fee70c20c2716471526f5bffe3249a51c7",
+    "telemetry_json_sha256": "e1c84ca77af44a77c221a05d03fdd504832556b953bf9901eadf9def4d0e160d",
+    "traffic_tsv_sha256": "54b76f99439d90ecb35d033c12dd1d1f219e30007248aaf77f913fc69d76f383",
+    "suite_manifest_sha256": "975077a1ec62ef0e88213c5d3ac812301253555983c340a8fc651761cbe4f10e",
+    "runner_script_sha256": "8d48f7f104b69894deea6977e788955457c11610594e86032f37f7c3ef9c193f"
+  },
+  "decision": {
+    "decode": "HARD_STOP",
+    "prefill": "BELOW_MATERIAL",
+    "layerplan": "DO_NOT_IMPLEMENT",
+    "gpu_descriptor_kernel": "DO_NOT_IMPLEMENT",
+    "implementation_retained": false,
+    "next_step": "Measure and split the 159.393603 ms/transition GPU dependency into KDA/router/shared components with non-perturbing device events, and measure the expert critical path. Keep the P58 exact multi-token verification comparison open."
+  }
+}
