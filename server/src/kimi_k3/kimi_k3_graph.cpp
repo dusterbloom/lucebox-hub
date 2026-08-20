@@ -10,6 +10,7 @@
 #include "ggml-alloc.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -355,6 +356,16 @@ ggml_tensor * build_kda(ggml_context * ctx,
     return ggml_mul_mat(ctx, layer.wo, output);
 }
 
+struct MlaInternalTraceTensors {
+    ggml_tensor * q = nullptr;
+    ggml_tensor * current_k = nullptr;
+    ggml_tensor * scores = nullptr;
+    ggml_tensor * latent = nullptr;
+    ggml_tensor * projected = nullptr;
+    ggml_tensor * gated = nullptr;
+    ggml_tensor * output = nullptr;
+};
+
 ggml_tensor * build_mla(ggml_context * ctx,
                         ggml_cgraph * graph,
                         const KimiK3Weights & w,
@@ -362,7 +373,8 @@ ggml_tensor * build_mla(ggml_context * ctx,
                         KimiK3LayerCache & cache,
                         ggml_tensor * cur,
                         int position,
-                        ggml_tensor * attn_mask) {
+                        ggml_tensor * attn_mask,
+                        MlaInternalTraceTensors * trace = nullptr) {
     const int n_head = w.n_head;
     const int kv_rank = w.kv_lora_rank;
     const int key_dim = w.mla_k_head_dim;
@@ -407,6 +419,10 @@ ggml_tensor * build_mla(ggml_context * ctx,
     ggml_tensor * compact_3d =
         ggml_reshape_3d(ctx, compact, kv_rank, n_tokens, 1);
     ggml_tensor * current_k = ggml_concat(ctx, compact_3d, k_pe, 0);
+    if (trace) {
+        trace->q = ggml_cont(ctx, q);
+        trace->current_k = ggml_cont(ctx, current_k);
+    }
 
     ggml_tensor * dst = ggml_view_2d(ctx, cache.mla_k,
         compact_dim, n_tokens, cache.mla_k->nb[2],
@@ -430,9 +446,12 @@ ggml_tensor * build_mla(ggml_context * ctx,
     scores = ggml_soft_max_ext(ctx, scores, attn_mask,
                                1.0f / std::sqrt(static_cast<float>(key_dim)),
                                0.0f);
+    if (trace) trace->scores = ggml_cont(ctx, scores);
     if (!v_trans) v = ggml_cont(ctx, ggml_transpose(ctx, v));
     ggml_tensor * out = ggml_mul_mat(ctx, v, scores);
+    if (trace) trace->latent = ggml_cont(ctx, out);
     out = ggml_mul_mat(ctx, layer.wv_b, out);
+    if (trace) trace->projected = ggml_cont(ctx, out);
     out = ggml_permute(ctx, out, 0, 2, 1, 3);
     out = ggml_cont_2d(ctx, out,
                        static_cast<int64_t>(value_dim) * n_head, n_tokens);
@@ -442,7 +461,10 @@ ggml_tensor * build_mla(ggml_context * ctx,
             ggml_mul_mat(ctx, layer.wqkv_gate, gate_input));
         out = ggml_mul(ctx, out, output_gate);
     }
-    return ggml_mul_mat(ctx, layer.wo, out);
+    if (trace) trace->gated = ggml_cont(ctx, out);
+    ggml_tensor * output = ggml_mul_mat(ctx, layer.wo, out);
+    if (trace) trace->output = ggml_cont(ctx, output);
+    return output;
 }
 
 TopKMoeRouterResult build_kimi_router(ggml_context * ctx,
@@ -548,6 +570,16 @@ struct GraphOutput {
     void * data = nullptr;
     size_t bytes = 0;
 };
+
+uint64_t fnv1a_float_bytes(const float * values, size_t count) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    const auto * bytes = reinterpret_cast<const uint8_t *>(values);
+    for (size_t i = 0; i < count * sizeof(float); ++i) {
+        hash ^= bytes[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
 
 bool read_token_embeddings_on_host(
         const KimiK3Weights & w,
@@ -1751,6 +1783,11 @@ bool streamed_kimi_k3_forward(
         return false;
     }
     const bool trace_divergence = divergence_trace.good();
+    const char * mla_trace_environment =
+        std::getenv("DFLASH_KIMI_S0_MLA_INTERNAL_TRACE");
+    const bool trace_mla_internals = trace_divergence &&
+        mla_trace_environment && *mla_trace_environment &&
+        std::strcmp(mla_trace_environment, "0") != 0;
     bool p46_requested = false;
     std::string p46_error;
     if (!parse_strict_binary_environment(
@@ -1963,6 +2000,7 @@ bool streamed_kimi_k3_forward(
         std::vector<GraphInput> inputs;
         ggml_tensor * prefix = nullptr;
         ggml_tensor * cur = nullptr;
+        MlaInternalTraceTensors mla_trace_tensors;
         if (!persistent_preparation) {
             ctx = new_kimi_step_context();
             if (!ctx) {
@@ -2004,7 +2042,8 @@ bool streamed_kimi_k3_forward(
                     mask, mla_mask.data(), mla_mask.size() * sizeof(float)});
                 cur = build_mla(
                     ctx, graph, w, layer, layer_cache,
-                    cur, base_pos, mask);
+                    cur, base_pos, mask,
+                    trace_mla_internals ? &mla_trace_tensors : nullptr);
             }
             prefix = banked
                 ? cur : ggml_add(ctx, prefix, cur);
@@ -2118,6 +2157,20 @@ bool streamed_kimi_k3_forward(
         std::vector<float> shared_host;
         std::vector<float> pre_moe_hidden_host;
         std::vector<float> router_logits_host;
+        static constexpr std::array<const char *, 7> mla_trace_names = {
+            "q", "current-k", "scores", "latent", "projected",
+            "gated", "output",
+        };
+        const std::array<ggml_tensor *, 7> mla_trace_outputs = {
+            mla_trace_tensors.q,
+            mla_trace_tensors.current_k,
+            mla_trace_tensors.scores,
+            mla_trace_tensors.latent,
+            mla_trace_tensors.projected,
+            mla_trace_tensors.gated,
+            mla_trace_tensors.output,
+        };
+        std::array<std::vector<float>, 7> mla_trace_values;
         std::vector<GraphOutput> preparation_outputs;
         if (!persistent_preparation && preparation_offloaded) {
             normalized_hidden_host.resize(hidden_values);
@@ -2170,6 +2223,23 @@ bool streamed_kimi_k3_forward(
                     router_logits_host.size() * sizeof(float)});
             }
         }
+        if (trace_mla_internals && !layer.recurrent) {
+            for (size_t i = 0; i < mla_trace_outputs.size(); ++i) {
+                ggml_tensor * tensor = mla_trace_outputs[i];
+                if (!tensor || tensor->type != GGML_TYPE_F32 ||
+                    ggml_nelements(tensor) % n_tokens != 0) {
+                    if (ctx) ggml_free(ctx);
+                    set_last_error(
+                        "Kimi-K3 S0 MLA internal trace shape mismatch");
+                    return false;
+                }
+                mla_trace_values[i].resize(
+                    static_cast<size_t>(ggml_nelements(tensor)));
+                preparation_outputs.push_back({
+                    tensor, mla_trace_values[i].data(),
+                    mla_trace_values[i].size() * sizeof(float)});
+            }
+        }
         const ProfileClock::time_point profile_preparation_start =
             profile_stages ? ProfileClock::now() :
                 ProfileClock::time_point{};
@@ -2192,6 +2262,24 @@ bool streamed_kimi_k3_forward(
             prep_ok = run_host_boundary_graph(
                 backend, ctx, graph, inputs, preparation_outputs,
                 "routed layer preparation");
+        }
+        if (prep_ok && trace_mla_internals && !layer.recurrent) {
+            for (size_t i = 0; i < mla_trace_values.size(); ++i) {
+                const std::vector<float> & values = mla_trace_values[i];
+                const size_t row_values = values.size() /
+                    static_cast<size_t>(n_tokens);
+                for (int token = 0; token < n_tokens; ++token) {
+                    const float * row = values.data() +
+                        static_cast<size_t>(token) * row_values;
+                    std::fprintf(stderr,
+                        "[kimi-k3-s0-mla] layer=%d base=%d tokens=%d "
+                        "token=%d stage=%s values=%zu hash=%016llx\n",
+                        il, base_pos, n_tokens, token, mla_trace_names[i],
+                        row_values,
+                        static_cast<unsigned long long>(
+                            fnv1a_float_bytes(row, row_values)));
+                }
+            }
         }
         if (ctx) ggml_free(ctx);
         if (!prep_ok) return false;
