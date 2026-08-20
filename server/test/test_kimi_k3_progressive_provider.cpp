@@ -15,6 +15,17 @@
 
 using namespace dflash::common;
 
+class UnqualifiedMultirowProvider final : public KimiK3RoutedOutputProvider {
+public:
+    bool handles_layer(int) const override { return false; }
+    bool evaluate(
+            int, int, const MoeStreamExpertSpec &,
+            const MoeStreamRouteBatch &, MoeHybridStreamEngine &,
+            std::vector<float> &, std::string *) override {
+        return false;
+    }
+};
+
 #if defined(DFLASH_KIMI_P45_ASYNC_TEST_HOOK)
 namespace dflash::common {
 bool kimi_k3_run_p45_async_compact_sentinel(
@@ -36,6 +47,9 @@ static void require_raw_zero_block_dequantizes_exactly(ggml_type type) {
 }
 
 int main() {
+    UnqualifiedMultirowProvider unqualified_provider;
+    assert(!unqualified_provider.supports_exact_multirow());
+
     using Delivery = KimiK3SparseDeliveryPolicy;
     using Upload = KimiK3SparseUpload;
     assert(kimi_k3_sparse_upload_for_call(

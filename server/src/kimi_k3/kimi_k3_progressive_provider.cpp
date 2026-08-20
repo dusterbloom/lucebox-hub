@@ -4880,6 +4880,20 @@ public:
              budget_for_layer(model_layer) < kNativeTopK * kSlabCount);
     }
 
+    bool supports_exact_multirow() const override {
+        if (!sidecar_authoritative_ || route_prefix_depth_ != 0 ||
+            layer_phase_ != LayerPhase::All || dynamic_active_layer_ ||
+            ordered_device_join_ || !oracle_trace_path_.empty() ||
+            io_trace_.is_open() || p40_trace_.is_open()) {
+            return false;
+        }
+        for (int layer = kFirstRoutedLayer;
+             layer <= kLastRoutedLayer; ++layer) {
+            if (budget_for_layer(layer) != 96) return false;
+        }
+        return true;
+    }
+
     bool evaluate(int model_layer, int base_pos,
                   const MoeStreamExpertSpec & spec,
                   const MoeStreamRouteBatch & routes,

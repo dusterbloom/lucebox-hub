@@ -50,6 +50,10 @@ public:
     virtual ~KimiK3RoutedOutputProvider() = default;
 
     virtual bool handles_layer(int model_layer) const = 0;
+    // Explicit opt-in for P58's one-call, eight-row routed boundary. The
+    // default is fail-closed so research and fallback providers cannot acquire
+    // multirow semantics accidentally.
+    virtual bool supports_exact_multirow() const { return false; }
     virtual bool evaluate(
         int model_layer,
         int base_pos,

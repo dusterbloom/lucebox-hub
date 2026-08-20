@@ -1150,10 +1150,24 @@ bool KimiK3Backend::init() {
         return false;
     }
     std::string backend_error;
+    if (!parse_optional_binary_environment(
+            "DFLASH_KIMI_P58_EXACT_MULTIROW", p58_exact_multirow_,
+            backend_error)) {
+        std::fprintf(stderr, "[kimi-k3] %s\n", backend_error.c_str());
+        return false;
+    }
     if (!parse_kimi_k3_prefill_chunk(
             std::getenv("DFLASH_KIMI_PREFILL_CHUNK"), prefill_chunk_)) {
         std::fprintf(stderr,
-            "[kimi-k3] DFLASH_KIMI_PREFILL_CHUNK must be 1, 2, or 4\n");
+            "[kimi-k3] DFLASH_KIMI_PREFILL_CHUNK must be 1, 2, 4, or 8\n");
+        return false;
+    }
+    if (!kimi_k3_p58_configuration_valid(
+            prefill_chunk_, p58_exact_multirow_)) {
+        std::fprintf(stderr,
+            "[kimi-k3] width-eight prefill requires both "
+            "DFLASH_KIMI_PREFILL_CHUNK=8 and "
+            "DFLASH_KIMI_P58_EXACT_MULTIROW=1\n");
         return false;
     }
     if (!parse_optional_binary_environment(
@@ -1186,6 +1200,47 @@ bool KimiK3Backend::init() {
             if (enabled) {
                 std::fprintf(stderr,
                     "[kimi-k3] chunked prefill is incompatible with %s\n",
+                    name);
+                return false;
+            }
+        }
+    }
+    if (p58_exact_multirow_) {
+        if (cfg_.core_placement != KimiK3CorePlacement::Accelerator ||
+            cfg_.device.primary_gpu() != 1) {
+            std::fprintf(stderr,
+                "[kimi-k3] P58 exact multirow is qualified only with the "
+                "accelerator core on GPU1\n");
+            return false;
+        }
+        if (cfg_.logits_trace_path && *cfg_.logits_trace_path) {
+            std::fprintf(stderr,
+                "[kimi-k3] P58 exact multirow does not support logits tracing\n");
+            return false;
+        }
+        for (const char * name : {
+                 "DFLASH_KIMI_DIVERGENCE_TRACE_OUT",
+                 "DFLASH_KIMI_LAYER1_TRACE_OUT",
+                 "DFLASH_KIMI_P20_IO_TRACE",
+                 "DFLASH_KIMI_P28_ORACLE_TRACE",
+                 "DFLASH_KIMI_P40_CACHE_TRACE",
+                 "DFLASH_MOE_ROUTE_STATS_OUT"}) {
+            const char * value = std::getenv(name);
+            if (value && *value) {
+                std::fprintf(stderr,
+                    "[kimi-k3] P58 exact multirow is incompatible with %s\n",
+                    name);
+                return false;
+            }
+        }
+        for (const char * name : {
+                 "DFLASH_MOE_DUAL_STREAM_TRACE",
+                 "DFLASH_KIMI_S0_SERIAL_CORE_ROWS",
+                 "DFLASH_KIMI_S0_SERIAL_EXPERT_ROWS"}) {
+            const char * value = std::getenv(name);
+            if (value && *value && std::strcmp(value, "0") != 0) {
+                std::fprintf(stderr,
+                    "[kimi-k3] P58 exact multirow is incompatible with %s\n",
                     name);
                 return false;
             }
@@ -1229,16 +1284,28 @@ bool KimiK3Backend::init() {
         return false;
     }
     if (weights_.routed_experts_streamed && !init_streaming()) return false;
+    if (p58_exact_multirow_ &&
+        (!weights_.routed_experts_streamed ||
+         !routed_output_provider_ ||
+         !routed_output_provider_->supports_exact_multirow() ||
+         routed_output_provider_->requires_device_output() ||
+         dual_stream_executor_.is_ready() || moe_core_offload_.enabled())) {
+        std::fprintf(stderr,
+            "[kimi-k3] P58 exact multirow requires the host-output, "
+            "sidecar-authoritative all-layer calibrated96 provider on one "
+            "expert owner\n");
+        return false;
+    }
     std::fprintf(stderr,
         "[kimi-k3] native backend ready core=%s:%d (max_ctx=%d, "
-        "experts=%s, prefill-chunk=%d)\n",
+        "experts=%s, prefill-chunk=%d, p58-exact-multirow=%d)\n",
         kimi_k3_core_placement_name(cfg_.core_placement),
         cfg_.device.primary_gpu(), max_ctx,
         !weights_.routed_experts_streamed ? "resident" :
             (cfg_.core_placement == KimiK3CorePlacement::Cpu
                 ? "nvme-accelerator" :
                 (expert_backend_ ? "nvme-dual-owner" : "nvme-single-owner")),
-        prefill_chunk_);
+        prefill_chunk_, p58_exact_multirow_ ? 1 : 0);
     std::fflush(stderr);
     return true;
 }
@@ -1256,6 +1323,13 @@ bool KimiK3Backend::benchmark_oracle_verify(
         if (error) *error = message;
         return false;
     };
+    const bool p58_candidate = kimi_k3_p58_oracle_candidate(
+        p58_exact_multirow_, oracle_tokens.size(), true);
+    if (p58_candidate && cfg_.oracle_layer_diagnostics) {
+        return fail(
+            "P58 exact multirow oracle qualification does not support "
+            "per-layer hidden capture; disable DFLASH_KIMI_S0_LAYER_CAPTURE");
+    }
     if (width > 1 && routed_output_provider_ &&
         routed_output_provider_->requires_device_output()) {
         return fail(
@@ -1291,6 +1365,8 @@ bool KimiK3Backend::benchmark_oracle_verify(
             capture_layers && cfg_.oracle_layer_diagnostics
                 ? &all_layer_ids : nullptr;
         options.capture_replay = capture_replay;
+        options.exact_multirow_core = kimi_k3_p58_oracle_candidate(
+            p58_exact_multirow_, tokens.size(), capture_replay);
         options.read_logits = true;
         options.read_argmax = true;
         options.routed_output_provider = routed_output_provider_.get();
@@ -1317,6 +1393,11 @@ bool KimiK3Backend::benchmark_oracle_verify(
         }
         return true;
     };
+    const auto provider_stats = [&]() {
+        return routed_output_provider_
+            ? routed_output_provider_->runtime_stats()
+            : KimiK3RoutedRuntimeStats{};
+    };
 
     if (!rebuild_prompt()) {
         return fail(std::string("S0 sequential prompt rebuild failed: ") +
@@ -1334,6 +1415,7 @@ bool KimiK3Backend::benchmark_oracle_verify(
     sequential_logits.reserve(
         static_cast<size_t>(width) * weights_.n_vocab);
     sequential_argmax.reserve(static_cast<size_t>(width));
+    const KimiK3RoutedRuntimeStats sequential_stats_begin = provider_stats();
     const uint64_t sequential_read_start = process_storage_read_bytes();
     const auto sequential_start = std::chrono::steady_clock::now();
     for (int token = 0; token < width; ++token) {
@@ -1366,8 +1448,16 @@ bool KimiK3Backend::benchmark_oracle_verify(
     result.sequential_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - sequential_start).count();
     const uint64_t sequential_read_end = process_storage_read_bytes();
+    const KimiK3RoutedRuntimeStats sequential_stats = routed_stats_delta(
+        provider_stats(), sequential_stats_begin);
     result.sequential_storage_bytes = sequential_read_end >= sequential_read_start
         ? sequential_read_end - sequential_read_start : 0;
+    result.sequential_logical_provider_bytes =
+        sequential_stats.logical_provider_bytes;
+    result.sequential_compact_attempted = sequential_stats.compact_attempted;
+    result.sequential_compact_completed = sequential_stats.compact_completed;
+    result.sequential_compact_fallbacks = sequential_stats.compact_fallbacks;
+    result.sequential_compact_invalid = sequential_stats.compact_invalid;
     result.sequential_recurrent_hash = recurrent_cache_hash(cache_);
     result.sequential_mla_hash = mla_rows_hash(cache_, base_pos, width);
     result.sequential_conv_layer_hashes =
@@ -1384,6 +1474,7 @@ bool KimiK3Backend::benchmark_oracle_verify(
     if (!kimi_k3_replay_snapshot(backend_, cache_)) {
         return fail("S0 ReplaySSM snapshot failed");
     }
+    const KimiK3RoutedRuntimeStats verify_stats_begin = provider_stats();
     const uint64_t verify_read_start = process_storage_read_bytes();
     const auto verify_start = std::chrono::steady_clock::now();
     KimiK3ForwardResult verified;
@@ -1402,8 +1493,16 @@ bool KimiK3Backend::benchmark_oracle_verify(
     result.commit_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - commit_start).count();
     const uint64_t verify_read_end = process_storage_read_bytes();
+    const KimiK3RoutedRuntimeStats verify_stats = routed_stats_delta(
+        provider_stats(), verify_stats_begin);
     result.verify_storage_bytes = verify_read_end >= verify_read_start
         ? verify_read_end - verify_read_start : 0;
+    result.verify_logical_provider_bytes =
+        verify_stats.logical_provider_bytes;
+    result.verify_compact_attempted = verify_stats.compact_attempted;
+    result.verify_compact_completed = verify_stats.compact_completed;
+    result.verify_compact_fallbacks = verify_stats.compact_fallbacks;
+    result.verify_compact_invalid = verify_stats.compact_invalid;
     result.verify_recurrent_hash = recurrent_cache_hash(cache_);
     result.verify_mla_hash = mla_rows_hash(cache_, base_pos, width);
     result.verify_conv_layer_hashes = recurrent_layer_hashes(cache_, true);
@@ -1444,6 +1543,46 @@ bool KimiK3Backend::benchmark_oracle_verify(
     result.first_mla_row_mismatch_layer = first_hash_mismatch(
         result.sequential_mla_layer_hashes,
         result.verify_mla_layer_hashes);
+
+    if (p58_candidate) {
+        const size_t layer_count = static_cast<size_t>(weights_.n_layer);
+        const bool complete_hash_vectors =
+            result.sequential_conv_layer_hashes.size() == layer_count &&
+            result.verify_conv_layer_hashes.size() == layer_count &&
+            result.sequential_ssm_layer_hashes.size() == layer_count &&
+            result.verify_ssm_layer_hashes.size() == layer_count &&
+            result.sequential_mla_layer_hashes.size() == layer_count &&
+            result.verify_mla_layer_hashes.size() == layer_count;
+        const bool complete_rows =
+            sequential_logits.size() ==
+                static_cast<size_t>(width) * weights_.n_vocab &&
+            verified.logits.size() == sequential_logits.size() &&
+            sequential_argmax.size() == static_cast<size_t>(width) &&
+            verified.argmax.size() == sequential_argmax.size();
+        const bool exact_provider_traffic =
+            result.sequential_logical_provider_bytes ==
+                result.verify_logical_provider_bytes &&
+            result.sequential_compact_attempted ==
+                result.sequential_compact_completed &&
+            result.verify_compact_attempted ==
+                result.verify_compact_completed &&
+            result.sequential_compact_fallbacks == 0 &&
+            result.verify_compact_fallbacks == 0 &&
+            result.sequential_compact_invalid == 0 &&
+            result.verify_compact_invalid == 0;
+        if (!complete_rows || !complete_hash_vectors ||
+            !result.logits_bit_equal || !result.argmax_bit_equal ||
+            !result.recurrent_state_hash_equal ||
+            result.first_conv_state_mismatch_layer >= 0 ||
+            result.first_ssm_state_mismatch_layer >= 0 ||
+            !result.mla_rows_hash_equal ||
+            result.first_mla_row_mismatch_layer >= 0 ||
+            !exact_provider_traffic) {
+            return fail(
+                "P58 exact multirow candidate failed mandatory full-logit, "
+                "argmax, recurrent conv/SSM, MLA, or provider-traffic parity");
+        }
+    }
 
     if (cfg_.oracle_layer_diagnostics) {
         const size_t expected_verified_capture =
@@ -1800,8 +1939,8 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
     size_t prefill_forward_calls = 0;
     const auto prefill_begin = std::chrono::steady_clock::now();
     for (size_t i = 0; i < req.prompt.size();) {
-        const size_t chunk = std::min(
-            static_cast<size_t>(prefill_chunk_), req.prompt.size() - i);
+        const size_t chunk = kimi_k3_prefill_chunk_size(
+            req.prompt.size() - i, prefill_chunk_, p58_exact_multirow_);
         bool ok = false;
         if (chunk == 1) {
             ok = forward_token(req.prompt[i], static_cast<int>(i));
@@ -1817,6 +1956,8 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
             options.read_logits = true;
             options.read_argmax = false;
             options.capture_replay = true;
+            options.exact_multirow_core =
+                p58_exact_multirow_ && chunk == 8;
             options.routed_output_provider = routed_output_provider_.get();
             options.moe_core_offload = moe_core_offload_.enabled()
                 ? &moe_core_offload_ : nullptr;

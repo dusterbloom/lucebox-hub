@@ -9,6 +9,8 @@
 #include "kimi_k3_internal.h"
 #include "placement/placement_config.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <random>
 #include <memory>
 #include <string>
@@ -41,7 +43,8 @@ inline bool parse_kimi_k3_core_placement(
 }
 
 // P57 intentionally starts with widths that have bounded exactness evidence.
-// Larger macrochunks remain a separate P58 decision after this gate.
+// Width eight is accepted by the parser only as configuration substrate; the
+// backend separately requires the strict P58 exact-multirow discriminator.
 inline bool parse_kimi_k3_prefill_chunk(
         const char * value, int & out) {
     out = 1;
@@ -54,7 +57,30 @@ inline bool parse_kimi_k3_prefill_chunk(
         out = 4;
         return true;
     }
+    if (std::string(value) == "8") {
+        out = 8;
+        return true;
+    }
     return false;
+}
+
+// P58 never exposes a partial macro batch to the calibrated provider. A short
+// prompt tail is deliberately executed through the established one-row path.
+inline size_t kimi_k3_prefill_chunk_size(
+        size_t remaining, int configured, bool exact_multirow) {
+    if (remaining == 0 || configured <= 1) return std::min<size_t>(remaining, 1);
+    if (exact_multirow && configured == 8 && remaining < 8) return 1;
+    return std::min(remaining, static_cast<size_t>(configured));
+}
+
+inline bool kimi_k3_p58_configuration_valid(
+        int configured, bool exact_multirow) {
+    return (configured == 8) == exact_multirow;
+}
+
+inline bool kimi_k3_p58_oracle_candidate(
+        bool exact_multirow, size_t width, bool capture_replay) {
+    return exact_multirow && width == 8 && capture_replay;
 }
 
 // Initialize the backend that owns KDA, MLA, shared experts, and the output
@@ -98,6 +124,16 @@ struct KimiK3OracleVerifyResult {
     double commit_seconds = 0.0;
     uint64_t sequential_storage_bytes = 0;
     uint64_t verify_storage_bytes = 0;
+    uint64_t sequential_logical_provider_bytes = 0;
+    uint64_t verify_logical_provider_bytes = 0;
+    uint64_t sequential_compact_attempted = 0;
+    uint64_t sequential_compact_completed = 0;
+    uint64_t sequential_compact_fallbacks = 0;
+    uint64_t sequential_compact_invalid = 0;
+    uint64_t verify_compact_attempted = 0;
+    uint64_t verify_compact_completed = 0;
+    uint64_t verify_compact_fallbacks = 0;
+    uint64_t verify_compact_invalid = 0;
     bool logits_bit_equal = false;
     bool argmax_bit_equal = false;
     bool recurrent_state_hash_equal = false;
@@ -199,6 +235,7 @@ private:
     std::shared_ptr<MoeHybridRoutingStats> routing_stats_;
     std::string routing_stats_out_path_;
     int prefill_chunk_ = 1;
+    bool p58_exact_multirow_ = false;
     bool prefill_census_ = false;
     bool parked_ = false;
     std::mt19937_64 rng_{std::random_device{}()};

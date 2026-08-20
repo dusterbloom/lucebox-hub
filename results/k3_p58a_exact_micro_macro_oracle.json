@@ -1,0 +1,183 @@
+{
+  "schema": "k3-p58a-exact-micro-macro-oracle-v1",
+  "date": "2026-08-20",
+  "status": "SEMANTIC_GO_THROUGHPUT_NOT_ACTIVATED",
+  "platform": "Lucebox4 ROCm/HIP gfx1201+gfx1151",
+  "speculative_decode": false,
+  "default_enabled": false,
+  "source": {
+    "base_head": "0c7d9c6d156d48d4bde98d8e2ce8c649a39069c6",
+    "qualification_commit": null,
+    "working_tree_snapshot": true,
+    "scoped_diff_sha256": "53ae270e8fe01f1d4a50e014c8a1c79c2987e4c32569096ce187b96dd2d6525e",
+    "raw_diff_loc": {
+      "production": {"added": 842, "deleted": 41},
+      "test_and_runner": {"added": 85, "deleted": 1},
+      "total": {"added": 927, "deleted": 42}
+    },
+    "files_sha256": {
+      "server/src/kimi_k3/kimi_k3_backend.cpp": "7d5be7d0491eea109a3c87331c34bc634395453e20c2e54f3f3b178755cd2700",
+      "server/src/kimi_k3/kimi_k3_backend.h": "f664c8eb7625979531841045e58452ea51ada72764ffddf89f1144d8c227eba6",
+      "server/src/kimi_k3/kimi_k3_graph.cpp": "a1af7a6be9c22e8e46836c31c54de71ef2ca3d9de4606c73abfa3fbaa39c9f6c",
+      "server/src/kimi_k3/kimi_k3_internal.h": "6fad55fc1229a2b57eec4229a6905c3e1e16696ae00f280243a781296265e399",
+      "server/src/kimi_k3/kimi_k3_progressive_provider.cpp": "9b53cb1d4a8b85505de4efec01e68d54257293a7b7a7246e131c4bec31c4c6da",
+      "server/src/kimi_k3/kimi_k3_progressive_provider.h": "f5853f101478131d623a0413e1f828338f861e8d274a49229e5dc7516179fb03",
+      "server/test/run_kimi_k3_s0_oracle.cpp": "2ad2de970b365ab18e45db4f322ad8f6b2ca44f49b44f326a98f8575844ccd42",
+      "server/test/test_kimi_k3_core_placement.cpp": "47dc485f26253030ab456a20b9ce4c178c0008641f01d6fcb389c78e6225700b",
+      "server/test/test_kimi_k3_progressive_provider.cpp": "e388318753767336a9eb0f8d984330bc6cbe82019aac6346e0bdf210edc9dbb1"
+    },
+    "qualified_runner_sha256": "591e8e8806ac55328cf2df899efc8e3fb3967502602114e3be6ee3ebd8ff241a"
+  },
+  "semantic_seam": {
+    "recurrent_micro_width": 1,
+    "routed_macro_width": 8,
+    "provider_calls_per_routed_layer": 1,
+    "provider_rows_per_call": 8,
+    "state_commit": "ReplaySSM exact row commit",
+    "short_tail_policy": "one-row established path",
+    "enablement": {
+      "DFLASH_KIMI_PREFILL_CHUNK": "8",
+      "DFLASH_KIMI_P58_EXACT_MULTIROW": "1"
+    },
+    "qualified_provider": "sidecar-authoritative all-layer calibrated96 host-output",
+    "qualified_topology": {
+      "core": "accelerator:gpu1",
+      "expert_owner": "gpu1",
+      "dual_owner": false
+    },
+    "unsupported_modes_fail_closed": [
+      "drafting",
+      "paired H16",
+      "P42 device-output join",
+      "P45 async compact queue",
+      "P46 persistent routed preparation",
+      "P52 persistent routed join",
+      "P53 device hidden chain",
+      "dual-owner execution",
+      "per-layer hidden diagnostics",
+      "logits, divergence, provider, IO, cache, and route tracing"
+    ]
+  },
+  "qualification": {
+    "root": "/home/duster/kimi-k3-deploy/p58a-mu1-m8-oracle-53ae270-20260820",
+    "prompt_ids": [18699],
+    "base_position": 1,
+    "oracle_ids": [11, 374, 4936, 261, 814, 2742, 316, 374],
+    "width": 8,
+    "vocabulary": 163840,
+    "full_logit_values_per_arm": 1310720,
+    "result": {
+      "exit_status": 0,
+      "logits_bit_equal": true,
+      "argmax_equal": true,
+      "logits_max_abs": 0.0,
+      "logits_rel_l2": 0.0,
+      "recurrent_state_hash_equal": true,
+      "sequential_recurrent_hash": 3345846951683756339,
+      "verify_recurrent_hash": 3345846951683756339,
+      "mla_rows_hash_equal": true,
+      "sequential_mla_hash": 16569152724683205385,
+      "verify_mla_hash": 16569152724683205385,
+      "conv_layer_hash_count": 93,
+      "conv_layer_hashes_all_equal": true,
+      "ssm_layer_hash_count": 93,
+      "ssm_layer_hashes_all_equal": true,
+      "mla_layer_hash_count": 93,
+      "mla_layer_hashes_all_equal": true,
+      "first_conv_state_mismatch_layer": -1,
+      "first_ssm_state_mismatch_layer": -1,
+      "first_mla_row_mismatch_layer": -1
+    },
+    "arm_local_provider_counters": {
+      "logical_provider_traffic_equal": true,
+      "sequential": {
+        "logical_provider_bytes": 40075886592,
+        "compact_attempted": 8504,
+        "compact_completed": 8504,
+        "compact_fallbacks": 0,
+        "compact_invalid": 0
+      },
+      "verify": {
+        "logical_provider_bytes": 40075886592,
+        "compact_attempted": 8504,
+        "compact_completed": 8504,
+        "compact_fallbacks": 0,
+        "compact_invalid": 0
+      }
+    },
+    "aggregate_provider_counters": {
+      "scope": "two prompt rebuilds plus sequential and verify arms",
+      "layer_token_sum": 1656,
+      "requested_slabs": 158976,
+      "selected_records": 158976,
+      "calibrated_routes": 26156,
+      "policy_exact_fallback_routes": 340,
+      "selected_sidecar_bytes": 87645487104,
+      "policy_exact_fallback_bytes": 2270478336,
+      "logical_provider_bytes": 89915965440,
+      "p41_compact_attempted": 19594,
+      "p41_compact_completed": 19594,
+      "p41_compact_fallbacks": 0,
+      "p41_compact_invalid": 0
+    },
+    "diagnostic_timing": {
+      "sequential_seconds": 11.825277626,
+      "sequential_seconds_per_row": 1.47815970325,
+      "sequential_rows_per_second": 0.6765168863698017,
+      "verify_seconds": 9.635555403,
+      "commit_seconds": 0.584942103,
+      "verify_plus_commit_seconds": 10.220497506,
+      "verify_plus_commit_rows_per_second": 0.7827407614261005,
+      "verify_only_ratio": 1.2272543855975586,
+      "committed_ratio": 1.1570158516312836,
+      "wall_reduction_fraction": 0.13570760626131967,
+      "sequential_process_read_bytes": 21386264576,
+      "verify_process_read_bytes": 21047894016,
+      "whole_process_elapsed_seconds": 32.17,
+      "whole_process_max_rss_kib": 17925816,
+      "performance_claim": false
+    },
+    "system": {
+      "swap_kib_before": 12,
+      "swap_kib_after": 12,
+      "lingering_kfd_processes": 0
+    },
+    "artifacts_sha256": {
+      "s0.json": "1bb1ede71e55ecdc4c28f28fcef06507007086a844ff9740c23a298424244be6",
+      "stderr.log": "ac8ed2c6cb53376ee913541843a23999c93442bd699c8057062442910283d607",
+      "stdout.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "time.txt": "cad63f2ded350d0c54237a5e35dcfe7b721323d4aed0735f6a36a47cf927bdf8",
+      "traffic.tsv": "db5ce71d8ecd1b78149ef9689a93926585a070fdb6d1eea6edd737fcf4b1ae77"
+    }
+  },
+  "validation": {
+    "local": {
+      "cuda_compile": "PASS",
+      "core_placement": "PASS",
+      "progressive_provider": "SKIP_NO_GPU"
+    },
+    "lucebox4": {
+      "hip_capped_parallelism": 4,
+      "oracle_runner_build": "PASS",
+      "core_placement": "PASS",
+      "progressive_provider_gpu0": "PASS",
+      "progressive_provider_gpu1": "PASS",
+      "ordered_join_gpu0": "PASS",
+      "ordered_join_gpu1": "PASS",
+      "moe_stream_gpu0": "PASS_2_OF_2",
+      "moe_stream_gpu1": "PASS_2_OF_2",
+      "sparse_k_mmvq_gpu0": "PASS_68_OF_68",
+      "sparse_k_mmvq_gpu1": "PASS_68_OF_68"
+    }
+  },
+  "decision": {
+    "semantic_gate": "GO",
+    "throughput_activation": false,
+    "throughput_status": "NOT_ACTIVATED",
+    "diagnostic_committed_ratio": 1.1570158516312836,
+    "broad_run_performed": false,
+    "prefill_performance_claim": false,
+    "keep_default_off": true,
+    "next_step": "Run independent core-only, all-resident-expert, and IO-only rooflines before deciding whether P59 grouped compact execution is justified."
+  }
+}

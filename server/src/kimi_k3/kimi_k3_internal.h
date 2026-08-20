@@ -262,6 +262,9 @@ struct KimiK3Cache {
     bool snapshot_valid = false;
     bool replay_valid = false;
     bool recurrent_state_pristine = false;
+    // P58 records each replay row through the native one-row KDA graph. Its
+    // later ReplaySSM commit must retain that same row boundary.
+    bool replay_exact_rows = false;
     // Opaque graph-lifetime owner for the opt-in one-token persistent routed
     // preparation path.  The concrete type remains private to graph.cpp.
     void * persistent_routed_preparation = nullptr;
@@ -298,6 +301,10 @@ struct KimiK3ForwardOptions {
     std::vector<KimiK3MoePanelCapture> * panel_captures = nullptr;
     MoeStreamExpertObserver * expert_observer = nullptr;
     KimiK3RoutedOutputProvider * routed_output_provider = nullptr;
+    // P58-only semantic discriminator: evolve KDA/MLA and all core arithmetic
+    // one row at a time, while exposing one eight-row routed-provider call per
+    // layer. The public backend validates the complete fail-closed envelope.
+    bool exact_multirow_core = false;
     // Experimental CPU-core / accelerator-MoE split. Null preserves the
     // established single-backend arithmetic and placement.
     KimiK3MoeCoreOffload * moe_core_offload = nullptr;

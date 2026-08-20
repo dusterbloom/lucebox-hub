@@ -277,7 +277,8 @@ ggml_tensor * build_kda(ggml_context * ctx,
                         KimiK3LayerCache & cache,
                         ggml_tensor * cur,
                         bool commit_state,
-                        bool capture_replay) {
+                        bool capture_replay,
+                        int replay_token_offset = 0) {
     const int head_dim = w.kda_head_dim;
     const int n_head = w.n_head;
     const int n_tokens = static_cast<int>(cur->ne[1]);
@@ -285,10 +286,13 @@ ggml_tensor * build_kda(ggml_context * ctx,
 
     if (capture_replay) {
         GGML_ASSERT(cache.replay_input != nullptr);
-        GGML_ASSERT(n_tokens <= cache.replay_input->ne[1]);
+        GGML_ASSERT(replay_token_offset >= 0);
+        GGML_ASSERT(replay_token_offset + n_tokens <= cache.replay_input->ne[1]);
         ggml_tensor * replay_dst = ggml_view_2d(
             ctx, cache.replay_input, w.n_embd, n_tokens,
-            cache.replay_input->nb[1], 0);
+            cache.replay_input->nb[1],
+            static_cast<size_t>(replay_token_offset) *
+                cache.replay_input->nb[1]);
         ggml_build_forward_expand(graph, ggml_cpy(ctx, cur, replay_dst));
     }
 
@@ -1725,6 +1729,557 @@ bool parse_strict_binary_environment(
 void free_persistent_routed_preparation(void *& opaque) {
     delete static_cast<PersistentRoutedPreparation *>(opaque);
     opaque = nullptr;
+}
+
+class ExactMultirowSnapshotGuard {
+public:
+    ExactMultirowSnapshotGuard(ggml_backend_t backend, KimiK3Cache & cache)
+        : backend_(backend), cache_(cache) {
+        cache_.recurrent_state_pristine = false;
+    }
+
+    ~ExactMultirowSnapshotGuard() { restore(); }
+
+    void restore() {
+        if (!active_) return;
+        for (KimiK3LayerCache & layer : cache_.layers) {
+            if (!layer.ssm_state) continue;
+            GGML_ASSERT(layer.ssm_state_snap && layer.conv_state_snap);
+            ggml_backend_tensor_copy_async(
+                backend_, backend_, layer.ssm_state_snap, layer.ssm_state);
+            ggml_backend_tensor_copy_async(
+                backend_, backend_, layer.conv_state_snap, layer.conv_state);
+        }
+        ggml_backend_synchronize(backend_);
+        cache_.recurrent_state_pristine = true;
+        active_ = false;
+    }
+
+private:
+    ggml_backend_t backend_ = nullptr;
+    KimiK3Cache & cache_;
+    bool active_ = true;
+};
+
+struct ExactMultirowLayerRow {
+    std::vector<float> hidden;
+    std::vector<float> prefix;
+    std::vector<float> routed;
+    std::vector<int32_t> selected;
+    std::vector<float> route_weights;
+    std::vector<float> shared;
+};
+
+bool exact_multirow_embedding_row(
+        ggml_backend_t backend,
+        const KimiK3Weights & w,
+        int32_t token,
+        float * output) {
+    ggml_context * ctx = new_kimi_step_context();
+    if (!ctx) {
+        set_last_error("Kimi-K3 P58 embedding: context allocation failed");
+        return false;
+    }
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 1024, false);
+    ggml_tensor * id = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+    ggml_set_input(id);
+    ggml_tensor * embedding = ggml_get_rows(ctx, w.tok_embd, id);
+    bool ok = false;
+    if (ggml_backend_supports_op(backend, embedding)) {
+        ok = run_host_boundary_graph(
+            backend, ctx, graph,
+            {{id, &token, sizeof(token)}},
+            {{embedding, output,
+              static_cast<size_t>(w.n_embd) * sizeof(float)}},
+            "P58 one-row embedding");
+    } else {
+        std::vector<float> row(static_cast<size_t>(w.n_embd));
+        ok = read_token_embeddings_on_host(w, {token}, row) &&
+            row.size() == static_cast<size_t>(w.n_embd);
+        if (ok) std::copy(row.begin(), row.end(), output);
+    }
+    ggml_free(ctx);
+    return ok;
+}
+
+bool exact_multirow_layer_row(
+        ggml_backend_t backend,
+        const KimiK3Weights & w,
+        KimiK3Cache & cache,
+        int model_layer,
+        int base_pos,
+        int token_index,
+        const float * hidden_row,
+        const std::vector<std::vector<float>> & checkpoints,
+        ExactMultirowLayerRow & output) {
+    const KimiK3Layer & layer = w.layers[static_cast<size_t>(model_layer)];
+    KimiK3LayerCache & layer_cache =
+        cache.layers[static_cast<size_t>(model_layer)];
+    const bool dense = model_layer < w.n_dense_lead;
+    const bool banked = model_layer % w.attn_res_block_size == 0;
+    const size_t hidden_width = static_cast<size_t>(w.n_embd);
+
+    std::vector<std::vector<float>> checkpoint_rows;
+    checkpoint_rows.reserve(checkpoints.size());
+    for (const std::vector<float> & checkpoint : checkpoints) {
+        const size_t begin = static_cast<size_t>(token_index) * hidden_width;
+        if (checkpoint.size() < begin + hidden_width) {
+            set_last_error("Kimi-K3 P58 checkpoint shape is invalid");
+            return false;
+        }
+        checkpoint_rows.emplace_back(
+            checkpoint.begin() + static_cast<std::ptrdiff_t>(begin),
+            checkpoint.begin() +
+                static_cast<std::ptrdiff_t>(begin + hidden_width));
+    }
+
+    ggml_context * ctx = new_kimi_step_context();
+    if (!ctx) {
+        set_last_error("Kimi-K3 P58 layer: context allocation failed");
+        return false;
+    }
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 32768, false);
+    std::vector<GraphInput> inputs;
+    ggml_tensor * hidden_in =
+        ggml_new_tensor_2d(ctx, GGML_TYPE_F32, w.n_embd, 1);
+    ggml_set_input(hidden_in);
+    inputs.push_back({hidden_in, hidden_row, hidden_width * sizeof(float)});
+
+    AttnResBank residuals;
+    populate_attn_res_bank(
+        ctx, w, 1, checkpoint_rows, residuals, inputs);
+    ggml_tensor * prefix = hidden_in;
+    ggml_tensor * cur = residuals.mix(prefix, layer.attn_res_score);
+    if (banked) residuals.push(prefix);
+    cur = rms_norm(ctx, cur, layer.attn_norm, w.rms_eps);
+    std::vector<float> mla_mask_values;
+    if (layer.recurrent) {
+        cur = build_kda(
+            ctx, graph, w, layer, layer_cache, cur,
+            /*commit_state=*/true,
+            /*capture_replay=*/true, token_index);
+    } else {
+        const int position = base_pos + token_index;
+        mla_mask_values.assign(
+            static_cast<size_t>(position + 1), 0.0f);
+        ggml_tensor * mask = ggml_new_tensor_2d(
+            ctx, GGML_TYPE_F32, position + 1, 1);
+        ggml_set_input(mask);
+        inputs.push_back({
+            mask, mla_mask_values.data(),
+            mla_mask_values.size() * sizeof(float)});
+        cur = build_mla(
+            ctx, graph, w, layer, layer_cache, cur, position, mask);
+    }
+    prefix = banked ? cur : ggml_add(ctx, prefix, cur);
+    cur = residuals.mix(prefix, layer.ffn_res_score);
+    cur = rms_norm(ctx, cur, layer.ffn_norm, w.rms_eps);
+
+    std::vector<GraphOutput> outputs;
+    if (dense) {
+        ggml_tensor * gate = ggml_mul_mat(ctx, layer.ffn_gate, cur);
+        ggml_tensor * up = ggml_mul_mat(ctx, layer.ffn_up, cur);
+        ggml_tensor * dense_output = situ(
+            ctx, gate, up, w.situ_beta, w.situ_linear_beta);
+        dense_output = ggml_mul_mat(ctx, layer.ffn_down, dense_output);
+        ggml_tensor * hidden_out = ggml_add(ctx, prefix, dense_output);
+        output.hidden.resize(hidden_width);
+        outputs.push_back({
+            hidden_out, output.hidden.data(), hidden_width * sizeof(float)});
+    } else {
+        ggml_tensor * routed =
+            ggml_mul_mat(ctx, layer.ffn_routed_down, cur);
+        TopKMoeRouterResult router =
+            build_kimi_router(ctx, graph, w, layer, cur);
+        ggml_tensor * selected = ggml_cont(ctx, router.selected);
+        ggml_tensor * route_weights = ggml_cont(ctx, router.weights_2d);
+        ggml_tensor * shared_gate =
+            ggml_mul_mat(ctx, layer.ffn_gate_shexp, cur);
+        ggml_tensor * shared_up =
+            ggml_mul_mat(ctx, layer.ffn_up_shexp, cur);
+        ggml_tensor * shared = situ(
+            ctx, shared_gate, shared_up,
+            w.situ_beta, w.situ_linear_beta);
+        shared = ggml_mul_mat(ctx, layer.ffn_down_shexp, shared);
+
+        output.prefix.resize(hidden_width);
+        output.routed.resize(static_cast<size_t>(w.n_expert_latent));
+        output.selected.resize(static_cast<size_t>(w.n_expert_used));
+        output.route_weights.resize(static_cast<size_t>(w.n_expert_used));
+        output.shared.resize(hidden_width);
+        outputs = {
+            {prefix, output.prefix.data(), hidden_width * sizeof(float)},
+            {routed, output.routed.data(),
+             output.routed.size() * sizeof(float)},
+            {selected, output.selected.data(),
+             output.selected.size() * sizeof(int32_t)},
+            {route_weights, output.route_weights.data(),
+             output.route_weights.size() * sizeof(float)},
+            {shared, output.shared.data(), hidden_width * sizeof(float)},
+        };
+    }
+
+    if (!layer.recurrent &&
+        (mla_mask_values.empty() || inputs.empty() ||
+         inputs.back().data != mla_mask_values.data() ||
+         inputs.back().bytes !=
+             mla_mask_values.size() * sizeof(float))) {
+        ggml_free(ctx);
+        set_last_error("Kimi-K3 P58 MLA mask lifetime invariant failed");
+        return false;
+    }
+    const bool ok = run_host_boundary_graph(
+        backend, ctx, graph, inputs, outputs,
+        dense ? "P58 one-row dense layer" :
+                "P58 one-row routed preparation");
+    ggml_free(ctx);
+    return ok;
+}
+
+bool exact_multirow_join_row(
+        ggml_backend_t backend,
+        const KimiK3Weights & w,
+        const KimiK3Layer & layer,
+        const float * prefix,
+        const float * routed_output,
+        const float * shared,
+        float * hidden_output) {
+    ggml_context * ctx = new_kimi_step_context();
+    if (!ctx) {
+        set_last_error("Kimi-K3 P58 join: context allocation failed");
+        return false;
+    }
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 4096, false);
+    ggml_tensor * prefix_in =
+        ggml_new_tensor_2d(ctx, GGML_TYPE_F32, w.n_embd, 1);
+    ggml_tensor * routed_in =
+        ggml_new_tensor_2d(ctx, GGML_TYPE_F32, w.n_expert_latent, 1);
+    ggml_tensor * shared_in =
+        ggml_new_tensor_2d(ctx, GGML_TYPE_F32, w.n_embd, 1);
+    ggml_set_input(prefix_in);
+    ggml_set_input(routed_in);
+    ggml_set_input(shared_in);
+    ggml_tensor * routed = routed_in;
+    if (layer.ffn_routed_norm) {
+        routed = rms_norm(ctx, routed, layer.ffn_routed_norm, w.rms_eps);
+    }
+    routed = ggml_mul_mat(ctx, layer.ffn_routed_up, routed);
+    ggml_tensor * hidden = ggml_add(
+        ctx, prefix_in, ggml_add(ctx, routed, shared_in));
+    const bool ok = run_host_boundary_graph(
+        backend, ctx, graph,
+        {
+            {prefix_in, prefix,
+             static_cast<size_t>(w.n_embd) * sizeof(float)},
+            {routed_in, routed_output,
+             static_cast<size_t>(w.n_expert_latent) * sizeof(float)},
+            {shared_in, shared,
+             static_cast<size_t>(w.n_embd) * sizeof(float)},
+        },
+        {{hidden, hidden_output,
+          static_cast<size_t>(w.n_embd) * sizeof(float)}},
+        "P58 one-row routed join");
+    ggml_free(ctx);
+    return ok;
+}
+
+bool exact_multirow_output_row(
+        ggml_backend_t backend,
+        const KimiK3Weights & w,
+        const float * hidden_row,
+        int token_index,
+        const std::vector<std::vector<float>> & checkpoints,
+        const KimiK3ForwardOptions & options,
+        KimiK3ForwardResult & result) {
+    const size_t hidden_width = static_cast<size_t>(w.n_embd);
+    std::vector<std::vector<float>> checkpoint_rows;
+    checkpoint_rows.reserve(checkpoints.size());
+    for (const std::vector<float> & checkpoint : checkpoints) {
+        const size_t begin = static_cast<size_t>(token_index) * hidden_width;
+        checkpoint_rows.emplace_back(
+            checkpoint.begin() + static_cast<std::ptrdiff_t>(begin),
+            checkpoint.begin() +
+                static_cast<std::ptrdiff_t>(begin + hidden_width));
+    }
+    ggml_context * ctx = new_kimi_step_context();
+    if (!ctx) {
+        set_last_error("Kimi-K3 P58 output: context allocation failed");
+        return false;
+    }
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 8192, false);
+    std::vector<GraphInput> inputs;
+    ggml_tensor * hidden_in =
+        ggml_new_tensor_2d(ctx, GGML_TYPE_F32, w.n_embd, 1);
+    ggml_set_input(hidden_in);
+    inputs.push_back({hidden_in, hidden_row, hidden_width * sizeof(float)});
+    AttnResBank residuals;
+    populate_attn_res_bank(
+        ctx, w, 1, checkpoint_rows, residuals, inputs);
+    ggml_tensor * output_hidden =
+        residuals.mix(hidden_in, w.output_res_score);
+    output_hidden = rms_norm(
+        ctx, output_hidden, w.output_norm, w.rms_eps);
+    ggml_tensor * logits = ggml_mul_mat(ctx, w.output, output_hidden);
+    ggml_tensor * argmax = ggml_argmax(ctx, logits);
+    std::vector<GraphOutput> outputs;
+    if (options.read_logits) {
+        outputs.push_back({
+            logits,
+            result.logits.data() +
+                static_cast<size_t>(token_index) * w.n_vocab,
+            static_cast<size_t>(w.n_vocab) * sizeof(float)});
+    }
+    if (options.read_argmax) {
+        outputs.push_back({
+            argmax, result.argmax.data() + token_index, sizeof(int32_t)});
+    }
+    const bool ok = run_host_boundary_graph(
+        backend, ctx, graph, inputs, outputs, "P58 one-row output");
+    ggml_free(ctx);
+    return ok;
+}
+
+bool streamed_kimi_k3_forward_exact_multirow(
+        ggml_backend_t backend,
+        const KimiK3Weights & w,
+        KimiK3Cache & cache,
+        const std::vector<int32_t> & tokens,
+        int base_pos,
+        const KimiK3ForwardOptions & options,
+        KimiK3ForwardResult & result,
+        MoeHybridStreamEngine * stream_engine) {
+    using Clock = std::chrono::steady_clock;
+    constexpr int kMacroWidth = 8;
+    for (const char * name : {
+             "DFLASH_KIMI_DIVERGENCE_TRACE_OUT",
+             "DFLASH_KIMI_LAYER1_TRACE_OUT",
+             "DFLASH_KIMI_P20_IO_TRACE",
+             "DFLASH_KIMI_P28_ORACLE_TRACE",
+             "DFLASH_KIMI_P40_CACHE_TRACE",
+             "DFLASH_MOE_ROUTE_STATS_OUT"}) {
+        const char * value = std::getenv(name);
+        if (value && *value) {
+            set_last_error(
+                std::string("Kimi-K3 P58 exact multirow is incompatible with ") +
+                name);
+            return false;
+        }
+    }
+    for (const char * name : {
+             "DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN",
+             "DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE",
+             "DFLASH_KIMI_P46_PERSISTENT_ROUTED_PREP",
+             "DFLASH_KIMI_P52_PERSISTENT_ROUTED_JOIN",
+             "DFLASH_KIMI_P53_DEVICE_HIDDEN_CHAIN",
+             "DFLASH_MOE_DUAL_STREAM_TRACE",
+             "DFLASH_KIMI_S0_SERIAL_CORE_ROWS",
+             "DFLASH_KIMI_S0_SERIAL_EXPERT_ROWS"}) {
+        const char * value = std::getenv(name);
+        if (value && *value && std::strcmp(value, "0") != 0) {
+            set_last_error(
+                std::string("Kimi-K3 P58 exact multirow is incompatible with ") +
+                name);
+            return false;
+        }
+    }
+    if (tokens.size() != kMacroWidth || !options.capture_replay ||
+        !options.routed_output_provider ||
+        !options.routed_output_provider->supports_exact_multirow() ||
+        options.routed_output_provider->requires_device_output() ||
+        options.moe_core_offload || options.capture_layer_ids ||
+        options.panel_capture || options.panel_capture_layer_ids ||
+        options.panel_captures || options.expert_observer ||
+        options.stop_before_moe_layer >= 0 || !stream_engine ||
+        !stream_engine->is_bound()) {
+        set_last_error("Kimi-K3 P58 exact multirow envelope is invalid");
+        return false;
+    }
+
+    const size_t hidden_width = static_cast<size_t>(w.n_embd);
+    const size_t hidden_values = hidden_width * kMacroWidth;
+    const auto elapsed_ns = [](Clock::time_point begin) {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                Clock::now() - begin).count());
+    };
+    const Clock::time_point total_begin = Clock::now();
+    uint64_t core_ns = 0;
+    uint64_t expert_ns = 0;
+    uint64_t join_ns = 0;
+    uint64_t output_ns = 0;
+    ExactMultirowSnapshotGuard recurrent_guard(backend, cache);
+
+    std::vector<float> hidden(hidden_values);
+    Clock::time_point phase_begin = Clock::now();
+    for (int token = 0; token < kMacroWidth; ++token) {
+        if (!exact_multirow_embedding_row(
+                backend, w, tokens[static_cast<size_t>(token)],
+                hidden.data() + static_cast<size_t>(token) * hidden_width)) {
+            return false;
+        }
+    }
+    core_ns += elapsed_ns(phase_begin);
+
+    std::vector<std::vector<float>> checkpoints;
+    checkpoints.reserve(static_cast<size_t>(
+        (w.n_layer + w.attn_res_block_size - 1) /
+        w.attn_res_block_size));
+    for (int il = 0; il < w.n_layer; ++il) {
+        const KimiK3Layer & layer = w.layers[static_cast<size_t>(il)];
+        const bool banked = il % w.attn_res_block_size == 0;
+        const std::vector<float> checkpoint_value = hidden;
+
+        phase_begin = Clock::now();
+        if (il < w.n_dense_lead) {
+            std::vector<float> next_hidden(hidden_values);
+            for (int token = 0; token < kMacroWidth; ++token) {
+                ExactMultirowLayerRow row;
+                if (!exact_multirow_layer_row(
+                        backend, w, cache, il, base_pos, token,
+                        hidden.data() +
+                            static_cast<size_t>(token) * hidden_width,
+                        checkpoints, row) ||
+                    row.hidden.size() != hidden_width) {
+                    return false;
+                }
+                std::copy(
+                    row.hidden.begin(), row.hidden.end(),
+                    next_hidden.begin() +
+                        static_cast<std::ptrdiff_t>(token * hidden_width));
+            }
+            core_ns += elapsed_ns(phase_begin);
+            if (banked) checkpoints.push_back(checkpoint_value);
+            hidden.swap(next_hidden);
+            continue;
+        }
+
+        std::vector<float> prefix(hidden_values);
+        std::vector<float> routed(
+            static_cast<size_t>(w.n_expert_latent) * kMacroWidth);
+        std::vector<int32_t> selected(
+            static_cast<size_t>(w.n_expert_used) * kMacroWidth);
+        std::vector<float> route_weights(
+            static_cast<size_t>(w.n_expert_used) * kMacroWidth);
+        std::vector<float> shared(hidden_values);
+        for (int token = 0; token < kMacroWidth; ++token) {
+            ExactMultirowLayerRow row;
+            if (!exact_multirow_layer_row(
+                    backend, w, cache, il, base_pos, token,
+                    hidden.data() +
+                        static_cast<size_t>(token) * hidden_width,
+                    checkpoints, row)) {
+                return false;
+            }
+            std::copy(row.prefix.begin(), row.prefix.end(),
+                prefix.begin() +
+                    static_cast<std::ptrdiff_t>(token * hidden_width));
+            std::copy(row.routed.begin(), row.routed.end(),
+                routed.begin() + static_cast<std::ptrdiff_t>(
+                    token * w.n_expert_latent));
+            std::copy(row.selected.begin(), row.selected.end(),
+                selected.begin() + static_cast<std::ptrdiff_t>(
+                    token * w.n_expert_used));
+            std::copy(row.route_weights.begin(), row.route_weights.end(),
+                route_weights.begin() + static_cast<std::ptrdiff_t>(
+                    token * w.n_expert_used));
+            std::copy(row.shared.begin(), row.shared.end(),
+                shared.begin() +
+                    static_cast<std::ptrdiff_t>(token * hidden_width));
+        }
+        core_ns += elapsed_ns(phase_begin);
+        if (banked) checkpoints.push_back(checkpoint_value);
+
+        for (size_t route = 0; route < selected.size(); ++route) {
+            if (selected[route] < 0 || selected[route] >= w.n_expert ||
+                !std::isfinite(route_weights[route])) {
+                set_last_error("Kimi-K3 P58 native router output is invalid");
+                return false;
+            }
+        }
+        if (!options.routed_output_provider->handles_layer(il)) {
+            set_last_error(
+                "Kimi-K3 P58 calibrated provider does not handle layer " +
+                std::to_string(il));
+            return false;
+        }
+        const MoeStreamExpertSpec spec = make_kimi_k3_stream_spec(w, layer);
+        MoeStreamRouteBatch routes;
+        routes.layer = il - w.n_dense_lead;
+        routes.n_expert = w.n_expert;
+        routes.top_k = w.n_expert_used;
+        routes.n_tokens = kMacroWidth;
+        routes.inputs = routed.data();
+        routes.selected_ids = selected.data();
+        routes.selected_weights = route_weights.data();
+        std::vector<float> routed_output;
+        std::string provider_error;
+        phase_begin = Clock::now();
+        if (!options.routed_output_provider->evaluate(
+                il, base_pos, spec, routes, *stream_engine,
+                routed_output, &provider_error)) {
+            set_last_error(
+                "Kimi-K3 P58 routed layer " + std::to_string(il) +
+                " failed: " + provider_error);
+            return false;
+        }
+        expert_ns += elapsed_ns(phase_begin);
+        if (routed_output.size() !=
+            static_cast<size_t>(w.n_expert_latent) * kMacroWidth) {
+            set_last_error("Kimi-K3 P58 provider returned an invalid shape");
+            return false;
+        }
+
+        phase_begin = Clock::now();
+        std::vector<float> next_hidden(hidden_values);
+        for (int token = 0; token < kMacroWidth; ++token) {
+            if (!exact_multirow_join_row(
+                    backend, w, layer,
+                    prefix.data() +
+                        static_cast<size_t>(token) * hidden_width,
+                    routed_output.data() + static_cast<size_t>(token) *
+                        w.n_expert_latent,
+                    shared.data() +
+                        static_cast<size_t>(token) * hidden_width,
+                    next_hidden.data() +
+                        static_cast<size_t>(token) * hidden_width)) {
+                return false;
+            }
+        }
+        join_ns += elapsed_ns(phase_begin);
+        hidden.swap(next_hidden);
+    }
+
+    if (options.read_logits) {
+        result.logits.resize(
+            static_cast<size_t>(w.n_vocab) * kMacroWidth);
+    }
+    if (options.read_argmax) result.argmax.resize(kMacroWidth);
+    phase_begin = Clock::now();
+    for (int token = 0; token < kMacroWidth; ++token) {
+        if (!exact_multirow_output_row(
+                backend, w,
+                hidden.data() + static_cast<size_t>(token) * hidden_width,
+                token, checkpoints, options, result)) {
+            return false;
+        }
+    }
+    output_ns += elapsed_ns(phase_begin);
+    cache.cur_pos = base_pos + kMacroWidth;
+    recurrent_guard.restore();
+
+    const char * profile = std::getenv("DFLASH_KIMI_STAGE_PROFILE");
+    if (profile && *profile && std::strcmp(profile, "0") != 0) {
+        const uint64_t total_ns = elapsed_ns(total_begin);
+        const uint64_t classified = core_ns + expert_ns + join_ns + output_ns;
+        std::fprintf(stderr,
+            "[kimi-k3-p58-stage] position=%d tokens=8 total_ms=%.3f "
+            "one_row_core_ms=%.3f experts_ms=%.3f one_row_join_ms=%.3f "
+            "one_row_output_ms=%.3f other_ms=%.3f\n",
+            base_pos, total_ns / 1.0e6, core_ns / 1.0e6,
+            expert_ns / 1.0e6, join_ns / 1.0e6, output_ns / 1.0e6,
+            (total_ns > classified ? total_ns - classified : 0) / 1.0e6);
+    }
+    return true;
 }
 
 bool streamed_kimi_k3_forward(
@@ -3419,6 +3974,7 @@ void reset_kimi_k3_cache(KimiK3Cache & cache) {
     cache.snapshot_valid = false;
     cache.replay_valid = false;
     cache.recurrent_state_pristine = false;
+    cache.replay_exact_rows = false;
 }
 
 void free_kimi_k3_cache(KimiK3Cache & cache) {
@@ -3514,6 +4070,23 @@ bool kimi_k3_forward(ggml_backend_t backend,
         set_last_error("Kimi-K3 forward: ReplaySSM capture has no matching snapshot");
         return false;
     }
+    if (options.exact_multirow_core &&
+        (!options.capture_replay || n_tokens != 8 || panel_stop || panel_multi ||
+         options.capture_layer_ids || options.expert_observer ||
+         options.moe_core_offload || dual_stream_executor || routing_stats ||
+         !options.routed_output_provider ||
+         !options.routed_output_provider->supports_exact_multirow() ||
+         options.routed_output_provider->requires_device_output())) {
+        set_last_error(
+            "Kimi-K3 forward: P58 exact multirow request is outside its "
+            "qualified envelope");
+        return false;
+    }
+    if (options.exact_multirow_core && !w.routed_experts_streamed) {
+        set_last_error(
+            "Kimi-K3 forward: P58 exact multirow requires streamed experts");
+        return false;
+    }
 
     if (w.routed_experts_streamed) {
         if (!panel_stop && (!stream_engine || !stream_engine->is_bound())) {
@@ -3528,10 +4101,15 @@ bool kimi_k3_forward(ggml_backend_t backend,
                 "executor and an ownership policy");
             return false;
         }
-        if (!streamed_kimi_k3_forward(
+        const bool forward_ok = options.exact_multirow_core
+            ? streamed_kimi_k3_forward_exact_multirow(
+                backend, w, cache, tokens, base_pos, options, result,
+                stream_engine)
+            : streamed_kimi_k3_forward(
                 backend, w, cache, tokens, base_pos, options, result,
                 stream_engine, dual_stream_executor,
-                stream_owner_policy, routing_stats)) {
+                stream_owner_policy, routing_stats);
+        if (!forward_ok) {
             return false;
         }
         if (options.capture_replay) {
@@ -3539,9 +4117,11 @@ bool kimi_k3_forward(ggml_backend_t backend,
             cache.replay_n_tokens = n_tokens;
             cache.replay_valid = true;
             cache.recurrent_state_pristine = true;
+            cache.replay_exact_rows = options.exact_multirow_core;
         } else {
             cache.replay_valid = false;
             cache.recurrent_state_pristine = false;
+            cache.replay_exact_rows = false;
         }
         return true;
     }
@@ -3705,6 +4285,7 @@ bool kimi_k3_replay_snapshot(ggml_backend_t backend, KimiK3Cache & cache) {
     cache.snapshot_valid = true;
     cache.replay_valid = false;
     cache.recurrent_state_pristine = true;
+    cache.replay_exact_rows = false;
     return true;
 }
 
@@ -3724,6 +4305,7 @@ bool kimi_k3_replay_restore(ggml_backend_t backend, KimiK3Cache & cache) {
     cache.cur_pos = cache.snapshot_pos;
     cache.replay_valid = false;
     cache.recurrent_state_pristine = true;
+    cache.replay_exact_rows = false;
     return true;
 }
 
@@ -3738,47 +4320,63 @@ bool kimi_k3_replay_commit(ggml_backend_t backend,
         commit_n > cache.replay_n_tokens) {
         return false;
     }
-
-    ggml_init_params params{};
-    params.mem_size = 64ull * 1024ull * 1024ull;
-    params.no_alloc = true;
-    ggml_context * ctx = ggml_init(params);
-    if (!ctx) return false;
-    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 32768, false);
-    for (int il = 0; il < w.n_layer; ++il) {
-        const KimiK3Layer & layer = w.layers[static_cast<size_t>(il)];
-        if (!layer.recurrent) continue;
-        KimiK3LayerCache & layer_cache = cache.layers[static_cast<size_t>(il)];
-        if (!layer_cache.replay_input) {
+    const bool exact_rows = cache.replay_exact_rows;
+    cache.recurrent_state_pristine = false;
+    const auto commit_span = [&](int token_offset, int token_count) {
+        ggml_init_params params{};
+        params.mem_size = 64ull * 1024ull * 1024ull;
+        params.no_alloc = true;
+        ggml_context * ctx = ggml_init(params);
+        if (!ctx) return false;
+        ggml_cgraph * graph = ggml_new_graph_custom(ctx, 32768, false);
+        for (int il = 0; il < w.n_layer; ++il) {
+            const KimiK3Layer & layer = w.layers[static_cast<size_t>(il)];
+            if (!layer.recurrent) continue;
+            KimiK3LayerCache & layer_cache =
+                cache.layers[static_cast<size_t>(il)];
+            if (!layer_cache.replay_input) {
+                ggml_free(ctx);
+                return false;
+            }
+            ggml_tensor * replay = ggml_view_2d(
+                ctx, layer_cache.replay_input, w.n_embd, token_count,
+                layer_cache.replay_input->nb[1],
+                static_cast<size_t>(token_offset) *
+                    layer_cache.replay_input->nb[1]);
+            (void)build_kda(
+                ctx, graph, w, layer, layer_cache, replay,
+                /*commit_state=*/true,
+                /*capture_replay=*/false);
+        }
+        ggml_gallocr_t allocator = ggml_gallocr_new(
+            ggml_backend_get_default_buffer_type(backend));
+        if (!allocator || !ggml_gallocr_alloc_graph(allocator, graph)) {
+            if (allocator) ggml_gallocr_free(allocator);
             ggml_free(ctx);
             return false;
         }
-        ggml_tensor * replay = ggml_view_2d(
-            ctx, layer_cache.replay_input, w.n_embd, commit_n,
-            layer_cache.replay_input->nb[1], 0);
-        (void)build_kda(ctx, graph, w, layer, layer_cache, replay,
-                        /*commit_state=*/true,
-                        /*capture_replay=*/false);
-    }
-
-    ggml_gallocr_t allocator = ggml_gallocr_new(
-        ggml_backend_get_default_buffer_type(backend));
-    if (!allocator || !ggml_gallocr_alloc_graph(allocator, graph)) {
-        if (allocator) ggml_gallocr_free(allocator);
+        const ggml_status status = ggml_backend_graph_compute(backend, graph);
+        ggml_gallocr_free(allocator);
         ggml_free(ctx);
-        return false;
+        return status == GGML_STATUS_SUCCESS;
+    };
+
+    bool commit_ok = true;
+    if (exact_rows) {
+        for (int token = 0; token < commit_n && commit_ok; ++token) {
+            commit_ok = commit_span(token, 1);
+        }
+    } else {
+        commit_ok = commit_span(0, commit_n);
     }
-    cache.recurrent_state_pristine = false;
-    const ggml_status status = ggml_backend_graph_compute(backend, graph);
-    ggml_gallocr_free(allocator);
-    ggml_free(ctx);
-    if (status != GGML_STATUS_SUCCESS) {
+    if (!commit_ok) {
         (void)kimi_k3_replay_restore(backend, cache);
         return false;
     }
     cache.cur_pos = base_pos + commit_n;
     cache.snapshot_valid = false;
     cache.replay_valid = false;
+    cache.replay_exact_rows = false;
     return true;
 }
 

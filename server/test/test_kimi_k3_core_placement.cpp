@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 
 using namespace dflash::common;
 
@@ -33,14 +34,65 @@ int main() {
     REQUIRE(prefill_chunk == 2);
     REQUIRE(parse_kimi_k3_prefill_chunk("4", prefill_chunk));
     REQUIRE(prefill_chunk == 4);
+    REQUIRE(parse_kimi_k3_prefill_chunk("8", prefill_chunk));
+    REQUIRE(prefill_chunk == 8);
     REQUIRE(!parse_kimi_k3_prefill_chunk("0", prefill_chunk));
-    REQUIRE(!parse_kimi_k3_prefill_chunk("8", prefill_chunk));
     REQUIRE(!parse_kimi_k3_prefill_chunk("2x", prefill_chunk));
+
+    REQUIRE(kimi_k3_prefill_chunk_size(16, 8, true) == 8);
+    REQUIRE(kimi_k3_prefill_chunk_size(8, 8, true) == 8);
+    REQUIRE(kimi_k3_prefill_chunk_size(7, 8, true) == 1);
+    REQUIRE(kimi_k3_prefill_chunk_size(3, 2, false) == 2);
+    REQUIRE(kimi_k3_prefill_chunk_size(1, 4, false) == 1);
+    REQUIRE(kimi_k3_p58_configuration_valid(1, false));
+    REQUIRE(kimi_k3_p58_configuration_valid(4, false));
+    REQUIRE(kimi_k3_p58_configuration_valid(8, true));
+    REQUIRE(!kimi_k3_p58_configuration_valid(8, false));
+    REQUIRE(!kimi_k3_p58_configuration_valid(4, true));
+    REQUIRE(kimi_k3_p58_oracle_candidate(true, 8, true));
+    REQUIRE(!kimi_k3_p58_oracle_candidate(true, 8, false));
+    REQUIRE(!kimi_k3_p58_oracle_candidate(true, 4, true));
+    REQUIRE(!kimi_k3_p58_oracle_candidate(false, 8, true));
 
     std::string error;
     ggml_backend_t cpu = init_kimi_k3_core_backend(
         KimiK3CorePlacement::Cpu, 0, &error);
     REQUIRE(cpu != nullptr);
+
+    ggml_init_params params{};
+    params.mem_size = 4096;
+    params.no_alloc = true;
+    ggml_context * ctx = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+    KimiK3Weights embedding_weights;
+    embedding_weights.n_embd = 4;
+    embedding_weights.n_vocab = 2;
+    embedding_weights.tok_embd = ggml_new_tensor_2d(
+        ctx, GGML_TYPE_F16, embedding_weights.n_embd,
+        embedding_weights.n_vocab);
+    ggml_backend_buffer_t embedding_buffer =
+        ggml_backend_alloc_ctx_tensors(ctx, cpu);
+    REQUIRE(embedding_buffer != nullptr);
+    const ggml_fp16_t embedding_values[] = {
+        ggml_fp32_to_fp16(1.0f), ggml_fp32_to_fp16(2.0f),
+        ggml_fp32_to_fp16(3.0f), ggml_fp32_to_fp16(4.0f),
+        ggml_fp32_to_fp16(5.0f), ggml_fp32_to_fp16(6.0f),
+        ggml_fp32_to_fp16(7.0f), ggml_fp32_to_fp16(8.0f),
+    };
+    ggml_backend_tensor_set(
+        embedding_weights.tok_embd, embedding_values, 0,
+        sizeof(embedding_values));
+    std::vector<float> embedding_row(
+        static_cast<size_t>(embedding_weights.n_embd));
+    REQUIRE(kimi_k3_read_token_embeddings_on_host(
+        embedding_weights, {1}, embedding_row));
+    REQUIRE(embedding_row ==
+        std::vector<float>({5.0f, 6.0f, 7.0f, 8.0f}));
+    std::vector<float> invalid_embedding_row;
+    REQUIRE(!kimi_k3_read_token_embeddings_on_host(
+        embedding_weights, {1}, invalid_embedding_row));
+    ggml_backend_buffer_free(embedding_buffer);
+    ggml_free(ctx);
     ggml_backend_free(cpu);
 
     std::printf("Kimi K3 core placement test passed\n");
