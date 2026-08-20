@@ -367,6 +367,8 @@ struct MlaInternalTraceTensors {
     ggml_tensor * output = nullptr;
 };
 
+bool serial_offloaded_moe_rows_enabled();
+
 ggml_tensor * build_mla(ggml_context * ctx,
                         ggml_cgraph * graph,
                         const KimiK3Weights & w,
@@ -450,7 +452,25 @@ ggml_tensor * build_mla(ggml_context * ctx,
         1.0f / std::sqrt(static_cast<float>(key_dim)), 0.0f);
     if (trace) trace->probabilities = ggml_cont(ctx, probabilities);
     if (!v_trans) v = ggml_cont(ctx, ggml_transpose(ctx, v));
-    ggml_tensor * out = ggml_mul_mat(ctx, v, probabilities);
+    ggml_tensor * out = nullptr;
+    if (n_tokens > 1 && serial_offloaded_moe_rows_enabled()) {
+        for (int token = 0; token < n_tokens; ++token) {
+            const int64_t causal_length = position + token + 1;
+            ggml_tensor * v_prefix = ggml_view_2d(
+                ctx, v, causal_length, kv_rank, v->nb[1], 0);
+            v_prefix = ggml_cont(ctx, v_prefix);
+            ggml_tensor * probability_row = ggml_view_3d(
+                ctx, probabilities, causal_length, 1, n_head,
+                probabilities->nb[1], probabilities->nb[2],
+                static_cast<size_t>(token) * probabilities->nb[1]);
+            probability_row = ggml_cont(ctx, probability_row);
+            ggml_tensor * row = ggml_mul_mat(
+                ctx, v_prefix, probability_row);
+            out = out ? ggml_concat(ctx, out, row, 1) : row;
+        }
+    } else {
+        out = ggml_mul_mat(ctx, v, probabilities);
+    }
     if (trace) trace->latent = ggml_cont(ctx, out);
     out = ggml_mul_mat(ctx, layer.wv_b, out);
     if (trace) trace->projected = ggml_cont(ctx, out);
