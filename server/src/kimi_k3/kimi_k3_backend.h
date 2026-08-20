@@ -40,6 +40,23 @@ inline bool parse_kimi_k3_core_placement(
     return false;
 }
 
+// P57 intentionally starts with widths that have bounded exactness evidence.
+// Larger macrochunks remain a separate P58 decision after this gate.
+inline bool parse_kimi_k3_prefill_chunk(
+        const char * value, int & out) {
+    out = 1;
+    if (!value || !*value || std::string(value) == "1") return true;
+    if (std::string(value) == "2") {
+        out = 2;
+        return true;
+    }
+    if (std::string(value) == "4") {
+        out = 4;
+        return true;
+    }
+    return false;
+}
+
 // Initialize the backend that owns KDA, MLA, shared experts, and the output
 // head. Routed experts may independently use the exact NVMe stream engine on
 // an accelerator.
@@ -181,6 +198,7 @@ private:
     MoeStreamDualOwnerPolicy stream_owner_policy_;
     std::shared_ptr<MoeHybridRoutingStats> routing_stats_;
     std::string routing_stats_out_path_;
+    int prefill_chunk_ = 1;
     bool prefill_census_ = false;
     bool parked_ = false;
     std::mt19937_64 rng_{std::random_device{}()};

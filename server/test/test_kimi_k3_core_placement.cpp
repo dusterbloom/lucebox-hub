@@ -22,6 +22,21 @@ int main() {
     REQUIRE(placement == KimiK3CorePlacement::Accelerator);
     REQUIRE(!parse_kimi_k3_core_placement("gpu", placement));
 
+    int prefill_chunk = 0;
+    REQUIRE(parse_kimi_k3_prefill_chunk(nullptr, prefill_chunk));
+    REQUIRE(prefill_chunk == 1);
+    REQUIRE(parse_kimi_k3_prefill_chunk("", prefill_chunk));
+    REQUIRE(prefill_chunk == 1);
+    REQUIRE(parse_kimi_k3_prefill_chunk("1", prefill_chunk));
+    REQUIRE(prefill_chunk == 1);
+    REQUIRE(parse_kimi_k3_prefill_chunk("2", prefill_chunk));
+    REQUIRE(prefill_chunk == 2);
+    REQUIRE(parse_kimi_k3_prefill_chunk("4", prefill_chunk));
+    REQUIRE(prefill_chunk == 4);
+    REQUIRE(!parse_kimi_k3_prefill_chunk("0", prefill_chunk));
+    REQUIRE(!parse_kimi_k3_prefill_chunk("8", prefill_chunk));
+    REQUIRE(!parse_kimi_k3_prefill_chunk("2x", prefill_chunk));
+
     std::string error;
     ggml_backend_t cpu = init_kimi_k3_core_backend(
         KimiK3CorePlacement::Cpu, 0, &error);

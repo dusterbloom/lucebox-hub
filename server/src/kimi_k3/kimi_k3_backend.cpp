@@ -1150,11 +1150,46 @@ bool KimiK3Backend::init() {
         return false;
     }
     std::string backend_error;
+    if (!parse_kimi_k3_prefill_chunk(
+            std::getenv("DFLASH_KIMI_PREFILL_CHUNK"), prefill_chunk_)) {
+        std::fprintf(stderr,
+            "[kimi-k3] DFLASH_KIMI_PREFILL_CHUNK must be 1, 2, or 4\n");
+        return false;
+    }
     if (!parse_optional_binary_environment(
             "DFLASH_KIMI_P56_PREFILL_CENSUS", prefill_census_,
             backend_error)) {
         std::fprintf(stderr, "[kimi-k3] %s\n", backend_error.c_str());
         return false;
+    }
+    if (prefill_chunk_ > 1) {
+        if ((cfg_.draft_path && *cfg_.draft_path) ||
+            (std::getenv("DFLASH_KIMI_H16_CANDIDATE_LOGITS_OUT") &&
+             *std::getenv("DFLASH_KIMI_H16_CANDIDATE_LOGITS_OUT"))) {
+            std::fprintf(stderr,
+                "[kimi-k3] chunked prefill is incompatible with drafting "
+                "and paired H16 execution\n");
+            return false;
+        }
+        for (const char * name : {
+                 "DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN",
+                 "DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE",
+                 "DFLASH_KIMI_P46_PERSISTENT_ROUTED_PREP",
+                 "DFLASH_KIMI_P52_PERSISTENT_ROUTED_JOIN",
+                 "DFLASH_KIMI_P53_DEVICE_HIDDEN_CHAIN"}) {
+            bool enabled = false;
+            if (!parse_optional_binary_environment(
+                    name, enabled, backend_error)) {
+                std::fprintf(stderr, "[kimi-k3] %s\n", backend_error.c_str());
+                return false;
+            }
+            if (enabled) {
+                std::fprintf(stderr,
+                    "[kimi-k3] chunked prefill is incompatible with %s\n",
+                    name);
+                return false;
+            }
+        }
     }
     backend_ = init_kimi_k3_core_backend(
         cfg_.core_placement, cfg_.device.primary_gpu(), &backend_error);
@@ -1193,13 +1228,14 @@ bool KimiK3Backend::init() {
     if (weights_.routed_experts_streamed && !init_streaming()) return false;
     std::fprintf(stderr,
         "[kimi-k3] native backend ready core=%s:%d (max_ctx=%d, "
-        "experts=%s, correctness-first sequential prefill)\n",
+        "experts=%s, prefill-chunk=%d)\n",
         kimi_k3_core_placement_name(cfg_.core_placement),
         cfg_.device.primary_gpu(), max_ctx,
         !weights_.routed_experts_streamed ? "resident" :
             (cfg_.core_placement == KimiK3CorePlacement::Cpu
                 ? "nvme-accelerator" :
-                (expert_backend_ ? "nvme-dual-owner" : "nvme-single-owner")));
+                (expert_backend_ ? "nvme-dual-owner" : "nvme-single-owner")),
+        prefill_chunk_);
     std::fflush(stderr);
     return true;
 }
@@ -1683,10 +1719,10 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
                 expected_rows * static_cast<size_t>(weights_.n_vocab));
         }
     }
-    const auto append_logits_trace = [&]() {
+    const auto append_logits_trace = [&](const std::vector<float> & rows) {
         if (trace_logits) {
             logits_trace.insert(
-                logits_trace.end(), logits.begin(), logits.end());
+                logits_trace.end(), rows.begin(), rows.end());
         }
     };
     auto * spec_target = static_cast<KimiK3DFlashTarget *>(dflash_target());
@@ -1760,9 +1796,46 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
         prefill_census_ ? process_storage_read_bytes() : 0;
     size_t prefill_forward_calls = 0;
     const auto prefill_begin = std::chrono::steady_clock::now();
-    for (size_t i = 0; i < req.prompt.size(); ++i) {
-        const bool ok = forward_token(
-            req.prompt[i], static_cast<int>(i));
+    for (size_t i = 0; i < req.prompt.size();) {
+        const size_t chunk = std::min(
+            static_cast<size_t>(prefill_chunk_), req.prompt.size() - i);
+        bool ok = false;
+        if (chunk == 1) {
+            ok = forward_token(req.prompt[i], static_cast<int>(i));
+            if (ok) append_logits_trace(logits);
+        } else {
+            KimiK3ForwardOptions options;
+            options.read_logits = true;
+            options.read_argmax = false;
+            options.routed_output_provider = routed_output_provider_.get();
+            options.moe_core_offload = moe_core_offload_.enabled()
+                ? &moe_core_offload_ : nullptr;
+            KimiK3ForwardResult forward_result;
+            const std::vector<int32_t> tokens(
+                req.prompt.begin() + static_cast<std::ptrdiff_t>(i),
+                req.prompt.begin() + static_cast<std::ptrdiff_t>(i + chunk));
+            ok = kimi_k3_forward(
+                backend_, weights_, cache_, tokens, static_cast<int>(i),
+                options, forward_result, &stream_engine_,
+                dual_stream_executor_.is_ready()
+                    ? &dual_stream_executor_ : nullptr,
+                &stream_owner_policy_, routing_stats_.get());
+            if (ok) {
+                maybe_release_kimi_mapped_pages(weights_);
+                append_logits_trace(forward_result.logits);
+                const size_t vocabulary =
+                    static_cast<size_t>(weights_.n_vocab);
+                if (forward_result.logits.size() != chunk * vocabulary) {
+                    ok = false;
+                    paired_failure =
+                        "chunked prefill returned an invalid logits shape";
+                } else {
+                    logits.assign(
+                        forward_result.logits.end() - vocabulary,
+                        forward_result.logits.end());
+                }
+            }
+        }
         if (!ok) {
             result.fail(GenerateErrorCode::PrefillFailed,
                         paired_failure.empty()
@@ -1771,7 +1844,7 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
             return result;
         }
         ++prefill_forward_calls;
-        append_logits_trace();
+        i += chunk;
     }
     const auto prefill_end = std::chrono::steady_clock::now();
     result.prefill_s = std::chrono::duration<double>(prefill_end - prefill_begin).count();
@@ -1963,7 +2036,7 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
                 out_io.emit(-1);
                 return result;
             }
-            append_logits_trace();
+            append_logits_trace(logits);
         }
     }
     const auto decode_end = std::chrono::steady_clock::now();
