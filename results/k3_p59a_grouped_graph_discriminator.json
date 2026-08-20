@@ -1,0 +1,221 @@
+{
+  "schema": "k3-p59a-grouped-graph-discriminator-v1",
+  "date": "2026-08-20",
+  "status": "EXACT_COMPUTE_ROOFLINE_GROUPING_NO_GO",
+  "platform": "Lucebox4 ROCm/HIP gfx1201+gfx1151",
+  "default_enabled": false,
+  "model_run": false,
+  "broad_run": false,
+  "source": {
+    "base_head": "6ed55b4528b8a29888e91a840af58c9282e80ac8",
+    "qualification_commit": null,
+    "working_tree_snapshot": true,
+    "snapshot_files_sha256": {
+      "scripts/build_kimi_k3_compact_schedule.py": "e6502698117070ccbe2575f72b4fd851b37b5f43b4f758f8093b4abd01e8905d",
+      "server/CMakeLists.txt": "ee221f84c7aed711d23a246f07c542ac47f1c36ca0c40e141f47334d7e4f58ef",
+      "server/src/kimi_k3/kimi_k3_progressive_provider.cpp": "5f85dd674c6124b975e6e0783d19e23f321495b00d0776eaf4f7a8127464b23a",
+      "server/tests/test_kimi_k3_compact_schedule.py": "8411043ceba11d89ff3d71008fc62f6d89a456a6260317cd7a68450d148898af",
+      "server/test/bench_kimi_k3_p59_grouped_graph.cpp": "9ced3317e551cfe6a16bfe546bf57719652e5cfeda251cfc376a4424df25443a",
+      "server/test/kimi_k3_p59_grouped_graph_sentinel.inc": "23c1657c4a0438eeebd0a69ba3c4a4cfff6c9c89065693158fc61dec5e3aade6"
+    },
+    "raw_diff_loc": {
+      "added": 2106,
+      "deleted": 6,
+      "net": 2100
+    },
+    "post_decision": {
+      "implementation_removed": true,
+      "added_lines_removed": 2106,
+      "head_lines_restored": 6,
+      "six_scoped_files_match_head_or_are_absent": true
+    }
+  },
+  "first_failure": {
+    "status": "INVALID_BENCHMARK_BOUNDARY",
+    "failed_device": "gpu0:gfx1201",
+    "discriminator": "A0 immediate singleton serial replay without poison, grouping, dummy, or reupload",
+    "a0_failed": true,
+    "proven_root_cause": "the retained op-NONE leaf residency assumption is invalid; the same singleton serial graph fails without reupload before grouping, dummy insertion, or graph capture",
+    "allocator_lifetime_diagnosis": "gallocr may reuse a leaf after its last consumer; output/gate-leaf reuse was the strongest specific mechanism from static allocator and tensor-range review",
+    "gate_output_overlap_directly_archived": false,
+    "diagnostic_evidence_limit": "no retained log records the candidate gate/output addresses",
+    "arithmetic_implicated": false,
+    "prediagnostic_snapshot": {
+      "path": "/tmp/p59-gpu0-failure-6ed55b4-20260820.tar",
+      "durability": "ephemeral path; hash retained",
+      "sha256": "360199344e9f3911ab4cfcf7725b351496a1e98b84ffe5af0baf96c10d62153c"
+    }
+  },
+  "corrected_boundary": {
+    "allocation": "group-owned static leaves plus dedicated persistent outputs plus grouped-only gallocr scratch",
+    "static_leaves": ["shared causal input", "gate", "up", "down", "natural_to_compact map", "dummy input"],
+    "serial_grouped_share_exact_nodes_and_buffers": true,
+    "persistent_leaf_replays_without_h2d": 2,
+    "fresh_synchronous_p41_teacher": true,
+    "poison_and_synchronize_before_grouped_parity": true,
+    "singleton_prequalification": true,
+    "mixed_map_multi_job_prequalification": true,
+    "publication_mode": "compute-only",
+    "execution_mode": "grouped GGML submission; HIP graph capture disabled"
+  },
+  "p56_weighting": {
+    "method": "exact causal geometry weighting with first-occurrence representative real maps; not a full-map replay",
+    "grouped_topology_key": ["spec_id", "prefix_depth", "bucket_size"],
+    "positions": 552,
+    "layer_groups": 50784,
+    "jobs": 223579,
+    "causal_full_spec_depth_buckets": 151947,
+    "observed_cells": 131,
+    "representative_jobs": 459,
+    "bucket_size_histogram": {
+      "1": 112791,
+      "2": 26408,
+      "3": 6483,
+      "4": 2391,
+      "5": 1155,
+      "6": 819,
+      "7": 410,
+      "8": 389,
+      "9": 206,
+      "10": 283,
+      "11": 103,
+      "12": 271,
+      "13": 125,
+      "14": 101,
+      "15": 12
+    },
+    "singleton_buckets": 112791,
+    "singleton_bucket_rate": 0.7423048826235463,
+    "singleton_jobs": 112791,
+    "singleton_job_rate": 0.5044794010170901,
+    "trace_sha256": "248548c73d396eca091aca34a02f5435df02eace471268be002eb5af319268e1",
+    "manifest_sha256": "6655058414d94c2b2667ff278ac3b59324b58b774f5332a92b4a038d35861707",
+    "jobs_tsv_sha256": "4428473c66679278f1936b61d03bef54d887f3774615235ebebb963f18729a14",
+    "schedule_json_sha256": "cbd52a51d4d4e6280d21ea782b5ff8c581a121baaf751cb89014301866a52f88",
+    "cell_fingerprint_fnv1a64": "4145dd556b954ea4",
+    "representative_real_maps_fnv1a64": "9c099cb4948005dc"
+  },
+  "qualification": {
+    "device": {
+      "index": 0,
+      "architecture": "gfx1201",
+      "description": "AMD Radeon Graphics",
+      "vram_mib": 32624
+    },
+    "gpu1": {
+      "index": 1,
+      "architecture": "gfx1151",
+      "status": "NOT_RUN_PREREGISTERED_STOP_AFTER_GPU0_NO_GO"
+    },
+    "build": {
+      "type": "Release",
+      "dedicated_option": "DFLASH_KIMI_P59_GROUPED_BENCH=ON",
+      "ccache_disabled": true,
+      "parallelism_cap": 4,
+      "configure_exit": 0,
+      "build_exit": 0,
+      "release_contract_self_test_exit": 0,
+      "release_contract_self_test_status": "PASS",
+      "hip_graph_capture_compiled": false,
+      "graph_capture_globally_enabled": false,
+      "graph_capture_global_env_disabled": false,
+      "benchmark_binary_sha256": "26dcc3223afd99a6123a428aa2173dfbe3149f84a8ef96d3313fea811461dc76"
+    },
+    "correctness": {
+      "benchmark_exit": 2,
+      "exit_meaning": "measured performance or stability NO_GO",
+      "byte_equal_to_synchronous_p41_for_every_cell": true,
+      "observed_cells_checked": 131,
+      "payload_h2d_bytes_in_timed_windows": 0,
+      "storage_bytes_in_timed_windows": 0,
+      "peak_static_leaf_buffer_bytes": 45174656,
+      "peak_persistent_output_buffer_bytes": 215168,
+      "peak_gallocr_scratch_buffer_bytes": 24576,
+      "peak_evaluator_buffer_bytes": 45299712,
+      "evaluator_buffer_cap_bytes": 536870912,
+      "evaluator_buffer_cap_passed": true
+    },
+    "timing": {
+      "timing_trials_per_cell": 7,
+      "alternating_execution_order": true,
+      "micro_cell_median": {
+        "serial_ms": 0.199679,
+        "grouped_ms": 0.161839,
+        "speedup": 1.1816423141699668
+      },
+      "projected_serial_device_window_ms": 16665.81896,
+      "projected_grouped_device_window_ms": 15409.226588,
+      "projected_speedup": 1.0815480494639864,
+      "projected_positions_per_second": 35.822693426409366,
+      "projected_serial_graph_submissions": 223579,
+      "projected_grouped_graph_submissions": 151947,
+      "projected_serial_synchronizations": 223579,
+      "projected_grouped_synchronizations": 151947,
+      "trial_controls": [
+        {"trial": 0, "serial_ms": 17978.80245, "grouped_ms": 16586.219937, "speedup": 1.0839602102401569, "positions_per_second": 33.28063911467955},
+        {"trial": 1, "serial_ms": 17291.716333, "grouped_ms": 16311.15553, "speedup": 1.0601159618149996, "positions_per_second": 33.841869693704034},
+        {"trial": 2, "serial_ms": 16866.63486, "grouped_ms": 15531.452434, "speedup": 1.0859663596610671, "positions_per_second": 35.54078424704269},
+        {"trial": 3, "serial_ms": 17337.653143, "grouped_ms": 15403.480313, "speedup": 1.1255672608201164, "positions_per_second": 35.836057097702216},
+        {"trial": 4, "serial_ms": 16610.084483, "grouped_ms": 15390.71525, "speedup": 1.0792275870999564, "positions_per_second": 35.865779532241035},
+        {"trial": 5, "serial_ms": 16701.106547, "grouped_ms": 15359.148035, "speedup": 1.0873719368380317, "positions_per_second": 35.9394934368832},
+        {"trial": 6, "serial_ms": 16577.119815, "grouped_ms": 15159.303673, "speedup": 1.0935277881216439, "positions_per_second": 36.413282028458774}
+      ],
+      "projected_trial_full_spread_fraction": {
+        "serial": 0.08310387025239722,
+        "grouped": 0.09263596505497089,
+        "maximum": 0.02,
+        "passed": false
+      },
+      "whole_process_elapsed_seconds": 18.70,
+      "whole_process_max_rss_kib": 406824
+    },
+    "gates": {
+      "minimum": {
+        "positions_per_second_required": 20.0,
+        "positions_per_second_passed": true,
+        "speedup_required": 1.16,
+        "speedup_passed": false,
+        "spread_passed": false,
+        "overall_passed": false
+      },
+      "preferred": {
+        "positions_per_second_required": 24.0,
+        "positions_per_second_passed": true,
+        "speedup_required": 1.20,
+        "speedup_passed": false,
+        "spread_passed": false,
+        "overall_passed": false
+      }
+    },
+    "system": {
+      "kfd_processes_before": 0,
+      "kfd_processes_after": 0,
+      "swap_used_mib_before": 2.3,
+      "swap_used_mib_after": 2.3,
+      "pswpin_before": 12274,
+      "pswpin_after": 12274,
+      "pswpout_before": 15119,
+      "pswpout_after": 15119,
+      "timed_command_swaps": 0
+    },
+    "artifacts": {
+      "root": "/home/duster/kimi-k3-deploy/p59a-g0-corrected-20260820",
+      "artifact_manifest_sha256": "fad791670956f41b946a3d9a83caae17166017b0a8253d0d05358808d8b56523",
+      "gpu0_json_sha256": "6c57eb7ce36eae385e387faa5576957a6ac79b7e1566de9c6a81afe4746fbc7e",
+      "gpu0_stderr_sha256": "5c31acb273c6d0f86e42e2099a058f7c391aa0c5a8c6814e154a88970f016619",
+      "gpu0_time_sha256": "3f79307f17a2ef2b966b93b8886bf4f4c7bf2fb74fa8d987063e1f73c004b2c7",
+      "gpu0_postflight_sha256": "186c18d1653c6ae41661ee6f023722351b3ee0e52f44d8745da5141ff0dd6efe"
+    }
+  },
+  "decision": {
+    "exactness_gate": "PASS",
+    "absolute_compute_roofline": "PASS",
+    "minimum_activation_gate": "FAIL",
+    "preferred_activation_gate": "FAIL",
+    "control_spread_gate": "FAIL",
+    "gpu1_run": false,
+    "p59b_custom_descriptor_kernel": "GATED_OFF",
+    "implementation_retained": false,
+    "next_step": "Run the bounded P60 GPU1 router/policy/job-descriptor preparation discriminator. Reopen P59B only if a separately measured critical path can clear the 1.16x gate; otherwise compare P60 with exact multi-token proposal/verification work."
+  }
+}
