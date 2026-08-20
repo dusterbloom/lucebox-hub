@@ -4923,6 +4923,51 @@ public:
             false, err);
     }
 
+    KimiK3RoutedRuntimeStats runtime_stats() const override {
+        KimiK3RoutedRuntimeStats result;
+        for (const LayerState & state : layers_) {
+            result.logical_provider_bytes +=
+                state.traffic.selected_sidecar_bytes +
+                state.traffic.exact_fallback_bytes;
+        }
+        result.explicit_read_bytes = explicit_read_bytes_;
+        result.physical_direct_read_bytes = direct_physical_bytes_;
+        result.direct_io_ns = direct_io_ns_;
+        result.payload_h2d_bytes = authoritative_h2d_bytes_;
+        result.metadata_h2d_bytes = metadata_h2d_bytes_;
+        result.compact_pack_ns = sparse_device_evaluator_.compact_pack_ns();
+        result.expert_graph_ns = sparse_device_evaluator_.expert_graph_ns();
+        result.expert_readback_ns =
+            sparse_device_evaluator_.expert_readback_ns();
+        result.compact_attempted = p41_attempted_;
+        result.compact_completed = p41_completed_;
+        result.compact_fallbacks = p41_fallbacks_;
+        result.compact_invalid = p41_invalid_;
+        const SparseDeviceExpertEvaluator::CompactAsyncStats & async =
+            sparse_device_evaluator_.compact_async_stats();
+        result.async_begins = async.begins;
+        result.async_jobs = async.jobs;
+        result.async_h2d_calls = async.h2d_calls;
+        result.async_h2d_bytes = async.h2d_bytes;
+        result.async_input_d2d_copies = async.input_d2d_copies;
+        result.async_input_d2d_bytes = async.input_d2d_bytes;
+        result.async_graph_enqueues = async.graph_enqueues;
+        result.async_layer_flushes = async.layer_flushes;
+        result.async_abort_syncs = async.abort_syncs;
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+        result.ordered_expert_d2d_copies =
+            ordered_join_arena_.expert_d2d_copies();
+        result.ordered_expert_d2d_bytes =
+            ordered_join_arena_.expert_d2d_bytes();
+        result.ordered_join_launches = ordered_join_arena_.join_launches();
+        result.ordered_output_d2d_copies =
+            ordered_join_arena_.output_d2d_copies();
+        result.ordered_output_d2d_bytes =
+            ordered_join_arena_.output_d2d_bytes();
+#endif
+        return result;
+    }
+
     bool requires_device_output() const override {
         return ordered_device_join_;
     }

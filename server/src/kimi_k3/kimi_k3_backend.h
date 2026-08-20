@@ -181,6 +181,7 @@ private:
     MoeStreamDualOwnerPolicy stream_owner_policy_;
     std::shared_ptr<MoeHybridRoutingStats> routing_stats_;
     std::string routing_stats_out_path_;
+    bool prefill_census_ = false;
     bool parked_ = false;
     std::mt19937_64 rng_{std::random_device{}()};
 };

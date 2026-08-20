@@ -10,6 +10,39 @@
 
 namespace dflash::common {
 
+// Monotonic routed-provider counters used to attribute one bounded generation
+// phase without adding per-route logging to the measured hot path. Providers
+// that do not expose these counters return an all-zero snapshot.
+struct KimiK3RoutedRuntimeStats {
+    uint64_t logical_provider_bytes = 0;
+    uint64_t explicit_read_bytes = 0;
+    uint64_t physical_direct_read_bytes = 0;
+    uint64_t direct_io_ns = 0;
+    uint64_t payload_h2d_bytes = 0;
+    uint64_t metadata_h2d_bytes = 0;
+    uint64_t compact_pack_ns = 0;
+    uint64_t expert_graph_ns = 0;
+    uint64_t expert_readback_ns = 0;
+    uint64_t compact_attempted = 0;
+    uint64_t compact_completed = 0;
+    uint64_t compact_fallbacks = 0;
+    uint64_t compact_invalid = 0;
+    uint64_t async_begins = 0;
+    uint64_t async_jobs = 0;
+    uint64_t async_h2d_calls = 0;
+    uint64_t async_h2d_bytes = 0;
+    uint64_t async_input_d2d_copies = 0;
+    uint64_t async_input_d2d_bytes = 0;
+    uint64_t async_graph_enqueues = 0;
+    uint64_t async_layer_flushes = 0;
+    uint64_t async_abort_syncs = 0;
+    uint64_t ordered_expert_d2d_copies = 0;
+    uint64_t ordered_expert_d2d_bytes = 0;
+    uint64_t ordered_join_launches = 0;
+    uint64_t ordered_output_d2d_copies = 0;
+    uint64_t ordered_output_d2d_bytes = 0;
+};
+
 // Research-only routed boundary used by H16. The exact stream engine remains
 // the immutable teacher; implementations may replace one model layer only.
 class KimiK3RoutedOutputProvider {
@@ -46,6 +79,7 @@ public:
         return false;
     }
     virtual void discard_device_output() {}
+    virtual KimiK3RoutedRuntimeStats runtime_stats() const { return {}; }
 };
 
 // An unset or "exact" DFLASH_KIMI_LAYER1_PROVIDER returns success with a null

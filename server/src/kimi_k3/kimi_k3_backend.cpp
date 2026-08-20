@@ -72,6 +72,19 @@ bool parse_teacher_forced_tokens(const char * raw,
     return true;
 }
 
+bool parse_optional_binary_environment(const char * name, bool & value,
+                                       std::string & error) {
+    value = false;
+    const char * raw = std::getenv(name);
+    if (!raw || !*raw || std::strcmp(raw, "0") == 0) return true;
+    if (std::strcmp(raw, "1") == 0) {
+        value = true;
+        return true;
+    }
+    error = std::string(name) + " must be 0 or 1";
+    return false;
+}
+
 uint64_t process_storage_read_bytes() {
 #if defined(_WIN32)
     return 0;
@@ -90,6 +103,100 @@ uint64_t process_storage_read_bytes() {
     std::fclose(input);
     return result;
 #endif
+}
+
+uint64_t monotonic_delta(uint64_t after, uint64_t before) {
+    return after >= before ? after - before : 0;
+}
+
+KimiK3RoutedRuntimeStats routed_stats_delta(
+        const KimiK3RoutedRuntimeStats & after,
+        const KimiK3RoutedRuntimeStats & before) {
+    KimiK3RoutedRuntimeStats result;
+#define KIMI_K3_DELTA(field) \
+    result.field = monotonic_delta(after.field, before.field)
+    KIMI_K3_DELTA(logical_provider_bytes);
+    KIMI_K3_DELTA(explicit_read_bytes);
+    KIMI_K3_DELTA(physical_direct_read_bytes);
+    KIMI_K3_DELTA(direct_io_ns);
+    KIMI_K3_DELTA(payload_h2d_bytes);
+    KIMI_K3_DELTA(metadata_h2d_bytes);
+    KIMI_K3_DELTA(compact_pack_ns);
+    KIMI_K3_DELTA(expert_graph_ns);
+    KIMI_K3_DELTA(expert_readback_ns);
+    KIMI_K3_DELTA(compact_attempted);
+    KIMI_K3_DELTA(compact_completed);
+    KIMI_K3_DELTA(compact_fallbacks);
+    KIMI_K3_DELTA(compact_invalid);
+    KIMI_K3_DELTA(async_begins);
+    KIMI_K3_DELTA(async_jobs);
+    KIMI_K3_DELTA(async_h2d_calls);
+    KIMI_K3_DELTA(async_h2d_bytes);
+    KIMI_K3_DELTA(async_input_d2d_copies);
+    KIMI_K3_DELTA(async_input_d2d_bytes);
+    KIMI_K3_DELTA(async_graph_enqueues);
+    KIMI_K3_DELTA(async_layer_flushes);
+    KIMI_K3_DELTA(async_abort_syncs);
+    KIMI_K3_DELTA(ordered_expert_d2d_copies);
+    KIMI_K3_DELTA(ordered_expert_d2d_bytes);
+    KIMI_K3_DELTA(ordered_join_launches);
+    KIMI_K3_DELTA(ordered_output_d2d_copies);
+    KIMI_K3_DELTA(ordered_output_d2d_bytes);
+#undef KIMI_K3_DELTA
+    return result;
+}
+
+void print_prefill_census(
+        const char * phase, size_t positions, size_t forwards,
+        double seconds, uint64_t process_read_bytes,
+        const KimiK3RoutedRuntimeStats & stats) {
+    const double rate = seconds > 0.0
+        ? static_cast<double>(positions) / seconds : 0.0;
+    std::fprintf(stderr,
+        "[kimi-k3-p56] phase=%s positions=%zu forwards=%zu seconds=%.9f "
+        "positions-per-second=%.9f process-read-bytes=%llu "
+        "logical-provider-bytes=%llu explicit-read-bytes=%llu "
+        "physical-direct-read-bytes=%llu direct-io-ns=%llu "
+        "payload-h2d-bytes=%llu metadata-h2d-bytes=%llu "
+        "compact-pack-ns=%llu expert-graph-ns=%llu "
+        "expert-readback-ns=%llu compact-attempted=%llu "
+        "compact-completed=%llu compact-fallbacks=%llu compact-invalid=%llu "
+        "async-begins=%llu async-jobs=%llu async-h2d-calls=%llu "
+        "async-h2d-bytes=%llu async-input-d2d-copies=%llu "
+        "async-input-d2d-bytes=%llu async-graph-enqueues=%llu "
+        "async-layer-flushes=%llu async-abort-syncs=%llu "
+        "ordered-expert-d2d-copies=%llu ordered-expert-d2d-bytes=%llu "
+        "ordered-join-launches=%llu ordered-output-d2d-copies=%llu "
+        "ordered-output-d2d-bytes=%llu\n",
+        phase, positions, forwards, seconds, rate,
+        static_cast<unsigned long long>(process_read_bytes),
+        static_cast<unsigned long long>(stats.logical_provider_bytes),
+        static_cast<unsigned long long>(stats.explicit_read_bytes),
+        static_cast<unsigned long long>(stats.physical_direct_read_bytes),
+        static_cast<unsigned long long>(stats.direct_io_ns),
+        static_cast<unsigned long long>(stats.payload_h2d_bytes),
+        static_cast<unsigned long long>(stats.metadata_h2d_bytes),
+        static_cast<unsigned long long>(stats.compact_pack_ns),
+        static_cast<unsigned long long>(stats.expert_graph_ns),
+        static_cast<unsigned long long>(stats.expert_readback_ns),
+        static_cast<unsigned long long>(stats.compact_attempted),
+        static_cast<unsigned long long>(stats.compact_completed),
+        static_cast<unsigned long long>(stats.compact_fallbacks),
+        static_cast<unsigned long long>(stats.compact_invalid),
+        static_cast<unsigned long long>(stats.async_begins),
+        static_cast<unsigned long long>(stats.async_jobs),
+        static_cast<unsigned long long>(stats.async_h2d_calls),
+        static_cast<unsigned long long>(stats.async_h2d_bytes),
+        static_cast<unsigned long long>(stats.async_input_d2d_copies),
+        static_cast<unsigned long long>(stats.async_input_d2d_bytes),
+        static_cast<unsigned long long>(stats.async_graph_enqueues),
+        static_cast<unsigned long long>(stats.async_layer_flushes),
+        static_cast<unsigned long long>(stats.async_abort_syncs),
+        static_cast<unsigned long long>(stats.ordered_expert_d2d_copies),
+        static_cast<unsigned long long>(stats.ordered_expert_d2d_bytes),
+        static_cast<unsigned long long>(stats.ordered_join_launches),
+        static_cast<unsigned long long>(stats.ordered_output_d2d_copies),
+        static_cast<unsigned long long>(stats.ordered_output_d2d_bytes));
 }
 
 uint64_t fnv1a_update(uint64_t hash, const void * data, size_t bytes) {
@@ -1043,6 +1150,12 @@ bool KimiK3Backend::init() {
         return false;
     }
     std::string backend_error;
+    if (!parse_optional_binary_environment(
+            "DFLASH_KIMI_P56_PREFILL_CENSUS", prefill_census_,
+            backend_error)) {
+        std::fprintf(stderr, "[kimi-k3] %s\n", backend_error.c_str());
+        return false;
+    }
     backend_ = init_kimi_k3_core_backend(
         cfg_.core_placement, cfg_.device.primary_gpu(), &backend_error);
     if (!backend_) {
@@ -1636,6 +1749,16 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
         return !paired_interventions || write_logits_trace(
             req, result, paired_candidate_trace, paired_candidate_path);
     };
+    const auto provider_stats = [&]() {
+        return routed_output_provider_
+            ? routed_output_provider_->runtime_stats()
+            : KimiK3RoutedRuntimeStats{};
+    };
+    const KimiK3RoutedRuntimeStats prefill_stats_begin =
+        prefill_census_ ? provider_stats() : KimiK3RoutedRuntimeStats{};
+    const uint64_t prefill_process_read_begin =
+        prefill_census_ ? process_storage_read_bytes() : 0;
+    size_t prefill_forward_calls = 0;
     const auto prefill_begin = std::chrono::steady_clock::now();
     for (size_t i = 0; i < req.prompt.size(); ++i) {
         const bool ok = forward_token(
@@ -1647,10 +1770,19 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
             out_io.emit(-1);
             return result;
         }
+        ++prefill_forward_calls;
         append_logits_trace();
     }
     const auto prefill_end = std::chrono::steady_clock::now();
     result.prefill_s = std::chrono::duration<double>(prefill_end - prefill_begin).count();
+    if (prefill_census_) {
+        print_prefill_census(
+            "prefill", req.prompt.size(), prefill_forward_calls,
+            result.prefill_s,
+            monotonic_delta(
+                process_storage_read_bytes(), prefill_process_read_begin),
+            routed_stats_delta(provider_stats(), prefill_stats_begin));
+    }
 
     if (req.n_gen <= 0 || out_io.cancelled) {
         maybe_save_routing_stats();
@@ -1664,6 +1796,10 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
         return result;
     }
 
+    const KimiK3RoutedRuntimeStats decode_stats_begin =
+        prefill_census_ ? provider_stats() : KimiK3RoutedRuntimeStats{};
+    const uint64_t decode_process_read_begin =
+        prefill_census_ ? process_storage_read_bytes() : 0;
     const auto decode_begin = std::chrono::steady_clock::now();
     int draft_delay_tokens = 0;
     if (const char * raw = std::getenv("DFLASH_KIMI_DRAFT_DELAY_TOKENS")) {
@@ -1832,6 +1968,16 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
     }
     const auto decode_end = std::chrono::steady_clock::now();
     result.decode_s = std::chrono::duration<double>(decode_end - decode_begin).count();
+    if (prefill_census_) {
+        const size_t transitions =
+            cache_.cur_pos > static_cast<int>(req.prompt.size())
+                ? static_cast<size_t>(cache_.cur_pos) - req.prompt.size() : 0;
+        print_prefill_census(
+            "decode", transitions, transitions, result.decode_s,
+            monotonic_delta(
+                process_storage_read_bytes(), decode_process_read_begin),
+            routed_stats_delta(provider_stats(), decode_stats_begin));
+    }
     maybe_save_routing_stats();
     out_io.emit(-1);
     result.succeed();

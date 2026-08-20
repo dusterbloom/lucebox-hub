@@ -353,6 +353,7 @@ int main(int argc, char ** argv) {
     record_environment("DFLASH_KIMI_DRAFT_DELAY_TOKENS");
     record_environment("DFLASH_KIMI_S0_SERIAL_CORE_ROWS");
     record_environment("DFLASH_KIMI_S0_SERIAL_EXPERT_ROWS");
+    record_environment("DFLASH_KIMI_P56_PREFILL_CENSUS");
     record_environment("DFLASH_KIMI_SUITE_DISABLE_LOGITS");
     record_environment("DFLASH_KIMI_H16_RESUME");
     record_environment("KIMI_H16_REPOSITORY_COMMIT");
