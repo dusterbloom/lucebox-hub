@@ -1,0 +1,101 @@
+{
+  "schema": "k3-p56-p57-prefill-width-v1",
+  "status": "EXACT_SUBSTRATE_GATE_MISSED",
+  "platform": "Lucebox4 ROCm/HIP gfx1201+gfx1151",
+  "speculative_decode": false,
+  "final_commit": "50399e8d6011242841bf3f53be640986b6ff3dd3",
+  "p56": {
+    "root": "/home/duster/kimi-k3-deploy/p56-prefill-census-72cd0ec-20260820",
+    "analysis_sha256": "8469a938c32351fac9a05008d23a726e6e7a61a944a06e17d0a8b1b5d1258b49",
+    "prefill": {
+      "positions": 552,
+      "seconds_trace_enabled": 375.560925302,
+      "positions_per_second_trace_enabled": 1.4698014697778263,
+      "compact_jobs": 223579,
+      "physical_direct_read_bytes": 291245891584,
+      "logical_provider_bytes": 724784406528,
+      "routed_prep_ms_per_position": 223.57509239130434,
+      "experts_ms_per_position": 427.7512989130435,
+      "join_ms_per_position": 17.75149637681159,
+      "fallbacks": 0,
+      "invalid": 0,
+      "async_aborts": 0
+    },
+    "macro_trace": {
+      "width_1": {"requests": 187654, "bytes": 290115694592},
+      "width_2": {"requests": 180783, "bytes": 290092957696},
+      "width_4": {"requests": 174746, "bytes": 290073104384},
+      "width_8": {"requests": 166517, "bytes": 290046218240},
+      "width_16": {"requests": 159987, "bytes": 290025738240},
+      "width_32": {"requests": 150340, "bytes": 289687969792},
+      "width_64": {"requests": 138171, "bytes": 280693231616}
+    },
+    "registered_baseline": {
+      "source": "P55 broad-12 without P56 trace overhead",
+      "positions_per_second": 1.628035098,
+      "ten_x_target_positions_per_second": 16.28035098
+    }
+  },
+  "p57": {
+    "mode": "serial-core and serial-expert exact qualification",
+    "width_1": {
+      "root": "/home/duster/kimi-k3-deploy/p57-fact-width1-control-0b6742e-20260820",
+      "prefill_positions": 34,
+      "forward_calls": 34,
+      "prefill_seconds": 26.415983065,
+      "positions_per_second": 1.287099553,
+      "physical_direct_read_bytes": 18606039040,
+      "direct_io_ns": 9509405758,
+      "expert_graph_ns": 4474600095
+    },
+    "width_2": {
+      "root": "/home/duster/kimi-k3-deploy/p57-fact-width2-replay2-0b6742e-20260820",
+      "prefill_positions": 34,
+      "forward_calls": 17,
+      "prefill_seconds": 22.718395184,
+      "positions_per_second": 1.496584584,
+      "physical_direct_read_bytes": 18627551232,
+      "direct_io_ns": 8297712481,
+      "expert_graph_ns": 4300139685,
+      "rate_gain_fraction": 0.1627574417582154,
+      "wall_reduction_fraction": 0.13997540322090604
+    },
+    "exactness": {
+      "logits_sha256": "cce1bd031e90eb13928ffddfb7e9329d75d55419a8f73b6479a920fe6c561a69",
+      "traffic_sha256": "e2eb5fcca9e0138d326892710977f4bd5dad1b7166d37cce6ef3675b0a911f13",
+      "compact_attempted": 17917,
+      "compact_completed": 17917,
+      "fallbacks": 0,
+      "invalid": 0
+    },
+    "promotion_gate": {
+      "required_speedup": 1.8,
+      "measured_speedup": 1.1627574417582154,
+      "passed": false,
+      "broad_run_performed": false
+    },
+    "final_s0": {
+      "root": "/home/duster/kimi-k3-deploy/p57-s0-final-50399e8-20260820",
+      "result_sha256": "c28f942bbaa1234710267ad370372fad0d26602d88066a5e607c36cd2cbdaecf",
+      "runner_sha256": "6cdaa2ff0f2fc3e20e8703b15df2a7fa27393547f92b9a38236af6c171799e2a",
+      "committed_verifier_ratio": 1.1211473386873119,
+      "logits_bit_equal": true,
+      "argmax_bit_equal": true,
+      "recurrent_state_hash_equal": true,
+      "mla_rows_hash_equal": true,
+      "first_hidden_mismatch_layer": -1,
+      "first_conv_state_mismatch_layer": -1,
+      "first_ssm_state_mismatch_layer": -1,
+      "first_mla_row_mismatch_layer": -1,
+      "logits_max_abs": 0.0,
+      "logits_rel_l2": 0.0
+    }
+  },
+  "decision": {
+    "keep_default_off": true,
+    "run_p57_broad": false,
+    "next_prefill_experiment": "bounded P58 exact KDA microtiles plus larger MoE macro width",
+    "grouped_p59_condition": "only after P58 exactness and independent roofline margin",
+    "multi_token_prediction_replaces_prefill": false
+  }
+}
