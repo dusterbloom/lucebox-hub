@@ -1,0 +1,146 @@
+{
+  "schema": "k3-p56x-xg7000-roofline-v1",
+  "status": "MEASURED_RAW_AND_TRACE_SHAPED_ROOFLINES",
+  "platform": {
+    "host": "lucebox4",
+    "block_device": "nvme0n1",
+    "model": "XG7000-2TB 2280",
+    "serial": "9C50503060399",
+    "firmware_revision": "1.W.O.1K",
+    "link": "PCIe 16.0 GT/s x4",
+    "scheduler": "none",
+    "filesystem_role": "single root/model/results/swap device"
+  },
+  "provenance": {
+    "benchmark_script": "scripts/benchmark_kimi_k3_storage_roofline.py",
+    "benchmark_script_sha256": "8df0177fd16b779cb619a7d5730add01c72e11b64471a36b65edd485f8745afe",
+    "p56_trace": "/home/duster/kimi-k3-deploy/p56-prefill-census-72cd0ec-20260820/io_trace.tsv",
+    "p56_trace_sha256": "248548c73d396eca091aca34a02f5435df02eace471268be002eb5af319268e1",
+    "suite_manifest": "/home/duster/kimi-k3-deploy/p56-prefill-census-72cd0ec-20260820/suite/suite-manifest.json",
+    "suite_manifest_sha256": "6655058414d94c2b2667ff278ac3b59324b58b774f5332a92b4a038d35861707",
+    "remote_root": "/home/duster/kimi-k3-deploy/p56x-xg7000-roofline-20260820",
+    "remote_artifact_sha256": {
+      "raw.json": "c912e7966c78898f3b1a24c84af48c45997f5a7b13487edb5c3dc452169998a0",
+      "trace-pilot-2000.json": "e9f3004158eda1099c838c6da8525e29d7c46fd69cd9509d0326722dd86e8741",
+      "trace-full-q4-q8-q16.json": "148ae7c451ec1f019442dfbff6858f9f62359de1b849ade205900174816b2038",
+      "trace-full-q4-repeat.json": "9a8fc67383aef8f30541443729af2476bfc3f7119cae97628e65ef5294ad3693"
+    }
+  },
+  "controls": {
+    "io": "O_DIRECT preadv into page-aligned persistent anonymous buffers",
+    "cache_drop": false,
+    "model_run": false,
+    "build_run": false,
+    "all_arms_process_physical_over_submitted": 1.0,
+    "all_arms_zero_swap_in_out": true,
+    "all_arms_background_read_fraction_at_most": 0.000002701,
+    "maximum_nvme_temperature_celsius": 53.85,
+    "all_arms_clean_gate": true,
+    "clean_gate_rule": "process physical/submitted within 2 percent; background reads at most 2 percent; zero swap-in and swap-out"
+  },
+  "raw_sequential": {
+    "source": "/home/duster/kimi-k3-deploy/streamed-bank/natural-sidecars/kimi_layer71_natural_slabs.k3slab",
+    "source_bytes": 7013429248,
+    "source_sha256": "6453ef74a78d8c05b81fa917a353f8b35ca6d5072ce14f850d36f30aa38ebb0a",
+    "model_checksum_registry_sha256": "10a41a35e9673b2c74d1f74a85074e966412e958b1008db43bc7ee715aa5da14",
+    "order": "1/4/8 MiB, then 8/4/1 MiB, then 1/4/8 MiB",
+    "arms": [
+      {"pass": 1, "block_mib": 1, "seconds": 2.325685497, "gib_per_second": 2.808533223},
+      {"pass": 1, "block_mib": 4, "seconds": 1.326497112, "gib_per_second": 4.924070264},
+      {"pass": 1, "block_mib": 8, "seconds": 1.175358139, "gib_per_second": 5.557255076},
+      {"pass": 2, "block_mib": 8, "seconds": 1.169111956, "gib_per_second": 5.586945673},
+      {"pass": 2, "block_mib": 4, "seconds": 2.110581292, "gib_per_second": 3.094770625},
+      {"pass": 2, "block_mib": 1, "seconds": 7.399731530, "gib_per_second": 0.882702968},
+      {"pass": 3, "block_mib": 1, "seconds": 9.935287893, "gib_per_second": 0.657430872},
+      {"pass": 3, "block_mib": 4, "seconds": 1.300207250, "gib_per_second": 5.023633720},
+      {"pass": 3, "block_mib": 8, "seconds": 1.170538158, "gib_per_second": 5.580138451}
+    ],
+    "registered_block_mib": 8,
+    "registered_median_gib_per_second": 5.580138451,
+    "registered_full_spread_fraction": 0.005325878,
+    "smaller_block_verdict": "UNSTABLE_NOT_REGISTERED"
+  },
+  "trace_pilot": {
+    "groups": 2000,
+    "requests": 28482,
+    "bytes_per_arm": 15806275584,
+    "gib_per_second_by_queue_depth": {
+      "1": 1.33140,
+      "4": 3.45772,
+      "8": 3.50888,
+      "16": 3.37928,
+      "32": 3.19822
+    },
+    "verdict": "PREFIX_NOT_REPRESENTATIVE_DO_NOT_EXTRAPOLATE"
+  },
+  "trace_full": {
+    "dependency_boundary": "one prompt position and model layer",
+    "coalescing": false,
+    "groups": 41458,
+    "requests": 524863,
+    "bytes_per_arm": 291245891584,
+    "request_fingerprint_sha256": "bcb8a669ec4112b4dcd2ad5daff64ac91dc345fe071386c0a226c13fed00a6e0",
+    "arms": [
+      {
+        "queue_depth": 4,
+        "seconds": 135.307582361,
+        "gib_per_second": 2.004646516,
+        "latency_ms_p50": 0.558195,
+        "latency_ms_p95": 2.343838,
+        "latency_ms_p99": 5.056508
+      },
+      {
+        "queue_depth": 8,
+        "seconds": 147.756299768,
+        "gib_per_second": 1.835751667,
+        "latency_ms_p50": 1.004111,
+        "latency_ms_p95": 4.683892,
+        "latency_ms_p99": 10.450681
+      },
+      {
+        "queue_depth": 16,
+        "seconds": 144.334011606,
+        "gib_per_second": 1.879278976,
+        "latency_ms_p50": 1.480283,
+        "latency_ms_p95": 6.891128,
+        "latency_ms_p99": 14.559018
+      },
+      {
+        "queue_depth": 4,
+        "repeat": true,
+        "seconds": 150.381213189,
+        "gib_per_second": 1.803708507,
+        "latency_ms_p50": 0.601767,
+        "latency_ms_p95": 2.778996,
+        "latency_ms_p99": 5.783775
+      }
+    ],
+    "registered_queue_depth": 4,
+    "registered_repeat_mean_gib_per_second": 1.904177512,
+    "registered_control_spread_fraction": 0.105524830,
+    "trace_over_raw_fraction": 0.341241983,
+    "variability_verdict": "TOO_HIGH_FOR_MARGINAL_COMPARISONS"
+  },
+  "cold_prefill_storage_law": {
+    "p56_positions": 552,
+    "physical_gib_per_position": 0.491383829,
+    "registered_target_positions_per_second": 16.28035098,
+    "required_unchanged_density_gib_per_second": 8.00016,
+    "raw_sequential_positions_per_second_ceiling": 11.355966807,
+    "trace_shaped_positions_per_second_ceiling": 3.875132635,
+    "raw_bandwidth_gap_factor": 1.433638479,
+    "trace_shaped_bandwidth_gap_factor": 4.201237097,
+    "maximum_density_at_raw_ceiling_gib_per_position": 0.342752958,
+    "maximum_density_at_trace_shaped_ceiling_gib_per_position": 0.116961699,
+    "minimum_byte_reduction_at_raw_ceiling_fraction": 0.302474079,
+    "minimum_byte_reduction_at_trace_shaped_ceiling_fraction": 0.761974871
+  },
+  "decision": {
+    "raw_xg7000_ceiling_measured": true,
+    "exact_trace_shaped_ceiling_measured": true,
+    "independent_storage_margin_for_ten_x": false,
+    "persistent_buffers_change_p56r_decision": false,
+    "simple_coalescing_reopened": false,
+    "next": "Combine held-out R9700 resident-slab misses with a grouped P59 service replay; do not assume raw sequential bandwidth for the present fragmented trace."
+  }
+}
