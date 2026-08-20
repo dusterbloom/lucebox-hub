@@ -587,8 +587,10 @@ uint64_t hash_mla_trace_token(
         const std::vector<float> & values,
         const std::array<int64_t, 4> & ne,
         int token_axis,
-        int token) {
+        int token,
+        int64_t ne0_limit) {
     uint64_t hash = UINT64_C(1469598103934665603);
+    GGML_ASSERT(ne0_limit > 0 && ne0_limit <= ne[0]);
     if (token_axis == 1) {
         for (int64_t i3 = 0; i3 < ne[3]; ++i3) {
             for (int64_t i2 = 0; i2 < ne[2]; ++i2) {
@@ -596,7 +598,7 @@ uint64_t hash_mla_trace_token(
                     ((i3 * ne[2] + i2) * ne[1] + token) * ne[0]);
                 hash = fnv1a_append_float_bytes(
                     hash, values.data() + offset,
-                    static_cast<size_t>(ne[0]));
+                    static_cast<size_t>(ne0_limit));
             }
         }
         return hash;
@@ -607,7 +609,7 @@ uint64_t hash_mla_trace_token(
             (i3 * ne[2] + token) * ne[1] * ne[0]);
         hash = fnv1a_append_float_bytes(
             hash, values.data() + offset,
-            static_cast<size_t>(ne[0] * ne[1]));
+            static_cast<size_t>(ne0_limit * ne[1]));
     }
     return hash;
 }
@@ -2307,9 +2309,17 @@ bool streamed_kimi_k3_forward(
         if (prep_ok && trace_mla_internals && !layer.recurrent) {
             for (size_t i = 0; i < mla_trace_values.size(); ++i) {
                 const std::vector<float> & values = mla_trace_values[i];
-                const size_t row_values = values.size() /
-                    static_cast<size_t>(n_tokens);
                 for (int token = 0; token < n_tokens; ++token) {
+                    const int64_t ne0_limit = (i == 2 || i == 3)
+                        ? base_pos + token + 1
+                        : mla_trace_shapes[i][0];
+                    const size_t row_values = static_cast<size_t>(
+                        ne0_limit *
+                        (mla_trace_token_axes[i] == 1
+                            ? mla_trace_shapes[i][2] *
+                                mla_trace_shapes[i][3]
+                            : mla_trace_shapes[i][1] *
+                                mla_trace_shapes[i][3]));
                     std::fprintf(stderr,
                         "[kimi-k3-s0-mla] layer=%d base=%d tokens=%d "
                         "token=%d stage=%s values=%zu hash=%016llx\n",
@@ -2318,7 +2328,8 @@ bool streamed_kimi_k3_forward(
                         static_cast<unsigned long long>(
                             hash_mla_trace_token(
                                 values, mla_trace_shapes[i],
-                                mla_trace_token_axes[i], token)));
+                                mla_trace_token_axes[i], token,
+                                ne0_limit)));
                 }
             }
         }
