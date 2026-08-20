@@ -1,0 +1,52 @@
+{
+  "schema": "k3-p56r-layer-read-coalesce-replay-v1",
+  "status": "byte-exact-storage-replay-performance-no-go",
+  "source": {
+    "repository_commit": "0c7d9c6d156d48d4bde98d8e2ce8c649a39069c6",
+    "script": "scripts/benchmark_kimi_k3_layer_reads.py",
+    "script_sha256": "7076361754f4a70274ea9f2f7b51819a06703eaf5d437648528e2e29c0675b10"
+  },
+  "fixture": {
+    "host": "lucebox4",
+    "backend": "O_DIRECT_preadv",
+    "queue_depth": 16,
+    "scope": "frozen_P56_prefill_one_token_one_layer",
+    "io_trace_sha256": "248548c73d396eca091aca34a02f5435df02eace471268be002eb5af319268e1",
+    "suite_manifest_sha256": "6655058414d94c2b2667ff278ac3b59324b58b774f5332a92b4a038d35861707"
+  },
+  "plan": {
+    "layer_groups": 41458,
+    "current_requests": 524863,
+    "current_bytes": 291245891584,
+    "coalesced_requests": 187654,
+    "coalesced_bytes": 290115694592,
+    "request_reduction_fraction": 0.6424705113524862,
+    "byte_reduction_fraction": 0.0038805594333132243,
+    "rule": "deduplicate and merge only overlapping or touching aligned ranges within one prompt-position/model-layer/file group"
+  },
+  "byte_parity": {
+    "groups": 100,
+    "current_sha256": "234b33708124548218f8f7d70ce6be853d8ab68e9af42757de1df009a5f178bd",
+    "coalesced_sha256": "234b33708124548218f8f7d70ce6be853d8ab68e9af42757de1df009a5f178bd",
+    "equal": true
+  },
+  "aba_seconds": {
+    "a1_current": 134.02465454301273,
+    "b_coalesced": 159.26315547899867,
+    "a2_current": 149.56917982299638,
+    "current_mean": 141.79691718300455,
+    "coalesced_vs_current_mean_fraction": 0.12317784224781136,
+    "current_control_spread_fraction": 0.1159825804661554
+  },
+  "artifacts": {
+    "a1_sha256": "a17975632574de7795118f721eec0ea7b48ab0c5eb0eb5779faeadd5a21d7c6b",
+    "b_sha256": "48d976d8b1e02e9c493f07a27a545172a8aa7cf8861e8b2ce15892505474cb9e",
+    "a2_sha256": "6151d1212c743e7d04f23a84cd68c91401ff65093091cd6509b06e6e061d928e"
+  },
+  "decision": {
+    "model_run": false,
+    "production_feature_retained": false,
+    "verdict": "NO_GO_REMOVE_PRODUCTION_SLICE",
+    "reason": "The coalesced arm is slower than both current-path controls and 12.32 percent slower than their mean. Larger spans reduce useful queue parallelism; the 0.39 percent byte reduction cannot compensate."
+  }
+}
