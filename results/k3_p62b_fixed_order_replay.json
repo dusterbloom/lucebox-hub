@@ -1,0 +1,270 @@
+{
+  "schema": "k3-p62b-fixed-order-replay-closure-v1",
+  "date": "2026-08-21",
+  "status": "VALID_EXACT_NO_GO",
+  "scope": "model-free expert-output-only earliest mixed cell",
+  "model_run": false,
+  "repeat_run": false,
+  "speedup_claim": null,
+  "decision": {
+    "p62b_g1": "OFF",
+    "same_layer_io_device_overlap": "CLOSED",
+    "next": "P58 exact multi-token verification and roofline comparison",
+    "p58_multi_token_comparison": "OPEN",
+    "broad_exact_decode_2_tps": "OPEN",
+    "cold_prefill_10x": "OPEN",
+    "pre_speculation_base_4_to_5_tps": "OPEN"
+  },
+  "frozen_cell": {
+    "prompt_id": "fact-capital",
+    "base_position": 0,
+    "model_layer": 2,
+    "jobs": 6,
+    "production_encounter_order": [441, 491, 22, 496, 388, 71],
+    "calibrated_submit_order": [22, 388, 441, 491, 496],
+    "late_exact_expert": 71,
+    "late_exact_depth": 12,
+    "counter_contract": {
+      "pre_reads": 24,
+      "pre_bytes": 12976128,
+      "late_reads": 12,
+      "late_bytes": 6488064,
+      "physical_requests": 36,
+      "physical_bytes": 19464192,
+      "h2d_calls": 24,
+      "h2d_bytes": 19353888,
+      "input_d2d": 1,
+      "input_d2d_bytes": 14336,
+      "graph_enqueues": 6,
+      "output_d2d": 6,
+      "output_d2d_bytes": 86016,
+      "begins": 1,
+      "flushes": 1,
+      "syncs": 1,
+      "aborts": 0,
+      "fallbacks": 0,
+      "invalid": 0
+    }
+  },
+  "qualification": {
+    "hardware": {
+      "backend": "hip",
+      "physical_device": 1,
+      "arch": "gfx1151"
+    },
+    "worker_pool": {
+      "workers": 16,
+      "max_active": 16
+    },
+    "build_steps_passed": 375,
+    "contract_self_test": "PASS",
+    "ctest_contract": "PASS",
+    "python_tests": {
+      "passed": 7,
+      "failed": 0
+    },
+    "gpu_model_free_gates": {
+      "passed": 8,
+      "failed": 0,
+      "tests_per_gpu": [
+        "kimi_k3_progressive_provider",
+        "test_moe_stream_compute",
+        "sparse_k_mmvq_cuda",
+        "kimi_k3_ordered_join"
+      ],
+      "physical_gpus": [0, 1]
+    },
+    "wrapper_invocations": 1,
+    "wrapper_exit": 2,
+    "analyzer_invocations": 1,
+    "analyzer_exit": 2,
+    "telemetry_complete": true,
+    "monitor_error": null
+  },
+  "exactness": {
+    "teacher_output_sha256": "0706855c262a9353bc51aa9e3dba8169479bffec884f7119a7877d6c2f519509",
+    "arm_output_contract": true,
+    "input_sha256": "e179463957d71f670400b484f2fa5535a3dc9b3663a46446cfa90e7aaf341f0f",
+    "payload_sha256": "5c98249ed4f724a8a5b05acd1cbcbe21b21747ff5b1b07fa284e3a5264d152cc",
+    "map_sha256": "d7a05972f67311547398b5fdc1046ab8ec1f0c316203d3a87a4a5e2e18f3ede9",
+    "logical_plan_orders": {
+      "production_read": "fff66fe46cfac032b7347aa11faba910c4e99edb4a55cbe991c280f1fd32ce45",
+      "fixed_read": "6821d42d882ef55fbede3e3b90b185b59c3f1c7f9bcc56fac347aaf4df66a2a9",
+      "compute": "6821d42d882ef55fbede3e3b90b185b59c3f1c7f9bcc56fac347aaf4df66a2a9",
+      "output": "6821d42d882ef55fbede3e3b90b185b59c3f1c7f9bcc56fac347aaf4df66a2a9"
+    },
+    "all_arm_counters_exact": true,
+    "storage_device_empty_control_counters_exact": true
+  },
+  "preregistered_gates": {
+    "require_per_block_b_win": true,
+    "minimum_saving_ns": 2000000,
+    "minimum_speedup": 1.2,
+    "minimum_overlap_efficiency": 0.35,
+    "maximum_a_prod_spread": 0.1,
+    "maximum_a_fixed_spread": 0.1,
+    "maximum_b_spread": 0.1,
+    "maximum_device_inflation": 0.05,
+    "maximum_empty_fraction": 0.05,
+    "maximum_hot_regression": 0.02
+  },
+  "medians_ns": {
+    "a_prod": 4433866,
+    "a_fixed": 4410983,
+    "a_fixed_device": 1673769,
+    "b": 3777766,
+    "b_device": 2446248
+  },
+  "control_medians_ns": {
+    "storage": 3910685,
+    "device": 1556910,
+    "empty": 140,
+    "hot_a": 788810,
+    "hot_b": 784031
+  },
+  "paired_blocks": [
+    {
+      "index": 0,
+      "a": "prod",
+      "conservative_a_ns": 4343327,
+      "conservative_b_ns": 3804035,
+      "saving_ns": 539292,
+      "speedup": 1.141768411699682,
+      "pass": false
+    },
+    {
+      "index": 1,
+      "a": "fixed",
+      "conservative_a_ns": 4379885,
+      "conservative_b_ns": 3697795,
+      "saving_ns": 682090,
+      "speedup": 1.1844585759892043,
+      "pass": false
+    },
+    {
+      "index": 2,
+      "a": "prod",
+      "conservative_a_ns": 4433866,
+      "conservative_b_ns": 3848649,
+      "saving_ns": 585217,
+      "speedup": 1.1520577740396696,
+      "pass": false
+    },
+    {
+      "index": 3,
+      "a": "fixed",
+      "conservative_a_ns": 4331485,
+      "conservative_b_ns": 3924521,
+      "saving_ns": 406964,
+      "speedup": 1.1036977506299495,
+      "pass": false
+    },
+    {
+      "index": 4,
+      "a": "prod",
+      "conservative_a_ns": 4418317,
+      "conservative_b_ns": 3737280,
+      "saving_ns": 681037,
+      "speedup": 1.1822279839883552,
+      "pass": false
+    },
+    {
+      "index": 5,
+      "a": "fixed",
+      "conservative_a_ns": 4374075,
+      "conservative_b_ns": 3871992,
+      "saving_ns": 502083,
+      "speedup": 1.129670464195174,
+      "pass": false
+    }
+  ],
+  "paired_minima": {
+    "saving_ns": 406964,
+    "speedup": 1.1036977506299495,
+    "prod_saving_ns": 539292,
+    "prod_speedup": 1.141768411699682,
+    "fixed_saving_ns": 406964,
+    "fixed_speedup": 1.1036977506299495
+  },
+  "metrics": {
+    "overlap_efficiency": 1.0853735925647596,
+    "a_prod_spread": 0.034684855158004325,
+    "a_fixed_spread": 0.05966991938078202,
+    "b_spread": 0.06193819310142555,
+    "device_inflation": 0.5712199163728153,
+    "empty_fraction": 0.0000899217038878291,
+    "hot_regression": -0.006058493173261015
+  },
+  "gate_results": {
+    "per_block_b_wins": true,
+    "all_saving_2ms": false,
+    "all_speedup_1_20": false,
+    "all_blocks": false,
+    "efficiency_0_35": true,
+    "a_prod_spread_10pct": true,
+    "a_fixed_spread_10pct": true,
+    "b_spread_10pct": true,
+    "device_inflation_5pct": false,
+    "empty_5pct": true,
+    "hot_regression_2pct": true,
+    "target_swap_zero": true,
+    "system_swap_zero": true,
+    "cgroup_oom_zero": true,
+    "sample_gaps_bounded": true,
+    "hip_device1_gfx1151": true
+  },
+  "telemetry": {
+    "target_sample_count": 70,
+    "sampled_max_vmswap_kib": 0,
+    "max_inter_sample_gap_ns": 250465698,
+    "sample_gap_limit_ns": 1000000000,
+    "pswpin_before": 223513,
+    "pswpin_after": 223513,
+    "pswpout_before": 1141965,
+    "pswpout_after": 1141965,
+    "cgroup_oom_before": 0,
+    "cgroup_oom_after": 0,
+    "cgroup_oom_kill_before": 0,
+    "cgroup_oom_kill_after": 0
+  },
+  "provenance": {
+    "local_and_remote_head": "df63d18fa3a8d5e7a384504dda15ccc266a3cc4d",
+    "artifact_root": "/home/duster/kimi-k3-deploy/p62b-g0-qualification-20260821",
+    "reviewed_combined_source_sha256": "b1abf3b718f37f6d8a940b3b3974ffd680a983d21868d2784b10889a7e6d5aae",
+    "canonical_tracked_diff_sha256": "5612ab4ad6a797d7657a4aab6dca081961b6370ad389d1c91471bdf71b089303",
+    "artifact_sha256": {
+      "binary": "ecea248fc9c21552a06e8113f1c11cb0caf2087fc27fec824c035de7de3bd213",
+      "fixture": "39457414b6f7c351a8bfcd9a54327a57c329aec05ca115475644bb270618da3a",
+      "natural_sidecar": "270efec50b41b8fcc49faeb0260b74d7819792deca73e9f65871bea06b08e6b9",
+      "result": "b60e626235950525feff65263543131f05daaba5a66e0b84c7c9f322157e942d",
+      "telemetry": "c6749286b27f26bb7c5dbf01149ee076ad756e28bab9b325604f58e5f2b994a9",
+      "analysis": "08f34e37638b19667176f7d1b1ee22cb7994f1273e641eb2068be061672be8ca",
+      "stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr": "5c31acb273c6d0f86e42e2099a058f7c391aa0c5a8c6814e154a88970f016619"
+    },
+    "reviewed_source_sha256": {
+      "server/CMakeLists.txt": "316dd980cbe291fa41a55a97dac3b1c8d1f618c778f89933a5079bf1f066a13c",
+      "server/src/common/gguf_inspect.cpp": "cdae2b53f4e99e889bc27a380fe2fa84ab75ba089db25e57ffba8626ed238613",
+      "server/src/common/gguf_inspect.h": "43dd98f144f9d7c3da15ffd5291bb15655463cf341fdb80e43ef5660d3e14733",
+      "server/src/kimi_k3/kimi_k3_progressive_provider.cpp": "a7d47002188a4d95483ae75f3a1d57eddeab35248be2d631c759958489533ff8",
+      "docs/P62B_K3_FIXED_ORDER_REPLAY_PREREG.md": "14078589419fd0f34dd5692e9c00fad8f88e4c3163c2003d51f4bcbb76610b4c",
+      "scripts/run_kimi_k3_p62b_g0.py": "bd25487eede315c861198b147136ef35d54f3cce4acb9aaf1c78444121c08908",
+      "scripts/analyze_kimi_k3_p62b_g0.py": "0a43b28bcc6d50afcb1faed112bbc0eb4fc631c13f19f0c842a36268ee445ab2",
+      "server/test/bench_kimi_k3_p62b_fixed_order.cpp": "27674258f62f672c07b449de87a7e7f288f6a25f3bcc36ac9b9a69e4ea383d0e",
+      "server/test/fixtures/kimi_k3_p62b_fixed_order_layer02.json": "39457414b6f7c351a8bfcd9a54327a57c329aec05ca115475644bb270618da3a",
+      "server/test/kimi_k3_p62b_fixed_order_replay.inc": "4e27b5c82e84c71d84b48c1afe1b334186add175dfd13cb123a344ffd31de0e8",
+      "server/tests/test_kimi_k3_p62b_g0.py": "a5f2d8e59e9885be6cbec6861cb4974e17ebfb37ab8eaa22539eec183fa6c2a1"
+    }
+  },
+  "closure": {
+    "temporary_tracked_files_restored_to_head": 4,
+    "temporary_untracked_files_removed": 7,
+    "reviewed_raw_net_lines_removed": 1488,
+    "p62b_implementation_or_test_symbols_remaining": 0,
+    "retained_files": [
+      "docs/P62B_K3_FIXED_ORDER_REPLAY.md",
+      "results/k3_p62b_fixed_order_replay.json",
+      "research/K3-ROADMAP.html"
+    ]
+  }
+}
