@@ -51,6 +51,10 @@ lines, plus one NPZ artifact.
 
 Current overall status: `AUDITED_UNSTACKED`.
 
+The foundation stack remains uncut. Focused follow-up branches may be frozen
+and reviewed in the meantime, but they are not upstream-ready until replayed
+onto their owning stack layer.
+
 ## Audited path inventory
 
 These non-overlapping groups account for all 474 paths in the frozen archive
@@ -158,9 +162,24 @@ Before the top code PR is declared complete:
 
 ## Current work not yet assigned
 
-New work is assigned only after it has passed its own correctness review. The
-K3 response-framing fix, HumanEval score-only sandbox, D0 width-four exactness
-probe, and any future production optimization remain outside the frozen
-baseline above until their source, tests, build, and evidence are complete.
-When admitted, each receives an explicit stack owner and a new audited archive
-head; it must not be hidden inside an unrelated layer.
+New work is assigned only after it has passed its own correctness review.
+Validated follow-ups are tracked here without pretending that their archive
+base is an upstream-review base:
+
+| Follow-up | Parent | Head | Files | + / - | Patch SHA-256 | Validation | Intended owner |
+|---|---|---|---:|---:|---|---|---|
+| K3 response framing | `8a319bdf` | `54023bdd` | 12 | +532/-70 | `227e6db024263eaf44c17a372c5451f82374da3bc0ef132dc57f50988261413d` | Lucebox4 HIP `-j4`; K3 9/9; server unit 397/397; Math10 HTTP/trace 10/10 | K3-05 |
+| Math answer equivalence | `54023bdd` | `ace48041` | 2 | +131/-2 | `bc77c85756c37ebe55fda94d2e6cc2ff48c35f6a57ed8124bd0793e562d5bdda` | focused tests, pycompile, diff check; immutable Math10 rescore 7/10 versus raw 4/10 | K3-07 |
+| K3 reasoning policy | `54023bdd` | `bdb2ca83` | 7 | +597/-97 | `d6f4d039fee18c88236841f85124113aaa10595268ec415704d86285f7402dd0` | independent GO after two NO-GO review cycles; capped build and focused policy/props/Qwen/P55 gates | K3-05 |
+
+These heads are published respectively as
+`agent/k3-output-framer`, `agent/k3-math-scorer`, and
+`agent/k3-reasoning-policy`. They remain follow-ups to the integration archive,
+not substitutes for K3-00 through K3-07. Before opening upstream PRs, recreate
+each change on the exact owning stack parent, recompute its diff hash, and rerun
+the layer gates.
+
+The HumanEval score-only sandbox, D0 width-four exactness probe, and any future
+production optimization remain outside the frozen baseline until their source,
+tests, build, and evidence are complete. A new audited archive head must not be
+hidden inside an unrelated layer.
