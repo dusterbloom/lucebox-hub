@@ -1,0 +1,212 @@
+{
+  "schema": "k3-p62a-layer-io-device-overlap-closure-v1",
+  "date": "2026-08-21",
+  "status": "INVALID_TIMING",
+  "signal": "DISQUALIFIED_STRONG_SIGNAL",
+  "official_analyzer_result": null,
+  "speedup_claim": null,
+  "decision": {
+    "integration": "NO_GO",
+    "next": "P62B-G0 model-free mixed-cell replay",
+    "p62b_g1": "allowed only after G0 exactness, memory, and timing gates pass",
+    "p58_multi_token_comparison": "OPEN"
+  },
+  "runtime_completion": {
+    "requests": 12,
+    "prefill_positions": 552,
+    "decode_transitions": 129,
+    "records": 62652,
+    "prefill_records": 50784,
+    "decode_records": 11868,
+    "jobs": 275008,
+    "h2d_calls": 1116376,
+    "input_d2d_copies": 46308,
+    "logical_bytes": {
+      "prefill": 724784406528,
+      "decode": 167799668736
+    },
+    "p41_attempted": 275008,
+    "p41_completed": 275008,
+    "p41_fallbacks": 0,
+    "p41_invalid": 0,
+    "p45_aborts": 0,
+    "p30_sequence_resets": 11,
+    "traffic_sha256": "54b76f99439d90ecb35d033c12dd1d1f219e30007248aaf77f913fc69d76f383",
+    "fresh_logits_or_state_claim": false
+  },
+  "phase_attribution_failure": {
+    "frozen_physical_bytes": {
+      "prefill": 291245891584,
+      "decode": 44258549760,
+      "total": 335504441344
+    },
+    "observed_physical_bytes": {
+      "prefill": 291245350912,
+      "decode": 44259090432,
+      "total": 335504441344
+    },
+    "shift_bytes_prefill_to_decode": 540672,
+    "frozen_prefill_physical_requests": 524863,
+    "observed_prefill_physical_requests": 524862
+  },
+  "qualification_failure": {
+    "wrapper_error": "RuntimeError: live child has no VmSwap field",
+    "cause": "exit-in-progress race: the task can release mm before waitpid(WNOHANG) reports exit",
+    "child_exit": 0,
+    "wrapper_exit": 1,
+    "analyzer_invocations": 1,
+    "analyzer_exit": 1,
+    "analyzer_error": "ValueError: P62 process/timing evidence schema mismatch",
+    "analysis_json_exists": false,
+    "target_vmswap_kib": {
+      "initial": 0,
+      "sampled_max": 49944,
+      "final": 9840
+    },
+    "host_swap_pages": {
+      "pswpin_pre": 210842,
+      "pswpin_post": 222121,
+      "pswpin_delta": 11279,
+      "pswpout_pre": 1128191,
+      "pswpout_post": 1141907,
+      "pswpout_delta": 13716,
+      "combined_delta": 24995,
+      "registered_limit": 1024
+    },
+    "cgroup_oom_delta": 0,
+    "cgroup_oom_kill_delta": 0,
+    "max_sample_gap_ns": 285579938,
+    "sample_gap_limit_ns": 1000000000
+  },
+  "unqualified_descriptive_diagnostic": {
+    "explicit_bypasses": [
+      "wrapper/process qualification",
+      "target sampled VmSwap zero",
+      "host combined swap-page limit",
+      "per-phase physical-byte split",
+      "prefill physical-request count"
+    ],
+    "not_observed_overlap": true,
+    "not_device_availability": true,
+    "not_realizable_savings": true,
+    "not_speedup_projection": true,
+    "service_rate_bytes_per_second": 1835171837.5252454,
+    "swap_equivalent_ms": 55.78742976900746,
+    "prefill": {
+      "narrow_ms_per_position": 112.11514101086956,
+      "full_ms_per_position": 142.4047268731884,
+      "swap_debit_ms_per_position": 0.10106418436414395,
+      "adjusted_full_ms_per_position": 142.30366268882426,
+      "component_seconds": {
+        "provider": 220.716880353,
+        "pre_submit_reads": 143.542608256,
+        "late_exact_reads": 11.440266549,
+        "mixed_post_submit_device": 67.657579784,
+        "outside_residual": 9.516692313,
+        "narrow_bound": 61.887557838,
+        "full_bound": 78.607409234
+      },
+      "full_bound_ms_distribution": {
+        "p50": 1.285147,
+        "p95": 4.206914,
+        "p99": 8.681628,
+        "max": 198.875827
+      },
+      "exact_policy_routes": 7954,
+      "affected_records": 6452,
+      "late_read_calls": 7954,
+      "late_read_bytes": 23255416832,
+      "zero_physical_read_records": 9326
+    },
+    "decode": {
+      "narrow_ms_per_transition": 96.04224953488372,
+      "full_ms_per_transition": 116.45730477519379,
+      "swap_debit_ms_per_transition": 0.4324606958837788,
+      "adjusted_full_ms_per_transition": 116.02484407931001,
+      "component_seconds": {
+        "provider": 41.462825674,
+        "pre_submit_reads": 25.804554236,
+        "late_exact_reads": 2.031658787,
+        "mixed_post_submit_device": 13.582128146,
+        "outside_residual": 2.076143292,
+        "narrow_bound": 12.389450190,
+        "full_bound": 15.022992316
+      },
+      "full_bound_ms_distribution": {
+        "p50": 1.075236,
+        "p95": 2.983189,
+        "p99": 6.526090,
+        "max": 34.616990
+      },
+      "exact_policy_routes": 1620,
+      "affected_records": 1364,
+      "late_read_calls": 1620,
+      "late_read_bytes": 3728277504,
+      "zero_physical_read_records": 3234
+    },
+    "raw_threshold_interpretation": "DISQUALIFIED_STRONG_SIGNAL only",
+    "diagnostic_sha256": "a180c6c050aa2a8628c8dbe94e4d291b5e347ae32810a5a36e9f4584745360c4",
+    "diagnostic_script_sha256": "fcc9ca90521118860414347ffa821bfdba407c693b127278c6d61c78283501ab",
+    "diagnostic_command_sha256": "dc290965708a48bce5ca2f0eff1129be0422af0d7517cec34d958a4474adeb59"
+  },
+  "provenance": {
+    "local_and_remote_head": "20b2979e4fd5cceed8df88aa6d6060729278c59c",
+    "artifact_root": "/home/duster/kimi-k3-deploy/p62a-v2-broad12-final-r2-20260821",
+    "artifact_sha256": {
+      "binary": "6e2a5fe00ca005400d1038b64d9a9b7b9c06b078f4a679f6270c9807cbce34ca",
+      "fixture": "6d1c0583df52738820559bef66f6a96839bcde44c0bae7bdc4bb7bbe7332d4cc",
+      "reference_manifest": "124b6b119ce28418967d0f541b485f88f63077b01ae78dccbcf88a922ed211bb",
+      "records": "18e95291d5483d27f0a4398f704dfb743c89ded0153c37ddde176cac5ecdb4cb",
+      "traffic": "54b76f99439d90ecb35d033c12dd1d1f219e30007248aaf77f913fc69d76f383",
+      "suite_manifest": "427fbbd8c4e404037ff3311893d988f9525a07c49e610e0fecfc3c5b0b3ca29d",
+      "evidence_manifest": "c914ba40a0ab36ee1975d75d7c14c7bbc85a0146a0da29d39104d50ad19f6838",
+      "stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr": "2162027c3b47b280dc39f6e58b31443c551d8b19a0f509e6e034a253b75bb791",
+      "suite_exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "analyzer_exit": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "analyzer_stderr": "4eb4eca0ecab01e27f67f09bafa87bf5dd06d0235ef3ee5fe7a9247573062374",
+      "wrapper_race_note": "d82f981bac83a207eeae1bd957138ca8aab42475d86ce7ffcad8438726da9494"
+    },
+    "reviewed_temporary_source_sha256": {
+      "server/src/kimi_k3/kimi_k3_backend.cpp": "adc2f07202eb647dbbfebb65776c6978a4804305fa5abc73e8279ca19c66d860",
+      "server/src/kimi_k3/kimi_k3_backend.h": "91cbca8c30663ed68c98ea7231b86ef81aa562c6d195cb94f62a4b5511ba9bc6",
+      "server/src/kimi_k3/kimi_k3_progressive_provider.cpp": "21c7da38a8d0afd87dee69b17573a21e72012a16b981116ff2e6e5e0124d4677",
+      "server/src/kimi_k3/kimi_k3_progressive_provider.h": "bcc50af43de49bf9f26862e3a1f0ecd0bb633e0a8f66f7aa3b767efc7b16ee02",
+      "server/test/run_kimi_k3_h16_suite.cpp": "b18cfa9c715510db27c5b9d06ad3650809973d07bd589dbcfb2071a84fdd8e27",
+      "docs/P62A_K3_LAYER_IO_DEVICE_OVERLAP_PREREG.md": "ca5e608126bf0c55be32fe408c00bc93c223fd8c206e158a13dbab7358ec17dd",
+      "scripts/analyze_kimi_k3_p62_overlap.py": "52d2fa1bbc76958af765eb0398b7e02c4bfec53574e3f85ceb94bf76153493f9",
+      "scripts/run_kimi_k3_p62_telemetry.py": "19279aa41a8ade3a8e97883193afd977655cf769ce7cb438f14b22a71fc81861",
+      "server/tests/test_kimi_k3_p62_overlap.py": "72be83da2a58067e7b5f9da9ec6225b38dc6b22976b7dfdf3cb8133ff4f12a14"
+    }
+  },
+  "stopped_launches": [
+    {
+      "root": "/home/duster/kimi-k3-deploy/p62a-overlap-qualified-20260821/broad12",
+      "scope": "first prompt, layer 2, 15 jobs",
+      "failure": "P62 layer accounting mismatch",
+      "evidence_use": "NONE",
+      "exit_sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "stderr_sha256": "cc4a6a0315ae68c438584f4aba55c64db307ac904b71b7ca4e21a511d1caaa99"
+    },
+    {
+      "root": "/home/duster/kimi-k3-deploy/p62a-v2-broad12-final-20260821",
+      "scope": "fact-capital complete; fact-science rejected before broad completion",
+      "failure": "hardcoded 12 decode transitions versus authoritative frozen-reference count 8",
+      "evidence_use": "NONE",
+      "stderr_sha256": "72548454098f189496f032f3b37a8302634cf0e6df00d424e0fc305490d2ea5a",
+      "partial_manifest_sha256": "ef8d74920af6829c1f1dbc6646cb61f976cc53e7ee6645c12ff2d3e8984a789d"
+    }
+  ],
+  "closure": {
+    "temporary_tracked_files_restored_to_head": 5,
+    "temporary_production_additions_removed": 416,
+    "head_lines_restored": 13,
+    "temporary_untracked_files_removed": 4,
+    "p62_runtime_symbols_remaining": 0,
+    "retained_files": [
+      "docs/P62A_K3_LAYER_IO_DEVICE_OVERLAP_CENSUS.md",
+      "results/k3_p62a_layer_io_device_overlap_census.json",
+      "research/K3-ROADMAP.html"
+    ]
+  }
+}
