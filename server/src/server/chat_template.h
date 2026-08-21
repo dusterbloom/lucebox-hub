@@ -26,6 +26,7 @@ enum class ChatFormat {
     LAGUNA,    // <|begin_of_sentence|><|User|>...<|Assistant|>
     GEMMA4,    // <bos><|turn>role\n...<turn|>\n
     DEEPSEEK4, // <｜begin▁of▁sentence｜>...<｜User｜>...<｜Assistant｜>
+    KIMI_K3,   // GGUF Jinja: <|open|>/<|close|> named frames
 };
 
 // Render chat messages into the model-specific prompt string.

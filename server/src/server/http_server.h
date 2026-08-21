@@ -436,7 +436,7 @@ private:
     void prepare_generation_inputs(
         const ParsedRequest & req, const PreparedPrompt & prepared,
         GenerationInputs & inputs);
-    void configure_generation_io(
+    std::shared_ptr<SseEmitter> configure_generation_io(
         ServerJob * job, const ParsedRequest & req, SseEmitter & emitter,
         GenerationOutputState & output, DaemonIO & io);
 

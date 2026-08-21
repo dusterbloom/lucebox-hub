@@ -377,7 +377,8 @@ void HttpServer::scheduler_loop(SeqEngine & engine) {
             SseEmitter emitter(req.format, req.response_id, req.model,
                                (int)req.prompt_tokens.size(), req.tools,
                                &tool_memory_, req.stop_sequences,
-                               req.started_in_thinking);
+                               req.started_in_thinking,
+                               chat_format_ == ChatFormat::KIMI_K3);
             GenTimings t{
                 0.0,
                 0.0,
@@ -425,7 +426,8 @@ void HttpServer::scheduler_loop(SeqEngine & engine) {
             job->emitter = std::make_unique<SseEmitter>(
                 req.format, req.response_id, req.model,
                 (int)req.prompt_tokens.size(), req.tools, &tool_memory_,
-                req.stop_sequences, req.started_in_thinking);
+                req.stop_sequences, req.started_in_thinking,
+                chat_format_ == ChatFormat::KIMI_K3);
         }
         if (req.stream && !job->sse_started) {
             job->sse_started = true;

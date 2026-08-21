@@ -64,6 +64,7 @@ static void append_available_tools(std::string & result,
 }
 
 ChatFormat chat_format_for_arch(const std::string & arch) {
+    if (arch == "kimi-k3") return ChatFormat::KIMI_K3;
     if (arch == "deepseek4") return ChatFormat::DEEPSEEK4;
     if (arch == "laguna") return ChatFormat::LAGUNA;
     if (arch == "gemma4") return ChatFormat::GEMMA4;
@@ -82,6 +83,14 @@ std::string render_chat_template(
     bool has_tools = !tools_json.empty() && tools_json != "[]" && tools_json != "null";
 
     switch (format) {
+    case ChatFormat::KIMI_K3:
+        // K3 message contents and tool blocks are defined by the GGUF's
+        // embedded Jinja template.  Falling back to Qwen ChatML silently
+        // produces a valid token stream for the wrong protocol, so fail
+        // closed when that template was not loaded.
+        throw std::runtime_error(
+            "Kimi K3 requires its GGUF Jinja chat template");
+
     case ChatFormat::QWEN3: {
         // Qwen3/3.5 ChatML format:
         //   <|im_start|>system\n[tool preamble +] content<|im_end|>\n

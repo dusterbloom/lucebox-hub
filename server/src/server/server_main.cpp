@@ -899,6 +899,20 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    // K3's named-frame protocol is defined by tokenizer.chat_template.  When
+    // the operator omits --chat-template-file, use that exact embedded source
+    // instead of falling through to a different architecture's hardcoded
+    // renderer.  A missing metadata template remains fail-closed via
+    // ChatFormat::KIMI_K3 in render_chat_template().
+    if (arch == "kimi-k3" && sconfig.chat_template_src.empty() &&
+        !tokenizer.chat_template().empty()) {
+        sconfig.chat_template_src = tokenizer.chat_template();
+        sconfig.chat_template_path = "gguf:tokenizer.chat_template";
+        std::fprintf(stderr,
+            "[server] using embedded Kimi K3 chat template (%zu bytes)\n",
+            sconfig.chat_template_src.size());
+    }
+
     // Load pflash drafter tokenizer (if pflash enabled).
     Tokenizer drafter_tokenizer;
     if (pflash_enabled) {

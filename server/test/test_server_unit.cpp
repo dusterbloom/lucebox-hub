@@ -20,6 +20,7 @@
 #include "server/api_types.h"
 #include "server/http_server.h"
 #include "server/chat_template.h"
+#include "server/kimi_k3_output_framer.h"
 #include "common/sampler.h"
 #include "common/backend_precision.h"
 #include "common/backend_ipc.h"
@@ -2895,6 +2896,161 @@ TEST_CASE(ServerUnitFixture, test_jinja_render_empty_template_throws) {
         threw = true;
     }
     TEST_ASSERT(threw);
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_arch_has_fail_closed_template_fallback) {
+    TEST_ASSERT(chat_format_for_arch("kimi-k3") == ChatFormat::KIMI_K3);
+    bool threw = false;
+    try {
+        (void)render_chat_template(
+            {{"user", "hello", ""}}, ChatFormat::KIMI_K3,
+            /*add_generation_prompt=*/true, /*enable_thinking=*/false, "");
+    } catch (const std::runtime_error &) {
+        threw = true;
+    }
+    TEST_ASSERT(threw);
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_framer_hides_only_complete_known_frames) {
+    KimiK3OutputFramer framer;
+    std::string visible;
+    const std::vector<std::pair<std::string, std::string>> pieces = {
+        {"Tokyo", "Tokyo"},
+        {"<|close|>", "<|close|>"},
+        {"res", "res"},
+        {"ponse", "ponse"},
+        {"<|sep|>", "<|sep|>"},
+        {" response", " response"},
+        {"<|close|>", "<|close|>"},
+        {"message", "message"},
+        {"<|sep|>", "<|sep|>"},
+    };
+    for (const auto & piece : pieces) {
+        visible += framer.push(piece.first, piece.second).text;
+    }
+    visible += framer.finish().text;
+    TEST_ASSERT(visible == "Tokyo response");
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_framer_maps_think_transitions) {
+    KimiK3OutputFramer framer;
+    TEST_ASSERT(framer.push("<|open|>", "<|open|>").text.empty());
+    TEST_ASSERT(framer.push("th", "th").text.empty());
+    TEST_ASSERT(framer.push("ink", "ink").text.empty());
+    auto opened = framer.push("<|sep|>", "<|sep|>");
+    TEST_ASSERT(opened.text == "<think>");
+    TEST_ASSERT(opened.think_boundary);
+    TEST_ASSERT(framer.push("work", "work").text == "work");
+    TEST_ASSERT(framer.push("<|close|>", "<|close|>").text.empty());
+    TEST_ASSERT(framer.push("think", "think").text.empty());
+    auto closed = framer.push("<|sep|>", "<|sep|>");
+    TEST_ASSERT(closed.text == "</think>");
+    TEST_ASSERT(closed.think_boundary);
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_framer_preserves_unknown_and_malformed) {
+    KimiK3OutputFramer unknown;
+    TEST_ASSERT(unknown.push("<|open|>", "<|open|>").text.empty());
+    TEST_ASSERT(unknown.push("tool", "tool").text.empty());
+    const auto tool = unknown.push("<|sep|>", "<|sep|>");
+    TEST_ASSERT(tool.text == "<|open|>tool<|sep|>");
+
+    KimiK3OutputFramer malformed;
+    TEST_ASSERT(malformed.push("<|close|>", "<|close|>").text.empty());
+    TEST_ASSERT(malformed.push("res", "res").text.empty());
+    TEST_ASSERT(malformed.finish().text == "<|close|>res");
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_emitter_stream_and_nonstream_text_match) {
+    auto stream = SseEmitter(ApiFormat::OPENAI_CHAT, "stream", "kimi-k3", 4,
+                             json::array(), nullptr, {}, false, true);
+    auto nonstream = SseEmitter(ApiFormat::OPENAI_CHAT, "json", "kimi-k3", 4,
+                                json::array(), nullptr, {}, false, true);
+    const std::vector<std::pair<std::string, std::string>> pieces = {
+        {"The", "The"}, {" response", " response"},
+        {"<|close|>", "<|close|>"}, {"res", "res"},
+        {"ponse", "ponse"}, {"<|sep|>", "<|sep|>"},
+        {"<|close|>", "<|close|>"}, {"message", "message"},
+        {"<|sep|>", "<|sep|>"},
+    };
+    const std::vector<int32_t> committed_ids = {
+        1, 2, 163588, 3, 4, 163589, 163588, 2778, 163589};
+    const auto original_ids = committed_ids;
+    for (const auto & piece : pieces) {
+        std::string a;
+        std::string b;
+        bool think_a = false;
+        bool think_b = false;
+        if (stream.frame_model_token(piece.first, piece.second, a, think_a)) {
+            stream.emit_token(a);
+        }
+        if (nonstream.frame_model_token(piece.first, piece.second, b, think_b)) {
+            nonstream.emit_token(b);
+        }
+    }
+    stream.emit_finish((int)committed_ids.size());
+    nonstream.emit_finish((int)committed_ids.size());
+    TEST_ASSERT(stream.accumulated_text() == "The response");
+    TEST_ASSERT(nonstream.accumulated_text() == stream.accumulated_text());
+    TEST_ASSERT(committed_ids == original_ids);
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_preview_uses_full_special_classification) {
+    SseEmitter preview(ApiFormat::OPENAI_CHAT, "preview", "kimi-k3", 1,
+                       json::array(), nullptr, {}, false, true);
+    std::string text;
+    const auto delivery = classify_model_token(
+        preview, "<|internal_control|>", "<|internal_control|>", false, text);
+    TEST_ASSERT(delivery == ModelTokenDelivery::SKIP);
+    TEST_ASSERT(classify_model_token(
+        preview, "<|open|>", "<|open|>", true, text) ==
+        ModelTokenDelivery::SKIP);
+    preview.emit_finish(1);
+    TEST_ASSERT(!preview.has_visible_model_output());
+    TEST_ASSERT(preview.accumulated_text().empty());
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_preview_finish_exposes_malformed_tail_for_cache) {
+    SseEmitter preview(ApiFormat::OPENAI_CHAT, "preview", "kimi-k3", 1,
+                       json::array(), nullptr, {}, false, true);
+    std::string text;
+    TEST_ASSERT(classify_model_token(
+        preview, "<|close|>", "<|close|>", false, text) ==
+        ModelTokenDelivery::SKIP);
+    TEST_ASSERT(classify_model_token(
+        preview, "res", "res", false, text) == ModelTokenDelivery::SKIP);
+    TEST_ASSERT(!preview.has_visible_model_output());
+
+    preview.emit_finish(2);
+    TEST_ASSERT(preview.has_visible_model_output());
+    TEST_ASSERT(preview.accumulated_text() == "<|close|>res");
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_classic_nonstream_preview_stops_raw_delivery) {
+    SseEmitter preview(ApiFormat::OPENAI_CHAT, "preview", "kimi-k3", 1,
+                       json::array(), nullptr, {"STOP"}, false, true);
+    const std::vector<std::pair<std::string, std::string>> raw_tokens = {
+        {"STOP", "STOP"},
+        {" after", " after"},
+    };
+    int raw_count = 0;
+    bool callback_stopped = false;
+    for (const auto & token : raw_tokens) {
+        ++raw_count;  // Mirrors completion_tokens in the classic callback.
+        std::string text;
+        const auto delivery = classify_model_token(
+            preview, token.first, token.second, false, text);
+        if (delivery == ModelTokenDelivery::SKIP) continue;
+        preview.emit_token(text);
+        if (!should_continue_model_generation(delivery, preview)) {
+            callback_stopped = true;
+            break;
+        }
+    }
+
+    TEST_ASSERT(callback_stopped);
+    TEST_ASSERT(preview.stop_hit());
+    TEST_ASSERT(raw_count == 1);  // The post-stop raw token was never counted.
 }
 
 TEST_CASE(ServerUnitFixture, test_jinja_render_bad_tools_json_throws) {
@@ -5976,4 +6132,3 @@ TEST_CASE(ServerUnitFixture, test_emitter_function_calls_param_with_literal_thin
     TEST_ASSERT(em.emit_token_count() == 3);
     TEST_ASSERT(em.emit_token_count() - em.first_content_token_index() == 1);
 }
-

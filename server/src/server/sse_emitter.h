@@ -9,6 +9,7 @@
 #include "tool_memory.h"
 #include "reasoning.h"
 #include "api_types.h"
+#include "kimi_k3_output_framer.h"
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
@@ -48,6 +49,12 @@ struct GenTimings {
     int    effective_prompt_tokens = 0;
 };
 
+enum class ModelTokenDelivery {
+    SKIP,
+    THINK_TAG,
+    TEXT,
+};
+
 // Build the `timings` sub-object emitted under `usage`.
 //   prefill_ms              = prefill_s * 1000.0  (1 decimal)
 //   decode_ms               = decode_s  * 1000.0  (1 decimal)
@@ -70,7 +77,16 @@ public:
                const json & tools,
                ToolMemory * tool_memory,
                const std::vector<std::string> & stop_sequences = {},
-               bool started_in_thinking = false);
+               bool started_in_thinking = false,
+               bool kimi_k3_output = false);
+
+    // Apply model-specific framing before the generic reasoning/tool state
+    // machine. Returns false while a K3 structural frame is buffered or
+    // suppressed. `think_boundary` identifies mapped K3 think transitions.
+    bool frame_model_token(const std::string & raw_token,
+                           const std::string & decoded_piece,
+                           std::string & text,
+                           bool & think_boundary);
 
     // Emit the initial SSE events (role delta, message_start, etc.)
     // Returns the formatted SSE strings to send.
@@ -97,6 +113,12 @@ public:
 
     // Get accumulated content (for non-streaming).
     const std::string & accumulated_text() const { return accumulated_content_; }
+
+    // True once model output has survived model-specific framing and generic
+    // internal-token suppression. This includes reasoning/tool syntax and
+    // fail-closed malformed framing, so cache confirmation can distinguish
+    // real output from an internal-only token stream.
+    bool has_visible_model_output() const { return !accumulated_raw_.empty(); }
 
     // Get the parsed tool calls (after emit_finish).
     const std::vector<ToolCall> & tool_calls() const { return tool_calls_; }
@@ -182,6 +204,9 @@ private:
     int          first_content_token_index_ = -1;
     int          emit_token_count_ = 0;
 
+    bool         kimi_k3_output_ = false;
+    KimiK3OutputFramer kimi_k3_framer_;
+
     // Stop sequences support
     std::vector<std::string> stop_sequences_;
     size_t       stop_holdback_ = 0;  // max length of any stop sequence
@@ -196,5 +221,20 @@ private:
     // across streamed tokens is still recognized on the next token.
     static constexpr size_t BASE_HOLDBACK = 15;  // len("<parameter name=") - 1
 };
+
+// Shared classification seam for streaming, non-stream replay, and live
+// non-stream preview. `is_eos` is supplied by the tokenizer owner so EOS IDs
+// remain untouched and are never fed into model-specific framing state.
+ModelTokenDelivery classify_model_token(
+    SseEmitter & emitter,
+    const std::string & raw_token,
+    const std::string & decoded_piece,
+    bool is_eos,
+    std::string & text);
+
+// Thinking boundaries never terminate generation; ordinary text obeys the
+// emitter's stop-sequence state. Shared by every token-delivery path.
+bool should_continue_model_generation(
+    ModelTokenDelivery delivery, const SseEmitter & emitter);
 
 }  // namespace dflash::common

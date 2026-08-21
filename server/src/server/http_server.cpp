@@ -234,8 +234,16 @@ static bool prompt_ends_in_open_think(const std::string & prompt) {
         if (c != ' ' && c != '\n' && c != '\r' && c != '\t') break;
         --end;
     }
-    return end >= kThinkOpenLen &&
-           prompt.compare(end - kThinkOpenLen, kThinkOpenLen, kThinkOpen) == 0;
+    if (end >= kThinkOpenLen &&
+        prompt.compare(end - kThinkOpenLen, kThinkOpenLen, kThinkOpen) == 0) {
+        return true;
+    }
+    static constexpr const char * kKimiThinkOpen =
+        "<|open|>think<|sep|>";
+    static constexpr size_t kKimiThinkOpenLen = 20;
+    return end >= kKimiThinkOpenLen &&
+           prompt.compare(end - kKimiThinkOpenLen, kKimiThinkOpenLen,
+                          kKimiThinkOpen) == 0;
 }
 
 // ─── piecewise keep-ratio curve ─────────────────────────────────────────
@@ -1964,9 +1972,15 @@ bool HttpServer::render_and_tokenize_request(
             return false;
         }
     } else {
-        rendered = render_chat_template(
-            chat_messages, chat_format_, /*add_generation_prompt=*/true,
-            req.thinking_enabled, tools_json);
+        try {
+            rendered = render_chat_template(
+                chat_messages, chat_format_, /*add_generation_prompt=*/true,
+                req.thinking_enabled, tools_json);
+        } catch (const std::exception & e) {
+            send_error(fd, 500,
+                std::string("chat template render failed: ") + e.what());
+            return false;
+        }
     }
 
     req.started_in_thinking = prompt_ends_in_open_think(rendered);
@@ -2127,53 +2141,22 @@ struct CompletionTokenCounts {
     int content = 0;
 };
 
-enum class TokenDelivery {
-    kSkip,      // EOS or internal control marker — never reaches the emitter
-    kThinkTag,  // thinking-boundary marker mapped to its <think> text form
-    kText,      // ordinary text (token_text may still be empty)
-};
-
 // Classifies one generated token for delivery to the SseEmitter, filling
-// `text` with the deliverable form for kThinkTag / kText. Shared by the
+// `text` with the deliverable form. Shared by the
 // streaming on_token callback and the non-streaming replay: the two paths
 // MUST classify identically, or the reasoning/content split diverges
 // between streamed and non-streamed responses.
-TokenDelivery classify_generated_token(
-        Tokenizer & tokenizer, int32_t token, std::string & text) {
-    if (token == tokenizer.eos_id() || token == tokenizer.eos_chat_id()) {
-        return TokenDelivery::kSkip;
+ModelTokenDelivery classify_generated_token(
+        Tokenizer & tokenizer, SseEmitter & emitter,
+        int32_t token, std::string & text) {
+    const bool is_eos =
+        token == tokenizer.eos_id() || token == tokenizer.eos_chat_id();
+    if (is_eos) {
+        return classify_model_token(emitter, {}, {}, true, text);
     }
-
-    const std::string & raw = tokenizer.raw_token(token);
-
-    // Gemma4 thinking channel (<|channel> / <channel|>) and Qwen3.6
-    // thinking markers share one mapped dialect. The Qwen markers
-    // <think> (id 248068) and </think> (id 248069) are SINGLE special
-    // tokens in the added_tokens vocab: without this mapping they would
-    // hit the generic "<...>" strip below and be silently dropped, the
-    // emitter would never see the reasoning→content transition, and the
-    // whole answer would land in reasoning_content with empty content.
-    if (raw == "<|channel>" || raw == "<think>") {
-        text = "<think>";
-        return TokenDelivery::kThinkTag;
-    }
-    if (raw == "<channel|>" || raw == "</think>") {
-        text = "</think>\n";
-        return TokenDelivery::kThinkTag;
-    }
-
-    // Other special tokens are internal control markers. Byte-fallback
-    // tokens such as <0xAB> are text and must still reach the emitter.
-    if (raw.size() >= 2 && raw[0] == '<' && raw[1] == '|') {
-        return TokenDelivery::kSkip;
-    }
-    if (raw.size() >= 2 && raw[0] == '<' && raw.back() == '>' &&
-        !(raw.size() == 6 && raw[1] == '0' && raw[2] == 'x')) {
-        return TokenDelivery::kSkip;
-    }
-
-    text = tokenizer.token_text(token);
-    return TokenDelivery::kText;
+    return classify_model_token(
+        emitter, tokenizer.raw_token(token), tokenizer.token_text(token),
+        false, text);
 }
 
 CompletionTokenCounts feed_non_streaming_tokens(
@@ -2181,14 +2164,14 @@ CompletionTokenCounts feed_non_streaming_tokens(
         SseEmitter & emitter) {
     for (int32_t token : tokens) {
         std::string text;
-        const TokenDelivery delivery =
-            classify_generated_token(tokenizer, token, text);
-        if (delivery == TokenDelivery::kSkip) continue;
+        const ModelTokenDelivery delivery =
+            classify_generated_token(tokenizer, emitter, token, text);
+        if (delivery == ModelTokenDelivery::SKIP) continue;
 
         emitter.emit_token(text);
         // Matching the streaming path, only ordinary text is checked
         // against stop sequences — think-tag markers never count.
-        if (delivery == TokenDelivery::kText && emitter.stop_hit()) break;
+        if (delivery == ModelTokenDelivery::TEXT && emitter.stop_hit()) break;
     }
 
     CompletionTokenCounts counts;
@@ -3556,9 +3539,22 @@ void HttpServer::prepare_generation_inputs(
     inputs.request.stall_skip_tokens = &inputs.stall_skip_tokens;
 }
 
-void HttpServer::configure_generation_io(
+std::shared_ptr<SseEmitter> HttpServer::configure_generation_io(
         ServerJob * job, const ParsedRequest & req, SseEmitter & emitter,
         GenerationOutputState & output, DaemonIO & io) {
+    // Classic non-streaming generation replays result.tokens through
+    // `emitter` after generation.  Keep its live status preview state
+    // separate so the request's response framer sees every committed token
+    // exactly once.  Streaming and scheduler delivery emit directly and do
+    // not use this preview.
+    std::shared_ptr<SseEmitter> nonstream_k3_preview;
+    if (!req.stream && chat_format_ == ChatFormat::KIMI_K3) {
+        nonstream_k3_preview = std::make_shared<SseEmitter>(
+            req.format, req.response_id + "-preview", req.model,
+            (int) req.prompt_tokens.size(), req.tools, nullptr,
+            req.stop_sequences, req.started_in_thinking, true);
+    }
+
     io.stream_fd = -1;
     io.should_cancel = [job]() {
         return job->client_disconnected.load(std::memory_order_acquire);
@@ -3573,7 +3569,8 @@ void HttpServer::configure_generation_io(
         broadcast_status();
     };
 
-    io.on_token = [this, job, &req, &emitter, &output](
+    io.on_token = [this, job, &req, &emitter, &output,
+                   nonstream_k3_preview](
             int32_t token) -> bool {
         if (output.client_disconnected ||
             job->client_disconnected.load(std::memory_order_acquire)) {
@@ -3588,9 +3585,21 @@ void HttpServer::configure_generation_io(
         }
 
         std::string text;
-        const TokenDelivery delivery =
-            classify_generated_token(tokenizer_, token, text);
-        if (delivery == TokenDelivery::kSkip) return true;
+        if (nonstream_k3_preview) {
+            const ModelTokenDelivery delivery = classify_generated_token(
+                tokenizer_, *nonstream_k3_preview, token, text);
+            if (delivery == ModelTokenDelivery::SKIP) return true;
+            nonstream_k3_preview->emit_token(text);
+            output.visible_output_seen =
+                nonstream_k3_preview->has_visible_model_output();
+            if (!text.empty()) broadcast_token(text);
+            return should_continue_model_generation(
+                delivery, *nonstream_k3_preview);
+        }
+
+        const ModelTokenDelivery delivery =
+            classify_generated_token(tokenizer_, emitter, token, text);
+        if (delivery == ModelTokenDelivery::SKIP) return true;
 
         if (!text.empty()) {
             output.visible_output_seen = true;
@@ -3606,8 +3615,10 @@ void HttpServer::configure_generation_io(
         }
         // Only ordinary text is checked against stop sequences — think-tag
         // markers never terminate generation.
-        return delivery == TokenDelivery::kThinkTag || !emitter.stop_hit();
+        return should_continue_model_generation(delivery, emitter);
     };
+
+    return nonstream_k3_preview;
 }
 
 bool HttpServer::deliver_generation_token(
@@ -3617,9 +3628,9 @@ bool HttpServer::deliver_generation_token(
     ++completion_tokens;
 
     std::string text;
-    const TokenDelivery delivery =
-        classify_generated_token(tokenizer_, token, text);
-    if (delivery == TokenDelivery::kSkip) return true;
+    const ModelTokenDelivery delivery =
+        classify_generated_token(tokenizer_, emitter, token, text);
+    if (delivery == ModelTokenDelivery::SKIP) return true;
 
     // Non-stream replay counts every non-skipped token, including tokens
     // whose decoded text is empty. Keep concurrent usage accounting aligned;
@@ -3635,7 +3646,7 @@ bool HttpServer::deliver_generation_token(
             send_buffer.append(chunk);
         }
     }
-    return delivery == TokenDelivery::kThinkTag || !emitter.stop_hit();
+    return should_continue_model_generation(delivery, emitter);
 }
 
 void HttpServer::send_nonstream_response(
@@ -3766,7 +3777,8 @@ void HttpServer::process_job(ServerJob * job) {
                        (int)req.prompt_tokens.size(), req.tools,
                        &tool_memory_,
                        req.stop_sequences,
-                       req.started_in_thinking);
+                       req.started_in_thinking,
+                       chat_format_ == ChatFormat::KIMI_K3);
 
     // Emit initial SSE events only for local generation. The upstream owns
     // the proxied event sequence.
@@ -3811,7 +3823,8 @@ void HttpServer::process_job(ServerJob * job) {
 
     DaemonIO io;
     GenerationOutputState output;
-    configure_generation_io(job, req, emitter, output, io);
+    auto nonstream_k3_preview =
+        configure_generation_io(job, req, emitter, output, io);
     int & completion_tokens = output.completion_tokens;
     bool & visible_output_seen = output.visible_output_seen;
     bool & client_disconnected = output.client_disconnected;
@@ -3874,6 +3887,15 @@ void HttpServer::process_job(ServerJob * job) {
             "[pflash-bandit] session=%s turn=%d keep=%.4f->%.4f ema=%.3f accept=%.3f\n",
             req.session_id.c_str(), old_turn + 1,
             old_keep, new_keep, ema, result.accept_rate);
+    }
+
+    // Complete the independent non-stream preview before cache confirmation.
+    // In particular, an incomplete K3 frame is fail-closed into visible text
+    // only at finish(), while an internal-only special stream stays empty.
+    if (nonstream_k3_preview) {
+        nonstream_k3_preview->emit_finish(completion_tokens);
+        visible_output_seen =
+            nonstream_k3_preview->has_visible_model_output();
     }
 
     finalize_generation_cache(
