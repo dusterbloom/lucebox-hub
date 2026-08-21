@@ -17,6 +17,7 @@ import json
 import os
 import statistics
 import time
+from bisect import bisect_right
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -55,6 +56,7 @@ class CacheRequest:
     sequence: int = 0
     base_pos: int = 0
     kind: str = "slab-page"
+    observed_physical_bytes: int = 0
 
     @property
     def key(self) -> tuple[str, str, int, int]:
@@ -80,6 +82,21 @@ class CacheTrace:
     mean_tail_logical_bytes: int
     exact_fallback_rows: int
     exact_fallback_bytes: int
+
+
+@dataclass(frozen=True)
+class CoupledControl:
+    host_capacity_bytes: int
+    expected_physical_bytes: dict[str, int]
+    prompt_lengths: list[int]
+    opaque_physical_bytes: dict[str, int]
+
+
+def request_phase(request: CacheRequest, prompt_lengths: list[int]) -> str:
+    if request.sequence >= len(prompt_lengths):
+        raise ValueError("cache trace has more sequences than its manifest")
+    return ("prefill" if request.base_pos < prompt_lengths[request.sequence]
+            else "decode")
 
 
 def proc_read_bytes() -> int:
@@ -123,6 +140,30 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def atomic_write_json(path: Path, value: object) -> None:
+    """Publish one complete JSON artifact or leave no new artifact behind."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        with temporary.open("x") as output:
+            json.dump(value, output, indent=2)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except BaseException:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def valid_sha256(value: object) -> bool:
@@ -204,7 +245,8 @@ def load_cache_trace(
         path: Path, model_identity: str,
         sidecars: dict[str, ArtifactIdentity],
         means: dict[str, ArtifactIdentity], collect_requests: bool = True,
-        request_observer: Callable[[CacheRequest], None] | None = None) -> CacheTrace:
+        request_observer: Callable[[CacheRequest], None] | None = None,
+        reconstruct_zero_reads: bool = False) -> CacheTrace:
     requests: list[CacheRequest] = []
     input_rows = 0
     selected_component_rows = 0
@@ -263,7 +305,7 @@ def load_cache_trace(
             if region == "slab-mean":
                 mean_tail_rows += 1
                 mean_tail_logical_bytes += logical_length
-                if explicit_read_bytes == 0:
+                if explicit_read_bytes == 0 and not reconstruct_zero_reads:
                     continue
                 try:
                     offset = int(row["aligned_offset"])
@@ -271,7 +313,8 @@ def load_cache_trace(
                 except (KeyError, ValueError) as error:
                     raise ValueError(
                         f"cache trace row {input_rows} has an invalid mean-tail range: {error}")
-                if offset < 0 or length <= 0 or explicit_read_bytes != length:
+                if (offset < 0 or length <= 0 or
+                        explicit_read_bytes not in {0, length}):
                     raise ValueError(
                         f"cache trace row {input_rows} is not an exact mean-tail read")
                 canonical = str(Path(row["file_path"]).resolve(strict=False))
@@ -295,6 +338,7 @@ def load_cache_trace(
                     sequence=sequence,
                     base_pos=base_pos,
                     kind=identity.kind,
+                    observed_physical_bytes=explicit_read_bytes,
                 ))
                 continue
             if region not in {"gate", "up", "down"}:
@@ -302,7 +346,13 @@ def load_cache_trace(
 
             selected_component_rows += 1
             selected_logical_bytes += logical_length
-            if explicit_read_bytes == 0:
+            # One gate row represents the aligned gate/up/down record. Up and
+            # down rows are logical slices of the same record and must never
+            # become independent cache demands. A P30 hit leaves the gate's
+            # aligned identity intact but records zero explicit bytes.
+            if region != "gate":
+                continue
+            if explicit_read_bytes == 0 and not reconstruct_zero_reads:
                 # P27 emits one physical aligned read on the gate trace row;
                 # its up/down rows describe slices of those same source bytes.
                 continue
@@ -312,7 +362,8 @@ def load_cache_trace(
             except (KeyError, ValueError) as error:
                 raise ValueError(
                     f"cache trace row {input_rows} has an invalid range: {error}")
-            if offset < 0 or length <= 0 or explicit_read_bytes != length:
+            if (offset < 0 or length <= 0 or
+                    explicit_read_bytes not in {0, length}):
                 raise ValueError(
                     f"cache trace row {input_rows} is not an exact P27 aligned read")
             canonical = str(Path(row["file_path"]).resolve(strict=False))
@@ -336,6 +387,7 @@ def load_cache_trace(
                 sequence=sequence,
                 base_pos=base_pos,
                 kind=identity.kind,
+                observed_physical_bytes=explicit_read_bytes,
             ))
 
     if emitted_requests == 0:
@@ -499,6 +551,183 @@ def simulate_bounded_lru(
     return simulation.result()
 
 
+class OrderedByteCache:
+    """Small exact-byte cache primitive shared by coupled policies."""
+
+    def __init__(self, capacity_bytes: int):
+        if capacity_bytes <= 0:
+            raise ValueError("cache capacity must be positive")
+        self.capacity = capacity_bytes
+        self.resident: OrderedDict[tuple[str, str, int, int], int] = OrderedDict()
+        self.bytes = 0
+        self.evictions = 0
+
+    def reset(self) -> None:
+        self.resident.clear()
+        self.bytes = 0
+
+    def hit(self, request: CacheRequest) -> bool:
+        size = self.resident.get(request.key)
+        if size is None:
+            return False
+        if size != request.length:
+            raise AssertionError("resident cache entry changed size")
+        self.resident.move_to_end(request.key)
+        return True
+
+    def admit(self, request: CacheRequest,
+              eviction_key: Callable[[OrderedDict], object] | None = None) -> bool:
+        if request.length > self.capacity or request.key in self.resident:
+            return False
+        while self.resident and self.bytes + request.length > self.capacity:
+            key = (eviction_key(self.resident) if eviction_key is not None
+                   else next(iter(self.resident)))
+            self.bytes -= self.resident.pop(key)
+            self.evictions += 1
+        self.resident[request.key] = request.length
+        self.bytes += request.length
+        return True
+
+
+def _empty_phase_stats() -> dict[str, int]:
+    return {name: 0 for name in (
+        "requests", "request_bytes", "gpu_hits", "gpu_hit_bytes",
+        "host_hits", "host_hit_bytes", "nvme_bytes", "peer_bytes",
+        "promotion_bytes")}
+
+
+def _observed_physical_by_phase(
+        path: Path, prompt_lengths: list[int]) -> dict[str, int]:
+    totals = {"prefill": 0, "decode": 0}
+    sequence = 0
+    previous: int | None = None
+    with path.open(newline="") as handle:
+        for index, row in enumerate(csv.DictReader(handle, delimiter="\t"), 1):
+            try:
+                base_pos = int(row["base_pos"])
+                physical = int(row["explicit_read_bytes"])
+            except (KeyError, ValueError) as error:
+                raise ValueError(f"trace row {index} has invalid physical accounting: {error}")
+            if previous is not None and base_pos < previous:
+                sequence += 1
+            previous = base_pos
+            if sequence >= len(prompt_lengths):
+                raise ValueError("cache trace has more sequences than its manifest")
+            phase = ("prefill" if base_pos < prompt_lengths[sequence]
+                     else "decode")
+            totals[phase] += physical
+    return totals
+
+
+def _future_positions(requests: list[CacheRequest]) -> dict[tuple[int, tuple], list[int]]:
+    future: dict[tuple[int, tuple], list[int]] = {}
+    for index, request in enumerate(requests):
+        if request.observed_physical_bytes == 0:
+            continue
+        future.setdefault((request.sequence, request.key), []).append(index)
+    return future
+
+
+def simulate_coupled_residency(
+        requests: list[CacheRequest], control: CoupledControl,
+        gpu_capacity_bytes: int, policy: str,
+        pinned_hot: set[tuple[str, str, int, int]] | None = None,
+        service_curve: dict[str, float] | None = None) -> dict[str, object]:
+    """Replay P30 plus an ordered GPU0 compact cache without model compute."""
+    if policy not in {"lru", "second-touch", "heldout-pinned-hot", "belady"}:
+        raise ValueError("unknown GPU residency policy")
+    pinned = pinned_hot or set()
+    if policy == "heldout-pinned-hot" and not pinned:
+        raise ValueError("heldout-pinned-hot requires independently frozen keys")
+    gpu = OrderedByteCache(gpu_capacity_bytes)
+    seen: set[tuple[str, str, int, int]] = set()
+    futures = _future_positions(requests)
+    phase_stats = {"prefill": _empty_phase_stats(), "decode": _empty_phase_stats()}
+    previous_sequence: int | None = None
+
+    def farthest(resident: OrderedDict, index: int, sequence: int):
+        def next_use(key):
+            positions = futures.get((sequence, key), [])
+            slot = bisect_right(positions, index)
+            return positions[slot] if slot < len(positions) else float("inf")
+        return max(resident, key=next_use)
+
+    for index, request in enumerate(requests):
+        if previous_sequence != request.sequence:
+            if previous_sequence is not None:
+                gpu.reset()
+                seen.clear()
+            previous_sequence = request.sequence
+        phase = request_phase(request, control.prompt_lengths)
+        stats = phase_stats[phase]
+        stats["requests"] += 1
+        stats["request_bytes"] += request.length
+        # The trace records the authoritative result of production's
+        # concurrent P30 lookup. Its worker-completion LRU order is not present
+        # in the deterministic trace order, so never resimulate it here.
+        if request.observed_physical_bytes == 0:
+            stats["host_hits"] += 1
+            stats["host_hit_bytes"] += request.length
+            continue
+        if request.observed_physical_bytes != request.length:
+            raise ValueError("P30 miss physical bytes disagree with aligned demand")
+        if gpu.hit(request):
+            stats["gpu_hits"] += 1
+            stats["gpu_hit_bytes"] += request.length
+            stats["peer_bytes"] += request.length
+            continue
+        stats["nvme_bytes"] += request.observed_physical_bytes
+        should_admit = policy in {"lru", "belady"}
+        if policy == "second-touch":
+            should_admit = request.key in seen
+            seen.add(request.key)
+        elif policy == "heldout-pinned-hot":
+            should_admit = request.key in pinned
+        if should_admit:
+            evict = ((lambda resident, i=index, s=request.sequence:
+                      farthest(resident, i, s)) if policy == "belady" else None)
+            if gpu.admit(request, evict):
+                stats["promotion_bytes"] += request.length
+
+    for phase, opaque in control.opaque_physical_bytes.items():
+        phase_stats[phase]["nvme_bytes"] += opaque
+    physical = {phase: values["nvme_bytes"]
+                for phase, values in phase_stats.items()}
+    projected = None
+    if service_curve is not None:
+        required = {"nvme_gib_s", "peer_gib_s", "promotion_gib_s",
+                    "peer_latency_us"}
+        if set(service_curve) != required or any(service_curve[k] <= 0 for k in required):
+            raise ValueError("service curve requires four positive registered values")
+        projected = {}
+        for phase, values in phase_stats.items():
+            baseline = control.expected_physical_bytes[phase] / GIB / service_curve["nvme_gib_s"]
+            candidate = (
+                values["nvme_bytes"] / GIB / service_curve["nvme_gib_s"] +
+                values["peer_bytes"] / GIB / service_curve["peer_gib_s"] +
+                values["gpu_hits"] * service_curve["peer_latency_us"] / 1e6 +
+                values["promotion_bytes"] / GIB / service_curve["promotion_gib_s"])
+            projected[phase] = {
+                "classification": "PROJECTED_FROM_EXTERNAL_SERVICE_CURVE",
+                "baseline_seconds": baseline,
+                "candidate_seconds": candidate,
+                "projected_saving_seconds": baseline - candidate,
+            }
+    return {
+        "policy": policy,
+        "gpu_capacity_bytes": gpu_capacity_bytes,
+        "host_capacity_bytes": control.host_capacity_bytes,
+        "phase": phase_stats,
+        "required_physical_bytes": physical,
+        "gpu_evictions": gpu.evictions,
+        "host_evictions": None,
+        "p30_outcome_source": "FROZEN_CONCURRENT_TRACE",
+        "service_projection": projected,
+        "service_curve": service_curve,
+        "performance_measured": False,
+    }
+
+
 def load_sequence_manifest(path: Path) -> tuple[list[str], list[int]]:
     try:
         manifest = json.loads(path.read_text())
@@ -524,6 +753,123 @@ def load_sequence_manifest(path: Path) -> tuple[list[str], list[int]]:
     if len(set(identifiers)) != len(identifiers):
         raise ValueError("sequence manifest identifiers are not unique")
     return identifiers, prompt_lengths
+
+
+def load_pinned_hot(path: Path) -> set[tuple[str, str, int, int]]:
+    try:
+        rows = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read pinned-hot keys {path}: {error}")
+    if not isinstance(rows, list):
+        raise ValueError("pinned-hot keys must be a JSON list")
+    result = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("pinned-hot key is malformed")
+        key = (row.get("model_identity"), row.get("sidecar_identity"),
+               row.get("offset"), row.get("length"))
+        if (not valid_sha256(key[0]) or not valid_sha256(key[1]) or
+                not isinstance(key[2], int) or key[2] < 0 or
+                not isinstance(key[3], int) or key[3] <= 0):
+            raise ValueError("pinned-hot key has invalid identity or range")
+        result.add(key)
+    if not result:
+        raise ValueError("pinned-hot key set is empty")
+    return result
+
+
+def simulate_coupled_trace(
+        trace_path: Path, identity_manifest: Path, sequence_manifest: Path,
+        host_capacity_gib: int, gpu_capacity_gib: int,
+        expected_prefill_bytes: int, expected_decode_bytes: int,
+        pinned_hot_path: Path | None = None,
+        service_curve: dict[str, float] | None = None
+        ) -> dict[str, object]:
+    if host_capacity_gib <= 0 or gpu_capacity_gib <= 0:
+        raise ValueError("host and GPU capacities must be positive")
+    sequence_ids, prompt_lengths = load_sequence_manifest(sequence_manifest)
+    model_identity, sidecars, means = load_cache_identities(identity_manifest)
+    trace = load_cache_trace(
+        trace_path, model_identity, sidecars, means,
+        reconstruct_zero_reads=True)
+    if trace.sequence_count != len(prompt_lengths):
+        raise ValueError("cache trace sequence resets disagree with sequence manifest")
+    observed_total = _observed_physical_by_phase(trace_path, prompt_lengths)
+    observed_cacheable = {"prefill": 0, "decode": 0}
+    for request in trace.requests:
+        observed_cacheable[request_phase(request, prompt_lengths)] += (
+            request.observed_physical_bytes)
+    opaque = {phase: observed_total[phase] - observed_cacheable[phase]
+              for phase in observed_total}
+    if any(value < 0 for value in opaque.values()):
+        raise ValueError("cacheable physical accounting exceeds trace total")
+    expected = {"prefill": expected_prefill_bytes, "decode": expected_decode_bytes}
+    if observed_total != expected:
+        raise ValueError(
+            f"frozen P55 trace physical mismatch: observed={observed_total} "
+            f"expected={expected}")
+    control = CoupledControl(
+        host_capacity_gib * GIB, expected, prompt_lengths, opaque)
+    pinned = load_pinned_hot(pinned_hot_path) if pinned_hot_path else None
+    policy_names = ["lru", "second-touch"]
+    policy_skipped: list[dict[str, str]] = []
+    if pinned is not None:
+        policy_names.append("heldout-pinned-hot")
+    else:
+        policy_skipped.append({
+            "policy": "heldout-pinned-hot",
+            "reason": "no independently frozen --pinned-hot-keys artifact supplied",
+        })
+    policy_names.append("belady")
+    policies = [
+        simulate_coupled_residency(
+            trace.requests, control, gpu_capacity_gib * GIB, name,
+            pinned_hot=pinned, service_curve=service_curve)
+        for name in policy_names
+    ]
+    belady = next(row for row in policies if row["policy"] == "belady")[
+        "required_physical_bytes"]
+    practical = [row for row in policies if row["policy"] != "belady"]
+    belady_dominates = all(
+        belady[phase] <= row["required_physical_bytes"][phase]
+        for row in practical for phase in ("prefill", "decode"))
+    return {
+        "schema": "k3-p55-coupled-gpu0-compact-residency-simulation-v1",
+        "classification": "OFFLINE_TRACE_SIMULATION",
+        "scope": "INCREMENTAL_GPU0_OVER_FROZEN_CONCURRENT_P30_OUTCOMES",
+        "runtime_mutation": False,
+        "performance_measured": False,
+        "trace": str(trace_path),
+        "trace_sha256": sha256(trace_path),
+        "identity_manifest_sha256": sha256(identity_manifest),
+        "sequence_manifest_sha256": sha256(sequence_manifest),
+        "pinned_hot_sha256": sha256(pinned_hot_path) if pinned_hot_path else None,
+        "sequence_ids": sequence_ids,
+        "sequence_resets": len(sequence_ids) - 1,
+        "logical_cacheable_requests": len(trace.requests),
+        "zero_explicit_read_demands": sum(
+            request.observed_physical_bytes == 0 for request in trace.requests),
+        "control": {
+            "expected_physical_bytes": expected,
+            "observed_trace_physical_bytes": observed_total,
+            "opaque_uncacheable_physical_bytes": opaque,
+            "exact_match": True,
+            "serialized_host_reconstruction": None,
+            "reason": (
+                "P30 cache mutations occur in worker-completion order, which "
+                "the deterministic trace row order does not retain."),
+        },
+        "policies": policies,
+        "policy_skipped": policy_skipped,
+        "belady_dominates_practical": belady_dominates,
+        "belady_note": (
+            "Farthest-next-use is an exact Belady policy for equal-size ranges; "
+            "with variable-size ranges it is a trace oracle, not a proof of the "
+            "global byte-optimal replacement."),
+        "service_projection_note": (
+            "Any timing values are projections from caller-supplied service "
+            "curves, not measured cache or model performance."),
+    }
 
 
 def simulate_cache_trace(
@@ -742,7 +1088,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("trace", type=Path)
     parser.add_argument("--mode", choices=(
-                            "current", "batched-pread", "bounded-lru-sim"),
+                            "current", "batched-pread", "bounded-lru-sim",
+                            "coupled-gpu0-sim"),
                         default="current")
     parser.add_argument("--queue-depth", type=int, default=1)
     parser.add_argument("--cold", action="store_true")
@@ -755,17 +1102,53 @@ def main() -> None:
     parser.add_argument("--reset-policy", choices=("none", "sequence"),
                         default="none")
     parser.add_argument("--sequence-manifest", type=Path)
+    parser.add_argument("--host-cache-gib", type=int, default=16)
+    parser.add_argument("--gpu-cache-gib", type=int, default=8)
+    parser.add_argument("--expected-prefill-bytes", type=int)
+    parser.add_argument("--expected-decode-bytes", type=int)
+    parser.add_argument("--pinned-hot-keys", type=Path)
+    parser.add_argument("--nvme-gib-s", type=float)
+    parser.add_argument("--peer-gib-s", type=float)
+    parser.add_argument("--promotion-gib-s", type=float)
+    parser.add_argument("--peer-latency-us", type=float)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.queue_depth <= 0:
         parser.error("--queue-depth must be positive")
 
-    if args.mode == "bounded-lru-sim":
+    if args.mode in {"bounded-lru-sim", "coupled-gpu0-sim"}:
         if args.identity_manifest is None:
-            parser.error("--identity-manifest is required for bounded-lru-sim")
+            parser.error("--identity-manifest is required for cache simulation")
         if args.cold or args.include_means or args.queue_depth != 1:
             parser.error(
-                "bounded-lru-sim does not accept replay-only I/O options")
+                "cache simulation does not accept replay-only I/O options")
+    if args.mode == "coupled-gpu0-sim":
+        if (args.sequence_manifest is None or
+                args.expected_prefill_bytes is None or
+                args.expected_decode_bytes is None):
+            parser.error(
+                "coupled-gpu0-sim requires sequence manifest and expected "
+                "phase bytes")
+        curve_values = (args.nvme_gib_s, args.peer_gib_s,
+                        args.promotion_gib_s, args.peer_latency_us)
+        if any(value is not None for value in curve_values) and not all(
+                value is not None for value in curve_values):
+            parser.error("all four external service-curve values are required")
+        curve = (dict(zip(("nvme_gib_s", "peer_gib_s", "promotion_gib_s",
+                           "peer_latency_us"), curve_values))
+                 if all(value is not None for value in curve_values) else None)
+        try:
+            result = simulate_coupled_trace(
+                args.trace, args.identity_manifest, args.sequence_manifest,
+                args.host_cache_gib, args.gpu_cache_gib,
+                args.expected_prefill_bytes, args.expected_decode_bytes,
+                args.pinned_hot_keys, curve)
+        except ValueError as error:
+            parser.error(str(error))
+        atomic_write_json(args.output, result)
+        print(json.dumps(result, indent=2))
+        return
+    if args.mode == "bounded-lru-sim":
         try:
             result = simulate_cache_trace(
                 args.trace, args.identity_manifest, args.cache_gib,
@@ -774,8 +1157,7 @@ def main() -> None:
                 sequence_manifest=args.sequence_manifest)
         except ValueError as error:
             parser.error(str(error))
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(result, indent=2) + "\n")
+        atomic_write_json(args.output, result)
         print(json.dumps(result, indent=2))
         return
 
@@ -804,8 +1186,7 @@ def main() -> None:
             result["os_physical_bytes"] / logical if logical else None),
         "note": "exact fallback model-shard ranges are not replayed by this sidecar-only baseline",
     })
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2) + "\n")
+    atomic_write_json(args.output, result)
     print(json.dumps(result, indent=2))
 
 

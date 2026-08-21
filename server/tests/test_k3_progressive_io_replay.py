@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).parents[2] / "scripts" / "k3_progressive_io_replay.py"
@@ -236,6 +237,172 @@ class K3ProgressiveCacheSimulationTests(unittest.TestCase):
             self.assertAlmostEqual(policies[key]["byte_hit_fraction"], fraction)
             self.assertEqual(policies[key]["sequence_resets"], 11)
             self.assertTrue(policies[key]["capacity_respected"])
+
+    def coupled_request(self, offset: int, sequence: int = 0,
+                        base_pos: int = 0, length: int = 16,
+                        observed: int | None = None):
+        if observed is None:
+            observed = length
+        return replay.CacheRequest(
+            MODEL_SHA, SIDECAR_SHA, "sidecar", offset, length, 1,
+            sequence=sequence, base_pos=base_pos,
+            observed_physical_bytes=observed)
+
+    def control(self, requests, host_capacity=64):
+        prompt_lengths = [1] * (max(row.sequence for row in requests) + 1)
+        expected = {"prefill": 0, "decode": 0}
+        for request in requests:
+            expected[replay.request_phase(request, prompt_lengths)] += (
+                request.observed_physical_bytes)
+        return replay.CoupledControl(
+            host_capacity, expected, prompt_lengths,
+            {"prefill": 0, "decode": 0})
+
+    def test_coupled_residency_resets_both_tiers_between_prompts(self):
+        requests = [
+            self.coupled_request(0, sequence=0, base_pos=0),
+            self.coupled_request(0, sequence=0, base_pos=1),
+            self.coupled_request(0, sequence=1, base_pos=0),
+            self.coupled_request(0, sequence=1, base_pos=1),
+        ]
+        result = replay.simulate_coupled_residency(
+            requests, self.control(requests), 32, "lru")
+        self.assertEqual(result["phase"]["prefill"]["gpu_hits"], 0)
+        self.assertEqual(result["phase"]["decode"]["gpu_hits"], 2)
+        self.assertEqual(result["required_physical_bytes"]["prefill"], 32)
+        self.assertEqual(result["required_physical_bytes"]["decode"], 0)
+
+    def test_second_touch_admission_and_lru_eviction(self):
+        requests = [self.coupled_request(offset) for offset in (0, 16, 0, 32, 16)]
+        control = self.control(requests, host_capacity=16)
+        second = replay.simulate_coupled_residency(
+            requests, control, 16, "second-touch")
+        lru = replay.simulate_coupled_residency(requests, control, 16, "lru")
+        self.assertEqual(second["phase"]["prefill"]["promotion_bytes"], 32)
+        self.assertGreaterEqual(second["gpu_evictions"], 1)
+        self.assertGreaterEqual(lru["gpu_evictions"], 1)
+
+    def test_belady_oracle_is_not_worse_than_lru_on_equal_ranges(self):
+        requests = [self.coupled_request(offset) for offset in
+                    (0, 16, 32, 0, 16, 32, 0)]
+        control = self.control(requests, host_capacity=16)
+        lru = replay.simulate_coupled_residency(requests, control, 32, "lru")
+        belady = replay.simulate_coupled_residency(
+            requests, control, 32, "belady")
+        self.assertLessEqual(
+            belady["required_physical_bytes"]["prefill"],
+            lru["required_physical_bytes"]["prefill"])
+
+    def test_frozen_concurrent_p30_outcomes_override_serial_lru_order(self):
+        # Three frozen misses are possible when concurrent workers perform all
+        # gets before their puts. A serialized 32-byte host LRU would call the
+        # third A a hit, so reconstructing P30 from row order is invalid.
+        requests = [
+            self.coupled_request(0, observed=16),
+            self.coupled_request(16, observed=16),
+            self.coupled_request(0, observed=16),
+        ]
+        control = self.control(requests, host_capacity=32)
+        result = replay.simulate_coupled_residency(
+            requests, control, 32, "lru")
+        self.assertEqual(control.expected_physical_bytes["prefill"], 48)
+        self.assertEqual(result["phase"]["prefill"]["gpu_hits"], 1)
+        self.assertEqual(result["required_physical_bytes"]["prefill"], 32)
+        self.assertEqual(result["p30_outcome_source"], "FROZEN_CONCURRENT_TRACE")
+
+    def test_frozen_p30_hits_bypass_gpu_and_claim_no_saving(self):
+        requests = [
+            self.coupled_request(0, observed=0),
+            self.coupled_request(0, observed=0),
+        ]
+        result = replay.simulate_coupled_residency(
+            requests, self.control(requests), 32, "lru")
+        stats = result["phase"]["prefill"]
+        self.assertEqual(stats["host_hits"], 2)
+        self.assertEqual(stats["gpu_hits"], 0)
+        self.assertEqual(stats["promotion_bytes"], 0)
+        self.assertEqual(stats["nvme_bytes"], 0)
+
+    def test_projected_service_formula_is_labeled_and_has_exact_boundary(self):
+        requests = [self.coupled_request(0), self.coupled_request(0)]
+        control = self.control(requests)
+        curve = {"nvme_gib_s": 1.0, "peer_gib_s": 2.0,
+                 "promotion_gib_s": 4.0, "peer_latency_us": 10.0}
+        result = replay.simulate_coupled_residency(
+            requests, control, 32, "lru", service_curve=curve)
+        projection = result["service_projection"]["prefill"]
+        expected_candidate = 16 / replay.GIB + 16 / replay.GIB / 2 + \
+            16 / replay.GIB / 4 + 10e-6
+        self.assertEqual(
+            projection["classification"],
+            "PROJECTED_FROM_EXTERNAL_SERVICE_CURVE")
+        self.assertAlmostEqual(projection["candidate_seconds"], expected_candidate)
+        self.assertFalse(result["performance_measured"])
+
+    def test_zero_explicit_gate_is_reconstructed_and_control_reconciles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sidecar = root / "layer01.k3slab"
+            rows = [
+                row(0, sidecar, "gate", 0, 16, 0, 512, 512, base_pos=0),
+                row(1, sidecar, "up", 16, 16, 0, 512, 0, base_pos=0),
+                row(2, sidecar, "down", 32, 16, 0, 512, 0, base_pos=0),
+                row(3, sidecar, "gate", 0, 16, 0, 512, 0, base_pos=1),
+                row(4, sidecar, "up", 16, 16, 0, 512, 0, base_pos=1),
+                row(5, sidecar, "down", 32, 16, 0, 512, 0, base_pos=1),
+            ]
+            _, manifest, trace = self.write_fixture(directory, rows)
+            suite = root / "suite.json"
+            suite.write_text(json.dumps({
+                "schema": "kimi-k3-h16-suite-v1",
+                "sequences": [{"id": "one", "prompt_token_count": 1}],
+            }))
+            pinned = root / "pinned.json"
+            pinned.write_text(json.dumps([{
+                "model_identity": MODEL_SHA,
+                "sidecar_identity": SIDECAR_SHA,
+                "offset": 0,
+                "length": 512,
+            }]))
+            result = replay.simulate_coupled_trace(
+                trace, manifest, suite, 1, 1, 512, 0, pinned)
+            self.assertTrue(result["control"]["exact_match"])
+            self.assertEqual(result["zero_explicit_read_demands"], 1)
+            self.assertEqual(result["logical_cacheable_requests"], 2)
+            self.assertEqual(result["sequence_resets"], 0)
+            without_pinned = replay.simulate_coupled_trace(
+                trace, manifest, suite, 1, 1, 512, 0)
+            self.assertEqual(
+                [item["policy"] for item in without_pinned["policies"]],
+                ["lru", "second-touch", "belady"])
+            self.assertEqual(without_pinned["pinned_hot_sha256"], None)
+            self.assertEqual(without_pinned["policy_skipped"], [{
+                "policy": "heldout-pinned-hot",
+                "reason": (
+                    "no independently frozen --pinned-hot-keys artifact "
+                    "supplied"),
+            }])
+            self.assertTrue(without_pinned["belady_dominates_practical"])
+            with self.assertRaisesRegex(ValueError, "trace physical mismatch"):
+                replay.simulate_coupled_trace(
+                    trace, manifest, suite, 1, 1, 511, 0, pinned)
+
+    def test_atomic_publication_removes_temporary_on_replace_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "result.json"
+            with mock.patch.object(
+                    replay.os, "replace", side_effect=OSError("injected")):
+                with self.assertRaisesRegex(OSError, "injected"):
+                    replay.atomic_write_json(output, {"complete": True})
+            self.assertFalse(output.exists())
+            self.assertEqual(list(output.parent.glob(".result.json.tmp.*")), [])
+
+    def test_atomic_publication_replaces_only_with_complete_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "result.json"
+            replay.atomic_write_json(output, {"complete": True})
+            self.assertEqual(json.loads(output.read_text()), {"complete": True})
+            self.assertEqual(list(output.parent.glob(".result.json.tmp.*")), [])
 
 
 if __name__ == "__main__":
