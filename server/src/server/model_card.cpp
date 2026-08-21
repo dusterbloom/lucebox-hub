@@ -32,6 +32,29 @@ namespace fs = std::filesystem;
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
+ReasoningPolicy reasoning_policy_for_arch(const std::string & arch) {
+    const bool is_qwen = arch.rfind("qwen", 0) == 0;
+    if (!is_qwen && arch != "kimi-k3") return {};
+
+    ReasoningPolicy policy;
+    policy.supported = true;
+    // K3's official contract defaults to thinking at maximum effort. Qwen
+    // retains the server's existing explicit-opt-in request behavior.
+    if (arch == "kimi-k3") {
+        policy.default_effort = "max";
+        policy.supported_efforts = {"low", "high", "max"};
+    } else {
+        policy.supported_efforts = {"low", "medium", "high", "x-high", "max"};
+    }
+    return policy;
+}
+
+std::string default_thinking_marker_for_arch(const std::string & arch) {
+    if (arch == "kimi-k3") return "<|close|>think<|sep|>";
+    if (arch == "gemma4") return "<channel|>";
+    return "</think>";
+}
+
 std::string normalize_model_card_stem(const std::string & general_name) {
     std::string out;
     out.reserve(general_name.size());

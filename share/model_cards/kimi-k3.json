@@ -4,5 +4,9 @@
   "verified_at": "2026-08-21",
   "max_tokens": 32768,
   "hard_limit_reply_budget": 4096,
-  "notes": "The upstream generation_config.json publishes max_length=1048576 and the model card documents a 1M-token context plus low/high/max reasoning-effort controls, but neither source publishes a separate recommended output-token budget or sampler settings. This card therefore uses dflash's conservative 32768-token operational ceiling and deliberately omits sampling, complex-problem and explicit tier values instead of attributing invented recommendations to Moonshot. Smaller-context deployments should set an explicit output limit; M1a parity requests use 24 tokens."
+  "thinking_marker": "<|close|>think<|sep|>",
+  "sampling": {
+    "temperature": 1.0
+  },
+  "notes": "The upstream generation_config.json publishes max_length=1048576 and the model card documents a 1M-token context plus low/high/max reasoning-effort controls. Official K3 evaluation uses maximum reasoning effort and temperature 1.0, which is the source for this card's temperature default; the published top_p=0.95 is specific to single-step evaluation and is deliberately not generalized here. Normal omitted-mode K3 requests are quality-first maximum-effort autoregressive runs: both stochastic sampling and the thinking BudgetHook make that request ineligible for speculative decode, even when the configured backend advertises DFlash capability. Neither source publishes a separate recommended output-token budget, so 32768 remains dflash's conservative operational ceiling. The thinking marker is the exact named-frame close from the official GGUF template. Smaller-context deployments should set an explicit output limit; frozen P55/M1a parity requests remain explicit thinking-off, temperature-0, 24-token reproductions."
 }

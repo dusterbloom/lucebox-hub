@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include <string>
+#include <vector>
 
 namespace dflash::common {
 
@@ -27,6 +28,20 @@ struct EffortTiers {
     int x_high = 0;
     int max    = 0;
 };
+
+// Architecture-level reasoning behavior shared by request defaults and API
+// capability metadata. An empty default_effort means requests remain opt-in.
+struct ReasoningPolicy {
+    bool supported = false;
+    std::string default_effort;
+    std::vector<std::string> supported_efforts;
+};
+
+ReasoningPolicy reasoning_policy_for_arch(const std::string & arch);
+
+// Source-proven parse-side close marker used when a sidecar does not provide
+// one. Kept here so startup and tests cannot drift by architecture.
+std::string default_thinking_marker_for_arch(const std::string & arch);
 
 // Sampler defaults from the model card. Each field's `has_*` companion
 // records whether the sidecar actually supplied a value, so the request

@@ -1347,7 +1347,7 @@ int main(int argc, char ** argv) {
     if (sconfig.hard_limit_reply_budget > 0) {
         std::string marker = card.thinking_marker;
         if (marker.empty()) {
-            marker = (arch == "gemma4") ? "<channel|>" : "</think>";
+            marker = default_thinking_marker_for_arch(arch);
         }
         const std::string close_text = card.thinking_terminator_hint.empty()
                                            ? marker

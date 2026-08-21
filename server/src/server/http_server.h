@@ -285,10 +285,10 @@ struct ParsedRequest {
     // Thinking/reasoning state
     bool                      thinking_enabled = true;
     bool                      started_in_thinking = false;
-    // True when the request opted in to the thinking-budget envelope via
-    // `thinking: {type: "enabled"}`. Distinct from thinking_enabled (which
-    // can be set via the chat template kwarg alone). When true, the response
-    // includes a `finish_details` block when thinking was opted in.
+    // Thinking-budget envelope opt-in. For K3 this equals the final resolved
+    // thinking_enabled state so named-frame prompts and force-close agree.
+    // Other architectures retain their established distinction between
+    // template-only thinking kwargs and budget-envelope controls.
     bool                      thinking_opt_in = false;
     // Per-request thinking-budget envelope (spec §4). Populated from
     // `thinking.budget_tokens` and `thinking.reply_budget`, or selected
@@ -310,6 +310,18 @@ struct ParsedRequest {
 SamplerCfg parse_request_sampler(const json & body,
                                  const SamplingDefaults & defaults);
 
+// Resolve explicit request controls over the architecture default. Exposed as
+// a pure request-policy seam so K3 default/max and compatibility-off behavior
+// can be tested without sockets or a model.
+void apply_request_reasoning_policy(
+    const json & body, const ServerConfig & config, ParsedRequest & req);
+
+// Apply the already-resolved reasoning state to generation. This is the sole
+// owner of the generation cap and BudgetHook activation decision.
+void prepare_reasoning_generation_inputs(
+    const ParsedRequest & req, const ServerConfig & config,
+    GenerateRequest & request, int & generation_cap);
+
 // Read the required `messages` field. Throws std::invalid_argument when
 // it is missing or not a non-empty array; route_request's catch turns
 // that into a 400.
@@ -329,6 +341,10 @@ bool ppp_prefers_tools_boundary(bool ppp_enabled, bool has_tools);
 json build_props_body(const ServerConfig & config,
                       const PrefixCache & prefix_cache,
                       const ToolMemory & tool_memory);
+
+// Codex-flavoured /v1/models body. Kept testable so it cannot drift from
+// /props reasoning metadata for architecture-specific policies.
+json build_codex_models_body(const ServerConfig & config);
 
 // ─── HTTP server ────────────────────────────────────────────────────────
 class HttpServer {

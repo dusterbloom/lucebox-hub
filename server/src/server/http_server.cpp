@@ -708,8 +708,10 @@ json build_props_body(const ServerConfig & config,
                       const ToolMemory & tool_memory) {
     // arch-gated capabilities (mirrors Python _capabilities()).
     const bool is_qwen = (config.arch.rfind("qwen", 0) == 0);
-    const bool reasoning_supported = is_qwen;
-    const bool speculative_supported = is_qwen;
+    const ReasoningPolicy reasoning_policy =
+        reasoning_policy_for_arch(config.arch);
+    const bool reasoning_supported = reasoning_policy.supported;
+    const bool speculative_supported = is_qwen || config.arch == "kimi-k3";
     const bool tools_supported = is_qwen || config.arch == "deepseek4";
 
     auto pcs  = prefix_cache.stats();
@@ -728,16 +730,13 @@ json build_props_body(const ServerConfig & config,
     else if (config.speculative_enabled)   speculative_mode = "dflash";
     else                                   speculative_mode = "off";
 
-    // Spec §4.2: the five-tier vocabulary (low | medium | high | x-high | max)
-    // all activate the phase-1 envelope. Advertise the full set when the
-    // arch supports reasoning so clients can negotiate the higher tiers.
+    // Advertise only the source-supported tiers for this architecture
+    // (Qwen's five-tier vocabulary; K3's low/high/max contract).
     json reasoning_efforts = json::array();
     if (reasoning_supported) {
-        reasoning_efforts.push_back("low");
-        reasoning_efforts.push_back("medium");
-        reasoning_efforts.push_back("high");
-        reasoning_efforts.push_back("x-high");
-        reasoning_efforts.push_back("max");
+        for (const std::string & effort : reasoning_policy.supported_efforts) {
+            reasoning_efforts.push_back(effort);
+        }
     }
 
     json server = {
@@ -839,7 +838,9 @@ json build_props_body(const ServerConfig & config,
         }},
         {"reasoning", {
             {"supported",         reasoning_supported},
-            {"default",           nullptr},
+            {"default",           reasoning_policy.default_effort.empty()
+                                      ? json(nullptr)
+                                      : json(reasoning_policy.default_effort)},
             {"supported_efforts", reasoning_efforts},
         }},
         // `model_card`: 1:1 with the on-disk sidecar JSON when one was
@@ -916,6 +917,43 @@ json build_props_body(const ServerConfig & config,
         }},
     };
     return body;
+}
+
+json build_codex_models_body(const ServerConfig & config) {
+    const ReasoningPolicy policy = reasoning_policy_for_arch(config.arch);
+    const std::string default_effort = policy.default_effort.empty()
+        ? "low"
+        : policy.default_effort;
+    json levels = json::array();
+    for (const std::string & effort : policy.supported_efforts) {
+        const int budget =
+            effort == "low"    ? config.effort_tiers.low :
+            effort == "medium" ? config.effort_tiers.medium :
+            effort == "high"   ? config.effort_tiers.high :
+            effort == "x-high" ? config.effort_tiers.x_high :
+                                    config.effort_tiers.max;
+        levels.push_back({
+            {"effort", effort},
+            {"description", "Phase-1 budget at the model card's " + effort +
+                " tier (" + std::to_string(budget) + " tokens)"},
+        });
+    }
+    return {
+        {"models", json::array({
+            {{"slug", config.model_name},
+             {"display_name", config.model_name},
+             {"description", "Local DFlash speculative-decoding server"},
+             {"default_reasoning_level", default_effort},
+             {"supported_reasoning_levels", levels},
+             {"shell_type", "shell_command"},
+             {"visibility", "list"},
+             {"supported_in_api", true},
+             {"priority", 1},
+             {"context_window", config.max_ctx},
+             {"supports_reasoning_summaries", false},
+             {"supports_parallel_tool_calls", false}}
+        })}
+    };
 }
 
 // Normalize Anthropic's `system` field (top-level on /v1/messages and
@@ -1614,47 +1652,7 @@ void HttpServer::handle_client(SocketHandle fd) {
     if (hr.method == "GET" && hr.path == "/v1/models") {
         // Codex sends ?client_version= — serve the Codex-specific schema.
         if (hr.query.find("client_version") != std::string::npos) {
-            json codex_models = {
-                {"models", json::array({
-                    {{"slug", config_.model_name},
-                     {"display_name", config_.model_name},
-                     {"description", "Local DFlash speculative-decoding server"},
-                     {"default_reasoning_level", "low"},
-                     // Spec §4.2: every tier activates the phase-1 envelope;
-                     // the difference is the budget cap selected from the
-                     // model card's effort_tiers. Descriptions surface the
-                     // resolved cap so clients can pick a tier purposefully.
-                     {"supported_reasoning_levels", json::array({
-                         {{"effort", "low"},
-                          {"description", "Phase-1 budget at the model card's low tier ("
-                                          + std::to_string(config_.effort_tiers.low)
-                                          + " tokens)"}},
-                         {{"effort", "medium"},
-                          {"description", "Phase-1 budget at the model card's medium tier ("
-                                          + std::to_string(config_.effort_tiers.medium)
-                                          + " tokens)"}},
-                         {{"effort", "high"},
-                          {"description", "Phase-1 budget at the model card's standard recommendation ("
-                                          + std::to_string(config_.effort_tiers.high)
-                                          + " tokens)"}},
-                         {{"effort", "x-high"},
-                          {"description", "Phase-1 budget between high and the complex-problem ceiling ("
-                                          + std::to_string(config_.effort_tiers.x_high)
-                                          + " tokens)"}},
-                         {{"effort", "max"},
-                          {"description", "Phase-1 budget at the model card's complex-problem ceiling ("
-                                          + std::to_string(config_.effort_tiers.max)
-                                          + " tokens)"}},
-                     })},
-                     {"shell_type", "shell_command"},
-                     {"visibility", "list"},
-                     {"supported_in_api", true},
-                     {"priority", 1},
-                     {"context_window", config_.max_ctx},
-                     {"supports_reasoning_summaries", false},
-                     {"supports_parallel_tool_calls", false}}
-                })}
-            };
+            const json codex_models = build_codex_models_body(config_);
             send_response(fd, 200, "application/json", codex_models.dump() + "\n");
             socket_close(fd);
             return;
@@ -1820,46 +1818,67 @@ bool HttpServer::parse_endpoint_request(
     return false;
 }
 
-void HttpServer::apply_request_reasoning(
-        const json & body, ParsedRequest & req) {
+void apply_request_reasoning_policy(
+        const json & body, const ServerConfig & config, ParsedRequest & req) {
     // Explicit thinking budgets override reasoning-effort tiers. Template
     // kwargs can still override whether the rendered prompt enables thinking.
-    // Default: thinking OFF (Qwen3.6 thinking wrecks DFlash acceptance
-    // rates; clients opt in explicitly).
+    // Architecture policy supplies the omitted-mode default; explicit request
+    // controls always win.
     bool enable_thinking = false;
     int request_budget_tokens = -1;
     int request_reply_budget = -1;
     int effort_phase1_cap = -1;
     bool effort_set = false;
+    bool explicit_mode = false;
+    const ReasoningPolicy arch_policy = reasoning_policy_for_arch(config.arch);
+    const bool enforce_final_budget_invariant = config.arch == "kimi-k3";
+
+    req.thinking_opt_in = false;
+    req.per_req_phase1_cap = -1;
+    req.per_req_reply_budget = -1;
 
     auto apply_reasoning_effort = [&](const std::string & effort) {
         if (effort == "none") {
             enable_thinking = false;
+            effort_set = false;
             return;
         }
 
+        // K3 exposes exactly low/high/max. Rejecting other values prevents a
+        // request from silently selecting a tier the API says is unsupported.
+        if (config.arch == "kimi-k3" &&
+            std::find(arch_policy.supported_efforts.begin(),
+                      arch_policy.supported_efforts.end(), effort) ==
+                arch_policy.supported_efforts.end()) {
+            throw std::invalid_argument(
+                "unsupported K3 reasoning effort '" + effort +
+                "' (expected low, high, max, or none)");
+        }
+
         // Five-tier vocabulary (spec §4.2). Unknown tier → high.
-        int tier_value = config_.effort_tiers.high;
+        int tier_value = config.effort_tiers.high;
         if (effort == "minimal" || effort == "low") {
-            tier_value = config_.effort_tiers.low;
+            tier_value = config.effort_tiers.low;
         } else if (effort == "medium") {
-            tier_value = config_.effort_tiers.medium;
+            tier_value = config.effort_tiers.medium;
         } else if (effort == "x-high") {
-            tier_value = config_.effort_tiers.x_high;
+            tier_value = config.effort_tiers.x_high;
         } else if (effort == "max") {
-            tier_value = config_.effort_tiers.max;
+            tier_value = config.effort_tiers.max;
         }
 
         effort_phase1_cap = tier_value;
         effort_set = true;
         enable_thinking = true;
-        // Spec §4.2: reasoning effort activates the budget envelope.
         req.thinking_opt_in = true;
     };
 
     if (body.contains("reasoning")) {
+        explicit_mode = true;
         const auto & reasoning = body["reasoning"];
-        if (reasoning.contains("effort")) {
+        if (reasoning.is_boolean() && enforce_final_budget_invariant) {
+            enable_thinking = reasoning.get<bool>();
+        } else if (reasoning.contains("effort")) {
             apply_reasoning_effort(reasoning.value("effort", "high"));
         } else {
             enable_thinking = true;
@@ -1867,11 +1886,16 @@ void HttpServer::apply_request_reasoning(
     }
     if (!effort_set && body.contains("reasoning_effort") &&
         body["reasoning_effort"].is_string()) {
+        explicit_mode = true;
         apply_reasoning_effort(body["reasoning_effort"].get<std::string>());
     }
     if (body.contains("thinking")) {
         const auto & thinking = body["thinking"];
-        if (thinking.contains("type")) {
+        if (thinking.is_boolean() && enforce_final_budget_invariant) {
+            explicit_mode = true;
+            enable_thinking = thinking.get<bool>();
+        } else if (thinking.contains("type")) {
+            explicit_mode = true;
             const bool enabled = thinking.value("type", "") == "enabled";
             enable_thinking = enabled;
             req.thinking_opt_in = enabled;
@@ -1888,22 +1912,39 @@ void HttpServer::apply_request_reasoning(
     if (body.contains("chat_template_kwargs")) {
         const auto & kwargs = body["chat_template_kwargs"];
         if (kwargs.contains("enable_thinking")) {
+            explicit_mode = true;
             enable_thinking = kwargs["enable_thinking"].get<bool>();
         }
     }
+
+    // K3's official request contract defaults to maximum-effort thinking.
+    // Explicit API controls remain authoritative, including the frozen P55
+    // `chat_template_kwargs.enable_thinking=false` reproduction contract.
+    if (!explicit_mode) {
+        if (!arch_policy.default_effort.empty()) {
+            apply_reasoning_effort(arch_policy.default_effort);
+        }
+    }
     req.thinking_enabled = enable_thinking;
+    if (enforce_final_budget_invariant) {
+        // K3's named-frame prompt and close sequence must agree after all
+        // overrides. Qwen retains its established distinction between a
+        // template kwarg and an explicit budget-envelope opt-in.
+        req.thinking_opt_in = enable_thinking;
+        if (!enable_thinking) return;
+    }
 
     // Spec §4.3 combined precedence + §4.4 clamping: thinking.budget_tokens
     // (if set) wins over reasoning.effort for the phase-1 cap; either is
     // clamped to the server ceilings.
     if (request_budget_tokens >= 0) {
         req.per_req_phase1_cap =
-            (std::min)(request_budget_tokens, config_.think_max_tokens);
-        if (request_budget_tokens > config_.think_max_tokens) {
+            (std::min)(request_budget_tokens, config.think_max_tokens);
+        if (request_budget_tokens > config.think_max_tokens) {
             std::fprintf(stderr,
                 "[server] thinking.budget_tokens=%d clamped to "
                 "think_max_tokens=%d\n",
-                request_budget_tokens, config_.think_max_tokens);
+                request_budget_tokens, config.think_max_tokens);
         }
     } else if (effort_set) {
         // Spec §4.4: effective cap is min(tier value, max_tokens -
@@ -1911,7 +1952,7 @@ void HttpServer::apply_request_reasoning(
         // default_max_tokens; clients that want the full tier budget must
         // pass an explicit max_tokens. Otherwise we narrow silently to fit.
         const int max_output_phase1_room = (std::max)(
-            0, req.max_output - config_.hard_limit_reply_budget);
+            0, req.max_output - config.hard_limit_reply_budget);
         req.per_req_phase1_cap =
             (std::min)(effort_phase1_cap, max_output_phase1_room);
         if (effort_phase1_cap > max_output_phase1_room) {
@@ -1920,21 +1961,50 @@ void HttpServer::apply_request_reasoning(
                 "(max_tokens=%d - hard_limit_reply_budget=%d); "
                 "pass a larger max_tokens to use the full tier budget\n",
                 effort_phase1_cap, req.per_req_phase1_cap,
-                req.max_output, config_.hard_limit_reply_budget);
+                req.max_output, config.hard_limit_reply_budget);
         }
     }
     if (request_reply_budget >= 0) {
         req.per_req_reply_budget =
-            (std::min)(request_reply_budget, config_.hard_limit_reply_budget);
-        if (request_reply_budget > config_.hard_limit_reply_budget) {
+            (std::min)(request_reply_budget, config.hard_limit_reply_budget);
+        if (request_reply_budget > config.hard_limit_reply_budget) {
             std::fprintf(stderr,
                 "[server] thinking.reply_budget=%d clamped to "
                 "hard_limit_reply_budget=%d\n",
-                request_reply_budget, config_.hard_limit_reply_budget);
+                request_reply_budget, config.hard_limit_reply_budget);
         }
     }
     // (The effort tier doesn't influence reply_budget — spec §4.2: the
     // reply reserve falls back to --hard-limit-reply-budget.)
+}
+
+void prepare_reasoning_generation_inputs(
+        const ParsedRequest & req, const ServerConfig & config,
+        GenerateRequest & request, int & generation_cap) {
+    const bool budget_active = config.arch == "kimi-k3"
+        ? req.thinking_enabled && req.thinking_opt_in
+        : req.thinking_opt_in;
+    const int thinking_ceiling = req.per_req_phase1_cap >= 0
+        ? req.per_req_phase1_cap
+        : config.think_max_tokens;
+    const int reply_budget = req.per_req_reply_budget >= 0
+        ? req.per_req_reply_budget
+        : config.hard_limit_reply_budget;
+    generation_cap = budget_active
+        ? (std::min)(thinking_ceiling + reply_budget, req.max_output)
+        : req.max_output;
+
+    request.budget_hook = {};
+    if (budget_active && !config.think_close_token_ids.empty() &&
+        config.hard_limit_reply_budget > 0) {
+        request.budget_hook.close_token_ids = config.think_close_token_ids;
+        request.budget_hook.hard_limit_remaining = reply_budget;
+    }
+}
+
+void HttpServer::apply_request_reasoning(
+        const json & body, ParsedRequest & req) {
+    apply_request_reasoning_policy(body, config_, req);
 }
 
 // Render messages to prompt text and tokenize into req.prompt_tokens.
@@ -3470,16 +3540,8 @@ void HttpServer::finalize_generation_cache(
 void HttpServer::prepare_generation_inputs(
         const ParsedRequest & req, const PreparedPrompt & prepared,
         GenerationInputs & inputs) {
-    const bool budget_active = req.thinking_opt_in;
-    const int thinking_ceiling = req.per_req_phase1_cap >= 0
-        ? req.per_req_phase1_cap
-        : config_.think_max_tokens;
-    const int reply_budget = req.per_req_reply_budget >= 0
-        ? req.per_req_reply_budget
-        : config_.hard_limit_reply_budget;
-    inputs.generation_cap = budget_active
-        ? (std::min)(thinking_ceiling + reply_budget, req.max_output)
-        : req.max_output;
+    prepare_reasoning_generation_inputs(
+        req, config_, inputs.request, inputs.generation_cap);
 
     inputs.request.prompt = prepared.tokens;
     inputs.request.n_gen = inputs.generation_cap;
@@ -3488,15 +3550,6 @@ void HttpServer::prepare_generation_inputs(
     // Tokens are delivered through DaemonIO so all API formats share the
     // same disconnect and streaming state machine.
     inputs.request.stream = false;
-
-    // The budget hook injects the close sequence while KV state is live,
-    // leaving the remaining reserve for a visible answer.
-    if (budget_active && !config_.think_close_token_ids.empty() &&
-        config_.hard_limit_reply_budget > 0) {
-        inputs.request.budget_hook.close_token_ids =
-            config_.think_close_token_ids;
-        inputs.request.budget_hook.hard_limit_remaining = reply_budget;
-    }
 
     if (!req.tools.empty() && !req.tool_choice.is_null()) {
         ToolHintGenerator hint_generator(tokenizer_);

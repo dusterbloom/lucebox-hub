@@ -22,6 +22,7 @@
 #include "server/chat_template.h"
 #include "server/kimi_k3_output_framer.h"
 #include "common/sampler.h"
+#include "common/sha1.h"
 #include "common/backend_precision.h"
 #include "common/backend_ipc.h"
 #include "common/moe_hybrid_ffn_eval.h"
@@ -2911,6 +2912,336 @@ TEST_CASE(ServerUnitFixture, test_kimi_k3_arch_has_fail_closed_template_fallback
     TEST_ASSERT(threw);
 }
 
+// Minimal contract fixture extracted from the registered K3 generation-control
+// branch. It exercises the real Jinja/tokenizer seams, but is deliberately not
+// represented as the complete 24,696-byte registered template: that template
+// currently lives only in the external sharded GGUF, not a stable repo fixture.
+static const char KIMI_K3_GENERATION_CONTROL_FIXTURE[] =
+    "{%- macro attr(k, v) -%}"
+    "{{- ' ' + k + '=\"' + (v | string | replace('&', '&amp;') | replace('\"', '&quot;')) + '\"' -}}"
+    "{%- endmacro -%}"
+    "{%- macro otag(tag, attrs=[]) -%}"
+    "{{- '<|open|>' + tag -}}"
+    "{%- for a in attrs -%}{{- attr(a[0], a[1]) -}}{%- endfor -%}"
+    "{{- '<|sep|>' -}}"
+    "{%- endmacro -%}"
+    "{%- if thinking is not defined -%}"
+    "{%- if enable_thinking is defined -%}"
+    "{%- set thinking = enable_thinking -%}"
+    "{%- else -%}{%- set thinking = true -%}{%- endif -%}{%- endif -%}"
+    "{%- if add_generation_prompt -%}"
+    "{{- otag('message', [['role', 'assistant']]) -}}"
+    "{%- if thinking -%}{{- otag('think') -}}"
+    "{%- else -%}{{- otag('response') -}}{%- endif -%}{%- endif -%}";
+
+static std::string write_kimi_k3_tokenizer_contract_fixture() {
+    gguf_context * g = gguf_init_empty();
+    std::vector<std::string> storage(163590, "x");
+    storage[39964] = "think";
+    storage[163586] = "<|end_of_msg|>";
+    storage[163587] = "<|open|>";
+    storage[163588] = "<|close|>";
+    storage[163589] = "<|sep|>";
+    std::vector<const char *> tokens;
+    tokens.reserve(storage.size());
+    for (const std::string & token : storage) tokens.push_back(token.c_str());
+    std::vector<uint32_t> token_types(storage.size(), 1);
+    for (int id = 163586; id <= 163589; ++id) token_types[id] = 3;
+
+    gguf_set_arr_str(g, "tokenizer.ggml.tokens", tokens.data(), tokens.size());
+    gguf_set_arr_data(g, "tokenizer.ggml.token_type", GGUF_TYPE_UINT32,
+                      token_types.data(), token_types.size());
+    gguf_set_val_str(g, "tokenizer.ggml.model", "gpt2");
+    gguf_set_val_str(g, "tokenizer.ggml.pre", "qwen35");
+    gguf_set_val_u32(g, "tokenizer.ggml.bos_token_id", 163587);
+    gguf_set_val_u32(g, "tokenizer.ggml.eos_token_id", 163586);
+    gguf_set_val_str(g, "tokenizer.chat_template",
+                     KIMI_K3_GENERATION_CONTROL_FIXTURE);
+
+    const std::string path = "/tmp/dflash_test_kimi_k3_contract.gguf";
+    gguf_write_to_file(g, path.c_str(), /*only_meta=*/false);
+    gguf_free(g);
+    return path;
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_reasoning_policy_default_and_explicit_off) {
+    const ReasoningPolicy policy = reasoning_policy_for_arch("kimi-k3");
+    TEST_ASSERT(policy.supported);
+    TEST_ASSERT(policy.default_effort == "max");
+    TEST_ASSERT(policy.supported_efforts.size() == 3);
+    TEST_ASSERT(std::find(policy.supported_efforts.begin(),
+                          policy.supported_efforts.end(), "max") !=
+                policy.supported_efforts.end());
+
+    ServerConfig config;
+    config.arch = "kimi-k3";
+    config.think_max_tokens = 28672;
+    config.hard_limit_reply_budget = 4096;
+    config.effort_tiers.max = 28672;
+    config.effort_tiers.high = 14336;
+    config.effort_tiers.low = 3584;
+    config.think_close_token_ids = {163588, 39964, 163589};
+
+    const std::vector<ChatMessage> messages = {{"user", "hello", ""}};
+    auto assert_prompt_mode = [&](const ParsedRequest & req,
+                                  const char * frame) {
+        TEST_ASSERT(render_chat_template_jinja(
+            KIMI_K3_GENERATION_CONTROL_FIXTURE, messages, "", "", true,
+            req.thinking_enabled, "") ==
+            std::string("<|open|>message role=\"assistant\"<|sep|><|open|>") +
+                frame + "<|sep|>");
+    };
+
+    ParsedRequest normal;
+    normal.max_output = 32768;
+    apply_request_reasoning_policy(json::object(), config, normal);
+    TEST_ASSERT(normal.thinking_enabled);
+    TEST_ASSERT(normal.thinking_opt_in);
+    TEST_ASSERT(normal.per_req_phase1_cap == 28672);
+
+    assert_prompt_mode(normal, "think");
+    GenerateRequest normal_gen;
+    int normal_cap = 0;
+    prepare_reasoning_generation_inputs(normal, config, normal_gen, normal_cap);
+    TEST_ASSERT(normal_cap == 32768);
+    TEST_ASSERT(normal_gen.budget_hook.close_token_ids ==
+                config.think_close_token_ids);
+    TEST_ASSERT(normal_gen.budget_hook.hard_limit_remaining == 4096);
+
+    const json p55_body = {
+        {"model", "kimi-k3"},
+        {"messages", json::array({{
+            {"role", "user"},
+            {"content", "Name the capital of Japan. Answer with only the city name."},
+        }})},
+        {"max_tokens", 24},
+        {"temperature", 0},
+        {"seed", 0},
+        {"chat_template_kwargs", {{"enable_thinking", false}}},
+    };
+    ParsedRequest p55;
+    p55.max_output = 24;
+    p55.prompt_tokens = {163587, 2778, 163589, 42, 163588, 2778, 163589};
+    const auto frozen_prompt_tokens = p55.prompt_tokens;
+    apply_request_reasoning_policy(p55_body, config, p55);
+    TEST_ASSERT(!p55.thinking_enabled);
+    TEST_ASSERT(!p55.thinking_opt_in);
+    TEST_ASSERT(p55.per_req_phase1_cap == -1);
+    TEST_ASSERT(p55.prompt_tokens == frozen_prompt_tokens);
+    assert_prompt_mode(p55, "response");
+    GenerateRequest p55_gen;
+    int p55_cap = 0;
+    prepare_reasoning_generation_inputs(p55, config, p55_gen, p55_cap);
+    TEST_ASSERT(p55_cap == 24);
+    TEST_ASSERT(p55_gen.budget_hook.close_token_ids.empty());
+
+    const std::string request_bytes = p55_body.dump();
+    uint8_t digest[20];
+    sha1_hash(request_bytes.data(), request_bytes.size(), digest);
+    char digest_hex[41];
+    for (size_t i = 0; i < 20; ++i) {
+        std::snprintf(digest_hex + 2 * i, 3, "%02x", digest[i]);
+    }
+    digest_hex[40] = '\0';
+    TEST_ASSERT(std::string(digest_hex) ==
+                "1574069d44c49a8b57c2ab2f3908dfd1e3f4a638");
+    // Bind the frozen request to the exact staged GGUF template identity.
+    // The external shard is not a portable unit-test fixture, so this pins its
+    // independently verified SHA-256 without pretending the subset above is
+    // the full registered Jinja.
+    static constexpr const char * kRegisteredTemplateSha256 =
+        "05bb501f8ac31fa6b0bf04803b5ada49abf9cdd51c3c90a4719b739df0000722";
+    const std::string p55_contract = request_bytes +
+        "\nchat_template_sha256=" + kRegisteredTemplateSha256;
+    sha1_hash(p55_contract.data(), p55_contract.size(), digest);
+    for (size_t i = 0; i < 20; ++i) {
+        std::snprintf(digest_hex + 2 * i, 3, "%02x", digest[i]);
+    }
+    digest_hex[40] = '\0';
+    TEST_ASSERT(std::string(digest_hex) ==
+                "29669ecc73087c117c9a5d5802e6f5033b552570");
+    TEST_ASSERT(parse_request_sampler(p55_body, config.sampler_defaults).temp == 0.0f);
+
+    ParsedRequest disabled;
+    disabled.max_output = 32768;
+    apply_request_reasoning_policy(
+        {{"thinking", {{"type", "disabled"}}}}, config, disabled);
+    TEST_ASSERT(!disabled.thinking_enabled);
+    TEST_ASSERT(!disabled.thinking_opt_in);
+
+    ParsedRequest explicit_false;
+    explicit_false.max_output = 32768;
+    apply_request_reasoning_policy({{"reasoning", false}}, config,
+                                   explicit_false);
+    TEST_ASSERT(!explicit_false.thinking_enabled);
+    TEST_ASSERT(!explicit_false.thinking_opt_in);
+
+    ParsedRequest thinking_false;
+    thinking_false.max_output = 32768;
+    apply_request_reasoning_policy({{"thinking", false}}, config,
+                                   thinking_false);
+    TEST_ASSERT(!thinking_false.thinking_enabled);
+    TEST_ASSERT(!thinking_false.thinking_opt_in);
+
+    ParsedRequest reasoning_object;
+    reasoning_object.max_output = 32768;
+    apply_request_reasoning_policy({{"reasoning", json::object()}}, config,
+                                   reasoning_object);
+    TEST_ASSERT(reasoning_object.thinking_enabled);
+    TEST_ASSERT(reasoning_object.thinking_opt_in);
+    assert_prompt_mode(reasoning_object, "think");
+    GenerateRequest object_gen;
+    int object_cap = 0;
+    prepare_reasoning_generation_inputs(
+        reasoning_object, config, object_gen, object_cap);
+    TEST_ASSERT(!object_gen.budget_hook.close_token_ids.empty());
+
+    ParsedRequest kwargs_true;
+    kwargs_true.max_output = 32768;
+    apply_request_reasoning_policy(
+        {{"chat_template_kwargs", {{"enable_thinking", true}}}},
+        config, kwargs_true);
+    TEST_ASSERT(kwargs_true.thinking_enabled);
+    TEST_ASSERT(kwargs_true.thinking_opt_in);
+    assert_prompt_mode(kwargs_true, "think");
+    GenerateRequest kwargs_true_gen;
+    int kwargs_true_cap = 0;
+    prepare_reasoning_generation_inputs(
+        kwargs_true, config, kwargs_true_gen, kwargs_true_cap);
+    TEST_ASSERT(!kwargs_true_gen.budget_hook.close_token_ids.empty());
+
+    ParsedRequest mixed_off;
+    mixed_off.max_output = 32768;
+    apply_request_reasoning_policy(
+        {{"reasoning", {{"effort", "high"}}},
+         {"chat_template_kwargs", {{"enable_thinking", false}}}},
+        config, mixed_off);
+    TEST_ASSERT(!mixed_off.thinking_enabled);
+    TEST_ASSERT(!mixed_off.thinking_opt_in);
+    TEST_ASSERT(mixed_off.per_req_phase1_cap == -1);
+    assert_prompt_mode(mixed_off, "response");
+    GenerateRequest mixed_off_gen;
+    int mixed_off_cap = 0;
+    prepare_reasoning_generation_inputs(
+        mixed_off, config, mixed_off_gen, mixed_off_cap);
+    TEST_ASSERT(mixed_off_cap == 32768);
+    TEST_ASSERT(mixed_off_gen.budget_hook.close_token_ids.empty());
+
+    ParsedRequest mixed_on;
+    mixed_on.max_output = 32768;
+    apply_request_reasoning_policy(
+        {{"reasoning", false},
+         {"chat_template_kwargs", {{"enable_thinking", true}}}},
+        config, mixed_on);
+    TEST_ASSERT(mixed_on.thinking_enabled);
+    TEST_ASSERT(mixed_on.thinking_opt_in);
+    assert_prompt_mode(mixed_on, "think");
+    GenerateRequest mixed_on_gen;
+    int mixed_on_cap = 0;
+    prepare_reasoning_generation_inputs(
+        mixed_on, config, mixed_on_gen, mixed_on_cap);
+    TEST_ASSERT(!mixed_on_gen.budget_hook.close_token_ids.empty());
+
+    ParsedRequest none;
+    none.max_output = 32768;
+    apply_request_reasoning_policy({{"reasoning_effort", "none"}}, config, none);
+    TEST_ASSERT(!none.thinking_enabled);
+    TEST_ASSERT(!none.thinking_opt_in);
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_rejects_unadvertised_reasoning_efforts) {
+    ServerConfig config;
+    config.arch = "kimi-k3";
+    config.effort_tiers = {3584, 7000, 14336, 22000, 28672};
+
+    for (const char * effort : {"medium", "x-high", "unknown"}) {
+        ParsedRequest req;
+        req.max_output = 32768;
+        bool threw = false;
+        try {
+            apply_request_reasoning_policy(
+                {{"reasoning_effort", effort}}, config, req);
+        } catch (const std::invalid_argument &) {
+            threw = true;
+        }
+        TEST_ASSERT(threw);
+    }
+
+    for (const char * effort : {"low", "high", "max", "none"}) {
+        ParsedRequest req;
+        req.max_output = 32768;
+        apply_request_reasoning_policy(
+            {{"reasoning_effort", effort}}, config, req);
+        TEST_ASSERT(req.thinking_enabled == (std::string(effort) != "none"));
+    }
+}
+
+TEST_CASE(ServerUnitFixture, test_qwen_reasoning_kwargs_budget_semantics_unchanged) {
+    ServerConfig config;
+    config.arch = "qwen36";
+    config.think_max_tokens = 1000;
+    config.hard_limit_reply_budget = 200;
+    config.effort_tiers.high = 800;
+    config.think_close_token_ids = {248069};
+
+    ParsedRequest kwargs_only;
+    kwargs_only.max_output = 1000;
+    apply_request_reasoning_policy(
+        {{"chat_template_kwargs", {{"enable_thinking", true}}}},
+        config, kwargs_only);
+    TEST_ASSERT(kwargs_only.thinking_enabled);
+    TEST_ASSERT(!kwargs_only.thinking_opt_in);
+    GenerateRequest kwargs_gen;
+    int kwargs_cap = 0;
+    prepare_reasoning_generation_inputs(
+        kwargs_only, config, kwargs_gen, kwargs_cap);
+    TEST_ASSERT(kwargs_cap == 1000);
+    TEST_ASSERT(kwargs_gen.budget_hook.close_token_ids.empty());
+
+    ParsedRequest effort_then_kwarg_off;
+    effort_then_kwarg_off.max_output = 1000;
+    apply_request_reasoning_policy(
+        {{"reasoning", {{"effort", "high"}}},
+         {"chat_template_kwargs", {{"enable_thinking", false}}}},
+        config, effort_then_kwarg_off);
+    TEST_ASSERT(!effort_then_kwarg_off.thinking_enabled);
+    TEST_ASSERT(effort_then_kwarg_off.thinking_opt_in);
+    GenerateRequest effort_gen;
+    int effort_cap = 0;
+    prepare_reasoning_generation_inputs(
+        effort_then_kwarg_off, config, effort_gen, effort_cap);
+    TEST_ASSERT(effort_cap == 1000);
+    TEST_ASSERT(effort_gen.budget_hook.close_token_ids ==
+                config.think_close_token_ids);
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_think_close_marker_ids_and_raw_invariance) {
+    TEST_ASSERT(default_thinking_marker_for_arch("kimi-k3") ==
+                "<|close|>think<|sep|>");
+    const std::string fixture_path = write_kimi_k3_tokenizer_contract_fixture();
+    Tokenizer tokenizer;
+    TEST_ASSERT(tokenizer.load_from_gguf(fixture_path.c_str()));
+    TEST_ASSERT(tokenizer.chat_template() ==
+                KIMI_K3_GENERATION_CONTROL_FIXTURE);
+    TEST_ASSERT(tokenizer.raw_token(163586) == "<|end_of_msg|>");
+    TEST_ASSERT(tokenizer.raw_token(163587) == "<|open|>");
+    TEST_ASSERT(tokenizer.raw_token(163588) == "<|close|>");
+    TEST_ASSERT(tokenizer.raw_token(39964) == "think");
+    TEST_ASSERT(tokenizer.raw_token(163589) == "<|sep|>");
+
+    // IDs independently verified against the registered K3 GGUF shard.
+    const std::vector<int32_t> marker_ids = {163588, 39964, 163589};
+    const auto original_ids = marker_ids;
+    KimiK3OutputFramer framer;
+    TEST_ASSERT(framer.push("<|close|>", "<|close|>").text.empty());
+    TEST_ASSERT(framer.push("think", "think").text.empty());
+    const auto close = framer.push("<|sep|>", "<|sep|>");
+    TEST_ASSERT(close.text == "</think>");
+    TEST_ASSERT(close.think_boundary);
+    TEST_ASSERT(marker_ids == original_ids);
+    unlink(fixture_path.c_str());
+}
+
 TEST_CASE(ServerUnitFixture, test_kimi_k3_framer_hides_only_complete_known_frames) {
     KimiK3OutputFramer framer;
     std::string visible;
@@ -4975,8 +5306,16 @@ TEST_CASE(ServerUnitFixture, test_kimi_k3_model_card_resolves_by_gguf_name) {
     TEST_ASSERT(card.source_label ==
                 (repo_root / "share/model_cards/kimi-k3.json").string());
     TEST_ASSERT(card.max_tokens == 32768);
+    TEST_ASSERT(card.thinking_marker == "<|close|>think<|sep|>");
+    TEST_ASSERT(card.sampling.has_temperature);
+    TEST_ASSERT(std::fabs(card.sampling.temperature - 1.0f) < 0.001f);
+    TEST_ASSERT(!card.sampling.has_top_p);
     TEST_ASSERT(card.raw_json.is_object());
     TEST_ASSERT(card.raw_json.value("name", "") == "Kimi K3");
+    TEST_ASSERT(card.raw_json["thinking_marker"] ==
+                "<|close|>think<|sep|>");
+    TEST_ASSERT(card.raw_json["sampling"].contains("temperature"));
+    TEST_ASSERT(!card.raw_json["sampling"].contains("top_p"));
 }
 
 TEST_CASE(ServerUnitFixture, test_committed_token_trace_preserves_ids) {
@@ -5038,6 +5377,56 @@ TEST_CASE(ServerUnitFixture, test_props_model_card_wholesale_sidecar) {
     // keys are NOT in the wholesale shape — they moved to budget_envelope.
     TEST_ASSERT(!body["model_card"].contains("think_max_tokens"));
     TEST_ASSERT(!body["model_card"].contains("hard_limit_reply_budget"));
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_props_reasoning_and_sampler_defaults_are_honest) {
+    ServerConfig cfg;
+    cfg.arch = "kimi-k3";
+    cfg.model_name = "kimi-k3";
+    cfg.sampler_defaults.has_temperature = true;
+    cfg.sampler_defaults.temperature = 1.0f;
+    cfg.effort_tiers = {3584, 14336, 28672, 28672, 28672};
+
+    Tokenizer tok;
+    PrefixCache pc(0, tok);
+    ToolMemory tm;
+    const json body = build_props_body(cfg, pc, tm);
+    const ReasoningPolicy policy = reasoning_policy_for_arch(cfg.arch);
+
+    TEST_ASSERT(body["reasoning"]["supported"] == true);
+    TEST_ASSERT(body["reasoning"]["default"] == policy.default_effort);
+    TEST_ASSERT(body["reasoning"]["default"] == "max");
+    TEST_ASSERT(body["reasoning"]["supported_efforts"] ==
+                policy.supported_efforts);
+    // Capability is distinct from current configuration. The official
+    // max+temperature-1 default remains AR-only because sampling and its
+    // non-empty BudgetHook make the request ineligible in K3Backend.
+    TEST_ASSERT(body["capabilities"]["speculative_supported"] == true);
+    TEST_ASSERT(body["speculative"]["enabled"] == false);
+    TEST_ASSERT(body["speculative_mode"] == "off");
+    TEST_ASSERT(body["default_generation_settings"]["temperature"] == 1.0f);
+    // The official 0.95 value is single-step-eval-specific, so the general
+    // API keeps its existing unspecified-card fallback rather than claiming it.
+    TEST_ASSERT(body["default_generation_settings"]["top_p"] == 1.0f);
+
+    const json codex = build_codex_models_body(cfg);
+    const json & codex_model = codex["models"][0];
+    TEST_ASSERT(codex_model["default_reasoning_level"] ==
+                body["reasoning"]["default"]);
+    json codex_efforts = json::array();
+    for (const auto & level : codex_model["supported_reasoning_levels"]) {
+        codex_efforts.push_back(level["effort"]);
+    }
+    TEST_ASSERT(codex_efforts == body["reasoning"]["supported_efforts"]);
+
+    ServerConfig enabled_cfg = cfg;
+    enabled_cfg.speculative_enabled = true;
+    enabled_cfg.ddtree_budget = 8;
+    const json enabled = build_props_body(enabled_cfg, pc, tm);
+    TEST_ASSERT(enabled["capabilities"]["speculative_supported"] == true);
+    TEST_ASSERT(enabled["speculative"]["enabled"] == true);
+    TEST_ASSERT(enabled["speculative"]["ddtree_budget"] == 8);
+    TEST_ASSERT(enabled["speculative_mode"] == "dflash");
 }
 
 TEST_CASE(ServerUnitFixture, test_props_model_card_null_on_family_fallback) {
