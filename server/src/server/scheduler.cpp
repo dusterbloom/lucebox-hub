@@ -240,6 +240,9 @@ void HttpServer::scheduler_loop(SeqEngine & engine) {
         SchedSlot & s = slots[(size_t)idx];
         if (!s.job) return;
         const ParsedRequest & req = s.job->req;
+        http_detail::maybe_emit_committed_token_trace(
+            req.response_id, req.stream, req.prompt_tokens, s.gen_tokens,
+            backend_ok && !s.failed);
         // Stop monitor-thread heartbeats before queuing terminal frames.
         stop_job_stream(s.job, &s.send_buffer);
         const double decode_s = std::chrono::duration<double>(

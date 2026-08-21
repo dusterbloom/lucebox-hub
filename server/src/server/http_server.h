@@ -249,6 +249,18 @@ float resolve_pflash_keep_ratio(float configured_ratio,
 bool should_clamp_flowkv_disk_cache(
     bool flowkv, const DiskPrefixCachePolicy & policy);
 
+// Build the opt-in committed-token trace record used by production-path
+// qualification.  Keeping this pure makes the wire-independent evidence
+// shape testable; the server writes it to stderr only when explicitly enabled.
+json build_committed_token_trace(
+    const std::string & response_id, bool stream,
+    const std::vector<int32_t> & prompt_tokens,
+    const std::vector<int32_t> & output_tokens, bool ok);
+void maybe_emit_committed_token_trace(
+    const std::string & response_id, bool stream,
+    const std::vector<int32_t> & prompt_tokens,
+    const std::vector<int32_t> & output_tokens, bool ok);
+
 }  // namespace http_detail
 
 // ─── Parsed request ─────────────────────────────────────────────────────

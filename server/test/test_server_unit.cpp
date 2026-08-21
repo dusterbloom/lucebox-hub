@@ -4803,6 +4803,40 @@ TEST_CASE(ServerUnitFixture, test_model_card_family_fallback_deepseek4) {
     TEST_ASSERT(unknown.source_label != "family:not-a-real-arch");
 }
 
+TEST_CASE(ServerUnitFixture, test_kimi_k3_model_card_resolves_by_gguf_name) {
+    namespace fs = std::filesystem;
+    const fs::path repo_root =
+        fs::path(__FILE__).parent_path().parent_path().parent_path();
+    const char * previous = std::getenv("DFLASH_MODEL_CARDS_DIR");
+    const std::string saved = previous ? previous : "";
+    dflash_unsetenv("DFLASH_MODEL_CARDS_DIR");
+
+    const auto card = dflash::common::resolve_model_card(
+        "", "Kimi-K3", "kimi-k3", repo_root.string());
+
+    if (saved.empty()) dflash_unsetenv("DFLASH_MODEL_CARDS_DIR");
+    else dflash_setenv("DFLASH_MODEL_CARDS_DIR", saved.c_str());
+    TEST_ASSERT(card.source_label ==
+                (repo_root / "share/model_cards/kimi-k3.json").string());
+    TEST_ASSERT(card.max_tokens == 32768);
+    TEST_ASSERT(card.raw_json.is_object());
+    TEST_ASSERT(card.raw_json.value("name", "") == "Kimi K3");
+}
+
+TEST_CASE(ServerUnitFixture, test_committed_token_trace_preserves_ids) {
+    const auto record = dflash::common::http_detail::build_committed_token_trace(
+        "chatcmpl-m1a", true, {163584, 42, 7}, {123, 456, 163586}, true);
+
+    TEST_ASSERT(record == nlohmann::json({
+        {"schema", "dflash-committed-token-trace-v1"},
+        {"response_id", "chatcmpl-m1a"},
+        {"stream", true},
+        {"ok", true},
+        {"prompt_tokens", {163584, 42, 7}},
+        {"output_tokens", {123, 456, 163586}},
+    }));
+}
+
 TEST_CASE(ServerUnitFixture, test_props_model_card_wholesale_sidecar) {
     // When a sidecar was loaded, /props.model_card should be the parsed
     // sidecar JSON verbatim — *all* fields from the file, not just the
@@ -5942,6 +5976,4 @@ TEST_CASE(ServerUnitFixture, test_emitter_function_calls_param_with_literal_thin
     TEST_ASSERT(em.emit_token_count() == 3);
     TEST_ASSERT(em.emit_token_count() - em.first_content_token_index() == 1);
 }
-
-
 

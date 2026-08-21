@@ -105,6 +105,35 @@ constexpr char kSseHeartbeat[] = ": keep-alive\n\n";
 
 namespace http_detail {
 
+json build_committed_token_trace(
+        const std::string & response_id, bool stream,
+        const std::vector<int32_t> & prompt_tokens,
+        const std::vector<int32_t> & output_tokens, bool ok) {
+    return {
+        {"schema", "dflash-committed-token-trace-v1"},
+        {"response_id", response_id},
+        {"stream", stream},
+        {"ok", ok},
+        {"prompt_tokens", prompt_tokens},
+        {"output_tokens", output_tokens},
+    };
+}
+
+void maybe_emit_committed_token_trace(
+        const std::string & response_id, bool stream,
+        const std::vector<int32_t> & prompt_tokens,
+        const std::vector<int32_t> & output_tokens, bool ok) {
+    const char * enabled = std::getenv("DFLASH_SERVER_COMMITTED_TOKEN_TRACE");
+    if (!enabled || std::strcmp(enabled, "1") != 0) return;
+
+    const std::string record = build_committed_token_trace(
+        response_id, stream, prompt_tokens, output_tokens, ok).dump();
+    static std::mutex trace_mu;
+    std::lock_guard<std::mutex> lock(trace_mu);
+    std::fprintf(stderr, "[server-token-trace] %s\n", record.c_str());
+    std::fflush(stderr);
+}
+
 PeerSocketState inspect_peer_socket(SocketHandle fd) {
     struct pollfd pfd = {fd, POLLIN, 0};
 #if defined(POLLRDHUP)
@@ -3815,6 +3844,10 @@ void HttpServer::process_job(ServerJob * job) {
     } else {
         result = backend_.generate(gen_req, io);
     }
+
+    http_detail::maybe_emit_committed_token_trace(
+        req.response_id, req.stream, req.prompt_tokens, result.tokens,
+        result.ok());
 
     if (dflash_residency == DraftResidencyAction::ReleaseAfterUse &&
         !config_.draft_path.empty()) {

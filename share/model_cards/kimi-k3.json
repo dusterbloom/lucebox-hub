@@ -1,0 +1,8 @@
+{
+  "name": "Kimi K3",
+  "source": "https://huggingface.co/moonshotai/Kimi-K3",
+  "verified_at": "2026-08-21",
+  "max_tokens": 32768,
+  "hard_limit_reply_budget": 4096,
+  "notes": "The upstream generation_config.json publishes max_length=1048576 and the model card documents a 1M-token context plus low/high/max reasoning-effort controls, but neither source publishes a separate recommended output-token budget or sampler settings. This card therefore uses dflash's conservative 32768-token operational ceiling and deliberately omits sampling, complex-problem and explicit tier values instead of attributing invented recommendations to Moonshot. Smaller-context deployments should set an explicit output limit; M1a parity requests use 24 tokens."
+}
