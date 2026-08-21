@@ -75,6 +75,43 @@ Math500 responses are scored by extracting `\boxed{}` answers and comparing
 against gold with normalized math equivalence. Accuracy is reported in the
 output but does not gate the exit code.
 
+### Isolated HumanEval scoring from a generation report
+
+For an already-running production server, generate the HumanEval subset with
+`generation_benchmark.py run` and score the resulting report separately. The
+scorer executes generated code **only** through Bubblewrap: networking is
+unshared, host files are not mounted, and the child has CPU, address-space and
+process-count limits. A trusted in-sandbox supervisor runs the fixture's gold
+test and calls the generated candidate over a narrow JSON RPC; the candidate
+has no verdict channel, so its exit status or output cannot mark a case passed.
+Each call and shutdown acknowledgement carries a fresh supervisor challenge;
+stale, out-of-order, or extra candidate responses fail the score.
+Do not use this mode where Bubblewrap's unprivileged user namespace support is
+unavailable; it fails closed instead of falling back to host execution.
+
+```bash
+python3 harness/benchmarks/generation_benchmark.py run \
+  --name k3-he --url http://127.0.0.1:18095/v1 --model kimi-k3 \
+  --prompts harness/benchmarks/prompts/bench_he.jsonl \
+  --max-tokens 512 --timeout 1500 --json-out /tmp/k3-he-generation.json
+
+python3 harness/client_test_runner.py score-he \
+  --generation-report /tmp/k3-he-generation.json \
+  --json-out /tmp/k3-he-score.json
+```
+
+The static ten-case fixture is a local regression subset, not an official
+HumanEval score. A nonzero exit means at least one case failed, the report did
+not exactly match the fixture IDs, or the sandbox could not provide a verdict.
+The score file is atomically replaced only after every row has a result and
+records the hashes of the exact report/fixture bytes it parsed.  Supported
+runtime layouts require `/usr/bin/python3`, `/usr`, and `/lib`/`/lib64` as
+directories or symlinks into `/usr`; other layouts fail closed.
+
+`client_test_runner.py bench --suite he` is retained unchanged for historical
+benchmark parity and directly executes generated code. It is unsafe for
+untrusted output and is deprecated for production evaluation; use `score-he`.
+
 ---
 
 ## Lucebox vs llama.cpp

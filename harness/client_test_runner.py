@@ -15,15 +15,19 @@ test machines before project Python dependencies are installed.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import itertools
 import json
 import os
 import re
+import secrets
+import selectors
 import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -1453,14 +1457,8 @@ def _score_gsm_response(text: str, gold_answer: str) -> tuple[bool, str]:
     return correct, detail
 
 
-def _score_he_response(text: str, entry_point: str, gold_test: str) -> tuple[bool, str]:
-    """Score a HumanEval response by executing the generated code against test cases.
-
-    Extracts code from model output, appends the test harness, and runs via subprocess.
-    Returns (correct, detail_str).
-    """
-    import subprocess as _sp
-
+def _extract_he_code(text: str, entry_point: str) -> str | None:
+    """Extract only the model-supplied implementation from a response."""
     think_end = text.rfind("</think>")
     answer_text = text[think_end + len("</think>"):] if think_end >= 0 else text
 
@@ -1478,25 +1476,477 @@ def _score_he_response(text: str, entry_point: str, gold_test: str) -> tuple[boo
             code = prefix + m.group(2)
 
     if not code:
-        return False, "no code extracted"
+        return None
 
-    # Build test script: function code + test harness + call check(entry_point)
+    return code
+
+
+def _score_he_response(text: str, entry_point: str, gold_test: str) -> tuple[bool, str]:
+    """Legacy in-process HumanEval bench scorer (unsafe; retained for parity).
+
+    `bench --suite he` predates the score-only security boundary and keeps its
+    original subprocess behavior.  Do not use it with untrusted model output;
+    use `score-he` for Bubblewrap-isolated scoring.
+    """
+    code = _extract_he_code(text, entry_point)
+    if code is None:
+        return False, "no code extracted"
     test_script = code + "\n" + gold_test + f"\ncheck({entry_point})\n"
 
     try:
-        result = _sp.run(
+        result = subprocess.run(
             ["python3", "-c", test_script],
-            capture_output=True, text=True, timeout=10
+            capture_output=True, text=True, timeout=10, check=False,
         )
         if result.returncode == 0:
             return True, "correct: tests passed"
-        else:
-            err = result.stderr.strip().split('\n')[-1] if result.stderr else "unknown error"
-            return False, f"wrong: {err[:80]}"
-    except _sp.TimeoutExpired:
+        error = result.stderr.strip().split("\n")[-1] if result.stderr else "unknown error"
+        return False, f"wrong: {error[:80]}"
+    except subprocess.TimeoutExpired:
         return False, "wrong: timeout"
-    except Exception as e:
-        return False, f"error: {str(e)[:80]}"
+    except Exception as error:
+        return False, f"error: {str(error)[:80]}"
+
+
+def _score_he_response_isolated(text: str, entry_point: str, gold_test: str, *,
+                                bwrap: str, timeout_seconds: int, memory_mib: int,
+                                pid_limit: int) -> tuple[bool, str]:
+    """Score one response exclusively through the `score-he` sandbox."""
+    code = _extract_he_code(text, entry_point)
+    if code is None:
+        return False, "no code extracted"
+    return _run_he_in_bwrap(
+        code, entry_point, gold_test, bwrap=bwrap, timeout_seconds=timeout_seconds,
+        memory_mib=memory_mib, pid_limit=pid_limit)
+
+
+
+HE_SCORE_SCHEMA = "lucebox-humaneval-score-v1"
+HE_SANDBOX_STATUS_SCHEMA = "lucebox-humaneval-sandbox-v1"
+HE_SANDBOX_STATUS_MAX_BYTES = 1024
+HE_SCORE_REPORT_MAX_BYTES = 16 * 1024 * 1024
+HE_SCORE_FIXTURE_MAX_BYTES = 2 * 1024 * 1024
+HE_SANDBOX_PAYLOAD_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _validate_rpc_reply(reply: Any, nonce: str, expected_op: str) -> dict[str, Any]:
+    """Require the current supervisor challenge and expected RPC operation."""
+    if not isinstance(reply, dict) or reply.get("nonce") != nonce or \
+            reply.get("op") != expected_op:
+        raise HarnessError("candidate response authentication failed")
+    return reply
+
+
+HE_SANDBOX_RUNNER = r"""import json
+import os
+import select
+import secrets
+import sys
+import time
+
+timeout_seconds = int(sys.argv[1])
+memory_bytes = sys.argv[2]
+pid_limit = sys.argv[3]
+payload = json.loads(sys.stdin.buffer.read())
+
+WORKER = r'''import json
+import os
+import resource
+import signal
+import sys
+
+timeout_seconds, memory_bytes, pid_limit = map(int, sys.argv[1:4])
+null_fd = os.open("/dev/null", os.O_WRONLY)
+os.dup2(null_fd, 1)
+os.dup2(null_fd, 2)
+def reply(value):
+    os.write(3, (json.dumps(value, separators=(",", ":")) + "\\n").encode())
+def pack(value):
+    if value is None or isinstance(value, (bool, int, float, str)): return value
+    if isinstance(value, list): return {"type":"list","items":[pack(x) for x in value]}
+    if isinstance(value, tuple): return {"type":"tuple","items":[pack(x) for x in value]}
+    raise TypeError("unsupported result")
+try:
+    resource.setrlimit(resource.RLIMIT_CPU, (timeout_seconds, timeout_seconds + 1))
+    resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+    resource.setrlimit(resource.RLIMIT_NPROC, (pid_limit, pid_limit))
+    signal.alarm(timeout_seconds)
+    config = json.loads(sys.stdin.buffer.readline())
+    ns = {"__name__":"__main__"}
+    exec(compile(config["candidate_source"], "<generated-human-eval>", "exec"), ns, ns)
+    candidate = ns[config["entry_point"]]
+    if not callable(candidate): raise TypeError("entry point")
+except BaseException:
+    os._exit(1)
+for line in sys.stdin.buffer:
+    try:
+        request = json.loads(line)
+        nonce = request["nonce"]
+        if request["op"] == "stop":
+            reply({"op":"stop_ack","nonce":nonce}); os._exit(0)
+        if request["op"] != "call": raise TypeError("op")
+        reply({"op":"result","nonce":nonce,"ok":True,
+               "value":pack(candidate(*request["args"], **request["kwargs"]))})
+    except BaseException as error:
+        reply({"op":"result","nonce":request.get("nonce"),"ok":False,
+               "error":type(error).__name__})
+'''
+
+def write_all(fd, data):
+    while data:
+        written = os.write(fd, data); data = data[written:]
+
+def report(status):
+    print(json.dumps({"schema":"lucebox-humaneval-sandbox-v1","status":status}, separators=(",",":")), flush=True)
+
+def unpack(value):
+    if value is None or isinstance(value, (bool, int, float, str)): return value
+    if not isinstance(value, dict) or not isinstance(value.get("items"), list): raise TypeError("value")
+    if value.get("type") == "list": return [unpack(x) for x in value["items"]]
+    if value.get("type") == "tuple": return tuple(unpack(x) for x in value["items"])
+    raise TypeError("value")
+
+# A<->B pipes: only B sees A's nonce; B<->C pipes never carry it.
+ab_r, ab_w = os.pipe(); ba_r, ba_w = os.pipe()
+broker_pid = os.fork()
+if broker_pid == 0:
+    os.close(ab_w); os.close(ba_r)
+    bc_r, bc_w = os.pipe(); cb_r, cb_w = os.pipe()
+    candidate_pid = os.fork()
+    if candidate_pid == 0:
+        os.close(ab_r); os.close(ba_w); os.close(bc_w); os.close(cb_r)
+        os.dup2(bc_r, 0); os.dup2(cb_w, 3); os.set_inheritable(3, True)
+        for fd in range(4, 256):
+            try: os.close(fd)
+            except OSError: pass
+        os.execve("/usr/bin/python3", ["python3","-I","-c",WORKER,
+                  str(timeout_seconds),memory_bytes,pid_limit], {"PATH":"/usr/bin:/bin"})
+    os.close(bc_r); os.close(cb_w); os.set_blocking(cb_r, False)
+    c_buffer = b""
+    def read_c(nonce, expected):
+        global c_buffer
+        deadline = time.monotonic() + timeout_seconds
+        while b"\\n" not in c_buffer:
+            if len(c_buffer) >= 65536 or time.monotonic() >= deadline: raise RuntimeError("candidate limit")
+            ready, _, _ = select.select([cb_r], [], [], min(.1, deadline-time.monotonic()))
+            if not ready: continue
+            block = os.read(cb_r, min(4096,65536-len(c_buffer)))
+            if not block: raise RuntimeError("candidate exited")
+            c_buffer += block
+        line, c_buffer = c_buffer.split(b"\\n", 1)
+        if c_buffer: raise RuntimeError("extra candidate response")
+        value = json.loads(line)
+        if not isinstance(value,dict) or value.get("nonce") != nonce or value.get("op") != expected: raise RuntimeError("candidate authentication")
+        return value
+    def reply_a(value): write_all(ba_w, (json.dumps(value,separators=(",",":"))+"\\n").encode())
+    write_all(bc_w, (json.dumps({"candidate_source":payload["candidate_source"],"entry_point":payload["entry_point"]},separators=(",",":"))+"\\n").encode())
+    for line in os.fdopen(ab_r, "rb", closefd=False):
+        try:
+            request = json.loads(line); a_nonce = request["nonce"]
+            c_nonce = secrets.token_urlsafe(24)
+            if request["op"] == "call":
+                write_all(bc_w,(json.dumps({"op":"call","nonce":c_nonce,"args":request["args"],"kwargs":request["kwargs"]},separators=(",",":"))+"\\n").encode())
+                result = read_c(c_nonce,"result")
+                reply_a({"op":"result","nonce":a_nonce,"ok":result.get("ok") is True,"value":result.get("value")})
+                continue
+            if request["op"] == "stop":
+                write_all(bc_w,(json.dumps({"op":"stop","nonce":c_nonce},separators=(",",":"))+"\\n").encode())
+                read_c(c_nonce,"stop_ack")
+                _, status = os.waitpid(candidate_pid,0)
+                if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0: raise RuntimeError("candidate stop")
+                reply_a({"op":"stop_ack","nonce":a_nonce}); os._exit(0)
+            raise RuntimeError("broker op")
+        except BaseException:
+            try: reply_a({"op":"error","nonce":request.get("nonce")})
+            except BaseException: pass
+    os._exit(1)
+
+os.close(ab_r); os.close(ba_w); os.set_blocking(ba_r,False)
+a_buffer = b""
+def read_b(nonce, expected):
+    global a_buffer
+    deadline=time.monotonic()+timeout_seconds
+    while b"\\n" not in a_buffer:
+        if len(a_buffer)>=65536 or time.monotonic()>=deadline: raise RuntimeError("broker limit")
+        ready,_,_=select.select([ba_r],[],[],min(.1,deadline-time.monotonic()))
+        if not ready: continue
+        block=os.read(ba_r,min(4096,65536-len(a_buffer)))
+        if not block: raise RuntimeError("broker exited")
+        a_buffer+=block
+    line,a_buffer=a_buffer.split(b"\\n",1)
+    if a_buffer: raise RuntimeError("extra broker response")
+    value=json.loads(line)
+    if not isinstance(value,dict) or value.get("nonce")!=nonce or value.get("op")!=expected: raise RuntimeError("broker authentication")
+    return value
+def candidate_proxy(*args,**kwargs):
+    nonce=secrets.token_urlsafe(24)
+    write_all(ab_w,(json.dumps({"op":"call","nonce":nonce,"args":args,"kwargs":kwargs},separators=(",",":"))+"\\n").encode())
+    result=read_b(nonce,"result")
+    if result.get("ok") is not True: raise RuntimeError("candidate failed")
+    return unpack(result.get("value"))
+passed=False
+try:
+    trusted={"__name__":"__trusted_humaneval__"}
+    exec(compile(payload["gold_test"],"<trusted-human-eval-test>","exec"),trusted,trusted)
+    trusted["check"](candidate_proxy); passed=True
+except BaseException: passed=False
+try:
+    stop_nonce=secrets.token_urlsafe(24)
+    write_all(ab_w,(json.dumps({"op":"stop","nonce":stop_nonce},separators=(",",":"))+"\\n").encode())
+    read_b(stop_nonce,"stop_ack")
+    _, status=os.waitpid(broker_pid,0)
+    passed = passed and os.WIFEXITED(status) and os.WEXITSTATUS(status)==0
+except BaseException:
+    passed=False
+finally:
+    try: os.close(ab_w)
+    except OSError: pass
+    child,_=os.waitpid(broker_pid,os.WNOHANG)
+    if child!=broker_pid:
+        try: os.kill(broker_pid,9)
+        except ProcessLookupError: pass
+        try: os.waitpid(broker_pid,0)
+        except ChildProcessError: pass
+report("passed" if passed else "failed")
+"""
+
+
+def _sandbox_runtime_args() -> tuple[list[str], str]:
+    """Validate the small host runtime layout mounted into Bubblewrap.
+
+    Supported Linux layouts provide `/usr/bin/python3` and `/usr`; `/lib` and
+    `/lib64` must each be either real directories or symlinks into `/usr`.
+    """
+    python = Path("/usr/bin/python3")
+    if not python.is_file():
+        raise HarnessError("unsupported sandbox runtime: /usr/bin/python3 is unavailable")
+    args: list[str] = ["--ro-bind", "/usr", "/usr"]
+    for link in ("/lib", "/lib64"):
+        path = Path(link)
+        if not path.exists():
+            raise HarnessError(f"unsupported sandbox runtime: {link} is unavailable")
+        if path.is_symlink():
+            resolved = path.resolve()
+            try:
+                resolved.relative_to("/usr")
+            except ValueError as error:
+                raise HarnessError(
+                    f"unsupported sandbox runtime: {link} must link into /usr") from error
+            args.extend(["--symlink", str(resolved.relative_to("/")), link])
+        elif path.is_dir():
+            args.extend(["--ro-bind", link, link])
+        else:
+            raise HarnessError(f"unsupported sandbox runtime: {link} is not a directory")
+    return args, str(python)
+
+
+def _bwrap_command(bwrap: str, timeout_seconds: int, memory_mib: int,
+                   pid_limit: int) -> list[str]:
+    """Return the only process boundary allowed to execute generated code."""
+    if not shutil.which(bwrap):
+        raise HarnessError(f"bwrap is unavailable: {bwrap}")
+    if timeout_seconds <= 0 or memory_mib <= 0 or pid_limit <= 0:
+        raise HarnessError("sandbox limits must be positive")
+    runtime_args, python = _sandbox_runtime_args()
+    # No current directory, home, model files, network namespace, or writable
+    # host mount is exposed. Python and its shared libraries are read-only.
+    return [
+        bwrap,
+        "--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL",
+        *runtime_args,
+        "--dev", "/dev",
+        "--tmpfs", "/tmp", "--dir", "/work", "--chdir", "/work",
+        "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
+        "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
+        "--", python, "-I", "-c", HE_SANDBOX_RUNNER,
+        str(timeout_seconds), str(memory_mib * 1024 * 1024), str(pid_limit),
+    ]
+
+
+def _read_bounded_sandbox_status(process: subprocess.Popen[bytes], timeout_seconds: int) -> tuple[int, bytes] | None:
+    """Read at most one small trusted status record; kill output floods."""
+    assert process.stdout is not None
+    assert process.stdin is not None
+    try:
+        process.stdin.close()
+    except BrokenPipeError:
+        pass
+    chunks: list[bytes] = []
+    total = 0
+    deadline = time.monotonic() + timeout_seconds + 5
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                process.kill()
+                process.wait()
+                return None
+            for _key, _mask in selector.select(remaining):
+                block = os.read(process.stdout.fileno(), 256)
+                if block:
+                    total += len(block)
+                    if total > HE_SANDBOX_STATUS_MAX_BYTES:
+                        process.kill()
+                        process.wait()
+                        return None
+                    chunks.append(block)
+            if process.poll() is not None:
+                while True:
+                    block = os.read(process.stdout.fileno(), 256)
+                    if not block:
+                        return process.returncode, b"".join(chunks)
+                    total += len(block)
+                    if total > HE_SANDBOX_STATUS_MAX_BYTES:
+                        return process.returncode, b""
+                    chunks.append(block)
+    finally:
+        selector.close()
+
+
+def _verify_sandbox_status(returncode: int, output: bytes) -> tuple[bool, str]:
+    """The host, not generated code output, owns the final scoring verdict."""
+    if returncode != 0:
+        return False, f"error: sandbox exited {returncode} without trusted completion"
+    try:
+        status = json.loads(output.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False, "error: sandbox produced no trusted completion"
+    if status == {"schema": HE_SANDBOX_STATUS_SCHEMA, "status": "passed"}:
+        return True, "correct: tests passed"
+    return False, "wrong: sandbox test did not complete"
+
+
+def _run_he_in_bwrap(candidate_source: str, entry_point: str, gold_test: str, *, bwrap: str = "bwrap",
+                     timeout_seconds: int = 10, memory_mib: int = 256,
+                     pid_limit: int = 32) -> tuple[bool, str]:
+    """Grade through a trusted test supervisor; candidate source is stdin only."""
+    payload = json.dumps({"candidate_source": candidate_source,
+                          "entry_point": entry_point, "gold_test": gold_test}).encode("utf-8")
+    if len(payload) > HE_SANDBOX_PAYLOAD_MAX_BYTES:
+        return False, "error: sandbox payload exceeds size limit"
+    try:
+        process = subprocess.Popen(
+            _bwrap_command(bwrap, timeout_seconds, memory_mib, pid_limit),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        assert process.stdin is not None
+        process.stdin.write(payload)
+        result = _read_bounded_sandbox_status(process, timeout_seconds)
+    except subprocess.TimeoutExpired:
+        return False, "wrong: sandbox timeout"
+    except HarnessError as error:
+        return False, f"error: {error}"
+    except OSError as error:
+        return False, f"error: sandbox launch failed: {type(error).__name__}"
+    if result is None:
+        return False, "wrong: sandbox timeout or output limit"
+    return _verify_sandbox_status(*result)
+
+
+def _load_score_records(generation_bytes: bytes, prompt_bytes: bytes) -> list[dict[str, Any]]:
+    """Join immutable generation_benchmark output to the local HE fixture."""
+    try:
+        report = json.loads(generation_bytes)
+        cases = report["cases"]
+    except (KeyError, TypeError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise HarnessError(f"malformed generation report: {type(error).__name__}") from error
+    if not isinstance(cases, list):
+        raise HarnessError("malformed generation report: cases must be a list")
+
+    generated: dict[str, str] = {}
+    for row in cases:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str) or \
+                not isinstance(row.get("text"), str) or row["id"] in generated:
+            raise HarnessError("malformed generation report case")
+        generated[row["id"]] = row["text"]
+
+    fixture: dict[str, dict[str, Any]] = {}
+    try:
+        for line in prompt_bytes.decode("utf-8").splitlines():
+            row = json.loads(line)
+            case_id = row.get("id")
+            if not isinstance(case_id, str) or case_id in fixture or \
+                    not isinstance(row.get("entry_point"), str) or \
+                    not isinstance(row.get("gold_test"), str):
+                raise HarnessError("malformed HumanEval fixture case")
+            fixture[case_id] = row
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise HarnessError(f"malformed HumanEval fixture: {type(error).__name__}") from error
+
+    if not fixture or set(generated) != set(fixture):
+        raise HarnessError("generation report and HumanEval fixture case IDs differ")
+    return [{"id": case_id, "text": generated[case_id],
+             "entry_point": fixture[case_id]["entry_point"],
+             "gold_test": fixture[case_id]["gold_test"]}
+            for case_id in fixture]
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    """Publish a score report all at once, preserving an earlier report on failure."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.",
+                suffix=".tmp", delete=False) as handle:
+            temp_name = handle.name
+            handle.write(json.dumps(payload, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    finally:
+        if temp_name is not None:
+            try:
+                Path(temp_name).unlink()
+            except FileNotFoundError:
+                pass
+    print(f"wrote {path}")
+
+
+def _read_score_input(path: Path, limit: int, label: str) -> bytes:
+    """Reject oversized score inputs before allocating/parsing their contents."""
+    try:
+        if path.stat().st_size > limit:
+            raise HarnessError(f"{label} exceeds size limit")
+        data = path.read_bytes()
+    except OSError as error:
+        raise HarnessError(f"unable to read score input: {type(error).__name__}") from error
+    if len(data) > limit:  # Fail closed if the file changed after stat().
+        raise HarnessError(f"{label} exceeds size limit")
+    return data
+
+
+def cmd_score_he(args: argparse.Namespace) -> int:
+    generation_bytes = _read_score_input(
+        args.generation_report, HE_SCORE_REPORT_MAX_BYTES, "generation report")
+    prompt_bytes = _read_score_input(
+        args.prompts, HE_SCORE_FIXTURE_MAX_BYTES, "HumanEval fixture")
+    records = _load_score_records(generation_bytes, prompt_bytes)
+    rows = []
+    for record in records:
+        correct, detail = _score_he_response_isolated(
+            record["text"], record["entry_point"], record["gold_test"],
+            bwrap=args.bwrap, timeout_seconds=args.timeout_seconds,
+            memory_mib=args.memory_mib, pid_limit=args.pid_limit)
+        rows.append({"id": record["id"], "correct": correct, "detail": detail})
+    passed = sum(1 for row in rows if row["correct"])
+    payload = {
+        "schema": HE_SCORE_SCHEMA,
+        "generation_report": str(args.generation_report.resolve()),
+        "generation_report_sha256": hashlib.sha256(generation_bytes).hexdigest(),
+        "prompts": str(args.prompts.resolve()),
+        "prompts_sha256": hashlib.sha256(prompt_bytes).hexdigest(),
+        "sandbox": {"command": args.bwrap, "network": "disabled",
+                    "timeout_seconds": args.timeout_seconds,
+                    "memory_mib": args.memory_mib, "pid_limit": args.pid_limit},
+        "rows": rows,
+        "summary": {"passed": passed, "total": len(rows)},
+        "ok": passed == len(rows),
+    }
+    _write_json_atomic(args.json_out, payload)
+    return 0 if payload["ok"] else 1
 
 
 # ── bench subcommand ────────────────────────────────────────────────────────
@@ -1884,6 +2334,20 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Override prompts directory")
     p_bench.add_argument("--json-out", type=Path, default=None)
     p_bench.set_defaults(func=cmd_bench)
+
+    p_score_he = sub.add_parser(
+        "score-he", help="Score a generation_benchmark HumanEval report in bwrap")
+    p_score_he.add_argument("--generation-report", required=True, type=Path,
+                            help="generation_benchmark.py run JSON output")
+    p_score_he.add_argument("--prompts", type=Path,
+                            default=BENCH_PROMPTS_DIR / "bench_he.jsonl")
+    p_score_he.add_argument("--bwrap", default="bwrap",
+                            help="bubblewrap executable (default: bwrap)")
+    p_score_he.add_argument("--timeout-seconds", type=int, default=10)
+    p_score_he.add_argument("--memory-mib", type=int, default=256)
+    p_score_he.add_argument("--pid-limit", type=int, default=32)
+    p_score_he.add_argument("--json-out", required=True, type=Path)
+    p_score_he.set_defaults(func=cmd_score_he)
 
     return ap
 
