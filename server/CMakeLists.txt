@@ -479,6 +479,8 @@ add_library(dflash_common STATIC
     src/common/moe_hybrid_storage.cpp
     src/common/spark_corpus.cpp
     src/common/moe_hybrid_ffn_eval.cpp
+    src/common/moe_nvme_scheduler.cpp
+    src/common/moe_stream_cache_policy.cpp
     src/common/moe_hybrid_stream.cpp
     src/common/moe_expert_compute.cpp
     src/common/moe_expert_compute_cpu.cpp
@@ -811,6 +813,10 @@ target_link_libraries(dflash_common
     PRIVATE
         ${CMAKE_DL_LIBS}
 )
+# The NVMe scheduler uses a bounded worker pool on platforms where io_uring is
+# unavailable (and as its portable fallback).
+find_package(Threads REQUIRED)
+target_link_libraries(dflash_common PUBLIC Threads::Threads)
 # OpenMP for parallel MoE expert compute kernel (saturate memory bandwidth).
 find_package(OpenMP)
 if(OpenMP_CXX_FOUND)
@@ -848,6 +854,22 @@ if(DFLASH27B_TESTS)
     set(_raw_unit_test_targets)
     enable_testing()
 
+    # SSD scheduling is deliberately independent of ggml and the GPU runtime.
+    # Keep its correctness tests lightweight so queueing/cache invariants are
+    # exercised even on CPU-only CI workers.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_moe_nvme_scheduler.cpp")
+        add_executable(test_moe_nvme_scheduler
+            test/test_unit_main.cpp
+            test/test_moe_nvme_scheduler.cpp
+            src/common/moe_nvme_scheduler.cpp)
+        target_include_directories(test_moe_nvme_scheduler PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/common
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include)
+        target_link_libraries(test_moe_nvme_scheduler PRIVATE Threads::Threads)
+        list(APPEND _raw_unit_test_targets test_moe_nvme_scheduler)
+    endif()
+
     # Header-only platform shims must remain independently buildable and
     # runnable on hosted Windows workers without a GPU.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_platform_compat.cpp")
@@ -857,6 +879,29 @@ if(DFLASH27B_TESTS)
         if(WIN32)
             target_link_libraries(test_platform_compat PRIVATE ws2_32)
         endif()
+    endif()
+
+    # End-to-end numerical check for the reusable streamed-expert graph. It
+    # uses tiny generated F32 experts and defaults to GPU 0, so a Strix-only
+    # machine can run it without any model download. DFLASH_TEST_GPU selects a
+    # different device on multi-GPU qualification hosts.
+    if(UNIX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_moe_stream_compute.cpp")
+        add_executable(test_moe_stream_compute
+            test/test_unit_main.cpp
+            test/test_moe_stream_compute.cpp)
+        target_include_directories(test_moe_stream_compute PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/common
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+        target_link_libraries(test_moe_stream_compute PRIVATE
+            dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+        if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
+            target_link_libraries(test_moe_stream_compute PRIVATE CUDA::cudart)
+        else()
+            target_link_libraries(test_moe_stream_compute PRIVATE hip::host)
+        endif()
+        list(APPEND _raw_unit_test_targets test_moe_stream_compute)
     endif()
 
     if(DFLASH27B_GPU_BACKEND STREQUAL "hip"
@@ -1585,6 +1630,7 @@ if(DFLASH27B_TESTS)
             test/test_kvflash_placement.cpp
             test/test_kvflash_pool_sizing.cpp
             test/test_kvflash_qk.cpp
+            test/test_moe_stream_owner_partition.cpp
             test/test_qwen35moe_routing_stats.cpp
             test/test_qwen35moe_expert_placement.cpp
             test/test_qwen35moe_swap_manager.cpp
