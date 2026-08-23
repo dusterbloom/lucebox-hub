@@ -1,0 +1,183 @@
+{
+  "schema": "k3-xg7000-storage-roofline-v1",
+  "scope": "READ_ONLY_NO_MODEL_NO_CACHE_DROP",
+  "command": "trace",
+  "qualification": {
+    "status": "GO",
+    "interpretation": "P65/H23 model-free storage-only service for a hypothetical layer-major macro-union plan; not live K3 prefill throughput or fixed96 route evidence",
+    "primary_gate": "at least one qualified arm >= 20 effective storage positions/s",
+    "replay_script_sha256": "d504cc8664b8c4e0ae11fd27d56f48f8a2aa347635167e68cf9a5c3427895b2f",
+    "remote_raw_result_sha256_before_qualification_annotation": "f21f22ce8650c05d922ee30eb784f10daf779d4949f4b87f37448c9fc5b37fa8",
+    "argv": [
+      "python3",
+      "/tmp/benchmark_kimi_k3_storage_roofline_macro.py",
+      "trace",
+      "--trace",
+      "/home/duster/kimi-k3-deploy/p65-a0-long-prefix-chat-20260822/io_trace.tsv",
+      "--manifest",
+      "/home/duster/kimi-k3-deploy/p65-a0-long-prefix-chat-20260822/suite-manifest.json",
+      "--macro-width",
+      "2048",
+      "--queue-depth",
+      "4",
+      "16",
+      "--passes",
+      "1",
+      "--block-device",
+      "nvme0n1",
+      "--output",
+      "/tmp/k3-wide-storage-union-replay.json"
+    ],
+    "run_attestation": {
+      "platform_profile_immediately_before_run": "performance",
+      "model_or_build_processes_observed_immediately_before_run": 0,
+      "note": "These two preflight facts were checked externally and are attestations, not fields sampled by the replay script. Short reads fail the process immediately."
+    }
+  },
+  "platform": {
+    "block_device": "nvme0n1",
+    "model": "XG7000-2TB 2280",
+    "serial": "9C50503060399",
+    "firmware_revision": "1.W.O.1K",
+    "current_link_speed": "16.0 GT/s PCIe",
+    "current_link_width": "4",
+    "scheduler": "[none] mq-deadline",
+    "page_size": 4096,
+    "o_direct_constant": 16384
+  },
+  "source": {
+    "trace": "/home/duster/kimi-k3-deploy/p65-a0-long-prefix-chat-20260822/io_trace.tsv",
+    "trace_sha256": "38b4af38ef2405c23f30a78d2d6d3b2e0c573ae1e6196fed35bb25eef5df66c6",
+    "manifest": "/home/duster/kimi-k3-deploy/p65-a0-long-prefix-chat-20260822/suite-manifest.json",
+    "manifest_sha256": "1a92808a09abd905e3e8f3837003d7b13a2a3f1178d88aa4242396a2b3f44e11"
+  },
+  "plan": {
+    "name": "macro-union-deduplicated",
+    "dependency_boundary": "one-prompt-position-macro/model-layer",
+    "coalescing": true,
+    "groups": 92,
+    "requests": 35772,
+    "bytes": 74656587776,
+    "prompt_positions": 2048,
+    "request_fingerprint_sha256": "d407673fe2905771340874d5a3a6ef00f7fbbc84b0c10710ceac5704814f0fcc",
+    "macro_width": 2048,
+    "macro_tail_policy": "one ragged final macro per sequence",
+    "ordering": "sequence/macro/model-layer then path/offset",
+    "union_rule": "merge overlapping or adjacent aligned ranges",
+    "source_groups": 64608,
+    "position_macroblocks": 1,
+    "ragged_position_macroblocks": 0
+  },
+  "arms": [
+    {
+      "queue_depth": 4,
+      "persistent_aligned_buffers": 4,
+      "groups": 92,
+      "submitted_requests": 35772,
+      "submitted_bytes": 74656587776,
+      "elapsed_seconds": 14.734818532000645,
+      "submitted_gib_per_second": 4.7187120349360905,
+      "request_latency_ms": {
+        "mean": 1.5742589157162026,
+        "p50": 1.340462,
+        "p95": 3.463769,
+        "p99": 5.223938
+      },
+      "controls": {
+        "block_device": "nvme0n1",
+        "process_physical_read_bytes": 74656612352,
+        "device_read_bytes": 74656612352,
+        "device_write_bytes": 77824,
+        "background_read_bytes_upper_bound": 0,
+        "process_physical_over_submitted": 1.0000003291872925,
+        "background_over_device_read": 0.0,
+        "swap_in_pages": 0,
+        "swap_out_pages": 0,
+        "io_busy_ms": 12977,
+        "temperature_before_millicelsius": {
+          "hwmon3:Sensor 2": 34850,
+          "hwmon3:Composite": 34850,
+          "hwmon3:Sensor 1": 34850
+        },
+        "temperature_after_millicelsius": {
+          "hwmon3:Sensor 2": 44850,
+          "hwmon3:Composite": 44850,
+          "hwmon3:Sensor 1": 44850
+        },
+        "memory_before_kib": {
+          "MemAvailable": 69800780,
+          "SwapTotal": 8388604,
+          "SwapFree": 8388592,
+          "Dirty": 1512,
+          "Writeback": 0
+        },
+        "memory_after_kib": {
+          "MemAvailable": 69824056,
+          "SwapTotal": 8388604,
+          "SwapFree": 8388592,
+          "Dirty": 1512,
+          "Writeback": 0
+        },
+        "clean_gate": true,
+        "gate_rule": "process physical/submitted within 2%; background reads <=2%; zero swap-in and swap-out"
+      },
+      "pass": 1,
+      "effective_storage_positions_per_second": 138.99051390094922
+    },
+    {
+      "queue_depth": 16,
+      "persistent_aligned_buffers": 16,
+      "groups": 92,
+      "submitted_requests": 35772,
+      "submitted_bytes": 74656587776,
+      "elapsed_seconds": 14.05300294799963,
+      "submitted_gib_per_second": 4.947651814834915,
+      "request_latency_ms": {
+        "mean": 5.808650537850833,
+        "p50": 5.318595,
+        "p95": 10.526352,
+        "p99": 17.082435
+      },
+      "controls": {
+        "block_device": "nvme0n1",
+        "process_physical_read_bytes": 74656587776,
+        "device_read_bytes": 74656587776,
+        "device_write_bytes": 3108864,
+        "background_read_bytes_upper_bound": 0,
+        "process_physical_over_submitted": 1.0,
+        "background_over_device_read": 0.0,
+        "swap_in_pages": 0,
+        "swap_out_pages": 0,
+        "io_busy_ms": 11627,
+        "temperature_before_millicelsius": {
+          "hwmon3:Sensor 2": 44850,
+          "hwmon3:Composite": 44850,
+          "hwmon3:Sensor 1": 44850
+        },
+        "temperature_after_millicelsius": {
+          "hwmon3:Sensor 2": 49850,
+          "hwmon3:Composite": 47850,
+          "hwmon3:Sensor 1": 47850
+        },
+        "memory_before_kib": {
+          "MemAvailable": 69824056,
+          "SwapTotal": 8388604,
+          "SwapFree": 8388592,
+          "Dirty": 1512,
+          "Writeback": 0
+        },
+        "memory_after_kib": {
+          "MemAvailable": 69764072,
+          "SwapTotal": 8388604,
+          "SwapFree": 8388592,
+          "Dirty": 16,
+          "Writeback": 0
+        },
+        "clean_gate": true,
+        "gate_rule": "process physical/submitted within 2%; background reads <=2%; zero swap-in and swap-out"
+      },
+      "pass": 1,
+      "effective_storage_positions_per_second": 145.7339764019278
+    }
+  ]
+}

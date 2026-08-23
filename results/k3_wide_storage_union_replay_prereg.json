@@ -1,0 +1,44 @@
+{
+  "schema": "k3-wide-storage-union-replay-prereg-v1",
+  "status": "PREREGISTERED_BEFORE_PHYSICAL_REPLAY",
+  "question": "Can the retained P65 2048-position selected-slab trace, serviced once per layer-major macro after exact range union, clear 20 storage positions/s on Lucebox4?",
+  "scope": "MODEL_FREE_READ_ONLY_O_DIRECT_NO_CACHE_DROP",
+  "frozen_inputs": {
+    "trace": "/home/duster/kimi-k3-deploy/p65-a0-long-prefix-chat-20260822/io_trace.tsv",
+    "trace_sha256": "38b4af38ef2405c23f30a78d2d6d3b2e0c573ae1e6196fed35bb25eef5df66c6",
+    "manifest": "/home/duster/kimi-k3-deploy/p65-a0-long-prefix-chat-20260822/suite-manifest.json",
+    "manifest_sha256": "1a92808a09abd905e3e8f3837003d7b13a2a3f1178d88aa4242396a2b3f44e11",
+    "replay_script_sha256": "d504cc8664b8c4e0ae11fd27d56f48f8a2aa347635167e68cf9a5c3427895b2f"
+  },
+  "frozen_plan": {
+    "macro_width": 2048,
+    "prompt_positions": 2048,
+    "groups": 92,
+    "requests": 35772,
+    "submitted_bytes": 74656587776,
+    "request_fingerprint_sha256": "d407673fe2905771340874d5a3a6ef00f7fbbc84b0c10710ceac5704814f0fcc",
+    "ordering": "sequence/macro/model-layer then path/offset",
+    "union_rule": "merge overlapping or adjacent aligned ranges per file",
+    "interpretation": "P65 H23 physical-geometry replay; not a fixed96 route or model-throughput result"
+  },
+  "arms": {
+    "order": [4, 16],
+    "passes": 1,
+    "repeats_after_observation": 0
+  },
+  "primary_metric": "effective_storage_positions_per_second = 2048 / measured_arm_seconds",
+  "qualification_gates": {
+    "process_physical_over_submitted": "0.98..1.02",
+    "background_over_device_read_max": 0.02,
+    "swap_in_pages": 0,
+    "swap_out_pages": 0,
+    "platform_profile": "performance",
+    "model_or_build_processes": 0,
+    "short_or_failed_direct_reads": 0
+  },
+  "decision": {
+    "GO": "at least one qualified arm >=20 positions/s; >=24 preferred",
+    "NO_GO": "all qualified arms <20 positions/s",
+    "INVALID": "no qualified arm or frozen source/plan identity mismatch"
+  }
+}

@@ -5,8 +5,9 @@ The raw lane reads one complete sidecar sequentially with an aligned,
 persistent buffer.  The trace lane reconstructs the exact unmerged physical
 requests from the frozen P56 prefill trace, retains the one-token/one-layer
 dependency boundary, and replays each group through a fixed pool of aligned
-buffers.  Neither lane writes to the measured device, drops caches, or runs
-model arithmetic.
+buffers.  An optional macro plan unions overlapping or adjacent physical
+ranges per file inside each prompt-bounded position-macro/layer group.  Neither
+lane writes to the measured device, drops caches, or runs model arithmetic.
 
 O_DIRECT bypasses the page cache.  Results also record process physical-read
 counters, underlying block-device counters, swap activity, NVMe temperature,
@@ -292,6 +293,43 @@ def load_prefill_groups(trace: Path, lengths: list[int]) -> list[LayerGroup]:
     return groups
 
 
+def union_requests(requests: list[Request]) -> list[Request]:
+    """Union overlapping or adjacent aligned ranges, ordered by path/offset."""
+    by_path: dict[str, list[tuple[int, int]]] = {}
+    for request in requests:
+        by_path.setdefault(request.path, []).append(
+            (request.offset, request.offset + request.length))
+    result: list[Request] = []
+    for path in sorted(by_path):
+        merged: list[tuple[int, int]] = []
+        for start, stop in sorted(by_path[path]):
+            if not merged or start > merged[-1][1]:
+                merged.append((start, stop))
+            elif stop > merged[-1][1]:
+                merged[-1] = (merged[-1][0], stop)
+        result.extend(
+            Request(path, start, stop - start) for start, stop in merged)
+    return result
+
+
+def macro_union_groups(
+        groups: list[LayerGroup], macro_width: int) -> list[LayerGroup]:
+    """Build prompt-bounded, layer-major union groups for one macro width."""
+    if macro_width <= 0:
+        raise ValueError("macro width must be positive")
+    grouped: dict[tuple[int, int, int], list[Request]] = {}
+    for group in groups:
+        macro = group.position // macro_width
+        grouped.setdefault(
+            (group.sequence, macro, group.layer), []).extend(group.requests)
+    return [
+        LayerGroup(
+            sequence, macro * macro_width, layer,
+            union_requests(grouped[(sequence, macro, layer)]))
+        for sequence, macro, layer in sorted(grouped)
+    ]
+
+
 def request_fingerprint(groups: list[LayerGroup]) -> str:
     digest = hashlib.sha256()
     for group in groups:
@@ -411,9 +449,8 @@ def trace_pass(groups: list[LayerGroup], queue_depth: int,
     try:
         with ThreadPoolExecutor(max_workers=queue_depth) as executor:
             for group in groups:
-                # Intentionally retain every original request and the barrier
-                # between causal token/layer groups.  P56R already rejected
-                # larger same-layer coalesced spans.
+                # Preserve the barrier selected by the plan: token/layer for
+                # the original trace, or position-macro/layer for macro union.
                 futures = [executor.submit(pool.read, item)
                            for item in group.requests]
                 for future in futures:
@@ -471,6 +508,13 @@ def main() -> int:
     trace.add_argument("--queue-depth", type=int, nargs="+", default=[4, 8, 16, 32])
     trace.add_argument("--passes", type=int, default=1)
     trace.add_argument("--limit-groups", type=int)
+    trace.add_argument(
+        "--plan-only", action="store_true",
+        help="emit the trace plan without opening sidecars or replaying reads")
+    trace.add_argument(
+        "--macro-width", type=int,
+        help=("union overlapping/adjacent physical ranges per file within "
+              "each prompt-bounded position-macro/model-layer group"))
     add_common(trace)
     args = parser.parse_args()
     if args.passes <= 0:
@@ -507,10 +551,16 @@ def main() -> int:
             parser.error("queue depths must be in 1..256")
         if args.limit_groups is not None and args.limit_groups <= 0:
             parser.error("--limit-groups must be positive")
-        groups = load_prefill_groups(
-            args.trace, prompt_lengths(args.manifest))
+        if args.macro_width is not None and args.macro_width <= 0:
+            parser.error("--macro-width must be positive")
+        lengths = prompt_lengths(args.manifest)
+        original_groups = load_prefill_groups(args.trace, lengths)
+        groups = original_groups
+        if args.macro_width is not None:
+            groups = macro_union_groups(groups, args.macro_width)
         if args.limit_groups is not None:
             groups = groups[:args.limit_groups]
+        position_count = sum(lengths)
         plan_requests = sum(len(group.requests) for group in groups)
         plan_bytes = sum(
             item.length for group in groups for item in group.requests)
@@ -520,22 +570,49 @@ def main() -> int:
             "manifest": str(args.manifest),
             "manifest_sha256": sha256(args.manifest),
         }
-        result["plan"] = {
-            "dependency_boundary": "one-prompt-position/model-layer",
-            "coalescing": False,
+        plan: dict[str, object] = {
+            "name": (
+                "macro-union-deduplicated" if args.macro_width is not None
+                else "exact-trace-token-layer"),
+            "dependency_boundary": (
+                "one-prompt-position-macro/model-layer"
+                if args.macro_width is not None
+                else "one-prompt-position/model-layer"),
+            "coalescing": args.macro_width is not None,
             "groups": len(groups),
             "requests": plan_requests,
             "bytes": plan_bytes,
+            "prompt_positions": position_count,
             "request_fingerprint_sha256": request_fingerprint(groups),
         }
+        if args.macro_width is not None:
+            plan.update({
+                "macro_width": args.macro_width,
+                "macro_tail_policy": "one ragged final macro per sequence",
+                "ordering": "sequence/macro/model-layer then path/offset",
+                "union_rule": "merge overlapping or adjacent aligned ranges",
+                "source_groups": len(original_groups),
+                "position_macroblocks": sum(
+                    (length + args.macro_width - 1) // args.macro_width
+                    for length in lengths),
+                "ragged_position_macroblocks": sum(
+                    length % args.macro_width != 0 for length in lengths),
+            })
+        if args.plan_only:
+            plan["plan_only"] = True
+        result["plan"] = plan
         arms = []
-        for pass_index in range(args.passes):
-            order = args.queue_depth if pass_index % 2 == 0 else list(
-                reversed(args.queue_depth))
-            for queue_depth in order:
-                arm = trace_pass(groups, queue_depth, args.block_device)
-                arm["pass"] = pass_index + 1
-                arms.append(arm)
+        if not args.plan_only:
+            for pass_index in range(args.passes):
+                order = args.queue_depth if pass_index % 2 == 0 else list(
+                    reversed(args.queue_depth))
+                for queue_depth in order:
+                    arm = trace_pass(groups, queue_depth, args.block_device)
+                    arm["pass"] = pass_index + 1
+                    if args.macro_width is not None:
+                        arm["effective_storage_positions_per_second"] = (
+                            position_count / float(arm["elapsed_seconds"]))
+                    arms.append(arm)
         result["arms"] = arms
 
     rendered = json.dumps(result, indent=2) + "\n"
