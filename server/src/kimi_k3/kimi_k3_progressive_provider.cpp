@@ -4696,13 +4696,6 @@ public:
             }
             return false;
         }
-        if (enabled && device_variant_cache_) {
-            if (err) {
-                *err = "P41 compact executor and P40 device cache are "
-                    "mutually exclusive during parity qualification";
-            }
-            return false;
-        }
         compact_executor_ = enabled;
         if (ordered_device_join && (!compact_executor_ || !sidecar_authoritative_ ||
                 layer_phase_ != LayerPhase::All || dynamic_active_layer_ ||
@@ -4892,8 +4885,8 @@ public:
         }
         if (!sidecar_authoritative_ || route_prefix_depth_ != 0 ||
             layer_phase_ != LayerPhase::All || dynamic_active_layer_ ||
-            ordered_device_join_ || !oracle_trace_path_.empty() ||
-            io_trace_.is_open() || p40_trace_.is_open()) {
+            !oracle_trace_path_.empty() || io_trace_.is_open() ||
+            p40_trace_.is_open()) {
             return false;
         }
         for (int layer = kFirstRoutedLayer;
@@ -4924,7 +4917,7 @@ public:
                   MoeHybridStreamEngine & exact_engine,
                   std::vector<float> & output,
                   std::string * err) override {
-        if (ordered_device_join_) {
+        if (ordered_device_join_ && routes.n_tokens == 1) {
             if (err) *err = "P42 ordered join requires the device-output API";
             return false;
         }
@@ -4935,7 +4928,8 @@ public:
             return false;
         }
         constexpr size_t kP40AllocationTolerance = 64ULL * 1024 * 1024;
-        if (device_variant_cache_ && exact_engine.external_device_cache_bytes() +
+        if (device_variant_cache_ && routes.n_tokens > 1 &&
+                exact_engine.external_device_cache_bytes() +
                 kP40AllocationTolerance < p40_requested_device_bytes_) {
             if (err) {
                 *err = "P40 shared device cache allocation fell below its requested budget";
@@ -6469,8 +6463,8 @@ private:
             size_t down_slab_row_bytes, uint16_t requested_mask,
             ggml_tensor *& device_output, std::string * err) {
         device_output = nullptr;
-        if (!compact_executor_ || device_variant_cache_) {
-            if (err) *err = "P42 device output requires uncached P41";
+        if (!compact_executor_) {
+            if (err) *err = "P42 device output requires P41";
             return false;
         }
         bool invalid = false;
@@ -6487,6 +6481,7 @@ private:
             const LayerState & state, const MoeStreamExpertSpec & spec,
             int local_layer, int expert, const float * input,
             MoeHybridStreamEngine & exact_engine,
+            bool use_device_variant_cache,
             std::vector<float> & result, ggml_tensor ** device_result,
             std::string * err) {
         const size_t gate_full_bytes = static_cast<size_t>(
@@ -6504,13 +6499,13 @@ private:
             const MoeStreamExternalKey cache_key{
                 kNaturalSidecarCacheDomain, state.source_generation,
                 local_layer, expert, spec};
-            if (device_variant_cache_ &&
+            if (use_device_variant_cache &&
                 !sparse_device_evaluator_.acquire_cache_lease(
                     backend_, spec, false, exact_engine, cache_key, 0x0fff,
                     cache_lease, err)) {
                 return false;
             }
-            if (device_variant_cache_) {
+            if (use_device_variant_cache) {
                 account_device_variant_lease(
                     cache_lease, 0x0fff,
                     exact_engine.external_device_cache_bytes());
@@ -6579,7 +6574,7 @@ private:
             return evaluate_sparse_payload(
                 spec, input, slabs, nullptr, full_mask,
                 down_slab_row_bytes, 0x0fff, result,
-                cache_lease ? &cache_lease : nullptr, err);
+                use_device_variant_cache ? &cache_lease : nullptr, err);
         }
 
         std::vector<uint8_t> gate(gate_full_bytes);
@@ -6649,6 +6644,8 @@ private:
             MoeHybridStreamEngine & exact_engine,
             std::vector<float> & output, bool device_ordered,
             std::string * err) {
+        const bool use_device_variant_cache =
+            device_variant_cache_ && routes.n_tokens > 1;
         if (read_cache_.enabled() && model_layer == kFirstRoutedLayer &&
             base_pos == 0) {
             if (cache_sequence_started_) read_cache_.reset_sequence();
@@ -6833,7 +6830,7 @@ private:
                     compact_slot_index);
             std::vector<uint8_t> read_selected_by_route = selected_by_route;
             std::array<MoeStreamExternalLease, kNativeTopK> cache_leases;
-            if (direct_reads() && !oracle_hit && device_variant_cache_) {
+            if (direct_reads() && !oracle_hit && use_device_variant_cache) {
                 for (const int route : calibrated_routes) {
                     const int expert =
                         routes.selected_ids[route_offset + route];
@@ -7111,7 +7108,7 @@ private:
                     : sparse_device() ? evaluate_sparse_payload(
                         spec, input, sparse_slabs, prepacked_compact, mask,
                         down_slab_row_bytes, requested_mask, expert_output,
-                        cache_leases[static_cast<size_t>(route)]
+                        use_device_variant_cache
                             ? &cache_leases[static_cast<size_t>(route)]
                             : nullptr,
                         err)
@@ -7176,7 +7173,8 @@ private:
                         if (!evaluate_sidecar_exact_expert(
                                 sidecar_fd, model_layer, base_pos, token,
                                 state, spec, routes.layer, expert, input,
-                                exact_engine, exact_expert,
+                                exact_engine, use_device_variant_cache,
+                                exact_expert,
                                 device_ordered ? &device_exact_output : nullptr,
                                 err)) {
                             return fail_device_join();

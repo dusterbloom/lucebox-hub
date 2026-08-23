@@ -1,0 +1,138 @@
+{
+  "schema": "k3-wide-p40-m1024-result-v1",
+  "date": "2026-08-23",
+  "status": "QUALIFIED",
+  "verdict": "GO",
+  "question": "Can the existing exact P58 layer-major scheduler make the existing P40 device-variant cache materially useful at M=1024 without changing one-row expert arithmetic or canonical join order?",
+  "source": {
+    "fork_commit": "fe6156b92dc280f6cd133c2e0e56e9b91edc3147",
+    "remote_scratch_commit": "11d9b1d",
+    "binary_sha256": "14f4f3343587e5bb9c7fe6739a55b8464021abd0377fa7da609eca22b3aa9444"
+  },
+  "fixture": {
+    "width": 1024,
+    "prompt_ids": [163587],
+    "oracle_slice": "ids[1:1025]",
+    "token_file_sha256": "564c321765f38368e4e3882ca5a9f6707d3cd978efad6407e12479739537d029",
+    "topology": "single-owner physical GPU1 gfx1151",
+    "platform_profile": "performance",
+    "p30_host_cache_mib": 16384,
+    "p40_device_cache_mib": 8192,
+    "p41_compact_executor": false
+  },
+  "control": {
+    "seconds": 1227.932126806,
+    "positions_per_second": 0.833922313,
+    "milliseconds_per_position": 1199.152468,
+    "process_physical_bytes": 1560364584960,
+    "provider_physical_direct_read_bytes": 1559209689088,
+    "provider_physical_gib_per_position": 1.418092951,
+    "direct_io_seconds": 507.843894014,
+    "direct_io_gib_per_second": 2.859396754,
+    "logical_provider_bytes": 5223657492480,
+    "payload_h2d_bytes": 5223657492480,
+    "payload_h2d_gib_per_position": 4.750888813,
+    "stage_seconds": {
+      "total": 1227.774148,
+      "routed_preparation": 297.582975,
+      "experts": 878.544626,
+      "join": 36.249937,
+      "output": 4.740001,
+      "residual": 10.656609
+    },
+    "p40": {
+      "completed": 1243007,
+      "hits": 0,
+      "extensions": 0,
+      "cold": 1243007,
+      "evictions": 1243007,
+      "scatter_calls": 1243007,
+      "scatter_avoided": 0,
+      "fallbacks": 0,
+      "aborted": 0,
+      "unavailable": 0
+    }
+  },
+  "candidate": {
+    "verify_seconds": 667.197876083,
+    "commit_seconds": 73.578540948,
+    "committed_seconds": 740.776417031,
+    "verify_positions_per_second": 1.534777068,
+    "committed_positions_per_second": 1.382333423,
+    "committed_milliseconds_per_position": 723.414470,
+    "committed_speedup": 1.657628535,
+    "net_seconds_saved": 487.155709775,
+    "net_milliseconds_saved_per_position": 475.737998,
+    "process_physical_bytes": 167121100800,
+    "provider_physical_direct_read_bytes": 166879289344,
+    "provider_physical_gib_per_position": 0.151775829,
+    "physical_read_reduction_percent": 89.297188,
+    "direct_io_seconds": 132.621534461,
+    "direct_io_gib_per_second": 1.171894519,
+    "logical_provider_bytes": 5223657492480,
+    "payload_h2d_bytes": 2306072767488,
+    "payload_h2d_gib_per_position": 2.097360964,
+    "payload_h2d_reduction_percent": 55.853293,
+    "stage_seconds": {
+      "verify_total": 667.194289,
+      "one_row_core": 274.616331,
+      "experts": 377.151695,
+      "one_row_join": 10.597054,
+      "one_row_output": 4.601768,
+      "other": 0.227441,
+      "replay_ssm_commit": 73.578540948
+    },
+    "p40": {
+      "completed": 1243007,
+      "hits": 657579,
+      "hit_percent": 52.902276,
+      "extensions": 15478,
+      "cold": 569950,
+      "evictions": 569950,
+      "requested_slabs": 9477444,
+      "resident_before_slabs": 5331789,
+      "resident_before_percent": 56.257668,
+      "scatter_calls": 585428,
+      "scatter_avoided": 657579,
+      "fallbacks": 0,
+      "aborted": 0,
+      "unavailable": 0
+    }
+  },
+  "correctness": {
+    "all_1024_full_vocabulary_logits_bit_equal": true,
+    "all_argmax_rows_bit_equal": true,
+    "logits_max_abs": 0.0,
+    "logits_relative_l2": 0.0,
+    "recurrent_state_hash_equal": true,
+    "mla_rows_hash_equal": true,
+    "first_conv_state_mismatch_layer": -1,
+    "first_ssm_state_mismatch_layer": -1,
+    "first_mla_row_mismatch_layer": -1,
+    "logical_provider_traffic_equal": true,
+    "provider_fallback_or_invalid": false
+  },
+  "qualification": {
+    "speedup_gate_at_least_1_20x": true,
+    "candidate_physical_bytes_not_increased": true,
+    "exactness_gate": true,
+    "zero_swap_io_delta": true,
+    "no_oom": true
+  },
+  "critical_path": {
+    "expert_stage_speedup": 2.329419800,
+    "expert_seconds_saved": 501.392931,
+    "core_plus_exact_commit_seconds": 348.194872,
+    "core_plus_commit_zero_other_work_ceiling_positions_per_second": 2.940881910,
+    "zero_expert_service_ceiling_positions_per_second": 2.816090155,
+    "interpretation": "Layer-major P40 reuse is a real exact win and earns production phase selection. It does not approach the 16.28-pos/s target: the causal core plus exact commit and the remaining one-row expert/H2D service are now co-binding. The lower live direct-I/O GiB/s is not a regression because physical bytes fell 89.3%."
+  },
+  "artifacts": {
+    "remote_root": "/tmp/k3-wide-p40-m1024-fe6156b9",
+    "launch_sha256": "5b0f14c9083534d0e13cfc38627c8e7b3569d17ee07f57c1027ed76da93dd649",
+    "stdout_sha256": "dcdd50837896e6413c56bce70fb4d3b3371162cde0a8569bfc7b5b1702ac8b43",
+    "stderr_sha256": "74d255c96525c9a739eabbc72850082ac2a99aa1534f667918348fc60154e1f2",
+    "raw_result_sha256": "2071785e5a1a5bc54153dd66a48a3b68ad6624ee963dc15813d5ac37837d480d",
+    "traffic_sha256": "861457d0421183043043040059d15416823c859d90e35b78bccb9a63d85568a4"
+  }
+}

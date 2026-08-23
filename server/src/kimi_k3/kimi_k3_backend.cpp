@@ -1199,23 +1199,29 @@ bool KimiK3Backend::init() {
                 "and paired H16 execution\n");
             return false;
         }
-        for (const char * name : {
-                 "DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN",
-                 "DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE",
-                 "DFLASH_KIMI_P46_PERSISTENT_ROUTED_PREP",
-                 "DFLASH_KIMI_P52_PERSISTENT_ROUTED_JOIN",
-                 "DFLASH_KIMI_P53_DEVICE_HIDDEN_CHAIN"}) {
-            bool enabled = false;
-            if (!parse_optional_binary_environment(
-                    name, enabled, backend_error)) {
-                std::fprintf(stderr, "[kimi-k3] %s\n", backend_error.c_str());
-                return false;
-            }
-            if (enabled) {
-                std::fprintf(stderr,
-                    "[kimi-k3] chunked prefill is incompatible with %s\n",
-                    name);
-                return false;
+        // P58 separates the host-output routed macro from the established
+        // width-one device-output chain.  Other chunked modes retain the
+        // original fail-closed device-chain envelope.
+        if (!p58_exact_multirow_) {
+            for (const char * name : {
+                     "DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN",
+                     "DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE",
+                     "DFLASH_KIMI_P46_PERSISTENT_ROUTED_PREP",
+                     "DFLASH_KIMI_P52_PERSISTENT_ROUTED_JOIN",
+                     "DFLASH_KIMI_P53_DEVICE_HIDDEN_CHAIN"}) {
+                bool enabled = false;
+                if (!parse_optional_binary_environment(
+                        name, enabled, backend_error)) {
+                    std::fprintf(
+                        stderr, "[kimi-k3] %s\n", backend_error.c_str());
+                    return false;
+                }
+                if (enabled) {
+                    std::fprintf(stderr,
+                        "[kimi-k3] chunked prefill is incompatible with %s\n",
+                        name);
+                    return false;
+                }
             }
         }
     }
@@ -1304,12 +1310,11 @@ bool KimiK3Backend::init() {
          !routed_output_provider_->prefill_service() ||
          !routed_output_provider_->prefill_service()->supports_width(
              static_cast<size_t>(prefill_chunk_)) ||
-         routed_output_provider_->requires_device_output() ||
          dual_stream_executor_.is_ready() || moe_core_offload_.enabled())) {
         std::fprintf(stderr,
-            "[kimi-k3] P58 exact multirow requires the host-output, "
-            "sidecar-authoritative all-layer calibrated96 provider on one "
-            "expert owner\n");
+            "[kimi-k3] P58 exact multirow requires the "
+            "sidecar-authoritative all-layer calibrated96 prefill service "
+            "on one expert owner\n");
         return false;
     }
     std::fprintf(stderr,
@@ -1346,7 +1351,7 @@ bool KimiK3Backend::benchmark_oracle_verify(
             "P58 exact multirow oracle qualification does not support "
             "per-layer hidden capture; disable DFLASH_KIMI_S0_LAYER_CAPTURE");
     }
-    if (width > 1 && routed_output_provider_ &&
+    if (width > 1 && !p58_candidate && routed_output_provider_ &&
         routed_output_provider_->requires_device_output()) {
         return fail(
             "S0 oracle multi-token verification is incompatible with a "

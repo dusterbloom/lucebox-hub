@@ -51,6 +51,10 @@ int main() {
     REQUIRE(kimi_k3_prefill_chunk_size(63, 64, true) == 1);
     REQUIRE(kimi_k3_prefill_chunk_size(2048, 1024, true) == 1024);
     REQUIRE(kimi_k3_prefill_chunk_size(1023, 1024, true) == 1);
+    // A complete macro uses the exact prefill service while its tail stays on
+    // the established width-one execution chain.
+    REQUIRE(kimi_k3_prefill_chunk_size(1025, 1024, true) == 1024);
+    REQUIRE(kimi_k3_prefill_chunk_size(1, 1024, true) == 1);
     REQUIRE(kimi_k3_prefill_chunk_size(3, 2, false) == 2);
     REQUIRE(kimi_k3_prefill_chunk_size(1, 4, false) == 1);
     REQUIRE(kimi_k3_p58_configuration_valid(1, false));

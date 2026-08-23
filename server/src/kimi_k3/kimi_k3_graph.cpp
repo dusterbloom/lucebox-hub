@@ -2066,11 +2066,6 @@ bool streamed_kimi_k3_forward_exact_multirow(
         }
     }
     for (const char * name : {
-             "DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN",
-             "DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE",
-             "DFLASH_KIMI_P46_PERSISTENT_ROUTED_PREP",
-             "DFLASH_KIMI_P52_PERSISTENT_ROUTED_JOIN",
-             "DFLASH_KIMI_P53_DEVICE_HIDDEN_CHAIN",
              "DFLASH_MOE_DUAL_STREAM_TRACE",
              "DFLASH_KIMI_S0_SERIAL_CORE_ROWS",
              "DFLASH_KIMI_S0_SERIAL_EXPERT_ROWS"}) {
@@ -2088,7 +2083,6 @@ bool streamed_kimi_k3_forward_exact_multirow(
         !options.routed_output_provider->prefill_service() ||
         !options.routed_output_provider->prefill_service()->supports_width(
             tokens.size()) ||
-        options.routed_output_provider->requires_device_output() ||
         options.moe_core_offload || options.capture_layer_ids ||
         options.panel_capture || options.panel_capture_layer_ids ||
         options.panel_captures || options.expert_observer ||
@@ -4082,8 +4076,7 @@ bool kimi_k3_forward(ggml_backend_t backend,
          !options.routed_output_provider ||
          !options.routed_output_provider->prefill_service() ||
          !options.routed_output_provider->prefill_service()->supports_width(
-             static_cast<size_t>(n_tokens)) ||
-         options.routed_output_provider->requires_device_output())) {
+             static_cast<size_t>(n_tokens)))) {
         set_last_error(
             "Kimi-K3 forward: P58 exact multirow request is outside its "
             "qualified envelope");
