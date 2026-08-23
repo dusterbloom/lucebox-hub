@@ -1,0 +1,223 @@
+{
+  "schema_version": 1,
+  "campaign": "k3-production-p46-exact-macro",
+  "experiment_number": null,
+  "date": "2026-08-23",
+  "verdict": "ENGINEERING_GO_DEFAULT_OFF",
+  "scope": "default-off reuse of persistent routed-preparation graphs in the exact multirow macro path",
+  "source": {
+    "branch": "perf/k3-production-ponytail",
+    "base_commit": "21506614",
+    "parent_p40_winner_commit": "10e79c805e695cc4581fa78be1cfc3b7fee9ae50",
+    "winner_commit": "014aaf4a5ac4b5c11af2461c69e61b810391a517",
+    "winner_parent_commit": "d65e42470cd3bebddcbd03f23ca8391a41507c1f",
+    "graph_source_sha256": "c19948ab752d71043736e1ec7ea378cba22d4aa8b7f8cee999165e0077ac115d",
+    "clean_smoke_binary_sha256": "b52be8a2c12f7264709b9b8ed188ded38c8fc4e823e877461d98b623664c7436",
+    "production_server_sha256": "988fb99305ebe075dd37893e22582e9d85d50533ebee2d37e6a36c8a66324848"
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "backend": "HIP/ROCm",
+    "physical_device": "GPU1",
+    "architecture": "gfx1151",
+    "logical_device": 0,
+    "platform_profile": "performance",
+    "topology": "single-owner"
+  },
+  "frozen_runtime": {
+    "cpu_workers": 18,
+    "policy": "calibrated96/fixed96",
+    "p30_host_cache_bytes": 17179869184,
+    "p40_device_cache_bytes": 8589934592,
+    "p40_layer_epoch": true,
+    "p41_compact_executor": true,
+    "p42_ordered_device_join": true,
+    "p45_async_compact_queue": true,
+    "physical_layout": "scratch",
+    "io_backend": "direct-pread",
+    "hipblaslt": false,
+    "control_flag": "DFLASH_KIMI_P46_PERSISTENT_ROUTED_PREP=0",
+    "candidate_flag": "DFLASH_KIMI_P46_PERSISTENT_ROUTED_PREP=1"
+  },
+  "m8_component_ab": {
+    "same_binary": true,
+    "token_fixture_sha256": "49e460755358b84be57193ef3d53449026cb36dd626d19240b93fc8c574faa50",
+    "physical_bytes_each_arm": 31580471296,
+    "output_ids_each_arm": [48430, 10867],
+    "control": {
+      "stage_total_seconds": 11.314696,
+      "core_seconds": 2.161921,
+      "expert_seconds": 9.006086,
+      "direct_io_seconds": 7.336402818,
+      "prefill_positions_per_second": 0.706561,
+      "traffic_sha256": "c157d4af726b50d120641839938eceed3e660f551dec031cecc8c6fd8b79498f",
+      "log_sha256": "682089314147fbdc46dea99408efbabf822787c38529835beeae032f8b6e79a6"
+    },
+    "candidate": {
+      "stage_total_seconds": 13.139695,
+      "core_seconds": 1.886770,
+      "expert_seconds": 11.104987,
+      "direct_io_seconds": 9.844752641,
+      "prefill_positions_per_second": 0.608114,
+      "traffic_sha256": "c157d4af726b50d120641839938eceed3e660f551dec031cecc8c6fd8b79498f",
+      "log_sha256": "9a5f6beb933495dbc88dc11477bdd1eb9f87998cf4e3fb4400646d16078e62e9"
+    },
+    "delta": {
+      "core_seconds_saved": 0.275151,
+      "core_milliseconds_saved_per_position": 34.393875
+    },
+    "performance_qualification": "INVALID_TOTAL_DUE_TO_IO_VARIATION"
+  },
+  "m64_component_ab": {
+    "same_binary": true,
+    "binary_sha256": "47187c31941dedda76f9e9dd5e3bda3328bb2e4bea7f4a53444f5f359f7723c3",
+    "token_fixture_sha256": "d5ace9d1b8429ff271307acc26c0d013ef4bfae0d6eb6b8a6638e35e0013d388",
+    "traffic_sha256": "898a397272075995ba469d4db79526c7d099b7c6ed148516f9cf6d154dc1a9fd",
+    "physical_bytes_each_arm": 115133669376,
+    "output_ids_each_arm": [5801, 114820],
+    "control_reversal": {
+      "stage_total_seconds": 56.139764,
+      "core_seconds": 16.255968,
+      "expert_seconds": 38.898038,
+      "direct_io_seconds": 25.695025948,
+      "prefill_positions_per_second": 1.139837,
+      "log_sha256": "ffb5ec34f3d1963948549516f1835c3230cdd4ead57d008e90f5a2bb1b72f1fe"
+    },
+    "candidate_primary": {
+      "stage_total_seconds": 55.873969,
+      "core_seconds": 14.372818,
+      "expert_seconds": 40.515005,
+      "direct_io_seconds": 25.604895866,
+      "prefill_positions_per_second": 1.145091,
+      "log_sha256": "950da0ee8cfeb02bc730d31438f5ccf9015982e8e474200aeb696479c8a15d52"
+    },
+    "candidate_reversal": {
+      "stage_total_seconds": 61.722189,
+      "core_seconds": 14.369951,
+      "expert_seconds": 46.362420,
+      "direct_io_seconds": 29.663067929,
+      "prefill_positions_per_second": 1.036612,
+      "log_sha256": "787b7cd5a25f1358545466d91518000b4c3f7c34502672207f7d8d8adcd06b7b"
+    },
+    "delta_matched_io": {
+      "core_seconds_saved": 1.883150,
+      "core_milliseconds_saved_per_position": 29.42421875,
+      "core_reduction_fraction": 0.115837,
+      "stage_seconds_saved": 0.265795
+    }
+  },
+  "partial_commit_exactness_gate": {
+    "commit_n": 3,
+    "probe_binary_sha256": "3e9a6ad7ee7eb950b28be4be1f78f8097c8519a984d7d78caf7811d8b0147b00",
+    "control_log_sha256": "62be4fd657d09b4dd6e6c63638733694d8f935e2b69284d07c5cdb976e5904e3",
+    "candidate_log_sha256": "f87faf28be3766d535e79a6b0221019d4443676d7c485adf8c8b2591b987cea6",
+    "probe_patch_sha256": "a13e3102bddceef422ac8567d5a238fadc14dcefff19be53f8c79d878888ba3f",
+    "traffic_sha256_each_arm": "d0436d265e1b04585481f46e33b45c84064ee27d7a65e42d16b4e1856f9b68f1",
+    "prefix_full_logits_byte_identical": true,
+    "next_full_logits_byte_identical": true,
+    "conv_state_all_layers_identical_after_commit": true,
+    "ssm_state_all_layers_identical_after_commit": true,
+    "mla_state_all_layers_identical_after_commit": true,
+    "conv_state_all_layers_identical_after_next_step": true,
+    "ssm_state_all_layers_identical_after_next_step": true,
+    "mla_state_all_layers_identical_after_next_step": true,
+    "next_logits_hash_each_arm": 7899592251675440270,
+    "exact": true
+  },
+  "m1024_production": {
+    "same_binary": false,
+    "comparison": "adjacent source commits: preceding P40 winner versus P46 winner",
+    "token_fixture_sha256": "a52320c799f4c20eba845a0cf19edd68a557f28dd2a58d88a4609c797f24cc71",
+    "traffic_sha256_each_arm": "c0dfd31205484facf903d1e55cd75ccf05338359583b1f9d76fbaa032b6cea15",
+    "control": {
+      "source_commit": "10e79c805e695cc4581fa78be1cfc3b7fee9ae50",
+      "prefill_seconds": 479.711,
+      "prefill_positions_per_second": 2.134617,
+      "stage_total_seconds": 479.686969,
+      "core_seconds": 266.028214,
+      "expert_seconds": 198.543269,
+      "join_seconds": 10.363974,
+      "output_seconds": 4.510118,
+      "direct_io_seconds": 44.223622796,
+      "direct_io_gib_per_second": 3.5620670953,
+      "physical_bytes": 169143877632,
+      "h2d_bytes": 168212803584,
+      "p40_cold_fills": 34014,
+      "p40_evictions": 0,
+      "completed": 1244278,
+      "fallbacks": 0,
+      "log_sha256": "d59f491de5dd0169b8533936cd0070e8d4d1282cf9097858d7be21a76b4b8f3b"
+    },
+    "candidate": {
+      "source_commit": "014aaf4a5ac4b5c11af2461c69e61b810391a517",
+      "prefill_seconds": 452.315,
+      "prefill_positions_per_second": 2.263908,
+      "stage_total_seconds": 452.274679,
+      "core_seconds": 236.624296,
+      "expert_seconds": 200.357841,
+      "join_seconds": 10.543054,
+      "output_seconds": 4.507782,
+      "other_seconds": 0.241706,
+      "direct_io_seconds": 47.471885693,
+      "direct_io_gib_per_second": 3.3183327205,
+      "compact_pack_seconds": 0.306307630,
+      "compact_scatter_seconds": 6.311063211,
+      "expert_graph_seconds": 95.680121200,
+      "expert_readback_seconds": 14.696659025,
+      "physical_bytes": 169143877632,
+      "h2d_bytes": 168212803584,
+      "p40_cold_fills": 34014,
+      "p40_evictions": 0,
+      "completed": 1244278,
+      "fallbacks": 0,
+      "p46_graphs": 136,
+      "p46_replay_graphs": 68,
+      "p46_executions": 69632,
+      "p46_replay_executions": 69632,
+      "invalidated_native_graphs": 0,
+      "log_sha256": "b9247b0f1d1e22f9f3b6d4076b160f83bc06ca324e3877fc379a5cbada0173b6"
+    },
+    "delta": {
+      "prefill_speedup": 1.0605687109,
+      "stage_speedup": 1.0606098269,
+      "stage_seconds_saved": 27.412290,
+      "core_seconds_saved": 29.403918,
+      "core_reduction_fraction": 0.1105293215,
+      "physical_byte_change": 0,
+      "h2d_byte_change": 0
+    },
+    "correctness": {
+      "traffic_identical": true,
+      "physical_bytes_identical": true,
+      "h2d_bytes_identical": true,
+      "provider_counts_identical": true,
+      "fallbacks_zero": true,
+      "full_logit_hash_checked_in_this_m1024_ab": false,
+      "state_hash_checked_in_this_m1024_ab": false,
+      "separate_partial_commit_full_logit_and_state_gate_exact": true
+    }
+  },
+  "post_win_critical_path": {
+    "total_seconds": 452.274679,
+    "core_seconds": 236.624296,
+    "expert_seconds": 200.357841,
+    "join_seconds": 10.543054,
+    "output_seconds": 4.507782,
+    "other_seconds": 0.241706,
+    "measured_prefill_positions_per_second": 2.263908,
+    "infinite_expert_speed_ceiling_positions_per_second": 4.064833491,
+    "infinite_core_speed_ceiling_positions_per_second": 4.748426531,
+    "seconds_to_remove_for_10_positions_per_second": 349.874679,
+    "fraction_of_combined_core_and_expert_time_to_remove_for_10": 0.8006612842,
+    "interpretation": "The exact macro graph reuse is material, but causal core and experts remain co-binding. Neither term alone can reach 10 positions/s even at zero cost."
+  },
+  "promotion": {
+    "default": false,
+    "qualified_profile": "exact macro width greater than one, calibrated96/fixed96, P40 layer epoch, P41/P42/P45, single-owner gfx1151",
+    "requires_before_default": [
+      "matched long-fixture full-logit and state qualification",
+      "broad operational qualification",
+      "retained exact fallback"
+    ]
+  }
+}
