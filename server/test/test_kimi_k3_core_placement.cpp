@@ -1,4 +1,5 @@
 #include "kimi_k3/kimi_k3_backend.h"
+#include "kimi_k3/kimi_k3_prefill_plan.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -53,6 +54,38 @@ int main() {
     REQUIRE(!kimi_k3_p58_oracle_candidate(true, 8, false));
     REQUIRE(!kimi_k3_p58_oracle_candidate(true, 4, true));
     REQUIRE(!kimi_k3_p58_oracle_candidate(false, 8, true));
+
+    const int32_t prefill_experts[] = {3, 1, 3, 2};
+    const float prefill_weights[] = {0.4f, 0.6f, 0.7f, 0.3f};
+    const uint8_t prefill_partitions[] = {0, 0, 1, 0};
+    const uint16_t prefill_masks[] = {
+        static_cast<uint16_t>((1u << 0) | (1u << 2)),
+        static_cast<uint16_t>(1u << 1),
+        static_cast<uint16_t>((1u << 2) | (1u << 3)),
+        static_cast<uint16_t>(1u << 0),
+    };
+    KimiK3PrefillLayerPlan prefill_plan;
+    REQUIRE(plan_kimi_k3_layer_major_prefill(
+        2, 2, 4, 4, 8192, 4096, 4096, prefill_experts,
+        prefill_weights, prefill_partitions, prefill_masks, prefill_plan));
+    REQUIRE(prefill_plan.width == 2);
+    REQUIRE(prefill_plan.top_k == 2);
+    REQUIRE(prefill_plan.requested_slab_records == 6);
+    REQUIRE(prefill_plan.physical_reads.size() == 5);
+    REQUIRE(prefill_plan.expert_groups.size() == 3);
+    REQUIRE(prefill_plan.canonical_routes == std::vector<int>({1, 0, 3, 2}));
+    REQUIRE(prefill_plan.expert_groups[0].expert == 1);
+    REQUIRE(prefill_plan.expert_groups[1].expert == 2);
+    REQUIRE(prefill_plan.expert_groups[2].expert == 3);
+    REQUIRE(prefill_plan.expert_groups[2].routes.size() == 2);
+    REQUIRE(prefill_plan.expert_groups[2].union_natural_slab_mask ==
+        static_cast<uint16_t>((1u << 0) | (1u << 2) | (1u << 3)));
+    REQUIRE(prefill_plan.physical_reads.front().aligned_offset ==
+        8192 + static_cast<uint64_t>(1 * 4 + 1) * 4096);
+    const int32_t invalid_prefill_experts[] = {4};
+    REQUIRE(!plan_kimi_k3_layer_major_prefill(
+        1, 1, 4, 4, 0, 4096, 4096, invalid_prefill_experts,
+        prefill_weights, prefill_partitions, prefill_masks, prefill_plan));
 
     std::string error;
     ggml_backend_t cpu = init_kimi_k3_core_backend(

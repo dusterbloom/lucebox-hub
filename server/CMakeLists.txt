@@ -446,6 +446,7 @@ add_library(dflash_common STATIC
     src/kimi_k3/kimi_k3_progressive_provider.cpp
     src/kimi_k3/kimi_k3_graph.cpp
     src/kimi_k3/kimi_k3_prefill.cpp
+    src/kimi_k3/kimi_k3_prefill_plan.cpp
     src/kimi_k3/kimi_k3_dflash_target.cpp
     src/kimi_k3/kimi_k3_backend.cpp
     src/flashprefill_q8.cpp
