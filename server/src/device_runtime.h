@@ -36,8 +36,13 @@ using __nv_bfloat16 = __hip_bfloat16;
 #define cudaGetDevice hipGetDevice
 #define cudaMalloc hipMalloc
 #define cudaFree hipFree
+#define cudaFreeHost hipFreeHost
+#define cudaHostAlloc hipHostAlloc
+#define cudaHostAllocDefault hipHostAllocDefault
 #define cudaMemcpy hipMemcpy
+#define cudaMemcpy2D hipMemcpy2D
 #define cudaMemset hipMemset
+#define cudaMemGetInfo hipMemGetInfo
 #define cudaMemcpyAsync hipMemcpyAsync
 #define cudaMemcpy2DAsync hipMemcpy2DAsync
 #define cudaMemcpyDeviceToDevice hipMemcpyDeviceToDevice
