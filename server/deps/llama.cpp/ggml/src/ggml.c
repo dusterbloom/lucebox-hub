@@ -1200,9 +1200,11 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "MUL_MAT_GROUPED_SRC",
 
     "PAGED_ATTN",
+
+    "MUL_MAT_SPARSE_K_BLOCKS",
 };
 
-static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
+static_assert(GGML_OP_COUNT == 106, "GGML_OP_COUNT != 106");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1327,9 +1329,11 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "X*grouped(Y)",
 
     "paged_attn(q,k,v)",
+
+    "sparse_k(X)*Y",
 };
 
-static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
+static_assert(GGML_OP_COUNT == 106, "GGML_OP_COUNT != 106");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3447,6 +3451,39 @@ bool ggml_mul_mat_is_grouped_src(const struct ggml_tensor * tensor) {
 int64_t ggml_mul_mat_grouped_src_groups(const struct ggml_tensor * tensor) {
     GGML_ASSERT(ggml_mul_mat_is_grouped_src(tensor));
     return ggml_get_op_params_i32(tensor, 14);
+}
+
+struct ggml_tensor * ggml_mul_mat_sparse_k_blocks(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * weight_blocks,
+        struct ggml_tensor  * x_blocks,
+        struct ggml_tensor  * natural_to_compact,
+        int64_t               virtual_k) {
+    GGML_ASSERT(weight_blocks->type == GGML_TYPE_IQ1_S ||
+                weight_blocks->type == GGML_TYPE_IQ2_XXS);
+    GGML_ASSERT(x_blocks->type == GGML_TYPE_F32);
+    GGML_ASSERT(natural_to_compact->type == GGML_TYPE_I32);
+    GGML_ASSERT(weight_blocks->ne[0] == 256);
+    GGML_ASSERT(weight_blocks->ne[2] >= 1 && weight_blocks->ne[2] <= 12);
+    GGML_ASSERT(weight_blocks->ne[2] == x_blocks->ne[1]);
+    GGML_ASSERT(weight_blocks->ne[3] == 1);
+    GGML_ASSERT(x_blocks->ne[0] == weight_blocks->ne[0]);
+    GGML_ASSERT(x_blocks->ne[2] == 1 && x_blocks->ne[3] == 1);
+    GGML_ASSERT(natural_to_compact->ne[0] == virtual_k / weight_blocks->ne[0]);
+    GGML_ASSERT(ggml_nrows(natural_to_compact) == 1);
+    GGML_ASSERT(virtual_k == 3072);
+    GGML_ASSERT(ggml_is_contiguous(weight_blocks));
+    GGML_ASSERT(ggml_is_contiguous(x_blocks));
+    GGML_ASSERT(ggml_is_contiguous(natural_to_compact));
+
+    struct ggml_tensor * result =
+        ggml_new_tensor_1d(ctx, GGML_TYPE_F32, weight_blocks->ne[1]);
+    result->op     = GGML_OP_MUL_MAT_SPARSE_K_BLOCKS;
+    result->src[0] = weight_blocks;
+    result->src[1] = x_blocks;
+    result->src[2] = natural_to_compact;
+    ggml_set_op_params_i32(result, 0, (int32_t) virtual_k);
+    return result;
 }
 
 void ggml_mul_mat_set_prec(
