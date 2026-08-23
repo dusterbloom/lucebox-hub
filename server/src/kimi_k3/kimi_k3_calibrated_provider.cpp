@@ -1537,19 +1537,31 @@ public:
         if (err) *err = "compact union executor requires CUDA or HIP";
         return false;
 #else
-        if (!backend || !ggml_backend_is_cuda(backend) || !input_data ||
-            !requested_masks || !consume || rows <= 0 ||
-            (graph_width != 1 && graph_width != 2 && graph_width != 8) ||
-            spec.input_dim != 3584 || spec.intermediate_dim != 3072 ||
-            spec.output_dim != 3584 || spec.fused_gate_up ||
-            spec.gate_type != GGML_TYPE_IQ1_S ||
-            spec.up_type != GGML_TYPE_IQ1_S ||
-            spec.down_type != GGML_TYPE_IQ2_XXS ||
-            spec.gated_activation != MoeGatedActivation::Situ ||
-            compact.slab_count <= 0 || compact.slab_count > kSlabCount ||
-            !compact.component_major || !compact.data) {
+        const bool geometry_supported =
+            backend && ggml_backend_is_cuda(backend) && input_data &&
+            requested_masks && consume && rows > 0 &&
+            (graph_width == 1 || graph_width == 2 || graph_width == 8) &&
+            spec.input_dim == 3584 && spec.intermediate_dim == 3072 &&
+            spec.output_dim == 3584 && !spec.fused_gate_up &&
+            spec.gate_type == spec.up_type &&
+            (spec.gate_type == GGML_TYPE_IQ1_S ||
+             spec.gate_type == GGML_TYPE_IQ2_XXS) &&
+            (spec.down_type == GGML_TYPE_IQ1_S ||
+             spec.down_type == GGML_TYPE_IQ2_XXS) &&
+            spec.gated_activation == MoeGatedActivation::Situ &&
+            compact.slab_count > 0 && compact.slab_count <= kSlabCount &&
+            compact.component_major && compact.data;
+        if (!geometry_supported) {
+            std::ostringstream detail;
+            detail << "compact union executor geometry is unsupported: dims="
+                   << spec.input_dim << 'x' << spec.intermediate_dim << 'x'
+                   << spec.output_dim << " types="
+                   << ggml_type_name(spec.gate_type) << '/'
+                   << ggml_type_name(spec.up_type) << '/'
+                   << ggml_type_name(spec.down_type)
+                   << " width=" << graph_width << " rows=" << rows;
             invalid = true;
-            if (err) *err = "compact union executor geometry is unsupported";
+            if (err) *err = detail.str();
             return false;
         }
         BackendDeviceScope device_scope;

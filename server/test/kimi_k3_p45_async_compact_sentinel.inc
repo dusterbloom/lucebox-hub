@@ -256,10 +256,13 @@ bool p45_async_compact_sentinel_impl(
 #endif
 }
 
-bool compact_union_owned_buffer_sentinel_impl(
-        ggml_backend_t backend, std::string * err) {
+bool compact_union_owned_buffer_sentinel_for_quant_types(
+        ggml_backend_t backend, ggml_type gate_up_type,
+        ggml_type down_type, std::string * err) {
 #if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
     (void) backend;
+    (void) gate_up_type;
+    (void) down_type;
     if (err) *err = "compact union sentinel requires CUDA or HIP";
     return false;
 #else
@@ -270,9 +273,9 @@ bool compact_union_owned_buffer_sentinel_impl(
     spec.input_dim = input_dim;
     spec.intermediate_dim = kSlabCount * kSlabSize;
     spec.output_dim = output_dim;
-    spec.gate_type = GGML_TYPE_IQ1_S;
-    spec.up_type = GGML_TYPE_IQ1_S;
-    spec.down_type = GGML_TYPE_IQ2_XXS;
+    spec.gate_type = gate_up_type;
+    spec.up_type = gate_up_type;
+    spec.down_type = down_type;
     spec.gated_activation = MoeGatedActivation::Situ;
     spec.situ_beta = 4.0f;
     spec.situ_linear_beta = 25.0f;
@@ -437,4 +440,14 @@ bool compact_union_owned_buffer_sentinel_impl(
     }
     return true;
 #endif
+}
+
+bool compact_union_owned_buffer_sentinel_impl(
+        ggml_backend_t backend, std::string * err) {
+    return compact_union_owned_buffer_sentinel_for_quant_types(
+               backend, GGML_TYPE_IQ1_S, GGML_TYPE_IQ1_S, err) &&
+        compact_union_owned_buffer_sentinel_for_quant_types(
+               backend, GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ1_S, err) &&
+        compact_union_owned_buffer_sentinel_for_quant_types(
+               backend, GGML_TYPE_IQ1_S, GGML_TYPE_IQ2_XXS, err);
 }
