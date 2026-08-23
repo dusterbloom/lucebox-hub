@@ -1731,6 +1731,33 @@ void free_persistent_routed_preparation(void *& opaque) {
     opaque = nullptr;
 }
 
+bool restore_recurrent_snapshot(
+        ggml_backend_t backend, KimiK3Cache & cache) {
+    if (!backend) return false;
+    for (const KimiK3LayerCache & layer : cache.layers) {
+        if (layer.ssm_state &&
+            (!layer.conv_state || !layer.ssm_state_snap ||
+             !layer.conv_state_snap)) {
+            return false;
+        }
+    }
+    for (KimiK3LayerCache & layer : cache.layers) {
+        if (!layer.ssm_state) continue;
+        ggml_backend_tensor_copy_async(
+            backend, backend, layer.ssm_state_snap, layer.ssm_state);
+        ggml_backend_tensor_copy_async(
+            backend, backend, layer.conv_state_snap, layer.conv_state);
+    }
+    ggml_backend_synchronize(backend);
+    cache.recurrent_state_pristine = true;
+    return true;
+}
+
+bool exact_terminal_pending(const KimiK3Cache & cache) {
+    return cache.snapshot_valid && cache.replay_valid &&
+        cache.replay_exact_rows && !cache.recurrent_state_pristine;
+}
+
 class ExactMultirowSnapshotGuard {
 public:
     ExactMultirowSnapshotGuard(ggml_backend_t backend, KimiK3Cache & cache)
@@ -1740,18 +1767,12 @@ public:
 
     ~ExactMultirowSnapshotGuard() { restore(); }
 
+    void retain_terminal() { active_ = false; }
+
     void restore() {
         if (!active_) return;
-        for (KimiK3LayerCache & layer : cache_.layers) {
-            if (!layer.ssm_state) continue;
-            GGML_ASSERT(layer.ssm_state_snap && layer.conv_state_snap);
-            ggml_backend_tensor_copy_async(
-                backend_, backend_, layer.ssm_state_snap, layer.ssm_state);
-            ggml_backend_tensor_copy_async(
-                backend_, backend_, layer.conv_state_snap, layer.conv_state);
-        }
-        ggml_backend_synchronize(backend_);
-        cache_.recurrent_state_pristine = true;
+        const bool restored = restore_recurrent_snapshot(backend_, cache_);
+        GGML_ASSERT(restored);
         active_ = false;
     }
 
@@ -2262,7 +2283,7 @@ bool streamed_kimi_k3_forward_exact_multirow(
     }
     output_ns += elapsed_ns(phase_begin);
     cache.cur_pos = base_pos + macro_width;
-    recurrent_guard.restore();
+    recurrent_guard.retain_terminal();
 
     const char * profile = std::getenv("DFLASH_KIMI_STAGE_PROFILE");
     if (profile && *profile && std::strcmp(profile, "0") != 0) {
@@ -3994,6 +4015,10 @@ bool kimi_k3_forward(ggml_backend_t backend,
                      const MoeStreamDualOwnerPolicy * stream_owner_policy,
                      MoeHybridRoutingStats * routing_stats) {
     result = KimiK3ForwardResult{};
+    if (exact_terminal_pending(cache)) {
+        set_last_error("Kimi-K3 forward: exact terminal state is unresolved");
+        return false;
+    }
     const int n_tokens = static_cast<int>(tokens.size());
     const bool panel_stop = options.stop_before_moe_layer >= 0;
     const bool panel_multi_requested =
@@ -4110,13 +4135,17 @@ bool kimi_k3_forward(ggml_backend_t backend,
                 stream_engine, dual_stream_executor,
                 stream_owner_policy, routing_stats);
         if (!forward_ok) {
+            if (options.capture_replay) {
+                cache.replay_valid = false;
+                cache.replay_exact_rows = false;
+            }
             return false;
         }
         if (options.capture_replay) {
             cache.replay_base_pos = base_pos;
             cache.replay_n_tokens = n_tokens;
             cache.replay_valid = true;
-            cache.recurrent_state_pristine = true;
+            cache.recurrent_state_pristine = !options.exact_multirow_core;
             cache.replay_exact_rows = options.exact_multirow_core;
         } else {
             cache.replay_valid = false;
@@ -4268,7 +4297,8 @@ bool kimi_k3_forward(ggml_backend_t backend,
 }
 
 bool kimi_k3_replay_snapshot(ggml_backend_t backend, KimiK3Cache & cache) {
-    if (!backend || cache.max_verify_tokens <= 0) return false;
+    if (!backend || cache.max_verify_tokens <= 0 ||
+        exact_terminal_pending(cache)) return false;
     for (KimiK3LayerCache & layer : cache.layers) {
         if (!layer.ssm_state) continue;
         if (!layer.ssm_state_snap || !layer.conv_state_snap ||
@@ -4291,17 +4321,8 @@ bool kimi_k3_replay_snapshot(ggml_backend_t backend, KimiK3Cache & cache) {
 
 bool kimi_k3_replay_restore(ggml_backend_t backend, KimiK3Cache & cache) {
     if (!backend || !cache.snapshot_valid || cache.snapshot_pos < 0) return false;
-    if (!cache.recurrent_state_pristine) {
-        for (KimiK3LayerCache & layer : cache.layers) {
-            if (!layer.ssm_state) continue;
-            if (!layer.ssm_state_snap || !layer.conv_state_snap) return false;
-            ggml_backend_tensor_copy_async(
-                backend, backend, layer.ssm_state_snap, layer.ssm_state);
-            ggml_backend_tensor_copy_async(
-                backend, backend, layer.conv_state_snap, layer.conv_state);
-        }
-        ggml_backend_synchronize(backend);
-    }
+    if (!cache.recurrent_state_pristine &&
+        !restore_recurrent_snapshot(backend, cache)) return false;
     cache.cur_pos = cache.snapshot_pos;
     cache.replay_valid = false;
     cache.recurrent_state_pristine = true;
@@ -4314,14 +4335,17 @@ bool kimi_k3_replay_commit(ggml_backend_t backend,
                            KimiK3Cache & cache,
                            int base_pos,
                            int commit_n) {
+    const bool retained_terminal = exact_terminal_pending(cache);
     if (!backend || !cache.snapshot_valid || !cache.replay_valid ||
-        !cache.recurrent_state_pristine || cache.snapshot_pos != base_pos ||
+        (!cache.recurrent_state_pristine && !retained_terminal) ||
+        cache.snapshot_pos != base_pos ||
         cache.replay_base_pos != base_pos || commit_n <= 0 ||
-        commit_n > cache.replay_n_tokens) {
+        commit_n > cache.replay_n_tokens ||
+        (retained_terminal &&
+         cache.cur_pos != base_pos + cache.replay_n_tokens)) {
         return false;
     }
     const bool exact_rows = cache.replay_exact_rows;
-    cache.recurrent_state_pristine = false;
     const auto commit_span = [&](int token_offset, int token_count) {
         ggml_init_params params{};
         params.mem_size = 64ull * 1024ull * 1024ull;
@@ -4362,12 +4386,17 @@ bool kimi_k3_replay_commit(ggml_backend_t backend,
     };
 
     bool commit_ok = true;
-    if (exact_rows) {
-        for (int token = 0; token < commit_n && commit_ok; ++token) {
-            commit_ok = commit_span(token, 1);
+    if (!retained_terminal || commit_n != cache.replay_n_tokens) {
+        if (retained_terminal &&
+            !restore_recurrent_snapshot(backend, cache)) return false;
+        cache.recurrent_state_pristine = false;
+        if (exact_rows) {
+            for (int token = 0; token < commit_n && commit_ok; ++token) {
+                commit_ok = commit_span(token, 1);
+            }
+        } else {
+            commit_ok = commit_span(0, commit_n);
         }
-    } else {
-        commit_ok = commit_span(0, commit_n);
     }
     if (!commit_ok) {
         (void)kimi_k3_replay_restore(backend, cache);
