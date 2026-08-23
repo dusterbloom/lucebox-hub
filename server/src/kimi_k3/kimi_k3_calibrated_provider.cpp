@@ -1646,11 +1646,6 @@ public:
                 return false;
             }
             if (!consume(base, valid, entry->outputs, err)) return false;
-            // A consumer may stage these rows with an asynchronous D2D copy.
-            // Retire that copy before the next replay reuses output scratch.
-            // A later double-buffered path may replace this conservative
-            // boundary, but must preserve the same ownership contract.
-            ggml_backend_synchronize(backend);
         }
         return true;
 #endif
@@ -2397,6 +2392,7 @@ private:
                 cudaSetDevice(runtime_device) == cudaSuccess;
             if (backend) ggml_backend_synchronize(backend);
             if (allocator) ggml_gallocr_free(allocator);
+            if (replay_buffer) ggml_backend_buffer_free(replay_buffer);
             if (weight_buffer) ggml_backend_buffer_free(weight_buffer);
             if (context) ggml_free(context);
             if (restore_device) (void) cudaSetDevice(previous_device);
@@ -2411,6 +2407,7 @@ private:
         ggml_gallocr_t allocator = nullptr;
         ggml_cgraph * graph = nullptr;
         ggml_backend_buffer_t weight_buffer = nullptr;
+        ggml_backend_buffer_t replay_buffer = nullptr;
         ggml_tensor * input = nullptr;
         ggml_tensor * gate = nullptr;
         ggml_tensor * up = nullptr;
@@ -2600,6 +2597,11 @@ private:
         ggml_set_input(entry->gate);
         ggml_set_input(entry->up);
         ggml_set_input(entry->down);
+        for (int lane = 0; lane < graph_width; ++lane) {
+            entry->maps[static_cast<size_t>(lane)] = ggml_new_tensor_1d(
+                entry->context, GGML_TYPE_I32, kSlabCount);
+            ggml_set_input(entry->maps[static_cast<size_t>(lane)]);
+        }
 
         const ggml_backend_buffer_type_t buft =
             ggml_backend_get_default_buffer_type(backend);
@@ -2639,6 +2641,49 @@ private:
             return nullptr;
         }
 
+        size_t replay_cursor = 0;
+        const auto reserve_replay = [&](ggml_tensor * tensor) {
+            replay_cursor =
+                ((replay_cursor + alignment - 1) / alignment) * alignment;
+            const size_t offset = replay_cursor;
+            replay_cursor += ggml_backend_buft_get_alloc_size(buft, tensor);
+            return offset;
+        };
+        const size_t input_offset = reserve_replay(entry->input);
+        std::array<size_t, 8> map_offsets{};
+        for (int lane = 0; lane < graph_width; ++lane) {
+            map_offsets[static_cast<size_t>(lane)] = reserve_replay(
+                entry->maps[static_cast<size_t>(lane)]);
+        }
+        replay_cursor =
+            ((replay_cursor + alignment - 1) / alignment) * alignment;
+        entry->replay_buffer =
+            ggml_backend_buft_alloc_buffer(buft, replay_cursor);
+        if (!entry->replay_buffer) {
+            if (err) *err = "compact union replay allocation failed";
+            return nullptr;
+        }
+        ggml_backend_buffer_set_usage(
+            entry->replay_buffer, GGML_BACKEND_BUFFER_USAGE_COMPUTE);
+        auto * replay_base = static_cast<uint8_t *>(
+            ggml_backend_buffer_get_base(entry->replay_buffer));
+        if (ggml_backend_tensor_alloc(
+                entry->replay_buffer, entry->input,
+                replay_base + input_offset) != GGML_STATUS_SUCCESS) {
+            if (err) *err = "compact union input binding failed";
+            return nullptr;
+        }
+        for (int lane = 0; lane < graph_width; ++lane) {
+            if (ggml_backend_tensor_alloc(
+                    entry->replay_buffer,
+                    entry->maps[static_cast<size_t>(lane)],
+                    replay_base + map_offsets[static_cast<size_t>(lane)]) !=
+                    GGML_STATUS_SUCCESS) {
+                if (err) *err = "compact union map binding failed";
+                return nullptr;
+            }
+        }
+
         ggml_tensor * gate_value = probe_scale_tensor(
             entry->context,
             ggml_mul_mat(entry->context, entry->gate, entry->input),
@@ -2650,9 +2695,6 @@ private:
         ggml_tensor * activated = probe_gated_activation(
             entry->context, spec, gate_value, up_value);
         for (int lane = 0; lane < graph_width; ++lane) {
-            entry->maps[static_cast<size_t>(lane)] = ggml_new_tensor_1d(
-                entry->context, GGML_TYPE_I32, kSlabCount);
-            ggml_set_input(entry->maps[static_cast<size_t>(lane)]);
             ggml_tensor * activation_row = ggml_view_1d(
                 entry->context, activated, activated->ne[0],
                 static_cast<size_t>(lane) * activated->nb[1]);
