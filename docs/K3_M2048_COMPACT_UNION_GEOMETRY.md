@@ -75,9 +75,11 @@ nominally `3.561165x` faster and reduced its test payload H2D by 99.012%, yet
 failed byte identity against the current one-row compact teacher.  A
 six-slab identical-mask width-eight candidate likewise failed byte identity.
 
-The offline byte opportunity remains valid; the assumption that MMVQ width
-eight can realize it on the exact lane does not.  The failed experimental
-executor was removed.  Exact follow-up is bounded to width two or one-row
-arithmetic plus layer-major storage/order; wider execution is quality-gated.
-See `results/k3_compact_schedule_discriminator.json` and
-`results/k3_full12_union_long.json`.
+The offline byte opportunity remains valid; the assumption that multi-row
+MMVQ can realize it on the exact lane does not.  A subsequent full-12 width-two
+continuation was `2.876200x` nominally but also non-exact across 245 rows.  The
+failed experimental executor was removed.  Exact follow-up is therefore
+one-row arithmetic plus layer-major storage/order; all multi-row execution is
+quality-gated.  See `results/k3_compact_schedule_discriminator.json`,
+`results/k3_full12_union_long.json`, and
+`results/k3_full12_union_width2.json`.

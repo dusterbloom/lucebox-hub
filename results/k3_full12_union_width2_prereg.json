@@ -1,0 +1,58 @@
+{
+  "campaign": "K3 full-12 compact union exact width-two discriminator",
+  "registered_utc": "2026-08-23",
+  "question": "Can the already-proven exact width-two MMVQ seam reuse one full-12 compact payload over M_e=245 while remaining byte-identical and materially faster than rowwise execution?",
+  "reason_for_candidate": "Width-eight was validly closed as non-exact. Width two is a distinct retained exact seam, including the earlier live M64 pair2 parity result; this run does not retry a failed width-eight arm.",
+  "frozen_source": {
+    "base_head": "a513bc5fb8d9b7b2c7310028f643da708abac284",
+    "provider_cpp_sha256": "e8146f278700ef62fb41f7019e74d01be1676ecfec5330a357c43279504df95c",
+    "sentinel_inc_sha256": "333524884a3c6427fc72990ed1f5f41fca2da718b35ba96bbad89fb300316430",
+    "binary_sha256": "166ac31965ac0911c9f38b36b4d1d3fec11bf696e9a99712f65c0cf1fe38acdc",
+    "trigger": "DFLASH_TEST_KIMI_IQ_MULTIROW_EXACT=union_long2"
+  },
+  "qualified_device": {
+    "physical_device": "GPU1",
+    "architecture": "gfx1151",
+    "visibility": "HIP_VISIBLE_DEVICES=1; DFLASH_TEST_GPU=0",
+    "platform_profile": "performance"
+  },
+  "fixture": {
+    "shape": "3584 -> 3072 -> 3584",
+    "gate_up_type": "IQ1_S",
+    "down_type": "IQ2_XXS",
+    "rows": 245,
+    "graph_width": 2,
+    "resident_slabs": 12,
+    "requested_masks": "the same eight deterministic 1..8-slab masks, repeated in fixed order",
+    "tail_rows": 5
+  },
+  "arms_in_fixed_order": [
+    "245-row rowwise compact teacher versus one full-12 payload reused over width-two chunks",
+    "five-row width-two tail"
+  ],
+  "correctness_gate": {
+    "outputs": "byte-identical for all 245 rows and five tail rows",
+    "dispatch": "MMVQ launches greater than zero and MMQ launches equal zero",
+    "payload": "candidate authoritative weight H2D equals one full-12 payload"
+  },
+  "performance_gate": {
+    "primary_metric": "matched rowwise teacher_ns divided by 245-row candidate_ns",
+    "minimum_speedup_vs_rowwise": 1.6,
+    "go": "all correctness gates pass and speedup is at least 1.6x",
+    "no_go": "any correctness failure or speedup below 1.6x"
+  },
+  "run_policy": {
+    "qualified_runs": 1,
+    "reruns_after_result": 0,
+    "build_parallelism_max": 4,
+    "abort_conditions": [
+      "source or binary hash mismatch",
+      "wrong physical device or platform profile",
+      "concurrent GPU lease holder",
+      "build or runtime failure",
+      "any correctness, dispatch, or accounting failure",
+      "OOM or swap activity"
+    ]
+  },
+  "interpretation_boundary": "A GO earns a default-off fixed-width-two layer-major executor, not a live prefill speed claim. Physical storage and full model state/logit parity remain separate gates."
+}

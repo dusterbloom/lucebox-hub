@@ -4,10 +4,11 @@
 
 The ordinary width-four/eight MMQ path is **not exact**.  MMVQ width four and
 eight was byte-identical on this discriminator's first eight deterministic
-inputs, but a later 245-row continuation falsified that as a general exactness
-envelope.  Width eight is therefore **not an exact production path**.  Width
-two remains the retained exact multi-row seam; wider MMVQ is now an explicitly
-approximate/quality-gated candidate.
+inputs, but later 245-row continuations falsified that as a general exactness
+envelope.  A separate width-two union continuation was also non-exact.
+Generic compact multi-row execution is therefore **not an exact production
+path**.  The specific M64 pair2 fixture remains exact evidence, not a universal
+arithmetic guarantee.
 
 This is a model-free arithmetic gate on physical GPU1 `gfx1151`, not a
 performance or live-prefill result.
@@ -69,14 +70,19 @@ differing masks or by using a full-12 resident tensor.  Results and frozen
 hashes are in `results/k3_compact_schedule_discriminator.json` and
 `results/k3_full12_union_long.json`.
 
+The final full-12 width-two continuation was nominally `2.876200x`
+(`58.684213 ms -> 20.403382 ms`) and reduced weight H2D from 722,856,960 to
+7,139,328 bytes, but it too failed byte identity over the 245 rows.  Its
+result is `results/k3_full12_union_width2.json`.
+
 ## Engineering decision
 
-Do not integrate width-eight MMVQ into the exact runtime.  Its speed prize is
-real, but its arithmetic differs for later inputs.  The test-only union
-executor was removed after preserving the valid NO-GO.  Exact production work
-may retain the already-proven width-two seam or keep one-row arithmetic while
-improving layer-major storage/order.  Any width-four/eight continuation must
-report numerical/state/logit deltas and remain behind the exact fallback.
+Do not integrate compact multi-row MMVQ into the generic exact runtime.  Its
+speed prize is real, but its arithmetic differs for later inputs even at width
+two.  The test-only union executor was removed after preserving the valid
+NO-GOs.  Exact production work must keep one-row arithmetic while improving
+layer-major storage/order.  Any multi-row continuation must report
+numerical/state/logit deltas and remain behind the exact fallback.
 
 Machine-readable results and binary/runtime hashes are in
 `results/k3_iq_multirow_exact_gate.json`.
