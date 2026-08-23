@@ -22,7 +22,8 @@ public:
     virtual bool begin_layer_route_observation(
         int, int, const MoeStreamExpertSpec &, size_t,
         bool * active, std::string * = nullptr) {
-        if (active) *active = false; return true;
+        if (active) *active = false;
+        return true;
     }
     virtual bool observe_completed_route_row(
         int, const int32_t *, const float *, int,
@@ -81,8 +82,11 @@ struct KimiK3RoutedRuntimeStats {
     uint64_t p40_scatter_avoided = 0;
     uint64_t union_prefetch_keys = 0;
     uint64_t union_prefetch_bytes = 0;
+    uint64_t union_prefetch_service_ns = 0;
     uint64_t union_prefetch_wait_ns = 0;
     uint64_t union_prefetch_tail_ns = 0;
+    uint64_t union_prefetch_epochs = 0;
+    uint64_t union_prefetch_order_hash = 0;
     uint64_t union_prefetch_duplicates = 0;
     uint64_t union_prefetch_mismatches = 0;
     uint64_t union_prefetch_aborts = 0;

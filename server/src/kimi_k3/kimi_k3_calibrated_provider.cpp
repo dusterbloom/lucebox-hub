@@ -3321,6 +3321,11 @@ private:
 };
 
 constexpr int kMacroUnionPrefetchEpoch = 64;
+uint64_t macro_union_steady_now_ns() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 struct MacroUnionTokenPlan {
     std::array<uint16_t, kNativeTopK> masks{};
     std::array<size_t, kNativeTopK> output_rows{};
@@ -3340,6 +3345,16 @@ struct MacroUnionPrefetchRecord {
 struct MacroUnionPrefetchEpoch {
     std::vector<MacroUnionPrefetchRecord *> records;
     std::atomic<size_t> next{0};
+    std::atomic<size_t> workers_remaining{0};
+    uint64_t submitted_ns = 0;
+    std::atomic<uint64_t> completed_ns{0};
+};
+struct MacroUnionPrefetchWorkerDone {
+    ~MacroUnionPrefetchWorkerDone() {
+        if (epoch->workers_remaining.fetch_sub(1) == 1)
+            epoch->completed_ns = macro_union_steady_now_ns();
+    }
+    MacroUnionPrefetchEpoch * epoch;
 };
 struct MacroUnionPrefetchState {
     ~MacroUnionPrefetchState() {
@@ -3353,8 +3368,10 @@ struct MacroUnionPrefetchState {
     std::array<uint16_t, kExpertCount> seen_masks{};
     std::array<std::unique_ptr<MacroUnionPrefetchRecord>,
                kExpertCount * kSlabCount> records{};
+    std::vector<std::shared_ptr<MacroUnionPrefetchEpoch>> epochs;
     std::vector<std::future<void>> futures;
     std::atomic<bool> failed{false};
+    bool service_accounted = false;
 };
 // Every routed layer owns independent, provenance-checked calibration cards.
 // Any absent, malformed, or provenance-free layer stays exact.  Within a valid
@@ -4016,8 +4033,11 @@ public:
         result.p40_scatter_avoided = p40_scatter_avoided_;
         result.union_prefetch_keys = union_prefetch_keys_;
         result.union_prefetch_bytes = union_prefetch_bytes_;
+        result.union_prefetch_service_ns = union_prefetch_service_ns_;
         result.union_prefetch_wait_ns = union_prefetch_wait_ns_;
         result.union_prefetch_tail_ns = union_prefetch_tail_ns_;
+        result.union_prefetch_epochs = union_prefetch_epochs_;
+        result.union_prefetch_order_hash = union_prefetch_order_hash_;
         result.union_prefetch_duplicates = union_prefetch_duplicates_;
         result.union_prefetch_mismatches = union_prefetch_mismatches_;
         result.union_prefetch_aborts = union_prefetch_aborts_;
@@ -4268,9 +4288,22 @@ private:
             record->submitted = true;
         }
         const size_t workers = std::min<size_t>(16, epoch->records.size());
+        epoch->submitted_ns = macro_union_steady_now_ns();
+        epoch->workers_remaining = workers;
+        observation.epochs.push_back(epoch);
+        ++union_prefetch_epochs_;
+        hash_prefetch_order(0x45504f4348ULL);
+        hash_prefetch_order(static_cast<uint64_t>(observation.model_layer));
+        hash_prefetch_order(static_cast<uint64_t>(observation.base_pos));
+        hash_prefetch_order(static_cast<uint64_t>(observation.observed_rows));
+        for (const MacroUnionPrefetchRecord * record : epoch->records) {
+            hash_prefetch_order(record->aligned_offset);
+            hash_prefetch_order(record->aligned_bytes);
+        }
         for (size_t worker = 0; worker < workers; ++worker) {
             observation.futures.push_back(direct_read_pool_->submit(
                 [this, &observation, epoch]() {
+                    MacroUnionPrefetchWorkerDone done{epoch.get()};
                     for (;;) {
                         if (observation.failed.load()) break;
                         const size_t index = epoch->next.fetch_add(1);
@@ -4311,10 +4344,55 @@ private:
         observation.futures.clear();
     }
 
+    void hash_prefetch_order(uint64_t value) {
+        for (int byte = 0; byte < 8; ++byte) {
+            union_prefetch_order_hash_ ^=
+                static_cast<uint8_t>(value >> (byte * 8));
+            union_prefetch_order_hash_ *= 1099511628211ULL;
+        }
+    }
+
+    void account_macro_union_prefetch_service(
+            MacroUnionPrefetchState & observation) {
+        if (observation.service_accounted) return;
+        uint64_t service_ns = 0;
+        uint64_t interval_end = 0;
+        for (const auto & epoch : observation.epochs) {
+            const uint64_t start = epoch->submitted_ns;
+            const uint64_t end = epoch->completed_ns.load();
+            if (end <= start) continue;
+            if (start >= interval_end) service_ns += end - start;
+            else if (end > interval_end) service_ns += end - interval_end;
+            interval_end = std::max(interval_end, end);
+        }
+        // Preserve direct_io_ns as physical service wall time. Epochs may
+        // overlap, so charge the union of their active submission windows.
+        direct_io_ns_ += service_ns;
+        union_prefetch_service_ns_ += service_ns;
+        observation.service_accounted = true;
+    }
+
+    void account_aborted_macro_union_prefetch_reads(
+            MacroUnionPrefetchState & observation) {
+        uint64_t keys = 0;
+        uint64_t bytes = 0;
+        for (const auto & record : observation.records) {
+            if (!record || !record->ok) continue;
+            ++keys;
+            bytes += record->aligned_bytes;
+        }
+        union_prefetch_keys_ += keys;
+        union_prefetch_bytes_ += bytes;
+        explicit_read_bytes_ += bytes;
+        direct_physical_bytes_ += bytes;
+    }
+
     void abort_macro_union_prefetch() {
         if (!macro_union_prefetch_) return;
         macro_union_prefetch_->failed = true;
         wait_macro_union_prefetch(*macro_union_prefetch_);
+        account_macro_union_prefetch_service(*macro_union_prefetch_);
+        account_aborted_macro_union_prefetch_reads(*macro_union_prefetch_);
         ++union_prefetch_aborts_;
         macro_union_prefetch_.reset();
     }
@@ -5532,9 +5610,7 @@ private:
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - wait_started).count());
             union_prefetch_wait_ns_ += wait_ns;
-            // Once delivery is overlapped, only this residual wait remains on
-            // the provider critical path represented by direct_io_ns.
-            direct_io_ns_ += wait_ns;
+            account_macro_union_prefetch_service(observation);
             if (observation.failed.load()) {
                 if (err) *err = "macro union prefetched sidecar read failed";
                 return MacroUnionOutcome::Failed;
@@ -6739,12 +6815,18 @@ private:
             if (macro_union_prefetch_enabled_) {
                 std::fprintf(stderr,
                     "[kimi-k3-macro-union-prefetch] keys=%llu bytes=%llu "
-                    "wait_ms=%.3f tail_ms=%.3f duplicates=%llu "
+                    "service-union-ms=%.3f residual-wait-ms=%.3f "
+                    "tail-ms=%.3f epochs=%llu submission-order-fnv64=%016llx "
+                    "duplicates=%llu "
                     "mismatches=%llu aborts=%llu\n",
                     static_cast<unsigned long long>(union_prefetch_keys_),
                     static_cast<unsigned long long>(union_prefetch_bytes_),
+                    union_prefetch_service_ns_ / 1.0e6,
                     union_prefetch_wait_ns_ / 1.0e6,
                     union_prefetch_tail_ns_ / 1.0e6,
+                    static_cast<unsigned long long>(union_prefetch_epochs_),
+                    static_cast<unsigned long long>(
+                        union_prefetch_order_hash_),
                     static_cast<unsigned long long>(
                         union_prefetch_duplicates_),
                     static_cast<unsigned long long>(
@@ -6817,8 +6899,11 @@ private:
     uint64_t macro_union_rows_ = 0;
     uint64_t union_prefetch_keys_ = 0;
     uint64_t union_prefetch_bytes_ = 0;
+    uint64_t union_prefetch_service_ns_ = 0;
     uint64_t union_prefetch_wait_ns_ = 0;
     uint64_t union_prefetch_tail_ns_ = 0;
+    uint64_t union_prefetch_epochs_ = 0;
+    uint64_t union_prefetch_order_hash_ = 14695981039346656037ULL;
     uint64_t union_prefetch_duplicates_ = 0;
     uint64_t union_prefetch_mismatches_ = 0;
     uint64_t union_prefetch_aborts_ = 0;
