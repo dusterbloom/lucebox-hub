@@ -1,0 +1,131 @@
+{
+  "schema": "k3-iq-multirow-exact-gate-v1",
+  "status": "EXACT_MMQ_NO_GO__EXACT_MMVQ8_GO",
+  "scope": "MODEL_FREE_ONE_FULL_K3_EXPERT_PHYSICAL_GPU1",
+  "source": {
+    "branch_base": "27c8b3f7742c6964291876aa3a386f63102d828f",
+    "test_source_sha256": "a8085f61c84e2a65bf20c561dd2c7b8eb33caaa452feac9cecd03cfce51301f1",
+    "binary_sha256": "0f53bec020393948c4a921640bfb6126adde9cb5dd191e4118db276fc5863f07",
+    "moe_hybrid_stream_cpp_sha256": "cf39d0a66ba17fd5ac98d5030c401cda692193552348c0e922068c6f67dbff8c",
+    "ggml_cuda_cu_sha256": "c783e5968a44b344dd96eae7df666d99f029140bde6c3723d9e8248dbfc1b162",
+    "mmq_cu_sha256": "3094775a3503ae21172cf8847715a67e798f25aa308ddd31817543e6adb8310b",
+    "mmvq_cu_sha256": "f7d0f95296781af7423ebdab858c0adc0ae11f44b1a042b7b20dc6453d59d7d0",
+    "libggml_hip_sha256": "896f1d6cb6583b139f0a8b3782a00dd02125afcdde45b3ac6effec17e8cc2774"
+  },
+  "fixture": {
+    "experts": 1,
+    "input_dim": 3584,
+    "intermediate_dim": 3072,
+    "output_dim": 3584,
+    "gate_type": "IQ1_S",
+    "up_type": "IQ1_S",
+    "down_type": "IQ2_XXS",
+    "activation": "SiTU",
+    "weight_source": "deterministic full-shape synthetic values quantized with a unit importance matrix",
+    "teacher": "same expert and inputs evaluated as eight separate width-1 calls"
+  },
+  "hardware": {
+    "physical_device": "GPU1",
+    "visible_device": 0,
+    "name": "Radeon 8060S Graphics",
+    "architecture": "gfx1151",
+    "wave_size": 32,
+    "vram_mib": 98304,
+    "visibility": "HIP_VISIBLE_DEVICES=1",
+    "graphs": "disabled for dispatch-counter qualification"
+  },
+  "runtime_closures": [
+    {
+      "name": "system_rocm_7.2.2",
+      "libamdhip64_sha256": "8d76bcfb348efec115de2d7c665687c3066326d028dbc6c2b0f3fd4141d62247",
+      "libhsa_runtime64_sha256": "56d110eabc83440a5bcb0d4ab0277f1caf99ea9694ba32722082e231596e92e3",
+      "librocblas_sha256": "6cce0b34176ef99977018496ee8f243e77c4312e4f5e99072fa64d04b1c14e97",
+      "result": "same exactness and numerical deltas as retained closure"
+    },
+    {
+      "name": "retained_hip_hsa_7.2.4_plus_system_rocblas",
+      "libamdhip64_sha256": "f1043337461c8e54ee135e95fa979a7d0e4344676ad5b0554652f844f8f098ac",
+      "libhsa_runtime64_sha256": "b8cdfe93d343649a35c1daf73a0a3a6840f09379ebeee9be65670461ffea43f4",
+      "librocblas_sha256": "6cce0b34176ef99977018496ee8f243e77c4312e4f5e99072fa64d04b1c14e97",
+      "result": "retained qualified rows below"
+    }
+  ],
+  "results": [
+    {
+      "policy": "production",
+      "mmvq_ceiling": 3,
+      "width": 2,
+      "dispatch": "MMVQ",
+      "mmvq_launches": 3,
+      "mmq_launches": 0,
+      "dispatch_valid": true,
+      "byte_exact": true,
+      "mismatches": 0,
+      "max_abs": 0.0,
+      "relative_l2": 0.0
+    },
+    {
+      "policy": "production",
+      "mmvq_ceiling": 3,
+      "width": 4,
+      "dispatch": "MMQ",
+      "mmvq_launches": 0,
+      "mmq_launches": 3,
+      "dispatch_valid": true,
+      "byte_exact": false,
+      "mismatches": 14336,
+      "max_abs": 0.000123002799,
+      "relative_l2": 0.00832551118
+    },
+    {
+      "policy": "production",
+      "mmvq_ceiling": 3,
+      "width": 8,
+      "dispatch": "MMQ",
+      "mmvq_launches": 0,
+      "mmq_launches": 3,
+      "dispatch_valid": true,
+      "byte_exact": false,
+      "mismatches": 28672,
+      "max_abs": 0.000123002799,
+      "relative_l2": 0.00809432315
+    },
+    {
+      "policy": "exact_fallback",
+      "mmvq_ceiling": 8,
+      "width": 4,
+      "dispatch": "MMVQ",
+      "mmvq_launches": 3,
+      "mmq_launches": 0,
+      "dispatch_valid": true,
+      "byte_exact": true,
+      "mismatches": 0,
+      "max_abs": 0.0,
+      "relative_l2": 0.0
+    },
+    {
+      "policy": "exact_fallback",
+      "mmvq_ceiling": 8,
+      "width": 8,
+      "dispatch": "MMVQ",
+      "mmvq_launches": 3,
+      "mmq_launches": 0,
+      "dispatch_valid": true,
+      "byte_exact": true,
+      "mismatches": 0,
+      "max_abs": 0.0,
+      "relative_l2": 0.0
+    }
+  ],
+  "invalid_preflight": {
+    "symptom": "the pre-existing F32 control segfaulted inside libamdhip64 when both physical GPUs were visible and DFLASH_TEST_GPU selected index 1",
+    "resolution": "isolate physical GPU1 with HIP_VISIBLE_DEVICES=1 and use visible index 0",
+    "interpretation": "topology-invalid runs produced no new-fixture numerical rows and are not counted as result arms"
+  },
+  "decision": {
+    "default_mmq_exact_lane": "NO_GO",
+    "bounded_mmvq_width_8_exact_lane": "GO",
+    "production_implication": "stage a compact expert payload once and process identical-mask routed rows in chunks of at most eight while the payload remains resident",
+    "not_claimed": "No performance or live-model speedup is claimed by this exactness gate"
+  }
+}

@@ -4,9 +4,11 @@
 
 #include "ggml-quants.h"
 #include "ggml-cpu.h"
+#include "ggml-cuda.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -231,6 +233,77 @@ ModelBytes make_mxfp4_model_bytes(const std::vector<float> & gate,
     model.slot_bytes = model.regions.expert_bytes_gate +
                        model.regions.expert_bytes_up +
                        model.regions.expert_bytes_down;
+    return model;
+}
+
+// Keep this discriminator in the existing streamed-expert test, but make it
+// opt-in: it uses the real Kimi-K3 expert dimensions and quantization types and
+// is intended for the qualified GPU, not every developer's unit-test loop.
+constexpr int kKimiInput = 3584;
+constexpr int kKimiFf = 3072;
+constexpr int kKimiOutput = 3584;
+constexpr int kKimiExactMaxWidth = 8;
+
+float kimi_quant_value(uint32_t seed, int row, int column) {
+    uint32_t value = seed ^ (uint32_t) (row + 1) * 0x9e3779b9U ^
+                     (uint32_t) (column + 1) * 0x85ebca6bU;
+    value ^= value >> 16;
+    value *= 0x7feb352dU;
+    value ^= value >> 15;
+    value *= 0x846ca68bU;
+    value ^= value >> 16;
+    const int centered = (int) (value & 0xffffU) - 32768;
+    return 0.055f * (float) centered / 32768.0f;
+}
+
+std::vector<uint8_t> quantize_kimi_component(
+        ggml_type type, int columns, int rows, uint32_t seed) {
+    const size_t row_bytes = ggml_row_size(type, columns);
+    std::vector<uint8_t> quantized(row_bytes * (size_t) rows);
+
+    // Quantize in small row chunks so a full-shape discriminator peaks around
+    // the actual compact tensor size rather than materializing ~44 MiB of F32
+    // source and another ~44 MiB importance matrix per component.
+    constexpr int kRowsPerChunk = 8;
+    std::vector<float> source((size_t) kRowsPerChunk * columns);
+    std::vector<float> importance(source.size(), 1.0f);
+    for (int row_base = 0; row_base < rows; row_base += kRowsPerChunk) {
+        const int chunk_rows = std::min(kRowsPerChunk, rows - row_base);
+        for (int row = 0; row < chunk_rows; ++row) {
+            for (int column = 0; column < columns; ++column) {
+                source[(size_t) row * columns + column] =
+                    kimi_quant_value(seed, row_base + row, column);
+            }
+        }
+        const size_t written = ggml_quantize_chunk(
+            type, source.data(),
+            quantized.data() + (size_t) row_base * row_bytes,
+            0, chunk_rows, columns, importance.data());
+        STREAM_REQUIRE(written == (size_t) chunk_rows * row_bytes);
+    }
+    return quantized;
+}
+
+ModelBytes make_kimi_iq_model_bytes() {
+    const std::vector<uint8_t> gate = quantize_kimi_component(
+        GGML_TYPE_IQ1_S, kKimiInput, kKimiFf, 0x4b334741U);
+    const std::vector<uint8_t> up = quantize_kimi_component(
+        GGML_TYPE_IQ1_S, kKimiInput, kKimiFf, 0x4b335550U);
+    const std::vector<uint8_t> down = quantize_kimi_component(
+        GGML_TYPE_IQ2_XXS, kKimiFf, kKimiOutput, 0x4b33444eU);
+
+    ModelBytes model;
+    model.regions.expert_bytes_gate = gate.size();
+    model.regions.expert_bytes_up = up.size();
+    model.regions.expert_bytes_down = down.size();
+    model.regions.gate_exps = {0, gate.size()};
+    model.regions.up_exps = {gate.size(), up.size()};
+    model.regions.down_exps = {gate.size() + up.size(), down.size()};
+    model.file.reserve(gate.size() + up.size() + down.size());
+    model.file.insert(model.file.end(), gate.begin(), gate.end());
+    model.file.insert(model.file.end(), up.begin(), up.end());
+    model.file.insert(model.file.end(), down.begin(), down.end());
+    model.slot_bytes = model.file.size();
     return model;
 }
 
@@ -686,6 +759,218 @@ void run_mxfp4_padding_case(ggml_backend_t backend) {
     engine.destroy();
 }
 
+struct MmvqWidthOverride {
+    int previous = 0;
+
+    explicit MmvqWidthOverride(int max_width)
+        : previous(ggml_backend_cuda_set_mmvq_max_ncols_override(max_width)) {}
+
+    ~MmvqWidthOverride() {
+        ggml_backend_cuda_set_mmvq_max_ncols_override(previous);
+    }
+};
+
+struct CudaGraphsDisabledOverride {
+    bool previous = false;
+
+    CudaGraphsDisabledOverride()
+        : previous(ggml_backend_cuda_set_graphs_disabled_override(true)) {}
+
+    ~CudaGraphsDisabledOverride() {
+        ggml_backend_cuda_set_graphs_disabled_override(previous);
+    }
+};
+
+struct ExactComparison {
+    bool exact = false;
+    size_t mismatches = 0;
+    float max_abs = 0.0f;
+    double rel_l2 = 0.0;
+};
+
+ExactComparison compare_exact_f32(const std::vector<float> & reference,
+                                  const std::vector<float> & candidate) {
+    STREAM_REQUIRE(candidate.size() == reference.size());
+    ExactComparison comparison;
+    comparison.exact = std::memcmp(
+        reference.data(), candidate.data(),
+        reference.size() * sizeof(float)) == 0;
+    double diff_squared = 0.0;
+    double reference_squared = 0.0;
+    for (size_t i = 0; i < reference.size(); ++i) {
+        if (std::memcmp(&reference[i], &candidate[i], sizeof(float)) != 0) {
+            ++comparison.mismatches;
+        }
+        const double difference =
+            (double) candidate[i] - (double) reference[i];
+        comparison.max_abs = std::max(
+            comparison.max_abs, (float) std::fabs(difference));
+        diff_squared += difference * difference;
+        reference_squared += (double) reference[i] * (double) reference[i];
+    }
+    comparison.rel_l2 = reference_squared > 0.0
+        ? std::sqrt(diff_squared / reference_squared)
+        : std::sqrt(diff_squared);
+    return comparison;
+}
+
+void run_kimi_iq_multirow_exact_case(ggml_backend_t backend) {
+    ModelBytes model = make_kimi_iq_model_bytes();
+    TempFile file(model.file);
+
+    MoeStreamExpertSpec spec;
+    spec.input_dim = kKimiInput;
+    spec.intermediate_dim = kKimiFf;
+    spec.output_dim = kKimiOutput;
+    spec.gate_type = GGML_TYPE_IQ1_S;
+    spec.up_type = GGML_TYPE_IQ1_S;
+    spec.down_type = GGML_TYPE_IQ2_XXS;
+    spec.gated_activation = MoeGatedActivation::Situ;
+    spec.situ_beta = 4.0f;
+    spec.situ_linear_beta = 25.0f;
+
+    std::vector<float> input(
+        (size_t) kKimiExactMaxWidth * kKimiInput);
+    for (int token = 0; token < kKimiExactMaxWidth; ++token) {
+        for (int column = 0; column < kKimiInput; ++column) {
+            input[(size_t) token * kKimiInput + column] =
+                0.035f * std::sin(
+                    0.011f * (float) (column + 1) +
+                    0.19f * (float) (token + 1));
+        }
+    }
+
+    std::vector<float> teacher;
+    bool production_mmvq_exact = true;
+    bool production_mmq_exact = true;
+    bool fallback_mmvq_exact = true;
+    bool dispatch_valid = true;
+
+    const auto run_policy = [&](const char * policy, int mmvq_ceiling,
+                                const std::vector<int> & widths,
+                                bool build_teacher) {
+        MoeHybridStorage storage;
+        storage.mmap_size = model.file.size();
+        storage.mmap_fd = ::dup(file.fd);
+        STREAM_REQUIRE(storage.mmap_fd >= 0);
+        storage.layer_regions.push_back(model.regions);
+
+        MoeStreamConfig config;
+        config.device_slots = 1;
+        config.device_cache_bytes = 0;
+        config.graph_cache_entries = 4;
+        config.nvme.backend = MoeNvmeBackend::ThreadPool;
+        config.nvme.direct_io = MoeNvmeDirectMode::Disabled;
+        config.nvme.host_slots = 2;
+        config.nvme.io_threads = 1;
+
+        MoeHybridStreamEngine engine;
+        std::string error;
+        STREAM_REQUIRE(engine.init(
+            backend, model.slot_bytes, storage, config, &error));
+        MmvqWidthOverride mmvq_width(mmvq_ceiling);
+        CudaGraphsDisabledOverride graphs_disabled;
+
+        if (build_teacher) {
+            const int32_t one_id = 0;
+            const float one_weight = 1.0f;
+            teacher.resize(
+                (size_t) kKimiExactMaxWidth * kKimiOutput);
+            for (int token = 0; token < kKimiExactMaxWidth; ++token) {
+                MoeStreamRouteBatch batch;
+                batch.layer = 0;
+                batch.n_expert = 1;
+                batch.top_k = 1;
+                batch.n_tokens = 1;
+                batch.inputs = input.data() + (size_t) token * kKimiInput;
+                batch.selected_ids = &one_id;
+                batch.selected_weights = &one_weight;
+                std::vector<float> one_output;
+                STREAM_REQUIRE(eval_moe_streamed_experts(
+                    engine, spec, batch, one_output, &error));
+                STREAM_REQUIRE(one_output.size() == (size_t) kKimiOutput);
+                std::memcpy(
+                    teacher.data() + (size_t) token * kKimiOutput,
+                    one_output.data(), one_output.size() * sizeof(float));
+            }
+        }
+        STREAM_REQUIRE(
+            teacher.size() == (size_t) kKimiExactMaxWidth * kKimiOutput);
+
+        for (const int width : widths) {
+            std::vector<int32_t> ids((size_t) width, 0);
+            std::vector<float> weights((size_t) width, 1.0f);
+            MoeStreamRouteBatch batch;
+            batch.layer = 0;
+            batch.n_expert = 1;
+            batch.top_k = 1;
+            batch.n_tokens = width;
+            batch.inputs = input.data();
+            batch.selected_ids = ids.data();
+            batch.selected_weights = weights.data();
+            std::vector<float> multirow;
+            const size_t mmvq_before =
+                ggml_backend_cuda_get_mmvq_launch_count();
+            const size_t mmq_before =
+                ggml_backend_cuda_get_mmq_launch_count();
+            STREAM_REQUIRE(eval_moe_streamed_experts(
+                engine, spec, batch, multirow, &error));
+            const size_t mmvq_launches =
+                ggml_backend_cuda_get_mmvq_launch_count() - mmvq_before;
+            const size_t mmq_launches =
+                ggml_backend_cuda_get_mmq_launch_count() - mmq_before;
+
+            const std::vector<float> reference(
+                teacher.begin(),
+                teacher.begin() + (size_t) width * kKimiOutput);
+            const ExactComparison comparison =
+                compare_exact_f32(reference, multirow);
+            const bool mmvq = width <= mmvq_ceiling;
+            const bool observed_dispatch = mmvq
+                ? mmvq_launches > 0 && mmq_launches == 0
+                : mmq_launches > 0 && mmvq_launches == 0;
+            std::fprintf(
+                stderr,
+                "k3_iq_multirow_exact policy=%s mmvq_ceiling=%d width=%d "
+                "dispatch=%s mmvq_launches=%zu mmq_launches=%zu "
+                "dispatch_valid=%s exact=%s mismatches=%zu max_abs=%.9g "
+                "rel_l2=%.9g\n",
+                policy, mmvq_ceiling, width, mmvq ? "MMVQ" : "MMQ",
+                mmvq_launches, mmq_launches,
+                observed_dispatch ? "yes" : "no",
+                comparison.exact ? "yes" : "no", comparison.mismatches,
+                comparison.max_abs, comparison.rel_l2);
+            dispatch_valid &= observed_dispatch;
+            if (std::strcmp(policy, "production") == 0) {
+                if (mmvq) production_mmvq_exact &= comparison.exact;
+                else production_mmq_exact &= comparison.exact;
+            } else {
+                fallback_mmvq_exact &= comparison.exact;
+            }
+        }
+        engine.destroy();
+    };
+
+    // Measure both policies before applying either gate. Production crosses
+    // from MMVQ to MMQ at width 4. The exact fallback keeps widths 4 and 8 on
+    // MMVQ so a fast storage schedule can remain useful even if MMQ differs.
+    run_policy("production", 3, {2, 4, 8}, true);
+    run_policy("exact_fallback", 8, {4, 8}, false);
+    std::fprintf(
+        stderr,
+        "k3_iq_multirow_exact summary production_mmvq_exact=%s "
+        "production_mmq_exact=%s fallback_mmvq_exact=%s "
+        "dispatch_valid=%s\n",
+        production_mmvq_exact ? "yes" : "no",
+        production_mmq_exact ? "yes" : "no",
+        fallback_mmvq_exact ? "yes" : "no",
+        dispatch_valid ? "yes" : "no");
+
+    STREAM_REQUIRE(dispatch_valid);
+    STREAM_REQUIRE(production_mmvq_exact);
+    STREAM_REQUIRE(fallback_mmvq_exact);
+}
+
 void run_pinned_cache_case(ggml_backend_t backend) {
     std::vector<float> gate;
     std::vector<float> up;
@@ -897,6 +1182,11 @@ TEST_CASE(MoeStreamComputeFixture, persistent_graph_matches_cpu_and_padded_mxfp4
     run_fused_decode_case(backend, true);
     run_mxfp4_padding_case(backend);
     run_pinned_cache_case(backend);
+    const char * run_kimi_exact = std::getenv(
+        "DFLASH_TEST_KIMI_IQ_MULTIROW_EXACT");
+    if (run_kimi_exact && std::strcmp(run_kimi_exact, "0") != 0) {
+        run_kimi_iq_multirow_exact_case(backend);
+    }
     ggml_backend_free(backend);
 }
 
