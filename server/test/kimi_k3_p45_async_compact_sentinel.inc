@@ -396,33 +396,30 @@ bool compact_union_owned_buffer_sentinel_for_quant_types(
         uint64_t metadata_h2d = 0;
         uint64_t graph_ns = 0;
         bool invalid = false;
-        const auto consume = [&](
+        const auto select_targets = [&](
                 int base, int valid,
-                const std::array<ggml_tensor *, 8> & outputs,
+                std::array<ggml_tensor *, 8> & targets,
                 std::string *) {
-            for (int lane = 0; lane < valid; ++lane) {
-                ggml_backend_tensor_copy_async(
-                    backend, backend, outputs[static_cast<size_t>(lane)],
-                    candidate.compact_union_output(
-                        static_cast<size_t>(base + lane)));
-                candidate.record_compact_union_output_d2d(
-                    static_cast<size_t>(output_dim) * sizeof(float));
+            for (int lane = 0; lane < width; ++lane) {
+                targets[static_cast<size_t>(lane)] = lane < valid
+                    ? candidate.compact_union_output(
+                        static_cast<size_t>(base + lane))
+                    : candidate.compact_union_padding_output(
+                        static_cast<size_t>(lane));
             }
             return true;
         };
         if (!candidate.evaluate_compact_union_device(
                 backend, spec, inputs.data(), rows, width, compact,
-                masks.data(), down_row_bytes, consume, weight_h2d,
+                masks.data(), down_row_bytes, select_targets, weight_h2d,
                 metadata_h2d, graph_ns, invalid, err) || invalid) {
             return false;
         }
         if (weight_h2d != slab.gate.size() + slab.up.size() +
                 slab.down.size() || metadata_h2d == 0 || graph_ns == 0 ||
             candidate.expert_graph_ns() - graph_ns_before != graph_ns ||
-            candidate.compact_union_output_d2d_copies() -
-                    d2d_copies_before != static_cast<uint64_t>(rows) ||
-            candidate.compact_union_output_d2d_bytes() - d2d_bytes_before !=
-                    static_cast<uint64_t>(rows) * output_dim * sizeof(float)) {
+            candidate.compact_union_output_d2d_copies() != d2d_copies_before ||
+            candidate.compact_union_output_d2d_bytes() != d2d_bytes_before) {
             if (err) *err = "compact union owned-buffer accounting mismatch";
             return false;
         }

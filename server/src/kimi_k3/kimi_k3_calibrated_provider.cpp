@@ -1739,9 +1739,9 @@ public:
             authoritative_h2d_bytes, metadata_h2d_bytes, invalid, err);
     }
 
-    using CompactUnionConsumer = std::function<bool(
+    using CompactUnionTargets = std::function<bool(
         int base_row, int valid_rows,
-        const std::array<ggml_tensor *, 8> & outputs,
+        std::array<ggml_tensor *, 8> & targets,
         std::string * err)>;
 
     // Executes one expert's component-major union payload over several rows.
@@ -1756,7 +1756,7 @@ public:
             const SparseCompactPayload & compact,
             const uint16_t * requested_masks,
             size_t down_slab_row_bytes,
-            const CompactUnionConsumer & consume,
+            const CompactUnionTargets & select_targets,
             uint64_t & authoritative_h2d_bytes,
             uint64_t & metadata_h2d_bytes,
             uint64_t & graph_ns,
@@ -1766,7 +1766,7 @@ public:
 #if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
         (void) backend; (void) spec; (void) input_data; (void) rows;
         (void) graph_width; (void) compact; (void) requested_masks;
-        (void) down_slab_row_bytes; (void) consume;
+        (void) down_slab_row_bytes; (void) select_targets;
         (void) authoritative_h2d_bytes; (void) metadata_h2d_bytes;
         (void) graph_ns;
         invalid = true;
@@ -1782,7 +1782,7 @@ public:
               spec.down_type == GGML_TYPE_IQ1_S));
         const bool geometry_supported =
             backend && ggml_backend_is_cuda(backend) && input_data &&
-            requested_masks && consume && rows > 0 &&
+            requested_masks && select_targets && rows > 0 &&
             (graph_width == 1 || graph_width == 2 || graph_width == 8) &&
             spec.input_dim == 3584 && spec.intermediate_dim == 3072 &&
             spec.output_dim == 3584 && !spec.fused_gate_up &&
@@ -1896,9 +1896,47 @@ public:
             metadata_h2d_bytes += chunk_inputs.size() * sizeof(float) +
                 static_cast<uint64_t>(graph_width) *
                     sizeof(std::array<int32_t, kSlabCount>);
+            std::array<ggml_tensor *, 8> targets{};
+            if (!select_targets(base, valid, targets, err)) return false;
+            std::array<ggml_backend_buffer_t, 8> saved_buffers{};
+            std::array<void *, 8> saved_data{};
+            for (int lane = 0; lane < graph_width; ++lane) {
+                ggml_tensor * output = entry->outputs[
+                    static_cast<size_t>(lane)];
+                ggml_tensor * target = targets[static_cast<size_t>(lane)];
+                if (!output || !target || output->view_src || !output->buffer ||
+                    !output->data || !target->buffer || !target->data ||
+                    target->type != GGML_TYPE_F32 || target->ne[0] !=
+                        spec.output_dim || ggml_nbytes(target) !=
+                        static_cast<size_t>(spec.output_dim) * sizeof(float) ||
+                    ggml_backend_buffer_get_type(output->buffer) !=
+                        ggml_backend_buffer_get_type(target->buffer)) {
+                    if (err) *err =
+                        "compact union direct output target is invalid";
+                    return false;
+                }
+                for (int previous = 0; previous < lane; ++previous) {
+                    if (targets[static_cast<size_t>(previous)]->data ==
+                            target->data) {
+                        if (err) *err =
+                            "compact union direct output targets alias";
+                        return false;
+                    }
+                }
+                saved_buffers[static_cast<size_t>(lane)] = output->buffer;
+                saved_data[static_cast<size_t>(lane)] = output->data;
+                output->buffer = target->buffer;
+                output->data = target->data;
+            }
             const auto started = std::chrono::steady_clock::now();
             const ggml_status status =
                 ggml_backend_graph_compute(backend, entry->graph);
+            for (int lane = 0; lane < graph_width; ++lane) {
+                ggml_tensor * output = entry->outputs[
+                    static_cast<size_t>(lane)];
+                output->buffer = saved_buffers[static_cast<size_t>(lane)];
+                output->data = saved_data[static_cast<size_t>(lane)];
+            }
             const uint64_t elapsed_ns = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - started).count());
@@ -1910,7 +1948,6 @@ public:
                 if (err) *err = "compact union executor graph failed";
                 return false;
             }
-            if (!consume(base, valid, entry->outputs, err)) return false;
         }
         return true;
 #endif
@@ -1945,8 +1982,9 @@ public:
         arena->capacity = rows;
         arena->active_rows = rows;
         ggml_init_params parameters{};
+        constexpr size_t kPaddingRows = 8;
         parameters.mem_size =
-            (rows + 1) * ggml_tensor_overhead() + 4096;
+            (rows + kPaddingRows + 1) * ggml_tensor_overhead() + 4096;
         parameters.no_alloc = true;
         arena->context = ggml_init(parameters);
         if (!arena->context) {
@@ -1955,9 +1993,9 @@ public:
         }
         arena->rows = ggml_new_tensor_2d(
             arena->context, GGML_TYPE_F32, output_dim,
-            static_cast<int64_t>(rows));
-        arena->row.reserve(rows);
-        for (size_t index = 0; index < rows; ++index) {
+            static_cast<int64_t>(rows + kPaddingRows));
+        arena->row.reserve(rows + kPaddingRows);
+        for (size_t index = 0; index < rows + kPaddingRows; ++index) {
             arena->row.push_back(ggml_view_1d(
                 arena->context, arena->rows, output_dim,
                 index * static_cast<size_t>(output_dim) * sizeof(float)));
@@ -1989,6 +2027,17 @@ public:
         return nullptr;
 #else
         return compact_union_outputs_ ? compact_union_outputs_->rows : nullptr;
+#endif
+    }
+
+    ggml_tensor * compact_union_padding_output(size_t lane) const {
+#if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
+        (void) lane;
+        return nullptr;
+#else
+        return compact_union_outputs_ && lane < 8
+            ? compact_union_outputs_->row[
+                compact_union_outputs_->capacity + lane] : nullptr;
 #endif
     }
 
@@ -5348,22 +5397,23 @@ private:
             const int graph_width = group.jobs.size() >= 8 ? 8 :
                 (group.jobs.size() >= 2 ? 2 : 1);
             bool invalid = false;
-            const auto consume = [&group, this](
+            const auto select_targets = [&group, this](
                     int base, int valid,
-                    const std::array<ggml_tensor *, 8> & sources,
+                    std::array<ggml_tensor *, 8> & targets,
                     std::string *) {
-                for (int lane = 0; lane < valid; ++lane) {
-                    const Job & job = group.jobs[
-                        static_cast<size_t>(base + lane)];
-                    ggml_tensor * destination =
-                        sparse_device_evaluator_.compact_union_output(
-                            job.output_row);
-                    if (!destination) return false;
-                    ggml_backend_tensor_copy_async(
-                        backend_, backend_,
-                        sources[static_cast<size_t>(lane)], destination);
-                    sparse_device_evaluator_.record_compact_union_output_d2d(
-                        static_cast<size_t>(kDimension) * sizeof(float));
+                for (int lane = 0; lane < 8; ++lane) {
+                    if (lane < valid) {
+                        const Job & job = group.jobs[
+                            static_cast<size_t>(base + lane)];
+                        targets[static_cast<size_t>(lane)] =
+                            sparse_device_evaluator_.compact_union_output(
+                                job.output_row);
+                    } else {
+                        targets[static_cast<size_t>(lane)] =
+                            sparse_device_evaluator_.
+                                compact_union_padding_output(
+                                    static_cast<size_t>(lane));
+                    }
                 }
                 return true;
             };
@@ -5375,7 +5425,8 @@ private:
                     *group.compact, masks.data(),
                     static_cast<size_t>(state.down_slab_bytes /
                         spec.output_dim),
-                    consume, authoritative_h2d_bytes_, metadata_h2d_bytes_,
+                    select_targets, authoritative_h2d_bytes_,
+                    metadata_h2d_bytes_,
                     union_graph_ns, invalid, err) || invalid) {
                 close_sidecar();
                 if (err && err->empty())
