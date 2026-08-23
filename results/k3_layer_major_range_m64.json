@@ -1,0 +1,140 @@
+{
+  "schema": "k3-layer-major-range-m64-result-v1",
+  "date": "2026-08-23",
+  "verdict": "NO_GO",
+  "question": "Can a bounded, offset-sorted concurrent layer arena materially improve exact M64 routed storage while retaining one-row expert arithmetic and the canonical host join?",
+  "preregistration": "results/k3_layer_major_range_m64_prereg.json",
+  "frozen_local_head": "9f4861a8e9755da45445d8f2fc0804d12ea29b3b",
+  "measured_source_closure": {
+    "remote_base_head": "cfd3c7a61cf568bf588dbad2f789d5dd13a50a76",
+    "source_diff_sha256": "3d50dd688b3f2e0f05306d81764f1a2fa37eda31172da919862ad2b0330334d3",
+    "binary_sha256": "9e7bd86c394de92bb8276d99285412efd5986bce5568bbc0326b6e9fd6fe40a4",
+    "model_first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "sidecar_manifest_sha256": "192efad90c790b8a8230e71bca56c260eee3baf6846108d71c9ec598f6762b7c",
+    "rocm_overlay_tree_sha256": "b779a5c1464fb4f09a89a0abd75896c9f2e2c401efe6037edc242620372f8dbe",
+    "measured_file_sha256": {
+      "backend_cpp": "0ac620781de56d7891225bb0fc8330e61a2c0cbfcf756ac71c316f4c9e376b9a",
+      "backend_h": "4b952e8f933204ba79feb392cfcfd3179cea31de54c272a0d3661cc4082a8437",
+      "prefill_plan_cpp": "3fb834dc1b6c38ade04b144d4f32dca83f777302c2635ceba7cffd4aad0c8e43",
+      "prefill_plan_h": "8ffa192159bb1094a212bfb49b1bc390f4b01611b8768e149d36dc40238888e7",
+      "progressive_provider_cpp": "832842ee6801e36c22461e34d4c67902afd8c51b91a00a4e858e2f7ffc612a18",
+      "progressive_provider_h": "0a25ced83320864aca1ee98ab7c02d8012277803c81442b6aa61022d02f71268",
+      "oracle_runner_cpp": "cdf783cd37a3c7208bc261fd1878f49246de7bdb22d4d0bcac5dc97c760db9de",
+      "placement_test_cpp": "ecdaf09e32078a9c54ed72e841e6e8ebbc5ca6fc1e63bab6d7703b3fd7f2c710"
+    }
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "core_and_expert_device": "physical GPU1 Radeon 8060S Graphics gfx1151",
+    "secondary_expert_owner": false,
+    "platform_profile": "performance",
+    "build_parallelism": 4,
+    "p30_host_cache_mib": 16384,
+    "direct_read_workers": 16
+  },
+  "fixture": {
+    "prompt_ids": [42],
+    "width": 64,
+    "provider": "authoritative fixed96 P27/P41",
+    "expert_arithmetic": "unchanged exact one-row",
+    "join": "unchanged canonical host join",
+    "traffic_sha256_control": "0246d25a134e8603ac579a65c013509cdd5ee7e060c1fc1a78827980e0ed3006",
+    "traffic_sha256_candidate": "0246d25a134e8603ac579a65c013509cdd5ee7e060c1fc1a78827980e0ed3006"
+  },
+  "validity": {
+    "control_exact": true,
+    "candidate_exact": true,
+    "logits_bit_equal": true,
+    "argmax_bit_equal": true,
+    "recurrent_state_hash_equal": true,
+    "mla_rows_hash_equal": true,
+    "per_layer_state_hashes_equal": true,
+    "logical_provider_traffic_equal": true,
+    "candidate_layer_major_stages": 92,
+    "candidate_full_stage_coverage": true,
+    "candidate_no_escaped_direct_reads": true,
+    "compact_fallbacks": 0,
+    "compact_invalid": 0,
+    "control_swapin_delta_pages": 0,
+    "control_swapout_delta_pages": 0,
+    "candidate_swapin_delta_pages": 0,
+    "candidate_swapout_delta_pages": 0
+  },
+  "registered_gates": {
+    "minimum_verify_plus_commit_saving_seconds": 5.0,
+    "minimum_direct_service_improvement_percent": 15.0,
+    "physical_bytes_must_not_increase": true
+  },
+  "measurements": {
+    "control": {
+      "sequential_seconds": 88.445451967,
+      "verify_seconds": 67.107634698,
+      "commit_seconds": 4.594181974,
+      "verify_plus_commit_seconds": 71.701816672,
+      "verify_physical_direct_read_bytes": 106598383616,
+      "verify_direct_service_seconds": 34.470751793,
+      "verify_direct_gib_s": 2.880049779,
+      "expert_seconds": 49.386080
+    },
+    "candidate": {
+      "sequential_seconds": 81.277581349,
+      "verify_seconds": 66.638903186,
+      "commit_seconds": 4.596491646,
+      "verify_plus_commit_seconds": 71.235394832,
+      "verify_physical_direct_read_bytes": 105142243328,
+      "verify_direct_service_seconds": 32.071139412,
+      "verify_direct_gib_s": 3.053254314,
+      "expert_seconds": 48.907434,
+      "requested_records": 601668,
+      "unique_records": 192814,
+      "submitted_extents": 26134,
+      "p30_record_hits": 1960,
+      "max_inflight_provider_lifetime": 16,
+      "pure_layer_read_seconds": 19.453761247,
+      "pure_layer_read_gib_s": 5.033543052,
+      "arena_to_route_materialization_seconds": 12.617378165
+    },
+    "delta": {
+      "verify_plus_commit_saved_seconds": 0.466421840,
+      "verify_plus_commit_improvement_percent": 0.650502123,
+      "direct_service_saved_seconds": 2.399612381,
+      "direct_service_improvement_percent": 6.961299816,
+      "physical_bytes_saved": 1456140288,
+      "physical_bytes_improvement_percent": 1.366005974,
+      "expert_saved_seconds": 0.478646
+    }
+  },
+  "interpretation": {
+    "wall_gate_pass": false,
+    "direct_service_gate_pass": false,
+    "physical_byte_gate_pass": true,
+    "why": "At M64, P30 already removes most repeated physical reads. The union stage reached 5.03 GiB/s for its preads, but saved only 1.37% physical bytes and spent 12.62 seconds materializing arena records into route-local compact wires. The recovered storage time did not survive the complete exact path.",
+    "action": "Remove the default-off M64 runtime stage. Do not tune or rerun this width. Preserve the storage-only M2048 result as a separate wide-regime fact."
+  },
+  "invalid_attempts": [
+    {
+      "kind": "telemetry_preflight_only",
+      "model_started": false,
+      "reason": "rocm-smi combined clock query aborted before source hashing or model launch"
+    },
+    {
+      "kind": "exact_control_but_environment_invalid",
+      "result_sha256": "320366e4c69a0bfce547d12a11855b220441e23bd3ffdd1999474e688e89c27c",
+      "verify_plus_commit_seconds": 71.301038244,
+      "reason": "149 MiB/36,424 pages swapped out because the retained ROCm overlay was tmpfs-backed"
+    }
+  ],
+  "validity_repair": "Copied the retained ROCm overlay from tmpfs to file-backed /tmp without changing its byte tree (both tree hashes b779a5c1...). Both qualified arms used that identical file-backed closure and showed zero swap-in/out deltas.",
+  "artifacts": {
+    "control_result": "results/k3_layer_major_range_m64_control_raw.json",
+    "candidate_result": "results/k3_layer_major_range_m64_candidate_raw.json",
+    "control_raw_timing_log": "results/k3_layer_major_range_m64_control_raw.log",
+    "candidate_raw_timing_log": "results/k3_layer_major_range_m64_candidate_raw.log",
+    "control_launch": "results/k3_layer_major_range_m64_control_launch.txt",
+    "candidate_launch": "results/k3_layer_major_range_m64_candidate_launch.txt",
+    "control_result_sha256": "e5e09a9c1137a3576ec9ab8a8409d856b0004d39a659a0cf079df003670d2f76",
+    "candidate_result_sha256": "71d28defd6c1a4b5c0d5c5873ea9b651d112291c4ead3a94117b0c0f1faf3de8",
+    "control_log_sha256": "6cf6fd29eaf418a2554b9cb8ce838a37d42a87c46b55b10b1874b9e3853721aa",
+    "candidate_log_sha256": "4da251a50a11fc26edcbe6f2eb73be952211dcf0c8b873ffe44a6a2f851635fd"
+  }
+}

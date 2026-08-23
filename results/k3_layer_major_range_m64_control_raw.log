@@ -1,0 +1,101 @@
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 130928 MiB):
+  Device 0: AMD Radeon Graphics, gfx1201 (0x1201), VMM: no, Wave Size: 32, VRAM: 32624 MiB
+  Device 1: Radeon 8060S Graphics, gfx1151 (0x1151), VMM: no, Wave Size: 32, VRAM: 98304 MiB
+[kimi-k3] loaded resident=37.56 GiB mapped-core=0.00 GiB file-backed-experts=507.90 GiB shards=14 layers=93 (KDA=69 MLA=24) hidden=7168 experts=896 top=16 latent=3584 vocab=163840
+[kimi-k3-calibrated96] status=PILOT policy=calibrated-slabs quality-certified=false speed-claim=false requested-budget=96 layer-phase=all dynamic-layer=disabled physical-layout=scratch io-backend=direct-pread persistent-scratch=enabled compact-upload=enabled pinned-compact=enabled direct-pinned-compact=enabled p28-oracle=disabled p40-device-cache=disabled p41-compact-executor=enabled p42-ordered-join=disabled layer-major-stage=disabled exact-source=sidecar p30-host-cache-mib=16384.0 valid-layers=92/92 invalid-layer-action=exact insufficient-expert-action=exact
+[kimi-k3] routed experts file-backed: shards=14 layers=92 io=io_uring+direct compute=hip:1 cache=2.00 GiB
+[kimi-k3] native backend ready core=accelerator:1 (max_ctx=4096, experts=nvme-single-owner, prefill-chunk=64, p58-exact-multirow=1)
+[kimi-k3-stage] position=0 tokens=1 total_ms=2024.867 embedding_ms=0.725 dense_ms=71.768 routed_prep_ms=301.464 offload_prep_ms=0.000 experts_ms=1613.739 join_ms=27.823 output_ms=4.674 other_ms=4.675
+[kimi-k3-stage] position=1 tokens=1 total_ms=1818.393 embedding_ms=0.073 dense_ms=4.990 routed_prep_ms=278.940 offload_prep_ms=0.000 experts_ms=1494.586 join_ms=30.505 output_ms=4.619 other_ms=4.680
+[kimi-k3-stage] position=2 tokens=1 total_ms=1680.564 embedding_ms=0.078 dense_ms=5.040 routed_prep_ms=278.586 offload_prep_ms=0.000 experts_ms=1358.393 join_ms=29.233 output_ms=4.575 other_ms=4.660
+[kimi-k3-stage] position=3 tokens=1 total_ms=1519.146 embedding_ms=0.065 dense_ms=5.027 routed_prep_ms=279.226 offload_prep_ms=0.000 experts_ms=1195.040 join_ms=30.569 output_ms=4.549 other_ms=4.670
+[kimi-k3-stage] position=4 tokens=1 total_ms=1546.271 embedding_ms=0.068 dense_ms=5.152 routed_prep_ms=279.104 offload_prep_ms=0.000 experts_ms=1220.335 join_ms=31.980 output_ms=4.588 other_ms=5.044
+[kimi-k3-stage] position=5 tokens=1 total_ms=1386.704 embedding_ms=0.072 dense_ms=4.937 routed_prep_ms=278.317 offload_prep_ms=0.000 experts_ms=1062.808 join_ms=31.026 output_ms=4.633 other_ms=4.911
+[kimi-k3-stage] position=6 tokens=1 total_ms=1320.124 embedding_ms=0.077 dense_ms=5.013 routed_prep_ms=279.049 offload_prep_ms=0.000 experts_ms=994.283 join_ms=31.997 output_ms=4.616 other_ms=5.089
+[kimi-k3-stage] position=7 tokens=1 total_ms=1456.102 embedding_ms=0.079 dense_ms=4.875 routed_prep_ms=278.959 offload_prep_ms=0.000 experts_ms=1130.823 join_ms=31.737 output_ms=4.613 other_ms=5.016
+[kimi-k3-stage] position=8 tokens=1 total_ms=1381.511 embedding_ms=0.084 dense_ms=5.018 routed_prep_ms=279.724 offload_prep_ms=0.000 experts_ms=1055.390 join_ms=31.702 output_ms=4.560 other_ms=5.032
+[kimi-k3-stage] position=9 tokens=1 total_ms=1367.085 embedding_ms=0.078 dense_ms=5.035 routed_prep_ms=279.287 offload_prep_ms=0.000 experts_ms=1041.189 join_ms=31.870 output_ms=4.601 other_ms=5.024
+[kimi-k3-stage] position=10 tokens=1 total_ms=1265.959 embedding_ms=0.078 dense_ms=5.227 routed_prep_ms=280.241 offload_prep_ms=0.000 experts_ms=938.729 join_ms=31.955 output_ms=4.589 other_ms=5.140
+[kimi-k3-stage] position=11 tokens=1 total_ms=1261.788 embedding_ms=0.081 dense_ms=5.191 routed_prep_ms=275.600 offload_prep_ms=0.000 experts_ms=942.676 join_ms=28.937 output_ms=4.602 other_ms=4.701
+[kimi-k3-stage] position=12 tokens=1 total_ms=1631.644 embedding_ms=0.210 dense_ms=5.157 routed_prep_ms=280.924 offload_prep_ms=0.000 experts_ms=1303.681 join_ms=32.042 output_ms=4.629 other_ms=5.001
+[kimi-k3-stage] position=13 tokens=1 total_ms=1458.187 embedding_ms=0.081 dense_ms=5.152 routed_prep_ms=277.967 offload_prep_ms=0.000 experts_ms=1132.723 join_ms=32.548 output_ms=4.607 other_ms=5.109
+[kimi-k3-stage] position=14 tokens=1 total_ms=1390.621 embedding_ms=0.080 dense_ms=4.970 routed_prep_ms=280.399 offload_prep_ms=0.000 experts_ms=1063.455 join_ms=32.012 output_ms=4.597 other_ms=5.108
+[kimi-k3-stage] position=15 tokens=1 total_ms=1443.762 embedding_ms=0.077 dense_ms=4.954 routed_prep_ms=279.712 offload_prep_ms=0.000 experts_ms=1117.302 join_ms=31.910 output_ms=4.646 other_ms=5.161
+[kimi-k3-stage] position=16 tokens=1 total_ms=1301.724 embedding_ms=0.093 dense_ms=5.264 routed_prep_ms=281.274 offload_prep_ms=0.000 experts_ms=973.069 join_ms=32.286 output_ms=4.670 other_ms=5.068
+[kimi-k3-stage] position=17 tokens=1 total_ms=1399.664 embedding_ms=0.081 dense_ms=5.054 routed_prep_ms=279.646 offload_prep_ms=0.000 experts_ms=1072.417 join_ms=32.687 output_ms=4.611 other_ms=5.168
+[kimi-k3-stage] position=18 tokens=1 total_ms=1419.125 embedding_ms=0.072 dense_ms=5.021 routed_prep_ms=279.954 offload_prep_ms=0.000 experts_ms=1091.841 join_ms=32.561 output_ms=4.612 other_ms=5.063
+[kimi-k3-stage] position=19 tokens=1 total_ms=1133.239 embedding_ms=0.076 dense_ms=4.905 routed_prep_ms=277.569 offload_prep_ms=0.000 experts_ms=808.912 join_ms=32.181 output_ms=4.602 other_ms=4.995
+[kimi-k3-stage] position=20 tokens=1 total_ms=1141.012 embedding_ms=0.074 dense_ms=4.977 routed_prep_ms=280.842 offload_prep_ms=0.000 experts_ms=813.397 join_ms=32.096 output_ms=4.607 other_ms=5.018
+[kimi-k3-stage] position=21 tokens=1 total_ms=1355.422 embedding_ms=0.075 dense_ms=5.103 routed_prep_ms=280.047 offload_prep_ms=0.000 experts_ms=1028.155 join_ms=32.396 output_ms=4.581 other_ms=5.065
+[kimi-k3-stage] position=22 tokens=1 total_ms=1171.321 embedding_ms=0.076 dense_ms=4.963 routed_prep_ms=278.514 offload_prep_ms=0.000 experts_ms=846.005 join_ms=32.092 output_ms=4.593 other_ms=5.078
+[kimi-k3-stage] position=23 tokens=1 total_ms=1278.057 embedding_ms=0.069 dense_ms=5.087 routed_prep_ms=279.462 offload_prep_ms=0.000 experts_ms=951.472 join_ms=32.184 output_ms=4.605 other_ms=5.178
+[kimi-k3-stage] position=24 tokens=1 total_ms=1201.898 embedding_ms=0.071 dense_ms=5.012 routed_prep_ms=280.552 offload_prep_ms=0.000 experts_ms=873.999 join_ms=32.444 output_ms=4.617 other_ms=5.203
+[kimi-k3-stage] position=25 tokens=1 total_ms=1304.693 embedding_ms=0.079 dense_ms=5.239 routed_prep_ms=278.401 offload_prep_ms=0.000 experts_ms=978.945 join_ms=32.218 output_ms=4.607 other_ms=5.205
+[kimi-k3-stage] position=26 tokens=1 total_ms=1200.538 embedding_ms=0.066 dense_ms=5.048 routed_prep_ms=275.179 offload_prep_ms=0.000 experts_ms=884.683 join_ms=26.577 output_ms=4.622 other_ms=4.363
+[kimi-k3-stage] position=27 tokens=1 total_ms=1171.679 embedding_ms=0.092 dense_ms=4.896 routed_prep_ms=278.821 offload_prep_ms=0.000 experts_ms=845.642 join_ms=32.488 output_ms=4.739 other_ms=5.002
+[kimi-k3-stage] position=28 tokens=1 total_ms=1326.097 embedding_ms=0.080 dense_ms=5.143 routed_prep_ms=279.874 offload_prep_ms=0.000 experts_ms=1000.024 join_ms=31.323 output_ms=4.622 other_ms=5.031
+[kimi-k3-stage] position=29 tokens=1 total_ms=1125.395 embedding_ms=0.070 dense_ms=5.086 routed_prep_ms=278.429 offload_prep_ms=0.000 experts_ms=800.415 join_ms=31.707 output_ms=4.621 other_ms=5.067
+[kimi-k3-stage] position=30 tokens=1 total_ms=1265.892 embedding_ms=0.073 dense_ms=5.124 routed_prep_ms=280.530 offload_prep_ms=0.000 experts_ms=938.129 join_ms=32.430 output_ms=4.624 other_ms=4.983
+[kimi-k3-stage] position=31 tokens=1 total_ms=1214.705 embedding_ms=0.075 dense_ms=5.210 routed_prep_ms=278.916 offload_prep_ms=0.000 experts_ms=889.025 join_ms=31.861 output_ms=4.651 other_ms=4.967
+[kimi-k3-stage] position=32 tokens=1 total_ms=1112.857 embedding_ms=0.083 dense_ms=5.005 routed_prep_ms=279.776 offload_prep_ms=0.000 experts_ms=785.737 join_ms=32.572 output_ms=4.596 other_ms=5.089
+[kimi-k3-stage] position=33 tokens=1 total_ms=1200.120 embedding_ms=0.076 dense_ms=5.053 routed_prep_ms=278.791 offload_prep_ms=0.000 experts_ms=874.877 join_ms=31.746 output_ms=4.622 other_ms=4.954
+[kimi-k3-stage] position=34 tokens=1 total_ms=1238.792 embedding_ms=0.066 dense_ms=5.094 routed_prep_ms=280.401 offload_prep_ms=0.000 experts_ms=910.921 join_ms=32.507 output_ms=4.597 other_ms=5.206
+[kimi-k3-stage] position=35 tokens=1 total_ms=1169.037 embedding_ms=0.065 dense_ms=5.114 routed_prep_ms=278.498 offload_prep_ms=0.000 experts_ms=843.052 join_ms=32.574 output_ms=4.640 other_ms=5.092
+[kimi-k3-stage] position=36 tokens=1 total_ms=1189.382 embedding_ms=0.069 dense_ms=5.108 routed_prep_ms=279.672 offload_prep_ms=0.000 experts_ms=863.400 join_ms=31.553 output_ms=4.609 other_ms=4.970
+[kimi-k3-stage] position=37 tokens=1 total_ms=1220.590 embedding_ms=0.078 dense_ms=5.000 routed_prep_ms=279.807 offload_prep_ms=0.000 experts_ms=894.232 join_ms=31.676 output_ms=4.629 other_ms=5.167
+[kimi-k3-stage] position=38 tokens=1 total_ms=1191.112 embedding_ms=0.065 dense_ms=5.111 routed_prep_ms=280.023 offload_prep_ms=0.000 experts_ms=863.704 join_ms=32.464 output_ms=4.687 other_ms=5.058
+[kimi-k3-stage] position=39 tokens=1 total_ms=1139.986 embedding_ms=0.102 dense_ms=5.041 routed_prep_ms=277.808 offload_prep_ms=0.000 experts_ms=814.680 join_ms=32.726 output_ms=4.584 other_ms=5.045
+[kimi-k3-stage] position=40 tokens=1 total_ms=1118.940 embedding_ms=0.068 dense_ms=4.885 routed_prep_ms=278.464 offload_prep_ms=0.000 experts_ms=793.621 join_ms=32.268 output_ms=4.598 other_ms=5.035
+[kimi-k3-stage] position=41 tokens=1 total_ms=1308.542 embedding_ms=0.065 dense_ms=4.993 routed_prep_ms=279.595 offload_prep_ms=0.000 experts_ms=982.215 join_ms=32.041 output_ms=4.639 other_ms=4.995
+[kimi-k3-stage] position=42 tokens=1 total_ms=1117.682 embedding_ms=0.069 dense_ms=5.171 routed_prep_ms=281.250 offload_prep_ms=0.000 experts_ms=789.663 join_ms=31.910 output_ms=4.588 other_ms=5.032
+[kimi-k3-stage] position=43 tokens=1 total_ms=1311.897 embedding_ms=0.066 dense_ms=5.049 routed_prep_ms=278.849 offload_prep_ms=0.000 experts_ms=985.817 join_ms=32.544 output_ms=4.595 other_ms=4.976
+[kimi-k3-stage] position=44 tokens=1 total_ms=1198.692 embedding_ms=0.081 dense_ms=5.128 routed_prep_ms=280.586 offload_prep_ms=0.000 experts_ms=870.764 join_ms=32.459 output_ms=4.586 other_ms=5.087
+[kimi-k3-stage] position=45 tokens=1 total_ms=1378.732 embedding_ms=0.119 dense_ms=4.987 routed_prep_ms=279.403 offload_prep_ms=0.000 experts_ms=1051.939 join_ms=32.582 output_ms=4.586 other_ms=5.117
+[kimi-k3-stage] position=46 tokens=1 total_ms=1447.951 embedding_ms=0.066 dense_ms=5.054 routed_prep_ms=281.085 offload_prep_ms=0.000 experts_ms=1119.270 join_ms=32.744 output_ms=4.605 other_ms=5.127
+[kimi-k3-stage] position=47 tokens=1 total_ms=1570.653 embedding_ms=0.069 dense_ms=5.033 routed_prep_ms=279.796 offload_prep_ms=0.000 experts_ms=1242.381 join_ms=33.435 output_ms=4.620 other_ms=5.318
+[kimi-k3-stage] position=48 tokens=1 total_ms=1428.175 embedding_ms=0.068 dense_ms=5.019 routed_prep_ms=280.641 offload_prep_ms=0.000 experts_ms=1100.073 join_ms=32.716 output_ms=4.580 other_ms=5.079
+[kimi-k3-stage] position=49 tokens=1 total_ms=1468.769 embedding_ms=0.076 dense_ms=5.073 routed_prep_ms=278.043 offload_prep_ms=0.000 experts_ms=1142.723 join_ms=33.049 output_ms=4.610 other_ms=5.193
+[kimi-k3-stage] position=50 tokens=1 total_ms=1316.803 embedding_ms=0.072 dense_ms=5.008 routed_prep_ms=280.294 offload_prep_ms=0.000 experts_ms=989.111 join_ms=32.570 output_ms=4.593 other_ms=5.154
+[kimi-k3-stage] position=51 tokens=1 total_ms=1390.108 embedding_ms=0.079 dense_ms=5.190 routed_prep_ms=278.593 offload_prep_ms=0.000 experts_ms=1064.247 join_ms=32.182 output_ms=4.713 other_ms=5.103
+[kimi-k3-stage] position=52 tokens=1 total_ms=1181.483 embedding_ms=0.071 dense_ms=5.021 routed_prep_ms=279.885 offload_prep_ms=0.000 experts_ms=854.583 join_ms=32.225 output_ms=4.635 other_ms=5.064
+[kimi-k3-stage] position=53 tokens=1 total_ms=1665.648 embedding_ms=0.065 dense_ms=5.026 routed_prep_ms=279.713 offload_prep_ms=0.000 experts_ms=1338.595 join_ms=32.528 output_ms=4.577 other_ms=5.144
+[kimi-k3-stage] position=54 tokens=1 total_ms=1692.825 embedding_ms=0.077 dense_ms=5.144 routed_prep_ms=281.400 offload_prep_ms=0.000 experts_ms=1363.225 join_ms=33.040 output_ms=4.583 other_ms=5.357
+[kimi-k3-stage] position=55 tokens=1 total_ms=1555.273 embedding_ms=0.067 dense_ms=5.081 routed_prep_ms=279.790 offload_prep_ms=0.000 experts_ms=1227.930 join_ms=32.547 output_ms=4.596 other_ms=5.263
+[kimi-k3-stage] position=56 tokens=1 total_ms=1654.878 embedding_ms=0.073 dense_ms=5.016 routed_prep_ms=281.372 offload_prep_ms=0.000 experts_ms=1325.160 join_ms=33.357 output_ms=4.572 other_ms=5.329
+[kimi-k3-stage] position=57 tokens=1 total_ms=1846.149 embedding_ms=0.074 dense_ms=5.104 routed_prep_ms=279.652 offload_prep_ms=0.000 experts_ms=1518.476 join_ms=33.066 output_ms=4.585 other_ms=5.192
+[kimi-k3-stage] position=58 tokens=1 total_ms=1478.579 embedding_ms=0.079 dense_ms=5.078 routed_prep_ms=281.542 offload_prep_ms=0.000 experts_ms=1148.901 join_ms=32.951 output_ms=4.680 other_ms=5.348
+[kimi-k3-stage] position=59 tokens=1 total_ms=1590.577 embedding_ms=0.077 dense_ms=5.104 routed_prep_ms=279.690 offload_prep_ms=0.000 experts_ms=1262.690 join_ms=33.178 output_ms=4.586 other_ms=5.253
+[kimi-k3-stage] position=60 tokens=1 total_ms=1483.917 embedding_ms=0.078 dense_ms=5.097 routed_prep_ms=278.579 offload_prep_ms=0.000 experts_ms=1157.437 join_ms=33.050 output_ms=4.577 other_ms=5.098
+[kimi-k3-stage] position=61 tokens=1 total_ms=1664.273 embedding_ms=0.065 dense_ms=5.090 routed_prep_ms=277.657 offload_prep_ms=0.000 experts_ms=1338.961 join_ms=32.824 output_ms=4.598 other_ms=5.078
+[kimi-k3-stage] position=62 tokens=1 total_ms=1620.827 embedding_ms=0.083 dense_ms=5.061 routed_prep_ms=279.787 offload_prep_ms=0.000 experts_ms=1293.085 join_ms=33.127 output_ms=4.585 other_ms=5.099
+[kimi-k3-stage] position=63 tokens=1 total_ms=1736.236 embedding_ms=0.074 dense_ms=5.140 routed_prep_ms=278.270 offload_prep_ms=0.000 experts_ms=1410.232 join_ms=32.761 output_ms=4.611 other_ms=5.147
+[kimi-k3-stage] position=64 tokens=1 total_ms=1809.144 embedding_ms=0.067 dense_ms=4.994 routed_prep_ms=279.773 offload_prep_ms=0.000 experts_ms=1481.159 join_ms=33.321 output_ms=4.561 other_ms=5.269
+[kimi-k3-stage] position=0 tokens=1 total_ms=2456.980 embedding_ms=0.045 dense_ms=5.192 routed_prep_ms=276.922 offload_prep_ms=0.000 experts_ms=2141.304 join_ms=25.566 output_ms=4.553 other_ms=3.397
+[kimi-k3-p58-stage] position=1 tokens=64 total_ms=67107.606 one_row_core_ms=16704.260 experts_ms=49386.080 one_row_join_ms=711.007 one_row_output_ms=287.788 other_ms=18.471
+[kimi-k3-s0] width=64 sequential=88.445s verify=67.108s commit=4.594s V=1.234x logits=BIT_EQUAL recurrent=HASH_EQUAL mla=HASH_EQUAL
+[kimi-k3-p20] physical-layout=scratch reference-full-weight-h2d=0 sparse-authoritative-h2d=673159323648 metadata-h2d=2018420416 device-zero-bytes=0 explicit-provider-reads=299286601728 direct-physical-bytes=286155915264 direct-io-ns=89954820327 compact-pack-ns=881530887 compact-scatter-ns=0 expert-graph-ns=23434974510 expert-readback-ns=2224043652
+[kimi-k3-p30] capacity-bytes=17179869184 resident-bytes=17179598848 entries=33913 hits=813579 misses=592799 hit-bytes=409498361856 inserted-bytes=299286601728 evicted-bytes=264927576064 sequence-resets=1
+[kimi-k3-p41] attempted=140324 layouts=140324 uploads=140324 gate=140324 up=140324 situ=140324 sparse-down=140324 completed=140324 fallbacks=0 invalid=0
+	Command being timed: "server/build-k3-hip-dual/run_kimi_k3_s0_oracle /home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-of-00014.gguf 42 30223,1040,18,11082,418,261,22586,42279,115912,472,1682,93923,9196,12517,114820,316,108278,12839,120402,658,23983,8452,13,1379,31710,32155,5184,85000,70768,14600,15417,691,4596,8767,24828,2932,12662,1178,107635,528,93923,2469,13,646,13604,387,29103,6623,5793,11,122113,11,316,2021,4914,308,12897,5075,18762,318,39944,2396,59285,276 /tmp/k3-layer-major-m64-control/result.json 1 accelerator -1 64 64"
+	User time (seconds): 131.43
+	System time (seconds): 44.69
+	Percent of CPU this job got: 103%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 2:49.99
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 20302384
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 18
+	Minor (reclaiming a frame) page faults: 17176574
+	Voluntary context switches: 2030781
+	Involuntary context switches: 12565
+	Swaps: 0
+	File system inputs: 559018880
+	File system outputs: 8152
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

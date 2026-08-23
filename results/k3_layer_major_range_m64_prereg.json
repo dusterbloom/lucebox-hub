@@ -1,0 +1,52 @@
+{
+  "schema": "k3-layer-major-range-m64-prereg-v1",
+  "date": "2026-08-23",
+  "question": "Can an offset-sorted concurrent, range-merged layer arena improve exact M64 routed storage while preserving the current one-row expert arithmetic and canonical host join?",
+  "frozen_base_head": "9f4861a8e9755da45445d8f2fc0804d12ea29b3b",
+  "fixture": {
+    "runner": "existing run_kimi_k3_s0_oracle width-64-only arm",
+    "prompt_ids": [42],
+    "oracle_ids": [30223, 1040, 18, 11082, 418, 261, 22586, 42279, 115912, 472, 1682, 93923, 9196, 12517, 114820, 316, 108278, 12839, 120402, 658, 23983, 8452, 13, 1379, 31710, 32155, 5184, 85000, 70768, 14600, 15417, 691, 4596, 8767, 24828, 2932, 12662, 1178, 107635, 528, 93923, 2469, 13, 646, 13604, 387, 29103, 6623, 5793, 11, 122113, 11, 316, 2021, 4914, 308, 12897, 5075, 18762, 318, 39944, 2396, 59285, 276],
+    "oracle_provenance": "recovered verbatim from /tmp/k3-pair2-m64-control/result.json sha256 cc77fac43159d5b44a28b1e3f8076ad2fe975b141188105dbe5a0fe644aeb376",
+    "topology": "single-owner physical GPU1 gfx1151",
+    "platform_profile": "performance",
+    "provider": "authoritative fixed96 P27/P41 host-output",
+    "p30_host_cache_mib": 16384,
+    "launch_closure_note": "The retained M64 roots contain result.json only, not the historical shell/env manifest. Use one freshly recorded explicit environment and command for both arms; do not claim the omitted historical launch was recovered."
+  },
+  "arms": [
+    "control: DFLASH_KIMI_LAYER_MAJOR_STAGE=0",
+    "candidate: DFLASH_KIMI_LAYER_MAJOR_STAGE=1"
+  ],
+  "unchanged": [
+    "model and sidecars",
+    "prompt and oracle rows",
+    "one-row MMVQ/sparse-K expert arithmetic",
+    "route IDs and weight bits",
+    "recurrent and MLA row order",
+    "canonical host join",
+    "P30 capacity/configuration and all other environment"
+  ],
+  "candidate_storage_change": "P30 remains authoritative for existing hits; sidecar slab misses are served from the bounded layer arena and are not inserted into P30",
+  "primary_metrics": [
+    "verify_plus_commit_seconds",
+    "verify direct-I/O seconds",
+    "verify physical bytes",
+    "layer-major extent count and effective GiB/s"
+  ],
+  "correctness_gate": "bit-identical full logits and argmax; identical recurrent/MLA aggregate and per-layer hashes; identical logical provider traffic; zero compact fallback/invalid; candidate reports exactly 92 layer-major stages and verify physical direct bytes equal layer-major physical bytes (no escaped demand reads)",
+  "performance_gate": "candidate removes at least 5.0 seconds from M64 verify+commit and improves matched arm-local direct-service time by at least 15% without increasing physical bytes; the historical 5.58-GiB/s raw ceiling and 266.504-GiB/84.667-s aggregate are approximate context only, not the denominator",
+  "abort_conditions": [
+    "arena exceeds the fixed 2-GiB bound",
+    "short/direct read or hidden fallback",
+    "swap I/O, OOM, wrong GPU, or non-performance platform profile",
+    "source/model/sidecar/fixture mismatch"
+  ],
+  "repeat_policy": "one qualified control and one qualified candidate; rerun only an explicitly INVALID arm, never a valid miss",
+  "counter_semantics": "layer-major max-inflight is the provider-lifetime maximum; in this width-64-only candidate process it is the candidate-arm maximum",
+  "interpretation": {
+    "go": "retain the default-off storage stage and proceed to an accepted-prompt functional/timing gate",
+    "no_go": "remove the stage code and preserve only this result",
+    "invalid": "repair only the stated validity failure and rerun that arm"
+  }
+}

@@ -1,0 +1,63 @@
+2026-08-23T11:49:17Z
+platform_profile=performance
+Linux lucebox4 7.0.0-29-generic #29~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Wed Aug 12 17:25:56 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
+               total        used        free      shared  buff/cache   available
+Mem:     134307819520 56621084672 21435387904   249040896 57734385664 77686734848
+Swap:     8589930496        8192  8589922304
+Filename				Type		Size		Used		Priority
+/swap.img                               file		8388604		8		-1
+    131159980 K total memory
+     55294028 K used memory
+       675768 K active memory
+     55479248 K inactive memory
+     20932996 K free memory
+       223848 K buffer memory
+     56157388 K swap cache
+      8388604 K total swap
+            8 K used swap
+      8388596 K free swap
+       880686 non-nice user cpu ticks
+          263 nice user cpu ticks
+       154289 system cpu ticks
+    144175823 idle cpu ticks
+      1221555 IO-wait cpu ticks
+            0 IRQ cpu ticks
+         6717 softirq cpu ticks
+            0 stolen cpu ticks
+            0 non-nice guest cpu ticks
+            0 nice guest cpu ticks
+   4393507353 K paged in
+      9640921 K paged out
+        36117 pages swapped in
+        36428 pages swapped out
+     98939736 interrupts
+     94713675 CPU context switches
+   1787439980 boot time
+       274376 forks
+
+
+========================= ROCm System Management Interface =========================
+======================================== ID ========================================
+GPU[0]		: GPU ID: 0x7551
+GPU[1]		: GPU ID: 0x1586
+====================================================================================
+=============================== End of ROCm SMI Log ================================
+
+
+========================= ROCm System Management Interface =========================
+=================================== Temperature ====================================
+GPU[0]		: Temperature (Sensor edge) (C): 35.0
+GPU[0]		: Temperature (Sensor junction) (C): 36.0
+GPU[0]		: Temperature (Sensor memory) (C): 33.0
+GPU[1]		: Temperature (Sensor edge) (C): 34.0
+====================================================================================
+=============================== End of ROCm SMI Log ================================
+
+
+========================= ROCm System Management Interface =========================
+================================ Power Consumption =================================
+GPU[0]		: Average Graphics Package Power (W): 14.0
+, Not supported on the given system
+GPU[1]		: Average Graphics Package Power (W): 16.039
+====================================================================================
+=============================== End of ROCm SMI Log ================================

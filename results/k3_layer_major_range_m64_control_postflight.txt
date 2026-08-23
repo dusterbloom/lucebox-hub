@@ -1,0 +1,53 @@
+2026-08-23T11:52:07Z
+               total        used        free      shared  buff/cache   available
+Mem:     134307819520 56630042624 22001209344   249057280 57160228864 77677776896
+Swap:     8589930496        8192  8589922304
+Filename				Type		Size		Used		Priority
+/swap.img                               file		8388604		8		-1
+    131159980 K total memory
+     55294712 K used memory
+       722948 K active memory
+     54872252 K inactive memory
+     21493620 K free memory
+       224056 K buffer memory
+     55596480 K swap cache
+      8388604 K total swap
+            8 K used swap
+      8388596 K free swap
+       893678 non-nice user cpu ticks
+          263 nice user cpu ticks
+       158827 system cpu ticks
+    144617787 idle cpu ticks
+      1305481 IO-wait cpu ticks
+            0 IRQ cpu ticks
+         6768 softirq cpu ticks
+            0 stolen cpu ticks
+            0 non-nice guest cpu ticks
+            0 nice guest cpu ticks
+   4673017925 K paged in
+      9849957 K paged out
+        36117 pages swapped in
+        36428 pages swapped out
+    102647782 interrupts
+     98978954 CPU context switches
+   1787439980 boot time
+       275293 forks
+
+
+========================= ROCm System Management Interface =========================
+=================================== Temperature ====================================
+GPU[0]		: Temperature (Sensor edge) (C): 35.0
+GPU[0]		: Temperature (Sensor junction) (C): 36.0
+GPU[0]		: Temperature (Sensor memory) (C): 34.0
+GPU[1]		: Temperature (Sensor edge) (C): 41.0
+====================================================================================
+=============================== End of ROCm SMI Log ================================
+
+
+========================= ROCm System Management Interface =========================
+================================ Power Consumption =================================
+GPU[0]		: Average Graphics Package Power (W): 14.0
+, Not supported on the given system
+GPU[1]		: Average Graphics Package Power (W): 31.002
+====================================================================================
+=============================== End of ROCm SMI Log ================================
