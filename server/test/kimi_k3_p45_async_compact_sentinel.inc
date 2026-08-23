@@ -255,3 +255,197 @@ bool p45_async_compact_sentinel_impl(
     return true;
 #endif
 }
+
+bool compact_union_owned_buffer_sentinel_impl(
+        ggml_backend_t backend, std::string * err) {
+#if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
+    (void) backend;
+    if (err) *err = "compact union sentinel requires CUDA or HIP";
+    return false;
+#else
+    constexpr int input_dim = 3584;
+    constexpr int output_dim = 3584;
+    constexpr int max_rows = 9;
+    MoeStreamExpertSpec spec;
+    spec.input_dim = input_dim;
+    spec.intermediate_dim = kSlabCount * kSlabSize;
+    spec.output_dim = output_dim;
+    spec.gate_type = GGML_TYPE_IQ1_S;
+    spec.up_type = GGML_TYPE_IQ1_S;
+    spec.down_type = GGML_TYPE_IQ2_XXS;
+    spec.gated_activation = MoeGatedActivation::Situ;
+    spec.situ_beta = 4.0f;
+    spec.situ_linear_beta = 25.0f;
+    ggml_quantize_init(spec.gate_type);
+    ggml_quantize_init(spec.down_type);
+
+    const auto quantize = [&](ggml_type type,
+                              std::vector<uint8_t> & destination,
+                              int rows, int columns, uint32_t salt) {
+        const size_t row_bytes = ggml_row_size(type, columns);
+        destination.resize(row_bytes * static_cast<size_t>(rows));
+        std::vector<float> row(static_cast<size_t>(columns));
+        std::vector<float> importance(static_cast<size_t>(columns), 1.0f);
+        for (int r = 0; r < rows; ++r) {
+            for (int c = 0; c < columns; ++c) {
+                uint32_t value = salt ^
+                    static_cast<uint32_t>(r + 1) * 0x9e3779b9U ^
+                    static_cast<uint32_t>(c + 1) * 0x85ebca6bU;
+                value ^= value >> 16;
+                value *= 0x7feb352dU;
+                value ^= value >> 15;
+                row[static_cast<size_t>(c)] =
+                    0.04f * static_cast<float>(
+                        static_cast<int>(value & 0xffffU) - 32768) /
+                    32768.0f;
+            }
+            if (ggml_quantize_chunk(
+                    type, row.data(),
+                    destination.data() + static_cast<size_t>(r) * row_bytes,
+                    0, 1, columns, importance.data()) != row_bytes) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    SparseSlabPayload slab;
+    slab.natural = 5;
+    if (!quantize(
+            spec.gate_type, slab.gate, kSlabSize, input_dim, 0x475445U) ||
+        !quantize(
+            spec.up_type, slab.up, kSlabSize, input_dim, 0x555045U) ||
+        !quantize(
+            spec.down_type, slab.down, output_dim, kSlabSize, 0x444e45U)) {
+        if (err) *err = "compact union sentinel quantization failed";
+        return false;
+    }
+    const std::vector<SparseSlabPayload> payload = {slab};
+    const size_t down_row_bytes =
+        ggml_row_size(spec.down_type, kSlabSize);
+    SparseCompactPayload compact;
+    compact.slab_count = 1;
+    compact.gate_slab_bytes = slab.gate.size();
+    compact.up_slab_bytes = slab.up.size();
+    compact.down_slab_bytes = slab.down.size();
+    compact.component_major = true;
+    KimiK3CompactWireLayout layout;
+    uint16_t compact_mask = 0;
+    if (!kimi_k3_compact_wire_layout(
+            1, compact.gate_slab_bytes, compact.up_slab_bytes,
+            compact.down_slab_bytes, &layout) ||
+        !compact.ensure(layout.total_bytes, err)) {
+        return false;
+    }
+    compact.bytes = layout.total_bytes;
+    if (!pack_sparse_component_major(
+            payload, nullptr, compact.data, compact.capacity, layout,
+            compact_mask, err)) {
+        return false;
+    }
+
+    std::vector<float> inputs(static_cast<size_t>(max_rows) * input_dim);
+    for (int row = 0; row < max_rows; ++row) {
+        for (int column = 0; column < input_dim; ++column) {
+            inputs[static_cast<size_t>(row) * input_dim + column] =
+                0.03f * std::sin(
+                    0.013f * static_cast<float>(column + 1) +
+                    0.17f * static_cast<float>(row + 1));
+        }
+    }
+    std::array<uint16_t, max_rows> masks{};
+    masks.fill(compact_mask);
+
+    SparseDeviceExpertEvaluator teacher;
+    std::vector<float> expected(static_cast<size_t>(max_rows) * output_dim);
+    for (int row = 0; row < max_rows; ++row) {
+        ggml_tensor * output = nullptr;
+        uint64_t weight_h2d = 0;
+        uint64_t metadata_h2d = 0;
+        bool invalid = false;
+        if (!teacher.evaluate_compact_device(
+                backend, spec,
+                inputs.data() + static_cast<size_t>(row) * input_dim,
+                payload, nullptr, compact_mask, down_row_bytes, output,
+                weight_h2d, metadata_h2d, invalid, err) ||
+            invalid || !output) {
+            return false;
+        }
+        ggml_backend_tensor_get(
+            output,
+            expected.data() + static_cast<size_t>(row) * output_dim,
+            0, static_cast<size_t>(output_dim) * sizeof(float));
+    }
+
+    struct OutputArena {
+        ~OutputArena() {
+            if (buffer) ggml_backend_buffer_free(buffer);
+            if (context) ggml_free(context);
+        }
+        ggml_context * context = nullptr;
+        ggml_backend_buffer_t buffer = nullptr;
+        ggml_tensor * rows = nullptr;
+        std::array<ggml_tensor *, max_rows> row{};
+    } arena;
+    ggml_init_params params{};
+    params.mem_size = (max_rows + 1) * ggml_tensor_overhead() + 1024;
+    params.no_alloc = true;
+    arena.context = ggml_init(params);
+    if (arena.context) {
+        arena.rows = ggml_new_tensor_2d(
+            arena.context, GGML_TYPE_F32, output_dim, max_rows);
+        for (int row = 0; row < max_rows; ++row) {
+            arena.row[static_cast<size_t>(row)] = ggml_view_1d(
+                arena.context, arena.rows, output_dim,
+                static_cast<size_t>(row) * output_dim * sizeof(float));
+        }
+        arena.buffer = ggml_backend_alloc_ctx_tensors(arena.context, backend);
+    }
+    if (!arena.context || !arena.rows || !arena.buffer) {
+        if (err) *err = "compact union output arena allocation failed";
+        return false;
+    }
+
+    SparseDeviceExpertEvaluator candidate;
+    for (const int width : {1, 2, 8}) {
+        const int rows = width + 1;
+        uint64_t weight_h2d = 0;
+        uint64_t metadata_h2d = 0;
+        uint64_t graph_ns = 0;
+        bool invalid = false;
+        const auto consume = [&](
+                int base, int valid,
+                const std::array<ggml_tensor *, 8> & outputs,
+                std::string *) {
+            for (int lane = 0; lane < valid; ++lane) {
+                ggml_backend_tensor_copy_async(
+                    backend, backend, outputs[static_cast<size_t>(lane)],
+                    arena.row[static_cast<size_t>(base + lane)]);
+            }
+            return true;
+        };
+        if (!candidate.evaluate_compact_union_device(
+                backend, spec, inputs.data(), rows, width, compact,
+                masks.data(), down_row_bytes, consume, weight_h2d,
+                metadata_h2d, graph_ns, invalid, err) || invalid) {
+            return false;
+        }
+        if (weight_h2d != slab.gate.size() + slab.up.size() +
+                slab.down.size() || metadata_h2d == 0 || graph_ns == 0) {
+            if (err) *err = "compact union owned-buffer accounting mismatch";
+            return false;
+        }
+        ggml_backend_synchronize(backend);
+        std::vector<float> actual(static_cast<size_t>(rows) * output_dim);
+        ggml_backend_tensor_get(
+            arena.rows, actual.data(), 0, actual.size() * sizeof(float));
+        if (std::memcmp(
+                actual.data(), expected.data(),
+                actual.size() * sizeof(float)) != 0) {
+            if (err) *err = "compact union owned-buffer output mismatch";
+            return false;
+        }
+    }
+    return true;
+#endif
+}

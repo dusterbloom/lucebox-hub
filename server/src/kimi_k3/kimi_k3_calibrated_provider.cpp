@@ -5361,7 +5361,8 @@ bool parse_positive_int(const char * raw, int & value) {
 #if defined(DFLASH_KIMI_P45_ASYNC_TEST_HOOK)
 bool kimi_k3_run_p45_async_compact_sentinel(
         ggml_backend_t backend, std::string * err) {
-    return p45_async_compact_sentinel_impl(backend, err);
+    return p45_async_compact_sentinel_impl(backend, err) &&
+        compact_union_owned_buffer_sentinel_impl(backend, err);
 }
 #endif
 
