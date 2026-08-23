@@ -1,0 +1,181 @@
+{
+  "schema_version": 1,
+  "campaign": "k3-production-p40-layer-epoch",
+  "experiment_number": null,
+  "date": "2026-08-23",
+  "verdict": "ENGINEERING_GO_DEFAULT_OFF",
+  "scope": "exact-path A/B of per-wide-layer P40 cache epochs; M64 same-binary, M1024 adjacent source commits",
+  "source": {
+    "branch": "perf/k3-production-ponytail",
+    "base_commit": "21506614",
+    "token_replay_commit": "44f8426a",
+    "winner_commit": "10e79c805e695cc4581fa78be1cfc3b7fee9ae50",
+    "candidate_binary_sha256": "8250f281307034e2d99715c5584608ad40e41e9339f79875a8d5b130de82b0dc"
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "backend": "HIP/ROCm",
+    "physical_device": "GPU1",
+    "architecture": "gfx1151",
+    "logical_device": 0,
+    "platform_profile": "performance",
+    "topology": "single-owner"
+  },
+  "frozen_runtime": {
+    "cpu_workers": 18,
+    "policy": "calibrated96/fixed96",
+    "p30_host_cache_bytes": 17179869184,
+    "p40_device_cache_bytes": 8589934592,
+    "p40_slots": 1095,
+    "physical_layout": "scratch",
+    "io_backend": "direct-pread",
+    "hipblaslt": false,
+    "control_flag": "DFLASH_KIMI_P40_LAYER_EPOCH=0",
+    "candidate_flag": "DFLASH_KIMI_P40_LAYER_EPOCH=1"
+  },
+  "m64": {
+    "same_binary": true,
+    "prompt_tokens": 64,
+    "generated_tokens": 1,
+    "token_fixture_sha256": "d5ace9d1b8429ff271307acc26c0d013ef4bfae0d6eb6b8a6638e35e0013d388",
+    "traffic_sha256": "57a76723bff549e8284777a4daa75d7b828c126112dde14f9ea91b33b3eb54f9",
+    "control": {
+      "prefill_seconds": 67.522,
+      "prefill_positions_per_second": 0.947836,
+      "expert_seconds": 50.282741,
+      "h2d_bytes": 196084431872,
+      "physical_bytes": 110658715648,
+      "direct_io_seconds": 29.012315152,
+      "direct_io_gib_per_second": 3.5522487406,
+      "p40_cold_fills": 42627,
+      "p40_evictions": 41532,
+      "terminal_token_id": 5801,
+      "log_sha256": "765afa1b2007eb49256d84f25fdca6f9f917469e02f52039e6297cc6c4d1cd01"
+    },
+    "candidate": {
+      "prefill_seconds": 62.140,
+      "prefill_positions_per_second": 1.029940,
+      "expert_seconds": 44.906440,
+      "h2d_bytes": 110044705792,
+      "physical_bytes": 110658715648,
+      "direct_io_seconds": 29.111538853,
+      "direct_io_gib_per_second": 3.5401412643,
+      "p40_cold_fills": 22543,
+      "p40_evictions": 0,
+      "terminal_token_id": 5801,
+      "log_sha256": "544e91504474253cfe66f60e9cdf3b1996c8a2b6621a7cf6285e8aa7fdc70ab9"
+    },
+    "delta": {
+      "prefill_speedup": 1.086610879,
+      "expert_speedup": 1.119722271,
+      "h2d_reduction_fraction": 0.438789175,
+      "cold_fill_reduction_fraction": 0.471156779,
+      "physical_byte_change": 0
+    },
+    "correctness": {
+      "traffic_identical": true,
+      "physical_bytes_identical": true,
+      "terminal_argmax_identical": true,
+      "full_logit_hash_checked_in_this_ab": false,
+      "state_hash_checked_in_this_ab": false
+    }
+  },
+  "m1024": {
+    "same_binary": false,
+    "control_source_commit": "44f8426a",
+    "candidate_source_commit": "10e79c805e695cc4581fa78be1cfc3b7fee9ae50",
+    "prompt_tokens": 1024,
+    "generated_tokens": 0,
+    "token_fixture_sha256": "a52320c799f4c20eba845a0cf19edd68a557f28dd2a58d88a4609c797f24cc71",
+    "traffic_sha256": "c0dfd31205484facf903d1e55cd75ccf05338359583b1f9d76fbaa032b6cea15",
+    "control": {
+      "prefill_seconds": 659.726,
+      "prefill_positions_per_second": 1.552159,
+      "stage_total_seconds": 659.698654,
+      "core_seconds": 266.305047,
+      "expert_seconds": 378.169198,
+      "join_seconds": 10.446246,
+      "output_seconds": 4.535436,
+      "h2d_bytes": 2340370421760,
+      "physical_bytes": 169143877632,
+      "direct_io_seconds": 133.943266951,
+      "direct_io_gib_per_second": 1.1760763731,
+      "p40_cold_fills": 576248,
+      "p40_evictions": 575153,
+      "p40_completed": 1244278,
+      "fallbacks": 0,
+      "errors": 0,
+      "log_sha256": "3866663cd0522f0ad7cc4e2ce4ee1f763437746682ab4cb9a8eac9b17a8722d7"
+    },
+    "candidate": {
+      "prefill_seconds": 479.711,
+      "prefill_positions_per_second": 2.134617,
+      "stage_total_seconds": 479.686969,
+      "core_seconds": 266.028214,
+      "expert_seconds": 198.543269,
+      "join_seconds": 10.363974,
+      "output_seconds": 4.510118,
+      "h2d_bytes": 168212803584,
+      "physical_bytes": 169143877632,
+      "direct_io_seconds": 44.223622796,
+      "direct_io_gib_per_second": 3.5620670953,
+      "p40_cold_fills": 34014,
+      "p40_evictions": 0,
+      "p40_completed": 1244278,
+      "fallbacks": 0,
+      "errors": 0,
+      "log_sha256": "d59f491de5dd0169b8533936cd0070e8d4d1282cf9097858d7be21a76b4b8f3b"
+    },
+    "delta": {
+      "prefill_speedup": 1.375257186,
+      "expert_speedup": 1.904719308,
+      "h2d_reduction_fraction": 0.928125564,
+      "cold_fill_reduction_fraction": 0.940973331,
+      "direct_io_time_reduction_fraction": 0.669833178,
+      "physical_byte_change": 0
+    },
+    "correctness": {
+      "traffic_identical": true,
+      "physical_bytes_identical": true,
+      "provider_call_count_identical": true,
+      "full_logit_hash_checked_in_this_ab": false,
+      "state_hash_checked_in_this_ab": false,
+      "prior_underlying_p40_m1024_full_logit_and_state_qualification": true
+    }
+  },
+  "root_cause": {
+    "diagnosis": "cross-layer P40 cache thrash",
+    "mechanism": "The 1095-slot frequency-first LFRU carries high-frequency keys from a completed layer into the next layer. Those keys are dead because P40 keys are layer-specific, but they outrank newly loaded current-layer keys and force repeated current-layer fills and evictions.",
+    "control_cold_fills": 576248,
+    "control_evictions": 575153,
+    "control_initial_fill_count": 1095,
+    "control_identity": "576248 cold fills - 575153 evictions = 1095 slots",
+    "conservative_redundant_cold_fill_lower_bound": 493816,
+    "observed_control_minus_candidate_cold_fills": 542234,
+    "fix": "At each qualified wide-layer boundary, synchronize, reject active leases, clear only external P40 slot identities/frequency state, and retain the allocated device arena.",
+    "why_physical_bytes_do_not_change": "P30 already deduplicates backing reads. The defect repeatedly uploads and scatters payloads from the host cache and destroys useful request cadence; it does not require additional authoritative sidecar bytes."
+  },
+  "post_win_critical_path": {
+    "total_seconds": 479.686969,
+    "core_seconds": 266.028214,
+    "expert_seconds": 198.543269,
+    "join_seconds": 10.363974,
+    "output_seconds": 4.510118,
+    "other_seconds": 0.241393,
+    "measured_prefill_positions_per_second": 2.134617,
+    "infinite_expert_speed_ceiling_positions_per_second": 3.641954204,
+    "infinite_core_speed_ceiling_positions_per_second": 4.792150173,
+    "seconds_to_remove_for_10_positions_per_second": 377.311,
+    "fraction_of_combined_core_and_expert_time_to_remove_for_10": 0.812169954,
+    "interpretation": "The cache fix is material and production-shaped, but neither core-only nor expert-only elimination reaches 10 positions/s. Core and exact expert execution are now co-binding."
+  },
+  "promotion": {
+    "default": false,
+    "qualified_profile": "P40 enabled, exact macro width greater than one, calibrated96/fixed96, single-owner gfx1151",
+    "not_qualified_as": [
+      "an automatic all-width default",
+      "a 10 positions/s result",
+      "a new full-logit/state qualification of this production smoke"
+    ]
+  }
+}
