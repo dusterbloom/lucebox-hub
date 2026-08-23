@@ -451,9 +451,18 @@ int main() {
         static_cast<size_t>(batch_count) * width);
     for (int batch = 0; batch < batch_count; ++batch) {
         const size_t offset = static_cast<size_t>(batch) * operation_stride;
-        CHECK(launch(
-            batch_indices.data() + offset, batch_weights.data() + offset,
-            batch_operations[batch], batch_operations[batch]));
+        CHECK(cudaMemcpy(
+            device_indices, batch_indices.data() + offset,
+            static_cast<size_t>(batch_operations[batch]) * sizeof(int32_t),
+            cudaMemcpyHostToDevice) == cudaSuccess);
+        CHECK(cudaMemcpy(
+            device_weights, batch_weights.data() + offset,
+            static_cast<size_t>(batch_operations[batch]) * sizeof(float),
+            cudaMemcpyHostToDevice) == cudaSuccess);
+        CHECK(kimi_k3_ordered_join_launch(
+            device_rows, row_count, width, device_rows, row_count,
+            device_indices, device_weights, batch_operations[batch],
+            batch_operations[batch], device_output, &failure));
         CHECK(cudaMemcpy(
             scalar_actual.data() + static_cast<size_t>(batch) * width,
             device_output, static_cast<size_t>(width) * sizeof(float),
