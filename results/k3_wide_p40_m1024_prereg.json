@@ -7,6 +7,12 @@
     "scoped_diff_sha256_before_build": "0ad3841d0a40df0e6d395fd2a6ba27af91d961491f2b516692d03ab7212a9486",
     "changed_surface": "qualification/parser guards plus the existing S0 width list and policy tests only; no scheduler, provider, cache, arithmetic, or join implementation change"
   },
+  "validity_repair": {
+    "trigger": "The first launch was stopped during the sequential arm, before any candidate timing was observed, because the same-process verify arm would have inherited P40 identities and frequency-first eviction metadata trained by the sequential arm.",
+    "invalid_record": "results/k3_wide_p40_m1024_invalid_cache_state.json",
+    "repair_scope": "Reuse the existing stream-engine cache allocation, but clear external/P40 identities plus frequency and recency before both prompt rebuilds; expose already-collected P40 counters as per-arm runtime-stat deltas. No arithmetic, route, scheduler, layout, join, performance, or correctness gate changes.",
+    "repair_source_test_diff_sha256": "792d6d7d70632b91da2f4206ac5783e7f982bf964eb06fae570732596a36002f"
+  },
   "fixture": {
     "runner": "existing run_kimi_k3_s0_oracle, width-1024-only arm",
     "token_source": "/home/duster/kimi-k3-deploy/p65-a0-long-prefix-chat-20260822/prompt-tokenizer.json",

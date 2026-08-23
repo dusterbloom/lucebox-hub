@@ -1,0 +1,30 @@
+{
+  "schema": "k3-wide-p40-m1024-invalid-v1",
+  "date": "2026-08-23",
+  "status": "INVALID",
+  "verdict": "INVALID_BEFORE_CANDIDATE",
+  "source_commit": "3ca05fd36906eb4d2a2432fd0378214c90fd16bb",
+  "binary_sha256": "45a4db317de4c5fe79ad536f7a2fb4a27d248b2f095c5c24335e1a5455b7ee1c",
+  "fixture_sha256": "051ad3ae530d512148795ce9478f8af5a5f72446bc39e5e3f09edfae2e286264",
+  "started_utc": "2026-08-23T12:23:42Z",
+  "stopped_utc": "2026-08-23T12:30:20Z",
+  "exit_code": 143,
+  "observed_phase": "sequential control only, stopped after position 280 of 1024",
+  "candidate_observed": false,
+  "reason": "The runner rebuilt recurrent and P30 state between arms but did not clear P40. Sequential control therefore trained the exact future route sequence into P40's persistent identity, frequency, and recency state, which would bias candidate eviction decisions beyond the initial 8-GiB contents.",
+  "repair_allowed_by_prereg": "Add an equal initial external-cache boundary and phase-delta existing counters only; do not change registered gates.",
+  "environment": {
+    "gpu": "physical GPU1 gfx1151",
+    "topology": "single-owner",
+    "platform_profile": "performance",
+    "swap_bytes_before": 8192,
+    "swap_bytes_after": 8192,
+    "swap_io_delta": 0
+  },
+  "artifacts": {
+    "remote_root": "/tmp/k3-wide-p40-m1024-3ca05fd3",
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_sha256": "0ceed8ea410d06160f58e3300ec7a8718c62fdfe962c1d8c6a93541e20d725ee",
+    "launch_sha256": "006fcb9bbd2b27ec69d80cedc2828ab3abcc7109103a411bc6d6577ccb5ef71d"
+  }
+}

@@ -8,6 +8,7 @@
 #include "internal.h"
 #include "kimi_k3_internal.h"
 #include "kimi_k3_prefill.h"
+#include "kimi_k3_progressive_provider.h"
 #include "placement/placement_config.h"
 
 #include <algorithm>
@@ -86,6 +87,8 @@ struct KimiK3OracleVerifyResult {
     uint64_t verify_storage_bytes = 0;
     uint64_t sequential_logical_provider_bytes = 0;
     uint64_t verify_logical_provider_bytes = 0;
+    KimiK3RoutedRuntimeStats sequential_provider_stats{};
+    KimiK3RoutedRuntimeStats verify_provider_stats{};
     uint64_t sequential_compact_attempted = 0;
     uint64_t sequential_compact_completed = 0;
     uint64_t sequential_compact_fallbacks = 0;

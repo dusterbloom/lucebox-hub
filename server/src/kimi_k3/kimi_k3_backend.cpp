@@ -142,6 +142,19 @@ KimiK3RoutedRuntimeStats routed_stats_delta(
     KIMI_K3_DELTA(ordered_join_launches);
     KIMI_K3_DELTA(ordered_output_d2d_copies);
     KIMI_K3_DELTA(ordered_output_d2d_bytes);
+    KIMI_K3_DELTA(p40_requested_slabs);
+    KIMI_K3_DELTA(p40_resident_before_slabs);
+    KIMI_K3_DELTA(p40_hits);
+    KIMI_K3_DELTA(p40_extensions);
+    KIMI_K3_DELTA(p40_cold);
+    KIMI_K3_DELTA(p40_unavailable);
+    KIMI_K3_DELTA(p40_completed);
+    KIMI_K3_DELTA(p40_aborted);
+    KIMI_K3_DELTA(p40_fallbacks);
+    KIMI_K3_DELTA(p40_evictions);
+    KIMI_K3_DELTA(p40_h2d_bytes);
+    KIMI_K3_DELTA(p40_scatter_calls);
+    KIMI_K3_DELTA(p40_scatter_avoided);
 #undef KIMI_K3_DELTA
     return result;
 }
@@ -1402,6 +1415,10 @@ bool KimiK3Backend::benchmark_oracle_verify(
             : KimiK3RoutedRuntimeStats{};
     };
 
+    if (!stream_engine_.reset_external_device_cache(error)) {
+        return fail(std::string("S0 sequential cache reset failed: ") +
+                    (error ? *error : std::string{}));
+    }
     if (!rebuild_prompt()) {
         return fail(std::string("S0 sequential prompt rebuild failed: ") +
                     dflash27b_last_error());
@@ -1453,6 +1470,7 @@ bool KimiK3Backend::benchmark_oracle_verify(
     const uint64_t sequential_read_end = process_storage_read_bytes();
     const KimiK3RoutedRuntimeStats sequential_stats = routed_stats_delta(
         provider_stats(), sequential_stats_begin);
+    result.sequential_provider_stats = sequential_stats;
     result.sequential_storage_bytes = sequential_read_end >= sequential_read_start
         ? sequential_read_end - sequential_read_start : 0;
     result.sequential_logical_provider_bytes =
@@ -1470,6 +1488,10 @@ bool KimiK3Backend::benchmark_oracle_verify(
     result.sequential_mla_layer_hashes =
         mla_layer_row_hashes(cache_, base_pos, width);
 
+    if (!stream_engine_.reset_external_device_cache(error)) {
+        return fail(std::string("S0 verify cache reset failed: ") +
+                    (error ? *error : std::string{}));
+    }
     if (!rebuild_prompt()) {
         return fail(std::string("S0 verify prompt rebuild failed: ") +
                     dflash27b_last_error());
@@ -1498,6 +1520,7 @@ bool KimiK3Backend::benchmark_oracle_verify(
     const uint64_t verify_read_end = process_storage_read_bytes();
     const KimiK3RoutedRuntimeStats verify_stats = routed_stats_delta(
         provider_stats(), verify_stats_begin);
+    result.verify_provider_stats = verify_stats;
     result.verify_storage_bytes = verify_read_end >= verify_read_start
         ? verify_read_end - verify_read_start : 0;
     result.verify_logical_provider_bytes =
@@ -1573,6 +1596,14 @@ bool KimiK3Backend::benchmark_oracle_verify(
             result.verify_compact_fallbacks == 0 &&
             result.sequential_compact_invalid == 0 &&
             result.verify_compact_invalid == 0;
+        const auto exact_p40 = [](const KimiK3RoutedRuntimeStats & stats) {
+            return stats.p40_unavailable == 0 &&
+                stats.p40_aborted == 0 && stats.p40_fallbacks == 0 &&
+                stats.p40_completed ==
+                    stats.p40_hits + stats.p40_extensions + stats.p40_cold &&
+                stats.p40_completed ==
+                    stats.p40_scatter_calls + stats.p40_scatter_avoided;
+        };
         if (!complete_rows || !complete_hash_vectors ||
             !result.logits_bit_equal || !result.argmax_bit_equal ||
             !result.recurrent_state_hash_equal ||
@@ -1580,7 +1611,9 @@ bool KimiK3Backend::benchmark_oracle_verify(
             result.first_ssm_state_mismatch_layer >= 0 ||
             !result.mla_rows_hash_equal ||
             result.first_mla_row_mismatch_layer >= 0 ||
-            !exact_provider_traffic) {
+            !exact_provider_traffic ||
+            !exact_p40(result.sequential_provider_stats) ||
+            !exact_p40(result.verify_provider_stats)) {
             return fail(
                 "P58 exact multirow candidate failed mandatory full-logit, "
                 "argmax, recurrent conv/SSM, MLA, or provider-traffic parity");

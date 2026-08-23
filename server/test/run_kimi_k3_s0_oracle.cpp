@@ -34,6 +34,34 @@ bool parse_ids(const char * text, std::vector<int32_t> & ids) {
     return !ids.empty();
 }
 
+nlohmann::json provider_stats_json(
+        const KimiK3RoutedRuntimeStats & stats) {
+    return {
+        {"logical_provider_bytes", stats.logical_provider_bytes},
+        {"explicit_read_bytes", stats.explicit_read_bytes},
+        {"physical_direct_read_bytes", stats.physical_direct_read_bytes},
+        {"direct_io_ns", stats.direct_io_ns},
+        {"payload_h2d_bytes", stats.payload_h2d_bytes},
+        {"metadata_h2d_bytes", stats.metadata_h2d_bytes},
+        {"compact_pack_ns", stats.compact_pack_ns},
+        {"expert_graph_ns", stats.expert_graph_ns},
+        {"expert_readback_ns", stats.expert_readback_ns},
+        {"p40_requested_slabs", stats.p40_requested_slabs},
+        {"p40_resident_before_slabs", stats.p40_resident_before_slabs},
+        {"p40_hits", stats.p40_hits},
+        {"p40_extensions", stats.p40_extensions},
+        {"p40_cold", stats.p40_cold},
+        {"p40_unavailable", stats.p40_unavailable},
+        {"p40_completed", stats.p40_completed},
+        {"p40_aborted", stats.p40_aborted},
+        {"p40_fallbacks", stats.p40_fallbacks},
+        {"p40_evictions", stats.p40_evictions},
+        {"p40_h2d_bytes", stats.p40_h2d_bytes},
+        {"p40_scatter_calls", stats.p40_scatter_calls},
+        {"p40_scatter_avoided", stats.p40_scatter_avoided},
+    };
+}
+
 nlohmann::json result_json(const KimiK3OracleVerifyResult & result) {
     const double committed_seconds =
         result.verify_seconds + result.commit_seconds;
@@ -57,6 +85,10 @@ nlohmann::json result_json(const KimiK3OracleVerifyResult & result) {
          result.sequential_logical_provider_bytes},
         {"verify_logical_provider_bytes",
          result.verify_logical_provider_bytes},
+        {"sequential_provider_stats",
+         provider_stats_json(result.sequential_provider_stats)},
+        {"verify_provider_stats",
+         provider_stats_json(result.verify_provider_stats)},
         {"logical_provider_traffic_equal",
          result.sequential_logical_provider_bytes ==
              result.verify_logical_provider_bytes},

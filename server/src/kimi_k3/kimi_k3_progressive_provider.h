@@ -59,6 +59,19 @@ struct KimiK3RoutedRuntimeStats {
     uint64_t ordered_join_launches = 0;
     uint64_t ordered_output_d2d_copies = 0;
     uint64_t ordered_output_d2d_bytes = 0;
+    uint64_t p40_requested_slabs = 0;
+    uint64_t p40_resident_before_slabs = 0;
+    uint64_t p40_hits = 0;
+    uint64_t p40_extensions = 0;
+    uint64_t p40_cold = 0;
+    uint64_t p40_unavailable = 0;
+    uint64_t p40_completed = 0;
+    uint64_t p40_aborted = 0;
+    uint64_t p40_fallbacks = 0;
+    uint64_t p40_evictions = 0;
+    uint64_t p40_h2d_bytes = 0;
+    uint64_t p40_scatter_calls = 0;
+    uint64_t p40_scatter_avoided = 0;
 };
 
 // Research-only routed boundary used by H16. The exact stream engine remains

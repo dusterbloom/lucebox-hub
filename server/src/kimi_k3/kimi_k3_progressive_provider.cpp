@@ -4981,6 +4981,19 @@ public:
         result.compact_completed = p41_completed_;
         result.compact_fallbacks = p41_fallbacks_;
         result.compact_invalid = p41_invalid_;
+        result.p40_requested_slabs = p40_requested_slabs_;
+        result.p40_resident_before_slabs = p40_resident_before_slabs_;
+        result.p40_hits = p40_hits_;
+        result.p40_extensions = p40_extensions_;
+        result.p40_cold = p40_cold_;
+        result.p40_unavailable = p40_unavailable_;
+        result.p40_completed = p40_completed_;
+        result.p40_aborted = p40_aborted_;
+        result.p40_fallbacks = p40_fallbacks_;
+        result.p40_evictions = p40_evictions_;
+        result.p40_h2d_bytes = p40_h2d_bytes_;
+        result.p40_scatter_calls = p40_scatter_calls_;
+        result.p40_scatter_avoided = p40_scatter_avoided_;
         const SparseDeviceExpertEvaluator::CompactAsyncStats & async =
             sparse_device_evaluator_.compact_async_stats();
         result.async_begins = async.begins;
