@@ -191,6 +191,8 @@ int main() {
     set_env("DFLASH_KIMI_LAYER1_PROVIDER", "exact");
     set_env("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "0");
     set_env("DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE", "0");
+    set_env("DFLASH_KIMI_EXACT_MACRO_UNION", "0");
+    set_env("DFLASH_KIMI_EXACT_MACRO_UNION_PREFETCH", "0");
     std::unique_ptr<KimiK3RoutedOutputProvider> provider;
     assert(create_kimi_k3_calibrated_provider_from_env(
         nullptr, nullptr, provider, &error));
@@ -201,6 +203,14 @@ int main() {
     assert(!create_kimi_k3_calibrated_provider_from_env(
         nullptr, nullptr, provider, &error));
     assert(!error.empty());
+
+    set_env("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "0");
+    set_env("DFLASH_KIMI_EXACT_MACRO_UNION_PREFETCH", "1");
+    error.clear();
+    assert(!create_kimi_k3_calibrated_provider_from_env(
+        nullptr, nullptr, provider, &error));
+    assert(error == "macro union prefetch requires exact macro union");
+    set_env("DFLASH_KIMI_EXACT_MACRO_UNION_PREFETCH", "0");
 
     set_env("DFLASH_KIMI_LAYER1_PROVIDER", "all-layers-calibrated96");
     error.clear();

@@ -16,6 +16,18 @@ public:
     virtual ~KimiK3RoutedPrefillService() = default;
 
     virtual bool supports_width(size_t width) const = 0;
+
+    // Completed exact routes may start immutable delivery; evaluate_layer
+    // remains the only operation allowed to publish routed output.
+    virtual bool begin_layer_route_observation(
+        int, int, const MoeStreamExpertSpec &, size_t,
+        bool * active, std::string * = nullptr) {
+        if (active) *active = false; return true;
+    }
+    virtual bool observe_completed_route_row(
+        int, const int32_t *, const float *, int,
+        std::string * = nullptr) { return true; }
+    virtual void abort_layer_route_observation() {}
     virtual bool evaluate_layer(
         int model_layer,
         int base_pos,
@@ -67,6 +79,13 @@ struct KimiK3RoutedRuntimeStats {
     uint64_t p40_h2d_bytes = 0;
     uint64_t p40_scatter_calls = 0;
     uint64_t p40_scatter_avoided = 0;
+    uint64_t union_prefetch_keys = 0;
+    uint64_t union_prefetch_bytes = 0;
+    uint64_t union_prefetch_wait_ns = 0;
+    uint64_t union_prefetch_tail_ns = 0;
+    uint64_t union_prefetch_duplicates = 0;
+    uint64_t union_prefetch_mismatches = 0;
+    uint64_t union_prefetch_aborts = 0;
 };
 
 // Exact routed-expert boundary shared by decode and prompt macro execution.

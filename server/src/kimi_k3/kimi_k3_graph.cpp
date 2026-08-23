@@ -1057,6 +1057,18 @@ private:
     bool active_ = true;
 };
 
+class LayerRouteObservationGuard {
+public:
+    explicit LayerRouteObservationGuard(KimiK3RoutedPrefillService * service)
+        : service_(service) {}
+    ~LayerRouteObservationGuard() {
+        if (active_ && service_) service_->abort_layer_route_observation(); }
+    void complete() { active_ = false; }
+private:
+    KimiK3RoutedPrefillService * service_ = nullptr;
+    bool active_ = true;
+};
+
 struct ExactMultirowLayerRow {
     std::vector<float> hidden;
     std::vector<float> prefix;
@@ -1494,6 +1506,21 @@ bool streamed_kimi_k3_forward_exact_multirow(
         std::vector<float> route_weights(
             static_cast<size_t>(w.n_expert_used) * tokens.size());
         std::vector<float> shared(hidden_values);
+        const MoeStreamExpertSpec spec = make_kimi_k3_stream_spec(w, layer);
+        KimiK3RoutedPrefillService * prefill_service =
+            options.routed_output_provider->prefill_service();
+        std::string provider_error;
+        bool observation_active = false;
+        if (!prefill_service->begin_layer_route_observation(
+                il, base_pos, spec, tokens.size(), &observation_active,
+                &provider_error)) {
+            set_last_error(
+                "Kimi-K3 P58 routed observation failed at layer " +
+                std::to_string(il) + ": " + provider_error);
+            return false;
+        }
+        LayerRouteObservationGuard observation_guard(
+            observation_active ? prefill_service : nullptr);
         for (int token = 0; token < macro_width; ++token) {
             ExactMultirowLayerRow row;
             if (!exact_multirow_layer_row(
@@ -1518,6 +1545,15 @@ bool streamed_kimi_k3_forward_exact_multirow(
             std::copy(row.shared.begin(), row.shared.end(),
                 shared.begin() +
                     static_cast<std::ptrdiff_t>(token * hidden_width));
+            if (observation_active &&
+                !prefill_service->observe_completed_route_row(
+                    token, row.selected.data(), row.route_weights.data(),
+                    w.n_expert_used, &provider_error)) {
+                set_last_error(
+                    "Kimi-K3 P58 routed observation failed at layer " +
+                    std::to_string(il) + ": " + provider_error);
+                return false;
+            }
         }
         core_ns += elapsed_ns(phase_begin);
         if (banked) checkpoints.push_back(checkpoint_value);
@@ -1535,7 +1571,6 @@ bool streamed_kimi_k3_forward_exact_multirow(
                 std::to_string(il));
             return false;
         }
-        const MoeStreamExpertSpec spec = make_kimi_k3_stream_spec(w, layer);
         MoeStreamRouteBatch routes;
         routes.layer = il - w.n_dense_lead;
         routes.n_expert = w.n_expert;
@@ -1545,9 +1580,8 @@ bool streamed_kimi_k3_forward_exact_multirow(
         routes.selected_ids = selected.data();
         routes.selected_weights = route_weights.data();
         std::vector<float> routed_output;
-        std::string provider_error;
         phase_begin = Clock::now();
-        if (!options.routed_output_provider->prefill_service()->evaluate_layer(
+        if (!prefill_service->evaluate_layer(
                 il, base_pos, spec, routes, *stream_engine,
                 routed_output, &provider_error)) {
             set_last_error(
@@ -1555,6 +1589,7 @@ bool streamed_kimi_k3_forward_exact_multirow(
                 " failed: " + provider_error);
             return false;
         }
+        observation_guard.complete();
         expert_ns += elapsed_ns(phase_begin);
         if (routed_output.size() !=
             static_cast<size_t>(w.n_expert_latent) * tokens.size()) {

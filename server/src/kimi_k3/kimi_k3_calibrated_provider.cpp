@@ -3320,6 +3320,42 @@ private:
     CompactAsyncStats compact_async_stats_{};
 };
 
+constexpr int kMacroUnionPrefetchEpoch = 64;
+struct MacroUnionTokenPlan {
+    std::array<uint16_t, kNativeTopK> masks{};
+    std::array<size_t, kNativeTopK> output_rows{};
+    std::vector<int> stable_routes;
+    std::vector<int> fallback_routes;
+    int selected_count = 0;
+};
+struct MacroUnionPrefetchRecord {
+    ~MacroUnionPrefetchRecord() { std::free(raw); }
+    uint64_t aligned_offset = 0;
+    size_t aligned_bytes = 0;
+    size_t prefix = 0;
+    void * raw = nullptr;
+    bool submitted = false;
+    bool ok = false;
+};
+struct MacroUnionPrefetchEpoch {
+    std::vector<MacroUnionPrefetchRecord *> records;
+    std::atomic<size_t> next{0};
+};
+struct MacroUnionPrefetchState {
+    ~MacroUnionPrefetchState() {
+        if (fd >= 0) close_fd(fd);
+    }
+    int model_layer = -1;
+    int base_pos = 0;
+    int observed_rows = 0;
+    int fd = -1;
+    size_t record_count = 0;
+    std::array<uint16_t, kExpertCount> seen_masks{};
+    std::array<std::unique_ptr<MacroUnionPrefetchRecord>,
+               kExpertCount * kSlabCount> records{};
+    std::vector<std::future<void>> futures;
+    std::atomic<bool> failed{false};
+};
 // Every routed layer owns independent, provenance-checked calibration cards.
 // Any absent, malformed, or provenance-free layer stays exact.  Within a valid
 // layer, experts below the exporter's minimum-hit threshold also stay exact.
@@ -3330,6 +3366,7 @@ class CalibratedAllLayerProvider final :
         public KimiK3RoutedPrefillService {
 public:
     ~CalibratedAllLayerProvider() override {
+        abort_macro_union_prefetch();
         finish_metrics();
     }
 
@@ -3339,6 +3376,7 @@ public:
               bool async_compact_queue,
               bool p40_wide_async_join,
               bool exact_macro_union,
+              bool macro_union_prefetch,
               const char * metrics_path,
               std::string * err) {
         if (!backend || aux_directory.empty() || sidecar_directory.empty()) {
@@ -3608,6 +3646,13 @@ public:
 #endif
         }
         exact_macro_union_ = exact_macro_union;
+        if (macro_union_prefetch && !exact_macro_union_) {
+            if (err) {
+                *err = "macro union prefetch requires exact macro union";
+            }
+            return false;
+        }
+        macro_union_prefetch_enabled_ = macro_union_prefetch;
         if (const char * trace =
                 std::getenv("DFLASH_KIMI_P40_CACHE_TRACE")) {
             if (*trace && !device_variant_cache_) {
@@ -3703,7 +3748,7 @@ public:
             "p40-device-cache=%s p40-layer-epoch=%s "
             "p41-compact-executor=%s p42-ordered-join=%s "
             "p45-async-queue=%s p40-wide-async-join=%s "
-            "exact-macro-union=%s "
+            "exact-macro-union=%s macro-union-prefetch=%s "
             "exact-source=%s "
             "p30-host-cache-mib=%.1f "
             "valid-layers=%d/92 "
@@ -3726,6 +3771,7 @@ public:
             async_compact_queue_ ? "enabled" : "disabled",
             p40_wide_async_join_ ? "enabled" : "disabled",
             exact_macro_union_ ? "enabled" : "disabled",
+            macro_union_prefetch_enabled_ ? "enabled" : "disabled",
             sidecar_authoritative_ ? "sidecar" : "native-model",
             static_cast<double>(read_cache_.capacity()) / (1024.0 * 1024.0),
             valid_layers);
@@ -3758,6 +3804,91 @@ public:
         return true;
     }
 
+    bool begin_layer_route_observation(
+            int model_layer, int base_pos, const MoeStreamExpertSpec & spec,
+            size_t width, bool * active, std::string * err) override {
+        if (active) *active = false;
+        if (!macro_union_prefetch_enabled_ || width != 1024) return true;
+        if (macro_union_prefetch_ || !exact_macro_union_ || !direct_read_pool_ ||
+            !handles_layer(model_layer)) {
+            if (err) *err = "macro union prefetch observation is invalid";
+            return false;
+        }
+        LayerState & state = layers_[static_cast<size_t>(model_layer)];
+        if (!state.valid || spec.fused_gate_up ||
+            !geometry_matches(state, spec)) {
+            if (err) *err = "macro union prefetch layer is incompatible";
+            return false;
+        }
+        const int fd = open_read_only_direct(state.sidecar_path);
+        if (fd < 0) {
+            if (err) *err = "macro union prefetch cannot open the sidecar";
+            return false;
+        }
+        auto observation = std::make_unique<MacroUnionPrefetchState>();
+        observation->model_layer = model_layer;
+        observation->base_pos = base_pos;
+        observation->fd = fd;
+        macro_union_prefetch_ = std::move(observation);
+        if (active) *active = true;
+        return true;
+    }
+
+    bool observe_completed_route_row(
+            int token_index, const int32_t * selected_ids,
+            const float * route_weights, int top_k,
+            std::string * err) override {
+        if (!macro_union_prefetch_) return true;
+        MacroUnionPrefetchState & observation = *macro_union_prefetch_;
+        if (top_k != kNativeTopK || token_index != observation.observed_rows ||
+            token_index < 0 || token_index >= 1024 ||
+            !selected_ids || !route_weights) {
+            if (err) *err = "macro union prefetch row order is invalid";
+            return false;
+        }
+        LayerState & state =
+            layers_[static_cast<size_t>(observation.model_layer)];
+        MacroUnionTokenPlan plan;
+        if (!plan_macro_union_token(
+                observation.model_layer, state, selected_ids, route_weights,
+                plan, err)) return false;
+        for (const int route : plan.stable_routes) {
+            const int expert = selected_ids[route];
+            const uint16_t mask = plan.masks[static_cast<size_t>(route)];
+            const uint16_t duplicate = static_cast<uint16_t>(
+                observation.seen_masks[static_cast<size_t>(expert)] & mask);
+            union_prefetch_duplicates_ += slab_mask_count(duplicate);
+            for (int natural = 0; natural < kSlabCount; ++natural) {
+                if ((mask & (1u << natural)) == 0) continue;
+                const size_t key = static_cast<size_t>(expert) * kSlabCount +
+                    static_cast<size_t>(natural);
+                if (observation.records[key]) continue;
+                auto record = std::make_unique<MacroUnionPrefetchRecord>();
+                const uint64_t source_record = state.payload_offset +
+                    static_cast<uint64_t>(key) * state.slab_bytes;
+                record->aligned_offset = source_record &
+                    ~(static_cast<uint64_t>(kAlignment) - 1);
+                record->prefix = static_cast<size_t>(
+                    source_record - record->aligned_offset);
+                record->aligned_bytes = static_cast<size_t>(
+                    (record->prefix + state.slab_bytes + kAlignment - 1) &
+                    ~(static_cast<uint64_t>(kAlignment) - 1));
+                observation.records[key] = std::move(record);
+                uint16_t & seen =
+                    observation.seen_masks[static_cast<size_t>(expert)];
+                seen = static_cast<uint16_t>(seen | (1u << natural));
+                ++observation.record_count;
+            }
+        }
+        ++observation.observed_rows;
+        if (observation.observed_rows % kMacroUnionPrefetchEpoch == 0)
+            submit_macro_union_prefetch_epoch(observation);
+        return true;
+    }
+
+    void abort_layer_route_observation() override {
+        abort_macro_union_prefetch(); }
+
     bool evaluate_layer(
             int model_layer, int base_pos,
             const MoeStreamExpertSpec & spec,
@@ -3776,8 +3907,15 @@ public:
                 !exact_engine.reset_external_device_cache(err)) {
             return false;
         }
-        return evaluate(
+        const bool ok = evaluate(
             model_layer, base_pos, spec, routes, exact_engine, output, err);
+        if (macro_union_prefetch_) {
+            ++union_prefetch_mismatches_;
+            abort_macro_union_prefetch();
+            if (ok && err) *err = "macro union prefetch was not consumed";
+            return false;
+        }
+        return ok;
     }
 
     bool evaluate(int model_layer, int base_pos,
@@ -3876,6 +4014,13 @@ public:
         result.p40_h2d_bytes = p40_h2d_bytes_;
         result.p40_scatter_calls = p40_scatter_calls_;
         result.p40_scatter_avoided = p40_scatter_avoided_;
+        result.union_prefetch_keys = union_prefetch_keys_;
+        result.union_prefetch_bytes = union_prefetch_bytes_;
+        result.union_prefetch_wait_ns = union_prefetch_wait_ns_;
+        result.union_prefetch_tail_ns = union_prefetch_tail_ns_;
+        result.union_prefetch_duplicates = union_prefetch_duplicates_;
+        result.union_prefetch_mismatches = union_prefetch_mismatches_;
+        result.union_prefetch_aborts = union_prefetch_aborts_;
         const SparseDeviceExpertEvaluator::CompactAsyncStats & async =
             sparse_device_evaluator_.compact_async_stats();
         result.async_begins = async.begins;
@@ -4023,6 +4168,156 @@ private:
         std::vector<uint32_t> hit_counts;
         Traffic traffic;
     };
+
+    bool plan_macro_union_token(
+            int model_layer, const LayerState & state,
+            const int32_t * selected_ids, const float * route_weights,
+            MacroUnionTokenPlan & token_plan, std::string * err) const {
+        if (!selected_ids || !route_weights) {
+            if (err) *err = "macro union route row is missing";
+            return false;
+        }
+        const int layer_budget = budget_for_layer(model_layer);
+        std::vector<uint8_t> effective_calibrated = state.calibrated;
+        if (layer_budget == kNativeTopK * kSlabCount) {
+            std::fill(effective_calibrated.begin(),
+                      effective_calibrated.end(), uint8_t{1});
+        }
+        for (int route = 0; route < kNativeTopK; ++route) {
+            if (selected_ids[route] < 0 ||
+                selected_ids[route] >= kExpertCount ||
+                !std::isfinite(route_weights[route])) {
+                if (err) *err = "macro union saw an invalid route row";
+                return false;
+            }
+        }
+        const KimiK3CalibratedSlabPlan plan =
+            plan_kimi_k3_calibrated_slabs(
+                selected_ids, route_weights, kNativeTopK,
+                state.importance.data(), effective_calibrated.data(),
+                kExpertCount, kSlabCount, layer_budget);
+        token_plan = {};
+        token_plan.selected_count =
+            static_cast<int>(plan.selected_slab_ids.size());
+        for (int route = 0; route < kNativeTopK; ++route) {
+            const int expert = selected_ids[route];
+            if (effective_calibrated[static_cast<size_t>(expert)]) {
+                token_plan.stable_routes.push_back(route);
+            } else {
+                token_plan.fallback_routes.push_back(route);
+            }
+        }
+        if (plan.exact_route_indices.size() !=
+                token_plan.fallback_routes.size() ||
+            !std::equal(
+                plan.exact_route_indices.begin(),
+                plan.exact_route_indices.end(),
+                token_plan.fallback_routes.begin())) {
+            if (err) *err = "macro union calibrated planner diverged";
+            return false;
+        }
+        std::array<std::array<uint8_t, kSlabCount>, kNativeTopK> selected{};
+        for (const int pseudo : plan.selected_slab_ids) {
+            const int expert = pseudo / kSlabCount;
+            const int rank = pseudo % kSlabCount;
+            int selected_route = -1;
+            for (int route = 0; route < kNativeTopK; ++route) {
+                if (selected_ids[route] == expert) {
+                    selected_route = route;
+                    break;
+                }
+            }
+            if (selected_route < 0 || rank < 0 || rank >= kSlabCount) {
+                if (err) *err = "macro union selected slab is invalid";
+                return false;
+            }
+            selected[static_cast<size_t>(selected_route)]
+                    [static_cast<size_t>(rank)] = 1;
+        }
+        for (int route = 0; route < kNativeTopK; ++route) {
+            const int expert = selected_ids[route];
+            if (!effective_calibrated[static_cast<size_t>(expert)]) continue;
+            token_plan.masks[static_cast<size_t>(route)] =
+                kimi_k3_selected_natural_slab_mask(
+                    state.order.data() +
+                        static_cast<size_t>(expert) * kSlabCount,
+                    selected[static_cast<size_t>(route)].data(), kSlabCount);
+        }
+        std::stable_sort(
+            token_plan.stable_routes.begin(), token_plan.stable_routes.end(),
+            [&](int left, int right) {
+                return selected_ids[left] < selected_ids[right];
+            });
+        return true;
+    }
+
+    void submit_macro_union_prefetch_epoch(
+            MacroUnionPrefetchState & observation) {
+        auto epoch = std::make_shared<MacroUnionPrefetchEpoch>();
+        for (const auto & owned : observation.records) {
+            if (owned && !owned->submitted) epoch->records.push_back(owned.get());
+        }
+        if (epoch->records.empty()) return;
+        std::stable_sort(
+            epoch->records.begin(), epoch->records.end(),
+            [](const MacroUnionPrefetchRecord * left,
+               const MacroUnionPrefetchRecord * right) {
+                return left->aligned_offset < right->aligned_offset;
+            });
+        for (MacroUnionPrefetchRecord * record : epoch->records) {
+            record->submitted = true;
+        }
+        const size_t workers = std::min<size_t>(16, epoch->records.size());
+        for (size_t worker = 0; worker < workers; ++worker) {
+            observation.futures.push_back(direct_read_pool_->submit(
+                [this, &observation, epoch]() {
+                    for (;;) {
+                        if (observation.failed.load()) break;
+                        const size_t index = epoch->next.fetch_add(1);
+                        if (index >= epoch->records.size()) break;
+                        MacroUnionPrefetchRecord & record =
+                            *epoch->records[index];
+                        void * raw = nullptr;
+                        if (::posix_memalign(
+                                &raw, kAlignment, record.aligned_bytes) != 0) {
+                            observation.failed = true;
+                            break;
+                        }
+                        bool cache_hit = false;
+                        if (!read_direct_sidecar_record(
+                                observation.fd, observation.model_layer,
+                                record.aligned_offset, record.aligned_bytes,
+                                raw, cache_hit,
+                                /* allow_cache = */ false) || cache_hit) {
+                            std::free(raw);
+                            observation.failed = true;
+                            break;
+                        }
+                        record.raw = raw;
+                        record.ok = true;
+                    }
+                }));
+        }
+    }
+
+    void wait_macro_union_prefetch(MacroUnionPrefetchState & observation) {
+        for (std::future<void> & future : observation.futures) {
+            try {
+                future.get();
+            } catch (...) {
+                observation.failed = true;
+            }
+        }
+        observation.futures.clear();
+    }
+
+    void abort_macro_union_prefetch() {
+        if (!macro_union_prefetch_) return;
+        macro_union_prefetch_->failed = true;
+        wait_macro_union_prefetch(*macro_union_prefetch_);
+        ++union_prefetch_aborts_;
+        macro_union_prefetch_.reset();
+    }
 
     static bool nonzero_digest(const uint8_t * digest) {
         for (int i = 0; i < 32; ++i) if (digest[i] != 0) return true;
@@ -5042,13 +5337,6 @@ private:
             cache_sequence_started_ = true;
         }
 
-        struct TokenPlan {
-            std::array<uint16_t, kNativeTopK> masks{};
-            std::array<size_t, kNativeTopK> output_rows{};
-            std::vector<int> stable_routes;
-            std::vector<int> fallback_routes;
-            int selected_count = 0;
-        };
         struct Job {
             int token = 0;
             int route = 0;
@@ -5065,87 +5353,23 @@ private:
         };
 
         const int layer_budget = budget_for_layer(model_layer);
-        std::vector<TokenPlan> plans(static_cast<size_t>(routes.n_tokens));
+        std::vector<MacroUnionTokenPlan> plans(
+            static_cast<size_t>(routes.n_tokens));
         std::array<int, kExpertCount> group_by_expert{};
         group_by_expert.fill(-1);
         std::vector<Group> groups;
         for (int token = 0; token < routes.n_tokens; ++token) {
             const size_t route_offset =
                 static_cast<size_t>(token) * kNativeTopK;
-            std::vector<uint8_t> effective_calibrated = state.calibrated;
-            if (layer_budget == kNativeTopK * kSlabCount) {
-                std::fill(effective_calibrated.begin(),
-                          effective_calibrated.end(), uint8_t{1});
-            }
-            for (int route = 0; route < kNativeTopK; ++route) {
-                const int expert = routes.selected_ids[route_offset + route];
-                if (expert < 0 || expert >= kExpertCount) {
-                    if (err) *err = "macro union saw an invalid expert id";
-                    return MacroUnionOutcome::Failed;
-                }
-            }
-            const KimiK3CalibratedSlabPlan plan =
-                plan_kimi_k3_calibrated_slabs(
+            MacroUnionTokenPlan & token_plan =
+                plans[static_cast<size_t>(token)];
+            if (!plan_macro_union_token(
+                    model_layer, state,
                     routes.selected_ids + route_offset,
-                    routes.selected_weights + route_offset, kNativeTopK,
-                    state.importance.data(), effective_calibrated.data(),
-                    kExpertCount, kSlabCount, layer_budget);
-            TokenPlan & token_plan = plans[static_cast<size_t>(token)];
-            token_plan.selected_count =
-                static_cast<int>(plan.selected_slab_ids.size());
-            for (int route = 0; route < kNativeTopK; ++route) {
-                const int expert = routes.selected_ids[route_offset + route];
-                if (effective_calibrated[static_cast<size_t>(expert)]) {
-                    token_plan.stable_routes.push_back(route);
-                } else {
-                    token_plan.fallback_routes.push_back(route);
-                }
-            }
-            if (plan.exact_route_indices.size() !=
-                    token_plan.fallback_routes.size() ||
-                !std::equal(
-                    plan.exact_route_indices.begin(),
-                    plan.exact_route_indices.end(),
-                    token_plan.fallback_routes.begin())) {
-                if (err) *err = "macro union calibrated planner diverged";
+                    routes.selected_weights + route_offset,
+                    token_plan, err)) {
                 return MacroUnionOutcome::Failed;
             }
-            std::array<std::array<uint8_t, kSlabCount>, kNativeTopK>
-                selected{};
-            for (const int pseudo : plan.selected_slab_ids) {
-                const int expert = pseudo / kSlabCount;
-                const int rank = pseudo % kSlabCount;
-                int selected_route = -1;
-                for (int route = 0; route < kNativeTopK; ++route) {
-                    if (routes.selected_ids[route_offset + route] == expert) {
-                        selected_route = route;
-                        break;
-                    }
-                }
-                if (selected_route < 0 || rank < 0 || rank >= kSlabCount) {
-                    if (err) *err = "macro union selected slab is invalid";
-                    return MacroUnionOutcome::Failed;
-                }
-                selected[static_cast<size_t>(selected_route)]
-                        [static_cast<size_t>(rank)] = 1;
-            }
-            for (int route = 0; route < kNativeTopK; ++route) {
-                const int expert = routes.selected_ids[route_offset + route];
-                if (!effective_calibrated[static_cast<size_t>(expert)])
-                    continue;
-                token_plan.masks[static_cast<size_t>(route)] =
-                    kimi_k3_selected_natural_slab_mask(
-                        state.order.data() +
-                            static_cast<size_t>(expert) * kSlabCount,
-                        selected[static_cast<size_t>(route)].data(),
-                        kSlabCount);
-            }
-            std::stable_sort(
-                token_plan.stable_routes.begin(),
-                token_plan.stable_routes.end(), [&](int left, int right) {
-                    return routes.selected_ids[route_offset + left] <
-                        routes.selected_ids[route_offset + right];
-                });
             for (const int route : token_plan.stable_routes) {
                 const uint16_t mask =
                     token_plan.masks[static_cast<size_t>(route)];
@@ -5268,17 +5492,106 @@ private:
             [](const ReadTask & left, const ReadTask & right) {
                 return left.aligned_offset < right.aligned_offset;
             });
+        const auto install_payload = [&](
+                ReadTask & task, const void * raw, size_t prefix) {
+            Group & group = groups[task.group];
+            SparseCompactPayload & compact = *group.compact;
+            const auto * source = static_cast<const uint8_t *>(raw) + prefix;
+            auto * destination = static_cast<uint8_t *>(compact.data);
+            std::memcpy(
+                destination + group.layout.gate_offset +
+                    task.slot * compact.gate_slab_bytes,
+                source, compact.gate_slab_bytes);
+            std::memcpy(
+                destination + group.layout.up_offset +
+                    task.slot * compact.up_slab_bytes,
+                source + compact.gate_slab_bytes, compact.up_slab_bytes);
+            std::memcpy(
+                destination + group.layout.down_offset +
+                    task.slot * compact.down_slab_bytes,
+                source + compact.gate_slab_bytes + compact.up_slab_bytes,
+                compact.down_slab_bytes);
+            task.ok = true;
+        };
 
-        const int sidecar_fd = open_read_only_direct(state.sidecar_path);
-        if (sidecar_fd < 0) {
-            if (err) *err = "macro union cannot open the layer sidecar";
-            return MacroUnionOutcome::Failed;
+        int sidecar_fd = -1;
+        const bool use_prefetch = macro_union_prefetch_ != nullptr;
+        if (use_prefetch) {
+            MacroUnionPrefetchState & observation = *macro_union_prefetch_;
+            if (observation.model_layer != model_layer ||
+                observation.base_pos != base_pos ||
+                observation.observed_rows != routes.n_tokens ||
+                observation.record_count != tasks.size()) {
+                ++union_prefetch_mismatches_;
+                if (err) *err = "macro union prefetch identity mismatch";
+                return MacroUnionOutcome::Failed;
+            }
+            const auto wait_started = std::chrono::steady_clock::now();
+            wait_macro_union_prefetch(observation);
+            const uint64_t wait_ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - wait_started).count());
+            union_prefetch_wait_ns_ += wait_ns;
+            // Once delivery is overlapped, only this residual wait remains on
+            // the provider critical path represented by direct_io_ns.
+            direct_io_ns_ += wait_ns;
+            if (observation.failed.load()) {
+                if (err) *err = "macro union prefetched sidecar read failed";
+                return MacroUnionOutcome::Failed;
+            }
+            const auto tail_started = std::chrono::steady_clock::now();
+            std::array<uint16_t, kExpertCount> final_masks{};
+            uint64_t prefetched_bytes = 0;
+            for (ReadTask & task : tasks) {
+                const Group & group = groups[task.group];
+                const size_t key = static_cast<size_t>(group.expert) *
+                    kSlabCount + task.natural;
+                const MacroUnionPrefetchRecord * record =
+                    observation.records[key].get();
+                if (!record || !record->submitted || !record->ok ||
+                    !record->raw ||
+                    record->aligned_offset + record->prefix != task.record ||
+                    record->aligned_offset != task.aligned_offset ||
+                    record->aligned_bytes != task.aligned_bytes) {
+                    ++union_prefetch_mismatches_;
+                    if (err) *err = "macro union prefetched key mismatch";
+                    return MacroUnionOutcome::Failed;
+                }
+                final_masks[static_cast<size_t>(group.expert)] =
+                    static_cast<uint16_t>(
+                        final_masks[static_cast<size_t>(group.expert)] |
+                        (1u << task.natural));
+                install_payload(task, record->raw, record->prefix);
+                prefetched_bytes += task.aligned_bytes;
+                // The common tail records this physical read exactly once.
+                task.ok = true;
+            }
+            if (final_masks != observation.seen_masks) {
+                ++union_prefetch_mismatches_;
+                if (err) *err = "macro union prefetched mask mismatch";
+                return MacroUnionOutcome::Failed;
+            }
+            union_prefetch_keys_ += tasks.size();
+            union_prefetch_bytes_ += prefetched_bytes;
+            union_prefetch_tail_ns_ += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - tail_started).count());
+            sidecar_fd = observation.fd;
+            observation.fd = -1;
+            macro_union_prefetch_.reset();
+        } else {
+            sidecar_fd = open_read_only_direct(state.sidecar_path);
+            if (sidecar_fd < 0) {
+                if (err) *err = "macro union cannot open the layer sidecar";
+                return MacroUnionOutcome::Failed;
+            }
         }
         const auto close_sidecar = [&]() { close_fd(sidecar_fd); };
         const auto io_started = std::chrono::steady_clock::now();
         std::atomic<size_t> next{0};
         std::atomic<bool> failed{false};
-        const size_t workers = std::min<size_t>(16, tasks.size());
+        const size_t workers = use_prefetch
+            ? 0 : std::min<size_t>(16, tasks.size());
         std::vector<std::future<void>> workers_done;
         workers_done.reserve(workers);
         for (size_t worker = 0; worker < workers; ++worker) {
@@ -5297,30 +5610,9 @@ private:
                             sidecar_fd, model_layer, task.aligned_offset,
                             task.aligned_bytes, raw, task.cache_hit,
                             /* allow_cache = */ false)) {
-                        Group & group = groups[task.group];
-                        SparseCompactPayload & compact = *group.compact;
-                        const auto * source =
-                            static_cast<const uint8_t *>(raw) +
-                            static_cast<size_t>(
-                                task.record - task.aligned_offset);
-                        auto * destination =
-                            static_cast<uint8_t *>(compact.data);
-                        std::memcpy(
-                            destination + group.layout.gate_offset +
-                                task.slot * compact.gate_slab_bytes,
-                            source, compact.gate_slab_bytes);
-                        std::memcpy(
-                            destination + group.layout.up_offset +
-                                task.slot * compact.up_slab_bytes,
-                            source + compact.gate_slab_bytes,
-                            compact.up_slab_bytes);
-                        std::memcpy(
-                            destination + group.layout.down_offset +
-                                task.slot * compact.down_slab_bytes,
-                            source + compact.gate_slab_bytes +
-                                compact.up_slab_bytes,
-                            compact.down_slab_bytes);
-                        task.ok = true;
+                        install_payload(
+                            task, raw, static_cast<size_t>(
+                                task.record - task.aligned_offset));
                     } else {
                         failed = true;
                     }
@@ -5330,12 +5622,14 @@ private:
             }));
         }
         for (std::future<void> & done : workers_done) done.get();
-        direct_io_ns_ += static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - io_started).count());
+        if (!use_prefetch) {
+            direct_io_ns_ += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - io_started).count());
+        }
         if (failed.load() || std::any_of(
-                tasks.begin(), tasks.end(),
-                [](const ReadTask & task) { return !task.ok; })) {
+                    tasks.begin(), tasks.end(),
+                    [](const ReadTask & task) { return !task.ok; })) {
             close_sidecar();
             if (err && err->empty()) *err = "macro union sidecar read failed";
             return MacroUnionOutcome::Failed;
@@ -5469,7 +5763,8 @@ private:
                 const int token = macro_tokens[batch];
                 const size_t route_offset =
                     static_cast<size_t>(token) * kNativeTopK;
-                const TokenPlan & plan = plans[static_cast<size_t>(token)];
+                const MacroUnionTokenPlan & plan =
+                    plans[static_cast<size_t>(token)];
                 for (const int route : plan.stable_routes) {
                     const int expert =
                         routes.selected_ids[route_offset + route];
@@ -5525,7 +5820,8 @@ private:
         for (int token = 0; token < routes.n_tokens; ++token) {
             const size_t route_offset =
                 static_cast<size_t>(token) * kNativeTopK;
-            const TokenPlan & plan = plans[static_cast<size_t>(token)];
+            const MacroUnionTokenPlan & plan =
+                plans[static_cast<size_t>(token)];
             if (plan.fallback_routes.empty()) continue;
             if (!ordered_join_arena_.begin(
                     backend_, spec.output_dim, err)) {
@@ -5643,7 +5939,7 @@ private:
                 return MacroUnionOutcome::Failed;
             }
         }
-        for (const TokenPlan & plan : plans) {
+        for (const MacroUnionTokenPlan & plan : plans) {
             ++state.traffic.tokens;
             state.traffic.requested_nominal_slabs += layer_budget;
             state.traffic.selected_slab_records += plan.selected_count;
@@ -6440,6 +6736,21 @@ private:
                 static_cast<unsigned long long>(macro_union_groups_),
                 static_cast<unsigned long long>(macro_union_records_),
                 static_cast<unsigned long long>(macro_union_rows_));
+            if (macro_union_prefetch_enabled_) {
+                std::fprintf(stderr,
+                    "[kimi-k3-macro-union-prefetch] keys=%llu bytes=%llu "
+                    "wait_ms=%.3f tail_ms=%.3f duplicates=%llu "
+                    "mismatches=%llu aborts=%llu\n",
+                    static_cast<unsigned long long>(union_prefetch_keys_),
+                    static_cast<unsigned long long>(union_prefetch_bytes_),
+                    union_prefetch_wait_ns_ / 1.0e6,
+                    union_prefetch_tail_ns_ / 1.0e6,
+                    static_cast<unsigned long long>(
+                        union_prefetch_duplicates_),
+                    static_cast<unsigned long long>(
+                        union_prefetch_mismatches_),
+                    static_cast<unsigned long long>(union_prefetch_aborts_));
+            }
         }
 #if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
         if (ordered_device_join_) {
@@ -6497,11 +6808,20 @@ private:
     bool async_compact_queue_ = false;
     bool p40_wide_async_join_ = false;
     bool exact_macro_union_ = false;
+    bool macro_union_prefetch_enabled_ = false;
+    std::unique_ptr<MacroUnionPrefetchState> macro_union_prefetch_;
     uint64_t macro_union_attempted_ = 0;
     uint64_t macro_union_completed_ = 0;
     uint64_t macro_union_groups_ = 0;
     uint64_t macro_union_records_ = 0;
     uint64_t macro_union_rows_ = 0;
+    uint64_t union_prefetch_keys_ = 0;
+    uint64_t union_prefetch_bytes_ = 0;
+    uint64_t union_prefetch_wait_ns_ = 0;
+    uint64_t union_prefetch_tail_ns_ = 0;
+    uint64_t union_prefetch_duplicates_ = 0;
+    uint64_t union_prefetch_mismatches_ = 0;
+    uint64_t union_prefetch_aborts_ = 0;
 #if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
     P42OrderedJoinArena ordered_join_arena_;
 #endif
@@ -6699,6 +7019,7 @@ bool create_kimi_k3_calibrated_provider_from_env(
     bool async_queue = false;
     bool p40_wide_async_join = false;
     bool exact_macro_union = false;
+    bool macro_union_prefetch = false;
     if (!parse_binary_flag(
             std::getenv("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN"),
             ordered_join) ||
@@ -6720,13 +7041,27 @@ bool create_kimi_k3_calibrated_provider_from_env(
         if (err) *err = "DFLASH_KIMI_EXACT_MACRO_UNION must be 0 or 1";
         return false;
     }
+    if (!parse_binary_flag(
+            std::getenv("DFLASH_KIMI_EXACT_MACRO_UNION_PREFETCH"),
+            macro_union_prefetch)) {
+        if (err) {
+            *err = "DFLASH_KIMI_EXACT_MACRO_UNION_PREFETCH must be 0 or 1";
+        }
+        return false;
+    }
+    if (macro_union_prefetch && !exact_macro_union) {
+        if (err) {
+            *err = "macro union prefetch requires exact macro union";
+        }
+        return false;
+    }
     if (async_queue && !ordered_join) {
         if (err) *err = "P45 async compact queue requires P42 ordered join";
         return false;
     }
     if (!kind || !*kind || std::strcmp(kind, "exact") == 0) {
         if (ordered_join || async_queue || p40_wide_async_join ||
-            exact_macro_union) {
+            exact_macro_union || macro_union_prefetch) {
             if (err) {
                 *err = "P42/P45/P40 wide async join/macro union require "
                     "all-layers-calibrated96";
@@ -6760,7 +7095,7 @@ bool create_kimi_k3_calibrated_provider_from_env(
     auto provider = std::make_unique<CalibratedAllLayerProvider>();
     if (!provider->init(
             expert_backend, aux, sidecars, ordered_join, async_queue,
-            p40_wide_async_join, exact_macro_union,
+            p40_wide_async_join, exact_macro_union, macro_union_prefetch,
             std::getenv("DFLASH_KIMI_CALIBRATED96_METRICS_OUT"), err)) {
         return false;
     }
