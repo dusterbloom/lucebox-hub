@@ -4729,6 +4729,7 @@ private:
             std::vector<Job> jobs;
             std::unique_ptr<SparseCompactPayload> compact;
             KimiK3CompactWireLayout layout{};
+            size_t staging_offset = 0;
         };
 
         const int layer_budget = budget_for_layer(model_layer);
@@ -4860,6 +4861,8 @@ private:
             bool ok = false;
         };
         std::vector<ReadTask> tasks;
+        constexpr size_t kStagingAlignment = 256;
+        size_t staging_bytes = 0;
         for (size_t group_index = 0; group_index < groups.size();
              ++group_index) {
             Group & group = groups[group_index];
@@ -4876,12 +4879,33 @@ private:
             if (!kimi_k3_compact_wire_layout(
                     compact.slab_count, compact.gate_slab_bytes,
                     compact.up_slab_bytes, compact.down_slab_bytes,
-                    &group.layout) ||
-                !compact.ensure(group.layout.total_bytes, err)) {
+                    &group.layout)) {
                 if (err && err->empty())
                     *err = "macro union compact layout is invalid";
                 return MacroUnionOutcome::Failed;
             }
+            staging_bytes = (staging_bytes + kStagingAlignment - 1) &
+                ~(kStagingAlignment - 1);
+            group.staging_offset = staging_bytes;
+            if (group.layout.total_bytes >
+                    std::numeric_limits<size_t>::max() - staging_bytes) {
+                if (err) *err = "macro union staging size overflow";
+                return MacroUnionOutcome::Failed;
+            }
+            staging_bytes += group.layout.total_bytes;
+        }
+        if (staging_bytes != 0 &&
+            !macro_union_staging_.ensure(staging_bytes, err)) {
+            return MacroUnionOutcome::Failed;
+        }
+        for (size_t group_index = 0; group_index < groups.size();
+             ++group_index) {
+            Group & group = groups[group_index];
+            SparseCompactPayload & compact = *group.compact;
+            compact.set_external(
+                static_cast<uint8_t *>(macro_union_staging_.data) +
+                    group.staging_offset,
+                group.layout.total_bytes);
             compact.bytes = group.layout.total_bytes;
             std::memset(compact.data, 0, compact.metadata_bytes);
             size_t slot = 0;
@@ -5139,6 +5163,7 @@ private:
             if (fallback_batch &&
                 !sparse_device_evaluator_.begin_compact_async_batch(
                     backend_, kNativeTopK, err)) {
+                sparse_device_evaluator_.abort_compact_async_batch();
                 ordered_join_arena_.discard();
                 close_sidecar();
                 if (err && err->empty())
@@ -6072,6 +6097,7 @@ private:
     std::unique_ptr<P20DirectReadPool> direct_read_pool_;
     std::array<SparseCompactPayload, kNativeTopK>
         direct_compact_payloads_;
+    SparseCompactPayload macro_union_staging_;
     int budget_ = 96;
     std::vector<int32_t> layer_budgets_;
     std::string layer_budget_path_;
