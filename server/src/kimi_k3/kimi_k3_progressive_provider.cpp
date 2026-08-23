@@ -4462,7 +4462,7 @@ public:
               const std::string & sidecar_directory,
               const std::string & route_stats_directory,
               int route_prefix_depth, bool ordered_device_join,
-              bool async_compact_queue,
+              bool async_compact_queue, bool layer_major_prefetch,
               const char * metrics_path,
               std::string * err) {
         if (!backend || aux_directory.empty() || sidecar_directory.empty()) {
@@ -4481,6 +4481,7 @@ public:
             return false;
         }
         backend_ = backend;
+        layer_major_prefetch_ = layer_major_prefetch;
         route_prefix_depth_ = route_prefix_depth;
         budget_ = route_prefix_depth_ > 0 ? 4 * route_prefix_depth_ : 96;
         if (const char * authoritative =
@@ -4838,6 +4839,13 @@ public:
         if (!oracle_trace_path_.empty() && !load_oracle_trace(err)) {
             return false;
         }
+        if (layer_major_prefetch_ && !supports_width(8)) {
+            if (err) {
+                *err = "layer-major prefetch requires the qualified width-8 "
+                    "calibrated96 direct-read envelope";
+            }
+            return false;
+        }
         metrics_path_ = metrics_path && *metrics_path ? metrics_path : "";
         const std::string budget_description = layer_budgets_.empty()
             ? std::to_string(budget_) : "table:" + layer_budget_path_;
@@ -4847,6 +4855,7 @@ public:
             "io-backend=%s persistent-scratch=%s compact-upload=%s "
             "pinned-compact=%s direct-pinned-compact=%s p28-oracle=%s "
             "p40-device-cache=%s p41-compact-executor=%s p42-ordered-join=%s "
+            "layer-major-prefetch=%s "
             "exact-source=%s "
             "p30-host-cache-mib=%.1f "
             "valid-layers=%d/92 "
@@ -4870,6 +4879,7 @@ public:
             device_variant_cache_ ? "enabled" : "disabled",
             compact_executor_ ? "enabled" : "disabled",
             ordered_device_join_ ? "enabled" : "disabled",
+            layer_major_prefetch_ ? "enabled" : "disabled",
             sidecar_authoritative_ ? "sidecar" : "native-model",
             static_cast<double>(read_cache_.capacity()) / (1024.0 * 1024.0),
             valid_layers);
@@ -4915,7 +4925,11 @@ public:
             if (err) *err = "calibrated96 prefill width is not qualified";
             return false;
         }
-        return evaluate_prefill_layer_major(
+        if (layer_major_prefetch_) {
+            return evaluate_prefill_layer_major(
+                model_layer, base_pos, spec, routes, exact_engine, output, err);
+        }
+        return evaluate(
             model_layer, base_pos, spec, routes, exact_engine, output, err);
     }
 
@@ -7765,6 +7779,7 @@ private:
     uint64_t device_zero_bytes_ = 0;
     uint64_t direct_physical_bytes_ = 0;
     uint64_t direct_io_ns_ = 0;
+    bool layer_major_prefetch_ = false;
     uint64_t layer_major_prefetches_ = 0;
     uint64_t layer_major_requested_records_ = 0;
     uint64_t layer_major_unique_records_ = 0;
@@ -8040,6 +8055,14 @@ bool create_kimi_k3_progressive_provider_from_env(
             "P45 async compact queue requires P42 ordered join";
         return false;
     }
+    bool layer_major_prefetch = false;
+    if (!parse_binary_flag(
+            std::getenv("DFLASH_KIMI_LAYER_MAJOR_PREFETCH"),
+            layer_major_prefetch)) {
+        if (err) *err =
+            "DFLASH_KIMI_LAYER_MAJOR_PREFETCH must be 0 or 1";
+        return false;
+    }
     const bool all_layers_calibrated96 =
         raw_kind && std::strcmp(raw_kind, "all-layers-calibrated96") == 0;
     const bool all_layers_four_route_half =
@@ -8048,6 +8071,12 @@ bool create_kimi_k3_progressive_provider_from_env(
     const bool all_layers_four_route_full =
         raw_kind && std::strcmp(raw_kind,
                     "all-layers-four-route-full-slabs") == 0;
+    if (layer_major_prefetch && !all_layers_calibrated96) {
+        if (err) {
+            *err = "layer-major prefetch requires all-layers-calibrated96";
+        }
+        return false;
+    }
     if (p42_requested && (!all_layers_calibrated96 ||
             expert_backend != destination_backend)) {
         if (err) {
@@ -8085,7 +8114,7 @@ bool create_kimi_k3_progressive_provider_from_env(
                 route_stats_directory ? route_stats_directory : "",
                 all_layers_four_route_half ? 6 :
                     all_layers_four_route_full ? 12 : 0,
-                p42_requested, p45_requested,
+                p42_requested, p45_requested, layer_major_prefetch,
                 std::getenv("DFLASH_KIMI_CALIBRATED96_METRICS_OUT"), err)) {
             return false;
         }
