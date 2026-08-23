@@ -575,6 +575,7 @@ if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
     endif()
 elseif(DFLASH27B_GPU_BACKEND STREQUAL "hip")
     target_sources(dflash_common PRIVATE
+        src/kimi_k3/kimi_k3_calibrated_provider.cpp
         src/kimi_k3/kimi_k3_ordered_join.cu
         src/kimi_k3/kimi_k3_sparse_scatter.cu
         src/deepseek4/deepseek4_hc_cuda.cu)
@@ -1106,6 +1107,27 @@ if(DFLASH27B_TESTS)
         endforeach()
         unset(_k3_hip_target)
         unset(_k3_hip_test)
+
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_kimi_k3_calibrated_provider.cpp")
+            add_executable(test_kimi_k3_calibrated_provider
+                test/test_kimi_k3_calibrated_provider.cpp)
+            target_include_directories(test_kimi_k3_calibrated_provider PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/src
+                ${CMAKE_CURRENT_SOURCE_DIR}/hip_compat)
+            target_compile_definitions(dflash_common PRIVATE
+                DFLASH_KIMI_P45_ASYNC_TEST_HOOK=1)
+            target_compile_definitions(test_kimi_k3_calibrated_provider PRIVATE
+                DFLASH27B_BACKEND_HIP=1
+                GGML_USE_HIP
+                DFLASH_KIMI_P45_ASYNC_TEST_HOOK=1)
+            target_link_libraries(test_kimi_k3_calibrated_provider PRIVATE
+                dflash_common
+                ggml
+                ${DFLASH27B_GGML_BACKEND_TARGET}
+                hip::host)
+            list(APPEND _raw_unit_test_targets
+                test_kimi_k3_calibrated_provider)
+        endif()
     endif()
     # HIP-only standalone build; CUDA backend is covered by aggregated test_server_unit.
     if(DFLASH27B_GPU_BACKEND STREQUAL "hip" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_draft_topk_cuda.cpp")
