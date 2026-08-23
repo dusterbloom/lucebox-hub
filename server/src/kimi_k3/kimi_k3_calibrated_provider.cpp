@@ -2634,6 +2634,16 @@ public:
                 static_cast<size_t>(cache_mib) * 1024 * 1024;
         }
         if (!parse_binary_flag(std::getenv(
+                "DFLASH_KIMI_P40_LAYER_EPOCH"), enabled)) {
+            if (err) *err = "DFLASH_KIMI_P40_LAYER_EPOCH must be 0 or 1";
+            return false;
+        }
+        if (enabled && !device_variant_cache_) {
+            if (err) *err = "P40 layer epoch requires the P40 device cache";
+            return false;
+        }
+        p40_layer_epoch_ = enabled;
+        if (!parse_binary_flag(std::getenv(
                 "DFLASH_KIMI_P41_COMPACT_EXECUTOR"), enabled)) {
             if (err) *err =
                 "DFLASH_KIMI_P41_COMPACT_EXECUTOR must be 0 or 1";
@@ -2776,7 +2786,8 @@ public:
             "requested-budget=%s physical-layout=%s "
             "io-backend=%s persistent-scratch=%s compact-upload=%s "
             "pinned-compact=%s direct-pinned-compact=%s "
-            "p40-device-cache=%s p41-compact-executor=%s p42-ordered-join=%s "
+            "p40-device-cache=%s p40-layer-epoch=%s "
+            "p41-compact-executor=%s p42-ordered-join=%s "
             "exact-source=%s "
             "p30-host-cache-mib=%.1f "
             "valid-layers=%d/92 "
@@ -2793,6 +2804,7 @@ public:
             sparse_delivery_ == KimiK3SparseDeliveryPolicy::DirectPinnedCompact
                 ? "enabled" : "disabled",
             device_variant_cache_ ? "enabled" : "disabled",
+            p40_layer_epoch_ ? "enabled" : "disabled",
             compact_executor_ ? "enabled" : "disabled",
             ordered_device_join_ ? "enabled" : "disabled",
             sidecar_authoritative_ ? "sidecar" : "native-model",
@@ -2836,6 +2848,13 @@ public:
             std::string * err) override {
         if (!supports_width(static_cast<size_t>(routes.n_tokens))) {
             if (err) *err = "calibrated96 prefill width is not qualified";
+            return false;
+        }
+        // The P58 A/B starts one cold external-cache epoch per wide layer.
+        // Width-one evaluation/decode enters evaluate() directly and never
+        // resets P40 residency.
+        if (p40_layer_epoch_ &&
+                !exact_engine.reset_external_device_cache(err)) {
             return false;
         }
         return evaluate(
@@ -4761,6 +4780,7 @@ private:
     KimiK3SparseDeliveryPolicy sparse_delivery_ =
         KimiK3SparseDeliveryPolicy::BufferedSlabs;
     bool device_variant_cache_ = false;
+    bool p40_layer_epoch_ = false;
     bool compact_executor_ = false;
     bool ordered_device_join_ = false;
     bool async_compact_queue_ = false;

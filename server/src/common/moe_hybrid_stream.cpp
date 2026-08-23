@@ -1868,6 +1868,43 @@ size_t MoeHybridStreamEngine::external_device_cache_bytes() const {
     return available_slots * runtime_->device_stride;
 }
 
+bool MoeHybridStreamEngine::reset_external_device_cache(std::string * err) {
+    if (!external_lease_control_ || !runtime_) {
+        if (err) *err = "external device cache engine is not live";
+        return false;
+    }
+    std::lock_guard<std::mutex> control_guard(
+        external_lease_control_->mutex);
+    if (external_lease_control_->engine != this) {
+        if (err) *err = "external device cache engine is not live";
+        return false;
+    }
+    std::lock_guard<std::recursive_mutex> runtime_guard(
+        runtime_->compute_mutex);
+    for (const Runtime::DeviceSlot & slot : runtime_->device_slots) {
+        if (slot.external && (slot.pending || slot.compute_users != 0)) {
+            if (err) *err = "external device cache still has an active lease";
+            return false;
+        }
+    }
+    if (runtime_->backend) ggml_backend_synchronize(runtime_->backend);
+    if (runtime_->transfer_backend) {
+        ggml_backend_synchronize(runtime_->transfer_backend);
+    }
+    for (size_t i = 0; i < runtime_->device_slots.size(); ++i) {
+        Runtime::DeviceSlot & slot = runtime_->device_slots[i];
+        if (!slot.external) continue;
+        slot.host_lease.reset();
+        clear_slot_identity(*runtime_, static_cast<int>(i));
+        slot.pending = false;
+        slot.compute_users = 0;
+        slot.frequency = 0;
+        slot.last_touch = 0;
+    }
+    runtime_->external_index.clear();
+    return true;
+}
+
 size_t MoeHybridStreamEngine::pinned_expert_count() const {
     return runtime_ ? runtime_->pinned_experts : 0;
 }

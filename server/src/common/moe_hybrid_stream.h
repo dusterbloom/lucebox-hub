@@ -304,6 +304,11 @@ public:
     size_t pinned_expert_count() const;
     ggml_backend_t compute_backend() const;
 
+    // Drop adapter-populated cache identities while retaining the allocated
+    // device pool and ordinary profile-warmed entries. This fails while an
+    // external lease is active.
+    bool reset_external_device_cache(std::string * err = nullptr);
+
     // Acquire one externally populated cache variant. Lack of spare capacity
     // or an oversized variant is a normal fallback: this returns true with an
     // empty lease. Invalid identities and internal state errors return false.

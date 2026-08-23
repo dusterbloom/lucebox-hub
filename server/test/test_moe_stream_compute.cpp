@@ -704,7 +704,7 @@ void run_pinned_cache_case(ggml_backend_t backend) {
 
     MoeStreamConfig config;
     config.device_slots = 3;
-    config.device_cache_bytes = 0;
+    config.device_cache_bytes = 4 * model.slot_bytes;
     config.graph_cache_entries = 0;
     config.nvme.backend = MoeNvmeBackend::ThreadPool;
     config.nvme.direct_io = MoeNvmeDirectMode::Disabled;
@@ -715,7 +715,7 @@ void run_pinned_cache_case(ggml_backend_t backend) {
     std::string error;
     STREAM_REQUIRE(engine.init(
         backend, model.slot_bytes, storage, config, &error));
-    STREAM_REQUIRE(engine.device_slot_count() == 3);
+    STREAM_REQUIRE(engine.device_slot_count() >= 4);
 
     MoeStreamExpertSpec spec;
     spec.input_dim = kInput;
@@ -743,11 +743,25 @@ void run_pinned_cache_case(ggml_backend_t backend) {
         STREAM_REQUIRE(engine.activate_device_slot(slot, &error));
         engine.release_device_slot(slot);
     };
-    // Only two slots are evictable. Four distinct cold keys force churn.
+    // Four distinct cold keys force churn outside the pinned entry.
     touch(0, 1);
     touch(0, 2);
     touch(1, 0);
     touch(1, 1);
+
+    MoeStreamExternalKey external_key;
+    external_key.source_domain = 0x4b3350494e4e4544ULL;
+    external_key.source_generation = 1;
+    external_key.layer = 1;
+    external_key.expert = 7;
+    external_key.spec = spec;
+    MoeStreamExternalLease external;
+    STREAM_REQUIRE(engine.acquire_external_device_lease(
+        external_key, model.slot_bytes, 0x001, external, &error));
+    STREAM_REQUIRE(external && external.commit(0x001, &error));
+    external.reset();
+    STREAM_REQUIRE(engine.reset_external_device_cache(&error));
+    STREAM_REQUIRE(engine.pinned_expert_count() == 1);
 
     const uint64_t requests_before_hot_reuse = engine.io_stats().requests;
     touch(0, 0);
@@ -785,6 +799,8 @@ void run_external_variant_cache_case(ggml_backend_t backend) {
     STREAM_REQUIRE(first && !first.cache_hit() && first.clear_required());
     STREAM_REQUIRE(first.resident_mask() == 0);
     STREAM_REQUIRE(first.missing_mask() == 0x003);
+    STREAM_REQUIRE(!engine.reset_external_device_cache(&error));
+    error.clear();
 
     ggml_init_params params{};
     params.mem_size = 4096;
@@ -816,6 +832,21 @@ void run_external_variant_cache_case(ggml_backend_t backend) {
     STREAM_REQUIRE(partial.missing_mask() == 0x004);
     STREAM_REQUIRE(partial.commit(0x004, &error));
     partial.reset();
+
+    const int slots_before_reset = engine.device_slot_count();
+    const size_t bytes_before_reset = engine.external_device_cache_bytes();
+    STREAM_REQUIRE(engine.reset_external_device_cache(&error));
+    STREAM_REQUIRE(engine.device_slot_count() == slots_before_reset);
+    STREAM_REQUIRE(engine.external_device_cache_bytes() == bytes_before_reset);
+    MoeStreamExternalLease reset_cold;
+    STREAM_REQUIRE(engine.acquire_external_device_lease(
+        key, 2048, 0x007, reset_cold, &error));
+    STREAM_REQUIRE(reset_cold && !reset_cold.cache_hit());
+    STREAM_REQUIRE(reset_cold.clear_required());
+    STREAM_REQUIRE(reset_cold.resident_mask() == 0);
+    STREAM_REQUIRE(reset_cold.missing_mask() == 0x007);
+    STREAM_REQUIRE(reset_cold.commit(0x007, &error));
+    reset_cold.reset();
 
     MoeStreamExternalKey stale = key;
     stale.source_generation = 12;
