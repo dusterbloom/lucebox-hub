@@ -1,0 +1,111 @@
+{
+  "schema": "k3-p40-p41-phase-transition-runtime-v1",
+  "date": "2026-08-23",
+  "status": "QUALIFIED",
+  "verdict": "PASS",
+  "question": "Can one exact single-owner GPU1 process use P40 for P58 prompt macros and then retain the established P41/P42/P45/P46 width-one path without changing output?",
+  "source": {
+    "fork_commit": "fe16d8f7",
+    "integration_commit": "008baf8c",
+    "wire_fix_commit": "fe16d8f7",
+    "remote_scratch_commit": "c1ddf1a0d047bf7fe43ecc0eeed4be15bf2edc7c",
+    "runner_sha256": "1cdef816966c37545aeacabdecd82e511a6a657a7c247e92de76bb77db6aa46c"
+  },
+  "fixture": {
+    "path": "server/test/fixtures/kimi_k3_p23_capital_quality.jsonl",
+    "sha256": "e8386870df899270956f8fc820ff23e940e854e33124afdc9fabd056754afbfa",
+    "prompt_tokens": 30,
+    "macro_width": 8,
+    "macro_forwards": 3,
+    "width_one_prompt_tail_forwards": 6,
+    "true_decode_forwards": 1,
+    "platform_profile": "performance",
+    "topology": "single-owner physical GPU1 gfx1151",
+    "p30_host_cache_mib": 16384,
+    "p40_device_cache_mib": 8192
+  },
+  "configuration": {
+    "p40_device_variant_cache": true,
+    "p41_compact_executor": true,
+    "p42_ordered_device_join": true,
+    "p45_async_compact_queue": true,
+    "p46_persistent_routed_preparation": true,
+    "p52_persistent_routed_join": false,
+    "p53_device_hidden_chain": false,
+    "p58_exact_multirow": true
+  },
+  "result": {
+    "output_tokens": [39818, 18009],
+    "output_text": "Tokyo",
+    "matches_registered_output": true,
+    "prefill": {
+      "positions": 30,
+      "forwards": 9,
+      "seconds": 43.536310193,
+      "positions_per_second": 0.689079986,
+      "physical_direct_read_bytes": 77586309120,
+      "payload_h2d_bytes": 103908188160
+    },
+    "decode": {
+      "positions": 1,
+      "forwards": 1,
+      "seconds": 1.321584845,
+      "positions_per_second": 0.756667272,
+      "physical_direct_read_bytes": 3061252096,
+      "payload_h2d_bytes": 5024452608
+    },
+    "p40": {
+      "completed": 27034,
+      "hits": 8614,
+      "extensions": 860,
+      "cold": 17560,
+      "evictions": 16465,
+      "scatter_calls": 18420,
+      "scatter_avoided": 8614,
+      "fallbacks": 0,
+      "aborted": 0,
+      "unavailable": 0
+    },
+    "p41": {
+      "attempted": 7791,
+      "completed": 7791,
+      "fallbacks": 0,
+      "invalid": 0
+    },
+    "p45": {
+      "begins": 644,
+      "jobs": 7791,
+      "layer_flushes": 644,
+      "abort_syncs": 0,
+      "max_inflight": 16
+    },
+    "p42": {
+      "expert_d2d_copies": 7791,
+      "join_launches": 644,
+      "output_d2d_copies": 644
+    },
+    "p46": {
+      "graphs": 68,
+      "executions": 476
+    },
+    "swap_events": 0,
+    "exit_status": 0
+  },
+  "failure_and_fix": {
+    "invalid_commit": "008baf8c",
+    "invalid_signature": "P40 completed 1045 events, P41 attempted 0, then the next P58 router output became invalid",
+    "root_cause": "The global P41 enable selected component-major direct-read staging during a P40 macro. P40/P23 scatter expects record-major staging; equal byte counts let the semantically scrambled payload pass validation.",
+    "fix": "Select staging layout from the active consumer: record-major for P40 and component-major for P41. The P23/P40 consumer now rejects component-major payloads fail-closed.",
+    "p40_only_control_passed": true,
+    "invalid_full_chain_stderr_sha256": "89b363c617e3fc3765f73076f7400febbfe8d870d43779f43e51f6dfbab79b5b",
+    "invalid_p40_p41_stderr_sha256": "6cc5e2514c78d9245947f75cf571cad326dad57cfe9d8f81e874f760bf0f51e0"
+  },
+  "artifacts": {
+    "remote_root": "/tmp/k3-p58-p40-m8-tail-fe16d8f7",
+    "suite_manifest_sha256": "6128e5eb78da21af916d6cc4d383e3436d61abfd51d547b8a163e933af4ffce2",
+    "traffic_sha256": "d40cdc9790cd1677efd431b15d460ca3eb89da64ddfdf9f3ef57087cbdc04bbc",
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_sha256": "f17b986e6fae73aafb80750149bbc5c301b96e95e62f38d70c8a58a2e5cf7e78"
+  },
+  "interpretation": "The exact phase-specific integration is functionally viable. This short M8 transition run is a lifecycle/correctness gate, not a production prefill throughput claim; the qualified M1024 same-run performance result remains the speed evidence."
+}
