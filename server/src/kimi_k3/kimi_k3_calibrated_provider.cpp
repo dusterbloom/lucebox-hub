@@ -3364,14 +3364,12 @@ struct MacroUnionPrefetchState {
     int base_pos = 0;
     int observed_rows = 0;
     int fd = -1;
-    size_t record_count = 0;
     std::array<uint16_t, kExpertCount> seen_masks{};
     std::array<std::unique_ptr<MacroUnionPrefetchRecord>,
                kExpertCount * kSlabCount> records{};
     std::vector<std::shared_ptr<MacroUnionPrefetchEpoch>> epochs;
     std::vector<std::future<void>> futures;
     std::atomic<bool> failed{false};
-    bool service_accounted = false;
 };
 // Every routed layer owns independent, provenance-checked calibration cards.
 // Any absent, malformed, or provenance-free layer stays exact.  Within a valid
@@ -3663,12 +3661,6 @@ public:
 #endif
         }
         exact_macro_union_ = exact_macro_union;
-        if (macro_union_prefetch && !exact_macro_union_) {
-            if (err) {
-                *err = "macro union prefetch requires exact macro union";
-            }
-            return false;
-        }
         macro_union_prefetch_enabled_ = macro_union_prefetch;
         if (const char * trace =
                 std::getenv("DFLASH_KIMI_P40_CACHE_TRACE")) {
@@ -3894,7 +3886,6 @@ public:
                 uint16_t & seen =
                     observation.seen_masks[static_cast<size_t>(expert)];
                 seen = static_cast<uint16_t>(seen | (1u << natural));
-                ++observation.record_count;
             }
         }
         ++observation.observed_rows;
@@ -4354,7 +4345,6 @@ private:
 
     void account_macro_union_prefetch_service(
             MacroUnionPrefetchState & observation) {
-        if (observation.service_accounted) return;
         uint64_t service_ns = 0;
         uint64_t interval_end = 0;
         for (const auto & epoch : observation.epochs) {
@@ -4369,7 +4359,6 @@ private:
         // overlap, so charge the union of their active submission windows.
         direct_io_ns_ += service_ns;
         union_prefetch_service_ns_ += service_ns;
-        observation.service_accounted = true;
     }
 
     void account_aborted_macro_union_prefetch_reads(
@@ -5598,8 +5587,7 @@ private:
             MacroUnionPrefetchState & observation = *macro_union_prefetch_;
             if (observation.model_layer != model_layer ||
                 observation.base_pos != base_pos ||
-                observation.observed_rows != routes.n_tokens ||
-                observation.record_count != tasks.size()) {
+                observation.observed_rows != routes.n_tokens) {
                 ++union_prefetch_mismatches_;
                 if (err) *err = "macro union prefetch identity mismatch";
                 return MacroUnionOutcome::Failed;
@@ -5610,7 +5598,6 @@ private:
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - wait_started).count());
             union_prefetch_wait_ns_ += wait_ns;
-            account_macro_union_prefetch_service(observation);
             if (observation.failed.load()) {
                 if (err) *err = "macro union prefetched sidecar read failed";
                 return MacroUnionOutcome::Failed;
@@ -5624,8 +5611,7 @@ private:
                     kSlabCount + task.natural;
                 const MacroUnionPrefetchRecord * record =
                     observation.records[key].get();
-                if (!record || !record->submitted || !record->ok ||
-                    !record->raw ||
+                if (!record || !record->ok || !record->raw ||
                     record->aligned_offset + record->prefix != task.record ||
                     record->aligned_offset != task.aligned_offset ||
                     record->aligned_bytes != task.aligned_bytes) {
@@ -5639,8 +5625,6 @@ private:
                         (1u << task.natural));
                 install_payload(task, record->raw, record->prefix);
                 prefetched_bytes += task.aligned_bytes;
-                // The common tail records this physical read exactly once.
-                task.ok = true;
             }
             if (final_masks != observation.seen_masks) {
                 ++union_prefetch_mismatches_;
@@ -5652,6 +5636,7 @@ private:
             union_prefetch_tail_ns_ += static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - tail_started).count());
+            account_macro_union_prefetch_service(observation);
             sidecar_fd = observation.fd;
             observation.fd = -1;
             macro_union_prefetch_.reset();
@@ -7146,7 +7131,7 @@ bool create_kimi_k3_calibrated_provider_from_env(
     }
     if (!kind || !*kind || std::strcmp(kind, "exact") == 0) {
         if (ordered_join || async_queue || p40_wide_async_join ||
-            exact_macro_union || macro_union_prefetch) {
+            exact_macro_union) {
             if (err) {
                 *err = "P42/P45/P40 wide async join/macro union require "
                     "all-layers-calibrated96";
