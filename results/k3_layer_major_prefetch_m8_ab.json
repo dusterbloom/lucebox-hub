@@ -1,0 +1,78 @@
+{
+  "schema": "k3-layer-major-prefetch-m8-ab-v1",
+  "date": "2026-08-23",
+  "status": "NO_GO_REMOVED",
+  "question": "Does union-deduplicating and offset-ordering one exact M=8 routed layer into the existing P30 cache improve the retained P58 path?",
+  "source_commit_tested": "7d54e24c",
+  "platform": {
+    "host": "Lucebox4",
+    "backend": "ROCm/HIP",
+    "core_and_expert_device": "physical GPU1 gfx1151",
+    "build_architectures": ["gfx1201", "gfx1151"],
+    "platform_profile": "performance",
+    "build_parallelism": 4
+  },
+  "fixture": {
+    "prompt_ids": [18699],
+    "oracle_ids": [11, 374, 4936, 261, 814, 2742, 316, 374],
+    "width": 8,
+    "provider": "sidecar-authoritative all-layer calibrated96",
+    "topology": "single-owner GPU1",
+    "p30_host_cache_mib": 16384,
+    "physical_layout": "scratch",
+    "io_backend": "direct-pread",
+    "compact_executor": true
+  },
+  "arms": {
+    "control": {
+      "layer_major_prefetch": false,
+      "sequential_seconds": 10.54450501,
+      "verify_seconds": 9.187053253,
+      "commit_seconds": 0.575937816,
+      "verify_plus_commit_seconds": 9.762991069,
+      "verify_physical_direct_read_bytes": 21047894016,
+      "verify_direct_io_ns": 5156871289,
+      "logits_bit_equal": true,
+      "recurrent_state_hash_equal": true,
+      "mla_rows_hash_equal": true,
+      "compact_fallbacks": 0,
+      "compact_invalid": 0
+    },
+    "union_ordered_prefetch": {
+      "layer_major_prefetch": true,
+      "sequential_seconds": 10.391296225,
+      "verify_seconds": 9.653159058,
+      "commit_seconds": 0.572390615,
+      "verify_plus_commit_seconds": 10.225549673,
+      "verify_physical_direct_read_bytes": 21047894016,
+      "verify_direct_io_ns": 5693230249,
+      "requested_records": 72672,
+      "unique_records": 38781,
+      "record_reduction_fraction": 0.466355680317041,
+      "logits_bit_equal": true,
+      "recurrent_state_hash_equal": true,
+      "mla_rows_hash_equal": true,
+      "compact_fallbacks": 0,
+      "compact_invalid": 0
+    }
+  },
+  "comparison": {
+    "physical_bytes_equal": true,
+    "verify_plus_commit_regression_fraction": 0.04737877979513283,
+    "direct_io_regression_fraction": 0.10400859938934182,
+    "interpretation": "P30 already deduplicates the physical payloads at M=8. The eager union pass adds cache traffic and makes direct-I/O service slower."
+  },
+  "decision": {
+    "verdict": "NO_GO",
+    "production_activation": false,
+    "expert_batching_earned": false,
+    "wider_live_widths_earned": false,
+    "action": "Remove the losing prefetch hot path; retain the exact prefill executor, routed-service seam, and pure deterministic planner."
+  },
+  "artifacts": {
+    "remote_root": "/home/duster/kimi-k3-deploy/k3-layer-major-prefill-m8-042c6fdd-20260823",
+    "runner_sha256": "87096080c4913b0f53e0bd856abd59b0d395528d2038d106a94257e33e8c1763",
+    "control_json_sha256": "d4b0dd06877b0efd354d15c30cc36b6b27755be50f668e4e26025b5d75c79cb8",
+    "prefetch_json_sha256": "3a45edc511a9561523e226e1f14ad63d401093b148f3880bae1a1a8a3e6e9a1f"
+  }
+}

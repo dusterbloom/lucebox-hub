@@ -1,5 +1,4 @@
 #include "kimi_k3_progressive_provider.h"
-#include "kimi_k3_prefill_plan.h"
 #include "kimi_k3_ordered_join.h"
 #include "kimi_k3_sparse_scatter.h"
 #include "device_runtime.h"
@@ -4462,7 +4461,7 @@ public:
               const std::string & sidecar_directory,
               const std::string & route_stats_directory,
               int route_prefix_depth, bool ordered_device_join,
-              bool async_compact_queue, bool layer_major_prefetch,
+              bool async_compact_queue,
               const char * metrics_path,
               std::string * err) {
         if (!backend || aux_directory.empty() || sidecar_directory.empty()) {
@@ -4481,7 +4480,6 @@ public:
             return false;
         }
         backend_ = backend;
-        layer_major_prefetch_ = layer_major_prefetch;
         route_prefix_depth_ = route_prefix_depth;
         budget_ = route_prefix_depth_ > 0 ? 4 * route_prefix_depth_ : 96;
         if (const char * authoritative =
@@ -4839,13 +4837,6 @@ public:
         if (!oracle_trace_path_.empty() && !load_oracle_trace(err)) {
             return false;
         }
-        if (layer_major_prefetch_ && !supports_width(8)) {
-            if (err) {
-                *err = "layer-major prefetch requires the qualified width-8 "
-                    "calibrated96 direct-read envelope";
-            }
-            return false;
-        }
         metrics_path_ = metrics_path && *metrics_path ? metrics_path : "";
         const std::string budget_description = layer_budgets_.empty()
             ? std::to_string(budget_) : "table:" + layer_budget_path_;
@@ -4855,7 +4846,6 @@ public:
             "io-backend=%s persistent-scratch=%s compact-upload=%s "
             "pinned-compact=%s direct-pinned-compact=%s p28-oracle=%s "
             "p40-device-cache=%s p41-compact-executor=%s p42-ordered-join=%s "
-            "layer-major-prefetch=%s "
             "exact-source=%s "
             "p30-host-cache-mib=%.1f "
             "valid-layers=%d/92 "
@@ -4879,7 +4869,6 @@ public:
             device_variant_cache_ ? "enabled" : "disabled",
             compact_executor_ ? "enabled" : "disabled",
             ordered_device_join_ ? "enabled" : "disabled",
-            layer_major_prefetch_ ? "enabled" : "disabled",
             sidecar_authoritative_ ? "sidecar" : "native-model",
             static_cast<double>(read_cache_.capacity()) / (1024.0 * 1024.0),
             valid_layers);
@@ -4902,9 +4891,7 @@ public:
         if (!sidecar_authoritative_ || route_prefix_depth_ != 0 ||
             layer_phase_ != LayerPhase::All || dynamic_active_layer_ ||
             ordered_device_join_ || !oracle_trace_path_.empty() ||
-            io_trace_.is_open() || p40_trace_.is_open() ||
-            device_variant_cache_ || !direct_reads() ||
-            !direct_read_pool_ || !read_cache_.enabled()) {
+            io_trace_.is_open() || p40_trace_.is_open()) {
             return false;
         }
         for (int layer = kFirstRoutedLayer;
@@ -4924,10 +4911,6 @@ public:
         if (!supports_width(static_cast<size_t>(routes.n_tokens))) {
             if (err) *err = "calibrated96 prefill width is not qualified";
             return false;
-        }
-        if (layer_major_prefetch_) {
-            return evaluate_prefill_layer_major(
-                model_layer, base_pos, spec, routes, exact_engine, output, err);
         }
         return evaluate(
             model_layer, base_pos, spec, routes, exact_engine, output, err);
@@ -4973,7 +4956,7 @@ public:
         }
         return evaluate_calibrated(
             model_layer, base_pos, state, spec, routes, exact_engine, output,
-            false, false, err);
+            false, err);
     }
 
     KimiK3RoutedRuntimeStats runtime_stats() const override {
@@ -5018,10 +5001,6 @@ public:
         result.ordered_output_d2d_bytes =
             ordered_join_arena_.output_d2d_bytes();
 #endif
-        result.layer_major_prefetches = layer_major_prefetches_;
-        result.layer_major_requested_records =
-            layer_major_requested_records_;
-        result.layer_major_unique_records = layer_major_unique_records_;
         return result;
     }
 
@@ -5059,7 +5038,7 @@ public:
         std::vector<float> unused;
         return evaluate_calibrated(
             model_layer, base_pos, state, spec, routes, exact_engine, unused,
-            true, false, err);
+            true, err);
 #endif
     }
 
@@ -5182,107 +5161,6 @@ private:
         std::vector<uint32_t> hit_counts;
         Traffic traffic;
     };
-
-    struct CalibratedRowPlan {
-        KimiK3CalibratedSlabPlan slabs;
-        std::vector<uint8_t> effective_calibrated;
-        std::vector<int> calibrated_routes;
-        std::vector<int> fallback_routes;
-        std::vector<uint8_t> selected_by_route;
-        std::array<uint16_t, kNativeTopK> natural_masks{};
-        std::array<uint8_t, kNativeTopK> canonical_partitions{};
-    };
-
-    bool plan_calibrated_row(
-            const LayerState & state,
-            const MoeStreamRouteBatch & routes,
-            size_t route_offset,
-            int layer_budget,
-            CalibratedRowPlan & out,
-            std::string * err) const {
-        out = CalibratedRowPlan{};
-        out.effective_calibrated = state.calibrated;
-        if (layer_budget == kNativeTopK * kSlabCount) {
-            std::fill(
-                out.effective_calibrated.begin(),
-                out.effective_calibrated.end(), static_cast<uint8_t>(1));
-        }
-        out.slabs = route_prefix_depth_ > 0
-            ? plan_kimi_k3_calibrated_route_prefixes(
-                routes.selected_ids + route_offset,
-                routes.selected_weights + route_offset, kNativeTopK,
-                state.native_importance.data(),
-                out.effective_calibrated.data(), kExpertCount, kSlabCount,
-                4, route_prefix_depth_)
-            : plan_kimi_k3_calibrated_slabs(
-                routes.selected_ids + route_offset,
-                routes.selected_weights + route_offset, kNativeTopK,
-                state.importance.data(), out.effective_calibrated.data(),
-                kExpertCount, kSlabCount, layer_budget);
-        for (int route = 0; route < kNativeTopK; ++route) {
-            const int expert = routes.selected_ids[route_offset + route];
-            if (expert < 0 || expert >= kExpertCount) {
-                if (err) *err = "calibrated96 saw an invalid expert id";
-                return false;
-            }
-            if (out.effective_calibrated[static_cast<size_t>(expert)]) {
-                out.calibrated_routes.push_back(route);
-            } else {
-                out.fallback_routes.push_back(route);
-                out.canonical_partitions[static_cast<size_t>(route)] = 1;
-                out.natural_masks[static_cast<size_t>(route)] = 0x0fff;
-            }
-        }
-        if (out.slabs.exact_route_indices.size() !=
-                out.fallback_routes.size() ||
-            !std::equal(
-                out.slabs.exact_route_indices.begin(),
-                out.slabs.exact_route_indices.end(),
-                out.fallback_routes.begin())) {
-            if (err) *err = "calibrated96 planner failed";
-            return false;
-        }
-        out.selected_by_route.assign(
-            static_cast<size_t>(kNativeTopK * kSlabCount), 0);
-        for (const int pseudo : out.slabs.selected_slab_ids) {
-            const int expert = pseudo / kSlabCount;
-            const int rank = pseudo % kSlabCount;
-            const auto found = std::find_if(
-                out.calibrated_routes.begin(),
-                out.calibrated_routes.end(),
-                [&](int route) {
-                    return routes.selected_ids[route_offset + route] == expert;
-                });
-            if (found == out.calibrated_routes.end()) {
-                if (err) {
-                    *err = "selected slab has no calibrated route";
-                }
-                return false;
-            }
-            out.selected_by_route[static_cast<size_t>(
-                *found * kSlabCount + rank)] = 1;
-        }
-        for (const int route : out.calibrated_routes) {
-            const int expert = routes.selected_ids[route_offset + route];
-            out.natural_masks[static_cast<size_t>(route)] =
-                kimi_k3_selected_natural_slab_mask(
-                    state.order.data() +
-                        static_cast<size_t>(expert) * kSlabCount,
-                    out.selected_by_route.data() +
-                        static_cast<size_t>(route) * kSlabCount,
-                    kSlabCount);
-        }
-        return true;
-    }
-
-    void begin_cache_sequence(int model_layer, int base_pos) {
-        if (!read_cache_.enabled() || model_layer != kFirstRoutedLayer ||
-            base_pos != 0) {
-            return;
-        }
-        if (cache_sequence_started_) read_cache_.reset_sequence();
-        cache_sequence_started_ = true;
-    }
 
     static uint64_t oracle_key(int base_pos, int model_layer) {
         return (static_cast<uint64_t>(static_cast<uint32_t>(base_pos)) << 8) |
@@ -6154,175 +6032,6 @@ private:
 #endif
     }
 
-    bool prefetch_layer_major_reads(
-            int fd,
-            int model_layer,
-            const KimiK3PrefillLayerPlan & plan,
-            std::string * err) {
-#if defined(_WIN32) || !defined(O_DIRECT)
-        (void) fd; (void) model_layer; (void) plan;
-        if (err) *err = "layer-major prefill requires O_DIRECT";
-        return false;
-#else
-        struct Completion {
-            bool ok = false;
-            bool cache_hit = false;
-        };
-        std::vector<Completion> completions(plan.physical_reads.size());
-        const auto io_started = std::chrono::steady_clock::now();
-        std::atomic<size_t> next{0};
-        std::atomic<bool> failed{false};
-        const size_t workers = std::min<size_t>(
-            16, plan.physical_reads.size());
-        std::vector<std::future<void>> workers_done;
-        workers_done.reserve(workers);
-        for (size_t worker = 0; worker < workers; ++worker) {
-            workers_done.push_back(direct_read_pool_->submit([&]() {
-                for (;;) {
-                    const size_t index = next.fetch_add(1);
-                    if (index >= plan.physical_reads.size()) break;
-                    const KimiK3PrefillPhysicalRead & read =
-                        plan.physical_reads[index];
-                    if (read.aligned_bytes >
-                            std::numeric_limits<size_t>::max()) {
-                        failed = true;
-                        break;
-                    }
-                    const size_t bytes =
-                        static_cast<size_t>(read.aligned_bytes);
-                    void * raw = nullptr;
-                    if (::posix_memalign(&raw, kAlignment, bytes) != 0) {
-                        failed = true;
-                        break;
-                    }
-                    bool cache_hit = false;
-                    const bool ok = read_direct_sidecar_record(
-                        fd, model_layer, read.aligned_offset, bytes,
-                        raw, cache_hit);
-                    std::free(raw);
-                    completions[index] = {ok, cache_hit};
-                    if (!ok) {
-                        failed = true;
-                        break;
-                    }
-                }
-            }));
-        }
-        for (std::future<void> & done : workers_done) done.get();
-        direct_io_ns_ += static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - io_started).count());
-        if (failed.load() || std::any_of(
-                completions.begin(), completions.end(),
-                [](const Completion & value) { return !value.ok; })) {
-            if (err) *err = "layer-major aligned sidecar prefetch failed";
-            return false;
-        }
-        for (size_t index = 0; index < completions.size(); ++index) {
-            if (completions[index].cache_hit) continue;
-            const uint64_t bytes = plan.physical_reads[index].aligned_bytes;
-            explicit_read_bytes_ += bytes;
-            direct_physical_bytes_ += bytes;
-        }
-        return true;
-#endif
-    }
-
-    bool evaluate_prefill_layer_major(
-            int model_layer,
-            int base_pos,
-            const MoeStreamExpertSpec & spec,
-            const MoeStreamRouteBatch & routes,
-            MoeHybridStreamEngine & exact_engine,
-            std::vector<float> & output,
-            std::string * err) {
-        if (!supports_width(static_cast<size_t>(routes.n_tokens)) ||
-            !handles_layer(model_layer) ||
-            routes.n_expert != kExpertCount ||
-            routes.top_k != kNativeTopK ||
-            spec.input_dim != kDimension ||
-            spec.output_dim != kDimension || !routes.inputs ||
-            !routes.selected_ids || !routes.selected_weights) {
-            if (err) *err = "layer-major prefill request is incompatible";
-            return false;
-        }
-        LayerState & state = layers_[static_cast<size_t>(model_layer)];
-        if (!state.valid || spec.fused_gate_up ||
-            !geometry_matches(state, spec)) {
-            if (err) *err = "layer-major prefill layer is incompatible";
-            return false;
-        }
-
-        const size_t route_count =
-            static_cast<size_t>(routes.n_tokens) * kNativeTopK;
-        std::vector<uint16_t> natural_masks(route_count, 0);
-        std::vector<uint8_t> canonical_partitions(route_count, 0);
-        const int layer_budget = budget_for_layer(model_layer);
-        for (int token = 0; token < routes.n_tokens; ++token) {
-            const size_t route_offset =
-                static_cast<size_t>(token) * kNativeTopK;
-            CalibratedRowPlan row_plan;
-            if (!plan_calibrated_row(
-                    state, routes, route_offset, layer_budget,
-                    row_plan, err)) {
-                return false;
-            }
-            std::copy(
-                row_plan.natural_masks.begin(), row_plan.natural_masks.end(),
-                natural_masks.begin() +
-                    static_cast<std::ptrdiff_t>(route_offset));
-            std::copy(
-                row_plan.canonical_partitions.begin(),
-                row_plan.canonical_partitions.end(),
-                canonical_partitions.begin() +
-                    static_cast<std::ptrdiff_t>(route_offset));
-        }
-
-        KimiK3PrefillLayerPlan plan;
-        if (!plan_kimi_k3_layer_major_prefill(
-                routes.n_tokens, kNativeTopK, kExpertCount, kSlabCount,
-                state.payload_offset, state.slab_bytes, kAlignment,
-                routes.selected_ids, routes.selected_weights,
-                canonical_partitions.data(), natural_masks.data(),
-                plan, err)) {
-            return false;
-        }
-        uint64_t planned_cache_bytes = 0;
-        for (const KimiK3PrefillPhysicalRead & read : plan.physical_reads) {
-            if (read.aligned_bytes >
-                    std::numeric_limits<uint64_t>::max() -
-                        planned_cache_bytes) {
-                if (err) *err = "layer-major prefill cache size overflow";
-                return false;
-            }
-            planned_cache_bytes += read.aligned_bytes;
-        }
-        if (planned_cache_bytes > read_cache_.capacity()) {
-            if (err) {
-                *err = "layer-major prefill union exceeds the P30 cache";
-            }
-            return false;
-        }
-
-        begin_cache_sequence(model_layer, base_pos);
-        const int sidecar_fd = open_read_only_direct(state.sidecar_path);
-        if (sidecar_fd < 0) {
-            if (err) *err = "layer-major prefill cannot open its sidecar";
-            return false;
-        }
-        const bool prefetched = prefetch_layer_major_reads(
-            sidecar_fd, model_layer, plan, err);
-        close_fd(sidecar_fd);
-        if (!prefetched) return false;
-
-        ++layer_major_prefetches_;
-        layer_major_requested_records_ += plan.requested_slab_records;
-        layer_major_unique_records_ += plan.physical_reads.size();
-        return evaluate_calibrated(
-            model_layer, base_pos, state, spec, routes, exact_engine,
-            output, false, true, err);
-    }
-
     std::array<SparseCompactPayload, kNativeTopK> & oracle_slot(int slot) {
         return slot == 0 ? direct_compact_payloads_ :
             oracle_compact_payloads_;
@@ -6924,10 +6633,11 @@ private:
             const MoeStreamRouteBatch & routes,
             MoeHybridStreamEngine & exact_engine,
             std::vector<float> & output, bool device_ordered,
-            bool cache_sequence_prepared,
             std::string * err) {
-        if (!cache_sequence_prepared) {
-            begin_cache_sequence(model_layer, base_pos);
+        if (read_cache_.enabled() && model_layer == kFirstRoutedLayer &&
+            base_pos == 0) {
+            if (cache_sequence_started_) read_cache_.reset_sequence();
+            cache_sequence_started_ = true;
         }
         const int layer_budget = budget_for_layer(model_layer);
         const int aux_fd = open_read_only(state.aux_path);
@@ -7041,23 +6751,62 @@ private:
         for (int token = 0; token < routes.n_tokens; ++token) {
             const size_t route_offset =
                 static_cast<size_t>(token) * kNativeTopK;
-            CalibratedRowPlan row_plan;
-            std::string row_plan_error;
-            if (!plan_calibrated_row(
-                    state, routes, route_offset, layer_budget,
-                    row_plan, &row_plan_error)) {
-                return exact_layer_fallback(row_plan_error.c_str());
+            std::vector<uint8_t> effective_calibrated = state.calibrated;
+            if (layer_budget == kNativeTopK * kSlabCount) {
+                std::fill(
+                    effective_calibrated.begin(),
+                    effective_calibrated.end(), static_cast<uint8_t>(1));
             }
-            const std::vector<uint8_t> & effective_calibrated =
-                row_plan.effective_calibrated;
-            const std::vector<int> & calibrated_routes =
-                row_plan.calibrated_routes;
-            const std::vector<int> & fallback_routes =
-                row_plan.fallback_routes;
-            const std::vector<uint8_t> & selected_by_route =
-                row_plan.selected_by_route;
+            const KimiK3CalibratedSlabPlan plan = route_prefix_depth_ > 0
+                ? plan_kimi_k3_calibrated_route_prefixes(
+                    routes.selected_ids + route_offset,
+                    routes.selected_weights + route_offset, kNativeTopK,
+                    state.native_importance.data(),
+                    effective_calibrated.data(), kExpertCount, kSlabCount,
+                    4, route_prefix_depth_)
+                : plan_kimi_k3_calibrated_slabs(
+                    routes.selected_ids + route_offset,
+                    routes.selected_weights + route_offset, kNativeTopK,
+                    state.importance.data(), effective_calibrated.data(),
+                    kExpertCount, kSlabCount, layer_budget);
+            std::vector<int> calibrated_routes;
+            std::vector<int> fallback_routes;
+            for (int route = 0; route < kNativeTopK; ++route) {
+                const int expert = routes.selected_ids[route_offset + route];
+                if (expert < 0 || expert >= kExpertCount) {
+                    close_fd(aux_fd); close_fd(sidecar_fd);
+                    if (route_stats_fd >= 0) close_fd(route_stats_fd);
+                    if (err) *err = "calibrated96 saw an invalid expert id";
+                    return false;
+                }
+                (effective_calibrated[static_cast<size_t>(expert)]
+                    ? calibrated_routes : fallback_routes).push_back(route);
+            }
             const int selected_count = static_cast<int>(
-                row_plan.slabs.selected_slab_ids.size());
+                plan.selected_slab_ids.size());
+            if (plan.exact_route_indices.size() != fallback_routes.size() ||
+                !std::equal(plan.exact_route_indices.begin(),
+                            plan.exact_route_indices.end(),
+                            fallback_routes.begin())) {
+                return exact_layer_fallback("calibrated96 planner failed");
+            }
+            std::vector<uint8_t> selected_by_route(
+                static_cast<size_t>(kNativeTopK * kSlabCount), 0);
+            for (const int pseudo : plan.selected_slab_ids) {
+                const int expert = pseudo / kSlabCount;
+                const int rank = pseudo % kSlabCount;
+                const auto found = std::find_if(
+                    calibrated_routes.begin(), calibrated_routes.end(),
+                    [&](int route) {
+                        return routes.selected_ids[route_offset + route] == expert;
+                    });
+                if (found == calibrated_routes.end()) {
+                    return exact_layer_fallback(
+                        "selected slab has no calibrated route");
+                }
+                selected_by_route[
+                    static_cast<size_t>(*found * kSlabCount + rank)] = 1;
+            }
             std::vector<std::vector<SparseSlabPayload>> direct_payloads;
             int compact_slot_index = 0;
             const uint64_t current_oracle_key =
@@ -7779,10 +7528,6 @@ private:
     uint64_t device_zero_bytes_ = 0;
     uint64_t direct_physical_bytes_ = 0;
     uint64_t direct_io_ns_ = 0;
-    bool layer_major_prefetch_ = false;
-    uint64_t layer_major_prefetches_ = 0;
-    uint64_t layer_major_requested_records_ = 0;
-    uint64_t layer_major_unique_records_ = 0;
     P30BoundedReadCache read_cache_;
     bool cache_sequence_started_ = false;
 };
@@ -8055,14 +7800,6 @@ bool create_kimi_k3_progressive_provider_from_env(
             "P45 async compact queue requires P42 ordered join";
         return false;
     }
-    bool layer_major_prefetch = false;
-    if (!parse_binary_flag(
-            std::getenv("DFLASH_KIMI_LAYER_MAJOR_PREFETCH"),
-            layer_major_prefetch)) {
-        if (err) *err =
-            "DFLASH_KIMI_LAYER_MAJOR_PREFETCH must be 0 or 1";
-        return false;
-    }
     const bool all_layers_calibrated96 =
         raw_kind && std::strcmp(raw_kind, "all-layers-calibrated96") == 0;
     const bool all_layers_four_route_half =
@@ -8071,12 +7808,6 @@ bool create_kimi_k3_progressive_provider_from_env(
     const bool all_layers_four_route_full =
         raw_kind && std::strcmp(raw_kind,
                     "all-layers-four-route-full-slabs") == 0;
-    if (layer_major_prefetch && !all_layers_calibrated96) {
-        if (err) {
-            *err = "layer-major prefetch requires all-layers-calibrated96";
-        }
-        return false;
-    }
     if (p42_requested && (!all_layers_calibrated96 ||
             expert_backend != destination_backend)) {
         if (err) {
@@ -8114,7 +7845,7 @@ bool create_kimi_k3_progressive_provider_from_env(
                 route_stats_directory ? route_stats_directory : "",
                 all_layers_four_route_half ? 6 :
                     all_layers_four_route_full ? 12 : 0,
-                p42_requested, p45_requested, layer_major_prefetch,
+                p42_requested, p45_requested,
                 std::getenv("DFLASH_KIMI_CALIBRATED96_METRICS_OUT"), err)) {
             return false;
         }

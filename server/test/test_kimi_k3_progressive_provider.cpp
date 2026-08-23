@@ -203,51 +203,16 @@ int main() {
     _putenv_s("DFLASH_KIMI_LAYER1_PROVIDER", "exact");
     _putenv_s("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "0");
     _putenv_s("DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE", "0");
-    _putenv_s("DFLASH_KIMI_LAYER_MAJOR_PREFETCH", "0");
 #else
     setenv("DFLASH_KIMI_LAYER1_PROVIDER", "exact", 1);
     setenv("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "0", 1);
     setenv("DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE", "0", 1);
-    setenv("DFLASH_KIMI_LAYER_MAJOR_PREFETCH", "0", 1);
 #endif
     std::unique_ptr<KimiK3RoutedOutputProvider> provider;
     error.clear();
     assert(create_kimi_k3_progressive_provider_from_env(
         nullptr, nullptr, provider, &error));
     assert(!provider);
-#if defined(_WIN32)
-    _putenv_s("DFLASH_KIMI_LAYER_MAJOR_PREFETCH", "1");
-#else
-    setenv("DFLASH_KIMI_LAYER_MAJOR_PREFETCH", "1", 1);
-#endif
-    error.clear();
-    if (create_kimi_k3_progressive_provider_from_env(
-            nullptr, nullptr, provider, &error) ||
-        error != "layer-major prefetch requires all-layers-calibrated96") {
-        std::fprintf(stderr,
-            "layer-major provider dependency did not fail closed: %s\n",
-            error.c_str());
-        return 1;
-    }
-#if defined(_WIN32)
-    _putenv_s("DFLASH_KIMI_LAYER_MAJOR_PREFETCH", "2");
-#else
-    setenv("DFLASH_KIMI_LAYER_MAJOR_PREFETCH", "2", 1);
-#endif
-    error.clear();
-    if (create_kimi_k3_progressive_provider_from_env(
-            nullptr, nullptr, provider, &error) ||
-        error != "DFLASH_KIMI_LAYER_MAJOR_PREFETCH must be 0 or 1") {
-        std::fprintf(stderr,
-            "layer-major flag validation did not fail closed: %s\n",
-            error.c_str());
-        return 1;
-    }
-#if defined(_WIN32)
-    _putenv_s("DFLASH_KIMI_LAYER_MAJOR_PREFETCH", "0");
-#else
-    setenv("DFLASH_KIMI_LAYER_MAJOR_PREFETCH", "0", 1);
-#endif
 #if defined(_WIN32)
     _putenv_s("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "1");
 #else

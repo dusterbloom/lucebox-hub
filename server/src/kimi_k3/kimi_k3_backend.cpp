@@ -142,9 +142,6 @@ KimiK3RoutedRuntimeStats routed_stats_delta(
     KIMI_K3_DELTA(ordered_join_launches);
     KIMI_K3_DELTA(ordered_output_d2d_copies);
     KIMI_K3_DELTA(ordered_output_d2d_bytes);
-    KIMI_K3_DELTA(layer_major_prefetches);
-    KIMI_K3_DELTA(layer_major_requested_records);
-    KIMI_K3_DELTA(layer_major_unique_records);
 #undef KIMI_K3_DELTA
     return result;
 }
@@ -170,9 +167,7 @@ void print_prefill_census(
         "async-layer-flushes=%llu async-abort-syncs=%llu "
         "ordered-expert-d2d-copies=%llu ordered-expert-d2d-bytes=%llu "
         "ordered-join-launches=%llu ordered-output-d2d-copies=%llu "
-        "ordered-output-d2d-bytes=%llu layer-major-prefetches=%llu "
-        "layer-major-requested-records=%llu "
-        "layer-major-unique-records=%llu\n",
+        "ordered-output-d2d-bytes=%llu\n",
         phase, positions, forwards, seconds, rate,
         static_cast<unsigned long long>(process_read_bytes),
         static_cast<unsigned long long>(stats.logical_provider_bytes),
@@ -201,11 +196,7 @@ void print_prefill_census(
         static_cast<unsigned long long>(stats.ordered_expert_d2d_bytes),
         static_cast<unsigned long long>(stats.ordered_join_launches),
         static_cast<unsigned long long>(stats.ordered_output_d2d_copies),
-        static_cast<unsigned long long>(stats.ordered_output_d2d_bytes),
-        static_cast<unsigned long long>(stats.layer_major_prefetches),
-        static_cast<unsigned long long>(
-            stats.layer_major_requested_records),
-        static_cast<unsigned long long>(stats.layer_major_unique_records));
+        static_cast<unsigned long long>(stats.ordered_output_d2d_bytes));
 }
 
 uint64_t fnv1a_update(uint64_t hash, const void * data, size_t bytes) {
@@ -1462,15 +1453,6 @@ bool KimiK3Backend::benchmark_oracle_verify(
         provider_stats(), sequential_stats_begin);
     result.sequential_storage_bytes = sequential_read_end >= sequential_read_start
         ? sequential_read_end - sequential_read_start : 0;
-    result.sequential_physical_direct_read_bytes =
-        sequential_stats.physical_direct_read_bytes;
-    result.sequential_direct_io_ns = sequential_stats.direct_io_ns;
-    result.sequential_layer_major_prefetches =
-        sequential_stats.layer_major_prefetches;
-    result.sequential_layer_major_requested_records =
-        sequential_stats.layer_major_requested_records;
-    result.sequential_layer_major_unique_records =
-        sequential_stats.layer_major_unique_records;
     result.sequential_logical_provider_bytes =
         sequential_stats.logical_provider_bytes;
     result.sequential_compact_attempted = sequential_stats.compact_attempted;
@@ -1516,15 +1498,6 @@ bool KimiK3Backend::benchmark_oracle_verify(
         provider_stats(), verify_stats_begin);
     result.verify_storage_bytes = verify_read_end >= verify_read_start
         ? verify_read_end - verify_read_start : 0;
-    result.verify_physical_direct_read_bytes =
-        verify_stats.physical_direct_read_bytes;
-    result.verify_direct_io_ns = verify_stats.direct_io_ns;
-    result.verify_layer_major_prefetches =
-        verify_stats.layer_major_prefetches;
-    result.verify_layer_major_requested_records =
-        verify_stats.layer_major_requested_records;
-    result.verify_layer_major_unique_records =
-        verify_stats.layer_major_unique_records;
     result.verify_logical_provider_bytes =
         verify_stats.logical_provider_bytes;
     result.verify_compact_attempted = verify_stats.compact_attempted;
