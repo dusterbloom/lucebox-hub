@@ -69,6 +69,24 @@
     "wider_live_widths_earned": false,
     "action": "Remove the losing prefetch hot path; retain the exact prefill executor, routed-service seam, and pure deterministic planner."
   },
+  "cleaned_head_validation": {
+    "source_commit": "4be2f378d7e2fe9fb8d0ec6a3e39fa74102d2453",
+    "sequential_seconds": 11.621676152,
+    "verify_seconds": 9.883100104,
+    "commit_seconds": 0.57281988,
+    "committed_ratio": 1.1114924530585426,
+    "sequential_storage_bytes": 21102125056,
+    "verify_storage_bytes": 21047894016,
+    "logits_bit_equal": true,
+    "recurrent_state_hash_equal": true,
+    "mla_rows_hash_equal": true,
+    "compact_attempted": 8504,
+    "compact_completed": 8504,
+    "compact_fallbacks": 0,
+    "compact_invalid": 0,
+    "runner_sha256": "273c4f063bd6c7bd0d3159e490ef5bac63d5e3da5d1d65f4d9b02719d873031a",
+    "result_json_sha256": "ac866e5e2b0b00b2cb876049006ac8586ed09ac8a38beb498a7329d2bd235d94"
+  },
   "artifacts": {
     "remote_root": "/home/duster/kimi-k3-deploy/k3-layer-major-prefill-m8-042c6fdd-20260823",
     "runner_sha256": "87096080c4913b0f53e0bd856abd59b0d395528d2038d106a94257e33e8c1763",
