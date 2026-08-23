@@ -114,7 +114,7 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr,
             "usage: %s <kimi-k3.gguf> <prompt_ids_csv> <oracle_ids_csv> "
             "<result.json> [gpu=0] [core=cpu|accelerator] [expert_gpu=-1] "
-            "[max_width=8] [min_width=2|4|8|64]\n",
+            "[max_width=8] [min_width=2|4|8|64|1024]\n",
             argv[0]);
         return 2;
     }
@@ -147,16 +147,16 @@ int main(int argc, char ** argv) {
     }
     config.expert_gpu = argc > 7 ? std::atoi(argv[7]) : -1;
     if (max_width != 2 && max_width != 4 && max_width != 8 &&
-        max_width != 64) {
+        max_width != 64 && max_width != 1024) {
         std::fprintf(stderr,
-            "[kimi-k3-s0] max_width must be 2, 4, 8, or 64\n");
+            "[kimi-k3-s0] max_width must be 2, 4, 8, 64, or 1024\n");
         return 2;
     }
     if ((min_width != 2 && min_width != 4 && min_width != 8 &&
-         min_width != 64) ||
+         min_width != 64 && min_width != 1024) ||
         min_width > max_width) {
         std::fprintf(stderr,
-            "[kimi-k3-s0] min_width must be 2, 4, 8, or 64 and <= "
+            "[kimi-k3-s0] min_width must be 2, 4, 8, 64, or 1024 and <= "
             "max_width\n");
         return 2;
     }
@@ -184,7 +184,7 @@ int main(int argc, char ** argv) {
         }},
     };
     bool parity_failed = false;
-    for (int width : {2, 4, 8, 64}) {
+    for (int width : {2, 4, 8, 64, 1024}) {
         if (width < min_width) continue;
         if (width > max_width) break;
         const std::vector<int32_t> tokens(

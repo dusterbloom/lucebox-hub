@@ -287,7 +287,7 @@ struct KimiK3MoePanelCapture {
 // Retained exact recurrent-micro / routed-macro discriminator widths. These
 // are explicit research envelopes, not a generic chunking promise.
 inline bool kimi_k3_exact_multirow_width(size_t width) {
-    return width == 8 || width == 64;
+    return width == 8 || width == 64 || width == 1024;
 }
 
 struct KimiK3ForwardOptions {

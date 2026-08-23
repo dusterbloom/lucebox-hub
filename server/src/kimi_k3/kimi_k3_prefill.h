@@ -55,6 +55,10 @@ inline bool parse_kimi_k3_prefill_chunk(const char * value, int & out) {
         out = 64;
         return true;
     }
+    if (std::string(value) == "1024") {
+        out = 1024;
+        return true;
+    }
     return false;
 }
 

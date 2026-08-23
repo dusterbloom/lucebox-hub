@@ -1,0 +1,60 @@
+{
+  "schema": "k3-wide-p40-m1024-prereg-v1",
+  "date": "2026-08-23",
+  "question": "Can the existing exact P58 layer-major scheduler make the existing P40 device-variant cache materially useful at M=1024 by reusing each layer/expert expanded view across causal rows, without changing one-row expert arithmetic or row-wise join order?",
+  "frozen_source": {
+    "base_head": "194c48c0907a7ba78a5628cc5021fa62676ded05",
+    "scoped_diff_sha256_before_build": "0ad3841d0a40df0e6d395fd2a6ba27af91d961491f2b516692d03ab7212a9486",
+    "changed_surface": "qualification/parser guards plus the existing S0 width list and policy tests only; no scheduler, provider, cache, arithmetic, or join implementation change"
+  },
+  "fixture": {
+    "runner": "existing run_kimi_k3_s0_oracle, width-1024-only arm",
+    "token_source": "/home/duster/kimi-k3-deploy/p65-a0-long-prefix-chat-20260822/prompt-tokenizer.json",
+    "full_2048_token_ids_sha256": "564c321765f38368e4e3882ca5a9f6707d3cd978efad6407e12479739537d029",
+    "prompt_slice": "ids[0:1]",
+    "oracle_slice": "ids[1:1025]",
+    "base_position": 1,
+    "topology": "single-owner physical GPU1 gfx1151",
+    "platform_profile": "performance",
+    "provider": "authoritative fixed96 P27/P40 host-output",
+    "p30_host_cache_mib": 16384,
+    "p40_device_cache_mib": 8192,
+    "p41_compact_executor": false
+  },
+  "arms": [
+    "control: the runner's existing 1024 sequential one-row loop with P40 enabled",
+    "candidate: the same process and binary, existing P58 exact layer-major width 1024 with P40 enabled, followed by exact one-row ReplaySSM commit"
+  ],
+  "why_m1024": {
+    "m512": "memory-safe but below the approximately M=1008 physical-density crossover and therefore not the first material storage discriminator",
+    "m1024": "first bounded width above that crossover; projected ReplaySSM input is 1.887 GiB and remains well inside GPU1 capacity",
+    "m2048": "stronger storage geometry but deferred until M1024 proves the existing P40 representation can convert reuse into live wall time"
+  },
+  "frozen_bounds": {
+    "m64_fixed96_logical_provider_bytes_per_position": 5182572864,
+    "m2048_h23_one_compact_upload_per_route_gib": 2321.848613768816,
+    "m2048_h23_one_union_upload_per_layer_expert_gib": 57.460371404886246,
+    "interpretation": "The M2048 figures establish reuse headroom but use H23 geometry and are not a fixed96 M1024 performance projection. The run must measure the live prize."
+  },
+  "primary_metrics": [
+    "sequential_seconds versus verify_plus_commit_seconds",
+    "sequential versus verify physical storage bytes",
+    "sequential versus verify logical provider bytes",
+    "P40 hit/extension/cold/scatter counters from the existing provider report",
+    "existing routed core/expert/join/output stage timings"
+  ],
+  "correctness_gate": "bit-identical all 1024 full-vocabulary logits and argmax rows; identical recurrent and MLA aggregate/per-layer hashes; identical logical provider traffic; zero provider fallback/invalid; physical GPU1; no OOM or swap I/O",
+  "performance_gate": "verify_plus_commit must be at least 1.20x faster than the same-run sequential control, while verify physical bytes do not increase. A smaller exact win is evidence only and does not earn production phase selection.",
+  "abort_conditions": [
+    "wrong GPU or non-performance platform profile",
+    "swap input/output, OOM, or device allocation failure",
+    "source/model/sidecar/token fixture mismatch",
+    "hidden fallback, arithmetic/join change, or incomplete 1024-row output"
+  ],
+  "repeat_policy": "one qualified same-process sequential/candidate comparison; rerun only an INVALID arm, never a valid miss",
+  "interpretation": {
+    "go": "retain the default-off width envelope and implement the smallest phase selector: P40 for wide prefill, established P41/P46/P42 chain for width-one/decode",
+    "no_go": "remove the new width gates and preserve only the result; do not tune M1024",
+    "invalid": "repair only the stated validity failure without changing the registered gates"
+  }
+}

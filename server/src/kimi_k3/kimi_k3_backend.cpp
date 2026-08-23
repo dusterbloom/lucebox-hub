@@ -1160,13 +1160,14 @@ bool KimiK3Backend::init() {
             std::getenv("DFLASH_KIMI_PREFILL_CHUNK"), prefill_chunk_)) {
         std::fprintf(stderr,
             "[kimi-k3] DFLASH_KIMI_PREFILL_CHUNK must be 1, 2, 4, 8, "
-            "or 64\n");
+            "64, or 1024\n");
         return false;
     }
     if (!kimi_k3_p58_configuration_valid(
             prefill_chunk_, p58_exact_multirow_)) {
         std::fprintf(stderr,
-            "[kimi-k3] exact routed-macro prefill requires width 8 or 64 "
+            "[kimi-k3] exact routed-macro prefill requires width 8, 64, "
+            "or 1024 "
             "and DFLASH_KIMI_P58_EXACT_MULTIROW=1\n");
         return false;
     }
