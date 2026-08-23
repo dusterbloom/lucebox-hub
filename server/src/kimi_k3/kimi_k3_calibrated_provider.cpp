@@ -923,6 +923,18 @@ bool pack_sparse_component_major(
 }
 
 #if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+bool p42_qualified_device(int device) {
+#if defined(DFLASH27B_BACKEND_HIP)
+    cudaDeviceProp properties{};
+    return cudaGetDeviceProperties(&properties, device) == cudaSuccess &&
+        std::strncmp(properties.gcnArchName, "gfx1151", 7) == 0 &&
+        (properties.gcnArchName[7] == '\0' ||
+         properties.gcnArchName[7] == ':');
+#else
+    return device == 1;
+#endif
+}
+
 struct P42MeanSource {
     std::string path;
     uint64_t offset = 0;
@@ -942,7 +954,14 @@ public:
         if (!scope.enter(backend, err)) return false;
         const uint64_t layer_bytes = static_cast<uint64_t>(
             kExpertCount) * kSlabCount * width * sizeof(float);
-        if (scope.device() != 1 || width != kDimension ||
+        if (!p42_qualified_device(scope.device())) {
+            if (err) {
+                *err = "P42c resident means require the qualified "
+                    "gfx1151 device";
+            }
+            return false;
+        }
+        if (width != kDimension ||
             sources.size() != kRoutedLayerCount || buffer_) {
             if (err) *err = "P42c resident mean table geometry is invalid";
             return false;
@@ -1053,8 +1072,11 @@ public:
     bool begin(ggml_backend_t backend, int width, std::string * err) {
         BackendDeviceScope scope;
         if (!scope.enter(backend, err)) return false;
-        if (scope.device() != 1 || width != kDimension) {
-            if (err) *err = "P42 ordered join requires current backend GPU1";
+        if (!p42_qualified_device(scope.device()) || width != kDimension) {
+            if (err) {
+                *err = "P42 ordered join requires the qualified "
+                    "gfx1151 backend";
+            }
             return false;
         }
         if (backend_ && backend_ != backend) {
@@ -2639,12 +2661,7 @@ public:
             BackendDeviceScope scope;
             if (!scope.enter(backend_, err)) return false;
 #if defined(DFLASH27B_BACKEND_HIP)
-            cudaDeviceProp properties{};
-            if (cudaGetDeviceProperties(&properties, scope.device()) !=
-                    cudaSuccess ||
-                std::strncmp(properties.gcnArchName, "gfx1151", 7) != 0 ||
-                (properties.gcnArchName[7] != '\0' &&
-                 properties.gcnArchName[7] != ':')) {
+            if (!p42_qualified_device(scope.device())) {
                 if (err) {
                     *err = "P42 ordered join is qualified only on gfx1151";
                 }
