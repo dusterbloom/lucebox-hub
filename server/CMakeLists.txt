@@ -404,6 +404,7 @@ set(DFLASH27B_SRC_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/qwen3
     ${CMAKE_CURRENT_SOURCE_DIR}/src/gemma4
     ${CMAKE_CURRENT_SOURCE_DIR}/src/deepseek4
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/kimi_k3
     ${CMAKE_CURRENT_SOURCE_DIR}/src/server
 )
 
@@ -438,6 +439,10 @@ add_library(dflash_common STATIC
     src/deepseek4/deepseek4_target_shard_ipc_daemon.cpp
     src/deepseek4/deepseek4_dspark.cpp
     src/deepseek4/deepseek4_dspark_spec.cpp
+    # Kimi-K3 immutable model and semantic-state ownership. Runtime
+    # capability is wired only after the graph/provider layers land.
+    src/kimi_k3/kimi_k3_loader.cpp
+    src/kimi_k3/kimi_k3_cache.cpp
     src/flashprefill_q8.cpp
     src/kv_cache.cpp
     src/kv_quant.cpp
