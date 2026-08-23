@@ -10,6 +10,24 @@
 
 namespace dflash::common {
 
+// Optional prompt-phase service.  Decode providers remain one-row oriented;
+// only implementations with an explicitly qualified macro contract expose
+// this interface.
+class KimiK3RoutedPrefillService {
+public:
+    virtual ~KimiK3RoutedPrefillService() = default;
+
+    virtual bool supports_width(size_t width) const = 0;
+    virtual bool evaluate_layer(
+        int model_layer,
+        int base_pos,
+        const MoeStreamExpertSpec & exact_spec,
+        const MoeStreamRouteBatch & native_routes,
+        MoeHybridStreamEngine & exact_engine,
+        std::vector<float> & output,
+        std::string * err = nullptr) = 0;
+};
+
 // Monotonic routed-provider counters used to attribute one bounded generation
 // phase without adding per-route logging to the measured hot path. Providers
 // that do not expose these counters return an all-zero snapshot.
@@ -50,10 +68,7 @@ public:
     virtual ~KimiK3RoutedOutputProvider() = default;
 
     virtual bool handles_layer(int model_layer) const = 0;
-    // Explicit opt-in for P58's one-call, eight-row routed boundary. The
-    // default is fail-closed so research and fallback providers cannot acquire
-    // multirow semantics accidentally.
-    virtual bool supports_exact_multirow() const { return false; }
+    virtual KimiK3RoutedPrefillService * prefill_service() { return nullptr; }
     virtual bool evaluate(
         int model_layer,
         int base_pos,

@@ -1287,7 +1287,8 @@ bool KimiK3Backend::init() {
     if (p58_exact_multirow_ &&
         (!weights_.routed_experts_streamed ||
          !routed_output_provider_ ||
-         !routed_output_provider_->supports_exact_multirow() ||
+         !routed_output_provider_->prefill_service() ||
+         !routed_output_provider_->prefill_service()->supports_width(8) ||
          routed_output_provider_->requires_device_output() ||
          dual_stream_executor_.is_ready() || moe_core_offload_.enabled())) {
         std::fprintf(stderr,

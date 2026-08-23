@@ -4448,7 +4448,9 @@ private:
 // layer, experts below the exporter's minimum-hit threshold also stay exact.
 // The requested budget is 96 slab records, while measured traffic separately
 // reports selected sidecar bytes and exact-fallback expert bytes.
-class CalibratedAllLayerProvider final : public KimiK3RoutedOutputProvider {
+class CalibratedAllLayerProvider final :
+        public KimiK3RoutedOutputProvider,
+        public KimiK3RoutedPrefillService {
 public:
     ~CalibratedAllLayerProvider() override {
         finish_oracle_prefetch();
@@ -4880,7 +4882,12 @@ public:
              budget_for_layer(model_layer) < kNativeTopK * kSlabCount);
     }
 
-    bool supports_exact_multirow() const override {
+    KimiK3RoutedPrefillService * prefill_service() override {
+        return supports_width(8) ? this : nullptr;
+    }
+
+    bool supports_width(size_t width) const override {
+        if (width != 8) return false;
         if (!sidecar_authoritative_ || route_prefix_depth_ != 0 ||
             layer_phase_ != LayerPhase::All || dynamic_active_layer_ ||
             ordered_device_join_ || !oracle_trace_path_.empty() ||
@@ -4892,6 +4899,21 @@ public:
             if (budget_for_layer(layer) != 96) return false;
         }
         return true;
+    }
+
+    bool evaluate_layer(
+            int model_layer, int base_pos,
+            const MoeStreamExpertSpec & spec,
+            const MoeStreamRouteBatch & routes,
+            MoeHybridStreamEngine & exact_engine,
+            std::vector<float> & output,
+            std::string * err) override {
+        if (!supports_width(static_cast<size_t>(routes.n_tokens))) {
+            if (err) *err = "calibrated96 prefill width is not qualified";
+            return false;
+        }
+        return evaluate(
+            model_layer, base_pos, spec, routes, exact_engine, output, err);
     }
 
     bool evaluate(int model_layer, int base_pos,

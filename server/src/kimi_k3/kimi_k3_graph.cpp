@@ -2084,7 +2084,9 @@ bool streamed_kimi_k3_forward_exact_multirow(
     }
     if (tokens.size() != kMacroWidth || !options.capture_replay ||
         !options.routed_output_provider ||
-        !options.routed_output_provider->supports_exact_multirow() ||
+        !options.routed_output_provider->prefill_service() ||
+        !options.routed_output_provider->prefill_service()->supports_width(
+            kMacroWidth) ||
         options.routed_output_provider->requires_device_output() ||
         options.moe_core_offload || options.capture_layer_ids ||
         options.panel_capture || options.panel_capture_layer_ids ||
@@ -2214,7 +2216,7 @@ bool streamed_kimi_k3_forward_exact_multirow(
         std::vector<float> routed_output;
         std::string provider_error;
         phase_begin = Clock::now();
-        if (!options.routed_output_provider->evaluate(
+        if (!options.routed_output_provider->prefill_service()->evaluate_layer(
                 il, base_pos, spec, routes, *stream_engine,
                 routed_output, &provider_error)) {
             set_last_error(
@@ -4075,7 +4077,8 @@ bool kimi_k3_forward(ggml_backend_t backend,
          options.capture_layer_ids || options.expert_observer ||
          options.moe_core_offload || dual_stream_executor || routing_stats ||
          !options.routed_output_provider ||
-         !options.routed_output_provider->supports_exact_multirow() ||
+         !options.routed_output_provider->prefill_service() ||
+         !options.routed_output_provider->prefill_service()->supports_width(8) ||
          options.routed_output_provider->requires_device_output())) {
         set_last_error(
             "Kimi-K3 forward: P58 exact multirow request is outside its "

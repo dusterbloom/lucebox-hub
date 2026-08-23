@@ -48,7 +48,7 @@ static void require_raw_zero_block_dequantizes_exactly(ggml_type type) {
 
 int main() {
     UnqualifiedMultirowProvider unqualified_provider;
-    assert(!unqualified_provider.supports_exact_multirow());
+    assert(unqualified_provider.prefill_service() == nullptr);
 
     using Delivery = KimiK3SparseDeliveryPolicy;
     using Upload = KimiK3SparseUpload;
