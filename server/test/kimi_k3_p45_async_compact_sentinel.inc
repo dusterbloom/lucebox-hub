@@ -384,6 +384,11 @@ bool compact_union_owned_buffer_sentinel_impl(
     }
     for (const int width : {1, 2, 8}) {
         const int rows = width + 1;
+        const uint64_t graph_ns_before = candidate.expert_graph_ns();
+        const uint64_t d2d_copies_before =
+            candidate.compact_union_output_d2d_copies();
+        const uint64_t d2d_bytes_before =
+            candidate.compact_union_output_d2d_bytes();
         uint64_t weight_h2d = 0;
         uint64_t metadata_h2d = 0;
         uint64_t graph_ns = 0;
@@ -397,6 +402,8 @@ bool compact_union_owned_buffer_sentinel_impl(
                     backend, backend, outputs[static_cast<size_t>(lane)],
                     candidate.compact_union_output(
                         static_cast<size_t>(base + lane)));
+                candidate.record_compact_union_output_d2d(
+                    static_cast<size_t>(output_dim) * sizeof(float));
             }
             return true;
         };
@@ -407,7 +414,12 @@ bool compact_union_owned_buffer_sentinel_impl(
             return false;
         }
         if (weight_h2d != slab.gate.size() + slab.up.size() +
-                slab.down.size() || metadata_h2d == 0 || graph_ns == 0) {
+                slab.down.size() || metadata_h2d == 0 || graph_ns == 0 ||
+            candidate.expert_graph_ns() - graph_ns_before != graph_ns ||
+            candidate.compact_union_output_d2d_copies() -
+                    d2d_copies_before != static_cast<uint64_t>(rows) ||
+            candidate.compact_union_output_d2d_bytes() - d2d_bytes_before !=
+                    static_cast<uint64_t>(rows) * output_dim * sizeof(float)) {
             if (err) *err = "compact union owned-buffer accounting mismatch";
             return false;
         }

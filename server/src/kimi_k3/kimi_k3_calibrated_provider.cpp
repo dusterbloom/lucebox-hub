@@ -1330,6 +1330,16 @@ public:
     uint64_t compact_scatter_ns() const { return compact_scatter_ns_; }
     uint64_t expert_graph_ns() const { return expert_graph_ns_; }
     uint64_t expert_readback_ns() const { return expert_readback_ns_; }
+    uint64_t compact_union_output_d2d_copies() const {
+        return compact_union_output_d2d_copies_;
+    }
+    uint64_t compact_union_output_d2d_bytes() const {
+        return compact_union_output_d2d_bytes_;
+    }
+    void record_compact_union_output_d2d(size_t bytes) {
+        ++compact_union_output_d2d_copies_;
+        compact_union_output_d2d_bytes_ += bytes;
+    }
     uint64_t compact_layouts() const { return compact_layouts_; }
     uint64_t compact_uploads() const { return compact_uploads_; }
     uint64_t compact_gate_stages() const { return compact_gate_stages_; }
@@ -1638,9 +1648,13 @@ public:
             const auto started = std::chrono::steady_clock::now();
             const ggml_status status =
                 ggml_backend_graph_compute(backend, entry->graph);
-            graph_ns += static_cast<uint64_t>(
+            const uint64_t elapsed_ns = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - started).count());
+            // Preserve the caller-local timing used by exact sentinels while
+            // also charging production runtime_stats exactly once.
+            graph_ns += elapsed_ns;
+            expert_graph_ns_ += elapsed_ns;
             if (status != GGML_STATUS_SUCCESS) {
                 if (err) *err = "compact union executor graph failed";
                 return false;
@@ -2995,6 +3009,8 @@ private:
     uint64_t compact_scatter_ns_ = 0;
     uint64_t expert_graph_ns_ = 0;
     uint64_t expert_readback_ns_ = 0;
+    uint64_t compact_union_output_d2d_copies_ = 0;
+    uint64_t compact_union_output_d2d_bytes_ = 0;
     uint64_t compact_layouts_ = 0;
     uint64_t compact_uploads_ = 0;
     uint64_t compact_gate_stages_ = 0;
@@ -3280,6 +3296,17 @@ public:
             }
             return false;
         }
+        if (exact_macro_union) {
+#if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
+            if (err) *err = "exact macro union requires a GPU build";
+            return false;
+#elif defined(_WIN32) || !defined(O_DIRECT)
+            if (err) {
+                *err = "exact macro union requires POSIX O_DIRECT support";
+            }
+            return false;
+#endif
+        }
         exact_macro_union_ = exact_macro_union;
         if (const char * trace =
                 std::getenv("DFLASH_KIMI_P40_CACHE_TRACE")) {
@@ -3562,9 +3589,11 @@ public:
         result.async_abort_syncs = async.abort_syncs;
 #if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
         result.ordered_expert_d2d_copies =
-            ordered_join_arena_.expert_d2d_copies();
+            ordered_join_arena_.expert_d2d_copies() +
+            sparse_device_evaluator_.compact_union_output_d2d_copies();
         result.ordered_expert_d2d_bytes =
-            ordered_join_arena_.expert_d2d_bytes();
+            ordered_join_arena_.expert_d2d_bytes() +
+            sparse_device_evaluator_.compact_union_output_d2d_bytes();
         result.ordered_join_launches = ordered_join_arena_.join_launches();
         result.ordered_output_d2d_copies =
             ordered_join_arena_.output_d2d_copies();
@@ -4687,13 +4716,15 @@ private:
             std::vector<float> & output, std::string * err) {
 #if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
         (void) model_layer; (void) base_pos; (void) state; (void) spec;
-        (void) routes; (void) exact_engine; (void) output; (void) err;
-        return MacroUnionOutcome::NotEligible;
+        (void) routes; (void) exact_engine; (void) output;
+        if (err) *err = "exact macro union requires a GPU build";
+        return MacroUnionOutcome::Failed;
 #else
 #if defined(_WIN32) || !defined(O_DIRECT)
         (void) model_layer; (void) base_pos; (void) state; (void) spec;
-        (void) routes; (void) exact_engine; (void) output; (void) err;
-        return MacroUnionOutcome::NotEligible;
+        (void) routes; (void) exact_engine; (void) output;
+        if (err) *err = "exact macro union requires POSIX O_DIRECT support";
+        return MacroUnionOutcome::Failed;
 #else
         if (!exact_macro_union_ || routes.n_tokens <= 1 || !routes.inputs ||
             routes.device_inputs || !direct_reads() || !compact_executor_ ||
@@ -5079,6 +5110,8 @@ private:
                     ggml_backend_tensor_copy_async(
                         backend_, backend_,
                         sources[static_cast<size_t>(lane)], destination);
+                    sparse_device_evaluator_.record_compact_union_output_d2d(
+                        static_cast<size_t>(kDimension) * sizeof(float));
                 }
                 return true;
             };
@@ -5162,7 +5195,7 @@ private:
             const bool fallback_batch = !stable_fallback.empty();
             if (fallback_batch &&
                 !sparse_device_evaluator_.begin_compact_async_batch(
-                    backend_, kNativeTopK, err)) {
+                    backend_, static_cast<int>(stable_fallback.size()), err)) {
                 sparse_device_evaluator_.abort_compact_async_batch();
                 ordered_join_arena_.discard();
                 close_sidecar();
@@ -6030,9 +6063,13 @@ private:
                 static_cast<unsigned long long>(
                     ordered_join_arena_.resident_mean_bytes()),
                 static_cast<unsigned long long>(
-                    ordered_join_arena_.expert_d2d_copies()),
+                    ordered_join_arena_.expert_d2d_copies() +
+                    sparse_device_evaluator_.
+                        compact_union_output_d2d_copies()),
                 static_cast<unsigned long long>(
-                    ordered_join_arena_.expert_d2d_bytes()),
+                    ordered_join_arena_.expert_d2d_bytes() +
+                    sparse_device_evaluator_.
+                        compact_union_output_d2d_bytes()),
                 static_cast<unsigned long long>(
                     ordered_join_arena_.join_launches()),
                 static_cast<unsigned long long>(
