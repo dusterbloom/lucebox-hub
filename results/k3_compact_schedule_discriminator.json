@@ -1,0 +1,84 @@
+{
+  "campaign": "K3 compact M_e=245 exact schedule discriminator",
+  "verdict": "PARTIAL_NO_GO",
+  "qualified_utc": "2026-08-23",
+  "source": {
+    "base_head": "1de724dcdde8a4d86206a0880109d52d3f815142",
+    "provider_cpp_sha256": "e8146f278700ef62fb41f7019e74d01be1676ecfec5330a357c43279504df95c",
+    "sentinel_inc_sha256": "e74b9ba2cdc36776503cda26d9e8fc59199229024ebe99c43107bf81f04fa4d3",
+    "binary_sha256": "f097a11590de33e4763df6605ee2cfb13f4860f103421b8ce99189b1659cf5d5",
+    "transcript_path": "/tmp/k3-compact-schedule-qualified.typescript",
+    "transcript_sha256": "1d780d124b10caa0f093c73e790d84cd46d9b4173a6f17bf4ba05b18a6acb0bd"
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "physical_device": "GPU1 Radeon 8060S Graphics",
+    "architecture": "gfx1151",
+    "wave_size": 32,
+    "visible_devices": 1,
+    "test_device_index": 0,
+    "platform_profile": "performance",
+    "rocm_overlay": "/dev/shm/rocm724-root/opt/rocm-7.2.4/lib",
+    "rocblas_use_hipblaslt": 0
+  },
+  "environment": {
+    "gpu_lease_before": "free",
+    "gpu_lease_after": "free",
+    "loadavg_before": [0.06, 0.03, 0.11],
+    "loadavg_after": [0.07, 0.05, 0.10],
+    "gpu1_edge_c_before": 34.0,
+    "gpu1_edge_c_after": 33.0,
+    "pswpin_before": 0,
+    "pswpin_after": 0,
+    "pswpout_before": 4,
+    "pswpout_after": 4,
+    "unexpected_swap_activity": false,
+    "oom": false
+  },
+  "observations": {
+    "resident_superset_width1": [
+      {"resident_slabs": 1, "exact": true, "speedup": 1.996559},
+      {"resident_slabs": 2, "exact": true, "speedup": 1.165855},
+      {"resident_slabs": 3, "exact": true, "speedup": 0.980018},
+      {"resident_slabs": 4, "exact": true, "speedup": 0.422116},
+      {"resident_slabs": 5, "exact": true, "speedup": 0.465235},
+      {"resident_slabs": 6, "exact": true, "speedup": 0.428264},
+      {"resident_slabs": 7, "exact": true, "speedup": 0.402845},
+      {"resident_slabs": 8, "exact": true, "speedup": 0.337113},
+      {"resident_slabs": 9, "exact": true, "speedup": 0.340543},
+      {"resident_slabs": 10, "exact": true, "speedup": 0.351476},
+      {"resident_slabs": 11, "exact": true, "speedup": 0.339116},
+      {"resident_slabs": 12, "exact": true, "speedup": 0.295096}
+    ],
+    "twelve_slab_differing_masks": [
+      {"rows": 1, "width": 1, "exact": true, "teacher_ns": 175248, "candidate_ns": 574133, "graph_ns": 54753, "speedup": 0.305239},
+      {"rows": 2, "width": 2, "exact": true, "teacher_ns": 494755, "candidate_ns": 663851, "graph_ns": 107852, "speedup": 0.745280},
+      {"rows": 4, "width": 4, "exact": true, "teacher_ns": 1131403, "candidate_ns": 784116, "graph_ns": 181630, "speedup": 1.442903},
+      {"rows": 8, "width": 8, "exact": true, "teacher_ns": 3224005, "candidate_ns": 1056795, "graph_ns": 345395, "speedup": 3.050738, "teacher_weight_h2d_bytes": 23797760, "candidate_weight_h2d_bytes": 7139328, "metadata_h2d_bytes": 115072, "mmvq_launches": 2, "mmq_launches": 0}
+    ],
+    "six_slab_identical_width8_m_e245": {
+      "rows": 245,
+      "width": 8,
+      "exact": false,
+      "teacher_ns": 65001480,
+      "candidate_ns": 15153320,
+      "graph_ns": 9381184,
+      "nominal_speedup": 4.289587,
+      "teacher_weight_h2d_bytes": 874567680,
+      "candidate_weight_h2d_bytes": 3569664,
+      "metadata_h2d_bytes": 3567232,
+      "mmvq_launches": 62,
+      "mmq_launches": 0,
+      "performance_promotable": false
+    }
+  },
+  "stage_verdicts": {
+    "twelve_slab_union_widths_1_2_4_8_exactness": "GO",
+    "twelve_slab_union_width8_small_signal": "GO_3.050738X",
+    "six_slab_identical_mask_width8_exact_lane": "NO_GO_NOT_BYTE_EXACT",
+    "same_workload_grouped_mask_m_e245": "NOT_REACHED_AFTER_REGISTERED_ABORT",
+    "same_workload_union_m_e245": "NOT_REACHED_AFTER_REGISTERED_ABORT",
+    "live_runtime_integration": "NOT_EARNED"
+  },
+  "interpretation": "The run was environmentally valid and aborted at its first correctness failure. The fast six-slab result cannot be promoted. Full twelve-slab union arithmetic remains byte-exact through width eight and showed a material small-width signal, so only a separately registered long twelve-slab union discriminator remains justified."
+}

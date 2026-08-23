@@ -1,0 +1,75 @@
+{
+  "campaign": "K3 compact M_e=245 exact schedule discriminator",
+  "registered_utc": "2026-08-23",
+  "question": "On one empirical-scale expert bucket, does exact width-eight identical-mask grouping or a differing-mask union remove enough rowwise compact work to earn live layer-major integration?",
+  "frozen_source": {
+    "base_head": "1de724dcdde8a4d86206a0880109d52d3f815142",
+    "provider_cpp_sha256": "e8146f278700ef62fb41f7019e74d01be1676ecfec5330a357c43279504df95c",
+    "sentinel_inc_sha256": "e74b9ba2cdc36776503cda26d9e8fc59199229024ebe99c43107bf81f04fa4d3",
+    "trigger": "DFLASH_TEST_KIMI_IQ_MULTIROW_EXACT=1"
+  },
+  "qualified_device": {
+    "physical_device": "GPU1",
+    "architecture": "gfx1151",
+    "visibility": "HIP_VISIBLE_DEVICES=1; DFLASH_TEST_GPU=0",
+    "platform_profile": "performance"
+  },
+  "fixture": {
+    "shape": "3584 -> 3072 -> 3584",
+    "gate_up_type": "IQ1_S",
+    "down_type": "IQ2_XXS",
+    "rows": 245,
+    "graph_width": 8,
+    "requested_masks": "eight deterministic masks with 1..8 selected natural slabs, repeated in fixed order",
+    "union_slabs": 12,
+    "grouped_complete_mask_groups": 8,
+    "weight_generation": "deterministic frozen seeds in the sentinel source",
+    "timing_scope": "candidate wall includes weight/input/map uploads, graph construction, graph execution, and output readback; deterministic fixture/group construction is excluded"
+  },
+  "arms_in_fixed_order": [
+    "rowwise teachers embedded in every case",
+    "resident-superset exactness for slab counts 1..12",
+    "differing-mask exactness at widths 1,2,4,8",
+    "all-identical six-slab width-eight control",
+    "same-workload stable identical-mask grouping",
+    "same-workload twelve-slab differing-mask union",
+    "five-row padded-tail exactness"
+  ],
+  "primary_metrics": [
+    "candidate_ns",
+    "teacher_ns",
+    "candidate speedup versus its rowwise teacher",
+    "candidate authoritative weight H2D bytes"
+  ],
+  "secondary_metrics": [
+    "graph_ns",
+    "metadata H2D bytes",
+    "MMVQ and MMQ launch counts"
+  ],
+  "correctness_gate": {
+    "outputs": "byte-identical for every real row versus current one-row compact teacher",
+    "dispatch": "MMVQ launches greater than zero and MMQ launches equal zero",
+    "payload": "candidate authoritative H2D equals exactly one payload per union or complete-mask group",
+    "padding": "five-row width-eight tail remains byte-identical"
+  },
+  "performance_gate": {
+    "minimum_speedup_vs_rowwise": 1.6,
+    "winner": "Among same-workload candidates that clear 1.6x, choose lower candidate_ns",
+    "simplicity_tiebreak": "If grouped and union candidate_ns are within 5%, choose identical-mask grouping",
+    "no_go": "If neither same-workload candidate clears 1.6x, neither earns live integration"
+  },
+  "run_policy": {
+    "qualified_runs": 1,
+    "reruns_after_result": 0,
+    "build_parallelism_max": 4,
+    "abort_conditions": [
+      "source or binary hash mismatch",
+      "wrong physical device or platform profile",
+      "concurrent GPU lease holder",
+      "build or runtime failure",
+      "any correctness, dispatch, or accounting failure",
+      "OOM or nonzero swap activity"
+    ]
+  },
+  "interpretation_boundary": "This is a model-free expert compute/H2D discriminator. It cannot by itself establish live prefill throughput, storage scheduling, recurrent-state parity, or full-logit parity."
+}

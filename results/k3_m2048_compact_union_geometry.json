@@ -1,0 +1,110 @@
+{
+  "campaign": "K3 M=2048 compact/union-mask offline geometry",
+  "verdict": "OFFLINE_GEOMETRY_ONLY",
+  "source": {
+    "trace_path": "/home/duster/kimi-k3-deploy/p65-a0-long-prefix-chat-20260822/io_trace.tsv",
+    "trace_sha256": "38b4af38ef2405c23f30a78d2d6d3b2e0c573ae1e6196fed35bb25eef5df66c6",
+    "causal_positions": 2048,
+    "sidecar_manifests": "/home/duster/kimi-k3-deploy/streamed-bank/natural-sidecars/kimi_layer*_natural_slabs.json",
+    "routed_layers": 92
+  },
+  "reconstruction": {
+    "route_identity": "(base_pos + token_index, model_layer, expert_id)",
+    "candidate_filter": "natural-sidecar gate records with exact_fallback=0; explicit_read_bytes was not filtered, so cached rows remain",
+    "natural_slab_index": "(file_offset - (payload_offset + expert_id * record_bytes)) / slab_bytes from the per-layer sidecar manifest",
+    "exact_key": "frozen sidecar generation plus model_layer/expert/spec, completed by the reconstructed natural selected-slab mask",
+    "compact_wire_payload": "32-byte natural-ID header + selected slabs for gate, up, and down using per-layer manifest slab sizes"
+  },
+  "validation": {
+    "all_gate_events": 5542536,
+    "exact_fallback0_gate_events": 4521984,
+    "exact_fallback1_gate_events_excluded": 1020552,
+    "route_count": 1239227,
+    "reconstruction_issues": 0
+  },
+  "complete_mask_groups": {
+    "group_count": 66753,
+    "multiplicity": { "p05": 1, "p50": 2, "p95": 70, "max": 2027 },
+    "baseline_one_upload_per_route": {
+      "payload_bytes": 2493066844000,
+      "payload_gib": 2321.848613768816,
+      "max_layer_payload_bytes": 32061797664,
+      "max_unique_complete_mask_payload_pool_per_layer_bytes": 4759795072
+    },
+    "fixed_width": {
+      "2": {
+        "full_chunk_groups": 598337,
+        "full_chunk_routes": 1196674,
+        "full_chunk_route_fraction": 0.9656616584370741,
+        "tail_routes": 42553,
+        "tail_route_fraction": 0.03433834156292592,
+        "payload_bytes": 1305205193536,
+        "saved_bytes": 1187861650464,
+        "payload_reduction_fraction": 0.4764660254989938,
+        "max_layer_payload_bytes": 17550745184
+      },
+      "4": {
+        "full_chunk_groups": 285878,
+        "full_chunk_routes": 1143512,
+        "full_chunk_route_fraction": 0.9227623349071639,
+        "tail_routes": 95715,
+        "tail_route_fraction": 0.0772376650928361,
+        "payload_bytes": 814912269088,
+        "saved_bytes": 1678154574912,
+        "payload_reduction_fraction": 0.6731285921798573,
+        "max_layer_payload_bytes": 13154228256
+      },
+      "8": {
+        "full_chunk_groups": 134518,
+        "full_chunk_routes": 1076144,
+        "full_chunk_route_fraction": 0.8683994135053545,
+        "tail_routes": 163083,
+        "tail_route_fraction": 0.13160058649464546,
+        "payload_bytes": 678859959328,
+        "saved_bytes": 1814206884672,
+        "payload_reduction_fraction": 0.7277008593003453,
+        "max_layer_payload_bytes": 14084976192
+      }
+    }
+  },
+  "per_expert_union_mask": {
+    "expert_cells": 22809,
+    "rows": 1239227,
+    "rows_per_expert": { "p05": 1, "p50": 6, "p95": 245, "max": 2035 },
+    "union_slab_count": { "p05": 1, "p50": 2, "p95": 12, "max": 12 },
+    "one_weight_upload_per_cell": {
+      "payload_bytes": 61697204000,
+      "payload_gib": 57.460371404886246,
+      "saved_bytes_vs_one_upload_per_route": 2431369640000,
+      "payload_reduction_fraction": 0.9752524870528502
+    },
+    "width8_compute_chunking": {
+      "chunks": 167887,
+      "full_chunk_rows": 1173480,
+      "full_chunk_row_fraction": 0.9469451520988487,
+      "tail_rows": 65747,
+      "tail_row_fraction": 0.05305484790115128
+    },
+    "gate_up_work": {
+      "current_selected_slab_rows": 4521984,
+      "union_widened_slab_rows": 9315461,
+      "extra_work_ratio": 2.060038469839787
+    },
+    "staging": {
+      "max_layer_union_payload_bytes": 1703796064,
+      "max_layer_union_payload_gib": 1.5872505903244019,
+      "max_single_union_payload_bytes": 7827488
+    }
+  },
+  "interpretation": {
+    "candidate": "one union compact weight image per (layer, expert), reused for up to eight input rows with row-specific sparse-down maps",
+    "required_exactness_condition": "canonical row joins and row-specific sparse-down mappings must be preserved",
+    "not_measured": [
+      "storage service time or physical NVMe throughput",
+      "H2D wall time",
+      "GPU graph/runtime time",
+      "end-to-end prefill throughput",
+      "model output or state parity"
+    ]
+  }
+}

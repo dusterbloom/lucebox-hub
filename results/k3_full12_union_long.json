@@ -1,0 +1,62 @@
+{
+  "campaign": "K3 full-12 compact union long discriminator",
+  "verdict": "NO_GO_EXACT",
+  "qualified_utc": "2026-08-23",
+  "source": {
+    "base_head": "1de724dcdde8a4d86206a0880109d52d3f815142",
+    "provider_cpp_sha256": "e8146f278700ef62fb41f7019e74d01be1676ecfec5330a357c43279504df95c",
+    "sentinel_inc_sha256": "751c2820fe13e03ec42168491e6089b3c5d6305134a9eba5cf81e5368acf316e",
+    "binary_sha256": "bffed0e437a1de52957206af60cec966c61703a7f98fdbe31aad1e73cb2bbc7c",
+    "transcript_path": "/tmp/k3-full12-union-long-qualified.typescript",
+    "transcript_sha256": "3bcbee211f9d93ea77582c6a80d48a02e9ba1d185cfcd6838a57608bc74943bc"
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "physical_device": "GPU1 Radeon 8060S Graphics",
+    "architecture": "gfx1151",
+    "wave_size": 32,
+    "visible_devices": 1,
+    "test_device_index": 0,
+    "platform_profile": "performance",
+    "rocm_overlay": "/dev/shm/rocm724-root/opt/rocm-7.2.4/lib",
+    "rocblas_use_hipblaslt": 0
+  },
+  "environment": {
+    "gpu_lease_before": "free",
+    "gpu_lease_after": "free",
+    "loadavg_before": [0.23, 0.08, 0.10],
+    "loadavg_after": [0.16, 0.09, 0.09],
+    "gpu1_edge_c_before": 34.0,
+    "gpu1_edge_c_after": 34.0,
+    "pswpin_before": 0,
+    "pswpin_after": 0,
+    "pswpout_before": 4,
+    "pswpout_after": 4,
+    "unexpected_swap_activity": false,
+    "oom": false
+  },
+  "arm": {
+    "label": "differing_union_wide",
+    "resident_slabs": 12,
+    "rows": 245,
+    "width": 8,
+    "exact": false,
+    "mmvq_launches": 62,
+    "mmq_launches": 0,
+    "teacher_weight_h2d_bytes": 722856960,
+    "candidate_weight_h2d_bytes": 7139328,
+    "metadata_h2d_bytes": 3567232,
+    "teacher_ns": 58478407,
+    "candidate_ns": 16421144,
+    "graph_ns": 10362522,
+    "nominal_speedup": 3.561165,
+    "performance_promotable": false
+  },
+  "stage_verdicts": {
+    "repeated_width8_full12_exactness": "NO_GO",
+    "nominal_performance": "MATERIAL_BUT_INEXACT",
+    "padded_tail": "NOT_REACHED_AFTER_REGISTERED_ABORT",
+    "exact_live_runtime_integration": "NOT_EARNED"
+  },
+  "interpretation": "The environmentally valid one-shot run failed its byte-identity gate before the padded-tail arm. The 3.561165x timing is retained only as an approximate-lane prize and cannot support an exact production claim. Width-eight exactness observed on the first eight deterministic inputs does not generalize across the 245-row fixture."
+}

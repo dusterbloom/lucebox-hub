@@ -2,9 +2,12 @@
 
 ## Verdict
 
-The ordinary width-four/eight MMQ path is **not exact**. The existing MMVQ
-path remains byte-identical through width eight and therefore supplies a
-bounded exact implementation path without a new kernel.
+The ordinary width-four/eight MMQ path is **not exact**.  MMVQ width four and
+eight was byte-identical on this discriminator's first eight deterministic
+inputs, but a later 245-row continuation falsified that as a general exactness
+envelope.  Width eight is therefore **not an exact production path**.  Width
+two remains the retained exact multi-row seam; wider MMVQ is now an explicitly
+approximate/quality-gated candidate.
 
 This is a model-free arithmetic gate on physical GPU1 `gfx1151`, not a
 performance or live-prefill result.
@@ -46,23 +49,34 @@ The system ROCm 7.2.2 closure independently produced the same values.
 | exact ceiling 8 | 4 | 3 MMVQ, 0 MMQ | **yes** | 0 | 0 | 0 |
 | exact ceiling 8 | 8 | 3 MMVQ, 0 MMQ | **yes** | 0 | 0 | 0 |
 
-Both complete test runs pass. The MMQ result may be studied later as an
-explicit quality-gated approximation, but it is closed for the exact lane.
+Both original eight-input test runs pass.  This table is retained as the
+fixture-level observation it actually established, not as a universal MMVQ
+claim.  The MMQ result remains closed for the exact lane.
+
+## Superseding long-row evidence
+
+The follow-up used the same physical GPU and complete K3 shape, one reordered
+full-12 compact payload, independent row masks, and 245 deterministic inputs.
+The width-eight candidate dispatched 62 MMVQ launches and no MMQ.  It was
+nominally `3.561165x` faster than the current rowwise compact teacher
+(`58.478407 ms -> 16.421144 ms`) and reduced authoritative weight H2D from
+722,856,960 to 7,139,328 bytes, but it was **not byte-identical**.  The
+correctness gate aborted before the padded-tail arm.
+
+A separate six-slab identical-mask width-eight arm was also fast
+(`4.289587x`) and non-exact.  Thus the failure is not repaired by avoiding
+differing masks or by using a full-12 resident tensor.  Results and frozen
+hashes are in `results/k3_compact_schedule_discriminator.json` and
+`results/k3_full12_union_long.json`.
 
 ## Engineering decision
 
-The exact wide service should not execute an expert at its entire empirical
-`M_e` through MMQ. It should stage each selected expert payload once, keep it
-resident, and run its same-payload rows in MMVQ chunks of at most eight. The
-existing `ggml_mul_mat_sparse_k_blocks` down operation retains the natural-K
-mapping and canonical one-row reduction used by P41. The existing outer
-per-route join order remains unchanged.
-
-Before implementing that generalization, the retained P65 trace must show
-that M=2048 creates enough identical expert/slab-mask groups for width-eight
-chunks to remove materially more uploads than the rejected M64 pair2 path.
-That offline grouping calculation is the next bound; it requires no model or
-GPU run.
+Do not integrate width-eight MMVQ into the exact runtime.  Its speed prize is
+real, but its arithmetic differs for later inputs.  The test-only union
+executor was removed after preserving the valid NO-GO.  Exact production work
+may retain the already-proven width-two seam or keep one-row arithmetic while
+improving layer-major storage/order.  Any width-four/eight continuation must
+report numerical/state/logit deltas and remain behind the exact fallback.
 
 Machine-readable results and binary/runtime hashes are in
 `results/k3_iq_multirow_exact_gate.json`.

@@ -1,0 +1,58 @@
+{
+  "campaign": "K3 full-12 compact union long discriminator",
+  "registered_utc": "2026-08-23",
+  "question": "Does the still-exact full-12 union shape remain byte-identical across repeated width-eight chunks and clear the material compute/H2D gate at M_e=245?",
+  "reason_for_separate_continuation": "The prior registered discriminator validly rejected six-slab identical-mask width eight before reaching the full-12 long arm. This continuation does not rerun or weaken that failed arm.",
+  "frozen_source": {
+    "base_head": "1de724dcdde8a4d86206a0880109d52d3f815142",
+    "provider_cpp_sha256": "e8146f278700ef62fb41f7019e74d01be1676ecfec5330a357c43279504df95c",
+    "sentinel_inc_sha256": "751c2820fe13e03ec42168491e6089b3c5d6305134a9eba5cf81e5368acf316e",
+    "binary_sha256": "bffed0e437a1de52957206af60cec966c61703a7f98fdbe31aad1e73cb2bbc7c",
+    "trigger": "DFLASH_TEST_KIMI_IQ_MULTIROW_EXACT=union_long"
+  },
+  "qualified_device": {
+    "physical_device": "GPU1",
+    "architecture": "gfx1151",
+    "visibility": "HIP_VISIBLE_DEVICES=1; DFLASH_TEST_GPU=0",
+    "platform_profile": "performance"
+  },
+  "fixture": {
+    "shape": "3584 -> 3072 -> 3584",
+    "gate_up_type": "IQ1_S",
+    "down_type": "IQ2_XXS",
+    "rows": 245,
+    "graph_width": 8,
+    "resident_slabs": 12,
+    "requested_masks": "the same eight deterministic 1..8-slab masks from the prior discriminator, repeated in fixed order",
+    "tail_rows": 5
+  },
+  "arms_in_fixed_order": [
+    "245-row rowwise compact teacher versus one full-12 union payload reused over width-eight chunks",
+    "five-row padded-tail teacher versus full-12 width-eight union"
+  ],
+  "correctness_gate": {
+    "outputs": "byte-identical for all 245 real rows and all five padded-tail real rows",
+    "dispatch": "MMVQ launches greater than zero and MMQ launches equal zero",
+    "payload": "authoritative candidate weight H2D equals exactly one full-12 payload"
+  },
+  "performance_gate": {
+    "primary_metric": "245-row candidate_ns divided into matched rowwise teacher_ns",
+    "minimum_speedup_vs_rowwise": 1.6,
+    "go": "all correctness gates pass and speedup is at least 1.6x",
+    "no_go": "any correctness failure or speedup below 1.6x"
+  },
+  "run_policy": {
+    "qualified_runs": 1,
+    "reruns_after_result": 0,
+    "build_parallelism_max": 4,
+    "abort_conditions": [
+      "source or binary hash mismatch",
+      "wrong physical device or platform profile",
+      "concurrent GPU lease holder",
+      "build or runtime failure",
+      "any correctness, dispatch, or accounting failure",
+      "OOM or swap activity"
+    ]
+  },
+  "interpretation_boundary": "A GO earns default-off layer-major integration work only. It is not a live prefill throughput claim. Full-12 compute shape does not require reading missing physical slabs: unused tensor slots may be deterministic padding because row-specific down maps never reference them; production H2D/storage accounting must still be measured."
+}
