@@ -7,6 +7,7 @@
 #include "common/moe_storage_policy.h"
 #include "internal.h"
 #include "kimi_k3_internal.h"
+#include "kimi_k3_prefill.h"
 #include "placement/placement_config.h"
 
 #include <algorithm>
@@ -40,47 +41,6 @@ inline bool parse_kimi_k3_core_placement(
         return true;
     }
     return false;
-}
-
-// P57 intentionally starts with widths that have bounded exactness evidence.
-// Width eight is accepted by the parser only as configuration substrate; the
-// backend separately requires the strict P58 exact-multirow discriminator.
-inline bool parse_kimi_k3_prefill_chunk(
-        const char * value, int & out) {
-    out = 1;
-    if (!value || !*value || std::string(value) == "1") return true;
-    if (std::string(value) == "2") {
-        out = 2;
-        return true;
-    }
-    if (std::string(value) == "4") {
-        out = 4;
-        return true;
-    }
-    if (std::string(value) == "8") {
-        out = 8;
-        return true;
-    }
-    return false;
-}
-
-// P58 never exposes a partial macro batch to the calibrated provider. A short
-// prompt tail is deliberately executed through the established one-row path.
-inline size_t kimi_k3_prefill_chunk_size(
-        size_t remaining, int configured, bool exact_multirow) {
-    if (remaining == 0 || configured <= 1) return std::min<size_t>(remaining, 1);
-    if (exact_multirow && configured == 8 && remaining < 8) return 1;
-    return std::min(remaining, static_cast<size_t>(configured));
-}
-
-inline bool kimi_k3_p58_configuration_valid(
-        int configured, bool exact_multirow) {
-    return (configured == 8) == exact_multirow;
-}
-
-inline bool kimi_k3_p58_oracle_candidate(
-        bool exact_multirow, size_t width, bool capture_replay) {
-    return exact_multirow && width == 8 && capture_replay;
 }
 
 // Initialize the backend that owns KDA, MLA, shared experts, and the output

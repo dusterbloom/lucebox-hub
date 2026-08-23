@@ -1936,82 +1936,36 @@ GenerateResult KimiK3Backend::generate_impl(const GenerateRequest & req,
         prefill_census_ ? provider_stats() : KimiK3RoutedRuntimeStats{};
     const uint64_t prefill_process_read_begin =
         prefill_census_ ? process_storage_read_bytes() : 0;
-    size_t prefill_forward_calls = 0;
     const auto prefill_begin = std::chrono::steady_clock::now();
-    for (size_t i = 0; i < req.prompt.size();) {
-        const size_t chunk = kimi_k3_prefill_chunk_size(
-            req.prompt.size() - i, prefill_chunk_, p58_exact_multirow_);
-        bool ok = false;
-        if (chunk == 1) {
-            ok = forward_token(req.prompt[i], static_cast<int>(i));
-            if (ok) append_logits_trace(logits);
-        } else {
-            const bool snapshot_ok =
-                kimi_k3_replay_snapshot(backend_, cache_);
-            if (!snapshot_ok) {
-                paired_failure =
-                    "chunked prefill cannot snapshot recurrent state";
-            }
-            KimiK3ForwardOptions options;
-            options.read_logits = true;
-            options.read_argmax = false;
-            options.capture_replay = true;
-            options.exact_multirow_core =
-                p58_exact_multirow_ && chunk == 8;
-            options.routed_output_provider = routed_output_provider_.get();
-            options.moe_core_offload = moe_core_offload_.enabled()
-                ? &moe_core_offload_ : nullptr;
-            KimiK3ForwardResult forward_result;
-            const std::vector<int32_t> tokens(
-                req.prompt.begin() + static_cast<std::ptrdiff_t>(i),
-                req.prompt.begin() + static_cast<std::ptrdiff_t>(i + chunk));
-            ok = snapshot_ok && kimi_k3_forward(
-                backend_, weights_, cache_, tokens, static_cast<int>(i),
-                options, forward_result, &stream_engine_,
-                dual_stream_executor_.is_ready()
-                    ? &dual_stream_executor_ : nullptr,
-                &stream_owner_policy_, routing_stats_.get());
-            if (ok) {
-                const size_t vocabulary =
-                    static_cast<size_t>(weights_.n_vocab);
-                if (forward_result.logits.size() != chunk * vocabulary) {
-                    ok = false;
-                    paired_failure =
-                        "chunked prefill returned an invalid logits shape";
-                } else if (!kimi_k3_replay_commit(
-                               backend_, weights_, cache_,
-                               static_cast<int>(i),
-                               static_cast<int>(chunk))) {
-                    ok = false;
-                    paired_failure =
-                        "chunked prefill cannot commit recurrent state";
-                } else {
-                    maybe_release_kimi_mapped_pages(weights_);
-                    append_logits_trace(forward_result.logits);
-                    logits.assign(
-                        forward_result.logits.end() - vocabulary,
-                        forward_result.logits.end());
-                }
-            }
-            if (!ok && cache_.snapshot_valid) {
-                (void) kimi_k3_replay_restore(backend_, cache_);
-            }
-        }
-        if (!ok) {
-            result.fail(GenerateErrorCode::PrefillFailed,
-                        paired_failure.empty()
-                            ? dflash27b_last_error() : paired_failure);
-            out_io.emit(-1);
-            return result;
-        }
-        ++prefill_forward_calls;
-        i += chunk;
+    const KimiK3PrefillPolicy prefill_policy{
+        prefill_chunk_, p58_exact_multirow_};
+    KimiK3PrefillContext prefill_context{
+        backend_, weights_, cache_, stream_engine_,
+        dual_stream_executor_.is_ready() ? &dual_stream_executor_ : nullptr,
+        &stream_owner_policy_, routing_stats_.get(),
+        routed_output_provider_.get(),
+        moe_core_offload_.enabled() ? &moe_core_offload_ : nullptr};
+    KimiK3PrefillExecutionResult prefill_execution;
+    std::string executor_failure;
+    const KimiK3PrefillExecutor prefill_executor(prefill_context);
+    if (!prefill_executor.run(
+            req.prompt, prefill_policy, forward_token,
+            append_logits_trace,
+            [&]() { maybe_release_kimi_mapped_pages(weights_); },
+            logits, prefill_execution,
+            &executor_failure)) {
+        result.fail(GenerateErrorCode::PrefillFailed,
+                    !executor_failure.empty() ? executor_failure :
+                        (!paired_failure.empty() ? paired_failure :
+                            dflash27b_last_error()));
+        out_io.emit(-1);
+        return result;
     }
     const auto prefill_end = std::chrono::steady_clock::now();
     result.prefill_s = std::chrono::duration<double>(prefill_end - prefill_begin).count();
     if (prefill_census_) {
         print_prefill_census(
-            "prefill", req.prompt.size(), prefill_forward_calls,
+            "prefill", req.prompt.size(), prefill_execution.forward_calls,
             result.prefill_s,
             monotonic_delta(
                 process_storage_read_bytes(), prefill_process_read_begin),
