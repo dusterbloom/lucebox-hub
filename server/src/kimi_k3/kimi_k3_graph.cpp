@@ -2049,7 +2049,7 @@ bool streamed_kimi_k3_forward_exact_multirow(
         KimiK3ForwardResult & result,
         MoeHybridStreamEngine * stream_engine) {
     using Clock = std::chrono::steady_clock;
-    constexpr int kMacroWidth = 8;
+    const int macro_width = static_cast<int>(tokens.size());
     for (const char * name : {
              "DFLASH_KIMI_DIVERGENCE_TRACE_OUT",
              "DFLASH_KIMI_LAYER1_TRACE_OUT",
@@ -2082,11 +2082,12 @@ bool streamed_kimi_k3_forward_exact_multirow(
             return false;
         }
     }
-    if (tokens.size() != kMacroWidth || !options.capture_replay ||
+    if (!kimi_k3_exact_multirow_width(tokens.size()) ||
+        !options.capture_replay ||
         !options.routed_output_provider ||
         !options.routed_output_provider->prefill_service() ||
         !options.routed_output_provider->prefill_service()->supports_width(
-            kMacroWidth) ||
+            tokens.size()) ||
         options.routed_output_provider->requires_device_output() ||
         options.moe_core_offload || options.capture_layer_ids ||
         options.panel_capture || options.panel_capture_layer_ids ||
@@ -2098,7 +2099,7 @@ bool streamed_kimi_k3_forward_exact_multirow(
     }
 
     const size_t hidden_width = static_cast<size_t>(w.n_embd);
-    const size_t hidden_values = hidden_width * kMacroWidth;
+    const size_t hidden_values = hidden_width * tokens.size();
     const auto elapsed_ns = [](Clock::time_point begin) {
         return static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -2113,7 +2114,7 @@ bool streamed_kimi_k3_forward_exact_multirow(
 
     std::vector<float> hidden(hidden_values);
     Clock::time_point phase_begin = Clock::now();
-    for (int token = 0; token < kMacroWidth; ++token) {
+    for (int token = 0; token < macro_width; ++token) {
         if (!exact_multirow_embedding_row(
                 backend, w, tokens[static_cast<size_t>(token)],
                 hidden.data() + static_cast<size_t>(token) * hidden_width)) {
@@ -2134,7 +2135,7 @@ bool streamed_kimi_k3_forward_exact_multirow(
         phase_begin = Clock::now();
         if (il < w.n_dense_lead) {
             std::vector<float> next_hidden(hidden_values);
-            for (int token = 0; token < kMacroWidth; ++token) {
+            for (int token = 0; token < macro_width; ++token) {
                 ExactMultirowLayerRow row;
                 if (!exact_multirow_layer_row(
                         backend, w, cache, il, base_pos, token,
@@ -2157,13 +2158,13 @@ bool streamed_kimi_k3_forward_exact_multirow(
 
         std::vector<float> prefix(hidden_values);
         std::vector<float> routed(
-            static_cast<size_t>(w.n_expert_latent) * kMacroWidth);
+            static_cast<size_t>(w.n_expert_latent) * tokens.size());
         std::vector<int32_t> selected(
-            static_cast<size_t>(w.n_expert_used) * kMacroWidth);
+            static_cast<size_t>(w.n_expert_used) * tokens.size());
         std::vector<float> route_weights(
-            static_cast<size_t>(w.n_expert_used) * kMacroWidth);
+            static_cast<size_t>(w.n_expert_used) * tokens.size());
         std::vector<float> shared(hidden_values);
-        for (int token = 0; token < kMacroWidth; ++token) {
+        for (int token = 0; token < macro_width; ++token) {
             ExactMultirowLayerRow row;
             if (!exact_multirow_layer_row(
                     backend, w, cache, il, base_pos, token,
@@ -2209,7 +2210,7 @@ bool streamed_kimi_k3_forward_exact_multirow(
         routes.layer = il - w.n_dense_lead;
         routes.n_expert = w.n_expert;
         routes.top_k = w.n_expert_used;
-        routes.n_tokens = kMacroWidth;
+        routes.n_tokens = macro_width;
         routes.inputs = routed.data();
         routes.selected_ids = selected.data();
         routes.selected_weights = route_weights.data();
@@ -2226,14 +2227,14 @@ bool streamed_kimi_k3_forward_exact_multirow(
         }
         expert_ns += elapsed_ns(phase_begin);
         if (routed_output.size() !=
-            static_cast<size_t>(w.n_expert_latent) * kMacroWidth) {
+            static_cast<size_t>(w.n_expert_latent) * tokens.size()) {
             set_last_error("Kimi-K3 P58 provider returned an invalid shape");
             return false;
         }
 
         phase_begin = Clock::now();
         std::vector<float> next_hidden(hidden_values);
-        for (int token = 0; token < kMacroWidth; ++token) {
+        for (int token = 0; token < macro_width; ++token) {
             if (!exact_multirow_join_row(
                     backend, w, layer,
                     prefix.data() +
@@ -2253,11 +2254,11 @@ bool streamed_kimi_k3_forward_exact_multirow(
 
     if (options.read_logits) {
         result.logits.resize(
-            static_cast<size_t>(w.n_vocab) * kMacroWidth);
+            static_cast<size_t>(w.n_vocab) * tokens.size());
     }
-    if (options.read_argmax) result.argmax.resize(kMacroWidth);
+    if (options.read_argmax) result.argmax.resize(tokens.size());
     phase_begin = Clock::now();
-    for (int token = 0; token < kMacroWidth; ++token) {
+    for (int token = 0; token < macro_width; ++token) {
         if (!exact_multirow_output_row(
                 backend, w,
                 hidden.data() + static_cast<size_t>(token) * hidden_width,
@@ -2266,7 +2267,7 @@ bool streamed_kimi_k3_forward_exact_multirow(
         }
     }
     output_ns += elapsed_ns(phase_begin);
-    cache.cur_pos = base_pos + kMacroWidth;
+    cache.cur_pos = base_pos + macro_width;
     recurrent_guard.restore();
 
     const char * profile = std::getenv("DFLASH_KIMI_STAGE_PROFILE");
@@ -2274,10 +2275,10 @@ bool streamed_kimi_k3_forward_exact_multirow(
         const uint64_t total_ns = elapsed_ns(total_begin);
         const uint64_t classified = core_ns + expert_ns + join_ns + output_ns;
         std::fprintf(stderr,
-            "[kimi-k3-p58-stage] position=%d tokens=8 total_ms=%.3f "
+            "[kimi-k3-p58-stage] position=%d tokens=%d total_ms=%.3f "
             "one_row_core_ms=%.3f experts_ms=%.3f one_row_join_ms=%.3f "
             "one_row_output_ms=%.3f other_ms=%.3f\n",
-            base_pos, total_ns / 1.0e6, core_ns / 1.0e6,
+            base_pos, macro_width, total_ns / 1.0e6, core_ns / 1.0e6,
             expert_ns / 1.0e6, join_ns / 1.0e6, output_ns / 1.0e6,
             (total_ns > classified ? total_ns - classified : 0) / 1.0e6);
     }
@@ -4073,12 +4074,15 @@ bool kimi_k3_forward(ggml_backend_t backend,
         return false;
     }
     if (options.exact_multirow_core &&
-        (!options.capture_replay || n_tokens != 8 || panel_stop || panel_multi ||
+        (!options.capture_replay ||
+         !kimi_k3_exact_multirow_width(static_cast<size_t>(n_tokens)) ||
+         panel_stop || panel_multi ||
          options.capture_layer_ids || options.expert_observer ||
          options.moe_core_offload || dual_stream_executor || routing_stats ||
          !options.routed_output_provider ||
          !options.routed_output_provider->prefill_service() ||
-         !options.routed_output_provider->prefill_service()->supports_width(8) ||
+         !options.routed_output_provider->prefill_service()->supports_width(
+             static_cast<size_t>(n_tokens)) ||
          options.routed_output_provider->requires_device_output())) {
         set_last_error(
             "Kimi-K3 forward: P58 exact multirow request is outside its "

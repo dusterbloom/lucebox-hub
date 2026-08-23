@@ -37,20 +37,26 @@ int main() {
     REQUIRE(prefill_chunk == 4);
     REQUIRE(parse_kimi_k3_prefill_chunk("8", prefill_chunk));
     REQUIRE(prefill_chunk == 8);
+    REQUIRE(parse_kimi_k3_prefill_chunk("64", prefill_chunk));
+    REQUIRE(prefill_chunk == 64);
     REQUIRE(!parse_kimi_k3_prefill_chunk("0", prefill_chunk));
     REQUIRE(!parse_kimi_k3_prefill_chunk("2x", prefill_chunk));
 
     REQUIRE(kimi_k3_prefill_chunk_size(16, 8, true) == 8);
     REQUIRE(kimi_k3_prefill_chunk_size(8, 8, true) == 8);
     REQUIRE(kimi_k3_prefill_chunk_size(7, 8, true) == 1);
+    REQUIRE(kimi_k3_prefill_chunk_size(128, 64, true) == 64);
+    REQUIRE(kimi_k3_prefill_chunk_size(63, 64, true) == 1);
     REQUIRE(kimi_k3_prefill_chunk_size(3, 2, false) == 2);
     REQUIRE(kimi_k3_prefill_chunk_size(1, 4, false) == 1);
     REQUIRE(kimi_k3_p58_configuration_valid(1, false));
     REQUIRE(kimi_k3_p58_configuration_valid(4, false));
     REQUIRE(kimi_k3_p58_configuration_valid(8, true));
+    REQUIRE(kimi_k3_p58_configuration_valid(64, true));
     REQUIRE(!kimi_k3_p58_configuration_valid(8, false));
     REQUIRE(!kimi_k3_p58_configuration_valid(4, true));
     REQUIRE(kimi_k3_p58_oracle_candidate(true, 8, true));
+    REQUIRE(kimi_k3_p58_oracle_candidate(true, 64, true));
     REQUIRE(!kimi_k3_p58_oracle_candidate(true, 8, false));
     REQUIRE(!kimi_k3_p58_oracle_candidate(true, 4, true));
     REQUIRE(!kimi_k3_p58_oracle_candidate(false, 8, true));

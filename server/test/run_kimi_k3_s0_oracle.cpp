@@ -114,7 +114,7 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr,
             "usage: %s <kimi-k3.gguf> <prompt_ids_csv> <oracle_ids_csv> "
             "<result.json> [gpu=0] [core=cpu|accelerator] [expert_gpu=-1] "
-            "[max_width=8] [min_width=2]\n",
+            "[max_width=8] [min_width=2|4|8|64]\n",
             argv[0]);
         return 2;
     }
@@ -132,7 +132,9 @@ int main(int argc, char ** argv) {
     config.model_path = argv[1];
     config.device.gpu = argc > 5 ? std::atoi(argv[5]) : 0;
     config.device.max_ctx = 4096;
-    config.oracle_verify_tokens = 8;
+    const int max_width = argc > 8 ? std::atoi(argv[8]) : 8;
+    const int min_width = argc > 9 ? std::atoi(argv[9]) : 2;
+    config.oracle_verify_tokens = max_width;
     const char * layer_diagnostics =
         std::getenv("DFLASH_KIMI_S0_LAYER_CAPTURE");
     config.oracle_layer_diagnostics = layer_diagnostics &&
@@ -144,16 +146,24 @@ int main(int argc, char ** argv) {
         return 2;
     }
     config.expert_gpu = argc > 7 ? std::atoi(argv[7]) : -1;
-    const int max_width = argc > 8 ? std::atoi(argv[8]) : 8;
-    const int min_width = argc > 9 ? std::atoi(argv[9]) : 2;
-    if (max_width != 2 && max_width != 4 && max_width != 8) {
-        std::fprintf(stderr, "[kimi-k3-s0] max_width must be 2, 4, or 8\n");
+    if (max_width != 2 && max_width != 4 && max_width != 8 &&
+        max_width != 64) {
+        std::fprintf(stderr,
+            "[kimi-k3-s0] max_width must be 2, 4, 8, or 64\n");
         return 2;
     }
-    if ((min_width != 2 && min_width != 4 && min_width != 8) ||
+    if ((min_width != 2 && min_width != 4 && min_width != 8 &&
+         min_width != 64) ||
         min_width > max_width) {
         std::fprintf(stderr,
-            "[kimi-k3-s0] min_width must be 2, 4, or 8 and <= max_width\n");
+            "[kimi-k3-s0] min_width must be 2, 4, 8, or 64 and <= "
+            "max_width\n");
+        return 2;
+    }
+    if (oracle.size() < static_cast<size_t>(max_width)) {
+        std::fprintf(stderr,
+            "[kimi-k3-s0] oracle IDs must contain at least max_width "
+            "tokens\n");
         return 2;
     }
 
@@ -174,7 +184,7 @@ int main(int argc, char ** argv) {
         }},
     };
     bool parity_failed = false;
-    for (int width : {2, 4, 8}) {
+    for (int width : {2, 4, 8, 64}) {
         if (width < min_width) continue;
         if (width > max_width) break;
         const std::vector<int32_t> tokens(

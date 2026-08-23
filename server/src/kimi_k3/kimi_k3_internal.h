@@ -284,6 +284,12 @@ struct KimiK3MoePanelCapture {
     std::vector<float> router_weights;
 };
 
+// Retained exact recurrent-micro / routed-macro discriminator widths. These
+// are explicit research envelopes, not a generic chunking promise.
+inline bool kimi_k3_exact_multirow_width(size_t width) {
+    return width == 8 || width == 64;
+}
+
 struct KimiK3ForwardOptions {
     const std::vector<int> * capture_layer_ids = nullptr;
     bool capture_replay = false;
@@ -302,7 +308,7 @@ struct KimiK3ForwardOptions {
     MoeStreamExpertObserver * expert_observer = nullptr;
     KimiK3RoutedOutputProvider * routed_output_provider = nullptr;
     // P58-only semantic discriminator: evolve KDA/MLA and all core arithmetic
-    // one row at a time, while exposing one eight-row routed-provider call per
+    // one row at a time, while exposing one bounded routed-provider macro per
     // layer. The public backend validates the complete fail-closed envelope.
     bool exact_multirow_core = false;
     // Experimental CPU-core / accelerator-MoE split. Null preserves the

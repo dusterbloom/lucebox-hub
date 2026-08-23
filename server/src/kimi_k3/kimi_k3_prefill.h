@@ -19,7 +19,8 @@ struct KimiK3PrefillPolicy {
     bool exact_multirow = false;
 
     bool valid() const {
-        return (macro_width == 8) == exact_multirow;
+        return kimi_k3_exact_multirow_width(
+            static_cast<size_t>(macro_width)) == exact_multirow;
     }
 
     size_t next_width(size_t remaining) const {
@@ -28,7 +29,9 @@ struct KimiK3PrefillPolicy {
         }
         // P58 never exposes a partial macro to the calibrated provider.  A
         // short tail remains on the established one-row path.
-        if (exact_multirow && macro_width == 8 && remaining < 8) return 1;
+        if (exact_multirow && remaining < static_cast<size_t>(macro_width)) {
+            return 1;
+        }
         return std::min(remaining, static_cast<size_t>(macro_width));
     }
 };
@@ -48,6 +51,10 @@ inline bool parse_kimi_k3_prefill_chunk(const char * value, int & out) {
         out = 8;
         return true;
     }
+    if (std::string(value) == "64") {
+        out = 64;
+        return true;
+    }
     return false;
 }
 
@@ -63,7 +70,8 @@ inline bool kimi_k3_p58_configuration_valid(
 
 inline bool kimi_k3_p58_oracle_candidate(
         bool exact_multirow, size_t width, bool capture_replay) {
-    return exact_multirow && width == 8 && capture_replay;
+    return exact_multirow && kimi_k3_exact_multirow_width(width) &&
+        capture_replay;
 }
 
 struct KimiK3PrefillExecutionResult {

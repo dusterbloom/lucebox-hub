@@ -1159,15 +1159,15 @@ bool KimiK3Backend::init() {
     if (!parse_kimi_k3_prefill_chunk(
             std::getenv("DFLASH_KIMI_PREFILL_CHUNK"), prefill_chunk_)) {
         std::fprintf(stderr,
-            "[kimi-k3] DFLASH_KIMI_PREFILL_CHUNK must be 1, 2, 4, or 8\n");
+            "[kimi-k3] DFLASH_KIMI_PREFILL_CHUNK must be 1, 2, 4, 8, "
+            "or 64\n");
         return false;
     }
     if (!kimi_k3_p58_configuration_valid(
             prefill_chunk_, p58_exact_multirow_)) {
         std::fprintf(stderr,
-            "[kimi-k3] width-eight prefill requires both "
-            "DFLASH_KIMI_PREFILL_CHUNK=8 and "
-            "DFLASH_KIMI_P58_EXACT_MULTIROW=1\n");
+            "[kimi-k3] exact routed-macro prefill requires width 8 or 64 "
+            "and DFLASH_KIMI_P58_EXACT_MULTIROW=1\n");
         return false;
     }
     if (!parse_optional_binary_environment(
@@ -1288,7 +1288,8 @@ bool KimiK3Backend::init() {
         (!weights_.routed_experts_streamed ||
          !routed_output_provider_ ||
          !routed_output_provider_->prefill_service() ||
-         !routed_output_provider_->prefill_service()->supports_width(8) ||
+         !routed_output_provider_->prefill_service()->supports_width(
+             static_cast<size_t>(prefill_chunk_)) ||
          routed_output_provider_->requires_device_output() ||
          dual_stream_executor_.is_ready() || moe_core_offload_.enabled())) {
         std::fprintf(stderr,

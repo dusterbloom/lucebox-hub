@@ -4887,7 +4887,7 @@ public:
     }
 
     bool supports_width(size_t width) const override {
-        if (width != 8) return false;
+        if (width != 8 && width != 64) return false;
         if (!sidecar_authoritative_ || route_prefix_depth_ != 0 ||
             layer_phase_ != LayerPhase::All || dynamic_active_layer_ ||
             ordered_device_join_ || !oracle_trace_path_.empty() ||

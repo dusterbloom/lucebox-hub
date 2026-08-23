@@ -40,7 +40,7 @@ bool KimiK3PrefillExecutor::run(
             options.read_argmax = false;
             options.capture_replay = true;
             options.exact_multirow_core =
-                policy.exact_multirow && width == 8;
+                policy.exact_multirow && kimi_k3_exact_multirow_width(width);
             options.routed_output_provider = context_.routed_output_provider;
             options.moe_core_offload = context_.moe_core_offload;
 
