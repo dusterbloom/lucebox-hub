@@ -2638,10 +2638,24 @@ public:
 #if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
             BackendDeviceScope scope;
             if (!scope.enter(backend_, err)) return false;
+#if defined(DFLASH27B_BACKEND_HIP)
+            cudaDeviceProp properties{};
+            if (cudaGetDeviceProperties(&properties, scope.device()) !=
+                    cudaSuccess ||
+                std::strncmp(properties.gcnArchName, "gfx1151", 7) != 0 ||
+                (properties.gcnArchName[7] != '\0' &&
+                 properties.gcnArchName[7] != ':')) {
+                if (err) {
+                    *err = "P42 ordered join is qualified only on gfx1151";
+                }
+                return false;
+            }
+#else
             if (scope.device() != 1) {
                 if (err) *err = "P42 ordered join is qualified only on GPU1";
                 return false;
             }
+#endif
 #else
             if (err) *err = "P42 ordered join requires a GPU backend";
             return false;

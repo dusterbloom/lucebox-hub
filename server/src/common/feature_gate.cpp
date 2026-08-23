@@ -26,6 +26,16 @@ std::string check_feature_compatibility(
                " is unsupported in this binary (compiled backend: " +
                placement_backend_name(compiled_backend) + ")";
     }
+    if (arch == "kimi-k3") {
+        if (target_backend != PlacementBackend::Hip ||
+            compiled_backend != PlacementBackend::Hip) {
+            return "Kimi-K3 requires a HIP/ROCm build and target";
+        }
+        if (args.device.is_multi_device() ||
+            args.remote_target_shard.enabled()) {
+            return "Kimi-K3 requires one local HIP target";
+        }
+    }
 
     const PlacementBackend draft_backend =
         args.draft_device.backend == PlacementBackend::Auto

@@ -82,6 +82,25 @@ void test_feature_gate_requires_compiled_target_backend() {
         PlacementBackend::Cuda).empty());
 }
 
+void test_feature_gate_kimi_requires_single_local_hip() {
+    BackendArgs hip;
+    hip.model_path = "/nonexistent/model.gguf";
+    hip.device.backend = PlacementBackend::Hip;
+    CHECK(gate_result(hip, "kimi-k3", PlacementBackend::Hip).empty());
+
+    BackendArgs cuda = hip;
+    cuda.device.backend = PlacementBackend::Cuda;
+    CHECK(!gate_result(cuda, "kimi-k3", PlacementBackend::Cuda).empty());
+
+    BackendArgs split = hip;
+    CHECK(parse_placement_device_list("hip:0,hip:1", split.device));
+    CHECK(!gate_result(split, "kimi-k3", PlacementBackend::Hip).empty());
+
+    BackendArgs remote = hip;
+    remote.remote_target_shard.ipc_bin = "/usr/bin/target-shard";
+    CHECK(!gate_result(remote, "kimi-k3", PlacementBackend::Hip).empty());
+}
+
 void test_feature_gate_ipc_options_require_ipc_binary() {
     BackendArgs draft;
     draft.model_path = "/nonexistent/model.gguf";
@@ -606,7 +625,7 @@ void test_model_capability_tables() {
 
     // arch_is_supported() must match create_backend()'s dispatch chain.
     for (const char * arch : {"qwen35", "qwen35moe", "laguna",
-                              "qwen3", "gemma4", "deepseek4"}) {
+                              "qwen3", "gemma4", "deepseek4", "kimi-k3"}) {
         CHECK(arch_is_supported(arch));
     }
     CHECK(!arch_is_supported(""));
@@ -618,6 +637,7 @@ void test_model_capability_tables() {
     CHECK(!arch_has_expert_offload("qwen35"));
     // deepseek4 is mixture-of-experts but has no hot/cold offload path.
     CHECK(!arch_has_expert_offload("deepseek4"));
+    CHECK(!arch_has_expert_offload("kimi-k3"));
 
     // Every capability predicate must be false for an architecture the
     // factory cannot build, so no rule can admit an unbuildable model.
@@ -644,6 +664,7 @@ TEST_CASE(FeatureGateFixture, feature_gate_suite) {
     test_feature_gate_accepts_plain_launch();
     test_feature_gate_rejects_undetected_arch();
     test_feature_gate_requires_compiled_target_backend();
+    test_feature_gate_kimi_requires_single_local_hip();
     test_feature_gate_ipc_options_require_ipc_binary();
     test_feature_gate_mixed_draft_placement_requires_ipc();
     test_feature_gate_pflash_requires_drafter_and_supported_arch();

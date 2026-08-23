@@ -575,7 +575,9 @@ if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
     endif()
 elseif(DFLASH27B_GPU_BACKEND STREQUAL "hip")
     target_sources(dflash_common PRIVATE
+        src/kimi_k3/kimi_k3_backend.cpp
         src/kimi_k3/kimi_k3_calibrated_provider.cpp
+        src/kimi_k3/kimi_k3_prefill.cpp
         src/kimi_k3/kimi_k3_ordered_join.cu
         src/kimi_k3/kimi_k3_sparse_scatter.cu
         src/deepseek4/deepseek4_hc_cuda.cu)
@@ -1443,6 +1445,15 @@ if(DFLASH27B_TESTS)
         add_executable(smoke_qwen3_forward test/smoke_qwen3_forward.cpp)
         target_include_directories(smoke_qwen3_forward PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
         target_link_libraries(smoke_qwen3_forward PRIVATE dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+    endif()
+    if(DFLASH27B_GPU_BACKEND STREQUAL "hip" AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_kimi_k3_forward.cpp")
+        add_executable(smoke_kimi_k3_forward
+            test/smoke_kimi_k3_forward.cpp)
+        target_include_directories(smoke_kimi_k3_forward PRIVATE
+            ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(smoke_kimi_k3_forward PRIVATE
+            dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET} hip::host)
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_vs_oracle.cpp")
         add_executable(test_vs_oracle test/test_vs_oracle.cpp)

@@ -13,6 +13,9 @@
 #include "gemma4_layer_split_adapter.h"
 #include "deepseek4_backend.h"
 #include "deepseek4_layer_split_adapter.h"
+#if defined(DFLASH27B_BACKEND_HIP)
+#include "kimi_k3_backend.h"
+#endif
 #include "layer_split_backend.h"
 #include "qwen35_layer_split_adapter.h"
 
@@ -95,6 +98,9 @@ DFLASH_CHECK_ARCH("laguna",    LagunaBackendArgs,     LagunaLayerSplitAdapterCon
 DFLASH_CHECK_ARCH("qwen3",     Qwen3BackendConfig,    NoLayerSplitConfig);
 DFLASH_CHECK_ARCH("gemma4",    Gemma4BackendConfig,   Gemma4LayerSplitAdapterConfig);
 DFLASH_CHECK_ARCH("deepseek4", DeepSeek4BackendConfig, DeepSeek4LayerSplitAdapterConfig);
+#if defined(DFLASH27B_BACKEND_HIP)
+DFLASH_CHECK_ARCH("kimi-k3",   KimiK3BackendConfig,    NoLayerSplitConfig);
+#endif
 
 // paged_attn sits outside the bundle because the field-presence trait cannot
 // separate qwen35 from qwen35moe: they share Qwen35Config, so the moe row
@@ -452,6 +458,24 @@ std::unique_ptr<ModelBackend> create_backend(
         }
         return backend;
 
+    } else if (arch == "kimi-k3") {
+#if defined(DFLASH27B_BACKEND_HIP)
+        KimiK3BackendConfig cfg;
+        cfg.model_path = args.model_path;
+        cfg.device = args.device;
+
+        auto backend = std::make_unique<KimiK3Backend>(cfg);
+        if (!backend->init()) {
+            std::fprintf(stderr,
+                "[backend_factory] KimiK3Backend init failed\n");
+            return nullptr;
+        }
+        return backend;
+#else
+        std::fprintf(stderr,
+            "[backend_factory] Kimi-K3 requires a HIP/ROCm build\n");
+        return nullptr;
+#endif
     } else {
         std::fprintf(stderr, "[backend_factory] unsupported architecture: %s\n",
                      arch.c_str());

@@ -1,4 +1,5 @@
 #include "kimi_k3/kimi_k3_calibrated_provider.h"
+#include "kimi_k3/kimi_k3_prefill.h"
 #include "device_runtime.h"
 
 #include "ggml.h"
@@ -49,6 +50,60 @@ void require_raw_zero_block_dequantizes_exactly(ggml_type type) {
 } // namespace
 
 int main() {
+    const KimiK3PrefillPolicy width_one{1, false};
+    const KimiK3PrefillPolicy width_eight{8, true};
+    const KimiK3PrefillPolicy width_64{64, true};
+    const KimiK3PrefillPolicy width_1024{1024, true};
+    assert(width_one.valid());
+    assert(width_eight.valid() && width_64.valid() && width_1024.valid());
+    assert((!KimiK3PrefillPolicy{1, true}.valid()));
+    assert((!KimiK3PrefillPolicy{32, true}.valid()));
+    assert(width_eight.next_width(7) == 1);
+    assert(width_eight.next_width(8) == 8);
+    assert(width_64.next_width(63) == 1);
+    assert(width_1024.next_width(1024) == 1024);
+
+    // Exercise cancellation through the existing width-one seam without a
+    // model. This pins successful early termination and prevents a client
+    // disconnect from being misreported as a prefill failure.
+    KimiK3Weights test_weights;
+    test_weights.n_vocab = 3;
+    KimiK3Cache test_cache;
+    MoeHybridStreamEngine test_stream;
+    KimiK3PrefillContext test_context{
+        reinterpret_cast<ggml_backend_t>(1), test_weights, test_cache,
+        test_stream, nullptr};
+    const KimiK3PrefillExecutor test_executor(test_context);
+    std::vector<float> test_logits(3, 0.0f);
+    KimiK3PrefillExecutionResult test_result;
+    std::string test_error;
+    int forward_calls = 0;
+    int logits_calls = 0;
+    const auto test_forward = [&](int32_t, int position) {
+        assert(position == test_cache.cur_pos);
+        ++forward_calls;
+        ++test_cache.cur_pos;
+        return true;
+    };
+    assert(test_executor.run(
+        {1, 2, 3}, width_one, test_forward,
+        [&](const std::vector<float> &) { ++logits_calls; }, []() {},
+        [&]() { return forward_calls == 1; }, test_logits, test_result,
+        &test_error));
+    assert(test_result.cancelled && test_result.forward_calls == 1);
+    assert(test_cache.cur_pos == 1 && logits_calls == 1);
+
+    test_cache.cur_pos = 0;
+    forward_calls = 0;
+    logits_calls = 0;
+    test_error.clear();
+    assert(test_executor.run(
+        {1}, width_one, test_forward,
+        [&](const std::vector<float> &) { ++logits_calls; }, []() {},
+        []() { return true; }, test_logits, test_result, &test_error));
+    assert(test_result.cancelled && test_result.forward_calls == 0);
+    assert(test_cache.cur_pos == 0 && forward_calls == 0 && logits_calls == 0);
+
     using Delivery = KimiK3SparseDeliveryPolicy;
     using Upload = KimiK3SparseUpload;
     assert(kimi_k3_sparse_upload_for_call(
