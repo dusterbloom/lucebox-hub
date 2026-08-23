@@ -1,0 +1,147 @@
+{
+  "schema": "k3-p40-p41-http-smoke-v1",
+  "date": "2026-08-23",
+  "status": "QUALIFIED_FUNCTIONAL",
+  "verdict": "PASS",
+  "question": "Does the production dflash_server HTTP path preserve the reference committed-token sequence across the P40-wide to P41-width-one transition on single-owner physical GPU1?",
+  "scope": "One existing registered non-streaming fact-capital request. This is an HTTP lifecycle and exact committed-token gate, not a throughput comparison or a broad quality gate.",
+  "source": {
+    "fork_branch": "perf/k3-layer-major-prefill",
+    "fork_head_before_evidence": "de0670ab8bcdd9ac23bc54c8902168b23a50cd65",
+    "remote_scratch_head": "c1ddf1a0d047bf7fe43ecc0eeed4be15bf2edc7c",
+    "binary_path": "/tmp/k3-pair2-build/server/build-k3-hip-dual/dflash_server",
+    "binary_sha256": "4907142edeb9bbc36caa9fc6b7415efc8a73769b46f273f0a5ecc9ab9b6dda59",
+    "model_card_path": "share/model_cards/kimi-k3.json",
+    "model_card_sha256": "51681314a9994954018c34637a54dba9f899551fd7a626fef81c233d861ad6e1",
+    "chat_template_path": "/home/duster/kimi-k3-deploy/m1a-server-prelaunch-20260821/kimi-k3-chat-template.jinja",
+    "chat_template_sha256": "05bb501f8ac31fa6b0bf04803b5ada49abf9cdd51c3c90a4719b739df0000722",
+    "request_path": "/home/duster/kimi-k3-deploy/m1a-server-g2-20260821/parity-artifacts/00-fact-capital-json.request.json",
+    "request_sha256": "ba05d44969dfc45a5297e7d4cad72eb85d5878f76a5e645d94be7accfc283c4f"
+  },
+  "topology": {
+    "platform_profile_observed_prelaunch": "performance",
+    "target_device": "hip:1",
+    "physical_device": "GPU1 gfx1151 Radeon 8060S Graphics",
+    "core": "accelerator:1",
+    "experts": "nvme-single-owner",
+    "secondary_expert_backend_initialized": false,
+    "prefill_chunk": 8,
+    "p58_exact_multirow": true,
+    "p40_device_variant_cache": true,
+    "p41_compact_executor": true,
+    "p42_ordered_device_join": true,
+    "p45_async_compact_queue": true,
+    "p46_persistent_routed_preparation": true,
+    "p52_persistent_routed_join": false,
+    "p53_device_hidden_chain": false,
+    "p30_host_cache_mib": 16384,
+    "p40_device_cache_mib": 8192
+  },
+  "http": {
+    "bind": "127.0.0.1:18094",
+    "endpoint": "/v1/chat/completions",
+    "status": 200,
+    "wall_seconds": 51.942134,
+    "prompt_tokens": 34,
+    "completion_tokens": 9,
+    "finish_reason": "stop",
+    "stream": false,
+    "temperature": 0,
+    "seed": 0,
+    "thinking": false
+  },
+  "exactness": {
+    "committed_output_tokens": [39818, 18009, 163588, 12092, 163589, 163588, 2778, 163589, 163586],
+    "reference_output_tokens": [39818, 18009, 163588, 12092, 163589, 163588, 2778, 163589, 163586],
+    "reference_path": "results/k3_p42d_consolidation_runtime.json",
+    "reference_sha256": "2d8d609cfa44d21c5d936b81d39099e768521c9aa98ec337f311ebc135a5d11b",
+    "committed_tokens_equal": true,
+    "server_trace_ok": true,
+    "logits_byte_identity_captured": false,
+    "recurrent_state_identity_captured": false,
+    "rendered_content": "Tokyoresponsemessage",
+    "rendered_text_quality_pass": false,
+    "rendering_caveat": "The exact established token sequence includes model framing tokens. The existing HTTP renderer exposes two framing labels instead of suppressing them; this pre-existing output-framing defect is outside the prefill execution integration."
+  },
+  "execution": {
+    "prefill": {
+      "positions": 34,
+      "forwards": 6,
+      "macro_forwards_width_8": 4,
+      "width_one_tail_forwards": 2,
+      "seconds": 44.139603123,
+      "positions_per_second": 0.770283319,
+      "physical_direct_read_bytes": 88536604672,
+      "direct_io_ns": 21884548840,
+      "payload_h2d_bytes": 106895366144,
+      "compact_fallbacks": 0,
+      "compact_invalid": 0,
+      "async_abort_syncs": 0
+    },
+    "decode": {
+      "positions": 8,
+      "forwards": 8,
+      "seconds": 7.791001017,
+      "positions_per_second": 1.026825691,
+      "physical_direct_read_bytes": 16658104320,
+      "direct_io_ns": 4486895434,
+      "payload_h2d_bytes": 40120872960,
+      "compact_fallbacks": 0,
+      "compact_invalid": 0,
+      "async_abort_syncs": 0
+    },
+    "p40": {
+      "requested_slabs": 289320,
+      "resident_before_slabs": 113374,
+      "hits": 11821,
+      "extensions": 1129,
+      "cold": 23068,
+      "completed": 36018,
+      "unavailable": 0,
+      "aborted": 0,
+      "fallbacks": 0,
+      "evictions": 21973,
+      "scatter_calls": 24197,
+      "scatter_avoided": 11821
+    },
+    "p41": {
+      "attempted": 11350,
+      "completed": 11350,
+      "fallbacks": 0,
+      "invalid": 0
+    },
+    "p45": {
+      "begins": 920,
+      "jobs": 11350,
+      "layer_flushes": 920,
+      "abort_syncs": 0,
+      "max_inflight": 16
+    },
+    "p42": {
+      "expert_d2d_copies": 11350,
+      "join_launches": 920,
+      "output_d2d_copies": 920
+    },
+    "p46": {
+      "graphs": 68,
+      "executions": 680
+    }
+  },
+  "artifacts": {
+    "remote_root": "/tmp/k3-p40-p41-http-de0670ab",
+    "health_sha256": "6489d6d7a33c5d40e18fc61eeb6c34c341279ee61816394dde5189aa4ad8fae5",
+    "models_sha256": "ad318e5113f881978624db3a10cca403caf6d5ca2a18319119e1f59a42e83023",
+    "props_sha256": "9106bbc3e4470609415d3fb1c989a3fc813560d0b93438f19559ad961b739db9",
+    "response_sha256": "4c150b95e113c753e5c24adf64c127189d7647ac78a4848950004c0fc3b8b10e",
+    "server_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "server_stderr_sha256": "26ec6e0ff545bca070193b4eea7997a15e69d518b799872173f21ba6a4ce8970",
+    "traffic_sha256": "e659c64c70635d8f1c6ceba2fbf71b743e8e0a35fd4449de93e8867503dffbfb",
+    "termination_observed": {
+      "signal_sent": "SIGTERM",
+      "process_absent_after_signal": true,
+      "exit_code_captured": false
+    },
+    "gpu_lease_after_exit_observed": "free"
+  },
+  "interpretation": "The production HTTP server exercises the intended phase selector in one process: P40 serves four P58 M=8 prompt macros, then P41/P42/P45/P46 serve the width-one tail and true AR decode. Committed tokens exactly match the established reference and every fallback/error counter is zero. This HTTP artifact does not contain logits or recurrent-state hashes; those exactness gates remain in the qualified backend evidence. The short cold M8 timing is not promoted as a speed claim; the qualified M1024 same-run result remains the performance evidence."
+}
