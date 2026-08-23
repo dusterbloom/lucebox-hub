@@ -1,6 +1,7 @@
 #include "kimi_k3/kimi_k3_ordered_join.h"
 #include "device_runtime.h"
 
+#include <array>
 #include <cstdlib>
 #include <cmath>
 #include <cstdint>
@@ -350,6 +351,122 @@ int main() {
             CHECK(bits(actual[dimension]) == bits(expected[dimension]));
         }
     }
+
+    // The production macro path batches only calibrated schedules. Compare
+    // variable operation counts against both the scalar device contract and
+    // an independent host teacher. The inherited rows cover signed zero,
+    // denormals, cancellation, NaN propagation and non-FMA rounding.
+    constexpr int batch_count = 4;
+    constexpr int operation_stride = row_count;
+    std::vector<int32_t> batch_indices(
+        static_cast<size_t>(batch_count) * operation_stride, 0);
+    std::vector<float> batch_weights(
+        static_cast<size_t>(batch_count) * operation_stride, 0.0f);
+    const std::array<int32_t, batch_count> batch_operations = {
+        1, calibrated_operations, row_count, 4};
+    const auto set_batch = [&](int batch, int operation, int32_t encoded,
+                               float factor) {
+        const size_t offset = static_cast<size_t>(batch) * operation_stride +
+            static_cast<size_t>(operation);
+        batch_indices[offset] = encoded;
+        batch_weights[offset] = factor;
+    };
+    set_batch(0, 0, 0, 1.0f);
+    for (int operation = 0; operation < calibrated_operations; ++operation) {
+        set_batch(1, operation, row_indices[operation], weights[operation]);
+    }
+    for (int operation = 0; operation < row_count; ++operation) {
+        set_batch(
+            2, operation, maximum_indices[operation],
+            maximum_weights[operation]);
+    }
+    set_batch(3, 0, -1, 1.0f);
+    set_batch(3, 1, -2, 1.0f);
+    set_batch(3, 2, 13, 1.0f);
+    set_batch(3, 3, 14, 1.0f);
+
+    std::vector<float> batch_teacher(
+        static_cast<size_t>(batch_count) * width, 0.0f);
+    for (int batch = 0; batch < batch_count; ++batch) {
+        float * batch_expected = batch_teacher.data() +
+            static_cast<size_t>(batch) * width;
+        for (int operation = 0; operation < batch_operations[batch];
+             ++operation) {
+            const size_t offset = static_cast<size_t>(batch) *
+                operation_stride + static_cast<size_t>(operation);
+            const int32_t encoded = batch_indices[offset];
+            const int source_row = encoded < 0 ? -1 - encoded : encoded;
+            const float * source = rows.data() +
+                static_cast<size_t>(source_row) * width;
+            for (int dimension = 0; dimension < width; ++dimension) {
+                batch_expected[dimension] = separate_mul_add(
+                    batch_expected[dimension], batch_weights[offset],
+                    source[dimension]);
+            }
+        }
+    }
+
+    int32_t * device_batch_indices = nullptr;
+    float * device_batch_weights = nullptr;
+    int32_t * device_batch_operations = nullptr;
+    float * device_batch_outputs = nullptr;
+    CHECK(cudaMalloc(
+        reinterpret_cast<void **>(&device_batch_indices),
+        batch_indices.size() * sizeof(int32_t)) == cudaSuccess);
+    CHECK(cudaMalloc(
+        reinterpret_cast<void **>(&device_batch_weights),
+        batch_weights.size() * sizeof(float)) == cudaSuccess);
+    CHECK(cudaMalloc(
+        reinterpret_cast<void **>(&device_batch_operations),
+        batch_operations.size() * sizeof(int32_t)) == cudaSuccess);
+    CHECK(cudaMalloc(
+        reinterpret_cast<void **>(&device_batch_outputs),
+        static_cast<size_t>(batch_count) * width * sizeof(float)) ==
+        cudaSuccess);
+    CHECK(cudaMemcpy(
+        device_batch_indices, batch_indices.data(),
+        batch_indices.size() * sizeof(int32_t), cudaMemcpyHostToDevice) ==
+        cudaSuccess);
+    CHECK(cudaMemcpy(
+        device_batch_weights, batch_weights.data(),
+        batch_weights.size() * sizeof(float), cudaMemcpyHostToDevice) ==
+        cudaSuccess);
+    CHECK(cudaMemcpy(
+        device_batch_operations, batch_operations.data(),
+        batch_operations.size() * sizeof(int32_t),
+        cudaMemcpyHostToDevice) == cudaSuccess);
+    CHECK(kimi_k3_ordered_join_calibrated_batch_launch(
+        device_rows, row_count, width, device_rows, row_count,
+        device_batch_indices, device_batch_weights, operation_stride,
+        device_batch_operations, batch_count, device_batch_outputs,
+        &failure));
+    std::vector<float> batch_actual(
+        static_cast<size_t>(batch_count) * width);
+    CHECK(cudaMemcpy(
+        batch_actual.data(), device_batch_outputs,
+        batch_actual.size() * sizeof(float), cudaMemcpyDeviceToHost) ==
+        cudaSuccess);
+
+    std::vector<float> scalar_actual(
+        static_cast<size_t>(batch_count) * width);
+    for (int batch = 0; batch < batch_count; ++batch) {
+        const size_t offset = static_cast<size_t>(batch) * operation_stride;
+        CHECK(launch(
+            batch_indices.data() + offset, batch_weights.data() + offset,
+            batch_operations[batch], batch_operations[batch]));
+        CHECK(cudaMemcpy(
+            scalar_actual.data() + static_cast<size_t>(batch) * width,
+            device_output, static_cast<size_t>(width) * sizeof(float),
+            cudaMemcpyDeviceToHost) == cudaSuccess);
+    }
+    for (size_t index = 0; index < batch_actual.size(); ++index) {
+        CHECK(bits(batch_actual[index]) == bits(scalar_actual[index]));
+        CHECK(bits(batch_actual[index]) == bits(batch_teacher[index]));
+    }
+    (void) cudaFree(device_batch_outputs);
+    (void) cudaFree(device_batch_operations);
+    (void) cudaFree(device_batch_weights);
+    (void) cudaFree(device_batch_indices);
     (void) cudaFree(device_output);
     (void) cudaFree(device_weights);
     (void) cudaFree(device_indices);

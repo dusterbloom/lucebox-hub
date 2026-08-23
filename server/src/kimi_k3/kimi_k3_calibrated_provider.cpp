@@ -1101,6 +1101,134 @@ public:
         return true;
     }
 
+    bool begin_calibrated_macro(
+            ggml_backend_t backend, const ggml_tensor * source_rows,
+            int source_row_count, int batch_count, std::string * err) {
+        BackendDeviceScope scope;
+        if (!scope.enter(backend, err)) return false;
+        if (backend != backend_ || scope.device() != runtime_device_ ||
+            pending_output_ || queued_backend_work_ || macro_active_ ||
+            !source_rows || source_rows->type != GGML_TYPE_F32 ||
+            !source_rows->data || !ggml_is_contiguous(source_rows) ||
+            source_rows->ne[0] != kDimension ||
+            source_rows->ne[1] < source_row_count ||
+            source_rows->ne[2] != 1 || source_rows->ne[3] != 1 ||
+            source_row_count <= 0 || batch_count <= 0 ||
+            batch_count > 65535) {
+            if (err) *err = "P42 calibrated macro geometry is invalid";
+            return false;
+        }
+        if (!ensure_macro_capacity(static_cast<size_t>(batch_count), err)) {
+            return false;
+        }
+        const size_t descriptor_count =
+            static_cast<size_t>(batch_count) * kMaximumOperations;
+        macro_row_indices_.assign(descriptor_count, 0);
+        macro_weights_.assign(descriptor_count, 0.0f);
+        macro_operation_counts_.assign(static_cast<size_t>(batch_count), 0);
+        macro_source_rows_ = source_rows;
+        macro_source_row_count_ = source_row_count;
+        macro_batch_count_ = batch_count;
+        macro_active_ = true;
+        return true;
+    }
+
+    bool append_calibrated_macro_output(
+            int batch, int source_row, float weight, std::string * err) {
+        if (!macro_active_ || batch < 0 || batch >= macro_batch_count_ ||
+            source_row < 0 || source_row >= macro_source_row_count_) {
+            if (err) *err = "P42 calibrated macro output is invalid";
+            return false;
+        }
+        return append_calibrated_macro(
+            batch, source_row, weight, err);
+    }
+
+    bool append_calibrated_macro_mean(
+            int batch, int model_layer, int expert, int rank, float weight,
+            std::string * err) {
+        const int64_t row = static_cast<int64_t>(
+            model_layer - kFirstModelLayer) * kExpertCount * kSlabCount +
+            static_cast<int64_t>(expert) * kSlabCount + rank;
+        if (!macro_active_ || batch < 0 || batch >= macro_batch_count_ ||
+            model_layer < kFirstModelLayer ||
+            model_layer >= kFirstModelLayer + kRoutedLayerCount ||
+            expert < 0 || expert >= kExpertCount || rank < 0 ||
+            rank >= kSlabCount || row < 0 || row >= kResidentMeanRows) {
+            if (err) *err = "P42 calibrated macro mean is invalid";
+            return false;
+        }
+        return append_calibrated_macro(
+            batch, -1 - static_cast<int32_t>(row), weight, err);
+    }
+
+    bool finish_calibrated_macro(
+            float * host_outputs, size_t output_values, std::string * err) {
+        if (!macro_active_ || !host_outputs ||
+            output_values != static_cast<size_t>(macro_batch_count_) *
+                kDimension || !macro_source_rows_ ||
+            std::any_of(
+                macro_operation_counts_.begin(),
+                macro_operation_counts_.end(),
+                [](int32_t count) { return count <= 0; })) {
+            if (err) *err = "P42 calibrated macro is incomplete";
+            discard_calibrated_macro();
+            return false;
+        }
+        const size_t descriptor_count =
+            static_cast<size_t>(macro_batch_count_) * kMaximumOperations;
+        const size_t descriptor_bytes = descriptor_count * sizeof(int32_t);
+        const size_t weight_bytes = descriptor_count * sizeof(float);
+        const size_t count_bytes =
+            static_cast<size_t>(macro_batch_count_) * sizeof(int32_t);
+        const size_t output_bytes = output_values * sizeof(float);
+        // Stable union-row copies use the backend stream. One layer barrier
+        // makes those rows visible to the raw exact join; there is no
+        // token-level synchronization in this path.
+        ggml_backend_synchronize(backend_);
+        const bool copied =
+            cudaMemcpy(
+                macro_device_row_indices_, macro_row_indices_.data(),
+                descriptor_bytes, cudaMemcpyHostToDevice) == cudaSuccess &&
+            cudaMemcpy(
+                macro_device_weights_, macro_weights_.data(), weight_bytes,
+                cudaMemcpyHostToDevice) == cudaSuccess &&
+            cudaMemcpy(
+                macro_device_operation_counts_,
+                macro_operation_counts_.data(), count_bytes,
+                cudaMemcpyHostToDevice) == cudaSuccess;
+        const char * failure = nullptr;
+        const bool launched = copied &&
+            kimi_k3_ordered_join_calibrated_batch_launch(
+                static_cast<const float *>(macro_source_rows_->data),
+                macro_source_row_count_, kDimension,
+                static_cast<const float *>(mean_tensor_->data),
+                kResidentMeanRows, macro_device_row_indices_,
+                macro_device_weights_, kMaximumOperations,
+                macro_device_operation_counts_, macro_batch_count_,
+                macro_device_outputs_, &failure);
+        const bool read = launched &&
+            cudaMemcpy(
+                host_outputs, macro_device_outputs_, output_bytes,
+                cudaMemcpyDeviceToHost) == cudaSuccess;
+        if (!read) {
+            if (err) {
+                *err = std::string("P42 calibrated macro failed: ") +
+                    (failure ? failure : "device transfer failed");
+            }
+            discard_calibrated_macro();
+            return false;
+        }
+        ++macro_join_launches_;
+        macro_join_rows_ += static_cast<uint64_t>(macro_batch_count_);
+        discard_calibrated_macro();
+        return true;
+    }
+
+    void abort_calibrated_macro() {
+        discard_calibrated_macro();
+    }
+
     bool stage_device_output(
             const ggml_tensor * source, int & row, std::string * err) {
         if (!source || source->type != GGML_TYPE_F32 || !source->data ||
@@ -1244,10 +1372,99 @@ public:
     uint64_t join_launches() const { return join_launches_; }
     uint64_t output_d2d_copies() const { return output_d2d_copies_; }
     uint64_t output_d2d_bytes() const { return output_d2d_bytes_; }
+    uint64_t macro_join_launches() const { return macro_join_launches_; }
+    uint64_t macro_join_rows() const { return macro_join_rows_; }
 
 private:
+    bool append_calibrated_macro(
+            int batch, int32_t encoded, float weight, std::string * err) {
+        int32_t & count =
+            macro_operation_counts_[static_cast<size_t>(batch)];
+        if (count < 0 ||
+            count >= static_cast<int32_t>(kMaximumOperations)) {
+            if (err) *err = "P42 calibrated macro descriptor overflow";
+            return false;
+        }
+        const size_t offset = static_cast<size_t>(batch) *
+            kMaximumOperations + static_cast<size_t>(count++);
+        macro_row_indices_[offset] = encoded;
+        macro_weights_[offset] = weight;
+        return true;
+    }
+
+    bool ensure_macro_capacity(size_t rows, std::string * err) {
+        if (rows <= macro_capacity_) return true;
+        size_t capacity = macro_capacity_ ? macro_capacity_ : 1;
+        while (capacity < rows) {
+            if (capacity > std::numeric_limits<size_t>::max() / 2) {
+                if (err) *err = "P42 calibrated macro capacity overflow";
+                return false;
+            }
+            capacity *= 2;
+        }
+        const size_t descriptors = capacity * kMaximumOperations;
+        int32_t * row_indices = nullptr;
+        float * weights = nullptr;
+        int32_t * operation_counts = nullptr;
+        float * outputs = nullptr;
+        const bool allocated =
+            cudaMalloc(
+                reinterpret_cast<void **>(&row_indices),
+                descriptors * sizeof(int32_t)) == cudaSuccess &&
+            cudaMalloc(
+                reinterpret_cast<void **>(&weights),
+                descriptors * sizeof(float)) == cudaSuccess &&
+            cudaMalloc(
+                reinterpret_cast<void **>(&operation_counts),
+                capacity * sizeof(int32_t)) == cudaSuccess &&
+            cudaMalloc(
+                reinterpret_cast<void **>(&outputs),
+                capacity * kDimension * sizeof(float)) == cudaSuccess;
+        if (!allocated) {
+            if (outputs) (void) cudaFree(outputs);
+            if (operation_counts) (void) cudaFree(operation_counts);
+            if (weights) (void) cudaFree(weights);
+            if (row_indices) (void) cudaFree(row_indices);
+            if (err) *err = "P42 calibrated macro device allocation failed";
+            return false;
+        }
+        if (macro_device_outputs_) (void) cudaFree(macro_device_outputs_);
+        if (macro_device_operation_counts_) {
+            (void) cudaFree(macro_device_operation_counts_);
+        }
+        if (macro_device_weights_) (void) cudaFree(macro_device_weights_);
+        if (macro_device_row_indices_) {
+            (void) cudaFree(macro_device_row_indices_);
+        }
+        macro_device_row_indices_ = row_indices;
+        macro_device_weights_ = weights;
+        macro_device_operation_counts_ = operation_counts;
+        macro_device_outputs_ = outputs;
+        macro_capacity_ = capacity;
+        return true;
+    }
+
+    void discard_calibrated_macro() {
+        macro_active_ = false;
+        macro_source_rows_ = nullptr;
+        macro_source_row_count_ = 0;
+        macro_batch_count_ = 0;
+        macro_row_indices_.clear();
+        macro_weights_.clear();
+        macro_operation_counts_.clear();
+    }
+
     void release_backend_storage() {
         if (buffer_ && backend_) ggml_backend_synchronize(backend_);
+        discard_calibrated_macro();
+        if (macro_device_outputs_) (void) cudaFree(macro_device_outputs_);
+        if (macro_device_operation_counts_) {
+            (void) cudaFree(macro_device_operation_counts_);
+        }
+        if (macro_device_weights_) (void) cudaFree(macro_device_weights_);
+        if (macro_device_row_indices_) {
+            (void) cudaFree(macro_device_row_indices_);
+        }
         if (buffer_) ggml_backend_buffer_free(buffer_);
         if (context_) ggml_free(context_);
         buffer_ = nullptr;
@@ -1261,6 +1478,11 @@ private:
         backend_ = nullptr;
         runtime_device_ = -1;
         queued_backend_work_ = false;
+        macro_device_row_indices_ = nullptr;
+        macro_device_weights_ = nullptr;
+        macro_device_operation_counts_ = nullptr;
+        macro_device_outputs_ = nullptr;
+        macro_capacity_ = 0;
     }
 
     static constexpr int kFirstModelLayer = 1;
@@ -1293,6 +1515,20 @@ private:
     uint64_t join_launches_ = 0;
     uint64_t output_d2d_copies_ = 0;
     uint64_t output_d2d_bytes_ = 0;
+    bool macro_active_ = false;
+    const ggml_tensor * macro_source_rows_ = nullptr;
+    int macro_source_row_count_ = 0;
+    int macro_batch_count_ = 0;
+    size_t macro_capacity_ = 0;
+    std::vector<int32_t> macro_row_indices_;
+    std::vector<float> macro_weights_;
+    std::vector<int32_t> macro_operation_counts_;
+    int32_t * macro_device_row_indices_ = nullptr;
+    float * macro_device_weights_ = nullptr;
+    int32_t * macro_device_operation_counts_ = nullptr;
+    float * macro_device_outputs_ = nullptr;
+    uint64_t macro_join_launches_ = 0;
+    uint64_t macro_join_rows_ = 0;
 };
 #endif
 
@@ -3609,7 +3845,8 @@ public:
         result.ordered_expert_d2d_bytes =
             ordered_join_arena_.expert_d2d_bytes() +
             sparse_device_evaluator_.compact_union_output_d2d_bytes();
-        result.ordered_join_launches = ordered_join_arena_.join_launches();
+        result.ordered_join_launches = ordered_join_arena_.join_launches() +
+            ordered_join_arena_.macro_join_launches();
         result.ordered_output_d2d_copies =
             ordered_join_arena_.output_d2d_copies();
         result.ordered_output_d2d_bytes =
@@ -5149,10 +5386,96 @@ private:
 
         std::vector<float> candidate(
             static_cast<size_t>(routes.n_tokens) * spec.output_dim, 0.0f);
+        std::vector<int> macro_tokens;
+        macro_tokens.reserve(static_cast<size_t>(routes.n_tokens));
+        for (int token = 0; token < routes.n_tokens; ++token) {
+            if (plans[static_cast<size_t>(token)].fallback_routes.empty()) {
+                macro_tokens.push_back(token);
+            }
+        }
+        if (!macro_tokens.empty()) {
+            if (output_rows > static_cast<size_t>(
+                    std::numeric_limits<int>::max()) ||
+                macro_tokens.size() > 65535) {
+                close_sidecar();
+                if (err) *err = "macro union calibrated join is too wide";
+                return MacroUnionOutcome::Failed;
+            }
+            ggml_tensor * union_outputs =
+                sparse_device_evaluator_.compact_union_outputs();
+            if (!ordered_join_arena_.begin_calibrated_macro(
+                    backend_, union_outputs, static_cast<int>(output_rows),
+                    static_cast<int>(macro_tokens.size()), err)) {
+                close_sidecar();
+                if (err && err->empty()) {
+                    *err = "macro union cannot begin calibrated macro join";
+                }
+                return MacroUnionOutcome::Failed;
+            }
+            bool descriptors_ok = true;
+            for (size_t batch = 0;
+                 descriptors_ok && batch < macro_tokens.size(); ++batch) {
+                const int token = macro_tokens[batch];
+                const size_t route_offset =
+                    static_cast<size_t>(token) * kNativeTopK;
+                const TokenPlan & plan = plans[static_cast<size_t>(token)];
+                for (const int route : plan.stable_routes) {
+                    const int expert =
+                        routes.selected_ids[route_offset + route];
+                    const float weight =
+                        routes.selected_weights[route_offset + route];
+                    const uint16_t mask =
+                        plan.masks[static_cast<size_t>(route)];
+                    for (int rank = 0; rank < kSlabCount; ++rank) {
+                        const uint16_t natural = state.order[
+                            static_cast<size_t>(expert) * kSlabCount + rank];
+                        if ((mask & (1u << natural)) == 0 &&
+                            !ordered_join_arena_.
+                                append_calibrated_macro_mean(
+                                    static_cast<int>(batch), model_layer,
+                                    expert, rank, weight, err)) {
+                            descriptors_ok = false;
+                            break;
+                        }
+                    }
+                    if (!descriptors_ok) break;
+                    if (mask != 0 &&
+                        !ordered_join_arena_.append_calibrated_macro_output(
+                            static_cast<int>(batch),
+                            static_cast<int>(plan.output_rows[
+                                static_cast<size_t>(route)]),
+                            weight, err)) {
+                        descriptors_ok = false;
+                        break;
+                    }
+                }
+            }
+            std::vector<float> macro_output(
+                macro_tokens.size() * static_cast<size_t>(spec.output_dim));
+            if (!descriptors_ok ||
+                !ordered_join_arena_.finish_calibrated_macro(
+                    macro_output.data(), macro_output.size(), err)) {
+                ordered_join_arena_.abort_calibrated_macro();
+                close_sidecar();
+                if (err && err->empty()) {
+                    *err = "macro union calibrated macro join failed";
+                }
+                return MacroUnionOutcome::Failed;
+            }
+            for (size_t batch = 0; batch < macro_tokens.size(); ++batch) {
+                std::memcpy(
+                    candidate.data() +
+                        static_cast<size_t>(macro_tokens[batch]) *
+                            spec.output_dim,
+                    macro_output.data() + batch * spec.output_dim,
+                    static_cast<size_t>(spec.output_dim) * sizeof(float));
+            }
+        }
         for (int token = 0; token < routes.n_tokens; ++token) {
             const size_t route_offset =
                 static_cast<size_t>(token) * kNativeTopK;
             const TokenPlan & plan = plans[static_cast<size_t>(token)];
+            if (plan.fallback_routes.empty()) continue;
             if (!ordered_join_arena_.begin(
                     backend_, spec.output_dim, err)) {
                 ordered_join_arena_.discard();
@@ -6073,7 +6396,8 @@ private:
                 "[kimi-k3-p42c] resident-mean-bytes=%llu "
                 "hot-mean-reads=0 hot-mean-h2d-bytes=0 "
                 "expert-d2d-copies=%llu expert-d2d-bytes=%llu "
-                "join-launches=%llu output-d2d-copies=%llu "
+                "join-launches=%llu macro-join-launches=%llu "
+                "macro-join-rows=%llu output-d2d-copies=%llu "
                 "output-d2d-bytes=%llu\n",
                 static_cast<unsigned long long>(
                     ordered_join_arena_.resident_mean_bytes()),
@@ -6087,6 +6411,10 @@ private:
                         compact_union_output_d2d_bytes()),
                 static_cast<unsigned long long>(
                     ordered_join_arena_.join_launches()),
+                static_cast<unsigned long long>(
+                    ordered_join_arena_.macro_join_launches()),
+                static_cast<unsigned long long>(
+                    ordered_join_arena_.macro_join_rows()),
                 static_cast<unsigned long long>(
                     ordered_join_arena_.output_d2d_copies()),
                 static_cast<unsigned long long>(
