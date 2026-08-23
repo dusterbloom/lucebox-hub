@@ -239,11 +239,9 @@ struct KimiK3LayerCache {
     ggml_tensor * ssm_state  = nullptr; // [head_dim, head_dim, n_head], F32
     ggml_tensor * mla_k      = nullptr; // [kv_rank+rope_dim, 1, max_ctx], F16
 
-    // Speculative-decode state.  ReplaySSM captures the much smaller
-    // pre-KDA activation for every verify row, then re-runs only the accepted
-    // recurrent transitions at commit time.  The snapshots are a failure-safe
-    // for the commit graph; ordinary rejected verification leaves the live
-    // recurrent tensors untouched and therefore needs no restore copy.
+    // ReplaySSM captures the pre-KDA activation for every verify row. Exact
+    // P58 also leaves its already-computed terminal state in the live tensors
+    // until full commit adopts it or restore rolls it back from these snapshots.
     ggml_tensor * conv_state_snap = nullptr;
     ggml_tensor * ssm_state_snap  = nullptr;
     ggml_tensor * replay_input    = nullptr; // [hidden, max_verify_tokens], F32
@@ -262,8 +260,8 @@ struct KimiK3Cache {
     bool snapshot_valid = false;
     bool replay_valid = false;
     bool recurrent_state_pristine = false;
-    // P58 records each replay row through the native one-row KDA graph. Its
-    // later ReplaySSM commit must retain that same row boundary.
+    // P58 records each row through the native one-row KDA graph. A non-pristine
+    // exact replay owns the terminal state already present in the live tensors.
     bool replay_exact_rows = false;
     // Opaque graph-lifetime owner for the opt-in one-token persistent routed
     // preparation path.  The concrete type remains private to graph.cpp.
@@ -439,10 +437,10 @@ bool create_kimi_k3_cache(ggml_backend_t backend,
 void reset_kimi_k3_cache(KimiK3Cache & cache);
 void free_kimi_k3_cache(KimiK3Cache & cache);
 
-// Batch forward used for target verification.  With capture_replay=true the
-// recurrent state is read-only: KDA inputs are persisted for a later
-// kimi_k3_replay_commit(), while MLA writes remain position-indexed and become
-// invisible simply by restoring cur_pos.
+// Batch forward used for target verification. With capture_replay=true, KDA
+// inputs are persisted for commit. Exact P58 may retain a terminal state that
+// only kimi_k3_replay_commit/restore may resolve; other modes keep recurrent
+// state read-only. MLA writes remain position-indexed behind cur_pos.
 bool kimi_k3_forward(ggml_backend_t backend,
                      const KimiK3Weights & w,
                      KimiK3Cache & cache,
