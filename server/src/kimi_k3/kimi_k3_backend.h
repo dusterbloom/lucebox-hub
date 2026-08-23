@@ -84,6 +84,16 @@ struct KimiK3OracleVerifyResult {
     double commit_seconds = 0.0;
     uint64_t sequential_storage_bytes = 0;
     uint64_t verify_storage_bytes = 0;
+    uint64_t sequential_physical_direct_read_bytes = 0;
+    uint64_t verify_physical_direct_read_bytes = 0;
+    uint64_t sequential_direct_io_ns = 0;
+    uint64_t verify_direct_io_ns = 0;
+    uint64_t sequential_layer_major_prefetches = 0;
+    uint64_t verify_layer_major_prefetches = 0;
+    uint64_t sequential_layer_major_requested_records = 0;
+    uint64_t verify_layer_major_requested_records = 0;
+    uint64_t sequential_layer_major_unique_records = 0;
+    uint64_t verify_layer_major_unique_records = 0;
     uint64_t sequential_logical_provider_bytes = 0;
     uint64_t verify_logical_provider_bytes = 0;
     uint64_t sequential_compact_attempted = 0;

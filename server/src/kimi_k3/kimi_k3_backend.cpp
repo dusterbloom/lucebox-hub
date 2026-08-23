@@ -1462,6 +1462,15 @@ bool KimiK3Backend::benchmark_oracle_verify(
         provider_stats(), sequential_stats_begin);
     result.sequential_storage_bytes = sequential_read_end >= sequential_read_start
         ? sequential_read_end - sequential_read_start : 0;
+    result.sequential_physical_direct_read_bytes =
+        sequential_stats.physical_direct_read_bytes;
+    result.sequential_direct_io_ns = sequential_stats.direct_io_ns;
+    result.sequential_layer_major_prefetches =
+        sequential_stats.layer_major_prefetches;
+    result.sequential_layer_major_requested_records =
+        sequential_stats.layer_major_requested_records;
+    result.sequential_layer_major_unique_records =
+        sequential_stats.layer_major_unique_records;
     result.sequential_logical_provider_bytes =
         sequential_stats.logical_provider_bytes;
     result.sequential_compact_attempted = sequential_stats.compact_attempted;
@@ -1507,6 +1516,15 @@ bool KimiK3Backend::benchmark_oracle_verify(
         provider_stats(), verify_stats_begin);
     result.verify_storage_bytes = verify_read_end >= verify_read_start
         ? verify_read_end - verify_read_start : 0;
+    result.verify_physical_direct_read_bytes =
+        verify_stats.physical_direct_read_bytes;
+    result.verify_direct_io_ns = verify_stats.direct_io_ns;
+    result.verify_layer_major_prefetches =
+        verify_stats.layer_major_prefetches;
+    result.verify_layer_major_requested_records =
+        verify_stats.layer_major_requested_records;
+    result.verify_layer_major_unique_records =
+        verify_stats.layer_major_unique_records;
     result.verify_logical_provider_bytes =
         verify_stats.logical_provider_bytes;
     result.verify_compact_attempted = verify_stats.compact_attempted;
