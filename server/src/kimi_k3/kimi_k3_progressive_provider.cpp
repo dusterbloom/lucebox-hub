@@ -2700,6 +2700,12 @@ public:
                 "P23 sparse scratch received an incompatible expert";
             return false;
         }
+        if (prepacked_compact && prepacked_compact->component_major) {
+            if (err) {
+                *err = "P23/P40 requires record-major compact payloads";
+            }
+            return false;
+        }
         BackendDeviceScope device_scope;
         if (!device_scope.enter(backend, err)) return false;
         const size_t slab_count = prepacked_compact
@@ -5766,12 +5772,14 @@ private:
             const std::vector<uint8_t> & selected_by_route,
             std::vector<std::vector<SparseSlabPayload>> & payloads,
             std::array<SparseCompactPayload, kNativeTopK> * compact_payloads,
+            bool component_major_payloads,
             std::string * err) {
 #if defined(_WIN32) || !defined(O_DIRECT)
         (void) fd; (void) state; (void) spec; (void) model_layer;
         (void) base_pos; (void) token_index; (void) route_offset;
         (void) routes; (void) calibrated_routes; (void) selected_by_route;
         (void) payloads; (void) compact_payloads;
+        (void) component_major_payloads;
         if (err) *err = "P20 direct-pread is unavailable on this platform";
         return false;
 #else
@@ -5811,7 +5819,7 @@ private:
                     static_cast<size_t>(state.up_slab_bytes);
                 compact->down_slab_bytes =
                     static_cast<size_t>(state.down_slab_bytes);
-                compact->component_major = compact_executor_ &&
+                compact->component_major = component_major_payloads &&
                     prefix_depth > 0;
                 KimiK3CompactWireLayout compact_layout;
                 if (compact->component_major &&
@@ -6877,6 +6885,7 @@ private:
                     sparse_delivery_ ==
                         KimiK3SparseDeliveryPolicy::DirectPinnedCompact
                         ? &current_compact_payloads : nullptr,
+                    compact_executor_ && !use_device_variant_cache,
                     err)) {
                 return exact_layer_fallback(
                     "P20 direct layer-batch sidecar read failed");
