@@ -377,36 +377,11 @@ bool compact_union_owned_buffer_sentinel_impl(
             0, static_cast<size_t>(output_dim) * sizeof(float));
     }
 
-    struct OutputArena {
-        ~OutputArena() {
-            if (buffer) ggml_backend_buffer_free(buffer);
-            if (context) ggml_free(context);
-        }
-        ggml_context * context = nullptr;
-        ggml_backend_buffer_t buffer = nullptr;
-        ggml_tensor * rows = nullptr;
-        std::array<ggml_tensor *, max_rows> row{};
-    } arena;
-    ggml_init_params params{};
-    params.mem_size = (max_rows + 1) * ggml_tensor_overhead() + 1024;
-    params.no_alloc = true;
-    arena.context = ggml_init(params);
-    if (arena.context) {
-        arena.rows = ggml_new_tensor_2d(
-            arena.context, GGML_TYPE_F32, output_dim, max_rows);
-        for (int row = 0; row < max_rows; ++row) {
-            arena.row[static_cast<size_t>(row)] = ggml_view_1d(
-                arena.context, arena.rows, output_dim,
-                static_cast<size_t>(row) * output_dim * sizeof(float));
-        }
-        arena.buffer = ggml_backend_alloc_ctx_tensors(arena.context, backend);
-    }
-    if (!arena.context || !arena.rows || !arena.buffer) {
-        if (err) *err = "compact union output arena allocation failed";
+    SparseDeviceExpertEvaluator candidate;
+    if (!candidate.prepare_compact_union_outputs(
+            backend, output_dim, max_rows, err)) {
         return false;
     }
-
-    SparseDeviceExpertEvaluator candidate;
     for (const int width : {1, 2, 8}) {
         const int rows = width + 1;
         uint64_t weight_h2d = 0;
@@ -420,7 +395,8 @@ bool compact_union_owned_buffer_sentinel_impl(
             for (int lane = 0; lane < valid; ++lane) {
                 ggml_backend_tensor_copy_async(
                     backend, backend, outputs[static_cast<size_t>(lane)],
-                    arena.row[static_cast<size_t>(base + lane)]);
+                    candidate.compact_union_output(
+                        static_cast<size_t>(base + lane)));
             }
             return true;
         };
@@ -438,7 +414,8 @@ bool compact_union_owned_buffer_sentinel_impl(
         ggml_backend_synchronize(backend);
         std::vector<float> actual(static_cast<size_t>(rows) * output_dim);
         ggml_backend_tensor_get(
-            arena.rows, actual.data(), 0, actual.size() * sizeof(float));
+            candidate.compact_union_outputs(), actual.data(), 0,
+            actual.size() * sizeof(float));
         if (std::memcmp(
                 actual.data(), expected.data(),
                 actual.size() * sizeof(float)) != 0) {
