@@ -1,6 +1,7 @@
 #include "kimi_k3_calibrated_provider.h"
 #include "kimi_k3_ordered_join.h"
 #include "kimi_k3_sparse_scatter.h"
+#include "common/cuda_graph_overrides.h"
 #include "device_runtime.h"
 
 #include "ggml-alloc.h"
@@ -1492,6 +1493,164 @@ public:
             authoritative_h2d_bytes, metadata_h2d_bytes, invalid, err);
     }
 
+    using CompactUnionConsumer = std::function<bool(
+        int base_row, int valid_rows,
+        const std::array<ggml_tensor *, 8> & outputs,
+        std::string * err)>;
+
+    // Executes one expert's component-major union payload over several rows.
+    // The union weights have their own backend buffer: unlike graph scratch,
+    // their lifetime spans every width-sized graph replay in this call.
+    bool evaluate_compact_union_device(
+            ggml_backend_t backend,
+            const MoeStreamExpertSpec & spec,
+            const float * input_data,
+            int rows,
+            int graph_width,
+            const SparseCompactPayload & compact,
+            const uint16_t * requested_masks,
+            size_t down_slab_row_bytes,
+            const CompactUnionConsumer & consume,
+            uint64_t & authoritative_h2d_bytes,
+            uint64_t & metadata_h2d_bytes,
+            uint64_t & graph_ns,
+            bool & invalid,
+            std::string * err) {
+        invalid = false;
+#if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
+        (void) backend; (void) spec; (void) input_data; (void) rows;
+        (void) graph_width; (void) compact; (void) requested_masks;
+        (void) down_slab_row_bytes; (void) consume;
+        (void) authoritative_h2d_bytes; (void) metadata_h2d_bytes;
+        (void) graph_ns;
+        invalid = true;
+        if (err) *err = "compact union executor requires CUDA or HIP";
+        return false;
+#else
+        if (!backend || !ggml_backend_is_cuda(backend) || !input_data ||
+            !requested_masks || !consume || rows <= 0 ||
+            (graph_width != 1 && graph_width != 2 && graph_width != 8) ||
+            spec.input_dim != 3584 || spec.intermediate_dim != 3072 ||
+            spec.output_dim != 3584 || spec.fused_gate_up ||
+            spec.gate_type != GGML_TYPE_IQ1_S ||
+            spec.up_type != GGML_TYPE_IQ1_S ||
+            spec.down_type != GGML_TYPE_IQ2_XXS ||
+            spec.gated_activation != MoeGatedActivation::Situ ||
+            compact.slab_count <= 0 || compact.slab_count > kSlabCount ||
+            !compact.component_major || !compact.data) {
+            invalid = true;
+            if (err) *err = "compact union executor geometry is unsupported";
+            return false;
+        }
+        BackendDeviceScope device_scope;
+        if (!device_scope.enter(backend, err)) return false;
+
+        KimiK3CompactWireLayout layout;
+        if (!kimi_k3_compact_wire_layout(
+                compact.slab_count, compact.gate_slab_bytes,
+                compact.up_slab_bytes, compact.down_slab_bytes, &layout) ||
+            compact.bytes != layout.total_bytes ||
+            compact.capacity < compact.bytes ||
+            compact.down_slab_bytes != down_slab_row_bytes *
+                static_cast<size_t>(spec.output_dim)) {
+            invalid = true;
+            if (err) *err = "compact union executor wire is invalid";
+            return false;
+        }
+        const auto * wire = static_cast<const uint8_t *>(compact.data);
+        const auto * naturals = reinterpret_cast<const uint16_t *>(wire);
+        uint16_t union_mask = 0;
+        if (!kimi_k3_sparse_natural_mask(
+                naturals, compact.slab_count, &union_mask)) {
+            invalid = true;
+            if (err) *err = "compact union executor natural IDs are invalid";
+            return false;
+        }
+        for (int row = 0; row < rows; ++row) {
+            if (requested_masks[row] == 0 ||
+                (requested_masks[row] & ~union_mask) != 0) {
+                invalid = true;
+                if (err) *err = "compact union row mask is not resident";
+                return false;
+            }
+        }
+
+        CompactUnionEntry * entry = find_compact_union(
+            backend, spec, compact.slab_count, graph_width);
+        if (!entry) {
+            entry = create_compact_union(
+                backend, spec, compact.slab_count, graph_width, err);
+            if (!entry) return false;
+        }
+        ggml_backend_tensor_set(
+            entry->gate, wire + layout.gate_offset, 0,
+            compact.gate_slab_bytes * compact.slab_count);
+        ggml_backend_tensor_set(
+            entry->up, wire + layout.up_offset, 0,
+            compact.up_slab_bytes * compact.slab_count);
+        ggml_backend_tensor_set(
+            entry->down, wire + layout.down_offset, 0,
+            compact.down_slab_bytes * compact.slab_count);
+        authoritative_h2d_bytes += static_cast<uint64_t>(compact.slab_count) *
+            (compact.gate_slab_bytes + compact.up_slab_bytes +
+             compact.down_slab_bytes);
+
+        const size_t input_row_bytes =
+            static_cast<size_t>(spec.input_dim) * sizeof(float);
+        std::vector<float> chunk_inputs(
+            static_cast<size_t>(graph_width) * spec.input_dim);
+        std::array<std::array<int32_t, kSlabCount>, 8> maps{};
+        ScopedCudaGraphOverrides exact_scope(
+            /* disable_graphs = */ true,
+            /* mmvq_max_ncols = */ 8,
+            /* skip_property_check = */ false);
+        for (int base = 0; base < rows; base += graph_width) {
+            const int valid = std::min(graph_width, rows - base);
+            for (int lane = 0; lane < graph_width; ++lane) {
+                const int source_row = base + std::min(lane, valid - 1);
+                std::memcpy(
+                    chunk_inputs.data() +
+                        static_cast<size_t>(lane) * spec.input_dim,
+                    input_data +
+                        static_cast<size_t>(source_row) * spec.input_dim,
+                    input_row_bytes);
+                maps[static_cast<size_t>(lane)].fill(-1);
+                const uint16_t mask = requested_masks[source_row];
+                for (int slot = 0; slot < compact.slab_count; ++slot) {
+                    const uint16_t natural = naturals[slot];
+                    if (mask & (1u << natural)) {
+                        maps[static_cast<size_t>(lane)][natural] = slot;
+                    }
+                }
+            }
+            ggml_backend_tensor_set(
+                entry->input, chunk_inputs.data(), 0,
+                chunk_inputs.size() * sizeof(float));
+            for (int lane = 0; lane < graph_width; ++lane) {
+                ggml_backend_tensor_set(
+                    entry->maps[static_cast<size_t>(lane)],
+                    maps[static_cast<size_t>(lane)].data(), 0,
+                    sizeof(maps[static_cast<size_t>(lane)]));
+            }
+            metadata_h2d_bytes += chunk_inputs.size() * sizeof(float) +
+                static_cast<uint64_t>(graph_width) *
+                    sizeof(std::array<int32_t, kSlabCount>);
+            const auto started = std::chrono::steady_clock::now();
+            const ggml_status status =
+                ggml_backend_graph_compute(backend, entry->graph);
+            graph_ns += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - started).count());
+            if (status != GGML_STATUS_SUCCESS) {
+                if (err) *err = "compact union executor graph failed";
+                return false;
+            }
+            if (!consume(base, valid, entry->outputs, err)) return false;
+        }
+        return true;
+#endif
+    }
+
     bool evaluate_cached_device(
             ggml_backend_t backend,
             const MoeStreamExpertSpec & spec,
@@ -2224,6 +2383,37 @@ private:
         size_t host_capacity = 0;
     };
 
+    struct CompactUnionEntry {
+        ~CompactUnionEntry() {
+            int previous_device = -1;
+            const bool restore_device = runtime_device >= 0 &&
+                cudaGetDevice(&previous_device) == cudaSuccess &&
+                previous_device != runtime_device &&
+                cudaSetDevice(runtime_device) == cudaSuccess;
+            if (backend) ggml_backend_synchronize(backend);
+            if (allocator) ggml_gallocr_free(allocator);
+            if (weight_buffer) ggml_backend_buffer_free(weight_buffer);
+            if (context) ggml_free(context);
+            if (restore_device) (void) cudaSetDevice(previous_device);
+        }
+
+        ggml_backend_t backend = nullptr;
+        int runtime_device = -1;
+        MoeStreamExpertSpec spec{};
+        int slab_count = 0;
+        int graph_width = 0;
+        ggml_context * context = nullptr;
+        ggml_gallocr_t allocator = nullptr;
+        ggml_cgraph * graph = nullptr;
+        ggml_backend_buffer_t weight_buffer = nullptr;
+        ggml_tensor * input = nullptr;
+        ggml_tensor * gate = nullptr;
+        ggml_tensor * up = nullptr;
+        ggml_tensor * down = nullptr;
+        std::array<ggml_tensor *, 8> maps{};
+        std::array<ggml_tensor *, 8> outputs{};
+    };
+
     struct CompactAsyncSlot {
         ~CompactAsyncSlot() {
             if (host_staging) cudaFreeHost(host_staging);
@@ -2356,6 +2546,135 @@ private:
         }
         compact_entries_.push_back(std::move(entry));
         return compact_entries_.back().get();
+    }
+
+    CompactUnionEntry * find_compact_union(
+            ggml_backend_t backend, const MoeStreamExpertSpec & spec,
+            int slab_count, int graph_width) {
+        for (const std::unique_ptr<CompactUnionEntry> & entry :
+                compact_union_entries_) {
+            if (entry->backend == backend &&
+                entry->slab_count == slab_count &&
+                entry->graph_width == graph_width &&
+                same_moe_stream_expert_spec(entry->spec, spec)) {
+                return entry.get();
+            }
+        }
+        return nullptr;
+    }
+
+    CompactUnionEntry * create_compact_union(
+            ggml_backend_t backend, const MoeStreamExpertSpec & spec,
+            int slab_count, int graph_width, std::string * err) {
+        auto entry = std::make_unique<CompactUnionEntry>();
+        entry->backend = backend;
+        (void) cudaGetDevice(&entry->runtime_device);
+        entry->spec = spec;
+        entry->slab_count = slab_count;
+        entry->graph_width = graph_width;
+        ggml_init_params parameters{};
+        parameters.mem_size = 32 * 1024 * 1024;
+        parameters.no_alloc = true;
+        entry->context = ggml_init(parameters);
+        if (!entry->context) {
+            if (err) *err = "compact union ggml_init failed";
+            return nullptr;
+        }
+        entry->input = ggml_new_tensor_2d(
+            entry->context, GGML_TYPE_F32, spec.input_dim, graph_width);
+        entry->gate = ggml_new_tensor_2d(
+            entry->context, spec.gate_type, spec.input_dim,
+            static_cast<int64_t>(slab_count) * kSlabSize);
+        entry->up = ggml_new_tensor_2d(
+            entry->context, spec.up_type, spec.input_dim,
+            static_cast<int64_t>(slab_count) * kSlabSize);
+        entry->down = ggml_new_tensor_4d(
+            entry->context, spec.down_type, kSlabSize, spec.output_dim,
+            slab_count, 1);
+        ggml_set_input(entry->input);
+        ggml_set_input(entry->gate);
+        ggml_set_input(entry->up);
+        ggml_set_input(entry->down);
+
+        const ggml_backend_buffer_type_t buft =
+            ggml_backend_get_default_buffer_type(backend);
+        const size_t alignment = std::max<size_t>(
+            256, ggml_backend_buft_get_alignment(buft));
+        size_t cursor = 0;
+        const auto reserve = [&](ggml_tensor * tensor) {
+            cursor = ((cursor + alignment - 1) / alignment) * alignment;
+            const size_t offset = cursor;
+            cursor += ggml_backend_buft_get_alloc_size(buft, tensor);
+            return offset;
+        };
+        const size_t gate_offset = reserve(entry->gate);
+        const size_t up_offset = reserve(entry->up);
+        const size_t down_offset = reserve(entry->down);
+        cursor = ((cursor + alignment - 1) / alignment) * alignment;
+        entry->weight_buffer =
+            ggml_backend_buft_alloc_buffer(buft, cursor);
+        if (!entry->weight_buffer) {
+            if (err) *err = "compact union weight allocation failed";
+            return nullptr;
+        }
+        ggml_backend_buffer_set_usage(
+            entry->weight_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        auto * base = static_cast<uint8_t *>(
+            ggml_backend_buffer_get_base(entry->weight_buffer));
+        if (ggml_backend_tensor_alloc(
+                entry->weight_buffer, entry->gate, base + gate_offset) !=
+                GGML_STATUS_SUCCESS ||
+            ggml_backend_tensor_alloc(
+                entry->weight_buffer, entry->up, base + up_offset) !=
+                GGML_STATUS_SUCCESS ||
+            ggml_backend_tensor_alloc(
+                entry->weight_buffer, entry->down, base + down_offset) !=
+                GGML_STATUS_SUCCESS) {
+            if (err) *err = "compact union weight binding failed";
+            return nullptr;
+        }
+
+        ggml_tensor * gate_value = probe_scale_tensor(
+            entry->context,
+            ggml_mul_mat(entry->context, entry->gate, entry->input),
+            spec.gate_scale);
+        ggml_tensor * up_value = probe_scale_tensor(
+            entry->context,
+            ggml_mul_mat(entry->context, entry->up, entry->input),
+            spec.up_scale);
+        ggml_tensor * activated = probe_gated_activation(
+            entry->context, spec, gate_value, up_value);
+        for (int lane = 0; lane < graph_width; ++lane) {
+            entry->maps[static_cast<size_t>(lane)] = ggml_new_tensor_1d(
+                entry->context, GGML_TYPE_I32, kSlabCount);
+            ggml_set_input(entry->maps[static_cast<size_t>(lane)]);
+            ggml_tensor * activation_row = ggml_view_1d(
+                entry->context, activated, activated->ne[0],
+                static_cast<size_t>(lane) * activated->nb[1]);
+            ggml_tensor * blocks = ggml_reshape_2d(
+                entry->context, activation_row, kSlabSize, slab_count);
+            entry->outputs[static_cast<size_t>(lane)] = probe_scale_tensor(
+                entry->context,
+                ggml_mul_mat_sparse_k_blocks(
+                    entry->context, entry->down, blocks,
+                    entry->maps[static_cast<size_t>(lane)],
+                    spec.intermediate_dim),
+                spec.down_scale);
+        }
+        entry->graph = ggml_new_graph_custom(entry->context, 1024, false);
+        for (int lane = 0; lane < graph_width; ++lane) {
+            ggml_set_output(entry->outputs[static_cast<size_t>(lane)]);
+            ggml_build_forward_expand(
+                entry->graph, entry->outputs[static_cast<size_t>(lane)]);
+        }
+        entry->allocator = ggml_gallocr_new(buft);
+        if (!entry->allocator ||
+            !ggml_gallocr_alloc_graph(entry->allocator, entry->graph)) {
+            if (err) *err = "compact union graph allocation failed";
+            return nullptr;
+        }
+        compact_union_entries_.push_back(std::move(entry));
+        return compact_union_entries_.back().get();
     }
 
     static bool ensure_compact_host_staging(
@@ -2511,6 +2830,7 @@ private:
 
     std::vector<std::unique_ptr<Entry>> entries_;
     std::vector<std::unique_ptr<CompactEntry>> compact_entries_;
+    std::vector<std::unique_ptr<CompactUnionEntry>> compact_union_entries_;
     ggml_tensor * compact_shared_input_ = nullptr;
     ggml_backend_t compact_shared_input_backend_ = nullptr;
     std::array<CompactAsyncSlot, kNativeTopK> compact_async_slots_{};
