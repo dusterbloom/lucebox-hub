@@ -1,0 +1,183 @@
+{
+  "schema_version": 1,
+  "campaign": "k3-production-p40-wide-async-join",
+  "experiment_number": null,
+  "date": "2026-08-23",
+  "verdict": "ENGINEERING_GO_DEFAULT_OFF",
+  "scope": "default-off direct cached-device expert execution, P45 batching, and canonical P42 join in the exact wide path",
+  "source": {
+    "branch": "perf/k3-production-ponytail",
+    "prior_p46_commit": "014aaf4a5ac4b5c11af2461c69e61b810391a517",
+    "documentation_parent_commit": "e17b76e7d5e4f0a65d754d01ba5818b8b341f715",
+    "winner_commit": "d1dec9fce11891f4f5af3af491d1d164deff7c35",
+    "winner_parent_commit": "e17b76e7d5e4f0a65d754d01ba5818b8b341f715",
+    "provider_source_sha256": "97d2c945c09338f6167b9c4321aea91b5b1ed6a16be343a12cf4951040079fc7",
+    "smoke_binary_sha256": "9a4f281dd74d896bc91c57bbb3ce12514fed620fb9fcf81fa6e4d3faf5ff67cb",
+    "source_patch_sha256": "8d1c8554d796bc4dc9b37adf5898cae5fba50beb2f40820f4d608975301f54c3"
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "backend": "HIP/ROCm",
+    "physical_device": "GPU1",
+    "architecture": "gfx1151",
+    "logical_device": 0,
+    "platform_profile": "performance",
+    "topology": "single-owner",
+    "process_swaps": 0
+  },
+  "frozen_runtime": {
+    "cpu_workers": 18,
+    "policy": "calibrated96/fixed96",
+    "authoritative_sidecars": true,
+    "p30_host_cache_bytes": 17179869184,
+    "p40_device_cache_bytes": 8589934592,
+    "p40_layer_epoch": true,
+    "p41_compact_executor": true,
+    "p42_ordered_device_join": true,
+    "p45_async_compact_queue": true,
+    "p46_persistent_routed_prep": true,
+    "io_backend": "direct-pread",
+    "hipblaslt": false,
+    "control_flag": "DFLASH_KIMI_P40_WIDE_ASYNC_JOIN=0",
+    "candidate_flag": "DFLASH_KIMI_P40_WIDE_ASYNC_JOIN=1",
+    "default": false
+  },
+  "m64_same_binary_ab": {
+    "same_binary": true,
+    "binary_sha256": "9a4f281dd74d896bc91c57bbb3ce12514fed620fb9fcf81fa6e4d3faf5ff67cb",
+    "token_fixture_sha256": "d5ace9d1b8429ff271307acc26c0d013ef4bfae0d6eb6b8a6638e35e0013d388",
+    "traffic_sha256_each_arm": "898a397272075995ba469d4db79526c7d099b7c6ed148516f9cf6d154dc1a9fd",
+    "output_ids_each_arm": [5801, 114820],
+    "control_reversal": {
+      "stage_total_seconds": 57.527057,
+      "core_seconds": 14.364692,
+      "expert_seconds": 42.169920,
+      "direct_io_seconds": 28.281161209,
+      "prefill_positions_per_second": 1.112204,
+      "physical_bytes": 115133669376,
+      "log_sha256": "f25d449307592ca5af8bd680a8f15027fb83fe19f7aef1d8e4dabe2a0437af95"
+    },
+    "candidate": {
+      "stage_total_seconds": 47.801304,
+      "core_seconds": 14.367396,
+      "expert_seconds": 32.456798,
+      "direct_io_seconds": 24.380159695,
+      "prefill_positions_per_second": 1.338407,
+      "physical_bytes": 115107717120,
+      "log_sha256": "3394432f29ea707799c12f465c0e38f10f13f6eb737afeabb2011dd608ca5b85"
+    },
+    "delta": {
+      "prefill_speedup": 1.2033826528,
+      "stage_seconds_saved": 9.725753,
+      "expert_seconds_saved": 9.713122,
+      "direct_io_seconds_saved": 3.901001514,
+      "non_io_expert_seconds_saved": 5.812120486,
+      "physical_bytes_removed": 25952256,
+      "physical_byte_reduction_fraction": 0.0002254098,
+      "physical_byte_explanation": "P42 resident means remove roughly 4.84 GB of logical auxiliary reads, changing P30 cache occupancy and secondarily reducing direct sidecar service by 0.0225%; selected-slab and exact-fallback logical traffic remains identical."
+    }
+  },
+  "partial_commit_exactness_gate": {
+    "same_candidate_binary": true,
+    "commit_n": 3,
+    "control_log_sha256": "7ea055aaf91ff12a559cb715d7d6522d135e1f26cf7ade9da10dbafc73672f0c",
+    "candidate_log_sha256": "dd39df5d3e0fd19bdf853097a6909426e2d317123c98d8aa64c67ed445d16da2",
+    "traffic_sha256_each_arm": "d0436d265e1b04585481f46e33b45c84064ee27d7a65e42d16b4e1856f9b68f1",
+    "prefix_full_logits_byte_identical": true,
+    "next_full_logits_byte_identical": true,
+    "conv_state_all_layers_identical_after_commit": true,
+    "ssm_state_all_layers_identical_after_commit": true,
+    "mla_state_all_layers_identical_after_commit": true,
+    "conv_state_all_layers_identical_after_next_step": true,
+    "ssm_state_all_layers_identical_after_next_step": true,
+    "mla_state_all_layers_identical_after_next_step": true,
+    "all_state_mismatch_indices": -1,
+    "next_logits_hash_each_arm": 7899592251675440270,
+    "exact": true
+  },
+  "m1024_production": {
+    "same_binary": false,
+    "comparison": "adjacent committed production winners: P46 versus P40 wide async join",
+    "token_fixture_sha256": "a52320c799f4c20eba845a0cf19edd68a557f28dd2a58d88a4609c797f24cc71",
+    "traffic_sha256_each_arm": "c0dfd31205484facf903d1e55cd75ccf05338359583b1f9d76fbaa032b6cea15",
+    "control": {
+      "source_commit": "014aaf4a5ac4b5c11af2461c69e61b810391a517",
+      "prefill_seconds": 452.315,
+      "prefill_positions_per_second": 2.263908,
+      "stage_total_seconds": 452.274679,
+      "core_seconds": 236.624296,
+      "expert_seconds": 200.357841,
+      "join_seconds": 10.543054,
+      "output_seconds": 4.507782,
+      "physical_bytes": 169143877632,
+      "h2d_bytes": 168212803584,
+      "log_sha256": "b9247b0f1d1e22f9f3b6d4076b160f83bc06ca324e3877fc379a5cbada0173b6"
+    },
+    "candidate": {
+      "source_commit": "d1dec9fce11891f4f5af3af491d1d164deff7c35",
+      "prefill_seconds": 406.870,
+      "prefill_positions_per_second": 2.516772,
+      "stage_total_seconds": 406.821367,
+      "core_seconds": 236.874767,
+      "expert_seconds": 154.993998,
+      "join_seconds": 10.215118,
+      "output_seconds": 4.489633,
+      "other_seconds": 0.247852,
+      "direct_io_seconds": 43.799216635,
+      "physical_bytes": 169143877632,
+      "h2d_bytes": 168212803584,
+      "p45_device_window_seconds": 110.009187871,
+      "p45_graph_jobs": 1244278,
+      "p42_join_launches": 94208,
+      "p40_cold_fills": 34014,
+      "p40_evictions": 0,
+      "p40_completed": 1244278,
+      "p40_aborts": 0,
+      "p40_fallbacks": 0,
+      "process_swaps": 0,
+      "log_sha256": "9940820ee9b56b10f025fc471d63bc77fcc2085cc6cf4baf228a7fbdebb7bfe3"
+    },
+    "delta": {
+      "prefill_speedup": 1.1116935847,
+      "stage_speedup": 1.1117279368,
+      "stage_seconds_saved": 45.453312,
+      "expert_seconds_saved": 45.363843,
+      "expert_reduction_fraction": 0.2264141137,
+      "physical_byte_change": 0,
+      "h2d_byte_change": 0
+    },
+    "correctness": {
+      "logical_traffic_identical": true,
+      "physical_bytes_identical": true,
+      "h2d_bytes_identical": true,
+      "p40_completions_identical": true,
+      "fallbacks_zero": true,
+      "full_logit_hash_checked_in_this_m1024_comparison": false,
+      "state_hash_checked_in_this_m1024_comparison": false,
+      "separate_partial_commit_full_logit_and_state_gate_exact": true
+    }
+  },
+  "post_win_critical_path": {
+    "total_seconds": 406.821367,
+    "core_seconds": 236.874767,
+    "expert_seconds": 154.993998,
+    "join_seconds": 10.215118,
+    "output_seconds": 4.489633,
+    "other_seconds": 0.247852,
+    "measured_prefill_positions_per_second": 2.516772,
+    "infinite_expert_speed_ceiling_positions_per_second": 4.066277641,
+    "infinite_core_speed_ceiling_positions_per_second": 6.025422103,
+    "seconds_to_remove_for_10_positions_per_second": 304.421367,
+    "fraction_of_combined_core_and_expert_time_to_remove_for_10": 0.7768451946,
+    "interpretation": "The causal core is now the largest term, but neither core-only nor expert-only elimination reaches 10 positions/s. Both remain binding."
+  },
+  "promotion": {
+    "default": false,
+    "qualified_profile": "exact macro width greater than one, authoritative calibrated96/fixed96, P40 layer epoch, P41/P42/P45/P46, single-owner gfx1151",
+    "requires_before_default": [
+      "matched long-fixture full-logit and state qualification",
+      "broad operational qualification",
+      "retained synchronous exact fallback"
+    ]
+  }
+}
