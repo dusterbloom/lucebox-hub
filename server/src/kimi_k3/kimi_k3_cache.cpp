@@ -89,6 +89,7 @@ void reset_kimi_k3_cache(KimiK3Cache & cache) {
 }
 
 void free_kimi_k3_cache(KimiK3Cache & cache) {
+    kimi_k3_destroy_graph_state(cache.persistent_routed_preparation);
     if (cache.buf) ggml_backend_buffer_free(cache.buf);
     if (cache.ctx) ggml_free(cache.ctx);
     cache = KimiK3Cache{};

@@ -3,6 +3,7 @@
 
 #include "common/gguf_mmap.h"
 #include "common/moe_hybrid_storage.h"
+#include "common/moe_hybrid_stream.h"
 
 #include "ggml.h"
 #include "ggml-backend.h"
@@ -13,6 +14,8 @@
 #include <vector>
 
 namespace dflash::common {
+
+class KimiK3RoutedOutputProvider;
 
 struct KimiK3Layer {
     bool recurrent = false;
@@ -152,6 +155,43 @@ struct KimiK3Cache {
     bool recurrent_state_pristine = false;
     // P58 records every replay row through the native one-row KDA graph.
     bool replay_exact_rows = false;
+    // Concrete ownership remains private to graph.cpp.
+    void * persistent_routed_preparation = nullptr;
+};
+
+inline bool kimi_k3_exact_multirow_width(size_t width) {
+    return width == 8 || width == 64 || width == 1024;
+}
+
+inline MoeStreamExpertSpec make_kimi_k3_stream_spec(
+        const KimiK3Weights & weights, const KimiK3Layer & layer) {
+    MoeStreamExpertSpec spec;
+    spec.input_dim = weights.n_expert_latent;
+    spec.intermediate_dim = weights.n_ff_exp;
+    spec.output_dim = weights.n_expert_latent;
+    spec.gate_type = layer.ffn_gate_exps->type;
+    spec.up_type = layer.ffn_up_exps->type;
+    spec.down_type = layer.ffn_down_exps->type;
+    spec.gated_activation = MoeGatedActivation::Situ;
+    spec.situ_beta = weights.situ_beta;
+    spec.situ_linear_beta = weights.situ_linear_beta;
+    return spec;
+}
+
+struct KimiK3ForwardOptions {
+    const std::vector<int> * capture_layer_ids = nullptr;
+    bool capture_replay = false;
+    bool read_logits = false;
+    bool read_argmax = true;
+    KimiK3RoutedOutputProvider * routed_output_provider = nullptr;
+    // Exact causal micro-width one with a separately serviced routed macro.
+    bool exact_multirow_core = false;
+};
+
+struct KimiK3ForwardResult {
+    std::vector<float> logits;
+    std::vector<int32_t> argmax;
+    std::vector<float> captured_hidden;
 };
 
 struct KimiK3LoadOptions {
@@ -178,5 +218,37 @@ bool create_kimi_k3_cache(ggml_backend_t backend,
                           int max_verify_tokens = 0);
 void reset_kimi_k3_cache(KimiK3Cache & cache);
 void free_kimi_k3_cache(KimiK3Cache & cache);
+void kimi_k3_destroy_graph_state(void *& state);
+
+bool kimi_k3_read_token_embeddings_on_host(
+    const KimiK3Weights & weights,
+    const std::vector<int32_t> & tokens,
+    std::vector<float> & hidden);
+
+bool kimi_k3_forward(ggml_backend_t backend,
+                     const KimiK3Weights & weights,
+                     KimiK3Cache & cache,
+                     const std::vector<int32_t> & tokens,
+                     int base_pos,
+                     const KimiK3ForwardOptions & options,
+                     KimiK3ForwardResult & result,
+                     MoeHybridStreamEngine * stream_engine = nullptr);
+
+bool kimi_k3_replay_snapshot(ggml_backend_t backend, KimiK3Cache & cache);
+bool kimi_k3_replay_restore(ggml_backend_t backend, KimiK3Cache & cache);
+bool kimi_k3_replay_commit(ggml_backend_t backend,
+                           const KimiK3Weights & weights,
+                           KimiK3Cache & cache,
+                           int base_pos,
+                           int commit_n);
+
+bool kimi_k3_step(ggml_backend_t backend,
+                  const KimiK3Weights & weights,
+                  KimiK3Cache & cache,
+                  int32_t token,
+                  int position,
+                  std::vector<float> & logits,
+                  MoeHybridStreamEngine * stream_engine = nullptr,
+                  KimiK3RoutedOutputProvider * routed_output_provider = nullptr);
 
 } // namespace dflash::common

@@ -443,6 +443,7 @@ add_library(dflash_common STATIC
     # capability is wired only after the graph/provider layers land.
     src/kimi_k3/kimi_k3_loader.cpp
     src/kimi_k3/kimi_k3_cache.cpp
+    src/kimi_k3/kimi_k3_graph.cpp
     src/flashprefill_q8.cpp
     src/kv_cache.cpp
     src/kv_quant.cpp
@@ -573,7 +574,16 @@ if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
             DFLASH27B_BACKEND_MIXED=1)
     endif()
 elseif(DFLASH27B_GPU_BACKEND STREQUAL "hip")
-    target_sources(dflash_common PRIVATE src/deepseek4/deepseek4_hc_cuda.cu)
+    target_sources(dflash_common PRIVATE
+        src/kimi_k3/kimi_k3_ordered_join.cu
+        src/kimi_k3/kimi_k3_sparse_scatter.cu
+        src/deepseek4/deepseek4_hc_cuda.cu)
+    set_source_files_properties(
+        src/kimi_k3/kimi_k3_ordered_join.cu PROPERTIES LANGUAGE HIP)
+    set_property(SOURCE src/kimi_k3/kimi_k3_ordered_join.cu APPEND
+        PROPERTY COMPILE_OPTIONS -ffp-contract=off)
+    set_source_files_properties(
+        src/kimi_k3/kimi_k3_sparse_scatter.cu PROPERTIES LANGUAGE HIP)
     set_source_files_properties(src/deepseek4/deepseek4_hc_cuda.cu PROPERTIES LANGUAGE HIP)
     set_target_properties(dflash_common PROPERTIES HIP_ARCHITECTURES "${_dflash_archs}")
     target_compile_definitions(dflash_common PRIVATE DFLASH27B_BACKEND_HIP=1 GGML_USE_HIP)
@@ -1073,6 +1083,29 @@ if(DFLASH27B_TESTS)
         target_link_libraries(test_sparse_k_mmvq_cuda PRIVATE
             ggml ${DFLASH27B_GGML_BACKEND_TARGET})
         list(APPEND _raw_unit_test_targets test_sparse_k_mmvq_cuda)
+    endif()
+    if(DFLASH27B_GPU_BACKEND STREQUAL "hip")
+        foreach(_k3_hip_test IN ITEMS ordered_join sparse_scatter)
+            set(_k3_hip_target "test_kimi_k3_${_k3_hip_test}")
+            if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/${_k3_hip_target}.cpp")
+                add_executable(${_k3_hip_target}
+                    "test/${_k3_hip_target}.cpp")
+                set_source_files_properties(
+                    "test/${_k3_hip_target}.cpp" PROPERTIES LANGUAGE HIP)
+                set_target_properties(${_k3_hip_target} PROPERTIES
+                    HIP_ARCHITECTURES "${_dflash_archs}")
+                target_include_directories(${_k3_hip_target} PRIVATE
+                    ${CMAKE_CURRENT_SOURCE_DIR}/src
+                    ${CMAKE_CURRENT_SOURCE_DIR}/hip_compat)
+                target_compile_definitions(${_k3_hip_target} PRIVATE
+                    DFLASH27B_BACKEND_HIP=1)
+                target_link_libraries(${_k3_hip_target} PRIVATE
+                    dflash_common hip::host)
+                list(APPEND _raw_unit_test_targets ${_k3_hip_target})
+            endif()
+        endforeach()
+        unset(_k3_hip_target)
+        unset(_k3_hip_test)
     endif()
     # HIP-only standalone build; CUDA backend is covered by aggregated test_server_unit.
     if(DFLASH27B_GPU_BACKEND STREQUAL "hip" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_draft_topk_cuda.cpp")
