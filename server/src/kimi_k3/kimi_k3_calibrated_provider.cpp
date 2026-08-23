@@ -1646,6 +1646,11 @@ public:
                 return false;
             }
             if (!consume(base, valid, entry->outputs, err)) return false;
+            // A consumer may stage these rows with an asynchronous D2D copy.
+            // Retire that copy before the next replay reuses output scratch.
+            // A later double-buffered path may replace this conservative
+            // boundary, but must preserve the same ownership contract.
+            ggml_backend_synchronize(backend);
         }
         return true;
 #endif
