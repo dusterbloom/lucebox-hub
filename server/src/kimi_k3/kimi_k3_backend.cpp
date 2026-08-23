@@ -142,6 +142,9 @@ KimiK3RoutedRuntimeStats routed_stats_delta(
     KIMI_K3_DELTA(ordered_join_launches);
     KIMI_K3_DELTA(ordered_output_d2d_copies);
     KIMI_K3_DELTA(ordered_output_d2d_bytes);
+    KIMI_K3_DELTA(layer_major_prefetches);
+    KIMI_K3_DELTA(layer_major_requested_records);
+    KIMI_K3_DELTA(layer_major_unique_records);
 #undef KIMI_K3_DELTA
     return result;
 }
@@ -167,7 +170,9 @@ void print_prefill_census(
         "async-layer-flushes=%llu async-abort-syncs=%llu "
         "ordered-expert-d2d-copies=%llu ordered-expert-d2d-bytes=%llu "
         "ordered-join-launches=%llu ordered-output-d2d-copies=%llu "
-        "ordered-output-d2d-bytes=%llu\n",
+        "ordered-output-d2d-bytes=%llu layer-major-prefetches=%llu "
+        "layer-major-requested-records=%llu "
+        "layer-major-unique-records=%llu\n",
         phase, positions, forwards, seconds, rate,
         static_cast<unsigned long long>(process_read_bytes),
         static_cast<unsigned long long>(stats.logical_provider_bytes),
@@ -196,7 +201,11 @@ void print_prefill_census(
         static_cast<unsigned long long>(stats.ordered_expert_d2d_bytes),
         static_cast<unsigned long long>(stats.ordered_join_launches),
         static_cast<unsigned long long>(stats.ordered_output_d2d_copies),
-        static_cast<unsigned long long>(stats.ordered_output_d2d_bytes));
+        static_cast<unsigned long long>(stats.ordered_output_d2d_bytes),
+        static_cast<unsigned long long>(stats.layer_major_prefetches),
+        static_cast<unsigned long long>(
+            stats.layer_major_requested_records),
+        static_cast<unsigned long long>(stats.layer_major_unique_records));
 }
 
 uint64_t fnv1a_update(uint64_t hash, const void * data, size_t bytes) {

@@ -59,6 +59,9 @@ struct KimiK3RoutedRuntimeStats {
     uint64_t ordered_join_launches = 0;
     uint64_t ordered_output_d2d_copies = 0;
     uint64_t ordered_output_d2d_bytes = 0;
+    uint64_t layer_major_prefetches = 0;
+    uint64_t layer_major_requested_records = 0;
+    uint64_t layer_major_unique_records = 0;
 };
 
 // Research-only routed boundary used by H16. The exact stream engine remains
