@@ -1537,17 +1537,20 @@ public:
         if (err) *err = "compact union executor requires CUDA or HIP";
         return false;
 #else
+        const bool quant_geometry_supported =
+            spec.gate_type == spec.up_type &&
+            ((spec.gate_type == GGML_TYPE_IQ1_S &&
+              (spec.down_type == GGML_TYPE_IQ1_S ||
+               spec.down_type == GGML_TYPE_IQ2_XXS)) ||
+             (spec.gate_type == GGML_TYPE_IQ2_XXS &&
+              spec.down_type == GGML_TYPE_IQ1_S));
         const bool geometry_supported =
             backend && ggml_backend_is_cuda(backend) && input_data &&
             requested_masks && consume && rows > 0 &&
             (graph_width == 1 || graph_width == 2 || graph_width == 8) &&
             spec.input_dim == 3584 && spec.intermediate_dim == 3072 &&
             spec.output_dim == 3584 && !spec.fused_gate_up &&
-            spec.gate_type == spec.up_type &&
-            (spec.gate_type == GGML_TYPE_IQ1_S ||
-             spec.gate_type == GGML_TYPE_IQ2_XXS) &&
-            (spec.down_type == GGML_TYPE_IQ1_S ||
-             spec.down_type == GGML_TYPE_IQ2_XXS) &&
+            quant_geometry_supported &&
             spec.gated_activation == MoeGatedActivation::Situ &&
             compact.slab_count > 0 && compact.slab_count <= kSlabCount &&
             compact.component_major && compact.data;
