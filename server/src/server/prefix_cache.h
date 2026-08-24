@@ -27,7 +27,7 @@ namespace dflash::common {
 // ─── Chat marker detection ──────────────────────────────────────────────
 
 struct ChatMarkers {
-    std::string family;  // "deepseek", "qwen", "gemma", or "laguna"
+    std::string family;  // "deepseek", "kimi", "qwen", "gemma", or "laguna"
     // Token sequences for boundary detection
     std::vector<int32_t> sys_role_prefix;
     std::vector<std::vector<int32_t>> end_msg_seqs;

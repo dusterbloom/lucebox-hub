@@ -34,7 +34,29 @@ bool resolve_chat_markers(const Tokenizer & tok, ChatMarkers & out) {
         return true;
     }
 
-    // Qwen/Kimi GGUFs carry the exact ChatML marker strings in vocabulary.
+    // Kimi K2/K3 templates wrap top-level messages as:
+    //   <|open|>message role="..."<|sep|>...<|end_of_msg|>
+    // Require the complete exact control-token quartet so an unrelated BPE
+    // that can merely spell these strings cannot be classified as Kimi.
+    const int32_t kimi_open = exact_control_token("<|open|>");
+    const int32_t kimi_close = exact_control_token("<|close|>");
+    const int32_t kimi_sep = exact_control_token("<|sep|>");
+    const int32_t kimi_end = exact_control_token("<|end_of_msg|>");
+    if (kimi_open >= 0 && kimi_close >= 0 && kimi_sep >= 0 && kimi_end >= 0) {
+        auto system_tag = tok.encode("message role=\"system\"");
+        if (!system_tag.empty()) {
+            out.family = "kimi";
+            out.sys_role_prefix = {kimi_open};
+            out.sys_role_prefix.insert(
+                out.sys_role_prefix.end(), system_tag.begin(), system_tag.end());
+            out.sys_role_prefix.push_back(kimi_sep);
+            out.end_msg_seqs = {{kimi_end}};
+            out.next_role_starts = {{kimi_open}};
+            return true;
+        }
+    }
+
+    // Qwen ChatML GGUFs carry the exact marker strings in vocabulary.
     // Some quants label them as normal tokens rather than added/control
     // tokens, so encode() legitimately returns the multi-token spelling used
     // by live prompts. Use exact vocabulary presence to identify the family,
