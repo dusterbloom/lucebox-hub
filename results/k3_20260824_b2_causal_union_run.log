@@ -1,0 +1,33 @@
+K3 B=2 causal-union focused discriminator
+UTC date: 2026-08-24
+Base source: 0407c041dccffddb6c3662ae173fd1bda6985ff3
+Experiment commit: da678034
+Pre-commit patch SHA-256: dc9d16b9d3c20b91faac8ae707d5f386233a6ec27343c82e008348c64742266b
+Binary SHA-256: 80418d1836e5b1a51e35b22239e825f87a4d060d8c032be0498cb5f588478c00
+Binary: /home/duster/k3-b2-causal-graph/server/build-k3-b2-causal/smoke_kimi_k3_forward
+Model: /home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-of-00014.gguf
+Device: Radeon 8060S Graphics, gfx1151, wave32, ROCm 7.2.2
+Platform profile: performance
+CPU governor: performance
+GPU lease owner: codex-b2-causal-final
+
+Qualified startup lines:
+[kimi-k3] loaded resident=37.56 GiB mapped-core=0.00 GiB file-backed-experts=507.90 GiB shards=14 layers=93 (KDA=69 MLA=24) hidden=7168 experts=896 top=16 latent=3584 vocab=163840
+[kimi-k3-calibrated96] status=exact policy=calibrated-slabs requested-budget=96 physical-layout=scratch io-backend=direct-pread persistent-scratch=enabled compact-upload=enabled pinned-compact=enabled direct-pinned-compact=enabled p40-device-cache=enabled p40-layer-epoch=enabled p41-compact-executor=enabled p42-ordered-join=enabled p45-async-queue=enabled p40-wide-async-join=disabled exact-macro-union=enabled macro-union-prefetch=disabled exact-source=sidecar p30-host-cache-mib=0.0 p30-borrowed-records=disabled valid-layers=92/92 invalid-layer-action=exact insufficient-expert-action=exact
+[kimi-k3] production backend ready topology=single-owner core=hip:0 experts=hip:0 join=hip:0 io=io_uring+direct cache=8.00GiB prefill-width=1 exact-macro=0 provider=calibrated96
+
+Final provider counters:
+[kimi-k3-p20] physical-layout=scratch reference-full-weight-h2d=0 sparse-authoritative-h2d=38432801792 metadata-h2d=42133040 device-zero-bytes=192589824 explicit-provider-reads=38646947840 direct-physical-bytes=38646947840 direct-io-ns=6350633984 compact-pack-ns=15916854 compact-scatter-ns=7979153 expert-graph-ns=115355179 expert-readback-ns=0
+[kimi-k3-p40] requested-slabs=348 resident-before-slabs=0 hits=0 extensions=0 cold=29 unavailable=0 completed=29 aborted=0 fallbacks=0 evictions=0 device-bytes=8571064320 h2d-bytes=192589824 scatter-calls=29 scatter-avoided=0
+[kimi-k3-p41] attempted=7502 layouts=7502 uploads=7502 gate=7502 up=7502 situ=7502 sparse-down=7502 completed=7502 fallbacks=0 invalid=0
+[kimi-k3-p45] begins=572 jobs=7531 h2d-calls=30589 h2d-bytes=29532563104 input-d2d-copies=0 input-d2d-bytes=0 graph-enqueues=7531 layer-flushes=572 abort-syncs=0 max-inflight=16 submit-ns=157647576 device-window-ns=1252017090
+[kimi-k3-macro-union] attempted=92 completed=92 groups=2041 records=15805 rows=2325
+[kimi-k3-p42c] resident-mean-bytes=14180941824 hot-mean-reads=0 hot-mean-h2d-bytes=0 expert-d2d-copies=7771 expert-d2d-bytes=111405056 join-launches=572 macro-join-launches=89 macro-join-rows=164 output-d2d-copies=552 output-d2d-bytes=7913472
+
+Decisive exact result line:
+[kimi-k3-b2] serial_ms=2625.91 pair_ms=2201.91 speedup=1.19256 pair_aggregate_tps=0.908304 serial_physical_bytes=9986310144 pair_physical_bytes=8958550016 serial_direct_io_ms=1732.41 pair_direct_io_ms=1376.52 serial_causal_graph_ms=431.14 pair_causal_graph_ms=286.312 serial_pack_ms=5.72879 pair_pack_ms=5.73015 serial_expert_graph_ms=0 pair_expert_graph_ms=115.355 pair_union_layers=92 pair_causal_layers=93 logits_exact=1 routes_exact=1 tensor_states_exact=1 cache_metadata_exact=1 tokens_exact=1 causal_exact=1 exact=1
+
+Verdict: GO as a default-off exact discriminator; not production code.
+No P30 host cache was active. Width two was advertised only under the
+discriminator with exact macro union. The pair path has no serial graph
+fallback and fails closed unless all 93 causal layers and all 92 unions run.

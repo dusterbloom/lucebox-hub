@@ -1,0 +1,58 @@
+{
+  "experiment": "K3-20260824-B2-CAUSAL-UNION",
+  "status": "GO_DISCRIMINATOR_ONLY",
+  "production_status": "NOT_PROPOSED",
+  "source": {
+    "base_commit": "0407c041dccffddb6c3662ae173fd1bda6985ff3",
+    "experiment_commit": "da678034",
+    "patch_sha256": "dc9d16b9d3c20b91faac8ae707d5f386233a6ec27343c82e008348c64742266b",
+    "binary_sha256": "80418d1836e5b1a51e35b22239e825f87a4d060d8c032be0498cb5f588478c00"
+  },
+  "hardware": {
+    "device": "Radeon 8060S Graphics",
+    "arch": "gfx1151",
+    "wave_size": 32,
+    "rocm": "7.2.2",
+    "platform_profile": "performance",
+    "cpu_governor": "performance"
+  },
+  "timing_ms": {
+    "serial_whole_pair": 2625.91,
+    "b2_whole_pair": 2201.91,
+    "serial_causal_graph_pair": 431.14,
+    "b2_causal_graph_pair": 286.312,
+    "serial_direct_io": 1732.41,
+    "b2_direct_io": 1376.52,
+    "serial_pack": 5.72879,
+    "b2_pack": 5.73015,
+    "b2_expert_graph": 115.355
+  },
+  "speedup": {
+    "whole_pair": 1.19256,
+    "causal_graph_pair": 1.50584,
+    "whole_pair_ms_saved": 424.0,
+    "causal_graph_ms_saved": 144.828,
+    "causal_graph_ms_saved_per_row": 72.414
+  },
+  "storage": {
+    "serial_physical_bytes": 9986310144,
+    "b2_physical_bytes": 8958550016
+  },
+  "coverage": {
+    "b2_causal_layers": 93,
+    "pair_union_layers": 92,
+    "p40_fallbacks": 0,
+    "p41_fallbacks": 0,
+    "serial_graph_fallback_in_pair": false,
+    "p30_host_cache_mib": 0
+  },
+  "correctness": {
+    "logits_exact": true,
+    "routes_exact": true,
+    "tensor_states_exact": true,
+    "cache_metadata_exact": true,
+    "tokens_exact": true,
+    "exact": true
+  },
+  "interpretation": "Exact B=2 resident projection batching is material and passes the 330 ms causal interval gate. The 0.908 aggregate tok/s figure is a cold whole-forward discriminator and is not a production throughput claim."
+}
