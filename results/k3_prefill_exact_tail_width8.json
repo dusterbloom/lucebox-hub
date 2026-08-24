@@ -1,0 +1,216 @@
+{
+  "schema": "k3-prefill-exact-tail-width8-v1",
+  "date_utc": "2026-08-24",
+  "verdict": "GO",
+  "summary": "Exact width-eight batching of the four Q6_K routed-tail projections reduces the M1024 causal core by 6.636 seconds and raises retained-path prefill from 5.908 to 6.105 positions/s despite a 2.933-second slower direct-I/O sample.",
+  "preregistration": {
+    "question": "Can the existing exact Q6_K width-eight MMVQ path replace two ordered Tail4 halves without changing causal state, route traffic, or outputs?",
+    "m64_performance_gate": "core saving >= 0.400 seconds, projecting to >= 6.4 seconds at M1024",
+    "correctness_gates": [
+      "bit-identical logits and argmax at M8 and chained M16",
+      "byte-identical committed and terminal recurrent state",
+      "identical MLA rows",
+      "identical M64 and M1024 physical bytes and traffic trace hashes",
+      "no fallback and zero swaps"
+    ],
+    "interpretation": {
+      "GO": "all correctness gates pass and the M64 core-saving gate passes",
+      "NO_GO": "correct but below the frozen performance gate",
+      "INVALID": "any correctness, topology, traffic, telemetry, or execution failure"
+    }
+  },
+  "source": {
+    "parent_head": "33999efd3619bcf136fbdb66a144877edc6ab209",
+    "branch": "perf/k3-prefill-causal-core",
+    "merge_base_origin_main": "21506614cf99be7fc339fdacb6ae05c17fa22503",
+    "graph_source_sha256": "90558d395ee51dd385242af9c57e8756a25159fb6d2a6cbda89901de3506624c",
+    "smoke_binary_sha256": "ebf32d85ab124af55570530296b420d6ec9aa4cad17ffbd8cb35129501f99cfe",
+    "oracle_binary_sha256": "41cf8e1837b9f5aaaf8f8f2f01f4b0aecc8f3f59edb023b91e5a5b449d5fa422",
+    "libggml_hip_sha256": "f5037cd5a0d5badeab930792b125ad522f23699911d4766ea16a800b4fc0b0ff"
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "device": "GPU1 Radeon 8060S gfx1151 exposed as ROCm0",
+    "wave_size": 32,
+    "platform_profile": "performance",
+    "backend": "HIP/ROCm 7.2.2",
+    "topology": "single-owner core=hip:0 experts=hip:0 join=hip:0",
+    "build_parallelism": 4
+  },
+  "closure": {
+    "environment": "DFLASH_KIMI_P58_EXACT_TAIL_GROUP_WIDTH=8",
+    "default_off": true,
+    "fail_closed": true,
+    "tail_group_control": 4,
+    "tail_group_candidate": 8,
+    "core_group_width": 8,
+    "mla_group_width": 8,
+    "router_group_width": 8,
+    "batched_projection_types": [
+      "ffn_routed_down Q6_K",
+      "ffn_gate_shexp Q6_K",
+      "ffn_up_shexp Q6_K",
+      "ffn_down_shexp Q6_K"
+    ],
+    "global_mmvq_policy_changed": false,
+    "fallback": "existing exact Tail4 or scalar path",
+    "implementation": "reuse the persistent prepared-tail graph and the already-qualified exact Q6_K width-eight MMVQ dispatch; publish unchanged prepared rows directly to Router8 staging in canonical order"
+  },
+  "profile_discriminator": {
+    "status": "PASS_FOR_ATTRIBUTION",
+    "fixture": "exact M64 retained path with MLA8 and Tail4",
+    "tool": "official rocprofv3 from AMD ROCm 7.2.2 packages, extracted under /tmp without changing system packages",
+    "kernel_stats_sha256": "cdb8a1fdd797c68c97fed590eb2a8ff4359371a7bd1e40d5eef38234932a2d72",
+    "kernel_trace_sha256": "16e1631e16e3c30eaa23a57330c45f2cc8f6c412f872a1df663c4f0521b83bfb",
+    "profiled_stage_seconds": 34.515215,
+    "profiled_core_seconds": 5.200016,
+    "profiled_grouped_graph_seconds": 3.042362,
+    "top_relevant_kernels": [
+      {"operation": "Q4_K exact width8 projection", "seconds": 1.050182524, "calls": 2560},
+      {"operation": "Q6_K exact width4 projection", "seconds": 0.902353127, "calls": 5888},
+      {"operation": "Q6_K exact width8 projection", "seconds": 0.218383436, "calls": 1512},
+      {"operation": "GDN recurrent update", "seconds": 0.056497746},
+      {"operation": "causal convolution", "seconds": 0.005844516}
+    ],
+    "interpretation": "Profiler overhead distorts wall time, so only rank attribution is used. GDN and convolution are closed by materiality; projection width/lifecycle is dominant. Tail8 was selected because it reuses an existing exact kernel and removes half of the remaining Q6 tail launches without a new kernel."
+  },
+  "cpu_worker_ab": {
+    "verdict": "NO_GO_NO_CHANGE",
+    "arms": [12, 18],
+    "first_order": {
+      "workers18": {"stage_seconds": 33.330840, "direct_io_seconds": 22.160516035, "positions_per_second": 1.919094},
+      "workers12": {"stage_seconds": 31.271207, "direct_io_seconds": 20.061905475, "positions_per_second": 2.045410}
+    },
+    "reversal": {
+      "workers12": {"stage_seconds": 31.624103, "direct_io_seconds": 20.329769670, "positions_per_second": 2.022586},
+      "workers18": {"stage_seconds": 31.695106, "direct_io_seconds": 20.542111802, "positions_per_second": 2.017997}
+    },
+    "traffic_sha256_each": "898a397272075995ba469d4db79526c7d099b7c6ed148516f9cf6d154dc1a9fd",
+    "decision": "The apparent first-order win vanished on reversal and tracked storage variance. Retain the production value of 18 workers."
+  },
+  "invalid_preflight": {
+    "status": "INVALID",
+    "reason": "The first M16 command misspelled calibrated96 and failed before candidate execution.",
+    "action": "Corrected the command and ran the preregistered M16 arm once; no failed model execution was rerun."
+  },
+  "correctness": {
+    "m8": {
+      "status": "PASS",
+      "sequential_seconds": 8.214660193,
+      "candidate_seconds": 5.045584922,
+      "logits_bit_equal": true,
+      "argmax_bit_equal": true,
+      "terminal_conv_state_mismatch_layer": -1,
+      "terminal_ssm_state_mismatch_layer": -1,
+      "committed_conv_state_mismatch_layer": -1,
+      "committed_ssm_state_mismatch_layer": -1,
+      "mla_row_mismatch_layer": -1,
+      "logical_provider_bytes_each": 40075886592,
+      "result_sha256": "f4f70eaa2a5aa7ef2e1ba133f36c156c08679c6b8f2d6fa1bb7451396cb52adb",
+      "traffic_sha256": "db5ce71d8ecd1b78149ef9689a93926585a070fdb6d1eea6edd737fcf4b1ae77"
+    },
+    "m16_chained": {
+      "status": "PASS",
+      "sequential_seconds": 16.381539331,
+      "candidate_seconds": 10.448034861,
+      "logits_bit_equal": true,
+      "argmax_bit_equal": true,
+      "terminal_conv_state_mismatch_layer": -1,
+      "terminal_ssm_state_mismatch_layer": -1,
+      "committed_conv_state_mismatch_layer": -1,
+      "committed_ssm_state_mismatch_layer": -1,
+      "mla_row_mismatch_layer": -1,
+      "logical_provider_bytes_each": 81549103104,
+      "result_sha256": "57535b3b0f0fda1d81734f5fbfa427631b96d7440ef8363bb8f7d7638d7e1a74",
+      "traffic_sha256": "b3a02b700ac2fee3cab6949e387d840839a10babe7e3126137d6a5dad2926b4f"
+    }
+  },
+  "m64_gate": {
+    "fixture_sha256": "d5ace9d1b8429ff271307acc26c0d013ef4bfae0d6eb6b8a6638e35e0013d388",
+    "physical_bytes_each": 115562905600,
+    "traffic_sha256_each": "898a397272075995ba469d4db79526c7d099b7c6ed148516f9cf6d154dc1a9fd",
+    "output_ids_each": [5801, 114820],
+    "output_text_each": " exact causal",
+    "control": {
+      "stage_seconds": 31.830918,
+      "core_seconds": 4.873566,
+      "experts_seconds": 25.991542,
+      "join_seconds": 0.672526,
+      "output_seconds": 0.281665,
+      "direct_io_seconds": 20.435743594,
+      "positions_per_second": 2.009246,
+      "tail_executions": 1472,
+      "log_sha256": "b1910a97a37a696318978d7d29813911b977cdeab8d70c5a0eab0443480cdb71"
+    },
+    "candidate": {
+      "stage_seconds": 31.689674,
+      "core_seconds": 4.318932,
+      "experts_seconds": 26.404549,
+      "join_seconds": 0.670899,
+      "output_seconds": 0.282618,
+      "direct_io_seconds": 20.871403021,
+      "positions_per_second": 2.018396,
+      "tail_executions": 736,
+      "log_sha256": "12193779367df8c0ae27795a9cd5502101c166734db2a9d3bc92697bebff1c17"
+    },
+    "core_saving_seconds": 0.554634,
+    "core_saving_percent": 11.380455,
+    "projected_m1024_core_saving_seconds": 8.874144,
+    "io_normalized_stage_saving_seconds": 0.576903427,
+    "verdict": "GO"
+  },
+  "m1024": {
+    "fixture_sha256": "a52320c799f4c20eba845a0cf19edd68a557f28dd2a58d88a4609c797f24cc71",
+    "physical_bytes_each": 169143877632,
+    "traffic_sha256_each": "c0dfd31205484facf903d1e55cd75ccf05338359583b1f9d76fbaa032b6cea15",
+    "control": {
+      "stage_seconds": 173.286575,
+      "core_seconds": 84.026393,
+      "experts_seconds": 74.922230,
+      "join_seconds": 9.598918,
+      "output_seconds": 4.484553,
+      "other_seconds": 0.254480,
+      "grouped_graph_seconds": 50.682699,
+      "grouped_publish_seconds": 0.440846,
+      "direct_io_seconds": 32.191013541,
+      "positions_per_second": 5.907622,
+      "tail_executions": 23552,
+      "log_sha256": "dffc5177365c9c4593b6e16443b22c2ac89742758cee5ab860c75361e8b2ef93",
+      "swaps": 0
+    },
+    "candidate": {
+      "stage_seconds": 167.692906,
+      "core_seconds": 77.390264,
+      "experts_seconds": 75.960286,
+      "join_seconds": 9.724823,
+      "output_seconds": 4.460157,
+      "other_seconds": 0.157377,
+      "grouped_graph_seconds": 50.662471,
+      "grouped_publish_seconds": 0.448859,
+      "direct_io_seconds": 35.124396517,
+      "positions_per_second": 6.104826,
+      "tail_executions": 11776,
+      "log_sha256": "b831b0fa0b8a651bc7368b4b305692212a52c4578f7456af0a686ddd73db478b",
+      "swaps": 0
+    },
+    "stage_saving_seconds": 5.593669,
+    "core_saving_seconds": 6.636129,
+    "core_saving_percent": 7.897672,
+    "same_binary_speedup": 1.033381283,
+    "expert_regression_seconds": 1.038056,
+    "direct_io_regression_seconds": 2.933382976,
+    "io_normalized_candidate_seconds": 164.759523024,
+    "io_normalized_positions_per_second": 6.215118745,
+    "io_normalized_stage_saving_seconds": 8.527051976,
+    "interpretation": "The measured end-to-end win is conservative: candidate storage was 2.933 seconds slower and expert service was 1.038 seconds slower while the causal-core change still won by 5.594 seconds."
+  },
+  "remaining_bound": {
+    "target_positions_per_second": 10.0,
+    "target_stage_seconds_at_m1024": 102.4,
+    "candidate_stage_seconds_to_remove": 65.292906,
+    "infinite_expert_speedup_ceiling_positions_per_second": 11.163124,
+    "infinite_core_speedup_ceiling_positions_per_second": 11.339640,
+    "binding_terms": ["causal core", "expert service"],
+    "interpretation": "Tail8 is a bankable exact win. The remaining 77.390-second core and 75.960-second expert terms are now peers; reaching 10 requires a material reduction or an exact cross-layer overlap, not another narrow launch-only tweak."
+  }
+}

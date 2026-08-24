@@ -997,11 +997,13 @@ public:
         if (backend_ || !backend || w.n_layer <= 0 ||
             static_cast<int>(cache.layers.size()) != w.n_layer ||
             (prepared_tail_width != 0 && prepared_tail_width != 1 &&
-             prepared_tail_width != kExactCoreGroupWidth) ||
-            (prepared_tail_width == kExactCoreGroupWidth &&
+             prepared_tail_width != kExactCoreGroupWidth &&
+             prepared_tail_width != kExactCoreGroupWidth8) ||
+            (prepared_tail_width > 1 &&
              !deferred_router) ||
             (include_mla_prepared_tail &&
-             prepared_tail_width != kExactCoreGroupWidth)) {
+             prepared_tail_width != kExactCoreGroupWidth &&
+             prepared_tail_width != kExactCoreGroupWidth8)) {
             return fail(error, "invalid persistent routed-preparation state");
         }
         ggml_backend_dev_t device = ggml_backend_get_device(backend);
@@ -1132,17 +1134,26 @@ public:
                 (layer.recurrent || include_mla_prepared_tail)) {
                 PersistentPreparedTailGraph & prepared =
                     prepared_tail_entries_[static_cast<size_t>(il)];
-                if (prepared_tail_width == kExactCoreGroupWidth) {
+                if (prepared_tail_width == kExactCoreGroupWidth ||
+                    prepared_tail_width == kExactCoreGroupWidth8) {
                     for (const ggml_tensor * weight : {
                              layer.ffn_routed_down, layer.ffn_gate_shexp,
                              layer.ffn_up_shexp, layer.ffn_down_shexp}) {
-                        if (!weight ||
-                            (weight->type != GGML_TYPE_Q4_K &&
-                             weight->type != GGML_TYPE_Q6_K)) {
+                        const bool exact_type = weight &&
+                            (prepared_tail_width == kExactCoreGroupWidth8
+                                ? weight->type == GGML_TYPE_Q6_K
+                                : (weight->type == GGML_TYPE_Q4_K ||
+                                   weight->type == GGML_TYPE_Q6_K));
+                        if (!exact_type) {
                             ggml_gallocr_free(measure);
                             return fail(error,
-                                "width-four prepared tail requires four "
-                                "Q4_K/Q6_K matrices at layer " +
+                                "exact prepared tail width " +
+                                std::to_string(prepared_tail_width) +
+                                " requires four " +
+                                (prepared_tail_width == kExactCoreGroupWidth8
+                                    ? std::string("Q6_K")
+                                    : std::string("Q4_K/Q6_K")) +
+                                " matrices at layer " +
                                 std::to_string(il));
                         }
                     }
@@ -1449,9 +1460,12 @@ public:
         return true;
     }
 
-    ggml_tensor * prepared_tail_width4_input(int model_layer) const {
+    ggml_tensor * prepared_tail_input(
+            int model_layer, int width) const {
         if (!backend_ || !weights_ ||
-            prepared_tail_width_ != kExactCoreGroupWidth ||
+            prepared_tail_width_ != width ||
+            (width != kExactCoreGroupWidth &&
+             width != kExactCoreGroupWidth8) ||
             !deferred_router_ ||
             model_layer < weights_->n_dense_lead ||
             model_layer >=
@@ -1461,21 +1475,30 @@ public:
         const PersistentPreparedTailGraph & entry =
             prepared_tail_entries_[static_cast<size_t>(model_layer)];
         return entry.graph && entry.prepared &&
-                entry.prepared->ne[1] == kExactCoreGroupWidth
+                entry.prepared->ne[1] == width
             ? entry.prepared : nullptr;
     }
 
-    ggml_tensor * exact_core_width8_prepared_destination(
-            int model_layer) const {
-        if (!prepared_tail_width4_input(model_layer) ||
+    ggml_tensor * exact_group_prepared_destination(
+            int model_layer, int group_width) const {
+        ggml_tensor * tail_input = prepared_tail_input(
+            model_layer, prepared_tail_width_);
+        if (!tail_input || group_width < prepared_tail_width_ ||
+            group_width % prepared_tail_width_ != 0) {
+            return nullptr;
+        }
+        if (group_width == prepared_tail_width_) return tail_input;
+        if (group_width != kExactCoreGroupWidth8 ||
+            prepared_tail_width_ != kExactCoreGroupWidth ||
             !router8_staging_ ||
             router8_staging_->ne[0] != weights_->n_embd ||
             router8_staging_->ne[1] != kExactCoreGroupWidth8) {
             return nullptr;
         }
         // This buffer is allocated independently of the transient core
-        // gallocr. Publishing the full width8 tensor here keeps both halves
-        // alive while the single persistent width4 tail input is reused.
+        // gallocr. Tail4 needs both width8 halves to remain alive while its
+        // one persistent input is reused; Tail8 publishes directly to that
+        // input and takes the early return above.
         return router8_staging_;
     }
 
@@ -1488,7 +1511,7 @@ public:
         return router8_staging_halves_[static_cast<size_t>(half)];
     }
 
-    bool evaluate_prepared_width4(
+    bool evaluate_prepared_exact(
             int model_layer,
             int token_begin,
             float * routed,
@@ -1497,35 +1520,41 @@ public:
             size_t shared_count,
             ggml_tensor * prepared_source,
             std::string * error) {
+        const int width = prepared_tail_width_;
         if (!backend_ || !weights_ ||
-            prepared_tail_width_ != kExactCoreGroupWidth ||
+            (width != kExactCoreGroupWidth &&
+             width != kExactCoreGroupWidth8) ||
             !deferred_router_ ||
             model_layer < weights_->n_dense_lead ||
             model_layer >=
                 static_cast<int>(prepared_tail_entries_.size()) ||
-            token_begin < 0 || token_begin % kExactCoreGroupWidth != 0 ||
+            token_begin < 0 || token_begin % width != 0 ||
             !routed || !shared) {
             return fail(error,
-                "invalid persistent width-four prepared-tail request");
+                "invalid persistent exact prepared-tail request");
         }
-        const int router_half =
-            (token_begin % kDeferredRouterWidth) / kExactCoreGroupWidth;
-        if (router_half < 0 ||
-            router_half >= static_cast<int>(router8_staging_halves_.size())) {
+        const int router_part =
+            (token_begin % kDeferredRouterWidth) / width;
+        if (router_part < 0 ||
+            (width == kExactCoreGroupWidth &&
+             router_part >=
+                static_cast<int>(router8_staging_halves_.size())) ||
+            (width == kExactCoreGroupWidth8 && router_part != 0)) {
             return fail(error,
-                "invalid persistent width-four router staging half");
+                "invalid persistent exact router staging partition");
         }
         PersistentPreparedTailGraph & entry =
             prepared_tail_entries_[static_cast<size_t>(model_layer)];
         const KimiK3Weights & w = *weights_;
         const size_t expected_routed =
-            static_cast<size_t>(w.n_expert_latent) * kExactCoreGroupWidth;
+            static_cast<size_t>(w.n_expert_latent) * width;
         const size_t expected_shared =
-            static_cast<size_t>(w.n_embd) * kExactCoreGroupWidth;
-        ggml_tensor * router_destination =
-            router8_staging_halves_[static_cast<size_t>(router_half)];
+            static_cast<size_t>(w.n_embd) * width;
+        ggml_tensor * router_destination = width == kExactCoreGroupWidth8
+            ? router8_staging_
+            : router8_staging_halves_[static_cast<size_t>(router_part)];
         if (!entry.graph || !entry.prepared || !entry.deferred_router ||
-            entry.prepared->ne[1] != kExactCoreGroupWidth ||
+            entry.prepared->ne[1] != width ||
             !same_tensor_layout(
                 entry.outputs.router_input, router_destination) ||
             (prepared_source &&
@@ -1533,39 +1562,45 @@ public:
             routed_count != expected_routed ||
             shared_count != expected_shared) {
             return fail(error,
-                "persistent width-four prepared-tail shape mismatch at layer " +
+                "persistent exact prepared-tail width " +
+                std::to_string(width) + " shape mismatch at layer " +
                 std::to_string(model_layer));
         }
 
-        const size_t exact_qk_launches_before =
-            ggml_backend_cuda_get_exact_qk_width4_launch_count();
+        const size_t exact_qk_launches_before = width == kExactCoreGroupWidth8
+            ? ggml_backend_cuda_get_exact_qk_width8_launch_count()
+            : ggml_backend_cuda_get_exact_qk_width4_launch_count();
         const bool first_execution = entry.executions == 0;
         if (prepared_source) {
             ggml_backend_tensor_copy_async(
                 backend_, backend_, prepared_source, entry.prepared);
         }
         {
-            // All four K3 tail matrices are Q6_K. Capture the same exact
-            // width-four MMVQ dispatch as the causal graph; subsequent calls
+            // Keep every tail column on the same one-column vec-dot and
+            // reduction order as the exact causal graph. Subsequent calls
             // may replay the already-qualified native graph.
             ScopedCudaGraphOverrides graph_scope(
                 /*disable_graphs=*/false,
-                /*mmvq_max_ncols=*/kExactCoreGroupWidth,
+                /*mmvq_max_ncols=*/width,
                 /*skip_property_check=*/true,
-                /*exact_qk_width4=*/true);
+                /*exact_qk_width4=*/width == kExactCoreGroupWidth,
+                /*exact_qk_width8=*/width == kExactCoreGroupWidth8);
             if (ggml_backend_graph_compute(backend_, entry.graph) !=
                     GGML_STATUS_SUCCESS) {
                 return fail(error,
-                    "persistent width-four prepared-tail graph compute failed "
-                    "at layer " + std::to_string(model_layer));
+                    "persistent exact prepared-tail width " +
+                    std::to_string(width) + " graph compute failed at layer " +
+                    std::to_string(model_layer));
             }
         }
-        const size_t exact_qk_launches =
-            ggml_backend_cuda_get_exact_qk_width4_launch_count() -
-            exact_qk_launches_before;
+        const size_t exact_qk_launches = (width == kExactCoreGroupWidth8
+            ? ggml_backend_cuda_get_exact_qk_width8_launch_count()
+            : ggml_backend_cuda_get_exact_qk_width4_launch_count()) -
+                exact_qk_launches_before;
         if (first_execution && exact_qk_launches != 4) {
             return fail(error,
-                "persistent width-four prepared tail dispatched " +
+                "persistent exact prepared tail width " +
+                std::to_string(width) + " dispatched " +
                 std::to_string(exact_qk_launches) +
                 " exact Q4_K/Q6_K kernels instead of four at layer " +
                 std::to_string(model_layer));
@@ -2970,38 +3005,48 @@ bool streamed_kimi_k3_forward_exact_multirow(
             "divisible by 8");
         return false;
     }
-    bool exact_tail_group_width4 = false;
+    int exact_tail_group_width = 0;
     const char * exact_tail_group =
         std::getenv("DFLASH_KIMI_P58_EXACT_TAIL_GROUP_WIDTH");
     if (exact_tail_group && *exact_tail_group &&
         std::strcmp(exact_tail_group, "0") != 0) {
-        if (std::strcmp(exact_tail_group, "4") != 0) {
+        if (std::strcmp(exact_tail_group, "4") != 0 &&
+            std::strcmp(exact_tail_group, "8") != 0) {
             set_last_error(
-                "DFLASH_KIMI_P58_EXACT_TAIL_GROUP_WIDTH must be 0 or 4");
+                "DFLASH_KIMI_P58_EXACT_TAIL_GROUP_WIDTH must be 0, 4, or 8");
             return false;
         }
-        exact_tail_group_width4 = true;
+        exact_tail_group_width = std::strcmp(exact_tail_group, "8") == 0
+            ? kExactCoreGroupWidth8 : kExactCoreGroupWidth;
         if ((exact_core_group_width == 1 && exact_mla_group_width == 1) ||
             (!exact_qk_width4 && !exact_qk_width8) || !tokenwise_mmvq ||
             !persistent_requested || !deferred_router) {
             set_last_error(
-                "Kimi-K3 exact width-four prepared tail requires exact KDA/MLA, "
+                "Kimi-K3 exact prepared tail requires exact KDA/MLA, "
                 "P46, Router8, exact Q4_K/Q6_K, and tokenwise MMVQ");
+            return false;
+        }
+        if ((exact_core_group_width > 1 &&
+             exact_core_group_width % exact_tail_group_width != 0) ||
+            (exact_mla_group_width > 1 &&
+             exact_mla_group_width % exact_tail_group_width != 0)) {
+            set_last_error(
+                "Kimi-K3 exact prepared-tail width must divide each enabled "
+                "KDA/MLA group width");
             return false;
         }
     }
     if (exact_core_group_width == kExactCoreGroupWidth8 &&
-        !exact_tail_group_width4) {
+        exact_tail_group_width == 0) {
         set_last_error(
-            "Kimi-K3 exact KDA8 requires the existing exact width-four "
-            "prepared tail");
+            "Kimi-K3 exact KDA8 requires an exact prepared tail");
         return false;
     }
     if (exact_mla_group_width == kExactCoreGroupWidth8 &&
-        (!exact_tail_group_width4 || !persistent_requested ||
+        (exact_tail_group_width == 0 || !persistent_requested ||
          !deferred_router || !exact_qk_width8 || !tokenwise_mmvq)) {
         set_last_error(
-            "Kimi-K3 exact MLA8 requires P46, Tail4, Router8, exact "
+            "Kimi-K3 exact MLA8 requires P46, an exact tail, Router8, exact "
             "Q6_K width8, and tokenwise MMVQ");
         return false;
     }
@@ -3032,7 +3077,7 @@ bool streamed_kimi_k3_forward_exact_multirow(
         persistent = ensure_persistent_routed_preparation(
             backend, w, cache, deferred_router,
             (exact_core_group_width > 1 || exact_mla_group_width > 1)
-                ? (exact_tail_group_width4 ? kExactCoreGroupWidth : 1)
+                ? (exact_tail_group_width > 0 ? exact_tail_group_width : 1)
                 : 0,
             /*include_mla_prepared_tail=*/
                 exact_mla_group_width == kExactCoreGroupWidth8,
@@ -3249,20 +3294,15 @@ bool streamed_kimi_k3_forward_exact_multirow(
                 ExactMultirowCoreGroup core;
                 const bool core_width8 =
                     layer_group_width == kExactCoreGroupWidth8;
-                // Borrowing router8_staging_ as the width8 publish target
-                // is safe only because each width4 tail below copies its
-                // staging half out and then writes the router-input values
-                // back before finish_deferred_router_group lets
-                // evaluate_router8 read the restored rows. The tails must
-                // stay on this in-order stream; running them elsewhere or
-                // deferring the router finalize would feed prepared values
-                // to the router.
-                ggml_tensor * prepared_destination = exact_tail_group_width4
-                    ? (core_width8
-                        ? persistent->exact_core_width8_prepared_destination(il)
-                        : persistent->prepared_tail_width4_input(il))
+                // Tail8 publishes directly into its persistent input. Tail4
+                // over a width8 core first retains both halves in Router8
+                // staging. In both cases the in-order stream restores the
+                // router input before evaluate_router8 can consume it.
+                ggml_tensor * prepared_destination = exact_tail_group_width > 0
+                    ? persistent->exact_group_prepared_destination(
+                        il, layer_group_width)
                     : nullptr;
-                if (exact_tail_group_width4 && !prepared_destination) {
+                if (exact_tail_group_width > 0 && !prepared_destination) {
                     set_last_error(
                         "Kimi-K3 persistent prepared-tail input is "
                         "unavailable at layer " + std::to_string(il));
@@ -3280,7 +3320,7 @@ bool streamed_kimi_k3_forward_exact_multirow(
                 }
                 grouped_graph_ns += core.graph_ns;
                 grouped_publish_ns += core.publish_ns;
-                if (exact_tail_group_width4) {
+                if (exact_tail_group_width > 0) {
                     std::copy(
                         core.prefix.begin(), core.prefix.end(),
                         prefix.begin() + static_cast<std::ptrdiff_t>(
@@ -3290,38 +3330,42 @@ bool streamed_kimi_k3_forward_exact_multirow(
                     const size_t shared_offset =
                         static_cast<size_t>(group) * hidden_width;
                     const int tail_calls = layer_group_width /
-                        kExactCoreGroupWidth;
+                        exact_tail_group_width;
                     for (int tail = 0; tail < tail_calls; ++tail) {
                         const int tail_token =
-                            group + tail * kExactCoreGroupWidth;
-                        ggml_tensor * prepared_source = core_width8
+                            group + tail * exact_tail_group_width;
+                        ggml_tensor * prepared_source =
+                            core_width8 && exact_tail_group_width ==
+                                kExactCoreGroupWidth
                             ? persistent->prepared_tail_width4_source_half(tail)
                             : nullptr;
-                        if (core_width8 && !prepared_source) {
+                        if (core_width8 && exact_tail_group_width ==
+                                kExactCoreGroupWidth && !prepared_source) {
                             set_last_error(
                                 "Kimi-K3 width8 prepared-tail source is "
                                 "unavailable at layer " + std::to_string(il));
                             return false;
                         }
-                        if (!persistent->evaluate_prepared_width4(
+                        if (!persistent->evaluate_prepared_exact(
                                 il, tail_token,
                                 routed.data() + routed_offset +
                                     static_cast<size_t>(tail) *
                                         w.n_expert_latent *
-                                        kExactCoreGroupWidth,
+                                        exact_tail_group_width,
                                 static_cast<size_t>(w.n_expert_latent) *
-                                    kExactCoreGroupWidth,
+                                    exact_tail_group_width,
                                 shared.data() + shared_offset +
                                     static_cast<size_t>(tail) * hidden_width *
-                                        kExactCoreGroupWidth,
-                                hidden_width * kExactCoreGroupWidth,
+                                        exact_tail_group_width,
+                                hidden_width * exact_tail_group_width,
                                 prepared_source,
                                 &persistent_error)) {
                             set_last_error(
-                                "Kimi-K3 persistent width-four prepared tail "
-                                "failed at layer " + std::to_string(il) +
+                                "Kimi-K3 persistent exact prepared tail width " +
+                                std::to_string(exact_tail_group_width) +
+                                " failed at layer " + std::to_string(il) +
                                 " group " + std::to_string(
-                                    tail_token / kExactCoreGroupWidth) +
+                                    tail_token / exact_tail_group_width) +
                                 ": " + persistent_error);
                             return false;
                         }
@@ -3459,7 +3503,7 @@ bool streamed_kimi_k3_forward_exact_multirow(
             grouped_graph_ns / 1.0e6, grouped_publish_ns / 1.0e6,
             exact_core_group_width,
             exact_mla_group_width,
-            exact_tail_group_width4 ? kExactCoreGroupWidth : 0,
+            exact_tail_group_width,
             exact_qk_width4 ? 1 : 0,
             exact_qk_width8 ? 1 : 0,
             std::max(exact_core_group_width, exact_mla_group_width) > 1
