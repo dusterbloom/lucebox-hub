@@ -12,7 +12,12 @@
     "mmvq_source_sha256": "7ebfbaf5bd026d6b4361cc534a188ca266f05060d907a5a17b16cb52992e2a2c",
     "smoke_binary_sha256": "dd2c122635946bc3b332dcc715b8db330146f74f4e696d065204ea178ce0a13a",
     "libggml_hip_sha256": "2b7e5725bbe453b496e97389f97901470190a1a721a4460bba8455a2e03385fc",
-    "oracle_binary_sha256": "e94a2871f634d09b5f35f51624e234e6aac918978e22d0a2f2aa5c2c9a7d0c34"
+    "oracle_binary_sha256": "e94a2871f634d09b5f35f51624e234e6aac918978e22d0a2f2aa5c2c9a7d0c34",
+    "production_closure_commit": "0eccd3cd1b116156dcaf6f64d7f33e18e94a1efd",
+    "production_graph_source_sha256": "53d9ec601e6457335b68c217ae04d3ec2bc04757560575489a0808ee76823d37",
+    "production_mmvq_source_sha256": "24966c693340ef05e2688e9d87346be84ee04b98e3fb9072890a6f0b39cc3289",
+    "production_smoke_binary_sha256": "289fd4c5ab9f56ab3ee4b95b66b23551d38a84e5decf8167a314fadb0ce27c64",
+    "production_libggml_hip_sha256": "4821f24f3209f9f03f09dd78f4b626f1b1e1b317c2f871eebeeea507b92b1edf"
   },
   "hardware": {
     "host": "lucebox4",
@@ -23,7 +28,8 @@
     "platform_profile": "performance",
     "topology": "single-owner"
   },
-  "flags": {
+  "initial_gate_flags": {
+    "LUCE_MMVQ_MAX_NCOLS": 4,
     "DFLASH_KIMI_P58_EXACT_CORE_GROUP_WIDTH": 4,
     "DFLASH_CUDA_MMVQ_QK_EXACT_WIDTH4": 1,
     "DFLASH_CUDA_MMVQ_TOKENWISE": 1,
@@ -98,9 +104,95 @@
       "exit_status_each_arm": 0
     }
   },
+  "production_closure": {
+    "global_LUCE_MMVQ_MAX_NCOLS": "unset",
+    "mmvq_max_ncols_scope": "thread-local width 4 during the exact K3 core graph only",
+    "exact_qk_width4_scope": "thread-local during the exact K3 core graph only",
+    "unrelated_width4_dispatch_affected": false,
+    "dispatch_fail_closed": true,
+    "prepared_tail_persistent": true,
+    "ordinary_p46_unchanged": true,
+    "m8_clean_smoke": {
+      "output_ids": [48430, 10867],
+      "text": " Ryzen",
+      "stage_seconds": 9.224184,
+      "core_seconds": 1.319778,
+      "experts_seconds": 7.760409,
+      "grouped_graph_seconds": 0.404150,
+      "terminal_publication_seconds": 0.005931,
+      "prepared_tail_executions": 544,
+      "router8_executions": 92,
+      "physical_bytes": 33059545088,
+      "traffic_sha256": "c157d4af726b50d120641839938eceed3e660f551dec031cecc8c6fd8b79498f",
+      "swap_count": 0,
+      "exit_status": 0
+    },
+    "m8_full_oracle": {
+      "status": "PASS",
+      "sequential_seconds": 9.278175948,
+      "candidate_seconds": 6.702098835,
+      "logical_provider_bytes_each_arm": 40033996800,
+      "logits_bit_equal": true,
+      "argmax_bit_equal": true,
+      "terminal_conv_state_bit_equal": true,
+      "terminal_ssm_state_bit_equal": true,
+      "committed_conv_state_bit_equal": true,
+      "committed_ssm_state_bit_equal": true,
+      "mla_rows_bit_equal": true,
+      "json_sha256": "b8f9ab80334932c80aebd9a7adc5a53282d17c71c69b9634a63048dfc2b62e8e"
+    },
+    "m64_same_binary_ab": {
+      "physical_bytes_each_arm": 115562905600,
+      "traffic_sha256_each_arm": "898a397272075995ba469d4db79526c7d099b7c6ed148516f9cf6d154dc1a9fd",
+      "output_ids_each_arm": [5801, 114820],
+      "control": {
+        "stage_seconds": 41.682981,
+        "core_seconds": 13.467736,
+        "experts_seconds": 27.248911,
+        "join_seconds": 0.671853,
+        "output_seconds": 0.282605,
+        "direct_io_seconds": 21.842528496,
+        "prefill_positions_per_second": 1.534661,
+        "log_sha256": "f5f6e44b60e5bf3563666481457f1fa3327b40d4dafdbe9c7c0fa9330d71fdbd"
+      },
+      "candidate": {
+        "stage_seconds": 35.979451,
+        "core_seconds": 9.662027,
+        "experts_seconds": 25.348013,
+        "join_seconds": 0.675471,
+        "output_seconds": 0.281703,
+        "grouped_graph_seconds": 2.751448,
+        "terminal_publication_seconds": 0.046114,
+        "direct_io_seconds": 19.857427346,
+        "prefill_positions_per_second": 1.777873,
+        "prepared_tail_executions": 4352,
+        "router8_executions": 736,
+        "log_sha256": "05ad21230485020e9ee4e27f937c13fd655fedd33d7e68b26f5f1a6a55e50491"
+      },
+      "delta": {
+        "core_seconds_saved": 3.805709,
+        "core_reduction_fraction": 0.282579715,
+        "stage_seconds_saved_observed": 5.703530,
+        "prefill_speedup_observed": 1.158521874,
+        "direct_io_seconds_favorable_delta": 1.985101150,
+        "io_normalized_candidate_stage_seconds": 37.964552,
+        "io_normalized_candidate_positions_per_second": 1.685783089,
+        "projected_m1024_core_seconds_saved": 60.891344,
+        "projected_m1024_positions_per_second": 3.982290319,
+        "projection_basis": "linear scaling of measured M64 core delta against the retained 318.029804-second Router8 M1024 stage; not a throughput claim"
+      },
+      "correctness": {
+        "physical_bytes_identical": true,
+        "traffic_byte_identical": true,
+        "output_ids_identical": true,
+        "swap_count_each_arm": 0,
+        "exit_status_each_arm": 0
+      }
+    }
+  },
   "promotion": {
     "default": false,
-    "next_gate": "same-binary qualified M1024 comparison after persistent P46 prepared-tail composition",
+    "next_gate": "same-binary qualified M1024 comparison",
     "fallback_retained": true
   }
 }
