@@ -1,0 +1,83 @@
+{
+  "campaign": "k3-production-defaults-logit-closure-20260825",
+  "verdict": "GO_EXACT_DEFAULT_PROFILE",
+  "source": {
+    "branch": "perf/k3-production-ponytail",
+    "parent": "419af4db9d16686986915171982499130ef03798",
+    "binary_sha256": "25823f563f27d0fc96181524cd542b020c05f1bdb899d06e60a22bfaac98c4c2"
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "backend": "HIP/ROCm",
+    "visible_devices": "HIP_VISIBLE_DEVICES=1",
+    "device": "gfx1151 logical 0",
+    "topology": "single-owner",
+    "platform_profile": "performance",
+    "swap_bytes": 0
+  },
+  "fixture": {
+    "prompt_positions": 1024,
+    "generated_tokens": 0,
+    "token_file": "/home/duster/kimi-k3-deploy/k3-production-p46-macro-20260823/k3-ponytail-m1024-oracle.tokens",
+    "model": "/home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-of-00014.gguf"
+  },
+  "arms": {
+    "explicit_control": {
+      "production_defaults": false,
+      "prefill_positions_per_second": 6.046419,
+      "stage_seconds": 169.298151,
+      "causal_core_seconds": 77.043165,
+      "experts_seconds": 77.815065,
+      "direct_io_seconds": 36.111115958,
+      "physical_bytes": 169143877632,
+      "max_rss_kib": 20481104,
+      "log_sha256": "cf3fb003d6cac7987255f5bdcf98ca6dba13220b27d7ba6c3e2ce201c9229287"
+    },
+    "server_default": {
+      "production_defaults": true,
+      "operator_performance_flags": [],
+      "configured_asset_inputs": [
+        "DFLASH_KIMI_CALIBRATED96_AUX_DIR",
+        "DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR"
+      ],
+      "resolved_profile": "exact-m1024",
+      "prefill_positions_per_second": 6.108239,
+      "stage_seconds": 167.585450,
+      "causal_core_seconds": 77.201388,
+      "experts_seconds": 75.918538,
+      "direct_io_seconds": 35.728804442,
+      "physical_bytes": 169143877632,
+      "max_rss_kib": 20524828,
+      "log_sha256": "26159598670315689a80c0a81be489536e11f35b0206997959fdd1903a1c43b1"
+    }
+  },
+  "correctness": {
+    "logits_format": "raw little-endian F32",
+    "logits_values": 163840,
+    "logits_bytes": 655360,
+    "logits_sha256_each": "9c4ce92109b5f1deea6caeb9d741c6ff21972bb8a07a456c4589108557bcc66d",
+    "logits_byte_identical": true,
+    "traffic_sha256_each": "c0dfd31205484facf903d1e55cd75ccf05338359583b1f9d76fbaa032b6cea15",
+    "traffic_byte_identical": true,
+    "macro_union_completed_each": 92,
+    "fallbacks_each": 0
+  },
+  "runtime_contract": {
+    "default_activation": "calibrated96 aux and sidecar directories are both configured",
+    "operator_overrides_preserved": true,
+    "opt_out": "DFLASH_KIMI_PRODUCTION_DEFAULTS=0",
+    "logit_capture": "DFLASH_KIMI_LOGITS_OUT=<path>; a requested capture fails the request if the raw row cannot be written",
+    "unqualified_async_delivery_default": false,
+    "unqualified_double_buffer_default": false
+  },
+  "tests": [
+    "HIP_VISIBLE_DEVICES=1 test_kimi_k3_calibrated_provider: PASS",
+    "same-binary explicit profile versus server default M1024: PASS",
+    "raw full-logit byte comparison: PASS",
+    "traffic byte comparison: PASS"
+  ],
+  "artifacts": {
+    "root": "/home/duster/kimi-k3-deploy/k3-production-defaults-20260825",
+    "note": "The provider unit test is qualified with only gfx1151 visible; exposing gfx1201 and gfx1151 together hit the pre-existing two-device test teardown fault."
+  }
+}

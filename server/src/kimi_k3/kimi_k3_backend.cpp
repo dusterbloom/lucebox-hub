@@ -2,6 +2,7 @@
 
 #include "common/sampler.h"
 #include "common/snapshot_backend.h"
+#include "common/platform_env.h"
 #include "device_runtime.h"
 #include "dflash27b.h"
 #include "internal.h"
@@ -15,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iterator>
 #include <limits>
 #include <string>
@@ -56,6 +58,85 @@ bool parse_prefill_width(const char * raw, int & width) {
         }
     }
     return false;
+}
+
+bool apply_kimi_k3_production_defaults(std::string & error) {
+    const char * profile = std::getenv("DFLASH_KIMI_PRODUCTION_DEFAULTS");
+    if (profile && *profile && std::strcmp(profile, "0") != 0 &&
+        std::strcmp(profile, "1") != 0) {
+        error = "DFLASH_KIMI_PRODUCTION_DEFAULTS must be 0 or 1";
+        return false;
+    }
+    if (profile && std::strcmp(profile, "0") == 0) return true;
+
+    const char * provider = std::getenv("DFLASH_KIMI_LAYER1_PROVIDER");
+    const char * aux = std::getenv("DFLASH_KIMI_CALIBRATED96_AUX_DIR");
+    const char * sidecars =
+        std::getenv("DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR");
+    const bool has_aux = aux && *aux;
+    const bool has_sidecars = sidecars && *sidecars;
+    if ((!provider || !*provider) && has_aux != has_sidecars) {
+        error = "Kimi-K3 production defaults require both calibrated96 "
+                "auxiliary and sidecar directories";
+        return false;
+    }
+    if ((!provider || !*provider) && has_aux && has_sidecars) {
+        if (set_environment_variable(
+                "DFLASH_KIMI_LAYER1_PROVIDER",
+                "all-layers-calibrated96", false) != 0) {
+            error = "cannot select the Kimi-K3 production provider";
+            return false;
+        }
+        provider = std::getenv("DFLASH_KIMI_LAYER1_PROVIDER");
+    }
+    if (!provider || std::strcmp(provider, "all-layers-calibrated96") != 0) {
+        return true;
+    }
+
+    struct DefaultValue { const char * name; const char * value; };
+    static constexpr DefaultValue defaults[] = {
+        {"ROCBLAS_USE_HIPBLASLT", "0"},
+        {"DFLASH_MOE_NVME_DIRECT", "on"},
+        {"DFLASH_MOE_NVME_DEVICE_CACHE_MB", "8192"},
+        {"DFLASH_CUDA_MMVQ_TOKENWISE", "1"},
+        {"DFLASH_CUDA_MMVQ_QK_EXACT_WIDTH8", "1"},
+        {"DFLASH_KIMI_PREFILL_CHUNK", "1024"},
+        {"DFLASH_KIMI_P58_EXACT_MULTIROW", "1"},
+        {"DFLASH_KIMI_SIDECAR_AUTHORITATIVE", "1"},
+        {"DFLASH_KIMI_P20_PHYSICAL_LAYOUT", "scratch"},
+        {"DFLASH_KIMI_P20_IO_BACKEND", "direct-pread"},
+        {"DFLASH_KIMI_P20_SLAB_BUDGET", "96"},
+        {"DFLASH_KIMI_P23_PERSISTENT_SCRATCH", "1"},
+        {"DFLASH_KIMI_P25_COMPACT_UPLOAD", "1"},
+        {"DFLASH_KIMI_P26_PINNED_COMPACT", "1"},
+        {"DFLASH_KIMI_P27_DIRECT_PINNED_COMPACT", "1"},
+        {"DFLASH_KIMI_P30_HOST_CACHE_MB", "16384"},
+        {"DFLASH_KIMI_P30_BORROWED_RECORDS", "1"},
+        {"DFLASH_KIMI_P40_DEVICE_VARIANT_CACHE", "1"},
+        {"DFLASH_KIMI_P40_LAYER_EPOCH", "1"},
+        {"DFLASH_KIMI_P41_COMPACT_EXECUTOR", "1"},
+        {"DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "1"},
+        {"DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE", "1"},
+        {"DFLASH_KIMI_P46_PERSISTENT_ROUTED_PREP", "1"},
+        {"DFLASH_KIMI_ROUTER_WIDTH8", "1"},
+        {"DFLASH_KIMI_P58_EXACT_CORE_GROUP_WIDTH", "8"},
+        {"DFLASH_KIMI_P58_EXACT_MLA_GROUP_WIDTH", "8"},
+        {"DFLASH_KIMI_P58_EXACT_TAIL_GROUP_WIDTH", "8"},
+        {"DFLASH_KIMI_EXACT_MACRO_UNION", "1"},
+        {"DFLASH_KIMI_EXACT_MACRO_UNION_PREFETCH", "1"},
+    };
+    for (const DefaultValue & value : defaults) {
+        if (set_environment_variable(
+                value.name, value.value, false) != 0) {
+            error = std::string("cannot set Kimi-K3 production default ") +
+                value.name;
+            return false;
+        }
+    }
+    std::fprintf(stderr,
+        "[kimi-k3] production-defaults=enabled profile=exact-m1024 "
+        "operator-overrides=preserved\n");
+    return true;
 }
 
 void close_descriptor(int fd) {
@@ -274,6 +355,10 @@ bool KimiK3Backend::init() {
     }
 
     std::string error;
+    if (!apply_kimi_k3_production_defaults(error)) {
+        std::fprintf(stderr, "[kimi-k3] %s\n", error.c_str());
+        return false;
+    }
     if (!resolve_prefill_policy(error)) {
         std::fprintf(stderr, "[kimi-k3] %s\n", error.c_str());
         return false;
@@ -403,6 +488,32 @@ GenerateResult KimiK3Backend::generate_impl(
     return generate_from_state(req, io, nullptr);
 }
 
+bool KimiK3Backend::capture_last_logits(std::string & error) const {
+    const char * path = std::getenv("DFLASH_KIMI_LOGITS_OUT");
+    if (!path || !*path) return true;
+    if (last_logits_.empty()) {
+        error = "DFLASH_KIMI_LOGITS_OUT requested without a logits row";
+        return false;
+    }
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        error = std::string("cannot open Kimi-K3 logits output: ") + path;
+        return false;
+    }
+    const size_t bytes = last_logits_.size() * sizeof(float);
+    output.write(reinterpret_cast<const char *>(last_logits_.data()),
+                 static_cast<std::streamsize>(bytes));
+    output.close();
+    if (!output) {
+        error = std::string("cannot write Kimi-K3 logits output: ") + path;
+        return false;
+    }
+    std::fprintf(stderr,
+        "[kimi-k3] logits-capture path=%s position=%d values=%zu bytes=%zu\n",
+        path, last_logits_pos_, last_logits_.size(), bytes);
+    return true;
+}
+
 GenerateResult KimiK3Backend::generate_from_state(
         const GenerateRequest & req,
         const DaemonIO & io,
@@ -523,6 +634,11 @@ GenerateResult KimiK3Backend::generate_from_state(
 
     if (req.n_gen == 0 || prefill_execution.cancelled ||
         out_io.is_cancelled()) {
+        std::string capture_error;
+        if (!capture_last_logits(capture_error)) {
+            return fail(GenerateErrorCode::PrefillFailed,
+                        std::move(capture_error));
+        }
         out_io.emit(-1);
         result.succeed();
         return result;
@@ -582,6 +698,11 @@ GenerateResult KimiK3Backend::generate_from_state(
     const auto decode_end = std::chrono::steady_clock::now();
     result.decode_s =
         std::chrono::duration<double>(decode_end - decode_begin).count();
+    std::string capture_error;
+    if (!capture_last_logits(capture_error)) {
+        return fail(GenerateErrorCode::DecodeFailed,
+                    std::move(capture_error));
+    }
     out_io.emit(-1);
     result.succeed();
     return result;

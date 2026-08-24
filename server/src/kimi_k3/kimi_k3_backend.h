@@ -61,6 +61,7 @@ private:
         const GenerateRequest & req,
         const DaemonIO & io,
         const KimiK3PrefixSnapshot * snapshot);
+    bool capture_last_logits(std::string & error) const;
     int32_t choose_token(const std::vector<float> & logits,
                          const SamplerCfg & sampler,
                          bool do_sample,
