@@ -1,0 +1,69 @@
+{
+  "schema": "k3-causal-group8-m64-v1",
+  "date_utc": "2026-08-24",
+  "verdict": "NO_GO",
+  "reason": "The candidate missed the preregistered M64 core-saving gate by 1,200.583 ms.",
+  "source": {
+    "base_head": "c095c7cf106491660df2d8c799f12258b80f2226",
+    "branch": "perf/k3-causal-group8",
+    "graph_source_sha256": "fc205b6812b320bc9db4fbcfdaac619fcdee04b42b1212bd8c4510f795afbe64",
+    "experimental_patch_sha256": "173634ba2c7e079a83ac1b1e2a9ae92d223bb4f8f19751f46948e328b9ab6e44",
+    "binary_sha256": "61878d9c118697ddc27d9c8ce3b84306cbacffe62d61964a1e7d3f18546d62f2"
+  },
+  "fixture": {
+    "host": "lucebox4",
+    "device": "GPU1 gfx1151 exposed as ROCm0",
+    "platform_profile": "performance",
+    "macro_width": 64,
+    "launch_basis": "/home/duster/kimi-k3-deploy/k3-router8-production-20260824/run_k3_router8_prodqual_m64.sh",
+    "traffic_control": "/home/duster/kimi-k3-deploy/k3-causal-group8-20260824/m64-control-traffic.tsv",
+    "traffic_candidate": "/home/duster/kimi-k3-deploy/k3-causal-group8-20260824/m64-candidate-traffic.tsv"
+  },
+  "control": {
+    "DFLASH_KIMI_ROUTER_WIDTH8": 1,
+    "DFLASH_KIMI_P46_GROUP8_ASYNC": 0,
+    "stage_ms": 53357.544,
+    "core_ms": 13723.551,
+    "experts_ms": 38654.506,
+    "join_ms": 682.691,
+    "output_ms": 282.830,
+    "other_ms": 13.967,
+    "positions_per_second": 1.199027,
+    "direct_physical_bytes": 115133669376,
+    "direct_io_ns": 26142849370,
+    "output_ids": [5801, 114820],
+    "swap_count": 0,
+    "exit_status": 0
+  },
+  "candidate": {
+    "DFLASH_KIMI_ROUTER_WIDTH8": 1,
+    "DFLASH_KIMI_P46_GROUP8_ASYNC": 1,
+    "stage_ms": 55270.443,
+    "core_ms": 13674.134,
+    "experts_ms": 40618.070,
+    "join_ms": 682.121,
+    "output_ms": 282.072,
+    "other_ms": 14.045,
+    "positions_per_second": 1.157488,
+    "direct_physical_bytes": 115133669376,
+    "direct_io_ns": 23906455544,
+    "group8_executions": 544,
+    "pinned_host_bytes": 2638848,
+    "output_ids": [5801, 114820],
+    "swap_count": 0,
+    "exit_status": 0
+  },
+  "result": {
+    "core_saving_ms": 49.417,
+    "stage_saving_ms": -1912.899,
+    "m64_core_saving_gate_ms": 1250.0,
+    "projected_m1024_core_saving_ms": 790.672,
+    "projected_m1024_gate_ms": 20000.0,
+    "output_ids_equal": true,
+    "physical_bytes_equal": true,
+    "traffic_byte_equal": true,
+    "traffic_sha256": "898a397272075995ba469d4db79526c7d099b7c6ed148516f9cf6d154dc1a9fd",
+    "full_m8_state_oracle_run": false,
+    "full_m8_state_oracle_reason": "The candidate failed the performance gate, so the production path was not promoted to the more expensive full-state gate."
+  }
+}
