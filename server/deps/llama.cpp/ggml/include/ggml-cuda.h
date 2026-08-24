@@ -62,6 +62,7 @@ GGML_BACKEND_API size_t ggml_backend_cuda_get_concat_transpose_f32_count(void);
 // matrix-matrix (MMQ) kernels. Intended for focused tests that must prove
 // which dispatch path executed rather than only checking numerical output.
 GGML_BACKEND_API size_t ggml_backend_cuda_get_mmvq_launch_count(void);
+GGML_BACKEND_API size_t ggml_backend_cuda_get_exact_qk_width4_launch_count(void);
 GGML_BACKEND_API size_t ggml_backend_cuda_get_mmq_launch_count(void);
 
 // device buffer
@@ -85,6 +86,7 @@ GGML_BACKEND_API void ggml_backend_cuda_get_device_memory(int device, size_t * f
 // thread-local so one graph builder can select a safe topology without
 // changing concurrent requests or other CUDA/HIP backends.
 GGML_BACKEND_API int ggml_backend_cuda_set_mmvq_max_ncols_override(int max_ncols);
+GGML_BACKEND_API bool ggml_backend_cuda_set_exact_qk_width4_override(bool enabled);
 
 GGML_BACKEND_API bool ggml_backend_cuda_register_host_buffer(void * buffer, size_t size);
 GGML_BACKEND_API void ggml_backend_cuda_unregister_host_buffer(void * buffer);

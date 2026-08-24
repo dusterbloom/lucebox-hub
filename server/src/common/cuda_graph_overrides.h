@@ -12,10 +12,12 @@ public:
     explicit ScopedCudaGraphOverrides(
             bool disable_graphs = false,
             int mmvq_max_ncols = 0,
-            bool skip_property_check = false)
+            bool skip_property_check = false,
+            bool exact_qk_width4 = false)
         : disable_graphs_(disable_graphs),
           override_mmvq_(mmvq_max_ncols > 0),
-          skip_property_check_(skip_property_check) {
+          skip_property_check_(skip_property_check),
+          exact_qk_width4_(exact_qk_width4) {
         if (disable_graphs_) {
             previous_graphs_disabled_ =
                 ggml_backend_cuda_set_graphs_disabled_override(true);
@@ -24,6 +26,10 @@ public:
             previous_mmvq_max_ncols_ =
                 ggml_backend_cuda_set_mmvq_max_ncols_override(
                     mmvq_max_ncols);
+        }
+        if (exact_qk_width4_) {
+            previous_exact_qk_width4_ =
+                ggml_backend_cuda_set_exact_qk_width4_override(true);
         }
         if (skip_property_check_) {
             previous_skip_property_check_ =
@@ -35,6 +41,10 @@ public:
         if (skip_property_check_) {
             ggml_backend_cuda_set_skip_props_check(
                 previous_skip_property_check_);
+        }
+        if (exact_qk_width4_) {
+            ggml_backend_cuda_set_exact_qk_width4_override(
+                previous_exact_qk_width4_);
         }
         if (override_mmvq_) {
             ggml_backend_cuda_set_mmvq_max_ncols_override(
@@ -53,8 +63,10 @@ private:
     bool disable_graphs_ = false;
     bool override_mmvq_ = false;
     bool skip_property_check_ = false;
+    bool exact_qk_width4_ = false;
     bool previous_graphs_disabled_ = false;
     bool previous_skip_property_check_ = false;
+    bool previous_exact_qk_width4_ = false;
     int previous_mmvq_max_ncols_ = 0;
 };
 
