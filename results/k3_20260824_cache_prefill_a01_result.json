@@ -8,10 +8,10 @@
     "primary_gate": "GO",
     "qualified_metric": "WARM-CACHED-EFFECTIVE-PREFILL-POSITIONS-PER-SECOND",
     "target_positions_per_second": 200.0,
-    "measured_positions_per_second": 107789.474,
-    "margin_over_target": 538.94737,
+    "measured_positions_per_second": 121904.762,
+    "margin_over_target": 609.52381,
     "default": false,
-    "production_interpretation": "A repeated 1024-token full prompt restored in 9.5 ms and performed zero provider/expert work. A separate native-Kimi changed-suffix test restored the real 73-token message boundary, executed only 21 suffix tokens, and matched the clean cold output token."
+    "production_interpretation": "A native-Kimi 1024-token full prompt restored twice in 8.4 ms and performed zero provider/expert work. A separate changed-suffix test restored the real 73-token message boundary, executed only 21 suffix tokens, and matched the clean cold output token."
   },
   "source": {
     "base_branch": "perf/k3-production-ponytail",
@@ -19,9 +19,9 @@
     "candidate_branch": "perf/k3-prefix-state-cache",
     "candidate_commit": "d6e538ad75e1a4feb7382c2e343498b013de4770",
     "production_branch": "perf/k3-production-ponytail",
-    "production_commit": "293f863f",
-    "candidate_and_production_tree": "1539318455a8592b1b901ed05e44e10fe0a9e8e1",
-    "binary_sha256": "d8aeac1e1c02e561dcb67bd9426bd8e40c773e39662816c85f22dbd3dab1fbe0"
+    "production_commit": "610e5d3f157c51713b5342a8c5fcc90e35a2e379",
+    "cache_integration_tree_before_policy_hardening": "1539318455a8592b1b901ed05e44e10fe0a9e8e1",
+    "binary_sha256": "f354089e8aa8458d62c5af7412466d44d827c82669c5ad7b6fcce6bf8e852209"
   },
   "hardware": {
     "host": "lucebox4",
@@ -83,12 +83,16 @@
       "hidden_cold_fallback": false
     },
     "m1024_full_hit": {
+      "template": "native Kimi GGUF tokenizer.chat_template",
       "cold_output_text": "It",
       "warm1_output_text": "It",
       "warm2_output_text": "It",
+      "returned_token_text_identical": true,
+      "warm1_prefill_ms": 8.4,
+      "warm2_prefill_ms": 8.4,
       "warm_provider_calls": 0,
       "warm_expert_work": 0,
-      "note": "This early performance arm used the then-hardcoded Qwen envelope. It is valid snapshot/state-copy and traffic evidence, but is excluded from Kimi prompt-quality evidence. Native Kimi framing is qualified separately by the M64 suffix arm."
+      "hidden_cold_fallback": false
     }
   },
   "measurements": {
@@ -104,7 +108,7 @@
       "direct_io_ns": 14823561034,
       "template_note": "state-copy/performance evidence only; predates native Kimi template selection"
     },
-    "m1024_primary_arm": {
+    "m1024_early_state_copy_arm": {
       "prompt_positions": 1024,
       "cold_prefill_ms": 177239.0,
       "cold_positions_per_second": 5.777509465,
@@ -126,6 +130,29 @@
       "warm2_effective_positions_per_second": 107789.474,
       "warm_prefilled_tokens": 0,
       "template_note": "state-copy/performance evidence only; predates native Kimi template selection"
+    },
+    "m1024_native_primary_arm": {
+      "prompt_positions": 1024,
+      "template": "native Kimi GGUF tokenizer.chat_template",
+      "cold_prefill_ms": 176801.5,
+      "cold_performance_valid": false,
+      "cold_invalid_reason": "A concurrent -j4 B2 compilation ran from 18:23:55 to 18:26:23; retain this arm for state/output correctness only.",
+      "physical_bytes": 184150228992,
+      "direct_io_ns": 39282928540,
+      "physical_gib_per_second_unqualified": 4.36585,
+      "snapshot_raw_bytes": 492945408,
+      "snapshot_slot_bytes": 493600768,
+      "warm1_prefill_ms": 8.4,
+      "warm1_effective_positions_per_second": 121904.762,
+      "warm2_prefill_ms": 8.4,
+      "warm2_effective_positions_per_second": 121904.762,
+      "warm_prefilled_tokens": 0,
+      "macro_union_attempted": 92,
+      "macro_union_completed": 92,
+      "prefetch_mismatches": 0,
+      "prefetch_aborts": 0,
+      "warm_performance_valid": true,
+      "warm_environment_note": "No compiler process remained before either warm arm."
     },
     "m64_native_changed_suffix": {
       "prompt_positions": 94,
@@ -174,13 +201,20 @@
     },
     "native_m64_first_response_sha256": "139e40632553b650485d9e011f148cbec4c62cea0a7b319b2ab3e6496dd6761d",
     "native_m64_warm_changed_suffix_response_sha256": "7583e46ffa06f88566185aebd557e1c85ee3900fabd3c04199a1021af7e15d18",
-    "native_m64_cold_changed_suffix_response_sha256": "ad5b7eadd977e8d4528ec74fda141f7c0b3f4da66ae2d1e2b4af926a3b33020a"
+    "native_m64_cold_changed_suffix_response_sha256": "ad5b7eadd977e8d4528ec74fda141f7c0b3f4da66ae2d1e2b4af926a3b33020a",
+    "native_m1024_server_log": {
+      "path": "server_native_m1024.log",
+      "sha256": "7e45d1d05bfc1e55d7c178f5cec1d4229f482d33fbcafc3c8ec3c33eb2ce2512"
+    },
+    "native_m1024_cold_response_sha256": "2ebdae1273ee33876b020d9516f05546ccc018a692f068af97b6c4c436bd69ce",
+    "native_m1024_warm1_response_sha256": "a3afe4854e7c917bbc6b7422a33b2515f1c6aa326b1681ed34e466a4b61c3081",
+    "native_m1024_warm2_response_sha256": "38f90b7643846b17b4c7b30385a7dc8981587d811760d4998702580dcbc37bce"
   },
   "limits": [
-    "The 107789 positions/s number applies only to a complete in-memory full-prompt hit.",
+    "The 121904.762 positions/s number applies only to a complete in-memory full-prompt hit.",
     "The feature does not improve first-touch cold prefill; the best measured cold M1024 result in this arm is 5.7775 positions/s.",
     "Arbitrary changed suffixes still execute their uncached causal and expert work.",
-    "The M1024 performance arm is excluded from prompt-quality claims because it predates native Kimi template selection.",
+    "The earlier Qwen-framed M1024 arm remains excluded from prompt-quality claims; the production result is the later native-Kimi arm.",
     "No disk serialization or cross-process snapshot reuse is implemented."
   ]
 }
