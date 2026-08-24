@@ -1,0 +1,116 @@
+{
+  "schema": "dflash.kimi-k3.experiment.v1",
+  "experiment": "k3-decode-p51-device-input-chain",
+  "date_utc": "2026-08-24",
+  "verdict": "NO-GO",
+  "question": "Does keeping P46 prefix, routed input, and shared output on gfx1151 through P45/P42 save at least 20 ms per exact AR transition?",
+  "performance_gate": "Keep only if the matched exact short-fact arm saves at least 20 ms/transition after storage variance; at <=5 ms keep only if essentially free.",
+  "decision": "Delete the connector. The storage-matched repeat was 3.927 ms/transition slower in decode and only 4.619 ms/position faster in width-one prefill; 52 net source lines are not free.",
+  "source": {
+    "base_git_head": "1e4aaaf2b95ad54a562326a3e21d481f904167dd",
+    "branch": "perf/k3-prefill-causal-core",
+    "experimental_diff_sha256": "9c24e433503929efbba220bab1316ba6624d33efbb1239ff5674daa1d78c58af",
+    "experimental_patch_net_lines": 52,
+    "experimental_patch_retained": false
+  },
+  "build": {
+    "backend": "HIP/ROCm 7.2.2",
+    "hip_architectures": ["gfx1151", "gfx1201"],
+    "binary_sha256": "2b69568b0969971a79238df18c8fe0cc670a72bccf532cd0af487b18b2eb78c1",
+    "build_parallelism": 4
+  },
+  "fixture": {
+    "name": "P55 fact-capital 34-token rendered prompt",
+    "prompt_positions": 34,
+    "generated_tokens": 9,
+    "true_ar_transitions": 8,
+    "topology": "single-owner core=hip:0 experts=hip:0 join=hip:0 after HIP_VISIBLE_DEVICES=1,0; physical gfx1151",
+    "platform_profile": "performance",
+    "p40": false,
+    "p41": true,
+    "p42": true,
+    "p45": true,
+    "p46": true,
+    "p52": false,
+    "p53": false,
+    "host_cache_mib": 16384,
+    "output_ids": [39818, 18009, 163588, 12092, 163589, 163588, 2778, 163589, 163586],
+    "traffic_sha256": "e2eb5fcca9e0138d326892710977f4bd5dad1b7166d37cce6ef3675b0a911f13"
+  },
+  "arms": [
+    {
+      "name": "control1",
+      "p51_device_input_chain": false,
+      "prefill_positions_per_second": 1.716031,
+      "true_ar_per_second": 1.913875,
+      "direct_physical_bytes": 20957749248,
+      "direct_io_ns": 10323878179,
+      "metadata_h2d_bytes": 56254320,
+      "p45_h2d_calls": 75532,
+      "p45_input_d2d_copies": 0,
+      "log_sha256": "50727da74bcb41cb604c448226e45785533004c578c54842c22dc2c561f61772"
+    },
+    {
+      "name": "candidate1",
+      "p51_device_input_chain": true,
+      "prefill_positions_per_second": 1.949886,
+      "true_ar_per_second": 2.136198,
+      "direct_physical_bytes": 20957749248,
+      "direct_io_ns": 7671754599,
+      "metadata_h2d_bytes": 15310704,
+      "p45_h2d_calls": 72676,
+      "p45_input_d2d_copies": 2856,
+      "p45_input_d2d_bytes": 40943616,
+      "log_sha256": "e97c7e3d79694346cf2b310cb967da274c848a7df8492f4c8a236c8481f664ea"
+    },
+    {
+      "name": "control2_matched",
+      "p51_device_input_chain": false,
+      "prefill_positions_per_second": 1.965401,
+      "true_ar_per_second": 2.252435,
+      "direct_physical_bytes": 20957749248,
+      "direct_io_ns": 7273551414,
+      "metadata_h2d_bytes": 56254320,
+      "p45_h2d_calls": 75532,
+      "p45_input_d2d_copies": 0,
+      "log_sha256": "e85d5facb6b6f8d8ea5e4c1f4562fae7086b3954b44e672166c7c3381dd975d3"
+    },
+    {
+      "name": "candidate2_matched",
+      "p51_device_input_chain": true,
+      "prefill_positions_per_second": 1.983406,
+      "true_ar_per_second": 2.232685,
+      "direct_physical_bytes": 20957749248,
+      "direct_io_ns": 7260234925,
+      "metadata_h2d_bytes": 15310704,
+      "p45_h2d_calls": 72676,
+      "p45_input_d2d_copies": 2856,
+      "p45_input_d2d_bytes": 40943616,
+      "log_sha256": "3fa9eb553e4d2d210a276b48613a006b7bb7dd6ad65b17ee13f838065f1c2c86"
+    }
+  ],
+  "matched_result": {
+    "direct_io_delta_ms_candidate_minus_control": -13.316489,
+    "decode_ms_per_transition_control": 443.963977,
+    "decode_ms_per_transition_candidate": 447.891216,
+    "decode_delta_ms_per_transition_candidate_minus_control": 3.927239,
+    "decode_speed_ratio": 0.991232,
+    "prefill_delta_ms_per_position_candidate_minus_control": -4.618812,
+    "prefill_speed_ratio": 1.009161,
+    "physical_bytes_identical": true,
+    "traffic_hash_identical": true,
+    "output_ids_identical": true,
+    "full_logits_hash_collected": false
+  },
+  "interpretation": {
+    "measured": "The connector worked mechanically: 2,856 routed-input host uploads (40,943,616 bytes) became same-device copies and all output IDs and traffic hashes matched.",
+    "first_pair": "The apparent 1.913875 to 2.136198 AR/s win was invalidated by a 2.652-second direct-I/O improvement unrelated to P51.",
+    "matched_pair": "With direct-I/O time matched within 13.3 ms across the complete 42-position run, P51 was 3.927 ms/transition slower in decode.",
+    "next_action": "Do not port the historical P51 connector into the ponytail branch. Reprofile the current exact decode path and attack a component with at least 20 ms/transition of physical headroom."
+  },
+  "artifacts_on_lucebox4": {
+    "root": "/home/duster/kimi-k3-deploy/k3-p51-ponytail-ab-20260824",
+    "logs": ["control.log", "candidate.log", "control2.log", "candidate2.log"],
+    "metrics": ["control-traffic.tsv", "candidate-traffic.tsv", "control2-traffic.tsv", "candidate2-traffic.tsv"]
+  }
+}
