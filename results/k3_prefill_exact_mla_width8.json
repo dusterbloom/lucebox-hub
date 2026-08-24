@@ -1,0 +1,155 @@
+{
+  "schema": "k3-prefill-exact-mla-width8-v1",
+  "date_utc": "2026-08-24",
+  "verdict": "GO",
+  "summary": "Exact width-eight batching of the five resident Q6_K MLA projections reduces the M1024 causal core by 29.628 seconds and raises retained-path prefill from 5.029 to 5.878 positions/s.",
+  "source": {
+    "parent_head": "5df7afe1",
+    "branch": "perf/k3-prefill-causal-core",
+    "graph_source_sha256": "d47ee282ef8d8de62f8e51ece2bb23719c545ba3c4aa8272037e61b8452e1bb4",
+    "smoke_binary_sha256": "ea6c949bd9b54359422d5286c05159f54722744fc563bf363541f0a975c7421e",
+    "libggml_hip_sha256": "f5037cd5a0d5badeab930792b125ad522f23699911d4766ea16a800b4fc0b0ff"
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "device": "GPU1 Radeon 8060S gfx1151 exposed as ROCm0",
+    "wave_size": 32,
+    "platform_profile": "performance",
+    "backend": "HIP/ROCm 7.2.2",
+    "topology": "single-owner core=hip:0 experts=hip:0 join=hip:0"
+  },
+  "closure": {
+    "environment": "DFLASH_KIMI_P58_EXACT_MLA_GROUP_WIDTH=8",
+    "default_off": true,
+    "group_width": 8,
+    "batched_projection_types": [
+      "attn_q_a Q6_K",
+      "attn_q_b Q6_K",
+      "attn_kv_a_mqa Q6_K",
+      "attn_gate Q6_K",
+      "attn_output Q6_K"
+    ],
+    "batched_mla_layers": 24,
+    "scalar_exact_components": [
+      "q_a RMS normalization per row",
+      "absorbed attention per row",
+      "F32 score reduction per row",
+      "per-row causal mask",
+      "ordered MLA KV publication"
+    ],
+    "prepared_tail_width": 4,
+    "router_width": 8,
+    "global_mmvq_policy_changed": false,
+    "fallback": "existing scalar MLA path"
+  },
+  "invalid_preflight": {
+    "status": "INVALID",
+    "reason": "The first M8 launch failed closed before candidate execution because persistent Tail4 graphs were initialized only for recurrent layers.",
+    "fix": "An explicit include_mla_prepared_tail mode now extends Tail4 construction to routed MLA layers only when MLA8 is enabled; KDA8-only and ordinary execution retain their prior graph sets."
+  },
+  "correctness": {
+    "m8": {
+      "status": "PASS",
+      "sequential_seconds": 8.176818028,
+      "candidate_seconds": 5.054247033,
+      "logits_bit_equal": true,
+      "argmax_bit_equal": true,
+      "terminal_conv_state_mismatch_layer": -1,
+      "terminal_ssm_state_mismatch_layer": -1,
+      "committed_conv_state_mismatch_layer": -1,
+      "committed_ssm_state_mismatch_layer": -1,
+      "mla_row_mismatch_layer": -1,
+      "logical_provider_bytes_each": 40075886592,
+      "result_sha256": "53efe558e1b08aab0fd55163bf44b405e207ad0090f0db7099d8b52f81f56d93",
+      "log_sha256": "12df35ae16b24fb1b928a1e6046601bfae7ab978753f13364f3cf5ef215d1b4b"
+    },
+    "m16_chained": {
+      "status": "PASS",
+      "sequential_seconds": 19.083748014,
+      "candidate_seconds": 10.588607734,
+      "logits_bit_equal": true,
+      "argmax_bit_equal": true,
+      "terminal_conv_state_mismatch_layer": -1,
+      "terminal_ssm_state_mismatch_layer": -1,
+      "committed_conv_state_mismatch_layer": -1,
+      "committed_ssm_state_mismatch_layer": -1,
+      "mla_row_mismatch_layer": -1,
+      "logical_provider_bytes_each": 81549103104,
+      "result_sha256": "a18dd5710f878d918331934d13c9b7cae2a228da422cbaafc79092e359d10662",
+      "log_sha256": "8ca9a91f87ac753928d487bdec75f781d4e7f48a4389693beee2a5b7e01a4bd7"
+    }
+  },
+  "m64_gate": {
+    "physical_bytes_each": 115562905600,
+    "traffic_sha256_each": "898a397272075995ba469d4db79526c7d099b7c6ed148516f9cf6d154dc1a9fd",
+    "output_ids_each": [5801, 114820],
+    "control": {
+      "stage_seconds": 34.841707,
+      "core_seconds": 6.887983,
+      "experts_seconds": 26.981728,
+      "join_seconds": 0.678040,
+      "output_seconds": 0.282074,
+      "direct_io_seconds": 21.768131592,
+      "positions_per_second": 1.835897,
+      "log_sha256": "67c203515150120ab37a42a06a0658db574a92432f0a028a162886f23f815029"
+    },
+    "candidate": {
+      "stage_seconds": 31.576710,
+      "core_seconds": 4.727561,
+      "experts_seconds": 25.887880,
+      "join_seconds": 0.668752,
+      "output_seconds": 0.281413,
+      "direct_io_seconds": 20.368701989,
+      "positions_per_second": 2.025640,
+      "log_sha256": "c591cb50979d11874d76c2e8668119b54fbcbcaa94f9c45cf024a127b1966bd9"
+    },
+    "core_saving_seconds": 2.160422,
+    "projected_m1024_core_saving_seconds": 34.566752,
+    "verdict": "GO"
+  },
+  "m1024": {
+    "physical_bytes_each": 169143877632,
+    "traffic_sha256_each": "c0dfd31205484facf903d1e55cd75ccf05338359583b1f9d76fbaa032b6cea15",
+    "control": {
+      "stage_seconds": 203.558118,
+      "core_seconds": 114.279137,
+      "experts_seconds": 74.699466,
+      "join_seconds": 9.820158,
+      "output_seconds": 4.493868,
+      "other_seconds": 0.265489,
+      "grouped_graph_seconds": 32.057949,
+      "grouped_publish_seconds": 0.411369,
+      "direct_io_seconds": 32.030623061,
+      "positions_per_second": 5.029295,
+      "log_sha256": "76db6192e4e6a50fd5295c8079ff98e715dde4b485091dfed17cc8cebc2cff01"
+    },
+    "candidate": {
+      "stage_seconds": 174.171754,
+      "core_seconds": 84.650835,
+      "experts_seconds": 75.168619,
+      "join_seconds": 9.715536,
+      "output_seconds": 4.461335,
+      "other_seconds": 0.175429,
+      "grouped_graph_seconds": 50.843529,
+      "grouped_publish_seconds": 0.443963,
+      "direct_io_seconds": 32.624576617,
+      "positions_per_second": 5.877863,
+      "log_sha256": "966169c3060f88b4d11adf28d259b44202b3976d69f8aad1f14a43a8456a8a49"
+    },
+    "stage_saving_seconds": 29.386364,
+    "core_saving_seconds": 29.628302,
+    "core_saving_percent": 25.926256,
+    "same_binary_speedup": 1.168720607,
+    "expert_regression_seconds": 0.469153,
+    "direct_io_regression_seconds": 0.593953556,
+    "interpretation": "The measured total win is conservative with respect to storage and expert variance: both were slower in the candidate."
+  },
+  "remaining_bound": {
+    "target_positions_per_second": 10.0,
+    "target_stage_seconds_at_m1024": 102.4,
+    "candidate_stage_seconds_to_remove": 71.771754,
+    "infinite_expert_speedup_ceiling_positions_per_second": 10.343107,
+    "binding_terms": ["causal core", "expert service"],
+    "interpretation": "MLA8 makes 10 positions/s physically reachable under an infinite-expert bound for the first time, but the measured path still needs 71.772 seconds removed or overlapped."
+  }
+}
