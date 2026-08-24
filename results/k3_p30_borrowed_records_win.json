@@ -157,6 +157,49 @@
     "output_ids_identical": true,
     "interpretation": "The extra capacity removed 4.09 GB of physical reads and all evictions, but the larger resident working set increased provider wall and did not improve decode. Keep the 16-GiB production cap."
   },
+  "m1024_cumulative_interaction": {
+    "verdict": "NO_CHANGE_FOR_EXACT_MACRO_UNION",
+    "question": "Does the P30 borrowed-record winner add value when combined with the complete retained M1024 ponytail stack?",
+    "same_binary": true,
+    "binary_sha256": "39fa5b9f864f22af5b4e48938c721a0a4030c75a97c63c6f1ae2962e896b0a1a",
+    "fixed_stack": [
+      "P40 layer epoch",
+      "P46 persistent routed preparation",
+      "exact macro union plus prefetch",
+      "Router8",
+      "exact Core8",
+      "exact MLA8",
+      "exact Tail8"
+    ],
+    "control": {
+      "env": "DFLASH_KIMI_P30_BORROWED_RECORDS=0",
+      "prefill_positions_per_second": 6.161574,
+      "stage_seconds": 166.163871,
+      "core_seconds": 77.416880,
+      "experts_seconds": 74.305455,
+      "direct_io_seconds": 31.268953371,
+      "macro_union_service_seconds": 28.212513,
+      "macro_union_residual_wait_seconds": 0.360109,
+      "borrowed_hit_bytes": 0,
+      "adopted_miss_bytes": 0
+    },
+    "candidate": {
+      "env": "DFLASH_KIMI_P30_BORROWED_RECORDS=1",
+      "prefill_positions_per_second": 6.082662,
+      "stage_seconds": 168.319795,
+      "core_seconds": 77.798284,
+      "experts_seconds": 76.108407,
+      "direct_io_seconds": 33.570119903,
+      "macro_union_service_seconds": 30.215967,
+      "macro_union_residual_wait_seconds": 0.834670,
+      "borrowed_hit_bytes": 0,
+      "adopted_miss_bytes": 0
+    },
+    "physical_bytes_each": 169143877632,
+    "traffic_sha256_each": "c0dfd31205484facf903d1e55cd75ccf05338359583b1f9d76fbaa032b6cea15",
+    "output_capture": "prefill-only fixture; no output IDs or full logits were emitted",
+    "interpretation": "The exact macro-union prefetch path does not traverse P30 record borrowing or miss adoption. The candidate's 2.156-second stage regression tracks a 2.301-second slower direct-I/O sample and is not attributed to the inactive P30 flag. Keep P30 for its qualified decode and scalar/M64 benefits, but do not claim an additional M1024 union speedup."
+  },
   "artifacts": {
     "root": "/home/duster/kimi-k3-deploy/k3-p30-borrowed-records-codefunction-20260824",
     "control_stdout_sha256": "f9f415a24e802724ceae03f64e0b386c932fcdd52f63c02a6fbb5703c152679f",
@@ -172,7 +215,11 @@
     "m64_candidate_stdout_sha256": "aa4a65dac5870441b0769dad16b0cd484d74e31c509c8601ca9dba460f91a5aa",
     "m64_candidate_stderr_sha256": "3709c33bbb326f0c70a6983cc19e15ba0ccfcb075781cd4d357e52ba3c972d1f",
     "cache_32gib_stdout_sha256": "7faeb7ff3aa7296ba1db3258f5edf0810961d6dc59cf52267e144e832bbb2c50",
-    "cache_32gib_stderr_sha256": "2b1581ce9a620207b5e4b00f5a29284b5703dc6edbd3618cf8636a2e2068352c"
+    "cache_32gib_stderr_sha256": "2b1581ce9a620207b5e4b00f5a29284b5703dc6edbd3618cf8636a2e2068352c",
+    "m1024_cumulative_root": "/home/duster/kimi-k3-deploy/k3-ponytail-cumulative-20260824",
+    "m1024_control_log_sha256": "6d6de5b3701505e7f0d6748a49d69d798a48735c987271ff154ac0818f0498e6",
+    "m1024_candidate_log_sha256": "0588289f3e2d1b514a001797f184004574dd25c680bc746313d61d65bc2dcbb0",
+    "m1024_traffic_sha256": "c0dfd31205484facf903d1e55cd75ccf05338359583b1f9d76fbaa032b6cea15"
   },
   "tests": [
     "test_kimi_k3_calibrated_provider: PASS",
@@ -181,6 +228,7 @@
     "23-transition P55 code-function A/B: PASS",
     "post-review rebuilt binary short smoke: 2.363632 true AR/s with expected output IDs",
     "same-binary M64 with P40 layer epoch fixed on: 1.075344 to 1.121668 positions/s",
-    "32-GiB cache-capacity discriminator: NO-GO, validation ceiling reverted"
+    "32-GiB cache-capacity discriminator: NO-GO, validation ceiling reverted",
+    "same-binary cumulative M1024 interaction: no P30 record-borrow path executed; retained Tail8 stack reproduced at 6.161574 positions/s"
   ]
 }
