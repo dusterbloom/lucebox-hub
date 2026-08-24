@@ -204,6 +204,39 @@
     "io_normalized_stage_saving_seconds": 8.527051976,
     "interpretation": "The measured end-to-end win is conservative: candidate storage was 2.933 seconds slower and expert service was 1.038 seconds slower while the causal-core change still won by 5.594 seconds."
   },
+  "post_win_q4_width8_discriminator": {
+    "verdict": "NO_GO_CODE_REMOVED",
+    "question": "Does serializing width-eight activation-column temporaries reduce VGPR pressure enough to accelerate the dominant exact Q4_K kernel?",
+    "prototype_source_sha256": "13323827e3f2bcab04f350c82af3676976e5de9835c6b76a82f9f95feaff80c0",
+    "fixture": "matched profiled M64 exact Tail8 path",
+    "physical_bytes_each": 110658715648,
+    "traffic_sha256_each": "57a76723bff549e8284777a4daa75d7b828c126112dde14f9ea91b33b3eb54f9",
+    "gguf_inventory": {
+      "q4_k_tensors": 320,
+      "bytes_per_tensor": 49545216,
+      "width8_groups_at_m64": 8,
+      "mandatory_q4_weight_bytes": 126835752960,
+      "mandatory_q4_weight_gib": 118.125
+    },
+    "control": {
+      "q4_kernel_seconds": 1.050644741,
+      "calls": 2560,
+      "average_kernel_microseconds": 410.408102,
+      "vgpr_count": 96,
+      "core_seconds": 4.745250,
+      "kernel_stats_sha256": "e11b1d43f2be79803756f22c53d8e5f27a9567745dbd4dec6f3c1258e40db9c7"
+    },
+    "candidate": {
+      "q4_kernel_seconds": 1.429616636,
+      "calls": 2560,
+      "average_kernel_microseconds": 558.443998,
+      "vgpr_count": 48,
+      "core_seconds": 5.144727,
+      "kernel_stats_sha256": "f30452a898fcda4701b3e7f34b1ca4fe9f8be10b3e67a2560315eb00c8ca3393"
+    },
+    "q4_kernel_regression_percent": 36.070413,
+    "decision": "Halving VGPR use loses cross-column ILP and makes the exact kernel 36.1% slower. The existing path already reuses each packed weight across eight columns. The prototype was deleted and M1024 was not run."
+  },
   "remaining_bound": {
     "target_positions_per_second": 10.0,
     "target_stage_seconds_at_m1024": 102.4,
