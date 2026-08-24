@@ -1656,6 +1656,9 @@ public:
     SparseDeviceExpertEvaluator() = default;
     ~SparseDeviceExpertEvaluator() {
         abort_compact_async_batch();
+#if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
+        compact_union_entries_.clear();
+#endif
     }
     SparseDeviceExpertEvaluator(const SparseDeviceExpertEvaluator &) = delete;
     SparseDeviceExpertEvaluator & operator=(
@@ -1670,6 +1673,12 @@ public:
     }
     uint64_t compact_union_output_d2d_bytes() const {
         return compact_union_output_d2d_bytes_;
+    }
+    uint64_t compact_union_async_weight_uploads() const {
+        return compact_union_async_weight_uploads_;
+    }
+    uint64_t compact_union_async_weight_bytes() const {
+        return compact_union_async_weight_bytes_;
     }
     void record_compact_union_output_d2d(size_t bytes) {
         ++compact_union_output_d2d_copies_;
@@ -1852,6 +1861,7 @@ public:
             const float * input_data,
             int rows,
             int graph_width,
+            bool async_upload,
             const SparseCompactPayload & compact,
             const uint16_t * requested_masks,
             size_t down_slab_row_bytes,
@@ -1864,7 +1874,8 @@ public:
         invalid = false;
 #if !defined(DFLASH27B_BACKEND_CUDA) && !defined(DFLASH27B_BACKEND_HIP)
         (void) backend; (void) spec; (void) input_data; (void) rows;
-        (void) graph_width; (void) compact; (void) requested_masks;
+        (void) graph_width; (void) async_upload; (void) compact;
+        (void) requested_masks;
         (void) down_slab_row_bytes; (void) select_targets;
         (void) authoritative_h2d_bytes; (void) metadata_h2d_bytes;
         (void) graph_ns;
@@ -1942,14 +1953,21 @@ public:
                 backend, spec, compact.slab_count, graph_width, err);
             if (!entry) return false;
         }
-        ggml_backend_tensor_set(
-            entry->gate, wire + layout.gate_offset, 0,
+        const auto upload_weights = [&](ggml_tensor * tensor,
+                const void * data, size_t bytes) {
+            if (async_upload) {
+                ggml_backend_tensor_set_async(backend, tensor, data, 0, bytes);
+                ++compact_union_async_weight_uploads_;
+                compact_union_async_weight_bytes_ += bytes;
+            } else {
+                ggml_backend_tensor_set(tensor, data, 0, bytes);
+            }
+        };
+        upload_weights(entry->gate, wire + layout.gate_offset,
             compact.gate_slab_bytes * compact.slab_count);
-        ggml_backend_tensor_set(
-            entry->up, wire + layout.up_offset, 0,
+        upload_weights(entry->up, wire + layout.up_offset,
             compact.up_slab_bytes * compact.slab_count);
-        ggml_backend_tensor_set(
-            entry->down, wire + layout.down_offset, 0,
+        upload_weights(entry->down, wire + layout.down_offset,
             compact.down_slab_bytes * compact.slab_count);
         authoritative_h2d_bytes += static_cast<uint64_t>(compact.slab_count) *
             (compact.gate_slab_bytes + compact.up_slab_bytes +
@@ -1957,9 +1975,30 @@ public:
 
         const size_t input_row_bytes =
             static_cast<size_t>(spec.input_dim) * sizeof(float);
-        std::vector<float> chunk_inputs(
-            static_cast<size_t>(graph_width) * spec.input_dim);
-        std::array<std::array<int32_t, kSlabCount>, 8> maps{};
+        const size_t input_values =
+            static_cast<size_t>(graph_width) * spec.input_dim;
+        std::vector<float> pageable_inputs;
+        std::array<std::array<int32_t, kSlabCount>, 8> pageable_maps{};
+        if (async_upload && !entry->host_staging) {
+            const size_t host_input_bytes = input_values * sizeof(float);
+            const size_t host_map_bytes =
+                static_cast<size_t>(graph_width) * kSlabCount * sizeof(int32_t);
+            if (cudaHostAlloc(&entry->host_staging,
+                    host_input_bytes + host_map_bytes,
+                    cudaHostAllocDefault) != cudaSuccess) {
+                if (err) *err = "compact union pinned metadata allocation failed";
+                return false;
+            }
+            entry->host_inputs = static_cast<float *>(entry->host_staging);
+            entry->host_maps = reinterpret_cast<int32_t *>(
+                static_cast<uint8_t *>(entry->host_staging) + host_input_bytes);
+        } else if (!async_upload) {
+            pageable_inputs.resize(input_values);
+        }
+        float * const chunk_inputs = async_upload
+            ? entry->host_inputs : pageable_inputs.data();
+        int32_t * const maps = async_upload
+            ? entry->host_maps : pageable_maps[0].data();
         ScopedCudaGraphOverrides exact_scope(
             /* disable_graphs = */ true,
             /* mmvq_max_ncols = */ 8,
@@ -1969,30 +2008,46 @@ public:
             for (int lane = 0; lane < graph_width; ++lane) {
                 const int source_row = base + std::min(lane, valid - 1);
                 std::memcpy(
-                    chunk_inputs.data() +
+                    chunk_inputs +
                         static_cast<size_t>(lane) * spec.input_dim,
                     input_data +
                         static_cast<size_t>(source_row) * spec.input_dim,
                     input_row_bytes);
-                maps[static_cast<size_t>(lane)].fill(-1);
+                int32_t * const lane_map =
+                    maps + static_cast<size_t>(lane) * kSlabCount;
+                std::fill(lane_map, lane_map + kSlabCount, -1);
                 const uint16_t mask = requested_masks[source_row];
                 for (int slot = 0; slot < compact.slab_count; ++slot) {
                     const uint16_t natural = naturals[slot];
                     if (mask & (1u << natural)) {
-                        maps[static_cast<size_t>(lane)][natural] = slot;
+                        lane_map[natural] = slot;
                     }
                 }
             }
-            ggml_backend_tensor_set(
-                entry->input, chunk_inputs.data(), 0,
-                chunk_inputs.size() * sizeof(float));
-            for (int lane = 0; lane < graph_width; ++lane) {
+            if (async_upload) {
+                ggml_backend_tensor_set_async(
+                    backend, entry->input, chunk_inputs, 0,
+                    input_values * sizeof(float));
+            } else {
                 ggml_backend_tensor_set(
-                    entry->maps[static_cast<size_t>(lane)],
-                    maps[static_cast<size_t>(lane)].data(), 0,
-                    sizeof(maps[static_cast<size_t>(lane)]));
+                    entry->input, chunk_inputs, 0,
+                    input_values * sizeof(float));
             }
-            metadata_h2d_bytes += chunk_inputs.size() * sizeof(float) +
+            for (int lane = 0; lane < graph_width; ++lane) {
+                const int32_t * lane_map =
+                    maps + static_cast<size_t>(lane) * kSlabCount;
+                if (async_upload) {
+                    ggml_backend_tensor_set_async(
+                        backend, entry->maps[static_cast<size_t>(lane)],
+                        lane_map, 0,
+                        static_cast<size_t>(kSlabCount) * sizeof(int32_t));
+                } else {
+                    ggml_backend_tensor_set(
+                        entry->maps[static_cast<size_t>(lane)], lane_map, 0,
+                        static_cast<size_t>(kSlabCount) * sizeof(int32_t));
+                }
+            }
+            metadata_h2d_bytes += input_values * sizeof(float) +
                 static_cast<uint64_t>(graph_width) *
                     sizeof(std::array<int32_t, kSlabCount>);
             std::array<ggml_tensor *, 8> targets{};
@@ -2880,6 +2935,7 @@ private:
                 previous_device != runtime_device &&
                 cudaSetDevice(runtime_device) == cudaSuccess;
             if (backend) ggml_backend_synchronize(backend);
+            if (host_staging) cudaFreeHost(host_staging);
             if (allocator) ggml_gallocr_free(allocator);
             if (replay_buffer) ggml_backend_buffer_free(replay_buffer);
             if (weight_buffer) ggml_backend_buffer_free(weight_buffer);
@@ -2901,6 +2957,9 @@ private:
         ggml_tensor * gate = nullptr;
         ggml_tensor * up = nullptr;
         ggml_tensor * down = nullptr;
+        void * host_staging = nullptr;
+        float * host_inputs = nullptr;
+        int32_t * host_maps = nullptr;
         std::array<ggml_tensor *, 8> maps{};
         std::array<ggml_tensor *, 8> outputs{};
     };
@@ -3106,6 +3165,10 @@ private:
         entry->down = ggml_new_tensor_4d(
             entry->context, spec.down_type, kSlabSize, spec.output_dim,
             slab_count, 1);
+        if (!entry->input || !entry->gate || !entry->up || !entry->down) {
+            if (err) *err = "compact union tensor creation failed";
+            return nullptr;
+        }
         ggml_set_input(entry->input);
         ggml_set_input(entry->gate);
         ggml_set_input(entry->up);
@@ -3410,6 +3473,8 @@ private:
     uint64_t expert_readback_ns_ = 0;
     uint64_t compact_union_output_d2d_copies_ = 0;
     uint64_t compact_union_output_d2d_bytes_ = 0;
+    uint64_t compact_union_async_weight_uploads_ = 0;
+    uint64_t compact_union_async_weight_bytes_ = 0;
     uint64_t compact_layouts_ = 0;
     uint64_t compact_uploads_ = 0;
     uint64_t compact_gate_stages_ = 0;
@@ -3778,6 +3843,18 @@ public:
         }
         exact_macro_union_ = exact_macro_union;
         macro_union_prefetch_enabled_ = macro_union_prefetch;
+        if (!parse_binary_flag(std::getenv(
+                "DFLASH_KIMI_MACRO_UNION_ASYNC_UPLOAD"), enabled)) {
+            if (err) {
+                *err = "DFLASH_KIMI_MACRO_UNION_ASYNC_UPLOAD must be 0 or 1";
+            }
+            return false;
+        }
+        if (enabled && !exact_macro_union_) {
+            if (err) *err = "macro union async upload requires exact macro union";
+            return false;
+        }
+        macro_union_async_upload_ = enabled;
         if (const char * trace =
                 std::getenv("DFLASH_KIMI_P40_CACHE_TRACE")) {
             if (*trace && !device_variant_cache_) {
@@ -3874,7 +3951,7 @@ public:
             "p41-compact-executor=%s p42-ordered-join=%s "
             "p45-async-queue=%s p40-wide-async-join=%s "
             "exact-macro-union=%s macro-union-prefetch=%s "
-            "exact-source=%s "
+            "macro-union-async-upload=%s exact-source=%s "
             "p30-host-cache-mib=%.1f p30-borrowed-records=%s "
             "valid-layers=%d/92 "
             "invalid-layer-action=exact insufficient-expert-action=exact\n",
@@ -3897,6 +3974,7 @@ public:
             p40_wide_async_join_ ? "enabled" : "disabled",
             exact_macro_union_ ? "enabled" : "disabled",
             macro_union_prefetch_enabled_ ? "enabled" : "disabled",
+            macro_union_async_upload_ ? "enabled" : "disabled",
             sidecar_authoritative_ ? "sidecar" : "native-model",
             static_cast<double>(read_cache_.capacity()) / (1024.0 * 1024.0),
             p30_borrowed_records_ ? "enabled" : "disabled",
@@ -5943,6 +6021,7 @@ private:
             if (!sparse_device_evaluator_.evaluate_compact_union_device(
                     backend_, spec, inputs.data(),
                     static_cast<int>(group.jobs.size()), graph_width,
+                    macro_union_async_upload_,
                     *group.compact, masks.data(),
                     static_cast<size_t>(state.down_slab_bytes /
                         spec.output_dim),
@@ -6969,6 +7048,16 @@ private:
                 static_cast<unsigned long long>(macro_union_groups_),
                 static_cast<unsigned long long>(macro_union_records_),
                 static_cast<unsigned long long>(macro_union_rows_));
+            std::fprintf(stderr,
+                "[kimi-k3-macro-union-delivery] async=%d "
+                "async-weight-calls=%llu async-weight-bytes=%llu\n",
+                macro_union_async_upload_ ? 1 : 0,
+                static_cast<unsigned long long>(
+                    sparse_device_evaluator_.
+                        compact_union_async_weight_uploads()),
+                static_cast<unsigned long long>(
+                    sparse_device_evaluator_.
+                        compact_union_async_weight_bytes()));
             if (macro_union_prefetch_enabled_) {
                 std::fprintf(stderr,
                     "[kimi-k3-macro-union-prefetch] keys=%llu bytes=%llu "
@@ -7048,6 +7137,7 @@ private:
     bool p40_wide_async_join_ = false;
     bool exact_macro_union_ = false;
     bool macro_union_prefetch_enabled_ = false;
+    bool macro_union_async_upload_ = false;
     std::unique_ptr<MacroUnionPrefetchState> macro_union_prefetch_;
     uint64_t macro_union_attempted_ = 0;
     uint64_t macro_union_completed_ = 0;

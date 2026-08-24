@@ -1,0 +1,108 @@
+{
+  "schema": "k3-async-expert-delivery-v1",
+  "date": "2026-08-25",
+  "host": "lucebox4",
+  "source_parent": "7a6abfcea94476f6f3035316fd7fe8795c1e9a07",
+  "branch": "perf/k3-production-ponytail",
+  "hardware": {
+    "compute_device": "Radeon 8060S Graphics gfx1151",
+    "topology": "single-owner core=hip:0 experts=hip:0 join=hip:0",
+    "platform_profile": "performance",
+    "cpu_governor": "performance",
+    "cpu_epp": "performance"
+  },
+  "fixture": {
+    "tokens": 1024,
+    "physical_bytes": 169143877632,
+    "traffic_sha256": "c0dfd31205484facf903d1e55cd75ccf05338359583b1f9d76fbaa032b6cea15",
+    "logits_bytes": 655360,
+    "logits_sha256": "9c4ce92109b5f1deea6caeb9d741c6ff21972bb8a07a456c4589108557bcc66d"
+  },
+  "arms": [
+    {
+      "name": "same-binary-control",
+      "async_upload": false,
+      "prefill_positions_per_second": 6.120183,
+      "stage_ms": 167260.733,
+      "core_ms": 77402.474,
+      "experts_ms": 75204.841,
+      "direct_io_ms": 32087.411393,
+      "expert_graph_ms": 39675.024843,
+      "exact": true
+    },
+    {
+      "name": "direct-async-1",
+      "async_upload": true,
+      "prefill_positions_per_second": 6.422675,
+      "stage_ms": 159396.839,
+      "core_ms": 77025.421,
+      "experts_ms": 67915.189,
+      "direct_io_ms": 36460.568030,
+      "expert_graph_ms": 43717.362920,
+      "exact": true
+    },
+    {
+      "name": "direct-async-matched",
+      "async_upload": true,
+      "prefill_positions_per_second": 6.409330,
+      "stage_ms": 159714.380,
+      "core_ms": 77184.503,
+      "experts_ms": 67929.345,
+      "direct_io_ms": 36310.108808,
+      "expert_graph_ms": 43738.597371,
+      "exact": true
+    },
+    {
+      "name": "server-default-final",
+      "async_upload": true,
+      "prefill_positions_per_second": 6.476318,
+      "stage_ms": 158058.156,
+      "core_ms": 77221.269,
+      "experts_ms": 66361.067,
+      "direct_io_ms": 32302.182699,
+      "expert_graph_ms": 43682.318111,
+      "exact": true,
+      "explicit_async_flag": false,
+      "smoke_binary_sha256": "7c26e00c5bec0d31182944a205eb633a0685de8558204891ff2fc58f30ea36f0",
+      "server_binary_sha256": "dc51d0ad2fd8501485a8deb282a2b33747b5b03115acf7a66402be575a5a7f0b",
+      "log_sha256": "571f73d3ec39a9031dafae0062a104bf0f577af45be93b7e2c5c81c90b4f7468"
+    }
+  ],
+  "retained_summary": {
+    "direct_async_repeats": 3,
+    "mean_prefill_positions_per_second": 6.436108,
+    "mean_experts_ms": 67401.867,
+    "mean_stage_ms": 159056.458,
+    "prefill_gain_vs_control_percent": 5.162,
+    "expert_saving_vs_control_ms": 7802.974,
+    "expert_saving_vs_control_percent": 10.376,
+    "stage_saving_vs_control_ms": 8204.275,
+    "verdict": "GO"
+  },
+  "rejected_arms": [
+    {
+      "name": "whole-layer-staging-with-d2d",
+      "prefill_positions_per_second": 6.349974,
+      "experts_ms": 69800.188,
+      "reason": "extra full-payload D2D copy; slower than direct async",
+      "verdict": "NO-GO"
+    },
+    {
+      "name": "whole-layer-staging-direct-bind",
+      "prefill_positions_per_second": 6.367599,
+      "experts_ms": 69306.655,
+      "reason": "exact but slower than direct async",
+      "verdict": "NO-GO"
+    },
+    {
+      "name": "two-bank-256MiB-ping-pong",
+      "prefill_positions_per_second": 6.433941,
+      "experts_ms": 67191.305,
+      "matched_direct_async_positions_per_second": 6.409330,
+      "relative_gain_percent": 0.384,
+      "reason": "exact but below materiality; second stream and bank code deleted",
+      "verdict": "NO-GO"
+    }
+  ],
+  "artifact_root": "/home/duster/kimi-k3-deploy/k3-async-expert-bank-20260825"
+}

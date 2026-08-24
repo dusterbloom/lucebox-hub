@@ -410,7 +410,9 @@ bool compact_union_owned_buffer_sentinel_for_quant_types(
             return true;
         };
         if (!candidate.evaluate_compact_union_device(
-                backend, spec, inputs.data(), rows, width, compact,
+                backend, spec, inputs.data(), rows, width,
+                /* async_upload = */ false,
+                compact,
                 masks.data(), down_row_bytes, select_targets, weight_h2d,
                 metadata_h2d, graph_ns, invalid, err) || invalid) {
             return false;

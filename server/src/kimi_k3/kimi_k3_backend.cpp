@@ -124,6 +124,7 @@ bool apply_kimi_k3_production_defaults(std::string & error) {
         {"DFLASH_KIMI_P58_EXACT_TAIL_GROUP_WIDTH", "8"},
         {"DFLASH_KIMI_EXACT_MACRO_UNION", "1"},
         {"DFLASH_KIMI_EXACT_MACRO_UNION_PREFETCH", "1"},
+        {"DFLASH_KIMI_MACRO_UNION_ASYNC_UPLOAD", "1"},
     };
     for (const DefaultValue & value : defaults) {
         if (set_environment_variable(
