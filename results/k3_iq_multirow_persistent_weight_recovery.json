@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "campaign": "k3-iq-multirow-persistent-weight-recovery",
+  "date": "2026-08-24",
+  "verdict": "HISTORICAL_NO_GO_REVERSED_EXACT_LIFETIME_FIX_ALREADY_INTEGRATED",
+  "question": "Why did the Aug-23 width-2/8 resident-union microbench retain 2.88x/3.56x speedups but fail byte identity?",
+  "hardware": {
+    "host": "lucebox4",
+    "backend": "HIP/ROCm",
+    "physical_device": "GPU1 Radeon 8060S Graphics",
+    "architecture": "gfx1151",
+    "platform_profile": "performance"
+  },
+  "historical_closure": {
+    "source_commit": "a513bc5fb8d9b7b2c7310028f643da708abac284",
+    "provider_source_sha256": "e8146f278700ef62fb41f7019e74d01be1676ecfec5330a357c43279504df95c",
+    "sentinel_source_sha256": "333524884a3c6427fc72990ed1f5f41fca2da718b35ba96bbad89fb300316430",
+    "width2_patch_sha256": "191aed0fbbfe95438a75024d8a7d90de569991f25c5065294a0cc65ac456f816",
+    "width8_patch_sha256": "8e656ade4579a8b76744273c84799bd68ef16927cfca812be579a5c366b8e0bf",
+    "historical_width2_transcript_sha256": "1946730e69348a7fb8bf1194c0723a0f3c10d963cccea6b817a00c705c9cdb3b",
+    "historical_width8_transcript_sha256": "3bcbee211f9d93ea77582c6a80d48a02e9ba1d185cfcd6838a57608bc74943bc"
+  },
+  "commands": {
+    "reconstruct": "git worktree add --detach /tmp/k3-union-rootcause a513bc5fb8d9b7b2c7310028f643da708abac284; apply the frozen width-2 source patch; build the retained test target with -j4",
+    "failed_arm": "HIP_VISIBLE_DEVICES=1 DFLASH_TEST_GPU=0 DFLASH_TEST_KIMI_IQ_MULTIROW_EXACT=union_long DFLASH_CUDA_MMVQ_TOKENWISE=0 ROCBLAS_USE_HIPBLASLT=0 test_kimi_k3_progressive_provider",
+    "negative_control": "repeat failed_arm with DFLASH_CUDA_MMVQ_TOKENWISE=1 and, separately, with the later retained ggml HIP backend",
+    "fixed_arm": "apply /tmp/k3-union-persist-weights.patch; rebuild with -j4; repeat failed_arm unchanged"
+  },
+  "failed_reproduction": {
+    "tokenwise_mmvq_0": {
+      "width": 2,
+      "exact": false,
+      "teacher_ms": 58.503065,
+      "candidate_ms": 19.597184,
+      "speedup": 2.985279
+    },
+    "tokenwise_mmvq_1": {
+      "width": 2,
+      "exact": false,
+      "teacher_ms": 59.992405,
+      "candidate_ms": 19.849967,
+      "speedup": 3.022292
+    },
+    "later_ggml_hip_backend": "still exact=no",
+    "mismatch_signature": {
+      "row0": "byte-identical",
+      "rows1_through_244": "all 3584 floats differ",
+      "mismatch_count": 874496
+    }
+  },
+  "causal_fix": {
+    "patch_sha256": "125eee9b8f9d0b8192dc4fd946635ce5798f584c5566f96bc702b4d0efa9c6fa",
+    "fixed_provider_source_sha256": "42c8c04b55ef10a2472327e0308dc5d2d96ffb4e5305c3450a64537ba8674c99",
+    "fixed_test_binary_sha256": "d1f1c05666e947ba0de52cc243125482f9dc4ba35a8e00b8b998a71bc579be58",
+    "only_semantic_change": [
+      "ggml_set_output(state.gate)",
+      "ggml_set_output(state.up)",
+      "ggml_set_output(state.down)"
+    ],
+    "tokenwise_mmvq": false,
+    "interpretation": "The gallocr could recycle INPUT-only weight leaves after their last graph consumer. Marking the once-uploaded weights as outputs preserves their allocations across repeated graph replay."
+  },
+  "recovered_width2": {
+    "rows": 245,
+    "resident_slabs": 12,
+    "teacher_ns": 59571987,
+    "candidate_ns": 20066665,
+    "speedup": 2.968704,
+    "teacher_weight_h2d_bytes": 722856960,
+    "candidate_weight_h2d_bytes": 7139328,
+    "metadata_h2d_bytes": 3567232,
+    "mmvq_launches": 246,
+    "mmq_launches": 0,
+    "exact": true,
+    "padded_tail_exact": true
+  },
+  "recovered_width8": {
+    "rows": 245,
+    "resident_slabs": 12,
+    "teacher_ns": 58070500,
+    "candidate_ns": 16277267,
+    "graph_ns": 10223780,
+    "speedup": 3.567583,
+    "teacher_weight_h2d_bytes": 722856960,
+    "candidate_weight_h2d_bytes": 7139328,
+    "metadata_h2d_bytes": 3567232,
+    "mmvq_launches": 62,
+    "mmq_launches": 0,
+    "exact": true,
+    "padded_tail_exact": true
+  },
+  "production_status": {
+    "already_integrated": true,
+    "mechanism": "Dedicated persistent WEIGHTS backend buffer for gate/up/down, separate COMPUTE buffer for replay input/maps, gallocr-owned scratch.",
+    "introduced_by_commit": "106c1f0fc",
+    "current_end_to_end_m1024_positions_per_second": 6.161574,
+    "current_end_to_end_expert_graph_seconds": 39.425707,
+    "non_additivity": "The recovered microbench prize is the same residency architecture already measured in production; it is not a further 3.57x multiplier on 6.161574 positions/s."
+  },
+  "separate_non_exact_lane": {
+    "candidate": "true multi-column IQ1_S MMQ",
+    "mismatches": 10752,
+    "max_abs": 0.0000104052,
+    "relative_l2": 0.0125854,
+    "verdict": "NOT_EXACT_NOT_PROMOTED"
+  }
+}

@@ -37,6 +37,46 @@ Both remain default off. Unsupported
 quant tuples, shapes, ownership, cache policy, or join policy fail closed. The
 ordinary width-one and non-union paths are unchanged.
 
+### Historical exactness gate correction
+
+The Aug-23 245-row full-12 union runs that originally rejected width two and
+eight did not expose an arithmetic failure. Reconstructing the exact failed
+source at `a513bc5f`, with the frozen provider and sentinel source hashes,
+reproduced `exact=no` with both tokenwise MMVQ disabled and enabled. Loading a
+later ggml HIP backend did not change the failure either.
+
+The failure was a graph-allocation lifetime bug. Gate, up and down were
+uploaded once into tensors marked only as graph inputs. The gallocr was then
+free to reuse those leaf allocations after their last consumer, so the first
+replay could be correct while later replays read overwritten weights. The
+diagnostic signature was exact row zero followed by every float in rows 1--244
+differing: `244 * 3584 = 874,496` mismatches.
+
+The causal discriminator added only:
+
+```cpp
+ggml_set_output(state.gate);
+ggml_set_output(state.up);
+ggml_set_output(state.down);
+```
+
+Those declarations pin the once-uploaded leaves for the complete repeated
+replay. With tokenwise MMVQ still disabled, the same freshly built source and
+fixture changed to byte identity while retaining the original speedup:
+
+| width | rowwise teacher | resident union | speedup | weight H2D | exact |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 2 | 59.571987 ms | 20.066665 ms | 2.968704x | 722,856,960 -> 7,139,328 B | yes |
+| 8 | 58.070500 ms | 16.277267 ms | 3.567583x | 722,856,960 -> 7,139,328 B | yes |
+
+Both padded-tail arms are also byte-identical. This reverses the historical
+NO-GO without relaxing exactness. It does not add another `3.57x` to current
+throughput: the production executor already owns union weights in a dedicated
+`GGML_BACKEND_BUFFER_USAGE_WEIGHTS` buffer, owns replay inputs/maps in a
+separate compute buffer, and leaves gallocr to allocate scratch. The lifetime
+bug therefore cannot occur in the integrated path, and the already measured
+production union gain is this recovered prize expressed end to end.
+
 ## Measured progression
 
 All M1024 arms use physical GPU1 `gfx1151`, the performance platform profile,
