@@ -91,6 +91,45 @@
     "full_logits_captured": false,
     "exactness_label": "behaviorally exact on the registered sentinel; full-logit capture is unavailable on latest main and is not claimed"
   },
+  "m64_prefill_interaction": {
+    "question": "Does the same P30 change add value after the qualified P40 layer-epoch winner?",
+    "same_binary": true,
+    "fixed_flags": {
+      "DFLASH_KIMI_PREFILL_CHUNK": 64,
+      "DFLASH_KIMI_P40_DEVICE_VARIANT_CACHE": 1,
+      "DFLASH_KIMI_P40_LAYER_EPOCH": 1,
+      "DFLASH_KIMI_P58_EXACT_MULTIROW": 1
+    },
+    "control": {
+      "prefill_positions_per_second": 1.075344,
+      "prefill_seconds": 59.516,
+      "stage_total_ms": 59498.263,
+      "experts_ms": 44158.461,
+      "direct_provider_window_ns": 24426316747,
+      "direct_physical_bytes": 110658715648,
+      "sparse_authoritative_h2d_bytes": 110044705792,
+      "borrowed_hit_bytes": 0,
+      "adopted_miss_bytes": 0
+    },
+    "borrowed": {
+      "prefill_positions_per_second": 1.121668,
+      "prefill_seconds": 57.058,
+      "stage_total_ms": 57040.889,
+      "experts_ms": 41682.969,
+      "direct_provider_window_ns": 22556360574,
+      "direct_physical_bytes": 110658715648,
+      "sparse_authoritative_h2d_bytes": 110044705792,
+      "borrowed_hit_bytes": 0,
+      "adopted_miss_bytes": 105007906816
+    },
+    "prefill_speedup": 1.043078,
+    "expert_ms_saved": 2475.492,
+    "traffic_sha256": "57a76723bff549e8284777a4daa75d7b828c126112dde14f9ea91b33b3eb54f9",
+    "traffic_identical": true,
+    "terminal_output_id": 5801,
+    "terminal_output_identical": true,
+    "interpretation": "The wide path had no borrowed sidecar hits; its gain came from adopting cold O_DIRECT miss buffers without a cache-insertion copy."
+  },
   "artifacts": {
     "root": "/home/duster/kimi-k3-deploy/k3-p30-borrowed-records-codefunction-20260824",
     "control_stdout_sha256": "f9f415a24e802724ceae03f64e0b386c932fcdd52f63c02a6fbb5703c152679f",
@@ -99,13 +138,19 @@
     "candidate_stderr_sha256": "4ca67ba4731e481138608896418f598998e2faa89dd77cfc05ac691d201b0d72",
     "post_review_smoke_root": "/home/duster/kimi-k3-deploy/k3-p30-borrowed-records-postreview-20260824",
     "post_review_stdout_sha256": "4f7095a8a64c951e22bba39fa2d144aae627c152d0e9763b1f75db9418758fc0",
-    "post_review_stderr_sha256": "ed2adf981d87a876909ec655d08a8b6331e29531b6d32a3fa85958b7ac0b7a38"
+    "post_review_stderr_sha256": "ed2adf981d87a876909ec655d08a8b6331e29531b6d32a3fa85958b7ac0b7a38",
+    "m64_root": "/home/duster/kimi-k3-deploy/k3-p30-borrowed-m64-20260824",
+    "m64_control_stdout_sha256": "c5ad6d52266981ed58423233827f39403593d42420d54059d6e276534a98cf05",
+    "m64_control_stderr_sha256": "2435c7a78f13df14c8a086e551496ddefd6d3e8a15670c93110db284e9dc659f",
+    "m64_candidate_stdout_sha256": "aa4a65dac5870441b0769dad16b0cd484d74e31c509c8601ca9dba460f91a5aa",
+    "m64_candidate_stderr_sha256": "3709c33bbb326f0c70a6983cc19e15ba0ccfcb075781cd4d357e52ba3c972d1f"
   },
   "tests": [
     "test_kimi_k3_calibrated_provider: PASS",
     "test_kimi_k3_ordered_join: PASS",
     "four-arm short fact control/candidate reversal: identical traffic and output IDs",
     "23-transition P55 code-function A/B: PASS",
-    "post-review rebuilt binary short smoke: 2.363632 true AR/s with expected output IDs"
+    "post-review rebuilt binary short smoke: 2.363632 true AR/s with expected output IDs",
+    "same-binary M64 with P40 layer epoch fixed on: 1.075344 to 1.121668 positions/s"
   ]
 }
