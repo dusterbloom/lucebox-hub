@@ -4,7 +4,7 @@
   "date_utc": "2026-08-24",
   "verdict": "NO-GO",
   "question": "Can the existing exact macro expert provider run synchronously on gfx1201 fast enough to justify a tiled gfx1151-core/gfx1201-expert pipeline?",
-  "decision": "Do not integrate the secondary provider or build the tiled pipeline. The discrete GPU's host-to-device payload service dominates before useful expert compute.",
+  "decision": "Do not integrate the synchronous secondary provider. Its serialized host-to-gfx1201 delivery implementation dominates before useful expert compute; this run does not close a future batched asynchronous provider.",
   "source": {
     "git_head": "1e4aaaf2b95ad54a562326a3e21d481f904167dd",
     "branch": "perf/k3-prefill-causal-core",
@@ -92,19 +92,26 @@
     "expert_stage_regression_ms": 63651.796,
     "expert_stage_slowdown": 3.280928,
     "candidate_direct_io_was_faster": true,
-    "estimated_unattributed_transfer_seconds": [
-      61.2,
-      62.2
-    ],
-    "estimated_effective_payload_h2d_gib_per_second": [
-      1.65,
-      1.67
-    ]
+    "macro_union_weight_h2d_bytes": 104425194496,
+    "macro_union_metadata_h2d_bytes": 1079359376,
+    "macro_union_groups": 21694,
+    "synchronous_weight_set_calls": 65082,
+    "minimum_synchronous_metadata_set_calls": 87800,
+    "minimum_total_immediate_synchronizations": 152882,
+    "pcie5_x16_weight_payload_wire_lower_bound_seconds": 1.66,
+    "unclassified_expert_seconds_after_direct_io_pack_scatter_graph_and_p45_window": 61.872,
+    "unclassified_us_per_minimum_synchronized_call": 405
   },
   "interpretation": {
-    "measured": "Storage and expert arithmetic are not the dominant regression. Moving about 110 GB of prompt expert payload from host staging to the discrete GPU adds roughly 61-62 seconds at the observed transfer path.",
-    "inference": "A tiled cross-device pipeline cannot reach 10 positions/s while it must stream this payload over the measured host-to-gfx1201 path. The synchronous arm failed before any overlap implementation was justified.",
-    "next_action": "Delete the default-off secondary-provider code and return to the single-owner gfx1151 production path."
+    "measured": "Storage and expert arithmetic are not the dominant regression. The candidate performs about 104.4 GB of macro-union weight H2D through 65,082 synchronous tensor-set calls, plus synchronous metadata sets. Those calls are outside the retained scatter and graph timers and leave 61.872 seconds unclassified.",
+    "inference": "The current synchronous delivery implementation can explain the regression through per-call and per-sync serialization. The negotiated PCIe 5.0 x16 link is not itself proven to be the limiting ceiling, so this run rejects only the synchronous provider implementation, not a batched asynchronous gfx1201 provider.",
+    "next_action": "Keep the experimental synchronous provider deleted. A future gfx1201 discriminator is earned only after replacing per-tensor synchronization with bounded same-stream asynchronous union uploads, using the existing pinned payload lifetime."
+  },
+  "post_run_correction": {
+    "date_utc": "2026-08-24",
+    "reason": "Source and counter audit separated actual macro-union H2D from P40/P45 subset counters and found 65,082 immediate stream synchronizations. The original raw-PCIe-ceiling wording was too strong.",
+    "pcie_link": "gfx1201 negotiated 32.0 GT/s x16 (PCIe 5.0 x16)",
+    "verdict_scope": "NO-GO for the measured synchronous implementation only"
   },
   "artifacts_on_lucebox4": {
     "root": "/home/duster/kimi-k3-deploy/k3-gfx1201-prefill-20260824",
