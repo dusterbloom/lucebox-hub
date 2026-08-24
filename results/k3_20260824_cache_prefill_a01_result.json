@@ -1,0 +1,186 @@
+{
+  "schema": "k3-product-discriminator-v1",
+  "id": "K3-20260824-CACHE-PREFILL-A01",
+  "status": "GO_DEFAULT_OFF",
+  "date": "2026-08-24",
+  "scope": "Exact in-memory Kimi-K3 semantic-state reuse. This is warm cached/effective prefill, not cold or arbitrary-prompt prefill.",
+  "verdict": {
+    "primary_gate": "GO",
+    "qualified_metric": "WARM-CACHED-EFFECTIVE-PREFILL-POSITIONS-PER-SECOND",
+    "target_positions_per_second": 200.0,
+    "measured_positions_per_second": 107789.474,
+    "margin_over_target": 538.94737,
+    "default": false,
+    "production_interpretation": "A repeated 1024-token full prompt restored in 9.5 ms and performed zero provider/expert work. A separate native-Kimi changed-suffix test restored the real 73-token message boundary, executed only 21 suffix tokens, and matched the clean cold output token."
+  },
+  "source": {
+    "base_branch": "perf/k3-production-ponytail",
+    "base_commit": "bd0f3b81c8d43abf9eb5c462c37c5fbdff6ee574",
+    "candidate_branch": "perf/k3-prefix-state-cache",
+    "candidate_commit": "d6e538ad75e1a4feb7382c2e343498b013de4770",
+    "production_branch": "perf/k3-production-ponytail",
+    "production_commit": "293f863f",
+    "candidate_and_production_tree": "1539318455a8592b1b901ed05e44e10fe0a9e8e1",
+    "binary_sha256": "d8aeac1e1c02e561dcb67bd9426bd8e40c773e39662816c85f22dbd3dab1fbe0"
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "backend": "HIP/ROCm",
+    "physical_device": "GPU1",
+    "architecture": "gfx1151",
+    "logical_device": 0,
+    "platform_profile": "performance",
+    "topology": "single-owner",
+    "build_parallelism_max": 4
+  },
+  "runtime": {
+    "provider": "calibrated96",
+    "prefill_widths_tested": [8, 64, 1024],
+    "p30_host_cache_bytes": 17179869184,
+    "p40_device_cache_bytes": 8589934592,
+    "p40_layer_epoch": true,
+    "p41_compact_executor": true,
+    "p42_ordered_device_join": true,
+    "p45_async_compact_queue": true,
+    "p46_persistent_routed_prep": true,
+    "exact_macro_union": true,
+    "macro_union_prefetch": true,
+    "snapshot_backend": "CPU",
+    "live_state_backend": "HIP gfx1151",
+    "snapshot_budget_bytes": 8589934592
+  },
+  "correctness": {
+    "snapshot_fixture": {
+      "status": "PASS",
+      "coverage": [
+        "HIP-to-CPU snapshot and CPU-to-HIP restore",
+        "all recurrent convolution and SSM state",
+        "right-sized MLA prefix state",
+        "final logits",
+        "current position and replay metadata",
+        "atomic rejection of malformed layouts"
+      ]
+    },
+    "server_unit_suite": "399/399 PASS",
+    "embedded_template": {
+      "bytes": 24696,
+      "sha256": "05bb501f8ac31fa6b0bf04803b5ada49abf9cdd51c3c90a4719b739df0000722",
+      "runtime_source": "gguf:tokenizer.chat_template",
+      "native_markers": [
+        "<|open|>",
+        "<|close|>",
+        "<|sep|>",
+        "<|end_of_msg|>"
+      ]
+    },
+    "native_m64_changed_suffix": {
+      "prompt_tokens_each_arm": 94,
+      "warm_cached_prefix_tokens": 73,
+      "warm_prefilled_suffix_tokens": 21,
+      "warm_output_text": "It",
+      "cold_output_text": "It",
+      "returned_token_text_identical": true,
+      "hidden_cold_fallback": false
+    },
+    "m1024_full_hit": {
+      "cold_output_text": "It",
+      "warm1_output_text": "It",
+      "warm2_output_text": "It",
+      "warm_provider_calls": 0,
+      "warm_expert_work": 0,
+      "note": "This early performance arm used the then-hardcoded Qwen envelope. It is valid snapshot/state-copy and traffic evidence, but is excluded from Kimi prompt-quality evidence. Native Kimi framing is qualified separately by the M64 suffix arm."
+    }
+  },
+  "measurements": {
+    "m8_early_state_copy_arm": {
+      "prompt_positions": 32,
+      "cold_prefill_ms": 21666.1,
+      "cold_positions_per_second": 1.476961705,
+      "warm1_prefill_ms": 9.0,
+      "warm1_effective_positions_per_second": 3555.556,
+      "warm2_prefill_ms": 8.9,
+      "warm2_effective_positions_per_second": 3595.506,
+      "physical_bytes": 77627842560,
+      "direct_io_ns": 14823561034,
+      "template_note": "state-copy/performance evidence only; predates native Kimi template selection"
+    },
+    "m1024_primary_arm": {
+      "prompt_positions": 1024,
+      "cold_prefill_ms": 177239.0,
+      "cold_positions_per_second": 5.777509465,
+      "cold_stage_ms": {
+        "total": 177105.116,
+        "causal_core": 78979.742,
+        "experts": 83107.634,
+        "join": 10243.992,
+        "output": 4509.013
+      },
+      "physical_bytes": 196638531584,
+      "direct_io_ns": 41274945581,
+      "physical_gib_per_second": 4.436926589,
+      "snapshot_raw_bytes": 492945408,
+      "snapshot_slot_bytes": 493600768,
+      "warm1_prefill_ms": 9.5,
+      "warm1_effective_positions_per_second": 107789.474,
+      "warm2_prefill_ms": 9.5,
+      "warm2_effective_positions_per_second": 107789.474,
+      "warm_prefilled_tokens": 0,
+      "template_note": "state-copy/performance evidence only; predates native Kimi template selection"
+    },
+    "m64_native_changed_suffix": {
+      "prompt_positions": 94,
+      "snapshot_position": 73,
+      "snapshot_raw_bytes": 466652160,
+      "snapshot_slot_bytes": 467307520,
+      "cold_prefill_ms": 52709.0,
+      "cold_prefilled_tokens": 94,
+      "cold_physical_bytes": 136412315648,
+      "cold_direct_io_ns": 28693396066,
+      "cold_physical_gib_per_second": 4.42763,
+      "warm_prefill_ms": 19278.0,
+      "warm_cached_prefix_tokens": 73,
+      "warm_prefilled_suffix_tokens": 21,
+      "warm_effective_full_prompt_positions_per_second": 4.87602,
+      "warm_suffix_positions_per_second": 1.08932,
+      "request_prefill_speedup": 2.73415,
+      "prefill_ms_saved": 33431.0
+    }
+  },
+  "artifacts": {
+    "root": "/home/duster/kimi-k3-deploy/k3-cache-prefix-a01-20260824",
+    "m1024_server_log": {
+      "path": "server2.log",
+      "sha256": "7092225027803c8596cf53b2184b3d6d532c962b35d941d353b219508164c4f4"
+    },
+    "m1024_provider_tsv": {
+      "path": "provider2.tsv",
+      "sha256": "fe82f2b03ee60401e69854845818e7e09e27203ca7cff8a69ae6071cc1ba07fe"
+    },
+    "m8_server_log": {
+      "path": "server_m8.log",
+      "sha256": "ae130c3b99fad95e24aad4119735760adcf2ac94a360b7561c0e9efb14c404d7"
+    },
+    "m8_provider_tsv": {
+      "path": "provider_m8.tsv",
+      "sha256": "1682447137f47e6f6b61f4a4404cdcea220d493e08b14438785b28e83916dc1a"
+    },
+    "native_m64_warm_server_log": {
+      "path": "server_native_m64.log",
+      "sha256": "7922bb265ee3ea471e6a38e1122711f067430765232a82d565fe808844a6fd1e"
+    },
+    "native_m64_cold_server_log": {
+      "path": "server_native_m64_cold.log",
+      "sha256": "e50aa006b69a323c2c2f0f61553da0e0c13d5d53651f2aac194b4801c2a"
+    },
+    "native_m64_first_response_sha256": "139e40632553b650485d9e011f148cbec4c62cea0a7b319b2ab3e6496dd6761d",
+    "native_m64_warm_changed_suffix_response_sha256": "7583e46ffa06f88566185aebd557e1c85ee3900fabd3c04199a1021af7e15d18",
+    "native_m64_cold_changed_suffix_response_sha256": "ad5b7eadd977e8d4528ec74fda141f7c0b3f4da66ae2d1e2b4af926a3b33020a"
+  },
+  "limits": [
+    "The 107789 positions/s number applies only to a complete in-memory full-prompt hit.",
+    "The feature does not improve first-touch cold prefill; the best measured cold M1024 result in this arm is 5.7775 positions/s.",
+    "Arbitrary changed suffixes still execute their uncached causal and expert work.",
+    "The M1024 performance arm is excluded from prompt-quality claims because it predates native Kimi template selection.",
+    "No disk serialization or cross-process snapshot reuse is implemented."
+  ]
+}
