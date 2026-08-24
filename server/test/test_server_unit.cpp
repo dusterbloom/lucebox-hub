@@ -2054,8 +2054,60 @@ static std::string write_marker_tokenizer_fixture(
 }
 
 static std::vector<std::string> marker_spelling_tokens() {
-    return {"<", ">", "/", "|", "_", "a", "d", "e", "i", "m",
-            "n", "r", "s", "t", "u", "y"};
+    return {"<", ">", "/", "|", "_", "=", "\"", "Ġ", "a", "d",
+            "e", "g", "i", "l", "m", "n", "o", "r", "s", "t", "u", "y"};
+}
+
+TEST_CASE(ServerUnitFixture, test_resolve_kimi_native_chat_markers) {
+    const char * real_model = std::getenv("LUCE_TEST_MODEL_KIMI_K3");
+    const bool using_fixture = !real_model || !*real_model;
+    std::string path;
+    if (using_fixture) {
+        std::vector<std::string> tokens = marker_spelling_tokens();
+        tokens.push_back("<|open|>");
+        tokens.push_back("<|close|>");
+        tokens.push_back("<|sep|>");
+        tokens.push_back("<|end_of_msg|>");
+        std::vector<uint32_t> types(tokens.size(), 1);
+        for (size_t i = tokens.size() - 4; i < tokens.size(); ++i) {
+            types[i] = 3;
+        }
+        path = write_marker_tokenizer_fixture(
+            tokens, types, "dflash_test_kimi_native_markers");
+    } else {
+        path = real_model;
+    }
+    Tokenizer tokenizer;
+    TEST_ASSERT(tokenizer.load_from_gguf(path.c_str()));
+
+    const auto system_tag = tokenizer.encode("message role=\"system\"");
+    TEST_ASSERT(!system_tag.empty());
+    ChatMarkers markers;
+    TEST_ASSERT(resolve_chat_markers(tokenizer, markers));
+    TEST_ASSERT(markers.family == "kimi");
+    std::vector<int32_t> system_prefix = {
+        tokenizer.token_to_id("<|open|>")};
+    system_prefix.insert(
+        system_prefix.end(), system_tag.begin(), system_tag.end());
+    system_prefix.push_back(tokenizer.token_to_id("<|sep|>"));
+    TEST_ASSERT(markers.sys_role_prefix == system_prefix);
+    TEST_ASSERT(markers.end_msg_seqs == std::vector<std::vector<int32_t>>({
+        {tokenizer.token_to_id("<|end_of_msg|>")}}));
+    TEST_ASSERT(markers.next_role_starts == std::vector<std::vector<int32_t>>({
+        {tokenizer.token_to_id("<|open|>")}}));
+
+    std::vector<int32_t> rendered = system_prefix;
+    const auto body = tokenizer.encode("system");
+    rendered.insert(rendered.end(), body.begin(), body.end());
+    rendered.push_back(tokenizer.token_to_id("<|close|>"));
+    const auto message = tokenizer.encode("message");
+    rendered.insert(rendered.end(), message.begin(), message.end());
+    rendered.push_back(tokenizer.token_to_id("<|sep|>"));
+    rendered.push_back(tokenizer.token_to_id("<|end_of_msg|>"));
+    rendered.push_back(tokenizer.token_to_id("<|open|>"));
+    TEST_ASSERT(find_all_boundaries(rendered, markers) ==
+                std::vector<int>({(int) rendered.size()}));
+    if (using_fixture) unlink(path.c_str());
 }
 
 TEST_CASE(ServerUnitFixture, test_resolve_qwen_normal_vocab_chat_markers) {
