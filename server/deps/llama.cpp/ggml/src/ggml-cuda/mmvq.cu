@@ -696,6 +696,95 @@ static bool is_gfx1151(const int cc) {
     return cc == GGML_CUDA_CC_OFFSET_AMD + 0x1151;
 }
 
+// Exact dense multi-column service for the K3 core.  Decode one packed weight
+// fragment once, then apply the established one-column vec-dot independently
+// to every activation column.  The caller retains the one-column RDNA4 wave
+// count and reduction tree; only the immutable weight loads are shared.
+template <int ncols_dst>
+static __device__ __forceinline__ void vec_dot_q4_K_q8_1_ncols_exact(
+        const void * __restrict__ vbq,
+        const block_q8_1 * __restrict__ bq8_1,
+        const uint32_t stride_col_y,
+        const int & kbx,
+        const int & iqs,
+        float (&result)[ncols_dst]) {
+    const block_q4_K * bq4_K = (const block_q4_K *) vbq + kbx;
+    int v[2];
+    const int bq8_offset = QR4_K * ((iqs/2) / (QI8_1/2));
+    const int * q4 = (const int *)(bq4_K->qs +
+        16*bq8_offset + 4*((iqs/2)%4));
+    v[0] = q4[0];
+    v[1] = q4[4];
+
+    const uint16_t * scales = (const uint16_t *) bq4_K->scales;
+    uint16_t aux[2];
+    const int scale_group = bq8_offset/2;
+    if (scale_group < 2) {
+        aux[0] = scales[scale_group + 0] & 0x3f3f;
+        aux[1] = scales[scale_group + 2] & 0x3f3f;
+    } else {
+        aux[0] = ((scales[scale_group + 2] >> 0) & 0x0f0f) |
+                 ((scales[scale_group - 2] & 0xc0c0) >> 2);
+        aux[1] = ((scales[scale_group + 2] >> 4) & 0x0f0f) |
+                 ((scales[scale_group - 0] & 0xc0c0) >> 2);
+    }
+    const uint8_t * sc = (const uint8_t *) aux;
+    const uint8_t * m = sc + 2;
+
+#pragma unroll
+    for (int col = 0; col < ncols_dst; ++col) {
+        int u[2*QR4_K];
+        float d8[QR4_K];
+#pragma unroll
+        for (int i = 0; i < QR4_K; ++i) {
+            const block_q8_1 * bq8i =
+                bq8_1 + col*stride_col_y + bq8_offset + i;
+            d8[i] = __low2float(bq8i->ds);
+            const int * q8 = (const int *) bq8i->qs + ((iqs/2)%4);
+            u[2*i + 0] = q8[0];
+            u[2*i + 1] = q8[4];
+        }
+        result[col] = vec_dot_q4_K_q8_1_impl_vmmq(
+            v, u, sc, m, bq4_K->dm, d8);
+    }
+}
+
+template <int ncols_dst>
+static __device__ __forceinline__ void vec_dot_q6_K_q8_1_ncols_exact(
+        const void * __restrict__ vbq,
+        const block_q8_1 * __restrict__ bq8_1,
+        const uint32_t stride_col_y,
+        const int & kbx,
+        const int & iqs,
+        float (&result)[ncols_dst]) {
+    const block_q6_K * bq6_K = (const block_q6_K *) vbq + kbx;
+    const int bq8_offset =
+        2*QR6_K*(iqs/(QI6_K/2)) + (iqs%(QI6_K/2))/(QI6_K/4);
+    const int scale_offset =
+        (QI6_K/4)*(iqs/(QI6_K/2)) + (iqs%(QI6_K/2))/(QI6_K/8);
+    const int vh_shift = 2*((iqs%(QI6_K/2))/(QI6_K/4));
+    const int vl = get_int_b2(bq6_K->ql, iqs);
+    const int vh = get_int_b2(
+        bq6_K->qh,
+        (QI6_K/4)*(iqs/(QI6_K/2)) + iqs%(QI6_K/4)) >> vh_shift;
+    const int8_t * scales = bq6_K->scales + scale_offset;
+
+#pragma unroll
+    for (int col = 0; col < ncols_dst; ++col) {
+        int u[QR6_K];
+        float d8[QR6_K];
+#pragma unroll
+        for (int i = 0; i < QR6_K; ++i) {
+            const block_q8_1 * bq8i =
+                bq8_1 + col*stride_col_y + bq8_offset + 2*i;
+            u[i] = get_int_b4(bq8i->qs, iqs % QI8_1);
+            d8[i] = __low2float(bq8i->ds);
+        }
+        result[col] = vec_dot_q6_K_q8_1_impl_mmvq(
+            vl, vh, u, scales, bq6_K->d, d8);
+    }
+}
+
 // Dense four-column projections use the same weight row for every column.
 // Decode each packed ROCmFP4 fragment once while preserving the original
 // per-column DP4A and floating-point accumulation order.
@@ -755,8 +844,11 @@ template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false,
           int fixed_ncols_x = 0, bool unroll_k_loop_2 = false,
           bool reuse_rocmfp4_weights = false,
           bool c_fp3_packed24 = false, bool c_fp4_x4 = false,
-          bool sparse_k = false>
-__launch_bounds__(calc_nwarps(type, ncols_dst, get_device_table_id())*ggml_cuda_get_physical_warp_size(), 1)
+          bool exact_qk_multirow = false, bool sparse_k = false>
+__launch_bounds__((exact_qk_multirow
+    ? calc_nwarps(type, 1, get_device_table_id())
+    : calc_nwarps(type, ncols_dst, get_device_table_id()))*
+    ggml_cuda_get_physical_warp_size(), 1)
 static __global__ void mul_mat_vec_q(
         const void * __restrict__ vx, const void * __restrict__ vy, const int32_t * __restrict__ ids, const ggml_cuda_mm_fusion_args_device fusion, float * __restrict__ dst,
         const uint32_t ncols_x, const uint3 nchannels_y, const uint32_t stride_row_x, const uint32_t stride_col_y,
@@ -769,8 +861,12 @@ static __global__ void mul_mat_vec_q(
     constexpr int qi  = ggml_cuda_type_traits<type>::qi;
     constexpr int vdr = get_vdr_mmvq(type);
     constexpr mmvq_parameter_table_id table_id = get_device_table_id();
-    constexpr int nwarps = calc_nwarps(type, ncols_dst, table_id);
-    constexpr int rows_per_cuda_block = calc_rows_per_block(ncols_dst, table_id, small_k, nwarps);
+    constexpr int nwarps = exact_qk_multirow
+        ? calc_nwarps(type, 1, table_id)
+        : calc_nwarps(type, ncols_dst, table_id);
+    constexpr int rows_per_cuda_block = exact_qk_multirow
+        ? calc_rows_per_block(1, table_id, false, nwarps)
+        : calc_rows_per_block(ncols_dst, table_id, small_k, nwarps);
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
 
     const     int tid = warp_size*threadIdx.y + threadIdx.x;
@@ -794,10 +890,17 @@ static __global__ void mul_mat_vec_q(
                       (type == GGML_TYPE_Q4_0_ROCMFP4_FAST &&
                        (ncols_dst == 4 || ncols_dst == 5)),
                   "FP4 x4 MMVQ specialization requires ROCmFP4-fast q4/q5");
+    static_assert(!exact_qk_multirow ||
+                      ((type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q6_K) &&
+                       ncols_dst == 4 && !has_fusion &&
+                       !small_k && fixed_ncols_x == 0 && !unroll_k_loop_2 &&
+                       !reuse_rocmfp4_weights && !c_fp3_packed24 && !c_fp4_x4),
+                  "exact QK multirow requires unfused Q4_K/Q6_K width 4");
     static_assert(!sparse_k ||
                       ((type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ2_XXS) &&
                        ncols_dst == 1 && !has_fusion && !small_k && fixed_ncols_x == 0 &&
-                       !unroll_k_loop_2 && !reuse_rocmfp4_weights && !c_fp3_packed24 && !c_fp4_x4),
+                       !unroll_k_loop_2 && !reuse_rocmfp4_weights && !c_fp3_packed24 && !c_fp4_x4 &&
+                       !exact_qk_multirow),
                   "sparse-K MMVQ is limited to the calibrated one-column IQ path");
 
     const uint32_t channel_dst = blockIdx.y;
@@ -901,7 +1004,29 @@ static __global__ void mul_mat_vec_q(
 
     const block_q8_1 * y = ((const block_q8_1 *) vy) + sample_y*stride_sample_y + channel_y*stride_channel_y;
 
-    if constexpr (reuse_rocmfp4_weights) {
+    if constexpr (exact_qk_multirow) {
+        const int kbx_offset = sample_x*stride_sample_x +
+            channel_x*stride_channel_x + row0*stride_row_x;
+        for (int kbx = tid/(qi/vdr); kbx < blocks_per_row_x;
+             kbx += blocks_per_iter) {
+            const int kby = kbx*(qk/QK8_1);
+            const int kqs = vdr*(tid%(qi/vdr));
+            float dots[ncols_dst];
+            if constexpr (type == GGML_TYPE_Q4_K) {
+                vec_dot_q4_K_q8_1_ncols_exact<ncols_dst>(
+                    vx, y + kby, stride_col_y,
+                    kbx_offset + kbx, kqs, dots);
+            } else {
+                vec_dot_q6_K_q8_1_ncols_exact<ncols_dst>(
+                    vx, y + kby, stride_col_y,
+                    kbx_offset + kbx, kqs, dots);
+            }
+#pragma unroll
+            for (int col = 0; col < ncols_dst; ++col) {
+                tmp[col][0] += dots[col];
+            }
+        }
+    } else if constexpr (reuse_rocmfp4_weights) {
         const int kbx_offset = sample_x*stride_sample_x +
                                channel_x*stride_channel_x + row0*stride_row_x;
         for (int kbx = tid / (qi/vdr); kbx < blocks_per_row_x; kbx += blocks_per_iter) {
@@ -1816,6 +1941,19 @@ static std::pair<dim3, dim3> calc_launch_params(
     return {block_nums, block_dims};
 }
 
+template<ggml_type type>
+static std::pair<dim3, dim3> calc_exact_qk_multirow_launch_params(
+        const int nrows_x, const int nchannels_dst,
+        const int warp_size, const mmvq_parameter_table_id table_id) {
+    const int nwarps = calc_nwarps(type, 1, table_id);
+    const int rpb = calc_rows_per_block(1, table_id, false, nwarps);
+    const int64_t nblocks = (nrows_x + rpb - 1)/rpb;
+    return {
+        dim3(nblocks, nchannels_dst, 1),
+        dim3(warp_size, nwarps, 1),
+    };
+}
+
 template<ggml_type type, int c_ncols_dst, bool small_k = false,
          int fixed_ncols_x = 0, bool unroll_k_loop_2 = false,
          bool reuse_rocmfp4_weights = false,
@@ -2199,6 +2337,30 @@ static void mul_mat_vec_q_switch_ncols_dst(
         const char * e = std::getenv("DFLASH_CUDA_MMVQ_TOKENWISE");
         return e && e[0] == '1' && e[1] == '\0';
     }();
+
+    static const bool use_exact_qk_width4 = []() {
+        const char * e =
+            std::getenv("DFLASH_CUDA_MMVQ_QK_EXACT_WIDTH4");
+        return e && e[0] == '1' && e[1] == '\0';
+    }();
+
+    if constexpr (type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q6_K) {
+        if (use_exact_qk_width4 && is_gfx1151(cc) && !has_ids &&
+            !has_fusion && ncols_dst == 4 && nsamples_dst == 1) {
+            constexpr int c_ncols_dst = 4;
+            const auto dims = calc_exact_qk_multirow_launch_params<type>(
+                nrows_x, nchannels_dst, warp_size, table_id);
+            mul_mat_vec_q<
+                type, c_ncols_dst, false, false, 0, false, false, false,
+                false, true, false><<<dims.first, dims.second, 0, stream>>>(
+                    vx, vy, nullptr, fusion, dst, ncols_x, nchannels_y_fd,
+                    stride_row_x, stride_col_y, stride_col_dst,
+                    channel_ratio_fd, stride_channel_x, stride_channel_y,
+                    stride_channel_dst, sample_ratio_fd, stride_sample_x,
+                    stride_sample_y, stride_sample_dst, ids_stride, false);
+            return;
+        }
+    }
 
     if (use_tokenwise_mmid && has_ids && ncols_dst > 1) {
         constexpr int c_ncols_dst = 1;
@@ -2934,7 +3096,7 @@ void ggml_cuda_mul_mat_vec_sparse_k_blocks(
     const uint3 unit_ratio = init_fastdiv_values(1);
 
 #define GGML_SPARSE_K_LAUNCH(type_name)                                                       \
-    mul_mat_vec_q<type_name, 1, false, false, 0, false, false, false, false, true>             \
+    mul_mat_vec_q<type_name, 1, false, false, 0, false, false, false, false, false, true>      \
         <<<block_nums, block_dims, 0, stream>>>(                                              \
         weights->data, x_q8.ptr, (const int32_t *) natural_to_compact->data, fusion,          \
         (float *) dst->data, 3072,                                                            \

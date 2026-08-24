@@ -117,7 +117,8 @@ ggml_tensor * kda_conv1d(ggml_context * ctx,
                          int d_conv,
                          int head_dim,
                          int n_head,
-                         bool commit_state) {
+                         bool commit_state,
+                         ggml_tensor ** terminal_state = nullptr) {
     const int64_t d_inner = static_cast<int64_t>(head_dim) * n_head;
     const int64_t state_rows = d_conv - 1;
     const int64_t n_tokens = x->ne[1];
@@ -132,11 +133,14 @@ ggml_tensor * kda_conv1d(ggml_context * ctx,
                                            ggml_transpose(ctx, projected), 0);
 
     // Drop the oldest row and persist the newest d_conv-1 values.
-    if (commit_state) {
+    if (commit_state || terminal_state) {
         ggml_tensor * newest = ggml_view_3d(ctx, conv_input,
             state_rows, d_inner, 1, conv_input->nb[1], conv_input->nb[2],
             static_cast<size_t>(n_tokens) * conv_input->nb[0]);
-        ggml_build_forward_expand(graph, ggml_cpy(ctx, newest, state));
+        if (commit_state) {
+            ggml_build_forward_expand(graph, ggml_cpy(ctx, newest, state));
+        }
+        if (terminal_state) *terminal_state = newest;
     }
 
     ggml_tensor * cw = ggml_reshape_2d(ctx, conv_weight, d_conv, d_inner);
@@ -144,6 +148,11 @@ ggml_tensor * kda_conv1d(ggml_context * ctx,
     out = ggml_reshape_4d(ctx, out, head_dim, n_head, n_tokens, 1);
     return out;
 }
+
+struct KdaTerminalState {
+    ggml_tensor * conv = nullptr;
+    ggml_tensor * ssm = nullptr;
+};
 
 ggml_tensor * build_kda(ggml_context * ctx,
                         ggml_cgraph * graph,
@@ -153,7 +162,8 @@ ggml_tensor * build_kda(ggml_context * ctx,
                         ggml_tensor * cur,
                         bool commit_state,
                         bool capture_replay,
-                        int replay_token_offset = 0) {
+                        int replay_token_offset = 0,
+                        KdaTerminalState * terminal_state = nullptr) {
     const int head_dim = w.kda_head_dim;
     const int n_head = w.n_head;
     const int n_tokens = static_cast<int>(cur->ne[1]);
@@ -171,15 +181,18 @@ ggml_tensor * build_kda(ggml_context * ctx,
         ggml_build_forward_expand(graph, ggml_cpy(ctx, cur, replay_dst));
     }
 
+    ggml_tensor * q_terminal = nullptr;
+    ggml_tensor * k_terminal = nullptr;
+    ggml_tensor * v_terminal = nullptr;
     ggml_tensor * q = kda_conv1d(ctx, graph, cache.conv_state, 0, cur,
         layer.wq, layer.ssm_q_conv, w.ssm_d_conv, head_dim, n_head,
-        commit_state);
+        commit_state, terminal_state ? &q_terminal : nullptr);
     ggml_tensor * k = kda_conv1d(ctx, graph, cache.conv_state, 1, cur,
         layer.wk, layer.ssm_k_conv, w.ssm_d_conv, head_dim, n_head,
-        commit_state);
+        commit_state, terminal_state ? &k_terminal : nullptr);
     ggml_tensor * v = kda_conv1d(ctx, graph, cache.conv_state, 2, cur,
         layer.wv, layer.ssm_v_conv, w.ssm_d_conv, head_dim, n_head,
-        commit_state);
+        commit_state, terminal_state ? &v_terminal : nullptr);
 
     ggml_tensor * decay = ggml_mul_mat(ctx, layer.ssm_f_a, cur);
     decay = ggml_mul_mat(ctx, layer.ssm_f_b, decay);
@@ -223,6 +236,12 @@ ggml_tensor * build_kda(ggml_context * ctx,
     if (commit_state) {
         ggml_build_forward_expand(graph,
             ggml_cpy(ctx, new_state, cache.ssm_state));
+    }
+    if (terminal_state) {
+        GGML_ASSERT(!commit_state && q_terminal && k_terminal && v_terminal);
+        terminal_state->conv = ggml_concat(
+            ctx, ggml_concat(ctx, q_terminal, k_terminal, 1), v_terminal, 1);
+        terminal_state->ssm = new_state;
     }
 
     ggml_tensor * gate = ggml_mul_mat(ctx, layer.ssm_g, cur);
@@ -428,6 +447,28 @@ struct GraphOutput {
     size_t bytes = 0;
 };
 
+struct GraphDevicePublish {
+    ggml_tensor * source = nullptr;
+    ggml_tensor * destination = nullptr;
+};
+
+struct GraphExecutionTiming {
+    uint64_t compute_ns = 0;
+    uint64_t publish_ns = 0;
+};
+
+bool same_tensor_layout(
+        const ggml_tensor * left, const ggml_tensor * right) {
+    if (!left || !right || left->type != right->type) return false;
+    for (int dimension = 0; dimension < GGML_MAX_DIMS; ++dimension) {
+        if (left->ne[dimension] != right->ne[dimension] ||
+            left->nb[dimension] != right->nb[dimension]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool read_token_embeddings_on_host(
         const KimiK3Weights & w,
         const std::vector<int32_t> & tokens,
@@ -469,8 +510,12 @@ bool run_host_boundary_graph(ggml_backend_t backend,
                              ggml_cgraph * graph,
                              const std::vector<GraphInput> & inputs,
                              const std::vector<GraphOutput> & outputs,
-                             const char * phase) {
+                             const char * phase,
+                             const std::vector<GraphDevicePublish> & publishes = {},
+                             GraphExecutionTiming * timing = nullptr) {
     (void)ctx;
+    using Clock = std::chrono::steady_clock;
+    if (timing) *timing = GraphExecutionTiming{};
     for (const GraphOutput & output : outputs) {
         if (!output.tensor || !output.data || output.bytes == 0 ||
             output.bytes != ggml_nbytes(output.tensor)) {
@@ -492,9 +537,20 @@ bool run_host_boundary_graph(ggml_backend_t backend,
             return false;
         }
     }
+    for (const GraphDevicePublish & publish : publishes) {
+        if (!same_tensor_layout(publish.source, publish.destination)) {
+            set_last_error(std::string("Kimi-K3 ") + phase +
+                           ": invalid device publication");
+            return false;
+        }
+    }
     for (const GraphOutput & output : outputs) {
         ggml_set_output(output.tensor);
         ggml_build_forward_expand(graph, output.tensor);
+    }
+    for (const GraphDevicePublish & publish : publishes) {
+        ggml_set_output(publish.source);
+        ggml_build_forward_expand(graph, publish.source);
     }
     ggml_gallocr_t allocator = ggml_gallocr_new(
         ggml_backend_get_default_buffer_type(backend));
@@ -522,14 +578,36 @@ bool run_host_boundary_graph(ggml_backend_t backend,
                 input.tensor, input.data, 0, input.bytes);
         }
     }
-    const ggml_status status =
-        ggml_backend_graph_compute(backend, graph);
+    Clock::time_point compute_begin;
+    if (timing) compute_begin = Clock::now();
+    const ggml_status status = ggml_backend_graph_compute(backend, graph);
+    if (timing) {
+        timing->compute_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                Clock::now() - compute_begin).count());
+    }
     if (status != GGML_STATUS_SUCCESS) {
         set_last_error(std::string("Kimi-K3 ") + phase +
                        ": graph compute failed with status " +
                        std::to_string(static_cast<int>(status)));
         ggml_gallocr_free(allocator);
         return false;
+    }
+    if (!publishes.empty()) {
+        Clock::time_point publish_begin;
+        if (timing) publish_begin = Clock::now();
+        for (const GraphDevicePublish & publish : publishes) {
+            ggml_backend_tensor_copy_async(
+                backend, backend, publish.source, publish.destination);
+        }
+        // Publication sources are gallocr scratch. Keep them live until the
+        // complete recurrent state is visible to the following causal group.
+        ggml_backend_synchronize(backend);
+        if (timing) {
+            timing->publish_ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    Clock::now() - publish_begin).count());
+        }
     }
     for (const GraphOutput & output : outputs) {
         ggml_backend_tensor_get(
@@ -605,6 +683,7 @@ struct PersistentRoutedGraph {
 };
 
 constexpr int kDeferredRouterWidth = 8;
+constexpr int kExactCoreGroupWidth = 4;
 
 struct PersistentRouter8Graph {
     ggml_context * ctx = nullptr;
@@ -1542,6 +1621,205 @@ bool exact_multirow_layer_row(
     return ok;
 }
 
+struct ExactMultirowCoreGroup {
+    std::vector<float> prefix;
+    std::vector<float> prepared;
+    uint64_t graph_ns = 0;
+    uint64_t publish_ns = 0;
+};
+
+bool exact_multirow_core_group(
+        ggml_backend_t backend,
+        const KimiK3Weights & w,
+        KimiK3Cache & cache,
+        int model_layer,
+        int token_begin,
+        const std::vector<float> & hidden,
+        const std::vector<std::vector<float>> & checkpoints,
+        ExactMultirowCoreGroup & output) {
+    const size_t hidden_width = static_cast<size_t>(w.n_embd);
+    const size_t group_values = hidden_width * kExactCoreGroupWidth;
+    if (model_layer < 0 || model_layer >= w.n_layer || token_begin < 0 ||
+        static_cast<size_t>(token_begin) * hidden_width + group_values >
+            hidden.size()) {
+        set_last_error(
+            "Kimi-K3 exact core group is outside its width-four envelope");
+        return false;
+    }
+
+    const KimiK3Layer & layer = w.layers[static_cast<size_t>(model_layer)];
+    if (!layer.recurrent) {
+        set_last_error("Kimi-K3 exact core grouping requires a KDA layer");
+        return false;
+    }
+    KimiK3LayerCache & layer_cache =
+        cache.layers[static_cast<size_t>(model_layer)];
+    const bool banked = model_layer % w.attn_res_block_size == 0;
+    std::vector<std::vector<float>> checkpoint_group;
+    checkpoint_group.reserve(checkpoints.size());
+    for (const std::vector<float> & checkpoint : checkpoints) {
+        const size_t begin = static_cast<size_t>(token_begin) * hidden_width;
+        if (checkpoint.size() < begin + group_values) {
+            set_last_error("Kimi-K3 exact core checkpoint shape is invalid");
+            return false;
+        }
+        checkpoint_group.emplace_back(
+            checkpoint.begin() + static_cast<std::ptrdiff_t>(begin),
+            checkpoint.begin() +
+                static_cast<std::ptrdiff_t>(begin + group_values));
+    }
+
+    ggml_context * ctx = new_kimi_step_context();
+    if (!ctx) {
+        set_last_error("Kimi-K3 exact core group: context allocation failed");
+        return false;
+    }
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 32768, false);
+    std::vector<GraphInput> inputs;
+    ggml_tensor * hidden_in = ggml_new_tensor_2d(
+        ctx, GGML_TYPE_F32, w.n_embd, kExactCoreGroupWidth);
+    ggml_set_input(hidden_in);
+    inputs.push_back({
+        hidden_in,
+        hidden.data() + static_cast<size_t>(token_begin) * hidden_width,
+        group_values * sizeof(float)});
+
+    AttnResBank residuals;
+    populate_attn_res_bank(
+        ctx, w, kExactCoreGroupWidth, checkpoint_group, residuals, inputs);
+    ggml_tensor * prefix = hidden_in;
+    ggml_tensor * cur = residuals.mix(prefix, layer.attn_res_score);
+    if (banked) residuals.push(prefix);
+    cur = rms_norm(ctx, cur, layer.attn_norm, w.rms_eps);
+    KdaTerminalState terminal;
+    cur = build_kda(
+        ctx, graph, w, layer, layer_cache, cur,
+        /*commit_state=*/false,
+        /*capture_replay=*/true, token_begin, &terminal);
+    prefix = banked ? cur : ggml_add(ctx, prefix, cur);
+    cur = residuals.mix(prefix, layer.ffn_res_score);
+    cur = rms_norm(ctx, cur, layer.ffn_norm, w.rms_eps);
+
+    output.prefix.resize(group_values);
+    output.prepared.resize(group_values);
+    GraphExecutionTiming timing;
+    const bool ok = run_host_boundary_graph(
+        backend, ctx, graph, inputs,
+        {
+            {prefix, output.prefix.data(), group_values * sizeof(float)},
+            {cur, output.prepared.data(), group_values * sizeof(float)},
+        },
+        "P58 exact width-four KDA core",
+        {
+            {terminal.conv, layer_cache.conv_state},
+            {terminal.ssm, layer_cache.ssm_state},
+        },
+        &timing);
+    output.graph_ns = timing.compute_ns;
+    output.publish_ns = timing.publish_ns;
+    ggml_free(ctx);
+    return ok;
+}
+
+bool exact_multirow_prepared_row(
+        ggml_backend_t backend,
+        const KimiK3Weights & w,
+        int model_layer,
+        int token_index,
+        const float * prefix_row,
+        const float * prepared_row,
+        ExactMultirowLayerRow & output,
+        PersistentRoutedPreparation * persistent,
+        bool defer_router) {
+    const KimiK3Layer & layer = w.layers[static_cast<size_t>(model_layer)];
+    const bool dense = model_layer < w.n_dense_lead;
+    const size_t hidden_width = static_cast<size_t>(w.n_embd);
+    ggml_context * ctx = new_kimi_step_context();
+    if (!ctx) {
+        set_last_error(
+            "Kimi-K3 exact row preparation: context allocation failed");
+        return false;
+    }
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 16384, false);
+    ggml_tensor * cur = ggml_new_tensor_2d(
+        ctx, GGML_TYPE_F32, w.n_embd, 1);
+    ggml_set_input(cur);
+    std::vector<GraphInput> inputs = {
+        {cur, prepared_row, hidden_width * sizeof(float)},
+    };
+    std::vector<GraphOutput> outputs;
+    if (dense) {
+        ggml_tensor * prefix = ggml_new_tensor_2d(
+            ctx, GGML_TYPE_F32, w.n_embd, 1);
+        ggml_set_input(prefix);
+        inputs.push_back({
+            prefix, prefix_row, hidden_width * sizeof(float)});
+        ggml_tensor * gate = ggml_mul_mat(ctx, layer.ffn_gate, cur);
+        ggml_tensor * up = ggml_mul_mat(ctx, layer.ffn_up, cur);
+        ggml_tensor * dense_output = situ(
+            ctx, gate, up, w.situ_beta, w.situ_linear_beta);
+        dense_output = ggml_mul_mat(ctx, layer.ffn_down, dense_output);
+        ggml_tensor * hidden_out = ggml_add(ctx, prefix, dense_output);
+        output.hidden.resize(hidden_width);
+        outputs.push_back({
+            hidden_out, output.hidden.data(), hidden_width * sizeof(float)});
+    } else {
+        ggml_tensor * routed =
+            ggml_mul_mat(ctx, layer.ffn_routed_down, cur);
+        ggml_tensor * selected = nullptr;
+        ggml_tensor * route_weights = nullptr;
+        if (!defer_router) {
+            TopKMoeRouterResult router =
+                build_kimi_router(ctx, graph, w, layer, cur);
+            selected = ggml_cont(ctx, router.selected);
+            route_weights = ggml_cont(ctx, router.weights_2d);
+        }
+        ggml_tensor * shared_gate =
+            ggml_mul_mat(ctx, layer.ffn_gate_shexp, cur);
+        ggml_tensor * shared_up =
+            ggml_mul_mat(ctx, layer.ffn_up_shexp, cur);
+        ggml_tensor * shared = situ(
+            ctx, shared_gate, shared_up,
+            w.situ_beta, w.situ_linear_beta);
+        shared = ggml_mul_mat(ctx, layer.ffn_down_shexp, shared);
+
+        output.prefix.assign(prefix_row, prefix_row + hidden_width);
+        output.routed.resize(static_cast<size_t>(w.n_expert_latent));
+        output.selected.resize(static_cast<size_t>(w.n_expert_used));
+        output.route_weights.resize(static_cast<size_t>(w.n_expert_used));
+        output.shared.resize(hidden_width);
+        outputs = {
+            {routed, output.routed.data(),
+             output.routed.size() * sizeof(float)},
+            {shared, output.shared.data(), hidden_width * sizeof(float)},
+        };
+        if (defer_router) {
+            ggml_tensor * staging = persistent
+                ? persistent->router8_staging_row(
+                    token_index % kDeferredRouterWidth) : nullptr;
+            if (!staging) {
+                ggml_free(ctx);
+                set_last_error(
+                    "Kimi-K3 width8 router staging row is unavailable");
+                return false;
+            }
+            ggml_build_forward_expand(
+                graph, ggml_cpy(ctx, cur, staging));
+        } else {
+            outputs.push_back({selected, output.selected.data(),
+                               output.selected.size() * sizeof(int32_t)});
+            outputs.push_back({route_weights, output.route_weights.data(),
+                               output.route_weights.size() * sizeof(float)});
+        }
+    }
+    const bool ok = run_host_boundary_graph(
+        backend, ctx, graph, inputs, outputs,
+        dense ? "P58 exact row dense tail" :
+                "P58 exact row routed preparation");
+    ggml_free(ctx);
+    return ok;
+}
+
 bool exact_multirow_join_row(
         ggml_backend_t backend,
         const KimiK3Weights & w,
@@ -1695,6 +1973,25 @@ bool streamed_kimi_k3_forward_exact_multirow(
         return false;
     }
 
+    int exact_core_group_width = 1;
+    const char * exact_core_group =
+        std::getenv("DFLASH_KIMI_P58_EXACT_CORE_GROUP_WIDTH");
+    if (exact_core_group && *exact_core_group &&
+        std::strcmp(exact_core_group, "0") != 0) {
+        if (std::strcmp(exact_core_group, "4") != 0) {
+            set_last_error(
+                "DFLASH_KIMI_P58_EXACT_CORE_GROUP_WIDTH must be 0 or 4");
+            return false;
+        }
+        exact_core_group_width = kExactCoreGroupWidth;
+        if (macro_width % exact_core_group_width != 0) {
+            set_last_error(
+                "Kimi-K3 exact core grouping requires a macro width "
+                "divisible by four");
+            return false;
+        }
+    }
+
     bool persistent_requested = false;
     bool deferred_router = false;
     std::string persistent_error;
@@ -1716,6 +2013,13 @@ bool streamed_kimi_k3_forward_exact_multirow(
         set_last_error(
             "Kimi-K3 deferred router width8 requires P46 and a macro width "
             "divisible by 8");
+        return false;
+    }
+    if (exact_core_group_width == kExactCoreGroupWidth &&
+        persistent_requested && !deferred_router) {
+        set_last_error(
+            "Kimi-K3 exact core grouping is incompatible with P46 routed "
+            "preparation; P46 is allowed only as Router8 staging");
         return false;
     }
     PersistentRoutedPreparation * persistent = nullptr;
@@ -1744,6 +2048,8 @@ bool streamed_kimi_k3_forward_exact_multirow(
     uint64_t expert_ns = 0;
     uint64_t join_ns = 0;
     uint64_t output_ns = 0;
+    uint64_t grouped_graph_ns = 0;
+    uint64_t grouped_publish_ns = 0;
     ExactMultirowSnapshotGuard recurrent_guard(backend, cache);
 
     std::vector<float> hidden(hidden_values);
@@ -1769,20 +2075,59 @@ bool streamed_kimi_k3_forward_exact_multirow(
         phase_begin = Clock::now();
         if (il < w.n_dense_lead) {
             std::vector<float> next_hidden(hidden_values);
-            for (int token = 0; token < macro_width; ++token) {
-                ExactMultirowLayerRow row;
-                if (!exact_multirow_layer_row(
-                        backend, w, cache, il, base_pos, token,
-                        hidden.data() +
-                            static_cast<size_t>(token) * hidden_width,
-                        checkpoints, row, persistent) ||
-                    row.hidden.size() != hidden_width) {
-                    return false;
+            if (exact_core_group_width == kExactCoreGroupWidth &&
+                layer.recurrent) {
+                for (int group = 0; group < macro_width;
+                     group += kExactCoreGroupWidth) {
+                    ExactMultirowCoreGroup core;
+                    if (!exact_multirow_core_group(
+                            backend, w, cache, il, group, hidden,
+                            checkpoints, core)) {
+                        return false;
+                    }
+                    grouped_graph_ns += core.graph_ns;
+                    grouped_publish_ns += core.publish_ns;
+                    for (int row_index = 0;
+                         row_index < kExactCoreGroupWidth; ++row_index) {
+                        ExactMultirowLayerRow row;
+                        const int token = group + row_index;
+                        if (!exact_multirow_prepared_row(
+                                backend, w, il, token,
+                                core.prefix.data() +
+                                    static_cast<size_t>(row_index) *
+                                        hidden_width,
+                                core.prepared.data() +
+                                    static_cast<size_t>(row_index) *
+                                        hidden_width,
+                                row, persistent,
+                                /*defer_router=*/false) ||
+                            row.hidden.size() != hidden_width) {
+                            return false;
+                        }
+                        std::copy(
+                            row.hidden.begin(), row.hidden.end(),
+                            next_hidden.begin() +
+                                static_cast<std::ptrdiff_t>(
+                                    token * hidden_width));
+                    }
                 }
-                std::copy(
-                    row.hidden.begin(), row.hidden.end(),
-                    next_hidden.begin() +
-                        static_cast<std::ptrdiff_t>(token * hidden_width));
+            } else {
+                for (int token = 0; token < macro_width; ++token) {
+                    ExactMultirowLayerRow row;
+                    if (!exact_multirow_layer_row(
+                            backend, w, cache, il, base_pos, token,
+                            hidden.data() +
+                                static_cast<size_t>(token) * hidden_width,
+                            checkpoints, row, persistent) ||
+                        row.hidden.size() != hidden_width) {
+                        return false;
+                    }
+                    std::copy(
+                        row.hidden.begin(), row.hidden.end(),
+                        next_hidden.begin() +
+                            static_cast<std::ptrdiff_t>(
+                                token * hidden_width));
+                }
             }
             core_ns += elapsed_ns(phase_begin);
             if (banked) checkpoints.push_back(checkpoint_value);
@@ -1813,15 +2158,8 @@ bool streamed_kimi_k3_forward_exact_multirow(
         }
         LayerRouteObservationGuard observation_guard(
             observation_active ? prefill_service : nullptr);
-        for (int token = 0; token < macro_width; ++token) {
-            ExactMultirowLayerRow row;
-            if (!exact_multirow_layer_row(
-                    backend, w, cache, il, base_pos, token,
-                    hidden.data() +
-                        static_cast<size_t>(token) * hidden_width,
-                    checkpoints, row, persistent, deferred_router)) {
-                return false;
-            }
+        const auto copy_prepared_row = [&] (
+                int token, const ExactMultirowLayerRow & row) {
             std::copy(row.prefix.begin(), row.prefix.end(),
                 prefix.begin() +
                     static_cast<std::ptrdiff_t>(token * hidden_width));
@@ -1887,6 +2225,48 @@ bool streamed_kimi_k3_forward_exact_multirow(
                     set_last_error(
                         "Kimi-K3 P58 routed observation failed at layer " +
                         std::to_string(il) + ": " + provider_error);
+                    return false;
+                }
+            }
+            return true;
+        };
+        if (exact_core_group_width == kExactCoreGroupWidth &&
+            layer.recurrent) {
+            for (int group = 0; group < macro_width;
+                 group += kExactCoreGroupWidth) {
+                ExactMultirowCoreGroup core;
+                if (!exact_multirow_core_group(
+                        backend, w, cache, il, group, hidden,
+                        checkpoints, core)) {
+                    return false;
+                }
+                grouped_graph_ns += core.graph_ns;
+                grouped_publish_ns += core.publish_ns;
+                for (int row_index = 0;
+                     row_index < kExactCoreGroupWidth; ++row_index) {
+                    ExactMultirowLayerRow row;
+                    const int token = group + row_index;
+                    if (!exact_multirow_prepared_row(
+                            backend, w, il, token,
+                            core.prefix.data() +
+                                static_cast<size_t>(row_index) * hidden_width,
+                            core.prepared.data() +
+                                static_cast<size_t>(row_index) * hidden_width,
+                            row, persistent, deferred_router) ||
+                        !copy_prepared_row(token, row)) {
+                        return false;
+                    }
+                }
+            }
+        } else {
+            for (int token = 0; token < macro_width; ++token) {
+                ExactMultirowLayerRow row;
+                if (!exact_multirow_layer_row(
+                        backend, w, cache, il, base_pos, token,
+                        hidden.data() +
+                            static_cast<size_t>(token) * hidden_width,
+                        checkpoints, row, persistent, deferred_router) ||
+                    !copy_prepared_row(token, row)) {
                     return false;
                 }
             }
@@ -1978,9 +2358,11 @@ bool streamed_kimi_k3_forward_exact_multirow(
         std::fprintf(stderr,
             "[kimi-k3-p58-stage] position=%d tokens=%d total_ms=%.3f "
             "one_row_core_ms=%.3f experts_ms=%.3f one_row_join_ms=%.3f "
-            "one_row_output_ms=%.3f other_ms=%.3f\n",
+            "one_row_output_ms=%.3f grouped_graph_ms=%.3f "
+            "grouped_publish_ms=%.3f other_ms=%.3f\n",
             base_pos, macro_width, total_ns / 1.0e6, core_ns / 1.0e6,
             expert_ns / 1.0e6, join_ns / 1.0e6, output_ns / 1.0e6,
+            grouped_graph_ns / 1.0e6, grouped_publish_ns / 1.0e6,
             (total_ns > classified ? total_ns - classified : 0) / 1.0e6);
     }
     return true;
