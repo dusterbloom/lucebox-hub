@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "campaign": "k3-prefill-causal-core-width4",
+  "experiment_number": null,
+  "date": "2026-08-24",
+  "verdict": "ENGINEERING_GO_DEFAULT_OFF",
+  "scope": "exact four-row KDA execution plus gfx1151 Q4_K/Q6_K weight reuse",
+  "source": {
+    "branch": "perf/k3-prefill-causal-core",
+    "winner_commit": "6a51e0c2",
+    "graph_source_sha256": "33f72f776c11ceb0ab2e2fc2454a2faffd8eca51852df09300eba4fa77b41046",
+    "mmvq_source_sha256": "7ebfbaf5bd026d6b4361cc534a188ca266f05060d907a5a17b16cb52992e2a2c",
+    "smoke_binary_sha256": "dd2c122635946bc3b332dcc715b8db330146f74f4e696d065204ea178ce0a13a",
+    "libggml_hip_sha256": "2b7e5725bbe453b496e97389f97901470190a1a721a4460bba8455a2e03385fc",
+    "oracle_binary_sha256": "e94a2871f634d09b5f35f51624e234e6aac918978e22d0a2f2aa5c2c9a7d0c34"
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "backend": "HIP/ROCm",
+    "physical_device": "GPU1",
+    "architecture": "gfx1151",
+    "logical_device": 0,
+    "platform_profile": "performance",
+    "topology": "single-owner"
+  },
+  "flags": {
+    "DFLASH_KIMI_P58_EXACT_CORE_GROUP_WIDTH": 4,
+    "DFLASH_CUDA_MMVQ_QK_EXACT_WIDTH4": 1,
+    "DFLASH_CUDA_MMVQ_TOKENWISE": 1,
+    "DFLASH_KIMI_P46_PERSISTENT_ROUTED_PREP": 1,
+    "DFLASH_KIMI_ROUTER_WIDTH8": 1
+  },
+  "m8_full_exactness_oracle": {
+    "status": "PASS",
+    "width": 8,
+    "sequential_seconds": 9.324148427,
+    "candidate_seconds": 6.834487675,
+    "sequential_logical_provider_bytes": 40033996800,
+    "candidate_logical_provider_bytes": 40033996800,
+    "provider_valid_each_arm": true,
+    "logits_bit_equal": true,
+    "argmax_bit_equal": true,
+    "first_mla_row_mismatch_layer": -1,
+    "first_conv_state_mismatch_layer": -1,
+    "first_ssm_state_mismatch_layer": -1,
+    "first_terminal_conv_state_mismatch_layer": -1,
+    "first_terminal_ssm_state_mismatch_layer": -1,
+    "json_sha256": "976fc422f3c43204df66a85246cc8dcba371d29446bb8d40fa062d65cf66c270",
+    "log_sha256": "bb0f735237296faf0684b1bc3da7b3538e14d127d1d22f115bbc8afdee036024",
+    "traffic_sha256": "1cb2340e9d1646d73bb7408ee63dcaec69ec5e5b05375deac7f3fca4f0e344d5"
+  },
+  "m64_production_ab": {
+    "same_binary": true,
+    "physical_bytes_each_arm": 115562905600,
+    "traffic_sha256_each_arm": "898a397272075995ba469d4db79526c7d099b7c6ed148516f9cf6d154dc1a9fd",
+    "output_ids_each_arm": [5801, 114820],
+    "control": {
+      "group_width": 0,
+      "exact_qk_width4": 0,
+      "stage_seconds": 41.306639,
+      "core_seconds": 13.473138,
+      "experts_seconds": 26.859320,
+      "join_seconds": 0.679194,
+      "output_seconds": 0.283564,
+      "direct_io_seconds": 20.826381713,
+      "prefill_positions_per_second": 1.548663,
+      "log_sha256": "6373fcdd87e983bf2929da81dba8111d0b3f2db1951c9ae6b9aeaf965465a4c3"
+    },
+    "candidate": {
+      "group_width": 4,
+      "exact_qk_width4": 1,
+      "stage_seconds": 38.853841,
+      "core_seconds": 10.010706,
+      "experts_seconds": 27.878611,
+      "join_seconds": 0.669845,
+      "output_seconds": 0.282785,
+      "grouped_graph_seconds": 2.815236,
+      "terminal_publication_seconds": 0.046678,
+      "direct_io_seconds": 22.297550046,
+      "prefill_positions_per_second": 1.646094,
+      "log_sha256": "f659454de55a2d311f16253e0d1962db410e4150a339717e9eb30ebfaa1710b5"
+    },
+    "delta": {
+      "core_seconds_saved": 3.462432,
+      "core_reduction_fraction": 0.257000,
+      "stage_seconds_saved": 2.452798,
+      "prefill_speedup": 1.062914,
+      "m64_core_saving_gate_seconds": 1.250,
+      "gate_passed": true,
+      "projected_m1024_core_seconds_saved": 55.398912,
+      "projection_basis": "linear scaling of the measured M64 component delta; not a model-throughput claim"
+    },
+    "correctness": {
+      "physical_bytes_identical": true,
+      "traffic_byte_identical": true,
+      "output_ids_identical": true,
+      "swap_count_each_arm": 0,
+      "exit_status_each_arm": 0
+    }
+  },
+  "promotion": {
+    "default": false,
+    "next_gate": "same-binary qualified M1024 comparison after persistent P46 prepared-tail composition",
+    "fallback_retained": true
+  }
+}
