@@ -36,6 +36,22 @@
     "global_mmvq_policy_changed": false
   },
   "correctness": {
+    "production_commit_m64_closure": {
+      "status": "PASS",
+      "source_head": "f86946a579e9e85b904b14e9b3fdf4179318f447",
+      "smoke_binary_sha256": "d64caef2dc2855a8dde81c441675964ff7973bcb30cb48550d4e9e076c639dad",
+      "libggml_hip_sha256": "f5037cd5a0d5badeab930792b125ad522f23699911d4766ea16a800b4fc0b0ff",
+      "stage_seconds": 33.565475,
+      "core_seconds": 6.604434,
+      "experts_seconds": 25.994482,
+      "direct_io_seconds": 20.354834827,
+      "physical_bytes": 115562905600,
+      "traffic_sha256": "898a397272075995ba469d4db79526c7d099b7c6ed148516f9cf6d154dc1a9fd",
+      "output_ids": [5801, 114820],
+      "log_sha256": "d964d729dfd920ebfa7a374344fe66ec8dc0c3787389e573739993d27c64ffad",
+      "swaps": 0,
+      "interpretation": "A clean build of the production commit, without the retained-oracle M16 admission overlay, reproduces the exact M64 width8 path."
+    },
     "m8": {
       "status": "PASS",
       "sequential_seconds": 9.247424372,
