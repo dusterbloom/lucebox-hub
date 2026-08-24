@@ -10,7 +10,9 @@
 
 static thread_local size_t g_mmvq_launch_count = 0;
 static thread_local size_t g_exact_qk_width4_launch_count = 0;
+static thread_local size_t g_exact_qk_width8_launch_count = 0;
 static thread_local bool g_exact_qk_width4_override = false;
+static thread_local bool g_exact_qk_width8_override = false;
 
 extern "C" size_t ggml_backend_cuda_get_mmvq_launch_count(void) {
     return g_mmvq_launch_count;
@@ -20,9 +22,19 @@ extern "C" size_t ggml_backend_cuda_get_exact_qk_width4_launch_count(void) {
     return g_exact_qk_width4_launch_count;
 }
 
+extern "C" size_t ggml_backend_cuda_get_exact_qk_width8_launch_count(void) {
+    return g_exact_qk_width8_launch_count;
+}
+
 extern "C" bool ggml_backend_cuda_set_exact_qk_width4_override(bool enabled) {
     const bool previous = g_exact_qk_width4_override;
     g_exact_qk_width4_override = enabled;
+    return previous;
+}
+
+extern "C" bool ggml_backend_cuda_set_exact_qk_width8_override(bool enabled) {
+    const bool previous = g_exact_qk_width8_override;
+    g_exact_qk_width8_override = enabled;
     return previous;
 }
 
@@ -712,13 +724,14 @@ static bool is_gfx1151(const int cc) {
 // fragment once, then apply the established one-column vec-dot independently
 // to every activation column.  The caller retains the device's one-column
 // wave count and reduction tree; only the immutable weight loads are shared.
+template<int ncols>
 static __device__ __forceinline__ void vec_dot_q4_K_q8_1_ncols_exact(
         const void * __restrict__ vbq,
         const block_q8_1 * __restrict__ bq8_1,
         const uint32_t stride_col_y,
         const int & kbx,
         const int & iqs,
-        float (&result)[4]) {
+        float (&result)[ncols]) {
     const block_q4_K * bq4_K = (const block_q4_K *) vbq + kbx;
     int v[2];
     const int bq8_offset = QR4_K * ((iqs/2) / (QI8_1/2));
@@ -743,7 +756,7 @@ static __device__ __forceinline__ void vec_dot_q4_K_q8_1_ncols_exact(
     const uint8_t * m = sc + 2;
 
 #pragma unroll
-    for (int col = 0; col < 4; ++col) {
+    for (int col = 0; col < ncols; ++col) {
         int u[2*QR4_K];
         float d8[QR4_K];
 #pragma unroll
@@ -760,13 +773,14 @@ static __device__ __forceinline__ void vec_dot_q4_K_q8_1_ncols_exact(
     }
 }
 
+template<int ncols>
 static __device__ __forceinline__ void vec_dot_q6_K_q8_1_ncols_exact(
         const void * __restrict__ vbq,
         const block_q8_1 * __restrict__ bq8_1,
         const uint32_t stride_col_y,
         const int & kbx,
         const int & iqs,
-        float (&result)[4]) {
+        float (&result)[ncols]) {
     const block_q6_K * bq6_K = (const block_q6_K *) vbq + kbx;
     const int bq8_offset =
         2*QR6_K*(iqs/(QI6_K/2)) + (iqs%(QI6_K/2))/(QI6_K/4);
@@ -780,7 +794,7 @@ static __device__ __forceinline__ void vec_dot_q6_K_q8_1_ncols_exact(
     const int8_t * scales = bq6_K->scales + scale_offset;
 
 #pragma unroll
-    for (int col = 0; col < 4; ++col) {
+    for (int col = 0; col < ncols; ++col) {
         int u[QR6_K];
         float d8[QR6_K];
 #pragma unroll
@@ -902,10 +916,10 @@ static __global__ void mul_mat_vec_q(
                   "FP4 x4 MMVQ specialization requires ROCmFP4-fast q4/q5");
     static_assert(!exact_qk_multirow ||
                       ((type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q6_K) &&
-                       ncols_dst == 4 && !has_fusion &&
+                       (ncols_dst == 4 || ncols_dst == 8) && !has_fusion &&
                        !small_k && fixed_ncols_x == 0 && !unroll_k_loop_2 &&
                        !reuse_rocmfp4_weights && !c_fp3_packed24 && !c_fp4_x4),
-                  "exact QK multirow requires unfused Q4_K/Q6_K width 4");
+                  "exact QK multirow requires unfused Q4_K/Q6_K width 4 or 8");
     static_assert(!sparse_k ||
                       ((type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ2_XXS) &&
                        ncols_dst == 1 && !has_fusion && !small_k && fixed_ncols_x == 0 &&
@@ -1023,11 +1037,11 @@ static __global__ void mul_mat_vec_q(
             const int kqs = vdr*(tid%(qi/vdr));
             float dots[ncols_dst];
             if constexpr (type == GGML_TYPE_Q4_K) {
-                vec_dot_q4_K_q8_1_ncols_exact(
+                vec_dot_q4_K_q8_1_ncols_exact<ncols_dst>(
                     vx, y + kby, stride_col_y,
                     kbx_offset + kbx, kqs, dots);
             } else {
-                vec_dot_q6_K_q8_1_ncols_exact(
+                vec_dot_q6_K_q8_1_ncols_exact<ncols_dst>(
                     vx, y + kby, stride_col_y,
                     kbx_offset + kbx, kqs, dots);
             }
@@ -2349,6 +2363,22 @@ static void mul_mat_vec_q_switch_ncols_dst(
     }();
 
     if constexpr (type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q6_K) {
+        if (g_exact_qk_width8_override && is_gfx1151(cc) && !has_ids &&
+            !has_fusion && ncols_dst == 8 && nsamples_dst == 1) {
+            ++g_exact_qk_width8_launch_count;
+            constexpr int c_ncols_dst = 8;
+            const auto dims = calc_exact_qk_multirow_launch_params<type>(
+                nrows_x, nchannels_dst, warp_size, table_id);
+            mul_mat_vec_q<
+                type, c_ncols_dst, false, false, 0, false, false, false,
+                false, true, false><<<dims.first, dims.second, 0, stream>>>(
+                    vx, vy, nullptr, fusion, dst, ncols_x, nchannels_y_fd,
+                    stride_row_x, stride_col_y, stride_col_dst,
+                    channel_ratio_fd, stride_channel_x, stride_channel_y,
+                    stride_channel_dst, sample_ratio_fd, stride_sample_x,
+                    stride_sample_y, stride_sample_dst, ids_stride, false);
+            return;
+        }
         if (g_exact_qk_width4_override && is_gfx1151(cc) && !has_ids &&
             !has_fusion && ncols_dst == 4 && nsamples_dst == 1) {
             ++g_exact_qk_width4_launch_count;

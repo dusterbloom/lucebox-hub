@@ -13,11 +13,13 @@ public:
             bool disable_graphs = false,
             int mmvq_max_ncols = 0,
             bool skip_property_check = false,
-            bool exact_qk_width4 = false)
+            bool exact_qk_width4 = false,
+            bool exact_qk_width8 = false)
         : disable_graphs_(disable_graphs),
           override_mmvq_(mmvq_max_ncols > 0),
           skip_property_check_(skip_property_check),
-          exact_qk_width4_(exact_qk_width4) {
+          exact_qk_width4_(exact_qk_width4),
+          exact_qk_width8_(exact_qk_width8) {
         if (disable_graphs_) {
             previous_graphs_disabled_ =
                 ggml_backend_cuda_set_graphs_disabled_override(true);
@@ -31,6 +33,10 @@ public:
             previous_exact_qk_width4_ =
                 ggml_backend_cuda_set_exact_qk_width4_override(true);
         }
+        if (exact_qk_width8_) {
+            previous_exact_qk_width8_ =
+                ggml_backend_cuda_set_exact_qk_width8_override(true);
+        }
         if (skip_property_check_) {
             previous_skip_property_check_ =
                 ggml_backend_cuda_set_skip_props_check(true);
@@ -41,6 +47,10 @@ public:
         if (skip_property_check_) {
             ggml_backend_cuda_set_skip_props_check(
                 previous_skip_property_check_);
+        }
+        if (exact_qk_width8_) {
+            ggml_backend_cuda_set_exact_qk_width8_override(
+                previous_exact_qk_width8_);
         }
         if (exact_qk_width4_) {
             ggml_backend_cuda_set_exact_qk_width4_override(
@@ -64,9 +74,11 @@ private:
     bool override_mmvq_ = false;
     bool skip_property_check_ = false;
     bool exact_qk_width4_ = false;
+    bool exact_qk_width8_ = false;
     bool previous_graphs_disabled_ = false;
     bool previous_skip_property_check_ = false;
     bool previous_exact_qk_width4_ = false;
+    bool previous_exact_qk_width8_ = false;
     int previous_mmvq_max_ncols_ = 0;
 };
 

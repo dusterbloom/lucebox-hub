@@ -1,0 +1,140 @@
+{
+  "schema": "k3-prefill-causal-core-width8-v1",
+  "date_utc": "2026-08-24",
+  "verdict": "GO",
+  "summary": "Exact KDA8 plus two ordered exact Tail4 halves removes 15.295 seconds from the M1024 causal core and raises retained-path prefill from 4.6503 to 4.9899 positions/s.",
+  "source": {
+    "base_head": "84f801d842e3776dfec8b965e66644ea490f0a88",
+    "branch": "perf/k3-prefill-causal-core",
+    "merge_base_origin_main": "21506614cf99be7fc339fdacb6ae05c17fa22503",
+    "ggml_cuda_header_sha256": "707215a14d0f6c755b836724e6c70acccb883a153f4ffdd85fa1a637bef13965",
+    "mmvq_source_sha256": "f8932fbfe7c098923007a0732ffbef087555f969214aa1c9425fcf4dcf6786a5",
+    "override_header_sha256": "04e67eac0895ca1835ce46378474f6eeaa500be8cf48162159eb128f108b0331",
+    "graph_source_sha256": "e423ca4285414a54b843552548fd8df5a592ec540cbaa4900029eb3d0f1e2a4d",
+    "measured_smoke_binary_sha256": "b811e1e026ced7aec9412a07029c11b88d7244c1a57ea45ab4465bf45ec2b3f1",
+    "measured_oracle_binary_sha256": "ac6ee77eda7c1f50455f6d0ab6b7d7000ff36e32c860fa109baef117047d140b",
+    "measured_libggml_hip_sha256": "c422e7ba770d5411b1fc0c1fe78537fbe71b9b1f5d5ed0887bd95044aa740261",
+    "measurement_overlay": "The retained oracle was minimally extended to admit M16, and the measured binary admitted width 16 in the exact prefill policy. Those test-only admissions do not affect widths 64 or 1024 and are excluded from the production commit."
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "device": "GPU1 Radeon 8060S gfx1151 exposed as ROCm0",
+    "wave_size": 32,
+    "platform_profile": "performance",
+    "backend": "HIP/ROCm 7.2.2",
+    "topology": "single-owner core=hip:0 experts=hip:0 join=hip:0"
+  },
+  "closure": {
+    "core_group_control": 4,
+    "core_group_candidate": 8,
+    "prepared_tail_group": 4,
+    "router_group": 8,
+    "exact_qk_types": ["Q4_K", "Q6_K"],
+    "qualified_fallback_types": ["Q2_K", "Q8_0", "F32"],
+    "exact_width8_launches_per_m1024_layer_sweep": 389,
+    "default_off": true,
+    "global_mmvq_policy_changed": false
+  },
+  "correctness": {
+    "m8": {
+      "status": "PASS",
+      "sequential_seconds": 9.247424372,
+      "candidate_seconds": 6.774473761,
+      "logits_bit_equal": true,
+      "argmax_bit_equal": true,
+      "terminal_conv_state_mismatch_layer": -1,
+      "terminal_ssm_state_mismatch_layer": -1,
+      "committed_conv_state_mismatch_layer": -1,
+      "committed_ssm_state_mismatch_layer": -1,
+      "mla_row_mismatch_layer": -1,
+      "logical_provider_bytes": 40033996800,
+      "result_sha256": "a6a04e7fc51288f27fc725af56b656203e521bcd766cb6713b472eda3965edc7"
+    },
+    "m16_chained": {
+      "status": "PASS",
+      "sequential_seconds": 16.629943232,
+      "candidate_seconds": 11.031206906,
+      "logits_bit_equal": true,
+      "argmax_bit_equal": true,
+      "terminal_conv_state_mismatch_layer": -1,
+      "terminal_ssm_state_mismatch_layer": -1,
+      "committed_conv_state_mismatch_layer": -1,
+      "committed_ssm_state_mismatch_layer": -1,
+      "mla_row_mismatch_layer": -1,
+      "logical_provider_bytes": 81549103104,
+      "result_sha256": "4daede794da9831a509551923d3e4d9a2766524ab0e76bb63e7c5ac09d11c8da"
+    }
+  },
+  "m64_gate": {
+    "fixture_sha256": "d5ace9d1b8429ff271307acc26c0d013ef4bfae0d6eb6b8a6638e35e0013d388",
+    "physical_bytes_each": 115562905600,
+    "traffic_sha256_each": "898a397272075995ba469d4db79526c7d099b7c6ed148516f9cf6d154dc1a9fd",
+    "output_ids_each": [5801, 114820],
+    "control": {
+      "stage_seconds": 34.646176,
+      "core_seconds": 7.802408,
+      "experts_seconds": 25.735362,
+      "direct_io_seconds": 19.93186555,
+      "positions_per_second": 1.846207
+    },
+    "candidate": {
+      "stage_seconds": 33.389354,
+      "core_seconds": 6.580992,
+      "experts_seconds": 25.840300,
+      "direct_io_seconds": 20.124225392,
+      "positions_per_second": 1.915732
+    },
+    "core_saving_seconds": 1.221416,
+    "required_core_saving_seconds": 0.9375,
+    "projected_m1024_core_saving_seconds": 19.542656,
+    "verdict": "GO"
+  },
+  "m1024": {
+    "fixture_sha256": "a52320c799f4c20eba845a0cf19edd68a557f28dd2a58d88a4609c797f24cc71",
+    "physical_bytes_each": 169143877632,
+    "traffic_sha256_each": "c0dfd31205484facf903d1e55cd75ccf05338359583b1f9d76fbaa032b6cea15",
+    "control": {
+      "stage_seconds": 220.157936,
+      "core_seconds": 130.319541,
+      "experts_seconds": 75.368568,
+      "join_seconds": 9.838687,
+      "output_seconds": 4.459084,
+      "other_seconds": 0.172056,
+      "grouped_graph_seconds": 43.110086,
+      "grouped_publish_seconds": 0.817221,
+      "direct_io_seconds": 32.389131502,
+      "positions_per_second": 4.650287,
+      "log_sha256": "2ed7b59212d9fbd0abe9eaacde2ef7a1e17188a40f6f6c5416c7ad0298156b95"
+    },
+    "candidate": {
+      "stage_seconds": 205.168464,
+      "core_seconds": 115.024810,
+      "experts_seconds": 75.729268,
+      "join_seconds": 9.787103,
+      "output_seconds": 4.457462,
+      "other_seconds": 0.169821,
+      "grouped_graph_seconds": 32.118518,
+      "grouped_publish_seconds": 0.413000,
+      "direct_io_seconds": 33.959755185,
+      "positions_per_second": 4.989923,
+      "log_sha256": "aac9a26e1e1a441d7cf24b08bd3b01fb2beca138bcd30ab1e7dbb8b8b75b3e4c"
+    },
+    "stage_saving_seconds": 14.989472,
+    "core_saving_seconds": 15.294731,
+    "core_saving_percent": 11.736323,
+    "same_binary_speedup": 1.073061,
+    "io_normalized_candidate_seconds": 203.597840317,
+    "io_normalized_positions_per_second": 5.029523,
+    "io_normalized_stage_saving_seconds": 16.560095683,
+    "required_core_saving_seconds": 15.0,
+    "verdict": "GO"
+  },
+  "remaining_bound": {
+    "target_positions_per_second": 10.0,
+    "target_stage_seconds_at_m1024": 102.4,
+    "candidate_stage_seconds_to_remove": 102.768464,
+    "infinite_expert_speedup_ceiling_positions_per_second": 7.91105,
+    "binding_term": "causal core",
+    "interpretation": "Width8 is a bankable exact win, but expert-only work still cannot reach 10 positions/s. The next attack must reduce or overlap the remaining 115.025-second causal core."
+  }
+}
