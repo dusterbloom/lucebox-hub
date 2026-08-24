@@ -27,14 +27,14 @@ namespace dflash::common {
 // ─── Chat marker detection ──────────────────────────────────────────────
 
 struct ChatMarkers {
-    std::string family;  // "qwen", "gemma", or "laguna"
+    std::string family;  // "deepseek", "qwen", "gemma", or "laguna"
     // Token sequences for boundary detection
     std::vector<int32_t> sys_role_prefix;
     std::vector<std::vector<int32_t>> end_msg_seqs;
     std::vector<std::vector<int32_t>> next_role_starts;
 };
 
-// Resolve chat markers from the tokenizer (detects Qwen, Gemma, or Laguna family).
+// Resolve chat markers from the tokenizer vocabulary and actual encoded form.
 bool resolve_chat_markers(const Tokenizer & tok, ChatMarkers & out);
 
 // Find all turn-boundary cut points in a token stream.
