@@ -2026,6 +2026,94 @@ TEST_CASE(ServerUnitFixture, test_stop_sequence_holdback_extends) {
 // Prefix cache hash tests (model-free)
 // ═══════════════════════════════════════════════════════════════════════
 
+static std::string write_marker_tokenizer_fixture(
+        const std::vector<std::string> & tokens,
+        const std::vector<uint32_t> & token_types,
+        const char * name) {
+    TEST_ASSERT(tokens.size() == token_types.size());
+    std::vector<const char *> token_ptrs;
+    token_ptrs.reserve(tokens.size());
+    for (const std::string & token : tokens) {
+        token_ptrs.push_back(token.c_str());
+    }
+
+    gguf_context * g = gguf_init_empty();
+    gguf_set_arr_str(g, "tokenizer.ggml.tokens", token_ptrs.data(),
+                     token_ptrs.size());
+    gguf_set_arr_data(g, "tokenizer.ggml.token_type", GGUF_TYPE_UINT32,
+                      token_types.data(), token_types.size());
+    gguf_set_val_str(g, "tokenizer.ggml.model", "gpt2");
+    gguf_set_val_str(g, "tokenizer.ggml.pre", "qwen35");
+    gguf_set_val_u32(g, "tokenizer.ggml.bos_token_id", 0);
+    gguf_set_val_u32(g, "tokenizer.ggml.eos_token_id", 1);
+
+    const std::string path = std::string("/tmp/") + name + ".gguf";
+    gguf_write_to_file(g, path.c_str(), /*only_meta=*/false);
+    gguf_free(g);
+    return path;
+}
+
+static std::vector<std::string> marker_spelling_tokens() {
+    return {"<", ">", "/", "|", "_", "a", "d", "e", "i", "m",
+            "n", "r", "s", "t", "u", "y"};
+}
+
+TEST_CASE(ServerUnitFixture, test_resolve_qwen_normal_vocab_chat_markers) {
+    // Kimi quants can retain the exact ChatML vocabulary entries while
+    // labelling them normal, so live encode() spells them with several BPE
+    // tokens instead of treating them as added tokens.
+    std::vector<std::string> tokens = marker_spelling_tokens();
+    tokens.push_back("<|im_start|>");
+    tokens.push_back("<|im_end|>");
+    const std::string path = write_marker_tokenizer_fixture(
+        tokens, std::vector<uint32_t>(tokens.size(), 1),
+        "dflash_test_qwen_normal_markers");
+    Tokenizer tokenizer;
+    TEST_ASSERT(tokenizer.load_from_gguf(path.c_str()));
+
+    const auto im_start = tokenizer.encode("<|im_start|>");
+    const auto im_end = tokenizer.encode("<|im_end|>");
+    const auto system = tokenizer.encode("system");
+    TEST_ASSERT(im_start.size() > 1 && im_end.size() > 1);
+    ChatMarkers markers;
+    TEST_ASSERT(resolve_chat_markers(tokenizer, markers));
+    TEST_ASSERT(markers.family == "qwen");
+    std::vector<int32_t> system_prefix = im_start;
+    system_prefix.insert(system_prefix.end(), system.begin(), system.end());
+    TEST_ASSERT(markers.sys_role_prefix == system_prefix);
+    TEST_ASSERT(markers.end_msg_seqs ==
+                std::vector<std::vector<int32_t>>({im_end}));
+    TEST_ASSERT(markers.next_role_starts ==
+                std::vector<std::vector<int32_t>>({im_start}));
+    unlink(path.c_str());
+}
+
+TEST_CASE(ServerUnitFixture, test_resolve_laguna_requires_assistant_controls) {
+    std::vector<std::string> generic = marker_spelling_tokens();
+    std::string path = write_marker_tokenizer_fixture(
+        generic, std::vector<uint32_t>(generic.size(), 1),
+        "dflash_test_generic_xml_markers");
+    Tokenizer tokenizer;
+    TEST_ASSERT(tokenizer.load_from_gguf(path.c_str()));
+    ChatMarkers markers;
+    TEST_ASSERT(!resolve_chat_markers(tokenizer, markers));
+    unlink(path.c_str());
+
+    std::vector<std::string> laguna = marker_spelling_tokens();
+    laguna.push_back("<assistant>");
+    laguna.push_back("</assistant>");
+    std::vector<uint32_t> types(laguna.size(), 1);
+    types[types.size() - 2] = 3;
+    types[types.size() - 1] = 3;
+    path = write_marker_tokenizer_fixture(
+        laguna, types, "dflash_test_laguna_markers");
+    Tokenizer laguna_tokenizer;
+    TEST_ASSERT(laguna_tokenizer.load_from_gguf(path.c_str()));
+    TEST_ASSERT(resolve_chat_markers(laguna_tokenizer, markers));
+    TEST_ASSERT(markers.family == "laguna");
+    unlink(path.c_str());
+}
+
 static std::string write_deepseek_marker_tokenizer_fixture() {
     gguf_context * g = gguf_init_empty();
     const char * tokens[] = {

@@ -34,16 +34,24 @@ bool resolve_chat_markers(const Tokenizer & tok, ChatMarkers & out) {
         return true;
     }
 
-    // Try Qwen family: <|im_end|> and <|im_start|> should be single tokens.
+    // Qwen/Kimi GGUFs carry the exact ChatML marker strings in vocabulary.
+    // Some quants label them as normal tokens rather than added/control
+    // tokens, so encode() legitimately returns the multi-token spelling used
+    // by live prompts. Use exact vocabulary presence to identify the family,
+    // then retain the tokenizer's actual encoded sequences for matching.
+    const int32_t im_end_vocab = tok.token_to_id("<|im_end|>");
+    const int32_t im_start_vocab = tok.token_to_id("<|im_start|>");
     auto im_end = tok.encode("<|im_end|>");
     auto im_start = tok.encode("<|im_start|>");
-    if (im_end.size() == 1 && im_start.size() == 1) {
-        auto sys = tok.encode("system");
+    auto sys = tok.encode("system");
+    if (im_end_vocab >= 0 && im_start_vocab >= 0 &&
+        !im_end.empty() && !im_start.empty() && !sys.empty()) {
         out.family = "qwen";
-        out.sys_role_prefix = {im_start[0]};
-        if (sys.size() == 1) out.sys_role_prefix.push_back(sys[0]);
-        out.end_msg_seqs = {{im_end[0]}};
-        out.next_role_starts = {{im_start[0]}};
+        out.sys_role_prefix = im_start;
+        out.sys_role_prefix.insert(
+            out.sys_role_prefix.end(), sys.begin(), sys.end());
+        out.end_msg_seqs = {im_end};
+        out.next_role_starts = {im_start};
         return true;
     }
 
@@ -65,7 +73,10 @@ bool resolve_chat_markers(const Tokenizer & tok, ChatMarkers & out) {
     auto end_usr   = tok.encode("</user>");
     auto start_ast = tok.encode("<assistant>");
     auto end_ast   = tok.encode("</assistant>");
-    if (!start_sys.empty() && !end_sys.empty() && !start_usr.empty() &&
+    const int32_t start_ast_control = exact_control_token("<assistant>");
+    const int32_t end_ast_control = exact_control_token("</assistant>");
+    if (start_ast_control >= 0 && end_ast_control >= 0 &&
+        !start_sys.empty() && !end_sys.empty() && !start_usr.empty() &&
         !end_usr.empty() && !start_ast.empty() && !end_ast.empty()) {
         out.family = "laguna";
         out.sys_role_prefix = start_sys;
