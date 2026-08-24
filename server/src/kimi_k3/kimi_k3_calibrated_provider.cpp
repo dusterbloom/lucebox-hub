@@ -3778,6 +3778,22 @@ public:
         }
         exact_macro_union_ = exact_macro_union;
         macro_union_prefetch_enabled_ = macro_union_prefetch;
+        bool b2_discriminator = false;
+        if (!parse_binary_flag(std::getenv(
+                "DFLASH_KIMI_B2_UNION_DISCRIMINATOR"),
+                b2_discriminator)) {
+            if (err) *err =
+                "DFLASH_KIMI_B2_UNION_DISCRIMINATOR must be 0 or 1";
+            return false;
+        }
+        if (b2_discriminator &&
+            (!exact_macro_union_ || read_cache_.enabled() ||
+             p30_borrowed_records_)) {
+            if (err) *err =
+                "B=2 causal union requires exact macro union and no P30 cache";
+            return false;
+        }
+        b2_discriminator_ = b2_discriminator;
         if (const char * trace =
                 std::getenv("DFLASH_KIMI_P40_CACHE_TRACE")) {
             if (*trace && !device_variant_cache_) {
@@ -3916,7 +3932,8 @@ public:
     }
 
     bool supports_width(size_t width) const override {
-        if (width != 8 && width != 64 && width != 1024) {
+        if (width != 8 && width != 64 && width != 1024 &&
+            !(width == 2 && b2_discriminator_)) {
             return false;
         }
         if (!sidecar_authoritative_ || io_trace_.is_open() ||
@@ -4122,6 +4139,7 @@ public:
         result.expert_graph_ns = sparse_device_evaluator_.expert_graph_ns();
         result.expert_readback_ns =
             sparse_device_evaluator_.expert_readback_ns();
+        result.macro_union_completed = macro_union_completed_;
         result.compact_attempted = p41_attempted_;
         result.compact_completed = p41_completed_;
         result.compact_fallbacks = p41_fallbacks_;
@@ -7102,6 +7120,7 @@ private:
     uint64_t direct_io_ns_ = 0;
     P30BoundedReadCache read_cache_;
     bool p30_borrowed_records_ = false;
+    bool b2_discriminator_ = false;
     bool cache_sequence_started_ = false;
 };
 

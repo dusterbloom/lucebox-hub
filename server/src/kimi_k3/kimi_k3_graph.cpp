@@ -149,6 +149,144 @@ ggml_tensor * kda_conv1d(ggml_context * ctx,
     return out;
 }
 
+// B=2 same-position execution shares only the immutable projection.  Each
+// sequence still prepends and publishes its own convolution state.
+ggml_tensor * kda_conv1d_b2_slot(
+        ggml_context * ctx,
+        ggml_cgraph * graph,
+        ggml_tensor * all_state,
+        int qkv,
+        ggml_tensor * projected_b2,
+        int slot,
+        ggml_tensor * conv_weight,
+        int d_conv,
+        int head_dim,
+        int n_head) {
+    const int64_t d_inner = static_cast<int64_t>(head_dim) * n_head;
+    const int64_t state_rows = d_conv - 1;
+    GGML_ASSERT(projected_b2->ne[0] == d_inner);
+    GGML_ASSERT(projected_b2->ne[1] == 2);
+    GGML_ASSERT(slot == 0 || slot == 1);
+
+    const size_t block_offset =
+        static_cast<size_t>(qkv) * d_inner * all_state->nb[1];
+    ggml_tensor * state = ggml_view_3d(
+        ctx, all_state, state_rows, d_inner, 1,
+        all_state->nb[1], all_state->nb[2], block_offset);
+    ggml_tensor * projected = ggml_view_2d(
+        ctx, projected_b2, d_inner, 1, projected_b2->nb[1],
+        static_cast<size_t>(slot) * projected_b2->nb[1]);
+    projected = ggml_reshape_3d(ctx, projected, d_inner, 1, 1);
+    ggml_tensor * conv_input = ggml_concat(
+        ctx, state, ggml_transpose(ctx, projected), 0);
+    ggml_tensor * newest = ggml_view_3d(
+        ctx, conv_input, state_rows, d_inner, 1,
+        conv_input->nb[1], conv_input->nb[2], conv_input->nb[0]);
+    ggml_build_forward_expand(graph, ggml_cpy(ctx, newest, state));
+
+    ggml_tensor * cw = ggml_reshape_2d(
+        ctx, conv_weight, d_conv, d_inner);
+    ggml_tensor * out = ggml_silu(
+        ctx, ggml_ssm_conv(ctx, conv_input, cw));
+    return ggml_reshape_4d(ctx, out, head_dim, n_head, 1, 1);
+}
+
+ggml_tensor * build_kda_b2(
+        ggml_context * ctx,
+        ggml_cgraph * graph,
+        const KimiK3Weights & w,
+        const KimiK3Layer & layer,
+        const std::array<KimiK3LayerCache *, 2> & caches,
+        ggml_tensor * cur) {
+    const int head_dim = w.kda_head_dim;
+    const int n_head = w.n_head;
+    const int64_t d_inner = static_cast<int64_t>(head_dim) * n_head;
+    GGML_ASSERT(cur->ne[0] == w.n_embd && cur->ne[1] == 2);
+
+    // These resident weights are the shared prize.  The two columns remain
+    // independent; only the immutable matrix reads are amortized.
+    ggml_tensor * q_projected = ggml_mul_mat(ctx, layer.wq, cur);
+    ggml_tensor * k_projected = ggml_mul_mat(ctx, layer.wk, cur);
+    ggml_tensor * v_projected = ggml_mul_mat(ctx, layer.wv, cur);
+    ggml_tensor * decay_projected =
+        ggml_mul_mat(ctx, layer.ssm_f_b,
+            ggml_mul_mat(ctx, layer.ssm_f_a, cur));
+    ggml_tensor * beta_projected = ggml_mul_mat(ctx, layer.ssm_beta, cur);
+
+    std::array<ggml_tensor *, 2> recurrent_output{};
+    for (int slot = 0; slot < 2; ++slot) {
+        KimiK3LayerCache & cache = *caches[static_cast<size_t>(slot)];
+        ggml_tensor * q = kda_conv1d_b2_slot(
+            ctx, graph, cache.conv_state, 0, q_projected, slot,
+            layer.ssm_q_conv, w.ssm_d_conv, head_dim, n_head);
+        ggml_tensor * k = kda_conv1d_b2_slot(
+            ctx, graph, cache.conv_state, 1, k_projected, slot,
+            layer.ssm_k_conv, w.ssm_d_conv, head_dim, n_head);
+        ggml_tensor * v = kda_conv1d_b2_slot(
+            ctx, graph, cache.conv_state, 2, v_projected, slot,
+            layer.ssm_v_conv, w.ssm_d_conv, head_dim, n_head);
+
+        ggml_tensor * decay = ggml_view_2d(
+            ctx, decay_projected, decay_projected->ne[0], 1,
+            decay_projected->nb[1],
+            static_cast<size_t>(slot) * decay_projected->nb[1]);
+        decay = ggml_add(ctx, decay, layer.ssm_dt_b);
+        ggml_tensor * A = ggml_reshape_3d(
+            ctx, layer.ssm_a, 1, n_head, 1);
+        if (std::isfinite(w.kda_gate_lower_bound)) {
+            decay = ggml_reshape_3d(ctx, decay, head_dim, n_head, 1);
+            decay = ggml_mul(ctx, decay, A);
+            decay = ggml_sigmoid(ctx, ggml_scale(ctx, decay, -1.0f));
+            decay = ggml_scale(ctx, decay, w.kda_gate_lower_bound);
+        } else {
+            decay = ggml_softplus(ctx, decay);
+            decay = ggml_reshape_3d(ctx, decay, head_dim, n_head, 1);
+            decay = ggml_mul(ctx, decay, A);
+        }
+        decay = ggml_reshape_4d(ctx, decay, head_dim, n_head, 1, 1);
+
+        ggml_tensor * beta = ggml_view_2d(
+            ctx, beta_projected, beta_projected->ne[0], 1,
+            beta_projected->nb[1],
+            static_cast<size_t>(slot) * beta_projected->nb[1]);
+        beta = ggml_sigmoid(
+            ctx, ggml_reshape_4d(ctx, beta, 1, n_head, 1, 1));
+        q = ggml_l2_norm(ctx, q, w.rms_eps);
+        k = ggml_l2_norm(ctx, k, w.rms_eps);
+        ggml_tensor * state = ggml_reshape_4d(
+            ctx, cache.ssm_state, head_dim, head_dim, n_head, 1);
+        ggml_tensor * packed = ggml_gated_delta_net(
+            ctx, q, k, v, decay, beta, state);
+        ggml_gated_delta_net_set_skip_intermediate(packed, true);
+
+        const size_t elt = ggml_element_size(packed);
+        ggml_tensor * output = ggml_view_4d(
+            ctx, packed, head_dim, n_head, 1, 1,
+            static_cast<size_t>(head_dim) * elt,
+            static_cast<size_t>(head_dim) * n_head * elt,
+            static_cast<size_t>(head_dim) * n_head * elt, 0);
+        ggml_tensor * new_state = ggml_view_4d(
+            ctx, packed, head_dim, head_dim, n_head, 1,
+            static_cast<size_t>(head_dim) * elt,
+            static_cast<size_t>(head_dim) * head_dim * elt,
+            static_cast<size_t>(head_dim) * head_dim * n_head * elt,
+            static_cast<size_t>(head_dim) * n_head * elt);
+        ggml_build_forward_expand(
+            graph, ggml_cpy(ctx, new_state, cache.ssm_state));
+        recurrent_output[static_cast<size_t>(slot)] = output;
+    }
+
+    ggml_tensor * output = ggml_concat(
+        ctx, recurrent_output[0], recurrent_output[1], 2);
+    output = ggml_reshape_3d(ctx, output, head_dim, n_head, 2);
+    output = rms_norm(ctx, output, layer.ssm_o_norm, w.rms_eps);
+    ggml_tensor * gate = ggml_reshape_3d(
+        ctx, ggml_mul_mat(ctx, layer.ssm_g, cur), head_dim, n_head, 2);
+    output = ggml_mul(ctx, output, ggml_sigmoid(ctx, gate));
+    output = ggml_cont_2d(ctx, output, d_inner, 2);
+    return ggml_mul_mat(ctx, layer.wo, output);
+}
+
 struct KdaTerminalState {
     ggml_tensor * conv = nullptr;
     ggml_tensor * ssm = nullptr;
@@ -359,6 +497,52 @@ ggml_tensor * build_mla(ggml_context * ctx,
         ctx, graph, w, layer, cache, q_cur, compact_pe, gate_input,
         /*projected_gate=*/nullptr, position, attn_mask);
     return ggml_mul_mat(ctx, layer.wo, out);
+}
+
+ggml_tensor * build_mla_b2(
+        ggml_context * ctx,
+        ggml_cgraph * graph,
+        const KimiK3Weights & w,
+        const KimiK3Layer & layer,
+        const std::array<KimiK3LayerCache *, 2> & caches,
+        ggml_tensor * cur,
+        int position,
+        ggml_tensor * attn_mask) {
+    GGML_ASSERT(cur->ne[0] == w.n_embd && cur->ne[1] == 2);
+    ggml_tensor * q_cur = nullptr;
+    if (layer.wq_a) {
+        q_cur = ggml_mul_mat(ctx, layer.wq_a, cur);
+        q_cur = rms_norm(ctx, q_cur, layer.wq_a_norm, w.rms_eps);
+        q_cur = ggml_mul_mat(ctx, layer.wq_b, q_cur);
+    } else {
+        q_cur = ggml_mul_mat(ctx, layer.wq, cur);
+    }
+    ggml_tensor * compact_pe = ggml_mul_mat(ctx, layer.wkv_a_mqa, cur);
+    ggml_tensor * projected_gate = layer.wqkv_gate
+        ? ggml_mul_mat(ctx, layer.wqkv_gate, cur) : nullptr;
+
+    std::array<ggml_tensor *, 2> outputs{};
+    for (int slot = 0; slot < 2; ++slot) {
+        const size_t index = static_cast<size_t>(slot);
+        ggml_tensor * cur_slot = ggml_view_2d(
+            ctx, cur, cur->ne[0], 1, cur->nb[1], index * cur->nb[1]);
+        ggml_tensor * q_slot = ggml_view_2d(
+            ctx, q_cur, q_cur->ne[0], 1, q_cur->nb[1],
+            index * q_cur->nb[1]);
+        ggml_tensor * compact_slot = ggml_view_2d(
+            ctx, compact_pe, compact_pe->ne[0], 1, compact_pe->nb[1],
+            index * compact_pe->nb[1]);
+        ggml_tensor * gate_slot = projected_gate
+            ? ggml_view_2d(
+                ctx, projected_gate, projected_gate->ne[0], 1,
+                projected_gate->nb[1], index * projected_gate->nb[1])
+            : nullptr;
+        outputs[index] = build_mla_absorbed_attention(
+            ctx, graph, w, layer, *caches[index], q_slot, compact_slot,
+            cur_slot, gate_slot, position, attn_mask);
+    }
+    ggml_tensor * output = ggml_concat(ctx, outputs[0], outputs[1], 1);
+    return ggml_mul_mat(ctx, layer.wo, output);
 }
 
 TopKMoeRouterResult build_kimi_router(ggml_context * ctx,
@@ -1909,7 +2093,8 @@ bool exact_multirow_layer_row(
         const std::vector<std::vector<float>> & checkpoints,
         ExactMultirowLayerRow & output,
         PersistentRoutedPreparation * persistent = nullptr,
-        bool defer_router = false) {
+        bool defer_router = false,
+        bool capture_replay = true) {
     const KimiK3Layer & layer = w.layers[static_cast<size_t>(model_layer)];
     KimiK3LayerCache & layer_cache =
         cache.layers[static_cast<size_t>(model_layer)];
@@ -1979,7 +2164,7 @@ bool exact_multirow_layer_row(
         cur = build_kda(
             ctx, graph, w, layer, layer_cache, cur,
             /*commit_state=*/true,
-            /*capture_replay=*/true, token_index);
+            capture_replay, token_index);
     } else {
         const int position = base_pos + token_index;
         mla_mask_values.assign(
@@ -2074,6 +2259,196 @@ bool exact_multirow_layer_row(
                 "P58 one-row routed preparation");
     ggml_free(ctx);
     return ok;
+}
+
+bool exact_b2_causal_layer(
+        ggml_backend_t backend,
+        const KimiK3Weights & w,
+        const std::array<KimiK3Cache *, 2> & caches,
+        int model_layer,
+        int position,
+        const std::array<std::vector<float>, 2> & hidden,
+        const std::array<std::vector<std::vector<float>>, 2> & checkpoints,
+        std::array<ExactMultirowLayerRow, 2> & output,
+        uint64_t * graph_ns) {
+    if (graph_ns) *graph_ns = 0;
+    const size_t hidden_width = static_cast<size_t>(w.n_embd);
+    if (!backend || !caches[0] || !caches[1] || caches[0] == caches[1] ||
+        model_layer < 0 || model_layer >= w.n_layer || position < 0 ||
+        hidden[0].size() != hidden_width ||
+        hidden[1].size() != hidden_width ||
+        checkpoints[0].size() != checkpoints[1].size()) {
+        set_last_error("Kimi-K3 B=2 causal layer has an invalid envelope");
+        return false;
+    }
+    const KimiK3Layer & layer = w.layers[static_cast<size_t>(model_layer)];
+    const bool dense = model_layer < w.n_dense_lead;
+    const bool banked = model_layer % w.attn_res_block_size == 0;
+
+    std::vector<float> hidden_b2(hidden_width * 2);
+    std::copy(hidden[0].begin(), hidden[0].end(), hidden_b2.begin());
+    std::copy(hidden[1].begin(), hidden[1].end(),
+        hidden_b2.begin() + static_cast<std::ptrdiff_t>(hidden_width));
+    std::vector<std::vector<float>> checkpoints_b2;
+    checkpoints_b2.reserve(checkpoints[0].size());
+    for (size_t checkpoint = 0; checkpoint < checkpoints[0].size(); ++checkpoint) {
+        if (checkpoints[0][checkpoint].size() != hidden_width ||
+            checkpoints[1][checkpoint].size() != hidden_width) {
+            set_last_error("Kimi-K3 B=2 checkpoint shape is invalid");
+            return false;
+        }
+        checkpoints_b2.emplace_back(hidden_width * 2);
+        std::copy(checkpoints[0][checkpoint].begin(),
+                  checkpoints[0][checkpoint].end(),
+                  checkpoints_b2.back().begin());
+        std::copy(checkpoints[1][checkpoint].begin(),
+                  checkpoints[1][checkpoint].end(),
+                  checkpoints_b2.back().begin() +
+                      static_cast<std::ptrdiff_t>(hidden_width));
+    }
+
+    ggml_context * ctx = new_kimi_step_context();
+    if (!ctx) {
+        set_last_error("Kimi-K3 B=2 causal layer context allocation failed");
+        return false;
+    }
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 65536, false);
+    std::vector<GraphInput> inputs;
+    ggml_tensor * hidden_in = ggml_new_tensor_2d(
+        ctx, GGML_TYPE_F32, w.n_embd, 2);
+    ggml_set_input(hidden_in);
+    inputs.push_back({hidden_in, hidden_b2.data(),
+                      hidden_b2.size() * sizeof(float)});
+
+    AttnResBank residuals;
+    populate_attn_res_bank(
+        ctx, w, 2, checkpoints_b2, residuals, inputs);
+    ggml_tensor * prefix = hidden_in;
+    ggml_tensor * cur = residuals.mix(prefix, layer.attn_res_score);
+    if (banked) residuals.push(prefix);
+    cur = rms_norm(ctx, cur, layer.attn_norm, w.rms_eps);
+
+    std::vector<float> mla_mask_values;
+    if (layer.recurrent) {
+        cur = build_kda_b2(
+            ctx, graph, w, layer,
+            {&caches[0]->layers[static_cast<size_t>(model_layer)],
+             &caches[1]->layers[static_cast<size_t>(model_layer)]},
+            cur);
+    } else {
+        mla_mask_values.assign(static_cast<size_t>(position + 1), 0.0f);
+        ggml_tensor * mask = ggml_new_tensor_2d(
+            ctx, GGML_TYPE_F32, position + 1, 1);
+        ggml_set_input(mask);
+        inputs.push_back({mask, mla_mask_values.data(),
+                          mla_mask_values.size() * sizeof(float)});
+        cur = build_mla_b2(
+            ctx, graph, w, layer,
+            {&caches[0]->layers[static_cast<size_t>(model_layer)],
+             &caches[1]->layers[static_cast<size_t>(model_layer)]},
+            cur, position, mask);
+    }
+    prefix = banked ? cur : ggml_add(ctx, prefix, cur);
+    cur = residuals.mix(prefix, layer.ffn_res_score);
+    cur = rms_norm(ctx, cur, layer.ffn_norm, w.rms_eps);
+
+    std::vector<GraphOutput> graph_outputs;
+    std::vector<float> hidden_out;
+    std::vector<float> prefix_out;
+    std::vector<float> routed_out;
+    std::vector<int32_t> selected_out;
+    std::vector<float> weights_out;
+    std::vector<float> shared_out;
+    if (dense) {
+        ggml_tensor * gate = ggml_mul_mat(ctx, layer.ffn_gate, cur);
+        ggml_tensor * up = ggml_mul_mat(ctx, layer.ffn_up, cur);
+        ggml_tensor * dense_out = situ(
+            ctx, gate, up, w.situ_beta, w.situ_linear_beta);
+        dense_out = ggml_mul_mat(ctx, layer.ffn_down, dense_out);
+        dense_out = ggml_add(ctx, prefix, dense_out);
+        hidden_out.resize(hidden_width * 2);
+        graph_outputs.push_back(
+            {dense_out, hidden_out.data(), hidden_out.size() * sizeof(float)});
+    } else {
+        ggml_tensor * routed = ggml_mul_mat(
+            ctx, layer.ffn_routed_down, cur);
+        TopKMoeRouterResult router = build_kimi_router(
+            ctx, graph, w, layer, cur);
+        ggml_tensor * selected = ggml_cont(ctx, router.selected);
+        ggml_tensor * weights = ggml_cont(ctx, router.weights_2d);
+        ggml_tensor * shared_gate = ggml_mul_mat(
+            ctx, layer.ffn_gate_shexp, cur);
+        ggml_tensor * shared_up = ggml_mul_mat(
+            ctx, layer.ffn_up_shexp, cur);
+        ggml_tensor * shared = situ(
+            ctx, shared_gate, shared_up,
+            w.situ_beta, w.situ_linear_beta);
+        shared = ggml_mul_mat(ctx, layer.ffn_down_shexp, shared);
+
+        prefix_out.resize(hidden_width * 2);
+        routed_out.resize(static_cast<size_t>(w.n_expert_latent) * 2);
+        selected_out.resize(static_cast<size_t>(w.n_expert_used) * 2);
+        weights_out.resize(static_cast<size_t>(w.n_expert_used) * 2);
+        shared_out.resize(hidden_width * 2);
+        graph_outputs = {
+            {prefix, prefix_out.data(), prefix_out.size() * sizeof(float)},
+            {routed, routed_out.data(), routed_out.size() * sizeof(float)},
+            {selected, selected_out.data(),
+             selected_out.size() * sizeof(int32_t)},
+            {weights, weights_out.data(), weights_out.size() * sizeof(float)},
+            {shared, shared_out.data(), shared_out.size() * sizeof(float)},
+        };
+    }
+
+    bool ok = false;
+    GraphExecutionTiming timing;
+    {
+        // Keep two-column quantized projections on the tokenwise MMVQ path.
+        // This is scoped to the discriminator and is required for the exact
+        // per-column association of the established one-row oracle.
+        ScopedCudaGraphOverrides graph_scope(
+            /*disable_graphs=*/false,
+            /*mmvq_max_ncols=*/2,
+            /*skip_property_check=*/false);
+        ok = run_host_boundary_graph(
+            backend, ctx, graph, inputs, graph_outputs,
+            dense ? "B=2 causal dense layer" :
+                    "B=2 causal routed preparation",
+            /*publishes=*/{}, graph_ns ? &timing : nullptr);
+    }
+    if (graph_ns) *graph_ns = timing.compute_ns;
+    ggml_free(ctx);
+    if (!ok) return false;
+
+    for (size_t slot = 0; slot < 2; ++slot) {
+        ExactMultirowLayerRow & row = output[slot];
+        if (dense) {
+            row.hidden.assign(
+                hidden_out.begin() +
+                    static_cast<std::ptrdiff_t>(slot * hidden_width),
+                hidden_out.begin() +
+                    static_cast<std::ptrdiff_t>((slot + 1) * hidden_width));
+            continue;
+        }
+        const size_t routed_width = static_cast<size_t>(w.n_expert_latent);
+        const size_t route_width = static_cast<size_t>(w.n_expert_used);
+        row.prefix.assign(
+            prefix_out.begin() + static_cast<std::ptrdiff_t>(slot * hidden_width),
+            prefix_out.begin() + static_cast<std::ptrdiff_t>((slot + 1) * hidden_width));
+        row.routed.assign(
+            routed_out.begin() + static_cast<std::ptrdiff_t>(slot * routed_width),
+            routed_out.begin() + static_cast<std::ptrdiff_t>((slot + 1) * routed_width));
+        row.selected.assign(
+            selected_out.begin() + static_cast<std::ptrdiff_t>(slot * route_width),
+            selected_out.begin() + static_cast<std::ptrdiff_t>((slot + 1) * route_width));
+        row.route_weights.assign(
+            weights_out.begin() + static_cast<std::ptrdiff_t>(slot * route_width),
+            weights_out.begin() + static_cast<std::ptrdiff_t>((slot + 1) * route_width));
+        row.shared.assign(
+            shared_out.begin() + static_cast<std::ptrdiff_t>(slot * hidden_width),
+            shared_out.begin() + static_cast<std::ptrdiff_t>((slot + 1) * hidden_width));
+    }
+    return true;
 }
 
 struct ExactMultirowCoreGroup {
@@ -3668,11 +4043,17 @@ bool streamed_kimi_k3_forward(
             dense = ggml_mul_mat(ctx, layer.ffn_down, dense);
             ggml_tensor * hidden_out = ggml_add(ctx, prefix, dense);
             std::vector<float> next_hidden(hidden_values);
+            GraphExecutionTiming layer_timing;
             const bool ok = run_host_boundary_graph(
                 backend, ctx, graph, inputs,
                 {{hidden_out, next_hidden.data(),
                   next_hidden.size() * sizeof(float)}},
-                "dense layer");
+                "dense layer", /*publishes=*/{},
+                options.route_trace ? &layer_timing : nullptr);
+            if (options.route_trace) {
+                options.route_trace->causal_graph_ns +=
+                    layer_timing.compute_ns;
+            }
             ggml_free(ctx);
             if (!ok) return false;
             if (banked) checkpoints.push_back(checkpoint);
@@ -3687,6 +4068,7 @@ bool streamed_kimi_k3_forward(
                 static_cast<size_t>(w.n_expert_used) * n_tokens);
             std::vector<float> shared(hidden_values);
             bool prepared = false;
+            GraphExecutionTiming layer_timing;
             if (persistent_layer) {
                 prepared = persistent->evaluate(
                     il, hidden, checkpoints, prefix_host, routed_input,
@@ -3730,7 +4112,12 @@ bool streamed_kimi_k3_forward(
                         {shared_out, shared.data(),
                          shared.size() * sizeof(float)},
                     },
-                    "routed layer preparation");
+                    "routed layer preparation", /*publishes=*/{},
+                    options.route_trace ? &layer_timing : nullptr);
+                if (options.route_trace) {
+                    options.route_trace->causal_graph_ns +=
+                        layer_timing.compute_ns;
+                }
                 ggml_free(ctx);
             }
             if (!prepared) return false;
@@ -3742,6 +4129,14 @@ bool streamed_kimi_k3_forward(
                         "Kimi-K3 native router returned invalid output");
                     return false;
                 }
+            }
+            if (options.route_trace) {
+                options.route_trace->selected_ids.insert(
+                    options.route_trace->selected_ids.end(),
+                    selected.begin(), selected.end());
+                options.route_trace->selected_weights.insert(
+                    options.route_trace->selected_weights.end(),
+                    route_weights.begin(), route_weights.end());
             }
 
             const MoeStreamExpertSpec spec =
@@ -3883,6 +4278,209 @@ bool streamed_kimi_k3_forward(
 
 } // namespace
 
+bool kimi_k3_forward_b2_causal_union(
+        ggml_backend_t backend,
+        const KimiK3Weights & w,
+        const std::array<KimiK3Cache *, 2> & caches,
+        const std::array<int32_t, 2> & tokens,
+        const std::array<int, 2> & positions,
+        KimiK3RoutedOutputProvider & provider,
+        MoeHybridStreamEngine & stream_engine,
+        std::array<KimiK3ForwardResult, 2> & results,
+        KimiK3RouteTrace * route_trace) {
+    results = {};
+    if (route_trace) {
+        route_trace->selected_ids.clear();
+        route_trace->selected_weights.clear();
+        route_trace->causal_graph_ns = 0;
+        route_trace->b2_causal_layers = 0;
+    }
+    if (!backend || !w.ctx || !stream_engine.is_bound() ||
+        !caches[0] || !caches[1] || caches[0] == caches[1] ||
+        positions[0] != positions[1]) {
+        set_last_error(
+            "Kimi-K3 B=2 discriminator requires two caches at one position");
+        return false;
+    }
+    KimiK3RoutedPrefillService * prefill_service =
+        provider.prefill_service();
+    if (!prefill_service || !prefill_service->supports_width(2)) {
+        set_last_error(
+            "Kimi-K3 B=2 provider does not advertise exact width two");
+        return false;
+    }
+    for (size_t slot = 0; slot < caches.size(); ++slot) {
+        KimiK3Cache & cache = *caches[slot];
+        if (!cache.ctx || exact_terminal_pending(cache) ||
+            positions[slot] < 0 || positions[slot] != cache.cur_pos ||
+            positions[slot] >= cache.max_ctx ||
+            tokens[slot] < 0 || tokens[slot] >= w.n_vocab) {
+            set_last_error(
+                "Kimi-K3 B=2 discriminator received an invalid slot");
+            return false;
+        }
+    }
+
+    const size_t hidden_width = static_cast<size_t>(w.n_embd);
+    std::array<std::vector<float>, 2> hidden{
+        std::vector<float>(hidden_width), std::vector<float>(hidden_width)};
+    for (size_t slot = 0; slot < hidden.size(); ++slot) {
+        if (!exact_multirow_embedding_row(
+                backend, w, tokens[slot], hidden[slot].data())) {
+            return false;
+        }
+    }
+
+    std::array<std::vector<std::vector<float>>, 2> checkpoints;
+    for (auto & slot_checkpoints : checkpoints) {
+        slot_checkpoints.reserve(static_cast<size_t>(
+            (w.n_layer + w.attn_res_block_size - 1) /
+            w.attn_res_block_size));
+    }
+
+    const KimiK3RoutedRuntimeStats union_before = provider.runtime_stats();
+    int routed_layers = 0;
+    for (int il = 0; il < w.n_layer; ++il) {
+        const KimiK3Layer & layer = w.layers[static_cast<size_t>(il)];
+        const bool banked = il % w.attn_res_block_size == 0;
+        const std::array<std::vector<float>, 2> checkpoint_value = hidden;
+        std::array<ExactMultirowLayerRow, 2> rows;
+        uint64_t causal_graph_ns = 0;
+        if (!exact_b2_causal_layer(
+                backend, w, caches, il, positions[0], hidden,
+                checkpoints, rows, &causal_graph_ns)) {
+            return false;
+        }
+        if (route_trace) {
+            ++route_trace->b2_causal_layers;
+            route_trace->causal_graph_ns += causal_graph_ns;
+        }
+
+        if (il < w.n_dense_lead) {
+            for (size_t slot = 0; slot < rows.size(); ++slot) {
+                if (rows[slot].hidden.size() != hidden_width) {
+                    set_last_error(
+                        "Kimi-K3 B=2 dense row returned an invalid shape");
+                    return false;
+                }
+                hidden[slot].swap(rows[slot].hidden);
+                if (banked) {
+                    checkpoints[slot].push_back(checkpoint_value[slot]);
+                }
+            }
+            continue;
+        }
+
+        ++routed_layers;
+        const size_t routed_width = static_cast<size_t>(w.n_expert_latent);
+        const size_t route_width = static_cast<size_t>(w.n_expert_used);
+        std::vector<float> routed(routed_width * 2);
+        std::vector<int32_t> selected(route_width * 2);
+        std::vector<float> route_weights(route_width * 2);
+        for (size_t slot = 0; slot < rows.size(); ++slot) {
+            const ExactMultirowLayerRow & row = rows[slot];
+            if (row.prefix.size() != hidden_width ||
+                row.routed.size() != routed_width ||
+                row.selected.size() != route_width ||
+                row.route_weights.size() != route_width ||
+                row.shared.size() != hidden_width) {
+                set_last_error(
+                    "Kimi-K3 B=2 routed preparation returned an invalid shape");
+                return false;
+            }
+            std::copy(row.routed.begin(), row.routed.end(),
+                routed.begin() + static_cast<std::ptrdiff_t>(slot * routed_width));
+            std::copy(row.selected.begin(), row.selected.end(),
+                selected.begin() + static_cast<std::ptrdiff_t>(slot * route_width));
+            std::copy(row.route_weights.begin(), row.route_weights.end(),
+                route_weights.begin() +
+                    static_cast<std::ptrdiff_t>(slot * route_width));
+            if (banked) checkpoints[slot].push_back(checkpoint_value[slot]);
+        }
+        for (size_t route = 0; route < selected.size(); ++route) {
+            if (selected[route] < 0 || selected[route] >= w.n_expert ||
+                !std::isfinite(route_weights[route])) {
+                set_last_error("Kimi-K3 B=2 router output is invalid");
+                return false;
+            }
+        }
+        if (route_trace) {
+            route_trace->selected_ids.insert(
+                route_trace->selected_ids.end(), selected.begin(), selected.end());
+            route_trace->selected_weights.insert(
+                route_trace->selected_weights.end(),
+                route_weights.begin(), route_weights.end());
+        }
+        if (!provider.handles_layer(il)) {
+            set_last_error(
+                "Kimi-K3 B=2 provider does not handle routed layer " +
+                std::to_string(il));
+            return false;
+        }
+
+        std::string provider_error;
+        const MoeStreamExpertSpec spec = make_kimi_k3_stream_spec(w, layer);
+        MoeStreamRouteBatch routes;
+        routes.layer = il - w.n_dense_lead;
+        routes.n_expert = w.n_expert;
+        routes.top_k = w.n_expert_used;
+        routes.n_tokens = 2;
+        routes.inputs = routed.data();
+        routes.selected_ids = selected.data();
+        routes.selected_weights = route_weights.data();
+        std::vector<float> routed_output;
+        if (!provider.evaluate(
+                il, positions[0], spec, routes, stream_engine,
+                routed_output, &provider_error)) {
+            set_last_error(
+                "Kimi-K3 B=2 expert union failed at layer " +
+                std::to_string(il) + ": " + provider_error);
+            return false;
+        }
+        if (routed_output.size() != routed_width * 2) {
+            set_last_error("Kimi-K3 B=2 provider returned an invalid shape");
+            return false;
+        }
+        for (size_t slot = 0; slot < rows.size(); ++slot) {
+            std::vector<float> next(hidden_width);
+            if (!exact_multirow_join_row(
+                    backend, w, layer, rows[slot].prefix.data(),
+                    routed_output.data() + slot * routed_width,
+                    rows[slot].shared.data(), next.data())) {
+                return false;
+            }
+            hidden[slot].swap(next);
+        }
+    }
+
+    const KimiK3RoutedRuntimeStats union_after = provider.runtime_stats();
+    if (union_after.macro_union_completed < union_before.macro_union_completed ||
+        union_after.macro_union_completed - union_before.macro_union_completed !=
+            static_cast<uint64_t>(routed_layers)) {
+        set_last_error(
+            "Kimi-K3 B=2 did not use exact macro union for every routed layer");
+        return false;
+    }
+
+    KimiK3ForwardOptions output_options;
+    output_options.read_logits = true;
+    output_options.read_argmax = true;
+    for (size_t slot = 0; slot < results.size(); ++slot) {
+        results[slot].logits.resize(static_cast<size_t>(w.n_vocab));
+        results[slot].argmax.resize(1);
+        if (!exact_multirow_output_row(
+                backend, w, hidden[slot].data(), 0, checkpoints[slot],
+                output_options, results[slot])) {
+            return false;
+        }
+        caches[slot]->cur_pos = positions[slot] + 1;
+        caches[slot]->replay_valid = false;
+        caches[slot]->recurrent_state_pristine = false;
+        caches[slot]->replay_exact_rows = false;
+    }
+    return true;
+}
+
 bool kimi_k3_read_token_embeddings_on_host(
         const KimiK3Weights & weights,
         const std::vector<int32_t> & tokens,
@@ -3903,6 +4501,12 @@ bool kimi_k3_forward(ggml_backend_t backend,
                      KimiK3ForwardResult & result,
                      MoeHybridStreamEngine * stream_engine) {
     result = KimiK3ForwardResult{};
+    if (options.route_trace) {
+        options.route_trace->selected_ids.clear();
+        options.route_trace->selected_weights.clear();
+        options.route_trace->causal_graph_ns = 0;
+        options.route_trace->b2_causal_layers = 0;
+    }
     if (exact_terminal_pending(cache)) {
         set_last_error("Kimi-K3 forward: exact terminal state is unresolved");
         return false;

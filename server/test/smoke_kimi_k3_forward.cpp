@@ -2,8 +2,10 @@
 #include "server/tokenizer.h"
 
 #include <charconv>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <sstream>
@@ -105,6 +107,28 @@ int main(int argc, char ** argv) {
     }
     KimiK3Backend backend(config);
     if (!backend.init()) return 1;
+
+    const char * b2 = std::getenv("DFLASH_KIMI_B2_UNION_DISCRIMINATOR");
+    if (b2 && *b2 && std::strcmp(b2, "0") != 0) {
+        if (std::strcmp(b2, "1") != 0) {
+            std::fprintf(stderr,
+                "[kimi-k3-b2] DFLASH_KIMI_B2_UNION_DISCRIMINATOR "
+                "must be 0 or 1\n");
+            return 1;
+        }
+        if (prompt_ids.size() < 4) {
+            std::fprintf(stderr,
+                "[kimi-k3-b2] prompt must provide at least four token IDs\n");
+            return 1;
+        }
+        const std::array<int32_t, 4> tokens{
+            prompt_ids[0], prompt_ids[1], prompt_ids[2], prompt_ids[3]};
+        std::string report;
+        const bool exact = backend.run_b2_causal_union_discriminator(
+            tokens, report);
+        std::printf("[kimi-k3-b2] %s\n", report.c_str());
+        return exact ? 0 : 1;
+    }
 
     GenerateRequest request;
     request.prompt = prompt_ids;

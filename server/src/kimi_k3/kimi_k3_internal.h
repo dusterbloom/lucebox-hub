@@ -8,6 +8,7 @@
 #include "ggml.h"
 #include "ggml-backend.h"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -200,6 +201,16 @@ struct KimiK3ForwardOptions {
     KimiK3RoutedOutputProvider * routed_output_provider = nullptr;
     // Exact causal micro-width one with a separately serviced routed macro.
     bool exact_multirow_core = false;
+    // Experimental observability only. Rows are appended layer-major in the
+    // same fixed order in which they are presented to the routed provider.
+    struct KimiK3RouteTrace * route_trace = nullptr;
+};
+
+struct KimiK3RouteTrace {
+    std::vector<int32_t> selected_ids;
+    std::vector<float> selected_weights;
+    uint64_t causal_graph_ns = 0;
+    uint64_t b2_causal_layers = 0;
 };
 
 struct KimiK3ForwardResult {
@@ -257,6 +268,19 @@ bool kimi_k3_forward(ggml_backend_t backend,
                      const KimiK3ForwardOptions & options,
                      KimiK3ForwardResult & result,
                      MoeHybridStreamEngine * stream_engine = nullptr);
+
+// Default-off B=2 discriminator. Each row owns an independent causal cache;
+// resident projections and routed-provider calls are shared across the pair.
+bool kimi_k3_forward_b2_causal_union(
+    ggml_backend_t backend,
+    const KimiK3Weights & weights,
+    const std::array<KimiK3Cache *, 2> & caches,
+    const std::array<int32_t, 2> & tokens,
+    const std::array<int, 2> & positions,
+    KimiK3RoutedOutputProvider & routed_output_provider,
+    MoeHybridStreamEngine & stream_engine,
+    std::array<KimiK3ForwardResult, 2> & results,
+    KimiK3RouteTrace * route_trace = nullptr);
 
 bool kimi_k3_replay_snapshot(ggml_backend_t backend, KimiK3Cache & cache);
 bool kimi_k3_replay_restore(ggml_backend_t backend, KimiK3Cache & cache);

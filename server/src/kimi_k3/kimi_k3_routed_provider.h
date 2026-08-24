@@ -90,6 +90,7 @@ struct KimiK3RoutedRuntimeStats {
     uint64_t union_prefetch_duplicates = 0;
     uint64_t union_prefetch_mismatches = 0;
     uint64_t union_prefetch_aborts = 0;
+    uint64_t macro_union_completed = 0;
 };
 
 // Exact routed-expert boundary shared by decode and prompt macro execution.

@@ -17,6 +17,7 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -179,6 +180,112 @@ size_t estimated_snapshot_admission_bytes(
         return std::numeric_limits<size_t>::max();
     }
     return bytes + kKimiK3SnapshotAllocationMargin;
+}
+
+void append_cache_tensor_bytes(
+        ggml_tensor * tensor, std::vector<uint8_t> & bytes) {
+    if (!tensor) return;
+    const size_t offset = bytes.size();
+    const size_t count = ggml_nbytes(tensor);
+    bytes.resize(offset + count);
+    ggml_backend_tensor_get(tensor, bytes.data() + offset, 0, count);
+}
+
+std::vector<uint8_t> read_cache_bytes(const KimiK3Cache & cache) {
+    std::vector<uint8_t> bytes;
+    bytes.insert(bytes.end(),
+        reinterpret_cast<const uint8_t *>(&cache.cur_pos),
+        reinterpret_cast<const uint8_t *>(&cache.cur_pos) +
+            sizeof(cache.cur_pos));
+    for (const KimiK3LayerCache & layer : cache.layers) {
+        append_cache_tensor_bytes(layer.conv_state, bytes);
+        append_cache_tensor_bytes(layer.ssm_state, bytes);
+        append_cache_tensor_bytes(layer.mla_k, bytes);
+    }
+    return bytes;
+}
+
+bool same_bytes(const std::vector<float> & left,
+                const std::vector<float> & right) {
+    return left.size() == right.size() &&
+        (left.empty() || std::memcmp(
+            left.data(), right.data(), left.size() * sizeof(float)) == 0);
+}
+
+struct CacheMetadata {
+    int max_ctx = 0;
+    int cur_pos = 0;
+    int max_verify_tokens = 0;
+    int snapshot_pos = 0;
+    int replay_base_pos = 0;
+    int replay_n_tokens = 0;
+    bool snapshot_valid = false;
+    bool replay_valid = false;
+    bool recurrent_state_pristine = false;
+    bool replay_exact_rows = false;
+};
+
+CacheMetadata read_cache_metadata(const KimiK3Cache & cache) {
+    return {
+        cache.max_ctx,
+        cache.cur_pos,
+        cache.max_verify_tokens,
+        cache.snapshot_pos,
+        cache.replay_base_pos,
+        cache.replay_n_tokens,
+        cache.snapshot_valid,
+        cache.replay_valid,
+        cache.recurrent_state_pristine,
+        cache.replay_exact_rows,
+    };
+}
+
+bool same_cache_metadata(
+        const CacheMetadata & left, const CacheMetadata & right) {
+    return left.max_ctx == right.max_ctx && left.cur_pos == right.cur_pos &&
+        left.max_verify_tokens == right.max_verify_tokens &&
+        left.snapshot_pos == right.snapshot_pos &&
+        left.replay_base_pos == right.replay_base_pos &&
+        left.replay_n_tokens == right.replay_n_tokens &&
+        left.snapshot_valid == right.snapshot_valid &&
+        left.replay_valid == right.replay_valid &&
+        left.recurrent_state_pristine == right.recurrent_state_pristine &&
+        left.replay_exact_rows == right.replay_exact_rows;
+}
+
+bool same_route_rows(
+        const std::array<KimiK3RouteTrace, 2> & serial,
+        const KimiK3RouteTrace & pair,
+        int top_k) {
+    if (top_k <= 0 ||
+        serial[0].selected_ids.size() != serial[1].selected_ids.size() ||
+        serial[0].selected_weights.size() !=
+            serial[1].selected_weights.size() ||
+        pair.selected_ids.size() != serial[0].selected_ids.size() * 2 ||
+        pair.selected_weights.size() !=
+            serial[0].selected_weights.size() * 2) {
+        return false;
+    }
+    const size_t row_width = static_cast<size_t>(top_k);
+    if (serial[0].selected_ids.size() % row_width != 0) return false;
+    const size_t rows = serial[0].selected_ids.size() / row_width;
+    for (size_t row = 0; row < rows; ++row) {
+        for (size_t slot = 0; slot < serial.size(); ++slot) {
+            const size_t serial_offset = row * row_width;
+            const size_t pair_offset = (row * 2 + slot) * row_width;
+            if (std::memcmp(
+                    serial[slot].selected_ids.data() + serial_offset,
+                    pair.selected_ids.data() + pair_offset,
+                    row_width * sizeof(int32_t)) != 0 ||
+                std::memcmp(
+                    serial[slot].selected_weights.data() + serial_offset,
+                    pair.selected_weights.data() + pair_offset,
+                    row_width * sizeof(float)) != 0) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 } // namespace
@@ -362,6 +469,199 @@ bool KimiK3Backend::init() {
         routed_output_provider_ ? "calibrated96" : "native-exact");
     std::fflush(stderr);
     return true;
+}
+
+bool KimiK3Backend::run_b2_causal_union_discriminator(
+        const std::array<int32_t, 4> & tokens, std::string & report) {
+    report.clear();
+    if (!initialized_ || !backend_ || !routed_output_provider_ ||
+        !stream_engine_.is_bound()) {
+        report = "backend is not initialized";
+        return false;
+    }
+    for (int32_t token : tokens) {
+        if (token < 0 || token >= weights_.n_vocab) {
+            report = "discriminator token is outside the vocabulary";
+            return false;
+        }
+    }
+
+    struct CachePair {
+        std::array<KimiK3Cache, 2> values;
+        ~CachePair() {
+            for (KimiK3Cache & cache : values) free_kimi_k3_cache(cache);
+        }
+    } caches;
+    for (KimiK3Cache & cache : caches.values) {
+        if (!create_kimi_k3_cache(
+                backend_, weights_, /*max_ctx=*/2, cache,
+                /*max_verify_tokens=*/0)) {
+            report = "cannot allocate the two discriminator caches";
+            return false;
+        }
+    }
+
+    const std::array<int32_t, 2> seeds{tokens[0], tokens[2]};
+    const std::array<int32_t, 2> next{tokens[1], tokens[3]};
+    const auto seed_slot = [&](size_t slot) {
+        KimiK3ForwardOptions options;
+        options.read_argmax = true;
+        options.routed_output_provider = routed_output_provider_.get();
+        KimiK3ForwardResult ignored;
+        return kimi_k3_forward(
+            backend_, weights_, caches.values[slot], {seeds[slot]}, 0,
+            options, ignored, &stream_engine_);
+    };
+    for (size_t slot = 0; slot < caches.values.size(); ++slot) {
+        if (!seed_slot(slot)) {
+            report = std::string("serial seed failed: ") +
+                dflash27b_last_error();
+            return false;
+        }
+    }
+    std::string cache_error;
+    if (!stream_engine_.reset_external_device_cache(&cache_error)) {
+        report = "serial cold-cache reset failed: " + cache_error;
+        return false;
+    }
+
+    std::array<KimiK3ForwardResult, 2> serial_results;
+    std::array<KimiK3RouteTrace, 2> serial_routes;
+    const KimiK3RoutedRuntimeStats serial_stats_begin =
+        routed_output_provider_->runtime_stats();
+    const auto serial_begin = std::chrono::steady_clock::now();
+    for (size_t slot = 0; slot < caches.values.size(); ++slot) {
+        KimiK3ForwardOptions options;
+        options.read_logits = true;
+        options.read_argmax = true;
+        options.routed_output_provider = routed_output_provider_.get();
+        options.route_trace = &serial_routes[slot];
+        if (!kimi_k3_forward(
+                backend_, weights_, caches.values[slot], {next[slot]}, 1,
+                options, serial_results[slot], &stream_engine_)) {
+            report = std::string("serial control failed: ") +
+                dflash27b_last_error();
+            return false;
+        }
+    }
+    const double serial_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - serial_begin).count();
+    const KimiK3RoutedRuntimeStats serial_stats_end =
+        routed_output_provider_->runtime_stats();
+    const std::array<std::vector<uint8_t>, 2> serial_states{
+        read_cache_bytes(caches.values[0]),
+        read_cache_bytes(caches.values[1])};
+    const std::array<CacheMetadata, 2> serial_metadata{
+        read_cache_metadata(caches.values[0]),
+        read_cache_metadata(caches.values[1])};
+
+    for (KimiK3Cache & cache : caches.values) reset_kimi_k3_cache(cache);
+    for (size_t slot = 0; slot < caches.values.size(); ++slot) {
+        if (!seed_slot(slot)) {
+            report = std::string("pair seed failed: ") +
+                dflash27b_last_error();
+            return false;
+        }
+    }
+    if (!stream_engine_.reset_external_device_cache(&cache_error)) {
+        report = "pair cold-cache reset failed: " + cache_error;
+        return false;
+    }
+
+    std::array<KimiK3ForwardResult, 2> pair_results;
+    KimiK3RouteTrace pair_routes;
+    const KimiK3RoutedRuntimeStats pair_stats_begin =
+        routed_output_provider_->runtime_stats();
+    const auto pair_begin = std::chrono::steady_clock::now();
+    if (!kimi_k3_forward_b2_causal_union(
+            backend_, weights_, {&caches.values[0], &caches.values[1]},
+            next, {1, 1}, *routed_output_provider_, stream_engine_,
+            pair_results, &pair_routes)) {
+        report = std::string("B=2 causal union failed: ") +
+            dflash27b_last_error();
+        return false;
+    }
+    const double pair_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - pair_begin).count();
+    const KimiK3RoutedRuntimeStats pair_stats_end =
+        routed_output_provider_->runtime_stats();
+
+    bool logits_exact = true;
+    bool tokens_exact = true;
+    bool states_exact = true;
+    bool cache_metadata_exact = true;
+    for (size_t slot = 0; slot < pair_results.size(); ++slot) {
+        logits_exact = logits_exact && same_bytes(
+            serial_results[slot].logits, pair_results[slot].logits);
+        tokens_exact = tokens_exact &&
+            serial_results[slot].argmax == pair_results[slot].argmax;
+        states_exact = states_exact &&
+            serial_states[slot] == read_cache_bytes(caches.values[slot]);
+        cache_metadata_exact = cache_metadata_exact && same_cache_metadata(
+            serial_metadata[slot], read_cache_metadata(caches.values[slot]));
+    }
+    const bool routes_exact = same_route_rows(
+        serial_routes, pair_routes, weights_.n_expert_used);
+    const bool causal_exact = pair_routes.b2_causal_layers ==
+        static_cast<uint64_t>(weights_.n_layer);
+    const bool exact = logits_exact && tokens_exact && states_exact &&
+        cache_metadata_exact && routes_exact && causal_exact;
+
+    const auto delta = [](uint64_t end, uint64_t begin) {
+        return end >= begin ? end - begin : 0;
+    };
+    const uint64_t serial_physical = delta(
+        serial_stats_end.physical_direct_read_bytes,
+        serial_stats_begin.physical_direct_read_bytes);
+    const uint64_t pair_physical = delta(
+        pair_stats_end.physical_direct_read_bytes,
+        pair_stats_begin.physical_direct_read_bytes);
+    const uint64_t pair_unions = delta(
+        pair_stats_end.macro_union_completed,
+        pair_stats_begin.macro_union_completed);
+    const uint64_t serial_causal_ns =
+        serial_routes[0].causal_graph_ns +
+        serial_routes[1].causal_graph_ns;
+    std::ostringstream out;
+    out << "serial_ms=" << serial_ms
+        << " pair_ms=" << pair_ms
+        << " speedup=" << (pair_ms > 0.0 ? serial_ms / pair_ms : 0.0)
+        << " pair_aggregate_tps="
+        << (pair_ms > 0.0 ? 2000.0 / pair_ms : 0.0)
+        << " serial_physical_bytes=" << serial_physical
+        << " pair_physical_bytes=" << pair_physical
+        << " serial_direct_io_ms="
+        << delta(serial_stats_end.direct_io_ns,
+                 serial_stats_begin.direct_io_ns) / 1.0e6
+        << " pair_direct_io_ms="
+        << delta(pair_stats_end.direct_io_ns,
+                 pair_stats_begin.direct_io_ns) / 1.0e6
+        << " serial_causal_graph_ms=" << serial_causal_ns / 1.0e6
+        << " pair_causal_graph_ms="
+        << pair_routes.causal_graph_ns / 1.0e6
+        << " serial_pack_ms="
+        << delta(serial_stats_end.compact_pack_ns,
+                 serial_stats_begin.compact_pack_ns) / 1.0e6
+        << " pair_pack_ms="
+        << delta(pair_stats_end.compact_pack_ns,
+                 pair_stats_begin.compact_pack_ns) / 1.0e6
+        << " serial_expert_graph_ms="
+        << delta(serial_stats_end.expert_graph_ns,
+                 serial_stats_begin.expert_graph_ns) / 1.0e6
+        << " pair_expert_graph_ms="
+        << delta(pair_stats_end.expert_graph_ns,
+                 pair_stats_begin.expert_graph_ns) / 1.0e6
+        << " pair_union_layers=" << pair_unions
+        << " pair_causal_layers=" << pair_routes.b2_causal_layers
+        << " logits_exact=" << (logits_exact ? 1 : 0)
+        << " routes_exact=" << (routes_exact ? 1 : 0)
+        << " tensor_states_exact=" << (states_exact ? 1 : 0)
+        << " cache_metadata_exact=" << (cache_metadata_exact ? 1 : 0)
+        << " tokens_exact=" << (tokens_exact ? 1 : 0)
+        << " causal_exact=" << (causal_exact ? 1 : 0)
+        << " exact=" << (exact ? 1 : 0);
+    report = out.str();
+    return exact;
 }
 
 void KimiK3Backend::print_ready_banner() const {

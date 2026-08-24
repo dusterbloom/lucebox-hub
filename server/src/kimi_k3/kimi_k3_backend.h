@@ -33,6 +33,11 @@ public:
 
     bool init();
 
+    // Existing-smoke-only entry for the default-off B=2 causal-union
+    // discriminator. Production generation never calls this method.
+    bool run_b2_causal_union_discriminator(
+        const std::array<int32_t, 4> & tokens, std::string & report);
+
     void print_ready_banner() const override;
     bool park(ParkTarget target) override;
     bool unpark(ParkTarget target) override;
