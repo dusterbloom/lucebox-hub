@@ -1949,9 +1949,9 @@ bool HttpServer::render_messages_to_text(
     }
 
     if (!config_.chat_template_src.empty()) {
-        // Jinja path: --chat-template-file overrides the hardcoded
-        // QWEN3/LAGUNA renderer. Used for tool-using agents that need the
-        // Anthropic tool_use envelope (e.g. froggeric Qwen3.6 template).
+        // Jinja path: the GGUF-embedded tokenizer template is the default;
+        // --chat-template-file can override it. This preserves the model's
+        // native message envelope instead of guessing from architecture.
         //
         // Special tokens like <|im_start|> / <|im_end|> are stored verbatim
         // in the GGUF vocab — use raw_token() to skip the GPT-2 byte decode

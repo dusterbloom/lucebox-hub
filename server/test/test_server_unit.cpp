@@ -2989,6 +2989,32 @@ static const char MINI_JINJA_TEMPLATE[] =
     "<|assistant|>"
     "{%- endif -%}";
 
+// The message-envelope subset used by the Kimi K3 GGUF template. Keep this
+// small: the production source is read from tokenizer.chat_template, while
+// this fixture locks the native markers and whitespace semantics.
+static const char KIMI_ENVELOPE_JINJA_TEMPLATE[] =
+    "{%- macro attr(k, v) -%}"
+    "{{- ' ' + k + '=\\\"' + (v | string) + '\\\"' -}}"
+    "{%- endmacro -%}"
+    "{%- macro otag(tag, attrs=[]) -%}"
+    "{{- '<|open|>' + tag -}}"
+    "{%- for a in attrs -%}{{- attr(a[0], a[1]) -}}{%- endfor -%}"
+    "{{- '<|sep|>' -}}"
+    "{%- endmacro -%}"
+    "{%- macro ctag(tag) -%}"
+    "{{- '<|close|>' + tag + '<|sep|>' -}}"
+    "{%- endmacro -%}"
+    "{%- for message in messages -%}"
+    "{{- otag('message', [['role', message.role]]) -}}"
+    "{{- message.content -}}"
+    "{{- ctag('message') -}}<|end_of_msg|>"
+    "{%- endfor -%}"
+    "{%- if add_generation_prompt -%}"
+    "{{- otag('message', [['role', 'assistant']]) -}}"
+    "{%- if enable_thinking -%}{{- otag('think') -}}"
+    "{%- else -%}{{- otag('response') -}}{%- endif -%}"
+    "{%- endif -%}";
+
 TEST_CASE(ServerUnitFixture, test_deepseek4_render_system_only_gen_prompt) {
     std::vector<ChatMessage> msgs = {
         {"system", "sys only", ""},
@@ -3028,6 +3054,44 @@ TEST_CASE(ServerUnitFixture, test_jinja_render_basic) {
     TEST_ASSERT(out.find("<|system|>you are helpful") != std::string::npos);
     TEST_ASSERT(out.find("<|user|>hi")               != std::string::npos);
     TEST_ASSERT(out.find("<|assistant|>")            != std::string::npos);
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_embedded_jinja_native_envelope) {
+    std::vector<ChatMessage> msgs = {
+        {"system", "You are exact.", ""},
+        {"user", "What is 2+2?", ""},
+    };
+    const std::string out = render_chat_template_jinja(
+        KIMI_ENVELOPE_JINJA_TEMPLATE, msgs, "", "",
+        /*add_gen=*/true, /*think=*/false, "");
+    const std::string expected =
+        "<|open|>message role=\"system\"<|sep|>You are exact."
+        "<|close|>message<|sep|><|end_of_msg|>"
+        "<|open|>message role=\"user\"<|sep|>What is 2+2?"
+        "<|close|>message<|sep|><|end_of_msg|>"
+        "<|open|>message role=\"assistant\"<|sep|>"
+        "<|open|>response<|sep|>";
+    TEST_ASSERT(out == expected);
+}
+
+TEST_CASE(ServerUnitFixture, test_gguf_inspection_reads_embedded_chat_template) {
+    static const char TEMPLATE[] =
+        "{{ '<|open|>message role=\\\"user\\\"<|sep|>' }}";
+    const std::string path = "/tmp/dflash_test_embedded_chat_template.gguf";
+    gguf_context * g = gguf_init_empty();
+    gguf_set_val_str(g, "general.architecture", "kimi-k3");
+    gguf_set_val_str(g, "general.name", "Kimi K3 fixture");
+    gguf_set_val_u32(g, "kimi-k3.block_count", 61);
+    gguf_set_val_str(g, "tokenizer.chat_template", TEMPLATE);
+    gguf_write_to_file(g, path.c_str(), /*only_meta=*/false);
+    gguf_free(g);
+
+    const GgufModelInfo info = inspect_gguf_model_info(path.c_str());
+    unlink(path.c_str());
+    TEST_ASSERT(info.arch == "kimi-k3");
+    TEST_ASSERT(info.name == "Kimi K3 fixture");
+    TEST_ASSERT(info.n_layer == 61);
+    TEST_ASSERT(info.chat_template == TEMPLATE);
 }
 
 TEST_CASE(ServerUnitFixture, test_jinja_render_no_gen_prompt) {

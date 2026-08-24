@@ -608,14 +608,11 @@ int main(int argc, char ** argv) {
             long n = std::ftell(f);
             std::fseek(f, 0, SEEK_SET);
             if (n <= 0) {
-                // The usage text promises "Empty or missing falls back to the
-                // hardcoded template." Honor that: log a warning and leave
-                // chat_template_src empty so http_server.cpp falls through to
-                // the hardcoded QWEN3/LAGUNA renderer, instead of aborting
-                // startup.
+                // Leave chat_template_src empty so startup selects the model's
+                // embedded default (Kimi K3) or the architecture fallback.
                 std::fclose(f);
                 std::fprintf(stderr, "[server] --chat-template-file: '%s' is empty, "
-                                     "falling back to hardcoded template\n", path);
+                                     "falling back to model default template\n", path);
             } else {
                 sconfig.chat_template_src.resize((size_t)n);
                 size_t got = std::fread(sconfig.chat_template_src.data(), 1, (size_t)n, f);
@@ -998,6 +995,22 @@ int main(int argc, char ** argv) {
     std::fprintf(stderr,
         "[server] gguf meta: general.name='%s' general.architecture='%s'\n",
         general_name.c_str(), general_arch.c_str());
+
+    // The model's own tokenizer template is the authoritative default. This
+    // matters for architectures such as Kimi K3 whose native <|open|> /<|close|>
+    // envelope is not ChatML. Keep the explicit CLI file as the operator
+    // override, and reuse the GGUF inspection already performed by the backend
+    // factory instead of opening the multi-shard model again.
+    if (general_arch == "kimi-k3" &&
+        sconfig.chat_template_src.empty() &&
+        !backend_plan.model().chat_template.empty()) {
+        sconfig.chat_template_src = backend_plan.model().chat_template;
+        sconfig.chat_template_path = "gguf:tokenizer.chat_template";
+        std::fprintf(stderr,
+            "[server] loaded chat template from %s (%zu bytes)\n",
+            sconfig.chat_template_path.c_str(),
+            sconfig.chat_template_src.size());
+    }
 
     ModelCard card = resolve_model_card(
         bargs.model_path ? bargs.model_path : "",

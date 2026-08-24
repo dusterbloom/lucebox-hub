@@ -223,11 +223,11 @@ struct ServerConfig {
     int         disk_cache_cold_max_tokens = 10240;    // cold prefix for prompts longer than this
     DiskPrefixCachePolicy disk_cache_policy;
 
-    // Optional Jinja chat template (overrides the hardcoded ChatFormat::QWEN3
-    // / LAGUNA renderer when non-empty). Used for tool-using agents that need
-    // the Anthropic tool_use envelope, e.g. froggeric Qwen3.6 template.
-    std::string chat_template_src;          // literal Jinja source (loaded from file)
-    std::string chat_template_path;         // path it was loaded from (logged at startup)
+    // Optional Jinja chat template (overrides the hardcoded renderer when
+    // non-empty). Loaded from tokenizer.chat_template by default; an explicit
+    // --chat-template-file takes precedence.
+    std::string chat_template_src;          // literal Jinja source
+    std::string chat_template_path;         // file path or GGUF metadata label
 
     // Expert frequency tracking (--freq): print frequency analysis at shutdown.
     bool        freq_tracking = false;

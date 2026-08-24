@@ -65,6 +65,14 @@ GgufModelInfo inspect_gguf_model_info(const char * path) {
         if (v) info.name = v;
     }
 
+    const int64_t chat_template_id =
+        gguf_find_key(gctx, "tokenizer.chat_template");
+    if (chat_template_id >= 0 &&
+        gguf_get_kv_type(gctx, chat_template_id) == GGUF_TYPE_STRING) {
+        const char * v = gguf_get_val_str(gctx, chat_template_id);
+        if (v) info.chat_template = v;
+    }
+
     // Read target layer count. Qwen3.5/3.6 GGUFs can include trailing
     // embedded MTP blocks in block_count.
     if (!info.arch.empty()) {
