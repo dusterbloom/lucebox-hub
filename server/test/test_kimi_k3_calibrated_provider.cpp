@@ -97,9 +97,46 @@ bool snapshot_tensor_prefix_equals(
     return true;
 }
 
-void require_kimi_k3_prefix_snapshot_roundtrip() {
-    ggml_backend_t backend = ggml_backend_cpu_init();
-    require_snapshot_test(backend != nullptr, "CPU backend initialization");
+ggml_backend_t require_kimi_k3_prefix_snapshot_roundtrip() {
+    ggml_backend_t live_backend = nullptr;
+    int device_count = 0;
+    const bool hip_available =
+        cudaGetDeviceCount(&device_count) == cudaSuccess && device_count > 0;
+    if (hip_available) {
+        int device = device_count > 1 ? 1 : 0;
+        if (const char * raw_device = std::getenv("DFLASH_TEST_GPU")) {
+            device = std::atoi(raw_device);
+        }
+        require_snapshot_test(
+            device >= 0 && device < device_count,
+            "requested HIP fixture device is unavailable");
+        require_snapshot_test(
+            cudaSetDevice(device) == cudaSuccess,
+            "HIP fixture device selection");
+        live_backend = ggml_backend_cuda_init(device);
+        require_snapshot_test(
+            live_backend != nullptr, "HIP live backend initialization");
+        cudaDeviceProp properties{};
+        require_snapshot_test(
+            cudaGetDeviceProperties(&properties, device) == cudaSuccess,
+            "HIP fixture device properties");
+        std::fprintf(stderr,
+            "Kimi-K3 prefix snapshot fixture: live=HIP device=%d arch=%s snapshot=CPU\n",
+            device, properties.gcnArchName);
+    } else {
+        std::fprintf(stderr,
+            "Kimi-K3 prefix snapshot fixture: HIP unavailable; using CPU live cache\n");
+        live_backend = ggml_backend_cpu_init();
+    }
+    require_snapshot_test(
+        live_backend != nullptr, "live backend initialization");
+
+    // Production keeps semantic state on gfx1151 while snapshots live on a
+    // separate CPU backend. Keep that direction even when the live side falls
+    // back to CPU so this never degenerates into a same-buffer/backend copy.
+    ggml_backend_t snapshot_backend = ggml_backend_cpu_init();
+    require_snapshot_test(
+        snapshot_backend != nullptr, "snapshot backend initialization");
 
     KimiK3Weights weights;
     weights.n_layer = 2;
@@ -115,7 +152,7 @@ void require_kimi_k3_prefix_snapshot_roundtrip() {
 
     KimiK3Cache cache;
     require_snapshot_test(
-        create_kimi_k3_cache(backend, weights, 16, cache),
+        create_kimi_k3_cache(live_backend, weights, 16, cache),
         "cache creation");
     cache.cur_pos = 5;
     fill_snapshot_tensor(cache.layers[0].conv_state, 10.0f);
@@ -128,10 +165,22 @@ void require_kimi_k3_prefix_snapshot_roundtrip() {
 
     KimiK3PrefixSnapshot snapshot;
     require_snapshot_test(save_kimi_k3_prefix_snapshot(
-        weights, cache, backend, logits, snapshot), "snapshot save");
+        weights, cache, snapshot_backend, logits, snapshot), "snapshot save");
+    require_snapshot_test(
+        ggml_backend_buffer_is_host(snapshot.buf),
+        "snapshot must reside in CPU memory");
     require_snapshot_test(
         snapshot.mla_k[1] && snapshot.mla_k[1]->ne[2] == 5,
         "right-sized MLA snapshot");
+    require_snapshot_test(snapshot_tensor_prefix_equals(
+        snapshot.conv_state[0], 10.0f,
+        ggml_nelements(snapshot.conv_state[0])), "saved GPU-to-CPU conv bytes");
+    require_snapshot_test(snapshot_tensor_prefix_equals(
+        snapshot.ssm_state[0], 100.0f,
+        ggml_nelements(snapshot.ssm_state[0])), "saved GPU-to-CPU SSM bytes");
+    require_snapshot_test(snapshot_tensor_prefix_equals(
+        snapshot.mla_k[1], 1000.0f,
+        ggml_nelements(snapshot.mla_k[1])), "saved GPU-to-CPU MLA bytes");
     require_snapshot_test(
         snapshot.final_logits == logits, "final logits roundtrip");
 
@@ -185,13 +234,25 @@ void require_kimi_k3_prefix_snapshot_roundtrip() {
 
     free_kimi_k3_prefix_snapshot(snapshot);
     free_kimi_k3_cache(cache);
-    ggml_backend_free(backend);
+    ggml_backend_free(snapshot_backend);
+    if (!hip_available) {
+        ggml_backend_free(live_backend);
+        return nullptr;
+    }
+    return live_backend;
 }
 
 } // namespace
 
 int main() {
-    require_kimi_k3_prefix_snapshot_roundtrip();
+    ggml_backend_t snapshot_fixture_backend =
+        require_kimi_k3_prefix_snapshot_roundtrip();
+    if (std::getenv("DFLASH_KIMI_SNAPSHOT_TEST_ONLY")) {
+        if (snapshot_fixture_backend) {
+            ggml_backend_free(snapshot_fixture_backend);
+        }
+        return 0;
+    }
 
     const KimiK3PrefillPolicy width_one{1, false};
     const KimiK3PrefillPolicy width_eight{8, true};
@@ -386,7 +447,8 @@ int main() {
         std::fprintf(stderr, "SKIP: requested GPU %d is unavailable\n", device);
         return explicit_device ? 1 : 77;
     }
-    ggml_backend_t backend = ggml_backend_cuda_init(device);
+    ggml_backend_t backend = snapshot_fixture_backend
+        ? snapshot_fixture_backend : ggml_backend_cuda_init(device);
     if (!backend) {
         std::fprintf(stderr, "P45 sentinel backend initialization failed\n");
         return 1;
