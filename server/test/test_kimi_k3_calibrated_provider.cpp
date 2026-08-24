@@ -29,6 +29,12 @@ bool kimi_k3_run_p45_async_compact_sentinel(
 
 namespace {
 
+void require_snapshot_test(bool condition, const char * message) {
+    if (condition) return;
+    std::fprintf(stderr, "Kimi-K3 prefix snapshot test failed: %s\n", message);
+    std::abort();
+}
+
 void set_env(const char * name, const char * value) {
 #if defined(_WIN32)
     _putenv_s(name, value);
@@ -50,7 +56,7 @@ void require_raw_zero_block_dequantizes_exactly(ggml_type type) {
 }
 
 void fill_snapshot_tensor(ggml_tensor * tensor, float base) {
-    assert(tensor);
+    require_snapshot_test(tensor != nullptr, "missing fixture tensor");
     if (tensor->type == GGML_TYPE_F16) {
         std::vector<ggml_fp16_t> values(ggml_nelements(tensor));
         for (size_t i = 0; i < values.size(); ++i) {
@@ -60,7 +66,8 @@ void fill_snapshot_tensor(ggml_tensor * tensor, float base) {
             tensor, values.data(), 0, values.size() * sizeof(ggml_fp16_t));
         return;
     }
-    assert(tensor->type == GGML_TYPE_F32);
+    require_snapshot_test(
+        tensor->type == GGML_TYPE_F32, "unexpected fixture tensor type");
     std::vector<float> values(ggml_nelements(tensor));
     for (size_t i = 0; i < values.size(); ++i) {
         values[i] = base + static_cast<float>(i);
@@ -92,7 +99,7 @@ bool snapshot_tensor_prefix_equals(
 
 void require_kimi_k3_prefix_snapshot_roundtrip() {
     ggml_backend_t backend = ggml_backend_cpu_init();
-    assert(backend);
+    require_snapshot_test(backend != nullptr, "CPU backend initialization");
 
     KimiK3Weights weights;
     weights.n_layer = 2;
@@ -107,7 +114,9 @@ void require_kimi_k3_prefix_snapshot_roundtrip() {
     weights.layers[1].recurrent = false;
 
     KimiK3Cache cache;
-    assert(create_kimi_k3_cache(backend, weights, 16, cache));
+    require_snapshot_test(
+        create_kimi_k3_cache(backend, weights, 16, cache),
+        "cache creation");
     cache.cur_pos = 5;
     fill_snapshot_tensor(cache.layers[0].conv_state, 10.0f);
     fill_snapshot_tensor(cache.layers[0].ssm_state, 100.0f);
@@ -118,10 +127,13 @@ void require_kimi_k3_prefix_snapshot_roundtrip() {
     }
 
     KimiK3PrefixSnapshot snapshot;
-    assert(save_kimi_k3_prefix_snapshot(
-        weights, cache, backend, logits, snapshot));
-    assert(snapshot.mla_k[1] && snapshot.mla_k[1]->ne[2] == 5);
-    assert(snapshot.final_logits == logits);
+    require_snapshot_test(save_kimi_k3_prefix_snapshot(
+        weights, cache, backend, logits, snapshot), "snapshot save");
+    require_snapshot_test(
+        snapshot.mla_k[1] && snapshot.mla_k[1]->ne[2] == 5,
+        "right-sized MLA snapshot");
+    require_snapshot_test(
+        snapshot.final_logits == logits, "final logits roundtrip");
 
     // A stale layout must fail before touching the live cache.
     fill_snapshot_tensor(cache.layers[0].conv_state, 300.0f);
@@ -129,17 +141,20 @@ void require_kimi_k3_prefix_snapshot_roundtrip() {
     fill_snapshot_tensor(cache.layers[1].mla_k, 600.0f);
     cache.cur_pos = 13;
     snapshot.mla_k[1]->ne[2] = 4;
-    assert(!restore_kimi_k3_prefix_snapshot(snapshot, cache));
-    assert(cache.cur_pos == 13);
-    assert(snapshot_tensor_prefix_equals(
+    require_snapshot_test(
+        !restore_kimi_k3_prefix_snapshot(snapshot, cache),
+        "malformed layout rejection");
+    require_snapshot_test(cache.cur_pos == 13, "atomic rejected position");
+    require_snapshot_test(snapshot_tensor_prefix_equals(
         cache.layers[0].conv_state, 300.0f,
-        ggml_nelements(cache.layers[0].conv_state)));
-    assert(snapshot_tensor_prefix_equals(
+        ggml_nelements(cache.layers[0].conv_state)), "atomic rejected conv");
+    require_snapshot_test(snapshot_tensor_prefix_equals(
         cache.layers[0].ssm_state, 400.0f,
-        ggml_nelements(cache.layers[0].ssm_state)));
-    assert(snapshot_tensor_prefix_equals(
+        ggml_nelements(cache.layers[0].ssm_state)), "atomic rejected SSM");
+    require_snapshot_test(snapshot_tensor_prefix_equals(
         cache.layers[1].mla_k, 600.0f,
-        static_cast<size_t>(weights.kv_lora_rank + weights.rope_dim) * 5));
+        static_cast<size_t>(weights.kv_lora_rank + weights.rope_dim) * 5),
+        "atomic rejected MLA");
     snapshot.mla_k[1]->ne[2] = 5;
 
     cache.snapshot_pos = 3;
@@ -149,21 +164,24 @@ void require_kimi_k3_prefix_snapshot_roundtrip() {
     cache.replay_valid = true;
     cache.recurrent_state_pristine = true;
     cache.replay_exact_rows = true;
-    assert(restore_kimi_k3_prefix_snapshot(snapshot, cache));
-    assert(cache.cur_pos == 5);
-    assert(cache.snapshot_pos == -1 && cache.replay_base_pos == -1 &&
-           cache.replay_n_tokens == 0 && !cache.snapshot_valid &&
-           !cache.replay_valid && !cache.recurrent_state_pristine &&
-           !cache.replay_exact_rows);
-    assert(snapshot_tensor_prefix_equals(
+    require_snapshot_test(
+        restore_kimi_k3_prefix_snapshot(snapshot, cache), "snapshot restore");
+    require_snapshot_test(cache.cur_pos == 5, "restored position");
+    require_snapshot_test(
+        cache.snapshot_pos == -1 && cache.replay_base_pos == -1 &&
+        cache.replay_n_tokens == 0 && !cache.snapshot_valid &&
+        !cache.replay_valid && !cache.recurrent_state_pristine &&
+        !cache.replay_exact_rows, "replay metadata invalidation");
+    require_snapshot_test(snapshot_tensor_prefix_equals(
         cache.layers[0].conv_state, 10.0f,
-        ggml_nelements(cache.layers[0].conv_state)));
-    assert(snapshot_tensor_prefix_equals(
+        ggml_nelements(cache.layers[0].conv_state)), "restored conv");
+    require_snapshot_test(snapshot_tensor_prefix_equals(
         cache.layers[0].ssm_state, 100.0f,
-        ggml_nelements(cache.layers[0].ssm_state)));
-    assert(snapshot_tensor_prefix_equals(
+        ggml_nelements(cache.layers[0].ssm_state)), "restored SSM");
+    require_snapshot_test(snapshot_tensor_prefix_equals(
         cache.layers[1].mla_k, 1000.0f,
-        static_cast<size_t>(weights.kv_lora_rank + weights.rope_dim) * 5));
+        static_cast<size_t>(weights.kv_lora_rank + weights.rope_dim) * 5),
+        "restored MLA");
 
     free_kimi_k3_prefix_snapshot(snapshot);
     free_kimi_k3_cache(cache);
