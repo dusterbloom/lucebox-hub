@@ -1,0 +1,111 @@
+{
+  "schema": "k3-production-ab-v1",
+  "date": "2026-08-24",
+  "verdict": "GO",
+  "question": "Can immutable P30 sidecar-record leases remove cache copy amplification without changing the exact read plan or model outputs?",
+  "source": {
+    "branch": "perf/k3-prefill-causal-core",
+    "base_commit": "46abeba889a1",
+    "remote_test_base_commit": "1e4aaaf2b95ad54a562326a3e21d481f904167dd",
+    "modified_file": "server/src/kimi_k3/kimi_k3_calibrated_provider.cpp",
+    "modified_file_sha256": "216c0dc499da123cceded90d6a78343298ae16fbdd3bd19ff7e109ad365033d2",
+    "qualified_binary_sha256": "6bbff7f999c1a0e1c2176a95e662bb137ed0960fcb7f1022167587c9c0153dbf",
+    "post_review_binary_sha256": "39fa5b9f864f22af5b4e48938c721a0a4030c75a97c63c6f1ae2962e896b0a1a",
+    "post_measurement_change": "removed an unused lease byte count and bool conversion; no executable path changed; focused tests rebuilt and passed"
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "platform_profile": "performance",
+    "visible_devices": [
+      "hip:0 Radeon 8060S gfx1151",
+      "hip:1 AMD Radeon Graphics gfx1201"
+    ],
+    "topology": "single-owner core=hip:0 experts=hip:0 join=hip:0",
+    "build_parallelism": 4
+  },
+  "fixture": {
+    "id": "P55 code-function rendered prompt",
+    "prompt_positions": 53,
+    "output_tokens": 24,
+    "true_ar_transitions": 23,
+    "source_manifest": "/home/duster/kimi-k3-deploy/p51-orderly-broad12-2ce8a28-20260819/suite/suite-manifest.json",
+    "n_gen": 24,
+    "cache_mib": 16384,
+    "p51_device_input_chain": false,
+    "physical_layout": "scratch",
+    "io_backend": "direct-pread"
+  },
+  "gate": {
+    "performance": "keep only if decode saves at least 20 ms/transition",
+    "correctness": "identical output IDs, traffic trace, physical bytes, logical expert bytes, job/graph counts, and single-owner topology",
+    "result": "PASS"
+  },
+  "arms": {
+    "control": {
+      "env": "DFLASH_KIMI_P30_BORROWED_RECORDS=0",
+      "prefill_seconds": 27.950,
+      "prefill_positions_per_second": 1.896250,
+      "decode_seconds": 10.856,
+      "true_ar_tokens_per_second": 2.118559,
+      "decode_ms_per_transition": 472.000,
+      "direct_physical_bytes": 37039996928,
+      "sparse_authoritative_h2d_bytes": 96217497600,
+      "direct_provider_window_ns": 14663162168,
+      "compact_pack_ns": 96354927,
+      "p45_submit_ns": 744546704,
+      "p45_device_window_ns": 5290547486,
+      "cache_hit_bytes": 59713355776,
+      "cache_inserted_bytes": 37039996928,
+      "traffic_sha256": "8475c2348564fc9a0b7ca4ec533607019120708574ab95986a049d494f2928a5"
+    },
+    "borrowed": {
+      "env": "DFLASH_KIMI_P30_BORROWED_RECORDS=1",
+      "prefill_seconds": 24.330,
+      "prefill_positions_per_second": 2.178375,
+      "decode_seconds": 9.710,
+      "true_ar_tokens_per_second": 2.368668,
+      "decode_ms_per_transition": 422.173913,
+      "direct_physical_bytes": 37039996928,
+      "sparse_authoritative_h2d_bytes": 96217497600,
+      "direct_provider_window_ns": 10129661437,
+      "compact_pack_ns": 104212862,
+      "p45_submit_ns": 621450248,
+      "p45_device_window_ns": 5194924658,
+      "cache_hit_bytes": 59713355776,
+      "borrowed_hit_bytes": 58029309952,
+      "cache_inserted_bytes": 37039996928,
+      "adopted_miss_bytes": 35000877056,
+      "traffic_sha256": "8475c2348564fc9a0b7ca4ec533607019120708574ab95986a049d494f2928a5"
+    }
+  },
+  "result": {
+    "decode_ms_saved_per_transition": 49.826087,
+    "decode_speedup": 1.118056,
+    "prefill_speedup": 1.148780,
+    "redundant_cache_copy_bytes_removed": 93030187008,
+    "redundant_cache_copy_gib_removed": 86.641113,
+    "physical_bytes_changed": false,
+    "logical_expert_bytes_changed": false,
+    "traffic_identical": true,
+    "output_ids_identical": true,
+    "full_logits_captured": false,
+    "exactness_label": "behaviorally exact on the registered sentinel; full-logit capture is unavailable on latest main and is not claimed"
+  },
+  "artifacts": {
+    "root": "/home/duster/kimi-k3-deploy/k3-p30-borrowed-records-codefunction-20260824",
+    "control_stdout_sha256": "f9f415a24e802724ceae03f64e0b386c932fcdd52f63c02a6fbb5703c152679f",
+    "control_stderr_sha256": "bd721aa164c1905f7dad5a1b8e6a487f104de9759605dfef62f2d19cab460322",
+    "candidate_stdout_sha256": "0d2482ddc255ce2611e99a1b28c6864b247a37beb451454e413e375c81beaa9a",
+    "candidate_stderr_sha256": "4ca67ba4731e481138608896418f598998e2faa89dd77cfc05ac691d201b0d72",
+    "post_review_smoke_root": "/home/duster/kimi-k3-deploy/k3-p30-borrowed-records-postreview-20260824",
+    "post_review_stdout_sha256": "4f7095a8a64c951e22bba39fa2d144aae627c152d0e9763b1f75db9418758fc0",
+    "post_review_stderr_sha256": "ed2adf981d87a876909ec655d08a8b6331e29531b6d32a3fa85958b7ac0b7a38"
+  },
+  "tests": [
+    "test_kimi_k3_calibrated_provider: PASS",
+    "test_kimi_k3_ordered_join: PASS",
+    "four-arm short fact control/candidate reversal: identical traffic and output IDs",
+    "23-transition P55 code-function A/B: PASS",
+    "post-review rebuilt binary short smoke: 2.363632 true AR/s with expected output IDs"
+  ]
+}

@@ -307,12 +307,22 @@ struct P30ReadKeyHash {
 };
 
 // P30's first cache is deliberately simple and semantics-free: immutable
-// aligned sidecar records and immutable calibrated means are copied into a
-// bounded host LRU.  It never caches exact-fallback experts and never changes
-// selection, accumulation, or GPU arithmetic.  A new independent prompt
+// aligned sidecar records and immutable calibrated means live in a bounded
+// host LRU. The default path retains its copy-in/copy-out behavior. The
+// qualified borrowed path may instead adopt and share aligned sidecar records;
+// means keep the original API. It never caches exact-fallback experts and never
+// changes selection, accumulation, or GPU arithmetic. A new independent prompt
 // clears residency so suite measurements cannot borrow bytes across users.
 class P30BoundedReadCache {
 public:
+    struct SidecarLease {
+        std::shared_ptr<const void> owner;
+
+        const uint8_t * data() const {
+            return static_cast<const uint8_t *>(owner.get());
+        }
+    };
+
     struct Stats {
         uint64_t hits = 0;
         uint64_t misses = 0;
@@ -320,6 +330,10 @@ public:
         uint64_t inserted_bytes = 0;
         uint64_t evicted_bytes = 0;
         uint64_t sequence_resets = 0;
+        uint64_t borrowed_hits = 0;
+        uint64_t borrowed_hit_bytes = 0;
+        uint64_t adopted_misses = 0;
+        uint64_t adopted_miss_bytes = 0;
         size_t resident_bytes = 0;
         size_t entries = 0;
     };
@@ -335,14 +349,34 @@ public:
             ++misses_;
             return false;
         }
-        if (found->second.bytes.size() != key.bytes) {
+        if (found->second.size() != key.bytes) {
             ++misses_;
             return false;
         }
-        std::memcpy(destination, found->second.bytes.data(), key.bytes);
+        std::memcpy(destination, found->second.data(), key.bytes);
         lru_.splice(lru_.begin(), lru_, found->second.position);
         ++hits_;
         hit_bytes_ += key.bytes;
+        return true;
+    }
+
+    bool borrow_sidecar(const P30ReadKey & key, SidecarLease & lease) {
+        lease = {};
+        if (!enabled() || key.kind != P30ReadKind::SidecarSlab) return false;
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto found = entries_.find(key);
+        if (found == entries_.end() ||
+            !found->second.sidecar_owner ||
+            found->second.size() != key.bytes) {
+            ++misses_;
+            return false;
+        }
+        lease.owner = found->second.sidecar_owner;
+        lru_.splice(lru_.begin(), lru_, found->second.position);
+        ++hits_;
+        hit_bytes_ += key.bytes;
+        ++borrowed_hits_;
+        borrowed_hit_bytes_ += key.bytes;
         return true;
     }
 
@@ -358,8 +392,8 @@ public:
             const P30ReadKey victim = lru_.back();
             const auto found = entries_.find(victim);
             if (found != entries_.end()) {
-                resident_bytes_ -= found->second.bytes.size();
-                evicted_bytes_ += found->second.bytes.size();
+                resident_bytes_ -= found->second.size();
+                evicted_bytes_ += found->second.size();
                 entries_.erase(found);
             }
             lru_.pop_back();
@@ -371,6 +405,56 @@ public:
         entry.position = lru_.begin();
         resident_bytes_ += key.bytes;
         inserted_bytes_ += key.bytes;
+        entries_.emplace(key, std::move(entry));
+    }
+
+    void adopt_sidecar(
+            const P30ReadKey & key,
+            const std::shared_ptr<const void> & owner) {
+        if (!enabled() || key.kind != P30ReadKind::SidecarSlab ||
+            !owner || key.bytes == 0 || key.bytes > capacity_ ||
+            (reinterpret_cast<uintptr_t>(owner.get()) & (kAlignment - 1)) != 0) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto existing = entries_.find(key);
+        if (existing != entries_.end()) {
+            // A legacy copy-out caller may have populated this key earlier in
+            // the same provider lifetime. Replace that identical immutable
+            // record with the aligned owner just read by this caller so later
+            // borrowed hits do not repeatedly miss. A concurrently adopted
+            // owner remains authoritative; the caller's lease still protects
+            // its own duplicate read until its payload copy completes.
+            if (!existing->second.sidecar_owner &&
+                existing->second.size() == key.bytes) {
+                std::vector<uint8_t>().swap(existing->second.bytes);
+                existing->second.sidecar_owner = owner;
+                existing->second.sidecar_bytes = key.bytes;
+                ++adopted_misses_;
+                adopted_miss_bytes_ += key.bytes;
+            }
+            lru_.splice(lru_.begin(), lru_, existing->second.position);
+            return;
+        }
+        while (!lru_.empty() && resident_bytes_ + key.bytes > capacity_) {
+            const P30ReadKey victim = lru_.back();
+            const auto found = entries_.find(victim);
+            if (found != entries_.end()) {
+                resident_bytes_ -= found->second.size();
+                evicted_bytes_ += found->second.size();
+                entries_.erase(found);
+            }
+            lru_.pop_back();
+        }
+        lru_.push_front(key);
+        Entry entry;
+        entry.sidecar_owner = owner;
+        entry.sidecar_bytes = key.bytes;
+        entry.position = lru_.begin();
+        resident_bytes_ += key.bytes;
+        inserted_bytes_ += key.bytes;
+        ++adopted_misses_;
+        adopted_miss_bytes_ += key.bytes;
         entries_.emplace(key, std::move(entry));
     }
 
@@ -386,7 +470,9 @@ public:
     Stats stats() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return {hits_, misses_, hit_bytes_, inserted_bytes_, evicted_bytes_,
-                sequence_resets_, resident_bytes_, entries_.size()};
+                sequence_resets_, borrowed_hits_, borrowed_hit_bytes_,
+                adopted_misses_, adopted_miss_bytes_, resident_bytes_,
+                entries_.size()};
     }
 
     size_t capacity() const { return capacity_; }
@@ -394,7 +480,16 @@ public:
 private:
     struct Entry {
         std::vector<uint8_t> bytes;
+        std::shared_ptr<const void> sidecar_owner;
+        size_t sidecar_bytes = 0;
         std::list<P30ReadKey>::iterator position;
+
+        size_t size() const {
+            return sidecar_owner ? sidecar_bytes : bytes.size();
+        }
+        const void * data() const {
+            return sidecar_owner ? sidecar_owner.get() : bytes.data();
+        }
     };
 
     size_t capacity_ = 0;
@@ -408,6 +503,10 @@ private:
     uint64_t inserted_bytes_ = 0;
     uint64_t evicted_bytes_ = 0;
     uint64_t sequence_resets_ = 0;
+    uint64_t borrowed_hits_ = 0;
+    uint64_t borrowed_hit_bytes_ = 0;
+    uint64_t adopted_misses_ = 0;
+    uint64_t adopted_miss_bytes_ = 0;
 };
 
 struct SlabAuxHeaderV2 {
@@ -3487,6 +3586,18 @@ public:
         }
         bool enabled = false;
         if (!parse_binary_flag(std::getenv(
+                "DFLASH_KIMI_P30_BORROWED_RECORDS"), enabled)) {
+            if (err) *err =
+                "DFLASH_KIMI_P30_BORROWED_RECORDS must be 0 or 1";
+            return false;
+        }
+        if (enabled && !read_cache_.enabled()) {
+            if (err) *err =
+                "P30 borrowed records require the P30 host cache";
+            return false;
+        }
+        p30_borrowed_records_ = enabled;
+        if (!parse_binary_flag(std::getenv(
                 "DFLASH_KIMI_P23_PERSISTENT_SCRATCH"), enabled)) {
             if (err) *err =
                 "DFLASH_KIMI_P23_PERSISTENT_SCRATCH must be 0 or 1";
@@ -3584,6 +3695,11 @@ public:
             return false;
         }
         compact_executor_ = enabled;
+        if (p30_borrowed_records_ && !compact_executor_) {
+            if (err) *err =
+                "P30 borrowed records require the persistent P41 path";
+            return false;
+        }
         if (ordered_device_join &&
                 (!compact_executor_ || !sidecar_authoritative_)) {
             if (err) {
@@ -3759,7 +3875,7 @@ public:
             "p45-async-queue=%s p40-wide-async-join=%s "
             "exact-macro-union=%s macro-union-prefetch=%s "
             "exact-source=%s "
-            "p30-host-cache-mib=%.1f "
+            "p30-host-cache-mib=%.1f p30-borrowed-records=%s "
             "valid-layers=%d/92 "
             "invalid-layer-action=exact insufficient-expert-action=exact\n",
             budget_description.c_str(),
@@ -3783,6 +3899,7 @@ public:
             macro_union_prefetch_enabled_ ? "enabled" : "disabled",
             sidecar_authoritative_ ? "sidecar" : "native-model",
             static_cast<double>(read_cache_.capacity()) / (1024.0 * 1024.0),
+            p30_borrowed_records_ ? "enabled" : "disabled",
             valid_layers);
         return true;
     }
@@ -4651,6 +4768,43 @@ private:
 #endif
     }
 
+    bool read_direct_sidecar_record_borrowed(
+            int fd, int model_layer, uint64_t aligned_offset,
+            size_t aligned_bytes,
+            P30BoundedReadCache::SidecarLease & lease,
+            bool & cache_hit) {
+#if defined(_WIN32) || !defined(O_DIRECT)
+        (void) fd; (void) model_layer; (void) aligned_offset;
+        (void) aligned_bytes; (void) lease;
+        cache_hit = false;
+        return false;
+#else
+        const P30ReadKey cache_key{
+            model_layer, P30ReadKind::SidecarSlab,
+            aligned_offset, aligned_bytes};
+        cache_hit = read_cache_.borrow_sidecar(cache_key, lease);
+        if (cache_hit) return true;
+
+        void * raw = nullptr;
+        if (::posix_memalign(&raw, kAlignment, aligned_bytes) != 0) {
+            return false;
+        }
+        const ssize_t got = ::pread(
+            fd, raw, aligned_bytes, static_cast<off_t>(aligned_offset));
+        if (got != static_cast<ssize_t>(aligned_bytes)) {
+            std::free(raw);
+            return false;
+        }
+        std::shared_ptr<const void> owner(
+            raw, [](const void * value) {
+                std::free(const_cast<void *>(value));
+            });
+        lease.owner = owner;
+        read_cache_.adopt_sidecar(cache_key, owner);
+        return true;
+#endif
+    }
+
     bool read_sparse_payloads_direct(
             int fd, const LayerState & state,
             const MoeStreamExpertSpec & spec, int model_layer, int base_pos,
@@ -4907,16 +5061,28 @@ private:
                         (prefix + state.slab_bytes + kAlignment - 1) &
                         ~(static_cast<uint64_t>(kAlignment) - 1));
                     void * raw = nullptr;
-                    if (::posix_memalign(
-                            &raw, kAlignment, task.aligned_bytes) != 0) {
-                        failed = true;
-                        break;
-                    }
-                    if (read_direct_sidecar_record(
+                    P30BoundedReadCache::SidecarLease borrowed;
+                    const uint8_t * source = nullptr;
+                    bool read_ok = false;
+                    if (p30_borrowed_records_) {
+                        read_ok = read_direct_sidecar_record_borrowed(
                             fd, model_layer, task.aligned_offset,
-                            task.aligned_bytes, raw, task.cache_hit)) {
-                        const auto * source =
-                            static_cast<const uint8_t *>(raw) + prefix;
+                            task.aligned_bytes, borrowed, task.cache_hit);
+                        if (read_ok) source = borrowed.data() + prefix;
+                    } else {
+                        if (::posix_memalign(
+                                &raw, kAlignment, task.aligned_bytes) != 0) {
+                            failed = true;
+                            break;
+                        }
+                        read_ok = read_direct_sidecar_record(
+                            fd, model_layer, task.aligned_offset,
+                            task.aligned_bytes, raw, task.cache_hit);
+                        if (read_ok) {
+                            source = static_cast<const uint8_t *>(raw) + prefix;
+                        }
+                    }
+                    if (read_ok) {
                         if (compact_payloads) {
                             SparseCompactPayload & compact =
                                 (*compact_payloads)[
@@ -6713,14 +6879,20 @@ private:
             std::fprintf(stderr,
                 "[kimi-k3-p30] capacity-bytes=%zu resident-bytes=%zu "
                 "entries=%zu hits=%llu misses=%llu hit-bytes=%llu "
-                "inserted-bytes=%llu evicted-bytes=%llu sequence-resets=%llu\n",
+                "inserted-bytes=%llu evicted-bytes=%llu sequence-resets=%llu "
+                "borrowed-hits=%llu borrowed-hit-bytes=%llu "
+                "adopted-misses=%llu adopted-miss-bytes=%llu\n",
                 read_cache_.capacity(), cache.resident_bytes, cache.entries,
                 static_cast<unsigned long long>(cache.hits),
                 static_cast<unsigned long long>(cache.misses),
                 static_cast<unsigned long long>(cache.hit_bytes),
                 static_cast<unsigned long long>(cache.inserted_bytes),
                 static_cast<unsigned long long>(cache.evicted_bytes),
-                static_cast<unsigned long long>(cache.sequence_resets));
+                static_cast<unsigned long long>(cache.sequence_resets),
+                static_cast<unsigned long long>(cache.borrowed_hits),
+                static_cast<unsigned long long>(cache.borrowed_hit_bytes),
+                static_cast<unsigned long long>(cache.adopted_misses),
+                static_cast<unsigned long long>(cache.adopted_miss_bytes));
         }
         if (device_variant_cache_) {
             std::fprintf(stderr,
@@ -6929,6 +7101,7 @@ private:
     uint64_t direct_physical_bytes_ = 0;
     uint64_t direct_io_ns_ = 0;
     P30BoundedReadCache read_cache_;
+    bool p30_borrowed_records_ = false;
     bool cache_sequence_started_ = false;
 };
 
