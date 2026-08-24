@@ -188,11 +188,85 @@
         "swap_count_each_arm": 0,
         "exit_status_each_arm": 0
       }
+    },
+    "m1024_same_binary_ab": {
+      "fixture_sha256": "a52320c799f4c20eba845a0cf19edd68a557f28dd2a58d88a4609c797f24cc71",
+      "binary_sha256_each_arm": "289fd4c5ab9f56ab3ee4b95b66b23551d38a84e5decf8167a314fadb0ce27c64",
+      "libggml_hip_sha256_each_arm": "4821f24f3209f9f03f09dd78f4b626f1b1e1b317c2f871eebeeea507b92b1edf",
+      "physical_bytes_each_arm": 169143877632,
+      "traffic_sha256_each_arm": "c0dfd31205484facf903d1e55cd75ccf05338359583b1f9d76fbaa032b6cea15",
+      "control": {
+        "stage_seconds": 313.827190,
+        "core_seconds": 224.530023,
+        "experts_seconds": 74.795927,
+        "join_seconds": 9.876556,
+        "output_seconds": 4.459041,
+        "other_seconds": 0.165643,
+        "direct_io_seconds": 33.057182651,
+        "direct_io_gib_per_second": 4.765303603,
+        "prefill_positions_per_second": 3.262505,
+        "p46_executions": 69632,
+        "p46_replay_executions": 69632,
+        "prepared_tail_executions": 0,
+        "router8_executions": 11776,
+        "log_sha256": "56eeaf75516bc0dd3f4f541eb50a35c1e37534df5d1414ff32adb5caa6011486"
+      },
+      "candidate": {
+        "stage_seconds": 254.635165,
+        "core_seconds": 164.577942,
+        "experts_seconds": 75.613887,
+        "join_seconds": 9.807742,
+        "output_seconds": 4.457743,
+        "other_seconds": 0.177850,
+        "grouped_graph_seconds": 43.179271,
+        "terminal_publication_seconds": 0.769341,
+        "direct_io_seconds": 34.198166116,
+        "direct_io_gib_per_second": 4.606314592,
+        "prefill_positions_per_second": 4.020733,
+        "p46_executions": 0,
+        "p46_replay_executions": 0,
+        "prepared_tail_executions": 69632,
+        "router8_executions": 11776,
+        "log_sha256": "bd10d6082d0508aeed5e2929fc1826573b2da08d35d02354b5114da97babad61"
+      },
+      "delta": {
+        "core_seconds_saved": 59.952081,
+        "core_reduction_fraction": 0.267011423,
+        "stage_seconds_saved": 59.192025,
+        "same_binary_stage_speedup": 1.232458172,
+        "same_binary_prefill_speedup": 1.232406694,
+        "speedup_over_retained_3_219400_baseline": 1.248907560,
+        "direct_io_seconds_regression": 1.140983465,
+        "io_normalized_candidate_stage_seconds": 253.494182,
+        "io_normalized_candidate_positions_per_second": 4.039540449
+      },
+      "correctness": {
+        "physical_bytes_identical": true,
+        "traffic_byte_identical": true,
+        "provider_mismatches_each_arm": 0,
+        "provider_aborts_each_arm": 0,
+        "swap_count_each_arm": 0,
+        "exit_status_each_arm": 0,
+        "full_logits_read": false,
+        "m1024_terminal_state_hash_read": false,
+        "separate_m8_full_logits_and_state_oracle_exact": true
+      },
+      "post_win_critical_path": {
+        "core_seconds": 164.577942,
+        "experts_seconds": 75.613887,
+        "join_seconds": 9.807742,
+        "output_seconds": 4.457743,
+        "other_seconds": 0.177850,
+        "seconds_to_remove_for_10_positions_per_second": 152.235165,
+        "infinite_core_speed_ceiling_positions_per_second": 11.370548383,
+        "infinite_expert_speed_ceiling_positions_per_second": 5.719990479,
+        "interpretation": "The exact causal core remains the binding prefill term. Expert elimination alone cannot reach 10 positions/s."
+      }
     }
   },
   "promotion": {
     "default": false,
-    "next_gate": "same-binary qualified M1024 comparison",
+    "next_gate": "attack the remaining exact causal-core term from the measured 4.020733 positions/s baseline",
     "fallback_retained": true
   }
 }
