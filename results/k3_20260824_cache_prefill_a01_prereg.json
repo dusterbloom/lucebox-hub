@@ -1,0 +1,59 @@
+{
+  "schema": "k3-product-discriminator-v1",
+  "id": "K3-20260824-CACHE-PREFILL-A01",
+  "status": "PREREGISTERED",
+  "date": "2026-08-24",
+  "question": "Can an exact in-memory Kimi-K3 semantic-state snapshot exceed 200 effective warm-prefill positions/s without changing cold execution?",
+  "source": {
+    "base_branch": "perf/k3-production-ponytail",
+    "base_commit": "bd0f3b81c8d43abf9eb5c462c37c5fbdff6ee574",
+    "candidate_branch": "perf/k3-prefix-state-cache",
+    "candidate_commit": "this preregistration's commit"
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "device": "physical gfx1151",
+    "platform_profile": "performance",
+    "build_parallelism_max": 4
+  },
+  "arms": [
+    "M8 cold full-prompt snapshot, mutate live state, restore twice",
+    "M64 safe committed-prefix snapshot plus exact suffix",
+    "M1024 cold full-prompt snapshot followed by two full-cache restores"
+  ],
+  "primary_metric": {
+    "name": "WARM-CACHED-EFFECTIVE-PREFILL-POSITIONS-PER-SECOND",
+    "formula": "full_prompt_positions / (snapshot_restore_seconds + delta_prefill_seconds)",
+    "target": 200.0,
+    "m1024_max_seconds": 5.12
+  },
+  "secondary_metrics": [
+    "cold prefill positions/s",
+    "restored prefix positions",
+    "actually prefilled suffix positions",
+    "snapshot save and restore wall time",
+    "snapshot slot and aggregate allocated bytes",
+    "physical expert bytes and traffic identity where existing counters expose them"
+  ],
+  "correctness_gates": [
+    "permanent CPU fixture preserves recurrent conv/SSM, right-sized MLA prefix, final logits, and rejects malformed layouts atomically",
+    "live cold and restored greedy output IDs are identical",
+    "valid restores report the backend-confirmed cached prefix with no hidden cold fallback",
+    "safe suffix restore preserves registered traffic/output identity",
+    "repeated restore of the same slot remains deterministic"
+  ],
+  "performance_gate": "GO only if the qualified M1024 full hit reaches at least 200 effective positions/s; smaller arms establish exactness and do not satisfy the target alone",
+  "abort_conditions": [
+    "platform profile is not performance",
+    "wrong physical GPU or multi-owner topology",
+    "swap growth, OOM, or invalid snapshot admission",
+    "snapshot restore silently falls back to cold prefill",
+    "cold control no longer reproduces the retained production path"
+  ],
+  "interpretation": {
+    "GO": "Correct in-memory reuse reaches the target and may be integrated into the production ponytail.",
+    "NO_GO": "Correct reuse works but misses 200 effective positions/s; keep only if the product latency gain remains material and the implementation stays lean.",
+    "INVALID": "Any topology, correctness, fallback, resource, or fixture gate fails; no performance conclusion."
+  },
+  "scope": "In-memory prefix and Agent Turn Cache only. Disk snapshot serialization and cold/aggregate prefill claims are excluded."
+}

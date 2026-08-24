@@ -1,8 +1,10 @@
 #include "kimi_k3_backend.h"
 
 #include "common/sampler.h"
+#include "common/snapshot_backend.h"
 #include "device_runtime.h"
 #include "dflash27b.h"
+#include "internal.h"
 
 // ggml retains the cuda-named accelerator API for both CUDA and HIP builds.
 #include "ggml-cuda.h"
@@ -111,6 +113,72 @@ bool is_exact_gfx1151(const cudaDeviceProp & properties) {
     return std::strncmp(properties.gcnArchName, "gfx1151", 7) == 0 &&
         (properties.gcnArchName[7] == '\0' ||
          properties.gcnArchName[7] == ':');
+}
+
+int largest_committed_snapshot_boundary(
+        int base_pos,
+        size_t token_count,
+        int requested_pos,
+        const KimiK3PrefillPolicy & policy) {
+    if (base_pos < 0 || requested_pos < base_pos) return -1;
+    int boundary = requested_pos == base_pos ? base_pos : -1;
+    size_t offset = 0;
+    int position = base_pos;
+    while (offset < token_count) {
+        const size_t width = policy.next_width(token_count - offset);
+        if (width == 0 || width > token_count - offset ||
+            width > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+            position > std::numeric_limits<int>::max() -
+                static_cast<int>(width)) {
+            return -1;
+        }
+        const int next = position + static_cast<int>(width);
+        if (next > requested_pos) break;
+        boundary = next;
+        position = next;
+        offset += width;
+    }
+    return boundary > 0 ? boundary : -1;
+}
+
+constexpr size_t kKimiK3SnapshotBudget = size_t{8} << 30;
+constexpr size_t kKimiK3SnapshotAllocationMargin = size_t{64} << 20;
+
+size_t snapshot_storage_bytes(const KimiK3PrefixSnapshot & snapshot) {
+    const size_t buffer_bytes = snapshot.buf
+        ? ggml_backend_buffer_get_size(snapshot.buf) : 0;
+    const size_t logits_bytes = snapshot.final_logits.size() * sizeof(float);
+    return buffer_bytes + logits_bytes;
+}
+
+size_t estimated_snapshot_admission_bytes(
+        const KimiK3Cache & cache,
+        int vocabulary) {
+    size_t bytes = vocabulary > 0
+        ? static_cast<size_t>(vocabulary) * sizeof(float) : 0;
+    for (const KimiK3LayerCache & layer : cache.layers) {
+        size_t layer_bytes = 0;
+        if (layer.conv_state && layer.ssm_state) {
+            layer_bytes = ggml_nbytes(layer.conv_state) +
+                ggml_nbytes(layer.ssm_state);
+        } else if (layer.mla_k && cache.cur_pos > 0) {
+            const size_t rows = static_cast<size_t>(cache.cur_pos);
+            if (layer.mla_k->nb[2] >
+                std::numeric_limits<size_t>::max() / rows) {
+                return std::numeric_limits<size_t>::max();
+            }
+            layer_bytes = layer.mla_k->nb[2] * rows;
+        }
+        if (bytes > std::numeric_limits<size_t>::max() - layer_bytes) {
+            return std::numeric_limits<size_t>::max();
+        }
+        bytes += layer_bytes;
+    }
+    if (bytes > std::numeric_limits<size_t>::max() -
+        kKimiK3SnapshotAllocationMargin) {
+        return std::numeric_limits<size_t>::max();
+    }
+    return bytes + kKimiK3SnapshotAllocationMargin;
 }
 
 } // namespace
@@ -230,6 +298,13 @@ bool KimiK3Backend::init() {
         shutdown();
         return false;
     }
+    snapshot_backend_ = create_snapshot_backend(backend_);
+    if (!snapshot_backend_) {
+        std::fprintf(stderr,
+            "[kimi-k3] prefix snapshot backend initialization failed\n");
+        shutdown();
+        return false;
+    }
 
     KimiK3LoadOptions load_options;
     load_options.stream_routed_experts = true;
@@ -325,6 +400,13 @@ int32_t KimiK3Backend::choose_token(
 
 GenerateResult KimiK3Backend::generate_impl(
         const GenerateRequest & req, const DaemonIO & io) {
+    return generate_from_state(req, io, nullptr);
+}
+
+GenerateResult KimiK3Backend::generate_from_state(
+        const GenerateRequest & req,
+        const DaemonIO & io,
+        const KimiK3PrefixSnapshot * snapshot) {
     GenerateResult result;
     DaemonIO out_io = io.with_token_callback(req.on_token);
     const auto fail = [&](GenerateErrorCode code, std::string detail) {
@@ -349,9 +431,65 @@ GenerateResult KimiK3Backend::generate_impl(
     }
     if (req.do_sample && req.sampler.seed != 0) rng_.seed(req.sampler.seed);
 
-    reset_kimi_k3_cache(cache_);
-    std::vector<float> logits;
     const auto prefill_begin = std::chrono::steady_clock::now();
+    int restored_prefix = 0;
+    std::vector<float> logits;
+    if (snapshot && static_cast<int>(req.prompt.size()) >= snapshot->cur_pos) {
+        if (!restore_kimi_k3_prefix_snapshot(*snapshot, cache_)) {
+            return fail(GenerateErrorCode::InvalidSnapshotSlot,
+                        dflash27b_last_error());
+        }
+        restored_prefix = snapshot->cur_pos;
+        logits = snapshot->final_logits;
+        last_logits_ = logits;
+        last_logits_pos_ = cache_.cur_pos;
+    } else {
+        if (snapshot) {
+            std::fprintf(stderr,
+                "[kimi-k3-snap] snapshot longer than prompt "
+                "(snap=%d prompt=%zu); using cold prefill\n",
+                snapshot->cur_pos, req.prompt.size());
+        }
+        reset_kimi_k3_cache(cache_);
+        last_logits_.clear();
+        last_logits_pos_ = -1;
+    }
+    result.restored_prefix_tokens = restored_prefix;
+
+    const std::vector<int32_t> delta(
+        req.prompt.begin() + restored_prefix, req.prompt.end());
+    const int capture_boundary = req.snap_slot >= 0 &&
+        req.snap_slot < ModelBackend::kMaxSlots
+        ? largest_committed_snapshot_boundary(
+            restored_prefix, delta.size(), req.snap_pos, prefill_policy_)
+        : -1;
+    bool snapshot_attempted = false;
+    const auto maybe_capture = [&](const std::vector<float> & rows) {
+        if (snapshot_attempted || cache_.cur_pos != capture_boundary) return;
+        const size_t vocabulary = static_cast<size_t>(weights_.n_vocab);
+        if (vocabulary == 0 || rows.size() < vocabulary ||
+            rows.size() % vocabulary != 0) {
+            return;
+        }
+        last_logits_.assign(rows.end() -
+            static_cast<std::vector<float>::difference_type>(vocabulary),
+            rows.end());
+        last_logits_pos_ = cache_.cur_pos;
+        snapshot_attempted = true;
+        if (!snapshot_save(req.snap_slot)) {
+            std::fprintf(stderr,
+                "[kimi-k3-snap] capture failed slot=%d pos=%d: %s\n",
+                req.snap_slot, cache_.cur_pos, dflash27b_last_error());
+        }
+    };
+
+    // A restored checkpoint can itself be the largest safe boundary. Copy it
+    // before executing a later macro rather than changing macro width to reach
+    // an arbitrary requested cut.
+    if (capture_boundary == restored_prefix && restored_prefix > 0) {
+        maybe_capture(logits);
+    }
+
     const auto forward_token = [&](int32_t token, int position) {
         if (out_io.is_cancelled()) return false;
         return kimi_k3_step(
@@ -364,14 +502,20 @@ GenerateResult KimiK3Backend::generate_impl(
     KimiK3PrefillExecutionResult prefill_execution;
     std::string prefill_error;
     const KimiK3PrefillExecutor prefill_executor(prefill_context);
-    if (!prefill_executor.run(
-            req.prompt, prefill_policy_, forward_token,
-            [](const std::vector<float> &) {}, []() {},
-            [&out_io]() { return out_io.is_cancelled(); }, logits,
-            prefill_execution, &prefill_error)) {
-        return fail(
-            GenerateErrorCode::PrefillFailed,
-            !prefill_error.empty() ? prefill_error : dflash27b_last_error());
+    if (!delta.empty()) {
+        if (!prefill_executor.run(
+                delta, prefill_policy_, forward_token, maybe_capture, []() {},
+                [&out_io]() { return out_io.is_cancelled(); }, logits,
+                prefill_execution, &prefill_error)) {
+            return fail(
+                GenerateErrorCode::PrefillFailed,
+                !prefill_error.empty()
+                    ? prefill_error : dflash27b_last_error());
+        }
+        if (logits.size() == static_cast<size_t>(weights_.n_vocab)) {
+            last_logits_ = logits;
+            last_logits_pos_ = cache_.cur_pos;
+        }
     }
     const auto prefill_end = std::chrono::steady_clock::now();
     result.prefill_s =
@@ -430,6 +574,10 @@ GenerateResult KimiK3Backend::generate_impl(
             return fail(GenerateErrorCode::DecodeFailed,
                         "decode did not produce one logits row");
         }
+        if (i + 1 < req.n_gen) {
+            last_logits_ = logits;
+            last_logits_pos_ = cache_.cur_pos;
+        }
     }
     const auto decode_end = std::chrono::steady_clock::now();
     result.decode_s =
@@ -440,33 +588,90 @@ GenerateResult KimiK3Backend::generate_impl(
 }
 
 bool KimiK3Backend::snapshot_save(int slot) {
-    (void) slot;
-    return false;
+    if (slot < 0 || slot >= ModelBackend::kMaxSlots ||
+        !snapshot_backend_ || cache_.cur_pos <= 0 ||
+        last_logits_pos_ != cache_.cur_pos ||
+        last_logits_.size() != static_cast<size_t>(weights_.n_vocab)) {
+        set_last_error("Kimi-K3 prefix snapshot has no committed logits row");
+        return false;
+    }
+    KimiK3PrefixSnapshot & snapshot =
+        prefix_snapshots_[static_cast<size_t>(slot)];
+    const size_t old_bytes = snapshot_storage_bytes(snapshot);
+    const size_t admission_bytes = estimated_snapshot_admission_bytes(
+        cache_, weights_.n_vocab);
+    const size_t retained_bytes = snapshot_bytes_ >= old_bytes
+        ? snapshot_bytes_ - old_bytes : 0;
+    if (admission_bytes > kKimiK3SnapshotBudget ||
+        retained_bytes > kKimiK3SnapshotBudget - admission_bytes) {
+        set_last_error("Kimi-K3 in-memory prefix snapshot budget exhausted");
+        std::fprintf(stderr,
+            "[kimi-k3-snap] admission rejected slot=%d retained=%zu "
+            "admission=%zu budget=%zu\n",
+            slot, retained_bytes, admission_bytes, kKimiK3SnapshotBudget);
+        return false;
+    }
+    const bool saved = save_kimi_k3_prefix_snapshot(
+        weights_, cache_, snapshot_backend_, last_logits_,
+        snapshot);
+    if (!saved) {
+        free_kimi_k3_prefix_snapshot(snapshot);
+        snapshot_bytes_ = retained_bytes;
+        return false;
+    }
+    const size_t slot_bytes = snapshot_storage_bytes(snapshot);
+    if (slot_bytes > kKimiK3SnapshotBudget ||
+        retained_bytes > kKimiK3SnapshotBudget - slot_bytes) {
+        free_kimi_k3_prefix_snapshot(snapshot);
+        snapshot_bytes_ = retained_bytes;
+        set_last_error(
+            "Kimi-K3 prefix snapshot exceeded its in-memory budget");
+        return false;
+    }
+    snapshot_bytes_ = retained_bytes + slot_bytes;
+    std::fprintf(stderr,
+        "[kimi-k3-snap] saved slot=%d pos=%d slot_bytes=%zu "
+        "aggregate_bytes=%zu budget=%zu\n",
+        slot, cache_.cur_pos, slot_bytes, snapshot_bytes_,
+        kKimiK3SnapshotBudget);
+    return true;
 }
 
 void KimiK3Backend::snapshot_free(int slot) {
-    (void) slot;
+    if (slot < 0 || slot >= ModelBackend::kMaxSlots) return;
+    KimiK3PrefixSnapshot & snapshot =
+        prefix_snapshots_[static_cast<size_t>(slot)];
+    const size_t bytes = snapshot_storage_bytes(snapshot);
+    free_kimi_k3_prefix_snapshot(snapshot);
+    snapshot_bytes_ = snapshot_bytes_ >= bytes
+        ? snapshot_bytes_ - bytes : 0;
 }
 
 bool KimiK3Backend::snapshot_used(int slot) const {
-    (void) slot;
-    return false;
+    if (slot < 0 || slot >= ModelBackend::kMaxSlots) return false;
+    const KimiK3PrefixSnapshot & snapshot =
+        prefix_snapshots_[static_cast<size_t>(slot)];
+    return snapshot.ctx && snapshot.buf && snapshot.cur_pos > 0 &&
+        snapshot.final_logits.size() ==
+            static_cast<size_t>(weights_.n_vocab);
 }
 
 int KimiK3Backend::snapshot_cur_pos(int slot) const {
-    (void) slot;
-    return 0;
+    return snapshot_used(slot)
+        ? prefix_snapshots_[static_cast<size_t>(slot)].cur_pos : 0;
 }
 
 GenerateResult KimiK3Backend::restore_and_generate_impl(
         int slot, const GenerateRequest & req, const DaemonIO & io) {
-    (void) slot;
-    (void) req;
-    GenerateResult result;
-    result.fail(GenerateErrorCode::InvalidSnapshotSlot,
-                "Kimi-K3 prefix snapshots are not supported");
-    io.emit(-1);
-    return result;
+    if (!snapshot_used(slot)) {
+        GenerateResult result;
+        result.fail(GenerateErrorCode::InvalidSnapshotSlot,
+                    "Kimi-K3 prefix snapshot slot is empty");
+        io.emit(-1);
+        return result;
+    }
+    return generate_from_state(
+        req, io, &prefix_snapshots_[static_cast<size_t>(slot)]);
 }
 
 bool KimiK3Backend::handle_compress(
@@ -479,8 +684,16 @@ bool KimiK3Backend::handle_compress(
 void KimiK3Backend::shutdown() {
     routed_output_provider_.reset();
     stream_engine_.destroy();
+    for (KimiK3PrefixSnapshot & snapshot : prefix_snapshots_) {
+        free_kimi_k3_prefix_snapshot(snapshot);
+    }
+    snapshot_bytes_ = 0;
+    last_logits_.clear();
+    last_logits_pos_ = -1;
     free_kimi_k3_cache(cache_);
     free_kimi_k3_weights(weights_);
+    free_snapshot_backend(snapshot_backend_, backend_);
+    snapshot_backend_ = nullptr;
     if (backend_) {
         ggml_backend_free(backend_);
         backend_ = nullptr;
