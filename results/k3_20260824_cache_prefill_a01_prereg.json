@@ -1,8 +1,15 @@
 {
   "schema": "k3-product-discriminator-v1",
   "id": "K3-20260824-CACHE-PREFILL-A01",
-  "status": "PREREGISTERED",
+  "status": "SUPERSEDED_METRIC_CLASSIFICATION",
   "date": "2026-08-24",
+  "post_run_audit": {
+    "date": "2026-08-24",
+    "finding": "The registered full_prompt_positions / snapshot_restore_seconds metric measures repeated-request cache-restore latency while executing zero model prefill work. It cannot be used as actual prefill throughput or as evidence that a 200-prefill target was met.",
+    "replacement_metric": "full-prefix cache restore latency and full-prompt-equivalent restore positions/s",
+    "actual_prefill_target_advanced": false,
+    "preservation_note": "The original question and gates below are retained unchanged as historical preregistration text."
+  },
   "question": "Can an exact in-memory Kimi-K3 semantic-state snapshot exceed 200 effective warm-prefill positions/s without changing cold execution?",
   "source": {
     "base_branch": "perf/k3-production-ponytail",

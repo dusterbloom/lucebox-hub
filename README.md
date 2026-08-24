@@ -362,8 +362,8 @@ When compression is on, multi-turn continuations automatically use **FlowKV**: a
 | `--cache-type-k <t>` / `--cache-type-v <t>` | env-driven | Per-side quant override: `f16,bf16,q4_0,q4_1,q5_0,q5_1,q8_0,tq3_0` |
 | `DFLASH27B_KV_TQ3=1` | (default) | Preset TQ3_0 K+V (3.5 bpv, fits 256K @ 24 GB) |
 | `DFLASH27B_KV_Q4=1` | off | Q4_0 K+V (4.5 bpv, legacy, ~128K ceiling) |
-| `--prefix-cache-slots N` | — | Live prefix-cache slot count |
-| `DFLASH_PREFIX_CACHE_SLOTS=N` | `32` | Container-entrypoint equivalent of `--prefix-cache-slots`; the native binary itself uses the CLI flag. |
+| `--prefix-cache-slots N` | `32` generally; `0` for Kimi-K3 | Live prefix-cache slot count. Kimi-K3 semantic snapshots require explicit opt-in. |
+| `DFLASH_PREFIX_CACHE_SLOTS=N` | unset | Container-entrypoint equivalent of `--prefix-cache-slots`; when unset, the native default applies (`32` generally, `0` for Kimi-K3). |
 | `DFLASH_PREFILL_CACHE_SLOTS=N` | `0` | Container-entrypoint equivalent of `--prefill-cache-slots`; the native binary itself uses the CLI flag. |
 | `--kv-cache-dir <path>` | — | Persist prefix cache to disk |
 | `--kv-cache-budget N` | — | On-disk cache size cap |

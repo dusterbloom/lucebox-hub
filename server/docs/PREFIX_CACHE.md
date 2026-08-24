@@ -194,7 +194,7 @@ free_snapshot_backend(snap_backend_, compute_backend_);  // then backend
 
 | Server flag | Default | Description |
 |-------------|---------|-------------|
-| `--prefix-cache-slots N` | 32 | Max turn-boundary prefix cache slots |
+| `--prefix-cache-slots N` | 32 generally; 0 for Kimi-K3 | Max turn-boundary prefix cache slots. Kimi-K3 semantic snapshots require explicit opt-in. |
 | `--prefill-cache-slots N` | 0 | Max exact full-prompt prefill cache slots |
 | `--skip-park` | false | Skip parking draft model during compress |
 

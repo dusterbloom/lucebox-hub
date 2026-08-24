@@ -48,8 +48,9 @@ restored. This is conservative: the backend recomputes the small remainder and
 never restores past the stable prefix.
 
 No tool-specific flag is required. The native server default enables the
-in-memory prefix cache with 32 slots. Direct container launches inherit that
-default. Pass `--prefix-cache-slots N` to the native binary, or set
+in-memory prefix cache with 32 slots for established backends; Kimi-K3 defaults
+to zero and requires explicit opt-in. Direct container launches inherit the
+applicable native default. Pass `--prefix-cache-slots N` to the native binary, or set
 `DFLASH_PREFIX_CACHE_SLOTS=N` through `server/scripts/entrypoint.sh`; use `0`
 to disable prefix reuse.
 
