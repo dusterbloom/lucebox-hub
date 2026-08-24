@@ -159,6 +159,20 @@ struct KimiK3Cache {
     void * persistent_routed_preparation = nullptr;
 };
 
+// Cross-request semantic prefix state. This is intentionally separate from
+// KimiK3Cache's one-macro replay scratch: macro replay omits MLA history and is
+// overwritten by every exact multi-row span.
+struct KimiK3PrefixSnapshot {
+    ggml_context *        ctx = nullptr;
+    ggml_backend_buffer_t buf = nullptr;
+    std::vector<ggml_tensor *> conv_state;
+    std::vector<ggml_tensor *> ssm_state;
+    std::vector<ggml_tensor *> mla_k;
+    std::vector<float> final_logits;
+    int cur_pos = 0;
+    int max_ctx = 0;
+};
+
 inline bool kimi_k3_exact_multirow_width(size_t width) {
     return width == 8 || width == 64 || width == 1024;
 }
@@ -218,6 +232,16 @@ bool create_kimi_k3_cache(ggml_backend_t backend,
                           int max_verify_tokens = 0);
 void reset_kimi_k3_cache(KimiK3Cache & cache);
 void free_kimi_k3_cache(KimiK3Cache & cache);
+bool save_kimi_k3_prefix_snapshot(
+    const KimiK3Weights & weights,
+    const KimiK3Cache & cache,
+    ggml_backend_t snapshot_backend,
+    const std::vector<float> & final_logits,
+    KimiK3PrefixSnapshot & snapshot);
+bool restore_kimi_k3_prefix_snapshot(
+    const KimiK3PrefixSnapshot & snapshot,
+    KimiK3Cache & cache);
+void free_kimi_k3_prefix_snapshot(KimiK3PrefixSnapshot & snapshot);
 void kimi_k3_destroy_graph_state(void *& state);
 
 bool kimi_k3_read_token_embeddings_on_host(

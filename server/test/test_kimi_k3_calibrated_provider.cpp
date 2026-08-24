@@ -1,8 +1,10 @@
 #include "kimi_k3/kimi_k3_calibrated_provider.h"
+#include "kimi_k3/kimi_k3_internal.h"
 #include "kimi_k3/kimi_k3_prefill.h"
 #include "device_runtime.h"
 
 #include "ggml.h"
+#include "ggml-cpu.h"
 #include "ggml-cuda.h"
 
 #include <algorithm>
@@ -47,9 +49,132 @@ void require_raw_zero_block_dequantizes_exactly(ggml_type type) {
         [](float value) { return value == 0.0f; }));
 }
 
+void fill_snapshot_tensor(ggml_tensor * tensor, float base) {
+    assert(tensor);
+    if (tensor->type == GGML_TYPE_F16) {
+        std::vector<ggml_fp16_t> values(ggml_nelements(tensor));
+        for (size_t i = 0; i < values.size(); ++i) {
+            values[i] = ggml_fp32_to_fp16(base + static_cast<float>(i));
+        }
+        ggml_backend_tensor_set(
+            tensor, values.data(), 0, values.size() * sizeof(ggml_fp16_t));
+        return;
+    }
+    assert(tensor->type == GGML_TYPE_F32);
+    std::vector<float> values(ggml_nelements(tensor));
+    for (size_t i = 0; i < values.size(); ++i) {
+        values[i] = base + static_cast<float>(i);
+    }
+    ggml_backend_tensor_set(
+        tensor, values.data(), 0, values.size() * sizeof(float));
+}
+
+bool snapshot_tensor_prefix_equals(
+        ggml_tensor * tensor, float base, size_t elements) {
+    if (tensor->type == GGML_TYPE_F16) {
+        std::vector<ggml_fp16_t> values(elements);
+        ggml_backend_tensor_get(
+            tensor, values.data(), 0, values.size() * sizeof(ggml_fp16_t));
+        for (size_t i = 0; i < values.size(); ++i) {
+            if (values[i] != ggml_fp32_to_fp16(
+                    base + static_cast<float>(i))) return false;
+        }
+        return true;
+    }
+    std::vector<float> values(elements);
+    ggml_backend_tensor_get(
+        tensor, values.data(), 0, values.size() * sizeof(float));
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (values[i] != base + static_cast<float>(i)) return false;
+    }
+    return true;
+}
+
+void require_kimi_k3_prefix_snapshot_roundtrip() {
+    ggml_backend_t backend = ggml_backend_cpu_init();
+    assert(backend);
+
+    KimiK3Weights weights;
+    weights.n_layer = 2;
+    weights.n_head = 2;
+    weights.kda_head_dim = 4;
+    weights.ssm_d_conv = 3;
+    weights.kv_lora_rank = 5;
+    weights.rope_dim = 3;
+    weights.n_vocab = 7;
+    weights.layers.resize(2);
+    weights.layers[0].recurrent = true;
+    weights.layers[1].recurrent = false;
+
+    KimiK3Cache cache;
+    assert(create_kimi_k3_cache(backend, weights, 16, cache));
+    cache.cur_pos = 5;
+    fill_snapshot_tensor(cache.layers[0].conv_state, 10.0f);
+    fill_snapshot_tensor(cache.layers[0].ssm_state, 100.0f);
+    fill_snapshot_tensor(cache.layers[1].mla_k, 1000.0f);
+    std::vector<float> logits(7);
+    for (size_t i = 0; i < logits.size(); ++i) {
+        logits[i] = 2000.0f + static_cast<float>(i);
+    }
+
+    KimiK3PrefixSnapshot snapshot;
+    assert(save_kimi_k3_prefix_snapshot(
+        weights, cache, backend, logits, snapshot));
+    assert(snapshot.mla_k[1] && snapshot.mla_k[1]->ne[2] == 5);
+    assert(snapshot.final_logits == logits);
+
+    // A stale layout must fail before touching the live cache.
+    fill_snapshot_tensor(cache.layers[0].conv_state, 300.0f);
+    fill_snapshot_tensor(cache.layers[0].ssm_state, 400.0f);
+    fill_snapshot_tensor(cache.layers[1].mla_k, 600.0f);
+    cache.cur_pos = 13;
+    snapshot.mla_k[1]->ne[2] = 4;
+    assert(!restore_kimi_k3_prefix_snapshot(snapshot, cache));
+    assert(cache.cur_pos == 13);
+    assert(snapshot_tensor_prefix_equals(
+        cache.layers[0].conv_state, 300.0f,
+        ggml_nelements(cache.layers[0].conv_state)));
+    assert(snapshot_tensor_prefix_equals(
+        cache.layers[0].ssm_state, 400.0f,
+        ggml_nelements(cache.layers[0].ssm_state)));
+    assert(snapshot_tensor_prefix_equals(
+        cache.layers[1].mla_k, 600.0f,
+        static_cast<size_t>(weights.kv_lora_rank + weights.rope_dim) * 5));
+    snapshot.mla_k[1]->ne[2] = 5;
+
+    cache.snapshot_pos = 3;
+    cache.replay_base_pos = 3;
+    cache.replay_n_tokens = 2;
+    cache.snapshot_valid = true;
+    cache.replay_valid = true;
+    cache.recurrent_state_pristine = true;
+    cache.replay_exact_rows = true;
+    assert(restore_kimi_k3_prefix_snapshot(snapshot, cache));
+    assert(cache.cur_pos == 5);
+    assert(cache.snapshot_pos == -1 && cache.replay_base_pos == -1 &&
+           cache.replay_n_tokens == 0 && !cache.snapshot_valid &&
+           !cache.replay_valid && !cache.recurrent_state_pristine &&
+           !cache.replay_exact_rows);
+    assert(snapshot_tensor_prefix_equals(
+        cache.layers[0].conv_state, 10.0f,
+        ggml_nelements(cache.layers[0].conv_state)));
+    assert(snapshot_tensor_prefix_equals(
+        cache.layers[0].ssm_state, 100.0f,
+        ggml_nelements(cache.layers[0].ssm_state)));
+    assert(snapshot_tensor_prefix_equals(
+        cache.layers[1].mla_k, 1000.0f,
+        static_cast<size_t>(weights.kv_lora_rank + weights.rope_dim) * 5));
+
+    free_kimi_k3_prefix_snapshot(snapshot);
+    free_kimi_k3_cache(cache);
+    ggml_backend_free(backend);
+}
+
 } // namespace
 
 int main() {
+    require_kimi_k3_prefix_snapshot_roundtrip();
+
     const KimiK3PrefillPolicy width_one{1, false};
     const KimiK3PrefillPolicy width_eight{8, true};
     const KimiK3PrefillPolicy width_64{64, true};

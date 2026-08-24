@@ -7,6 +7,7 @@
 #include "kimi_k3_prefill.h"
 #include "placement/placement_config.h"
 
+#include <array>
 #include <memory>
 #include <random>
 #include <string>
@@ -56,6 +57,10 @@ public:
 private:
     bool resolve_prefill_policy(std::string & error);
     bool init_streaming(std::string & error);
+    GenerateResult generate_from_state(
+        const GenerateRequest & req,
+        const DaemonIO & io,
+        const KimiK3PrefixSnapshot * snapshot);
     int32_t choose_token(const std::vector<float> & logits,
                          const SamplerCfg & sampler,
                          bool do_sample,
@@ -64,10 +69,16 @@ private:
     KimiK3BackendConfig cfg_;
 
     // Manual shutdown follows the same dependency order as reverse member
-    // destruction: provider -> stream -> cache -> weights -> backend.
+    // destruction: provider -> stream -> snapshots -> cache -> weights -> backend.
     ggml_backend_t backend_ = nullptr;
+    ggml_backend_t snapshot_backend_ = nullptr;
     KimiK3Weights weights_;
     KimiK3Cache cache_;
+    std::array<KimiK3PrefixSnapshot, ModelBackend::kMaxSlots>
+        prefix_snapshots_;
+    size_t snapshot_bytes_ = 0;
+    std::vector<float> last_logits_;
+    int last_logits_pos_ = -1;
     MoeHybridStreamEngine stream_engine_;
     std::unique_ptr<KimiK3RoutedOutputProvider> routed_output_provider_;
 
