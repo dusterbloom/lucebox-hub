@@ -42,17 +42,26 @@ quadrupled requested logical slab records. Measured logical traffic rose
 X7 and X8-disabled produced byte-identical traffic and final logits. X8 is not
 the source of this regression.
 
-## Second changed mechanism
+## Wide-prefill diagnosis corrected
 
-Using budget 24 for scalar rows while retaining width-8 prefill recovered AR
-to 2.116 tok/s but still changed the generated stream late. Width-8 prefill
-had only been compared with the same explicit wide profile in the prior
-production-default gate. It had not been compared against the scalar P55/P30
-causal state across subsequent decode.
+The run previously described as budget-24 width-8 did not use budget 24 for
+wide rows. Its startup closure was
+`requested-budget=scalar-table:... (24),macro:96`. It therefore cannot support
+the earlier claim that a budget-24 wide causal state diverged.
 
-Therefore wide prefill is retained as an explicit experimental profile, not
-the unconditional exact server default. It must pass scalar-reference state
-and logit parity before it can be promoted again.
+The provider was subsequently allowed to expose an explicit, uniform
+budget-24 wide service. Scalar and wide controls then produced byte-identical
+raw logits at M8, M16, and M64. An M64 continuation gate also produced the
+same output IDs (`114820 9196`) and byte-identical post-decode logits. The
+matched reversed-order M64 run improved prefill from 1.820531 to 4.331290
+positions/s (`2.3791x`). Details are in
+`docs/K3_EXACT_WIDE24_RECOVERY.md`.
+
+This corrects the causal diagnosis but does not restore wide prefill as the
+automatic server default. The 53-token mixed prefill/decode gate remained
+exact while scalar decode slowed from 2.355260 to 1.965083 AR/s because the
+wide phase left a different cache population. M1024 budget-24 performance and
+the phase handoff still require qualification.
 
 ## Production correction
 

@@ -4001,9 +4001,11 @@ public:
             p40_trace_.is_open()) {
             return false;
         }
-        for (int layer = kFirstRoutedLayer;
+        const int budget = budget_for_layer(kFirstRoutedLayer);
+        if (budget != 24 && budget != 96) return false;
+        for (int layer = kFirstRoutedLayer + 1;
              layer <= kLastRoutedLayer; ++layer) {
-            if (budget_for_layer(layer) != 96) return false;
+            if (budget_for_layer(layer) != budget) return false;
         }
         return true;
     }

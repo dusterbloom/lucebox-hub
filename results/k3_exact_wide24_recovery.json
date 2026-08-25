@@ -1,0 +1,90 @@
+{
+  "schema": "dflash.kimi-k3.exact-wide24-recovery.v1",
+  "date": "2026-08-25",
+  "verdict": "ENGINEERING_GO_EXPLICIT_DEFAULT_OFF",
+  "source": {
+    "branch": "perf/k3-production-ponytail",
+    "base_commit": "fa938a78fd8a723a6178f7cb7be54f4f9d15e73c",
+    "qualified_binary_sha256": "f777e3d12383798aa9bb7abe760452548c0f78f6ea1b8f6865fd001b2ede8b4a",
+    "qualified_provider_sha256": "70f2356ed63b5dd2794eb22ffeb5e77e5cf43e5b671baf41c6e046846540ff8b",
+    "final_guard_binary_sha256": "92a815e635c2b457d86404d52350bfbf71376a2895a5acea5e17b9f4bf835319",
+    "final_guard_provider_sha256": "b6f75df925bed5b5aa05901c8c7484cf028851c5e8042e8da8aed7fcaa26a5b2",
+    "change": "wide service accepts only uniform all-24 or all-96 layer budgets"
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "backend": "HIP/ROCm",
+    "device": "GPU1 gfx1151",
+    "topology": "single-owner",
+    "platform_profile": "performance",
+    "build_parallelism": 4,
+    "process_swaps": 0
+  },
+  "fixture": {
+    "name": "retained causal M64",
+    "prompt_tokens": 64,
+    "model_first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "budget_per_routed_layer": 24,
+    "routed_layers": 92,
+    "logical_provider_bytes": 92518293504
+  },
+  "matched_reversal": {
+    "order": ["wide", "scalar"],
+    "scalar": {
+      "prefill_chunk": 1,
+      "prefill_seconds": 35.155,
+      "positions_per_second": 1.820531,
+      "direct_physical_bytes": 39999864832,
+      "direct_io_seconds": 14.623837352,
+      "raw_logits_sha256": "aacdaac4a622c23bd5339999aa208c8cde8a00544c8eb0ad6ddc41269fb22e6a",
+      "log_sha256": "bea92f6fea2dead14d683f5ee6cc574026aa172c307ee8bee2e3e5ca06ca168d"
+    },
+    "wide": {
+      "prefill_chunk": 64,
+      "exact_group_width": 8,
+      "prefill_seconds": 14.776,
+      "positions_per_second": 4.331290,
+      "stage_seconds": 14.752063,
+      "core_seconds": 4.286794,
+      "expert_seconds": 9.495063,
+      "join_seconds": 0.675082,
+      "output_seconds": 0.283742,
+      "other_seconds": 0.011381,
+      "direct_physical_bytes": 37335130112,
+      "direct_io_seconds": 7.079634982,
+      "expert_graph_seconds": 1.484355114,
+      "physical_gib_per_second": 4.911418398,
+      "raw_logits_sha256": "aacdaac4a622c23bd5339999aa208c8cde8a00544c8eb0ad6ddc41269fb22e6a",
+      "log_sha256": "dd09c406e1a4735614372707c63b4ffbf10924b3189b154ec17266cb9c841656"
+    },
+    "speedup": 2.379135538,
+    "raw_logits_byte_identical": true
+  },
+  "continued_decode": {
+    "generated_tokens": 2,
+    "true_ar_transitions": 1,
+    "output_ids_each_arm": [114820, 9196],
+    "text_each_arm": " causal core",
+    "scalar_prefill_positions_per_second": 1.824532,
+    "wide_prefill_positions_per_second": 4.361404,
+    "post_decode_logits_sha256_each_arm": "09e346c4e9af1859ce4cb52b6d89e0f91564c85ab75bcd641e4935143b01f6a8",
+    "raw_logits_byte_identical": true,
+    "scalar_log_sha256": "25e45ee7e969dcc68e765b41a5e9fdb4b9d8f9a11f588c066f2c2e84109bf637",
+    "wide_log_sha256": "84be75395b9dee33443ac70abf7e0150bb36ef25f9fca60e13d9238c747fbdc0",
+    "decode_performance_claim": false
+  },
+  "final_guard_gate": {
+    "width": 8,
+    "scalar_and_wide_logits_sha256": "516a50ad88abd6ec6a7de7988d7ce39131c2e579e748abef73202f9f1c9e15e9",
+    "byte_identical": true,
+    "provider_unit_test": "PASS_WITH_HIP_VISIBLE_DEVICES_1"
+  },
+  "m64_20_pos_per_second_bound": {
+    "target_seconds": 3.2,
+    "physical_payload_gib": 34.7710495,
+    "raw_sequential_ceiling_gib_per_second": 5.580138451,
+    "physical_read_floor_seconds": 6.231,
+    "verdict": "IMPOSSIBLE_AT_M64_WITH_CURRENT_EXACT_BYTE_PLAN"
+  },
+  "artifact_root": "/home/duster/kimi-k3-deploy/k3-wide24-recovery-20260825"
+}
