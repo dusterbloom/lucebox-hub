@@ -462,7 +462,11 @@ std::unique_ptr<ModelBackend> create_backend(
 #if defined(DFLASH27B_BACKEND_HIP)
         KimiK3BackendConfig cfg;
         cfg.model_path = args.model_path;
+        cfg.draft_path = args.draft_path;
         cfg.device = args.device;
+        cfg.draft_gpu = args.draft_device.gpu;
+        cfg.draft_ctx_max = args.draft_ctx_max;
+        cfg.fast_rollback = args.fast_rollback;
 
         auto backend = std::make_unique<KimiK3Backend>(cfg);
         if (!backend->init()) {

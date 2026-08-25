@@ -265,6 +265,7 @@ void draft_feature_mirror_free(DraftFeatureMirror & mirror) {
     mirror.device = 0;
     mirror.target_device = 0;
     mirror.cap = 0;
+    mirror.logical_cap = 0;
     mirror.storage_type = GGML_TYPE_F32;
 }
 
@@ -317,6 +318,7 @@ bool draft_feature_mirror_init(DraftFeatureMirror & mirror,
         return false;
     }
     mirror.cap = cap;
+    mirror.logical_cap = cap;
     std::fprintf(stderr, "[dflash-feature] mirror dtype=%s cap=%d fc_in=%d\n",
                  ggml_type_name(mirror.storage_type), cap, fc_in);
     return true;

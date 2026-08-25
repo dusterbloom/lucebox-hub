@@ -71,6 +71,8 @@ bool run_dflash_spec_decode(
         DFlashDraftIpcClient * remote_draft = nullptr,
         const std::vector<int32_t> * hint_tokens = nullptr,
         int base_pos = 0,
+        // Accepted draft proposals / offered proposal slots; excludes the
+        // always-present anchor row.
         double * accept_rate_out = nullptr);
 
 } // namespace dflash::common

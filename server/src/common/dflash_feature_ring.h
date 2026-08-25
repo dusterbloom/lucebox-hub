@@ -31,7 +31,8 @@ struct DraftFeatureMirror {
     size_t staging_bytes = 0;
     int device = 0;
     int target_device = 0;
-    int cap = 0;
+    int cap = 0;         // physical slots
+    int logical_cap = 0; // maximum context rows exposed to the drafter
     int n_target_layers = 0;
     int hidden_size = 0;
     ggml_type storage_type = GGML_TYPE_F32;

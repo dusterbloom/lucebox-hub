@@ -445,6 +445,112 @@ static void test_dspark_confidence_uses_separate_hidden(ggml_backend_t backend) 
     std::fprintf(stderr, g_failures ? " done\n" : " ok\n");
 }
 
+static void test_dspark_proposal_block_uses_every_hidden_row(
+        ggml_backend_t backend) {
+    std::fprintf(stderr,
+                 "  test_dspark_proposal_block_uses_every_hidden_row ...");
+
+    constexpr int hidden = 2;
+    constexpr int rank = 1;
+    constexpr int vocab = 3;
+    constexpr int proposal_len = 2;
+
+    struct Target final : DFlashTarget {
+        enum : int { kHidden = 2, kVocab = 3 };
+
+        bool verify_batch(const std::vector<int32_t> &, int, int &,
+                          std::vector<int32_t> *, bool) override {
+            return false;
+        }
+        bool snapshot_kv() override { return false; }
+        bool restore_kv() override { return false; }
+        bool is_eos(int) const override { return false; }
+        bool embed_tokens(const int32_t *, int, float *) const override {
+            return false;
+        }
+        bool project_hidden_to_tokens(
+                const float *, int, std::vector<int32_t> &) override {
+            return false;
+        }
+        bool project_hidden_to_logits(
+                const float * values, int rows,
+                std::vector<float> & logits) override {
+            logits.assign(static_cast<size_t>(rows) * kVocab, 0.0f);
+            for (int row = 0; row < rows; ++row) {
+                logits[static_cast<size_t>(row) * kVocab + 1] =
+                    values[static_cast<size_t>(row) * kHidden];
+                logits[static_cast<size_t>(row) * kVocab + 2] =
+                    values[static_cast<size_t>(row) * kHidden + 1];
+            }
+            return true;
+        }
+        int hidden_size() const override { return kHidden; }
+        int mask_token_id() const override { return 0; }
+        const std::vector<int> & capture_layer_ids() const override {
+            static const std::vector<int> empty;
+            return empty;
+        }
+    } target;
+
+    ggml_context * ctx = make_test_context();
+    TEST_ASSERT_MSG(ctx != nullptr, "ggml_init failed");
+    if (!ctx) {
+        std::fprintf(stderr, " FAIL\n");
+        return;
+    }
+
+    ggml_tensor * markov_w1 =
+        ggml_new_tensor_2d(ctx, GGML_TYPE_F32, rank, vocab);
+    ggml_tensor * markov_w2 =
+        ggml_new_tensor_2d(ctx, GGML_TYPE_F32, rank, vocab);
+    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    TEST_ASSERT_MSG(buf != nullptr, "weight allocation failed");
+    if (!buf) {
+        ggml_free(ctx);
+        std::fprintf(stderr, " FAIL\n");
+        return;
+    }
+
+    // Hidden row 0 selects token 1; hidden row 1 selects token 2. A runtime
+    // that incorrectly treats row 0 as the already-known seed returns only
+    // the second token and cannot satisfy this contract.
+    const std::vector<float> markov_zeros(
+        static_cast<size_t>(rank) * vocab, 0.0f);
+    const std::vector<float> draft_hidden = {
+        3.0f, 0.0f,
+        0.0f, 3.0f,
+    };
+    ggml_backend_tensor_set(
+        markov_w1, markov_zeros.data(), 0,
+        markov_zeros.size() * sizeof(float));
+    ggml_backend_tensor_set(
+        markov_w2, markov_zeros.data(), 0,
+        markov_zeros.size() * sizeof(float));
+
+    DraftWeights dw{};
+    dw.n_embd = hidden;
+    dw.block_size = proposal_len;
+    dw.dspark.enabled = true;
+    dw.dspark.markov_rank = rank;
+    dw.dspark.vocab_size = vocab;
+    dw.dspark.markov_w1 = markov_w1;
+    dw.dspark.markov_w2 = markov_w2;
+
+    std::vector<int32_t> proposals;
+    const bool ok = dspark_markov_propose_greedy_block(
+        dw, backend, target, draft_hidden.data(), proposal_len,
+        /*anchor_token=*/0, proposals);
+    TEST_ASSERT_MSG(ok, "DSpark proposal block failed");
+    TEST_ASSERT(proposals == std::vector<int32_t>({1, 2}));
+    TEST_ASSERT(dw.max_chain_verify_tokens() == proposal_len + 1);
+    dw.dspark.enabled = false;
+    TEST_ASSERT(dw.max_chain_verify_tokens() == proposal_len);
+
+    ggml_backend_buffer_free(buf);
+    ggml_free(ctx);
+    std::fprintf(stderr, g_failures ? " done\n" : " ok\n");
+}
+
 static float softplus_stable(float x) {
     if (x > 20.0f) {
         return x;
@@ -4136,6 +4242,7 @@ int main() {
     test_loader_rejects_truncated_tensor_data(backend);
     test_dspark_loader_contract_and_bounds(backend);
     test_dspark_confidence_uses_separate_hidden(backend);
+    test_dspark_proposal_block_uses_every_hidden_row(backend);
     test_safe_compressor_batch_tokens();
     test_hybrid_prefill_chunk_tokens();
     test_dspark_park_all_releases_drafter();

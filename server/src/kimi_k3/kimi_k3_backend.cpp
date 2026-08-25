@@ -1,5 +1,7 @@
 #include "kimi_k3_backend.h"
+#include "kimi_k3_dflash_target.h"
 
+#include "common/dflash_spec_decode.h"
 #include "common/sampler.h"
 #include "common/snapshot_backend.h"
 #include "common/platform_env.h"
@@ -11,6 +13,7 @@
 #include "ggml-cuda.h"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -36,6 +39,11 @@
 namespace dflash::common {
 namespace {
 
+constexpr int kKimiDsparkHidden = 7168;
+constexpr int kKimiDsparkBlock = 7;
+constexpr int kKimiDsparkVerifyRows = 8;
+constexpr std::array<int, 5> kKimiDsparkCaptureLayers = {7, 23, 51, 67, 83};
+
 bool parse_binary_env(const char * name, bool & value, std::string & error) {
     value = false;
     const char * raw = std::getenv(name);
@@ -60,7 +68,7 @@ bool parse_prefill_width(const char * raw, int & width) {
     return false;
 }
 
-bool apply_kimi_k3_production_defaults(std::string & error) {
+bool apply_kimi_k3_production_defaults(bool dspark, std::string & error) {
     const char * profile = std::getenv("DFLASH_KIMI_PRODUCTION_DEFAULTS");
     if (profile && *profile && std::strcmp(profile, "0") != 0 &&
         std::strcmp(profile, "1") != 0) {
@@ -110,16 +118,10 @@ bool apply_kimi_k3_production_defaults(std::string & error) {
         {"DFLASH_KIMI_P27_DIRECT_PINNED_COMPACT", "1"},
         {"DFLASH_KIMI_P30_HOST_CACHE_MB", "16384"},
         {"DFLASH_KIMI_P30_BORROWED_RECORDS", "1"},
-        {"DFLASH_KIMI_P40_DEVICE_VARIANT_CACHE", "0"},
-        {"DFLASH_KIMI_P40_LAYER_EPOCH", "0"},
         {"DFLASH_KIMI_P41_COMPACT_EXECUTOR", "1"},
         {"DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "1"},
         {"DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE", "1"},
         {"DFLASH_KIMI_P46_PERSISTENT_ROUTED_PREP", "1"},
-        {"DFLASH_KIMI_ROUTER_WIDTH8", "0"},
-        {"DFLASH_KIMI_EXACT_MACRO_UNION", "0"},
-        {"DFLASH_KIMI_EXACT_MACRO_UNION_PREFETCH", "0"},
-        {"DFLASH_KIMI_MACRO_UNION_ASYNC_UPLOAD", "0"},
     };
     const char * layer_budgets =
         std::getenv("DFLASH_KIMI_H22_LAYER_BUDGETS");
@@ -135,9 +137,38 @@ bool apply_kimi_k3_production_defaults(std::string & error) {
             return false;
         }
     }
+    const char * enabled = dspark ? "1" : "0";
+    const char * width = dspark ? "8" : "0";
+    const DefaultValue verifier_defaults[] = {
+        {"DFLASH_KIMI_P40_DEVICE_VARIANT_CACHE", enabled},
+        {"DFLASH_KIMI_P40_LAYER_EPOCH", enabled},
+        {"DFLASH_KIMI_ROUTER_WIDTH8", enabled},
+        {"DFLASH_KIMI_EXACT_MACRO_UNION", enabled},
+        {"DFLASH_KIMI_EXACT_MACRO_UNION_PREFETCH", "0"},
+        {"DFLASH_KIMI_MACRO_UNION_ASYNC_UPLOAD", enabled},
+        {"DFLASH_KIMI_P58_EXACT_CORE_GROUP_WIDTH", width},
+        {"DFLASH_KIMI_P58_EXACT_MLA_GROUP_WIDTH", width},
+        {"DFLASH_KIMI_P58_EXACT_TAIL_GROUP_WIDTH", width},
+        {"DFLASH_CUDA_MMVQ_QK_EXACT_WIDTH8", enabled},
+        {"DFLASH_CUDA_MMVQ_TOKENWISE", enabled},
+        {"DFLASH_KIMI_DSPARK_ATTN_RES_CAPTURE", enabled},
+    };
+    for (const DefaultValue & value : verifier_defaults) {
+        if (set_environment_variable(
+                value.name, value.value, false) != 0) {
+            error = std::string("cannot set Kimi-K3 production default ") +
+                value.name;
+            return false;
+        }
+    }
+    const char * capture_mode =
+        std::getenv("DFLASH_KIMI_DSPARK_ATTN_RES_CAPTURE");
     std::fprintf(stderr,
-        "[kimi-k3] production-defaults=enabled profile=exact-scalar "
-        "operator-overrides=preserved\n");
+        "[kimi-k3] production-defaults=enabled profile=%s "
+        "operator-overrides=preserved dspark-capture=%s\n",
+        dspark ? "dspark-q7-width8" : "exact-scalar",
+        capture_mode && std::strcmp(capture_mode, "1") == 0
+            ? "attnres" : "raw");
     return true;
 }
 
@@ -336,6 +367,109 @@ bool KimiK3Backend::init_streaming(std::string & error) {
     return true;
 }
 
+bool KimiK3Backend::init_draft() {
+    if (!cfg_.draft_path || !*cfg_.draft_path) return true;
+    if (draft_backend_ || draft_weights_.ctx) return true;
+#if !defined(DFLASH27B_HIP_K3_DUAL_ARCH)
+    std::fprintf(stderr,
+        "[kimi-k3-dspark] draft requires a fat HIP build; reconfigure with "
+        "-DDFLASH27B_HIP_ARCHITECTURES='gfx1151;gfx1201'\n");
+    return false;
+#endif
+    if (cfg_.draft_gpu < 0 || cfg_.draft_gpu == cfg_.device.primary_gpu()) {
+        std::fprintf(stderr,
+            "[kimi-k3-dspark] draft must use a separate gfx1201 device\n");
+        return false;
+    }
+
+    cudaDeviceProp properties{};
+    if (cudaGetDeviceProperties(&properties, cfg_.draft_gpu) != cudaSuccess ||
+        std::strncmp(properties.gcnArchName, "gfx1201", 7) != 0) {
+        std::fprintf(stderr,
+            "[kimi-k3-dspark] draft device %d must be gfx1201 (got %s)\n",
+            cfg_.draft_gpu,
+            properties.gcnArchName[0] ? properties.gcnArchName : "unknown");
+        return false;
+    }
+    draft_backend_ = ggml_backend_cuda_init(cfg_.draft_gpu);
+    if (!draft_backend_) {
+        std::fprintf(stderr,
+            "[kimi-k3-dspark] backend init failed for device %d\n",
+            cfg_.draft_gpu);
+        return false;
+    }
+    if (!load_draft_gguf(cfg_.draft_path, draft_backend_, draft_weights_)) {
+        std::fprintf(stderr, "[kimi-k3-dspark] draft load failed: %s\n",
+                     dflash27b_last_error());
+        free_drafter();
+        return false;
+    }
+
+    const bool captures_match =
+        draft_weights_.capture_layer_ids.size() ==
+            kKimiDsparkCaptureLayers.size() &&
+        std::equal(draft_weights_.capture_layer_ids.begin(),
+                   draft_weights_.capture_layer_ids.end(),
+                   kKimiDsparkCaptureLayers.begin());
+    const bool compatible =
+        draft_weights_.dspark.enabled &&
+        weights_.n_embd == kKimiDsparkHidden &&
+        draft_weights_.n_embd == kKimiDsparkHidden &&
+        draft_weights_.block_size == kKimiDsparkBlock &&
+        draft_weights_.max_chain_verify_tokens() == kKimiDsparkVerifyRows &&
+        draft_weights_.n_target_layers ==
+            static_cast<int>(kKimiDsparkCaptureLayers.size()) &&
+        captures_match &&
+        draft_weights_.mask_token_id >= 0 &&
+        draft_weights_.mask_token_id < weights_.n_vocab &&
+        draft_weights_.dspark.vocab_size == weights_.n_vocab;
+    if (!compatible) {
+        std::fprintf(stderr,
+            "[kimi-k3-dspark] checkpoint contract mismatch: "
+            "target_hidden/vocab=%d/%d draft_hidden/block/verify/captures/"
+            "mask/vocab/dspark=%d/%d/%d/%zu/%d/%d/%d\n",
+            weights_.n_embd, weights_.n_vocab, draft_weights_.n_embd,
+            draft_weights_.block_size,
+            draft_weights_.max_chain_verify_tokens(),
+            draft_weights_.capture_layer_ids.size(),
+            draft_weights_.mask_token_id, draft_weights_.dspark.vocab_size,
+            draft_weights_.dspark.enabled ? 1 : 0);
+        free_drafter();
+        return false;
+    }
+
+    const int logical_ring_cap = std::min(
+        std::max(1, cfg_.device.max_ctx),
+        std::max(2048, cfg_.draft_ctx_max));
+    // Keep V8 speculative suffixes out of the last logical context window.
+    // The shared decoder still caps draft_ctx at cfg_.draft_ctx_max.
+    const int ring_cap = logical_ring_cap + kKimiDsparkVerifyRows;
+    if (!draft_feature_mirror_init(
+            feature_ring_, draft_backend_, cfg_.draft_gpu,
+            cfg_.device.primary_gpu(), ring_cap,
+            draft_weights_.n_target_layers, weights_.n_embd)) {
+        std::fprintf(stderr,
+            "[kimi-k3-dspark] feature-ring allocation failed\n");
+        free_drafter();
+        return false;
+    }
+    feature_ring_.logical_cap = logical_ring_cap;
+    if (feature_ring_.cap - feature_ring_.logical_cap <
+        kKimiDsparkVerifyRows) {
+        std::fprintf(stderr,
+            "[kimi-k3-dspark] feature-ring guard capacity is invalid\n");
+        free_drafter();
+        return false;
+    }
+    std::fprintf(stderr,
+        "[kimi-k3-dspark] exact q=7/V=8 enabled captures=7,23,51,67,83 "
+        "ring_logical=%d ring_physical=%d draft=hip:%d/gfx1201 "
+        "target=hip:%d/gfx1151\n",
+        logical_ring_cap, ring_cap, cfg_.draft_gpu,
+        cfg_.device.primary_gpu());
+    return true;
+}
+
 bool KimiK3Backend::init() {
     if (initialized_) return true;
     if (!cfg_.model_path || !*cfg_.model_path) {
@@ -357,12 +491,58 @@ bool KimiK3Backend::init() {
     }
 
     std::string error;
-    if (!apply_kimi_k3_production_defaults(error)) {
+    if (!apply_kimi_k3_production_defaults(
+            cfg_.draft_path && *cfg_.draft_path, error)) {
         std::fprintf(stderr, "[kimi-k3] %s\n", error.c_str());
         return false;
     }
+    if (cfg_.draft_path && *cfg_.draft_path) {
+        const char * provider =
+            std::getenv("DFLASH_KIMI_LAYER1_PROVIDER");
+        if (!provider ||
+            std::strcmp(provider, "all-layers-calibrated96") != 0) {
+            std::fprintf(stderr,
+                "[kimi-k3-dspark] production requires the authoritative "
+                "all-layer calibrated96 Width8 provider\n");
+            return false;
+        }
+        bool attn_res_capture = false;
+        bool exact_macro_union = false;
+        bool async_upload = false;
+        if (!parse_binary_env(
+                "DFLASH_KIMI_DSPARK_ATTN_RES_CAPTURE",
+                attn_res_capture, error) ||
+            !parse_binary_env(
+                "DFLASH_KIMI_EXACT_MACRO_UNION",
+                exact_macro_union, error) ||
+            !parse_binary_env(
+                "DFLASH_KIMI_MACRO_UNION_ASYNC_UPLOAD",
+                async_upload, error)) {
+            std::fprintf(stderr, "[kimi-k3] %s\n", error.c_str());
+            return false;
+        }
+        if (!attn_res_capture) {
+            std::fprintf(stderr,
+                "[kimi-k3-dspark] production requires "
+                "DFLASH_KIMI_DSPARK_ATTN_RES_CAPTURE=1\n");
+            return false;
+        }
+        if (!exact_macro_union || !async_upload) {
+            std::fprintf(stderr,
+                "[kimi-k3-dspark] production requires "
+                "DFLASH_KIMI_EXACT_MACRO_UNION=1 and "
+                "DFLASH_KIMI_MACRO_UNION_ASYNC_UPLOAD=1\n");
+            return false;
+        }
+    }
     if (!resolve_prefill_policy(error)) {
         std::fprintf(stderr, "[kimi-k3] %s\n", error.c_str());
+        return false;
+    }
+    if (cfg_.draft_path && *cfg_.draft_path &&
+        prefill_policy_.exact_multirow) {
+        std::fprintf(stderr,
+            "[kimi-k3-dspark] q=7 currently requires scalar prompt prefill\n");
         return false;
     }
 
@@ -403,11 +583,19 @@ bool KimiK3Backend::init() {
         return false;
     }
 
+    if (!init_draft()) {
+        shutdown();
+        return false;
+    }
+
     const int max_ctx = std::max(1, cfg_.device.max_ctx);
     const int replay_width = prefill_policy_.exact_multirow
         ? prefill_policy_.macro_width : 0;
+    const int max_verify_tokens = draft_weights_.ctx
+        ? draft_weights_.max_chain_verify_tokens() : 0;
     if (!create_kimi_k3_cache(
-            backend_, weights_, max_ctx, cache_, replay_width)) {
+            backend_, weights_, max_ctx, cache_,
+            std::max(replay_width, max_verify_tokens))) {
         std::fprintf(stderr,
             "[kimi-k3] cache allocation failed (max_ctx=%d)\n", max_ctx);
         shutdown();
@@ -421,15 +609,18 @@ bool KimiK3Backend::init() {
         return false;
     }
 
-    if (prefill_policy_.exact_multirow) {
+    const int required_exact_width = draft_weights_.ctx
+        ? kKimiDsparkVerifyRows
+        : (prefill_policy_.exact_multirow ? prefill_policy_.macro_width : 0);
+    if (required_exact_width > 0) {
         KimiK3RoutedPrefillService * service = routed_output_provider_
             ? routed_output_provider_->prefill_service() : nullptr;
         if (!service || !service->supports_width(
-                static_cast<size_t>(prefill_policy_.macro_width))) {
+                static_cast<size_t>(required_exact_width))) {
             std::fprintf(stderr,
-                "[kimi-k3] macro prefill requires the authoritative "
+                "[kimi-k3] exact macro execution requires the authoritative "
                 "all-layer calibrated96 service at width %d\n",
-                prefill_policy_.macro_width);
+                required_exact_width);
             shutdown();
             return false;
         }
@@ -447,6 +638,11 @@ bool KimiK3Backend::init() {
         prefill_policy_.macro_width,
         prefill_policy_.exact_multirow ? 1 : 0,
         routed_output_provider_ ? "calibrated96" : "native-exact");
+    if (draft_weights_.ctx) {
+        std::fprintf(stderr,
+            "[kimi-k3] decode=dflash-dspark-q7 draft=hip:%d target=hip:%d\n",
+            cfg_.draft_gpu, cfg_.device.primary_gpu());
+    }
     std::fflush(stderr);
     return true;
 }
@@ -470,6 +666,32 @@ bool KimiK3Backend::park(ParkTarget target) {
 bool KimiK3Backend::unpark(ParkTarget target) {
     (void) target;
     return false;
+}
+
+bool KimiK3Backend::supports_dflash_spec_decode() const {
+    return draft_backend_ && draft_weights_.ctx && feature_ring_.target_feat;
+}
+
+DFlashTarget * KimiK3Backend::dflash_target() {
+    if (!supports_dflash_spec_decode()) return nullptr;
+    if (!dflash_target_) {
+        dflash_target_ = std::make_unique<KimiK3DFlashTarget>(
+            weights_, cache_, backend_, feature_ring_,
+            draft_weights_.capture_layer_ids, draft_weights_.mask_token_id,
+            cfg_.fast_rollback, &stream_engine_,
+            routed_output_provider_.get());
+    }
+    return dflash_target_.get();
+}
+
+void KimiK3Backend::free_drafter() {
+    dflash_target_.reset();
+    draft_feature_mirror_free(feature_ring_);
+    if (draft_weights_.ctx) free_draft_weights(draft_weights_);
+    if (draft_backend_) {
+        ggml_backend_free(draft_backend_);
+        draft_backend_ = nullptr;
+    }
 }
 
 int32_t KimiK3Backend::choose_token(
@@ -577,6 +799,13 @@ GenerateResult KimiK3Backend::generate_from_state(
             restored_prefix, delta.size(), req.snap_pos, prefill_policy_)
         : -1;
     bool snapshot_attempted = false;
+    auto * spec_target = snapshot ? nullptr :
+        static_cast<KimiK3DFlashTarget *>(dflash_target());
+    if (snapshot && supports_dflash_spec_decode()) {
+        std::fprintf(stderr,
+            "[kimi-k3-dspark] restored prefix has no draft feature state; "
+            "using exact AR\n");
+    }
     const auto maybe_capture = [&](const std::vector<float> & rows) {
         if (snapshot_attempted || cache_.cur_pos != capture_boundary) return;
         const size_t vocabulary = static_cast<size_t>(weights_.n_vocab);
@@ -605,7 +834,9 @@ GenerateResult KimiK3Backend::generate_from_state(
 
     const auto forward_token = [&](int32_t token, int position) {
         if (out_io.is_cancelled()) return false;
-        return kimi_k3_step(
+        return spec_target
+            ? spec_target->forward_token(token, position, logits)
+            : kimi_k3_step(
             backend_, weights_, cache_, token, position, logits,
             &stream_engine_, routed_output_provider_.get());
     };
@@ -654,6 +885,53 @@ GenerateResult KimiK3Backend::generate_from_state(
     std::vector<int32_t> history;
     history.reserve(req.prompt.size() + static_cast<size_t>(req.n_gen));
     history.insert(history.end(), req.prompt.begin(), req.prompt.end());
+    const bool can_spec = spec_target && !req.force_ar_decode &&
+        !req.do_sample && req.budget_hook.close_token_ids.empty();
+    if (can_spec) {
+        const int32_t seed = choose_token(
+            logits, req.sampler, /*do_sample=*/false, history);
+        DaemonIO spec_io = out_io.with_token_callback(
+            [&](int32_t token) -> bool {
+                result.tokens.push_back(token);
+                return true;
+            });
+        double accept_rate = 0.0;
+        const bool ok = run_dflash_spec_decode(
+            *spec_target, draft_weights_, draft_backend_, feature_ring_,
+            req.prompt, req.n_gen, seed, /*out_path=*/nullptr,
+            cfg_.draft_ctx_max, spec_io, /*remote_draft=*/nullptr,
+            req.hint_tokens, /*base_pos=*/0, &accept_rate);
+        result.decode_s = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - decode_begin).count();
+        result.accept_rate = static_cast<float>(accept_rate);
+        result.spec_decode_ran = true;
+        if (!ok) {
+            return fail(GenerateErrorCode::DecodeFailed,
+                        "Kimi-K3 DSpark speculative decode failed; "
+                        "see preceding stage error");
+        }
+        if (spec_io.is_cancelled() || out_io.is_cancelled()) {
+            last_logits_.clear();
+            last_logits_pos_ = -1;
+            spec_io.emit(-1);
+            result.succeed();
+            return result;
+        }
+        if (!spec_target->copy_committed_logits(last_logits_)) {
+            return fail(GenerateErrorCode::DecodeFailed,
+                        "DSpark did not preserve one committed logits row");
+        }
+        last_logits_pos_ = cache_.cur_pos;
+        std::string capture_error;
+        if (!capture_last_logits(capture_error)) {
+            return fail(GenerateErrorCode::DecodeFailed,
+                        std::move(capture_error));
+        }
+        spec_io.emit(-1);
+        result.succeed();
+        return result;
+    }
+
     bool budget_close_started = false;
     size_t close_inject_pos = 0;
     for (int i = 0; i < req.n_gen; ++i) {
@@ -805,6 +1083,7 @@ bool KimiK3Backend::handle_compress(
 }
 
 void KimiK3Backend::shutdown() {
+    free_drafter();
     routed_output_provider_.reset();
     stream_engine_.destroy();
     for (KimiK3PrefixSnapshot & snapshot : prefix_snapshots_) {

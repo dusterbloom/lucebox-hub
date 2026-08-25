@@ -200,6 +200,8 @@ struct KimiK3ForwardOptions {
     KimiK3RoutedOutputProvider * routed_output_provider = nullptr;
     // Exact causal micro-width one with a separately serviced routed macro.
     bool exact_multirow_core = false;
+    // Live prefix of a fixed Width8 verifier. Zero means all rows are live.
+    int active_rows = 0;
 };
 
 struct KimiK3ForwardResult {

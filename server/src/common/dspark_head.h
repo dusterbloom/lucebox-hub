@@ -8,6 +8,16 @@
 
 namespace dflash::common {
 
+// DSpark block contract: every draft hidden row predicts one proposal. The
+// known target token anchors the Markov chain but is not part of proposals_out.
+bool dspark_markov_propose_greedy_block(const DraftWeights & dw,
+                                        ggml_backend_t backend,
+                                        DFlashTarget & target,
+                                        const float * draft_hidden,
+                                        int proposal_len,
+                                        int32_t anchor_token,
+                                        std::vector<int32_t> & proposals_out);
+
 bool dspark_markov_correct_greedy_chain(const DraftWeights & dw,
                                         ggml_backend_t backend,
                                         DFlashTarget & target,

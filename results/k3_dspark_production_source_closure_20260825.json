@@ -1,0 +1,51 @@
+{
+  "schema": "dflash.kimi-k3.dspark-production-source-closure.v1",
+  "date": "2026-08-25",
+  "verdict": "GO_EXACT",
+  "scope": "Lean production-source closure for exact scalar and canonical-AttnRes q=7/V=8 DSpark execution. This is a correctness and integration gate, not a new throughput qualification.",
+  "source": {
+    "branch": "perf/k3-production-ponytail",
+    "binary": "/tmp/k3-dualarch-build/dflash_server",
+    "binary_sha256": "e9e849e3d2d510276e4f3457de10c2baa55f82c33392b3d558733b1e5747b17a",
+    "hip_architectures": ["gfx1151", "gfx1201"]
+  },
+  "artifacts": {
+    "target_first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "draft_sha256": "848d12be5283a4717c08b1b1263420980dfc61b5a59067e343296fd7f4998435",
+    "request_sha256": "856d7ed1f0280e20a1580aee15e58da91befdd7e416a900528bfdf391bc2208b",
+    "remote_root": "/home/duster/kimi-k3-deploy/k3-dspark-production-closure-20260825",
+    "dspark_run": "/home/duster/kimi-k3-deploy/k3-dspark-capture-ab-20260825/fib-production-closure-lean"
+  },
+  "startup_contract": {
+    "scalar": "PASS: exact-scalar, single-owner gfx1151, no DSpark runtime",
+    "dspark": "PASS: default canonical AttnRes capture, q=7/V=8, gfx1201 draft, gfx1151 target, exact macro union and direct async upload",
+    "missing_width8_provider": "EXPECTED_FAIL before GPU/model allocation",
+    "attnres_capture_disabled": "EXPECTED_FAIL before GPU/model allocation",
+    "macro_union_disabled": "EXPECTED_FAIL before GPU/model allocation"
+  },
+  "fibonacci_gate": {
+    "prompt_tokens": 43,
+    "completion_tokens": 33,
+    "final_logits_sha256_scalar": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "final_logits_sha256_dspark": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "rendered_output_sha256_scalar": "d22c8241fc6357b8174953f43e2f252da2ad52b1830f749cd9e9d7f1f42ea0b5",
+    "rendered_output_sha256_dspark": "d22c8241fc6357b8174953f43e2f252da2ad52b1830f749cd9e9d7f1f42ea0b5",
+    "scalar_traffic_sha256": "f4a8cd1fe4819f646d63c46907fa31d79f5ad8daf976c1dfba84f4b627012feb",
+    "dspark_draft_steps": 5,
+    "dspark_average_committed_tokens_per_step": 6.6,
+    "dspark_accepted_proposals": 28,
+    "dspark_offered_proposals": 33,
+    "dspark_runtime_reported_decode_tokens_per_second": 2.96
+  },
+  "verification": {
+    "rocm_build": "PASS: dflash_server and smoke_kimi_k3_forward, -j4",
+    "focused_unit_binary": "PASS: test_deepseek4_unit",
+    "dspark_converter_tests": "PASS: 3/3",
+    "diff_check": "PASS"
+  },
+  "notes": [
+    "The focused regression test proves every DSpark hidden row becomes a proposal and V=q+1.",
+    "The response JSON hashes vary with request metadata; rendered output and raw final-logit hashes are the authoritative equality gates.",
+    "No new prefill or decode north-star throughput is claimed by this closure run."
+  ]
+}

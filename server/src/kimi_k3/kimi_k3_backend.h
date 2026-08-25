@@ -1,7 +1,9 @@
 #pragma once
 
+#include "common/dflash_feature_ring.h"
 #include "common/model_backend.h"
 #include "common/moe_hybrid_stream.h"
+#include "internal.h"
 #include "kimi_k3_calibrated_provider.h"
 #include "kimi_k3_internal.h"
 #include "kimi_k3_prefill.h"
@@ -17,7 +19,11 @@ namespace dflash::common {
 
 struct KimiK3BackendConfig {
     const char * model_path = nullptr;
+    const char * draft_path = nullptr;
     DevicePlacement device;
+    int draft_gpu = -1;
+    int draft_ctx_max = 4096;
+    bool fast_rollback = true;
 };
 
 // Production Kimi-K3 is deliberately one owner: core, routed expert compute,
@@ -51,12 +57,15 @@ public:
 
     bool handle_compress(const std::string & line,
                          const DaemonIO & io) override;
-    void free_drafter() override {}
+    void free_drafter() override;
+    bool supports_dflash_spec_decode() const override;
+    DFlashTarget * dflash_target() override;
     void shutdown() override;
 
 private:
     bool resolve_prefill_policy(std::string & error);
     bool init_streaming(std::string & error);
+    bool init_draft();
     GenerateResult generate_from_state(
         const GenerateRequest & req,
         const DaemonIO & io,
@@ -72,9 +81,13 @@ private:
     // Manual shutdown follows the same dependency order as reverse member
     // destruction: provider -> stream -> snapshots -> cache -> weights -> backend.
     ggml_backend_t backend_ = nullptr;
+    ggml_backend_t draft_backend_ = nullptr;
     ggml_backend_t snapshot_backend_ = nullptr;
     KimiK3Weights weights_;
     KimiK3Cache cache_;
+    DraftWeights draft_weights_;
+    DraftFeatureMirror feature_ring_;
+    std::unique_ptr<class KimiK3DFlashTarget> dflash_target_;
     std::array<KimiK3PrefixSnapshot, ModelBackend::kMaxSlots>
         prefix_snapshots_;
     size_t snapshot_bytes_ = 0;

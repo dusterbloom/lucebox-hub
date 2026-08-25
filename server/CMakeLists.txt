@@ -576,6 +576,7 @@ if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
 elseif(DFLASH27B_GPU_BACKEND STREQUAL "hip")
     target_sources(dflash_common PRIVATE
         src/kimi_k3/kimi_k3_backend.cpp
+        src/kimi_k3/kimi_k3_dflash_target.cpp
         src/kimi_k3/kimi_k3_calibrated_provider.cpp
         src/kimi_k3/kimi_k3_prefill.cpp
         src/kimi_k3/kimi_k3_ordered_join.cu
@@ -590,6 +591,10 @@ elseif(DFLASH27B_GPU_BACKEND STREQUAL "hip")
     set_source_files_properties(src/deepseek4/deepseek4_hc_cuda.cu PROPERTIES LANGUAGE HIP)
     set_target_properties(dflash_common PROPERTIES HIP_ARCHITECTURES "${_dflash_archs}")
     target_compile_definitions(dflash_common PRIVATE DFLASH27B_BACKEND_HIP=1 GGML_USE_HIP)
+    if("gfx1151" IN_LIST _dflash_archs AND "gfx1201" IN_LIST _dflash_archs)
+        target_compile_definitions(dflash_common PRIVATE
+            DFLASH27B_HIP_K3_DUAL_ARCH=1)
+    endif()
     if(DFLASH27B_ENABLE_MIXED_CUDA_HIP)
         target_compile_definitions(dflash_common PRIVATE
             DFLASH27B_BACKEND_MIXED=1)
