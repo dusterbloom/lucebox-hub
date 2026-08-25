@@ -1,0 +1,111 @@
+{
+  "schema": "dflash.kimi-k3.x8.lane-a-prereg.v1",
+  "date": "2026-08-25",
+  "issue": "https://github.com/dusterbloom/lucebox-hub/issues/14",
+  "question": "Can X7's exact direct-async macro-union delivery make gfx1201 a material prompt expert provider while gfx1151 retains causal state and model authority?",
+  "frozen_source": {
+    "x7_commit": "cade040cf97874bfebf9207029c71c4911e3f4a7",
+    "branch": "perf/k3-x8-dual-verifier"
+  },
+  "prior_evidence": {
+    "result": "results/k3_prefill_gfx1201_sync_provider_no_go.json",
+    "artifact_root": "/home/duster/kimi-k3-deploy/k3-gfx1201-prefill-20260824",
+    "synchronous_candidate_expert_ms": 91557.897,
+    "synchronous_candidate_unclassified_ms": 61872.0,
+    "synchronous_weight_set_calls": 65082,
+    "minimum_immediate_synchronizations": 152882,
+    "prior_async_artifact_root": "/home/duster/kimi-k3-deploy/k3-async-union-upload-20260824",
+    "prior_async_status": "engineering signal only: no raw-logit or recurrent-state capture and no reversed matched A/B"
+  },
+  "physical_bound": {
+    "m64_nvme_physical_bytes": 110658715648,
+    "macro_union_weight_h2d_bytes": 104425194496,
+    "macro_union_metadata_h2d_bytes": 1079359376,
+    "pcie_payload_bytes": 105504553872,
+    "pcie5_x16_assumed_payload_GBps": 63.0,
+    "pcie_payload_wire_floor_seconds": 1.674675458,
+    "gfx1151_pure_expert_graph_seconds": 2.942417815,
+    "gfx1201_pure_expert_graph_seconds": 4.180898268,
+    "expected_gfx1201_compute_saving_seconds": -1.238480453,
+    "routed_output_bytes": 84410368,
+    "routed_output_raw_wire_floor_seconds": 0.001339847,
+    "measured_peer_reference_bytes": 15319040,
+    "measured_peer_reference_seconds": 0.0105789405,
+    "routed_output_projected_peer_seconds": 0.058295,
+    "optimistic_candidate_expert_seconds": 31.419,
+    "control_expert_seconds": 27.906101,
+    "credible_removable_critical_path_vs_control_seconds": 0.0,
+    "optimistic_candidate_regression_vs_control_seconds": 3.513,
+    "interpretation": "Direct async removes per-call host synchronization but cannot remove the required PCIe payload or the slower measured gfx1201 exact expert graph. The gate is expected to falsify this complete-provider topology."
+  },
+  "old_no_go_mechanism_removed": {
+    "removed": "ggml_backend_tensor_set immediate synchronization for each of 65082 weight sets plus at least 87800 metadata sets",
+    "replacement": "X7 same-stream ggml_backend_tensor_set_async from persistent pinned macro-union and metadata buffers",
+    "not_removed": [
+      "105.505 GB host-to-gfx1201 payload dependency",
+      "65082 individual weight upload submissions",
+      "gfx1201 exact IQ1_S compute cost",
+      "per-layer result return to gfx1151"
+    ]
+  },
+  "fixture": {
+    "macro_width": 64,
+    "generated_tokens": 0,
+    "model": "/home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-of-00014.gguf",
+    "tokens": "/home/duster/kimi-k3-deploy/k3-production-p46-macro-20260823/k3-ponytail-m64-oracle.tokens",
+    "policy": "X7 production Ponytail exact stack, explicit M64",
+    "devices": "HIP_VISIBLE_DEVICES=1,0; logical hip:0=gfx1151 core, logical hip:1=gfx1201 candidate expert provider"
+  },
+  "arms": [
+    "A1: gfx1151 single-owner control",
+    "B1: gfx1151 causal core plus gfx1201 direct-async prompt expert provider",
+    "B2: immediate candidate repeat",
+    "A2: reversed gfx1151 single-owner control"
+  ],
+  "frozen_controls": [
+    "one binary for all four arms",
+    "same model, token fixture, exact provider policy and cache sizes",
+    "performance platform profile and performance CPU policy",
+    "P40 layer epoch",
+    "identical physical-record order and traffic plan",
+    "no global cache drop",
+    "raw final-logit capture",
+    "exact recurrent-state comparison through the retained partial-replay state probe"
+  ],
+  "primary_metrics": [
+    "prefill positions/s",
+    "stage/core/expert/join/output wall",
+    "physical and logical bytes",
+    "direct I/O and H2D bytes",
+    "expert graph wall",
+    "peer/result bytes and wall",
+    "raw-logit SHA-256",
+    "per-layer convolution, SSM and MLA state hashes"
+  ],
+  "correctness_gate": {
+    "traffic_and_physical_plan_identical": true,
+    "raw_logits_byte_identical": true,
+    "conv_ssm_mla_state_hashes_identical": true,
+    "fallbacks": 0,
+    "required": true
+  },
+  "performance_gate": {
+    "minimum_end_to_end_speedup": 1.05,
+    "minimum_stage_seconds_saved": 1.5,
+    "candidate_repeats_must_both_pass": true,
+    "advance_to_m1024_only_on_go": true
+  },
+  "abort_conditions": [
+    "wrong device identity or topology",
+    "platform or CPU power policy not performance",
+    "OOM, swap activity or provider fallback",
+    "physical-record or traffic-plan drift",
+    "raw-logit or recurrent-state mismatch",
+    "candidate cannot use X7 direct-async delivery"
+  ],
+  "interpretation": {
+    "GO": "all correctness gates pass and both candidate arms deliver at least 1.05x end-to-end speedup with at least 1.5 seconds saved",
+    "NO_GO": "valid exact arms complete but the performance gate fails; delete experimental device wiring and do not run M1024",
+    "INVALID": "any frozen-environment, topology, telemetry, traffic or correctness gate fails; repair only that invalidating condition and repeat the preregistered order"
+  }
+}
