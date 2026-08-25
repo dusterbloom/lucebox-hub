@@ -1,0 +1,158 @@
+{
+  "schema": "dflash.kimi-k3.q7-provider-ledger.v1",
+  "date": "2026-08-25",
+  "verdict": "LEDGER_VALID__P30_32G_NO_GO_INVALID_SWAP",
+  "fixture": {
+    "name": "P55 code-function perfect-token verifier",
+    "q": 7,
+    "verify_rows": 8,
+    "target_steps": 4,
+    "true_transitions": 32,
+    "active_rows": 32,
+    "inactive_rows": 0,
+    "fallbacks": 0,
+    "budget": 24,
+    "prompt_sha256": "fd835f624d053f0f2da04114215461906430685463e99fb5e94cdf17115acbb0",
+    "target_sha256": "2a90dd5334722853fe64997b313c0c9489f60e858bd40eeca292fafe07ffcb74"
+  },
+  "telemetry_semantics": {
+    "outer_ms": "wall inside the exact routed provider across all routed layers",
+    "read_cache_stage_ms": "P30 lookup or O_DIRECT miss plus record-to-component-major host staging; not pure NVMe wall",
+    "upload_graph_ms": "same-stream queued weight/input/map H2D completion plus expert graph; not pure IQ1_S compute",
+    "pack_ms": "existing compact-pack counter delta",
+    "other_ms": "outer minus the preceding mutually exclusive counters; includes union planning and untimed macro join/readback",
+    "warning": "P45 device-window and compact-scatter counters do not describe the main q7 macro-union path"
+  },
+  "closure": {
+    "control_binary_sha256": "5ba89b9c6dd4c062cdb7a4d29192a76b9a7a8c1c95cd6d294c7f7ddb9de943e7",
+    "cap32_binary_sha256": "806b35e62ec58a5e7e24076f7335315e638592ac5aec7751c7c01257c1450b90",
+    "graph_source_sha256": "41f5c49ce9db337c154bd9a7d4ab6ba24b48d2d3376b445af8aad42b499025d4",
+    "provider_source_control_sha256": "254a2eddd60038ce6753bcf98e76431dd03a40edf6211cf9e984416f06642bf4",
+    "model_first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "artifact_root": "/home/duster/kimi-k3-deploy/k3-q7-provider-ledger-20260825",
+    "control_log_sha256": [
+      "186caa4b7d62bf5a887676018d3cac2db0acf2c8cc3b63833885a86af7e235ea",
+      "ee95f61bcd79e1b7eef45a83324d1317812c597fd0226325d97ea666ef060b30"
+    ],
+    "cap32_log_sha256": "0b6d29ab784092d3756d111af59ff9a1bbbb6a3c1e856afb1b58d47d5f860ac4"
+  },
+  "control_16g": {
+    "arms": [
+      {
+        "name": "B1",
+        "decode_seconds": 6.772,
+        "true_ar_tokens_per_second": 4.725687,
+        "outer_ms_per_step": 972.5455,
+        "read_cache_stage_ms_per_step": 641.7785,
+        "upload_graph_ms_per_step": 243.0135,
+        "pack_ms_per_step": 6.213,
+        "other_ms_per_step": 81.54025
+      },
+      {
+        "name": "B2",
+        "decode_seconds": 6.580,
+        "true_ar_tokens_per_second": 4.863071,
+        "outer_ms_per_step": 926.58275,
+        "read_cache_stage_ms_per_step": 606.9065,
+        "upload_graph_ms_per_step": 232.388,
+        "pack_ms_per_step": 6.536,
+        "other_ms_per_step": 80.7525
+      }
+    ],
+    "pooled": {
+      "decode_seconds": 6.676,
+      "true_ar_tokens_per_second": 4.79329,
+      "outer_ms_per_step": 949.564125,
+      "read_cache_stage_ms_per_step": 624.3425,
+      "upload_graph_ms_per_step": 237.70075,
+      "pack_ms_per_step": 6.3745,
+      "other_ms_per_step": 81.146375,
+      "physical_bytes_per_step": 3193253888,
+      "payload_h2d_bytes_per_step": 6182751232,
+      "union_weight_h2d_bytes_per_step": 5951927296,
+      "union_weight_h2d_calls_per_step": 5217.75,
+      "effective_read_cache_stage_gib_per_second": 4.7619
+    }
+  },
+  "candidate_32g": {
+    "decode_seconds": 6.801,
+    "true_ar_tokens_per_second": 4.705038,
+    "outer_ms_per_step": 973.27975,
+    "read_cache_stage_ms_per_step": 648.90475,
+    "upload_graph_ms_per_step": 235.81675,
+    "pack_ms_per_step": 6.847,
+    "other_ms_per_step": 81.71125,
+    "physical_bytes_per_step": 2372820992,
+    "q7_physical_bytes_saved_total": 3281731584,
+    "q7_physical_bytes_saved_percent": 25.693,
+    "whole_process_physical_bytes": 35422314496,
+    "whole_process_evicted_bytes": 1062903808,
+    "read_cache_stage_change_ms_per_step": 24.56225,
+    "outer_change_ms_per_step": 23.715625,
+    "swap_pages_increase": 10654,
+    "swap_pages_out_increase": 12975,
+    "gate_physical_bytes_saved_total": 4100000000,
+    "gate_read_cache_stage_saving_ms_per_step": 200,
+    "passed_physical_gate": false,
+    "passed_wall_gate": false,
+    "valid_telemetry": false,
+    "interpretation": "More cache removed reads but increased memory pressure and cache-copy/fabric cost. The temporary cap extension was removed."
+  },
+  "critical_worker_telemetry": {
+    "status": "ENGINEERING_VALID__PUBLICATION_INVALID_SWAP_OUT_242_PAGES",
+    "binary_sha256": "21733a8400828a170dfc65becb9929c6c0196db970b588f90c43f20b16292e53",
+    "provider_source_sha256": "217d71ee33112ccfcd7fc12722926691893b29ab979d122b4258a52fb1d1fb0a",
+    "graph_source_sha256": "78001ac0a106dc99ea522fdc7a4efed835395c7fb4b2073aacf99a29f61a8c03",
+    "log_sha256": "fcf9fac151486eaaf806240486e193e762422e19410cc2c602d0afed9804a1d6",
+    "decode_seconds": 6.606,
+    "true_ar_tokens_per_second": 4.84405,
+    "outer_ms_per_step": 937.84525,
+    "read_cache_stage_ms_per_step": 616.3465,
+    "queued_upload_graph_ms_per_step": 234.8015,
+    "pack_ms_per_step": 6.66775,
+    "provider_other_ms_per_step": 80.02925,
+    "critical_worker_ms_per_step": {
+      "blocked_pread": 542.82075,
+      "non_macro_direct_service": 42.97575,
+      "record_to_pinned_install": 22.11425,
+      "cache_lookup_and_lock": 2.824,
+      "pool_start_delay": 2.5425,
+      "cache_adopt_and_evict": 1.14625,
+      "allocation": 0.93775,
+      "future_fence_tail": 0.5635,
+      "worker_other": 0.42175
+    },
+    "tasks_per_step": 10791,
+    "cache_hit_tasks_per_step": 5317.5,
+    "aligned_task_bytes_per_step": 5985077248,
+    "physical_bytes_per_step": 3193253888,
+    "exactness": {
+      "boundary_logits_sha256": "0ab319c61d9d5d2931423ff0bac668d048298241abbf1ef1bc8ad66703cd347f",
+      "final_logits_sha256": "3cdf0dd9015396e03e0d2d9a161680a68d305af21bbd638c42ddcbe758c5c00e",
+      "logical_traffic_sha256": "92ff3ab7a9bb3fec4462f57af5cc17811bd5864d01e27521f16a2b00af05effb"
+    },
+    "interpretation": "Blocked physical service owns the critical path. Cache locking, allocation, adoption, worker dispatch, fence tail, and record installation together are too small to be the route to a 0.20-second step saving. The detailed timers were removed after evidence capture."
+  },
+  "exactness": {
+    "boundary_logits_sha256": "0ab319c61d9d5d2931423ff0bac668d048298241abbf1ef1bc8ad66703cd347f",
+    "final_logits_sha256": "3cdf0dd9015396e03e0d2d9a161680a68d305af21bbd638c42ddcbe758c5c00e",
+    "logical_traffic_sha256": "92ff3ab7a9bb3fec4462f57af5cc17811bd5864d01e27521f16a2b00af05effb",
+    "all_arms_byte_identical": true
+  },
+  "decision": {
+    "dominant_current_term": "read/cache/staging at 616.3 ms/step in the fine-timed D2 arm; blocked pread alone is 542.8 ms/step",
+    "historical_1_429_seconds_reconciliation": "stale pre-526ac612 value; the current exact q7 provider outer wall is 937.8 ms/step and is fully classified by the retained coarse counters plus the temporary fine-timing evidence",
+    "raw_bandwidth_only_headroom_ms_per_step": 83.4,
+    "immediate_5_tps_gap_ms_per_step": 51.5,
+    "frozen_implementation_gate_ms_per_step": 200,
+    "larger_p30_capacity": "NO_GO for q7 and scalar",
+    "same_capacity_cache_policy": "not yet earned; requires an ordered-record oracle showing materially fewer physical bytes at the same 16-GiB capacity",
+    "same_layer_read_graph_overlap": "not earned under the 0.20-s/step gate; prior evidence projects only about 60-97 ms/step and must not be conflated with the 225-ms ideal bound",
+    "provider_residual_and_join": "NO_GO as a standalone >=0.10-s/step lane; even the intentionally impossible combined deletion bound is 98.54 ms/step",
+    "next_family": "first bound physical-byte avoidance and a different exact IQ1_S multirow/representation path; do not implement until a candidate or rigorously coupled plan clears 0.20 s/step"
+  },
+  "invalid_preflights": [
+    "missing explicit GPU lease path; no model load",
+    "mistyped provider value; model loaded but provider initialization and generation did not run"
+  ]
+}

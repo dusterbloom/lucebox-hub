@@ -1,0 +1,208 @@
+{
+  "schema": "dflash.kimi-k3.dspark-production-ab.v1",
+  "date": "2026-08-25",
+  "verdict": {
+    "q7_width8_target": "GO_EXACT",
+    "current_dspark_low_entropy_code": "GO_EXACT",
+    "current_dspark_long_prose": "NO_GO",
+    "production_policy": "AVAILABLE_WHEN_EXPLICITLY_CONFIGURED__NOT_DEFAULT_AR"
+  },
+  "artifacts": {
+    "remote_source_head": "fa938a78fd8a723a6178f7cb7be54f4f9d15e73c",
+    "remote_source_diff_sha256": "176f7c81cac209de044d25a824cfde6d8bf93a4f372f35f669079c63efd2e687",
+    "binary": "/tmp/k3-dualarch-build/dflash_server",
+    "binary_sha256": "58d275d0a7caac0347f3e766ab8501cd7e895a52efa9563700f17f69aaf9377b",
+    "hip_architectures": ["gfx1151", "gfx1201"],
+    "target_first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "draft": "/dev/shm/Kimi-K3-DSpark-Q8_0.gguf",
+    "draft_size_bytes": 2390153888,
+    "draft_sha256": "848d12be5283a4717c08b1b1263420980dfc61b5a59067e343296fd7f4998435",
+    "draft_hf_revision": "c6c5688a402dcdee76e09d11152af324ce0a2a9a",
+    "draft_source": "RadixArk/Kimi-K3-DSpark",
+    "draft_source_revision": "56ce616ad7486f0e96cbb51ef23ed5a1bce1d92d",
+    "draft_source_bf16_sha256": "ecd746459b4a603ce0d2c64f73935efead29bd651b14439b99e57ee8b41b77ca",
+    "draft_contract": {
+      "block_size": 7,
+      "capture_layer_ids": [7, 23, 51, 67, 83],
+      "capture_stream": "historical_control_full_post_block_hidden__upstream_contract_is_next_consumer_prenorm_attnres",
+      "mask_token_id": 163824,
+      "rope_theta": 10000.0,
+      "rope_scaling": "yarn",
+      "rope_scaling_factor": 16.0,
+      "rope_original_context": 65536
+    }
+  },
+  "topology": {
+    "hip_visible_devices": "1,0",
+    "target": "hip:0/gfx1151",
+    "draft": "hip:1/gfx1201",
+    "expert_owner": "hip:0/gfx1151",
+    "peer_access": false,
+    "platform_profile": "performance"
+  },
+  "production_profile": {
+    "name": "dspark-q7-width8",
+    "proposal_count_q": 7,
+    "verify_rows_v": 8,
+    "prefill_chunk_c": 1,
+    "core_width": 8,
+    "mla_width": 8,
+    "tail_width": 8,
+    "router_width": 8,
+    "exact_qk_width": 8,
+    "p40_layer_epoch": true,
+    "p30_borrowed_records": true,
+    "p41_compact_executor": true,
+    "p42_ordered_join": true,
+    "p45_async_queue": true,
+    "p46_persistent_routed_prep": true,
+    "macro_union": true,
+    "direct_async_upload": true,
+    "wide_async_join": false
+  },
+  "short_fact": {
+    "prompt": "Name the capital of Japan. Answer with only the city name.",
+    "completion_tokens": 9,
+    "transitions": 8,
+    "ar": {
+      "decode_seconds": 3.601,
+      "true_ar_tokens_per_second": 2.22160511,
+      "final_logits_sha256": "98815c949e4bde6485d4b79b64449ae95539c333bfd4fffc4a1538b2d1fed29b"
+    },
+    "dspark": {
+      "decode_seconds": 4.8567,
+      "true_ar_tokens_per_second": 1.64720901,
+      "acceptance": 0.666666687,
+      "width8_target_step_ms": 1685.693,
+      "width8_core_ms": 584.856,
+      "width8_experts_ms": 965.571,
+      "width8_join_ms": 97.766,
+      "width8_output_ms": 35.972,
+      "final_logits_sha256": "98815c949e4bde6485d4b79b64449ae95539c333bfd4fffc4a1538b2d1fed29b"
+    },
+    "target_step_improvement_vs_scalar_profile": 2.6715517,
+    "interpretation": "The qualified Width8 target works, but a V4 tail, rollback commits, and scalar replay dominate this short request."
+  },
+  "long_output": {
+    "prompt": "Write a detailed 200-word explanation of photosynthesis.",
+    "prompt_tokens": 34,
+    "completion_tokens": 33,
+    "transitions": 32,
+    "rendered_output_byte_identical": true,
+    "final_logits_byte_identical": true,
+    "final_logits_sha256": "1b95925becfc28282a9db7fc4b8366360a351897ebe399b3654eb22cd74d732f",
+    "ar": {
+      "prefill_seconds": 16.8462,
+      "decode_seconds": 15.0614,
+      "true_ar_tokens_per_second": 2.124636488,
+      "direct_physical_bytes": 34770149376,
+      "direct_io_ns": 10037576181,
+      "p45_h2d_bytes": 89992505568
+    },
+    "dspark": {
+      "prefill_seconds": 16.6305,
+      "decode_seconds": 40.0474,
+      "true_ar_tokens_per_second": 0.799053122,
+      "speedup_vs_ar": 0.376089334,
+      "draft_steps": 21,
+      "accepted_rows": 31,
+      "verified_rows": 154,
+      "reported_acceptance_anchor_inclusive": 0.201298699,
+      "accepted_proposal_tokens": 10,
+      "offered_proposal_slots": 133,
+      "proposal_agreement": 0.07518797,
+      "average_committed_tokens_per_step": 1.57,
+      "width8_steps": 18,
+      "width8_target_ms_sum": 30976.82,
+      "width8_target_ms_mean": 1720.934,
+      "width8_core_ms_sum": 10522.872,
+      "width8_experts_ms_sum": 17905.23,
+      "width8_join_ms_sum": 1884.185,
+      "width8_output_ms_sum": 648.67,
+      "direct_physical_bytes": 75449802752,
+      "direct_io_ns": 18513796086,
+      "p45_h2d_bytes": 65576572960,
+      "rollback": {
+        "fast_low": 18,
+        "legacy_replay": 3,
+        "failed_fallback": 0,
+        "accept_histogram": {"1": 13, "2": 6, "3": 2}
+      }
+    },
+    "zero_draft_cost_ceiling_at_measured_acceptance_tps": 1.033030505,
+      "interpretation": "The original 20.1% counter included one always-accepted anchor per step. The 10/133=7.52% slot-normalized prefix-survival counter is diagnostic, not independent token accuracy, because suffix rows after the first rejection are conditioned on a divergent predecessor. At the measured accepted-prefix length, Width8 target work alone exceeds scalar decode wall by 2.06x; accelerating only the draft or its LM-head path cannot make this historical capture configuration profitable on this fixture."
+  },
+  "fibonacci_code": {
+    "prompt": "Write a Python function `fibonacci(n)` that returns the nth Fibonacci number. Return only the code.",
+    "prompt_tokens": 43,
+    "completion_tokens": 33,
+    "transitions": 32,
+    "rendered_output_byte_identical": true,
+    "final_logits_byte_identical": true,
+    "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "ar": {
+      "prefill_seconds": 21.0513,
+      "decode_seconds": 13.8065,
+      "true_ar_tokens_per_second": 2.317748162,
+      "direct_physical_bytes": 32788045824,
+      "direct_io_ns": 10871602247
+    },
+    "dspark": {
+      "prefill_seconds": 19.8853,
+      "decode_seconds": 9.6207,
+      "true_ar_tokens_per_second": 3.326163378,
+      "speedup_vs_ar": 1.435082395,
+      "draft_steps": 5,
+      "accepted_rows": 33,
+      "verified_rows": 36,
+      "reported_acceptance_anchor_inclusive": 0.916666687,
+      "accepted_proposal_tokens": 28,
+      "offered_proposal_slots": 31,
+      "proposal_agreement": 0.903225806,
+      "average_committed_tokens_per_step": 6.6,
+      "width8_steps": 4,
+      "width8_target_ms_sum": 6346.671,
+      "width8_target_ms_mean": 1586.66775,
+      "width8_core_ms_sum": 2336.69,
+      "width8_experts_ms_sum": 3471.858,
+      "width8_join_ms_sum": 388.516,
+      "width8_output_ms_sum": 144.891,
+      "direct_physical_bytes": 33927061504,
+      "direct_io_ns": 8822901465,
+      "rollback": {
+        "fast_low": 0,
+        "fast_high": 4,
+        "legacy_replay": 1,
+        "failed_fallback": 0,
+        "accept_histogram": {"4": 1, "5": 1, "8": 3}
+      }
+    },
+    "interpretation": "The same Q8 draft/runtime is healthy on low-entropy code: 28/31 proposal slots survive, end-to-end exact decode is 1.435x faster, and final logits are byte-identical. This falsifies a global mask or q7 row-contract failure, but does not validate the target capture-feature contract."
+  },
+  "exactness_basis": [
+    "identical rendered output and completion count",
+    "byte-identical final 163840-value logits after partial acceptance and rollback",
+    "zero rollback fallback",
+    "archived q7 boundary/final-logit, logical-traffic, and recurrent/MLA-state byte gates",
+    "archived P30 borrowed-record and P46 partial-commit byte gates"
+  ],
+  "known_draft_path_cost": {
+    "fused_dspark_head_used": false,
+    "reason": "target LM head is on gfx1151 while the draft is on gfx1201",
+    "graphs_per_q7_proposal": 9,
+    "proposal_host_device_bytes": 9777152,
+    "markov_w2_bytes_read_seven_times": 311951360,
+    "scope": "This is a real optimization opportunity only after a target-matched draft earns speculation through acceptance."
+  },
+  "confidence_admission": {
+    "checkpoint_head_present": true,
+    "confidence_dimension": 7424,
+    "active_k3_path_uses_head": false,
+    "required_input": "final_post_output_norm_hidden_plus_markov_previous_token_rank_embedding",
+    "two_fixture_perfect_admission_oracle_tokens_per_second": 2.593,
+    "two_fixture_all_ar_tokens_per_second": 2.217,
+    "oracle_gain": 0.1695,
+    "scope": "Confidence admission can avoid harmful speculation, but cannot accelerate a winning V8 step or approach 20 tok/s. Do not threshold the currently exposed post-norm hidden state."
+  },
+  "scope": "The current Q8 DSpark checkpoint is a deployable exact speedup on the measured low-entropy Fibonacci fixture and a severe regression on the measured long-prose fixture. It must not replace scalar AR unconditionally. This does not close the exact q7 verifier, a better target-matched draft, confidence-gated admission, or the already-implemented fused DSpark head with a gfx1201-resident target LM head."
+}

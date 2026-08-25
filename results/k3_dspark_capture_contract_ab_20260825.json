@@ -1,0 +1,187 @@
+{
+  "schema": "dflash.kimi-k3.dspark-capture-contract-ab.v1",
+  "date": "2026-08-25",
+  "question": "Does feeding the Radix K3 DSpark checkpoint the official next-consumer pre-norm AttnRes aggregate improve draft acceptance versus Lucebox's raw post-block hidden capture?",
+  "verdict": {
+    "capture_contract_mismatch": "CONFIRMED",
+    "acceptance_signal": "GO",
+    "target_exactness": "GO",
+    "diagnostic_implementation_for_production": "NO_GO_UNFUSED",
+    "piggyback_implementation_for_production": "GO_DEFAULT_ENABLED",
+    "unconditional_dspark_for_prose": "NO_GO"
+  },
+  "upstream_contract": {
+    "source": "sgl-project/sglang",
+    "commit": "ee560a2b2df5dafe18fd835d2e546eff019ca5ba",
+    "file": "python/sglang/srt/models/kimi_k3.py",
+    "function": "_dspark_capture_stream",
+    "capture_layers": [7, 23, 51, 67, 83],
+    "control": "raw post-block hidden",
+    "candidate": "next layer pre-norm AttnRes aggregate; output-side aggregate after the last layer"
+  },
+  "closure": {
+    "ponytail_head": "455255c3652641ee92fc0123fe0c3c0b5974aaf0",
+    "remote_source_head": "fa938a78fd8a723a6178f7cb7be54f4f9d15e73c",
+    "remote_graph_source_sha256": "8263b691e7f9de1b7aae6190a98d2ad458057c0c0bd531d756b0e42fff462519",
+    "binary": "/tmp/k3-dualarch-build/dflash_server",
+    "binary_sha256": "2c7a0cea462e0b263bd094c4cf65edabb67e7f6ff110865ccd132f099fdc3da0",
+    "draft": "/home/duster/kimi-k3-deploy/Kimi-K3-DSpark-Q8_0.gguf",
+    "draft_sha256": "848d12be5283a4717c08b1b1263420980dfc61b5a59067e343296fd7f4998435",
+    "target_first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "budget_table_sha256": "b73d203e9ae7d4f382baf3f30cf0381387596edda7a6fb16c6cf5c88626ad97a",
+    "runner_sha256": "a3aaf50c9676f0a61f85d6d90e63e1e089097dc6135fb8535110b2766a781d47",
+    "prose_request_sha256": "f72c72cdefa4979a987227e10fb70b59b9cef31847e83db406ec250249dc77ac",
+    "fibonacci_request_sha256": "856d7ed1f0280e20a1580aee15e58da91befdd7e416a900528bfdf391bc2208b",
+    "remote_artifact_root": "/home/duster/kimi-k3-deploy/k3-dspark-capture-ab-20260825"
+  },
+  "fixture": {
+    "prompt": "Write a detailed 200-word explanation of photosynthesis.",
+    "prompt_tokens": 34,
+    "completion_tokens": 33,
+    "true_transitions": 32,
+    "proposal_count_q": 7,
+    "verify_rows_v": 8,
+    "arm_order": ["A1", "B1", "B2", "A2"],
+    "process_cache_discipline": "fresh server process and 16-GiB P30 cache per arm",
+    "candidate_env": "DFLASH_KIMI_DSPARK_ATTN_RES_CAPTURE=1",
+    "control_env": "unset"
+  },
+  "prose_arms": [
+    {
+      "arm": "A1",
+      "capture": "raw_post_block_hidden",
+      "draft_steps": 21,
+      "accepted_rows": 31,
+      "verified_rows": 154,
+      "accepted_proposals": 10,
+      "offered_proposal_slots": 133,
+      "average_committed_tokens_per_step": 1.57,
+      "decode_seconds": 40.337,
+      "direct_physical_bytes": 75449802752,
+      "final_logits_sha256": "1b95925becfc28282a9db7fc4b8366360a351897ebe399b3654eb22cd74d732f"
+    },
+    {
+      "arm": "B1",
+      "capture": "canonical_attnres",
+      "draft_steps": 17,
+      "accepted_rows": 30,
+      "verified_rows": 124,
+      "accepted_proposals": 13,
+      "offered_proposal_slots": 107,
+      "average_committed_tokens_per_step": 1.94,
+      "decode_seconds": 37.429,
+      "direct_physical_bytes": 67444547584,
+      "final_logits_sha256": "1b95925becfc28282a9db7fc4b8366360a351897ebe399b3654eb22cd74d732f"
+    },
+    {
+      "arm": "B2",
+      "capture": "canonical_attnres",
+      "draft_steps": 17,
+      "accepted_rows": 30,
+      "verified_rows": 124,
+      "accepted_proposals": 13,
+      "offered_proposal_slots": 107,
+      "average_committed_tokens_per_step": 1.94,
+      "decode_seconds": 37.631,
+      "direct_physical_bytes": 67442925568,
+      "final_logits_sha256": "1b95925becfc28282a9db7fc4b8366360a351897ebe399b3654eb22cd74d732f"
+    },
+    {
+      "arm": "A2",
+      "capture": "raw_post_block_hidden",
+      "draft_steps": 21,
+      "accepted_rows": 31,
+      "verified_rows": 154,
+      "accepted_proposals": 10,
+      "offered_proposal_slots": 133,
+      "average_committed_tokens_per_step": 1.57,
+      "decode_seconds": 41.026,
+      "direct_physical_bytes": 75449802752,
+      "final_logits_sha256": "1b95925becfc28282a9db7fc4b8366360a351897ebe399b3654eb22cd74d732f"
+    }
+  ],
+  "prose_effect": {
+    "target_steps_reduction": 0.19047619,
+    "committed_tokens_per_step_gain": 0.23566879,
+    "anchor_inclusive_accepted_length_control": 1.47619048,
+    "anchor_inclusive_accepted_length_candidate": 1.76470588,
+    "proposal_slot_agreement_control": 0.07518797,
+    "proposal_slot_agreement_candidate": 0.12149533,
+    "interpretation": "The official capture contract causally improves this fixture, but the remaining acceptance is far below the published MTBench regime and cannot make unconditional q7 profitable by itself. Proposal-slot agreement is diagnostic only because suffix slots after the first rejection are conditioned on a divergent predecessor."
+  },
+  "model_card_comparison": {
+    "card_metric": "accepted_rows / verify_steps, including one target bonus per step",
+    "published_mtbench_mean_acc_len": 3.9342,
+    "published_humaneval_mean_acc_len": 5.512,
+    "control_prose_acc_len": 1.47619048,
+    "canonical_capture_prose_acc_len": 1.76470588,
+    "fibonacci_acc_len": 6.6,
+    "comparison_limit": "The card used 80 MT-Bench first turns, native Kimi thinking/max chat rendering, up to 2048 generated tokens, the official Moonshot target runtime, and the BF16 draft. The 33-token Lucebox fixtures are diagnostic, not card-parity measurements."
+  },
+  "fibonacci_safety_check": {
+    "control_source": "results/k3_dspark_q7_production_ab_20260825.json",
+    "control_draft_steps": 5,
+    "control_average_committed_tokens_per_step": 6.6,
+    "control_accepted_proposals": 28,
+    "control_offered_proposal_slots": 31,
+    "candidate_draft_steps": 5,
+    "candidate_average_committed_tokens_per_step": 6.6,
+    "candidate_accepted_proposals": 28,
+    "candidate_offered_proposal_slots": 33,
+    "candidate_final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "interpretation": "The candidate preserves the useful five-step/6.6-commit behavior and authoritative final logits. The changed suffix denominator does not change useful target-step count."
+  },
+  "exactness": {
+    "rendered_completion_text_identical_across_prose_arms": true,
+    "final_logits_byte_identical_across_prose_arms": true,
+    "fibonacci_final_logits_byte_identical_to_registered_control": true,
+    "fallbacks": 0
+  },
+  "production_scope": {
+    "diagnostic_cost": "The host/exact implementation materializes five separate AttnRes boundary graphs per target forward and is not a production throughput path.",
+    "promotion_gate": "PASSED: the production implementation publishes the existing consumer pre-norm AttnRes tensors through existing graph output phases, with no standalone graph or synchronization.",
+    "production_binary_sha256": "0faced855e9c765663aab53e36a003205d0c48c2183015d71acb0f40a958478a",
+    "production_graph_source_sha256": "fb2b4d2a2905ee27bd2d684ef726cde252763e52eb44654d3802a2fa9f959925",
+    "production_backend_source_sha256": "6b8569080b02e7c437a70037396615dbeec8cb7ecde2c69525f2c09d4f46582a",
+    "production_runner_sha256": "b3cef505518911ba99375d1ef0f720d672643ad9188536a6de8f0b90fa31bc98",
+    "production_default_startup_line": "production-defaults=enabled profile=dspark-q7-width8 operator-overrides=preserved dspark-capture=attnres",
+    "production_default_prose": {
+      "draft_steps": 17,
+      "accepted_rows": 30,
+      "verified_rows": 124,
+      "card_comparable_acc_len": 1.76470588,
+      "average_committed_tokens_per_step": 1.94,
+      "decode_seconds": 35.415,
+      "direct_physical_bytes": 67443466240,
+      "final_logits_sha256": "1b95925becfc28282a9db7fc4b8366360a351897ebe399b3654eb22cd74d732f",
+      "exact": true
+    },
+    "explicit_zero_fallback_prose": {
+      "draft_steps": 21,
+      "accepted_rows": 31,
+      "verified_rows": 154,
+      "card_comparable_acc_len": 1.47619048,
+      "decode_seconds": 43.682,
+      "direct_physical_bytes": 75449802752,
+      "final_logits_sha256": "1b95925becfc28282a9db7fc4b8366360a351897ebe399b3654eb22cd74d732f",
+      "exact": true
+    },
+    "fibonacci_default_guard": {
+      "draft_steps": 5,
+      "card_comparable_acc_len": 6.6,
+      "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+      "exact": true
+    },
+    "rollback": "Set DFLASH_KIMI_DSPARK_ATTN_RES_CAPTURE=0 before backend initialization.",
+    "remaining_draft_unknowns": [
+      "Q8_0 versus BF16 draft acceptance",
+      "hybrid Q2/IQ1_S Budget24 target/runtime versus the official Moonshot K3 target/runtime used for distillation",
+      "official MTBench chat-template and acceptance-contract reproduction",
+      "accepted Width8 feature-ring rows versus scalar replay"
+    ]
+  },
+  "invalid_prelaunch_attempts": [
+    "obsolete --moe-storage CLI option rejected before model load",
+    "budget-table path in current checkout absent; retained qualified table path used thereafter"
+  ]
+}
