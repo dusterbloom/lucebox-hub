@@ -1,0 +1,88 @@
+{
+  "schema": "dflash.kimi-k3.x8.lane-b-prereg.v1",
+  "date": "2026-08-25",
+  "issue": "https://github.com/dusterbloom/lucebox-hub/issues/14",
+  "question": "With target-correct future tokens, can q=4 verification on the frozen X7 production Ponytail target stack improve long-output committed decode throughput by at least 15% while preserving target logits and causal state exactly?",
+  "frozen_source": {
+    "x7_commit": "cade040cf97874bfebf9207029c71c4911e3f4a7",
+    "branch": "perf/k3-x8-verifier-oracle",
+    "worktree": "/home/peppi/Dev/kimi-033/work/k3-x8-verifier-oracle"
+  },
+  "prior_evidence": {
+    "result": "results/k3_20260824_dspark_gfx1201_ab.json",
+    "prior_dspark_useful_tokens_per_second": 1.527780135,
+    "prior_matched_ar_emitted_tokens_per_second": 2.092379249,
+    "prior_acceptance_rate": 0.9,
+    "not_transferable_reason": "The prior target ran serial core and expert rows with P42, P45 and P46 disabled; its own decomposition attributes the loss to the old target expert/storage path. It also measured only token equality, not exact logits or recurrent state."
+  },
+  "oracle_fixture": {
+    "prompt": "Name the capital of Japan. Answer with only the city name.",
+    "retained_short_sentinel_token_ids": [39818, 18009, 163588, 12092, 163589, 163588, 2778, 163589, 163586],
+    "long_output_minimum_tokens": 32,
+    "acquisition": "Before oracle source changes, run frozen X7 autoregressively and archive its emitted target token IDs, per-step raw logits, traffic plan and final causal state. The archived IDs are then immutable q=4 perfect proposals for all oracle arms.",
+    "model": "/home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-of-00014.gguf",
+    "temperature": 0.0,
+    "seed": 0
+  },
+  "target_stack": [
+    "P40 layer-epoch device cache",
+    "P46 persistent routed preparation",
+    "exact macro union",
+    "direct async upload",
+    "Router8",
+    "Core8",
+    "MLA8",
+    "Tail8"
+  ],
+  "arms": [
+    "A1: frozen X7 production autoregressive control",
+    "B1: q=4 perfect-token oracle on the same production target stack",
+    "B2: immediate q=4 perfect-token oracle repeat",
+    "A2: reversed frozen X7 autoregressive control"
+  ],
+  "frozen_controls": [
+    "one target binary for all measured arms",
+    "same model, prompt, archived target tokens, provider policy, cache sizes and device topology",
+    "performance platform profile and performance CPU policy",
+    "no draft model and no draft training",
+    "raw per-step target-logit capture",
+    "per-layer convolution, SSM and MLA state hashes",
+    "physical-record and logical-traffic capture",
+    "no global cache drop"
+  ],
+  "primary_metrics": [
+    "committed tokens per target step",
+    "useful committed tokens per second",
+    "target stage wall per step",
+    "core, expert, join and output wall",
+    "physical and logical traffic per committed token",
+    "direct I/O, H2D and D2D bytes",
+    "raw target-logit SHA-256",
+    "convolution, SSM and MLA state hashes"
+  ],
+  "correctness_gate": {
+    "oracle_proposals_match_archived_target_tokens": true,
+    "raw_target_logits_byte_identical_at_each_committed_boundary": true,
+    "conv_ssm_mla_state_hashes_identical_at_each_committed_boundary": true,
+    "final_emitted_tokens_identical": true,
+    "fallbacks": 0,
+    "required": true
+  },
+  "performance_gate": {
+    "minimum_long_output_speedup": 1.15,
+    "candidate_repeats_must_both_pass": true,
+    "advance_to_current_dspark_only_on_go": true
+  },
+  "abort_conditions": [
+    "wrong target stack, device identity or power policy",
+    "OOM, swap activity or provider fallback",
+    "oracle token, traffic-plan, raw-logit or recurrent-state mismatch",
+    "fewer than 32 archived target tokens for the long-output ceiling",
+    "oracle execution silently replays accepted rows serially"
+  ],
+  "interpretation": {
+    "GO": "Both exact q=4 oracle arms improve useful long-output decode throughput by at least 15%; integrate and compare the current R9700 DSpark under the same production target closure.",
+    "NO_GO": "Valid exact q=4 oracle arms complete below 1.15x; close draft training as uneconomic for this target stack.",
+    "INVALID": "Any fixture, topology, target-stack, traffic or exactness gate fails; repair only the invalidating condition and repeat the frozen arm order."
+  }
+}
