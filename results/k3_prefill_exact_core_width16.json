@@ -1,0 +1,164 @@
+{
+  "schema": "dflash.kimi-k3.exact-core-width16.v1",
+  "date_utc": "2026-08-25",
+  "status": "NO_GO",
+  "source": {
+    "parent_head": "526ac6124b5215e5ba2b4ae8d9c38d10c6674f1a",
+    "branch": "perf/k3-production-ponytail"
+  },
+  "question": "Can exact width-sixteen KDA grouping reduce the frozen M64 causal core from 4.316722 seconds to at most 2.754222 seconds without changing exact execution?",
+  "control": {
+    "group_width": 8,
+    "m64_causal_core_seconds": 4.316722
+  },
+  "candidate": {
+    "group_width": 16,
+    "mla_group_width": 8,
+    "tail_group_width": 8,
+    "router_group_width": 8,
+    "default_off": true,
+    "device": "GPU1 gfx1151"
+  },
+  "gates": {
+    "correctness": [
+      "byte-identical raw logits",
+      "byte-identical committed and terminal convolution/KDA state",
+      "byte-identical MLA rows, route IDs, route-weight bits, and traffic trace",
+      "identical physical bytes",
+      "exact width16 dispatch observed with no fallback"
+    ],
+    "resources": [
+      "Q4_K and Q6_K exact width16 kernels use at most 128 VGPR",
+      "Q4_K and Q6_K exact width16 kernels have no scratch allocation or register spills"
+    ],
+    "performance": "qualified M64 causal core <= 2.754222 seconds"
+  },
+  "interpretation": {
+    "GO": "all exactness, resource, traffic, and M64 performance gates pass",
+    "NO_GO": "the candidate is correct but misses any resource or performance gate; remove experimental code",
+    "INVALID": "the matched fixture, topology, device, traffic, or telemetry cannot be qualified"
+  },
+  "stop_rule": "Stop within two hours if build/smoke cannot produce a signal; do not run M1024 before M64 GO.",
+  "resource_gate": {
+    "verdict": "PASS",
+    "q4_k_width16": {
+      "vgpr": 111,
+      "sgpr": 69,
+      "private_segment_bytes": 0,
+      "vgpr_spills": 0,
+      "sgpr_spills": 0
+    },
+    "q6_k_width16": {
+      "vgpr": 81,
+      "sgpr": 63,
+      "private_segment_bytes": 0,
+      "vgpr_spills": 0,
+      "sgpr_spills": 0
+    },
+    "mmvq_code_object_sha256": "a40872a3f898b0251f3481fb31dd148c0fb5055795809af48c3cc14adc3ca61a"
+  },
+  "invalid_preflights": [
+    {
+      "artifact": "/home/duster/kimi-k3-deploy/k3-core16-20260825/m64-core16.log",
+      "sha256": "9c8c81555ec6154321d20e77e3866241afde18c863a5f343942ace540317edcf",
+      "reason": "legacy MMVQ_MAX_BATCH_SIZE=8 assertion rejected the dedicated width16 path before timed model work"
+    },
+    {
+      "artifact": "/home/duster/kimi-k3-deploy/k3-core16-20260825/m64-core16-b1.log",
+      "sha256": "c81298a9e015c03c6fe91c36f26d512cff6c06e939d115aa71b231e5f0d8c858",
+      "reason": "narrow Q4_K/Q6_K admission exposed the Q8_0 tokenwise fallback ordering bug before timed model work"
+    }
+  ],
+  "root_cause_diagnostic": {
+    "artifact": "/home/duster/kimi-k3-deploy/k3-core16-20260825/m64-core16-diag.log",
+    "sha256": "3438791a1adc13292f58fdc750d7cd88743926487eb003bf7a22d8beac6490cf",
+    "observed": "type=8 (Q8_0), ncols_dst=16, ids=false, width16_override=true, fusion=false, nsamples_dst=1",
+    "repair": "admit only the already-existing plain tokenwise width1 fallback before the legacy width assertion; Q4_K/Q6_K retain the dedicated width16 path"
+  },
+  "non_arm_launch_error": {
+    "artifact": "/home/duster/kimi-k3-deploy/k3-core16-20260825/m64-core16-b2.log",
+    "sha256": "02c6068e8d2252de1b5950f203e6567a1eaf9847b145f4f5b9a9a8361c8389b5",
+    "reason": "provider environment value contained a capitalization typo; no model execution"
+  },
+  "qualified_m64_candidate": {
+    "device": "GPU1 gfx1151",
+    "topology": "single-owner",
+    "tokens": 64,
+    "wall_seconds": 14.447,
+    "prefill_positions_per_second": 4.429874,
+    "stage_seconds": {
+      "total": 14.424295,
+      "causal_core": 4.088891,
+      "experts": 9.370302,
+      "join": 0.671187,
+      "output": 0.281903,
+      "other": 0.012012,
+      "grouped_graph": 2.643088,
+      "grouped_publish": 0.014532
+    },
+    "performance": {
+      "control_causal_core_seconds": 4.316722,
+      "closest_retained_core8_arm_seconds": 4.286794,
+      "candidate_causal_core_seconds": 4.088891,
+      "saving_seconds": 0.227831,
+      "saving_vs_closest_retained_arm_seconds": 0.197903,
+      "required_saving_seconds": 1.5625,
+      "fraction_of_required_saving": 0.1458128,
+      "same_binary_control": false,
+      "attribution": "directional only: the candidate was not paired with a same-binary Core8 arm, so the defensible observed range is 0.197903 to 0.227831 seconds; even its optimistic end misses the preregistered gate by 1.334669 seconds",
+      "performance_gate_pass": false
+    },
+    "exactness": {
+      "final_argmax": 114820,
+      "raw_logits_byte_identical": false,
+      "changed_values": 163840,
+      "total_values": 163840,
+      "max_abs": 2.516587,
+      "mean_abs": 0.359361,
+      "relative_l2": 0.130652,
+      "control_logits_sha256": "aacdaac4a622c23bd5339999aa208c8cde8a00544c8eb0ad6ddc41269fb22e6a",
+      "candidate_logits_sha256": "176575fd4df5dbc836d6a6d3ebd7b3ed5197b90794748a2283507c63cdf84036",
+      "recurrent_state_checked": false,
+      "recurrent_state_reason": "not promoted after final-logit, traffic, and performance gates failed",
+      "exact_qk_dispatch_gate_pass": true,
+      "correctness_gate_pass": false
+    },
+    "traffic": {
+      "control_groups": 9343,
+      "candidate_groups": 9342,
+      "control_records": 59287,
+      "candidate_records": 59296,
+      "control_rows": 23183,
+      "candidate_rows": 23196,
+      "control_physical_bytes": 37335130112,
+      "candidate_physical_bytes": 37315248128,
+      "traffic_gate_pass": false,
+      "candidate_traffic_sha256": "c6936e518d7e0d050f7066f8822e5e1dbe7fed6e3db9bf857f2c00a7b6f7a2d5"
+    },
+    "telemetry": {
+      "swap_bytes": 0,
+      "direct_io_seconds": 6.958382502
+    },
+    "artifacts": {
+      "log": "/home/duster/kimi-k3-deploy/k3-core16-20260825/m64-core16-b3.log",
+      "log_sha256": "790510446cd681fd1fd6cd3e37688ded9b694260d5ee2d9642c3a81ff0cd916f",
+      "raw_logits": "/home/duster/kimi-k3-deploy/k3-core16-20260825/m64-core16-b3.f32",
+      "traffic": "/home/duster/kimi-k3-deploy/k3-core16-20260825/m64-core16-b3.traffic.tsv",
+      "smoke_binary_sha256": "12511732d30c9521c7988528a9b5e600f3b7adb4d38dcc60f1d4a184a27b8d68",
+      "libggml_hip_sha256": "20cae86430e418d9c8070966c3b6fc64bf70deef711b29bf87f0873e5c8a71d1",
+      "mmvq_object_sha256": "0def14e0c3284e59f85f07496518b35cb3de4e8b9a0a42a6a360b847e569bef4"
+    }
+  },
+  "verdict": {
+    "stage": "NO_GO",
+    "m1024_run": false,
+    "production_source_retained": false,
+    "reason": "Core16 missed the preregistered M64 performance gate by 1.334669 seconds and also failed logits and traffic exactness.",
+    "scope": "This closes only exact Core16 with the current Q4_K/Q6_K multirow kernels, tokenwise mixed-qtype fallback, MLA8, Tail8, and Router8 on gfx1151. It does not close a different exact projection kernel or representation.",
+    "adversarial_review": {
+      "glm_5_3": "CLOSE: intended flags/path engaged, but exactness, materiality, attribution, and production-readiness gates fail",
+      "independent_flags_audit": "PASS: Core16 + MLA8 + Tail8 + Router8 and mixed-qtype dispatch were internally consistent; no provider fallback was observed",
+      "steward_decision": "close this implementation without M1024; preserve the directional 0.198-0.228 second M64 signal as motivation for a different exact projection design, not for retrying the same Core16 staging path"
+    }
+  }
+}
