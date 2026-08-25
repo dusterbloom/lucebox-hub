@@ -1,8 +1,8 @@
 {
-  "schema": "dflash.kimi-k3.x8.active-row-perfect-oracle.v1",
+  "schema": "dflash.kimi-k3.x8.perfect-token-verifier.v2",
   "date": "2026-08-25",
-  "verdict": "NO_GO_CURRENT_EXACT_SCALAR_CURRENT_IQ1_S_Q4_VERIFIER",
-  "gate": {
+  "verdict": "Q4_SCALAR_CORE_NO_GO__Q7_FULL_WIDTH_GROUPED_GO",
+  "q4_gate": {
     "minimum_speedup": 1.15,
     "control_true_ar_tokens_per_second": 2.116425,
     "required_true_ar_tokens_per_second": 2.43388875,
@@ -171,5 +171,275 @@
     "measured_nonexpert_step_ms": 1226.621286,
     "nonexpert_alone_over_budget": 2.453242572
   },
-  "scope": "This NO-GO closes only the perfect-token q=4 active-row verifier using the current exact-scalar causal core, current IQ1_S expert kernels, budget-24 P30, and P40/macro-union disabled. It does not close batched decode generally, q=7 with no interior padding, a grouped or fused causal core, a different direct IQ1_S multirow kernel, or later verification after target-cost improvements."
+    "width5_macro_union_ab": {
+    "verdict": "NO_GO_CURRENT_WIDTH5_MACRO_UNION",
+    "binary_sha256": "031a273ffdee4358895953db977491298785db75583b4b746f1a4a653ade1a5f",
+    "source_diff_sha256": "7b96cab786d6e75d9e4298bf9f1ec44048f182946f63105ab9619a1b5c5d2762",
+    "gate": {
+      "maximum_target_ms_per_step": 2054.326,
+      "maximum_expert_ms_per_step": 823.214,
+      "candidate_target_ms_per_step": 2412.850429,
+      "candidate_expert_ms_per_step": 1186.179,
+      "target_gate_miss_ms_per_step": 358.524429,
+      "expert_gate_miss_ms_per_step": 362.965
+    },
+    "control": {
+      "prefill_seconds": 25.177,
+      "decode_seconds": 17.068,
+      "true_ar_tokens_per_second": 2.050628,
+      "target_ms": 17063.947,
+      "stage_ms": {
+        "classified_total": 17032.176,
+        "exact_scalar_core": 7915.626,
+        "experts": 8449.064,
+        "join": 506.740,
+        "output": 154.975,
+        "other": 5.771
+      },
+      "p20": {
+        "logical_provider_bytes": 111530926080,
+        "sparse_authoritative_h2d_bytes": 111530926080,
+        "metadata_h2d_bytes": 258251872,
+        "explicit_provider_read_bytes": 45791379456,
+        "direct_physical_bytes": 42594680832,
+        "direct_io_ns": 12648800743,
+        "expert_graph_ns": 2205846779,
+        "expert_readback_ns": 161209848
+      },
+      "p30": {
+        "hits": 158205,
+        "misses": 95312,
+        "hit_bytes": 75188871168,
+        "evicted_bytes": 28611936256,
+        "borrowed_hits": 122062,
+        "borrowed_hit_bytes": 67634282496,
+        "adopted_misses": 72242,
+        "adopted_miss_bytes": 40084881408
+      },
+      "p41": {"completed": 33218, "fallbacks": 0, "invalid": 0},
+      "p45": {
+        "jobs": 20191,
+        "h2d_bytes": 67645471184,
+        "device_window_ns": 3871524010
+      },
+      "boundary_logits_sha256": "43938021a3a97b31f9ddbc92d57aa27160ef48919bf928ef785f3b7fab49eff8",
+      "terminal_logits_sha256": "382ca5a264a3c5749fedf0be4e4b468df4d170c4eb9e81255888b6b220390d6d",
+      "traffic_sha256": "5ae3a3f0a921162f2bf3241481570077d98cddaa0e951c5e6828c17add545dcd",
+      "log_sha256": "b68b1d5043ad6a1752272a75b9053bae0f653990dc97ef546f68d54adfd78285"
+    },
+    "candidate": {
+      "prefill_seconds": 24.653,
+      "decode_seconds": 16.894,
+      "true_ar_tokens_per_second": 2.071759,
+      "target_ms": 16889.953,
+      "stage_ms": {
+        "classified_total": 16858.610,
+        "exact_scalar_core": 7908.327,
+        "experts": 8303.253,
+        "join": 488.230,
+        "output": 155.527,
+        "other": 3.277
+      },
+      "p20": {
+        "logical_provider_bytes": 111530926080,
+        "sparse_authoritative_h2d_bytes": 97176912896,
+        "metadata_h2d_bytes": 268704704,
+        "device_zero_bytes": 1126035456,
+        "explicit_provider_read_bytes": 56740052992,
+        "direct_physical_bytes": 56740052992,
+        "direct_io_ns": 14572277971,
+        "compact_scatter_ns": 45651169,
+        "expert_graph_ns": 1079462016,
+        "expert_readback_ns": 0
+      },
+      "p30": {
+        "hits": 73922,
+        "misses": 50590,
+        "hit_bytes": 40978014208,
+        "evicted_bytes": 10925875200,
+        "borrowed_hits": 70706,
+        "borrowed_hit_bytes": 39157325824,
+        "adopted_misses": 46318,
+        "adopted_miss_bytes": 25718988800
+      },
+      "p40": {
+        "requested_slabs": 2436,
+        "resident_before_slabs": 408,
+        "hits": 34,
+        "cold": 169,
+        "completed": 203,
+        "fallbacks": 0,
+        "aborted": 0,
+        "evictions": 0,
+        "h2d_bytes": 1126035456
+      },
+      "macro_union": {
+        "attempted": 644,
+        "completed": 644,
+        "groups": 8527,
+        "records": 51645,
+        "routed_expert_rows": 12824,
+        "direct_async": true,
+        "async_weight_calls": 25581,
+        "async_weight_bytes": 28476277760
+      },
+      "p41": {"completed": 20191, "fallbacks": 0, "invalid": 0},
+      "p45": {
+        "jobs": 20394,
+        "h2d_bytes": 67648381392,
+        "device_window_ns": 3853676076
+      },
+      "boundary_logits_sha256": "43938021a3a97b31f9ddbc92d57aa27160ef48919bf928ef785f3b7fab49eff8",
+      "terminal_logits_sha256": "382ca5a264a3c5749fedf0be4e4b468df4d170c4eb9e81255888b6b220390d6d",
+      "traffic_sha256": "5ae3a3f0a921162f2bf3241481570077d98cddaa0e951c5e6828c17add545dcd",
+      "log_sha256": "072403811d25c999e79e101509d624a03950ee236666c701e99e6750f361c5db"
+    },
+    "mechanism": {
+      "true_ar_improvement_percent": 1.030465,
+      "target_wall_improvement_percent": 1.019659,
+      "expert_wall_improvement_percent": 1.725765,
+      "expert_graph_reduction_percent": 51.063,
+      "physical_byte_increase": 14145372160,
+      "physical_byte_increase_percent": 33.209246,
+      "direct_io_increase_ns": 1923477228,
+      "direct_io_increase_percent": 15.206795,
+      "interpretation": "Macro union halved expert graph device time, but loss or bypass of P30 record reuse increased physical bytes and exposed I/O enough that expert wall improved only 1.73%."
+    },
+    "exactness": {
+      "all_output_ids_identical": true,
+      "boundary_logits_byte_identical": true,
+      "terminal_logits_byte_identical": true,
+      "logical_traffic_byte_identical": true,
+      "active_rows": 35,
+      "inactive_rows_with_zero_work": 21,
+      "routes_n_tokens": 5,
+      "oracle_fallbacks": 0,
+      "p41_fallbacks": 0,
+      "short_fact_state_sha256": "12021f44818e2053fd28e46f483f56d1385221a1087cbdc6f2cdcb45a0855903",
+      "long_state_dump_omitted_reason": "Seven boundaries would add multiple GiB of correctness-only host readback to timed arms."
+    },
+        "scope": "Closes only width-5 macro union at q=4 with current P30/P40 policies and current exact-scalar/IQ1_S kernels. Does not close retaining P30 reuse while deduplicating width-5 payload, q=7, or faster causal/expert kernels."
+    },
+    "q7_full_width": {
+        "verdict": "GO_EXACT_FULL_WIDTH_GROUPED_VERIFIER_ARCHITECTURE",
+        "production_promoted": false,
+        "trained_draft_measured": false,
+        "worktree_head": "2655ac23783eaa830cba716f557881bd28f33b87",
+        "source_diff_sha256": "bc42f9749e1994ce1aa726bad410d50a30c2ec440eef38d4585193b5f0f80bc0",
+        "binary_sha256": "e2bf799173259b2ae453bffca14547649335c304ed9eed34a200e3c03b24f5ab",
+        "configuration": {
+            "proposal_count": 7,
+            "valid_width": 8,
+            "physical_width": 8,
+            "inactive_rows": 0,
+            "exact_core_group_width": 8,
+            "exact_mla_group_width": 8,
+            "exact_tail_group_width": 8,
+            "router_width": 8,
+            "exact_qk_width": 8,
+            "p40_layer_epoch": true,
+            "exact_macro_union": true,
+            "direct_async_upload": true,
+            "wide_async_join": false
+        },
+        "one_step_state_gate": {
+            "transitions": 8,
+            "scalar_decode_seconds": 3.945,
+            "scalar_true_ar_tokens_per_second": 2.028059,
+            "candidate_decode_seconds": 2.162,
+            "candidate_true_ar_tokens_per_second": 3.700976,
+            "speedup": 1.824885765,
+            "target_ms": 2092.424,
+            "stage_ms": {
+                "classified_total": 2078.746,
+                "grouped_exact_core": 576.878,
+                "experts": 1362.395,
+                "join": 102.586,
+                "output": 35.307,
+                "other": 1.58
+            },
+            "active_rows": 8,
+            "committed_state_rows": 8,
+            "inactive_rows": 0,
+            "oracle_fallbacks": 0,
+            "exactness": {
+                "traffic_byte_identical": true,
+                "traffic_sha256": "b450b9ea6e359d0192a5251d04a04bf766b46bbcf18833a48e82f57f272554f4",
+                "boundary_logits_byte_identical": true,
+                "terminal_logits_byte_identical": true,
+                "logits_sha256": "29ada024163ac03014c9c96db7874b484e2f86e65c310a001fb5574a9b6f4a2f",
+                "state_byte_identical": true,
+                "state_sha256": "2e14919246ade1040c7d997f4b7c514ab940b8e674a00d374257df924500a6f9"
+            },
+            "control_log_sha256": "304f81ff51259524f39225a53305eff894dac78458e87ca896d026fab7ac20d6",
+            "candidate_log_sha256": "7cdf3be61e125f1573f0f82e244bb7cc63ef4701315d9dee477c441a816a6c9f"
+        },
+        "long_performance_gate": {
+            "emitted_tokens": 33,
+            "transitions": 32,
+            "target_steps": 4,
+            "active_rows": 32,
+            "inactive_rows": 0,
+            "oracle_fallbacks": 0,
+            "control": {
+                "prefill_seconds": 26.229,
+                "decode_seconds": 14.229,
+                "true_ar_tokens_per_second": 2.248906,
+                "sparse_authoritative_h2d_bytes": 107623305216,
+                "direct_physical_bytes": 40588738560,
+                "direct_io_ns": 13581135592,
+                "p45_h2d_bytes": 107736940288,
+                "log_sha256": "4787db5989ddecf1417a5ba8483286e32f9250168bb5edb7e2ec26676b921c1a"
+            },
+            "candidate": {
+                "prefill_seconds": 24.439,
+                "decode_seconds": 8.614,
+                "true_ar_tokens_per_second": 3.714881,
+                "target_ms": 8610.677,
+                "sparse_authoritative_h2d_bytes": 92305604608,
+                "direct_physical_bytes": 51914293248,
+                "direct_io_ns": 12126992286,
+                "p45_h2d_bytes": 67647822288,
+                "stage_ms": {
+                    "classified_total": 8583.742,
+                    "grouped_exact_core": 2309.968,
+                    "experts": 5714.929,
+                    "join": 413.924,
+                    "output": 141.111,
+                    "other": 3.81,
+                    "per_target_step": {
+                        "target": 2152.66925,
+                        "classified_total": 2145.9355,
+                        "grouped_exact_core": 577.492,
+                        "experts": 1428.73225,
+                        "join": 103.481,
+                        "output": 35.27775,
+                        "other": 0.9525
+                    }
+                },
+                "log_sha256": "d0404f6111ba8a9a67c5c87b5dbb5e0274cebb7bb80041bf62014f0dc29d06"
+            },
+            "speedup": 1.651861,
+            "exactness": {
+                "traffic_byte_identical": true,
+                "traffic_sha256": "92ff3ab7a9bb3fec4462f57af5cc17811bd5864d01e27521f16a2b00af05effb",
+                "boundary_logits_byte_identical": true,
+                "boundary_logits_sha256": "0ab319c61d9d5d2931423ff0bac668d048298241abbf1ef1bc8ad66703cd347f",
+                "terminal_logits_byte_identical": true,
+                "terminal_logits_sha256": "3cdf0dd9015396e03e0d2d9a161680a68d305af21bbd638c42ddcbe758c5c00e"
+            }
+        },
+        "ten_token_target": {
+            "perfect_q7_target_step_budget_ms": 800.0,
+            "measured_target_step_ms": 2152.66925,
+            "required_target_step_speedup": 2.690836563,
+            "measured_expert_step_ms": 1428.73225,
+            "expert_alone_over_perfect_budget": 1.785915313,
+            "expected_committed_tokens_at_independent_acceptance_0_9": 5.6953279,
+            "approximate_target_step_budget_ms_at_acceptance_0_9": 569.53279,
+            "q80_not_earned": true
+        },
+        "scope": "Proves that a perfect-token, full physical-width q=7 target can reuse the exact grouped wide engine and materially beat scalar AR. Does not promote temporary oracle code, include draft cost, establish trained-draft acceptance, or reach 10 tokens/s."
+    },
+    "scope": "q=4 with the exact-scalar core is a NO-GO. Full-width q=7 through the grouped exact target engine is a material GO at 3.714881 true AR tokens/s, but remains an oracle-only result without draft cost and below the 10-token/s target."
 }
