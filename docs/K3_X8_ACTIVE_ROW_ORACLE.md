@@ -300,3 +300,25 @@ a trained-draft speedup, or meet 10 tokens/s.  The next target-side work is to
 retain the grouped core while reducing expert physical service and graph wall;
 q should then be selected from measured target cost and acceptance rather than
 increased blindly.
+
+## Existing P30 reuse inside q=7 macro union
+
+The macro-union reader was bypassing the already-populated 16-GiB P30 cache.
+The production fix reuses the existing borrowed-record API at that read site;
+it adds no cache, queue, scheduler, or ownership policy.  The uncached direct
+reader remains the fallback when borrowed records are disabled.
+
+The one-step correctness gate was byte-identical for boundary logits, terminal
+logits, logical provider traffic, and the full recurrent/MLA state image.  In
+the matched long reversal, the two candidate arms produced 4.831074 and
+4.828583 true AR tok/s, versus 3.389670 for the fresh frozen control.  Physical
+reads fell deterministically from 51,914,293,248 to 40,146,558,976 bytes and
+the mean expert interval fell from 1,639.514 to 943.002 ms/step.  The
+candidate's boundary logits, terminal logits, and logical traffic remained
+byte-identical to the frozen control.
+
+This is a target-verifier ceiling, not deployable draft throughput.  The mean
+candidate result is 4.829829 true AR tok/s before draft cost, so reducing the
+remaining target cost and measuring the current draft remain necessary.  The
+machine-readable closure is
+`results/k3_x8_q7_p30_macro_reuse.json`.

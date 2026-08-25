@@ -1,0 +1,93 @@
+{
+  "schema": "dflash.kimi-k3.x8.q7-p30-macro-reuse.v1",
+  "date": "2026-08-25",
+  "verdict": "GO_EXACT_Q7_P30_REUSE",
+  "branch": "perf/k3-production-ponytail",
+  "base_commit": "4c3ade5f826de60af059b2e0a6b348e09a3fb070",
+  "hypothesis": "The q=7 macro-union reader should borrow records already resident in the existing P30 cache instead of issuing a second authoritative O_DIRECT read.",
+  "implementation": {
+    "file": "server/src/kimi_k3/kimi_k3_calibrated_provider.cpp",
+    "new_cache": false,
+    "new_scheduler": false,
+    "new_queue": false,
+    "fallback": "The existing uncached direct-read path remains active when P30 borrowed records are disabled."
+  },
+  "closure": {
+    "control_binary_sha256": "e2bf799173259b2ae453bffca14547649335c304ed9eed34a200e3c03b24f5ab",
+    "candidate_binary_sha256": "fbb24c2ee070f1f6d77d8b69ad29c683e7e24ec05986f32c9b98c2030ad39c75",
+    "model_first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "prompt_ids_sha256": "fd835f624d053f0f2da04114215461906430685463e99fb5e94cdf17115acbb0",
+    "target_ids_sha256": "2a90dd5334722853fe64997b313c0c9489f60e858bd40eeca292fafe07ffcb74",
+    "device": "gfx1151 exposed as logical hip:0 with HIP_VISIBLE_DEVICES=1,0",
+    "platform_profile": "performance",
+    "amdgpu_performance_levels": ["high", "high"],
+    "prompt_tokens": 53,
+    "q": 7,
+    "verify_rows": 8,
+    "target_steps": 4,
+    "true_transitions": 32,
+    "slab_budget": 24,
+    "p30_host_cache_mib": 16384,
+    "p40_layer_epoch": true,
+    "macro_union": true,
+    "macro_union_async_upload": true
+  },
+  "one_step_exactness_gate": {
+    "active_rows": 8,
+    "inactive_rows": 0,
+    "fallbacks": 0,
+    "boundary_logits_byte_identical": true,
+    "final_logits_byte_identical": true,
+    "state_byte_identical": true,
+    "logical_traffic_byte_identical": true,
+    "boundary_and_final_logits_sha256": "29ada024163ac03014c9c96db7874b484e2f86e65c310a001fb5574a9b6f4a2f",
+    "state_sha256": "2e14919246ade1040c7d997f4b7c514ab940b8e674a00d374257df924500a6f9",
+    "traffic_sha256": "b450b9ea6e359d0192a5251d04a04bf766b46bbcf18833a48e82f57f272554f4",
+    "historical_target_ms": 2092.424,
+    "candidate_target_ms": 1647.992,
+    "historical_expert_ms": 1362.395,
+    "candidate_expert_ms": 935.241
+  },
+  "matched_reversal": {
+    "arm_order": ["retained_A1", "candidate_B1", "candidate_B2", "fresh_A2"],
+    "fresh_control_A2": {
+      "decode_seconds": 9.440,
+      "true_ar_tokens_per_second": 3.389670,
+      "target_ms_per_step": 2359.19875,
+      "expert_ms_per_step": 1639.51375,
+      "direct_physical_bytes": 51914293248,
+      "direct_io_seconds": 15.453535465,
+      "p30_borrowed_hits": 70706,
+      "p30_borrowed_hit_bytes": 39157325824
+    },
+    "candidate_B1": {
+      "decode_seconds": 6.624,
+      "true_ar_tokens_per_second": 4.831074,
+      "target_ms_per_step": 1655.0365,
+      "expert_ms_per_step": 944.952,
+      "direct_physical_bytes": 40146558976,
+      "direct_io_seconds": 9.915642802,
+      "p30_borrowed_hits": 91976,
+      "p30_borrowed_hit_bytes": 50960252928
+    },
+    "candidate_B2": {
+      "decode_seconds": 6.627,
+      "true_ar_tokens_per_second": 4.828583,
+      "target_ms_per_step": 1655.95475,
+      "expert_ms_per_step": 941.05175,
+      "direct_physical_bytes": 40146558976,
+      "direct_io_seconds": 10.218330109,
+      "p30_borrowed_hits": 91976,
+      "p30_borrowed_hit_bytes": 50960252928
+    },
+    "candidate_mean_true_ar_tokens_per_second": 4.8298285,
+    "candidate_speedup_vs_fresh_control": 1.4248669,
+    "physical_bytes_saved": 11767734272,
+    "physical_bytes_saved_percent": 22.667619,
+    "boundary_logits_sha256": "0ab319c61d9d5d2931423ff0bac668d048298241abbf1ef1bc8ad66703cd347f",
+    "final_logits_sha256": "3cdf0dd9015396e03e0d2d9a161680a68d305af21bbd638c42ddcbe758c5c00e",
+    "logical_traffic_sha256": "92ff3ab7a9bb3fec4462f57af5cc17811bd5864d01e27521f16a2b00af05effb",
+    "all_exact": true
+  },
+  "scope": "Promotes reuse of the existing P30 record lease inside the q=7 macro-union reader. It does not claim deployable draft throughput, change the IQ1_S graph, add a cache tier, or reach 5 tok/s after draft cost."
+}

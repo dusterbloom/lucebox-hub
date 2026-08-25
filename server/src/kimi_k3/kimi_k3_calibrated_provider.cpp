@@ -5908,17 +5908,29 @@ private:
                     if (task_index >= tasks.size()) break;
                     ReadTask & task = tasks[task_index];
                     void * raw = nullptr;
-                    if (::posix_memalign(
-                            &raw, kAlignment, task.aligned_bytes) != 0) {
-                        failed = true;
-                        break;
-                    }
-                    if (read_direct_sidecar_record(
+                    P30BoundedReadCache::SidecarLease borrowed;
+                    const void * source = nullptr;
+                    bool read_ok = false;
+                    if (p30_borrowed_records_) {
+                        read_ok = read_direct_sidecar_record_borrowed(
+                            sidecar_fd, model_layer, task.aligned_offset,
+                            task.aligned_bytes, borrowed, task.cache_hit);
+                        source = borrowed.data();
+                    } else {
+                        if (::posix_memalign(
+                                &raw, kAlignment, task.aligned_bytes) != 0) {
+                            failed = true;
+                            break;
+                        }
+                        read_ok = read_direct_sidecar_record(
                             sidecar_fd, model_layer, task.aligned_offset,
                             task.aligned_bytes, raw, task.cache_hit,
-                            /* allow_cache = */ false)) {
+                            /* allow_cache = */ false);
+                        source = raw;
+                    }
+                    if (read_ok) {
                         install_payload(
-                            task, raw, static_cast<size_t>(
+                            task, source, static_cast<size_t>(
                                 task.record - task.aligned_offset));
                     } else {
                         failed = true;
