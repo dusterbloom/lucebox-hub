@@ -1,0 +1,140 @@
+{
+  "schema": "dflash.kimi-k3.x8.lane-b-q4-active-rows-ab.v1",
+  "date": "2026-08-25",
+  "issue": "https://github.com/dusterbloom/lucebox-hub/issues/14",
+  "verdict": "NO_GO",
+  "question": "Does making logical verification width first-class and excluding inactive width8 rows from routed service let a perfect q=4 oracle beat exact AR by at least 15%?",
+  "performance_gate": {
+    "minimum_speedup": 1.15,
+    "passed": false
+  },
+  "implementation": {
+    "physical_graph_width": 8,
+    "logical_rows": 5,
+    "inactive_rows_excluded_from": [
+      "route demand",
+      "union payload",
+      "expert work",
+      "join",
+      "output"
+    ],
+    "new_scheduler_or_queue_or_cache": false,
+    "retained_after_no_go": false
+  },
+  "closure": {
+    "evidence_parent": "c2a60ba3",
+    "x7_parent": "cade040cf97874bfebf9207029c71c4911e3f4a7",
+    "measured_binary": "/home/duster/k3-x8-verifier-oracle-20260825/server/build-k3-x8-oracle-hip-v2/smoke_kimi_k3_forward",
+    "measured_binary_sha256": "ed31af692f7509f177a0237249e73c1648923c96d048b35491d5f006944188f7",
+    "model": "/home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-of-00014.gguf",
+    "device": "ROCm device 0 / physical GPU1 / gfx1151",
+    "topology": "single-owner core=hip:0 experts=hip:0 join=hip:0",
+    "platform_profile": "performance",
+    "gpu_dpm": "high/high"
+  },
+  "fixture": {
+    "name": "P55 code-function",
+    "prompt_ids_sha256": "fd835f624d053f0f2da04114215461906430685463e99fb5e94cdf17115acbb0",
+    "frozen_target_ids_sha256": "e2ab50a17ff751e096a10e13110ee88e256f9a61ef54c7922d85d27549e646a9",
+    "natural_output_tokens": 36,
+    "processed_transitions": 35,
+    "q": 4,
+    "steps": 7,
+    "valid_rows": 35,
+    "padded_rows_not_serviced": 21,
+    "oracle_fallbacks": 0
+  },
+  "arms": [
+    {
+      "arm": "A1",
+      "mode": "autoregressive",
+      "prefill_seconds": 55.080,
+      "decode_seconds": 33.588,
+      "useful_tokens_per_second": 1.042037,
+      "physical_bytes": 205311057920,
+      "direct_io_seconds": 52.467936266,
+      "effective_direct_io_gib_per_second": 3.644337,
+      "sparse_authoritative_h2d_bytes": 433914507264
+    },
+    {
+      "arm": "B1",
+      "mode": "active_row_perfect_q4_oracle",
+      "prefill_seconds": 50.530,
+      "decode_seconds": 35.566,
+      "useful_tokens_per_second": 0.984086,
+      "speedup_vs_a1": 0.944386,
+      "target_step_seconds": 32.986643,
+      "stage_seconds": {
+        "experts": 28.164922,
+        "core": 4.076579,
+        "join": 0.569431,
+        "output": 0.154805
+      },
+      "physical_bytes": 237768196096,
+      "direct_io_seconds": 52.578517323,
+      "effective_direct_io_gib_per_second": 4.211585,
+      "sparse_authoritative_h2d_bytes": 374258827264
+    },
+    {
+      "arm": "B2",
+      "mode": "active_row_perfect_q4_oracle",
+      "prefill_seconds": 51.259,
+      "decode_seconds": 38.723,
+      "useful_tokens_per_second": 0.903849,
+      "speedup_vs_a2": 0.972247,
+      "target_step_seconds": 36.148001,
+      "stage_seconds": {
+        "experts": 31.332531,
+        "core": 4.067234,
+        "join": 0.570872,
+        "output": 0.155729
+      },
+      "physical_bytes": 237769277440,
+      "direct_io_seconds": 56.433464119,
+      "effective_direct_io_gib_per_second": 3.923911,
+      "sparse_authoritative_h2d_bytes": 374258827264
+    },
+    {
+      "arm": "A2",
+      "mode": "autoregressive",
+      "prefill_seconds": 53.999,
+      "decode_seconds": 37.649,
+      "useful_tokens_per_second": 0.929650,
+      "physical_bytes": 205306617856,
+      "direct_io_seconds": 55.514681378,
+      "effective_direct_io_gib_per_second": 3.444254,
+      "sparse_authoritative_h2d_bytes": 433914507264
+    }
+  ],
+  "summary": {
+    "mean_ar_tokens_per_second": 0.9858435,
+    "mean_oracle_tokens_per_second": 0.9439675,
+    "ratio_of_throughput_means": 0.957523,
+    "ratio_from_mean_wall_time": 0.958917,
+    "b1_physical_bytes_vs_a1": 1.158088,
+    "b2_physical_bytes_vs_a2": 1.158118,
+    "traffic_plan_identical_all_arms": true,
+    "target_only_faster_than_paired_ar": true,
+    "approximate_non_target_overhead_seconds_per_oracle_run": 2.58,
+    "idealized_speedup_if_non_target_overhead_were_zero": "about 1.02-1.04x"
+  },
+  "exactness": {
+    "all_four_output_token_sequences_identical": true,
+    "all_four_traffic_tsv_byte_identical": true,
+    "traffic_tsv_sha256": "6c372b86027146bbfac5ee5177cddcbfa93209b71f2dea42cc199ce8a7bff1c6",
+    "all_four_boundary_logits_byte_identical": true,
+    "boundary_logits_sha256": "fe194e2e4f058a5183da4263ac4eea0a6a0dfae32116dc39b973a0b74990b9e1",
+    "all_four_final_logits_byte_identical": true,
+    "final_logits_sha256": "b41609a39ddf28ae12f995f22143e067d1c44c72616972e66488db652dbecf22",
+    "short_gate_state_byte_identical": true,
+    "short_gate_state_sha256": "76cf8beae020974384235477d2d972847b47c064200a29afe69878e1399c8622"
+  },
+  "artifact_root": "/home/duster/kimi-k3-deploy/k3-x8-active-rows-20260825",
+  "artifact_sha256": {
+    "a1_log": "77da9249a6dc329b9b35d711231ff1ffb2698d23e9f142bc46ab11bcc2dacdc5",
+    "b1_log": "b029e662930e0c88b1a652f343b8b97899fdf013688a0e3bc918b02143c056b4",
+    "b2_log": "5d499f12229994c5c2ce003ea0c053a9263c924d1a7a15cbb10cef1e82e26a60",
+    "a2_log": "53634b6b8100a2c24043d9444f722fb19ed3e1cee291e1e5984754310769e4f3"
+  },
+  "interpretation": "Logical width masking is correct and removes inactive-row expert traffic, but the exact q4 verifier remains slower end to end. The remaining fixed verifier overhead and 15.81% physical-read amplification prevent the 1.15x gate; even a zero-overhead projection reaches only about 1.02-1.04x. The experimental source is removed and current DSpark integration remains unearned."
+}

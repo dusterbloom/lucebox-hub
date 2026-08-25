@@ -4,8 +4,11 @@
 
 **NO-GO.** A perfect q=4 draft is slower than exact autoregressive decode on
 the frozen X7 production Ponytail target stack. The preregistered `1.15x`
-promotion gate was missed by a wide margin in both candidate arms. Do not
-integrate the current DSpark under this target closure.
+promotion gate was missed by a wide margin in both candidate arms. A bounded
+follow-up made logical verification width first-class and excluded inactive
+rows from routes, union payload, expert work, joins, and output. That removed
+the padding traffic bug but still lost end to end. Do not integrate the current
+DSpark under this target closure.
 
 | Arm | Mode | Decode | Useful tok/s | Ratio to paired AR |
 | --- | --- | ---: | ---: | ---: |
@@ -78,12 +81,53 @@ required; neither candidate approached parity under either storage interval.
 
 ## Closure
 
-This result closes training or integrating a draft against the current
-physical-width8 X7 production verifier: even a perfect draft cannot pass the
-economic gate. It does not prove speculation is universally impossible. A
-future verifier would need to remove the width8 padding/traffic tax or make
-multirow expert service materially cheaper before draft quality becomes the
-binding term.
+The initial result closed training against the physical-width8 implementation
+but left one precise seam open: inactive rows could be removed before expert
+service. The bounded follow-up below tested and closed that seam.
 
 Machine-readable closure, exact byte counters, hashes, and retained artifact
-paths are in `results/k3_x8_lane_b_q4_ab.json`.
+paths for the initial run are in `results/k3_x8_lane_b_q4_ab.json`.
+
+## Active-row follow-up
+
+The follow-up kept Core8/MLA8/Tail8 as the qualified physical graph shape but
+passed `logical_rows=5` to the routed provider. Only the valid causal prefix
+could generate routes, union records, expert jobs, joins, or output. The
+implementation was 29 net production-path lines and introduced no scheduler,
+queue, cache, or alternate execution path.
+
+| Arm | Mode | Decode | Useful tok/s | Ratio to paired AR |
+| --- | --- | ---: | ---: | ---: |
+| A1 | exact AR | 33.588 s | 1.042037 | control |
+| B1 | active-row perfect q=4 | 35.566 s | 0.984086 | 0.944386x |
+| B2 | active-row perfect q=4 | 38.723 s | 0.903849 | 0.972247x |
+| A2 | exact AR | 37.649 s | 0.929650 | control |
+
+The ratio of throughput means was `0.957523x`; the ratio derived from mean
+wall time was `0.958917x`. Thus masking recovered most of the original loss
+but remained about 4% slower than AR and far below the `1.15x` gate.
+
+The discriminator did exactly what it was intended to do:
+
+* all four traffic TSVs are byte-identical (`6c372b86...1c6`);
+* the oracle serviced 35 valid rows, not 56 physical rows;
+* B1 expert wall fell from the unmasked `38.062 s` to `28.165 s`;
+* sparse authoritative H2D fell from AR's `433.915 GB` to `374.259 GB`;
+* boundary logits, final logits, the short-sentinel recurrent state, and all
+  output IDs remained byte-identical.
+
+The remaining loss is not inactive-row expert work. Target-only work was
+slightly faster than paired AR (`32.987` versus `33.588 s` in pair 1 and
+`36.148` versus `37.649 s` in pair 2), but verifier snapshot/commit/driver work
+added about `2.58 s` per run. Even deleting all of that overhead would yield
+only about `1.02--1.04x`, not `1.15x`. In addition, the wide macro/cache service
+read `15.81%` more physical bytes than AR despite the identical logical record
+plan (`237.77` versus `205.31 GB`).
+
+The active-row code is therefore removed after preserving this evidence. The
+NO-GO closes perfect-q4/current-DSpark integration on the current X7 target
+stack. It does not close a fundamentally cheaper target verifier, but q7 or
+another width-only sweep is not earned by these bounds.
+
+Machine-readable evidence is in
+`results/k3_x8_lane_b_q4_active_rows_ab.json`.
