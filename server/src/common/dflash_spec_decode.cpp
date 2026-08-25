@@ -91,6 +91,7 @@ bool run_dflash_spec_decode(
     int n_draft_steps   = 0;
     int n_accept_sum    = 0;
     int n_verify_rows   = 0;
+    int n_physical_verify_rows = 0;
     int n_proposal_accept_sum = 0;
     int n_proposal_rows = 0;
     int n_hint_proposed = 0;
@@ -104,6 +105,14 @@ bool run_dflash_spec_decode(
         const int need_commit_budget = n_gen - n_generated;
         const int q_len = std::max(
             1, std::min(max_verify_width, need_commit_budget));
+        const int physical_q_len = target.preferred_physical_verify_width(
+            q_len, max_verify_width);
+        if (physical_q_len < q_len || physical_q_len > max_verify_width) {
+            std::fprintf(stderr,
+                "dflash-spec invalid physical verify width %d for logical %d\n",
+                physical_q_len, q_len);
+            return false;
+        }
 
         // ── Build noise input for draft ────────────────────────────────────
         noise_ids[0] = last_tok;
@@ -211,10 +220,10 @@ bool run_dflash_spec_decode(
             return false;
         }
 
-        // The draft graph stays fixed-width for reuse, but the exact target
-        // must never execute suffix rows that cannot be committed.
-        draft_tok.resize(static_cast<size_t>(q_len));
-        target_tok.resize(static_cast<size_t>(q_len));
+        // The target may keep a wider physical graph at the terminal tail.
+        // q_len remains the sole logical acceptance/emission boundary.
+        draft_tok.resize(static_cast<size_t>(physical_q_len));
+        target_tok.resize(static_cast<size_t>(physical_q_len));
 
         // ── Tool call hint injection ──────────────────────────────────────
         // Override draft tokens with pre-known hint tokens for near-100%
@@ -230,7 +239,8 @@ bool run_dflash_spec_decode(
 
         // Notify observer with draft tokens for this step.
         if (io.observer) {
-            io.observer("draft", draft_tok);
+            io.observer("draft", std::vector<int32_t>(
+                draft_tok.begin(), draft_tok.begin() + q_len));
         }
 
         // ── Verify pass: speculative target forward over q_len tokens ────
@@ -358,6 +368,7 @@ bool run_dflash_spec_decode(
         n_generated += emitted;
         n_accept_sum += std::min(accept_n, emitted);
         n_verify_rows += q_len;
+        n_physical_verify_rows += physical_q_len;
         n_proposal_accept_sum +=
             std::max(0, std::min(accept_n, emitted) - 1);
         n_proposal_rows += std::max(0, q_len - 1);
@@ -393,6 +404,8 @@ bool run_dflash_spec_decode(
     std::printf("[target-split-dflash] %d draft steps, accepted=%d/%d (%.1f%%), avg commit/step=%.2f\n",
                 n_draft_steps, n_accept_sum, total_draft_pos, accept_pct,
                 n_draft_steps > 0 ? (double)n_generated / (double)n_draft_steps : 0.0);
+    std::printf("[target-split-dflash] verify rows logical=%d physical=%d\n",
+                n_verify_rows, n_physical_verify_rows);
     std::printf("[target-split-dflash] proposals accepted=%d/%d (%.1f%%)\n",
                 n_proposal_accept_sum, n_proposal_rows, proposal_accept_pct);
     rollback_diag.print(rollback_policy, stdout);

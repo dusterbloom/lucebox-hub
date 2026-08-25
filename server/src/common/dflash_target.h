@@ -39,6 +39,14 @@ struct DFlashTarget {
                               std::vector<int32_t> * all_argmax = nullptr,
                               bool capture_ssm_intermediates = false) = 0;
 
+    // A target may prefer a wider physical graph for a shorter logical tail.
+    // Acceptance, emission, and accounting remain at `logical_width`.
+    virtual int preferred_physical_verify_width(
+            int logical_width, int max_width) const {
+        (void)max_width;
+        return logical_width;
+    }
+
     // Read the full [n_tokens x vocab] f32 logits produced by the most
     // recent verify_batch call. Used by sampled-verify (spec decode with
     // temperature). Returns false when the implementation does not keep

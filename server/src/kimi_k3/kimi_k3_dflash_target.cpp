@@ -120,9 +120,8 @@ bool KimiK3DFlashTarget::verify_batch(
         return true;
     }
 
-    // A budget-trimmed final step has V<8. Execute only those active rows in
-    // exact causal order; the common runtime restores the snapshot and
-    // replays the accepted prefix because no Width8 replay factors exist.
+    // Width8-capable tails take the exact grouped path above. Other V<8
+    // requests execute only their active rows in exact causal order.
     std::vector<int32_t> argmax;
     argmax.reserve(tokens.size());
     std::vector<float> verify_logits;
@@ -156,6 +155,15 @@ bool KimiK3DFlashTarget::verify_batch(
     last_tok = argmax.back();
     if (all_argmax) *all_argmax = std::move(argmax);
     return true;
+}
+
+int KimiK3DFlashTarget::preferred_physical_verify_width(
+        int logical_width, int max_width) const {
+    // Width8 beats scalar verify+replay for measured terminal spans of four
+    // or more rows. The common loop never accepts or commits the suffix.
+    return exact_fast_rollback() && max_width == 8 && logical_width >= 4 &&
+            cache_.cur_pos + max_width <= cache_.max_ctx
+        ? max_width : logical_width;
 }
 
 bool KimiK3DFlashTarget::snapshot_kv() {

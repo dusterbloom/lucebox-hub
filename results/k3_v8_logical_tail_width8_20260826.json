@@ -1,0 +1,177 @@
+{
+  "schema": "dflash.kimi-k3.v8-logical-tail-width8.v1",
+  "date": "2026-08-26",
+  "status": "QUALIFIED_GO",
+  "question": "Can the qualified physical Width8 target path replace the final logical V=6 scalar verify plus scalar replay without changing emitted tokens or committed target state?",
+  "source": {
+    "branch": "perf/k3-production-ponytail",
+    "base_head": "9d56b98b1f064d867660c5c4a48bf9ad2ab80632",
+    "hip_architectures": ["gfx1151", "gfx1201"],
+    "control_binary_sha256": "f652108175bd14156e1fef75e2d9fce31f19e3b7d6cb18de1762e11ea026a4d6",
+    "ab_candidate_binary_sha256": "d333c5b57d7867f0291a4e8865c536f9f5f71845ba3ea6b7fe274c9e274893aa",
+    "production_candidate_binary_sha256": "65f1da1ac79a54acd0cac541dc8f84f04a272ae87af036531bed1e7cc104dbf8"
+  },
+  "fixture": {
+    "prompt": "Write a Python function `fibonacci(n)` that returns the nth Fibonacci number. Return only the code.",
+    "prompt_tokens": 43,
+    "completion_tokens": 33,
+    "true_transitions": 32,
+    "logical_tail_width": 6,
+    "physical_candidate_width": 8
+  },
+  "pre_code_bound": {
+    "control_tail_work": "six scalar verification forwards plus five scalar replay forwards",
+    "control_scalar_rows": 11,
+    "scalar_seconds_per_row_proxy": 0.444656,
+    "control_tail_seconds_proxy": 4.891219,
+    "candidate_tail_seconds_range": [1.77, 2.45],
+    "credible_request_saving_seconds_range": [2.44, 3.12],
+    "materiality_gate": ">=0.20 seconds per affected target transaction"
+  },
+  "arms": [
+    "A: retained 9d56b98b production q7 control",
+    "B: logical V=6 with K3-requested physical Width8"
+  ],
+  "correctness_gate": {
+    "emitted_token_ids_identical": true,
+    "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "logical_acceptance_and_traffic_accounting_unchanged": true,
+    "no_physical_suffix_token_emitted": true,
+    "no_rollback_fallback": true,
+    "committed_recurrent_and_mla_state_identical_where_capture_is_available": true
+  },
+  "qualified_runs": [
+    {
+      "arm": "A1_fat",
+      "variant": "control",
+      "decode_seconds": 11.943,
+      "strict_true_ar_tps": 2.679393787,
+      "logical_verify_rows": 38,
+      "physical_verify_rows": 38,
+      "scalar_replay_rows": 5,
+      "total_target_work_rows": 43,
+      "legacy_replays": 1,
+      "direct_physical_bytes": 33892589568,
+      "direct_io_ns": 11017105948,
+      "sparse_authoritative_h2d_bytes": 92716352512,
+      "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+      "emitted_text_sha256": "d22c8241fc6357b8174953f43e2f252da2ad52b1830f749cd9e9d7f1f42ea0b5",
+      "failed_fallbacks": 0
+    },
+    {
+      "arm": "B1_fat",
+      "variant": "candidate",
+      "decode_seconds": 8.989,
+      "strict_true_ar_tps": 3.559906552,
+      "logical_verify_rows": 38,
+      "physical_verify_rows": 40,
+      "scalar_replay_rows": 0,
+      "total_target_work_rows": 40,
+      "legacy_replays": 0,
+      "direct_physical_bytes": 34352594944,
+      "direct_io_ns": 9480584600,
+      "sparse_authoritative_h2d_bytes": 85209994240,
+      "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+      "emitted_text_sha256": "d22c8241fc6357b8174953f43e2f252da2ad52b1830f749cd9e9d7f1f42ea0b5",
+      "failed_fallbacks": 0
+    },
+    {
+      "arm": "B2_fat",
+      "variant": "candidate",
+      "decode_seconds": 9.605,
+      "strict_true_ar_tps": 3.331598126,
+      "logical_verify_rows": 38,
+      "physical_verify_rows": 40,
+      "scalar_replay_rows": 0,
+      "total_target_work_rows": 40,
+      "legacy_replays": 0,
+      "direct_physical_bytes": 34353135616,
+      "direct_io_ns": 9370637489,
+      "sparse_authoritative_h2d_bytes": 85209994240,
+      "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+      "emitted_text_sha256": "d22c8241fc6357b8174953f43e2f252da2ad52b1830f749cd9e9d7f1f42ea0b5",
+      "failed_fallbacks": 0
+    },
+    {
+      "arm": "A2_fat",
+      "variant": "control",
+      "decode_seconds": 11.611,
+      "strict_true_ar_tps": 2.756007235,
+      "logical_verify_rows": 38,
+      "physical_verify_rows": 38,
+      "scalar_replay_rows": 5,
+      "total_target_work_rows": 43,
+      "legacy_replays": 1,
+      "direct_physical_bytes": 33893130240,
+      "direct_io_ns": 9632442252,
+      "sparse_authoritative_h2d_bytes": 92716352512,
+      "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+      "emitted_text_sha256": "d22c8241fc6357b8174953f43e2f252da2ad52b1830f749cd9e9d7f1f42ea0b5",
+      "failed_fallbacks": 0
+    }
+  ],
+  "result": {
+    "control_pooled_strict_true_ar_tps": 2.717160567,
+    "candidate_pooled_strict_true_ar_tps": 3.441970528,
+    "pooled_speedup": 1.266752716,
+    "mean_request_saving_seconds": 2.48,
+    "acceptance_histogram": "3:1,6:1,8:3",
+    "verdict": "GO",
+    "scope": "Keeping a final logical V=6 request on the qualified physical Width8 path eliminates the scalar verify/replay cliff. This does not reduce full-V8 target-step cost or establish sustained 5 tok/s."
+  },
+  "production_hardening": {
+    "v4": {
+      "control_decode_seconds": 9.437,
+      "candidate_decode_seconds": 8.595,
+      "logical_rows": 36,
+      "candidate_physical_rows": 40,
+      "logits_sha256": "105628472422ccf32f0d2bafbf47cd4ce4976419384fb21b636e108c02525fa7",
+      "exact": true,
+      "fallbacks": 0
+    },
+    "v5": {
+      "control_decode_seconds": 10.37,
+      "candidate_decode_seconds": 9.339,
+      "logical_rows": 37,
+      "candidate_physical_rows": 40,
+      "logits_sha256": "413dc7fac41851da6b639d614275d9bc709a62c3cfd44fe85b7f47848f0bdff2",
+      "exact": true,
+      "fallbacks": 0
+    },
+    "v6_eos": {
+      "control_decode_seconds": 11.058,
+      "candidate_decode_seconds": 8.948,
+      "logical_rows": 38,
+      "candidate_physical_rows": 40,
+      "logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+      "exact": true,
+      "fallbacks": 0
+    },
+    "v7": {
+      "control_decode_seconds": 13.263,
+      "candidate_decode_seconds": 10.083,
+      "logical_rows": 47,
+      "candidate_physical_rows": 48,
+      "logits_sha256": "4019fe31c51c8f429dbe48f14c7b6d001e9197011060446391f73c869cdcb8a1",
+      "exact": true,
+      "fallbacks": 0
+    },
+    "max_ctx_guard": {
+      "max_ctx": 64,
+      "prompt_tokens": 43,
+      "completion_tokens": 21,
+      "logical_rows": 26,
+      "candidate_physical_rows": 26,
+      "logits_sha256": "ffd3aeb2b511f28edd344ece6a34d8e33e4e5611471ec9ae14bf969393b15483",
+      "completed_without_abort": true,
+      "exact": true,
+      "fallbacks": 0
+    }
+  },
+  "interpretation": {
+    "go": "All correctness gates pass and the affected tail saves at least 0.20 seconds.",
+    "no_go": "Correct but below materiality; remove the production change.",
+    "invalid": "Any output/logit/state mismatch, suffix emission, fallback, wrong physical width, or contaminated topology invalidates the arm.",
+    "scope": "This gate repairs the final logical tail only. It does not improve steady-state full-V8 target cost and cannot by itself establish sustained 5 tok/s."
+  }
+}
