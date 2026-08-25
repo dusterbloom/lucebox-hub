@@ -45,6 +45,34 @@ The wide arm prefilling at 4.361404 positions/s matched the scalar arm at
 1.824532 positions/s. The single decode transition is too short for a
 throughput claim.
 
+## M1024 production-width result
+
+The retained 1024-token causal fixture then closed the long-width gate:
+
+| Arm | Prefill | Wall | Raw logits |
+| --- | ---: | ---: | --- |
+| exact scalar24, chunk 1 | 2.409916 pos/s | 424.911 s | `61e327e0...` |
+| exact wide24, chunk 1024 | **8.365368 pos/s** | **122.409 s** | `61e327e0...` |
+
+The **3.4712x** end-to-end speedup is non-cached prefill and the complete raw
+logit arrays are byte-identical. Logical provider traffic was identical at
+1,486,168,276,992 bytes. Exact union/reuse reduced physical reads from
+129,418,330,112 to 56,946,794,496 bytes.
+
+The wide stage was 122.358992 seconds:
+
+```text
+causal core      77.012445 s
+expert service   30.239189 s
+join/output      14.854488 s
+other             0.252869 s
+----------------------------
+stage           122.358992 s
+```
+
+Direct I/O (12.007388 s) and expert graph/delivery (16.592059 s) are nested
+inside expert service. They are not added to the stage again.
+
 After narrowing the guard to reject mixed 24/96 tables, the final build passed
 a fresh matched M8 scalar/wide raw-logit comparison with hash
 `516a50ad88abd6ec6a7de7988d7ce39131c2e579e748abef73202f9f1c9e15e9`.
@@ -61,9 +89,9 @@ and other budgets fail closed.
 M64 is a correctness gate, not the 20-pos/s production width. Its 34.771 GiB
 physical payload has a 6.231-second floor at the measured 5.580-GiB/s raw
 ceiling, already above the 3.2-second 20-pos/s budget. M1024 is the next valid
-width. At the current M1024 ledger, reaching 20 requires reductions in both
-the 77.221-second causal core and the 43.682-second expert graph; further SSD
-queue tuning is not the primary lever.
+width. At the measured all-24 M1024 ledger, reaching 20 requires reducing the
+77.012-second causal core plus material expert/tail wall; further SSD queue
+tuning is not the primary lever.
 
 The 53-token P55 continuation gate was also byte-identical, but the wide phase
 left a cache population that slowed subsequent scalar decode from 2.355260 to

@@ -79,6 +79,38 @@
     "byte_identical": true,
     "provider_unit_test": "PASS_WITH_HIP_VISIBLE_DEVICES_1"
   },
+  "m1024": {
+    "fixture_sha256": "a52320c799f4c20eba845a0cf19edd68a557f28dd2a58d88a4609c797f24cc71",
+    "logical_provider_bytes_each_arm": 1486168276992,
+    "scalar": {
+      "prefill_chunk": 1,
+      "prefill_seconds": 424.911,
+      "positions_per_second": 2.409916,
+      "direct_physical_bytes": 129418330112,
+      "direct_io_seconds": 83.430786050,
+      "raw_logits_sha256": "61e327e0c41ce743848303034868953770e56ac79bc978eb873862b010766a58",
+      "log_sha256": "ffe12045da06b16de9dc059a5fe843a8c41ff17043d36d306d295995758da21a"
+    },
+    "wide": {
+      "prefill_chunk": 1024,
+      "exact_group_width": 8,
+      "prefill_seconds": 122.409,
+      "positions_per_second": 8.365368,
+      "stage_seconds": 122.358992,
+      "core_seconds": 77.012445,
+      "expert_seconds": 30.239189,
+      "join_seconds": 10.320894,
+      "output_seconds": 4.533594,
+      "other_seconds": 0.252869,
+      "direct_physical_bytes": 56946794496,
+      "direct_io_seconds": 12.007387501,
+      "expert_graph_seconds": 16.592059255,
+      "raw_logits_sha256": "61e327e0c41ce743848303034868953770e56ac79bc978eb873862b010766a58",
+      "log_sha256": "c1fe43cc2e2f7270e9f393ee6111a0f5a80e5793b5d21fc724986b26e26b7d69"
+    },
+    "speedup": 3.471229,
+    "raw_logits_byte_identical": true
+  },
   "m64_20_pos_per_second_bound": {
     "target_seconds": 3.2,
     "physical_payload_gib": 34.7710495,
