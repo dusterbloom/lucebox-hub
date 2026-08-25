@@ -1,0 +1,119 @@
+{
+  "schema": "dflash.kimi-k3.block16-v8-chain-production-ab.v1",
+  "date": "2026-08-25",
+  "verdict": "NO_GO",
+  "question": "Can the Modal Kimi K3 Block16 draft profitably drive the existing exact production V8 target as V8#1 followed by an independently committed V8#2 only when the boundary token is target-correct?",
+  "scope": "Closes the lossless F16 Modal Block16 artifact consumed by up to two sequential production-Ponytail V8 transactions on the current Budget24 K3 target. It does not close a cheaper verifier, a native exact V16 target, another target-matched draft, or acceptance-gated draft selection.",
+  "source": {
+    "branch": "perf/k3-production-ponytail",
+    "base_head": "024554d80c2694394a4bf0e531fd7213bb8e41ee",
+    "experimental_diff_sha256": "0dd3f6c924b1cf3e2ec70345ef509c4a400b07e64cb47359f3838607a81432d6",
+    "binary_sha256": "fdfbeb18714aa2907d0bdc0dbca34064dfea4bdf85fae9a7a876e09b69b6b14f",
+    "hip_architectures": ["gfx1151", "gfx1201"],
+    "build_parallelism": 4
+  },
+  "artifact": {
+    "repository": "modal-labs/Kimi-K3-DFlash",
+    "revision": "c192d15a43407bf758b5ae0880d5c72052fef1de",
+    "source_format": "BF16 safetensors",
+    "source_bytes": 5196953912,
+    "source_sha256": "0f0bd39d19c2dd0249de4f8216180f9729963402f902d50f19a156a8d358b733",
+    "runtime_format": "F16 GGUF fidelity control",
+    "runtime_bytes": 5197157408,
+    "runtime_sha256": "91b1b167f6fa2e940c32d5d2e73096b8eb2b762cb9f2027b1b3ff883f4f99cf1",
+    "conversion_relative_rmse": 0.0,
+    "block_size": 16,
+    "capture_layer_ids": [19, 37, 54, 66, 78, 90],
+    "capture_stream": "K3 next-consumer pre-norm AttnRes",
+    "mask_token_id": 163592
+  },
+  "topology": {
+    "hip_visible_devices": "1,0",
+    "target": "hip:0/gfx1151",
+    "draft": "hip:1/gfx1201",
+    "target_physical_width": 8,
+    "platform_profile": "performance",
+    "p30_host_cache_mib": 16384,
+    "production_defaults": true
+  },
+  "gate": {
+    "materiality": ">=10% useful decode throughput over the matched q7 production draft",
+    "correctness": "identical rendered tokens and byte-identical registered final logits",
+    "continuation_rule": "run V8#2 only after V8#1 fully commits and proposal row 8 equals target row 7",
+    "transaction_rule": "independent snapshot, verify, and commit or restore for every V8"
+  },
+  "fibonacci": {
+    "prompt": "Write a Python function `fibonacci(n)` that returns the nth Fibonacci number. Return only the code.",
+    "prompt_tokens": 43,
+    "completion_tokens": 33,
+    "true_transitions": 32,
+    "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "arm_order": ["block16_B1", "q7_A1", "block16_B2", "q7_A2"],
+    "q7_control": {
+      "decode_seconds": [10.964, 11.949],
+      "decode_seconds_mean": 11.4565,
+      "true_ar_tokens_per_second_mean": 2.793174181,
+      "draft_steps": 5,
+      "target_steps": 5,
+      "average_committed_tokens_per_draft": 6.60,
+      "second_v8_steps": 0,
+      "direct_physical_bytes": 33893130240
+    },
+    "block16_candidate": {
+      "decode_seconds": [11.422, 11.461],
+      "decode_seconds_mean": 11.4415,
+      "true_ar_tokens_per_second_mean": 2.796836079,
+      "draft_steps": 4,
+      "target_steps": 6,
+      "average_committed_tokens_per_draft": 8.25,
+      "second_v8_steps": 2,
+      "boundary_matches": 2,
+      "boundary_checks": 2,
+      "draft_wall_seconds": [0.178, 0.178],
+      "direct_physical_bytes": 37355479040,
+      "physical_byte_increase_vs_q7": 0.102154884
+    },
+    "candidate_speedup_vs_matched_q7": 1.001309301,
+    "candidate_speedup_vs_registered_q7_3_326163378": 0.840862,
+    "interpretation": "The second V8 mechanism was exercised twice and remained exact. Fewer draft calls did not reduce target work: Block16 required one extra target step and 10.2% more physical expert traffic. The interleaved mean difference is noise-sized and misses the preregistered 10% gate."
+  },
+  "prose": {
+    "prompt": "Write a detailed 200-word explanation of photosynthesis.",
+    "prompt_tokens": 34,
+    "completion_tokens": 33,
+    "true_transitions": 32,
+    "final_logits_sha256": "1b95925becfc28282a9db7fc4b8366360a351897ebe399b3654eb22cd74d732f",
+    "q7_control": {
+      "decode_seconds": 34.566,
+      "true_ar_tokens_per_second": 0.925765203,
+      "draft_steps": 17,
+      "target_steps": 17,
+      "average_committed_tokens_per_draft": 1.94,
+      "direct_physical_bytes": 67442925568
+    },
+    "block16_candidate": {
+      "decode_seconds": 35.307,
+      "true_ar_tokens_per_second": 0.906335854,
+      "draft_steps": 18,
+      "target_steps": 18,
+      "average_committed_tokens_per_draft": 1.83,
+      "second_v8_steps": 0,
+      "direct_physical_bytes": 63480963072
+    },
+    "candidate_speedup_vs_q7": 0.979012093,
+    "interpretation": "The Modal artifact did not rescue the weak prose regime: no second V8 was earned and useful throughput regressed 2.1%."
+  },
+  "correctness": {
+    "fibonacci_four_arm_final_logits_byte_identical": true,
+    "prose_final_logits_byte_identical": true,
+    "rendered_completion_tokens_identical": true,
+    "fallbacks": 0
+  },
+  "decision": {
+    "production_bridge": "DELETE",
+    "converter_extension": "DELETE_WITH_FAILED_LANE",
+    "artifact": "RETAIN_EXTERNAL_WITH_HASHES",
+    "next_action": "Reduce the existing V8 verifier expert delivery cost; a wider draft cannot overcome an expensive target step."
+  },
+  "remote_evidence_root": "/home/duster/kimi-k3-deploy/k3-block16-production-ab-20260825"
+}
