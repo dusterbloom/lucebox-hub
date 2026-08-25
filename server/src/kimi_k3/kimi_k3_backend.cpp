@@ -98,35 +98,36 @@ bool apply_kimi_k3_production_defaults(std::string & error) {
         {"ROCBLAS_USE_HIPBLASLT", "0"},
         {"DFLASH_MOE_NVME_DIRECT", "on"},
         {"DFLASH_MOE_NVME_DEVICE_CACHE_MB", "8192"},
-        {"DFLASH_CUDA_MMVQ_TOKENWISE", "1"},
-        {"DFLASH_CUDA_MMVQ_QK_EXACT_WIDTH8", "1"},
-        {"DFLASH_KIMI_PREFILL_CHUNK", "1024"},
-        {"DFLASH_KIMI_P58_EXACT_MULTIROW", "1"},
+        {"DFLASH_KIMI_PREFILL_CHUNK", "1"},
+        {"DFLASH_KIMI_P58_EXACT_MULTIROW", "0"},
         {"DFLASH_KIMI_SIDECAR_AUTHORITATIVE", "1"},
         {"DFLASH_KIMI_P20_PHYSICAL_LAYOUT", "scratch"},
         {"DFLASH_KIMI_P20_IO_BACKEND", "direct-pread"},
-        {"DFLASH_KIMI_P20_SLAB_BUDGET", "96"},
+        {"DFLASH_KIMI_P20_SLAB_BUDGET", "24"},
         {"DFLASH_KIMI_P23_PERSISTENT_SCRATCH", "1"},
         {"DFLASH_KIMI_P25_COMPACT_UPLOAD", "1"},
         {"DFLASH_KIMI_P26_PINNED_COMPACT", "1"},
         {"DFLASH_KIMI_P27_DIRECT_PINNED_COMPACT", "1"},
         {"DFLASH_KIMI_P30_HOST_CACHE_MB", "16384"},
         {"DFLASH_KIMI_P30_BORROWED_RECORDS", "1"},
-        {"DFLASH_KIMI_P40_DEVICE_VARIANT_CACHE", "1"},
-        {"DFLASH_KIMI_P40_LAYER_EPOCH", "1"},
+        {"DFLASH_KIMI_P40_DEVICE_VARIANT_CACHE", "0"},
+        {"DFLASH_KIMI_P40_LAYER_EPOCH", "0"},
         {"DFLASH_KIMI_P41_COMPACT_EXECUTOR", "1"},
         {"DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "1"},
         {"DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE", "1"},
         {"DFLASH_KIMI_P46_PERSISTENT_ROUTED_PREP", "1"},
-        {"DFLASH_KIMI_ROUTER_WIDTH8", "1"},
-        {"DFLASH_KIMI_P58_EXACT_CORE_GROUP_WIDTH", "8"},
-        {"DFLASH_KIMI_P58_EXACT_MLA_GROUP_WIDTH", "8"},
-        {"DFLASH_KIMI_P58_EXACT_TAIL_GROUP_WIDTH", "8"},
-        {"DFLASH_KIMI_EXACT_MACRO_UNION", "1"},
-        {"DFLASH_KIMI_EXACT_MACRO_UNION_PREFETCH", "1"},
-        {"DFLASH_KIMI_MACRO_UNION_ASYNC_UPLOAD", "1"},
+        {"DFLASH_KIMI_ROUTER_WIDTH8", "0"},
+        {"DFLASH_KIMI_EXACT_MACRO_UNION", "0"},
+        {"DFLASH_KIMI_EXACT_MACRO_UNION_PREFETCH", "0"},
+        {"DFLASH_KIMI_MACRO_UNION_ASYNC_UPLOAD", "0"},
     };
+    const char * layer_budgets =
+        std::getenv("DFLASH_KIMI_H22_LAYER_BUDGETS");
     for (const DefaultValue & value : defaults) {
+        if (layer_budgets && *layer_budgets &&
+            std::strcmp(value.name, "DFLASH_KIMI_P20_SLAB_BUDGET") == 0) {
+            continue;
+        }
         if (set_environment_variable(
                 value.name, value.value, false) != 0) {
             error = std::string("cannot set Kimi-K3 production default ") +
@@ -135,7 +136,7 @@ bool apply_kimi_k3_production_defaults(std::string & error) {
         }
     }
     std::fprintf(stderr,
-        "[kimi-k3] production-defaults=enabled profile=exact-m1024 "
+        "[kimi-k3] production-defaults=enabled profile=exact-scalar "
         "operator-overrides=preserved\n");
     return true;
 }

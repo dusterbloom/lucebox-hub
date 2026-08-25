@@ -1,0 +1,262 @@
+{
+  "schema": "dflash.kimi-k3.x8.baseline-reconciliation.v1",
+  "date": "2026-08-25",
+  "verdict": "X7_PRODUCTION_PROFILE_REGRESSION_FIXED__X8_LANE_B_SUSPENDED",
+  "fixture": {
+    "name": "P55 code-function",
+    "prompt_tokens": 53,
+    "generated_tokens": 24,
+    "true_ar_transitions": 23,
+    "provider_positions": 76,
+    "prompt_ids_sha256": "fd835f624d053f0f2da04114215461906430685463e99fb5e94cdf17115acbb0",
+    "model_first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "h23_budget_table_sha256": "b73d203e9ae7d4f382baf3f30cf0381387596edda7a6fb16c6cf5c88626ad97a",
+    "h23_budget_distribution": "92 layers x 24 slabs"
+  },
+  "counter_scope": {
+    "physical_and_logical_bytes": "whole process: 53 prompt positions plus 23 decode transitions",
+    "normalization": "whole-process bytes divided by the same 23 transitions for every matched arm",
+    "expert_wall": null,
+    "expert_wall_note": "The scalar smoke runner does not emit a whole-request expert-wall timer. P45 device-window is retained as a distinct subcounter and is not relabeled."
+  },
+  "closures": {
+    "p30": {
+      "source_commit": "1e4aaaf2b95ad54a562326a3e21d481f904167dd",
+      "qualified_pre_review_binary_sha256": "6bbff7f999c1a0e1c2176a95e662bb137ed0960fcb7f1022167587c9c0153dbf",
+      "retained_post_review_binary_sha256": "39fa5b9f864f22af5b4e48938c721a0a4030c75a97c63c6f1ae2962e896b0a1a",
+      "retained_provider_source_sha256": "216c0dc499da123cceded90d6a78343298ae16fbdd3bd19ff7e109ad365033d2",
+      "qualified_ar_tokens_per_second": 2.368668,
+      "reproduced_ar_tokens_per_second": 2.129991
+    },
+    "x7": {
+      "source_commit": "cade040cf97874bfebf9207029c71c4911e3f4a7",
+      "binary_sha256": "1a072543cd98bd92db48d82387bbbfbff7e31024450ff7cb8974550951d84de3"
+    },
+    "x8_disabled": {
+      "source_commit": "dbe04b244643d32559e3250e857b1e62abe43150",
+      "worktree_diff_sha256": "a634a047aaa08bf3f4bc6c93d873437606d14c482501ce32ef1b29a8d8d704e7",
+      "binary_sha256": "ed31af692f7509f177a0237249e73c1648923c96d048b35491d5f006944188f7"
+    },
+    "fixed_default": {
+      "base_commit": "cade040cf97874bfebf9207029c71c4911e3f4a7",
+      "pre_commit_diff_sha256": "7cf0a949203e89590af3cbea52ff1ef2e5e2cf1dbd766342f31f9e8a63d5709d",
+      "backend_source_sha256": "24fdad46087ee7a03ace28a60bcb40f64c165c9a0f8f59cb3999b77ccbfb7e0a",
+      "provider_source_sha256": "457e259a4467e4a9a3ea5f41baca32847937dba7b94773f05c87d5528ab721fd",
+      "binary_sha256": "7cc52beb04020d048bff567a8c34f7f5be7a937d7c26a5532b599160008dafb8"
+    }
+  },
+  "launches": {
+    "p30": {
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1,0",
+        "DFLASH_MOE_NVME_DIRECT=on",
+        "DFLASH_MOE_NVME_DEVICE_CACHE_MB=8192",
+        "GGML_BATCH_PEER_COPIES=1",
+        "DFLASH_KIMI_H16_CHAT_TEMPLATE=1",
+        "DFLASH_KIMI_H16_RESUME=0",
+        "DFLASH_KIMI_LAYER1_PROVIDER=all-layers-calibrated96",
+        "DFLASH_KIMI_SIDECAR_AUTHORITATIVE=1",
+        "DFLASH_KIMI_STAGE_PROFILE=1",
+        "DFLASH_KIMI_P20_PHYSICAL_LAYOUT=scratch",
+        "DFLASH_KIMI_P20_IO_BACKEND=direct-pread",
+        "DFLASH_KIMI_P30_HOST_CACHE_MB=16384",
+        "DFLASH_KIMI_P30_BORROWED_RECORDS=1",
+        "DFLASH_KIMI_P23_PERSISTENT_SCRATCH=1",
+        "DFLASH_KIMI_P25_COMPACT_UPLOAD=1",
+        "DFLASH_KIMI_P26_PINNED_COMPACT=1",
+        "DFLASH_KIMI_P27_DIRECT_PINNED_COMPACT=1",
+        "DFLASH_KIMI_P41_COMPACT_EXECUTOR=1",
+        "DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN=1",
+        "DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE=1",
+        "DFLASH_KIMI_P46_PERSISTENT_ROUTED_PREP=1",
+        "DFLASH_KIMI_P51_DEVICE_INPUT_CHAIN=0",
+        "DFLASH_KIMI_H22_LAYER_BUDGETS=/home/duster/lucebox-k3-p40/results/h23_10k_policies/h23_moonshot_1_2gib.txt"
+      ],
+      "unset": [
+        "GGML_CUDA_ENABLE_UNIFIED_MEMORY",
+        "DFLASH_KIMI_P40_DEVICE_VARIANT_CACHE",
+        "DFLASH_MOE_TP_GPU",
+        "DFLASH_MOE_PRIMARY_SHARE_PER_MILLE",
+        "DFLASH_KIMI_P43B_BALANCED_DUAL_OWNER",
+        "DFLASH_KIMI_P52_PERSISTENT_ROUTED_JOIN",
+        "DFLASH_KIMI_P53_DEVICE_HIDDEN_CHAIN",
+        "DFLASH_KIMI_PREFILL_EXPERT_GPU"
+      ],
+      "arguments": ["MODEL", "0", "24", "@code-function.ids"]
+    },
+    "x7_and_x8_default": {
+      "clean_environment": true,
+      "environment": [
+        "HOME=/home/duster",
+        "USER=duster",
+        "LOGNAME=duster",
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "TMPDIR=/tmp",
+        "LD_LIBRARY_PATH=/opt/rocm/lib",
+        "HIP_VISIBLE_DEVICES=1,0",
+        "ROCBLAS_USE_HIPBLASLT=0",
+        "DFLASH_KIMI_PRODUCTION_DEFAULTS=1",
+        "DFLASH_KIMI_LAYER1_PROVIDER=all-layers-calibrated96",
+        "DFLASH_KIMI_PREFILL_CHUNK=8",
+        "DFLASH_KIMI_SMOKE_MAX_CTX=128",
+        "DFLASH_KIMI_STAGE_PROFILE=1"
+      ],
+      "arguments": ["MODEL", "0", "24", "@code-function.ids"]
+    },
+    "fixed_default": {
+      "clean_environment": true,
+      "environment": [
+        "HOME=/home/duster",
+        "USER=duster",
+        "LOGNAME=duster",
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "TMPDIR=/tmp",
+        "LD_LIBRARY_PATH=/opt/rocm/lib",
+        "HIP_VISIBLE_DEVICES=1,0",
+        "DFLASH_KIMI_PRODUCTION_DEFAULTS=1",
+        "DFLASH_KIMI_LAYER1_PROVIDER=all-layers-calibrated96",
+        "DFLASH_KIMI_SMOKE_MAX_CTX=128",
+        "DFLASH_KIMI_STAGE_PROFILE=1"
+      ],
+      "arguments": ["MODEL", "0", "24", "@code-function.ids"],
+      "resolved_profile": "exact-scalar"
+    }
+  },
+  "arms": {
+    "p30_reproduced": {
+      "prompt_tokens": 53,
+      "processed_transitions": 23,
+      "cache_mib": 16384,
+      "p30_borrowed_records": true,
+      "borrowed_hit_bytes": 58029309952,
+      "p40": "disabled",
+      "p46": "enabled scalar",
+      "macro_union": "disabled",
+      "direct_physical_bytes": 37039996928,
+      "physical_gb_per_transition": 1.610434649,
+      "logical_provider_bytes": 96217497600,
+      "logical_gb_per_transition": 4.183369461,
+      "cache_hits": 107726,
+      "cache_misses": 66706,
+      "cache_evicted_bytes": 19860234240,
+      "adopted_miss_bytes": 35000877056,
+      "direct_provider_seconds": 15.811707536,
+      "expert_wall_seconds": null,
+      "p45_device_window_seconds": 5.567265412,
+      "true_ar_tokens_per_second": 2.129991,
+      "traffic_sha256": "8475c2348564fc9a0b7ca4ec533607019120708574ab95986a049d494f2928a5",
+      "raw_final_logits_sha256": null,
+      "output_ids_match_qualified_p55": true
+    },
+    "x7_production_default": {
+      "prompt_tokens": 53,
+      "processed_transitions": 23,
+      "cache_mib": 16384,
+      "p30_borrowed_records": true,
+      "borrowed_hit_bytes": 70302367744,
+      "p40": "enabled layer-epoch; 8192 MiB device cache",
+      "p46": "enabled width8",
+      "macro_union": "enabled direct-async",
+      "direct_physical_bytes": 203778605056,
+      "physical_gb_per_transition": 8.859939350,
+      "logical_provider_bytes": 374433669120,
+      "logical_gb_per_transition": 16.279724744,
+      "cache_hits": 128203,
+      "cache_misses": 125321,
+      "cache_evicted_bytes": 52226146304,
+      "adopted_miss_bytes": 66794749952,
+      "direct_provider_seconds": 39.673704389,
+      "expert_wall_seconds": null,
+      "p45_device_window_seconds": 4.583491381,
+      "true_ar_tokens_per_second": 1.073751,
+      "traffic_sha256": "761473131acc6123eb3b721011d6e89fed1a870940a3cf245b51012509b41e3c",
+      "raw_final_logits_sha256": "5ffbb2e51eeb405b037f54d9719865542f1bc283ff83e251f07202013bd52172",
+      "output_ids_match_qualified_p55": false,
+      "first_divergent_output_index_one_based": 14
+    },
+    "x8_oracle_disabled": {
+      "prompt_tokens": 53,
+      "processed_transitions": 23,
+      "cache_mib": 16384,
+      "p30_borrowed_records": true,
+      "borrowed_hit_bytes": 70304415744,
+      "p40": "enabled layer-epoch; 8192 MiB device cache",
+      "p46": "enabled width8",
+      "macro_union": "enabled direct-async",
+      "direct_physical_bytes": 203776557056,
+      "physical_gb_per_transition": 8.859850307,
+      "logical_provider_bytes": 374433669120,
+      "logical_gb_per_transition": 16.279724744,
+      "cache_hits": 128207,
+      "cache_misses": 125317,
+      "cache_evicted_bytes": 52224098304,
+      "adopted_miss_bytes": 66792701952,
+      "direct_provider_seconds": 42.302025424,
+      "expert_wall_seconds": null,
+      "p45_device_window_seconds": 4.657060830,
+      "true_ar_tokens_per_second": 1.022236,
+      "traffic_sha256": "761473131acc6123eb3b721011d6e89fed1a870940a3cf245b51012509b41e3c",
+      "raw_final_logits_sha256": "5ffbb2e51eeb405b037f54d9719865542f1bc283ff83e251f07202013bd52172",
+      "output_ids_match_qualified_p55": false,
+      "byte_identical_to_x7_default": true
+    },
+    "fixed_server_default": {
+      "prompt_tokens": 53,
+      "processed_transitions": 23,
+      "cache_mib": 16384,
+      "p30_borrowed_records": true,
+      "borrowed_hit_bytes": 58029309952,
+      "p40": "disabled",
+      "p46": "enabled scalar",
+      "macro_union": "disabled",
+      "direct_physical_bytes": 37039996928,
+      "physical_gb_per_transition": 1.610434649,
+      "logical_provider_bytes": 96217497600,
+      "logical_gb_per_transition": 4.183369461,
+      "cache_hits": 107726,
+      "cache_misses": 66706,
+      "cache_evicted_bytes": 19860234240,
+      "adopted_miss_bytes": 35000877056,
+      "direct_provider_seconds": 13.014193948,
+      "expert_wall_seconds": null,
+      "p45_device_window_seconds": 5.305660109,
+      "true_ar_tokens_per_second": 2.355260,
+      "traffic_sha256": "8475c2348564fc9a0b7ca4ec533607019120708574ab95986a049d494f2928a5",
+      "raw_final_logits_sha256": "9bb3f3856b12c51210f3bb471e3a54be407fb85f5d475ed66643039e4d3d8e08",
+      "output_ids_match_qualified_p55": true
+    }
+  },
+  "root_cause": {
+    "first_changed_mechanism": "X7 automatic defaults changed the calibrated provider from the qualified all-layer budget 24 to budget 96",
+    "logical_traffic_amplification": 3.891534060,
+    "physical_traffic_amplification": 5.501582666,
+    "second_changed_mechanism": "width-8 prefill was promoted without scalar-P55 recurrent-state and continued-decode parity",
+    "x8_introduced_regression": false
+  },
+  "fix": {
+    "automatic_profile": "exact-scalar",
+    "default_slab_budget": 24,
+    "prefill_width": 1,
+    "wide_prefill_status": "explicit experimental opt-in pending scalar-reference state/logit parity",
+    "recovered_at_least_2_3_ar": true
+  },
+  "tests": [
+    "clean HIP build capped at -j4: PASS",
+    "test_kimi_k3_calibrated_provider on physical GPU1 gfx1151: PASS",
+    "matched 53+23 fixed automatic default: PASS",
+    "qualified output IDs: PASS",
+    "P30 traffic SHA: PASS",
+    "captured X7-P30 final-logit SHA: PASS"
+  ],
+  "artifact_root": "/home/duster/kimi-k3-deploy/k3-baseline-reconciliation-20260825",
+  "artifact_sha256": {
+    "p30_stdout": "2c16c576bac553078e90abbee143aa1bb4357f05fb2d004d5c56916f5271dcce",
+    "p30_stderr": "062dcfd8d3a79eb692035d41a09c2a5bb374f24946a3a21bd9d8ed4bc48c115e",
+    "x7_stdout": "322fe67986673e90dd557e16c3b1fc22794c0a91f2986f506a1883ada5435872",
+    "x7_stderr": "618dbf6dbe276ddeaa06235ca55931459dc4da21a387edb5c732537c61a30c5d",
+    "x8_disabled_stdout": "a3d8ddb0156206a8d4264877e48c7517387b607673c2639d81935d74185c5b1e",
+    "x8_disabled_stderr": "1c367b966ff1e8603bd26f24869499c8b235d466b3912dbb2a543eef0cb005ae",
+    "fixed_stdout": "991e951fd0a179ed798f8182722b9c600d1032bae0fd363a6bd5ad9dae3099d2",
+    "fixed_stderr": "719c385da5f3c7ec4e29a5e4c311501fe6b0a41bb6a93f5b87faaca7a3aa9360"
+  }
+}

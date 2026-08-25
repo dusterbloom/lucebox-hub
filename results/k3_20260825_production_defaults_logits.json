@@ -1,5 +1,8 @@
 {
   "campaign": "k3-production-defaults-logit-closure-20260825",
+  "status": "SUPERSEDED_FOR_AUTOMATIC_SERVER_DEFAULT",
+  "superseded_by": "results/k3_x8_baseline_reconciliation.json",
+  "scope_correction": "This gate proved the automatic profile matched the same explicit wide profile at M1024. It did not compare recurrent state or continued decode against the qualified scalar P55/P30 path.",
   "verdict": "GO_EXACT_DEFAULT_PROFILE",
   "source": {
     "branch": "perf/k3-production-ponytail",

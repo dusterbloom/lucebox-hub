@@ -3596,9 +3596,9 @@ public:
             char * end = nullptr;
             const long parsed = std::strtol(raw_budget, &end, 10);
             if (end == raw_budget || *end != '\0' ||
-                (parsed != 96 && parsed != 192)) {
+                (parsed != 24 && parsed != 96 && parsed != 192)) {
                 if (err) *err =
-                    "DFLASH_KIMI_P20_SLAB_BUDGET must be 96 or 192";
+                    "DFLASH_KIMI_P20_SLAB_BUDGET must be 24, 96, or 192";
                 return false;
             }
             budget_ = static_cast<int>(parsed);
