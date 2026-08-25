@@ -133,6 +133,103 @@
     },
     "interpretation": "Blocked physical service owns the critical path. Cache locking, allocation, adoption, worker dispatch, fence tail, and record installation together are too small to be the route to a 0.20-second step saving. The detailed timers were removed after evidence capture."
   },
+  "whole_step_ledger": {
+    "measured_ms_per_step": {
+      "causal_core": 572.003,
+      "expert_provider_outer": 937.84525,
+      "canonical_join": 97.69325,
+      "output": 35.663,
+      "stage_other": 0.746,
+      "outer_loop_overhead": 7.5495,
+      "total": 1651.5
+    },
+    "measured_true_ar_tokens_per_second": 4.84405,
+    "counterfactuals": {
+      "raw_nvme_only_same_bytes": {
+        "total_ms_per_step": 1641.63,
+        "perfect_tokens_per_second": 4.873,
+        "interpretation": "Only blocked pread falls from 542.82 ms to the 532.95-ms raw 5.580-GiB/s floor; all staging remains."
+      },
+      "entire_read_cache_stage_at_raw_physical_floor": {
+        "total_ms_per_step": 1568.10,
+        "perfect_tokens_per_second": 5.102,
+        "interpretation": "Optimistically deletes every non-read staging/cache cost while retaining the same physical bytes."
+      },
+      "zero_read_cache_stage": {
+        "total_ms_per_step": 1035.15,
+        "perfect_tokens_per_second": 7.728,
+        "interpretation": "Impossible zero-delivery bound with the current queued upload/graph and provider residual retained."
+      },
+      "perfect_delivery_plus_p59_resident_graph": {
+        "total_ms_per_step": 1023.65,
+        "perfect_tokens_per_second": 7.815,
+        "interpretation": "Uses the retained approximately 223.3-ms all-resident expert-graph roofline and retains current pack/provider residual/core/join/output."
+      }
+    },
+    "ten_tps_implication": "At q=7, 10 perfect tok/s requires an 800-ms target step. The current sequential non-delivery/core/join/output plus resident expert graph floor remains above 1.0 s, so width adaptation or material cross-stage/core/graph change is required even if storage delivery becomes free."
+  },
+  "cache_trace_oracle": {
+    "status": "ENGINEERING_VALID_EXACT_TRACE__PUBLICATION_INVALID_SWAP_OUT_55_PAGES",
+    "artifact_root": "/home/duster/kimi-k3-deploy/k3-q7-cache-trace-20260825",
+    "trace_sha256": "8ebe2aadb7cab3188113d3a19e7ce5538337cf58d564274cbfdcd243fcbb90be",
+    "trace_lines": 501913,
+    "oracle_script_sha256": "94ea40afa00bed985ddf8b6b08a19fb2ad366564b8c72a2b89ba462fd208181d",
+    "oracle_output_sha256": "eb51ae7e60ceb3cd70e2d1eab7457d27fff49669b718e2c5c9937c386bdf64eb",
+    "temporary_diagnostic": {
+      "change": "Temporarily permitted the already-existing P20 trace writer in the exact multirow provider and graph guards; no scheduler, cache policy, or production path was added.",
+      "provider_source_sha256": "ede59eec46d265a37bb4dfb4f4491ad65dfd5f56074201b32ed9a908c867db6b",
+      "graph_source_sha256": "ffc8774bedd4b22e8a4282eb761eb3e7f8dea0cd10966b47ba33842507136515",
+      "binary_sha256": "c653178b149e7f86f62bcaf4d6fa6e53cf7984cae4a08fa8bebdd5e9acd3e13b",
+      "removed_after_capture": true,
+      "restored_provider_source_sha256": "254a2eddd60038ce6753bcf98e76431dd03a40edf6211cf9e984416f06642bf4",
+      "restored_graph_source_sha256": "41f5c49ce9db337c154bd9a7d4ab6ba24b48d2d3376b445af8aad42b499025d4",
+      "restored_binary_sha256": "5ba89b9c6dd4c062cdb7a4d29192a76b9a7a8c1c95cd6d294c7f7ddb9de943e7"
+    },
+    "exactness": {
+      "active_rows": 32,
+      "inactive_rows": 0,
+      "oracle_fallbacks": 0,
+      "boundary_logits_sha256": "0ab319c61d9d5d2931423ff0bac668d048298241abbf1ef1bc8ad66703cd347f",
+      "final_logits_sha256": "3cdf0dd9015396e03e0d2d9a161680a68d305af21bbd638c42ddcbe758c5c00e",
+      "logical_traffic_sha256": "92ff3ab7a9bb3fec4462f57af5cc17811bd5864d01e27521f16a2b00af05effb"
+    },
+    "lru_replay_validation": {
+      "actual_whole_run_physical_bytes": 40146558976,
+      "predicted_whole_run_physical_bytes": 40147640320,
+      "difference_bytes": 1081344,
+      "relative_difference_percent": 0.00269,
+      "interpretation": "Two-record difference at base position 61 is within QD16 cache-lock acquisition order; all other q7 steps reproduce exactly."
+    },
+    "q7_working_set": {
+      "unique_records": 30850,
+      "unique_aligned_bytes": 17120763904,
+      "unique_gib": 15.944954,
+      "actual_physical_bytes": 12773015552,
+      "within_q7_repeated_miss_bytes": 0,
+      "prompt_seen_then_evicted_first_miss_bytes": 3283353600,
+      "never_prompt_seen_first_miss_bytes": 9489661952,
+      "interpretation": "Current 16-GiB LRU retains every q7 record after its first q7 use; there is no cross-step q7 cache thrash."
+    },
+    "same_16g_policy_oracle": {
+      "perfect_future_savings_bytes_by_step": [1391198208, 486408192, 656441344, 749305856],
+      "average_savings_bytes_per_step": 820838400,
+      "average_savings_gib_per_step": 0.764465,
+      "optimistic_saving_ms_per_step_at_raw_ceiling": 137.0,
+      "passes_5_tps_diagnostic": true,
+      "passes_200_ms_implementation_gate": false,
+      "bounded_wtinylfu_q7_physical_regression_bytes": 314130432,
+      "verdict": "NO_GO: only future-aware prompt retention reaches the ceiling; bounded online policies regress traffic."
+    },
+    "device_8g_record_oracle": {
+      "perfect_future_physical_bypass_bytes_total": 2707333120,
+      "perfect_future_payload_h2d_hit_bytes_total": 14346063872,
+      "optimistic_saving_ms_per_step": "126-139",
+      "passes_200_ms_implementation_gate": false,
+      "online_warm_prompt_lru_physical_regression_bytes": 947601408,
+      "layout_blocker": "P40 leases use fixed full-natural record-major tensors, while macro union requires a variable-mask component-major compact layout; zero-copy binding would address incorrect weights.",
+      "verdict": "NO_GO: the oracle needs future knowledge and a new D2D gather/full-natural graph, while online LRU does not reproduce the signal."
+    }
+  },
   "exactness": {
     "boundary_logits_sha256": "0ab319c61d9d5d2931423ff0bac668d048298241abbf1ef1bc8ad66703cd347f",
     "final_logits_sha256": "3cdf0dd9015396e03e0d2d9a161680a68d305af21bbd638c42ddcbe758c5c00e",
@@ -142,17 +239,21 @@
   "decision": {
     "dominant_current_term": "read/cache/staging at 616.3 ms/step in the fine-timed D2 arm; blocked pread alone is 542.8 ms/step",
     "historical_1_429_seconds_reconciliation": "stale pre-526ac612 value; the current exact q7 provider outer wall is 937.8 ms/step and is fully classified by the retained coarse counters plus the temporary fine-timing evidence",
-    "raw_bandwidth_only_headroom_ms_per_step": 83.4,
+    "raw_physical_floor_ms_per_step": 532.95,
+    "blocked_pread_headroom_to_raw_floor_ms_per_step": 9.87,
+    "whole_read_cache_stage_headroom_to_raw_floor_ms_per_step": 83.4,
     "immediate_5_tps_gap_ms_per_step": 51.5,
     "frozen_implementation_gate_ms_per_step": 200,
     "larger_p30_capacity": "NO_GO for q7 and scalar",
-    "same_capacity_cache_policy": "not yet earned; requires an ordered-record oracle showing materially fewer physical bytes at the same 16-GiB capacity",
+    "same_capacity_cache_policy": "NO_GO: exact trace proves zero within-q7 thrash; perfect future retention is only 137 ms/step and bounded online TinyLFU regresses traffic",
     "same_layer_read_graph_overlap": "not earned under the 0.20-s/step gate; prior evidence projects only about 60-97 ms/step and must not be conflated with the 225-ms ideal bound",
     "provider_residual_and_join": "NO_GO as a standalone >=0.10-s/step lane; even the intentionally impossible combined deletion bound is 98.54 ms/step",
-    "next_family": "first bound physical-byte avoidance and a different exact IQ1_S multirow/representation path; do not implement until a candidate or rigorously coupled plan clears 0.20 s/step"
+    "next_family": "cache policy, current P40 residency, fallback deletion, and available exact IQ1_S replacements do not clear 0.20 s/step; redirect to core/expert cross-stage overlap or a verifier architecture that conditionally composes Width8 blocks"
   },
   "invalid_preflights": [
     "missing explicit GPU lease path; no model load",
-    "mistyped provider value; model loaded but provider initialization and generation did not run"
+    "mistyped provider value; model loaded but provider initialization and generation did not run",
+    "P20 trace disabled wide provider service; prompt ran but no q7 target step entered",
+    "provider trace guard relaxed while the graph-level P20 incompatibility remained; prompt ran but no q7 target step entered"
   ]
 }
