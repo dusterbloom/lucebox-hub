@@ -1,0 +1,33 @@
+{
+  "schema": "dflash.kimi-k3.v8-partial-commit-timing.v1",
+  "date": "2026-08-26",
+  "status": "QUALIFIED_GO",
+  "source_head": "c2627999",
+  "question": "Does exact partial KDA rollback consume at least 0.20 seconds per retained Fibonacci request, enough to earn recurrence-factor capture?",
+  "fixture": {
+    "request": "k3_fib_request.json",
+    "prompt_tokens": 43,
+    "completion_tokens": 33,
+    "true_transitions": 32,
+    "physical_verify_width": 8,
+    "expected_partial_state_commits": [3, 5]
+  },
+  "arm": "production Ponytail plus diagnostic timing only",
+  "primary_metric": "sum of rollback_to wall time for partial commits",
+  "go": "sum >= 0.20 seconds and registered logits/output remain exact",
+  "no_go": "sum < 0.20 seconds; remove timing and close factor capture",
+  "invalid": "acceptance pattern changes, any fallback, or output/logit mismatch",
+  "next_if_go": "reuse exact KDA recurrence factors plus conv input; no new kernel, queue, cache, or scheduler",
+  "result": {
+    "binary_sha256": "ff08fe338cd647d6514ff0628bcc9258f54660b5f37cd4ad57699a28ef569e64",
+    "commit_8_us": [15, 20, 15],
+    "commit_3_us": 220384,
+    "commit_5_us": 363848,
+    "partial_commit_sum_us": 584232,
+    "decode_seconds": 9.273,
+    "strict_true_ar_tps": 3.450878896,
+    "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "fallbacks": 0,
+    "verdict": "GO"
+  }
+}
