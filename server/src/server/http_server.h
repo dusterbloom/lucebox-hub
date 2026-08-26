@@ -287,6 +287,8 @@ struct ParsedRequest {
     // Thinking/reasoning state
     bool                      thinking_enabled = true;
     bool                      started_in_thinking = false;
+    // K3 speculative decode is request opt-in; false keeps scalar AR.
+    bool                      speculative = false;
     // True when the request opted in to the thinking-budget envelope via
     // `thinking: {type: "enabled"}`. Distinct from thinking_enabled (which
     // can be set via the chat template kwarg alone). When true, the response
@@ -320,6 +322,14 @@ json require_messages_array(const json & body);
 // Resolve the supported output-token aliases in precedence order. Only the
 // selected field is parsed, so malformed lower-priority aliases are ignored.
 int resolve_max_output_tokens(const json & body, int default_max_tokens);
+
+// Parse the explicit speculative-decode request opt-in. Missing means false;
+// a present non-boolean value is rejected by route_request's 400 path.
+bool parse_speculative_opt_in(const json & body);
+
+// Only K3 is fail-closed per request; existing architecture policies remain.
+bool request_forces_ar_decode(const std::string & arch,
+                              bool speculative_opt_in);
 
 // Sticky tools-boundary pinning is part of PPP and must follow its master
 // toggle. Kept as a small policy helper so the disabled path is testable.

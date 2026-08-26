@@ -2819,6 +2819,24 @@ TEST_CASE(ServerUnitFixture, test_max_output_alias_precedence_ignores_shadowed_i
         resolve_max_output_tokens({{"max_completion_tokens", 8}}, 400) == 8);
 }
 
+TEST_CASE(ServerUnitFixture, test_speculative_decode_is_explicit_opt_in) {
+    TEST_ASSERT(!parse_speculative_opt_in(json::object()));
+    TEST_ASSERT(parse_speculative_opt_in({{"speculative", true}}));
+    TEST_ASSERT(!parse_speculative_opt_in({{"speculative", false}}));
+
+    bool threw = false;
+    try {
+        parse_speculative_opt_in({{"speculative", "true"}});
+    } catch (const std::invalid_argument &) {
+        threw = true;
+    }
+    TEST_ASSERT(threw);
+
+    TEST_ASSERT(request_forces_ar_decode("kimi-k3", false));
+    TEST_ASSERT(!request_forces_ar_decode("kimi-k3", true));
+    TEST_ASSERT(!request_forces_ar_decode("qwen35", false));
+}
+
 TEST_CASE(ServerUnitFixture, test_pflash_placement_same_backend_local) {
     DevicePlacement target;
     target.backend = compiled_placement_backend();
@@ -5153,6 +5171,25 @@ TEST_CASE(ServerUnitFixture, test_props_deepseek4_tool_capability) {
     const json body = build_props_body(cfg, pc, tm);
 
     TEST_ASSERT(body["capabilities"]["tools_supported"].get<bool>());
+}
+
+TEST_CASE(ServerUnitFixture, test_props_kimi_speculative_is_available_but_opt_in) {
+    ServerConfig cfg;
+    cfg.arch = "kimi-k3";
+    cfg.draft_path = "/tmp/kimi-k3-draft.gguf";
+    // DDTree is a startup policy for other architectures; K3 remains
+    // request-opt-in even if this legacy flag is present.
+    cfg.speculative_enabled = true;
+    Tokenizer tok;
+    PrefixCache pc(0, tok);
+    ToolMemory tm;
+    const json body = build_props_body(cfg, pc, tm);
+
+    TEST_ASSERT(body["capabilities"]["speculative_supported"].get<bool>());
+    TEST_ASSERT(!body["speculative"]["enabled"].get<bool>());
+    TEST_ASSERT(body["speculative"]["available"].get<bool>());
+    TEST_ASSERT(body["speculative"]["requires_explicit_opt_in"].get<bool>());
+    TEST_ASSERT(body["speculative_mode"].get<std::string>() == "off");
 }
 
 TEST_CASE(ServerUnitFixture, test_props_budget_envelope_shape) {

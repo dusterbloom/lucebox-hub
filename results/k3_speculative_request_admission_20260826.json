@@ -1,0 +1,39 @@
+{
+  "schema": "k3_speculative_request_admission_v1",
+  "date_utc": "2026-08-26",
+  "source_head_before_change": "dfb3ef60ea23",
+  "question": "Can a production K3 server expose the retained q=7 drafter without silently slowing requests whose acceptance is below break-even?",
+  "evidence": {
+    "scalar_true_ar_tps": 2.248906,
+    "perfect_q7_pooled_true_ar_tps": 4.552957,
+    "perfect_q7_code_true_ar_tps": 4.948811,
+    "long_prose_unconditional_q7_true_ar_tps": 0.799,
+    "physical_break_even_committed_transitions_per_v8_before_draft_overhead": 3.64,
+    "confidence_contract": "post-output-RMSNorm draft hidden plus previous-token Markov rank embedding",
+    "confidence_training_target": "one minus total-variation distance between draft and target distributions",
+    "production_acceptance_rule": "greedy token equality",
+    "interpretation": "The raw confidence sigmoid is not a calibrated greedy prefix-survival probability and cannot safely enable q7 automatically."
+  },
+  "implementation": {
+    "request_field": "speculative",
+    "missing_value": false,
+    "invalid_non_boolean": "HTTP 400 through the existing request-validation path",
+    "kimi_k3_default": "scalar AR",
+    "kimi_k3_true_value": "use the existing q7 path when its retained runtime closure is available",
+    "other_architectures": "unchanged",
+    "props": {
+      "enabled_by_default": false,
+      "available_when_draft_loaded": true,
+      "requires_explicit_opt_in": true
+    }
+  },
+  "tests": {
+    "build_command": "CCACHE_DISABLE=1 cmake --build server/build-feature-ring-cuda126b --target test_server_unit -j4",
+    "build": "PASS",
+    "focused_ctest": "PASS 2/2",
+    "full_ctest": "414/416 PASS; two unrelated socket tests fail under the WSL sandbox at shutdown/setsockopt before reaching changed code",
+    "diff_check": "PASS"
+  },
+  "verdict": "KEEP",
+  "scope": "This makes the current mixed K3 server fail closed. It does not promote automatic speculation. Automatic admission remains blocked on checkpoint-bound held-out greedy calibration and a frozen cost gate."
+}

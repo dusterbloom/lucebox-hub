@@ -560,6 +560,19 @@ int resolve_max_output_tokens(const json & body, int default_max_tokens) {
     return default_max_tokens;
 }
 
+bool parse_speculative_opt_in(const json & body) {
+    if (!body.contains("speculative")) return false;
+    if (!body["speculative"].is_boolean()) {
+        throw std::invalid_argument("speculative must be a boolean");
+    }
+    return body["speculative"].get<bool>();
+}
+
+bool request_forces_ar_decode(const std::string & arch,
+                              bool speculative_opt_in) {
+    return arch == "kimi-k3" && !speculative_opt_in;
+}
+
 bool ppp_prefers_tools_boundary(bool ppp_enabled, bool has_tools) {
     return ppp_enabled && has_tools;
 }
@@ -701,7 +714,14 @@ json build_props_body(const ServerConfig & config,
     // arch-gated capabilities (mirrors Python _capabilities()).
     const bool is_qwen = (config.arch.rfind("qwen", 0) == 0);
     const bool reasoning_supported = is_qwen;
-    const bool speculative_supported = is_qwen;
+    const bool is_kimi_k3 = config.arch == "kimi-k3";
+    const bool speculative_supported = is_qwen || is_kimi_k3;
+    const bool speculative_enabled =
+        config.speculative_enabled && !is_kimi_k3;
+    const bool speculative_available = speculative_enabled ||
+        (is_kimi_k3 && !config.draft_path.empty());
+    const bool speculative_requires_opt_in =
+        is_kimi_k3 && speculative_available;
     const bool tools_supported = is_qwen || config.arch == "deepseek4";
 
     auto pcs  = prefix_cache.stats();
@@ -717,7 +737,7 @@ json build_props_body(const ServerConfig & config,
     // false` and the two contradict (codex review feedback on 8d6ff04).
     std::string speculative_mode;
     if (pflash_enabled)                    speculative_mode = "pflash";
-    else if (config.speculative_enabled)   speculative_mode = "dflash";
+    else if (speculative_enabled)          speculative_mode = "dflash";
     else                                   speculative_mode = "off";
 
     // Spec §4.2: the five-tier vocabulary (low | medium | high | x-high | max)
@@ -861,8 +881,10 @@ json build_props_body(const ServerConfig & config,
             }},
         }},
         {"speculative", {
-            {"enabled",       config.speculative_enabled},
-            {"ddtree_budget", config.speculative_enabled
+            {"enabled",       speculative_enabled},
+            {"available",     speculative_available},
+            {"requires_explicit_opt_in", speculative_requires_opt_in},
+            {"ddtree_budget", speculative_enabled
                                 ? json(config.ddtree_budget) : json(nullptr)},
         }},
         {"sampling", {
@@ -1692,6 +1714,7 @@ bool HttpServer::parse_common_request_fields(
         SocketHandle fd, const json & body, ParsedRequest & req) {
     req.stream = body.value("stream", false);
     req.model = body.value("model", config_.model_name);
+    req.speculative = parse_speculative_opt_in(body);
     req.disk_cache_policy = config_.disk_cache_policy;
 
     // Accept the output-token names used by each supported API dialect.
@@ -2019,13 +2042,15 @@ bool HttpServer::validate_request_context(
 void HttpServer::log_parsed_request(const ParsedRequest & req) const {
     std::fprintf(stderr,
         "[server] chat %s format=%s stream=%s msgs=%zu tools=%zu prompt_tokens=%zu "
-        "max_tokens=%d max_ctx=%d thinking=%s started_in_thinking=%s stops=%zu model=%s\n",
+        "max_tokens=%d max_ctx=%d thinking=%s started_in_thinking=%s "
+        "speculative=%s stops=%zu model=%s\n",
         req.response_id.c_str(), api_format_name(req.format),
         req.stream ? "true" : "false",
         json_array_size(req.messages), json_array_size(req.tools),
         req.prompt_tokens.size(), req.max_output, config_.max_ctx,
         req.thinking_enabled ? "true" : "false",
         req.started_in_thinking ? "true" : "false",
+        req.speculative ? "true" : "false",
         req.stop_sequences.size(), req.model.c_str());
 }
 
@@ -3655,6 +3680,8 @@ void HttpServer::prepare_generation_inputs(
     inputs.request.n_gen = inputs.generation_cap;
     inputs.request.sampler = req.sampler;
     inputs.request.do_sample = req.sampler.needs_logit_processing();
+    inputs.request.force_ar_decode =
+        request_forces_ar_decode(config_.arch, req.speculative);
     // Tokens are delivered through DaemonIO so all API formats share the
     // same disconnect and streaming state machine.
     inputs.request.stream = false;
