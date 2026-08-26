@@ -1,0 +1,52 @@
+{
+  "schema": "dflash.kimi-k3.q7-group-ready-overlap-prereg.v1",
+  "date": "2026-08-26",
+  "question": "Can the current V8 macro-union provider execute each ready expert group while later disjoint group slices are still being filled, without changing reads, bytes, compute order, buffers, or exact outputs?",
+  "hypothesis": "Removing the current all-reads barrier can hide at least 50 ms/V8 of the existing 234.802-ms queued upload/graph interval under the 616.347-ms read/cache/staging interval.",
+  "why_now": {
+    "perfect_code_function_total_ms_per_v8": 1616.55,
+    "core_ms_per_v8": 498.836,
+    "provider_ms_per_v8": 937.515,
+    "read_cache_stage_ms_per_v8": 616.347,
+    "queued_upload_graph_ms_per_v8": 234.802,
+    "perfect_five_tps_gap_ms_per_v8": 16.55,
+    "absolute_overlap_ceiling_ms_per_v8": 234.802,
+    "prior_measured_overlap_projection_ms_per_v8": [61.4, 95.5]
+  },
+  "scope": {
+    "candidate": "one existing pinned macro_union_staging_ allocation partitioned into existing disjoint group ranges; worker completion publishes group readiness; main thread executes unchanged synchronous group H2D/graph in the existing group order",
+    "forbidden": [
+      "second staging or device bank",
+      "second GPU stream",
+      "new scheduler or queue abstraction",
+      "physical read reordering",
+      "asynchronous graph return or in-flight shape-buffer reuse",
+      "cache-policy or expert-representation change"
+    ],
+    "distinction_from_p62b": "P62B tested six one-row P41/P45 calibrated-plus-late-exact jobs, not the later Width1/2/8 expert-major macro-union/direct-output/direct-async path.",
+    "distinction_from_x7_ping_pong": "X7 added a second 256-MiB bank and stream; this candidate must use the existing single disjoint staging allocation and synchronous graph path."
+  },
+  "fixture": {
+    "name": "P55 code-function perfect-token q7/V8 verifier",
+    "q": 7,
+    "verify_rows_v": 8,
+    "target_steps": 4,
+    "true_transitions": 32,
+    "arm_order_after_smoke": ["A1", "B1", "B2", "A2"],
+    "candidate_env": "DFLASH_KIMI_Q7_GROUP_READY_OVERLAP=1"
+  },
+  "frozen_traffic_per_v8": {
+    "aligned_task_bytes": 5985077248,
+    "physical_bytes": 3193253888,
+    "payload_h2d_bytes": 6182751232,
+    "union_weight_h2d_bytes": 5951927296
+  },
+  "gates": {
+    "smoke": "one exact V8 step must preserve physical/logical bytes, read-task order, logits/state hashes, group order and fallback count; queued upload/graph wall may inflate at most 5%; continue only if projected saving is at least 50 ms/V8",
+    "go": "both B arms exact, zero fallback/swap, unchanged bytes/order, pooled total saving at least 50 ms/V8, and queued upload/graph wall inflation at most 5%",
+    "no_go": "exact but pooled saving below 50 ms/V8 or device interval inflation above 5%; delete candidate source",
+    "invalid": "any byte/order/hash/state mismatch, fallback, swap/OOM, wrong topology/power, or worker lifetime/error-path violation",
+    "abort_implementation": "abort before build if safe implementation requires any forbidden mechanism"
+  },
+  "no_go_scope": "A failure closes only group-readiness overlap in the current V8 macro-union/direct-async topology. It does not reopen old P62/P41/P45 overlap or close residency, reduced physical representation, or cross-stage architectural work."
+}
