@@ -1,0 +1,61 @@
+{
+  "schema": "k3_dspark_route_proxy_prefetch_result_v1",
+  "date_utc": "2026-08-26",
+  "verdict": "NO_GO_CODE_REMOVED",
+  "question": "Can the existing DSpark hidden rows predict enough authoritative K3 Budget24 slab misses to hide at least 0.20 seconds of V8 delivery under Core8?",
+  "preregistration": "results/k3_dspark_route_proxy_prefetch_prereg_20260826.json",
+  "source": {
+    "production_head": "3410f135",
+    "diagnostic_diff_sha256": "12a79e4781593c34b886c62b998d4d045189e0430227068dc7fdf1a9125efb3d",
+    "diagnostic_binary_sha256": "c58d617256415e07f654111b595897c10804d974a3c239e624e08b56d85e1482",
+    "runner_sha256": "18c4a44ede652c657a1071fdfaf399b20f82e3b3bd01e9318d530af60efd7867",
+    "request_sha256": "649a3d74b3ca9c98d6f63de371ba3f6a5f982ffaf81a82683d14471ff1cd0194",
+    "retained_exact_record_trace_sha256": "8ebe2aadb7cab3188113d3a19e7ce5538337cf58d564274cbfdcd243fcbb90be"
+  },
+  "fixture": {
+    "name": "registered Python code-function",
+    "prompt_tokens": 53,
+    "output_tokens": 33,
+    "true_transitions": 32,
+    "draft_steps": 5,
+    "physical_verify_rows": 40,
+    "platform_profile": "performance",
+    "gpu_power": "card1=high,card2=high",
+    "swap_pages_in_delta": 0,
+    "swap_pages_out_delta": 0
+  },
+  "capture": {
+    "proxy_trace_sha256": "0a373f50cb8ed0d6fc3b3fa6665370c2a151cdb0542eb270b7215b1571b40968",
+    "proxy_trace_rows": 3220,
+    "proxy_trace_bytes": 1905582,
+    "final_logits_sha256": "3cdf0dd9015396e03e0d2d9a161680a68d305af21bbd638c42ddcbe758c5c00e",
+    "final_logits_match_frozen_code_function": true,
+    "fallbacks": 0
+  },
+  "per_step_proxy_expert_union_recall": [
+    {"base_pos": 53, "recall": 0.094724992, "proxy_router_total_ms": 19.197231},
+    {"base_pos": 61, "recall": 0.097114592, "proxy_router_total_ms": 19.036590},
+    {"base_pos": 66, "recall": 0.080723281, "proxy_router_total_ms": 19.060956},
+    {"base_pos": 74, "recall": 0.080140485, "proxy_router_total_ms": 19.112383},
+    {"base_pos": 82, "recall": 0.071577748, "proxy_router_total_ms": 19.063020}
+  ],
+  "matched_first_v8_optimistic_bound": {
+    "authoritative_physical_miss_bytes": 3136724992,
+    "bytes_under_any_predicted_expert": 194674688,
+    "optimistic_physical_miss_byte_recall": 0.062063040,
+    "raw_hideable_seconds_at_5_580138451_gib_s": 0.032491117,
+    "measured_proxy_router_seconds": 0.019197231,
+    "net_seconds_before_any_false_prefetch_cost": 0.013293886
+  },
+  "gates": {
+    "abort_recall_min": 0.3753,
+    "go_recall_min": 0.50,
+    "go_precision_min": 0.70,
+    "go_net_seconds_min": 0.20,
+    "abort_recall_pass": false,
+    "decision": "Stop after the first fixture; do not run Fibonacci, prose, or fact and do not implement provider prefetch."
+  },
+  "interpretation": "The final DSpark hidden lives in the correct output space for token prediction but is not a useful proxy for the 92 layer-specific target router inputs. Even the deliberately optimistic expert-level bound recalls only 6.21 percent of physical miss bytes, before prefix-depth mismatch or false-prefetch cost. The best possible net signal from this capture is about 13.3 ms/V8, fifteen times below the materiality gate.",
+  "scope": "Closes DSpark-final-hidden through the current target Router8 matrices as a V8 pre-route expert-record predictor for the registered code-function and current Budget24/P30 representation. It does not close a trained layer-specific route predictor, authoritative-route lookahead from a different execution schedule, or non-predictive cross-request batching.",
+  "cleanup": "All default-off diagnostic source changes were removed after preserving hashes and raw artifacts. No production provider code was written."
+}
