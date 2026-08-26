@@ -1,0 +1,64 @@
+{
+  "schema": "k3_dspark_route_proxy_prefetch_prereg_v1",
+  "date_utc": "2026-08-26",
+  "source_head": "6193480d",
+  "question": "Can already-produced DSpark hidden rows predict enough authoritative K3 Budget24 slab misses early enough to hide at least 0.20 seconds of V8 expert delivery under exact Core8?",
+  "hypothesis": "Applying each existing layer-specific target Router8 to the seven DSpark proposal hidden rows will recall at least half of the physical miss bytes later requested by authoritative routing, without changing target semantics.",
+  "why_now": {
+    "current_provider_outer_seconds_per_v8": 0.93785,
+    "current_physical_bytes_per_v8": 3193253888,
+    "raw_storage_floor_seconds_per_v8": 0.532953,
+    "current_core_overlap_window_seconds_per_v8": 0.572,
+    "required_net_saving_seconds_per_v8": 0.20,
+    "required_gross_recalled_bytes": 1198325608
+  },
+  "borrow_first": [
+    "existing DSpark host hidden output",
+    "existing immutable per-layer Router8 graphs and weights",
+    "existing calibrated Budget24 record planner",
+    "existing P20/P30 I/O trace and cache-oracle script"
+  ],
+  "fixtures": [
+    "registered Python code-function",
+    "registered Fibonacci Python",
+    "registered long prose",
+    "registered short fact"
+  ],
+  "capture": [
+    "base position, layer, active row",
+    "proxy and authoritative top-16 expert IDs and weights",
+    "proxy-router device wall",
+    "authoritative aligned record keys and explicit physical miss bytes"
+  ],
+  "primary_metrics": [
+    "P30-filtered authoritative physical-miss byte recall",
+    "pessimistic false-prefetch byte precision",
+    "predicted nonresident payload bytes",
+    "net service wall after false-prefetch and proxy-router cost"
+  ],
+  "go_gate": {
+    "every_fixture_physical_miss_byte_recall_min": 0.50,
+    "every_fixture_pessimistic_byte_precision_min": 0.70,
+    "predicted_nonresident_payload_bytes_max": 2287070085,
+    "predicted_service_seconds_max": 0.40,
+    "net_saving_seconds_per_v8_min": 0.20
+  },
+  "correctness_contract": [
+    "authoritative Router8 remains the sole route and weight authority",
+    "a prefetched record may be consumed only after exact layer/offset/length match",
+    "every missing authoritative record is read synchronously",
+    "wrong predictions never enter P30 or P40 and are discarded",
+    "target IDs, logits, recurrent and MLA state, logical traffic, and canonical joins remain unchanged"
+  ],
+  "abort_conditions": [
+    "gross physical-miss byte recall below 37.53 percent",
+    "capture requires a new scheduler, cache, queue, or benchmark framework",
+    "proxy computation mutates authoritative target state",
+    "any fixture misses the frozen GO thresholds"
+  ],
+  "interpretation": {
+    "GO": "Implement the smallest existing-queue prefetch seam and run same-binary reversed exact A/B.",
+    "NO_GO": "Delete capture code and close DSpark-hidden pre-route prediction at V8 under the current draft and Budget24 representation.",
+    "INVALID": "Fix only the recorded capture/measurement defect; do not widen gates."
+  }
+}
