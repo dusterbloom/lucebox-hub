@@ -1,0 +1,83 @@
+{
+  "schema": "dflash.kimi-k3.fresh-block16-single-v8.v1",
+  "date": "2026-08-26",
+  "status": "QUALIFIED_NO_GO",
+  "question": "Can a fresh Modal Block16 draft before every single physical V8 reduce the registered Fibonacci fixture from five target transactions to four?",
+  "source": {
+    "branch": "perf/k3-production-ponytail",
+    "base_head": "ee125db82ff6442ebb0df3531f39126b88b97ae1",
+    "patch_sha256": "9333860eba0f258574f1d7590584d09a8c241ab3706f8046180f99786ebc96ef",
+    "binary_sha256": "ed2cfa7d28166c3e221f567ed92dce2721c8f714077189b972f4cdefee1bb6e6",
+    "runner_sha256": "34921f56abd47651be4c66f2dffb5c32646363249912a9d25575ff6f6c204d48"
+  },
+  "fixture": {
+    "name": "Fibonacci code",
+    "request_sha256": "856d7ed1f0280e20a1580aee15e58da91befdd7e416a900528bfdf391bc2208b",
+    "prompt_tokens": 43,
+    "completion_tokens": 33,
+    "strict_true_transitions": 32,
+    "target_model_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4"
+  },
+  "preregistration": {
+    "arms": ["A1 Radix q7", "B1 fresh Modal Block16 to one V8", "B2 fresh Modal Block16 to one V8", "A2 Radix q7"],
+    "go": "candidate target steps 5 to 4, byte-identical output and frozen final logits, no fallback, and at least 10% useful decode gain",
+    "abort": "stop after the first candidate if it requires five or more target steps",
+    "no_go": "five or more candidate target steps, or less than 10% gain",
+    "invalid": "topology, power, exactness, swap/OOM, or fallback gate fails"
+  },
+  "runs": [
+    {
+      "arm": "A1",
+      "draft": "Radix DSpark q7",
+      "draft_sha256": "848d12be5283a4717c08b1b1263420980dfc61b5a59067e343296fd7f4998435",
+      "decode_seconds": 8.262,
+      "strict_true_ar_tps": 3.873154200,
+      "target_steps": 5,
+      "accept_n": [8, 3, 8, 8, 6],
+      "logical_verify_rows": 38,
+      "physical_verify_rows": 40,
+      "target_stage_seconds": 7.468709,
+      "whole_process_direct_physical_bytes": 34352594944,
+      "whole_process_direct_io_ns": 9150909592,
+      "failed_fallbacks": 0
+    },
+    {
+      "arm": "B1",
+      "draft": "Modal DFlash Block16, fresh first seven proposals only",
+      "draft_sha256": "91b1b167f6fa2e940c32d5d2e73096b8eb2b762cb9f2027b1b3ff883f4f99cf1",
+      "decode_seconds": 9.042,
+      "strict_true_ar_tps": 3.539040035,
+      "target_steps": 5,
+      "accept_n": [8, 8, 5, 8, 4],
+      "logical_verify_rows": 36,
+      "physical_verify_rows": 40,
+      "target_stage_seconds": 8.206219,
+      "whole_process_direct_physical_bytes": 35357827072,
+      "whole_process_direct_io_ns": 9786946526,
+      "failed_fallbacks": 0
+    }
+  ],
+  "qualification": {
+    "same_binary": true,
+    "same_target_model": true,
+    "same_prompt_and_limits": true,
+    "single_owner_target": "hip:0/gfx1151",
+    "draft_device": "hip:1/gfx1201",
+    "power_profile": "performance",
+    "gpu_power_levels": "high/high",
+    "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "final_logits_byte_identical": true,
+    "emitted_content_sha256": "6bd11f7975954e453d5771e9621204cda8aa3fadce6b753301990cffff522c82",
+    "emitted_content_identical": true,
+    "swap_note": "B1 observed two pswpin pages and zero pswpout delta; too small to explain the 0.780-second regression"
+  },
+  "result": {
+    "candidate_speedup": 0.913735899,
+    "candidate_regression_percent": 8.6264101,
+    "target_step_reduction": 0,
+    "verdict": "NO_GO",
+    "abort_applied": true,
+    "unrun_arms": ["B2", "A2"]
+  },
+  "scope": "Closes only repeated fresh invocation of this Modal Block16 artifact with proposals 1..7 consumed by one physical V8 on the registered Fibonacci fixture. It does not close retrained or target-matched drafts, other draft families, or changes to target expert delivery. No candidate source is retained."
+}
