@@ -1,0 +1,54 @@
+{
+  "schema": "dflash.kimi-k3.width8-scalar-capture-parity.v1",
+  "date": "2026-08-26",
+  "status": "QUALIFIED_PASS_DIAGNOSTIC_REMOVED",
+  "source_base": "8143e774e9dbed490c89110e810df648ed9f2903",
+  "question": "Does exact Width8 verification publish the same five canonical AttnRes feature rows as scalar replay of the same accepted eight-token chain?",
+  "fixture": {
+    "prompt_tokens": 43,
+    "completion_tokens": 33,
+    "q": 7,
+    "verify_rows": 8,
+    "feature_dtype": "F32",
+    "fast_rollback": false,
+    "compared_base_position": 43,
+    "compared_rows": 8,
+    "captures_per_row": 5,
+    "hidden_values_per_capture": 7168
+  },
+  "artifacts": {
+    "binary_sha256": "af41cae2247f483e0b54c7f00ad384410740fe594bd1429a9d577f20d0057e26",
+    "runner_sha256": "3f8b3a931b34bd6198b033872876ac4ae39d433cb357657cc83a3402048b85cb",
+    "preregistration_sha256": "4d37f5b04bab1f4cadfb6d6016df81a42e9f365c689f67205d5fdde7763ae229",
+    "remote_root": "/home/duster/kimi-k3-deploy/k3-width8-scalar-capture-parity-r2-20260826",
+    "width8_file_sha256": "72c43ffdc015117dfdb82cec56b2314c8480c799e68ad7fbe2a5b3aa5741e442",
+    "scalar_concatenation_sha256": "72c43ffdc015117dfdb82cec56b2314c8480c799e68ad7fbe2a5b3aa5741e442",
+    "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e"
+  },
+  "invalid_attempt": {
+    "root": "/home/duster/kimi-k3-deploy/k3-width8-scalar-capture-parity-20260826",
+    "reason": "Omitting --fast-rollback did not disable the server's default-on rollback, so no scalar replay occurred and no parity result was interpreted."
+  },
+  "result": {
+    "width8_bytes": 1146880,
+    "scalar_row_bytes": 143360,
+    "whole_file_cmp": "IDENTICAL",
+    "matching_row_capture_slices": 40,
+    "total_row_capture_slices": 40,
+    "first_width8_acceptance": 8,
+    "pswpout_pages": 0,
+    "verdict": "PASS"
+  },
+  "slice_sha256_by_row": [
+    ["183e0023c05b6382a2a21c87276bd47bc763abea5bd28af195870955cd70cc1a", "8e08d45ea94858bdbd70527f24f11e3a86de54135daf28d4ffd47a274be92a5b", "1ec63de5473a78ed9bf25dd13587942ebb6cd059744b783e9c0ed1594970024e", "948959ea595d2126d5bc76e8ea5bbf4d4ba72a3202901f69472916ef0db7e0b2", "9d268c06522064b668a5507fd74f2e047c56638685733d1212574ac6f877cf19"],
+    ["e95d9362a99348096489869ce6fcb8f3a7043ef55f254aed8699980678a3e233", "e071d56134009e55f69855da6ad4030019f9f29114d0936b2e8fd38ce8200741", "3f92f531ccc70ab915e3994dd4f1dfb33b2d365a0c2441253e3d265a5aaf26ce", "2582be150ae3af3d877d834675be408e3db1f5cd38b89f8441a469d474be2623", "ad01daf9c74d78de3d3029d338375755005e1fac6cb4f748253ad9a566148d79"],
+    ["25acb0d76e9a306e7ad07e34c41773d8748bbcc4f4d567e8be3540fc6918f272", "e3347e781e2f9e39a63a16f17fbd50a9588b306863ed536d3c7be0060006ff56", "b6b91db03a5b80b4bbaaab52e524512e375bc1a4601380e77e822558ef87e51c", "59c592ab5ae83c3a059498f2de7188f7dcab4d4fbe538c146275f383731d244e", "1ae80a2948f70d333d622296c019405e38a64f9790d01aa8cc7586dbe8c8c333"],
+    ["8cc0d23c177d90735ae0b091b0429edf9b82fa29570dc8d6ce101e0d9552d55b", "1c128e8bd4ad8d96b7b7d167622c4d36317f0bc29d506a7706b709d8439bb8d3", "7e0eab805c9e2fbff192ba7abba60c3e304ae8ce8c24f8774ec37c9831f2a8b3", "46bbbea43d28865205ca96b331ab8ded41d9568087c283b25f476d8e598e45b2", "8eb73ef721049a9a3ecf925154a6c467ab13598af00b75d0dc503d6b22db6404"],
+    ["0cb936a1abd1d2ffc3083dbcfe4d1f828256143f7fb9168a75489ee1cd2dedd7", "69cc5ce6509aaf6cb7768fb6a8214efd279286744aaef6bffc43431ad64ed956", "8ca9189d7f13c61cc93728125cb8696f4da21c04ca9ec7b22bd392cb9b669818", "ee092d0580bfcde3edb136c46e25f6124a10fa656548061104c1b685acb6b4e3", "7184acc4acfb457ff90f84642b04cd60edc9c25ad70dd7a214ede803f7567d5d"],
+    ["6db6116de7c97de26058acd5b30cf2c5562d2716fa729fef53e9187f79450aa5", "5e50724f602396fb0caa648be83efe0b33131667e541b605522669750939a45a", "b7c2d4dbe53494ae2f765a9cad67725dfec90c7ea0cd6ab0c3193e0dd65d09ee", "30ef2568b9fbcfd08bf4c4f324b652a12808a2ea427d08a2e3877a6f8e1bab1f", "c57e2da5046e7aa0380a9266336ddc32399dd664f37151581fe1347f32f85a50"],
+    ["ea65bed444c46dbba1d5b1e329bc0686d7c5f1809e0165108eefd8952ce041bc", "c8181eb72f1c96674d0802d16555b9f9bf2bce75ae1e8affb4dcfd3565e9b473", "f4aa23a6c457128246f7f50a235d087ea7926c8f0e555d7c97416afb24cd56f5", "e74658f10cf9125320d43cce00f144267fac65e93b930cf27afa4052f9033ca9", "13b195ab23e785e343986f09d98166ff13ffc6b0a947247662af38f1933d1ecf"],
+    ["b056cabeeab7d67e2244b97424f2d8c8292ffa949aaf24af6f21f68e397b1465", "3378a02c605d2d3a37b7278212a60476a6faf74a4f3268853527c7b9fc5331169", "0f3b54333e31e4b697a3b2556b10ca5041999da0958b73beabb2b546a90cfada", "e8bd6d002271ae9bb2546e9eee8ec38c1016d038b024d2937e3cb3a4d87fa7a0", "8b951e32b3dfe693f078c4925f4f0df3ab774c8dda07f250f0a9bd1954fb95a7"]
+  ],
+  "interpretation": "The production Width8 path publishes every actual five-tap canonical AttnRes row byte-identically to scalar target execution. Residual selection, row stride, checkpoint binding, and feature-ring publication are not the deterministic DSpark accept=3 cause.",
+  "scope": "Closes Width8-versus-scalar canonical feature publication for the registered accepted V8 chain. It does not close teacher-versus-hybrid-target distribution mismatch or draft quality on other prompts. Temporary dump code was removed."
+}

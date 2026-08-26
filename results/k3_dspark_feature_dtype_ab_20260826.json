@@ -1,0 +1,79 @@
+{
+  "schema": "dflash.kimi-k3.dspark-feature-dtype-ab.v1",
+  "date": "2026-08-26",
+  "status": "QUALIFIED_NO_GO_ACCEPTANCE__CORRECTNESS_FIX_RETAINED",
+  "source_base": "8143e774e9dbed490c89110e810df648ed9f2903",
+  "question": "Does BF16 storage of the canonical AttnRes feature ring remove the deterministic Fibonacci DSpark rejection?",
+  "fixture": {
+    "prompt_tokens": 43,
+    "completion_tokens": 33,
+    "true_transitions": 32,
+    "q": 7,
+    "verify_rows": 8,
+    "arm_order": ["F32_A1", "BF16_B1", "BF16_B2", "F32_A2"]
+  },
+  "artifacts": {
+    "binary_sha256": "ae710fd241bec1c5701384ae9ba3f4e022db7cd4e1a3cb3d7b978f14ddc01ef2",
+    "runner_sha256": "e54fad20f4a8f17c9e05a75a688d608b20fd8ce76ae81b364b5c65606d6f1dee",
+    "preregistration_sha256": "d84bf8766c40de4f3ed5f9c02858032601809402805485bd5e2cae287ab000c0",
+    "remote_root": "/home/duster/kimi-k3-deploy/k3-dspark-feature-dtype-fixed-ab-20260826",
+    "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e"
+  },
+  "invalid_preliminary_arm": {
+    "result": "BF16 target verification failed before an acceptance observation",
+    "root_cause": "copy_host_capture_slice_to_draft_ring used F32 byte counts and offsets for every configured ring storage type",
+    "interpretation": "INVALID; the registered reversal was restarted after the shared root-cause fix"
+  },
+  "root_cause_fix": {
+    "production_lines_added": 13,
+    "production_lines_removed": 3,
+    "behavior": "Use ggml_row_size plus the existing host_f32_to_feature_row conversion for non-F32 capture slices; retain the direct F32 upload path.",
+    "source_sha256": "c5ec0c549f0f5e9bda04de5b915e79412960e0bec08b63d601c64d4a5e2896d4",
+    "test": "test_server_unit host_bf16_capture_slice_uses_storage_layout",
+    "test_result": "1 passed, 0 failed, 399 skipped on HIP/gfx1151 build"
+  },
+  "arms": [
+    {
+      "arm": "F32_A1",
+      "decode_seconds": 8.382,
+      "acceptance": [8, 3, 8, 8, 6],
+      "direct_physical_bytes": 34352054272,
+      "pswpout_pages": 1
+    },
+    {
+      "arm": "BF16_B1",
+      "decode_seconds": 8.240,
+      "acceptance": [8, 3, 8, 8, 6],
+      "direct_physical_bytes": 34656395264,
+      "pswpout_pages": 11
+    },
+    {
+      "arm": "BF16_B2",
+      "decode_seconds": 8.473,
+      "acceptance": [8, 3, 8, 8, 6],
+      "direct_physical_bytes": 34656935936,
+      "pswpout_pages": 73053,
+      "timing_qualification": "INVALID_SWAP"
+    },
+    {
+      "arm": "F32_A2",
+      "decode_seconds": 9.509,
+      "acceptance": [8, 3, 8, 8, 6],
+      "direct_physical_bytes": 34353135616,
+      "pswpout_pages": 1267
+    }
+  ],
+  "correctness": {
+    "all_final_logits_byte_identical": true,
+    "all_rendered_outputs_identical": true,
+    "fallbacks": 0,
+    "bf16_acceptance_reproduced_twice": true
+  },
+  "result": {
+    "acceptance_verdict": "NO_GO",
+    "performance_verdict": "NOT_INTERPRETED",
+    "bf16_physical_byte_increase_vs_f32_bytes": 304070656,
+    "interpretation": "Rounding canonical captures to BF16 changes rejected speculative suffix work but does not move the first mismatch or reduce target-step count. Feature-ring precision is not the missing DSpark acceptance contract."
+  },
+  "scope": "Closes only F32-versus-BF16 canonical AttnRes feature storage as the cause of the deterministic Fibonacci accept=3 boundary. It does not close Width8-versus-scalar capture parity or teacher-target distribution mismatch."
+}

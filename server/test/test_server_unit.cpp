@@ -32,6 +32,7 @@
 #include "common/layer_split_kvflash.h"
 #include "common/layer_split_utils.h"
 #include "common/kvflash_pager.h"
+#include "common/dflash_feature_ring.h"
 #include "placement/draft_residency.h"
 #include "common/gguf_bounds.h"
 #include "common/gguf_inspect.h"
@@ -6284,4 +6285,42 @@ TEST_CASE(ServerUnitFixture, test_emitter_streaming_anthropic_stop_sequence_beat
     TEST_ASSERT(em.finish_reason() == "stop");
     std::string text = concat(chunks);
     TEST_ASSERT(text.find("\"stop_reason\":\"end_turn\"") != std::string::npos);
+}
+
+TEST_CASE(ServerUnitFixture, test_host_bf16_capture_slice_uses_storage_layout) {
+    ggml_backend_t backend = ggml_backend_cpu_init();
+    TEST_ASSERT(backend != nullptr);
+
+    ggml_init_params params{};
+    params.mem_size = ggml_tensor_overhead() * 2 + 16 * 1024;
+    params.no_alloc = true;
+    ggml_context * ctx = ggml_init(params);
+    TEST_ASSERT(ctx != nullptr);
+
+    DraftFeatureMirror ring;
+    ring.ctx = ctx;
+    ring.storage_type = GGML_TYPE_BF16;
+    ring.cap = 2;
+    ring.n_target_layers = 3;
+    ring.hidden_size = 4;
+    ring.target_feat = ggml_new_tensor_2d(ctx, ring.storage_type, 12, ring.cap);
+    ring.buf = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    TEST_ASSERT(ring.buf != nullptr);
+    ggml_backend_tensor_memset(ring.target_feat, 0, 0, ggml_nbytes(ring.target_feat));
+
+    const float capture[] = {1.0f, -2.0f, 3.5f, 0.25f};
+    TEST_ASSERT(copy_host_capture_slice_to_draft_ring(
+        ring, 1, 0, 1, capture, 4));
+
+    std::vector<float> row;
+    TEST_ASSERT(copy_feature_ring_range_to_host_f32(ring, 0, 1, row));
+    TEST_ASSERT(row.size() == 12);
+    for (int i = 0; i < 4; ++i) {
+        TEST_ASSERT(row[(size_t)i] == 0.0f);
+        TEST_ASSERT(row[(size_t)(i + 4)] == capture[i]);
+        TEST_ASSERT(row[(size_t)(i + 8)] == 0.0f);
+    }
+
+    draft_feature_mirror_free(ring);
+    ggml_backend_free(backend);
 }
