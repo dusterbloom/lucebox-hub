@@ -1,7 +1,7 @@
 {
   "campaign": "k3-tool-contract-20260826",
-  "qualification": "engineering-causal-discriminator",
-  "qualification_note": "The corrected executable is retained and hashed. The overwritten Qwen2 control executable is not retained, so this result must not be promoted as a publication-grade binary-closure A/B.",
+  "qualification": "production-promotion-gate-pass",
+  "qualification_note": "The initial Qwen2-vs-Kimi tokenizer discriminator remains engineering-grade because its overwritten Qwen2 executable was not retained. The promoted runtime correction has a same-build request-scoped-vs-global Budget96 gate, a real-GGUF tokenizer oracle, and a same-process Budget96-to-Budget24 reset gate.",
   "source_parent": "720af73a8bf3750d79d7729ac78476814096c41c",
   "corrected_executable_sha256": "f0bfb9639d6ecf3627cacb152c0448f59f655788cdf641a75b703173ac4f1011",
   "budget24_runner_sha256": "0ddec3b54311f14b57b0681c837d42b46442696562d02ccfb142d56736989ac1",
@@ -82,6 +82,59 @@
       "tool_arguments": {"location": "San Francisco"}
     }
   ],
+  "production_promotion": {
+    "source_commit": "1142cadf7de8d8c4b50ce7bc02b3032b1c8c9159",
+    "source_tree": "d92279e0887a60eb727e3fcf77975dd96db75968",
+    "hip_binary_sha256": "c79e7cb5c70fce1c8ccedf2f88dd00cd65695e8c3945238d7cc5471f41d15dbe",
+    "hardware": "Lucebox4; HIP_VISIBLE_DEVICES=1,0; core/expert/join hip:0=gfx1151; single owner",
+    "tests": {
+      "local_server_unit": "432/432 PASS",
+      "lucebox4_focused_server_unit": "PASS",
+      "real_gguf_tokenizer_vectors_and_prompt": "PASS"
+    },
+    "request_scoped_budget96": {
+      "configured_policy": "h23_moonshot_1_2gib table",
+      "request_floor": 96,
+      "prompt_tokens": 147,
+      "completion_tokens": 56,
+      "prefill_seconds": 147.3629,
+      "decode_seconds": 56.3897,
+      "elapsed_seconds": 203.76,
+      "finish_reason": "tool_calls",
+      "normalized_message_sha256": "8050ffe17e6c749d6c78e3dc16748ceb687f307621adb6a8ba2ce7e0b557d168",
+      "final_logits_sha256": "6878385785ed615c01202c690de9c33536a0a71b6ce61466bb3eba47947ee413",
+      "tool_arguments": {"location": "San Francisco"}
+    },
+    "process_global_budget96": {
+      "configured_budget": 96,
+      "prompt_tokens": 147,
+      "completion_tokens": 56,
+      "prefill_seconds": 146.6255,
+      "decode_seconds": 57.5341,
+      "elapsed_seconds": 204.16,
+      "finish_reason": "tool_calls",
+      "normalized_message_sha256": "8050ffe17e6c749d6c78e3dc16748ceb687f307621adb6a8ba2ce7e0b557d168",
+      "final_logits_sha256": "6878385785ed615c01202c690de9c33536a0a71b6ce61466bb3eba47947ee413",
+      "direct_physical_bytes": 538365018112,
+      "direct_io_nanoseconds": 121160032006,
+      "selected_slab_records": 1784064,
+      "calibrated_routes": 290097,
+      "exact_fallback_routes": 7247
+    },
+    "same_process_reset": {
+      "sequence": "request-scoped Budget96 tool request, then ordinary fact request",
+      "fact_prompt_tokens": 34,
+      "fact_provider_positions": 42,
+      "fact_completion_tokens": 9,
+      "fact_output": "Tokyo",
+      "fact_decode_tokens_per_second": 2.2,
+      "fact_final_logits_sha256": "98815c949e4bde6485d4b79b64449ae95539c333bfd4fffc4a1538b2d1fed29b",
+      "requested_records_per_layer": 20400,
+      "requested_records_identity": "202*96 + 42*24 = 20400",
+      "verdict": "PASS: provider floor reset to Budget24"
+    },
+    "verdict": "GO"
+  },
   "conclusions": {
     "wrong_kimi_pretokenizer": "PROVEN_AND_FIXED",
     "downstream_token_corruption": "FALSIFIED",
