@@ -157,6 +157,10 @@ bool KimiK3DFlashTarget::verify_batch(
     return true;
 }
 
+int KimiK3DFlashTarget::max_logical_verify_width(int draft_width) const {
+    return std::min(draft_width, 8);
+}
+
 int KimiK3DFlashTarget::preferred_physical_verify_width(
         int logical_width, int max_width) const {
     // Width8 beats scalar verify+replay for measured terminal spans of four

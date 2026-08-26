@@ -491,6 +491,8 @@ static void test_dspark_proposal_block_uses_every_hidden_row(
             return empty;
         }
     } target;
+    TEST_ASSERT_MSG(target.max_logical_verify_width(9) == 9,
+                    "non-K3 targets must retain the full draft width");
 
     ggml_context * ctx = make_test_context();
     TEST_ASSERT_MSG(ctx != nullptr, "ggml_init failed");
@@ -503,6 +505,8 @@ static void test_dspark_proposal_block_uses_every_hidden_row(
         ggml_new_tensor_2d(ctx, GGML_TYPE_F32, rank, vocab);
     ggml_tensor * markov_w2 =
         ggml_new_tensor_2d(ctx, GGML_TYPE_F32, rank, vocab);
+    ggml_tensor * owned_head =
+        ggml_new_tensor_2d(ctx, GGML_TYPE_BF16, hidden, vocab);
     ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, backend);
     TEST_ASSERT_MSG(buf != nullptr, "weight allocation failed");
     if (!buf) {
@@ -526,6 +530,18 @@ static void test_dspark_proposal_block_uses_every_hidden_row(
     ggml_backend_tensor_set(
         markov_w2, markov_zeros.data(), 0,
         markov_zeros.size() * sizeof(float));
+    const std::vector<float> owned_head_f32 = {
+        0.0f, 0.0f,
+        1.0f, 0.0f,
+        0.0f, 1.0f,
+    };
+    std::vector<ggml_bf16_t> owned_head_bf16(owned_head_f32.size());
+    ggml_fp32_to_bf16_row(
+        owned_head_f32.data(), owned_head_bf16.data(),
+        static_cast<int64_t>(owned_head_f32.size()));
+    ggml_backend_tensor_set(
+        owned_head, owned_head_bf16.data(), 0,
+        owned_head_bf16.size() * sizeof(ggml_bf16_t));
 
     DraftWeights dw{};
     dw.n_embd = hidden;
@@ -541,6 +557,15 @@ static void test_dspark_proposal_block_uses_every_hidden_row(
         dw, backend, target, draft_hidden.data(), proposal_len,
         /*anchor_token=*/0, proposals);
     TEST_ASSERT_MSG(ok, "DSpark proposal block failed");
+    TEST_ASSERT(proposals == std::vector<int32_t>({1, 2}));
+    // The checkpoint-owned BF16 head uses the same every-row/anchor-seeded
+    // proposal contract without consulting the target projection fallback.
+    dw.output = owned_head;
+    proposals.clear();
+    const bool owned_ok = dspark_markov_propose_greedy_block(
+        dw, backend, target, draft_hidden.data(), proposal_len,
+        /*anchor_token=*/0, proposals);
+    TEST_ASSERT_MSG(owned_ok, "DSpark owned-head proposal block failed");
     TEST_ASSERT(proposals == std::vector<int32_t>({1, 2}));
     TEST_ASSERT(dw.max_chain_verify_tokens() == proposal_len + 1);
     dw.dspark.enabled = false;

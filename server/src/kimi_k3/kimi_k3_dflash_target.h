@@ -32,6 +32,7 @@ public:
                       int & last_tok,
                       std::vector<int32_t> * all_argmax = nullptr,
                       bool capture_ssm_intermediates = false) override;
+    int max_logical_verify_width(int draft_width) const override;
     int preferred_physical_verify_width(
             int logical_width, int max_width) const override;
     bool snapshot_kv() override;

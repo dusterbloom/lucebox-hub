@@ -40,9 +40,8 @@ namespace dflash::common {
 namespace {
 
 constexpr int kKimiDsparkHidden = 7168;
-constexpr int kKimiDsparkBlock = 7;
+constexpr int kKimiDsparkProposals = 7;
 constexpr int kKimiDsparkVerifyRows = 8;
-constexpr std::array<int, 5> kKimiDsparkCaptureLayers = {7, 23, 51, 67, 83};
 
 bool parse_binary_env(const char * name, bool & value, std::string & error) {
     value = false;
@@ -406,20 +405,24 @@ bool KimiK3Backend::init_draft() {
         return false;
     }
 
+    const int source_block_size = draft_weights_.block_size;
     const bool captures_match =
+        !draft_weights_.capture_layer_ids.empty() &&
         draft_weights_.capture_layer_ids.size() ==
-            kKimiDsparkCaptureLayers.size() &&
-        std::equal(draft_weights_.capture_layer_ids.begin(),
-                   draft_weights_.capture_layer_ids.end(),
-                   kKimiDsparkCaptureLayers.begin());
+            static_cast<size_t>(draft_weights_.n_target_layers) &&
+        std::is_sorted(draft_weights_.capture_layer_ids.begin(),
+                       draft_weights_.capture_layer_ids.end()) &&
+        std::adjacent_find(draft_weights_.capture_layer_ids.begin(),
+                           draft_weights_.capture_layer_ids.end()) ==
+            draft_weights_.capture_layer_ids.end() &&
+        draft_weights_.capture_layer_ids.front() >= 0 &&
+        draft_weights_.capture_layer_ids.back() < weights_.n_layer;
     const bool compatible =
         draft_weights_.dspark.enabled &&
         weights_.n_embd == kKimiDsparkHidden &&
         draft_weights_.n_embd == kKimiDsparkHidden &&
-        draft_weights_.block_size == kKimiDsparkBlock &&
-        draft_weights_.max_chain_verify_tokens() == kKimiDsparkVerifyRows &&
-        draft_weights_.n_target_layers ==
-            static_cast<int>(kKimiDsparkCaptureLayers.size()) &&
+        (source_block_size == kKimiDsparkProposals ||
+         source_block_size == kKimiDsparkVerifyRows) &&
         captures_match &&
         draft_weights_.mask_token_id >= 0 &&
         draft_weights_.mask_token_id < weights_.n_vocab &&
@@ -438,7 +441,6 @@ bool KimiK3Backend::init_draft() {
         free_drafter();
         return false;
     }
-
     const int logical_ring_cap = std::min(
         std::max(1, cfg_.device.max_ctx),
         std::max(2048, cfg_.draft_ctx_max));
@@ -463,10 +465,14 @@ bool KimiK3Backend::init_draft() {
         return false;
     }
     std::fprintf(stderr,
-        "[kimi-k3-dspark] exact q=7/V=8 enabled captures=7,23,51,67,83 "
+        "[kimi-k3-dspark] exact q=7/V=8 enabled source-block=%d captures="
+        "%zu first=%d last=%d "
         "ring_logical=%d ring_physical=%d draft=hip:%d/gfx1201 "
         "target=hip:%d/gfx1151\n",
-        logical_ring_cap, ring_cap, cfg_.draft_gpu,
+        source_block_size, draft_weights_.capture_layer_ids.size(),
+        draft_weights_.capture_layer_ids.front(),
+        draft_weights_.capture_layer_ids.back(), logical_ring_cap, ring_cap,
+        cfg_.draft_gpu,
         cfg_.device.primary_gpu());
     return true;
 }
@@ -593,7 +599,7 @@ bool KimiK3Backend::init() {
     const int replay_width = prefill_policy_.exact_multirow
         ? prefill_policy_.macro_width : 0;
     const int max_verify_tokens = draft_weights_.ctx
-        ? draft_weights_.max_chain_verify_tokens() : 0;
+        ? kKimiDsparkVerifyRows : 0;
     if (!create_kimi_k3_cache(
             backend_, weights_, max_ctx, cache_,
             std::max(replay_width, max_verify_tokens))) {

@@ -34,7 +34,7 @@ import gguf
 from gguf.quants import dequantize, quantize
 
 ARCH = "dflash-draft"
-CONVERTER_VERSION = 1
+CONVERTER_VERSION = 2
 Q8_BLOCK_SIZE = 32
 MAX_HEADER_BYTES = 128 * 1024 * 1024
 SUPPORTED_DTYPES = {"BF16": 2, "F16": 2, "F32": 4}
@@ -128,70 +128,105 @@ def _optional_token_id(config: dict[str, Any], key: str) -> int | None:
 
 
 def load_model_spec(config: dict[str, Any]) -> ModelSpec:
+    nested = config.get("transformer_layer_config")
+    if nested is not None and not isinstance(nested, dict):
+        raise ConversionError("config.transformer_layer_config must be an object")
+    model_config: dict[str, Any] = dict(nested or {})
+    model_config.update(config)
     architectures = config.get("architectures")
     if not isinstance(architectures, list) or not any(
         isinstance(value, str) and "DSparkDraftModel" in value for value in architectures
     ):
         raise ConversionError("config.architectures must identify a DSparkDraftModel")
-    if config.get("attention_bias", False):
+    if config.get("sample_from_anchor", True) is not True:
+        raise ConversionError("DSpark conversion requires sample_from_anchor=true")
+    if config.get("sliding_window_non_causal", False) is not False:
+        raise ConversionError("sliding_window_non_causal=true is not supported")
+    if model_config.get("attention_bias", False):
         raise ConversionError("attention_bias=true is not supported by the DFlash GGUF contract")
-    if config.get("hidden_act", "silu") != "silu":
+    if model_config.get("hidden_act", "silu") != "silu":
         raise ConversionError("only the SiLU DFlash MLP contract is currently supported")
 
-    hidden = _positive_int(config, "hidden_size")
-    draft_layers = _positive_int(config, "num_hidden_layers")
-    target_layers = _positive_int(config, "num_target_layers")
-    heads = _positive_int(config, "num_attention_heads")
-    kv_heads = _positive_int(config, "num_key_value_heads")
-    head_dim = _positive_int(config, "head_dim")
-    intermediate = _positive_int(config, "intermediate_size")
-    vocab = _positive_int(config, "vocab_size")
-    context_length = _positive_int(config, "max_position_embeddings")
-    block_size = _positive_int(config, "block_size")
-    markov_rank = _positive_int(config, "markov_rank")
+    dflash_value = config.get("dflash_config")
+    if dflash_value is None:
+        dflash: dict[str, Any] = {}
+    elif not isinstance(dflash_value, dict):
+        raise ConversionError("config.dflash_config must be an object")
+    else:
+        dflash = dflash_value
+    boundary_capture_ids = config.get("aux_hidden_state_layer_ids")
+    if "target_layer_ids" in dflash:
+        capture_ids = dflash["target_layer_ids"]
+        vllm_boundary_capture = False
+    elif "target_layer_ids" in config:
+        capture_ids = config["target_layer_ids"]
+        vllm_boundary_capture = False
+    else:
+        capture_ids = boundary_capture_ids
+        vllm_boundary_capture = True
+    if (
+        not isinstance(capture_ids, list)
+        or not capture_ids
+        or any(isinstance(value, bool) or not isinstance(value, int) for value in capture_ids)
+    ):
+        raise ConversionError("target_layer_ids must be a non-empty int array")
+    source_capture_layer_ids = tuple(capture_ids)
+    capture_layer_ids = source_capture_layer_ids
+    if vllm_boundary_capture:
+        if source_capture_layer_ids[0] == 0:
+            raise ConversionError("aux_hidden_state_layer_ids must name post-layer boundaries")
+        capture_layer_ids = tuple(layer - 1 for layer in source_capture_layer_ids)
+    if tuple(sorted(set(capture_layer_ids))) != capture_layer_ids:
+        raise ConversionError("target_layer_ids must be unique and strictly increasing")
+    if "num_target_layers" not in model_config:
+        # Speculators reserves the following boundary as the final verifier
+        # hidden (K3 uses 24/48/72/88/92 plus final boundary 93). Therefore
+        # the target block count is one past the last auxiliary boundary.
+        model_config["num_target_layers"] = source_capture_layer_ids[-1] + 1
+
+    hidden = _positive_int(model_config, "hidden_size")
+    draft_layers = _positive_int(model_config, "num_hidden_layers")
+    target_layers = _positive_int(model_config, "num_target_layers")
+    heads = _positive_int(model_config, "num_attention_heads")
+    kv_heads = _positive_int(model_config, "num_key_value_heads")
+    head_dim = _positive_int(model_config, "head_dim")
+    intermediate = _positive_int(model_config, "intermediate_size")
+    vocab = _positive_int(model_config, "vocab_size")
+    context_length = _positive_int(model_config, "max_position_embeddings")
+    block_size = _positive_int(model_config, "block_size")
+    markov_rank = _positive_int(model_config, "markov_rank")
 
     if heads % kv_heads:
         raise ConversionError(
             f"num_attention_heads={heads} is not divisible by num_key_value_heads={kv_heads}"
         )
 
-    rms_eps = config.get("rms_norm_eps")
-    if not isinstance(rms_eps, (int, float)) or isinstance(rms_eps, bool) or rms_eps <= 0:
+    rms_eps = model_config.get("rms_norm_eps")
+    if not isinstance(rms_eps, int | float) or isinstance(rms_eps, bool) or rms_eps <= 0:
         raise ConversionError(f"config.rms_norm_eps must be positive, got {rms_eps!r}")
 
-    dflash = config.get("dflash_config")
-    if not isinstance(dflash, dict):
-        raise ConversionError("config.dflash_config must be an object")
-    capture_ids = dflash.get("target_layer_ids")
-    if (
-        not isinstance(capture_ids, list)
-        or not capture_ids
-        or any(isinstance(value, bool) or not isinstance(value, int) for value in capture_ids)
-    ):
-        raise ConversionError("config.dflash_config.target_layer_ids must be a non-empty int array")
-    capture_layer_ids = tuple(capture_ids)
-    if tuple(sorted(set(capture_layer_ids))) != capture_layer_ids:
-        raise ConversionError("target_layer_ids must be unique and strictly increasing")
     if capture_layer_ids[0] < 0 or capture_layer_ids[-1] >= target_layers:
         raise ConversionError(
             f"target_layer_ids must fall inside target block range [0, {target_layers})"
         )
-    mask_token_id = dflash.get("mask_token_id")
+    mask_token_id = dflash.get("mask_token_id", config.get("mask_token_id"))
     if isinstance(mask_token_id, bool) or not isinstance(mask_token_id, int):
         raise ConversionError("config.dflash_config.mask_token_id must be an integer")
     if not 0 <= mask_token_id < vocab:
         raise ConversionError(f"mask_token_id={mask_token_id} is outside vocab_size={vocab}")
 
-    rope = config.get("rope_parameters") or {}
+    rope = model_config.get("rope_parameters") or {}
     if not isinstance(rope, dict):
         raise ConversionError("config.rope_parameters must be an object")
-    rope_theta = rope.get("rope_theta", config.get("rope_theta", 10_000.0))
+    rope_theta = rope.get("rope_theta", model_config.get("rope_theta", 10_000.0))
     rope_type = str(rope.get("rope_type", "none")).lower()
+    if rope_type == "default":
+        rope_type = "none"
     rope_factor = rope.get("factor", 1.0)
     rope_original_context = rope.get("original_max_position_embeddings", context_length)
-    if not isinstance(rope_theta, (int, float)) or rope_theta <= 0:
+    if not isinstance(rope_theta, int | float) or rope_theta <= 0:
         raise ConversionError(f"RoPE theta must be positive, got {rope_theta!r}")
-    if not isinstance(rope_factor, (int, float)) or rope_factor <= 0:
+    if not isinstance(rope_factor, int | float) or rope_factor <= 0:
         raise ConversionError(f"RoPE factor must be positive, got {rope_factor!r}")
     if (
         isinstance(rope_original_context, bool)
@@ -202,23 +237,23 @@ def load_model_spec(config: dict[str, Any]) -> ModelSpec:
     if rope_type not in {"none", "yarn"}:
         raise ConversionError(f"unsupported rope_type={rope_type!r}; supported: none, yarn")
 
-    markov_type = str(config.get("markov_head_type", "vanilla")).lower()
+    markov_type = str(model_config.get("markov_head_type", "vanilla")).lower()
     if markov_type != "vanilla":
         raise ConversionError(f"unsupported markov_head_type={markov_type!r}")
-    confidence_enabled = bool(config.get("enable_confidence_head", False))
-    confidence_with_markov = bool(config.get("confidence_head_with_markov", False))
+    confidence_enabled = bool(model_config.get("enable_confidence_head", False))
+    confidence_with_markov = bool(model_config.get("confidence_head_with_markov", False))
     if confidence_with_markov and not confidence_enabled:
         raise ConversionError("confidence_head_with_markov requires enable_confidence_head")
     confidence_dim = hidden + (markov_rank if confidence_with_markov else 0)
 
-    raw_layer_types = config.get("layer_types") or ["full_attention"] * draft_layers
+    raw_layer_types = model_config.get("layer_types") or ["full_attention"] * draft_layers
     if not isinstance(raw_layer_types, list) or len(raw_layer_types) != draft_layers:
         raise ConversionError(f"config.layer_types must contain {draft_layers} entries")
     unknown_layer_types = set(raw_layer_types) - {"full_attention", "sliding_attention"}
     if unknown_layer_types:
         raise ConversionError(f"unsupported layer_types: {sorted(unknown_layer_types)}")
     sliding_pattern = tuple(value == "sliding_attention" for value in raw_layer_types)
-    raw_sliding_window = config.get("sliding_window")
+    raw_sliding_window = model_config.get("sliding_window")
     if any(sliding_pattern):
         if (
             isinstance(raw_sliding_window, bool)
@@ -248,9 +283,9 @@ def load_model_spec(config: dict[str, Any]) -> ModelSpec:
         capture_layer_ids=capture_layer_ids,
         block_size=block_size,
         mask_token_id=mask_token_id,
-        bos_token_id=_optional_token_id(config, "bos_token_id"),
-        eos_token_id=_optional_token_id(config, "eos_token_id"),
-        pad_token_id=_optional_token_id(config, "pad_token_id"),
+        bos_token_id=_optional_token_id(model_config, "bos_token_id"),
+        eos_token_id=_optional_token_id(model_config, "eos_token_id"),
+        pad_token_id=_optional_token_id(model_config, "pad_token_id"),
         markov_rank=markov_rank,
         markov_type=markov_type,
         confidence_enabled=confidence_enabled,
@@ -348,6 +383,8 @@ def map_tensor_name(name: str) -> str | None:
         "dspark_confidence_head.bias": "dflash.dspark.confidence.bias",
         "mtp.2.confidence_head.proj.weight": "dflash.dspark.confidence.weight",
         "mtp.2.confidence_head.proj.bias": "dflash.dspark.confidence.bias",
+        "embed_tokens.weight": "token_embd.weight",
+        "lm_head.weight": "output.weight",
     }
     if name in singleton_map:
         return singleton_map[name]
@@ -405,11 +442,34 @@ def expected_source_shapes(spec: ModelSpec) -> dict[str, tuple[int, ...]]:
     return shapes
 
 
+def vocabulary_source_shapes(spec: ModelSpec) -> dict[str, tuple[int, ...]]:
+    return {
+        "embed_tokens.weight": (spec.vocab, spec.hidden),
+        "lm_head.weight": (spec.vocab, spec.hidden),
+    }
+
+
 def validate_tensor_contract(entries: dict[str, TensorEntry], spec: ModelSpec) -> None:
     expected = expected_source_shapes(spec)
+    vocabulary = vocabulary_source_shapes(spec)
+    present_vocabulary = set(entries) & set(vocabulary)
+    if present_vocabulary and present_vocabulary != set(vocabulary):
+        raise ConversionError(
+            "checkpoint vocabulary tensors must contain both embed_tokens.weight and lm_head.weight"
+        )
     # Accept historical aliases only after mapping them to the canonical contract.
     actual_by_gguf: dict[str, TensorEntry] = {}
     for source_name, entry in entries.items():
+        if source_name in vocabulary:
+            if entry.dtype != "BF16":
+                raise ConversionError(
+                    f"{source_name}: checkpoint vocabulary tensor must be BF16, got {entry.dtype}"
+                )
+            if entry.shape != vocabulary[source_name]:
+                raise ConversionError(
+                    f"{source_name}: shape {entry.shape} does not match expected "
+                    f"{vocabulary[source_name]}"
+                )
         gguf_name = map_tensor_name(source_name)
         if gguf_name is None:
             raise ConversionError(f"unmapped source tensor: {source_name}")
@@ -417,7 +477,12 @@ def validate_tensor_contract(entries: dict[str, TensorEntry], spec: ModelSpec) -
             raise ConversionError(f"multiple source tensors map to {gguf_name}")
         actual_by_gguf[gguf_name] = entry
 
-    expected_by_gguf = {map_tensor_name(name): (name, shape) for name, shape in expected.items()}
+    expected_with_vocabulary = dict(expected)
+    for name in present_vocabulary:
+        expected_with_vocabulary[name] = vocabulary[name]
+    expected_by_gguf = {
+        map_tensor_name(name): (name, shape) for name, shape in expected_with_vocabulary.items()
+    }
     missing = sorted(set(expected_by_gguf) - set(actual_by_gguf))
     extra = sorted(set(actual_by_gguf) - set(expected_by_gguf))
     if missing or extra:
@@ -453,6 +518,8 @@ def _sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
 
 
 def _quantization_kind(gguf_name: str, shape: tuple[int, ...]) -> str:
+    if gguf_name in {"token_embd.weight", "output.weight"}:
+        return "BF16"
     if len(shape) == 1 or gguf_name.startswith("dflash.dspark.confidence."):
         return "F32"
     if shape[-1] % Q8_BLOCK_SIZE:
@@ -627,8 +694,8 @@ def convert_model(options: ConversionOptions) -> dict[str, Any]:
     quantized_bytes = 0
     quantized_params = 0
     q8_metrics: list[dict[str, Any]] = []
-    type_counts: dict[str, int] = {"Q8_0": 0, "F32": 0}
-    type_bytes: dict[str, int] = {"Q8_0": 0, "F32": 0}
+    type_counts: dict[str, int] = {"Q8_0": 0, "F32": 0, "BF16": 0}
+    type_bytes: dict[str, int] = {"Q8_0": 0, "F32": 0, "BF16": 0}
     try:
         writer = gguf.GGUFWriter(temporary, ARCH)
         _add_metadata(writer, spec, config, options, source_hash)
@@ -652,6 +719,9 @@ def convert_model(options: ConversionOptions) -> dict[str, Any]:
                     }
                 )
                 quantized_params += entry.n_elements
+            elif kind == "BF16":
+                encoded = quantize(values, gguf.GGMLQuantizationType.BF16)
+                writer.add_tensor(gguf_name, encoded, raw_dtype=gguf.GGMLQuantizationType.BF16)
             else:
                 encoded = values.astype("<f4", copy=False)
                 writer.add_tensor(gguf_name, encoded, raw_dtype=gguf.GGMLQuantizationType.F32)
@@ -696,6 +766,9 @@ def convert_model(options: ConversionOptions) -> dict[str, Any]:
             "bytes": source_bytes,
             "tensor_count": len(entries),
             "parameter_count": sum(entry.n_elements for entry in entries.values()),
+            "checkpoint_vocabulary_tensors_retained": sorted(
+                name for name in entries if name in vocabulary_source_shapes(spec)
+            ),
         },
         "target": {
             "repository": options.target_repo,

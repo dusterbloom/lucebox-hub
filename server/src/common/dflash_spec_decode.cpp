@@ -23,6 +23,55 @@ struct StepGraphGuard {
     StepGraph & sg;
     ~StepGraphGuard() { step_graph_destroy(sg); }
 };
+
+bool embed_draft_tokens(const DraftWeights & weights,
+                        ggml_backend_t backend,
+                        const int32_t * tokens,
+                        int n_tokens,
+                        float * output) {
+    if (!weights.token_embd || !backend || !tokens || !output || n_tokens <= 0) {
+        return false;
+    }
+    const size_t arena_size = ggml_tensor_overhead() * 32 +
+                              ggml_graph_overhead_custom(64, false) +
+                              256 * 1024;
+    static thread_local std::vector<uint8_t> arena;
+    if (arena.size() < arena_size) arena.resize(arena_size);
+    ggml_init_params params{};
+    params.mem_size = arena.size();
+    params.mem_buffer = arena.data();
+    params.no_alloc = true;
+    ggml_context * ctx = ggml_init(params);
+    if (!ctx) return false;
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 64, false);
+    ggml_tensor * ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_tokens);
+    ggml_set_input(ids);
+    ggml_tensor * embedded = ggml_get_rows(ctx, weights.token_embd, ids);
+    ggml_set_output(embedded);
+    ggml_build_forward_expand(graph, embedded);
+
+    static thread_local ggml_gallocr_t galloc = nullptr;
+    if (!galloc) {
+        galloc = ggml_gallocr_new(
+            ggml_backend_get_default_buffer_type(backend));
+    }
+    if (!ggml_gallocr_alloc_graph(galloc, graph)) {
+        ggml_free(ctx);
+        return false;
+    }
+    ggml_backend_tensor_set(
+        ids, tokens, 0, sizeof(int32_t) * static_cast<size_t>(n_tokens));
+    if (ggml_backend_graph_compute(backend, graph) != GGML_STATUS_SUCCESS) {
+        ggml_free(ctx);
+        return false;
+    }
+    ggml_backend_tensor_get(
+        embedded, output, 0,
+        sizeof(float) * static_cast<size_t>(weights.n_embd) *
+            static_cast<size_t>(n_tokens));
+    ggml_free(ctx);
+    return true;
+}
 }  // namespace
 
 bool run_dflash_spec_decode(
@@ -63,12 +112,40 @@ bool run_dflash_spec_decode(
         int base_pos,
         double * accept_rate_out) {
     const bool use_remote_draft = remote_draft && remote_draft->active();
+    const bool owns_embedding = draft_weights.token_embd != nullptr;
+    const bool owns_output = draft_weights.output != nullptr;
+    if (owns_embedding != owns_output) {
+        std::fprintf(stderr,
+            "dflash-spec checkpoint-owned vocabulary requires a complete pair\n");
+        return false;
+    }
+    if (owns_embedding &&
+        (draft_weights.backend != draft_backend ||
+         !draft_weights.token_embd->buffer || !draft_weights.output->buffer ||
+         draft_weights.token_embd->type != GGML_TYPE_BF16 ||
+         draft_weights.output->type != GGML_TYPE_BF16 ||
+         draft_weights.token_embd->ne[0] != draft_weights.n_embd ||
+         draft_weights.output->ne[0] != draft_weights.n_embd ||
+         draft_weights.token_embd->ne[1] != draft_weights.dspark.vocab_size ||
+         draft_weights.output->ne[1] != draft_weights.dspark.vocab_size)) {
+        std::fprintf(stderr,
+            "dflash-spec checkpoint-owned vocabulary contract is invalid\n");
+        return false;
+    }
+    if (use_remote_draft && owns_embedding) {
+        std::fprintf(stderr,
+            "dflash-spec checkpoint-owned vocabulary is not supported by "
+            "the remote draft path\n");
+        return false;
+    }
     if (!use_remote_draft && !feature_ring.target_feat) return false;
 
     const int hidden = draft_weights.n_embd;
     const int draft_block_size = draft_weights.block_size;
     const bool dspark_block = draft_weights.dspark.enabled;
-    const int max_verify_width = draft_weights.max_chain_verify_tokens();
+    const int draft_verify_width = draft_weights.max_chain_verify_tokens();
+    const int max_verify_width =
+        target.max_logical_verify_width(draft_verify_width);
     if (hidden <= 0 || draft_block_size <= 0 || max_verify_width <= 0) {
         return false;
     }
@@ -128,8 +205,13 @@ bool run_dflash_spec_decode(
         for (int i = 1; i < draft_block_size; i++) {
             noise_ids[i] = target.mask_token_id();
         }
-        if (!target.embed_tokens(
-                noise_ids.data(), draft_block_size, noise_embed.data())) {
+        const bool embedded = draft_weights.token_embd
+            ? (!use_remote_draft && embed_draft_tokens(
+                  draft_weights, draft_backend, noise_ids.data(),
+                  draft_block_size, noise_embed.data()))
+            : target.embed_tokens(
+                  noise_ids.data(), draft_block_size, noise_embed.data());
+        if (!embedded) {
             std::fprintf(stderr, "dflash-spec noise embed failed\n");
             return false;
         }

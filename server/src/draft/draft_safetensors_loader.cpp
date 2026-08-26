@@ -698,6 +698,8 @@ void free_draft_weights(DraftWeights & w) {
     w.fc = nullptr;
     w.hidden_norm = nullptr;
     w.out_norm = nullptr;
+    w.token_embd = nullptr;
+    w.output = nullptr;
     w.domino = DraftDominoWeights{};
 }
 

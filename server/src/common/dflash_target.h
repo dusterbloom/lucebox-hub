@@ -39,6 +39,12 @@ struct DFlashTarget {
                               std::vector<int32_t> * all_argmax = nullptr,
                               bool capture_ssm_intermediates = false) = 0;
 
+    // A target may admit fewer logical rows than a wider causal draft emits.
+    // The unused suffix never reaches verification or acceptance accounting.
+    virtual int max_logical_verify_width(int draft_width) const {
+        return draft_width;
+    }
+
     // A target may prefer a wider physical graph for a shorter logical tail.
     // Acceptance, emission, and accounting remain at `logical_width`.
     virtual int preferred_physical_verify_width(

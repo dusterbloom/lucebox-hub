@@ -22,15 +22,25 @@ def _to_bf16_bytes(values: np.ndarray) -> bytes:
     return (words >> 16).astype("<u2").tobytes()
 
 
-def _write_safetensors(path: Path, tensors: dict[str, np.ndarray]) -> None:
+def _write_safetensors(
+    path: Path,
+    tensors: dict[str, np.ndarray],
+    dtypes: dict[str, str] | None = None,
+) -> None:
     header: dict[str, object] = {"__metadata__": {"format": "pt"}}
     payload = bytearray()
     for name, values in tensors.items():
-        raw = _to_bf16_bytes(values)
+        dtype = (dtypes or {}).get(name, "BF16")
+        if dtype == "BF16":
+            raw = _to_bf16_bytes(values)
+        elif dtype == "F16":
+            raw = values.astype("<f2").tobytes()
+        else:
+            raise ValueError(f"unsupported fixture dtype: {dtype}")
         start = len(payload)
         payload.extend(raw)
         header[name] = {
-            "dtype": "BF16",
+            "dtype": dtype,
             "shape": list(values.shape),
             "data_offsets": [start, len(payload)],
         }
@@ -145,7 +155,10 @@ class ConvertDSparkToGGUFTest(unittest.TestCase):
         self.assertTrue(output.is_file())
         self.assertTrue(report_path.is_file())
         self.assertEqual(report["source"]["tensor_count"], 18)
-        self.assertEqual(report["quantization"]["tensor_counts"], {"Q8_0": 10, "F32": 8})
+        self.assertEqual(
+            report["quantization"]["tensor_counts"],
+            {"Q8_0": 10, "F32": 8, "BF16": 0},
+        )
         self.assertLess(report["quantization"]["sampled_relative_rmse_max"], 0.01)
 
         reader = gguf.GGUFReader(output)
@@ -191,6 +204,138 @@ class ConvertDSparkToGGUFTest(unittest.TestCase):
                 )
             )
         self.assertFalse(output.exists())
+
+    def test_converts_speculators_nested_config_with_checkpoint_vocabulary(self) -> None:
+        config = _fixture_config()
+        transformer_keys = {
+            "attention_bias",
+            "bos_token_id",
+            "eos_token_id",
+            "head_dim",
+            "hidden_act",
+            "hidden_size",
+            "intermediate_size",
+            "layer_types",
+            "max_position_embeddings",
+            "num_attention_heads",
+            "num_hidden_layers",
+            "num_key_value_heads",
+            "pad_token_id",
+            "rms_norm_eps",
+            "rope_parameters",
+            "sliding_window",
+            "tie_word_embeddings",
+            "vocab_size",
+        }
+        nested = {key: config.pop(key) for key in tuple(config) if key in transformer_keys}
+        config.pop("num_target_layers")
+        config["aux_hidden_state_layer_ids"] = [2]
+        config["mask_token_id"] = config.pop("dflash_config")["mask_token_id"]
+        config["transformer_layer_config"] = nested
+        (self.model_dir / "config.json").write_text(json.dumps(config))
+
+        tensors = _fixture_tensors()
+        rng = np.random.default_rng(11)
+        tensors["embed_tokens.weight"] = rng.normal(0, 0.1, (64, 32)).astype("<f4")
+        tensors["lm_head.weight"] = rng.normal(0, 0.1, (64, 32)).astype("<f4")
+        _write_safetensors(self.model_dir / "model.safetensors", tensors)
+
+        output = self.root / "nested-q8_0.gguf"
+        report = converter.convert_model(
+            converter.ConversionOptions(
+                model_dir=self.model_dir,
+                output=output,
+                sample_elements=256,
+            )
+        )
+
+        self.assertEqual(report["target"]["block_count"], 3)
+        self.assertEqual(
+            report["source"]["checkpoint_vocabulary_tensors_retained"],
+            ["embed_tokens.weight", "lm_head.weight"],
+        )
+        reader = gguf.GGUFReader(output)
+        self.assertEqual(len(reader.tensors), 20)
+        capture_field = reader.fields["dflash-draft.dflash.target_layer_ids"]
+        capture_values = capture_field.parts[capture_field.data[0]].tolist()
+        self.assertEqual(capture_values, [1])
+        tensors_by_name = {t.name: t for t in reader.tensors}
+        self.assertEqual(
+            tensors_by_name["token_embd.weight"].tensor_type,
+            gguf.GGMLQuantizationType.BF16,
+        )
+        self.assertEqual(
+            tensors_by_name["output.weight"].tensor_type,
+            gguf.GGMLQuantizationType.BF16,
+        )
+        restored_head = gguf.quants.dequantize(
+            tensors_by_name["output.weight"].data,
+            gguf.GGMLQuantizationType.BF16,
+        ).reshape(tensors["lm_head.weight"].shape)
+        source_header, source_entries = converter.load_safetensors_header(
+            self.model_dir / "model.safetensors"
+        )
+        source_head = converter._read_tensor(
+            self.model_dir / "model.safetensors",
+            source_header,
+            source_entries["lm_head.weight"],
+        )
+        expected_head = gguf.quants.dequantize(
+            gguf.quants.quantize(source_head, gguf.GGMLQuantizationType.BF16),
+            gguf.GGMLQuantizationType.BF16,
+        ).reshape(source_head.shape)
+        np.testing.assert_array_equal(restored_head, expected_head)
+
+    def test_rejects_incomplete_checkpoint_vocabulary_pair(self) -> None:
+        tensors = _fixture_tensors()
+        tensors["lm_head.weight"] = np.zeros((64, 32), dtype="<f4")
+        _write_safetensors(self.model_dir / "model.safetensors", tensors)
+        _, entries = converter.load_safetensors_header(self.model_dir / "model.safetensors")
+        with self.assertRaisesRegex(converter.ConversionError, "must contain both"):
+            converter.validate_tensor_contract(
+                entries, converter.load_model_spec(_fixture_config())
+            )
+
+    def test_rejects_non_bf16_checkpoint_vocabulary(self) -> None:
+        tensors = _fixture_tensors()
+        tensors["embed_tokens.weight"] = np.zeros((64, 32), dtype="<f4")
+        tensors["lm_head.weight"] = np.zeros((64, 32), dtype="<f4")
+        _write_safetensors(
+            self.model_dir / "model.safetensors",
+            tensors,
+            {"lm_head.weight": "F16"},
+        )
+        header_size, entries = converter.load_safetensors_header(
+            self.model_dir / "model.safetensors"
+        )
+        self.assertGreater(header_size, 0)
+        with self.assertRaisesRegex(converter.ConversionError, "must be BF16"):
+            converter.validate_tensor_contract(
+                entries, converter.load_model_spec(_fixture_config())
+            )
+
+    def test_rejects_unsupported_dspark_sampling_contract(self) -> None:
+        config = _fixture_config()
+        config["sample_from_anchor"] = False
+        with self.assertRaisesRegex(converter.ConversionError, "sample_from_anchor"):
+            converter.load_model_spec(config)
+
+        config = _fixture_config()
+        config["sliding_window_non_causal"] = True
+        with self.assertRaisesRegex(converter.ConversionError, "non_causal"):
+            converter.load_model_spec(config)
+
+    def test_rejects_malformed_or_empty_explicit_dflash_config(self) -> None:
+        config = _fixture_config()
+        config["dflash_config"] = []
+        with self.assertRaisesRegex(converter.ConversionError, "must be an object"):
+            converter.load_model_spec(config)
+
+        config = _fixture_config()
+        config["dflash_config"] = {"mask_token_id": 63, "target_layer_ids": []}
+        config["aux_hidden_state_layer_ids"] = [2]
+        with self.assertRaisesRegex(converter.ConversionError, "non-empty int array"):
+            converter.load_model_spec(config)
 
 
 if __name__ == "__main__":

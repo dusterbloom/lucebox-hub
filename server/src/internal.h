@@ -291,6 +291,11 @@ struct DraftWeights {
     bool context_kv_layer_norm = false;             // Laguna DFlash: per-layer input norm before context K/V
     std::vector<DraftLayer> layers;                 // size = n_layer
     ggml_tensor *          out_norm    = nullptr;   // [hidden]
+    // Optional checkpoint-owned vocabulary path.  Some DSpark checkpoints
+    // copy (rather than share) the verifier tensors and were trained against
+    // those exact values.  Both must be present or both absent.
+    ggml_tensor *          token_embd  = nullptr;   // [hidden, vocab]
+    ggml_tensor *          output      = nullptr;   // [hidden, vocab]
 
     // Architecture metadata (populated by loader).
     int n_layer   = DFLASH27B_DRAFT_LAYERS;           // 5

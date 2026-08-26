@@ -306,6 +306,8 @@ bool load_draft_gguf(const std::string & path,
     out.fc          = g_any("dflash.fc.weight", "dflash_fc.weight");
     out.hidden_norm = g_any("dflash.hidden_norm.weight", "dflash_hidden_norm.weight");
     out.out_norm    = g("output_norm.weight");
+    out.token_embd  = g("token_embd.weight");
+    out.output      = g("output.weight");
     if (!out.fc || !out.hidden_norm || !out.out_norm) {
         set_last_error("draft GGUF: missing top-level tensors "
                        "(dflash.fc|dflash_fc / dflash.hidden_norm|dflash_hidden_norm / output_norm)");
@@ -313,6 +315,42 @@ bool load_draft_gguf(const std::string & path,
         out.ctx = nullptr;
         gguf_free(gctx);
         return false;
+    }
+
+    if ((out.token_embd == nullptr) != (out.output == nullptr)) {
+        set_last_error("draft GGUF: checkpoint vocabulary path requires both "
+                       "token_embd.weight and output.weight");
+        ggml_free(meta_ctx);
+        out.ctx = nullptr;
+        gguf_free(gctx);
+        return false;
+    }
+    if (out.token_embd) {
+        const int64_t vocab = dspark_meta_vocab != 0
+            ? static_cast<int64_t>(dspark_meta_vocab)
+            : out.token_embd->ne[1];
+        char shape_err[320];
+        if (!check_shape_2d(out.token_embd, out.n_embd, vocab,
+                            "token_embd.weight", shape_err, sizeof(shape_err)) ||
+            !check_shape_2d(out.output, out.n_embd, vocab,
+                            "output.weight", shape_err, sizeof(shape_err))) {
+            set_last_error(shape_err);
+            ggml_free(meta_ctx);
+            out.ctx = nullptr;
+            gguf_free(gctx);
+            return false;
+        }
+        if (out.token_embd->type != GGML_TYPE_BF16 ||
+            out.output->type != GGML_TYPE_BF16) {
+            set_last_error("draft GGUF: checkpoint vocabulary tensors must be BF16");
+            ggml_free(meta_ctx);
+            out.ctx = nullptr;
+            gguf_free(gctx);
+            return false;
+        }
+        std::fprintf(stderr,
+                     "[draft GGUF] checkpoint-owned BF16 vocabulary path enabled: vocab=%lld\n",
+                     (long long)vocab);
     }
 
     out.aux_hidden_norms.clear();

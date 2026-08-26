@@ -163,18 +163,6 @@ bool dspark_markov_candidates(const DraftWeights & dw,
 
 }  // namespace
 
-bool dspark_markov_propose_greedy_block(const DraftWeights & dw,
-                                        ggml_backend_t backend,
-                                        DFlashTarget & target,
-                                        const float * draft_hidden,
-                                        int proposal_len,
-                                        int32_t anchor_token,
-                                        std::vector<int32_t> & proposals_out) {
-    return dspark_markov_candidates(
-        dw, backend, target, draft_hidden, proposal_len, anchor_token,
-        /*confidence_threshold=*/0.0f, proposals_out);
-}
-
 bool dspark_markov_correct_greedy_chain(const DraftWeights & dw,
                                         ggml_backend_t backend,
                                         DFlashTarget & target,
@@ -335,6 +323,66 @@ bool build_markov_chain_graph(const DraftWeights & dw,
 }
 
 }  // namespace
+
+bool dspark_markov_propose_greedy_block(const DraftWeights & dw,
+                                        ggml_backend_t backend,
+                                        DFlashTarget & target,
+                                        const float * draft_hidden,
+                                        int proposal_len,
+                                        int32_t anchor_token,
+                                        std::vector<int32_t> & proposals_out) {
+    if (!dw.output) {
+        return dspark_markov_candidates(
+            dw, backend, target, draft_hidden, proposal_len, anchor_token,
+            /*confidence_threshold=*/0.0f, proposals_out);
+    }
+    if (proposal_len <= 0 ||
+        !dspark_fused_usable(
+            dw, backend, dw.output, draft_hidden, "dspark_owned_head")) {
+        return false;
+    }
+
+    static thread_local std::vector<uint8_t> arena;
+    MarkovChainGraph graph;
+    if (!build_markov_chain_graph(
+            dw, dw.output, proposal_len, /*first_corrected=*/0,
+            /*corrected_are_outputs=*/false,
+            /*confidence_are_outputs=*/false, arena, graph)) {
+        return false;
+    }
+
+    static thread_local ggml_gallocr_t galloc = nullptr;
+    if (!galloc) {
+        galloc = ggml_gallocr_new(
+            ggml_backend_get_default_buffer_type(backend));
+    }
+    if (!ggml_gallocr_alloc_graph(galloc, graph.gf)) {
+        std::fprintf(stderr, "dspark_owned_head: gallocr_alloc_graph failed\n");
+        ggml_free(graph.ctx);
+        return false;
+    }
+    ggml_backend_tensor_set(
+        graph.inp_hidden, draft_hidden, 0,
+        sizeof(float) * static_cast<size_t>(dw.n_embd) *
+            static_cast<size_t>(proposal_len));
+    ggml_backend_tensor_set(
+        graph.inp_seed, &anchor_token, 0, sizeof(anchor_token));
+    if (ggml_backend_graph_compute(backend, graph.gf) != GGML_STATUS_SUCCESS) {
+        std::fprintf(stderr, "dspark_owned_head: graph_compute failed\n");
+        ggml_free(graph.ctx);
+        return false;
+    }
+
+    proposals_out.resize(static_cast<size_t>(proposal_len));
+    for (int i = 0; i < proposal_len; ++i) {
+        ggml_backend_tensor_get_async(
+            backend, graph.toks[static_cast<size_t>(i)],
+            &proposals_out[static_cast<size_t>(i)], 0, sizeof(int32_t));
+    }
+    ggml_backend_synchronize(backend);
+    ggml_free(graph.ctx);
+    return true;
+}
 
 bool dspark_markov_correct_greedy_chain_fused(const DraftWeights & dw,
                                               ggml_backend_t backend,
