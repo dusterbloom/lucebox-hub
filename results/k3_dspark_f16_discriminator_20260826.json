@@ -1,0 +1,84 @@
+{
+  "schema": "dflash.kimi-k3.dspark-f16-discriminator.v1",
+  "date": "2026-08-26",
+  "verdict": "ACCEPTANCE_NO_GO__PERFORMANCE_INVALID_SWAP",
+  "question": "Did Q8_0 quantization of the official RadixArk DSpark cause the sole early Fibonacci q7/V8 rejection?",
+  "closure": {
+    "target_binary_sha256": "65f1da1ac79a54acd0cac541dc8f84f04a272ae87af036531bed1e7cc104dbf8",
+    "source_bf16_sha256": "ecd746459b4a603ce0d2c64f73935efead29bd651b14439b99e57ee8b41b77ca",
+    "q8_gguf_sha256": "848d12be5283a4717c08b1b1263420980dfc61b5a59067e343296fd7f4998435",
+    "f16_gguf_sha256": "dbb164d4b164036fa6aad8e8df9e3cc6e07bd59095c46f121d814b4a231d80e2",
+    "f16_report_sha256": "c0a9714b85e2f875b1d0c46610eab21c466a5d480752bda844585355ceaebb0c",
+    "experimental_diff_sha256": "253be2e805a12484b67be7339bf398d51f7672ab0ee97e4786f54fe32bdb10e5",
+    "preregistration_sha256": "070dfae6a91dc63e8a6c059f7bd632a98b3129e21523bd39202200e015c06dca",
+    "artifact_root": "/home/duster/kimi-k3-deploy/k3-dspark-f16-ab-20260826"
+  },
+  "fixture": {
+    "name": "Fibonacci chat completion",
+    "prompt_tokens": 43,
+    "output_tokens": 33,
+    "true_transitions": 32,
+    "q": 7,
+    "verify_rows": 8,
+    "platform_profile": "performance"
+  },
+  "arms": [
+    {
+      "name": "A1-Q8",
+      "decode_seconds": 12.008,
+      "strict_true_tokens_per_second": 2.664890,
+      "target_steps": 5,
+      "ordered_acceptance": [8, 3, 8, 8, 6],
+      "physical_bytes": 34352594944,
+      "swap_pages_in_delta": 89139,
+      "swap_pages_out_delta": 137643
+    },
+    {
+      "name": "B1-F16",
+      "decode_seconds": 11.195,
+      "strict_true_tokens_per_second": 2.858419,
+      "target_steps": 5,
+      "ordered_acceptance": [8, 3, 8, 8, 6],
+      "physical_bytes": 34656935936,
+      "swap_pages_in_delta": 4067,
+      "swap_pages_out_delta": 19676
+    },
+    {
+      "name": "B2-F16",
+      "decode_seconds": 9.554,
+      "strict_true_tokens_per_second": 3.349383,
+      "target_steps": 5,
+      "ordered_acceptance": [8, 3, 8, 8, 6],
+      "physical_bytes": 34656395264,
+      "swap_pages_in_delta": 70730,
+      "swap_pages_out_delta": 109025
+    },
+    {
+      "name": "A2-Q8",
+      "decode_seconds": 9.471,
+      "strict_true_tokens_per_second": 3.378735,
+      "target_steps": 5,
+      "ordered_acceptance": [8, 3, 8, 8, 6],
+      "physical_bytes": 34352594944,
+      "swap_pages_in_delta": 17516,
+      "swap_pages_out_delta": 56552
+    }
+  ],
+  "pooled_timing_not_promotable": {
+    "q8_strict_true_tokens_per_second": 2.979655,
+    "f16_strict_true_tokens_per_second": 3.084486,
+    "reason": "Every arm observed active swap; timing is recorded but invalid for promotion."
+  },
+  "exactness": {
+    "final_target_logits_sha256_all_arms": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "normalized_answer_and_finish_sha256_all_arms": "de56d49f1737f4366243d127c4f8ac3ad0ccd8bfa9b405fb82c9b0bcee308139",
+    "fallbacks_all_arms": 0
+  },
+  "interpretation": "F16 changed speculative suffix traffic but reproduced the same sole early accept3 rejection and the same five-step outcome twice. Therefore Q8 quantization is not the cause of the acceptance blocker on this fixture. Active swap invalidates all performance comparisons but cannot create the deterministic equality of the target acceptance outcome.",
+  "cleanup": {
+    "converter_code_promoted": false,
+    "runtime_default_changed": false,
+    "f16_artifact_promoted": false
+  },
+  "scope": "Closes Q8-versus-F16 draft quantization as the cause of the Fibonacci early rejection. It does not compare BF16 execution, establish general draft quality, or close a different drafter, confidence scheduling, or target-verifier optimization."
+}

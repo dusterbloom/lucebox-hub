@@ -1,0 +1,24 @@
+{
+  "schema": "dflash.kimi-k3.v8-graph-lifecycle-census.v1",
+  "date": "2026-08-26",
+  "verdict": "NO_GO_COMPILE_TIME_DISABLED",
+  "question": "Does native GGML graph capture/replay churn consume enough exact Core8 wall to justify disabling capture?",
+  "binary_sha256": "65f1da1ac79a54acd0cac541dc8f84f04a272ae87af036531bed1e7cc104dbf8",
+  "cmake_cache": {
+    "GGML_CUDA_GRAPHS": false,
+    "GGML_HIP_GRAPHS": false
+  },
+  "binary_contains_cuda_graph_stats_string": false,
+  "diagnostic": {
+    "requested_environment": [
+      "GGML_CUDA_GRAPH_STATS=1",
+      "GGML_CUDA_GRAPH_STATS_EVERY=1",
+      "GGML_CUDA_GRAPH_WARMUP_LOG=1",
+      "GGML_CUDA_GRAPH_DIFF_STATS=1"
+    ],
+    "graph_stat_lines": 0,
+    "artifact_root": "/home/duster/kimi-k3-deploy/k3-v8-graph-census-20260826/census01"
+  },
+  "interpretation": "The native graph lifecycle code is excluded from this ROCm production binary by USE_CUDA_GRAPH. ScopedCudaGraphOverrides around Core8 cannot alter execution, so the proposed capture-off A/B would be a no-op and was not implemented.",
+  "scope": "Closes only native GGML HIP graph capture/replay as a current exact Core8 optimization. It does not close K3's explicit P46 graphs or a future build deliberately enabling GGML_HIP_GRAPHS."
+}
