@@ -1,0 +1,102 @@
+{
+  "schema": "dflash.kimi-k3.terminal-pending-token.v1",
+  "date": "2026-08-26",
+  "status": "QUALIFIED_GO",
+  "question": "Can the already-authoritative final pending token be emitted without a redundant q=1 draft, snapshot, target verify, and restore?",
+  "source": {
+    "branch": "perf/k3-production-ponytail",
+    "base_head": "89e764fbe927895be694d5d911a90eb023bfc46f",
+    "patch_sha256": "dcfabfa0eeba8ff2d8401e952b42e699910afecd99c36cd424a0c8ca31f6ca1e",
+    "control_binary_sha256": "ae710fd241bec1c5701384ae9ba3f4e022db7cd4e1a3cb3d7b978f14ddc01ef2",
+    "candidate_binary_sha256": "3a3a783d542e7b6579a22dcc388713bd48ca822a8a694d1bfec3d7ea4988131e",
+    "runner_sha256": "34921f56abd47651be4c66f2dffb5c32646363249912a9d25575ff6f6c204d48"
+  },
+  "fixture": {
+    "name": "Fibonacci code",
+    "request_sha256": "ca33e25e9222211653ccd90a9a33f605e40c05fe8fb5ed8ccb1666d3eb74930c",
+    "prompt_tokens": 43,
+    "completion_tokens": 20,
+    "strict_true_transitions": 19,
+    "registered_acceptance_prefix": [8, 3, 8],
+    "expected_control_tail": 1
+  },
+  "preregistration": {
+    "arms": ["A1 control", "B1 candidate", "B2 candidate", "A2 control"],
+    "go": "target steps 4 to 3, byte-identical output and final logits, no fallback, and at least 10% end-to-end decode saving",
+    "no_go": "exact but below 10% materiality",
+    "invalid": "topology, power, traffic, swap/OOM, output, logits, or fallback gate fails"
+  },
+  "qualified_runs": [
+    {
+      "arm": "A1",
+      "variant": "control",
+      "decode_seconds": 5.483,
+      "target_steps": 4,
+      "logical_verify_rows": 25,
+      "physical_verify_rows": 25,
+      "direct_physical_bytes": 29887127552,
+      "direct_io_ns": 8496709692,
+      "expert_graph_ns": 668252755,
+      "legacy_replays": 1,
+      "failed_fallbacks": 0
+    },
+    {
+      "arm": "B1",
+      "variant": "candidate",
+      "decode_seconds": 4.813,
+      "target_steps": 3,
+      "logical_verify_rows": 24,
+      "physical_verify_rows": 24,
+      "direct_physical_bytes": 29606699008,
+      "direct_io_ns": 7952689661,
+      "expert_graph_ns": 659733246,
+      "legacy_replays": 0,
+      "failed_fallbacks": 0
+    },
+    {
+      "arm": "B2",
+      "variant": "candidate",
+      "decode_seconds": 4.729,
+      "target_steps": 3,
+      "logical_verify_rows": 24,
+      "physical_verify_rows": 24,
+      "direct_physical_bytes": 29606158336,
+      "direct_io_ns": 7556099348,
+      "expert_graph_ns": 662734935,
+      "legacy_replays": 0,
+      "failed_fallbacks": 0
+    },
+    {
+      "arm": "A2",
+      "variant": "control",
+      "decode_seconds": 5.238,
+      "target_steps": 4,
+      "logical_verify_rows": 25,
+      "physical_verify_rows": 25,
+      "direct_physical_bytes": 29887127552,
+      "direct_io_ns": 7887517698,
+      "expert_graph_ns": 663716584,
+      "legacy_replays": 1,
+      "failed_fallbacks": 0
+    }
+  ],
+  "exactness": {
+    "emitted_content_sha256": "c4160ae2aa6af58077e874794965fb981cafb9c1e516ba096588b2213a39f55f",
+    "all_emitted_content_identical": true,
+    "final_logits_sha256": "683bf42b753aae29b2752d3b3d0a59f2634cdeb92e63ce79b0c03f4a27cfee1a",
+    "all_final_logits_byte_identical": true,
+    "final_logits_position": 62,
+    "explicit_state_readback": false,
+    "state_contract": "Both paths advance 19 rows. The removed q=1 path had terminal state_commit_n=0 and restored its snapshot; the candidate retains the same preceding authoritative state and final logits."
+  },
+  "result": {
+    "control_mean_decode_seconds": 5.3605,
+    "candidate_mean_decode_seconds": 4.771,
+    "mean_saving_seconds": 0.5895,
+    "pooled_speedup": 1.123559002,
+    "control_pooled_strict_true_ar_tps": 3.544445481,
+    "candidate_pooled_strict_true_ar_tps": 3.982393628,
+    "verdict": "GO"
+  },
+  "scope": "This removes only a terminal q=1 target transaction when one already-authoritative output remains. It does not change q, V, acceptance, expert execution, recurrent arithmetic, or steady-state full-V8 cost."
+}

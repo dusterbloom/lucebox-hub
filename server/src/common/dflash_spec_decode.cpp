@@ -103,6 +103,15 @@ bool run_dflash_spec_decode(
     auto t_dec0 = std::chrono::steady_clock::now();
     while (n_generated < n_gen) {
         const int need_commit_budget = n_gen - n_generated;
+        if (need_commit_budget == 1) {
+            out_all.push_back(last_tok);
+            io.emit(last_tok);
+            if (!io.is_cancelled()) {
+                ++n_generated;
+                if (io.observer) io.observer("verify", {last_tok});
+            }
+            break;
+        }
         const int q_len = std::max(
             1, std::min(max_verify_width, need_commit_budget));
         const int physical_q_len = target.preferred_physical_verify_width(
