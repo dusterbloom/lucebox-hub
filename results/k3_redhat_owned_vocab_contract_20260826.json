@@ -1,0 +1,112 @@
+{
+  "schema": "dflash.kimi-k3.redhat-owned-vocabulary-contract.v1",
+  "date": "2026-08-26",
+  "question": "Does preserving the RedHat K3 DSpark checkpoint's own BF16 embedding and LM head recover the acceptance lost when Lucebox substituted the target Q6_K vocabulary pair?",
+  "verdict": {
+    "checkpoint_contract_bug": "CONFIRMED",
+    "acceptance_recovery": "GO",
+    "target_exactness": "GO",
+    "throughput_promotion_over_radix": "NO_GO",
+    "publication_qualification": "INVALID_SWAP_IN_ONE_PAGE_PER_ARM"
+  },
+  "closure": {
+    "ponytail_base": "6bc29de1",
+    "source_revision": "48beb88daae33227c148ea2b78a2ac2f493dbccb",
+    "source_bf16_sha256": "0262abfd7418d2ecbc3a077790851c1af2f8879016b00e7decb9d43d7c1277b4",
+    "faithful_gguf_sha256": "15eddb010f826f03fe9d074cd2e1703e8ca5a626a2b770ed91f7fdcd693639ac",
+    "candidate_binary_sha256": "b6809e0fbffb59bb3c77dd589ba2e5bc3ce5735b03bf5706e46219d9f3c21b88",
+    "hardened_binary_sha256": "c077b8da3e7563a944d9fba8b85c1dfd720024ae497c740ca4ac9a3a19f4c54a",
+    "target_first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "artifact_root": "/home/duster/kimi-k3-deploy/k3-redhat-owned-vocab-gate-20260826"
+  },
+  "contract": {
+    "draft_layers": 5,
+    "source_block_size": 8,
+    "logical_proposals_q": 7,
+    "physical_verify_rows_v": 8,
+    "capture_boundaries": [24, 48, 72, 88, 92],
+    "completed_capture_layers": [23, 47, 71, 87, 91],
+    "capture_stream": "next-consumer pre-RMSNorm AttnRes",
+    "checkpoint_embedding": "BF16 [163840,7168]",
+    "checkpoint_lm_head": "BF16 [163840,7168]",
+    "legacy_behavior": "drafter artifacts without the complete owned pair use the target embedding/head fallback"
+  },
+  "unfaithful_substituted_vocabulary_control": {
+    "target_steps": 8,
+    "average_committed_tokens_per_step": 4.12,
+    "proposal_acceptance_percent": 43.6,
+    "reported_true_ar_tokens_per_second": [2.20, 2.21],
+    "interpretation": "This tests only the RedHat draft body with an unfaithful target-vocabulary substitution; it is not a checkpoint NO-GO."
+  },
+  "faithful_arms": [
+    {
+      "arm": "C1",
+      "decode_seconds": 8.372,
+      "strict_32_transition_tokens_per_second": 3.822265,
+      "reported_33_token_tokens_per_second": 3.94,
+      "target_steps": 5,
+      "average_committed_tokens_per_step": 6.60,
+      "accepted_rows": 33,
+      "offered_rows": 36,
+      "accepted_proposals": 28,
+      "offered_proposals": 31,
+      "proposal_acceptance_percent": 90.3,
+      "physical_verify_rows": 40,
+      "direct_physical_bytes": 35143475200,
+      "direct_io_seconds": 9.295021849,
+      "average_target_step_ms": 1517.9782,
+      "average_core_ms": 497.9012,
+      "average_experts_ms": 883.92,
+      "average_join_ms": 99.4692,
+      "average_output_ms": 36.0252,
+      "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+      "swap_pages_increase": 1,
+      "swap_pages_out_increase": 0
+    },
+    {
+      "arm": "C2",
+      "decode_seconds": 8.347,
+      "strict_32_transition_tokens_per_second": 3.833713,
+      "reported_33_token_tokens_per_second": 3.95,
+      "target_steps": 5,
+      "average_committed_tokens_per_step": 6.60,
+      "accepted_rows": 33,
+      "offered_rows": 36,
+      "accepted_proposals": 28,
+      "offered_proposals": 31,
+      "proposal_acceptance_percent": 90.3,
+      "physical_verify_rows": 40,
+      "direct_physical_bytes": 35143475200,
+      "direct_io_seconds": 11.718779845,
+      "average_target_step_ms": 1514.4262,
+      "average_core_ms": 498.3722,
+      "average_experts_ms": 878.5954,
+      "average_join_ms": 100.8312,
+      "average_output_ms": 35.9392,
+      "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+      "swap_pages_increase": 1,
+      "swap_pages_out_increase": 0
+    }
+  ],
+  "decision": {
+    "acceptance_cause": "The missing checkpoint-owned vocabulary pair was the dominant acceptance bug: committed tokens recovered from 4.12 to 6.60 per target step and proposal acceptance from 43.6% to 90.3%.",
+    "remaining_bottleneck": "Five exact V8 target steps remain necessary for the 32-transition Fibonacci fixture; verifier wall, especially expert delivery, is again binding.",
+    "promotion": "Retain as fail-closed faithful checkpoint support, not as the default drafter or a throughput winner over the current Radix control.",
+    "next_gate": "Return to the exact V8 verifier critical path; no further draft fitting is earned by this fixture."
+  },
+  "hardened_runtime_smoke": {
+    "arm": "C3",
+    "decode_seconds": 8.317,
+    "reported_33_token_tokens_per_second": 3.97,
+    "target_steps": 5,
+    "average_committed_tokens_per_step": 6.60,
+    "proposal_acceptance_percent": 90.3,
+    "direct_physical_bytes": 35144015872,
+    "direct_io_seconds": 9.253655260,
+    "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "startup_contract": "AttnRes capture, source Block8, captures 23/47/71/87/91, checkpoint-owned BF16 vocabulary on gfx1201, V8 verifier on gfx1151",
+    "gpu_unit_suite": "PASS",
+    "swap_pages_increase": 1,
+    "swap_pages_out_increase": 0
+  }
+}
