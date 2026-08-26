@@ -245,6 +245,11 @@ bool restore_kimi_k3_prefix_snapshot(
     KimiK3Cache & cache);
 void free_kimi_k3_prefix_snapshot(KimiK3PrefixSnapshot & snapshot);
 void kimi_k3_destroy_graph_state(void *& state);
+bool kimi_k3_prepare_persistent_core8(
+    ggml_backend_t backend,
+    const KimiK3Weights & weights,
+    KimiK3Cache & cache,
+    std::string & error);
 
 bool kimi_k3_read_token_embeddings_on_host(
     const KimiK3Weights & weights,

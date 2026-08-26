@@ -149,6 +149,7 @@ bool apply_kimi_k3_production_defaults(bool dspark, std::string & error) {
         {"DFLASH_KIMI_P58_EXACT_CORE_GROUP_WIDTH", width},
         {"DFLASH_KIMI_P58_EXACT_MLA_GROUP_WIDTH", width},
         {"DFLASH_KIMI_P58_EXACT_TAIL_GROUP_WIDTH", width},
+        {"DFLASH_KIMI_P58_PERSISTENT_CORE8", enabled},
         {"DFLASH_CUDA_MMVQ_QK_EXACT_WIDTH8", enabled},
         {"DFLASH_CUDA_MMVQ_TOKENWISE", enabled},
         {"DFLASH_KIMI_DSPARK_ATTN_RES_CAPTURE", enabled},
@@ -621,6 +622,67 @@ bool KimiK3Backend::init() {
                 "[kimi-k3] exact macro execution requires the authoritative "
                 "all-layer calibrated96 service at width %d\n",
                 required_exact_width);
+            shutdown();
+            return false;
+        }
+    }
+
+    bool persistent_core8 = false;
+    if (!parse_binary_env(
+            "DFLASH_KIMI_P58_PERSISTENT_CORE8",
+            persistent_core8, error)) {
+        std::fprintf(stderr, "[kimi-k3] %s\n", error.c_str());
+        shutdown();
+        return false;
+    }
+    if (persistent_core8) {
+        bool async_queue = false;
+        bool persistent_prep = false;
+        bool router8 = false;
+        bool exact_qk8 = false;
+        bool tokenwise = false;
+        if (!parse_binary_env(
+                "DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE",
+                async_queue, error) ||
+            !parse_binary_env(
+                "DFLASH_KIMI_P46_PERSISTENT_ROUTED_PREP",
+                persistent_prep, error) ||
+            !parse_binary_env(
+                "DFLASH_KIMI_ROUTER_WIDTH8", router8, error) ||
+            !parse_binary_env(
+                "DFLASH_CUDA_MMVQ_QK_EXACT_WIDTH8", exact_qk8, error) ||
+            !parse_binary_env(
+                "DFLASH_CUDA_MMVQ_TOKENWISE", tokenwise, error)) {
+            std::fprintf(stderr, "[kimi-k3] %s\n", error.c_str());
+            shutdown();
+            return false;
+        }
+        const auto is_width8 = [] (const char * name) {
+            const char * value = std::getenv(name);
+            return value && std::strcmp(value, "8") == 0;
+        };
+        if (required_exact_width != kKimiDsparkVerifyRows) {
+            std::fprintf(stderr,
+                "[kimi-k3] persistent Core8 requires exact Width8\n");
+            shutdown();
+            return false;
+        }
+        if (!async_queue || !persistent_prep || !router8 || !exact_qk8 ||
+            !tokenwise ||
+            !is_width8("DFLASH_KIMI_P58_EXACT_CORE_GROUP_WIDTH") ||
+            !is_width8("DFLASH_KIMI_P58_EXACT_MLA_GROUP_WIDTH") ||
+            !is_width8("DFLASH_KIMI_P58_EXACT_TAIL_GROUP_WIDTH")) {
+            std::fprintf(stderr,
+                "[kimi-k3] persistent Core8 requires the exact DSpark "
+                "P45/P46/Router8/Core8/MLA8/Tail8 closure\n");
+            shutdown();
+            return false;
+        }
+        if (!kimi_k3_prepare_persistent_core8(
+                backend_, weights_, cache_, error)) {
+            std::fprintf(stderr,
+                "[kimi-k3] persistent Core8 initialization failed: %s\n",
+                error.c_str());
             shutdown();
             return false;
         }

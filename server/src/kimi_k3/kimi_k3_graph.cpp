@@ -730,6 +730,100 @@ struct PersistentRouter8Graph {
     ggml_tensor * route_weights = nullptr;
 };
 
+struct PersistentExactCore8Graph {
+    ggml_context * ctx = nullptr;
+    ggml_cgraph * graph = nullptr;
+    ggml_tensor * hidden = nullptr;
+    std::vector<ggml_tensor *> checkpoints;
+    ggml_tensor * attn_input = nullptr;
+    ggml_tensor * prefix = nullptr;
+    ggml_tensor * prepared = nullptr;
+    KdaTerminalState terminal;
+    ggml_tensor * conv_destination = nullptr;
+    ggml_tensor * ssm_destination = nullptr;
+    bool prepared_to_host = false;
+};
+
+int exact_qk_core_launches(
+        const KimiK3Layer & layer,
+        std::string * unsupported);
+
+bool build_persistent_exact_core8_graph(
+        const KimiK3Weights & w,
+        const KimiK3Layer & layer,
+        KimiK3LayerCache & layer_cache,
+        int checkpoint_count,
+        bool banked,
+        bool prepared_to_host,
+        PersistentExactCore8Graph & out) {
+    if (!layer_cache.replay_input ||
+        layer_cache.replay_input->ne[0] != w.n_embd ||
+        layer_cache.replay_input->ne[1] < kExactCoreGroupWidth8) {
+        return false;
+    }
+    out.ctx = new_kimi_persistent_context();
+    if (!out.ctx) return false;
+    out.graph = ggml_new_graph_custom(out.ctx, 32768, false);
+    out.hidden = ggml_new_tensor_2d(
+        out.ctx, GGML_TYPE_F32, w.n_embd, kExactCoreGroupWidth8);
+    if (!out.graph || !out.hidden) return false;
+    ggml_set_input(out.hidden);
+
+    AttnResBank residuals;
+    residuals.ctx = out.ctx;
+    residuals.eps = w.rms_eps;
+    residuals.n_embd = w.n_embd;
+    residuals.n_tokens = kExactCoreGroupWidth8;
+    out.checkpoints.reserve(static_cast<size_t>(checkpoint_count));
+    for (int checkpoint = 0; checkpoint < checkpoint_count; ++checkpoint) {
+        ggml_tensor * tensor = ggml_new_tensor_2d(
+            out.ctx, GGML_TYPE_F32, w.n_embd, kExactCoreGroupWidth8);
+        if (!tensor) return false;
+        ggml_set_input(tensor);
+        out.checkpoints.push_back(tensor);
+        residuals.push(tensor);
+    }
+
+    ggml_tensor * cur = out.hidden;
+    out.attn_input = residuals.mix(cur, layer.attn_res_score);
+    cur = out.attn_input;
+    if (banked) residuals.push(out.hidden);
+    cur = rms_norm(out.ctx, cur, layer.attn_norm, w.rms_eps);
+    cur = build_kda(
+        out.ctx, out.graph, w, layer, layer_cache, cur,
+        /*commit_state=*/false, /*capture_replay=*/true,
+        /*replay_token_offset=*/0, &out.terminal);
+    out.prefix = banked ? cur : ggml_add(out.ctx, out.hidden, cur);
+    out.prepared = residuals.mix(out.prefix, layer.ffn_res_score);
+    out.prepared = rms_norm(
+        out.ctx, out.prepared, layer.ffn_norm, w.rms_eps);
+    out.prepared_to_host = prepared_to_host;
+    out.conv_destination = layer_cache.conv_state;
+    out.ssm_destination = layer_cache.ssm_state;
+    if (!out.attn_input || !out.prefix || !out.prepared ||
+        !out.terminal.conv || !out.terminal.ssm ||
+        !same_tensor_layout(out.terminal.conv, out.conv_destination) ||
+        !same_tensor_layout(out.terminal.ssm, out.ssm_destination)) {
+        return false;
+    }
+
+    // Match exact_multirow_core_group's output/publication traversal. The
+    // attention input is retained for the optional DSpark capture readback;
+    // it is already a dependency of prefix and adds no arithmetic.
+    const std::vector<ggml_tensor *> outputs = prepared_to_host
+        ? std::vector<ggml_tensor *>({
+              out.prefix, out.prepared, out.attn_input,
+              out.terminal.conv, out.terminal.ssm})
+        : std::vector<ggml_tensor *>({
+              out.prefix, out.attn_input, out.terminal.conv,
+              out.terminal.ssm, out.prepared});
+    for (ggml_tensor * output : outputs) {
+        ggml_set_output(output);
+        ggml_build_forward_expand(out.graph, output);
+    }
+    return true;
+}
+
 bool build_routed_tail_graph(
         ggml_context * ctx,
         ggml_cgraph * graph,
@@ -959,22 +1053,35 @@ public:
                         backend_, ggml_get_mem_buffer(entry.ctx),
                         ggml_get_mem_size(entry.ctx));
             }
+            for (PersistentExactCore8Graph & entry : exact_core8_entries_) {
+                if (!entry.ctx) continue;
+                invalidated_graphs +=
+                    ggml_backend_cuda_graph_invalidate_range(
+                        backend_, ggml_get_mem_buffer(entry.ctx),
+                        ggml_get_mem_size(entry.ctx));
+            }
         }
         if (backend_) {
             std::fprintf(stderr,
                 "[kimi-k3-p46] finalized graphs=%zu executions=%llu "
                 "replay-executions=%llu prepared-tail-executions=%llu "
                 "router8-executions=%llu "
-                "workspace-bytes=%zu "
+                "exact-core8-executions=%llu "
+                "workspace-bytes=%zu exact-core8-workspace-bytes=%zu "
                 "metadata-bytes=%zu invalidated-native-graphs=%zu\n",
                 graph_count_,
                 static_cast<unsigned long long>(executions_),
                 static_cast<unsigned long long>(replay_executions_),
                 static_cast<unsigned long long>(prepared_tail_executions_),
                 static_cast<unsigned long long>(router8_executions_),
-                workspace_bytes_, metadata_bytes_, invalidated_graphs);
+                static_cast<unsigned long long>(exact_core8_executions_),
+                workspace_bytes_, exact_core8_workspace_bytes_,
+                metadata_bytes_, invalidated_graphs);
         }
         if (allocator_) ggml_gallocr_free(allocator_);
+        if (exact_core8_allocator_) {
+            ggml_gallocr_free(exact_core8_allocator_);
+        }
         for (auto * entries : {&entries_, &replay_entries_}) {
             for (PersistentRoutedGraph & entry : *entries) {
                 if (entry.ctx) ggml_free(entry.ctx);
@@ -984,6 +1091,9 @@ public:
             if (entry.ctx) ggml_free(entry.ctx);
         }
         for (PersistentRouter8Graph & entry : router8_entries_) {
+            if (entry.ctx) ggml_free(entry.ctx);
+        }
+        for (PersistentExactCore8Graph & entry : exact_core8_entries_) {
             if (entry.ctx) ggml_free(entry.ctx);
         }
         if (router8_staging_buffer_) {
@@ -999,6 +1109,7 @@ public:
             bool deferred_router,
             int prepared_tail_width,
             bool include_mla_prepared_tail,
+            bool include_exact_core8,
             std::string * error) {
         if (backend_ || !backend || w.n_layer <= 0 ||
             static_cast<int>(cache.layers.size()) != w.n_layer ||
@@ -1024,6 +1135,9 @@ public:
         weights_ = &w;
         entries_.resize(static_cast<size_t>(w.n_layer));
         replay_entries_.resize(static_cast<size_t>(w.n_layer));
+        if (include_exact_core8) {
+            exact_core8_entries_.resize(static_cast<size_t>(w.n_layer));
+        }
         if (prepared_tail_width > 0) {
             prepared_tail_entries_.resize(static_cast<size_t>(w.n_layer));
         }
@@ -1086,6 +1200,8 @@ public:
         }
         ggml_cgraph * largest = nullptr;
         size_t largest_bytes = 0;
+        ggml_cgraph * largest_exact_core8 = nullptr;
+        size_t largest_exact_core8_bytes = 0;
         const auto measure_graph = [&](ggml_context * ctx,
                                        ggml_cgraph * graph) {
             size_t required = 0;
@@ -1094,6 +1210,18 @@ public:
             if (required > largest_bytes) {
                 largest_bytes = required;
                 largest = graph;
+            }
+            metadata_bytes_ += ggml_used_mem(ctx);
+            ++graph_count_;
+        };
+        const auto measure_exact_core8_graph = [&] (
+                ggml_context * ctx, ggml_cgraph * graph) {
+            size_t required = 0;
+            ggml_gallocr_reserve_n_size(
+                measure, graph, nullptr, nullptr, &required);
+            if (required > largest_exact_core8_bytes) {
+                largest_exact_core8_bytes = required;
+                largest_exact_core8 = graph;
             }
             metadata_bytes_ += ggml_used_mem(ctx);
             ++graph_count_;
@@ -1193,6 +1321,38 @@ public:
                 ++router8_graph_count_;
             }
         }
+        if (include_exact_core8) {
+            for (int il = 0; il < w.n_layer; ++il) {
+                const KimiK3Layer & layer =
+                    w.layers[static_cast<size_t>(il)];
+                if (!layer.recurrent) continue;
+                std::string unsupported;
+                if (exact_qk_core_launches(layer, &unsupported) <= 0) {
+                    ggml_gallocr_free(measure);
+                    return fail(error,
+                        "persistent exact Core8 found unsupported KDA "
+                        "projection at layer " + std::to_string(il) +
+                        ": " + unsupported);
+                }
+                PersistentExactCore8Graph & core8 =
+                    exact_core8_entries_[static_cast<size_t>(il)];
+                const int checkpoint_count =
+                    (il + w.attn_res_block_size - 1) /
+                    w.attn_res_block_size;
+                if (!build_persistent_exact_core8_graph(
+                        w, layer, cache.layers[static_cast<size_t>(il)],
+                        checkpoint_count,
+                        il % w.attn_res_block_size == 0,
+                        il < w.n_dense_lead, core8)) {
+                    ggml_gallocr_free(measure);
+                    return fail(error,
+                        "cannot build persistent exact Core8 graph for layer " +
+                        std::to_string(il));
+                }
+                measure_exact_core8_graph(core8.ctx, core8.graph);
+                ++exact_core8_graph_count_;
+            }
+        }
         ggml_gallocr_free(measure);
         if (!largest || graph_count_ == 0 || largest_bytes == 0) {
             return fail(error,
@@ -1238,22 +1398,53 @@ public:
             }
         }
         workspace_bytes_ = reserved;
+        if (include_exact_core8) {
+            if (!largest_exact_core8 || largest_exact_core8_bytes == 0) {
+                return fail(error,
+                    "persistent exact Core8 found no recurrent graph");
+            }
+            exact_core8_allocator_ = ggml_gallocr_new(
+                ggml_backend_get_default_buffer_type(backend));
+            if (!exact_core8_allocator_ ||
+                !ggml_gallocr_reserve(
+                    exact_core8_allocator_, largest_exact_core8)) {
+                return fail(error,
+                    "cannot reserve persistent exact Core8 workspace");
+            }
+            const size_t exact_reserved =
+                ggml_gallocr_get_buffer_size(exact_core8_allocator_, 0);
+            for (PersistentExactCore8Graph & entry : exact_core8_entries_) {
+                if (!entry.graph) continue;
+                if (!ggml_gallocr_alloc_graph(
+                        exact_core8_allocator_, entry.graph) ||
+                    ggml_gallocr_get_buffer_size(
+                        exact_core8_allocator_, 0) != exact_reserved) {
+                    return fail(error,
+                        "persistent exact Core8 workspace changed while "
+                        "allocating immutable graphs");
+                }
+            }
+            exact_core8_workspace_bytes_ = exact_reserved;
+        }
         deferred_router_ = deferred_router;
         prepared_tail_width_ = prepared_tail_width;
         includes_mla_prepared_tail_ = include_mla_prepared_tail;
+        includes_exact_core8_ = include_exact_core8;
         std::fprintf(stderr,
             "[kimi-k3-p46] initialized graphs=%zu replay-graphs=%zu "
             "prepared-tail-graphs=%zu prepared-tail-width=%d "
             "prepared-tail-mla=%s router8-graphs=%zu "
+            "exact-core8-graphs=%zu "
             "router8-staging-bytes=%zu "
-            "workspace-bytes=%zu "
+            "workspace-bytes=%zu exact-core8-workspace-bytes=%zu "
             "metadata-bytes=%zu backend=%s\n",
             graph_count_, replay_graph_count_, prepared_tail_graph_count_,
             prepared_tail_width_,
             includes_mla_prepared_tail_ ? "enabled" : "disabled",
             router8_graph_count_,
+            exact_core8_graph_count_,
             router8_staging_bytes_,
-            workspace_bytes_, metadata_bytes_,
+            workspace_bytes_, exact_core8_workspace_bytes_, metadata_bytes_,
             ggml_backend_name(backend_));
         return true;
     }
@@ -1263,11 +1454,13 @@ public:
             const KimiK3Weights & w,
             bool deferred_router,
             int prepared_tail_width,
-            bool include_mla_prepared_tail) const {
+            bool include_mla_prepared_tail,
+            bool include_exact_core8) const {
         return backend_ == backend && weights_ == &w &&
             deferred_router_ == deferred_router &&
             prepared_tail_width_ == prepared_tail_width &&
-            includes_mla_prepared_tail_ == include_mla_prepared_tail;
+            includes_mla_prepared_tail_ == include_mla_prepared_tail &&
+            includes_exact_core8_ == include_exact_core8;
     }
 
     bool matches_identity(
@@ -1281,12 +1474,14 @@ public:
             const KimiK3Weights & w,
             bool deferred_router,
             int prepared_tail_width,
-            bool include_mla_prepared_tail) const {
+            bool include_mla_prepared_tail,
+            bool include_exact_core8) const {
         return matches_identity(backend, w) &&
             (!deferred_router || deferred_router_) &&
             (prepared_tail_width == 0 ||
              prepared_tail_width_ == prepared_tail_width) &&
-            (!include_mla_prepared_tail || includes_mla_prepared_tail_);
+            (!include_mla_prepared_tail || includes_mla_prepared_tail_) &&
+            (!include_exact_core8 || includes_exact_core8_);
     }
 
     bool evaluate(
@@ -1632,6 +1827,133 @@ public:
         return true;
     }
 
+    bool evaluate_exact_core8(
+            int model_layer,
+            int token_begin,
+            const std::vector<float> & hidden,
+            const std::vector<std::vector<float>> & checkpoints,
+            std::vector<float> & prefix,
+            std::vector<float> & prepared,
+            ggml_tensor * prepared_destination,
+            float * attn_capture,
+            uint64_t & graph_ns,
+            uint64_t & publish_ns,
+            std::string * error) {
+        using Clock = std::chrono::steady_clock;
+        if (!backend_ || !weights_ || !includes_exact_core8_ ||
+            token_begin != 0 ||
+            model_layer < 0 ||
+            model_layer >= static_cast<int>(exact_core8_entries_.size())) {
+            return fail(error,
+                "persistent exact Core8 request is outside its envelope");
+        }
+        PersistentExactCore8Graph & entry =
+            exact_core8_entries_[static_cast<size_t>(model_layer)];
+        const KimiK3Weights & w = *weights_;
+        const KimiK3Layer & layer =
+            w.layers[static_cast<size_t>(model_layer)];
+        const size_t values =
+            static_cast<size_t>(w.n_embd) * kExactCoreGroupWidth8;
+        if (!layer.recurrent || !entry.graph || !entry.hidden ||
+            hidden.size() != values ||
+            checkpoints.size() != entry.checkpoints.size() ||
+            entry.prepared_to_host == (prepared_destination != nullptr) ||
+            (prepared_destination &&
+             !same_tensor_layout(entry.prepared, prepared_destination))) {
+            return fail(error,
+                "persistent exact Core8 shape mismatch at layer " +
+                std::to_string(model_layer));
+        }
+        for (const std::vector<float> & checkpoint : checkpoints) {
+            if (checkpoint.size() != values) {
+                return fail(error,
+                    "persistent exact Core8 checkpoint shape mismatch");
+            }
+        }
+        std::string unsupported;
+        const int expected_exact_launches =
+            exact_qk_core_launches(layer, &unsupported);
+        if (expected_exact_launches <= 0) {
+            return fail(error,
+                "persistent exact Core8 unsupported projection at layer " +
+                std::to_string(model_layer) + ": " + unsupported);
+        }
+
+        ggml_backend_tensor_set(
+            entry.hidden, hidden.data(), 0, values * sizeof(float));
+        for (size_t checkpoint = 0; checkpoint < checkpoints.size();
+             ++checkpoint) {
+            ggml_backend_tensor_set(
+                entry.checkpoints[checkpoint], checkpoints[checkpoint].data(),
+                0, values * sizeof(float));
+        }
+
+        const size_t launches_before =
+            ggml_backend_cuda_get_exact_qk_width8_launch_count();
+        const Clock::time_point graph_begin = Clock::now();
+        {
+            // This probe persists GGML metadata/allocation only. Native HIP
+            // graph replay stays disabled so every eager exact-QK launch is
+            // counted on every execution.
+            ScopedCudaGraphOverrides graph_scope(
+                /*disable_graphs=*/true,
+                /*mmvq_max_ncols=*/kExactCoreGroupWidth8,
+                /*skip_property_check=*/false,
+                /*exact_qk_width4=*/false,
+                /*exact_qk_width8=*/true);
+            if (ggml_backend_graph_compute(backend_, entry.graph) !=
+                    GGML_STATUS_SUCCESS) {
+                return fail(error,
+                    "persistent exact Core8 graph compute failed at layer " +
+                    std::to_string(model_layer));
+            }
+        }
+        graph_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                Clock::now() - graph_begin).count());
+        const size_t observed_exact_launches =
+            ggml_backend_cuda_get_exact_qk_width8_launch_count() -
+            launches_before;
+        if (observed_exact_launches !=
+                static_cast<size_t>(expected_exact_launches)) {
+            return fail(error,
+                "persistent exact Core8 Q4_K/Q6_K dispatch mismatch at layer " +
+                std::to_string(model_layer) + ": expected " +
+                std::to_string(expected_exact_launches) + ", observed " +
+                std::to_string(observed_exact_launches));
+        }
+
+        const Clock::time_point publish_begin = Clock::now();
+        ggml_backend_tensor_copy_async(
+            backend_, backend_, entry.terminal.conv, entry.conv_destination);
+        ggml_backend_tensor_copy_async(
+            backend_, backend_, entry.terminal.ssm, entry.ssm_destination);
+        if (prepared_destination) {
+            ggml_backend_tensor_copy_async(
+                backend_, backend_, entry.prepared, prepared_destination);
+        }
+        ggml_backend_synchronize(backend_);
+        publish_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                Clock::now() - publish_begin).count());
+
+        prefix.resize(values);
+        prepared.clear();
+        ggml_backend_tensor_get(
+            entry.prefix, prefix.data(), 0, values * sizeof(float));
+        if (entry.prepared_to_host) {
+            prepared.resize(values);
+            ggml_backend_tensor_get(
+                entry.prepared, prepared.data(), 0, values * sizeof(float));
+        }
+        if (attn_capture) {
+            ggml_backend_tensor_get(
+                entry.attn_input, attn_capture, 0, values * sizeof(float));
+        }
+        ++exact_core8_executions_;
+        return true;
+    }
+
     bool evaluate_router8(
             int model_layer,
             int32_t * selected,
@@ -1702,10 +2024,12 @@ private:
     ggml_backend_t backend_ = nullptr;
     const KimiK3Weights * weights_ = nullptr;
     ggml_gallocr_t allocator_ = nullptr;
+    ggml_gallocr_t exact_core8_allocator_ = nullptr;
     std::vector<PersistentRoutedGraph> entries_;
     std::vector<PersistentRoutedGraph> replay_entries_;
     std::vector<PersistentPreparedTailGraph> prepared_tail_entries_;
     std::vector<PersistentRouter8Graph> router8_entries_;
+    std::vector<PersistentExactCore8Graph> exact_core8_entries_;
     ggml_context * router8_staging_ctx_ = nullptr;
     ggml_backend_buffer_t router8_staging_buffer_ = nullptr;
     ggml_tensor * router8_staging_ = nullptr;
@@ -1715,15 +2039,19 @@ private:
     size_t replay_graph_count_ = 0;
     size_t prepared_tail_graph_count_ = 0;
     size_t router8_graph_count_ = 0;
+    size_t exact_core8_graph_count_ = 0;
     size_t router8_staging_bytes_ = 0;
     size_t workspace_bytes_ = 0;
+    size_t exact_core8_workspace_bytes_ = 0;
     size_t metadata_bytes_ = 0;
     uint64_t executions_ = 0;
     uint64_t replay_executions_ = 0;
     uint64_t prepared_tail_executions_ = 0;
     uint64_t router8_executions_ = 0;
+    uint64_t exact_core8_executions_ = 0;
     bool deferred_router_ = false;
     bool includes_mla_prepared_tail_ = false;
+    bool includes_exact_core8_ = false;
     int prepared_tail_width_ = 0;
 };
 
@@ -1734,6 +2062,7 @@ PersistentRoutedPreparation * ensure_persistent_routed_preparation(
         bool deferred_router,
         int prepared_tail_width,
         bool include_mla_prepared_tail,
+        bool include_exact_core8,
         bool require_exact_router_mode,
         std::string * error) {
     if (cache.persistent_routed_preparation) {
@@ -1744,10 +2073,10 @@ PersistentRoutedPreparation * ensure_persistent_routed_preparation(
         const bool mode_mismatch = require_exact_router_mode
             ? !existing->matches(
                 backend, weights, deferred_router, prepared_tail_width,
-                include_mla_prepared_tail)
+                include_mla_prepared_tail, include_exact_core8)
             : !existing->supports(
                 backend, weights, deferred_router, prepared_tail_width,
-                include_mla_prepared_tail);
+                include_mla_prepared_tail, include_exact_core8);
         if (same_identity && mode_mismatch) {
             // Exact macro replay graphs have one fixed router mode. Ordinary
             // width-one calls may reuse the router8 superset because its
@@ -1761,6 +2090,7 @@ PersistentRoutedPreparation * ensure_persistent_routed_preparation(
         if (!created || !created->initialize(
                 backend, weights, cache, deferred_router,
                 prepared_tail_width, include_mla_prepared_tail,
+                include_exact_core8,
                 error)) {
             delete created;
             return nullptr;
@@ -1772,10 +2102,10 @@ PersistentRoutedPreparation * ensure_persistent_routed_preparation(
     const bool supported = require_exact_router_mode
         ? persistent->matches(
             backend, weights, deferred_router, prepared_tail_width,
-            include_mla_prepared_tail)
+            include_mla_prepared_tail, include_exact_core8)
         : persistent->supports(
             backend, weights, deferred_router, prepared_tail_width,
-            include_mla_prepared_tail);
+            include_mla_prepared_tail, include_exact_core8);
     if (!supported) {
         if (error) *error = "P46 backend/model changed";
         return nullptr;
@@ -3026,11 +3356,18 @@ bool streamed_kimi_k3_forward_exact_multirow(
     }
 
     bool persistent_requested = false;
+    bool persistent_core8 = false;
     bool deferred_router = false;
     std::string persistent_error;
     if (!parse_strict_binary_environment(
             "DFLASH_KIMI_P46_PERSISTENT_ROUTED_PREP",
             persistent_requested, &persistent_error)) {
+        set_last_error(persistent_error);
+        return false;
+    }
+    if (!parse_strict_binary_environment(
+            "DFLASH_KIMI_P58_PERSISTENT_CORE8",
+            persistent_core8, &persistent_error)) {
         set_last_error(persistent_error);
         return false;
     }
@@ -3115,6 +3452,17 @@ bool streamed_kimi_k3_forward_exact_multirow(
             return false;
         }
     }
+    if (persistent_core8 &&
+        (!persistent_requested || macro_width != kExactCoreGroupWidth8 ||
+         active_rows != kExactCoreGroupWidth8 ||
+         exact_core_group_width != kExactCoreGroupWidth8 ||
+         exact_tail_group_width != kExactCoreGroupWidth8 ||
+         !deferred_router)) {
+        set_last_error(
+            "DFLASH_KIMI_P58_PERSISTENT_CORE8 requires one full V8, "
+            "P46, exact Core8/Tail8, and Router8");
+        return false;
+    }
     if (active_rows != macro_width &&
         (exact_core_group_width != 1 || exact_mla_group_width != 1 ||
          exact_tail_group_width != 0 || deferred_router)) {
@@ -3144,6 +3492,7 @@ bool streamed_kimi_k3_forward_exact_multirow(
                 : 0,
             /*include_mla_prepared_tail=*/
                 exact_mla_group_width == kExactCoreGroupWidth8,
+            /*include_exact_core8=*/persistent_core8,
             /*require_exact_router_mode=*/true,
             &persistent_error);
         if (!persistent) {
@@ -3230,12 +3579,27 @@ bool streamed_kimi_k3_forward_exact_multirow(
                 for (int group = 0; group < macro_width;
                      group += exact_core_group_width) {
                     ExactMultirowCoreGroup core;
-                    if (!exact_multirow_core_group(
+                    const bool core_ok = persistent_core8
+                        ? persistent->evaluate_exact_core8(
+                            il, group, hidden, checkpoints,
+                            core.prefix, core.prepared,
+                            /*prepared_destination=*/nullptr,
+                            capture_for_consumer(il, group),
+                            core.graph_ns, core.publish_ns,
+                            &persistent_error)
+                        : exact_multirow_core_group(
                             backend, w, cache, il, group,
                             exact_core_group_width, hidden,
                             checkpoints, core,
                             /*prepared_destination=*/nullptr,
-                            capture_for_consumer(il, group))) {
+                            capture_for_consumer(il, group));
+                    if (!core_ok) {
+                        if (persistent_core8) {
+                            set_last_error(
+                                "Kimi-K3 persistent exact Core8 failed at "
+                                "layer " + std::to_string(il) + ": " +
+                                persistent_error);
+                        }
                         return false;
                     }
                     grouped_graph_ns += core.graph_ns;
@@ -3408,7 +3772,14 @@ bool streamed_kimi_k3_forward_exact_multirow(
                         "unavailable at layer " + std::to_string(il));
                     return false;
                 }
-                const bool grouped_ok = layer.recurrent
+                const bool grouped_ok = layer.recurrent && persistent_core8
+                    ? persistent->evaluate_exact_core8(
+                        il, group, hidden, checkpoints,
+                        core.prefix, core.prepared, prepared_destination,
+                        capture_for_consumer(il, group),
+                        core.graph_ns, core.publish_ns,
+                        &persistent_error)
+                    : layer.recurrent
                     ? exact_multirow_core_group(
                         backend, w, cache, il, group, layer_group_width,
                         hidden, checkpoints, core, prepared_destination,
@@ -3418,6 +3789,11 @@ bool streamed_kimi_k3_forward_exact_multirow(
                         checkpoints, core, prepared_destination,
                         capture_for_consumer(il, group));
                 if (!grouped_ok) {
+                    if (layer.recurrent && persistent_core8) {
+                        set_last_error(
+                            "Kimi-K3 persistent exact Core8 failed at layer " +
+                            std::to_string(il) + ": " + persistent_error);
+                    }
                     return false;
                 }
                 grouped_graph_ns += core.graph_ns;
@@ -3672,6 +4048,7 @@ bool streamed_kimi_k3_forward(
             backend, w, cache, /*deferred_router=*/false,
             /*prepared_tail_width=*/0,
             /*include_mla_prepared_tail=*/false,
+            /*include_exact_core8=*/false,
             /*require_exact_router_mode=*/false,
             &persistent_error);
         if (!persistent) {
@@ -4034,6 +4411,21 @@ bool streamed_kimi_k3_forward(
 }
 
 } // namespace
+
+bool kimi_k3_prepare_persistent_core8(
+        ggml_backend_t backend,
+        const KimiK3Weights & weights,
+        KimiK3Cache & cache,
+        std::string & error) {
+    return ensure_persistent_routed_preparation(
+        backend, weights, cache,
+        /*deferred_router=*/true,
+        /*prepared_tail_width=*/kExactCoreGroupWidth8,
+        /*include_mla_prepared_tail=*/true,
+        /*include_exact_core8=*/true,
+        /*require_exact_router_mode=*/true,
+        &error) != nullptr;
+}
 
 bool kimi_k3_read_token_embeddings_on_host(
         const KimiK3Weights & weights,

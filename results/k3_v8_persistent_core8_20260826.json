@@ -1,0 +1,101 @@
+{
+  "schema": "dflash.kimi-k3.v8-persistent-core8.v1",
+  "date": "2026-08-26",
+  "status": "QUALIFIED_GO",
+  "source_base": "3984fa48",
+  "question": "Can immutable GGML Core8 graphs and one reusable workspace remove the measured KDA host/allocation envelope without changing exact q7/V8 semantics?",
+  "fixture": {
+    "name": "Fibonacci Python",
+    "prompt_tokens": 43,
+    "completion_tokens": 33,
+    "true_transitions": 32,
+    "target_steps": 5,
+    "logical_verify_rows": 38,
+    "physical_verify_rows": 40,
+    "acceptance": [8, 3, 8, 8, 6]
+  },
+  "artifacts": {
+    "probe_binary_sha256": "66a1cba3b1b1927d6af6da7db93e7ae2b0db9424cd9daa7174cf9887b6b74ad1",
+    "production_ab_binary_sha256": "badf15dddec2842de8212a36f15b79a7465db989af10e34bb483363847146f15",
+    "final_production_binary_sha256": "30da90a229f9379fe38c1c1382dfacb34a749a37409dac950c3af7d1a6b56b1a",
+    "probe_preregistration_sha256": "ed7d89572333cd8e76d5d837fe24e333bab21ad3fc4390041069140e9b38e9a6",
+    "production_preregistration_sha256": "15d83ab1fc51a075d48f8f8b31b74598bf1faa650638e796f4c67552aeffe214",
+    "runner_sha256": "34921f56abd47651be4c66f2dffb5c32646363249912a9d25575ff6f6c204d48",
+    "request_sha256": "856d7ed1f0280e20a1580aee15e58da91befdd7e416a900528bfdf391bc2208b",
+    "model_first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "draft_sha256": "848d12be5283a4717c08b1b1263420980dfc61b5a59067e343296fd7f4998435",
+    "probe_artifact_root": "/home/duster/kimi-k3-deploy/k3-persistent-core8-ab-20260826",
+    "production_artifact_root": "/home/duster/kimi-k3-deploy/k3-persistent-core8-production-ab-20260826"
+  },
+  "correctness": {
+    "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "all_eight_arms_match_final_logits": true,
+    "acceptance_identical": true,
+    "logical_traffic_identical": true,
+    "runtime_fallbacks": 0,
+    "exact_core8_executions_per_request": 345,
+    "exact_core8_graphs": 69
+  },
+  "probe_ab": {
+    "arm_order": ["A1", "B1", "B2", "A2"],
+    "control_decode_seconds": [8.998, 8.731],
+    "candidate_decode_seconds": [8.301, 8.243],
+    "control_pooled_seconds": 17.729,
+    "candidate_pooled_seconds": 16.544,
+    "pooled_saving_seconds": 1.185,
+    "saving_seconds_per_request": 0.5925,
+    "speedup": 1.071627176,
+    "control_strict_true_ar_tps": 3.609904676,
+    "candidate_strict_true_ar_tps": 3.868471954,
+    "control_pooled_physical_bytes": 68705730560,
+    "candidate_pooled_physical_bytes": 68705730560,
+    "traffic_pooled_identical": true
+  },
+  "production_ab": {
+    "arm_order": ["A1", "B1", "B2", "A2"],
+    "control_decode_seconds": [8.709, 8.734],
+    "candidate_decode_seconds": [8.249, 8.246],
+    "control_mean_core_ms_per_v8": 584.4446,
+    "candidate_mean_core_ms_per_v8": 499.3610,
+    "core_saving_ms_per_v8": 85.0836,
+    "control_pooled_seconds": 17.443,
+    "candidate_pooled_seconds": 16.495,
+    "pooled_saving_seconds": 0.948,
+    "saving_seconds_per_request": 0.474,
+    "speedup": 1.057471961,
+    "control_strict_true_ar_tps": 3.669093619,
+    "candidate_strict_true_ar_tps": 3.879963625,
+    "candidate_physical_bytes_delta": -540672,
+    "one_record_delta_upper_bound_ms_at_2_gib_s": 0.252,
+    "startup_initializations_candidate": 1,
+    "request_reinitializations_candidate": 0,
+    "candidate_exact_core8_workspace_bytes": 12882176,
+    "candidate_metadata_bytes": 368101984,
+    "qualification_note": "A1 observed 12861 pswpout pages and is invalid for publication timing. B1, B2 and A2 had only 228, 177 and 125 pages respectively. The clean adjacent B2-to-A2 pair saves 0.488 seconds; the independent probe reversal supplies the complete pooled traffic-identical timing gate."
+  },
+  "stable_production_run": {
+    "arm": "C3",
+    "decode_seconds": 8.219,
+    "strict_true_ar_tps": 3.893417691,
+    "displayed_emitted_token_tps": 4.02,
+    "prefill_seconds": 22.5,
+    "direct_physical_bytes": 34352594944,
+    "direct_io_ns": 11382195900,
+    "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e"
+  },
+  "result": {
+    "preregistered_saving_gate_seconds_per_request": 0.2575,
+    "both_probe_candidates_beat_paired_controls": true,
+    "both_production_candidates_beat_paired_controls": true,
+    "exact": true,
+    "verdict": "GO"
+  },
+  "implementation": "Persist the 69 exact recurrent Core8 GGML graphs inside the existing P46 object, refresh only mutable inputs, execute them sequentially through a separate reusable gallocr workspace, and initialize the full DSpark P46/Core8 superset once before the ready banner. Native HIP graph replay remains disabled in this commit.",
+  "scope": "Promotes persistent exact Core8 only for the serialized single-owner DSpark q7/V8 production topology. It does not authorize concurrent sequence use of the shared workspace, wider verifier widths, native HIP graph replay, or approximate arithmetic.",
+  "reviews": {
+    "internal": "Two independent reviewers found no semantic, state-order, allocator or lifetime blocker inside the serialized production envelope.",
+    "glm_5_3": "KEEP; add divergent-trajectory and soak coverage, and test native HIP capture only on the now-stable graphs.",
+    "ox_alpha": "Provider returned two server errors.",
+    "luna_fallback": "MODIFY but retain: preflight the complete DSpark closure, keep the serialized-workspace scope explicit, add lifecycle/trajectory coverage, then test isolated native HIP capture."
+  }
+}
