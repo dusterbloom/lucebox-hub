@@ -1,0 +1,69 @@
+{
+  "campaign": "k3-dspark-base-versus-markov-corrected",
+  "date_utc": "2026-08-26",
+  "source_head": "62eb06d8b754e4e77777da98134091234655d864",
+  "branch": "perf/k3-production-ponytail",
+  "question": "Does the DSpark Markov correction demote the authoritative target token at the first logically valid divergence relative to the raw base LM-head logits?",
+  "closure": {
+    "temporary_diff_sha256": "4a16d7f74953b75d0593f36a497edf4780a6079d3bf9a3f285244470ab9adc72",
+    "preregistration_sha256": "36ba05b4eee3608ccd7a7d15c3e95e97f55fd738d076ec12d95a2b17722a1507",
+    "runner_sha256": "31ca1ce28cb483300b4c4b9ca1da521391283b0a21e987a4d90cc2552fb352c2",
+    "diagnostic_binary_sha256": "95132a1c38c0b35784f454bd44a0be4e1cdad61534576a9b37acdbf9f241c625",
+    "target_model_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "draft_model_sha256": "848d12be5283a4717c08b1b1263420980dfc61b5a59067e343296fd7f4998435",
+    "platform_profile": "performance",
+    "gpu_dpm": ["high", "high"],
+    "production_defaults": true,
+    "persistent_core8": true,
+    "feature_dtype": "f32"
+  },
+  "fibonacci": {
+    "request_sha256": "856d7ed1f0280e20a1580aee15e58da91befdd7e416a900528bfdf391bc2208b",
+    "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "response_sha256": "d71366e86a92520cc955ef456b27cef41da9ee343afa7287e15a8c534f933295",
+    "server_log_sha256": "bee053cb4cc12d8a0de4030419e29e9d017985b2adecef03556592974abb15a2",
+    "first_divergence": {
+      "base_position": 51,
+      "depth_one_based": 3,
+      "target_token_id": 1151,
+      "base_target_rank": 5,
+      "base_top1_target_margin": 7.96446037,
+      "corrected_target_rank": 4,
+      "corrected_top1_target_margin": 1.58814049,
+      "correction_delta_target_vs_base_top1": 7.77674484
+    },
+    "interpretation": "The Markov correction substantially helps the target token but does not make it top-1. Disabling or shrinking the correction is not the Fibonacci acceptance fix."
+  },
+  "prose": {
+    "request_sha256": "f72c72cdefa4979a987227e10fb70b59b9cef31847e83db406ec250249dc77ac",
+    "final_logits_sha256": "1b95925becfc28282a9db7fc4b8366360a351897ebe399b3654eb22cd74d732f",
+    "response_sha256": "a522a2f06794e325ab41342540a0733c3297383a49b0f3d3de2efc1cbbc2c88a",
+    "server_log_sha256": "602deb5d75fe110bd4088800ff201a2487da3b1382913a16669a9f33719bd45c",
+    "draft_steps": 19,
+    "valid_first_divergence_events": 18,
+    "base_rank_better_events": 4,
+    "corrected_rank_better_events": 12,
+    "equal_rank_events": 2,
+    "direct_correction_harm_events": 1,
+    "direct_harm_example": {
+      "base_position": 40,
+      "depth_one_based": 2,
+      "target_token_id": 8985,
+      "base_target_rank": 1,
+      "corrected_target_rank": 4
+    },
+    "interpretation": "The correction usually improves target rank at observed divergences, but it can also turn a raw-base top-1 target into a rejection. First-divergence sampling cannot measure correction-help events because corrected top-1 rows are accepted and therefore are not divergences."
+  },
+  "verdict": {
+    "status": "NO-GO",
+    "closed_scope": "Globally disabling or shrinking the Markov correction as the immediate Fibonacci accept=3 repair is closed.",
+    "not_closed": [
+      "an analytically derived stronger global correction scale evaluated on calibration and held-out prompts",
+      "a target-matched draft or offline target-derived correction",
+      "terminal-token reuse in the generic production verifier",
+      "verifier delivery or draft-head cost reduction"
+    ],
+    "performance_note": "Diagnostic timing is not a performance result because corrected logits are copied to the host."
+  },
+  "artifact_root": "/home/duster/kimi-k3-deploy/k3-dspark-base-correction-20260826"
+}
