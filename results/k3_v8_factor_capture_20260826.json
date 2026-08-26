@@ -1,0 +1,74 @@
+{
+  "schema": "dflash.kimi-k3.v8-factor-capture.v1",
+  "date": "2026-08-26",
+  "status": "QUALIFIED_NO_GO",
+  "source_head": "1f0581df",
+  "binary_sha256": "cfb0950d4c0f4dc60978b87a3b6226f64d770b53e53b895b5fe59a5f62f040e6",
+  "question": "Can exact recurrence-factor capture eliminate the measured 584.232-ms partial KDA replay without changing target state or logits?",
+  "fixture": {
+    "request": "k3_fib_request.json",
+    "prompt_tokens": 43,
+    "completion_tokens": 33,
+    "true_transitions": 32,
+    "expected_partial_state_commits": [3, 5]
+  },
+  "arms": [
+    "A: DFLASH_KIMI_V8_FACTOR_CAPTURE=0",
+    "B: DFLASH_KIMI_V8_FACTOR_CAPTURE=1"
+  ],
+  "arm_order": ["A1", "B1", "B2", "A2"],
+  "capture_bytes_per_v8": 220658688,
+  "correctness_gate": {
+    "emitted_text_identical": true,
+    "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "acceptance_histogram_identical": true,
+    "no_fallback": true
+  },
+  "go": "all correctness gates pass and mean request saving >=0.20 seconds",
+  "no_go": "correct but below materiality; remove the three-file experiment",
+  "invalid": "any output/logit/state mismatch, changed acceptance, fallback, OOM, or catastrophic swap",
+  "runs": [
+    {
+      "arm": "A1",
+      "capture": false,
+      "decode_seconds": 8.675,
+      "strict_true_ar_tps": 3.688760807,
+      "direct_io_ns": 9938575422,
+      "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e"
+    },
+    {
+      "arm": "B1",
+      "capture": true,
+      "decode_seconds": 9.312,
+      "strict_true_ar_tps": 3.436426117,
+      "direct_io_ns": 11417233792,
+      "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e"
+    },
+    {
+      "arm": "B2",
+      "capture": true,
+      "decode_seconds": 8.191,
+      "strict_true_ar_tps": 3.906726895,
+      "direct_io_ns": 10834257598,
+      "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e"
+    },
+    {
+      "arm": "A2",
+      "capture": false,
+      "decode_seconds": 8.982,
+      "strict_true_ar_tps": 3.562680917,
+      "direct_io_ns": 11941104724,
+      "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e"
+    }
+  ],
+  "result": {
+    "control_pooled_strict_true_ar_tps": 3.624624795,
+    "candidate_pooled_strict_true_ar_tps": 3.656516026,
+    "mean_request_saving_seconds": 0.077,
+    "speedup": 1.008798492,
+    "exact": true,
+    "fallbacks": 0,
+    "verdict": "NO_GO",
+    "scope": "Recurrence-factor capture with the current Width8 GDN representation is exact but does not meet the 0.20-second end-to-end materiality gate. The experimental three-file implementation was removed."
+  }
+}
