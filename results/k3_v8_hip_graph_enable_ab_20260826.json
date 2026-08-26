@@ -1,0 +1,97 @@
+{
+  "schema": "dflash.kimi-k3.v8-hip-graph-enable-ab.v1",
+  "date": "2026-08-26",
+  "status": "QUALIFIED_NO_GO",
+  "source_head": "02ec419f278994200c7b6d073395bea014808c27",
+  "question": "Can existing native GGML HIP graph capture/replay remove at least 206 ms from the exact Fibonacci q7/V8 request and cross the perfect-oracle 5 tok/s gate?",
+  "artifacts": {
+    "binary_sha256": "3407a1642e167f452e8a546dbb0adb49ec1ebcdac8e6343cb3d5654ef8049844",
+    "cmake": {
+      "GGML_HIP_GRAPHS": true,
+      "GGML_CUDA_GRAPHS": false,
+      "build_parallelism": 4
+    },
+    "request_sha256": "856d7ed1f0280e20a1580aee15e58da91befdd7e416a900528bfdf391bc2208b",
+    "runner_sha256": "13441828baa43abe11b7eb0011a7e60e5ecc4a478d250674757767b9eb2a8b90",
+    "preregistration_sha256": "052bae1d161c8d91dad4d57548dfe6aa4f40912d9edc8cddd1226bf92b1822c7",
+    "model_first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "draft_sha256": "848d12be5283a4717c08b1b1263420980dfc61b5a59067e343296fd7f4998435"
+  },
+  "fixture": {
+    "name": "Fibonacci Python",
+    "prompt_tokens": 43,
+    "completion_tokens": 33,
+    "true_transitions": 32,
+    "target_steps": 5,
+    "acceptance": [8, 3, 8, 8, 6]
+  },
+  "safety_census": {
+    "artifact_root": "/home/duster/kimi-k3-deploy/k3-hip-graphs-census-20260826/census01",
+    "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "runtime_fallbacks": 0,
+    "observation": "Stable 13-node graphs replayed thousands of times, but the large 292/402/501-node Core-family graphs recorded zero captures and zero replays because their bindings changed. The dominant macro-union provider explicitly disables native graphs.",
+    "performance_use": "logging-only; excluded from timing"
+  },
+  "arm_order": ["A1", "B1", "B2", "A2"],
+  "arms": {
+    "A": "same binary with GGML_CUDA_DISABLE_GRAPHS_DEVICES=0,1",
+    "B": "same binary with GGML_CUDA_DISABLE_GRAPHS_DEVICES absent"
+  },
+  "go": "All correctness gates pass, both B arms beat their matched controls, pooled request saving is at least 0.206 seconds, and the perfect-oracle projection crosses 5 tok/s.",
+  "runs": [
+    {
+      "arm": "A1",
+      "graphs": false,
+      "decode_seconds": 8.878,
+      "strict_true_ar_tps": 3.604415409,
+      "direct_physical_bytes": 34353135616,
+      "direct_io_ns": 9055294024,
+      "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+      "runtime_fallbacks": 0
+    },
+    {
+      "arm": "B1",
+      "graphs": true,
+      "decode_seconds": 9.052,
+      "strict_true_ar_tps": 3.535130358,
+      "direct_physical_bytes": 34353135616,
+      "direct_io_ns": 9271473173,
+      "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+      "runtime_fallbacks": 0
+    },
+    {
+      "arm": "B2",
+      "graphs": true,
+      "decode_seconds": 9.155,
+      "strict_true_ar_tps": 3.495357728,
+      "direct_physical_bytes": 34353135616,
+      "direct_io_ns": 9299459421,
+      "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+      "runtime_fallbacks": 0
+    },
+    {
+      "arm": "A2",
+      "graphs": false,
+      "decode_seconds": 8.773,
+      "strict_true_ar_tps": 3.647554998,
+      "direct_physical_bytes": 34353135616,
+      "direct_io_ns": 9192056668,
+      "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+      "runtime_fallbacks": 0
+    }
+  ],
+  "result": {
+    "control_pooled_decode_seconds": 17.651,
+    "candidate_pooled_decode_seconds": 18.207,
+    "control_pooled_strict_true_ar_tps": 3.625856892,
+    "candidate_pooled_strict_true_ar_tps": 3.515131543,
+    "candidate_minus_control_seconds_per_request": 0.278,
+    "candidate_speedup": 0.969462,
+    "exact": true,
+    "traffic_identical": true,
+    "acceptance_identical": true,
+    "verdict": "NO_GO"
+  },
+  "scope": "Closes enabling the existing native GGML HIP graph implementation for the current exact q7/V8 topology. Small stable graphs replay, but the large transient Core graphs do not, and the matched candidate regresses. It does not close a persistent KDA island with stable bindings or a redesigned graph lifetime.",
+  "cleanup": "No production source changed. The graph-enabled build is experimental only; production remains GGML_HIP_GRAPHS=OFF."
+}
