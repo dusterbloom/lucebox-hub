@@ -1,0 +1,74 @@
+{
+  "schema": "dflash.kimi-k3.perfect-q7-current-ponytail-ceiling.v1",
+  "date": "2026-08-26",
+  "question": "What is the exact perfect-token q=7/V=8 ceiling after the retained direct-async, Core8, and terminal-pending-token production wins, while retaining the real Radix draft/head cost?",
+  "verdict": "NO_GO_FOR_REPEATABLE_5_TPS__CODE_FUNCTION_POOLED_4_948811__FIBONACCI_POOLED_4_552957",
+  "measurement_semantics": {
+    "q": 7,
+    "verify_rows": 8,
+    "strict_transitions_per_arm": 32,
+    "completion_tokens_per_arm": 33,
+    "strict_tokens_per_second": "32 / decode_seconds; the emitted terminal token is not counted as a transition",
+    "oracle_scope": "Archived target-authoritative future tokens replace proposal IDs only. The production Radix draft, feature ring, target LM-head projection, Markov head, and target verifier all still execute.",
+    "not_a_claim": "This is a verifier ceiling and is not deployable draft throughput."
+  },
+  "closure": {
+    "branch_head": "f1447c09de95fce80a65138a9b808bcbe971c354",
+    "binary_sha256": "b2e18b3163d5345d380b8abe6d1c114adb2edf0acff520f3fc4634f93e707db2",
+    "runner_sha256": "f4c6911e89e4e888b56d25433b733e4785c7e6ea12dbe79190fc31b341a607c8",
+    "diagnostic_source_sha256": "7f308d82aa6af2e9adc960c8ad2d9654a34c194912b7515bf7452bcb9c3469ca",
+    "production_source_sha256": "1d2957195a855256cbee37cba4509f1c2934d388a972181aa32d70484e9994f0",
+    "model_first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "draft_sha256": "848d12be5283a4717c08b1b1263420980dfc61b5a59067e343296fd7f4998435",
+    "topology": "gfx1151 authoritative K3 target + gfx1201 Radix Q8_0 draft; exact Width8 macro union; direct async; P30 borrowed records; P40/P41/P42/P45/P46; persistent Core8; terminal pending token",
+    "power": "platform_profile=performance; card1=high; card2=high",
+    "artifact_roots": [
+      "/home/duster/kimi-k3-deploy/k3-perfect-q7-deployable-20260826",
+      "/home/duster/kimi-k3-deploy/k3-perfect-q7-code-function-20260826"
+    ]
+  },
+  "fibonacci": {
+    "request_sha256": "856d7ed1f0280e20a1580aee15e58da91befdd7e416a900528bfdf391bc2208b",
+    "token_ids_sha256": "bf8daace063ac06e5be2bf79e14b213050b83f91e4c58f6d3c80407868cdf484",
+    "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "arms": [
+      {"name":"A1","oracle":false,"decode_seconds":8.2309,"strict_tps":3.887789,"target_steps":5,"acceptance_histogram":{"3":1,"6":1,"8":3},"direct_physical_bytes":34352594944,"direct_io_seconds":9.432004},
+      {"name":"B1","oracle":true,"decode_seconds":7.8260,"strict_tps":4.088934,"target_steps":4,"acceptance_histogram":{"8":4},"target_stage_seconds":7.646039,"outer_draft_and_loop_seconds":0.179961,"direct_physical_bytes":32809107456,"direct_io_seconds":14.549765},
+      {"name":"B2","oracle":true,"decode_seconds":6.2308,"strict_tps":5.135770,"target_steps":4,"acceptance_histogram":{"8":4},"target_stage_seconds":6.051211,"outer_draft_and_loop_seconds":0.179589,"direct_physical_bytes":32809107456,"direct_io_seconds":8.304004},
+      {"name":"A2","oracle":false,"decode_seconds":8.1617,"strict_tps":3.920750,"target_steps":5,"acceptance_histogram":{"3":1,"6":1,"8":3},"direct_physical_bytes":34353135616,"direct_io_seconds":8.672574}
+    ],
+    "pooled_control_strict_tps": 3.904197,
+    "pooled_oracle_strict_tps": 4.552957,
+    "interpretation": "One oracle arm exceeded 5, but identical physical bytes accompanied a 1.752x direct-I/O time swing. The reversed pair is not a repeatable 5-tok/s result."
+  },
+  "code_function": {
+    "request_sha256": "649a3d74b3ca9c98d6f63de371ba3f6a5f982ffaf81a82683d14471ff1cd0194",
+    "token_ids_sha256": "3b739824ee3b69588752f3331172d30d9c7d1022694640f10ce5bae05bb1d0e3",
+    "final_logits_sha256": "3cdf0dd9015396e03e0d2d9a161680a68d305af21bbd638c42ddcbe758c5c00e",
+    "arms": [
+      {"name":"C1","oracle":false,"decode_seconds":8.7453,"strict_tps":3.659109,"target_steps":5,"acceptance_histogram":{"4":1,"5":1,"8":3},"direct_physical_bytes":43744763904,"direct_io_seconds":10.848083},
+      {"name":"D1","oracle":true,"decode_seconds":6.4346,"strict_tps":4.973114,"target_steps":4,"acceptance_histogram":{"8":4},"target_stage_seconds":6.253371,"outer_draft_and_loop_seconds":0.181229,"direct_physical_bytes":40146558976,"direct_io_seconds":9.945283},
+      {"name":"D2","oracle":true,"decode_seconds":6.4978,"strict_tps":4.924744,"target_steps":4,"acceptance_histogram":{"8":4},"target_stage_seconds":6.316141,"outer_draft_and_loop_seconds":0.181659,"direct_physical_bytes":40146558976,"direct_io_seconds":9.948806},
+      {"name":"C2","oracle":false,"decode_seconds":8.8233,"strict_tps":3.626759,"target_steps":5,"acceptance_histogram":{"4":1,"5":1,"8":3},"direct_physical_bytes":43745304576,"direct_io_seconds":10.998988}
+    ],
+    "pooled_control_strict_tps": 3.642861,
+    "pooled_oracle_strict_tps": 4.948811,
+    "pooled_oracle_speedup": 1.358489,
+    "pooled_oracle_mean_v8_ms": {"core":498.836,"experts":937.515,"join":98.138,"output":35.941,"stage_other":0.759,"outer_draft_and_loop":45.361,"total":1616.550},
+    "gap_to_repeatable_5_seconds_per_request": 0.0662,
+    "gap_to_repeatable_5_ms_per_v8": 16.55,
+    "interpretation": "This stable fixture is the nearest current exact ceiling. Crossing it by optimizing only the roughly 45-ms/V8 retained draft/head envelope would improve an oracle number but would not make the current draft deployably exceed 5 tok/s."
+  },
+  "exactness": {
+    "all_arms_token_ids_byte_identical_within_fixture": true,
+    "all_arms_final_logits_byte_identical_within_fixture": true,
+    "oracle_active_rows": 32,
+    "oracle_inactive_rows": 0,
+    "oracle_fallbacks": 0,
+    "swap": "At most two pswpin pages per arm and zero pswpout growth; no material swap activity."
+  },
+  "decision": {
+    "fused_head": "BACKLOG: clone only the approximately 85 MiB W1/W2 pair to gfx1151 and reuse the existing fused Markov primitive if a larger production lane later justifies it. The entire current draft/head remainder is below the 0.20-s/V8 implementation gate.",
+    "next_lane": "Require at least 0.20 s/V8 credible exact saving from expert delivery/physical representation or cross-stage overlap, then measure real draft acceptance and add safe admission before calling >=5 deployable."
+  }
+}
