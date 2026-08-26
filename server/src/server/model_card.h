@@ -69,7 +69,7 @@ struct ModelCard {
     // (a) `thinking_marker` — the parse-side terminator. Bytes that signal
     //     end-of-thinking to *us* (bench parser, chat template, response
     //     formatter). If empty, arch-default applies: `</think>` for
-    //     qwen3-family, `<channel|>` for gemma4, `</think>` elsewhere.
+    //     qwen3-family, `<channel|>` for gemma4, and native XTML for Kimi K3.
     // (b) `thinking_terminator_hint` — the inject-side directive. What we
     //     tell the *model* when the budget hook fires. Free-form text;
     //     the server tokenizes it and overrides sampled tokens with this

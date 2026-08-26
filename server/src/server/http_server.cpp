@@ -288,6 +288,12 @@ bool canonical_assistant_content(
     return true;
 }
 
+int kimi_k3_routed_expert_min_budget(
+        const std::string & arch, const json & effective_tools) {
+    return arch == "kimi-k3" && effective_tools.is_array() &&
+        !effective_tools.empty() ? 96 : 0;
+}
+
 }  // namespace http_detail
 
 // ─── curl helpers for upstream proxy ─────────────────────────────────────
@@ -720,8 +726,8 @@ json build_props_body(const ServerConfig & config,
                       const ToolMemory & tool_memory) {
     // arch-gated capabilities (mirrors Python _capabilities()).
     const bool is_qwen = (config.arch.rfind("qwen", 0) == 0);
-    const bool reasoning_supported = is_qwen;
     const bool is_kimi_k3 = config.arch == "kimi-k3";
+    const bool reasoning_supported = is_qwen || is_kimi_k3;
     const bool speculative_supported = is_qwen || is_kimi_k3;
     const bool speculative_enabled =
         config.speculative_enabled && !is_kimi_k3;
@@ -729,7 +735,8 @@ json build_props_body(const ServerConfig & config,
         (is_kimi_k3 && !config.draft_path.empty());
     const bool speculative_requires_opt_in =
         is_kimi_k3 && speculative_available;
-    const bool tools_supported = is_qwen || config.arch == "deepseek4";
+    const bool tools_supported =
+        is_qwen || is_kimi_k3 || config.arch == "deepseek4";
 
     auto pcs  = prefix_cache.stats();
     auto pcfs = prefix_cache.full_stats();
@@ -3119,8 +3126,12 @@ HttpServer::PreparedPrompt HttpServer::prepare_prompt(
         const ParsedRequest & req) {
     PreparedPrompt prepared;
     prepared.tokens = req.prompt_tokens;
+    const bool k3_tool_quality =
+        http_detail::kimi_k3_routed_expert_min_budget(
+            config_.arch, req.effective_tools) > 0;
 
-    if (config_.pflash_mode != ServerConfig::PflashMode::OFF &&
+    if (!k3_tool_quality &&
+        config_.pflash_mode != ServerConfig::PflashMode::OFF &&
         drafter_tokenizer_ != nullptr) {
         const int prompt_tokens = (int) req.prompt_tokens.size();
         bool should_compress =
@@ -3251,6 +3262,20 @@ HttpServer::GenerationCacheState HttpServer::prepare_generation_cache(
         const ParsedRequest & req, PreparedPrompt & prepared,
         GenerateRequest & generate_request) {
     auto & effective_prompt = prepared.tokens;
+    if (generate_request.routed_expert_min_budget > 0) {
+        GenerationCacheState cache;
+        cache.disk_policy = req.disk_cache_policy;
+        cache.disk_policy.mode = DiskPrefixCacheMode::Off;
+        std::fprintf(stderr,
+            "[server] chat CACHE %s restore=false quality-budget=%d "
+            "effective_prompt=%zu disk_policy=off\n",
+            req.response_id.c_str(),
+            generate_request.routed_expert_min_budget,
+            effective_prompt.size());
+        status_.set_flags(false, false, !config_.draft_path.empty());
+        broadcast_status();
+        return cache;
+    }
     // Tool-heavy requests prefer the reusable system/tool boundary under eviction.
     const bool prefer_inline_snap = !req.tools.empty();
     const bool prefer_tools_boundary =
@@ -3899,6 +3924,9 @@ void HttpServer::prepare_generation_inputs(
     inputs.request.n_gen = inputs.generation_cap;
     inputs.request.sampler = req.sampler;
     inputs.request.do_sample = req.sampler.needs_logit_processing();
+    inputs.request.routed_expert_min_budget =
+        http_detail::kimi_k3_routed_expert_min_budget(
+            config_.arch, req.effective_tools);
     inputs.request.force_ar_decode =
         request_forces_ar_decode(config_.arch, req.speculative);
     // Tokens are delivered through DaemonIO so all API formats share the

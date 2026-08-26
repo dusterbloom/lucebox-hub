@@ -250,6 +250,71 @@ static json convert_param_value(const std::string & val, const std::string & key
     try { return json::parse(val); } catch (...) { return val; }
 }
 
+struct ParamSchemaType {
+    std::string value;
+    bool nullable = false;
+    bool valid = false;
+};
+
+static ParamSchemaType param_schema_type(const std::string & key,
+                                         const json & props) {
+    if (!props.contains(key)) return {};
+    const auto & cfg = props[key];
+    if (!cfg.is_object() || !cfg.contains("type")) {
+        return {"string", false, true};
+    }
+    const auto & type = cfg["type"];
+    if (type.is_string()) {
+        const std::string value = type.get<std::string>();
+        return {value, value == "null", true};
+    }
+    if (!type.is_array()) return {};
+
+    ParamSchemaType resolved;
+    for (const auto & entry : type) {
+        if (!entry.is_string()) return {};
+        const std::string candidate = entry.get<std::string>();
+        if (candidate == "null") {
+            resolved.nullable = true;
+        } else if (resolved.value.empty()) {
+            resolved.value = candidate;
+        } else {
+            // The XTML argument form has no unambiguous discriminator for a
+            // general multi-type union. Nullable single-type schemas are the
+            // useful model-card case; fail closed for everything broader.
+            return {};
+        }
+    }
+    if (resolved.value.empty() && resolved.nullable) {
+        resolved.value = "null";
+    }
+    resolved.valid = !resolved.value.empty();
+    return resolved;
+}
+
+static bool param_value_matches_schema(const std::string & val,
+                                       const std::string & key,
+                                       const json & props) {
+    const ParamSchemaType schema = param_schema_type(key, props);
+    if (!schema.valid) return false;
+    const std::string & type = schema.value;
+    if (type == "string" || type == "str" || type == "enum") return true;
+    const json parsed = json::parse(val, nullptr, false);
+    if (parsed.is_discarded()) return false;
+    if (parsed.is_null()) return schema.nullable;
+    if (type.substr(0, 3) == "int" || type == "integer") {
+        return parsed.is_number_integer();
+    }
+    if (type == "number" || type.substr(0, 5) == "float") {
+        return parsed.is_number();
+    }
+    if (type == "boolean" || type == "bool") return parsed.is_boolean();
+    if (type == "object") return parsed.is_object();
+    if (type == "array") return parsed.is_array();
+    if (type == "null") return parsed.is_null();
+    return true;
+}
+
 static std::string kimi_unescape_attr(std::string value) {
     size_t pos = 0;
     while ((pos = value.find("&quot;", pos)) != std::string::npos) {
@@ -261,15 +326,6 @@ static std::string kimi_unescape_attr(std::string value) {
         value.replace(pos, 5, "&");
         ++pos;
     }
-    return value;
-}
-
-static json kimi_param_value(const std::string & raw,
-                             const std::string & type) {
-    if (type.rfind("str", 0) == 0) return raw;
-    const std::string value = trim_ws(raw);
-    const json parsed = json::parse(value, nullptr, false);
-    if (!parsed.is_discarded()) return parsed;
     return value;
 }
 
@@ -337,12 +393,6 @@ static const std::regex & re_kimi_call() {
 static const std::regex & re_kimi_argument() {
     static const std::regex r(
         R"re(<\|open\|>argument key="([^"]+)"(?:\s+type="([^"]*)")?<\|sep\|>((?:(?!<\|open\|>argument key=")[\s\S])*?)<\|close\|>argument(?:<\|sep\|>)?)re");
-    return r;
-}
-
-static const std::regex & re_kimi_json() {
-    static const std::regex r(
-        R"re(<\|open\|>json type="object"<\|sep\|>([\s\S]*?)<\|close\|>json(?:<\|sep\|>)?)re");
     return r;
 }
 
@@ -920,45 +970,46 @@ static ToolParseResult parse_kimi_k3_tool_calls(
             if (!valid_tool_name(name) || !tool_allowed(tools, name)) {
                 return {text, {}};
             }
+            const json props = find_tool_properties(tools, name);
 
             const std::string call_body = (*it)[2].str();
             json args = json::object();
             std::vector<Span> consumed;
 
-            std::smatch json_match;
-            if (std::regex_search(call_body, json_match, re_kimi_json())) {
-                const json object =
-                    json::parse(json_match[1].str(), nullptr, false);
-                if (!object.is_object()) return {text, {}};
-                args = object;
-                consumed.push_back({(size_t) json_match.position(),
-                                    (size_t) json_match.position() +
-                                        (size_t) json_match.length()});
-            } else {
-                size_t arg_openers = 0;
-                for (size_t pos = 0;
-                     (pos = call_body.find("<|open|>argument key=\"", pos)) !=
-                         std::string::npos;
-                     pos += 24) {
-                    ++arg_openers;
-                }
-                size_t arg_matches = 0;
-                auto arg_begin = std::sregex_iterator(
-                    call_body.begin(), call_body.end(), re_kimi_argument());
-                const auto arg_end = std::sregex_iterator();
-                for (auto arg = arg_begin; arg != arg_end; ++arg) {
-                    ++arg_matches;
-                    const std::string key =
-                        kimi_unescape_attr((*arg)[1].str());
-                    if (key.empty() || args.contains(key)) return {text, {}};
-                    args[key] = kimi_param_value(
-                        (*arg)[3].str(), (*arg)[2].str());
-                    consumed.push_back({(size_t) arg->position(),
-                                        (size_t) arg->position() +
-                                            (size_t) arg->length()});
-                }
-                if (arg_openers != arg_matches) return {text, {}};
+            size_t arg_openers = 0;
+            for (size_t pos = 0;
+                 (pos = call_body.find("<|open|>argument key=\"", pos)) !=
+                     std::string::npos;
+                 pos += 24) {
+                ++arg_openers;
             }
+            size_t arg_matches = 0;
+            auto arg_begin = std::sregex_iterator(
+                call_body.begin(), call_body.end(), re_kimi_argument());
+            const auto arg_end = std::sregex_iterator();
+            for (auto arg = arg_begin; arg != arg_end; ++arg) {
+                ++arg_matches;
+                const std::string key =
+                    kimi_unescape_attr((*arg)[1].str());
+                const std::string raw = (*arg)[3].str();
+                const ParamSchemaType schema = param_schema_type(key, props);
+                const std::string & type = schema.value;
+                const bool string_value =
+                    schema.valid &&
+                    (type == "string" || type == "str" || type == "enum");
+                const std::string value =
+                    string_value ? raw : trim_ws(raw);
+                if (key.empty() || args.contains(key) ||
+                    !param_value_matches_schema(value, key, props)) {
+                    return {text, {}};
+                }
+                args[key] = string_value
+                    ? json(value) : convert_param_value(value, key, props);
+                consumed.push_back({(size_t) arg->position(),
+                                    (size_t) arg->position() +
+                                        (size_t) arg->length()});
+            }
+            if (arg_openers != arg_matches) return {text, {}};
 
             std::sort(consumed.begin(), consumed.end(),
                       [](const Span & a, const Span & b) {

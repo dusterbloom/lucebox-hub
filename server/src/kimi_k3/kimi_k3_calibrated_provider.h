@@ -26,6 +26,9 @@ bool parse_kimi_k3_layer_budget_table(
     std::vector<int32_t> & budgets,
     std::string * error = nullptr);
 
+int kimi_k3_effective_slab_budget(int configured_budget,
+                                  int request_min_budget);
+
 struct KimiK3CalibratedSlabPlan {
     int requested_budget = 0;
     std::vector<int32_t> selected_slab_ids;

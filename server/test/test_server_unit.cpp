@@ -3280,14 +3280,22 @@ TEST_CASE(ServerUnitFixture, test_kimi_k3_stream_and_nonstream_match) {
 TEST_CASE(ServerUnitFixture, test_kimi_k3_xtml_tool_call_parser) {
     const json tools = json::array({{{"type", "function"}, {"function", {
         {"name", "get_weather"},
-        {"parameters", {{"type", "object"}}},
+        {"parameters", {
+            {"type", "object"},
+            {"properties", {
+                {"city", {{"type", "string"}}},
+                {"days", {{"type", "number"}}},
+                {"count", {{"type", json::array({"integer", "null"})}}},
+                {"nothing", {{"type", "null"}}},
+            }},
+        }},
     }}}});
     const std::string text =
         "Sure.<|open|>tools<|sep|>"
         "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>"
-        "<|open|>argument key=\"city\" type=\"string\"<|sep|>Rome"
+        "<|open|>argument key=\"city\" type=\"object\"<|sep|> {\"a\":1} "
         "<|close|>argument<|sep|>"
-        "<|open|>argument key=\"days\" type=\"number\"<|sep|>100"
+        "<|open|>argument key=\"days\"<|sep|>100"
         "<|close|>argument<|sep|>"
         "<|close|>call<|sep|><|close|>tools<|sep|>";
     const auto parsed = parse_tool_calls(text, tools, true);
@@ -3295,12 +3303,74 @@ TEST_CASE(ServerUnitFixture, test_kimi_k3_xtml_tool_call_parser) {
     TEST_ASSERT(parsed.tool_calls.size() == 1);
     TEST_ASSERT(parsed.tool_calls[0].name == "get_weather");
     TEST_ASSERT(json::parse(parsed.tool_calls[0].arguments) ==
-                json({{"city", "Rome"}, {"days", 100}}));
+                json({{"city", " {\"a\":1} "}, {"days", 100}}));
+
+    const std::string undeclared =
+        "<|open|>tools<|sep|>"
+        "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>"
+        "<|open|>argument key=\"country\" type=\"string\"<|sep|>Italy"
+        "<|close|>argument<|sep|>"
+        "<|close|>call<|sep|><|close|>tools<|sep|>";
+    const auto rejected = parse_tool_calls(undeclared, tools, true);
+    TEST_ASSERT(rejected.tool_calls.empty());
+    TEST_ASSERT(rejected.cleaned_text == undeclared);
+
+    const std::string invalid_number =
+        "<|open|>tools<|sep|>"
+        "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>"
+        "<|open|>argument key=\"days\" type=\"string\"<|sep|>many"
+        "<|close|>argument<|sep|>"
+        "<|close|>call<|sep|><|close|>tools<|sep|>";
+    TEST_ASSERT(parse_tool_calls(invalid_number, tools, true)
+                    .tool_calls.empty());
+
+    const std::string invalid_nullable_integer =
+        "<|open|>tools<|sep|>"
+        "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>"
+        "<|open|>argument key=\"count\"<|sep|>many"
+        "<|close|>argument<|sep|>"
+        "<|close|>call<|sep|><|close|>tools<|sep|>";
+    TEST_ASSERT(parse_tool_calls(invalid_nullable_integer, tools, true)
+                    .tool_calls.empty());
+
+    const std::string null_integer =
+        "<|open|>tools<|sep|>"
+        "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>"
+        "<|open|>argument key=\"count\"<|sep|>null"
+        "<|close|>argument<|sep|>"
+        "<|close|>call<|sep|><|close|>tools<|sep|>";
+    const auto parsed_null = parse_tool_calls(null_integer, tools, true);
+    TEST_ASSERT(parsed_null.tool_calls.size() == 1);
+    TEST_ASSERT(json::parse(parsed_null.tool_calls[0].arguments) ==
+                json({{"count", nullptr}}));
+
+    const std::string pure_null =
+        "<|open|>tools<|sep|>"
+        "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>"
+        "<|open|>argument key=\"nothing\" type=\"null\"<|sep|>null"
+        "<|close|>argument<|sep|>"
+        "<|close|>call<|sep|><|close|>tools<|sep|>";
+    const auto parsed_pure_null = parse_tool_calls(pure_null, tools, true);
+    TEST_ASSERT(parsed_pure_null.tool_calls.size() == 1);
+    TEST_ASSERT(json::parse(parsed_pure_null.tool_calls[0].arguments) ==
+                json({{"nothing", nullptr}}));
+
+    const std::string unsupported_json =
+        "<|open|>tools<|sep|>"
+        "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>"
+        "<|open|>json type=\"object\"<|sep|>{\"city\":\"Rome\"}"
+        "<|close|>json<|sep|>"
+        "<|close|>call<|sep|><|close|>tools<|sep|>";
+    TEST_ASSERT(parse_tool_calls(unsupported_json, tools, true)
+                    .tool_calls.empty());
 }
 
 TEST_CASE(ServerUnitFixture, test_kimi_k3_framer_to_emitter_tool_call) {
     const json tools = json::array({{{"type", "function"}, {"function", {
-        {"name", "get_weather"}, {"parameters", {{"type", "object"}}},
+        {"name", "get_weather"}, {"parameters", {
+            {"type", "object"},
+            {"properties", {{"city", {{"type", "string"}}}}},
+        }},
     }}}});
     SseEmitter emitter(ApiFormat::OPENAI_CHAT, "k3", "kimi-k3", 1,
                        tools, nullptr, {}, false, true);
@@ -5411,6 +5481,14 @@ TEST_CASE(ServerUnitFixture, test_model_card_family_fallback_deepseek4) {
     TEST_ASSERT(unknown.source_label != "family:not-a-real-arch");
 }
 
+TEST_CASE(ServerUnitFixture, test_model_card_family_fallback_kimi_k3) {
+    const auto card =
+        dflash::common::resolve_model_card("", "", "kimi-k3", "");
+    TEST_ASSERT(card.source_label == "family:kimi-k3");
+    TEST_ASSERT(card.max_tokens == 32768);
+    TEST_ASSERT(card.thinking_marker == "<|close|>think<|sep|>");
+}
+
 TEST_CASE(ServerUnitFixture, test_props_model_card_wholesale_sidecar) {
     // When a sidecar was loaded, /props.model_card should be the parsed
     // sidecar JSON verbatim — *all* fields from the file, not just the
@@ -5506,10 +5584,25 @@ TEST_CASE(ServerUnitFixture, test_props_kimi_speculative_is_available_but_opt_in
     const json body = build_props_body(cfg, pc, tm);
 
     TEST_ASSERT(body["capabilities"]["speculative_supported"].get<bool>());
+    TEST_ASSERT(body["capabilities"]["reasoning_supported"].get<bool>());
+    TEST_ASSERT(body["capabilities"]["tools_supported"].get<bool>());
     TEST_ASSERT(!body["speculative"]["enabled"].get<bool>());
     TEST_ASSERT(body["speculative"]["available"].get<bool>());
     TEST_ASSERT(body["speculative"]["requires_explicit_opt_in"].get<bool>());
     TEST_ASSERT(body["speculative_mode"].get<std::string>() == "off");
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_tools_raise_progressive_budget) {
+    const json tool = {{"type", "function"}, {"function", {
+        {"name", "get_weather"},
+        {"parameters", {{"type", "object"}}},
+    }}};
+    TEST_ASSERT(http_detail::kimi_k3_routed_expert_min_budget(
+                    "kimi-k3", json::array()) == 0);
+    TEST_ASSERT(http_detail::kimi_k3_routed_expert_min_budget(
+                    "kimi-k3", json::array({tool})) == 96);
+    TEST_ASSERT(http_detail::kimi_k3_routed_expert_min_budget(
+                    "qwen35", json::array({tool})) == 0);
 }
 
 TEST_CASE(ServerUnitFixture, test_props_budget_envelope_shape) {

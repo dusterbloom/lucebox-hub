@@ -391,6 +391,9 @@ int main() {
     assert(budgets.size() == 92);
     assert(budgets[0] == 96 && budgets[23] == 24);
     std::filesystem::remove(table_path);
+    assert(kimi_k3_effective_slab_budget(24, 0) == 24);
+    assert(kimi_k3_effective_slab_budget(24, 96) == 96);
+    assert(kimi_k3_effective_slab_budget(192, 96) == 192);
 
     set_env("DFLASH_KIMI_LAYER1_PROVIDER", "exact");
     set_env("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "0");

@@ -1329,7 +1329,7 @@ int main(int argc, char ** argv) {
     // from the model card sidecar (see model_card.h for semantics):
     //   - marker: bytes that signal end-of-thinking to *us* (parsers).
     //     Arch default if sidecar doesn't override: `</think>` for qwen,
-    //     `<channel|>` for gemma4, `</think>` for everything else.
+    //     `<channel|>` for gemma4, and K3's native XTML close sequence.
     //   - hint: directive injected to tell the *model* to wrap up. Taken
     //     verbatim — the operator decides whether to include the marker
     //     at the end. Empty hint → inject just the marker (bare close).
@@ -1347,7 +1347,8 @@ int main(int argc, char ** argv) {
     if (sconfig.hard_limit_reply_budget > 0) {
         std::string marker = card.thinking_marker;
         if (marker.empty()) {
-            marker = (arch == "gemma4") ? "<channel|>" : "</think>";
+            marker = arch == "gemma4" ? "<channel|>" :
+                (arch == "kimi-k3" ? "<|close|>think<|sep|>" : "</think>");
         }
         const std::string close_text = card.thinking_terminator_hint.empty()
                                            ? marker

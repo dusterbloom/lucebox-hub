@@ -194,6 +194,9 @@ struct GenerateRequest {
     const std::vector<int32_t> * stall_skip_tokens = nullptr;
     // Optional thinking-budget hook — see BudgetHook docs above.
     BudgetHook                 budget_hook;
+    // K3 progressive-expert quality floor for this request. Zero keeps the
+    // configured production policy; tool turns currently require Budget96.
+    int                        routed_expert_min_budget = 0;
     // Common retry knob. Upper layers set this after a speculative decode
     // path returns success but emits no tokens, so each backend can route the
     // retry through its existing AR path without copying retry policy.

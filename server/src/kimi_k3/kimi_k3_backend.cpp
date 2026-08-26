@@ -834,6 +834,35 @@ GenerateResult KimiK3Backend::generate_from_state(
     }
     if (req.do_sample && req.sampler.seed != 0) rng_.seed(req.sampler.seed);
 
+    if (snapshot && req.routed_expert_min_budget > 0) {
+        return fail(GenerateErrorCode::InvalidSnapshotSlot,
+                    "request-scoped K3 slab budget cannot restore a snapshot");
+    }
+    struct RequestBudgetGuard {
+        KimiK3RoutedOutputProvider * provider = nullptr;
+        ~RequestBudgetGuard() {
+            if (!provider) return;
+            std::string ignored;
+            provider->set_request_min_slab_budget(0, &ignored);
+        }
+    } request_budget_guard;
+    if (req.routed_expert_min_budget > 0) {
+        if (!routed_output_provider_) {
+            return fail(GenerateErrorCode::PrefillFailed,
+                        "request-scoped K3 slab budget needs calibrated provider");
+        }
+        std::string budget_error;
+        if (!routed_output_provider_->set_request_min_slab_budget(
+                req.routed_expert_min_budget, &budget_error)) {
+            return fail(GenerateErrorCode::PrefillFailed,
+                        std::move(budget_error));
+        }
+        request_budget_guard.provider = routed_output_provider_.get();
+        std::fprintf(stderr,
+            "[kimi-k3] request minimum slab budget=%d\n",
+            req.routed_expert_min_budget);
+    }
+
     const auto prefill_begin = std::chrono::steady_clock::now();
     int restored_prefix = 0;
     std::vector<float> logits;

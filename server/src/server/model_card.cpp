@@ -316,6 +316,14 @@ static bool family_fallback(const std::string & arch, ModelCard & out) {
         out.source_label = "family:deepseek4";
         return true;
     }
+    if (arch == "kimi-k3") {
+        out.max_tokens                 = 32768;
+        out.complex_problem_max_tokens = 0;
+        out.hard_limit_reply_budget    = 4096;
+        out.thinking_marker            = "<|close|>think<|sep|>";
+        out.source_label = "family:kimi-k3";
+        return true;
+    }
     return false;
 }
 

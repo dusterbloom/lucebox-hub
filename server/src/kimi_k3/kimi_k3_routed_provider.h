@@ -130,6 +130,12 @@ public:
         return false;
     }
     virtual void discard_device_output() {}
+    virtual bool set_request_min_slab_budget(
+        int budget, std::string * error = nullptr) {
+        if (budget == 0) return true;
+        if (error) *error = "provider has no request-scoped slab budget";
+        return false;
+    }
     virtual KimiK3RoutedRuntimeStats runtime_stats() const { return {}; }
 };
 

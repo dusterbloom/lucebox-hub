@@ -261,6 +261,8 @@ bool canonical_assistant_content(
     const std::string & sentinel,
     const std::string & generated_text,
     std::string & content);
+int kimi_k3_routed_expert_min_budget(
+    const std::string & arch, const json & effective_tools);
 
 }  // namespace http_detail
 

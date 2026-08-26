@@ -3549,6 +3549,16 @@ public:
         finish_metrics();
     }
 
+    bool set_request_min_slab_budget(
+            int budget, std::string * err) override {
+        if (budget != 0 && budget != 24 && budget != 96 && budget != 192) {
+            if (err) *err = "request slab budget must be 0, 24, 96, or 192";
+            return false;
+        }
+        request_min_budget_ = budget;
+        return true;
+    }
+
     bool init(ggml_backend_t backend, const std::string & aux_directory,
               const std::string & sidecar_directory,
               bool ordered_device_join,
@@ -4338,12 +4348,18 @@ private:
     }
 
     int budget_for_layer(int model_layer) const {
-        if (layer_budgets_.empty()) return budget_;
+        int configured = budget_;
+        if (layer_budgets_.empty()) {
+            return kimi_k3_effective_slab_budget(
+                configured, request_min_budget_);
+        }
         if (model_layer < kFirstRoutedLayer ||
             model_layer > kLastRoutedLayer) {
             return kNativeTopK * kSlabCount;
         }
-        return layer_budgets_[static_cast<size_t>(model_layer - 1)];
+        configured = layer_budgets_[static_cast<size_t>(model_layer - 1)];
+        return kimi_k3_effective_slab_budget(
+            configured, request_min_budget_);
     }
 
 
@@ -7196,6 +7212,7 @@ private:
         direct_compact_payloads_;
     SparseCompactPayload macro_union_staging_;
     int budget_ = 96;
+    int request_min_budget_ = 0;
     std::vector<int32_t> layer_budgets_;
     std::string layer_budget_path_;
     uint64_t reference_full_weight_h2d_bytes_ = 0;
@@ -7226,6 +7243,11 @@ bool parse_positive_int(const char * raw, int & value) {
 #endif
 
 } // namespace
+
+int kimi_k3_effective_slab_budget(
+        int configured_budget, int request_min_budget) {
+    return (std::max)(configured_budget, request_min_budget);
+}
 
 #if defined(DFLASH_KIMI_P45_ASYNC_TEST_HOOK)
 bool kimi_k3_run_p45_async_compact_sentinel(

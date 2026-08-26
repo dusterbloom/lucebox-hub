@@ -7,12 +7,15 @@
 #include "tokenizer.h"
 
 #include "gguf.h"
+#include "kimi_k2_unicode.h"
+#include "kimi_k2_unicode_case.h"
 
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <utility>
 
@@ -137,6 +140,189 @@ static bool is_newline(uint32_t cp) {
     return cp == '\n' || cp == '\r';
 }
 
+// Kimi's official tokenizer uses the o200k case-aware word split, plus a
+// dedicated Han branch. This is the compact Colibri v1.8.0 implementation
+// adapted to return string pieces; its Unicode tables are kept separate above.
+static bool kimi_k2_is_han(uint32_t cp) {
+    static const uint32_t ranges[][2] = {
+        {0x2E80,0x2E99},{0x2E9B,0x2EF3},{0x2F00,0x2FD5},{0x3005,0x3005},
+        {0x3007,0x3007},{0x3021,0x3029},{0x3038,0x303B},{0x3400,0x4DBF},
+        {0x4E00,0x9FFF},{0xF900,0xFA6D},{0xFA70,0xFAD9},{0x16FE2,0x16FE3},
+        {0x16FF0,0x16FF1},{0x20000,0x2A6DF},{0x2A700,0x2B739},{0x2B740,0x2B81D},
+        {0x2B820,0x2CEA1},{0x2CEB0,0x2EBE0},{0x2EBF0,0x2EE5D},{0x2F800,0x2FA1D},
+        {0x30000,0x3134A},{0x31350,0x323AF},
+    };
+    int lo = 0;
+    int hi = static_cast<int>(std::size(ranges)) - 1;
+    while (lo <= hi) {
+        const int mid = (lo + hi) / 2;
+        if (cp < ranges[mid][0]) hi = mid - 1;
+        else if (cp > ranges[mid][1]) lo = mid + 1;
+        else return true;
+    }
+    return false;
+}
+
+static bool kimi_k2_s1(uint32_t cp) {
+    return (is_U(cp) || is_X(cp)) && !kimi_k2_is_han(cp);
+}
+
+static bool kimi_k2_s2(uint32_t cp) {
+    return (is_X(cp) || (is_L(cp) && !is_U(cp))) && !kimi_k2_is_han(cp);
+}
+
+static size_t kimi_k2_contraction(
+    const std::vector<uint32_t> & cps, size_t pos) {
+    if (pos >= cps.size() || cps[pos] != '\'' || pos + 1 >= cps.size()) {
+        return pos;
+    }
+    auto lower_ascii = [](uint32_t cp) {
+        return cp >= 'A' && cp <= 'Z' ? cp + ('a' - 'A') : cp;
+    };
+    const uint32_t first = lower_ascii(cps[pos + 1]);
+    if (pos + 2 < cps.size()) {
+        const uint32_t second = lower_ascii(cps[pos + 2]);
+        if ((first == 'r' && second == 'e') ||
+            (first == 'v' && second == 'e') ||
+            (first == 'l' && second == 'l')) {
+            return pos + 3;
+        }
+    }
+    if (first == 's' || first == 't' || first == 'm' || first == 'd') {
+        return pos + 2;
+    }
+    return pos;
+}
+
+static size_t kimi_k2_letters(
+    const std::vector<uint32_t> & cps, size_t pos) {
+    for (bool prefix : {true, false}) {
+        size_t start = pos;
+        if (prefix) {
+            const uint32_t cp = cps[pos];
+            if (cp == '\r' || cp == '\n' || is_L(cp) || is_N(cp) ||
+                pos + 1 >= cps.size()) {
+                continue;
+            }
+            start++;
+        }
+        size_t first_end = start;
+        while (first_end < cps.size() && kimi_k2_s1(cps[first_end])) first_end++;
+        for (size_t split = first_end;; split--) {
+            if (split < cps.size() && kimi_k2_s2(cps[split])) {
+                size_t end = split + 1;
+                while (end < cps.size() && kimi_k2_s2(cps[end])) end++;
+                return kimi_k2_contraction(cps, end);
+            }
+            if (split == start) break;
+        }
+    }
+    for (bool prefix : {true, false}) {
+        size_t start = pos;
+        if (prefix) {
+            const uint32_t cp = cps[pos];
+            if (cp == '\r' || cp == '\n' || is_L(cp) || is_N(cp) ||
+                pos + 1 >= cps.size()) {
+                continue;
+            }
+            start++;
+        }
+        size_t first_end = start;
+        while (first_end < cps.size() && kimi_k2_s1(cps[first_end])) first_end++;
+        if (first_end > start) {
+            size_t end = first_end;
+            while (end < cps.size() && kimi_k2_s2(cps[end])) end++;
+            return kimi_k2_contraction(cps, end);
+        }
+    }
+    return std::string::npos;
+}
+
+static std::vector<std::string> pre_tokenize_kimi_k2(const std::string & text) {
+    std::vector<std::string> pieces;
+    std::vector<uint32_t> cps;
+    std::vector<size_t> offsets;
+    for (size_t byte = 0; byte < text.size();) {
+        int length = 0;
+        offsets.push_back(byte);
+        cps.push_back(utf8_decode(text.data() + byte, text.size() - byte, &length));
+        byte += length > 0 ? static_cast<size_t>(length) : 1;
+    }
+    offsets.push_back(text.size());
+
+    auto emit = [&](size_t begin, size_t end) {
+        pieces.emplace_back(
+            text.substr(offsets[begin], offsets[end] - offsets[begin]));
+    };
+
+    for (size_t pos = 0; pos < cps.size();) {
+        const size_t begin = pos;
+        const uint32_t cp = cps[pos];
+
+        if (kimi_k2_is_han(cp)) {
+            while (pos < cps.size() && kimi_k2_is_han(cps[pos])) pos++;
+            emit(begin, pos);
+            continue;
+        }
+
+        const size_t letter_end = kimi_k2_letters(cps, pos);
+        if (letter_end != std::string::npos && letter_end > pos) {
+            pos = letter_end;
+            emit(begin, pos);
+            continue;
+        }
+
+        if (is_N(cp)) {
+            size_t count = 0;
+            while (pos < cps.size() && is_N(cps[pos]) && count < 3) {
+                pos++;
+                count++;
+            }
+            emit(begin, pos);
+            continue;
+        }
+
+        size_t punctuation = pos;
+        if (cp == ' ' && punctuation + 1 < cps.size() &&
+            !is_S(cps[punctuation + 1]) && !is_L(cps[punctuation + 1]) &&
+            !is_N(cps[punctuation + 1])) {
+            punctuation++;
+        }
+        if (punctuation < cps.size() && !is_S(cps[punctuation]) &&
+            !is_L(cps[punctuation]) && !is_N(cps[punctuation])) {
+            while (punctuation < cps.size() && !is_S(cps[punctuation]) &&
+                   !is_L(cps[punctuation]) && !is_N(cps[punctuation])) {
+                punctuation++;
+            }
+            while (punctuation < cps.size() &&
+                   (cps[punctuation] == '\r' || cps[punctuation] == '\n')) {
+                punctuation++;
+            }
+            pos = punctuation;
+            emit(begin, pos);
+            continue;
+        }
+
+        size_t whitespace_end = pos;
+        while (whitespace_end < cps.size() && is_S(cps[whitespace_end])) whitespace_end++;
+        if (whitespace_end > pos) {
+            size_t last_newline = std::string::npos;
+            for (size_t i = pos; i < whitespace_end; i++) {
+                if (cps[i] == '\r' || cps[i] == '\n') last_newline = i;
+            }
+            if (last_newline != std::string::npos) pos = last_newline + 1;
+            else pos = whitespace_end < cps.size() ? whitespace_end - 1 : whitespace_end;
+            if (pos <= begin) pos = begin + 1;
+            emit(begin, pos);
+            continue;
+        }
+
+        pos++;
+        emit(begin, pos);
+    }
+    return pieces;
+}
+
 // ─── Pre-tokenizer ─────────────────────────────────────────────────────
 // Matches the Qwen3.5 pattern:
 //   (?:'[sStTmMdD]|...) |
@@ -148,6 +334,9 @@ static bool is_newline(uint32_t cp) {
 //   \s+
 
 std::vector<std::string> Tokenizer::pre_tokenize(const std::string & text) const {
+    if (pre_type_ == PreTokenizer::KIMI_K2) {
+        return pre_tokenize_kimi_k2(text);
+    }
     std::vector<std::string> pieces;
     const char * s = text.c_str();
     const size_t len = text.size();
@@ -592,15 +781,32 @@ bool Tokenizer::load_from_gguf(const char * model_path) {
         }
     }
 
+    std::string architecture;
+    int architecture_key = gguf_find_key(gctx, "general.architecture");
+    if (architecture_key >= 0) {
+        const char * value = gguf_get_val_str(gctx, architecture_key);
+        if (value) architecture = value;
+    }
+
     // Detect pre-tokenizer type.
     int pre_key = gguf_find_key(gctx, "tokenizer.ggml.pre");
     if (pre_key >= 0) {
         const char * pre = gguf_get_val_str(gctx, pre_key);
-        if (pre && std::strcmp(pre, "qwen35") == 0) {
+        pre_name_ = pre ? pre : "(null)";
+        if (pre && std::strcmp(pre, "kimi-k2") == 0) {
+            pre_type_ = PreTokenizer::KIMI_K2;
+        } else if (pre && std::strcmp(pre, "qwen35") == 0) {
             pre_type_ = PreTokenizer::QWEN35;
         } else {
             pre_type_ = PreTokenizer::QWEN2;
         }
+    }
+    if (architecture == "kimi-k3" && pre_type_ != PreTokenizer::KIMI_K2) {
+        std::fprintf(stderr,
+            "[tokenizer] Kimi-K3 requires tokenizer.ggml.pre=kimi-k2, got %s\n",
+            pre_name_.c_str());
+        gguf_free(gctx);
+        return false;
     }
 
     // Load special token IDs.
@@ -626,9 +832,11 @@ bool Tokenizer::load_from_gguf(const char * model_path) {
 
     gguf_free(gctx);
 
-    std::fprintf(stderr, "[tokenizer] loaded vocab=%d merges=%zu bos=%d eos=%d eot=%d pre=%s sp=%s\n",
+    const char * pre_mode = pre_type_ == PreTokenizer::KIMI_K2 ? "kimi-k2" :
+        (pre_type_ == PreTokenizer::QWEN35 ? "qwen35" : "qwen2");
+    std::fprintf(stderr, "[tokenizer] loaded vocab=%d merges=%zu bos=%d eos=%d eot=%d pre=%s mode=%s sp=%s\n",
                  n_vocab, merge_rank_.size(), bos_id_, eos_id_, eos_chat_id_,
-                 pre_type_ == PreTokenizer::QWEN35 ? "qwen35" : "qwen2",
+                 pre_name_.c_str(), pre_mode,
                  is_sentencepiece_ ? "yes" : "no");
     return true;
 }

@@ -1,0 +1,92 @@
+{
+  "campaign": "k3-tool-contract-20260826",
+  "qualification": "engineering-causal-discriminator",
+  "qualification_note": "The corrected executable is retained and hashed. The overwritten Qwen2 control executable is not retained, so this result must not be promoted as a publication-grade binary-closure A/B.",
+  "source_parent": "720af73a8bf3750d79d7729ac78476814096c41c",
+  "corrected_executable_sha256": "f0bfb9639d6ecf3627cacb152c0448f59f655788cdf641a75b703173ac4f1011",
+  "budget24_runner_sha256": "0ddec3b54311f14b57b0681c837d42b46442696562d02ccfb142d56736989ac1",
+  "budget96_runner_sha256": "fe2195cbc4765a445de689160d9a684108528ea497981d2e09d7804ff1fc8dec",
+  "budget24_table_sha256": "b73d203e9ae7d4f382baf3f30cf0381387596edda7a6fb16c6cf5c88626ad97a",
+  "official_tokenizer_oracle": {
+    "rendered_utf8_bytes": 752,
+    "rendered_sha256": "fa05c4fc98a796f387838fdef2aef89aaa5805ca2bbb1c7101ed428f80439d14",
+    "token_count": 147,
+    "token_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+    "real_gguf_result": "PASS"
+  },
+  "fixture": {
+    "prompt": "What's the weather in San Francisco?",
+    "tool": "get_weather(location: string)",
+    "tool_choice": "get_weather",
+    "temperature": 0.0,
+    "speculative": false,
+    "max_output_tokens": 64,
+    "max_context_tokens": 256
+  },
+  "arms": [
+    {
+      "name": "qwen2-pretokenizer-budget24-control",
+      "prompt_tokens": 148,
+      "progressive_expert_budget": 24,
+      "output_tokens": 57,
+      "prefill_seconds": 73.2,
+      "decode_seconds": 26.7,
+      "decode_tokens_per_second": 2.1,
+      "direct_physical_bytes": 99160891392,
+      "direct_io_nanoseconds": 31788309918,
+      "final_logits_sha256": "1be5900c51a4956c035545e03afe5aee7cca3e0ad17daf440bd10b06921881fd",
+      "finish_reason": "stop",
+      "valid_tool_call": false
+    },
+    {
+      "name": "kimi-k2-pretokenizer-budget24",
+      "prompt_tokens": 147,
+      "progressive_expert_budget": 24,
+      "output_tokens": 45,
+      "prefill_seconds": 73.7,
+      "decode_seconds": 21.8,
+      "decode_tokens_per_second": 2.1,
+      "direct_physical_bytes": 95874129920,
+      "direct_io_nanoseconds": 29143377396,
+      "final_logits_sha256": "82d8a62f6a76e2c22f97a450bf4b5e29278482b3ce899562e37c22b4c11963f6",
+      "identifier_boundary": {
+        "prefix_token_ids": [618, 21055],
+        "selected_token_id": 10666,
+        "selected_logit": 15.9918566,
+        "declared_name_continuation_token_id": 2800,
+        "declared_name_continuation_logit": 12.9116983,
+        "declared_name_continuation_rank": 6
+      },
+      "finish_reason": "stop",
+      "valid_tool_call": false
+    },
+    {
+      "name": "kimi-k2-pretokenizer-budget96",
+      "prompt_tokens": 147,
+      "progressive_expert_budget": 96,
+      "output_tokens": 56,
+      "prefill_seconds": 151.3,
+      "decode_seconds": 58.2,
+      "decode_tokens_per_second": 1.0,
+      "direct_physical_bytes": 538365075456,
+      "direct_io_nanoseconds": 126436728417,
+      "final_logits_sha256": "6878385785ed615c01202c690de9c33536a0a71b6ce61466bb3eba47947ee413",
+      "identifier_boundary": {
+        "prefix_token_ids": [618, 21055],
+        "selected_token_id": 2800,
+        "selected_logit": 29.000288,
+        "selected_rank": 1
+      },
+      "finish_reason": "tool_calls",
+      "valid_tool_call": true,
+      "tool_arguments": {"location": "San Francisco"}
+    }
+  ],
+  "conclusions": {
+    "wrong_kimi_pretokenizer": "PROVEN_AND_FIXED",
+    "downstream_token_corruption": "FALSIFIED",
+    "budget24_causes_observed_invalid_tool_identifier": "PROVEN",
+    "budget96_recovers_observed_tool_call": "PROVEN",
+    "native_declared_tool_constraint_still_required": true
+  }
+}
