@@ -1,0 +1,100 @@
+{
+  "schema": "dflash.kimi-k3.v8-core8-envelope.v1",
+  "date": "2026-08-26",
+  "status": "QUALIFIED_GO_TO_ONE_LAYER_PROBE",
+  "source_head": "8b61b362",
+  "question": "Does exact Core8 expose at least 60 ms/V8 outside grouped graph compute and state publication, enough to earn a persistent-KDA plus fused-MLA probe?",
+  "fixture": {
+    "name": "Fibonacci Python",
+    "prompt_tokens": 43,
+    "completion_tokens": 33,
+    "true_transitions": 32,
+    "target_steps": 5,
+    "physical_verify_rows": 40,
+    "acceptance": [8, 3, 8, 8, 6]
+  },
+  "artifacts": {
+    "instrumented_binary_sha256": "42efe440c8e3f34d1fb61e57814e975551f0ea94c4e5958e53c6b1cb04814deb",
+    "preregistration_sha256": "c4cff59fe6eca8a9a631e0f084ce9e3e7ae93a4aacd3ad0728fac9dd5f8cb5c2",
+    "request_sha256": "856d7ed1f0280e20a1580aee15e58da91befdd7e416a900528bfdf391bc2208b",
+    "model_first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "draft_sha256": "848d12be5283a4717c08b1b1263420980dfc61b5a59067e343296fd7f4998435",
+    "artifact_root": "/home/duster/kimi-k3-deploy/k3-core8-envelope-20260826/profile02"
+  },
+  "correctness": {
+    "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "acceptance_identical": true,
+    "runtime_fallbacks": 0,
+    "logical_verify_rows": 38,
+    "physical_verify_rows": 40
+  },
+  "steps_ms": [
+    {
+      "position": 43,
+      "kda_wall": 419.721,
+      "kda_graph": 302.646,
+      "kda_publish": 3.192,
+      "kda_envelope": 113.883,
+      "mla_wall": 119.250,
+      "mla_graph": 89.929,
+      "mla_publish": 0.263,
+      "mla_envelope": 29.058
+    },
+    {
+      "position": 51,
+      "kda_wall": 377.700,
+      "kda_graph": 281.873,
+      "kda_publish": 3.172,
+      "kda_envelope": 92.655,
+      "mla_wall": 113.611,
+      "mla_graph": 86.665,
+      "mla_publish": 0.256,
+      "mla_envelope": 26.690
+    },
+    {
+      "position": 54,
+      "kda_wall": 346.353,
+      "kda_graph": 252.486,
+      "kda_publish": 3.167,
+      "kda_envelope": 90.700,
+      "mla_wall": 113.356,
+      "mla_graph": 86.362,
+      "mla_publish": 0.261,
+      "mla_envelope": 26.733
+    },
+    {
+      "position": 62,
+      "kda_wall": 347.769,
+      "kda_graph": 252.875,
+      "kda_publish": 3.177,
+      "kda_envelope": 91.717,
+      "mla_wall": 115.979,
+      "mla_graph": 89.637,
+      "mla_publish": 0.273,
+      "mla_envelope": 26.069
+    },
+    {
+      "position": 70,
+      "kda_wall": 349.081,
+      "kda_graph": 252.307,
+      "kda_publish": 3.171,
+      "kda_envelope": 93.603,
+      "mla_wall": 116.669,
+      "mla_graph": 90.614,
+      "mla_publish": 0.266,
+      "mla_envelope": 25.789
+    }
+  ],
+  "result": {
+    "mean_kda_envelope_ms_per_v8": 96.5116,
+    "mean_mla_envelope_ms_per_v8": 26.8678,
+    "mean_combined_envelope_ms_per_v8": 123.3794,
+    "steady_last_three_kda_envelope_ms_per_v8": 92.0067,
+    "steady_last_three_mla_envelope_ms_per_v8": 26.1970,
+    "steady_last_three_combined_envelope_ms_per_v8": 118.2037,
+    "gate_ms_per_v8": 60.0,
+    "verdict": "GO_TO_ONE_LAYER_PROBE"
+  },
+  "interpretation": "The measured envelope is a ceiling, not a projected saving. It contains graph construction/allocation, input/output transfers, host vector work, synchronization and mandatory state/data movement. Existing P46 evidence suggests only part is removable. The result earns a smallest default-off persistent-KDA probe followed, only if needed, by exact MLA boundary fusion.",
+  "scope": "This GO authorizes implementation measurement only. It is not an end-to-end throughput claim and does not relax byte-exact arithmetic, state order, traffic semantics or fallback gates."
+}
