@@ -1,0 +1,67 @@
+{
+  "campaign": "k3-dspark-global-markov-alpha-feasibility",
+  "date_utc": "2026-08-26",
+  "source_head": "5ba888dc",
+  "branch": "perf/k3-production-ponytail",
+  "question": "Can one affine scale alpha preserve the accepted Fibonacci prefix and make the first rejected authoritative target token the deterministic draft argmax?",
+  "closure": {
+    "temporary_diff_sha256": "a196120e01a545faaf134db8df4f7284464d7c4e7a31b44cf9e9d811d0b7cbd7",
+    "preregistration_sha256": "fea1ddb91ff1bc7b4dde8a902d2ba89feec0caf03a10ee1e8aa4fa04d7fa1435",
+    "diagnostic_binary_sha256": "4b6b45a6e5c1d521e02209522154f5865eaa080cc88d8e208c842a83a0aaadf1",
+    "request_sha256": "856d7ed1f0280e20a1580aee15e58da91befdd7e416a900528bfdf391bc2208b",
+    "target_model_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "draft_model_sha256": "848d12be5283a4717c08b1b1263420980dfc61b5a59067e343296fd7f4998435",
+    "platform_profile": "performance",
+    "gpu_dpm": ["high", "high"],
+    "production_defaults": true,
+    "persistent_core8": true
+  },
+  "result": {
+    "status": "qualified",
+    "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "response_sha256": "85e2207126f8407373490638fc4669e9e29ef99f4a34e87ce0f42a1d61bb8435",
+    "server_log_sha256": "50514696867e95922415307a4e2afb56f603e4e6ea90ba702469f3c7b00f71b9",
+    "base_position": 51,
+    "first_divergence_depth_one_based": 3,
+    "rows": [
+      {
+        "row": 0,
+        "target_token_id": 581,
+        "alpha_lower": 0.794074878843886,
+        "alpha_upper": 2.227691012235721
+      },
+      {
+        "row": 1,
+        "target_token_id": 326,
+        "alpha_lower": 0.466990433483791,
+        "alpha_upper": 4.615361166922991
+      },
+      {
+        "row": 2,
+        "target_token_id": 1151,
+        "alpha_lower": 6.983728642491529,
+        "lower_constraining_token_id": 555,
+        "alpha_upper": 1.73829784488101,
+        "upper_constraining_token_id": 43064,
+        "feasible": false
+      }
+    ],
+    "accepted_prefix_plus_divergence_intersection": {
+      "alpha_lower": 6.983728642491529,
+      "alpha_upper": 1.73829784488101,
+      "feasible": false
+    }
+  },
+  "verdict": {
+    "status": "NO-GO",
+    "closed_scope": "No global scalar alpha applied to the current base-plus-Markov-bias logits can repair the registered Fibonacci first rejection while preserving its accepted prefix. The divergence row itself has an empty target-winning interval.",
+    "not_closed": [
+      "a target-derived non-scalar correction or retrained draft",
+      "another target-matched draft architecture",
+      "generic terminal-token reuse",
+      "verifier target-stage reductions"
+    ],
+    "cleanup": "Temporary interval and logits-readback code removed after preserving this result."
+  },
+  "artifact_root": "/home/duster/kimi-k3-deploy/k3-dspark-alpha-interval-20260826"
+}
