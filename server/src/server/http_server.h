@@ -276,8 +276,13 @@ struct ParsedRequest {
     std::string               model;
     // Tool definitions (stored as JSON for response formatting)
     json                      tools;
+    // Model-output allow-list after architecture/tool_choice normalization.
+    json                      effective_tools;
     // Tool choice constraint (stored for hint generation)
     json                      tool_choice;
+    // Filtered, model-template-specific request context.
+    nlohmann::ordered_json    template_kwargs =
+        nlohmann::ordered_json::object();
     // Original messages (for response formatting)
     json                      messages;
     // Original request body (for upstream proxy forwarding)
@@ -455,7 +460,7 @@ private:
     void prepare_generation_inputs(
         const ParsedRequest & req, const PreparedPrompt & prepared,
         GenerationInputs & inputs);
-    void configure_generation_io(
+    std::shared_ptr<SseEmitter> configure_generation_io(
         ServerJob * job, const ParsedRequest & req, SseEmitter & emitter,
         GenerationOutputState & output, DaemonIO & io);
 

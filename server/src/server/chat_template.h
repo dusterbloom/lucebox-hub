@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include <nlohmann/json.hpp>
+
 #include <string>
 #include <vector>
 
@@ -18,6 +20,9 @@ struct ChatMessage {
     std::string content;    // message text
     // Optional tool_call_id for tool result messages.
     std::string tool_call_id;
+    // Native Jinja fields (tool_calls, name, typed content, reasoning, ...).
+    // Hard-coded renderers keep using the three legacy fields above.
+    nlohmann::ordered_json template_fields;
 };
 
 // Chat template format.
@@ -26,6 +31,7 @@ enum class ChatFormat {
     LAGUNA,    // <|begin_of_sentence|><|User|>...<|Assistant|>
     GEMMA4,    // <bos><|turn>role\n...<turn|>\n
     DEEPSEEK4, // <｜begin▁of▁sentence｜>...<｜User｜>...<｜Assistant｜>
+    KIMI_K3,   // GGUF Jinja: <|open|>/<|close|> named frames
 };
 
 // Render chat messages into the model-specific prompt string.
@@ -75,6 +81,8 @@ std::string render_chat_template_jinja(
     const std::string & eos_token,
     bool add_generation_prompt = true,
     bool enable_thinking = false,
-    const std::string & tools_json = "");
+    const std::string & tools_json = "",
+    const nlohmann::ordered_json & template_kwargs =
+        nlohmann::ordered_json::object());
 
 }  // namespace dflash::common

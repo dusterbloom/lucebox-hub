@@ -40,7 +40,7 @@ struct ToolParseResult {
 // the built-in compatibility forms, this recognizes `<DECLARED_TOOL>` so the
 // streaming emitter and final parser agree on bare tool-name syntax.
 bool find_tool_syntax_start(const std::string & text, const json & tools,
-                            size_t & pos);
+                            size_t & pos, bool kimi_k3 = false);
 
 // Number of trailing bytes the streaming emitter must retain to recognize an
 // opener split across token boundaries.
@@ -49,6 +49,7 @@ size_t tool_syntax_holdback(const json & tools);
 // Parse tool calls from generated text. `tools` is the tool definitions
 // (used for type coercion and allow-list filtering). May be null/empty.
 ToolParseResult parse_tool_calls(const std::string & text,
-                                 const json & tools = json());
+                                 const json & tools = json(),
+                                 bool kimi_k3 = false);
 
 }  // namespace dflash::common

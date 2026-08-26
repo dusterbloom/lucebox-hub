@@ -205,8 +205,15 @@ static bool prompt_ends_in_open_think(const std::string & prompt) {
         if (c != ' ' && c != '\n' && c != '\r' && c != '\t') break;
         --end;
     }
-    return end >= kThinkOpenLen &&
-           prompt.compare(end - kThinkOpenLen, kThinkOpenLen, kThinkOpen) == 0;
+    if (end >= kThinkOpenLen &&
+        prompt.compare(end - kThinkOpenLen, kThinkOpenLen, kThinkOpen) == 0) {
+        return true;
+    }
+    static constexpr const char * kKimiThinkOpen = "<|open|>think<|sep|>";
+    static constexpr size_t kKimiThinkOpenLen = 20;
+    return end >= kKimiThinkOpenLen &&
+           prompt.compare(end - kKimiThinkOpenLen, kKimiThinkOpenLen,
+                          kKimiThinkOpen) == 0;
 }
 
 // ─── piecewise keep-ratio curve ─────────────────────────────────────────
@@ -989,15 +996,39 @@ std::vector<ChatMessage> normalize_chat_messages(
     std::vector<std::string> system_parts;
     std::vector<std::string> response_call_ids;
     std::string response_call_fallback;
+    nlohmann::ordered_json response_tool_calls =
+        nlohmann::ordered_json::array();
+
+    auto content_text = [](const json & content) {
+        if (content.is_string()) return content.get<std::string>();
+        std::string text;
+        if (!content.is_array()) return text;
+        for (const auto & part : content) {
+            if (!part.is_object()) continue;
+            const std::string type = part.value("type", "");
+            if (type == "text" || type == "input_text" ||
+                type == "output_text") {
+                text += part.value("text", "");
+            }
+        }
+        return text;
+    };
 
     auto flush_response_calls = [&]() {
         if (response_call_fallback.empty()) return;
         std::string raw = response_call_ids.empty()
             ? std::string() : tool_memory.lookup(response_call_ids);
-        chat_msgs.push_back({"assistant",
-                             raw.empty() ? response_call_fallback : raw});
+        ChatMessage call_message{
+            "assistant", raw.empty() ? response_call_fallback : raw};
+        call_message.template_fields = {
+            {"role", "assistant"},
+            {"content", nullptr},
+            {"tool_calls", response_tool_calls},
+        };
+        chat_msgs.push_back(std::move(call_message));
         response_call_ids.clear();
         response_call_fallback.clear();
+        response_tool_calls = nlohmann::ordered_json::array();
     };
 
     if (messages.is_array()) {
@@ -1007,6 +1038,14 @@ std::vector<ChatMessage> normalize_chat_messages(
                 if (item_type == "function_call") {
                     std::string call_id = m.value("call_id", m.value("id", ""));
                     if (!call_id.empty()) response_call_ids.push_back(call_id);
+                    response_tool_calls.push_back({
+                        {"id", call_id},
+                        {"type", "function"},
+                        {"function", {
+                            {"name", m.value("name", "")},
+                            {"arguments", parse_responses_arguments(m)},
+                        }},
+                    });
                     response_call_fallback += render_tool_call_xml(
                         m.value("name", ""), parse_responses_arguments(m));
                     continue;
@@ -1019,15 +1058,89 @@ std::vector<ChatMessage> normalize_chat_messages(
                     } else if (m.contains("output")) {
                         output = m["output"].dump();
                     }
-                    chat_msgs.push_back({"tool", output,
-                                         m.value("call_id", m.value("id", ""))});
+                    const std::string call_id =
+                        m.value("call_id", m.value("id", ""));
+                    ChatMessage tool_message{"tool", output, call_id};
+                    tool_message.template_fields = {
+                        {"role", "tool"},
+                        {"content", output},
+                        {"tool_call_id", call_id},
+                    };
+                    chat_msgs.push_back(std::move(tool_message));
                     continue;
                 }
             }
             if (format == ApiFormat::RESPONSES) flush_response_calls();
 
+            if (format == ApiFormat::ANTHROPIC && m.is_object() &&
+                m.contains("content") && m["content"].is_array()) {
+                const std::string role = m.value("role", "user");
+                if (role == "assistant") {
+                    ChatMessage assistant{"assistant", ""};
+                    nlohmann::ordered_json fields = {
+                        {"role", "assistant"}, {"content", ""},
+                        {"tool_calls", nlohmann::ordered_json::array()},
+                    };
+                    std::string reasoning;
+                    for (const auto & block : m["content"]) {
+                        if (!block.is_object()) continue;
+                        const std::string type = block.value("type", "");
+                        if (type == "text") {
+                            assistant.content += block.value("text", "");
+                        } else if (type == "thinking") {
+                            reasoning += block.value("thinking", "");
+                        } else if (type == "tool_use") {
+                            fields["tool_calls"].push_back({
+                                {"id", block.value("id", "")},
+                                {"type", "function"},
+                                {"function", {
+                                    {"name", block.value("name", "")},
+                                    {"arguments", block.value(
+                                        "input", json::object())},
+                                }},
+                            });
+                        }
+                    }
+                    fields["content"] = assistant.content;
+                    if (!reasoning.empty()) fields["reasoning_content"] = reasoning;
+                    assistant.template_fields = std::move(fields);
+                    chat_msgs.push_back(std::move(assistant));
+                    continue;
+                }
+                if (role == "user") {
+                    std::string user_text;
+                    for (const auto & block : m["content"]) {
+                        if (!block.is_object()) continue;
+                        const std::string type = block.value("type", "");
+                        if (type == "tool_result") {
+                            const std::string call_id =
+                                block.value("tool_use_id", "");
+                            const std::string output =
+                                content_text(block.value("content", json()));
+                            ChatMessage tool{"tool", output, call_id};
+                            tool.template_fields = {
+                                {"role", "tool"}, {"content", output},
+                                {"tool_call_id", call_id},
+                            };
+                            chat_msgs.push_back(std::move(tool));
+                        } else if (type == "text") {
+                            user_text += block.value("text", "");
+                        }
+                    }
+                    if (!user_text.empty()) {
+                        ChatMessage user{"user", user_text};
+                        user.template_fields = {
+                            {"role", "user"}, {"content", user_text}};
+                        chat_msgs.push_back(std::move(user));
+                    }
+                    continue;
+                }
+            }
+
             ChatMessage cm;
             cm.role = m.value("role", "user");
+            if (m.is_object()) cm.template_fields = m;
+            cm.tool_call_id = m.value("tool_call_id", "");
 
             bool replayed = false;
             if (cm.role == "assistant" && m.contains("tool_calls") &&
@@ -1047,14 +1160,8 @@ std::vector<ChatMessage> normalize_chat_messages(
             if (!replayed) {
                 if (m.contains("content") && m["content"].is_string()) {
                     cm.content = m["content"].get<std::string>();
-                } else if (m.contains("content") && m["content"].is_array()) {
-                    for (const auto & part : m["content"]) {
-                        std::string ptype = part.value("type", "");
-                        if (ptype == "text" || ptype == "input_text" ||
-                            ptype == "output_text") {
-                            cm.content += part.value("text", "");
-                        }
-                    }
+                } else if (m.contains("content")) {
+                    cm.content = content_text(m["content"]);
                 }
             }
 
@@ -1733,8 +1840,83 @@ bool HttpServer::parse_common_request_fields(
 
     req.sampler = parse_request_sampler(body, config_.sampler_defaults);
     if (body.contains("tools")) req.tools = body["tools"];
+    req.effective_tools = req.tools;
     // Tool choice constraint for hint generation.
     if (body.contains("tool_choice")) req.tool_choice = body["tool_choice"];
+    if (config_.arch == "kimi-k3" && !req.tool_choice.is_null()) {
+        std::string choice = "auto";
+        std::string selected;
+        if (req.tool_choice.is_string()) {
+            choice = req.tool_choice.get<std::string>();
+        } else if (req.tool_choice.is_object()) {
+            choice = req.tool_choice.value("type", "auto");
+            if (req.tool_choice.contains("function") &&
+                req.tool_choice["function"].is_object()) {
+                selected = req.tool_choice["function"].value("name", "");
+                choice = "tool";
+            } else {
+                selected = req.tool_choice.value("name", "");
+            }
+        }
+        if (choice == "any") choice = "required";
+        if (choice == "function" && !selected.empty()) choice = "tool";
+
+        if (choice == "none") {
+            req.template_kwargs["tool_choice"] = "none";
+            req.effective_tools = json::array();
+        } else if (choice == "required") {
+            if (!req.tools.is_array() || req.tools.empty()) {
+                send_error(fd, 400, "tool_choice=required needs declared tools");
+                return false;
+            }
+            req.template_kwargs["tool_choice"] = "required";
+        } else if (choice == "tool") {
+            json selected_tools = json::array();
+            if (req.tools.is_array()) {
+                for (const auto & tool : req.tools) {
+                    const auto & function =
+                        tool.is_object() && tool.contains("function")
+                            ? tool["function"] : tool;
+                    if (function.is_object() &&
+                        function.value("name", "") == selected) {
+                        selected_tools.push_back(tool);
+                    }
+                }
+            }
+            if (selected.empty() || selected_tools.size() != 1) {
+                send_error(fd, 400,
+                           "tool_choice names an undeclared function");
+                return false;
+            }
+            req.effective_tools = std::move(selected_tools);
+            req.template_kwargs["tool_choice"] = "required";
+        } else if (choice != "auto") {
+            send_error(fd, 400, "unsupported Kimi K3 tool_choice");
+            return false;
+        }
+    }
+    if (body.contains("response_format")) {
+        req.template_kwargs["response_format"] = body["response_format"];
+        if (body["response_format"].is_object() &&
+            body["response_format"].contains("json_schema")) {
+            const auto & schema = body["response_format"]["json_schema"];
+            if (schema.is_object() && schema.contains("schema")) {
+                req.template_kwargs["response_schema"] = schema["schema"];
+            } else if (schema.is_object() && schema.contains("json_schema")) {
+                req.template_kwargs["response_schema"] = schema["json_schema"];
+            } else {
+                req.template_kwargs["response_schema"] = schema;
+            }
+        }
+    }
+    if (body.contains("text") && body["text"].is_object() &&
+        body["text"].contains("format")) {
+        req.template_kwargs["response_format"] = body["text"]["format"];
+        const auto & format = body["text"]["format"];
+        if (format.is_object() && format.contains("schema")) {
+            req.template_kwargs["response_schema"] = format["schema"];
+        }
+    }
 
     if (body.contains("prefix_cache") && body["prefix_cache"].is_object()) {
         const auto & prefix_cache = body["prefix_cache"];
@@ -1860,6 +2042,7 @@ void HttpServer::apply_request_reasoning(
     auto apply_reasoning_effort = [&](const std::string & effort) {
         if (effort == "none") {
             enable_thinking = false;
+            req.template_kwargs["thinking_effort"] = nullptr;
             return;
         }
 
@@ -1878,6 +2061,13 @@ void HttpServer::apply_request_reasoning(
         effort_phase1_cap = tier_value;
         effort_set = true;
         enable_thinking = true;
+        if (effort == "minimal" || effort == "low") {
+            req.template_kwargs["thinking_effort"] = "low";
+        } else if (effort == "x-high" || effort == "max") {
+            req.template_kwargs["thinking_effort"] = "max";
+        } else {
+            req.template_kwargs["thinking_effort"] = "high";
+        }
         // Spec §4.2: reasoning effort activates the budget envelope.
         req.thinking_opt_in = true;
     };
@@ -1888,6 +2078,7 @@ void HttpServer::apply_request_reasoning(
             apply_reasoning_effort(reasoning.value("effort", "high"));
         } else {
             enable_thinking = true;
+            req.thinking_opt_in = true;
         }
     }
     if (!effort_set && body.contains("reasoning_effort") &&
@@ -1912,11 +2103,23 @@ void HttpServer::apply_request_reasoning(
     }
     if (body.contains("chat_template_kwargs")) {
         const auto & kwargs = body["chat_template_kwargs"];
+        if (!effort_set && kwargs.contains("thinking_effort") &&
+            kwargs["thinking_effort"].is_string()) {
+            apply_reasoning_effort(
+                kwargs["thinking_effort"].get<std::string>());
+        }
         if (kwargs.contains("enable_thinking")) {
             enable_thinking = kwargs["enable_thinking"].get<bool>();
         }
     }
     req.thinking_enabled = enable_thinking;
+    req.thinking_opt_in = req.thinking_opt_in && enable_thinking;
+    req.template_kwargs["thinking"] = enable_thinking;
+    // The frozen GGUF adapter otherwise defaults an omitted effort to max,
+    // unlike Moonshot's current encoder.
+    if (!req.template_kwargs.contains("thinking_effort")) {
+        req.template_kwargs["thinking_effort"] = nullptr;
+    }
 
     // Spec §4.3 combined precedence + §4.4 clamping: thinking.budget_tokens
     // (if set) wins over reasoning.effort for the phase-1 cap; either is
@@ -1966,9 +2169,71 @@ bool HttpServer::render_messages_to_text(
         const std::vector<ChatMessage> & chat_messages,
         const ParsedRequest & req, bool add_generation_prompt,
         std::string & rendered, std::string & error) {
+    std::vector<ChatMessage> render_messages = chat_messages;
+    auto has_control_literal = [&](const auto & self,
+                                   const json & value) -> bool {
+        if (value.is_string()) {
+            const std::string text = value.get<std::string>();
+            return text.find("<|open|>") != std::string::npos ||
+                   text.find("<|close|>") != std::string::npos ||
+                   text.find("<|sep|>") != std::string::npos ||
+                   text.find("<|end_of_msg|>") != std::string::npos ||
+                   text.find("<|kimi_image_placeholder|>") !=
+                       std::string::npos;
+        }
+        if (value.is_array()) {
+            for (const auto & item : value) {
+                if (self(self, item)) return true;
+            }
+        } else if (value.is_object()) {
+            for (const auto & [key, item] : value.items()) {
+                if (self(self, item)) return true;
+            }
+        }
+        return false;
+    };
+    if (chat_format_ == ChatFormat::KIMI_K3) {
+        for (auto & message : render_messages) {
+            if (message.role == "developer") message.role = "system";
+            const json native = message.template_fields.is_object()
+                ? json(message.template_fields)
+                : json(message.content);
+            if (has_control_literal(has_control_literal, native)) {
+                error = "Kimi K3 message contains a reserved XTML control literal";
+                return false;
+            }
+            if (!message.template_fields.is_object() ||
+                !message.template_fields.contains("content") ||
+                !message.template_fields["content"].is_array()) {
+                continue;
+            }
+            for (const auto & part : message.template_fields["content"]) {
+                if (!part.is_object()) continue;
+                const std::string type = part.value("type", "");
+                if (type == "image" || type == "image_url" ||
+                    type == "input_image") {
+                    error = "Kimi K3 image input requires a vision adapter";
+                    return false;
+                }
+            }
+        }
+    }
+
+    json rendered_tools =
+        chat_format_ == ChatFormat::KIMI_K3 &&
+        req.template_kwargs.value("tool_choice", std::string()) == "none"
+            ? req.tools : req.effective_tools;
+    nlohmann::ordered_json template_kwargs = req.template_kwargs;
+    if (chat_format_ == ChatFormat::KIMI_K3 &&
+        (has_control_literal(has_control_literal, rendered_tools) ||
+         has_control_literal(has_control_literal, json(template_kwargs)))) {
+        error = "Kimi K3 tools/schema contain a reserved XTML control literal";
+        return false;
+    }
+
     std::string tools_json;
-    if (req.tools.is_array() && !req.tools.empty()) {
-        tools_json = req.tools.dump();
+    if (rendered_tools.is_array() && !rendered_tools.empty()) {
+        tools_json = rendered_tools.dump();
     }
 
     if (!config_.chat_template_src.empty()) {
@@ -1987,16 +2252,16 @@ bool HttpServer::render_messages_to_text(
             : std::string();
         try {
             rendered = render_chat_template_jinja(
-                config_.chat_template_src, chat_messages, bos, eos,
+                config_.chat_template_src, render_messages, bos, eos,
                 add_generation_prompt,
-                req.thinking_enabled, tools_json);
+                req.thinking_enabled, tools_json, template_kwargs);
         } catch (const std::exception & e) {
             error = std::string("chat template (jinja) render failed: ") + e.what();
             return false;
         }
     } else {
         rendered = render_chat_template(
-            chat_messages, chat_format_, add_generation_prompt,
+            render_messages, chat_format_, add_generation_prompt,
             req.thinking_enabled, tools_json);
     }
 
@@ -2171,53 +2436,20 @@ struct CompletionTokenCounts {
     int content = 0;
 };
 
-enum class TokenDelivery {
-    kSkip,      // EOS or internal control marker — never reaches the emitter
-    kThinkTag,  // thinking-boundary marker mapped to its <think> text form
-    kText,      // ordinary text (token_text may still be empty)
-};
-
 // Classifies one generated token for delivery to the SseEmitter, filling
-// `text` with the deliverable form for kThinkTag / kText. Shared by the
+// `text` with the deliverable form. Shared by the
 // streaming on_token callback and the non-streaming replay: the two paths
 // MUST classify identically, or the reasoning/content split diverges
 // between streamed and non-streamed responses.
-TokenDelivery classify_generated_token(
-        Tokenizer & tokenizer, int32_t token, std::string & text) {
-    if (token == tokenizer.eos_id() || token == tokenizer.eos_chat_id()) {
-        return TokenDelivery::kSkip;
-    }
-
-    const std::string & raw = tokenizer.raw_token(token);
-
-    // Gemma4 thinking channel (<|channel> / <channel|>) and Qwen3.6
-    // thinking markers share one mapped dialect. The Qwen markers
-    // <think> (id 248068) and </think> (id 248069) are SINGLE special
-    // tokens in the added_tokens vocab: without this mapping they would
-    // hit the generic "<...>" strip below and be silently dropped, the
-    // emitter would never see the reasoning→content transition, and the
-    // whole answer would land in reasoning_content with empty content.
-    if (raw == "<|channel>" || raw == "<think>") {
-        text = "<think>";
-        return TokenDelivery::kThinkTag;
-    }
-    if (raw == "<channel|>" || raw == "</think>") {
-        text = "</think>\n";
-        return TokenDelivery::kThinkTag;
-    }
-
-    // Other special tokens are internal control markers. Byte-fallback
-    // tokens such as <0xAB> are text and must still reach the emitter.
-    if (raw.size() >= 2 && raw[0] == '<' && raw[1] == '|') {
-        return TokenDelivery::kSkip;
-    }
-    if (raw.size() >= 2 && raw[0] == '<' && raw.back() == '>' &&
-        !(raw.size() == 6 && raw[1] == '0' && raw[2] == 'x')) {
-        return TokenDelivery::kSkip;
-    }
-
-    text = tokenizer.token_text(token);
-    return TokenDelivery::kText;
+ModelTokenDelivery classify_generated_token(
+        Tokenizer & tokenizer, SseEmitter & emitter,
+        int32_t token, std::string & text) {
+    const bool is_eos =
+        token == tokenizer.eos_id() || token == tokenizer.eos_chat_id();
+    if (is_eos) return classify_model_token(emitter, {}, {}, true, text);
+    return classify_model_token(
+        emitter, tokenizer.raw_token(token), tokenizer.token_text(token),
+        false, text);
 }
 
 CompletionTokenCounts feed_non_streaming_tokens(
@@ -2225,14 +2457,14 @@ CompletionTokenCounts feed_non_streaming_tokens(
         SseEmitter & emitter) {
     for (int32_t token : tokens) {
         std::string text;
-        const TokenDelivery delivery =
-            classify_generated_token(tokenizer, token, text);
-        if (delivery == TokenDelivery::kSkip) continue;
+        const ModelTokenDelivery delivery =
+            classify_generated_token(tokenizer, emitter, token, text);
+        if (delivery == ModelTokenDelivery::SKIP) continue;
 
         emitter.emit_token(text);
         // Matching the streaming path, only ordinary text is checked
         // against stop sequences — think-tag markers never count.
-        if (delivery == TokenDelivery::kText && emitter.stop_hit()) break;
+        if (delivery == ModelTokenDelivery::TEXT && emitter.stop_hit()) break;
     }
 
     CompletionTokenCounts counts;
@@ -2730,36 +2962,17 @@ void HttpServer::apply_flowkv_compression(
         return;
     }
 
-    std::string tools_json;
-    if (req.tools.is_array() && !req.tools.empty()) {
-        tools_json = req.tools.dump();
-    }
     const std::vector<ChatMessage> chat_messages = normalize_chat_messages(
         modified_messages, req.format, tool_memory_);
 
     std::string rendered;
-    if (!config_.chat_template_src.empty()) {
-        const std::string & bos = tokenizer_.bos_id() >= 0
-            ? tokenizer_.raw_token(tokenizer_.bos_id())
-            : std::string();
-        const std::string & eos = tokenizer_.eos_id() >= 0
-            ? tokenizer_.raw_token(tokenizer_.eos_id())
-            : std::string();
-        try {
-            rendered = render_chat_template_jinja(
-                config_.chat_template_src, chat_messages, bos, eos,
-                /*add_generation_prompt=*/true,
-                req.thinking_enabled, tools_json);
-        } catch (const std::exception & error) {
-            std::fprintf(stderr,
-                "[flowkv] jinja re-render failed (%s) — skipping\n",
-                error.what());
-            return;
-        }
-    } else {
-        rendered = render_chat_template(
-            chat_messages, chat_format_, /*add_generation_prompt=*/true,
-            req.thinking_enabled, tools_json);
+    std::string render_error;
+    if (!render_messages_to_text(
+            chat_messages, req, /*add_generation_prompt=*/true,
+            rendered, render_error)) {
+        std::fprintf(stderr, "[flowkv] re-render failed (%s) — skipping\n",
+                     render_error.c_str());
+        return;
     }
 
     const int tokens_before = (int) prepared.tokens.size();
@@ -3540,6 +3753,12 @@ void HttpServer::remember_agent_turn(
         const SseEmitter & emitter, int completion_tokens,
         bool visible_output_seen, bool client_disconnected,
         bool replay_cache) {
+    if (config_.arch == "kimi-k3" &&
+        (req.template_kwargs.contains("tool_choice") ||
+         req.template_kwargs.contains("response_format") ||
+         req.template_kwargs.contains("response_schema"))) {
+        return;
+    }
     const bool supported_format = req.format == ApiFormat::OPENAI_CHAT ||
         req.format == ApiFormat::RESPONSES;
     const bool valid_tool_turn = result.ok() && completion_tokens > 0 &&
@@ -3695,7 +3914,10 @@ void HttpServer::prepare_generation_inputs(
         inputs.request.budget_hook.hard_limit_remaining = reply_budget;
     }
 
-    if (!req.tools.empty() && !req.tool_choice.is_null()) {
+    // The generic hint grammar is Qwen XML. K3 uses XTML and must remain on
+    // exact target generation until a native, target-anchored hint is proven.
+    if (config_.arch != "kimi-k3" &&
+        !req.tools.empty() && !req.tool_choice.is_null()) {
         ToolHintGenerator hint_generator(tokenizer_);
         auto hint = hint_generator.build_hint(req.tools, req.tool_choice);
         if (!hint.empty()) {
@@ -3704,7 +3926,8 @@ void HttpServer::prepare_generation_inputs(
         }
     }
 
-    if (req.tools.empty() || !env_flag_enabled("DFLASH_STALL_TOOL_PREFIX")) {
+    if (config_.arch == "kimi-k3" || req.tools.empty() ||
+        !env_flag_enabled("DFLASH_STALL_TOOL_PREFIX")) {
         return;
     }
 
@@ -3736,9 +3959,19 @@ void HttpServer::prepare_generation_inputs(
     inputs.request.stall_skip_tokens = &inputs.stall_skip_tokens;
 }
 
-void HttpServer::configure_generation_io(
+std::shared_ptr<SseEmitter> HttpServer::configure_generation_io(
         ServerJob * job, const ParsedRequest & req, SseEmitter & emitter,
         GenerationOutputState & output, DaemonIO & io) {
+    // Non-stream generation replays result.tokens into `emitter`. Give live
+    // status its own K3 framing state so each committed token is consumed once.
+    std::shared_ptr<SseEmitter> nonstream_k3_preview;
+    if (!req.stream && chat_format_ == ChatFormat::KIMI_K3) {
+        nonstream_k3_preview = std::make_shared<SseEmitter>(
+            req.format, req.response_id + "-preview", req.model,
+            (int) req.prompt_tokens.size(), req.effective_tools, nullptr,
+            req.stop_sequences, req.started_in_thinking, true);
+    }
+
     io.stream_fd = -1;
     io.should_cancel = [job]() {
         return job->client_disconnected.load(std::memory_order_acquire);
@@ -3753,7 +3986,8 @@ void HttpServer::configure_generation_io(
         broadcast_status();
     };
 
-    io.on_token = [this, job, &req, &emitter, &output](
+    io.on_token = [this, job, &req, &emitter, &output,
+                   nonstream_k3_preview](
             int32_t token) -> bool {
         if (output.client_disconnected ||
             job->client_disconnected.load(std::memory_order_acquire)) {
@@ -3768,9 +4002,21 @@ void HttpServer::configure_generation_io(
         }
 
         std::string text;
-        const TokenDelivery delivery =
-            classify_generated_token(tokenizer_, token, text);
-        if (delivery == TokenDelivery::kSkip) return true;
+        if (nonstream_k3_preview) {
+            const ModelTokenDelivery delivery = classify_generated_token(
+                tokenizer_, *nonstream_k3_preview, token, text);
+            if (delivery == ModelTokenDelivery::SKIP) return true;
+            nonstream_k3_preview->emit_token(text);
+            output.visible_output_seen =
+                nonstream_k3_preview->has_visible_model_output();
+            if (!text.empty()) broadcast_token(text);
+            return should_continue_model_generation(
+                delivery, *nonstream_k3_preview);
+        }
+
+        const ModelTokenDelivery delivery =
+            classify_generated_token(tokenizer_, emitter, token, text);
+        if (delivery == ModelTokenDelivery::SKIP) return true;
 
         if (!text.empty()) {
             output.visible_output_seen = true;
@@ -3786,8 +4032,10 @@ void HttpServer::configure_generation_io(
         }
         // Only ordinary text is checked against stop sequences — think-tag
         // markers never terminate generation.
-        return delivery == TokenDelivery::kThinkTag || !emitter.stop_hit();
+        return should_continue_model_generation(delivery, emitter);
     };
+
+    return nonstream_k3_preview;
 }
 
 bool HttpServer::deliver_generation_token(
@@ -3797,9 +4045,9 @@ bool HttpServer::deliver_generation_token(
     ++completion_tokens;
 
     std::string text;
-    const TokenDelivery delivery =
-        classify_generated_token(tokenizer_, token, text);
-    if (delivery == TokenDelivery::kSkip) return true;
+    const ModelTokenDelivery delivery =
+        classify_generated_token(tokenizer_, emitter, token, text);
+    if (delivery == ModelTokenDelivery::SKIP) return true;
 
     // Non-stream replay counts every non-skipped token, including tokens
     // whose decoded text is empty. Keep concurrent usage accounting aligned;
@@ -3815,7 +4063,7 @@ bool HttpServer::deliver_generation_token(
             send_buffer.append(chunk);
         }
     }
-    return delivery == TokenDelivery::kThinkTag || !emitter.stop_hit();
+    return should_continue_model_generation(delivery, emitter);
 }
 
 void HttpServer::send_nonstream_response(
@@ -3943,10 +4191,11 @@ void HttpServer::process_job(ServerJob * job) {
 
     // Create SSE emitter for streaming state machine.
     SseEmitter emitter(req.format, req.response_id, req.model,
-                       (int)req.prompt_tokens.size(), req.tools,
+                       (int)req.prompt_tokens.size(), req.effective_tools,
                        &tool_memory_,
                        req.stop_sequences,
-                       req.started_in_thinking);
+                       req.started_in_thinking,
+                       chat_format_ == ChatFormat::KIMI_K3);
 
     // Emit initial SSE events only for local generation. The upstream owns
     // the proxied event sequence.
@@ -3991,7 +4240,8 @@ void HttpServer::process_job(ServerJob * job) {
 
     DaemonIO io;
     GenerationOutputState output;
-    configure_generation_io(job, req, emitter, output, io);
+    auto nonstream_k3_preview =
+        configure_generation_io(job, req, emitter, output, io);
     int & completion_tokens = output.completion_tokens;
     bool & visible_output_seen = output.visible_output_seen;
     bool & client_disconnected = output.client_disconnected;
@@ -4032,6 +4282,12 @@ void HttpServer::process_job(ServerJob * job) {
 
     if (job->client_disconnected.load(std::memory_order_acquire)) {
         client_disconnected = true;
+    }
+
+    if (nonstream_k3_preview) {
+        nonstream_k3_preview->emit_finish(completion_tokens);
+        visible_output_seen =
+            nonstream_k3_preview->has_visible_model_output();
     }
 
     // Release oversized scratch buffers (gallocr, BSA cache) so VRAM

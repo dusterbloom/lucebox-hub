@@ -968,7 +968,7 @@ GenerateResult KimiK3Backend::generate_from_state(
             *spec_target, draft_weights_, draft_backend_, feature_ring_,
             req.prompt, req.n_gen, seed, /*out_path=*/nullptr,
             cfg_.draft_ctx_max, spec_io, /*remote_draft=*/nullptr,
-            req.hint_tokens, /*base_pos=*/0, &accept_rate);
+            /*hint_tokens=*/nullptr, /*base_pos=*/0, &accept_rate);
         result.decode_s = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - decode_begin).count();
         result.accept_rate = static_cast<float>(accept_rate);

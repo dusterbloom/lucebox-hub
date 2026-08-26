@@ -64,6 +64,7 @@ static void append_available_tools(std::string & result,
 }
 
 ChatFormat chat_format_for_arch(const std::string & arch) {
+    if (arch == "kimi-k3") return ChatFormat::KIMI_K3;
     if (arch == "deepseek4") return ChatFormat::DEEPSEEK4;
     if (arch == "laguna") return ChatFormat::LAGUNA;
     if (arch == "gemma4") return ChatFormat::GEMMA4;
@@ -82,6 +83,10 @@ std::string render_chat_template(
     bool has_tools = !tools_json.empty() && tools_json != "[]" && tools_json != "null";
 
     switch (format) {
+    case ChatFormat::KIMI_K3:
+        throw std::runtime_error(
+            "Kimi K3 requires its GGUF Jinja chat template");
+
     case ChatFormat::QWEN3: {
         // Qwen3/3.5 ChatML format:
         //   <|im_start|>system\n[tool preamble +] content<|im_end|>\n
@@ -471,7 +476,8 @@ std::string render_chat_template_jinja(
     const std::string & eos_token,
     bool add_generation_prompt,
     bool enable_thinking,
-    const std::string & tools_json)
+    const std::string & tools_json,
+    const nlohmann::ordered_json & template_kwargs)
 {
     if (template_src.empty()) {
         throw std::runtime_error("render_chat_template_jinja: template_src is empty");
@@ -485,16 +491,30 @@ std::string render_chat_template_jinja(
     // eos_token, add_generation_prompt, enable_thinking).
     nlohmann::ordered_json messages_j = nlohmann::ordered_json::array();
     for (const auto & m : messages) {
-        nlohmann::ordered_json mj;
-        mj["role"]    = m.role;
-        mj["content"] = m.content;
+        nlohmann::ordered_json mj = m.template_fields.is_object()
+            ? m.template_fields
+            : nlohmann::ordered_json::object();
+        mj["role"] = m.role;
+        // Keep typed content intact; synchronize ordinary string content so
+        // prompt pinning/compression edits remain authoritative.
+        const bool has_structured_calls =
+            mj.contains("tool_calls") && mj["tool_calls"].is_array() &&
+            !mj["tool_calls"].empty();
+        if (!has_structured_calls &&
+            (!mj.contains("content") || mj["content"].is_string())) {
+            mj["content"] = m.content;
+        }
         if (!m.tool_call_id.empty()) {
             mj["tool_call_id"] = m.tool_call_id;
         }
         messages_j.push_back(std::move(mj));
     }
 
-    nlohmann::ordered_json inputs;
+    nlohmann::ordered_json inputs = template_kwargs.is_object()
+        ? template_kwargs
+        : nlohmann::ordered_json::object();
+    // These inputs are server-authoritative; request kwargs cannot replace
+    // the actual conversation, token vocabulary, or generation boundary.
     inputs["messages"]              = std::move(messages_j);
     inputs["bos_token"]             = bos_token;
     inputs["eos_token"]             = eos_token;

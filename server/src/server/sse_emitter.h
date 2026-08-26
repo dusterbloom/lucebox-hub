@@ -9,6 +9,7 @@
 #include "tool_memory.h"
 #include "reasoning.h"
 #include "api_types.h"
+#include "kimi_k3_output_framer.h"
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
@@ -49,6 +50,12 @@ struct GenTimings {
     bool   agent_turn_cache_hit = false;
 };
 
+enum class ModelTokenDelivery {
+    SKIP,
+    THINK_TAG,
+    TEXT,
+};
+
 // Build the `timings` sub-object emitted under `usage`.
 //   prefill_ms              = prefill_s * 1000.0  (1 decimal)
 //   decode_ms               = decode_s  * 1000.0  (1 decimal)
@@ -71,7 +78,13 @@ public:
                const json & tools,
                ToolMemory * tool_memory,
                const std::vector<std::string> & stop_sequences = {},
-               bool started_in_thinking = false);
+               bool started_in_thinking = false,
+               bool kimi_k3_output = false);
+
+    bool frame_model_token(const std::string & raw_token,
+                           const std::string & decoded_piece,
+                           std::string & text,
+                           bool & think_boundary);
 
     // Emit the initial SSE events (role delta, message_start, etc.)
     // Returns the formatted SSE strings to send.
@@ -99,6 +112,8 @@ public:
 
     // Get accumulated content (for non-streaming).
     const std::string & accumulated_text() const { return accumulated_content_; }
+
+    bool has_visible_model_output() const { return !accumulated_raw_.empty(); }
 
     // Exact model text before structured tool-call normalization.
     const std::string & accumulated_raw() const { return accumulated_raw_; }
@@ -187,6 +202,9 @@ private:
     int          first_content_token_index_ = -1;
     int          emit_token_count_ = 0;
 
+    bool         kimi_k3_output_ = false;
+    KimiK3OutputFramer kimi_k3_framer_;
+
     // Stop sequences support
     std::vector<std::string> stop_sequences_;
     size_t       stop_holdback_ = 0;  // max length of any stop sequence
@@ -202,5 +220,15 @@ private:
     // across streamed tokens is still recognized on the next token.
     static constexpr size_t BASE_HOLDBACK = 15;  // len("<parameter name=") - 1
 };
+
+ModelTokenDelivery classify_model_token(
+    SseEmitter & emitter,
+    const std::string & raw_token,
+    const std::string & decoded_piece,
+    bool is_eos,
+    std::string & text);
+
+bool should_continue_model_generation(
+    ModelTokenDelivery delivery, const SseEmitter & emitter);
 
 }  // namespace dflash::common

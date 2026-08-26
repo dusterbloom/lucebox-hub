@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <utility>
 
 namespace dflash::common {
 
@@ -73,7 +74,8 @@ SseEmitter::SseEmitter(ApiFormat format,
                        const json & tools,
                        ToolMemory * tool_memory,
                        const std::vector<std::string> & stop_sequences,
-                       bool started_in_thinking)
+                       bool started_in_thinking,
+                       bool kimi_k3_output)
     : format_(format)
     , request_id_(request_id)
     , model_name_(model_name)
@@ -82,6 +84,7 @@ SseEmitter::SseEmitter(ApiFormat format,
     , tool_memory_(tool_memory)
     , mode_(started_in_thinking ? StreamMode::REASONING : StreamMode::CONTENT)
     , active_kind_(started_in_thinking ? "thinking" : "text")
+    , kimi_k3_output_(kimi_k3_output)
     , stop_sequences_(stop_sequences)
     , created_at_(unix_timestamp())
     , msg_item_id_(gen_item_id())
@@ -90,6 +93,62 @@ SseEmitter::SseEmitter(ApiFormat format,
     for (const auto & s : stop_sequences_) {
         if (s.size() > stop_holdback_) stop_holdback_ = s.size();
     }
+}
+
+bool SseEmitter::frame_model_token(const std::string & raw_token,
+                                   const std::string & decoded_piece,
+                                   std::string & text,
+                                   bool & think_boundary) {
+    if (!kimi_k3_output_) {
+        text = decoded_piece;
+        think_boundary = false;
+        return true;
+    }
+    KimiK3FramedPiece framed = kimi_k3_framer_.push(raw_token, decoded_piece);
+    text = std::move(framed.text);
+    think_boundary = framed.think_boundary;
+    return !text.empty();
+}
+
+ModelTokenDelivery classify_model_token(
+        SseEmitter & emitter, const std::string & raw_token,
+        const std::string & decoded_piece, bool is_eos,
+        std::string & text) {
+    if (is_eos) return ModelTokenDelivery::SKIP;
+
+    bool framed_think_boundary = false;
+    if (!emitter.frame_model_token(raw_token, decoded_piece, text,
+                                   framed_think_boundary)) {
+        return ModelTokenDelivery::SKIP;
+    }
+    if (framed_think_boundary) return ModelTokenDelivery::THINK_TAG;
+
+    // Combined text is a fail-visible K3 frame, not a single special token.
+    if (text != decoded_piece) return ModelTokenDelivery::TEXT;
+
+    if (raw_token == "<|channel>" || raw_token == "<think>") {
+        text = "<think>";
+        return ModelTokenDelivery::THINK_TAG;
+    }
+    if (raw_token == "<channel|>" || raw_token == "</think>") {
+        text = "</think>\n";
+        return ModelTokenDelivery::THINK_TAG;
+    }
+    if (raw_token.size() >= 2 && raw_token[0] == '<' && raw_token[1] == '|') {
+        return ModelTokenDelivery::SKIP;
+    }
+    if (raw_token.size() >= 2 && raw_token[0] == '<' && raw_token.back() == '>' &&
+        !(raw_token.size() == 6 && raw_token[1] == '0' && raw_token[2] == 'x')) {
+        return ModelTokenDelivery::SKIP;
+    }
+
+    text = decoded_piece;
+    return ModelTokenDelivery::TEXT;
+}
+
+bool should_continue_model_generation(
+        ModelTokenDelivery delivery, const SseEmitter & emitter) {
+    return delivery == ModelTokenDelivery::THINK_TAG || !emitter.stop_hit();
 }
 
 // ─── SSE formatting helpers ─────────────────────────────────────────────
@@ -349,7 +408,11 @@ std::vector<std::string> SseEmitter::emit_token(const std::string & raw_piece) {
             size_t idx = window_.find(THINK_CLOSE);
             size_t tool_idx = std::string::npos;
             bool tool_hit = has_request_tools(tools_) &&
-                            (tool_idx = window_.find(FUNCTION_CALLS_OPEN)) != std::string::npos;
+                            (kimi_k3_output_
+                                ? find_tool_syntax_start(
+                                      window_, tools_, tool_idx, true)
+                                : (tool_idx = window_.find(
+                                      FUNCTION_CALLS_OPEN)) != std::string::npos);
 
             if (idx != std::string::npos && (tool_idx == std::string::npos || idx < tool_idx)) {
                 std::string pre = window_.substr(0, idx);
@@ -459,7 +522,8 @@ std::vector<std::string> SseEmitter::emit_token(const std::string & raw_piece) {
         size_t think_close_idx = window_.find(THINK_CLOSE);
         size_t tool_idx = std::string::npos;
         bool tool_hit = has_request_tools(tools_) &&
-                        find_tool_syntax_start(window_, tools_, tool_idx);
+                        find_tool_syntax_start(
+                            window_, tools_, tool_idx, kimi_k3_output_);
 
         struct Hit { size_t pos; int type; };  // type: 0=think, 1=think_close, 2=tool-ish
         std::vector<Hit> hits;
@@ -584,6 +648,14 @@ std::vector<std::string> SseEmitter::emit_finish(int completion_tokens,
                                                  int generation_cap) {
     std::vector<std::string> out;
 
+    if (kimi_k3_output_) {
+        KimiK3FramedPiece trailing = kimi_k3_framer_.finish();
+        if (!trailing.text.empty()) {
+            auto chunks = emit_token(trailing.text);
+            out.insert(out.end(), chunks.begin(), chunks.end());
+        }
+    }
+
     // A tail still pending at end-of-stream is a genuinely truncated
     // codepoint; sanitize it into the window so nothing is silently lost.
     if (!utf8_tail_.empty()) {
@@ -653,7 +725,8 @@ std::vector<std::string> SseEmitter::emit_finish(int completion_tokens,
     // Parse tool calls from buffer
     std::string fr = "stop";
     if (mode_ == StreamMode::TOOL_BUFFER && !tool_buffer_.empty()) {
-        auto parsed = parse_tool_calls(tool_buffer_, tools_);
+        auto parsed = parse_tool_calls(
+            tool_buffer_, tools_, kimi_k3_output_);
         tool_calls_ = std::move(parsed.tool_calls);
 
         if (!tool_calls_.empty()) {

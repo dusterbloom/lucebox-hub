@@ -20,6 +20,7 @@
 #include "server/api_types.h"
 #include "server/http_server.h"
 #include "server/chat_template.h"
+#include "server/kimi_k3_output_framer.h"
 #include "common/sampler.h"
 #include "common/backend_precision.h"
 #include "common/backend_ipc.h"
@@ -3093,6 +3094,33 @@ TEST_CASE(ServerUnitFixture, test_kimi_embedded_jinja_native_envelope) {
     TEST_ASSERT(out == expected);
 }
 
+TEST_CASE(ServerUnitFixture, test_kimi_jinja_preserves_structured_message_context) {
+    static const char TPL[] =
+        "{{ messages[0].name }}|{{ messages[0].tool_calls[0].function.name }}|"
+        "{{ tool_choice }}|{{ thinking }}|{{ thinking_effort }}";
+    ChatMessage assistant{"assistant", ""};
+    assistant.template_fields = {
+        {"role", "assistant"},
+        {"name", "worker"},
+        {"content", nullptr},
+        {"tool_calls", nlohmann::ordered_json::array({{
+            {"id", "call_1"},
+            {"type", "function"},
+            {"function", {{"name", "get_weather"},
+                           {"arguments", {{"city", "Rome"}}}}},
+        }})},
+    };
+    nlohmann::ordered_json kwargs = {
+        {"tool_choice", "required"},
+        {"thinking", true},
+        {"thinking_effort", "low"},
+    };
+    const std::string out = render_chat_template_jinja(
+        TPL, {assistant}, "", "", false, true, "", kwargs);
+    TEST_ASSERT(out.rfind("worker|get_weather|required|", 0) == 0);
+    TEST_ASSERT(out.size() >= 4 && out.substr(out.size() - 4) == "|low");
+}
+
 TEST_CASE(ServerUnitFixture, test_gguf_inspection_reads_embedded_chat_template) {
     static const char TEMPLATE[] =
         "{{ '<|open|>message role=\\\"user\\\"<|sep|>' }}";
@@ -3163,6 +3191,252 @@ TEST_CASE(ServerUnitFixture, test_jinja_render_empty_template_throws) {
         threw = true;
     }
     TEST_ASSERT(threw);
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_arch_fails_closed_without_jinja) {
+    TEST_ASSERT(chat_format_for_arch("kimi-k3") == ChatFormat::KIMI_K3);
+    bool threw = false;
+    try {
+        (void)render_chat_template(
+            {{"user", "hello", ""}}, ChatFormat::KIMI_K3,
+            true, false, "");
+    } catch (const std::runtime_error &) {
+        threw = true;
+    }
+    TEST_ASSERT(threw);
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_framer_hides_only_known_frames) {
+    KimiK3OutputFramer framer;
+    std::string visible;
+    const std::vector<std::pair<std::string, std::string>> pieces = {
+        {"Tokyo", "Tokyo"},
+        {"<|close|>", "<|close|>"}, {"res", "res"},
+        {"ponse", "ponse"}, {"<|sep|>", "<|sep|>"},
+        {" response", " response"},
+        {"<|close|>", "<|close|>"}, {"message", "message"},
+        {"<|sep|>", "<|sep|>"},
+    };
+    for (const auto & piece : pieces) {
+        visible += framer.push(piece.first, piece.second).text;
+    }
+    visible += framer.finish().text;
+    TEST_ASSERT(visible == "Tokyo response");
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_framer_maps_thinking) {
+    KimiK3OutputFramer framer;
+    TEST_ASSERT(framer.push("<|open|>", "<|open|>").text.empty());
+    TEST_ASSERT(framer.push("think", "think").text.empty());
+    auto open = framer.push("<|sep|>", "<|sep|>");
+    TEST_ASSERT(open.text == "<think>" && open.think_boundary);
+    TEST_ASSERT(framer.push("work", "work").text == "work");
+    TEST_ASSERT(framer.push("<|close|>", "<|close|>").text.empty());
+    TEST_ASSERT(framer.push("think", "think").text.empty());
+    auto close = framer.push("<|sep|>", "<|sep|>");
+    TEST_ASSERT(close.text == "</think>" && close.think_boundary);
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_framer_preserves_unknown_and_malformed) {
+    KimiK3OutputFramer unknown;
+    TEST_ASSERT(unknown.push("<|open|>", "<|open|>").text.empty());
+    TEST_ASSERT(unknown.push("call tool=\"x\"", "call tool=\"x\"").text.empty());
+    TEST_ASSERT(unknown.push("<|sep|>", "<|sep|>").text ==
+                "<|open|>call tool=\"x\"<|sep|>");
+
+    KimiK3OutputFramer malformed;
+    TEST_ASSERT(malformed.push("<|close|>", "<|close|>").text.empty());
+    TEST_ASSERT(malformed.push("res", "res").text.empty());
+    TEST_ASSERT(malformed.finish().text == "<|close|>res");
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_stream_and_nonstream_match) {
+    SseEmitter stream(ApiFormat::OPENAI_CHAT, "s", "kimi-k3", 1,
+                      json::array(), nullptr, {}, false, true);
+    SseEmitter nonstream(ApiFormat::OPENAI_CHAT, "n", "kimi-k3", 1,
+                         json::array(), nullptr, {}, false, true);
+    const std::vector<std::pair<std::string, std::string>> pieces = {
+        {"Tokyo", "Tokyo"}, {"<|close|>", "<|close|>"},
+        {"response", "response"}, {"<|sep|>", "<|sep|>"},
+        {"<|close|>", "<|close|>"}, {"message", "message"},
+        {"<|sep|>", "<|sep|>"},
+    };
+    for (const auto & piece : pieces) {
+        std::string a, b;
+        bool ta = false, tb = false;
+        if (stream.frame_model_token(piece.first, piece.second, a, ta)) {
+            stream.emit_token(a);
+        }
+        if (nonstream.frame_model_token(piece.first, piece.second, b, tb)) {
+            nonstream.emit_token(b);
+        }
+    }
+    stream.emit_finish(7);
+    nonstream.emit_finish(7);
+    TEST_ASSERT(stream.accumulated_text() == "Tokyo");
+    TEST_ASSERT(nonstream.accumulated_text() == stream.accumulated_text());
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_xtml_tool_call_parser) {
+    const json tools = json::array({{{"type", "function"}, {"function", {
+        {"name", "get_weather"},
+        {"parameters", {{"type", "object"}}},
+    }}}});
+    const std::string text =
+        "Sure.<|open|>tools<|sep|>"
+        "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>"
+        "<|open|>argument key=\"city\" type=\"string\"<|sep|>Rome"
+        "<|close|>argument<|sep|>"
+        "<|open|>argument key=\"days\" type=\"number\"<|sep|>100"
+        "<|close|>argument<|sep|>"
+        "<|close|>call<|sep|><|close|>tools<|sep|>";
+    const auto parsed = parse_tool_calls(text, tools, true);
+    TEST_ASSERT(parsed.cleaned_text == "Sure.");
+    TEST_ASSERT(parsed.tool_calls.size() == 1);
+    TEST_ASSERT(parsed.tool_calls[0].name == "get_weather");
+    TEST_ASSERT(json::parse(parsed.tool_calls[0].arguments) ==
+                json({{"city", "Rome"}, {"days", 100}}));
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_framer_to_emitter_tool_call) {
+    const json tools = json::array({{{"type", "function"}, {"function", {
+        {"name", "get_weather"}, {"parameters", {{"type", "object"}}},
+    }}}});
+    SseEmitter emitter(ApiFormat::OPENAI_CHAT, "k3", "kimi-k3", 1,
+                       tools, nullptr, {}, false, true);
+    const std::vector<std::pair<std::string, std::string>> pieces = {
+        {"<|open|>", "<|open|>"}, {"tools", "tools"},
+        {"<|sep|>", "<|sep|>"},
+        {"<|open|>", "<|open|>"},
+        {"call tool=\"get_weather\" index=\"1\"",
+         "call tool=\"get_weather\" index=\"1\""},
+        {"<|sep|>", "<|sep|>"},
+        {"<|open|>", "<|open|>"},
+        {"argument key=\"city\" type=\"string\"",
+         "argument key=\"city\" type=\"string\""},
+        {"<|sep|>", "<|sep|>"}, {"Rome", "Rome"},
+        {"<|close|>", "<|close|>"}, {"argument", "argument"},
+        {"<|sep|>", "<|sep|>"},
+        {"<|close|>", "<|close|>"}, {"call", "call"},
+        {"<|sep|>", "<|sep|>"},
+        {"<|close|>", "<|close|>"}, {"tools", "tools"},
+        {"<|sep|>", "<|sep|>"},
+    };
+    for (const auto & piece : pieces) {
+        std::string text;
+        const auto delivery = classify_model_token(
+            emitter, piece.first, piece.second, false, text);
+        if (delivery != ModelTokenDelivery::SKIP) emitter.emit_token(text);
+    }
+    emitter.emit_finish((int) pieces.size());
+    TEST_ASSERT(emitter.accumulated_text().empty());
+    TEST_ASSERT(emitter.tool_calls().size() == 1);
+    TEST_ASSERT(emitter.tool_calls()[0].name == "get_weather");
+    TEST_ASSERT(json::parse(emitter.tool_calls()[0].arguments) ==
+                json({{"city", "Rome"}}));
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_preview_uses_full_special_classification) {
+    SseEmitter preview(ApiFormat::OPENAI_CHAT, "preview", "kimi-k3", 1,
+                       json::array(), nullptr, {}, false, true);
+    std::string text;
+    TEST_ASSERT(classify_model_token(
+        preview, "<|internal_control|>", "<|internal_control|>", false, text) ==
+        ModelTokenDelivery::SKIP);
+    TEST_ASSERT(classify_model_token(
+        preview, "<|open|>", "<|open|>", true, text) ==
+        ModelTokenDelivery::SKIP);
+    preview.emit_finish(1);
+    TEST_ASSERT(!preview.has_visible_model_output());
+    TEST_ASSERT(preview.accumulated_text().empty());
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_preview_finish_exposes_malformed_tail_for_cache) {
+    SseEmitter preview(ApiFormat::OPENAI_CHAT, "preview", "kimi-k3", 1,
+                       json::array(), nullptr, {}, false, true);
+    std::string text;
+    TEST_ASSERT(classify_model_token(
+        preview, "<|close|>", "<|close|>", false, text) ==
+        ModelTokenDelivery::SKIP);
+    TEST_ASSERT(classify_model_token(
+        preview, "res", "res", false, text) == ModelTokenDelivery::SKIP);
+    TEST_ASSERT(!preview.has_visible_model_output());
+    preview.emit_finish(2);
+    TEST_ASSERT(preview.has_visible_model_output());
+    TEST_ASSERT(preview.accumulated_text() == "<|close|>res");
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_classic_nonstream_preview_stops_raw_delivery) {
+    SseEmitter preview(ApiFormat::OPENAI_CHAT, "preview", "kimi-k3", 1,
+                       json::array(), nullptr, {"STOP"}, false, true);
+    int raw_count = 0;
+    bool stopped = false;
+    for (const std::string & token : {std::string("STOP"), std::string(" after")}) {
+        ++raw_count;
+        std::string text;
+        const auto delivery = classify_model_token(
+            preview, token, token, false, text);
+        if (delivery == ModelTokenDelivery::SKIP) continue;
+        preview.emit_token(text);
+        if (!should_continue_model_generation(delivery, preview)) {
+            stopped = true;
+            break;
+        }
+    }
+    TEST_ASSERT(stopped && preview.stop_hit());
+    TEST_ASSERT(raw_count == 1);
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_tool_parser_is_dialect_isolated) {
+    const json tools = json::array({{{"type", "function"}, {"function", {
+        {"name", "allowed"}, {"parameters", {{"type", "object"}}},
+    }}}});
+    const std::string k3 =
+        "<|open|>tools<|sep|><|open|>call tool=\"allowed\" index=\"1\""
+        "<|sep|><|close|>call<|sep|><|close|>tools<|sep|>";
+    TEST_ASSERT(parse_tool_calls(k3, tools).tool_calls.empty());
+    TEST_ASSERT(parse_tool_calls(
+        "<tool_call><function=allowed></function></tool_call>",
+        tools, true).tool_calls.empty());
+    const std::string smuggled =
+        "<|open|>tools<|sep|><|open|>call tool=\"denied\" index=\"1\""
+        "<|sep|>{\"name\":\"allowed\",\"arguments\":{}}"
+        "<|close|>call<|sep|><|close|>tools<|sep|>";
+    TEST_ASSERT(parse_tool_calls(smuggled, tools, true).tool_calls.empty());
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_tool_parser_requires_allowlist) {
+    const std::string call =
+        "<|open|>tools<|sep|><|open|>call tool=\"anything\" index=\"1\""
+        "<|sep|><|close|>call<|sep|><|close|>tools<|sep|>";
+    TEST_ASSERT(parse_tool_calls(call, json::array(), true).tool_calls.empty());
+    TEST_ASSERT(parse_tool_calls(call, json(), true).tool_calls.empty());
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_tool_parser_rejects_malformed_siblings) {
+    const json tools = json::array({{{"type", "function"}, {"function", {
+        {"name", "allowed"}, {"parameters", {{"type", "object"}}},
+    }}}});
+    const std::string malformed =
+        "<|open|>tools<|sep|><|open|>call tool=\"allowed\" index=\"1\""
+        "<|sep|><|open|>argument key=\"a\" type=\"string\"<|sep|>x"
+        "<|open|>argument key=\"b\" type=\"string\"<|sep|>y"
+        "<|close|>argument<|sep|><|close|>call<|sep|>"
+        "<|close|>tools<|sep|>";
+    TEST_ASSERT(parse_tool_calls(malformed, tools, true).tool_calls.empty());
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_k3_quoted_call_opener_stays_content) {
+    const json tools = json::array({{{"type", "function"}, {"function", {
+        {"name", "allowed"}, {"parameters", {{"type", "object"}}},
+    }}}});
+    SseEmitter emitter(ApiFormat::OPENAI_CHAT, "k3", "kimi-k3", 1,
+                       tools, nullptr, {}, false, true);
+    emitter.emit_token("Example: <|open|>call tool=\"allowed\"<|sep|>");
+    emitter.emit_finish(1);
+    TEST_ASSERT(emitter.tool_calls().empty());
+    TEST_ASSERT(emitter.accumulated_text() ==
+                "Example: <|open|>call tool=\"allowed\"<|sep|>");
 }
 
 TEST_CASE(ServerUnitFixture, test_jinja_render_bad_tools_json_throws) {
@@ -3250,6 +3524,52 @@ TEST_CASE(ServerUnitFixture, test_normalize_responses_tool_followup_messages) {
         TEST_ASSERT(chat_msgs[4].tool_call_id == second_call_id);
         TEST_ASSERT(chat_msgs[4].content == "int main() {}");
     }
+}
+
+TEST_CASE(ServerUnitFixture, test_normalize_anthropic_kimi_tool_history) {
+    ToolMemory tool_memory;
+    const json messages = json::array({
+        {{"role", "assistant"}, {"content", json::array({
+            {{"type", "thinking"}, {"thinking", "check weather"}},
+            {{"type", "tool_use"}, {"id", "toolu_1"},
+             {"name", "get_weather"}, {"input", {{"city", "Rome"}}}},
+        })}},
+        {{"role", "user"}, {"content", json::array({
+            {{"type", "tool_result"}, {"tool_use_id", "toolu_1"},
+             {"content", "sunny"}},
+        })}},
+    });
+    const auto normalized = normalize_chat_messages(
+        messages, ApiFormat::ANTHROPIC, tool_memory);
+    TEST_ASSERT(normalized.size() == 2);
+    TEST_ASSERT(normalized[0].role == "assistant");
+    TEST_ASSERT(normalized[0].template_fields["reasoning_content"] ==
+                "check weather");
+    TEST_ASSERT(normalized[0].template_fields["tool_calls"][0]["function"]["name"] ==
+                "get_weather");
+    TEST_ASSERT(normalized[1].role == "tool");
+    TEST_ASSERT(normalized[1].tool_call_id == "toolu_1");
+    TEST_ASSERT(normalized[1].content == "sunny");
+}
+
+TEST_CASE(ServerUnitFixture, test_kimi_structured_tool_history_does_not_replay_raw_content) {
+    ToolMemory tool_memory;
+    tool_memory.remember({"call_1"}, "RAW_XTML_REPLAY");
+    const json messages = json::array({{{"role", "assistant"},
+        {"tool_calls", json::array({{{"id", "call_1"},
+            {"type", "function"}, {"function", {
+                {"name", "get_weather"}, {"arguments", json::object()}}}}})}}});
+    const auto normalized = normalize_chat_messages(
+        messages, ApiFormat::OPENAI_CHAT, tool_memory);
+    TEST_ASSERT(normalized.size() == 1);
+    TEST_ASSERT(normalized[0].content == "RAW_XTML_REPLAY");
+
+    static const char TPL[] =
+        "{{ messages[0].get('content', 'MISSING') }}|"
+        "{{ messages[0].tool_calls | length }}";
+    const std::string rendered = render_chat_template_jinja(
+        TPL, normalized, "", "", false, false, "");
+    TEST_ASSERT(rendered == "MISSING|1");
 }
 
 // ═══════════════════════════════════════════════════════════════════════

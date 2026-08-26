@@ -63,6 +63,8 @@ static const char FUNCNAME_OPEN[] = "<funcname>";
 static const char TOOL_CODE_OPEN[] = "<tool_code>";
 static const char ATTRIBUTE_PARAMETER_OPEN[] = "<parameter name=";
 static const char ARG_KEY_OPEN[] = "<arg_key>";
+static const char KIMI_TOOLS_OPEN[] = "<|open|>tools<|sep|>";
+static const char KIMI_CALL_OPEN[] = "<|open|>call tool=\"";
 
 
 
@@ -102,7 +104,12 @@ static bool declared_tool_open_at(const std::string & text, size_t pos,
 }
 
 bool find_tool_syntax_start(const std::string & text, const json & tools,
-                            size_t & pos) {
+                            size_t & pos, bool kimi_k3) {
+    if (kimi_k3) {
+        const size_t tools_pos = text.find(KIMI_TOOLS_OPEN);
+        pos = tools_pos;
+        return pos != std::string::npos;
+    }
     size_t idx = text.find('<');
     while (idx != std::string::npos) {
         if (text.compare(idx, sizeof(TOOL_OPEN) - 1, TOOL_OPEN) == 0 ||
@@ -243,6 +250,29 @@ static json convert_param_value(const std::string & val, const std::string & key
     try { return json::parse(val); } catch (...) { return val; }
 }
 
+static std::string kimi_unescape_attr(std::string value) {
+    size_t pos = 0;
+    while ((pos = value.find("&quot;", pos)) != std::string::npos) {
+        value.replace(pos, 6, "\"");
+        ++pos;
+    }
+    pos = 0;
+    while ((pos = value.find("&amp;", pos)) != std::string::npos) {
+        value.replace(pos, 5, "&");
+        ++pos;
+    }
+    return value;
+}
+
+static json kimi_param_value(const std::string & raw,
+                             const std::string & type) {
+    if (type.rfind("str", 0) == 0) return raw;
+    const std::string value = trim_ws(raw);
+    const json parsed = json::parse(value, nullptr, false);
+    if (!parsed.is_discarded()) return parsed;
+    return value;
+}
+
 // ─── Removal tracking ───────────────────────────────────────────────────
 
 struct Span {
@@ -295,6 +325,24 @@ static size_t include_following_tool_call_close(const std::string & text,
 
 static const std::regex & re_tool_call_complete() {
     static std::regex r(R"(<tool_call>([\s\S]*?)</tool_call>)");
+    return r;
+}
+
+static const std::regex & re_kimi_call() {
+    static const std::regex r(
+        R"re(<\|open\|>call tool="([^"]+)"(?:\s+index="[0-9]+")?<\|sep\|>((?:(?!<\|open\|>call tool=")[\s\S])*?)<\|close\|>call(?:<\|sep\|>)?)re");
+    return r;
+}
+
+static const std::regex & re_kimi_argument() {
+    static const std::regex r(
+        R"re(<\|open\|>argument key="([^"]+)"(?:\s+type="([^"]*)")?<\|sep\|>((?:(?!<\|open\|>argument key=")[\s\S])*?)<\|close\|>argument(?:<\|sep\|>)?)re");
+    return r;
+}
+
+static const std::regex & re_kimi_json() {
+    static const std::regex r(
+        R"re(<\|open\|>json type="object"<\|sep\|>([\s\S]*?)<\|close\|>json(?:<\|sep\|>)?)re");
     return r;
 }
 
@@ -836,7 +884,131 @@ static bool parse_function_sig_args(const std::string & arg_text, json & out_arg
 
 // ─── Main parser ────────────────────────────────────────────────────────
 
-ToolParseResult parse_tool_calls(const std::string & text, const json & tools) {
+static ToolParseResult parse_kimi_k3_tool_calls(
+        const std::string & text, const json & tools) {
+    // K3 XTML is executable only against an explicit request allowlist.
+    if (!tools.is_array() || tools.empty()) return {text, {}};
+
+    ToolParseResult result;
+    std::vector<Span> removals;
+    std::vector<std::pair<size_t, ToolCall>> calls;
+    static constexpr char kToolsClose[] = "<|close|>tools<|sep|>";
+
+    size_t section = 0;
+    while ((section = text.find(KIMI_TOOLS_OPEN, section)) !=
+           std::string::npos) {
+        const size_t body_start = section + sizeof(KIMI_TOOLS_OPEN) - 1;
+        const size_t close = text.find(kToolsClose, body_start);
+        if (close == std::string::npos) return {text, {}};
+        const size_t section_end = close + sizeof(kToolsClose) - 1;
+        const std::string body = text.substr(body_start, close - body_start);
+
+        size_t opener_count = 0;
+        for (size_t pos = 0;
+             (pos = body.find(KIMI_CALL_OPEN, pos)) != std::string::npos;
+             pos += sizeof(KIMI_CALL_OPEN) - 1) {
+            ++opener_count;
+        }
+
+        size_t matched_count = 0;
+        auto begin = std::sregex_iterator(
+            body.begin(), body.end(), re_kimi_call());
+        const auto end = std::sregex_iterator();
+        for (auto it = begin; it != end; ++it) {
+            ++matched_count;
+            const std::string name = kimi_unescape_attr((*it)[1].str());
+            if (!valid_tool_name(name) || !tool_allowed(tools, name)) {
+                return {text, {}};
+            }
+
+            const std::string call_body = (*it)[2].str();
+            json args = json::object();
+            std::vector<Span> consumed;
+
+            std::smatch json_match;
+            if (std::regex_search(call_body, json_match, re_kimi_json())) {
+                const json object =
+                    json::parse(json_match[1].str(), nullptr, false);
+                if (!object.is_object()) return {text, {}};
+                args = object;
+                consumed.push_back({(size_t) json_match.position(),
+                                    (size_t) json_match.position() +
+                                        (size_t) json_match.length()});
+            } else {
+                size_t arg_openers = 0;
+                for (size_t pos = 0;
+                     (pos = call_body.find("<|open|>argument key=\"", pos)) !=
+                         std::string::npos;
+                     pos += 24) {
+                    ++arg_openers;
+                }
+                size_t arg_matches = 0;
+                auto arg_begin = std::sregex_iterator(
+                    call_body.begin(), call_body.end(), re_kimi_argument());
+                const auto arg_end = std::sregex_iterator();
+                for (auto arg = arg_begin; arg != arg_end; ++arg) {
+                    ++arg_matches;
+                    const std::string key =
+                        kimi_unescape_attr((*arg)[1].str());
+                    if (key.empty() || args.contains(key)) return {text, {}};
+                    args[key] = kimi_param_value(
+                        (*arg)[3].str(), (*arg)[2].str());
+                    consumed.push_back({(size_t) arg->position(),
+                                        (size_t) arg->position() +
+                                            (size_t) arg->length()});
+                }
+                if (arg_openers != arg_matches) return {text, {}};
+            }
+
+            std::sort(consumed.begin(), consumed.end(),
+                      [](const Span & a, const Span & b) {
+                          return a.start < b.start;
+                      });
+            std::string residue;
+            size_t cursor = 0;
+            for (const Span & span : consumed) {
+                if (span.start < cursor) return {text, {}};
+                residue += call_body.substr(cursor, span.start - cursor);
+                cursor = span.end;
+            }
+            residue += call_body.substr(cursor);
+            if (!trim_ws(residue).empty()) return {text, {}};
+
+            ToolCall call;
+            call.id = generate_call_id();
+            call.name = name;
+            call.arguments = args.dump();
+            calls.emplace_back(body_start + (size_t) it->position(),
+                               std::move(call));
+        }
+        if (opener_count == 0 || opener_count != matched_count) {
+            return {text, {}};
+        }
+        removals.push_back({section, section_end});
+        section = section_end;
+    }
+
+    if (removals.empty()) return {text, {}};
+    std::stable_sort(calls.begin(), calls.end(),
+                     [](const auto & a, const auto & b) {
+                         return a.first < b.first;
+                     });
+    for (auto & call : calls) result.tool_calls.push_back(std::move(call.second));
+
+    std::string cleaned;
+    size_t cursor = 0;
+    for (const Span & span : removals) {
+        cleaned += text.substr(cursor, span.start - cursor);
+        cursor = span.end;
+    }
+    cleaned += text.substr(cursor);
+    result.cleaned_text = trim_ws(cleaned);
+    return result;
+}
+
+ToolParseResult parse_tool_calls(const std::string & text, const json & tools,
+                                 bool kimi_k3) {
+    if (kimi_k3) return parse_kimi_k3_tool_calls(text, tools);
     ToolParseResult result;
     std::vector<Span> removals;
     std::vector<std::pair<size_t, ToolCall>> positioned_calls;
