@@ -1,0 +1,64 @@
+{
+  "campaign": "k3-dspark-first-mismatch-rank",
+  "date_utc": "2026-08-26",
+  "source_head": "5f4ef9792973c236a626c8bb8a79aebc90ea9d95",
+  "branch": "perf/k3-production-ponytail",
+  "fixture": "Fibonacci Python, 43 prompt tokens, 33 generated tokens",
+  "preregistration_sha256": "396ceafed5fc47a962a7d100813319512bdda44509afaf800c8d007c2df7a03d",
+  "runner_sha256": "413df523dd0d0b2a042fb40644425fe28917428a9ed5d333f577ae359ebfa032",
+  "closure": {
+    "diagnostic_binary_sha256": "1b25ee68ac17da5e24a8cb880881c28c706bf256eedea80c59cb07f649e2a2fd",
+    "target_model_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "draft_model_sha256": "848d12be5283a4717c08b1b1263420980dfc61b5a59067e343296fd7f4998435",
+    "request_sha256": "856d7ed1f0280e20a1580aee15e58da91befdd7e416a900528bfdf391bc2208b",
+    "platform_profile": "performance",
+    "gpu_dpm": {
+      "card1": "high",
+      "card2": "high"
+    },
+    "production_defaults": true,
+    "feature_dtype": "f32",
+    "persistent_core8": true,
+    "fast_rollback": true
+  },
+  "result": {
+    "status": "qualified",
+    "final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "reference_final_logits_sha256": "5d2a1c98a640d76d025393602c82d33cf89d065718a1762f8bb0df799ebf101e",
+    "response_sha256": "a894bb4f8a2bcb4b8289f4874d649009f9dfa58aa4120e7550f3bc5ebbf957f8",
+    "server_log_sha256": "4787abefb775ffd538c9451a5bbebef1a29146a05260158acb80fa14e2b5a933",
+    "draft_steps": 5,
+    "accepted_by_step": [8, 3, 8, 8, 6],
+    "logical_verify_rows": 38,
+    "physical_verify_rows": 40,
+    "first_mismatch": {
+      "step_zero_based": 1,
+      "base_position": 51,
+      "mismatch_depth_one_based": 3,
+      "draft_token_id": 5266,
+      "target_token_id": 1151,
+      "target_rank_in_corrected_distribution": 4,
+      "top1_token_id": 5266,
+      "top1_logit": 20.7742233,
+      "top2_token_id": 555,
+      "top2_logit": 20.7691879,
+      "target_logit": 19.1860828,
+      "top1_minus_target_logit": 1.58814049
+    },
+    "physical_direct_bytes": 34353135616,
+    "diagnostic_decode_seconds": 8.234,
+    "diagnostic_true_transitions_per_second": 4.01
+  },
+  "interpretation": {
+    "verdict": "NO-GO",
+    "closed_scope": "A simple top-2 hedge for the registered deterministic DSpark mismatch is closed: the authoritative target token ranked fourth and was not a near-margin second choice.",
+    "not_closed": [
+      "whether the Markov correction demotes the target relative to the base draft logits",
+      "a broader target-derived draft correction evaluated on multiple prompts",
+      "tree verification with a measured multi-prompt acceptance oracle",
+      "verifier delivery, overlap, or target-step cost reductions"
+    ],
+    "performance_note": "Timing is engineering-only because the diagnostic adds corrected-logit D2H readback and a host rank scan."
+  },
+  "artifact_root": "/home/duster/kimi-k3-deploy/k3-dspark-mismatch-rank-20260826"
+}
