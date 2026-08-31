@@ -1,0 +1,79 @@
+{
+  "schema": "kimi-k3-terminal-bws-v2-scalar-v1",
+  "status": "MEASURED_SCALAR_CONTROL_NOT_A_SELECTOR_RESULT",
+  "source": {
+    "base_commit": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "local_harness_commits": [
+      "9caac143a78470485fe6fb59d74d4ba15a6aa36a",
+      "5278718df1c1713724341a9e550da2bbfcfebc51"
+    ],
+    "lucebox4_worktree_commit": "d97757ad0bba43e2718c9d98dc82150f24b3b8be",
+    "dirty_tree": false,
+    "executable_sha256": "9b9cce4a91e83e010c8a770a49b5525c14cff7e7b9b2a8bfacaad4acd93feec3"
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "os": "Linux 7.0.0-30-generic x86_64",
+    "accelerator": "Radeon 8060S gfx1151, 98304 MiB",
+    "device_contract": "HIP_VISIBLE_DEVICES=1, logical GPU 0"
+  },
+  "model": {
+    "first_shard": "/home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-of-00014.gguf",
+    "first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "vocabulary": 163840,
+    "calibration_manifest_sha256": "1189c85743a1e5f41901f09b090ea3a4a567c2020bce53400e9ae5f039409f56",
+    "sidecar_manifest_sha256": "86216b66256f61bdcbe8d796dc2e9316e3dccdeba801ea296b2e779cf86394e9"
+  },
+  "fixture": {
+    "raw_text": "According to all known laws",
+    "token_ids": [18805, 308, 799, 5624, 12524],
+    "sha256": "5d48475ffdf17428c74c58fd1fbbf0611c9d9ed7006bde3d0164264afb30a9f9",
+    "chat_template": "NOT_USED_RAW_SMOKE_CONTROL"
+  },
+  "frozen_policy": {
+    "path": "/home/duster/k3-layer-major-prefill/results/h23_10k_policies/h23_moonshot_1_2gib.txt",
+    "sha256": "b73d203e9ae7d4f382baf3f30cf0381387596edda7a6fb16c6cf5c88626ad97a",
+    "all_layer_nominal_budget": 24
+  },
+  "measurements": {
+    "exact": {
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r7-visible-gfx1151",
+      "logits_sha256": "03a9b50c3daacab19e8e10dd9c999fcd011c3f1177d37f3c269177bfc2771f94e9",
+      "top1_id": 11,
+      "output_id": 11,
+      "prefill_seconds": 5.006
+    },
+    "h23_budget24": {
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r8-b24-plan",
+      "logits_sha256": "fab1fa6c1dd5400ffb0438e5866e31616a8de8dbab1057543bead62547b532e9",
+      "plan_tsv_sha256": "c38a2ddceb19e768813c992d67035e68369913445625b5c3087f61fa702226e6",
+      "traffic_tsv_sha256": "0ec663e5e9c43f297f43a79272738d3901b16392353d0119a62c1f9544c035eb",
+      "logical_provider_bytes": 6086492160,
+      "logical_provider_gib_per_position": 1.1336975098,
+      "terminal_kl_from_exact": 1.1581643021,
+      "top1_id": 318,
+      "output_id": 318,
+      "prefill_seconds": 10.283
+    },
+    "force_layer92_expert369_rank11": {
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r10-force-l92-e369-r11",
+      "selector_definition": "frozen H23 Budget24 plus force L92:E369:R11",
+      "logits_sha256": "12fcf451e8b4845ec528ad982fece613b6f3d7bffa87dbbb94dfa00b85b0f7cc",
+      "traffic_tsv_sha256": "0ec663e5e9c43f297f43a79272738d3901b16392353d0119a62c1f9544c035eb",
+      "logical_provider_bytes": 6086492160,
+      "logical_provider_gib_per_position": 1.1336975098,
+      "terminal_kl_from_exact": 1.19368454984,
+      "terminal_kl_delta_vs_h23_budget24": 0.0355202477393,
+      "top1_id": 318,
+      "output_id": 318,
+      "prefill_seconds": 6.686,
+      "interpretation": "NO_GO: this one equal-byte swap made terminal KL worse."
+    }
+  },
+  "limitations": [
+    "One raw-token fixture and one terminal logit row; no official chat template or task retention claim.",
+    "The terminal force is a causal screening control, not a learned terminal selector.",
+    "No decode throughput is measured: n_gen=1 has zero decode transitions.",
+    "No sub-24 result, estimator correlation, route curve, low-bit tail, progressive rescue, or prefill claim is made."
+  ]
+}
