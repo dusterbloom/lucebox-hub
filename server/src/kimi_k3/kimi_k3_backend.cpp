@@ -963,9 +963,11 @@ GenerateResult KimiK3Backend::generate_from_state(
         maybe_capture(logits);
     }
 
+    const int paired_position = paired
+        ? static_cast<int>(req.prompt.size()) - 1 : -1;
     const auto forward_token = [&](int32_t token, int position) {
         if (out_io.is_cancelled()) return false;
-        if (paired) {
+        if (paired && position == paired_position) {
             if (!kimi_k3_replay_snapshot(backend_, cache_)) return false;
             if (!kimi_k3_step(
                     backend_, weights_, cache_, token, position,
@@ -974,6 +976,11 @@ GenerateResult KimiK3Backend::generate_from_state(
                 return false;
             }
             if (!kimi_k3_replay_restore(backend_, cache_)) return false;
+            return kimi_k3_step(
+                backend_, weights_, cache_, token, position, logits,
+                &stream_engine_, nullptr);
+        }
+        if (paired) {
             return kimi_k3_step(
                 backend_, weights_, cache_, token, position, logits,
                 &stream_engine_, nullptr);
