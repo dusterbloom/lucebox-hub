@@ -21,6 +21,24 @@ The imported evidence objects are immutable Git blobs:
 | `results/h23_10k_aggressive1p8_quality.json` | `81f82ce50dce6eca958234d4ace12236e8a6cccf` |
 | `results/h23_10k_moonshot1p2_quality.json` | `1960f193ce812f73f35c6c8c99ed4b2521f52c38` |
 
+## Decision objective
+
+There is no global `10x` KL-reduction or `0.01`-KL promotion gate.  Terminal KL
+is the distributional risk signal used to discover selectors and identify
+rescue positions; it is not a substitute for behavior.  A candidate advances
+only when it improves the measured byte/time Pareto frontier while retaining
+native-success coding, reasoning, structured-output and tool-call fixtures.
+Mean KL is reported with median, p95 and maximum because a modest mean can hide
+a decisive identifier-boundary failure.  Conversely, harmless probability
+redistribution need not block a materially faster candidate whose outputs and
+tasks remain reliable.
+
+The explicit trade-off is accepting some measured distribution drift for
+speed, while using progressive fidelity at the sparse positions where the
+drift changes behavior.  The known `get_weather` identifier boundary remains a
+hard rescue gate; low entropy or a confident top-one prediction does not waive
+it.
+
 ## Decisive first experiment
 
 For each representative isolated routed layer, retain the existing exact
