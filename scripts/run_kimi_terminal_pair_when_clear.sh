@@ -19,12 +19,22 @@ if [[ ! $minimum_available_kib =~ ^[0-9]+$ || ! $stable_seconds =~ ^[0-9]+$ ]]; 
 fi
 
 clear_seconds=0
+declare -A own_lineage=()
+lineage_pid=$$
+while (( lineage_pid > 0 )) && [[ -r /proc/$lineage_pid/status ]]; do
+    own_lineage[$lineage_pid]=1
+    lineage_pid=$(awk '$1 == "PPid:" { print $2 }' /proc/$lineage_pid/status)
+done
 while (( clear_seconds < stable_seconds )); do
     available_kib=$(awk '$1 == "MemAvailable:" { print $2 }' /proc/meminfo)
     blocked=0
-    if pgrep -af -- "$block_pattern" >/dev/null; then
-        blocked=1
-    fi
+    while read -r matching_pid matching_command; do
+        if [[ $matching_command =~ $block_pattern ]] &&
+                [[ -z ${own_lineage[$matching_pid]+present} ]]; then
+            blocked=1
+            break
+        fi
+    done < <(ps -eo pid=,args=)
     if (( available_kib >= minimum_available_kib && blocked == 0 )); then
         clear_seconds=$((clear_seconds + poll_seconds))
     else
