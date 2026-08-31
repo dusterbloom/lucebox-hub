@@ -81,6 +81,15 @@ same wrong top token.  It falsifies the simple claim that an arbitrary omitted
 route/slab is a terminal-quality rescue.  It is one conditional datum only;
 no terminal ranking, rank correlation, or below-Budget24 conclusion is earned.
 
+A uniform local-selector Budget8 point was also measured at 0.377899170
+GiB/position, with terminal KL 0.371722866 (still wrong top ID 318).  The
+exact terminal vector was byte-identical on a rerun.  This surprising
+non-monotonic point is **not** Phase-A evidence: its plan trace reaches layer
+92 with a different route set than Budget24, so it is an on-policy terminal
+comparison, not an ablation on a frozen native trajectory.  It establishes
+that sub-24 representations are runnable and worth studying, not that they
+are quality-safe or terminal-ranked.
+
 `results/k3_terminal_bws_v2_lucebox4_scalar_20260831.json` is the immutable
 result summary; the raw F32 logits, plan TSV, traffic TSV, stdout/stderr and
 SHA256SUMS live under the absolute artifact roots named there.

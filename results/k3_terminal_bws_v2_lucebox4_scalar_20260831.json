@@ -68,12 +68,31 @@
       "output_id": 318,
       "prefill_seconds": 6.686,
       "interpretation": "NO_GO: this one equal-byte swap made terminal KL worse."
+    },
+    "uniform_local_budget8": {
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r11-local-b8",
+      "selector_definition": "unchanged local residual selector, all routed layers Budget8",
+      "logits_sha256": "d528749fca4dd0ea8e16d373d2d37c1fee2c4e0603f19d8ea82b051309e7093a",
+      "plan_tsv_sha256": "4d4620ba84b9f1c446927922b6af55c7c8ed6d3bd8947a5ce492c51ef1b9983b",
+      "traffic_tsv_sha256": "039a1a9dc024fb887802acf77f80d835d0e62e23540f14e01800f52c301b793e",
+      "logical_provider_bytes": 2028831744,
+      "logical_provider_gib_per_position": 0.377899169922,
+      "terminal_kl_from_exact": 0.371722865842,
+      "top1_id": 318,
+      "output_id": 318,
+      "prefill_seconds": 4.780,
+      "interpretation": "MEASURED but not causal: its on-policy route trace differs from Budget24."
+    },
+    "exact_repeat": {
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r12-exact-current-harness",
+      "logits_sha256": "03a9b50c3daacab19e8e10dd9c999fcd011c3f1177d37f3c269177bfc2771f94",
+      "byte_identical_to_exact": true
     }
   },
   "limitations": [
     "One raw-token fixture and one terminal logit row; no official chat template or task retention claim.",
     "The terminal force is a causal screening control, not a learned terminal selector.",
     "No decode throughput is measured: n_gen=1 has zero decode transitions.",
-    "No sub-24 result, estimator correlation, route curve, low-bit tail, progressive rescue, or prefill claim is made."
+    "No frozen-trajectory sub-24 ablation, estimator correlation, route curve, low-bit tail, progressive rescue, or prefill claim is made."
   ]
 }
