@@ -290,6 +290,11 @@ bool canonical_assistant_content(
 
 int kimi_k3_routed_expert_min_budget(
         const std::string & arch, const json & effective_tools) {
+    const char * experimental_b24 =
+        std::getenv("DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24");
+    if (experimental_b24 && std::strcmp(experimental_b24, "1") == 0) {
+        return 0;
+    }
     return arch == "kimi-k3" && effective_tools.is_array() &&
         !effective_tools.empty() ? 96 : 0;
 }

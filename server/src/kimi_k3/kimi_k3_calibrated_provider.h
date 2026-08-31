@@ -29,6 +29,25 @@ bool parse_kimi_k3_layer_budget_table(
 int kimi_k3_effective_slab_budget(int configured_budget,
                                   int request_min_budget);
 
+// Research-only progressive-rescue control. The environment syntax is a
+// comma-separated BASE_POS:BUDGET list. Overrides are monotone floors and
+// cannot reduce the configured/request budget.
+struct KimiK3PositionBudget {
+    int32_t base_pos = 0;
+    int32_t slab_budget = 0;
+};
+
+bool parse_kimi_k3_position_budgets(
+    const char * raw,
+    std::vector<KimiK3PositionBudget> & overrides,
+    std::string * error = nullptr);
+
+int kimi_k3_effective_position_slab_budget(
+    int configured_budget,
+    int request_min_budget,
+    const std::vector<KimiK3PositionBudget> & overrides,
+    int base_pos);
+
 struct KimiK3CalibratedSlabPlan {
     int requested_budget = 0;
     std::vector<int32_t> selected_slab_ids;

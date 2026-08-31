@@ -395,6 +395,26 @@ int main() {
     assert(kimi_k3_effective_slab_budget(24, 96) == 96);
     assert(kimi_k3_effective_slab_budget(192, 96) == 192);
 
+    std::vector<KimiK3PositionBudget> position_budgets;
+    error.clear();
+    assert(parse_kimi_k3_position_budgets(
+        "158:96,159:48", position_budgets, &error));
+    assert(position_budgets.size() == 2);
+    assert(kimi_k3_effective_position_slab_budget(
+        24, 0, position_budgets, 157) == 24);
+    assert(kimi_k3_effective_position_slab_budget(
+        24, 0, position_budgets, 158) == 96);
+    assert(kimi_k3_effective_position_slab_budget(
+        24, 120, position_budgets, 158) == 120);
+    error.clear();
+    assert(!parse_kimi_k3_position_budgets(
+        "158:96,158:48", position_budgets, &error));
+    assert(!error.empty());
+    error.clear();
+    assert(!parse_kimi_k3_position_budgets(
+        "-1:96", position_budgets, &error));
+    assert(!error.empty());
+
     set_env("DFLASH_KIMI_LAYER1_PROVIDER", "exact");
     set_env("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "0");
     set_env("DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE", "0");

@@ -5603,6 +5603,10 @@ TEST_CASE(ServerUnitFixture, test_kimi_k3_tools_raise_progressive_budget) {
                     "kimi-k3", json::array({tool})) == 96);
     TEST_ASSERT(http_detail::kimi_k3_routed_expert_min_budget(
                     "qwen35", json::array({tool})) == 0);
+    dflash_setenv("DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24", "1");
+    TEST_ASSERT(http_detail::kimi_k3_routed_expert_min_budget(
+                    "kimi-k3", json::array({tool})) == 0);
+    dflash_unsetenv("DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24");
 }
 
 TEST_CASE(ServerUnitFixture, test_props_budget_envelope_shape) {

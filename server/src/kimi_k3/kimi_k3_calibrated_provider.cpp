@@ -3622,7 +3622,10 @@ public:
                 "DFLASH_KIMI_EXPERIMENT_SLAB_FORCE", terminal_force_, err) ||
             !parse_terminal_slab_probes(
                 std::getenv("DFLASH_KIMI_EXPERIMENT_SLAB_DROP"),
-                "DFLASH_KIMI_EXPERIMENT_SLAB_DROP", terminal_drop_, err)) {
+                "DFLASH_KIMI_EXPERIMENT_SLAB_DROP", terminal_drop_, err) ||
+            !parse_kimi_k3_position_budgets(
+                std::getenv("DFLASH_KIMI_EXPERIMENT_POSITION_BUDGETS"),
+                position_budgets_, err)) {
             return false;
         }
         for (const auto & force : terminal_force_) {
@@ -4241,6 +4244,18 @@ public:
             if (err) *err = "calibrated96 received an incompatible routed batch";
             return false;
         }
+        if (routes.n_tokens > 1 && std::any_of(
+                position_budgets_.begin(), position_budgets_.end(),
+                [&](const KimiK3PositionBudget & value) {
+                    return value.base_pos >= base_pos &&
+                        static_cast<int64_t>(value.base_pos) <
+                            static_cast<int64_t>(base_pos) + routes.n_tokens;
+                })) {
+            if (err) {
+                *err = "experimental position budget requires width-one evaluation";
+            }
+            return false;
+        }
         constexpr size_t kP40AllocationTolerance = 64ULL * 1024 * 1024;
         if (device_variant_cache_ && routes.n_tokens > 1 &&
                 exact_engine.external_device_cache_bytes() +
@@ -4261,7 +4276,8 @@ public:
             const bool ok = eval_moe_streamed_experts(
                 exact_engine, spec, routes, output, err);
             if (ok) observe_exact_layer(
-                state, routes.n_tokens, spec, budget_for_layer(model_layer));
+                state, routes.n_tokens, spec,
+                budget_for_layer(model_layer, base_pos));
             return ok;
         }
         const bool p40_wide_async_join =
@@ -4439,19 +4455,19 @@ private:
         return sparse_delivery_ != KimiK3SparseDeliveryPolicy::BufferedSlabs;
     }
 
-    int budget_for_layer(int model_layer) const {
+    int budget_for_layer(int model_layer, int base_pos = -1) const {
         int configured = budget_;
-        if (layer_budgets_.empty()) {
-            return kimi_k3_effective_slab_budget(
-                configured, request_min_budget_);
+        if (!layer_budgets_.empty()) {
+            if (model_layer < kFirstRoutedLayer ||
+                model_layer > kLastRoutedLayer) {
+                return kNativeTopK * kSlabCount;
+            }
+            configured = layer_budgets_[static_cast<size_t>(model_layer - 1)];
         }
-        if (model_layer < kFirstRoutedLayer ||
-            model_layer > kLastRoutedLayer) {
-            return kNativeTopK * kSlabCount;
-        }
-        configured = layer_budgets_[static_cast<size_t>(model_layer - 1)];
-        return kimi_k3_effective_slab_budget(
-            configured, request_min_budget_);
+        return base_pos < 0
+            ? kimi_k3_effective_slab_budget(configured, request_min_budget_)
+            : kimi_k3_effective_position_slab_budget(
+                configured, request_min_budget_, position_budgets_, base_pos);
     }
 
 
@@ -6437,7 +6453,13 @@ private:
             if (cache_sequence_started_) read_cache_.reset_sequence();
             cache_sequence_started_ = true;
         }
-        const int layer_budget = budget_for_layer(model_layer);
+        const int layer_budget = budget_for_layer(model_layer, base_pos);
+        if (model_layer == kFirstRoutedLayer &&
+                layer_budget > budget_for_layer(model_layer)) {
+            std::fprintf(stderr,
+                "[kimi-k3-progressive-rescue] base-pos=%d slab-budget=%d\n",
+                base_pos, layer_budget);
+        }
         const int aux_fd = open_read_only(state.aux_path);
         const int sidecar_fd = direct_reads()
             ? open_read_only_direct(state.sidecar_path)
@@ -7354,6 +7376,7 @@ private:
     int request_min_budget_ = 0;
     std::vector<int32_t> layer_budgets_;
     std::string layer_budget_path_;
+    std::vector<KimiK3PositionBudget> position_budgets_;
     uint64_t reference_full_weight_h2d_bytes_ = 0;
     uint64_t authoritative_h2d_bytes_ = 0;
     uint64_t metadata_h2d_bytes_ = 0;
@@ -7386,6 +7409,51 @@ bool parse_positive_int(const char * raw, int & value) {
 int kimi_k3_effective_slab_budget(
         int configured_budget, int request_min_budget) {
     return (std::max)(configured_budget, request_min_budget);
+}
+
+bool parse_kimi_k3_position_budgets(
+        const char * raw, std::vector<KimiK3PositionBudget> & overrides,
+        std::string * err) {
+    overrides.clear();
+    if (!raw || !*raw) return true;
+    std::stringstream values(raw);
+    std::string value;
+    while (std::getline(values, value, ',')) {
+        KimiK3PositionBudget parsed;
+        char trailing = '\0';
+        if (std::sscanf(value.c_str(), "%d:%d%c", &parsed.base_pos,
+                        &parsed.slab_budget, &trailing) != 2 ||
+            parsed.base_pos < 0 || parsed.slab_budget < 1 ||
+            parsed.slab_budget > 192 ||
+            std::any_of(overrides.begin(), overrides.end(),
+                [&](const KimiK3PositionBudget & existing) {
+                    return existing.base_pos == parsed.base_pos;
+                })) {
+            if (err) {
+                *err = "DFLASH_KIMI_EXPERIMENT_POSITION_BUDGETS must be a "
+                    "duplicate-free BASE_POS:BUDGET list with non-negative "
+                    "positions and budgets in [1, 192]";
+            }
+            overrides.clear();
+            return false;
+        }
+        overrides.push_back(parsed);
+    }
+    return true;
+}
+
+int kimi_k3_effective_position_slab_budget(
+        int configured_budget, int request_min_budget,
+        const std::vector<KimiK3PositionBudget> & overrides, int base_pos) {
+    int result = kimi_k3_effective_slab_budget(
+        configured_budget, request_min_budget);
+    for (const KimiK3PositionBudget & value : overrides) {
+        if (value.base_pos == base_pos) {
+            result = (std::max)(result, value.slab_budget);
+            break;
+        }
+    }
+    return result;
 }
 
 #if defined(DFLASH_KIMI_P45_ASYNC_TEST_HOOK)
