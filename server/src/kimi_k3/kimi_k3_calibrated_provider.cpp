@@ -723,20 +723,35 @@ struct TerminalSlabProbe {
     int rank = -1;
 };
 
-bool parse_terminal_slab_probe(const char * raw, const char * name,
-                               TerminalSlabProbe & probe,
-                               std::string * err) {
-    probe = {};
+bool parse_terminal_slab_probes(const char * raw, const char * name,
+                                std::vector<TerminalSlabProbe> & probes,
+                                std::string * err) {
+    probes.clear();
     if (!raw || !*raw) return true;
-    char trailing = '\0';
-    if (std::sscanf(raw, "%d:%d:%d%c", &probe.layer, &probe.expert,
-                    &probe.rank, &trailing) != 3 ||
-        probe.layer < 1 || probe.layer > 92 ||
-        probe.expert < 0 || probe.expert >= kExpertCount ||
-        probe.rank < 0 || probe.rank >= kSlabCount) {
-        if (err) *err = std::string(name) +
-            " must be LAYER:EXPERT:RANK within the routed sidecar geometry";
-        return false;
+    std::stringstream values(raw);
+    std::string value;
+    while (std::getline(values, value, ',')) {
+        TerminalSlabProbe probe;
+        char trailing = '\0';
+        if (std::sscanf(value.c_str(), "%d:%d:%d%c", &probe.layer,
+                        &probe.expert, &probe.rank, &trailing) != 3 ||
+            probe.layer < 1 || probe.layer > 92 ||
+            probe.expert < 0 || probe.expert >= kExpertCount ||
+            probe.rank < 0 || probe.rank >= kSlabCount) {
+            if (err) *err = std::string(name) +
+                " must be a comma-separated LAYER:EXPERT:RANK list within "
+                "the routed sidecar geometry";
+            return false;
+        }
+        for (const auto & existing : probes) {
+            if (existing.layer == probe.layer &&
+                existing.expert == probe.expert &&
+                existing.rank == probe.rank) {
+                if (err) *err = std::string(name) + " contains a duplicate";
+                return false;
+            }
+        }
+        probes.push_back(probe);
     }
     return true;
 }
@@ -3602,17 +3617,22 @@ public:
             return false;
         }
         backend_ = backend;
-        if (!parse_terminal_slab_probe(
+        if (!parse_terminal_slab_probes(
                 std::getenv("DFLASH_KIMI_EXPERIMENT_SLAB_FORCE"),
                 "DFLASH_KIMI_EXPERIMENT_SLAB_FORCE", terminal_force_, err) ||
-            !parse_terminal_slab_probe(
+            !parse_terminal_slab_probes(
                 std::getenv("DFLASH_KIMI_EXPERIMENT_SLAB_DROP"),
                 "DFLASH_KIMI_EXPERIMENT_SLAB_DROP", terminal_drop_, err)) {
             return false;
         }
-        if (terminal_force_.layer >= 0 && terminal_drop_.layer >= 0) {
-            if (err) *err = "terminal slab force and drop are mutually exclusive";
-            return false;
+        for (const auto & force : terminal_force_) {
+            for (const auto & drop : terminal_drop_) {
+                if (force.layer == drop.layer && force.expert == drop.expert &&
+                    force.rank == drop.rank) {
+                    if (err) *err = "cannot force and drop the same terminal slab";
+                    return false;
+                }
+            }
         }
         if (const char * active =
                 std::getenv("DFLASH_KIMI_EXPERIMENT_ACTIVE_LAYER")) {
@@ -4750,23 +4770,21 @@ private:
                 }
             }
         }
-        const TerminalSlabProbe * probe = nullptr;
-        bool force = false;
-        if (terminal_force_.layer == model_layer) {
-            probe = &terminal_force_;
-            force = true;
-        } else if (terminal_drop_.layer == model_layer) {
-            probe = &terminal_drop_;
-        }
-        if (probe) {
-            float & score = state.importance[static_cast<size_t>(probe->expert) *
-                                             kSlabCount + probe->rank];
-            score = force ? std::numeric_limits<float>::max() : 0.0f;
-            std::fprintf(stderr,
-                         "[kimi-k3-terminal-probe] layer=%d expert=%d rank=%d action=%s\n",
-                         probe->layer, probe->expert, probe->rank,
-                         force ? "force" : "drop");
-        }
+        const auto apply_probes = [&](const std::vector<TerminalSlabProbe> & probes,
+                                      bool force) {
+            for (const auto & probe : probes) {
+                if (probe.layer != model_layer) continue;
+                float & score = state.importance[
+                    static_cast<size_t>(probe.expert) * kSlabCount + probe.rank];
+                score = force ? std::numeric_limits<float>::max() : 0.0f;
+                std::fprintf(stderr,
+                             "[kimi-k3-terminal-probe] layer=%d expert=%d rank=%d action=%s\n",
+                             probe.layer, probe.expert, probe.rank,
+                             force ? "force" : "drop");
+            }
+        };
+        apply_probes(terminal_drop_, false);
+        apply_probes(terminal_force_, true);
         state.means_offset = aux.slab_means_offset;
         state.means_bytes = aux.slab_means_bytes;
 
@@ -7264,8 +7282,8 @@ private:
     static constexpr int kLastRoutedLayer = 92;
     ggml_backend_t backend_ = nullptr;
     int experiment_active_layer_ = -1;
-    TerminalSlabProbe terminal_force_;
-    TerminalSlabProbe terminal_drop_;
+    std::vector<TerminalSlabProbe> terminal_force_;
+    std::vector<TerminalSlabProbe> terminal_drop_;
     std::vector<LayerState> layers_;
     std::string metrics_path_;
     std::ofstream io_trace_;
