@@ -125,10 +125,10 @@ def main() -> int:
         raise FileExistsError(args.output)
     if args.layer < 1 or args.layer > 92:
         raise ValueError("layer must be in [1, 92]")
-    if (args.screen_root / "COMPLETE").read_text() != "complete\t192\n":
+    completion = (args.screen_root / "COMPLETE").read_text().strip().split("\t")
+    if len(completion) != 2 or completion[0] != "complete":
         raise ValueError("screen is not complete")
-    if len(list((args.screen_root / "runs").glob("*/SHA256SUMS"))) != 192:
-        raise ValueError("screen does not contain 192 checksummed runs")
+    expected_interventions = int(completion[1])
 
     teacher = read_logits(args.teacher)
     baseline_path = args.baseline_root / "candidate-terminal.f32"
@@ -143,8 +143,11 @@ def main() -> int:
 
     with (args.screen_root / "screen-plan.tsv").open(newline="") as source:
         interventions = list(csv.DictReader(source, delimiter="\t"))
-    if len(interventions) != 192:
-        raise ValueError(f"expected 192 interventions, found {len(interventions)}")
+    if len(interventions) != expected_interventions:
+        raise ValueError(f"expected {expected_interventions} interventions, found {len(interventions)}")
+    if any(not (Path(row["artifact_dir"]) / "SHA256SUMS").is_file()
+           for row in interventions):
+        raise ValueError("one or more indexed interventions lack SHA256SUMS")
     rows = []
     for intervention in interventions:
         layer, expert, rank = map(int, intervention["target"].split(":"))
@@ -202,9 +205,11 @@ def main() -> int:
         "screen": {
             "root": str(args.screen_root),
             "plan_sha256": digest(args.screen_root / "screen-plan.tsv"),
-            "binary_sha256": (args.screen_root / "binary.sha256").read_text().split()[0],
-            "pair_script_sha256": (args.screen_root / "pair-script.sha256").read_text().split()[0],
-            "source_commit": (args.screen_root / "source-commit.txt").read_text().strip(),
+            "binary_sha256": [line.split()[0] for line in
+                              (args.screen_root / "binary.sha256").read_text().splitlines()],
+            "pair_script_sha256": [line.split()[0] for line in
+                                   (args.screen_root / "pair-script.sha256").read_text().splitlines()],
+            "source_commits": (args.screen_root / "source-commit.txt").read_text().splitlines(),
         },
         "aux": {"json": str(args.aux_json), "json_sha256": digest(args.aux_json),
                 "binary": str(args.aux_bin), "binary_sha256": digest(args.aux_bin)},
