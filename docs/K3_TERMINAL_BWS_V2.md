@@ -243,3 +243,48 @@ terminal logits on captured native states before any HIP decoder is written.
 The immutable result is
 `results/k3_terminal_bws_v2_margin_gate_20260901.json`; raw roots r58--r61
 and analysis r62 remain on Lucebox4.
+
+## Progressive tool-boundary rescue gate
+
+The known official-template `get_weather` failure was rerun on Lucebox4 with
+one executable and the H23 moonshot 1.2-GiB table as the base policy.  Prompt
+alignment is exact: all arms contain 147 prompt token IDs with frozen i32le
+SHA-256 `f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c`.
+The v2 control reproduced the invalid identifier boundary
+`618,21055,10666` (`get`, `_we`, wrong continuation), and the HTTP layer
+suppressed the malformed tool payload.
+
+A label-derived mechanistic oracle raised only base position 158 from the H23
+table to Budget96 across the routed layers.  It changed exactly one of 45
+generated IDs: boundary token `10666` became native/teacher token `2800`.
+The remaining 44 IDs were identical.  The response then contained exactly one
+valid `get_weather` call with JSON argument `{"location":"San Francisco"}`
+and finish reason `tool_calls`.
+
+| arm | valid tool | logical GiB/position | physical GiB/position | prefill | decode |
+|---|---:|---:|---:|---:|---:|
+| H23 base | no | 1.34037 | 0.46749 | 130.81 s | 40.08 s / 45 tokens |
+| position-158 B96 | **yes** | 1.35993 | 0.47834 | 137.26 s | 39.64 s / 45 tokens |
+
+The rescue added 6,624 selected records, 3.73651 GiB logical traffic and
+2.07259 GiB physical reads over the complete 191-position sequence.  Averaged
+over the whole sequence, the premiums are 0.01956 logical GiB/position and
+0.01085 physical GiB/position: +1.46% and +2.32%, respectively.  There was no
+request-wide Budget96 marker.  The preregistered four-position window is
+therefore skipped.
+
+This is a measured **progressive-rescue GO**, not a deployable policy.  It
+falsifies the need to pay global Budget96 for this failure and shows that a
+sparse higher-fidelity decision can repair a confident wrong identifier at a
+small sequence-average byte premium.  It does not identify that decision
+without labels, establish broad tool/coding reliability, or measure terminal
+full-vocabulary KL.  The cold token-sequential timings are not serving
+throughput.  The next earned experiment is a runtime grammar/tool-schema
+boundary trigger followed by the same fixture and non-tool false-positive
+controls; no production transplant is earned yet.
+
+The immutable summary is
+`results/k3_terminal_bws_v2_progressive_tool_result_20260901.json`; raw roots
+r64/r65 and analysis r67 remain on Lucebox4.  The earlier r63 arm is retained
+as an excluded pilot because its branch lacked the promised generated-token
+trace.
