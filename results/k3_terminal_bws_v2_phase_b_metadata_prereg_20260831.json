@@ -1,0 +1,65 @@
+{
+  "schema": "kimi-k3-terminal-bws-v2-phase-b-prereg-v1",
+  "status": "PREREGISTERED_BEFORE_HELDOUT_LABEL_INSPECTION",
+  "timestamp_local": "2026-08-31T20:50:00+02:00",
+  "source_commit_before_prereg": "06a061d1",
+  "question": "Can a cheap metadata-only model trained on direct terminal interventions predict held-out omitted-slab terminal value materially better than the existing local residual score?",
+  "training_set": {
+    "fixture": "According to all known laws",
+    "layer": 92,
+    "teacher": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r23-paired-l92-b192/candidate-terminal.f32",
+    "baseline": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r13-paired-l92-b24",
+    "labels": "the 168 equal-byte force/eviction terminal-KL deltas under r25f/r31f plus the previously measured E586:R0 and E769:R11 arms",
+    "heldout_from_fit": ["all selected/drop labels", "all coding-prompt labels", "expert identity"]
+  },
+  "heldout_set": {
+    "fixture": "Implement a Python function that parses JSON and returns sorted unique keys.",
+    "layer": 92,
+    "teacher": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r43-paired-code-l92-b192/candidate-terminal.f32",
+    "baseline": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r44-paired-code-l92-b24",
+    "screen": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r45-screen-code-l92",
+    "baseline_terminal_kl": 0.10629908537256239,
+    "teacher_top1": 646,
+    "baseline_top1": 17763,
+    "labels_inspected_before_prereg": false
+  },
+  "estimator": {
+    "name": "terminal-marginal metadata ridge",
+    "scope": "omitted calibrated slabs only",
+    "target": "equal-byte terminal KL recovered by forcing the omitted slab into local Budget24",
+    "features": [
+      "log(max(abs(router_weight), 1e-12))",
+      "log(max(ordered_residual_importance, 1e-12))",
+      "route_index / 15",
+      "ordered_rank / 11",
+      "one-hot natural_slab_id (12 values)"
+    ],
+    "forbidden_features": ["expert_id", "heldout intervention result", "candidate logits", "heldout top1 effect"],
+    "standardization": "fit mean and population standard deviation on the discovery training rows only; leave one-hot columns unscaled",
+    "fit": "closed-form L2 ridge with an unpenalized intercept",
+    "lambda_grid": [0.01, 0.1, 1.0, 10.0, 100.0],
+    "lambda_selection": "maximum mean Spearman under leave-one-route-out discovery cross-validation; ties choose the larger lambda",
+    "local_control": "abs(router_weight) * ordered_residual_importance"
+  },
+  "acceptance": {
+    "heldout_force_spearman_minimum": 0.45,
+    "heldout_spearman_gain_over_local_minimum": 0.15,
+    "equal_byte_conditional_swap_kl_reduction_minimum": 0.20,
+    "teacher_top1_recovered": true,
+    "all_required": true
+  },
+  "conditional_validation": {
+    "procedure": "Starting from held-out local Budget24, test predictor-ranked omitted candidates in measured one-swap order, then conditionally test 2 and 4 simultaneous swaps against the weakest measured selected/drop members. Do not infer additivity from independent marginals.",
+    "bytes": "must remain exactly Budget24 sidecar bytes with unchanged exact-fallback bytes",
+    "selection_leakage": "The held-out marginal labels may score the preregistered ranking and identify the measured weakest selected controls, but may not refit the estimator."
+  },
+  "decision": {
+    "go": "Use the estimator as a cheap candidate generator on additional held-out layers, then test actual equal-byte terminal KL.",
+    "no_go": "Archive the negative result. Do not add metadata-model complexity. Move to a small terminal group-intervention or downstream-gradient estimator and compare it against the same held-out screen."
+  },
+  "limitations": [
+    "This is a cheap empirical baseline, not Fisher, Hessian, JVP, or causal attribution by itself.",
+    "Passing one prompt-transfer gate would not establish cross-layer or model-wide reliability.",
+    "Rank correlation alone cannot promote a selector; actual equal-byte KL and top1 are mandatory."
+  ]
+}
