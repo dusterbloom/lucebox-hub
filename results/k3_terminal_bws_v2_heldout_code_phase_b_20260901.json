@@ -1,0 +1,163 @@
+{
+  "schema": "kimi-k3-terminal-bws-v2-heldout-phase-b-v1",
+  "status": "MEASURED_NO_GO_METADATA_RIDGE",
+  "timestamp_local": "2026-09-01T00:17:36+02:00",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "local_commit_before_result": "c9f6ae48b66a5f90895ae4eb74c9e035063cf5a5",
+    "lucebox4_source_commit": "61e5b4fee98f400ecde06cf27216bbd58895fbd6",
+    "lucebox4_dirty_state_before_new_runs": "clean",
+    "executable_sha256": "bb37463b70b5f95913382afc4d072b1c09b78fb4aef5d8ec6af8e92b462dbd37",
+    "pair_script_sha256": "6c13193762a22cb6c5438caac3ac3bf802df547bd08cf6043a24d6654350d015",
+    "capacity_wrapper_sha256": "ab25c2e44073fbfc32b4a7dd1507fdd8f8f3fb402116117fdce8a9b548d62ce9",
+    "terminal_screen_analyzer_sha256": "2024a6e23a319d364a0aacb4e308a8b2be1c67e9657872e634e0a9373a33b36f"
+  },
+  "model": {
+    "first_shard": "/home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-of-00014.gguf",
+    "first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "calibrated96_manifest_sha256": "1189c85743a1e5f41901f09b090ea3a4a567c2020bce53400e9ae5f039409f56",
+    "natural_sidecar_manifest_sha256": "86216b66256f61bdcbe8d796dc2e9316e3dccdeba801ea296b2e779cf86394e9"
+  },
+  "hardware": {
+    "host": "Lucebox4",
+    "device_contract": "HIP_VISIBLE_DEVICES=1, logical GPU 0, gfx1151",
+    "quality_screen_cache_override": "DFLASH_KIMI_P30_HOST_CACHE_MB=1",
+    "cache_override_binary_closure": "results/k3_terminal_bws_v2_cache1_closure_20260831.json",
+    "capacity_gate": "60,000,000 KiB MemAvailable and no matching foreign DeepSeek process for 30 seconds before model load"
+  },
+  "fixtures": {
+    "discovery": {
+      "prompt": "According to all known laws",
+      "prompt_file_sha256": "5d48475ffdf17428c74c58fd1fbbf0611c9d9ed7006bde3d0164264afb30a9f9",
+      "layer": 92,
+      "teacher_budget": 192,
+      "candidate_budget": 24
+    },
+    "heldout": {
+      "prompt": "Implement a Python function that parses JSON and returns sorted unique keys.",
+      "prompt_file_sha256": "e9c51eb46dadd3dd50937e4f1c817fbb38d3941824e8ff3bf063938ecf390087",
+      "layer": 92,
+      "teacher_budget": 192,
+      "candidate_budget": 24,
+      "teacher_top1": 646,
+      "local_budget24_top1": 17763
+    }
+  },
+  "measured_screens": {
+    "heldout": {
+      "screen_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r45e-screen-code-l92-capacity-guarded",
+      "completion_sha256": "e34d6ba85fcdc95bae9197e7e1edd5b5dce602534687ccebff3b2f931b440b13",
+      "plan_sha256": "d7b21cfd2de7e764f63dc8d2218708f80cc4c1447d6b300fa27859416a170124",
+      "valid_interventions": 192,
+      "analysis": "/home/duster/kimi-k3-deploy/k3-terminal-bws-v2-20260831-r47-heldout-code-l92-screen-analysis.json",
+      "analysis_sha256": "d92b8dbac7e73b7d04e7354dae3d3aa9d0a35092ee09df0399295bff380684d4"
+    },
+    "discovery_force_only": {
+      "current_provenance_closure_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r48-discovery-force-closure-current",
+      "closure_completion_sha256": "960df5b47f28c1c477e5418285cb8cf2ebe1b337fcc46e1bd6154126f36a2db5",
+      "closure_plan_sha256": "70872c05ae060f994ad753de781aa41fa659956bffe56d144b4d9ae4ed7077cb",
+      "indexed_plan_sha256": "a98d7c390e7e20e347a63b016340c06cebcc544fa354562eb3d028a67fb0b067",
+      "valid_interventions": 168,
+      "analysis": "/home/duster/kimi-k3-deploy/k3-terminal-bws-v2-20260831-r50-discovery-l92-force-analysis-current.json",
+      "analysis_sha256": "3fb4726861d91746323920b4d57de8ad7b09bb41459d793f21a02d5b6b7c4d5f"
+    }
+  },
+  "baseline_and_independent_marginals": {
+    "logical_authoritative_bytes": 14278656,
+    "exact_fallback_bytes": 0,
+    "heldout_local_budget24_terminal_kl": 0.10629908537256239,
+    "heldout_local_budget24_top1_agreement": false,
+    "force_omitted_count": 168,
+    "positive_force_count": 40,
+    "single_force_teacher_top1_recoveries": 0,
+    "best_single_force_terminal_kl": 0.09600021573374729,
+    "best_single_force_relative_kl_reduction": 0.09688577848736048,
+    "force_value_median": -0.0011472090036754728,
+    "heldout_local_score": {
+      "pearson": 0.46886576176262357,
+      "spearman": 0.44407296986753464
+    },
+    "discovery_local_score": {
+      "pearson": 0.2116698715579838,
+      "spearman": 0.30479446854389286
+    }
+  },
+  "preregistered_metadata_ridge": {
+    "artifact": "/home/duster/kimi-k3-deploy/k3-terminal-bws-v2-20260831-r51-metadata-ridge-heldout-code.json",
+    "artifact_sha256": "7e5aff8a571ecab2fa2c03c8cb1466b3119d8e12d92dd45fd6dc4af56381e879",
+    "selected_lambda": 10.0,
+    "discovery_model_spearman": 0.4074260608115975,
+    "discovery_local_spearman": 0.30479446854389286,
+    "heldout_model_spearman": 0.2989532346971316,
+    "heldout_local_spearman": 0.44407296986753464,
+    "heldout_spearman_gain": -0.14511973517040305,
+    "required_heldout_spearman": 0.45,
+    "required_gain_over_local": 0.15,
+    "correlation_gate_pass": false,
+    "interpretation": "NO-GO. Route/rank/residual/natural-slab metadata does not transfer terminal marginal value across these prompts and is worse than the existing local score on heldout."
+  },
+  "post_heldout_oracle_interactions": {
+    "status": "MECHANISTIC_DISCOVERY_ONLY_LABELS_USED",
+    "common": {
+      "logical_authoritative_bytes": 14278656,
+      "direct_physical_bytes": 14352384,
+      "exact_fallback_bytes": 0,
+      "selected_slab_records": 24,
+      "exact_trajectory_sha256": "54f50d7c3f93f94512367ede8bdb2e542a96aa61ecd0ac0ee52d155b77e82df2",
+      "teacher_top1": 646,
+      "candidate_top1": 17763
+    },
+    "top2": {
+      "terminal_kl": 0.08505288182067629,
+      "relative_kl_reduction": 0.19987193189312338,
+      "teacher_top1_recovered": false,
+      "teacher_margin_change": -0.4924201965332031,
+      "direct_io_ns": 30058131
+    },
+    "top4": {
+      "terminal_kl": 0.07330285437477858,
+      "relative_kl_reduction": 0.3104093594233379,
+      "teacher_top1_recovered": false,
+      "teacher_margin_change": -0.38250255584716797,
+      "direct_io_ns": 17182330,
+      "analysis_sha256": "8ec8f6d16c2d5afccab94580e803250f52e29ebb60619d9f5709a40f576dbf4e"
+    },
+    "top8": {
+      "terminal_kl": 0.06114749447027058,
+      "relative_kl_reduction": 0.42475991909095207,
+      "teacher_top1_recovered": false,
+      "teacher_margin_change": -0.2403697967529297,
+      "direct_io_ns": 7009338,
+      "run_manifest_sha256": "b629ba58410b7e719000a2d6438ea2b29e1afd34e3c043c4e06401b94c4e4c35",
+      "analysis_sha256": "74e00fa718695026306ea3dbb8a81c02d06d26b1603a6042136adaaba44f487e"
+    },
+    "positive_gain_crossover14": {
+      "terminal_kl": 0.06075451198317,
+      "relative_kl_reduction": 0.42845686987583637,
+      "teacher_top1_recovered": false,
+      "teacher_margin_change": -0.4432334899902344,
+      "direct_io_ns": 8931053,
+      "run_manifest_sha256": "3de22aa69364e1f7d20abf29e77a19642e0ef2146b52dc770c6f775d781dfb44",
+      "analysis_sha256": "015409d7c9e6a1bff9a156f4d60be927d3e80128df2c9b258464831ce5b5b806"
+    },
+    "timing_interpretation": "Direct-I/O counters are recorded for completeness, but wall time and I/O timing were collected under an intermittent competing campaign and are not serving-throughput measurements."
+  },
+  "decision": {
+    "what_passed": "Direct terminal interventions identify prompt-specific equal-byte sets that cut isolated layer-92 terminal KL by about 42.8% on heldout.",
+    "what_failed": [
+      "The preregistered cheap metadata estimator does not generalize and is worse than local ranking on heldout.",
+      "No single equal-byte slab swap recovers the teacher top token.",
+      "Independent-marginal top2/top4/top8/crossover14 sets do not recover the teacher top token.",
+      "Lower full-vocabulary terminal KL is not monotonic with the teacher-token boundary margin: crossover14 has lower KL but a worse margin than top8.",
+      "No below-Budget24 heldout viability or model-wide bytes/token result is established."
+    ],
+    "promotion": "NO production transplant. The production destination remains perf/k3-production-ponytail only after a primitive passes heldout behavioral and performance gates.",
+    "next_highest_ev_experiment": "On captured layer-92 states, score each measured slab displacement with a prompt-conditioned terminal Fisher/JVP proxy, such as the teacher-distribution expectation of squared directional log-probability gradients. Start only with the two completed prompts and validate rank correlation plus conditional equal-byte group KL/top1 against the existing 192-arm heldout screen. Do not build a general second-order framework or a GSQ/Trellis kernel yet."
+  },
+  "scope_limits": [
+    "All KL statistics in this result are one aligned terminal full-vocabulary row on a frozen teacher trajectory.",
+    "The 14,278,656-byte figure is one isolated routed layer call, not full-model bytes/token.",
+    "The post-heldout oracle sets use heldout labels and are not validation or production selectors.",
+    "No decode tok/s or prefill tok/s was measured in this phase."
+  ]
+}

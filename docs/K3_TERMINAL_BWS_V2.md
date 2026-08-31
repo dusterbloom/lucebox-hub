@@ -171,3 +171,44 @@ unclaimed in exchange for external validity.
 The immutable summary is
 `results/k3_terminal_bws_v2_l92_phase_a_20260831.json`; all raw run directories
 retain command/environment captures and checksum manifests on Lucebox4.
+
+## Held-out prompt transfer and Phase-B metadata gate
+
+A complete 192-intervention layer-92 screen was run on the held-out coding
+prompt `Implement a Python function that parses JSON and returns sorted unique
+keys.`.  The local Budget24 control had terminal KL `0.106299085`, chose token
+`17763`, and disagreed with teacher token `646`.  Of 168 omitted-slab forces,
+40 lowered KL, but the best single equal-byte swap lowered it by only `9.69%`
+to `0.096000216`; no single swap recovered teacher top-one.  Local score
+generalized better here than on discovery (Spearman `0.4441`), reinforcing
+that slab value is prompt-conditioned.
+
+The preregistered metadata-only ridge is a **NO-GO**.  It selected lambda `10`
+and improved discovery Spearman from `0.3048` to `0.4074`, but held-out
+Spearman fell to `0.2990`, versus `0.4441` for the existing local score.  Its
+held-out gain was `-0.1451`, not the required `+0.15`.  Per the preregistration,
+no additional metadata features will be added to rescue this model.
+
+Post-heldout oracle interactions were retained as mechanistic discovery, not
+validation.  At exactly 24 records, 14,278,656 logical authoritative bytes and
+zero fallback, the best measured terminal KL values were:
+
+| conditional set | terminal KL | relative reduction | teacher top-one |
+|---|---:|---:|---:|
+| local Budget24 | 0.106299085 | -- | no |
+| oracle top-2 | 0.085052882 | 19.99% | no |
+| oracle top-4 | 0.073302854 | 31.04% | no |
+| oracle top-8 | 0.061147494 | 42.48% | no |
+| positive-gain crossover-14 | 0.060754512 | 42.85% | no |
+
+The crossover-14 set had lower KL but a worse teacher-token margin than top-8,
+directly falsifying independent marginal additivity and demonstrating that
+lower mean terminal KL does not guarantee identifier/token-boundary recovery.
+This phase therefore earns no production transplant and establishes no
+below-Budget24 result.  The next highest-value experiment is a narrow
+prompt-conditioned terminal Fisher/JVP discriminator on these captured states,
+validated against the completed exact intervention screen.  A general
+second-order framework and GSQ/Trellis kernels remain unearned.
+
+The immutable result summary is
+`results/k3_terminal_bws_v2_heldout_code_phase_b_20260901.json`.
