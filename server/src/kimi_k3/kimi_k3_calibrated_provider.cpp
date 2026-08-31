@@ -3614,6 +3614,24 @@ public:
             if (err) *err = "terminal slab force and drop are mutually exclusive";
             return false;
         }
+        if (const char * trace =
+                std::getenv("DFLASH_KIMI_EXPERIMENT_PLAN_OUT")) {
+            if (*trace) {
+                std::ifstream existing(trace, std::ios::binary);
+                if (existing.good()) {
+                    if (err) *err = "terminal slab plan output already exists";
+                    return false;
+                }
+                terminal_plan_trace_.open(trace, std::ios::out);
+                if (!terminal_plan_trace_) {
+                    if (err) *err = "cannot create terminal slab plan output";
+                    return false;
+                }
+                terminal_plan_trace_ <<
+                    "model_layer\tbase_pos\ttoken\troute\texpert"
+                    "\tweight\tselected_ranks\n";
+            }
+        }
         budget_ = 96;
         if (const char * authoritative =
                 std::getenv("DFLASH_KIMI_SIDECAR_AUTHORITATIVE")) {
@@ -6540,6 +6558,9 @@ private:
                 selected_by_route[
                     static_cast<size_t>(*found * kSlabCount + rank)] = 1;
             }
+            write_terminal_plan(
+                model_layer, base_pos, token, routes, route_offset,
+                selected_by_route);
             std::vector<std::vector<SparseSlabPayload>> direct_payloads;
             std::vector<uint8_t> read_selected_by_route = selected_by_route;
             std::array<MoeStreamExternalLease, kNativeTopK> cache_leases;
@@ -7201,6 +7222,30 @@ private:
         layers_.clear();
     }
 
+    void write_terminal_plan(
+            int model_layer, int base_pos, int token,
+            const MoeStreamRouteBatch & routes, size_t route_offset,
+            const std::vector<uint8_t> & selected_by_route) {
+        if (!terminal_plan_trace_) return;
+        std::lock_guard<std::mutex> lock(terminal_plan_trace_mutex_);
+        for (int route = 0; route < kNativeTopK; ++route) {
+            terminal_plan_trace_ << model_layer << '\t' << base_pos << '\t'
+                << token << '\t' << route << '\t'
+                << routes.selected_ids[route_offset + route] << '\t'
+                << routes.selected_weights[route_offset + route] << '\t';
+            bool first = true;
+            for (int rank = 0; rank < kSlabCount; ++rank) {
+                if (selected_by_route[static_cast<size_t>(route) * kSlabCount +
+                                      rank] == 0) continue;
+                if (!first) terminal_plan_trace_ << ',';
+                terminal_plan_trace_ << rank;
+                first = false;
+            }
+            terminal_plan_trace_ << '\n';
+        }
+        terminal_plan_trace_.flush();
+    }
+
     static constexpr int kFirstRoutedLayer = 1;
     static constexpr int kLastRoutedLayer = 92;
     ggml_backend_t backend_ = nullptr;
@@ -7210,6 +7255,8 @@ private:
     std::string metrics_path_;
     std::ofstream io_trace_;
     std::ofstream p40_trace_;
+    std::ofstream terminal_plan_trace_;
+    std::mutex terminal_plan_trace_mutex_;
     std::string prompt_id_ = "0";
     ProcessIoSnapshot process_io_start_{};
     uint64_t next_request_id_ = 0;
