@@ -4152,6 +4152,20 @@ void HttpServer::process_job(ServerJob * job) {
     SocketHandle fd = job->fd;
     const auto & req = job->req;
     auto started_at = std::chrono::steady_clock::now();
+    const bool committed_token_trace =
+        env_flag_enabled("DFLASH_SERVER_COMMITTED_TOKEN_TRACE");
+    auto trace_token_ids = [&](const char * kind,
+                               const std::vector<int32_t> & tokens) {
+        if (!committed_token_trace) return;
+        std::string line = "[server-token-trace] request=" +
+            req.response_id + " " + kind + "=";
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            if (i != 0) line.push_back(',');
+            line += std::to_string(tokens[i]);
+        }
+        std::fprintf(stderr, "%s\n", line.c_str());
+    };
+    trace_token_ids("prompt_ids", req.prompt_tokens);
 
     // Track live status for /status page. RAII guard ensures idle on all paths.
     std::string prompt_excerpt;
@@ -4307,6 +4321,7 @@ void HttpServer::process_job(ServerJob * job) {
     } else {
         result = backend_.generate(gen_req, io);
     }
+    trace_token_ids("generated_ids", result.tokens);
 
     if (dflash_residency == DraftResidencyAction::ReleaseAfterUse &&
         !config_.draft_path.empty()) {
