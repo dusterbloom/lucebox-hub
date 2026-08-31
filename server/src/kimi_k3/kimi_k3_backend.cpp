@@ -43,6 +43,26 @@ constexpr int kKimiDsparkHidden = 7168;
 constexpr int kKimiDsparkProposals = 7;
 constexpr int kKimiDsparkVerifyRows = 8;
 
+bool write_experiment_logits(const char * path,
+                             const std::vector<float> & logits,
+                             std::string & error) {
+    if (!path || !*path) return true;
+    std::ifstream existing(path, std::ios::binary);
+    if (existing.good()) {
+        error = std::string("refusing existing experiment logits: ") + path;
+        return false;
+    }
+    std::ofstream output(path, std::ios::binary);
+    output.write(reinterpret_cast<const char *>(logits.data()),
+                 static_cast<std::streamsize>(logits.size() * sizeof(float)));
+    output.close();
+    if (!output) {
+        error = std::string("cannot write experiment logits: ") + path;
+        return false;
+    }
+    return true;
+}
+
 bool parse_binary_env(const char * name, bool & value, std::string & error) {
     value = false;
     const char * raw = std::getenv(name);
@@ -598,8 +618,10 @@ bool KimiK3Backend::init() {
     const int max_ctx = std::max(1, cfg_.device.max_ctx);
     const int replay_width = prefill_policy_.exact_multirow
         ? prefill_policy_.macro_width : 0;
+    const char * paired_logits =
+        std::getenv("DFLASH_KIMI_EXPERIMENT_PAIRED_LOGITS_OUT");
     const int max_verify_tokens = draft_weights_.ctx
-        ? kKimiDsparkVerifyRows : 0;
+        ? kKimiDsparkVerifyRows : paired_logits && *paired_logits ? 1 : 0;
     if (!create_kimi_k3_cache(
             backend_, weights_, max_ctx, cache_,
             std::max(replay_width, max_verify_tokens))) {
@@ -834,6 +856,17 @@ GenerateResult KimiK3Backend::generate_from_state(
     }
     if (req.do_sample && req.sampler.seed != 0) rng_.seed(req.sampler.seed);
 
+    const char * paired_logits_path =
+        std::getenv("DFLASH_KIMI_EXPERIMENT_PAIRED_LOGITS_OUT");
+    const bool paired = paired_logits_path && *paired_logits_path;
+    if (paired && (snapshot || req.n_gen != 1 ||
+                   prefill_policy_.macro_width != 1 ||
+                   !routed_output_provider_)) {
+        return fail(GenerateErrorCode::PrefillFailed,
+                    "paired terminal experiment requires cold n_gen=1, "
+                    "prefill width 1, and a routed provider");
+    }
+
     if (snapshot && req.routed_expert_min_budget > 0) {
         return fail(GenerateErrorCode::InvalidSnapshotSlot,
                     "request-scoped K3 slab budget cannot restore a snapshot");
@@ -866,6 +899,7 @@ GenerateResult KimiK3Backend::generate_from_state(
     const auto prefill_begin = std::chrono::steady_clock::now();
     int restored_prefix = 0;
     std::vector<float> logits;
+    std::vector<float> paired_logits;
     if (snapshot && static_cast<int>(req.prompt.size()) >= snapshot->cur_pos) {
         if (!restore_kimi_k3_prefix_snapshot(*snapshot, cache_)) {
             return fail(GenerateErrorCode::InvalidSnapshotSlot,
@@ -931,6 +965,19 @@ GenerateResult KimiK3Backend::generate_from_state(
 
     const auto forward_token = [&](int32_t token, int position) {
         if (out_io.is_cancelled()) return false;
+        if (paired) {
+            if (!kimi_k3_replay_snapshot(backend_, cache_)) return false;
+            if (!kimi_k3_step(
+                    backend_, weights_, cache_, token, position,
+                    paired_logits, &stream_engine_,
+                    routed_output_provider_.get())) {
+                return false;
+            }
+            if (!kimi_k3_replay_restore(backend_, cache_)) return false;
+            return kimi_k3_step(
+                backend_, weights_, cache_, token, position, logits,
+                &stream_engine_, nullptr);
+        }
         return spec_target
             ? spec_target->forward_token(token, position, logits)
             : kimi_k3_step(
@@ -1076,6 +1123,16 @@ GenerateResult KimiK3Backend::generate_from_state(
     result.decode_s =
         std::chrono::duration<double>(decode_end - decode_begin).count();
     std::string capture_error;
+    if (paired && (paired_logits.size() !=
+                       static_cast<size_t>(weights_.n_vocab) ||
+                   !write_experiment_logits(
+                       paired_logits_path, paired_logits, capture_error))) {
+        if (capture_error.empty()) {
+            capture_error = "paired terminal experiment has no logits row";
+        }
+        return fail(GenerateErrorCode::DecodeFailed,
+                    std::move(capture_error));
+    }
     if (!capture_last_logits(capture_error)) {
         return fail(GenerateErrorCode::DecodeFailed,
                     std::move(capture_error));

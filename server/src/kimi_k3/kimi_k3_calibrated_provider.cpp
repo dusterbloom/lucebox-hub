@@ -3614,6 +3614,18 @@ public:
             if (err) *err = "terminal slab force and drop are mutually exclusive";
             return false;
         }
+        if (const char * active =
+                std::getenv("DFLASH_KIMI_EXPERIMENT_ACTIVE_LAYER")) {
+            char * end = nullptr;
+            const long parsed = std::strtol(active, &end, 10);
+            if (!*active || end == active || *end != '\0' ||
+                parsed < kFirstRoutedLayer || parsed > kLastRoutedLayer) {
+                if (err) *err =
+                    "DFLASH_KIMI_EXPERIMENT_ACTIVE_LAYER must be in 1..92";
+                return false;
+            }
+            experiment_active_layer_ = static_cast<int>(parsed);
+        }
         if (const char * trace =
                 std::getenv("DFLASH_KIMI_EXPERIMENT_PLAN_OUT")) {
             if (*trace) {
@@ -4053,6 +4065,8 @@ public:
     bool handles_layer(int model_layer) const override {
         return model_layer >= kFirstRoutedLayer &&
             model_layer <= kLastRoutedLayer &&
+            (experiment_active_layer_ < 0 ||
+             model_layer == experiment_active_layer_) &&
             (sidecar_authoritative_ ||
              budget_for_layer(model_layer) < kNativeTopK * kSlabCount);
     }
@@ -7249,6 +7263,7 @@ private:
     static constexpr int kFirstRoutedLayer = 1;
     static constexpr int kLastRoutedLayer = 92;
     ggml_backend_t backend_ = nullptr;
+    int experiment_active_layer_ = -1;
     TerminalSlabProbe terminal_force_;
     TerminalSlabProbe terminal_drop_;
     std::vector<LayerState> layers_;
