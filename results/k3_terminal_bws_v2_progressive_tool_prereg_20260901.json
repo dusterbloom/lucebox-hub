@@ -1,0 +1,59 @@
+{
+  "schema": "kimi-k3-progressive-tool-rescue-prereg-v1",
+  "status": "PREREGISTERED_MECHANISTIC_ORACLE",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "implementation_commit": "a5f9c1883a16bf0e0f8d2d0ddbf9a919270a181b",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "base_policy": "/home/duster/lucebox-k3-b7b74cc/results/h23_10k_policies/h23_moonshot_1_2gib.txt"
+  },
+  "fixture": {
+    "path": "fixtures/k3_tool_weather_request.json",
+    "sha256": "9ddc53b93c0e162a898f9b2c72d03e5cd9ab670c608ffef489aaa6090ab7f0d6",
+    "prompt_tokens": 147,
+    "rendered_sha256": "fa05c4fc98a796f387838fdef2aef89aaa5805ca2bbb1c7101ed428f80439d14",
+    "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+    "teacher_prefix_ids": [618, 21055],
+    "teacher_continuation_id": 2800,
+    "failed_base_continuation_id": 10666,
+    "boundary_base_pos": 158,
+    "position_derivation": "147 prompt tokens; generated token 12 (_we) occupies position 158 and its forward predicts generated token 13."
+  },
+  "arms": [
+    {
+      "name": "same_binary_h23_base",
+      "position_budgets": "",
+      "required": true
+    },
+    {
+      "name": "singleton_boundary_b96",
+      "position_budgets": "158:96",
+      "required": true
+    },
+    {
+      "name": "tool_name_window_b96",
+      "position_budgets": "155:96,156:96,157:96,158:96",
+      "required": false,
+      "run_only_if": "singleton_boundary_b96 does not return a valid get_weather call"
+    }
+  ],
+  "validity": [
+    "All arms use one retained executable hash and a clean implementation commit.",
+    "The official rendered prompt hash must match the frozen 147-token fixture.",
+    "The base arm must not contain a progressive-rescue marker.",
+    "Each rescue arm must contain exactly the preregistered base-position markers and no request-wide Budget96 marker.",
+    "Each arm records logical provider bytes, physical direct-read bytes, exact fallback bytes, timings, generated token IDs, response JSON and final logits hash."
+  ],
+  "gate": {
+    "pass": "A rescue arm returns exactly one native-valid get_weather tool call with location San Francisco without request-wide Budget96.",
+    "traffic": "Report total and average bytes over every provider position, plus rescue records/bytes above the H23 base table.",
+    "stop": "If the four-position window fails, stop positional Budget96 rescue on this fixture and investigate earlier-state or representation damage; do not widen adaptively.",
+    "next_if_pass": "Replace the position oracle with a grammar/tool-schema boundary trigger and rerun the same fixture plus non-tool controls."
+  },
+  "limitations": [
+    "The rescue positions are label-derived and are not a deployable risk oracle.",
+    "One tool fixture cannot establish broad reliability.",
+    "This gate does not establish the 0.53 GiB/token or 10 tok/s target."
+  ]
+}
