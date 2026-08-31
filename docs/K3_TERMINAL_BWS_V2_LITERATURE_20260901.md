@@ -212,3 +212,26 @@ The teacher margin is `0.0924091339`, above the preregistered numerical floor
 of `0.001`. The four frozen compositions and their exact targets are in
 `results/k3_terminal_bws_v2_margin_groups_prereg_20260901.json`. They are
 post-heldout mechanistic oracle tests, not validation.
+
+## Measured Gate A result
+
+All four preregistered equal-B24 groups completed on Lucebox4 with the same
+14,278,656 logical authoritative bytes, 14,352,384 physical bytes and zero
+fallback.  None recovered teacher top-one or a positive teacher-token margin.
+The best, top-8, reduced KL from `0.1062990854` to `0.0809814791` (23.82%) but
+left the margin at `-0.3434715271`.  The 24-way sum of individually positive
+margin arms instead raised KL to `0.2110966823` and worsened the margin to
+`-0.9409847260`.
+
+This is the preregistered **NO-GO** for static layer-92 Budget24 selection and
+an especially sharp validation of the attribution literature's interaction
+warning.  It also rejects the proposed captured-tail/Fisher implementation:
+there is no demonstrated equal-byte boundary-recovering target for that
+estimator to learn.  The earned next experiment is the smallest offline
+omitted-complement or progressive-rescue discriminator.  GSQ-like scalar
+groups precede any Trellis proxy, and neither earns a HIP kernel until captured
+terminal logits show a material equal-byte advantage.
+
+The measured result is
+`results/k3_terminal_bws_v2_margin_gate_20260901.json` (SHA-256
+`abf2faf687d1498f3531728d35fdf6e7503cd326c2eb700addc8db84bf08e9ec`).

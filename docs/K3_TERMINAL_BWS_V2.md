@@ -212,3 +212,34 @@ second-order framework and GSQ/Trellis kernels remain unearned.
 
 The immutable result summary is
 `results/k3_terminal_bws_v2_heldout_code_phase_b_20260901.json`.
+
+## Held-out margin-capacity Gate A
+
+The post-heldout margin oracle was tested exactly as preregistered: four
+nested force groups of 2, 4, 8 and 24 records, each retaining the Budget24
+contract of 24 selected records, 14,278,656 logical authoritative bytes,
+14,352,384 physical bytes and zero exact fallback.  All four runs reproduced
+the frozen exact trajectory hash.
+
+| group | terminal KL | KL change vs local B24 | teacher margin | teacher top-one |
+|---|---:|---:|---:|---:|
+| local B24 | 0.106299085 | -- | -0.575365 | no |
+| top-2 margin | 0.098126259 | -7.69% | -0.460027 | no |
+| top-4 margin | 0.086541398 | -18.59% | -0.366367 | no |
+| top-8 margin | **0.080981479** | **-23.82%** | **-0.343472** | no |
+| positive-margin crossover-24 | 0.211096682 | +98.59% | -0.940985 | no |
+
+Gate A is therefore a measured **NO-GO**.  Even a held-out-label oracle did
+not find an equal-byte static B24 set that restored teacher token 646 or made
+its margin positive.  The 24-way arm also reversed every projected independent
+gain, nearly doubled KL and worsened the boundary margin.  This is strong
+evidence that finite slab interventions interact non-additively and that the
+known boundary is not safely repaired by more static layer-92 ranking.
+
+Per the preregistered stop rule, no captured-tail/Fisher framework is earned
+from this gate.  The next discriminator is an offline low-bit approximation
+of the omitted complement or a progressive richer-pass rescue, evaluated by
+terminal logits on captured native states before any HIP decoder is written.
+The immutable result is
+`results/k3_terminal_bws_v2_margin_gate_20260901.json`; raw roots r58--r61
+and analysis r62 remain on Lucebox4.
