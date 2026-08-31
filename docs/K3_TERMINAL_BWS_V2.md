@@ -21,6 +21,17 @@ The imported evidence objects are immutable Git blobs:
 | `results/h23_10k_aggressive1p8_quality.json` | `81f82ce50dce6eca958234d4ace12236e8a6cccf` |
 | `results/h23_10k_moonshot1p2_quality.json` | `1960f193ce812f73f35c6c8c99ed4b2521f52c38` |
 
+## Production promotion boundary
+
+This branch is research-only.  A passing experiment does not make
+`experiment/k3-terminal-kl-bws-v2` a production branch and does not authorize
+merging it wholesale.  Each earned primitive must be narrowly transplanted or
+reimplemented on `perf/k3-production-ponytail`, then re-earn binary closure,
+traffic accounting, behavioral quality and performance gates there.  The same
+rule excludes a wholesale merge of `perf/k3-layer-major-prefill`; that branch
+is an immutable source of research artifacts and proven causal/state
+invariants only.
+
 ## Decision objective
 
 There is no global `10x` KL-reduction or `0.01`-KL promotion gate.  Terminal KL
