@@ -103,7 +103,7 @@ tail -n +2 "$plan" | while IFS=$'\t' read -r action target artifact_dir; do
     KIMI_K3_ACTIVE_LAYER=$active_layer "$pair_script" "$artifact_dir" 24 "$action" "$target"
 done
 
-run_count=$(find "$screen_root/runs" -mindepth 1 -maxdepth 1 -type d | wc -l)
+run_count=$(find -L "$screen_root/runs" -mindepth 1 -maxdepth 1 -type d | wc -l)
 if [[ $run_count -ne 192 ]]; then
     echo "expected 192 intervention directories, found $run_count" >&2
     exit 1
