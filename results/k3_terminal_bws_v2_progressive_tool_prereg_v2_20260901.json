@@ -1,0 +1,62 @@
+{
+  "schema": "kimi-k3-progressive-tool-rescue-prereg-v2",
+  "status": "PREREGISTERED_MECHANISTIC_ORACLE_AMENDMENT",
+  "supersedes_for_gate": "results/k3_terminal_bws_v2_progressive_tool_prereg_20260901.json",
+  "amendment_reason": "The r63 pilot reproduced the invalid tool response and traffic but exposed that DFLASH_KIMI_TOKEN_TRACE did not exist on this branch. The intervention gate had not run. Commit d4cb9c8b adds an opt-in prompt/generated token-ID trace and removes the unused variable. All arms are rerun with one rebuilt binary.",
+  "excluded_pilot": {
+    "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r63-progressive-tool-base",
+    "interpretation": "MEASURED PILOT ONLY; invalid tool output, 147 prompt tokens, 45 generated tokens, 95.874129920 GB physical reads, but no generated-token-ID artifact. Do not use as the same-binary gate control."
+  },
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "implementation_commit": "d4cb9c8bc2eb45390427a4c2148afd60be95d426",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "base_policy": "/home/duster/lucebox-k3-b7b74cc/results/h23_10k_policies/h23_moonshot_1_2gib.txt",
+    "runner_sha256": "7f53c7d08fcbda9197bc4072c5d67f342a2291b6eb6864b8976ce852bc859779"
+  },
+  "fixture": {
+    "path": "fixtures/k3_tool_weather_request.json",
+    "sha256": "9ddc53b93c0e162a898f9b2c72d03e5cd9ab670c608ffef489aaa6090ab7f0d6",
+    "prompt_tokens": 147,
+    "rendered_sha256": "fa05c4fc98a796f387838fdef2aef89aaa5805ca2bbb1c7101ed428f80439d14",
+    "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+    "teacher_prefix_ids": [618, 21055],
+    "teacher_continuation_id": 2800,
+    "failed_base_continuation_id": 10666,
+    "boundary_base_pos": 158
+  },
+  "arms": [
+    {
+      "name": "same_binary_h23_base",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r64-progressive-tool-base-v2",
+      "position_budgets": "",
+      "required": true
+    },
+    {
+      "name": "singleton_boundary_b96",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r65-progressive-tool-singleton-v2",
+      "position_budgets": "158:96",
+      "required": true
+    },
+    {
+      "name": "tool_name_window_b96",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r66-progressive-tool-window-v2",
+      "position_budgets": "155:96,156:96,157:96,158:96",
+      "required": false,
+      "run_only_if": "singleton_boundary_b96 does not return a valid get_weather call"
+    }
+  ],
+  "validity": [
+    "All gate arms use one rebuilt executable hash and a clean source commit containing this amendment.",
+    "The prompt token-ID trace must contain 147 IDs and match the frozen i32le SHA-256.",
+    "The base arm must have no progressive-rescue marker; rescue arms must contain exactly their preregistered base-position markers and no request-wide Budget96 marker.",
+    "Every arm records generated token IDs, response JSON, final logits, logical provider bytes, physical direct-read bytes, provider exact-fallback bytes and timings."
+  ],
+  "gate": {
+    "pass": "A rescue arm returns exactly one native-valid get_weather tool call with JSON argument location San Francisco without request-wide Budget96.",
+    "traffic": "Report total and average bytes over every provider position, plus rescue records/bytes above the H23 base table.",
+    "stop": "If the four-position window fails, stop positional Budget96 rescue on this fixture and investigate earlier-state or representation damage; do not widen adaptively.",
+    "next_if_pass": "Replace the position oracle with a grammar/tool-schema boundary trigger and rerun the same fixture plus non-tool controls."
+  }
+}
