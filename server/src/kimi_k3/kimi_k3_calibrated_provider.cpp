@@ -713,6 +713,34 @@ struct Candidate {
     int rank = 0;
 };
 
+// Deliberately narrow experimental control for terminal-KL slab screens.  The
+// value is a sidecar rank (the current natural sidecars use rank == slab ID),
+// not a new production selector.  One target per process keeps every
+// intervention attributable and its command line self-describing.
+struct TerminalSlabProbe {
+    int layer = -1;
+    int expert = -1;
+    int rank = -1;
+};
+
+bool parse_terminal_slab_probe(const char * raw, const char * name,
+                               TerminalSlabProbe & probe,
+                               std::string * err) {
+    probe = {};
+    if (!raw || !*raw) return true;
+    char trailing = '\0';
+    if (std::sscanf(raw, "%d:%d:%d%c", &probe.layer, &probe.expert,
+                    &probe.rank, &trailing) != 3 ||
+        probe.layer < 1 || probe.layer > 92 ||
+        probe.expert < 0 || probe.expert >= kExpertCount ||
+        probe.rank < 0 || probe.rank >= kSlabCount) {
+        if (err) *err = std::string(name) +
+            " must be LAYER:EXPERT:RANK within the routed sidecar geometry";
+        return false;
+    }
+    return true;
+}
+
 bool better_candidate(const Candidate & left, const Candidate & right) {
     if (left.score != right.score) return left.score > right.score;
     if (left.expert != right.expert) return left.expert < right.expert;
@@ -3551,8 +3579,8 @@ public:
 
     bool set_request_min_slab_budget(
             int budget, std::string * err) override {
-        if (budget != 0 && budget != 24 && budget != 96 && budget != 192) {
-            if (err) *err = "request slab budget must be 0, 24, 96, or 192";
+        if (budget < 0 || budget > kNativeTopK * kSlabCount) {
+            if (err) *err = "request slab budget must be in [0, 192]";
             return false;
         }
         request_min_budget_ = budget;
@@ -3574,6 +3602,18 @@ public:
             return false;
         }
         backend_ = backend;
+        if (!parse_terminal_slab_probe(
+                std::getenv("DFLASH_KIMI_EXPERIMENT_SLAB_FORCE"),
+                "DFLASH_KIMI_EXPERIMENT_SLAB_FORCE", terminal_force_, err) ||
+            !parse_terminal_slab_probe(
+                std::getenv("DFLASH_KIMI_EXPERIMENT_SLAB_DROP"),
+                "DFLASH_KIMI_EXPERIMENT_SLAB_DROP", terminal_drop_, err)) {
+            return false;
+        }
+        if (terminal_force_.layer >= 0 && terminal_drop_.layer >= 0) {
+            if (err) *err = "terminal slab force and drop are mutually exclusive";
+            return false;
+        }
         budget_ = 96;
         if (const char * authoritative =
                 std::getenv("DFLASH_KIMI_SIDECAR_AUTHORITATIVE")) {
@@ -3606,9 +3646,9 @@ public:
             char * end = nullptr;
             const long parsed = std::strtol(raw_budget, &end, 10);
             if (end == raw_budget || *end != '\0' ||
-                (parsed != 24 && parsed != 96 && parsed != 192)) {
+                (parsed < 1 || parsed > kNativeTopK * kSlabCount)) {
                 if (err) *err =
-                    "DFLASH_KIMI_P20_SLAB_BUDGET must be 24, 96, or 192";
+                    "DFLASH_KIMI_P20_SLAB_BUDGET must be in [1, 192]";
                 return false;
             }
             budget_ = static_cast<int>(parsed);
@@ -4677,6 +4717,23 @@ private:
                     return false;
                 }
             }
+        }
+        const TerminalSlabProbe * probe = nullptr;
+        bool force = false;
+        if (terminal_force_.layer == model_layer) {
+            probe = &terminal_force_;
+            force = true;
+        } else if (terminal_drop_.layer == model_layer) {
+            probe = &terminal_drop_;
+        }
+        if (probe) {
+            float & score = state.importance[static_cast<size_t>(probe->expert) *
+                                             kSlabCount + probe->rank];
+            score = force ? std::numeric_limits<float>::max() : 0.0f;
+            std::fprintf(stderr,
+                         "[kimi-k3-terminal-probe] layer=%d expert=%d rank=%d action=%s\n",
+                         probe->layer, probe->expert, probe->rank,
+                         force ? "force" : "drop");
         }
         state.means_offset = aux.slab_means_offset;
         state.means_bytes = aux.slab_means_bytes;
@@ -7147,6 +7204,8 @@ private:
     static constexpr int kFirstRoutedLayer = 1;
     static constexpr int kLastRoutedLayer = 92;
     ggml_backend_t backend_ = nullptr;
+    TerminalSlabProbe terminal_force_;
+    TerminalSlabProbe terminal_drop_;
     std::vector<LayerState> layers_;
     std::string metrics_path_;
     std::ofstream io_trace_;
@@ -7263,7 +7322,7 @@ bool parse_kimi_k3_layer_budget_table(
         std::string * err) {
     constexpr int kLayers = 92;
     const auto allowed = [](int budget) {
-        return budget >= 24 && budget <= 192 && budget % 24 == 0;
+        return budget >= 1 && budget <= 192;
     };
     std::ifstream input(path);
     if (!input) {
