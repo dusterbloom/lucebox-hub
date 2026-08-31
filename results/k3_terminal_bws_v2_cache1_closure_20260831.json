@@ -1,0 +1,80 @@
+{
+  "schema": "kimi-k3-terminal-bws-v2-cache-closure-v1",
+  "status": "MEASURED_BINARY_CLOSURE",
+  "timestamp_local": "2026-08-31T22:13:00+02:00",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "local_commit_before_result": "ba64a59e",
+    "lucebox4_equivalent_commit": "15a171c6",
+    "executable": "/home/duster/k3-terminal-kl-bws-v2/server/build-terminal-kl-hip/smoke_kimi_k3_forward",
+    "executable_sha256": "bb37463b70b5f95913382afc4d072b1c09b78fb4aef5d8ec6af8e92b462dbd37",
+    "pair_script": "/home/duster/k3-terminal-kl-bws-v2-resume/scripts/run_kimi_terminal_pair.sh",
+    "pair_script_sha256": "6c13193762a22cb6c5438caac3ac3bf802df547bd08cf6043a24d6654350d015"
+  },
+  "model": {
+    "first_shard": "/home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-of-00014.gguf",
+    "first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "calibrated96_manifest_sha256": "1189c85743a1e5f41901f09b090ea3a4a567c2020bce53400e9ae5f039409f56",
+    "natural_sidecar_manifest_sha256": "86216b66256f61bdcbe8d796dc2e9316e3dccdeba801ea296b2e779cf86394e9"
+  },
+  "fixture": {
+    "prompt": "Implement a Python function that parses JSON and returns sorted unique keys.",
+    "active_layer": 92,
+    "budget": 24,
+    "device_contract": "HIP_VISIBLE_DEVICES=1, logical GPU 0, gfx1151"
+  },
+  "control": {
+    "root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r44-paired-code-l92-b24",
+    "manifest_sha256": "6551892d475013daa362454b5ffe2fd3301582e928a0e1a2c3682033caf1bd51",
+    "environment_sha256": "18a850edb143932b41c4b034613692c2933902a8673eea5b99eb84a202432757"
+  },
+  "candidate": {
+    "root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r46c-cache1-closure-code-l92-b24",
+    "only_runtime_change": "DFLASH_KIMI_P30_HOST_CACHE_MB=1",
+    "manifest_sha256": "28288bfc4c534324e001c668dd9782e03f700f25415e0153b7c780cec8678a8d",
+    "environment_sha256": "9d62cd0b7af74f58d422422eb8589807cacffbd4aa50a4351f4a56dc956ba765",
+    "candidate_logits_sha256": "c9844d265ac575adc665967dcd95087f08749850f8774593c196e6f1fc4414ec",
+    "exact_logits_sha256": "54f50d7c3f93f94512367ede8bdb2e542a96aa61ecd0ac0ee52d155b77e82df2",
+    "plan_sha256": "5d92da7bb8571aa4f36b145ee6809e2c519846fa1216ee8d2c82d35aae2a64f3",
+    "traffic_sha256": "329e2cd5e7fef868ce13ed279742718643ba9e7288ecdd8cbd6c3145d71c6db7",
+    "selected_sidecar_bytes": 14278656,
+    "exact_fallback_bytes": 0
+  },
+  "closure": {
+    "candidate_logits_byte_identical": true,
+    "exact_logits_byte_identical": true,
+    "selector_plan_byte_identical": true,
+    "traffic_table_byte_identical": true,
+    "binary_closure": true
+  },
+  "rejected_attempts": [
+    {
+      "root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r45-lowmem-closure-code-l92-b24",
+      "manifest_sha256": "fb38548c0fc871f68d5ff9e3892b90643102780bb421d0603a218df0c1aaf562",
+      "rejected_marker_sha256": "4333e3960f0caea04ca181f3b4f079125d43beb322cc2979066f053e5aa20936",
+      "reason": "foreign-process contention caused model-load OOM at shard 2 before inference"
+    },
+    {
+      "root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r46-lowmem-closure-code-l92-b24",
+      "manifest_sha256": "51581ebd384978813ab439401644428b61acd0c6e44a67cbd48c7647f92783c8",
+      "rejected_marker_sha256": "d222d8f88eaa57108d37da2f8390d6fc56fb2ce3a546c0fbcc99658072ed18b4",
+      "reason": "invalid configuration: P46 ordinary one-token execution requires P45"
+    },
+    {
+      "root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r46b-lowmem-closure-code-l92-b24",
+      "manifest_sha256": "6c2962241ff10a7f4c9ffc3b2edf5a9395f6bbe7dbfb9a25d9f7101f181fdced",
+      "rejected_marker_sha256": "970239ac39a996dfd3b65bbb01a5934828a46085edaac15502c80a5703392d41",
+      "reason": "invalid configuration: P45 requires P42 ordered join"
+    }
+  ],
+  "decision": {
+    "interpretation": "GO for using a 1 MiB P30 host-cache capacity in quality-only intervention screens. It changes neither logits, selector plan nor authoritative byte accounting on the held-out control.",
+    "tradeoff": "The small cache may increase repeated physical reads and runtime. Therefore mixed-contention screen timings are excluded from performance conclusions; only quality and logical authoritative bytes are scored.",
+    "not_claimed": [
+      "serving throughput",
+      "decode speedup",
+      "lower physical traffic",
+      "P42-off viability"
+    ]
+  }
+}
