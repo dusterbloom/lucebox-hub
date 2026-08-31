@@ -73,6 +73,7 @@ else
     mv "$plan_tmp" "$plan"
     sha256sum "$plan" > "$screen_root/screen-plan.sha256"
     sha256sum "$binary" > "$screen_root/binary.sha256"
+    sha256sum "$pair_script" > "$screen_root/pair-script.sha256"
     git -C "$(dirname "$pair_script")/.." rev-parse HEAD > "$screen_root/source-commit.txt"
 fi
 
@@ -81,6 +82,12 @@ expected_binary=$(cut -d' ' -f1 "$screen_root/binary.sha256")
 actual_binary=$(sha256sum "$binary" | cut -d' ' -f1)
 if [[ $actual_binary != "$expected_binary" ]]; then
     echo "binary changed during resumable screen" >&2
+    exit 1
+fi
+expected_pair_script=$(cut -d' ' -f1 "$screen_root/pair-script.sha256")
+actual_pair_script=$(sha256sum "$pair_script" | cut -d' ' -f1)
+if [[ $actual_pair_script != "$expected_pair_script" ]]; then
+    echo "paired runner changed during resumable screen" >&2
     exit 1
 fi
 
@@ -101,4 +108,11 @@ if [[ $run_count -ne 192 ]]; then
     echo "expected 192 intervention directories, found $run_count" >&2
     exit 1
 fi
-printf 'complete\t192\n' > "$screen_root/COMPLETE"
+if [[ -f $screen_root/COMPLETE ]]; then
+    if [[ $(cat "$screen_root/COMPLETE") != $'complete\t192' ]]; then
+        echo "invalid completion marker: $screen_root/COMPLETE" >&2
+        exit 1
+    fi
+else
+    printf 'complete\t192\n' > "$screen_root/COMPLETE"
+fi
