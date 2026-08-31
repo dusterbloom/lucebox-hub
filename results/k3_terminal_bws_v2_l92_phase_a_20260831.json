@@ -1,0 +1,118 @@
+{
+  "schema": "kimi-k3-terminal-bws-v2-phase-a-v1",
+  "status": "MEASURED_RESEARCH_GO_HELD_OUT_VALIDATION_REQUIRED",
+  "question": "At equal Budget24 authoritative bytes, can direct slab-level terminal sensitivity reduce terminal KL relative to the existing local selector, and does the ranking make budgets below 24 more viable?",
+  "source": {
+    "base_commit": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "local_experiment_commit": "50fe4b96e19cce915d09436679d5b56203970623",
+    "lucebox4_experiment_commit": "9c052a4f3e589116a0683c6e5e8f0001cb4d56c6",
+    "dirty_tree_during_runs": false,
+    "executable_sha256": "bb37463b70b5f95913382afc4d072b1c09b78fb4aef5d8ec6af8e92b462dbd37"
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "os": "Linux 7.0.0-30-generic x86_64",
+    "accelerator": "Radeon 8060S gfx1151, 98304 MiB",
+    "device_contract": "HIP_VISIBLE_DEVICES=1, logical GPU 0",
+    "guard": "single-owner lucebox4_guard"
+  },
+  "model": {
+    "first_shard": "/home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-of-00014.gguf",
+    "first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "calibration_manifest_sha256": "1189c85743a1e5f41901f09b090ea3a4a567c2020bce53400e9ae5f039409f56",
+    "sidecar_manifest_sha256": "86216b66256f61bdcbe8d796dc2e9316e3dccdeba801ea296b2e779cf86394e9",
+    "representation_boundary": "The deployed KDA-hybrid GGUF and the natural sidecars have different source quantization identities. All-192 natural sidecar slabs are therefore the representation-matched routed teacher for this selector experiment; KL to the deployed native routed layer is a model-mismatch diagnostic, not selector damage."
+  },
+  "fixture": {
+    "raw_text": "According to all known laws",
+    "token_ids": [18805, 308, 799, 5624, 12524],
+    "active_routed_layer": 92,
+    "terminal_prompt_row_only": true,
+    "official_chat_template": false,
+    "teacher_top1_id": 11
+  },
+  "protocol": {
+    "teacher": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r23-paired-l92-b192/candidate-terminal.f32",
+    "teacher_sha256": "b94ba726c914b8860546b7eb96006e23bdf724eb36d4040be5d4cc65ade5a609",
+    "teacher_definition": "all 192 natural sidecar records at layer 92, with the exact frozen KDA-hybrid trajectory and suffix",
+    "baseline_definition": "existing calibrated local residual selector at Budget24",
+    "atomic_intervention": "drop one selected slab with equal-byte local replacement, or force one omitted slab with equal-byte eviction",
+    "selected_drop_count": 24,
+    "omitted_force_count": 168,
+    "omitted_candidates_improving_baseline": 22,
+    "omitted_candidates_worsening_baseline": 146,
+    "screen_artifact_globs": [
+      "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r24d-*",
+      "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r25f-*",
+      "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r31f-*"
+    ],
+    "integrity": "All 192 independent-screen directories contain SHA256SUMS and passed sha256sum -c on 2026-08-31. Exact trajectory/state output hashes closed in every intervention."
+  },
+  "rank_correlation": {
+    "population": "168 slabs omitted by the local Budget24 selector",
+    "local_calibration_score_vs_equal_byte_terminal_kl_recovery": {
+      "pearson": 0.2116699,
+      "spearman": 0.3047945
+    },
+    "interpretation": "The local score is only weakly related to terminal value on this discovery point."
+  },
+  "top_omitted_marginals": [
+    {"expert": 625, "slab": 0, "terminal_kl_recovered": 0.0054170, "local_rank": 44},
+    {"expert": 233, "slab": 1, "terminal_kl_recovered": 0.0052277, "local_rank": 91},
+    {"expert": 233, "slab": 2, "terminal_kl_recovered": 0.0042196, "local_rank": 97},
+    {"expert": 133, "slab": 1, "terminal_kl_recovered": 0.0033313, "local_rank": 26},
+    {"expert": 176, "slab": 5, "terminal_kl_recovered": 0.0022268, "local_rank": 14}
+  ],
+  "terminal_ranked_order_prefix_24": [
+    "369:5", "369:0", "625:0", "233:1", "233:2", "769:9", "769:8", "769:0",
+    "133:1", "769:2", "176:5", "850:1", "369:3", "514:0", "133:5", "133:9",
+    "514:11", "176:9", "586:11", "133:8", "369:2", "514:1", "369:11", "769:3"
+  ],
+  "measured_curves": [
+    {"budget": 8, "authoritative_bytes": 4759552, "local_kl": 0.13443630812768367, "terminal_ranked_kl": 0.09987969498832229, "relative_kl_reduction": 0.257048216, "terminal_ranked_top1": 11, "terminal_ranked_sha256": "0f5b3993b180fa8f70bf776583d13bb7fef9d96adf614c8567a6e3f2a7c38757"},
+    {"budget": 12, "authoritative_bytes": 7139328, "local_kl": 0.12947773715015112, "terminal_ranked_kl": 0.08294868145726678, "relative_kl_reduction": 0.359359506, "terminal_ranked_top1": 11, "terminal_ranked_sha256": "a441c1177c9944cf7fda07346593bef2ba0eea145018f5aff829fcb1545aba62"},
+    {"budget": 16, "authoritative_bytes": 9519104, "local_kl": 0.11631237683316338, "terminal_ranked_kl": 0.07251918189435654, "relative_kl_reduction": 0.376513628, "terminal_ranked_top1": 11, "terminal_ranked_sha256": "e844875359ba603a70964d2df1007fec794b41f64956c7a26bd36f7d3a125f8d"},
+    {"budget": 24, "authoritative_bytes": 14278656, "local_kl": 0.10275562614789198, "terminal_ranked_kl": 0.051154509200295135, "relative_kl_reduction": 0.502173155, "terminal_ranked_top1": 11, "terminal_ranked_sha256": "cb903735ce97864eb5e0bc92132c841bb30fb1660a8743643e53b850ab1c46d8"},
+    {"budget": 32, "authoritative_bytes": 19038208, "local_kl": 0.10690583131444414, "terminal_ranked_kl": 0.04028028453031066, "relative_kl_reduction": 0.623217143, "terminal_ranked_top1": 11, "terminal_ranked_sha256": "5769b065b1a12a8a4804c7a404c9aaa9c34ac6e25e61b6e2a819f53113daca40"}
+  ],
+  "controls": {
+    "local_budget96": {
+      "authoritative_bytes": 57114624,
+      "terminal_kl": 0.023041485885536953,
+      "top1": 11
+    },
+    "terminal_ranked_budget24_margin": {
+      "teacher_margin": 0.7999858856201172,
+      "candidate_teacher_margin": 0.6803312301635742
+    },
+    "terminal_ranked_budget24_leave_one_out": {
+      "count": 24,
+      "replacement": "next local selector record, E369:R1",
+      "best_replacement_kl": 0.05338614851985411,
+      "worst_replacement_kl": 0.06095190458761487,
+      "all_members_helpful": true,
+      "artifact_glob": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r38loo-*",
+      "integrity": "All 24 directories passed sha256sum -c."
+    }
+  },
+  "byte_accounting_boundary": {
+    "curve_bytes": "authoritative payload bytes for the single isolated layer's terminal provider call",
+    "not_full_model_bytes_per_token": true,
+    "frozen_full_model_budget24_reference_gib_per_position": 1.1427147388458252
+  },
+  "interpretation": {
+    "phase_a": "GO: at exactly equal Budget24 bytes, the direct terminal ranking halved isolated-layer terminal KL relative to the local selector. Budgets 8, 12, and 16 also improved materially and the measured terminal-ranked curve was monotonic.",
+    "falsified": [
+      "Local residual rank is a sufficient proxy for slab terminal value on this point.",
+      "Budget24 must remain the minimum registered representation for scientific testing.",
+      "More locally ranked slabs necessarily improve terminal KL; local Budget32 was worse than local Budget24."
+    ],
+    "not_established": [
+      "Cross-prompt, cross-layer, or model-wide selector generalization.",
+      "Official-template output quality, tool-call recovery, decode throughput, or full-model bytes per token.",
+      "A cheap predictor of terminal slab utility; this ranking used measured interventions on the discovery point.",
+      "Distributional equivalence to native K3."
+    ],
+    "next_gate": "Validate prediction/ranking on held-out high-, medium-, and low-sensitivity layers and prompts before further coordinate descent or runtime implementation."
+  }
+}

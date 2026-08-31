@@ -93,3 +93,52 @@ are quality-safe or terminal-ranked.
 `results/k3_terminal_bws_v2_lucebox4_scalar_20260831.json` is the immutable
 result summary; the raw F32 logits, plan TSV, traffic TSV, stdout/stderr and
 SHA256SUMS live under the absolute artifact roots named there.
+
+## Phase A discovery result: direct terminal slab value
+
+The paired probe was narrowed to the final prompt row and layer 92 while the
+rest of the model followed the exact frozen KDA-hybrid trajectory.  Because
+the deployed hybrid GGUF and the calibrated natural sidecars do not share a
+source quantization identity, all 192 natural sidecar slabs are the
+representation-matched routed teacher for this selector test.  The measured
+native-to-sidecar difference is not charged to the selector.
+
+Every one of the 192 layer-92 candidates was screened at equal Budget24 bytes:
+24 selected records by drop-and-replacement and 168 omitted records by
+force-and-eviction.  Only 22 of the omitted records improved the local
+Budget24 baseline; 146 made it worse.  The existing local calibration score
+was a weak terminal-value proxy (Pearson `0.212`, Spearman `0.305`).  A locally
+attractive omitted record, E769:R11, was terminal rank 166 and increased KL.
+
+The terminal-marginal ranking produced a direct, exactly equal-byte Budget24
+measurement:
+
+| selector | isolated layer bytes | terminal KL | top ID |
+|---|---:|---:|---:|
+| local Budget24 | 14,278,656 | 0.102755626 | 11 |
+| terminal-ranked Budget24 | 14,278,656 | **0.051154509** | 11 |
+
+This is a measured `50.22%` reduction, not a projection.  The terminal-ranked
+curve was also monotonic from Budget8 through Budget32 and beat the local
+selector at every equal-byte point by `25.70%`, `35.94%`, `37.65%`, `50.22%`,
+and `62.32%`, respectively.  A conditional leave-one-out check around the new
+Budget24 set found all 24 members useful relative to the next local-selector
+replacement.
+
+This earns a **research GO** for direct terminal sensitivity and falsifies the
+claim that local residual rank is sufficient.  It does not establish a cheap
+selector, cross-layer or cross-prompt generalization, official-template
+quality, tool recovery, model-wide bytes/token, or throughput.  The bytes in
+the table are for one isolated layer provider call; they must not be reported
+as full-model bytes/token.
+
+Following the TIPPS decision rule, further coordinate descent on the same
+layer/prompt is deferred: an expert would reject it as discovery-set
+overfitting.  The next gate is held-out replication on H22-selected early,
+middle and late high/medium/tolerant layers, followed by the known tool-name
+boundary.  The explicit trade-off is leaving possible layer-92 KL gains
+unclaimed in exchange for external validity.
+
+The immutable summary is
+`results/k3_terminal_bws_v2_l92_phase_a_20260831.json`; all raw run directories
+retain command/environment captures and checksum manifests on Lucebox4.
