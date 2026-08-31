@@ -1,0 +1,36 @@
+{
+  "schema": "kimi-k3-terminal-bws-v2-adversarial-review-v1",
+  "status": "REVIEWED_MODIFY",
+  "date": "2026-09-01",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "commit_before_review": "afe57d6a540ba6ba09f3395f7be63348d111c0c3",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "literature_sweep_sha256_before_review": "91248ba5929ad9135425a3ba6e0b080bf4ee043a30cee3e8d592993b6e99f7d2"
+  },
+  "reviewer": {
+    "tool": "OpenCode 1.18.25",
+    "provider": "zai-coding-plan",
+    "model": "glm-5.3-flash",
+    "session": "ses_fa6051828ffeYAEJ6Ptf4g93p2",
+    "prompt_sha256": "2d24a7f8237b795704210fbc6dcea20301abf19839ab16f0fc51c6234404a347",
+    "repository_changes": 0
+  },
+  "verdict": "MODIFY",
+  "accepted_objections": [
+    "Exact margin ranking requires the omitted slab bytes and is not a pre-read runtime selector.",
+    "Layer 92 has a tractable but nonlinear tail: routed RMS/up, hidden-dependent AttnRes softmax, final RMS, and vocabulary projection.",
+    "Same-screen margin ranking is label-derived mechanistic evidence and cannot validate a selector.",
+    "Full-vocabulary KL alone is insufficient at a structured-token boundary; margin alone is also insufficient and can hide broader distribution damage.",
+    "Existing KL-ranked group measurements do not replace the four newly frozen margin-ranked compositions."
+  ],
+  "modified_protocol": {
+    "teacher_margin_floor": 0.001,
+    "teacher_margin_measured": 0.09240913391113281,
+    "planned_group_runs": 4,
+    "hard_cap_including_invalid_repeats": 6,
+    "first_stop": "If no equal-B24 margin-ranked group recovers teacher top1 or makes teacher-versus-contender margin positive, stop static B24 selection work at layer 92 and move to complement or progressive rescue.",
+    "gate_b": "Only after Gate A passes, build a captured nonlinear-tail discriminator. It must rank before unranked authoritative bytes are read and must beat local held-out correlation without refitting."
+  },
+  "production": "No promotion. Any later passing primitive must be narrowly reimplemented and requalified on perf/k3-production-ponytail."
+}

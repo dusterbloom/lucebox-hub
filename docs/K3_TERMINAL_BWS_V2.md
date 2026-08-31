@@ -5,7 +5,7 @@
 The experiment branch is `experiment/k3-terminal-kl-bws-v2` at
 `fac048c090c74e5f8f989bffcda3aadc0bc8c266`, created from the clean commit
 instead of the dirty production worktree.  The research-only reference is
-`perf/k3-layer-major-prefill` at `102cf35ab2d86dc37e63faeece180267b2e6`;
+`perf/k3-layer-major-prefill` at `102cf35ab2d86dc37e63faeece180267b2e9b2e6`;
 its terminal-state adoption parent is `04ce074a17f37285b9de0e7169b1ee307f9f1000`.
 
 The imported evidence objects are immutable Git blobs:

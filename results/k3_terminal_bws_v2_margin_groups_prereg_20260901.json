@@ -1,0 +1,551 @@
+{
+  "schema": "kimi-k3-terminal-margin-group-prereg-v1",
+  "status": "PREREGISTERED_MECHANISTIC_ORACLE_ONLY",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "commit_before_preregistration": "afe57d6a540ba6ba09f3395f7be63348d111c0c3",
+    "screen_analysis_path": "/tmp/k3-heldout-code-l92-screen-analysis.json",
+    "screen_analysis_sha256": "d92b8dbac7e73b7d04e7354dae3d3aa9d0a35092ee09df0399295bff380684d4",
+    "screen_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r45e-screen-code-l92-capacity-guarded",
+    "teacher_logits_sha256": "58c727e97e909a60750e71c35d125ffcf62126fd9bd61059e47dc3fd67169dc2",
+    "baseline_logits_sha256": "c9844d265ac575adc665967dcd95087f08749850f8774593c196e6f1fc4414ec",
+    "exact_trajectory_sha256": "54f50d7c3f93f94512367ede8bdb2e542a96aa61ecd0ac0ee52d155b77e82df2"
+  },
+  "teacher_precondition": {
+    "teacher_top1": 646,
+    "teacher_top1_margin": 0.09240913391113281,
+    "minimum_margin": 0.001,
+    "passed": true
+  },
+  "baseline": {
+    "budget": 24,
+    "candidate_top1": 17763,
+    "candidate_teacher_margin": -0.5753650665283203,
+    "terminal_kl": 0.10629908537256239
+  },
+  "ranking": {
+    "definition": "descending isolated recovery of teacher-top1 versus the candidate's strongest contender margin",
+    "eligible_force_arms": 168,
+    "positive_margin_force_arms": 112,
+    "tie_break": "expert ascending, ordered rank ascending",
+    "labels_used": true
+  },
+  "groups": [
+    {
+      "name": "top2m",
+      "member_count": 2,
+      "targets": [
+        "92:434:1",
+        "92:659:0"
+      ],
+      "force_environment_value": "92:434:1,92:659:0",
+      "members": [
+        {
+          "layer": 92,
+          "route": 9,
+          "expert": 434,
+          "ordered_rank": 1,
+          "natural_slab": 3,
+          "delta_teacher_margin": 0.06897926330566406,
+          "candidate_teacher_margin": -0.5063858032226562,
+          "independent_terminal_kl_recovered": 0.005239038153256381,
+          "target": "92:434:1"
+        },
+        {
+          "layer": 92,
+          "route": 11,
+          "expert": 659,
+          "ordered_rank": 0,
+          "natural_slab": 0,
+          "delta_teacher_margin": 0.06566810607910156,
+          "candidate_teacher_margin": -0.5096969604492188,
+          "independent_terminal_kl_recovered": 0.004813200179707891,
+          "target": "92:659:0"
+        }
+      ],
+      "projected_independent_delta_teacher_margin": 0.13464736938476562,
+      "projected_independent_terminal_kl_recovered": 0.010052238332964272,
+      "projection_warning": "Independent sums are diagnostics only; interactions are measured by the group run and are not assumed additive."
+    },
+    {
+      "name": "top4m",
+      "member_count": 4,
+      "targets": [
+        "92:434:1",
+        "92:659:0",
+        "92:6:1",
+        "92:26:9"
+      ],
+      "force_environment_value": "92:434:1,92:659:0,92:6:1,92:26:9",
+      "members": [
+        {
+          "layer": 92,
+          "route": 9,
+          "expert": 434,
+          "ordered_rank": 1,
+          "natural_slab": 3,
+          "delta_teacher_margin": 0.06897926330566406,
+          "candidate_teacher_margin": -0.5063858032226562,
+          "independent_terminal_kl_recovered": 0.005239038153256381,
+          "target": "92:434:1"
+        },
+        {
+          "layer": 92,
+          "route": 11,
+          "expert": 659,
+          "ordered_rank": 0,
+          "natural_slab": 0,
+          "delta_teacher_margin": 0.06566810607910156,
+          "candidate_teacher_margin": -0.5096969604492188,
+          "independent_terminal_kl_recovered": 0.004813200179707891,
+          "target": "92:659:0"
+        },
+        {
+          "layer": 92,
+          "route": 2,
+          "expert": 6,
+          "ordered_rank": 1,
+          "natural_slab": 7,
+          "delta_teacher_margin": 0.06311225891113281,
+          "candidate_teacher_margin": -0.5122528076171875,
+          "independent_terminal_kl_recovered": 0.0102988696388151,
+          "target": "92:6:1"
+        },
+        {
+          "layer": 92,
+          "route": 1,
+          "expert": 26,
+          "ordered_rank": 9,
+          "natural_slab": 7,
+          "delta_teacher_margin": 0.04738807678222656,
+          "candidate_teacher_margin": -0.5279769897460938,
+          "independent_terminal_kl_recovered": 0.005886392210057698,
+          "target": "92:26:9"
+        }
+      ],
+      "projected_independent_delta_teacher_margin": 0.245147705078125,
+      "projected_independent_terminal_kl_recovered": 0.02623750018183707,
+      "projection_warning": "Independent sums are diagnostics only; interactions are measured by the group run and are not assumed additive."
+    },
+    {
+      "name": "top8m",
+      "member_count": 8,
+      "targets": [
+        "92:434:1",
+        "92:659:0",
+        "92:6:1",
+        "92:26:9",
+        "92:102:2",
+        "92:187:8",
+        "92:24:1",
+        "92:6:6"
+      ],
+      "force_environment_value": "92:434:1,92:659:0,92:6:1,92:26:9,92:102:2,92:187:8,92:24:1,92:6:6",
+      "members": [
+        {
+          "layer": 92,
+          "route": 9,
+          "expert": 434,
+          "ordered_rank": 1,
+          "natural_slab": 3,
+          "delta_teacher_margin": 0.06897926330566406,
+          "candidate_teacher_margin": -0.5063858032226562,
+          "independent_terminal_kl_recovered": 0.005239038153256381,
+          "target": "92:434:1"
+        },
+        {
+          "layer": 92,
+          "route": 11,
+          "expert": 659,
+          "ordered_rank": 0,
+          "natural_slab": 0,
+          "delta_teacher_margin": 0.06566810607910156,
+          "candidate_teacher_margin": -0.5096969604492188,
+          "independent_terminal_kl_recovered": 0.004813200179707891,
+          "target": "92:659:0"
+        },
+        {
+          "layer": 92,
+          "route": 2,
+          "expert": 6,
+          "ordered_rank": 1,
+          "natural_slab": 7,
+          "delta_teacher_margin": 0.06311225891113281,
+          "candidate_teacher_margin": -0.5122528076171875,
+          "independent_terminal_kl_recovered": 0.0102988696388151,
+          "target": "92:6:1"
+        },
+        {
+          "layer": 92,
+          "route": 1,
+          "expert": 26,
+          "ordered_rank": 9,
+          "natural_slab": 7,
+          "delta_teacher_margin": 0.04738807678222656,
+          "candidate_teacher_margin": -0.5279769897460938,
+          "independent_terminal_kl_recovered": 0.005886392210057698,
+          "target": "92:26:9"
+        },
+        {
+          "layer": 92,
+          "route": 14,
+          "expert": 102,
+          "ordered_rank": 2,
+          "natural_slab": 9,
+          "delta_teacher_margin": 0.047031402587890625,
+          "candidate_teacher_margin": -0.5283336639404297,
+          "independent_terminal_kl_recovered": 0.0014869344113487698,
+          "target": "92:102:2"
+        },
+        {
+          "layer": 92,
+          "route": 4,
+          "expert": 187,
+          "ordered_rank": 8,
+          "natural_slab": 2,
+          "delta_teacher_margin": 0.04464149475097656,
+          "candidate_teacher_margin": -0.5307235717773438,
+          "independent_terminal_kl_recovered": 0.006627871561870224,
+          "target": "92:187:8"
+        },
+        {
+          "layer": 92,
+          "route": 10,
+          "expert": 24,
+          "ordered_rank": 1,
+          "natural_slab": 10,
+          "delta_teacher_margin": 0.035839080810546875,
+          "candidate_teacher_margin": -0.5395259857177734,
+          "independent_terminal_kl_recovered": 0.0012330464837201904,
+          "target": "92:24:1"
+        },
+        {
+          "layer": 92,
+          "route": 2,
+          "expert": 6,
+          "ordered_rank": 6,
+          "natural_slab": 8,
+          "delta_teacher_margin": 0.03572559356689453,
+          "candidate_teacher_margin": -0.5396394729614258,
+          "independent_terminal_kl_recovered": 0.007034496426609624,
+          "target": "92:6:6"
+        }
+      ],
+      "projected_independent_delta_teacher_margin": 0.4083852767944336,
+      "projected_independent_terminal_kl_recovered": 0.04261984906538588,
+      "projection_warning": "Independent sums are diagnostics only; interactions are measured by the group run and are not assumed additive."
+    },
+    {
+      "name": "positive_margin_crossover24",
+      "member_count": 24,
+      "targets": [
+        "92:434:1",
+        "92:659:0",
+        "92:6:1",
+        "92:26:9",
+        "92:102:2",
+        "92:187:8",
+        "92:24:1",
+        "92:6:6",
+        "92:26:11",
+        "92:434:10",
+        "92:61:7",
+        "92:187:7",
+        "92:750:11",
+        "92:750:6",
+        "92:6:9",
+        "92:102:6",
+        "92:750:1",
+        "92:187:4",
+        "92:268:0",
+        "92:102:11",
+        "92:710:0",
+        "92:61:9",
+        "92:102:3",
+        "92:268:9"
+      ],
+      "force_environment_value": "92:434:1,92:659:0,92:6:1,92:26:9,92:102:2,92:187:8,92:24:1,92:6:6,92:26:11,92:434:10,92:61:7,92:187:7,92:750:11,92:750:6,92:6:9,92:102:6,92:750:1,92:187:4,92:268:0,92:102:11,92:710:0,92:61:9,92:102:3,92:268:9",
+      "members": [
+        {
+          "layer": 92,
+          "route": 9,
+          "expert": 434,
+          "ordered_rank": 1,
+          "natural_slab": 3,
+          "delta_teacher_margin": 0.06897926330566406,
+          "candidate_teacher_margin": -0.5063858032226562,
+          "independent_terminal_kl_recovered": 0.005239038153256381,
+          "target": "92:434:1"
+        },
+        {
+          "layer": 92,
+          "route": 11,
+          "expert": 659,
+          "ordered_rank": 0,
+          "natural_slab": 0,
+          "delta_teacher_margin": 0.06566810607910156,
+          "candidate_teacher_margin": -0.5096969604492188,
+          "independent_terminal_kl_recovered": 0.004813200179707891,
+          "target": "92:659:0"
+        },
+        {
+          "layer": 92,
+          "route": 2,
+          "expert": 6,
+          "ordered_rank": 1,
+          "natural_slab": 7,
+          "delta_teacher_margin": 0.06311225891113281,
+          "candidate_teacher_margin": -0.5122528076171875,
+          "independent_terminal_kl_recovered": 0.0102988696388151,
+          "target": "92:6:1"
+        },
+        {
+          "layer": 92,
+          "route": 1,
+          "expert": 26,
+          "ordered_rank": 9,
+          "natural_slab": 7,
+          "delta_teacher_margin": 0.04738807678222656,
+          "candidate_teacher_margin": -0.5279769897460938,
+          "independent_terminal_kl_recovered": 0.005886392210057698,
+          "target": "92:26:9"
+        },
+        {
+          "layer": 92,
+          "route": 14,
+          "expert": 102,
+          "ordered_rank": 2,
+          "natural_slab": 9,
+          "delta_teacher_margin": 0.047031402587890625,
+          "candidate_teacher_margin": -0.5283336639404297,
+          "independent_terminal_kl_recovered": 0.0014869344113487698,
+          "target": "92:102:2"
+        },
+        {
+          "layer": 92,
+          "route": 4,
+          "expert": 187,
+          "ordered_rank": 8,
+          "natural_slab": 2,
+          "delta_teacher_margin": 0.04464149475097656,
+          "candidate_teacher_margin": -0.5307235717773438,
+          "independent_terminal_kl_recovered": 0.006627871561870224,
+          "target": "92:187:8"
+        },
+        {
+          "layer": 92,
+          "route": 10,
+          "expert": 24,
+          "ordered_rank": 1,
+          "natural_slab": 10,
+          "delta_teacher_margin": 0.035839080810546875,
+          "candidate_teacher_margin": -0.5395259857177734,
+          "independent_terminal_kl_recovered": 0.0012330464837201904,
+          "target": "92:24:1"
+        },
+        {
+          "layer": 92,
+          "route": 2,
+          "expert": 6,
+          "ordered_rank": 6,
+          "natural_slab": 8,
+          "delta_teacher_margin": 0.03572559356689453,
+          "candidate_teacher_margin": -0.5396394729614258,
+          "independent_terminal_kl_recovered": 0.007034496426609624,
+          "target": "92:6:6"
+        },
+        {
+          "layer": 92,
+          "route": 1,
+          "expert": 26,
+          "ordered_rank": 11,
+          "natural_slab": 11,
+          "delta_teacher_margin": 0.035434722900390625,
+          "candidate_teacher_margin": -0.5399303436279297,
+          "independent_terminal_kl_recovered": 0.002119709900117339,
+          "target": "92:26:11"
+        },
+        {
+          "layer": 92,
+          "route": 9,
+          "expert": 434,
+          "ordered_rank": 10,
+          "natural_slab": 6,
+          "delta_teacher_margin": 0.03490638732910156,
+          "candidate_teacher_margin": -0.5404586791992188,
+          "independent_terminal_kl_recovered": 0.0024777179864683557,
+          "target": "92:434:10"
+        },
+        {
+          "layer": 92,
+          "route": 7,
+          "expert": 61,
+          "ordered_rank": 7,
+          "natural_slab": 9,
+          "delta_teacher_margin": 0.033926963806152344,
+          "candidate_teacher_margin": -0.541438102722168,
+          "independent_terminal_kl_recovered": 0.00042091588995427087,
+          "target": "92:61:7"
+        },
+        {
+          "layer": 92,
+          "route": 4,
+          "expert": 187,
+          "ordered_rank": 7,
+          "natural_slab": 1,
+          "delta_teacher_margin": 0.03286933898925781,
+          "candidate_teacher_margin": -0.5424957275390625,
+          "independent_terminal_kl_recovered": -0.0003380815652165581,
+          "target": "92:187:7"
+        },
+        {
+          "layer": 92,
+          "route": 3,
+          "expert": 750,
+          "ordered_rank": 11,
+          "natural_slab": 0,
+          "delta_teacher_margin": 0.031002044677734375,
+          "candidate_teacher_margin": -0.5443630218505859,
+          "independent_terminal_kl_recovered": -0.000457199294112004,
+          "target": "92:750:11"
+        },
+        {
+          "layer": 92,
+          "route": 3,
+          "expert": 750,
+          "ordered_rank": 6,
+          "natural_slab": 3,
+          "delta_teacher_margin": 0.030858993530273438,
+          "candidate_teacher_margin": -0.5445060729980469,
+          "independent_terminal_kl_recovered": -0.0013947927489624395,
+          "target": "92:750:6"
+        },
+        {
+          "layer": 92,
+          "route": 2,
+          "expert": 6,
+          "ordered_rank": 9,
+          "natural_slab": 5,
+          "delta_teacher_margin": 0.030582427978515625,
+          "candidate_teacher_margin": -0.5447826385498047,
+          "independent_terminal_kl_recovered": 0.0010933272084223816,
+          "target": "92:6:9"
+        },
+        {
+          "layer": 92,
+          "route": 14,
+          "expert": 102,
+          "ordered_rank": 6,
+          "natural_slab": 8,
+          "delta_teacher_margin": 0.029703140258789062,
+          "candidate_teacher_margin": -0.5456619262695312,
+          "independent_terminal_kl_recovered": -0.0009281005674283416,
+          "target": "92:102:6"
+        },
+        {
+          "layer": 92,
+          "route": 3,
+          "expert": 750,
+          "ordered_rank": 1,
+          "natural_slab": 7,
+          "delta_teacher_margin": 0.028604507446289062,
+          "candidate_teacher_margin": -0.5467605590820312,
+          "independent_terminal_kl_recovered": -0.0009600183720375327,
+          "target": "92:750:1"
+        },
+        {
+          "layer": 92,
+          "route": 4,
+          "expert": 187,
+          "ordered_rank": 4,
+          "natural_slab": 0,
+          "delta_teacher_margin": 0.027657508850097656,
+          "candidate_teacher_margin": -0.5477075576782227,
+          "independent_terminal_kl_recovered": -0.00035669787215548976,
+          "target": "92:187:4"
+        },
+        {
+          "layer": 92,
+          "route": 15,
+          "expert": 268,
+          "ordered_rank": 0,
+          "natural_slab": 0,
+          "delta_teacher_margin": 0.02733135223388672,
+          "candidate_teacher_margin": -0.5480337142944336,
+          "independent_terminal_kl_recovered": 0.0007146414227755526,
+          "target": "92:268:0"
+        },
+        {
+          "layer": 92,
+          "route": 14,
+          "expert": 102,
+          "ordered_rank": 11,
+          "natural_slab": 1,
+          "delta_teacher_margin": 0.0266876220703125,
+          "candidate_teacher_margin": -0.5486774444580078,
+          "independent_terminal_kl_recovered": 0.00022874869457582825,
+          "target": "92:102:11"
+        },
+        {
+          "layer": 92,
+          "route": 5,
+          "expert": 710,
+          "ordered_rank": 0,
+          "natural_slab": 10,
+          "delta_teacher_margin": 0.026597023010253906,
+          "candidate_teacher_margin": -0.5487680435180664,
+          "independent_terminal_kl_recovered": 0.0023053579889065062,
+          "target": "92:710:0"
+        },
+        {
+          "layer": 92,
+          "route": 7,
+          "expert": 61,
+          "ordered_rank": 9,
+          "natural_slab": 5,
+          "delta_teacher_margin": 0.02658367156982422,
+          "candidate_teacher_margin": -0.5487813949584961,
+          "independent_terminal_kl_recovered": 0.0007741835952677217,
+          "target": "92:61:9"
+        },
+        {
+          "layer": 92,
+          "route": 14,
+          "expert": 102,
+          "ordered_rank": 3,
+          "natural_slab": 5,
+          "delta_teacher_margin": 0.025460243225097656,
+          "candidate_teacher_margin": -0.5499048233032227,
+          "independent_terminal_kl_recovered": 0.0035567024223858434,
+          "target": "92:102:3"
+        },
+        {
+          "layer": 92,
+          "route": 15,
+          "expert": 268,
+          "ordered_rank": 9,
+          "natural_slab": 1,
+          "delta_teacher_margin": 0.023805618286132812,
+          "candidate_teacher_margin": -0.5515594482421875,
+          "independent_terminal_kl_recovered": -0.00038084148521111416,
+          "target": "92:268:9"
+        }
+      ],
+      "projected_independent_delta_teacher_margin": 0.880396842956543,
+      "projected_independent_terminal_kl_recovered": 0.0514954222691362,
+      "projection_warning": "Independent sums are diagnostics only; interactions are measured by the group run and are not assumed additive."
+    }
+  ],
+  "execution_gate": {
+    "intended_new_full_model_runs": 4,
+    "hard_cap": 6,
+    "contingency_runs": "Only invalid/capacity-contended repeats; no alternative composition may be selected after observing group results.",
+    "pass": "At least one exact equal-B24 group recovers teacher top1 or makes the teacher-versus-contender margin positive.",
+    "first_stop": "If none passes, stop static B24 selection work at layer 92 and move to offline low-bit complement or progressive rescue."
+  },
+  "scope": [
+    "Held-out labels were used; this can test representation capacity but is not a selector.",
+    "All bytes and interventions are for isolated layer 92 on one frozen terminal row.",
+    "No group result can be promoted to production or called validation."
+  ]
+}
