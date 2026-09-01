@@ -415,6 +415,20 @@ int main() {
         "-1:96", position_budgets, &error));
     assert(!error.empty());
 
+    int route_limit = 0;
+    error.clear();
+    assert(parse_kimi_k3_route_limit(nullptr, route_limit, &error));
+    assert(route_limit == 16);
+    for (const int expected : {4, 6, 8, 12, 16}) {
+        error.clear();
+        assert(parse_kimi_k3_route_limit(
+            std::to_string(expected).c_str(), route_limit, &error));
+        assert(route_limit == expected);
+    }
+    error.clear();
+    assert(!parse_kimi_k3_route_limit("10", route_limit, &error));
+    assert(!error.empty());
+
     set_env("DFLASH_KIMI_LAYER1_PROVIDER", "exact");
     set_env("DFLASH_KIMI_P42_ORDERED_DEVICE_JOIN", "0");
     set_env("DFLASH_KIMI_P45_ASYNC_COMPACT_QUEUE", "0");

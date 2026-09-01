@@ -48,6 +48,13 @@ int kimi_k3_effective_position_slab_budget(
     const std::vector<KimiK3PositionBudget> & overrides,
     int base_pos);
 
+// Research-only router-prefix screen. Unset means native top-16; only the
+// preregistered exact route counts are accepted.
+bool parse_kimi_k3_route_limit(
+    const char * raw,
+    int & route_limit,
+    std::string * error = nullptr);
+
 struct KimiK3CalibratedSlabPlan {
     int requested_budget = 0;
     std::vector<int32_t> selected_slab_ids;

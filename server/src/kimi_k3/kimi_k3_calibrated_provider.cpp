@@ -3625,8 +3625,16 @@ public:
                 "DFLASH_KIMI_EXPERIMENT_SLAB_DROP", terminal_drop_, err) ||
             !parse_kimi_k3_position_budgets(
                 std::getenv("DFLASH_KIMI_EXPERIMENT_POSITION_BUDGETS"),
-                position_budgets_, err)) {
+                position_budgets_, err) ||
+            !parse_kimi_k3_route_limit(
+                std::getenv("DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT"),
+                route_limit_, err)) {
             return false;
+        }
+        if (route_limit_ != kNativeTopK) {
+            std::fprintf(stderr,
+                "[kimi-k3-route-limit] top-routes=%d weights=unchanged\n",
+                route_limit_);
         }
         for (const auto & force : terminal_force_) {
             for (const auto & drop : terminal_drop_) {
@@ -4103,7 +4111,7 @@ public:
             return false;
         }
         if (!sidecar_authoritative_ || io_trace_.is_open() ||
-            p40_trace_.is_open()) {
+            p40_trace_.is_open() || route_limit_ != kNativeTopK) {
             return false;
         }
         const int budget = budget_for_layer(kFirstRoutedLayer);
@@ -6572,12 +6580,12 @@ private:
             const KimiK3CalibratedSlabPlan plan =
                 plan_kimi_k3_calibrated_slabs(
                     routes.selected_ids + route_offset,
-                    routes.selected_weights + route_offset, kNativeTopK,
+                    routes.selected_weights + route_offset, route_limit_,
                     state.importance.data(), effective_calibrated.data(),
                     kExpertCount, kSlabCount, layer_budget);
             std::vector<int> calibrated_routes;
             std::vector<int> fallback_routes;
-            for (int route = 0; route < kNativeTopK; ++route) {
+            for (int route = 0; route < route_limit_; ++route) {
                 const int expert = routes.selected_ids[route_offset + route];
                 if (expert < 0 || expert >= kExpertCount) {
                     close_fd(aux_fd); close_fd(sidecar_fd);
@@ -7377,6 +7385,7 @@ private:
     std::vector<int32_t> layer_budgets_;
     std::string layer_budget_path_;
     std::vector<KimiK3PositionBudget> position_budgets_;
+    int route_limit_ = kNativeTopK;
     uint64_t reference_full_weight_h2d_bytes_ = 0;
     uint64_t authoritative_h2d_bytes_ = 0;
     uint64_t metadata_h2d_bytes_ = 0;
@@ -7454,6 +7463,25 @@ int kimi_k3_effective_position_slab_budget(
         }
     }
     return result;
+}
+
+bool parse_kimi_k3_route_limit(
+        const char * raw, int & route_limit, std::string * err) {
+    route_limit = 16;
+    if (!raw || !*raw) return true;
+    char * end = nullptr;
+    const long parsed = std::strtol(raw, &end, 10);
+    const bool allowed = parsed == 4 || parsed == 6 || parsed == 8 ||
+        parsed == 12 || parsed == 16;
+    if (end == raw || *end != '\0' || !allowed) {
+        if (err) {
+            *err = "DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT must be one of "
+                "4,6,8,12,16";
+        }
+        return false;
+    }
+    route_limit = static_cast<int>(parsed);
+    return true;
 }
 
 #if defined(DFLASH_KIMI_P45_ASYNC_TEST_HOOK)
