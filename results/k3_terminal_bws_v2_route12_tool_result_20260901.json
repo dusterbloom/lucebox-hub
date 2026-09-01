@@ -1,0 +1,161 @@
+{
+  "schema": "kimi-k3-route12-tool-result-v1",
+  "status": "MEASURED_ROUTE12_TOOL_GO",
+  "preregistration_sha256": "33e8ea2bc297a7e217bf1c8b4c58eea4361eb3e488bbd7f81581ae4af6e949ec",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "28a304fe",
+    "implementation_commit": "4bb8bd38",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+    "measured_commit": "fa03c0821ed7ae27283c0bc68d5b8e5607552668"
+  },
+  "route12": {
+    "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r92-route12-schema-tool",
+    "source_commit": "fa03c0821ed7ae27283c0bc68d5b8e5607552668",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+    "manifest_sha256": "137c04579103c7c92486f886de4ff4c5a780629abea4e0924e7f632844ba5d6b",
+    "environment": {
+      "DFLASH_KIMI_EXPERIMENT_TOOL_SCHEMA_RESCUE": "1",
+      "DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT": "12",
+      "DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24": "1",
+      "DFLASH_KIMI_H22_LAYER_BUDGETS": "fixtures/k3_uniform_budget20.txt"
+    },
+    "prompt_count": 147,
+    "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+    "generated_ids": [
+      163588,
+      12092,
+      163589,
+      163587,
+      25385,
+      163589,
+      163587,
+      10257,
+      4453,
+      878,
+      618,
+      21055,
+      2800,
+      1,
+      4002,
+      878,
+      16,
+      1,
+      163589,
+      163587,
+      47185,
+      2355,
+      878,
+      5791,
+      1,
+      1798,
+      878,
+      2033,
+      1,
+      163589,
+      37190,
+      21774,
+      163588,
+      47185,
+      163589,
+      163588,
+      10257,
+      163589,
+      163588,
+      25385,
+      163589,
+      163588,
+      2778,
+      163589,
+      163586
+    ],
+    "response": {
+      "finish_reason": "tool_calls",
+      "content": "",
+      "usage": {
+        "accept_rate": 0.0,
+        "completion_tokens": 45,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 147,
+        "spec_decode_ran": false,
+        "timings": {
+          "agent_turn_cache_hit": false,
+          "cache_hit": false,
+          "cached_prefix_tokens": 0,
+          "decode_ms": 31113.8,
+          "decode_tokens_per_sec": 1.4,
+          "effective_prompt_tokens": 147,
+          "prefill_ms": 96864.0,
+          "prefilled_tokens": 147
+        },
+        "total_tokens": 192
+      }
+    },
+    "schema_prefix_configurations": 1,
+    "schema_rescue_markers": [
+      [
+        158,
+        96
+      ]
+    ],
+    "static_position_markers": 0,
+    "request_wide_b96_markers": 0,
+    "logits_sha256": "07e906c41191a611b16fd6cdf4d6a2c2f042944e2f5a378159dbcb3e3451cd09",
+    "traffic_sha256": "143a23e683305f6d1a383b523813efc03827e186c0b9ff32b27af59c3f955ef5",
+    "traffic": {
+      "requested_nominal_slabs": 358432,
+      "selected_slab_records": 358432,
+      "selected_sidecar_bytes": 197608112128,
+      "exact_fallback_bytes": 29927804928,
+      "total_provider_bytes": 227535917056,
+      "provider_positions": 191,
+      "logical_bytes_per_position": 1191287523.853403,
+      "logical_gib_per_position": 1.1094729638224496,
+      "fallback_gib_per_position": 0.1459290070059412,
+      "explicit_provider_reads": 80536076288,
+      "direct_physical_bytes": 80536076288,
+      "direct_io_ns": 52940997491
+    },
+    "route_limit_markers": [
+      12
+    ],
+    "tool_call_valid": true,
+    "tool_call": {
+      "finish_reason": "tool_calls",
+      "tool_calls": 1,
+      "tool_name": "get_weather",
+      "arguments": {
+        "location": "San Francisco"
+      }
+    },
+    "physical_gib_per_position": 0.3926966801987893
+  },
+  "comparison": {
+    "budget24_generated_ids_equal": true,
+    "budget24_final_logits_equal": false,
+    "logical_gib_per_position": {
+      "invalid_budget20_route16": 1.132539173555092,
+      "valid_route12": 1.1094729638224496,
+      "valid_budget24": 1.3599310270778795
+    },
+    "physical_gib_per_position": {
+      "valid_route12": 0.3926966801987893,
+      "valid_budget24": 0.47833679358996645
+    }
+  },
+  "gate": {
+    "passed": true,
+    "tool_valid": true,
+    "logical_below_1_2_gib": true,
+    "decision": "Freeze route12 and validate held-out native-success quality plus additional tool-declared controls."
+  },
+  "limitations": [
+    "This behavioral follow-up reuses the route-discovery fixture and cannot establish generalization.",
+    "Terminal full-vocabulary KL versus native exact is not captured for the generated sequence.",
+    "Cold token-sequential timing is not serving throughput."
+  ]
+}

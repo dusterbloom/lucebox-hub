@@ -469,3 +469,34 @@ promotion.
 The immutable summary is
 `results/k3_terminal_bws_v2_route_prefix_result_20260901.json`; raw route16
 closure r86, route arms r87--r90 and analysis r91 remain on Lucebox4.
+
+## Route12 full-tool validation
+
+Because route12 restored the discovery fixture's first token while materially
+improving KL and bytes, a separate preregistration tested it across the full
+tool sequence with the already-validated declared-name schema rescue.  The
+formal route-screen NO-GO label was retained.
+
+Route12 returned exactly one valid `get_weather` call for San Francisco.  The
+schema rescue fired once at base position 158, and all **45 generated IDs were
+identical** to the valid Budget24-plus-schema control.  Final logits were not
+byte-identical, so token equality is not reported as distributional
+equivalence.
+
+Average traffic was **1.10947 logical / 0.39270 physical
+GiB/provider-position**, versus 1.35993 / 0.47834 for the valid Budget24
+control.  Selected sidecar plus fallback traffic totaled 227,535,917,056
+bytes over 191 positions.  The cold run reported 96.864 s prefill and 31.114 s
+for 45 decode tokens (~1.4 tok/s); this is an improvement over the cold
+Budget24 control but remains neither the 10 tok/s target nor a serving
+throughput measurement.
+
+This is a measured **route12 tool GO** and the first sub-1.2 policy in this
+campaign to preserve the known full tool sequence.  It earns held-out
+native-success coding/reasoning/multilingual/extraction tests plus additional
+tool-declared controls.  It does not earn a production transplant from one
+discovery fixture.
+
+The immutable summary is
+`results/k3_terminal_bws_v2_route12_tool_result_20260901.json`; raw arm r92
+and analysis r93 remain on Lucebox4.
