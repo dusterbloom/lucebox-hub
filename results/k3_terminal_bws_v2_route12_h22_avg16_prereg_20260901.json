@@ -1,0 +1,93 @@
+{
+  "schema": "kimi-k3-route12-h22-avg16-prereg-v1",
+  "status": "PREREGISTERED_EQUAL_AVERAGE_LAYER_ALLOCATION_SCREEN",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "72beb73b",
+    "implementation_commit": "4bb8bd38",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+    "runner_sha256": "1aaf62571527f32161710ff116d2b3d97a0f27f11e012d2b142d66e074e74230",
+    "analyzer": "scripts/analyze_kimi_route12_h22_avg16.py",
+    "analyzer_sha256": "a8b6a3aa4fc82c65212e6e1b2412f20f4af598d778f70f9b295c065041638059"
+  },
+  "h22_atlas": {
+    "source_branch": "perf/k3-layer-major-prefill",
+    "source_commit": "102cf35ab2d86dc37e63faeece180267b2e9b2e6",
+    "path": "results/kimi_h22_layer_behavior_atlas.json",
+    "git_blob": "9efa66282ae31e62105791ae17913561a3bf6097",
+    "sha256": "a492f0842f49455e4c0c9def33ce72e1383b44f63db369c4d797e5b96c3ef475",
+    "ranking_key": "ascending (kl_mean, model_layer) from isolated Budget96 interventions",
+    "measured_range": "0.0003979589 at layer 88 to 0.0143503514 at layer 92, about 36x",
+    "use": "Rank only. No extrapolated Budget8/12/16/20/24 KL value is treated as measured."
+  },
+  "question": "At the same exact average nominal capacity as uniform Budget16, can the frozen H22 layer ranking move enough slabs from tolerant layers to sensitive layers to restore the route12 terminal boundary?",
+  "fixture": {
+    "path": "fixtures/k3_tool_weather_first_token_request.json",
+    "sha256": "fa18a5b47c98ddbb430c602e1a8738200e87b56dcbd5468889c4fb895ec00191",
+    "prompt_tokens": 147,
+    "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+    "max_tokens": 1
+  },
+  "policies": {
+    "conservative": {
+      "path": "fixtures/k3_h22_quartile_avg16_12_16_20.txt",
+      "sha256": "6993d75873330ff7f7abbb0f1e54e0b086839cd50a05b20d3c521f9d2b92b3f7",
+      "budget_counts": {"12": 23, "16": 46, "20": 23},
+      "average_nominal_slabs": 16
+    },
+    "sharp": {
+      "path": "fixtures/k3_h22_quartile_avg16_8_16_24.txt",
+      "sha256": "881f03dba9dd179c15f52c11b6a31dd15c438ff8852608e4058e263c69fe6750",
+      "budget_counts": {"8": 23, "16": 46, "24": 23},
+      "average_nominal_slabs": 16
+    }
+  },
+  "retained_references": {
+    "budget24_reference": {
+      "root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r79-prompt-first-b24",
+      "manifest_sha256": "9abad806e519bf4d525375545579098657f5d154860bdd84a3f4ca9e9baf6fde",
+      "logits_sha256": "27c2c61a9d6ac92a5a7750530db2a9c61a9cbed363bc57bcac28ed5677e8d905",
+      "generated_ids": [163588]
+    },
+    "route12_budget20_reference": {
+      "root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r87-route12-first",
+      "manifest_sha256": "c4e996cb46970c339b0a565c13565363b32344b0935d5ecc619513df662d8b18",
+      "logits_sha256": "234511ee03402accf45833c5ce37b7ccca060d40d8e7dc1ea3a923aba189b0c6",
+      "generated_ids": [163588]
+    },
+    "route12_uniform16_reference": {
+      "root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r132-route12-budget16-first",
+      "manifest_sha256": "84c5995b56258b8284f3ef6726a8a24d74aaaa983ebc3b16c49354c30092c60a",
+      "logits_sha256": "3bad6e1a897a261c148ab77cbab7f81b2f8b14f8a54cca7df3ed56fa2e2543e5",
+      "generated_ids": [1008]
+    }
+  },
+  "arms": [
+    {
+      "id": "route12_h22_conservative",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r134-route12-h22-avg16-conservative"
+    },
+    {
+      "id": "route12_h22_sharp",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r135-route12-h22-avg16-sharp"
+    }
+  ],
+  "intervention": "Both arms set route limit 12, use the same frozen H22 ranking, keep the exact nominal sum 1472 slabs across 92 layers, leave retained route weights unchanged, and disable schema/position rescue.",
+  "gate": {
+    "minimum_kl_reduction_fraction": 0.2,
+    "maximum_logical_gib_per_position": 0.9,
+    "go": "An arm must match the Budget24-reference top-1 with positive teacher margin, reduce KL(Budget24||arm) by at least 20% versus route12/uniform16, and measure <=0.90 logical GiB/provider-position.",
+    "no_go": "If neither arm passes, stop quartile H22 average-16 allocation. Do not tune quartile membership on this fixture.",
+    "next_if_go": "Run only the lowest-KL passing policy on one separately preregistered full get_weather sequence with schema rescue.",
+    "production": "No production transplant from this discovery position."
+  },
+  "limitations": [
+    "H22 directly measured isolated Budget96 terminal KL on one calibration stream; its rank transfer to composed Budget8--24 policies is the hypothesis under test.",
+    "Budget24 is a behaviorally successful reference, not native exact K3; reported KL is reference-to-arm.",
+    "One terminal boundary cannot establish broad quality.",
+    "Quartile allocation is a coarse discriminator, not a claimed optimum.",
+    "Cold token-sequential timing is not serving throughput."
+  ]
+}
