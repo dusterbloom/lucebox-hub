@@ -1,0 +1,57 @@
+{
+  "schema": "kimi-k3-route12-tool-false-positive-prereg-v1",
+  "status": "PREREGISTERED_TOOL_CONTROL_GATE",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "9760eb59",
+    "implementation_commit": "4bb8bd38",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+    "analyzer": "scripts/analyze_kimi_route12_tool_false_positive.py",
+    "analyzer_sha256": "8d7a012cc7323d52944c5b5786d12f8026ad019cdd838c7f69023444e4d1dea3",
+    "runner_sha256": "23e8d540199018fb8c5cde88ab9722820ef44735cdf39a0aec3d415a96896cdf"
+  },
+  "representation": {
+    "policy": "fixtures/k3_uniform_budget20.txt",
+    "policy_sha256": "2f366aab82de990441dc61de870736b1acbf081f26b2aff11f63017dd53f697c",
+    "route_limit": 12,
+    "retained_router_weights": "unchanged",
+    "schema_rescue_off_on": true,
+    "position_rescue": false
+  },
+  "controls": [
+    {
+      "id": "ok",
+      "fixture": "fixtures/k3_tool_declared_no_call_ok.json",
+      "fixture_sha256": "9f2ff9f97208c57b0ce85222c55248c82f67bad869f6353e57afca37e2f6faee",
+      "declared_tool": "get_weather",
+      "tool_choice": "auto",
+      "expected_plain_answer": "OK",
+      "off_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r112-route12-tool-no-call-ok-off",
+      "on_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r113-route12-tool-no-call-ok-on"
+    },
+    {
+      "id": "math",
+      "fixture": "fixtures/k3_tool_declared_no_call_math.json",
+      "fixture_sha256": "99339fce7530f743ad38601b27e55ab1f06aed5faf512b8e7522dbdfa2dde289",
+      "declared_tool": "lookup_customer_order",
+      "tool_choice": "auto",
+      "expected_plain_answer": "42",
+      "off_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r114-route12-tool-no-call-math-off",
+      "on_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r115-route12-tool-no-call-math-on"
+    }
+  ],
+  "command": "DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT=12 scripts/run_kimi_progressive_tool_rescue.sh ROOT BINARY '' PORT FIXTURE SCHEMA_0_OR_1 POLICY",
+  "gate": {
+    "go": "For both controls, off and on return the registered plain answer with no tool call; the on arm configures one schema prefix set but fires zero rescue markers; prompt IDs, generated IDs, final logits, traffic, logical/fallback bytes and physical bytes are exactly equal off versus on.",
+    "no_go": "Any tool call, wrong plain answer, rescue firing or off/on divergence. Stop schema-rescue production consideration.",
+    "next_if_go": "Proceed to broader JSON/structured and longer coding-agent quality gates; keep research-only.",
+    "production": "perf/k3-production-ponytail remains untouched."
+  },
+  "limitations": [
+    "These are mechanism controls against the same route12 policy, not native-quality retention fixtures.",
+    "Two declared tool names do not cover every possible shared token prefix or grammar state.",
+    "No serving-throughput claim is made."
+  ]
+}
