@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 4 ]]; then
+    echo "usage: $0 ARTIFACT_ROOT SERVER_BINARY PORT REQUEST_JSON" >&2
+    exit 2
+fi
+
+root=$1
+binary=$2
+port=$3
+fixture=$4
+model=/home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-of-00014.gguf
+
+if [[ -e $root ]]; then
+    echo "artifact root already exists: $root" >&2
+    exit 3
+fi
+for path in "$binary" "$model" "$fixture"; do
+    if [[ ! -f $path ]]; then
+        echo "missing required file: $path" >&2
+        exit 4
+    fi
+done
+if [[ ! $port =~ ^[0-9]+$ ]] || (( port < 1024 || port > 65535 )); then
+    echo "invalid port: $port" >&2
+    exit 5
+fi
+
+mkdir "$root"
+cp "$fixture" "$root/request.json"
+git rev-parse HEAD > "$root/source-commit.txt"
+git status --porcelain=v1 > "$root/source-status.txt"
+if [[ -s $root/source-status.txt ]]; then
+    echo "source worktree is dirty" >&2
+    exit 6
+fi
+sha256sum "$binary" > "$root/executable.sha256"
+sha256sum "$model" "$fixture" > "$root/inputs.sha256"
+uname -a > "$root/uname.txt"
+free -h > "$root/memory-before.txt"
+
+export HIP_VISIBLE_DEVICES=1,0
+export DFLASH_KIMI_PRODUCTION_DEFAULTS=0
+export DFLASH_KIMI_LAYER1_PROVIDER=exact
+export DFLASH_MOE_NVME_DIRECT=on
+export DFLASH_MOE_NVME_DEVICE_CACHE_MB=8192
+export DFLASH_KIMI_MMAP_DROP_PAGES=1
+export DFLASH_SERVER_COMMITTED_TOKEN_TRACE=1
+export DFLASH_KIMI_LOGITS_OUT=$root/final.f32
+unset DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT || true
+unset DFLASH_KIMI_EXPERIMENT_TOOL_SCHEMA_RESCUE || true
+unset DFLASH_KIMI_EXPERIMENT_POSITION_BUDGETS || true
+env -0 > "$root/environment.nul"
+
+command=(
+    "$binary" "$model"
+    --host 127.0.0.1 --port "$port" --model-name dflash
+    --max-ctx 256 --max-tokens 64 --target-device hip:0
+    --cache-type-k q4_0 --cache-type-v q4_0
+    --prefix-cache-slots 0 --prefill-cache-slots 0 --chunk 512
+)
+printf '%s\0' "${command[@]}" > "$root/command.nul"
+
+server_pid=
+cleanup() {
+    if [[ -n $server_pid ]] && kill -0 "$server_pid" 2>/dev/null; then
+        kill -TERM "$server_pid" 2>/dev/null || true
+        wait "$server_pid" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+
+"${command[@]}" > "$root/server.stdout" 2> "$root/server.stderr" &
+server_pid=$!
+ready=0
+for _ in $(seq 1 180); do
+    if curl -fsS "http://127.0.0.1:$port/health" > "$root/health.json"; then
+        ready=1
+        break
+    fi
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+        echo "server exited before readiness" >&2
+        exit 7
+    fi
+    sleep 1
+done
+if (( ready == 0 )); then
+    echo "server readiness timeout" >&2
+    exit 8
+fi
+
+/usr/bin/time -f '%e\t%U\t%S\t%M' -o "$root/client.time.tsv" \
+    curl -fsS -H 'Content-Type: application/json' \
+    --data-binary "@$root/request.json" \
+    "http://127.0.0.1:$port/v1/chat/completions" \
+    > "$root/response.json"
+
+kill -TERM "$server_pid"
+wait "$server_pid" || true
+server_pid=
+free -h > "$root/memory-after.txt"
+
+for path in final.f32 response.json; do
+    if [[ ! -s $root/$path ]]; then
+        echo "missing or empty result file: $root/$path" >&2
+        exit 9
+    fi
+done
+
+(
+    cd "$root"
+    sha256sum client.time.tsv command.nul environment.nul executable.sha256 \
+        final.f32 health.json inputs.sha256 memory-after.txt memory-before.txt \
+        request.json response.json server.stderr server.stdout source-commit.txt \
+        source-status.txt uname.txt > SHA256SUMS
+)
+trap - EXIT

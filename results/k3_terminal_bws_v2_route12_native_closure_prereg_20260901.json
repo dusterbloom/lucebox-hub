@@ -1,0 +1,85 @@
+{
+  "schema": "kimi-k3-route12-native-closure-prereg-v1",
+  "status": "PREREGISTERED_BINARY_CLOSURE",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "0f3aa6e4",
+    "implementation_commit": "4bb8bd38",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "candidate_measured_commit": "0f3aa6e4874d0ca196b62fa8212a79579e9f3b6e",
+    "hardware": "Lucebox4",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+    "exact_harness": "scripts/run_kimi_exact_chat_closure.sh",
+    "exact_harness_sha256": "3187d200ea0f4380dbf205472982844bcdfe0406483cb9f229439677534ea4d0"
+  },
+  "reason": {
+    "parent_prereg": "results/k3_terminal_bws_v2_route12_native_success_prereg_20260901.json",
+    "parent_prereg_sha256": "f412c6769a362aae5b64ac31d5371a756a6a0342e95e0a71e51a404530ba96c7",
+    "invalidated_by": "Exact prompt-token mismatch between the immutable 2026-08-30 native artifact and the current production-template tokenizer on two prompts.",
+    "aligned_ids": [
+      "fact-capital",
+      "code-sum",
+      "reasoning-marble",
+      "translation-italian"
+    ],
+    "misaligned": [
+      {
+        "id": "grammar-apples",
+        "old_native_prompt_tokens": 38,
+        "current_candidate_prompt_tokens": 37,
+        "candidate_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r97-route12-grammar-apples"
+      },
+      {
+        "id": "extract-code",
+        "old_native_prompt_tokens": 50,
+        "current_candidate_prompt_tokens": 48,
+        "candidate_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r99-route12-extract-code"
+      }
+    ],
+    "constraint": "Only the two misaligned prompts are rerun exact; reproducing the four already aligned native captures would spend authoritative traffic without resolving binary closure."
+  },
+  "representation": {
+    "provider": "exact",
+    "model_first_shard": "/home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-of-00014.gguf",
+    "model_first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "production_defaults": false,
+    "route_limit": null,
+    "schema_rescue": false,
+    "max_tokens": 8
+  },
+  "arms": [
+    {
+      "id": "grammar-apples",
+      "fixture": "fixtures/k3_route12_native_success/grammar-apples.json",
+      "fixture_sha256": "dc419cc6a1d30b9767e74099622d23bb4c91574accb4185533a198208fc44c85",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r101-exact-grammar-apples",
+      "port": 18101
+    },
+    {
+      "id": "extract-code",
+      "fixture": "fixtures/k3_route12_native_success/extract-code.json",
+      "fixture_sha256": "572eee4a4e71b92b4cca01ff6d933919cd2c0e5144178cb05915f89275c5ebdd",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r102-exact-extract-code",
+      "port": 18102
+    }
+  ],
+  "command": "scripts/run_kimi_exact_chat_closure.sh ROOT BINARY PORT FIXTURE",
+  "measurements": [
+    "exact prompt and generated token IDs",
+    "exact response and task success",
+    "terminal full-vocabulary logits hash",
+    "cold request timing",
+    "absence of route, slab-provider and schema rescue interventions"
+  ],
+  "gate": {
+    "go": "Both exact-native responses pass their registered tasks, their prompt token IDs exactly equal the already captured route12 prompt IDs, and the exact environment contains no route/schema/position intervention.",
+    "no_go": "Any native task failure, prompt mismatch to the candidate capture, executable mismatch or intervention leakage. The affected task cannot be used for candidate retention.",
+    "next_if_go": "Construct an immutable mixed-provenance baseline: four old native sequences whose prompt IDs align exactly plus these two current exact-native sequences, then score the frozen six route12 captures without rerunning them.",
+    "production": "This is binary closure only. It cannot promote route12 or modify perf/k3-production-ponytail."
+  },
+  "limitations": [
+    "Only tokenizer-misaligned prompts are rerun because binary closure is the sole purpose.",
+    "A final-logits KL is comparable only when candidate and exact generated histories remain aligned through that captured position.",
+    "Cold exact runtime is not a serving-throughput measurement."
+  ]
+}

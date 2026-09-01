@@ -102,19 +102,16 @@ def main() -> int:
                 arm["request_wide_b96_markers"] != 0):
             raise ValueError(f"route/schema marker contract changed: {identifier}")
         native = baseline_rows[identifier]
-        traces_match = arm["prompt_count"] == len(native["prompt_tokens"])
-        if not traces_match:
-            raise ValueError(f"prompt length changed: {identifier}")
         traces = token_traces(stderr)
-        if traces["prompt_ids"] != native["prompt_tokens"]:
-            raise ValueError(f"prompt token alignment changed: {identifier}")
+        prompt_equal = traces["prompt_ids"] == native["prompt_tokens"]
         response = json.loads((root / "response.json").read_text())
         content = response["choices"][0]["message"].get("content", "")
         generated = arm["generated_ids"]
-        success = task_success(identifier, content)
-        divergence = first_divergence(native["output_tokens"], generated)
+        success = task_success(identifier, content) if prompt_equal else None
+        divergence = (first_divergence(native["output_tokens"], generated)
+                      if prompt_equal else None)
         positions = arm["traffic"]["provider_positions"]
-        expected_positions = len(native["prompt_tokens"]) + max(0, len(generated) - 1)
+        expected_positions = len(traces["prompt_ids"]) + max(0, len(generated) - 1)
         if positions != expected_positions:
             raise ValueError(f"provider-position alignment changed: {identifier}")
         total_positions += positions
@@ -129,12 +126,14 @@ def main() -> int:
             "response_sha256": digest(root / "response.json"),
             "logits_sha256": arm["logits_sha256"],
             "traffic_sha256": arm["traffic_sha256"],
-            "prompt_tokens_equal_native": True,
+            "native_prompt_token_count": len(native["prompt_tokens"]),
+            "candidate_prompt_token_count": len(traces["prompt_ids"]),
+            "prompt_tokens_equal_native": prompt_equal,
             "native_tokens": native["output_tokens"],
             "candidate_tokens": generated,
             "first_generated_token_divergence": divergence,
-            "exact_sequence": divergence is None,
-            "candidate_text": content,
+            "exact_sequence": divergence is None if prompt_equal else None,
+            "candidate_text": content if prompt_equal else None,
             "task_success": success,
             "route_limit_markers": route_markers,
             "provider_positions": positions,
@@ -151,13 +150,20 @@ def main() -> int:
         raise ValueError("arms used a different executable")
     aggregate_logical = total_logical / total_positions / (1024 ** 3)
     aggregate_physical = total_physical / total_positions / (1024 ** 3)
-    tasks_passed = sum(row["task_success"] for row in sequences)
-    exact_sequences = sum(row["exact_sequence"] for row in sequences)
-    gate_passed = tasks_passed == len(sequences) and aggregate_logical < 1.2
+    alignment_passed = all(
+        row["prompt_tokens_equal_native"] for row in sequences)
+    tasks_passed = sum(row["task_success"] is True for row in sequences)
+    exact_sequences = sum(row["exact_sequence"] is True for row in sequences)
+    gate_passed = (alignment_passed and tasks_passed == len(sequences) and
+                   aggregate_logical < 1.2)
+    status = (
+        "MEASURED_ROUTE12_NATIVE_SUCCESS_INVALID_PROMPT_ALIGNMENT"
+        if not alignment_passed else
+        ("MEASURED_ROUTE12_NATIVE_SUCCESS_GO" if gate_passed else
+         "MEASURED_ROUTE12_NATIVE_SUCCESS_NO_GO"))
     result = {
         "schema": "kimi-k3-route12-native-success-result-v1",
-        "status": ("MEASURED_ROUTE12_NATIVE_SUCCESS_GO" if gate_passed else
-                   "MEASURED_ROUTE12_NATIVE_SUCCESS_NO_GO"),
+        "status": status,
         "preregistration_sha256": digest(args.prereg),
         "source": {
             **prereg["source"],
@@ -189,10 +195,12 @@ def main() -> int:
         "gate": {
             "passed": gate_passed,
             "tasks_passed": tasks_passed == len(sequences),
-            "prompt_alignment_passed": True,
+            "prompt_alignment_passed": alignment_passed,
             "schema_false_activation_absent": True,
             "logical_below_1_2_gib": aggregate_logical < 1.2,
             "decision": (
+                "Run exact binary closure only for the misaligned prompt IDs; do not score this invalid gate."
+                if not alignment_passed else
                 "Preregister tool-declared false-positive controls; keep research-only."
                 if gate_passed else
                 "Stop route12 production consideration and return to representation/progressive rescue work."
