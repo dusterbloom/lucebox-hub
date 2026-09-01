@@ -601,3 +601,50 @@ shared-prefix grammar state.  The immutable result is
 `results/k3_terminal_bws_v2_route12_tool_false_positive_result_20260901.json`
 (SHA-256 `d3876477ca2e2e98d094a2d606137d3c5d1fb7cb03a18fbdea69c78b9eb4522d`);
 raw arms r112--r115 and analysis r116 remain on Lucebox4.
+
+## Structured JSON and coding-agent gate
+
+The last cheap reliability discriminator compared H23 aggressive-1.8 with
+the frozen route12/Budget20 candidate on strict JSON emission and a small
+`merge_intervals` repository repair.  The validator required exact JSON
+semantics/key order and executable Python that passed five restricted
+functional and input-mutation checks.  Controls had to pass before route12
+could be scored.
+
+Two infrastructure defects were preserved rather than silently retried.  The
+first campaign clamped the registered 128-token coding response to 64 tokens;
+its immutable analysis is
+`results/k3_terminal_bws_v2_route12_structured_agentic_invalid_20260901.json`.
+After raising only that server cap, the unchanged 144-token prompt plus
+128-token completion exceeded the runner's 256-token context and was rejected
+before inference.  That attempt is recorded in
+`results/k3_terminal_bws_v2_route12_structured_agentic_cap256_infra_failure_20260901.json`.
+The final preregistered campaign used a 512-token context and otherwise
+unchanged model-facing inputs.
+
+Strict JSON passed both policies.  Route12 emitted the requested object at
+**1.01268 logical / 0.36354 physical GiB/provider-position**, versus H23's
+1.85036 / 0.71965, a 42.5% total-provider-byte reduction.  Route12 prefill was
+41.0 s and its 25-token decode 12.8 s (2.0 tok/s); H23 measured 49.0 s and
+20.8 s (1.0 tok/s).  These are cold request measurements, not serving
+throughput.
+
+The coding fixture is formally **INVALID_CONTROL**.  With the registered
+128-token allowance, H23 still ended at `finish_reason=length` one assignment
+short of syntactic completion.  Route12 first emitted a complete plausible
+implementation, then began emitting a duplicate function and was also cut at
+128 tokens; the registered whole-response validator therefore rejected it as
+well.  Because the control failed, this is neither a route12 GO nor NO-GO, and
+the token limit/prompt will not be tuned after seeing the outputs.  Diagnostic
+traffic was 1.83089 / 0.61507 GiB per position for H23 and **0.99050 /
+0.29898** for route12; corresponding cold prefill/decode times were
+131.8/107.0 s and 100.0/72.6 s.
+
+The immutable final analysis is
+`results/k3_terminal_bws_v2_route12_structured_agentic_result_20260901.json`
+(SHA-256 `38b888e5b80df27c49d9b1c406198305236fb0b2e48160abbbb6e4763a7d465c`);
+raw arms r126--r129 and analysis r130 remain on Lucebox4.  This strengthens
+structured-output evidence but does not establish coding-agent retention.
+Production remains untouched.  The next earned discriminator is joint
+route/slab reduction below the route12/Budget20 ~1.0-GiB regime, starting at
+route12/Budget16 on the known tool boundary before any broad rerun.
