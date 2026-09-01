@@ -326,3 +326,34 @@ generated sequence.
 The immutable summary is
 `results/k3_terminal_bws_v2_schema_rescue_result_20260901.json`; raw roots
 r68--r70 and analysis r71 remain on Lucebox4.
+
+## Sub-24 base plus schema rescue
+
+The next curve asked whether the same runtime trigger could make a uniform
+sub-24 base viable.  Budget16 ran first under a preregistered stop rule;
+Budget12 and Budget8 were contingent on its tool success.
+
+Budget16 reduced logical authoritative traffic from 1.35993 to
+**0.93371 GiB/provider-position** (-31.34%) and physical reads from 0.47834 to
+**0.30537 GiB/provider-position** (-36.16%).  It therefore crossed the traffic
+component of the <1.2-GiB milestone.  It failed the joint gate: generation
+diverged at the first output token, never reached the declared-name suffix,
+emitted no rescue marker, and returned ordinary text claiming sunny weather
+instead of a tool call.
+
+This is a measured **Budget16 progressive NO-GO** on the known tool fixture.
+It falsifies the simple hypothesis that preserving only the final tool-name
+boundary is enough below Budget24.  The damaging information is already
+missing before the first generated token, so a downstream schema trigger
+cannot recover it.  Per preregistration, Budget12 and Budget8 were not run and
+the trigger tokens/positions were not tuned.
+
+The next useful discriminator must cover terminal prompt state or detect
+cheap/rich disagreement before the first emitted token.  A larger static
+downstream rescue window is not justified by this result.  Any such gate must
+account for its prompt-side bytes over the full sequence and preserve exact
+KDA/MLA state semantics.
+
+The immutable summary is
+`results/k3_terminal_bws_v2_sub24_schema_result_20260901.json`; raw Budget16
+root r72 and analysis r75 remain on Lucebox4.
