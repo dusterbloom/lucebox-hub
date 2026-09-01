@@ -1,0 +1,70 @@
+{
+  "schema": "kimi-k3-sub24-schema-rescue-prereg-v1",
+  "status": "PREREGISTERED_BEFORE_RUNNER_CHANGE",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "231a9748f3358c39800cc6619bf1784e6cc3d29a",
+    "runtime_implementation_commit": "23a8f46adb7064b1389ce40404a2d61fa641e216",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4"
+  },
+  "hypothesis": "A sub-24 uniform base retains enough causal state to reach the declared get_weather final-token prefix, after which the measured schema discriminator can spend one Budget96 routed position and preserve a valid tool call.",
+  "control": {
+    "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r68-schema-tool",
+    "base_budget": 24,
+    "valid_tool_call": true,
+    "logical_gib_per_position": 1.3599310270778795,
+    "physical_gib_per_position": 0.47833679358996645,
+    "generated_ids_sha256_contract": "Use the retained r68 committed-token trace; token equality is reported separately from tool validity."
+  },
+  "fixture": {
+    "path": "fixtures/k3_tool_weather_request.json",
+    "sha256": "9ddc53b93c0e162a898f9b2c72d03e5cd9ab670c608ffef489aaa6090ab7f0d6",
+    "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+    "tool_name_ids": [618, 21055, 2800],
+    "trigger_suffix": [618, 21055]
+  },
+  "policies": [
+    {
+      "budget": 16,
+      "path": "fixtures/k3_uniform_budget16.txt",
+      "sha256": "4e40e7b834baf78152ff39a2f5cfec99fb5af52527633c123cb77cb0aa2a325e",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r72-schema-b16",
+      "required": true
+    },
+    {
+      "budget": 12,
+      "path": "fixtures/k3_uniform_budget12.txt",
+      "sha256": "9d868b039ae900f51a52723db0ce566c4d569337e7f4e578208c0d867bbc1080",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r73-schema-b12",
+      "required_if": "Budget16 returns a valid get_weather call"
+    },
+    {
+      "budget": 8,
+      "path": "fixtures/k3_uniform_budget8.txt",
+      "sha256": "7b2159c53739f8d67372fc01e9206063b791d6fcdaba611e0ec97ac689e64dd1",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r74-schema-b8",
+      "required_if": "Budget12 returns a valid get_weather call"
+    }
+  ],
+  "validity": [
+    "All executed arms use one clean source commit and one executable hash, the frozen official-template prompt hash, no static position override and no request-wide Budget96 floor.",
+    "Each policy file has exactly layers 1 through 92 at the declared uniform budget and matches its preregistered SHA-256.",
+    "A passing arm emits exactly one schema-rescue marker. Its base position must equal prompt_count plus the zero-based generated index of the second trigger-suffix token.",
+    "A passing arm returns exactly one native-valid get_weather call with JSON argument location San Francisco.",
+    "Report full generated IDs and exact equality versus Budget24 independently from tool validity.",
+    "Report logical provider, selected-sidecar, provider exact-fallback and physical direct-read bytes over every provider position."
+  ],
+  "gates": {
+    "budget16": "GO below Budget24 only if valid tool output and logical GiB/position is below the measured Budget24 control.",
+    "budget12": "GO for the <0.8 milestone only if valid tool output and logical GiB/position is <0.8; otherwise report the measured point without relabeling it.",
+    "budget8": "GO for the <=0.53 storage regime only if valid tool output and logical GiB/position is <=0.53; otherwise report the measured point without relabeling it.",
+    "stop": "Stop at the first invalid tool arm. Do not add positions, alter trigger tokens or tune the selector on this fixture."
+  },
+  "limitations": [
+    "One tool fixture cannot establish broad behavior or reliability.",
+    "No terminal full-vocabulary KL teacher capture is included.",
+    "A successful schema boundary does not prove coding, reasoning or structured-output retention at the same base budget.",
+    "Cold token-sequential timing is not serving throughput."
+  ]
+}
