@@ -543,3 +543,40 @@ Immutable summaries are
 (raw r94--r99, analysis r100) and
 `results/k3_terminal_bws_v2_route12_native_closure_result_20260901.json`
 (raw r101--r102, analysis r103).
+
+## Unseen route12 behavioral holdout
+
+The next gate froze the six tasks from the immutable 12/12 broad
+native-success suite which route12 had not seen: a photosynthesis fact, a
+Python list-comprehension function, rate reasoning, subject/verb agreement,
+Spanish translation and decoy-resistant code extraction.  The gate was
+behavioral because the original native tensors are unavailable and the
+deployed hybrid exact path failed closure.
+
+The first analysis incorrectly scored the valid chemical formula `CO₂` as a
+failure because the copied normalizer accepted ASCII `CO2` but had omitted
+the original H23 scorer's subscript-digit translation.  That 5/6 result was
+preserved unchanged.  An analysis-only amendment restored exactly the old
+normalization rule, pinned the changed scorer hash and reran **zero** model
+arms.
+
+The corrected result is **6/6 behavioral GO**.  The code function and three
+other outputs matched frozen native output IDs, while science answered the
+shorter `CO₂` and Spanish added a period.  Four prompts aligned to the old
+native tokenization; two of those four had exact generated sequences.  These
+counts are diagnostic and are not called distributional equivalence.
+
+Across 371 provider positions, traffic was **1.00675 logical / 0.37613
+physical GiB/position**, with 0.06201 GiB/position exact fallback.  No no-tool
+request configured or fired schema rescue.  This clears the `<1.2 GiB`
+behavioral milestone on twelve short native-success tasks plus the full
+`get_weather` discovery sequence.  It remains about 1.9x above the 0.53-GiB
+decode target, cold request timing is not serving throughput, and native
+terminal KL remains unresolved.
+
+The corrected immutable result is
+`results/k3_terminal_bws_v2_route12_behavioral_holdout_result_20260901.json`
+(SHA-256 `bf55bddb724b15cfcff1156f5b47b639a113882a875d78faddf231dba5af13cf`);
+raw arms r104--r109 and analyses r110--r111 remain on Lucebox4.  The next gate
+is tool-declared false-positive behavior plus JSON/structured and longer
+coding-agent tasks.  Production remains untouched.
