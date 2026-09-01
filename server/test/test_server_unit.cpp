@@ -5609,6 +5609,22 @@ TEST_CASE(ServerUnitFixture, test_kimi_k3_tools_raise_progressive_budget) {
     dflash_unsetenv("DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24");
 }
 
+TEST_CASE(ServerUnitFixture, test_kimi_k3_tool_schema_rescue_budget) {
+    const std::vector<std::vector<int32_t>> prefixes = {
+        {618, 21055}, {77, 88, 99},
+    };
+    TEST_ASSERT(http_detail::kimi_k3_tool_schema_rescue_budget(
+                    prefixes, {1, 618}) == 0);
+    TEST_ASSERT(http_detail::kimi_k3_tool_schema_rescue_budget(
+                    prefixes, {1, 618, 21055}) == 96);
+    TEST_ASSERT(http_detail::kimi_k3_tool_schema_rescue_budget(
+                    prefixes, {77, 88, 99}) == 96);
+    TEST_ASSERT(http_detail::kimi_k3_tool_schema_rescue_budget(
+                    prefixes, {77, 88, 99, 100}) == 0);
+    TEST_ASSERT(http_detail::kimi_k3_tool_schema_rescue_budget(
+                    {}, {618, 21055}) == 0);
+}
+
 TEST_CASE(ServerUnitFixture, test_props_budget_envelope_shape) {
     // budget_envelope is always present with all five fields and the
     // expected effort_tiers vocabulary (low|medium|high|x-high|max).

@@ -867,7 +867,10 @@ GenerateResult KimiK3Backend::generate_from_state(
                     "prefill width 1, and a routed provider");
     }
 
-    if (snapshot && req.routed_expert_min_budget > 0) {
+    const bool dynamic_routed_budget =
+        static_cast<bool>(req.routed_expert_budget_for_history);
+    if (snapshot && (req.routed_expert_min_budget > 0 ||
+                     dynamic_routed_budget)) {
         return fail(GenerateErrorCode::InvalidSnapshotSlot,
                     "request-scoped K3 slab budget cannot restore a snapshot");
     }
@@ -879,7 +882,7 @@ GenerateResult KimiK3Backend::generate_from_state(
             provider->set_request_min_slab_budget(0, &ignored);
         }
     } request_budget_guard;
-    if (req.routed_expert_min_budget > 0) {
+    if (req.routed_expert_min_budget > 0 || dynamic_routed_budget) {
         if (!routed_output_provider_) {
             return fail(GenerateErrorCode::PrefillFailed,
                         "request-scoped K3 slab budget needs calibrated provider");
@@ -890,10 +893,12 @@ GenerateResult KimiK3Backend::generate_from_state(
             return fail(GenerateErrorCode::PrefillFailed,
                         std::move(budget_error));
         }
+        if (req.routed_expert_min_budget > 0) {
+            std::fprintf(stderr,
+                "[kimi-k3] request minimum slab budget=%d\n",
+                req.routed_expert_min_budget);
+        }
         request_budget_guard.provider = routed_output_provider_.get();
-        std::fprintf(stderr,
-            "[kimi-k3] request minimum slab budget=%d\n",
-            req.routed_expert_min_budget);
     }
 
     const auto prefill_begin = std::chrono::steady_clock::now();
@@ -1037,7 +1042,8 @@ GenerateResult KimiK3Backend::generate_from_state(
     history.reserve(req.prompt.size() + static_cast<size_t>(req.n_gen));
     history.insert(history.end(), req.prompt.begin(), req.prompt.end());
     const bool can_spec = spec_target && !req.force_ar_decode &&
-        !req.do_sample && req.budget_hook.close_token_ids.empty();
+        !req.do_sample && req.budget_hook.close_token_ids.empty() &&
+        !dynamic_routed_budget;
     if (can_spec) {
         const int32_t seed = choose_token(
             logits, req.sampler, /*do_sample=*/false, history);
@@ -1085,6 +1091,7 @@ GenerateResult KimiK3Backend::generate_from_state(
 
     bool budget_close_started = false;
     size_t close_inject_pos = 0;
+    int active_routed_budget = req.routed_expert_min_budget;
     for (int i = 0; i < req.n_gen; ++i) {
         int32_t next = choose_token(
             logits, req.sampler, req.do_sample, history);
@@ -1110,6 +1117,27 @@ GenerateResult KimiK3Backend::generate_from_state(
         history.push_back(next);
         out_io.emit(next);
         if (out_io.is_cancelled() || next == weights_.eos_token_id) break;
+        if (i + 1 < req.n_gen && dynamic_routed_budget) {
+            const int dynamic_budget =
+                req.routed_expert_budget_for_history(result.tokens);
+            const int next_budget = (std::max)(
+                req.routed_expert_min_budget, dynamic_budget);
+            if (next_budget != active_routed_budget) {
+                std::string budget_error;
+                if (!routed_output_provider_->set_request_min_slab_budget(
+                        next_budget, &budget_error)) {
+                    return fail(GenerateErrorCode::DecodeFailed,
+                                std::move(budget_error));
+                }
+                active_routed_budget = next_budget;
+                if (dynamic_budget > req.routed_expert_min_budget) {
+                    std::fprintf(stderr,
+                        "[kimi-k3-progressive-schema-rescue] "
+                        "base-pos=%d slab-budget=%d\n",
+                        cache_.cur_pos, next_budget);
+                }
+            }
+        }
         if (i + 1 < req.n_gen && !kimi_k3_step(
                 backend_, weights_, cache_, next, cache_.cur_pos, logits,
                 &stream_engine_, routed_output_provider_.get())) {

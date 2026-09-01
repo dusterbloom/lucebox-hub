@@ -263,6 +263,9 @@ bool canonical_assistant_content(
     std::string & content);
 int kimi_k3_routed_expert_min_budget(
     const std::string & arch, const json & effective_tools);
+int kimi_k3_tool_schema_rescue_budget(
+    const std::vector<std::vector<int32_t>> & tool_name_prefixes,
+    const std::vector<int32_t> & generated_tokens);
 
 }  // namespace http_detail
 

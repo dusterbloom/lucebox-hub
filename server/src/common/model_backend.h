@@ -197,6 +197,12 @@ struct GenerateRequest {
     // K3 progressive-expert quality floor for this request. Zero keeps the
     // configured production policy; tool turns currently require Budget96.
     int                        routed_expert_min_budget = 0;
+    // Optional K3 research discriminator evaluated after each committed token
+    // and before the routed forward that predicts the next token. The return
+    // value is a monotone floor over routed_expert_min_budget for that one
+    // forward; zero keeps the request/configured policy.
+    std::function<int(const std::vector<int32_t> &)>
+                               routed_expert_budget_for_history;
     // Common retry knob. Upper layers set this after a speculative decode
     // path returns success but emits no tokens, so each backend can route the
     // retry through its existing AR path without copying retry policy.

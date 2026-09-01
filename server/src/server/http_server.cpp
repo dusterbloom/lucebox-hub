@@ -299,6 +299,21 @@ int kimi_k3_routed_expert_min_budget(
         !effective_tools.empty() ? 96 : 0;
 }
 
+int kimi_k3_tool_schema_rescue_budget(
+        const std::vector<std::vector<int32_t>> & tool_name_prefixes,
+        const std::vector<int32_t> & generated_tokens) {
+    for (const auto & prefix : tool_name_prefixes) {
+        if (prefix.empty() || prefix.size() > generated_tokens.size()) {
+            continue;
+        }
+        if (std::equal(prefix.rbegin(), prefix.rend(),
+                       generated_tokens.rbegin())) {
+            return 96;
+        }
+    }
+    return 0;
+}
+
 }  // namespace http_detail
 
 // ─── curl helpers for upstream proxy ─────────────────────────────────────
@@ -3932,6 +3947,37 @@ void HttpServer::prepare_generation_inputs(
     inputs.request.routed_expert_min_budget =
         http_detail::kimi_k3_routed_expert_min_budget(
             config_.arch, req.effective_tools);
+    if (config_.arch == "kimi-k3" &&
+            env_flag_enabled("DFLASH_KIMI_EXPERIMENT_TOOL_SCHEMA_RESCUE") &&
+            req.effective_tools.is_array()) {
+        std::vector<std::vector<int32_t>> prefixes;
+        for (const auto & tool : req.effective_tools) {
+            if (!tool.is_object() || !tool.contains("function") ||
+                    !tool["function"].is_object()) {
+                continue;
+            }
+            const std::string name =
+                tool["function"].value("name", "");
+            std::vector<int32_t> ids = tokenizer_.encode(name);
+            if (ids.size() < 2) continue;
+            ids.pop_back();
+            if (std::find(prefixes.begin(), prefixes.end(), ids) ==
+                    prefixes.end()) {
+                prefixes.push_back(std::move(ids));
+            }
+        }
+        if (!prefixes.empty()) {
+            std::fprintf(stderr,
+                "[kimi-k3-schema-rescue] configured-prefixes=%zu\n",
+                prefixes.size());
+            inputs.request.routed_expert_budget_for_history =
+                [prefixes = std::move(prefixes)](
+                        const std::vector<int32_t> & generated) {
+                    return http_detail::kimi_k3_tool_schema_rescue_budget(
+                        prefixes, generated);
+                };
+        }
+    }
     inputs.request.force_ar_decode =
         request_forces_ar_decode(config_.arch, req.speculative);
     // Tokens are delivered through DaemonIO so all API formats share the

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
-    echo "usage: $0 ARTIFACT_ROOT SERVER_BINARY POSITION_BUDGETS PORT" >&2
+if [[ $# -lt 4 || $# -gt 6 ]]; then
+    echo "usage: $0 ARTIFACT_ROOT SERVER_BINARY POSITION_BUDGETS PORT [REQUEST_JSON] [SCHEMA_RESCUE_0_OR_1]" >&2
     exit 2
 fi
 
@@ -14,7 +14,8 @@ model=/home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-o
 aux=/home/duster/kimi-k3-deploy/aux
 sidecars=/home/duster/kimi-k3-deploy/streamed-bank/natural-sidecars
 policy=/home/duster/lucebox-k3-b7b74cc/results/h23_10k_policies/h23_moonshot_1_2gib.txt
-fixture=$(dirname "$0")/../fixtures/k3_tool_weather_request.json
+fixture=${5:-$(dirname "$0")/../fixtures/k3_tool_weather_request.json}
+schema_rescue=${6:-0}
 
 if [[ -e $root ]]; then
     echo "artifact root already exists: $root" >&2
@@ -34,6 +35,10 @@ for path in "$aux" "$sidecars"; do
 done
 if [[ ! $port =~ ^[0-9]+$ ]] || (( port < 1024 || port > 65535 )); then
     echo "invalid port: $port" >&2
+    exit 5
+fi
+if [[ $schema_rescue != 0 && $schema_rescue != 1 ]]; then
+    echo "SCHEMA_RESCUE_0_OR_1 must be 0 or 1" >&2
     exit 5
 fi
 
@@ -68,6 +73,11 @@ if [[ -n $position_budgets ]]; then
     export DFLASH_KIMI_EXPERIMENT_POSITION_BUDGETS=$position_budgets
 else
     unset DFLASH_KIMI_EXPERIMENT_POSITION_BUDGETS || true
+fi
+if [[ $schema_rescue == 1 ]]; then
+    export DFLASH_KIMI_EXPERIMENT_TOOL_SCHEMA_RESCUE=1
+else
+    unset DFLASH_KIMI_EXPERIMENT_TOOL_SCHEMA_RESCUE || true
 fi
 env -0 > "$root/environment.nul"
 
