@@ -1,0 +1,12 @@
+{
+  "model": "dflash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A box has 7 rows of 6 marbles. How many marbles are there? Answer with only the integer."
+    }
+  ],
+  "max_tokens": 8,
+  "temperature": 0.0,
+  "stream": false
+}

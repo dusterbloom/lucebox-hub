@@ -1,0 +1,12 @@
+{
+  "model": "dflash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Name the capital of Japan. Answer with only the city name."
+    }
+  ],
+  "max_tokens": 8,
+  "temperature": 0.0,
+  "stream": false
+}

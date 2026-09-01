@@ -1,0 +1,12 @@
+{
+  "model": "dflash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What does this Python expression evaluate to: sum([2, 3, 5])? Answer with only the integer."
+    }
+  ],
+  "max_tokens": 8,
+  "temperature": 0.0,
+  "stream": false
+}

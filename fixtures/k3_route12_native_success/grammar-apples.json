@@ -1,0 +1,12 @@
+{
+  "model": "dflash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Correct this sentence: She don't like apples. Answer with only the corrected sentence."
+    }
+  ],
+  "max_tokens": 8,
+  "temperature": 0.0,
+  "stream": false
+}

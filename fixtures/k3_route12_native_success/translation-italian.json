@@ -1,0 +1,12 @@
+{
+  "model": "dflash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Translate 'good morning' into Italian. Answer with only the translation."
+    }
+  ],
+  "max_tokens": 8,
+  "temperature": 0.0,
+  "stream": false
+}

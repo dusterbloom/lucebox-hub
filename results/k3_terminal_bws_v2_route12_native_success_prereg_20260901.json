@@ -1,0 +1,105 @@
+{
+  "schema": "kimi-k3-route12-native-success-prereg-v1",
+  "status": "PREREGISTERED_HELDOUT_GATE",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "6826f946",
+    "implementation_commit": "4bb8bd38",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c"
+  },
+  "representation": {
+    "model_first_shard": "/home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-of-00014.gguf",
+    "model_first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "calibration_manifest_sha256": "1189c85743a1e5f41901f09b090ea3a4a567c2020bce53400e9ae5f039409f56",
+    "natural_sidecar_manifest_sha256": "86216b66256f61bdcbe8d796dc2e9316e3dccdeba801ea296b2e779cf86394e9",
+    "policy": "fixtures/k3_uniform_budget20.txt",
+    "policy_sha256": "2f366aab82de990441dc61de870736b1acbf081f26b2aff11f63017dd53f697c",
+    "route_limit": 12,
+    "retained_router_weights": "unchanged",
+    "schema_rescue": true,
+    "position_rescue": false
+  },
+  "native_baseline": {
+    "path": "fixtures/k3_h23_native_success_baseline.json",
+    "sha256": "b32a4bd63ef87ade57c38b6376effd1cba1c2d93c96c971e0926ed63d56d5de7",
+    "source_branch": "perf/k3-layer-major-prefill",
+    "source_branch_head": "102cf35ab2d86dc37e63faeece180267b2e9b2e6",
+    "source_artifact_commit": "16b0fb511ad1301087819abb3f684be51059cdd9",
+    "source_result_sha256": "e056e0802d2d8917446445271ef18c0b2289a2220d51ad41ac7a932ab88079dd",
+    "native_passed": "6/6",
+    "chat_template": "gguf-jinja-thinking-off"
+  },
+  "fixtures": [
+    {
+      "id": "fact-capital",
+      "path": "fixtures/k3_route12_native_success/fact-capital.json",
+      "sha256": "1f0cbcdd6eed575d20e76e63f6a78e4743acf1cc5eca1a455fcbefede27788ea",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r94-route12-fact-capital"
+    },
+    {
+      "id": "code-sum",
+      "path": "fixtures/k3_route12_native_success/code-sum.json",
+      "sha256": "6f3e000016fee9d60ba9e5cf7ab98f17678c839d64bf87539e5bb63101016077",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r95-route12-code-sum"
+    },
+    {
+      "id": "reasoning-marble",
+      "path": "fixtures/k3_route12_native_success/reasoning-marble.json",
+      "sha256": "9ec946d5412251432ec7635fc9aa474c4da27f17ab36bdd467ebe470b2c47dbd",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r96-route12-reasoning-marble"
+    },
+    {
+      "id": "grammar-apples",
+      "path": "fixtures/k3_route12_native_success/grammar-apples.json",
+      "sha256": "dc419cc6a1d30b9767e74099622d23bb4c91574accb4185533a198208fc44c85",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r97-route12-grammar-apples"
+    },
+    {
+      "id": "translation-italian",
+      "path": "fixtures/k3_route12_native_success/translation-italian.json",
+      "sha256": "a7fb127aac01f317ffe45026195f26eb1943428ec93399f1ebb6a8e30bb1ee5c",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r98-route12-translation-italian"
+    },
+    {
+      "id": "extract-code",
+      "path": "fixtures/k3_route12_native_success/extract-code.json",
+      "sha256": "572eee4a4e71b92b4cca01ff6d933919cd2c0e5144178cb05915f89275c5ebdd",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r99-route12-extract-code"
+    }
+  ],
+  "controls": {
+    "h23_1_8_result": "results/h23_10k_aggressive1p8_quality.json on perf/k3-layer-major-prefill",
+    "h23_1_8_sha256": "e424ebd4792026e82d3cf1d0620fbc26ecaad8b7fb6d82633369733e50f8b3a4",
+    "h23_1_8_task_retention": "6/6",
+    "h23_1_8_exact_sequences": "6/6",
+    "h23_1_8_logical_gib_per_position": 1.8344892914762203,
+    "h23_1_2_result": "results/h23_10k_moonshot1p2_quality.json on perf/k3-layer-major-prefill",
+    "h23_1_2_sha256": "e628e63675d18424c1e65fdd5e86d2c40479d6027835aaa59a0f0bee25f098b0",
+    "h23_1_2_task_retention": "6/6",
+    "h23_1_2_exact_sequences": "5/6",
+    "h23_1_2_logical_gib_per_position": 1.2200937172801225
+  },
+  "command": "DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT=12 scripts/run_kimi_progressive_tool_rescue.sh ROOT BINARY '' PORT FIXTURE 1 POLICY",
+  "measurements": [
+    "official-template prompt token IDs and exact alignment to the frozen native baseline",
+    "response text, generated token IDs, task success, exact native sequence equality",
+    "route-limit and schema-rescue marker contract",
+    "logical authoritative, fallback and physical direct-read bytes over all provider positions",
+    "direct I/O and cold request timing"
+  ],
+  "gate": {
+    "go": "All six frozen native-success tasks pass, all prompt token IDs exactly match the frozen native captures, no schema prefix or rescue marker appears on these no-tool requests, and aggregate logical traffic is below 1.2 GiB/provider-position.",
+    "no_go": "Any task failure, prompt misalignment, false schema activation, or traffic at least 1.2 GiB/provider-position. Preserve the result and do not test more route counts on these fixtures.",
+    "exactness": "Generated-token exactness is reported separately and is not called distributional equivalence.",
+    "next_if_go": "Run preregistered tool-declared false-positive controls before considering a narrow production transplant.",
+    "production": "perf/k3-production-ponytail remains untouched until both held-out and tool-declared control gates pass."
+  },
+  "limitations": [
+    "This is the frozen six-task native-success gate, not the broader quality suite required for final acceptance.",
+    "Native terminal logit tensors are not retained on Lucebox4, so this gate cannot report terminal KL against native; it must not substitute token equality for KL.",
+    "The six tasks are short and weak on long coding-agent, JSON and multi-step structured behavior.",
+    "Cold token-sequential timing is not serving throughput."
+  ]
+}
