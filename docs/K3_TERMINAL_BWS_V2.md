@@ -648,3 +648,29 @@ structured-output evidence but does not establish coding-agent retention.
 Production remains untouched.  The next earned discriminator is joint
 route/slab reduction below the route12/Budget20 ~1.0-GiB regime, starting at
 route12/Budget16 on the known tool boundary before any broad rerun.
+
+## Route12 plus uniform Budget16
+
+The first joint route/slab discriminator compared route16/Budget16 with
+route12/Budget16 at the frozen first `get_weather` output position.  Both used
+the same executable and uniform Budget16 policy; the only intervention was
+the native descending route prefix.  The preregistered GO required the
+Budget24-reference top-1 with positive margin, at least 20% KL recovery versus
+route16/Budget16, fewer bytes, and at most 0.90 logical GiB/position.
+
+Route12 met the byte threshold at **0.88991 logical / 0.30973 physical
+GiB/provider-position**, 5.7% less logical traffic than route16/Budget16 and
+0.193 GiB below route12/Budget20.  It failed behaviorally: both B16 arms chose
+token `1008` instead of the Budget24 reference token `163588`.  Route12 made
+the teacher-token margin worse from -0.260 to **-1.060** and increased
+`KL(P_B24 || P_arm)` from 0.20835 to **0.25886** (+24.2%).
+
+This is a measured **route12/Budget16 NO-GO**.  Route removal recovered the
+boundary at Budget20 but cannot replace the information lost by lowering the
+uniform slab budget to 16.  No full tool generation or broad quality run is
+earned.  The immutable result is
+`results/k3_terminal_bws_v2_route12_budget16_result_20260901.json`; raw arms
+r131--r132 and analysis r133 remain on Lucebox4.  The next useful discriminator
+must change where the 16-slab-average capacity is spent (layer-adaptive
+allocation) or its representation; tuning the global route count is closed at
+this budget.
