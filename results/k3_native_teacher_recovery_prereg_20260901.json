@@ -49,6 +49,34 @@
     "workers": 4,
     "reason": "The peer sparse-tar transfer delivered only 252547072 allocated bytes before cancellation, while a 16 MiB pinned range fetched directly on Lucebox4 at 10767387 bytes/s."
   },
+  "closure": {
+    "executable": "/home/duster/k3-terminal-kl-bws-v2-guarded/server/build-progressive-hip/dflash_server",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+    "harness": "scripts/run_kimi_exact_chat_closure.sh",
+    "harness_sha256": "aa5c27d5e98780b397e5c96cade5bce8be28f4c20ab86bc863afdf00acd3fd13",
+    "native_baseline": "fixtures/k3_h23_native_success_baseline.json",
+    "native_baseline_sha256": "b32a4bd63ef87ade57c38b6376effd1cba1c2d93c96c971e0926ed63d56d5de7",
+    "provider": "all-layers-calibrated96",
+    "uniform_slab_budget": 192,
+    "sidecar_authoritative": true,
+    "fixtures": [
+      {
+        "id": "fact-capital",
+        "path": "fixtures/k3_route12_native_success/fact-capital.json",
+        "sha256": "1f0cbcdd6eed575d20e76e63f6a78e4743acf1cc5eca1a455fcbefede27788ea"
+      },
+      {
+        "id": "grammar-apples",
+        "path": "fixtures/k3_route12_native_success/grammar-apples.json",
+        "sha256": "dc419cc6a1d30b9767e74099622d23bb4c91574accb4185533a198208fc44c85"
+      },
+      {
+        "id": "extract-code",
+        "path": "fixtures/k3_route12_native_success/extract-code.json",
+        "sha256": "572eee4a4e71b92b4cca01ff6d933919cd2c0e5144178cb05915f89275c5ebdd"
+      }
+    ]
+  },
   "gates": [
     "Every downloaded range must match its source SHA-256 and every shard must match its combined copied-range SHA-256.",
     "The 14 shard logical sizes and sparse allocated-byte total must match the registered geometry within filesystem block rounding.",
