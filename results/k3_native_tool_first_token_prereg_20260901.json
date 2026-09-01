@@ -1,0 +1,85 @@
+{
+  "schema": "kimi-k3-native-tool-first-token-prereg-v1",
+  "status": "PREREGISTERED",
+  "date": "2026-09-01",
+  "source": {
+    "research_branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "c07c3672a687e66e3f39c3aabec8451b28b490b8",
+    "production_branch": "perf/k3-production-ponytail",
+    "production_base_commit": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "executable": "/home/duster/k3-terminal-kl-bws-v2-guarded/server/build-progressive-hip/dflash_server",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c"
+  },
+  "question": "On the identical official-template get_weather history, how close are the frozen H23 1.8-GiB, H23 Budget24 and route12/Budget20 distributions to the recovered source-matched native Full192 teacher?",
+  "fixture": {
+    "path": "fixtures/k3_tool_weather_first_token_request.json",
+    "sha256": "fa18a5b47c98ddbb430c602e1a8738200e87b56dcbd5468889c4fb895ec00191",
+    "prompt_tokens": 147,
+    "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+    "max_tokens": 1,
+    "temperature": 0.0
+  },
+  "model": {
+    "first_shard": "/home/duster/kimi-k3-deploy/native-iq1s-slim-core/Kimi-K3-UD-IQ1_S-00001-of-00014.gguf",
+    "first_shard_sha256": "5022014e7c49d8844e9f1bc7d9fb824c0d640214540aa845690518d800286083",
+    "native_sparse_manifest_sha256": "37fa11843cd867b344c416c5e4ed0a8dcbe993fd897bb97268577e3ed3ef1070",
+    "sidecar_canonical_output_hash_map_sha256": "14257820be259752202ad73685ab23f8ddbd08e8d1ad7083fae993b6f1d73994"
+  },
+  "harness": {
+    "native": "scripts/run_kimi_exact_chat_closure.sh",
+    "native_sha256": "25d906e244010b4357be1238a88d1fa9260ed537e5e125aa771376a62f4182df",
+    "candidate": "scripts/run_kimi_progressive_tool_rescue.sh",
+    "candidate_sha256": "0378151f98bfcd73e1b3b578fbbcf93a6de09f72b2f4e8a48a616af4ddc9865e",
+    "analyzer": "scripts/analyze_kimi_native_tool_first_token.py",
+    "analyzer_sha256": "0cd3921fda9e8c8b9174a3b676f8a7ca7a3953929e2b3aa972ea43398d189fbc"
+  },
+  "arms": {
+    "native_full192": {
+      "root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r141-native-tool-first",
+      "provider": "all-layers-calibrated96",
+      "slab_budget": 192,
+      "route_count": 16
+    },
+    "h23": {
+      "root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r142-h23-aggressive-tool-first",
+      "policy": "/home/duster/lucebox-k3-b7b74cc/results/h23_10k_policies/h23_aggressive_1_8gib.txt",
+      "policy_sha256": "1d3f8737d884d9115ce8c4077d4a25088425cc29b826633d7af50280d906d403",
+      "route_count": 16
+    },
+    "moonshot": {
+      "root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r143-h23-moonshot-tool-first",
+      "policy": "/home/duster/lucebox-k3-b7b74cc/results/h23_10k_policies/h23_moonshot_1_2gib.txt",
+      "policy_sha256": "b73d203e9ae7d4f382baf3f30cf0381387596edda7a6fb16c6cf5c88626ad97a",
+      "route_count": 16
+    },
+    "route12_budget20": {
+      "root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r144-route12-b20-native-tool-first",
+      "policy": "fixtures/k3_uniform_budget20.txt",
+      "policy_sha256": "2f366aab82de990441dc61de870736b1acbf081f26b2aff11f63017dd53f697c",
+      "route_count": 12
+    }
+  },
+  "measurements": [
+    "full-vocabulary KL(native Full192 || candidate)",
+    "native and candidate top-1",
+    "candidate margin of the native top-1 over every other token",
+    "logical authoritative, sidecar and exact-fallback bytes per provider position",
+    "physical direct-read bytes and direct-I/O nanoseconds where reported",
+    "cold prefill/decode timing"
+  ],
+  "gates": {
+    "alignment": "All four arms must use one source commit, one executable, exactly the registered 147 prompt IDs and one generated token. Any mismatch invalidates the comparison.",
+    "strong_go": "route12/Budget20 agrees with native top-1, has positive native-token margin, stays below 1.2 logical GiB/provider-position and has terminal KL no worse than H23 aggressive-1.8.",
+    "behavioral_go": "route12/Budget20 agrees with native top-1, has positive native-token margin and stays below 1.2 logical GiB/provider-position, but its KL exceeds H23 aggressive-1.8. Preserve the distinction and earn only broader source-matched native KL measurement.",
+    "no_go": "route12/Budget20 misses native top-1, has non-positive native-token margin or reaches 1.2 logical GiB/provider-position. Stop this frozen policy without tuning the fixture.",
+    "production": "No production transplant from one terminal position. perf/k3-production-ponytail remains untouched."
+  },
+  "anti_tuning": "Run all four frozen arms once. Do not change the prompt, policies, route counts, model, executable, thresholds or logits direction after observing any arm.",
+  "limitations": [
+    "This is a source-matched causal discriminator at one known difficult boundary, not a quality suite.",
+    "Token equality is not distributional equivalence.",
+    "Cold token-sequential timing is not serving throughput.",
+    "The route12/Budget20 policy was discovered against the older Budget24 reference, so broader native validation is mandatory even if it passes."
+  ]
+}
