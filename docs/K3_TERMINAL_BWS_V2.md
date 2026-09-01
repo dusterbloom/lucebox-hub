@@ -411,3 +411,30 @@ this near miss.
 The immutable summary is
 `results/k3_terminal_bws_v2_prompt_tail_result_20260901.json`; raw arms r78--r81
 and analysis r82 remain on Lucebox4.
+
+## Periodic fidelity refresh
+
+A separate preregistered hypothesis tested whether uniform-Budget24 rows could
+periodically limit recurrent-state drift under a Budget20 base.  Period 8
+(positions 7 mod 8) and, conditionally, period 4 (positions 3 mod 4) were the
+only allowed densities.  This was a label-free schedule, not a longer tail or
+a tool-position oracle.
+
+Period 8 reduced `KL(P_B24 || P_arm)` by 25.1%, to 0.17674, at 1.16488
+logical GiB/provider-position.  Period 4 reduced it by **69.7%**, to 0.07151,
+at **1.18524 logical / 0.42491 physical GiB/provider-position**.  Neither arm
+restored the Budget24 first token.  Period 4 made the decision nearly tied,
+but still wrong: the Budget24 token margin was -0.0862 and token 1008 retained
+a +0.0862 top-1 margin.
+
+This is a measured **periodic-refresh NO-GO**.  Occasional rich rows improve
+the distribution but do not reset accumulated cheap-state error.  Denser
+refresh would consume the remaining `<1.2 GiB` margin and approach Budget24
+under another name, so this static schedule is closed.  The next experiment
+must allocate information inside routed layer/route/slab computation or use a
+real disagreement/risk observation; it should not tune modulo phase on the
+discovery fixture.
+
+The immutable summary is
+`results/k3_terminal_bws_v2_periodic_refresh_result_20260901.json`; raw arms
+r83--r84 and analysis r85 remain on Lucebox4.
