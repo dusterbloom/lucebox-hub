@@ -1,0 +1,59 @@
+{
+  "schema": "kimi-k3-route-prefix-prereg-v1",
+  "status": "PREREGISTERED_ROUTE_AXIS_SCREEN",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "43c6f33d",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4"
+  },
+  "question": "At equal uniform-Budget20 selected-slab capacity, is terminal information better preserved by concentrating slabs inside the router's highest-weight route prefix than by spreading candidates over all native 16 routes?",
+  "intervention": {
+    "environment": "DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT",
+    "allowed_values": [4, 6, 8, 12, 16],
+    "definition": "Only the first N routes from GGML's descending top-k router order are eligible for calibrated slabs or exact fallback. Retained native router weights are unchanged and omitted routes contribute zero; there is no renormalization in this screen.",
+    "scope": "Research-only, width-one execution. Production defaults and the native router remain unchanged when the environment variable is absent."
+  },
+  "fixture": {
+    "path": "fixtures/k3_tool_weather_first_token_request.json",
+    "sha256": "fa18a5b47c98ddbb430c602e1a8738200e87b56dcbd5468889c4fb895ec00191",
+    "prompt_tokens": 147,
+    "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c"
+  },
+  "policy": {
+    "path": "fixtures/k3_uniform_budget20.txt",
+    "sha256": "2f366aab82de990441dc61de870736b1acbf081f26b2aff11f63017dd53f697c",
+    "selected_slab_budget_per_layer_position": 20
+  },
+  "retained_controls": {
+    "route16_budget20": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r78-prompt-first-b20",
+    "budget24_reference": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r79-prompt-first-b24",
+    "control_executable_sha256": "1732c11ee4ea17621d08a6ec21451a9f703c8629aac82223488536d856130ffc"
+  },
+  "arms": [
+    {"route_limit": 12, "max_tokens": 1},
+    {"route_limit": 8, "max_tokens": 1},
+    {"route_limit": 6, "max_tokens": 1},
+    {"route_limit": 4, "max_tokens": 1}
+  ],
+  "measurements": [
+    "full-vocabulary KL(Budget24 reference || arm)",
+    "top-1 and Budget24-token margin",
+    "selected slabs split by retained route where available",
+    "logical sidecar and exact-fallback bytes",
+    "physical direct-read bytes and cold timings"
+  ],
+  "gates": {
+    "go": "At least one route-limited arm restores the Budget24 first token, reduces KL by at least 50% versus route16 Budget20, and does not increase logical authoritative bytes.",
+    "partial": "An arm reduces KL by at least 50% and improves the Budget24-token margin but misses top-1; this may earn one separately preregistered retained-weight renormalization check, not a quality claim.",
+    "no_go": "No arm materially improves KL/margin or every arm remains wrong. Preserve the route-prefix result and do not claim the route axis is generally closed; only this unrenormalized global-prefix policy is closed.",
+    "next_if_go": "Run one full-generation tool arm using the winning route count plus the validated schema rescue; require a valid tool call and lower bytes before held-out quality validation.",
+    "production": "No production transplant from this discovery fixture."
+  },
+  "limitations": [
+    "This screen uses a behaviorally successful Budget24 reference rather than native exact terminal logits.",
+    "One global route count cannot establish layer-adaptive route allocation.",
+    "Omitted-route weights are not renormalized; conclusions do not automatically transfer to a renormalized router.",
+    "Cold token-sequential timing is not serving throughput."
+  ]
+}
