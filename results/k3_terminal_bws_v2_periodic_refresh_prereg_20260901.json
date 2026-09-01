@@ -1,0 +1,69 @@
+{
+  "schema": "kimi-k3-periodic-refresh-prereg-v1",
+  "status": "PREREGISTERED_RECURRENT_STATE_REFRESH",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "f284ff542f3b3739d7ae1c54bd225e4df045926d",
+    "runtime_implementation_commit": "a5f9c1883a16bf0e0f8d2d0ddbf9a919270a181b",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4"
+  },
+  "prior": {
+    "result": "results/k3_terminal_bws_v2_prompt_tail_result_20260901.json",
+    "sha256": "625b6903373867a1d0e12f249f6c18605448e7b78eca797ae32bbed653ceb31c",
+    "observation": "Eight terminal Budget24 rows cut KL(Budget24||arm) by 74.0% but retained the wrong top-1, so recent higher-fidelity rows matter but a fixed eight-row tail is insufficient."
+  },
+  "hypothesis": "Budget20 corrupts the recurrent prompt trajectory cumulatively. A label-free periodic uniform-Budget24 refresh can limit that drift more efficiently than a terminal-only tail and restore the Budget24 first-token distribution below 1.2 logical GiB/provider-position.",
+  "fixture": {
+    "path": "fixtures/k3_tool_weather_first_token_request.json",
+    "sha256": "fa18a5b47c98ddbb430c602e1a8738200e87b56dcbd5468889c4fb895ec00191",
+    "prompt_tokens": 147,
+    "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c"
+  },
+  "controls": {
+    "budget20": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r78-prompt-first-b20",
+    "budget24_reference": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r79-prompt-first-b24",
+    "control_source_commit": "910da03a0125d76b29add32d45df63db24b530c4",
+    "executable_sha256": "1732c11ee4ea17621d08a6ec21451a9f703c8629aac82223488536d856130ffc"
+  },
+  "policies": {
+    "base": {
+      "path": "fixtures/k3_uniform_budget20.txt",
+      "sha256": "2f366aab82de990441dc61de870736b1acbf081f26b2aff11f63017dd53f697c"
+    },
+    "refresh_budget": 24
+  },
+  "arms": [
+    {
+      "name": "period8_first_token",
+      "period": 8,
+      "phase": 7,
+      "position_budgets": "7:24,15:24,23:24,31:24,39:24,47:24,55:24,63:24,71:24,79:24,87:24,95:24,103:24,111:24,119:24,127:24,135:24,143:24,151:24,159:24,167:24,175:24,183:24,191:24,199:24,207:24,215:24,223:24,231:24,239:24,247:24,255:24"
+    },
+    {
+      "name": "period4_first_token",
+      "period": 4,
+      "phase": 3,
+      "position_budgets": "3:24,7:24,11:24,15:24,19:24,23:24,27:24,31:24,35:24,39:24,43:24,47:24,51:24,55:24,59:24,63:24,67:24,71:24,75:24,79:24,83:24,87:24,91:24,95:24,99:24,103:24,107:24,111:24,115:24,119:24,123:24,127:24,131:24,135:24,139:24,143:24,147:24,151:24,155:24,159:24,163:24,167:24,171:24,175:24,179:24,183:24,187:24,191:24,195:24,199:24,203:24,207:24,211:24,215:24,219:24,223:24,227:24,231:24,235:24,239:24,243:24,247:24,251:24,255:24",
+      "conditional": "Run only if period8 misses Budget24 top-1 or fails to reduce KL toward Budget24."
+    }
+  ],
+  "protocol": {
+    "first_token": "Use max_tokens=1, schema rescue disabled, and compare full-vocabulary logits to the retained Budget24 reference.",
+    "full_generation": "If a periodic arm passes top-1 and improves KL, rerun the 64-token weather fixture with the identical schedule and the already-validated declared-name schema rescue enabled.",
+    "no_tail_tuning": "Do not add a longer fixed terminal tail or change the modulo phase on this discovery fixture."
+  },
+  "gates": {
+    "first_token_strong_go": "Budget24 top-1 is restored, KL is reduced by at least 50% versus Budget20, and logical traffic is below 1.2 GiB/provider-position.",
+    "first_token_partial_go": "Budget24 top-1 is restored with positive KL reduction below 1.2 GiB/provider-position; permit the full-generation arm but do not claim distributional equivalence.",
+    "full_generation_go": "Exactly one valid get_weather call for San Francisco, at least one schema rescue marker, and sequence-average logical traffic below 1.2 GiB/provider-position.",
+    "no_go": "Period4 still misses Budget24 top-1, does not improve KL, or exceeds 1.2 logical GiB/provider-position. Stop periodic static refresh.",
+    "next_if_full_go": "Freeze the schedule and validate on held-out native-success coding, reasoning, multilingual, extraction and tool-declared fixtures before any production transplant.",
+    "production": "Discovery-fixture success is research evidence only."
+  },
+  "limitations": [
+    "The modulo schedule is label-free but static; it is a causal discriminator, not yet an adaptive risk oracle.",
+    "Budget24 is the behaviorally successful reference on this tool fixture, not native K3.",
+    "Cold timing is not serving throughput."
+  ]
+}
