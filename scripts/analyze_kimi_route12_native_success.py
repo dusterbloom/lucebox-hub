@@ -17,7 +17,9 @@ ROUTE_MARKER = re.compile(
 
 
 def normalized(text: str) -> str:
-    return " ".join(text.lower().replace("’", "'").split())
+    subscript_digits = str.maketrans("₀₁₂₃₄₅₆₇₈₉", "0123456789")
+    return " ".join(
+        text.lower().replace("’", "'").translate(subscript_digits).split())
 
 
 def task_success(identifier: str, text: str) -> bool:
