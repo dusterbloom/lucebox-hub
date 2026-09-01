@@ -174,7 +174,7 @@ struct KimiK3PrefixSnapshot {
 };
 
 inline bool kimi_k3_exact_multirow_width(size_t width) {
-    return width == 8 || width == 64 || width == 1024;
+    return width == 8 || width == 16 || width == 64 || width == 1024;
 }
 
 inline MoeStreamExpertSpec make_kimi_k3_stream_spec(

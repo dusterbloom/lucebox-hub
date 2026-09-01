@@ -42,6 +42,35 @@ namespace {
 constexpr int kKimiDsparkHidden = 7168;
 constexpr int kKimiDsparkProposals = 7;
 constexpr int kKimiDsparkVerifyRows = 8;
+constexpr int kKimiV16VerifyRows = 16;
+
+const char * v16_oracle_path() {
+    const char * path = std::getenv("DFLASH_KIMI_EXPERIMENT_V16_ORACLE_TOKENS");
+    return path && *path ? path : nullptr;
+}
+
+bool load_experiment_token_ids(const char * path,
+                               std::vector<int32_t> & ids,
+                               std::string & error) {
+    std::ifstream input(path);
+    if (!input) {
+        error = std::string("cannot open V16 oracle tokens: ") + path;
+        return false;
+    }
+    int64_t token = 0;
+    while (input >> token) {
+        if (token < 0 || token > std::numeric_limits<int32_t>::max()) {
+            error = "V16 oracle token is outside int32 range";
+            return false;
+        }
+        ids.push_back(static_cast<int32_t>(token));
+    }
+    if (!input.eof() || ids.empty()) {
+        error = std::string("cannot parse V16 oracle tokens: ") + path;
+        return false;
+    }
+    return true;
+}
 
 bool write_experiment_logits(const char * path,
                              const std::vector<float> & logits,
@@ -60,6 +89,77 @@ bool write_experiment_logits(const char * path,
         error = std::string("cannot write experiment logits: ") + path;
         return false;
     }
+    return true;
+}
+
+bool write_experiment_state(const KimiK3Cache & cache,
+                            std::string & error) {
+    const char * path = std::getenv("DFLASH_KIMI_EXPERIMENT_STATE_OUT");
+    if (!path || !*path) return true;
+    std::ifstream existing(path, std::ios::binary);
+    if (existing.good()) {
+        error = std::string("refusing existing experiment state: ") + path;
+        return false;
+    }
+    std::ofstream output(path, std::ios::binary);
+    const std::array<char, 8> magic = {'K', '3', 'S', 'T', 'A', 'T', 'E', '1'};
+    const int32_t position = cache.cur_pos;
+    const int32_t layers = static_cast<int32_t>(cache.layers.size());
+    output.write(magic.data(), static_cast<std::streamsize>(magic.size()));
+    output.write(reinterpret_cast<const char *>(&position), sizeof(position));
+    output.write(reinterpret_cast<const char *>(&layers), sizeof(layers));
+    std::vector<uint8_t> buffer(8u << 20);
+    const auto write_tensor = [&] (
+            int32_t layer, uint8_t kind, ggml_tensor * tensor,
+            size_t bytes) {
+        const uint64_t stored_bytes = static_cast<uint64_t>(bytes);
+        output.write(reinterpret_cast<const char *>(&layer), sizeof(layer));
+        output.write(reinterpret_cast<const char *>(&kind), sizeof(kind));
+        output.write(
+            reinterpret_cast<const char *>(&stored_bytes),
+            sizeof(stored_bytes));
+        for (size_t offset = 0; offset < bytes;) {
+            const size_t chunk = std::min(buffer.size(), bytes - offset);
+            ggml_backend_tensor_get(tensor, buffer.data(), offset, chunk);
+            output.write(
+                reinterpret_cast<const char *>(buffer.data()),
+                static_cast<std::streamsize>(chunk));
+            offset += chunk;
+        }
+        return static_cast<bool>(output);
+    };
+    for (int32_t il = 0; il < layers; ++il) {
+        const KimiK3LayerCache & layer =
+            cache.layers[static_cast<size_t>(il)];
+        if (layer.conv_state && layer.ssm_state) {
+            if (!write_tensor(il, 1, layer.conv_state,
+                              ggml_nbytes(layer.conv_state)) ||
+                !write_tensor(il, 2, layer.ssm_state,
+                              ggml_nbytes(layer.ssm_state))) {
+                error = "cannot write Kimi-K3 recurrent experiment state";
+                return false;
+            }
+        } else if (layer.mla_k) {
+            const size_t bytes = layer.mla_k->nb[2] *
+                static_cast<size_t>(cache.cur_pos);
+            if (!write_tensor(il, 3, layer.mla_k, bytes)) {
+                error = "cannot write Kimi-K3 MLA experiment state";
+                return false;
+            }
+        } else {
+            error = "cannot write incomplete Kimi-K3 experiment state";
+            return false;
+        }
+    }
+    const std::streamoff stored_bytes = output.tellp();
+    output.close();
+    if (!output) {
+        error = std::string("cannot write experiment state: ") + path;
+        return false;
+    }
+    std::fprintf(stderr,
+        "[kimi-k3] state-capture path=%s position=%d bytes=%lld\n",
+        path, cache.cur_pos, static_cast<long long>(stored_bytes));
     return true;
 }
 
@@ -518,8 +618,9 @@ bool KimiK3Backend::init() {
     }
 
     std::string error;
+    const bool v16_oracle = v16_oracle_path() != nullptr;
     if (!apply_kimi_k3_production_defaults(
-            cfg_.draft_path && *cfg_.draft_path, error)) {
+            (cfg_.draft_path && *cfg_.draft_path) || v16_oracle, error)) {
         std::fprintf(stderr, "[kimi-k3] %s\n", error.c_str());
         return false;
     }
@@ -620,8 +721,10 @@ bool KimiK3Backend::init() {
         ? prefill_policy_.macro_width : 0;
     const char * paired_logits =
         std::getenv("DFLASH_KIMI_EXPERIMENT_PAIRED_LOGITS_OUT");
-    const int max_verify_tokens = draft_weights_.ctx
-        ? kKimiDsparkVerifyRows : paired_logits && *paired_logits ? 1 : 0;
+    const int max_verify_tokens = v16_oracle
+        ? kKimiV16VerifyRows
+        : draft_weights_.ctx
+            ? kKimiDsparkVerifyRows : paired_logits && *paired_logits ? 1 : 0;
     if (!create_kimi_k3_cache(
             backend_, weights_, max_ctx, cache_,
             std::max(replay_width, max_verify_tokens))) {
@@ -638,9 +741,11 @@ bool KimiK3Backend::init() {
         return false;
     }
 
-    const int required_exact_width = draft_weights_.ctx
-        ? kKimiDsparkVerifyRows
-        : (prefill_policy_.exact_multirow ? prefill_policy_.macro_width : 0);
+    const int required_exact_width = v16_oracle
+        ? kKimiV16VerifyRows
+        : draft_weights_.ctx
+            ? kKimiDsparkVerifyRows
+            : (prefill_policy_.exact_multirow ? prefill_policy_.macro_width : 0);
     if (required_exact_width > 0) {
         KimiK3RoutedPrefillService * service = routed_output_provider_
             ? routed_output_provider_->prefill_service() : nullptr;
@@ -689,9 +794,10 @@ bool KimiK3Backend::init() {
             const char * value = std::getenv(name);
             return value && std::strcmp(value, "8") == 0;
         };
-        if (required_exact_width != kKimiDsparkVerifyRows) {
+        if (required_exact_width < kKimiDsparkVerifyRows ||
+            required_exact_width % kKimiDsparkVerifyRows != 0) {
             std::fprintf(stderr,
-                "[kimi-k3] persistent Core8 requires exact Width8\n");
+                "[kimi-k3] persistent Core8 requires a full Width8 group\n");
             shutdown();
             return false;
         }
@@ -804,28 +910,29 @@ GenerateResult KimiK3Backend::generate_impl(
 
 bool KimiK3Backend::capture_last_logits(std::string & error) const {
     const char * path = std::getenv("DFLASH_KIMI_LOGITS_OUT");
-    if (!path || !*path) return true;
-    if (last_logits_.empty()) {
-        error = "DFLASH_KIMI_LOGITS_OUT requested without a logits row";
-        return false;
+    if (path && *path) {
+        if (last_logits_.empty()) {
+            error = "DFLASH_KIMI_LOGITS_OUT requested without a logits row";
+            return false;
+        }
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            error = std::string("cannot open Kimi-K3 logits output: ") + path;
+            return false;
+        }
+        const size_t bytes = last_logits_.size() * sizeof(float);
+        output.write(reinterpret_cast<const char *>(last_logits_.data()),
+                     static_cast<std::streamsize>(bytes));
+        output.close();
+        if (!output) {
+            error = std::string("cannot write Kimi-K3 logits output: ") + path;
+            return false;
+        }
+        std::fprintf(stderr,
+            "[kimi-k3] logits-capture path=%s position=%d values=%zu bytes=%zu\n",
+            path, last_logits_pos_, last_logits_.size(), bytes);
     }
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    if (!output) {
-        error = std::string("cannot open Kimi-K3 logits output: ") + path;
-        return false;
-    }
-    const size_t bytes = last_logits_.size() * sizeof(float);
-    output.write(reinterpret_cast<const char *>(last_logits_.data()),
-                 static_cast<std::streamsize>(bytes));
-    output.close();
-    if (!output) {
-        error = std::string("cannot write Kimi-K3 logits output: ") + path;
-        return false;
-    }
-    std::fprintf(stderr,
-        "[kimi-k3] logits-capture path=%s position=%d values=%zu bytes=%zu\n",
-        path, last_logits_pos_, last_logits_.size(), bytes);
-    return true;
+    return write_experiment_state(cache_, error);
 }
 
 GenerateResult KimiK3Backend::generate_from_state(
@@ -1041,6 +1148,109 @@ GenerateResult KimiK3Backend::generate_from_state(
     std::vector<int32_t> history;
     history.reserve(req.prompt.size() + static_cast<size_t>(req.n_gen));
     history.insert(history.end(), req.prompt.begin(), req.prompt.end());
+    if (const char * oracle_path = v16_oracle_path()) {
+        std::vector<int32_t> oracle;
+        std::string oracle_error;
+        if (!load_experiment_token_ids(oracle_path, oracle, oracle_error) ||
+            req.n_gen != kKimiV16VerifyRows + 2 ||
+            oracle.size() < static_cast<size_t>(req.n_gen)) {
+            return fail(GenerateErrorCode::DecodeFailed,
+                        oracle_error.empty()
+                            ? "V16 oracle requires n_gen=18 and 18 token IDs"
+                            : std::move(oracle_error));
+        }
+        const int32_t seed = choose_token(
+            logits, req.sampler, /*do_sample=*/false, history);
+        if (oracle.front() != seed) {
+            return fail(GenerateErrorCode::DecodeFailed,
+                        "V16 oracle seed does not match the candidate target");
+        }
+        const int base_pos = cache_.cur_pos;
+        if (!kimi_k3_replay_snapshot(backend_, cache_)) {
+            return fail(GenerateErrorCode::DecodeFailed,
+                        "V16 oracle cannot snapshot the target state");
+        }
+        const std::vector<int32_t> verify_tokens(
+            oracle.begin(), oracle.begin() + kKimiV16VerifyRows);
+        KimiK3ForwardOptions options;
+        options.capture_replay = true;
+        options.read_logits = true;
+        options.read_argmax = true;
+        options.routed_output_provider = routed_output_provider_.get();
+        options.exact_multirow_core = true;
+        KimiK3ForwardResult forward_result;
+        const auto target_begin = std::chrono::steady_clock::now();
+        if (!kimi_k3_forward(
+                backend_, weights_, cache_, verify_tokens, base_pos, options,
+                forward_result, &stream_engine_)) {
+            return fail(GenerateErrorCode::DecodeFailed,
+                        dflash27b_last_error());
+        }
+        const auto target_end = std::chrono::steady_clock::now();
+        if (forward_result.argmax.size() != kKimiV16VerifyRows ||
+            forward_result.logits.size() !=
+                static_cast<size_t>(weights_.n_vocab) * kKimiV16VerifyRows) {
+            return fail(GenerateErrorCode::DecodeFailed,
+                        "V16 oracle returned invalid target outputs");
+        }
+        for (int row = 0; row < kKimiV16VerifyRows; ++row) {
+            if (forward_result.argmax[static_cast<size_t>(row)] !=
+                oracle[static_cast<size_t>(row + 1)]) {
+                return fail(GenerateErrorCode::DecodeFailed,
+                            "V16 target diverged from its frozen scalar trajectory");
+            }
+        }
+        if (!kimi_k3_replay_commit(
+                backend_, weights_, cache_, base_pos, kKimiV16VerifyRows)) {
+            return fail(GenerateErrorCode::DecodeFailed,
+                        "V16 oracle cannot commit the target state");
+        }
+        last_logits_.assign(
+            forward_result.logits.end() - weights_.n_vocab,
+            forward_result.logits.end());
+        last_logits_pos_ = cache_.cur_pos;
+        const auto continuation_begin = std::chrono::steady_clock::now();
+        if (!kimi_k3_step(
+                backend_, weights_, cache_, oracle[kKimiV16VerifyRows],
+                cache_.cur_pos, logits, &stream_engine_,
+                routed_output_provider_.get())) {
+            return fail(GenerateErrorCode::DecodeFailed,
+                        "V16 oracle continuation step failed");
+        }
+        const auto continuation_end = std::chrono::steady_clock::now();
+        history.insert(
+            history.end(), oracle.begin(),
+            oracle.begin() + kKimiV16VerifyRows + 1);
+        const int32_t continuation = choose_token(
+            logits, req.sampler, /*do_sample=*/false, history);
+        if (continuation != oracle[kKimiV16VerifyRows + 1]) {
+            return fail(GenerateErrorCode::DecodeFailed,
+                        "V16 committed state diverged on the continuation");
+        }
+        last_logits_ = logits;
+        last_logits_pos_ = cache_.cur_pos;
+        result.tokens.assign(oracle.begin(), oracle.begin() + req.n_gen);
+        for (int32_t token : result.tokens) out_io.emit(token);
+        result.decode_s = std::chrono::duration<double>(
+            continuation_end - decode_begin).count();
+        result.accept_rate = 1.0f;
+        std::fprintf(stderr,
+            "[kimi-k3-v16-oracle] rows=16 target-ns=%llu "
+            "continuation-ns=%llu committed=16\n",
+            static_cast<unsigned long long>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    target_end - target_begin).count()),
+            static_cast<unsigned long long>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    continuation_end - continuation_begin).count()));
+        if (!capture_last_logits(oracle_error)) {
+            return fail(GenerateErrorCode::DecodeFailed,
+                        std::move(oracle_error));
+        }
+        out_io.emit(-1);
+        result.succeed();
+        return result;
+    }
     const bool can_spec = spec_target && !req.force_ar_decode &&
         !req.do_sample && req.budget_hook.close_token_ids.empty() &&
         !dynamic_routed_budget;

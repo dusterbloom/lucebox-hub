@@ -4107,15 +4107,22 @@ public:
     }
 
     bool supports_width(size_t width) const override {
-        if (width != 8 && width != 64 && width != 1024) {
+        const char * v16_path =
+            std::getenv("DFLASH_KIMI_EXPERIMENT_V16_ORACLE_TOKENS");
+        const bool v16_experiment = v16_path && *v16_path;
+        if (width != 8 && width != 64 && width != 1024 &&
+            !(v16_experiment && width == 16)) {
             return false;
         }
         if (!sidecar_authoritative_ || io_trace_.is_open() ||
-            p40_trace_.is_open() || route_limit_ != kNativeTopK) {
+            p40_trace_.is_open() ||
+            (route_limit_ != kNativeTopK &&
+             !(v16_experiment && route_limit_ == 12))) {
             return false;
         }
         const int budget = budget_for_layer(kFirstRoutedLayer);
-        if (budget != 24 && budget != 96) return false;
+        if (budget != 24 && budget != 96 &&
+            !(v16_experiment && budget == 16)) return false;
         for (int layer = kFirstRoutedLayer + 1;
              layer <= kLastRoutedLayer; ++layer) {
             if (budget_for_layer(layer) != budget) return false;
@@ -4523,7 +4530,7 @@ private:
             std::fill(effective_calibrated.begin(),
                       effective_calibrated.end(), uint8_t{1});
         }
-        for (int route = 0; route < kNativeTopK; ++route) {
+        for (int route = 0; route < route_limit_; ++route) {
             if (selected_ids[route] < 0 ||
                 selected_ids[route] >= kExpertCount ||
                 !std::isfinite(route_weights[route])) {
@@ -4533,13 +4540,13 @@ private:
         }
         const KimiK3CalibratedSlabPlan plan =
             plan_kimi_k3_calibrated_slabs(
-                selected_ids, route_weights, kNativeTopK,
+                selected_ids, route_weights, route_limit_,
                 state.importance.data(), effective_calibrated.data(),
                 kExpertCount, kSlabCount, layer_budget);
         token_plan = {};
         token_plan.selected_count =
             static_cast<int>(plan.selected_slab_ids.size());
-        for (int route = 0; route < kNativeTopK; ++route) {
+        for (int route = 0; route < route_limit_; ++route) {
             const int expert = selected_ids[route];
             if (effective_calibrated[static_cast<size_t>(expert)]) {
                 token_plan.stable_routes.push_back(route);
@@ -4561,7 +4568,7 @@ private:
             const int expert = pseudo / kSlabCount;
             const int rank = pseudo % kSlabCount;
             int selected_route = -1;
-            for (int route = 0; route < kNativeTopK; ++route) {
+            for (int route = 0; route < route_limit_; ++route) {
                 if (selected_ids[route] == expert) {
                     selected_route = route;
                     break;
@@ -4574,7 +4581,7 @@ private:
             selected[static_cast<size_t>(selected_route)]
                     [static_cast<size_t>(rank)] = 1;
         }
-        for (int route = 0; route < kNativeTopK; ++route) {
+        for (int route = 0; route < route_limit_; ++route) {
             const int expert = selected_ids[route];
             if (!effective_calibrated[static_cast<size_t>(expert)]) continue;
             token_plan.masks[static_cast<size_t>(route)] =
@@ -6410,7 +6417,7 @@ private:
             ++state.traffic.tokens;
             state.traffic.requested_nominal_slabs += layer_budget;
             state.traffic.selected_slab_records += plan.selected_count;
-            state.traffic.calibrated_routes += kNativeTopK;
+            state.traffic.calibrated_routes += route_limit_;
             state.traffic.calibrated_routes -= plan.fallback_routes.size();
             state.traffic.exact_fallback_routes +=
                 plan.fallback_routes.size();

@@ -1,0 +1,31 @@
+{
+  "schema": "dflash.kimi-k3.route12-budget16-v16-oracle-prereg.v1",
+  "date": "2026-09-01",
+  "question": "Can one route12/Budget16 V16 target step execute in at most 1.55 seconds while reproducing its frozen scalar trajectory and a state-sensitive continuation?",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "head_before_patch": "85727b24535eb22e8bcf977a506cf898c820d872",
+    "production_branch": "perf/k3-production-ponytail",
+    "production_head_untouched": "fac048c090c74e5f8f989bffcda3aadc0bc8c266"
+  },
+  "hardware": "Lucebox4; gfx1151 target; single owner; build parallelism at most 4",
+  "frozen_inputs": {
+    "prompt_ids_sha256": "fd835f624d053f0f2bf3241481570077d98cddaa0e951c5e6828c17add545dcd",
+    "native_target_ids_sha256": "2a90dd5334722853fe64997b313c0c9489f60e858bd40eeca292fafe07ffcb74",
+    "uniform_budget16_sha256": "4e40e7b834baf78152ff39a2f5cfec99fb5af52527633c123cb77cb0aa2a325e",
+    "route_limit": 12
+  },
+  "protocol": [
+    "Run scalar route12/Budget16 for 18 generated IDs and freeze that candidate trajectory.",
+    "Run one 16-row grouped target step over the first 16 candidate IDs, require all 16 argmax rows to match IDs 1 through 16, and commit all rows.",
+    "Run one scalar continuation from the committed state and require the next argmax to match candidate ID 17.",
+    "Require byte-identical final continuation logits versus the scalar control and identical logical policy inputs.",
+    "Report target-step wall separately from the untimed scientific interpretation; do not call the target-only oracle deployable throughput."
+  ],
+  "gate": {
+    "go": "target step <= 1.55 seconds, complete 16/16 trajectory agreement, continuation agreement, byte-identical continuation logits, no macro/provider failure, and valid telemetry",
+    "promising_but_incomplete": "target step > 1.55 and <= 1.75 seconds with all correctness gates; retain only as an optimization candidate",
+    "no_go": "target step > 1.75 seconds, any correctness failure, or any macro/provider runtime failure"
+  },
+  "scope": "Research-only target ceiling. Registered exact-route fallback bytes remain part of the route12/Budget16 policy and must be reported; they are not a runtime failure. This is not native-exact K3, a real draft result, or production promotion."
+}

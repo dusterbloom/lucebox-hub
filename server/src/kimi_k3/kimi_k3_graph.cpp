@@ -3,6 +3,7 @@
 
 #include "common/cuda_graph_overrides.h"
 #include "common/moe_router_graph.h"
+#include "delta_net_chunked.h"
 #include "internal.h"
 
 #include "ggml-alloc.h"
@@ -230,21 +231,34 @@ ggml_tensor * build_kda(ggml_context * ctx,
     k = ggml_l2_norm(ctx, k, w.rms_eps);
     ggml_tensor * state = ggml_reshape_4d(ctx, cache.ssm_state,
         head_dim, head_dim, n_head, 1);
-    ggml_tensor * packed = ggml_gated_delta_net(ctx, q, k, v, decay, beta, state);
-    ggml_gated_delta_net_set_skip_intermediate(packed, true);
-
-    const size_t elt = ggml_element_size(packed);
-    ggml_tensor * output = ggml_view_4d(ctx, packed,
-        head_dim, n_head, n_tokens, 1,
-        static_cast<size_t>(head_dim) * elt,
-        static_cast<size_t>(head_dim) * n_head * elt,
-        static_cast<size_t>(head_dim) * n_head * n_tokens * elt, 0);
-    ggml_tensor * new_state = ggml_view_4d(ctx, packed,
-        head_dim, head_dim, n_head, 1,
-        static_cast<size_t>(head_dim) * elt,
-        static_cast<size_t>(head_dim) * head_dim * elt,
-        static_cast<size_t>(head_dim) * head_dim * n_head * elt,
-        static_cast<size_t>(head_dim) * n_head * n_tokens * elt);
+    const char * chunked_env =
+        std::getenv("DFLASH_KIMI_EXPERIMENT_CHUNKED_KDA");
+    const bool use_chunked = n_tokens > 1 && chunked_env &&
+        std::strcmp(chunked_env, "1") == 0;
+    ggml_tensor * output = nullptr;
+    ggml_tensor * new_state = nullptr;
+    if (use_chunked) {
+        const DeltaNetChunkedResult chunked = build_delta_net_chunked(
+            ctx, q, k, v, decay, beta, state);
+        output = chunked.output;
+        new_state = chunked.new_state;
+    } else {
+        ggml_tensor * packed =
+            ggml_gated_delta_net(ctx, q, k, v, decay, beta, state);
+        ggml_gated_delta_net_set_skip_intermediate(packed, true);
+        const size_t elt = ggml_element_size(packed);
+        output = ggml_view_4d(ctx, packed,
+            head_dim, n_head, n_tokens, 1,
+            static_cast<size_t>(head_dim) * elt,
+            static_cast<size_t>(head_dim) * n_head * elt,
+            static_cast<size_t>(head_dim) * n_head * n_tokens * elt, 0);
+        new_state = ggml_view_4d(ctx, packed,
+            head_dim, head_dim, n_head, 1,
+            static_cast<size_t>(head_dim) * elt,
+            static_cast<size_t>(head_dim) * head_dim * elt,
+            static_cast<size_t>(head_dim) * head_dim * n_head * elt,
+            static_cast<size_t>(head_dim) * n_head * n_tokens * elt);
+    }
     if (commit_state) {
         ggml_build_forward_expand(graph,
             ggml_cpy(ctx, new_state, cache.ssm_state));
@@ -3453,13 +3467,14 @@ bool streamed_kimi_k3_forward_exact_multirow(
         }
     }
     if (persistent_core8 &&
-        (!persistent_requested || macro_width != kExactCoreGroupWidth8 ||
-         active_rows != kExactCoreGroupWidth8 ||
+        (!persistent_requested ||
+         macro_width % kExactCoreGroupWidth8 != 0 ||
+         active_rows != macro_width ||
          exact_core_group_width != kExactCoreGroupWidth8 ||
          exact_tail_group_width != kExactCoreGroupWidth8 ||
          !deferred_router)) {
         set_last_error(
-            "DFLASH_KIMI_P58_PERSISTENT_CORE8 requires one full V8, "
+            "DFLASH_KIMI_P58_PERSISTENT_CORE8 requires full V8 groups, "
             "P46, exact Core8/Tail8, and Router8");
         return false;
     }

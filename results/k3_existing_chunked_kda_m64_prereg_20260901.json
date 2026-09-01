@@ -1,0 +1,31 @@
+{
+  "schema": "dflash.kimi-k3.existing-chunked-kda-m64-prereg.v1",
+  "date": "2026-09-01",
+  "question": "Can the existing generic ggml chunked KDA helper materially reduce the current exact-macro causal core on Lucebox4 without changing terminal logits or any committed KDA/MLA state byte?",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "head_before_patch": "85727b24535eb22e8bcf977a506cf898c820d872",
+    "production_branch": "perf/k3-production-ponytail",
+    "production_head_untouched": "fac048c090c74e5f8f989bffcda3aadc0bc8c266"
+  },
+  "prior": {
+    "current_m64_causal_core_seconds_approx": 4.1,
+    "current_m1024_causal_core_seconds": 77.416880,
+    "helper_origin": "direct port of llama.cpp delta-net chunking already present in server/src/delta_net_chunked.cpp",
+    "known_warning": "The helper previously produced final-state drift in Qwen3.5; this experiment treats that as a preregistered risk, not a surprise to explain away."
+  },
+  "protocol": [
+    "Build one binary and run a same-binary M64 control/candidate/reversal on Lucebox4 gfx1151 under the single-owner GPU lease.",
+    "The only candidate switch is DFLASH_KIMI_EXPERIMENT_CHUNKED_KDA=1; the control leaves it unset.",
+    "Keep the exact-macro provider policy, prompt IDs, route/slab policy, cache sizes, and all other execution flags identical.",
+    "Capture full terminal logits and a canonical binary dump of every committed recurrent convolution state, recurrent SSM state, and populated MLA row after the state-sensitive continuation.",
+    "Require byte-identical logits and state dumps, identical output IDs, identical logical traffic, and no provider/runtime fallback before interpreting timing.",
+    "Run M1024 only after an M64 GO."
+  ],
+  "gate": {
+    "go": "all exactness gates pass and candidate causal-core wall is at most 50% of the matched control",
+    "promising_but_incomplete": "all exactness gates pass and candidate causal-core wall is below 80% but above 50% of control; retain only as a kernel-optimization lead",
+    "no_go": "any exactness failure, any runtime failure, or less than 20% matched causal-core reduction"
+  },
+  "scope": "This is the cheapest test of the existing helper inside today's Core8-grouped executor. A negative result does not falsify a true prompt-wide DPLR/FlashKDA kernel, because this path sees eight-row groups and uses generic ggml operators. It must not be called FlashKDA or a 100 tok/s result."
+}
