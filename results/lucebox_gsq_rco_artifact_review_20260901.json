@@ -1,0 +1,114 @@
+{
+  "schema": "dflash.lucebox.gsq-rco-artifact-review.v1",
+  "status": "IMMUTABLE_SOURCE_REVIEW",
+  "created_utc": "2026-09-01",
+  "source_branch": "experiment/k3-terminal-kl-bws-v2",
+  "source_commit_before_review": "fc3cd9f90853cee85026f639d4703c76e5b5e478",
+  "artifact": {
+    "repository": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
+    "revision": "888cc868537099e09a9c4f41a2b9a421b346f88b",
+    "last_modified": "2026-09-01T11:51:50Z",
+    "readme_sha256": "37978f1c37de9d71a8d1612bf8f7e57e1792f018d1832775ee76cfe903cdfdd0",
+    "model_api_capture_sha256": "b10dda38a4a36f2d4a1fe93c33fe3b394055c85bf94f16f692e8ea267ab28505",
+    "iq2_s_allocation_sha256": "5ef89178788363edf97852d13badadab432e0e791f4cd8564a1ebe2564b67ecb",
+    "iq3_s_allocation_sha256": "5148660ef0bb74f743106845c421e7acaf562dbb9a6bed3ea24dc01feb2005b1",
+    "gsq_code_revision": "03fc16484c369e3127225615d5e03e8d3a6043e3",
+    "rco_code_revision": "9a1e09c07d468109cbe60a1b87d5036034a79d10",
+    "papers": [
+      "arXiv:2604.18556v2",
+      "arXiv:2605.00649v2"
+    ]
+  },
+  "published_artifact_evidence": {
+    "base_model": "Qwen3.8-27B",
+    "model_is_moe": false,
+    "calibration": "importance matrix from 1000 chunks of 4096 tokens",
+    "files": [
+      {
+        "name": "Qwen3.8-27B-GSQ-RCO-IQ2_XS.gguf",
+        "bpw": 2.50,
+        "size_gb": 8.4
+      },
+      {
+        "name": "Qwen3.8-27B-GSQ-RCO-IQ2_S.gguf",
+        "bpw": 2.75,
+        "size_gb": 9.3
+      },
+      {
+        "name": "Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf",
+        "bpw": 3.00,
+        "size_gb": 10.1
+      },
+      {
+        "name": "Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf",
+        "bpw": 3.50,
+        "size_gb": 11.8
+      }
+    ],
+    "bf16_reference": {
+      "size_gb": 53.8,
+      "aime25": 100.00,
+      "gpqa_diamond": 89.90,
+      "livecodebench_v6": 85.71
+    },
+    "gsq_rco_iq3_s": {
+      "aime25": 100.00,
+      "gpqa_diamond": 89.39,
+      "livecodebench_v6": 85.71
+    },
+    "equal_size_iq2_comparison": {
+      "size_gb": 8.4,
+      "gsq_rco_iq2_xs": {
+        "aime25": 96.67,
+        "gpqa_diamond": 84.85,
+        "livecodebench_v6": 76.57
+      },
+      "ud_iq2_s": {
+        "aime25": 86.67,
+        "gpqa_diamond": 76.26,
+        "livecodebench_v6": 72.00
+      }
+    },
+    "iq2_s_type_counts": {
+      "BF16": 96,
+      "F32": 353,
+      "IQ1_M": 18,
+      "IQ1_S": 7,
+      "IQ2_S": 62,
+      "IQ2_XS": 46,
+      "IQ2_XXS": 59,
+      "IQ3_S": 64,
+      "IQ3_XXS": 82,
+      "IQ4_XS": 14,
+      "Q2_K": 41,
+      "Q4_K": 9
+    }
+  },
+  "transferable_findings": [
+    "GSQ improves discrete scalar assignments and group scales while projecting the result back into standard deployment formats, so it can improve quality without earning a new HIP decoder.",
+    "RCO optimizes a non-decomposable model loss under an exact global byte budget instead of summing independent local proxy scores.",
+    "The published allocation is highly non-uniform even within one semantic role. A role supplies floors and priors; it should not hard-code one precision for every layer.",
+    "The allocation preserves hundreds of small recurrent/control tensors in BF16/F32 while varying precision over the large matrices, independently reproducing the structural lesson from Hy4.",
+    "The public RCO implementation supports grouping by layer, expert, or regex and includes a separate MoE expert-pruning application."
+  ],
+  "limitations": [
+    "The reviewed artifact is a 27B dense/hybrid model, not a greater-than-300-GB MoE deployment.",
+    "The reported quality suite has no full-vocabulary terminal KL, tool-call boundary, structured-output, or Lucebox performance measurement.",
+    "GSQ's published optimization target is layer reconstruction, not K3 terminal KL.",
+    "The public RCO quantization pipeline assigns whole tensors/layers. It does not directly implement K3 route-by-slab-by-fidelity allocation.",
+    "Using RCO's non-decomposable objective on K3 requires a differentiable terminal evaluator or a validated differentiable surrogate; the current llama.cpp captured-state path is not autograd-enabled.",
+    "The exact-budget dynamic program must be proven tractable after byte discretization before expanding from representative layers to all K3 route/slab groups."
+  ],
+  "decision": "PROMOTE_GSQ_ARM_DEFER_RCO_RUNTIME",
+  "interpretation": "Make GSQ-refined standard scalar formats a mandatory native/source-compatible candidate in the Lucebox codec deathmatch. Retain RCO as the preferred joint allocator only after a terminal estimator or differentiable captured-state evaluator passes the Phase B correlation gate. Do not build a new kernel or full RCO subsystem from this artifact.",
+  "next_discriminator": {
+    "name": "same-format GSQ captured-state screen",
+    "scope": "Representative gate/up/down tensors or K3 slabs at byte-identical standard GGUF formats, using route-aware calibration and held-out captured states.",
+    "controls": [
+      "current quantizer at identical stored bytes",
+      "Hy4-style STQ where format-compatible",
+      "unmodified authoritative deployment tensor"
+    ],
+    "gate": "Proceed to terminal intervention only if GSQ lowers held-out routed-output error at identical bytes on at least two semantic roles without a catastrophic individual-row regression. A terminal optimizer is earned only after its proxy predicts exact interventions better than the current selector."
+  }
+}

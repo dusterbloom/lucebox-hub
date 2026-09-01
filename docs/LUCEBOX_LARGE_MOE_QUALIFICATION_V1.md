@@ -60,6 +60,41 @@ compressed GEMV written; on gfx1151 that changed roughly 7.8 to 17.9 tok/s.
 That is the default order for a new codec. Correctness and a usable artifact
 come before a specialized decode kernel.
 
+## GSQ-RCO update: refine standard formats, then allocate them
+
+The `ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF` artifact at revision
+`888cc868537099e09a9c4f41a2b9a421b346f88b` adds two useful, separable
+techniques:
+
+- **GSQ** learns discrete scalar grid assignments and group scales, then
+  materializes ordinary GGUF scalar formats. It is therefore a mandatory
+  native-source codec arm before Trellis or a new HIP decoder is considered.
+- **RCO** chooses a mixed tensor allocation under an exact global byte budget
+  using the actual non-decomposable objective. Its idea matches the eventual
+  `route x slab x fidelity` problem better than independent local scores.
+
+The reviewed artifact is a 27B dense/hybrid model, not a greater-than-300-GB
+MoE, and supplies no K3 terminal-KL, tool-boundary, or Lucebox measurement.
+Its phrase "task-lossless" applies only to the published AIME25, GPQA-Diamond,
+and LiveCodeBench evaluations. It is not evidence of distributional, tool, or
+universal output equivalence.
+
+The public IQ2_S plan nevertheless contains an important structural result:
+it uses 12 distinct GGUF types, makes highly irregular choices within the
+same projection role, and retains 449 small tensors in BF16/F32. This agrees
+with Hy4 and DeepSeek4 independently. Semantic roles should impose floors and
+priors, while evidence chooses individual fidelity; a model-wide bpw label is
+only an artifact summary.
+
+RCO is not yet an earned K3 subsystem. Its true-loss optimizer requires a
+differentiable forward or validated differentiable terminal surrogate, while
+the current captured-state llama.cpp intervention path is not autograd based.
+Until Phase B passes its held-out correlation gate, use the simple discrete
+allocator over measured utilities. If the gate passes, test RCO first on a
+representative layer with byte-discretization and tractability measurements.
+The immutable source review is
+`results/lucebox_gsq_rco_artifact_review_20260901.json`.
+
 ## Model intake matrix
 
 The common inventory must represent the following known differences without
@@ -244,7 +279,8 @@ From the same authoritative tensor samples and route-aware calibration, fit a
 small common arm set:
 
 1. the current qualified scalar/IQ control;
-2. a conventional low-bit scalar or GSQ-like arm;
+2. the same standard GGUF target format refined with GSQ, at identical stored
+   bytes;
 3. adaptive per-expert scalar codebooks where evidence supports them;
 4. STQ for eligible gate/up surfaces;
 5. a Trellis proxy only if an existing reference implementation is cheap to
@@ -275,6 +311,13 @@ the remaining bytes maximize measured terminal information saved per byte.
 Run short native-success, exact-copy, structured-output, and known boundary
 fixtures before a broad suite. Static route-count or slab-count reductions
 are separate approximation axes and cannot hide inside a quantization result.
+
+Use exact dynamic programming or a simple constrained allocator when the
+objective is a sum of measured utilities. A non-decomposable RCO-style
+allocator is eligible only after the terminal surrogate predicts exact
+interventions better than local residual ranking on held-out layers. Preserve
+its candidate database and emitted allocation as immutable artifacts; the
+allocation file is compiled evidence, not a hand-authored codec recipe.
 
 ### R5 — broad quality
 
@@ -491,8 +534,10 @@ end-to-end fixture under the same clocks and ownership.
 
 Stream a small set of highest-authority expert tensors from at least
 gate/up/down roles for two materially different MoEs. Fit STQ1_0, a
-conventional scalar/GSQ-like low-bit arm, and the current IQ control from the
-same route-aware calibration. Inject each into held-out native trajectories.
+GSQ-refined standard scalar arm, and the current standard/IQ control from the
+same route-aware calibration. The GSQ arm and its control must have exactly
+the same stored format and bytes. Inject each into held-out native
+trajectories.
 
 Use "highest-authority source" rather than BF16 for a QAT-native model. The
 first two targets should be Hy4 and one structurally different source for which
@@ -532,6 +577,7 @@ The best expert can already reject the following, so v1 does not build them:
 
 - a universal Hy4 tensor-type file;
 - a large format-agnostic quantization framework;
+- a full RCO optimizer before a differentiable or validated terminal surrogate;
 - an STQ HIP kernel calibrated from K3 IQ1_S;
 - a low-bit MMQ before dequant-once plus dense GEMM is measured;
 - a duplicated decode/prefill expert bank;

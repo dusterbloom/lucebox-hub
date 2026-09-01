@@ -34,6 +34,15 @@
   Instinct-only support listing.
 - Preserve the staged executor rule: reference dequant+dense first; earn a
   compressed GEMV/MMQ only from an end-to-end bottleneck and equal-output gate.
+- Make GSQ refinement of an existing standard GGUF format a mandatory
+  equal-byte codec arm. It is attractive precisely because it does not require
+  a new decoder or kernel.
+- Do not implement full RCO for K3 yet. Its non-decomposable terminal objective
+  needs a differentiable evaluator or a held-out validated terminal surrogate;
+  until then use the smallest discrete allocator over measured utilities.
+- Treat an RCO allocation as compiled evidence, not a universal per-role
+  recipe. Preserve the candidate database, exact budget, constraints, emitted
+  assignment, and objective traces.
 
 ## Current provenance
 
@@ -55,6 +64,14 @@
   `6d03d03c2219f6bbc632a7798355669ffd4bf8f4dbc815d56c3f1da25bb4aa0a`.
 - K3 STQ held-out decision SHA-256 before commit:
   `acb1f221fab6c3ff4bcde16adaad8b09a274c540803cab31d9d7022dc7a20907`.
+- Qwen3.8 GSQ-RCO artifact revision:
+  `888cc868537099e09a9c4f41a2b9a421b346f88b`.
+- Qwen3.8 GSQ-RCO README SHA-256:
+  `37978f1c37de9d71a8d1612bf8f7e57e1792f018d1832775ee76cfe903cdfdd0`.
+- GSQ code revision: `03fc16484c369e3127225615d5e03e8d3a6043e3`.
+- RCO code revision: `9a1e09c07d468109cbe60a1b87d5036034a79d10`.
+- GSQ-RCO immutable source-review SHA-256 before commit:
+  `bfce83e90e2e816bc6ee23fdcab579e52b0b5c4e0b9ca4c183857a3a285ba875`.
 - V16 preregistration SHA-256:
   `af210eaa8365af576b74743118943d96616cd5ed4df8c4479f1641ceeb8b0dd6`
 - Chunked-KDA preregistration SHA-256:

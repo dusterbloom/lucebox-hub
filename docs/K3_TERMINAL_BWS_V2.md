@@ -870,3 +870,24 @@ gate, and cross-model process are recorded in
 `docs/LUCEBOX_LARGE_MOE_QUALIFICATION_V1.md`.  Production
 `perf/k3-production-ponytail` remains untouched at
 `fac048c090c74e5f8f989bffcda3aadc0bc8c266`.
+
+## GSQ-RCO allocator watch
+
+The Qwen3.8-27B GSQ-RCO release was frozen at Hugging Face revision
+`888cc868537099e09a9c4f41a2b9a421b346f88b`. It is not a K3 or large-MoE
+result, but it contributes two distinct candidates. GSQ refines scalar
+assignments and scales while emitting standard GGUF formats, so an equal-byte
+same-format GSQ arm is now preferred over earning a new codec kernel. RCO
+optimizes a non-decomposable objective under an exact byte budget, which is a
+plausible future allocator for `route x slab x fidelity`.
+
+RCO is deferred: current K3 captured interventions are not differentiable,
+and GSQ itself is trained against layer reconstruction rather than terminal
+KL. The next earned test is a route-aware, held-out, same-format GSQ screen on
+representative gate/up/down tensors or slabs. It advances to terminal
+intervention only after beating the current quantizer at identical stored
+bytes without catastrophic individual-row regressions. RCO advances only
+after the Phase B terminal predictor beats residual/norm ranking on held-out
+layers. No GSQ-specific decoder, HIP kernel, or large allocator subsystem is
+earned by the published artifact alone. The immutable review is
+`results/lucebox_gsq_rco_artifact_review_20260901.json`.
