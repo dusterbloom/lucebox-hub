@@ -1,0 +1,409 @@
+{
+  "schema": "kimi-k3-route12-h22-avg16-result-v1",
+  "status": "MEASURED_ROUTE12_H22_AVG16_NO_GO",
+  "preregistration_sha256": "21f9998de90c84de5b5ad860a7eaf6b66b752c112da5a3d236b2b9bc403558a6",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "72beb73b",
+    "implementation_commit": "4bb8bd38",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+    "runner_sha256": "1aaf62571527f32161710ff116d2b3d97a0f27f11e012d2b142d66e074e74230",
+    "analyzer": "scripts/analyze_kimi_route12_h22_avg16.py",
+    "analyzer_sha256": "a8b6a3aa4fc82c65212e6e1b2412f20f4af598d778f70f9b295c065041638059",
+    "measured_commit": "c0c3b4a2275758fb228cb096922423f174cd5d66"
+  },
+  "policy_summaries": {
+    "conservative": {
+      "nominal_slab_sum": 1472,
+      "average_nominal_slabs": 16.0,
+      "budget_counts": {
+        "16": 46,
+        "20": 23,
+        "12": 23
+      }
+    },
+    "sharp": {
+      "nominal_slab_sum": 1472,
+      "average_nominal_slabs": 16.0,
+      "budget_counts": {
+        "16": 46,
+        "24": 23,
+        "8": 23
+      }
+    }
+  },
+  "arms": {
+    "budget24_reference": {
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r79-prompt-first-b24",
+      "source_commit": "910da03a0125d76b29add32d45df63db24b530c4",
+      "executable_sha256": "1732c11ee4ea17621d08a6ec21451a9f703c8629aac82223488536d856130ffc",
+      "manifest_sha256": "9abad806e519bf4d525375545579098657f5d154860bdd84a3f4ca9e9baf6fde",
+      "command_sha256": "52673e3cc8233624d4d37867b9e6326fb51d82ec2bf3e7a93a4b2d016c9bb9f9",
+      "environment_sha256": "0b2a455ee74daec523e1cbda37d922b258990173139c9acc41bafff1b692c623",
+      "response_sha256": "06170910b71e1aa6f95fca6e75784c8f53b04e83099a348b7fac131ffb6fe4ab",
+      "logits_sha256": "27c2c61a9d6ac92a5a7750530db2a9c61a9cbed363bc57bcac28ed5677e8d905",
+      "traffic_sha256": "5c0e17733d031c48a31acc69a3846e41ff500b5c8c29feb8ff41998efe180324",
+      "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+      "generated_ids": [
+        163588
+      ],
+      "rescue_markers": [],
+      "tool_call_valid": false,
+      "tool_call": {
+        "finish_reason": "length",
+        "tool_calls": 0
+      },
+      "usage": {
+        "accept_rate": 0.0,
+        "completion_tokens": 1,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 147,
+        "spec_decode_ran": false,
+        "timings": {
+          "agent_turn_cache_hit": false,
+          "cache_hit": false,
+          "cached_prefix_tokens": 0,
+          "decode_ms": 0.2,
+          "decode_tokens_per_sec": 6012.6,
+          "effective_prompt_tokens": 147,
+          "prefill_ms": 125424.7,
+          "prefilled_tokens": 147
+        },
+        "total_tokens": 148
+      },
+      "traffic": {
+        "requested_nominal_slabs": 324576,
+        "selected_slab_records": 324576,
+        "selected_sidecar_bytes": 178942869504,
+        "exact_fallback_bytes": 31291502592,
+        "total_provider_bytes": 210234372096,
+        "provider_positions": 147,
+        "logical_bytes_per_position": 1430165796.5714285,
+        "logical_gib_per_position": 1.3319456917898995,
+        "fallback_gib_per_position": 0.19824818202427455,
+        "explicit_provider_reads": 76204236800,
+        "direct_physical_bytes": 76204236800,
+        "direct_physical_gib_per_position": 0.482794054511453,
+        "direct_io_ns": 67601109224
+      }
+    },
+    "route12_budget20_reference": {
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r87-route12-first",
+      "source_commit": "119a3d1bcd7c1d2b2c7c842849a214c3ab0702b7",
+      "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+      "manifest_sha256": "c4e996cb46970c339b0a565c13565363b32344b0935d5ecc619513df662d8b18",
+      "command_sha256": "152170fbdc03b16f002c8241fc60219fae392a7143365d95bdfba604c5661a9f",
+      "environment_sha256": "624a189f9d84e992c6d924c61581a1f7492efb912e27bc2e722b53d1744b4253",
+      "response_sha256": "941c054ae8c81d36900cede414d8841860968a4a5442c9c64750dc94cd5b5f47",
+      "logits_sha256": "234511ee03402accf45833c5ce37b7ccca060d40d8e7dc1ea3a923aba189b0c6",
+      "traffic_sha256": "fd6ebfd58832b6da763747ebe68909768b64ead180c85e0ff5185ee626f7855f",
+      "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+      "generated_ids": [
+        163588
+      ],
+      "rescue_markers": [],
+      "tool_call_valid": false,
+      "tool_call": {
+        "finish_reason": "length",
+        "tool_calls": 0
+      },
+      "usage": {
+        "accept_rate": 0.0,
+        "completion_tokens": 1,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 147,
+        "spec_decode_ran": false,
+        "timings": {
+          "agent_turn_cache_hit": false,
+          "cache_hit": false,
+          "cached_prefix_tokens": 0,
+          "decode_ms": 0.2,
+          "decode_tokens_per_sec": 6250.9,
+          "effective_prompt_tokens": 147,
+          "prefill_ms": 125917.1,
+          "prefilled_tokens": 147
+        },
+        "total_tokens": 148
+      },
+      "traffic": {
+        "requested_nominal_slabs": 270480,
+        "selected_slab_records": 270480,
+        "selected_sidecar_bytes": 149119057920,
+        "exact_fallback_bytes": 21804023808,
+        "total_provider_bytes": 170923081728,
+        "provider_positions": 147,
+        "logical_bytes_per_position": 1162742052.5714285,
+        "logical_gib_per_position": 1.082887922014509,
+        "fallback_gib_per_position": 0.13813999720982142,
+        "explicit_provider_reads": 61439451136,
+        "direct_physical_bytes": 61439451136,
+        "direct_physical_gib_per_position": 0.3892513456798735,
+        "direct_io_ns": 67679566149
+      }
+    },
+    "route12_uniform16_reference": {
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r132-route12-budget16-first",
+      "source_commit": "fc9c306fae2b74886d62d7be2dec8882d934045d",
+      "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+      "manifest_sha256": "84c5995b56258b8284f3ef6726a8a24d74aaaa983ebc3b16c49354c30092c60a",
+      "command_sha256": "c3d0821ccecd580676dedaa3555e0028b7a592b2534b087461d1b2a8e556b932",
+      "environment_sha256": "480d2e2ca57535613789c9571bfad832366fa0157984c173ff80feb627d5d5c0",
+      "response_sha256": "f4e03541e8b014fcda662ea2efcc745d5f8d8ce5cd25aae56ab11d47331c501f",
+      "logits_sha256": "3bad6e1a897a261c148ab77cbab7f81b2f8b14f8a54cca7df3ed56fa2e2543e5",
+      "traffic_sha256": "f3d39a3eeff5c500945e4241b8ac906e412ef54c593b456a48ec278a192af4a3",
+      "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+      "generated_ids": [
+        1008
+      ],
+      "rescue_markers": [],
+      "tool_call_valid": false,
+      "tool_call": {
+        "finish_reason": "length",
+        "tool_calls": 0
+      },
+      "usage": {
+        "accept_rate": 0.0,
+        "completion_tokens": 1,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 147,
+        "spec_decode_ran": false,
+        "timings": {
+          "agent_turn_cache_hit": false,
+          "cache_hit": false,
+          "cached_prefix_tokens": 0,
+          "decode_ms": 0.2,
+          "decode_tokens_per_sec": 5406.6,
+          "effective_prompt_tokens": 147,
+          "prefill_ms": 99890.4,
+          "prefilled_tokens": 147
+        },
+        "total_tokens": 148
+      },
+      "traffic": {
+        "requested_nominal_slabs": 216384,
+        "selected_slab_records": 216384,
+        "selected_sidecar_bytes": 119295246336,
+        "exact_fallback_bytes": 21167763456,
+        "total_provider_bytes": 140463009792,
+        "provider_positions": 147,
+        "logical_bytes_per_position": 955530678.8571428,
+        "logical_gib_per_position": 0.8899072919573102,
+        "fallback_gib_per_position": 0.13410895211356028,
+        "explicit_provider_reads": 48887046144,
+        "direct_physical_bytes": 48887046144,
+        "direct_physical_gib_per_position": 0.30972523591956314,
+        "direct_io_ns": 46589787357
+      }
+    },
+    "route12_h22_conservative": {
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r134-route12-h22-avg16-conservative",
+      "source_commit": "c0c3b4a2275758fb228cb096922423f174cd5d66",
+      "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+      "manifest_sha256": "71de3f46e93d964330093f806301576a01584bcd65c56427b5f22a55b1b3a76b",
+      "command_sha256": "74863f0fddf17def0a0b0f4f6f2ea16ea485735a17c8090dacaba652e8dc3004",
+      "environment_sha256": "804a27987f582bb6d0bf6965c1464e6e13b50db26818762cae24071979fbef56",
+      "response_sha256": "b5b44a8bce0eb21867aae8095b49d7f5e1e7fa715c197eb83f9d0c4c6122acf2",
+      "logits_sha256": "9398dfa7bca3487e1096d1f99f6a2e5b1f3e2b5358f030ef62626159ffbe6a1d",
+      "traffic_sha256": "b9becf4b21f3776e381dd449267c58446396f41579ca984b70fbfd12bf34e4f5",
+      "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+      "generated_ids": [
+        1008
+      ],
+      "rescue_markers": [],
+      "tool_call_valid": false,
+      "tool_call": {
+        "finish_reason": "length",
+        "tool_calls": 0
+      },
+      "usage": {
+        "accept_rate": 0.0,
+        "completion_tokens": 1,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 147,
+        "spec_decode_ran": false,
+        "timings": {
+          "agent_turn_cache_hit": false,
+          "cache_hit": false,
+          "cached_prefix_tokens": 0,
+          "decode_ms": 0.2,
+          "decode_tokens_per_sec": 5345.8,
+          "effective_prompt_tokens": 147,
+          "prefill_ms": 76734.1,
+          "prefilled_tokens": 147
+        },
+        "total_tokens": 148
+      },
+      "traffic": {
+        "requested_nominal_slabs": 216384,
+        "selected_slab_records": 216384,
+        "selected_sidecar_bytes": 119126654976,
+        "exact_fallback_bytes": 21065146368,
+        "total_provider_bytes": 140191801344,
+        "provider_positions": 147,
+        "logical_bytes_per_position": 953685723.4285715,
+        "logical_gib_per_position": 0.8881890433175224,
+        "fallback_gib_per_position": 0.13345881870814733,
+        "explicit_provider_reads": 48684580864,
+        "direct_physical_bytes": 48684580864,
+        "direct_physical_gib_per_position": 0.3084425115260948,
+        "direct_io_ns": 25210932729
+      },
+      "route_limit": 12,
+      "route_limit_markers": [
+        12
+      ],
+      "environment": {
+        "DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT": "12",
+        "DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24": "1",
+        "DFLASH_KIMI_H22_LAYER_BUDGETS": "fixtures/k3_h22_quartile_avg16_12_16_20.txt"
+      }
+    },
+    "route12_h22_sharp": {
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r135-route12-h22-avg16-sharp",
+      "source_commit": "c0c3b4a2275758fb228cb096922423f174cd5d66",
+      "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+      "manifest_sha256": "c3ee84a9e6913e3ba6521f60c7e4068dec451166a946cb5b8225c6e721b28c7f",
+      "command_sha256": "2c5d3880fd7db0addc13e2c59e97fdabf0923860ea5b9f5f4c5214b61a28e517",
+      "environment_sha256": "77876faf4e6e46b5e08b60e575ac44abe1b37f89fd94e5b4b8a887f297e16e7c",
+      "response_sha256": "11dbc36a6accfdbfe876fe6e268d75ea0eb05cc391e15869e3cd48b9390dc8d2",
+      "logits_sha256": "a0cfaf5c30583938a3ee5ba23993fd1d43b3fe915a770528fea098450f5a7f07",
+      "traffic_sha256": "8571b275202977d5712d04f76bb58197aab413ebc3fb49ca36e88cd183fc634f",
+      "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+      "generated_ids": [
+        1008
+      ],
+      "rescue_markers": [],
+      "tool_call_valid": false,
+      "tool_call": {
+        "finish_reason": "length",
+        "tool_calls": 0
+      },
+      "usage": {
+        "accept_rate": 0.0,
+        "completion_tokens": 1,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 147,
+        "spec_decode_ran": false,
+        "timings": {
+          "agent_turn_cache_hit": false,
+          "cache_hit": false,
+          "cached_prefix_tokens": 0,
+          "decode_ms": 0.2,
+          "decode_tokens_per_sec": 5319.3,
+          "effective_prompt_tokens": 147,
+          "prefill_ms": 94035.7,
+          "prefilled_tokens": 147
+        },
+        "total_tokens": 148
+      },
+      "traffic": {
+        "requested_nominal_slabs": 216384,
+        "selected_slab_records": 216384,
+        "selected_sidecar_bytes": 118958063616,
+        "exact_fallback_bytes": 21456777216,
+        "total_provider_bytes": 140414840832,
+        "provider_positions": 147,
+        "logical_bytes_per_position": 955202998.8571428,
+        "logical_gib_per_position": 0.8896021161760602,
+        "fallback_gib_per_position": 0.13594000680106028,
+        "explicit_provider_reads": 48207699968,
+        "direct_physical_bytes": 48207699968,
+        "direct_physical_gib_per_position": 0.30542121939107675,
+        "direct_io_ns": 41107160609
+      },
+      "route_limit": 12,
+      "route_limit_markers": [
+        12
+      ],
+      "environment": {
+        "DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT": "12",
+        "DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24": "1",
+        "DFLASH_KIMI_H22_LAYER_BUDGETS": "fixtures/k3_h22_quartile_avg16_8_16_24.txt"
+      }
+    }
+  },
+  "terminal_metrics": {
+    "budget24_reference": {
+      "vocabulary": 163840,
+      "top1": 163588,
+      "top1_agrees_with_budget24": true,
+      "top1_margin": 0.40999603271484375,
+      "budget24_top1_logit": 16.6357364654541,
+      "budget24_top1_margin": 0.40999603271484375,
+      "kl_budget24_reference_to_arm": 0.0
+    },
+    "route12_budget20_reference": {
+      "vocabulary": 163840,
+      "top1": 163588,
+      "top1_agrees_with_budget24": true,
+      "top1_margin": 0.5871543884277344,
+      "budget24_top1_logit": 16.007823944091797,
+      "budget24_top1_margin": 0.5871543884277344,
+      "kl_budget24_reference_to_arm": 0.14082849243502324
+    },
+    "route12_uniform16_reference": {
+      "vocabulary": 163840,
+      "top1": 1008,
+      "top1_agrees_with_budget24": false,
+      "top1_margin": 0.5574378967285156,
+      "budget24_top1_logit": 15.507622718811035,
+      "budget24_top1_margin": -1.0595617294311523,
+      "kl_budget24_reference_to_arm": 0.25886097370732836
+    },
+    "route12_h22_conservative": {
+      "vocabulary": 163840,
+      "top1": 1008,
+      "top1_agrees_with_budget24": false,
+      "top1_margin": 0.0821523666381836,
+      "budget24_top1_logit": 15.468015670776367,
+      "budget24_top1_margin": -0.268310546875,
+      "kl_budget24_reference_to_arm": 0.22906890447070843
+    },
+    "route12_h22_sharp": {
+      "vocabulary": 163840,
+      "top1": 1008,
+      "top1_agrees_with_budget24": false,
+      "top1_margin": 0.09175777435302734,
+      "budget24_top1_logit": 15.152152061462402,
+      "budget24_top1_margin": -0.09175777435302734,
+      "kl_budget24_reference_to_arm": 0.25539785780285545
+    }
+  },
+  "candidates": {
+    "route12_h22_conservative": {
+      "passed": false,
+      "kl_reduction_vs_uniform16_fraction": 0.11508907198310714,
+      "logical_gib_per_position_delta_vs_uniform16": -0.0017182486397878671
+    },
+    "route12_h22_sharp": {
+      "passed": false,
+      "kl_reduction_vs_uniform16_fraction": 0.013378285088227915,
+      "logical_gib_per_position_delta_vs_uniform16": -0.00030517578125
+    }
+  },
+  "gate": {
+    "passed": false,
+    "go_arms": [],
+    "best_kl_arm": "route12_h22_conservative",
+    "decision": "Stop H22 quartile average-16 allocation; the budget-96 layer atlas does not transfer strongly enough to this low-budget composed state."
+  },
+  "limitations": [
+    "H22 directly measured isolated Budget96 terminal KL on one calibration stream; its rank transfer to composed Budget8--24 policies is the hypothesis under test.",
+    "Budget24 is a behaviorally successful reference, not native exact K3; reported KL is reference-to-arm.",
+    "One terminal boundary cannot establish broad quality.",
+    "Quartile allocation is a coarse discriminator, not a claimed optimum.",
+    "Cold token-sequential timing is not serving throughput."
+  ]
+}

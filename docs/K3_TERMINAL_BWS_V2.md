@@ -674,3 +674,30 @@ r131--r132 and analysis r133 remain on Lucebox4.  The next useful discriminator
 must change where the 16-slab-average capacity is spent (layer-adaptive
 allocation) or its representation; tuning the global route count is closed at
 this budget.
+
+## H22-ranked equal-average Budget16 allocation
+
+The frozen H22 isolated Budget96 layer atlas was used only as a rank prior.
+Its source was pinned to `perf/k3-layer-major-prefill` commit `102cf35a`, blob
+`9efa6628`, SHA-256 `a492f084...`; no low-budget projected KL was treated as
+measured.  The 23 most tolerant, 46 middle and 23 most sensitive layers were
+assigned either conservative `12/16/20` budgets or sharp `8/16/24` budgets.
+Both policies total exactly 1,472 nominal slabs, equal to uniform Budget16,
+and both used route12.
+
+Neither policy restored the Budget24-reference top-1.  The conservative arm
+reduced KL from uniform route12/B16's 0.25886 to **0.22907** (-11.5%) and
+improved the teacher-token margin from -1.060 to **-0.268**, at **0.88819
+logical / 0.30844 physical GiB/position**.  The sharp arm reached the closer
+margin **-0.092**, but KL was 0.25540 (only 1.3% better), at 0.88960 / 0.30542.
+Both still selected token `1008`.
+
+This is a measured **H22 average-B16 rank-transfer NO-GO** under the
+preregistered 20% KL plus top-1 gate.  It shows that layer sensitivity is
+useful but insufficient: the isolated Budget96 ordering partially transfers,
+while composed low-budget interactions change enough that coarse quartiles do
+not recover behavior.  Quartile membership will not be tuned on this fixture.
+The immutable result is
+`results/k3_terminal_bws_v2_route12_h22_avg16_result_20260901.json`
+(SHA-256 `c2222b1061890f83f8b785ec01e107449de4e39a3676656620fe55f6ce47d629`);
+raw arms r134--r135 and analysis r136 remain on Lucebox4.
