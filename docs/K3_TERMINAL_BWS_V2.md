@@ -580,3 +580,24 @@ The corrected immutable result is
 raw arms r104--r109 and analyses r110--r111 remain on Lucebox4.  The next gate
 is tool-declared false-positive behavior plus JSON/structured and longer
 coding-agent tasks.  Production remains untouched.
+
+## Tool-declared false-positive controls
+
+Two `tool_choice=auto` requests declared different tools but explicitly
+required a plain answer: `OK` with `get_weather` available, and `42` with
+`lookup_customer_order` available.  Each was run at frozen route12/Budget20
+with schema rescue off and on.
+
+Both pairs passed.  The on arms configured their declared-name prefixes but
+fired zero rescue markers and emitted no tool calls.  Off versus on was
+byte-identical in prompt IDs, generated IDs, final full-vocabulary logits,
+traffic TSV, logical bytes, fallback bytes and physical direct-read bytes.
+The OK control measured 1.07385 logical / 0.38622 physical GiB/position; the
+math control measured 1.06390 / 0.38298.
+
+This is a measured **tool false-positive GO** for these two names and prompt
+shapes.  It validates the narrow trigger mechanism, not every possible
+shared-prefix grammar state.  The immutable result is
+`results/k3_terminal_bws_v2_route12_tool_false_positive_result_20260901.json`
+(SHA-256 `d3876477ca2e2e98d094a2d606137d3c5d1fb7cb03a18fbdea69c78b9eb4522d`);
+raw arms r112--r115 and analysis r116 remain on Lucebox4.

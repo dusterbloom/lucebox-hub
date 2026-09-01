@@ -1,0 +1,350 @@
+{
+  "schema": "kimi-k3-route12-tool-false-positive-result-v1",
+  "status": "MEASURED_ROUTE12_TOOL_FALSE_POSITIVE_GO",
+  "preregistration_sha256": "7a59c80515799c09ed857b2e0c26f359063dd27a81e534abcb664a932e8401c6",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "9760eb59",
+    "implementation_commit": "4bb8bd38",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+    "analyzer": "scripts/analyze_kimi_route12_tool_false_positive.py",
+    "analyzer_sha256": "8d7a012cc7323d52944c5b5786d12f8026ad019cdd838c7f69023444e4d1dea3",
+    "runner_sha256": "23e8d540199018fb8c5cde88ab9722820ef44735cdf39a0aec3d415a96896cdf",
+    "measured_commit": "c4adc943a64a3e40fd412173b28ea11b300645f5"
+  },
+  "controls": [
+    {
+      "id": "ok",
+      "passed": true,
+      "off": {
+        "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r112-route12-tool-no-call-ok-off",
+        "source_commit": "c4adc943a64a3e40fd412173b28ea11b300645f5",
+        "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+        "manifest_sha256": "cf304e7d6dead3cbab93f8ab1754be428192b7102297ceabb0807955d3ebceb4",
+        "environment": {
+          "DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT": "12",
+          "DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24": "1",
+          "DFLASH_KIMI_H22_LAYER_BUDGETS": "/home/duster/k3-terminal-kl-bws-v2-guarded/fixtures/k3_uniform_budget20.txt"
+        },
+        "prompt_count": 110,
+        "prompt_token_ids_i32le_sha256": "f9906f3a41fd317b44911eef88cfc7e6412045b628b16a5cf69514cd9412306d",
+        "generated_ids": [
+          8145,
+          163588,
+          12092,
+          163589,
+          163588,
+          2778,
+          163589,
+          163586
+        ],
+        "response": {
+          "finish_reason": "length",
+          "content": "OK",
+          "usage": {
+            "accept_rate": 0.0,
+            "completion_tokens": 8,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 110,
+            "spec_decode_ran": false,
+            "timings": {
+              "agent_turn_cache_hit": false,
+              "cache_hit": false,
+              "cached_prefix_tokens": 0,
+              "decode_ms": 3380.0,
+              "decode_tokens_per_sec": 2.4,
+              "effective_prompt_tokens": 110,
+              "prefill_ms": 61385.5,
+              "prefilled_tokens": 110
+            },
+            "total_tokens": 118
+          }
+        },
+        "schema_prefix_configurations": 0,
+        "schema_rescue_markers": [],
+        "static_position_markers": 0,
+        "request_wide_b96_markers": 0,
+        "logits_sha256": "4fa78e2752d7d02ed076fb6fd70ab4e6aaed4ebb71ab514c288c75f9421a1d90",
+        "traffic_sha256": "53149d9555b2b27150995ad88cf7e68c57b1ebefc8985abb743eb1b766935760",
+        "traffic": {
+          "requested_nominal_slabs": 215280,
+          "selected_slab_records": 215280,
+          "selected_sidecar_bytes": 118686597120,
+          "exact_fallback_bytes": 16219435008,
+          "total_provider_bytes": 134906032128,
+          "provider_positions": 117,
+          "logical_bytes_per_position": 1153043009.6410255,
+          "logical_gib_per_position": 1.07385498438126,
+          "fallback_gib_per_position": 0.1291070595765725,
+          "explicit_provider_reads": 48520175616,
+          "direct_physical_bytes": 48520175616,
+          "direct_io_ns": 22791780340
+        },
+        "plain_answer_valid": true,
+        "answer": {
+          "finish_reason": "length",
+          "content": "OK",
+          "tool_calls": 0
+        }
+      },
+      "on": {
+        "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r113-route12-tool-no-call-ok-on",
+        "source_commit": "c4adc943a64a3e40fd412173b28ea11b300645f5",
+        "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+        "manifest_sha256": "dd89b964b9f57e0050e7c1551e6f9f9e61b007622fdcd794a8518dd403269366",
+        "environment": {
+          "DFLASH_KIMI_EXPERIMENT_TOOL_SCHEMA_RESCUE": "1",
+          "DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT": "12",
+          "DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24": "1",
+          "DFLASH_KIMI_H22_LAYER_BUDGETS": "/home/duster/k3-terminal-kl-bws-v2-guarded/fixtures/k3_uniform_budget20.txt"
+        },
+        "prompt_count": 110,
+        "prompt_token_ids_i32le_sha256": "f9906f3a41fd317b44911eef88cfc7e6412045b628b16a5cf69514cd9412306d",
+        "generated_ids": [
+          8145,
+          163588,
+          12092,
+          163589,
+          163588,
+          2778,
+          163589,
+          163586
+        ],
+        "response": {
+          "finish_reason": "length",
+          "content": "OK",
+          "usage": {
+            "accept_rate": 0.0,
+            "completion_tokens": 8,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 110,
+            "spec_decode_ran": false,
+            "timings": {
+              "agent_turn_cache_hit": false,
+              "cache_hit": false,
+              "cached_prefix_tokens": 0,
+              "decode_ms": 3899.6,
+              "decode_tokens_per_sec": 2.1,
+              "effective_prompt_tokens": 110,
+              "prefill_ms": 67009.3,
+              "prefilled_tokens": 110
+            },
+            "total_tokens": 118
+          }
+        },
+        "schema_prefix_configurations": 1,
+        "schema_rescue_markers": [],
+        "static_position_markers": 0,
+        "request_wide_b96_markers": 0,
+        "logits_sha256": "4fa78e2752d7d02ed076fb6fd70ab4e6aaed4ebb71ab514c288c75f9421a1d90",
+        "traffic_sha256": "53149d9555b2b27150995ad88cf7e68c57b1ebefc8985abb743eb1b766935760",
+        "traffic": {
+          "requested_nominal_slabs": 215280,
+          "selected_slab_records": 215280,
+          "selected_sidecar_bytes": 118686597120,
+          "exact_fallback_bytes": 16219435008,
+          "total_provider_bytes": 134906032128,
+          "provider_positions": 117,
+          "logical_bytes_per_position": 1153043009.6410255,
+          "logical_gib_per_position": 1.07385498438126,
+          "fallback_gib_per_position": 0.1291070595765725,
+          "explicit_provider_reads": 48520175616,
+          "direct_physical_bytes": 48520175616,
+          "direct_io_ns": 28492888325
+        },
+        "plain_answer_valid": true,
+        "answer": {
+          "finish_reason": "length",
+          "content": "OK",
+          "tool_calls": 0
+        }
+      },
+      "on_rescue_markers": [],
+      "equality": {
+        "prompt_ids": true,
+        "generated_ids": true,
+        "final_logits": true,
+        "traffic": true,
+        "logical_bytes": true,
+        "fallback_bytes": true,
+        "physical_bytes": true
+      }
+    },
+    {
+      "id": "math",
+      "passed": true,
+      "off": {
+        "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r114-route12-tool-no-call-math-off",
+        "source_commit": "c4adc943a64a3e40fd412173b28ea11b300645f5",
+        "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+        "manifest_sha256": "5b029939dc200d1c86458d49c71ef83eaacb9ba75efb1b0dcbb14178bf8e9825",
+        "environment": {
+          "DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT": "12",
+          "DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24": "1",
+          "DFLASH_KIMI_H22_LAYER_BUDGETS": "/home/duster/k3-terminal-kl-bws-v2-guarded/fixtures/k3_uniform_budget20.txt"
+        },
+        "prompt_count": 123,
+        "prompt_token_ids_i32le_sha256": "1e9346041864462acc6bd547da296243b2b45dfa89b36476164b8a6476d99974",
+        "generated_ids": [
+          5512,
+          163588,
+          12092,
+          163589,
+          163588,
+          2778,
+          163589,
+          163586
+        ],
+        "response": {
+          "finish_reason": "length",
+          "content": "42",
+          "usage": {
+            "accept_rate": 0.0,
+            "completion_tokens": 8,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 123,
+            "spec_decode_ran": false,
+            "timings": {
+              "agent_turn_cache_hit": false,
+              "cache_hit": false,
+              "cached_prefix_tokens": 0,
+              "decode_ms": 4250.6,
+              "decode_tokens_per_sec": 1.9,
+              "effective_prompt_tokens": 123,
+              "prefill_ms": 87039.3,
+              "prefilled_tokens": 123
+            },
+            "total_tokens": 131
+          }
+        },
+        "schema_prefix_configurations": 0,
+        "schema_rescue_markers": [],
+        "static_position_markers": 0,
+        "request_wide_b96_markers": 0,
+        "logits_sha256": "c6326f4641d9157d4ae3178ce74f94a06dc6b1cb95aab3bb0d6816b9f27eef90",
+        "traffic_sha256": "dba283ddbcd87670c8c108ea34b44a716942ddd48c86b5614c9d674efba8feaf",
+        "traffic": {
+          "requested_nominal_slabs": 239200,
+          "selected_slab_records": 239200,
+          "selected_sidecar_bytes": 131873996800,
+          "exact_fallback_bytes": 16632569856,
+          "total_provider_bytes": 148506566656,
+          "provider_positions": 130,
+          "logical_bytes_per_position": 1142358205.0461538,
+          "logical_gib_per_position": 1.0639039846567007,
+          "fallback_gib_per_position": 0.11915605985201322,
+          "explicit_provider_reads": 53458264064,
+          "direct_physical_bytes": 53458264064,
+          "direct_io_ns": 43316346961
+        },
+        "plain_answer_valid": true,
+        "answer": {
+          "finish_reason": "length",
+          "content": "42",
+          "tool_calls": 0
+        }
+      },
+      "on": {
+        "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r115-route12-tool-no-call-math-on",
+        "source_commit": "c4adc943a64a3e40fd412173b28ea11b300645f5",
+        "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+        "manifest_sha256": "262e53eb354410c945d67d7ed5426d4d6606550acc427135779f48208e6b9c3f",
+        "environment": {
+          "DFLASH_KIMI_EXPERIMENT_TOOL_SCHEMA_RESCUE": "1",
+          "DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT": "12",
+          "DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24": "1",
+          "DFLASH_KIMI_H22_LAYER_BUDGETS": "/home/duster/k3-terminal-kl-bws-v2-guarded/fixtures/k3_uniform_budget20.txt"
+        },
+        "prompt_count": 123,
+        "prompt_token_ids_i32le_sha256": "1e9346041864462acc6bd547da296243b2b45dfa89b36476164b8a6476d99974",
+        "generated_ids": [
+          5512,
+          163588,
+          12092,
+          163589,
+          163588,
+          2778,
+          163589,
+          163586
+        ],
+        "response": {
+          "finish_reason": "length",
+          "content": "42",
+          "usage": {
+            "accept_rate": 0.0,
+            "completion_tokens": 8,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 123,
+            "spec_decode_ran": false,
+            "timings": {
+              "agent_turn_cache_hit": false,
+              "cache_hit": false,
+              "cached_prefix_tokens": 0,
+              "decode_ms": 4223.5,
+              "decode_tokens_per_sec": 1.9,
+              "effective_prompt_tokens": 123,
+              "prefill_ms": 93461.8,
+              "prefilled_tokens": 123
+            },
+            "total_tokens": 131
+          }
+        },
+        "schema_prefix_configurations": 1,
+        "schema_rescue_markers": [],
+        "static_position_markers": 0,
+        "request_wide_b96_markers": 0,
+        "logits_sha256": "c6326f4641d9157d4ae3178ce74f94a06dc6b1cb95aab3bb0d6816b9f27eef90",
+        "traffic_sha256": "dba283ddbcd87670c8c108ea34b44a716942ddd48c86b5614c9d674efba8feaf",
+        "traffic": {
+          "requested_nominal_slabs": 239200,
+          "selected_slab_records": 239200,
+          "selected_sidecar_bytes": 131873996800,
+          "exact_fallback_bytes": 16632569856,
+          "total_provider_bytes": 148506566656,
+          "provider_positions": 130,
+          "logical_bytes_per_position": 1142358205.0461538,
+          "logical_gib_per_position": 1.0639039846567007,
+          "fallback_gib_per_position": 0.11915605985201322,
+          "explicit_provider_reads": 53458264064,
+          "direct_physical_bytes": 53458264064,
+          "direct_io_ns": 48287710168
+        },
+        "plain_answer_valid": true,
+        "answer": {
+          "finish_reason": "length",
+          "content": "42",
+          "tool_calls": 0
+        }
+      },
+      "on_rescue_markers": [],
+      "equality": {
+        "prompt_ids": true,
+        "generated_ids": true,
+        "final_logits": true,
+        "traffic": true,
+        "logical_bytes": true,
+        "fallback_bytes": true,
+        "physical_bytes": true
+      }
+    }
+  ],
+  "gate": {
+    "passed": true,
+    "decision": "Schema rescue is inert on both tool-declared no-call controls; proceed to broader structured/agentic quality."
+  },
+  "limitations": [
+    "These are mechanism controls against the same route12 policy, not native-quality retention fixtures.",
+    "Two declared tool names do not cover every possible shared token prefix or grammar state.",
+    "No serving-throughput claim is made."
+  ]
+}
