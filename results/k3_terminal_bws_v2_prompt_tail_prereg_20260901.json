@@ -1,0 +1,76 @@
+{
+  "schema": "kimi-k3-prompt-tail-rescue-prereg-v1",
+  "status": "PREREGISTERED_PROMPT_TAIL_DISCRIMINATOR",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "55561cea8eade646306179f4021d92b71521365b",
+    "runtime_implementation_commit": "23a8f46adb7064b1389ce40404a2d61fa641e216",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4"
+  },
+  "question": "Is the Budget20 first-token failure concentrated in the final prompt rows, so that a tiny Budget24 prompt tail restores the Budget24 terminal distribution without paying Budget24 for the whole prompt?",
+  "fixture": {
+    "path": "fixtures/k3_tool_weather_first_token_request.json",
+    "sha256": "fa18a5b47c98ddbb430c602e1a8738200e87b56dcbd5468889c4fb895ec00191",
+    "max_tokens": 1,
+    "expected_prompt_tokens": 147,
+    "expected_prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c"
+  },
+  "runner": {
+    "path": "scripts/run_kimi_progressive_tool_rescue.sh",
+    "sha256": "23e8d540199018fb8c5cde88ab9722820ef44735cdf39a0aec3d415a96896cdf",
+    "schema_rescue": 0
+  },
+  "policies": {
+    "budget20": {
+      "path": "fixtures/k3_uniform_budget20.txt",
+      "sha256": "2f366aab82de990441dc61de870736b1acbf081f26b2aff11f63017dd53f697c"
+    },
+    "budget24_reference": {
+      "path": "/home/duster/lucebox-k3-b7b74cc/results/h23_10k_policies/h23_moonshot_1_2gib.txt",
+      "sha256": "b73d203e9ae7d4f382baf3f30cf0381387596edda7a6fb16c6cf5c88626ad97a"
+    }
+  },
+  "arms": [
+    {
+      "name": "budget20_control",
+      "base_policy": "budget20",
+      "position_budgets": ""
+    },
+    {
+      "name": "budget24_reference",
+      "base_policy": "budget24_reference",
+      "position_budgets": ""
+    },
+    {
+      "name": "budget20_last1_budget24",
+      "base_policy": "budget20",
+      "position_budgets": "146:24"
+    },
+    {
+      "name": "budget20_last8_budget24",
+      "base_policy": "budget20",
+      "position_budgets": "139:24,140:24,141:24,142:24,143:24,144:24,145:24,146:24",
+      "conditional": "Run only if last1 fails to match the Budget24 first token or fails to reduce KL toward Budget24."
+    }
+  ],
+  "measurements": [
+    "prompt and generated token IDs",
+    "full-vocabulary KL(Budget24 reference || arm)",
+    "top-1 agreement and teacher-token margin",
+    "logical authoritative, sidecar, exact-fallback and physical bytes",
+    "provider positions and cold timings"
+  ],
+  "gates": {
+    "strong_go": "Tail arm matches the Budget24 first token and cuts KL to Budget24 by at least 50% versus the Budget20 control.",
+    "partial_go": "Tail arm restores the Budget24 first token and improves KL but by less than 50%; permit one full-generation validation but do not call it distributionally equivalent.",
+    "no_go": "Last8 still misses the Budget24 first token or does not improve KL. Stop static prompt-tail rescue and move to a real cheap/rich disagreement signal.",
+    "next_if_go": "Run one full 64-token Budget20 plus identical prompt-tail policy plus the already-validated schema rescue; require a valid tool call and less than 1.2 logical GiB/provider-position before broadening fixtures.",
+    "production": "No production transplant from this single label-derived temporal fixture."
+  },
+  "limitations": [
+    "Budget24 is a behaviorally successful reference for this discriminator, not native K3.",
+    "Static tail positions are causal localization only and are not a deployable risk signal.",
+    "Cold token-sequential timing is not serving throughput."
+  ]
+}
