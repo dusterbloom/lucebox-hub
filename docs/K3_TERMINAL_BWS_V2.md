@@ -438,3 +438,34 @@ discovery fixture.
 The immutable summary is
 `results/k3_terminal_bws_v2_periodic_refresh_result_20260901.json`; raw arms
 r83--r84 and analysis r85 remain on Lucebox4.
+
+## Equal-Budget20 route-prefix screen
+
+The missing route axis was tested with a research-only width-one hook.  At the
+same uniform Budget20 slab capacity, only the router's first 12, 8, 6 or 4
+descending top-k routes were eligible for slabs/fallback.  Retained router
+weights were unchanged and omitted routes contributed zero.  The rebuilt
+route16 default first passed exact closure against the retained Budget20
+control: prompt/generated IDs, full-vocabulary logits and traffic were
+byte-identical.
+
+Top-12 is the important result.  It restored the Budget24 first token with a
++0.587 margin, reduced `KL(P_B24 || P_arm)` from 0.23599 to **0.14083**
+(-40.3%), and reduced logical traffic to **1.08289 GiB/provider-position**.
+Selected sidecar bytes were unchanged; the 5.1% logical reduction came from
+lower exact-fallback bytes.  Top-8 and top-6 also restored first-token top-1
+at 1.02884 and 1.00600 GiB/position, but worsened full-distribution KL to
+0.32730 and 0.44897.  Top-4 failed top-1 with KL 0.55657.
+
+The preregistered strong gate required at least a 50% KL reduction, so this is
+formally a **route-prefix gate NO-GO** and is not relabeled after seeing the
+data.  Nevertheless, top-12 is the first sub-1.2 representation in this
+campaign to restore the correct pre-tool behavior while improving KL.  Under
+the stated priority of reliable behavior over a literal KL multiple, it earns
+a separately preregistered full-generation validation with the existing
+schema rescue.  That follow-up remains discovery evidence, not production
+promotion.
+
+The immutable summary is
+`results/k3_terminal_bws_v2_route_prefix_result_20260901.json`; raw route16
+closure r86, route arms r87--r90 and analysis r91 remain on Lucebox4.
