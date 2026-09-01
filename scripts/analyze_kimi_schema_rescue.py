@@ -49,7 +49,8 @@ def analyze_arm(root: Path) -> dict:
         "environment": {
             key: value for key, value in read_environment(
                 root / "environment.nul").items()
-            if key.startswith("DFLASH_KIMI_EXPERIMENT_")
+            if key.startswith("DFLASH_KIMI_EXPERIMENT_") or
+            key == "DFLASH_KIMI_H22_LAYER_BUDGETS"
         },
         "prompt_count": len(traces["prompt_ids"]),
         "prompt_token_ids_i32le_sha256": i32le_digest(traces["prompt_ids"]),
