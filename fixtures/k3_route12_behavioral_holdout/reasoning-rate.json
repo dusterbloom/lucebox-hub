@@ -1,0 +1,12 @@
+{
+  "model": "dflash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A train travels at a constant 60 kilometres per hour for 2.5 hours. How many kilometres does it travel? Answer with only the integer."
+    }
+  ],
+  "max_tokens": 8,
+  "temperature": 0.0,
+  "stream": false
+}

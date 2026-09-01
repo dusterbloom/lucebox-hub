@@ -1,0 +1,12 @@
+{
+  "model": "dflash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Write a Python function named square_even_numbers(values) that returns the squares of only the even integers in values. Return only the function code, with no explanation."
+    }
+  ],
+  "max_tokens": 24,
+  "temperature": 0.0,
+  "stream": false
+}

@@ -1,0 +1,12 @@
+{
+  "model": "dflash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Which gas do green plants absorb from the atmosphere during photosynthesis? Answer with only the gas name or chemical formula."
+    }
+  ],
+  "max_tokens": 13,
+  "temperature": 0.0,
+  "stream": false
+}

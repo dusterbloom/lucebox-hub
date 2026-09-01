@@ -1,0 +1,90 @@
+{
+  "schema": "kimi-k3-route12-behavioral-holdout-prereg-v1",
+  "status": "PREREGISTERED_UNSEEN_BEHAVIORAL_GATE",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "883afc99",
+    "implementation_commit": "4bb8bd38",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+    "analyzer": "scripts/analyze_kimi_route12_behavioral_holdout.py",
+    "analyzer_sha256": "fc8f9ee7451bffc87224cf686e3f8580f4cee071b611270163c0a9a8ef5f73aa",
+    "scorer_module_sha256": "ff4fed747b65e0de3100f13050618dac9c4a9e174a589426067298a9e74d1e28",
+    "runner_sha256": "23e8d540199018fb8c5cde88ab9722820ef44735cdf39a0aec3d415a96896cdf"
+  },
+  "representation": {
+    "model_first_shard": "/home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-of-00014.gguf",
+    "model_first_shard_sha256": "93cf4fa551660cbc390e6bdea12caf67403cdb0091d82a17b14e39d253708fc4",
+    "calibration_manifest_sha256": "1189c85743a1e5f41901f09b090ea3a4a567c2020bce53400e9ae5f039409f56",
+    "natural_sidecar_manifest_sha256": "86216b66256f61bdcbe8d796dc2e9316e3dccdeba801ea296b2e779cf86394e9",
+    "policy": "fixtures/k3_uniform_budget20.txt",
+    "policy_sha256": "2f366aab82de990441dc61de870736b1acbf081f26b2aff11f63017dd53f697c",
+    "route_limit": 12,
+    "retained_router_weights": "unchanged",
+    "schema_rescue": true,
+    "position_rescue": false
+  },
+  "native_baseline": {
+    "path": "fixtures/k3_h23_broad_holdout_baseline.json",
+    "sha256": "493b2dbd8105995fb75579d0bf685d839520a1fa9d3fbf2bb37544c9bb3e1c81",
+    "source_branch": "perf/k3-layer-major-prefill",
+    "source_branch_head": "102cf35ab2d86dc37e63faeece180267b2e9b2e6",
+    "source_artifact_commit": "374206ce7164f31b5fd534bdee3adda2c45507a9",
+    "source_result_sha256": "ad0161eeb95312fd893aa88fb1014f467419f9fe5881317e0bc813f7e0efc40c",
+    "native_passed": "12/12 broad suite; this gate selects the six prompts not used in the preceding route12 run",
+    "chat_template": "gguf-jinja-thinking-off"
+  },
+  "fixtures": [
+    {
+      "id": "fact-science",
+      "path": "fixtures/k3_route12_behavioral_holdout/fact-science.json",
+      "sha256": "8fb11a50c2952fad8f19d83e22831c38471e906b5bb8e491c4ee3a01cea500af",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r104-route12-fact-science"
+    },
+    {
+      "id": "code-function",
+      "path": "fixtures/k3_route12_behavioral_holdout/code-function.json",
+      "sha256": "95047ad26f01e573026a9aac65631b554a413993ac02d6e7a7d978b8c27ebb24",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r105-route12-code-function"
+    },
+    {
+      "id": "reasoning-rate",
+      "path": "fixtures/k3_route12_behavioral_holdout/reasoning-rate.json",
+      "sha256": "6aff7529f30ce0853b25d990d27897d17f13a22a0bf2428e8d3cc51b610a0661",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r106-route12-reasoning-rate"
+    },
+    {
+      "id": "grammar-agreement",
+      "path": "fixtures/k3_route12_behavioral_holdout/grammar-agreement.json",
+      "sha256": "2595c69204eb375321b643de515b53849e00e784ca1d603b13fdeeb5a9818c34",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r107-route12-grammar-agreement"
+    },
+    {
+      "id": "translation-spanish",
+      "path": "fixtures/k3_route12_behavioral_holdout/translation-spanish.json",
+      "sha256": "9ebb56c3fb66ceb3bee2e1bff14154303e606addd3e236cfc5c079755248c3cd",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r108-route12-translation-spanish"
+    },
+    {
+      "id": "extract-decoys",
+      "path": "fixtures/k3_route12_behavioral_holdout/extract-decoys.json",
+      "sha256": "238d045a442c5e14b9e3aba3ad9fae5d44df851d04a846772110b04678e80557",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r109-route12-extract-decoys"
+    }
+  ],
+  "command": "DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT=12 scripts/run_kimi_progressive_tool_rescue.sh ROOT BINARY '' PORT FIXTURE 1 POLICY",
+  "gate": {
+    "go": "All six previously unseen tasks pass, no no-tool request configures or fires schema rescue, and aggregate logical traffic is below 1.2 GiB/provider-position.",
+    "no_go": "Any task failure, false schema activation or traffic at least 1.2 GiB/provider-position. Preserve the result and stop route12 production consideration.",
+    "alignment": "Prompt-token equality and output-ID equality to the frozen native artifact are reported per task but are not behavioral gate conditions. No KL or distributional claim is permitted where histories do not align.",
+    "next_if_go": "Test tool-declared false-positive controls and a broader JSON/structured/long coding-agent suite before any production transplant.",
+    "production": "perf/k3-production-ponytail remains untouched."
+  },
+  "limitations": [
+    "The exact deployed hybrid is not a valid native-quality reference for these official-template tasks; native success comes from the immutable original K3 artifact.",
+    "The native artifact retains output IDs and text but not full-vocabulary logits, so this gate cannot report native terminal KL.",
+    "These tasks broaden coding, reasoning, factual, multilingual and extraction coverage but still do not cover JSON, a long coding-agent turn or additional tools.",
+    "Cold token-sequential timing is not serving throughput."
+  ]
+}

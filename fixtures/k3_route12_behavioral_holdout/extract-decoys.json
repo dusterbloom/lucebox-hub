@@ -1,0 +1,12 @@
+{
+  "model": "dflash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Context: The red folder mentions ALPHA-103, an expired badge says RIVER-440, and the current equipment-locker code is QUARTZ-918. What is the current equipment-locker code? Answer with only the code."
+    }
+  ],
+  "max_tokens": 12,
+  "temperature": 0.0,
+  "stream": false
+}

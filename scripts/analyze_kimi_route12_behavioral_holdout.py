@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Score the preregistered route12 policy on frozen native-success tasks."""
+"""Score route12 on the preregistered unseen behavioral holdout."""
 
 from __future__ import annotations
 
@@ -9,57 +9,12 @@ import re
 from pathlib import Path
 
 from analyze_kimi_progressive_tool_rescue import digest, token_traces
+from analyze_kimi_route12_native_success import first_divergence, task_success
 from analyze_kimi_schema_rescue import analyze_arm
 
 
 ROUTE_MARKER = re.compile(
     r"\[kimi-k3-route-limit\] top-routes=(\d+) weights=unchanged")
-
-
-def normalized(text: str) -> str:
-    return " ".join(text.lower().replace("’", "'").split())
-
-
-def task_success(identifier: str, text: str) -> bool:
-    value = normalized(text)
-    if identifier == "fact-capital":
-        return "tokyo" in value
-    if identifier == "fact-science":
-        return ("carbon dioxide" in value or
-                re.search(r"(?<![a-z0-9])co2(?![a-z0-9])", value) is not None)
-    if identifier == "code-sum":
-        return re.search(r"(?<!\d)10(?!\d)", value) is not None
-    if identifier == "code-function":
-        compact = value.replace(" ", "")
-        return (
-            "defsquare_even_numbers(" in compact and "%2" in compact and
-            ("**2" in compact or
-             re.search(r"([a-z])\*\1for", compact) is not None))
-    if identifier == "reasoning-marble":
-        return re.search(r"(?<!\d)42(?!\d)", value) is not None
-    if identifier == "reasoning-rate":
-        return re.search(r"(?<!\d)150(?!\d)", value) is not None
-    if identifier == "grammar-apples":
-        return ("she doesn't like apples" in value or
-                "she does not like apples" in value)
-    if identifier == "grammar-agreement":
-        return "the list of items is on the table" in value
-    if identifier == "translation-italian":
-        return "buongiorno" in value or "buon giorno" in value
-    if identifier == "translation-spanish":
-        return "muchas gracias" in value
-    if identifier == "extract-code":
-        return "lime-742" in re.sub(r"\s+", "", value)
-    if identifier == "extract-decoys":
-        return "quartz-918" in re.sub(r"\s+", "", value)
-    raise ValueError(f"unregistered task {identifier}")
-
-
-def first_divergence(left: list[int], right: list[int]) -> int | None:
-    for index, pair in enumerate(zip(left, right)):
-        if pair[0] != pair[1]:
-            return index
-    return None if len(left) == len(right) else min(len(left), len(right))
 
 
 def main() -> int:
@@ -77,30 +32,37 @@ def main() -> int:
 
     prereg = json.loads(args.prereg.read_text())
     baseline = json.loads(args.baseline.read_text())
+    repo = Path(__file__).resolve().parent.parent
+    for path, expected in (
+            (Path(__file__), prereg["source"]["analyzer_sha256"]),
+            (repo / "scripts/analyze_kimi_route12_native_success.py",
+             prereg["source"]["scorer_module_sha256"]),
+            (repo / "scripts/run_kimi_progressive_tool_rescue.sh",
+             prereg["source"]["runner_sha256"])):
+        if digest(path) != expected:
+            raise ValueError(f"registered harness hash changed: {path}")
     if digest(args.baseline) != prereg["native_baseline"]["sha256"]:
         raise ValueError("native baseline hash changed")
     if digest(args.policy) != prereg["representation"]["policy_sha256"]:
         raise ValueError("Budget20 policy hash changed")
-    baseline_rows = {row["id"]: row for row in baseline["sequences"]}
-    root_args = dict(item.split("=", 1) for item in args.root)
+    native_rows = {row["id"]: row for row in baseline["sequences"]}
     fixture_rows = {row["id"]: row for row in prereg["fixtures"]}
-    if set(root_args) != set(fixture_rows) or set(root_args) != set(baseline_rows):
+    root_args = dict(item.split("=", 1) for item in args.root)
+    if set(root_args) != set(native_rows) or set(root_args) != set(fixture_rows):
         raise ValueError("task/root set does not match preregistration")
 
     sequences = []
     source_commits = set()
     executable_hashes = set()
-    total_positions = 0
-    total_logical = 0
-    total_fallback = 0
-    total_physical = 0
-    total_direct_io_ns = 0
+    total_positions = total_logical = total_fallback = 0
+    total_physical = total_direct_io_ns = 0
     for identifier in (row["id"] for row in prereg["fixtures"]):
+        spec = fixture_rows[identifier]
+        fixture = Path(spec["path"])
         root = Path(root_args[identifier])
-        fixture = Path(fixture_rows[identifier]["path"])
-        if digest(fixture) != fixture_rows[identifier]["sha256"]:
+        if digest(fixture) != spec["sha256"]:
             raise ValueError(f"fixture hash changed: {identifier}")
-        if digest(root / "request.json") != fixture_rows[identifier]["sha256"]:
+        if digest(root / "request.json") != spec["sha256"]:
             raise ValueError(f"measured fixture changed: {identifier}")
         arm = analyze_arm(root)
         source_commits.add(arm["source_commit"])
@@ -118,18 +80,15 @@ def main() -> int:
                 arm["schema_rescue_markers"] or arm["static_position_markers"] != 0 or
                 arm["request_wide_b96_markers"] != 0):
             raise ValueError(f"route/schema marker contract changed: {identifier}")
-        native = baseline_rows[identifier]
         traces = token_traces(stderr)
-        prompt_equal = traces["prompt_ids"] == native["prompt_tokens"]
+        native = native_rows[identifier]
         response = json.loads((root / "response.json").read_text())
         content = response["choices"][0]["message"].get("content", "")
-        generated = arm["generated_ids"]
-        success = task_success(identifier, content) if prompt_equal else None
-        divergence = (first_divergence(native["output_tokens"], generated)
-                      if prompt_equal else None)
+        success = task_success(identifier, content)
+        divergence = first_divergence(native["output_tokens"], arm["generated_ids"])
+        prompt_equal = traces["prompt_ids"] == native["prompt_tokens"]
         positions = arm["traffic"]["provider_positions"]
-        expected_positions = len(traces["prompt_ids"]) + max(0, len(generated) - 1)
-        if positions != expected_positions:
+        if positions != len(traces["prompt_ids"]) + len(arm["generated_ids"]) - 1:
             raise ValueError(f"provider-position alignment changed: {identifier}")
         total_positions += positions
         total_logical += arm["traffic"]["total_provider_bytes"]
@@ -147,10 +106,11 @@ def main() -> int:
             "candidate_prompt_token_count": len(traces["prompt_ids"]),
             "prompt_tokens_equal_native": prompt_equal,
             "native_tokens": native["output_tokens"],
-            "candidate_tokens": generated,
+            "candidate_tokens": arm["generated_ids"],
+            "output_ids_equal_frozen_native": divergence is None,
+            "prompt_aligned_exact_sequence": prompt_equal and divergence is None,
             "first_generated_token_divergence": divergence,
-            "exact_sequence": divergence is None if prompt_equal else None,
-            "candidate_text": content if prompt_equal else None,
+            "candidate_text": content,
             "task_success": success,
             "route_limit_markers": route_markers,
             "provider_positions": positions,
@@ -165,22 +125,14 @@ def main() -> int:
         raise ValueError("arms used different source commits")
     if executable_hashes != {prereg["source"]["executable_sha256"]}:
         raise ValueError("arms used a different executable")
-    aggregate_logical = total_logical / total_positions / (1024 ** 3)
-    aggregate_physical = total_physical / total_positions / (1024 ** 3)
-    alignment_passed = all(
-        row["prompt_tokens_equal_native"] for row in sequences)
-    tasks_passed = sum(row["task_success"] is True for row in sequences)
-    exact_sequences = sum(row["exact_sequence"] is True for row in sequences)
-    gate_passed = (alignment_passed and tasks_passed == len(sequences) and
-                   aggregate_logical < 1.2)
-    status = (
-        "MEASURED_ROUTE12_NATIVE_SUCCESS_INVALID_PROMPT_ALIGNMENT"
-        if not alignment_passed else
-        ("MEASURED_ROUTE12_NATIVE_SUCCESS_GO" if gate_passed else
-         "MEASURED_ROUTE12_NATIVE_SUCCESS_NO_GO"))
+    logical_gib = total_logical / total_positions / (1024 ** 3)
+    physical_gib = total_physical / total_positions / (1024 ** 3)
+    tasks_passed = sum(row["task_success"] for row in sequences)
+    gate_passed = tasks_passed == len(sequences) and logical_gib < 1.2
     result = {
-        "schema": "kimi-k3-route12-native-success-result-v1",
-        "status": status,
+        "schema": "kimi-k3-route12-behavioral-holdout-result-v1",
+        "status": ("MEASURED_ROUTE12_BEHAVIORAL_HOLDOUT_GO" if gate_passed else
+                   "MEASURED_ROUTE12_BEHAVIORAL_HOLDOUT_NO_GO"),
         "preregistration_sha256": digest(args.prereg),
         "source": {
             **prereg["source"],
@@ -190,37 +142,38 @@ def main() -> int:
         "candidate": {
             "tasks_passed": tasks_passed,
             "tasks": len(sequences),
-            "exact_sequences": exact_sequences,
+            "output_ids_equal_frozen_native": sum(
+                row["output_ids_equal_frozen_native"] for row in sequences),
+            "prompt_aligned_exact_sequences": sum(
+                row["prompt_aligned_exact_sequence"] for row in sequences),
+            "prompt_aligned_tasks": sum(
+                row["prompt_tokens_equal_native"] for row in sequences),
             "sequences": sequences,
         },
         "traffic": {
             "provider_positions": total_positions,
             "logical_authoritative_bytes": total_logical,
-            "logical_gib_per_position": aggregate_logical,
+            "logical_gib_per_position": logical_gib,
             "exact_fallback_bytes": total_fallback,
             "exact_fallback_gib_per_position": (
                 total_fallback / total_positions / (1024 ** 3)),
             "physical_direct_read_bytes": total_physical,
-            "physical_gib_per_position": aggregate_physical,
+            "physical_gib_per_position": physical_gib,
             "direct_io_ns": total_direct_io_ns,
         },
-        "controls": prereg["controls"],
         "terminal_kl": {
             "available": False,
-            "reason": "Frozen native output IDs are retained, but native full-vocabulary logit tensors are not retained on Lucebox4.",
+            "reason": "The immutable native artifact retains IDs/text but not native logits; prompt-token drift is also possible and is reported per task.",
         },
         "gate": {
             "passed": gate_passed,
-            "tasks_passed": tasks_passed == len(sequences),
-            "prompt_alignment_passed": alignment_passed,
+            "all_behaviors_retained": tasks_passed == len(sequences),
             "schema_false_activation_absent": True,
-            "logical_below_1_2_gib": aggregate_logical < 1.2,
+            "logical_below_1_2_gib": logical_gib < 1.2,
             "decision": (
-                "Run exact binary closure only for the misaligned prompt IDs; do not score this invalid gate."
-                if not alignment_passed else
-                "Preregister tool-declared false-positive controls; keep research-only."
+                "Proceed to tool-declared false-positive and broader structured/agentic gates; keep research-only."
                 if gate_passed else
-                "Stop route12 production consideration and return to representation/progressive rescue work."
+                "Stop route12 production consideration."
             ),
         },
         "limitations": prereg["limitations"],
@@ -230,9 +183,8 @@ def main() -> int:
         "output": str(args.output),
         "status": result["status"],
         "tasks_passed": f"{tasks_passed}/{len(sequences)}",
-        "exact_sequences": f"{exact_sequences}/{len(sequences)}",
-        "logical_gib_per_position": aggregate_logical,
-        "physical_gib_per_position": aggregate_physical,
+        "logical_gib_per_position": logical_gib,
+        "physical_gib_per_position": physical_gib,
     }, sort_keys=True))
     return 0
 
