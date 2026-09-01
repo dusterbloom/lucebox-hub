@@ -382,3 +382,32 @@ before changing runtime state scheduling.
 The immutable summary is
 `results/k3_terminal_bws_v2_budget20_schema_result_20260901.json`; raw Budget20
 root r76 and analysis r77 remain on Lucebox4.
+
+## Prompt-tail causal discriminator
+
+Four preregistered one-token arms isolated the terminal prompt distribution:
+uniform Budget20, the behaviorally successful H23 Budget24 policy, Budget20
+with only prompt position 146 raised to Budget24, and (conditionally) Budget20
+with positions 139--146 raised to Budget24.  All used the same 147-token
+official-template tool prompt and the same executable.  Every expected
+position marker fired.
+
+The final-row intervention was effectively inert: it reduced
+`KL(P_B24 || P_arm)` from 0.23599 to 0.23409 (0.8%) and retained the wrong
+first token.  The last-eight intervention was much stronger.  It reduced KL
+to **0.06136** (74.0%) at **1.15200 logical / 0.40749 physical
+GiB/provider-position**, but still selected token 1008 (`The`) rather than the
+Budget24 tool-protocol token 163588.  The Budget24 token's margin improved
+from -0.842 to -0.272, but remained negative.
+
+This is a measured **prompt-tail NO-GO**, not a quality pass.  It falsifies a
+one- or eight-row fixed tail as sufficient on the discovery fixture, while
+showing that recent prompt rows carry a large share of the distributional
+damage.  Per preregistration, the tail length will not be tuned further on
+this fixture.  A longer/periodic refresh must be treated as a new hypothesis
+and validated on held-out native-success fixtures rather than declared from
+this near miss.
+
+The immutable summary is
+`results/k3_terminal_bws_v2_prompt_tail_result_20260901.json`; raw arms r78--r81
+and analysis r82 remain on Lucebox4.
