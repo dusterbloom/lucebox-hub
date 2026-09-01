@@ -1,0 +1,78 @@
+{
+  "schema": "dflash.kimi-k3.stq1-tail-local-prereg.v1",
+  "date": "2026-09-01",
+  "question": "At approximately the same routed-layer payload as route12/Budget16 IQ1_S, does broader STQ1_0 coverage reduce captured-state routed-output error enough to earn a terminal-KL experiment?",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "head_before_patch": "87f9836f",
+    "production_branch": "perf/k3-production-ponytail",
+    "production_head_untouched": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "native_model_revision": "a0836360ce58dfec088d966a97f2ddc8a606279b",
+    "hy4_repository_revision": "779242edccdedc2109a0b36b164263a88f015bfa",
+    "hy4_stq_patch_sha256": "b6deb5d1eda8cc241c417c28725c426dfe36d280ed744dc40ac9aa4472748ec1",
+    "hy4_tensor_recipe_sha256": "6ccb89ba093ece88becac2c920ca74e18cb332a27059243db1ca57407a6244d0"
+  },
+  "frozen_inputs": {
+    "layer": 12,
+    "route_limit": 12,
+    "capture": "/mnt/kimi-k3/captures/kimi_layer12_10000.bin",
+    "capture_sha256": "59ba419b83c2d6ab1274cfe35f7b317b9f4c3814093fa94e1c2b893a246ee544",
+    "fit_state": "/mnt/kimi-k3/fit-state/kimi-h23-slab-calibration-10000/kimi_layer12_neuron_slabs_calibration.npz",
+    "fit_state_sha256": "cdf5d7c3e91d7acd9fed998ac674e2aa4dc4fbd3c9cdd42d964c3d2bd464a0cb",
+    "row_selection": "first four validation rows in capture order",
+    "selector": "abs(router_weight) times 10K mean omitted-slab residual norm, stable route then within-expert rank ties"
+  },
+  "format": {
+    "source": "IQ1_S, 179200 bytes per 3584x256 slab component",
+    "stq1_0": "format-equivalent PTQ emulation: {-d,0,+d}, stride-16 3:4 groups, fp16 scale per 256 weights, 42 bytes per block, three LS/selection iterations, no imatrix term",
+    "important_limitation": "The local screen emulates decoded STQ values from the authoritative IQ1_S source. It does not perform physical STQ reads, run an STQ HIP kernel, or measure terminal logits."
+  },
+  "arms": [
+    {
+      "name": "route12_iq1s_b16",
+      "budget": 16,
+      "gate": "IQ1_S",
+      "up": "IQ1_S",
+      "down": "IQ1_S",
+      "payload_bytes_per_layer": 8601600
+    },
+    {
+      "name": "route12_iq1s_b20",
+      "budget": 20,
+      "gate": "IQ1_S",
+      "up": "IQ1_S",
+      "down": "IQ1_S",
+      "payload_bytes_per_layer": 10752000
+    },
+    {
+      "name": "route12_stq1_b19",
+      "budget": 19,
+      "gate": "STQ1_0",
+      "up": "STQ1_0",
+      "down": "STQ1_0",
+      "payload_bytes_per_layer": 8580096,
+      "payload_delta_vs_b16": -0.0025
+    },
+    {
+      "name": "route12_stq1_gu_iq1s_down_b18",
+      "budget": 18,
+      "gate": "STQ1_0",
+      "up": "STQ1_0",
+      "down": "IQ1_S",
+      "payload_bytes_per_layer": 8644608,
+      "payload_delta_vs_b16": 0.005
+    }
+  ],
+  "metrics": [
+    "routed-output cosine versus captured native route12 aggregate",
+    "routed-output relative L2 mean/median/p95/max",
+    "per-family STQ reconstruction relative L2",
+    "exact source and used response artifact hashes"
+  ],
+  "gate": {
+    "go_to_terminal": "At least one STQ arm has finite outputs and mean routed-output relative L2 no worse than route12_iq1s_b16 while staying within 1% of its declared bytes.",
+    "retain_as_low_priority": "The best STQ arm is worse than B16 but no more than 1.5x its mean relative L2; retain only for a terminally ranked exact-core plus STQ-tail test.",
+    "no_go": "Both STQ arms exceed 1.5x B16 mean relative L2, produce a non-finite value, or fail the format self-check."
+  },
+  "scope": "This is a cheap local discriminator only. Local error is known to be a weak terminal-value proxy, so even a GO cannot establish terminal KL, behavior, bytes/token, physical reads, or throughput. A HIP decoder remains unearned."
+}

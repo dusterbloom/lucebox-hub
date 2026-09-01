@@ -839,3 +839,34 @@ quality-preserving frontier point.  The immutable result is
 `results/k3_b16_b20_disagreement_result_20260901.json` (SHA-256
 `56f84a2c064a8a73e992dcf3473fd2556ab9f85ce69dca20826d7b520e931828`);
 raw B16 arms r157--r160 and analysis r161 remain on Lucebox4.
+
+## Hy4/STQ low-bit complement screen
+
+Hy4 revision `779242edccdedc2109a0b36b164263a88f015bfa` was reviewed as a
+native-source PTQ and mixed-precision process.  Its STQ1_0 format is 1.3125
+bpw and protects routed down projections at higher precision.  Blanket STQ
+can reduce one K3 gate/up/down route-slab record by only 16% versus the current
+IQ1_S bytes, so it is not an independent traffic solution.  Its possible K3
+value was additional approximate tail coverage at Budget16 bytes.
+
+The exploratory four-row exact-core screen narrowly favored eight exact
+IQ1_S records plus nine Hy4-style STQ gate/up tails, but the frozen held-out
+test reversed it.  Across 12 validation rows from 10 sequences, exact B16 had
+mean local relative L2 `0.711892`; the mixed arm had `0.728829` at `1.0025x`
+bytes and lost all 12 rows.  The held-out preregistration therefore gives a
+**NO-GO** for STQ derived from the already-lossy K3 IQ1_S source.  No HIP
+kernel is earned.
+
+This does not close STQ fitted directly from BF16/native K3 weights with a
+route-aware imatrix.  Such an arm must first beat scalar alternatives at equal
+bytes on held-out captured states and then terminal KL before runtime work.
+The immutable decision is
+`results/k3_stq1_exact_core_holdout_decision_20260901.json`; the raw harness
+artifact is preserved even though its older exploratory classifier printed
+`RETAIN_LOW_PRIORITY`.
+
+The reusable Hy4 lessons, provider package contract, ROCm 10 qualification
+gate, and cross-model process are recorded in
+`docs/LUCEBOX_LARGE_MOE_QUALIFICATION_V1.md`.  Production
+`perf/k3-production-ponytail` remains untouched at
+`fac048c090c74e5f8f989bffcda3aadc0bc8c266`.

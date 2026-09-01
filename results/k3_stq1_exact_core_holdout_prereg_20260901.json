@@ -1,0 +1,39 @@
+{
+  "schema": "dflash.kimi-k3.stq1-exact-core-holdout-prereg.v1",
+  "status": "PREREGISTERED",
+  "created_utc": "2026-09-01",
+  "source_branch": "experiment/k3-terminal-kl-bws-v2",
+  "source_commit_before_harness_patch": "87f9836f",
+  "hypothesis": "At approximately route12/B16 payload bytes, eight exact IQ1_S route-slab records plus nine additional records whose gate/up matrices use Hy4-style STQ1_0 and whose down matrix remains IQ1_S reduce local routed-output error versus sixteen exact IQ1_S records on held-out captured states.",
+  "frozen_inputs": {
+    "model_revision": "a0836360ce58dfec088d966a97f2ddc8a606279b",
+    "capture": "/mnt/kimi-k3/captures/kimi_layer12_10000.bin",
+    "capture_sha256": "59ba419b83c2d6ab1274cfe35f7b317b9f4c3814093fa94e1c2b893a246ee544",
+    "fit_state": "/mnt/kimi-k3/fit-state/kimi-h23-slab-calibration-10000/kimi_layer12_neuron_slabs_calibration.npz",
+    "fit_state_sha256": "cdf5d7c3e91d7acd9fed998ac674e2aa4dcfbd3c9cdd42d964c3d2bd464a0cb",
+    "layer": 12,
+    "validation_row_ordinals": [73, 222, 371, 520, 669, 818, 967, 1116, 1265, 1414, 1563, 1712],
+    "selection_rule": "twelve validation rows starting at ordinal 73 with stride 149; chosen from capture metadata before measuring these rows"
+  },
+  "frozen_comparison": {
+    "control": "route12_iq1s_b16",
+    "candidate": "route12_iq1s_b8_stq1_gu_iq1s_down_tail9",
+    "control_payload_bytes_per_routed_layer": 8601600,
+    "candidate_payload_bytes_per_routed_layer": 8623104,
+    "candidate_to_control_byte_ratio": 1.0025,
+    "selector": "abs(router_weight) * 10K mean omitted-slab residual norm",
+    "omitted_tail": "10K per-expert per-slab mean",
+    "stq": "Hy4 three-iteration weighted-LS STQ1_0 without imatrix term, emulated from dequantized IQ1_S source; fp16 block scale"
+  },
+  "gate": {
+    "GO_TO_TERMINAL": "candidate mean and median local relative L2 are each no worse than control, candidate wins at least 7 of 12 individual rows, and candidate bytes are no more than 1.01 times control",
+    "RETAIN_LOW_PRIORITY": "candidate mean local relative L2 is no worse than control and candidate bytes are no more than 1.01 times control, but a robustness condition fails",
+    "NO_GO": "candidate mean local relative L2 is worse than control or candidate bytes exceed 1.01 times control",
+    "stop_rule": "Do not tune STQ iterations, scale, sparsity, exact-core size, tail size, row set, or selector from this result. A failure closes IQ1_S-derived STQ1_0 as the leading complement candidate."
+  },
+  "limitations": [
+    "This is a held-out local captured-state discriminator, not terminal KL.",
+    "The STQ emulator requantizes already lossy IQ1_S source weights; it does not test native-precision STQ calibration.",
+    "No STQ file, HIP kernel, physical direct-read path, model behavior, decode throughput, or prefill throughput is measured."
+  ]
+}

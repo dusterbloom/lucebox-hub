@@ -20,12 +20,41 @@
 - Keep `perf/k3-production-ponytail` at
   `fac048c090c74e5f8f989bffcda3aadc0bc8c266` untouched. A narrowly passing
   primitive still needs production requalification before transplant.
+- Treat Hy4 as a process prototype, not a universal tensor recipe. Standardize
+  source/inventory/calibration/quality/package/performance records and allow
+  every architecture to compile a different allocation.
+- Close cascaded IQ1_S-to-STQ as the leading K3 complement: the frozen
+  equal-byte holdout lost 12/12 rows. Native/highest-authority-source STQ is
+  still untested and is the only STQ arm worth retaining.
+- Use the final self-contained DeepSeek4 ROCmFPX artifact as the resident-model
+  process control and K3 as the provider/BWS control. Learned codebooks and
+  modes are authoritative serving data, not optional sidecars.
+- Qualify ROCm 10 side by side against 7.2.2. Do not upgrade production based
+  on release notes, and do not infer gfx1151 GPU-direct storage from hipFile's
+  Instinct-only support listing.
+- Preserve the staged executor rule: reference dequant+dense first; earn a
+  compressed GEMV/MMQ only from an end-to-end bottleneck and equal-output gate.
 
 ## Current provenance
 
 - Experiment branch: `experiment/k3-terminal-kl-bws-v2`
-- Committed experiment head before this patch:
-  `85727b24535eb22e8bcf977a506cf898c820d872`
+- Committed experiment head before the Hy4/STQ patch:
+  `87f9836f0b5c66c6796aa5c573e641b969996ae1`
+- Production branch/head remains:
+  `perf/k3-production-ponytail` at
+  `fac048c090c74e5f8f989bffcda3aadc0bc8c266`.
+- Hy4 repository revision:
+  `779242edccdedc2109a0b36b164263a88f015bfa`.
+- Hy4 STQ patch SHA-256:
+  `b6deb5d1eda8cc241c417c28725c426dfe36d280ed744dc40ac9aa4472748ec1`.
+- Hy4 tensor recipe SHA-256:
+  `6ccb89ba093ece88becac2c920ca74e18cb332a27059243db1ca57407a6244d0`.
+- K3 STQ held-out preregistration SHA-256:
+  `21181d2ec117a71b9acbdc632b77b645ed066cf68b7e54d18652e6ad059a08d1`.
+- K3 STQ held-out raw result SHA-256:
+  `6d03d03c2219f6bbc632a7798355669ffd4bf8f4dbc815d56c3f1da25bb4aa0a`.
+- K3 STQ held-out decision SHA-256 before commit:
+  `acb1f221fab6c3ff4bcde16adaad8b09a274c540803cab31d9d7022dc7a20907`.
 - V16 preregistration SHA-256:
   `af210eaa8365af576b74743118943d96616cd5ed4df8c4479f1641ceeb8b0dd6`
 - Chunked-KDA preregistration SHA-256:

@@ -1,0 +1,49 @@
+{
+  "schema": "dflash.kimi-k3.stq1-exact-core-holdout-decision.v1",
+  "status": "MEASURED_LOCAL_DECISION",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "commit_before_patch": "87f9836f0b5c66c6796aa5c573e641b969996ae1",
+    "production_branch": "perf/k3-production-ponytail",
+    "production_commit": "fac048c090c74e5f8f989bffcda3aadc0bc8c266"
+  },
+  "preregistration": {
+    "path": "results/k3_stq1_exact_core_holdout_prereg_20260901.json",
+    "sha256": "21181d2ec117a71b9acbdc632b77b645ed066cf68b7e54d18652e6ad059a08d1"
+  },
+  "raw_result": {
+    "path": "results/k3_stq1_exact_core_holdout_result_20260901.json",
+    "sha256": "6d03d03c2219f6bbc632a7798355669ffd4bf8f4dbc815d56c3f1da25bb4aa0a",
+    "raw_harness_interpretation": "RETAIN_LOW_PRIORITY",
+    "classifier_note": "The raw harness used the earlier exploratory 1.2x retention threshold. The frozen held-out preregistration makes mean error worse than control an explicit NO_GO, so the preregistered decision below is authoritative. The immutable raw artifact is not overwritten."
+  },
+  "comparison": {
+    "control": "route12_iq1s_b16",
+    "candidate": "route12_iq1s_b8_stq1_gu_iq1s_down_tail9",
+    "validation_rows": 12,
+    "validation_sequences": 10,
+    "control_payload_bytes_per_routed_layer": 8601600,
+    "candidate_payload_bytes_per_routed_layer": 8623104,
+    "candidate_to_control_byte_ratio": 1.0025,
+    "control_mean_relative_l2": 0.7118924610339361,
+    "candidate_mean_relative_l2": 0.7288289946483751,
+    "candidate_to_control_mean_ratio": 1.0237908596332665,
+    "control_median_relative_l2": 0.7108683985953003,
+    "candidate_median_relative_l2": 0.7297198340752611,
+    "candidate_to_control_median_ratio": 1.0265188824221358,
+    "candidate_row_wins": 0,
+    "candidate_row_losses": 12
+  },
+  "decision": "NO_GO",
+  "interpretation": "At equal route12/B16 payload bytes, replacing half of the exact IQ1_S core with additional STQ1_0 gate/up coverage derived from already-quantized IQ1_S weights worsened local routed-output reconstruction on every held-out row. Do not implement an STQ HIP kernel for this cascaded representation.",
+  "scope": {
+    "falsified": "IQ1_S-derived STQ1_0 as the leading low-bit complement for current K3 BWS",
+    "not_falsified": "STQ1_0 calibrated directly from native BF16 with route-aware importance weights",
+    "terminal_kl": null,
+    "behavior": null,
+    "physical_reads": null,
+    "decode_tokens_per_second": null,
+    "prefill_tokens_per_second": null
+  },
+  "next_action": "Standardize a native-source MoE calibration and provider-packaging process. Any future STQ arm must start from BF16/native weights, beat scalar alternatives at equal bytes in a captured-state screen, and then earn terminal-KL and gfx1151 kernel tests."
+}

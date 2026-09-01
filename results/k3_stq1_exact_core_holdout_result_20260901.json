@@ -1,0 +1,452 @@
+{
+  "schema": "dflash.kimi-k3.stq1-tail-local-screen.v1",
+  "status": "MEASURED_LOCAL_SCREEN",
+  "interpretation": "RETAIN_LOW_PRIORITY",
+  "best_stq_arm": "route12_iq1s_b8_stq1_gu_iq1s_down_tail9",
+  "best_mixed_arm": "route12_iq1s_b8_stq1_gu_iq1s_down_tail9",
+  "gate_arm": "route12_iq1s_b8_stq1_gu_iq1s_down_tail9",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "commit": "87f9836f0b5c66c6796aa5c573e641b969996ae1",
+    "dirty": true,
+    "status_sha256": "6e5919356d57e7b3f57f5c6ca3681cc1e3e360bcf9cd7380354eb3a15f23c2ee",
+    "patch_sha256": "974e9506839898bfc10797592a249155e81146f6fd3145be4375c91f1921b0fc",
+    "native_model_revision": "a0836360ce58dfec088d966a97f2ddc8a606279b",
+    "hy4_repository_revision": "779242edccdedc2109a0b36b164263a88f015bfa"
+  },
+  "command": [
+    "scripts/probe_kimi_stq1_tail.py",
+    "/mnt/kimi-k3/models/unsloth-Kimi-K3-GGUF/UD-IQ1_S",
+    "/mnt/kimi-k3/captures/kimi_layer12_10000.bin",
+    "/mnt/kimi-k3/responses/kimi_layer12_10000",
+    "/mnt/kimi-k3/fit-state/kimi-h23-slab-calibration-10000/kimi_layer12_neuron_slabs_calibration.npz",
+    "results/k3_stq1_exact_core_holdout_result_20260901.json",
+    "--layer",
+    "12",
+    "--rows",
+    "12",
+    "--skip-rows",
+    "73",
+    "--row-step",
+    "149",
+    "--gate-arm",
+    "route12_iq1s_b8_stq1_gu_iq1s_down_tail9"
+  ],
+  "hardware": {
+    "platform": "Linux-5.15.167.4-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "numpy": "2.2.6"
+  },
+  "inputs": {
+    "model": "/mnt/kimi-k3/models/unsloth-Kimi-K3-GGUF/UD-IQ1_S",
+    "tensor_sources": [
+      "/mnt/kimi-k3/models/unsloth-Kimi-K3-GGUF/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00003-of-00014.gguf"
+    ],
+    "capture": "/mnt/kimi-k3/captures/kimi_layer12_10000.bin",
+    "capture_sha256": "59ba419b83c2d6ab1274cfe35f7b317b9f4c3814093fa94e1c2b893a246ee544",
+    "fit_state": "/mnt/kimi-k3/fit-state/kimi-h23-slab-calibration-10000/kimi_layer12_neuron_slabs_calibration.npz",
+    "fit_state_sha256": "cdf5d7c3e91d7acd9fed998ac674e2aa4dc4fbd3c9cdd42d964c3d2bd464a0cb",
+    "responses": "/mnt/kimi-k3/responses/kimi_layer12_10000",
+    "used_response_files": 100,
+    "used_responses_sha256": "89fd8fafa2dd39e534a811eeebfdf311449665bde106cf88a2c439811435d2bb",
+    "token_indices": [
+      687,
+      1129,
+      2002,
+      2825,
+      4110,
+      5328,
+      6020,
+      7203,
+      8273,
+      9261,
+      9410,
+      9559
+    ],
+    "token_ids": [
+      2106,
+      1609,
+      6689,
+      901,
+      7343,
+      15041,
+      220,
+      4372,
+      276,
+      12555,
+      11,
+      1215
+    ],
+    "sequence_ids": [
+      "code-HumanEval-4",
+      "conversation-88",
+      "conversation-93",
+      "conversation-98",
+      "code-HumanEval-24",
+      "conversation-113",
+      "code-HumanEval-34",
+      "conversation-123",
+      "conversation-128",
+      "conversation-133",
+      "conversation-133",
+      "conversation-133"
+    ]
+  },
+  "selector": {
+    "route_limit": 12,
+    "definition": "abs(router_weight) * 10K mean omitted-slab residual norm",
+    "tail": "10K per-expert per-slab mean"
+  },
+  "stq": {
+    "definition": "Hy4 three-iteration weighted-LS STQ1_0 without imatrix term; fp16 block scale",
+    "physical_reads_measured": false,
+    "hip_kernel_used": false,
+    "component_reconstruction_relative_l2": {
+      "gate": {
+        "mean": 0.569211367473729,
+        "maximum": 0.5711290925492143,
+        "samples": 204
+      },
+      "up": {
+        "mean": 0.5692565386025547,
+        "maximum": 0.5715990877562532,
+        "samples": 204
+      },
+      "down": {
+        "mean": 0.56820932012337,
+        "maximum": 0.5700409564373483,
+        "samples": 204
+      }
+    }
+  },
+  "policies": {
+    "route12_iq1s_b16": {
+      "budget": 16,
+      "exact_prefix": 16,
+      "tail_mode": "exact",
+      "payload_bytes_per_routed_layer": 8601600,
+      "metrics_vs_native_route12": {
+        "relative_l2": {
+          "mean": 0.7118924610339361,
+          "median": 0.7108683985953003,
+          "p95": 0.8442037571481125,
+          "maximum": 0.857211061843851,
+          "rows": [
+            0.7442682653156164,
+            0.711275804151257,
+            0.6322514830608207,
+            0.6522389283404335,
+            0.689706123235139,
+            0.7104609930393435,
+            0.749990950882632,
+            0.857211061843851,
+            0.6342836279140308,
+            0.8335614169425083,
+            0.6065614843499172,
+            0.7208993933316821
+          ]
+        },
+        "cosine": {
+          "mean": 0.7009201298735035,
+          "minimum": 0.5201684423864361,
+          "rows": [
+            0.6693722479812395,
+            0.7268501122060613,
+            0.7794062284739292,
+            0.7733755901039207,
+            0.729643823985847,
+            0.7045731009770344,
+            0.6669345841889456,
+            0.5201684423864361,
+            0.7759899451524054,
+            0.5709050393732694,
+            0.7958979924511025,
+            0.6979244512018501
+          ]
+        }
+      }
+    },
+    "route12_iq1s_b20": {
+      "budget": 20,
+      "exact_prefix": 20,
+      "tail_mode": "exact",
+      "payload_bytes_per_routed_layer": 10752000,
+      "metrics_vs_native_route12": {
+        "relative_l2": {
+          "mean": 0.68755362691876,
+          "median": 0.6870987424791235,
+          "p95": 0.8153808607989326,
+          "maximum": 0.8370236199674573,
+          "rows": [
+            0.7033084722910404,
+            0.6829612147621003,
+            0.6231259451418868,
+            0.6271718992027512,
+            0.6259315501796774,
+            0.6912362701961466,
+            0.7407638559263773,
+            0.8370236199674573,
+            0.6218303829212024,
+            0.7976731487519577,
+            0.5910872488456725,
+            0.7085299148388496
+          ]
+        },
+        "cosine": {
+          "mean": 0.7229744882639823,
+          "minimum": 0.5494221651314888,
+          "rows": [
+            0.7109778325056245,
+            0.7481350827046283,
+            0.7864607735856257,
+            0.7894012035360717,
+            0.7798782915567389,
+            0.7228878648383786,
+            0.6764933133727385,
+            0.5494221651314888,
+            0.7860861867802064,
+            0.6092996749246921,
+            0.8071844895773419,
+            0.7094669806542512
+          ]
+        }
+      }
+    },
+    "route12_stq1_b19": {
+      "budget": 19,
+      "exact_prefix": 0,
+      "tail_mode": "stq",
+      "payload_bytes_per_routed_layer": 8580096,
+      "metrics_vs_native_route12": {
+        "relative_l2": {
+          "mean": 0.7600059506485927,
+          "median": 0.7620186615400841,
+          "p95": 0.8701601779411932,
+          "maximum": 0.885749724900889,
+          "rows": [
+            0.787306512481567,
+            0.7556398908168945,
+            0.7078289785499973,
+            0.7088384780577942,
+            0.7024714372749505,
+            0.7683974322632736,
+            0.8056756073739908,
+            0.885749724900889,
+            0.6913454372173721,
+            0.8574050940650784,
+            0.6775889441844605,
+            0.771823870596843
+          ]
+        },
+        "cosine": {
+          "mean": 0.6500749899849144,
+          "minimum": 0.4701821744097951,
+          "rows": [
+            0.6184006854300933,
+            0.682061725784534,
+            0.7168432242350733,
+            0.7231391101873437,
+            0.7136407707495982,
+            0.6429698575349944,
+            0.5948711617406836,
+            0.4701821744097951,
+            0.7286062191865744,
+            0.5287917289793975,
+            0.7377374489641944,
+            0.6436557726166918
+          ]
+        }
+      }
+    },
+    "route12_stq1_gu_iq1s_down_b18": {
+      "budget": 18,
+      "exact_prefix": 0,
+      "tail_mode": "stq_gu",
+      "payload_bytes_per_routed_layer": 8644608,
+      "metrics_vs_native_route12": {
+        "relative_l2": {
+          "mean": 0.7479723858082724,
+          "median": 0.7452966206426748,
+          "p95": 0.8658088969654234,
+          "maximum": 0.8790212347022514,
+          "rows": [
+            0.7800558870029799,
+            0.7405700352581899,
+            0.6885964561130147,
+            0.6972515900840688,
+            0.6990212497124189,
+            0.7500232060271597,
+            0.7905418163180961,
+            0.8790212347022514,
+            0.6782856186513291,
+            0.8549988024534733,
+            0.6607838236902857,
+            0.7565189096860013
+          ]
+        },
+        "cosine": {
+          "mean": 0.6634247867455816,
+          "minimum": 0.4828106581701275,
+          "rows": [
+            0.6279610032835886,
+            0.6968142816104004,
+            0.7343419872325752,
+            0.7340044356387035,
+            0.718261428509786,
+            0.6636080093329049,
+            0.6153450144190047,
+            0.4828106581701275,
+            0.7401896092316002,
+            0.5349056041575492,
+            0.7525372794450147,
+            0.6603181299157239
+          ]
+        }
+      }
+    },
+    "route12_iq1s_b8_stq1_tail9": {
+      "budget": 17,
+      "exact_prefix": 8,
+      "tail_mode": "stq",
+      "payload_bytes_per_routed_layer": 8365056,
+      "metrics_vs_native_route12": {
+        "relative_l2": {
+          "mean": 0.7364014743954486,
+          "median": 0.7388557956784338,
+          "p95": 0.8544594692106446,
+          "maximum": 0.8696508594154736,
+          "rows": [
+            0.7669511387552082,
+            0.73841510711595,
+            0.6679271921943037,
+            0.6823460835457069,
+            0.7018875046333893,
+            0.7392964842409177,
+            0.7793491300178557,
+            0.8696508594154736,
+            0.6660813208633569,
+            0.8420301499521482,
+            0.6431673982121654,
+            0.7397153237989076
+          ]
+        },
+        "cosine": {
+          "mean": 0.6763697293393164,
+          "minimum": 0.49843227488158476,
+          "rows": [
+            0.6432394935225582,
+            0.7024108243749069,
+            0.7514493118735539,
+            0.7479549082287424,
+            0.7170716026238684,
+            0.6747839261640418,
+            0.6309044917149628,
+            0.49843227488158476,
+            0.750435353104489,
+            0.5546625153591204,
+            0.7673058839699486,
+            0.6777861662540211
+          ]
+        }
+      }
+    },
+    "route12_iq1s_b6_stq1_tail12": {
+      "budget": 18,
+      "exact_prefix": 6,
+      "tail_mode": "stq",
+      "payload_bytes_per_routed_layer": 8644608,
+      "metrics_vs_native_route12": {
+        "relative_l2": {
+          "mean": 0.7419551006074707,
+          "median": 0.7412043573169087,
+          "p95": 0.8587601380169201,
+          "maximum": 0.8702157692879109,
+          "rows": [
+            0.7700198717878969,
+            0.7382403649798319,
+            0.677818974160917,
+            0.6901286144891694,
+            0.6965771113885918,
+            0.7441683496539856,
+            0.7901787720569153,
+            0.8702157692879109,
+            0.6750180531849391,
+            0.8493873487952004,
+            0.6524138571361142,
+            0.7492941203681764
+          ]
+        },
+        "cosine": {
+          "mean": 0.6699304059149255,
+          "minimum": 0.4971747831732457,
+          "rows": [
+            0.6391830359053552,
+            0.7007527410287788,
+            0.7432221741029542,
+            0.7400799463489182,
+            0.7205371809133664,
+            0.6695016635826792,
+            0.6159431933228189,
+            0.4971747831732457,
+            0.7429337820276913,
+            0.5426252556301754,
+            0.7596414770590234,
+            0.6675696378840985
+          ]
+        }
+      }
+    },
+    "route12_iq1s_b8_stq1_gu_iq1s_down_tail9": {
+      "budget": 17,
+      "exact_prefix": 8,
+      "tail_mode": "stq_gu",
+      "payload_bytes_per_routed_layer": 8623104,
+      "metrics_vs_native_route12": {
+        "relative_l2": {
+          "mean": 0.7288289946483751,
+          "median": 0.7297198340752611,
+          "p95": 0.849769221174537,
+          "maximum": 0.8647808833797914,
+          "rows": [
+            0.7597405936733257,
+            0.727800374786587,
+            0.6584726371297879,
+            0.6743065034901874,
+            0.6924303010518833,
+            0.7316392933639352,
+            0.7733219784586086,
+            0.8647808833797914,
+            0.6584252616113527,
+            0.8374869520975108,
+            0.633017023222204,
+            0.7345261335153269
+          ]
+        },
+        "cosine": {
+          "mean": 0.6839908725902535,
+          "minimum": 0.5065424568527155,
+          "rows": [
+            0.6516090043420901,
+            0.7118789493875958,
+            0.759473393250256,
+            0.7546679602302933,
+            0.7257047275495047,
+            0.6828749036565858,
+            0.6383849683215147,
+            0.5065424568527155,
+            0.757002377117167,
+            0.561000388705175,
+            0.7754267455570885,
+            0.6833245961130561
+          ]
+        }
+      }
+    }
+  },
+  "elapsed_seconds": 103.69244166393764,
+  "terminal_kl": null,
+  "limitations": [
+    "Local routed-output error is not terminal KL and is known to rank slab value weakly.",
+    "STQ values are emulated after dequantizing the IQ1_S teacher; no STQ file or physical byte path was exercised.",
+    "This result cannot establish behavior, output quality, bytes/token, decode speed, prefill speed, or a HIP-kernel GO."
+  ]
+}

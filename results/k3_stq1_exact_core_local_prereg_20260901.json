@@ -1,0 +1,66 @@
+{
+  "schema": "dflash.kimi-k3.stq1-exact-core-local-prereg.v1",
+  "date": "2026-09-01",
+  "question": "Does protecting a small IQ1_S core and spending the remaining Budget16 bytes on additional STQ1_0 records beat the static route12/Budget16 local control?",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "head_before_patch": "87f9836f",
+    "parent_preregistration": "results/k3_stq1_tail_local_prereg_20260901.json",
+    "parent_result": "results/k3_stq1_tail_local_result_20260901.json",
+    "parent_interpretation": "RETAIN_LOW_PRIORITY",
+    "production_head_untouched": "fac048c090c74e5f8f989bffcda3aadc0bc8c266"
+  },
+  "frozen_inputs": {
+    "layer": 12,
+    "route_limit": 12,
+    "rows": [319, 320, 321, 322],
+    "selector": "unchanged abs(router_weight) times 10K mean omitted-slab residual norm",
+    "format": "unchanged Hy4 three-iteration LS STQ1_0 emulator without imatrix term"
+  },
+  "arms": [
+    {
+      "name": "route12_iq1s_b16",
+      "exact_prefix": 16,
+      "approximate_tail": 0,
+      "payload_bytes_per_layer": 8601600
+    },
+    {
+      "name": "route12_iq1s_b20",
+      "exact_prefix": 20,
+      "approximate_tail": 0,
+      "payload_bytes_per_layer": 10752000
+    },
+    {
+      "name": "route12_iq1s_b8_stq1_tail9",
+      "exact_prefix": 8,
+      "approximate_tail": 9,
+      "tail_gate_up_down": "STQ1_0",
+      "payload_bytes_per_layer": 8365056,
+      "payload_delta_vs_b16": -0.0275
+    },
+    {
+      "name": "route12_iq1s_b6_stq1_tail12",
+      "exact_prefix": 6,
+      "approximate_tail": 12,
+      "tail_gate_up_down": "STQ1_0",
+      "payload_bytes_per_layer": 8644608,
+      "payload_delta_vs_b16": 0.005
+    },
+    {
+      "name": "route12_iq1s_b8_stq1_gu_iq1s_down_tail9",
+      "exact_prefix": 8,
+      "approximate_tail": 9,
+      "tail_gate_up": "STQ1_0",
+      "tail_down": "IQ1_S",
+      "payload_bytes_per_layer": 8623104,
+      "payload_delta_vs_b16": 0.0025
+    }
+  ],
+  "gate": {
+    "go_to_terminal": "At least one exact-core plus STQ-tail arm has mean local relative L2 no worse than B16 at no more than 1.01x B16 bytes.",
+    "retain_low_priority": "The best mixed arm is worse than B16 but no more than 1.2x its mean relative L2.",
+    "no_go": "Every mixed arm exceeds 1.2x B16 mean relative L2 or produces invalid output."
+  },
+  "stop_rule": "Do not tune exact-prefix or tail lengths on these four rows. A GO earns a terminal-KL implementation on captured native trajectories; a NO-GO closes STQ1_0 from the current IQ1_S source as the next representation lead.",
+  "scope": "This remains a local captured-state screen, not terminal KL, task quality, measured traffic, or throughput."
+}
