@@ -552,6 +552,36 @@ Immutable summaries are
 `results/k3_terminal_bws_v2_route12_native_closure_result_20260901.json`
 (raw r101--r102, analysis r103).
 
+## Recovered native Full192 teacher closure
+
+The source-matched sparse core was fetched directly on Lucebox4 from 290
+pinned UD-IQ1_S byte ranges using four workers.  Every range SHA-256 and every
+combined shard range SHA-256 matched the ds-033 source.  The transfer took
+812.36 seconds and allocated exactly 48,692,428,800 bytes while preserving the
+594,040,923,616-byte logical GGUF geometry.  Together with the already
+identical 92-layer natural sidecar bank, Full192 is the exact stored K3
+representation under test.
+
+The preregistered closure is **3/3 GO**.  `fact-capital` matched both the old
+native prompt and all eight native output IDs exactly and returned `Tokyo`.
+The two controls corrupted by the prior hole-reading run now return
+`She doesn't like apples.` and `LIME-742`; both pass their frozen behavioral
+validators.  This confirms that r101/r102 was an invalid sparse-provider
+control, not a K3 quality failure.
+
+Full192 consumes exactly 9.069580078125 logical GiB/provider-position.  Its
+cold short-request prefill measured 293.8--497.8 seconds and decode only
+0.1--0.2 tok/s.  Those figures characterize the teacher/control and are not a
+serving target.  The recovered teacher now earns aligned H23 and route12/B20
+terminal-KL measurements on the unchanged tool boundary; candidate traffic
+and performance must still be measured separately.
+
+The immutable closure summary is
+`results/k3_native_sidecar_closure_result_20260901.json` (SHA-256
+`d095f3d4a298a217b47a13c012706fe29f10caffafe071c21264f0888f2fddec`);
+raw arms r137--r139, range-fetch result `e2b2699f...` and analysis r140 remain
+on Lucebox4.
+
 ## Unseen route12 behavioral holdout
 
 The next gate froze the six tasks from the immutable 12/12 broad

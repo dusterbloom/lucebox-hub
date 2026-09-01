@@ -1,0 +1,444 @@
+{
+  "schema": "kimi-k3-native-sidecar-closure-result-v1",
+  "status": "MEASURED_NATIVE_SIDECAR_CLOSURE_GO",
+  "preregistration_sha256": "d9233daf32c57a6b3c0f0388bb0454e03c1e0a042a5a6203944338801aab42e8",
+  "fetch": {
+    "result": "/home/duster/kimi-k3-deploy/native-iq1s-slim-core/fetch-result.json",
+    "result_sha256": "e2b2699f50d46370b8fda9bf765ccf8c80eed2c60022f3b2ab7dcaaab3335a9b",
+    "schema": "kimi-k3-sparse-range-fetch-result-v1",
+    "status": "VERIFIED_COMPLETE",
+    "plan": "/home/duster/k3-terminal-kl-bws-v2-guarded/results/k3_native_iq1s_sparse_range_plan_20260901.json",
+    "plan_sha256": "454a196e210e3ff800ac1e15d26408af98a33ba50262f38659d140f3dbc2d1dc",
+    "command": [
+      "/home/duster/k3-terminal-kl-bws-v2-guarded/scripts/fetch_kimi_sparse_core.py",
+      "fetch",
+      "/home/duster/k3-terminal-kl-bws-v2-guarded/results/k3_native_iq1s_sparse_range_plan_20260901.json",
+      "/home/duster/kimi-k3-deploy/native-iq1s-slim-core.range-partial",
+      "--workers",
+      "4"
+    ],
+    "workers": 4,
+    "elapsed_seconds": 812.3584945710027,
+    "shards": [
+      {
+        "name": "Kimi-K3-UD-IQ1_S-00001-of-00014.gguf",
+        "logical_bytes": 6934144,
+        "allocated_bytes": 6934528,
+        "combined_range_sha256": "5022014e7c49d8844e9f1bc7d9fb824c0d640214540aa845690518d800286083"
+      },
+      {
+        "name": "Kimi-K3-UD-IQ1_S-00002-of-00014.gguf",
+        "logical_bytes": 47094999008,
+        "allocated_bytes": 6633164800,
+        "combined_range_sha256": "1615983878893f89609768f6af093fa20ff560cfaf0fcf50e3e190f62cf658e9"
+      },
+      {
+        "name": "Kimi-K3-UD-IQ1_S-00003-of-00014.gguf",
+        "logical_bytes": 49220694048,
+        "allocated_bytes": 3672227840,
+        "combined_range_sha256": "6106fdea9bff2cdaae2f08028062b37ecda154fbfa08986a064b2c405a3a4696"
+      },
+      {
+        "name": "Kimi-K3-UD-IQ1_S-00004-of-00014.gguf",
+        "logical_bytes": 48208733792,
+        "allocated_bytes": 3893391360,
+        "combined_range_sha256": "2d63364f2bdb21b4cbc2db3fe1457c9e721313c2592cc728cf7a51f67ffc01c5"
+      },
+      {
+        "name": "Kimi-K3-UD-IQ1_S-00005-of-00014.gguf",
+        "logical_bytes": 48276643808,
+        "allocated_bytes": 3961298944,
+        "combined_range_sha256": "6dd1e4744b1a8d0ff017c33b19aa965b8deb645c5d63bebff47b4db623dba3a3"
+      },
+      {
+        "name": "Kimi-K3-UD-IQ1_S-00006-of-00014.gguf",
+        "logical_bytes": 48006508320,
+        "allocated_bytes": 3691163648,
+        "combined_range_sha256": "60241e6a822bb29f7b1121cf559388c16aa4d767dd14f47f0f6fb077f9fe82e4"
+      },
+      {
+        "name": "Kimi-K3-UD-IQ1_S-00007-of-00014.gguf",
+        "logical_bytes": 48208733792,
+        "allocated_bytes": 3893391360,
+        "combined_range_sha256": "94fd66b7d12f8d3841c0b20f6e90c725f7615793d206b40c7c37902a10a8e67c"
+      },
+      {
+        "name": "Kimi-K3-UD-IQ1_S-00008-of-00014.gguf",
+        "logical_bytes": 50742894560,
+        "allocated_bytes": 3961298944,
+        "combined_range_sha256": "9ba1666876e55906a290210d665f2959cb529d14bc545548b9b7043d85e38f0c"
+      },
+      {
+        "name": "Kimi-K3-UD-IQ1_S-00009-of-00014.gguf",
+        "logical_bytes": 51608874592,
+        "allocated_bytes": 3594153984,
+        "combined_range_sha256": "05c2bf2a8c53ab0e1747ae13ac78b6232542b82b34939acbff9637948a5f5457"
+      },
+      {
+        "name": "Kimi-K3-UD-IQ1_S-00010-of-00014.gguf",
+        "logical_bytes": 49441859168,
+        "allocated_bytes": 3893391360,
+        "combined_range_sha256": "37f94e21f257224a6da1dbbeb7bcb165b5ed20258b1aad93cfca462dcf94ca6e"
+      },
+      {
+        "name": "Kimi-K3-UD-IQ1_S-00011-of-00014.gguf",
+        "logical_bytes": 51976019936,
+        "allocated_bytes": 3961298944,
+        "combined_range_sha256": "2f9b88c21643e8f9b8fd518db7c40328eba4c0e2ebdc336d1a2700930862c700"
+      },
+      {
+        "name": "Kimi-K3-UD-IQ1_S-00012-of-00014.gguf",
+        "logical_bytes": 48526061152,
+        "allocated_bytes": 3594153984,
+        "combined_range_sha256": "98f79852ee33b88cb612f7ce0b13bf25da0c65990fcb5ab45aca399bc1c24b1e"
+      },
+      {
+        "name": "Kimi-K3-UD-IQ1_S-00013-of-00014.gguf",
+        "logical_bytes": 48728286656,
+        "allocated_bytes": 3796381696,
+        "combined_range_sha256": "a262804b8d2729ae04a790c811867e3e6a2ed4dfecffbf38d51701eacc3b52d0"
+      },
+      {
+        "name": "Kimi-K3-UD-IQ1_S-00014-of-00014.gguf",
+        "logical_bytes": 3993680640,
+        "allocated_bytes": 140177408,
+        "combined_range_sha256": "31d49ca351e58d2c7f9e19be09f27001a8ee4ac3034dfba3e2141c1d6a49962c"
+      }
+    ],
+    "totals": {
+      "logical_bytes": 594040923616,
+      "allocated_bytes": 48692428800
+    }
+  },
+  "source": {
+    "research_branch": "experiment/k3-terminal-kl-bws-v2",
+    "research_parent_commit": "9eb166dafc00c118a187b9cb52321944512d6b2b",
+    "production_branch": "perf/k3-production-ponytail",
+    "production_base_commit": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "native_source_host": "ds-033",
+    "native_source_revision": "a0836360ce58dfec088d966a97f2ddc8a606279b",
+    "native_source_complete_marker_sha256": "da72ddc6319fe6c0c50e5a8c121403faec15b35a000a58de4985c60ed51b9a7d",
+    "measured_commit": "929ea7ee673881820dfde8053b1e3fc149ccf03f",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+    "native_core_first_shard_sha256": "5022014e7c49d8844e9f1bc7d9fb824c0d640214540aa845690518d800286083"
+  },
+  "arms": [
+    {
+      "id": "fact-capital",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r137-native-full192-fact",
+      "source_commit": "929ea7ee673881820dfde8053b1e3fc149ccf03f",
+      "manifest_sha256": "8f2e2a36c6ff8881ced476a5ec147da62d8495071fab789f5b4be29786cf9a77",
+      "response_sha256": "f7f303e42491135507b90784a54c14a2d59d59d54d7e41df4665f080785a9f00",
+      "logits_sha256": "e5178bc154287a9e048f36b0f94f1d3d3d42c3c5a0d4363c93e2f21425143578",
+      "traffic_sha256": "5fe04b5ba99790ffa713dea320a9e656bab84775a11d75042fc65fae0a4c10e6",
+      "prompt_ids": [
+        163587,
+        2778,
+        6244,
+        878,
+        2482,
+        1,
+        163589,
+        1263,
+        276,
+        10484,
+        318,
+        10417,
+        13,
+        61982,
+        472,
+        1609,
+        276,
+        5243,
+        1530,
+        13,
+        163588,
+        2778,
+        163589,
+        163586,
+        163587,
+        2778,
+        6244,
+        878,
+        69702,
+        1,
+        163589,
+        163587,
+        12092,
+        163589
+      ],
+      "generated_ids": [
+        39818,
+        18009,
+        163588,
+        12092,
+        163589,
+        163588,
+        2778,
+        163589
+      ],
+      "native_prompt_ids_equal": true,
+      "native_generated_ids_equal": true,
+      "first_generated_divergence": null,
+      "content": "Tokyo",
+      "task_success": true,
+      "finish_reason": "length",
+      "usage": {
+        "accept_rate": 0.0,
+        "completion_tokens": 8,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 34,
+        "spec_decode_ran": false,
+        "timings": {
+          "agent_turn_cache_hit": false,
+          "cache_hit": false,
+          "cached_prefix_tokens": 0,
+          "decode_ms": 51311.5,
+          "decode_tokens_per_sec": 0.2,
+          "effective_prompt_tokens": 34,
+          "prefill_ms": 293784.0,
+          "prefilled_tokens": 34
+        },
+        "total_tokens": 42
+      },
+      "traffic": {
+        "requested_nominal_slabs": 724224,
+        "selected_slab_records": 724224,
+        "selected_sidecar_bytes": 399273885696,
+        "exact_fallback_bytes": 0,
+        "total_provider_bytes": 399273885696,
+        "provider_positions": 41,
+        "logical_bytes_per_position": 9738387456.0,
+        "logical_gib_per_position": 9.069580078125,
+        "fallback_gib_per_position": 0.0,
+        "explicit_provider_reads": 409656360960,
+        "direct_physical_bytes": 0,
+        "direct_physical_gib_per_position": 0.0,
+        "direct_io_ns": 0
+      }
+    },
+    {
+      "id": "grammar-apples",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r138-native-full192-grammar",
+      "source_commit": "929ea7ee673881820dfde8053b1e3fc149ccf03f",
+      "manifest_sha256": "93bd8bbfe9bfcbc7bbccf126b2193ddec0759a69d1c5d3cc3a34113d131e00b7",
+      "response_sha256": "10a364821ddf52333e70e0ec34aef3b94555e632e73cf6b796fbf0a931fe048e",
+      "logits_sha256": "53d014999ff8d96df7f8d6e54ffff0244f5dad67d473c7aeb0caa67ed373c378",
+      "traffic_sha256": "69534dbd54077f3ec4b39c0bc3623c73b215e3fb534ed9af2a0d84e42d8ee122",
+      "prompt_ids": [
+        163587,
+        2778,
+        6244,
+        878,
+        2482,
+        1,
+        163589,
+        49491,
+        566,
+        23819,
+        25,
+        4133,
+        4536,
+        1517,
+        47091,
+        13,
+        61982,
+        472,
+        1609,
+        276,
+        54952,
+        23819,
+        13,
+        163588,
+        2778,
+        163589,
+        163586,
+        163587,
+        2778,
+        6244,
+        878,
+        69702,
+        1,
+        163589,
+        163587,
+        12092,
+        163589
+      ],
+      "generated_ids": [
+        8641,
+        8370,
+        1517,
+        47091,
+        13,
+        163588,
+        12092,
+        163589
+      ],
+      "native_prompt_ids_equal": false,
+      "native_generated_ids_equal": null,
+      "first_generated_divergence": null,
+      "content": "She doesn't like apples.",
+      "task_success": true,
+      "finish_reason": "length",
+      "usage": {
+        "accept_rate": 0.0,
+        "completion_tokens": 8,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 37,
+        "spec_decode_ran": false,
+        "timings": {
+          "agent_turn_cache_hit": false,
+          "cache_hit": false,
+          "cached_prefix_tokens": 0,
+          "decode_ms": 60053.9,
+          "decode_tokens_per_sec": 0.1,
+          "effective_prompt_tokens": 37,
+          "prefill_ms": 360920.5,
+          "prefilled_tokens": 37
+        },
+        "total_tokens": 45
+      },
+      "traffic": {
+        "requested_nominal_slabs": 777216,
+        "selected_slab_records": 777216,
+        "selected_sidecar_bytes": 428489048064,
+        "exact_fallback_bytes": 0,
+        "total_provider_bytes": 428489048064,
+        "provider_positions": 44,
+        "logical_bytes_per_position": 9738387456.0,
+        "logical_gib_per_position": 9.069580078125,
+        "fallback_gib_per_position": 0.0,
+        "explicit_provider_reads": 439631216640,
+        "direct_physical_bytes": 0,
+        "direct_physical_gib_per_position": 0.0,
+        "direct_io_ns": 0
+      }
+    },
+    {
+      "id": "extract-code",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r139-native-full192-extract",
+      "source_commit": "929ea7ee673881820dfde8053b1e3fc149ccf03f",
+      "manifest_sha256": "51c9728eeab0de3c037b4131c82309728ac59071e5e4fc4824cf5364e482add6",
+      "response_sha256": "895f8ee5f0e7fb2502ca7c5e47301303a66dc0c945bb30fceea04fc33024fe45",
+      "logits_sha256": "1a826bee731e925c50b8a56bc0f05cdbfdf108ee1192ebcd8e189ce955a0c1f1",
+      "traffic_sha256": "1cd5bdff43e340223db80dbc83ea0f675ee93eccfd71586a5122b34162cadcd0",
+      "prompt_ids": [
+        163587,
+        2778,
+        6244,
+        878,
+        2482,
+        1,
+        163589,
+        2959,
+        25,
+        646,
+        49984,
+        7539,
+        3199,
+        3253,
+        387,
+        547,
+        9069,
+        12,
+        51413,
+        13,
+        5071,
+        387,
+        276,
+        49984,
+        7539,
+        3199,
+        3253,
+        30,
+        61982,
+        472,
+        1609,
+        276,
+        3253,
+        13,
+        163588,
+        2778,
+        163589,
+        163586,
+        163587,
+        2778,
+        6244,
+        878,
+        69702,
+        1,
+        163589,
+        163587,
+        12092,
+        163589
+      ],
+      "generated_ids": [
+        43,
+        9069,
+        12,
+        51413,
+        163588,
+        12092,
+        163589,
+        163588
+      ],
+      "native_prompt_ids_equal": false,
+      "native_generated_ids_equal": null,
+      "first_generated_divergence": null,
+      "content": "LIME-742<|close|>",
+      "task_success": true,
+      "finish_reason": "length",
+      "usage": {
+        "accept_rate": 0.0,
+        "completion_tokens": 8,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 48,
+        "spec_decode_ran": false,
+        "timings": {
+          "agent_turn_cache_hit": false,
+          "cache_hit": false,
+          "cached_prefix_tokens": 0,
+          "decode_ms": 71337.0,
+          "decode_tokens_per_sec": 0.1,
+          "effective_prompt_tokens": 48,
+          "prefill_ms": 497808.0,
+          "prefilled_tokens": 48
+        },
+        "total_tokens": 56
+      },
+      "traffic": {
+        "requested_nominal_slabs": 971520,
+        "selected_slab_records": 971520,
+        "selected_sidecar_bytes": 535611310080,
+        "exact_fallback_bytes": 0,
+        "total_provider_bytes": 535611310080,
+        "provider_positions": 55,
+        "logical_bytes_per_position": 9738387456.0,
+        "logical_gib_per_position": 9.069580078125,
+        "fallback_gib_per_position": 0.0,
+        "explicit_provider_reads": 549539020800,
+        "direct_physical_bytes": 0,
+        "direct_physical_gib_per_position": 0.0,
+        "direct_io_ns": 0
+      }
+    }
+  ],
+  "gate": {
+    "passed": true,
+    "tasks_passed": "3/3",
+    "fact_prompt_and_generation_exact": true,
+    "decision": "Rerun frozen H23 and route12 candidates against the source-matched native core."
+  },
+  "limitations": [
+    "Cross-HIP/CUDA byte-identical logits are not required; source bytes and native behavior are the closure criteria.",
+    "Grammar and extraction prompt IDs may differ from the old capture because the current official template tokenizer is frozen separately.",
+    "This closes teacher provenance; it is not a BWS quality or throughput result."
+  ]
+}
