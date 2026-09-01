@@ -1,0 +1,34 @@
+{
+  "schema": "kimi-k3-route-prefix-prereg-v2",
+  "status": "PREREGISTERED_IMPLEMENTATION_CLOSURE",
+  "supersedes_for_gate": "results/k3_terminal_bws_v2_route_prefix_prereg_20260901.json",
+  "amendment_reason": "The route-prefix hook required a rebuilt executable. Before interpreting route-limited arms, rerun route16 with the new executable and require exact prompt IDs, generated ID, full-vocabulary logits and traffic equality with the retained Budget20 control.",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "implementation_commit": "4bb8bd38",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4"
+  },
+  "build": {
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+    "focused_provider_test": "PASS with HIP_VISIBLE_DEVICES=1",
+    "unqualified_two-device_test": "EXCLUDED: pre-existing live HIP prefix-snapshot fixture segfaulted after enumerating both GPUs; rerun on the qualified gfx1151 device passed."
+  },
+  "binary_closure": {
+    "new_route16_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r86-route16-closure",
+    "retained_control_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r78-prompt-first-b20",
+    "requirements": [
+      "No DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT in the environment and no route-limit marker.",
+      "Prompt token IDs, generated token ID, final.f32 and traffic.tsv are byte-identical to the retained control.",
+      "Any closure failure stops the route-count screen until explained."
+    ]
+  },
+  "screen": {
+    "route_counts": [12, 8, 6, 4],
+    "policy": "fixtures/k3_uniform_budget20.txt",
+    "policy_sha256": "2f366aab82de990441dc61de870736b1acbf081f26b2aff11f63017dd53f697c",
+    "fixture": "fixtures/k3_tool_weather_first_token_request.json",
+    "fixture_sha256": "fa18a5b47c98ddbb430c602e1a8738200e87b56dcbd5468889c4fb895ec00191",
+    "gate_definition": "Unchanged from v1: equal Budget20 capacity, unchanged retained router weights, Budget24-reference full-vocabulary KL/top-1/margin, authoritative bytes, and no production promotion."
+  }
+}
