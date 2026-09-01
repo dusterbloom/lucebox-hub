@@ -1,0 +1,39 @@
+{
+  "schema": "kimi-k3-budget20-schema-rescue-prereg-v1",
+  "status": "PREREGISTERED_INTERPOLATION",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "9da313faa1f4f4c3c4351407a28ca119d85df0f7",
+    "runtime_implementation_commit": "23a8f46adb7064b1389ce40404a2d61fa641e216",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4"
+  },
+  "hypothesis": "Uniform Budget20 retains the tool-protocol prefix that Budget16 lost, allowing the already-validated schema-boundary Budget96 rescue to return a valid get_weather call below 1.2 logical GiB/provider-position.",
+  "fixture": {
+    "path": "fixtures/k3_tool_weather_request.json",
+    "sha256": "9ddc53b93c0e162a898f9b2c72d03e5cd9ab670c608ffef489aaa6090ab7f0d6",
+    "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c"
+  },
+  "policy": {
+    "budget": 20,
+    "path": "fixtures/k3_uniform_budget20.txt",
+    "sha256": "2f366aab82de990441dc61de870736b1acbf081f26b2aff11f63017dd53f697c"
+  },
+  "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r76-schema-b20",
+  "controls": {
+    "budget24": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r68-schema-tool",
+    "budget16": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r72-schema-b16"
+  },
+  "validity": [
+    "Use the retained schema-rescue executable hash with a clean source commit, no static position override and no request-wide Budget96.",
+    "The prompt token hash and Budget20 policy hash match the frozen values.",
+    "A valid rescue emits exactly one schema marker derived from the declared-name prefix and returns exactly one get_weather call with location San Francisco.",
+    "Report full generated IDs, final logits hash, logical/sidecar/fallback/physical bytes and cold timings."
+  ],
+  "gate": {
+    "go": "Valid get_weather output and <1.2 logical GiB/provider-position.",
+    "partial": "Valid tool output at >=1.2 GiB/provider-position is quality-only evidence, not the traffic milestone.",
+    "no_go": "Any invalid tool output stops uniform-budget interpolation on this fixture; do not try Budget21/22/23 or alter the trigger.",
+    "production": "No production transplant from one fixture."
+  }
+}
