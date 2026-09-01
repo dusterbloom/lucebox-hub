@@ -521,22 +521,30 @@ Thus route12 has crossed the `<1.2 GiB` behavioral milestone on these short
 tasks, but this run cannot supply native terminal KL or a valid six-task
 exactness count.
 
-The minimum binary closure reran only the two misaligned prompts through the
-same executable's `native-exact` provider.  Prompt IDs, executable hash,
-width-one prefill (`prefill-width=1`, `exact-macro=0`) and intervention absence
-all closed.  The deployed hybrid exact representation itself failed both
-registered tasks, echoing prompt-tail fragments.  This is a measured
-**native-closure NO-GO**.  It does not falsify route12; it shows that this
-deployed hybrid's native-exact path cannot repair the missing reference for
-these fixtures.  The already documented quantization-identity mismatch
-between the deployed hybrid GGUF and natural sidecars therefore remains a
-real provenance boundary.
+The first attempted binary closure reran only the two misaligned prompts
+through the same executable's `native-exact` provider.  Its prompt IDs and
+binary identity closed, but the model path was the sparse P32 package: all 276
+routed tensor payloads are filesystem holes.  The exact provider therefore
+read holes instead of routed weights and emitted prompt-tail fragments.  This
+is an **INVALID CONTROL**, not a native-model NO-GO.  The immutable result is
+preserved, and the harness now refuses `provider=exact` when any GGUF shard is
+sparse.
 
-The next quality gate must be behavioral and use previously unseen textual
-fixtures which immutable native artifacts already passed.  Prompt alignment
-is still recorded, and no KL or token-distribution claim is allowed when it
-does not align.  A new exact teacher model must be sourced before broad native
-terminal KL can be measured.
+Fresh asset inventory found the complete pinned UD-IQ1_S source on ds-033 at
+`/mnt/kimi-k3`, even though it is no longer resident on Lucebox4.  The proven
+P38 packer produced a new exact non-routed sparse core: 14 shards, 2,573
+tensors, 276 routed holes and 48,692,428,800 allocated bytes.  Its manifest
+SHA-256 is `37fa1184...`.  The canonical output-hash map for all 92 natural
+sidecars is byte-identical between the source bank and Lucebox4
+(`14257820...`).  A pinned 290-range fetch plan now transfers only those 48.69
+GB and verifies every range before Full192 closure.  This replaces the false
+claim that a new teacher model must be sourced.
+
+The historical next gate remained behavioral and used previously unseen
+textual fixtures which immutable native artifacts had already passed.  Prompt
+alignment was recorded, and no KL or token-distribution claim was made when it
+did not align.  Native terminal KL becomes measurable only after the recovered
+Full192 source-matched core passes its registered closure.
 
 Immutable summaries are
 `results/k3_terminal_bws_v2_route12_native_success_invalid_20260901.json`
@@ -550,8 +558,8 @@ The next gate froze the six tasks from the immutable 12/12 broad
 native-success suite which route12 had not seen: a photosynthesis fact, a
 Python list-comprehension function, rate reasoning, subject/verb agreement,
 Spanish translation and decoy-resistant code extraction.  The gate was
-behavioral because the original native tensors are unavailable and the
-deployed hybrid exact path failed closure.
+behavioral because the then-used sparse exact control was invalid and the
+source-matched core had not yet been recovered on Lucebox4.
 
 The first analysis incorrectly scored the valid chemical formula `CO₂` as a
 failure because the copied normalizer accepted ASCII `CO2` but had omitted

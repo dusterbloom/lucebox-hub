@@ -1,0 +1,62 @@
+{
+  "schema": "kimi-k3-native-teacher-recovery-prereg-v1",
+  "status": "PREREGISTERED",
+  "date": "2026-09-01",
+  "source": {
+    "research_branch": "experiment/k3-terminal-kl-bws-v2",
+    "research_parent_commit": "9eb166dafc00c118a187b9cb52321944512d6b2b",
+    "production_branch": "perf/k3-production-ponytail",
+    "production_base_commit": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "native_source_host": "ds-033",
+    "native_source_revision": "a0836360ce58dfec088d966a97f2ddc8a606279b",
+    "native_source_complete_marker_sha256": "da72ddc6319fe6c0c50e5a8c121403faec15b35a000a58de4985c60ed51b9a7d"
+  },
+  "correction": {
+    "invalid_prior_result": "results/k3_terminal_bws_v2_route12_native_closure_result_20260901.json",
+    "cause": "The exact provider was pointed at the sparse P32 core. Its 276 routed tensor payloads are filesystem holes, so the run was not an exact-model control.",
+    "preservation": "Keep the immutable result, but reclassify it as INVALID_CONTROL rather than a model-quality NO-GO.",
+    "new_guard": "scripts/run_kimi_exact_chat_closure.sh refuses sparse GGUF shards with provider=exact."
+  },
+  "native_sparse_core": {
+    "source_model": "/mnt/kimi-k3/models/unsloth-Kimi-K3-GGUF/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00001-of-00014.gguf",
+    "packer_commit": "3f373b072e70791ef235df5002b0a9b130f470f1",
+    "packer_sha256": "2ab8fb0cc0df2ab8b71de42ef08f84c5075604154d05d4af41ed8d730212c8d4",
+    "manifest": "/mnt/kimi-k3/artifacts/kimi-k3-native-iq1s-slim-core-manifest-20260901.json",
+    "manifest_sha256": "37fa11843cd867b344c416c5e4ed0a8dcbe993fd897bb97268577e3ed3ef1070",
+    "classification": "EXACT_NON_ROUTED_COPY_ROUTED_PAYLOAD_HOLES",
+    "shards": 14,
+    "tensors": 2573,
+    "routed_tensor_holes": 276,
+    "logical_bytes": 594040923616,
+    "copied_bytes": 48691226080,
+    "allocated_bytes": 48692428800
+  },
+  "routed_sidecars": {
+    "lucebox4_path": "/home/duster/kimi-k3-deploy/streamed-bank/natural-sidecars",
+    "layers": 92,
+    "bytes": 545352335360,
+    "canonical_layer_output_hash_map_sha256": "14257820be259752202ad73685ab23f8ddbd08e8d1ad7083fae993b6f1d73994",
+    "identity": "The canonical model_layer/output_bytes/output_sha256 map is identical on ds-033 and Lucebox4."
+  },
+  "range_fetch": {
+    "plan": "results/k3_native_iq1s_sparse_range_plan_20260901.json",
+    "plan_sha256": "454a196e210e3ff800ac1e15d26408af98a33ba50262f38659d140f3dbc2d1dc",
+    "fetch_script": "scripts/fetch_kimi_sparse_core.py",
+    "fetch_script_sha256": "58d5daae9152e10ad46d7ce92f2b48afc593746cde3c0d0fb3bf686a63b950d7",
+    "source_ranges": 290,
+    "authoritative_download_bytes": 48691226080,
+    "workers": 4,
+    "reason": "The peer sparse-tar transfer delivered only 252547072 allocated bytes before cancellation, while a 16 MiB pinned range fetched directly on Lucebox4 at 10767387 bytes/s."
+  },
+  "gates": [
+    "Every downloaded range must match its source SHA-256 and every shard must match its combined copied-range SHA-256.",
+    "The 14 shard logical sizes and sparse allocated-byte total must match the registered geometry within filesystem block rounding.",
+    "Full192 sidecar-authoritative execution must pass the official-template fact-capital native output before any candidate is scored.",
+    "The prior grammar-apples and extract-code closure fixtures must pass under Full192; no prompt or validator tuning is allowed.",
+    "Only after closure may route12/B20 and H23 controls be rerun against this native core for aligned terminal KL."
+  ],
+  "go": "Verified range fetch plus 3/3 native behavioral closure earns native-KL reruns.",
+  "no_go": "Any range/hash mismatch or native behavioral failure blocks candidate scoring and is preserved without tuning.",
+  "production": "No production transplant. perf/k3-production-ponytail remains untouched."
+}

@@ -1,0 +1,1896 @@
+{
+  "schema": "kimi-k3-sparse-range-fetch-plan-v1",
+  "created_unix": 1788233491,
+  "source_model": "/mnt/kimi-k3/models/unsloth-Kimi-K3-GGUF/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00001-of-00014.gguf",
+  "source_sparse_manifest": "/mnt/kimi-k3/artifacts/kimi-k3-native-iq1s-slim-core-manifest-20260901.json",
+  "source_sparse_manifest_sha256": "37fa11843cd867b344c416c5e4ed0a8dcbe993fd897bb97268577e3ed3ef1070",
+  "base_url": "https://huggingface.co/unsloth/Kimi-K3-GGUF/resolve/a0836360ce58dfec088d966a97f2ddc8a606279b/UD-IQ1_S",
+  "shards": [
+    {
+      "index": 1,
+      "name": "Kimi-K3-UD-IQ1_S-00001-of-00014.gguf",
+      "url": "https://huggingface.co/unsloth/Kimi-K3-GGUF/resolve/a0836360ce58dfec088d966a97f2ddc8a606279b/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00001-of-00014.gguf",
+      "logical_bytes": 6934144,
+      "copied_bytes": 6934144,
+      "combined_range_sha256": "5022014e7c49d8844e9f1bc7d9fb824c0d640214540aa845690518d800286083",
+      "ranges": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 6934144,
+          "sha256": "5022014e7c49d8844e9f1bc7d9fb824c0d640214540aa845690518d800286083"
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "name": "Kimi-K3-UD-IQ1_S-00002-of-00014.gguf",
+      "url": "https://huggingface.co/unsloth/Kimi-K3-GGUF/resolve/a0836360ce58dfec088d966a97f2ddc8a606279b/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00002-of-00014.gguf",
+      "logical_bytes": 47094999008,
+      "copied_bytes": 6633072608,
+      "combined_range_sha256": "1615983878893f89609768f6af093fa20ff560cfaf0fcf50e3e190f62cf658e9",
+      "ranges": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 3179193440,
+          "sha256": "2fa2cbe13b586041e8fc39427053837a0e41ad1c00db351f4035ce2c1c2b7c12"
+        },
+        {
+          "index": 1,
+          "offset": 5105951840,
+          "length": 36126720,
+          "sha256": "c407cf3d439c2af94641c13c1e31acb1df43b5a08b8d3c366129c4fb67ea3eeb"
+        },
+        {
+          "index": 2,
+          "offset": 7068836960,
+          "length": 104036352,
+          "sha256": "2cf4591bd31ef667107a5278bd7a5c3ea605288dc414c24f9ede3896a30e63a6"
+        },
+        {
+          "index": 3,
+          "offset": 9099631712,
+          "length": 403271040,
+          "sha256": "e231187d268bf130577d76730d5e27918db4551f1f7ff6cc287f148155df507a"
+        },
+        {
+          "index": 4,
+          "offset": 11429661152,
+          "length": 36126720,
+          "sha256": "106eb5565fd1c52392bc410431de8e351ca2b0df4cff1daabe191f5951972771"
+        },
+        {
+          "index": 5,
+          "offset": 13392546272,
+          "length": 104036352,
+          "sha256": "8c47f33d873ff5e8a7bd85b2f58ad2bbd5315175b404abf4e5febbeff8327c09"
+        },
+        {
+          "index": 6,
+          "offset": 15423341024,
+          "length": 306260864,
+          "sha256": "06558b02f532a26b9f7130d6afb10623efa605426499e2760ca89f9f4551182e"
+        },
+        {
+          "index": 7,
+          "offset": 17656360288,
+          "length": 36126720,
+          "sha256": "4210001b8d32d4cdb5dfb881d609b8237a96749dda190e5bd03083a1a17e2871"
+        },
+        {
+          "index": 8,
+          "offset": 19619245408,
+          "length": 104036352,
+          "sha256": "0be5f347bb576f6c0bac2b386be487bd1558ce239cdff078f16d5f3fe1f0a5ee"
+        },
+        {
+          "index": 9,
+          "offset": 21650040160,
+          "length": 325201408,
+          "sha256": "8d7bcb8b05b56e8112741ee075726e223acccb907bc146e3d07664a1fa0a81bc"
+        },
+        {
+          "index": 10,
+          "offset": 23901999968,
+          "length": 36126720,
+          "sha256": "2421a9a6c5200a19448c59217762219f779f43ab132a4f1b99c93fb05eca60f8"
+        },
+        {
+          "index": 11,
+          "offset": 25864885088,
+          "length": 104036352,
+          "sha256": "c9c5204bdcd4a1de95e465ca20e6addc7c5cd6dfb909c1427cbca7976774d998"
+        },
+        {
+          "index": 12,
+          "offset": 27895679840,
+          "length": 403271040,
+          "sha256": "cc3548aef54e8cd7a0e6a46275b7dc7349b964a7c96e9845b34f1a80b70ab272"
+        },
+        {
+          "index": 13,
+          "offset": 30225709280,
+          "length": 36126720,
+          "sha256": "47ae05ac5de893c831cf4c668b38efcbe641c3966a1712a9e68cb7836e84fc1a"
+        },
+        {
+          "index": 14,
+          "offset": 32188594400,
+          "length": 104036352,
+          "sha256": "466ac1c87a2d355623d54abdf508d816f4467372dd217ae967a1e2770b21bcb2"
+        },
+        {
+          "index": 15,
+          "offset": 34219389152,
+          "length": 403271040,
+          "sha256": "505e98d9885321b43225573a734ccedd632a290814452f818598f8190a149614"
+        },
+        {
+          "index": 16,
+          "offset": 36549418592,
+          "length": 36126720,
+          "sha256": "b007a14796e8cd9cb2b83ac07a230c70633a9fac9801cbfe97b634cf38bd8872"
+        },
+        {
+          "index": 17,
+          "offset": 38512303712,
+          "length": 104036352,
+          "sha256": "58e805cdd28734524b9878d32b33d792daae0b0c8ce4da5c056c9c932854d3e1"
+        },
+        {
+          "index": 18,
+          "offset": 40543098464,
+          "length": 306260864,
+          "sha256": "dc43c44f4c09a61f29902be5938761ce5dc705159adbbbf054f1b0fc0ab01fdc"
+        },
+        {
+          "index": 19,
+          "offset": 42776117728,
+          "length": 36126720,
+          "sha256": "ab31d54d6ee6a83ef2eb456f9835755788ae9a06a4bc383ba0c172002ad8df9c"
+        },
+        {
+          "index": 20,
+          "offset": 44739002848,
+          "length": 104036352,
+          "sha256": "aceaa6e0c1c433d2472db0cba7a9a71ed8e0968f5077d81e55e7221693500f4f"
+        },
+        {
+          "index": 21,
+          "offset": 46769797600,
+          "length": 325201408,
+          "sha256": "b426390c490bfde46d1d070b630bdde961d33ebdc1df3222b6aa884d5434cce6"
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "name": "Kimi-K3-UD-IQ1_S-00003-of-00014.gguf",
+      "url": "https://huggingface.co/unsloth/Kimi-K3-GGUF/resolve/a0836360ce58dfec088d966a97f2ddc8a606279b/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00003-of-00014.gguf",
+      "logical_bytes": 49220694048,
+      "copied_bytes": 3672125472,
+      "combined_range_sha256": "6106fdea9bff2cdaae2f08028062b37ecda154fbfa08986a064b2c405a3a4696",
+      "ranges": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 13600,
+          "sha256": "57fb83bac617339de3232c087b8adda21d7a5405324a5f9792237bc9ca226ad0"
+        },
+        {
+          "index": 1,
+          "offset": 1926772000,
+          "length": 36126720,
+          "sha256": "32dbffcb09545833aaea59e3be497fceb4ec993fab7a0c2f9092177d635e3195"
+        },
+        {
+          "index": 2,
+          "offset": 3889657120,
+          "length": 104036352,
+          "sha256": "5370c59a0db2a34846a62ed5bca5a4e866bf427b81f64b75c1aeae540198fe60"
+        },
+        {
+          "index": 3,
+          "offset": 5920451872,
+          "length": 403271040,
+          "sha256": "91ae7fb443d2838b6b1b4cbabacdc8f7b3e5b13f69603882ecfd5962c68b490d"
+        },
+        {
+          "index": 4,
+          "offset": 8250481312,
+          "length": 36126720,
+          "sha256": "9342ca9db597e2a97f1996d6b4210102f7f64b8b1d409903f0c51575d416348b"
+        },
+        {
+          "index": 5,
+          "offset": 10213366432,
+          "length": 104036352,
+          "sha256": "e7545d985ee1ac2500bbb8e99bd6a132ea89f50f9605a6483678b2760ad9beef"
+        },
+        {
+          "index": 6,
+          "offset": 12244161184,
+          "length": 403271040,
+          "sha256": "703d036ee66a5884973cbdf6c5da17016c85c0942f8c75eb9f8d945dcd8bbe24"
+        },
+        {
+          "index": 7,
+          "offset": 14574190624,
+          "length": 36126720,
+          "sha256": "1fe488dc068041c9b2fe6a73a7c1f7f6078c4d271eed51285bdd983948f564d5"
+        },
+        {
+          "index": 8,
+          "offset": 16537075744,
+          "length": 104036352,
+          "sha256": "2498fbbbded6b28994d466418ac8dd81d0263bb4ce38ae4bddf82cf4072f4c16"
+        },
+        {
+          "index": 9,
+          "offset": 18567870496,
+          "length": 306260864,
+          "sha256": "98ae690cae6830c98742ec02e9470e1ad58c55367913f1af2e01f9ba43d8d863"
+        },
+        {
+          "index": 10,
+          "offset": 20800889760,
+          "length": 36126720,
+          "sha256": "8fea5c755e30b6432f9deb24590630f519a128b169669b8aaf34b160b5244971"
+        },
+        {
+          "index": 11,
+          "offset": 23380337568,
+          "length": 104036352,
+          "sha256": "4321ae7ca1e5d1aeef1fdd68ee929b5cdc5f7f0bbbeafe28837ee13d8ccbedb6"
+        },
+        {
+          "index": 12,
+          "offset": 26027695008,
+          "length": 325201408,
+          "sha256": "08c9d19f8a47d5e62c06ef24e91ef42135a8ac9c9b5e45e9ee22b9577b8220af"
+        },
+        {
+          "index": 13,
+          "offset": 28279654816,
+          "length": 36126720,
+          "sha256": "b6cc497c79fbab0cc181314f20b04d98e4458586b1d715eff1598967d37c8764"
+        },
+        {
+          "index": 14,
+          "offset": 30242539936,
+          "length": 104036352,
+          "sha256": "76794cfd5e4eb82958fca2d591477426c042c06ed83d9aa18cf266c05b0f7e14"
+        },
+        {
+          "index": 15,
+          "offset": 32273334688,
+          "length": 403271040,
+          "sha256": "b3357ea0eedc2aa382210835b35b325dbc13447ce9943bcab442897f9c1c39f5"
+        },
+        {
+          "index": 16,
+          "offset": 34603364128,
+          "length": 36126720,
+          "sha256": "dca8a7f51854730bb5e24660fff90534ad54bda9a52ab334e486bf7260184492"
+        },
+        {
+          "index": 17,
+          "offset": 36566249248,
+          "length": 104036352,
+          "sha256": "01f317b8040264f90efff2c0a0d4b67b939072f596345830ab55443f92cb1cd9"
+        },
+        {
+          "index": 18,
+          "offset": 38597044000,
+          "length": 403271040,
+          "sha256": "acf4ec5a0088cad535201e1eac539b4e7cca3d21507abaca38bf3d0ed80d79a4"
+        },
+        {
+          "index": 19,
+          "offset": 40927073440,
+          "length": 36126720,
+          "sha256": "7ae1e0f3e157c96fa02eef01da86769e1f0af52e76ec71be1b4dd44856171c90"
+        },
+        {
+          "index": 20,
+          "offset": 42889958560,
+          "length": 104036352,
+          "sha256": "5beb79bce1c46835e8ae0c42cb79ab4eacc112f8b2e29eb6dd771043f3236b34"
+        },
+        {
+          "index": 21,
+          "offset": 44920753312,
+          "length": 306260864,
+          "sha256": "cd6317be6770792fe8a38fce332ea7cd5a1783267406f0028551ec2e8d74f6f0"
+        },
+        {
+          "index": 22,
+          "offset": 47153772576,
+          "length": 36126720,
+          "sha256": "41d866d7657540eb3cb4886dc0aaa042cd6afb269e3f024ac28ed52433529633"
+        },
+        {
+          "index": 23,
+          "offset": 49116657696,
+          "length": 104036352,
+          "sha256": "d965d1ec9e3d85aa1986bade3ff39b4da2ebc672528edc6e01b4c07d89ff899b"
+        }
+      ]
+    },
+    {
+      "index": 4,
+      "name": "Kimi-K3-UD-IQ1_S-00004-of-00014.gguf",
+      "url": "https://huggingface.co/unsloth/Kimi-K3-GGUF/resolve/a0836360ce58dfec088d966a97f2ddc8a606279b/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00004-of-00014.gguf",
+      "logical_bytes": 48208733792,
+      "copied_bytes": 3893290592,
+      "combined_range_sha256": "2d63364f2bdb21b4cbc2db3fe1457c9e721313c2592cc728cf7a51f67ffc01c5",
+      "ranges": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 13664,
+          "sha256": "74d5346b7257feacb6554c75df27d544d3626a0b43c4243baebe56802e749510"
+        },
+        {
+          "index": 1,
+          "offset": 1926772064,
+          "length": 325201408,
+          "sha256": "459d4cf63ab953bf84e0f805c53ed4ce54360a5c91fb237c7e99c0c8cca98f5e"
+        },
+        {
+          "index": 2,
+          "offset": 4178731872,
+          "length": 36126720,
+          "sha256": "f977a422304c4095b9c727e05f108566dab055176668d4f1695528883490e061"
+        },
+        {
+          "index": 3,
+          "offset": 6141616992,
+          "length": 104036352,
+          "sha256": "6b34642b68dc6fb2df38dea3a3c2d4b81c6bde82ac966ec805d5cc38c99bfcb3"
+        },
+        {
+          "index": 4,
+          "offset": 8172411744,
+          "length": 403271040,
+          "sha256": "0d676ee086064cfed80f43fb3de611fd37207887b5ab85967e05a8893fa58d92"
+        },
+        {
+          "index": 5,
+          "offset": 10502441184,
+          "length": 36126720,
+          "sha256": "e274137a9c32dae3fba75a73c6a6eb4523c2470a1494defdf0eef1142e09dadb"
+        },
+        {
+          "index": 6,
+          "offset": 12465326304,
+          "length": 104036352,
+          "sha256": "9d975727f42619be6289a733f7991b3cd3daa84bc0fb19cf8ae7d5db71e18802"
+        },
+        {
+          "index": 7,
+          "offset": 14496121056,
+          "length": 403271040,
+          "sha256": "a2b2851f2271f48631cf77e528e7f7432af1d8f20434b20bda3be58a3f5037ba"
+        },
+        {
+          "index": 8,
+          "offset": 16826150496,
+          "length": 36126720,
+          "sha256": "5524889e39ff3b66a9b20a36c02fb52a77b1c1a41d329c15ccb89a7c13b01236"
+        },
+        {
+          "index": 9,
+          "offset": 18789035616,
+          "length": 104036352,
+          "sha256": "c774d14251befc3359c15f936a57edd8893d439f35a9705cc1575eedf4f33870"
+        },
+        {
+          "index": 10,
+          "offset": 20819830368,
+          "length": 306260864,
+          "sha256": "5e85fcfda5dd85aefce66517ff704db338edcea13806b9a8e197dd46b0b675fd"
+        },
+        {
+          "index": 11,
+          "offset": 23052849632,
+          "length": 36126720,
+          "sha256": "551eaa0db3df7acb6de4bd9bdd384be92e0069fa9e36c74befb2b4fdf3f4c33c"
+        },
+        {
+          "index": 12,
+          "offset": 25015734752,
+          "length": 104036352,
+          "sha256": "71867dff578de72d492fce18b4dab88b286265f004379ccc443109fba8ca71fd"
+        },
+        {
+          "index": 13,
+          "offset": 27046529504,
+          "length": 325201408,
+          "sha256": "967b52416678b7f0d618d78f003384e312a2e10340fcd49034505b3e93fa93aa"
+        },
+        {
+          "index": 14,
+          "offset": 29298489312,
+          "length": 36126720,
+          "sha256": "87fa1bb2ef5d302f3ac7270ab496c48d288938471aa065af4960838158fcaef1"
+        },
+        {
+          "index": 15,
+          "offset": 31261374432,
+          "length": 104036352,
+          "sha256": "d66636de9f04571e8b5393601e85902221a5508e8283cc0415790940d21636c8"
+        },
+        {
+          "index": 16,
+          "offset": 33292169184,
+          "length": 403271040,
+          "sha256": "43ce572583525978d00711e824d94e1da406848a4740118de4d82e20a0c3e716"
+        },
+        {
+          "index": 17,
+          "offset": 35622198624,
+          "length": 36126720,
+          "sha256": "26866fa87ea7c57ae086296d003cec20f74ddd372484959a746546fb65cc2ca1"
+        },
+        {
+          "index": 18,
+          "offset": 37585083744,
+          "length": 104036352,
+          "sha256": "9d9155c305de941e66a2381035a5d3f523824c1e07117a29faecd460d7611fa4"
+        },
+        {
+          "index": 19,
+          "offset": 39615878496,
+          "length": 403271040,
+          "sha256": "14d4d520f90762051b64936a2bc2f75c8107b0c6d57aaf4924a76345ba27a505"
+        },
+        {
+          "index": 20,
+          "offset": 41945907936,
+          "length": 36126720,
+          "sha256": "358bfd07d2a820b8114bd61d6bcc25cd82d9deda5c0e047c1c80026e7a369ed8"
+        },
+        {
+          "index": 21,
+          "offset": 43908793056,
+          "length": 104036352,
+          "sha256": "b9a24786027cdc6e1eed5b0754f813732ccb0e1f24f6a0c1ab85187e8e1e7025"
+        },
+        {
+          "index": 22,
+          "offset": 45939587808,
+          "length": 306260864,
+          "sha256": "0124ac302f1e4e139ec6227bfc92f8c8fc71fa272fc52db12cf7bdacdae5c3f5"
+        },
+        {
+          "index": 23,
+          "offset": 48172607072,
+          "length": 36126720,
+          "sha256": "8d1e963730d7175a4d270bbc4000b8696d2014f757aa153ff94541e9d2f51b5c"
+        }
+      ]
+    },
+    {
+      "index": 5,
+      "name": "Kimi-K3-UD-IQ1_S-00005-of-00014.gguf",
+      "url": "https://huggingface.co/unsloth/Kimi-K3-GGUF/resolve/a0836360ce58dfec088d966a97f2ddc8a606279b/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00005-of-00014.gguf",
+      "logical_bytes": 48276643808,
+      "copied_bytes": 3961200608,
+      "combined_range_sha256": "6dd1e4744b1a8d0ff017c33b19aa965b8deb645c5d63bebff47b4db623dba3a3",
+      "ranges": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 14048,
+          "sha256": "943708073a75eb9b399864be9196620b48856c6138231ea58cc1f2787b370f2b"
+        },
+        {
+          "index": 1,
+          "offset": 1926772448,
+          "length": 104036352,
+          "sha256": "261b72a077055a7223e5ec46831caba8dd2ad285a39a9da7d78fdf2488ba30cf"
+        },
+        {
+          "index": 2,
+          "offset": 3957567200,
+          "length": 325201408,
+          "sha256": "c7334c22241c937e4730dc9d3413fac82403f17cdb2434e9524c28dd4445ca9c"
+        },
+        {
+          "index": 3,
+          "offset": 6209527008,
+          "length": 36126720,
+          "sha256": "6025ba461a7f32c79843bfb9bad1ef214cd61f9b7c6eaaee048dc51e07c32cfa"
+        },
+        {
+          "index": 4,
+          "offset": 8172412128,
+          "length": 104036352,
+          "sha256": "6135ae7316e26192d60ef7b21c6060cd419ac4a256f9471284f02e1e5b8c241e"
+        },
+        {
+          "index": 5,
+          "offset": 10203206880,
+          "length": 403271040,
+          "sha256": "ac7ddf4e62802653294db8819ad227241c5f8f01837a3d60bd4cd08292831a11"
+        },
+        {
+          "index": 6,
+          "offset": 12533236320,
+          "length": 36126720,
+          "sha256": "4d5f8d71f20dda87f8ede7ba20cef5164155f5f21b08790cf03a8e58b06a74eb"
+        },
+        {
+          "index": 7,
+          "offset": 14496121440,
+          "length": 104036352,
+          "sha256": "1bdf84916d2015f327ba5ffeab12bd57e0641b6ce7b2081f038352f0207d386d"
+        },
+        {
+          "index": 8,
+          "offset": 16526916192,
+          "length": 403271040,
+          "sha256": "35e9fb2a70e2b3b9566256ad9488c9ab9d7eda27f28b3c58690fc23df53ff3a4"
+        },
+        {
+          "index": 9,
+          "offset": 18856945632,
+          "length": 36126720,
+          "sha256": "6e32f332a64bd11ee457292386fff66d7d41553048a8e2cd247983103ed2b811"
+        },
+        {
+          "index": 10,
+          "offset": 20819830752,
+          "length": 104036352,
+          "sha256": "417f0851f28e86336c32c4d9ae0683b1fcaea1d1eabf1a369307ceaadd18567e"
+        },
+        {
+          "index": 11,
+          "offset": 22850625504,
+          "length": 306260864,
+          "sha256": "c300422b5a5b4c55064ab7cf520e24102114066ff439c384a947326f0cb4141d"
+        },
+        {
+          "index": 12,
+          "offset": 25083644768,
+          "length": 36126720,
+          "sha256": "1cf8a132a190bc2e7e0649bed4e3bc4aca999c9814e76919af6187f1efe43a7b"
+        },
+        {
+          "index": 13,
+          "offset": 27046529888,
+          "length": 104036352,
+          "sha256": "575ef86dec2f3b4f7e239d5fcaf07884ce9236afe82c16b68d321e545172ea83"
+        },
+        {
+          "index": 14,
+          "offset": 29077324640,
+          "length": 325201408,
+          "sha256": "71293233b77b6b6b5653c35de067e9b18587c30b7b3f917590535af64716b1f2"
+        },
+        {
+          "index": 15,
+          "offset": 31329284448,
+          "length": 36126720,
+          "sha256": "dd62fb1fcecf92c4138b9d2aaf58641e9b1af6e15b6eba15fe0387999afe8181"
+        },
+        {
+          "index": 16,
+          "offset": 33292169568,
+          "length": 104036352,
+          "sha256": "62961a52b59fae89bf2bf40cd4c090e73a90daf561f013bb48a0227187fab370"
+        },
+        {
+          "index": 17,
+          "offset": 35322964320,
+          "length": 403271040,
+          "sha256": "aaa9389f49ad7b3ddeb359983b2121a7787c8d19ee812d2fe6376c7168ae0c77"
+        },
+        {
+          "index": 18,
+          "offset": 37652993760,
+          "length": 36126720,
+          "sha256": "d7e1fcab72a45d8223e113509f1b6b21f432f9b0c7197591f4779324704f9e08"
+        },
+        {
+          "index": 19,
+          "offset": 39615878880,
+          "length": 104036352,
+          "sha256": "6616046bc9a1082faade780cfb9fa4e894fb5d257b5d46ab4f7686dee6935f83"
+        },
+        {
+          "index": 20,
+          "offset": 41646673632,
+          "length": 403271040,
+          "sha256": "bd2c6055a196ed60030d5e3848c6bb7372de71f02c740c9c07f6b324efb9e0ae"
+        },
+        {
+          "index": 21,
+          "offset": 43976703072,
+          "length": 36126720,
+          "sha256": "ff47efc27230d61cea026e5672defbd4d40e609f70cc8ea7cc9a419e9502cbeb"
+        },
+        {
+          "index": 22,
+          "offset": 45939588192,
+          "length": 104036352,
+          "sha256": "6718ea8baa0d362fb22d728c1db74a3e9413c997e24d88755fb6119d293394f2"
+        },
+        {
+          "index": 23,
+          "offset": 47970382944,
+          "length": 306260864,
+          "sha256": "3d4ac2b9ad56eb0d2146872cdc9eadbb01f1cc3e2fad243b8e01996a2c9b81c1"
+        }
+      ]
+    },
+    {
+      "index": 6,
+      "name": "Kimi-K3-UD-IQ1_S-00006-of-00014.gguf",
+      "url": "https://huggingface.co/unsloth/Kimi-K3-GGUF/resolve/a0836360ce58dfec088d966a97f2ddc8a606279b/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00006-of-00014.gguf",
+      "logical_bytes": 48006508320,
+      "copied_bytes": 3691065120,
+      "combined_range_sha256": "60241e6a822bb29f7b1121cf559388c16aa4d767dd14f47f0f6fb077f9fe82e4",
+      "ranges": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 12704,
+          "sha256": "7914aac22db0f602d5b507619ee8616c3937d7fc792684c7789e8b03734e011b"
+        },
+        {
+          "index": 1,
+          "offset": 1926771104,
+          "length": 36126720,
+          "sha256": "f3eafefa59d2126ec667721fa9098ce01e14bfcfefc16406cd2094f772d8f83a"
+        },
+        {
+          "index": 2,
+          "offset": 3889656224,
+          "length": 104036352,
+          "sha256": "83d2bb540b06821bf820101649c476f85e5bd58bc90e868cd21cb0cadd368e04"
+        },
+        {
+          "index": 3,
+          "offset": 5920450976,
+          "length": 325201408,
+          "sha256": "880e6099151f36f8af326e245701d26686a3b7050172575d5a64c7e97be190fd"
+        },
+        {
+          "index": 4,
+          "offset": 8172410784,
+          "length": 36126720,
+          "sha256": "eadda294bfac603fea0a2525b54feede49bc2e3cc91b85744330264ebcb3b681"
+        },
+        {
+          "index": 5,
+          "offset": 10135295904,
+          "length": 104036352,
+          "sha256": "4f443769358b58212caed5cbdce722238d9dd3e54ba779885a9a2a14c877926e"
+        },
+        {
+          "index": 6,
+          "offset": 12166090656,
+          "length": 403271040,
+          "sha256": "3f3dc18b9a9aa33832fc311cf2a2a55b67b3d85b1908ad50f237aeafc34969e2"
+        },
+        {
+          "index": 7,
+          "offset": 14496120096,
+          "length": 36126720,
+          "sha256": "e339550e26a1e8677c04dbe11fa7759af7750aeb02630e776ca0186db55ed973"
+        },
+        {
+          "index": 8,
+          "offset": 16459005216,
+          "length": 104036352,
+          "sha256": "8e41607446912ca64d4c56e3a7d57199bc07f8a663e40e59a32a0374b1023616"
+        },
+        {
+          "index": 9,
+          "offset": 18489799968,
+          "length": 403271040,
+          "sha256": "7e480b8c83924e2389d981581bf43a8fc728ada4e6696e4738472752e1c24204"
+        },
+        {
+          "index": 10,
+          "offset": 20819829408,
+          "length": 36126720,
+          "sha256": "6e6c025737a17f901333bcc05dd88244447ba27db1422a5d43510994f9d17344"
+        },
+        {
+          "index": 11,
+          "offset": 22782714528,
+          "length": 104036352,
+          "sha256": "7b8ec2c0a90dfa93ad2c069ad9ecd5a71680fc95a4e0a0c69de0ae03bce6c283"
+        },
+        {
+          "index": 12,
+          "offset": 24813509280,
+          "length": 306260864,
+          "sha256": "93d69e316aa90cb1b4706de34f44cdf8210182afedb3e3b208fed10ac4d7508b"
+        },
+        {
+          "index": 13,
+          "offset": 27046528544,
+          "length": 36126720,
+          "sha256": "91e93e4cad9a79dd84b089ad0c4bc4a90d26ac55b4ccc1470d16cad7aaa9c69b"
+        },
+        {
+          "index": 14,
+          "offset": 29009413664,
+          "length": 104036352,
+          "sha256": "a0f806f025ded66d4799a4897eecc37bd4d4ed3c0f005c5bc29af658079b978e"
+        },
+        {
+          "index": 15,
+          "offset": 31040208416,
+          "length": 325201408,
+          "sha256": "bda2d17ac73401e5ff3dbff2936626437cbbe1a64c2f142837d553eb687b9a48"
+        },
+        {
+          "index": 16,
+          "offset": 33292168224,
+          "length": 36126720,
+          "sha256": "b38bde2f4853c646fbe64e039edd5adf7dfc614eb29df4e4ef5173d5f6b8e866"
+        },
+        {
+          "index": 17,
+          "offset": 35255053344,
+          "length": 104036352,
+          "sha256": "97fa7a7786f178f4bfddb73070d628cbfbc3962399f22b999bd802bf200bcf79"
+        },
+        {
+          "index": 18,
+          "offset": 37285848096,
+          "length": 403271040,
+          "sha256": "ac2d0eae3cefa6cc20091b844dd8904854f21edd9aaffcf919ae29f87381e944"
+        },
+        {
+          "index": 19,
+          "offset": 39615877536,
+          "length": 36126720,
+          "sha256": "fa3ba75a85bf2d8551ac468366fe933a247672e7817d63322fe2a02f8e111088"
+        },
+        {
+          "index": 20,
+          "offset": 41578762656,
+          "length": 104036352,
+          "sha256": "15b0f5e8784a7e9686655c2601e11f9bf6a591b7dc19fa56cf0e0a19ce10166c"
+        },
+        {
+          "index": 21,
+          "offset": 43609557408,
+          "length": 403271040,
+          "sha256": "452fbe9fff09610e8ac29c987ca495f25c11402b9e99c5dc3e2ae121000c5cfe"
+        },
+        {
+          "index": 22,
+          "offset": 45939586848,
+          "length": 36126720,
+          "sha256": "f0894ef833d279f01337a6572e718f925c952aac4dd035cb27691fc1c07dd568"
+        },
+        {
+          "index": 23,
+          "offset": 47902471968,
+          "length": 104036352,
+          "sha256": "a325233a80a06ecbb4ae3ac547560d01757e9ac6072124160f44137d4305357b"
+        }
+      ]
+    },
+    {
+      "index": 7,
+      "name": "Kimi-K3-UD-IQ1_S-00007-of-00014.gguf",
+      "url": "https://huggingface.co/unsloth/Kimi-K3-GGUF/resolve/a0836360ce58dfec088d966a97f2ddc8a606279b/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00007-of-00014.gguf",
+      "logical_bytes": 48208733792,
+      "copied_bytes": 3893290592,
+      "combined_range_sha256": "94fd66b7d12f8d3841c0b20f6e90c725f7615793d206b40c7c37902a10a8e67c",
+      "ranges": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 13664,
+          "sha256": "e0bc5bd1aea89d9fc980742c3feb708eca407f7c496db8fe204173ff7992d201"
+        },
+        {
+          "index": 1,
+          "offset": 1926772064,
+          "length": 306260864,
+          "sha256": "094c25f1ff048d99e35669e5e601229fee14c550191d22d1653a0771fa22e765"
+        },
+        {
+          "index": 2,
+          "offset": 4159791328,
+          "length": 36126720,
+          "sha256": "b5244d268aeeddc950c40c0ffa1cd1b1ca4a6590e3c81856db8baa4c0c69a027"
+        },
+        {
+          "index": 3,
+          "offset": 6122676448,
+          "length": 104036352,
+          "sha256": "5cd5213fcfdfc6cb7d2c2abfd0011eb655961e5b9382e91dd59ba8eb50d48e74"
+        },
+        {
+          "index": 4,
+          "offset": 8153471200,
+          "length": 325201408,
+          "sha256": "ed20757ace8768ce1963774f03252825323f950515c7526ab207f6aa92f73399"
+        },
+        {
+          "index": 5,
+          "offset": 10405431008,
+          "length": 36126720,
+          "sha256": "f643f337073be4f34e0f5a67ca7cfe87c2ce609056bcabd6f0604e1487660883"
+        },
+        {
+          "index": 6,
+          "offset": 12368316128,
+          "length": 104036352,
+          "sha256": "ff3a9ff8ec39ac166716363f5b5c44904a15a013b01e49a4342162a3a591a56e"
+        },
+        {
+          "index": 7,
+          "offset": 14399110880,
+          "length": 403271040,
+          "sha256": "e5698d2644dc1e4157461e46001299eff1317927fd8739b187ccf5f9ed57b889"
+        },
+        {
+          "index": 8,
+          "offset": 16729140320,
+          "length": 36126720,
+          "sha256": "8553b304bb9b0ef1d2d7bf30d66325583a8a107299c10e32567c480c407e6356"
+        },
+        {
+          "index": 9,
+          "offset": 18692025440,
+          "length": 104036352,
+          "sha256": "01572d5092a1d40f186fe4a2d9e98284b7a7c7fc88c29534bb978f7a2675d174"
+        },
+        {
+          "index": 10,
+          "offset": 20722820192,
+          "length": 403271040,
+          "sha256": "fbb9b87a34c4ac1fd27cc2ffac14b4e15515b8c80231b24d03b385e92a6e8e66"
+        },
+        {
+          "index": 11,
+          "offset": 23052849632,
+          "length": 36126720,
+          "sha256": "465eca86f456a6364b2c1b55f46c27ee6539f3eccc29e3c7824b1e2853955ea4"
+        },
+        {
+          "index": 12,
+          "offset": 25015734752,
+          "length": 104036352,
+          "sha256": "4acca8514c4912044feba3dcb48eeda8044e255ed8422075fcb775587865ab27"
+        },
+        {
+          "index": 13,
+          "offset": 27046529504,
+          "length": 306260864,
+          "sha256": "66d114936856f0beb8c02b07bc5a7a236b15ffea6a0195e372583d71b5cb68ad"
+        },
+        {
+          "index": 14,
+          "offset": 29279548768,
+          "length": 36126720,
+          "sha256": "7ab72eba759b3a39ba8f62624204f49f07d0734aae57a095063bb83d49071dbb"
+        },
+        {
+          "index": 15,
+          "offset": 31242433888,
+          "length": 104036352,
+          "sha256": "7750a19da4df1986910b1cc2d2e8dcbdad42cb07aaaae5b5dcc9dfd087e3ca45"
+        },
+        {
+          "index": 16,
+          "offset": 33273228640,
+          "length": 325201408,
+          "sha256": "b29a7b9df3707ba9a4f9d03736fd272f50f2bb71b56415eeff7a3c10781f8316"
+        },
+        {
+          "index": 17,
+          "offset": 35525188448,
+          "length": 36126720,
+          "sha256": "ed95d91a6d0e832f454192db8804d74ded9e5b9669649c25c760d55a57339b18"
+        },
+        {
+          "index": 18,
+          "offset": 37488073568,
+          "length": 104036352,
+          "sha256": "305aabc1cd956ec21da8c0366a7c2aae87373856b06287b339796db374fb90dd"
+        },
+        {
+          "index": 19,
+          "offset": 39518868320,
+          "length": 403271040,
+          "sha256": "96d5883ffefa100ceeab34f7aad6ef53e8b96e42a58b75e791ce5d0e00f7eab8"
+        },
+        {
+          "index": 20,
+          "offset": 41848897760,
+          "length": 36126720,
+          "sha256": "6f8756ed9f23a6aadd47d09f6f34a0f9cfe03cb18051f1305e9c80ddf9b39ca0"
+        },
+        {
+          "index": 21,
+          "offset": 43811782880,
+          "length": 104036352,
+          "sha256": "1d97810a7ae5cb6737fe392f649767cd9b1fcdcb22c0e72a2c9878dbdf5ae059"
+        },
+        {
+          "index": 22,
+          "offset": 45842577632,
+          "length": 403271040,
+          "sha256": "a488cbef5d572d61983ed69ec6c8d1a69c8c22dac01c2dd6bfb99f5902590dc7"
+        },
+        {
+          "index": 23,
+          "offset": 48172607072,
+          "length": 36126720,
+          "sha256": "1dffa2e6518d32606792e8de54c54ecd02f0978a4258e7a9c65229c1b59d6e21"
+        }
+      ]
+    },
+    {
+      "index": 8,
+      "name": "Kimi-K3-UD-IQ1_S-00008-of-00014.gguf",
+      "url": "https://huggingface.co/unsloth/Kimi-K3-GGUF/resolve/a0836360ce58dfec088d966a97f2ddc8a606279b/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00008-of-00014.gguf",
+      "logical_bytes": 50742894560,
+      "copied_bytes": 3961200608,
+      "combined_range_sha256": "9ba1666876e55906a290210d665f2959cb529d14bc545548b9b7043d85e38f0c",
+      "ranges": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 14048,
+          "sha256": "9fe379078bf97e5ca906a370f0dad8d9604f6d646632c4a1d04b6feea26d11ec"
+        },
+        {
+          "index": 1,
+          "offset": 2543335136,
+          "length": 104036352,
+          "sha256": "bb31d4928597142ead1cdf5a3a5b8894c78322ae28d6a63d0f99dc2033089430"
+        },
+        {
+          "index": 2,
+          "offset": 5190692576,
+          "length": 306260864,
+          "sha256": "9b1900149f6fd66ca8af8321c2f138667539274e944e9e53e41318dfd11d93cf"
+        },
+        {
+          "index": 3,
+          "offset": 7423711840,
+          "length": 36126720,
+          "sha256": "c16b58e2d9bc7eeba0d4eca58a44809aac244d8b5d9c1afcafc0d21fd3dadce1"
+        },
+        {
+          "index": 4,
+          "offset": 10003159648,
+          "length": 104036352,
+          "sha256": "22e8de66ab658d844f7d015c20b10fa46aaa063d044f7fa55550d9450d023b20"
+        },
+        {
+          "index": 5,
+          "offset": 12650517088,
+          "length": 325201408,
+          "sha256": "16bb9192a42f11a099cda9a2f704a51ad5e97b276db8990e512eda6f2e299a81"
+        },
+        {
+          "index": 6,
+          "offset": 14902476896,
+          "length": 36126720,
+          "sha256": "cf8550c5941ec99831e100e7ad50c203aee60c63a3139778105cf76cd2fe357f"
+        },
+        {
+          "index": 7,
+          "offset": 16865362016,
+          "length": 104036352,
+          "sha256": "8ad92b1662a798b8f71c5bf624c0bd51bc14145a5bce520626fdae1e05d0e58d"
+        },
+        {
+          "index": 8,
+          "offset": 18896156768,
+          "length": 403271040,
+          "sha256": "0364ebeb89524e4a12240f5613763aaa2f59261f4ae8c6172c8bd16e4b1d166b"
+        },
+        {
+          "index": 9,
+          "offset": 21226186208,
+          "length": 36126720,
+          "sha256": "fc7dbf476aa1dbc786abda573af5d5f60b742eb4a9ee430be8c8d43ea7649235"
+        },
+        {
+          "index": 10,
+          "offset": 23189071328,
+          "length": 104036352,
+          "sha256": "240f5cfaeaa06fcf7ee6e262a6c160e677f3e50d199448676ad45d1685f4b21f"
+        },
+        {
+          "index": 11,
+          "offset": 25219866080,
+          "length": 403271040,
+          "sha256": "748f05522774f26050316f7943f26d852738af00d1471165014c1b2de18f0f34"
+        },
+        {
+          "index": 12,
+          "offset": 27549895520,
+          "length": 36126720,
+          "sha256": "7eda9fefdfee7025614a7b93fb4a620b888bd0ed7ea09994fbfea34f9744411d"
+        },
+        {
+          "index": 13,
+          "offset": 29512780640,
+          "length": 104036352,
+          "sha256": "d0222de3129ba660a76ec6b55c06ad579bc8753626a7c084ea52fdba3a2213ba"
+        },
+        {
+          "index": 14,
+          "offset": 31543575392,
+          "length": 306260864,
+          "sha256": "b0afc71481fd2770db7eef6896eb736cb15c9b0b15b33c60bce5c120f9359122"
+        },
+        {
+          "index": 15,
+          "offset": 33776594656,
+          "length": 36126720,
+          "sha256": "a9ebd24728e1dc568729b332fe5cfd67badf97f64bc6004d494127d8851abea4"
+        },
+        {
+          "index": 16,
+          "offset": 35739479776,
+          "length": 104036352,
+          "sha256": "0f6cf8b31439971d36aa7640a8f4d926c7649f23171548785e84867523403ec6"
+        },
+        {
+          "index": 17,
+          "offset": 37770274528,
+          "length": 325201408,
+          "sha256": "31fc80ee26e0885636de6cd3ea91dd836afd9ba9d0040672228843dabdc660ff"
+        },
+        {
+          "index": 18,
+          "offset": 40022234336,
+          "length": 36126720,
+          "sha256": "6f93a60be7e0845acb255f33fd0f86a3c8e940b95058eda7d749d2451a4db5f8"
+        },
+        {
+          "index": 19,
+          "offset": 41985119456,
+          "length": 104036352,
+          "sha256": "64c0b73e672c5d3bdfea320ae441fd107cc3ee22044ad4d4f6277d2495282838"
+        },
+        {
+          "index": 20,
+          "offset": 44015914208,
+          "length": 403271040,
+          "sha256": "848fffd0c0aa86c08bbf4d70be4fb344f4baee91535cde2473d6e7607fe56553"
+        },
+        {
+          "index": 21,
+          "offset": 46345943648,
+          "length": 36126720,
+          "sha256": "f15b061964e7e8b5da9c196c4f8db302d0c69dae2dafe59ea554347fa3ad9a26"
+        },
+        {
+          "index": 22,
+          "offset": 48308828768,
+          "length": 104036352,
+          "sha256": "e7b493f09db2431ce5baf8a9359e290d3ff7122755b93f8d6d75abcb2e937c2a"
+        },
+        {
+          "index": 23,
+          "offset": 50339623520,
+          "length": 403271040,
+          "sha256": "1cd23646eb311f94ef7f0cb0b35e592831a446f442d0916208c5ad605489aff9"
+        }
+      ]
+    },
+    {
+      "index": 9,
+      "name": "Kimi-K3-UD-IQ1_S-00009-of-00014.gguf",
+      "url": "https://huggingface.co/unsloth/Kimi-K3-GGUF/resolve/a0836360ce58dfec088d966a97f2ddc8a606279b/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00009-of-00014.gguf",
+      "logical_bytes": 51608874592,
+      "copied_bytes": 3594055264,
+      "combined_range_sha256": "05c2bf2a8c53ab0e1747ae13ac78b6232542b82b34939acbff9637948a5f5457",
+      "ranges": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 13024,
+          "sha256": "2b32617d6c48c4fb26b0ad3fe274fd63ce2ddc54cc02114258cf8b3b987c2c23"
+        },
+        {
+          "index": 1,
+          "offset": 1926771424,
+          "length": 36126720,
+          "sha256": "dbda08fe41cccfa6be4b2065ac0636477a6f2156ea8fadc43d8ef1bdd3adfaea"
+        },
+        {
+          "index": 2,
+          "offset": 3889656544,
+          "length": 104036352,
+          "sha256": "74b68e2eb94ad0ba8bcda70d06e6fb9f8a2d16d78d5bc48c2da867ff6e7ee812"
+        },
+        {
+          "index": 3,
+          "offset": 5920451296,
+          "length": 306260864,
+          "sha256": "f3c9558d63e85e703195742d94fc22549dbea8e9e80afe1be131bc5c01e1d6d7"
+        },
+        {
+          "index": 4,
+          "offset": 8153470560,
+          "length": 36126720,
+          "sha256": "559c8964387cbdb45ec20c677850d7723bbcc5b7ecec8601aa107f58ecc76672"
+        },
+        {
+          "index": 5,
+          "offset": 10116355680,
+          "length": 104036352,
+          "sha256": "561778ef99f6116dad282e4fce4d12d93372e69c93d5337c5648a4e5a4f4b7ae"
+        },
+        {
+          "index": 6,
+          "offset": 12147150432,
+          "length": 325201408,
+          "sha256": "bf583b689456f81e0ffcc20025ffa3f7d42ebc6c05736c209309f4a2e258d406"
+        },
+        {
+          "index": 7,
+          "offset": 14399110240,
+          "length": 36126720,
+          "sha256": "57fd2cc5324d1fc50d094f97eef2b521c2a99a30c35cb1a5b415a74e9cadd93f"
+        },
+        {
+          "index": 8,
+          "offset": 16978558048,
+          "length": 104036352,
+          "sha256": "c4b223e5559a20e83d07bb7837aead2ca4c41787269fd3b1291d3972fcd04492"
+        },
+        {
+          "index": 9,
+          "offset": 19625915488,
+          "length": 403271040,
+          "sha256": "67b31c3d7097dda25c455d7f353eb81b88a6507392cc20e0722671282d7eaec5"
+        },
+        {
+          "index": 10,
+          "offset": 21955944928,
+          "length": 36126720,
+          "sha256": "03300e80e7a20b3e9566093ee73f8b06eb5c3eab8af0e02ca3d06e65570e5b89"
+        },
+        {
+          "index": 11,
+          "offset": 24535392736,
+          "length": 104036352,
+          "sha256": "16d2589696e84846c107d8ae03fba24ba235d7eec0784be05b75de67ea5cd924"
+        },
+        {
+          "index": 12,
+          "offset": 27182750176,
+          "length": 403271040,
+          "sha256": "7eb1d74e692a65a39af570e3cbfffc3dee55ae13e56ffbbf92c969ca3f2efd96"
+        },
+        {
+          "index": 13,
+          "offset": 29512779616,
+          "length": 36126720,
+          "sha256": "948b90fa4084d85d8220e728a32110e1a5795556211f3b874db64f3af5157109"
+        },
+        {
+          "index": 14,
+          "offset": 32092227424,
+          "length": 104036352,
+          "sha256": "66dcda9fcb9715ac9068fbf6f71d19fea7f2452c1ad868690d72c44135dbc364"
+        },
+        {
+          "index": 15,
+          "offset": 34739584864,
+          "length": 306260864,
+          "sha256": "8d28ae834732d8510bf35fd90423ef3db0dc0f15ab406b611dd1b7394c5ae54d"
+        },
+        {
+          "index": 16,
+          "offset": 36972604128,
+          "length": 36126720,
+          "sha256": "1dc70683d08f38ee575dfcb458a90dae8265814c029d790a10d170f5557e6421"
+        },
+        {
+          "index": 17,
+          "offset": 38935489248,
+          "length": 104036352,
+          "sha256": "fd0df5ee4647fa32ffbcc95fffeda6e520ca8a0ecb6073af32fde212dd461987"
+        },
+        {
+          "index": 18,
+          "offset": 40966284000,
+          "length": 325201408,
+          "sha256": "27a359e1b05f5816cf8de0b66944c561924995ae5ce3c3ccbaeeef245c53c52d"
+        },
+        {
+          "index": 19,
+          "offset": 43218243808,
+          "length": 36126720,
+          "sha256": "8078c7a4043528a62b2bbeec76234786d1bcd84bb27b401daa0d9f31c28ca13d"
+        },
+        {
+          "index": 20,
+          "offset": 45181128928,
+          "length": 104036352,
+          "sha256": "307381e4178e26e2afb9c1b54b3de557175a676c8c9cf02203adf0d5916612f5"
+        },
+        {
+          "index": 21,
+          "offset": 47211923680,
+          "length": 403271040,
+          "sha256": "50ce6a7cdcb7b3e6772d2cde50454953deaf7129e37c7e26a60d92c7af3674d3"
+        },
+        {
+          "index": 22,
+          "offset": 49541953120,
+          "length": 36126720,
+          "sha256": "14eea5a634c9fb9e06b268cfdcf2dc2e7457e826454420c0ff7a4cd16929bc15"
+        },
+        {
+          "index": 23,
+          "offset": 51504838240,
+          "length": 104036352,
+          "sha256": "f7f8298508a280142080c016ac246c9c113ce67892393738f9e604845b6bfef2"
+        }
+      ]
+    },
+    {
+      "index": 10,
+      "name": "Kimi-K3-UD-IQ1_S-00010-of-00014.gguf",
+      "url": "https://huggingface.co/unsloth/Kimi-K3-GGUF/resolve/a0836360ce58dfec088d966a97f2ddc8a606279b/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00010-of-00014.gguf",
+      "logical_bytes": 49441859168,
+      "copied_bytes": 3893290592,
+      "combined_range_sha256": "37f94e21f257224a6da1dbbeb7bcb165b5ed20258b1aad93cfca462dcf94ca6e",
+      "ranges": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 13664,
+          "sha256": "811bb75803d5445bc0e724248fb120d5a260f2ac4eff14033db949f562dc6430"
+        },
+        {
+          "index": 1,
+          "offset": 1926772064,
+          "length": 403271040,
+          "sha256": "15fb83468b8563bf306d4feb960b9a6b53bd3175d66e542fbd88cf69437d822a"
+        },
+        {
+          "index": 2,
+          "offset": 4256801504,
+          "length": 36126720,
+          "sha256": "8072820af2c8aa77cf23579b95c08f356484c70298277d45150a8ba6af2ca1e5"
+        },
+        {
+          "index": 3,
+          "offset": 6219686624,
+          "length": 104036352,
+          "sha256": "34bb8c172a0bb3f3c8b37cd3a036fd1b1ddfcff22c768f56eeaf312f6327d166"
+        },
+        {
+          "index": 4,
+          "offset": 8250481376,
+          "length": 306260864,
+          "sha256": "1ff184efa4058290a4890c24206f151b23213c91a2bd115c35bd667212c6eb80"
+        },
+        {
+          "index": 5,
+          "offset": 10483500640,
+          "length": 36126720,
+          "sha256": "c268c21c88b4a7ab133fcccb383e5c18e606280cec182c0090255396a5430727"
+        },
+        {
+          "index": 6,
+          "offset": 12446385760,
+          "length": 104036352,
+          "sha256": "b15e089d25f4e126928eb6e44373a4b0cb25f1a7a6e244985113da9d88992ae9"
+        },
+        {
+          "index": 7,
+          "offset": 14477180512,
+          "length": 325201408,
+          "sha256": "0d0a4d41ee0d82d93950c630331075b42a044f7bd56294058ffeddedfbfb4b2e"
+        },
+        {
+          "index": 8,
+          "offset": 16729140320,
+          "length": 36126720,
+          "sha256": "092980d487b06e81f4d0c37e6a12355d06a4a592bd4b872ab8eeffd16857cf6d"
+        },
+        {
+          "index": 9,
+          "offset": 18692025440,
+          "length": 104036352,
+          "sha256": "43cf7b0c3264757cc3f65fa4637dc821a036bdcdb1e34b080c5b6a0fcc257b6d"
+        },
+        {
+          "index": 10,
+          "offset": 20722820192,
+          "length": 403271040,
+          "sha256": "edb8423dced34ff833d04bbdcd46d3830867b9cf2fb08215254b304ad35a48b2"
+        },
+        {
+          "index": 11,
+          "offset": 23052849632,
+          "length": 36126720,
+          "sha256": "2bf8d65d1c61f51adba17a1215a532d2b60f791e20b742575f596e8086bc0b26"
+        },
+        {
+          "index": 12,
+          "offset": 25015734752,
+          "length": 104036352,
+          "sha256": "8f207c19cd6e9c483561984dd8094b37fda3f2ff9735c4c42eea7d26c1a4b8ba"
+        },
+        {
+          "index": 13,
+          "offset": 27046529504,
+          "length": 403271040,
+          "sha256": "0104c4eb1a46dbaa91cf9a693db90945cd3fe5c914cc1d658de5e7a6dfbf93a6"
+        },
+        {
+          "index": 14,
+          "offset": 29376558944,
+          "length": 36126720,
+          "sha256": "2d73b3d2677fa8a59333bf65ffa95b87574cb07dbdfc4d30538bf93bcb882a8f"
+        },
+        {
+          "index": 15,
+          "offset": 31339444064,
+          "length": 104036352,
+          "sha256": "0cfa639d153c9dfd957bca39349eac67b1643f4a11596c8afd5a65b13eb07987"
+        },
+        {
+          "index": 16,
+          "offset": 33370238816,
+          "length": 306260864,
+          "sha256": "481dd341a19140bfcc9ebe9726609c7e4ce5546153bf611e2140b5b4fb64297c"
+        },
+        {
+          "index": 17,
+          "offset": 35603258080,
+          "length": 36126720,
+          "sha256": "2aabc34d6b48f7b0803b18776df50644bc3e7b015be31665a1e83839953310a9"
+        },
+        {
+          "index": 18,
+          "offset": 37566143200,
+          "length": 104036352,
+          "sha256": "be14d8fdf4f37050a51da7ee7d1e020e179d1f197c98ce21007e8de9b1aab11b"
+        },
+        {
+          "index": 19,
+          "offset": 39596937952,
+          "length": 325201408,
+          "sha256": "ce27f703576de0d11fced8d0bcd60d64402fc96c34a323be7ce2f2cdb7dea6d1"
+        },
+        {
+          "index": 20,
+          "offset": 41848897760,
+          "length": 36126720,
+          "sha256": "33ec14af0f21c2a1e7002130e6e00ada69135805fb5ef6cadbd8274680455dbb"
+        },
+        {
+          "index": 21,
+          "offset": 44428345568,
+          "length": 104036352,
+          "sha256": "ae526ba59863897a7c8649548f2a0efaad6b12c9d896f67660e598a2c9f3b618"
+        },
+        {
+          "index": 22,
+          "offset": 47075703008,
+          "length": 403271040,
+          "sha256": "3f5e60cbff0d172d003e3434c31fb07a8f60e281e2a8f070f5bcf49ac99f47d2"
+        },
+        {
+          "index": 23,
+          "offset": 49405732448,
+          "length": 36126720,
+          "sha256": "1f69eafb9e2ff991a48ca4454914275dfeecf2475dc318f92921bc23975e71f1"
+        }
+      ]
+    },
+    {
+      "index": 11,
+      "name": "Kimi-K3-UD-IQ1_S-00011-of-00014.gguf",
+      "url": "https://huggingface.co/unsloth/Kimi-K3-GGUF/resolve/a0836360ce58dfec088d966a97f2ddc8a606279b/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00011-of-00014.gguf",
+      "logical_bytes": 51976019936,
+      "copied_bytes": 3961200608,
+      "combined_range_sha256": "2f9b88c21643e8f9b8fd518db7c40328eba4c0e2ebdc336d1a2700930862c700",
+      "ranges": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 14048,
+          "sha256": "b478a7d7ccc3000d29dd2f7cb449959c81934a89090613105a213715dde43960"
+        },
+        {
+          "index": 1,
+          "offset": 2543335136,
+          "length": 104036352,
+          "sha256": "92f88c1cefa05d98e5b5f0b359782ce82759de69adbd760cbf2d43bd193e074c"
+        },
+        {
+          "index": 2,
+          "offset": 5190692576,
+          "length": 403271040,
+          "sha256": "374a1dd2815b38662171d70f9256e7ae66f977ce0c1da022ce3c860f10722bc2"
+        },
+        {
+          "index": 3,
+          "offset": 7520722016,
+          "length": 36126720,
+          "sha256": "e211c9a39395b38ca3d19b64fcf3ef2d3077c7e413f264e7dfc2cc47122552fc"
+        },
+        {
+          "index": 4,
+          "offset": 10100169824,
+          "length": 104036352,
+          "sha256": "e06160e56c54776f0ffbd0d40de41892e8e619352851b0366e68c89aa02bd027"
+        },
+        {
+          "index": 5,
+          "offset": 12747527264,
+          "length": 306260864,
+          "sha256": "b1dc9cf71816a0d5eab09246104e64d5951aeb7ed25cd4dbe12922c382459a26"
+        },
+        {
+          "index": 6,
+          "offset": 14980546528,
+          "length": 36126720,
+          "sha256": "5e56e66281f4ed718cd94305130df79ffac1f35a6e1792be719ee24f9e51055e"
+        },
+        {
+          "index": 7,
+          "offset": 17559994336,
+          "length": 104036352,
+          "sha256": "05a0ff76c20a8829f3b0ba7d94614c753cc6b10994171abc99572d6caa6ada9f"
+        },
+        {
+          "index": 8,
+          "offset": 20207351776,
+          "length": 325201408,
+          "sha256": "df1ebc80c84c8db1a075709defbb0b0b1b25c8abe0a7cfb19172d14eb1fd70cb"
+        },
+        {
+          "index": 9,
+          "offset": 22459311584,
+          "length": 36126720,
+          "sha256": "ee21d1711b5fe8d7daa906c90e4fd03d52be5bbdabadc867593951bc75b3287f"
+        },
+        {
+          "index": 10,
+          "offset": 24422196704,
+          "length": 104036352,
+          "sha256": "8df6e1c1a23d8541086496089ee80956ec7820d665ce094c5907b97bfd8dc56a"
+        },
+        {
+          "index": 11,
+          "offset": 26452991456,
+          "length": 403271040,
+          "sha256": "5a12e74ba6af138d6bd2c0ce60fbf8dda3c5efafd4619d1c69ee22f26214ae62"
+        },
+        {
+          "index": 12,
+          "offset": 28783020896,
+          "length": 36126720,
+          "sha256": "7007716dab1c1aea60eb3bd8ff2887f210f512a06ec0ffe943a92946fc350b6f"
+        },
+        {
+          "index": 13,
+          "offset": 30745906016,
+          "length": 104036352,
+          "sha256": "fd6c36cff4e0899375ae0331c9b66bd5d2cc5ab5788a1c0cd197ec871cde5926"
+        },
+        {
+          "index": 14,
+          "offset": 32776700768,
+          "length": 403271040,
+          "sha256": "21fe91ce9d11e290d54ff080e877f5541039ab49846d0f5e8918d99ae69dd333"
+        },
+        {
+          "index": 15,
+          "offset": 35106730208,
+          "length": 36126720,
+          "sha256": "6dcdf0104ad2663da6be8b2c309d35f719fd82c448f5c0075b50ce93f5746db5"
+        },
+        {
+          "index": 16,
+          "offset": 37069615328,
+          "length": 104036352,
+          "sha256": "a8347e24cde5d4b332cbe2d718d8d44f0add6eb57b75bb4fc9f0c4bda058e63f"
+        },
+        {
+          "index": 17,
+          "offset": 39100410080,
+          "length": 306260864,
+          "sha256": "6c887bc38ef77041980ca8f3fa92a4a5e88a6724b9a4313d4bb82a5890e30a49"
+        },
+        {
+          "index": 18,
+          "offset": 41333429344,
+          "length": 36126720,
+          "sha256": "73d2a99281e744b542cce20c1c120668244d479a2d261fede38359a26b3d9ae3"
+        },
+        {
+          "index": 19,
+          "offset": 43296314464,
+          "length": 104036352,
+          "sha256": "915450aa2c79d9b926db3d25486158394ead2f9e4a9b02db02a939ad5891a268"
+        },
+        {
+          "index": 20,
+          "offset": 45327109216,
+          "length": 325201408,
+          "sha256": "22ce64be3c1eeb664c5acdcc892d148e3cb4e219540af60be867a0f5a214018e"
+        },
+        {
+          "index": 21,
+          "offset": 47579069024,
+          "length": 36126720,
+          "sha256": "03d1891a85fa87e932712b5698843950bcdc9750553bf025d0c35278e296df51"
+        },
+        {
+          "index": 22,
+          "offset": 49541954144,
+          "length": 104036352,
+          "sha256": "fe96297faf828dd489aead469bc71dc803d91a131acb699354bb5be53f05e86c"
+        },
+        {
+          "index": 23,
+          "offset": 51572748896,
+          "length": 403271040,
+          "sha256": "83b2043c3763a42dbda7ff7cc6df545456101dab02542de197aafc566be300c3"
+        }
+      ]
+    },
+    {
+      "index": 12,
+      "name": "Kimi-K3-UD-IQ1_S-00012-of-00014.gguf",
+      "url": "https://huggingface.co/unsloth/Kimi-K3-GGUF/resolve/a0836360ce58dfec088d966a97f2ddc8a606279b/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00012-of-00014.gguf",
+      "logical_bytes": 48526061152,
+      "copied_bytes": 3594055264,
+      "combined_range_sha256": "98f79852ee33b88cb612f7ce0b13bf25da0c65990fcb5ab45aca399bc1c24b1e",
+      "ranges": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 13024,
+          "sha256": "067d75e15e81aeb2f26ff563911dc9cae55d4976a6935aeed5a8ebd48091e7d6"
+        },
+        {
+          "index": 1,
+          "offset": 1926771424,
+          "length": 36126720,
+          "sha256": "63a61148607ed53c89f0125ed69a0ad810181d864e7a1695248da5836b5f5fb1"
+        },
+        {
+          "index": 2,
+          "offset": 3889656544,
+          "length": 104036352,
+          "sha256": "e3632a9d8d45d04265a402e3dfdf2a9969700a4941c7b45eb95cc4f35710106b"
+        },
+        {
+          "index": 3,
+          "offset": 5920451296,
+          "length": 403271040,
+          "sha256": "d04239d7d5e2e0f9fec092745db49f1abc93874323e31d12eebcfad99ae3f023"
+        },
+        {
+          "index": 4,
+          "offset": 8250480736,
+          "length": 36126720,
+          "sha256": "b87bc464029c17010e68111c478f2fd9df5b9f8006905818f2b6da0ab9ed5000"
+        },
+        {
+          "index": 5,
+          "offset": 10213365856,
+          "length": 104036352,
+          "sha256": "aff1bde2af4dd86616753beb4926fac2eff0d8365e215c878996764ad987c082"
+        },
+        {
+          "index": 6,
+          "offset": 12244160608,
+          "length": 306260864,
+          "sha256": "aaf3cdf16388eeb76a1500cacf4eb3ce6d7a7d51ede931e8e31892dc9d18c539"
+        },
+        {
+          "index": 7,
+          "offset": 14477179872,
+          "length": 36126720,
+          "sha256": "bbe033c95b1193000aa58eb9eae2fa3172a33269ee5d4c2a21358e8c2a0222af"
+        },
+        {
+          "index": 8,
+          "offset": 16440064992,
+          "length": 104036352,
+          "sha256": "bf97ae65c003161d559e189a400c118164864c837bdf23e3f57218ac66c2e8ca"
+        },
+        {
+          "index": 9,
+          "offset": 18470859744,
+          "length": 325201408,
+          "sha256": "b795db6254dec1989b1b7867d5adc7eb146985e921078171c7d29d1a41f0c122"
+        },
+        {
+          "index": 10,
+          "offset": 20722819552,
+          "length": 36126720,
+          "sha256": "b6e84da97bce721fb06df9dd5e38eb13ffe672e40cfba1303fde71af7141eee4"
+        },
+        {
+          "index": 11,
+          "offset": 22685704672,
+          "length": 104036352,
+          "sha256": "210438080bb2b0785304890bb2e550ec29d5709f183d4be3a7ffae5e9df15740"
+        },
+        {
+          "index": 12,
+          "offset": 24716499424,
+          "length": 403271040,
+          "sha256": "5bc92acf9df25719f88dca162fab10588727b5c02ba52f4468d292b788bc263b"
+        },
+        {
+          "index": 13,
+          "offset": 27046528864,
+          "length": 36126720,
+          "sha256": "adef2f088c80b5292f08ecfbe1382d4dba9fb14f13817e97d7cc79b573db3a37"
+        },
+        {
+          "index": 14,
+          "offset": 29009413984,
+          "length": 104036352,
+          "sha256": "4e3e6492f14dbd988e996d5da5d872d0cb8ecfc827d08b94230bcf3f7718a18b"
+        },
+        {
+          "index": 15,
+          "offset": 31040208736,
+          "length": 403271040,
+          "sha256": "dd9de495f342741c6e942439998de4a4423fc22f454de6fa2d304d66fe5aca57"
+        },
+        {
+          "index": 16,
+          "offset": 33370238176,
+          "length": 36126720,
+          "sha256": "0a3121437d3f4b038a98186cceac3e91d6f9e6218dfc932f08d9b0d2a26540b6"
+        },
+        {
+          "index": 17,
+          "offset": 35333123296,
+          "length": 104036352,
+          "sha256": "18bbf24e8ef2af4ceae60bb63a45cde6c7ba8f92b2b495495c4b011ab80f9d42"
+        },
+        {
+          "index": 18,
+          "offset": 37363918048,
+          "length": 306260864,
+          "sha256": "2e2de3e615a6a49a50fef84f1ca6b72342e4604a9234d93a794767f7febd3b84"
+        },
+        {
+          "index": 19,
+          "offset": 40213500000,
+          "length": 36126720,
+          "sha256": "1a948244deb1dcb0a9dcb018e5aa24f9579a51ac29a887f3ce39814d8b7b67c5"
+        },
+        {
+          "index": 20,
+          "offset": 42176385120,
+          "length": 104036352,
+          "sha256": "1f4cccd3cbc537bd0ac3733d4f1126629dc2841d051a206dfcbe3361854cbd05"
+        },
+        {
+          "index": 21,
+          "offset": 44207179872,
+          "length": 325201408,
+          "sha256": "4f0d3dd1c025051ab86807546c6164e7b7e444679a9b041250a1f520786cc41e"
+        },
+        {
+          "index": 22,
+          "offset": 46459139680,
+          "length": 36126720,
+          "sha256": "3d9535e52297c4063e639afe45cdb0f3202a01d8a0ad6bc510f8565b539cf25a"
+        },
+        {
+          "index": 23,
+          "offset": 48422024800,
+          "length": 104036352,
+          "sha256": "905de3b4f363fb513268b864d42f28d4ab444c96b453371158c59799a0fc3e69"
+        }
+      ]
+    },
+    {
+      "index": 13,
+      "name": "Kimi-K3-UD-IQ1_S-00013-of-00014.gguf",
+      "url": "https://huggingface.co/unsloth/Kimi-K3-GGUF/resolve/a0836360ce58dfec088d966a97f2ddc8a606279b/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00013-of-00014.gguf",
+      "logical_bytes": 48728286656,
+      "copied_bytes": 3796280768,
+      "combined_range_sha256": "a262804b8d2729ae04a790c811867e3e6a2ed4dfecffbf38d51701eacc3b52d0",
+      "ranges": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 14016,
+          "sha256": "4c478846b50fc5c8ab3e726a39768cc44534a042cb04565472eef17124e12a59"
+        },
+        {
+          "index": 1,
+          "offset": 1926772416,
+          "length": 403271040,
+          "sha256": "bb0a16b22250c15205f6a7455ca1d7d1a96dbc2d790aebba82921b49828f8777"
+        },
+        {
+          "index": 2,
+          "offset": 4256801856,
+          "length": 36126720,
+          "sha256": "b476f81843e8ca04add93a49ad985c711ffb12cad1e88e69e70457133598f84b"
+        },
+        {
+          "index": 3,
+          "offset": 6219686976,
+          "length": 104036352,
+          "sha256": "31ca30cc2eaf0b741e955999f7893f9eabfd7f7a4686fc3295b29ce45729bf6f"
+        },
+        {
+          "index": 4,
+          "offset": 8250481728,
+          "length": 403271040,
+          "sha256": "654b758214cb4a181c6809c791f1498ea6f72ffa35ed4cf3fddf5f0b0b56e0d2"
+        },
+        {
+          "index": 5,
+          "offset": 10580511168,
+          "length": 36126720,
+          "sha256": "30031fc72da9f9059bda0d0cfc69de22b6189ce9376c4220b6f21974d7801ac2"
+        },
+        {
+          "index": 6,
+          "offset": 12543396288,
+          "length": 104036352,
+          "sha256": "6700a7ddd68eb28ac9eea74f12e85fe557cf66f924d63872d38ad6887b93bfb8"
+        },
+        {
+          "index": 7,
+          "offset": 14574191040,
+          "length": 306260864,
+          "sha256": "24a913981d955b660a1293fbc69ff0e5a1ca8860565e1a764394ec606ffa293a"
+        },
+        {
+          "index": 8,
+          "offset": 16807210304,
+          "length": 36126720,
+          "sha256": "35f6ffb60d6c7f19dd88967f942fed4bbdf88f7e20464471fd3bc6a4bc894d85"
+        },
+        {
+          "index": 9,
+          "offset": 18770095424,
+          "length": 104036352,
+          "sha256": "68aa4f2b61fe192acc49e0bc2337fffbc1160902c4cf110a0db1b7a05bba3a11"
+        },
+        {
+          "index": 10,
+          "offset": 20800890176,
+          "length": 325201408,
+          "sha256": "3bc094eb335eb90cc97c2675cc1f18c18063c668d567d60e0e3a7e81f74d8a0e"
+        },
+        {
+          "index": 11,
+          "offset": 23052849984,
+          "length": 36126720,
+          "sha256": "ab305db1124f5dc13a8bc4775f418dff270d42fe8fb99f9da22ba830d717f8b0"
+        },
+        {
+          "index": 12,
+          "offset": 25015735104,
+          "length": 104036352,
+          "sha256": "c0c2462373dbe9b3621d2ef1a3ae35514d11697505f1450fd89b05308e27bbd6"
+        },
+        {
+          "index": 13,
+          "offset": 27046529856,
+          "length": 403271040,
+          "sha256": "818759c346de6c97da75dbecbee9c7e51ab714738a3ded53fa04250fb94ea888"
+        },
+        {
+          "index": 14,
+          "offset": 29376559296,
+          "length": 36126720,
+          "sha256": "289967eac7e1130fcf8ef265ddec0442a7506133b419db6ba60e89a721baae30"
+        },
+        {
+          "index": 15,
+          "offset": 31339444416,
+          "length": 104036352,
+          "sha256": "7fbda6f428837f3d07c8659b3e9b0baa717ac78e35c59689cb86556d55a0db7c"
+        },
+        {
+          "index": 16,
+          "offset": 33370239168,
+          "length": 403271040,
+          "sha256": "accb90945f9e3a10b39ea0073ff85828c240e7a5c7cfd68e5d142d1974ac4a5c"
+        },
+        {
+          "index": 17,
+          "offset": 35700268608,
+          "length": 36126720,
+          "sha256": "b6ed0f7ba7c1a20e183ddf628d2a7e66ee51812511dc4bc9d07f44eed528a4f7"
+        },
+        {
+          "index": 18,
+          "offset": 37663153728,
+          "length": 104036352,
+          "sha256": "d201975e3ac9ef1fa51fb0f6a0105b739f6a4c707f4a16f0b64ab0b6572a9e70"
+        },
+        {
+          "index": 19,
+          "offset": 39693948480,
+          "length": 306260864,
+          "sha256": "d5127bb27c3c6c7ac83b58b086030b4d6bd65b4957d59dc841f0b576682bbe20"
+        },
+        {
+          "index": 20,
+          "offset": 41926967744,
+          "length": 36126720,
+          "sha256": "fbf5b04920ea455bae7681f5411970af3c43f83ccdafb08bce60fa789586450b"
+        },
+        {
+          "index": 21,
+          "offset": 43889852864,
+          "length": 104036352,
+          "sha256": "72057ae72f14cef370c5454690f32cceabbd0b22d590e188a8bf1a40e653b312"
+        },
+        {
+          "index": 22,
+          "offset": 45920647616,
+          "length": 228191232,
+          "sha256": "dbdc787fed646340a93e06cd70ae00f17c1e6bf934f5d6127d2378142576b951"
+        },
+        {
+          "index": 23,
+          "offset": 48692159936,
+          "length": 36126720,
+          "sha256": "a9d82d28ece8cfbf0252efddb9f37a3aced0500734b960c006d4ea07911395f6"
+        }
+      ]
+    },
+    {
+      "index": 14,
+      "name": "Kimi-K3-UD-IQ1_S-00014-of-00014.gguf",
+      "url": "https://huggingface.co/unsloth/Kimi-K3-GGUF/resolve/a0836360ce58dfec088d966a97f2ddc8a606279b/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00014-of-00014.gguf",
+      "logical_bytes": 3993680640,
+      "copied_bytes": 140163840,
+      "combined_range_sha256": "31d49ca351e58d2c7f9e19be09f27001a8ee4ac3034dfba3e2141c1d6a49962c",
+      "ranges": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 768,
+          "sha256": "e816599c9791943e83f292831856d9f8b6ea59c90dadf980c670210b7962b131"
+        },
+        {
+          "index": 1,
+          "offset": 1926759168,
+          "length": 104036352,
+          "sha256": "77106830381cad127c2fafdbbf9879c4785ba4f015ee9fff430c1c31b521285b"
+        },
+        {
+          "index": 2,
+          "offset": 3957553920,
+          "length": 36126720,
+          "sha256": "e90ba9512bb6b4de3f13c54d9e0cc95978847889add9afdb87c4aaff24b93e53"
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "shards": 14,
+    "ranges": 290,
+    "logical_bytes": 594040923616,
+    "copied_bytes": 48691226080
+  }
+}
