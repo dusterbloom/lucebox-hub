@@ -1,0 +1,74 @@
+{
+  "schema": "kimi-k3-tool-schema-rescue-prereg-v1",
+  "status": "PREREGISTERED_BEFORE_IMPLEMENTATION",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "c6fba613019af6adc78e75e65b013ebc0696c3d8",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "base_policy": "/home/duster/lucebox-k3-b7b74cc/results/h23_10k_policies/h23_moonshot_1_2gib.txt"
+  },
+  "hypothesis": "A declared-tool-name final-token boundary is a sufficient runtime risk signal for the known confident wrong identifier, without a label-derived absolute position.",
+  "trigger": {
+    "scope": "Kimi K3 requests with one or more effective declared tools; research env gate only",
+    "definition": "Tokenize every declared function name. For names containing at least two tokens, return a Budget96 floor for the next routed position iff committed generated IDs end with every name token except the final token.",
+    "budget": 96,
+    "reset": "Return to the request/base policy on the following routed position unless another declared-name boundary matches.",
+    "known_fixture_prediction": {
+      "tool_name": "get_weather",
+      "token_ids": [618, 21055, 2800],
+      "trigger_suffix": [618, 21055],
+      "expected_base_pos": 158
+    },
+    "explicit_non_goals": [
+      "No entropy threshold, generic Fisher predictor, rollback, second pass, GSQ/Trellis decoder or request-wide Budget96.",
+      "One-token tool names are not rescued by this first discriminator."
+    ]
+  },
+  "fixtures": {
+    "tool": {
+      "path": "fixtures/k3_tool_weather_request.json",
+      "sha256": "9ddc53b93c0e162a898f9b2c72d03e5cd9ab670c608ffef489aaa6090ab7f0d6",
+      "frozen_prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c"
+    },
+    "non_tool": {
+      "path": "fixtures/k3_non_tool_exact_ok_request.json",
+      "sha256": "e7ba8bfc956be4f7cc28eddacf87f4bb1bf6f22a32e171b898e6c0ed95ab5165"
+    }
+  },
+  "arms": [
+    {
+      "name": "tool_schema_trigger",
+      "schema_trigger": true,
+      "position_budgets": "",
+      "fixture": "tool",
+      "required": true
+    },
+    {
+      "name": "non_tool_off",
+      "schema_trigger": false,
+      "position_budgets": "",
+      "fixture": "non_tool",
+      "required": true
+    },
+    {
+      "name": "non_tool_on",
+      "schema_trigger": true,
+      "position_budgets": "",
+      "fixture": "non_tool",
+      "required": true
+    }
+  ],
+  "validity": [
+    "All three arms use one clean source commit and one executable hash.",
+    "The tool arm has no static position-budget environment value and no request-wide Budget96 marker.",
+    "The tool arm emits exactly one schema-rescue marker at base position 158 and returns one valid get_weather call for San Francisco.",
+    "The tool arm's generated IDs, logical traffic and final logits match the measured positional-singleton mechanism unless the difference is explicitly investigated before interpretation.",
+    "The non-tool on/off prompts have identical token hashes and their generated IDs, final logits, logical traffic and provider exact-fallback traffic are byte-identical; the on arm emits zero schema-rescue markers."
+  ],
+  "gate": {
+    "go": "All validity conditions pass. The trigger is then earned for a broader native-success tool suite plus false-positive tool-declared controls, still research-only.",
+    "no_go": "Any missed/extra marker, invalid get_weather result, or non-tool divergence rejects this trigger. Preserve the negative result and investigate a real framer-state signal instead of tuning token IDs on the fixture.",
+    "production": "No production transplant from this gate alone."
+  }
+}

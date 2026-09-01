@@ -1,0 +1,11 @@
+{
+  "model": "dflash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply with exactly OK."
+    }
+  ],
+  "max_tokens": 8,
+  "temperature": 0
+}
