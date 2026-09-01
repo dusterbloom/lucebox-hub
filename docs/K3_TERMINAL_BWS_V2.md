@@ -774,3 +774,37 @@ The immutable summary is
 `results/k3_native_tool_first_token_result_20260901.json` (raw arms r141--r144,
 failed NumPy-only analysis r145, standard-library analysis r146).  The
 analysis-only amendment reran zero model arms.  Production remains untouched.
+
+## Reused-native terminal suite
+
+The three already-closed Full192 fact, grammar and extraction teachers were
+reused without another native run.  H23 aggressive-1.8, H23
+moonshot/Budget24 and route12/Budget20 were rerun against the source-matched
+non-routed core.  A terminal vector was scored only when all eight generated
+IDs matched its teacher history.
+
+All nine candidate arms aligned.  Every policy retained all 3/3 native
+sequences and final top-one decisions:
+
+| policy | logical GiB/position | physical GiB/position | mean KL | median KL | p95 KL | max KL |
+|---|---:|---:|---:|---:|---:|---:|
+| H23 aggressive-1.8 | 1.84465 | 0.73744 | 0.000227 | 0.000001 | 0.000611 | 0.000679 |
+| H23 moonshot/Budget24 | 1.22954 | 0.48342 | 0.002462 | 0.002653 | 0.004503 | 0.004708 |
+| route12/Budget20 | **1.00953** | **0.39436** | 0.010998 | 0.003963 | 0.026487 | 0.028989 |
+
+This is another preregistered **behavioral GO**, not a strong distributional
+GO.  On these ordinary, high-margin terminal positions route12 is comfortably
+below KL `0.13`; its worst value is `0.02899`.  On the hard tool boundary it
+was `0.65615` yet selected the native token while both lower-KL H23 policies
+failed.  KL risk is therefore sharply position-dependent, and a single global
+tolerance cannot certify reliability.  The data favor a cheap route12 base
+plus a sparse boundary-risk mechanism; they do not favor globally paying for
+H23 fidelity.
+
+Across the three route12 requests, 119 prompt tokens took 89.36 s
+(~1.33 prefill tok/s) and 24 decoded tokens took 12.11 s (~1.98 tok/s).  These
+remain cold token-sequential request measurements, not the 100/10 tok/s serving
+targets.  The immutable result is
+`results/k3_native_terminal_reuse_suite_result_20260901.json` (SHA-256
+`caa095e6cb42dc94f4fc50d8176732fcb9efbdbeda879c5c2cac0bf1a152980b`);
+raw candidate arms r147--r155 and analysis r156 remain on Lucebox4.
