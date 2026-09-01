@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 4 || $# -gt 6 ]]; then
-    echo "usage: $0 ARTIFACT_ROOT SERVER_BINARY POSITION_BUDGETS PORT [REQUEST_JSON] [SCHEMA_RESCUE_0_OR_1]" >&2
+if [[ $# -lt 4 || $# -gt 7 ]]; then
+    echo "usage: $0 ARTIFACT_ROOT SERVER_BINARY POSITION_BUDGETS PORT [REQUEST_JSON] [SCHEMA_RESCUE_0_OR_1] [LAYER_BUDGET_POLICY]" >&2
     exit 2
 fi
 
@@ -13,9 +13,9 @@ port=$4
 model=/home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-of-00014.gguf
 aux=/home/duster/kimi-k3-deploy/aux
 sidecars=/home/duster/kimi-k3-deploy/streamed-bank/natural-sidecars
-policy=/home/duster/lucebox-k3-b7b74cc/results/h23_10k_policies/h23_moonshot_1_2gib.txt
 fixture=${5:-$(dirname "$0")/../fixtures/k3_tool_weather_request.json}
 schema_rescue=${6:-0}
+policy=${7:-/home/duster/lucebox-k3-b7b74cc/results/h23_10k_policies/h23_moonshot_1_2gib.txt}
 
 if [[ -e $root ]]; then
     echo "artifact root already exists: $root" >&2
