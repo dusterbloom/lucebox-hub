@@ -1,0 +1,323 @@
+{
+  "schema": "kimi-k3-route12-native-success-result-v1",
+  "status": "MEASURED_ROUTE12_NATIVE_SUCCESS_INVALID_PROMPT_ALIGNMENT",
+  "preregistration_sha256": "f412c6769a362aae5b64ac31d5371a756a6a0342e95e0a71e51a404530ba96c7",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "6826f946",
+    "implementation_commit": "4bb8bd38",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+    "measured_commit": "0f3aa6e4874d0ca196b62fa8212a79579e9f3b6e"
+  },
+  "native_baseline": {
+    "path": "fixtures/k3_h23_native_success_baseline.json",
+    "sha256": "b32a4bd63ef87ade57c38b6376effd1cba1c2d93c96c971e0926ed63d56d5de7",
+    "source_branch": "perf/k3-layer-major-prefill",
+    "source_branch_head": "102cf35ab2d86dc37e63faeece180267b2e9b2e6",
+    "source_artifact_commit": "16b0fb511ad1301087819abb3f684be51059cdd9",
+    "source_result_sha256": "e056e0802d2d8917446445271ef18c0b2289a2220d51ad41ac7a932ab88079dd",
+    "native_passed": "6/6",
+    "chat_template": "gguf-jinja-thinking-off"
+  },
+  "candidate": {
+    "tasks_passed": 4,
+    "tasks": 6,
+    "exact_sequences": 3,
+    "sequences": [
+      {
+        "id": "fact-capital",
+        "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r94-route12-fact-capital",
+        "manifest_sha256": "05ce7ee5e0099bbaec55cc1ba4eecac0720db3b08d43ce07799d759a5933bade",
+        "response_sha256": "20aa22152c1f39c6fd16c3608d476edbeaf03a34b09a55269d4712feeac09c93",
+        "logits_sha256": "16491746972547083f5fa2d99015c65187ee3629d5e3adceb85d86b4f6f74d5b",
+        "traffic_sha256": "47a40d702182c615ad2694fd0ce035b25620d92b3f93b63eb143049d63764b79",
+        "native_prompt_token_count": 34,
+        "candidate_prompt_token_count": 34,
+        "prompt_tokens_equal_native": true,
+        "native_tokens": [
+          39818,
+          18009,
+          163588,
+          12092,
+          163589,
+          163588,
+          2778,
+          163589
+        ],
+        "candidate_tokens": [
+          39818,
+          18009,
+          163588,
+          12092,
+          163589,
+          163588,
+          2778,
+          163589
+        ],
+        "first_generated_token_divergence": null,
+        "exact_sequence": true,
+        "candidate_text": "Tokyo",
+        "task_success": true,
+        "route_limit_markers": [
+          12
+        ],
+        "provider_positions": 41,
+        "logical_gib_per_position": 1.0199308627989234,
+        "physical_gib_per_position": 0.395955527701029,
+        "client_time_seconds": 25.56
+      },
+      {
+        "id": "code-sum",
+        "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r95-route12-code-sum",
+        "manifest_sha256": "880f872aa6c9f502968864c423b1559d8ff13f8599a349a981016c50e3b11064",
+        "response_sha256": "7d200cc21b287f4d910804d72aae6df237baa25b7fd5740f1578fc3d627e1f0b",
+        "logits_sha256": "0db4b325214a1eec94ce5af90e55ccac76bfdbebaac618d6771bfcdb5da43f4a",
+        "traffic_sha256": "8252b0a68b2539d3053f2dac0c1b7f2d33f4e4a037a15860aef816f8eed0b22a",
+        "native_prompt_token_count": 46,
+        "candidate_prompt_token_count": 46,
+        "prompt_tokens_equal_native": true,
+        "native_tokens": [
+          795,
+          163588,
+          12092,
+          163589,
+          163588,
+          2778,
+          163589,
+          163586
+        ],
+        "candidate_tokens": [
+          795,
+          163588,
+          12092,
+          163589,
+          163588,
+          2778,
+          163589,
+          163586
+        ],
+        "first_generated_token_divergence": null,
+        "exact_sequence": true,
+        "candidate_text": "10",
+        "task_success": true,
+        "route_limit_markers": [
+          12
+        ],
+        "provider_positions": 53,
+        "logical_gib_per_position": 0.9827269788058299,
+        "physical_gib_per_position": 0.38281221209831956,
+        "client_time_seconds": 29.65
+      },
+      {
+        "id": "reasoning-marble",
+        "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r96-route12-reasoning-marble",
+        "manifest_sha256": "2bc450fe91670018a1e16e17e4b5b41426c36450db1304450b7d2b276a66055b",
+        "response_sha256": "76dca5b677a0cfbf5bf42ab9ddb10907945361c249f9682b83d6db4f6f88f1a4",
+        "logits_sha256": "e703510bf4e20c0a289e0f8861f1332720df7dbc946a93058cee7263d05a6279",
+        "traffic_sha256": "1bc9d4ba4cbac0ae5d2c2d376b2fcd76b6e349706eeb2aa7ebda014a3667ec84",
+        "native_prompt_token_count": 46,
+        "candidate_prompt_token_count": 46,
+        "prompt_tokens_equal_native": true,
+        "native_tokens": [
+          5512,
+          163588,
+          12092,
+          163589,
+          163588,
+          2778,
+          163589,
+          163586
+        ],
+        "candidate_tokens": [
+          5512,
+          163588,
+          12092,
+          163589,
+          163588,
+          2778,
+          163589,
+          163586
+        ],
+        "first_generated_token_divergence": null,
+        "exact_sequence": true,
+        "candidate_text": "42",
+        "task_success": true,
+        "route_limit_markers": [
+          12
+        ],
+        "provider_positions": 53,
+        "logical_gib_per_position": 0.9960371053443765,
+        "physical_gib_per_position": 0.36877225479989684,
+        "client_time_seconds": 37.3
+      },
+      {
+        "id": "grammar-apples",
+        "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r97-route12-grammar-apples",
+        "manifest_sha256": "680a4ea093e09c259f18df14d2264867bae33ee8e4721dcbd715ac597d8e277c",
+        "response_sha256": "892c1db5493a716000c5a13ef1005cd676054f11206d5678406aa9e246b594de",
+        "logits_sha256": "fb34f5d291f216b6f82b9530fd34e902ee9416bbaf01d6be1655d0c4e4523c38",
+        "traffic_sha256": "7b186f57c8cf04df0eb97263c82111a097dbc91a67f7a2d8d41e9bf4181f4fad",
+        "native_prompt_token_count": 38,
+        "candidate_prompt_token_count": 37,
+        "prompt_tokens_equal_native": false,
+        "native_tokens": [
+          8641,
+          8370,
+          1517,
+          47091,
+          13,
+          163588,
+          12092,
+          163589
+        ],
+        "candidate_tokens": [
+          8641,
+          8370,
+          1517,
+          47091,
+          13,
+          163588,
+          12092,
+          163589
+        ],
+        "first_generated_token_divergence": null,
+        "exact_sequence": null,
+        "candidate_text": null,
+        "task_success": null,
+        "route_limit_markers": [
+          12
+        ],
+        "provider_positions": 44,
+        "logical_gib_per_position": 0.9844636050137606,
+        "physical_gib_per_position": 0.37540401111949573,
+        "client_time_seconds": 28.55
+      },
+      {
+        "id": "translation-italian",
+        "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r98-route12-translation-italian",
+        "manifest_sha256": "3aca22940da073096a4661be1dc8b7863795cbee120dbcb6a24359b0fc00bfd7",
+        "response_sha256": "e3dfc1789346cf5498fb5e940b07bd7d5aaa8cc501c24e087cbaf9f1411819dc",
+        "logits_sha256": "430fc3df1adf5c32851cffac5195677d237cb339f64553a5fc9348ff856ab6a1",
+        "traffic_sha256": "afcbdefcd95f01be3dc6b83da66e2116d0eabc27e79d5ef882042209c6cf3437",
+        "native_prompt_token_count": 35,
+        "candidate_prompt_token_count": 35,
+        "prompt_tokens_equal_native": true,
+        "native_tokens": [
+          74577,
+          886,
+          3402,
+          4069,
+          163588,
+          12092,
+          163589,
+          163588
+        ],
+        "candidate_tokens": [
+          74577,
+          886,
+          3402,
+          4069,
+          13,
+          163588,
+          12092,
+          163589
+        ],
+        "first_generated_token_divergence": 4,
+        "exact_sequence": false,
+        "candidate_text": "Buongiorno.",
+        "task_success": true,
+        "route_limit_markers": [
+          12
+        ],
+        "provider_positions": 42,
+        "logical_gib_per_position": 1.0193977355957031,
+        "physical_gib_per_position": 0.3825254894438244,
+        "client_time_seconds": 27.71
+      },
+      {
+        "id": "extract-code",
+        "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r99-route12-extract-code",
+        "manifest_sha256": "98b29da39e659e728c8c703efdf4b2634b94e4d8176f5cc554792c2f5f2ea3b2",
+        "response_sha256": "ca10f9cab000b84282846b5d9486dbdddd3ccc2f386a9debed1dca6b6a2a1f2c",
+        "logits_sha256": "e5f1f31e20c09e2d4943569a9a4bed21a9f5404b99dbfca990920a0e451803b7",
+        "traffic_sha256": "8f4d8b307660c8b143296fc8da85793984a3cb904ca8d884d2a1c3fc349d1949",
+        "native_prompt_token_count": 50,
+        "candidate_prompt_token_count": 48,
+        "prompt_tokens_equal_native": false,
+        "native_tokens": [
+          43,
+          9069,
+          12,
+          51413,
+          163588,
+          12092,
+          163589,
+          163588
+        ],
+        "candidate_tokens": [
+          43,
+          9069,
+          12,
+          51413,
+          163588,
+          12092,
+          163589,
+          163588
+        ],
+        "first_generated_token_divergence": null,
+        "exact_sequence": null,
+        "candidate_text": null,
+        "task_success": null,
+        "route_limit_markers": [
+          12
+        ],
+        "provider_positions": 55,
+        "logical_gib_per_position": 1.0225567210804332,
+        "physical_gib_per_position": 0.4061037930575284,
+        "client_time_seconds": 40.95
+      }
+    ]
+  },
+  "traffic": {
+    "provider_positions": 288,
+    "logical_authoritative_bytes": 310379446272,
+    "logical_gib_per_position": 1.0036923090616863,
+    "exact_fallback_bytes": 18227822592,
+    "exact_fallback_gib_per_position": 0.058944384256998696,
+    "physical_direct_read_bytes": 119172145152,
+    "physical_gib_per_position": 0.3853739897410075,
+    "direct_io_ns": 80743389077
+  },
+  "controls": {
+    "h23_1_8_result": "results/h23_10k_aggressive1p8_quality.json on perf/k3-layer-major-prefill",
+    "h23_1_8_sha256": "e424ebd4792026e82d3cf1d0620fbc26ecaad8b7fb6d82633369733e50f8b3a4",
+    "h23_1_8_task_retention": "6/6",
+    "h23_1_8_exact_sequences": "6/6",
+    "h23_1_8_logical_gib_per_position": 1.8344892914762203,
+    "h23_1_2_result": "results/h23_10k_moonshot1p2_quality.json on perf/k3-layer-major-prefill",
+    "h23_1_2_sha256": "e628e63675d18424c1e65fdd5e86d2c40479d6027835aaa59a0f0bee25f098b0",
+    "h23_1_2_task_retention": "6/6",
+    "h23_1_2_exact_sequences": "5/6",
+    "h23_1_2_logical_gib_per_position": 1.2200937172801225
+  },
+  "terminal_kl": {
+    "available": false,
+    "reason": "Frozen native output IDs are retained, but native full-vocabulary logit tensors are not retained on Lucebox4."
+  },
+  "gate": {
+    "passed": false,
+    "tasks_passed": false,
+    "prompt_alignment_passed": false,
+    "schema_false_activation_absent": true,
+    "logical_below_1_2_gib": true,
+    "decision": "Run exact binary closure only for the misaligned prompt IDs; do not score this invalid gate."
+  },
+  "limitations": [
+    "This is the frozen six-task native-success gate, not the broader quality suite required for final acceptance.",
+    "Native terminal logit tensors are not retained on Lucebox4, so this gate cannot report terminal KL against native; it must not substitute token equality for KL.",
+    "The six tasks are short and weak on long coding-agent, JSON and multi-step structured behavior.",
+    "Cold token-sequential timing is not serving throughput."
+  ]
+}

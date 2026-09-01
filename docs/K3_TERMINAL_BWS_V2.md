@@ -500,3 +500,46 @@ discovery fixture.
 The immutable summary is
 `results/k3_terminal_bws_v2_route12_tool_result_20260901.json`; raw arm r92
 and analysis r93 remain on Lucebox4.
+
+## Route12 native-success alignment gate
+
+The frozen six-task H23 native-success suite was replayed without tuning at
+route12, uniform Budget20 and schema rescue enabled.  All six candidate texts
+were behaviorally correct: Tokyo, 10, 42, the corrected apples sentence,
+Buongiorno, and LIME-742.  Against the old native output IDs, five of six
+sequences matched; Italian added a period.  This is useful descriptive
+evidence, but the preregistered gate remains **invalid**, not GO: the current
+official-template tokenizer disagreed with the immutable native capture on
+`grammar-apples` (38 versus 37 prompt tokens) and `extract-code` (50 versus
+48).  The other four prompt sequences aligned exactly, with three of four
+generated sequences exact.
+
+Measured candidate traffic over all 288 provider positions was **1.00369
+logical / 0.38537 physical GiB/position**, including 0.05894 GiB/position of
+exact fallback.  No no-tool request configured or fired the schema rescue.
+Thus route12 has crossed the `<1.2 GiB` behavioral milestone on these short
+tasks, but this run cannot supply native terminal KL or a valid six-task
+exactness count.
+
+The minimum binary closure reran only the two misaligned prompts through the
+same executable's `native-exact` provider.  Prompt IDs, executable hash,
+width-one prefill (`prefill-width=1`, `exact-macro=0`) and intervention absence
+all closed.  The deployed hybrid exact representation itself failed both
+registered tasks, echoing prompt-tail fragments.  This is a measured
+**native-closure NO-GO**.  It does not falsify route12; it shows that this
+deployed hybrid's native-exact path cannot repair the missing reference for
+these fixtures.  The already documented quantization-identity mismatch
+between the deployed hybrid GGUF and natural sidecars therefore remains a
+real provenance boundary.
+
+The next quality gate must be behavioral and use previously unseen textual
+fixtures which immutable native artifacts already passed.  Prompt alignment
+is still recorded, and no KL or token-distribution claim is allowed when it
+does not align.  A new exact teacher model must be sourced before broad native
+terminal KL can be measured.
+
+Immutable summaries are
+`results/k3_terminal_bws_v2_route12_native_success_invalid_20260901.json`
+(raw r94--r99, analysis r100) and
+`results/k3_terminal_bws_v2_route12_native_closure_result_20260901.json`
+(raw r101--r102, analysis r103).
