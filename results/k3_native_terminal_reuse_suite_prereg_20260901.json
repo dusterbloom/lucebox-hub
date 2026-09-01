@@ -1,0 +1,109 @@
+{
+  "schema": "kimi-k3-native-terminal-reuse-suite-prereg-v1",
+  "status": "PREREGISTERED",
+  "date": "2026-09-01",
+  "source": {
+    "research_branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "93ff5f3b",
+    "production_branch": "perf/k3-production-ponytail",
+    "production_base_commit": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c"
+  },
+  "question": "Does route12/Budget20 retain exact native eight-token histories and acceptable final native KL beyond the get_weather discovery boundary?",
+  "teacher_reuse": {
+    "closure_result": "results/k3_native_sidecar_closure_result_20260901.json",
+    "closure_result_sha256": "d095f3d4a298a217b47a13c012706fe29f10caffafe071c21264f0888f2fddec",
+    "rule": "Rerun zero Full192 arms. Reuse only closed source-matched teacher manifests. Score terminal KL only when the complete candidate generated-ID history equals the teacher history."
+  },
+  "model": {
+    "first_shard": "/home/duster/kimi-k3-deploy/native-iq1s-slim-core/Kimi-K3-UD-IQ1_S-00001-of-00014.gguf",
+    "first_shard_sha256": "5022014e7c49d8844e9f1bc7d9fb824c0d640214540aa845690518d800286083",
+    "sidecar_canonical_output_hash_map_sha256": "14257820be259752202ad73685ab23f8ddbd08e8d1ad7083fae993b6f1d73994"
+  },
+  "harness": {
+    "runner": "scripts/run_kimi_progressive_tool_rescue.sh",
+    "runner_sha256": "0378151f98bfcd73e1b3b578fbbcf93a6de09f72b2f4e8a48a616af4ddc9865e",
+    "schema_rescue": 0,
+    "position_budgets": "",
+    "analyzer": "scripts/analyze_kimi_native_terminal_reuse_suite.py",
+    "analyzer_sha256": "763a24b522209e9e53dc0bf6bb547635c6625f37bb709a4d658f1d97b88de5e1"
+  },
+  "policies": {
+    "h23_aggressive1p8": {
+      "path": "/home/duster/lucebox-k3-b7b74cc/results/h23_10k_policies/h23_aggressive_1_8gib.txt",
+      "sha256": "1d3f8737d884d9115ce8c4077d4a25088425cc29b826633d7af50280d906d403"
+    },
+    "h23_moonshot1p2": {
+      "path": "/home/duster/lucebox-k3-b7b74cc/results/h23_10k_policies/h23_moonshot_1_2gib.txt",
+      "sha256": "b73d203e9ae7d4f382baf3f30cf0381387596edda7a6fb16c6cf5c88626ad97a"
+    },
+    "route12_budget20": {
+      "path": "fixtures/k3_uniform_budget20.txt",
+      "sha256": "2f366aab82de990441dc61de870736b1acbf081f26b2aff11f63017dd53f697c",
+      "route_limit": "12"
+    }
+  },
+  "fixtures": [
+    {
+      "id": "fact-capital",
+      "path": "fixtures/k3_route12_native_success/fact-capital.json",
+      "sha256": "1f0cbcdd6eed575d20e76e63f6a78e4743acf1cc5eca1a455fcbefede27788ea",
+      "prompt_tokens": 34,
+      "prompt_token_ids_i32le_sha256": "8e0cb801f3a5d506cc897b180cd51a0d15408d51ded4d201e1b59e8dadbad01b",
+      "generated_tokens": 8,
+      "teacher_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r137-native-full192-fact",
+      "teacher_manifest_sha256": "8f2e2a36c6ff8881ced476a5ec147da62d8495071fab789f5b4be29786cf9a77",
+      "candidate_roots": {
+        "h23_aggressive1p8": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r147-native-reuse-fact-h23",
+        "h23_moonshot1p2": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r148-native-reuse-fact-moonshot",
+        "route12_budget20": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r149-native-reuse-fact-route12"
+      }
+    },
+    {
+      "id": "grammar-apples",
+      "path": "fixtures/k3_route12_native_success/grammar-apples.json",
+      "sha256": "dc419cc6a1d30b9767e74099622d23bb4c91574accb4185533a198208fc44c85",
+      "prompt_tokens": 37,
+      "prompt_token_ids_i32le_sha256": "aef0c6317def8815c079d6eaef88b5eec79276b0da179b701ce2e545e9a1acca",
+      "generated_tokens": 8,
+      "teacher_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r138-native-full192-grammar",
+      "teacher_manifest_sha256": "93bd8bbfe9bfcbc7bbccf126b2193ddec0759a69d1c5d3cc3a34113d131e00b7",
+      "candidate_roots": {
+        "h23_aggressive1p8": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r150-native-reuse-grammar-h23",
+        "h23_moonshot1p2": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r151-native-reuse-grammar-moonshot",
+        "route12_budget20": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r152-native-reuse-grammar-route12"
+      }
+    },
+    {
+      "id": "extract-code",
+      "path": "fixtures/k3_route12_native_success/extract-code.json",
+      "sha256": "572eee4a4e71b92b4cca01ff6d933919cd2c0e5144178cb05915f89275c5ebdd",
+      "prompt_tokens": 48,
+      "prompt_token_ids_i32le_sha256": "0e422c8f36c5640a734504b95b77f0fbd0be4a79461c37744fe40ddeae618182",
+      "generated_tokens": 8,
+      "teacher_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r139-native-full192-extract",
+      "teacher_manifest_sha256": "51c9728eeab0de3c037b4131c82309728ac59071e5e4fc4824cf5364e482add6",
+      "candidate_roots": {
+        "h23_aggressive1p8": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r153-native-reuse-extract-h23",
+        "h23_moonshot1p2": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r154-native-reuse-extract-moonshot",
+        "route12_budget20": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r155-native-reuse-extract-route12"
+      }
+    }
+  ],
+  "analysis_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r156-native-reuse-analysis",
+  "measurements": [
+    "exact generated sequence retention",
+    "history-aligned final full-vocabulary KL mean, median, p95 and maximum",
+    "final top-1 agreement and native-token margin",
+    "aggregate logical and physical bytes per provider position",
+    "cold prefill and decode timings"
+  ],
+  "gates": {
+    "strong_go": "route12/Budget20 matches all three native generated-ID histories, averages below 1.2 logical GiB/provider-position and has mean aligned terminal KL no worse than H23 aggressive-1.8.",
+    "behavioral_go": "route12/Budget20 matches all three native generated-ID histories and averages below 1.2 logical GiB/provider-position, but has worse mean KL. Preserve that distinction and broaden native KL before any production work.",
+    "no_go": "Any route12 generated history differs from native or aggregate route12 traffic reaches 1.2 logical GiB/provider-position. Stop the frozen policy without tuning these fixtures.",
+    "production": "No production transplant from this three-fixture terminal reuse suite."
+  },
+  "anti_tuning": "Run each of the nine registered candidate arms once. Never compare logits after a generated-history divergence. Do not rerun Full192 or change fixtures, policies, thresholds, model or executable after observing an arm."
+}
