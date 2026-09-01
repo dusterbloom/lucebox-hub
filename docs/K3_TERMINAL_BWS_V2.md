@@ -808,3 +808,34 @@ targets.  The immutable result is
 `results/k3_native_terminal_reuse_suite_result_20260901.json` (SHA-256
 `caa095e6cb42dc94f4fc50d8176732fcb9efbdbeda879c5c2cac0bf1a152980b`);
 raw candidate arms r147--r155 and analysis r156 remain on Lucebox4.
+
+## Route12/B16 base and B16/B20 disagreement
+
+Four source-matched B16 arms reused the existing native and route12/B20
+artifacts.  On fact, grammar and extraction, B16 retained all 3/3 native
+eight-token sequences and final top-one decisions at **0.82179 logical /
+0.32517 physical GiB/provider-position**.  Mean/median/p95/max terminal KL
+were `0.01304/0.00303/0.03228/0.03553`, close to B20's
+`0.01100/0.00396/0.02649/0.02899` while using 18.6% fewer logical bytes.
+
+At the source-matched `get_weather` boundary, B16 selected wrong ID `1008`
+with native-token margin `-0.24390` and KL `0.97838`; B20 selected native ID
+`163588` with margin `+0.33290` and KL `0.65615`.  B16 and B20 agreed on every
+ordinary final top-one and disagreed at the known failure.  This passes the
+preregistered **B16/B20 disagreement GO** and establishes B16 as a promising
+cheap base, not as a globally safe policy.
+
+The captured B16 top-one margins were 8.57, 6.61 and 4.99 on the three
+ordinary rows versus only 0.244 on the tool failure.  This is a useful
+discovery observation, not a validated threshold: entropy/margin alone is
+explicitly insufficient, and the tool row was already known.  Two complete
+B16 and B20 passes would also erase the traffic win.  The next earned work is
+a held-out one-pass resident-state risk predictor or an incremental
+B16-to-B20 hydration experiment; no broad progressive subsystem is earned.
+
+Across all four rows B16 measured 0.85682 logical / 0.31711 physical
+GiB/position, but that aggregate includes the failed tool token and is not a
+quality-preserving frontier point.  The immutable result is
+`results/k3_b16_b20_disagreement_result_20260901.json` (SHA-256
+`56f84a2c064a8a73e992dcf3473fd2556ab9f85ce69dca20826d7b520e931828`);
+raw B16 arms r157--r160 and analysis r161 remain on Lucebox4.
