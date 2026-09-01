@@ -84,7 +84,7 @@ env -0 > "$root/environment.nul"
 command=(
     "$binary" "$model"
     --host 127.0.0.1 --port "$port" --model-name dflash
-    --max-ctx 256 --max-tokens 256 --target-device hip:0
+    --max-ctx 512 --max-tokens 256 --target-device hip:0
     --cache-type-k q4_0 --cache-type-v q4_0
     --prefix-cache-slots 0 --prefill-cache-slots 0 --chunk 512
 )

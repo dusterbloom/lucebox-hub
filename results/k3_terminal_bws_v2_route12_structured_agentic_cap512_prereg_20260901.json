@@ -1,0 +1,67 @@
+{
+  "schema": "kimi-k3-route12-structured-agentic-cap512-prereg-v1",
+  "status": "PREREGISTERED_INFRASTRUCTURE_CORRECTION",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "ad78b4d9",
+    "implementation_commit": "4bb8bd38",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+    "analyzer": "scripts/analyze_kimi_route12_structured_agentic.py",
+    "analyzer_sha256": "9a8ccf3cbcc7a56b766869b4d154590182975fe6ccb4e9b3a141a70638462bae",
+    "runner_sha256": "1aaf62571527f32161710ff116d2b3d97a0f27f11e012d2b142d66e074e74230"
+  },
+  "correction": {
+    "prior_preregistration": "results/k3_terminal_bws_v2_route12_structured_agentic_cap256_prereg_20260901.json",
+    "infrastructure_failure": "results/k3_terminal_bws_v2_route12_structured_agentic_cap256_infra_failure_20260901.json",
+    "infrastructure_failure_sha256": "746d8787575c7718186303ec039d0eacd65855ba0675d05b8cfa665b0f488fea",
+    "observed_defect": "The unchanged agentic request requires 144 prompt + 128 completion = 272 context tokens, but the runner launched --max-ctx 256. The server returned HTTP 400 before inference.",
+    "only_change": "Raise runner --max-ctx from 256 to 512. Keep the corrected --max-tokens 256 cap.",
+    "anti_tuning": "No model response was produced by the failed request. No prompt, policy, route count, validator, binary, or gate changed. Rerun all four arms under one source commit."
+  },
+  "policies": {
+    "control": "/home/duster/lucebox-k3-b7b74cc/results/h23_10k_policies/h23_aggressive_1_8gib.txt",
+    "control_sha256": "1d3f8737d884d9115ce8c4077d4a25088425cc29b826633d7af50280d906d403",
+    "control_route_count": 16,
+    "route12": "fixtures/k3_uniform_budget20.txt",
+    "route12_sha256": "2f366aab82de990441dc61de870736b1acbf081f26b2aff11f63017dd53f697c",
+    "route12_route_count": 12,
+    "schema_rescue": true
+  },
+  "fixtures": [
+    {
+      "id": "json",
+      "path": "fixtures/k3_route12_structured_json.json",
+      "sha256": "667a22abdb13dd0c3f6a98b6a1d4063b7d1a2ef23ea4befdbbbf8bf332046864",
+      "control_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r126-h23-1p8-structured-json-cap512",
+      "route12_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r127-route12-structured-json-cap512",
+      "validator": "Exactly one JSON object, keys language/passed_tests/safe in order, exact values Python/3/true, no markdown."
+    },
+    {
+      "id": "agentic",
+      "path": "fixtures/k3_route12_agentic_intervals.json",
+      "sha256": "72c86dcc65a6f9923970f3716f6549fa4a5a0ceb64554cbf47bbffb00f3ae242",
+      "control_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r128-h23-1p8-agentic-intervals-cap512",
+      "route12_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r129-route12-agentic-intervals-cap512",
+      "validator": "Single merge_intervals function; restricted AST with no import/dunder/indirect calls/unbounded while; five functional cases including touching, negative and empty intervals; input must remain unmodified."
+    }
+  ],
+  "commands": {
+    "control": "unset DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT; scripts/run_kimi_progressive_tool_rescue.sh ROOT BINARY '' PORT FIXTURE 1 CONTROL_POLICY",
+    "route12": "DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT=12 scripts/run_kimi_progressive_tool_rescue.sh ROOT BINARY '' PORT FIXTURE 1 ROUTE12_POLICY"
+  },
+  "gate": {
+    "invalid": "If an H23 1.8-GiB control fails its registered validator after both harness limits are corrected, invalidate that fixture rather than scoring route12.",
+    "go": "Both controls pass; both route12 arms pass the same validators; route12 prompt IDs exactly match their controls; route12 logical traffic is below 1.2 GiB/provider-position for each fixture; no no-tool schema rescue marker appears.",
+    "no_go": "A control-valid fixture fails at route12 or route12 reaches 1.2 GiB/provider-position. Stop route12 production consideration.",
+    "next_if_go": "Keep route12 research-only and pivot to the remaining byte/performance gap and native-teacher provenance rather than adding more discovery-prompt tuning.",
+    "production": "perf/k3-production-ponytail remains untouched."
+  },
+  "limitations": [
+    "These fixtures have no retained native-K3 outputs; H23 1.8 is a staging control, not a native teacher. A pass is additional behavioral evidence, not native retention.",
+    "Final logits are directly comparable only if generated histories are equal; equality is reported, and no native KL is claimed.",
+    "The restricted Python validator covers the registered behaviors, not arbitrary software engineering quality.",
+    "Cold request timing is not serving throughput."
+  ]
+}

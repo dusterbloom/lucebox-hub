@@ -1,0 +1,44 @@
+{
+  "schema": "kimi-k3-route12-structured-agentic-infrastructure-failure-v1",
+  "status": "INVALID_INFRASTRUCTURE_CONTEXT_LIMIT",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "commit": "ad78b4d9adeaffed0ab057e86cd0dc9e10a2ea51",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+    "runner_sha256": "3d1dac0f06ef4bfc06cf61b388c97b3779e37e14885d716b5ff210eb5408aa45"
+  },
+  "preregistration": "results/k3_terminal_bws_v2_route12_structured_agentic_cap256_prereg_20260901.json",
+  "attempt": {
+    "completed_roots": [
+      "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r122-h23-1p8-structured-json-cap256",
+      "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r123-route12-structured-json-cap256"
+    ],
+    "failed_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r124-h23-1p8-agentic-intervals-cap256",
+    "unstarted_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r125-route12-agentic-intervals-cap256",
+    "curl_exit_code": 22,
+    "http_status": 400,
+    "response_bytes": 0,
+    "complete_manifest_present": false
+  },
+  "cause": {
+    "prompt_tokens_from_prior_identical_capture": 144,
+    "requested_completion_tokens": 128,
+    "requested_total_tokens": 272,
+    "server_max_ctx": 256,
+    "server_rule": "validate_request_context rejects prompt_tokens + max_output > max_ctx when pflash is off",
+    "interpretation": "The request was rejected before model prefill or decode; this is not a quality result for either policy."
+  },
+  "failed_root_hashes": {
+    "command.nul": "971ade6b94f73b5ebebc1f1ff41ab17a3d8be2a78252a51934704e3f292fa05d",
+    "environment.nul": "a38ca46f87b7f01773677c457ddaa5af08299c14bd4653b8c80bf7ec8f700690",
+    "inputs.sha256": "fc1f88bab8e9fc929dbc70cffa867e6ae68feb7991bfc994c4fe866b0e3ba987",
+    "request.json": "72c86dcc65a6f9923970f3716f6549fa4a5a0ceb64554cbf47bbffb00f3ae242",
+    "server.stderr": "7cf403f0da03a2c3b8005bdbb6b539149596aa02741c734b77bde785a16a25ed",
+    "server.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "source-commit.txt": "aa88e4dd341ae02d2ede02abe67281940137ee41797c4b65522f33c2840632c7",
+    "source-status.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "decision": "INVALID. Preserve this attempt. Raise only runner --max-ctx from 256 to 512, preregister that correction, and rerun all four unchanged arms under one source commit."
+}
