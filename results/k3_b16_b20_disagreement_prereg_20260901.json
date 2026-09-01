@@ -1,0 +1,105 @@
+{
+  "schema": "kimi-k3-b16-b20-disagreement-prereg-v1",
+  "status": "PREREGISTERED",
+  "date": "2026-09-01",
+  "source": {
+    "research_branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "86f65542",
+    "production_branch": "perf/k3-production-ponytail",
+    "production_base_commit": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c"
+  },
+  "question": "Can route12/B16 serve ordinary native-aligned terminal rows below 0.9 GiB/position while B16-versus-B20 top-one disagreement isolates the known tool-boundary failure?",
+  "model": {
+    "first_shard": "/home/duster/kimi-k3-deploy/native-iq1s-slim-core/Kimi-K3-UD-IQ1_S-00001-of-00014.gguf",
+    "first_shard_sha256": "5022014e7c49d8844e9f1bc7d9fb824c0d640214540aa845690518d800286083"
+  },
+  "harness": {
+    "runner": "scripts/run_kimi_progressive_tool_rescue.sh",
+    "runner_sha256": "0378151f98bfcd73e1b3b578fbbcf93a6de09f72b2f4e8a48a616af4ddc9865e",
+    "analyzer": "scripts/analyze_kimi_b16_b20_disagreement.py",
+    "analyzer_sha256": "ea473f4af44e12a580747e247ac441d62717ee586d226f12f9a6120702a5f4b0",
+    "schema_rescue": 0,
+    "position_budgets": ""
+  },
+  "policies": {
+    "b20": {
+      "path": "fixtures/k3_uniform_budget20.txt",
+      "sha256": "2f366aab82de990441dc61de870736b1acbf081f26b2aff11f63017dd53f697c",
+      "route_limit": "12"
+    },
+    "b16": {
+      "path": "fixtures/k3_uniform_budget16.txt",
+      "sha256": "4e40e7b834baf78152ff39a2f5cfec99fb5af52527633c123cb77cb0aa2a325e",
+      "route_limit": "12"
+    }
+  },
+  "fixtures": [
+    {
+      "id": "fact-capital",
+      "kind": "ordinary",
+      "path": "fixtures/k3_route12_native_success/fact-capital.json",
+      "sha256": "1f0cbcdd6eed575d20e76e63f6a78e4743acf1cc5eca1a455fcbefede27788ea",
+      "prompt_tokens": 34,
+      "prompt_token_ids_i32le_sha256": "8e0cb801f3a5d506cc897b180cd51a0d15408d51ded4d201e1b59e8dadbad01b",
+      "generated_tokens": 8,
+      "teacher_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r137-native-full192-fact",
+      "teacher_manifest_sha256": "8f2e2a36c6ff8881ced476a5ec147da62d8495071fab789f5b4be29786cf9a77",
+      "b20_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r149-native-reuse-fact-route12",
+      "b20_manifest_sha256": "f296cf411c0627524630f1d32e72f49866284b2f7dbc37f30551ad1583be6c93",
+      "b16_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r157-b16-fact"
+    },
+    {
+      "id": "grammar-apples",
+      "kind": "ordinary",
+      "path": "fixtures/k3_route12_native_success/grammar-apples.json",
+      "sha256": "dc419cc6a1d30b9767e74099622d23bb4c91574accb4185533a198208fc44c85",
+      "prompt_tokens": 37,
+      "prompt_token_ids_i32le_sha256": "aef0c6317def8815c079d6eaef88b5eec79276b0da179b701ce2e545e9a1acca",
+      "generated_tokens": 8,
+      "teacher_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r138-native-full192-grammar",
+      "teacher_manifest_sha256": "93bd8bbfe9bfcbc7bbccf126b2193ddec0759a69d1c5d3cc3a34113d131e00b7",
+      "b20_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r152-native-reuse-grammar-route12",
+      "b20_manifest_sha256": "528e0580d297337491f6b7ca17ae67792b6009d1889cdff29c8400e2d8ac5173",
+      "b16_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r158-b16-grammar"
+    },
+    {
+      "id": "extract-code",
+      "kind": "ordinary",
+      "path": "fixtures/k3_route12_native_success/extract-code.json",
+      "sha256": "572eee4a4e71b92b4cca01ff6d933919cd2c0e5144178cb05915f89275c5ebdd",
+      "prompt_tokens": 48,
+      "prompt_token_ids_i32le_sha256": "0e422c8f36c5640a734504b95b77f0fbd0be4a79461c37744fe40ddeae618182",
+      "generated_tokens": 8,
+      "teacher_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r139-native-full192-extract",
+      "teacher_manifest_sha256": "51c9728eeab0de3c037b4131c82309728ac59071e5e4fc4824cf5364e482add6",
+      "b20_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r155-native-reuse-extract-route12",
+      "b20_manifest_sha256": "40f2871dfdd62c704c3f8cddaa99d2f7d3cbcec5fed660bb66f0545325a05c18",
+      "b16_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r159-b16-extract"
+    },
+    {
+      "id": "get-weather-first-token",
+      "kind": "tool_boundary",
+      "path": "fixtures/k3_tool_weather_first_token_request.json",
+      "sha256": "fa18a5b47c98ddbb430c602e1a8738200e87b56dcbd5468889c4fb895ec00191",
+      "prompt_tokens": 147,
+      "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+      "generated_tokens": 1,
+      "teacher_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r141-native-tool-first",
+      "teacher_manifest_sha256": "598987a3f4079175d4f7c3d5c50ac70b80115f8fb950bc0e315b631815779171",
+      "b20_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r144-route12-b20-native-tool-first",
+      "b20_manifest_sha256": "9f1abf20fd3c80975330d3ad086a5d3a362621af18595bcc653280112ee6c2ff",
+      "b16_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r160-b16-tool-first"
+    }
+  ],
+  "analysis_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r161-b16-b20-disagreement-analysis",
+  "gates": {
+    "base_go": "B16 retains all three ordinary native eight-token sequences and averages below 0.9 logical GiB/provider-position.",
+    "disagreement_go": "The base gate passes; B16 and B20 final top-one agree on all three ordinary fixtures; at the tool boundary B16 is wrong, B20 is native-correct and their top-ones disagree.",
+    "no_go": "B16 fails any ordinary native sequence or reaches 0.9 logical GiB/provider-position, or B16/B20 disagreement does not isolate the registered tool failure. Do not tune these fixtures.",
+    "next_if_go": "Test a one-pass resident-state predictor or incremental reuse of B16 work when hydrating to B20. Do not implement two complete production passes.",
+    "production": "This known-boundary discriminator cannot promote runtime code to production."
+  },
+  "anti_tuning": "Run only the four registered B16 arms. Reuse every teacher and B20 artifact. Do not change route count, budgets, fixtures, gates, model or executable after observing an arm."
+}
