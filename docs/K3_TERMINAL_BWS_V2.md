@@ -357,3 +357,28 @@ KDA/MLA state semantics.
 The immutable summary is
 `results/k3_terminal_bws_v2_sub24_schema_result_20260901.json`; raw Budget16
 root r72 and analysis r75 remain on Lucebox4.
+
+## Budget20 interpolation
+
+A preregistered one-shot Budget20 arm tested whether the Budget16 failure was
+merely too far below the Budget24 quality threshold.  Budget20 used
+**1.13254 logical GiB/provider-position** and **0.39364 physical
+GiB/provider-position**, reductions of 16.72% and 17.71% from the valid
+Budget24-plus-schema arm.  It therefore crossed the `<1.2 GiB` traffic
+milestone.
+
+Quality still failed.  Budget20 emitted the same first six wrong IDs as
+Budget16, returned invented weather prose instead of a tool call, and never
+reached the declared-name suffix, so no schema rescue fired.  This is a
+measured **Budget20 schema NO-GO**.  Per the one-shot stop rule, Budget21--23
+will not be tuned on this fixture.
+
+The result closes uniform-budget interpolation as the shortest route below
+Budget24.  The next earned experiment is a captured pre-first-token
+discriminator: measure terminal logits at the frozen prompt under cheap and
+rich policies, then test whether a narrow prompt-tail rescue is justified
+before changing runtime state scheduling.
+
+The immutable summary is
+`results/k3_terminal_bws_v2_budget20_schema_result_20260901.json`; raw Budget20
+root r76 and analysis r77 remain on Lucebox4.

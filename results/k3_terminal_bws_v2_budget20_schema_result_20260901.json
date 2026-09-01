@@ -1,0 +1,314 @@
+{
+  "schema": "kimi-k3-budget20-schema-rescue-result-v1",
+  "status": "MEASURED_BUDGET20_SCHEMA_NO_GO",
+  "preregistration_sha256": "289313d42ca70291a8dbaff9be5b91057dd3fb24b7dfdfaaeb99c49154d2a287",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "9da313faa1f4f4c3c4351407a28ca119d85df0f7",
+    "runtime_implementation_commit": "23a8f46adb7064b1389ce40404a2d61fa641e216",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "measured_commit": "b987ee46d8375ec82fa004396add5859535ac27b",
+    "executable_sha256": "1732c11ee4ea17621d08a6ec21451a9f703c8629aac82223488536d856130ffc",
+    "policy_sha256": "2f366aab82de990441dc61de870736b1acbf081f26b2aff11f63017dd53f697c"
+  },
+  "budget24_schema_control": {
+    "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r68-schema-tool",
+    "source_commit": "23a8f46adb7064b1389ce40404a2d61fa641e216",
+    "executable_sha256": "1732c11ee4ea17621d08a6ec21451a9f703c8629aac82223488536d856130ffc",
+    "manifest_sha256": "06c0a6dbebcc1bd8663d2a07166888b3528dc021f6117a660950258275c4fef4",
+    "environment": {
+      "DFLASH_KIMI_EXPERIMENT_TOOL_SCHEMA_RESCUE": "1",
+      "DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24": "1",
+      "DFLASH_KIMI_H22_LAYER_BUDGETS": "/home/duster/lucebox-k3-b7b74cc/results/h23_10k_policies/h23_moonshot_1_2gib.txt"
+    },
+    "prompt_count": 147,
+    "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+    "generated_ids": [
+      163588,
+      12092,
+      163589,
+      163587,
+      25385,
+      163589,
+      163587,
+      10257,
+      4453,
+      878,
+      618,
+      21055,
+      2800,
+      1,
+      4002,
+      878,
+      16,
+      1,
+      163589,
+      163587,
+      47185,
+      2355,
+      878,
+      5791,
+      1,
+      1798,
+      878,
+      2033,
+      1,
+      163589,
+      37190,
+      21774,
+      163588,
+      47185,
+      163589,
+      163588,
+      10257,
+      163589,
+      163588,
+      25385,
+      163589,
+      163588,
+      2778,
+      163589,
+      163586
+    ],
+    "response": {
+      "finish_reason": "tool_calls",
+      "content": "",
+      "usage": {
+        "accept_rate": 0.0,
+        "completion_tokens": 45,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 147,
+        "spec_decode_ran": false,
+        "timings": {
+          "agent_turn_cache_hit": false,
+          "cache_hit": false,
+          "cached_prefix_tokens": 0,
+          "decode_ms": 40975.0,
+          "decode_tokens_per_sec": 1.1,
+          "effective_prompt_tokens": 147,
+          "prefill_ms": 115860.8,
+          "prefilled_tokens": 147
+        },
+        "total_tokens": 192
+      }
+    },
+    "schema_prefix_configurations": 1,
+    "schema_rescue_markers": [
+      [
+        158,
+        96
+      ]
+    ],
+    "static_position_markers": 0,
+    "request_wide_b96_markers": 0,
+    "logits_sha256": "f1bc84f0fec300291a82a2a2cb52d10640acfd3c9ba7d1177fcef3c06780acd0",
+    "traffic_sha256": "27f5640f85dba67b00ae386bd06d21c068e7bbebd96db4332486e00a2c57eac7",
+    "traffic": {
+      "requested_nominal_slabs": 428352,
+      "selected_slab_records": 428352,
+      "selected_sidecar_bytes": 236155895808,
+      "exact_fallback_bytes": 42745135104,
+      "total_provider_bytes": 278901030912,
+      "provider_positions": 191,
+      "logical_bytes_per_position": 1460214821.5287957,
+      "logical_gib_per_position": 1.3599310270778795,
+      "fallback_gib_per_position": 0.208426750143161,
+      "explicit_provider_reads": 98099552256,
+      "direct_physical_bytes": 98099552256,
+      "direct_io_ns": 81622057959
+    }
+  },
+  "budget16_context": {
+    "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r72-schema-b16",
+    "source_commit": "b810e405d67628ba37c3b339f7dbee794937e7da",
+    "executable_sha256": "1732c11ee4ea17621d08a6ec21451a9f703c8629aac82223488536d856130ffc",
+    "manifest_sha256": "b2799bb2e2b465619332dc8dec16237406a7ff551dd94edf629fbdba3e62ed81",
+    "environment": {
+      "DFLASH_KIMI_EXPERIMENT_TOOL_SCHEMA_RESCUE": "1",
+      "DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24": "1",
+      "DFLASH_KIMI_H22_LAYER_BUDGETS": "/home/duster/k3-terminal-kl-bws-v2-guarded/fixtures/k3_uniform_budget16.txt"
+    },
+    "prompt_count": 147,
+    "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+    "generated_ids": [
+      1008,
+      10666,
+      306,
+      9060,
+      21774,
+      387,
+      41149,
+      472,
+      261,
+      10284,
+      318,
+      220,
+      577,
+      16525,
+      110964,
+      13,
+      163588,
+      12092,
+      163589,
+      163588,
+      2778,
+      163589,
+      163586
+    ],
+    "response": {
+      "finish_reason": "stop",
+      "content": "The weather in San Francisco is sunny with a temperature of 20 degrees Celsius.",
+      "usage": {
+        "accept_rate": 0.0,
+        "completion_tokens": 23,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 147,
+        "spec_decode_ran": false,
+        "timings": {
+          "agent_turn_cache_hit": false,
+          "cache_hit": false,
+          "cached_prefix_tokens": 0,
+          "decode_ms": 14875.5,
+          "decode_tokens_per_sec": 1.5,
+          "effective_prompt_tokens": 147,
+          "prefill_ms": 98931.6,
+          "prefilled_tokens": 147
+        },
+        "total_tokens": 170
+      }
+    },
+    "schema_prefix_configurations": 1,
+    "schema_rescue_markers": [],
+    "static_position_markers": 0,
+    "request_wide_b96_markers": 0,
+    "logits_sha256": "d1c5725fe7f54e3ea71d9bf7adb3661e720f458caa4d462d3641b92a5ebf6edb",
+    "traffic_sha256": "20a3dfd51aec903df82e68c1f6336ca0f5952418c9d8e0567216178ca2041b24",
+    "traffic": {
+      "requested_nominal_slabs": 248768,
+      "selected_slab_records": 248768,
+      "selected_sidecar_bytes": 137148956672,
+      "exact_fallback_bytes": 32284729344,
+      "total_provider_bytes": 169433686016,
+      "provider_positions": 169,
+      "logical_bytes_per_position": 1002566189.443787,
+      "logical_gib_per_position": 0.9337125247752173,
+      "fallback_gib_per_position": 0.17791418493146727,
+      "explicit_provider_reads": 55412490240,
+      "direct_physical_bytes": 55412490240,
+      "direct_io_ns": 49121220125
+    }
+  },
+  "budget20_schema": {
+    "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r76-schema-b20",
+    "source_commit": "b987ee46d8375ec82fa004396add5859535ac27b",
+    "executable_sha256": "1732c11ee4ea17621d08a6ec21451a9f703c8629aac82223488536d856130ffc",
+    "manifest_sha256": "9a29ee45d1b8251b11567cf65783d6aa750d6b4fe4c07a7df70b18bcaaab3963",
+    "environment": {
+      "DFLASH_KIMI_EXPERIMENT_TOOL_SCHEMA_RESCUE": "1",
+      "DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24": "1",
+      "DFLASH_KIMI_H22_LAYER_BUDGETS": "/home/duster/k3-terminal-kl-bws-v2-guarded/fixtures/k3_uniform_budget20.txt"
+    },
+    "prompt_count": 147,
+    "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+    "generated_ids": [
+      1008,
+      10666,
+      306,
+      9060,
+      21774,
+      387,
+      6506,
+      41149,
+      472,
+      261,
+      10284,
+      318,
+      220,
+      3555,
+      72661,
+      13,
+      163588,
+      12092,
+      163589,
+      163588,
+      2778,
+      163589,
+      163586
+    ],
+    "response": {
+      "finish_reason": "stop",
+      "content": "The weather in San Francisco is currently sunny with a temperature of 75\u00b0F.",
+      "usage": {
+        "accept_rate": 0.0,
+        "completion_tokens": 23,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 147,
+        "spec_decode_ran": false,
+        "timings": {
+          "agent_turn_cache_hit": false,
+          "cache_hit": false,
+          "cached_prefix_tokens": 0,
+          "decode_ms": 12589.7,
+          "decode_tokens_per_sec": 1.8,
+          "effective_prompt_tokens": 147,
+          "prefill_ms": 87598.6,
+          "prefilled_tokens": 147
+        },
+        "total_tokens": 170
+      }
+    },
+    "schema_prefix_configurations": 1,
+    "schema_rescue_markers": [],
+    "static_position_markers": 0,
+    "request_wide_b96_markers": 0,
+    "logits_sha256": "5d5d4b1a8835e85c85c7aefff417339af3d5325a7753fc73706311867e7543d3",
+    "traffic_sha256": "95b0cccffd7fc2ecc844d9d29169471519ae37b4a8e8267fc33410534df5d358",
+    "traffic": {
+      "requested_nominal_slabs": 310960,
+      "selected_slab_records": 310960,
+      "selected_sidecar_bytes": 171436195840,
+      "exact_fallback_bytes": 34077044736,
+      "total_provider_bytes": 205513240576,
+      "provider_positions": 169,
+      "logical_bytes_per_position": 1216054677.964497,
+      "logical_gib_per_position": 1.132539173555092,
+      "fallback_gib_per_position": 0.18779124875040448,
+      "explicit_provider_reads": 71431544832,
+      "direct_physical_bytes": 71431544832,
+      "direct_io_ns": 37868445390
+    },
+    "tool_call_valid": false,
+    "tool_call": {
+      "finish_reason": "stop",
+      "tool_calls": 0
+    }
+  },
+  "comparison": {
+    "budget16_and_budget20_first_six_ids_equal": true,
+    "budget20_and_budget24_generated_ids_equal": false,
+    "logical_gib_per_position_budget24": 1.3599310270778795,
+    "logical_gib_per_position_budget20": 1.132539173555092,
+    "logical_reduction_fraction": 0.16720837233296348,
+    "physical_gib_per_position_budget24": 0.47833679358996645,
+    "physical_gib_per_position_budget20": 0.39364384758401905,
+    "physical_reduction_fraction": 0.17705714287692187
+  },
+  "gate": {
+    "traffic_below_1_2_gib": true,
+    "tool_valid": false,
+    "joint_go": false,
+    "decision": "Stop uniform-budget interpolation on this fixture; do not try Budget21/22/23. Investigate prompt-terminal allocation or cheap/rich pre-token disagreement."
+  },
+  "limitations": [
+    "One tool fixture cannot establish broad quality.",
+    "No prompt-terminal teacher KL was captured.",
+    "Cold timing is not serving throughput."
+  ]
+}
