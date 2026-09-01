@@ -288,3 +288,41 @@ The immutable summary is
 r64/r65 and analysis r67 remain on Lucebox4.  The earlier r63 arm is retained
 as an excluded pilot because its branch lacked the promised generated-token
 trace.
+
+## Runtime tool-schema discriminator
+
+The position oracle was replaced with a preregistered runtime signal.  For
+each effective declared tool whose name tokenizes to at least two IDs, the
+research hook raises the next routed forward to Budget96 only when committed
+output ends with all name tokens except the final one.  `get_weather`
+tokenizes as `[618,21055,2800]`, so `[618,21055]` is the measured boundary
+signal.  The mechanism is enabled only by
+`DFLASH_KIMI_EXPERIMENT_TOOL_SCHEMA_RESCUE=1`; production defaults remain
+unchanged.
+
+On the frozen tool fixture the runtime discriminator configured one prefix,
+emitted exactly one rescue marker at base position 158, and returned the valid
+`get_weather` call.  It used no static position environment value and no
+request-wide Budget96 floor.  Its 45 generated IDs, terminal full-vocabulary
+logit bytes and 92-row traffic TSV are byte-identical to the successful
+position-158 singleton.  Thus the runtime signal reproduces the mechanism,
+not merely the visible tool name.
+
+A separate official-template no-tools control (`Reply with exactly OK.`) was
+run off/on with the same executable.  Both arms produced the same 26 prompt
+IDs, the same eight generated IDs and visible `OK`, byte-identical terminal
+logits and traffic, and exactly 16,109,527,040 physical provider bytes.  The
+enabled arm configured no prefix and emitted no rescue marker.  Direct-I/O
+time varied and is intentionally not treated as a hook cost.
+
+This is a measured **schema-rescue gate GO**.  It earns a broader
+native-success tool suite and tool-declared false-positive controls, still on
+the experiment branch.  It does not yet earn a production transplant:
+one-token tool names are unsupported by this first discriminator, a no-tools
+control cannot measure false positives inside a tool-declared turn, only one
+real tool boundary has been rescued, and terminal KL was not captured for the
+generated sequence.
+
+The immutable summary is
+`results/k3_terminal_bws_v2_schema_rescue_result_20260901.json`; raw roots
+r68--r70 and analysis r71 remain on Lucebox4.
