@@ -1,0 +1,75 @@
+{
+  "schema": "kimi-k3-route12-budget16-prereg-v1",
+  "status": "PREREGISTERED_JOINT_ROUTE_SLAB_SCREEN",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "c18c1d95",
+    "implementation_commit": "4bb8bd38",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+    "runner_sha256": "1aaf62571527f32161710ff116d2b3d97a0f27f11e012d2b142d66e074e74230",
+    "analyzer": "scripts/analyze_kimi_route12_budget16.py",
+    "analyzer_sha256": "0cf0ada64b4499d94d2aede0e784bd0f747c29af459d41f7bbe1c5b6233a0b5d"
+  },
+  "question": "Does retaining only the native top-12 routes remove enough distractor/error contribution that uniform Budget16 becomes terminally viable at the known get_weather boundary?",
+  "fixture": {
+    "path": "fixtures/k3_tool_weather_first_token_request.json",
+    "sha256": "fa18a5b47c98ddbb430c602e1a8738200e87b56dcbd5468889c4fb895ec00191",
+    "prompt_tokens": 147,
+    "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+    "max_tokens": 1
+  },
+  "policy": {
+    "path": "fixtures/k3_uniform_budget16.txt",
+    "sha256": "4e40e7b834baf78152ff39a2f5cfec99fb5af52527633c123cb77cb0aa2a325e",
+    "selected_slab_budget_per_layer_position": 16
+  },
+  "retained_references": {
+    "budget24_reference": {
+      "root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r79-prompt-first-b24",
+      "manifest_sha256": "9abad806e519bf4d525375545579098657f5d154860bdd84a3f4ca9e9baf6fde",
+      "logits_sha256": "27c2c61a9d6ac92a5a7750530db2a9c61a9cbed363bc57bcac28ed5677e8d905",
+      "generated_ids": [163588]
+    },
+    "route12_budget20_reference": {
+      "root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r87-route12-first",
+      "manifest_sha256": "c4e996cb46970c339b0a565c13565363b32344b0935d5ecc619513df662d8b18",
+      "logits_sha256": "234511ee03402accf45833c5ce37b7ccca060d40d8e7dc1ea3a923aba189b0c6",
+      "generated_ids": [163588],
+      "kl_budget24_reference_to_arm": 0.14082849243502324,
+      "logical_gib_per_position": 1.082887922014509
+    }
+  },
+  "arms": [
+    {
+      "id": "route16_budget16",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r131-route16-budget16-first",
+      "route_limit": 16
+    },
+    {
+      "id": "route12_budget16",
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r132-route12-budget16-first",
+      "route_limit": 12
+    }
+  ],
+  "intervention": {
+    "definition": "Both arms use the same uniform Budget16 policy. The candidate sets DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT=12; retained router weights are unchanged and omitted routes contribute zero. No schema or position rescue is enabled.",
+    "control": "The route16 arm uses the native 16 routes with the same binary and policy."
+  },
+  "gate": {
+    "minimum_kl_reduction_fraction": 0.2,
+    "maximum_logical_gib_per_position": 0.9,
+    "go": "Route12/Budget16 must match the Budget24-reference top-1 with positive teacher-token margin, reduce KL(Budget24||arm) by at least 20% versus route16/Budget16, use fewer total provider bytes, and measure <=0.90 logical GiB/provider-position.",
+    "no_go": "If any condition fails, stop route12/Budget16 and do not spend a broad suite on it.",
+    "next_if_go": "Preregister one full get_weather generation with route12/Budget16 plus the already validated schema rescue. No broad suite until that passes.",
+    "production": "No production transplant from this discovery boundary."
+  },
+  "limitations": [
+    "Budget24 is a behaviorally successful reference, not native exact K3; the KL is reference-to-arm, not native terminal KL.",
+    "One prompt position tests a causal boundary but cannot establish broad reliability.",
+    "A global route count and uniform slab budget do not establish a layer-adaptive joint optimizer.",
+    "Retained route weights are not renormalized.",
+    "Cold token-sequential timing is not serving throughput."
+  ]
+}
