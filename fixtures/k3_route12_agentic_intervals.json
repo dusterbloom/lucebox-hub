@@ -1,0 +1,12 @@
+{
+  "model": "dflash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "You are fixing a small Python repository. File intervals.py currently contains:\n\ndef merge_intervals(intervals):\n    return intervals\n\nTests require merge_intervals([]) == [], merge_intervals([[1, 3], [2, 4], [8, 10], [10, 12]]) == [[1, 4], [8, 12]], and merge_intervals([[5, 7], [1, 2]]) == [[1, 2], [5, 7]]. The function must not mutate its input. Return only the complete replacement Python file, with no explanation."
+    }
+  ],
+  "max_tokens": 128,
+  "temperature": 0.0,
+  "stream": false
+}

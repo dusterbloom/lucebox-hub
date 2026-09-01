@@ -1,0 +1,12 @@
+{
+  "model": "dflash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Return exactly one JSON object and no markdown. Use keys in this order: language, passed_tests, safe. Set language to Python, passed_tests to 3, and safe to true."
+    }
+  ],
+  "max_tokens": 64,
+  "temperature": 0.0,
+  "stream": false
+}
