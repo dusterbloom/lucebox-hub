@@ -739,3 +739,38 @@ The immutable result is
 `results/k3_terminal_bws_v2_route12_h22_avg16_result_20260901.json`
 (SHA-256 `c2222b1061890f83f8b785ec01e107449de4e39a3676656620fe55f6ce47d629`);
 raw arms r134--r135 and analysis r136 remain on Lucebox4.
+
+## Source-matched native tool-boundary KL
+
+The recovered Full192 teacher and all three frozen comparison policies were
+run on the identical 147-token official-template `get_weather` history using
+one executable and source commit.  The current H23 aggressive-1.8 and
+moonshot/Budget24 controls both missed native top-one ID `163588`; they chose
+ID `65447`.  Route12/Budget20 alone selected the native token:
+
+| arm | logical GiB/position | physical GiB/position | KL(native || arm) | native-token margin | top-one |
+|---|---:|---:|---:|---:|---|
+| native Full192 | 9.06958 | 0 (mmap reference) | 0 | +0.07571 | native |
+| H23 aggressive-1.8 | 1.95014 | 0.75472 | 0.39840 | -0.99215 | wrong |
+| H23 moonshot/Budget24 | 1.33002 | 0.48327 | 0.47871 | -0.06470 | wrong |
+| route12/Budget20 | **1.08185** | **0.39288** | 0.65615 | **+0.33290** | **native** |
+
+This is the preregistered **behavioral GO**, not the strong distributional GO.
+Route12 uses 44.5% fewer logical bytes than aggressive-1.8 and repairs the
+known boundary, but its terminal KL is 64.7% higher.  The result directly
+falsifies using a scalar KL threshold such as `0.13` as a universal safety
+rule: native itself has only a +0.0757 top-token margin here, and a lower
+whole-vocabulary KL can still move the wrong competitor across that narrow
+boundary.  Route pruning is therefore a useful behavioral intervention, not
+evidence that route12 is generally more native-like.
+
+Full192 cold prefill took 1,465.99 s; aggressive-1.8, moonshot and route12 took
+140.67, 120.46 and 105.26 s respectively for this 147-token request.  These
+are token-sequential cold measurements, not serving throughput.  The next
+earned step is broader source-matched native KL on already-captured teacher
+fixtures, with exact history alignment required before any KL is scored.
+
+The immutable summary is
+`results/k3_native_tool_first_token_result_20260901.json` (raw arms r141--r144,
+failed NumPy-only analysis r145, standard-library analysis r146).  The
+analysis-only amendment reran zero model arms.  Production remains untouched.

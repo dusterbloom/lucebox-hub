@@ -1,0 +1,321 @@
+{
+  "schema": "kimi-k3-native-tool-first-token-v1",
+  "status": "MEASURED_NATIVE_KL_BEHAVIORAL_GO",
+  "preregistration_sha256": "34ae78450d4d43ddac2ecdc1a9335d0e496b5a1f75c6f70fcc7827ca4894d141",
+  "source": {
+    "research_branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "c07c3672a687e66e3f39c3aabec8451b28b490b8",
+    "production_branch": "perf/k3-production-ponytail",
+    "production_base_commit": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "executable": "/home/duster/k3-terminal-kl-bws-v2-guarded/server/build-progressive-hip/dflash_server",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c"
+  },
+  "fixture": {
+    "path": "fixtures/k3_tool_weather_first_token_request.json",
+    "sha256": "fa18a5b47c98ddbb430c602e1a8738200e87b56dcbd5468889c4fb895ec00191",
+    "prompt_tokens": 147,
+    "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+    "max_tokens": 1,
+    "temperature": 0.0
+  },
+  "arms": {
+    "native_full192": {
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r141-native-tool-first",
+      "source_commit": "b200e93859a2fef03aa4f1e493c882414e03b6b6",
+      "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+      "manifest_sha256": "598987a3f4079175d4f7c3d5c50ac70b80115f8fb950bc0e315b631815779171",
+      "command_sha256": "d219fc0341d2f27243f16c7fbfbedee53db482c4245b3e624a5c278230812738",
+      "environment_sha256": "0eb673e574e497aec5c1dd4ef874bcd8e1c25d10322bd35cc3f554cca38e3d90",
+      "response_sha256": "f1f86dd770b8dce411667ae70a213980faa61c66c08faceeb9135e097d086940",
+      "logits_sha256": "b29aaa3626ef45166e51eb55353d1b291adcf913e4c384641f221b2cedf91da0",
+      "traffic_sha256": "341940adb19a45a57c2961f9e565a5eefd04711ff1eeb0d6687de9a52aa4982a",
+      "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+      "generated_ids": [
+        163588
+      ],
+      "environment": {
+        "DFLASH_KIMI_PRODUCTION_DEFAULTS": "0",
+        "DFLASH_KIMI_MMAP_DROP_PAGES": "1",
+        "DFLASH_KIMI_LAYER1_PROVIDER": "all-layers-calibrated96",
+        "DFLASH_KIMI_P20_SLAB_BUDGET": "192",
+        "DFLASH_KIMI_LOGITS_OUT": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r141-native-tool-first/final.f32",
+        "DFLASH_KIMI_SIDECAR_AUTHORITATIVE": "1",
+        "DFLASH_KIMI_CALIBRATED96_METRICS_OUT": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r141-native-tool-first/traffic.tsv",
+        "DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR": "/home/duster/kimi-k3-deploy/streamed-bank/natural-sidecars",
+        "DFLASH_KIMI_CALIBRATED96_AUX_DIR": "/home/duster/kimi-k3-deploy/aux"
+      },
+      "usage": {
+        "accept_rate": 0.0,
+        "completion_tokens": 1,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 147,
+        "spec_decode_ran": false,
+        "timings": {
+          "agent_turn_cache_hit": false,
+          "cache_hit": false,
+          "cached_prefix_tokens": 0,
+          "decode_ms": 0.7,
+          "decode_tokens_per_sec": 1338.3,
+          "effective_prompt_tokens": 147,
+          "prefill_ms": 1465986.5,
+          "prefilled_tokens": 147
+        },
+        "total_tokens": 148
+      },
+      "traffic": {
+        "requested_nominal_slabs": 2596608,
+        "selected_slab_records": 2596608,
+        "selected_sidecar_bytes": 1431542956032,
+        "exact_fallback_bytes": 0,
+        "total_provider_bytes": 1431542956032,
+        "provider_positions": 147,
+        "logical_bytes_per_position": 9738387456.0,
+        "logical_gib_per_position": 9.069580078125,
+        "fallback_gib_per_position": 0.0
+      },
+      "physical": {
+        "explicit_provider_reads": 1468767928320,
+        "direct_physical_bytes": 0,
+        "direct_physical_gib_per_position": 0.0,
+        "direct_io_ns": 0
+      }
+    },
+    "h23_aggressive1p8": {
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r142-h23-aggressive-tool-first",
+      "source_commit": "b200e93859a2fef03aa4f1e493c882414e03b6b6",
+      "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+      "manifest_sha256": "75dec6c3a62be4d053241cdd13e6de68e390888950bb64c600e9fe8ac6a0b586",
+      "command_sha256": "26d82439580ab4d12a86e66509d5386c6fa90eda8196febd14c27e10e4341f87",
+      "environment_sha256": "fdac7a4555994f6f32dade8e45149ba4bac0b8b28c6883ebe06b96aec9a09593",
+      "response_sha256": "21a5b304440dd6ede33ae7fbdbd9bfe9a43be4b6eaa30c2662b45a2391e54a8b",
+      "logits_sha256": "567fc3039ae2210899fd7c64bc7f4b53df55acf2071d204be6094abc17b9b72c",
+      "traffic_sha256": "5752ac88a3cfa203b232ff38abea8c28a77a4fe30bc29fea60a22e7f064ba587",
+      "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+      "generated_ids": [
+        65447
+      ],
+      "environment": {
+        "DFLASH_KIMI_STAGE_PROFILE": "1",
+        "DFLASH_KIMI_PRODUCTION_DEFAULTS": "1",
+        "DFLASH_KIMI_LAYER1_PROVIDER": "all-layers-calibrated96",
+        "DFLASH_KIMI_LOGITS_OUT": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r142-h23-aggressive-tool-first/final.f32",
+        "DFLASH_KIMI_SIDECAR_AUTHORITATIVE": "1",
+        "DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24": "1",
+        "DFLASH_KIMI_V8_FACTOR_CAPTURE": "0",
+        "DFLASH_KIMI_CALIBRATED96_METRICS_OUT": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r142-h23-aggressive-tool-first/traffic.tsv",
+        "DFLASH_KIMI_H22_LAYER_BUDGETS": "/home/duster/lucebox-k3-b7b74cc/results/h23_10k_policies/h23_aggressive_1_8gib.txt",
+        "DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR": "/home/duster/kimi-k3-deploy/streamed-bank/natural-sidecars",
+        "DFLASH_KIMI_CALIBRATED96_AUX_DIR": "/home/duster/kimi-k3-deploy/aux"
+      },
+      "usage": {
+        "accept_rate": 0.0,
+        "completion_tokens": 1,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 147,
+        "spec_decode_ran": false,
+        "timings": {
+          "agent_turn_cache_hit": false,
+          "cache_hit": false,
+          "cached_prefix_tokens": 0,
+          "decode_ms": 0.6,
+          "decode_tokens_per_sec": 1602.5,
+          "effective_prompt_tokens": 147,
+          "prefill_ms": 140670.7,
+          "prefilled_tokens": 147
+        },
+        "total_tokens": 148
+      },
+      "traffic": {
+        "requested_nominal_slabs": 500976,
+        "selected_slab_records": 500976,
+        "selected_sidecar_bytes": 275596296192,
+        "exact_fallback_bytes": 32213164032,
+        "total_provider_bytes": 307809460224,
+        "provider_positions": 147,
+        "logical_bytes_per_position": 2093941906.2857144,
+        "logical_gib_per_position": 1.9501353672572546,
+        "fallback_gib_per_position": 0.20408739362444198
+      },
+      "physical": {
+        "explicit_provider_reads": 119124434944,
+        "direct_physical_bytes": 119124434944,
+        "direct_physical_gib_per_position": 0.7547161595351031,
+        "direct_io_ns": 72153821513
+      },
+      "terminal_kl": 0.39840305305521506,
+      "teacher_top1": 163588,
+      "candidate_top1": 65447,
+      "top1_agreement": false,
+      "teacher_top1_margin": 0.07571029663085938,
+      "candidate_teacher_margin": -0.9921474456787109
+    },
+    "h23_moonshot1p2": {
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r143-h23-moonshot-tool-first",
+      "source_commit": "b200e93859a2fef03aa4f1e493c882414e03b6b6",
+      "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+      "manifest_sha256": "c036312bddb2ca2fd21d10b6f40bcd9c2bec7f3144cfb15a7089991375cd10d1",
+      "command_sha256": "202fc33d8306457b4ea75333b44eb2e1de03c0c4c19030062e970885bea979c2",
+      "environment_sha256": "447f198cd75ffcb0de4e8097e71f5e2156609b236df26da685e12cdb6d88a24f",
+      "response_sha256": "0c9cbaf218a5d1fa1fe19d19550e523919bf7ca79596c43cf4213ab54237c5b4",
+      "logits_sha256": "b49772bd88c708d724778ca6ee7a4f3984c896d0bba310ba6ea8bf779549b0bf",
+      "traffic_sha256": "5f4eb45d2ea8bb7b4a5d3c9265308b3994048d8e6b63ede60dc762fed92fac23",
+      "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+      "generated_ids": [
+        65447
+      ],
+      "environment": {
+        "DFLASH_KIMI_STAGE_PROFILE": "1",
+        "DFLASH_KIMI_PRODUCTION_DEFAULTS": "1",
+        "DFLASH_KIMI_LAYER1_PROVIDER": "all-layers-calibrated96",
+        "DFLASH_KIMI_LOGITS_OUT": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r143-h23-moonshot-tool-first/final.f32",
+        "DFLASH_KIMI_SIDECAR_AUTHORITATIVE": "1",
+        "DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24": "1",
+        "DFLASH_KIMI_V8_FACTOR_CAPTURE": "0",
+        "DFLASH_KIMI_CALIBRATED96_METRICS_OUT": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r143-h23-moonshot-tool-first/traffic.tsv",
+        "DFLASH_KIMI_H22_LAYER_BUDGETS": "/home/duster/lucebox-k3-b7b74cc/results/h23_10k_policies/h23_moonshot_1_2gib.txt",
+        "DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR": "/home/duster/kimi-k3-deploy/streamed-bank/natural-sidecars",
+        "DFLASH_KIMI_CALIBRATED96_AUX_DIR": "/home/duster/kimi-k3-deploy/aux"
+      },
+      "usage": {
+        "accept_rate": 0.0,
+        "completion_tokens": 1,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 147,
+        "spec_decode_ran": false,
+        "timings": {
+          "agent_turn_cache_hit": false,
+          "cache_hit": false,
+          "cached_prefix_tokens": 0,
+          "decode_ms": 0.7,
+          "decode_tokens_per_sec": 1407.7,
+          "effective_prompt_tokens": 147,
+          "prefill_ms": 120459.8,
+          "prefilled_tokens": 147
+        },
+        "total_tokens": 148
+      },
+      "traffic": {
+        "requested_nominal_slabs": 324576,
+        "selected_slab_records": 324576,
+        "selected_sidecar_bytes": 178942869504,
+        "exact_fallback_bytes": 30987694080,
+        "total_provider_bytes": 209930563584,
+        "provider_positions": 147,
+        "logical_bytes_per_position": 1428099072.0,
+        "logical_gib_per_position": 1.3300209045410156,
+        "fallback_gib_per_position": 0.19632339477539062
+      },
+      "physical": {
+        "explicit_provider_reads": 76278841344,
+        "direct_physical_bytes": 76278841344,
+        "direct_physical_gib_per_position": 0.48326671366788904,
+        "direct_io_ns": 54968233296
+      },
+      "terminal_kl": 0.4787098585312993,
+      "teacher_top1": 163588,
+      "candidate_top1": 65447,
+      "top1_agreement": false,
+      "teacher_top1_margin": 0.07571029663085938,
+      "candidate_teacher_margin": -0.06469917297363281
+    },
+    "route12_budget20": {
+      "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r144-route12-b20-native-tool-first",
+      "source_commit": "b200e93859a2fef03aa4f1e493c882414e03b6b6",
+      "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c",
+      "manifest_sha256": "9f1abf20fd3c80975330d3ad086a5d3a362621af18595bcc653280112ee6c2ff",
+      "command_sha256": "90c92f96dace6898aa7b86a774a37b6d8b608fda419295635df52e48a69ea093",
+      "environment_sha256": "51a03cfa5689b31b2747c82ce7c4f65e1fa27964980c922527bd8019d8f1ae7a",
+      "response_sha256": "ca19f338f9196d1f8fd266ae4ec10f62e30c0ea98a377497f358b3fd29b6219d",
+      "logits_sha256": "81c554c2ae848f21f4d96de2ebccf7e46c8c49c4b5fabac854c6e576da740be4",
+      "traffic_sha256": "019f958dac87a522f7f08f82d07cde0590dfa931e5475b7b08d67a5ee545f672",
+      "prompt_token_ids_i32le_sha256": "f1ed3971af8259f3b9241d92404ec8d45f34137dec027fd96bc8d23b91b9773c",
+      "generated_ids": [
+        163588
+      ],
+      "environment": {
+        "DFLASH_KIMI_STAGE_PROFILE": "1",
+        "DFLASH_KIMI_PRODUCTION_DEFAULTS": "1",
+        "DFLASH_KIMI_LAYER1_PROVIDER": "all-layers-calibrated96",
+        "DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT": "12",
+        "DFLASH_KIMI_LOGITS_OUT": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r144-route12-b20-native-tool-first/final.f32",
+        "DFLASH_KIMI_SIDECAR_AUTHORITATIVE": "1",
+        "DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24": "1",
+        "DFLASH_KIMI_V8_FACTOR_CAPTURE": "0",
+        "DFLASH_KIMI_CALIBRATED96_METRICS_OUT": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r144-route12-b20-native-tool-first/traffic.tsv",
+        "DFLASH_KIMI_H22_LAYER_BUDGETS": "fixtures/k3_uniform_budget20.txt",
+        "DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR": "/home/duster/kimi-k3-deploy/streamed-bank/natural-sidecars",
+        "DFLASH_KIMI_CALIBRATED96_AUX_DIR": "/home/duster/kimi-k3-deploy/aux"
+      },
+      "usage": {
+        "accept_rate": 0.0,
+        "completion_tokens": 1,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 147,
+        "spec_decode_ran": false,
+        "timings": {
+          "agent_turn_cache_hit": false,
+          "cache_hit": false,
+          "cached_prefix_tokens": 0,
+          "decode_ms": 0.2,
+          "decode_tokens_per_sec": 6170.7,
+          "effective_prompt_tokens": 147,
+          "prefill_ms": 105257.1,
+          "prefilled_tokens": 147
+        },
+        "total_tokens": 148
+      },
+      "traffic": {
+        "requested_nominal_slabs": 270480,
+        "selected_slab_records": 270480,
+        "selected_sidecar_bytes": 149119057920,
+        "exact_fallback_bytes": 21639647232,
+        "total_provider_bytes": 170758705152,
+        "provider_positions": 147,
+        "logical_bytes_per_position": 1161623844.5714285,
+        "logical_gib_per_position": 1.0818465096609933,
+        "fallback_gib_per_position": 0.1370985848563058
+      },
+      "physical": {
+        "explicit_provider_reads": 62011867136,
+        "direct_physical_bytes": 62011867136,
+        "direct_physical_gib_per_position": 0.39287790311437076,
+        "direct_io_ns": 45277574716
+      },
+      "terminal_kl": 0.6561487485794764,
+      "teacher_top1": 163588,
+      "candidate_top1": 163588,
+      "top1_agreement": true,
+      "teacher_top1_margin": 0.07571029663085938,
+      "candidate_teacher_margin": 0.3328990936279297
+    }
+  },
+  "comparison": {
+    "route12_minus_h23_terminal_kl": 0.2577456955242613,
+    "route12_over_h23_terminal_kl": 1.6469470892547102,
+    "route12_minus_h23_logical_gib_per_position": -0.8682888575962613,
+    "route12_logical_byte_reduction_fraction": 0.4452454286891151,
+    "route12_minus_moonshot_terminal_kl": 0.17743889004817703,
+    "route12_over_moonshot_terminal_kl": 1.3706606139104103,
+    "route12_minus_moonshot_logical_gib_per_position": -0.24817439488002235
+  },
+  "gate": {
+    "behavioral_pass": true,
+    "strong_distributional_pass": false,
+    "interpretation": "Advance route12/B20 to broader source-matched native KL measurement."
+  },
+  "limitations": [
+    "One aligned tool-boundary position is a discriminator, not a quality frontier.",
+    "A correct top-one token is not distributional equivalence.",
+    "Cold request timing is not serving throughput.",
+    "This comparison tests the frozen route/slab policies, not a new terminal selector."
+  ]
+}
