@@ -1,0 +1,27 @@
+{
+  "schema": "kimi-k3-native-tool-first-token-analysis-amendment-v1",
+  "status": "PREREGISTERED_ANALYSIS_ONLY_AMENDMENT",
+  "date": "2026-09-01",
+  "parent_preregistration": "results/k3_native_tool_first_token_prereg_20260901.json",
+  "parent_preregistration_sha256": "34ae78450d4d43ddac2ecdc1a9335d0e496b5a1f75c6f70fcc7827ca4894d141",
+  "failure": {
+    "failed_analysis_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r145-native-tool-first-analysis",
+    "exception": "ModuleNotFoundError: No module named 'numpy'",
+    "classification": "ANALYSIS_INFRASTRUCTURE_FAILURE",
+    "model_arms_affected": 0
+  },
+  "closed_arm_manifests": {
+    "native_full192": "598987a3f4079175d4f7c3d5c50ac70b80115f8fb950bc0e315b631815779171",
+    "h23_aggressive1p8": "75dec6c3a62be4d053241cdd13e6de68e390888950bb64c600e9fe8ac6a0b586",
+    "h23_moonshot1p2": "c036312bddb2ca2fd21d10b6f40bcd9c2bec7f3144cfb15a7089991375cd10d1",
+    "route12_budget20": "9f1abf20fd3c80975330d3ad086a5d3a362621af18595bcc653280112ee6c2ff"
+  },
+  "change": {
+    "old_analyzer_sha256": "0cd3921fda9e8c8b9174a3b676f8a7ca7a3953929e2b3aa972ea43398d189fbc",
+    "new_analyzer_sha256": "3a256f9a564d2a80bfcde72cf2c9212f9eb56b16a84714d0abfd852b84f71088",
+    "scope": "Replace NumPy-only F32 loading, logsumexp, KL and argmax operations with Python standard-library array/math equivalents. All arm validation, gates and KL direction remain unchanged.",
+    "equivalence_check": "A deterministic 163840-logit synthetic vector pair matched the NumPy reference top-1 IDs exactly and terminal KL within 1.6e-13.",
+    "new_analysis_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r146-native-tool-first-analysis"
+  },
+  "anti_tuning": "Rerun zero model arms. Analyze the four closed manifests once with the standard-library implementation. No input, gate, metric or interpretation change is allowed."
+}

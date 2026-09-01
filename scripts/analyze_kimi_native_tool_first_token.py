@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import array
 import json
+import math
+import sys
 from pathlib import Path
 
 from analyze_kimi_progressive_tool_rescue import (
@@ -16,7 +19,48 @@ from analyze_kimi_progressive_tool_rescue import (
     traffic,
     verify_manifest,
 )
-from analyze_kimi_terminal_full_screen import read_logits, terminal_metrics
+
+
+def read_logits(path: Path) -> list[float]:
+    values = array.array("f")
+    with path.open("rb") as source:
+        values.fromfile(source, 163840)
+        if source.read(1):
+            raise ValueError(f"oversized raw terminal logits: {path}")
+    if sys.byteorder != "little":
+        values.byteswap()
+    if len(values) != 163840 or not all(math.isfinite(value) for value in values):
+        raise ValueError(f"invalid raw terminal logits: {path}")
+    return list(values)
+
+
+def logsumexp(values: list[float]) -> float:
+    maximum = max(values)
+    return maximum + math.log(math.fsum(math.exp(value - maximum) for value in values))
+
+
+def terminal_metrics(teacher: list[float], candidate: list[float]) -> dict:
+    teacher_log_z = logsumexp(teacher)
+    candidate_log_z = logsumexp(candidate)
+    divergence = math.fsum(
+        math.exp(teacher_value - teacher_log_z)
+        * ((teacher_value - teacher_log_z) - (candidate_value - candidate_log_z))
+        for teacher_value, candidate_value in zip(teacher, candidate)
+    )
+    teacher_top = max(range(len(teacher)), key=teacher.__getitem__)
+    candidate_top = max(range(len(candidate)), key=candidate.__getitem__)
+    teacher_second = max(value for index, value in enumerate(teacher)
+                         if index != teacher_top)
+    candidate_other = max(value for index, value in enumerate(candidate)
+                          if index != teacher_top)
+    return {
+        "terminal_kl": max(0.0, divergence),
+        "teacher_top1": teacher_top,
+        "candidate_top1": candidate_top,
+        "top1_agreement": teacher_top == candidate_top,
+        "teacher_top1_margin": teacher[teacher_top] - teacher_second,
+        "candidate_teacher_margin": candidate[teacher_top] - candidate_other,
+    }
 
 
 def analyze_arm(root: Path, prompt_sha: str) -> tuple[dict, object]:
