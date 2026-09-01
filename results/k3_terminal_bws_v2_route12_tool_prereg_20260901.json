@@ -1,0 +1,51 @@
+{
+  "schema": "kimi-k3-route12-tool-prereg-v1",
+  "status": "PREREGISTERED_BEHAVIORAL_FOLLOWUP",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "28a304fe",
+    "implementation_commit": "4bb8bd38",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4",
+    "executable_sha256": "bed5ffdb2e7c1d20eec2ef39b22126e36867f16a8f50bd8983342301726e093c"
+  },
+  "discovery": {
+    "artifact": "results/k3_terminal_bws_v2_route_prefix_result_20260901.json",
+    "sha256": "ce21f92d724e56d598dde3543d9709500f5b94d3be157e6d4304962d0981195d",
+    "formal_gate": "NO-GO because the preregistered >=50% KL reduction was missed.",
+    "followup_reason": "Route12 nevertheless restored the correct Budget24 first token with positive margin, reduced KL by 40.3%, and used 1.08289 logical GiB/provider-position. The user explicitly prioritizes fast reliable behavior over a literal KL multiple."
+  },
+  "arm": {
+    "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r92-route12-schema-tool",
+    "fixture": "fixtures/k3_tool_weather_request.json",
+    "fixture_sha256": "9ddc53b93c0e162a898f9b2c72d03e5cd9ab670c608ffef489aaa6090ab7f0d6",
+    "policy": "fixtures/k3_uniform_budget20.txt",
+    "policy_sha256": "2f366aab82de990441dc61de870736b1acbf081f26b2aff11f63017dd53f697c",
+    "route_limit": 12,
+    "retained_router_weights": "unchanged",
+    "schema_rescue": true,
+    "max_tokens": 64
+  },
+  "controls": {
+    "valid_budget24_schema": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r68-schema-tool",
+    "invalid_budget20_route16": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r76-schema-b20"
+  },
+  "measurements": [
+    "full generated token IDs and visible/tool output",
+    "declared-name schema rescue markers",
+    "logical selected-sidecar and exact-fallback bytes per provider position",
+    "physical direct-read bytes per provider position",
+    "cold prefill/decode timing, labeled non-serving"
+  ],
+  "gate": {
+    "go": "Exactly one valid get_weather call with location San Francisco, at least one declared-name schema rescue marker, and less than 1.2 logical GiB/provider-position.",
+    "no_go": "Invalid tool output, missing route/schema marker, or traffic >=1.2 GiB/provider-position. Preserve the result and do not tune route count on this fixture.",
+    "next_if_go": "Freeze route12 and validate against retained native-success coding/reasoning/multilingual/extraction fixtures plus additional tool-declared controls before production consideration.",
+    "production": "A pass is research GO only; perf/k3-production-ponytail remains untouched."
+  },
+  "limitations": [
+    "This behavioral follow-up reuses the route-discovery fixture and cannot establish generalization.",
+    "Terminal full-vocabulary KL versus native exact is not captured for the generated sequence.",
+    "Cold token-sequential timing is not serving throughput."
+  ]
+}
