@@ -3657,6 +3657,20 @@ public:
             }
             experiment_active_layer_ = static_cast<int>(parsed);
         }
+        if (const char * raw = std::getenv(
+                "DFLASH_KIMI_EXPERIMENT_INCREMENTAL_BASE_BUDGET")) {
+            char * end = nullptr;
+            const long parsed = std::strtol(raw, &end, 10);
+            if (!*raw || end == raw || *end != '\0' ||
+                parsed < 1 || parsed >= kNativeTopK * kSlabCount) {
+                if (err) {
+                    *err = "DFLASH_KIMI_EXPERIMENT_INCREMENTAL_BASE_BUDGET "
+                        "must be in [1, 191]";
+                }
+                return false;
+            }
+            experiment_incremental_base_budget_ = static_cast<int>(parsed);
+        }
         if (const char * trace =
                 std::getenv("DFLASH_KIMI_EXPERIMENT_PLAN_OUT")) {
             if (*trace) {
@@ -3907,6 +3921,16 @@ public:
 #endif
         }
         ordered_device_join_ = ordered_device_join;
+        if (experiment_incremental_base_budget_ > 0 &&
+            (sparse_workspace_ != SparseWorkspace::HostRecomposed ||
+             sparse_delivery_ != KimiK3SparseDeliveryPolicy::BufferedSlabs ||
+             ordered_device_join_)) {
+            if (err) {
+                *err = "incremental slab experiment requires the buffered "
+                    "host-reference path";
+            }
+            return false;
+        }
         if (async_compact_queue && !ordered_device_join_) {
             if (err) *err = "P45 async compact queue requires P42 ordered join";
             return false;
@@ -6469,6 +6493,14 @@ private:
             cache_sequence_started_ = true;
         }
         const int layer_budget = budget_for_layer(model_layer, base_pos);
+        if (experiment_incremental_base_budget_ > 0 &&
+            experiment_incremental_base_budget_ >= layer_budget) {
+            if (err) {
+                *err = "incremental slab base budget must be below the "
+                    "effective layer budget";
+            }
+            return false;
+        }
         if (model_layer == kFirstRoutedLayer &&
                 layer_budget > budget_for_layer(model_layer)) {
             std::fprintf(stderr,
@@ -6554,9 +6586,18 @@ private:
             static_cast<size_t>(state.down_slab_bytes));
         std::vector<float> mask(
             static_cast<size_t>(spec.intermediate_dim), 0.0f);
+        std::vector<float> incremental_base_mask(
+            experiment_incremental_base_budget_ > 0
+                ? static_cast<size_t>(spec.intermediate_dim) : 0,
+            0.0f);
+        std::vector<float> incremental_delta_mask(
+            experiment_incremental_base_budget_ > 0
+                ? static_cast<size_t>(spec.intermediate_dim) : 0,
+            0.0f);
         std::vector<float> means(
             device_ordered ? 0 : static_cast<size_t>(kSlabCount * kDimension));
         std::vector<float> expert_output;
+        std::vector<float> incremental_delta_output;
         if (device_ordered) {
 #if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
             if (host_ordered_output) {
@@ -6590,6 +6631,15 @@ private:
                     routes.selected_weights + route_offset, route_limit_,
                     state.importance.data(), effective_calibrated.data(),
                     kExpertCount, kSlabCount, layer_budget);
+            KimiK3CalibratedSlabPlan incremental_base_plan;
+            if (experiment_incremental_base_budget_ > 0) {
+                incremental_base_plan = plan_kimi_k3_calibrated_slabs(
+                    routes.selected_ids + route_offset,
+                    routes.selected_weights + route_offset, route_limit_,
+                    state.importance.data(), effective_calibrated.data(),
+                    kExpertCount, kSlabCount,
+                    experiment_incremental_base_budget_);
+            }
             std::vector<int> calibrated_routes;
             std::vector<int> fallback_routes;
             for (int route = 0; route < route_limit_; ++route) {
@@ -6626,6 +6676,53 @@ private:
                 }
                 selected_by_route[
                     static_cast<size_t>(*found * kSlabCount + rank)] = 1;
+            }
+            std::vector<uint8_t> incremental_base_selected_by_route;
+            if (experiment_incremental_base_budget_ > 0) {
+                if (incremental_base_plan.exact_route_indices !=
+                        plan.exact_route_indices ||
+                    incremental_base_plan.selected_slab_ids.size() >
+                        plan.selected_slab_ids.size() ||
+                    !std::equal(
+                        incremental_base_plan.selected_slab_ids.begin(),
+                        incremental_base_plan.selected_slab_ids.end(),
+                        plan.selected_slab_ids.begin())) {
+                    return exact_layer_fallback(
+                        "incremental slab plan is not a strict prefix");
+                }
+                incremental_base_selected_by_route.assign(
+                    static_cast<size_t>(kNativeTopK * kSlabCount), 0);
+                for (const int pseudo :
+                        incremental_base_plan.selected_slab_ids) {
+                    const int expert = pseudo / kSlabCount;
+                    const int rank = pseudo % kSlabCount;
+                    const auto found = std::find_if(
+                        calibrated_routes.begin(), calibrated_routes.end(),
+                        [&](int route) {
+                            return routes.selected_ids[
+                                route_offset + route] == expert;
+                        });
+                    if (found == calibrated_routes.end()) {
+                        return exact_layer_fallback(
+                            "incremental base slab has no calibrated route");
+                    }
+                    incremental_base_selected_by_route[
+                        static_cast<size_t>(*found * kSlabCount + rank)] = 1;
+                }
+                const size_t delta_records =
+                    plan.selected_slab_ids.size() -
+                    incremental_base_plan.selected_slab_ids.size();
+                if (delta_records != static_cast<size_t>(
+                        layer_budget - experiment_incremental_base_budget_)) {
+                    return exact_layer_fallback(
+                        "incremental slab delta record count changed");
+                }
+                std::fprintf(stderr,
+                    "[kimi-k3-incremental-slab] layer=%d base-pos=%d "
+                    "token=%d base=%zu full=%zu delta=%zu\n",
+                    model_layer, base_pos, token,
+                    incremental_base_plan.selected_slab_ids.size(),
+                    plan.selected_slab_ids.size(), delta_records);
             }
             write_terminal_plan(
                 model_layer, base_pos, token, routes, route_offset,
@@ -6718,6 +6815,17 @@ private:
                     selected_by_route.begin() +
                         static_cast<ptrdiff_t>((route + 1) * kSlabCount),
                     static_cast<uint8_t>(1)));
+                const int incremental_base_depth =
+                    experiment_incremental_base_budget_ > 0
+                    ? static_cast<int>(std::count(
+                        incremental_base_selected_by_route.begin() +
+                            static_cast<ptrdiff_t>(route * kSlabCount),
+                        incremental_base_selected_by_route.begin() +
+                            static_cast<ptrdiff_t>((route + 1) * kSlabCount),
+                        static_cast<uint8_t>(1)))
+                    : prefix_depth;
+                const int incremental_delta_depth =
+                    prefix_depth - incremental_base_depth;
                 const float weight =
                     routes.selected_weights[route_offset + route];
                 if (!device_ordered && !traced_read_exact_at(
@@ -6730,8 +6838,13 @@ private:
                 // Add omitted cards directly.  Avoid add/subtract cancellation
                 // so the full-width path has stable arithmetic.
                 for (int rank = 0; rank < kSlabCount; ++rank) {
-                    if (selected_by_route[
-                            static_cast<size_t>(route * kSlabCount + rank)]) {
+                    const size_t selected_index = static_cast<size_t>(
+                        route * kSlabCount + rank);
+                    const bool base_selected =
+                        experiment_incremental_base_budget_ > 0
+                        ? incremental_base_selected_by_route[selected_index]
+                        : selected_by_route[selected_index];
+                    if (base_selected) {
                         continue;
                     }
                     if (device_ordered) {
@@ -6754,6 +6867,10 @@ private:
                 std::fill(up.begin(), up.end(), 0);
                 std::fill(down.begin(), down.end(), 0);
                 std::fill(mask.begin(), mask.end(), 0.0f);
+                std::fill(incremental_base_mask.begin(),
+                          incremental_base_mask.end(), 0.0f);
+                std::fill(incremental_delta_mask.begin(),
+                          incremental_delta_mask.end(), 0.0f);
                 std::vector<SparseSlabPayload> sparse_slabs =
                     direct_reads()
                     ? std::move(direct_payloads[static_cast<size_t>(route)])
@@ -6774,6 +6891,16 @@ private:
                     std::fill_n(mask.begin() +
                         static_cast<size_t>(natural) * kSlabSize,
                         kSlabSize, 1.0f);
+                    if (experiment_incremental_base_budget_ > 0) {
+                        std::vector<float> & split_mask =
+                            incremental_base_selected_by_route[
+                                static_cast<size_t>(
+                                    route * kSlabCount + rank)]
+                            ? incremental_base_mask : incremental_delta_mask;
+                        std::fill_n(split_mask.begin() +
+                            static_cast<size_t>(natural) * kSlabSize,
+                            kSlabSize, 1.0f);
+                    }
                 }
                 for (int rank = 0; !direct_reads() && rank < kSlabCount;
                      ++rank) {
@@ -6864,7 +6991,52 @@ private:
                         kSlabCount);
                 ggml_tensor * device_expert_output = nullptr;
                 bool evaluated = retained == 0;
-                if (retained > 0 && device_ordered) {
+                const bool incremental_route =
+                    experiment_incremental_base_budget_ > 0 && retained > 0;
+                if (incremental_route) {
+                    evaluated = true;
+                    if (incremental_base_depth > 0) {
+                        evaluated = evaluate_host_sparse_expert(
+                            backend_, spec, input, gate, up, down,
+                            &incremental_base_mask, expert_output, err);
+                        if (evaluated) {
+                            for (int d = 0; d < spec.output_dim; ++d) {
+                                destination[d] += weight * expert_output[
+                                    static_cast<size_t>(d)];
+                            }
+                            reference_full_weight_h2d_bytes_ +=
+                                gate.size() + up.size() + down.size();
+                        }
+                    }
+                    if (evaluated && incremental_delta_depth > 0) {
+                        for (int rank = 0; rank < kSlabCount; ++rank) {
+                            const size_t index = static_cast<size_t>(
+                                route * kSlabCount + rank);
+                            if (!selected_by_route[index] ||
+                                incremental_base_selected_by_route[index]) {
+                                continue;
+                            }
+                            const float * mean = means.data() +
+                                static_cast<size_t>(rank) * kDimension;
+                            for (int d = 0; d < spec.output_dim; ++d) {
+                                destination[d] -= weight * mean[d];
+                            }
+                        }
+                        evaluated = evaluate_host_sparse_expert(
+                            backend_, spec, input, gate, up, down,
+                            &incremental_delta_mask,
+                            incremental_delta_output, err);
+                        if (evaluated) {
+                            for (int d = 0; d < spec.output_dim; ++d) {
+                                destination[d] += weight *
+                                    incremental_delta_output[
+                                        static_cast<size_t>(d)];
+                            }
+                            reference_full_weight_h2d_bytes_ +=
+                                gate.size() + up.size() + down.size();
+                        }
+                    }
+                } else if (retained > 0 && device_ordered) {
                     evaluated = use_device_variant_cache
                         ? evaluate_sparse_payload_cached_device(
                             spec, input, sparse_slabs, prepacked_compact, mask,
@@ -6895,11 +7067,11 @@ private:
                         : "full-width recomposition failed";
                     return exact_layer_fallback(detail.c_str());
                 }
-                if (!sparse_device() && retained > 0) {
+                if (!incremental_route && !sparse_device() && retained > 0) {
                     reference_full_weight_h2d_bytes_ +=
                         gate.size() + up.size() + down.size();
                 }
-                if (retained > 0) {
+                if (!incremental_route && retained > 0) {
                     if (device_ordered) {
 #if defined(DFLASH27B_BACKEND_CUDA) || defined(DFLASH27B_BACKEND_HIP)
                         int expert_row = -1;
@@ -7319,6 +7491,7 @@ private:
     static constexpr int kLastRoutedLayer = 92;
     ggml_backend_t backend_ = nullptr;
     int experiment_active_layer_ = -1;
+    int experiment_incremental_base_budget_ = 0;
     std::vector<TerminalSlabProbe> terminal_force_;
     std::vector<TerminalSlabProbe> terminal_drop_;
     std::vector<LayerState> layers_;

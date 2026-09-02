@@ -366,6 +366,11 @@ int main() {
     const std::vector<int32_t> slabs = select_kimi_k3_slab_prefix_ids(
         experts, weights, 2, importance, 3, 3, 4);
     assert(slabs == std::vector<int32_t>({0, 6, 1, 7}));
+    const std::vector<int32_t> base_slabs = select_kimi_k3_slab_prefix_ids(
+        experts, weights, 2, importance, 3, 3, 2);
+    assert(base_slabs.size() == 2);
+    assert(std::equal(base_slabs.begin(), base_slabs.end(), slabs.begin()));
+    assert(slabs.size() - base_slabs.size() == 2);
 
     const uint8_t calibrated[] = {1, 0, 0};
     const KimiK3CalibratedSlabPlan plan = plan_kimi_k3_calibrated_slabs(
