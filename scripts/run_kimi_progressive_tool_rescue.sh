@@ -44,8 +44,9 @@ fi
 
 mkdir "$root"
 cp "$fixture" "$root/request.json"
-git rev-parse HEAD > "$root/source-commit.txt"
-git status --porcelain=v1 > "$root/source-status.txt"
+repo_root=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)
+git -C "$repo_root" rev-parse HEAD > "$root/source-commit.txt"
+git -C "$repo_root" status --porcelain=v1 > "$root/source-status.txt"
 if [[ -s $root/source-status.txt ]]; then
     echo "source worktree is dirty" >&2
     exit 6

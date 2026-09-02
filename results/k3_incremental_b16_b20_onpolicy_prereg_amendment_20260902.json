@@ -1,0 +1,36 @@
+{
+  "schema": "kimi-k3-incremental-b16-b20-onpolicy-prereg-amendment-v1",
+  "status": "PRERUN_HARNESS_AMENDMENT",
+  "date": "2026-09-02",
+  "original_preregistration": {
+    "path": "results/k3_incremental_b16_b20_onpolicy_prereg_20260902.json",
+    "sha256": "359a9fb2474f05713431a489874cc144cf25bdc54e6f3275749ddff7fada4e9d"
+  },
+  "failed_preflight": {
+    "root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260902-r171-onpolicy-fact-control",
+    "classification": "NO_MODEL_PROCESS_STARTED",
+    "error": "fatal: not a git repository (or any of the parent directories): .git",
+    "preserved_files": ["request.json", "source-commit.txt"],
+    "source_commit_bytes": 0,
+    "model_runs_before_amendment": 0,
+    "candidate_logits_observed": false,
+    "generated_ids_observed": false,
+    "timing_observed": false
+  },
+  "runner_fix": {
+    "old_sha256": "6164853dcbf4ef2f00a264de0764b5ccb9c9094dd15409dc20d96361d72c27ff",
+    "new_sha256": "b4a52c0a031f4eb9d4960c4b2508dea7a81041efb71f779ebe7b0cfc3def5a4a",
+    "change": "Resolve the Git worktree from the runner path and use git -C instead of assuming the caller working directory."
+  },
+  "unchanged": [
+    "model and model hash",
+    "executable",
+    "route limit 12",
+    "Budget20 control",
+    "Budget16 plus four-record candidate",
+    "fixtures and expected IDs",
+    "teacher artifacts",
+    "quality and structural gates"
+  ],
+  "decision": "Preserve r171 and start the four registered model arms at fresh roots r172-r175."
+}
