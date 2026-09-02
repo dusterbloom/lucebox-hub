@@ -9,9 +9,8 @@ import json
 import re
 from pathlib import Path
 
-import numpy as np
-
-from analyze_kimi_terminal_full_screen import digest, read_logits, terminal_metrics
+from analyze_kimi_native_tool_first_token import read_logits, terminal_metrics
+from analyze_kimi_progressive_tool_rescue import digest
 
 
 MARKER = re.compile(
@@ -157,7 +156,9 @@ def main() -> int:
                 control_root / "candidate-terminal.f32"),
             "incremental_logits_sha256": digest(
                 incremental_root / "candidate-terminal.f32"),
-            "max_abs_logit_delta": float(np.max(np.abs(control - incremental))),
+            "max_abs_logit_delta": max(
+                abs(left - right)
+                for left, right in zip(control, incremental)),
             "control_vs_incremental": composition,
             "control_vs_exact": control_teacher,
             "incremental_vs_exact": incremental_teacher,
