@@ -1,0 +1,81 @@
+{
+  "schema": "kimi-k3-incremental-b16-b20-onpolicy-summary-v1",
+  "status": "MEASURED_NO_GO_EXACT_COMPOSITION_BEHAVIOR_RETAINED",
+  "date": "2026-09-02",
+  "preregistration_sha256": "359a9fb2474f05713431a489874cc144cf25bdc54e6f3275749ddff7fada4e9d",
+  "prerun_amendment": "results/k3_incremental_b16_b20_onpolicy_prereg_amendment_20260902.json",
+  "raw_analysis": {
+    "path": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260902-r176-onpolicy-analysis/result.json",
+    "sha256": "8decef7cdcf5854b6ac71ce48b369f7b1adb84b8867f5dc5ae5d91f34bb40ba6"
+  },
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "commit": "e45d24b92003cdf7a10109071b8f7008c5dda37f",
+    "production_branch": "perf/k3-production-ponytail",
+    "production_base_commit": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "executable_sha256": "963cb3c2999f00b3a424a6b9f47fcda5da322ce98ffc0c818c89f09eae64afaa",
+    "hardware": "Lucebox4 gfx1151"
+  },
+  "failed_preflight": {
+    "root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260902-r171-onpolicy-fact-control",
+    "model_process_started": false,
+    "interpretation": "Preserved runner-CWD failure; no experimental output observed."
+  },
+  "fixtures": [
+    {
+      "id": "fact-capital",
+      "control_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260902-r172-onpolicy-fact-control",
+      "control_manifest_sha256": "32fd7b8476b8c03681454acc2228cafa512d5ffd1177d36008ea35fa8d6bf012",
+      "candidate_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260902-r173-onpolicy-fact-candidate",
+      "candidate_manifest_sha256": "57509a61d54e7d75a1ad3c88d1f7466f3c88bc28a1a7a3f1ab39e8643ab15cb1",
+      "generated_ids_equal_and_expected": true,
+      "generated_ids": [39818, 18009, 163588, 12092, 163589, 163588, 2778, 163589],
+      "content": "Tokyo",
+      "control_vs_candidate_terminal_kl": 0.0000023049816866492434,
+      "max_abs_logit_delta": 1.8912749290466309,
+      "control_native_teacher_kl": 0.00004119279160436117,
+      "candidate_native_teacher_kl": 0.000036862584646753726,
+      "control_native_teacher_margin": 11.254881858825684,
+      "candidate_native_teacher_margin": 11.342833518981934,
+      "control_logical_gib_per_position": 1.020522885206269,
+      "candidate_logical_gib_per_position": 1.0216952068049734,
+      "logical_provider_byte_delta_total": 51609600,
+      "logits_byte_identical": false,
+      "gate_pass": false
+    },
+    {
+      "id": "get-weather-first-token",
+      "control_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260902-r174-onpolicy-tool-control",
+      "control_manifest_sha256": "d9680297c052cb58c2ecd5e347ef2ca95029797231df9907a0d5a3998095e1c8",
+      "candidate_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260902-r175-onpolicy-tool-candidate",
+      "candidate_manifest_sha256": "aa68a18931501201766dc47ebe2f93fdee97aac7087ffd9a8172b2900de75dab",
+      "generated_ids_equal_and_expected": true,
+      "generated_ids": [163588],
+      "tool_boundary_native_correct": true,
+      "control_vs_candidate_terminal_kl": 0.027941286834786513,
+      "max_abs_logit_delta": 2.359999895095825,
+      "control_native_teacher_kl": 0.6561487485794764,
+      "candidate_native_teacher_kl": 0.6177511797969706,
+      "control_native_teacher_margin": 0.3328990936279297,
+      "candidate_native_teacher_margin": 0.3485736846923828,
+      "control_logical_gib_per_position": 1.0818465096609933,
+      "candidate_logical_gib_per_position": 1.0821271623883928,
+      "logical_provider_byte_delta_total": 44298240,
+      "logits_byte_identical": false,
+      "gate_pass": false
+    }
+  ],
+  "gate": {
+    "passed": false,
+    "behavioral_subgate_passed": true,
+    "tool_boundary_recovered": true,
+    "decision": "Do not promote the current all-layer composition order. The behavior is promising, but route/state drift falsifies exact or distributionally identical B20 composition and the candidate saves no bytes."
+  },
+  "interpretation": [
+    "Per-layer additive slab algebra is correct, but changing the accumulation order at every layer perturbs hidden states and later routes.",
+    "The perturbation retained both registered behaviors and improved native-teacher KL on both fixtures, so it is not a quality failure on this tiny gate.",
+    "The experiment reads all 20 records, so it provides no progressive traffic reduction.",
+    "Do not repeat a final-row or fixed prompt-tail rescue: prior registered Budget20-to-Budget24 one-row and eight-row prompt-tail interventions already failed the same tool boundary."
+  ],
+  "performance": "Host-reference timings are unqualified and are not serving throughput."
+}

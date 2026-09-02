@@ -946,3 +946,28 @@ B16-plus-four composition on one ordinary sequence and the registered tool
 boundary.  Production remains untouched.  The immutable held-out result is
 `results/k3_incremental_b16_b20_heldout_result_20260902.json`; raw roots
 r166-r170 remain on Lucebox4.
+
+## All-layer on-policy incremental composition
+
+The registered on-policy gate kept the same route12/B20 records but changed
+their evaluation order to a Budget16 base followed by four exact-minus-mean
+corrections at every routed layer.  Both behaviors survived: the ordinary arm
+retained the exact eight-token `Tokyo` sequence, and the known tool boundary
+retained native-correct ID `163588`.  On the tool row, native-teacher KL
+improved from `0.656149` to `0.617751` and the desired-token margin improved
+from `+0.332899` to `+0.348574`.
+
+The preregistered exact gate nevertheless failed.  Reassociation accumulated
+through 92 layers, changed later router decisions and exact-fallback traffic,
+and produced non-identical terminal distributions.  Control-to-candidate KL
+was `2.30e-6` on the ordinary row and `0.02794` at the tool boundary; maximum
+raw-logit deltas were `1.89` and `2.36`.  Logical provider traffic also rose
+slightly because of route drift.  Since all 20 records were still read, this
+arm saved no bytes and earns no production-profile delta implementation.
+
+This is a **NO-GO for exact/distributionally identical all-layer composition**,
+not a behavioral failure.  It also does not reopen fixed prompt-tail tuning:
+the earlier registered Budget20-to-Budget24 one-row and eight-row prompt-tail
+arms already failed this boundary.  The immutable summary is
+`results/k3_incremental_b16_b20_onpolicy_result_20260902.json`; raw roots
+r171-r176 remain on Lucebox4.  Production remains untouched.

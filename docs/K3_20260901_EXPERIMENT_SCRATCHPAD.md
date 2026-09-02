@@ -116,3 +116,6 @@ Lucebox4 itself is online/reachable, then first verify whether the staged patch 
 - Held-out result: layers 46 and 92 produced byte-identical control/incremental terminal logits, KL `0`, and max logit delta `0`; earn only the all-layer on-policy equivalence gate.
 - Do not re-litigate: these runs prove composition, not sparse delta reads, risk prediction, traffic savings, or throughput.
 - Next registered gate: one ordinary eight-token sequence and the known tool first-token boundary, all layers on-policy, B20 control versus B16-plus-four composition. Exact output/logit equality is required; host-reference timings are non-evidence.
+- On-policy result: strict NO-GO. Both outputs and the tool boundary survived, but logits were not identical, control/candidate KL reached `0.02794` on the tool row, and route drift changed fallback bytes.
+- Positive retained evidence: candidate native-teacher KL improved on both rows (`4.12e-5` to `3.69e-5`; `0.65615` to `0.61775`) and the tool margin improved to `+0.34857`.
+- Do not re-litigate: this reads all 20 records and saves no bytes. Fixed last-row/last-eight prompt rescue was already closed earlier; do not tune another static tail on the discovery fixture.
