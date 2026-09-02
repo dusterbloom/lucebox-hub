@@ -1,0 +1,32 @@
+{
+  "schema": "kimi-k3-incremental-b16-b20-prereg-correction-v1",
+  "status": "V1_PROVENANCE_ASSERTION_INVALIDATED",
+  "date": "2026-09-02",
+  "original_preregistration": {
+    "path": "results/k3_incremental_b16_b20_equivalence_prereg_20260902.json",
+    "sha256": "df4c33c95f76b82c516c3499c37e0d08fbb37deed4842da31021d12b5a8aba1e"
+  },
+  "error": "The preregistered frozen exact-terminal hash was copied from a p32-core artifact even though the preregistered experiment names the native-IQ1S slim-core model.",
+  "evidence": {
+    "old_source_artifact": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r43-paired-code-l92-b192",
+    "old_source_model": "/home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q2-MIDLATE-00001-of-00014.gguf",
+    "old_source_exact_terminal_sha256": "54f50d7c3f93f94512367ede8bdb2e542a96aa61ecd0ac0ee52d155b77e82df2",
+    "registered_model": "/home/duster/kimi-k3-deploy/native-iq1s-slim-core/Kimi-K3-UD-IQ1_S-00001-of-00014.gguf",
+    "registered_model_first_shard_sha256": "5022014e7c49d8844e9f1bc7d9fb824c0d640214540aa845690518d800286083"
+  },
+  "observed_before_detection": {
+    "layer": 1,
+    "classification": "DEVELOPMENT_PREFLIGHT_NOT_DECISIVE",
+    "control_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260902-r164-incremental-l1-control",
+    "control_manifest_sha256": "47e94743ae1b07dca8702b26b71829e2f460d127a4dd9fe1d81ef5bc18381f2f",
+    "incremental_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260902-r165-incremental-l1-candidate",
+    "incremental_manifest_sha256": "e935da8b78ef73b06f93c47594efec2f5e7da05ec164c74a815efebf52cff3be",
+    "exact_terminal_sha256": "8cd42fc5baff9f7335a998b250da740a3c77b2d65e970d8d823a73c83989e5d9",
+    "control_terminal_sha256": "568ed6d639e2f51f5f4d28de5cc5a3adfbdef5436d98e4261cbeff3f21afc245",
+    "incremental_terminal_sha256": "568ed6d639e2f51f5f4d28de5cc5a3adfbdef5436d98e4261cbeff3f21afc245",
+    "plan_sha256": "39711c10cdd9bb76954ead19627226c850925e1257f8d467c543641f40f01ec2",
+    "traffic_sha256": "fc8daa7e70dd3e5e1fcb28e332099c6b40f08abf162547ef40a65ba6c02aa9ea",
+    "observation": "The two candidate terminal vectors were byte-identical, but this arm cannot repair the cross-model preregistration error."
+  },
+  "decision": "Preserve the original preregistration and layer-1 artifacts. Do not count layer 1 toward a GO. Register untouched layers 46 and 92 with the same budgets, composition, and numerical gates. Require paired control/candidate teacher hashes to agree under the registered executable and model; do not assert logits from another model."
+}

@@ -83,7 +83,7 @@ def main() -> int:
     if sorted(supplied) != sorted(expected_layers):
         raise ValueError("supplied layers differ from preregistration")
 
-    frozen_exact = prereg["fixture"]["frozen_exact_terminal_sha256"]
+    frozen_exact = prereg["fixture"].get("frozen_exact_terminal_sha256")
     rows = []
     for layer in expected_layers:
         control_root, incremental_root = supplied[layer]
@@ -106,7 +106,8 @@ def main() -> int:
         incremental_exact_path = incremental_root / "exact-terminal.f32"
         control_exact_hash = digest(control_exact_path)
         incremental_exact_hash = digest(incremental_exact_path)
-        exact_equal = control_exact_hash == incremental_exact_hash == frozen_exact
+        exact_equal = control_exact_hash == incremental_exact_hash and (
+            frozen_exact is None or control_exact_hash == frozen_exact)
         control_plan = selected_records(control_root, layer)
         incremental_plan = selected_records(incremental_root, layer)
         control_traffic = traffic(control_root, layer)
