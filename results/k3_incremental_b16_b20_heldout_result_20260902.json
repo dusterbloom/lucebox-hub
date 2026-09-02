@@ -1,0 +1,108 @@
+{
+  "schema": "kimi-k3-incremental-b16-b20-equivalence-result-v1",
+  "status": "MEASURED_GO",
+  "preregistration_sha256": "f30501e56bd1574005c3ca6d0f4477a67b2f6f8113ef3c892fa18b0e58d7fbae",
+  "raw_analysis": {
+    "path": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260902-r170-incremental-analysis/result.json",
+    "sha256": "c17b5ed4f40b116942984d3a9741e2eddd5b3b85a1d91f3bdd207b7372deb158"
+  },
+  "layers": [
+    {
+      "layer": 46,
+      "control_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260902-r166-incremental-l46-control",
+      "incremental_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260902-r167-incremental-l46-candidate",
+      "control_manifest_sha256": "e707e35d4b37033e5e2fc2b97acd57e49bd03af7c0993fb8f811e23cb7ae4ab8",
+      "incremental_manifest_sha256": "8a3831f54268f37b11473b20e9d2ecf51e0cbbb64ee83bb39039c2c6b7502a8e",
+      "exact_trajectory_sha256": "8cd42fc5baff9f7335a998b250da740a3c77b2d65e970d8d823a73c83989e5d9",
+      "exact_trajectory_equal": true,
+      "selected_set_equal": true,
+      "selected_records": 20,
+      "incremental_marker": [[46, 12, 0, 16, 20, 4]],
+      "logical_authoritative_bytes": 13045760,
+      "control_logits_sha256": "bc522c11dd6f1a46909d87283d7d2564fbe1c3d19ed4e00b96329b3aa09afc32",
+      "incremental_logits_sha256": "bc522c11dd6f1a46909d87283d7d2564fbe1c3d19ed4e00b96329b3aa09afc32",
+      "max_abs_logit_delta": 0.0,
+      "control_vs_incremental": {
+        "terminal_kl": 0.0,
+        "teacher_top1": 17763,
+        "candidate_top1": 17763,
+        "top1_agreement": true,
+        "teacher_top1_margin": 2.11306095123291,
+        "candidate_teacher_margin": 2.11306095123291
+      },
+      "control_vs_exact": {
+        "terminal_kl": 0.002116181065461172,
+        "teacher_top1": 17763,
+        "candidate_top1": 17763,
+        "top1_agreement": true,
+        "teacher_top1_margin": 2.1453418731689453,
+        "candidate_teacher_margin": 2.11306095123291
+      },
+      "incremental_vs_exact": {
+        "terminal_kl": 0.002116181065461172,
+        "teacher_top1": 17763,
+        "candidate_top1": 17763,
+        "top1_agreement": true,
+        "teacher_top1_margin": 2.1453418731689453,
+        "candidate_teacher_margin": 2.11306095123291
+      },
+      "absolute_teacher_kl_delta": 0.0,
+      "structural_gate_pass": true,
+      "quality_gate_pass": true,
+      "gate_pass": true
+    },
+    {
+      "layer": 92,
+      "control_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260902-r168-incremental-l92-control",
+      "incremental_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260902-r169-incremental-l92-candidate",
+      "control_manifest_sha256": "c97e23a23029b800a8b708c84d30db365d7403c22e6c31a8d7eb70ea92d9261e",
+      "incremental_manifest_sha256": "5166b9a9db3b1a3bcd5bd1fcc72f06b4b0a0b5ac558f941eb265a9ac6fe0db1b",
+      "exact_trajectory_sha256": "8cd42fc5baff9f7335a998b250da740a3c77b2d65e970d8d823a73c83989e5d9",
+      "exact_trajectory_equal": true,
+      "selected_set_equal": true,
+      "selected_records": 20,
+      "incremental_marker": [[92, 12, 0, 16, 20, 4]],
+      "logical_authoritative_bytes": 11898880,
+      "control_logits_sha256": "0902141d999a625fc203247ad31a5259c8acfa337f26e5f82ef9d4d9b9846b34",
+      "incremental_logits_sha256": "0902141d999a625fc203247ad31a5259c8acfa337f26e5f82ef9d4d9b9846b34",
+      "max_abs_logit_delta": 0.0,
+      "control_vs_incremental": {
+        "terminal_kl": 0.0,
+        "teacher_top1": 17763,
+        "candidate_top1": 17763,
+        "top1_agreement": true,
+        "teacher_top1_margin": 0.30051136016845703,
+        "candidate_teacher_margin": 0.30051136016845703
+      },
+      "control_vs_exact": {
+        "terminal_kl": 0.4437261733937688,
+        "teacher_top1": 17763,
+        "candidate_top1": 17763,
+        "top1_agreement": true,
+        "teacher_top1_margin": 2.1453418731689453,
+        "candidate_teacher_margin": 0.30051136016845703
+      },
+      "incremental_vs_exact": {
+        "terminal_kl": 0.4437261733937688,
+        "teacher_top1": 17763,
+        "candidate_top1": 17763,
+        "top1_agreement": true,
+        "teacher_top1_margin": 2.1453418731689453,
+        "candidate_teacher_margin": 0.30051136016845703
+      },
+      "absolute_teacher_kl_delta": 0.0,
+      "structural_gate_pass": true,
+      "quality_gate_pass": true,
+      "gate_pass": true
+    }
+  ],
+  "gate": {
+    "passed": true,
+    "decision": "Earn an all-layer behavioral incremental-rescue test; do not promote production code."
+  },
+  "limitations": [
+    "Frozen exact trajectories are a causal arithmetic discriminator, not on-policy sequence quality.",
+    "Host-reference recomposition intentionally does not measure serving throughput.",
+    "The candidate reads the same 20 records as control; selective rescue traffic is not measured here."
+  ]
+}

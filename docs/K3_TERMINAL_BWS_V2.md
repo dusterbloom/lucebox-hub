@@ -921,3 +921,28 @@ The next earned lane is the smallest incremental B16-to-B20 hydration and
 held-out one-pass risk discriminator. The immutable result is
 `results/k3_v16_route12_budget16_oracle_result_20260902.json`; raw roots r162
 and r163 remain on Lucebox4. Production received no change.
+
+## Incremental B16 to B20 composition
+
+The host-reference discriminator evaluated ordinary Budget20 and the exact
+same 20 selected records as a Budget16 base followed by four corrections of
+`exact slab output - stored slab mean`.  The first layer-1 preflight exposed a
+cross-model hash error in the original preregistration: its frozen teacher hash
+came from the older p32-core artifact while the registered model was the
+native-IQ1S slim core.  That preregistration remains immutable, layer 1 is
+classified as development only, and untouched layers 46 and 92 were registered
+separately before execution.
+
+Both held-out layers passed more strongly than required.  Control and
+incremental terminal vectors were byte-identical: maximum logit delta `0`,
+composition KL `0`, equal top-one, equal selected plans, equal logical bytes,
+and equal exact-teacher trajectories.  Their terminal KL versus the exact
+teacher was therefore unchanged (`0.0021161811` at layer 46 and `0.4437261734`
+at layer 92).  This proves the four-record correction arithmetic for the
+tested path; it does not measure selective rescue traffic or serving speed.
+
+The next earned experiment is an all-layer, on-policy B20 control versus
+B16-plus-four composition on one ordinary sequence and the registered tool
+boundary.  Production remains untouched.  The immutable held-out result is
+`results/k3_incremental_b16_b20_heldout_result_20260902.json`; raw roots
+r166-r170 remain on Lucebox4.

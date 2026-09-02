@@ -112,3 +112,6 @@ Lucebox4 itself is online/reachable, then first verify whether the staged patch 
 - Decision: test `B20 = B16 + sum(exact added slab - stored slab mean)` on frozen exact trajectories before implementing rescue state or caching.
 - Do not re-litigate: B16 and B20 use one stable ranking; the only open question in this gate is finite-precision composition at terminal logits.
 - Stop condition: any selected-set mismatch, terminal top-one change, or registered KL threshold failure closes the current composition order.
+- Provenance correction: V1 mixed a p32-core exact-logit hash with the native-IQ1S model. Layer 1 is development-only; the immutable correction and held-out V2 preregistration preserve this explicitly.
+- Held-out result: layers 46 and 92 produced byte-identical control/incremental terminal logits, KL `0`, and max logit delta `0`; earn only the all-layer on-policy equivalence gate.
+- Do not re-litigate: these runs prove composition, not sparse delta reads, risk prediction, traffic savings, or throughput.
