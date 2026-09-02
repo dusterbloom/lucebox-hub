@@ -14,6 +14,8 @@ model=${KIMI_K3_MODEL:-/home/duster/kimi-k3-deploy/p32-core/Kimi-K3-KDA-HYBRID-Q
 provider=${KIMI_K3_PROVIDER:-exact}
 aux=${KIMI_K3_AUX_DIR:-/home/duster/kimi-k3-deploy/aux}
 sidecars=${KIMI_K3_SIDECAR_DIR:-/home/duster/kimi-k3-deploy/streamed-bank/natural-sidecars}
+max_ctx=${KIMI_K3_MAX_CTX:-256}
+max_tokens=${KIMI_K3_MAX_TOKENS:-64}
 
 if [[ -e $root ]]; then
     echo "artifact root already exists: $root" >&2
@@ -27,6 +29,11 @@ for path in "$binary" "$model" "$fixture"; do
 done
 if [[ ! $port =~ ^[0-9]+$ ]] || (( port < 1024 || port > 65535 )); then
     echo "invalid port: $port" >&2
+    exit 5
+fi
+if [[ ! $max_ctx =~ ^[0-9]+$ ]] || [[ ! $max_tokens =~ ^[0-9]+$ ]] ||
+        (( max_ctx < 1 || max_tokens < 1 || max_tokens > max_ctx )); then
+    echo "invalid KIMI_K3_MAX_CTX/KIMI_K3_MAX_TOKENS" >&2
     exit 5
 fi
 if [[ $provider != exact && $provider != all-layers-calibrated96 ]]; then
@@ -54,8 +61,9 @@ fi
 
 mkdir "$root"
 cp "$fixture" "$root/request.json"
-git rev-parse HEAD > "$root/source-commit.txt"
-git status --porcelain=v1 > "$root/source-status.txt"
+repo_root=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)
+git -C "$repo_root" rev-parse HEAD > "$root/source-commit.txt"
+git -C "$repo_root" status --porcelain=v1 > "$root/source-status.txt"
 if [[ -s $root/source-status.txt ]]; then
     echo "source worktree is dirty" >&2
     exit 6
@@ -90,13 +98,14 @@ unset DFLASH_KIMI_EXPERIMENT_ROUTE_LIMIT || true
 unset DFLASH_KIMI_EXPERIMENT_TOOL_SCHEMA_RESCUE || true
 unset DFLASH_KIMI_EXPERIMENT_TOOL_REQUEST_B24 || true
 unset DFLASH_KIMI_EXPERIMENT_POSITION_BUDGETS || true
+unset DFLASH_KIMI_EXPERIMENT_INCREMENTAL_BASE_BUDGET || true
 unset DFLASH_KIMI_H22_LAYER_BUDGETS || true
 env -0 > "$root/environment.nul"
 
 command=(
     "$binary" "$model"
     --host 127.0.0.1 --port "$port" --model-name dflash
-    --max-ctx 256 --max-tokens 64 --target-device hip:0
+    --max-ctx "$max_ctx" --max-tokens "$max_tokens" --target-device hip:0
     --cache-type-k q4_0 --cache-type-v q4_0
     --prefix-cache-slots 0 --prefill-cache-slots 0 --chunk 512
 )
