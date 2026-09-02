@@ -74,6 +74,14 @@
   `bfce83e90e2e816bc6ee23fdcab579e52b0b5c4e0b9ca4c183857a3a285ba875`.
 - V16 preregistration SHA-256:
   `af210eaa8365af576b74743118943d96616cd5ed4df8c4479f1641ceeb8b0dd6`
+- Before any V16 model run, the frozen prompt hash in that preregistration was
+  found to be a transcription error. Preserve the original file unchanged and
+  apply `results/k3_v16_route12_budget16_oracle_prereg_amendment_20260902.json`:
+  the retained 53-ID q7 prompt hashes to
+  `fd835f624d053f0f2da04114215461906430685463e99fb5e94cdf17115acbb0`.
+  The target IDs, Budget16 policy, protocol, and gates are unchanged.
+  Amendment SHA-256 before commit:
+  `ee6044bf80ee37fb7548be5f401166e7a99a0b79e3ea314e6c20b06dcaadfedc`.
 - Chunked-KDA preregistration SHA-256:
   `d89d71b99cee4f46b1a82ae1c4d32aaedd4eb1b034ca0785186e3e8d4264df06`
 
