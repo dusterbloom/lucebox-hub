@@ -1,0 +1,77 @@
+{
+  "schema": "kimi-k3-incremental-b16-b20-onpolicy-prereg-v1",
+  "status": "PREREGISTERED",
+  "date": "2026-09-02",
+  "source": {
+    "research_branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "5eb69e516e0cc98bc6134d93d9809ca7116b1115",
+    "production_branch": "perf/k3-production-ponytail",
+    "production_base_commit": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4 gfx1151",
+    "earned_by_result_sha256": "f2313e55818f2de5d0d4572d8a4bcc707ca36eb3af6d5fa230a767e0e73b9018"
+  },
+  "question": "Does an all-layer on-policy route12/B20 run remain behaviorally and distributionally identical when every routed layer is composed as a B16 base plus the four-record B20 correction?",
+  "model": {
+    "first_shard": "/home/duster/kimi-k3-deploy/native-iq1s-slim-core/Kimi-K3-UD-IQ1_S-00001-of-00014.gguf",
+    "first_shard_sha256": "5022014e7c49d8844e9f1bc7d9fb824c0d640214540aa845690518d800286083"
+  },
+  "harness": {
+    "runner": "scripts/run_kimi_progressive_tool_rescue.sh",
+    "runner_sha256": "6164853dcbf4ef2f00a264de0764b5ccb9c9094dd15409dc20d96361d72c27ff",
+    "runner_change": "Allow the caller to select production defaults; these arms force 0 so the registered host-reference incremental path is used.",
+    "policy": "fixtures/k3_uniform_budget20.txt",
+    "policy_sha256": "2f366aab82de990441dc61de870736b1acbf081f26b2aff11f63017dd53f697c",
+    "route_limit": 12,
+    "control_incremental_base_budget": null,
+    "candidate_incremental_base_budget": 16,
+    "position_budgets": "",
+    "schema_rescue": 0
+  },
+  "fixtures": [
+    {
+      "id": "fact-capital",
+      "kind": "ordinary",
+      "path": "fixtures/k3_route12_native_success/fact-capital.json",
+      "sha256": "1f0cbcdd6eed575d20e76e63f6a78e4743acf1cc5eca1a455fcbefede27788ea",
+      "expected_ids": [39818, 18009, 163588, 12092, 163589, 163588, 2778, 163589],
+      "native_teacher_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r137-native-full192-fact",
+      "native_teacher_logits_sha256": "e5178bc154287a9e048f36b0f94f1d3d3d42c3c5a0d4363c93e2f21425143578",
+      "prior_b20_terminal_kl": 0.00004119279160436117
+    },
+    {
+      "id": "get-weather-first-token",
+      "kind": "registered_tool_boundary",
+      "path": "fixtures/k3_tool_weather_first_token_request.json",
+      "sha256": "fa18a5b47c98ddbb430c602e1a8738200e87b56dcbd5468889c4fb895ec00191",
+      "expected_ids": [163588],
+      "native_teacher_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260901-r141-native-tool-first",
+      "native_teacher_logits_sha256": "b29aaa3626ef45166e51eb55353d1b291adcf913e4c384641f221b2cedf91da0",
+      "prior_b20_terminal_kl": 0.6561487485794764
+    }
+  ],
+  "protocol": {
+    "control": "All-layer route12/B20 host-reference execution.",
+    "candidate": "Same 20 records and means, but each routed expert output is accumulated as B16 followed by four exact-minus-mean corrections.",
+    "commands": "Run exactly one control and one candidate per registered fixture with the clean committed source and one executable.",
+    "anti_tuning": "Do not add fixtures, change budgets, change route count, alter expected IDs, or rerun an arm after observing output."
+  },
+  "gates": {
+    "structural": [
+      "Every candidate incremental marker reports base=16, full=20, delta=4.",
+      "Control and candidate account equal logical authoritative bytes and selected records.",
+      "All four arms use one executable hash, the registered model, clean source, host-reference execution and route12."
+    ],
+    "behavioral": [
+      "Control and candidate generated ID sequences are byte-for-byte equal and match the frozen expected IDs.",
+      "Control and candidate final full-vocabulary logits are byte-identical for both fixtures.",
+      "The get_weather boundary remains native-correct at ID 163588."
+    ],
+    "distributional": [
+      "KL(control B20 || incremental B20) is 0 for both fixtures.",
+      "Control and candidate terminal KL versus the aligned native teacher are equal for both fixtures."
+    ],
+    "go": "All gates pass. Earn a production-profile delta-only read/evaluate prototype and a separate risk predictor test; do not promote production.",
+    "no_go": "Any mismatch closes the current composition order.",
+    "performance": "No timing or throughput claim is permitted from host-reference arms."
+  }
+}

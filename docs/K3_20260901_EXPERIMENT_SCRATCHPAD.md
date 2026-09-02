@@ -115,3 +115,4 @@ Lucebox4 itself is online/reachable, then first verify whether the staged patch 
 - Provenance correction: V1 mixed a p32-core exact-logit hash with the native-IQ1S model. Layer 1 is development-only; the immutable correction and held-out V2 preregistration preserve this explicitly.
 - Held-out result: layers 46 and 92 produced byte-identical control/incremental terminal logits, KL `0`, and max logit delta `0`; earn only the all-layer on-policy equivalence gate.
 - Do not re-litigate: these runs prove composition, not sparse delta reads, risk prediction, traffic savings, or throughput.
+- Next registered gate: one ordinary eight-token sequence and the known tool first-token boundary, all layers on-policy, B20 control versus B16-plus-four composition. Exact output/logit equality is required; host-reference timings are non-evidence.

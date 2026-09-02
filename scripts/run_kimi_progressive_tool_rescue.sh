@@ -56,7 +56,7 @@ uname -a > "$root/uname.txt"
 free -h > "$root/memory-before.txt"
 
 export HIP_VISIBLE_DEVICES=1,0
-export DFLASH_KIMI_PRODUCTION_DEFAULTS=1
+export DFLASH_KIMI_PRODUCTION_DEFAULTS=${KIMI_K3_PRODUCTION_DEFAULTS:-1}
 export DFLASH_KIMI_LAYER1_PROVIDER=all-layers-calibrated96
 export DFLASH_KIMI_CALIBRATED96_AUX_DIR=$aux
 export DFLASH_KIMI_ALL_SLAB_SIDECAR_DIR=$sidecars
