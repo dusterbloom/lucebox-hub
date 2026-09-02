@@ -49,24 +49,30 @@ const char * v16_oracle_path() {
     return path && *path ? path : nullptr;
 }
 
+const char * teacher_token_path() {
+    const char * path =
+        std::getenv("DFLASH_KIMI_EXPERIMENT_TEACHER_TOKEN_IDS");
+    return path && *path ? path : nullptr;
+}
+
 bool load_experiment_token_ids(const char * path,
                                std::vector<int32_t> & ids,
                                std::string & error) {
     std::ifstream input(path);
     if (!input) {
-        error = std::string("cannot open V16 oracle tokens: ") + path;
+        error = std::string("cannot open experiment token IDs: ") + path;
         return false;
     }
     int64_t token = 0;
     while (input >> token) {
         if (token < 0 || token > std::numeric_limits<int32_t>::max()) {
-            error = "V16 oracle token is outside int32 range";
+            error = "experiment token ID is outside int32 range";
             return false;
         }
         ids.push_back(static_cast<int32_t>(token));
     }
     if (!input.eof() || ids.empty()) {
-        error = std::string("cannot parse V16 oracle tokens: ") + path;
+        error = std::string("cannot parse experiment token IDs: ") + path;
         return false;
     }
     return true;
@@ -976,6 +982,23 @@ GenerateResult KimiK3Backend::generate_from_state(
 
     const bool dynamic_routed_budget =
         static_cast<bool>(req.routed_expert_budget_for_history);
+    std::vector<int32_t> teacher_tokens;
+    if (const char * path = teacher_token_path()) {
+        std::string teacher_error;
+        if (paired || snapshot || req.do_sample || dynamic_routed_budget ||
+            !req.budget_hook.close_token_ids.empty() || req.n_gen < 2 ||
+            !load_experiment_token_ids(path, teacher_tokens, teacher_error) ||
+            teacher_tokens.size() + 1 != static_cast<size_t>(req.n_gen) ||
+            std::find(teacher_tokens.begin(), teacher_tokens.end(),
+                      weights_.eos_token_id) != teacher_tokens.end()) {
+            if (teacher_error.empty()) {
+                teacher_error = "teacher-history experiment requires cold "
+                    "greedy AR, N-1 non-EOS token IDs, and n_gen=N";
+            }
+            return fail(GenerateErrorCode::PrefillFailed,
+                        std::move(teacher_error));
+        }
+    }
     if (snapshot && (req.routed_expert_min_budget > 0 ||
                      dynamic_routed_budget)) {
         return fail(GenerateErrorCode::InvalidSnapshotSlot,
@@ -1253,7 +1276,7 @@ GenerateResult KimiK3Backend::generate_from_state(
     }
     const bool can_spec = spec_target && !req.force_ar_decode &&
         !req.do_sample && req.budget_hook.close_token_ids.empty() &&
-        !dynamic_routed_budget;
+        !dynamic_routed_budget && teacher_tokens.empty();
     if (can_spec) {
         const int32_t seed = choose_token(
             logits, req.sampler, /*do_sample=*/false, history);
@@ -1305,6 +1328,12 @@ GenerateResult KimiK3Backend::generate_from_state(
     for (int i = 0; i < req.n_gen; ++i) {
         int32_t next = choose_token(
             logits, req.sampler, req.do_sample, history);
+
+        if (i < static_cast<int>(teacher_tokens.size())) {
+            next = teacher_tokens[static_cast<size_t>(i)];
+            std::fprintf(stderr,
+                "[kimi-k3-teacher-history] index=%d token=%d\n", i, next);
+        }
 
         const auto & close_ids = req.budget_hook.close_token_ids;
         if (!close_ids.empty()) {

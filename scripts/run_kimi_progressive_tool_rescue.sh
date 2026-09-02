@@ -16,6 +16,7 @@ sidecars=/home/duster/kimi-k3-deploy/streamed-bank/natural-sidecars
 fixture=${5:-$(dirname "$0")/../fixtures/k3_tool_weather_request.json}
 schema_rescue=${6:-0}
 policy=${7:-/home/duster/lucebox-k3-b7b74cc/results/h23_10k_policies/h23_moonshot_1_2gib.txt}
+teacher_tokens=${KIMI_K3_TEACHER_TOKEN_IDS:-}
 
 if [[ -e $root ]]; then
     echo "artifact root already exists: $root" >&2
@@ -27,6 +28,10 @@ for path in "$binary" "$model" "$policy" "$fixture"; do
         exit 4
     fi
 done
+if [[ -n $teacher_tokens && ! -f $teacher_tokens ]]; then
+    echo "missing teacher token IDs: $teacher_tokens" >&2
+    exit 4
+fi
 for path in "$aux" "$sidecars"; do
     if [[ ! -d $path ]]; then
         echo "missing required directory: $path" >&2
@@ -44,6 +49,9 @@ fi
 
 mkdir "$root"
 cp "$fixture" "$root/request.json"
+if [[ -n $teacher_tokens ]]; then
+    cp "$teacher_tokens" "$root/teacher-token-ids.txt"
+fi
 repo_root=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)
 git -C "$repo_root" rev-parse HEAD > "$root/source-commit.txt"
 git -C "$repo_root" status --porcelain=v1 > "$root/source-status.txt"
@@ -53,6 +61,9 @@ if [[ -s $root/source-status.txt ]]; then
 fi
 sha256sum "$binary" > "$root/executable.sha256"
 sha256sum "$model" "$policy" "$fixture" > "$root/inputs.sha256"
+if [[ -n $teacher_tokens ]]; then
+    sha256sum "$root/teacher-token-ids.txt" >> "$root/inputs.sha256"
+fi
 uname -a > "$root/uname.txt"
 free -h > "$root/memory-before.txt"
 
@@ -79,6 +90,11 @@ if [[ $schema_rescue == 1 ]]; then
     export DFLASH_KIMI_EXPERIMENT_TOOL_SCHEMA_RESCUE=1
 else
     unset DFLASH_KIMI_EXPERIMENT_TOOL_SCHEMA_RESCUE || true
+fi
+if [[ -n $teacher_tokens ]]; then
+    export DFLASH_KIMI_EXPERIMENT_TEACHER_TOKEN_IDS=$root/teacher-token-ids.txt
+else
+    unset DFLASH_KIMI_EXPERIMENT_TEACHER_TOKEN_IDS || true
 fi
 env -0 > "$root/environment.nul"
 
@@ -142,6 +158,7 @@ done
     sha256sum client.time.tsv command.nul environment.nul executable.sha256 \
         final.f32 health.json inputs.sha256 memory-after.txt memory-before.txt \
         request.json response.json server.stderr server.stdout source-commit.txt \
-        source-status.txt traffic.tsv uname.txt > SHA256SUMS
+        source-status.txt traffic.tsv uname.txt \
+        ${teacher_tokens:+teacher-token-ids.txt} > SHA256SUMS
 )
 trap - EXIT
