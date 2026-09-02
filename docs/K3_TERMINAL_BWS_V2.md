@@ -996,3 +996,41 @@ and two separate lanes: free-running behavioral evaluation, and forced
 native-history terminal KL.  The latter produces comparable distributions;
 the former tests actual generated behavior.  A fixture is scored for candidate
 retention only after Full192 native K3 passes its registered checker.
+
+## Sixteen-prompt native qualification closure
+
+The frozen 16-prompt suite completed its Full192 native qualification on
+Lucebox4 before any new B16 or B20 candidate output was observed. Six prior
+official-template passes were reused under the registered provenance rule and
+ten new fixtures were run at experiment commit `721a5abd`, executable SHA-256
+`963cb3c2...`, and native-core first-shard SHA-256 `5022014e...`.
+
+Thirteen fixtures qualified, exceeding the preregistered minimum of twelve.
+Native failed `reasoning-inventory` semantically (`6, 0` instead of `13, 0`)
+and failed both coding contracts by returning otherwise plausible source in
+Markdown fences. Native passed exact flat and nested JSON, the known
+`get_weather` boundary, selection of `get_weather` among multiple declared
+tools, the declared-tool no-call control, the constrained three-line response,
+and the 278-token long-context extraction (`VIOLET-739`). Every new raw root
+contains its exact NUL-separated command, environment, response, terminal
+logits, traffic ledger and SHA-256 manifest; all 17 files in each root verified.
+
+This closes the **native behavioral denominator**, not candidate quality. It
+does not earn a B16, B20, progressive-rescue, aligned-KL, throughput or
+production conclusion. The qualified denominator also lacks coding coverage:
+before candidate execution, register fresh coding and longer coding-agent
+fixtures whose frozen validators explicitly accept either raw source or one
+conventional fenced block and then run behavioral tests. This is a new
+contract, not a retroactive weakening of the two failed fixtures.
+
+The next-session order is fixed: preregister those coding replacements before
+seeing candidate output; run free B16 and canonical B20 on native-qualified
+fixtures; report their disagreements and task success; then build/smoke the
+already-committed forced-history harness and measure aligned terminal KL.
+`B16+4` remains only the incremental-composition experiment name, not a new
+canonical BWS policy. The canonical policies remain `route12/Budget16` and
+`route12/Budget20`.
+
+The immutable closure is
+`results/k3_bws_eval_v2_native_qualification_final_20260902.json`. No
+candidate arm was queued during wrap-up, and production remains untouched.
