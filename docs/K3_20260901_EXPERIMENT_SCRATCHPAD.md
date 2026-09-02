@@ -2,17 +2,20 @@
 
 ## Decisions to retain
 
-- Run the route12/Budget16 V16 target-only oracle before building a real
-  draft or rescue runtime. The gate is `<= 1.55 s` for the 16-row target;
-  `1.55–1.75 s` is only a retained optimization lead.
+- The route12/Budget16 V16 single-call oracle is closed **NO-GO** before
+  timing: the persistent Core8 implementation still accepts exactly eight
+  hidden rows and rejected the width-16 vector at layer 0. No V16 target graph
+  executed. Do not relax another guard or tune this fixture. A future attempt
+  must preregister composition of two state-chained Core8 calls.
 - Freeze the candidate IDs from a scalar route12/Budget16 run. Do not compare
   the V16 target against a native trajectory after the approximate policy has
   diverged.
 - Require all 16 target argmax rows, the next scalar continuation, terminal
   full-vocabulary logits, and the complete committed recurrent/MLA state to
   match the scalar control.
-- Test B16→B20 incremental hydration only after the V16 timing and correctness
-  gate earns it. Do not implement a broad progressive subsystem first.
+- V16 did not earn continuation. Resume the already-evidenced B16→B20 lane
+  with the smallest incremental-hydration discriminator. Do not implement a
+  broad progressive subsystem first.
 - Separately screen the existing generic chunked delta-net helper at M64. Its
   prior Qwen state drift is a preregistered exactness risk. A failure closes
   only this helper inside the current Core8-grouped executor, not a true
@@ -82,6 +85,8 @@
   The target IDs, Budget16 policy, protocol, and gates are unchanged.
   Amendment SHA-256 before commit:
   `ee6044bf80ee37fb7548be5f401166e7a99a0b79e3ea314e6c20b06dcaadfedc`.
+- V16 single-call NO-GO result SHA-256 before commit:
+  `1f9642db69446b582af74f0719a02e634ea95bb3d673841ef3d84245ea4b52ba`.
 - Chunked-KDA preregistration SHA-256:
   `d89d71b99cee4f46b1a82ae1c4d32aaedd4eb1b034ca0785186e3e8d4264df06`
 

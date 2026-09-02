@@ -1,0 +1,75 @@
+{
+  "schema": "dflash.kimi-k3.route12-budget16-v16-oracle-result.v1",
+  "date": "2026-09-02",
+  "verdict": "NO_GO_CURRENT_V16_SINGLE_CALL",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "commit": "51152192619fa4e1a217e890db8b19474b0c720f",
+    "worktree_status": "clean",
+    "binary_sha256": "a84602d320b93a182b062d642772bd980d54cfe9150ad4e951428331790cd88d",
+    "production_baseline_untouched": "fac048c090c74e5f8f989bffcda3aadc0bc8c266"
+  },
+  "preregistration": {
+    "path": "results/k3_v16_route12_budget16_oracle_prereg_20260901.json",
+    "sha256": "af210eaa8365af576b74743118943d96616cd5ed4df8c4479f1641ceeb8b0dd6",
+    "amendment_path": "results/k3_v16_route12_budget16_oracle_prereg_amendment_20260902.json",
+    "amendment_sha256": "ee6044bf80ee37fb7548be5f401166e7a99a0b79e3ea314e6c20b06dcaadfedc",
+    "no_go_rule": "Any macro/provider runtime failure is NO-GO."
+  },
+  "hardware": {
+    "host": "lucebox4",
+    "target": "physical GPU1 gfx1151 exposed as logical hip:0",
+    "rocm": "7.2.2",
+    "platform_profile": "performance",
+    "gpu_performance_level": "auto",
+    "timing_qualification": "INVALID_AUTO_CLOCKS"
+  },
+  "focused_preflight": {
+    "targeted_release_build_j4": "PASS",
+    "test_kimi_k3_calibrated_provider_gfx1151": "PASS",
+    "test_kimi_k3_ordered_join_gfx1151": "PASS",
+    "test_moe_stream_compute_gfx1151": "PASS",
+    "device_selection_note": "The tests must set HIP_VISIBLE_DEVICES=1,0 and DFLASH_TEST_GPU=0. Their default second-visible-device choice selects gfx1201 and crashes in HIP kernels; this is outside the registered gfx1151 target.",
+    "unrelated_full_build": "FAIL test_rms_norm_hip: cudaErrorNoDevice compatibility symbol; both registered executables and focused tests built successfully"
+  },
+  "frozen_inputs": {
+    "model_first_shard_sha256": "5022014e7c49d8844e9f1bc7d9fb824c0d640214540aa845690518d800286083",
+    "prompt_ids_sha256": "fd835f624d053f0f2da04114215461906430685463e99fb5e94cdf17115acbb0",
+    "prompt_tokens": 53,
+    "budget16_sha256": "4e40e7b834baf78152ff39a2f5cfec99fb5af52527633c123cb77cb0aa2a325e",
+    "route_limit": 12
+  },
+  "scalar_trajectory": {
+    "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260902-r162-v16-b16-scalar",
+    "manifest_sha256": "02766dddd09ddd4e069722526549680e922918b49724e31f11af63bc9cb8057d",
+    "output_ids_sha256": "515114ea1143ed8318caa881a08e831a55509a0f8cdb4e9117dbf131c6fe1d88",
+    "output_ids": [1166, 12156, 139743, 93054, 42753, 2360, 274, 745, 793, 87, 381, 17, 395, 1288, 306, 4661, 581, 1288],
+    "visible_prefix": "def square_even_numbers(values):",
+    "final_logits_sha256": "f5061a0e0ca48b7f19a0c1e0c5d9998b79507610ded0a67324e59e78a7c6127d",
+    "final_state_sha256": "b1d9fd67c5a8fe9450c4813ac0ffebfed1448bdf30a4154acc415933f661b189",
+    "logical_authoritative_bytes": 58995679232,
+    "physical_direct_read_bytes": 22010372096,
+    "prefill_seconds_unqualified": 36.239,
+    "decode_seconds_unqualified": 9.370
+  },
+  "v16_arm": {
+    "artifact_root": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260902-r163-v16-b16-oracle-auto",
+    "manifest_sha256": "aa86c0f33f27ad1f47a374bf0dfd52c82d76c245a4ef89abdb7c2299d9e17e42",
+    "process_exit_status": 1,
+    "failure": "Kimi-K3 persistent exact Core8 failed at layer 0: persistent exact Core8 shape mismatch at layer 0",
+    "v16_target_marker_present": false,
+    "exact_core8_executions": 0,
+    "macro_union_attempts": 0,
+    "generated_ids": 0,
+    "final_logits_captured": false,
+    "final_state_captured": false,
+    "timing_interpretation": "No V16 target timing exists. The run failed before the target graph executed, so clock pinning cannot change the verdict."
+  },
+  "cause": {
+    "guard_change": "The experimental patch admitted macro widths divisible by eight.",
+    "unmodified_fixed_shape": "PersistentRoutedPreparation::evaluate_exact_core8 still requires token_begin == 0 and hidden.size() == n_embd * 8.",
+    "observed_effect": "The width-16 hidden vector reaches the first fixed-width Core8 call and fails its shape check before executing layer 0.",
+    "interpretation": "This is a harness/architecture NO-GO, not evidence about the performance of two correctly composed Core8 transactions."
+  },
+  "decision": "Do not tune or repair V16 on this discovery fixture. A future V16 attempt requires a separately preregistered two-Core8 composition with recurrent-state chaining, checkpoint slicing, exact state/logit closure, and the same timing gate. Continue with the already-earned incremental B16-to-B20 hydration and held-out one-pass risk discriminator."
+}

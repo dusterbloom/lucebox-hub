@@ -891,3 +891,33 @@ after the Phase B terminal predictor beats residual/norm ranking on held-out
 layers. No GSQ-specific decoder, HIP kernel, or large allocator subsystem is
 earned by the published artifact alone. The immutable review is
 `results/lucebox_gsq_rco_artifact_review_20260901.json`.
+
+## Route12/B16 V16 target-only oracle
+
+The V16 gate resumed on Lucebox4 from clean experiment commit `51152192`.
+Before model work, a transcription error in the preregistered 53-ID prompt
+hash was corrected by an immutable amendment; target IDs, Budget16 policy,
+protocol and gates did not change. Targeted HIP executables and the focused
+provider, ordered-join and stream tests passed on physical `gfx1151`.
+
+The scalar route12/B16 arm froze 18 candidate IDs and complete terminal logits
+and state. The V16 arm then failed the preregistered runtime gate before one
+target graph executed:
+
+```text
+Kimi-K3 persistent exact Core8 failed at layer 0:
+persistent exact Core8 shape mismatch at layer 0
+```
+
+The experimental guard admitted widths divisible by eight, but the persistent
+Core8 evaluator still requires `token_begin == 0` and a hidden vector of
+exactly `8 * n_embd`. The width-16 vector therefore fails at the first call;
+there is no target timing to interpret, and automatic clocks do not affect the
+NO-GO. This closes the current single-call V16 patch, not a correctly
+state-chained composition of two Core8 transactions. Per the registered stop
+rule, it will not be repaired on the discovery fixture.
+
+The next earned lane is the smallest incremental B16-to-B20 hydration and
+held-out one-pass risk discriminator. The immutable result is
+`results/k3_v16_route12_budget16_oracle_result_20260902.json`; raw roots r162
+and r163 remain on Lucebox4. Production received no change.
