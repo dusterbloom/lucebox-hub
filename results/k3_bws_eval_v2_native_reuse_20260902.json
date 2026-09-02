@@ -1,0 +1,76 @@
+{
+  "schema": "kimi-k3-bws-eval-v2-native-reuse-v1",
+  "status": "IMMUTABLE_NATIVE_BEHAVIOR_REUSE_6_OF_16",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "suite_preregistration": "results/k3_bws_eval_v2_prereg_20260902.json",
+    "suite_preregistration_sha256": "59ee7939169eca555848d93f5868940128868a61a6472b95dcf58825bf132aca",
+    "checker": "scripts/check_kimi_bws_eval_v2.py",
+    "checker_commit": "37561109",
+    "checker_sha256": "0fba00cc6a4802e5eae9bc1a59aa2d240a57d92dcfc7162ebaa907a09cf9b8cb"
+  },
+  "baselines": [
+    {
+      "path": "fixtures/k3_h23_native_success_baseline.json",
+      "sha256": "b32a4bd63ef87ade57c38b6376effd1cba1c2d93c96c971e0926ed63d56d5de7",
+      "source_branch": "perf/k3-layer-major-prefill",
+      "source_branch_head": "102cf35ab2d86dc37e63faeece180267b2e9b2e6",
+      "artifact_commit": "16b0fb511ad1301087819abb3f684be51059cdd9",
+      "native_result_sha256": "e056e0802d2d8917446445271ef18c0b2289a2220d51ad41ac7a932ab88079dd",
+      "chat_template": "gguf-jinja-thinking-off"
+    },
+    {
+      "path": "fixtures/k3_h23_broad_holdout_baseline.json",
+      "sha256": "493b2dbd8105995fb75579d0bf685d839520a1fa9d3fbf2bb37544c9bb3e1c81",
+      "source_branch": "perf/k3-layer-major-prefill",
+      "source_branch_head": "102cf35ab2d86dc37e63faeece180267b2e9b2e6",
+      "artifact_commit": "374206ce7164f31b5fd534bdee3adda2c45507a9",
+      "native_result_sha256": "ad0161eeb95312fd893aa88fb1014f467419f9fe5881317e0bc813f7e0efc40c",
+      "chat_template": "gguf-jinja-thinking-off"
+    }
+  ],
+  "reused_fixtures": [
+    {
+      "id": "fact-capital",
+      "baseline": "fixtures/k3_h23_native_success_baseline.json",
+      "prompt_text_byte_identical": true,
+      "registered_checker_pass": true
+    },
+    {
+      "id": "translation-italian",
+      "baseline": "fixtures/k3_h23_native_success_baseline.json",
+      "prompt_text_byte_identical": true,
+      "registered_checker_pass": true
+    },
+    {
+      "id": "reasoning-marble",
+      "baseline": "fixtures/k3_h23_native_success_baseline.json",
+      "prompt_text_byte_identical": true,
+      "registered_checker_pass": true
+    },
+    {
+      "id": "fact-science",
+      "baseline": "fixtures/k3_h23_broad_holdout_baseline.json",
+      "prompt_text_byte_identical": true,
+      "registered_checker_pass": true
+    },
+    {
+      "id": "extract-decoys",
+      "baseline": "fixtures/k3_h23_broad_holdout_baseline.json",
+      "prompt_text_byte_identical": true,
+      "registered_checker_pass": true
+    },
+    {
+      "id": "grammar-agreement",
+      "baseline": "fixtures/k3_h23_broad_holdout_baseline.json",
+      "prompt_text_byte_identical": true,
+      "registered_checker_pass": true
+    }
+  ],
+  "decision": "Reuse these six observations for native behavioral qualification. Do not rerun expensive Full192 generation solely to reproduce them.",
+  "limitations": [
+    "This reuse qualifies registered behavior only; it does not provide current-binary logits for the aligned-terminal lane.",
+    "Prompt text and checker output were revalidated, but historical prompt token IDs are not promoted as current-binary token closure.",
+    "Candidate terminal KL still requires byte-identical forced histories and a retained Full192 logit row."
+  ]
+}
