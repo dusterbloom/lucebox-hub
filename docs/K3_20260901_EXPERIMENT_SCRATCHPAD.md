@@ -107,3 +107,8 @@ Lucebox4 still has no handshake or return traffic: Tailscale ping, Tailscale
 userspace `nc`, and direct SSH all time out. No GPU work started. Resume after
 Lucebox4 itself is online/reachable, then first verify whether the staged patch reached
 `/home/duster/k3-terminal-kl-bws-v2-guarded` before applying it again.
+## 2026-09-02 — incremental B16 to B20 discriminator
+
+- Decision: test `B20 = B16 + sum(exact added slab - stored slab mean)` on frozen exact trajectories before implementing rescue state or caching.
+- Do not re-litigate: B16 and B20 use one stable ranking; the only open question in this gate is finite-precision composition at terminal logits.
+- Stop condition: any selected-set mismatch, terminal top-one change, or registered KL threshold failure closes the current composition order.

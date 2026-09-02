@@ -1,0 +1,55 @@
+{
+  "schema": "kimi-k3-incremental-b16-b20-equivalence-prereg-v1",
+  "status": "PREREGISTERED",
+  "date": "2026-09-02",
+  "source": {
+    "research_branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "13ea6d86cb44295dcfa0ab158bd416256064454e",
+    "production_branch": "perf/k3-production-ponytail",
+    "production_base_commit": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4 gfx1151"
+  },
+  "question": "Can the four records added by route12/B20 be evaluated as an incremental correction to an already-computed B16 routed output without materially changing the terminal distribution?",
+  "frozen_observations": [
+    "B16 and B20 are prefixes of the same stable score ordering.",
+    "B20 adds exactly four selected route-slab records to B16 when the calibrated route set is unchanged.",
+    "Each natural slab owns an independent 256-neuron gate/up activation block and corresponding down-projection block, so its expert-output contribution is algebraically additive.",
+    "B16 and B20 agreed on all three registered ordinary fixtures and disagreed at the registered get_weather boundary, where B20 was native-correct."
+  ],
+  "model": {
+    "first_shard": "/home/duster/kimi-k3-deploy/native-iq1s-slim-core/Kimi-K3-UD-IQ1_S-00001-of-00014.gguf",
+    "first_shard_sha256": "5022014e7c49d8844e9f1bc7d9fb824c0d640214540aa845690518d800286083"
+  },
+  "fixture": {
+    "prompt": "Implement a Python function that parses JSON and returns sorted unique keys.",
+    "prompt_file_sha256": "e9c51eb46dadd3dd50937e4f1c817fbb38d3941824e8ff3bf063938ecf390087",
+    "source_artifact": "/home/duster/kimi-k3-deploy/k3-terminal-kl-bws-v2-20260831-r43-paired-code-l92-b192",
+    "frozen_exact_terminal_sha256": "54f50d7c3f93f94512367ede8bdb2e542a96aa61ecd0ac0ee52d155b77e82df2"
+  },
+  "protocol": {
+    "layers": [1, 46, 92],
+    "route_limit": 12,
+    "full_budget": 20,
+    "incremental_base_budget": 16,
+    "trajectory": "Cold scalar prefill follows the exact teacher. Only the final prompt row at the named routed layer uses the candidate provider.",
+    "control": "Ordinary Budget20 evaluation and reduction.",
+    "candidate": "Construct the same Budget20 selected set as a Budget16 base followed by the four-record correction sum(exact_slab_output - stored_slab_mean). Read exactly the same 20 authoritative records as control.",
+    "implementation_scope": "Host-reference experimental path only. No cache, risk predictor, production path, or throughput claim.",
+    "anti_tuning": "Run one control and one incremental arm at each registered layer. Do not alter prompt, layers, budgets, routes, model, or gates after observing an arm."
+  },
+  "gates": {
+    "structural": [
+      "For every evaluated row, the Budget16 plan is an exact prefix/subset of Budget20 and the delta has exactly four records.",
+      "Control and candidate plan traces select the same 20 records and account the same logical authoritative bytes.",
+      "Control and candidate exact-teacher terminal logits are byte-identical."
+    ],
+    "quality": [
+      "Incremental and ordinary Budget20 terminal top-1 IDs agree at all three layers.",
+      "Full-vocabulary KL(control Budget20 || incremental Budget20) is <= 1e-6 at every layer.",
+      "Absolute change in terminal KL versus exact teacher is <= 1e-4 at every layer."
+    ],
+    "go": "All structural and quality gates pass. This earns an all-layer behavioral incremental-rescue experiment, not production code.",
+    "no_go": "Any structural failure, top-1 change, or KL threshold failure closes this composition/order and forbids a progressive runtime based on it.",
+    "production": "No production transplant is authorized by this discriminator."
+  }
+}
