@@ -41,8 +41,8 @@ def selected_records(root: Path, layer: int) -> set[tuple[int, int]]:
                 if int(row["model_layer"]) == layer]
     terminal_pos = max(int(row["base_pos"]) for row in rows)
     rows = [row for row in rows if int(row["base_pos"]) == terminal_pos]
-    if len(rows) != 12:
-        raise ValueError(f"layer {layer}: expected 12 route rows, found {len(rows)}")
+    if len(rows) != 16:
+        raise ValueError(f"layer {layer}: expected 16 native route rows, found {len(rows)}")
     return {(int(row["expert"]), int(rank))
             for row in rows
             for rank in filter(None, row["selected_ranks"].split(","))}
