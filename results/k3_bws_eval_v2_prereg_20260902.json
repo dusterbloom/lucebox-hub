@@ -1,0 +1,278 @@
+{
+  "schema": "kimi-k3-bws-eval-v2-prereg-v1",
+  "status": "PREREGISTERED_UNMEASURED",
+  "source": {
+    "branch": "experiment/k3-terminal-kl-bws-v2",
+    "design_parent": "7c684b6d943205291c09b3841f247a5c52f92f4f",
+    "production_branch": "perf/k3-production-ponytail",
+    "production_base": "fac048c090c74e5f8f989bffcda3aadc0bc8c266",
+    "hardware": "Lucebox4"
+  },
+  "question": "How often do route12/B16 and route12/B20 disagree on native-qualified behavior, and what terminal full-vocabulary KL do they produce on the same forced native histories?",
+  "exactness_scope": {
+    "native_equivalence": "Neither B16 nor B20 can be native-exact because route12 and omitted-slab means discard authoritative information.",
+    "b20_equivalence": "The measured add-after-rounding B16-plus-four implementation already failed exact all-layer B20 equivalence and is not rerun here.",
+    "future_exact_rescue": "An exact B20 rescue must defer state commit and execute the canonical B20 reduction, or restore and replay canonical B20. Reused payload residency is allowed; equality must cover logits, output IDs, routes, recurrent state hashes, and traffic accounting."
+  },
+  "lanes": {
+    "free_run": {
+      "purpose": "Measure actual greedy behavior, generated token IDs, valid JSON/tool/code output, and B16/B20 disagreement.",
+      "history_rule": "Do not compute KL after generated histories diverge.",
+      "native_qualification": "A fixture contributes to candidate retention only if Full192 native passes its registered checker. Native failures remain reported but are excluded from the retention denominator."
+    },
+    "aligned_terminal": {
+      "purpose": "Measure one terminal full-vocabulary distribution per fixture on a common history.",
+      "history_rule": "Replay the Full192 native generated token IDs under every arm before capturing the next-token logits. Verify prompt token IDs and forced history token IDs byte-for-byte.",
+      "metrics": [
+        "terminal KL mean",
+        "terminal KL median",
+        "terminal KL p95",
+        "terminal KL maximum",
+        "top-1 agreement",
+        "native-token margin"
+      ],
+      "non_claim": "One terminal point per prompt is not a per-token sequence KL curve."
+    }
+  },
+  "arms": {
+    "native_full192": {
+      "route_count": 16,
+      "slab_budget": 192,
+      "role": "teacher and native task qualifier"
+    },
+    "h23_aggressive1p8": {
+      "role": "frozen H23 1.8-GiB comparison"
+    },
+    "h23_moonshot1p2": {
+      "role": "frozen H23 1.2-GiB comparison"
+    },
+    "route12_budget20": {
+      "route_count": 12,
+      "slab_budget": 20,
+      "role": "richer static BWS control"
+    },
+    "route12_budget16": {
+      "route_count": 12,
+      "slab_budget": 16,
+      "role": "cheap base and disagreement probe"
+    }
+  },
+  "fixtures": [
+    {
+      "id": "fact-capital",
+      "category": "factual",
+      "path": "fixtures/k3_route12_native_success/fact-capital.json",
+      "sha256": "1f0cbcdd6eed575d20e76e63f6a78e4743acf1cc5eca1a455fcbefede27788ea",
+      "checker": {
+        "type": "normalized_contains",
+        "value": "tokyo"
+      }
+    },
+    {
+      "id": "fact-science",
+      "category": "factual",
+      "path": "fixtures/k3_route12_behavioral_holdout/fact-science.json",
+      "sha256": "8fb11a50c2952fad8f19d83e22831c38471e906b5bb8e491c4ee3a01cea500af",
+      "checker": {
+        "type": "normalized_regex",
+        "value": "carbon dioxide|(?<![a-z0-9])co2(?![a-z0-9])"
+      }
+    },
+    {
+      "id": "extract-decoys",
+      "category": "extraction",
+      "path": "fixtures/k3_route12_behavioral_holdout/extract-decoys.json",
+      "sha256": "238d045a442c5e14b9e3aba3ad9fae5d44df851d04a846772110b04678e80557",
+      "checker": {
+        "type": "whitespace_insensitive_contains",
+        "value": "quartz-918"
+      }
+    },
+    {
+      "id": "translation-italian",
+      "category": "multilingual",
+      "path": "fixtures/k3_route12_native_success/translation-italian.json",
+      "sha256": "a7fb127aac01f317ffe45026195f26eb1943428ec93399f1ebb6a8e30bb1ee5c",
+      "checker": {
+        "type": "normalized_regex",
+        "value": "buongiorno|buon giorno"
+      }
+    },
+    {
+      "id": "grammar-agreement",
+      "category": "language_precision",
+      "path": "fixtures/k3_route12_behavioral_holdout/grammar-agreement.json",
+      "sha256": "2595c69204eb375321b643de515b53849e00e784ca1d603b13fdeeb5a9818c34",
+      "checker": {
+        "type": "normalized_contains",
+        "value": "the list of items is on the table"
+      }
+    },
+    {
+      "id": "reasoning-marble",
+      "category": "arithmetic_canary",
+      "path": "fixtures/k3_route12_native_success/reasoning-marble.json",
+      "sha256": "9ec946d5412251432ec7635fc9aa474c4da27f17ab36bdd467ebe470b2c47dbd",
+      "checker": {
+        "type": "integer_token",
+        "value": 42
+      }
+    },
+    {
+      "id": "reasoning-inventory",
+      "category": "multi_step_reasoning",
+      "path": "fixtures/k3_bws_eval_v2/reasoning-inventory.json",
+      "sha256": "040f5d8f0ebef4abe1a1e94d2a48dbf155441766c73b0574f7449d8c6caefb45",
+      "checker": {
+        "type": "normalized_regex",
+        "value": "^13\\s*,\\s*0$"
+      }
+    },
+    {
+      "id": "code-function-complete",
+      "category": "coding",
+      "path": "fixtures/k3_bws_eval_v2/code-function-complete.json",
+      "sha256": "8f236a645167aa595c86d148bbf5b79a86a37ae13533b26a50a9b8dbbbd04a2f",
+      "checker": {
+        "type": "python_square_even_numbers",
+        "cases": [
+          [[], []],
+          [[1, 2, 3, 4], [4, 16]],
+          [[-2, -1, 0, 6], [4, 0, 36]]
+        ],
+        "input_must_not_mutate": true
+      }
+    },
+    {
+      "id": "agentic-intervals",
+      "category": "longer_coding_agent",
+      "path": "fixtures/k3_route12_agentic_intervals.json",
+      "sha256": "72c86dcc65a6f9923970f3716f6549fa4a5a0ceb64554cbf47bbffb00f3ae242",
+      "checker": {
+        "type": "python_merge_intervals",
+        "cases": [
+          [[], []],
+          [[[1, 3], [2, 4], [8, 10], [10, 12]], [[1, 4], [8, 12]]],
+          [[[5, 7], [1, 2]], [[1, 2], [5, 7]]]
+        ],
+        "input_must_not_mutate": true
+      }
+    },
+    {
+      "id": "structured-flat",
+      "category": "structured_json",
+      "path": "fixtures/k3_route12_structured_json.json",
+      "sha256": "667a22abdb13dd0c3f6a98b6a1d4063b7d1a2ef23ea4befdbbbf8bf332046864",
+      "checker": {
+        "type": "json_exact",
+        "value": {
+          "language": "Python",
+          "passed_tests": 3,
+          "safe": true
+        }
+      }
+    },
+    {
+      "id": "structured-nested",
+      "category": "structured_json",
+      "path": "fixtures/k3_bws_eval_v2/structured-nested.json",
+      "sha256": "70eb78511fa23bbc5da50f0cbf354685ec3958190d40e7941ec183e58c928f69",
+      "checker": {
+        "type": "json_exact",
+        "value": {
+          "language": "Python",
+          "tests": [
+            {
+              "name": "unit",
+              "passed": true
+            },
+            {
+              "name": "integration",
+              "passed": false
+            }
+          ],
+          "metadata": {
+            "attempts": 2,
+            "safe": true
+          }
+        }
+      }
+    },
+    {
+      "id": "tool-weather-boundary",
+      "category": "native_tool_boundary",
+      "path": "fixtures/k3_tool_weather_request.json",
+      "sha256": "9ddc53b93c0e162a898f9b2c72d03e5cd9ab670c608ffef489aaa6090ab7f0d6",
+      "checker": {
+        "type": "tool_call",
+        "name": "get_weather",
+        "arguments": {
+          "location": "San Francisco"
+        }
+      }
+    },
+    {
+      "id": "tool-select-weather",
+      "category": "multi_tool_selection",
+      "path": "fixtures/k3_bws_eval_v2/tool-select-weather.json",
+      "sha256": "b6b57113ffaad7328a8748a344fa6e25347d241892e6fee9600faebd0508371b",
+      "checker": {
+        "type": "tool_call",
+        "name": "get_weather",
+        "arguments": {
+          "location": "Rome"
+        }
+      }
+    },
+    {
+      "id": "tool-declared-no-call",
+      "category": "tool_false_positive",
+      "path": "fixtures/k3_tool_declared_no_call_math.json",
+      "sha256": "99339fce7530f743ad38601b27e55ab1f06aed5faf512b8e7522dbdfa2dde289",
+      "checker": {
+        "type": "no_tool_integer",
+        "value": 42
+      }
+    },
+    {
+      "id": "long-constrained-response",
+      "category": "long_response",
+      "path": "fixtures/k3_bws_eval_v2/long-constrained-response.json",
+      "sha256": "5dffd9321491ae1fa5d104044c68f543e78b5591a1e9cc277c970d633d93647d",
+      "checker": {
+        "type": "three_numbered_lines",
+        "required_terms": [
+          "invariant",
+          "boundary",
+          "o(log n)"
+        ]
+      }
+    },
+    {
+      "id": "long-context-extract",
+      "category": "long_context_extraction",
+      "path": "fixtures/k3_bws_eval_v2/long-context-extract.json",
+      "sha256": "ef6f0eb70b44cf21b28c1faca9c55015ab20f1cd91c50430a77bf622d5540e36",
+      "checker": {
+        "type": "whitespace_insensitive_contains",
+        "value": "violet-739"
+      }
+    }
+  ],
+  "gates": {
+    "suite_size": 16,
+    "native": "Run every fixture under Full192. Keep all native failures visible and exclude only those fixtures from candidate retention scoring.",
+    "behavior": "Report task passes and exact generated sequences separately. Do not require token equality when both outputs satisfy the registered task.",
+    "disagreement": "Report every B16/B20 first divergence and whether B20, B16, both, or neither pass.",
+    "terminal_kl": "Compute statistics only on forced, byte-identical native histories. Do not compute KL on divergent free-running histories.",
+    "progression": "Only build a canonical exact-rescue prototype if B16/B20 disagreement is sparse enough to amortize and concentrated enough for a one-pass risk model to predict."
+  },
+  "byte_accounting": [
+    "logical authoritative provider bytes",
+    "physical direct-read bytes",
+    "exact fallback bytes",
+    "provider positions",
+    "bytes per provider position"
+  ],
+  "performance_non_claim": "Cold suite wall time and host-reference execution are not serving throughput."
+}

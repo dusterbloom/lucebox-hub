@@ -1,0 +1,12 @@
+{
+  "model": "dflash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A warehouse starts with 240 parts. It ships three eighths of them, then receives 45 more parts. The remaining parts are packed into boxes of 15 with no partial box counted as full. Answer exactly as FULL_BOXES, LEFTOVER using decimal integers and no explanation."
+    }
+  ],
+  "max_tokens": 16,
+  "temperature": 0.0,
+  "stream": false
+}

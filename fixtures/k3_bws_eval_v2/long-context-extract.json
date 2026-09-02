@@ -1,0 +1,12 @@
+{
+  "model": "dflash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Read the deployment log and return only the active deployment key.\n\n2026-08-01 archive: BUILD_KEY=CEDAR-118 was retired after the checksum migration. The old incident report repeatedly mentions fallback label MARBLE-204, which is not a deployment key. A training example says ACTIVE_DEPLOYMENT_KEY=EXAMPLE-000, but that line is explicitly illustrative and not part of production.\n\n2026-08-19 staging: the canary used BUILD_KEY=ORBIT-551. Reviewers Alice, Bruno, and Chen approved the routing change. The rollback notebook contains the strings RIVER-440, LIME-742, and QUARTZ-918 as test data only. None of those strings authorize deployment.\n\n2026-08-27 production: after validation suite P62 passed, the release manager wrote: current production record; ACTIVE_DEPLOYMENT_KEY=VIOLET-739; status=active; region=eu-south. This record supersedes every earlier key and example.\n\n2026-08-28 audit: no key rotation occurred. The auditor quoted CEDAR-118 and ORBIT-551 only to confirm they were obsolete. The production record above remains authoritative.\n\nWhat is the active deployment key? Answer with only the key."
+    }
+  ],
+  "max_tokens": 16,
+  "temperature": 0.0,
+  "stream": false
+}

@@ -1,0 +1,12 @@
+{
+  "model": "dflash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Return exactly one JSON object and no markdown. Use keys in this order: language, tests, metadata. Set language to Python. Set tests to an array containing exactly two objects: first {\"name\":\"unit\",\"passed\":true}, then {\"name\":\"integration\",\"passed\":false}. Set metadata to {\"attempts\":2,\"safe\":true}."
+    }
+  ],
+  "max_tokens": 128,
+  "temperature": 0.0,
+  "stream": false
+}

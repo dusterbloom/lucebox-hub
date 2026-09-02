@@ -971,3 +971,28 @@ the earlier registered Budget20-to-Budget24 one-row and eight-row prompt-tail
 arms already failed this boundary.  The immutable summary is
 `results/k3_incremental_b16_b20_onpolicy_result_20260902.json`; raw roots
 r171-r176 remain on Lucebox4.  Production remains untouched.
+
+## What exact B16-plus-four can mean
+
+It cannot mean exact native K3: route12/B20 already discards four routed
+experts and replaces unselected slab contributions with means.  It can mean
+bit-identical to the registered B20 approximation, but the present mechanism
+does not preserve that invariant.  Ordinary B20 evaluates one selected mask;
+the experiment evaluates separate B16 and four-slab masks and adds them after
+rounding.  Those expressions are equal over real arithmetic, not necessarily
+under the implemented floating-point reductions.  Once the result is
+committed, KDA/MLA state and subsequent routing amplify the difference.
+
+An exact B20 rescue therefore has two honest forms: retain uncommitted
+intermediates and finish the canonical B20 reduction before state commit, or
+restore the pre-token state and replay ordinary B20 while reusing any resident
+payloads.  Whether the first form can reuse enough gate/up/down work without a
+custom deterministic reduction is currently unknown.  It must be benchmarked;
+it is not implied by the held-out single-layer equality.
+
+The next quality gate is no longer the small discovery set.  The immutable
+preregistration `results/k3_bws_eval_v2_prereg_20260902.json` defines 16 prompts
+and two separate lanes: free-running behavioral evaluation, and forced
+native-history terminal KL.  The latter produces comparable distributions;
+the former tests actual generated behavior.  A fixture is scored for candidate
+retention only after Full192 native K3 passes its registered checker.

@@ -1,0 +1,12 @@
+{
+  "model": "dflash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Explain why binary search over the first true value requires a monotone predicate. Return exactly three numbered lines starting with 1., 2., and 3. Each line must be one sentence. Across the three lines explicitly mention the invariant, the boundary, and O(log n). Do not use markdown other than the three numeric prefixes."
+    }
+  ],
+  "max_tokens": 160,
+  "temperature": 0.0,
+  "stream": false
+}
