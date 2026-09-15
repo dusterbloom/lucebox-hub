@@ -1885,6 +1885,8 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
         }
     }
 #endif // !defined(GGML_USE_MUSA)
+
+    const int write_partials = n_partitions > 1 ? 1 : 0;
     if (k->type == GGML_TYPE_F16) {
         if (v->type == GGML_TYPE_F16) {
             paged_attn_wmma<GGML_TYPE_F16, GGML_TYPE_F16><<<grid, block, smem, ctx.stream()>>>(
