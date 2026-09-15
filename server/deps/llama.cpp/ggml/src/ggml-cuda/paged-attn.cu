@@ -1389,8 +1389,8 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
             // Column 0 fragment: x[0..7] = the first 8 token scores (np-slice 0).
             dbg[threadIdx.x] = KQ_C[0].x[threadIdx.x];
         }
-        if (threadIdx.x == 8) {
-            // Q_B[0] fragment lane 0: 4 half2s = dims 0..7
+        if (threadIdx.x == 0) {
+            // Q_B[0] fragment lane 0: 4 half2s = column 0 dims 0..7
             dbg[50] = __half2float(Q_B[0].x[0].x);
             dbg[51] = __half2float(Q_B[0].x[0].y);
             dbg[52] = __half2float(Q_B[0].x[1].x);
@@ -1399,6 +1399,11 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
             dbg[55] = __half2float(Q_B[0].x[2].y);
             dbg[56] = __half2float(Q_B[0].x[3].x);
             dbg[57] = __half2float(Q_B[0].x[3].y);
+        }
+        if (threadIdx.x == 1) {
+            // Q_B[0] fragment lane 1: column 1 dims 0..7
+            dbg[58] = __half2float(Q_B[0].x[0].x);
+            dbg[59] = __half2float(Q_B[0].x[0].y);
         }
     }
 
