@@ -1405,6 +1405,14 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
             dbg[58] = __half2float(Q_B[0].x[0].x);
             dbg[59] = __half2float(Q_B[0].x[0].y);
         }
+        if (threadIdx.x == 2) {
+            // raw q pointer: first 4 float2s = row 0 head 0 dims 0..7
+            const float2 * qf2 = (const float2 *) q;
+            dbg[60] = qf2[0].x;
+            dbg[61] = qf2[0].y;
+            dbg[62] = qf2[1].x;
+            dbg[63] = qf2[1].y;
+        }
     }
 
     // Softmax in the log2 domain: log2(e) is folded into the Q prescale.
