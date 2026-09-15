@@ -1495,14 +1495,14 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
     }
 
     if (dbg != nullptr && threadIdx.y == 0 && threadIdx.x == 8) {
-        dbg[112] = __half2float(B[0].x[0].x);
-        dbg[113] = __half2float(B[0].x[0].y);
-        dbg[114] = __half2float(B[0].x[1].x);
-        dbg[115] = __half2float(B[0].x[1].y);
-        dbg[116] = __half2float(B[0].x[2].x);
-        dbg[117] = __half2float(B[0].x[2].y);
-        dbg[118] = __half2float(B[0].x[3].x);
-        dbg[119] = __half2float(B[0].x[3].y);
+        dbg[184] = __half2float(B[0].x[0].x);
+        dbg[185] = __half2float(B[0].x[0].y);
+        dbg[186] = __half2float(B[0].x[1].x);
+        dbg[187] = __half2float(B[0].x[1].y);
+        dbg[188] = __half2float(B[0].x[2].x);
+        dbg[189] = __half2float(B[0].x[2].y);
+        dbg[190] = __half2float(B[0].x[3].x);
+        dbg[191] = __half2float(B[0].x[3].y);
     }
     if (dbg != nullptr && threadIdx.y == 0 && threadIdx.x == 0) {
         dbg[144] = __half2float(B[0].x[0].x);
@@ -1556,15 +1556,37 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
                 mma(A, A_trans, A_identity);
 #endif // defined(LDMATRIX_TRANS_AVAILABLE)
 
-                if (dbg != nullptr && threadIdx.y == 0 && threadIdx.x == 8) {
-                    dbg[120] = __half2float(A.x[0].x);
-                    dbg[121] = __half2float(A.x[0].y);
-                    dbg[122] = __half2float(A.x[1].x);
-                    dbg[123] = __half2float(A.x[1].y);
-                    dbg[124] = __half2float(A.x[2].x);
-                    dbg[125] = __half2float(A.x[2].y);
-                    dbg[126] = __half2float(A.x[3].x);
-                    dbg[127] = __half2float(A.x[3].y);
+                if (dbg != nullptr && threadIdx.y == 0 && i_VKQ_0 == i0_start) {
+                    if (threadIdx.x == 8) {
+                        dbg[120] = __half2float(A.x[0].x);
+                        dbg[121] = __half2float(A.x[0].y);
+                        dbg[122] = __half2float(A.x[1].x);
+                        dbg[123] = __half2float(A.x[1].y);
+                        dbg[124] = __half2float(A.x[2].x);
+                        dbg[125] = __half2float(A.x[2].y);
+                        dbg[126] = __half2float(A.x[3].x);
+                        dbg[127] = __half2float(A.x[3].y);
+                    }
+                    if (threadIdx.x == 0) {
+                        dbg[168] = __half2float(A_trans.x[0].x);
+                        dbg[169] = __half2float(A_trans.x[0].y);
+                        dbg[170] = __half2float(A_trans.x[1].x);
+                        dbg[171] = __half2float(A_trans.x[1].y);
+                        dbg[172] = __half2float(A_trans.x[2].x);
+                        dbg[173] = __half2float(A_trans.x[2].y);
+                        dbg[174] = __half2float(A_trans.x[3].x);
+                        dbg[175] = __half2float(A_trans.x[3].y);
+                    }
+                    if (threadIdx.x == 8) {
+                        dbg[176] = __half2float(A_trans.x[0].x);
+                        dbg[177] = __half2float(A_trans.x[0].y);
+                        dbg[178] = __half2float(A_trans.x[1].x);
+                        dbg[179] = __half2float(A_trans.x[1].y);
+                        dbg[180] = __half2float(A_trans.x[2].x);
+                        dbg[181] = __half2float(A_trans.x[2].y);
+                        dbg[182] = __half2float(A_trans.x[3].x);
+                        dbg[183] = __half2float(A_trans.x[3].y);
+                    }
                 }
 
                 mma(VKQ_C[i_VKQ_0/i0_stride], A, B[k00/(np*T_A_VKQ::J)]);
