@@ -1089,6 +1089,10 @@ if(DFLASH27B_TESTS)
         dflash_add_ggml_gpu_executable(bench_fattn_mma256 test/bench_fattn_mma256.cpp)
         target_compile_definitions(bench_fattn_mma256 PRIVATE GGML_USE_HIP)
 
+        dflash_add_ggml_gpu_executable(test_paged_attn_wmma test/test_paged_attn_wmma.cpp)
+        target_compile_definitions(test_paged_attn_wmma PRIVATE GGML_USE_HIP)
+        list(APPEND _raw_unit_test_targets test_paged_attn_wmma)
+
         # Benchmark, not a test: built with the tests but deliberately NOT added to
         # _raw_unit_test_targets, so ctest stays deterministic. Measures the launch-count
         # claim the fusion rests on.
