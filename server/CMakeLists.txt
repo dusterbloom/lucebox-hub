@@ -1033,6 +1033,16 @@ if(DFLASH27B_TESTS)
         target_link_libraries(test_softmax_sink_col PRIVATE ggml ggml-base ggml-cpu ${DFLASH27B_GGML_BACKEND_TARGET} hip::host)
         list(APPEND _raw_unit_test_targets test_softmax_sink_col)
 
+        # Benchmark, not a test: prices the quant-type mix of the UD-IQ4_XS
+        # serving file at FFN-shaped prefill batches.
+        add_executable(bench_mmq_prefill test/bench_mmq_prefill.cpp)
+        set_source_files_properties(test/bench_mmq_prefill.cpp PROPERTIES LANGUAGE HIP)
+        set_target_properties(bench_mmq_prefill PROPERTIES HIP_ARCHITECTURES "${_dflash_archs}")
+        target_compile_definitions(bench_mmq_prefill PRIVATE GGML_USE_HIP)
+        target_include_directories(bench_mmq_prefill PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+        target_link_libraries(bench_mmq_prefill PRIVATE ggml ggml-base ${DFLASH27B_GGML_BACKEND_TARGET} hip::host)
         # Benchmark, not a test: built with the tests but deliberately NOT added to
         # _raw_unit_test_targets, so ctest stays deterministic. Measures the launch-count
         # claim the fusion rests on.
