@@ -1252,7 +1252,7 @@ static __device__ __forceinline__ void paged_attn_wmma_stage_mask(
         const int32_t e = (row_seq[j] == seq_s) ? row_extent[j] : -1;
         if (i2 < nbatch_fa/2) {
             const int32_t token = token0 + 2*i2;
-            if (token < e) {
+            if (token < e && token < token0 + k_VKQ_sup) {
                 val.x = 0.0f;
             }
             if (token + 1 < e && token + 1 < token0 + k_VKQ_sup) {
@@ -1305,6 +1305,191 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
     constexpr int stride_tile_KV_max = stride_tile_K > stride_tile_V ? stride_tile_K : stride_tile_V;
     constexpr int tile_stride = nbatch_combine + 4;
 #if defined(VOLTA_MMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || (defined(AMD_WMMA_AVAILABLE) && defined(RDNA4)) || defined(AMD_MFMA_AVAILABLE)
+    T_C_KQ KQ_C[nbatch_fa/(np*T_C_KQ::J)];
+#pragma unroll
+    for (int i = 0; i < nbatch_fa/(np*T_C_KQ::J); ++i) {
+#pragma unroll
+        for (int l = 0; l < T_C_KQ::ne; ++l) {
+            KQ_C[i].x[l] = 0.0f;
+        }
+    }
+
+    {
+        paged_attn_wmma_stage_mask<ncols1, nbatch_fa>(
+            tile_mask, token_begin + kb0*nbatch_fa, k_VKQ_sup, seq_s, row_seq, row_extent);
+    }
+
+    // KQ phase: stage the K tile for this chunk and accumulate the
+    // score matrix with the Q fragments held in registers.
+#pragma unroll
+    for (int k0_start = (DKQ/2-1) - (DKQ/2-1) % nbatch_K2; k0_start >= 0; k0_start -= nbatch_K2) {
+        const int k0_stop = k0_start + nbatch_K2 < DKQ/2 ? k0_start + nbatch_K2 : DKQ/2;
+
+        {
+            paged_attn_wmma_stage_tile<type_K, stride_tile_K, nbatch_K2>(
+                k, block_table, bt_nb0, bt_nb1, k_nb1, kv_head, seq_s, block_size,
+                pool_tokens, token_begin + kb0*nbatch_fa, k_VKQ_sup, tile_K);
+            __syncthreads();
+        }
+
+        {
+#pragma unroll
+            for (int i_KQ_00 = 0; i_KQ_00 < nbatch_fa; i_KQ_00 += np*T_A_KQ::I) {
+                const int i_KQ_0 = i_KQ_00 + (threadIdx.y % np)*T_A_KQ::I;
+#pragma unroll
+                for (int k_KQ_0 = k0_start; k_KQ_0 < k0_stop; k_KQ_0 += T_A_KQ::J) {
+                    T_A_KQ K_A;
+                    load_ldmatrix(K_A, tile_K + i_KQ_0*stride_tile_K + (k_KQ_0 - k0_start), stride_tile_K);
+                    mma(KQ_C[i_KQ_00/(np*T_A_KQ::I)], K_A, Q_B[k_KQ_0/T_A_KQ::J]);
+                }
+            }
+        }
+
+        {
+            __syncthreads(); // tile_V reuses the tile_K smem in the VKQ phase.
+        }
+    }
+
+    float KQ_max_new[cols_per_thread];
+#pragma unroll
+    for (int col = 0; col < cols_per_thread; ++col) {
+        KQ_max_new[col] = KQ_max[col];
+    }
+    float KQ_rowsum_add[cols_per_thread] = {0.0f};
+
+    {
+        // Add the per-row causal/sequence mask (wide layout, half2 pairs).
+#pragma unroll
+        for (int i00 = 0; i00 < nbatch_fa; i00 += np*T_C_KQ::J) {
+            const int i0 = i00 + (threadIdx.y % np)*T_C_KQ::J;
+#pragma unroll
+            for (int l0 = 0; l0 < T_C_KQ::ne; l0 += 2) {
+                const int i = (i0 + T_C_KQ::get_j(l0)) / 2;
+                const int j = ((threadIdx.y / np)*cols_per_warp + T_C_KQ::get_i(l0)) / ncols2;
+
+                const float2 tmp = __half22float2(((const half2 *) tile_mask)[j*(nbatch_fa/2 + 4) + i]);
+                KQ_C[i00/(np*T_C_KQ::J)].x[l0 + 0] += tmp.x;
+                KQ_C[i00/(np*T_C_KQ::J)].x[l0 + 1] += tmp.y;
+            }
+        }
+    }
+
+    // Softmax in the log2 domain: log2(e) is folded into the Q prescale.
+    static_assert(nbatch_fa % (np*T_C_KQ::J) == 0, "bad loop size");
+#pragma unroll
+    for (int k0 = 0; k0 < nbatch_fa; k0 += np*T_C_KQ::J) {
+#pragma unroll
+        for (int l = 0; l < T_C_KQ::ne; ++l) {
+            if (k0 + (threadIdx.y % np)*T_C_KQ::J + T_C_KQ::get_j(l) < k_VKQ_sup) {
+                KQ_max_new[0] = fmaxf(KQ_max_new[0], KQ_C[(k0/(np*T_C_KQ::J))].x[l]);
+            }
+        }
+    }
+
+#pragma unroll
+    for (int col = 0; col < cols_per_thread; ++col) {
+        KQ_max_new[col] = fmaxf(KQ_max_new[col], __shfl_xor_sync(0xFFFFFFFF, KQ_max_new[col], 16, warp_size));
+    }
+
+    static_assert(nbatch_fa % (np*T_C_KQ::J) == 0, "bad loop size");
+#pragma unroll
+    for (int k0 = 0; k0 < nbatch_fa; k0 += np*T_C_KQ::J) {
+#pragma unroll
+        for (int l = 0; l < T_C_KQ::ne; ++l) {
+            if (k0 + (threadIdx.y % np)*T_C_KQ::J + T_C_KQ::get_j(l) < k_VKQ_sup) {
+                KQ_C[(k0/(np*T_C_KQ::J))].x[l] = exp2f(KQ_C[(k0/(np*T_C_KQ::J))].x[l] - KQ_max_new[0]);
+                KQ_rowsum_add[0] += KQ_C[(k0/(np*T_C_KQ::J))].x[l];
+            } else {
+                KQ_C[(k0/(np*T_C_KQ::J))].x[l] = 0.0f;
+            }
+        }
+    }
+
+    {
+        float KQ_max_scale[cols_per_thread];
+#pragma unroll
+        for (int col = 0; col < cols_per_thread; ++col) {
+            const float KQ_max_diff = KQ_max[col] - KQ_max_new[col];
+            KQ_max_scale[col] = exp2f(KQ_max_diff);
+            KQ_max[col] = KQ_max_new[col];
+
+            *((uint32_t *) &KQ_max_scale[col]) *= KQ_max_diff >= SOFTMAX_FTZ_THRESHOLD;
+
+            // Scale previous KQ_rowsum to account for a potential increase in KQ_max:
+            KQ_rowsum[col] = KQ_max_scale[col]*KQ_rowsum[col] + KQ_rowsum_add[col];
+        }
+
+        const half2 KQ_max_scale_h2 = make_half2(
+            KQ_max_scale[0], KQ_max_scale[0]);
+#pragma unroll
+        for (int i = 0; i < (DV/2)/T_C_VKQ::J; ++i) {
+#pragma unroll
+            for (int l = 0; l < T_C_VKQ::ne; ++l) {
+                VKQ_C[i].x[l] *= KQ_max_scale_h2;
+            }
+        }
+    }
+
+    // Convert KQ C tiles into B tiles for the VKQ calculation:
+    T_B_VKQ B[nbatch_fa/(np*2*T_B_VKQ::J)];
+    static_assert(nbatch_fa % (np*2*T_B_VKQ::J) == 0, "bad loop size");
+    {
+#pragma unroll
+        for (int k = 0; k < nbatch_fa/(np*2*T_B_VKQ::J); ++k) {
+            B[k] = get_half2(KQ_C[k]);
+        }
+    }
+
+#if defined(AMD_WMMA_AVAILABLE) && !defined(LDMATRIX_TRANS_AVAILABLE)
+    T_A_VKQ A_identity;
+    make_identity_mat(A_identity);
+#endif // defined(AMD_WMMA_AVAILABLE) && !defined(LDMATRIX_TRANS_AVAILABLE)
+
+    // VKQ phase: stage the V tile (reusing the K smem) and accumulate.
+#pragma unroll
+    for (int i0_start = 0; i0_start < DV; i0_start += 2*nbatch_V2) {
+        static_assert(DV % (2*nbatch_V2) == 0, "bad loop size");
+        const int i0_stop = i0_start + 2*nbatch_V2;
+
+        {
+            paged_attn_wmma_stage_tile<type_V, stride_tile_V, nbatch_V2>(
+                v, block_table, bt_nb0, bt_nb1, v_nb1, kv_head, seq_s, block_size,
+                pool_tokens, token_begin + kb0*nbatch_fa, k_VKQ_sup, tile_V);
+            __syncthreads();
+        }
+        const half2 * tile_V_i = tile_V;
+
+        constexpr int i0_stride = 2*T_C_VKQ::J;
+#pragma unroll
+        for (int i_VKQ_0 = i0_start; i_VKQ_0 < i0_stop; i_VKQ_0 += i0_stride) {
+            static_assert((nbatch_fa/2) % (np*T_A_VKQ::J) == 0, "bad loop size");
+#pragma unroll
+            for (int k00 = 0; k00 < nbatch_fa/2; k00 += np*T_A_VKQ::J) {
+                const int k0 = k00 + (threadIdx.y % np)*T_A_VKQ::J;
+
+                T_A_VKQ A; // Transposed in SRAM but not in registers, gets transposed on load.
+#if defined(LDMATRIX_TRANS_AVAILABLE)
+                load_ldmatrix_trans(A, tile_V_i + 2*k0*stride_tile_V + (i_VKQ_0 - i0_start)/2, stride_tile_V);
+#else
+                // Use mma to transpose T_A_VKQ for RDNA.
+                T_A_VKQ A_trans;
+                load_ldmatrix(A_trans, tile_V_i + 2*k0*stride_tile_V + (i_VKQ_0 - i0_start)/2, stride_tile_V);
+                mma(A, A_trans, A_identity);
+#endif // defined(LDMATRIX_TRANS_AVAILABLE)
+
+                mma(VKQ_C[i_VKQ_0/i0_stride], A, B[k00/(np*T_A_VKQ::J)]);
+            }
+        }
+
+        {
+            __syncthreads();
+        }
+    }
+#else
+    GGML_UNUSED_VARS(k, v, block_table, bt_nb0, bt_nb1, k_nb1, v_nb1, kv_head, seq_s,
+        block_size, pool_tokens, token_begin, row_seq, row_extent,
+        tile_Q, tile_K, tile_V, tile_mask, Q_B, VKQ_C, KQ_max, KQ_rowsum, kb0);
+    NO_DEVICE_CODE;
 #endif // defined(VOLTA_MMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || (defined(AMD_WMMA_AVAILABLE) && defined(RDNA4)) || defined(AMD_MFMA_AVAILABLE)
 }template <ggml_type type_K, ggml_type type_V>
 __launch_bounds__(256, 2)
