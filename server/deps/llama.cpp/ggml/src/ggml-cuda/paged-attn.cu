@@ -1477,6 +1477,13 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
         }
     }
 
+    if (dbg != nullptr && threadIdx.y == 0 && threadIdx.x == 8) {
+        // lane 8 = column 8 (row 1, head 0): post-softmax weights
+        for (int l = 0; l < 8; ++l) {
+            dbg[152 + l] = KQ_C[0].x[l];
+        }
+    }
+
     // Convert KQ C tiles into B tiles for the VKQ calculation:
     T_B_VKQ B[nbatch_fa/(np*2*T_B_VKQ::J)];
     static_assert(nbatch_fa % (np*2*T_B_VKQ::J) == 0, "bad loop size");
@@ -1496,6 +1503,16 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
         dbg[117] = __half2float(B[0].x[2].y);
         dbg[118] = __half2float(B[0].x[3].x);
         dbg[119] = __half2float(B[0].x[3].y);
+    }
+    if (dbg != nullptr && threadIdx.y == 0 && threadIdx.x == 0) {
+        dbg[144] = __half2float(B[0].x[0].x);
+        dbg[145] = __half2float(B[0].x[0].y);
+        dbg[146] = __half2float(B[0].x[1].x);
+        dbg[147] = __half2float(B[0].x[1].y);
+        dbg[148] = __half2float(B[0].x[2].x);
+        dbg[149] = __half2float(B[0].x[2].y);
+        dbg[150] = __half2float(B[0].x[3].x);
+        dbg[151] = __half2float(B[0].x[3].y);
     }
 
 #if defined(AMD_WMMA_AVAILABLE) && !defined(LDMATRIX_TRANS_AVAILABLE)
@@ -1557,6 +1574,17 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
         {
             __syncthreads();
         }
+    }
+
+    if (dbg != nullptr && threadIdx.y == 0 && threadIdx.x == 8) {
+        dbg[160] = __half2float(VKQ_C[0].x[0].x);
+        dbg[161] = __half2float(VKQ_C[0].x[0].y);
+        dbg[162] = __half2float(VKQ_C[0].x[1].x);
+        dbg[163] = __half2float(VKQ_C[0].x[1].y);
+        dbg[164] = __half2float(VKQ_C[0].x[2].x);
+        dbg[165] = __half2float(VKQ_C[0].x[2].y);
+        dbg[166] = __half2float(VKQ_C[0].x[3].x);
+        dbg[167] = __half2float(VKQ_C[0].x[3].y);
     }
 #else
     GGML_UNUSED_VARS(k, v, block_table, bt_nb0, bt_nb1, k_nb1, v_nb1, kv_head, seq_s,
