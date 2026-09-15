@@ -153,6 +153,14 @@ bool run_case(ggml_backend_t gpu, const Case & c, FILE * out) {
     std::vector<float> out_data(ggml_nelements(out_t));
     ggml_backend_tensor_get(out_t, out_data.data(), 0, ggml_nbytes(out_t));
 
+    if (getenv("DFLASH27B_PAGED_WMMA_DEBUG") != nullptr) {
+        std::vector<float> dbg(64);
+        ggml_backend_cuda_get_paged_attn_wmma_debug(dbg.data(), 64);
+        std::printf("[paged-wmma-debug] scores[0..7] =");
+        for (int i = 0; i < 8; ++i) std::printf(" %.6f", dbg[i]);
+        std::printf("  max=%.6f rowsum=%.6f\n", dbg[16], dbg[17]);
+    }
+
     bool finite = true;
     for (float x : out_data) {
         if (!std::isfinite(x)) {

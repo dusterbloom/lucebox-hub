@@ -97,6 +97,7 @@ GGML_BACKEND_API size_t ggml_backend_cuda_get_fattn_wmma256_launch_count(void);
 // Calling-thread launch counter for the head-size-256 WMMA paged-attention
 // kernel (stage-1; gated by DFLASH27B_PAGED_WMMA).
 GGML_BACKEND_API size_t ggml_backend_cuda_get_paged_attn_wmma256_launch_count(void);
+GGML_BACKEND_API void   ggml_backend_cuda_get_paged_attn_wmma_debug(float * host, int n);
 
 // device buffer
 GGML_BACKEND_API ggml_backend_buffer_type_t ggml_backend_cuda_buffer_type(int device);
