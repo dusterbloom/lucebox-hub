@@ -1882,6 +1882,20 @@ static __global__ void paged_attn_wmma(
             }
         }
 
+        // Combined KQ max + rowsum for the partition merge (mirrors
+        // fattn's dstk_fixup_meta write and paged_attn_decode :601).
+        static_assert(cols_per_warp <= warp_size);
+        if (write_partials && (cols_per_warp == warp_size || threadIdx.x < cols_per_warp)) {
+            const int jc = (threadIdx.y / np)*cols_per_warp + threadIdx.x;
+            const int row  = group_row0 + jc / ncols2;
+            const int head = kv_head*gqa_ratio + jc % ncols2;
+            if (row < n_rows && head < n_head) {
+                const int64_t output_row = (int64_t) head * n_rows + row;
+                partial_meta[output_row * n_partitions + partition] =
+                    make_float2(KQ_cmn, KQ_crs);
+            }
+        }
+
     } else if (np > 1) {
         // Warps with threadIdx.y % np == 0 execute a __syncthreads() in the if branch.
         // Therefore, all other warps also need to execute a __syncthreads().
