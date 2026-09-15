@@ -1353,7 +1353,6 @@ static __global__ void paged_attn_wmma(
     constexpr int stride_tile_Q = DKQ/2 + 4;
     constexpr int stride_tile_K = nbatch_K2 + 4;
     constexpr int stride_tile_V = nbatch_V2 + 4;
-    constexpr int tile_stride = nbatch_combine + 4;
 
     const int gqa_ratio = n_head / n_head_kv;
     const int kv_head   = blockIdx.x;
@@ -1613,19 +1612,7 @@ static __global__ void paged_attn_wmma(
     constexpr int tile_stride = nbatch_combine + 4;
     static_assert((DV/2) % nbatch_combine == 0, "bad nbatch_combine");
 
-    if constexpr (false) {
-        const int jc_cwmo = (threadIdx.x % (2*T_C_VKQ::J)) / T_C_VKQ::J; // jc combine write meta offset
-        const int jc_cwm = threadIdx.y*(2*T_C_VKQ::J) + 2*T_C_VKQ::get_j(-1) + jc_cwmo; // jc combine write meta
-        const float2 KQ_cmr = make_float2(KQ_max[jc_cwmo], KQ_rowsum[jc_cwmo]); // KQ combine max rowsum
-
-        if (((!needs_fixup && !is_fixup) || np > 1) && threadIdx.x < 2*T_C_VKQ::J) {
-            // Use the 16 bytes of padding in each row to store the meta data: KQ max, KQ rowsum, KQ max scale.
-            ((float2 *) tile_Q)[jc_cwm*(tile_stride/2) + nbatch_combine/2] = KQ_cmr;
-        }
-
-        __syncthreads();
-
-    } else {
+    {
         // jc_cwm = jc combine write meta
         // KQ_cmr = KQ combine max rowsum
         // Use the 16 bytes of padding in each Q column to store the meta data: KQ max, KQ rowsum, KQ max scale.
@@ -1719,20 +1706,7 @@ static __global__ void paged_attn_wmma(
 
 #pragma unroll
     for (int k00 = 0; k00 < DV/2; k00 += nbatch_combine) {
-        if constexpr (false) {
-            const int jc_cwd = threadIdx.y*T_B_KQ::I + T_B_KQ::get_i(-1); // jc combine write data
-#pragma unroll
-            for (int k1 = 0; k1 < nbatch_combine; k1 += T_B_KQ::J) {
-                const T_B_KQ B = get_transposed(VKQ_C[(k00 + k1)/T_B_KQ::J]); // Conversion of C to B matrix puts it in column-major format.
-
-#pragma unroll
-                for (int l = 0; l < T_B_KQ::ne; ++l) {
-                    const int k = k1 + T_B_KQ::get_j(l);
-
-                    tile_Q[jc_cwd*tile_stride + k] = B.x[l];
-                }
-            }
-        } else {
+        {
             const int j0 = threadIdx.y*cols_per_warp;
 #pragma unroll
             for (int k1 = 0; k1 < nbatch_combine; k1 += T_C_VKQ::J) {
