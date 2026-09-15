@@ -2209,12 +2209,12 @@ static __global__ void paged_attn_wmma(
                             dstk_val.x += dstk_val_add.x*KQ_crs_ip;
                             dstk_val.y += dstk_val_add.y*KQ_crs_ip;
                         }
-                        if (!write_partials) {
-                            // Partials stay unnormalized: paged_attn_combine
-                            // renormalizes across partitions with the meta.
-                            dstk_val.x *= inv_sum;
-                            dstk_val.y *= inv_sum;
-                        }
+                        // paged_attn_combine expects per-partition partials
+                        // normalized by the partition's own qk_sum (decode
+                        // kernel convention: numerator and denominator both
+                        // carry the qk_sum weight).
+                        dstk_val.x *= inv_sum;
+                        dstk_val.y *= inv_sum;
                         const int dim0 = 2*(k00 + k);
                         if (dbg != nullptr && kv_head == 0 && partition == 0 &&
                             group_row0 == 0 && threadIdx.y == 0 && threadIdx.x < 8 &&
