@@ -69,6 +69,9 @@ static bool lucebox_mmq_big_tile_take(const ggml_type type, const int64_t ncols_
         case GGML_TYPE_Q5_K:
         case GGML_TYPE_Q6_K:
         case GGML_TYPE_Q8_0:
+        case GGML_TYPE_IQ3_S:
+        case GGML_TYPE_IQ3_XXS:
+        case GGML_TYPE_Q3_K:
             return true;
         default:
             return false;
@@ -88,6 +91,9 @@ static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, con
             case GGML_TYPE_Q5_K:   mul_mat_q_case_big_q5_k  (ctx, &args, stream); return;
             case GGML_TYPE_Q6_K:   mul_mat_q_case_big_q6_k  (ctx, &args, stream); return;
             case GGML_TYPE_Q8_0:   mul_mat_q_case_big_q8_0  (ctx, &args, stream); return;
+            case GGML_TYPE_IQ3_S:   mul_mat_q_case_big_iq3_s  (ctx, &args, stream); return;
+            case GGML_TYPE_IQ3_XXS: mul_mat_q_case_big_iq3_xxs(ctx, &args, stream); return;
+            case GGML_TYPE_Q3_K:    mul_mat_q_case_big_q3_k   (ctx, &args, stream); return;
             default: break;
         }
     }

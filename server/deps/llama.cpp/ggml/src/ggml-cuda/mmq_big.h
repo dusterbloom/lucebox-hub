@@ -23,3 +23,6 @@ void mul_mat_q_case_big_q4_k  (ggml_backend_cuda_context & ctx, const void * arg
 void mul_mat_q_case_big_q5_k  (ggml_backend_cuda_context & ctx, const void * args, cudaStream_t stream);
 void mul_mat_q_case_big_q6_k  (ggml_backend_cuda_context & ctx, const void * args, cudaStream_t stream);
 void mul_mat_q_case_big_q8_0  (ggml_backend_cuda_context & ctx, const void * args, cudaStream_t stream);
+void mul_mat_q_case_big_iq3_s   (ggml_backend_cuda_context & ctx, const void * args, cudaStream_t stream);
+void mul_mat_q_case_big_iq3_xxs (ggml_backend_cuda_context & ctx, const void * args, cudaStream_t stream);
+void mul_mat_q_case_big_q3_k    (ggml_backend_cuda_context & ctx, const void * args, cudaStream_t stream);
