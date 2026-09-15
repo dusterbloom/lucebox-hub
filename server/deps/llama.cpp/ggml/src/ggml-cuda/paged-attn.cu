@@ -1846,8 +1846,9 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
     const int32_t rows_per_block = 4;
     const dim3 grid(n_head_kv, (n_rows + rows_per_block - 1) / rows_per_block, n_partitions);
     const dim3 block(32, 8);
-    // tile_Q (32x132) + tile_K (64x132) + tile_V (64x132) half2s + mask.
-    const size_t smem = (size_t) (32*132 + 64*132 + 64*132) * sizeof(half2)
+    // tile_Q (32x132) + tile_K (64x132, reused by the V stage sequentially)
+    // half2s + mask. 25.6 KiB, under the 32 KiB attribute-free limit.
+    const size_t smem = (size_t) (32*132 + 64*132) * sizeof(half2)
                       + (size_t) 4*(32+4) * sizeof(half);
 
     const int64_t output_rows = (int64_t) n_rows * n_head;
@@ -1862,36 +1863,6 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
     }
 
     ggml_backend_cuda_record_paged_attn_wmma256_launch();
-
-    // > 32 KiB dynamic shared memory needs an explicit opt-in per kernel
-    // instantiation (same pattern as the fattn-mma launcher).
-#if !defined(GGML_USE_MUSA)
-    {
-        static bool smem_raised[GGML_CUDA_MAX_DEVICES] = {false};
-        if (!smem_raised[ctx.device]) {
-            // Assign through function-pointer variables first: HIP's
-            // hipFuncSetAttribute needs the same pointer form the launcher
-            // uses (mirrors the fattn-mma launcher).
-            const void * k_f16_f16 = reinterpret_cast<const void *>(
-                &paged_attn_wmma<GGML_TYPE_F16, GGML_TYPE_F16>);
-            const void * k_f16_q8 = reinterpret_cast<const void *>(
-                &paged_attn_wmma<GGML_TYPE_F16, GGML_TYPE_Q8_0>);
-            const void * k_q8_f16 = reinterpret_cast<const void *>(
-                &paged_attn_wmma<GGML_TYPE_Q8_0, GGML_TYPE_F16>);
-            const void * k_q8_q8 = reinterpret_cast<const void *>(
-                &paged_attn_wmma<GGML_TYPE_Q8_0, GGML_TYPE_Q8_0>);
-            CUDA_CHECK(cudaFuncSetAttribute(
-                k_f16_f16, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem));
-            CUDA_CHECK(cudaFuncSetAttribute(
-                k_f16_q8, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem));
-            CUDA_CHECK(cudaFuncSetAttribute(
-                k_q8_f16, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem));
-            CUDA_CHECK(cudaFuncSetAttribute(
-                k_q8_q8, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem));
-            smem_raised[ctx.device] = true;
-        }
-    }
-#endif // !defined(GGML_USE_MUSA)
 
     const int write_partials = n_partitions > 1 ? 1 : 0;
     if (k->type == GGML_TYPE_F16) {
