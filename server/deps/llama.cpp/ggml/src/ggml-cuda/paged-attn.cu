@@ -1567,7 +1567,7 @@ static __global__ void paged_attn_wmma(
     for (; kb0 < kb0_stop; ++kb0) {
         constexpr int  k_VKQ_sup = nbatch_fa;
         paged_attn_wmma_iter<type_K, type_V>(
-            k, v, block_table, bt_nb0, bt_nb1, k_nb1, v_nb1, kv_head, seq_s,
+            k, v, block_table, bt_nb0, bt_nb1, k_nb1, k_nb2, v_nb1, v_nb2, kv_head, seq_s,
             block_size, pool_tokens, token_begin,
             row_seq, row_extent,
             tile_Q, tile_K, tile_V, tile_mask, Q_B, VKQ_C, KQ_max, KQ_rowsum,
