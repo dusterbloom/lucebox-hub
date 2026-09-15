@@ -1202,7 +1202,7 @@ static __device__ __forceinline__ void paged_attn_wmma_stage_tile(
     const int warp_size = 32;
     const int nthreads = 8 * warp_size;
     const int32_t n_physical_blocks = pool_tokens / block_size;
-    for (int idx = threadIdx.x + threadIdx.y * warp_size; idx < nbatch_fa * nbatch_h2;
+    for (int idx = threadIdx.x + threadIdx.y * warp_size; idx < 64 * nbatch_h2;
          idx += nthreads) {
         const int i  = idx / nbatch_h2;
         const int kk = idx % nbatch_h2;
@@ -1279,8 +1279,8 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
         half2 * __restrict__ tile_K,
         half2 * __restrict__ tile_V,
         half  * __restrict__ tile_mask,
-        T_B_KQ * __restrict__ Q_B,
-        T_C_VKQ * __restrict__ VKQ_C,
+        ggml_cuda_mma::tile<16, 8, half2> * __restrict__ Q_B,
+        ggml_cuda_mma::tile<16, 8, half2> * __restrict__ VKQ_C,
         float * __restrict__ KQ_max,
         float * __restrict__ KQ_rowsum,
         const int32_t kb0,
@@ -1353,7 +1353,6 @@ static __global__ void paged_attn_wmma(
     constexpr int stride_tile_Q = DKQ/2 + 4;
     constexpr int stride_tile_K = nbatch_K2 + 4;
     constexpr int stride_tile_V = nbatch_V2 + 4;
-    constexpr int stride_tile_KV_max = stride_tile_K > stride_tile_V ? stride_tile_K : stride_tile_V;
     constexpr int tile_stride = nbatch_combine + 4;
 
     const int gqa_ratio = n_head / n_head_kv;
@@ -1447,6 +1446,8 @@ static __global__ void paged_attn_wmma(
     }
     const int32_t kb0_stop = (token_count + nbatch_fa - 1) / nbatch_fa;
     const int32_t kb0_start = 0;
+    const float2 * Q_f2 = (const float2 *) (q + (int64_t) group_row0 * q_nb1 +
+                                            (int64_t) kv_head * gqa_ratio * q_nb2);
     //In this kernel Q, K, V are matrices while i, j, k are matrix indices.
 
     constexpr int stride_tile_KV_max = stride_tile_K > stride_tile_V ? stride_tile_K : stride_tile_V;
@@ -1562,7 +1563,7 @@ static __global__ void paged_attn_wmma(
         if (dup || seq_max_extent < token_begin) {
             continue;
         }
-        const int32_t kb0 = kb0_start;
+        int32_t kb0 = kb0_start;
 
     for (; kb0 < kb0_stop; ++kb0) {
         constexpr int  k_VKQ_sup = nbatch_fa;
