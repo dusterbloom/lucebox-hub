@@ -1669,7 +1669,10 @@ static __global__ void paged_attn_wmma(
     // Load Q data into tile_Q, either temporarily or permanently.
     // Q in registers is faster, but register pressure is the biggest bottleneck.
     // The loading is done with decreasing granularity for D for better memory bandwidth.
-    const half2 scale_h2 = make_half2(scale, scale);
+    // Log2 domain: fold log2(e) into the prescale exactly like the
+    // decode kernel (scale * PAGED_ATTN_LOG2E), so the exp2f softmax
+    // matches the reference softmax.
+    const half2 scale_h2 = make_half2(scale * PAGED_ATTN_LOG2E, scale * PAGED_ATTN_LOG2E);
 #pragma unroll
     for (int stride_k : {warp_size, warp_size/2, warp_size/4, warp_size/8}) {
         const int k0_start  = stride_k == warp_size ? 0 : DKQ/2 - (DKQ/2) % (2*stride_k);
