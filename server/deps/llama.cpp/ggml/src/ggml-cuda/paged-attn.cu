@@ -1487,6 +1487,17 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
         }
     }
 
+    if (dbg != nullptr && threadIdx.y == 0 && threadIdx.x == 8) {
+        dbg[112] = __half2float(B[0].x[0].x);
+        dbg[113] = __half2float(B[0].x[0].y);
+        dbg[114] = __half2float(B[0].x[1].x);
+        dbg[115] = __half2float(B[0].x[1].y);
+        dbg[116] = __half2float(B[0].x[2].x);
+        dbg[117] = __half2float(B[0].x[2].y);
+        dbg[118] = __half2float(B[0].x[3].x);
+        dbg[119] = __half2float(B[0].x[3].y);
+    }
+
 #if defined(AMD_WMMA_AVAILABLE) && !defined(LDMATRIX_TRANS_AVAILABLE)
     T_A_VKQ A_identity;
     make_identity_mat(A_identity);
@@ -1503,6 +1514,10 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
                 v, block_table, bt_nb0, bt_nb1, v_nb1, kv_head, seq_s, block_size,
                 pool_tokens, token_begin + kb0*nbatch_fa, k_VKQ_sup, tile_V);
             __syncthreads();
+        }
+        if (dbg != nullptr && threadIdx.y == 0 && threadIdx.x < 8) {
+            dbg[128 + threadIdx.x] = __half2float(tile_V[threadIdx.x].x);
+            dbg[136 + threadIdx.x] = __half2float(tile_V[stride_tile_V + threadIdx.x].x);
         }
         const half2 * tile_V_i = tile_V;
 
@@ -1523,6 +1538,17 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
                 load_ldmatrix(A_trans, tile_V_i + 2*k0*stride_tile_V + (i_VKQ_0 - i0_start)/2, stride_tile_V);
                 mma(A, A_trans, A_identity);
 #endif // defined(LDMATRIX_TRANS_AVAILABLE)
+
+                if (dbg != nullptr && threadIdx.y == 0 && threadIdx.x == 8) {
+                    dbg[120] = __half2float(A.x[0].x);
+                    dbg[121] = __half2float(A.x[0].y);
+                    dbg[122] = __half2float(A.x[1].x);
+                    dbg[123] = __half2float(A.x[1].y);
+                    dbg[124] = __half2float(A.x[2].x);
+                    dbg[125] = __half2float(A.x[2].y);
+                    dbg[126] = __half2float(A.x[3].x);
+                    dbg[127] = __half2float(A.x[3].y);
+                }
 
                 mma(VKQ_C[i_VKQ_0/i0_stride], A, B[k00/(np*T_A_VKQ::J)]);
             }
