@@ -172,6 +172,11 @@ bool run_case(ggml_backend_t gpu, const Case & c, FILE * out) {
                 std::fwrite(dbg.data() + 16, sizeof(float), 64, md);
                 std::fclose(md);
             }
+            FILE * vd = std::fopen("vkqdump.bin", "wb");
+            if (vd) {
+                std::fwrite(dbg.data() + 100, sizeof(float), 16, vd);
+                std::fclose(vd);
+            }
         }
         std::printf("[paged-wmma-debug] x0 =");
         for (int i = 0; i < 8; ++i) std::printf(" %.5f", dbg[i]);

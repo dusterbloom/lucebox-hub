@@ -2053,6 +2053,13 @@ static __global__ void paged_attn_wmma(
 
         __syncthreads();
 
+        if (dbg != nullptr && kv_head == 0 && partition == 0 && group_row0 == 0 &&
+            threadIdx.y == 0 && threadIdx.x < 8) {
+            // strip 8 (row 1 head 0, np-slice 0): the unnormalized VKQ result
+            dbg[100 + 2*threadIdx.x]     = __half2float(tile_Q[8*tile_stride + threadIdx.x].x);
+            dbg[100 + 2*threadIdx.x + 1] = __half2float(tile_Q[8*tile_stride + threadIdx.x].y);
+        }
+
         if (np == 1 || threadIdx.y % np == 0) {
             // The combine strips hold one slice per warp: destination
             // column jc_dst maps to strip (jc_dst/cols_per_warp)*(np*cols_per_warp)
