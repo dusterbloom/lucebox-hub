@@ -1869,18 +1869,25 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
     {
         static bool smem_raised[GGML_CUDA_MAX_DEVICES] = {false};
         if (!smem_raised[ctx.device]) {
+            // Assign through function-pointer variables first: HIP's
+            // hipFuncSetAttribute needs the same pointer form the launcher
+            // uses (mirrors the fattn-mma launcher).
+            const void * k_f16_f16 = reinterpret_cast<const void *>(
+                &paged_attn_wmma<GGML_TYPE_F16, GGML_TYPE_F16>);
+            const void * k_f16_q8 = reinterpret_cast<const void *>(
+                &paged_attn_wmma<GGML_TYPE_F16, GGML_TYPE_Q8_0>);
+            const void * k_q8_f16 = reinterpret_cast<const void *>(
+                &paged_attn_wmma<GGML_TYPE_Q8_0, GGML_TYPE_F16>);
+            const void * k_q8_q8 = reinterpret_cast<const void *>(
+                &paged_attn_wmma<GGML_TYPE_Q8_0, GGML_TYPE_Q8_0>);
             CUDA_CHECK(cudaFuncSetAttribute(
-                reinterpret_cast<const void *>(paged_attn_wmma<GGML_TYPE_F16, GGML_TYPE_F16>),
-                cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem));
+                k_f16_f16, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem));
             CUDA_CHECK(cudaFuncSetAttribute(
-                reinterpret_cast<const void *>(paged_attn_wmma<GGML_TYPE_F16, GGML_TYPE_Q8_0>),
-                cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem));
+                k_f16_q8, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem));
             CUDA_CHECK(cudaFuncSetAttribute(
-                reinterpret_cast<const void *>(paged_attn_wmma<GGML_TYPE_Q8_0, GGML_TYPE_F16>),
-                cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem));
+                k_q8_f16, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem));
             CUDA_CHECK(cudaFuncSetAttribute(
-                reinterpret_cast<const void *>(paged_attn_wmma<GGML_TYPE_Q8_0, GGML_TYPE_Q8_0>),
-                cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem));
+                k_q8_q8, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem));
             smem_raised[ctx.device] = true;
         }
     }
