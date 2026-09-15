@@ -1731,6 +1731,14 @@ static __global__ void paged_attn_wmma(
 
     __syncthreads();
 
+    if (dbg != nullptr && kv_head == 0 && partition == 0 && group_row0 == 0 &&
+        threadIdx.y == 0) {
+        if (threadIdx.x < 8) {
+            dbg[32 + threadIdx.x] = __half2float(tile_Q[threadIdx.x].x);
+            dbg[40 + threadIdx.x] = __half2float(tile_Q[8*stride_tile_Q + threadIdx.x].x);
+        }
+    }
+
     if (Q_in_reg) {
         const int j0 = (threadIdx.y / np) * cols_per_warp;
 

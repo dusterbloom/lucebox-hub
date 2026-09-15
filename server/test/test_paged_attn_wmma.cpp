@@ -156,9 +156,15 @@ bool run_case(ggml_backend_t gpu, const Case & c, FILE * out) {
     if (getenv("DFLASH27B_PAGED_WMMA_DEBUG") != nullptr) {
         std::vector<float> dbg(64);
         ggml_backend_cuda_get_paged_attn_wmma_debug(dbg.data(), 64);
-        std::printf("[paged-wmma-debug] scores[0..7] =");
-        for (int i = 0; i < 8; ++i) std::printf(" %.6f", dbg[i]);
-        std::printf("  max=%.6f rowsum=%.6f\n", dbg[16], dbg[17]);
+        std::printf("[paged-wmma-debug] x0 =");
+        for (int i = 0; i < 8; ++i) std::printf(" %.5f", dbg[i]);
+        std::printf("  Kx =");
+        for (int i = 8; i < 16; ++i) std::printf(" %.5f", dbg[i]);
+        std::printf("  Qx0 =");
+        for (int i = 32; i < 40; ++i) std::printf(" %.5f", dbg[i]);
+        std::printf("  Qx8 =");
+        for (int i = 40; i < 48; ++i) std::printf(" %.5f", dbg[i]);
+        std::printf("\n");
     }
 
     bool finite = true;
