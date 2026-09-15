@@ -2108,6 +2108,11 @@ static __global__ void paged_attn_wmma(
                 const int64_t output_row = (int64_t) head * n_rows + row;
                 partial_meta[output_row * n_partitions + partition] =
                     make_float2(KQ_cmn, KQ_crs);
+                if (dbg != nullptr && kv_head == 0 && partition == 0 &&
+                    group_row0 == 0 && threadIdx.y == 0 && jc == 8) {
+                    dbg[490] = KQ_cmn;
+                    dbg[491] = KQ_crs;
+                }
             }
         }
 
@@ -2212,10 +2217,10 @@ static __global__ void paged_attn_wmma(
                         }
                         const int dim0 = 2*(k00 + k);
                         if (dbg != nullptr && kv_head == 0 && partition == 0 &&
-                            group_row0 == 0 && threadIdx.y == 0 && threadIdx.x == 0 &&
+                            group_row0 == 0 && threadIdx.y == 0 && threadIdx.x < 8 &&
                             jc_dst == 8 && k00 == 0 && k < 8) {
-                            dbg[480 + 2*k]     = dstk_val.x;
-                            dbg[480 + 2*k + 1] = dstk_val.y;
+                            dbg[480 + 2*threadIdx.x]     = dstk_val.x;
+                            dbg[480 + 2*threadIdx.x + 1] = dstk_val.y;
                         }
                         if (write_partials) {
                             pa_row[dim0]     = __float2half(dstk_val.x);
