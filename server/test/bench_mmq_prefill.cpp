@@ -2,8 +2,18 @@
 //
 // Times mul_mat at the Qwen3.8-27B FFN shape (6144 x 15360 weights, 512
 // activation columns) across the quant types the UD-IQ4_XS file actually
-// ships, to price the sub-4-bit tensor tax the blog concedes. Throughput
-// only; no correctness checks.
+// ships. Two activation dtypes per weight type:
+//
+//   act=f32: the production qwen35 prefill contract (the graph runs F32
+//            hidden states) and the only way to reach the MMQ kernels -
+//            mul_mat dispatch requires src1 F32. Route asserted via the
+//            mmq launch counter.
+//   act=f16: the cublas-converted fallback (weights expanded to a 180 MiB
+//            f16 scratch per call, then f16 GEMM).
+//
+// The f16-weight row (act=f16) is the pure-GEMM control; the delta to the
+// quantized act=f16 rows isolates the fallback's conversion cost.
+// Throughput only; no correctness checks.
 #include "ggml.h"
 #define GGML_COMMON_DECL_CPP
 #include "ggml-common.h"
@@ -84,6 +94,10 @@ double bench_type(ggml_backend_t gpu, ggml_type wtype, bool f32_act) {
         ggml_backend_graph_compute(gpu, gf);
     }
     hipDeviceSynchronize();
+    // Route assertion: MMQ dispatch increments the host-side launch counter;
+    // the cublas-converted fallback does not. F32 activations + quantized
+    // weights must enter MMQ, F16 activations must not.
+    const size_t mmq_before = ggml_backend_cuda_get_mmq_launch_count();
     const auto t0 = std::chrono::steady_clock::now();
     const int iters = 5;
     for (int i = 0; i < iters; ++i) {
@@ -91,12 +105,17 @@ double bench_type(ggml_backend_t gpu, ggml_type wtype, bool f32_act) {
     }
     hipDeviceSynchronize();
     const auto t1 = std::chrono::steady_clock::now();
+    const size_t mmq_launches = ggml_backend_cuda_get_mmq_launch_count() - mmq_before;
 
     const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
-    const double gbs = (double) ggml_nbytes(w) / ms / 1e6; // bytes / (ms*1e6) == GB/s
+    // Stored-weight throughput: packed weight bytes over total op time. Not a
+    // memory-bandwidth measurement (the f16-activation fallback also expands
+    // the weights into a 180 MiB f16 scratch per call before the GEMM).
+    const double stored_gbs = (double) ggml_nbytes(w) / ms / 1e6; // bytes / (ms*1e6) == GB/s
     const double tflops = 2.0 * (double) ne0 * ne1 * ncols / ms / 1e9;
-    std::printf("[bench-mmq] %-9s act=%-4s weight=%7.1f MiB %8.2f ms/iter %6.2f GB/s %6.1f TFLOP/s\n",
-                ggml_type_name(wtype), f32_act ? "f32" : "f16", ggml_nbytes(w) / 1048576.0, ms, gbs, tflops);
+    std::printf("[bench-mmq] %-9s act=%-4s mmq=%zu weight=%7.1f MiB %8.2f ms/iter %6.2f stored-GB/s %6.1f TFLOP/s\n",
+                ggml_type_name(wtype), f32_act ? "f32" : "f16", mmq_launches,
+                ggml_nbytes(w) / 1048576.0, ms, stored_gbs, tflops);
 
     ggml_gallocr_free(galloc);
     ggml_free(ctx);
