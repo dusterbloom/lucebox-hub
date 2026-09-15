@@ -1737,6 +1737,11 @@ static __global__ void paged_attn_wmma(
             dbg[32 + threadIdx.x] = __half2float(tile_Q[threadIdx.x].x);
             dbg[40 + threadIdx.x] = __half2float(tile_Q[8*stride_tile_Q + threadIdx.x].x);
         }
+        if (threadIdx.x == 0) {
+            dbg[48] = 777.0f;
+            dbg[49] = __half2float(tile_Q[0].x);
+            dbg[50] = __half2float(tile_Q[1].x);
+        }
     }
 
     if (Q_in_reg) {
