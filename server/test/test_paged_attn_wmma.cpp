@@ -154,8 +154,15 @@ bool run_case(ggml_backend_t gpu, const Case & c, FILE * out) {
     ggml_backend_tensor_get(out_t, out_data.data(), 0, ggml_nbytes(out_t));
 
     if (getenv("DFLASH27B_PAGED_WMMA_DEBUG") != nullptr) {
-        std::vector<float> dbg(64);
-        ggml_backend_cuda_get_paged_attn_wmma_debug(dbg.data(), 64);
+        std::vector<float> dbg(1024);
+        ggml_backend_cuda_get_paged_attn_wmma_debug(dbg.data(), 1024);
+        {
+            FILE * qd = std::fopen("qdump.bin", "wb");
+            if (qd) {
+                std::fwrite(dbg.data() + 64, sizeof(float), 256, qd);
+                std::fclose(qd);
+            }
+        }
         std::printf("[paged-wmma-debug] x0 =");
         for (int i = 0; i < 8; ++i) std::printf(" %.5f", dbg[i]);
         std::printf("  Kx =");

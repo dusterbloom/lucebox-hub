@@ -1810,6 +1810,10 @@ static __global__ void paged_attn_wmma(
             dbg[62] = qf2[1].x;
             dbg[63] = qf2[1].y;
         }
+        for (int i = threadIdx.x; i < 128; i += 32) {
+            dbg[64 + 2*i]     = __half2float(tile_Q[i].x);
+            dbg[64 + 2*i + 1] = __half2float(tile_Q[i].y);
+        }
     }
 
     if (Q_in_reg) {
@@ -2203,8 +2207,8 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
     ggml_backend_cuda_record_paged_attn_wmma256_launch();
 
     if (!g_paged_attn_wmma_dbg_dev) {
-        CUDA_CHECK(cudaMalloc(&g_paged_attn_wmma_dbg_dev, 64 * sizeof(float)));
-        CUDA_CHECK(cudaMemset(g_paged_attn_wmma_dbg_dev, 0, 64 * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&g_paged_attn_wmma_dbg_dev, 1024 * sizeof(float)));
+        CUDA_CHECK(cudaMemset(g_paged_attn_wmma_dbg_dev, 0, 1024 * sizeof(float)));
     }
 
     const int write_partials = n_partitions > 1 ? 1 : 0;
