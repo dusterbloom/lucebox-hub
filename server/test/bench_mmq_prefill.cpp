@@ -31,13 +31,17 @@ float next_float() {
     return ((int32_t)(g_rng >> 8) - 8388608) / 8388608.0f;
 }
 
-double bench_type(ggml_backend_t gpu, ggml_type wtype) {
+double bench_type(ggml_backend_t gpu, ggml_type wtype, bool f32_act) {
     ggml_init_params params = { 4u << 20, nullptr, true };
     ggml_context * ctx = ggml_init(params);
     if (!ctx) return -1.0;
 
     ggml_tensor * w = ggml_new_tensor_2d(ctx, wtype, ne0, ne1);
-    ggml_tensor * x = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, ne0, ncols);
+    // F32 activations are the real qwen35 prefill contract (the graph runs
+    // F32 hidden states), and the only way to reach the MMQ kernels:
+    // mul_mat dispatch requires src1 F32 for use_mul_mat_q. The F16 variant
+    // measures the cuBLAS-converted fallback for comparison.
+    ggml_tensor * x = ggml_new_tensor_2d(ctx, f32_act ? GGML_TYPE_F32 : GGML_TYPE_F16, ne0, ncols);
     ggml_set_input(w);
     ggml_set_input(x);
     ggml_tensor * y = ggml_mul_mat(ctx, w, x);
@@ -66,9 +70,15 @@ double bench_type(ggml_backend_t gpu, ggml_type wtype) {
                         needs_imat ? imat.data() : nullptr);
     ggml_backend_tensor_set(w, wq.data(), 0, wq.size());
 
-    std::vector<ggml_fp16_t> xh(ne0 * ncols);
-    for (auto & v : xh) v = ggml_fp32_to_fp16(next_float());
-    ggml_backend_tensor_set(x, xh.data(), 0, xh.size() * sizeof(ggml_fp16_t));
+    if (f32_act) {
+        std::vector<float> xf(ne0 * ncols);
+        for (auto & v : xf) v = next_float();
+        ggml_backend_tensor_set(x, xf.data(), 0, xf.size() * sizeof(float));
+    } else {
+        std::vector<ggml_fp16_t> xh(ne0 * ncols);
+        for (auto & v : xh) v = ggml_fp32_to_fp16(next_float());
+        ggml_backend_tensor_set(x, xh.data(), 0, xh.size() * sizeof(ggml_fp16_t));
+    }
 
     for (int i = 0; i < 3; ++i) {
         ggml_backend_graph_compute(gpu, gf);
@@ -83,10 +93,10 @@ double bench_type(ggml_backend_t gpu, ggml_type wtype) {
     const auto t1 = std::chrono::steady_clock::now();
 
     const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
-    const double gbs = (double) ggml_nbytes(w) / ms / 1e6; // GB / ms -> TB/s-ish
+    const double gbs = (double) ggml_nbytes(w) / ms / 1e6; // bytes / (ms*1e6) == GB/s
     const double tflops = 2.0 * (double) ne0 * ne1 * ncols / ms / 1e9;
-    std::printf("[bench-mmq] %-9s weight=%7.1f MiB %8.2f ms/iter %6.2f TB/s %6.1f TFLOP/s\n",
-                ggml_type_name(wtype), ggml_nbytes(w) / 1048576.0, ms, gbs, tflops);
+    std::printf("[bench-mmq] %-9s act=%-4s weight=%7.1f MiB %8.2f ms/iter %6.2f GB/s %6.1f TFLOP/s\n",
+                ggml_type_name(wtype), f32_act ? "f32" : "f16", ggml_nbytes(w) / 1048576.0, ms, gbs, tflops);
 
     ggml_gallocr_free(galloc);
     ggml_free(ctx);
@@ -109,7 +119,8 @@ int main() {
     for (ggml_type t : { GGML_TYPE_F16, GGML_TYPE_Q4_K, GGML_TYPE_IQ4_XS,
                          GGML_TYPE_IQ3_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_Q3_K,
                          GGML_TYPE_Q5_K }) {
-        bench_type(gpu, t);
+        bench_type(gpu, t, true);   // F32 activations: the MMQ path
+        bench_type(gpu, t, false);  // F16 activations: the cuBLAS-converted path
     }
     ggml_backend_free(gpu);
     return 0;
