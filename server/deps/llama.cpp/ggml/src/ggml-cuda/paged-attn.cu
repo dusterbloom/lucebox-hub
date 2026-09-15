@@ -1178,6 +1178,15 @@ static void launch_paged_attn_v(
 // paged_attn_combine and the partial convention are reused verbatim.
 
 static thread_local size_t g_paged_attn_wmma256_launch_count = 0;
+static float * g_paged_attn_wmma_dbg_dev = nullptr;
+
+extern "C" void ggml_backend_cuda_get_paged_attn_wmma_debug(float * host, int n) {
+    if (!g_paged_attn_wmma_dbg_dev || n <= 0) {
+        return;
+    }
+    CUDA_CHECK(cudaMemcpy(host, g_paged_attn_wmma_dbg_dev, (size_t) n * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
 
 extern "C" void ggml_backend_cuda_record_paged_attn_wmma256_launch(void) {
     ++g_paged_attn_wmma256_launch_count;
@@ -1284,7 +1293,8 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
         float * __restrict__ KQ_max,
         float * __restrict__ KQ_rowsum,
         const int32_t kb0,
-        const int32_t k_VKQ_sup) {
+        const int32_t k_VKQ_sup,
+        float * __restrict__ dbg) {
     using namespace ggml_cuda_mma;
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
     constexpr int DKQ = 256, DV = 256;
@@ -1372,6 +1382,11 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
                 KQ_C[i00/(np*T_C_KQ::J)].x[l0 + 1] += tmp.y;
             }
         }
+    }
+
+    if (dbg != nullptr && threadIdx.y == 0 && threadIdx.x < 8) {
+        // Column 0 fragment: x[0..7] = the first 8 token scores (np-slice 0).
+        dbg[threadIdx.x] = KQ_C[0].x[threadIdx.x];
     }
 
     // Softmax in the log2 domain: log2(e) is folded into the Q prescale.
@@ -1520,7 +1535,8 @@ static __global__ void paged_attn_wmma(
         int32_t n_rows,
         int32_t n_partitions,
         int32_t write_partials,
-        float scale) {
+        float scale,
+        float * __restrict__ dbg) {
     using namespace ggml_cuda_mma;
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
     constexpr int DKQ = 256, DV = 256;
@@ -1754,12 +1770,19 @@ static __global__ void paged_attn_wmma(
 
     for (; kb0 < kb0_stop; ++kb0) {
         constexpr int  k_VKQ_sup = nbatch_fa;
+        float * iter_dbg = (dbg != nullptr && kv_head == 0 && partition == 0 &&
+                            pass == 0 && kb0 == 0) ? dbg : nullptr;
         paged_attn_wmma_iter<type_K, type_V>(
             k, v, block_table, bt_nb0, bt_nb1, k_nb1, k_nb2, v_nb1, v_nb2, kv_head, seq_s,
             block_size, pool_tokens, token_begin,
             row_seq, row_extent,
             tile_Q, tile_K, tile_V, tile_mask, Q_B, VKQ_C, KQ_max, KQ_rowsum,
-            kb0, k_VKQ_sup);
+            kb0, k_VKQ_sup, iter_dbg);
+        if (dbg != nullptr && kv_head == 0 && partition == 0 && group_row0 == 0 &&
+            threadIdx.y == 0 && threadIdx.x == 0) {
+            dbg[16] = KQ_max[0];
+            dbg[17] = KQ_rowsum[0];
+        }
     }
 
     }
@@ -2098,6 +2121,11 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
 
     ggml_backend_cuda_record_paged_attn_wmma256_launch();
 
+    if (!g_paged_attn_wmma_dbg_dev) {
+        CUDA_CHECK(cudaMalloc(&g_paged_attn_wmma_dbg_dev, 64 * sizeof(float)));
+        CUDA_CHECK(cudaMemset(g_paged_attn_wmma_dbg_dev, 0, 64 * sizeof(float)));
+    }
+
     const int write_partials = n_partitions > 1 ? 1 : 0;
     if (k->type == GGML_TYPE_F16) {
         if (v->type == GGML_TYPE_F16) {
@@ -2114,7 +2142,7 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
                 dst->nb[1], dst->nb[2],
                 (int32_t) block_table->ne[1], n_head, n_head_kv,
                 (int32_t) k->ne[1], (int32_t) block_table->ne[0], block_size,
-                n_rows, n_partitions, write_partials, scale);
+                n_rows, n_partitions, write_partials, scale, g_paged_attn_wmma_dbg_dev);
         } else {
             paged_attn_wmma<GGML_TYPE_F16, GGML_TYPE_Q8_0><<<grid, block, smem, ctx.stream()>>>(
                 (const char *) q->data, (const char *) k->data, (const char *) v->data,
@@ -2129,7 +2157,7 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
                 dst->nb[1], dst->nb[2],
                 (int32_t) block_table->ne[1], n_head, n_head_kv,
                 (int32_t) k->ne[1], (int32_t) block_table->ne[0], block_size,
-                n_rows, n_partitions, write_partials, scale);
+                n_rows, n_partitions, write_partials, scale, g_paged_attn_wmma_dbg_dev);
         }
     } else {
         if (v->type == GGML_TYPE_F16) {
@@ -2146,7 +2174,7 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
                 dst->nb[1], dst->nb[2],
                 (int32_t) block_table->ne[1], n_head, n_head_kv,
                 (int32_t) k->ne[1], (int32_t) block_table->ne[0], block_size,
-                n_rows, n_partitions, write_partials, scale);
+                n_rows, n_partitions, write_partials, scale, g_paged_attn_wmma_dbg_dev);
         } else {
             paged_attn_wmma<GGML_TYPE_Q8_0, GGML_TYPE_Q8_0><<<grid, block, smem, ctx.stream()>>>(
                 (const char *) q->data, (const char *) k->data, (const char *) v->data,
@@ -2161,7 +2189,7 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
                 dst->nb[1], dst->nb[2],
                 (int32_t) block_table->ne[1], n_head, n_head_kv,
                 (int32_t) k->ne[1], (int32_t) block_table->ne[0], block_size,
-                n_rows, n_partitions, write_partials, scale);
+                n_rows, n_partitions, write_partials, scale, g_paged_attn_wmma_dbg_dev);
         }
     }
 
