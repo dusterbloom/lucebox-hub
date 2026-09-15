@@ -164,9 +164,7 @@ bool run_case(ggml_backend_t gpu, const Case & c, FILE * out) {
         for (int i = 32; i < 40; ++i) std::printf(" %.5f", dbg[i]);
         std::printf("  Qx8 =");
         for (int i = 40; i < 48; ++i) std::printf(" %.5f", dbg[i]);
-        std::printf("  QB0 =");
-        for (int i = 50; i < 60; ++i) std::printf(" %.5f", dbg[i]);
-        std::printf("  rawq =");
+        std::printf("  mk=%.1f rawq=", dbg[48]);
         for (int i = 60; i < 64; ++i) std::printf(" %.5f", dbg[i]);
         std::printf("\n");
     }
