@@ -1863,7 +1863,28 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
 
     ggml_backend_cuda_record_paged_attn_wmma256_launch();
 
-    const int write_partials = n_partitions > 1 ? 1 : 0;
+    // > 32 KiB dynamic shared memory needs an explicit opt-in per kernel
+    // instantiation (same pattern as the fattn-mma launcher).
+#if !defined(GGML_USE_MUSA)
+    {
+        static bool smem_raised[GGML_CUDA_MAX_DEVICES] = {false};
+        if (!smem_raised[ctx.device]) {
+            CUDA_CHECK(cudaFuncSetAttribute(
+                reinterpret_cast<const void *>(paged_attn_wmma<GGML_TYPE_F16, GGML_TYPE_F16>),
+                cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem));
+            CUDA_CHECK(cudaFuncSetAttribute(
+                reinterpret_cast<const void *>(paged_attn_wmma<GGML_TYPE_F16, GGML_TYPE_Q8_0>),
+                cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem));
+            CUDA_CHECK(cudaFuncSetAttribute(
+                reinterpret_cast<const void *>(paged_attn_wmma<GGML_TYPE_Q8_0, GGML_TYPE_F16>),
+                cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem));
+            CUDA_CHECK(cudaFuncSetAttribute(
+                reinterpret_cast<const void *>(paged_attn_wmma<GGML_TYPE_Q8_0, GGML_TYPE_Q8_0>),
+                cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem));
+            smem_raised[ctx.device] = true;
+        }
+    }
+#endif // !defined(GGML_USE_MUSA)
     if (k->type == GGML_TYPE_F16) {
         if (v->type == GGML_TYPE_F16) {
             paged_attn_wmma<GGML_TYPE_F16, GGML_TYPE_F16><<<grid, block, smem, ctx.stream()>>>(
