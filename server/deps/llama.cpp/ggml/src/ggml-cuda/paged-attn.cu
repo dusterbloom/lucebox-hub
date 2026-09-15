@@ -1997,11 +1997,11 @@ static __global__ void paged_attn_wmma(
         dbg[16 + 2*threadIdx.x]     = KQ_max[0];
         dbg[16 + 2*threadIdx.x + 1] = KQ_rowsum[0];
         if (threadIdx.x == 8) {
-            dbg[472] = ((const float *) (tile_Q + 8*tile_stride + nbatch_combine))[0];
-            dbg[473] = ((const float *) (tile_Q + 8*tile_stride + nbatch_combine))[1];
-            dbg[474] = ((const float *) (tile_Q + (8 + 16)*tile_stride + nbatch_combine))[0];
-            dbg[475] = ((const float *) (tile_Q + (8 + 32)*tile_stride + nbatch_combine))[0];
-            dbg[476] = ((const float *) (tile_Q + (8 + 48)*tile_stride + nbatch_combine))[0];
+            dbg[472] = ((const float *) (tile_Q + 8*(nbatch_combine + 4) + nbatch_combine))[0];
+            dbg[473] = ((const float *) (tile_Q + 8*(nbatch_combine + 4) + nbatch_combine))[1];
+            dbg[474] = ((const float *) (tile_Q + (8 + 16)*(nbatch_combine + 4) + nbatch_combine))[0];
+            dbg[475] = ((const float *) (tile_Q + (8 + 32)*(nbatch_combine + 4) + nbatch_combine))[0];
+            dbg[476] = ((const float *) (tile_Q + (8 + 48)*(nbatch_combine + 4) + nbatch_combine))[0];
         }
     }
 
