@@ -1413,8 +1413,10 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
         }
         // K rows 0..3 (128 half2s each) for the score ground truth
         for (int i = threadIdx.x; i < 4*128; i += 32) {
-            dbg[576 + 2*i]     = __half2float(tile_K[i].x);
-            dbg[576 + 2*i + 1] = __half2float(tile_K[i].y);
+            const int r = i / 128;
+            const int c = i % 128;
+            dbg[576 + 2*i]     = __half2float(tile_K[r*stride_tile_K + c].x);
+            dbg[576 + 2*i + 1] = __half2float(tile_K[r*stride_tile_K + c].y);
         }
 
     }
