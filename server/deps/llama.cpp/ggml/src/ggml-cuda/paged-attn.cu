@@ -1598,15 +1598,15 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
         }
     }
 
-    if (dbg != nullptr && threadIdx.y == 0 && threadIdx.x == 8) {
-        dbg[160] = __half2float(VKQ_C[0].x[0].x);
-        dbg[161] = __half2float(VKQ_C[0].x[0].y);
-        dbg[162] = __half2float(VKQ_C[0].x[1].x);
-        dbg[163] = __half2float(VKQ_C[0].x[1].y);
-        dbg[164] = __half2float(VKQ_C[0].x[2].x);
-        dbg[165] = __half2float(VKQ_C[0].x[2].y);
-        dbg[166] = __half2float(VKQ_C[0].x[3].x);
-        dbg[167] = __half2float(VKQ_C[0].x[3].y);
+    if (dbg != nullptr && threadIdx.y == 0) {
+        dbg[200 + 8*threadIdx.x + 0] = __half2float(VKQ_C[0].x[0].x);
+        dbg[200 + 8*threadIdx.x + 1] = __half2float(VKQ_C[0].x[0].y);
+        dbg[200 + 8*threadIdx.x + 2] = __half2float(VKQ_C[0].x[1].x);
+        dbg[200 + 8*threadIdx.x + 3] = __half2float(VKQ_C[0].x[1].y);
+        dbg[200 + 8*threadIdx.x + 4] = __half2float(VKQ_C[0].x[2].x);
+        dbg[200 + 8*threadIdx.x + 5] = __half2float(VKQ_C[0].x[2].y);
+        dbg[200 + 8*threadIdx.x + 6] = __half2float(VKQ_C[0].x[3].x);
+        dbg[200 + 8*threadIdx.x + 7] = __half2float(VKQ_C[0].x[3].y);
     }
 #else
     GGML_UNUSED_VARS(k, v, block_table, bt_nb0, bt_nb1, k_nb1, v_nb1, kv_head, seq_s,

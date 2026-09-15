@@ -174,7 +174,7 @@ bool run_case(ggml_backend_t gpu, const Case & c, FILE * out) {
             }
             FILE * vd = std::fopen("vkqdump.bin", "wb");
             if (vd) {
-                std::fwrite(dbg.data() + 100, sizeof(float), 100, vd);
+                std::fwrite(dbg.data() + 100, sizeof(float), 356, vd);
                 std::fclose(vd);
             }
         }
