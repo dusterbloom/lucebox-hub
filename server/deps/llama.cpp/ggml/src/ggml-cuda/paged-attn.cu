@@ -1852,7 +1852,7 @@ static __global__ void paged_attn_wmma(
     for (; kb0 < kb0_stop; ++kb0) {
         constexpr int  k_VKQ_sup = nbatch_fa;
         float * iter_dbg = (dbg != nullptr && kv_head == 0 && partition == 0 &&
-                            pass == 0 && kb0 == 0) ? dbg : nullptr;
+                            group_row0 == 0 && pass == 0 && kb0 == 0) ? dbg : nullptr;
         paged_attn_wmma_iter<type_K, type_V>(
             k, v, block_table, bt_nb0, bt_nb1, k_nb1, k_nb2, v_nb1, v_nb2, kv_head, seq_s,
             block_size, pool_tokens, token_begin,
