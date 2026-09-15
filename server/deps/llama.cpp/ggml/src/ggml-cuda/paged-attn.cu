@@ -1405,6 +1405,17 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
             dbg[58] = __half2float(Q_B[0].x[0].x);
             dbg[59] = __half2float(Q_B[0].x[0].y);
         }
+        if (threadIdx.x == 8) {
+            // lane 8 = column 8 (row 1, head 0): token scores after the mask add
+            for (int l = 0; l < 8; ++l) {
+                dbg[8 + l] = KQ_C[0].x[l];
+            }
+        }
+        // K rows 0..3 (128 half2s each) for the score ground truth
+        for (int i = threadIdx.x; i < 4*128; i += 32) {
+            dbg[576 + 2*i]     = __half2float(tile_K[i].x);
+            dbg[576 + 2*i + 1] = __half2float(tile_K[i].y);
+        }
 
     }
 
@@ -1813,6 +1824,8 @@ static __global__ void paged_attn_wmma(
         for (int i = threadIdx.x; i < 128; i += 32) {
             dbg[64 + 2*i]     = __half2float(tile_Q[i].x);
             dbg[64 + 2*i + 1] = __half2float(tile_Q[i].y);
+            dbg[320 + 2*i]     = __half2float(tile_Q[8*stride_tile_Q + i].x);
+            dbg[320 + 2*i + 1] = __half2float(tile_Q[8*stride_tile_Q + i].y);
         }
     }
 
@@ -1900,6 +1913,12 @@ static __global__ void paged_attn_wmma(
         }
     }
 
+
+    if (dbg != nullptr && kv_head == 0 && partition == 0 && group_row0 == 0 &&
+        threadIdx.y == 0) {
+        dbg[16 + 2*threadIdx.x]     = KQ_max[0];
+        dbg[16 + 2*threadIdx.x + 1] = KQ_rowsum[0];
+    }
 
     // Combine VKQ accumulator values if np > 1.
     // It's also faster to do small writes to shared memory, then large write to VRAM than to do small writes to VRAM.
@@ -2207,8 +2226,8 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
     ggml_backend_cuda_record_paged_attn_wmma256_launch();
 
     if (!g_paged_attn_wmma_dbg_dev) {
-        CUDA_CHECK(cudaMalloc(&g_paged_attn_wmma_dbg_dev, 1024 * sizeof(float)));
-        CUDA_CHECK(cudaMemset(g_paged_attn_wmma_dbg_dev, 0, 1024 * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&g_paged_attn_wmma_dbg_dev, 4096 * sizeof(float)));
+        CUDA_CHECK(cudaMemset(g_paged_attn_wmma_dbg_dev, 0, 4096 * sizeof(float)));
     }
 
     const int write_partials = n_partitions > 1 ? 1 : 0;
