@@ -1922,44 +1922,76 @@ static __global__ void paged_attn_wmma(
         __syncthreads();
 
         if (np == 1 || threadIdx.y % np == 0) {
-            const int j0 = threadIdx.y*cols_per_warp;
-            const int j  = j0 / ncols2;
-            const int c  = j0 % ncols2;
-            const int row  = group_row0 + j;
-            const int head = kv_head*gqa_ratio + c;
-            // Guard set: dead columns write nothing (fattn-mma:1506
-            // equivalent); invalid-slot rows and dead partitions were
-            // handled by the sentinel path before the pass loop.
-            if (j < group_rows && c < gqa_ratio && row_seq[j] >= 0 && row_extent[j] >= 0) {
-                const float * meta_j = (const float *) tile_Q + j0*tile_stride + nbatch_combine;
-                const float qk_sum = meta_j[1];
-                float * o_row = (float *) (dst + (int64_t) row * dst_nb1 + (int64_t) head * dst_nb2);
-                half * pa_row = nullptr;
-                if (write_partials) {
-                    const int64_t output_row = (int64_t) head * n_rows + row;
-                    pa_row = partial_acc + output_row * (int64_t) n_partitions * 256 + (int64_t) partition * 256;
+            // The combine strips hold one slice per warp: destination
+            // column jc_dst maps to strip (jc_dst/cols_per_warp)*(np*cols_per_warp)
+            // + jc_dst % cols_per_warp, with the np partner slices at
+            // ip*cols_per_warp strip offsets (fattn-mma-f16.cuh write-back).
+#pragma unroll
+            for (int stride_k : {warp_size, warp_size/2, warp_size/4, warp_size/8}) {
+                const int k0_start  = stride_k == warp_size ? 0 : nbatch_combine - nbatch_combine % (2*stride_k);
+                const int k0_stop   =                             nbatch_combine - nbatch_combine % (1*stride_k);
+                const int stride_jc = warp_size / stride_k;
+
+                if (k0_start == k0_stop) {
+                    continue;
                 }
-                const float inv_sum = qk_sum > 0.0f ? 1.0f/qk_sum : 0.0f;
+
 #pragma unroll
-                for (int k0 = 0; k0 < nbatch_combine; k0 += warp_size) {
-                    const int k = k0 + threadIdx.x;
-                    float2 dstk_val = make_float2(0.0f, 0.0f);
-#pragma unroll
-                    for (int ip = 0; ip < np; ++ip) {
-                        const float KQ_crs_ip = np == 1 ? 1.0f : meta_j[ip*cols_per_warp * tile_stride + 0];
-                        const float2 dstk_val_add = __half22float2(tile_Q[(j0 + ip*cols_per_warp) * tile_stride + k]);
-                        dstk_val.x += dstk_val_add.x*KQ_crs_ip;
-                        dstk_val.y += dstk_val_add.y*KQ_crs_ip;
+                for (int jc0_dst = 0; jc0_dst < ncols; jc0_dst += (nwarps/np)*stride_jc) {
+                    const int jc_dst = jc0_dst + (threadIdx.y/np)*stride_jc + (stride_k == warp_size ? 0 : threadIdx.x / stride_k);
+
+                    if (jc0_dst + (nwarps/np)*stride_jc > ncols && jc_dst >= ncols) {
+                        break;
                     }
-                    dstk_val.x *= inv_sum;
-                    dstk_val.y *= inv_sum;
-                    const int dim0 = 2*(k00 + k);
+
+                    const int jc_tile_K = (jc_dst/cols_per_warp)*(np*cols_per_warp) + jc_dst % cols_per_warp;
+
+                    const int j = jc_dst / ncols2;
+                    const int c = jc_dst % ncols2;
+
+                    // Dead rows and out-of-range head slots were pinned by the
+                    // sentinel path before the pass loop; skip them here.
+                    if (j >= group_rows || c >= gqa_ratio || row_seq[j] < 0 || row_extent[j] < 0) {
+                        continue;
+                    }
+                    const int row  = group_row0 + j;
+                    const int head = kv_head*gqa_ratio + c;
+
+                    const float * meta_j = (const float *) tile_Q + jc_tile_K*tile_stride + nbatch_combine;
+                    const float qk_sum = meta_j[1];
+                    float * o_row = (float *) (dst + (int64_t) row * dst_nb1 + (int64_t) head * dst_nb2);
+                    half * pa_row = nullptr;
                     if (write_partials) {
-                        pa_row[dim0]     = __float2half(dstk_val.x);
-                        pa_row[dim0 + 1] = __float2half(dstk_val.y);
-                    } else {
-                        o_row[dim0]     = dstk_val.x;
-                        o_row[dim0 + 1] = dstk_val.y;
+                        const int64_t output_row = (int64_t) head * n_rows + row;
+                        pa_row = partial_acc + output_row * (int64_t) n_partitions * 256 + (int64_t) partition * 256;
+                    }
+                    const float inv_sum = qk_sum > 0.0f ? 1.0f/qk_sum : 0.0f;
+#pragma unroll
+                    for (int k0 = k0_start; k0 < k0_stop; k0 += stride_k) {
+                        const int k = k0 + (stride_k == warp_size ? threadIdx.x : threadIdx.x % stride_k);
+
+                        float2 dstk_val = make_float2(0.0f, 0.0f);
+#pragma unroll
+                        for (int ip = 0; ip < np; ++ip) {
+                            const float KQ_crs_ip = np == 1 ? 1.0f : meta_j[ip*cols_per_warp * tile_stride + 0];
+                            const float2 dstk_val_add = __half22float2(tile_Q[(jc_tile_K + ip*cols_per_warp) * tile_stride + k]);
+                            dstk_val.x += dstk_val_add.x*KQ_crs_ip;
+                            dstk_val.y += dstk_val_add.y*KQ_crs_ip;
+                        }
+                        if (!write_partials) {
+                            // Partials stay unnormalized: paged_attn_combine
+                            // renormalizes across partitions with the meta.
+                            dstk_val.x *= inv_sum;
+                            dstk_val.y *= inv_sum;
+                        }
+                        const int dim0 = 2*(k00 + k);
+                        if (write_partials) {
+                            pa_row[dim0]     = __float2half(dstk_val.x);
+                            pa_row[dim0 + 1] = __float2half(dstk_val.y);
+                        } else {
+                            o_row[dim0]     = dstk_val.x;
+                            o_row[dim0 + 1] = dstk_val.y;
+                        }
                     }
                 }
             }
