@@ -1384,9 +1384,22 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
         }
     }
 
-    if (dbg != nullptr && threadIdx.y == 0 && threadIdx.x < 8) {
-        // Column 0 fragment: x[0..7] = the first 8 token scores (np-slice 0).
-        dbg[threadIdx.x] = KQ_C[0].x[threadIdx.x];
+    if (dbg != nullptr && threadIdx.y == 0) {
+        if (threadIdx.x < 8) {
+            // Column 0 fragment: x[0..7] = the first 8 token scores (np-slice 0).
+            dbg[threadIdx.x] = KQ_C[0].x[threadIdx.x];
+        }
+        if (threadIdx.x == 8) {
+            // Q_B[0] fragment lane 0: 4 half2s = dims 0..7
+            dbg[50] = __half2float(Q_B[0].x[0].x);
+            dbg[51] = __half2float(Q_B[0].x[0].y);
+            dbg[52] = __half2float(Q_B[0].x[1].x);
+            dbg[53] = __half2float(Q_B[0].x[1].y);
+            dbg[54] = __half2float(Q_B[0].x[2].x);
+            dbg[55] = __half2float(Q_B[0].x[2].y);
+            dbg[56] = __half2float(Q_B[0].x[3].x);
+            dbg[57] = __half2float(Q_B[0].x[3].y);
+        }
     }
 
     // Softmax in the log2 domain: log2(e) is folded into the Q prescale.
