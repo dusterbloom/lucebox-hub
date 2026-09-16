@@ -35,6 +35,7 @@
 #include "server/tokenizer.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -379,6 +380,7 @@ int main() {
 
                 bool ok = true;
                 const char * why = "";
+                const auto case_t0 = std::chrono::steady_clock::now();
 
                 // A: reference run — checkpoint at cut, state at L, continuation.
                 GenerateRequest req_a;
@@ -401,7 +403,11 @@ int main() {
                 req_gen.n_gen = n_gen;
                 std::vector<int32_t> cont_a;
                 if (ok) {
-                    GenerateResult res_a = backend.generate(req_gen, io);
+                    // Decode straight from the reference state@L snapshot: an
+                    // exact full-prompt hit, so no prompt pass is repeated.
+                    // Continuations A and B then differ only in how state@L was
+                    // produced (whole-prompt prefill vs restore+suffix repair).
+                    GenerateResult res_a = backend.restore_and_generate(1, req_gen, io);
                     cont_a = res_a.tokens;
                     if (!res_a.ok() || (int) cont_a.size() != n_gen) {
                         ok = false;
@@ -487,11 +493,13 @@ int main() {
                     }
                 }
 
+                const double case_s = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - case_t0).count();
                 if (ok) {
-                    std::fprintf(stderr, "     PASS\n");
+                    std::fprintf(stderr, "     PASS (%.1fs)\n", case_s);
                 } else {
                     ++failures;
-                    std::fprintf(stderr, "     FAIL: %s\n", why);
+                    std::fprintf(stderr, "     FAIL: %s (%.1fs)\n", why, case_s);
                 }
                 backend.snapshot_free(0);
                 backend.snapshot_free(1);
