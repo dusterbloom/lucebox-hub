@@ -455,6 +455,7 @@ set(DFLASH27B_SRC_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/qwen35
     ${CMAKE_CURRENT_SOURCE_DIR}/src/qwen35moe
     ${CMAKE_CURRENT_SOURCE_DIR}/src/bailingmoe3
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/qwen4exp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/laguna
     ${CMAKE_CURRENT_SOURCE_DIR}/src/qwen3
     ${CMAKE_CURRENT_SOURCE_DIR}/src/gemma4
@@ -470,6 +471,7 @@ add_library(dflash_common STATIC
     src/bailingmoe3/bailingmoe3_loader.cpp
     src/bailingmoe3/bailingmoe3_graph.cpp
     src/bailingmoe3/bailingmoe3_backend.cpp
+    src/qwen4exp/qwen4exp_loader.cpp
     src/draft/draft_gguf_loader.cpp
     src/draft/draft_safetensors_loader.cpp
     src/draft/draft_graph.cpp
