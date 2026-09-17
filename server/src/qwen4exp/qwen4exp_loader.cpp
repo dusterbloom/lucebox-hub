@@ -461,13 +461,16 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
     };
 
     out.tok_embd = tensor("token_embd.weight");
-    out.out_norm = tensor("output_norm.weight");
+    out.out_norm = tensor("output_norm.weight");   // qwen4exp folds this into output_hc_*
     out.output   = tensor("output.weight");
     out.output_hc_norm = tensor("output_hc_norm.weight");
     out.output_hc_down = tensor("output_hc_down.weight");
     out.output_hc_up   = tensor("output_hc_up.weight");
-    if (!out.tok_embd || !out.out_norm || !out.output) {
-        return fail("missing token_embd/output_norm/output tensor");
+    if (!out.tok_embd || !out.output) {
+        return fail("missing token_embd/output tensor");
+    }
+    if (!out.output_hc_norm || !out.output_hc_down || !out.output_hc_up) {
+        return fail("missing output_hc_norm/down/up tensor");
     }
     out.n_vocab = static_cast<int>(out.tok_embd->ne[1]);
 
@@ -476,7 +479,7 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
         layer.is_full_attention = out.compress_ratios[il] > 0;
         layer.is_ple = is_ple_layer(il);
 
-        layer.attn_norm = layer_tensor(il, "attn_norm.weight");
+        layer.attn_norm = layer_tensor(il, "attn_norm.weight");       // absent in qwen4exp
         layer.attn_post_norm = layer_tensor(il, "attn_post_norm.weight");
         layer.ffn_norm = layer_tensor(il, "ffn_norm.weight");
         layer.hc_attn_norm = layer_tensor(il, "hc_attn_norm.weight");
@@ -487,10 +490,10 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
         layer.hc_ffn_down = layer_tensor(il, "hc_ffn_down.weight");
         layer.hc_ffn_up = layer_tensor(il, "hc_ffn_up.weight");
         layer.hc_ffn_inject = layer_tensor(il, "hc_ffn_inject.weight");
-        if (!layer.attn_norm || !layer.hc_attn_norm || !layer.hc_attn_down ||
+        if (!layer.hc_attn_norm || !layer.hc_attn_down ||
             !layer.hc_attn_up || !layer.hc_attn_inject || !layer.hc_ffn_norm ||
             !layer.hc_ffn_down || !layer.hc_ffn_up || !layer.hc_ffn_inject) {
-            return fail("layer " + std::to_string(il) + " missing norm/HC tensor");
+            return fail("layer " + std::to_string(il) + " missing HC tensor");
         }
 
         if (layer.is_full_attention) {
