@@ -523,7 +523,7 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
         }
         ggml_backend_tensor_set(mask, m.data(), 0, sizeof(ggml_fp16_t) * m.size());
     }
-    if (ple_in) {
+    if (ple_in && !q4_env("Q4_NO_PLE")) {
         ggml_backend_tensor_set(ple_in, ple_data.data(), 0, sizeof(float) * ple_data.size());
     }
 
