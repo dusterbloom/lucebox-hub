@@ -104,7 +104,9 @@ ggml_tensor * repeat_dim1(ggml_context * c, ggml_tensor * x, int64_t hc) {
 
     ggml_tensor * logits = mm(c, L.ffn_gate_inp, cur);      // [n_expert, T]
     ggml_tensor * probs  = ggml_soft_max(c, logits);
-    ggml_tensor * sel    = ggml_argsort_top_k(c, probs, (int) n_used);  // [n_used, T]
+    ggml_tensor * sel    = q4_env("Q4_TOPK_SIMPLE")
+        ? ggml_top_k(c, probs, (int) n_used)
+        : ggml_argsort_top_k(c, probs, (int) n_used);        // [n_used, T]
 
     ggml_tensor * probs3 = ggml_reshape_3d(c, probs, 1, n_expert, n_tokens);
     ggml_tensor * wsel   = ggml_reshape_2d(c, ggml_get_rows(c, probs3, sel), n_used, n_tokens);
