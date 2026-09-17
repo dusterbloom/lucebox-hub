@@ -58,10 +58,12 @@ int main(int argc, char ** argv) {
     config.cache_type_v = GGML_TYPE_Q8_0;
 
     Qwen35Backend backend(config);
+    std::fprintf(stderr, "[dump] init...\n");
     if (!backend.init()) {
         std::fprintf(stderr, "FAIL: backend init failed\n");
         return 1;
     }
+    std::fprintf(stderr, "[dump] init ok, prefill %d tokens...\n", cut);
 
     GenerateRequest req;
     req.prompt = prompt;
@@ -71,10 +73,12 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "FAIL: prefill to cut=%d failed\n", cut);
         return 1;
     }
+    std::fprintf(stderr, "[dump] prefill ok, snapshot_save...\n");
     if (!backend.snapshot_save(0) || backend.snapshot_cur_pos(0) != cut) {
         std::fprintf(stderr, "FAIL: snapshot at cut=%d failed\n", cut);
         return 1;
     }
+    std::fprintf(stderr, "[dump] snapshot ok\n");
 
     const ModelBackend::SnapshotRef ref = backend.snapshot_ref(0);
     if (!ref.ctx || !ref.buf) {
