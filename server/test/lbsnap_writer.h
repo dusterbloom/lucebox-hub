@@ -105,7 +105,7 @@ inline std::vector<int32_t> read_prompt(const char * path,
     while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) text.append(buf, n);
     std::fclose(f);
 
-    Tokenizer tokenizer;
+    dflash::common::Tokenizer tokenizer;
     if (!tokenizer.load_from_gguf(model.c_str())) {
         std::fprintf(stderr, "FAIL: tokenizer load from %s\n", model.c_str());
         return {};
