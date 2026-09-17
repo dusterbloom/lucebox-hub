@@ -30,6 +30,11 @@ bool Qwen4ExpBackend::init() {
                      dflash27b_last_error());
         return false;
     }
+    if (!create_qwen4exp_cache(backend_, weights_, cfg_.device.max_ctx,
+                               GGML_TYPE_F16, cache_)) {
+        std::fprintf(stderr, "[qwen4exp] cache creation failed\n");
+        return false;
+    }
     return true;
 }
 
@@ -114,6 +119,7 @@ bool Qwen4ExpBackend::handle_compress(const std::string & line,
 void Qwen4ExpBackend::free_drafter() {}
 
 void Qwen4ExpBackend::shutdown() {
+    free_qwen4exp_cache(cache_);
     free_qwen4exp_weights(weights_);
     if (backend_) {
         ggml_backend_free(backend_);

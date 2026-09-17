@@ -11,6 +11,7 @@
 #include "placement/placement_config.h"
 
 #include "qwen4exp_internal.h"
+#include "qwen4exp_cache.h"
 
 #include "ggml.h"
 #include "ggml-backend.h"
@@ -65,6 +66,7 @@ private:
     Qwen4ExpBackendConfig cfg_;
     ggml_backend_t        backend_ = nullptr;
     Qwen4ExpWeights       weights_;
+    Qwen4ExpCache         cache_;
     bool                  parked_  = false;
 };
 
