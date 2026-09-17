@@ -198,6 +198,13 @@ struct GenerateRequest {
     // path returns success but emits no tokens, so each backend can route the
     // retry through its existing AR path without copying retry policy.
     bool                       force_ar_decode = false;
+    // When true, the backend copies the raw (pre-sampling) logits vector for
+    // the first post-prefill token into GenerateResult::first_token_logits.
+    // Used by the /v1/systemone "prefill-only" classification endpoint,
+    // which only needs a single position's logit distribution and never
+    // wants full generation. Off by default: copying a vocab-sized float
+    // array is not free, so normal generation must never pay for it.
+    bool                       want_first_token_logits = false;
 };
 
 // Stable, backend-independent generation failure categories. Backends should
@@ -270,6 +277,10 @@ struct GenerateResult {
     // to zero output for clients and should take the same AR retry path as
     // an empty token vector.
     bool                       empty_visible_output = false;
+    // Populated only when the request set want_first_token_logits: the raw
+    // (pre-softmax, pre-sampling) logits for the first post-prefill token,
+    // vocab_size long. Empty otherwise.
+    std::vector<float>         first_token_logits;
 
     bool ok() const {
         return !error.has_value();
