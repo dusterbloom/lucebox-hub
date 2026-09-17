@@ -200,13 +200,7 @@ static size_t ggml_cuda_total_ram_bytes() {
     return cached;
 }
 
-static bool ggml_cuda_device_use_uma(int device, size_t size) {
-    if (getenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY") != nullptr) {
-        return true;
-    }
-    if (getenv("DFLASH_HIP_NO_AUTO_UMA") != nullptr) {
-        return false;
-    }
+static const std::array<bool, GGML_CUDA_MAX_DEVICES> & ggml_cuda_integrated_devices() {
     static const std::array<bool, GGML_CUDA_MAX_DEVICES> integrated = []() {
         std::array<bool, GGML_CUDA_MAX_DEVICES> flags{};
         int n = 0;
@@ -217,7 +211,58 @@ static bool ggml_cuda_device_use_uma(int device, size_t size) {
         }
         return flags;
     }();
-    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES || !integrated[device]) {
+    return integrated;
+}
+
+static bool ggml_cuda_device_is_integrated(int device) {
+    return device >= 0 && device < GGML_CUDA_MAX_DEVICES && ggml_cuda_integrated_devices()[device];
+}
+
+// dflash: ROCm 7.2 on gfx1151 (Strix Halo APU) livelocks in the runtime's pageable-host
+// staging path for H2D copies into GTT-backed hipMalloc memory once the system is under
+// memory pressure (large weight buffer + model file page cache): hipMemcpyAsync spins at
+// ~100% of one core with the GPU idle and the copy never completes. Bouncing the source
+// through a pinned staging buffer (hipHostMalloc) avoids the pageable staging path
+// entirely (verified: 69 GiB upload completes in ~30 s staged vs livelock direct).
+// Only used for host->device uploads on integrated GPUs under HIP; the CUDA driver's
+// pageable staging is well-tested. Opt out: DFLASH_HIP_NO_PINNED_STAGE=1.
+#if defined(GGML_USE_HIP)
+static const size_t GGML_CUDA_STAGE_CHUNK = 256ull * 1024 * 1024;
+
+static void * ggml_cuda_staging_buffer(int device) {
+    static std::mutex mutex;
+    static std::unordered_map<int, void *> buffers;
+    std::lock_guard<std::mutex> lock(mutex);
+    void * & buf = buffers[device];
+    if (buf == nullptr) {
+        ggml_cuda_set_device(device);
+        cudaError_t err = cudaMallocHost(&buf, GGML_CUDA_STAGE_CHUNK);
+        if (err != cudaSuccess) {
+            (void) cudaGetLastError();
+            GGML_LOG_WARN("%s: pinned staging buffer alloc failed (%s); using direct copies\n",
+                          __func__, cudaGetErrorString(err));
+            buf = nullptr;
+        }
+    }
+    return buf;
+}
+
+static bool ggml_cuda_stage_h2d(int device) {
+    if (getenv("DFLASH_HIP_NO_PINNED_STAGE") != nullptr) {
+        return false;
+    }
+    return ggml_cuda_device_is_integrated(device);
+}
+#endif // defined(GGML_USE_HIP)
+
+static bool ggml_cuda_device_use_uma(int device, size_t size) {
+    if (getenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY") != nullptr) {
+        return true;
+    }
+    if (getenv("DFLASH_HIP_NO_AUTO_UMA") != nullptr) {
+        return false;
+    }
+    if (!ggml_cuda_device_is_integrated(device)) {
         return false;
     }
     size_t total_ram = ggml_cuda_total_ram_bytes();
@@ -874,6 +919,49 @@ static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
         }
         return;
     }
+#if defined(GGML_USE_HIP)
+    if (ggml_cuda_stage_h2d(ctx->device)) {
+        void * staging = ggml_cuda_staging_buffer(ctx->device);
+        if (staging != nullptr) {
+            char * dst = (char *) tensor->data + offset;
+            const char * src = (const char *) data;
+            const size_t chunk = GGML_CUDA_STAGE_CHUNK;
+            unsigned nth = std::thread::hardware_concurrency();
+            if (nth == 0) nth = 4;
+            if (nth > 16) nth = 16;
+            for (size_t done = 0; done < size; ) {
+                const size_t n = (chunk < size - done) ? chunk : (size - done);
+                // CPU copy into pinned staging, then one DMA from pinned host
+                // memory (skips the runtime's pageable-source staging path that
+                // livelocks under memory pressure); split large chunks across
+                // threads so cold-cache page-ins and the copy run in parallel
+                const size_t par_threshold = (size_t) 16 * 1024 * 1024;
+                if (n >= par_threshold && nth > 1) {
+                    std::vector<std::thread> workers;
+                    workers.reserve(nth);
+                    const size_t part = (n + nth - 1) / nth;
+                    for (unsigned t = 0; t < nth; t++) {
+                        const size_t s0 = (size_t) t * part;
+                        if (s0 >= n) break;
+                        const size_t len = (part < n - s0) ? part : (n - s0);
+                        workers.emplace_back([staging, src, done, s0, len]() {
+                            memcpy((char *) staging + s0, src + done + s0, len);
+                        });
+                    }
+                    for (auto & w : workers) {
+                        w.join();
+                    }
+                } else {
+                    memcpy(staging, src + done, n);
+                }
+                CUDA_CHECK(cudaMemcpyAsync(dst + done, staging, n, cudaMemcpyHostToDevice, cudaStreamPerThread));
+                CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+                done += n;
+            }
+            return;
+        }
+    }
+#endif // defined(GGML_USE_HIP)
     CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
