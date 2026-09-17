@@ -26,8 +26,6 @@
 namespace dflash::common {
 namespace {
 
-bool q4_env(const char * name) { return std::getenv(name) != nullptr; }
-
 ggml_tensor * mm(ggml_context * c, ggml_tensor * w, ggml_tensor * x, float s = 1.0f) {
     ggml_tensor * y = ggml_mul_mat(c, w, x);
     return s == 1.0f ? y : ggml_scale(c, y, s);
@@ -104,9 +102,7 @@ ggml_tensor * repeat_dim1(ggml_context * c, ggml_tensor * x, int64_t hc) {
 
     ggml_tensor * logits = mm(c, L.ffn_gate_inp, cur);      // [n_expert, T]
     ggml_tensor * probs  = ggml_soft_max(c, logits);
-    ggml_tensor * sel    = q4_env("Q4_TOPK_SIMPLE")
-        ? ggml_top_k(c, probs, (int) n_used)
-        : ggml_argsort_top_k(c, probs, (int) n_used);        // [n_used, T]
+    ggml_tensor * sel    = ggml_argsort_top_k(c, probs, (int) n_used);  // [n_used, T]
 
     ggml_tensor * probs3 = ggml_reshape_3d(c, probs, 1, n_expert, n_tokens);
     ggml_tensor * wsel   = ggml_reshape_2d(c, ggml_get_rows(c, probs3, sel), n_used, n_tokens);
@@ -182,25 +178,20 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
     ggml_tensor * k_c = ggml_l2_norm(c, ggml_view_3d(c, conv, D, Hk, T, D * esz, tstride, D * Hk * esz), eps);
     ggml_tensor * v_c = ggml_view_3d(c, conv, D, Hv, T, D * esz, tstride, 2 * D * Hk * esz);
 
-    ggml_tensor * attn = nullptr;
-    if (q4_env("Q4_NO_RECUR")) {
-        attn = ggml_cont(c, v_c);
-    } else {
-        ggml_tensor * state4 = ggml_reshape_4d(c, ssm_state, D, D, Hv, 1);
-        ggml_tensor * gdn = ggml_gated_delta_net(c, q_c, k_c, v_c, gate, beta, state4);
+    ggml_tensor * state4 = ggml_reshape_4d(c, ssm_state, D, D, Hv, 1);
+    ggml_tensor * gdn = ggml_gated_delta_net(c, q_c, k_c, v_c, gate, beta, state4);
 
-        // packed: [ attn S_v*H_v*T | final_state S_v*S_v*H_v | intermediates ]
-        attn = ggml_view_4d(c, gdn, D, Hv, T, 1,
-            ggml_row_size(gdn->type, D),
-            ggml_row_size(gdn->type, D * Hv),
-            ggml_row_size(gdn->type, D * Hv * T), 0);
-        ggml_tensor * new_state = ggml_view_4d(c, gdn, D, D, Hv, 1,
-            ggml_row_size(gdn->type, D),
-            ggml_row_size(gdn->type, D * D),
-            ggml_row_size(gdn->type, D * D * Hv),
-            ggml_row_size(gdn->type, D * Hv * T));
-        ggml_build_forward_expand(gf, ggml_cpy(c, new_state, state4));
-    }
+    // packed: [ attn S_v*H_v*T | final_state S_v*S_v*H_v | intermediates ]
+    ggml_tensor * attn = ggml_view_4d(c, gdn, D, Hv, T, 1,
+        ggml_row_size(gdn->type, D),
+        ggml_row_size(gdn->type, D * Hv),
+        ggml_row_size(gdn->type, D * Hv * T), 0);
+    ggml_tensor * new_state = ggml_view_4d(c, gdn, D, D, Hv, 1,
+        ggml_row_size(gdn->type, D),
+        ggml_row_size(gdn->type, D * D),
+        ggml_row_size(gdn->type, D * D * Hv),
+        ggml_row_size(gdn->type, D * Hv * T));
+    ggml_build_forward_expand(gf, ggml_cpy(c, new_state, state4));
 
     // gated RMSNorm: sigmoid(z) gate (the one numerical difference from Qwen3.5)
     ggml_tensor * normed = ggml_mul(c, ggml_rms_norm(c, attn, eps), L.ssm_norm);
@@ -239,12 +230,10 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
 
     int sections[4] = { w.rope_sections[0], w.rope_sections[1],
                         w.rope_sections[2], w.rope_sections[3] };
-    const int rope_mode = q4_env("Q4_IMROPE") ? GGML_ROPE_TYPE_IMROPE
-                                               : GGML_ROPE_TYPE_MROPE;
     Q = ggml_rope_multi(c, Q, positions, nullptr, w.rope_dimension_count, sections,
-                        rope_mode, 0, w.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+                        GGML_ROPE_TYPE_MROPE, 0, w.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
     K = ggml_rope_multi(c, K, positions, nullptr, w.rope_dimension_count, sections,
-                        rope_mode, 0, w.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+                        GGML_ROPE_TYPE_MROPE, 0, w.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
 
     // write K/V into the persistent cache at [pos0, pos0+T)
     ggml_tensor * Kt = ggml_permute(c, ggml_cast(c, K, k_cache->type), 0, 2, 1, 3);
@@ -457,7 +446,7 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
     for (int il = 0; il < w.n_layer; ++il) {
         const Qwen4ExpLayer & L = w.layers[il];
 
-        if (L.is_ple && has_ple && !q4_env("Q4_NO_PLE")) {
+        if (L.is_ple && has_ple) {
             res_hc = build_ple(ctx, gf, res_hc, ple_in, L, w,
                                cache.ple_conv_state.empty() ? nullptr :
                                    cache.ple_conv_state[0]);
@@ -529,7 +518,7 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
         }
         ggml_backend_tensor_set(mask, m.data(), 0, sizeof(ggml_fp16_t) * m.size());
     }
-    if (ple_in && !q4_env("Q4_NO_PLE")) {
+    if (ple_in) {
         ggml_backend_tensor_set(ple_in, ple_data.data(), 0, sizeof(float) * ple_data.size());
     }
 
@@ -542,24 +531,6 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
 
     out_logits.resize((size_t) w.n_vocab);
     ggml_backend_tensor_get(logits, out_logits.data(), 0, sizeof(float) * w.n_vocab);
-
-    if (q4_env("Q4_DUMP")) {
-        float emin = emb[0], emax = emb[0];
-        double esum = 0.0;
-        for (float v : emb) { emin = std::min(emin, v); emax = std::max(emax, v); esum += v; }
-        std::vector<float> tmp = out_logits;
-        std::fprintf(stderr, "[q4dump] emb min=%.4f max=%.4f mean=%.5f | logits:",
-                     emin, emax, esum / (double) emb.size());
-        for (int k = 0; k < 5; ++k) {
-            size_t best = 0;
-            for (size_t i = 1; i < tmp.size(); ++i) {
-                if (tmp[i] > tmp[best]) best = i;
-            }
-            std::fprintf(stderr, " %zu=%.3f", best, tmp[best]);
-            tmp[best] = -INFINITY;
-        }
-        std::fprintf(stderr, "\n");
-    }
 
     ggml_gallocr_free(galloc);
     ggml_free(ctx);
