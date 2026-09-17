@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -80,6 +81,35 @@ inline bool write_tensor(FILE * f, ggml_tensor * t) {
     return write_bytes(f, bytes.data(), nbytes);
 }
 
+// Optional keep-filter: LBSNAP_KEEP="prefix_a,prefix_b" writes only tensors
+// whose name starts with one of the prefixes. Used to record just the state a
+// feature/translator pipeline consumes (drops sidecars like last_logits and
+// hc_state), which keeps large corpora to a few MB per prompt.
+inline std::vector<std::string> keep_prefixes() {
+    std::vector<std::string> out;
+    const char * v = std::getenv("LBSNAP_KEEP");
+    if (!v || !v[0]) return out;
+    std::string s = v;
+    size_t p = 0;
+    while (p <= s.size()) {
+        const size_t c = s.find(',', p);
+        const std::string item = s.substr(p, c == std::string::npos ? std::string::npos : c - p);
+        if (!item.empty()) out.push_back(item);
+        if (c == std::string::npos) break;
+        p = c + 1;
+    }
+    return out;
+}
+
+inline bool keep_tensor(const std::vector<std::string> & keep, const char * name) {
+    if (keep.empty()) return true;
+    if (!name) return false;
+    for (const auto & p : keep) {
+        if (std::string(name).rfind(p, 0) == 0) return true;
+    }
+    return false;
+}
+
 // Write every tensor in `ctx` with the snapshot position and prompt length.
 // Returns the tensor count, or -1 on write failure.
 inline long long write_container(const std::string & path, ggml_context * ctx,
@@ -89,6 +119,7 @@ inline long long write_container(const std::string & path, ggml_context * ctx,
         std::fprintf(stderr, "FAIL: cannot open %s\n", path.c_str());
         return -1;
     }
+    const std::vector<std::string> keep = keep_prefixes();
     const char magic[8] = {'L', 'B', 'S', 'N', 'A', 'P', '0', '1'};
     bool ok = write_bytes(f, magic, sizeof(magic)) &&
               write_u32(f, (uint32_t) cur_pos) &&
@@ -97,11 +128,12 @@ inline long long write_container(const std::string & path, ggml_context * ctx,
     uint32_t n_tensors = 0;
     for (ggml_tensor * t = ggml_get_first_tensor(ctx); t; 
          t = ggml_get_next_tensor(ctx, t)) {
-        ++n_tensors;
+        if (keep_tensor(keep, ggml_get_name(t))) ++n_tensors;
     }
     ok = ok && write_u32(f, n_tensors);
     for (ggml_tensor * t = ggml_get_first_tensor(ctx); t && ok;
          t = ggml_get_next_tensor(ctx, t)) {
+        if (!keep_tensor(keep, ggml_get_name(t))) continue;
         ok = write_tensor(f, t);
     }
     std::fclose(f);
