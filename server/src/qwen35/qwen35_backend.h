@@ -387,7 +387,9 @@ private:
                       const DaemonIO & io,
                       const BudgetHook & budget_hook = {},
                       bool * forced_close_out = nullptr,
-                      bool * degenerate_close_out = nullptr);
+                      bool * degenerate_close_out = nullptr,
+                      bool want_first_token_logits = false,
+                      std::vector<float> * first_token_logits_out = nullptr);
 
     bool begin_paged_sequence(uint32_t prompt_tokens);
     // Allocates the next paged K/V row and uploads this step's block-table /

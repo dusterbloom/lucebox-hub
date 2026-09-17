@@ -810,6 +810,9 @@ GenerateResult Gemma4Backend::generate_impl(const GenerateRequest & req,
             }
 
             // Sample first token
+            if (req.want_first_token_logits) {
+                result.first_token_logits.assign(logits.data(), logits.data() + vocab);
+            }
             int32_t first;
             if (sampler_.needs_logit_processing()) {
                 first = sample_logits(logits.data(), vocab, sampler_,
@@ -1022,6 +1025,9 @@ GenerateResult Gemma4Backend::restore_and_generate_impl(int slot,
             }
 
             // Sample first token
+            if (req.want_first_token_logits) {
+                result.first_token_logits.assign(logits.data(), logits.data() + vocab);
+            }
             int32_t first;
             if (sampler_.temp > 0) {
                 first = sample_logits(logits.data(), vocab, sampler_,
