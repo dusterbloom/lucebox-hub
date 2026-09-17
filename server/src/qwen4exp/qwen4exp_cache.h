@@ -28,7 +28,7 @@ struct Qwen4ExpCache {
     std::vector<int> full_layer_ids;    // size = 12
     std::vector<int> linear_layer_ids;  // size = 36
 
-    // Full attention: [head_dim, n_head_kv, max_ctx].
+    // Full attention: [head_dim, max_ctx, n_head_kv] (flash_attn_ext layout).
     std::vector<ggml_tensor *> attn_k;  // size = n_full
     std::vector<ggml_tensor *> attn_v;
 
@@ -41,6 +41,10 @@ struct Qwen4ExpCache {
     // [ple_hist, hc_dim] f32 where ple_hist = (ple_conv_kernel-1)*ple_ngram_size.
     std::vector<ggml_tensor *> ple_conv_state;
     std::vector<int> ple_layer_ids;
+
+    // Rolling window of the last (ple_ngram_size - 1) token ids, oldest first,
+    // for the host-side PLE n-gram hash across decode steps.
+    std::vector<int32_t> ple_prev;
 };
 
 bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,

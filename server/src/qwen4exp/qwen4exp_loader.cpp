@@ -98,6 +98,31 @@ std::vector<float> get_f32_array(const gguf_context * g,
     return std::vector<float>(raw, raw + n);
 }
 
+// PLE metadata uses uint64 arrays (offsets, vocab sizes, per-ngram multipliers).
+std::vector<uint64_t> get_u64_array(const gguf_context * g,
+                                    const std::string & key) {
+    const int64_t id = gguf_find_key(g, key.c_str());
+    if (id < 0 || gguf_get_kv_type(g, id) != GGUF_TYPE_ARRAY) return {};
+    const gguf_type type = gguf_get_arr_type(g, id);
+    const size_t n = gguf_get_arr_n(g, id);
+    if (type != GGUF_TYPE_UINT64 && type != GGUF_TYPE_UINT32 &&
+        type != GGUF_TYPE_INT64) {
+        return {};
+    }
+    const void * raw = gguf_get_arr_data(g, id);
+    std::vector<uint64_t> out(n);
+    for (size_t i = 0; i < n; ++i) {
+        if (type == GGUF_TYPE_UINT64) {
+            out[i] = static_cast<const uint64_t *>(raw)[i];
+        } else if (type == GGUF_TYPE_INT64) {
+            out[i] = static_cast<uint64_t>(static_cast<const int64_t *>(raw)[i]);
+        } else {
+            out[i] = static_cast<const uint32_t *>(raw)[i];
+        }
+    }
+    return out;
+}
+
 size_t align_up(size_t value, size_t alignment) {
     if (alignment == 0) return value;
     const size_t remainder = value % alignment;
@@ -402,9 +427,13 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
         return fail("missing or short attention.compress_ratios");
     }
     out.ple_layer_ids = get_i32_array(gctx, P + "ple.layers");
-    out.ple_head_offsets = get_i32_array(gctx, P + "ple.head_offsets");
-    out.ple_head_vocab_sizes = get_i32_array(gctx, P + "ple.head_vocab_sizes");
-    out.ple_layer_multipliers = get_f32_array(gctx, P + "ple.layer_multipliers");
+    {
+        const std::vector<uint64_t> offs = get_u64_array(gctx, P + "ple.head_offsets");
+        const std::vector<uint64_t> vsz  = get_u64_array(gctx, P + "ple.head_vocab_sizes");
+        out.ple_head_offsets.assign(offs.begin(), offs.end());
+        out.ple_head_vocab_sizes.assign(vsz.begin(), vsz.end());
+    }
+    out.ple_layer_multipliers = get_u64_array(gctx, P + "ple.layer_multipliers");
     out.ple_eos_token_id = static_cast<int32_t>(get_u32_or(gctx, P + "ple.eos_token_id", 0xFFFFFFFFu));
     out.ple_image_token_id = static_cast<int32_t>(get_u32_or(gctx, P + "ple.image_token_id", 0xFFFFFFFFu));
     if (out.ple_head_offsets.size() != static_cast<size_t>(out.ple_n_heads) ||

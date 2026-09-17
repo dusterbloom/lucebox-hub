@@ -205,9 +205,9 @@ struct Qwen4ExpWeights {
     int ple_head_dim          = 0;      // = embedding_length_per_layer_input
     int ple_n_heads           = 0;      // = (ngram_size - 1) * heads_per_ngram
     std::vector<int32_t> ple_layer_ids;
-    std::vector<int32_t> ple_head_offsets;
-    std::vector<int32_t> ple_head_vocab_sizes;
-    std::vector<float>   ple_layer_multipliers;
+    std::vector<int64_t> ple_head_offsets;       // u64 in GGUF
+    std::vector<int64_t> ple_head_vocab_sizes;   // u64 in GGUF
+    std::vector<uint64_t> ple_layer_multipliers; // u64 in GGUF
     int32_t ple_eos_token_id  = -1;
     int32_t ple_image_token_id = -1;
 

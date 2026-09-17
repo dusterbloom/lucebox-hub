@@ -1,9 +1,16 @@
 #include "qwen4exp_backend.h"
+#include "qwen4exp_graph.h"
+
+#include "common/sampler.h"
 
 #include "ggml-cuda.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <random>
 #include <utility>
+#include <vector>
 
 namespace dflash::common {
 
@@ -66,16 +73,81 @@ bool Qwen4ExpBackend::unpark(ParkTarget target) {
 
 GenerateResult Qwen4ExpBackend::generate_impl(const GenerateRequest & req,
                                               const DaemonIO & io) {
-    (void) req;
-    (void) io;
     GenerateResult result;
     if (parked_) {
-        result.fail(GenerateErrorCode::ModelParked,
-                    "qwen4exp target is parked");
+        result.fail(GenerateErrorCode::ModelParked, "qwen4exp target is parked");
         return result;
     }
-    result.fail(GenerateErrorCode::BackendSpecific,
-                "qwen4exp forward graph is not implemented yet (Phase 1)");
+    if (req.prompt.empty()) {
+        result.fail(GenerateErrorCode::PrefillFailed, "empty prompt");
+        return result;
+    }
+
+    std::vector<float> logits;
+    const int chunk = std::max(1, cfg_.chunk);
+    int pos = 0;
+
+    // A generate() call is one fresh sequence: clear the recurrent state and
+    // the PLE n-gram window before the prefill writes position 0.
+    reset_qwen4exp_state(backend_, cache_);
+    cache_.ple_prev.clear();
+    cache_.cur_pos = 0;
+
+    const auto t_pre0 = std::chrono::steady_clock::now();
+    for (size_t i = 0; i < req.prompt.size(); i += (size_t) chunk) {
+        const int n = (int) std::min((size_t) chunk, req.prompt.size() - i);
+        const Qwen4ExpForwardResult r = qwen4exp_forward(
+            backend_, weights_, cache_, req.prompt.data() + i, n, pos, logits);
+        if (!r.ok) {
+            result.fail(GenerateErrorCode::PrefillFailed,
+                        "qwen4exp prefill forward failed");
+            return result;
+        }
+        pos += n;
+        if (io.is_cancelled()) {
+            result.fail(GenerateErrorCode::Cancelled, "cancelled during prefill");
+            return result;
+        }
+    }
+    const auto t_pre1 = std::chrono::steady_clock::now();
+    result.prefill_s = std::chrono::duration<double>(t_pre1 - t_pre0).count();
+
+    std::mt19937_64 rng(req.sampler.seed != 0 ? req.sampler.seed
+                                              : std::random_device{}());
+    std::vector<int32_t> history = req.prompt;
+
+    const auto t_dec0 = std::chrono::steady_clock::now();
+    int32_t next = sample_logits(logits.data(), weights_.n_vocab, req.sampler, history, rng);
+    for (int g = 0; g < req.n_gen; ++g) {
+        result.tokens.push_back(next);
+        io.emit(next);
+        if (io.is_cancelled()) {
+            result.fail(GenerateErrorCode::Cancelled, "cancelled during decode");
+            break;
+        }
+        if (next == weights_.eos_id || next == weights_.eos_chat_id) {
+            break;
+        }
+        if (g + 1 >= req.n_gen) {
+            break;
+        }
+        const Qwen4ExpForwardResult r = qwen4exp_forward(
+            backend_, weights_, cache_, &next, 1, pos, logits);
+        if (!r.ok) {
+            result.fail(GenerateErrorCode::DecodeFailed,
+                        "qwen4exp decode forward failed");
+            return result;
+        }
+        pos += 1;
+        history.push_back(next);
+        next = sample_logits(logits.data(), weights_.n_vocab, req.sampler, history, rng);
+    }
+    const auto t_dec1 = std::chrono::steady_clock::now();
+    result.decode_s = std::chrono::duration<double>(t_dec1 - t_dec0).count();
+
+    if (!result.error) {
+        result.succeed();
+    }
     return result;
 }
 

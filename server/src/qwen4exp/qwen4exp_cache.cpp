@@ -62,9 +62,9 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
 
     for (size_t i = 0; i < n_full; ++i) {
         out.attn_k[i] = ggml_new_tensor_3d(out.ctx, kv_type,
-            w.n_embd_head_k, w.n_head_kv, max_ctx);
+            w.n_embd_head_k, max_ctx, w.n_head_kv);
         out.attn_v[i] = ggml_new_tensor_3d(out.ctx, kv_type,
-            w.n_embd_head_v, w.n_head_kv, max_ctx);
+            w.n_embd_head_v, max_ctx, w.n_head_kv);
     }
     for (size_t i = 0; i < n_linear; ++i) {
         // Recurrent state is independent of context length.
