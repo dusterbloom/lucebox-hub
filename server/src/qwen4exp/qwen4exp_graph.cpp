@@ -235,10 +235,12 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
 
     int sections[4] = { w.rope_sections[0], w.rope_sections[1],
                         w.rope_sections[2], w.rope_sections[3] };
+    const int rope_mode = q4_env("Q4_IMROPE") ? GGML_ROPE_TYPE_IMROPE
+                                               : GGML_ROPE_TYPE_MROPE;
     Q = ggml_rope_multi(c, Q, positions, nullptr, w.rope_dimension_count, sections,
-                        GGML_ROPE_TYPE_MROPE, 0, w.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+                        rope_mode, 0, w.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
     K = ggml_rope_multi(c, K, positions, nullptr, w.rope_dimension_count, sections,
-                        GGML_ROPE_TYPE_MROPE, 0, w.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+                        rope_mode, 0, w.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
 
     // write K/V into the persistent cache at [pos0, pos0+T)
     ggml_tensor * Kt = ggml_permute(c, ggml_cast(c, K, k_cache->type), 0, 2, 1, 3);
