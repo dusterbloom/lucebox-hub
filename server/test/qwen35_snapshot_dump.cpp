@@ -49,7 +49,8 @@ int main(int argc, char ** argv) {
     config.device.backend = PlacementBackend::Cuda;
 #endif
     config.device.gpu = gpu;
-    config.device.max_ctx = cut + 256;
+    const char * mc = std::getenv("QWEN35_DUMP_MAXCTX");
+    config.device.max_ctx = mc && mc[0] ? std::atoi(mc) : cut + 256;
     config.paged_attention = false;
     config.max_concurrency = 1;
     // Match the measured R9700 Qwen3.8 profile (q8_0 KV); model defaults are
