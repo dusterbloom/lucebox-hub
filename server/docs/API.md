@@ -15,6 +15,7 @@ backend (qwen35, qwen3, gemma4, laguna).
 | POST | `/v1/chat/completions` | OpenAI Chat Completions | ✅ |
 | POST | `/v1/messages` | Anthropic Messages | ✅ |
 | POST | `/v1/responses` | OpenAI Responses API | ✅ |
+| POST | `/v1/systemone` | openjev structured classification (prefill-only) | ✅ qwen3 only |
 
 ---
 
@@ -159,6 +160,79 @@ Follows Anthropic Messages API structure with `content` blocks:
 | `text` | object | — | Structured output / JSON schema | ❌ TODO 🔴 |
 | `service_tier` | string | — | Routing hint | ❌ TODO 🔴 |
 | `previous_response_id` | string | — | Multi-turn chaining | ❌ TODO |
+
+---
+
+## POST `/v1/systemone` (openjev structured classification)
+
+Implements the "openjev"/Jev prefill-only classification protocol
+([ekzhang/openjev-sglang](https://github.com/ekzhang/openjev-sglang)):
+each question costs exactly one forced token of inference. Instead of
+generating text, the server renders the chat prompt plus a
+question-specific suffix that ends right where the model would emit its
+answer, reads the raw logits at that single position, restricts them to
+the token(s) for each valid answer label, and renormalizes with softmax
+over just those candidates. No decode loop runs, so this is much cheaper
+than a normal chat completion.
+
+Currently only the **qwen3** backend has first-token logit capture wired
+up; other backends (qwen35, qwen35moe, gemma4, deepseek4, laguna) return
+`501` naming the active arch until their first-token sites are hooked up
+the same way (see `server/src/common/model_backend.h`'s
+`want_first_token_logits` / `first_token_logits` and
+`server/src/qwen3/qwen3_backend.cpp` for the reference implementation).
+
+### Request
+
+```json
+{
+  "model": "qwen3",
+  "messages": [
+    {"role": "user", "content": "Subject: URGENT invoice overdue, click here now!"}
+  ],
+  "questions": [
+    {"id": "q1", "type": "noul",   "prompt": "Is this spam?"},
+    {"id": "q2", "type": "choice", "prompt": "Which category?",
+     "options": ["billing", "support", "sales"]},
+    {"id": "q3", "type": "score",  "prompt": "Rate urgency 1-5", "levels": 5}
+  ]
+}
+```
+
+`messages` is the same chat message array `/v1/chat/completions` takes —
+it forms the shared context every question is asked against. Each entry
+in `questions` needs:
+
+| Field | Type | Required | Description |
+|-------|------|----------|--------------|
+| `id` | string | yes | Echoed back in the response; caller-chosen |
+| `type` | string | yes | `"noul"` (yes/no), `"choice"` (multi-way), or `"score"` (ranked level) |
+| `prompt` | string | yes | The question text |
+| `options` | string[] | `choice` only | ≥ 2 labeled options |
+| `levels` | int | `score` only | Number of levels, default 5, range 2–20 |
+
+### Response
+
+```json
+{
+  "id": "sysone-...",
+  "model": "qwen3",
+  "answers": [
+    {"id": "q1", "type": "noul", "answer": true,
+     "probabilities": {"Yes": 0.94, "No": 0.06}},
+    {"id": "q2", "type": "choice", "answer": "billing",
+     "probabilities": {"billing": 0.71, "support": 0.20, "sales": 0.09}},
+    {"id": "q3", "type": "score", "answer": 4,
+     "probabilities": {"1": 0.02, "2": 0.05, "3": 0.18, "4": 0.51, "5": 0.24}}
+  ]
+}
+```
+
+`answer` is a bool for `noul`, the chosen option string for `choice`, and
+a 1-based level integer for `score`. `probabilities` always sums to ~1.0
+over the valid answer labels for that question (candidate labels that
+fail to tokenize as expected get probability 0). A `400` is returned for
+malformed questions and a `501` for unsupported backends.
 
 ---
 
