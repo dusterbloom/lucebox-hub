@@ -45,6 +45,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -2411,11 +2413,295 @@ RoutingAdmission HttpServer::enqueue_request_and_wait(SocketHandle fd, ParsedReq
     return job.admission;
 }
 
+// ─── /v1/systemone (openjev-style prefill-only classification) ──────────
+//
+// Design: https://github.com/ekzhang/openjev-sglang. Each "question" is
+// answered with exactly one forced token of inference: the chat prompt is
+// rendered with a question-specific suffix that ends right where the
+// model would emit its answer token, the backend captures the raw logits
+// at that single position (GenerateRequest::want_first_token_logits, see
+// generation_types.h), and we restrict + renormalize (softmax) those
+// logits over just the valid answer tokens (Yes/No, option labels, or
+// "1".."N"). This never runs full generation, so it is cheap relative to
+// a normal chat completion — one prefill per question, no decode loop.
+namespace {
+
+struct SystemoneQuestion {
+    std::string id;
+    std::string type;               // "noul" | "choice" | "score"
+    std::string prompt;
+    std::vector<std::string> options;  // "choice" only
+    int levels = 5;                    // "score" only
+};
+
+// Render the question as a suffix appended to the conversation as a final
+// user turn, instructing the model to answer with exactly one of the
+// candidate labels.
+std::string systemone_question_suffix(const SystemoneQuestion & q) {
+    std::string suffix = q.prompt;
+    if (q.type == "noul") {
+        suffix += "\nAnswer with exactly one word: Yes or No.";
+    } else if (q.type == "choice") {
+        suffix += "\nChoose exactly one of the following options: ";
+        for (size_t i = 0; i < q.options.size(); ++i) {
+            if (i) suffix += ", ";
+            suffix += q.options[i];
+        }
+        suffix += ". Answer with the option label only, nothing else.";
+    } else {  // score
+        suffix += "\nRate on a scale from 1 to " + std::to_string(q.levels) +
+                  ". Answer with only the number.";
+    }
+    return suffix;
+}
+
+// Picks the token id that encodes `label` as a single token, preferring
+// the leading-space form (the common mid-sentence spelling in BPE
+// vocabularies) and falling back to the bare form / first sub-token.
+// Returns -1 if `label` cannot be tokenized at all.
+int32_t systemone_label_token(Tokenizer & tok, const std::string & label) {
+    std::vector<int32_t> with_space = tok.encode(" " + label);
+    if (with_space.size() == 1) return with_space[0];
+    std::vector<int32_t> bare = tok.encode(label);
+    if (bare.size() == 1) return bare[0];
+    if (!bare.empty()) return bare[0];
+    if (!with_space.empty()) return with_space[0];
+    return -1;
+}
+
+// Softmax restricted to `candidates` (parallel array of token ids into
+// `logits`). Unresolvable candidates (id == -1) get probability 0.
+std::vector<float> systemone_softmax_restricted(
+        const std::vector<float> & logits,
+        const std::vector<int32_t> & candidates) {
+    std::vector<float> probs(candidates.size(), 0.0f);
+    float max_logit = -std::numeric_limits<float>::infinity();
+    for (int32_t id : candidates) {
+        if (id < 0 || (size_t) id >= logits.size()) continue;
+        max_logit = (std::max)(max_logit, logits[id]);
+    }
+    if (!std::isfinite(max_logit)) return probs;  // no candidate tokenized
+
+    std::vector<double> exps(candidates.size(), 0.0);
+    double sum = 0.0;
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        int32_t id = candidates[i];
+        if (id < 0 || (size_t) id >= logits.size()) continue;
+        double e = std::exp((double) (logits[id] - max_logit));
+        exps[i] = e;
+        sum += e;
+    }
+    if (sum <= 0.0) return probs;
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        probs[i] = (float) (exps[i] / sum);
+    }
+    return probs;
+}
+
+}  // namespace
+
+bool HttpServer::handle_systemone(SocketHandle fd, const std::string & body_str) {
+    json body;
+    try {
+        body = json::parse(body_str);
+    } catch (const std::exception & e) {
+        send_error(fd, 400, std::string("JSON parse error: ") + e.what());
+        return true;
+    }
+
+    // First-token logit capture is wired up for all six backends (see each
+    // backend's want_first_token_logits handling at its
+    // first-token-after-prefill site). An unrecognized/future arch would
+    // otherwise silently return an empty first_token_logits vector, which
+    // looks like "every candidate scored 0" — fail loudly and name the
+    // backend instead.
+    static const std::set<std::string> kSystemoneSupportedArches = {
+        "qwen3", "qwen35", "qwen35moe", "deepseek4", "gemma4", "laguna"};
+    if (!kSystemoneSupportedArches.count(config_.arch)) {
+        send_error(fd, 501,
+            "/v1/systemone is not implemented for backend arch '" +
+            config_.arch + "'");
+        return true;
+    }
+
+    if (!body.contains("questions") || !body["questions"].is_array() ||
+        body["questions"].empty()) {
+        send_error(fd, 400, "'questions' must be a non-empty array");
+        return true;
+    }
+
+    std::vector<SystemoneQuestion> questions;
+    for (const auto & qj : body["questions"]) {
+        if (!qj.is_object() || qj.value("id", "").empty() ||
+            !qj.contains("type") || !qj.contains("prompt")) {
+            send_error(fd, 400,
+                "each question needs non-empty 'id', 'type', and 'prompt'");
+            return true;
+        }
+        SystemoneQuestion q;
+        q.id = qj.value("id", "");
+        q.type = qj.value("type", "");
+        q.prompt = qj.value("prompt", "");
+        if (q.type == "choice") {
+            if (!qj.contains("options") || !qj["options"].is_array() ||
+                qj["options"].size() < 2) {
+                send_error(fd, 400,
+                    "question '" + q.id + "': 'choice' needs an 'options' "
+                    "array with at least 2 entries");
+                return true;
+            }
+            for (const auto & o : qj["options"]) {
+                if (!o.is_string()) {
+                    send_error(fd, 400,
+                        "question '" + q.id + "': 'options' entries must "
+                        "be strings");
+                    return true;
+                }
+                q.options.push_back(o.get<std::string>());
+            }
+        } else if (q.type == "score") {
+            q.levels = qj.value("levels", 5);
+            if (q.levels < 2 || q.levels > 20) {
+                send_error(fd, 400,
+                    "question '" + q.id + "': 'levels' must be between 2 "
+                    "and 20");
+                return true;
+            }
+        } else if (q.type != "noul") {
+            send_error(fd, 400,
+                "question '" + q.id + "': unknown type '" + q.type +
+                "' (expected 'noul', 'choice', or 'score')");
+            return true;
+        }
+        questions.push_back(std::move(q));
+    }
+
+    const json base_messages = body.value("messages", json::array());
+    std::vector<ChatMessage> chat_messages =
+        normalize_chat_messages(base_messages, ApiFormat::OPENAI_CHAT, tool_memory_);
+
+    const std::string model_name = body.value("model", config_.arch);
+    const std::string response_id = generate_id("sysone");
+
+    // Everything past this point touches the model. Route it through the
+    // job queue's single worker thread (via ServerJob::custom_task) so it
+    // serializes with ordinary generation jobs instead of calling
+    // backend_.generate() concurrently from this client thread.
+    sock_set_nonblock(fd);
+    ServerJob job;
+    job.fd = fd;
+    job.custom_task = [this, fd, questions = std::move(questions),
+                        chat_messages, model_name, response_id]() mutable {
+        json answers = json::array();
+        std::string err;
+        for (const auto & q : questions) {
+            std::vector<ChatMessage> msgs = chat_messages;
+            msgs.push_back({"user", systemone_question_suffix(q)});
+
+            ParsedRequest render_req;
+            render_req.thinking_enabled = false;  // keep the answer at token 0
+            std::string rendered;
+            std::string render_err;
+            if (!render_messages_to_text(msgs, render_req,
+                                         /*add_generation_prompt=*/true,
+                                         rendered, render_err)) {
+                err = "question '" + q.id + "': " + render_err;
+                break;
+            }
+            std::vector<int32_t> prompt_tokens = tokenizer_.encode(rendered);
+            if (prompt_tokens.empty()) {
+                err = "question '" + q.id + "': empty rendered prompt";
+                break;
+            }
+
+            std::vector<std::string> labels;
+            if (q.type == "noul") {
+                labels = {"Yes", "No"};
+            } else if (q.type == "choice") {
+                labels = q.options;
+            } else {
+                for (int i = 1; i <= q.levels; ++i) {
+                    labels.push_back(std::to_string(i));
+                }
+            }
+            std::vector<int32_t> candidate_ids;
+            candidate_ids.reserve(labels.size());
+            for (const auto & l : labels) {
+                candidate_ids.push_back(systemone_label_token(tokenizer_, l));
+            }
+
+            GenerateRequest gen_req;
+            gen_req.prompt = prompt_tokens;
+            gen_req.n_gen = 1;
+            gen_req.do_sample = false;
+            gen_req.want_first_token_logits = true;
+            // First-token logit capture is only hooked into each backend's
+            // plain AR-decode path, not speculative decode — force AR so
+            // qwen35/qwen35moe/deepseek4 don't silently route around it.
+            gen_req.force_ar_decode = true;
+            DaemonIO io;
+            GenerateResult result = backend_.generate(gen_req, io);
+            if (!result.ok() || result.first_token_logits.empty()) {
+                err = "question '" + q.id + "': generation failed (" +
+                      std::string(result.error_code()) + ")";
+                break;
+            }
+
+            std::vector<float> probs = systemone_softmax_restricted(
+                result.first_token_logits, candidate_ids);
+            size_t best = 0;
+            for (size_t i = 1; i < probs.size(); ++i) {
+                if (probs[i] > probs[best]) best = i;
+            }
+
+            json prob_obj = json::object();
+            for (size_t i = 0; i < labels.size(); ++i) {
+                prob_obj[labels[i]] = probs[i];
+            }
+
+            json a = {
+                {"id", q.id},
+                {"type", q.type},
+                {"probabilities", prob_obj},
+            };
+            if (q.type == "noul") {
+                a["answer"] = (labels[best] == "Yes");
+            } else if (q.type == "score") {
+                a["answer"] = (int) (best + 1);
+            } else {
+                a["answer"] = labels[best];
+            }
+            answers.push_back(std::move(a));
+        }
+
+        if (!err.empty()) {
+            send_error(fd, 500, err);
+            return;
+        }
+
+        const json response = {
+            {"id", response_id},
+            {"model", model_name},
+            {"answers", answers},
+        };
+        send_response(fd, 200, "application/json", response.dump() + "\n");
+    };
+    enqueue(&job);
+
+    std::unique_lock<std::mutex> lock(job.mu);
+    job.cv.wait(lock, [&]() { return job.done; });
+    return true;
+}
+
 bool HttpServer::route_request(SocketHandle fd, const HttpRequest & hr) {
     if (hr.method != "POST") return false;
 
     std::fprintf(stderr, "[server] request path=%s body_bytes=%zu\n",
                  hr.path.c_str(), hr.body.size());
+
+    if (hr.path == "/v1/systemone") {
+        return handle_systemone(fd, hr.body);
+    }
 
     ParsedRequest req;
     bool count_tokens_only = false;
@@ -4289,6 +4575,14 @@ void HttpServer::worker_loop() {
 }
 
 void HttpServer::process_job(ServerJob * job) {
+    if (job->custom_task) {
+        job->custom_task();
+        std::lock_guard<std::mutex> lk(job->mu);
+        job->done = true;
+        job->cv.notify_one();
+        return;
+    }
+
     SocketHandle fd = job->fd;
     const auto & req = job->req;
     auto started_at = std::chrono::steady_clock::now();
