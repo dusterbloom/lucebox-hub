@@ -195,8 +195,8 @@ int apply_injections(ggml_context * ctx, const std::string & path) {
         return 0;
     }
     char magic[8] = {0};
-    if (!read_bytes(f, magic, 8) || std::memcmp(magic, "LBINJ01", 8) != 0) {
-        std::fprintf(stderr, "FAIL: %s is not LBINJ01\n", path.c_str());
+    if (!read_bytes(f, magic, 8) || std::memcmp(magic, "LBINJ001", 8) != 0) {
+        std::fprintf(stderr, "FAIL: %s is not LBINJ001\n", path.c_str());
         std::fclose(f);
         return 0;
     }
