@@ -52,6 +52,10 @@ int main(int argc, char ** argv) {
     config.device.max_ctx = cut + 256;
     config.paged_attention = false;
     config.max_concurrency = 1;
+    // Match the measured R9700 Qwen3.8 profile (q8_0 KV); model defaults are
+    // not exercised by the supported launch path.
+    config.cache_type_k = GGML_TYPE_Q8_0;
+    config.cache_type_v = GGML_TYPE_Q8_0;
 
     Qwen35Backend backend(config);
     if (!backend.init()) {
