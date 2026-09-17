@@ -414,7 +414,7 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
 
     ggml_tensor * inp_emb = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, w.n_embd, T);
     ggml_set_input(inp_emb);
-    ggml_tensor * positions = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, T);
+    ggml_tensor * positions = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 4 * T);
     ggml_set_input(positions);
     ggml_tensor * mask = nullptr;
     if (T > 1) {
@@ -482,8 +482,16 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
     }
 
     ggml_backend_tensor_set(inp_emb, emb.data(), 0, sizeof(float) * emb.size());
-    std::vector<int32_t> pos((size_t) T);
-    for (int64_t i = 0; i < T; ++i) pos[(size_t) i] = (int32_t) (pos0 + i);
+    // M-RoPE wants 4 sections per token, section-major: [s*T + i]. Sections
+    // 0..2 carry the position, section 3 is zero (llama.cpp text convention).
+    std::vector<int32_t> pos((size_t) 4 * T, 0);
+    for (int64_t i = 0; i < T; ++i) {
+        const int32_t p = (int32_t) (pos0 + i);
+        pos[(size_t) (0 * T + i)] = p;
+        pos[(size_t) (1 * T + i)] = p;
+        pos[(size_t) (2 * T + i)] = p;
+        pos[(size_t) (3 * T + i)] = 0;
+    }
     ggml_backend_tensor_set(positions, pos.data(), 0, sizeof(int32_t) * pos.size());
     if (mask) {
         std::vector<ggml_fp16_t> m((size_t) kv_len * T);
