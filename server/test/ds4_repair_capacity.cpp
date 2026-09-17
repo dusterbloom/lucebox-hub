@@ -31,6 +31,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <random>
 #include <string>
 #include <vector>
@@ -143,6 +144,111 @@ int degrade(ggml_context * ctx, const std::string & mode, float noise_frac,
         }
     }
     return touched;
+}
+
+std::string group_of(const std::string & n) {
+    if (n.rfind("ds4_snap_comp_kv_", 0) == 0) return "comp_kv";
+    if (n.rfind("ds4_snap_raw_kv_", 0) == 0) return "raw_kv";
+    if (n.rfind("ds4_snap_attn_cs_", 0) == 0) return "attn_cs";
+    if (n.rfind("ds4_snap_idx_cs_", 0) == 0) return "idx_cs";
+    if (n.rfind("ds4_snap_index_kv_", 0) == 0) return "index_kv";
+    if (n == "ds4_hc_state_snap") return "hc_state";
+    if (n == "ds4_snap_meta") return "meta";
+    if (n == "ds4_snap_last_logits") return "last_logits";
+    return "other";
+}
+
+// Byte/element difference between two snapshot tensors. Returns 1e30 on a
+// structural mismatch, otherwise max |a-b| (or 1.0 for any change in a
+// non-float type).
+double tensor_max_abs_diff(ggml_tensor * a, ggml_tensor * b) {
+    if (!a || !b || a->type != b->type) return 1e30;
+    for (int d = 0; d < GGML_MAX_DIMS; ++d) {
+        if (a->ne[d] != b->ne[d]) return 1e30;
+    }
+    const size_t bytes = ggml_nbytes(a);
+    if (bytes != ggml_nbytes(b)) return 1e30;
+    std::vector<uint8_t> ra(bytes), rb(bytes);
+    ggml_backend_tensor_get(a, ra.data(), 0, bytes);
+    ggml_backend_tensor_get(b, rb.data(), 0, bytes);
+    if (std::memcmp(ra.data(), rb.data(), bytes) == 0) return 0.0;
+    if (a->type == GGML_TYPE_F32 || a->type == GGML_TYPE_F16) {
+        const size_t n = (size_t) ggml_nelements(a);
+        std::vector<float> fa(n), fb(n);
+        auto load = [&](ggml_tensor * t, std::vector<uint8_t> & raw,
+                        std::vector<float> & out) {
+            if (t->type == GGML_TYPE_F32) {
+                std::memcpy(out.data(), raw.data(), n * sizeof(float));
+            } else {
+                const ggml_fp16_t * h = (const ggml_fp16_t *) raw.data();
+                for (size_t i = 0; i < n; ++i) out[i] = ggml_fp16_to_fp32(h[i]);
+            }
+        };
+        load(a, ra, fa);
+        load(b, rb, fb);
+        double worst = 0.0;
+        for (size_t i = 0; i < n; ++i) {
+            worst = std::max(worst, (double) std::fabs(fa[i] - fb[i]));
+        }
+        return worst;
+    }
+    return 1.0;
+}
+
+struct GroupStat {
+    int tensors = 0;
+    int changed = 0;
+    double max_abs = 0.0;
+};
+
+void diff_snapshots(ggml_context * ref, ggml_context * rep,
+                    std::map<std::string, GroupStat> & out) {
+    std::map<std::string, ggml_tensor *> a, b;
+    for (ggml_tensor * t = ggml_get_first_tensor(ref); t;
+         t = ggml_get_next_tensor(ref, t)) {
+        a[ggml_get_name(t) ? ggml_get_name(t) : ""] = t;
+    }
+    for (ggml_tensor * t = ggml_get_first_tensor(rep); t;
+         t = ggml_get_next_tensor(rep, t)) {
+        b[ggml_get_name(t) ? ggml_get_name(t) : ""] = t;
+    }
+    for (const auto & [name, ta] : a) {
+        const auto it = b.find(name);
+        if (it == b.end()) continue;
+        const double d = tensor_max_abs_diff(ta, it->second);
+        GroupStat & g = out[group_of(name)];
+        ++g.tensors;
+        if (d > 0.0) {
+            ++g.changed;
+            g.max_abs = std::max(g.max_abs, d);
+        }
+    }
+}
+
+// Prefill a checkpoint at cut, degrade it, restore + repair to L with no
+// decode, and snapshot the resulting state into `slot`.
+bool state_pass(DeepSeek4Backend & backend,
+                const std::vector<int32_t> & prompt, int cut,
+                const std::string & mode, float noise_frac, int slot) {
+    DaemonIO io;
+    GenerateRequest a;
+    a.prompt = prompt;
+    a.n_gen = 0;
+    a.snap_slot = 0;
+    a.snap_pos = cut;
+    if (!backend.generate(a, io).ok() || !backend.snapshot_used(0)) return false;
+    std::mt19937_64 rng(1234);
+    const ModelBackend::SnapshotRef ref = backend.snapshot_ref(0);
+    degrade(ref.ctx, mode, noise_frac, rng);
+    GenerateRequest b;
+    b.prompt = prompt;
+    b.n_gen = 0;
+    if (!backend.restore_and_generate(0, b, io).ok()) {
+        backend.snapshot_free(0);
+        return false;
+    }
+    backend.snapshot_free(0);
+    return backend.snapshot_save(slot);
 }
 
 std::vector<Case> run_side(DeepSeek4Backend & backend,
@@ -327,6 +433,49 @@ int main(int argc, char ** argv) {
                          c.R, c.mode.c_str(), m.matches, n_gen, m.first_divergence);
         }
     }
+    // ── Post-repair state diff ───────────────────────────────────────────
+    // Does the native suffix repair rewrite the degraded groups? If a group
+    // that was zeroed comes back nonzero, the token-level ablation measured
+    // repair healing rather than a translator requirement.
+    const bool state_diff = [] {
+        const char * v = std::getenv("DS4_RC_STATE_DIFF");
+        return !v || std::string(v) != "0";
+    }();
+    if (state_diff) {
+        std::fprintf(f, "\n# post-repair state diff (n_gen=0): ref slot1 vs degraded slot2\n");
+        std::fprintf(f, "# R\tmode\tgroup\ttensors\tchanged\tmax_abs\n");
+        for (int cut : cuts) {
+            const int R = length - cut;
+            if (!state_pass(backend, prompt, cut, "none", noise_frac, 1)) {
+                std::fprintf(stderr, "[rc] state_pass(none) failed R=%d\n", R);
+                continue;
+            }
+            for (const auto & mode : modes) {
+                if (!state_pass(backend, prompt, cut, mode, noise_frac, 2)) {
+                    std::fprintf(stderr, "[rc] state_pass(%s) failed R=%d\n",
+                                 mode.c_str(), R);
+                    continue;
+                }
+                std::map<std::string, GroupStat> stats;
+                const auto a = backend.snapshot_ref(1);
+                const auto b = backend.snapshot_ref(2);
+                if (a.ctx && b.ctx) diff_snapshots(a.ctx, b.ctx, stats);
+                for (const auto & [g, s] : stats) {
+                    std::fprintf(f, "%d\t%s\t%s\t%d\t%d\t%.3g\n", R, mode.c_str(),
+                                 g.c_str(), s.tensors, s.changed, s.max_abs);
+                    if (s.changed) {
+                        std::fprintf(stderr,
+                                     "[diff] R=%-5d %-12s %-10s changed=%d/%d max=%.3g\n",
+                                     R, mode.c_str(), g.c_str(), s.changed,
+                                     s.tensors, s.max_abs);
+                    }
+                }
+                backend.snapshot_free(2);
+            }
+            backend.snapshot_free(1);
+        }
+    }
+
     std::fclose(f);
     std::fprintf(stderr, "[rc] wrote %s (%d degraded cases lost tokens)\n",
                  out_path.c_str(), failures);
