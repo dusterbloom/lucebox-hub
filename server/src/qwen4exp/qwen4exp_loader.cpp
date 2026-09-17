@@ -676,17 +676,23 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
     gctx = nullptr;
     meta_ctx = nullptr;  // owned by out.ctx from here on
 
-    // Shard 2: the PLE lookup table, served lazily from disk.
+    // Shard 2: the PLE lookup table, served lazily from disk. ISTA-DASLab
+    // isolates it in a second shard; other quantizers keep it in the shard we
+    // already loaded (or in a single file), so fall back to `path`.
     if (!out.ple_layer_ids.empty()) {
         std::string shard2;
         if (!derive_shard2_path(path, shard2)) {
-            return fail("PLE layers present but shard-1 filename does not encode split index");
+            shard2 = path;
         }
-        out.shard2_path = shard2;
         std::string reader_error;
         if (!out.ple_reader.open(shard2, "per_layer_token_embd.weight", 4, reader_error)) {
-            return fail(reader_error);
+            if (shard2 == path ||
+                !out.ple_reader.open(path, "per_layer_token_embd.weight", 4, reader_error)) {
+                return fail(reader_error);
+            }
+            shard2 = path;
         }
+        out.shard2_path = shard2;
     }
 
     char summary[512];
