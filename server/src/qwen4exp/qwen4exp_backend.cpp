@@ -123,7 +123,7 @@ GenerateResult Qwen4ExpBackend::generate_impl(const GenerateRequest & req,
         io.emit(next);
         if (io.is_cancelled()) {
             result.fail(GenerateErrorCode::Cancelled, "cancelled during decode");
-            break;
+            return result;
         }
         if (next == weights_.eos_id || next == weights_.eos_chat_id) {
             break;
@@ -145,9 +145,7 @@ GenerateResult Qwen4ExpBackend::generate_impl(const GenerateRequest & req,
     const auto t_dec1 = std::chrono::steady_clock::now();
     result.decode_s = std::chrono::duration<double>(t_dec1 - t_dec0).count();
 
-    if (!result.error) {
-        result.succeed();
-    }
+    result.succeed();
     return result;
 }
 
