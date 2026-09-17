@@ -1,7 +1,5 @@
 #include "binbcast.cuh"
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
 #include <utility>
 
 static __device__ __forceinline__ float op_repeat(const float a, const float b) {
@@ -447,15 +445,6 @@ void ggml_cuda_op_repeat(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
             src->ne[0], src->ne[1], src->ne[2], src->ne[3],
             n);
         return;
-    }
-    if (const char * tr = std::getenv("Q4_TRACE_REPEAT")) {
-        (void) tr;
-        std::fprintf(stderr,
-            "[repeat] dst=%s dst_ne=[%lld,%lld,%lld,%lld] src0=%s src0_ne=[%lld,%lld,%lld,%lld] src0_nb=[%zu,%zu,%zu,%zu]\n",
-            dst->name, (long long) dst->ne[0], (long long) dst->ne[1], (long long) dst->ne[2], (long long) dst->ne[3],
-            dst->src[0]->name, (long long) dst->src[0]->ne[0], (long long) dst->src[0]->ne[1],
-            (long long) dst->src[0]->ne[2], (long long) dst->src[0]->ne[3],
-            dst->src[0]->nb[0], dst->src[0]->nb[1], dst->src[0]->nb[2], dst->src[0]->nb[3]);
     }
     ggml_cuda_op_bin_bcast<bin_bcast_cuda<op_repeat, 0>>(dst, dst->src[0], dst, nullptr, dst->src[0]->data, dst->data, ctx.stream());
 }

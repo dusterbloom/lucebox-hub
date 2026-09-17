@@ -30,6 +30,17 @@ ggml_tensor * mm(ggml_context * c, ggml_tensor * w, ggml_tensor * x, float s = 1
     return s == 1.0f ? y : ggml_scale(c, y, s);
 }
 
+// Broadcast a [.., 1, ..] tensor along dim 1 to `hc` copies by concatenation.
+// Avoids GGML_OP_REPEAT, which segfaults on gfx1151 for the hyper-connection
+// shapes (the first op of the first forward).
+ggml_tensor * repeat_dim1(ggml_context * c, ggml_tensor * x, int64_t hc) {
+    ggml_tensor * r = x;
+    for (int64_t i = 1; i < hc; ++i) {
+        r = ggml_concat(c, r, x, 1);
+    }
+    return r;
+}
+
 // ── Hyper-connections ───────────────────────────────────────────────────
 
 // build_hc_mix: grouped RMSNorm over one stream, low-rank mixer, sigmoid gate,
@@ -74,8 +85,7 @@ ggml_tensor * mm(ggml_context * c, ggml_tensor * w, ggml_tensor * x, float s = 1
     w = ggml_scale(c, w, 2.0f);
     w = ggml_reshape_3d(c, w, 1, hc, nt);
 
-    ggml_tensor * b = ggml_repeat_4d(c, ggml_reshape_3d(c, block_out, n_embd, 1, nt), n_embd, hc, nt, 1);
-    ggml_set_name(b, "rep_hc_combine");
+    ggml_tensor * b = repeat_dim1(c, ggml_reshape_3d(c, block_out, n_embd, 1, nt), hc);
 
     return ggml_add(c, residual, ggml_mul(c, b, w));
 }
@@ -117,9 +127,7 @@ ggml_tensor * mm(ggml_context * c, ggml_tensor * w, ggml_tensor * x, float s = 1
     ggml_tensor * shared  = mm(c, L.ffn_down_shexp, sh_gu);
 
     ggml_tensor * shared_gate = ggml_sigmoid(c, mm(c, L.ffn_gate_inp_shexp, cur));
-    ggml_tensor * shexp_rep = ggml_repeat(c, shared_gate, shared);
-    ggml_set_name(shexp_rep, "rep_moe_shexp");
-    shared = ggml_mul(c, shared, shexp_rep);
+    shared = ggml_mul(c, shared, shared_gate);   // [n_embd,T] * [1,T] broadcasts over dim 0
 
     return ggml_add(c, routed, shared);
 }
@@ -278,9 +286,8 @@ ggml_tensor * build_ple(ggml_context * c, ggml_cgraph * gf, ggml_tensor * hidden
     ggml_tensor * mag = ggml_sqrt(c, ggml_clamp(c, ggml_abs(c, s), 1e-6f, INFINITY));
     ggml_tensor * ple_gate = ggml_sigmoid(c, ggml_mul(c, ggml_sgn(c, s), mag));
 
-    ggml_tensor * v3 = ggml_repeat_4d(c,
-        ggml_reshape_3d(c, value, n_embd, 1, T), n_embd, hc, T, 1);
-    ggml_set_name(v3, "rep_ple_v3");
+    ggml_tensor * v3 = repeat_dim1(c,
+        ggml_reshape_3d(c, value, n_embd, 1, T), hc);
     ggml_tensor * gated = ggml_mul(c, v3, ple_gate);
 
     ggml_tensor * normalized = ggml_reshape_2d(c,
@@ -430,9 +437,8 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
         ggml_set_input(ple_in);
     }
 
-    ggml_tensor * res_hc = ggml_repeat_4d(ctx,
-        ggml_reshape_3d(ctx, inp_emb, w.n_embd, 1, T), w.n_embd, w.n_hc, T, 1);
-    ggml_set_name(res_hc, "rep_hc_init");
+    ggml_tensor * res_hc = repeat_dim1(ctx,
+        ggml_reshape_3d(ctx, inp_emb, w.n_embd, 1, T), w.n_hc);
 
     for (int il = 0; il < w.n_layer; ++il) {
         const Qwen4ExpLayer & L = w.layers[il];
