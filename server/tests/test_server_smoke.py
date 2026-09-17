@@ -239,6 +239,63 @@ class SmokeTest:
         except Exception as e:
             self._report("responses API", False, str(e))
 
+    def test_systemone_validation(self):
+        print("\n[7b] /v1/systemone request validation")
+        # Missing 'questions' -> 400
+        try:
+            self._req("POST", "/v1/systemone", {"messages": [
+                {"role": "user", "content": "hi"}]})
+            self._report("missing questions -> 400", False,
+                         "expected 400 but got 200")
+        except urllib.error.HTTPError as e:
+            self._report("missing questions -> 400", e.code == 400,
+                         f"got HTTP {e.code}")
+        except Exception as e:
+            self._report("missing questions -> 400", False, str(e))
+
+        # Unknown question type -> 400
+        try:
+            self._req("POST", "/v1/systemone", {
+                "messages": [{"role": "user", "content": "hi"}],
+                "questions": [{"id": "q1", "type": "bogus", "prompt": "?"}],
+            })
+            self._report("unknown type -> 400", False,
+                         "expected 400 but got 200")
+        except urllib.error.HTTPError as e:
+            self._report("unknown type -> 400", e.code == 400,
+                         f"got HTTP {e.code}")
+        except Exception as e:
+            self._report("unknown type -> 400", False, str(e))
+
+    def test_systemone_noul(self):
+        print("\n[7c] /v1/systemone noul question")
+        try:
+            r = self._req("POST", "/v1/systemone", {
+                "messages": [{"role": "user", "content": "The sky is blue."}],
+                "questions": [
+                    {"id": "q1", "type": "noul", "prompt": "Is the sky blue?"},
+                ],
+            }, timeout=60.0)
+            answers = r.get("answers", [])
+            self._report("has one answer", len(answers) == 1, f"got: {r}")
+            if answers:
+                a = answers[0]
+                self._report("answer id echoed", a.get("id") == "q1", f"got: {a}")
+                probs = a.get("probabilities", {})
+                total = sum(probs.values()) if probs else 0.0
+                self._report("probabilities sum to ~1",
+                             abs(total - 1.0) < 1e-3, f"sum={total}")
+        except urllib.error.HTTPError as e:
+            if e.code == 501:
+                # Backend without first-token logit capture wired up yet.
+                self.skipped += 1
+                print("  ⏭  /v1/systemone: backend unsupported (501), skipping")
+            else:
+                self._report("/v1/systemone noul", False,
+                             f"HTTP {e.code}: {e.read()}")
+        except Exception as e:
+            self._report("/v1/systemone noul", False, str(e))
+
     def test_404(self):
         print("\n[8] Unknown endpoint returns error")
         try:
@@ -277,12 +334,14 @@ class SmokeTest:
         self.test_models()
         self.test_404()
         self.test_bad_json()
+        self.test_systemone_validation()
 
         # Generation tests (require model loaded)
         self.test_chat_completion_streaming()
         self.test_chat_completion_nonstreaming()
         self.test_anthropic_messages()
         self.test_responses_api()
+        self.test_systemone_noul()
 
         # Summary
         total = self.passed + self.failed + self.skipped
