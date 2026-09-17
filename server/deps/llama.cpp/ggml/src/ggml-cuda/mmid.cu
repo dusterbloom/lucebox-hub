@@ -103,6 +103,10 @@ static __global__ void mm_ids_helper(
         }
     }
     nex_prev = warp_reduce_sum<warp_size>(nex_prev);
+    // The write-back loop below reads store[] slots written by other lanes in
+    // the loop above; the shuffle reduce does not order shared-memory writes
+    // across lanes (upstream race fix 73a43d1f).
+    __syncwarp();
 
     for (int itc = threadIdx.x; itc < it_compact; itc += warp_size) {
         const mm_ids_helper_store store_it = store[itc];
