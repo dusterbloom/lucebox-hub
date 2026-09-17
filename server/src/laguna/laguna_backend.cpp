@@ -1464,6 +1464,9 @@ GenerateResult LagunaBackend::generate_impl(const GenerateRequest & req,
         return result;
     }
 
+    if (req.want_first_token_logits) {
+        result.first_token_logits = last_logits;
+    }
     int next_tok = pick(last_logits);
 
     // Budget force-close state — see model_backend.h BudgetHook docs.
@@ -1701,6 +1704,9 @@ GenerateResult LagunaBackend::restore_and_generate_impl(int slot,
         return result;
     }
 
+    if (req.want_first_token_logits) {
+        result.first_token_logits = last_logits;
+    }
     int next_tok = pick(last_logits);
 
     const BudgetHook & budget_hook = req.budget_hook;
@@ -3047,6 +3053,9 @@ GenerateResult LagunaBackend::generate_hybrid(const GenerateRequest & req,
             : argmax(ll);
     };
 
+    if (req.want_first_token_logits) {
+        result.first_token_logits = last_logits;
+    }
     int next_tok = pick(last_logits);
     result.tokens.reserve(req.n_gen);
 

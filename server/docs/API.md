@@ -15,7 +15,7 @@ backend (qwen35, qwen3, gemma4, laguna).
 | POST | `/v1/chat/completions` | OpenAI Chat Completions | ✅ |
 | POST | `/v1/messages` | Anthropic Messages | ✅ |
 | POST | `/v1/responses` | OpenAI Responses API | ✅ |
-| POST | `/v1/systemone` | openjev structured classification (prefill-only) | ✅ qwen3, qwen35, qwen35moe, deepseek4 |
+| POST | `/v1/systemone` | openjev structured classification (prefill-only) | ✅ all backends |
 
 ---
 
@@ -175,15 +175,14 @@ the token(s) for each valid answer label, and renormalizes with softmax
 over just those candidates. No decode loop runs, so this is much cheaper
 than a normal chat completion.
 
-First-token logit capture is wired up for **qwen3, qwen35, qwen35moe, and
-deepseek4**; the request forces AR decode (`force_ar_decode=true`) so
-these backends' speculative-decode paths — which aren't hooked — are
-bypassed. **gemma4 and laguna** remain unsupported and return `501`
-naming the active arch until their first-token sites are hooked up the
-same way (see `server/src/common/model_backend.h`'s
-`want_first_token_logits` / `first_token_logits`, and
-`server/src/qwen3/qwen3_backend.cpp` / `server/src/qwen35/qwen35_backend.cpp`
-for reference implementations).
+First-token logit capture is wired up for all six backends (qwen3,
+qwen35, qwen35moe, deepseek4, gemma4, laguna). The request forces AR
+decode (`force_ar_decode=true`) so each backend's speculative-decode
+path — which isn't hooked for logit capture — is bypassed in favor of
+its plain AR-decode / hybrid-decode first-token site (see
+`server/src/common/model_backend.h`'s `want_first_token_logits` /
+`first_token_logits`, and `server/src/qwen3/qwen3_backend.cpp` for a
+reference implementation).
 
 ### Request
 
