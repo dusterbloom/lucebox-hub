@@ -483,6 +483,15 @@ const ggml_cuda_device_info & ggml_cuda_info() {
 
 // buffer pool for cuda (legacy)
 struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+    // GGML_CUDA_POOL_LOG=1 logs allocations >= 8 MiB; =all logs every alloc.
+    // Used to find what dominates the graph arena at large ubatch on Strix Halo.
+    static int log_level() {
+        static const int level = []() {
+            const char * e = getenv("GGML_CUDA_POOL_LOG");
+            return e ? (e[0] == 'a' ? 2 : 1) : 0;
+        }();
+        return level;
+    }
     // Free buffers keyed by size. alloc() takes the smallest cached buffer
     // that fits, the same best-fit choice the original linear scan made, and
     // free() returns a buffer to the cache; both are O(log n). A DeepSeek4
@@ -522,12 +531,20 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
         void * ptr;
         size_t look_ahead_size = (size_t) (1.05 * size);
         look_ahead_size = 256 * ((look_ahead_size + 255)/256);
+        const int ll = log_level();
+        if (ll == 2 || (ll == 1 && size >= (8u << 20))) {
+            GGML_LOG_INFO("[cuda-pool] dev=%d alloc req=%.1f MiB look=%.1f MiB pool=%zu -> %zu MiB\n",
+                device, size/1048576.0, look_ahead_size/1048576.0,
+                pool_size/1048576, (pool_size + look_ahead_size)/1048576);
+        }
         ggml_cuda_set_device(device);
         CUDA_CHECK(ggml_cuda_device_malloc(&ptr, look_ahead_size, device));
         *actual_size = look_ahead_size;
         pool_size += look_ahead_size;
         return ptr;
     }
+
+    size_t size_bytes() const override { return pool_size; }
 
     void free(void * ptr, size_t size) override {
         if ((int) free_buffers.size() < MAX_BUFFERS) {
@@ -589,6 +606,8 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
             CU_CHECK(cuMemAddressFree(pool_addr, CUDA_POOL_VMM_MAX_SIZE));
         }
     }
+
+    size_t size_bytes() const override { return pool_used; }
 
     void * alloc(size_t size, size_t * actual_size) override {
         // round up the allocation size to the alignment to ensure that all allocations are aligned for all data types
@@ -5324,6 +5343,10 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     // shadows (g_mmb_shadow) are process-lifetime and survive this.
     ggml_cuda_mmb_begin_graph();
 
+    // Arena diagnostics (GGML_CUDA_POOL_LOG): pool growth attributable to this graph.
+    static const bool pool_log_graph = getenv("GGML_CUDA_POOL_LOG") != nullptr;
+    const size_t pool_before = pool_log_graph ? cuda_ctx->pool().size_bytes() : 0;
+
     // LIFO-free last evaluation's memoized q8_1 activations.
     while (!cuda_ctx->luce_q8_memo.empty()) {
         cuda_ctx->luce_q8_memo.pop_back();
@@ -5475,6 +5498,12 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     }
 
     ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, use_cuda_graph, cuda_graph_update_required, graph_key);
+
+    if (pool_log_graph) {
+        const size_t pool_after = cuda_ctx->pool().size_bytes();
+        GGML_LOG_INFO("[cuda-arena] nodes=%d pool=%zu MiB delta=%zu MiB\n",
+            cgraph->n_nodes, pool_after/1048576, (pool_after - pool_before)/1048576);
+    }
 
     return GGML_STATUS_SUCCESS;
 }
