@@ -305,9 +305,10 @@ ggml_tensor * build_ple(ggml_context * c, ggml_cgraph * gf, ggml_tensor * hidden
         ggml_tensor * shifted = ggml_cont(c, ggml_transpose(c,
             ggml_view_3d(c, padded, T, hc_dim, 1, padded->nb[1], padded->nb[2],
                          ggml_row_size(padded->type, start))));
-        ggml_tensor * wk = ggml_reshape_1d(c,
+        ggml_tensor * wk = ggml_cont(c,
             ggml_view_2d(c, L.ple_conv1d, 1, hc_dim, L.ple_conv1d->nb[1],
-                         k * L.ple_conv1d->nb[0]), hc_dim);
+                         k * L.ple_conv1d->nb[0]));
+        wk = ggml_reshape_1d(c, wk, hc_dim);
         if (wk->type != GGML_TYPE_F32) wk = ggml_cast(c, wk, GGML_TYPE_F32);
         ggml_tensor * term = ggml_mul(c, shifted, wk);
         conv_out = conv_out ? ggml_add(c, conv_out, term) : term;
