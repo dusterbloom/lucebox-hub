@@ -21,6 +21,7 @@
 
 #include "lbsnap_writer.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -36,28 +37,25 @@ ggml_type cache_type_from_env() {
     return GGML_TYPE_Q8_0;
 }
 
-bool dump_one(Qwen35Backend & backend, const std::string & model,
-              const lbsnap::Entry & entry, int gpu) {
-    std::vector<int32_t> prompt = lbsnap::read_prompt(entry.prompt.c_str(), model);
-    if (prompt.empty()) {
-        std::fprintf(stderr, "FAIL: no tokens from %s\n", entry.prompt.c_str());
-        return false;
-    }
-    if (entry.cut > 0 && entry.cut < (int) prompt.size()) prompt.resize(entry.cut);
-    const int cut = (int) prompt.size();
+bool dump_one(Qwen35Backend & backend, const std::vector<int32_t> & prompt,
+              int cut_arg, const std::string & out_path) {
+    if (prompt.empty()) return false;
+    std::vector<int32_t> tokens = prompt;
+    if (cut_arg > 0 && cut_arg < (int) tokens.size()) tokens.resize(cut_arg);
+    const int cut = (int) tokens.size();
 
     GenerateRequest req;
-    req.prompt = prompt;
+    req.prompt = tokens;
     req.n_gen = 0;
     DaemonIO io;
     if (!backend.generate(req, io).ok()) {
         std::fprintf(stderr, "FAIL: prefill to cut=%d failed (%s)\n", cut,
-                     entry.prompt.c_str());
+                     out_path.c_str());
         return false;
     }
     if (!backend.snapshot_save(0) || backend.snapshot_cur_pos(0) != cut) {
         std::fprintf(stderr, "FAIL: snapshot at cut=%d failed (%s)\n", cut,
-                     entry.prompt.c_str());
+                     out_path.c_str());
         return false;
     }
     const ModelBackend::SnapshotRef ref = backend.snapshot_ref(0);
@@ -65,9 +63,8 @@ bool dump_one(Qwen35Backend & backend, const std::string & model,
         std::fprintf(stderr, "FAIL: snapshot_ref(0) empty\n");
         return false;
     }
-    const bool ok = lbsnap::write_container(entry.out, ref.ctx, ref.cur_pos, cut) >= 0;
+    const bool ok = lbsnap::write_container(out_path, ref.ctx, ref.cur_pos, cut) >= 0;
     backend.snapshot_free(0);
-    (void) gpu;
     return ok;
 }
 
@@ -97,6 +94,22 @@ int main(int argc, char ** argv) {
     }
     const int gpu = argc > (batch ? 3 : 5) ? std::atoi(argv[batch ? 3 : 5]) : 0;
 
+    // Tokenize everything up front so the context can be sized from the real
+    // maximum (see ds4_snapshot_dump).
+    lbsnap::PromptLoader loader;
+    std::vector<std::vector<int32_t>> prompts(entries.size());
+    int max_prompt = 0;
+    for (size_t i = 0; i < entries.size(); ++i) {
+        prompts[i] = loader.load(entries[i].prompt.c_str(), model);
+        if (prompts[i].empty()) {
+            std::fprintf(stderr, "FAIL: no tokens from %s\n", entries[i].prompt.c_str());
+            return 1;
+        }
+        max_prompt = std::max(max_prompt, (int) prompts[i].size());
+    }
+    std::fprintf(stderr, "[dump] %zu entries, longest prompt %d tokens\n",
+                 entries.size(), max_prompt);
+
     Qwen35Config config;
     config.target_path = model;
 #if defined(DFLASH27B_BACKEND_HIP)
@@ -106,7 +119,7 @@ int main(int argc, char ** argv) {
 #endif
     config.device.gpu = gpu;
     const char * mc = std::getenv("QWEN35_DUMP_MAXCTX");
-    config.device.max_ctx = mc && mc[0] ? std::atoi(mc) : 8192;
+    config.device.max_ctx = mc && mc[0] ? std::atoi(mc) : max_prompt + 256;
     config.paged_attention = false;
     config.max_concurrency = 1;
     config.cache_type_k = cache_type_from_env();
@@ -119,8 +132,10 @@ int main(int argc, char ** argv) {
     }
 
     int failures = 0;
-    for (const auto & e : entries) {
-        if (!dump_one(backend, model, e, gpu)) ++failures;
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (!dump_one(backend, prompts[i], entries[i].cut, entries[i].out)) {
+            ++failures;
+        }
     }
     std::fprintf(stderr, "[dump] %zu entries, %d failures\n", entries.size(),
                  failures);

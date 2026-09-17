@@ -124,29 +124,43 @@ inline std::vector<int32_t> read_token_file(const char * path) {
     return out;
 }
 
-// A *.txt input is raw prompt text: tokenize it with the model's own vocab so
-// the corpus builder needs no second tokenizer implementation. Anything else
-// is a raw little-endian int32 token stream.
+// Prompt loading for a batch. The tokenizer is loaded once from the model, not
+// once per entry; a `.txt` prompt is tokenized with the model's own vocab, and
+// anything else is a raw little-endian int32 token stream.
+class PromptLoader {
+public:
+    std::vector<int32_t> load(const char * path, const std::string & model) {
+        const std::string p = path;
+        if (p.size() < 4 || p.compare(p.size() - 4, 4, ".txt") != 0) {
+            return read_token_file(path);
+        }
+        if (!loaded_) {
+            if (!tokenizer_.load_from_gguf(model.c_str())) {
+                std::fprintf(stderr, "FAIL: tokenizer load from %s\n", model.c_str());
+                return {};
+            }
+            loaded_ = true;
+        }
+        FILE * f = std::fopen(path, "rb");
+        if (!f) return {};
+        std::string text;
+        char buf[4096];
+        size_t n;
+        while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) text.append(buf, n);
+        std::fclose(f);
+        return tokenizer_.encode(text);
+    }
+
+private:
+    dflash::common::Tokenizer tokenizer_;
+    bool loaded_ = false;
+};
+
+// Convenience for single-shot callers.
 inline std::vector<int32_t> read_prompt(const char * path,
                                         const std::string & model) {
-    const std::string p = path;
-    if (p.size() < 4 || p.compare(p.size() - 4, 4, ".txt") != 0) {
-        return read_token_file(path);
-    }
-    FILE * f = std::fopen(path, "rb");
-    if (!f) return {};
-    std::string text;
-    char buf[4096];
-    size_t n;
-    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) text.append(buf, n);
-    std::fclose(f);
-
-    dflash::common::Tokenizer tokenizer;
-    if (!tokenizer.load_from_gguf(model.c_str())) {
-        std::fprintf(stderr, "FAIL: tokenizer load from %s\n", model.c_str());
-        return {};
-    }
-    return tokenizer.encode(text);
+    PromptLoader loader;
+    return loader.load(path, model);
 }
 
 }  // namespace lbsnap
