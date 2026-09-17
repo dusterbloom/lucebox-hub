@@ -126,6 +126,13 @@ int degrade(ggml_context * ctx, const std::string & mode, float noise_frac,
         const char * p = std::getenv("DS4_RC_INJECT");
         return p && p[0] ? apply_injections(ctx, p) : 0;
     }
+    if (mode.rfind("inject:", 0) == 0) {
+        // Batched rank sweep: inject:<name> reads <DS4_RC_INJECT_DIR>/<name>.bin
+        // so every rank shares one model load.
+        const char * d = std::getenv("DS4_RC_INJECT_DIR");
+        if (!d || !d[0]) return 0;
+        return apply_injections(ctx, std::string(d) + "/" + mode.substr(7) + ".bin");
+    }
     int touched = 0;
     for (ggml_tensor * t = ggml_get_first_tensor(ctx); t;
          t = ggml_get_next_tensor(ctx, t)) {
@@ -142,6 +149,14 @@ int degrade(ggml_context * ctx, const std::string & mode, float noise_frac,
         } else if (mode == "cs_zero" &&
                    (has_prefix(name, "ds4_snap_attn_cs_") ||
                     has_prefix(name, "ds4_snap_idx_cs_"))) {
+            zero_tensor(t); ++touched;
+        } else if (mode == "comp_cs_zero" &&
+                   (has_prefix(name, "ds4_snap_comp_kv_") ||
+                    has_prefix(name, "ds4_snap_attn_cs_") ||
+                    has_prefix(name, "ds4_snap_idx_cs_"))) {
+            // Consistent-state control: zero the compressed rows *and* the
+            // rolling compressor state that would otherwise extend them, so
+            // the failure mode is memory loss rather than state inconsistency.
             zero_tensor(t); ++touched;
         } else if (mode == "logits_zero" && n == "ds4_snap_last_logits") {
             zero_tensor(t); ++touched;
