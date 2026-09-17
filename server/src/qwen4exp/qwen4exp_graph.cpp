@@ -74,8 +74,8 @@ ggml_tensor * mm(ggml_context * c, ggml_tensor * w, ggml_tensor * x, float s = 1
     w = ggml_scale(c, w, 2.0f);
     w = ggml_reshape_3d(c, w, 1, hc, nt);
 
-    ggml_tensor * b = ggml_reshape_3d(c, block_out, n_embd, 1, nt);
-    b = ggml_repeat_4d(c, b, n_embd, hc, nt, 1);
+    ggml_tensor * b = ggml_repeat_4d(c, ggml_reshape_3d(c, block_out, n_embd, 1, nt), n_embd, hc, nt, 1);
+    ggml_set_name(b, "rep_hc_combine");
 
     return ggml_add(c, residual, ggml_mul(c, b, w));
 }
@@ -117,7 +117,9 @@ ggml_tensor * mm(ggml_context * c, ggml_tensor * w, ggml_tensor * x, float s = 1
     ggml_tensor * shared  = mm(c, L.ffn_down_shexp, sh_gu);
 
     ggml_tensor * shared_gate = ggml_sigmoid(c, mm(c, L.ffn_gate_inp_shexp, cur));
-    shared = ggml_mul(c, shared, ggml_repeat(c, shared_gate, shared));
+    ggml_tensor * shexp_rep = ggml_repeat(c, shared_gate, shared);
+    ggml_set_name(shexp_rep, "rep_moe_shexp");
+    shared = ggml_mul(c, shared, shexp_rep);
 
     return ggml_add(c, routed, shared);
 }
@@ -278,6 +280,7 @@ ggml_tensor * build_ple(ggml_context * c, ggml_cgraph * gf, ggml_tensor * hidden
 
     ggml_tensor * v3 = ggml_repeat_4d(c,
         ggml_reshape_3d(c, value, n_embd, 1, T), n_embd, hc, T, 1);
+    ggml_set_name(v3, "rep_ple_v3");
     ggml_tensor * gated = ggml_mul(c, v3, ple_gate);
 
     ggml_tensor * normalized = ggml_reshape_2d(c,
@@ -429,6 +432,7 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
 
     ggml_tensor * res_hc = ggml_repeat_4d(ctx,
         ggml_reshape_3d(ctx, inp_emb, w.n_embd, 1, T), w.n_embd, w.n_hc, T, 1);
+    ggml_set_name(res_hc, "rep_hc_init");
 
     for (int il = 0; il < w.n_layer; ++il) {
         const Qwen4ExpLayer & L = w.layers[il];
