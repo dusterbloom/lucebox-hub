@@ -1385,6 +1385,25 @@ if(DFLASH27B_TESTS)
             target_link_libraries(ds4_snapshot_dump PRIVATE hip::host)
         endif()
     endif()
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/qwen35_snapshot_dump.cpp")
+        # Source-side twin of ds4_snapshot_dump: prefill a Qwen3.5/3.6 target and
+        # serialize its prefix snapshot (LBSNAP01). Non-paged, single-concurrency,
+        # no kvflash — the modes where prefix snapshots are supported.
+        add_executable(qwen35_snapshot_dump test/qwen35_snapshot_dump.cpp)
+        target_include_directories(qwen35_snapshot_dump PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        if(DFLASH27B_GPU_BACKEND STREQUAL "hip")
+            target_compile_definitions(qwen35_snapshot_dump PRIVATE DFLASH27B_BACKEND_HIP=1 GGML_USE_HIP)
+        else()
+            target_compile_definitions(qwen35_snapshot_dump PRIVATE DFLASH27B_BACKEND_CUDA=1 GGML_USE_CUDA)
+        endif()
+        target_link_libraries(qwen35_snapshot_dump PRIVATE dflash_common ggml ggml-cpu ${DFLASH27B_GGML_BACKEND_TARGET} ggml-base)
+        if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
+            find_package(CUDAToolkit REQUIRED)
+            target_link_libraries(qwen35_snapshot_dump PRIVATE CUDA::cudart)
+        else()
+            target_link_libraries(qwen35_snapshot_dump PRIVATE hip::host)
+        endif()
+    endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_rocmfp3_mix_registry.cpp")
         # Backend-general: the kernels declare cudaStream_t and ggml's vendors/hip.h maps the
         # cuda* spellings onto hip*, so the same source builds for both. These were hip-only,
