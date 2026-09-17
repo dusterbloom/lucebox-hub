@@ -28,7 +28,7 @@ struct Qwen4ExpCache {
     std::vector<int> full_layer_ids;    // size = 12
     std::vector<int> linear_layer_ids;  // size = 36
 
-    // Full attention: [head_dim, max_ctx, n_head_kv].
+    // Full attention: [head_dim, n_head_kv, max_ctx].
     std::vector<ggml_tensor *> attn_k;  // size = n_full
     std::vector<ggml_tensor *> attn_v;
 
@@ -36,6 +36,11 @@ struct Qwen4ExpCache {
     //                  conv_state [kernel-1, conv_channels] f32.
     std::vector<ggml_tensor *> ssm_state;   // size = n_linear
     std::vector<ggml_tensor *> conv_state;
+
+    // Per-layer embedding (PLE) conv history, one per PLE layer:
+    // [ple_hist, hc_dim] f32 where ple_hist = (ple_conv_kernel-1)*ple_ngram_size.
+    std::vector<ggml_tensor *> ple_conv_state;
+    std::vector<int> ple_layer_ids;
 };
 
 bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,

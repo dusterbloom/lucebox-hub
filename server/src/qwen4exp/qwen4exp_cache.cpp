@@ -46,11 +46,25 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
     out.ssm_state.assign(n_linear, nullptr);
     out.conv_state.assign(n_linear, nullptr);
 
+    // PLE conv history (only PLE layers carry one).
+    const int64_t hc_dim  = static_cast<int64_t>(w.n_embd) * w.n_hc;
+    const int64_t ple_hist = static_cast<int64_t>(w.ple_conv_kernel - 1) * w.ple_ngram_size;
+    out.ple_layer_ids.clear();
+    if (ple_hist > 0) {
+        for (int il = 0; il < w.n_layer; ++il) {
+            if (w.layers[il].is_ple) out.ple_layer_ids.push_back(il);
+        }
+    }
+    out.ple_conv_state.assign(out.ple_layer_ids.size(), nullptr);
+    for (size_t i = 0; i < out.ple_layer_ids.size(); ++i) {
+        out.ple_conv_state[i] = ggml_new_tensor_2d(out.ctx, GGML_TYPE_F32, ple_hist, hc_dim);
+    }
+
     for (size_t i = 0; i < n_full; ++i) {
         out.attn_k[i] = ggml_new_tensor_3d(out.ctx, kv_type,
-            w.n_embd_head_k, max_ctx, w.n_head_kv);
+            w.n_embd_head_k, w.n_head_kv, max_ctx);
         out.attn_v[i] = ggml_new_tensor_3d(out.ctx, kv_type,
-            w.n_embd_head_v, max_ctx, w.n_head_kv);
+            w.n_embd_head_v, w.n_head_kv, max_ctx);
     }
     for (size_t i = 0; i < n_linear; ++i) {
         // Recurrent state is independent of context length.
@@ -94,6 +108,8 @@ void free_qwen4exp_cache(Qwen4ExpCache & c) {
     c.attn_v.clear();
     c.ssm_state.clear();
     c.conv_state.clear();
+    c.ple_conv_state.clear();
+    c.ple_layer_ids.clear();
     c.full_layer_ids.clear();
     c.linear_layer_ids.clear();
     c.cur_pos = 0;
@@ -106,6 +122,9 @@ void reset_qwen4exp_state(ggml_backend_t backend, Qwen4ExpCache & c) {
         if (t) ggml_backend_tensor_memset(t, 0, 0, ggml_nbytes(t));
     }
     for (ggml_tensor * t : c.conv_state) {
+        if (t) ggml_backend_tensor_memset(t, 0, 0, ggml_nbytes(t));
+    }
+    for (ggml_tensor * t : c.ple_conv_state) {
         if (t) ggml_backend_tensor_memset(t, 0, 0, ggml_nbytes(t));
     }
     c.cur_pos = 0;
