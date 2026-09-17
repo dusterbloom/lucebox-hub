@@ -2159,13 +2159,14 @@ bool HttpServer::handle_systemone(SocketHandle fd, const std::string & body_str)
         return true;
     }
 
-    // First-token logit capture is currently only wired up in the qwen3
-    // backend (see qwen3_backend.cpp's want_first_token_logits handling at
-    // its two first-token-after-prefill sites). Other backends return an
-    // empty first_token_logits vector, which would otherwise silently look
-    // like "every candidate scored 0" — fail loudly and name the backend
-    // instead. See the task write-up for which backends remain unsupported.
-    static const std::set<std::string> kSystemoneSupportedArches = {"qwen3"};
+    // First-token logit capture is wired up for qwen3, qwen35, qwen35moe,
+    // and deepseek4 (see each backend's want_first_token_logits handling at
+    // its first-token-after-prefill site). gemma4 and laguna remain
+    // unsupported. Other backends return an empty first_token_logits
+    // vector, which would otherwise silently look like "every candidate
+    // scored 0" — fail loudly and name the backend instead.
+    static const std::set<std::string> kSystemoneSupportedArches = {
+        "qwen3", "qwen35", "qwen35moe", "deepseek4"};
     if (!kSystemoneSupportedArches.count(config_.arch)) {
         send_error(fd, 501,
             "/v1/systemone is not implemented for backend arch '" +
@@ -2285,6 +2286,10 @@ bool HttpServer::handle_systemone(SocketHandle fd, const std::string & body_str)
             gen_req.n_gen = 1;
             gen_req.do_sample = false;
             gen_req.want_first_token_logits = true;
+            // First-token logit capture is only hooked into each backend's
+            // plain AR-decode path, not speculative decode — force AR so
+            // qwen35/qwen35moe/deepseek4 don't silently route around it.
+            gen_req.force_ar_decode = true;
             DaemonIO io;
             GenerateResult result = backend_.generate(gen_req, io);
             if (!result.ok() || result.first_token_logits.empty()) {

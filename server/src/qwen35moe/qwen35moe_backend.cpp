@@ -1237,6 +1237,9 @@ GenerateResult Qwen35MoeBackend::generate_impl(const GenerateRequest & req,
             }
 
             // Sample first token
+            if (req.want_first_token_logits) {
+                result.first_token_logits.assign(logits_buf.data(), logits_buf.data() + vocab);
+            }
             int32_t first_tok;
             if (sampler_config().temp > 0) {
                 first_tok = sample_logits(logits_buf.data(), vocab, sampler_config(),
