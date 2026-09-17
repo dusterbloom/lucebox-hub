@@ -657,7 +657,18 @@ static const uint16_t * mmb_shadow_lookup(const ggml_tensor * w) {
     auto it = g_mmb_shadow.find(w->data); return it == g_mmb_shadow.end() ? nullptr : it->second;
 }
 
-bool mmb_enabled() { return true; }
+// Off by default: opt in with GGML_CUDA_MMB=1. bf16 WMMA dequant changes the
+// rounding of prefill GEMMs relative to the MMQ int path, so it must never
+// silently alter existing architectures' numerics.
+bool mmb_enabled() {
+    static const bool requested = []() {
+        const char * env = getenv("GGML_CUDA_MMB");
+        return env && atoi(env) == 1;
+    }();
+    if (!requested) return false;
+    const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+    return GGML_CUDA_CC_IS_RDNA3_5(cc) || GGML_CUDA_CC_IS_RDNA4(cc);
+}
 int  mmb_min_t()   { return 512; }
 int  mmb_f32split_mode(){ return 2; }
 bool mmb_f32split() { return true; }

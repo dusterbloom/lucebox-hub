@@ -29,6 +29,7 @@
 #include "ggml-cuda/turbo-wht.cuh"
 #include "ggml-cuda/im2col.cuh"
 #include "ggml-cuda/mmf.cuh"
+#include "ggml-cuda/mmb.cuh"
 #include "ggml-cuda/mmq.cuh"
 #include "ggml-cuda/mmvf.cuh"
 #include "ggml-cuda/mmvq.cuh"
@@ -3008,6 +3009,8 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         ggml_cuda_mul_mat_f(ctx, src0, src1, nullptr, dst);
     } else if (!split && use_mul_mat_vec_q) {
         ggml_cuda_mul_mat_vec_q(ctx, src0, src1, nullptr, dst);
+    } else if (!split && ggml_cuda_mmb_supported_mm(src0, src1, dst)) {
+        ggml_cuda_mul_mat_mmb(ctx, src0, src1, dst);
     } else if (!split && use_mul_mat_q) {
         ggml_cuda_mul_mat_q(ctx, src0, src1, nullptr, dst);
     } else if (!split && (use_batched_cublas_f16 || use_batched_cublas_bf16 || use_batched_cublas_f32)
@@ -3107,6 +3110,12 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
                     return;
                 }
             }
+        }
+
+        if (ggml_cuda_mmb_supported_mmid(src0, src1, ids, dst)) {
+            log_dispatch("mmb");
+            ggml_cuda_mul_mat_id_mmb(ctx, src0, src1, ids, dst);
+            return;
         }
 
         if (ggml_cuda_should_use_mmq(dst, cc, ne12, /*n_experts=*/ne02)) {
@@ -3663,6 +3672,9 @@ static const char * ggml_backend_cuda_get_name(ggml_backend_t backend) {
 
 static void ggml_backend_cuda_free(ggml_backend_t backend) {
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *)backend->context;
+
+    // release cached BF16 conversions before the pool is destroyed (pool leak assert)
+    ggml_cuda_mmb_release_all();
 
     delete cuda_ctx;
     delete backend;
@@ -5307,9 +5319,32 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
 #endif
     ggml_cuda_set_device(cuda_ctx->device);
 
+    // Drop last graph's mmb bf16 activation cache: it is keyed by raw tensor
+    // data pointers, which the pool recycles for a different graph. Weight
+    // shadows (g_mmb_shadow) are process-lifetime and survive this.
+    ggml_cuda_mmb_begin_graph();
+
     // LIFO-free last evaluation's memoized q8_1 activations.
     while (!cuda_ctx->luce_q8_memo.empty()) {
         cuda_ctx->luce_q8_memo.pop_back();
+    }
+
+    // MMB: pre-dequantize eligible dense weights (Q6_K) into a bf16 shadow. Must
+    // run outside stream capture (raw cudaMalloc + a dequant kernel). The shadow
+    // is keyed by weight data pointer and lives until backend free, so the
+    // per-chunk dequant is paid once instead of on every prefill chunk.
+    for (int i = 0; i < cgraph->n_nodes; ++i) {
+        const ggml_tensor * node = cgraph->nodes[i];
+        if (node->op != GGML_OP_MUL_MAT) {
+            continue;
+        }
+        const ggml_type wt = node->src[0]->type;
+        if (wt != GGML_TYPE_Q6_K && wt != GGML_TYPE_IQ4_NL) {
+            continue;
+        }
+        if (ggml_cuda_mmb_supported_mm(node->src[0], node->src[1], node)) {
+            ggml_cuda_mmb_shadow_prepare(*cuda_ctx, node->src[0]);
+        }
     }
 
     bool use_cuda_graph             = false;

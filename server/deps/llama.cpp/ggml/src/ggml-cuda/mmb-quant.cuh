@@ -219,7 +219,6 @@ __device__ __forceinline__ void mmb_load_quant_tile(const uint8_t * weights, siz
 
 static bool mmb_quant_type(ggml_type type) {
     switch (type) {
-        case GGML_TYPE_Q1_0:
         case GGML_TYPE_Q2_0:
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q4_1:
@@ -250,7 +249,6 @@ static bool mmb_quant_type(ggml_type type) {
 template <typename Fn>
 static void mmb_dispatch_quant(ggml_type type, Fn fn) {
     switch (type) {
-        case GGML_TYPE_Q1_0: fn(std::integral_constant<int, 32 + GGML_TYPE_Q1_0>{}); break;
         case GGML_TYPE_Q2_0: fn(std::integral_constant<int, 32 + GGML_TYPE_Q2_0>{}); break;
         case GGML_TYPE_Q4_0: fn(std::integral_constant<int, 32 + GGML_TYPE_Q4_0>{}); break;
         case GGML_TYPE_Q4_1: fn(std::integral_constant<int, 32 + GGML_TYPE_Q4_1>{}); break;
