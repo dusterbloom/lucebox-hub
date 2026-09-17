@@ -1055,6 +1055,22 @@ if(DFLASH27B_TESTS)
             hip::host)
         list(APPEND _raw_unit_test_targets test_gfx1151_width4_dispatch)
 
+        # Guards the route-bounded mmid merge: negative (masked owner) ids must
+        # not reserve holes in the compact routing arrays. Drives the helper for
+        # the fast (<=256 experts) and classic paths, forward and inverse.
+        add_executable(test_ds4_mmid_regression test/test_ds4_mmid_regression.cpp)
+        set_source_files_properties(test/test_ds4_mmid_regression.cpp PROPERTIES LANGUAGE HIP)
+        set_target_properties(test_ds4_mmid_regression PROPERTIES HIP_ARCHITECTURES "${_dflash_archs}")
+        target_compile_definitions(test_ds4_mmid_regression PRIVATE GGML_USE_HIP)
+        target_include_directories(test_ds4_mmid_regression PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include)
+        target_link_libraries(test_ds4_mmid_regression PRIVATE
+            ggml
+            ggml-base
+            ${DFLASH27B_GGML_BACKEND_TARGET}
+            hip::host)
+        list(APPEND _raw_unit_test_targets test_ds4_mmid_regression)
+
         add_executable(test_qwen35_gdn_verify_fusion test/test_qwen35_gdn_verify_fusion.cpp)
         set_source_files_properties(test/test_qwen35_gdn_verify_fusion.cpp PROPERTIES LANGUAGE HIP)
         set_target_properties(test_qwen35_gdn_verify_fusion PROPERTIES HIP_ARCHITECTURES "${_dflash_archs}")
@@ -1623,6 +1639,11 @@ if(DFLASH27B_TESTS)
         add_executable(smoke_qwen3_forward test/smoke_qwen3_forward.cpp)
         target_include_directories(smoke_qwen3_forward PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
         target_link_libraries(smoke_qwen3_forward PRIVATE dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_qwen4exp_forward.cpp")
+        add_executable(smoke_qwen4exp_forward test/smoke_qwen4exp_forward.cpp)
+        target_include_directories(smoke_qwen4exp_forward PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS})
+        target_link_libraries(smoke_qwen4exp_forward PRIVATE dflash_common ggml ${DFLASH27B_GGML_BACKEND_TARGET})
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_vs_oracle.cpp")
         add_executable(test_vs_oracle test/test_vs_oracle.cpp)
