@@ -1402,6 +1402,64 @@ if(DFLASH27B_TESTS)
         # Self-skips (returns 0) unless DS4_TEST_MODEL points at a qtype-105 model.
         add_test(NAME ds4_load_transactional COMMAND test_ds4_load_transactional)
     endif()
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_ds4_snapshot_parity.cpp")
+        # E0 bridge-spike harness: native checkpoint-at-cut + suffix repair vs
+        # uninterrupted prefill. Self-skips without DS4_TEST_MODEL; needs a real
+        # GPU device and minutes of prefill at the longer lengths, so it is not
+        # part of the ordinary ctest pass.
+        add_executable(test_ds4_snapshot_parity test/test_ds4_snapshot_parity.cpp)
+        target_include_directories(test_ds4_snapshot_parity PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        if(DFLASH27B_GPU_BACKEND STREQUAL "hip")
+            target_compile_definitions(test_ds4_snapshot_parity PRIVATE DFLASH27B_BACKEND_HIP=1 GGML_USE_HIP)
+        else()
+            target_compile_definitions(test_ds4_snapshot_parity PRIVATE DFLASH27B_BACKEND_CUDA=1 GGML_USE_CUDA)
+        endif()
+        target_link_libraries(test_ds4_snapshot_parity PRIVATE dflash_common ggml ggml-cpu ${DFLASH27B_GGML_BACKEND_TARGET} ggml-base)
+        if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
+            find_package(CUDAToolkit REQUIRED)
+            target_link_libraries(test_ds4_snapshot_parity PRIVATE CUDA::cudart)
+        else()
+            target_link_libraries(test_ds4_snapshot_parity PRIVATE hip::host)
+        endif()
+    endif()
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/ds4_snapshot_dump.cpp")
+        # Paired-state extraction for the bridge spike: prefill token IDs from a
+        # file and serialize the native DS4 snapshot at a cut (LBSNAP01).
+        # Tokenizer-free; model-gated by its command line, not by ctest.
+        add_executable(ds4_snapshot_dump test/ds4_snapshot_dump.cpp)
+        target_include_directories(ds4_snapshot_dump PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        if(DFLASH27B_GPU_BACKEND STREQUAL "hip")
+            target_compile_definitions(ds4_snapshot_dump PRIVATE DFLASH27B_BACKEND_HIP=1 GGML_USE_HIP)
+        else()
+            target_compile_definitions(ds4_snapshot_dump PRIVATE DFLASH27B_BACKEND_CUDA=1 GGML_USE_CUDA)
+        endif()
+        target_link_libraries(ds4_snapshot_dump PRIVATE dflash_common ggml ggml-cpu ${DFLASH27B_GGML_BACKEND_TARGET} ggml-base)
+        if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
+            find_package(CUDAToolkit REQUIRED)
+            target_link_libraries(ds4_snapshot_dump PRIVATE CUDA::cudart)
+        else()
+            target_link_libraries(ds4_snapshot_dump PRIVATE hip::host)
+        endif()
+    endif()
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/qwen35_snapshot_dump.cpp")
+        # Source-side twin of ds4_snapshot_dump: prefill a Qwen3.5/3.6 target and
+        # serialize its prefix snapshot (LBSNAP01). Non-paged, single-concurrency,
+        # no kvflash — the modes where prefix snapshots are supported.
+        add_executable(qwen35_snapshot_dump test/qwen35_snapshot_dump.cpp)
+        target_include_directories(qwen35_snapshot_dump PRIVATE ${DFLASH27B_SRC_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        if(DFLASH27B_GPU_BACKEND STREQUAL "hip")
+            target_compile_definitions(qwen35_snapshot_dump PRIVATE DFLASH27B_BACKEND_HIP=1 GGML_USE_HIP)
+        else()
+            target_compile_definitions(qwen35_snapshot_dump PRIVATE DFLASH27B_BACKEND_CUDA=1 GGML_USE_CUDA)
+        endif()
+        target_link_libraries(qwen35_snapshot_dump PRIVATE dflash_common ggml ggml-cpu ${DFLASH27B_GGML_BACKEND_TARGET} ggml-base)
+        if(DFLASH27B_GPU_BACKEND STREQUAL "cuda")
+            find_package(CUDAToolkit REQUIRED)
+            target_link_libraries(qwen35_snapshot_dump PRIVATE CUDA::cudart)
+        else()
+            target_link_libraries(qwen35_snapshot_dump PRIVATE hip::host)
+        endif()
+    endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_rocmfp3_mix_registry.cpp")
         # Backend-general: the kernels declare cudaStream_t and ggml's vendors/hip.h maps the
         # cuda* spellings onto hip*, so the same source builds for both. These were hip-only,
