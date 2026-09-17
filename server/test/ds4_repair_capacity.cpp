@@ -276,6 +276,23 @@ int main(int argc, char ** argv) {
                     "noise_frac=%.3f\n", length, n_gen, noise_frac);
     std::fprintf(f, "# R\tmode\tmatches\tfirst_divergence\n");
 
+    // Reference text per repair length: without it a divergence is
+    // uninterpretable (we would not know whether the intact run even retrieves
+    // the long-range answer the degradation is meant to destroy).
+    dflash::common::Tokenizer tokenizer;
+    if (tokenizer.load_from_gguf(model.c_str())) {
+        for (int cut : cuts) {
+            for (const auto & c : cases) {
+                if (c.cut != cut || c.mode != "none") continue;
+                std::string text = tokenizer.decode(c.tokens);
+                for (char & ch : text) {
+                    if (ch == '\n' || ch == '\r') ch = ' ';
+                }
+                std::fprintf(f, "# ref[R=%d]: %s\n", c.R, text.c_str());
+            }
+        }
+    }
+
     int failures = 0;
     for (int cut : cuts) {
         const Case * ref = nullptr;
