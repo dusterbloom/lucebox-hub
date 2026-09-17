@@ -47,6 +47,13 @@ struct GenerateRequest {
     BudgetHook budget_hook;
     // Set only for the single autoregressive retry after empty spec output.
     bool force_ar_decode = false;
+    // When true, the backend copies the raw (pre-sampling) logits vector for
+    // the first post-prefill token into GenerateResult::first_token_logits.
+    // Used by the /v1/systemone "prefill-only" classification endpoint,
+    // which only needs a single position's logit distribution and never
+    // wants full generation. Off by default: copying a vocab-sized float
+    // array is not free, so normal generation must never pay for it.
+    bool want_first_token_logits = false;
 };
 
 // Backend-independent failure categories. generate_error_code() is their
@@ -114,6 +121,10 @@ struct GenerateResult {
     // The attempt emitted only tokens suppressed by the response layer and is
     // eligible for the same one-time retry as an empty token vector.
     bool empty_visible_output = false;
+    // Populated only when the request set want_first_token_logits: the raw
+    // (pre-softmax, pre-sampling) logits for the first post-prefill token,
+    // vocab_size long. Empty otherwise.
+    std::vector<float>         first_token_logits;
 
     bool ok() const {
         return !error.has_value();

@@ -1514,7 +1514,9 @@ GenerateResult Qwen35Backend::generate_impl(const GenerateRequest & req,
             decode_ok = do_ar_decode(committed, ar_n_gen, result.tokens, out_io,
                                      req.budget_hook,
                                      &result.budget_forced_close,
-                                     &result.degenerate_decode_close);
+                                     &result.degenerate_decode_close,
+                                     req.want_first_token_logits,
+                                     &result.first_token_logits);
             out_io.emit(-1);
         } else {
             const auto * hint_tokens =
@@ -1698,7 +1700,9 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
             decode_ok = do_ar_decode(committed, req.n_gen, result.tokens, out_io,
                                      req.budget_hook,
                                      &result.budget_forced_close,
-                                     &result.degenerate_decode_close);
+                                     &result.degenerate_decode_close,
+                                     req.want_first_token_logits,
+                                     &result.first_token_logits);
             out_io.emit(-1);
         } else {
             const auto * hint_tokens =
@@ -2216,7 +2220,9 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
                                   const DaemonIO & io,
                                   const BudgetHook & budget_hook,
                                   bool * forced_close_out,
-                                  bool * degenerate_close_out) {
+                                  bool * degenerate_close_out,
+                                  bool want_first_token_logits,
+                                  std::vector<float> * first_token_logits_out) {
     // Budget hook state.
     //   - budget_close_started: true once we've begun injecting the close
     //     sequence. Prevents re-triggering on continued forward generation.
@@ -2335,12 +2341,19 @@ bool Qwen35Backend::do_ar_decode(int committed, int n_gen,
     const int initial_emitted = out_tokens.empty() ? 1 : 0;
     if (initial_emitted == 1) {
         int32_t first_tok;
-        if (sampler_.needs_logit_processing()) {
+        if (sampler_.needs_logit_processing() || want_first_token_logits) {
             if (!prefill_last_logits_valid_) return false;
             ggml_backend_tensor_get(sg_.logits, logits_buf.data(), prefill_last_logits_offset_,
                                     sizeof(float) * vocab);
-            first_tok = sample_logits(logits_buf.data(), vocab, sampler_,
-                                      out_tokens, sampler_rng_);
+            if (want_first_token_logits && first_token_logits_out) {
+                first_token_logits_out->assign(logits_buf.data(), logits_buf.data() + vocab);
+            }
+            if (sampler_.needs_logit_processing()) {
+                first_tok = sample_logits(logits_buf.data(), vocab, sampler_,
+                                          out_tokens, sampler_rng_);
+            } else {
+                first_tok = cache_.last_tok;
+            }
         } else {
             first_tok = cache_.last_tok;
         }

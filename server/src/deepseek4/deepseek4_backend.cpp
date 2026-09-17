@@ -3039,7 +3039,9 @@ bool DeepSeek4Backend::do_decode(int committed, int n_gen,
                                   std::vector<int32_t> & out_tokens,
                                   const DaemonIO & io,
                                   const BudgetHook & budget_hook,
-                                  bool * forced_close_out) {
+                                  bool * forced_close_out,
+                                  bool want_first_token_logits,
+                                  std::vector<float> * first_token_logits_out) {
     const DeepSeek4RoctxPhaseScope roctx_phase(InferencePhase::Decode);
     if (forced_close_out) *forced_close_out = false;
     const bool timing = env_flag_enabled("LUCE_DS4_TIMING");
@@ -3120,6 +3122,10 @@ bool DeepSeek4Backend::do_decode(int committed, int n_gen,
                 add_step_tel(tel_acc, step_tel);
                 steps++;
             }
+        }
+
+        if (generated == 0 && want_first_token_logits && first_token_logits_out) {
+            first_token_logits_out->assign(logits.data(), logits.data() + w_.n_vocab);
         }
 
         int32_t next_token = 0;
@@ -3348,7 +3354,8 @@ GenerateResult DeepSeek4Backend::generate_from_state(
 
     bool forced_close = false;
     if (!do_decode(committed, req.n_gen, req.prompt, gen_tokens, out_io,
-                   req.budget_hook, &forced_close)) {
+                   req.budget_hook, &forced_close,
+                   req.want_first_token_logits, &result.first_token_logits)) {
         result.fail(GenerateErrorCode::DecodeFailed);
         return result;
     }

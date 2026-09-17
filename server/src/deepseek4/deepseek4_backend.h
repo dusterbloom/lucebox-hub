@@ -212,7 +212,9 @@ private:
                    std::vector<int32_t> & out_tokens,
                    const DaemonIO & io,
                    const BudgetHook & budget_hook = {},
-                   bool * forced_close_out = nullptr);
+                   bool * forced_close_out = nullptr,
+                   bool want_first_token_logits = false,
+                   std::vector<float> * first_token_logits_out = nullptr);
 
     bool load_model();
     bool init_hybrid_model();
