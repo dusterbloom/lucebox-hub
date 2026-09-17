@@ -117,9 +117,15 @@ void add_row_noise(ggml_tensor * t, float sigma_frac, std::mt19937_64 & rng) {
     write_floats(t, v);
 }
 
+int apply_injections(ggml_context * ctx, const std::string & path);
+
 int degrade(ggml_context * ctx, const std::string & mode, float noise_frac,
             std::mt19937_64 & rng) {
     if (!ctx || mode == "none") return 0;
+    if (mode == "inject") {
+        const char * p = std::getenv("DS4_RC_INJECT");
+        return p && p[0] ? apply_injections(ctx, p) : 0;
+    }
     int touched = 0;
     for (ggml_tensor * t = ggml_get_first_tensor(ctx); t;
          t = ggml_get_next_tensor(ctx, t)) {
@@ -144,6 +150,80 @@ int degrade(ggml_context * ctx, const std::string & mode, float noise_frac,
         }
     }
     return touched;
+}
+
+// ─── Injection (E-A rank ablation) ──────────────────────────────────────
+// LBINJ01 container: magic, u32 n, then per entry
+//   u32 name_len, name, u32 type_len, type, u32 ndim, u32 ne[4],
+//   u64 nbytes, bytes.
+// Written by extract/make_inject.py so Python owns the PCA and the C++ tool
+// only installs the resulting reconstruction.
+
+bool read_bytes(FILE * f, void * dst, size_t n) {
+    return n == 0 || std::fread(dst, 1, n, f) == n;
+}
+
+bool read_u32(FILE * f, uint32_t & v) { return read_bytes(f, &v, sizeof(v)); }
+bool read_u64(FILE * f, uint64_t & v) { return read_bytes(f, &v, sizeof(v)); }
+
+bool read_str(FILE * f, std::string & s) {
+    uint32_t n = 0;
+    if (!read_u32(f, n) || n > (1u << 20)) return false;
+    s.resize(n);
+    return read_bytes(f, s.data(), n);
+}
+
+int apply_injections(ggml_context * ctx, const std::string & path) {
+    FILE * f = std::fopen(path.c_str(), "rb");
+    if (!f) {
+        std::fprintf(stderr, "FAIL: cannot open injection %s\n", path.c_str());
+        return 0;
+    }
+    char magic[8] = {0};
+    if (!read_bytes(f, magic, 8) || std::memcmp(magic, "LBINJ01", 8) != 0) {
+        std::fprintf(stderr, "FAIL: %s is not LBINJ01\n", path.c_str());
+        std::fclose(f);
+        return 0;
+    }
+    uint32_t count = 0;
+    if (!read_u32(f, count)) { std::fclose(f); return 0; }
+    int applied = 0;
+    for (uint32_t e = 0; e < count; ++e) {
+        std::string name, type;
+        if (!read_str(f, name) || !read_str(f, type)) break;
+        uint32_t ndim = 0;
+        if (!read_u32(f, ndim) || ndim > GGML_MAX_DIMS) break;
+        int64_t ne[GGML_MAX_DIMS] = {1, 1, 1, 1};
+        for (uint32_t d = 0; d < ndim; ++d) {
+            uint32_t v = 0;
+            if (!read_u32(f, v)) { std::fclose(f); return applied; }
+            ne[d] = v;
+        }
+        uint64_t nbytes = 0;
+        if (!read_u64(f, nbytes)) break;
+        std::vector<uint8_t> data(nbytes);
+        if (!read_bytes(f, data.data(), nbytes)) break;
+
+        ggml_tensor * t = nullptr;
+        for (ggml_tensor * c = ggml_get_first_tensor(ctx); c;
+             c = ggml_get_next_tensor(ctx, c)) {
+            if (ggml_get_name(c) && name == ggml_get_name(c)) { t = c; break; }
+        }
+        if (!t) {
+            std::fprintf(stderr, "[inject] no tensor %s\n", name.c_str());
+            continue;
+        }
+        if (ggml_nbytes(t) != nbytes) {
+            std::fprintf(stderr, "[inject] size mismatch for %s\n", name.c_str());
+            continue;
+        }
+        ggml_backend_tensor_set(t, data.data(), 0, nbytes);
+        ++applied;
+    }
+    std::fclose(f);
+    std::fprintf(stderr, "[inject] applied %d/%u tensors from %s\n", applied,
+                 count, path.c_str());
+    return applied;
 }
 
 std::string group_of(const std::string & n) {
