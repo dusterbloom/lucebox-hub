@@ -17,6 +17,42 @@
 
 namespace lbsnap {
 
+// One dump request. `cut` <= 0 means end-of-prompt. Batch lists let the tools
+// keep the model resident across many exports instead of paying a load per item.
+struct Entry {
+    std::string prompt;
+    int cut = 0;
+    std::string out;
+};
+
+inline bool is_list_path(const std::string & p) {
+    return p.size() >= 5 && p.compare(p.size() - 5, 5, ".list") == 0;
+}
+
+// Tab-separated: prompt_path <TAB> cut <TAB> out_path. Blank lines and lines
+// starting with '#' are skipped.
+inline std::vector<Entry> read_list(const std::string & path) {
+    std::vector<Entry> out;
+    FILE * f = std::fopen(path.c_str(), "r");
+    if (!f) return out;
+    char line[8192];
+    while (std::fgets(line, sizeof(line), f)) {
+        std::string s(line);
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+        if (s.empty() || s[0] == '#') continue;
+        const size_t t1 = s.find('\t');
+        const size_t t2 = t1 == std::string::npos ? std::string::npos : s.find('\t', t1 + 1);
+        if (t1 == std::string::npos || t2 == std::string::npos) continue;
+        Entry e;
+        e.prompt = s.substr(0, t1);
+        e.cut = std::atoi(s.substr(t1 + 1, t2 - t1 - 1).c_str());
+        e.out = s.substr(t2 + 1);
+        out.push_back(std::move(e));
+    }
+    std::fclose(f);
+    return out;
+}
+
 inline bool write_bytes(FILE * f, const void * data, size_t n) {
     return n == 0 || std::fwrite(data, 1, n, f) == n;
 }
