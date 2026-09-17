@@ -430,9 +430,20 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
     ggml_tensor * positions = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 4 * T);
     ggml_set_input(positions);
     ggml_tensor * mask = nullptr;
+    // Opt-in until validated on gfx1151: QWEN4EXP_KQ_MASK_DEV=1 builds the causal
+    // mask on device instead of filling it on the host and uploading it.
+    static const bool dev_mask = getenv("QWEN4EXP_KQ_MASK_DEV") != nullptr;
     if (T > 1) {
-        mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, kv_len, T);
-        ggml_set_input(mask);
+        if (!dev_mask) {
+            mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, kv_len, T);
+            ggml_set_input(mask);
+        } else {
+            // fill(0) -> diag_mask_inf(pos0) -> f16, all on device.
+            ggml_tensor * m = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kv_len, T);
+            m = ggml_fill_inplace(ctx, m, 0.0f);
+            m = ggml_diag_mask_inf_inplace(ctx, m, (int) pos0);
+            mask = ggml_cast(ctx, m, GGML_TYPE_F16);
+        }
     }
     ggml_tensor * ple_in = nullptr;
     if (has_ple) {
@@ -506,7 +517,7 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
         pos[(size_t) (3 * T + i)] = 0;
     }
     ggml_backend_tensor_set(positions, pos.data(), 0, sizeof(int32_t) * pos.size());
-    if (mask) {
+    if (!dev_mask && mask) {
         std::vector<ggml_fp16_t> m((size_t) kv_len * T);
         const ggml_fp16_t zero = ggml_fp32_to_fp16(0.0f);
         const ggml_fp16_t ninf = ggml_fp32_to_fp16(-INFINITY);
