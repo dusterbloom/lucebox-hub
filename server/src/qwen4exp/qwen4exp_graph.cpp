@@ -167,8 +167,10 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
         T, conv_channels, 1);
     ggml_tensor * conv_input = ggml_concat(c, hist, qkv_t, 0);
 
-    ggml_tensor * new_hist = ggml_view_3d(c, conv_input, kernel - 1, conv_channels, 1,
-        conv_input->nb[1], conv_input->nb[2], (size_t) T * conv_input->nb[1]);
+    // Advance T tokens along dim 0 (time); nb[0] is the element size, so the
+    // tail offset is T*nb[0], NOT T*nb[1] (which steps whole channel rows).
+    ggml_tensor * new_hist = ggml_cont(c, ggml_view_3d(c, conv_input, kernel - 1, conv_channels, 1,
+        conv_input->nb[1], conv_input->nb[2], (size_t) T * conv_input->nb[0]));
     ggml_build_forward_expand(gf, ggml_cpy(c, new_hist,
         ggml_reshape_3d(c, conv_state, kernel - 1, conv_channels, 1)));
 
@@ -317,8 +319,8 @@ ggml_tensor * build_ple(ggml_context * c, ggml_cgraph * gf, ggml_tensor * hidden
         ggml_reshape_3d(c, ple_conv_state, hist, hc_dim, 1), norm_t, 0);
 
     ggml_build_forward_expand(gf, ggml_cpy(c,
-        ggml_view_3d(c, padded, hist, hc_dim, 1, padded->nb[1], padded->nb[2],
-                     (size_t) T * padded->nb[1]),
+        ggml_cont(c, ggml_view_3d(c, padded, hist, hc_dim, 1, padded->nb[1], padded->nb[2],
+                                  (size_t) T * padded->nb[0])),
         ggml_reshape_3d(c, ple_conv_state, hist, hc_dim, 1)));
 
     ggml_tensor * conv_out = nullptr;
