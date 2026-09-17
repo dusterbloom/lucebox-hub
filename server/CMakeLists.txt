@@ -472,6 +472,7 @@ add_library(dflash_common STATIC
     src/bailingmoe3/bailingmoe3_graph.cpp
     src/bailingmoe3/bailingmoe3_backend.cpp
     src/qwen4exp/qwen4exp_loader.cpp
+    src/qwen4exp/qwen4exp_backend.cpp
     src/draft/draft_gguf_loader.cpp
     src/draft/draft_safetensors_loader.cpp
     src/draft/draft_graph.cpp
