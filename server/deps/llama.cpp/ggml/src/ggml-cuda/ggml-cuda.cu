@@ -2973,8 +2973,15 @@ static bool ggml_cuda_mmb_cublas_shape_ok(const ggml_tensor * src0) {
     const int mode = ggml_cuda_mmb_cublas_mode();
     if (mode <= 0) return false;
     if (src0->ne[2] != 1 || src0->ne[3] != 1) return false;
+    if (mode == 1 || mode == 3) {
+        if (src0->ne[0] == 2560 && (src0->ne[1] == 10240 || src0->ne[1] == 6144 || src0->ne[1] == 12288)) return true;
+        return mode == 3 && src0->ne[0] == 6144 && src0->ne[1] == 2560;
+    }
+    // mode 2 (broad): must stay excluded. blk.N.ple_value (K=2560, N=2560)
+    // produces wrong output through the cuBLAS route for reasons that are not
+    // the GEMM itself (the standalone differential is clean).
     if (mode >= 2) return src0->ne[0] >= 2560 && src0->ne[1] >= 2560;
-    return src0->ne[0] == 2560 && (src0->ne[1] == 10240 || src0->ne[1] == 6144 || src0->ne[1] == 12288);
+    return false;
 }
 
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
@@ -2994,6 +3001,10 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         cublas_shape_ok && src1->ne[1] * src1->ne[2] * src1->ne[3] >= 512) {
         const void * sh = ggml_cuda_mmb_shadow_ptr(src0);
         if (sh) {
+            if (getenv("QWEN4EXP_CUBLAS_LOG")) {
+                std::fprintf(stderr, "[cublas] %s K=%lld N=%lld T=%lld\n", src0->name,
+                    (long long) src0->ne[0], (long long) src0->ne[1], (long long) (src1->ne[1] * src1->ne[2] * src1->ne[3]));
+            }
             ggml_tensor tmp = *src0;
             tmp.type = GGML_TYPE_BF16;
             tmp.data = const_cast<void *>(sh);
