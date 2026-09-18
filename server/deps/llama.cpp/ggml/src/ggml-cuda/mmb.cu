@@ -227,6 +227,47 @@ mmb_dense_kernel(const uint8_t * __restrict__ W, const uint16_t * __restrict__ X
         [&](int i) { return (t0 + i < T) ? t0 + i : -1; }, D, Dh, store_f32, M, [&](int i) { return (t0 + i < T) ? t0 + i : -1; }, m0, T - t0, As, Bs);
 }
 
+// Small-N (N<=8) bf16 dense: out[n,t] = sum_k w[n,k]*x[k,t]. The generic mmb tile
+// pads N up to 128 and re-reads x per warp; here every thread owns one (n,t)
+// output, x is staged once per k-tile by the whole block, and w is L2-resident.
+template <int NMAX, int TT, int KT>
+__global__ void __launch_bounds__(256, 2)
+mmb_small_n_bf16_kernel(const uint16_t * __restrict__ W, const uint16_t * __restrict__ X, float * __restrict__ D,
+        const int N, const int K, const int T) {
+    constexpr int NT = NMAX * TT;
+    static_assert(NT == 256, "kernel assumes 256 threads");
+    __shared__ uint16_t xs[KT][TT];
+    __shared__ uint16_t ws[NMAX][KT];
+    const int tid = threadIdx.x;
+    const int t0  = blockIdx.x * TT;
+    const int n   = tid / TT;
+    const int tlc = tid % TT;
+    const int t   = t0 + tlc;
+    float acc = 0.0f;
+    const int nks = K / KT;
+    for (int ks = 0; ks < nks; ++ks) {
+        for (int i = tid; i < KT * TT; i += NT) {
+            const int c = i / KT, r = i % KT, tt = t0 + c;
+            xs[r][c] = (tt < T) ? X[(size_t) tt * K + ks * KT + r] : (uint16_t) 0;
+        }
+        for (int i = tid; i < NMAX * KT; i += NT) {
+            const int nn = i / KT, rr = i % KT;
+            ws[nn][rr] = (nn < N) ? W[(size_t) nn * K + ks * KT + rr] : (uint16_t) 0;
+        }
+        __syncthreads();
+        if (n < N) {
+            #pragma unroll
+            for (int r = 0; r < KT; ++r) {
+                const float wv = __uint_as_float(((uint32_t) ws[n][r]) << 16);
+                const float xv = __uint_as_float(((uint32_t) xs[r][tlc]) << 16);
+                acc += wv * xv;
+            }
+        }
+        __syncthreads();
+    }
+    if (t < T && n < N) D[(size_t) t * N + n] = acc;
+}
+
 #if defined(__HIP_PLATFORM_AMD__)
 __device__ __forceinline__ float gm_mul_rn(const float a, const float b) { float r; asm("v_mul_f32_e32 %0, %1, %2" : "=v"(r) : "v"(a), "v"(b)); return r; }
 __device__ __forceinline__ float gm_add_rn(const float a, const float b) { float r; asm("v_add_f32_e32 %0, %1, %2" : "=v"(r) : "v"(a), "v"(b)); return r; }
@@ -777,6 +818,13 @@ void ggml_cuda_mul_mat_mmb(ggml_backend_cuda_context & ctx, const ggml_tensor * 
         CUDA_CHECK(cudaGetLastError()); return;
     }
     const uint16_t * xhp = mmb_bf16_activation(ctx, src1, (size_t) T * K, stream);
+    if (src0->type == GGML_TYPE_BF16 && M <= 8 && (K % 128) == 0) {
+        const int grid = (int) ((T + 31) / 32);
+        mmb_small_n_bf16_kernel<8, 32, 128><<<grid, 256, 0, stream>>>(
+            (const uint16_t *) src0->data, xhp, (float *) dst->data, (int) M, K, (int) T);
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
     const uint8_t * W = (const uint8_t *) src0->data; float * D = (float *) dst->data;
     if (mmb_tall() && src0->type == GGML_TYPE_IQ4_NL && M <= 384 && K >= 4096 && T >= 2048) {   // tall-M tile: HC down|inject [10240 -> 324], activations read once
         static const int wide = mmb_tall_mode() >= 2;
