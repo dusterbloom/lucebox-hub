@@ -2971,7 +2971,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         (src0->type == GGML_TYPE_IQ4_NL || src0->type == GGML_TYPE_Q6_K) &&
         src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 &&
         ggml_is_contiguous(src0) && ggml_is_contiguous(src1) &&
-        src0->ne[1] >= 2560 && src1->ne[1] * src1->ne[2] * src1->ne[3] >= 512) {
+        src0->ne[0] == 2560 && (src0->ne[1] == 10240 || src0->ne[1] == 6144 || src0->ne[1] == 12288) && src1->ne[1] * src1->ne[2] * src1->ne[3] >= 512) {
         const void * sh = ggml_cuda_mmb_shadow_ptr(src0);
         if (sh) {
             ggml_tensor tmp = *src0;
