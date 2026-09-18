@@ -6,7 +6,7 @@ qwen4exp graph. Target **>= 1000 t/s prefill**. Reference on this box: 738 t/s
 (pp16384, IQ4_NL 3-shard). **We are at ~878 t/s @ 13.6k, all planted-correct.**
 Chunked-prefill QSA landed (indexer-K cache): 32K 576 -> ~800, 64K now runs at
 826 with `--chunk 16384` (was OOM/dense). Reference CIRU v4.2.0 hits 984-990 @
-12,960 on the same GPU, so the remaining gap is ~11-13% of kernel grind.
+12,960 on the same GPU, so the remaining gap is ~9% of engine/kernel work.
 
 ### Update 2026-09-18 (cont.) — indexer-K cache / chunked QSA landed
 
@@ -71,10 +71,12 @@ Chunked-prefill QSA landed (indexer-K cache): 32K 576 -> ~800, 64K now runs at
 
 At a near-identical length CIRU measures **984-990 t/s prefill @ 12,960** on
 gfx1151 (v4.2.0 release; the 948-974 figure is the **64K** model-card number).
-So ~1000 at ~13K is achievable on this silicon and our same-length gap is
-~11-14%. CIRU + pwilkin both run **ROCm 10.0**; we run **ROCm 7.2.2**. The flat,
-waste-free gap is best explained by the compiler/runtime, so the **primary
-next-session item is a ROCm 10 build A/B**, ahead of the indexer-K cache. Their
+So ~1000 at ~13K is achievable on this silicon and our same-length gap to CIRU
+is ~9% (our decode already leads theirs, ~27 vs 21 tok/s). The earlier
+"both competitors run ROCm 10.0" claim does **not** hold here: the AMD apt repo
+tops out at 7.2.4 (no ROCm 8/9/10), and the on-box pwilkin reference is linked
+against ROCm 7.2.2 while our graph is ~22% faster than it on that same
+toolchain. The residual gap is engine/kernel work, not the compiler. Their
 named v4.2 items do **not** map to our prefill gap:
 - "float32 accumulation for 256-wide attention" is in their **generic fallback**
   for batches QSA3 declines; the QSA3 kernel is explicitly unchanged. Our
@@ -84,8 +86,8 @@ named v4.2 items do **not** map to our prefill gap:
 - "scratch masks ... 64-query strips" is their fallback's mask. We avoided the
   single 65K graph by chunking, and now elide the mask entirely on QSA chunks
   (above) — a partial port of that idea.
-Remaining gap: test ROCm 10 first (primary); then the HC/conversion fusion
-(mmb/cuBLAS/hc/conversions), item 3-5.
+Remaining gap: engine/kernel fusion (mmb/cuBLAS/hc/conversions), item 3-5.
+ROCm 10 is not an option on this box (repo max 7.2.4).
 
 ## Environment
 
@@ -150,14 +152,16 @@ GDN 0.95 s.
 **Target analysis (decide which 1000).**
 - **1000 @ 16K** (=pwilkin pp16384, on-box ref 738): need ~3.0 s out of 19.3 s.
   The profile is **flat** — no bucket is 3 s and none is obviously wasteful.
-  A uniform ~15% across every tuned kernel with no identifiable waste is the
-  signature of a **toolchain difference**, not a missing optimization:
-  pwilkin (1187 @ pp16384) and CIRU (987 @ 12,960) both run **ROCm 10.0**;
-  this box runs **ROCm 7.2.2**. Newer LLVM/ROCm producing broadly better code
-  from the same kernels fits the flat shape exactly. **Primary next-session
-  item: build this tree against ROCm 10 and A/B the same prompt/model/config.**
-  It is one operation, not a hundred kernel edits, and it is above the
-  indexer-K cache in priority.
+  The "toolchain difference" hypothesis from the prior review was **tested and
+  refuted**: (a) `repo.radeon.com/rocm/apt/` tops out at **7.2.4**; `8.0/9.0/10.0`
+  all 404, so there is no ROCm 10 to build against; (b) the on-box pwilkin
+  reference `~/llama-qwen4/build/bin/llama-bench` is linked against **ROCm
+  7.2.2** (RUNPATH `/opt/rocm-7.2.2/lib`) and gets **738 @ pp16384** — on the
+  same toolchain our graph is already ~22% faster than pwilkin's. The published
+  pwilkin 1187 is therefore not reproducible on this box for toolchain reasons.
+  CIRU (987 @ 12,960) is a different engine, and our remaining ~9% gap to it is
+  engine-level (decode we already lead: ~27 vs their corrected 21 tok/s).
+  **Primary next item reverts to the kernel/engine fusion work below.**
 - **1000 @ 64K** (CIRU v4.2.0 @12,960 = 984-990; model card 64K = 948-974):
   needs the **64K graph-alloc OOM fixed** *and* the **indexer-K cache**
   (chunks 2+, decode). Multi-hour, known-good reference. NOTE: the 984-990
