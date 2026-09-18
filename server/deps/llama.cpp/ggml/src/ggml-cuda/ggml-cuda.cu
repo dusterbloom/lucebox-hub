@@ -1,6 +1,10 @@
 #include "ggml-cuda.h"
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
+#include <set>
+#include <map>
+#include <tuple>
+#include <cstdio>
 
 #include "ggml-cuda/common.cuh"
 #include "ggml-cuda/acc.cuh"
@@ -104,6 +108,8 @@
 static bool g_op_prof = getenv("GGML_CUDA_OP_PROF") != nullptr;
 static std::unordered_map<int, double> g_op_ms;
 static std::unordered_map<int, long long> g_op_n;
+static std::map<uint64_t, double> g_mm_ms;
+static std::map<uint64_t, long long> g_mm_n;
 
 static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
 
@@ -2973,9 +2979,14 @@ static bool ggml_cuda_mmb_cublas_shape_ok(const ggml_tensor * src0) {
     const int mode = ggml_cuda_mmb_cublas_mode();
     if (mode <= 0) return false;
     if (src0->ne[2] != 1 || src0->ne[3] != 1) return false;
-    if (mode == 1 || mode == 3) {
+    if (mode == 1 || mode == 3 || mode == 5) {
         if (src0->ne[0] == 2560 && (src0->ne[1] == 10240 || src0->ne[1] == 6144 || src0->ne[1] == 12288)) return true;
-        return mode == 3 && src0->ne[0] == 6144 && src0->ne[1] == 2560;
+        if ((mode == 3 || mode == 5) && src0->ne[0] == 6144 && src0->ne[1] == 2560) return true;
+        if (mode == 5) {
+            if (src0->ne[0] == 10240 && src0->ne[1] == 320) return true;
+            if (src0->ne[0] == 320 && src0->ne[1] == 10240) return true;
+        }
+        return false;
     }
     // mode 2 (broad): must stay excluded. blk.N.ple_value (K=2560, N=2560)
     // produces wrong output through the cuBLAS route for reasons that are not
@@ -2986,6 +2997,13 @@ static bool ggml_cuda_mmb_cublas_shape_ok(const ggml_tensor * src0) {
 
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     static const bool dense_telemetry = getenv("DFLASH_MMB_TELEMETRY") != nullptr;
+    static const bool mm_shape_log = getenv("QWEN4EXP_MM_LOG") != nullptr;
+    if (mm_shape_log) {
+        static std::set<std::tuple<long long, long long, int>> seen;
+        if (seen.insert(std::make_tuple((long long) src0->ne[0], (long long) src0->ne[1], (int) src0->type)).second) {
+            std::fprintf(stderr, "[mm] K=%lld N=%lld type=%d\n", (long long) src0->ne[0], (long long) src0->ne[1], (int) src0->type);
+        }
+    }
     const bool split = ggml_backend_buft_is_cuda_split(src0->buffer->buft);
     const bool grouped_src = ggml_mul_mat_is_grouped_src(dst);
 
@@ -5396,6 +5414,11 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     hipEventElapsedTime(&ms, pev0, pev1);
                     g_op_ms[(int) node->op] += ms;
                     g_op_n[(int) node->op]++;
+                    if (node->op == GGML_OP_MUL_MAT && node->src[0]) {
+                        const uint64_t key = ((uint64_t) node->src[0]->ne[0] << 32) | (uint32_t) node->src[0]->ne[1];
+                        g_mm_ms[key] += ms;
+                        g_mm_n[key]++;
+                    }
                     cudaEventDestroy(pev0); cudaEventDestroy(pev1);
                 }
 #endif
@@ -5422,6 +5445,16 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 }
                 g_op_ms.clear();
                 g_op_n.clear();
+                std::vector<std::pair<double, uint64_t>> mv;
+                for (const auto & e : g_mm_ms) mv.push_back({e.second, e.first});
+                std::sort(mv.rbegin(), mv.rend());
+                for (size_t k = 0; k < mv.size() && k < 14; ++k) {
+                    std::fprintf(stderr, "  [mm] K=%-6lld N=%-7lld %8.1fms x%lld\n",
+                        (long long) (mv[k].second >> 32), (long long) (uint32_t) mv[k].second,
+                        mv[k].first, g_mm_n[mv[k].second]);
+                }
+                g_mm_ms.clear();
+                g_mm_n.clear();
             }
         }
 
