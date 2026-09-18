@@ -32,6 +32,8 @@
 #include "ggml-cuda/mmb.cuh"
 #include "ggml-cuda/hc-mix.cuh"
 #include "ggml-cuda/hc-cn.cuh"
+#include "ggml-cuda/ple-conv.cuh"
+#include "ggml-cuda/gdn-conv.cuh"
 #include "ggml-cuda/mmq.cuh"
 #include "ggml-cuda/mmvf.cuh"
 #include "ggml-cuda/mmvq.cuh"
@@ -4894,6 +4896,46 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 // start of fusion operations
                 static bool disable_fusion = (getenv("GGML_CUDA_DISABLE_FUSION") != nullptr);
                 if (!disable_fusion) {
+                    // Depthwise causal conv1d for PLE and GDN (journey step 10):
+                    // folds the concat + per-tap transpose chain into one kernel.
+                    if (GGML_CUDA_CC_IS_RDNA3_5(ggml_cuda_info().devices[cuda_ctx->device].cc)) {
+                        static const bool conv_prof = []() { const bool e = (getenv("GGML_CUDA_CONV_PROF") != nullptr); if (e) { setvbuf(stderr, nullptr, _IONBF, 0); } return e; }();
+                        if (node->op == GGML_OP_CONCAT) {
+                            ggml_cuda_ple_conv_match pm;
+                            if (ggml_cuda_ple_conv_match_at_concat(cgraph, i, pm)) {
+                                if (conv_prof) std::fprintf(stderr, "[conv] ple tail C=%lld T=%lld from=%lld\n", (long long) pm.C, (long long) pm.T, (long long) pm.tail_from);
+                                ggml_cuda_ple_conv_write_tail(*cuda_ctx, pm);
+                                i += 1;
+                                continue;
+                            }
+                            ggml_cuda_gdn_conv_match gm;
+                            if (ggml_cuda_gdn_conv_match_at_concat(cgraph, i, gm)) {
+                                if (conv_prof) std::fprintf(stderr, "[conv] gdn tail C=%lld T=%lld from=%lld\n", (long long) gm.C, (long long) gm.T, (long long) gm.tail_from);
+                                ggml_cuda_gdn_conv_write_tail(*cuda_ctx, gm);
+                                i += 1;
+                                continue;
+                            }
+                        }
+                        if (node->op == GGML_OP_CONT) {
+                            ggml_cuda_ple_conv_match pm;
+                            if (ggml_cuda_ple_conv_match_at_tap(cgraph, i, pm)) {
+                                if (conv_prof) std::fprintf(stderr, "[conv] ple direct C=%lld T=%lld K=%lld\n", (long long) pm.C, (long long) pm.T, (long long) pm.K);
+                                ggml_cuda_ple_conv_direct(*cuda_ctx, pm);
+                                i += pm.silu_idx - i;
+                                continue;
+                            }
+                        }
+                        if (node->op == GGML_OP_SSM_CONV) {
+                            ggml_cuda_gdn_conv_match gm;
+                            if (ggml_cuda_gdn_conv_match_at_conv(cgraph, i, gm)) {
+                                if (conv_prof) std::fprintf(stderr, "[conv] gdn direct C=%lld T=%lld\n", (long long) gm.C, (long long) gm.T);
+                                ggml_cuda_gdn_conv_direct(*cuda_ctx, gm);
+                                i += 1;
+                                continue;
+                            }
+                        }
+                    }
+
                     // HC gate GEMM + stream mix (journey step 07) and the HC mix
                     // reduce fold. Must precede the generic {UNARY,MUL} SIGMOID
                     // fusion below, which would otherwise claim the sigmoid->mul

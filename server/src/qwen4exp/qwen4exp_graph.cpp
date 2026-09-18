@@ -545,8 +545,8 @@ ggml_tensor * build_ple(ggml_context * c, ggml_cgraph * gf, ggml_tensor * hidden
     const int64_t hist = (kern - 1) * dil;
 
     ggml_tensor * norm_t = ggml_transpose(c, ggml_reshape_2d(c, normalized, hc_dim, T));
-    ggml_tensor * padded = ggml_concat(c,
-        ggml_reshape_3d(c, ple_conv_state, hist, hc_dim, 1), norm_t, 0);
+    ggml_tensor * ple_state = ggml_cont(c, ggml_reshape_3d(c, ple_conv_state, hist, hc_dim, 1));
+    ggml_tensor * padded = ggml_concat(c, ple_state, norm_t, 0);
 
     ggml_build_forward_expand(gf, ggml_cpy(c,
         ggml_cont(c, ggml_view_3d(c, padded, hist, hc_dim, 1, padded->nb[1], padded->nb[2],
