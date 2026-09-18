@@ -569,7 +569,11 @@ ggml_tensor * build_ple(ggml_context * c, ggml_cgraph * gf, ggml_tensor * hidden
     }
     conv_out = ggml_reshape_3d(c, ggml_cont(c, ggml_silu(c, conv_out)), n_embd, hc, T);
 
-    return ggml_add(c, hidden, ggml_add(c, gated, conv_out));
+    ggml_tensor * ple_out = ggml_add(c, hidden, ggml_add(c, gated, conv_out));
+    // Expand now so the conv matcher sees a contiguous concat -> state -> taps
+    // -> silu subgraph; otherwise the next layer's nodes interleave.
+    ggml_build_forward_expand(gf, ple_out);
+    return ple_out;
 }
 
 }  // namespace
