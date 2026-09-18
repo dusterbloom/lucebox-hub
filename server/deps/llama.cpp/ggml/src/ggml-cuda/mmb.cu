@@ -738,11 +738,26 @@ const void * ggml_cuda_mmb_shadow_ptr(const ggml_tensor * w) {
     return (!w || !mmb_shadow()) ? nullptr : (const void *) mmb_shadow_lookup(w);
 }
 
+// The bf16-only mark is set on the xn view created by hc_combine_norm, but its
+// consumers usually read a reshape/cont of that view, so a plain pointer test
+// misses them. Resolve by shared root tensor + view offset + data pointer.
+const uint16_t * ggml_cuda_mmb_bf16_src(const ggml_tensor * t) {
+    if (!t) return nullptr;
+    if (g_mmb_bf16_only.count(t) > 0) return (const uint16_t *) t->data;
+    const ggml_tensor * tr = mmb_root(t);
+    for (const ggml_tensor * m : g_mmb_bf16_only) {
+        if (mmb_root(m) == tr && t->view_offs == m->view_offs && t->data == m->data) {
+            return (const uint16_t *) t->data;
+        }
+    }
+    return nullptr;
+}
+
 const uint16_t * ggml_cuda_mmb_cache_lookup(const ggml_tensor * t) {
     // journey step 9: a bf16-only tensor holds its bf16 form in place, in its own
     // buffer. No cache entry, no slot, no eviction -- so there is nothing to race
     // with and nothing to evict.
-    if (ggml_cuda_mmb_is_bf16_only(t)) return (const uint16_t *) t->data;
+    if (const uint16_t * b = ggml_cuda_mmb_bf16_src(t)) return b;
     const ggml_tensor * root = mmb_root(t);
     for (auto & e : g_mmb_slots) if (e.buf && e.root == root && e.data == t->data) return e.buf->get();
     for (auto & e : g_mmb_cache) if (e.root == root && e.data == t->data) return e.buf->get();
@@ -824,7 +839,7 @@ void ggml_cuda_mul_mat_mmb(ggml_backend_cuda_context & ctx, const ggml_tensor * 
     // A tensor marked bf16-only (journey step 9) already lives in the mmb cache
     // as bf16; reading it through mmb_bf16_activation would reinterpret those
     // bytes as f32. Gated on the mark so the unmarked path is unchanged.
-    const uint16_t * xhp = ggml_cuda_mmb_is_bf16_only(src1) ? ggml_cuda_mmb_cache_lookup(src1) : nullptr;
+    const uint16_t * xhp = ggml_cuda_mmb_bf16_src(src1);
     if (!xhp) xhp = mmb_bf16_activation(ctx, src1, (size_t) T * K, stream);
     if (src0->type == GGML_TYPE_BF16 && M <= 8 && (K % 128) == 0) {
         const int grid = (int) ((T + 31) / 32);

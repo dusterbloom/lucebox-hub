@@ -3022,10 +3022,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         cublas_shape_ok && src1->ne[1] * src1->ne[2] * src1->ne[3] >= 512) {
         const void * sh = ggml_cuda_mmb_shadow_ptr(src0);
         if (sh) {
-            if (getenv("QWEN4EXP_CUBLAS_LOG")) {
-                std::fprintf(stderr, "[cublas] %s K=%lld N=%lld T=%lld\n", src0->name,
-                    (long long) src0->ne[0], (long long) src0->ne[1], (long long) (src1->ne[1] * src1->ne[2] * src1->ne[3]));
-            }
+            static const bool cublas_log = getenv("QWEN4EXP_CUBLAS_LOG") != nullptr;
             ggml_tensor tmp = *src0;
             tmp.type = GGML_TYPE_BF16;
             tmp.data = const_cast<void *>(sh);
@@ -3033,7 +3030,27 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
             tmp.nb[1] = sizeof(uint16_t) * src0->ne[0];
             tmp.nb[2] = tmp.nb[1] * src0->ne[1];
             tmp.nb[3] = tmp.nb[2] * src0->ne[2];
-            ggml_cuda_op_mul_mat(ctx, &tmp, src1, dst, ggml_cuda_op_mul_mat_cublas, nullptr);
+            // A bf16-only src1 (journey step 9) already holds its bf16 form in
+            // place: hand it to cuBLAS as bf16 so the f32->bf16 staging
+            // conversion is skipped, matching what the mmb kernel reads.
+            const uint16_t * xb = ggml_cuda_mmb_bf16_src(src1);
+            ggml_tensor tmp1 = *src1;
+            const ggml_tensor * s1 = src1;
+            if (xb) {
+                tmp1.type = GGML_TYPE_BF16;
+                tmp1.data = const_cast<uint16_t *>(xb);
+                tmp1.nb[0] = sizeof(uint16_t);
+                tmp1.nb[1] = sizeof(uint16_t) * src1->ne[0];
+                tmp1.nb[2] = tmp1.nb[1] * src1->ne[1];
+                tmp1.nb[3] = tmp1.nb[2] * src1->ne[2];
+                s1 = &tmp1;
+            }
+            if (cublas_log) {
+                std::fprintf(stderr, "[cublas] %s K=%lld N=%lld T=%lld src1=%s\n", src0->name,
+                    (long long) src0->ne[0], (long long) src0->ne[1],
+                    (long long) (src1->ne[1] * src1->ne[2] * src1->ne[3]), xb ? "bf16" : "f32");
+            }
+            ggml_cuda_op_mul_mat(ctx, &tmp, s1, dst, ggml_cuda_op_mul_mat_cublas, nullptr);
             return;
         }
     }
@@ -5760,10 +5777,12 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
                 const ggml_tensor * t = cgraph->nodes[n];
                 if (!reads(t, xn)) continue;
                 ++nread;
-                // A MUL_MAT only consumes the bf16 form if it takes the mmb path;
-                // a cuBLAS-routed shape reads src1 as f32, so it must block the mark.
-                if (t->op == GGML_OP_MUL_MAT && ggml_cuda_mmb_supported_mm(t->src[0], t->src[1], t) &&
-                    !ggml_cuda_mmb_cublas_shape_ok(t->src[0])) continue;
+                // A MUL_MAT consumes the bf16 form if it takes the mmb path, or
+                // the cuBLAS route (which now passes a bf16 src1 through when
+                // marked instead of converting from f32).
+                if (t->op == GGML_OP_MUL_MAT &&
+                    (ggml_cuda_mmb_supported_mm(t->src[0], t->src[1], t) ||
+                     ggml_cuda_mmb_cublas_shape_ok(t->src[0]))) continue;
                 if (t->op == GGML_OP_VIEW || t->op == GGML_OP_RESHAPE) continue;
                 if (t->op == GGML_OP_MUL && is_hc_mix_mul(n, xn)) continue;
                 { static unsigned dbg = 0; if (getenv("LLAMA_HC16_DEBUG") && ggml_nrows(xn) >= 4096 && dbg++ < 12)
