@@ -458,12 +458,27 @@ static ggml_tensor * build_qsa_attn(ggml_context * c, ggml_tensor * cur,
     return attn;
 }
 
+// Whether this prefill chunk should pool + persist its indexer keys. Kept
+// separate from qsa_layer_ok: even a dense small-chunk fallback writes, so a
+// later QSA chunk finds a populated prefix (dense chunks used to write nothing).
+static bool indexer_store_ok(ggml_tensor * indexer_k, int64_t T, int64_t pos0, int64_t ratio) {
+    static const bool use_qsa = getenv("QWEN4EXP_QSA") != nullptr;
+    if (!use_qsa || T < 128 || ratio <= 1 || ratio % 4 != 0 || pos0 % ratio != 0) return false;
+    const int64_t off    = pos0 / ratio;
+    const int64_t nb_cur = (T + ratio - 1) / ratio;
+    return indexer_k != nullptr && off + nb_cur <= indexer_k->ne[1];
+}
+
 // The per-layer QSA decision, shared by build_full_attn and the mask-elision
 // check in qwen4exp_forward (all full layers share ratio/cache shape, so if this
 // holds for every one of them the dense causal mask is never read).
+// `indexer_written` is the number of leading cache columns known populated by
+// earlier forwards of this sequence; the selected-block scoring reads blocks
+// [0, off) from it and must never touch uninitialised columns.
 static bool qsa_layer_ok(const Qwen4ExpWeights & w, ggml_tensor * k_cache,
                          ggml_tensor * indexer_k, int64_t T, int64_t kv_len,
-                         int64_t pos0, int64_t ratio, int64_t Hq, int64_t Hk) {
+                         int64_t pos0, int64_t ratio, int64_t Hq, int64_t Hk,
+                         int64_t indexer_written) {
     static const bool use_qsa = getenv("QWEN4EXP_QSA") != nullptr;
     if (!use_qsa || T < 128 || ratio <= 1) return false;
     if (w.indexer_head_size != 128 || w.indexer_n_head <= 0 ||
@@ -472,12 +487,12 @@ static bool qsa_layer_ok(const Qwen4ExpWeights & w, ggml_tensor * k_cache,
     const int64_t qsa_step = (ratio % 4 == 0) ? ratio : (ratio % 2 == 0 ? ratio * 2 : ratio * 4);
     const int64_t kv_pad   = (kv_len + qsa_step - 1) / qsa_step * qsa_step;
     if (kv_pad > k_cache->ne[1]) return false;
-    if (ratio % 4 != 0 || pos0 % ratio != 0) return false;
+    if (!indexer_store_ok(indexer_k, T, pos0, ratio)) return false;
     const int64_t budget = w.indexer_top_k / ratio;
     const int64_t nb_cur = (T + ratio - 1) / ratio;
     const int64_t off    = pos0 / ratio;
     if (off + nb_cur < budget) return false;
-    if (indexer_k == nullptr || off + nb_cur > indexer_k->ne[1]) return false;
+    if (off > indexer_written) return false;   // prefix not fully populated
     return true;
 }
 
@@ -486,7 +501,8 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
                               ggml_tensor * k_cache, ggml_tensor * v_cache,
                               ggml_tensor * indexer_k,
                               ggml_tensor * positions, ggml_tensor * mask,
-                              int64_t kv_len, int64_t pos0, int64_t ratio) {
+                              int64_t kv_len, int64_t pos0, int64_t ratio,
+                              int64_t indexer_written) {
     const int64_t D      = w.n_embd_head_k;   // 256
     const int64_t Hq     = w.n_head;          // 24
     const int64_t Hk     = w.n_head_kv;       // 2
@@ -538,7 +554,8 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
 
     const int64_t nb_cur = (T + ratio - 1) / ratio;   // blocks in this chunk
     const int64_t off    = pos0 / ratio;              // cached blocks before it
-    const bool qsa_ok = qsa_layer_ok(w, k_cache, indexer_k, T, kv_len, pos0, ratio, Hq, Hk);
+    const bool store = indexer_store_ok(indexer_k, T, pos0, ratio);
+    const bool qsa_ok = qsa_layer_ok(w, k_cache, indexer_k, T, kv_len, pos0, ratio, Hq, Hk, indexer_written);
     // qwen4exp_forward elides the dense causal mask only when every full layer
     // takes the QSA branch; a dense fallback without it would attend the whole
     // padded cache, so fail loudly instead.
@@ -549,16 +566,22 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
         std::abort();
     }
 
-    ggml_tensor * attn;
-    if (qsa_ok) {
-        // Indexer keys for this chunk (rope'd at absolute block positions), one
-        // column per r-block. Persist them for later chunks, then score against
-        // the cached prefix [0, off) plus the current chunk.
-        ggml_tensor * pooled_cur = build_indexer_pooled(c, cur, L, w, pos0, ratio);
+    // Pool and persist this chunk's indexer keys whenever it is an aligned
+    // prefill, even if QSA is not selected (a small chunk may be dense for lack
+    // of blocks): later chunks read blocks [0, off) and must find them written.
+    ggml_tensor * pooled_cur = nullptr;
+    if (store) {
+        pooled_cur = build_indexer_pooled(c, cur, L, w, pos0, ratio);
         ggml_build_forward_expand(gf, ggml_cpy(c,
             ggml_reshape_2d(c, pooled_cur, w.indexer_head_size, nb_cur),
             ggml_view_2d(c, indexer_k, w.indexer_head_size, nb_cur,
                          indexer_k->nb[1], (size_t) off * indexer_k->nb[1])));
+    }
+
+    ggml_tensor * attn;
+    if (qsa_ok) {
+        // Score against the cached prefix [0, off) plus this chunk.
+        GGML_ASSERT(pooled_cur != nullptr);
         ggml_tensor * pooled = pooled_cur;
         if (off > 0) {
             ggml_tensor * prefix = ggml_view_2d(c, indexer_k, w.indexer_head_size, off,
@@ -769,13 +792,22 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
     // QSA derives its own complete-block visibility, so when every full-attention
     // layer takes that branch the dense [kv_len, T] causal mask is never read.
     // Skip allocating/filling/uploading it (at 64K that is gigabytes per chunk).
-    bool qsa_all = T > 1;
-    for (int il = 0; il < w.n_layer && qsa_all; ++il) {
-        if (!w.layers[il].is_full_attention) continue;
-        const int fi = full_idx[il];
-        const int64_t ratio = il < (int) w.compress_ratios.size() ? w.compress_ratios[il] : 0;
+    // Every full layer shares ratio/head shape/indexer cache, so the decision is
+    // evaluated once; a dense small chunk still persists its indexer keys.
+    int full0 = -1;
+    for (int il = 0; il < w.n_layer && full0 < 0; ++il) {
+        if (w.layers[il].is_full_attention) full0 = il;
+    }
+    bool qsa_all = false;
+    if (T > 1 && full0 >= 0) {
+        const int fi = full_idx[full0];
+        const int64_t ratio = full0 < (int) w.compress_ratios.size() ? w.compress_ratios[full0] : 0;
         qsa_all = qsa_layer_ok(w, cache.attn_k[fi], cache.indexer_k[fi],
-                               T, kv_len, pos0, ratio, w.n_head, w.n_head_kv);
+                               T, kv_len, pos0, ratio, w.n_head, w.n_head_kv, cache.indexer_blocks);
+        if (indexer_store_ok(cache.indexer_k[fi], T, pos0, ratio)) {
+            cache.indexer_blocks = std::max(cache.indexer_blocks,
+                (int) (pos0 / ratio + (T + ratio - 1) / ratio));
+        }
     }
     if (T > 1 && !qsa_all) {
         if (!dev_mask) {
@@ -828,7 +860,8 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
             cur = build_full_attn(ctx, gf, cur, L, w,
                                   cache.attn_k[fi], cache.attn_v[fi], cache.indexer_k[fi],
                                   positions, mask, kv_len, pos0,
-                                  il < (int) w.compress_ratios.size() ? w.compress_ratios[il] : 0);
+                                  il < (int) w.compress_ratios.size() ? w.compress_ratios[il] : 0,
+                                  cache.indexer_blocks);
         } else {
             const int li = lin_idx[il];
             cur = build_linear_attn(ctx, gf, cur, L, w,

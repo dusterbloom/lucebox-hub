@@ -57,7 +57,11 @@ struct Qwen4ExpCache {
     // [indexer_head_size, ceil(max_ctx/ratio)] f32, one per full layer. Written
     // by every chunked prefill forward so later chunks (pos0 > 0) can score
     // against the full block history without it being present in `cur`.
+    // `indexer_blocks` is how many leading columns are known populated this
+    // sequence (a dense small-chunk fallback still writes, but QSA selection
+    // must never read past it).
     std::vector<ggml_tensor *> indexer_k;  // size = n_full
+    int indexer_blocks = 0;
 
     // Gated delta net: ssm_state [S_v, S_v, H_v] f32;
     //                  conv_state [kernel-1, conv_channels] f32.

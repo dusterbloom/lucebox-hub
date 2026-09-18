@@ -109,6 +109,7 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
 
     out.max_ctx = max_ctx;
     out.cur_pos = 0;
+    out.indexer_blocks = 0;
     out.kv_type = kv_type;
     out.input_ring.enabled = qwen4exp_uma_ring_supported(backend);
     if (out.input_ring.enabled) {
@@ -169,6 +170,7 @@ void reset_qwen4exp_state(ggml_backend_t backend, Qwen4ExpCache & c) {
         if (t) ggml_backend_tensor_memset(t, 0, 0, ggml_nbytes(t));
     }
     c.cur_pos = 0;
+    c.indexer_blocks = 0;
 }
 
 }  // namespace dflash::common
