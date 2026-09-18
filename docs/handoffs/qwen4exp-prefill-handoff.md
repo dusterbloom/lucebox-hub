@@ -3,8 +3,89 @@
 Repo: `/home/peppi/Dev/lucebox-qwen4exp`, branch `feat/qwen4exp-strix-halo`.
 Goal: reproduce then beat the pwilkin strix-halo journey on the hand-written
 qwen4exp graph. Target **>= 1000 t/s prefill**. Reference on this box: 738 t/s
-(pp16384, IQ4_NL 3-shard). **We are at ~870 t/s @ 13.6k / 847 @ 16K, all
-planted-correct.** The two big remaining items are named in "Next".
+(pp16384, IQ4_NL 3-shard). **We are at ~878 t/s @ 13.6k, all planted-correct.**
+Chunked-prefill QSA landed (indexer-K cache): 32K 576 -> ~800, 64K now runs at
+826 with `--chunk 16384` (was OOM/dense). Reference CIRU v4.2.0 hits 984-990 @
+12,960 on the same GPU, so the remaining gap is ~11-13% of kernel grind.
+
+### Update 2026-09-18 (cont.) — indexer-K cache / chunked QSA landed
+
+- `build_full_attn` now always pools the chunk's indexer keys
+  (`build_indexer_pooled`, kernel `qwen4exp_graph.cpp:325`) into a new per-full-
+  layer cache `Qwen4ExpCache::indexer_k` `[128, ceil(max_ctx/ratio)]` f32, and
+  `build_qsa_attn` scores against the cached prefix + current chunk with the
+  DS4 kernel's `kv_start`. `qsa_ok` dropped `pos0 == 0`; it now needs
+  `ratio % 4 == 0 && pos0 % ratio == 0`, `off+nb_cur >= budget`
+  (fixes the latent `ggml_top_k` `k <= ne[0]` assert for T < 2048) and enough
+  cache columns. Visibility/tail rows in `build_qsa_attn` are absolute
+  (`pos0 + row`); algebraically identical at `pos0 == 0`.
+- Measured (QSA=1, MMB_CUBLAS=5, SHADOW=1, HC16=2, chunk 16384):
+  | pt | chunks (qsa) | t/s | before |
+  |---|---|---|---|
+  | 13,664 | 1 | 896-904 | ~870 |
+  | 23,984 | 2 | ~840 | dense chunk2 |
+  | 32,792 | 2 | 792-806 | 576 @ 32K |
+  | 65,528 | 4 | 849 | OOM |
+  Planted gate 5/5 at 13.6k, and KEY+CEIL correct at 24K/32K/64K; FA counter
+  confirms `qsa=12` on every prefill chunk (decode still dense).
+- **Mask elision.** `qwen4exp_forward` now skips building/uploading the dense
+  `[kv_len, T]` f16 causal mask when `qsa_layer_ok` holds for every full layer
+  (QSA carries its own visibility). `build_full_attn` aborts if it ever gets a
+  maskless dense graph. At T=16384 `mask+upload` fell 124.7 -> 15.3 ms and
+  `build+alloc` 457 -> 325 ms; 64K 784 -> 826 t/s (the 4 per-chunk masks were
+  ~5.4 GB total). No-QSA dense still builds the mask and stays correct.
+- **Decode QSA (`qsa_decode`) is *not* wired** (T < 128 stays dense); the cache
+  is a prerequisite, not the whole job.
+- **Fresh 16K trace** (current build, `--kernel-trace`, sum 19.36 s @ 16,366):
+  | ms | x | kernel |
+  |---|---|---|
+  | 2352 | 48 | `mul_mat` K=6144 N=2560 (`wo`) — cuBLAS route |
+  | 1798 | 48 | `mmb_routed_glu_kernel<64,128,32,32>` |
+  | 1743+693+458 = **2894** | | cuBLAS `Cijk` bf16 |
+  | 1529 | 97 | `mul_mat` K=10240 N=320 (HC down) |
+  | 1404 | 96 | `hc_gate_mix` |
+  | 1259+909+306+130 = **2604** | | `mmb_dense_kernel` variants |
+  | 1148 | 37 | `mul_mat` K=2560 N=10240 (qkv) |
+  | 972 | 380 | `hc_combine_norm_f32_b256` (~930 prefill) |
+  | 967 | 36 | `gated_delta_net_tiled` |
+  | 933 | 48 | `mmb_routed_kernel<128,128,32,64>` |
+  | 913 | 12 | `qsa3_attn_kernel` |
+  | 829+534 = 1363 | 199 | `convert_unary` f32<->bf16 (cuBLAS route) |
+  | 581 | 96 | `mmb_small_n_bf16_kernel<8,32,128>` |
+  | 568 | 273 | `mmb_cvt_f32_bf16` |
+  | 464 | 12 | `k_get_rows_float<int,int>` (top-k block sort) |
+  | 450 | 168 | `mmb_f32split_kernel` |
+  A/B of the cuBLAS route at 16,366 (best of 4): mode 1 = 19.19 s, mode 3 =
+  19.06 s, **mode 5 = 18.51 s** — the extended route still pays; no regression
+  to reclaim. GEMMs run at ~27 TFLOP/s; the remaining time is many small
+  elementwise/norm/HC/conversion kernels, so the road to 1000 is fusion, not a
+  single misrouted shape.
+- **Packed scalar `get_rows`** (`getrows.cu k_get_rows_scalar`). The QSA top-k
+  block sort gathers with `ne00 == 1`, and the generic kernel launched 256
+  threads (255 idle) per single element. Consecutive threads now take
+  consecutive `ne10` rows (coalesced src1/dst), one grid over all
+  `ne10*ne11*ne12`. `k_get_rows<int,int>` 464 ms -> ~few ms; end to end
+  +3% (13.6K 873 -> ~900, 64K 826 -> 849).
+
+### CIRU v4.2.0 comparison (ciru-ai/Qwen3.8-Flash-CIRU-STRIX-IU4)
+
+At a near-identical length CIRU measures **984-990 t/s prefill @ 12,960** on
+gfx1151 (v4.2.0 release; the 948-974 figure is the **64K** model-card number).
+So ~1000 at ~13K is achievable on this silicon and our same-length gap is
+~11-14%. CIRU + pwilkin both run **ROCm 10.0**; we run **ROCm 7.2.2**. The flat,
+waste-free gap is best explained by the compiler/runtime, so the **primary
+next-session item is a ROCm 10 build A/B**, ahead of the indexer-K cache. Their
+named v4.2 items do **not** map to our prefill gap:
+- "float32 accumulation for 256-wide attention" is in their **generic fallback**
+  for batches QSA3 declines; the QSA3 kernel is explicitly unchanged. Our
+  `qsa3_attn_kernel` already accumulates f32
+  (`__builtin_amdgcn_wmma_f32_16x16x16_f16_w32`), and we have no
+  selected-key fallback path (decode is dense over the whole cache).
+- "scratch masks ... 64-query strips" is their fallback's mask. We avoided the
+  single 65K graph by chunking, and now elide the mask entirely on QSA chunks
+  (above) — a partial port of that idea.
+Remaining gap: test ROCm 10 first (primary); then the HC/conversion fusion
+(mmb/cuBLAS/hc/conversions), item 3-5.
 
 ## Environment
 
@@ -68,20 +149,29 @@ GDN 0.95 s.
 
 **Target analysis (decide which 1000).**
 - **1000 @ 16K** (=pwilkin pp16384, on-box ref 738): need ~3.0 s out of 19.3 s.
-  The profile is **flat** — no bucket is 3 s and none is obviously wasteful, so
-  this is a broad ~15% grind across tuned kernels, not a lever.
-- **1000 @ 64K** (CIRU ~960): needs the **64K graph-alloc OOM fixed** *and* the
-  **indexer-K cache** (chunks 2+, decode). Multi-hour, known-good reference.
+  The profile is **flat** — no bucket is 3 s and none is obviously wasteful.
+  A uniform ~15% across every tuned kernel with no identifiable waste is the
+  signature of a **toolchain difference**, not a missing optimization:
+  pwilkin (1187 @ pp16384) and CIRU (987 @ 12,960) both run **ROCm 10.0**;
+  this box runs **ROCm 7.2.2**. Newer LLVM/ROCm producing broadly better code
+  from the same kernels fits the flat shape exactly. **Primary next-session
+  item: build this tree against ROCm 10 and A/B the same prompt/model/config.**
+  It is one operation, not a hundred kernel edits, and it is above the
+  indexer-K cache in priority.
+- **1000 @ 64K** (CIRU v4.2.0 @12,960 = 984-990; model card 64K = 948-974):
+  needs the **64K graph-alloc OOM fixed** *and* the **indexer-K cache**
+  (chunks 2+, decode). Multi-hour, known-good reference. NOTE: the 984-990
+  figure is the **12,960-token** release datapoint, not 64K — do not compare
+  our 16K number to a 64K reference.
 - The indexer-K cache is **irrelevant at 16K** (`--chunk 16384`: both 13,664 and
   16,366 tokens are a single chunk, `pos0 == 0`, QSA already full).
 
-So the one big fixable thing sits behind the 64K/cache wall.
-
 **Two new cheap checks before any 300-line port:**
-- `hc_combine_norm` **x380** in one 16K prefill — ~5x the ~72 expected (2/layer).
-  Possible redundant-launch bug; 5-minute check.
-- `k_get_rows` x12 / 506 ms — the QSA selection gather, now visible after the
-  DS4 kernel cut the score.
+- `hc_combine_norm` **x380** — RESOLVED, not a bug. Trace split: 95 launches
+  with grid.y = 16366 (the prefill graph) + 285 with grid.y = 1 (3 decode steps
+  × 95 ops). One launch per op (grid.x = hc covers all 4 streams); `n_layer` is
+  48, so 2/layer ≈ 96 ops, not 72. No per-stream and no redundant launch.
+- `k_get_rows` x12 / 506 ms — RESOLVED via `k_get_rows_scalar` (see update).
 
 ## Commit log (oldest -> newest, all on `feat/qwen4exp-strix-halo`)
 
@@ -159,24 +249,26 @@ So the one big fixable thing sits behind the 64K/cache wall.
 
 ## Next (prioritized) — open items
 
-0. **Cheap first** (the fresh 16K trace): `hc_combine_norm` **x380** per 16K
-   prefill (~5x the expected ~72) — check for a redundant launch
-   (`hc-cn.cu`, the `GGML_OP_HC_COMBINE_NORM` dispatch, and
-   `hc_combine_norm()` in `qwen4exp_graph.cpp`). And `k_get_rows` x12 / 506 ms
-   in the QSA selection.
-1. **Indexer-K cache + store/select** (THE item). Decision gate: 1000@16K is a
-   flat grind, so the better ROI is 1000@64K, which needs **this cache + the
-   64K OOM fix (item 2)**. Enables chunked-prefill QSA (chunks 2+ currently
-   dense: 32K 576 -> should approach ~850) **and** `qsa_decode`
-   Reference: `strix-ref src/models/qwen4exp.cpp:963 build_qsa_store_k`,
-   `:1014 build_qsa_top_k`, `:1248 build_attn_qsa`. Why: for `pos0>0` (and
-   decode) the indexer keys of `[0,pos0)` are not in `cur` — they must be
-   cached per full-attn layer `[idim, max_ctx/r]`. Requires also
-   **absolute-position visibility/tail rows** in `build_qsa_attn` (the
-   `tv`/`tvt`/`br` terms currently use the local row, must use `pos0+row`).
-   ~200-300 lines; validate at `pos0>0` and decode with the FA counter.
-2. **64K OOM**: `graph alloc failed (T=65518)`, 27 GB. Suspect the packed
-   GDN intermediate (`build_linear_attn` / `ggml_gated_delta_net_skip_intermediate`).
+0. **RESOLVED (not bugs).** `hc_combine_norm` x380 = 95 prefill launches
+   (2/layer x 48 layers, minus one PLE handoff) + 285 from 3 decode steps in the
+   same 39.7 s trace window; `n_layer` is 48, so "expected 72" was wrong. No
+   redundant launch. `k_get_rows<int,int>` x12 / 506 ms is the ascending top-k
+   block sort (`qwen4exp_graph.cpp:409-412`), identical to the reference's
+   `qwen4exp_select_complete_blocks`; it is a scalar (`ne0=1`) gather of ~8.4M
+   int32 needed because `qsa3_rows_kernel`'s unsorted fallback is O(ns^2). Real
+   cost (now paid once per prefill chunk), not a bug; a fused sort/gather kernel
+   is the only fix.
+1. **Indexer-K cache — DONE for chunked prefill** (see the update at the top).
+   `Qwen4ExpCache::indexer_k` per full layer, written by every QSA prefill
+   forward and scored with `kv_start`. 32K 576 -> 781, 64K 784, planted-correct.
+   **Still open:** `qsa_decode` (T < 128 stays dense) — wire the decode kernel
+   against the same cache; and the ds4 indexer cost now grows with context
+   (chunk4 scores T=16384 x nb=16384), so per-chunk selection is the next lever
+   for 64K.
+2. **64K OOM**: avoided with `--chunk 16384` (4 graphs of 16384, no 27 GB alloc).
+   A single >=65518-token graph still OOMs; suspect the packed GDN intermediate
+   (`build_linear_attn` / `ggml_gated_delta_net_skip_intermediate`). No longer
+   blocks 64K prefill.
 3. **Conversion elimination** (~1.5 s): blocked. Writing f32 `C` in the
    cuBLAS route regresses badly (cuBLAS drops off tensor cores, 446 t/s);
    reading a marked src1 in cuBLAS is still wrong even with in-place marks

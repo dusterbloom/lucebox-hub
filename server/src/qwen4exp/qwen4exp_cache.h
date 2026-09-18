@@ -52,6 +52,13 @@ struct Qwen4ExpCache {
     std::vector<ggml_tensor *> attn_k;  // size = n_full
     std::vector<ggml_tensor *> attn_v;
 
+    // QSA lightning-indexer keys, pooled over each compress-ratio block and
+    // already normed + M-RoPE'd at absolute block positions:
+    // [indexer_head_size, ceil(max_ctx/ratio)] f32, one per full layer. Written
+    // by every chunked prefill forward so later chunks (pos0 > 0) can score
+    // against the full block history without it being present in `cur`.
+    std::vector<ggml_tensor *> indexer_k;  // size = n_full
+
     // Gated delta net: ssm_state [S_v, S_v, H_v] f32;
     //                  conv_state [kernel-1, conv_channels] f32.
     std::vector<ggml_tensor *> ssm_state;   // size = n_linear

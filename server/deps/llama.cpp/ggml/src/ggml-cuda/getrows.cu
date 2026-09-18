@@ -103,6 +103,33 @@ static __global__ void k_get_rows_float_packed(
     }
 }
 
+// Specialization for ne00 == 1: every output element is one scalar gather. The
+// generic kernel launches CUDA_GET_ROWS_BLOCK_SIZE threads (255 of them idle) and
+// a grid.z over ne11*ne12, which for the QSA top-k block sort is millions of
+// mostly-empty blocks. Here consecutive threads take consecutive ne10 rows, so
+// src1 and dst are coalesced, and all of ne10*ne11*ne12 is covered in one grid.
+template<typename src0_t, typename dst_t>
+static __global__ void k_get_rows_scalar(
+        const src0_t * __restrict__ src0, const int32_t * __restrict__ src1, dst_t * __restrict__ dst,
+        const int64_t ne10, const int64_t ne11, const int64_t ne12,
+        const size_t s1, const size_t s2, const size_t s3,
+        const size_t nb01, const size_t nb02, const size_t nb03,
+        const size_t s10, const size_t s11, const size_t s12) {
+    const int64_t total = ne10 * ne11 * ne12;
+    const int64_t idx = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= total) {
+        return;
+    }
+    const int64_t i10  = idx % ne10;
+    const int64_t rest = idx / ne10;
+    const int64_t i11  = rest % ne11;
+    const int64_t i12  = rest / ne11;
+
+    const int32_t i01 = src1[i10*s10 + i11*s11 + i12*s12];
+    const src0_t * src0_row = (const src0_t *) ((const char *) src0 + i01*nb01 + i11*nb02 + i12*nb03);
+    dst[i10*s1 + i11*s2 + i12*s3] = ggml_cuda_cast<dst_t>(src0_row[0]);
+}
+
 // 16-byte same-type copy fast path for row gathers. Requires src0 and dst to
 // have the same element type and all row strides/base pointers to be 16-byte
 // aligned; the caller checks both. Vectorizing with int4 turns the gather into
@@ -240,6 +267,21 @@ static void get_rows_cuda_float(
             else if (ne00 <= 32) launch(std::integral_constant<int,  32>{}, one);
             else if (ne00 <= 64) launch(std::integral_constant<int,  64>{}, one);
             else                launch(std::integral_constant<int, 128>{}, one);
+            return;
+        }
+    }
+
+    // ne00 == 1: every output is a scalar; use the packed gather instead of the
+    // one-live-thread-per-block generic kernel (int/float gathers such as the
+    // QSA top-k block sort).
+    if (ne00 == 1) {
+        const int64_t total = ne10 * ne11 * ne12;
+        if (total > 0) {
+            const int64_t threads = 256;
+            const int64_t blocks  = (total + threads - 1) / threads;
+            k_get_rows_scalar<src0_t, dst_t><<<(unsigned) blocks, (unsigned) threads, 0, stream>>>(
+                src0_d, src1_d, dst_d, ne10, ne11, ne12,
+                s1, s2, s3, nb01, nb02, nb03, s10, s11, s12);
             return;
         }
     }

@@ -56,13 +56,14 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
     }
 
     ggml_init_params ip{};
-    ip.mem_size = ggml_tensor_overhead() * (static_cast<size_t>(w.n_layer) * 3 + 8) + 4096;
+    ip.mem_size = ggml_tensor_overhead() * (static_cast<size_t>(w.n_layer) * 4 + 16) + 4096;
     ip.no_alloc = true;
     out.ctx = ggml_init(ip);
     if (!out.ctx) return false;
 
     out.attn_k.assign(n_full, nullptr);
     out.attn_v.assign(n_full, nullptr);
+    out.indexer_k.assign(n_full, nullptr);
     out.ssm_state.assign(n_linear, nullptr);
     out.conv_state.assign(n_linear, nullptr);
 
@@ -85,6 +86,13 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
             w.n_embd_head_k, max_ctx, w.n_head_kv);
         out.attn_v[i] = ggml_new_tensor_3d(out.ctx, kv_type,
             w.n_embd_head_v, max_ctx, w.n_head_kv);
+        const int il = out.full_layer_ids[i];
+        const int ratio = il < (int) w.compress_ratios.size() ? w.compress_ratios[il] : 0;
+        if (w.indexer_head_size > 0 && ratio > 0) {
+            const int64_t max_blocks = (static_cast<int64_t>(max_ctx) + ratio - 1) / ratio;
+            out.indexer_k[i] = ggml_new_tensor_2d(out.ctx, GGML_TYPE_F32,
+                w.indexer_head_size, max_blocks);
+        }
     }
     for (size_t i = 0; i < n_linear; ++i) {
         // Recurrent state is independent of context length.
@@ -138,6 +146,7 @@ void free_qwen4exp_cache(Qwen4ExpCache & c) {
     if (c.ctx) { ggml_free(c.ctx); c.ctx = nullptr; }
     c.attn_k.clear();
     c.attn_v.clear();
+    c.indexer_k.clear();
     c.ssm_state.clear();
     c.conv_state.clear();
     c.ple_conv_state.clear();
