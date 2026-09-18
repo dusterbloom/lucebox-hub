@@ -3,12 +3,36 @@
 Repo: `/home/peppi/Dev/lucebox-qwen4exp`, branch `feat/qwen4exp-strix-halo`.
 Goal: reproduce then beat the pwilkin strix-halo journey on the hand-written
 qwen4exp graph. Target **>= 1000 t/s prefill**. Reference on this box: 738 t/s
-(pp16384, IQ4_NL 3-shard). **We are at ~878 t/s @ 13.6k, all planted-correct.**
-Chunked-prefill QSA landed (indexer-K cache): 32K 576 -> ~800, 64K now runs at
-826 with `--chunk 16384` (was OOM/dense). Reference CIRU v4.2.0 hits 984-990 @
-12,960 on the same GPU, so the remaining gap is ~9% of engine/kernel work.
+(pp16384, IQ4_NL 3-shard). **We are at ~937 t/s @ 13.6k, all planted-correct.**
+Chunked-prefill QSA landed (indexer-K cache): 32K 576 -> ~893, 64K now runs at
+925 with `--chunk 16384` (was OOM/dense). Reference CIRU v4.2.0 hits 984-990 @
+12,960 on the same GPU, so the remaining gap is ~5% of engine/kernel work.
 
 ### Update 2026-09-18 (cont.) — indexer-K cache / chunked QSA landed
+
+- **HC16 mark fix (fusion, big win).** With `QWEN4EXP_MMB_CUBLAS=5`,
+  `LLAMA_MMB_HC16=2` was a **no-op**: `LLAMA_HC16_DEBUG=1` showed every xn mark
+  blocked (`ok=0`, blocked 12/12) because the HC down/up `MUL_MAT`s are
+  cuBLAS-routed and the route read src1 as f32. Added
+  `ggml_cuda_mmb_bf16_src()` (root + view_offs + data) in `mmb.cu`, used it in
+  the mmb src1 lookup, and taught the cuBLAS route to hand the in-place bf16
+  src1 to hipBLASLt (`ggml-cuda.cu` route + marking pass). Result: 13.6K ~900
+  -> ~937, 32.8K ~800 -> ~893, 64K 849 -> 925 t/s; `convert_unary` f32->bf16
+  829 -> 223 ms, `hc_combine_norm` 972 -> 849 ms (fresh sum 19.36 -> 17.97 s).
+  Planted 5/5 at 13.6K, KEY+CEIL at 32K/64K. (commit `849b9336`)
+- **Small-chunk indexer fix (review-driven).** A GLM-5.3 review of `2e94878d`
+  found that with `--chunk < 2048` the first chunk is dense (off+nb < budget)
+  and wrote no `indexer_k`, so the first QSA chunk read uninitialised prefix
+  columns. `indexer_store_ok` now pools+persists on every aligned prefill chunk
+  regardless of QSA selection, and `Qwen4ExpCache::indexer_blocks` bounds QSA to
+  the written prefix. (commit `0529d25f`.) Note: chunk 1024/1536 are
+  semantically correct but the planted `KEY_OK` literal flips ~25% because
+  chunking shifts a near-tie greedy first token (`CEIL_OK` 100%); production
+  chunks 2048/16384 are 8/8.
+- **GLM-5.3 reviews** (zai-coding-plan, non-blocking) found no concrete bug in
+  the HC16 cuBLAS src1 pass-through; the indexer-cache review produced the
+  small-chunk fix above. The `getrows.cu` hunk was not in the first review
+  prompt.
 
 - `build_full_attn` now always pools the chunk's indexer keys
   (`build_indexer_pooled`, kernel `qwen4exp_graph.cpp:325`) into a new per-full-
@@ -22,10 +46,10 @@ Chunked-prefill QSA landed (indexer-K cache): 32K 576 -> ~800, 64K now runs at
 - Measured (QSA=1, MMB_CUBLAS=5, SHADOW=1, HC16=2, chunk 16384):
   | pt | chunks (qsa) | t/s | before |
   |---|---|---|---|
-  | 13,664 | 1 | 896-904 | ~870 |
-  | 23,984 | 2 | ~840 | dense chunk2 |
-  | 32,792 | 2 | 792-806 | 576 @ 32K |
-  | 65,528 | 4 | 849 | OOM |
+  | 13,664 | 1 | 932-943 | ~870 |
+  | 23,984 | 2 | ~890 | dense chunk2 |
+  | 32,792 | 2 | 893 | 576 @ 32K |
+  | 65,528 | 4 | 925 | OOM |
   Planted gate 5/5 at 13.6k, and KEY+CEIL correct at 24K/32K/64K; FA counter
   confirms `qsa=12` on every prefill chunk (decode still dense).
 - **Mask elision.** `qwen4exp_forward` now skips building/uploading the dense
