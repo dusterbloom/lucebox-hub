@@ -799,14 +799,22 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
         if (w.layers[il].is_full_attention) full0 = il;
     }
     bool qsa_all = false;
+    // Written-prefix bound as seen by this graph: capture before advancing, so
+    // the per-layer "off <= written" guard actually bounds the prefix this
+    // chunk reads (the current chunk's own columns are written by this graph).
+    const int indexer_written = cache.indexer_blocks;
     if (T > 1 && full0 >= 0) {
         const int fi = full_idx[full0];
         const int64_t ratio = full0 < (int) w.compress_ratios.size() ? w.compress_ratios[full0] : 0;
         qsa_all = qsa_layer_ok(w, cache.attn_k[fi], cache.indexer_k[fi],
-                               T, kv_len, pos0, ratio, w.n_head, w.n_head_kv, cache.indexer_blocks);
+                               T, kv_len, pos0, ratio, w.n_head, w.n_head_kv, indexer_written);
         if (indexer_store_ok(cache.indexer_k[fi], T, pos0, ratio)) {
-            cache.indexer_blocks = std::max(cache.indexer_blocks,
-                (int) (pos0 / ratio + (T + ratio - 1) / ratio));
+            // Only extend on a contiguous chunk; a gap leaves the cache unusable
+            // for selection (-1) so later chunks fall back to dense instead of
+            // reading across unwritten columns.
+            const int off = (int) (pos0 / ratio);
+            const int end = (int) (pos0 / ratio + (T + ratio - 1) / ratio);
+            cache.indexer_blocks = (cache.indexer_blocks == off) ? end : -1;
         }
     }
     if (T > 1 && !qsa_all) {
@@ -861,7 +869,7 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
                                   cache.attn_k[fi], cache.attn_v[fi], cache.indexer_k[fi],
                                   positions, mask, kv_len, pos0,
                                   il < (int) w.compress_ratios.size() ? w.compress_ratios[il] : 0,
-                                  cache.indexer_blocks);
+                                  indexer_written);
         } else {
             const int li = lin_idx[il];
             cur = build_linear_attn(ctx, gf, cur, L, w,
