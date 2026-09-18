@@ -325,7 +325,7 @@ static ggml_tensor * qsa_pack_values(ggml_context * c, ggml_tensor * values) {
 static ggml_tensor * build_qsa_attn(ggml_context * c, ggml_tensor * cur,
         ggml_tensor * Q, ggml_tensor * Kf, ggml_tensor * Vf,
         const Qwen4ExpLayer & L, const Qwen4ExpWeights & w, int64_t ratio,
-        ggml_tensor * positions, int64_t kv_pad, int64_t kv_len) {
+        ggml_tensor * positions, int64_t kv_pad, int64_t kv_len, int64_t kv_start) {
     const int64_t idim   = w.indexer_head_size;
     const int64_t nih    = w.indexer_n_head;
     const int64_t r      = ratio;
@@ -372,25 +372,21 @@ static ggml_tensor * build_qsa_attn(ggml_context * c, ggml_tensor * cur,
     qi = ggml_mul(c, ggml_rms_norm(c, qi, eps), L.indexer_q_norm);
     qi = ggml_rope_multi(c, qi, positions, nullptr, w.rope_dimension_count, sections,
         GGML_ROPE_TYPE_MROPE, 0, w.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+    if (!ggml_is_contiguous(qi)) qi = ggml_cont(c, qi);
 
-    ggml_tensor * score = ggml_mul_mat(c, pooled, ggml_reshape_2d(c, qi, idim, nih * T));
-    score = ggml_relu(c, ggml_reshape_4d(c, score, nb, nih, T, 1));
-    ggml_tensor * summed = nullptr;
-    for (int64_t h = 0; h < nih; ++h) {
-        ggml_tensor * sl = ggml_view_3d(c, score, nb, T, 1, score->nb[1], score->nb[2], h * score->nb[1]);
-        summed = summed ? ggml_add(c, summed, sl) : ggml_cont(c, sl);
-    }
-
-    // causal complete-block visibility: block b's last key is r*b + r - 1
-    {
-        ggml_tensor * shape = ggml_new_tensor_2d(c, GGML_TYPE_F32, nb, T);
-        ggml_tensor * tv = ggml_reshape_2d(c, ggml_arange(c, 0.0f, (float) T, 1.0f), 1, T);
-        ggml_tensor * bv = ggml_scale_bias(c,
-            ggml_scale(c, ggml_arange(c, 0.0f, (float) nb, 1.0f), (float) r), 1.0f, (float) (r - 2));
-        ggml_tensor * vis = ggml_step(c, ggml_sub(c,
-            ggml_repeat(c, tv, shape), ggml_repeat(c, ggml_reshape_2d(c, bv, nb, 1), shape)));
-        summed = ggml_add(c, summed, ggml_log(c, vis));
-    }
+    // Lightning-indexer scoring via the in-tree fused DS4 kernel:
+    //   summed[b,t] = sum_h relu(q_h(t) . pooled_k[b])
+    // (head weights = 1). The kernel's built-in causal block visibility
+    // (block b complete for t iff r*b + r - 1 <= t) is identical to ours, and it
+    // takes kv_start, so it covers chunked/decode too. This replaces a
+    // mul_mat + relu + head-sum + log(vis) chain -- the O(context*T) generic part
+    // of QSA -- with one WMMA kernel.
+    ggml_tensor * comp16 = ggml_cast(c,
+        ggml_reshape_2d(c, ggml_cont(c, pooled), idim, nb), GGML_TYPE_F16);
+    ggml_tensor * hw = ggml_reshape_2d(c,
+        ggml_scale_bias(c, ggml_scale(c, ggml_arange(c, 0.0f, (float) (nih * T), 1.0f), 0.0f), 0.0f, 1.0f),
+        nih, T);
+    ggml_tensor * summed = ggml_ds4_indexer_score(c, qi, hw, comp16, (int) kv_start, (int) r);
 
     // top budget blocks per query, cells of each block, plus the query's tail cells
     ggml_tensor * blocks = ggml_cont(c, ggml_top_k(c, summed, (int) budget));   // [budget, T]
@@ -501,7 +497,7 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
     static const bool use_qsa = getenv("QWEN4EXP_QSA") != nullptr;
     const bool qsa_ok = use_qsa && pos0 == 0 && kv_len == T && T >= 128 && ratio > 1 &&
         pad_fits && w.indexer_head_size > 0 && w.indexer_n_head > 0 &&
-        w.indexer_top_k % ratio == 0 &&
+        w.indexer_head_size == 128 && w.indexer_top_k % ratio == 0 &&
         (w.indexer_top_k / ratio) * ratio + (ratio - 1) <= 2560 &&
         Hq == 12 * Hk;
     ggml_tensor * attn;
@@ -510,7 +506,7 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
             ? ggml_view_3d(c, k_cache, D, kv_pad, Hk, k_cache->nb[1], k_cache->nb[2], 0) : K_full;
         ggml_tensor * V_pad = (kv_pad != kv_len)
             ? ggml_view_3d(c, v_cache, D, kv_pad, Hk, v_cache->nb[1], v_cache->nb[2], 0) : V_full;
-        attn = build_qsa_attn(c, cur, Q, K_pad, V_pad, L, w, ratio, positions, kv_pad, kv_len);
+        attn = build_qsa_attn(c, cur, Q, K_pad, V_pad, L, w, ratio, positions, kv_pad, kv_len, pos0);
     } else {
         ggml_tensor * Qfa = ggml_cont(c, ggml_permute(c, Q, 0, 2, 1, 3));  // [D, T, Hq]
         attn = ggml_flash_attn_ext(c, Qfa, K_full, V_full, mask,
