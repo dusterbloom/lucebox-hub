@@ -756,7 +756,7 @@ void ggml_cuda_mmb_marks_clear() { g_mmb_bf16_only.clear(); }
 size_t ggml_cuda_mmb_marks_count() { return g_mmb_bf16_only.size(); }
 void ggml_cuda_mmb_mark_bf16_only(const ggml_tensor * t) { g_mmb_bf16_only.insert(t); }
 bool ggml_cuda_mmb_is_bf16_only(const ggml_tensor * t) { return g_mmb_bf16_only.count(t) > 0; }
-void ggml_cuda_mmb_begin_graph() { for (auto & e : g_mmb_cache) delete e.buf; g_mmb_cache.clear(); for (auto & e : g_mmb_slots) { e.root = nullptr; e.data = nullptr; e.n = 0; } }
+void ggml_cuda_mmb_begin_graph() { for (auto & e : g_mmb_cache) delete e.buf; g_mmb_cache.clear(); for (auto & e : g_mmb_slots) { e.root = nullptr; e.data = nullptr; e.n = 0; } g_mmb_bf16_only.clear(); }
 void ggml_cuda_mmb_release_all() {
     ggml_cuda_mmb_begin_graph();
     for (int i = 0; i < 4; ++i) { if (g_mmb_slots[i].buf) delete g_mmb_slots[i].buf; g_mmb_slots[i].buf = nullptr; g_mmb_slot_cap[i] = 0; }
@@ -817,7 +817,11 @@ void ggml_cuda_mul_mat_mmb(ggml_backend_cuda_context & ctx, const ggml_tensor * 
         else     mmb_f32split_kernel<128, 128, 32, 64, false><<<grid, MMB_NT, 0, stream>>>((const float *) src0->data, (const float *) src1->data, (float *) dst->data, M, K, T);
         CUDA_CHECK(cudaGetLastError()); return;
     }
-    const uint16_t * xhp = mmb_bf16_activation(ctx, src1, (size_t) T * K, stream);
+    // A tensor marked bf16-only (journey step 9) already lives in the mmb cache
+    // as bf16; reading it through mmb_bf16_activation would reinterpret those
+    // bytes as f32. Gated on the mark so the unmarked path is unchanged.
+    const uint16_t * xhp = ggml_cuda_mmb_is_bf16_only(src1) ? ggml_cuda_mmb_cache_lookup(src1) : nullptr;
+    if (!xhp) xhp = mmb_bf16_activation(ctx, src1, (size_t) T * K, stream);
     if (src0->type == GGML_TYPE_BF16 && M <= 8 && (K % 128) == 0) {
         const int grid = (int) ((T + 31) / 32);
         mmb_small_n_bf16_kernel<8, 32, 128><<<grid, 256, 0, stream>>>(
