@@ -390,25 +390,31 @@ static ggml_tensor * build_qsa_attn(ggml_context * c, ggml_tensor * cur,
     blocks = ggml_reshape_3d(c, ggml_get_rows(c,
         ggml_view_4d(c, blocks, 1, budget, T, 1, blocks->nb[0], blocks->nb[1], blocks->nb[2], 0),
         order), budget, T, 1);
-    ggml_tensor * picked = ggml_get_rows(c,
-        ggml_view_4d(c, summed, 1, nb, T, 1, summed->nb[0], summed->nb[1], summed->nb[2], 0), blocks);
-    ggml_tensor * valid = ggml_step(c, ggml_scale_bias(c, picked, 1.0f, 1.0f));
 
-    ggml_tensor * cells_idx = ggml_cast(c, ggml_arange(c, 0.0f, (float) (r * nb), 1.0f), GGML_TYPE_I32);
-    ggml_tensor * cells = ggml_get_rows(c, ggml_reshape_3d(c, cells_idx, r, nb, 1),
-                                        ggml_reshape_2d(c, blocks, budget * T, 1));
-    cells = ggml_mul(c, ggml_scale_bias(c, ggml_cast(c, ggml_reshape_4d(c, cells, r, budget, T, 1),
-                 GGML_TYPE_F32), 1.0f, 1.0f), valid);
-    cells = ggml_cast(c, ggml_scale_bias(c, cells, 1.0f, -1.0f), GGML_TYPE_I32);
-    cells = ggml_reshape_4d(c, cells, budget * r, T, 1, 1);
+    // Visibility and cell indices without a gather: block b owns cells
+    // r*b .. r*b + r - 1 and is complete for query t iff r*b + (r-1) <= t.
+    // Broadcast (not concat) the r rows: the concat chain copies O(r^2).
+    ggml_tensor * shape3 = ggml_new_tensor_3d(c, GGML_TYPE_F32, r, budget, T);
+    ggml_tensor * tv = ggml_repeat(c,
+        ggml_reshape_3d(c, ggml_arange(c, 0.0f, (float) T, 1.0f), 1, 1, T), shape3);
+    ggml_tensor * bf = ggml_cast(c, blocks, GGML_TYPE_F32);                        // [budget,T,1]
+    ggml_tensor * bf3 = ggml_repeat(c, ggml_reshape_3d(c, bf, 1, budget, T), shape3);
+    ggml_tensor * lim = ggml_scale_bias(c, ggml_scale(c, bf3, (float) r), 1.0f, (float) (r - 1));
+    ggml_tensor * valid = ggml_step(c, ggml_scale_bias(c, ggml_sub(c, tv, lim), 1.0f, 1.0f));
 
-    ggml_tensor * tv  = ggml_arange(c, 0.0f, (float) T, 1.0f);
+    ggml_tensor * iv  = ggml_repeat(c, ggml_reshape_3d(c,
+        ggml_arange(c, 0.0f, (float) r, 1.0f), r, 1, 1), shape3);
+    ggml_tensor * cf  = ggml_scale_bias(c, ggml_add(c, ggml_scale(c, bf3, (float) r), iv), 1.0f, 1.0f);
+    cf = ggml_scale_bias(c, ggml_mul(c, cf, valid), 1.0f, -1.0f);                  // (r*b+i+1)*valid - 1
+    ggml_tensor * cells = ggml_reshape_4d(c, ggml_cast(c, cf, GGML_TYPE_I32), budget * r, T, 1, 1);
+
+    ggml_tensor * tvt = ggml_arange(c, 0.0f, (float) T, 1.0f);
     ggml_tensor * br  = ggml_scale(c, ggml_floor(c,
         ggml_scale(c, ggml_arange(c, 1.0f, (float) (T + 1), 1.0f), 1.0f / (float) r)), (float) r);
     ggml_tensor * rows = nullptr;
     for (int64_t i = 0; i < r - 1; ++i) {
         ggml_tensor * cell = ggml_scale_bias(c, br, 1.0f, (float) i);
-        ggml_tensor * v = ggml_step(c, ggml_scale_bias(c, ggml_sub(c, tv, cell), 1.0f, 1.0f));
+        ggml_tensor * v = ggml_step(c, ggml_scale_bias(c, ggml_sub(c, tvt, cell), 1.0f, 1.0f));
         ggml_tensor * val = ggml_scale_bias(c, ggml_mul(c, v, ggml_scale_bias(c, cell, 1.0f, 1.0f)), 1.0f, -1.0f);
         ggml_tensor * row = ggml_reshape_2d(c, ggml_cast(c, val, GGML_TYPE_I32), 1, T);
         rows = rows ? ggml_concat(c, rows, row, 0) : row;
