@@ -3,10 +3,10 @@
 Repo: `/home/peppi/Dev/lucebox-qwen4exp`, branch `feat/qwen4exp-strix-halo`.
 Goal: reproduce then beat the pwilkin strix-halo journey on the hand-written
 qwen4exp graph. Target **>= 1000 t/s prefill**. Reference on this box: 738 t/s
-(pp16384, IQ4_NL 3-shard). **We are at ~937 t/s @ 13.6k, all planted-correct.**
+(pp16384, IQ4_NL 3-shard). **We are at ~950 t/s @ 13.6k, all planted-correct.**
 Chunked-prefill QSA landed (indexer-K cache): 32K 576 -> ~893, 64K now runs at
 925 with `--chunk 16384` (was OOM/dense). Reference CIRU v4.2.0 hits 984-990 @
-12,960 on the same GPU, so the remaining gap is ~5% of engine/kernel work.
+12,960 on the same GPU, so the remaining gap is ~4% of engine/kernel work.
 
 ### Update 2026-09-18 (cont.) — indexer-K cache / chunked QSA landed
 
@@ -29,6 +29,18 @@ Chunked-prefill QSA landed (indexer-K cache): 32K 576 -> ~893, 64K now runs at
   semantically correct but the planted `KEY_OK` literal flips ~25% because
   chunking shifts a near-tie greedy first token (`CEIL_OK` 100%); production
   chunks 2048/16384 are 8/8.
+- **HC inject to cuBLAS — tried, reverted.** The injects
+  (`blk.N.hc_attn_inject`, `blk.N.hc_ffn_inject`) are `[10240,4]` **BF16** (not
+  IQ4_NL), so `mmb_small_n_bf16` (623 ms, ~51 GB/s for M=4) owns them. Extending
+  `ggml_cuda_mmb_cublas_shape_ok` (mode 5, K=10240/N=4) and the route to accept
+  BF16 weights gave **no speedup** (~950 unchanged) plus one suspect gate miss,
+  so it was reverted. If revisited, cuBLAS M=4 is the suspect (tensor-op kernels
+  want M>=16).
+- **Remaining non-GEMM buckets @16K** (sum ~17.5 s): `convert_unary` bf16->f32
+  515 ms (needs downstream bf16 consumption for the K=2560 projection outputs),
+  `hc_gate_mix` 1377 ms (short K=320, ~7.4 TFLOP/s), `mmb_f32split` (F32 router)
+  466 ms, `hc_combine_norm` 855 ms (fuse-across-streams would reuse `block_out`
+  hc=4x -> 1x, ~250 ms).
 - **GLM-5.3 reviews** (zai-coding-plan, non-blocking) found no concrete bug in
   the HC16 cuBLAS src1 pass-through; the indexer-cache review produced the
   small-chunk fix above. The `getrows.cu` hunk was not in the first review
