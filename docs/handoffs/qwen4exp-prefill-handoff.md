@@ -42,6 +42,47 @@ LLAMA_MMB_HC16=2        # journey step 9 marks
 Before this session's QSA work, 16K non-%4 was **605** (dense FA). The single
 largest fix so far is `ffbd074f`.
 
+## Fresh kernel-trace composition @ 16,366 tokens (build `660bdc25`)
+
+`rocprofv3 --kernel-trace`, sum 19.07 s ≈ wall 19.3 s (the one instrument that
+agrees with wall time). This supersedes every earlier ranking (those were taken
+at 13.6k pre-`ffbd074f`, with 8.1 s of dense FA that no longer exists).
+
+| ms | x | kernel |
+|---|---|---|
+| 1765 | 48 | `mmb_routed_glu` |
+| 1734+711+453 = **2898** | | cuBLAS `Cijk` bf16 |
+| 1367 | 96 | `hc_gate_mix` |
+| 1238+916 = **2154** | | `mmb_dense` |
+| 969 | **380** | `hc_combine_norm` |
+| 950 | 36 | `gated_delta_net` |
+| 924 | 48 | `mmb_routed` |
+| **807** | 12 | `qsa3_attn` (was 8.1 s dense) |
+| 783+550 = 1333 | 199 | `convert_unary` f32<->bf16 (cuBLAS route) |
+| 574 | 96 | `mmb_small_n_bf16` (inject) |
+| 530 | 273 | `mmb_cvt_f32_bf16` |
+| 506 | 12 | `k_get_rows` (QSA top-k gather) |
+
+Buckets: mmb ~5.4 s, cuBLAS ~2.9 s, hc ~2.3 s, conversions ~1.9 s, QSA ~1.3 s,
+GDN 0.95 s.
+
+**Target analysis (decide which 1000).**
+- **1000 @ 16K** (=pwilkin pp16384, on-box ref 738): need ~3.0 s out of 19.3 s.
+  The profile is **flat** — no bucket is 3 s and none is obviously wasteful, so
+  this is a broad ~15% grind across tuned kernels, not a lever.
+- **1000 @ 64K** (CIRU ~960): needs the **64K graph-alloc OOM fixed** *and* the
+  **indexer-K cache** (chunks 2+, decode). Multi-hour, known-good reference.
+- The indexer-K cache is **irrelevant at 16K** (`--chunk 16384`: both 13,664 and
+  16,366 tokens are a single chunk, `pos0 == 0`, QSA already full).
+
+So the one big fixable thing sits behind the 64K/cache wall.
+
+**Two new cheap checks before any 300-line port:**
+- `hc_combine_norm` **x380** in one 16K prefill — ~5x the ~72 expected (2/layer).
+  Possible redundant-launch bug; 5-minute check.
+- `k_get_rows` x12 / 506 ms — the QSA selection gather, now visible after the
+  DS4 kernel cut the score.
+
 ## Commit log (oldest -> newest, all on `feat/qwen4exp-strix-halo`)
 
 `c1525bf8` sparse selected attention + fused HC/MoE prefill;
@@ -118,9 +159,15 @@ largest fix so far is `ffbd074f`.
 
 ## Next (prioritized) — open items
 
-1. **Indexer-K cache + store/select** (THE item). Enables **chunked-prefill
-   QSA** (chunks 2+ currently dense: 32K 576 -> should approach ~850) **and**
-   `qsa_decode` (see `docs/handoffs/qwen4exp-decode-qsa-reminder.md`).
+0. **Cheap first** (the fresh 16K trace): `hc_combine_norm` **x380** per 16K
+   prefill (~5x the expected ~72) — check for a redundant launch
+   (`hc-cn.cu`, the `GGML_OP_HC_COMBINE_NORM` dispatch, and
+   `hc_combine_norm()` in `qwen4exp_graph.cpp`). And `k_get_rows` x12 / 506 ms
+   in the QSA selection.
+1. **Indexer-K cache + store/select** (THE item). Decision gate: 1000@16K is a
+   flat grind, so the better ROI is 1000@64K, which needs **this cache + the
+   64K OOM fix (item 2)**. Enables chunked-prefill QSA (chunks 2+ currently
+   dense: 32K 576 -> should approach ~850) **and** `qsa_decode`
    Reference: `strix-ref src/models/qwen4exp.cpp:963 build_qsa_store_k`,
    `:1014 build_qsa_top_k`, `:1248 build_attn_qsa`. Why: for `pos0>0` (and
    decode) the indexer keys of `[0,pos0)` are not in `cur` — they must be
