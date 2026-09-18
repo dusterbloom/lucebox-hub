@@ -5497,6 +5497,11 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 g_mm_ms.clear();
                 g_mm_n.clear();
             }
+            if (getenv("QWEN4EXP_FA_TELEMETRY")) {
+                std::fprintf(stderr, "[fa] graph qsa=%lld dense=%lld\n",
+                    ggml_backend_cuda_get_fattn_qsa_launch_count(),
+                    ggml_backend_cuda_get_fattn_dense_launch_count());
+            }
         }
 
 #ifdef USE_CUDA_GRAPH
@@ -5703,6 +5708,7 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     // data pointers, which the pool recycles for a different graph. Weight
     // shadows (g_mmb_shadow) are process-lifetime and survive this.
     ggml_cuda_mmb_begin_graph();
+    ggml_backend_cuda_reset_fattn_launch_counts();
     g_hc_marked_xn.clear();
 
     // Journey step 9: mark the HC normalized stream (xn) bf16-only when every

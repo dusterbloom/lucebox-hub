@@ -4591,16 +4591,25 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     return BEST_FATTN_KERNEL_TILE;
 }
 
+static long long g_fattn_qsa_launches   = 0;
+static long long g_fattn_dense_launches = 0;
+long long ggml_backend_cuda_get_fattn_qsa_launch_count()   { return g_fattn_qsa_launches; }
+long long ggml_backend_cuda_get_fattn_dense_launch_count() { return g_fattn_dense_launches; }
+void ggml_backend_cuda_reset_fattn_launch_counts() { g_fattn_qsa_launches = 0; g_fattn_dense_launches = 0; }
+
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_set_device(ctx.device);
     if (ggml_cuda_flash_attn_ext_qsa_decode_supported(ctx, dst)) {
+        ++g_fattn_qsa_launches;
         ggml_cuda_flash_attn_ext_qsa_decode(ctx, dst);
         return;
     }
     if (ggml_cuda_flash_attn_ext_qsa_supported(ctx, dst)) {
+        ++g_fattn_qsa_launches;
         ggml_cuda_flash_attn_ext_qsa(ctx, dst);
         return;
     }
+    ++g_fattn_dense_launches;
     // only the qsa kernel honours the selected-cell indices; the kernels below attend to every key, so
     // a maskless sparse op reaching them would read cells the mask exists to hide
     GGML_ASSERT((dst->src[3] || !dst->src[5]) && "sparse flash attention without a mask needs the qsa kernel");

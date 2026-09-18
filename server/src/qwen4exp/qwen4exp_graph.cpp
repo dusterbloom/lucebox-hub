@@ -325,12 +325,12 @@ static ggml_tensor * qsa_pack_values(ggml_context * c, ggml_tensor * values) {
 static ggml_tensor * build_qsa_attn(ggml_context * c, ggml_tensor * cur,
         ggml_tensor * Q, ggml_tensor * Kf, ggml_tensor * Vf,
         const Qwen4ExpLayer & L, const Qwen4ExpWeights & w, int64_t ratio,
-        ggml_tensor * positions, int64_t kv_len) {
+        ggml_tensor * positions, int64_t kv_pad, int64_t kv_len) {
     const int64_t idim   = w.indexer_head_size;
     const int64_t nih    = w.indexer_n_head;
     const int64_t r      = ratio;
     const int64_t T      = cur->ne[1];
-    const int64_t nb     = kv_len / r;
+    const int64_t nb     = kv_pad / r;   // whole blocks, incl. the padded tail; padded blocks are never selected
     const int64_t budget = w.indexer_top_k / r;
     const float   eps    = w.rms_eps;
     const float   qscale = 1.0f / std::sqrt((float) w.n_embd_head_k);
@@ -338,6 +338,14 @@ static ggml_tensor * build_qsa_attn(ggml_context * c, ggml_tensor * cur,
 
     // indexer keys: mean over each r-key block, then norm + rope on block positions
     ggml_tensor * kraw = mm(c, L.indexer_k_proj, cur);            // [idim, T]
+    if (kv_pad > T) {
+        // pad with zeros so the pooling sees whole blocks; the padded blocks are
+        // excluded by the causal visibility below, so the values never matter.
+        ggml_tensor * z = ggml_reshape_2d(c,
+            ggml_scale_bias(c, ggml_arange(c, 0.0f, (float) (idim * (kv_pad - T)), 1.0f), 0.0f, 0.0f),
+            idim, kv_pad - T);
+        kraw = ggml_concat(c, kraw, z, 1);
+    }
     kraw = ggml_reshape_3d(c, kraw, idim, nb, r);
     ggml_tensor * pooled = nullptr;
     for (int64_t i = 0; i < r; ++i) {
@@ -482,15 +490,27 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
     ggml_tensor * V_full = ggml_view_3d(c, v_cache, D, kv_len, Hk,
         v_cache->nb[1], v_cache->nb[2], 0);
 
+    // QSA packs K/V in groups of 4 and pools indexer keys in whole r-blocks, so it
+    // only engages when the KV length is a multiple of lcm(4, ratio). Pad the view
+    // to that multiple (when it fits the cache) so QSA runs for any prompt length
+    // instead of silently falling back to dense attention (8.1 s vs 0.4 s).
+    const int64_t qsa_step = (ratio % 4 == 0) ? ratio : (ratio % 2 == 0 ? ratio * 2 : ratio * 4);
+    const int64_t kv_pad   = (kv_len + qsa_step - 1) / qsa_step * qsa_step;
+    const bool    pad_fits = kv_len == T && kv_pad <= k_cache->ne[1];
+
     static const bool use_qsa = getenv("QWEN4EXP_QSA") != nullptr;
     const bool qsa_ok = use_qsa && pos0 == 0 && kv_len == T && T >= 128 && ratio > 1 &&
-        (T % ratio == 0) && w.indexer_head_size > 0 && w.indexer_n_head > 0 &&
+        pad_fits && w.indexer_head_size > 0 && w.indexer_n_head > 0 &&
         w.indexer_top_k % ratio == 0 &&
         (w.indexer_top_k / ratio) * ratio + (ratio - 1) <= 2560 &&
         Hq == 12 * Hk;
     ggml_tensor * attn;
     if (qsa_ok) {
-        attn = build_qsa_attn(c, cur, Q, K_full, V_full, L, w, ratio, positions, kv_len);
+        ggml_tensor * K_pad = (kv_pad != kv_len)
+            ? ggml_view_3d(c, k_cache, D, kv_pad, Hk, k_cache->nb[1], k_cache->nb[2], 0) : K_full;
+        ggml_tensor * V_pad = (kv_pad != kv_len)
+            ? ggml_view_3d(c, v_cache, D, kv_pad, Hk, v_cache->nb[1], v_cache->nb[2], 0) : V_full;
+        attn = build_qsa_attn(c, cur, Q, K_pad, V_pad, L, w, ratio, positions, kv_pad, kv_len);
     } else {
         ggml_tensor * Qfa = ggml_cont(c, ggml_permute(c, Q, 0, 2, 1, 3));  // [D, T, Hq]
         attn = ggml_flash_attn_ext(c, Qfa, K_full, V_full, mask,
