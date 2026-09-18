@@ -10,6 +10,8 @@ void ggml_cuda_mmb_begin_graph();
 uint16_t * ggml_cuda_mmb_cache_reserve(ggml_backend_cuda_context & ctx, const ggml_tensor * t, size_t n);
 // BF16 copy of tensor t if one is cached for the current graph (consumers may read it instead of the F32 data)
 const uint16_t * ggml_cuda_mmb_cache_lookup(const ggml_tensor * t);
+// bf16 weight shadow as a raw pointer, or nullptr if none
+const void * ggml_cuda_mmb_shadow_ptr(const ggml_tensor * w);
 // producer slots (pinned until the next producer of the same kind): 0 = HC normalized stream xn, 1 = HC gate
 uint16_t * ggml_cuda_mmb_slot_reserve(ggml_backend_cuda_context & ctx, int slot, const ggml_tensor * t, size_t n);
 void ggml_cuda_mmb_marks_clear();

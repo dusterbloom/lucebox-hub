@@ -642,10 +642,19 @@ __global__ void mmb_dq_iq4nl_bf16_kernel(const uint8_t * __restrict__ W, uint16_
 static std::unordered_map<const void *, uint16_t *> g_mmb_shadow;
 static std::map<std::pair<const void *, const void *>, uint16_t *> g_mmb_shadow_pair;   // concat(w0, w1) along rows -> BF16 copy
 static size_t g_mmb_shadow_bytes = 0;
-int    mmb_shadow_mode(){ return 2; }
+int    mmb_shadow_mode(){
+    static const int m = []() { const char * e = getenv("DFLASH_MMB_SHADOW"); return e ? atoi(e) : 2; }();
+    return m;
+}
 bool   mmb_shadow()    { return mmb_shadow_mode() != 0; }
 bool   mmb_shadow_q6k(){ return mmb_shadow_mode() >= 1; }
-size_t mmb_shadow_cap(){ return (size_t) 6144 << 20; }
+size_t mmb_shadow_cap(){
+    static const size_t c = []() {
+        const char * e = getenv("DFLASH_MMB_SHADOW_CAP_MB");
+        return (size_t) (e ? atoll(e) : 6144) << 20;
+    }();
+    return c;
+}
 static bool mmb_is_resident_q6k(const ggml_tensor * w) { return w && w->type == GGML_TYPE_Q6_K && w->op == GGML_OP_NONE && w->data && w->buffer && w->ne[2] == 1 && w->ne[3] == 1 && ggml_is_contiguous(w) && w->ne[0] % 256 == 0 && w->ne[1] <= 32768; }
 static bool mmb_is_resident_iq4(const ggml_tensor * w) { return w && w->type == GGML_TYPE_IQ4_NL && w->op == GGML_OP_NONE && w->data && w->buffer && w->ne[2] == 1 && w->ne[3] == 1 && ggml_is_contiguous(w); }
 static bool mmb_is_row_concat(const ggml_tensor * w) {
@@ -681,6 +690,12 @@ bool mmb_down16_flag() { return true; }
 bool mmb_glu()     { return true; }
 
 } // namespace
+
+// bf16 weight shadow (mmb_shadow_prepare) as a raw pointer, so a GEMM can feed
+// it to cuBLAS/hipBLASLt instead of running the hand-rolled mmb kernel.
+const void * ggml_cuda_mmb_shadow_ptr(const ggml_tensor * w) {
+    return (!w || !mmb_shadow()) ? nullptr : (const void *) mmb_shadow_lookup(w);
+}
 
 const uint16_t * ggml_cuda_mmb_cache_lookup(const ggml_tensor * t) {
     const ggml_tensor * root = mmb_root(t);

@@ -2963,6 +2963,29 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     const bool split = ggml_backend_buft_is_cuda_split(src0->buffer->buft);
     const bool grouped_src = ggml_mul_mat_is_grouped_src(dst);
 
+    // QWEN4EXP_MMB_CUBLAS: route the big quantized GEMMs to cuBLAS/hipBLASLt,
+    // feeding it the bf16 weight shadow (mmb_shadow_prepare, mode 1) as the
+    // dense operand. The skinny shapes keep the hand-rolled mmb kernel.
+    static const bool mmb_cublas = getenv("QWEN4EXP_MMB_CUBLAS") != nullptr;
+    if (mmb_cublas && !split && !grouped_src && src0->ne[2] == 1 && src0->ne[3] == 1 &&
+        (src0->type == GGML_TYPE_IQ4_NL || src0->type == GGML_TYPE_Q6_K) &&
+        src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 &&
+        ggml_is_contiguous(src0) && ggml_is_contiguous(src1) &&
+        src0->ne[1] >= 2560 && src1->ne[1] * src1->ne[2] * src1->ne[3] >= 512) {
+        const void * sh = ggml_cuda_mmb_shadow_ptr(src0);
+        if (sh) {
+            ggml_tensor tmp = *src0;
+            tmp.type = GGML_TYPE_BF16;
+            tmp.data = const_cast<void *>(sh);
+            tmp.nb[0] = sizeof(uint16_t);
+            tmp.nb[1] = sizeof(uint16_t) * src0->ne[0];
+            tmp.nb[2] = tmp.nb[1] * src0->ne[1];
+            tmp.nb[3] = tmp.nb[2] * src0->ne[2];
+            ggml_cuda_op_mul_mat(ctx, &tmp, src1, dst, ggml_cuda_op_mul_mat_cublas, nullptr);
+            return;
+        }
+    }
+
     // If src0 is a temporary compute buffer it may have some padding that needs to be cleared for mul_mat_vec_q or mul_mat_q.
     // But if src0 is also a view of another tensor then this cannot be done safely because it may overwrite valid tensor data.
     // Therefore, in such cases use cuBLAS.
