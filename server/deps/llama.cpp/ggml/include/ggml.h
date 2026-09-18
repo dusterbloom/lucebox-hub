@@ -625,6 +625,8 @@ extern "C" {
 
         GGML_OP_DS4_MOE_COMBINE,
 
+        GGML_OP_HC_COMBINE_NORM,  // Fused hyper-connection combine + next stream rms-norm
+
         GGML_OP_COUNT,
     };
 
@@ -2450,6 +2452,12 @@ extern "C" {
             struct ggml_tensor * a,
             enum ggml_prec       prec);
 
+    // Upper bound on the number of finite entries in every mask row (used by
+    // the selected-attention kernel to size its shared-memory reduction).
+    GGML_API void ggml_flash_attn_ext_set_n_kv_max(
+            struct ggml_tensor * a,
+            int32_t              n_kv_max);
+
     // DS4 layout and block-sparse policy for flash_attn_ext. raw_window is the
     // maximum visible span inside the raw-row region. Compressed rows are
     // selected in fixed-size blocks, capped to keep_rows. Zero leaves the
@@ -2816,6 +2824,17 @@ extern "C" {
             struct ggml_tensor  * down_e,
             struct ggml_tensor  * weights,
             struct ggml_tensor  * shared_out);
+
+    // Fused hyper-connection combine (residual + repeat(block)*w) and the
+    // following stream rms-norm with gamma. Packed result [n_embd, hc, tokens, 2]:
+    // channel 0 is the new residual, channel 1 the normalized stream.
+    GGML_API struct ggml_tensor * ggml_hc_combine_norm(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * inject,
+            struct ggml_tensor  * residual,
+            struct ggml_tensor  * block_out,
+            struct ggml_tensor  * gamma,
+            float                 s1, float b1, float s2, float b2, float eps);
 
     // TODO: needs to be adapted to ggml_flash_attn_ext
     GGML_API struct ggml_tensor * ggml_flash_attn_back(

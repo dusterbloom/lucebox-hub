@@ -813,8 +813,12 @@ bool ggml_cuda_hc_gate_mix(ggml_backend_cuda_context & ctx, const ggml_tensor * 
     if (K % ggml_blck_size(w->type) != 0) return false;
     if (K % MMB_BK != 0 || M != hc * E || E % 32 != 0 || lo->ne[0] != K || ggml_nrows(lo) != T || xn->ne[0] != M || ggml_nrows(xn) != T || T < mmb_min_t()) return false;
     const uint16_t * xn16 = ggml_cuda_mmb_cache_lookup(xn);
-    if (!xn16) return false;
     cudaStream_t stream = ctx.stream();
+    // The HC normalized stream is normally handed over by the fused
+    // hc_combine_norm op. This tree has no such op, so convert on the fly the
+    // first time (tiny next to the GEMM); the cache still serves later HC ops.
+    if (!xn16) xn16 = mmb_bf16_activation(ctx, xn, (size_t) T * M, stream);
+    if (!xn16) return false;
     const uint16_t * lo16 = mmb_bf16_activation(ctx, lo, (size_t) T * K, stream);
     uint16_t * outh = ggml_cuda_mmb_slot_reserve(ctx, 3, dst, (size_t) T * E);
     const bool store_f32 = !(outh && ggml_cuda_mmb_is_bf16_only(dst));

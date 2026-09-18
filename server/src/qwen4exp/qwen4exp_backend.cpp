@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <random>
 #include <utility>
 #include <vector>
@@ -22,6 +23,12 @@ Qwen4ExpBackend::~Qwen4ExpBackend() {
 }
 
 bool Qwen4ExpBackend::init() {
+    // bf16 WMMA dequant GEMM (journey step 05). RDNA3.5/4 only; mmb_enabled()
+    // still gates on the device cc. Process-global by design: this daemon
+    // builds a single backend, so it is effectively qwen4exp-scoped. Set before
+    // the first graph compute so the cached env lookup in mmb.cu sees it,
+    // without clobbering an explicit GGML_CUDA_MMB=0 from the operator.
+    setenv("GGML_CUDA_MMB", "1", 0);
     if (cfg_.device.is_layer_split()) {
         std::fprintf(stderr, "[qwen4exp] layer split is not supported yet\n");
         return false;

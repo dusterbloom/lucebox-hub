@@ -6,7 +6,7 @@
 // GSQ-RCO IQ3_XXS artifact (48 layers, 512 experts top-10, hc_count=4,
 // PLE on one layer, indexer on the 12 full-attention layers).
 //
-// Tensor inventory (shard 1, from the GGUF header):
+// Tensor inventory (per split GGUF header, spread over N shards):
 //   36 linear layers: attn_gate.weight, attn_qkv.weight, ssm_{a,alpha,beta,
 //                     conv1d,dt.bias,norm,out}
 //   12 full   layers: attn_{q,k,v,output}.weight, attn_{q,k}_norm.weight,
@@ -16,8 +16,8 @@
 //                     ffn_{gate_inp,gate_inp_shexp,gate,up,down}_{exps,shexp}.weight
 //   one PLE layer:    ple_{conv1d,key,value,norm_conv,norm_key,norm_query}.weight
 //   top level:        token_embd.weight, output.weight, output_hc_{norm,down,up}.weight
-// Shard 2 holds a single tensor, per_layer_token_embd ([ple_head_dim, rows],
-// IQ4_NL) — a lookup table read lazily from disk, never uploaded.
+// per_layer_token_embd ([ple_head_dim, rows], IQ4_NL) lives in one shard — a
+// lookup table read lazily from disk, never uploaded.
 
 #pragma once
 
@@ -146,7 +146,9 @@ private:
 };
 
 struct Qwen4ExpWeights {
-    ggml_context *        ctx     = nullptr;
+    ggml_context *        ctx     = nullptr;  // shard 1 tensor descriptors
+    // Descriptor contexts of shards 2..N (split GGUFs); `ctx` covers shard 1.
+    std::vector<ggml_context *> extra_meta_ctxs;
     ggml_backend_t        backend = nullptr;
     ggml_backend_buffer_t buf     = nullptr;
 
@@ -211,7 +213,7 @@ struct Qwen4ExpWeights {
     int32_t ple_eos_token_id  = -1;
     int32_t ple_image_token_id = -1;
 
-    // Shard 2: the n-gram lookup table plus its lazy reader.
+    // The shard holding per_layer_token_embd plus its lazy reader.
     std::string   shard2_path;
     Qwen4ExpPleReader ple_reader;
 
@@ -220,8 +222,10 @@ struct Qwen4ExpWeights {
 };
 
 // Load the autoregressive trunk of a Qwen3.8-Flash-Next (`qwen4exp`) GGUF.
-// Shard 1 is the target; shard 2 (the PLE table) is derived from the shard-1
-// filename and opened lazily. Returns false and sets last_error on failure.
+// Split models ("-00001-of-00003.gguf") load every shard; single-file GGUFs
+// load as one shard. The per_layer_token_embd table is discovered in whichever
+// shard holds it and opened lazily. Returns false and sets last_error on
+// failure.
 bool load_qwen4exp_gguf(const std::string & path,
                         ggml_backend_t backend,
                         Qwen4ExpWeights & out);

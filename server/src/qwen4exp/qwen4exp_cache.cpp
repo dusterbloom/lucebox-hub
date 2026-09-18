@@ -1,8 +1,28 @@
 #include "qwen4exp_cache.h"
 
 #include <cstdio>
+#include <cstdlib>
 
 namespace dflash::common {
+
+namespace {
+
+// The ring engages when the compute device is an integrated GPU that can read
+// the (pinned) host buffer type directly — the same condition the scheduler
+// UMA detection uses in ggml-backend.cpp.
+bool qwen4exp_uma_ring_supported(ggml_backend_t backend) {
+    if (getenv("DFLASH_HIP_NO_UMA_RING") != nullptr) return false;
+    if (getenv("GGML_CUDA_NO_PINNED") != nullptr) return false;
+    ggml_backend_dev_t dev = ggml_backend_get_device(backend);
+    if (!dev || ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_IGPU) {
+        return false;
+    }
+    ggml_backend_buffer_type_t host_buft = ggml_backend_dev_host_buffer_type(dev);
+    return host_buft != nullptr &&
+           ggml_backend_dev_supports_buft(dev, host_buft);
+}
+
+}  // namespace
 
 bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
                            int max_ctx, ggml_type kv_type, Qwen4ExpCache & out) {
@@ -82,6 +102,12 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
     out.max_ctx = max_ctx;
     out.cur_pos = 0;
     out.kv_type = kv_type;
+    out.input_ring.enabled = qwen4exp_uma_ring_supported(backend);
+    if (out.input_ring.enabled) {
+        std::fprintf(stderr,
+            "[qwen4exp] cache: integrated GPU detected, graph inputs will be "
+            "ring-buffered in pinned host memory (DFLASH_HIP_NO_UMA_RING=1 to disable)\n");
+    }
 
     // A fresh cache must start from zero recurrent state, not whatever the
     // backend buffer happened to contain.
@@ -102,6 +128,12 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
 }
 
 void free_qwen4exp_cache(Qwen4ExpCache & c) {
+    if (c.input_ring.buf) {
+        ggml_backend_buffer_free(c.input_ring.buf);
+        c.input_ring.buf = nullptr;
+        c.input_ring.base = nullptr;
+        c.input_ring.enabled = false;
+    }
     if (c.buf) { ggml_backend_buffer_free(c.buf); c.buf = nullptr; }
     if (c.ctx) { ggml_free(c.ctx); c.ctx = nullptr; }
     c.attn_k.clear();

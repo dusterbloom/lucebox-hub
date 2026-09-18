@@ -2,8 +2,11 @@
 //
 // Ported structure from upstream llama.cpp `src/models/qwen4exp.cpp` and the
 // strix-halo lazy PLE reader (`llama-lazy-reader.h`), but this is a hand-rolled
-// Luzebox loader: no llama_model, no libllama. Shard 1 is uploaded to the
-// backend; shard 2's per_layer_token_embd stays on disk behind a pread pool.
+// Luzebox loader: no llama_model, no libllama. Standard split GGUFs (bartowski,
+// unsloth, ISTA-DASLab, ...) spread the trunk across N shards named
+// "...-00001-of-00003.gguf"; every shard is opened and each wanted tensor is
+// resolved from whichever shard holds it. The per_layer_token_embd lookup table
+// stays on disk behind a pread pool regardless of which shard owns it.
 
 #include "qwen4exp_internal.h"
 
@@ -134,17 +137,56 @@ struct TensorAllocation {
     size_t file_offset = 0;
     size_t file_size = 0;
     size_t buffer_offset = 0;
+    size_t shard = 0;
 };
 
-// Derive the sibling shard: "...-00001-of-00002.gguf" -> "...-00002-of-00002.gguf".
-bool derive_shard2_path(const std::string & shard1, std::string & out) {
-    const std::string needle = "-00001-of-";
-    const size_t at = shard1.rfind(needle);
-    if (at == std::string::npos) return false;
-    std::string s = shard1;
-    s.replace(at, needle.size(), "-00002-of-");
-    out = std::move(s);
-    return true;
+// One opened GGUF shard of a (possibly split) model.
+struct ShardSource {
+    std::string    path;
+    gguf_context * gctx = nullptr;
+    ggml_context * meta = nullptr;
+};
+
+// Discover every sibling shard of a standard split GGUF: a primary named
+// "...-00001-of-00003.gguf" yields the full 3-shard list. Anything that is not
+// split shard 1 (single-file models included) yields just the primary itself.
+std::vector<std::string> discover_shard_paths(const std::string & primary) {
+    const std::string ext = ".gguf";
+    if (primary.size() <= ext.size() ||
+        primary.compare(primary.size() - ext.size(), ext.size(), ext) != 0) {
+        return {primary};
+    }
+    const std::string stem = primary.substr(0, primary.size() - ext.size());
+
+    const size_t of = stem.rfind("-of-");
+    if (of == std::string::npos) return {primary};
+
+    const std::string total_str = stem.substr(of + 4);
+    if (total_str.empty() || total_str.size() > 9) return {primary};
+    for (const char c : total_str) {
+        if (c < '0' || c > '9') return {primary};
+    }
+
+    size_t idx_start = of;
+    while (idx_start > 0 && stem[idx_start - 1] >= '0' && stem[idx_start - 1] <= '9') {
+        --idx_start;
+    }
+    const std::string idx_str = stem.substr(idx_start, of - idx_start);
+    if (idx_str.empty() || idx_str.size() > 9) return {primary};
+
+    const int index = std::atoi(idx_str.c_str());
+    const int total = std::atoi(total_str.c_str());
+    if (index != 1 || total < 1 || total > 99999) return {primary};
+
+    std::vector<std::string> paths;
+    paths.reserve(static_cast<size_t>(total));
+    const std::string prefix = stem.substr(0, idx_start);
+    for (int i = 1; i <= total; ++i) {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%0*d", static_cast<int>(idx_str.size()), i);
+        paths.push_back(prefix + buf + "-of-" + total_str + ext);
+    }
+    return paths;
 }
 
 }  // namespace
@@ -311,23 +353,38 @@ bool Qwen4ExpPleReader::gather(const int32_t * rows, int64_t n, float * dst) con
 
 bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
                         Qwen4ExpWeights & out) {
-    ggml_context * meta_ctx = nullptr;
-    gguf_init_params params{};
-    params.no_alloc = true;
-    params.ctx = &meta_ctx;
-    gguf_context * gctx = gguf_init_from_file(path.c_str(), params);
-    if (!gctx) {
-        set_last_error("qwen4exp: gguf_init_from_file failed: " + path);
-        return false;
+    // Open every shard of the model; a single-file GGUF is a one-element list.
+    std::vector<ShardSource> shards;
+    for (const std::string & shard_path : discover_shard_paths(path)) {
+        ShardSource shard;
+        shard.path = shard_path;
+        gguf_init_params params{};
+        params.no_alloc = true;
+        params.ctx = &shard.meta;
+        shard.gctx = gguf_init_from_file(shard_path.c_str(), params);
+        if (!shard.gctx) {
+            set_last_error("qwen4exp: gguf_init_from_file failed: " + shard_path);
+            for (ShardSource & opened : shards) {
+                gguf_free(opened.gctx);
+                if (opened.meta) ggml_free(opened.meta);
+            }
+            return false;
+        }
+        shards.push_back(std::move(shard));
     }
+    gguf_context * gctx = shards.front().gctx;
+    ggml_context * meta_ctx = shards.front().meta;
 
     auto fail = [&](const std::string & message) {
         set_last_error("qwen4exp: " + message);
-        gguf_free(gctx);
-        if (meta_ctx) {
-            ggml_free(meta_ctx);
-            if (out.ctx == meta_ctx) out.ctx = nullptr;
+        for (ShardSource & shard : shards) {
+            gguf_free(shard.gctx);
+            if (shard.meta) {
+                ggml_free(shard.meta);
+                if (out.ctx == shard.meta) out.ctx = nullptr;
+            }
         }
+        out.extra_meta_ctxs.clear();
         return false;
     };
 
@@ -449,11 +506,18 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
 
     out.layers.assign(n_layer, Qwen4ExpLayer{});
 
-    auto tensor = [&](const char * name) { return ggml_get_tensor(meta_ctx, name); };
+    // Resolve a tensor by name across every shard's descriptor context.
+    auto tensor = [&](const char * name) {
+        for (const ShardSource & shard : shards) {
+            ggml_tensor * value = ggml_get_tensor(shard.meta, name);
+            if (value) return value;
+        }
+        return static_cast<ggml_tensor *>(nullptr);
+    };
     auto layer_tensor = [&](uint32_t il, const char * suffix) {
         char name[160];
         std::snprintf(name, sizeof(name), "blk.%u.%s", il, suffix);
-        return ggml_get_tensor(meta_ctx, name);
+        return tensor(name);
     };
     auto is_ple_layer = [&](uint32_t il) {
         return std::find(out.ple_layer_ids.begin(), out.ple_layer_ids.end(),
@@ -589,32 +653,38 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
         add(layer.ffn_up_shexp); add(layer.ffn_down_shexp);
     }
 
-    const int64_t n_tensors = gguf_get_n_tensors(gctx);
     ggml_backend_buffer_type_t buffer_type =
         ggml_backend_get_default_buffer_type(backend);
     const size_t alignment = ggml_backend_buft_get_alignment(buffer_type);
     std::vector<TensorAllocation> allocations;
     allocations.reserve(wanted.size());
     size_t allocation_size = 0;
-    for (int64_t tid = 0; tid < n_tensors; ++tid) {
-        const char * name = gguf_get_tensor_name(gctx, tid);
-        ggml_tensor * value = ggml_get_tensor(meta_ctx, name);
-        if (!value || wanted.find(value) == wanted.end()) continue;
-        allocation_size = align_up(allocation_size, alignment);
-        TensorAllocation allocation;
-        allocation.tensor = value;
-        allocation.file_offset =
-            gguf_get_data_offset(gctx) + gguf_get_tensor_offset(gctx, tid);
-        allocation.file_size = gguf_get_tensor_size(gctx, tid);
-        allocation.buffer_offset = allocation_size;
-        allocation_size += ggml_backend_buft_get_alloc_size(buffer_type, value);
-        allocations.push_back(allocation);
+    for (size_t s = 0; s < shards.size(); ++s) {
+        const int64_t n_tensors = gguf_get_n_tensors(shards[s].gctx);
+        for (int64_t tid = 0; tid < n_tensors; ++tid) {
+            const char * name = gguf_get_tensor_name(shards[s].gctx, tid);
+            ggml_tensor * value = ggml_get_tensor(shards[s].meta, name);
+            if (!value || wanted.find(value) == wanted.end()) continue;
+            allocation_size = align_up(allocation_size, alignment);
+            TensorAllocation allocation;
+            allocation.tensor = value;
+            allocation.file_offset = gguf_get_data_offset(shards[s].gctx) +
+                                     gguf_get_tensor_offset(shards[s].gctx, tid);
+            allocation.file_size = gguf_get_tensor_size(shards[s].gctx, tid);
+            allocation.buffer_offset = allocation_size;
+            allocation.shard = s;
+            allocation_size += ggml_backend_buft_get_alloc_size(buffer_type, value);
+            allocations.push_back(allocation);
+        }
     }
     if (allocations.size() != wanted.size()) {
         return fail("failed to resolve every trunk tensor in the GGUF table");
     }
 
     out.ctx = meta_ctx;
+    for (size_t s = 1; s < shards.size(); ++s) {
+        out.extra_meta_ctxs.push_back(shards[s].meta);
+    }
     out.backend = backend;
     out.buf = ggml_backend_alloc_buffer(backend, allocation_size);
     if (!out.buf) return fail("weight buffer allocation failed");
@@ -629,80 +699,104 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
         }
     }
 
-    GgufMmap mmap;
-    std::string mmap_error;
-    if (!mmap.open(path, mmap_error)) {
-        ggml_backend_buffer_free(out.buf);
-        out.buf = nullptr;
-        return fail(mmap_error);
+    // Every shard is mapped; each tensor reads its bytes from the shard that
+    // owns it, at that shard's data offset.
+    std::vector<GgufMmap> mmaps(shards.size());
+    for (size_t s = 0; s < shards.size(); ++s) {
+        std::string mmap_error;
+        if (!mmaps[s].open(shards[s].path, mmap_error)) {
+            ggml_backend_buffer_free(out.buf);
+            out.buf = nullptr;
+            return fail(mmap_error);
+        }
     }
-    const uint8_t * bytes = static_cast<const uint8_t *>(mmap.data());
-    const size_t file_size = mmap.size();
     for (const TensorAllocation & allocation : allocations) {
+        const GgufMmap & mmap = mmaps[allocation.shard];
         if (allocation.file_offset + allocation.file_size < allocation.file_offset ||
-            allocation.file_offset + allocation.file_size > file_size) {
+            allocation.file_offset + allocation.file_size > mmap.size()) {
             ggml_backend_buffer_free(out.buf);
             out.buf = nullptr;
             return fail("truncated tensor data for " + std::string(allocation.tensor->name));
         }
         ggml_backend_tensor_set(allocation.tensor,
-            bytes + allocation.file_offset, 0, allocation.file_size);
+            static_cast<const uint8_t *>(mmap.data()) + allocation.file_offset,
+            0, allocation.file_size);
     }
 
-    const int64_t token_tid = gguf_find_tensor(gctx, "token_embd.weight");
+    size_t token_shard = 0;
+    int64_t token_tid = -1;
+    for (size_t s = 0; s < shards.size(); ++s) {
+        token_tid = gguf_find_tensor(shards[s].gctx, "token_embd.weight");
+        if (token_tid >= 0) {
+            token_shard = s;
+            break;
+        }
+    }
     if (token_tid < 0) {
         ggml_backend_buffer_free(out.buf);
         out.buf = nullptr;
         return fail("token_embd.weight missing from tensor table");
     }
-    const size_t token_relative_offset = gguf_get_tensor_offset(gctx, token_tid);
-    const size_t token_size = gguf_get_tensor_size(gctx, token_tid);
-    const size_t data_offset = gguf_get_data_offset(gctx);
-    if (!gguf_tensor_in_file(data_offset, token_relative_offset, token_size, file_size)) {
+    const size_t token_relative_offset =
+        gguf_get_tensor_offset(shards[token_shard].gctx, token_tid);
+    const size_t token_size = gguf_get_tensor_size(shards[token_shard].gctx, token_tid);
+    const size_t data_offset = gguf_get_data_offset(shards[token_shard].gctx);
+    const uint8_t * token_bytes =
+        static_cast<const uint8_t *>(mmaps[token_shard].data());
+    if (!gguf_tensor_in_file(data_offset, token_relative_offset, token_size,
+                             mmaps[token_shard].size())) {
         ggml_backend_buffer_free(out.buf);
         out.buf = nullptr;
         return fail("truncated token_embd.weight");
     }
     out.embedder.tok_embd_owned.resize(token_size);
     std::memcpy(out.embedder.tok_embd_owned.data(),
-        bytes + data_offset + token_relative_offset, token_size);
+        token_bytes + data_offset + token_relative_offset, token_size);
     out.embedder.tok_embd_bytes = out.embedder.tok_embd_owned.data();
-    out.embedder.tok_embd_type = gguf_get_tensor_type(gctx, token_tid);
+    out.embedder.tok_embd_type = gguf_get_tensor_type(shards[token_shard].gctx, token_tid);
     out.embedder.n_embd = out.n_embd;
     out.embedder.n_vocab = out.n_vocab;
     out.embedder.row_bytes = token_size / static_cast<size_t>(out.n_vocab);
 
-    gguf_free(gctx);
-    gctx = nullptr;
-    meta_ctx = nullptr;  // owned by out.ctx from here on
-
-    // Shard 2: the PLE lookup table, served lazily from disk. ISTA-DASLab
-    // isolates it in a second shard; other quantizers keep it in the shard we
-    // already loaded (or in a single file), so fall back to `path`.
+    // The PLE lookup table is served lazily from whichever shard holds it
+    // (ISTA-DASLab isolates it in a separate shard; bartowski-style splits keep
+    // it in shard 1; single-file models trivially have it in `path`).
     if (!out.ple_layer_ids.empty()) {
-        std::string shard2;
-        if (!derive_shard2_path(path, shard2)) {
-            shard2 = path;
+        const char * const kPleTensor = "per_layer_token_embd.weight";
+        std::string ple_path;
+        for (const ShardSource & shard : shards) {
+            if (gguf_find_tensor(shard.gctx, kPleTensor) >= 0) {
+                ple_path = shard.path;
+                break;
+            }
+        }
+        if (ple_path.empty()) {
+            ple_path = shards.front().path;
         }
         std::string reader_error;
-        if (!out.ple_reader.open(shard2, "per_layer_token_embd.weight", 4, reader_error)) {
-            if (shard2 == path ||
-                !out.ple_reader.open(path, "per_layer_token_embd.weight", 4, reader_error)) {
-                return fail(reader_error);
-            }
-            shard2 = path;
+        if (!out.ple_reader.open(ple_path, kPleTensor, 4, reader_error)) {
+            return fail(reader_error);
         }
-        out.shard2_path = shard2;
+        out.shard2_path = ple_path;
     }
+
+    for (ShardSource & shard : shards) {
+        gguf_free(shard.gctx);
+        shard.gctx = nullptr;
+    }
+    gctx = nullptr;
+    meta_ctx = nullptr;  // owned by out.ctx / out.extra_meta_ctxs from here on
 
     char summary[512];
     std::snprintf(summary, sizeof(summary),
-        "qwen4exp trunk loaded: %d layers (%d linear + %d full), %zu tensors %.2f GiB, "
-        "experts=%d/%d hc=%d/%d ple_layers=%zu ngram=%d heads_per_ngram=%d table_rows=%lld eos=%d",
+        "qwen4exp trunk loaded: %d layers (%d linear + %d full), %zu tensors %.2f GiB "
+        "from %zu shard(s), experts=%d/%d hc=%d/%d ple_layers=%zu ngram=%d "
+        "heads_per_ngram=%d table_rows=%lld eos=%d",
         out.n_layer,
         out.n_layer - out.n_layer / out.full_attention_interval,
         out.n_layer / out.full_attention_interval,
         allocations.size(), allocation_size / (1024.0 * 1024.0 * 1024.0),
+        shards.size(),
         out.n_expert_used, out.n_expert, out.n_hc, out.hc_lowrank,
         out.ple_layer_ids.size(), out.ple_ngram_size, out.ple_heads_per_ngram,
         static_cast<long long>(out.ple_reader.n_rows()), out.eos_id);
@@ -717,6 +811,10 @@ void free_qwen4exp_weights(Qwen4ExpWeights & w) {
         ggml_backend_buffer_free(w.buf);
         w.buf = nullptr;
     }
+    for (ggml_context * extra : w.extra_meta_ctxs) {
+        if (extra) ggml_free(extra);
+    }
+    w.extra_meta_ctxs.clear();
     if (w.ctx) {
         ggml_free(w.ctx);
         w.ctx = nullptr;

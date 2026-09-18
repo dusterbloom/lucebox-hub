@@ -30,6 +30,8 @@
 #include "ggml-cuda/im2col.cuh"
 #include "ggml-cuda/mmf.cuh"
 #include "ggml-cuda/mmb.cuh"
+#include "ggml-cuda/hc-mix.cuh"
+#include "ggml-cuda/hc-cn.cuh"
 #include "ggml-cuda/mmq.cuh"
 #include "ggml-cuda/mmvf.cuh"
 #include "ggml-cuda/mmvq.cuh"
@@ -95,6 +97,11 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+
+// Temporary per-op GPU profiler (GGML_CUDA_OP_PROF=1).
+static bool g_op_prof = getenv("GGML_CUDA_OP_PROF") != nullptr;
+static std::unordered_map<int, double> g_op_ms;
+static std::unordered_map<int, long long> g_op_n;
 
 static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
 
@@ -180,8 +187,10 @@ int ggml_cuda_get_device() {
 // model on a 125GB box). Managed memory has measurable alloc + access overhead on
 // this APU, so small models that fit stay on the faster hipMalloc path (verified:
 // 16GB model loads 3s / decodes 11.8 tok/s on hipMalloc vs 15s / 10.9 on managed).
-// The cached ggml_cuda_info().devices[].integrated is hard-forced false (#15034
-// dodge), so probe a FRESH cudaDeviceProp. Opt out: DFLASH_HIP_NO_AUTO_UMA=1.
+// The cached ggml_cuda_info().devices[].integrated now reports the real flag on
+// HIP (the #15034 corruption is fixed by the scheduler graph-input ring buffer),
+// but this heuristic keeps its own fresh-prop probe to stay independent of it.
+// Opt out: DFLASH_HIP_NO_AUTO_UMA=1.
 // Force-all: GGML_CUDA_ENABLE_UNIFIED_MEMORY. Tune gate: DFLASH_HIP_UMA_MIN_FRAC.
 static size_t ggml_cuda_total_ram_bytes() {
     static const size_t cached = []() -> size_t {
@@ -418,7 +427,15 @@ static ggml_cuda_device_info ggml_cuda_init() {
 
         info.default_tensor_split[id] = total_vram;
         total_vram += prop.totalGlobalMem;
+#if defined(GGML_USE_HIP)
+        // Report the real flag on HIP. The corrupted output this was disabled for (#15034)
+        // came from graph inputs being overwritten while an asynchronous backend still read
+        // them; the scheduler's graph input ring buffer fixes that at the source, so an APU
+        // can use its host-visible buffers again instead of staging every input through VRAM.
+        info.devices[id].integrated = prop.integrated;
+#else
         info.devices[id].integrated = false; // Temporarily disabled due to issues with corrupted output (e.g. #15034)
+#endif
         info.devices[id].nsm        = prop.multiProcessorCount;
         info.devices[id].smpb       = prop.sharedMemPerBlock;
         info.devices[id].warp_size  = prop.warpSize;
@@ -2794,6 +2811,15 @@ static bool ggml_cuda_try_fuse_mul_mat_glu(
     const ggml_tensor * src1 = up->src[1];
     const ggml_tensor * ids  = up->src[2];
 
+    // Fused MoE gate/up + SwiGLU on the bf16 WMMA path (journey step 05). The
+    // kernel is already compiled in mmb.cu; dispatch it here so both matmuls
+    // and the GLU never materialise. Gate before the grouped-MVQ shortcut so a
+    // prefill batch never falls back to the unfused shape.
+    if (ids && ggml_cuda_mmb_supported_glu(gate->src[0], up->src[0], src1, ids, glu)) {
+        ggml_cuda_mul_mat_id_mmb_glu(ctx, gate->src[0], up->src[0], src1, ids, glu);
+        return true;
+    }
+
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
     if (ids && ggml_cuda_mmvq_mmid_grouped_enabled(
             src0->type, cc, up->ne[2], up->ne[1]*up->ne[2])) {
@@ -2933,6 +2959,7 @@ static bool ggml_cuda_try_fuse_mul_mat_glu(
 }
 
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    static const bool dense_telemetry = getenv("DFLASH_MMB_TELEMETRY") != nullptr;
     const bool split = ggml_backend_buft_is_cuda_split(src0->buffer->buft);
     const bool grouped_src = ggml_mul_mat_is_grouped_src(dst);
 
@@ -3117,8 +3144,18 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     } else if (!split && use_mul_mat_vec_q) {
         ggml_cuda_mul_mat_vec_q(ctx, src0, src1, nullptr, dst);
     } else if (!split && ggml_cuda_mmb_supported_mm(src0, src1, dst)) {
+        if (dense_telemetry) {
+            std::fprintf(stderr, "[dense-mat] path=mmb name=%s type=%s M=%lld K=%lld T=%lld\n",
+                dst->name, ggml_type_name(src0->type), (long long) src0->ne[1], (long long) src0->ne[0],
+                (long long) (src1->ne[1] * src1->ne[2] * src1->ne[3]));
+        }
         ggml_cuda_mul_mat_mmb(ctx, src0, src1, dst);
     } else if (!split && use_mul_mat_q) {
+        if (dense_telemetry) {
+            std::fprintf(stderr, "[dense-mat] path=mmq name=%s type=%s M=%lld K=%lld T=%lld\n",
+                dst->name, ggml_type_name(src0->type), (long long) src0->ne[1], (long long) src0->ne[0],
+                (long long) (src1->ne[1] * src1->ne[2] * src1->ne[3]));
+        }
         ggml_cuda_mul_mat_q(ctx, src0, src1, nullptr, dst);
     } else if (!split && (use_batched_cublas_f16 || use_batched_cublas_bf16 || use_batched_cublas_f32)
         && !ggml_is_transposed(src0) && !ggml_is_transposed(src1) && src1->ne[2]*src1->ne[3] > 1) {
@@ -3568,6 +3605,15 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_DS4_MOE_COMBINE:
             ggml_cuda_op_ds4_moe_combine(ctx, dst);
             break;
+        case GGML_OP_HC_COMBINE_NORM: {
+            const int64_t n_embd = dst->ne[0], hc = dst->ne[1], n_tokens = dst->ne[2];
+            float * base = (float *) dst->data;
+            ggml_cuda_hc_combine_norm_ptrs(ctx, dst->src[0], dst->src[1], dst->src[2], dst->src[3],
+                base, base + (size_t) n_embd * hc * n_tokens, n_embd, hc, n_tokens,
+                ggml_get_op_params_f32(dst, 0), ggml_get_op_params_f32(dst, 1),
+                ggml_get_op_params_f32(dst, 2), ggml_get_op_params_f32(dst, 3),
+                ggml_get_op_params_f32(dst, 4));
+        } break;
         case GGML_OP_GROUP_NORM:
             ggml_cuda_op_group_norm(ctx, dst);
             break;
@@ -4433,6 +4479,8 @@ static bool ggml_cuda_check_fusion_memory_ranges(const ggml_cgraph * cgraph,
 }
 
 
+#include "hc-match.inc"
+
 static bool ggml_cuda_can_fuse(const struct ggml_cgraph *                cgraph,
                                int                                       node_idx,
                                std::initializer_list<enum ggml_op>       ops,
@@ -4823,6 +4871,33 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 // start of fusion operations
                 static bool disable_fusion = (getenv("GGML_CUDA_DISABLE_FUSION") != nullptr);
                 if (!disable_fusion) {
+                    // HC gate GEMM + stream mix (journey step 07) and the HC mix
+                    // reduce fold. Must precede the generic {UNARY,MUL} SIGMOID
+                    // fusion below, which would otherwise claim the sigmoid->mul
+                    // pair and leave the gate GEMM materialised.
+                    if (GGML_CUDA_CC_IS_RDNA3_5(ggml_cuda_info().devices[cuda_ctx->device].cc)) {
+                        ggml_cuda_hc_mix_args hma;
+                        if (node->op == GGML_OP_MUL_MAT && ggml_cuda_mmb_gatemix() && i + 1 < cgraph->n_nodes) {
+                            const ggml_tensor * w  = node->src[0];
+                            const ggml_tensor * lo = node->src[1];
+                            if (ggml_is_quantized(w->type) && ggml_node_has_n_uses(cgraph, i, 1) &&
+                                ggml_cuda_mmb_supported_mm(w, lo, node)) {
+                                const int cnt = ggml_cuda_hc_mix_closed(cgraph, i + 1, hma);
+                                if (cnt > 0 && hma.gate == node &&
+                                    ggml_cuda_hc_gate_mix(*cuda_ctx, w, lo, hma.xn, hma.dst, hma.hc, hma.scale, hma.bias)) {
+                                    i += cnt;
+                                    continue;
+                                }
+                            }
+                        }
+                        const int cnt = ggml_cuda_hc_mix_closed(cgraph, i, hma);
+                        if (cnt > 0) {
+                            ggml_cuda_op_hc_mix_reduce(*cuda_ctx, hma);
+                            i += cnt - 1;
+                            continue;
+                        }
+                    }
+
                     ggml_cuda_topk_moe_args args;
 
                     if (cgraph->nodes[i]->op == GGML_OP_UNARY || cgraph->nodes[i]->op == GGML_OP_SOFT_MAX ||
@@ -5214,7 +5289,22 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 GGML_UNUSED(integrated);
 #endif  // NDEBUG
 
+#if defined(GGML_USE_HIP)
+                cudaEvent_t pev0 = nullptr, pev1 = nullptr;
+                if (g_op_prof) { hipEventCreate(&pev0); hipEventCreate(&pev1); cudaEventRecord(pev0, cuda_ctx->stream()); }
+#endif
                 bool ok = ggml_cuda_compute_forward(*cuda_ctx, node);
+#if defined(GGML_USE_HIP)
+                if (g_op_prof) {
+                    cudaEventRecord(pev1, cuda_ctx->stream());
+                    cudaEventSynchronize(pev1);
+                    float ms = 0.0f;
+                    hipEventElapsedTime(&ms, pev0, pev1);
+                    g_op_ms[(int) node->op] += ms;
+                    g_op_n[(int) node->op]++;
+                    cudaEventDestroy(pev0); cudaEventDestroy(pev1);
+                }
+#endif
                 if (!ok) {
                     GGML_LOG_ERROR("%s: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
                 }
@@ -5223,6 +5313,21 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 if (!is_concurrent_event_active) {
                     try_launch_concurrent_event(node);
                }
+            }
+
+            if (g_op_prof) {
+                std::vector<std::pair<double, int>> v;
+                for (const auto & e : g_op_ms) v.push_back({e.second, e.first});
+                std::sort(v.rbegin(), v.rend());
+                double tot = 0.0;
+                for (const auto & e : v) tot += e.first;
+                std::fprintf(stderr, "[op-prof] graph total=%.1fms\n", tot);
+                for (size_t k = 0; k < v.size() && k < 18; ++k) {
+                    std::fprintf(stderr, "  %-22s %8.1fms  x%lld\n",
+                        ggml_op_name((ggml_op) v[k].second), v[k].first, g_op_n[v[k].second]);
+                }
+                g_op_ms.clear();
+                g_op_n.clear();
             }
         }
 
@@ -6133,8 +6238,14 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
 }
 
 static enum ggml_backend_dev_type ggml_backend_cuda_device_get_type(ggml_backend_dev_t dev) {
-    GGML_UNUSED(dev);
-    return GGML_BACKEND_DEVICE_TYPE_GPU;
+    ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *) dev->context;
+
+    cudaDeviceProp prop;
+    CUDA_CHECK(cudaGetDeviceProperties(&prop, ctx->device));
+
+    return prop.integrated
+        ? GGML_BACKEND_DEVICE_TYPE_IGPU
+        : GGML_BACKEND_DEVICE_TYPE_GPU;
 }
 
 static void ggml_backend_cuda_device_get_props(ggml_backend_dev_t dev, ggml_backend_dev_props * props) {
@@ -6282,8 +6393,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
             // CUDA/HIP allocations are aligned, but views can start between
             // float4 boundaries. GGML folds nested views into view_offs, which
             // is available even before the scheduler allocates their buffers.
-            return op->src[0]->type == GGML_TYPE_F32 &&
-                   op->src[1]->type == GGML_TYPE_F32 &&
+            return op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32 &&
                    op->src[0]->ne[0] % 4 == 0 &&
                    op->src[0]->view_offs % sizeof(float4) == 0 &&
                    op->src[0]->nb[1] % sizeof(float4) == 0 &&
@@ -6294,6 +6404,11 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     (op->src[2]->type == GGML_TYPE_F32 &&
                      op->src[2]->view_offs % sizeof(float4) == 0 &&
                      op->src[2]->nb[1] % sizeof(float4) == 0));
+        case GGML_OP_HC_COMBINE_NORM:
+            return op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32 &&
+                   op->src[2]->type == GGML_TYPE_F32 && op->src[3]->type == GGML_TYPE_F32 &&
+                   ggml_is_contiguous(op->src[0]) && ggml_is_contiguous(op->src[1]) &&
+                   ggml_is_contiguous(op->src[2]) && ggml_is_contiguous(op->src[3]);
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_GROUPED_SRC:
         case GGML_OP_MUL_MAT_ID:

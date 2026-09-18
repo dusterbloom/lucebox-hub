@@ -21,40 +21,88 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <vector>
 
 namespace dflash::common {
 namespace {
+
+// Temporary phase profiler (QWEN4EXP_PROF=1). Remove once the prefill gap is
+// attributed.
+static double prof_now_ms() {
+    return std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+size_t ring_align_up(size_t value) {
+    const size_t remainder = value % 256;
+    return remainder == 0 ? value : value + 256 - remainder;
+}
+
+// (Re)allocate the pinned input ring so each slot fits the given sections.
+// Grow-only: slots keep their addresses across forwards, which keeps captured
+// CUDA graphs valid. Returns false (and disables the ring) when the pinned
+// allocation is impossible; the caller falls back to staged H2D inputs.
+bool qwen4exp_input_ring_reserve(Qwen4ExpInputRing & ring,
+                                 ggml_backend_buffer_type_t host_buft,
+                                 size_t embd_bytes, size_t pos_bytes,
+                                 size_t ple_bytes, size_t mask_bytes) {
+    if (ring.buf != nullptr &&
+        embd_bytes <= ring.embd_cap && pos_bytes <= ring.pos_cap &&
+        ple_bytes <= ring.ple_cap && mask_bytes <= ring.mask_cap) {
+        return true;
+    }
+
+    ring.embd_cap = std::max(ring.embd_cap, ring_align_up(embd_bytes));
+    ring.pos_cap  = std::max(ring.pos_cap,  ring_align_up(pos_bytes));
+    ring.ple_cap  = std::max(ring.ple_cap,  ring_align_up(ple_bytes));
+    ring.mask_cap = std::max(ring.mask_cap, ring_align_up(mask_bytes));
+    ring.embd_off = 0;
+    ring.pos_off  = ring.embd_off + ring.embd_cap;
+    ring.ple_off  = ring.pos_off + ring.pos_cap;
+    ring.mask_off = ring.ple_off + ring.ple_cap;
+    ring.slot_bytes = ring.mask_off + ring.mask_cap;
+
+    ggml_backend_buffer_t buf =
+        ggml_backend_buft_alloc_buffer(host_buft, 2 * ring.slot_bytes);
+    if (buf == nullptr || ggml_backend_buffer_get_base(buf) == nullptr) {
+        if (buf != nullptr) ggml_backend_buffer_free(buf);
+        if (ring.buf != nullptr) ggml_backend_buffer_free(ring.buf);
+        ring.buf = nullptr;
+        ring.base = nullptr;
+        ring.enabled = false;
+        std::fprintf(stderr,
+            "[qwen4exp] pinned input ring allocation failed (%zu bytes); "
+            "falling back to staged graph inputs\n",
+            2 * ring.slot_bytes);
+        return false;
+    }
+    if (ring.buf != nullptr) ggml_backend_buffer_free(ring.buf);
+    ring.buf = buf;
+    ring.base = static_cast<char *>(ggml_backend_buffer_get_base(buf));
+    return true;
+}
 
 ggml_tensor * mm(ggml_context * c, ggml_tensor * w, ggml_tensor * x, float s = 1.0f) {
     ggml_tensor * y = ggml_mul_mat(c, w, x);
     return s == 1.0f ? y : ggml_scale(c, y, s);
 }
 
-// Broadcast a [.., 1, ..] tensor along dim 1 to `hc` copies by concatenation.
-// Avoids GGML_OP_REPEAT, which segfaults on gfx1151 for the hyper-connection
-// shapes (the first op of the first forward).
+// Broadcast a [W, 1, T] tensor along dim 1 to `hc` copies. Matches the
+// reference's ggml_repeat_4d; kept as one op so the hc-combine-norm fusion can
+// match (its matcher requires GGML_OP_REPEAT, not a concat chain).
 ggml_tensor * repeat_dim1(ggml_context * c, ggml_tensor * x, int64_t hc) {
-    ggml_tensor * r = x;
-    for (int64_t i = 1; i < hc; ++i) {
-        r = ggml_concat(c, r, x, 1);
-    }
-    return r;
+    return ggml_repeat_4d(c, x, x->ne[0], hc, x->ne[2], x->ne[3]);
 }
 
 // ── Hyper-connections ───────────────────────────────────────────────────
 
-// build_hc_mix: grouped RMSNorm over one stream, low-rank mixer, sigmoid gate,
-// mean-collapse across the hc streams; also returns the scatter injection.
-[[maybe_unused]] ggml_tensor * hc_mix(ggml_context * c, ggml_tensor * x, ggml_tensor * w_norm,
-                     ggml_tensor * w_down, ggml_tensor * w_up, ggml_tensor * w_inject,
-                     ggml_tensor ** inject, int64_t n_embd, int64_t hc, float eps) {
-    const int64_t hc_dim = hc * n_embd;
-    const int64_t nt     = x->ne[2];
-
-    ggml_tensor * xn = ggml_rms_norm(c, x, eps);          // per (hc, token)
-    xn = ggml_reshape_2d(c, xn, hc_dim, nt);
-    xn = ggml_mul(c, xn, w_norm);                         // [hc_dim, nt] gamma
+// hc_mix_body: low-rank mixer, sigmoid gate, mean-collapse. `xn` is [hc_dim, nt]
+// already normalized (and gamma-scaled). Also returns the scatter injection.
+static ggml_tensor * hc_mix_body(ggml_context * c, ggml_tensor * xn, ggml_tensor * w_down,
+                     ggml_tensor * w_up, ggml_tensor * w_inject, ggml_tensor ** inject,
+                     int64_t n_embd, int64_t hc) {
+    const int64_t nt = xn->ne[1];
 
     ggml_tensor * lo = mm(c, w_down, xn);                 // [hc_lr, nt]
     lo = ggml_silu(c, ggml_scale(c, lo, 1.0f / (float) hc));
@@ -77,10 +125,37 @@ ggml_tensor * repeat_dim1(ggml_context * c, ggml_tensor * x, int64_t hc) {
     return mixed;
 }
 
+// build_hc_mix: grouped RMSNorm over one stream, low-rank mixer, sigmoid gate,
+// mean-collapse across the hc streams; also returns the scatter injection.
+[[maybe_unused]] ggml_tensor * hc_mix(ggml_context * c, ggml_tensor * x, ggml_tensor * w_norm,
+                     ggml_tensor * w_down, ggml_tensor * w_up, ggml_tensor * w_inject,
+                     ggml_tensor ** inject, int64_t n_embd, int64_t hc, float eps) {
+    const int64_t hc_dim = hc * n_embd;
+    const int64_t nt     = x->ne[2];
+
+    ggml_tensor * xn = ggml_rms_norm(c, x, eps);          // per (hc, token)
+    xn = ggml_reshape_2d(c, xn, hc_dim, nt);
+    xn = ggml_mul(c, xn, w_norm);                         // [hc_dim, nt] gamma
+
+    return hc_mix_body(c, xn, w_down, w_up, w_inject, inject, n_embd, hc);
+}
+
+// hc_mix_from_xn: continue a mix from the already-normalized stream produced by
+// the fused hc-combine-norm op (xn3 is [n_embd, hc, T]).
+static ggml_tensor * hc_mix_from_xn(ggml_context * c, ggml_tensor * xn3, ggml_tensor * w_down,
+                     ggml_tensor * w_up, ggml_tensor * w_inject, ggml_tensor ** inject,
+                     int64_t n_embd, int64_t hc) {
+    const int64_t hc_dim = hc * n_embd;
+    const int64_t nt     = xn3->ne[2];
+    ggml_tensor * xn = ggml_reshape_2d(c, xn3, hc_dim, nt);
+    return hc_mix_body(c, xn, w_down, w_up, w_inject, inject, n_embd, hc);
+}
+
 // build_hc_combine: scatter the block output back across the hc residual
-// streams with 2*sigmoid(inject) weights.
-[[maybe_unused]] ggml_tensor * hc_combine(ggml_context * c, ggml_tensor * residual,
-                         ggml_tensor * block_out, ggml_tensor * inject,
+// streams with 2*sigmoid(inject) weights. Plain path; used only where a PLE
+// layer sits between a combine and the following mix.
+[[maybe_unused]] ggml_tensor * hc_combine(ggml_context * c,
+                         ggml_tensor * residual, ggml_tensor * block_out, ggml_tensor * inject,
                          int64_t n_embd, int64_t hc, int64_t nt) {
     ggml_tensor * w = ggml_sigmoid(c, ggml_scale(c, inject, 1.0f / (float) hc));
     w = ggml_scale(c, w, 2.0f);
@@ -89,6 +164,28 @@ ggml_tensor * repeat_dim1(ggml_context * c, ggml_tensor * x, int64_t hc) {
     ggml_tensor * b = repeat_dim1(c, ggml_reshape_3d(c, block_out, n_embd, 1, nt), hc);
 
     return ggml_add(c, residual, ggml_mul(c, b, w));
+}
+
+// Fused combine + next-stream norm (GGML_OP_HC_COMBINE_NORM). Returns packed
+// [n_embd, hc, nt, 2]: channel 0 is the new residual, channel 1 the normalized
+// stream (gamma applied) for the following mix.
+static ggml_tensor * hc_combine_norm(ggml_context * c, ggml_tensor * inject, ggml_tensor * residual,
+                         ggml_tensor * block_out, ggml_tensor * gamma,
+                         int64_t n_embd, int64_t hc, int64_t nt, float eps) {
+    return ggml_hc_combine_norm(c, inject, residual,
+        ggml_reshape_3d(c, block_out, n_embd, 1, nt), gamma,
+        1.0f / (float) hc, 0.0f, 2.0f, 0.0f, eps);
+}
+
+static ggml_tensor * hc_norm_res(ggml_context * c, ggml_tensor * fused,
+                         int64_t n_embd, int64_t hc, int64_t nt) {
+    return ggml_view_4d(c, fused, n_embd, hc, nt, 1, fused->nb[1], fused->nb[2], fused->nb[3], 0);
+}
+
+static ggml_tensor * hc_norm_xn(ggml_context * c, ggml_tensor * fused,
+                         int64_t n_embd, int64_t hc, int64_t nt) {
+    return ggml_view_4d(c, fused, n_embd, hc, nt, 1, fused->nb[1], fused->nb[2], fused->nb[3],
+        (size_t) n_embd * hc * nt * sizeof(float));
 }
 
 // ── MoE FFN: 512 experts top-10 (softmax), gated shared expert ──────────
@@ -115,11 +212,6 @@ ggml_tensor * repeat_dim1(ggml_context * c, ggml_tensor * x, int64_t hc) {
     ggml_tensor * gu   = ggml_swiglu_split(c, gate, up);
 
     ggml_tensor * down = ggml_mul_mat_id(c, L.ffn_down_exps, gu, sel);   // [n_embd, n_used, T]
-    ggml_tensor * wv   = ggml_reshape_3d(c, wsel, 1, n_used, n_tokens);
-    down = ggml_mul(c, down, wv);
-
-    ggml_tensor * sum_shape = ggml_new_tensor_3d(c, GGML_TYPE_F32, n_embd, 1, n_tokens);
-    ggml_tensor * routed = ggml_reshape_2d(c, ggml_repeat_back(c, down, sum_shape), n_embd, n_tokens);
 
     // Shared expert with its own sigmoid gate.
     ggml_tensor * sh_gate = mm(c, L.ffn_gate_shexp, cur);
@@ -130,7 +222,9 @@ ggml_tensor * repeat_dim1(ggml_context * c, ggml_tensor * x, int64_t hc) {
     ggml_tensor * shared_gate = ggml_sigmoid(c, mm(c, L.ffn_gate_inp_shexp, cur));
     shared = ggml_mul(c, shared, shared_gate);   // [n_embd,T] * [1,T] broadcasts over dim 0
 
-    return ggml_add(c, routed, shared);
+    // Fused routed reduction + shared merge: sum_e down[e]*wsel[e] + shared,
+    // in one pass (fork op GGML_OP_DS4_MOE_COMBINE, generic F32).
+    return ggml_ds4_moe_fused_combine_shared(c, down, wsel, shared);
 }
 
 // ── Linear attention: gated delta net (36 layers) ───────────────────────
@@ -158,9 +252,9 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
 
     // depthwise causal conv over [history | qkv]
     ggml_tensor * hist = ggml_reshape_3d(c, conv_state, kernel - 1, conv_channels, 1);
-    ggml_tensor * qkv_t = ggml_reshape_3d(c,
-        ggml_cont(c, ggml_transpose(c, ggml_reshape_2d(c, qkv, conv_channels, T))),
-        T, conv_channels, 1);
+    // Keep the transpose as a view: the fused concat+transpose kernel keys off
+    // src1->nb[1] == sizeof(float) and a materialising ggml_cont hides it.
+    ggml_tensor * qkv_t = ggml_transpose(c, ggml_reshape_2d(c, qkv, conv_channels, T));
     ggml_tensor * conv_input = ggml_concat(c, hist, qkv_t, 0);
 
     // Advance T tokens along dim 0 (time); nb[0] is the element size, so the
@@ -180,8 +274,12 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
 
     ggml_tensor * state4 = ggml_reshape_4d(c, ssm_state, D, D, Hv, 1);
     ggml_tensor * gdn = ggml_gated_delta_net(c, q_c, k_c, v_c, gate, beta, state4);
+    // Only speculative rollback needs the per-token intermediate states. Without
+    // this the packed result keeps S_v*T extra rows, which at T=16384 is a single
+    // 48 GiB activation and makes any chunk above 8192 unallocatable.
+    ggml_gated_delta_net_set_skip_intermediate(gdn, true);
 
-    // packed: [ attn S_v*H_v*T | final_state S_v*S_v*H_v | intermediates ]
+    // packed: [ attn S_v*H_v*T | final_state S_v*S_v*H_v ]
     ggml_tensor * attn = ggml_view_4d(c, gdn, D, Hv, T, 1,
         ggml_row_size(gdn->type, D),
         ggml_row_size(gdn->type, D * Hv),
@@ -203,11 +301,139 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
 
 // ── Full attention: dense GQA (12 layers) ───────────────────────────────
 
+// QSA packing (pwilkin strix-halo step 04): K/V reshaped into 4-key blocks so
+// the selected-attention kernel reads contiguous fragments. keys/values are
+// [256, kv, Hk] F16.
+static ggml_tensor * qsa_pack_keys(ggml_context * c, ggml_tensor * keys) {
+    ggml_tensor * cont = ggml_is_contiguous(keys) ? keys : ggml_cont(c, keys);
+    ggml_tensor * blocks = ggml_reshape_4d(c, cont, 16, 16, 4,
+        keys->ne[1] / 4 * keys->ne[2]);
+    return ggml_cont(c, ggml_permute(c, blocks, 0, 2, 1, 3));
+}
+
+static ggml_tensor * qsa_pack_values(ggml_context * c, ggml_tensor * values) {
+    ggml_tensor * cont = ggml_is_contiguous(values) ? values : ggml_cont(c, values);
+    ggml_tensor * blocks = ggml_reshape_3d(c, cont, 256, 4,
+        values->ne[1] / 4 * values->ne[2]);
+    return ggml_cont(c, ggml_permute(c, blocks, 1, 0, 2, 3));
+}
+
+// Single-chunk QSA path (pos0==0, kv_len==T): score key blocks with the
+// lightning indexer, pick the top indexer_top_k/r complete causal blocks per
+// query, and attend only to their cells via the qsa kernel. Returns the FA
+// result [D, Hq, T, 1].
+static ggml_tensor * build_qsa_attn(ggml_context * c, ggml_tensor * cur,
+        ggml_tensor * Q, ggml_tensor * Kf, ggml_tensor * Vf,
+        const Qwen4ExpLayer & L, const Qwen4ExpWeights & w, int64_t ratio,
+        ggml_tensor * positions, int64_t kv_len) {
+    const int64_t idim   = w.indexer_head_size;
+    const int64_t nih    = w.indexer_n_head;
+    const int64_t r      = ratio;
+    const int64_t T      = cur->ne[1];
+    const int64_t nb     = kv_len / r;
+    const int64_t budget = w.indexer_top_k / r;
+    const float   eps    = w.rms_eps;
+    const float   qscale = 1.0f / std::sqrt((float) w.n_embd_head_k);
+    int sections[4] = { w.rope_sections[0], w.rope_sections[1], w.rope_sections[2], w.rope_sections[3] };
+
+    // indexer keys: mean over each r-key block, then norm + rope on block positions
+    ggml_tensor * kraw = mm(c, L.indexer_k_proj, cur);            // [idim, T]
+    kraw = ggml_reshape_3d(c, kraw, idim, nb, r);
+    ggml_tensor * pooled = nullptr;
+    for (int64_t i = 0; i < r; ++i) {
+        ggml_tensor * sl = ggml_cont(c, ggml_view_3d(c, kraw, idim, nb, 1,
+            kraw->nb[1], kraw->nb[2], i * kraw->nb[2]));
+        pooled = pooled ? ggml_add(c, pooled, sl) : sl;
+    }
+    pooled = ggml_scale(c, pooled, 1.0f / (float) r);
+    pooled = ggml_mul(c, ggml_rms_norm(c, pooled, eps), L.indexer_k_norm);
+
+    ggml_tensor * bp   = ggml_scale(c, ggml_arange(c, 0.0f, (float) nb, 1.0f), (float) r);
+    ggml_tensor * bp_i = ggml_cast(c, bp, GGML_TYPE_I32);
+    ggml_tensor * bp_z = ggml_cast(c, ggml_scale(c, bp, 0.0f), GGML_TYPE_I32);
+    ggml_tensor * bpos = ggml_concat(c, ggml_concat(c, bp_i, bp_i, 0),
+                                        ggml_concat(c, bp_i, bp_z, 0), 0);
+    // rope indexes its tokens on ne[2], so put the block axis there.
+    pooled = ggml_rope_multi(c, ggml_reshape_3d(c, pooled, idim, 1, nb), bpos, nullptr,
+        w.rope_dimension_count, sections, GGML_ROPE_TYPE_MROPE, 0, w.rope_theta,
+        1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+    pooled = ggml_reshape_3d(c, pooled, idim, nb, 1);
+
+    ggml_tensor * qi = mm(c, L.indexer_q_proj, cur);              // [idim*nih, T]
+    qi = ggml_reshape_3d(c, qi, idim, nih, T);
+    qi = ggml_mul(c, ggml_rms_norm(c, qi, eps), L.indexer_q_norm);
+    qi = ggml_rope_multi(c, qi, positions, nullptr, w.rope_dimension_count, sections,
+        GGML_ROPE_TYPE_MROPE, 0, w.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+
+    ggml_tensor * score = ggml_mul_mat(c, pooled, ggml_reshape_2d(c, qi, idim, nih * T));
+    score = ggml_relu(c, ggml_reshape_4d(c, score, nb, nih, T, 1));
+    ggml_tensor * summed = nullptr;
+    for (int64_t h = 0; h < nih; ++h) {
+        ggml_tensor * sl = ggml_view_3d(c, score, nb, T, 1, score->nb[1], score->nb[2], h * score->nb[1]);
+        summed = summed ? ggml_add(c, summed, sl) : ggml_cont(c, sl);
+    }
+
+    // causal complete-block visibility: block b's last key is r*b + r - 1
+    {
+        ggml_tensor * shape = ggml_new_tensor_2d(c, GGML_TYPE_F32, nb, T);
+        ggml_tensor * tv = ggml_reshape_2d(c, ggml_arange(c, 0.0f, (float) T, 1.0f), 1, T);
+        ggml_tensor * bv = ggml_scale_bias(c,
+            ggml_scale(c, ggml_arange(c, 0.0f, (float) nb, 1.0f), (float) r), 1.0f, (float) (r - 2));
+        ggml_tensor * vis = ggml_step(c, ggml_sub(c,
+            ggml_repeat(c, tv, shape), ggml_repeat(c, ggml_reshape_2d(c, bv, nb, 1), shape)));
+        summed = ggml_add(c, summed, ggml_log(c, vis));
+    }
+
+    // top budget blocks per query, cells of each block, plus the query's tail cells
+    ggml_tensor * blocks = ggml_cont(c, ggml_top_k(c, summed, (int) budget));   // [budget, T]
+    ggml_tensor * order = ggml_argsort(c, ggml_cast(c, blocks, GGML_TYPE_F32), GGML_SORT_ORDER_ASC);
+    blocks = ggml_reshape_3d(c, ggml_get_rows(c,
+        ggml_view_4d(c, blocks, 1, budget, T, 1, blocks->nb[0], blocks->nb[1], blocks->nb[2], 0),
+        order), budget, T, 1);
+    ggml_tensor * picked = ggml_get_rows(c,
+        ggml_view_4d(c, summed, 1, nb, T, 1, summed->nb[0], summed->nb[1], summed->nb[2], 0), blocks);
+    ggml_tensor * valid = ggml_step(c, ggml_scale_bias(c, picked, 1.0f, 1.0f));
+
+    ggml_tensor * cells_idx = ggml_cast(c, ggml_arange(c, 0.0f, (float) (r * nb), 1.0f), GGML_TYPE_I32);
+    ggml_tensor * cells = ggml_get_rows(c, ggml_reshape_3d(c, cells_idx, r, nb, 1),
+                                        ggml_reshape_2d(c, blocks, budget * T, 1));
+    cells = ggml_mul(c, ggml_scale_bias(c, ggml_cast(c, ggml_reshape_4d(c, cells, r, budget, T, 1),
+                 GGML_TYPE_F32), 1.0f, 1.0f), valid);
+    cells = ggml_cast(c, ggml_scale_bias(c, cells, 1.0f, -1.0f), GGML_TYPE_I32);
+    cells = ggml_reshape_4d(c, cells, budget * r, T, 1, 1);
+
+    ggml_tensor * tv  = ggml_arange(c, 0.0f, (float) T, 1.0f);
+    ggml_tensor * br  = ggml_scale(c, ggml_floor(c,
+        ggml_scale(c, ggml_arange(c, 1.0f, (float) (T + 1), 1.0f), 1.0f / (float) r)), (float) r);
+    ggml_tensor * rows = nullptr;
+    for (int64_t i = 0; i < r - 1; ++i) {
+        ggml_tensor * cell = ggml_scale_bias(c, br, 1.0f, (float) i);
+        ggml_tensor * v = ggml_step(c, ggml_scale_bias(c, ggml_sub(c, tv, cell), 1.0f, 1.0f));
+        ggml_tensor * val = ggml_scale_bias(c, ggml_mul(c, v, ggml_scale_bias(c, cell, 1.0f, 1.0f)), 1.0f, -1.0f);
+        ggml_tensor * row = ggml_reshape_2d(c, ggml_cast(c, val, GGML_TYPE_I32), 1, T);
+        rows = rows ? ggml_concat(c, rows, row, 0) : row;
+    }
+    ggml_tensor * ids = ggml_reshape_2d(c,
+        ggml_concat(c, cells, ggml_reshape_3d(c, rows, r - 1, T, 1), 0),
+        budget * r + (r - 1), T);
+
+    ggml_tensor * q3 = ggml_cont(c, ggml_permute(c, Q, 0, 2, 1, 3));       // [D, T, Hq]
+    ggml_tensor * Kc = ggml_is_contiguous(Kf) ? Kf : ggml_cont(c, Kf);
+    ggml_tensor * Vc = ggml_is_contiguous(Vf) ? Vf : ggml_cont(c, Vf);
+    ggml_tensor * attn = ggml_flash_attn_ext(c, q3, Kc, Vc, nullptr, qscale, 0.0f, 0.0f);
+    attn->src[5] = ids;
+    attn->src[6] = qsa_pack_keys(c, Kc);
+    attn->src[7] = qsa_pack_values(c, Vc);
+    ggml_flash_attn_ext_set_n_kv_max(attn, (int32_t) ids->ne[0]);
+    ggml_flash_attn_ext_set_prec(attn, GGML_PREC_F32);
+    return attn;
+}
+
 ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * cur,
                               const Qwen4ExpLayer & L, const Qwen4ExpWeights & w,
                               ggml_tensor * k_cache, ggml_tensor * v_cache,
                               ggml_tensor * positions, ggml_tensor * mask,
-                              int64_t kv_len, int64_t pos0) {
+                              int64_t kv_len, int64_t pos0, int64_t ratio) {
     const int64_t D      = w.n_embd_head_k;   // 256
     const int64_t Hq     = w.n_head;          // 24
     const int64_t Hk     = w.n_head_kv;       // 2
@@ -250,9 +476,20 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
     ggml_tensor * V_full = ggml_view_3d(c, v_cache, D, kv_len, Hk,
         v_cache->nb[1], v_cache->nb[2], 0);
 
-    ggml_tensor * Qfa = ggml_cont(c, ggml_permute(c, Q, 0, 2, 1, 3));  // [D, T, Hq]
-    ggml_tensor * attn = ggml_flash_attn_ext(c, Qfa, K_full, V_full, mask,
-        1.0f / std::sqrt((float) D), 0.0f, 0.0f);                       // [D, Hq, T, 1]
+    static const bool use_qsa = getenv("QWEN4EXP_QSA") != nullptr;
+    const bool qsa_ok = use_qsa && pos0 == 0 && kv_len == T && T >= 128 && ratio > 1 &&
+        (T % ratio == 0) && w.indexer_head_size > 0 && w.indexer_n_head > 0 &&
+        w.indexer_top_k % ratio == 0 &&
+        (w.indexer_top_k / ratio) * ratio + (ratio - 1) <= 2560 &&
+        Hq == 12 * Hk;
+    ggml_tensor * attn;
+    if (qsa_ok) {
+        attn = build_qsa_attn(c, cur, Q, K_full, V_full, L, w, ratio, positions, kv_len);
+    } else {
+        ggml_tensor * Qfa = ggml_cont(c, ggml_permute(c, Q, 0, 2, 1, 3));  // [D, T, Hq]
+        attn = ggml_flash_attn_ext(c, Qfa, K_full, V_full, mask,
+            1.0f / std::sqrt((float) D), 0.0f, 0.0f);                       // [D, Hq, T, 1]
+    }
 
     ggml_tensor * attn2 = ggml_reshape_2d(c, attn, D * Hq, T);
     attn2 = ggml_mul(c, attn2, ggml_sigmoid(c, gate));
@@ -301,9 +538,7 @@ ggml_tensor * build_ple(ggml_context * c, ggml_cgraph * gf, ggml_tensor * hidden
     const int64_t dil  = w.ple_ngram_size;
     const int64_t hist = (kern - 1) * dil;
 
-    ggml_tensor * norm_t = ggml_reshape_3d(c,
-        ggml_cont(c, ggml_transpose(c, ggml_reshape_2d(c, normalized, hc_dim, T))),
-        T, hc_dim, 1);
+    ggml_tensor * norm_t = ggml_transpose(c, ggml_reshape_2d(c, normalized, hc_dim, T));
     ggml_tensor * padded = ggml_concat(c,
         ggml_reshape_3d(c, ple_conv_state, hist, hc_dim, 1), norm_t, 0);
 
@@ -342,6 +577,9 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
                                        std::vector<float> & out_logits) {
     Qwen4ExpForwardResult res;
     if (n_tokens <= 0 || pos0 < 0 || !tokens) return res;
+    static const bool prof = getenv("QWEN4EXP_PROF") != nullptr;
+    const double t0 = prof ? prof_now_ms() : 0.0;
+    double t_emb = t0, t_ple = t0, t_alloc = t0, t_upload = t0, t_compute = t0;
     if (pos0 + n_tokens > cache.max_ctx) {
         std::fprintf(stderr, "[qwen4exp] context overflow: %d + %d > %d\n",
                      pos0, n_tokens, cache.max_ctx);
@@ -360,6 +598,7 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
         std::fprintf(stderr, "[qwen4exp] cpu embedding failed\n");
         return res;
     }
+    if (prof) t_emb = prof_now_ms();
 
     // PLE n-gram rows (host side): reuse the cache's rolling token window.
     const bool has_ple = !cache.ple_layer_ids.empty() && w.ple_reader.available();
@@ -414,6 +653,7 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
         cache.ple_prev = std::move(next);
     }
 
+    if (prof) t_ple = prof_now_ms();
     ggml_init_params ip{};
     ip.mem_size = ggml_tensor_overhead() * 200000 +
                   ggml_graph_overhead_custom(200000, false) + (1u << 20);
@@ -454,6 +694,10 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
     ggml_tensor * res_hc = repeat_dim1(ctx,
         ggml_reshape_3d(ctx, inp_emb, w.n_embd, 1, T), w.n_hc);
 
+    // `xn_next` is the normalized stream produced by the previous fused
+    // combine (packed channel 1); consumed by this layer's attention mix.
+    ggml_tensor * xn_next = nullptr;
+
     for (int il = 0; il < w.n_layer; ++il) {
         const Qwen4ExpLayer & L = w.layers[il];
 
@@ -461,33 +705,63 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
             res_hc = build_ple(ctx, gf, res_hc, ple_in, L, w,
                                cache.ple_conv_state.empty() ? nullptr :
                                    cache.ple_conv_state[0]);
+            xn_next = nullptr;   // PLE changed the residual; the norm must rerun
         }
 
         ggml_tensor * inject = nullptr;
-        ggml_tensor * cur = hc_mix(ctx, res_hc, L.hc_attn_norm, L.hc_attn_down,
-                                   L.hc_attn_up, L.hc_attn_inject, &inject,
-                                   w.n_embd, w.n_hc, w.rms_eps);
+        ggml_tensor * cur;
+        if (xn_next != nullptr) {
+            cur = hc_mix_from_xn(ctx, xn_next, L.hc_attn_down, L.hc_attn_up,
+                                 L.hc_attn_inject, &inject, w.n_embd, w.n_hc);
+            xn_next = nullptr;
+        } else {
+            cur = hc_mix(ctx, res_hc, L.hc_attn_norm, L.hc_attn_down,
+                         L.hc_attn_up, L.hc_attn_inject, &inject,
+                         w.n_embd, w.n_hc, w.rms_eps);
+        }
         if (L.is_full_attention) {
             const int fi = full_idx[il];
             cur = build_full_attn(ctx, gf, cur, L, w,
                                   cache.attn_k[fi], cache.attn_v[fi],
-                                  positions, mask, kv_len, pos0);
+                                  positions, mask, kv_len, pos0,
+                                  il < (int) w.compress_ratios.size() ? w.compress_ratios[il] : 0);
         } else {
             const int li = lin_idx[il];
             cur = build_linear_attn(ctx, gf, cur, L, w,
                                     cache.ssm_state[li], cache.conv_state[li]);
         }
-        res_hc = hc_combine(ctx, res_hc, cur, inject, w.n_embd, w.n_hc, T);
+        // combine(attn) fused with the hc_mix(ffn) norm
+        ggml_tensor * ffn_fused = hc_combine_norm(ctx, inject, res_hc, cur,
+            L.hc_ffn_norm, w.n_embd, w.n_hc, T, w.rms_eps);
+        res_hc = hc_norm_res(ctx, ffn_fused, w.n_embd, w.n_hc, T);
 
-        cur = hc_mix(ctx, res_hc, L.hc_ffn_norm, L.hc_ffn_down,
-                     L.hc_ffn_up, L.hc_ffn_inject, &inject, w.n_embd, w.n_hc, w.rms_eps);
+        cur = hc_mix_from_xn(ctx, hc_norm_xn(ctx, ffn_fused, w.n_embd, w.n_hc, T),
+                             L.hc_ffn_down, L.hc_ffn_up, L.hc_ffn_inject, &inject,
+                             w.n_embd, w.n_hc);
         cur = build_moe(ctx, cur, L, w);
-        res_hc = hc_combine(ctx, res_hc, cur, inject, w.n_embd, w.n_hc, T);
+
+        // combine(ffn) fused with the next mix's norm, unless a PLE layer sits
+        // in between (PLE adds to the residual before the norm).
+        const bool next_ple = (il + 1 < w.n_layer) && w.layers[il + 1].is_ple && has_ple;
+        if (next_ple) {
+            res_hc = hc_combine(ctx, res_hc, cur, inject, w.n_embd, w.n_hc, T);
+            xn_next = nullptr;
+        } else {
+            ggml_tensor * gamma = (il + 1 < w.n_layer)
+                ? w.layers[il + 1].hc_attn_norm : w.output_hc_norm;
+            ggml_tensor * f = hc_combine_norm(ctx, inject, res_hc, cur,
+                gamma, w.n_embd, w.n_hc, T, w.rms_eps);
+            res_hc = hc_norm_res(ctx, f, w.n_embd, w.n_hc, T);
+            xn_next = hc_norm_xn(ctx, f, w.n_embd, w.n_hc, T);
+        }
     }
 
-    ggml_tensor * final = hc_mix(ctx, res_hc, w.output_hc_norm, w.output_hc_down,
-                                 w.output_hc_up, nullptr, nullptr,
-                                 w.n_embd, w.n_hc, w.rms_eps);
+    ggml_tensor * final = (xn_next != nullptr)
+        ? hc_mix_from_xn(ctx, xn_next, w.output_hc_down, w.output_hc_up,
+                         nullptr, nullptr, w.n_embd, w.n_hc)
+        : hc_mix(ctx, res_hc, w.output_hc_norm, w.output_hc_down,
+                 w.output_hc_up, nullptr, nullptr,
+                 w.n_embd, w.n_hc, w.rms_eps);
     ggml_tensor * last = T > 1
         ? ggml_view_2d(ctx, final, w.n_embd, 1, final->nb[1], (size_t) (T - 1) * final->nb[1])
         : final;
@@ -495,6 +769,50 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
     ggml_set_output(logits);
     ggml_set_name(logits, "logits");
     ggml_build_forward_expand(gf, logits);
+
+    // Pinned host ring for the graph inputs (integrated GPUs only): point the
+    // input tensors at this call's slot before allocation so the gallocr
+    // leaves them alone and the iGPU reads them directly over GTT.
+    char * ring_embd = nullptr;
+    char * ring_pos  = nullptr;
+    char * ring_mask = nullptr;
+    char * ring_ple  = nullptr;
+    if (cache.input_ring.enabled) {
+        const size_t embd_need = static_cast<size_t>(w.n_embd) * T * sizeof(float);
+        const size_t pos_need  = static_cast<size_t>(4) * T * sizeof(int32_t);
+        const size_t ple_need  = has_ple
+            ? static_cast<size_t>(w.ple_head_dim) * ple_heads * T * sizeof(float) : 0;
+        const size_t mask_need = (!dev_mask && mask)
+            ? static_cast<size_t>(kv_len) * T * sizeof(ggml_fp16_t) : 0;
+        ggml_backend_buffer_type_t host_buft =
+            ggml_backend_dev_host_buffer_type(ggml_backend_get_device(backend));
+        if (host_buft != nullptr &&
+            qwen4exp_input_ring_reserve(cache.input_ring, host_buft,
+                                        embd_need, pos_need, ple_need, mask_need)) {
+            // The slot being taken was last read by the graph from two calls
+            // ago; wait for that graph before overwriting it. The logits read
+            // already synchronizes each forward, so this is normally free.
+            if (cache.input_ring.writes >= 2) {
+                ggml_backend_synchronize(backend);
+            }
+            const size_t slot = static_cast<size_t>(cache.input_ring.next_slot);
+            cache.input_ring.next_slot = (cache.input_ring.next_slot + 1) % 2;
+            cache.input_ring.writes++;
+            char * slot_base = cache.input_ring.base + slot * cache.input_ring.slot_bytes;
+            ring_embd = slot_base + cache.input_ring.embd_off;
+            ring_pos  = slot_base + cache.input_ring.pos_off;
+            ring_ple  = slot_base + cache.input_ring.ple_off;
+            ring_mask = slot_base + cache.input_ring.mask_off;
+            ggml_backend_tensor_alloc(cache.input_ring.buf, inp_emb, ring_embd);
+            ggml_backend_tensor_alloc(cache.input_ring.buf, positions, ring_pos);
+            if (mask && !dev_mask) {
+                ggml_backend_tensor_alloc(cache.input_ring.buf, mask, ring_mask);
+            }
+            if (ple_in) {
+                ggml_backend_tensor_alloc(cache.input_ring.buf, ple_in, ring_ple);
+            }
+        }
+    }
 
     ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
     if (!ggml_gallocr_alloc_graph(galloc, gf)) {
@@ -505,7 +823,7 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
         return res;
     }
 
-    ggml_backend_tensor_set(inp_emb, emb.data(), 0, sizeof(float) * emb.size());
+    if (prof) t_alloc = prof_now_ms();
     // M-RoPE wants 4 sections per token, section-major: [s*T + i]. Sections
     // 0..2 carry the position, section 3 is zero (llama.cpp text convention).
     std::vector<int32_t> pos((size_t) 4 * T, 0);
@@ -516,23 +834,40 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
         pos[(size_t) (2 * T + i)] = p;
         pos[(size_t) (3 * T + i)] = 0;
     }
-    ggml_backend_tensor_set(positions, pos.data(), 0, sizeof(int32_t) * pos.size());
+    std::vector<ggml_fp16_t> m;
     if (!dev_mask && mask) {
-        std::vector<ggml_fp16_t> m((size_t) kv_len * T);
         const ggml_fp16_t zero = ggml_fp32_to_fp16(0.0f);
         const ggml_fp16_t ninf = ggml_fp32_to_fp16(-INFINITY);
+        m.resize((size_t) kv_len * T);
         for (int64_t row = 0; row < T; ++row) {
             const int64_t vis = pos0 + row;
             for (int64_t col = 0; col < kv_len; ++col) {
                 m[(size_t) (row * kv_len + col)] = (col <= vis) ? zero : ninf;
             }
         }
-        ggml_backend_tensor_set(mask, m.data(), 0, sizeof(ggml_fp16_t) * m.size());
     }
-    if (ple_in) {
-        ggml_backend_tensor_set(ple_in, ple_data.data(), 0, sizeof(float) * ple_data.size());
+    if (ring_embd != nullptr) {
+        // Pinned inputs are host-writable: plain memcpy, no H2D staging DMA.
+        std::memcpy(inp_emb->data, emb.data(), sizeof(float) * emb.size());
+        std::memcpy(positions->data, pos.data(), sizeof(int32_t) * pos.size());
+        if (mask && !dev_mask) {
+            std::memcpy(mask->data, m.data(), sizeof(ggml_fp16_t) * m.size());
+        }
+        if (ple_in) {
+            std::memcpy(ple_in->data, ple_data.data(), sizeof(float) * ple_data.size());
+        }
+    } else {
+        ggml_backend_tensor_set(inp_emb, emb.data(), 0, sizeof(float) * emb.size());
+        ggml_backend_tensor_set(positions, pos.data(), 0, sizeof(int32_t) * pos.size());
+        if (!dev_mask && mask) {
+            ggml_backend_tensor_set(mask, m.data(), 0, sizeof(ggml_fp16_t) * m.size());
+        }
+        if (ple_in) {
+            ggml_backend_tensor_set(ple_in, ple_data.data(), 0, sizeof(float) * ple_data.size());
+        }
     }
 
+    if (prof) t_upload = prof_now_ms();
     if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
         std::fprintf(stderr, "[qwen4exp] graph compute failed\n");
         ggml_gallocr_free(galloc);
@@ -542,6 +877,13 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
 
     out_logits.resize((size_t) w.n_vocab);
     ggml_backend_tensor_get(logits, out_logits.data(), 0, sizeof(float) * w.n_vocab);
+    if (prof) {
+        t_compute = prof_now_ms();
+        std::fprintf(stderr,
+            "[qwen4exp-prof] T=%d embed=%.1fms ple=%.1fms build+alloc=%.1fms mask+upload=%.1fms compute=%.1fms get=%.1fms total=%.1fms\n",
+            n_tokens, t_emb - t0, t_ple - t_emb, t_alloc - t_ple, t_upload - t_alloc,
+            t_compute - t_upload, prof_now_ms() - t_compute, prof_now_ms() - t0);
+    }
 
     ggml_gallocr_free(galloc);
     ggml_free(ctx);

@@ -17,6 +17,26 @@
 
 namespace dflash::common {
 
+// UMA graph-input ring (port of the pwilkin strix-halo scheduler ring buffer,
+// adapted to this hand-rolled forward path). On an integrated GPU the
+// host-written forward inputs (embedding, M-RoPE positions, K/Q mask, PLE rows)
+// live in pinned host memory that the iGPU reads directly over GTT — no
+// per-token H2D staging copy. Two slots are rotated so the host never
+// overwrites inputs a still-submitted graph may be reading (#15034-class
+// corruption otherwise). Opt out: DFLASH_HIP_NO_UMA_RING=1; also disabled by
+// GGML_CUDA_NO_PINNED (the pinned allocation would silently degrade).
+struct Qwen4ExpInputRing {
+    bool                  enabled    = false;
+    int                   next_slot  = 0;
+    uint64_t              writes     = 0;      // slots handed out since enable
+    ggml_backend_buffer_t buf        = nullptr;
+    char *                base       = nullptr;
+    size_t                slot_bytes = 0;
+    // Per-slot section layout: [ embd | positions | ple | mask ].
+    size_t                embd_off = 0, pos_off = 0, ple_off = 0, mask_off = 0;
+    size_t                embd_cap = 0, pos_cap = 0, ple_cap = 0, mask_cap = 0;
+};
+
 struct Qwen4ExpCache {
     ggml_context *        ctx     = nullptr;
     ggml_backend_buffer_t buf     = nullptr;
@@ -45,6 +65,9 @@ struct Qwen4ExpCache {
     // Rolling window of the last (ple_ngram_size - 1) token ids, oldest first,
     // for the host-side PLE n-gram hash across decode steps.
     std::vector<int32_t> ple_prev;
+
+    // Pinned graph-input ring (see Qwen4ExpInputRing).
+    Qwen4ExpInputRing input_ring;
 };
 
 bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,

@@ -2090,6 +2090,8 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_ds4_moe_combine(params, tensor);
             } break;
+        case GGML_OP_HC_COMBINE_NORM:
+            GGML_ABORT("GGML_OP_HC_COMBINE_NORM is only supported on the CUDA/HIP backend");
         case GGML_OP_OUT_PROD:
             {
                 ggml_compute_forward_out_prod(params, tensor);

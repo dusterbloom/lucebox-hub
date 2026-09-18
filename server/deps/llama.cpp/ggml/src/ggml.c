@@ -1210,9 +1210,11 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "PAGED_ATTN",
 
     "DS4_MOE_COMBINE",
+
+    "HC_COMBINE_NORM",
 };
 
-static_assert(GGML_OP_COUNT == 106, "GGML_OP_COUNT != 106");
+static_assert(GGML_OP_COUNT == 107, "GGML_OP_COUNT != 107");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1339,9 +1341,11 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "paged_attn(q,k,v)",
 
     "ds4_moe_combine(down,w,shared)",
+
+    "hc_combine_norm(inj,res,blk,gamma)",
 };
 
-static_assert(GGML_OP_COUNT == 106, "GGML_OP_COUNT != 106");
+static_assert(GGML_OP_COUNT == 107, "GGML_OP_COUNT != 107");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -5639,6 +5643,15 @@ void ggml_flash_attn_ext_set_prec(
     ggml_set_op_params_i32(a, 3, prec_i32); // scale is on first pos, max_bias on second
 }
 
+void ggml_flash_attn_ext_set_n_kv_max(
+        struct ggml_tensor * a,
+        int32_t              n_kv_max) {
+    GGML_ASSERT(a->op == GGML_OP_FLASH_ATTN_EXT);
+    GGML_ASSERT(n_kv_max >= 0);
+
+    ggml_set_op_params_i32(a, 4, n_kv_max);
+}
+
 void ggml_flash_attn_ext_set_ds4_sparse(
         struct ggml_tensor * a,
         int                  raw_rows,
@@ -9459,5 +9472,37 @@ struct ggml_tensor * ggml_ds4_moe_fused_combine_shared(
     result->src[0] = down_e;
     result->src[1] = weights;
     result->src[2] = shared_out;
+    return result;
+}
+
+struct ggml_tensor * ggml_hc_combine_norm(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * inject,
+        struct ggml_tensor  * residual,
+        struct ggml_tensor  * block_out,
+        struct ggml_tensor  * gamma,
+        float                 s1, float b1, float s2, float b2, float eps) {
+    GGML_ASSERT(inject && residual && block_out && gamma);
+    GGML_ASSERT(inject->type == GGML_TYPE_F32 && residual->type == GGML_TYPE_F32 &&
+                block_out->type == GGML_TYPE_F32 && gamma->type == GGML_TYPE_F32);
+    GGML_ASSERT(ggml_is_contiguous(inject) && ggml_is_contiguous(residual) &&
+                ggml_is_contiguous(block_out) && ggml_is_contiguous(gamma));
+    GGML_ASSERT(residual->ne[3] == 1 && inject->ne[0] == residual->ne[1] &&
+                inject->ne[1] == residual->ne[2] && block_out->ne[3] == 1 &&
+                block_out->ne[0] == residual->ne[0] && block_out->ne[2] == residual->ne[2]);
+    GGML_ASSERT(ggml_nelements(gamma) == residual->ne[0] * residual->ne[1]);
+
+    const int64_t ne[4] = { residual->ne[0], residual->ne[1], residual->ne[2], 2 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+    result->op     = GGML_OP_HC_COMBINE_NORM;
+    result->src[0] = inject;
+    result->src[1] = residual;
+    result->src[2] = block_out;
+    result->src[3] = gamma;
+    ggml_set_op_params_f32(result, 0, s1);
+    ggml_set_op_params_f32(result, 1, b1);
+    ggml_set_op_params_f32(result, 2, s2);
+    ggml_set_op_params_f32(result, 3, b2);
+    ggml_set_op_params_f32(result, 4, eps);
     return result;
 }

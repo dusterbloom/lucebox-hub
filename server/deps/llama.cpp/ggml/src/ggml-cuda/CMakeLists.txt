@@ -124,6 +124,9 @@ if (CUDAToolkit_FOUND)
     list(REMOVE_ITEM GGML_SOURCES_CUDA
         "${CMAKE_CURRENT_SOURCE_DIR}/mmb.cu"
         "${CMAKE_CURRENT_SOURCE_DIR}/moe-weighted-reduction.cu"
+        "${CMAKE_CURRENT_SOURCE_DIR}/hc-mix.cu"
+        "${CMAKE_CURRENT_SOURCE_DIR}/hc-cn.cu"
+        "${CMAKE_CURRENT_SOURCE_DIR}/qsa.cu"
     )
 
     if(GGML_CUDA_BLACKWELL_CONSUMER)
