@@ -1095,6 +1095,15 @@ if(DFLASH27B_TESTS)
         target_link_libraries(test_fattn_mma256 PRIVATE ggml-cpu)
         list(APPEND _raw_unit_test_targets test_fattn_mma256)
 
+        # Standalone mmb-vs-library-GEMM differential on one quantized MUL_MAT,
+        # against a CPU dequant reference. See the file header.
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_mmb_cublas_diff.cpp")
+            dflash_add_ggml_gpu_executable(test_mmb_cublas_diff test/test_mmb_cublas_diff.cpp)
+            target_compile_definitions(test_mmb_cublas_diff PRIVATE GGML_USE_HIP)
+            target_link_libraries(test_mmb_cublas_diff PRIVATE ggml-cpu)
+            list(APPEND _raw_unit_test_targets test_mmb_cublas_diff)
+        endif()
+
         # The rocWMMA fragment-layout probe requires the rocWMMA headers; it
         # only builds when the rocWMMA fattn kernel is enabled so the
         # default HIP build stays independent of the optional package.
