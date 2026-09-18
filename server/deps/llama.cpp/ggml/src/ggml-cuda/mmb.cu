@@ -739,6 +739,10 @@ const void * ggml_cuda_mmb_shadow_ptr(const ggml_tensor * w) {
 }
 
 const uint16_t * ggml_cuda_mmb_cache_lookup(const ggml_tensor * t) {
+    // journey step 9: a bf16-only tensor holds its bf16 form in place, in its own
+    // buffer. No cache entry, no slot, no eviction -- so there is nothing to race
+    // with and nothing to evict.
+    if (ggml_cuda_mmb_is_bf16_only(t)) return (const uint16_t *) t->data;
     const ggml_tensor * root = mmb_root(t);
     for (auto & e : g_mmb_slots) if (e.buf && e.root == root && e.data == t->data) return e.buf->get();
     for (auto & e : g_mmb_cache) if (e.root == root && e.data == t->data) return e.buf->get();

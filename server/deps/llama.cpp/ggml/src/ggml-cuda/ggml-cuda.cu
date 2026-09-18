@@ -3699,8 +3699,8 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
                 res_t.data      = base;
                 res_t.view_src  = nullptr;
                 a.out_res = &res_t;
-                a.out_xn_bf16  = ggml_cuda_mmb_cache_reserve(ctx, a.out_xn, (size_t) ggml_nelements(a.out_xn));
-                a.store_xn_f32 = (a.out_xn_bf16 == nullptr);
+                a.out_xn_bf16  = (uint16_t *) a.out_xn->data;   // in place; consumers read bf16 from here
+                a.store_xn_f32 = false;
                 a.s1 = ggml_get_op_params_f32(dst, 0);
                 a.b1 = ggml_get_op_params_f32(dst, 1);
                 a.s2 = ggml_get_op_params_f32(dst, 2);
@@ -5742,8 +5742,8 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
                 const ggml_tensor * t = cgraph->nodes[n];
                 if (!reads(t, xn)) continue;
                 ++nread;
-                // A MUL_MAT only consumes the bf16 copy if it actually takes the
-                // mmb path; a cuBLAS-routed shape reads src1 as f32.
+                // A MUL_MAT only consumes the bf16 form if it takes the mmb path;
+                // a cuBLAS-routed shape reads src1 as f32, so it must block the mark.
                 if (t->op == GGML_OP_MUL_MAT && ggml_cuda_mmb_supported_mm(t->src[0], t->src[1], t) &&
                     !ggml_cuda_mmb_cublas_shape_ok(t->src[0])) continue;
                 if (t->op == GGML_OP_VIEW || t->op == GGML_OP_RESHAPE) continue;
