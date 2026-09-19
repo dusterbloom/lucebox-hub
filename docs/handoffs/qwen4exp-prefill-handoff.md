@@ -41,6 +41,22 @@ Chunked-prefill QSA landed (indexer-K cache): 32K 576 -> ~893, 64K now runs at
   `hc_gate_mix` 1377 ms (short K=320, ~7.4 TFLOP/s), `mmb_f32split` (F32 router)
   466 ms, `hc_combine_norm` 855 ms (fuse-across-streams would reuse `block_out`
   hc=4x -> 1x, ~250 ms).
+
+### Update 2026-09-19 — 2A landed, 2B rejected
+
+- **2A (landed, `34bef491`):** `convert_unary` is scalar; added vectorized
+  contiguous `convert_bf16_to_f32_vec` / `convert_f32_to_bf16_vec` (8 elems per
+  thread) with an alignment fast path in `convert_unary_cont_cuda`. Gate 5/5,
+  ~938-941 t/s vs ~928-933 (run-to-run varies +-1-2%; treat as ~1%).
+- **2B (evaluated, reverted):** marking the `hc_gate_mix` output bf16-only to
+  skip its redundant f32 `Out` (671 MB/call) works, but only **12 of 96** mixes
+  qualify: the ffn mix is consumed by the F32 MoE router (`ffn_gate_inp`) and the
+  linear-attn mix by the F32 `ssm_alpha`, both of which read src1 as f32
+  (f32split). Only the full-layer attn mixes are markable -> ~40 ms, within
+  noise, at the cost of marking-pass complexity/risk. Reverted,
+  `LLAMA_HC16_DEBUG` shows `mixdst ok=1 blocked=11` (blocked by `ssm_alpha` /
+  `ffn_gate_inp`, type f32). Not worth it unless those F32 GEMMs learn to read
+  the bf16.
 - **GLM-5.3 reviews** (zai-coding-plan, non-blocking) found no concrete bug in
   the HC16 cuBLAS src1 pass-through; the indexer-cache review produced the
   small-chunk fix above. The `getrows.cu` hunk was not in the first review
