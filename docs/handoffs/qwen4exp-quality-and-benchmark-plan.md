@@ -240,3 +240,75 @@ extra verified token ~+4.4 ms, head step ~3.4 ms, ~1/3 of a pass is kernel-launc
    report `draft_n`/`draft_n_accepted`/AL.
 5. Measure with harness `agent`/`he` + acceptance telemetry; target ≈1.5–1.8× code,
    1.3–1.5× long-context, prose near break-even.
+
+## 9. Spec-decoder decision for Qwen3.8-Flash-Next (2026-09-19)
+
+### HF evidence (re-checked)
+
+- **No DFlash and no DSpark drafter exists for Flash-Next.** The only DFlash
+  artifact is `PixelML/Qwen3.8-Flash-Next-NVFP4-DFlash` — NVFP4, vLLM-only
+  (3 control-flow patches + adapter overlay), not a GGUF, not loadable by our
+  HIP/llama.cpp engine. `DSpark` search returns nothing for this model.
+- **DFlash2 exists only for the dense 27B**: `z-lab/Qwen3.8-27B-DFlash2` /
+  `incoai/Qwen3.8-27B-DFlash2` (block 8, two-tap dynamic conv + candidate path
+  selector). Not for the Flash-Next hybrid.
+- **MTP heads are plentiful** (the head ships in the checkpoint): `dzannotti`,
+  `EasiiX`, `agentionai`, `ToPo-ToPo`, `drluoto`, `ashbash`, etc.
+- **Lucebox's own drafter experience** (HF `Lucebox/`):
+  `Qwen3.6-27B-DFlash-GGUF`, `gemma-4-{26B-A4B,31B}-it-DFlash-GGUF`,
+  `Laguna-XS.2-DFlash-GGUF` (with `dflash_aux_heads.pt` + `GATE_RESULTS.md`),
+  `DeepSeek-V4-Flash-0731-DSpark-GGUF`, `Kimi-K3-DSpark-Q8_0-GGUF`. The Laguna
+  card states the method: **"full continued training from v23-step18000 on 60k
+  clean regenerated rows (10k @16k ctx + 50k Open-PerfectBlend @4k ctx)"**, and
+  the GGUF carries **DSpark Markov/confidence aux heads** (our
+  `src/common/dspark_head.cpp`, `src/deepseek4/deepseek4_dspark*.cpp`).
+
+### What DFlash/DFlash2/DSpark are
+
+- **DFlash** (z-lab, ICML'26, arXiv 2602.06036): a lightweight **block-diffusion**
+  drafter. It conditions on the last target token + last ~5 captured target hidden
+  states and denoises a block (16) of MASK tokens in one forward. Loss = masked-
+  position cross-entropy. `z-lab/dflash` ships `pip install dflash` + the training
+  code; draft arch is ~5 layers / hidden 5120 / MASK token / RoPE θ1e6.
+- **DFlash2** (Inco AI, Aug'26): same idea, block 8, **two-tap dynamic convs** in
+  the backbone + a **candidate path selector** so the block doesn't decay toward
+  the end. Beats MTP and DSpark on H200 (GSM8K AL 5.46 vs 5.02 MTP, 4.36 DSpark;
+  3.43× vs 2.59×/2.69× concurrency-1 GSM8K).
+- **DSpark** = DFlash + Markov/confidence **aux heads** (adaptive verify width /
+  confidence-gated top-k); we already run this for DeepSeek V4.
+
+### Recommended plan
+
+Sequence: **ship MTP now** (zero training; head + reference patch already in
+hand — §8), and **train a DFlash2-style drafter for Flash-Next** as the SOTA path,
+reusing the Lucebox pipeline.
+
+1. **Bootstrap the trainer.** Start from `z-lab/dflash` (`pip install dflash`) and
+   the Lucebox Laguna run's config (60k regenerated rows; `dflash_aux_heads.pt`
+   trainer). Our inference side already loads DFlash drafts
+   (`gguf_draft_loader.cpp`, `--draft`, DDTree, fast rollback, KVFlash-on-pool).
+2. **Data.** Regenerate ~60k rows *from Qwen3.8-Flash-Next itself*: 10k @16k ctx +
+   50k Open-PerfectBlend @4k, plus code/math/agent mixes, **thinking disabled**
+   (RESULTS.md: a drafter trained on non-thinking output predicts it better), and
+   cache the target hidden states + logits needed for the conditioning.
+3. **Architecture.** A Flash-Next drafter must consume the target's hidden state.
+   Condition on the trunk's post-final-mix hidden (or the wide `res_hc`, as the MTP
+   head does) via an `fc`/`hidden_norm` pair, then the DFlash2 block-diffusion
+   backbone (block 8, two-tap conv, path selector). Flash-Next is a hybrid
+   (HC/QSA/GDN/MoE); the drafter itself can be a plain small transformer — only the
+   conditioning interface must match. Reuse `qwen35-dflash-draft` loader shape and
+   extend it to a `qwen4exp-dflash-draft` arch.
+4. **Train.** Block-diffusion masked-CE, 4k→16k ctx curriculum, target frozen; add
+   the DSpark Markov/confidence aux heads for adaptive width and confidence-gated
+   verification. Init from scratch if the hidden interface diverges from
+   Qwen3.8-27B-DFlash2, else fine-tune from it.
+5. **Eval.** Acceptance length + tok/s on gsm8k/math500/humaneval/mbpp/mt-bench
+   (z-lab harness) at concurrency 1 and 8, then the Lucebox serving gate (our
+   `harness/benchmarks`, `speed-profile` losslessness) — target ≈3× dense-class,
+   and clearly above MTP's ~1.5–1.8× code on this bandwidth-bound iGPU.
+6. **Compute.** A ~5-layer / hidden ~5k drafter over 60k 4k–16k rows is a
+   multi-GPU-day job (z-lab used Modal/InnoMatrix; Lucebox trained Laguna in-house).
+
+Decision: **MTP for immediate SOTA-ish decode; DFlash2-style as the trained
+upgrade; skip DSpark-for-Flash-Next** (no public drafter, and DFlash2 already
+subsumes it in the Inco eval). If a public Flash-Next DFlash appears, revisit.
