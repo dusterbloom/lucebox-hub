@@ -867,9 +867,17 @@ void ggml_cuda_mul_mat_mmb(ggml_backend_cuda_context & ctx, const ggml_tensor * 
     const uint16_t * xhp = ggml_cuda_mmb_bf16_src(src1);
     if (!xhp) xhp = mmb_bf16_activation(ctx, src1, (size_t) T * K, stream);
     if (src0->type == GGML_TYPE_BF16 && M <= 8 && (K % 128) == 0) {
-        const int grid = (int) ((T + 31) / 32);
-        mmb_small_n_bf16_kernel<8, 32, 128><<<grid, 256, 0, stream>>>(
-            (const uint16_t *) src0->data, xhp, (float *) dst->data, (int) M, K, (int) T);
+        if (M <= 4) {
+            // NMAX=4 keeps all 256 threads active for the 4-row HC inject (the
+            // NMAX=8 tiling idles half of them and runs at ~53 GB/s).
+            const int grid = (int) ((T + 63) / 64);
+            mmb_small_n_bf16_kernel<4, 64, 128><<<grid, 256, 0, stream>>>(
+                (const uint16_t *) src0->data, xhp, (float *) dst->data, (int) M, K, (int) T);
+        } else {
+            const int grid = (int) ((T + 31) / 32);
+            mmb_small_n_bf16_kernel<8, 32, 128><<<grid, 256, 0, stream>>>(
+                (const uint16_t *) src0->data, xhp, (float *) dst->data, (int) M, K, (int) T);
+        }
         CUDA_CHECK(cudaGetLastError());
         return;
     }
