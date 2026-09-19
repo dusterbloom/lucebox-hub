@@ -1411,25 +1411,23 @@ def _score_gsm_response(text: str, gold_answer: str) -> tuple[bool, str]:
         if re.match(r'^[+-]?\d+\.?\d*$', cleaned):
             pred = cleaned
 
-    # #### <number>
+    # Explicit final-answer markers, taking the LAST one (models restate and
+    # show intermediate "we get N" lines). Matches "#### N", "Answer: N",
+    # "The answer is N", "Result: N", "Total: N".
     if pred is None:
-        m = re.search(r'####\s*\$?([+-]?\d[\d,]*\.?\d*)', answer_text)
-        if m:
-            pred = m.group(1).replace(",", "")
+        markers = list(re.finditer(
+            r'(?i)(?:####|answer\s*(?:is|:)|the\s+answer\s*(?:is|:)|'
+            r'result\s*(?:is|:)|total\s*(?:is|:|=))'
+            r'[^\d\-+]{0,40}?([+-]?\d[\d,]*\.?\d*)',
+            answer_text))
+        if markers:
+            pred = markers[-1].group(1).replace(",", "")
 
-    # "the answer is **X**"
+    # **<number>** or **$<number>** (last)
     if pred is None:
-        m = re.search(
-            r'(?:answer\s+is|result\s+is|equals?|there\s+are|we\s+get)\s*\*?\*?\$?([+-]?\d[\d,]*\.?\d*)',
-            answer_text, re.IGNORECASE)
+        m = re.findall(r'\*\*\$?([+-]?\d[\d,]*\.?\d*)\*\*', answer_text)
         if m:
-            pred = m.group(1).replace(",", "")
-
-    # **<number>** or **$<number>**
-    if pred is None:
-        m = re.search(r'\*\*\$?([+-]?\d[\d,]*\.?\d*)\*\*', answer_text)
-        if m:
-            pred = m.group(1).replace(",", "")
+            pred = m[-1].replace(",", "")
 
     # Last standalone number
     if pred is None:

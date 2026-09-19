@@ -33,6 +33,42 @@ def _extract_boxed(text: str) -> str | None:
     return results[-1] if results else None
 
 
+def _expand_frac(s: str) -> str:
+    """Rewrite \\frac{A}{B} (and \\dfrac/\\tfrac) to A/B so LaTeX and plain
+    forms compare equal. Handles nested braces in A/B."""
+    out = s
+    for _ in range(32):
+        m = re.search(r"\\(?:d|t)?frac\s*\{", out)
+        if m is None:
+            break
+        i = m.start()
+
+        def group_at(k: int) -> tuple[str, int] | None:
+            if k >= len(out) or out[k] != "{":
+                return None
+            depth = 0
+            for p in range(k, len(out)):
+                if out[p] == "{":
+                    depth += 1
+                elif out[p] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return out[k + 1 : p], p + 1
+            return None
+
+        j = out.index("{", i)
+        g1 = group_at(j)
+        if g1 is None:
+            break
+        a, e1 = g1
+        g2 = group_at(e1)
+        if g2 is None:
+            break
+        b, e2 = g2
+        out = out[:i] + f"{a}/{b}" + out[e2:]
+    return out
+
+
 def _normalize_math(s: str | None) -> str:
     """Normalize a math answer string for comparison."""
     if s is None:
@@ -43,9 +79,10 @@ def _normalize_math(s: str | None) -> str:
     # Strip currency $ (e.g. "$18" -> "18")
     if re.match(r"^\$\d", s):
         s = s[1:]
+    s = _expand_frac(s)
     s = re.sub(r"\\text\s*\{([^}]*)\}", r"\1", s)
     s = re.sub(r"\\mathrm\s*\{([^}]*)\}", r"\1", s)
-    for cmd in [r"\left", r"\right", r"\displaystyle"]:
+    for cmd in [r"\left", r"\right", r"\displaystyle", r"\,", r"\;", r"\:", r"\!", r"\ "]:
         s = s.replace(cmd, "")
     s = s.replace(r"\tfrac", r"\frac")
     s = s.replace(r"\dfrac", r"\frac")
@@ -56,6 +93,8 @@ def _normalize_math(s: str | None) -> str:
     ]:
         if s.lower().rstrip(".").endswith(unit):
             s = s[: len(s) - len(unit) - (1 if s.endswith(".") else 0)]
+    # Interval/coordinate spacing: "[2, 5)" == "[2,5)".
+    s = re.sub(r",\s+", ",", s)
     s = re.sub(r"\s+", " ", s).strip()
     s = s.rstrip(".,")
     return s
