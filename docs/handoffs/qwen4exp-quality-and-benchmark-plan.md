@@ -312,3 +312,71 @@ reusing the Lucebox pipeline.
 Decision: **MTP for immediate SOTA-ish decode; DFlash2-style as the trained
 upgrade; skip DSpark-for-Flash-Next** (no public drafter, and DFlash2 already
 subsumes it in the Inco eval). If a public Flash-Next DFlash appears, revisit.
+
+## 10. Quality vs the model card, DeepSWE feasibility, local models (2026-09-19)
+
+### Quality vs the original model card
+
+The `Qwen/Qwen3.8-Flash-Next` card does **not** report GSM8K / Math500 /
+HumanEval. It reports agentic + coding: DeepSWE 1.1 **58.7**, SWE-bench Pro 62.5,
+SWE-bench Multilingual 81.0, NL2Repo-Bench 48.1, LiveCodeBench v6 91.9, GPQA
+Diamond 91.7, HLE 35.9, IFBench 81.3 (plus vision). So our harness suites have
+**no direct card reference**.
+
+Our harness numbers were also **wrong, not the model**: the GSM extractor grabbed
+an intermediate number (model-correct 260/160/120 scored as 20/40/4) and the Math
+normalizer didn't equate `[2, 5)` with `[2,5)` or `\frac{20}{3}` with `20/3`.
+After fixing `harness/math_scoring.py` + `_score_gsm_response` (`32d1fa66`):
+
+| suite | reported | corrected |
+|---|---|---|
+| HE (gold-test scored) | 10/10 | 10/10 |
+| GSM8K | 7/10 | **10/10** |
+| Math500 | 7/10 | **9/10** (1: max_tokens truncation at 2048) |
+| planted recall 13.6k/24k | 2/2 | 2/2 |
+
+n=10 per suite, so these are smoke-level, not capability claims. To compare with
+the card we must run an agentic/coding eval (DeepSWE or LiveCodeBench), which is
+the real open item.
+
+### DeepSWE — can we compare, and how much work?
+
+DeepSWE (`datacurve/deep-swe`): **113 long-horizon SWE tasks** (TS/Go/Py/JS/Rust)
+in the **Harbor** format with Docker task environments + program-based verifiers.
+It is **gated** (must accept access terms). Official runs use **Pier**
+(`pier run -p deep-swe/tasks --agent mini-swe-agent --model ...`), with
+`mini-swe-agent` / `claude-code` / `codex` / `opencode`, **256K context, temp 1.0,
+top_p 0.95**, and were produced on **Modal** sandboxes. Card: 58.7 for Flash-Next.
+
+Blockers on `lucebox4` today:
+1. **No Docker** on the box (task environments / verifiers need it).
+2. **No 256K serving** — chunked QSA + indexer cache get 64K working; native is
+   262144 but our graph alloc OOMs well before that, and the 28.8 GB PLE n-gram
+   table needs offload.
+3. **No Pier/multi-agent harness or dataset access** on the box.
+4. Tool-call reliability under the Qwen `<tool_call>` format is untested (the
+   harness has `client_test_runner probe` → `chat.tools_accepted`).
+5. On Strix Halo a 256K agentic task is hours of GPU; 113 tasks is days.
+
+Work to a *trustworthy* number: get dataset access + Pier + Docker; make our
+server serve **256K with correct tool calls** (finish the OOM/memory path, PLE
+offload, QSA at depth); run a **subset** (`--n-tasks 10 --sample-seed 0`) with
+mini-swe-agent pointed at our OpenAI endpoint; score with the program verifiers.
+That is a multi-day-to-week integration, and even then only a subset is
+practical on this single iGPU. Recommendation: treat DeepSWE as a **later,
+subset-only** target; meanwhile add the tool-call probe as a signed-off gate and
+keep HE/GSM/Math/recall as the routine suite.
+
+### Models available locally (`lucebox4:~/models`)
+
+| model | file(s) | size | notes |
+|---|---|---|---|
+| **Qwen3.8-Flash-Next IQ4_NL** (what we run) | 3-shard | 94 GB | hand-written qwen4exp graph |
+| Qwen3.8-Flash-Next GSQ-RCO-IQ3_XXS | 2-shard | 71 GB | another Flash-Next quant to try |
+| Qwen3.8-Flash-Next IQ4_NL "unc" | 1 file | 119 GB | **mislabeled Q8_0** (handoff) |
+| Qwen3.8-27B UD-IQ4_XS (dense) | 1 file | 13.3 GB | + DFlash2 below |
+| **Qwen3.8-27B DFlash2 drafter** | `qwen38-dflash2-f16.gguf`, `-q8_0.gguf`, `dflash2/` | 3.6/1.9 GB | **spec-decode testbed** |
+
+The 27B + its **DFlash2 drafter** is locally available and is the best way to
+exercise our DFlash/DDTree/KVFlash spec machinery end-to-end now, while any
+Flash-Next drafter would have to be trained (§9).
