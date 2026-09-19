@@ -3,9 +3,10 @@
 Repo: `/home/peppi/Dev/lucebox-qwen4exp`, branch `feat/qwen4exp-strix-halo`.
 Goal: reproduce then beat the pwilkin strix-halo journey on the hand-written
 qwen4exp graph. Target **>= 1000 t/s prefill**. Reference on this box: 738 t/s
-(pp16384, IQ4_NL 3-shard). **We are at ~950 t/s @ 13.6k, all planted-correct.**
+(pp16384, IQ4_NL 3-shard). **We are at ~947 t/s @ 16.4k / ~930 @ 13.6k, all
+planted-correct** (min-of-8 prefill, gfx1151 @2900MHz).
 Chunked-prefill QSA landed (indexer-K cache): 32K 576 -> ~893, 64K now runs at
-925 with `--chunk 16384` (was OOM/dense). Reference CIRU v4.2.0 hits 984-990 @
+~926 with `--chunk 16384` (was OOM/dense). Reference CIRU v4.2.0 hits 984-990 @
 12,960 on the same GPU, so the remaining gap is ~4% of engine/kernel work.
 
 ### Update 2026-09-18 (cont.) — indexer-K cache / chunked QSA landed
@@ -42,21 +43,24 @@ Chunked-prefill QSA landed (indexer-K cache): 32K 576 -> ~893, 64K now runs at
   466 ms, `hc_combine_norm` 855 ms (fuse-across-streams would reuse `block_out`
   hc=4x -> 1x, ~250 ms).
 
-### Update 2026-09-19 — 2A landed, 2B rejected
+### Update 2026-09-19 — 2A + 2B landed
 
 - **2A (landed, `34bef491`):** `convert_unary` is scalar; added vectorized
   contiguous `convert_bf16_to_f32_vec` / `convert_f32_to_bf16_vec` (8 elems per
-  thread) with an alignment fast path in `convert_unary_cont_cuda`. Gate 5/5,
-  ~938-941 t/s vs ~928-933 (run-to-run varies +-1-2%; treat as ~1%).
-- **2B (evaluated, reverted):** marking the `hc_gate_mix` output bf16-only to
-  skip its redundant f32 `Out` (671 MB/call) works, but only **12 of 96** mixes
-  qualify: the ffn mix is consumed by the F32 MoE router (`ffn_gate_inp`) and the
-  linear-attn mix by the F32 `ssm_alpha`, both of which read src1 as f32
-  (f32split). Only the full-layer attn mixes are markable -> ~40 ms, within
-  noise, at the cost of marking-pass complexity/risk. Reverted,
-  `LLAMA_HC16_DEBUG` shows `mixdst ok=1 blocked=11` (blocked by `ssm_alpha` /
-  `ffn_gate_inp`, type f32). Not worth it unless those F32 GEMMs learn to read
-  the bf16.
+  thread) with an alignment fast path in `convert_unary_cont_cuda`. Gate 5/5.
+- **2B (landed, `90260c75`):** the `hc_gate_mix` output is marked bf16-only and
+  written in place, so its redundant f32 `Out` (671 MB/call) is dropped. The
+  earlier attempt only got **12 of 96** mixes because the MoE router
+  (`ffn_gate_inp`) and GDN `ssm_alpha` are F32 weights whose `mmb_f32split`
+  kernel read src1 as f32. The unlock: `mmb_f32split_kernel` gained an `X16`
+  template that widens a bf16-marked src1 inside the tile load;
+  `mmb_bf16_activation` now returns the in-place bf16; the marking pass allows
+  mmb `MUL_MAT_ID` consumers too. min-of-8 prefill: **16,366 tok 924 -> 947 t/s
+  (+2.5%)**, **65,518 tok 912 -> 926 t/s (+1.5%)**, `f32split` 466 -> 379 ms.
+  Trade-off: the router/alpha now read the bf16 activation, not its f32 form.
+- **Measurement note:** single-run e2e `t/s` (with decode + warmup) hid this;
+  the min-of-8 prefill-only A/B (8s vs min 17.15-17.28 s @16K) is the reliable
+  signal. Do prefill A/B as min-of-N prefill-only.
 - **GLM-5.3 reviews** (zai-coding-plan, non-blocking) found no concrete bug in
   the HC16 cuBLAS src1 pass-through; the indexer-cache review produced the
   small-chunk fix above. The `getrows.cu` hunk was not in the first review
