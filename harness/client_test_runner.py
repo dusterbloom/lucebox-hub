@@ -1501,7 +1501,7 @@ def _score_he_response(text: str, entry_point: str, gold_test: str) -> tuple[boo
 
 # ── bench subcommand ────────────────────────────────────────────────────────
 
-BENCH_SUITES = ("he", "gsm", "math", "agent")
+BENCH_SUITES = ("he", "gsm", "math", "agent", "recall")
 BENCH_PROMPTS_DIR = Path(__file__).resolve().parent / "benchmarks" / "prompts"
 
 BENCH_SUITE_FILES = {
@@ -1509,6 +1509,7 @@ BENCH_SUITE_FILES = {
     "gsm": "bench_gsm.jsonl",
     "math": "bench_math.jsonl",
     "agent": "bench_agent.jsonl",
+    "recall": "bench_recall.jsonl",
 }
 
 
@@ -1683,8 +1684,24 @@ def _run_bench_suite(
             if correct:
                 n_correct += 1
             score_detail = "OK" if correct else "WRONG"
-
-        # Format output line
+        elif ("expect_contains" in case or "expect_regex" in case) and result.get("text"):
+            # Generic substring/regex check (used by the recall suite and any
+            # prompt with expect_contains/expect_regex).
+            wanted = case.get("expect_contains", [])
+            if isinstance(wanted, str):
+                wanted = [wanted]
+            misses = [s for s in wanted if s not in result["text"]]
+            rx = case.get("expect_regex")
+            rx_bad = bool(rx) and re.search(rx, result["text"]) is None
+            correct = not misses and not rx_bad
+            detail = "correct: all expected present" if correct else \
+                f"missing={misses}" + (f" regex_miss={rx}" if rx_bad else "")
+            result["correct"] = correct
+            result["score_detail"] = detail
+            n_scored += 1
+            if correct:
+                n_correct += 1
+            score_detail = "OK" if correct else "WRONG"
         wall_str = f"{result.get('wall_s', 0):.2f}s"
         ttft = result.get("ttft_s")
         ttft_str = f"{ttft:.3f}s" if ttft is not None else "n/a"
