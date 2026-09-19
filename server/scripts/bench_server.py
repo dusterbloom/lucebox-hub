@@ -395,10 +395,46 @@ def _print_summary(label: str, results: list[dict]):
               f"{min(dec_tps_list):.2f} - {max(dec_tps_list):.2f}")
 
 
+# ── Workload: planted-fact long-context recall ───────────────────────────
+# Promoted from the qwen4exp handoff's /tmp/planted.py so the gate is not
+# /tmp-only. Measures TTFT/decode at depth and checks the planted fact is
+# reproduced. Not a capability test (see server/eval/README.md).
+
+PLANT = ("OPERATIONS NOTE 47-B: the calibration key for the Strix Halo test rig is "
+         "QUINCE-AMBER-7731, and the rig's thermal ceiling is recorded as 54 degrees Celsius. ")
+FILLER = ("Lucebox is a GPU inference engine for local language models. "
+          "It runs on a single integrated GPU with unified memory. ")
+
+
+def _planted_prompt(target_tokens: int) -> str:
+    reps = max(1, (target_tokens - 40) // 13)
+    return PLANT + FILLER * reps + ("\nQuestion: What is the calibration key and the thermal "
+                                    "ceiling recorded in the operations note? Answer verbatim.")
+
+
+def workload_planted(url: str, n_sample: int, n_gen: int, planted_tokens: int = 13000, **_kw):
+    prompt = _planted_prompt(planted_tokens)
+    results = []
+    for i in range(n_sample):
+        name = f"planted_{i:02d}"
+        try:
+            r = stream_chat(url, [{"role": "user", "content": prompt}], n_gen)
+            ok = ("QUINCE-AMBER-7731" in r["text"] or "QUINCE AMBER 7731" in r["text"]) and "54" in r["text"]
+            results.append({"name": name, "recall": ok, **r})
+            _print_row(name, r)
+            print(f"      recall={'OK' if ok else 'MISS'}", flush=True)
+        except Exception as e:
+            print(f"  {name:28s}  FAILED: {e}", flush=True)
+    if results:
+        print(f"  [planted] recall {sum(1 for r in results if r['recall'])}/{len(results)}", flush=True)
+    return results
+
+
 # ── Main ──────────────────────────────────────────────────────────────────
 
 WORKLOADS = {
     "he":      ("HumanEval (code completion)", workload_he),
+    "planted": ("Planted-fact long-context recall", workload_planted),
     "gsm8k":   ("GSM8K (math word problems)", workload_gsm8k),
     "math500": ("MATH-500 (hard math)", workload_math500),
     "agent":   ("SWE-bench agent (2K/8K/24K)", workload_agent),
@@ -420,6 +456,8 @@ def main():
                     help=f"Max output tokens (default: {N_GEN_DEFAULT})")
     ap.add_argument("--agent-bucket", choices=["2k", "8k", "24k", "all"],
                     default="all", help="Agent bucket filter (default: all)")
+    ap.add_argument("--planted-tokens", type=int, default=13000,
+                    help="Approx prompt length for the planted-fact workload (default: 13000)")
     ap.add_argument("--warmup", action="store_true",
                     help="Run one warmup request before timing")
     ap.add_argument("--thinking", action="store_true",
@@ -455,7 +493,8 @@ def main():
         _print_header()
         try:
             results = fn(url=args.url, n_sample=args.n_sample, n_gen=args.n_gen,
-                         bucket=args.agent_bucket, thinking=args.thinking)
+                         bucket=args.agent_bucket, thinking=args.thinking,
+                         planted_tokens=args.planted_tokens)
         except ImportError as e:
             print(f"  SKIP {wk}: missing dependency — {e}", flush=True)
             results = []
