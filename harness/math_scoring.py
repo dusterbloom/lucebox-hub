@@ -33,6 +33,21 @@ def _extract_boxed(text: str) -> str | None:
     return results[-1] if results else None
 
 
+def _brace_group_at(s: str, k: int) -> tuple[str, int] | None:
+    """Return (contents, end_index) of a {...} group starting at k, else None."""
+    if k >= len(s) or s[k] != "{":
+        return None
+    depth = 0
+    for p in range(k, len(s)):
+        if s[p] == "{":
+            depth += 1
+        elif s[p] == "}":
+            depth -= 1
+            if depth == 0:
+                return s[k + 1 : p], p + 1
+    return None
+
+
 def _expand_frac(s: str) -> str:
     """Rewrite \\frac{A}{B} (and \\dfrac/\\tfrac) to A/B so LaTeX and plain
     forms compare equal. Handles nested braces in A/B."""
@@ -42,26 +57,11 @@ def _expand_frac(s: str) -> str:
         if m is None:
             break
         i = m.start()
-
-        def group_at(k: int) -> tuple[str, int] | None:
-            if k >= len(out) or out[k] != "{":
-                return None
-            depth = 0
-            for p in range(k, len(out)):
-                if out[p] == "{":
-                    depth += 1
-                elif out[p] == "}":
-                    depth -= 1
-                    if depth == 0:
-                        return out[k + 1 : p], p + 1
-            return None
-
-        j = out.index("{", i)
-        g1 = group_at(j)
+        g1 = _brace_group_at(out, out.index("{", i))
         if g1 is None:
             break
         a, e1 = g1
-        g2 = group_at(e1)
+        g2 = _brace_group_at(out, e1)
         if g2 is None:
             break
         b, e2 = g2
@@ -87,9 +87,21 @@ def _normalize_math(s: str | None) -> str:
     s = s.replace(r"\tfrac", r"\frac")
     s = s.replace(r"\dfrac", r"\frac")
     for unit in [
-        " cm", " m", " km", " kg", " g", " s", " ms",
-        " degrees", " degree", "\u00b0", " inches", " feet",
-        " square units", " units", " dollars",
+        " cm",
+        " m",
+        " km",
+        " kg",
+        " g",
+        " s",
+        " ms",
+        " degrees",
+        " degree",
+        "\u00b0",
+        " inches",
+        " feet",
+        " square units",
+        " units",
+        " dollars",
     ]:
         if s.lower().rstrip(".").endswith(unit):
             s = s[: len(s) - len(unit) - (1 if s.endswith(".") else 0)]
