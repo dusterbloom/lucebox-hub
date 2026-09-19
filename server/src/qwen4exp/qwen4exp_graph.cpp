@@ -803,6 +803,9 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
     // the per-layer "off <= written" guard actually bounds the prefix this
     // chunk reads (the current chunk's own columns are written by this graph).
     const int indexer_written = cache.indexer_blocks;
+    // Commit only after the graph computes: a failed alloc/compute must not mark
+    // columns written that the kernel never wrote.
+    int next_indexer_blocks = indexer_written;
     if (T > 1 && full0 >= 0) {
         const int fi = full_idx[full0];
         const int64_t ratio = full0 < (int) w.compress_ratios.size() ? w.compress_ratios[full0] : 0;
@@ -814,7 +817,7 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
             // reading across unwritten columns.
             const int off = (int) (pos0 / ratio);
             const int end = (int) (pos0 / ratio + (T + ratio - 1) / ratio);
-            cache.indexer_blocks = (cache.indexer_blocks == off) ? end : -1;
+            next_indexer_blocks = (indexer_written == off) ? end : -1;
         }
     }
     if (T > 1 && !qsa_all) {
@@ -1019,6 +1022,8 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
         ggml_free(ctx);
         return res;
     }
+    // The indexer-key stores are only real now that the graph has run.
+    cache.indexer_blocks = next_indexer_blocks;
 
     out_logits.resize((size_t) w.n_vocab);
     ggml_backend_tensor_get(logits, out_logits.data(), 0, sizeof(float) * w.n_vocab);
