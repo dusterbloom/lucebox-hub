@@ -3,11 +3,11 @@
 Repo: `/home/peppi/Dev/lucebox-qwen4exp`, branch `feat/qwen4exp-strix-halo`.
 Goal: reproduce then beat the pwilkin strix-halo journey on the hand-written
 qwen4exp graph. Target **>= 1000 t/s prefill**. Reference on this box: 738 t/s
-(pp16384, IQ4_NL 3-shard). **We are at ~947 t/s @ 16.4k / ~930 @ 13.6k, all
+(pp16384, IQ4_NL 3-shard). **We are at ~988 t/s @ 16.4k / ~957 @ 13.6k, all
 planted-correct** (min-of-8 prefill, gfx1151 @2900MHz).
 Chunked-prefill QSA landed (indexer-K cache): 32K 576 -> ~893, 64K now runs at
 ~926 with `--chunk 16384` (was OOM/dense). Reference CIRU v4.2.0 hits 984-990 @
-12,960 on the same GPU, so the remaining gap is ~4% of engine/kernel work.
+12,960 on the same GPU: at ~16K we are now at their 12,960 number.
 
 ### Update 2026-09-18 (cont.) — indexer-K cache / chunked QSA landed
 
@@ -70,6 +70,19 @@ Chunked-prefill QSA landed (indexer-K cache): 32K 576 -> ~893, 64K now runs at
   idles half its threads for N=4 (NMAX=8) and ran at ~53 GB/s. Use `<4,64,128>`
   when M<=4 so all 256 threads own a row. min-of-8 @16,366: 947 -> **963 t/s**
   (+1.7%), gate 5/5.
+- **Q5_K attn_output shadow (landed, `76a0e931`).** Re-profiling showed the 12
+  full-layer `attn_output` weights are **Q5_K**, which is excluded from both the
+  bf16 shadow and the cuBLAS route -> they ran on `mmb_dense<...45>` at ~7
+  TFLOP/s while the 36 IQ4_NL linear `wo` go through cuBLAS. Q5_K now shadows
+  (Q5_K->F16 via `dequantize_row_q5_K`, then F16->bf16 with the 2A converter)
+  and routes to cuBLAS: in-trace ~900 ms -> ~281 ms, sum 17.60 -> 17.02 s.
+  min-of-8 @16,366: 963 -> **988 t/s** (+2.6%). At ~16K we now match CIRU's
+  12,960 number.
+- **Re-profile method:** `rocprofv3 --kernel-trace` (SDK re-fetched to
+  `/tmp/sdkfull`+`/tmp/aqlp` after the reboot), plus `GGML_CUDA_OP_PROF=1` for
+  op-level `[mm] K= N= time xN`. Note `rocprofv3` reports `Grid_Size_X` as
+  grid.x*block.x. The Q5_K mmb kernel was `mmb_dense_kernel<128, 128, 32, 64,
+  45>` (45 = 32 + GGML_TYPE_Q5_K=13).
 - **GLM-5.3 reviews** (zai-coding-plan, non-blocking) found no concrete bug in
   the HC16 cuBLAS src1 pass-through; the indexer-cache review produced the
   small-chunk fix above. The `getrows.cu` hunk was not in the first review
