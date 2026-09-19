@@ -1,5 +1,6 @@
 #include "mmb.cuh"
 #include "unary.cuh"
+#include "convert.cuh"
 #include <unordered_map>
 #include <map>
 #include <utility>
@@ -714,6 +715,9 @@ size_t mmb_shadow_cap(){
 }
 static bool mmb_is_resident_q6k(const ggml_tensor * w) { return w && w->type == GGML_TYPE_Q6_K && w->op == GGML_OP_NONE && w->data && w->buffer && w->ne[2] == 1 && w->ne[3] == 1 && ggml_is_contiguous(w) && w->ne[0] % 256 == 0 && w->ne[1] <= 32768; }
 static bool mmb_is_resident_iq4(const ggml_tensor * w) { return w && w->type == GGML_TYPE_IQ4_NL && w->op == GGML_OP_NONE && w->data && w->buffer && w->ne[2] == 1 && w->ne[3] == 1 && ggml_is_contiguous(w); }
+// Q5_K is a handful of attn_output weights; shadowing them routes the GEMM to
+// cuBLAS instead of the ~7 TFLOP/s hand-rolled Q5_K mmb path.
+static bool mmb_is_resident_q5k(const ggml_tensor * w) { return w && w->type == GGML_TYPE_Q5_K && w->op == GGML_OP_NONE && w->data && w->buffer && w->ne[2] == 1 && w->ne[3] == 1 && ggml_is_contiguous(w) && w->ne[0] % 256 == 0 && w->ne[1] <= 32768; }
 static bool mmb_is_row_concat(const ggml_tensor * w) {
     return w && w->op == GGML_OP_CONCAT && w->type == GGML_TYPE_IQ4_NL && ggml_get_op_params_i32(w, 0) == 1 && mmb_is_resident_iq4(w->src[0]) && mmb_is_resident_iq4(w->src[1]) &&
            w->src[0]->ne[0] == w->src[1]->ne[0] && w->ne[0] == w->src[0]->ne[0] && w->ne[1] == w->src[0]->ne[1] + w->src[1]->ne[1];
@@ -889,7 +893,7 @@ void ggml_cuda_mul_mat_mmb(ggml_backend_cuda_context & ctx, const ggml_tensor * 
         CUDA_CHECK(cudaGetLastError());
         return;
     }
-    const uint16_t * shadow_pre = ((src0->type == GGML_TYPE_IQ4_NL && mmb_shadow()) || src0->type == GGML_TYPE_Q6_K) ? mmb_shadow_lookup(src0) : nullptr;
+    const uint16_t * shadow_pre = ((src0->type == GGML_TYPE_IQ4_NL && mmb_shadow()) || src0->type == GGML_TYPE_Q6_K || src0->type == GGML_TYPE_Q5_K) ? mmb_shadow_lookup(src0) : nullptr;
     const bool big = (M >= 6144 && K >= 2560) || (shadow_pre && K >= 2560 && T >= 4096);
     uint16_t * Dh = (mmb_hc16() && K == 320 && M == 10240) ? ggml_cuda_mmb_slot_reserve(ctx, 1, dst, (size_t) T * M) : nullptr;
     bool store_f32 = !(Dh && ggml_cuda_mmb_is_bf16_only(dst));
@@ -1054,6 +1058,25 @@ void ggml_cuda_mmb_shadow_prepare(ggml_backend_cuda_context & ctx, const ggml_te
         return;
     }
     if (mmb_shadow_mode() != 1) return;               // mode 2: Q6_K only
+    if (mmb_is_resident_q5k(w)) {
+        if (!mmb_shadow() || g_mmb_shadow.count(w->data) > 0) return;
+        const size_t n = (size_t) w->ne[0] * w->ne[1], bytes = n * 2;
+        if (g_mmb_shadow_bytes + bytes > mmb_shadow_cap()) { GGML_LOG_INFO("MMB_SHADOW cap reached; %s stays Q5_K\n", w->name); return; }
+        // No Q5_K->bf16 dequant; go via F16 (dequantize_row_q5_K) then F16->bf16.
+        const to_fp16_cuda_t to_f16  = ggml_get_to_fp16_cuda(GGML_TYPE_Q5_K);
+        const to_bf16_cuda_t to_bf16 = ggml_get_to_bf16_cuda(GGML_TYPE_F16);
+        if (!to_f16 || !to_bf16) return;
+        uint16_t * buf = nullptr;
+        half * tmp = nullptr;
+        if (cudaMalloc((void **) &buf, bytes) != cudaSuccess) { GGML_LOG_WARN("MMB_SHADOW alloc failed (%zu bytes)\n", bytes); return; }
+        if (cudaMalloc((void **) &tmp, bytes) != cudaSuccess) { cudaFree(buf); return; }
+        to_f16((const void *) w->data, (half *) tmp, (int64_t) n, ctx.stream());
+        to_bf16((const void *) tmp, (nv_bfloat16 *) buf, (int64_t) n, ctx.stream());
+        cudaFree(tmp);
+        CUDA_CHECK(cudaGetLastError());
+        g_mmb_shadow[w->data] = buf; g_mmb_shadow_bytes += bytes;
+        return;
+    }
     const bool concat = mmb_is_row_concat(w);
     if (!concat && !mmb_is_resident_iq4(w)) return;
     if (concat ? g_mmb_shadow_pair.count({w->src[0]->data, w->src[1]->data}) > 0 : g_mmb_shadow.count(w->data) > 0) return;

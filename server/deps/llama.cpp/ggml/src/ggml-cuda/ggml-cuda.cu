@@ -3016,7 +3016,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     // =1: the validated K=2560 projections; =2: broad (K,N >= 2560).
     const bool cublas_shape_ok = ggml_cuda_mmb_cublas_shape_ok(src0);
     if (ggml_cuda_mmb_cublas_mode() > 0 && !split && !grouped_src && src0->ne[2] == 1 && src0->ne[3] == 1 &&
-        (src0->type == GGML_TYPE_IQ4_NL || src0->type == GGML_TYPE_Q6_K) &&
+        (src0->type == GGML_TYPE_IQ4_NL || src0->type == GGML_TYPE_Q6_K || src0->type == GGML_TYPE_Q5_K) &&
         src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 &&
         ggml_is_contiguous(src0) && ggml_is_contiguous(src1) &&
         cublas_shape_ok && src1->ne[1] * src1->ne[2] * src1->ne[3] >= 512) {
@@ -5853,14 +5853,14 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
             continue;
         }
         const ggml_type wt = node->src[0]->type;
-        if (wt != GGML_TYPE_Q6_K && wt != GGML_TYPE_IQ4_NL) {
+        if (wt != GGML_TYPE_Q6_K && wt != GGML_TYPE_IQ4_NL && wt != GGML_TYPE_Q5_K) {
             continue;
         }
-        // IQ4_NL: only shadow weights the cuBLAS route will consume. Shadowing
-        // the rest would make the mmb kernel read 2-byte weights instead of the
-        // 4-bit originals for no benefit (measured ~18% prefill loss). Q6_K
-        // keeps its unconditional shadow.
-        if (wt == GGML_TYPE_IQ4_NL && !ggml_cuda_mmb_cublas_shape_ok(node->src[0])) {
+        // IQ4_NL/Q5_K: only shadow weights the cuBLAS route will consume.
+        // Shadowing the rest would make the mmb kernel read 2-byte weights
+        // instead of the 4-bit originals for no benefit (measured ~18% prefill
+        // loss). Q6_K keeps its unconditional shadow.
+        if ((wt == GGML_TYPE_IQ4_NL || wt == GGML_TYPE_Q5_K) && !ggml_cuda_mmb_cublas_shape_ok(node->src[0])) {
             continue;
         }
         if (ggml_cuda_mmb_supported_mm(node->src[0], node->src[1], node)) {
