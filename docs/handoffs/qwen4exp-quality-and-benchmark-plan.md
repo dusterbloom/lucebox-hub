@@ -186,3 +186,57 @@ ninja test_server_unit test_kvflash bench_paged_attention test_paged_attn_wmma
 HIP_VISIBLE_DEVICES=1 ctest -R "kvflash|PagedKv|AdaptiveSpec|SpecAccept" --output-on-failure
 HIP_VISIBLE_DEVICES=1 ./bench_paged_attention
 ```
+
+## 8. Tier 3 — MTP draft head (reference design, 2026-09-19)
+
+Chosen: **MTP via llama.cpp `--spec-type draft-mtp`**. The head ships inside
+`Qwen/Qwen3.8-Flash-Next` (converter PR 27742 drops it) and is republished as
+`dzannotti/Qwen3.8-Flash-Next-MTP-GGUF` (Qwen Community 1.0): `...-MTP-Q4_K_M.gguf`
+2.5 GB (use this; match the target's quant — a Q8_0 head measured worse), `...-MTP-BF16.gguf`
+7.8 GB, and the reference patch `patches/qwen4exp-mtp-draft-head.patch` + converter
+`patches/merge-mtp-shard.py`. Alternative head: `EasiiX/...-MTP-Strix-Halo-GGUF`
+(Q8_0, gfx1151-tuned); `agentionai/...-MTP-Q8_0-GGUF` (ROCmFP4). DFlash2/EAGLE3 have
+no Flash-Next drafter.
+
+**Head layout (34 tensors, `block_count=49`, `nextn_predict_layers=1`):** one full
+`qwen4exp` block `blk.48.*` (attn + indexer + 512-expert MoE + hyper-connections),
+`blk.48.nextn.{eh_proj [2*n_embd,n_embd], enorm [n_embd], hnorm [hc*n_embd]}`,
+plus shared `token_embd`/`output`/`output_hc_*` (and, MTP-only, the head's own
+`hyper_connection_mixer` as the final mixer).
+
+**Draft graph (from the patch):**
+- inputs: `tokens` (shared embed) and `h` = the trunk's wide residual **before the
+  final mix** (`res_hc`, `[hc*n_embd, T]`); trunk sets `t_h_nextn = res_hc`.
+- `h_norm = rms(h, hnorm)` spans `hc*n_embd` then reshapes to `[n_embd, hc, T]`;
+  `e_norm = rms(tok_embd, enorm)` is one `[n_embd,T]` stream **repeated across hc**.
+- `inpL = eh_proj @ concat(e_norm, h_norm)` (concat on dim0 → `[2*n_embd, hc, T]`);
+  so `eh_proj` contracts **per HC stream**, no pre-pooling (PR 27836's key rule).
+- then the normal block: `hc_mix → dense attention → hc_combine → hc_mix → MoE →
+  hc_combine`; the draft attends **dense** (its indexer weights exist but are skipped).
+- output: reshape to `[hc*n_embd, T]` (`t_h_nextn` for chained steps), then the head's
+  final mixer (`hc_head_norm/down/up`) → shared `output` → logits.
+
+**Runtime contract:** `--spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.75`
+(depth 3–4; `p-min` matters more than depth — deeper/adaptive drafting is slower on
+this bandwidth-bound iGPU because the head carries its own MoE so every draft token is
+a real forward pass). `LLAMA_ATTN_ROT_DISABLE=1` (qwen4exp attention rejects upstream's
+quantized-KV rotation). Target PLE n-gram table stays in host memory
+(`-ot per_layer_token_embd=CPU`).
+
+**Reference numbers (Strix Halo, temp 0, 300 tok):** ROCm UD-Q4_K_XL 20.3 → **35.8 code
+/ 22.6 prose** (accept 0.90 / 0.74); ROCm UD-IQ4_XS 18.0 → 32.8 / 22.1 (0.84 / 0.68);
+Vulkan 24.2 → 37.2 / 30.3 (0.88 / 0.82). Profiling: target pass ~47 ms/token, each
+extra verified token ~+4.4 ms, head step ~3.4 ms, ~1/3 of a pass is kernel-launch gaps
+(target graph ~8000 nodes).
+
+**Port plan into our graph (server/src/qwen4exp/):**
+1. Loader: extend beyond `n_layer` to load one MTP block (`blk.48.*`, `nextn.*`,
+   `block_count=49`, `compress_ratios += 0`); keep the trunk path unchanged.
+2. Forward: add `qwen4exp_mtp_forward(hidden_wide, tokens)` building the block above,
+   reusing `hc_mix`/`build_full_attn` (dense)/`build_moe`; return draft logits + the
+   next wide state.
+3. Trunk: expose `res_hc` (pre-final-mix) to the spec loop.
+4. Backend: draft-and-verify loop (chain), accept/reject with target logits;
+   report `draft_n`/`draft_n_accepted`/AL.
+5. Measure with harness `agent`/`he` + acceptance telemetry; target ≈1.5–1.8× code,
+   1.3–1.5× long-context, prose near break-even.
