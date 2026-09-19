@@ -532,9 +532,11 @@ mmb_routed_glu_kernel(const uint8_t * __restrict__ Wg, const uint8_t * __restric
 __device__ __forceinline__ void mmb_split2(float x, uint16_t & hi, uint16_t & lo) {
     hi = __builtin_bit_cast(uint16_t, (_Float16) x); lo = __builtin_bit_cast(uint16_t, (_Float16) (x - (float) __builtin_bit_cast(_Float16, hi)));
 }
-template <int BM, int BN, int WTM, int WTN, bool TWO>
+template <int BM, int BN, int WTM, int WTN, bool TWO, bool X16 = false>
 __global__ void __launch_bounds__(MMB_NT, 2)
-mmb_f32split_kernel(const float * __restrict__ W, const float * __restrict__ X, float * __restrict__ D, const int M, const int K, const int T) {
+mmb_f32split_kernel(const float * __restrict__ W, const void * __restrict__ Xv, float * __restrict__ D, const int M, const int K, const int T) {
+    const float * __restrict__ X = (const float *) Xv;
+    const uint16_t * __restrict__ Xh = (const uint16_t *) Xv;
     constexpr int BKs = 32, LS = BKs + 8, WAVES_M = BM / WTM, TM = WTM / 16, TN = WTN / 16;
     __shared__ __align__(16) uint16_t Ah[BM * LS], Al[BM * LS], Bh[BN * LS], Bl[BN * LS];
     const int tid = threadIdx.x, lane = tid & 31, wave = tid >> 5, wm = wave % WAVES_M, wn = wave / WAVES_M;
@@ -554,7 +556,19 @@ mmb_f32split_kernel(const float * __restrict__ W, const float * __restrict__ X, 
             *(uint2 *)(Ah + row * LS + c4) = make_uint2((uint32_t)h[0] | ((uint32_t)h[1] << 16), (uint32_t)h[2] | ((uint32_t)h[3] << 16));
             *(uint2 *)(Al + row * LS + c4) = make_uint2((uint32_t)l[0] | ((uint32_t)l[1] << 16), (uint32_t)l[2] | ((uint32_t)l[3] << 16)); }
         for (int idx = tid; idx < B_CH; idx += MMB_NT) { const int row = idx >> 3, c4 = (idx & 7) * 4; const int t = t0 + row;
-            float4 v = make_float4(0.f,0.f,0.f,0.f); if (t < T) v = *(const float4 *)(X + (size_t) t * K + k0 + c4);
+            float4 v = make_float4(0.f,0.f,0.f,0.f);
+            if (t < T) {
+                if constexpr (X16) {
+                    // src1 is bf16-only (in-place); widen before the f16 hi/lo split
+                    const uint2 u = *reinterpret_cast<const uint2 *>(Xh + (size_t) t * K + k0 + c4);
+                    v.x = __bfloat162float(__builtin_bit_cast(nv_bfloat16, (uint16_t) (u.x & 0xffff)));
+                    v.y = __bfloat162float(__builtin_bit_cast(nv_bfloat16, (uint16_t) (u.x >> 16)));
+                    v.z = __bfloat162float(__builtin_bit_cast(nv_bfloat16, (uint16_t) (u.y & 0xffff)));
+                    v.w = __bfloat162float(__builtin_bit_cast(nv_bfloat16, (uint16_t) (u.y >> 16)));
+                } else {
+                    v = *(const float4 *)(X + (size_t) t * K + k0 + c4);
+                }
+            }
             uint16_t h[4], l[4]; mmb_split2(v.x,h[0],l[0]); mmb_split2(v.y,h[1],l[1]); mmb_split2(v.z,h[2],l[2]); mmb_split2(v.w,h[3],l[3]);
             *(uint2 *)(Bh + row * LS + c4) = make_uint2((uint32_t)h[0] | ((uint32_t)h[1] << 16), (uint32_t)h[2] | ((uint32_t)h[3] << 16));
             *(uint2 *)(Bl + row * LS + c4) = make_uint2((uint32_t)l[0] | ((uint32_t)l[1] << 16), (uint32_t)l[2] | ((uint32_t)l[3] << 16)); }
@@ -629,6 +643,8 @@ static uint16_t * mmb_cache_insert(ggml_backend_cuda_context & ctx, const ggml_t
     return buf->get();
 }
 static const uint16_t * mmb_bf16_activation(ggml_backend_cuda_context & ctx, const ggml_tensor * src1, const size_t n, cudaStream_t stream) {
+    // A bf16-only tensor holds its bf16 form in place; never re-convert it.
+    if (const uint16_t * b = ggml_cuda_mmb_bf16_src(src1)) return b;
     const ggml_tensor * root = mmb_root(src1);
     for (auto & e : g_mmb_slots) if (e.buf && e.root == root && e.data == src1->data && e.n == n) return e.buf->get();
     for (auto & e : g_mmb_cache) if (e.root == root && e.data == src1->data && e.n == n) return e.buf->get();
@@ -832,8 +848,17 @@ void ggml_cuda_mul_mat_mmb(ggml_backend_cuda_context & ctx, const ggml_tensor * 
     if (src0->type == GGML_TYPE_F32) {
         dim3 grid((M + 127) / 128, (T + 127) / 128);
         static const bool two = true;
-        if (two) mmb_f32split_kernel<128, 128, 32, 64, true ><<<grid, MMB_NT, 0, stream>>>((const float *) src0->data, (const float *) src1->data, (float *) dst->data, M, K, T);
-        else     mmb_f32split_kernel<128, 128, 32, 64, false><<<grid, MMB_NT, 0, stream>>>((const float *) src0->data, (const float *) src1->data, (float *) dst->data, M, K, T);
+        // A bf16-only src1 (journey step 9) already holds its bf16 form in place;
+        // widen inside the tile load instead of staging an f32 copy.
+        const uint16_t * xb = ggml_cuda_mmb_bf16_src(src1);
+        const void * xp = xb ? (const void *) xb : (const void *) src1->data;
+        if (two) {
+            if (xb) mmb_f32split_kernel<128, 128, 32, 64, true,  true ><<<grid, MMB_NT, 0, stream>>>((const float *) src0->data, xp, (float *) dst->data, M, K, T);
+            else    mmb_f32split_kernel<128, 128, 32, 64, true,  false><<<grid, MMB_NT, 0, stream>>>((const float *) src0->data, xp, (float *) dst->data, M, K, T);
+        } else {
+            if (xb) mmb_f32split_kernel<128, 128, 32, 64, false, true ><<<grid, MMB_NT, 0, stream>>>((const float *) src0->data, xp, (float *) dst->data, M, K, T);
+            else    mmb_f32split_kernel<128, 128, 32, 64, false, false><<<grid, MMB_NT, 0, stream>>>((const float *) src0->data, xp, (float *) dst->data, M, K, T);
+        }
         CUDA_CHECK(cudaGetLastError()); return;
     }
     // A tensor marked bf16-only (journey step 9) already lives in the mmb cache
@@ -906,8 +931,12 @@ bool ggml_cuda_hc_gate_mix(ggml_backend_cuda_context & ctx, const ggml_tensor * 
     if (!xn16) xn16 = mmb_bf16_activation(ctx, xn, (size_t) T * M, stream);
     if (!xn16) return false;
     const uint16_t * lo16 = mmb_bf16_activation(ctx, lo, (size_t) T * K, stream);
-    uint16_t * outh = ggml_cuda_mmb_slot_reserve(ctx, 3, dst, (size_t) T * E);
-    const bool store_f32 = !(outh && ggml_cuda_mmb_is_bf16_only(dst));
+    // A bf16-only mix output stores its bf16 form in place (first half of the f32
+    // buffer); the f32 copy is then never written, same contract as xn.
+    const bool marked = ggml_cuda_mmb_is_bf16_only(dst);
+    uint16_t * outh = marked ? (uint16_t *) dst->data
+                             : ggml_cuda_mmb_slot_reserve(ctx, 3, dst, (size_t) T * E);
+    const bool store_f32 = !(outh && marked);
     dim3 grid(E / 32, (T + 127) / 128);
     mmb_dispatch_quant(w->type, [&](auto tag) {
         constexpr int WT = decltype(tag)::value;

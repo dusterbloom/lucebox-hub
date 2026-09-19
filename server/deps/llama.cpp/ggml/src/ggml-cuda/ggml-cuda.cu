@@ -5793,6 +5793,45 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
                 std::fprintf(stderr, "HC16 xn=%s rows=%lld consumers=%d ok=%d\n", xn->name, (long long) ggml_nrows(xn), nread, (int) ok); }
             if (ok && nread > 0) { ggml_cuda_mmb_mark_bf16_only(xn); g_hc_marked_xn[op] = xn; }
         }
+
+        // 2B: also mark the hc_gate_mix output bf16-only when every consumer can
+        // read bf16 -- the f32 gemm path (f32split) now widens a bf16 src1 inside
+        // the tile load, and the cuBLAS route passes a marked src1 through as
+        // bf16. That lets hc_gate_mix skip its redundant f32 copy (671 MB/call).
+        // Only the gate-mix path writes bf16 in place, and only for a quantized
+        // w_up; the reduce fallback writes f32.
+        for (int i = 0; i < cgraph->n_nodes; ++i) {
+            ggml_cuda_hc_mix_args ma;
+            const int cnt = ggml_cuda_hc_mix_closed(cgraph, i, ma);
+            if (cnt <= 0 || !ma.dst || i < 1 || ggml_nrows(ma.dst) < 512) continue;
+            const ggml_tensor * wup = cgraph->nodes[i - 1];
+            if (wup->op != GGML_OP_MUL_MAT || ma.gate != wup ||
+                !ggml_cuda_mmb_gatemix() || ma.hc != 4 ||
+                !ggml_is_quantized(wup->src[0]->type) || wup->src[1]->type != GGML_TYPE_F32) continue;
+            bool ok = true; int nread = 0;
+            for (int n = i + cnt; n < cgraph->n_nodes && ok; ++n) {
+                const ggml_tensor * t = cgraph->nodes[n];
+                if (!reads(t, ma.dst)) continue;
+                ++nread;
+                if (t->op == GGML_OP_MUL_MAT &&
+                    (ggml_cuda_mmb_supported_mm(t->src[0], t->src[1], t) ||
+                     ggml_cuda_mmb_cublas_shape_ok(t->src[0]))) continue;
+                if (t->op == GGML_OP_MUL_MAT_ID &&
+                    ggml_cuda_mmb_supported_mmid(t->src[0], t->src[1], t->src[2], t)) continue;
+                if (t->op == GGML_OP_VIEW || t->op == GGML_OP_RESHAPE ||
+                    t->op == GGML_OP_PERMUTE || t->op == GGML_OP_CONT) continue;
+                { static unsigned dbg = 0; if (getenv("LLAMA_HC16_DEBUG") && dbg++ < 20)
+                    std::fprintf(stderr, "HC16 mixdst blocked by %s(w=%s type=%s)\n",
+                        ggml_op_name(t->op),
+                        ((t->op == GGML_OP_MUL_MAT || t->op == GGML_OP_MUL_MAT_ID) && t->src[0]) ? t->src[0]->name : "-",
+                        ((t->op == GGML_OP_MUL_MAT || t->op == GGML_OP_MUL_MAT_ID) && t->src[0]) ? ggml_type_name(t->src[0]->type) : "-"); }
+                ok = false;
+            }
+            { static unsigned dbg2 = 0; if (getenv("LLAMA_HC16_DEBUG") && dbg2++ < 12)
+                std::fprintf(stderr, "HC16 mixdst rows=%lld consumers=%d ok=%d\n",
+                    (long long) ggml_nrows(ma.dst), nread, (int) ok); }
+            if (ok && nread > 0) ggml_cuda_mmb_mark_bf16_only(ma.dst);
+        }
     }
 
     // Arena diagnostics (GGML_CUDA_POOL_LOG): pool growth attributable to this graph.
