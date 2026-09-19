@@ -61,6 +61,15 @@ Chunked-prefill QSA landed (indexer-K cache): 32K 576 -> ~893, 64K now runs at
 - **Measurement note:** single-run e2e `t/s` (with decode + warmup) hid this;
   the min-of-8 prefill-only A/B (8s vs min 17.15-17.28 s @16K) is the reliable
   signal. Do prefill A/B as min-of-N prefill-only.
+- **hc_combine_norm cross-stream fusion (tried, reverted).** A fused kernel
+  (`hc_combine_norm_f32_all<4>`, one block per token, block_out read once) made
+  the kernel *slower* (832 -> 989 ms in-trace) from lower occupancy and register
+  pressure; min-of-8 e2e flat (17.31 vs 17.28 s). The `block_out` re-reads were
+  already served from L2, so the premise didn't hold. Reverted.
+- **HC inject tiling (landed, `01de2582`).** `mmb_small_n_bf16_kernel<8,32,128>`
+  idles half its threads for N=4 (NMAX=8) and ran at ~53 GB/s. Use `<4,64,128>`
+  when M<=4 so all 256 threads own a row. min-of-8 @16,366: 947 -> **963 t/s**
+  (+1.7%), gate 5/5.
 - **GLM-5.3 reviews** (zai-coding-plan, non-blocking) found no concrete bug in
   the HC16 cuBLAS src1 pass-through; the indexer-cache review produced the
   small-chunk fix above. The `getrows.cu` hunk was not in the first review
