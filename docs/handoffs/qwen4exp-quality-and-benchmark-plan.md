@@ -156,3 +156,33 @@ matched context/temp, with a spec losslessness check.
 Confounds to match: quant/bpw, KV type (F16 vs q8_0), context depth, MTP depth,
 n-gram/prompt-lookup on/off, temperature, power envelope, resident vs SSD
 tables, warmup, single vs multi-stream.
+
+## 7. Tier 2 verification (2026-09-19, box `lucebox4`)
+
+Built the existing special-tool gates (`ninja -C server/build-hip test_server_unit
+test_kvflash bench_paged_attention test_paged_attn_wmma`) and ran the targeted
+subset on gfx1151 (`HIP_VISIBLE_DEVICES=1`):
+
+| gate | command | result |
+|---|---|---|
+| KVFlash qk / placement / pool-sizing / pager identity-sync | `ctest -R "kvflash\|KvflashPlacement\|KvflashPoolSizing"` | **pass** |
+| Spec-decode acceptance accounting (tree/chain/AR-tail) | `ctest -R SpecAcceptance` | **pass** |
+| Adaptive spec width | `ctest -R AdaptiveSpec` | **pass** |
+| Paged-KV offload (quantized payload remap, budget/restore, cancel) | `ctest -R PagedKv` | **pass** |
+| paged-attn vs double-precision CPU oracle (+ timing) | `bench_paged_attention` | **pass**, oracle max-abs-error 5e-6–1e-5 (limit 0.005) |
+| paged-attn WMMA route | `test_paged_attn_wmma` | SKIP on gfx1151 (RDNA4-only); aborts on the box's gfx1201 dGPU (pre-existing, not our target) |
+
+Notes: `ctest -R "kvflash|PagedKv|AdaptiveSpec|SpecAccept|paged_attn"` is 50/52
+(the 2 are the RDNA4-only WMMA route). The host-side gates run in ~0.3 s and
+could run on a CPU CI runner; the GPU ones need gfx1151. `test_kvflash` (the
+model-driven NIAH/longab suite) needs a Qwen3.5/3.6 GGUF, not qwen4exp, so it was
+not run here. None of KVFlash/PFlash/paged are integrated with the hand-written
+qwen4exp graph yet — that is a separate question from whether the tools work.
+
+Run recipe:
+```
+cd server/build-hip
+ninja test_server_unit test_kvflash bench_paged_attention test_paged_attn_wmma
+HIP_VISIBLE_DEVICES=1 ctest -R "kvflash|PagedKv|AdaptiveSpec|SpecAccept" --output-on-failure
+HIP_VISIBLE_DEVICES=1 ./bench_paged_attention
+```
