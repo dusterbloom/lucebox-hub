@@ -81,13 +81,13 @@ void DiffusionBackend::print_ready_banner() const {
                 cfg_.n_steps > 0 ? cfg_.n_steps : cfg_.block_size, scheme);
 }
 
-bool DiffusionBackend::park(const std::string & /*what*/) { return true; }
-bool DiffusionBackend::unpark(const std::string & /*what*/) { return true; }
+bool DiffusionBackend::park(ParkTarget /*target*/) { return true; }
+bool DiffusionBackend::unpark(ParkTarget /*target*/) { return true; }
 
 GenerateResult DiffusionBackend::generate_impl(const GenerateRequest & req,
                                                const DaemonIO & io) {
     GenerateResult r;
-    if (!model_) { r.error = "no_model"; return r; }
+    if (!model_) { r.fail(GenerateErrorCode::AdapterUnavailable, "no_model"); return r; }
 
     DaemonIO out_io = io.with_token_callback(req.on_token);
     DiffusionStream stream = make_stream(out_io);
@@ -118,7 +118,7 @@ GenerateResult DiffusionBackend::generate_impl(const GenerateRequest & req,
 
     if (!prepared) {
         if (!model_->prepare(req.prompt, prefix_len)) {
-            r.error = "prepare";
+            r.fail(GenerateErrorCode::PrefillFailed, "prepare");
             return r;
         }
         if (prefix_len < 0 || prefix_len > (int)req.prompt.size()) {
@@ -150,8 +150,11 @@ GenerateResult DiffusionBackend::generate_impl(const GenerateRequest & req,
         stream, prefix_len);
     const auto t_decode1 = clock::now();
 
-    r.ok        = d.ok;
-    r.error     = d.error;
+    if (d.ok) {
+        r.succeed();
+    } else {
+        r.fail(GenerateErrorCode::DecodeFailed, d.error);
+    }
     r.tokens    = std::move(d.tokens);
     r.decode_s  = std::chrono::duration<double>(t_decode1 - t_decode0).count();
     return r;
@@ -329,18 +332,18 @@ bool DiffusionBackend::snapshot_adopt(int slot, ggml_context * ctx,
 GenerateResult DiffusionBackend::restore_and_generate_impl(
         int slot, const GenerateRequest & req, const DaemonIO & io) {
     GenerateResult r;
-    if (!model_) { r.error = "no_model"; return r; }
+    if (!model_) { r.fail(GenerateErrorCode::AdapterUnavailable, "no_model"); return r; }
 
     DaemonIO out_io = io.with_token_callback(req.on_token);
     if (slot < 0 || slot >= PREFIX_SLOTS || !snapshots_[slot].ctx) {
-        r.error = "bad slot";
+        r.fail(GenerateErrorCode::InvalidSnapshotSlot, "bad slot");
         out_io.emit(-1);
         return r;
     }
 
     auto * dg = as_diffusion_gemma(model_.get());
     if (!dg) {
-        r.error = "restore_unsupported";
+        r.fail(GenerateErrorCode::AdapterUnavailable, "restore_unsupported");
         out_io.emit(-1);
         return r;
     }
@@ -366,7 +369,7 @@ GenerateResult DiffusionBackend::restore_and_generate_impl(
 
     int prefix_len = snap.cur_pos;
     if (!dg->prepare_delta_from_cache(req.prompt, snap.cur_pos, prefix_len)) {
-        r.error = "prefill";
+        r.fail(GenerateErrorCode::PrefillFailed, "prefill");
         return r;
     }
 
@@ -392,8 +395,11 @@ GenerateResult DiffusionBackend::restore_and_generate_impl(
         stream, prefix_len);
     const auto t_decode1 = clock::now();
 
-    r.ok        = d.ok;
-    r.error     = d.error;
+    if (d.ok) {
+        r.succeed();
+    } else {
+        r.fail(GenerateErrorCode::DecodeFailed, d.error);
+    }
     r.tokens    = std::move(d.tokens);
     r.decode_s  = std::chrono::duration<double>(t_decode1 - t_decode0).count();
     return r;

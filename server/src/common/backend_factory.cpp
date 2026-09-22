@@ -415,7 +415,7 @@ std::unique_ptr<ModelBackend> construct_backend(
         // follow-up. The per-family forward graphs are wired in later phases —
         // until then the sub-factory returns nullptr with a clear diagnostic.
         DiffusionModelArgs dargs;
-        dargs.model_path = model.path;
+        dargs.model_path = model.path.c_str();
         dargs.device     = placement.target;
         dargs.max_ctx    = placement.target.max_ctx;
 
