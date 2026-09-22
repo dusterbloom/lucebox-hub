@@ -2,7 +2,7 @@
 // sampling kernel that the [dg-canvas-split] timer attributes ~1.6s to at C=2048).
 //
 // Isolated: no 26B model, no server. Builds standalone against diffusion_sampling.cu.
-//   nvcc -O3 -arch=sm_86 -DDFLASH27B_BACKEND_CUDA -I server/src/diffusion \
+//   nvcc -O3 -arch=sm_86 -DLUCE_BACKEND_CUDA -I server/src/diffusion \
 //        server/test/bench_diffusion_sample.cu server/src/diffusion/diffusion_sampling.cu \
 //        -o /tmp/bench_samp
 //   /tmp/bench_samp <C> <target_ms>

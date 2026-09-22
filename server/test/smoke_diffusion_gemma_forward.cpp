@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-using namespace dflash::common;
+using namespace luce::common;
 
 // ── Minimal JSON int-array parser ──────────────────────────────────────────
 // Reads a JSON array of integers: [a, b, c, ...]  (single-line, no nesting)

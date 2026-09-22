@@ -20,7 +20,7 @@
 #include <string>
 #include <vector>
 
-using namespace dflash::common;
+using namespace luce::common;
 
 static std::vector<int32_t> parse_json_int_array(const std::string & s,
                                                    const std::string & key) {
