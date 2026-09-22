@@ -2512,14 +2512,18 @@ bool HttpServer::handle_systemone(SocketHandle fd, const std::string & body_str)
         return true;
     }
 
-    // First-token logit capture is wired up for all six backends (see each
-    // backend's want_first_token_logits handling at its
-    // first-token-after-prefill site). An unrecognized/future arch would
-    // otherwise silently return an empty first_token_logits vector, which
-    // looks like "every candidate scored 0" — fail loudly and name the
-    // backend instead.
+    // First-token logit capture is wired up for all six causal backends (see
+    // each backend's want_first_token_logits handling at its
+    // first-token-after-prefill site) plus diffusion-gemma, which answers
+    // through a genuinely different mechanism — a canvas-seeded structured
+    // read (run_diffusion_structured_read) rather than a restricted-vocab
+    // single-token logit read — see DiffusionBackend::generate_impl and
+    // docs/djev-halo-plan.md. An unrecognized/future arch would otherwise
+    // silently return an empty first_token_logits vector, which looks like
+    // "every candidate scored 0" — fail loudly and name the backend instead.
     static const std::set<std::string> kSystemoneSupportedArches = {
-        "qwen3", "qwen35", "qwen35moe", "deepseek4", "gemma4", "laguna"};
+        "qwen3", "qwen35", "qwen35moe", "deepseek4", "gemma4", "laguna",
+        "diffusion-gemma"};
     if (!kSystemoneSupportedArches.count(config_.arch)) {
         send_error(fd, 501,
             "/v1/systemone is not implemented for backend arch '" +

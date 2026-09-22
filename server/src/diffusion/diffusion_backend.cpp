@@ -144,6 +144,31 @@ GenerateResult DiffusionBackend::generate_impl(const GenerateRequest & req,
 
     r.prefill_s = std::chrono::duration<double>(clock::now() - t_prefill0).count();
 
+    // Structured read (/v1/systemone): the caller wants one slot's raw
+    // logit distribution, not generated tokens. djev-spark's own claim is
+    // that one denoise step suffices ("one denoise step gives a
+    // distribution over each slot"); n_gen doubles as the step count here
+    // since /v1/systemone always sets it to a small, deliberate value
+    // (currently 1) rather than a token budget when this flag is set.
+    if (req.want_first_token_logits) {
+        const auto t_decode0 = clock::now();
+        DiffusionReadResult read = run_diffusion_structured_read(
+            *model_, req.prompt, /*slot_count=*/1,
+            /*n_steps=*/std::max(1, req.n_gen), cfg_, /*seed=*/req.sampler.seed,
+            prefix_len);
+        const auto t_decode1 = clock::now();
+
+        if (read.ok) {
+            r.succeed();
+            r.first_token_logits = std::move(read.slot_logits);
+        } else {
+            r.fail(GenerateErrorCode::DecodeFailed, read.error);
+        }
+        r.decode_s = std::chrono::duration<double>(t_decode1 - t_decode0).count();
+        out_io.emit(-1);
+        return r;
+    }
+
     const auto t_decode0 = clock::now();
     DiffusionDecodeResult d = run_diffusion_generate(
         *model_, req.prompt, req.n_gen, cfg_, req.sampler, req.do_sample,
