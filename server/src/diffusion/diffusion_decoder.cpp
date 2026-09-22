@@ -433,4 +433,107 @@ DiffusionDecodeResult run_diffusion_generate(
     return res;
 }
 
+// ─── Structured read (djev-style canvas seeding) ───────────────────────────
+
+DiffusionReadResult run_diffusion_structured_read(
+        DiffusionModelGraph &        model,
+        const std::vector<int32_t> & prefix_tokens,
+        int                          slot_count,
+        int                          n_steps,
+        const DiffusionConfig &      cfg_in,
+        uint64_t                     seed_override,
+        int                          prepared_prefix_len) {
+    DiffusionReadResult res;
+
+    if (slot_count <= 0) { res.error = "config: slot_count must be > 0"; return res; }
+    if (n_steps <= 0) n_steps = 1;
+
+    DiffusionConfig cfg = cfg_in;
+    if (cfg.noise_scheme == DiffusionNoise::Masked && cfg.mask_token_id < 0) {
+        cfg.mask_token_id = model.mask_token();
+        if (cfg.mask_token_id < 0) {
+            res.error = "config: Masked scheme requires a mask token id";
+            return res;
+        }
+    }
+
+    const int vocab = model.vocab();
+    if (vocab <= 0) { res.error = "config: model vocab() must be > 0"; return res; }
+    res.vocab = vocab;
+    res.slot_count = slot_count;
+
+    // resolve_prefix() takes a DiffusionDecodeResult to carry its error string;
+    // structured reads use a different result type, so bridge through a throwaway.
+    DiffusionDecodeResult prefix_res;
+    int prefix_len = 0;
+    if (!resolve_prefix(model, prefix_tokens, prepared_prefix_len, "read",
+                        prefix_len, prefix_res)) {
+        res.error = prefix_res.error;
+        return res;
+    }
+
+    const int n_ctx = model.n_ctx_max();
+    if (n_ctx > 0 && prefix_len + slot_count > n_ctx) {
+        res.error = "config: prefix + slot_count exceeds n_ctx_max";
+        return res;
+    }
+
+    const uint64_t seed = seed_override ? seed_override
+                        : (cfg.seed ? cfg.seed : 0x9E3779B97F4A7C15ULL);
+    std::mt19937_64 rng(seed);
+    auto noise_token = [&]() -> int32_t {
+        if (cfg.noise_scheme == DiffusionNoise::Masked) return cfg.mask_token_id;
+        std::uniform_int_distribution<int> d(0, vocab - 1);
+        return (int32_t)d(rng);
+    };
+
+    // Canvas = the causal prefix (ending exactly where the answer belongs, by
+    // the caller's own prompt construction) plus a noise block at the tail.
+    // Every step below re-noises and re-denoises the SAME block — this is
+    // deliberately not semi-AR (no committing, no advancing to a next block):
+    // a structured read wants the final step's distribution, not tokens.
+    std::vector<int32_t> canvas(prefix_tokens.begin(), prefix_tokens.begin() + prefix_len);
+    canvas.resize((size_t)prefix_len + slot_count);
+
+    std::vector<float> logits;
+    for (int step = 0; step < n_steps; ++step) {
+        for (int j = 0; j < slot_count; ++j) canvas[prefix_len + j] = noise_token();
+
+        if (!model.forward_block(canvas, prefix_len, slot_count,
+                                 /*bidirectional=*/true, logits)) {
+            res.error = "read: forward";
+            return res;
+        }
+        ++res.forward_passes;
+
+        if ((int)logits.size() < slot_count * vocab) {
+            res.error = "read: forward returned too few logits";
+            return res;
+        }
+
+        // Between steps (n_steps > 1), refine the canvas toward the current
+        // argmax so a later step's bidirectional pass sees the prior step's
+        // best guess rather than fresh noise at every position — the same
+        // "self-refinement" spirit as the generation loop's remasking, but
+        // without any finalize/commit bookkeeping since nothing is emitted
+        // until the caller reads the LAST step's logits.
+        if (step + 1 < n_steps) {
+            for (int j = 0; j < slot_count; ++j) {
+                const float * row = logits.data() + (size_t)j * vocab;
+                canvas[prefix_len + j] = softmax_argmax_prob(row, vocab).first;
+            }
+        }
+    }
+
+    res.slot_logits = std::move(logits);
+    res.slot_argmax.resize(slot_count);
+    for (int j = 0; j < slot_count; ++j) {
+        const float * row = res.slot_logits.data() + (size_t)j * vocab;
+        res.slot_argmax[j] = softmax_argmax_prob(row, vocab).first;
+    }
+
+    res.ok = true;
+    return res;
+}
+
 }  // namespace luce::common

@@ -474,6 +474,108 @@ int main() {
         check(r.tokens == m.gen_targets, "eb-sched1: tokens correct");
     }
 
+    // ── 15. structured read: single slot, one step ────────────────────────
+    // The djev-style primitive: seed the answer slot with noise, one
+    // bidirectional forward, read the logits straight back. No commit, no
+    // EOS/length stopping — just the final step's distribution.
+    {
+        SyntheticModel m;
+        m.prefix_ = 3;         // matches the 3-token prefix below
+        m.gen_targets = { 7 };  // slot 0's target
+        DiffusionConfig cfg;
+        cfg.noise_scheme = DiffusionNoise::UniformState;
+
+        auto r = run_diffusion_structured_read(m, /*prefix=*/{1, 2, 3},
+                                               /*slot_count=*/1, /*n_steps=*/1,
+                                               cfg, /*seed=*/123);
+        check(r.ok, "read: ok");
+        check(r.forward_passes == 1, "read: exactly one forward pass",
+              "got " + std::to_string(r.forward_passes));
+        check(r.slot_count == 1 && r.vocab == m.vocab_, "read: shape matches model");
+        check(r.slot_argmax.size() == 1 && r.slot_argmax[0] == 7,
+              "read: argmax matches the peaked target");
+        check((int)r.slot_logits.size() == r.vocab, "read: logits row is vocab-wide");
+        // The peaked logit (20.0) should dominate; every other entry near 0.
+        check(r.slot_logits[7] > 10.0f, "read: peaked slot logit is large",
+              "got " + std::to_string(r.slot_logits[7]));
+    }
+
+    // ── 16. structured read: multi-slot, one shot ─────────────────────────
+    {
+        SyntheticModel m;
+        m.prefix_ = 2;         // matches the 2-token prefix below
+        m.gen_targets = { 3, 9, 15 };  // slots 0,1,2
+        DiffusionConfig cfg;
+        cfg.noise_scheme = DiffusionNoise::Masked;  // exercise the mask-token path
+
+        auto r = run_diffusion_structured_read(m, /*prefix=*/{5, 6}, /*slot_count=*/3,
+                                               /*n_steps=*/1, cfg, /*seed=*/0);
+        check(r.ok, "read-multi: ok");
+        check(r.slot_argmax == std::vector<int32_t>({3, 9, 15}),
+              "read-multi: all three slots read correctly");
+    }
+
+    // ── 17. structured read: multi-step refines toward a fixed point ──────
+    // With n_steps>1, each step's canvas should be seeded from the previous
+    // step's argmax (not fresh noise) — verified indirectly: a peaked model
+    // ignores canvas content, so this mainly checks forward_passes counts
+    // steps correctly and the final read is still consistent with n_steps=1.
+    {
+        SyntheticModel m;
+        m.prefix_ = 1;          // matches the 1-token prefix below
+        m.gen_targets = { 11 };
+        DiffusionConfig cfg;
+        cfg.noise_scheme = DiffusionNoise::UniformState;
+
+        auto r = run_diffusion_structured_read(m, /*prefix=*/{1}, /*slot_count=*/1,
+                                               /*n_steps=*/4, cfg, /*seed=*/7);
+        check(r.ok, "read-multistep: ok");
+        check(r.forward_passes == 4, "read-multistep: forward_passes == n_steps",
+              "got " + std::to_string(r.forward_passes));
+        check(r.slot_argmax[0] == 11, "read-multistep: converges to the same target");
+    }
+
+    // ── 18. structured read: canvas seeding actually reaches the model ─────
+    // A model that reports back what it saw at the block position confirms
+    // the noise scheme wires through correctly (Masked => every slot holds
+    // exactly mask_token_id on every forward call).
+    {
+        struct SpyModel : DiffusionModelGraph {
+            int32_t seen_first_slot_tok = -999;
+            int     vocab_ = 16, mask_ = 15;
+            int     vocab() const override { return vocab_; }
+            int32_t eos_token() const override { return 14; }
+            int32_t mask_token() const override { return mask_; }
+            int     n_ctx_max() const override { return 0; }
+            bool prepare(const std::vector<int32_t> & p, int & out) override {
+                out = (int)p.size(); return true;
+            }
+            bool forward_block(const std::vector<int32_t> & canvas, int block_begin,
+                               int block_len, bool, std::vector<float> & out) override {
+                seen_first_slot_tok = canvas[block_begin];
+                out.assign((size_t)block_len * vocab_, 0.0f);
+                out[0] = 20.0f;  // peaked at token 0, regardless of input
+                return true;
+            }
+        } spy;
+
+        DiffusionConfig cfg;
+        cfg.noise_scheme = DiffusionNoise::Masked;
+        auto r = run_diffusion_structured_read(spy, {1, 2}, 1, 1, cfg, 0);
+        check(r.ok, "read-spy: ok");
+        check(spy.seen_first_slot_tok == 15,
+              "read-spy: Masked scheme seeds the slot with mask_token_id",
+              "got " + std::to_string(spy.seen_first_slot_tok));
+    }
+
+    // ── 19. structured read: rejects a non-positive slot_count ────────────
+    {
+        SyntheticModel m;
+        DiffusionConfig cfg;
+        auto r = run_diffusion_structured_read(m, {1}, /*slot_count=*/0, 1, cfg, 0);
+        check(!r.ok && !r.error.empty(), "read: slot_count<=0 is a config error");
+    }
+
     std::printf("\nResults: %d/%d passed, %d failed\n",
                 g_passed, g_passed + g_failed, g_failed);
     return g_failed == 0 ? 0 : 1;
