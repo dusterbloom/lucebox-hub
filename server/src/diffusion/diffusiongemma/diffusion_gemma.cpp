@@ -3,7 +3,7 @@
 #include "diffusion_gemma.h"
 
 #include "common/snapshot_backend.h"
-#include "dflash27b.h"   // dflash27b_last_error
+#include "luce.h"   // luce_last_error
 #include "ggml-cuda.h"   // ggml_backend_cuda_init
 
 #include <algorithm>
@@ -55,7 +55,7 @@ bool DiffusionGemmaGraph::init() {
         return false;
     }
     if (!load_gemma4_gguf(cfg_.model_path, backend_, w_)) {
-        std::fprintf(stderr, "[diffusiongemma] GGUF load failed: %s\n", dflash27b_last_error());
+        std::fprintf(stderr, "[diffusiongemma] GGUF load failed: %s\n", luce_last_error());
         return false;
     }
     if (!create_gemma4_cache(backend_, w_, cfg_.max_ctx, cache_)) {
