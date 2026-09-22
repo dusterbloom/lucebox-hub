@@ -25,7 +25,7 @@
 #include <string>
 #include <vector>
 
-using namespace dflash::common;
+using namespace luce::common;
 
 static std::vector<int32_t> read_i32_bin(const char * path) {
     std::ifstream f(path, std::ios::binary | std::ios::ate);

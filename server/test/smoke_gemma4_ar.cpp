@@ -16,7 +16,7 @@
 #include <string>
 #include <algorithm>
 
-using namespace dflash::common;
+using namespace luce::common;
 
 int main(int argc, char ** argv) {
     if (argc < 2) {

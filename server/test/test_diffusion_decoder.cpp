@@ -14,7 +14,7 @@
 #include <numeric>
 #include <vector>
 
-using namespace dflash::common;
+using namespace luce::common;
 
 namespace {
 
