@@ -1,5 +1,53 @@
 # Plan: an efficient djev-spark equivalent for Strix Halo (gfx1151)
 
+## Status (updated as work lands)
+
+CPU-only progress so far — no GPU has been available in this environment,
+so everything below is built and verified without one; nothing has run
+against a real model yet. Branch `plan/djev-halo` (merges
+`feat/diffusion-foundation`, the rebased DiffusionGemma backend, with
+`experiment/openjev`, the causal `/v1/systemone` work — both were rebased
+onto the same `upstream/main` tip independently, so the merge was clean).
+
+- ✅ **Phase 2, core primitive — done, CPU-verified.** `run_diffusion_structured_read()`
+  added to `diffusion_decoder.cpp`/`.h`: seeds `slot_count` noise positions
+  after a causally-encoded prefix, runs `n_steps` bidirectional
+  `forward_block` passes (refining toward the previous step's argmax
+  between steps), returns the final step's raw per-slot logits — no
+  commit/streaming/EOS handling, since a read wants a distribution, not
+  tokens. 9 new unit tests against the module's existing
+  `SyntheticModel`/spy-model pattern (single-slot, multi-slot, multi-step,
+  Masked-vs-UniformState noise wiring, config guards). **57/57 tests pass**
+  (48 pre-existing + 9 new), compiled and run with plain
+  `g++ -std=c++17` — the module's own documented CPU-only path, no CUDA
+  needed for this half.
+- ✅ **Phase 2, wiring — done, syntax-verified only.** `DiffusionBackend::generate_impl`
+  branches on `req.want_first_token_logits` before the normal
+  `run_diffusion_generate()` call, routes to the structured-read primitive
+  with `slot_count=1` and `n_steps=max(1, req.n_gen)` (`/v1/systemone`
+  always sends `n_gen=1`, matching djev-spark's own one-step-suffices
+  claim), and fills `GenerateResult::first_token_logits` — the same field
+  the six causal backends already populate. **No `/v1/systemone` HTTP-layer
+  changes were needed** beyond adding `"diffusion-gemma"` to its backend
+  allowlist: the endpoint's rendering, tokenization, and
+  restricted-softmax logic were already backend-agnostic. Verified with
+  `g++ -fsyntax-only` against the real project headers (clean) on both
+  `diffusion_backend.cpp` and `http_server.cpp` — **not** compiled as part
+  of a full CUDA/HIP build, and never run.
+- ❌ **Not built yet:** position-pinning for a *mixed* pinned+noise block
+  (Phase 2's other bullet below) — deliberately out of scope for now since
+  `/v1/systemone`'s one-slot-per-question protocol doesn't need it; still a
+  documented follow-up if multi-position templates come up later.
+- ⛔ **Blocked on hardware, not yet attempted:** Phase 0 (correctness
+  validation against real weights), Phase 1 (running on real gfx1151),
+  all of Phase 3 (every efficiency lever), Phase 4 (benchmarking). The
+  structured-read primitive above has never executed against an actual
+  DiffusionGemma forward pass — it's only been exercised against synthetic
+  test models. Nothing in this status section changes that risk, flagged
+  again below.
+
+---
+
 Target: reproduce [`mmastrac/djev-spark`](https://github.com/mmastrac/djev-spark)'s
 capability — structured Jev-style decisions (noul/choice/score) served directly
 off DiffusionGemma's native denoise-canvas mechanism — on AMD Strix Halo
@@ -95,38 +143,47 @@ latency.
 
 ### Phase 2 — Build the structured-read primitive (djev's actual algorithm)
 
-This is the piece lucebox doesn't have yet, on any hardware. `/v1/systemone`
-today (the earlier openjev work) only supports causal backends — it forces a
+**Status: core primitive + wiring done (see Status section above); the
+real-model spot check below is not — still blocked on hardware.**
+
+This was the piece lucebox didn't have yet, on any hardware. `/v1/systemone`
+(the earlier openjev work) only ever supported causal backends — it forces a
 single next-token position on an AR model and restricts vocab logits. That's
 a *different, weaker* mechanism than djev's real trick, which needs genuine
 bidirectional diffusion:
 
-- Add a **canvas-seeding mode** to `diffusion_decoder.cpp`: given a rendered
-  prompt/template and a set of answer-slot positions, seed the canvas with
-  the template's fixed tokens plus noise at exactly the answer slot(s)
-  (reusing the decoder's existing masked/uniform-state noise machinery), run
-  N denoise steps (start with N=1, matching djev-spark's own "one denoise
-  step gives a distribution over each slot" claim), and read the per-slot
-  logit distribution directly — no full generation, no EOS handling.
-- Add **position-pinning** for the template's fixed tokens across denoise
-  steps (matching djev's `diffusion_pinned` behavior) so they don't drift
-  under bidirectional attention.
-- Extend `/v1/systemone`'s HTTP contract (schema already exists — noul/
-  choice/score, `questions[]`) to route to this new canvas-read path when the
-  loaded backend is a diffusion arch, instead of (or alongside) the existing
-  causal-logit-restriction path. Keep the wire format identical so existing
-  clients don't need to change.
-- Restrict the read-out the same way `/v1/systemone` already does for causal
-  backends: candidate answer tokens (Yes/No, option labels, score digits),
-  softmax over just those, argmax → answer. The restriction logic
-  (`systemone_softmax_restricted` et al.) is reusable as-is; only the
-  logit-source changes.
+- ✅ **Canvas-seeding mode**, `run_diffusion_structured_read()` in
+  `diffusion_decoder.cpp`/`.h`: given a rendered prompt/template ending
+  exactly where the answer belongs (the same convention `/v1/systemone`
+  already used for causal backends) and a slot count, seeds the canvas with
+  noise at the answer slot(s) (reusing the decoder's existing
+  masked/uniform-state noise machinery), runs N denoise steps (N=1 by
+  default, matching djev-spark's own "one denoise step gives a distribution
+  over each slot" claim), and reads the per-slot logit distribution
+  directly — no full generation, no EOS handling.
+- ❌ **Position-pinning for a *mixed* pinned+noise block** (fixed template
+  tokens interleaved with free answer slots in one block, matching djev's
+  `diffusion_pinned` behavior) — **not built**. Turned out unnecessary for
+  the MVP: because `/v1/systemone` already renders prompts to end exactly at
+  the answer position (no trailing fixed template after the noise slot),
+  the causal prefix/bidirectional-block split handles pinning implicitly —
+  everything before the block is prefix (fixed, causally encoded), the
+  block itself is pure noise. A real mixed-block need (fixed tokens *inside*
+  the bidirectional block) is still a documented follow-up if a future
+  template shape requires it.
+- ✅ **`/v1/systemone` routing** — turned out to need no new HTTP-layer
+  branch at all: `DiffusionBackend::generate_impl` populates the exact same
+  `GenerateResult::first_token_logits` field the causal backends already
+  fill, so the endpoint's existing rendering/tokenization/restriction code
+  (`systemone_softmax_restricted` et al.) works unmodified. Only change:
+  `"diffusion-gemma"` added to the backend allowlist.
 
-**Exit criteria:** a correctness test suite (extend
-`test_diffusion_decoder.cpp`'s CPU-testable style) proving canvas-seeded
-single-step reads produce sane, calibrated-ish distributions on toy inputs,
-then a real-model spot check against djev-spark's own JevBench-style
-questions for a sanity comparison (not a formal benchmark run yet).
+**Exit criteria (revised — split in two):**
+- ✅ Correctness test suite on synthetic models — done, 57/57 (see Status).
+- ⛔ Real-model spot check against djev-spark's own JevBench-style
+  questions — **not done, blocked on hardware.** Nothing above has run a
+  real DiffusionGemma forward pass. Do this as part of Phase 0/1 once a
+  CUDA/HIP box is available, before trusting any answer this path produces.
 
 ### Phase 3 — Strix Halo-specific efficiency work
 
