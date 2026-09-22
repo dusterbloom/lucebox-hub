@@ -62,4 +62,52 @@ DiffusionDecodeResult run_diffusion_generate(
     const DiffusionStream &      stream,
     int                          prepared_prefix_len = -1);
 
+// ─── Structured read (djev-style canvas seeding) ───────────────────────────
+//
+// A "structured read" costs one (or a few) denoise steps, not a full
+// generation: `prefix_tokens` is rendered so it ends exactly where the
+// answer belongs (the same convention /v1/systemone already uses for
+// causal backends — see http_server.cpp's systemone_question_suffix), and
+// `slot_count` free positions right after it are seeded with noise and
+// denoised in place. Unlike run_diffusion_generate, nothing is committed to
+// a growing canvas and no EOS/length stopping applies — the caller wants
+// the raw per-slot probability distribution, not committed tokens.
+//
+// `slot_count` > 1 supports a multi-token answer label read in one shot
+// (all slot positions denoise jointly, bidirectionally, exactly like a
+// generation block); it does NOT support mixing pinned/fixed tokens with
+// noise within one block — every position in [prefix_len, prefix_len +
+// slot_count) is noise. That's a deliberate MVP scope: it's enough for
+// /v1/systemone's one-slot-per-question protocol today; a mixed pinned+
+// noise block is a documented follow-up if multi-position templates are
+// ever needed (see server/docs/djev-halo-plan.md, Phase 2).
+struct DiffusionReadResult {
+    bool                  ok = false;
+    std::string           error;
+    int                   slot_count = 0;
+    int                   vocab      = 0;
+    // Row-major: slot_count rows of `vocab` raw (pre-softmax) logits from the
+    // FINAL denoise step. Caller restricts/softmaxes over candidate answer
+    // tokens per slot, same as the causal /v1/systemone path already does.
+    std::vector<float>    slot_logits;
+    std::vector<int32_t>  slot_argmax;
+    int                   forward_passes = 0;
+};
+
+// Runs `n_steps` (>=1) denoise steps over a `slot_count`-wide noise block
+// seeded right after `prefix_tokens`, and returns the final step's per-slot
+// logits. `n_steps<=0` defaults to 1, matching djev-spark's own claim that
+// "one denoise step gives a distribution over each slot." `cfg.seed` (or an
+// explicit `seed` override, taking precedence when nonzero) drives the
+// initial noise draw for DiffusionNoise::UniformState; Masked noise instead
+// seeds every slot with the model's mask token and ignores the seed.
+DiffusionReadResult run_diffusion_structured_read(
+    DiffusionModelGraph &        model,
+    const std::vector<int32_t> & prefix_tokens,
+    int                          slot_count,
+    int                          n_steps,
+    const DiffusionConfig &      cfg,
+    uint64_t                     seed = 0,
+    int                          prepared_prefix_len = -1);
+
 }  // namespace luce::common
