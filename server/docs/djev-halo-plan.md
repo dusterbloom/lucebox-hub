@@ -18,25 +18,23 @@ the same model the reference contract was pinned to.
   baseline: ~2 tok/s decode (Phase 3's efficiency work has not started; the
   prompt prefix KV cache is on, but nothing else is optimized, so this is a
   floor, not a target).
-- ⚠️ **Phase 2, structured read — runs on real weights, accuracy still being
-  established.** An early run at 16 steps answered a 4-question set correctly
-  (`4`, `Paris`, `Yes`, `Elephant`), but a broader 7-question set scored
-  3/7 and an interim refinement revision scored 4/7 — so that one run was
-  **a lucky draw, not convergence**. Root cause: the read drove
-  `forward_block` directly and never applied the model's **self-conditioning
-  + temperature schedule** (the `set_sc` seam `run_eb_generate` uses). The
-  prefix/canvas attention masking is *not* missing — `forward_block` runs the
-  same denoising graph with `n_prompt=P`, which implements the
-  causal-prefix/bidirectional-canvas regions. Plain generation runs the
-  full contract and answered the same questions correctly (sky→`Yes.`,
-  10>3→`Yes.`, largest→`Elephant`). Changes landed: `DiffusionConfig::
-  read_steps` (default 16, decoupled from `n_gen`; strictly validated
-  `DG_READ_STEPS` override) and a rewrite of the read loop to seed once,
-  feed the previous argmax back, and supply previous-step logits through
-  `set_sc` with a temperature schedule — the real contract, replacing a
-  dead refinement and an interim fixed-confidence gate that could pin a
-  single slot. **Accuracy on the real-model set is being re-measured before
-  this is called trustworthy.**
+- ⚠️ **Phase 2, structured read — the loop is now the real EB denoiser, but
+  accuracy is unchanged, and the residual defect is upstream of it.** The
+  read now mirrors `run_eb_generate`'s single-block entropy-bound loop
+  (uniform init, temp schedule, ascending-entropy acceptance, renoise
+  rejected, `set_sc`), replacing both the dead refinement and an
+  SC+argmax heuristic. On the real 7-question set all three revisions score
+  3–4/7, i.e. **the loop was never the bottleneck**. Isolation: plain
+  generation with the exact `/v1/systemone` suffix renders the *choice*
+  questions as **empty output**, and disagrees with the read on noul
+  (fish-can-fly: generation `No`, read `Yes`). So the remaining bug is in
+  diffusion-gemma prompt rendering / answer-slot placement in
+  `/v1/systemone`, not in the denoiser. The prefix/canvas attention masking
+  is *not* the issue (`forward_block` runs the graph with `n_prompt=P`).
+  Landing: `DiffusionConfig::read_steps` (default 16, decoupled from
+  `n_gen`; strictly validated `DG_READ_STEPS`) + the EB-mirrored read.
+  **Next: dump/inspect the rendered prompt, answer-slot position, and
+  candidate label tokens for `diffusion-gemma` on `/v1/systemone`.**
 - ✅ **Phase 2, core primitive — CPU-verified.** `run_diffusion_structured_read()`
   added to `diffusion_decoder.cpp`/`.h`: seeds `slot_count` noise positions
   after a causally-encoded prefix, runs `n_steps` bidirectional
@@ -163,11 +161,12 @@ latency.
 ### Phase 2 — Build the structured-read primitive (djev's actual algorithm)
 
 **Status: core primitive + wiring done; real-model spot check RUN on gfx1151
-(2026-09-23). One 4-question set passed at 16 steps, but a 7-question set
-scored 3–4/7, so accuracy is not yet established. The loop now drives the
-model's `set_sc` self-conditioning + temperature schedule instead of a
-step-count/gate heuristic (see Status section above). `read_steps` defaults
-to 16.**
+(2026-09-23). The 7-question set scores 3–4/7 across three denoiser
+revisions, so accuracy is not yet established — and the loop is not the
+bottleneck. The read now mirrors `run_eb_generate`'s entropy-bound loop
+exactly; the residual defect is in diffusion-gemma prompt rendering /
+answer-slot placement (choice prompts render to empty output), see Status
+section above. `read_steps` defaults to 16.**
 
 This was the piece lucebox didn't have yet, on any hardware. `/v1/systemone`
 (the earlier openjev work) only ever supported causal backends — it forces a
