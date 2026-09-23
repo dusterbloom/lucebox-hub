@@ -496,9 +496,16 @@ DiffusionReadResult run_diffusion_structured_read(
     canvas.resize((size_t)prefix_len + slot_count);
 
     std::vector<float> logits;
-    for (int step = 0; step < n_steps; ++step) {
-        for (int j = 0; j < slot_count; ++j) canvas[prefix_len + j] = noise_token();
+    // Seed the canvas once, then refine in place: each step keeps the current
+    // argmax at positions it is confident about and re-noises the rest, so a
+    // later bidirectional pass actually sees the previous step's best guess.
+    // (Re-seeding every position at the top of each step — the previous
+    // behaviour — made the "refine toward argmax" step dead code: the argmax
+    // was always overwritten by fresh noise, so N steps were N independent
+    // random draws and only the last was read, not a refinement.)
+    for (int j = 0; j < slot_count; ++j) canvas[prefix_len + j] = noise_token();
 
+    for (int step = 0; step < n_steps; ++step) {
         if (!model.forward_block(canvas, prefix_len, slot_count,
                                  /*bidirectional=*/true, logits)) {
             res.error = "read: forward";
@@ -511,16 +518,19 @@ DiffusionReadResult run_diffusion_structured_read(
             return res;
         }
 
-        // Between steps (n_steps > 1), refine the canvas toward the current
-        // argmax so a later step's bidirectional pass sees the prior step's
-        // best guess rather than fresh noise at every position — the same
-        // "self-refinement" spirit as the generation loop's remasking, but
-        // without any finalize/commit bookkeeping since nothing is emitted
-        // until the caller reads the LAST step's logits.
+        // Between steps (n_steps > 1), accept the argmax where the read is
+        // already confident and re-noise only the uncertain positions — the
+        // same accept/re-noise spirit as the generation loop's remasking,
+        // without finalize/commit bookkeeping (nothing is emitted until the
+        // caller reads the LAST step's logits).
         if (step + 1 < n_steps) {
             for (int j = 0; j < slot_count; ++j) {
                 const float * row = logits.data() + (size_t)j * vocab;
-                canvas[prefix_len + j] = softmax_argmax_prob(row, vocab).first;
+                const auto best = softmax_argmax_prob(row, vocab);
+                canvas[prefix_len + j] =
+                    (best.second >= cfg.confidence_threshold)
+                        ? best.first
+                        : noise_token();
             }
         }
     }
