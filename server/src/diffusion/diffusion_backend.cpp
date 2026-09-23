@@ -163,15 +163,34 @@ GenerateResult DiffusionBackend::generate_impl(const GenerateRequest & req,
                     "(want an integer 1..256); using %d\n", e, read_steps);
             }
         }
+        int read_slots = cfg_.read_canvas > 0 ? cfg_.read_canvas : 32;
+        if (const char * e = std::getenv("DG_READ_SLOTS"); e && *e) {
+            char * end = nullptr;
+            const long v = std::strtol(e, &end, 10);
+            if (end && *end == '\0' && v >= 1 && v <= 256) {
+                read_slots = (int)v;
+            } else {
+                std::fprintf(stderr,
+                    "[diffusion] ignoring invalid DG_READ_SLOTS='%s' "
+                    "(want an integer 1..256); using %d\n", e, read_slots);
+            }
+        }
         DiffusionReadResult read = run_diffusion_structured_read(
-            *model_, req.prompt, /*slot_count=*/1,
+            *model_, req.prompt, read_slots,
             /*n_steps=*/read_steps, cfg_, /*seed=*/req.sampler.seed,
             prefix_len);
         const auto t_decode1 = clock::now();
 
         if (read.ok) {
             r.succeed();
-            r.first_token_logits = std::move(read.slot_logits);
+            const int V = read.vocab;
+            // The read returns every slot's row; the answer is slot 0.
+            if (read_slots == 1 || V <= 0) {
+                r.first_token_logits = std::move(read.slot_logits);
+            } else {
+                r.first_token_logits.assign(read.slot_logits.begin(),
+                                            read.slot_logits.begin() + V);
+            }
         } else {
             r.fail(GenerateErrorCode::DecodeFailed, read.error);
         }
