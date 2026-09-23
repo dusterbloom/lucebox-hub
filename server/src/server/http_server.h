@@ -578,6 +578,12 @@ private:
     RoutingAdmission enqueue_request_and_wait(SocketHandle fd, ParsedRequest req,
                                   bool report_admission = false);
 
+    // POST /v1/systemone: openjev-style prefill-only structured
+    // classification (noul/choice/score questions answered from a single
+    // forced next-token logit distribution). Sends its own response;
+    // always returns true (never falls through to 404 handling).
+    bool handle_systemone(SocketHandle fd, const std::string & body_str);
+
     // Send HTTP response helpers.
     bool send_response(SocketHandle fd, int status, const std::string & content_type,
                        const std::string & body);
@@ -703,6 +709,14 @@ struct ServerJob {
     std::chrono::steady_clock::time_point last_stream_write{};
     std::atomic<bool> client_disconnected{false};
     ServerJob *   next = nullptr;
+    // Optional escape hatch for handlers that don't fit the chat-completion
+    // shape (e.g. /v1/systemone). When set, process_job runs this on the
+    // worker thread instead of the normal prompt/generate/SSE pipeline —
+    // this still serializes with real generation jobs through the single
+    // worker thread, so backend_.generate() calls it makes are safe. The
+    // task is responsible for writing the HTTP response and must not touch
+    // job->done/job->cv itself (process_job signals those after it returns).
+    std::function<void()> custom_task;
 
     // Concurrent-scheduler state that survives a pool-full admission retry.
     // The classic worker leaves these fields untouched.
