@@ -570,6 +570,48 @@ int main() {
         check(m.nonnull_after, "read-sc: step 1 passes non-null SC + use=1");
     }
 
+    // ── 17c. structured read: needs a real canvas, not a 1-wide slot ──────
+    // Regression for the measured 1-wide-canvas defect: on real DiffusionGemma
+    // weights a slot_count=1 read scored 3/7 where a 32-wide read scored 5/7.
+    // A diffusion forward relies on the bidirectional context of the
+    // surrounding canvas positions; this model only produces the correct
+    // answer at slot 0 when the block has at least one neighbour.
+    {
+        struct CanvasContextModel : DiffusionModelGraph {
+            int vocab_ = 16;
+            int32_t vocab() const override { return vocab_; }
+            int32_t eos_token() const override { return 14; }
+            int32_t mask_token() const override { return -1; }
+            int     n_ctx_max() const override { return 4096; }
+            bool prepare(const std::vector<int32_t> &, int & out_prefix_len) override {
+                out_prefix_len = 1;
+                return true;
+            }
+            bool forward_block(const std::vector<int32_t> &, int, int block_len,
+                               bool, std::vector<float> & out) override {
+                out.assign((size_t)block_len * vocab_, 0.0f);
+                // Correct at slot 0 only with >=1 neighbour (context); a 1-wide
+                // canvas peaks at the wrong token.
+                const int tok = (block_len >= 2) ? 7 : 3;
+                out[(size_t)0 * vocab_ + tok] = 20.0f;
+                return true;
+            }
+        };
+        CanvasContextModel m;
+        DiffusionConfig cfg;
+        cfg.noise_scheme = DiffusionNoise::UniformState;
+
+        auto r = run_diffusion_structured_read(m, /*prefix=*/{1},
+                                               /*slot_count=*/cfg.read_canvas,
+                                               /*n_steps=*/4, cfg, /*seed=*/7);
+        check(r.ok, "read-canvas: ok");
+        check(r.slot_argmax[0] == 7,
+              "read-canvas: configured canvas gives the correct slot-0 answer "
+              "(a 1-wide canvas has no context)",
+              "got " + std::to_string(r.slot_argmax[0]) +
+              " with read_canvas=" + std::to_string(cfg.read_canvas));
+    }
+
     // ── 18. structured read: canvas seeding actually reaches the model ─────
     // A model that reports back what it saw at the block position confirms
     // the noise scheme wires through correctly (Masked => every slot holds

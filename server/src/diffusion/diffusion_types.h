@@ -60,6 +60,15 @@ struct DiffusionConfig {
     // proven value.
     int             read_steps           = 16;
 
+    // Structured read (/v1/systemone): canvas width seeded after the causal
+    // prefix; the answer is read from slot 0. A diffusion forward needs the
+    // bidirectional context of the surrounding canvas positions — a 1-wide
+    // canvas has none, and measured on real DiffusionGemma 26B-A4B weights a
+    // 1-wide read scored 3/7 where a 32-wide read scored 5/7 (the same width
+    // djev-spark benchmarks at). This is the "single read" width, not a
+    // token budget.
+    int             read_canvas          = 32;
+
     // L2′ inter-block snapshot: after each committed block, cache the KV so
     // the next block only forwards its C new tokens. Set DG_NO_L2=1 env or
     // enable_l2_interblock=false to disable (useful for correctness baselines).

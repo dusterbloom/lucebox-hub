@@ -18,23 +18,30 @@ the same model the reference contract was pinned to.
   baseline: ~2 tok/s decode (Phase 3's efficiency work has not started; the
   prompt prefix KV cache is on, but nothing else is optimized, so this is a
   floor, not a target).
-- ⚠️ **Phase 2, structured read — the loop is now the real EB denoiser, but
-  accuracy is unchanged, and the residual defect is upstream of it.** The
-  read now mirrors `run_eb_generate`'s single-block entropy-bound loop
-  (uniform init, temp schedule, ascending-entropy acceptance, renoise
-  rejected, `set_sc`), replacing both the dead refinement and an
-  SC+argmax heuristic. On the real 7-question set all three revisions score
-  3–4/7, i.e. **the loop was never the bottleneck**. Isolation: plain
-  generation with the exact `/v1/systemone` suffix renders the *choice*
-  questions as **empty output**, and disagrees with the read on noul
-  (fish-can-fly: generation `No`, read `Yes`). So the remaining bug is in
-  diffusion-gemma prompt rendering / answer-slot placement in
-  `/v1/systemone`, not in the denoiser. The prefix/canvas attention masking
-  is *not* the issue (`forward_block` runs the graph with `n_prompt=P`).
-  Landing: `DiffusionConfig::read_steps` (default 16, decoupled from
-  `n_gen`; strictly validated `DG_READ_STEPS`) + the EB-mirrored read.
-  **Next: dump/inspect the rendered prompt, answer-slot position, and
-  candidate label tokens for `diffusion-gemma` on `/v1/systemone`.**
+- ⚠️ **Phase 2, structured read — 5/7 after fixing the canvas width.**
+  Root cause #1 (fixed, TDD red→green, test 17c): the read used a **1-wide
+  canvas**, but a diffusion forward needs the bidirectional context of the
+  surrounding canvas positions. On real DiffusionGemma 26B-A4B a 1-wide read
+  scored 3/7; a 32-wide read (djev-spark's benchmark width) scored **5/7**
+  (noul 4/4, math correct). `DiffusionConfig::read_canvas` now defaults to
+  32; the backend seeds a 32-slot canvas after the prefix and returns slot
+  0's logits (`DG_READ_SLOTS` override).
+- ⚠️ **Phase 2, root cause #2 (open) — read disagrees with generation on
+  word-label choices.** Even at canvas 32 / steps 48, `capital of France`→
+  `Rome` and `largest animal`→`Cat` in the read, while plain generation
+  returns `Paris` consistently at block sizes 8–64. Not step count, not
+  canvas width. Prime suspect: `systemone_label_token` resolves candidate
+  ids via `encode(" "+label)`/`encode(label)`, which may pick a token id the
+  model does not actually emit at that position, so the restricted softmax
+  ranks the wrong ids. Next: log the read's slot-0 argmax token text vs the
+  resolved candidate ids for these two questions.
+- ℹ️ Intermediate history (all superseded): an early 4-question set passed
+  at 16 steps but a 7-question set scored 3–4/7 across a dead refinement,
+  an SC+argmax heuristic, and the EB-mirrored loop — so the loop itself was
+  never the bottleneck. The read now mirrors `run_eb_generate`'s
+  entropy-bound loop exactly (uniform init, temp schedule, ascending-entropy
+  acceptance, renoise rejected, `set_sc`). Prefix/canvas attention masking
+  is *not* missing (`forward_block` runs the graph with `n_prompt=P`).
 - ✅ **Phase 2, core primitive — CPU-verified.** `run_diffusion_structured_read()`
   added to `diffusion_decoder.cpp`/`.h`: seeds `slot_count` noise positions
   after a causally-encoded prefix, runs `n_steps` bidirectional
