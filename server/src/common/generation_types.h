@@ -125,6 +125,11 @@ struct GenerateResult {
     // (pre-softmax, pre-sampling) logits for the first post-prefill token,
     // vocab_size long. Empty otherwise.
     std::vector<float>         first_token_logits;
+    // Number of canvas slots packed into first_token_logits (each `vocab`
+    // wide). 1 for causal backends; the diffusion structured read may return
+    // several so the caller can skip leading formatting/channel tokens and
+    // score the answer at the slot it actually lands on.
+    int                        first_token_slot_count = 1;
 
     bool ok() const {
         return !error.has_value();

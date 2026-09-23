@@ -28,6 +28,7 @@
 #include "pin_friendly_prompt.h"
 #include "common/kv_rotation.h"
 #include "common/sha1.h"
+#include "common/systemone_score.h"
 #include "freeze_history.h"
 
 #ifdef LUCE_HAS_CURL
@@ -2472,35 +2473,6 @@ int32_t systemone_label_token(Tokenizer & tok, const std::string & label) {
     return -1;
 }
 
-// Softmax restricted to `candidates` (parallel array of token ids into
-// `logits`). Unresolvable candidates (id == -1) get probability 0.
-std::vector<float> systemone_softmax_restricted(
-        const std::vector<float> & logits,
-        const std::vector<int32_t> & candidates) {
-    std::vector<float> probs(candidates.size(), 0.0f);
-    float max_logit = -std::numeric_limits<float>::infinity();
-    for (int32_t id : candidates) {
-        if (id < 0 || (size_t) id >= logits.size()) continue;
-        max_logit = (std::max)(max_logit, logits[id]);
-    }
-    if (!std::isfinite(max_logit)) return probs;  // no candidate tokenized
-
-    std::vector<double> exps(candidates.size(), 0.0);
-    double sum = 0.0;
-    for (size_t i = 0; i < candidates.size(); ++i) {
-        int32_t id = candidates[i];
-        if (id < 0 || (size_t) id >= logits.size()) continue;
-        double e = std::exp((double) (logits[id] - max_logit));
-        exps[i] = e;
-        sum += e;
-    }
-    if (sum <= 0.0) return probs;
-    for (size_t i = 0; i < candidates.size(); ++i) {
-        probs[i] = (float) (exps[i] / sum);
-    }
-    return probs;
-}
-
 }  // namespace
 
 bool HttpServer::handle_systemone(SocketHandle fd, const std::string & body_str) {
@@ -2654,8 +2626,20 @@ bool HttpServer::handle_systemone(SocketHandle fd, const std::string & body_str)
                 break;
             }
 
-            std::vector<float> probs = systemone_softmax_restricted(
-                result.first_token_logits, candidate_ids);
+            // Diffusion returns several leading canvas slots (a channel /
+            // formatting marker can occupy slot 0); causal backends return one.
+            // Score the labels at the first slot whose argmax is a candidate,
+            // so a leading marker does not decide the answer.
+            const int slot_count = (std::max)(1, result.first_token_slot_count);
+            const int row_vocab = (int)(result.first_token_logits.size() /
+                                        (size_t)slot_count);
+            int answer_slot = systemone_pick_answer_slot(
+                result.first_token_logits, slot_count, row_vocab, candidate_ids);
+            if (answer_slot < 0) answer_slot = 0;
+            const float * answer_row =
+                result.first_token_logits.data() + (size_t)answer_slot * row_vocab;
+            std::vector<float> probs = systemone_softmax_restricted_row(
+                answer_row, row_vocab, candidate_ids);
             size_t best = 0;
             for (size_t i = 1; i < probs.size(); ++i) {
                 if (probs[i] > probs[best]) best = i;

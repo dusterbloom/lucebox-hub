@@ -69,6 +69,11 @@ struct DiffusionConfig {
     // token budget.
     int             read_canvas          = 32;
 
+    // How many leading canvas slots the structured read hands back (each
+    // `vocab` wide) so the caller can skip leading channel/formatting tokens
+    // and score the answer where it actually lands.
+    int             read_slots_returned  = 8;
+
     // L2′ inter-block snapshot: after each committed block, cache the KV so
     // the next block only forwards its C new tokens. Set DG_NO_L2=1 env or
     // enable_l2_interblock=false to disable (useful for correctness baselines).
