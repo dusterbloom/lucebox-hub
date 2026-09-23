@@ -50,12 +50,14 @@ struct DiffusionConfig {
     bool            semi_ar              = true; // advance block-by-block (vs one canvas)
     uint64_t        seed                 = 0;    // Random remask / uniform-state noise
 
-    // Structured read (/v1/systemone): number of refine-toward-argmax denoise
-    // steps run over the answer slot before its logit distribution is read.
-    // One step is NOT enough on real DiffusionGemma weights — djev-spark's
-    // "one denoise step suffices" claim does not hold for 26B-A4B (measured:
-    // 1 step answered 2+2=>3, capital of France=>Rome; 16 steps answered both
-    // correctly). Not tied to n_gen, which is a token budget, not a step count.
+    // Structured read (/v1/systemone): denoise steps run over the answer slot
+    // before its logit distribution is read, each step threading previous-step
+    // logits through the model's self-conditioning seam. Not tied to n_gen,
+    // which is a token budget, not a step count. 16 is provisional: on real
+    // DiffusionGemma 26B-A4B weights a single step produced wrong answers on
+    // some questions, but step count alone did not make the read reliable
+    // (see docs/djev-halo-plan.md) — treat this as a default to tune, not a
+    // proven value.
     int             read_steps           = 16;
 
     // L2′ inter-block snapshot: after each committed block, cache the KV so

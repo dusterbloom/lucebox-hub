@@ -496,16 +496,29 @@ DiffusionReadResult run_diffusion_structured_read(
     canvas.resize((size_t)prefix_len + slot_count);
 
     std::vector<float> logits;
-    // Seed the canvas once, then refine in place: each step keeps the current
-    // argmax at positions it is confident about and re-noises the rest, so a
-    // later bidirectional pass actually sees the previous step's best guess.
-    // (Re-seeding every position at the top of each step — the previous
-    // behaviour — made the "refine toward argmax" step dead code: the argmax
-    // was always overwritten by fresh noise, so N steps were N independent
-    // random draws and only the last was read, not a refinement.)
+    std::vector<float> sc_buffer;   // previous step's raw logits, for self-conditioning
+    // Seed the canvas once; refine in place thereafter. Each step feeds the
+    // previous step's logits back through the model's self-conditioning seam
+    // (set_sc) and sets the canvas to the previous argmax — the same SC +
+    // temperature-schedule machinery run_eb_generate uses. No fresh re-noise
+    // between steps: re-seeding every slot each step (the original behaviour)
+    // made the argmax feedback dead code, and a fixed confidence gate (an
+    // interim revision) left a single slot frozen below threshold. This is the
+    // model's actual denoising contract, not a proxy for it.
     for (int j = 0; j < slot_count; ++j) canvas[prefix_len + j] = noise_token();
 
+    float prev_temp_inv = 1.0f;
     for (int step = 0; step < n_steps; ++step) {
+        const float sched_frac = (n_steps <= 1)
+            ? 1.0f
+            : (float)step / (float)(n_steps - 1);
+        const float t        = cfg.eb_t_max - (cfg.eb_t_max - cfg.eb_t_min) * sched_frac;
+        const float temp_inv = 1.0f / t;
+
+        const float * sc_ptr = (step == 0 || sc_buffer.empty())
+                             ? nullptr : sc_buffer.data();
+        model.set_sc(sc_ptr, step == 0 ? 0.0f : 1.0f, prev_temp_inv);
+
         if (!model.forward_block(canvas, prefix_len, slot_count,
                                  /*bidirectional=*/true, logits)) {
             res.error = "read: forward";
@@ -518,19 +531,15 @@ DiffusionReadResult run_diffusion_structured_read(
             return res;
         }
 
-        // Between steps (n_steps > 1), accept the argmax where the read is
-        // already confident and re-noise only the uncertain positions — the
-        // same accept/re-noise spirit as the generation loop's remasking,
-        // without finalize/commit bookkeeping (nothing is emitted until the
-        // caller reads the LAST step's logits).
+        sc_buffer    = logits;
+        prev_temp_inv = temp_inv;
+
+        // Feed the current argmax back as the next step's canvas; the SC seam
+        // carries the full distribution from the step just completed.
         if (step + 1 < n_steps) {
             for (int j = 0; j < slot_count; ++j) {
                 const float * row = logits.data() + (size_t)j * vocab;
-                const auto best = softmax_argmax_prob(row, vocab);
-                canvas[prefix_len + j] =
-                    (best.second >= cfg.confidence_threshold)
-                        ? best.first
-                        : noise_token();
+                canvas[prefix_len + j] = softmax_argmax_prob(row, vocab).first;
             }
         }
     }

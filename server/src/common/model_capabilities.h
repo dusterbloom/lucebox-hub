@@ -80,7 +80,6 @@ inline constexpr ArchCapabilities kArchCapabilities[] = {
     {"deepseek4",  true,  false, true,  false,   kMono,  kNever, kNever, kNever, kNever,kNever, kMono},
     {"deepseek41", false, false, true,  false,   kMono,  kNever, kNever, kNever, kNever,kNever, kMono},
     {"diffusion-gemma", false,false,false,false, kNever,kNever,kNever,kNever,kNever,kNever, kNever},
-    {"diffusiongemma",  false,false,false,false, kNever,kNever,kNever,kNever,kNever,kNever, kNever},
 };
 
 inline constexpr std::size_t kArchCount =

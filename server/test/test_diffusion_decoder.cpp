@@ -516,10 +516,11 @@ int main() {
     }
 
     // ── 17. structured read: multi-step refines toward a fixed point ──────
-    // With n_steps>1, each step's canvas should be seeded from the previous
-    // step's argmax (not fresh noise) — verified indirectly: a peaked model
-    // ignores canvas content, so this mainly checks forward_passes counts
-    // steps correctly and the final read is still consistent with n_steps=1.
+    // With n_steps>1, each step's canvas is set from the previous step's
+    // argmax and previous-step logits are threaded through set_sc — verified
+    // indirectly: a peaked model ignores canvas content, so this mainly checks
+    // forward_passes counts steps correctly and the final read is consistent
+    // with n_steps=1. The SC wiring itself is covered by test 17b.
     {
         SyntheticModel m;
         m.prefix_ = 1;          // matches the 1-token prefix below
@@ -533,6 +534,40 @@ int main() {
         check(r.forward_passes == 4, "read-multistep: forward_passes == n_steps",
               "got " + std::to_string(r.forward_passes));
         check(r.slot_argmax[0] == 11, "read-multistep: converges to the same target");
+    }
+
+    // ── 17b. structured read: self-conditioning wired ────────────────────
+    // The read must drive the model's real denoising seam: set_sc once per
+    // step, with null logits + use=0 on step 0 and non-null logits + use=1
+    // thereafter (same contract as the EB generation loop). A gate/canvas
+    // heuristic that never calls set_sc would fail this.
+    {
+        struct SCReadModel : SyntheticModel {
+            int           sc_calls      = 0;
+            bool          null_on_step0 = false;
+            bool          nonnull_after = false;
+            void set_sc(const float * lg, float use, float /*temp_inv*/) override {
+                if (sc_calls == 0) {
+                    null_on_step0 = (lg == nullptr && use == 0.0f);
+                } else {
+                    nonnull_after = nonnull_after || (lg != nullptr && use == 1.0f);
+                }
+                ++sc_calls;
+            }
+        };
+        SCReadModel m;
+        m.prefix_ = 1;
+        m.gen_targets = { 11 };
+        DiffusionConfig cfg;
+        cfg.noise_scheme = DiffusionNoise::UniformState;
+
+        auto r = run_diffusion_structured_read(m, /*prefix=*/{1}, /*slot_count=*/1,
+                                               /*n_steps=*/3, cfg, /*seed=*/7);
+        check(r.ok, "read-sc: ok");
+        check(m.sc_calls == 3, "read-sc: set_sc called once per step",
+              "got " + std::to_string(m.sc_calls));
+        check(m.null_on_step0, "read-sc: step 0 passes null SC + use=0");
+        check(m.nonnull_after, "read-sc: step 1 passes non-null SC + use=1");
     }
 
     // ── 18. structured read: canvas seeding actually reaches the model ─────
