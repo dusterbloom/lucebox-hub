@@ -17,17 +17,24 @@ the same model the reference contract was pinned to.
   serves; `test_diffusion_decoder` is **57/57** on the box too. Measured
   baseline: ~2 tok/s decode (unoptimized stateless full-recompute path —
   Phase 3's efficiency work has not started, so this is a floor).
-- ⚠️ **Phase 2, structured read — ran, and was WRONG at one step.** With the
-  original `n_steps = max(1, req.n_gen)` (`/v1/systemone` sends `n_gen=1`),
-  the read answered `2+2 → 3`, `capital of France → Rome`,
-  `largest animal → Cat`. With **16 steps all four were correct**
-  (`4`, `Paris`, `Yes`, `Elephant`). **djev-spark's "one denoise step
-  suffices" does not hold for this model.** Fixed by adding
-  `DiffusionConfig::read_steps` (default 16, decoupled from `n_gen`;
-  `DG_READ_STEPS` overrides for experiments). Note the read still refines
-  toward argmax rather than following the model's real
-  self-conditioning/temperature schedule — a documented follow-up, but it
-  now produces correct answers.
+- ⚠️ **Phase 2, structured read — runs on real weights but is NOT reliable.**
+  An early run at 16 steps answered a 4-question set correctly
+  (`4`, `Paris`, `Yes`, `Elephant`); a broader 7-question set at the same
+  16 steps scored 3/7, and after fixing the loop's refinement it scored 4/7
+  — i.e. the "16 steps fixed it" result was **a lucky draw, not
+  convergence**. Root cause: the read calls `forward_block` directly and
+  does **not** apply the model's real denoising contract (self-conditioning
+  via prev-step logits, the temperature schedule, region-aware causal-prefix
+  / bidirectional-canvas attention). The plain generation path *does* run
+  that contract and answered the same questions correctly
+  (sky→`Yes.`, 10>3→`Yes.`, largest→`Elephant`), which isolates the defect
+  to the read, not the backbone. Interim changes landed: `DiffusionConfig::
+  read_steps` (default 16, decoupled from `n_gen`; `DG_READ_STEPS` override)
+  and a real refinement loop (the previous code re-seeded noise over every
+  slot at the top of each step, so its "refine toward argmax" step was dead
+  code — N steps were N independent random draws and only the last was
+  read). **The read is not trustworthy until it drives the model's actual
+  denoising contract.**
 - ✅ **Phase 2, core primitive — CPU-verified.** `run_diffusion_structured_read()`
   added to `diffusion_decoder.cpp`/`.h`: seeds `slot_count` noise positions
   after a causally-encoded prefix, runs `n_steps` bidirectional
@@ -191,10 +198,13 @@ bidirectional diffusion:
 
 **Exit criteria (revised — split in two):**
 - ✅ Correctness test suite on synthetic models — done, 57/57 (see Status).
-- ✅ Real-model spot check on gfx1151 — **run 2026-09-23.** Noul/choice/score
-  questions answered correctly once `read_steps=16`; the original one-step
-  default was wrong (2+2→3, capital→Rome, largest→Cat). The one-step
-  assumption is retired; `read_steps` is the knob.
+- ✅ Real-model spot check on gfx1151 — **run 2026-09-23.** The endpoint,
+  rendering, tokenization and restricted softmax all work end-to-end; the
+  read is fast (~0.4s/question). But the read's *answers* are unreliable
+  (3–4/7 on unambiguous questions) because it bypasses the model's denoising
+  contract — the gate is now "drive self-conditioning + temperature schedule
+  in the read", not step count. Plain generation is correct on the same
+  questions, so the backbone is fine.
 
 ### Phase 3 — Strix Halo-specific efficiency work
 
