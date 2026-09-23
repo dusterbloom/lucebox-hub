@@ -478,73 +478,94 @@ DiffusionReadResult run_diffusion_structured_read(
         return res;
     }
 
+    // Single-block entropy-bound denoise, mirroring run_eb_generate's per-block
+    // loop exactly (diffusion.cpp:442-672): uniform-state init, linear
+    // temperature schedule, ascending-entropy acceptance within the bound,
+    // renoise rejected, SC threaded through set_sc. The only difference is the
+    // output: a read has no commit/stream/EOS step — it returns the final
+    // step's distribution over the slot(s).
     const uint64_t seed = seed_override ? seed_override
                         : (cfg.seed ? cfg.seed : 0x9E3779B97F4A7C15ULL);
     std::mt19937_64 rng(seed);
+    std::uniform_int_distribution<int>    vocab_dist(0, vocab - 1);
+    std::uniform_real_distribution<float> uni01(0.0f, 1.0f);
     auto noise_token = [&]() -> int32_t {
         if (cfg.noise_scheme == DiffusionNoise::Masked) return cfg.mask_token_id;
-        std::uniform_int_distribution<int> d(0, vocab - 1);
-        return (int32_t)d(rng);
+        return (int32_t)vocab_dist(rng);
     };
 
-    // Canvas = the causal prefix (ending exactly where the answer belongs, by
-    // the caller's own prompt construction) plus a noise block at the tail.
-    // Every step below re-noises and re-denoises the SAME block — this is
-    // deliberately not semi-AR (no committing, no advancing to a next block):
-    // a structured read wants the final step's distribution, not tokens.
     std::vector<int32_t> canvas(prefix_tokens.begin(), prefix_tokens.begin() + prefix_len);
     canvas.resize((size_t)prefix_len + slot_count);
-
-    std::vector<float> logits;
-    std::vector<float> sc_buffer;   // previous step's raw logits, for self-conditioning
-    // Seed the canvas once; refine in place thereafter. Each step feeds the
-    // previous step's logits back through the model's self-conditioning seam
-    // (set_sc) and sets the canvas to the previous argmax — the same SC +
-    // temperature-schedule machinery run_eb_generate uses. No fresh re-noise
-    // between steps: re-seeding every slot each step (the original behaviour)
-    // made the argmax feedback dead code, and a fixed confidence gate (an
-    // interim revision) left a single slot frozen below threshold. This is the
-    // model's actual denoising contract, not a proxy for it.
     for (int j = 0; j < slot_count; ++j) canvas[prefix_len + j] = noise_token();
 
+    const int S  = std::max(1, n_steps);
+    const int SH = std::max(1, std::min(cfg.eb_schedule_steps, S));
+
+    std::vector<float>   sc_buffer;
+    std::vector<int32_t> argmax_canvas(slot_count, 0);
+    std::vector<float>   entropy_vec(slot_count, 0.0f);
+    std::vector<int32_t> denoiser(slot_count, 0);
+    std::vector<int32_t> order(slot_count);
     float prev_temp_inv = 1.0f;
-    for (int step = 0; step < n_steps; ++step) {
-        const float sched_frac = (n_steps <= 1)
+
+    for (int step_idx = 0; step_idx < S; ++step_idx) {
+        const float sched_frac = (SH <= 1)
             ? 1.0f
-            : (float)step / (float)(n_steps - 1);
+            : std::min(1.0f, (float)step_idx / (float)(SH - 1));
         const float t        = cfg.eb_t_max - (cfg.eb_t_max - cfg.eb_t_min) * sched_frac;
         const float temp_inv = 1.0f / t;
 
-        const float * sc_ptr = (step == 0 || sc_buffer.empty())
+        const float * sc_ptr = (step_idx == 0 || sc_buffer.empty())
                              ? nullptr : sc_buffer.data();
-        model.set_sc(sc_ptr, step == 0 ? 0.0f : 1.0f, prev_temp_inv);
+        model.set_sc(sc_ptr, step_idx == 0 ? 0.0f : 1.0f, prev_temp_inv);
 
-        if (!model.forward_block(canvas, prefix_len, slot_count,
-                                 /*bidirectional=*/true, logits)) {
-            res.error = "read: forward";
+        // Pre-draw this step's randomness (ref diffusion.cpp:672-708).
+        std::vector<float>   u(slot_count);
+        std::vector<int32_t> renoise(slot_count);
+        for (int j = 0; j < slot_count; ++j) {
+            u[j]       = uni01(rng);
+            renoise[j] = noise_token();
+        }
+
+        DiffusionModelGraph::DevSampleResult sr;
+        if (!model.forward_block_dev(canvas, prefix_len, slot_count,
+                                     /*bidirectional=*/true, u, temp_inv, sr)) {
+            res.error = "read: forward_block_dev";
             return res;
         }
         ++res.forward_passes;
 
-        if ((int)logits.size() < slot_count * vocab) {
-            res.error = "read: forward returned too few logits";
-            return res;
+        for (int j = 0; j < slot_count; ++j) {
+            entropy_vec[j]   = sr.entropy[j];
+            argmax_canvas[j] = sr.argmax[j];
+            denoiser[j]      = sr.sampled[j];
         }
+        if (!sr.logits.empty()) sc_buffer = std::move(sr.logits);
 
-        sc_buffer    = logits;
+        // Accept ascending-entropy while the cumulative prior entropy is within
+        // the bound; renoise the rest (ref diffusion.cpp:739-755).
+        std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(),
+                  [&](int a, int b) { return entropy_vec[a] < entropy_vec[b]; });
+        const double effective_bound = (double)cfg.eb_entropy_bound * slot_count;
+        std::vector<char> accepted(slot_count, 0);
+        double cumE = 0.0;
+        for (int k = 0; k < slot_count; ++k) {
+            const int pos = order[k];
+            if (cumE <= effective_bound) accepted[pos] = 1;
+            cumE += (double)entropy_vec[pos];
+        }
+        for (int j = 0; j < slot_count; ++j) {
+            canvas[prefix_len + j] = accepted[j] ? denoiser[j] : renoise[j];
+        }
         prev_temp_inv = temp_inv;
-
-        // Feed the current argmax back as the next step's canvas; the SC seam
-        // carries the full distribution from the step just completed.
-        if (step + 1 < n_steps) {
-            for (int j = 0; j < slot_count; ++j) {
-                const float * row = logits.data() + (size_t)j * vocab;
-                canvas[prefix_len + j] = softmax_argmax_prob(row, vocab).first;
-            }
-        }
     }
 
-    res.slot_logits = std::move(logits);
+    if (sc_buffer.empty()) {
+        res.error = "read: no logits available (backend returned none)";
+        return res;
+    }
+    res.slot_logits = std::move(sc_buffer);
     res.slot_argmax.resize(slot_count);
     for (int j = 0; j < slot_count; ++j) {
         const float * row = res.slot_logits.data() + (size_t)j * vocab;
