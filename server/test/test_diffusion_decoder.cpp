@@ -9,6 +9,7 @@
 // Self-contained: link against diffusion_decoder.cpp + sampler.cpp only.
 
 #include "diffusion/diffusion_decoder.h"
+#include "common/systemone_score.h"
 
 #include <cstdio>
 #include <numeric>
@@ -610,6 +611,38 @@ int main() {
               "(a 1-wide canvas has no context)",
               "got " + std::to_string(r.slot_argmax[0]) +
               " with read_canvas=" + std::to_string(cfg.read_canvas));
+    }
+
+    // ── 17d. systemone scoring skips a leading channel/formatting token ───
+    // Regression for the real-model failure where the read's slot 0 argmax was
+    // <|channel> (id 100) and the answer label landed a slot later, so scoring
+    // slot 0 picked an arbitrary candidate (capital of France -> Rome). The
+    // scorer must find the slot whose argmax is a candidate.
+    {
+        const int V = 16;
+        const std::vector<int32_t> cands = { 7, 9 };  // e.g. " Paris", " Rome"
+        // Slot 0 peaks at a non-candidate marker (id 5); slot 1 peaks at
+        // candidate 7; slot 2 peaks at candidate 9.
+        std::vector<float> logits((size_t)3 * V, 0.0f);
+        logits[(size_t)0 * V + 5] = 20.0f;
+        logits[(size_t)1 * V + 7] = 20.0f;
+        logits[(size_t)2 * V + 9] = 20.0f;
+
+        const int slot = systemone_pick_answer_slot(logits, 3, V, cands);
+        check(slot == 1,
+              "sysone-score: skips the marker at slot 0 and picks the answer slot",
+              "got slot " + std::to_string(slot));
+
+        // A 1-row (causal) result with a non-candidate argmax resolves to none.
+        const std::vector<float> one_row((size_t)V, 0.0f);
+        check(systemone_pick_answer_slot(one_row, 1, V, cands) == -1,
+              "sysone-score: single non-candidate row yields no answer slot");
+
+        // Restricted softmax over the chosen row ranks candidate 7 first.
+        const float * row = logits.data() + (size_t)slot * V;
+        auto probs = systemone_softmax_restricted_row(row, V, cands);
+        check(probs.size() == 2 && probs[0] > probs[1],
+              "sysone-score: chosen slot ranks the correct candidate first");
     }
 
     // ── 18. structured read: canvas seeding actually reaches the model ─────

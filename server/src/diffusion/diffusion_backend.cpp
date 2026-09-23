@@ -184,12 +184,27 @@ GenerateResult DiffusionBackend::generate_impl(const GenerateRequest & req,
         if (read.ok) {
             r.succeed();
             const int V = read.vocab;
-            // The read returns every slot's row; the answer is slot 0.
-            if (read_slots == 1 || V <= 0) {
+            const int total_slots = (V > 0) ? (int)(read.slot_logits.size() / (size_t)V) : 0;
+            int slots_returned = cfg_.read_slots_returned > 0 ? cfg_.read_slots_returned : 8;
+            if (const char * e = std::getenv("DG_READ_RETURN"); e && *e) {
+                char * end = nullptr;
+                const long v = std::strtol(e, &end, 10);
+                if (end && *end == '\0' && v >= 1 && v <= 256) {
+                    slots_returned = (int)v;
+                }
+            }
+            // Return the leading slots (not just slot 0): diffusion can emit a
+            // channel/formatting marker at slot 0 and place the answer a slot
+            // or two later, so the caller needs the canvas to find it.
+            const int keep = std::min(total_slots, std::max(1, slots_returned));
+            if (V <= 0 || keep <= 1) {
                 r.first_token_logits = std::move(read.slot_logits);
+                r.first_token_slot_count = std::max(1, total_slots);
             } else {
-                r.first_token_logits.assign(read.slot_logits.begin(),
-                                            read.slot_logits.begin() + V);
+                r.first_token_logits.assign(
+                    read.slot_logits.begin(),
+                    read.slot_logits.begin() + (size_t)keep * V);
+                r.first_token_slot_count = keep;
             }
         } else {
             r.fail(GenerateErrorCode::DecodeFailed, read.error);
