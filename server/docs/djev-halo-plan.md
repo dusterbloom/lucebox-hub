@@ -2,49 +2,59 @@
 
 ## Status (updated as work lands)
 
-CPU-only progress so far — no GPU has been available in this environment,
-so everything below is built and verified without one; nothing has run
-against a real model yet. Branch `plan/djev-halo` (merges
-`feat/diffusion-foundation`, the rebased DiffusionGemma backend, with
-`experiment/openjev`, the causal `/v1/systemone` work — both were rebased
-onto the same `upstream/main` tip independently, so the merge was clean).
+**Ran on real hardware — 2026-09-23, luzebox4 Strix Halo (`gfx1151`), ROCm
+7.2.2.** Branch built as a HIP `gfx1151` server and exercised end-to-end
+against DiffusionGemma 26B-A4B Q4_K_M (`unsloth/diffusiongemma-26B-A4B-it-GGUF`),
+the same model the reference contract was pinned to.
 
-- ✅ **Phase 2, core primitive — done, CPU-verified.** `run_diffusion_structured_read()`
+- ✅ **Phase 0 (partial) — real forward runs.** `luce_server` loads the real
+  GGUF and `/v1/chat/completions` returns coherent, *correct* answers
+  ("Which animal is the largest?" → "Elephant"). The plain generation path's
+  denoising contract is sound on real weights. Full reference parity (cosine
+  / argmax against the llama.cpp oracle on a fixed prompt set) is still open.
+- ✅ **Phase 1 — done, `gfx1151`.** HIP build
+  (`-DLUCE_GPU_BACKEND=hip -DCMAKE_HIP_ARCHITECTURES=gfx1151`) links and
+  serves; `test_diffusion_decoder` is **57/57** on the box too. Measured
+  baseline: ~2 tok/s decode (unoptimized stateless full-recompute path —
+  Phase 3's efficiency work has not started, so this is a floor).
+- ⚠️ **Phase 2, structured read — ran, and was WRONG at one step.** With the
+  original `n_steps = max(1, req.n_gen)` (`/v1/systemone` sends `n_gen=1`),
+  the read answered `2+2 → 3`, `capital of France → Rome`,
+  `largest animal → Cat`. With **16 steps all four were correct**
+  (`4`, `Paris`, `Yes`, `Elephant`). **djev-spark's "one denoise step
+  suffices" does not hold for this model.** Fixed by adding
+  `DiffusionConfig::read_steps` (default 16, decoupled from `n_gen`;
+  `DG_READ_STEPS` overrides for experiments). Note the read still refines
+  toward argmax rather than following the model's real
+  self-conditioning/temperature schedule — a documented follow-up, but it
+  now produces correct answers.
+- ✅ **Phase 2, core primitive — CPU-verified.** `run_diffusion_structured_read()`
   added to `diffusion_decoder.cpp`/`.h`: seeds `slot_count` noise positions
   after a causally-encoded prefix, runs `n_steps` bidirectional
   `forward_block` passes (refining toward the previous step's argmax
   between steps), returns the final step's raw per-slot logits — no
   commit/streaming/EOS handling, since a read wants a distribution, not
-  tokens. 9 new unit tests against the module's existing
-  `SyntheticModel`/spy-model pattern (single-slot, multi-slot, multi-step,
+  tokens. 9 new unit tests (single-slot, multi-slot, multi-step,
   Masked-vs-UniformState noise wiring, config guards). **57/57 tests pass**
-  (48 pre-existing + 9 new), compiled and run with plain
-  `g++ -std=c++17` — the module's own documented CPU-only path, no CUDA
-  needed for this half.
-- ✅ **Phase 2, wiring — done, syntax-verified only.** `DiffusionBackend::generate_impl`
-  branches on `req.want_first_token_logits` before the normal
-  `run_diffusion_generate()` call, routes to the structured-read primitive
-  with `slot_count=1` and `n_steps=max(1, req.n_gen)` (`/v1/systemone`
-  always sends `n_gen=1`, matching djev-spark's own one-step-suffices
-  claim), and fills `GenerateResult::first_token_logits` — the same field
-  the six causal backends already populate. **No `/v1/systemone` HTTP-layer
-  changes were needed** beyond adding `"diffusion-gemma"` to its backend
-  allowlist: the endpoint's rendering, tokenization, and
-  restricted-softmax logic were already backend-agnostic. Verified with
-  `g++ -fsyntax-only` against the real project headers (clean) on both
-  `diffusion_backend.cpp` and `http_server.cpp` — **not** compiled as part
-  of a full CUDA/HIP build, and never run.
+  locally and on the box.
+- 🏗 **HIP-build fixes required to compile the branch** (all landed on this
+  branch by this work): `server_main.cpp` was missing `#include "gguf.h"`
+  (the new embedded-chat-template block only got it transitively on CUDA)
+  and used the wrong in-scope path variable (`bargs.model_path`, empty at
+  that point → `sconfig.model_path`); `DiffusionGemmaGraph::forward_block_dev`
+  was declared unconditionally but defined only under `LUCE_BACKEND_CUDA`,
+  which broke the HIP link (guarded the declaration; the base class CPU
+  fallback covers HIP); `model_capabilities.h` had no row for the real arch
+  string `diffusion-gemma`, so `arch_is_supported()` rejected the model
+  before the factory could route it.
 - ❌ **Not built yet:** position-pinning for a *mixed* pinned+noise block
   (Phase 2's other bullet below) — deliberately out of scope for now since
   `/v1/systemone`'s one-slot-per-question protocol doesn't need it; still a
   documented follow-up if multi-position templates come up later.
-- ⛔ **Blocked on hardware, not yet attempted:** Phase 0 (correctness
-  validation against real weights), Phase 1 (running on real gfx1151),
-  all of Phase 3 (every efficiency lever), Phase 4 (benchmarking). The
-  structured-read primitive above has never executed against an actual
-  DiffusionGemma forward pass — it's only been exercised against synthetic
-  test models. Nothing in this status section changes that risk, flagged
-  again below.
+- ⛔ **Still open:** Phase 0 full reference parity; wiring the model's real
+  denoise contract (self-conditioning / temperature schedule) into the
+  structured read and the generation loop; all of Phase 3 (every efficiency
+  lever); Phase 4 (benchmarking).
 
 ---
 
@@ -143,8 +153,9 @@ latency.
 
 ### Phase 2 — Build the structured-read primitive (djev's actual algorithm)
 
-**Status: core primitive + wiring done (see Status section above); the
-real-model spot check below is not — still blocked on hardware.**
+**Status: core primitive + wiring done; real-model spot check RUN on gfx1151
+(2026-09-23) — correct at 16 steps, wrong at the original 1 (see Status
+section above). `read_steps` now defaults to 16.**
 
 This was the piece lucebox didn't have yet, on any hardware. `/v1/systemone`
 (the earlier openjev work) only ever supported causal backends — it forces a
@@ -180,10 +191,10 @@ bidirectional diffusion:
 
 **Exit criteria (revised — split in two):**
 - ✅ Correctness test suite on synthetic models — done, 57/57 (see Status).
-- ⛔ Real-model spot check against djev-spark's own JevBench-style
-  questions — **not done, blocked on hardware.** Nothing above has run a
-  real DiffusionGemma forward pass. Do this as part of Phase 0/1 once a
-  CUDA/HIP box is available, before trusting any answer this path produces.
+- ✅ Real-model spot check on gfx1151 — **run 2026-09-23.** Noul/choice/score
+  questions answered correctly once `read_steps=16`; the original one-step
+  default was wrong (2+2→3, capital→Rome, largest→Cat). The one-step
+  assumption is retired; `read_steps` is the knob.
 
 ### Phase 3 — Strix Halo-specific efficiency work
 

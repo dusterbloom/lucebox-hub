@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <utility>
 
 namespace luce::common {
@@ -145,16 +146,17 @@ GenerateResult DiffusionBackend::generate_impl(const GenerateRequest & req,
     r.prefill_s = std::chrono::duration<double>(clock::now() - t_prefill0).count();
 
     // Structured read (/v1/systemone): the caller wants one slot's raw
-    // logit distribution, not generated tokens. djev-spark's own claim is
-    // that one denoise step suffices ("one denoise step gives a
-    // distribution over each slot"); n_gen doubles as the step count here
-    // since /v1/systemone always sets it to a small, deliberate value
-    // (currently 1) rather than a token budget when this flag is set.
+    // logit distribution, not generated tokens. The step count is its own
+    // config knob (cfg_.read_steps), NOT n_gen — n_gen is a token budget.
+    // One step is not enough on real weights; see DiffusionConfig::read_steps.
     if (req.want_first_token_logits) {
         const auto t_decode0 = clock::now();
+        const char * read_steps_env = std::getenv("DG_READ_STEPS");
+        const int read_steps = read_steps_env ? std::atoi(read_steps_env)
+                                              : (cfg_.read_steps > 0 ? cfg_.read_steps : 16);
         DiffusionReadResult read = run_diffusion_structured_read(
             *model_, req.prompt, /*slot_count=*/1,
-            /*n_steps=*/std::max(1, req.n_gen), cfg_, /*seed=*/req.sampler.seed,
+            /*n_steps=*/read_steps, cfg_, /*seed=*/req.sampler.seed,
             prefix_len);
         const auto t_decode1 = clock::now();
 
