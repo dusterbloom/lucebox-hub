@@ -65,12 +65,14 @@ public:
 
     // GPU-accelerated forward + sample (CUDA builds). Runs the sampling kernel
     // on device; copies only ~3 KB to host. SC stays device-resident.
+#ifdef LUCE_BACKEND_CUDA
     bool forward_block_dev(const std::vector<int32_t> & canvas,
                            int block_begin, int block_len,
                            bool bidirectional,
                            const std::vector<float> & u,
                            float temp_inv,
                            DevSampleResult & out) override;
+#endif
 
     // Self-conditioning state setters (called by the EB decode loop each step).
     // sc_logits: [n_vocab * C] F32, prev-step raw canvas logits. Must remain valid

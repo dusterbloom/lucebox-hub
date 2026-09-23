@@ -14,6 +14,7 @@
 #include "http_server.h"
 #include "chat_template.h"
 #include "model_card.h"
+#include "gguf.h"
 #include "common/backend_factory.h"
 #include "common/chain_rollback_policy.h"
 #include "common/layer_split_utils.h"
@@ -1598,7 +1599,7 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
         gguf_init_params gip{};
         gip.no_alloc = true;
         gip.ctx      = nullptr;
-        gguf_context * gctx = gguf_init_from_file(bargs.model_path, gip);
+        gguf_context * gctx = gguf_init_from_file(sconfig.model_path.c_str(), gip);
         if (gctx) {
             int64_t tmpl_id = gguf_find_key(gctx, "tokenizer.chat_template");
             if (tmpl_id >= 0) {
