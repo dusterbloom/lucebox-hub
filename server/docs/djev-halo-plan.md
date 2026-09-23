@@ -15,35 +15,37 @@ the same model the reference contract was pinned to.
 - ✅ **Phase 1 — done, `gfx1151`.** HIP build
   (`-DLUCE_GPU_BACKEND=hip -DCMAKE_HIP_ARCHITECTURES=gfx1151`) links and
   serves; `test_diffusion_decoder` is **57/57** on the box too. Measured
-  baseline: ~2 tok/s decode (unoptimized stateless full-recompute path —
-  Phase 3's efficiency work has not started, so this is a floor).
-- ⚠️ **Phase 2, structured read — runs on real weights but is NOT reliable.**
-  An early run at 16 steps answered a 4-question set correctly
-  (`4`, `Paris`, `Yes`, `Elephant`); a broader 7-question set at the same
-  16 steps scored 3/7, and after fixing the loop's refinement it scored 4/7
-  — i.e. the "16 steps fixed it" result was **a lucky draw, not
-  convergence**. Root cause: the read calls `forward_block` directly and
-  does **not** apply the model's real denoising contract (self-conditioning
-  via prev-step logits, the temperature schedule, region-aware causal-prefix
-  / bidirectional-canvas attention). The plain generation path *does* run
-  that contract and answered the same questions correctly
-  (sky→`Yes.`, 10>3→`Yes.`, largest→`Elephant`), which isolates the defect
-  to the read, not the backbone. Interim changes landed: `DiffusionConfig::
-  read_steps` (default 16, decoupled from `n_gen`; `DG_READ_STEPS` override)
-  and a real refinement loop (the previous code re-seeded noise over every
-  slot at the top of each step, so its "refine toward argmax" step was dead
-  code — N steps were N independent random draws and only the last was
-  read). **The read is not trustworthy until it drives the model's actual
-  denoising contract.**
+  baseline: ~2 tok/s decode (Phase 3's efficiency work has not started; the
+  prompt prefix KV cache is on, but nothing else is optimized, so this is a
+  floor, not a target).
+- ⚠️ **Phase 2, structured read — runs on real weights, accuracy still being
+  established.** An early run at 16 steps answered a 4-question set correctly
+  (`4`, `Paris`, `Yes`, `Elephant`), but a broader 7-question set scored
+  3/7 and an interim refinement revision scored 4/7 — so that one run was
+  **a lucky draw, not convergence**. Root cause: the read drove
+  `forward_block` directly and never applied the model's **self-conditioning
+  + temperature schedule** (the `set_sc` seam `run_eb_generate` uses). The
+  prefix/canvas attention masking is *not* missing — `forward_block` runs the
+  same denoising graph with `n_prompt=P`, which implements the
+  causal-prefix/bidirectional-canvas regions. Plain generation runs the
+  full contract and answered the same questions correctly (sky→`Yes.`,
+  10>3→`Yes.`, largest→`Elephant`). Changes landed: `DiffusionConfig::
+  read_steps` (default 16, decoupled from `n_gen`; strictly validated
+  `DG_READ_STEPS` override) and a rewrite of the read loop to seed once,
+  feed the previous argmax back, and supply previous-step logits through
+  `set_sc` with a temperature schedule — the real contract, replacing a
+  dead refinement and an interim fixed-confidence gate that could pin a
+  single slot. **Accuracy on the real-model set is being re-measured before
+  this is called trustworthy.**
 - ✅ **Phase 2, core primitive — CPU-verified.** `run_diffusion_structured_read()`
   added to `diffusion_decoder.cpp`/`.h`: seeds `slot_count` noise positions
   after a causally-encoded prefix, runs `n_steps` bidirectional
-  `forward_block` passes (refining toward the previous step's argmax
-  between steps), returns the final step's raw per-slot logits — no
-  commit/streaming/EOS handling, since a read wants a distribution, not
-  tokens. 9 new unit tests (single-slot, multi-slot, multi-step,
-  Masked-vs-UniformState noise wiring, config guards). **57/57 tests pass**
-  locally and on the box.
+  `forward_block` passes (each step feeding the previous argmax back and
+  threading previous-step logits through `set_sc`), returns the final step's
+  raw per-slot logits — no commit/streaming/EOS handling, since a read wants
+  a distribution, not tokens. 9 new unit tests (single-slot, multi-slot,
+  multi-step, Masked-vs-UniformState noise wiring, config guards). **57/57
+  tests pass** locally and on the box.
 - 🏗 **HIP-build fixes required to compile the branch** (all landed on this
   branch by this work): `server_main.cpp` was missing `#include "gguf.h"`
   (the new embedded-chat-template block only got it transitively on CUDA)
@@ -161,8 +163,11 @@ latency.
 ### Phase 2 — Build the structured-read primitive (djev's actual algorithm)
 
 **Status: core primitive + wiring done; real-model spot check RUN on gfx1151
-(2026-09-23) — correct at 16 steps, wrong at the original 1 (see Status
-section above). `read_steps` now defaults to 16.**
+(2026-09-23). One 4-question set passed at 16 steps, but a 7-question set
+scored 3–4/7, so accuracy is not yet established. The loop now drives the
+model's `set_sc` self-conditioning + temperature schedule instead of a
+step-count/gate heuristic (see Status section above). `read_steps` defaults
+to 16.**
 
 This was the piece lucebox didn't have yet, on any hardware. `/v1/systemone`
 (the earlier openjev work) only ever supported causal backends — it forces a

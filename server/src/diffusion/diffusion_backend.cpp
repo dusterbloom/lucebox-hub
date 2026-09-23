@@ -151,9 +151,18 @@ GenerateResult DiffusionBackend::generate_impl(const GenerateRequest & req,
     // One step is not enough on real weights; see DiffusionConfig::read_steps.
     if (req.want_first_token_logits) {
         const auto t_decode0 = clock::now();
-        const char * read_steps_env = std::getenv("DG_READ_STEPS");
-        const int read_steps = read_steps_env ? std::atoi(read_steps_env)
-                                              : (cfg_.read_steps > 0 ? cfg_.read_steps : 16);
+        int read_steps = cfg_.read_steps > 0 ? cfg_.read_steps : 16;
+        if (const char * e = std::getenv("DG_READ_STEPS"); e && *e) {
+            char * end = nullptr;
+            const long v = std::strtol(e, &end, 10);
+            if (end && *end == '\0' && v >= 1 && v <= 256) {
+                read_steps = (int)v;
+            } else {
+                std::fprintf(stderr,
+                    "[diffusion] ignoring invalid DG_READ_STEPS='%s' "
+                    "(want an integer 1..256); using %d\n", e, read_steps);
+            }
+        }
         DiffusionReadResult read = run_diffusion_structured_read(
             *model_, req.prompt, /*slot_count=*/1,
             /*n_steps=*/read_steps, cfg_, /*seed=*/req.sampler.seed,
