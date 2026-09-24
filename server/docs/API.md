@@ -165,6 +165,9 @@ Follows Anthropic Messages API structure with `content` blocks:
 
 ## POST `/v1/systemone` (openjev structured classification)
 
+> Introduction, mechanism overview, and how to use/extend/modify:
+> [`systemone.md`](./systemone.md).
+
 Implements the "openjev"/Jev prefill-only classification protocol
 ([ekzhang/openjev-sglang](https://github.com/ekzhang/openjev-sglang)):
 each question costs exactly one forced token of inference. Instead of
@@ -175,7 +178,7 @@ the token(s) for each valid answer label, and renormalizes with softmax
 over just those candidates. No decode loop runs, so this is much cheaper
 than a normal chat completion.
 
-First-token logit capture is wired up for all six backends (qwen3,
+First-token logit capture is wired up for all six causal backends (qwen3,
 qwen35, qwen35moe, deepseek4, gemma4, laguna). The request forces AR
 decode (`force_ar_decode=true`) so each backend's speculative-decode
 path — which isn't hooked for logit capture — is bypassed in favor of
@@ -183,6 +186,13 @@ its plain AR-decode / hybrid-decode first-token site (see
 `server/src/common/generation_types.h`'s `want_first_token_logits` /
 `first_token_logits`, and `server/src/qwen3/qwen3_backend.cpp` for a
 reference implementation).
+
+`diffusion-gemma` is also supported, but via a different mechanism: a
+canvas-seeded **structured read** (`run_diffusion_structured_read`) that
+denoises a block after the prompt and scores the label at the canvas slot it
+lands on (diffusion emits a `<|channel>thought<channel|>` block before the
+answer, so slot 0 is not the answer). See [`systemone.md`](./systemone.md)
+and [`djev-halo-plan.md`](./djev-halo-plan.md).
 
 For how this relates to the wider openjev ecosystem — including whether
 existing Hugging Face openjev finetunes (e.g. `AlexWortega/openjev`, a
