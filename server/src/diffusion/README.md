@@ -7,6 +7,10 @@ it over a few **denoising steps**, generating many tokens per forward. This
 module lets such models plug into the existing `ModelBackend` factory exactly
 like an AR arch.
 
+For the structured-decision endpoint built on top of this module
+(`/v1/systemone`, the djev-spark-style structured read), see
+[`../../docs/systemone.md`](../../docs/systemone.md).
+
 Target families (both shipped mid-2026):
 
 | Family | Backbone | Mode(s) | Noise | Maps onto |
