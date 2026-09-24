@@ -2459,20 +2459,6 @@ std::string systemone_question_suffix(const SystemoneQuestion & q) {
     return suffix;
 }
 
-// Picks the token id that encodes `label` as a single token, preferring
-// the leading-space form (the common mid-sentence spelling in BPE
-// vocabularies) and falling back to the bare form / first sub-token.
-// Returns -1 if `label` cannot be tokenized at all.
-int32_t systemone_label_token(Tokenizer & tok, const std::string & label) {
-    std::vector<int32_t> with_space = tok.encode(" " + label);
-    if (with_space.size() == 1) return with_space[0];
-    std::vector<int32_t> bare = tok.encode(label);
-    if (bare.size() == 1) return bare[0];
-    if (!bare.empty()) return bare[0];
-    if (!with_space.empty()) return with_space[0];
-    return -1;
-}
-
 }  // namespace
 
 bool HttpServer::handle_systemone(SocketHandle fd, const std::string & body_str) {
@@ -2603,10 +2589,15 @@ bool HttpServer::handle_systemone(SocketHandle fd, const std::string & body_str)
                     labels.push_back(std::to_string(i));
                 }
             }
-            std::vector<int32_t> candidate_ids;
-            candidate_ids.reserve(labels.size());
+            // Each label resolves to all its single-token surface forms:
+            // " Paris" (causal) and "Paris" (diffusion's bare form).
+            const SystemoneEncodeFn encode = [this](const std::string & s) {
+                return tokenizer_.encode(s);
+            };
+            std::vector<std::vector<int32_t>> label_ids;
+            label_ids.reserve(labels.size());
             for (const auto & l : labels) {
-                candidate_ids.push_back(systemone_label_token(tokenizer_, l));
+                label_ids.push_back(systemone_label_token_ids(encode, l));
             }
 
             GenerateRequest gen_req;
@@ -2634,12 +2625,12 @@ bool HttpServer::handle_systemone(SocketHandle fd, const std::string & body_str)
             const int row_vocab = (int)(result.first_token_logits.size() /
                                         (size_t)slot_count);
             int answer_slot = systemone_pick_answer_slot(
-                result.first_token_logits, slot_count, row_vocab, candidate_ids);
+                result.first_token_logits, slot_count, row_vocab, label_ids);
             if (answer_slot < 0) answer_slot = 0;
             const float * answer_row =
                 result.first_token_logits.data() + (size_t)answer_slot * row_vocab;
-            std::vector<float> probs = systemone_softmax_restricted_row(
-                answer_row, row_vocab, candidate_ids);
+            std::vector<float> probs = systemone_label_probs_row(
+                answer_row, row_vocab, label_ids);
             size_t best = 0;
             for (size_t i = 1; i < probs.size(); ++i) {
                 if (probs[i] > probs[best]) best = i;

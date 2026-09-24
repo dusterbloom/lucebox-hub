@@ -613,36 +613,47 @@ int main() {
               " with read_canvas=" + std::to_string(cfg.read_canvas));
     }
 
-    // ── 17d. systemone scoring skips a leading channel/formatting token ───
-    // Regression for the real-model failure where the read's slot 0 argmax was
-    // <|channel> (id 100) and the answer label landed a slot later, so scoring
-    // slot 0 picked an arbitrary candidate (capital of France -> Rome). The
-    // scorer must find the slot whose argmax is a candidate.
+    // ── 17d. systemone scoring: skip the thinking block, match the bare label
+    // Regression for the real-model failure: generation committed
+    // <|channel> 'thought' '\n' <channel|> 'Paris'(bare, id 50429) <eos>, but
+    // the label was resolved to the leading-space token ' Paris' (9079), so
+    // capital-of-France scored Rome. The scorer must (a) resolve each label to
+    // both surface forms, and (b) read the slot where the answer lands.
     {
         const int V = 16;
-        const std::vector<int32_t> cands = { 7, 9 };  // e.g. " Paris", " Rome"
-        // Slot 0 peaks at a non-candidate marker (id 5); slot 1 peaks at
-        // candidate 7; slot 2 peaks at candidate 9.
-        std::vector<float> logits((size_t)3 * V, 0.0f);
-        logits[(size_t)0 * V + 5] = 20.0f;
-        logits[(size_t)1 * V + 7] = 20.0f;
-        logits[(size_t)2 * V + 9] = 20.0f;
+        // Fake tokenizer: " Paris"->2, "Paris"->3, " Rome"->4, "Rome"->5.
+        SystemoneEncodeFn enc = [](const std::string & s) -> std::vector<int32_t> {
+            if (s == " Paris") return { 2 };
+            if (s == "Paris")  return { 3 };
+            if (s == " Rome")  return { 4 };
+            if (s == "Rome")   return { 5 };
+            return {};
+        };
+        const auto paris = systemone_label_token_ids(enc, "Paris");
+        check(paris == std::vector<int32_t>({ 2, 3 }),
+              "sysone-score: label resolves to both surface forms");
+        const std::vector<std::vector<int32_t>> label_ids = {
+            paris, systemone_label_token_ids(enc, "Rome") };
 
-        const int slot = systemone_pick_answer_slot(logits, 3, V, cands);
+        // Slot 0 peaks at a marker (6); slot 1 peaks at the BARE answer token 3.
+        std::vector<float> logits((size_t)2 * V, 0.0f);
+        logits[(size_t)0 * V + 6] = 20.0f;
+        logits[(size_t)1 * V + 3] = 20.0f;
+
+        const int slot = systemone_pick_answer_slot(logits, 2, V, label_ids);
         check(slot == 1,
-              "sysone-score: skips the marker at slot 0 and picks the answer slot",
+              "sysone-score: skips the marker, matches the bare answer token",
               "got slot " + std::to_string(slot));
 
-        // A 1-row (causal) result with a non-candidate argmax resolves to none.
-        const std::vector<float> one_row((size_t)V, 0.0f);
-        check(systemone_pick_answer_slot(one_row, 1, V, cands) == -1,
-              "sysone-score: single non-candidate row yields no answer slot");
-
-        // Restricted softmax over the chosen row ranks candidate 7 first.
         const float * row = logits.data() + (size_t)slot * V;
-        auto probs = systemone_softmax_restricted_row(row, V, cands);
+        auto probs = systemone_label_probs_row(row, V, label_ids);
         check(probs.size() == 2 && probs[0] > probs[1],
-              "sysone-score: chosen slot ranks the correct candidate first");
+              "sysone-score: bare-form label ranks first");
+
+        // A single row with a non-candidate argmax yields no answer slot.
+        const std::vector<float> one_row((size_t)V, 0.0f);
+        check(systemone_pick_answer_slot(one_row, 1, V, label_ids) == -1,
+              "sysone-score: single non-candidate row yields no answer slot");
     }
 
     // ── 18. structured read: canvas seeding actually reaches the model ─────
