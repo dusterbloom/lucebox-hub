@@ -30,8 +30,9 @@ using SystemoneEncodeFn =
 
 // Candidate token ids for `label`: the single-token encodings of both
 // " <label>" (causal / mid-sentence form) and "<label>" (diffusion's bare
-// form), deduplicated. Labels that are not single tokens contribute whatever
-// single-token forms exist (possibly none).
+// form), deduplicated. If neither is a single token, fall back to the first
+// sub-token of the bare form (the pre-existing behaviour) so a multi-token
+// option is not silently scored 0.
 inline std::vector<int32_t> systemone_label_token_ids(
         const SystemoneEncodeFn & encode, const std::string & label) {
     std::vector<int32_t> ids;
@@ -44,6 +45,10 @@ inline std::vector<int32_t> systemone_label_token_ids(
     };
     add(" " + label);
     add(label);
+    if (ids.empty()) {
+        const std::vector<int32_t> bare = encode(label);
+        if (!bare.empty() && bare[0] >= 0) ids.push_back(bare[0]);
+    }
     return ids;
 }
 
@@ -66,7 +71,7 @@ inline std::vector<float> systemone_label_probs_row(
     if (max_id < 0 || !std::isfinite(max_logit)) return out;
 
     double sum = 0.0;
-    std::vector<std::pair<const std::vector<int32_t> *, std::vector<double>>> exps;
+    std::vector<std::vector<double>> exps;
     exps.reserve(label_ids.size());
     for (const auto & ids : label_ids) {
         std::vector<double> e(ids.size(), 0.0);
@@ -76,14 +81,13 @@ inline std::vector<float> systemone_label_probs_row(
             e[k] = std::exp((double) (row[id] - max_logit));
             sum += e[k];
         }
-        exps.emplace_back(&ids, std::move(e));
+        exps.push_back(std::move(e));
     }
     if (sum <= 0.0) return out;
 
     for (size_t i = 0; i < exps.size(); ++i) {
         float best = 0.0f;
-        const auto & e = exps[i].second;
-        for (double p : e) best = (std::max)(best, (float) (p / sum));
+        for (double p : exps[i]) best = (std::max)(best, (float) (p / sum));
         out[i] = best;
     }
     return out;

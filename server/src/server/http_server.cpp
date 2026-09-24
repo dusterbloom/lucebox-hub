@@ -2626,7 +2626,15 @@ bool HttpServer::handle_systemone(SocketHandle fd, const std::string & body_str)
                                         (size_t)slot_count);
             int answer_slot = systemone_pick_answer_slot(
                 result.first_token_logits, slot_count, row_vocab, label_ids);
-            if (answer_slot < 0) answer_slot = 0;
+            if (answer_slot < 0) {
+                if (slot_count > 1) {
+                    std::fprintf(stderr,
+                        "[systemone] question '%s': no candidate label found in "
+                        "%d returned canvas slots; falling back to slot 0\n",
+                        q.id.c_str(), slot_count);
+                }
+                answer_slot = 0;
+            }
             const float * answer_row =
                 result.first_token_logits.data() + (size_t)answer_slot * row_vocab;
             std::vector<float> probs = systemone_label_probs_row(
