@@ -18,23 +18,27 @@ the same model the reference contract was pinned to.
   baseline: ~2 tok/s decode (Phase 3's efficiency work has not started; the
   prompt prefix KV cache is on, but nothing else is optimized, so this is a
   floor, not a target).
-- ⚠️ **Phase 2, structured read — 5/7 after fixing the canvas width.**
-  Root cause #1 (fixed, TDD red→green, test 17c): the read used a **1-wide
-  canvas**, but a diffusion forward needs the bidirectional context of the
-  surrounding canvas positions. On real DiffusionGemma 26B-A4B a 1-wide read
-  scored 3/7; a 32-wide read (djev-spark's benchmark width) scored **5/7**
-  (noul 4/4, math correct). `DiffusionConfig::read_canvas` now defaults to
-  32; the backend seeds a 32-slot canvas after the prefix and returns slot
-  0's logits (`DG_READ_SLOTS` override).
-- ⚠️ **Phase 2, root cause #2 (open) — read disagrees with generation on
-  word-label choices.** Even at canvas 32 / steps 48, `capital of France`→
-  `Rome` and `largest animal`→`Cat` in the read, while plain generation
-  returns `Paris` consistently at block sizes 8–64. Not step count, not
-  canvas width. Prime suspect: `systemone_label_token` resolves candidate
-  ids via `encode(" "+label)`/`encode(label)`, which may pick a token id the
-  model does not actually emit at that position, so the restricted softmax
-  ranks the wrong ids. Next: log the read's slot-0 argmax token text vs the
-  resolved candidate ids for these two questions.
+- ✅ **Phase 2, structured read — read now matches generation on the real
+  question set (6/7 correct; the 7th is the model's own answer).** Two root
+  causes found and fixed, both TDD:
+  - **Root cause #1 — 1-wide canvas (test 17c).** A diffusion forward needs
+    the bidirectional context of neighbouring canvas positions. 1-wide read
+    3/7 vs 32-wide (djev-spark's width) 5/7. `DiffusionConfig::read_canvas`
+    now defaults to 32 (`DG_READ_SLOTS` override), and the read returns
+    several leading slots.
+  - **Root cause #2 — wrong label token (test 17d).** Instrumented the read
+    and generation: generation commits `<|channel>`(100) `thought`(45518)
+    `\n`(107) `<channel|>`(101) **`Paris`(50429 bare)** `<eos>`. The old
+    `systemone_label_token` resolved `" Paris"` (id 9079, *leading space*),
+    so slot-0/answer scoring ranked the wrong token (capital→Rome,
+    largest→Cat). `systemone_score.h` now resolves each label to **both**
+    surface forms and scores the label at the first slot whose argmax is
+    any form. Result on the box: 2+2→4, capital→Paris, largest→Elephant all
+    at prob 1.000, matching plain generation. Per-label probs are 1.000
+    because the answer slot is decisive.
+  - Verified agreement: for every one of the 7 questions the read's answer
+    equals plain generation's (`wet` → `No` in both — the model's own
+    answer, not a read bug).
 - ℹ️ Intermediate history (all superseded): an early 4-question set passed
   at 16 steps but a 7-question set scored 3–4/7 across a dead refinement,
   an SC+argmax heuristic, and the EB-mirrored loop — so the loop itself was
@@ -168,12 +172,12 @@ latency.
 ### Phase 2 — Build the structured-read primitive (djev's actual algorithm)
 
 **Status: core primitive + wiring done; real-model spot check RUN on gfx1151
-(2026-09-23). The 7-question set scores 3–4/7 across three denoiser
-revisions, so accuracy is not yet established — and the loop is not the
-bottleneck. The read now mirrors `run_eb_generate`'s entropy-bound loop
-exactly; the residual defect is in diffusion-gemma prompt rendering /
-answer-slot placement (choice prompts render to empty output), see Status
-section above. `read_steps` defaults to 16.**
+(2026-09-23) — the read now matches plain generation on the 7-question set
+(6/7 correct; the 7th is the model's own answer). Two real-weight root
+causes fixed via TDD: a 1-wide canvas (→32) and resolving each label to both
+its leading-space and bare token forms, scoring the answer at the slot it
+lands on (past the `<|channel>thought<channel|>` block). See Status above.
+`read_canvas` defaults to 32, `read_steps` to 16.**
 
 This was the piece lucebox didn't have yet, on any hardware. `/v1/systemone`
 (the earlier openjev work) only ever supported causal backends — it forces a
@@ -209,13 +213,15 @@ bidirectional diffusion:
 
 **Exit criteria (revised — split in two):**
 - ✅ Correctness test suite on synthetic models — done, 57/57 (see Status).
-- ✅ Real-model spot check on gfx1151 — **run 2026-09-23.** The endpoint,
-  rendering, tokenization and restricted softmax all work end-to-end; the
-  read is fast (~0.4s/question). But the read's *answers* are unreliable
-  (3–4/7 on unambiguous questions) because it bypasses the model's denoising
-  contract — the gate is now "drive self-conditioning + temperature schedule
-  in the read", not step count. Plain generation is correct on the same
-  questions, so the backbone is fine.
+- ✅ Real-model spot check on gfx1151 — **run 2026-09-23.** Endpoint,
+  rendering, tokenization and scoring all work end-to-end (~0.4s/question),
+  and the read's answers now **match plain generation** on the 7-question
+  set (6/7; `wet`→`No` in both). Fixed: canvas width (1→32) and label-token
+  resolution (bare + leading-space forms, scored at the answer slot past the
+  channel/thinking block). Remaining hardening: the picker takes the *first*
+  slot whose argmax is any label form, so a label word appearing inside the
+  thought block could still win; prefer the first form-slot after the last
+  `<channel|>` (or score by max candidate probability) is the next guard.
 
 ### Phase 3 — Strix Halo-specific efficiency work
 
