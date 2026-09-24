@@ -654,6 +654,16 @@ int main() {
         const std::vector<float> one_row((size_t)V, 0.0f);
         check(systemone_pick_answer_slot(one_row, 1, V, label_ids) == -1,
               "sysone-score: single non-candidate row yields no answer slot");
+
+        // Multi-token labels fall back to the first sub-token, not 0/empty.
+        SystemoneEncodeFn enc_multi = [](const std::string & s) -> std::vector<int32_t> {
+            if (s == " New York") return { 10, 11 };
+            if (s == "New York")  return { 12, 13 };
+            return {};
+        };
+        check(systemone_label_token_ids(enc_multi, "New York") ==
+                  std::vector<int32_t>({ 12 }),
+              "sysone-score: multi-token label falls back to its first sub-token");
     }
 
     // ── 18. structured read: canvas seeding actually reaches the model ─────

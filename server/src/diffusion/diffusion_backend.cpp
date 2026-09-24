@@ -191,6 +191,10 @@ GenerateResult DiffusionBackend::generate_impl(const GenerateRequest & req,
                 const long v = std::strtol(e, &end, 10);
                 if (end && *end == '\0' && v >= 1 && v <= 256) {
                     slots_returned = (int)v;
+                } else {
+                    std::fprintf(stderr,
+                        "[diffusion] ignoring invalid DG_READ_RETURN='%s' "
+                        "(want an integer 1..256); using %d\n", e, slots_returned);
                 }
             }
             // Return the leading slots (not just slot 0): diffusion can emit a

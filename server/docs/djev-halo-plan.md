@@ -9,9 +9,9 @@ the same model the reference contract was pinned to.
 
 - ✅ **Phase 0 (partial) — real forward runs.** `luce_server` loads the real
   GGUF and `/v1/chat/completions` returns coherent, *correct* answers
-  ("Which animal is the largest?" → "Elephant"). The plain generation path's
-  denoising contract is sound on real weights. Full reference parity (cosine
-  / argmax against the llama.cpp oracle on a fixed prompt set) is still open.
+  ("Which animal is the largest?" → "Elephant") on the prompts tried. That is
+  a smoke signal, not a parity result — full reference parity (cosine /
+  argmax against the llama.cpp oracle on a fixed prompt set) is still open.
 - ✅ **Phase 1 — done, `gfx1151`.** HIP build
   (`-DLUCE_GPU_BACKEND=hip -DCMAKE_HIP_ARCHITECTURES=gfx1151`) links and
   serves; `test_diffusion_decoder` is **57/57** on the box too. Measured
@@ -32,29 +32,33 @@ the same model the reference contract was pinned to.
     `systemone_label_token` resolved `" Paris"` (id 9079, *leading space*),
     so slot-0/answer scoring ranked the wrong token (capital→Rome,
     largest→Cat). `systemone_score.h` now resolves each label to **both**
-    surface forms and scores the label at the first slot whose argmax is
-    any form. Result on the box: 2+2→4, capital→Paris, largest→Elephant all
-    at prob 1.000, matching plain generation. Per-label probs are 1.000
-    because the answer slot is decisive.
+    surface forms (falling back to the first sub-token for multi-token
+    labels) and scores the label at the first slot whose argmax is any form.
+    Result on the box: 2+2→4, capital→Paris, largest→Elephant, all reported
+    at probability 1.000 (the answer slot is decisive), matching plain
+    generation.
   - Verified agreement: for every one of the 7 questions the read's answer
     equals plain generation's (`wet` → `No` in both — the model's own
     answer, not a read bug).
 - ℹ️ Intermediate history (all superseded): an early 4-question set passed
   at 16 steps but a 7-question set scored 3–4/7 across a dead refinement,
-  an SC+argmax heuristic, and the EB-mirrored loop — so the loop itself was
-  never the bottleneck. The read now mirrors `run_eb_generate`'s
-  entropy-bound loop exactly (uniform init, temp schedule, ascending-entropy
-  acceptance, renoise rejected, `set_sc`). Prefix/canvas attention masking
-  is *not* missing (`forward_block` runs the graph with `n_prompt=P`).
+  an SC+argmax heuristic, and a loop that mirrors the EB one — so the loop
+  itself was never the bottleneck. The read follows `run_eb_generate`'s
+  entropy-bound loop (uniform init, temp schedule, ascending-entropy
+  acceptance, renoise rejected, `set_sc`), except it runs a fixed step
+  count rather than the adaptive early-stop, and it always samples the
+  intermediate canvas (it does not honour `do_sample`). Prefix/canvas
+  attention masking is *not* missing (`forward_block` runs the graph with
+  `n_prompt=P`, shared pre-existing behaviour).
 - ✅ **Phase 2, core primitive — CPU-verified.** `run_diffusion_structured_read()`
   added to `diffusion_decoder.cpp`/`.h`: seeds `slot_count` noise positions
   after a causally-encoded prefix, runs `n_steps` bidirectional
-  `forward_block` passes (each step feeding the previous argmax back and
-  threading previous-step logits through `set_sc`), returns the final step's
-  raw per-slot logits — no commit/streaming/EOS handling, since a read wants
-  a distribution, not tokens. 9 new unit tests (single-slot, multi-slot,
-  multi-step, Masked-vs-UniformState noise wiring, config guards). **57/57
-  tests pass** locally and on the box.
+  `forward_block` passes (each step feeding the previous step's sampled
+  denoiser back and threading previous-step logits through `set_sc`), returns
+  the final step's raw per-slot logits — no commit/streaming/EOS handling,
+  since a read wants a distribution, not tokens. 9 new unit tests
+  (single-slot, multi-slot, multi-step, Masked-vs-UniformState noise wiring,
+  config guards). **67/67 tests pass** locally.
 - 🏗 **HIP-build fixes required to compile the branch** (all landed on this
   branch by this work): `server_main.cpp` was missing `#include "gguf.h"`
   (the new embedded-chat-template block only got it transitively on CUDA)

@@ -29,6 +29,42 @@ std::pair<int32_t, float> softmax_argmax_prob(const float * row, int vocab) {
     return { (int32_t)best, prob };
 }
 
+// Host sampling for one slot row at temperature 1/temp_inv: probability-weighted
+// draw from `draw`, Shannon entropy, and the argmax. Mirrors
+// DiffusionModelGraph::forward_block_dev's CPU fallback so the structured read
+// is backend-agnostic. The CUDA forward_block_dev override deliberately keeps
+// logits device-resident (host logits are left empty), so a read built on it
+// returns no host logits and fails; forward_block + this helper works on every
+// backend.
+void sample_slot_row(const float * row, int vocab, float temp_inv, float draw,
+                     float & entropy_out, int32_t & argmax_out,
+                     int32_t & sampled_out) {
+    int   best       = 0;
+    float best_logit = row[0];
+    float max_scaled = row[0] * temp_inv;
+    for (int v = 1; v < vocab; ++v) {
+        if (row[v] > best_logit) { best_logit = row[v]; best = v; }
+        max_scaled = (std::max)(max_scaled, row[v] * temp_inv);
+    }
+    double denom = 0.0;
+    for (int v = 0; v < vocab; ++v) {
+        denom += std::exp((double)row[v] * (double)temp_inv - (double)max_scaled);
+    }
+    double cdf = 0.0;
+    double entropy = 0.0;
+    int    sampled = vocab - 1;
+    for (int v = 0; v < vocab; ++v) {
+        const double p =
+            std::exp((double)row[v] * (double)temp_inv - (double)max_scaled) / denom;
+        if (p > 0.0) entropy -= p * std::log(p);
+        cdf += p;
+        if (draw <= cdf && sampled == vocab - 1) sampled = v;
+    }
+    argmax_out  = (int32_t)best;
+    sampled_out = (int32_t)sampled;
+    entropy_out = (float)entropy;
+}
+
 // Positions that should be finalized after completing 0-indexed denoising step
 // `s` of `steps`, under a linear schedule.
 int target_finalized_after(int s, int steps, int block_len) {
@@ -504,7 +540,6 @@ DiffusionReadResult run_diffusion_structured_read(
     const int SH = std::max(1, std::min(cfg.eb_schedule_steps, S));
 
     std::vector<float>   sc_buffer;
-    std::vector<int32_t> argmax_canvas(slot_count, 0);
     std::vector<float>   entropy_vec(slot_count, 0.0f);
     std::vector<int32_t> denoiser(slot_count, 0);
     std::vector<int32_t> order(slot_count);
@@ -529,20 +564,27 @@ DiffusionReadResult run_diffusion_structured_read(
             renoise[j] = noise_token();
         }
 
-        DiffusionModelGraph::DevSampleResult sr;
-        if (!model.forward_block_dev(canvas, prefix_len, slot_count,
-                                     /*bidirectional=*/true, u, temp_inv, sr)) {
-            res.error = "read: forward_block_dev";
+        std::vector<float> logits;
+        if (!model.forward_block(canvas, prefix_len, slot_count,
+                                 /*bidirectional=*/true, logits)) {
+            res.error = "read: forward_block";
             return res;
         }
         ++res.forward_passes;
-
-        for (int j = 0; j < slot_count; ++j) {
-            entropy_vec[j]   = sr.entropy[j];
-            argmax_canvas[j] = sr.argmax[j];
-            denoiser[j]      = sr.sampled[j];
+        if ((int)logits.size() < slot_count * vocab) {
+            res.error = "read: forward_block returned too few logits";
+            return res;
         }
-        if (!sr.logits.empty()) sc_buffer = std::move(sr.logits);
+
+        // Sample/entropy/argmax on the host (backend-agnostic; the CUDA device
+        // path keeps logits device-resident and returns none).
+        for (int j = 0; j < slot_count; ++j) {
+            const float * row = logits.data() + (size_t)j * vocab;
+            int32_t amax = 0;
+            sample_slot_row(row, vocab, temp_inv, u[j],
+                            entropy_vec[j], amax, denoiser[j]);
+        }
+        sc_buffer = std::move(logits);
 
         // Accept ascending-entropy while the cumulative prior entropy is within
         // the bound; renoise the rest (ref diffusion.cpp:739-755).
