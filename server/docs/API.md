@@ -235,21 +235,36 @@ in `questions` needs:
   "id": "sysone-...",
   "model": "qwen3",
   "answers": [
-    {"id": "q1", "type": "noul", "answer": true,
+    {"id": "q1", "type": "noul", "valid": true, "answer": true,
+     "confidence": 0.81, "candidate_mass": 0.991,
      "probabilities": {"Yes": 0.94, "No": 0.06}},
-    {"id": "q2", "type": "choice", "answer": "billing",
+    {"id": "q2", "type": "choice", "valid": true, "answer": "billing",
+     "confidence": 0.55, "candidate_mass": 0.972,
      "probabilities": {"billing": 0.71, "support": 0.20, "sales": 0.09}},
-    {"id": "q3", "type": "score", "answer": 4,
-     "probabilities": {"1": 0.02, "2": 0.05, "3": 0.18, "4": 0.51, "5": 0.24}}
+    {"id": "q3", "type": "score", "valid": false, "answer": null,
+     "reason": "model placed negligible probability on the candidate labels",
+     "confidence": 0.0, "candidate_mass": 0.0004,
+     "probabilities": {"1": 0.10, "2": 0.55, "3": 0.20, "4": 0.10, "5": 0.05}}
   ]
 }
 ```
 
-`answer` is a bool for `noul`, the chosen option string for `choice`, and
-a 1-based level integer for `score`. `probabilities` always sums to ~1.0
-over the valid answer labels for that question (candidate labels that
-fail to tokenize as expected get probability 0). A `400` is returned for
-malformed questions and a `501` for unsupported backends.
+Each answer carries:
+
+| Field | Meaning |
+|---|---|
+| `valid` | `false` when the read did not resolve a decision; treat as **abstain**, do not read `answer`. |
+| `answer` | bool for `noul`, option string for `choice`, 1-based level for `score`. `null` when `valid` is false. |
+| `probabilities` | Proper distribution over the labels (sums to 1). Only meaningful together with `candidate_mass`. |
+| `candidate_mass` | Total probability the model put on the candidate tokens; the rest went to non-candidate tokens. A near-zero mass means the model wanted something outside the offered options. |
+| `confidence` | `1 - H(p)/ln K` — concentration over the offered labels, **not** a probability the answer is correct. Do not gate on it until calibrated (see `systemone.md`). |
+
+`valid: false` (with `reason`) replaces the previous silent fallbacks: a
+label that is not a single token is rejected with `400` at request time (pass
+unique single-token aliases such as `A`/`B`/`C` and map back yourself); a
+canvas with no candidate slot, or a negligible `candidate_mass`, returns an
+explicit abstention rather than scoring slot 0 or an all-zero vector. A `400`
+is returned for malformed questions and a `501` for unsupported backends.
 
 ---
 

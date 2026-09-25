@@ -64,12 +64,24 @@ Notes specific to the diffusion path:
 
 - Each label is matched in **both** surface forms — `" cat"` (leading space,
   the causal/mid-sentence spelling) and `"cat"` (the bare form DiffusionGemma
-  emits after `<channel|>`) — and scored as the max over its forms.
+  emits after `<channel|>`) — and its probability is the **sum** over its
+  forms of the softmax over the candidate union.
 - The answer is read at the first canvas slot whose argmax is any label form,
-  so the leading thinking block is skipped. If no label is found in the
-  returned slots, the server logs a warning and falls back to slot 0.
-- Probabilities are often 1.000 for a decisive answer slot; that is expected
-  (the restricted softmax over a peaked slot).
+  so the leading thinking block is skipped. If no label is found, the answer
+  is an explicit **abstention** (`valid: false`), never a silent slot-0 score.
+
+Contract notes (all responses):
+
+- `probabilities` is a proper distribution over the labels (sums to 1);
+  `candidate_mass` is how much probability the model put on the candidates at
+  all (a low value means it preferred a non-candidate token).
+- A label that is not a single token is rejected with `400` — pass unique
+  single-token aliases (`A`/`B`/`C`) for arbitrary names and map back. There is
+  no silent multi-token collapse.
+- `confidence` is `1 - H(p)/ln K`: concentration over the offered labels, not
+  the probability the answer is correct. Do not gate on it until calibrated
+  (see `djev-halo-plan.md`). Probabilities of 1.000 are common on a decisive
+  slot and are expected.
 
 ## Code map
 
@@ -120,7 +132,10 @@ logged and ignored).
   picks the **first** slot whose argmax is any label form — a label word
   appearing inside the thinking block could still win; preferring the first
   form-slot after the last `<channel|>` is the next hardening.
-- Multi-token labels are scored by their first sub-token only.
+- Multi-token labels are rejected (`400`), not collapsed to a sub-token.
+- `confidence` is concentration over the offered labels and is **not yet
+  calibrated**; do not gate routing/safety on it (Astra review, see
+  `djev-halo-plan.md`).
 - The causal and diffusion paths share `systemone_score.h`; the union-softmax /
   max-over-forms scoring is slightly different from the original causal
   single-id-per-label behaviour and deserves a causal regression check.

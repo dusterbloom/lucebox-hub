@@ -613,12 +613,11 @@ int main() {
               " with read_canvas=" + std::to_string(cfg.read_canvas));
     }
 
-    // ── 17d. systemone scoring: skip the thinking block, match the bare label
-    // Regression for the real-model failure: generation committed
-    // <|channel> 'thought' '\n' <channel|> 'Paris'(bare, id 50429) <eos>, but
-    // the label was resolved to the leading-space token ' Paris' (9079), so
-    // capital-of-France scored Rome. The scorer must (a) resolve each label to
-    // both surface forms, and (b) read the slot where the answer lands.
+    // ── 17d. systemone scoring contract ──────────────────────────────────
+    // Regression + contract: (a) resolve each label to both surface forms;
+    // (b) multi-token labels are unresolvable, NOT collapsed; (c) the returned
+    // probabilities are a proper distribution (sum to 1) with candidate_mass
+    // reported; (d) confidence is 1 certain / 0 uniform.
     {
         const int V = 16;
         // Fake tokenizer: " Paris"->2, "Paris"->3, " Rome"->4, "Rome"->5.
@@ -627,6 +626,8 @@ int main() {
             if (s == "Paris")  return { 3 };
             if (s == " Rome")  return { 4 };
             if (s == "Rome")   return { 5 };
+            if (s == " New York") return { 10, 11 };
+            if (s == "New York")  return { 12, 13 };
             return {};
         };
         const auto paris = systemone_label_token_ids(enc, "Paris");
@@ -634,6 +635,10 @@ int main() {
               "sysone-score: label resolves to both surface forms");
         const std::vector<std::vector<int32_t>> label_ids = {
             paris, systemone_label_token_ids(enc, "Rome") };
+
+        // Multi-token labels are unresolvable (no silent sub-token collapse).
+        check(systemone_label_token_ids(enc, "New York").empty(),
+              "sysone-score: multi-token label is unresolvable, not collapsed");
 
         // Slot 0 peaks at a marker (6); slot 1 peaks at the BARE answer token 3.
         std::vector<float> logits((size_t)2 * V, 0.0f);
@@ -646,24 +651,34 @@ int main() {
               "got slot " + std::to_string(slot));
 
         const float * row = logits.data() + (size_t)slot * V;
-        auto probs = systemone_label_probs_row(row, V, label_ids);
-        check(probs.size() == 2 && probs[0] > probs[1],
+        const SystemoneScore sc = systemone_score_row(row, V, label_ids);
+        check(sc.label_probs.size() == 2 && sc.label_probs[0] > sc.label_probs[1],
               "sysone-score: bare-form label ranks first");
+        const float sum = sc.label_probs[0] + sc.label_probs[1];
+        check(std::fabs(sum - 1.0f) < 1e-4f,
+              "sysone-score: label probabilities sum to 1",
+              "sum=" + std::to_string(sum));
+        check(sc.candidate_mass > 0.0f && sc.candidate_mass <= 1.0f,
+              "sysone-score: candidate_mass is reported in (0,1]");
+        check(systemone_confidence(sc.label_probs) > 0.99f,
+              "sysone-score: peaked distribution has confidence ~1");
+
+        // Uniform distribution over two labels -> confidence 0.
+        check(std::fabs(systemone_confidence({0.5f, 0.5f})) < 1e-4f,
+              "sysone-score: uniform distribution has confidence 0");
+
+        // No resolvable candidate -> zero mass, all-zero distribution.
+        const SystemoneScore empty = systemone_score_row(row, V, {{}, {}});
+        check(empty.candidate_mass == 0.0f,
+              "sysone-score: no candidate ids yields zero candidate_mass");
+        check(empty.label_probs.size() == 2 && empty.label_probs[0] == 0.0f &&
+                  empty.label_probs[1] == 0.0f,
+              "sysone-score: no candidate ids yields all-zero probabilities");
 
         // A single row with a non-candidate argmax yields no answer slot.
         const std::vector<float> one_row((size_t)V, 0.0f);
         check(systemone_pick_answer_slot(one_row, 1, V, label_ids) == -1,
               "sysone-score: single non-candidate row yields no answer slot");
-
-        // Multi-token labels fall back to the first sub-token, not 0/empty.
-        SystemoneEncodeFn enc_multi = [](const std::string & s) -> std::vector<int32_t> {
-            if (s == " New York") return { 10, 11 };
-            if (s == "New York")  return { 12, 13 };
-            return {};
-        };
-        check(systemone_label_token_ids(enc_multi, "New York") ==
-                  std::vector<int32_t>({ 12 }),
-              "sysone-score: multi-token label falls back to its first sub-token");
     }
 
     // ── 18. structured read: canvas seeding actually reaches the model ─────
