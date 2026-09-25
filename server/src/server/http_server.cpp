@@ -2560,6 +2560,7 @@ bool HttpServer::handle_systemone(SocketHandle fd, const std::string & body_str)
                         chat_messages, model_name, response_id]() mutable {
         json answers = json::array();
         std::string err;
+        int err_status = 500;
         for (const auto & q : questions) {
             std::vector<ChatMessage> msgs = chat_messages;
             msgs.push_back({"user", systemone_question_suffix(q)});
@@ -2600,6 +2601,20 @@ bool HttpServer::handle_systemone(SocketHandle fd, const std::string & body_str)
             for (const auto & l : labels) {
                 label_ids.push_back(systemone_label_token_ids(encode, l));
             }
+            // A label that is not a single token cannot be scored by a one-slot
+            // read; reject it (400) rather than silently collapsing it to a
+            // sub-token or scoring it 0. Callers routing arbitrary names should
+            // pass unique single-token aliases (A/B/C) and map back.
+            for (size_t i = 0; i < labels.size(); ++i) {
+                if (label_ids[i].empty()) {
+                    err = "question '" + q.id + "': option '" + labels[i] +
+                          "' does not tokenize to a single token; use a unique "
+                          "single-token alias (e.g. A/B/C)";
+                    err_status = 400;
+                    break;
+                }
+            }
+            if (!err.empty()) break;
 
             GenerateRequest gen_req;
             gen_req.prompt = prompt_tokens;
@@ -2618,44 +2633,55 @@ bool HttpServer::handle_systemone(SocketHandle fd, const std::string & body_str)
                 break;
             }
 
-            // Diffusion returns several leading canvas slots (a channel /
-            // formatting marker can occupy slot 0); causal backends return one.
-            // Score the labels at the first slot whose argmax is a candidate,
-            // so a leading marker does not decide the answer.
             const int slot_count = (std::max)(1, result.first_token_slot_count);
             const int row_vocab = (int)(result.first_token_logits.size() /
                                         (size_t)slot_count);
-            int answer_slot = systemone_pick_answer_slot(
-                result.first_token_logits, slot_count, row_vocab, label_ids);
-            if (answer_slot < 0) {
-                if (slot_count > 1) {
-                    std::fprintf(stderr,
-                        "[systemone] question '%s': no candidate label found in "
-                        "%d returned canvas slots; falling back to slot 0\n",
-                        q.id.c_str(), slot_count);
-                }
-                answer_slot = 0;
+            // Causal backends answer from their single post-prefill slot; for
+            // the diffusion canvas, locate the slot whose argmax is a label
+            // (past the thinking block). A miss is an explicit abstention, not
+            // a silent slot-0 score.
+            int answer_slot = 0;
+            bool slot_ok = true;
+            if (slot_count > 1) {
+                answer_slot = systemone_pick_answer_slot(
+                    result.first_token_logits, slot_count, row_vocab, label_ids);
+                if (answer_slot < 0) slot_ok = false;
             }
             const float * answer_row =
-                result.first_token_logits.data() + (size_t)answer_slot * row_vocab;
-            std::vector<float> probs = systemone_label_probs_row(
-                answer_row, row_vocab, label_ids);
+                result.first_token_logits.data() +
+                (size_t)(slot_ok ? answer_slot : 0) * row_vocab;
+            const SystemoneScore sc =
+                systemone_score_row(answer_row, row_vocab, label_ids);
+
+            // Minimum probability mass the model must place on the candidate
+            // tokens for this to count as a decision at all.
+            constexpr float kMinCandidateMass = 1e-3f;
+            const bool valid = slot_ok && sc.candidate_mass >= kMinCandidateMass;
+
             size_t best = 0;
-            for (size_t i = 1; i < probs.size(); ++i) {
-                if (probs[i] > probs[best]) best = i;
+            for (size_t i = 1; i < sc.label_probs.size(); ++i) {
+                if (sc.label_probs[i] > sc.label_probs[best]) best = i;
             }
 
             json prob_obj = json::object();
             for (size_t i = 0; i < labels.size(); ++i) {
-                prob_obj[labels[i]] = probs[i];
+                prob_obj[labels[i]] = sc.label_probs[i];
             }
 
             json a = {
                 {"id", q.id},
                 {"type", q.type},
+                {"valid", valid},
                 {"probabilities", prob_obj},
+                {"candidate_mass", sc.candidate_mass},
+                {"confidence", systemone_confidence(sc.label_probs)},
             };
-            if (q.type == "noul") {
+            if (!valid) {
+                a["answer"] = nullptr;
+                a["reason"] = !slot_ok
+                    ? "no candidate label found in the returned canvas slots"
+                    : "model placed negligible probability on the candidate labels";
+            } else if (q.type == "noul") {
                 a["answer"] = (labels[best] == "Yes");
             } else if (q.type == "score") {
                 a["answer"] = (int) (best + 1);
@@ -2666,7 +2692,7 @@ bool HttpServer::handle_systemone(SocketHandle fd, const std::string & body_str)
         }
 
         if (!err.empty()) {
-            send_error(fd, 500, err);
+            send_error(fd, err_status, err);
             return;
         }
 

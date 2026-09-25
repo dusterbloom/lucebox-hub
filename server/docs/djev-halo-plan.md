@@ -32,8 +32,8 @@ the same model the reference contract was pinned to.
     `systemone_label_token` resolved `" Paris"` (id 9079, *leading space*),
     so slot-0/answer scoring ranked the wrong token (capital→Rome,
     largest→Cat). `systemone_score.h` now resolves each label to **both**
-    surface forms (falling back to the first sub-token for multi-token
-    labels) and scores the label at the first slot whose argmax is any form.
+    surface forms (multi-token labels are now rejected with `400` rather than
+    collapsed) and scores the label at the first slot whose argmax is any form.
     Result on the box: 2+2→4, capital→Paris, largest→Elephant, all reported
     at probability 1.000 (the answer slot is decisive), matching plain
     generation.
