@@ -8044,6 +8044,7 @@ TEST_CASE(ServerUnitFixture, test_usage_timings_openai_chat_streaming) {
     // data: [DONE]) carries `timings.{prefill_ms, decode_ms,
     // decode_tokens_per_sec}` when timings are passed to emit_finish.
     auto em = make_emitter(ApiFormat::OPENAI_CHAT);
+    em.set_include_usage(true);  // usage chunk is opt-in (stream_options.include_usage)
     em.emit_start();
     em.emit_token("Hello world");
 
@@ -8103,6 +8104,7 @@ TEST_CASE(ServerUnitFixture, test_usage_timings_zero_decode_no_div_by_zero) {
 
     // Also exercise via OpenAI streaming path — finite JSON output, no NaN/Inf.
     auto em = make_emitter(ApiFormat::OPENAI_CHAT);
+    em.set_include_usage(true);  // usage chunk is opt-in (stream_options.include_usage)
     em.emit_start();
     auto finish = em.emit_finish(/*completion_tokens*/ 0, &t);
     std::string finish_str = concat(finish);
