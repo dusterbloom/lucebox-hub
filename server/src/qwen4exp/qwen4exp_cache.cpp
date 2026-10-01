@@ -95,7 +95,7 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
         if (w.indexer_head_size > 0 && ratio > 0) {
             const int64_t max_blocks = (static_cast<int64_t>(max_ctx) + ratio - 1) / ratio;
             out.indexer_k[i] = ggml_new_tensor_2d(out.ctx, GGML_TYPE_F32,
-                w.indexer_head_size, max_blocks);
+                w.indexer_head_size, max_blocks + 1);
             out.indexer_raw[i] = ggml_new_tensor_2d(out.ctx, GGML_TYPE_F32,
                 w.indexer_head_size, max_ctx);
         }
@@ -111,6 +111,11 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
         ggml_free(out.ctx);
         out.ctx = nullptr;
         return false;
+    }
+
+    // Stable scoring converts the whole bucket, including its masked suffix.
+    for (ggml_tensor * t : out.indexer_k) {
+        if (t) ggml_backend_tensor_memset(t, 0, 0, ggml_nbytes(t));
     }
 
     out.max_ctx = max_ctx;

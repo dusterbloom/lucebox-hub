@@ -55,7 +55,8 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
                                        const int32_t * tokens,
                                        int n_tokens,
                                        int pos0,
-                                       std::vector<float> & out_logits);
+                                       std::vector<float> & out_logits,
+                                       bool qsa_rebuild_reference = false); // smoke oracle only
 
 // Decode one next token for each independent slot. `caches[s]` owns that
 // sequence's KV and recurrent state; `tokens[s]` and `positions[s]` are never

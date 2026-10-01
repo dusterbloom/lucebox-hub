@@ -165,9 +165,6 @@ int main(int argc, char ** argv) {
     // stable QSA enabled vs the original per-step rebuild (including cache bits).
     if (const char * check = getenv("QWEN4EXP_SMOKE_STABLE"); rc == 0 && check) {
         const int n = std::atoi(check), start = S - n;
-        const char * previous = getenv("QWEN4EXP_QSA_STABLE");
-        const bool had_previous = previous != nullptr;
-        const std::string saved = previous ? previous : "";
         Qwen4ExpCache reference;
         bool ok = n > 0 && n < S && create_qwen4exp_cache(backend, w, cache.max_ctx, GGML_TYPE_F16, reference);
         std::vector<float> expected, actual;
@@ -176,22 +173,19 @@ int main(int argc, char ** argv) {
                    qwen4exp_forward(backend, w, reference, tokens.data(), start, 0, expected).ok;
         int replays = 0;
         for (int p = start; ok && p < S; ++p) {
-            setenv("QWEN4EXP_QSA_STABLE", "0", 1);
-            ok = qwen4exp_forward(backend, w, reference, &tokens[p], 1, p, expected).ok;
-            setenv("QWEN4EXP_QSA_STABLE", "1", 1);
+            ok = qwen4exp_forward(backend, w, reference, &tokens[p], 1, p, expected, true).ok;
             const auto & ws = cache.decode_workspace;
-            const bool replay = ws.gf && ws.qsa_blocks == (p + 1) / 4 && ws.next_pos == p &&
-                                cache.indexer_blocks == (p + 1) / 4 && p + 1 <= ws.kv_bucket;
-            ggml_cgraph * prior_graph = ws.gf;
+            const bool replay = ws.gf && ws.qsa_blocks > 0 && ws.next_pos == p &&
+                                cache.indexer_blocks == p / 4 && p + 1 <= ws.kv_bucket;
+            const uint64_t builds = ws.builds, prior_replays = ws.replays;
             ok = ok && qwen4exp_forward(backend, w, cache, &tokens[p], 1, p, actual).ok;
             ok = ok && actual.size() == expected.size() &&
                  std::memcmp(actual.data(), expected.data(), actual.size() * sizeof(float)) == 0 &&
-                 same_cache(cache, reference, p + 1) && (!replay || ws.gf == prior_graph);
+                 same_cache(cache, reference, p + 1) &&
+                 (!replay || (ws.builds == builds && ws.replays == prior_replays + 1));
             replays += replay;
             if (!ok) std::fprintf(stderr, "[smoke] stable/rebuild mismatch at pos=%d\n", p);
         }
-        if (had_previous) setenv("QWEN4EXP_QSA_STABLE", saved.c_str(), 1);
-        else unsetenv("QWEN4EXP_QSA_STABLE");
         free_qwen4exp_cache(reference);
         std::printf("[smoke] stable/rebuild bits ok=%d QSA replays=%d\n", (int) ok, replays);
         if (!ok || replays == 0) rc = 1;

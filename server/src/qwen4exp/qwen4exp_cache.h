@@ -38,8 +38,8 @@ struct Qwen4ExpDecodeWorkspace {
     bool planned = false;
 
     // Stable T=1 graph state. The graph is rebuilt only when the fixed
-    // attention-span bucket changes. QSA also rebuilds on pooling steps and
-    // logical block-count changes; its score/top-k width is never padded.
+    // attention-span bucket changes. QSA visibility, selection width and
+    // pooled-key writes are runtime inputs, including block-completion steps.
     ggml_cgraph * gf = nullptr;
     ggml_tensor * inp_emb = nullptr;
     ggml_tensor * positions = nullptr;
@@ -48,7 +48,12 @@ struct Qwen4ExpDecodeWorkspace {
     ggml_tensor * kv_row = nullptr;
     ggml_tensor * logits = nullptr;
     int64_t kv_bucket = 0;
-    int64_t qsa_blocks = -1;  // -1 for dense; exact logical score/top-k width otherwise
+    int64_t qsa_blocks = -1;  // -1 for dense; fixed score capacity otherwise
+    ggml_tensor * qsa_visibility = nullptr;
+    // I32[10]: valid count, four raw rows, destination row, four M-RoPE positions.
+    ggml_tensor * qsa_params = nullptr;
+    uint64_t builds = 0;      // smoke-test evidence: metadata addresses can be recycled
+    uint64_t replays = 0;
     int qsa_budget = 0;
     int next_pos = -1;
     int max_ctx = 0;
@@ -83,7 +88,7 @@ struct Qwen4ExpCache {
 
     // QSA indexer. indexer_raw holds every token's raw (pre-pool) key, [indexer_head_size, max_ctx] f32;
     // indexer_k holds pooled complete blocks (mean of `ratio` consecutive raw keys, normed and M-RoPE'd at the
-    // block start), [indexer_head_size, ceil(max_ctx/ratio)] f32. `indexer_blocks` is the pooled prefix: blocks
+    // block start), [indexer_head_size, ceil(max_ctx/ratio)+1] f32 (last row is decode scratch). `indexer_blocks` is the pooled prefix: blocks
     // past it are pooled from indexer_raw the next time QSA runs.
     std::vector<ggml_tensor *> indexer_k;    // size = n_full
     std::vector<ggml_tensor *> indexer_raw;  // size = n_full
