@@ -31,15 +31,15 @@ struct Qwen4ExpInputRing {
 };
 
 // Optional T=1 decode workspace. Reuse the metadata arena and gallocr backing
-// buffers; allocation assignments are remeasured because KV views and RoPE
-// positions advance every step, so the graph still has to be rebuilt.
+// buffers; allocation assignments are remeasured whenever a graph is rebuilt.
 struct Qwen4ExpDecodeWorkspace {
     ggml_context * ctx   = nullptr;
     ggml_gallocr_t alloc = nullptr;
     bool planned = false;
 
     // Stable T=1 graph state. The graph is rebuilt only when the fixed
-    // attention-span bucket changes.
+    // attention-span bucket changes. QSA also rebuilds on pooling steps and
+    // logical block-count changes; its score/top-k width is never padded.
     ggml_cgraph * gf = nullptr;
     ggml_tensor * inp_emb = nullptr;
     ggml_tensor * positions = nullptr;
@@ -48,6 +48,12 @@ struct Qwen4ExpDecodeWorkspace {
     ggml_tensor * kv_row = nullptr;
     ggml_tensor * logits = nullptr;
     int64_t kv_bucket = 0;
+    int64_t qsa_blocks = -1;  // -1 for dense; exact logical score/top-k width otherwise
+    int qsa_budget = 0;
+    int next_pos = -1;
+    int max_ctx = 0;
+    const Qwen4ExpWeights * model = nullptr;
+    ggml_backend_t backend = nullptr;  // owns native captures; must outlive the workspace
 };
 
 // Shared arena for exact-width independent-sequence decode. Unlike the stable

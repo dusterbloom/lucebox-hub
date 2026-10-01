@@ -1,4 +1,5 @@
 #include "qwen4exp_cache.h"
+#include "ggml-cuda.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -142,6 +143,10 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
 }
 
 void clear_qwen4exp_decode_workspace(Qwen4ExpDecodeWorkspace & workspace) {
+    if (workspace.ctx && workspace.backend) {
+        ggml_backend_cuda_graph_invalidate_range(workspace.backend,
+            ggml_get_mem_buffer(workspace.ctx), ggml_get_mem_size(workspace.ctx));
+    }
     if (workspace.alloc) ggml_gallocr_free(workspace.alloc);
     if (workspace.ctx) ggml_free(workspace.ctx);
     workspace = {};

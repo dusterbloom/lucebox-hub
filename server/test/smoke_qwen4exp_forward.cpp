@@ -47,6 +47,31 @@ int argmax(const std::vector<float> & v) {
     return best;
 }
 
+// Compare only authoritative cache rows; reset deliberately leaves unused K/V intact.
+bool same_cache(const Qwen4ExpCache & a, const Qwen4ExpCache & b, int tokens) {
+    if (a.indexer_blocks != b.indexer_blocks || a.ple_prev != b.ple_prev) return false;
+    auto tensors_equal = [](const std::vector<ggml_tensor *> & x,
+                            const std::vector<ggml_tensor *> & y, int rows) {
+        if (x.size() != y.size()) return false;
+        for (size_t i = 0; i < x.size(); ++i) {
+            if (!x[i] || !y[i]) { if (x[i] != y[i]) return false; else continue; }
+            const size_t bytes = rows < 0 ? ggml_nbytes(x[i]) : (size_t) rows * x[i]->nb[1];
+            std::vector<char> xb(bytes), yb(bytes);
+            for (int64_t h = 0; h < (rows < 0 ? 1 : x[i]->ne[2]); ++h) {
+                ggml_backend_tensor_get(x[i], xb.data(), h * x[i]->nb[2], bytes);
+                ggml_backend_tensor_get(y[i], yb.data(), h * y[i]->nb[2], bytes);
+                if (xb != yb) return false;
+            }
+        }
+        return true;
+    };
+    return tensors_equal(a.attn_k, b.attn_k, tokens) && tensors_equal(a.attn_v, b.attn_v, tokens) &&
+        tensors_equal(a.indexer_raw, b.indexer_raw, tokens) &&
+        tensors_equal(a.indexer_k, b.indexer_k, a.indexer_blocks) &&
+        tensors_equal(a.ssm_state, b.ssm_state, -1) && tensors_equal(a.conv_state, b.conv_state, -1) &&
+        tensors_equal(a.ple_conv_state, b.ple_conv_state, -1);
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
@@ -79,8 +104,10 @@ int main(int argc, char ** argv) {
         std::chrono::duration<double>(t_load1 - t_load0).count(),
         w.n_layer, w.n_vocab, w.ple_reader.available() ? "yes" : "no");
 
+    const char * tg_env = getenv("QWEN4EXP_SMOKE_TG");
+    const int n_gen = tg_env ? std::max(1, std::atoi(tg_env)) : 1;
     Qwen4ExpCache cache;
-    if (!create_qwen4exp_cache(backend, w, S + 4, GGML_TYPE_F16, cache)) {
+    if (!create_qwen4exp_cache(backend, w, S + std::max(4, n_gen), GGML_TYPE_F16, cache)) {
         std::fprintf(stderr, "[smoke] create_qwen4exp_cache failed\n");
         free_qwen4exp_weights(w);
         ggml_backend_free(backend);
@@ -119,20 +146,55 @@ int main(int argc, char ** argv) {
     }
 
     if (rc == 0) {
-        const int32_t next = (int32_t) argmax(logits);
-        std::vector<float> logits2;
         auto d0 = std::chrono::steady_clock::now();
-        const Qwen4ExpForwardResult dec = qwen4exp_forward(
-            backend, w, cache, &next, 1, S, logits2);
-        auto d1 = std::chrono::steady_clock::now();
-        if (!dec.ok || logits2.size() != (size_t) w.n_vocab || !all_finite(logits2)) {
-            std::fprintf(stderr, "[smoke] decode FAILED ok=%d logits=%zu finite=%d\n",
-                (int) dec.ok, logits2.size(), (int) all_finite(logits2));
-            rc = 1;
-        } else {
-            std::printf("[smoke] decode OK %.3fs pos=%d argmax=%d\n",
-                std::chrono::duration<double>(d1 - d0).count(), S, argmax(logits2));
+        for (int i = 0; i < n_gen; ++i) {
+            const int32_t next = (int32_t) argmax(logits);
+            const auto dec = qwen4exp_forward(backend, w, cache, &next, 1, S + i, logits);
+            if (!dec.ok || logits.size() != (size_t) w.n_vocab || !all_finite(logits)) {
+                std::fprintf(stderr, "[smoke] decode FAILED pos=%d\n", S + i);
+                rc = 1;
+                break;
+            }
         }
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - d0).count();
+        std::printf("[smoke] tg%d ok=%d %.3fs %.3f tok/s argmax=%d\n",
+            n_gen, rc == 0, seconds, n_gen / seconds, argmax(logits));
+    }
+
+    // Optional exact differential: identical prefill, then every T=1 step with
+    // stable QSA enabled vs the original per-step rebuild (including cache bits).
+    if (const char * check = getenv("QWEN4EXP_SMOKE_STABLE"); rc == 0 && check) {
+        const int n = std::atoi(check), start = S - n;
+        const char * previous = getenv("QWEN4EXP_QSA_STABLE");
+        const bool had_previous = previous != nullptr;
+        const std::string saved = previous ? previous : "";
+        Qwen4ExpCache reference;
+        bool ok = n > 0 && n < S && create_qwen4exp_cache(backend, w, cache.max_ctx, GGML_TYPE_F16, reference);
+        std::vector<float> expected, actual;
+        reset_qwen4exp_state(backend, cache);
+        ok = ok && qwen4exp_forward(backend, w, cache, tokens.data(), start, 0, actual).ok &&
+                   qwen4exp_forward(backend, w, reference, tokens.data(), start, 0, expected).ok;
+        int replays = 0;
+        for (int p = start; ok && p < S; ++p) {
+            setenv("QWEN4EXP_QSA_STABLE", "0", 1);
+            ok = qwen4exp_forward(backend, w, reference, &tokens[p], 1, p, expected).ok;
+            setenv("QWEN4EXP_QSA_STABLE", "1", 1);
+            const auto & ws = cache.decode_workspace;
+            const bool replay = ws.gf && ws.qsa_blocks == (p + 1) / 4 && ws.next_pos == p &&
+                                cache.indexer_blocks == (p + 1) / 4 && p + 1 <= ws.kv_bucket;
+            ggml_cgraph * prior_graph = ws.gf;
+            ok = ok && qwen4exp_forward(backend, w, cache, &tokens[p], 1, p, actual).ok;
+            ok = ok && actual.size() == expected.size() &&
+                 std::memcmp(actual.data(), expected.data(), actual.size() * sizeof(float)) == 0 &&
+                 same_cache(cache, reference, p + 1) && (!replay || ws.gf == prior_graph);
+            replays += replay;
+            if (!ok) std::fprintf(stderr, "[smoke] stable/rebuild mismatch at pos=%d\n", p);
+        }
+        if (had_previous) setenv("QWEN4EXP_QSA_STABLE", saved.c_str(), 1);
+        else unsetenv("QWEN4EXP_QSA_STABLE");
+        free_qwen4exp_cache(reference);
+        std::printf("[smoke] stable/rebuild bits ok=%d QSA replays=%d\n", (int) ok, replays);
+        if (!ok || replays == 0) rc = 1;
     }
 
     // QWEN4EXP_SMOKE_SPLIT=N[:c]: the same S tokens as one prefill vs a prefill of S-N plus the last N tokens in

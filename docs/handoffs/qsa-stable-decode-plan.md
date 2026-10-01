@@ -1,8 +1,76 @@
 # Stable QSA decode graph: design and implementation plan
 
-Status: plan only. This branch implements downstream selection/ID fusion; it does
-not enable stable QSA graphs or change scoring, top-k, pooling, or attention
-arithmetic. Baseline is `e28ad709`, including strided decode K/V reads.
+Status: exact partial reuse implemented on top of `a07d89fd` (fused decode IDs).
+Full per-bucket QSA reuse remains deferred: no padded top-k equivalence is claimed.
+
+## Implemented scope and exactness
+
+`qwen4exp_forward()` keeps the 256-token K/V bucket and reuses a ratio-4 QSA
+T=1 graph on the three steps **after** block completion. Completion and bootstrap
+steps still run the original pooling/concat/norm/RoPE graph; the next step builds
+a graph reading the completed F32 pooled prefix, and the following two steps
+reuse it with input uploads only. This removes two of four graph builds in steady
+decode. Gallocr backing storage survives rebuilds; every new graph is reserved.
+`QWEN4EXP_QSA_STABLE=0` selects the original per-step QSA rebuild for comparison.
+
+- The pooled prefix is immutable throughout the reuse interval. There is no
+  redundant pooling and no change to the F32-to-F16 conversion or score shape.
+- `ggml_ds4_indexer_score` uses `kv_start` only through `(kv_start+1)/4` for
+  T=1 visibility, which is constant throughout the interval. Its kernels,
+  parameters governing dispatch, head weights and logical width are unchanged.
+- `ggml_top_k` still sees exactly `n_after=(pos+1)/4` columns. Its existing
+  dispatch, tie behavior and fused downstream cell IDs are unchanged; the latter
+  read the runtime position input.
+- Only K/V views are bucketed. The selected-attention kernel uses their length
+  solely to reject out-of-range IDs. Every nonnegative ID remains at most `pos`;
+  bucket padding therefore introduces no extra reads. Strides, WMMA eligibility,
+  selection-slot count, split count and reduction order are unchanged. Buckets
+  are capped at the existing decode kernel's 262144-cell limit.
+- K/V writes use the existing stable `set_rows` path, and QSA views depend on
+  the returned write tensors. Raw indexer writes also use the runtime row.
+- Replay requires the same model/backend/capacity, QSA mode, logical block count,
+  budget and consecutive position. Model contents and dispatch environment are
+  assumed immutable during inference. Prefill/reset discard the workspace;
+  position discontinuities rebuild it. Cache ownership supplies cache identity.
+- Native captures are retired using the existing synchronized
+  `ggml_backend_cuda_graph_invalidate_range` before metadata reset/free, including
+  reset, failures and cache teardown. No graph-replay default is changed.
+
+The reasoning above preserves the original arithmetic and selection operations;
+GPU bit equality and the throughput target still require the checks below.
+
+## GPU acceptance commands
+
+Use the same model, real-text token files and backend settings as the baseline.
+`QSA_TOKENS` contains exactly 6000 IDs; `QSA_TOKENS_4K` and `QSA_TOKENS_16K`
+contain exactly 4096 and 16384 IDs from the baseline generation inputs.
+
+```bash
+cmake -S server -B server/build
+cmake --build server/build -j4 --target smoke_qwen4exp_forward test_qwen4exp_qsa_ids test_qwen4exp_indexer_score
+server/build/test_qwen4exp_qsa_ids
+server/build/test_qwen4exp_indexer_score
+for split in 100:1 200:1 100:100 256:128; do
+  QWEN4EXP_QSA=1 QWEN4EXP_QSA_STABLE=1 QWEN4EXP_TOKEN_FILE="$QSA_TOKENS" QWEN4EXP_SMOKE_SPLIT="$split" server/build/smoke_qwen4exp_forward "$QSA_MODEL" 6000
+done
+# Expected KL, in order: 0.082874 / 0.118543 / 0.652715 / 0.734763.
+# Every-step logits and persistent cache bits, rebuilt vs stable, across
+# the dense/QSA transition, every residue, buckets and the 1024-block boundary:
+QWEN4EXP_QSA=1 QWEN4EXP_TOKEN_FILE="$QSA_TOKENS" QWEN4EXP_SMOKE_STABLE=3952 server/build/smoke_qwen4exp_forward "$QSA_MODEL" 6000
+# Optional shorter differential: QWEN4EXP_SMOKE_STABLE=100.
+QWEN4EXP_QSA=1 QWEN4EXP_QSA_STABLE=1 QWEN4EXP_SMOKE_TG=128 QWEN4EXP_TOKEN_FILE="$QSA_TOKENS_4K" server/build/smoke_qwen4exp_forward "$QSA_MODEL" 4096
+QWEN4EXP_QSA=1 QWEN4EXP_QSA_STABLE=1 QWEN4EXP_SMOKE_TG=128 QWEN4EXP_TOKEN_FILE="$QSA_TOKENS_16K" server/build/smoke_qwen4exp_forward "$QSA_MODEL" 16384
+```
+
+Both tg128 results must exceed 21.5 tok/s; compare with the same commands using
+`QWEN4EXP_QSA_STABLE=0`. Leave profiling off for acceptance timings; add
+`QWEN4EXP_PROF=1` separately to see two input-only QSA replays per four steps.
+The bit differential is intentionally expensive (reads all live cache rows each
+step) and is not a benchmark. Repeat it under the baseline's capture-enabled and
+capture-disabled settings; ggml graph reuse does not imply native capture replay
+within a three-call window.
+
+The remaining sections describe the deferred full-bucket design.
 
 ## Contract and current constraints
 
@@ -12,7 +80,7 @@ order, and the 2,051 output slots. Full blocks require `4*b+3 <= p`; tail slot
 `2048+i` is `4*n+i` when that cell is at most `p`, otherwise -1. Never compact
 invalid slots or change the attention split/reduction order.
 
-`qwen4exp_forward()` currently reuses a stable graph only in `QSA_DENSE` mode.
+`qwen4exp_forward()` at baseline `a07d89fd` reused a stable graph only in `QSA_DENSE` mode.
 QSA rebuilds because `qsa_pooled_keys()` changes concatenations, views, RoPE
 positions and copy offsets whenever the complete-block count changes.
 `build_qsa_attn()` also embeds `kv_start` and the logical score width. The new
@@ -124,7 +192,7 @@ resume from authoritative cache state. Keep allocation planning on every new
 graph: do not simply remove gallocr reserve calls.
 
 Audit HIP/CUDA executable-graph ownership before freeing/reusing ggml metadata
-or allocator addresses. `clear_qwen4exp_decode_workspace()` currently frees only
+or allocator addresses. `clear_qwen4exp_decode_workspace()` now retires native captures before freeing
 the allocator and context. Pool trimming's legacy-pool graph clear is not a
 universal per-workspace invalidation API. If existing graph identity checks do
 not cover replacement, add explicit backend graph retirement with synchronization
