@@ -73,10 +73,6 @@ def chat_full(prompt: str, max_tokens: int, timeout: int, temperature: float = 0
         return json.loads(resp.read())
 
 
-def chat(prompt: str, max_tokens: int, timeout: int) -> str:
-    return chat_full(prompt, max_tokens, timeout)["choices"][0]["message"]["content"]
-
-
 def wait_ready(proc: subprocess.Popen, timeout: int) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
