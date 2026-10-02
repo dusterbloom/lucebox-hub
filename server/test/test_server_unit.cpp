@@ -166,6 +166,45 @@ struct SchedulerTestHarness {
     static void mark_agent_turn(HttpServer & server, int slot) {
         server.agent_turn_cache_slots_.insert(slot);
     }
+
+    static bool is_agent_turn(const HttpServer & server, int slot) {
+        return server.agent_turn_cache_slots_.count(slot) != 0;
+    }
+
+    // `own_snapshot_slot` is the inline snapshot the request itself took.
+    static bool save_generated_turn(
+            HttpServer & server, const std::vector<int32_t> & prompt,
+            const std::vector<int32_t> & generated,
+            const std::vector<int32_t> & canonical,
+            int own_snapshot_slot = -1) {
+        HttpServer::GenerationCacheState cache;
+        cache.snap_prepared = own_snapshot_slot >= 0;
+        cache.snap_slot = own_snapshot_slot;
+        return server.save_generated_turn(prompt, generated, canonical, cache);
+    }
+
+    struct PreparedCache {
+        int restore_slot;   // -1 without a restore
+        int prefix_len;
+        bool snapshot;      // an inline snapshot is planned
+    };
+
+    static PreparedCache prepare_cache(
+            HttpServer & server, const std::vector<int32_t> & prompt,
+            bool ends_with_tool_result = false) {
+        ParsedRequest req;
+        req.prompt_tokens = prompt;
+        req.response_id = "test";
+        req.ends_with_tool_result = ends_with_tool_result;
+        HttpServer::PreparedPrompt prepared;
+        prepared.tokens = prompt;
+        GenerateRequest generate_request;
+        generate_request.prompt = prompt;
+        const auto cache = server.prepare_generation_cache(
+            req, prepared, generate_request);
+        return {cache.using_restore ? cache.cache_slot : -1, cache.prefix_len,
+                cache.snap_prepared};
+    }
 };
 }
 
@@ -3191,6 +3230,140 @@ TEST_CASE(ServerUnitFixture, test_prefix_cache_records_only_validated_restore) {
     unlink(path.c_str());
 }
 
+TEST_CASE(ServerUnitFixture, test_prefix_cache_long_first_turn_snapshots_whole_prompt) {
+    // reserve_inline_snap reads these once per process; the expectations
+    // below are for the defaults, so an exported override skips the case.
+    if (std::getenv("LUCE_PC_DEEP_FIRST_MIN") || std::getenv("LUCE_PC_DEEP_FIRST_MAX_HEAD")) {
+        std::fprintf(stderr, "skip: LUCE_PC_DEEP_FIRST_* overridden\n");
+        return;
+    }
+    const std::string path = write_deepseek_marker_tokenizer_fixture();
+    Tokenizer tokenizer;
+    TEST_ASSERT(tokenizer.load_from_gguf(path.c_str()));
+
+    // An agent's first turn: a short system/tools head, then a user turn
+    // well past LUCE_PC_DEEP_FIRST_MIN (4096). The snapshot covers the whole
+    // prompt, so the first follow-up does not re-prefill the conversation.
+    std::vector<int32_t> short_head = {1, 100, 3};
+    short_head.insert(short_head.end(), 5000, 101);
+    short_head.push_back(4);
+    {
+        PrefixCache cache(2, tokenizer);
+        auto r = cache.reserve_inline_snap(
+            short_head, /*restored_prefix_len=*/0,
+            /*prefer_tools_boundary=*/true);
+        TEST_ASSERT(r.active());
+        TEST_ASSERT(r.target_cut() == (int) short_head.size());
+        r.cancel();
+    }
+    // A new conversation that restored only the shared head still snapshots
+    // its long first turn whole.
+    {
+        PrefixCache cache(2, tokenizer);
+        auto r = cache.reserve_inline_snap(
+            short_head, /*restored_prefix_len=*/3,
+            /*prefer_tools_boundary=*/true);
+        TEST_ASSERT(r.active());
+        TEST_ASSERT(r.target_cut() == (int) short_head.size());
+        r.cancel();
+    }
+
+    // A head longer than LUCE_PC_DEEP_FIRST_MAX_HEAD (2048) keeps its own
+    // pin: new conversations that share it must not re-prefill it.
+    std::vector<int32_t> long_head = {1};
+    long_head.insert(long_head.end(), 3000, 100);
+    long_head.push_back(3);
+    long_head.insert(long_head.end(), 5000, 101);
+    long_head.push_back(4);
+    {
+        PrefixCache cache(2, tokenizer);
+        auto r = cache.reserve_inline_snap(
+            long_head, /*restored_prefix_len=*/0,
+            /*prefer_tools_boundary=*/true);
+        TEST_ASSERT(r.active());
+        TEST_ASSERT(r.target_cut() == 3002);
+        r.cancel();
+    }
+
+    // A short tail keeps the head pin as before.
+    const std::vector<int32_t> short_tail = {1, 100, 3, 101, 4};
+    {
+        PrefixCache cache(2, tokenizer);
+        auto r = cache.reserve_inline_snap(
+            short_tail, /*restored_prefix_len=*/0,
+            /*prefer_tools_boundary=*/true);
+        TEST_ASSERT(r.active());
+        TEST_ASSERT(r.target_cut() == 3);
+        r.cancel();
+    }
+
+    // A request without tools never pinned the head; it keeps its usual cut
+    // (the start of the last message) rather than a whole-prompt snapshot.
+    {
+        PrefixCache cache(2, tokenizer);
+        auto r = cache.reserve_inline_snap(
+            short_head, /*restored_prefix_len=*/0,
+            /*prefer_tools_boundary=*/false);
+        TEST_ASSERT(r.active());
+        TEST_ASSERT(r.target_cut() == 3);
+        r.cancel();
+    }
+
+    // A forced pin ahead of the restored prefix (PPP's pin of a head seen
+    // before, not resident now) still wins.
+    {
+        PrefixCache cache(2, tokenizer);
+        auto r = cache.reserve_inline_snap(
+            short_head, /*restored_prefix_len=*/0,
+            /*prefer_tools_boundary=*/true, /*forced_cut=*/3);
+        TEST_ASSERT(r.active());
+        TEST_ASSERT(r.target_cut() == 3);
+        r.cancel();
+    }
+    // Once that pin is restored, the long first turn is snapshotted whole.
+    {
+        PrefixCache cache(2, tokenizer);
+        auto r = cache.reserve_inline_snap(
+            short_head, /*restored_prefix_len=*/3,
+            /*prefer_tools_boundary=*/true, /*forced_cut=*/3);
+        TEST_ASSERT(r.active());
+        TEST_ASSERT(r.target_cut() == (int) short_head.size());
+        r.cancel();
+    }
+
+    // The whole-prompt snapshot is what the first follow-up restores: once
+    // committed, the next turn (the first one plus new tokens) finds all of it.
+    {
+        PrefixCache cache(2, tokenizer);
+        auto r = cache.reserve_inline_snap(
+            short_head, /*restored_prefix_len=*/0,
+            /*prefer_tools_boundary=*/true);
+        TEST_ASSERT(r.active());
+        TEST_ASSERT(r.commit(short_head));
+        std::vector<int32_t> follow_up = short_head;
+        follow_up.insert(follow_up.end(), {1, 102, 3, 103, 103, 4});
+        const auto hit = cache.lookup(follow_up);
+        TEST_ASSERT(hit.first >= 0);
+        TEST_ASSERT(hit.second == (int) short_head.size());
+    }
+
+    // A whole prompt the resident budget can never hold keeps the head pin
+    // instead of saving nothing.
+    {
+        PrefixCache cache(2, tokenizer, /*max_resident_bytes=*/1000);
+        auto r = cache.reserve_inline_snap(
+            short_head, /*restored_prefix_len=*/0,
+            /*prefer_tools_boundary=*/true, /*forced_cut=*/0,
+            /*restore_source_slot=*/-1,
+            [](int cut) { return (size_t) cut; });
+        TEST_ASSERT(r.active());
+        TEST_ASSERT(r.target_cut() == 3);
+        r.cancel();
+    }
+
+    unlink(path.c_str());
+}
+
 TEST_CASE(ServerUnitFixture, test_restore_invalidation_preserves_pending_pin) {
     const std::string path = write_deepseek_marker_tokenizer_fixture();
     Tokenizer tokenizer;
@@ -4320,6 +4493,166 @@ TEST_CASE(ServerUnitFixture, test_parse_request_sampler_applies_defaults_and_ove
     TEST_ASSERT(std::fabs(sampler.rep_pen - 1.1f) < 0.001f);
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// sampling_no_thinking: per-card sampler defaults for requests whose final
+// thinking state resolves to OFF (e.g. Qwen3.8-Flash-Next's instruct-mode
+// recipe vs. its thinking-mode one). See docs/specs/thinking-budget.md §3.3.
+// ═══════════════════════════════════════════════════════════════════════
+
+// Mirrors the real pipeline in HttpServer::handle_model_request: sampler
+// defaults are parsed before the final thinking state is known, then
+// apply_request_reasoning resolves req.thinking_enabled, then (only when
+// thinking ended up OFF) apply_no_thinking_sampler_defaults backfills the
+// still-omitted fields from the card's no-thinking block.
+static SamplerCfg resolve_request_sampler(const json & body, const ServerConfig & config) {
+    SamplerCfg sampler = parse_request_sampler(body, config.sampler_defaults);
+    ParsedRequest req;
+    req.max_output = resolve_max_output_tokens(body, config.default_max_tokens);
+    apply_request_reasoning(body, config, req);
+    if (!req.thinking_enabled) {
+        apply_no_thinking_sampler_defaults(
+            body, config.sampler_defaults_no_thinking, sampler);
+    }
+    return sampler;
+}
+
+// Qwen3.8-Flash-Next's published thinking vs. instruct sampling sets.
+static ServerConfig qwen4exp_dual_sampling_config() {
+    ServerConfig config;
+    config.arch = "qwen4exp";  // thinks by default unless disabled
+    config.default_max_tokens = 32768;
+    config.think_max_tokens = 24576;
+    config.hard_limit_reply_budget = 8192;
+
+    config.sampler_defaults.has_temperature = true;
+    config.sampler_defaults.temperature = 1.0f;
+    config.sampler_defaults.has_top_p = true;
+    config.sampler_defaults.top_p = 0.95f;
+    config.sampler_defaults.has_top_k = true;
+    config.sampler_defaults.top_k = 20;
+    config.sampler_defaults.has_presence_penalty = true;
+    config.sampler_defaults.presence_penalty = 0.0f;
+    config.sampler_defaults.has_repetition_penalty = true;
+    config.sampler_defaults.repetition_penalty = 1.0f;
+
+    config.sampler_defaults_no_thinking.has_temperature = true;
+    config.sampler_defaults_no_thinking.temperature = 0.7f;
+    config.sampler_defaults_no_thinking.has_top_p = true;
+    config.sampler_defaults_no_thinking.top_p = 0.80f;
+    config.sampler_defaults_no_thinking.has_top_k = true;
+    config.sampler_defaults_no_thinking.top_k = 20;
+    config.sampler_defaults_no_thinking.has_presence_penalty = true;
+    config.sampler_defaults_no_thinking.presence_penalty = 1.5f;
+    config.sampler_defaults_no_thinking.has_repetition_penalty = true;
+    config.sampler_defaults_no_thinking.repetition_penalty = 1.0f;
+    return config;
+}
+
+TEST_CASE(ServerUnitFixture, test_model_card_parses_sampling_no_thinking) {
+    namespace fs = std::filesystem;
+    const auto root = fs::temp_directory_path() / "dflash-mc-no-thinking-test";
+    fs::remove_all(root);
+    fs::create_directories(root / "share" / "model_cards");
+
+    {
+        FILE * f = std::fopen(
+            (root / "share" / "model_cards" / "notest-model.json").string().c_str(), "w");
+        TEST_ASSERT(f != nullptr);
+        std::fprintf(f,
+            "{\"name\":\"notest-model\",\"source\":\"test\",\"verified_at\":\"2026-10-02\","
+            "\"max_tokens\":32768,"
+            "\"sampling\":{\"temperature\":1.0,\"top_p\":0.95,\"top_k\":20,\"min_p\":0.0,"
+            "\"presence_penalty\":0.0,\"repetition_penalty\":1.0},"
+            "\"sampling_no_thinking\":{\"temperature\":0.7,\"top_p\":0.8,\"top_k\":20,"
+            "\"min_p\":0.0,\"presence_penalty\":1.5,\"repetition_penalty\":1.0}}");
+        std::fclose(f);
+    }
+
+    auto card = luce::common::resolve_model_card("", "notest-model", "qwen4exp", root.string());
+    fs::remove_all(root);
+
+    TEST_ASSERT(card.sampling.has_temperature);
+    TEST_ASSERT(std::fabs(card.sampling.temperature - 1.0f) < 1.0e-6f);
+
+    TEST_ASSERT(card.sampling_no_thinking.has_temperature);
+    TEST_ASSERT(std::fabs(card.sampling_no_thinking.temperature - 0.7f) < 1.0e-6f);
+    TEST_ASSERT(card.sampling_no_thinking.has_top_p);
+    TEST_ASSERT(std::fabs(card.sampling_no_thinking.top_p - 0.8f) < 1.0e-6f);
+    TEST_ASSERT(card.sampling_no_thinking.has_top_k);
+    TEST_ASSERT(card.sampling_no_thinking.top_k == 20);
+    TEST_ASSERT(card.sampling_no_thinking.has_presence_penalty);
+    TEST_ASSERT(std::fabs(card.sampling_no_thinking.presence_penalty - 1.5f) < 1.0e-6f);
+    TEST_ASSERT(card.sampling_no_thinking.has_repetition_penalty);
+    TEST_ASSERT(std::fabs(card.sampling_no_thinking.repetition_penalty - 1.0f) < 1.0e-6f);
+}
+
+TEST_CASE(ServerUnitFixture, test_sampler_defaults_no_thinking_applied_when_thinking_off) {
+    const ServerConfig config = qwen4exp_dual_sampling_config();
+    const json body = {
+        {"chat_template_kwargs", {{"enable_thinking", false}}},
+    };
+    const SamplerCfg sampler = resolve_request_sampler(body, config);
+
+    TEST_ASSERT(std::fabs(sampler.temp - 0.7f) < 0.001f);
+    TEST_ASSERT(std::fabs(sampler.top_p - 0.80f) < 0.001f);
+    TEST_ASSERT(sampler.top_k == 20);
+    TEST_ASSERT(std::fabs(sampler.pres_pen - 1.5f) < 0.001f);
+    TEST_ASSERT(std::fabs(sampler.rep_pen - 1.0f) < 0.001f);
+}
+
+TEST_CASE(ServerUnitFixture, test_sampler_defaults_thinking_mode_unaffected_by_no_thinking_card) {
+    const ServerConfig config = qwen4exp_dual_sampling_config();
+    const json body = json::object();  // qwen4exp thinks by default when omitted
+    const SamplerCfg sampler = resolve_request_sampler(body, config);
+
+    TEST_ASSERT(std::fabs(sampler.temp - 1.0f) < 0.001f);
+    TEST_ASSERT(std::fabs(sampler.top_p - 0.95f) < 0.001f);
+    TEST_ASSERT(std::fabs(sampler.pres_pen - 0.0f) < 0.001f);
+    TEST_ASSERT(std::fabs(sampler.rep_pen - 1.0f) < 0.001f);
+}
+
+TEST_CASE(ServerUnitFixture, test_sampler_explicit_fields_win_in_both_thinking_modes) {
+    const ServerConfig config = qwen4exp_dual_sampling_config();
+
+    const json thinking_off_body = {
+        {"temperature", 0.33f},
+        {"presence_penalty", 0.1f},
+        {"chat_template_kwargs", {{"enable_thinking", false}}},
+    };
+    const SamplerCfg off_sampler = resolve_request_sampler(thinking_off_body, config);
+    TEST_ASSERT(std::fabs(off_sampler.temp - 0.33f) < 0.001f);
+    TEST_ASSERT(std::fabs(off_sampler.pres_pen - 0.1f) < 0.001f);
+    // Omitted fields still pick up the no-thinking defaults.
+    TEST_ASSERT(std::fabs(off_sampler.top_p - 0.80f) < 0.001f);
+
+    const json thinking_on_body = {{"temperature", 0.44f}};
+    const SamplerCfg on_sampler = resolve_request_sampler(thinking_on_body, config);
+    TEST_ASSERT(std::fabs(on_sampler.temp - 0.44f) < 0.001f);
+    TEST_ASSERT(std::fabs(on_sampler.top_p - 0.95f) < 0.001f);
+}
+
+TEST_CASE(ServerUnitFixture, test_sampler_defaults_no_thinking_absent_keeps_today_behavior) {
+    // A card without `sampling_no_thinking` must behave exactly as before
+    // this feature: no-thinking requests still fall back to the (thinking-
+    // mode) `sampling` defaults for omitted fields.
+    ServerConfig config;
+    config.arch = "qwen4exp";
+    config.sampler_defaults.has_temperature = true;
+    config.sampler_defaults.temperature = 1.0f;
+    config.sampler_defaults.has_presence_penalty = true;
+    config.sampler_defaults.presence_penalty = 0.0f;
+    // config.sampler_defaults_no_thinking left default-constructed: every
+    // has_* is false, i.e. the card has no `sampling_no_thinking` block.
+
+    const json body = {
+        {"chat_template_kwargs", {{"enable_thinking", false}}},
+    };
+    const SamplerCfg sampler = resolve_request_sampler(body, config);
+
+    TEST_ASSERT(std::fabs(sampler.temp - 1.0f) < 0.001f);
+    TEST_ASSERT(std::fabs(sampler.pres_pen - 0.0f) < 0.001f);
+}
+
 TEST_CASE(ServerUnitFixture, test_require_messages_array_rejects_invalid) {
     const json valid = {{"messages", json::array({
         {{"role", "user"}, {"content", "hi"}},
@@ -4442,6 +4775,21 @@ TEST_CASE(ServerUnitFixture, test_qwen4exp_thinks_by_default) {
     const ParsedRequest kw_off = resolve_qwen4exp_reasoning({{"chat_template_kwargs", {{"enable_thinking", false}}}});
     TEST_ASSERT(!kw_off.thinking_enabled && !kw_off.thinking_opt_in);
     TEST_ASSERT(!resolve_qwen_reasoning(json::object()).thinking_enabled);
+}
+
+// chat_template_kwargs.preserve_thinking is a tri-state Jinja-only toggle:
+// absent leaves req.preserve_thinking at -1 (template default applies), and
+// an explicit bool sets 0/1. It must not disturb thinking_enabled/opt_in.
+TEST_CASE(ServerUnitFixture, test_qwen4exp_preserve_thinking_kwarg) {
+    const ParsedRequest absent = resolve_qwen4exp_reasoning(json::object());
+    TEST_ASSERT(absent.preserve_thinking == -1);
+    const ParsedRequest off = resolve_qwen4exp_reasoning(
+        {{"chat_template_kwargs", {{"preserve_thinking", false}}}});
+    TEST_ASSERT(off.preserve_thinking == 0);
+    TEST_ASSERT(off.thinking_enabled && off.thinking_opt_in);
+    const ParsedRequest on = resolve_qwen4exp_reasoning(
+        {{"chat_template_kwargs", {{"preserve_thinking", true}}}});
+    TEST_ASSERT(on.preserve_thinking == 1);
 }
 
 // Qwen3.8-Flash-Next's template knows low, medium and xhigh (its default); Lucebox's high, x-high and max map to xhigh.
@@ -5256,6 +5604,82 @@ TEST_CASE(ServerUnitFixture, test_jinja_render_bad_tools_json_throws) {
     TEST_ASSERT(threw);
 }
 
+// Mirrors the official qwen4exp (Qwen3.8-Flash-Next) GGUF Jinja template's
+// think-replay snippet: earlier assistant turns either replay their recorded
+// reasoning_content inside <think>...</think>, or (preserve_thinking=false)
+// drop the think block entirely for turns at/before the last user query.
+static const char QWEN4EXP_THINK_REPLAY_TEMPLATE[] =
+    "{%- set ns = namespace(last_query_index = 0) -%}"
+    "{%- for message in messages -%}"
+    "{%- if message.role == 'user' -%}{%- set ns.last_query_index = loop.index0 -%}{%- endif -%}"
+    "{%- endfor -%}"
+    "{%- for message in messages -%}"
+    "{%- set content = message.content -%}"
+    "{%- if message.role == 'assistant' -%}"
+    "{%- set reasoning_content = '' -%}"
+    "{%- if message.reasoning_content is string -%}{%- set reasoning_content = message.reasoning_content -%}{%- endif -%}"
+    "{%- set reasoning_content = reasoning_content|trim -%}"
+    "{%- if preserve_thinking is undefined or preserve_thinking is true or loop.index0 > ns.last_query_index -%}"
+    "{{- '<|im_start|>' + message.role + '\\n<think>\\n' + reasoning_content + '\\n</think>\\n\\n' + content + '<|im_end|>\\n' }}"
+    "{%- else -%}"
+    "{{- '<|im_start|>' + message.role + '\\n' + content + '<|im_end|>\\n' }}"
+    "{%- endif -%}"
+    "{%- else -%}"
+    "{{- '<|im_start|>' + message.role + '\\n' + content + '<|im_end|>\\n' }}"
+    "{%- endif -%}"
+    "{%- endfor -%}";
+
+// (a) An assistant history message with reasoning_content renders inside
+// <think>...</think> under the default (preserve_thinking left unset).
+TEST_CASE(ServerUnitFixture, test_jinja_render_reasoning_content_default_preserves_think) {
+    const std::vector<ChatMessage> msgs = {
+        {"user",      "Q1", "", ""},
+        {"assistant", "A1", "", "thinking about Q1"},
+        {"user",      "Q2", "", ""},
+    };
+    const std::string out = render_chat_template_jinja(
+        QWEN4EXP_THINK_REPLAY_TEMPLATE, msgs, "", "",
+        /*add_gen=*/false, /*think=*/true, "", "",
+        /*preserve_thinking=*/-1);
+    TEST_ASSERT(out.find(
+        "<|im_start|>assistant\n<think>\nthinking about Q1\n</think>\n\nA1<|im_end|>")
+        != std::string::npos);
+}
+
+// (b) With preserve_thinking=false the earlier assistant turn renders
+// without any <think> block.
+TEST_CASE(ServerUnitFixture, test_jinja_render_preserve_thinking_false_strips_think) {
+    const std::vector<ChatMessage> msgs = {
+        {"user",      "Q1", "", ""},
+        {"assistant", "A1", "", "thinking about Q1"},
+        {"user",      "Q2", "", ""},
+    };
+    const std::string out = render_chat_template_jinja(
+        QWEN4EXP_THINK_REPLAY_TEMPLATE, msgs, "", "",
+        /*add_gen=*/false, /*think=*/true, "", "",
+        /*preserve_thinking=*/0);
+    TEST_ASSERT(out.find("<|im_start|>assistant\nA1<|im_end|>") != std::string::npos);
+    TEST_ASSERT(out.find("<think>") == std::string::npos);
+}
+
+// (c) Without reasoning_content and under the default preserve setting, the
+// output is unchanged from today: an empty <think></think> block (neither of
+// the template's two official modes, but the pre-existing behavior — this is
+// a regression guard, not an endorsement).
+TEST_CASE(ServerUnitFixture, test_jinja_render_no_reasoning_content_regression) {
+    const std::vector<ChatMessage> msgs = {
+        {"user",      "Q1", "", ""},
+        {"assistant", "A1", "", ""},
+        {"user",      "Q2", "", ""},
+    };
+    const std::string out = render_chat_template_jinja(
+        QWEN4EXP_THINK_REPLAY_TEMPLATE, msgs, "", "",
+        /*add_gen=*/false, /*think=*/true, "", "",
+        /*preserve_thinking=*/-1);
+    TEST_ASSERT(out.find("<|im_start|>assistant\n<think>\n\n</think>\n\nA1<|im_end|>")
+        != std::string::npos);
+}
+
 TEST_CASE(ServerUnitFixture, test_normalize_responses_tool_followup_messages) {
     ToolMemory tool_memory;
     const std::string call_id = "call_exec_001";
@@ -5327,6 +5751,108 @@ TEST_CASE(ServerUnitFixture, test_normalize_responses_tool_followup_messages) {
         TEST_ASSERT(chat_msgs[4].role == "tool");
         TEST_ASSERT(chat_msgs[4].tool_call_id == second_call_id);
         TEST_ASSERT(chat_msgs[4].content == "int main() {}");
+    }
+}
+
+// Claude Code shape: tool_use blocks in the assistant turn, tool_result
+// blocks (any order, string or block content) plus reminder text in the
+// next user turn, then a system note.
+TEST_CASE(ServerUnitFixture, test_normalize_anthropic_tool_followup_messages) {
+    ToolMemory tool_memory;
+    const std::string raw =
+        "<think>\n\n</think>\n\n<tool_call>\n<function=Read>\n"
+        "<parameter=file_path>\n/a.py\n</parameter>\n</function>\n</tool_call>";
+    tool_memory.remember({"call_a", "call_b"}, raw);
+
+    const json messages = json::array({
+        {{"role", "user"}, {"content", json::array({
+            {{"type", "text"}, {"text", "read both"}}})}},
+        {{"role", "assistant"}, {"content", json::array({
+            {{"type", "text"}, {"text", ""}},
+            {{"type", "tool_use"}, {"id", "call_a"}, {"name", "Read"},
+             {"input", {{"file_path", "/a.py"}}}},
+            {{"type", "tool_use"}, {"id", "call_b"}, {"name", "Read"},
+             {"input", {{"file_path", "/b.py"}}}}})}},
+        {{"role", "user"}, {"content", json::array({
+            {{"type", "tool_result"}, {"tool_use_id", "call_b"},
+             {"content", json::array({{{"type", "text"}, {"text", "B"}}})}},
+            {{"type", "tool_result"}, {"tool_use_id", "call_a"},
+             {"content", "A"}},
+            {{"type", "text"}, {"text", "<system-reminder>x</system-reminder>"}}})}},
+        {{"role", "system"}, {"content", json::array({
+            {{"type", "text"}, {"text", "<total_tokens>9</total_tokens>"}}})}},
+    });
+
+    const auto chat = normalize_chat_messages(
+        messages, ApiFormat::ANTHROPIC, tool_memory);
+    TEST_ASSERT(chat.size() == 6);
+    if (chat.size() == 6) {
+        TEST_ASSERT(chat[0].role == "user" && chat[0].content == "read both");
+        TEST_ASSERT(chat[1].role == "assistant" && chat[1].content == raw);
+        TEST_ASSERT(chat[2].role == "tool" && chat[2].tool_call_id == "call_b" &&
+                    chat[2].content == "B");
+        TEST_ASSERT(chat[3].role == "tool" && chat[3].tool_call_id == "call_a" &&
+                    chat[3].content == "A");
+        TEST_ASSERT(chat[4].role == "user" &&
+                    chat[4].content == "<system-reminder>x</system-reminder>");
+        TEST_ASSERT(chat[5].role == "system");
+    }
+    TEST_ASSERT(!http_detail::ends_with_tool_result(chat));
+    TEST_ASSERT(http_detail::ends_with_tool_result(
+        std::vector<ChatMessage>(chat.begin(), chat.begin() + 4)));
+    std::vector<ChatMessage> with_note(chat.begin(), chat.begin() + 4);
+    with_note.push_back(chat[5]);
+    TEST_ASSERT(http_detail::ends_with_tool_result(with_note));
+}
+
+// Calls the server no longer remembers (restart, eviction) still reach the
+// model, in the Qwen template's own tool-call rendering.
+TEST_CASE(ServerUnitFixture, test_normalize_anthropic_tool_use_without_memory) {
+    ToolMemory tool_memory;
+    const json messages = json::array({
+        {{"role", "user"}, {"content", "go"}},
+        {{"role", "assistant"}, {"content", json::array({
+            {{"type", "text"}, {"text", "Reading."}},
+            {{"type", "tool_use"}, {"id", "toolu_1"}, {"name", "Read"},
+             {"input", {{"file_path", "/a.py"}}}},
+            {{"type", "tool_use"}, {"id", "toolu_2"}, {"name", "Grep"},
+             {"input", {{"pattern", "x"}, {"n", 3}}}}})}},
+    });
+    const auto chat = normalize_chat_messages(
+        messages, ApiFormat::ANTHROPIC, tool_memory);
+    TEST_ASSERT(chat.size() == 2);
+    if (chat.size() == 2) {
+        TEST_ASSERT(chat[1].content ==
+            "Reading.\n\n"
+            "<tool_call>\n<function=Read>\n<parameter=file_path>\n/a.py\n"
+            "</parameter>\n</function>\n</tool_call>\n"
+            "<tool_call>\n<function=Grep>\n<parameter=n>\n3\n</parameter>\n"
+            "<parameter=pattern>\nx\n</parameter>\n</function>\n</tool_call>");
+    }
+}
+
+// An assistant history message's prior <think> text must carry through to
+// ChatMessage.reasoning_content (OpenAI/DeepSeek dialect `reasoning_content`,
+// and the OpenRouter/Anthropic-gateway flat `reasoning` alias — the same
+// names the response side emits, see format_response_message). Non-assistant
+// roles and messages with neither field must leave it empty.
+TEST_CASE(ServerUnitFixture, test_normalize_assistant_reasoning_content_passthrough) {
+    ToolMemory tool_memory;
+    const json messages = json::array({
+        {{"role", "user"}, {"content", "hi"}},
+        {{"role", "assistant"}, {"content", "A1"}, {"reasoning_content", "thought one"}},
+        {{"role", "user"}, {"content", "and?"}, {"reasoning_content", "ignored on non-assistant"}},
+        {{"role", "assistant"}, {"content", "A2"}, {"reasoning", "thought two"}},
+        {{"role", "assistant"}, {"content", "A3"}},
+    });
+    const auto chat = normalize_chat_messages(
+        messages, ApiFormat::OPENAI_CHAT, tool_memory);
+    TEST_ASSERT(chat.size() == 5);
+    if (chat.size() == 5) {
+        TEST_ASSERT(chat[1].reasoning_content == "thought one");
+        TEST_ASSERT(chat[2].reasoning_content.empty());
+        TEST_ASSERT(chat[3].reasoning_content == "thought two");
+        TEST_ASSERT(chat[4].reasoning_content.empty());
     }
 }
 
@@ -5956,6 +6482,236 @@ TEST_CASE(ServerUnitFixture, test_inline_snapshot_finalization_prunes_chain) {
     std::vector<int32_t> other = head;
     other.insert(other.end(), {3, 999});
     TEST_ASSERT(cache.lookup(other).first == 0);
+    unlink(path.c_str());
+}
+
+// The live state after generation covers the prompt and the decoded part
+// of the reply; it is saved only as far as the next request's rendering of
+// the turn agrees with it.
+struct LiveStateBackend : ShortInlineSnapshotBackend {
+    int live_position = 0;
+    int saves = 0;
+
+    bool snapshot_save(int slot) override {
+        saved_slot = slot;
+        saved_position = live_position;
+        ++saves;
+        return true;
+    }
+    void snapshot_free(int slot) override {
+        if (slot == saved_slot) saved_position = 0;
+    }
+};
+
+TEST_CASE(ServerUnitFixture, test_save_generated_turn_keys_live_state) {
+    const std::string path = write_deepseek_marker_tokenizer_fixture();
+    Tokenizer tokenizer;
+    TEST_ASSERT(tokenizer.load_from_gguf(path.c_str()));
+    const std::vector<int32_t> prompt = {1, 100, 3, 101};
+    const std::vector<int32_t> generated = {200, 201, 202};
+    // The next request renders the reply, then appends tool results.
+    const std::vector<int32_t> canonical = {1, 100, 3, 101, 200, 201, 202, 7};
+
+    {
+        auto backend_owner = std::make_unique<LiveStateBackend>();
+        LiveStateBackend & backend = *backend_owner;
+        LuceEngine engine(std::move(backend_owner));
+        ServerConfig config;
+        config.prefix_cache_cap = 2;
+        HttpServer server(engine, tokenizer, config);
+        // The last sampled token was never decoded.
+        backend.live_position = 6;
+        TEST_ASSERT(SchedulerTestHarness::save_generated_turn(
+            server, prompt, generated, canonical));
+        std::vector<int32_t> next = canonical;
+        next.insert(next.end(), {8, 9});
+        const auto hit =
+            SchedulerTestHarness::prefix_cache(server).lookup(next);
+        TEST_ASSERT(hit.first == backend.saved_slot);
+        TEST_ASSERT(hit.second == 6);
+        TEST_ASSERT(SchedulerTestHarness::is_agent_turn(server, hit.first));
+    }
+    {
+        // A reply the next request renders differently is not saved.
+        auto backend_owner = std::make_unique<LiveStateBackend>();
+        LiveStateBackend & backend = *backend_owner;
+        LuceEngine engine(std::move(backend_owner));
+        ServerConfig config;
+        config.prefix_cache_cap = 2;
+        HttpServer server(engine, tokenizer, config);
+        backend.live_position = 6;
+        const std::vector<int32_t> rerendered = {1, 100, 3, 101, 250, 7};
+        TEST_ASSERT(!SchedulerTestHarness::save_generated_turn(
+            server, prompt, generated, rerendered));
+        TEST_ASSERT(backend.saves == 0);
+    }
+    {
+        // State past the agreeing tokens would claim rows it does not match.
+        auto backend_owner = std::make_unique<LiveStateBackend>();
+        LiveStateBackend & backend = *backend_owner;
+        LuceEngine engine(std::move(backend_owner));
+        ServerConfig config;
+        config.prefix_cache_cap = 2;
+        HttpServer server(engine, tokenizer, config);
+        backend.live_position = 7;
+        const std::vector<int32_t> partial = {1, 100, 3, 101, 200, 201, 250};
+        TEST_ASSERT(!SchedulerTestHarness::save_generated_turn(
+            server, prompt, generated, partial));
+        TEST_ASSERT(SchedulerTestHarness::prefix_cache(server).stats().in_use == 0);
+    }
+    {
+        // At capacity the checkpoint never evicts the request's own inline
+        // snapshot, the fallback when the next request diverges inside the
+        // generated turn. Otherwise slot 1, the oldest leaf, would go.
+        auto backend_owner = std::make_unique<LiveStateBackend>();
+        LiveStateBackend & backend = *backend_owner;
+        LuceEngine engine(std::move(backend_owner));
+        ServerConfig config;
+        config.prefix_cache_cap = 3;
+        HttpServer server(engine, tokenizer, config);
+        PrefixCache & cache = SchedulerTestHarness::prefix_cache(server);
+        cache.confirm_inline_snap(0, 2, prompt);
+        cache.confirm_inline_snap(1, 4, prompt);
+        cache.confirm_inline_snap(2, 3, std::vector<int32_t>{1, 100, 9});
+        backend.live_position = 6;
+        TEST_ASSERT(SchedulerTestHarness::save_generated_turn(
+            server, prompt, generated, canonical, /*own_snapshot_slot=*/1));
+        TEST_ASSERT(backend.saved_slot == 2);
+        std::vector<int32_t> next = canonical;
+        next.insert(next.end(), {8, 9});
+        TEST_ASSERT(cache.lookup(next).first == 2);
+        std::vector<int32_t> diverged = prompt;
+        diverged.insert(diverged.end(), {250, 7});
+        TEST_ASSERT(cache.lookup(diverged).first == 1);
+    }
+    unlink(path.c_str());
+}
+
+// A hit whose backend snapshot is gone (a deferred snapshot a live
+// continuation consumed) is dropped and the next deepest entry restored.
+struct SlotSetBackend : MockBackend {
+    std::map<int, int> positions;
+    bool snapshot_used(int slot) const override {
+        return positions.count(slot) != 0;
+    }
+    int snapshot_cur_pos(int slot) const override {
+        const auto it = positions.find(slot);
+        return it == positions.end() ? 0 : it->second;
+    }
+};
+
+TEST_CASE(ServerUnitFixture, test_prepare_cache_skips_consumed_snapshot) {
+    const std::string path = write_deepseek_marker_tokenizer_fixture();
+    Tokenizer tokenizer;
+    TEST_ASSERT(tokenizer.load_from_gguf(path.c_str()));
+    auto backend_owner = std::make_unique<SlotSetBackend>();
+    SlotSetBackend & backend = *backend_owner;
+    LuceEngine engine(std::move(backend_owner));
+    ServerConfig config;
+    config.prefix_cache_cap = 4;
+    HttpServer server(engine, tokenizer, config);
+    PrefixCache & cache = SchedulerTestHarness::prefix_cache(server);
+
+    const std::vector<int32_t> prompt = {1, 100, 3, 101, 4, 102};
+    cache.confirm_inline_snap(0, 2, prompt);
+    cache.confirm_inline_snap(1, 4, prompt);
+    // Slot 1 has no snapshot left: it was consumed.
+    backend.positions[0] = 2;
+
+    const auto prepared = SchedulerTestHarness::prepare_cache(server, prompt);
+    TEST_ASSERT(prepared.restore_slot == 0);
+    TEST_ASSERT(prepared.prefix_len == 2);
+    TEST_ASSERT(cache.lookup_candidate(prompt, (int)prompt.size()).first == 0);
+    unlink(path.c_str());
+}
+
+static std::vector<int> prefill_chunk_starts(
+        int kv_offset, int prompt_end, const std::vector<int> & points,
+        int first_min_tokens = kQwen35MinChunkTokens) {
+    std::vector<int> starts;
+    for (int pos = kv_offset; pos < prompt_end;) {
+        starts.push_back(pos);
+        pos += qwen35_prefill_chunk_tokens(
+            pos, prompt_end - pos, kQwen35PrefillUbatch, points,
+            pos == kv_offset ? first_min_tokens : kQwen35MinChunkTokens);
+    }
+    return starts;
+}
+
+// Chunks start at every restore point, keep to the 512 grid in between, and
+// are never shorter than 16 tokens before the end of the prompt. The expected
+// starts below assume those values of kQwen35PrefillUbatch and
+// kQwen35MinChunkTokens.
+TEST_CASE(ServerUnitFixture, test_qwen35_prefill_chunks) {
+    TEST_ASSERT((prefill_chunk_starts(0, 1300, {}) ==
+                 std::vector<int>{0, 512, 1024}));
+    TEST_ASSERT((prefill_chunk_starts(0, 1300, {21, 700}) ==
+                 std::vector<int>{0, 21, 512, 700, 1024}));
+    // A restore point 2 tokens before the grid does not leave a 2-token chunk.
+    TEST_ASSERT((prefill_chunk_starts(0, 1300, {510}) ==
+                 std::vector<int>{0, 510, 1022}));
+    // The prompt's last chunk may be short.
+    TEST_ASSERT((prefill_chunk_starts(0, 515, {}) ==
+                 std::vector<int>{0, 512}));
+    // A prefill resumed at a chunk start of the cold prefill cuts alike.
+    const std::vector<int> points = {40, 300, 1400, 1405, 2047, 2600};
+    const auto cold = prefill_chunk_starts(0, 3000, points);
+    for (int start : cold) {
+        const auto resumed = prefill_chunk_starts(start, 3000, points);
+        TEST_ASSERT(std::equal(resumed.begin(), resumed.end(),
+                               std::find(cold.begin(), cold.end(), start)));
+    }
+    // An off-grid restore runs its first chunk at least 64 tokens.
+    const auto off_grid = prefill_chunk_starts(
+        1003, 1300, {1010, 1100}, kQwen35OffGridLeadTokens);
+    TEST_ASSERT(off_grid.size() >= 2 &&
+                off_grid[1] - off_grid[0] >= kQwen35OffGridLeadTokens);
+}
+
+// An agent turn that continues a generated-turn checkpoint skips its own
+// snapshot while another checkpoint lies close behind; it keeps it when the
+// other checkpoints are far behind, and other requests always keep it.
+TEST_CASE(ServerUnitFixture, test_agent_continuation_throttles_snapshot) {
+    const std::string path = write_deepseek_marker_tokenizer_fixture();
+    Tokenizer tokenizer;
+    TEST_ASSERT(tokenizer.load_from_gguf(path.c_str()));
+
+    // Slot 0 holds the first 3 tokens, slot 1 a generated-turn checkpoint
+    // `filler` + 5 tokens in, and the prompt adds one more turn.
+    const auto prepare = [&](int filler, bool ends_with_tool_result) {
+        auto backend_owner = std::make_unique<SlotSetBackend>();
+        SlotSetBackend & backend = *backend_owner;
+        LuceEngine engine(std::move(backend_owner));
+        ServerConfig config;
+        config.prefix_cache_cap = 4;
+        HttpServer server(engine, tokenizer, config);
+        PrefixCache & cache = SchedulerTestHarness::prefix_cache(server);
+
+        std::vector<int32_t> prompt = {1, 100, 3, 101, 4};
+        prompt.insert(prompt.end(), (size_t) filler, 102);
+        const int checkpoint = (int) prompt.size();
+        prompt.insert(prompt.end(), {3, 103, 4});
+        cache.confirm_inline_snap(0, 3, prompt);
+        cache.confirm_inline_snap(1, checkpoint, prompt);
+        SchedulerTestHarness::mark_agent_turn(server, 1);
+        backend.positions[0] = 3;
+        backend.positions[1] = checkpoint;
+        return SchedulerTestHarness::prepare_cache(
+            server, prompt, ends_with_tool_result);
+    };
+
+    const auto near = prepare(1, /*ends_with_tool_result=*/true);
+    TEST_ASSERT(near.restore_slot == 1);
+    TEST_ASSERT(!near.snapshot);
+
+    const auto chat = prepare(1, /*ends_with_tool_result=*/false);
+    TEST_ASSERT(chat.restore_slot == 1);
+    TEST_ASSERT(chat.snapshot);
+
+    // Slot 0 lies more than 2048 tokens behind the cut.
+    const auto far = prepare(2100, /*ends_with_tool_result=*/true);
+    TEST_ASSERT(far.restore_slot == 1);
+    TEST_ASSERT(far.snapshot);
     unlink(path.c_str());
 }
 
@@ -7838,10 +8594,26 @@ TEST_CASE(ServerUnitFixture, test_sampler_needs_logit_processing) {
     TEST_ASSERT(!cfg.needs_logit_processing());
 }
 
+TEST_CASE(ServerUnitFixture, test_auto_concurrent_prefix_budget) {
+    const size_t MiB = 1024 * 1024, GiB = 1024 * MiB;
+    const size_t floor = ServerConfig::kConcurrentPrefixBudgetFloor;
+    // Small checkpoints stay at the former 4 GiB default.
+    TEST_ASSERT(auto_concurrent_prefix_budget(100 * MiB, 4, 128 * GiB) == floor);
+    // 2 x slots + 1 checkpoints when that is above the floor and under the cap.
+    TEST_ASSERT(auto_concurrent_prefix_budget(1237 * MiB, 4, 128 * GiB) == 9 * 1237 * MiB);
+    // Capped at a quarter of the available memory...
+    TEST_ASSERT(auto_concurrent_prefix_budget(4 * GiB, 8, 64 * GiB) == 16 * GiB);
+    // ...but never below the floor, and unknown memory does not cap.
+    TEST_ASSERT(auto_concurrent_prefix_budget(4 * GiB, 8, 8 * GiB) == floor);
+    TEST_ASSERT(auto_concurrent_prefix_budget(1 * GiB, 4, 0) == 9 * GiB);
+    // A non-positive slot count sizes one slot.
+    TEST_ASSERT(auto_concurrent_prefix_budget(2 * GiB, 0, 0) == 6 * GiB);
+}
+
 TEST_CASE(ServerUnitFixture, test_server_config_cache_defaults) {
     ServerConfig cfg;
     TEST_ASSERT(cfg.prefix_cache_cap == 32);
-    TEST_ASSERT(cfg.concurrent_prefix_cache_max_bytes == (size_t)4 * 1024 * 1024 * 1024);
+    TEST_ASSERT(cfg.concurrent_prefix_cache_max_bytes == ServerConfig::kPrefixCacheBudgetAuto);
     TEST_ASSERT(!cfg.concurrent_paged_prefix_cache);
     TEST_ASSERT(cfg.prefill_cache_cap == 0);
 }
@@ -7982,6 +8754,43 @@ TEST_CASE(ServerUnitFixture, test_props_model_card_wholesale_sidecar) {
     // keys are NOT in the wholesale shape — they moved to budget_envelope.
     TEST_ASSERT(!body["model_card"].contains("think_max_tokens"));
     TEST_ASSERT(!body["model_card"].contains("hard_limit_reply_budget"));
+}
+
+TEST_CASE(ServerUnitFixture, test_props_model_card_exposes_sampling_no_thinking) {
+    // sampling_no_thinking rides along in the wholesale raw-sidecar re-emit
+    // next to the existing `sampling` block, so preflight tooling can
+    // assert the card actually carries distinct instruct-mode values.
+    json sidecar = {
+        {"name",        "Qwen3.8 Flash Next"},
+        {"source",      "https://huggingface.co/Qwen/Qwen3.8-Flash-Next"},
+        {"verified_at", "2026-10-01"},
+        {"max_tokens",  32768},
+        {"sampling", {
+            {"temperature", 1.0}, {"top_p", 0.95}, {"top_k", 20},
+            {"min_p", 0.0}, {"presence_penalty", 0.0}, {"repetition_penalty", 1.0},
+        }},
+        {"sampling_no_thinking", {
+            {"temperature", 0.7}, {"top_p", 0.80}, {"top_k", 20},
+            {"min_p", 0.0}, {"presence_penalty", 1.5}, {"repetition_penalty", 1.0},
+        }},
+    };
+    ServerConfig cfg = make_props_config_with_sidecar(sidecar);
+    Tokenizer    tok;
+    PrefixCache  pc(0, tok);
+    ToolMemory   tm;
+    json body = build_props_body(cfg, pc, tm);
+
+    TEST_ASSERT(body["model_card"].contains("sampling"));
+    TEST_ASSERT(body["model_card"].contains("sampling_no_thinking"));
+    TEST_ASSERT(std::fabs(
+        body["model_card"]["sampling_no_thinking"]["temperature"].get<double>() - 0.7) < 1.0e-6);
+    TEST_ASSERT(std::fabs(
+        body["model_card"]["sampling_no_thinking"]["top_p"].get<double>() - 0.80) < 1.0e-6);
+    TEST_ASSERT(std::fabs(
+        body["model_card"]["sampling_no_thinking"]["presence_penalty"].get<double>() - 1.5) < 1.0e-6);
+    // Existing `sampling` (thinking-mode) field is untouched by the addition.
+    TEST_ASSERT(std::fabs(
+        body["model_card"]["sampling"]["temperature"].get<double>() - 1.0) < 1.0e-6);
 }
 
 TEST_CASE(ServerUnitFixture, test_props_model_card_null_on_family_fallback) {
@@ -8260,6 +9069,10 @@ struct EmptySpecRetryBackend : MockBackend {
     bool restore_saw_force_ar = false;
     bool generate_first_empty_visible = false;
     bool restore_first_empty_visible = false;
+    // False once the first attempt continued a deferred snapshot in place.
+    bool snapshot_present = true;
+
+    bool snapshot_used(int) const override { return snapshot_present; }
 
     GenerateResult generate_impl(const GenerateRequest & req,
                             const DaemonIO &) override {
@@ -8333,6 +9146,27 @@ TEST_CASE(ServerUnitFixture, test_model_backend_retries_empty_spec_restore_once_
     TEST_ASSERT(result.restored_prefix_tokens == 3);
     TEST_ASSERT(backend.restore_calls == 2);
     TEST_ASSERT(backend.restore_saw_force_ar);
+}
+
+// A deferred snapshot the first attempt consumed cannot be restored again:
+// the retry prefills the whole prompt.
+TEST_CASE(ServerUnitFixture, test_model_backend_retries_consumed_restore_with_prefill) {
+    EmptySpecRetryBackend backend;
+    backend.snapshot_present = false;
+    GenerateRequest req;
+    req.prompt = {1, 2, 3};
+    req.n_gen = 4;
+    DaemonIO io;
+
+    GenerateResult result = backend.restore_and_generate(7, req, io);
+
+    TEST_ASSERT(result.ok());
+    TEST_ASSERT(result.tokens.size() == 1);
+    TEST_ASSERT(result.tokens[0] == 42);
+    TEST_ASSERT(backend.restore_calls == 1);
+    TEST_ASSERT(backend.generate_calls == 1);
+    TEST_ASSERT(backend.generate_saw_force_ar);
+    TEST_ASSERT(result.restored_prefix_tokens == 0);
 }
 
 TEST_CASE(ServerUnitFixture, test_model_backend_retries_empty_visible_spec_generate_once_with_ar) {

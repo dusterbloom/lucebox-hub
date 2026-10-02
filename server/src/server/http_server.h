@@ -105,11 +105,14 @@ struct ServerConfig {
     // kPrefixCacheBudgetAuto sizes it from the backend's snapshot size at
     // its full context; zero means unlimited.
     static constexpr size_t kPrefixCacheBudgetAuto = (size_t)-1;
+    static constexpr size_t kConcurrentPrefixBudgetFloor = (size_t)4 * 1024 * 1024 * 1024;
     size_t      prefix_cache_max_bytes = kPrefixCacheBudgetAuto;
     // Resident system-memory budget for copied paged checkpoints. The
     // scheduler enforces it only when concurrent paged prefix storage is
-    // active. Zero means unlimited.
-    size_t      concurrent_prefix_cache_max_bytes = (size_t)4 * 1024 * 1024 * 1024;
+    // active. kPrefixCacheBudgetAuto sizes it when the scheduler starts, from
+    // the slot count and the batch engine's checkpoint size at --max-ctx
+    // (at least kConcurrentPrefixBudgetFloor); zero means unlimited.
+    size_t      concurrent_prefix_cache_max_bytes = kPrefixCacheBudgetAuto;
     bool        concurrent_paged_prefix_cache = false;
     int         prefill_cache_cap = 0;  // full-prompt/prefill cache slots (0 disables)
     // Extend the existing prefix cache through generated tool-call turns.
@@ -172,6 +175,14 @@ struct ServerConfig {
     // "card supplied a value" from "C++ default". HttpServer reads these
     // in the request parser; CLI does not currently override.
     SamplingDefaults sampler_defaults;
+
+    // Sampler defaults for requests whose final thinking state is OFF
+    // (model card's `sampling_no_thinking`, spec §3.3). has_* fields are
+    // all false when the card doesn't define the block; omitted request
+    // fields then keep falling back to `sampler_defaults` above, matching
+    // pre-existing behaviour. Only applied once the request's final
+    // thinking state is known — see apply_no_thinking_sampler_defaults.
+    SamplingDefaults sampler_defaults_no_thinking;
 
     // Operator-facing tag for the startup banner: e.g.
     // "share/model_cards/qwen3.6-27b.json", "family:qwen35", "hard-fallback".
@@ -273,6 +284,10 @@ float resolve_pflash_keep_ratio(float configured_ratio,
                                 const HttpServerSessions & sessions);
 bool should_clamp_flowkv_disk_cache(
     bool flowkv, const DiskPrefixCachePolicy & policy);
+// True when the last message other than a system note is a tool result.
+// Agent clients append system notes (a context budget, reminders) after
+// the tool results; those notes are append-only history too.
+bool ends_with_tool_result(const std::vector<ChatMessage> & messages);
 bool canonical_turn_matches_checkpoint(
     const std::vector<int32_t> & prompt,
     const std::vector<int32_t> & completed_turn,
@@ -346,6 +361,12 @@ struct ParsedRequest {
     // hard_limit_reply_budget. Values are already clamped to those ceilings.
     int                       per_req_phase1_cap   = -1;
     int                       per_req_reply_budget = -1;
+    // Jinja-path only: `preserve_thinking` from `chat_template_kwargs`.
+    // Tri-state: -1 = not set (template default applies, typically true),
+    // 0 = false, 1 = true. Controls whether official templates (e.g.
+    // qwen4exp) replay earlier assistant turns' recorded <think> block
+    // (message.reasoning_content) or strip it.
+    int                       preserve_thinking = -1;
     // Stop sequences (OpenAI "stop" + Anthropic "stop_sequences")
     std::vector<std::string>  stop_sequences;
     // Bandit: per-session adaptive keep_ratio opt-in
@@ -368,12 +389,31 @@ struct PrefixCacheBudget {
     std::string error;        // set when an explicit limit cannot apply;
                               // startup rejects that configuration
 };
+// Automatic concurrent paged prefix budget: 2 x slots + 1 checkpoints of
+// per_checkpoint bytes, at least ServerConfig::kConcurrentPrefixBudgetFloor
+// and, above that, at most memory / 4 when memory is known (non-zero).
+size_t auto_concurrent_prefix_budget(size_t per_checkpoint, int slots, size_t memory);
 PrefixCacheBudget resolve_prefix_cache_budget(const ServerConfig & config,
                                               const ModelBackend & backend);
 
 // Parse request sampler fields, applying model-card defaults where present.
 SamplerCfg parse_request_sampler(const json & body,
                                  const SamplingDefaults & defaults);
+
+// Overlay the model card's no-thinking sampler defaults onto an
+// already-parsed `sampler`, for any field the request body did not
+// explicitly set. parse_request_sampler runs before the request's final
+// thinking state is known (apply_request_reasoning resolves it afterward,
+// since the effort-tier phase-1 cap depends on ParsedRequest::max_output),
+// so it can only apply the thinking-mode `sampling` defaults; this patches
+// the no-thinking fields in once the final state is available. Call only
+// when the resolved thinking state is OFF. A no-op when `no_thinking`
+// carries no has_* fields (card without `sampling_no_thinking`), which
+// preserves pre-existing behaviour: omitted fields keep the thinking-mode
+// defaults regardless of thinking state.
+void apply_no_thinking_sampler_defaults(const json & body,
+                                        const SamplingDefaults & no_thinking,
+                                        SamplerCfg & sampler);
 
 // Read the required `messages` field. Throws std::invalid_argument when
 // it is missing or not a non-empty array; route_request's catch turns
@@ -503,6 +543,14 @@ private:
         GenerationCacheState & cache, const GenerateResult & result,
         int completion_tokens, bool visible_output_seen,
         bool client_disconnected);
+    // Save the live post-generation state as an inline checkpoint of the
+    // prompt plus those generated tokens that agree with `canonical` (the
+    // conversation with this turn appended, as the next request renders it).
+    bool save_generated_turn(
+        const std::vector<int32_t> & prompt,
+        const std::vector<int32_t> & generated,
+        const std::vector<int32_t> & canonical,
+        const GenerationCacheState & cache);
     void remember_agent_turn(
         const ParsedRequest & req, const PreparedPrompt & prepared,
         const GenerationCacheState & cache, const GenerateResult & result,
@@ -537,6 +585,8 @@ private:
     // drains its pending prefill between decode iterations, then advances
     // active slots together in one batched step.
     void scheduler_loop(SeqEngine & engine);
+    // Automatic concurrent prefix budget for `slots` checkpoints of `per_checkpoint` bytes.
+    size_t concurrent_prefix_budget(size_t per_checkpoint, int slots) const;
 
     // Non-blocking dequeue used for admission polling between decode steps.
     ServerJob * try_dequeue();
