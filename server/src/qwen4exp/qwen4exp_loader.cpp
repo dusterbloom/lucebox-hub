@@ -710,11 +710,8 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
     add(out.output_hc_down);
     add(out.output_hc_up);
     for (ggml_tensor * t : {out.mtp_enorm, out.mtp_hnorm, out.mtp_eh_proj, out.mtp_head_norm, out.mtp_head_down, out.mtp_head_up}) add(t);
-    std::vector<Qwen4ExpLayer *> upload_layers;
-    for (Qwen4ExpLayer & layer : out.layers) upload_layers.push_back(&layer);
-    if (!mtp_path.empty()) upload_layers.push_back(&out.mtp);
-    for (Qwen4ExpLayer * lp : upload_layers) {
-        Qwen4ExpLayer & layer = *lp;
+    for (uint32_t il = 0; il < n_layer + (mtp_path.empty() ? 0u : 1u); ++il) {
+        Qwen4ExpLayer & layer = il == n_layer ? out.mtp : out.layers[il];
         add(layer.attn_norm); add(layer.attn_post_norm); add(layer.ffn_norm);
         add(layer.hc_attn_norm); add(layer.hc_attn_down); add(layer.hc_attn_up);
         add(layer.hc_attn_inject); add(layer.hc_ffn_norm); add(layer.hc_ffn_down);
