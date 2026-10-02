@@ -429,8 +429,10 @@ int main(int argc, char ** argv) {
     }
 
     if (const char * mtp_env = getenv("QWEN4EXP_SMOKE_MTP"); rc == 0 && mtp_env) {
-        rc = run_mtp_check(backend, w, tokens, std::atoi(mtp_env));
-        if (rc == 0) rc = run_mtp_rollback_check(backend, w, tokens);
+        const int decode_rc = run_mtp_check(backend, w, tokens, std::atoi(mtp_env));
+        // Independent caches: report rollback even when natural drafting differs.
+        const int rollback_rc = run_mtp_rollback_check(backend, w, tokens);
+        rc = decode_rc || rollback_rc;
     }
 
     free_qwen4exp_cache(cache);

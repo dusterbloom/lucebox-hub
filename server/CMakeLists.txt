@@ -1856,6 +1856,11 @@ if(LUCE_TESTS)
     target_include_directories(test_qwen4exp_mtp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     add_test(NAME qwen4exp_mtp COMMAND test_qwen4exp_mtp)
 
+    # Exercise synthetic gfx1151 MMID admission without initializing a GPU.
+    add_executable(test_qwen4exp_mtp_dispatch test/test_qwen4exp_mtp_dispatch.cpp)
+    target_link_libraries(test_qwen4exp_mtp_dispatch PRIVATE ggml ${LUCE_GGML_BACKEND_TARGET})
+    add_test(NAME qwen4exp_mtp_dispatch COMMAND test_qwen4exp_mtp_dispatch)
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_qwen4exp_forward.cpp")
         add_executable(smoke_qwen4exp_forward test/smoke_qwen4exp_forward.cpp)
         target_include_directories(smoke_qwen4exp_forward PRIVATE ${LUCE_SRC_INCLUDE_DIRS})
