@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <random>
 #include <string>
 #include <vector>
@@ -26,20 +27,14 @@ static int argmax(const std::vector<float> & logits) {
         std::max_element(logits.begin(), logits.end()));
 }
 
-static float top2_margin(const std::vector<float> & logits) {
-    float first = -INFINITY, second = -INFINITY;
-    for (float value : logits) {
-        if (value > first) { second = first; first = value; }
-        else if (value > second) second = value;
-    }
-    return first - second;
-}
-
 static float max_delta(const std::vector<float> & a,
                        const std::vector<float> & b) {
+    if (a.size() != b.size()) return INFINITY;
     float delta = 0.0f;
-    for (size_t i = 0; i < a.size(); ++i)
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (!std::isfinite(a[i]) || !std::isfinite(b[i])) return INFINITY;
         delta = std::max(delta, std::abs(a[i] - b[i]));
+    }
     return delta;
 }
 
@@ -127,7 +122,7 @@ static bool run_distinct(Qwen4ExpSeqEngine & engine, ggml_backend_t backend,
         coherent_all = coherent_all && coherent;
     }
 
-    // Compare full-vocabulary logits while histories still share a prefix.
+    // Compare full-vocabulary logits and complete engine token streams exactly.
     // One reusable solo cache keeps the peak at five full caches, not eight.
     Qwen4ExpCache solo;
     if (!create_qwen4exp_cache(backend, weights, 32768, GGML_TYPE_F16, solo))
@@ -142,8 +137,10 @@ static bool run_distinct(Qwen4ExpSeqEngine & engine, ggml_backend_t backend,
             free_qwen4exp_cache(solo); return false;
         }
         solo_streams[i].push_back(argmax(logits));
-        for (int step = 0; step < STEPS; ++step) {
+        // Earlier admissions also decoded while later slots were prefilling.
+        for (int step = 0; step < STEPS + N - 1 - i; ++step) {
             const int32_t fed = solo_streams[i].back();
+            if (weights.eos_id == fed || weights.eos_chat_id == fed) break;
             std::vector<float> next_logits;
             if (!qwen4exp_forward(backend, weights, solo, &fed, 1,
                                   (int)ids[i].size() + step,
@@ -161,7 +158,6 @@ static bool run_distinct(Qwen4ExpSeqEngine & engine, ggml_backend_t backend,
     for (Qwen4ExpCache * cache : caches) reset_qwen4exp_state(backend, *cache);
     std::vector<int32_t> batch_next(N);
     std::vector<int> first_divergence(N, -1);
-    std::vector<float> first_epsilon(N, 0.0f), first_margin(N, 0.0f);
     for (int i = 0; i < N; ++i) {
         std::vector<float> ignored;
         if (!qwen4exp_forward(backend, weights, *caches[i], ids[i].data(),
@@ -190,27 +186,28 @@ static bool run_distinct(Qwen4ExpSeqEngine & engine, ggml_backend_t backend,
                 (size_t)step < solo_logits[i].size()) {
                 const float epsilon = max_delta(logits[i], solo_logits[i][step]);
                 max_epsilon[i] = std::max(max_epsilon[i], epsilon);
-                if (sampled != solo_streams[i][(size_t)step + 1]) {
+                if (!std::isfinite(epsilon) ||
+                    logits[i].size() != solo_logits[i][step].size() ||
+                    std::memcmp(logits[i].data(), solo_logits[i][step].data(),
+                                logits[i].size() * sizeof(float)) != 0)
                     first_divergence[i] = step;
-                    first_epsilon[i] = epsilon;
-                    first_margin[i] = top2_margin(solo_logits[i][step]);
-                }
             }
             batch_next[i] = sampled;
         }
     }
     clear_qwen4exp_batched_decode_workspace(workspace);
-    const bool ok = coherent_all;
+    bool ok = coherent_all;
     for (int i = 0; i < N; ++i) {
-        std::printf("[distinct-margin] slot=%d max_epsilon=%.8g first_divergence_step=%d epsilon=%.8g solo_margin=%.8g 2epsilon=%.8g\n",
-            i, max_epsilon[i], first_divergence[i], first_epsilon[i],
-            first_margin[i], 2.0f * first_epsilon[i]);
+        const bool exact_tokens = engine_streams[i] == solo_streams[i];
+        ok = ok && first_divergence[i] < 0 && exact_tokens;
+        std::printf("[distinct] slot=%d max_epsilon=%.8g first_divergence_step=%d exact_tokens=%s\n",
+            i, max_epsilon[i], first_divergence[i], exact_tokens ? "PASS" : "FAIL");
     }
     return ok;
 }
 
 // Compare every real engine step with independently advanced solo caches.
-// Both paths consume identical histories, so a near-tie token can be diagnosed.
+// Both paths must produce bit-exact indexer state and identical tokens.
 // Prompts straddle 2052; the last prefill is mixed with decode, followed by N=1.
 static bool run_qsa_boundary(Qwen4ExpSeqEngine & engine, ggml_backend_t backend,
                              const Qwen4ExpWeights & w,
@@ -255,8 +252,6 @@ static bool run_qsa_boundary(Qwen4ExpSeqEngine & engine, ggml_backend_t backend,
             spans.push_back({caches[row.slot], prompts[row.slot].data() + pos,
                 std::min(row.max_tokens, (int) prompts[row.slot].size() - pos), pos});
         }
-        const bool exact = spans.size() == 1 ||
-            !qwen4exp_can_batch(w, spans.data(), (int) spans.size(), qsa);
         std::vector<SavedIndexer> expected;
         std::vector<int32_t> expected_tokens;
         for (size_t i = 0; i < spans.size(); ++i) {
@@ -273,16 +268,16 @@ static bool run_qsa_boundary(Qwen4ExpSeqEngine & engine, ggml_backend_t backend,
         for (size_t i = 0; i < spans.size(); ++i) {
             const auto & span = spans[i];
             if (span.cache->cur_pos != span.pos0 + span.n_tokens ||
-                (qsa && !equal_indexer(*span.cache, expected[i], span.cache->cur_pos, false))) return false;
+                (qsa && !equal_indexer(*span.cache, expected[i], span.cache->cur_pos))) return false;
             const bool decode = i < plan.decode.size();
             if (!decode && result.prefills[i - plan.decode.size()].status !=
                     SeqEngine::PrefillOutput::Status::completed) continue;
             const int32_t token = decode ? result.decode[i].token :
                 result.prefills[i - plan.decode.size()].token;
-            // Enforce token identity here; smoke probe also diagnoses dense near ties with full logits.
+            // Enforce token identity here; the smoke probe checks full logits bit for bit.
             if (token != expected_tokens[i]) {
-                std::fprintf(stderr, "[qsa-boundary] slot=%d pos=%d solo=%d engine=%d exact=%d\n",
-                    slots[i], span.pos0, expected_tokens[i], token, exact);
+                std::fprintf(stderr, "[qsa-boundary] slot=%d pos=%d solo=%d engine=%d\n",
+                    slots[i], span.pos0, expected_tokens[i], token);
                 return false;
             }
             next[slots[i]] = token;

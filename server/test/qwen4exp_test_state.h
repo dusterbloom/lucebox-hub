@@ -72,10 +72,9 @@ inline SavedIndexer save_indexer(Qwen4ExpCache & c, int end) {
     }
     return saved;
 }
-inline bool equal_indexer(Qwen4ExpCache & c, const SavedIndexer & expected, int end, bool exact) {
+inline bool equal_indexer(Qwen4ExpCache & c, const SavedIndexer & expected, int end) {
     if (c.indexer_blocks != expected.blocks) return false;
     size_t tensor = 0;
-    float delta = 0;
     for (const auto * tensors : {&c.indexer_raw, &c.indexer_k}) {
         for (auto * t : *tensors) {
             if (!t) continue;
@@ -86,23 +85,11 @@ inline bool equal_indexer(Qwen4ExpCache & c, const SavedIndexer & expected, int 
             if (b.size() != count * width) return false;
             std::vector<float> a((size_t) ggml_nelements(t));
             ggml_backend_tensor_get(t, a.data(), 0, ggml_nbytes(t));
-            for (size_t row = 0; row < count; ++row) {
-                float scale = 0, error = 0;
-                for (size_t col = 0; col < width; ++col) {
-                    const size_t i = row * width + col;
-                    if (!std::isfinite(a[i]) || !std::isfinite(b[i])) return false;
-                    error = std::max(error, std::abs(a[i] - b[i]));
-                    scale = std::max(scale, std::abs(b[i]));
-                }
-                delta = std::max(delta, error);
-                // Conservative quantized batch-width gate: 2% of each row's infinity
-                // norm (floor 1). Missing/stale rows are independently rejected by
-                // the exact poison mask; same-state solo fallback must be bit-exact.
-                if (exact ? std::memcmp(a.data() + row * width, b.data() + row * width,
-                                         width * sizeof(float)) != 0
-                          : error > 0.02f * std::max(1.0f, scale)) {
-                    std::fprintf(stderr, "[indexer] tensor=%zu row=%zu error=%g scale=%g exact=%d\n",
-                                 tensor - 1, row, error, scale, exact);
+            for (size_t i = 0; i < b.size(); ++i) {
+                if (!std::isfinite(a[i]) || !std::isfinite(b[i]) ||
+                    std::memcmp(&a[i], &b[i], sizeof(float)) != 0) {
+                    std::fprintf(stderr, "[indexer] tensor=%zu row=%zu col=%zu solo=%g actual=%g\n",
+                                 tensor - 1, i / width, i % width, b[i], a[i]);
                     return false;
                 }
             }
@@ -113,7 +100,7 @@ inline bool equal_indexer(Qwen4ExpCache & c, const SavedIndexer & expected, int 
             }
         }
     }
-    std::printf("[indexer] end=%d blocks=%d max_delta=%g exact=%d\n", end, c.indexer_blocks, delta, exact);
+    std::printf("[indexer] end=%d blocks=%d exact=1\n", end, c.indexer_blocks);
     return tensor == expected.rows.size();
 }
 } // namespace qwen4exp_test

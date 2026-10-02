@@ -5442,14 +5442,15 @@ TEST_CASE(ServerUnitFixture, test_qwen4exp_qsa_batch_boundary) {
     TEST_ASSERT(qwen4exp_can_batch(w, spans, 2, false)); // QSA off / UPSTREAM
     std::swap(spans[0], spans[1]);
     TEST_ASSERT(!qwen4exp_can_batch(w, spans, 2, true)); // any slot, independent of order
-    spans[0].pos0 = 1920;
-    spans[0].n_tokens = 131;
-    TEST_ASSERT(qwen4exp_can_batch(w, spans, 2, true));
-    spans[0].n_tokens = 132;
-    TEST_ASSERT(!qwen4exp_can_batch(w, spans, 2, true)); // packed prefill crossing boundary
-    spans[0].pos0 = 2048;
-    spans[0].n_tokens = 4;
-    TEST_ASSERT(!qwen4exp_can_batch(w, spans, 2, true)); // short prefill uses QSA decode kernel
+    spans[0].pos0 = 16;
+    spans[0].n_tokens = 512;
+    TEST_ASSERT(!qwen4exp_can_batch(w, spans, 2, true)); // prefill always runs solo
+    TEST_ASSERT(!qwen4exp_can_batch(w, spans, 2, false));
+    spans[0].n_tokens = 1;
+    Qwen4ExpForwardSegment rows[5] = {spans[0], spans[1], spans[0], spans[1], spans[0]};
+    TEST_ASSERT(qwen4exp_can_batch(w, rows, 4, true));
+    TEST_ASSERT(!qwen4exp_can_batch(w, rows, 5, true)); // batch-invariant MMID ceiling
+    TEST_ASSERT(!qwen4exp_can_batch(w, rows, 5, false));
     w.indexer_top_k = 1024;
     spans[0].pos0 = 1026;
     spans[0].n_tokens = 1;

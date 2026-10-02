@@ -22,12 +22,8 @@ constexpr int N = 4;
 int argmax(const std::vector<float> & x) {
     return (int) std::distance(x.begin(), std::max_element(x.begin(), x.end()));
 }
-float top2_margin(const std::vector<float> & x) {
-    float a = -INFINITY, b = -INFINITY;
-    for (float v : x) { if (v > a) { b = a; a = v; } else if (v > b) b = v; }
-    return a - b;
-}
 float max_delta(const std::vector<float> & a, const std::vector<float> & b) {
+    if (a.size() != b.size()) return INFINITY;
     float e = 0;
     for (size_t i = 0; i < a.size(); ++i) {
         if (!std::isfinite(a[i]) || !std::isfinite(b[i])) return INFINITY;
@@ -110,9 +106,6 @@ int main(int argc, char ** argv) {
             for (int s = 0; s < N; ++s) snapshots.push_back(save_cache(caches[s]));
             std::vector<std::vector<float>> solo(N), batched;
             std::vector<SavedIndexer> expected;
-            Qwen4ExpForwardSegment spans[N];
-            for (int s = 0; s < N; ++s) spans[s] = {ptrs[s], feed + s, 1, pos[s]};
-            const bool exact = !qwen4exp_can_batch(w, spans, N, qsa);
             for (int s = 0; s < N; ++s) {
                 auto r = qwen4exp_forward(backend, w, caches[s], &feed[s], 1, pos[s], solo[s]);
                 expected.push_back(save_indexer(caches[s], qsa ? pos[s] + 1 : 0));
@@ -125,13 +118,11 @@ int main(int argc, char ** argv) {
             for (int s = 0; s < N; ++s) {
                 const float eps = max_delta(solo[s], batched[s]); phase_eps = std::max(phase_eps, eps);
                 const int solo_id = argmax(solo[s]), batch_id = argmax(batched[s]);
-                const float margin = top2_margin(solo[s]);
-                const bool allowed = std::isfinite(eps) && (solo_id == batch_id || margin < 2.0f * eps);
+                const bool allowed = std::isfinite(eps) && same_bits(solo[s], batched[s]);
                 if (!allowed) ++failures;
-                if ((qsa && !equal_indexer(caches[s], expected[s], pos[s] + 1, exact)) ||
-                    (exact && !same_bits(solo[s], batched[s]))) ++failures;
-                std::printf("[batch-probe] phase=%s step=%d slot=%d max_abs_delta=%.9g solo=%d batch=%d top2_margin=%.9g gate=%s\n",
-                    identical ? "identical" : "distinct", step, s, eps, solo_id, batch_id, margin, allowed ? "pass" : "FAIL");
+                if (qsa && !equal_indexer(caches[s], expected[s], pos[s] + 1)) ++failures;
+                std::printf("[batch-probe] phase=%s step=%d slot=%d max_abs_delta=%.9g solo=%d batch=%d exact=%s\n",
+                    identical ? "identical" : "distinct", step, s, eps, solo_id, batch_id, allowed ? "pass" : "FAIL");
                 if (identical && !same_bits(batched[0], batched[s])) {
                     ++failures; std::printf("[batch-probe] identical_logits=FAIL slot=%d\n", s);
                 }
@@ -139,7 +130,6 @@ int main(int argc, char ** argv) {
             std::printf("[batch-probe] phase=%s step=%d epsilon_max=%.9g\n", identical ? "identical" : "distinct", step, phase_eps);
             if (identical) for (int s = 0; s < N; ++s) if (argmax(batched[s]) != argmax(batched[0])) ++failures;
             for (int s = 0; s < N; ++s) { feed[s] = argmax(batched[s]); pos[s]++; }
-            // Replay each solo step from the same cache/history even after a permitted near tie.
         }
 
         // Exercise non-contiguous active rows and prove untouched slots do not move.

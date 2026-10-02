@@ -81,16 +81,8 @@ SeqEngine::AdmitResult Qwen4ExpSeqEngine::admit(
 }
 
 StepPlanLimits Qwen4ExpSeqEngine::step_plan_limits(int decode_rows) const {
-    // The packed graph can hold 2048 total rows. Give every selected prefill
-    // slot its normal chunk, rather than dividing one chunk across the whole
-    // cohort; subtract live decode rows so the graph's fixed row ceiling holds.
-    constexpr int packed_graph_max_rows = 2048;
-    const int decode_capacity = std::clamp(decode_rows, 0, slot_count());
-    const int prefill_slots = std::max(0, slot_count() - decode_capacity);
-    const int total_prefill_rows = std::min(
-        prefill_slots * prefill_chunk_,
-        packed_graph_max_rows - decode_capacity);
-    return {prefill_slots, prefill_chunk_, total_prefill_rows, 1};
+    const int prefill_slots = slot_count() - std::clamp(decode_rows, 0, slot_count());
+    return {prefill_slots, prefill_chunk_, prefill_slots * prefill_chunk_, 1};
 }
 
 bool Qwen4ExpSeqEngine::reserve_decode(const StepPlan & plan) {
@@ -151,7 +143,7 @@ SeqEngine::StepResult Qwen4ExpSeqEngine::step(const StepPlan & plan) {
     }
     const StepPlanLimits limits = step_plan_limits((int)plan.decode.size());
     if (plan.prefills.size() > (size_t)limits.max_prefill_sequences)
-        return fail("qwen4exp prefill plan exceeds packed graph capacity");
+        return fail("qwen4exp prefill plan exceeds available slots");
     for (const PrefillSlice & slice : plan.prefills) {
         const int remaining = slice.slot >= 0 && slice.slot < n &&
             slots_.is_prefilling(slice.slot)
@@ -254,26 +246,19 @@ SeqEngine::StepResult Qwen4ExpSeqEngine::step(const StepPlan & plan) {
         pending_prefills.push_back({slice.slot, complete, segment_index});
     }
     if (telemetry_on) {
-        int packed_rows = 0;
+        int total_rows = 0;
         for (const Qwen4ExpForwardSegment & segment : forward_segments)
-            packed_rows += segment.n_tokens;
+            total_rows += segment.n_tokens;
         std::fprintf(stderr,
             "[qwen4exp-step-work] step=%llu graph=%s segments=%zu rows=%d decode_rows=%zu prefill_sequences=%zu prefill_tokens=%d\n",
             (unsigned long long) telemetry_step,
-            plan.prefills.empty() ? "decode" : "packed",
-            forward_segments.size(), packed_rows, plan.decode.size(),
-            plan.prefills.size(), packed_rows - (int) plan.decode.size());
+            plan.prefills.empty() ? "decode" : "solo-prefill",
+            forward_segments.size(), total_rows, plan.decode.size(),
+            plan.prefills.size(), total_rows - (int) plan.decode.size());
     }
 
     std::vector<std::vector<float>> logits;
-    Qwen4ExpForwardResult forward;
-    if (!plan.prefills.empty()) {
-        forward = qwen4exp_forward_packed(
-            backend_, weights_, forward_segments.data(),
-            (int) forward_segments.size(), decode_workspace_, logits);
-        if (!forward.ok || logits.size() != forward_segments.size())
-            return fail("qwen4exp packed prefill/decode forward failed");
-    } else if (!plan.decode.empty()) {
+    if (!plan.decode.empty()) {
         std::vector<int32_t> tokens;
         std::vector<int32_t> positions;
         std::vector<Qwen4ExpCache *> caches;
@@ -285,11 +270,18 @@ SeqEngine::StepResult Qwen4ExpSeqEngine::step(const StepPlan & plan) {
             positions.push_back(decode_positions[i]);
             caches.push_back(caches_[(size_t) plan.decode[i].slot]);
         }
-        forward = qwen4exp_forward_batched(
+        const auto forward = qwen4exp_forward_batched(
             backend_, weights_, caches.data(), tokens.data(), positions.data(),
             (int)tokens.size(), decode_workspace_, logits);
         if (!forward.ok || logits.size() != tokens.size())
             return fail("qwen4exp batched decode forward failed");
+    }
+    logits.resize(forward_segments.size());
+    for (size_t i = plan.decode.size(); i < forward_segments.size(); ++i) {
+        const auto & segment = forward_segments[i];
+        if (!qwen4exp_forward(backend_, weights_, *segment.cache, segment.tokens,
+                             segment.n_tokens, segment.pos0, logits[i]).ok)
+            return fail("qwen4exp solo prefill forward failed");
     }
     if (std::any_of(logits.begin(), logits.end(), [this](const auto & row) {
             return row.size() != (size_t) weights_.n_vocab;
