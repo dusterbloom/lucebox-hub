@@ -422,6 +422,7 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
         }
         out.embedder.tok_embd_owned.clear();
         out.embedder.tok_embd_bytes = nullptr;
+        reset_qwen4exp_mtp_fields(out);
         for (ShardSource & shard : shards) {
             gguf_free(shard.gctx);
             if (shard.meta) {
@@ -898,6 +899,7 @@ void free_qwen4exp_weights(Qwen4ExpWeights & w) {
     w.output_hc_norm = nullptr;
     w.output_hc_down = nullptr;
     w.output_hc_up = nullptr;
+    reset_qwen4exp_mtp_fields(w);
     w.backend = nullptr;
 }
 

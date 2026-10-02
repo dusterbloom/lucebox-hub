@@ -208,6 +208,17 @@ struct Qwen4ExpWeights {
     int32_t eos_chat_id = -1;
 };
 
+// Clears the MTP sidecar layer and its six projection/head pointers so neither can outlive the ggml_context
+// that owns them. Must run on both teardown and load failure: qwen4exp_cache.cpp treats a non-null
+// mtp_eh_proj as "MTP available", and a later load that skips the sidecar (no file, or override "0") never
+// reassigns these fields, so a stale pointer from a prior load would otherwise look valid. Pure field
+// clearing only -- no I/O, safe to unit-test without a GGUF or a GPU.
+inline void reset_qwen4exp_mtp_fields(Qwen4ExpWeights & w) {
+    w.mtp = Qwen4ExpLayer{};
+    w.mtp_enorm = w.mtp_hnorm = w.mtp_eh_proj = nullptr;
+    w.mtp_head_norm = w.mtp_head_down = w.mtp_head_up = nullptr;
+}
+
 // Load the autoregressive trunk of a Qwen3.8-Flash-Next (`qwen4exp`) GGUF.
 // Split models ("-00001-of-00003.gguf") load every shard; single-file GGUFs
 // load as one shard. The per_layer_token_embd table is discovered in whichever

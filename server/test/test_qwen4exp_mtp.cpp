@@ -1,5 +1,6 @@
 // CPU-only: c++ -std=c++17 -Iserver/src server/test/test_qwen4exp_mtp.cpp -o /tmp/test_qwen4exp_mtp
 #include "qwen4exp/qwen4exp_mtp.h"
+#include "qwen4exp/qwen4exp_internal.h"
 
 #include <cstdio>
 #include <stdexcept>
@@ -9,7 +10,40 @@ using namespace luce::common;
 
 #define CHECK(condition) do { if (!(condition)) throw std::runtime_error(#condition); } while (0)
 
+// P1: free_qwen4exp_weights()/load failure must clear every MTP pointer, or a later load that skips the
+// sidecar (missing file, override "0") leaves qwen4exp_cache.cpp's `mtp_eh_proj != nullptr` check seeing a
+// stale descriptor from a freed ggml_context. Heap-allocated and intentionally never deleted: Qwen4ExpWeights
+// embeds CpuEmbedder/Qwen4ExpPleReader, whose destructors live in qwen4exp_loader.cpp, which this CPU-only
+// target does not link; never destroying the object avoids requiring that link for a pure field check.
+static void test_reset_qwen4exp_mtp_fields() {
+    auto * w = new Qwen4ExpWeights();
+    ggml_tensor sentinel{};   // address only; never dereferenced
+    w->mtp.wq = &sentinel;
+    w->mtp.ffn_down_exps = &sentinel;
+    w->mtp_enorm = &sentinel;
+    w->mtp_hnorm = &sentinel;
+    w->mtp_eh_proj = &sentinel;
+    w->mtp_head_norm = &sentinel;
+    w->mtp_head_down = &sentinel;
+    w->mtp_head_up = &sentinel;
+    w->tok_embd = &sentinel;   // unrelated field: must survive the reset untouched
+
+    reset_qwen4exp_mtp_fields(*w);
+
+    CHECK(w->mtp.wq == nullptr);
+    CHECK(w->mtp.ffn_down_exps == nullptr);
+    CHECK(w->mtp_enorm == nullptr);
+    CHECK(w->mtp_hnorm == nullptr);
+    CHECK(w->mtp_eh_proj == nullptr);
+    CHECK(w->mtp_head_norm == nullptr);
+    CHECK(w->mtp_head_down == nullptr);
+    CHECK(w->mtp_head_up == nullptr);
+    CHECK(w->tok_embd == &sentinel);
+}
+
 int main() {
+    test_reset_qwen4exp_mtp_fields();
+
     CHECK(qwen4exp_mtp_draft_length(nullptr) == 1);
     for (const char * v : {"", "0", "-3", "garbage", "2x", "2.5", "999999999999999999999x"}) {
         CHECK(qwen4exp_mtp_draft_length(v) == 1);
