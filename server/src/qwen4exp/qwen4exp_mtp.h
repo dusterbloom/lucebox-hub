@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/adaptive_spec_width.h"
+
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -18,6 +20,23 @@ inline int qwen4exp_mtp_draft_length(const char * value) {
     const long n = std::strtol(value, &end, 10);
     if (end == value || *end) return 1;
     return (int) std::clamp(n, 1L, (long) QWEN4EXP_MTP_MAX_DRAFT);
+}
+
+// Server --verify-width: 0 = adaptive k=1..3, 1 = off, 2..5 = fixed k=1..4.
+// Keep the old environment override for existing fixed-width A/B runs.
+inline int qwen4exp_mtp_verify_width(int configured, const char * legacy_draft) {
+    return configured == 0 && legacy_draft && *legacy_draft
+        ? qwen4exp_mtp_draft_length(legacy_draft) + 1 : configured;
+}
+
+inline AdaptiveSpecWidth qwen4exp_mtp_width_policy(int max_draft, bool adaptive) {
+    AdaptiveSpecWidth policy(max_draft + 1, 2, adaptive);
+    // Total draft + verify + rollback ms, indexed by seed-inclusive width.
+    // gfx1151 UD-Q4_K_XL: clean k=1/2/3 runs commit 2/3/4 tokens at
+    // 31.3/36.6/41.4 tok/s. The shared controller refines costs and prefix
+    // survival online, ignores cold cost samples, and can re-widen after rejects.
+    policy.set_relative_costs({0.0f, 0.0f, 64.0f, 82.0f, 97.0f});
+    return policy;
 }
 
 struct Qwen4ExpMtpAcceptance {

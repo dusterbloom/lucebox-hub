@@ -9,7 +9,7 @@ need the real weights and graph marking:
   qsa    a prompt prefilled in one chunk vs split over smaller chunks must
          generate the same greedy continuation.
   mtp    MTP speculative decode (sidecar auto-discovered from <repo>/MTP/, or
-         QWEN4EXP_MTP=<path>) vs QWEN4EXP_MTP=0 must give byte-identical greedy
+         QWEN4EXP_MTP=<path>) vs --verify-width 1 must give byte-identical greedy
          replies, short and past the 2,052-token QSA budget; prints the
          acceptance rate and decode tok/s of both.
 
@@ -19,7 +19,7 @@ Requires the model and a built luce_server; run on the gfx1151 box:
 
     python3 server/scripts/qwen4exp_forward_diff.py hc16
     python3 server/scripts/qwen4exp_forward_diff.py qsa --chunks 4096,16384
-    QWEN4EXP_MODEL=<UD-Q4_K_XL.gguf> python3 server/scripts/qwen4exp_forward_diff.py mtp --draft 1,2,3,4
+    QWEN4EXP_MODEL=<UD-Q4_K_XL.gguf> python3 server/scripts/qwen4exp_forward_diff.py mtp --draft auto,1,2,3,4
 
 Not part of ctest: model-backed and long-running.
 """
@@ -55,7 +55,8 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def chat_full(prompt: str, max_tokens: int, timeout: int, temperature: float = 0, seed: int = 0) -> dict:
+def chat_full(prompt: str, max_tokens: int, timeout: int, temperature: float = 0, seed: int = 0,
+              thinking: bool | None = None) -> dict:
     body = json.dumps({
         "model": "luce",
         "messages": [{"role": "user", "content": prompt}],
@@ -63,6 +64,7 @@ def chat_full(prompt: str, max_tokens: int, timeout: int, temperature: float = 0
         "temperature": temperature,
         "seed": seed,
         "stream": False,
+        **({"chat_template_kwargs": {"enable_thinking": thinking}} if thinking is not None else {}),
     }).encode()
     req = urllib.request.Request(
         f"http://127.0.0.1:{PORT}/v1/chat/completions",
@@ -89,7 +91,8 @@ def wait_ready(proc: subprocess.Popen, timeout: int) -> bool:
 
 
 def run_server(name: str, env_overrides: dict[str, str], extra_args: list[str],
-               prompts: list[str], max_tokens: int, temperature: float = 0, seed: int = 0) -> list[dict]:
+               prompts: list[str], max_tokens: int, temperature: float = 0, seed: int = 0,
+               thinking: list[bool] | None = None) -> list[dict]:
     """Spawn one server and return the full /v1/chat/completions response of each prompt, in order."""
     subprocess.run(["fuser", "-k", f"{PORT}/tcp"], capture_output=True)
     time.sleep(0.5)
@@ -103,7 +106,9 @@ def run_server(name: str, env_overrides: dict[str, str], extra_args: list[str],
         if not wait_ready(proc, timeout=600):
             raise RuntimeError(f"server did not become ready; see /tmp/qwen4exp_diff_{name}.log")
         log(f"[{name}] ready")
-        replies = [chat_full(prompt, max_tokens, timeout=1800, temperature=temperature, seed=seed) for prompt in prompts]
+        replies = [chat_full(prompt, max_tokens, timeout=1800, temperature=temperature, seed=seed,
+                             thinking=thinking[i] if thinking is not None else None)
+                   for i, prompt in enumerate(prompts)]
     finally:
         proc.send_signal(signal.SIGTERM)
         try:
@@ -170,18 +175,41 @@ def cmd_mtp(args: argparse.Namespace) -> int:
         "cross": PARAGRAPH * 45 + question,
         "long": PARAGRAPH * 70 + question,
     }
-    off_run = run_server("mtp_off", {"QWEN4EXP_MTP": "0"}, [], list(prompts.values()),
-                         args.max_tokens, args.temperature, args.seed)
+    thinking = None
+    if args.workloads:
+        # Representative prompts, not the original external benchmark corpus.
+        prompts = {
+            "warmup": "Write a short poem about the sea.",
+            "json": "Output only JSON: an array of 80 objects with id, name, city, and score fields.",
+            "list": "List the integers from 1 to 200, one per line, with each integer's English name.",
+            "code": "Write a complete Python LRU cache implementation with TTL and unit tests.",
+            "math": "Derive the sum of squares formula, prove it by induction, then work through examples.",
+            "translate": "Translate into Italian, preserving all detail:\n" + PARAGRAPH * 20,
+            "explain": "Explain how a relational database executes joins, with examples and tradeoffs.",
+            "reasoning": "Find all positive integers n for which n squared plus 2 divides n factorial plus 1. Prove your answer.",
+            "summarize": "Summarize the following in a detailed structured report:\n" + PARAGRAPH * 70,
+            "prose": "Write a long literary story about a lighthouse keeper who receives letters from the future.",
+        }
+        thinking = [name == "reasoning" for name in prompts]
+    # Exercise the public flags; avoid an inherited legacy fixed-width override
+    # silently turning the adaptive run into fixed k. Preserve sidecar discovery.
+    env = {"QWEN4EXP_MTP_DRAFT": ""}
+    off_run = run_server("mtp_off", env, ["--verify-width", "1"], list(prompts.values()),
+                         args.max_tokens, args.temperature, args.seed, thinking)
     ok = True
     for k in args.draft:
-        mode = f"mtp_k{k}"
-        on_run = run_server(mode, {"QWEN4EXP_MTP_DRAFT": str(k)}, [], list(prompts.values()),
-                            args.max_tokens, args.temperature, args.seed)
+        mode = f"mtp_{k}" if k == "auto" else f"mtp_k{k}"
+        flags = ["--verify-width", str(0 if k == "auto" else int(k) + 1)]
+        if os.environ.get("QWEN4EXP_MTP") not in (None, "", "0"):
+            flags += ["--draft", os.environ["QWEN4EXP_MTP"]]
+        on_run = run_server(mode, env, flags, list(prompts.values()),
+                            args.max_tokens, args.temperature, args.seed, thinking)
         on_log = Path(f"/tmp/qwen4exp_diff_{mode}.log").read_text(errors="replace").splitlines()
         if not any("[qwen4exp] MTP sidecar:" in line for line in on_log):
             log(f"[mtp] FAIL: {mode} loaded no sidecar (set QWEN4EXP_MTP=<mtp-*.gguf>)")
             return 1
-        if not any(f"[qwen4exp-mtp] k={k} drafts=" in line for line in on_log):
+        if not any("[qwen4exp-mtp]" in line and
+                   ("adaptive=1" in line if k == "auto" else f"k={k} drafts=" in line) for line in on_log):
             log(f"[mtp] FAIL: {mode} did not run speculative decoding")
             return 1
         for i, name in enumerate(prompts):
@@ -192,6 +220,11 @@ def cmd_mtp(args: argparse.Namespace) -> int:
             tps = [r.get("usage", {}).get("timings", {}).get("decode_tokens_per_sec", 0.0) for r in (off, on)]
             same = text[0] == text[1] and off.get("usage", {}).get("completion_tokens") == usage.get("completion_tokens")
             ok = ok and same
+            if name != "warmup":
+                ran = usage.get("spec_decode_ran") is True and off.get("usage", {}).get("spec_decode_ran") is False
+                ok = ok and ran
+                if not ran:
+                    log(f"[mtp] FAIL: {mode} {name} unexpected spec_decode_ran usage")
             log(f"[mtp] k={k} {name}: prompt={usage.get('prompt_tokens')} completion={usage.get('completion_tokens')} "
                 f"exact={same} common_prefix={common_prefix_ratio(text[0], text[1]):.3f} "
                 f"accept_rate={usage.get('accept_rate')} decode tok/s off={tps[0]} on={tps[1]} "
@@ -203,13 +236,10 @@ def cmd_mtp(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
-def draft_list(value: str) -> list[int]:
-    try:
-        values = [int(k) for k in value.split(",")]
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("--draft must be a comma-separated list of integers 1..4") from exc
-    if not values or any(k < 1 or k > 4 for k in values):
-        raise argparse.ArgumentTypeError("--draft lengths must be in 1..4")
+def draft_list(value: str) -> list[str]:
+    values = value.split(",")
+    if any(k not in ("auto", "1", "2", "3", "4") for k in values):
+        raise argparse.ArgumentTypeError("--draft must be a comma-separated list of auto and/or 1..4")
     return list(dict.fromkeys(values))
 
 
@@ -225,7 +255,9 @@ def main() -> int:
     p_qsa.set_defaults(func=cmd_qsa)
     p_mtp = sub.add_parser("mtp")
     p_mtp.add_argument("--max-tokens", type=int, default=128)
-    p_mtp.add_argument("--draft", type=draft_list, default=[1, 2, 3, 4], help="comma-separated lengths (default: 1,2,3,4)")
+    p_mtp.add_argument("--draft", type=draft_list, default=["auto", "1", "2", "3", "4"],
+                       help="comma-separated lengths or auto (default: auto,1,2,3,4)")
+    p_mtp.add_argument("--workloads", action="store_true", help="nine prompt types; thinking enabled only for reasoning")
     p_mtp.add_argument("--temperature", type=float, default=0, help="0 for greedy; e.g. 0.7 for seeded sampled A/B")
     p_mtp.add_argument("--seed", type=int, default=123, help="nonzero deterministic sampler seed")
     p_mtp.set_defaults(func=cmd_mtp)

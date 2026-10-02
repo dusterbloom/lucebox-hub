@@ -21,6 +21,67 @@ int main() {
     CHECK(qwen4exp_mtp_draft_length("999999999999999999999") == 4);
     CHECK(qwen4exp_mtp_draft_length("-999999999999999999999") == 1);
 
+    CHECK(qwen4exp_mtp_verify_width(0, nullptr) == 0);
+    CHECK(qwen4exp_mtp_verify_width(0, "") == 0);
+    CHECK(qwen4exp_mtp_verify_width(0, "4") == 5);
+    CHECK(qwen4exp_mtp_verify_width(0, "2") == 3);
+    CHECK(qwen4exp_mtp_verify_width(1, "4") == 1); // explicit off wins
+    CHECK(qwen4exp_mtp_verify_width(2, "4") == 2); // explicit fixed wins
+
+    // Same controller and cost seeds as the server. A rejection must narrow;
+    // clean drafts at that narrower width must recover without unseen-depth
+    // evidence being frozen forever. Fixed widths must never adapt.
+    for (int k = 1; k <= 4; ++k) {
+        auto fixed = qwen4exp_mtp_width_policy(k, false);
+        for (int i = 0; i < 32; ++i) {
+            fixed.observe(1, k + 1, 1000.0f);
+            CHECK(fixed.next_width_cost_aware({}) == k + 1);
+        }
+    }
+    auto adaptive = qwen4exp_mtp_width_policy(3, true);
+    CHECK(adaptive.next_width_cost_aware({}, 1) == 1); // remaining-token cap
+    for (int i = 0; i < 32; ++i) adaptive.observe(1, adaptive.next_width_cost_aware({}));
+    CHECK(adaptive.next_width_cost_aware({}) == 2);
+    for (int i = 0; i < 32; ++i) {
+        const int width = adaptive.next_width_cost_aware({});
+        CHECK(width >= 2 && width <= 4);
+        adaptive.observe(width, width);
+    }
+    CHECK(adaptive.next_width_cost_aware({}) == 4);
+
+    // Deterministic stationary prefix distributions: structured, code-like,
+    // intermediate and prose-like acceptance. Check realized throughput, not
+    // just the last chosen width, against the best fixed width for each case.
+    // These are synthetic policy tests, not predictions of GPU performance.
+    const std::array<float, 5> costs{0, 0, 64, 82, 97};
+    for (const auto & survival : std::vector<std::array<float, 3>>{
+            {1.0f, 1.0f, 1.0f}, {0.94f, 0.86f, 0.75f},
+            {0.85f, 0.69f, 0.47f}, {0.79f, 0.56f, 0.36f},
+            {0.68f, 0.34f, 0.18f}, {0.40f, 0.16f, 0.064f}}) {
+        auto policy = qwen4exp_mtp_width_policy(3, true);
+        uint32_t random = 1;
+        double tokens = 0, elapsed = 0;
+        for (int i = 0; i < 10000; ++i) {
+            const int width = policy.next_width_cost_aware({});
+            CHECK(width >= 2 && width <= 4);
+            random = random * 1664525u + 1013904223u;
+            const double draw = random / 4294967296.0;
+            int accepted = 1;
+            while (accepted < width && draw < survival[accepted - 1]) ++accepted;
+            policy.observe(accepted, width, costs[width]);
+            if (i >= 100) {
+                tokens += accepted;
+                elapsed += costs[width];
+            }
+        }
+        double best = 0, expected = 1;
+        for (int width = 2; width <= 4; ++width) {
+            expected += survival[width - 2];
+            best = std::max(best, expected / costs[width]);
+        }
+        CHECK(tokens / elapsed >= 0.95 * best);
+    }
+
     int cases = 0;
     for (int k = 0; k <= 4; ++k) {
         std::array<int32_t, 5> drafts{11, 22, 33, 44, 55}, samples{};
@@ -65,5 +126,5 @@ int main() {
             }
         }
     }
-    std::printf("qwen4exp MTP: %d acceptance/rollback cases passed; env validation passed\n", cases);
+    std::printf("qwen4exp MTP: %d acceptance/rollback cases passed; config and adaptive policy passed\n", cases);
 }

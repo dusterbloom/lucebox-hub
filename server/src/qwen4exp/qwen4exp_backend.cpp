@@ -50,7 +50,9 @@ void apply_gfx1151_defaults(int gpu) {
 }
 
 Qwen4ExpBackend::Qwen4ExpBackend(Qwen4ExpBackendConfig cfg)
-    : cfg_(std::move(cfg)) {}
+    : cfg_(std::move(cfg)) {
+    cfg_.verify_width = qwen4exp_mtp_verify_width(cfg_.verify_width, std::getenv("QWEN4EXP_MTP_DRAFT"));
+}
 
 Qwen4ExpBackend::~Qwen4ExpBackend() {
     shutdown();
@@ -68,13 +70,15 @@ bool Qwen4ExpBackend::init() {
                      cfg_.device.gpu);
         return false;
     }
-    if (!load_qwen4exp_gguf(cfg_.model_path, backend_, weights_)) {
+    if (!load_qwen4exp_gguf(cfg_.model_path, backend_, weights_,
+                           cfg_.verify_width == 1 ? "0" : cfg_.draft_path.value_or(""))) {
         std::fprintf(stderr, "[qwen4exp] model load failed: %s\n",
                      luce_last_error());
         return false;
     }
     if (!create_qwen4exp_cache(backend_, weights_, cfg_.device.max_ctx,
-                               GGML_TYPE_F16, cache_, /*mtp=*/true)) {
+                               GGML_TYPE_F16, cache_, /*mtp=*/true,
+                               cfg_.verify_width == 0 ? 3 : std::max(1, cfg_.verify_width - 1))) {
         std::fprintf(stderr, "[qwen4exp] cache creation failed\n");
         return false;
     }
@@ -141,13 +145,15 @@ bool Qwen4ExpBackend::unpark(ParkTarget target) {
         return false;
     }
     if (!parked_) return true;
-    if (!load_qwen4exp_gguf(cfg_.model_path, backend_, weights_)) {
+    if (!load_qwen4exp_gguf(cfg_.model_path, backend_, weights_,
+                           cfg_.verify_width == 1 ? "0" : cfg_.draft_path.value_or(""))) {
         std::fprintf(stderr, "[qwen4exp] unpark reload failed: %s\n",
                      luce_last_error());
         return false;
     }
     if (!create_qwen4exp_cache(backend_, weights_, cfg_.device.max_ctx,
-                               GGML_TYPE_F16, cache_, /*mtp=*/true)) {
+                               GGML_TYPE_F16, cache_, /*mtp=*/true,
+                               cfg_.verify_width == 0 ? 3 : std::max(1, cfg_.verify_width - 1))) {
         std::fprintf(stderr, "[qwen4exp] unpark cache creation failed\n");
         free_qwen4exp_weights(weights_);
         return false;
@@ -261,6 +267,9 @@ GenerateResult Qwen4ExpBackend::generate_impl(const GenerateRequest & req,
     // Sample trunk rows lazily, updating history and applying the budget hook
     // exactly once per emitted token. No RNG draws for unvisited verify rows.
     long long drafts = 0, accepted = 0, steps = 0;
+    std::array<long long, QWEN4EXP_MTP_MAX_VERIFY> width_steps{};
+    auto width_policy = qwen4exp_mtp_width_policy(cache_.mtp_draft,
+        spec && cfg_.verify_width == 0 && (!std::getenv("LUCE_ADAPTIVE_SPEC_WIDTH") || adaptive_spec_width_globally_enabled()));
     double draft_s = 0.0;
     const auto t_dec0 = std::chrono::steady_clock::now();
     int32_t next = sample(logits.data());
@@ -268,9 +277,10 @@ GenerateResult Qwen4ExpBackend::generate_impl(const GenerateRequest & req,
     if (spec) mtp_tok.assign(1, next);
     std::vector<int32_t> draft_tokens;
     while (more) {
-        const int k = spec ? std::max(0, std::min({cache_.mtp_draft,
+        const int k = spec ? std::max(0, std::min({width_policy.next_width_cost_aware({}) - 1,
             req.n_gen - (int) result.tokens.size() - 1, cache_.max_ctx - pos - 1})) : 0;
         const bool verify = k > 0;
+        const auto step_start = verify ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         if (verify) {
             const auto td0 = std::chrono::steady_clock::now();
             if (!qwen4exp_mtp_draft(backend_, weights_, cache_, mtp_tok.data(), mtp_h.data(), (int) mtp_tok.size(),
@@ -290,6 +300,7 @@ GenerateResult Qwen4ExpBackend::generate_impl(const GenerateRequest & req,
             return result;
         }
         ++steps;
+        ++width_steps[k];
         drafts += k;
         Qwen4ExpMtpAcceptance decision;
         for (int i = 0; i <= k; ++i) {
@@ -315,6 +326,8 @@ GenerateResult Qwen4ExpBackend::generate_impl(const GenerateRequest & req,
             }
         }
         pos += retained;
+        if (verify) width_policy.observe(decision.n_accepted + 1, k + 1,
+            (float) std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - step_start).count());
     }
     if (cancelled) {
         result.fail(GenerateErrorCode::Cancelled, "cancelled during decode");
@@ -327,9 +340,11 @@ GenerateResult Qwen4ExpBackend::generate_impl(const GenerateRequest & req,
     if (drafts > 0) {
         const double decoded = (double) result.tokens.size() - 1.0;   // the first token came from the prefill
         std::fprintf(stderr,
-            "[qwen4exp-mtp] k=%d drafts=%lld accepted=%lld rate=%.3f tokens_per_step=%.3f draft_ms=%.2f decode=%.2f tok/s\n",
+            "[qwen4exp-mtp] k=%d drafts=%lld accepted=%lld rate=%.3f tokens_per_step=%.3f draft_ms=%.2f decode=%.2f tok/s "
+            "adaptive=%d steps_k1=%lld steps_k2=%lld steps_k3=%lld steps_k4=%lld\n",
             cache_.mtp_draft, drafts, accepted, (double) accepted / (double) drafts, steps > 0 ? decoded / (double) steps : 0.0,
-            1e3 * draft_s / (double) drafts, result.decode_s > 0.0 ? decoded / result.decode_s : 0.0);
+            1e3 * draft_s / (double) drafts, result.decode_s > 0.0 ? decoded / result.decode_s : 0.0,
+            (int) width_policy.enabled(), width_steps[1], width_steps[2], width_steps[3], width_steps[4]);
     }
 
     result.succeed();

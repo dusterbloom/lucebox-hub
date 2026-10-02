@@ -136,7 +136,8 @@ struct Qwen4ExpCache {
 
 // `mtp` adds the MTP draft layer's K/V and the verify rollback state (needs a loaded sidecar).
 bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
-                           int max_ctx, ggml_type kv_type, Qwen4ExpCache & out, bool mtp = false);
+                           int max_ctx, ggml_type kv_type, Qwen4ExpCache & out, bool mtp = false,
+                           int mtp_draft = 0); // 0 = legacy environment/default; otherwise allocate this cap once
 
 void free_qwen4exp_cache(Qwen4ExpCache & c);
 

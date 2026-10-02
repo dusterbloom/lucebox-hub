@@ -25,8 +25,8 @@ bool qwen4exp_uma_ring_supported(ggml_backend_t backend) {
 }  // namespace
 
 bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
-                           int max_ctx, ggml_type kv_type, Qwen4ExpCache & out, bool mtp) {
-    if (max_ctx <= 0) return false;
+                           int max_ctx, ggml_type kv_type, Qwen4ExpCache & out, bool mtp, int mtp_draft) {
+    if (max_ctx <= 0 || mtp_draft < 0 || mtp_draft > QWEN4EXP_MTP_MAX_DRAFT) return false;
 
     out.full_layer_ids.clear();
     out.linear_layer_ids.clear();
@@ -108,7 +108,7 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
     out.spec_ssm.clear(); out.spec_conv.clear();
     out.spec_ssm_rows.clear(); out.spec_conv_rows.clear();
     out.spec_ple_rows = {};
-    out.mtp_draft = qwen4exp_mtp_draft_length(std::getenv("QWEN4EXP_MTP_DRAFT"));
+    out.mtp_draft = mtp_draft ? mtp_draft : qwen4exp_mtp_draft_length(std::getenv("QWEN4EXP_MTP_DRAFT"));
     out.spec_ple = nullptr;
     if (mtp && w.mtp_eh_proj) {   // the MTP draft layer's own K/V (dense attention, no indexer) and the verify rollback
         out.mtp_k = ggml_new_tensor_3d(out.ctx, kv_type, w.n_embd_head_k, kv_capacity, w.n_head_kv);

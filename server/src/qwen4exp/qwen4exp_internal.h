@@ -215,7 +215,8 @@ struct Qwen4ExpWeights {
 // loads as one more shard. Returns false and sets last_error on failure.
 bool load_qwen4exp_gguf(const std::string & path,
                         ggml_backend_t backend,
-                        Qwen4ExpWeights & out);
+                        Qwen4ExpWeights & out,
+                        const std::string & mtp_override = ""); // empty = discovery/env, "0" = off
 
 // MTP sidecar of a model: QWEN4EXP_MTP=<path> names one and QWEN4EXP_MTP=0 turns MTP off; otherwise the Unsloth
 // layout <repo>/<quant>/<model>.gguf -> <repo>/MTP/mtp-*.gguf is searched. Empty when there is none.

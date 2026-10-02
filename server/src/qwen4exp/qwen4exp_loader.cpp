@@ -381,11 +381,12 @@ std::string find_qwen4exp_mtp_sidecar(const std::string & model_path) {
 }
 
 bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
-                        Qwen4ExpWeights & out) {
+                        Qwen4ExpWeights & out, const std::string & mtp_override) {
     // Open every shard of the model; a single-file GGUF is a one-element list. An MTP sidecar
     // (e.g. MTP/mtp-*-shared-Q8_0.gguf) joins as one more shard: its blk.<n_layer> tensors resolve by name like the
     // trunk's, and it borrows the trunk's token_embd/output.
-    const std::string mtp_path = find_qwen4exp_mtp_sidecar(path);
+    const std::string mtp_path = mtp_override == "0" ? std::string() :
+        mtp_override.empty() ? find_qwen4exp_mtp_sidecar(path) : mtp_override;
     std::vector<std::string> shard_paths = discover_shard_paths(path);
     if (!mtp_path.empty()) {
         std::fprintf(stderr, "[qwen4exp] MTP sidecar: %s\n", mtp_path.c_str());
