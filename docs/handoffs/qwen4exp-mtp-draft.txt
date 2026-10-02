@@ -80,18 +80,3 @@ speculation. Compare drafts/accepted/rate/tokens_per_step and decode tok/s;
 performance gains are measurements, not prerequisites for exactness.
 Repeat smoke with QWEN4EXP_SMOKE_CHUNK=8 to cover chunked MTP prompt catch-up.
 GPU equality and throughput have not been tested locally (no GPU).
-
-Git delivery limitation
-The worktree's Git metadata is outside the sandbox's writable roots. Attempting
-`git switch -c qwen4exp-mtp-draft qwen4exp-qsa-speed` failed with read-only
-index.lock. Branch creation, cherry-pick and commits could not be performed.
-The actual branch remains qwen4exp-mtp at 43517f29. No push was attempted.
-The file tree combines bee76f91 with 43517f29 and the implementation above.
-Two reviewable patches, with stage one saved before the multi-draft edits, are
-in /tmp/qwen4exp-mtp-delivery. Intended conventional commit subjects:
-  feat(qwen4exp): replay MTP decoding on stable QSA graphs
-  feat(qwen4exp): chain up to four MTP drafts with exact prefix rollback
-Graph/header conflicts combined QSA workspace inputs, replay guards and native
-capture invalidation with hidden-output and verify-row plumbing. The smoke
-conflict retained both stable/rebuild and MTP checks. Backend changes merged
-without textual conflict; its decode loop now emits a sampled prefix lazily.
