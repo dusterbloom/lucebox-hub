@@ -678,10 +678,6 @@ static Qwen4ExpQsaMode qsa_mode(const Qwen4ExpWeights & w, const Qwen4ExpCache &
     return kv_pad <= cache.attn_k[0]->ne[1] ? QSA_PREFILL : QSA_DENSE;
 }
 
-static int64_t stable_kv_span(Qwen4ExpCache & cache, int64_t kv_len) {
-    return qwen4exp_stable_kv_span(cache.kv_bucket_base, cache.max_ctx, kv_len);
-}
-
 // Verify forward: row t attends exactly as a T=1 decode at pos0 + t would -- dense over that step's stable span with
 // its mask, or QSA over the blocks complete at that position -- so a verified token keeps plain decode's numerics.
 struct Qwen4ExpAttnRow {
@@ -1429,7 +1425,7 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
     const int64_t stable_kv_bucket = stable_qsa
         ? std::min<int64_t>(bucket_limit, ((kv_len + 255) / 256) * 256)
         : use_stable_graph
-            ? stable_kv_span(cache, kv_len)
+            ? qwen4exp_stable_kv_span(cache.kv_bucket_base, cache.max_ctx, kv_len)
             : 0;
 
     // Storage survives until graph_compute/get completes the asynchronous uploads.
@@ -1587,7 +1583,7 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
         Qwen4ExpAttnRow row;
         row.qsa = qsa_mode(w, cache, 1, pos0 + t, upstream);
         if (row.qsa == QSA_DENSE) {
-            row.span = stable_kv_span(cache, pos0 + t + 1);
+            row.span = qwen4exp_stable_kv_span(cache.kv_bucket_base, cache.max_ctx, pos0 + t + 1);
             row.mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, row.span, 1);
             ggml_set_input(row.mask);
         } else {
