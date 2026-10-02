@@ -8,6 +8,7 @@
 #include "common/sampler.h"
 #include "server/tokenizer.h"
 #include "ggml-cuda.h"
+#include "qwen4exp_test_state.h"
 
 #include <algorithm>
 #include <cctype>
@@ -208,6 +209,107 @@ static bool run_distinct(Qwen4ExpSeqEngine & engine, ggml_backend_t backend,
     return ok;
 }
 
+// Compare every real engine step with independently advanced solo caches.
+// Both paths consume identical histories, so a near-tie token can be diagnosed.
+// Prompts straddle 2052; the last prefill is mixed with decode, followed by N=1.
+static bool run_qsa_boundary(Qwen4ExpSeqEngine & engine, ggml_backend_t backend,
+                             const Qwen4ExpWeights & w,
+                             const std::vector<Qwen4ExpCache *> & caches) {
+    using namespace qwen4exp_test;
+    constexpr int N = 4;
+    const bool qsa = std::getenv("QWEN4EXP_QSA") && std::atoi(std::getenv("QWEN4EXP_QSA")) != 0;
+    std::vector<std::vector<int32_t>> prompts(N);
+    std::vector<int32_t> next(N);
+    // Only these small contexts are needed by the reference streams.
+    Qwen4ExpCache solo[N];
+    for (int s = 0; s < N; ++s) {
+        if (!create_qwen4exp_cache(backend, w, 3072, GGML_TYPE_F16, solo[s])) {
+            for (auto & cache : solo) free_qwen4exp_cache(cache);
+            return false;
+        }
+    }
+    for (int s = 0; s < N; ++s) {
+        engine.retire(s);
+        prompts[s].resize(s < 2 ? 2050 : 2181);
+        for (size_t i = 0; i < prompts[s].size(); ++i)
+            prompts[s][i] = (int32_t) ((i * 7919 + 13 + s * 104729) % w.n_vocab);
+        if (engine.admit(800 + s, prompts[s], SamplerCfg{}).slot != s) {
+            for (int slot = 0; slot < N; ++slot) engine.retire(slot);
+            for (auto & cache : solo) free_qwen4exp_cache(cache);
+            return false;
+        }
+        // Missing writes must fail even when a cache is reused from an earlier test.
+        if (qsa) poison_indexer(*caches[s]);
+    }
+    auto check_step = [&](const SeqEngine::StepPlan & plan) {
+        if (!engine.reserve_decode(plan)) return false;
+        std::vector<Qwen4ExpForwardSegment> spans;
+        std::vector<int> slots;
+        for (const auto & row : plan.decode) {
+            slots.push_back(row.slot);
+            spans.push_back({caches[row.slot], &row.token, 1, caches[row.slot]->cur_pos});
+        }
+        for (const auto & row : plan.prefills) {
+            const int pos = caches[row.slot]->cur_pos;
+            slots.push_back(row.slot);
+            spans.push_back({caches[row.slot], prompts[row.slot].data() + pos,
+                std::min(row.max_tokens, (int) prompts[row.slot].size() - pos), pos});
+        }
+        const bool exact = spans.size() == 1 ||
+            !qwen4exp_can_batch(w, spans.data(), (int) spans.size(), qsa);
+        std::vector<SavedIndexer> expected;
+        std::vector<int32_t> expected_tokens;
+        for (size_t i = 0; i < spans.size(); ++i) {
+            const auto & span = spans[i];
+            std::vector<float> logits;
+            if (!qwen4exp_forward(backend, w, solo[slots[i]], span.tokens,
+                                  span.n_tokens, span.pos0, logits).ok) return false;
+            expected_tokens.push_back(argmax(logits));
+            expected.push_back(save_indexer(solo[slots[i]], qsa ? span.pos0 + span.n_tokens : 0));
+        }
+        const auto result = engine.step(plan);
+        if (!result.ok() || result.decode.size() != plan.decode.size() ||
+            result.prefills.size() != plan.prefills.size()) return false;
+        for (size_t i = 0; i < spans.size(); ++i) {
+            const auto & span = spans[i];
+            if (span.cache->cur_pos != span.pos0 + span.n_tokens ||
+                (qsa && !equal_indexer(*span.cache, expected[i], span.cache->cur_pos, false))) return false;
+            const bool decode = i < plan.decode.size();
+            if (!decode && result.prefills[i - plan.decode.size()].status !=
+                    SeqEngine::PrefillOutput::Status::completed) continue;
+            const int32_t token = decode ? result.decode[i].token :
+                result.prefills[i - plan.decode.size()].token;
+            // Enforce token identity here; smoke probe also diagnoses dense near ties with full logits.
+            if (token != expected_tokens[i]) {
+                std::fprintf(stderr, "[qsa-boundary] slot=%d pos=%d solo=%d engine=%d exact=%d\n",
+                    slots[i], span.pos0, expected_tokens[i], token, exact);
+                return false;
+            }
+            next[slots[i]] = token;
+        }
+        return true;
+    };
+    bool ok = true;
+    for (int slice = 0; slice < 6 && ok; ++slice) {
+        SeqEngine::StepPlan plan;
+        for (int s = 0; s < N; ++s) {
+            if (caches[s]->cur_pos == (int) prompts[s].size()) plan.decode.push_back({s, next[s]});
+            else plan.prefills.push_back({s, slice == 4 ? 2 : 512});
+        }
+        ok = check_step(plan);
+    }
+    for (int step = 0; step < 64 && ok; ++step) {
+        SeqEngine::StepPlan plan;
+        // Retire three slots after crossing the threshold and continue solo.
+        if (step == 60) for (int s = 1; s < N; ++s) engine.retire(s);
+        for (int s = 0; s < (step < 60 ? N : 1); ++s) plan.decode.push_back({s, next[s]});
+        ok = check_step(plan);
+    }
+    for (int s = 0; s < N; ++s) engine.retire(s);
+    for (auto & cache : solo) free_qwen4exp_cache(cache);
+    return ok;
+}
+
 static bool run_soak(Qwen4ExpSeqEngine & engine, int n, int round) {
     std::mt19937 rng((uint32_t)(0x51e9 + n * 101 + round));
     std::vector<int32_t> over_ctx((size_t)engine.max_context() + 1, 1);
@@ -248,6 +350,10 @@ int main(int argc, char ** argv) {
     const int ctx = argc > 2 ? std::atoi(argv[2]) : 32768;
     if (ctx != 32768) return 2;
     setenv("QWEN4EXP_BATCHED_DECODE", "1", 1);
+#if defined(GGML_USE_HIP) || defined(LUCE_BACKEND_HIP)
+    // These probes bypass Qwen4ExpBackend's gfx1151 defaults.
+    setenv("QWEN4EXP_QSA", "1", 0);
+#endif
 
     ggml_backend_t backend = ggml_backend_cuda_init(0);
     if (!backend) return 77;
@@ -290,6 +396,9 @@ int main(int argc, char ** argv) {
     }
     {
         Qwen4ExpSeqEngine engine(backend, weights, ptrs, ctx);
+        const bool boundary_ok = run_qsa_boundary(engine, backend, weights, ptrs);
+        std::printf("[qwen4exp-seq] qsa-boundary=%s\n", boundary_ok ? "PASS" : "FAIL");
+        ok = ok && boundary_ok;
         const bool ok_distinct = run_distinct(
             engine, backend, weights, ptrs, argv[1]);
         std::printf("[qwen4exp-seq] distinct-concurrent=%s\n",

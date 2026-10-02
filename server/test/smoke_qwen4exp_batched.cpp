@@ -1,9 +1,10 @@
 // Exact-width qwen4exp independent-slot decode probe.
-// Usage: smoke_qwen4exp_batched <iq4nl-shard1.gguf> [prefill_tokens=16] [ctx=32768]
+// Usage: smoke_qwen4exp_batched <iq4nl-shard1.gguf> [prefill_tokens=16] [ctx=32768] [steps=3]
 #include "qwen4exp_internal.h"
 #include "qwen4exp_graph.h"
 #include "qwen4exp_cache.h"
 #include "ggml-cuda.h"
+#include "qwen4exp_test_state.h"
 
 #include <algorithm>
 #include <cmath>
@@ -15,46 +16,9 @@
 #include <vector>
 
 using namespace luce::common;
+using namespace qwen4exp_test;
 namespace {
 constexpr int N = 4;
-struct SavedTensor { ggml_tensor * tensor; std::vector<uint8_t> bytes; };
-struct SavedCache {
-    std::vector<SavedTensor> tensors;
-    std::vector<int32_t> ple_prev;
-    int indexer_blocks = 0, cur_pos = 0;
-};
-
-std::vector<ggml_tensor *> state_tensors(Qwen4ExpCache & c) {
-    std::vector<ggml_tensor *> out;
-    auto add = [&](const std::vector<ggml_tensor *> & v) { out.insert(out.end(), v.begin(), v.end()); };
-    add(c.attn_k); add(c.attn_v); add(c.indexer_k); add(c.ssm_state);
-    add(c.conv_state); add(c.ple_conv_state);
-    out.erase(std::remove(out.begin(), out.end(), nullptr), out.end());
-    return out;
-}
-SavedCache save_cache(Qwen4ExpCache & c) {
-    SavedCache out; out.ple_prev = c.ple_prev; out.indexer_blocks = c.indexer_blocks; out.cur_pos = c.cur_pos;
-    for (ggml_tensor * t : state_tensors(c)) {
-        SavedTensor v{t, std::vector<uint8_t>(ggml_nbytes(t))};
-        ggml_backend_tensor_get(t, v.bytes.data(), 0, v.bytes.size());
-        out.tensors.push_back(std::move(v));
-    }
-    return out;
-}
-void restore_cache(Qwen4ExpCache & c, const SavedCache & in) {
-    for (const SavedTensor & v : in.tensors)
-        ggml_backend_tensor_set(v.tensor, v.bytes.data(), 0, v.bytes.size());
-    c.ple_prev = in.ple_prev; c.indexer_blocks = in.indexer_blocks; c.cur_pos = in.cur_pos;
-}
-bool equal_cache(Qwen4ExpCache & c, const SavedCache & in) {
-    if (c.ple_prev != in.ple_prev || c.indexer_blocks != in.indexer_blocks || c.cur_pos != in.cur_pos) return false;
-    for (const SavedTensor & v : in.tensors) {
-        std::vector<uint8_t> now(v.bytes.size());
-        ggml_backend_tensor_get(v.tensor, now.data(), 0, now.size());
-        if (now != v.bytes) return false;
-    }
-    return true;
-}
 int argmax(const std::vector<float> & x) {
     return (int) std::distance(x.begin(), std::max_element(x.begin(), x.end()));
 }
@@ -65,7 +29,10 @@ float top2_margin(const std::vector<float> & x) {
 }
 float max_delta(const std::vector<float> & a, const std::vector<float> & b) {
     float e = 0;
-    for (size_t i = 0; i < a.size(); ++i) e = std::max(e, std::abs(a[i] - b[i]));
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (!std::isfinite(a[i]) || !std::isfinite(b[i])) return INFINITY;
+        e = std::max(e, std::abs(a[i] - b[i]));
+    }
     return e;
 }
 uint64_t logits_hash(const std::vector<float> & x) {
@@ -80,11 +47,16 @@ bool same_bits(const std::vector<float> & a, const std::vector<float> & b) {
 }
 
 int main(int argc, char ** argv) {
-    if (argc < 2) { std::fprintf(stderr, "usage: %s <shard1.gguf> [prefill=16] [ctx=32768]\n", argv[0]); return 2; }
+    if (argc < 2) { std::fprintf(stderr, "usage: %s <shard1.gguf> [prefill=16] [ctx=32768] [steps=3]\n", argv[0]); return 2; }
     const int prompt_n = argc > 2 ? std::atoi(argv[2]) : 16;
     const int ctx = argc > 3 ? std::atoi(argv[3]) : 32768;
-    if (prompt_n <= 0 || prompt_n >= ctx) return 2;
+    const int steps = argc > 4 ? std::atoi(argv[4]) : 3;
+    if (prompt_n <= 0 || steps <= 0 || prompt_n + steps + 1 >= ctx) return 2;
     setenv("QWEN4EXP_BATCHED_DECODE", "1", 1);
+#if defined(GGML_USE_HIP) || defined(LUCE_BACKEND_HIP)
+    // These probes bypass Qwen4ExpBackend's gfx1151 defaults.
+    setenv("QWEN4EXP_QSA", "1", 0);
+#endif
     ggml_backend_t backend = ggml_backend_cuda_init(0);
     if (!backend) { std::fprintf(stderr, "no GPU backend\n"); return 77; }
     Qwen4ExpWeights w;
@@ -94,6 +66,7 @@ int main(int argc, char ** argv) {
         ptrs[s] = &caches[s];
         if (!create_qwen4exp_cache(backend, w, ctx, GGML_TYPE_F16, caches[s])) return 1;
     }
+    const bool qsa = std::getenv("QWEN4EXP_QSA") && std::atoi(std::getenv("QWEN4EXP_QSA")) != 0;
     Qwen4ExpBatchedDecodeWorkspace workspace;
     int failures = 0;
 
@@ -101,6 +74,7 @@ int main(int argc, char ** argv) {
         const bool identical = phase == 0;
         for (int s = 0; s < N; ++s) {
             reset_qwen4exp_state(backend, caches[s]);
+            if (qsa) poison_indexer(caches[s]);
             std::vector<int32_t> prompt((size_t) prompt_n);
             for (int i = 0; i < prompt_n; ++i)
                 prompt[(size_t) i] = (int32_t) ((i * 7919 + 13 + (identical ? 0 : s * 104729)) % w.n_vocab);
@@ -131,13 +105,17 @@ int main(int argc, char ** argv) {
             restore_cache(caches[0], before);
         }
         std::printf("[batch-probe] phase=%s N=%d ctx=%d prefill=%d\n", identical ? "identical" : "distinct", N, ctx, prompt_n);
-        for (int step = 0; step < 3; ++step) {
+        for (int step = 0; step < steps; ++step) {
             std::vector<SavedCache> snapshots; snapshots.reserve(N);
             for (int s = 0; s < N; ++s) snapshots.push_back(save_cache(caches[s]));
             std::vector<std::vector<float>> solo(N), batched;
-            bool streams_match = true;
+            std::vector<SavedIndexer> expected;
+            Qwen4ExpForwardSegment spans[N];
+            for (int s = 0; s < N; ++s) spans[s] = {ptrs[s], feed + s, 1, pos[s]};
+            const bool exact = !qwen4exp_can_batch(w, spans, N, qsa);
             for (int s = 0; s < N; ++s) {
                 auto r = qwen4exp_forward(backend, w, caches[s], &feed[s], 1, pos[s], solo[s]);
+                expected.push_back(save_indexer(caches[s], qsa ? pos[s] + 1 : 0));
                 restore_cache(caches[s], snapshots[s]);
                 if (!r.ok) { std::fprintf(stderr, "solo failed slot=%d\n", s); return 1; }
             }
@@ -148,9 +126,10 @@ int main(int argc, char ** argv) {
                 const float eps = max_delta(solo[s], batched[s]); phase_eps = std::max(phase_eps, eps);
                 const int solo_id = argmax(solo[s]), batch_id = argmax(batched[s]);
                 const float margin = top2_margin(solo[s]);
-                const bool allowed = solo_id == batch_id || margin < 2.0f * eps;
+                const bool allowed = std::isfinite(eps) && (solo_id == batch_id || margin < 2.0f * eps);
                 if (!allowed) ++failures;
-                if (solo_id != batch_id) streams_match = false;
+                if ((qsa && !equal_indexer(caches[s], expected[s], pos[s] + 1, exact)) ||
+                    (exact && !same_bits(solo[s], batched[s]))) ++failures;
                 std::printf("[batch-probe] phase=%s step=%d slot=%d max_abs_delta=%.9g solo=%d batch=%d top2_margin=%.9g gate=%s\n",
                     identical ? "identical" : "distinct", step, s, eps, solo_id, batch_id, margin, allowed ? "pass" : "FAIL");
                 if (identical && !same_bits(batched[0], batched[s])) {
@@ -160,7 +139,7 @@ int main(int argc, char ** argv) {
             std::printf("[batch-probe] phase=%s step=%d epsilon_max=%.9g\n", identical ? "identical" : "distinct", step, phase_eps);
             if (identical) for (int s = 0; s < N; ++s) if (argmax(batched[s]) != argmax(batched[0])) ++failures;
             for (int s = 0; s < N; ++s) { feed[s] = argmax(batched[s]); pos[s]++; }
-            if (!streams_match) break; // The first divergence and its 2*epsilon margin were recorded above.
+            // Replay each solo step from the same cache/history even after a permitted near tie.
         }
 
         // Exercise non-contiguous active rows and prove untouched slots do not move.

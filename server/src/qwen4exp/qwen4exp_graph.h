@@ -45,6 +45,11 @@ struct Qwen4ExpForwardSegment {
     int pos0 = 0;
 };
 
+// Pure decision for validated segments: all must use dense attention in the solo path.
+// use_qsa is the effective QSA setting (false under UPSTREAM).
+bool qwen4exp_can_batch(const Qwen4ExpWeights & w,
+                       const Qwen4ExpForwardSegment * segments, int n_segments, bool use_qsa);
+
 // Run the trunk. `tokens` has n_tokens entries, processed as one contiguous
 // single-sequence span at positions [pos0, pos0 + n_tokens). On success the
 // cache is advanced to pos0 + n_tokens and out_logits holds n_vocab floats
@@ -61,6 +66,7 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
 // sequence's KV and recurrent state; `tokens[s]` and `positions[s]` are never
 // interpreted as a common time axis. The shared workspace must outlive calls
 // and is normally owned by the sequence-engine/model instance.
+// If any slot needs QSA, the entire call runs through per-slot solo forwards.
 // Enabled only when QWEN4EXP_BATCHED_DECODE=1 and never under UPSTREAM.
 Qwen4ExpForwardResult qwen4exp_forward_batched(
                                        ggml_backend_t backend,
@@ -75,6 +81,7 @@ Qwen4ExpForwardResult qwen4exp_forward_batched(
 // Packed independent-sequence forward for concurrent prefill/decode. Shared
 // dense/HC/MoE operations use the concatenated token rows; stateful operators
 // are built separately for each segment against its own cache.
+// If any segment needs QSA, the entire call runs through per-segment solo forwards.
 Qwen4ExpForwardResult qwen4exp_forward_packed(
                                        ggml_backend_t backend,
                                        const Qwen4ExpWeights & w,

@@ -5416,6 +5416,53 @@ TEST_CASE(ServerUnitFixture, test_qwen_snapshot_estimate_matches_saved_snapshot)
     ggml_backend_free(cpu);
 }
 
+TEST_CASE(ServerUnitFixture, test_qwen4exp_qsa_batch_boundary) {
+    Qwen4ExpWeights w;
+    w.n_layer = 1;
+    w.layers.resize(1);
+    w.layers[0].is_full_attention = true;
+    w.compress_ratios = {4};
+    w.indexer_head_size = 128;
+    w.indexer_n_head = 4;
+    w.indexer_top_k = 2048;
+    w.n_head = 24;
+    w.n_head_kv = 2;
+    ggml_tensor raw{}, kv{};
+    kv.ne[1] = 32768;
+    Qwen4ExpCache caches[2];
+    for (auto & cache : caches) {
+        cache.indexer_raw = {&raw};
+        cache.attn_k = {&kv};
+    }
+    Qwen4ExpForwardSegment spans[] = {{&caches[0], nullptr, 1, 16},
+                                     {&caches[1], nullptr, 1, 2050}};
+    TEST_ASSERT(qwen4exp_can_batch(w, spans, 2, true)); // 512 blocks + 3 tail tokens
+    spans[1].pos0 = 2051;
+    TEST_ASSERT(!qwen4exp_can_batch(w, spans, 2, true)); // first 513th block, before executing
+    TEST_ASSERT(qwen4exp_can_batch(w, spans, 2, false)); // QSA off / UPSTREAM
+    std::swap(spans[0], spans[1]);
+    TEST_ASSERT(!qwen4exp_can_batch(w, spans, 2, true)); // any slot, independent of order
+    spans[0].pos0 = 1920;
+    spans[0].n_tokens = 131;
+    TEST_ASSERT(qwen4exp_can_batch(w, spans, 2, true));
+    spans[0].n_tokens = 132;
+    TEST_ASSERT(!qwen4exp_can_batch(w, spans, 2, true)); // packed prefill crossing boundary
+    spans[0].pos0 = 2048;
+    spans[0].n_tokens = 4;
+    TEST_ASSERT(!qwen4exp_can_batch(w, spans, 2, true)); // short prefill uses QSA decode kernel
+    w.indexer_top_k = 1024;
+    spans[0].pos0 = 1026;
+    spans[0].n_tokens = 1;
+    TEST_ASSERT(qwen4exp_can_batch(w, spans, 2, true));
+    spans[0].pos0++;
+    TEST_ASSERT(!qwen4exp_can_batch(w, spans, 2, true)); // use model budget, not a magic 2051
+    w.compress_ratios = {1};
+    TEST_ASSERT(qwen4exp_can_batch(w, spans, 2, true)); // no supported QSA
+    w.compress_ratios = {4};
+    caches[1].indexer_raw.clear();
+    TEST_ASSERT(qwen4exp_can_batch(w, spans, 2, true));
+}
+
 // Qwen4Exp QSA indexer pooling: block b is the mean of the r consecutive token keys r*b .. r*b+r-1
 // (reference modeling_qwen4_exp.py: block_token_indices.view(n, ratio) then mean over the ratio axis).
 TEST_CASE(ServerUnitFixture, test_qwen4exp_pool_blocks_averages_consecutive_tokens) {

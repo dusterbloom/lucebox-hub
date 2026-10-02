@@ -622,9 +622,9 @@ enum Qwen4ExpQsaMode { QSA_DENSE = 0, QSA_PREFILL = 1, QSA_DECODE = 2 };
 // that point: the packed prefill kernel for T >= 128, the per-query decode kernel below that. CUDA builds and the
 // upstream reference stay dense.
 static Qwen4ExpQsaMode qsa_mode(const Qwen4ExpWeights & w, const Qwen4ExpCache & cache, int64_t T, int64_t pos0,
-                                bool upstream) {
+                                bool use_qsa) {
     const int64_t r = qsa_ratio(w);
-    if (!qsa_enabled() || upstream || r <= 1 || cache.indexer_raw.empty() || !cache.indexer_raw[0]) return QSA_DENSE;
+    if (!use_qsa || r <= 1 || cache.indexer_raw.empty() || !cache.indexer_raw[0]) return QSA_DENSE;
     if (w.indexer_head_size != 128 || w.indexer_n_head <= 0 || w.indexer_top_k % r != 0) return QSA_DENSE;
     const int64_t budget = w.indexer_top_k / r;
     if (budget * r + (r - 1) > 2560 || w.n_head != 12 * w.n_head_kv) return QSA_DENSE;
@@ -633,6 +633,18 @@ static Qwen4ExpQsaMode qsa_mode(const Qwen4ExpWeights & w, const Qwen4ExpCache &
     const int64_t step = (r % 4 == 0) ? r : (r % 2 == 0 ? r * 2 : r * 4);
     const int64_t kv_pad = (pos0 + T + step - 1) / step * step;
     return kv_pad <= cache.attn_k[0]->ne[1] ? QSA_PREFILL : QSA_DENSE;
+}
+
+static ggml_tensor * write_indexer_keys(ggml_context * c, ggml_cgraph * gf,
+        ggml_tensor * cur, const Qwen4ExpLayer & L, ggml_tensor * raw,
+        int64_t pos0, ggml_tensor * kv_row = nullptr) {
+    if (!raw) return nullptr;
+    ggml_tensor * keys = mm(c, L.indexer_k_proj, cur);
+    ggml_build_forward_expand(gf, kv_row
+        ? ggml_set_rows(c, raw, keys, kv_row)
+        : ggml_cpy(c, keys, ggml_view_2d(c, raw, keys->ne[0], keys->ne[1], raw->nb[1],
+                                        (size_t) pos0 * raw->nb[1])));
+    return keys;
 }
 
 ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * cur,
@@ -720,14 +732,7 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
         v_cache->nb[1], v_cache->nb[2], 0);
 
     // Every token's raw indexer key goes to the cache, so blocks can be pooled whenever QSA first needs them.
-    ggml_tensor * kraw = nullptr;
-    if (indexer_raw) {
-        kraw = mm(c, L.indexer_k_proj, cur);   // [idim, T]
-        ggml_build_forward_expand(gf, kv_row
-            ? ggml_set_rows(c, indexer_raw, kraw, kv_row)
-            : ggml_cpy(c, kraw, ggml_view_2d(c, indexer_raw, kraw->ne[0], T, indexer_raw->nb[1],
-                                             (size_t) pos0 * indexer_raw->nb[1])));
-    }
+    ggml_tensor * kraw = write_indexer_keys(c, gf, cur, L, indexer_raw, pos0, kv_row);
     // qwen4exp_forward elides the dense causal mask only when every full layer takes QSA; a dense fallback without one must fail loudly.
     if (T > 1 && mask == nullptr && qsa != QSA_PREFILL) {
         std::fprintf(stderr,
@@ -1086,7 +1091,9 @@ static ggml_tensor * build_full_attn_projected(ggml_context * c, ggml_cgraph * g
         ggml_tensor * qfull, ggml_tensor * kraw, ggml_tensor * vraw,
         ggml_tensor * positions, ggml_tensor * mask, const Qwen4ExpLayer & L,
         const Qwen4ExpWeights & w, ggml_tensor * k_cache, ggml_tensor * v_cache,
-        int pos0, int64_t kv_view_len) {
+        int pos0, int64_t kv_view_len, ggml_tensor * cur, ggml_tensor * indexer_raw) {
+    // Like dense solo, retain raw keys and leave pooling/indexer_blocks lazy until QSA runs.
+    write_indexer_keys(c, gf, cur, L, indexer_raw, pos0);
     const int64_t D = w.n_embd_head_k, Hq = w.n_head, Hk = w.n_head_kv;
     const int64_t T = qfull->ne[1];
     const float eps = w.rms_eps;
@@ -1195,7 +1202,7 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
     const bool hc_fused = !upstream;
     // T=1 decode reuses one context/allocator and a stable bucketed graph.
     // Past the QSA block budget the selected-cell graph changes shape as blocks complete, so it is rebuilt per step.
-    const Qwen4ExpQsaMode qsa = qsa_mode(w, cache, n_tokens, pos0, upstream);
+    const Qwen4ExpQsaMode qsa = qsa_mode(w, cache, n_tokens, pos0, qsa_enabled() && !upstream);
     // T=1 decode reuses one context/allocator; below the QSA budget it also keeps a stable bucketed graph.
     const bool reuse_ws = !upstream && n_tokens == 1 && !dump;
     const bool use_stable_graph = reuse_ws && qsa == QSA_DENSE;
@@ -1730,6 +1737,35 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
     return res;
 }
 
+bool qwen4exp_can_batch(const Qwen4ExpWeights & w,
+        const Qwen4ExpForwardSegment * segments, int n_segments, bool use_qsa) {
+    for (int s = 0; s < n_segments; ++s) {
+        const auto & segment = segments[s];
+        if (qsa_mode(w, *segment.cache, segment.n_tokens, segment.pos0, use_qsa) != QSA_DENSE)
+            return false;
+    }
+    return true;
+}
+
+static Qwen4ExpForwardResult forward_sequential(ggml_backend_t backend,
+        const Qwen4ExpWeights & w, const Qwen4ExpForwardSegment * segments, int n_segments,
+        std::vector<std::vector<float>> & out_logits) {
+    Qwen4ExpForwardResult result;
+    out_logits.resize((size_t) n_segments);
+    for (int s = 0; s < n_segments; ++s) {
+        const auto & segment = segments[s];
+        if (!qwen4exp_forward(backend, w, *segment.cache, segment.tokens,
+                segment.n_tokens, segment.pos0, out_logits[s]).ok) {
+            out_logits.clear();
+            return result;
+        }
+        result.n_tokens += segment.n_tokens;
+    }
+    result.ok = true;
+    result.pos0 = segments[0].pos0;
+    return result;
+}
+
 Qwen4ExpForwardResult qwen4exp_forward_batched(
         ggml_backend_t backend, const Qwen4ExpWeights & w,
         Qwen4ExpCache * const * caches, const int32_t * tokens,
@@ -1756,6 +1792,7 @@ Qwen4ExpForwardResult qwen4exp_forward_batched(
         return result;
     }
     if (n_slots > 8) return result;
+    Qwen4ExpForwardSegment segments[8];
     for (int s = 0; s < n_slots; ++s) {
         if (!caches[s] || positions[s] < 0 || positions[s] >= caches[s]->max_ctx ||
             caches[s]->kv_type != GGML_TYPE_F16 ||
@@ -1763,7 +1800,11 @@ Qwen4ExpForwardResult qwen4exp_forward_batched(
             caches[s]->full_layer_ids != caches[0]->full_layer_ids ||
             caches[s]->ple_layer_ids != caches[0]->ple_layer_ids) return result;
         for (int prev = 0; prev < s; ++prev) if (caches[prev] == caches[s]) return result;
+        segments[s] = {caches[s], tokens + s, 1, positions[s]};
     }
+    // ponytail: dense batching only; per-slot QSA graphs can replace this if throughput warrants it.
+    if (!qwen4exp_can_batch(w, segments, n_slots, qsa_enabled()))
+        return forward_sequential(backend, w, segments, n_slots, out_logits);
 
     static const bool hc_fused = [] {
         const char * v = std::getenv("QWEN4EXP_UPSTREAM");
@@ -1908,7 +1949,8 @@ Qwen4ExpForwardResult qwen4exp_forward_batched(
                 ggml_tensor * attn = build_full_attn_projected(ctx, gf,
                     column(ctx, qfull, s), column(ctx, kraw, s), column(ctx, vraw, s),
                     pos, mask, L, w, caches[s]->attn_k[(size_t) fi],
-                    caches[s]->attn_v[(size_t) fi], positions[s], kv_view_len);
+                    caches[s]->attn_v[(size_t) fi], positions[s], kv_view_len,
+                    column(ctx, cur, s), qsa_enabled() ? caches[s]->indexer_raw[(size_t) fi] : nullptr);
                 attn_rows = attn_rows ? ggml_concat(ctx, attn_rows, attn, 1) : attn;
             }
             cur = mm(ctx, L.wo, attn_rows);
@@ -2103,6 +2145,9 @@ Qwen4ExpForwardResult qwen4exp_forward_packed(
         kv_view_lens[(size_t) s] = kv_len;
     }
 
+    if (!qwen4exp_can_batch(w, segments, n_segments, qsa_enabled()))
+        return forward_sequential(backend, w, segments, n_segments, out_logits);
+
     std::vector<float> embeddings((size_t) w.n_embd * total_rows);
     if (!w.embedder.embed(all_tokens.data(), total_rows, embeddings.data())) {
         std::fprintf(stderr, "[qwen4exp] packed CPU embedding failed\n");
@@ -2277,7 +2322,9 @@ Qwen4ExpForwardResult qwen4exp_forward_packed(
                     position_inputs[(size_t) s], mask_inputs[(size_t) s],
                     L, w, segments[s].cache->attn_k[(size_t) fi],
                     segments[s].cache->attn_v[(size_t) fi],
-                    segments[s].pos0, kv_view_lens[(size_t) s]);
+                    segments[s].pos0, kv_view_lens[(size_t) s],
+                    column_span(ctx, cur, start, count),
+                    qsa_enabled() ? segments[s].cache->indexer_raw[(size_t) fi] : nullptr);
                 attention_rows = attention_rows
                     ? ggml_concat(ctx, attention_rows, attn, 1) : attn;
             }
