@@ -1402,15 +1402,10 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
             std::fprintf(stderr, "[qwen4exp] PLE gather failed\n");
             return res;
         }
-        auto tail = [&](int64_t n) {   // the last ng-1 ids of ple_prev followed by tokens[0, n)
-            const size_t total = ple_prev.size() + (size_t) n;
-            const size_t keep = (size_t) std::min<int64_t>(ng - 1, (int64_t) total);
-            std::vector<int32_t> out;
-            out.reserve(keep);
-            for (size_t k = total - keep; k < total; ++k) {
-                out.push_back(k < ple_prev.size() ? ple_prev[k] : tokens[k - ple_prev.size()]);
-            }
-            return out;
+        auto tail = [&](int64_t n) {   // the last ng-1 ids of seq[0, base+n), i.e. ple_prev followed by tokens[0, n)
+            const int64_t end = base + n;
+            const int64_t keep = std::min<int64_t>(ng - 1, end);
+            return std::vector<int32_t>(seq.begin() + (end - keep), seq.begin() + end);
         };
         if (verify) for (int t = 0; t < n_tokens; ++t) cache.spec_ple_prev[t] = tail(t + 1);
         cache.ple_prev = tail(n_tokens);
