@@ -93,16 +93,6 @@ std::vector<int32_t> get_i32_array(const gguf_context * g,
     return out;
 }
 
-std::vector<float> get_f32_array(const gguf_context * g,
-                                 const std::string & key) {
-    const int64_t id = gguf_find_key(g, key.c_str());
-    if (id < 0 || gguf_get_kv_type(g, id) != GGUF_TYPE_ARRAY) return {};
-    if (gguf_get_arr_type(g, id) != GGUF_TYPE_FLOAT32) return {};
-    const size_t n = gguf_get_arr_n(g, id);
-    const float * raw = static_cast<const float *>(gguf_get_arr_data(g, id));
-    return std::vector<float>(raw, raw + n);
-}
-
 // PLE metadata uses uint64 arrays (offsets, vocab sizes, per-ngram multipliers).
 std::vector<uint64_t> get_u64_array(const gguf_context * g,
                                     const std::string & key) {
@@ -593,9 +583,6 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
         layer.is_full_attention = is_mtp || out.compress_ratios[il] > 0;
         layer.is_ple = !is_mtp && is_ple_layer(il);
 
-        layer.attn_norm = layer_tensor(il, "attn_norm.weight");       // absent in qwen4exp
-        layer.attn_post_norm = layer_tensor(il, "attn_post_norm.weight");
-        layer.ffn_norm = layer_tensor(il, "ffn_norm.weight");
         layer.hc_attn_norm = layer_tensor(il, "hc_attn_norm.weight");
         layer.hc_attn_down = layer_tensor(il, "hc_attn_down.weight");
         layer.hc_attn_up = layer_tensor(il, "hc_attn_up.weight");
@@ -659,7 +646,6 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
         }
 
         layer.ffn_gate_inp = layer_tensor(il, "ffn_gate_inp.weight");
-        layer.ffn_exp_probs_b = layer_tensor(il, "exp_probs_b.bias");
         layer.ffn_gate_exps = layer_tensor(il, "ffn_gate_exps.weight");
         layer.ffn_up_exps = layer_tensor(il, "ffn_up_exps.weight");
         layer.ffn_down_exps = layer_tensor(il, "ffn_down_exps.weight");
@@ -712,7 +698,6 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
     for (ggml_tensor * t : {out.mtp_enorm, out.mtp_hnorm, out.mtp_eh_proj, out.mtp_head_norm, out.mtp_head_down, out.mtp_head_up}) add(t);
     for (uint32_t il = 0; il < n_layer + (mtp_path.empty() ? 0u : 1u); ++il) {
         Qwen4ExpLayer & layer = il == n_layer ? out.mtp : out.layers[il];
-        add(layer.attn_norm); add(layer.attn_post_norm); add(layer.ffn_norm);
         add(layer.hc_attn_norm); add(layer.hc_attn_down); add(layer.hc_attn_up);
         add(layer.hc_attn_inject); add(layer.hc_ffn_norm); add(layer.hc_ffn_down);
         add(layer.hc_ffn_up); add(layer.hc_ffn_inject);
@@ -725,7 +710,7 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
         add(layer.indexer_q_norm); add(layer.indexer_k_norm);
         add(layer.ple_conv1d); add(layer.ple_key); add(layer.ple_value);
         add(layer.ple_norm_conv); add(layer.ple_norm_key); add(layer.ple_norm_query);
-        add(layer.ffn_gate_inp); add(layer.ffn_exp_probs_b);
+        add(layer.ffn_gate_inp);
         add(layer.ffn_gate_exps); add(layer.ffn_up_exps); add(layer.ffn_down_exps);
         add(layer.ffn_gate_inp_shexp); add(layer.ffn_gate_shexp);
         add(layer.ffn_up_shexp); add(layer.ffn_down_shexp);
