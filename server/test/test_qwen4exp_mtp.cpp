@@ -41,8 +41,39 @@ static void test_reset_qwen4exp_mtp_fields() {
     CHECK(w->tok_embd == &sentinel);
 }
 
+// P2: the loader checked eh_proj.ne[0] but not its output dimension, nor any of the other five MTP tensor
+// shapes mtp_forward_batch() (qwen4exp_graph.cpp) relies on. An otherwise-valid sidecar with a wrong eh_proj
+// output dim (or any other mismatched shape) would reach the graph and crash or silently misbehave instead
+// of failing the load with a clear error.
+static void test_qwen4exp_mtp_shapes_valid() {
+    const int64_t n_embd = 2560, n_hc = 4, hc_lr = 320, hc_dim = n_hc * n_embd;
+    const Qwen4ExpMtpShapeDims good{2 * n_embd, n_embd, n_embd, hc_dim, hc_dim, hc_dim, hc_lr, hc_lr, hc_dim};
+    CHECK(qwen4exp_mtp_shapes_valid(good, n_embd, n_hc, hc_lr));
+
+    Qwen4ExpMtpShapeDims bad;
+    bad = good; bad.eh_proj_ne0 = 2 * n_embd - 1;
+    CHECK(!qwen4exp_mtp_shapes_valid(bad, n_embd, n_hc, hc_lr));
+    bad = good; bad.eh_proj_ne1 = n_embd + 1;   // the bug this guards: output dim was never checked
+    CHECK(!qwen4exp_mtp_shapes_valid(bad, n_embd, n_hc, hc_lr));
+    bad = good; bad.enorm_ne0 = n_embd - 1;
+    CHECK(!qwen4exp_mtp_shapes_valid(bad, n_embd, n_hc, hc_lr));
+    bad = good; bad.hnorm_ne0 = hc_dim - 1;
+    CHECK(!qwen4exp_mtp_shapes_valid(bad, n_embd, n_hc, hc_lr));
+    bad = good; bad.head_norm_ne0 = hc_dim + 1;
+    CHECK(!qwen4exp_mtp_shapes_valid(bad, n_embd, n_hc, hc_lr));
+    bad = good; bad.head_down_ne0 = hc_dim - 1;
+    CHECK(!qwen4exp_mtp_shapes_valid(bad, n_embd, n_hc, hc_lr));
+    bad = good; bad.head_down_ne1 = hc_lr - 1;
+    CHECK(!qwen4exp_mtp_shapes_valid(bad, n_embd, n_hc, hc_lr));
+    bad = good; bad.head_up_ne0 = hc_lr + 1;
+    CHECK(!qwen4exp_mtp_shapes_valid(bad, n_embd, n_hc, hc_lr));
+    bad = good; bad.head_up_ne1 = hc_dim - 1;
+    CHECK(!qwen4exp_mtp_shapes_valid(bad, n_embd, n_hc, hc_lr));
+}
+
 int main() {
     test_reset_qwen4exp_mtp_fields();
+    test_qwen4exp_mtp_shapes_valid();
 
     CHECK(qwen4exp_mtp_draft_length(nullptr) == 1);
     for (const char * v : {"", "0", "-3", "garbage", "2x", "2.5", "999999999999999999999x"}) {

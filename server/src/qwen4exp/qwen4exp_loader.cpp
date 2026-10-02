@@ -9,6 +9,7 @@
 // stays on disk behind a pread pool regardless of which shard owns it.
 
 #include "qwen4exp_internal.h"
+#include "qwen4exp_mtp.h"
 
 #include "common/gguf_bounds.h"
 #include "common/gguf_mmap.h"
@@ -684,9 +685,19 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
         for (const Qwen4ExpLayer & layer : out.layers) if (layer.is_full_attention) { full = &layer; break; }
         if (!out.mtp_enorm || !out.mtp_hnorm || !out.mtp_eh_proj || !out.mtp_head_norm ||
             !out.mtp_head_down || !out.mtp_head_up || !full ||
-            !ggml_are_same_shape(out.mtp.wq, full->wq) || !ggml_are_same_shape(out.mtp.ffn_gate_exps, full->ffn_gate_exps) ||
-            out.mtp_eh_proj->ne[0] != 2 * (int64_t) n_embd || out.mtp_hnorm->ne[0] != (int64_t) n_hc * n_embd) {
+            !ggml_are_same_shape(out.mtp.wq, full->wq) || !ggml_are_same_shape(out.mtp.ffn_gate_exps, full->ffn_gate_exps)) {
             return fail("MTP sidecar " + mtp_path + " does not match this trunk");
+        }
+        // Every shape the MTP forward graph (qwen4exp_graph.cpp: mtp_forward_batch) feeds into a
+        // matmul/reshape with no further checking, validated once here instead of failing deep in the
+        // graph (or worse, silently producing garbage).
+        if (!qwen4exp_mtp_shapes_valid({
+                    out.mtp_eh_proj->ne[0], out.mtp_eh_proj->ne[1],
+                    out.mtp_enorm->ne[0], out.mtp_hnorm->ne[0], out.mtp_head_norm->ne[0],
+                    out.mtp_head_down->ne[0], out.mtp_head_down->ne[1],
+                    out.mtp_head_up->ne[0], out.mtp_head_up->ne[1]},
+                (int64_t) n_embd, (int64_t) n_hc, (int64_t) hc_lr)) {
+            return fail("MTP sidecar " + mtp_path + " has mismatched projection/head tensor shapes");
         }
     }
 
