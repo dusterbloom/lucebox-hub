@@ -1851,6 +1851,11 @@ if(LUCE_TESTS)
         target_include_directories(smoke_qwen3_forward PRIVATE ${LUCE_SRC_INCLUDE_DIRS})
         target_link_libraries(smoke_qwen3_forward PRIVATE luce_common ggml ${LUCE_GGML_BACKEND_TARGET})
     endif()
+    # Pure speculative-prefix/rollback checks: no model, backend or GPU link.
+    add_executable(test_qwen4exp_mtp test/test_qwen4exp_mtp.cpp)
+    target_include_directories(test_qwen4exp_mtp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    add_test(NAME qwen4exp_mtp COMMAND test_qwen4exp_mtp)
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_qwen4exp_forward.cpp")
         add_executable(smoke_qwen4exp_forward test/smoke_qwen4exp_forward.cpp)
         target_include_directories(smoke_qwen4exp_forward PRIVATE ${LUCE_SRC_INCLUDE_DIRS})

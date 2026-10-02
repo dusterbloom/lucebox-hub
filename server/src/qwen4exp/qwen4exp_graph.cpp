@@ -347,7 +347,7 @@ struct Qwen4ExpMoeParts {
 // ── Linear attention: gated delta net (36 layers) ───────────────────────
 
 // spec_states / spec_conv (verify forward): receive the recurrent state after every token and the conv history after
-// the first one, the rollback point of a rejected draft.
+// every token, so any accepted prefix can be retained.
 ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * cur,
                                 const Qwen4ExpLayer & L, const Qwen4ExpWeights & w,
                                 ggml_tensor * ssm_state, ggml_tensor * conv_state, int il,
@@ -381,10 +381,11 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
         conv_input->nb[1], conv_input->nb[2], (size_t) T * conv_input->nb[0]));
     ggml_build_forward_expand(gf, ggml_cpy(c, new_hist,
         ggml_reshape_3d(c, conv_state, kernel - 1, conv_channels, 1)));
-    if (spec_conv) {
+    for (int64_t t = 0; spec_conv && t < T; ++t) {
         ggml_build_forward_expand(gf, ggml_cpy(c, ggml_cont(c, ggml_view_3d(c, conv_input, kernel - 1, conv_channels, 1,
-            conv_input->nb[1], conv_input->nb[2], conv_input->nb[0])),
-            ggml_reshape_3d(c, spec_conv, kernel - 1, conv_channels, 1)));
+            conv_input->nb[1], conv_input->nb[2], (t + 1) * conv_input->nb[0])),
+            ggml_view_3d(c, spec_conv, kernel - 1, conv_channels, 1,
+                spec_conv->nb[1], spec_conv->nb[2], t * spec_conv->nb[2])));
     }
 
     ggml_tensor * conv_op = ggml_ssm_conv(c, conv_input, L.ssm_conv1d);
@@ -893,7 +894,7 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
 
 // ── Per-layer n-gram embedding (PLE) ────────────────────────────────────
 
-// spec_state (verify forward): receives the conv history after the first token.
+// spec_state (verify forward): receives the conv history after each token.
 ggml_tensor * build_ple(ggml_context * c, ggml_cgraph * gf, ggml_tensor * hidden,
                         ggml_tensor * ple_emb, const Qwen4ExpLayer & L,
                         const Qwen4ExpWeights & w, ggml_tensor * ple_conv_state,
@@ -950,10 +951,11 @@ ggml_tensor * build_ple(ggml_context * c, ggml_cgraph * gf, ggml_tensor * hidden
         ggml_cont(c, ggml_view_3d(c, padded, hist, hc_dim, 1, padded->nb[1], padded->nb[2],
                                   (size_t) T * padded->nb[0])),
         ggml_reshape_3d(c, ple_conv_state, hist, hc_dim, 1)));
-    if (spec_state) {
+    for (int64_t t = 0; spec_state && t < T; ++t) {
         ggml_build_forward_expand(gf, ggml_cpy(c,
-            ggml_cont(c, ggml_view_3d(c, padded, hist, hc_dim, 1, padded->nb[1], padded->nb[2], padded->nb[0])),
-            ggml_reshape_3d(c, spec_state, hist, hc_dim, 1)));
+            ggml_cont(c, ggml_view_3d(c, padded, hist, hc_dim, 1, padded->nb[1], padded->nb[2], (t + 1) * padded->nb[0])),
+            ggml_view_3d(c, spec_state, hist, hc_dim, 1, spec_state->nb[1], spec_state->nb[2],
+                t * spec_state->nb[2])));
     }
 
     ggml_tensor * conv_out = nullptr;
@@ -1288,7 +1290,8 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
                                        bool verify, bool qsa_rebuild_reference) {
     Qwen4ExpForwardResult res;
     if (n_tokens <= 0 || pos0 < 0 || !tokens) return res;
-    if (verify && (n_tokens != 2 || !qwen4exp_verify_supported(cache))) return res;
+    if (verify && (n_tokens < 2 || n_tokens > cache.mtp_draft + 1 || !qwen4exp_verify_supported(cache))) return res;
+    cache.spec_tokens = 0;
     const bool prof = prof_enabled();
     // QWEN4EXP_DUMP=1 materialises per-layer activations and prints finite/absmax/mean.
     static const bool dump = getenv("QWEN4EXP_DUMP") != nullptr;
@@ -1409,10 +1412,10 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
             }
             return out;
         };
-        if (verify) cache.spec_ple_prev = tail(1);
+        if (verify) for (int t = 0; t < n_tokens; ++t) cache.spec_ple_prev[t] = tail(t + 1);
         cache.ple_prev = tail(n_tokens);
     } else if (verify) {
-        cache.spec_ple_prev = cache.ple_prev;
+        for (int t = 0; t < n_tokens; ++t) cache.spec_ple_prev[t] = cache.ple_prev;
     }
 
     if (prof) t_ple = prof_now_ms();
@@ -1502,6 +1505,7 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
                         decode_ws.qsa_budget == w.indexer_top_k / 4 && cache.indexer_blocks == pos0 / 4))) {
         if (!run_stable(decode_ws)) return res;
         decode_ws.next_pos = (int) kv_len;
+        cache.cur_pos = (int) kv_len;
         ++decode_ws.replays;
         if (qsa != QSA_DENSE) cache.indexer_blocks = (int) logical_blocks;
         res.ok = true;
@@ -1931,6 +1935,8 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
         return res;
     }
     // Commit only after the graph computed: a failed compute must not mark blocks the kernel never pooled.
+    cache.cur_pos = (int) kv_len;
+    if (verify) { cache.spec_pos = pos0; cache.spec_tokens = n_tokens; }
     if (qsa != QSA_DENSE) cache.indexer_blocks = (int) ((pos0 + T) / qsa_ratio(w));
 
     out_logits.resize((size_t) ggml_nelements(logits));   // n_vocab, per row when verifying
@@ -2031,21 +2037,27 @@ bool qwen4exp_verify_supported(const Qwen4ExpCache & cache) {
            getenv("QWEN4EXP_DUMP") == nullptr;
 }
 
-bool qwen4exp_verify_rollback(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache, int pos0) {
-    if (cache.spec_ssm0.size() != cache.ssm_state.size() || cache.spec_conv.size() != cache.conv_state.size()) {
-        return false;
+bool qwen4exp_verify_rollback(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache,
+                              int pos0, int retained) {
+    if (pos0 != cache.spec_pos || retained < 1 || retained > cache.spec_tokens ||
+        cache.spec_ssm_rows.size() != cache.ssm_state.size() ||
+        cache.spec_conv_rows.size() != cache.conv_state.size()) return false;
+    // Device copies queued on the backend stream. All views were allocated at
+    // cache creation; rollback never allocates or copies state through the host.
+    const int row = retained - 1;
+    if (retained < cache.spec_tokens) {
+        for (size_t i = 0; i < cache.ssm_state.size(); ++i) {
+            ggml_backend_tensor_copy_async(backend, backend, cache.spec_ssm_rows[i][row], cache.ssm_state[i]);
+            ggml_backend_tensor_copy_async(backend, backend, cache.spec_conv_rows[i][row], cache.conv_state[i]);
+        }
+        if (cache.spec_ple) ggml_backend_tensor_copy_async(backend, backend, cache.spec_ple_rows[row], cache.ple_conv_state[0]);
     }
-    // Device copies queued on the backend stream, ahead of the next forward.
-    for (size_t i = 0; i < cache.ssm_state.size(); ++i) {
-        ggml_backend_tensor_copy_async(backend, backend, cache.spec_ssm0[i], cache.ssm_state[i]);
-        ggml_backend_tensor_copy_async(backend, backend, cache.spec_conv[i], cache.conv_state[i]);
-    }
-    if (cache.spec_ple) ggml_backend_tensor_copy_async(backend, backend, cache.spec_ple, cache.ple_conv_state[0]);
-    cache.ple_prev = cache.spec_ple_prev;
-    // A QSA block the rejected token completed is pooled again, from its replacement's raw key, the next time QSA
-    // runs. K/V and raw-key rows past pos0 need nothing: the next forward overwrites them before anything reads them.
-    const int64_t r = qsa_ratio(w);
-    if (r > 1) cache.indexer_blocks = std::min(cache.indexer_blocks, (int) ((pos0 + 1) / r));
+    cache.ple_prev = cache.spec_ple_prev[row];
+    cache.cur_pos = pos0 + retained;
+    cache.indexer_blocks = qwen4exp_mtp_retained_blocks(cache.indexer_blocks, cache.cur_pos, (int) qsa_ratio(w));
+    // Stale KV/raw/pooled suffix rows are outside all logical views and will be
+    // overwritten before becoming visible, including partially retained blocks.
+    cache.spec_tokens = 0;
     return true;
 }
 
@@ -2054,7 +2066,7 @@ namespace {
 // One MTP batch: the graph rebuilds per call (its K/V span grows) on a reused context and allocator.
 bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache,
                        const int32_t * tokens, const float * hidden, int n, int pos0,
-                       std::vector<float> & out_logits) {
+                       std::vector<float> & out_logits, std::vector<float> * out_hidden) {
     const int64_t H = w.n_embd, hc = w.n_hc, T = n, kv_len = pos0 + n;
     std::vector<float> emb((size_t) H * T);
     if (!w.embedder.embed(tokens, n, emb.data())) return false;
@@ -2067,8 +2079,10 @@ bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4E
         ws.ctx = ggml_init(ip);
         if (!ws.ctx) return false;
     } else {
+        ggml_backend_cuda_graph_invalidate_range(backend, ggml_get_mem_buffer(ws.ctx), ggml_get_mem_size(ws.ctx));
         ggml_reset(ws.ctx);
     }
+    ws.backend = backend;
     ggml_context * ctx = ws.ctx;
     ggml_cgraph * gf = ggml_new_graph_custom(ctx, 8192, false);
 
@@ -2098,6 +2112,8 @@ bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4E
     res = hc_combine(ctx, res, build_moe(ctx, cur, L, w, w.n_layer), inject, H, hc, T);
 
     ggml_tensor * last = ggml_view_3d(ctx, res, H, hc, 1, res->nb[1], res->nb[2], (size_t) (T - 1) * res->nb[2]);
+    ggml_tensor * draft_hidden = out_hidden ? ggml_cont(ctx, last) : nullptr;
+    if (draft_hidden) { ggml_set_output(draft_hidden); ggml_build_forward_expand(gf, draft_hidden); }
     ggml_tensor * head = hc_mix(ctx, last, w.mtp_head_norm, w.mtp_head_down, w.mtp_head_up, nullptr, nullptr,
                                 H, hc, w.rms_eps);
     ggml_tensor * logits = ggml_mul_mat(ctx, w.output, head);
@@ -2130,6 +2146,10 @@ bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4E
     if (ok) {
         out_logits.resize((size_t) w.n_vocab);
         ggml_backend_tensor_get(logits, out_logits.data(), 0, sizeof(float) * w.n_vocab);
+        if (out_hidden) {
+            out_hidden->resize((size_t) H * hc);
+            ggml_backend_tensor_get(draft_hidden, out_hidden->data(), 0, out_hidden->size() * sizeof(float));
+        }
     } else {
         clear_qwen4exp_decode_workspace(ws);
     }
@@ -2140,7 +2160,7 @@ bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4E
 
 bool qwen4exp_mtp_forward(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache,
                           const int32_t * tokens, const float * hidden, int n, int pos0,
-                          std::vector<float> & out_logits) {
+                          std::vector<float> & out_logits, std::vector<float> * out_hidden) {
     if (!w.mtp_eh_proj || !cache.mtp_k || !tokens || !hidden || n <= 0 || pos0 < 0 || pos0 + n > cache.max_ctx) {
         return false;
     }
@@ -2149,9 +2169,26 @@ bool qwen4exp_mtp_forward(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwe
     const size_t hd = (size_t) w.n_embd * w.n_hc;
     for (int i = 0; i < n; i += slice) {
         const int m = std::min(slice, n - i);
-        if (!mtp_forward_batch(backend, w, cache, tokens + i, hidden + (size_t) i * hd, m, pos0 + i, out_logits)) {
+        if (!mtp_forward_batch(backend, w, cache, tokens + i, hidden + (size_t) i * hd, m, pos0 + i, out_logits, i + m == n ? out_hidden : nullptr)) {
             return false;
         }
+    }
+    return true;
+}
+
+bool qwen4exp_mtp_draft(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache,
+                        const int32_t * tokens, const float * hidden, int n, int pos0, int k,
+                        std::vector<int32_t> & drafts) {
+    if (k < 1 || k > cache.mtp_draft) return false;
+    std::vector<float> logits, chain_hidden;
+    drafts.clear();
+    // Catch up with authoritative trunk pairs, replacing any speculative MTP
+    // KV suffix from the preceding step before chaining predicted hidden states.
+    if (!qwen4exp_mtp_forward(backend, w, cache, tokens, hidden, n, pos0, logits, &chain_hidden)) return false;
+    for (int i = 0; i < k; ++i) {
+        drafts.push_back((int32_t) (std::max_element(logits.begin(), logits.end()) - logits.begin()));
+        if (i + 1 < k && !qwen4exp_mtp_forward(backend, w, cache, &drafts.back(), chain_hidden.data(), 1,
+                                              pos0 + n + i, logits, &chain_hidden)) return false;
     }
     return true;
 }

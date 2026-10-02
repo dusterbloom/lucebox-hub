@@ -57,10 +57,10 @@ struct Qwen4ExpForwardSegment {
 // for the final token. out_hidden, when set, receives every token's final HC
 // residual (n_embd * n_hc floats each) for the MTP draft head.
 //
-// verify (MTP speculation, n_tokens == 2, qwen4exp_verify_supported): each
+// verify (MTP speculation, 2 <= n_tokens <= k+1, qwen4exp_verify_supported): each
 // token is computed exactly as a T=1 forward at its position computes it
-// (batch-invariant matmuls, per-token attention), out_logits holds both rows,
-// and the cache keeps the state after the first token for
+// (batch-invariant matmuls, per-token attention), out_logits holds all rows,
+// and the cache keeps the state after every token for
 // qwen4exp_verify_rollback.
 Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
                                        const Qwen4ExpWeights & w,
@@ -76,17 +76,23 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
 // The cache was created with `mtp` and the graph is the default one (not QWEN4EXP_UPSTREAM / QWEN4EXP_DUMP).
 bool qwen4exp_verify_supported(const Qwen4ExpCache & cache);
 
-// After a verify forward at pos0 whose second token was rejected: return the cache to the state right after the
-// first token (recurrent, conv and PLE state, PLE n-gram tail, QSA pooled-block count).
-bool qwen4exp_verify_rollback(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache, int pos0);
+// Retain the first `retained` verify inputs (accepted drafts + 1, or fewer at EOS).
+// Restores recurrent/conv/PLE state and truncates KV and QSA visibility by position.
+bool qwen4exp_verify_rollback(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache, int pos0, int retained = 1);
 
 // MTP draft step over (trunk hidden h_p, token x_{p+1}) pairs at positions [pos0, pos0 + n): runs the sidecar's
 // nextn projection and layer, writes the draft layer's K/V there, and returns the logits of the last pair (its
 // argmax drafts x_{p+2}). `hidden` holds n rows of the trunk's final HC residual (n_embd * n_hc floats each), as
-// returned by qwen4exp_forward's out_hidden.
+// returned by qwen4exp_forward's out_hidden. Optional out_hidden returns the
+// last MTP HC residual, which feeds the next autoregressive draft step.
 bool qwen4exp_mtp_forward(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache,
                           const int32_t * tokens, const float * hidden, int n, int pos0,
-                          std::vector<float> & out_logits);
+                          std::vector<float> & out_logits, std::vector<float> * out_hidden = nullptr);
+
+// Catch up pending trunk pairs, then chain k predictions with the MTP residual.
+bool qwen4exp_mtp_draft(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache,
+                        const int32_t * tokens, const float * hidden, int n, int pos0, int k,
+                        std::vector<int32_t> & drafts);
 
 // Decode one next token for each independent slot. `caches[s]` owns that
 // sequence's KV and recurrent state; `tokens[s]` and `positions[s]` are never

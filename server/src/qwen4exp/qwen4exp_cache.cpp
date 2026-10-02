@@ -56,7 +56,7 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
     }
 
     ggml_init_params ip{};
-    ip.mem_size = ggml_tensor_overhead() * (static_cast<size_t>(w.n_layer) * 8 + 16) + 4096;
+    ip.mem_size = ggml_tensor_overhead() * (static_cast<size_t>(w.n_layer) * (8 + 3 * QWEN4EXP_MTP_MAX_VERIFY) + 16) + 4096;
     ip.no_alloc = true;
     out.ctx = ggml_init(ip);
     if (!out.ctx) return false;
@@ -105,20 +105,41 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
         out.ssm_state[i] = ggml_new_tensor_3d(out.ctx, GGML_TYPE_F32, S_v, S_v, H_v);
         out.conv_state[i] = ggml_new_tensor_2d(out.ctx, GGML_TYPE_F32, kernel - 1, conv_channels);
     }
-    out.spec_ssm.clear(); out.spec_ssm0.clear(); out.spec_conv.clear();
+    out.spec_ssm.clear(); out.spec_conv.clear();
+    out.spec_ssm_rows.clear(); out.spec_conv_rows.clear();
+    out.spec_ple_rows = {};
+    out.mtp_draft = qwen4exp_mtp_draft_length(std::getenv("QWEN4EXP_MTP_DRAFT"));
     out.spec_ple = nullptr;
     if (mtp && w.mtp_eh_proj) {   // the MTP draft layer's own K/V (dense attention, no indexer) and the verify rollback
         out.mtp_k = ggml_new_tensor_3d(out.ctx, kv_type, w.n_embd_head_k, kv_capacity, w.n_head_kv);
         out.mtp_v = ggml_new_tensor_3d(out.ctx, kv_type, w.n_embd_head_v, kv_capacity, w.n_head_kv);
+        const int count = out.mtp_draft + 1;
         for (size_t i = 0; i < n_linear; ++i) {
-            ggml_tensor * states = ggml_new_tensor_4d(out.ctx, GGML_TYPE_F32, S_v, S_v, H_v, 2);
+            ggml_tensor * states = ggml_new_tensor_4d(out.ctx, GGML_TYPE_F32, S_v, S_v, H_v, count);
+            ggml_tensor * conv = ggml_new_tensor_3d(out.ctx, GGML_TYPE_F32, kernel - 1, conv_channels, count);
             out.spec_ssm.push_back(states);
-            out.spec_ssm0.push_back(ggml_view_3d(out.ctx, states, S_v, S_v, H_v, states->nb[1], states->nb[2], 0));
-            out.spec_conv.push_back(ggml_new_tensor_2d(out.ctx, GGML_TYPE_F32, kernel - 1, conv_channels));
+            out.spec_conv.push_back(conv);
+            Qwen4ExpCache::SpecRows sr{}, cr{};
+            for (int t = 0; t < count; ++t) {
+                sr[t] = ggml_view_3d(out.ctx, states, S_v, S_v, H_v, states->nb[1], states->nb[2], t * states->nb[3]);
+                cr[t] = ggml_view_2d(out.ctx, conv, kernel - 1, conv_channels, conv->nb[1], t * conv->nb[2]);
+            }
+            out.spec_ssm_rows.push_back(sr);
+            out.spec_conv_rows.push_back(cr);
         }
         if (!out.ple_conv_state.empty()) {
-            out.spec_ple = ggml_new_tensor_2d(out.ctx, GGML_TYPE_F32, ple_hist, hc_dim);
+            out.spec_ple = ggml_new_tensor_3d(out.ctx, GGML_TYPE_F32, ple_hist, hc_dim, count);
+            for (int t = 0; t < count; ++t) {
+                out.spec_ple_rows[t] = ggml_view_2d(out.ctx, out.spec_ple, ple_hist, hc_dim,
+                    out.spec_ple->nb[1], t * out.spec_ple->nb[2]);
+            }
         }
+        size_t rollback_bytes = out.spec_ple ? ggml_nbytes(out.spec_ple) : 0;
+        for (auto * t : out.spec_ssm) rollback_bytes += ggml_nbytes(t);
+        for (auto * t : out.spec_conv) rollback_bytes += ggml_nbytes(t);
+        std::fprintf(stderr, "[qwen4exp-mtp] k=%d rollback_bytes=%zu (%.3f MiB), draft_kv_bytes=%zu; allocated once\n",
+            out.mtp_draft, rollback_bytes, rollback_bytes / (1024.0 * 1024.0),
+            ggml_nbytes(out.mtp_k) + ggml_nbytes(out.mtp_v));
     }
 
     out.buf = ggml_backend_alloc_ctx_tensors(out.ctx, backend);
@@ -194,10 +215,12 @@ void free_qwen4exp_cache(Qwen4ExpCache & c) {
     c.attn_v.clear();
     c.mtp_k = c.mtp_v = nullptr;
     c.spec_ssm.clear();
-    c.spec_ssm0.clear();
+    c.spec_ssm_rows.clear();
+    c.spec_conv_rows.clear();
     c.spec_conv.clear();
     c.spec_ple = nullptr;
-    c.spec_ple_prev.clear();
+    c.spec_ple_rows = {};
+    for (auto & tail : c.spec_ple_prev) tail.clear();
     c.indexer_k.clear();
     c.indexer_raw.clear();
     c.ssm_state.clear();
@@ -226,6 +249,8 @@ void reset_qwen4exp_state(ggml_backend_t backend, Qwen4ExpCache & c) {
         if (t) ggml_backend_tensor_memset(t, 0, 0, ggml_nbytes(t));
     }
     c.cur_pos = 0;
+    c.spec_pos = -1;
+    c.spec_tokens = 0;
     c.indexer_blocks = 0;
     c.kv_bucket_base = 0;
     c.ple_prev.clear();

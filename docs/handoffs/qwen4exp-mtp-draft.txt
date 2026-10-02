@@ -1,0 +1,97 @@
+Qwen4Exp chained MTP delivery
+
+Implementation
+QWEN4EXP_MTP_DRAFT defaults to 1. Integers clamp to 1..4; malformed values use 1.
+The configured maximum is read once at cache creation. Generation reduces k
+near the output/context limit. Each later draft consumes the previous draft
+and the MTP layer's last HC residual. Pending verified trunk pairs replace the
+speculative MTP KV suffix before the next chain.
+
+One trunk graph verifies [next, draft_1, ..., draft_k]. Its row attention uses
+the same position-dependent span as T=1, and its matmuls use the existing
+batch-invariant mode. The server samples rows only through the first mismatch
+or stopping token, preserving RNG draws, history, EOS and budget substitutions.
+The pure prefix function returns the accepted count and emitted trunk tokens.
+
+Persistent token-major F32 GDN states and conv/PLE histories have k+1 slices.
+Device-to-device copies from preallocated slice views restore any prefix.
+KV/raw-key visibility ends at pos+retained. indexer_blocks is clamped to the
+complete retained blocks; rolled-back block completions are recomputed from
+replacement raw keys. PLE token tails are restored too. T=1 still uses the
+speed branch's stable dense/QSA graphs; verification uses its own workspace.
+
+Rollback storage (36 linear layers, 128x128x48 GDN state, conv 3x10240,
+PLE 9x10240; all F32):
+ k  bytes         MiB
+ 1  236077056     225.140625
+ 2  354115584     337.710938
+ 3  472154112     450.281250
+ 4  590192640     562.851563
+These are reusable per-cache allocations, not allocations each decode step.
+MTP F16 KV adds 2048 * max_ctx bytes for every k. Model weights, graph allocator
+workspaces, host logits and metadata are additional and excluded from this table.
+
+Local verification (CUDA toolchain, no GPU)
+Build directory: /tmp/qwen4exp-mtp-build-gcc11
+Configured architecture 86, FA_ALL_QUANTS=OFF, IMAGE_CODECS=OFF, CUDA host GCC11.
+CUDA12.6 with the default GCC13 failed compiler detection (_Float128); GCC11
+worked. Network downloads are unavailable, so JSON3.11.3 was copied from the
+installed cuDNN frontend header to /tmp/qwen4exp-mtp-deps for this build.
+luce_server, smoke_qwen4exp_forward, test_server_unit and test_qwen4exp_mtp all
+built with -j4. Six changed C++ translation units also compiled independently.
+New pure tests: 376 acceptance/rollback cases plus env validation passed;
+its registered CTest passed. The Python --draft parser checks passed.
+test_server_unit: 582 passed, 28 failed, 3 skipped. All failures are socket
+creation/shutdown/setsockopt cases; independent probes confirm sandbox EPERM
+for those syscalls. GPU checks skip because no CUDA device is available.
+Logs: /tmp/qwen4exp-mtp-delivery/build.log, build-final.log, test-server-unit.log.
+
+GPU qualification (from the repository root on gfx1151)
+Set model/sidecar paths to the files installed on that box. Use a free port.
+
+export QWEN4EXP_MODEL=/absolute/path/to/model-00001-of-00003.gguf
+export QWEN4EXP_MTP=/absolute/path/to/mtp-Q8_0.gguf
+export QWEN4EXP_DIFF_PORT=8711
+unset QWEN4EXP_UPSTREAM QWEN4EXP_DUMP
+cmake -S server -B server/build-hip -G Ninja -DLUCE_GPU_BACKEND=hip -DCMAKE_HIP_ARCHITECTURES=gfx1151 -DLUCE_FA_ALL_QUANTS=OFF
+cmake --build server/build-hip --target luce_server smoke_qwen4exp_forward test_server_unit test_qwen4exp_mtp -j4
+server/build-hip/test_server_unit
+server/build-hip/test_qwen4exp_mtp
+set -euo pipefail
+for s in 16 2200 2048; do
+  for k in 1 2 3 4; do
+    QWEN4EXP_MTP_DRAFT=$k QWEN4EXP_SMOKE_MTP=128 server/build-hip/smoke_qwen4exp_forward "$QWEN4EXP_MODEL" "$s" 2>&1 | tee "/tmp/qwen4exp-mtp-S${s}-k${k}.log"
+  done
+done
+QWEN4EXP_MTP=0 QWEN4EXP_SMOKE_STABLE=256 server/build-hip/smoke_qwen4exp_forward "$QWEN4EXP_MODEL" 2308
+export QWEN4EXP_SERVER="$PWD/server/build-hip/luce_server"
+python3 server/scripts/qwen4exp_forward_diff.py mtp --draft 1,2,3,4 --max-tokens 128
+python3 server/scripts/qwen4exp_forward_diff.py mtp --draft 1,2,3,4 --max-tokens 128 --temperature 0.7 --seed 123
+
+Required results
+Every smoke must return 0, tokens_identical=1, logits_identical=1, and forced
+rollback cache_and_logits_identical=1 with all 4*(k+1) cases. This forces every
+retained prefix at all block alignments, checks recurrent/conv/PLE/KV/raw and
+pooled-key bytes, then overwrites the rejected suffix and completes its block.
+S=2048 additionally crosses the dense/QSA transition. The stable smoke must
+report positive QSA replays and identical bits. Server A/B must report exact=True
+for short, crossing and long prompts at every k, load a sidecar and log actual
+speculation. Compare drafts/accepted/rate/tokens_per_step and decode tok/s;
+performance gains are measurements, not prerequisites for exactness.
+Repeat smoke with QWEN4EXP_SMOKE_CHUNK=8 to cover chunked MTP prompt catch-up.
+GPU equality and throughput have not been tested locally (no GPU).
+
+Git delivery limitation
+The worktree's Git metadata is outside the sandbox's writable roots. Attempting
+`git switch -c qwen4exp-mtp-draft qwen4exp-qsa-speed` failed with read-only
+index.lock. Branch creation, cherry-pick and commits could not be performed.
+The actual branch remains qwen4exp-mtp at 43517f29. No push was attempted.
+The file tree combines bee76f91 with 43517f29 and the implementation above.
+Two reviewable patches, with stage one saved before the multi-draft edits, are
+in /tmp/qwen4exp-mtp-delivery. Intended conventional commit subjects:
+  feat(qwen4exp): replay MTP decoding on stable QSA graphs
+  feat(qwen4exp): chain up to four MTP drafts with exact prefix rollback
+Graph/header conflicts combined QSA workspace inputs, replay guards and native
+capture invalidation with hidden-output and verify-row plumbing. The smoke
+conflict retained both stable/rebuild and MTP checks. Backend changes merged
+without textual conflict; its decode loop now emits a sampled prefix lazily.

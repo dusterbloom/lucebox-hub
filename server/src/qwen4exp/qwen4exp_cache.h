@@ -6,6 +6,7 @@
 #pragma once
 
 #include "qwen4exp_internal.h"
+#include "qwen4exp_mtp.h"
 
 #include "ggml.h"
 #include "ggml-alloc.h"
@@ -111,12 +112,16 @@ struct Qwen4ExpCache {
     // for the host-side PLE n-gram hash across decode steps.
     std::vector<int32_t> ple_prev;
 
-    // MTP speculative decode (allocated only with `mtp`): the state after the first token of the last two-token
-    // verify forward, restored by qwen4exp_verify_rollback when its draft is rejected. spec_ssm holds the GDN
-    // kernel's per-token states [S_v, S_v, H_v, 2]; spec_ssm0 views its first token.
-    std::vector<ggml_tensor *> spec_ssm, spec_ssm0, spec_conv;   // size = n_linear
-    ggml_tensor *              spec_ple = nullptr;               // mirrors ple_conv_state[0]
-    std::vector<int32_t>       spec_ple_prev;
+    // Allocated once per cache: token-major snapshots after all k+1 verify
+    // inputs. Fixed views let rollback enqueue device copies without allocation.
+    int mtp_draft = 1;
+    int spec_pos = -1, spec_tokens = 0;
+    std::vector<ggml_tensor *> spec_ssm, spec_conv;
+    using SpecRows = std::array<ggml_tensor *, QWEN4EXP_MTP_MAX_VERIFY>;
+    std::vector<SpecRows> spec_ssm_rows, spec_conv_rows;
+    ggml_tensor * spec_ple = nullptr;
+    SpecRows spec_ple_rows{};
+    std::array<std::vector<int32_t>, QWEN4EXP_MTP_MAX_VERIFY> spec_ple_prev;
 
     // First stable T=1 attention span of the sequence; later spans grow from it in 512-token steps, so a position's
     // span (and its attention numerics) does not depend on which forwards ran before it.

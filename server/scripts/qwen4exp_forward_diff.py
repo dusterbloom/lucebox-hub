@@ -19,7 +19,7 @@ Requires the model and a built luce_server; run on the gfx1151 box:
 
     python3 server/scripts/qwen4exp_forward_diff.py hc16
     python3 server/scripts/qwen4exp_forward_diff.py qsa --chunks 4096,16384
-    QWEN4EXP_MODEL=<UD-Q4_K_XL.gguf> python3 server/scripts/qwen4exp_forward_diff.py mtp
+    QWEN4EXP_MODEL=<UD-Q4_K_XL.gguf> python3 server/scripts/qwen4exp_forward_diff.py mtp --draft 1,2,3,4
 
 Not part of ctest: model-backed and long-running.
 """
@@ -55,13 +55,13 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def chat_full(prompt: str, max_tokens: int, timeout: int) -> dict:
+def chat_full(prompt: str, max_tokens: int, timeout: int, temperature: float = 0, seed: int = 0) -> dict:
     body = json.dumps({
         "model": "luce",
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
-        "temperature": 0,
-        "seed": 0,
+        "temperature": temperature,
+        "seed": seed,
         "stream": False,
     }).encode()
     req = urllib.request.Request(
@@ -89,7 +89,7 @@ def wait_ready(proc: subprocess.Popen, timeout: int) -> bool:
 
 
 def run_server(name: str, env_overrides: dict[str, str], extra_args: list[str],
-               prompts: list[str], max_tokens: int) -> list[dict]:
+               prompts: list[str], max_tokens: int, temperature: float = 0, seed: int = 0) -> list[dict]:
     """Spawn one server and return the full /v1/chat/completions response of each prompt, in order."""
     subprocess.run(["fuser", "-k", f"{PORT}/tcp"], capture_output=True)
     time.sleep(0.5)
@@ -103,7 +103,7 @@ def run_server(name: str, env_overrides: dict[str, str], extra_args: list[str],
         if not wait_ready(proc, timeout=600):
             raise RuntimeError(f"server did not become ready; see /tmp/qwen4exp_diff_{name}.log")
         log(f"[{name}] ready")
-        replies = [chat_full(prompt, max_tokens, timeout=1800) for prompt in prompts]
+        replies = [chat_full(prompt, max_tokens, timeout=1800, temperature=temperature, seed=seed) for prompt in prompts]
     finally:
         proc.send_signal(signal.SIGTERM)
         try:
@@ -170,30 +170,47 @@ def cmd_mtp(args: argparse.Namespace) -> int:
         "cross": PARAGRAPH * 45 + question,
         "long": PARAGRAPH * 70 + question,
     }
-    runs = {mode: run_server(mode, env, [], list(prompts.values()), args.max_tokens)
-            for mode, env in (("mtp_off", {"QWEN4EXP_MTP": "0"}), ("mtp_on", {}))}
-    on_log = Path("/tmp/qwen4exp_diff_mtp_on.log").read_text(errors="replace").splitlines()
-    if not any("[qwen4exp] MTP sidecar:" in line for line in on_log):
-        log("[mtp] FAIL: the mtp_on server loaded no sidecar (set QWEN4EXP_MTP=<mtp-*.gguf>)")
-        return 1
+    off_run = run_server("mtp_off", {"QWEN4EXP_MTP": "0"}, [], list(prompts.values()),
+                         args.max_tokens, args.temperature, args.seed)
     ok = True
-    for i, name in enumerate(prompts):
-        off, on = runs["mtp_off"][i], runs["mtp_on"][i]
-        text = [(r["choices"][0]["message"].get("reasoning_content") or "") + "\0" +
-                (r["choices"][0]["message"].get("content") or "") for r in (off, on)]
-        usage = on.get("usage", {})
-        tps = [r.get("usage", {}).get("timings", {}).get("decode_tokens_per_sec", 0.0) for r in (off, on)]
-        same = text[0] == text[1]
-        ok = ok and same
-        log(f"[mtp] {name}: prompt={usage.get('prompt_tokens')} completion={usage.get('completion_tokens')} "
-            f"exact={same} common_prefix={common_prefix_ratio(text[0], text[1]):.3f} "
-            f"accept_rate={usage.get('accept_rate')} decode tok/s off={tps[0]} on={tps[1]} "
-            f"speedup={tps[1] / tps[0] if tps[0] else 0.0:.3f}")
-    for line in on_log:
-        if "[qwen4exp-mtp]" in line:
-            log(line.strip())
+    for k in args.draft:
+        mode = f"mtp_k{k}"
+        on_run = run_server(mode, {"QWEN4EXP_MTP_DRAFT": str(k)}, [], list(prompts.values()),
+                            args.max_tokens, args.temperature, args.seed)
+        on_log = Path(f"/tmp/qwen4exp_diff_{mode}.log").read_text(errors="replace").splitlines()
+        if not any("[qwen4exp] MTP sidecar:" in line for line in on_log):
+            log(f"[mtp] FAIL: {mode} loaded no sidecar (set QWEN4EXP_MTP=<mtp-*.gguf>)")
+            return 1
+        if not any(f"[qwen4exp-mtp] k={k} drafts=" in line for line in on_log):
+            log(f"[mtp] FAIL: {mode} did not run speculative decoding")
+            return 1
+        for i, name in enumerate(prompts):
+            off, on = off_run[i], on_run[i]
+            text = [(r["choices"][0]["message"].get("reasoning_content") or "") + "\0" +
+                    (r["choices"][0]["message"].get("content") or "") for r in (off, on)]
+            usage = on.get("usage", {})
+            tps = [r.get("usage", {}).get("timings", {}).get("decode_tokens_per_sec", 0.0) for r in (off, on)]
+            same = text[0] == text[1] and off.get("usage", {}).get("completion_tokens") == usage.get("completion_tokens")
+            ok = ok and same
+            log(f"[mtp] k={k} {name}: prompt={usage.get('prompt_tokens')} completion={usage.get('completion_tokens')} "
+                f"exact={same} common_prefix={common_prefix_ratio(text[0], text[1]):.3f} "
+                f"accept_rate={usage.get('accept_rate')} decode tok/s off={tps[0]} on={tps[1]} "
+                f"speedup={tps[1] / tps[0] if tps[0] else 0.0:.3f}")
+        for line in on_log:
+            if "[qwen4exp-mtp]" in line:
+                log(line.strip())
     log(f"[mtp] {'PASS' if ok else 'FAIL'}")
     return 0 if ok else 1
+
+
+def draft_list(value: str) -> list[int]:
+    try:
+        values = [int(k) for k in value.split(",")]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("--draft must be a comma-separated list of integers 1..4") from exc
+    if not values or any(k < 1 or k > 4 for k in values):
+        raise argparse.ArgumentTypeError("--draft lengths must be in 1..4")
+    return list(dict.fromkeys(values))
 
 
 def main() -> int:
@@ -208,8 +225,13 @@ def main() -> int:
     p_qsa.set_defaults(func=cmd_qsa)
     p_mtp = sub.add_parser("mtp")
     p_mtp.add_argument("--max-tokens", type=int, default=128)
+    p_mtp.add_argument("--draft", type=draft_list, default=[1, 2, 3, 4], help="comma-separated lengths (default: 1,2,3,4)")
+    p_mtp.add_argument("--temperature", type=float, default=0, help="0 for greedy; e.g. 0.7 for seeded sampled A/B")
+    p_mtp.add_argument("--seed", type=int, default=123, help="nonzero deterministic sampler seed")
     p_mtp.set_defaults(func=cmd_mtp)
     args = ap.parse_args()
+    if args.cmd == "mtp" and args.seed == 0:
+        ap.error("--seed must be nonzero for reproducible sampled A/B")
     if not Path(SERVER_BIN).exists():
         log(f"SKIP: server binary not found at {SERVER_BIN}")
         return 77

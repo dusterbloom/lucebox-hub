@@ -258,70 +258,63 @@ GenerateResult Qwen4ExpBackend::generate_impl(const GenerateRequest & req,
         return tok != weights_.eos_id && tok != weights_.eos_chat_id && (int) result.tokens.size() < req.n_gen;
     };
 
-    // Speculative decode, exact by construction: each step drafts d = argmax MTP(h_{pos-1}, next) and verifies
-    // [next, d] in one forward whose rows match plain T=1 decode bit for bit. The first token is sampled from row 0
-    // as plain decode would sample it (same sampler, history and rng draws) and committed through the budget hook;
-    // d is kept only if it equals that committed token, and then row 1 gives the token after it. Otherwise the
-    // cache rolls back to "after next" and decode continues from the committed token.
+    // Sample trunk rows lazily, updating history and applying the budget hook
+    // exactly once per emitted token. No RNG draws for unvisited verify rows.
     long long drafts = 0, accepted = 0, steps = 0;
     double draft_s = 0.0;
     const auto t_dec0 = std::chrono::steady_clock::now();
     int32_t next = sample(logits.data());
     bool more = req.n_gen > 0 && commit(next);
     if (spec) mtp_tok.assign(1, next);
+    std::vector<int32_t> draft_tokens;
     while (more) {
-        // Speculate while a second token can still be emitted and fits the context.
-        const bool verify = spec && req.n_gen - (int) result.tokens.size() >= 2 && pos + 2 <= cache_.max_ctx;
-        int32_t draft = -1;
+        const int k = spec ? std::max(0, std::min({cache_.mtp_draft,
+            req.n_gen - (int) result.tokens.size() - 1, cache_.max_ctx - pos - 1})) : 0;
+        const bool verify = k > 0;
         if (verify) {
             const auto td0 = std::chrono::steady_clock::now();
-            if (!qwen4exp_mtp_forward(backend_, weights_, cache_, mtp_tok.data(), mtp_h.data(), (int) mtp_tok.size(),
-                                      mtp_pos, mtp_logits)) {
+            if (!qwen4exp_mtp_draft(backend_, weights_, cache_, mtp_tok.data(), mtp_h.data(), (int) mtp_tok.size(),
+                                    mtp_pos, k, draft_tokens)) {
                 result.fail(GenerateErrorCode::DecodeFailed, "qwen4exp MTP draft failed");
                 return result;
             }
-            draft = (int32_t) (std::max_element(mtp_logits.begin(), mtp_logits.end()) - mtp_logits.begin());
             draft_s += std::chrono::duration<double>(std::chrono::steady_clock::now() - td0).count();
         }
-        const int32_t in[2] = { next, draft };
+        std::array<int32_t, QWEN4EXP_MTP_MAX_VERIFY> in{}, samples{};
+        in[0] = next;
+        if (verify) std::copy(draft_tokens.begin(), draft_tokens.end(), in.begin() + 1);
         const Qwen4ExpForwardResult r = qwen4exp_forward(
-            backend_, weights_, cache_, in, verify ? 2 : 1, pos, logits, verify ? &hidden : nullptr, verify);
+            backend_, weights_, cache_, in.data(), k + 1, pos, logits, verify ? &hidden : nullptr, verify);
         if (!r.ok) {
-            result.fail(GenerateErrorCode::DecodeFailed,
-                        "qwen4exp decode forward failed");
+            result.fail(GenerateErrorCode::DecodeFailed, "qwen4exp decode forward failed");
             return result;
         }
         ++steps;
-        history.push_back(next);
-        int32_t tok = sample(logits.data());
-        more = commit(tok);
-        if (!verify) {
-            pos += 1;
-            next = tok;
-            continue;
+        drafts += k;
+        Qwen4ExpMtpAcceptance decision;
+        for (int i = 0; i <= k; ++i) {
+            history.push_back(in[i]);
+            int32_t tok = sample(logits.data() + (size_t) i * weights_.n_vocab);
+            more = commit(tok);
+            samples[i] = tok;
+            decision = qwen4exp_mtp_accept(draft_tokens.data(), k, samples.data(), i + 1);
+            if (!more || decision.n_accepted != i + 1) break;
         }
-        ++drafts;
-        mtp_h.assign(hidden.begin(), hidden.begin() + (std::ptrdiff_t) hd);   // pair (h_pos, tok) at pos
-        mtp_tok.assign(1, tok);
-        mtp_pos = pos;
-        if (tok == draft) {
-            ++accepted;
-            pos += 2;
-            if (more) {
-                history.push_back(tok);
-                next = sample(logits.data() + weights_.n_vocab);
-                more = commit(next);
-                mtp_h.insert(mtp_h.end(), hidden.begin() + (std::ptrdiff_t) hd, hidden.begin() + (std::ptrdiff_t) (2 * hd));
-                mtp_tok.push_back(next);
-            }
-        } else {
-            if (more && !qwen4exp_verify_rollback(backend_, weights_, cache_, pos)) {
+        const int retained = decision.n_emitted;
+        next = decision.emitted[retained - 1];
+        accepted += decision.n_accepted;
+        if (verify) {
+            // Replace every predicted MTP hidden/KV row with the corresponding
+            // trunk pair on next catch-up, including after a partial accept.
+            mtp_h.assign(hidden.begin(), hidden.begin() + (std::ptrdiff_t) ((size_t) retained * hd));
+            mtp_tok.assign(decision.emitted.begin(), decision.emitted.begin() + retained);
+            mtp_pos = pos;
+            if (!qwen4exp_verify_rollback(backend_, weights_, cache_, pos, retained)) {
                 result.fail(GenerateErrorCode::DecodeFailed, "qwen4exp verify rollback failed");
                 return result;
             }
-            pos += 1;
-            next = tok;
         }
+        pos += retained;
     }
     if (cancelled) {
         result.fail(GenerateErrorCode::Cancelled, "cancelled during decode");
@@ -334,8 +327,8 @@ GenerateResult Qwen4ExpBackend::generate_impl(const GenerateRequest & req,
     if (drafts > 0) {
         const double decoded = (double) result.tokens.size() - 1.0;   // the first token came from the prefill
         std::fprintf(stderr,
-            "[qwen4exp-mtp] drafts=%lld accepted=%lld rate=%.3f tokens/step=%.3f draft_ms=%.2f decode=%.2f tok/s\n",
-            drafts, accepted, (double) accepted / (double) drafts, steps > 0 ? decoded / (double) steps : 0.0,
+            "[qwen4exp-mtp] k=%d drafts=%lld accepted=%lld rate=%.3f tokens_per_step=%.3f draft_ms=%.2f decode=%.2f tok/s\n",
+            cache_.mtp_draft, drafts, accepted, (double) accepted / (double) drafts, steps > 0 ? decoded / (double) steps : 0.0,
             1e3 * draft_s / (double) drafts, result.decode_s > 0.0 ? decoded / result.decode_s : 0.0);
     }
 
