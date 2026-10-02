@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Model-level forward differentials for the Qwen3.8-Flash-Next backend.
 
-Two self-contained A/B checks that a kernel unit test cannot cover because they
+Self-contained A/B checks that a kernel unit test cannot cover because they
 need the real weights and graph marking:
 
   hc16   LLAMA_MMB_HC16=2 (fused bf16 gate-mix / HC-down) vs =0 (f32 path) must
          generate the same greedy continuation.
   qsa    a prompt prefilled in one chunk vs split over smaller chunks must
          generate the same greedy continuation.
+  mtp    MTP speculative decode (sidecar auto-discovered from <repo>/MTP/, or
+         QWEN4EXP_MTP=<path>) vs QWEN4EXP_MTP=0 must give byte-identical greedy
+         replies, short and past the 2,052-token QSA budget; prints the
+         acceptance rate and decode tok/s of both.
 
 Both run on the gfx1151 prefill profile the backend defaults (QSA, HC16, MMB).
 
@@ -15,6 +19,7 @@ Requires the model and a built luce_server; run on the gfx1151 box:
 
     python3 server/scripts/qwen4exp_forward_diff.py hc16
     python3 server/scripts/qwen4exp_forward_diff.py qsa --chunks 4096,16384
+    QWEN4EXP_MODEL=<UD-Q4_K_XL.gguf> python3 server/scripts/qwen4exp_forward_diff.py mtp
 
 Not part of ctest: model-backed and long-running.
 """
@@ -50,7 +55,7 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def chat(prompt: str, max_tokens: int, timeout: int) -> str:
+def chat_full(prompt: str, max_tokens: int, timeout: int) -> dict:
     body = json.dumps({
         "model": "luce",
         "messages": [{"role": "user", "content": prompt}],
@@ -63,8 +68,11 @@ def chat(prompt: str, max_tokens: int, timeout: int) -> str:
         f"http://127.0.0.1:{PORT}/v1/chat/completions",
         data=body, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read())
-    return data["choices"][0]["message"]["content"]
+        return json.loads(resp.read())
+
+
+def chat(prompt: str, max_tokens: int, timeout: int) -> str:
+    return chat_full(prompt, max_tokens, timeout)["choices"][0]["message"]["content"]
 
 
 def wait_ready(proc: subprocess.Popen, timeout: int) -> bool:
@@ -80,8 +88,9 @@ def wait_ready(proc: subprocess.Popen, timeout: int) -> bool:
     return False
 
 
-def run_config(name: str, env_overrides: dict[str, str], extra_args: list[str],
-               prompt: str, max_tokens: int) -> str:
+def run_server(name: str, env_overrides: dict[str, str], extra_args: list[str],
+               prompts: list[str], max_tokens: int) -> list[dict]:
+    """Spawn one server and return the full /v1/chat/completions response of each prompt, in order."""
     subprocess.run(["fuser", "-k", f"{PORT}/tcp"], capture_output=True)
     time.sleep(0.5)
     cmd = [SERVER_BIN, MODEL, "--host", "127.0.0.1", "--port", str(PORT),
@@ -94,7 +103,7 @@ def run_config(name: str, env_overrides: dict[str, str], extra_args: list[str],
         if not wait_ready(proc, timeout=600):
             raise RuntimeError(f"server did not become ready; see /tmp/qwen4exp_diff_{name}.log")
         log(f"[{name}] ready")
-        reply = chat(prompt, max_tokens, timeout=1800)
+        replies = [chat_full(prompt, max_tokens, timeout=1800) for prompt in prompts]
     finally:
         proc.send_signal(signal.SIGTERM)
         try:
@@ -102,7 +111,12 @@ def run_config(name: str, env_overrides: dict[str, str], extra_args: list[str],
         except Exception:
             proc.kill()
         logf.close()
-    return reply
+    return replies
+
+
+def run_config(name: str, env_overrides: dict[str, str], extra_args: list[str],
+               prompt: str, max_tokens: int) -> str:
+    return run_server(name, env_overrides, extra_args, [prompt], max_tokens)[0]["choices"][0]["message"]["content"]
 
 
 def common_prefix_ratio(a: str, b: str) -> float:
@@ -146,6 +160,42 @@ def cmd_qsa(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_mtp(args: argparse.Namespace) -> int:
+    # Greedy output must not change with speculation: the verify forward reproduces plain decode bit for bit.
+    # "cross" starts below the QSA block budget (2,052 tokens) and decodes across it; "long" decodes past it.
+    question = "\n\nSummarize the text above in one sentence."
+    prompts = {
+        "warmup": "Write a short poem about the sea.",
+        "short": "Write a short poem about the sea.",
+        "cross": PARAGRAPH * 45 + question,
+        "long": PARAGRAPH * 70 + question,
+    }
+    runs = {mode: run_server(mode, env, [], list(prompts.values()), args.max_tokens)
+            for mode, env in (("mtp_off", {"QWEN4EXP_MTP": "0"}), ("mtp_on", {}))}
+    on_log = Path("/tmp/qwen4exp_diff_mtp_on.log").read_text(errors="replace").splitlines()
+    if not any("[qwen4exp] MTP sidecar:" in line for line in on_log):
+        log("[mtp] FAIL: the mtp_on server loaded no sidecar (set QWEN4EXP_MTP=<mtp-*.gguf>)")
+        return 1
+    ok = True
+    for i, name in enumerate(prompts):
+        off, on = runs["mtp_off"][i], runs["mtp_on"][i]
+        text = [(r["choices"][0]["message"].get("reasoning_content") or "") + "\0" +
+                (r["choices"][0]["message"].get("content") or "") for r in (off, on)]
+        usage = on.get("usage", {})
+        tps = [r.get("usage", {}).get("timings", {}).get("decode_tokens_per_sec", 0.0) for r in (off, on)]
+        same = text[0] == text[1]
+        ok = ok and same
+        log(f"[mtp] {name}: prompt={usage.get('prompt_tokens')} completion={usage.get('completion_tokens')} "
+            f"exact={same} common_prefix={common_prefix_ratio(text[0], text[1]):.3f} "
+            f"accept_rate={usage.get('accept_rate')} decode tok/s off={tps[0]} on={tps[1]} "
+            f"speedup={tps[1] / tps[0] if tps[0] else 0.0:.3f}")
+    for line in on_log:
+        if "[qwen4exp-mtp]" in line:
+            log(line.strip())
+    log(f"[mtp] {'PASS' if ok else 'FAIL'}")
+    return 0 if ok else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -156,6 +206,9 @@ def main() -> int:
     p_qsa.add_argument("--chunks", default="4096,16384")
     p_qsa.add_argument("--max-tokens", type=int, default=24)
     p_qsa.set_defaults(func=cmd_qsa)
+    p_mtp = sub.add_parser("mtp")
+    p_mtp.add_argument("--max-tokens", type=int, default=128)
+    p_mtp.set_defaults(func=cmd_mtp)
     args = ap.parse_args()
     if not Path(SERVER_BIN).exists():
         log(f"SKIP: server binary not found at {SERVER_BIN}")

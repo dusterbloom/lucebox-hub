@@ -25,7 +25,7 @@ bool qwen4exp_uma_ring_supported(ggml_backend_t backend) {
 }  // namespace
 
 bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
-                           int max_ctx, ggml_type kv_type, Qwen4ExpCache & out) {
+                           int max_ctx, ggml_type kv_type, Qwen4ExpCache & out, bool mtp) {
     if (max_ctx <= 0) return false;
 
     out.full_layer_ids.clear();
@@ -56,7 +56,7 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
     }
 
     ggml_init_params ip{};
-    ip.mem_size = ggml_tensor_overhead() * (static_cast<size_t>(w.n_layer) * 5 + 16) + 4096;
+    ip.mem_size = ggml_tensor_overhead() * (static_cast<size_t>(w.n_layer) * 8 + 16) + 4096;
     ip.no_alloc = true;
     out.ctx = ggml_init(ip);
     if (!out.ctx) return false;
@@ -104,6 +104,21 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
         // Recurrent state is independent of context length.
         out.ssm_state[i] = ggml_new_tensor_3d(out.ctx, GGML_TYPE_F32, S_v, S_v, H_v);
         out.conv_state[i] = ggml_new_tensor_2d(out.ctx, GGML_TYPE_F32, kernel - 1, conv_channels);
+    }
+    out.spec_ssm.clear(); out.spec_ssm0.clear(); out.spec_conv.clear();
+    out.spec_ple = nullptr;
+    if (mtp && w.mtp_eh_proj) {   // the MTP draft layer's own K/V (dense attention, no indexer) and the verify rollback
+        out.mtp_k = ggml_new_tensor_3d(out.ctx, kv_type, w.n_embd_head_k, kv_capacity, w.n_head_kv);
+        out.mtp_v = ggml_new_tensor_3d(out.ctx, kv_type, w.n_embd_head_v, kv_capacity, w.n_head_kv);
+        for (size_t i = 0; i < n_linear; ++i) {
+            ggml_tensor * states = ggml_new_tensor_4d(out.ctx, GGML_TYPE_F32, S_v, S_v, H_v, 2);
+            out.spec_ssm.push_back(states);
+            out.spec_ssm0.push_back(ggml_view_3d(out.ctx, states, S_v, S_v, H_v, states->nb[1], states->nb[2], 0));
+            out.spec_conv.push_back(ggml_new_tensor_2d(out.ctx, GGML_TYPE_F32, kernel - 1, conv_channels));
+        }
+        if (!out.ple_conv_state.empty()) {
+            out.spec_ple = ggml_new_tensor_2d(out.ctx, GGML_TYPE_F32, ple_hist, hc_dim);
+        }
     }
 
     out.buf = ggml_backend_alloc_ctx_tensors(out.ctx, backend);
@@ -165,6 +180,8 @@ void clear_qwen4exp_batched_decode_workspace(Qwen4ExpBatchedDecodeWorkspace & wo
 
 void free_qwen4exp_cache(Qwen4ExpCache & c) {
     clear_qwen4exp_decode_workspace(c.decode_workspace);
+    clear_qwen4exp_decode_workspace(c.verify_workspace);
+    clear_qwen4exp_decode_workspace(c.mtp_workspace);
     if (c.input_ring.buf) {
         ggml_backend_buffer_free(c.input_ring.buf);
         c.input_ring.buf = nullptr;
@@ -175,6 +192,12 @@ void free_qwen4exp_cache(Qwen4ExpCache & c) {
     if (c.ctx) { ggml_free(c.ctx); c.ctx = nullptr; }
     c.attn_k.clear();
     c.attn_v.clear();
+    c.mtp_k = c.mtp_v = nullptr;
+    c.spec_ssm.clear();
+    c.spec_ssm0.clear();
+    c.spec_conv.clear();
+    c.spec_ple = nullptr;
+    c.spec_ple_prev.clear();
     c.indexer_k.clear();
     c.indexer_raw.clear();
     c.ssm_state.clear();
@@ -204,6 +227,7 @@ void reset_qwen4exp_state(ggml_backend_t backend, Qwen4ExpCache & c) {
     }
     c.cur_pos = 0;
     c.indexer_blocks = 0;
+    c.kv_bucket_base = 0;
     c.ple_prev.clear();
 }
 

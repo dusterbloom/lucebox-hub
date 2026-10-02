@@ -28,6 +28,12 @@ namespace luce::common {
 // QSA indexer block pooling: [idim, nb*r] keys -> [idim, nb], block b = mean of tokens r*b .. r*b+r-1.
 ggml_tensor * qwen4exp_pool_blocks(ggml_context * c, ggml_tensor * keys, int64_t r);
 
+// K/V span of the stable T=1 decode graph at kv_len. The sequence's first span (`base`, set on first use) leaves at
+// least one 256-token window past its kv_len; later spans grow from it in 512-token steps. These are the spans a
+// token-by-token decode rebuilds with, as a function of kv_len alone, so a verify row attends over the same span
+// (same attention numerics) as plain decode at that position.
+int64_t qwen4exp_stable_kv_span(int64_t & base, int64_t max_ctx, int64_t kv_len);
+
 struct Qwen4ExpForwardResult {
     bool ok = false;
     int  n_tokens = 0;
@@ -48,7 +54,14 @@ struct Qwen4ExpForwardSegment {
 // Run the trunk. `tokens` has n_tokens entries, processed as one contiguous
 // single-sequence span at positions [pos0, pos0 + n_tokens). On success the
 // cache is advanced to pos0 + n_tokens and out_logits holds n_vocab floats
-// for the final token.
+// for the final token. out_hidden, when set, receives every token's final HC
+// residual (n_embd * n_hc floats each) for the MTP draft head.
+//
+// verify (MTP speculation, n_tokens == 2, qwen4exp_verify_supported): each
+// token is computed exactly as a T=1 forward at its position computes it
+// (batch-invariant matmuls, per-token attention), out_logits holds both rows,
+// and the cache keeps the state after the first token for
+// qwen4exp_verify_rollback.
 Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
                                        const Qwen4ExpWeights & w,
                                        Qwen4ExpCache & cache,
@@ -56,7 +69,24 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
                                        int n_tokens,
                                        int pos0,
                                        std::vector<float> & out_logits,
+                                       std::vector<float> * out_hidden = nullptr,
+                                       bool verify = false,
                                        bool qsa_rebuild_reference = false); // smoke oracle only
+
+// The cache was created with `mtp` and the graph is the default one (not QWEN4EXP_UPSTREAM / QWEN4EXP_DUMP).
+bool qwen4exp_verify_supported(const Qwen4ExpCache & cache);
+
+// After a verify forward at pos0 whose second token was rejected: return the cache to the state right after the
+// first token (recurrent, conv and PLE state, PLE n-gram tail, QSA pooled-block count).
+bool qwen4exp_verify_rollback(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache, int pos0);
+
+// MTP draft step over (trunk hidden h_p, token x_{p+1}) pairs at positions [pos0, pos0 + n): runs the sidecar's
+// nextn projection and layer, writes the draft layer's K/V there, and returns the logits of the last pair (its
+// argmax drafts x_{p+2}). `hidden` holds n rows of the trunk's final HC residual (n_embd * n_hc floats each), as
+// returned by qwen4exp_forward's out_hidden.
+bool qwen4exp_mtp_forward(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache,
+                          const int32_t * tokens, const float * hidden, int n, int pos0,
+                          std::vector<float> & out_logits);
 
 // Decode one next token for each independent slot. `caches[s]` owns that
 // sequence's KV and recurrent state; `tokens[s]` and `positions[s]` are never

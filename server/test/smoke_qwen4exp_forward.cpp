@@ -7,6 +7,11 @@
 //
 // Usage:
 //   smoke_qwen4exp_forward <shard1.gguf> [seq_len=16]
+//
+// QWEN4EXP_SMOKE_MTP=N (needs the MTP sidecar): greedy-decodes N tokens after the seq_len-token prompt with plain
+// decode and with MTP speculation and fails unless both give the same tokens from bit-identical logits. Use a
+// seq_len past 2052 to cover QSA decode, e.g.
+//   QWEN4EXP_SMOKE_MTP=128 smoke_qwen4exp_forward <shard1.gguf> 2200
 
 #include "qwen4exp_internal.h"
 #include "qwen4exp_graph.h"
@@ -45,6 +50,139 @@ int argmax(const std::vector<float> & v) {
         }
     }
     return best;
+}
+
+uint64_t hash_row(const float * row, size_t n) {   // FNV-1a over the bytes: equal iff bit-identical (in practice)
+    uint64_t h = 1469598103934665603ull;
+    const unsigned char * p = (const unsigned char *) row;
+    for (size_t i = 0; i < n * sizeof(float); ++i) h = (h ^ p[i]) * 1099511628211ull;
+    return h;
+}
+
+// QWEN4EXP_SMOKE_MTP: greedy-decode n_gen tokens after `prompt` twice -- plain T=1 steps, then MTP speculation
+// (draft, two-token verify, rollback on reject) -- and require the same tokens from bit-identical logits at every
+// position. Prefill runs in chunks of QWEN4EXP_SMOKE_CHUNK (default: the whole prompt).
+int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::vector<int32_t> & prompt, int n_gen) {
+    Qwen4ExpCache cache;
+    const int S = (int) prompt.size();
+    if (!w.mtp_eh_proj || n_gen < 1 ||
+        !create_qwen4exp_cache(backend, w, S + n_gen + 4, GGML_TYPE_F16, cache, /*mtp=*/true) ||
+        !qwen4exp_verify_supported(cache)) {
+        std::fprintf(stderr, "[smoke] mtp: needs a sidecar (QWEN4EXP_MTP or <repo>/MTP/mtp-*.gguf) and the default graph\n");
+        free_qwen4exp_cache(cache);
+        return 1;
+    }
+    const char * chunk_env = getenv("QWEN4EXP_SMOKE_CHUNK");
+    const int chunk = chunk_env ? std::max(1, std::atoi(chunk_env)) : S;
+    const size_t V = (size_t) w.n_vocab, hd = (size_t) w.n_embd * w.n_hc;
+    auto top = [&](const float * row) { return (int32_t) (std::max_element(row, row + V) - row); };
+    std::vector<float> logits, hidden, mtp_h, mtp_logits;
+    std::vector<int32_t> mtp_tok;
+    int mtp_pos = 0;
+
+    // Prefill; with `mtp` also the draft layer's catch-up over the prompt (as Qwen4ExpBackend::generate_impl).
+    auto prefill = [&](bool mtp) {
+        reset_qwen4exp_state(backend, cache);
+        mtp_h.clear();
+        mtp_pos = 0;
+        for (int pos = 0; pos < S; pos += chunk) {
+            const int n = std::min(chunk, S - pos);
+            if (!qwen4exp_forward(backend, w, cache, prompt.data() + pos, n, pos, logits, mtp ? &hidden : nullptr).ok) {
+                return false;
+            }
+            if (!mtp) continue;
+            mtp_tok.assign(prompt.begin() + pos + (pos == 0 ? 1 : 0), prompt.begin() + pos + n);
+            mtp_h.insert(mtp_h.end(), hidden.begin(), hidden.end());
+            const int n_pairs = (int) mtp_tok.size();
+            if (n_pairs > 0 && !qwen4exp_mtp_forward(backend, w, cache, mtp_tok.data(), mtp_h.data(), n_pairs, mtp_pos,
+                                                     mtp_logits)) {
+                return false;
+            }
+            mtp_h.erase(mtp_h.begin(), mtp_h.begin() + (std::ptrdiff_t) ((size_t) n_pairs * hd));
+            mtp_pos += n_pairs;
+        }
+        return true;
+    };
+
+    std::vector<int32_t> ref, out;
+    std::vector<uint64_t> ref_hash, out_hash;   // hash of the logits each token was taken from
+    bool ok = prefill(false);
+    if (ok) {
+        int32_t next = top(logits.data());
+        ref.push_back(next);
+        ref_hash.push_back(hash_row(logits.data(), V));
+        for (int pos = S; ok && (int) ref.size() < n_gen; ++pos) {
+            ok = qwen4exp_forward(backend, w, cache, &next, 1, pos, logits).ok;
+            next = top(logits.data());
+            ref.push_back(next);
+            ref_hash.push_back(hash_row(logits.data(), V));
+        }
+    }
+
+    long long drafts = 0, accepted = 0;
+    const auto t0 = std::chrono::steady_clock::now();
+    ok = ok && prefill(true);
+    if (ok) {
+        int32_t next = top(logits.data());
+        out.push_back(next);
+        out_hash.push_back(hash_row(logits.data(), V));
+        mtp_tok.assign(1, next);
+        int pos = S;
+        while (ok && (int) out.size() < n_gen) {
+            const bool verify = n_gen - (int) out.size() >= 2;
+            int32_t draft = -1;
+            if (verify) {
+                ok = qwen4exp_mtp_forward(backend, w, cache, mtp_tok.data(), mtp_h.data(), (int) mtp_tok.size(),
+                                          mtp_pos, mtp_logits);
+                draft = top(mtp_logits.data());
+            }
+            const int32_t in[2] = { next, draft };
+            ok = ok && qwen4exp_forward(backend, w, cache, in, verify ? 2 : 1, pos, logits,
+                                        verify ? &hidden : nullptr, verify).ok;
+            if (!ok) break;
+            const int32_t tok = top(logits.data());
+            out.push_back(tok);
+            out_hash.push_back(hash_row(logits.data(), V));
+            if (!verify) {
+                ++pos;
+                next = tok;
+                continue;
+            }
+            ++drafts;
+            mtp_h.assign(hidden.begin(), hidden.begin() + (std::ptrdiff_t) hd);
+            mtp_tok.assign(1, tok);
+            mtp_pos = pos;
+            if (tok == draft) {
+                ++accepted;
+                pos += 2;
+                if ((int) out.size() < n_gen) {
+                    next = top(logits.data() + V);
+                    out.push_back(next);
+                    out_hash.push_back(hash_row(logits.data() + V, V));
+                    mtp_h.insert(mtp_h.end(), hidden.begin() + (std::ptrdiff_t) hd, hidden.end());
+                    mtp_tok.push_back(next);
+                }
+            } else {
+                ok = qwen4exp_verify_rollback(backend, w, cache, pos);
+                ++pos;
+                next = tok;
+            }
+        }
+    }
+    const double spec_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    free_qwen4exp_cache(cache);
+
+    int first_token = -1, first_logits = -1;
+    for (size_t i = 0; ok && i < ref.size() && i < out.size(); ++i) {
+        if (first_token < 0 && ref[i] != out[i]) first_token = (int) i;
+        if (first_logits < 0 && ref_hash[i] != out_hash[i]) first_logits = (int) i;
+    }
+    const bool same = ok && ref.size() == out.size() && first_token < 0 && first_logits < 0;
+    std::printf("[smoke] mtp S=%d n_gen=%d ok=%d tokens_identical=%d logits_identical=%d first_token_diff=%d "
+                "first_logits_diff=%d drafts=%lld accepted=%lld rate=%.3f spec_s=%.2f\n",
+                S, n_gen, (int) ok, (int) (ok && first_token < 0), (int) (ok && first_logits < 0), first_token,
+                first_logits, drafts, accepted, drafts ? (double) accepted / (double) drafts : 0.0, spec_s);
+    return same ? 0 : 1;
 }
 
 // Compare only authoritative cache rows; reset deliberately leaves unused K/V intact.
@@ -173,7 +311,7 @@ int main(int argc, char ** argv) {
                    qwen4exp_forward(backend, w, reference, tokens.data(), start, 0, expected).ok;
         int replays = 0;
         for (int p = start; ok && p < S; ++p) {
-            ok = qwen4exp_forward(backend, w, reference, &tokens[p], 1, p, expected, true).ok;
+            ok = qwen4exp_forward(backend, w, reference, &tokens[p], 1, p, expected, nullptr, false, true).ok;
             const auto & ws = cache.decode_workspace;
             const bool replay = ws.gf && ws.qsa_blocks > 0 && ws.next_pos == p &&
                                 cache.indexer_blocks == p / 4 && p + 1 <= ws.kv_bucket;
@@ -238,6 +376,10 @@ int main(int argc, char ** argv) {
         std::printf("[smoke] split S=%d N=%d chunk=%d ok=%d argmax %d vs %d max_abs_diff=%.4f kl=%.6f top10_overlap=%d\n",
             S, N, step, (int) ok, ok ? argmax(full) : -1, ok ? argmax(split) : -1, max_diff, kl, overlap);
         if (!ok || argmax(full) != argmax(split)) rc = 1;
+    }
+
+    if (const char * mtp_env = getenv("QWEN4EXP_SMOKE_MTP"); rc == 0 && mtp_env) {
+        rc = run_mtp_check(backend, w, tokens, std::atoi(mtp_env));
     }
 
     free_qwen4exp_cache(cache);

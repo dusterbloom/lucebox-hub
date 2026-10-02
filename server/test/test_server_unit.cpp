@@ -5092,6 +5092,30 @@ TEST_CASE(ServerUnitFixture, test_qwen4exp_pool_blocks_averages_consecutive_toke
     ggml_free(c);
 }
 
+// The stable T=1 decode span is a function of kv_len alone that reproduces the spans token-by-token decode rebuilt
+// its graph with (((kv_len + 511) / 256) * 256 whenever kv_len outgrew the last one), so an MTP verify row attends
+// over exactly the span plain decode uses at that position.
+TEST_CASE(ServerUnitFixture, test_qwen4exp_stable_kv_span_matches_decode_rebuilds) {
+    for (const int64_t max_ctx : {4096, 32768, 40000}) {
+        for (const int64_t first : {1, 2, 100, 255, 256, 257, 511, 512, 513, 2000, 3999}) {
+            int64_t base = 0, rebuilt = 0;
+            bool same = true;
+            for (int64_t kv = first; kv <= max_ctx; ++kv) {
+                if (rebuilt == 0 || kv > rebuilt) rebuilt = std::min<int64_t>(max_ctx, ((kv + 511) / 256) * 256);
+                same = same && qwen4exp_stable_kv_span(base, max_ctx, kv) == rebuilt;
+            }
+            TEST_ASSERT_MSG(same, "max_ctx=" + std::to_string(max_ctx) + " first=" + std::to_string(first));
+        }
+    }
+}
+
+TEST_CASE(ServerUnitFixture, test_qwen4exp_mtp_sidecar_pick) {
+    TEST_ASSERT(pick_qwen4exp_mtp_sidecar({"README.md", "mtp-b-Q8_0.gguf", "model.gguf", "mtp-a-Q8_0.gguf"}) ==
+                "mtp-a-Q8_0.gguf");
+    TEST_ASSERT(pick_qwen4exp_mtp_sidecar({"mtp-.gguf", "mtp-x.bin", "Qwen3.8-Flash-Next.gguf"}).empty());
+    TEST_ASSERT(pick_qwen4exp_mtp_sidecar({}).empty());
+}
+
 // The Qwen report adds up the live cache and each snapshot from the buffers
 // snapshot_target_cache() actually allocates.
 TEST_CASE(ServerUnitFixture, test_qwen_memory_report_matches_buffers) {

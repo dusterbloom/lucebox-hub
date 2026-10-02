@@ -47,6 +47,7 @@ struct Qwen4ExpDecodeWorkspace {
     ggml_tensor * ple_in = nullptr;
     ggml_tensor * kv_row = nullptr;
     ggml_tensor * logits = nullptr;
+    ggml_tensor * hidden = nullptr;   // final HC residual, set when an MTP sidecar is loaded
     int64_t kv_bucket = 0;
     int64_t qsa_blocks = -1;  // -1 for dense; fixed score capacity otherwise
     ggml_tensor * qsa_visibility = nullptr;
@@ -85,6 +86,8 @@ struct Qwen4ExpCache {
     // Full attention: [head_dim, max_ctx, n_head_kv] (flash_attn_ext layout).
     std::vector<ggml_tensor *> attn_k;  // size = n_full
     std::vector<ggml_tensor *> attn_v;
+    ggml_tensor * mtp_k = nullptr;      // MTP draft layer, same layout; null unless created with `mtp`
+    ggml_tensor * mtp_v = nullptr;
 
     // QSA indexer. indexer_raw holds every token's raw (pre-pool) key, [indexer_head_size, max_ctx] f32;
     // indexer_k holds pooled complete blocks (mean of `ratio` consecutive raw keys, normed and M-RoPE'd at the
@@ -108,15 +111,27 @@ struct Qwen4ExpCache {
     // for the host-side PLE n-gram hash across decode steps.
     std::vector<int32_t> ple_prev;
 
+    // MTP speculative decode (allocated only with `mtp`): the state after the first token of the last two-token
+    // verify forward, restored by qwen4exp_verify_rollback when its draft is rejected. spec_ssm holds the GDN
+    // kernel's per-token states [S_v, S_v, H_v, 2]; spec_ssm0 views its first token.
+    std::vector<ggml_tensor *> spec_ssm, spec_ssm0, spec_conv;   // size = n_linear
+    ggml_tensor *              spec_ple = nullptr;               // mirrors ple_conv_state[0]
+    std::vector<int32_t>       spec_ple_prev;
+
+    // First stable T=1 attention span of the sequence; later spans grow from it in 512-token steps, so a position's
+    // span (and its attention numerics) does not depend on which forwards ran before it.
+    int64_t kv_bucket_base = 0;
+
     // Pinned graph-input ring (see Qwen4ExpInputRing).
     Qwen4ExpInputRing input_ring;
 
-    // T=1 decode workspace reuse (excluded under QWEN4EXP_UPSTREAM=1).
-    Qwen4ExpDecodeWorkspace decode_workspace;
+    // T=1 decode workspace reuse (excluded under QWEN4EXP_UPSTREAM=1); the verify and MTP draft graphs keep their own.
+    Qwen4ExpDecodeWorkspace decode_workspace, verify_workspace, mtp_workspace;
 };
 
+// `mtp` adds the MTP draft layer's K/V and the verify rollback state (needs a loaded sidecar).
 bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
-                           int max_ctx, ggml_type kv_type, Qwen4ExpCache & out);
+                           int max_ctx, ggml_type kv_type, Qwen4ExpCache & out, bool mtp = false);
 
 void free_qwen4exp_cache(Qwen4ExpCache & c);
 
