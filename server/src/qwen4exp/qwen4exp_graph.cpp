@@ -608,7 +608,7 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
                               int64_t n_pooled, Qwen4ExpQsaMode qsa, int il,
                               const std::function<void(ggml_tensor *, const char *)> & dump_mark = {},
                               const std::vector<Qwen4ExpAttnRow> * rows = nullptr,
-                              const Qwen4ExpDecodeWorkspace * qsa_ws = nullptr) {
+                              const Qwen4ExpDecodeWorkspace * qsa_ws = nullptr, bool kv_only = false) {
     const int64_t D      = w.n_embd_head_k;   // 256
     const int64_t Hq     = w.n_head;          // 24
     const int64_t Hk     = w.n_head_kv;       // 2
@@ -685,6 +685,10 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
             ggml_view_3d(c, v_cache, D, T, Hk, v_cache->nb[1], v_cache->nb[2],
                          v_cache->nb[1] * (size_t) pos0)));
     }
+
+    // A single MTP layer needs only these writes for prompt catch-up. Q/gate and
+    // everything after attention have no cache consumers and are not in gf yet.
+    if (kv_only) return nullptr;
 
     ggml_tensor * K_full = ggml_view_3d(c, k_cache, D, kv_len, Hk,
         k_cache->nb[1], k_cache->nb[2], 0);
@@ -1647,7 +1651,7 @@ namespace {
 // One MTP batch: the graph rebuilds per call (its K/V span grows) on a reused context and allocator.
 bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache,
                        const int32_t * tokens, const float * hidden, int n, int pos0,
-                       std::vector<float> & out_logits, std::vector<float> * out_hidden) {
+                       std::vector<float> & out_logits, std::vector<float> * out_hidden, bool kv_only) {
     const int64_t H = w.n_embd, hc = w.n_hc, T = n, kv_len = pos0 + n;
     std::vector<float> emb((size_t) H * T);
     if (!w.embedder.embed(tokens, n, emb.data())) return false;
@@ -1670,7 +1674,7 @@ bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4E
     ggml_tensor * inp_emb   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, H, T);
     ggml_tensor * inp_h     = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, H * hc, T);
     ggml_tensor * positions = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 4 * T);
-    ggml_tensor * mask      = T > 1 ? ggml_new_tensor_2d(ctx, GGML_TYPE_F16, kv_len, T) : nullptr;
+    ggml_tensor * mask      = !kv_only && T > 1 ? ggml_new_tensor_2d(ctx, GGML_TYPE_F16, kv_len, T) : nullptr;
     for (ggml_tensor * t : {inp_emb, inp_h, positions, mask}) if (t) ggml_set_input(t);
 
     // nextn front: stream s of the new residual is eh_proj [enorm(e) ; hnorm(h)_s]; hnorm spans all HC streams.
@@ -1685,21 +1689,25 @@ bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4E
     ggml_tensor * inject = nullptr;
     ggml_tensor * cur = hc_mix(ctx, res, L.hc_attn_norm, L.hc_attn_down, L.hc_attn_up, L.hc_attn_inject, &inject,
                                H, hc, w.rms_eps);
-    // The draft layer still attends densely; QSA for the MTP layer is a known follow-up.
+    // Decode still attends densely over the entire prompt; prefill only fills its K/V.
     cur = build_full_attn(ctx, gf, cur, L, w, cache.mtp_k, cache.mtp_v, /*indexer_k=*/nullptr, /*indexer_raw=*/nullptr,
-                          positions, mask, nullptr, kv_len, pos0, /*ratio=*/4, /*n_pooled=*/0, QSA_DENSE, w.n_layer);
-    res = hc_combine(ctx, res, cur, inject, H, hc, T);
-    cur = hc_mix(ctx, res, L.hc_ffn_norm, L.hc_ffn_down, L.hc_ffn_up, L.hc_ffn_inject, &inject, H, hc, w.rms_eps);
-    res = hc_combine(ctx, res, build_moe(ctx, cur, L, w, w.n_layer), inject, H, hc, T);
+                          positions, mask, nullptr, kv_len, pos0, /*ratio=*/4, /*n_pooled=*/0, QSA_DENSE, w.n_layer,
+                          {}, nullptr, nullptr, kv_only);
+    ggml_tensor * draft_hidden = nullptr, * logits = nullptr;
+    if (!kv_only) {
+        res = hc_combine(ctx, res, cur, inject, H, hc, T);
+        cur = hc_mix(ctx, res, L.hc_ffn_norm, L.hc_ffn_down, L.hc_ffn_up, L.hc_ffn_inject, &inject, H, hc, w.rms_eps);
+        res = hc_combine(ctx, res, build_moe(ctx, cur, L, w, w.n_layer), inject, H, hc, T);
 
-    ggml_tensor * last = ggml_view_3d(ctx, res, H, hc, 1, res->nb[1], res->nb[2], (size_t) (T - 1) * res->nb[2]);
-    ggml_tensor * draft_hidden = out_hidden ? ggml_cont(ctx, last) : nullptr;
-    if (draft_hidden) { ggml_set_output(draft_hidden); ggml_build_forward_expand(gf, draft_hidden); }
-    ggml_tensor * head = hc_mix(ctx, last, w.mtp_head_norm, w.mtp_head_down, w.mtp_head_up, nullptr, nullptr,
-                                H, hc, w.rms_eps);
-    ggml_tensor * logits = ggml_mul_mat(ctx, w.output, head);
-    ggml_set_output(logits);
-    ggml_build_forward_expand(gf, logits);
+        ggml_tensor * last = ggml_view_3d(ctx, res, H, hc, 1, res->nb[1], res->nb[2], (size_t) (T - 1) * res->nb[2]);
+        draft_hidden = out_hidden ? ggml_cont(ctx, last) : nullptr;
+        if (draft_hidden) { ggml_set_output(draft_hidden); ggml_build_forward_expand(gf, draft_hidden); }
+        ggml_tensor * head = hc_mix(ctx, last, w.mtp_head_norm, w.mtp_head_down, w.mtp_head_up, nullptr, nullptr,
+                                    H, hc, w.rms_eps);
+        logits = ggml_mul_mat(ctx, w.output, head);
+        ggml_set_output(logits);
+        ggml_build_forward_expand(gf, logits);
+    }
 
     if (ws.alloc == nullptr) ws.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
     // Re-plan every call (the K/V views move), keeping the allocator's buffer.
@@ -1725,8 +1733,8 @@ bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4E
         ok = ggml_backend_graph_compute(backend, gf) == GGML_STATUS_SUCCESS;
     }
     if (ok) {
-        out_logits.resize((size_t) w.n_vocab);
-        ggml_backend_tensor_get(logits, out_logits.data(), 0, sizeof(float) * w.n_vocab);
+        out_logits.resize(kv_only ? 0 : (size_t) w.n_vocab);
+        if (logits) ggml_backend_tensor_get(logits, out_logits.data(), 0, sizeof(float) * w.n_vocab);
         if (out_hidden) {
             out_hidden->resize((size_t) H * hc);
             ggml_backend_tensor_get(draft_hidden, out_hidden->data(), 0, out_hidden->size() * sizeof(float));
@@ -1741,16 +1749,18 @@ bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4E
 
 bool qwen4exp_mtp_forward(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache,
                           const int32_t * tokens, const float * hidden, int n, int pos0,
-                          std::vector<float> & out_logits, std::vector<float> * out_hidden) {
-    if (!w.mtp_eh_proj || !cache.mtp_k || !tokens || !hidden || n <= 0 || pos0 < 0 || pos0 + n > cache.max_ctx) {
+                          std::vector<float> & out_logits, std::vector<float> * out_hidden, bool kv_only) {
+    if (!w.mtp_eh_proj || !cache.mtp_k || !tokens || !hidden || n <= 0 || pos0 < 0 || pos0 + n > cache.max_ctx ||
+        (kv_only && out_hidden)) {
         return false;
     }
-    // Prefill catch-up runs in slices, bounding the dense causal mask at slice * kv_len.
+    // Keep the original slices even for K/V-only prefill: matmul dispatch/numerics depend on batch width.
     constexpr int slice = 512;
     const size_t hd = (size_t) w.n_embd * w.n_hc;
     for (int i = 0; i < n; i += slice) {
         const int m = std::min(slice, n - i);
-        if (!mtp_forward_batch(backend, w, cache, tokens + i, hidden + (size_t) i * hd, m, pos0 + i, out_logits, i + m == n ? out_hidden : nullptr)) {
+        if (!mtp_forward_batch(backend, w, cache, tokens + i, hidden + (size_t) i * hd, m, pos0 + i,
+                               out_logits, i + m == n ? out_hidden : nullptr, kv_only)) {
             return false;
         }
     }

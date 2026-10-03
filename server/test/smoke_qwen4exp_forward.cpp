@@ -87,6 +87,22 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
     std::vector<float> logits, hidden, mtp_h, mtp_logits;
     std::vector<int32_t> mtp_tok;
     int mtp_pos = 0;
+    bool prefill_kv_identical = true;
+
+    // Full MTP is the oracle: compare the actual F16 K/V bytes for every prompt
+    // pair, including the pair carried across a trunk chunk boundary.
+    auto mtp_kv_bytes = [&](int pos, int n) {
+        std::vector<char> bytes;
+        for (ggml_tensor * t : {cache.mtp_k, cache.mtp_v}) {
+            const size_t size = (size_t) n * t->nb[1];
+            for (int64_t h = 0; h < t->ne[2]; ++h) {
+                const size_t start = bytes.size();
+                bytes.resize(start + size);
+                ggml_backend_tensor_get(t, bytes.data() + start, h * t->nb[2] + (size_t) pos * t->nb[1], size);
+            }
+        }
+        return bytes;
+    };
 
     // Prefill; with `mtp` also the draft layer's catch-up over the prompt (as Qwen4ExpBackend::generate_impl).
     auto prefill = [&](bool mtp) {
@@ -105,6 +121,20 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
             if (n_pairs > 0 && !qwen4exp_mtp_forward(backend, w, cache, mtp_tok.data(), mtp_h.data(), n_pairs, mtp_pos,
                                                      mtp_logits)) {
                 return false;
+            }
+            if (n_pairs > 0) {
+                const auto expected = mtp_kv_bytes(mtp_pos, n_pairs);
+                // Poison the destination so a missing/partial write cannot pass on stale oracle bytes.
+                for (ggml_tensor * t : {cache.mtp_k, cache.mtp_v}) {
+                    for (int64_t h = 0; h < t->ne[2]; ++h) {
+                        ggml_backend_tensor_memset(t, 0xa5, h * t->nb[2] + (size_t) mtp_pos * t->nb[1],
+                                                   (size_t) n_pairs * t->nb[1]);
+                    }
+                }
+                if (!qwen4exp_mtp_forward(backend, w, cache, mtp_tok.data(), mtp_h.data(), n_pairs, mtp_pos,
+                                          mtp_logits, nullptr, /*kv_only=*/true)) return false;
+                prefill_kv_identical = expected == mtp_kv_bytes(mtp_pos, n_pairs) && mtp_logits.empty();
+                if (!prefill_kv_identical) return false;
             }
             mtp_h.erase(mtp_h.begin(), mtp_h.begin() + (std::ptrdiff_t) ((size_t) n_pairs * hd));
             mtp_pos += n_pairs;
@@ -173,6 +203,7 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
         }
     }
     const double spec_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("[smoke] mtp prefill S=%d chunk=%d kv_identical=%d\n", S, chunk, (int) (ok && prefill_kv_identical));
     free_qwen4exp_cache(cache);
 
     int first_token = -1;

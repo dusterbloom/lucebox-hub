@@ -179,7 +179,7 @@ GenerateResult Qwen4ExpBackend::generate_impl(const GenerateRequest & req,
             mtp_h.insert(mtp_h.end(), hidden.begin(), hidden.end());
             const int n_pairs = (int) mtp_tok.size();
             if (n_pairs > 0 && !qwen4exp_mtp_forward(backend_, weights_, cache_, mtp_tok.data(), mtp_h.data(),
-                                                     n_pairs, mtp_pos, mtp_logits)) {
+                                                     n_pairs, mtp_pos, mtp_logits, nullptr, /*kv_only=*/true)) {
                 result.fail(GenerateErrorCode::PrefillFailed, "qwen4exp MTP catch-up failed");
                 return result;
             }

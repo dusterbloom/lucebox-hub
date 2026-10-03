@@ -73,9 +73,11 @@ bool qwen4exp_verify_rollback(ggml_backend_t backend, const Qwen4ExpWeights & w,
 // argmax drafts x_{p+2}). `hidden` holds n rows of the trunk's final HC residual (n_embd * n_hc floats each), as
 // returned by qwen4exp_forward's out_hidden. Optional out_hidden returns the
 // last MTP HC residual, which feeds the next autoregressive draft step.
+// kv_only fills the same prompt K/V without evaluating attention or the draft head;
+// out_logits is cleared and out_hidden must be null. Slice sizes stay unchanged.
 bool qwen4exp_mtp_forward(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache,
                           const int32_t * tokens, const float * hidden, int n, int pos0,
-                          std::vector<float> & out_logits, std::vector<float> * out_hidden = nullptr);
+                          std::vector<float> & out_logits, std::vector<float> * out_hidden = nullptr, bool kv_only = false);
 
 // Catch up pending trunk pairs, then chain k predictions with the MTP residual.
 bool qwen4exp_mtp_draft(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache,
