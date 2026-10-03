@@ -95,10 +95,31 @@ all three quants.
 | QSA at prefill and decode, keys pooled per 4-token block | done (exactly dense up to 2,051 tokens) |
 | gfx1151 kernels: MMB bf16 and Q8_0 -> F16 WMMA GEMMs, fused HC / GDN / PLE, M-RoPE into the flash-attention layout | done |
 | Chat template, reasoning effort, thinking budget, `preserve_thinking`, `sampling_no_thinking` | done |
-| Concurrent serving (`--max-concurrency > 1`) | refused; exact 4-slot serving is a follow-up PR |
+| Concurrent serving (`--max-concurrency 2..4`) | supported, exact independent slots with full per-slot caches; more than 4 is refused |
 | MTP speculative decoding | follow-up PR |
 | Layer split | refused |
 | Other GPUs | generic paths; kernels, defaults and quality gates are tuned and measured on gfx1151 only |
+
+`--max-concurrency 1` keeps the single-sequence path. Values 2 through 4
+enable the sequence engine and batched decode without environment settings.
+Each slot prefills separately with the backend's 2,048-token chunk size and
+owns a full F16 cache. Dense decode batches use the same MMVQ arithmetic as
+solo decode; when any slot crosses the QSA boundary, decode runs per slot.
+Paging, `--kv-pool-tokens`, and multi-device placement are unsupported.
+The GPU concurrency checks use a 32,768-token context:
+
+```bash
+luce_server MODEL.gguf --max-concurrency 4 --max-ctx 32768 \
+  --prefix-cache-slots 0 --disk-prefix-cache off
+python3 server/test/qwen4exp_concurrency_http.py http://127.0.0.1:8080
+```
+
+The HTTP test checks eight responses (four near 2K and four near 16K) against
+solo requests, including planted-fact recall, and reports aggregate prefill
+and decode rates from `usage.timings`. GPU probes:
+`smoke_qwen4exp_batched MODEL.gguf 2050 3072 1` and
+`test_qwen4exp_seq_engine MODEL.gguf 32768` check logits, cache/indexer state,
+contract/soak, the QSA boundary, and distinct concurrent token streams.
 
 ## Layout
 
@@ -114,7 +135,8 @@ Tests: `test_qwen4exp_qsa_ids` (QSA block selection, GPU and CPU),
 `test_qwen4exp_indexer_score`, `test_rope_tail` (including the M-RoPE ->
 CONT fusion alias), `test_backend_plan` (default prefill chunk),
 `test_server_unit`, and `smoke_qwen4exp_forward` (split-prefill KLs and
-cancel/reset/reuse on a real GGUF).
+reference comparisons on a real GGUF). `smoke_qwen4exp_batched` also checks
+cancel/reset/reuse and slot isolation.
 
 The smoke binary uses the same gfx1151 defaults as the server. Its test controls
 are command-line arguments:

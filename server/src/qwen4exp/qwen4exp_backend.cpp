@@ -22,6 +22,10 @@ Qwen4ExpBackend::~Qwen4ExpBackend() {
 }
 
 bool Qwen4ExpBackend::init() {
+    if (cfg_.max_concurrency < 1 || cfg_.max_concurrency > 4) {
+        std::fprintf(stderr, "[qwen4exp] --max-concurrency must be between 1 and 4\n");
+        return false;
+    }
     if (cfg_.device.is_layer_split()) {
         std::fprintf(stderr, "[qwen4exp] layer split is not supported yet\n");
         return false;
@@ -41,6 +45,26 @@ bool Qwen4ExpBackend::init() {
                                GGML_TYPE_F16, cache_)) {
         std::fprintf(stderr, "[qwen4exp] cache creation failed\n");
         return false;
+    }
+    if (cfg_.max_concurrency > 1) {
+        seq_caches_.resize((size_t)cfg_.max_concurrency - 1);
+        std::vector<Qwen4ExpCache *> caches;
+        caches.reserve((size_t)cfg_.max_concurrency);
+        caches.push_back(&cache_);
+        for (Qwen4ExpCache & cache : seq_caches_) {
+            if (!create_qwen4exp_cache(backend_, weights_, cfg_.device.max_ctx,
+                                       GGML_TYPE_F16, cache)) {
+                std::fprintf(stderr, "[qwen4exp] full-cache slot allocation failed\n");
+                return false;
+            }
+            caches.push_back(&cache);
+        }
+        seq_engine_ = std::make_unique<Qwen4ExpSeqEngine>(
+            backend_, weights_, std::move(caches), cfg_.device.max_ctx,
+            cfg_.chunk);
+        std::fprintf(stderr,
+            "[qwen4exp-seq] independent-slot engine enabled: %d full F16 caches, ctx=%d\n",
+            cfg_.max_concurrency, cfg_.device.max_ctx);
     }
     return true;
 }
@@ -63,6 +87,9 @@ bool Qwen4ExpBackend::park(ParkTarget target) {
         return false;
     }
     if (parked_) return true;
+    seq_engine_.reset();
+    for (Qwen4ExpCache & cache : seq_caches_) free_qwen4exp_cache(cache);
+    seq_caches_.clear();
     free_qwen4exp_cache(cache_);
     free_qwen4exp_weights(weights_);
     parked_ = true;
@@ -86,6 +113,18 @@ bool Qwen4ExpBackend::unpark(ParkTarget target) {
         std::fprintf(stderr, "[qwen4exp] unpark cache creation failed\n");
         free_qwen4exp_weights(weights_);
         return false;
+    }
+    if (cfg_.max_concurrency > 1) {
+        seq_caches_.resize((size_t)cfg_.max_concurrency - 1);
+        std::vector<Qwen4ExpCache *> caches{&cache_};
+        for (Qwen4ExpCache & cache : seq_caches_) {
+            if (!create_qwen4exp_cache(backend_, weights_, cfg_.device.max_ctx,
+                                       GGML_TYPE_F16, cache)) return false;
+            caches.push_back(&cache);
+        }
+        seq_engine_ = std::make_unique<Qwen4ExpSeqEngine>(
+            backend_, weights_, std::move(caches), cfg_.device.max_ctx,
+            cfg_.chunk);
     }
     parked_ = false;
     std::printf("[qwen4exp] target unparked\n");
@@ -210,6 +249,9 @@ bool Qwen4ExpBackend::handle_compress(const std::string & line,
 void Qwen4ExpBackend::free_drafter() {}
 
 void Qwen4ExpBackend::shutdown() {
+    seq_engine_.reset();
+    for (Qwen4ExpCache & cache : seq_caches_) free_qwen4exp_cache(cache);
+    seq_caches_.clear();
     free_qwen4exp_cache(cache_);
     free_qwen4exp_weights(weights_);
     if (backend_) {
