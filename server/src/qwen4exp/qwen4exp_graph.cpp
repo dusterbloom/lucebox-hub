@@ -11,113 +11,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
-#include <chrono>
 #include <functional>
-#include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace luce::common {
 namespace {
-
-static double prof_now_ms() {
-    return std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
-// QWEN4EXP_PROF=1: per-call phase timings, forward-call timestamps and graph batch widths.
-static bool prof_enabled() {
-    static const bool on = std::getenv("QWEN4EXP_PROF") != nullptr;
-    return on;
-}
-
-// F16 activation paths for gfx1151 MMB prefill (gated-norm tail, attention gate, MoE fold). Default on; QWEN4EXP_F16=0
-// is the kill switch. Off under QWEN4EXP_UPSTREAM (byte-exact reference) and QWEN4EXP_DUMP (per-node dumps).
-static bool f16_paths() {
-    static const bool on = [] {
-        const char * u = getenv("QWEN4EXP_UPSTREAM"), * f = getenv("QWEN4EXP_F16");
-        return !(u && std::atoi(u) != 0) && getenv("QWEN4EXP_DUMP") == nullptr && !(f && std::atoi(f) == 0);
-    }();
-    return on;
-}
-
-static double mono_now_s() {
-    return std::chrono::duration<double>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
-static void trace_batch_widths(ggml_cgraph * gf, const char * phase,
-                               int rows, int max_kv) {
-    if (!prof_enabled() || !gf) return;
-
-    std::map<int, int> matmul_widths, mmid_widths;
-    std::map<std::string, int> state_ops;
-    std::vector<std::string> width_one;
-    int matmul_count = 0, mmid_count = 0, max_matmul_width = 0, dense_t1_count = 0;
-    const int node_count = ggml_graph_n_nodes(gf);
-    for (int i = 0; i < node_count; ++i) {
-        const ggml_tensor * node = ggml_graph_node(gf, i);
-        if (!node) continue;
-        if ((node->op == GGML_OP_MUL_MAT || node->op == GGML_OP_MUL_MAT_ID) &&
-            node->src[0] && node->src[1]) {
-            const bool is_id = node->op == GGML_OP_MUL_MAT_ID;
-            const int width = is_id
-                ? (int) node->src[1]->ne[2]
-                : node->src[1]->ne[0] > 0
-                    ? (int) (ggml_nelements(node->src[1]) / node->src[1]->ne[0])
-                    : 0;
-            if (is_id) {
-                ++mmid_count;
-                ++mmid_widths[width];
-            } else {
-                ++matmul_count;
-                ++matmul_widths[width];
-                max_matmul_width = std::max(max_matmul_width, width);
-                if (width == 1) {
-                    ++dense_t1_count;
-                    if (width_one.size() < 12) width_one.emplace_back(
-                        std::string(node->src[0]->name) +
-                        "[" + std::to_string(node->src[0]->ne[0]) + "x" +
-                        std::to_string(node->src[0]->ne[1]) + "]");
-                }
-            }
-        } else if (node->op == GGML_OP_FLASH_ATTN_EXT ||
-                   node->op == GGML_OP_GATED_DELTA_NET ||
-                   node->op == GGML_OP_SSM_CONV) {
-            ++state_ops[ggml_op_name(node->op)];
-        }
-    }
-    auto widths = [](const std::map<int, int> & hist) {
-        std::string out;
-        for (const auto & [width, count] : hist) {
-            if (!out.empty()) out += ",";
-            out += std::to_string(width) + ":" + std::to_string(count);
-        }
-        return out.empty() ? std::string("-") : out;
-    };
-    std::string state;
-    for (const auto & [op, count] : state_ops) {
-        if (!state.empty()) state += ",";
-        state += op + ":" + std::to_string(count);
-    }
-    std::string t1;
-    for (const std::string & name : width_one) {
-        if (!t1.empty()) t1 += ",";
-        t1 += name;
-    }
-    static uint64_t call = 0;
-    std::fprintf(stderr,
-        "[qwen4exp-batch] call=%llu phase=%s rows=%d max_kv=%d nodes=%d "
-        "MUL_MAT=%d{width:count:%s} MMID=%d{width:count:%s} "
-        "max_dense_T=%d state={%s} dense_T1=%d names=%d[%s]\n",
-        (unsigned long long) ++call, phase, rows, max_kv, node_count,
-        matmul_count, widths(matmul_widths).c_str(), mmid_count,
-        widths(mmid_widths).c_str(), max_matmul_width, state.c_str(),
-        dense_t1_count, (int) width_one.size(), t1.empty() ? "-" : t1.c_str());
-}
 
 size_t ring_align_up(size_t value) {
     const size_t remainder = value % 256;
@@ -268,7 +169,7 @@ struct Qwen4ExpMoeParts {
 };
 
 [[maybe_unused]] ggml_tensor * build_moe(ggml_context * c, ggml_tensor * cur,
-                        const Qwen4ExpLayer & L, const Qwen4ExpWeights & w, int il,
+                        const Qwen4ExpLayer & L, const Qwen4ExpWeights & w, int il, bool reference,
                         const std::function<void(ggml_tensor *, const char *)> & dump_mark = {},
                         Qwen4ExpMoeParts * parts = nullptr) {
     const int64_t n_embd   = w.n_embd;
@@ -322,11 +223,7 @@ struct Qwen4ExpMoeParts {
 
     ggml_tensor * moe_out;
     // Keep the unfused form for upstream differential checks.
-    static const bool moe_fused = [] {
-        const char * v = getenv("QWEN4EXP_UPSTREAM");
-        return !(v && std::atoi(v) != 0);
-    }();
-    if (!moe_fused) {
+    if (reference) {
         // Upstream aggregate: weight every route (broadcast mul), then sequential
         // per-route view adds in argsort order, then add the gated shared expert.
         ggml_tensor * wexp = ggml_mul(c, down, ggml_reshape_3d(c, wsel, 1, n_used, n_tokens));
@@ -347,7 +244,7 @@ struct Qwen4ExpMoeParts {
 // ── Linear attention: gated delta net (36 layers) ───────────────────────
 
 ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * cur,
-                                const Qwen4ExpLayer & L, const Qwen4ExpWeights & w,
+                                const Qwen4ExpLayer & L, const Qwen4ExpWeights & w, bool f16,
                                 ggml_tensor * ssm_state, ggml_tensor * conv_state, int il,
                                 const std::function<void(ggml_tensor *, const char *)> & dump_mark = {}) {
     const int64_t D      = w.ssm_d_state;              // 128
@@ -420,7 +317,7 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
 
     // Gated norm written as F16 in one pass, read directly by ssm_out's Q8_0 -> F16 GEMM (same arithmetic as the
     // chain below, so bit-exact).
-    if (f16_paths() && ggml_backend_cuda_mmb_f16_input_ok(L.ssm_out, T)) {
+    if (f16 && ggml_backend_cuda_mmb_f16_input_ok(L.ssm_out, T)) {
         ggml_tensor * lin_raw = mm(c, L.ssm_out, ggml_gated_rms_norm_f16(c, attn, L.ssm_norm, z, eps));
         return ggml_reshape_2d(c, lin_raw, w.n_embd, T);
     }
@@ -604,11 +501,6 @@ static ggml_tensor * build_qsa_attn(ggml_context * c, ggml_tensor * cur,
     return attn;
 }
 
-static bool qsa_enabled() {
-    static const bool on = [] { const char * v = getenv("QWEN4EXP_QSA"); return v && std::atoi(v) != 0; }();
-    return on;
-}
-
 // QSA block ratio of the full-attention layers (0 when the model has no indexer).
 static int64_t qsa_ratio(const Qwen4ExpWeights & w) {
     for (int il = 0; il < w.n_layer && il < (int) w.compress_ratios.size(); ++il) {
@@ -623,9 +515,9 @@ enum Qwen4ExpQsaMode { QSA_DENSE = 0, QSA_PREFILL = 1, QSA_DECODE = 2 };
 // that point: the packed prefill kernel for T >= 128, the per-query decode kernel below that. CUDA builds and the
 // upstream reference stay dense.
 static Qwen4ExpQsaMode qsa_mode(const Qwen4ExpWeights & w, const Qwen4ExpCache & cache, int64_t T, int64_t pos0,
-                                bool use_qsa) {
+                                bool enabled) {
     const int64_t r = qsa_ratio(w);
-    if (!use_qsa || r <= 1 || cache.indexer_raw.empty() || !cache.indexer_raw[0]) return QSA_DENSE;
+    if (!enabled || r <= 1 || cache.indexer_raw.empty() || !cache.indexer_raw[0]) return QSA_DENSE;
     if (w.indexer_head_size != 128 || w.indexer_n_head <= 0 || w.indexer_top_k % r != 0) return QSA_DENSE;
     const int64_t budget = w.indexer_top_k / r;
     if (budget * r + (r - 1) > 2560 || w.n_head != 12 * w.n_head_kv) return QSA_DENSE;
@@ -649,7 +541,7 @@ static ggml_tensor * write_indexer_keys(ggml_context * c, ggml_cgraph * gf,
 }
 
 ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * cur,
-                              const Qwen4ExpLayer & L, const Qwen4ExpWeights & w,
+                              const Qwen4ExpLayer & L, const Qwen4ExpWeights & w, bool f16,
                               ggml_tensor * k_cache, ggml_tensor * v_cache,
                               ggml_tensor * indexer_k, ggml_tensor * indexer_raw,
                               ggml_tensor * positions, ggml_tensor * mask, ggml_tensor * kv_row,
@@ -791,7 +683,7 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
 
     // sigmoid(gate) * attn written as F16 in one pass straight from the wq view (no CONT), read directly by wo's
     // Q8_0 -> F16 GEMM. Same product as below, so bit-exact.
-    if (f16_paths() && ggml_backend_cuda_mmb_f16_input_ok(L.wo, T)) {
+    if (f16 && ggml_backend_cuda_mmb_f16_input_ok(L.wo, T)) {
         ggml_tensor * gate3 = ggml_view_3d(c, qfull, D, Hq, T, 2 * D * qe, 2 * D * Hq * qe, D * qe);
         return mm(c, L.wo, ggml_gated_f16(c, attn, gate3));
     }
@@ -1054,18 +946,16 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
                                        const int32_t * tokens,
                                        int n_tokens,
                                        int pos0,
-                                       std::vector<float> & out_logits) {
+                                       std::vector<float> & out_logits, bool dump) {
     Qwen4ExpForwardResult res;
     if (n_tokens <= 0 || pos0 < 0 || !tokens) return res;
-    // QWEN4EXP_DUMP=1 materialises per-layer activations and prints finite/absmax/mean.
-    static const bool dump = getenv("QWEN4EXP_DUMP") != nullptr;
-    // The fused reduction can differ from upstream's ggml_rms_norm below one
-    // ulp; keep the unfused form for upstream differential checks.
-    static const bool upstream = [] { const char * v = getenv("QWEN4EXP_UPSTREAM"); return v && std::atoi(v) != 0; }();
+    const bool upstream = cache.reference;
+    const Qwen4ExpCudaScope profile(w.gfx1151, upstream);
+    const bool f16 = !upstream && !dump;
     const bool hc_fused = !upstream;
     // T=1 decode reuses one context/allocator and a stable bucketed graph.
     // Past the QSA block budget the selected-cell graph changes shape as blocks complete, so it is rebuilt per step.
-    const Qwen4ExpQsaMode qsa = qsa_mode(w, cache, n_tokens, pos0, qsa_enabled() && !upstream);
+    const Qwen4ExpQsaMode qsa = qsa_mode(w, cache, n_tokens, pos0, profile.optimized);
     // T=1 decode reuses one context/allocator; below the QSA budget it also keeps a stable bucketed graph.
     const bool reuse_ws = !upstream && n_tokens == 1 && !dump;
     const bool use_stable_graph = reuse_ws && qsa == QSA_DENSE;
@@ -1277,15 +1167,15 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
         dump_mark(cur, dlab);
         if (L.is_full_attention) {
             const int fi = full_idx[il];
-            cur = build_full_attn(ctx, gf, cur, L, w,
+            cur = build_full_attn(ctx, gf, cur, L, w, f16,
                                   cache.attn_k[fi], cache.attn_v[fi], cache.indexer_k[fi],
-                                  qsa_enabled() && !upstream ? cache.indexer_raw[fi] : nullptr,
+                                  profile.optimized ? cache.indexer_raw[fi] : nullptr,
                                   positions, mask, kv_row, graph_kv_len, pos0,
                                   il < (int) w.compress_ratios.size() ? w.compress_ratios[il] : 0,
                                   cache.indexer_blocks, qsa, il, dump_mark);
         } else {
             const int li = lin_idx[il];
-            cur = build_linear_attn(ctx, gf, cur, L, w,
+            cur = build_linear_attn(ctx, gf, cur, L, w, f16,
                                     cache.ssm_state[li], cache.conv_state[li], il, dump_mark);
         }
         std::snprintf(dlab, sizeof dlab, "L%02d.att", il);
@@ -1327,8 +1217,8 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
         // Prefill: the MoE combine runs inside the next HC_COMBINE_NORM (one kernel fewer; last-bit numerics change
         // from FMA contraction in the new kernel, covered by the long-prompt quality gate). Not at T=1: it cost ~1.7% decode.
         Qwen4ExpMoeParts moe_parts;
-        const bool fold = f16_paths() && hc_fused && !next_ple && ggml_backend_cuda_mmb_prefill(layer_T);
-        cur = build_moe(ctx, cur, L, w, il, dump_mark, fold ? &moe_parts : nullptr);
+        const bool fold = f16 && hc_fused && !next_ple && ggml_backend_cuda_mmb_prefill(layer_T);
+        cur = build_moe(ctx, cur, L, w, il, upstream, dump_mark, fold ? &moe_parts : nullptr);
         std::snprintf(dlab, sizeof dlab, "L%02d.moe", il);
         dump_mark(cur, dlab);
 
@@ -1547,24 +1437,6 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
             }
             std::vector<float> v(n);
             ggml_backend_tensor_get(t, v.data(), 0, n * sizeof(float));
-            static const char * dump_bin = getenv("QWEN4EXP_DUMP_BIN");
-            if (dump_bin && dump_bin[0] && n_tokens > 1) {
-                std::string names = dump_bin, want;
-                size_t pos = 0;
-                while (pos <= names.size()) {
-                    size_t comma = names.find(',', pos);
-                    want = names.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
-                    if (want == dt.second) {
-                        char path[256];
-                        std::snprintf(path, sizeof path, "/tmp/our_%s.bin", dt.second.c_str());
-                        FILE * f = std::fopen(path, "wb");
-                        if (f) { std::fwrite(v.data(), sizeof(float), n, f); std::fclose(f); }
-                        break;
-                    }
-                    if (comma == std::string::npos) break;
-                    pos = comma + 1;
-                }
-            }
             bool finite = true; double amax = 0, sum = 0, sumsq = 0;
             size_t argmax = 0;
             for (size_t i = 0; i < n; ++i) {
@@ -1606,7 +1478,7 @@ bool qwen4exp_can_batch(const Qwen4ExpWeights & w,
     if (n_segments < 1 || n_segments > 4) return false;
     for (int s = 0; s < n_segments; ++s) {
         const auto & segment = segments[s];
-        if (segment.n_tokens != 1 ||
+        if (segment.cache->reference || segment.n_tokens != 1 ||
             qsa_mode(w, *segment.cache, 1, segment.pos0, use_qsa) != QSA_DENSE)
             return false;
     }
@@ -1639,11 +1511,8 @@ Qwen4ExpForwardResult qwen4exp_forward_batched(
         Qwen4ExpBatchedDecodeWorkspace & workspace,
         std::vector<std::vector<float>> & out_logits) {
     Qwen4ExpForwardResult result;
-    const char * enabled = std::getenv("QWEN4EXP_BATCHED_DECODE");
-    const char * upstream_env = std::getenv("QWEN4EXP_UPSTREAM");
-    if (!enabled || std::atoi(enabled) == 0 ||
-        (upstream_env && std::atoi(upstream_env) != 0) ||
-        !backend || !caches || !tokens || !positions || n_slots <= 0) return result;
+    if (!backend || !caches || !tokens || !positions || n_slots <= 0) return result;
+    const Qwen4ExpCudaScope profile(w.gfx1151);
     out_logits.clear();
 
     // Preserve the established single-sequence arithmetic and state transitions
@@ -1669,13 +1538,10 @@ Qwen4ExpForwardResult qwen4exp_forward_batched(
         segments[s] = {caches[s], tokens + s, 1, positions[s]};
     }
     // ponytail: dense batching only; per-slot QSA graphs can replace this if throughput warrants it.
-    if (!qwen4exp_can_batch(w, segments, n_slots, qsa_enabled()))
+    if (!qwen4exp_can_batch(w, segments, n_slots, profile.optimized))
         return forward_sequential(backend, w, segments, n_slots, out_logits);
 
-    static const bool hc_fused = [] {
-        const char * v = std::getenv("QWEN4EXP_UPSTREAM");
-        return !(v && std::atoi(v) != 0);
-    }();
+    const bool hc_fused = true;
     const int64_t T = n_slots;
     const bool has_ple = w.ple_reader.available() && !caches[0]->ple_layer_ids.empty();
     const int64_t ple_heads = w.ple_n_heads;
@@ -1816,7 +1682,7 @@ Qwen4ExpForwardResult qwen4exp_forward_batched(
                     column(ctx, qfull, s), column(ctx, kraw, s), column(ctx, vraw, s),
                     pos, mask, L, w, caches[s]->attn_k[(size_t) fi],
                     caches[s]->attn_v[(size_t) fi], positions[s], kv_view_len,
-                    column(ctx, cur, s), qsa_enabled() ? caches[s]->indexer_raw[(size_t) fi] : nullptr);
+                    column(ctx, cur, s), profile.optimized ? caches[s]->indexer_raw[(size_t) fi] : nullptr);
                 attn_rows = attn_rows ? ggml_concat(ctx, attn_rows, attn, 1) : attn;
             }
             cur = mm(ctx, L.wo, attn_rows);
@@ -1851,7 +1717,7 @@ Qwen4ExpForwardResult qwen4exp_forward_batched(
             cur = hc_mix(ctx, res_hc, L.hc_ffn_norm, L.hc_ffn_down,
                 L.hc_ffn_up, L.hc_ffn_inject, &inject, w.n_embd, w.n_hc, w.rms_eps);
         }
-        cur = build_moe(ctx, cur, L, w, il);
+        cur = build_moe(ctx, cur, L, w, il, /*reference=*/false);
         const bool next_ple = (il + 1 < w.n_layer) && w.layers[il + 1].is_ple && has_ple;
         if (next_ple) {
             // Match the single-sequence graph's PLE boundary: do not fold the
@@ -1879,11 +1745,6 @@ Qwen4ExpForwardResult qwen4exp_forward_batched(
     ggml_tensor * logits = ggml_mul_mat(ctx, w.output, final);
     ggml_set_output(logits);
     ggml_build_forward_expand(gf, logits);
-    int max_kv = 0;
-    for (int s = 0; s < n_slots; ++s)
-        max_kv = std::max(max_kv, positions[s] + 1);
-    trace_batch_widths(gf, "batched", n_slots, max_kv);
-
     if (!workspace.alloc)
         workspace.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
     if (!workspace.alloc || !ggml_gallocr_reserve(workspace.alloc, gf) ||
@@ -1909,23 +1770,12 @@ Qwen4ExpForwardResult qwen4exp_forward_batched(
         std::fill(mask.begin(), mask.begin() + kv_len, ggml_fp32_to_fp16(0.0f));
         ggml_backend_tensor_set(mask_inputs[s], mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));
     }
-    const bool batch_telemetry = prof_enabled();
-    const auto compute_start = batch_telemetry
-        ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-    const double compute_begin_s = batch_telemetry ? mono_now_s() : 0.0;
     // Match solo MMVQ arithmetic regardless of the number of active slots.
     const ScopedCudaGraphOverrides overrides(false, 0, false, 0, /*mmvq_batch_invariant=*/true);
     if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
         workspace.planned = false;
         std::fprintf(stderr, "[qwen4exp] batched graph compute failed\n");
         return result;
-    }
-    if (batch_telemetry) {
-        const double compute_ms = std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - compute_start).count();
-        std::fprintf(stderr,
-            "[qwen4exp-batch-time] rows=%d compute_ms=%.3f begin_abs=%.9f done_abs=%.9f\n",
-            n_slots, compute_ms, compute_begin_s, mono_now_s());
     }
     std::vector<float> packed((size_t) w.n_vocab * n_slots);
     ggml_backend_tensor_get(logits, packed.data(), 0, packed.size() * sizeof(float));

@@ -4,20 +4,12 @@
 #include "qwen4exp_graph.h"
 
 #include <algorithm>
-#include <chrono>
-#include <cstdio>
-#include <cstdlib>
 #include <limits>
 #include <utility>
 
 namespace luce::common {
 
 namespace {
-double mono_now_s() {
-    return std::chrono::duration<double>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
 uint32_t pool_blocks(int max_ctx, size_t slots) {
     if (max_ctx <= 0 || slots == 0 ||
         slots > std::numeric_limits<uint32_t>::max()) return 0;
@@ -122,10 +114,7 @@ SeqEngine::StepResult Qwen4ExpSeqEngine::step(const StepPlan & plan) {
         return std::move(result);
     };
 
-    const char * batched_env = std::getenv("QWEN4EXP_BATCHED_DECODE");
-    const char * upstream_env = std::getenv("QWEN4EXP_UPSTREAM");
-    if (!backend_ || !batched_env || std::atoi(batched_env) == 0 ||
-        (upstream_env && std::atoi(upstream_env) != 0) ||
+    if (!backend_ ||
         (int)plan.decode.size() != slots_.decoding_count())
         return fail("qwen4exp decode plan does not cover live slots");
 
@@ -160,44 +149,6 @@ SeqEngine::StepResult Qwen4ExpSeqEngine::step(const StepPlan & plan) {
         seen[(size_t)slice.slot] = 1;
     }
     if (plan.decode.empty() && plan.prefills.empty()) return result;
-
-    static const bool telemetry_on = std::getenv("QWEN4EXP_PROF") != nullptr;
-    uint64_t telemetry_step = 0;
-    const double step_begin_s = telemetry_on ? mono_now_s() : 0.0;
-    if (telemetry_on) {
-        static uint64_t step_id = 0;
-        telemetry_step = ++step_id;
-        int live = 0;
-        for (int slot = 0; slot < n; ++slot) live += slots_.is_active(slot) ? 1 : 0;
-        const uint64_t blocks_per_slot =
-            ((uint64_t) max_context() + 255) / 256;
-        std::fprintf(stderr,
-            "[qwen4exp-seq-step] step=%llu live=%d decode_rows=%zu "
-            "prefill_slices=%zu kv_mode=full-cache bookkeeping_blocks=%llu slots=",
-            (unsigned long long) telemetry_step, live,
-            plan.decode.size(), plan.prefills.size(),
-            (unsigned long long) (blocks_per_slot * live));
-        bool first_slot = true;
-        for (int slot = 0; slot < n; ++slot) {
-            if (!slots_.is_active(slot)) continue;
-            const SeqSlot & state = slots_.slot(slot);
-            std::fprintf(stderr, "%s%d:%s:%d/%d",
-                first_slot ? "" : ",", slot,
-                state.decoding() ? "decode" : "prefill",
-                state.cur_pos, state.prompt_len);
-            first_slot = false;
-        }
-        std::fprintf(stderr, " decode_plan=");
-        for (size_t i = 0; i < plan.decode.size(); ++i)
-            std::fprintf(stderr, "%s%d@%d", i ? "," : "",
-                plan.decode[i].slot,
-                slots_.slot(plan.decode[i].slot).cur_pos);
-        std::fprintf(stderr, " prefill_plan=");
-        for (size_t i = 0; i < plan.prefills.size(); ++i)
-            std::fprintf(stderr, "%s%d+%d", i ? "," : "",
-                plan.prefills[i].slot, plan.prefills[i].max_tokens);
-        std::fprintf(stderr, "\n");
-    }
 
     struct PendingPrefill {
         int slot;
@@ -244,17 +195,6 @@ SeqEngine::StepResult Qwen4ExpSeqEngine::step(const StepPlan & plan) {
         const bool complete = slots_.slot(slice.slot).cur_pos ==
                               slots_.slot(slice.slot).prompt_len;
         pending_prefills.push_back({slice.slot, complete, segment_index});
-    }
-    if (telemetry_on) {
-        int total_rows = 0;
-        for (const Qwen4ExpForwardSegment & segment : forward_segments)
-            total_rows += segment.n_tokens;
-        std::fprintf(stderr,
-            "[qwen4exp-step-work] step=%llu graph=%s segments=%zu rows=%d decode_rows=%zu prefill_sequences=%zu prefill_tokens=%d\n",
-            (unsigned long long) telemetry_step,
-            plan.prefills.empty() ? "decode" : "solo-prefill",
-            forward_segments.size(), total_rows, plan.decode.size(),
-            plan.prefills.size(), total_rows - (int) plan.decode.size());
     }
 
     std::vector<std::vector<float>> logits;
@@ -306,15 +246,6 @@ SeqEngine::StepResult Qwen4ExpSeqEngine::step(const StepPlan & plan) {
             : (int32_t)(std::max_element(row.begin(), row.end()) - row.begin());
         result.decode.push_back(std::move(output));
     }
-    if (telemetry_on) {
-        for (size_t i = 0; i < result.decode.size(); ++i) {
-            const DecodeOutput & output = result.decode[i];
-            std::fprintf(stderr,
-                "[qwen4exp-output] step=%llu kind=decode slot=%d input_pos=%d token=%d done_abs=%.9f\n",
-                (unsigned long long) telemetry_step, output.slot,
-                decode_positions[i], output.token, mono_now_s());
-        }
-    }
     for (const PendingPrefill & pending : pending_prefills) {
         PrefillOutput output;
         output.slot = pending.slot;
@@ -329,18 +260,6 @@ SeqEngine::StepResult Qwen4ExpSeqEngine::step(const StepPlan & plan) {
             slots_.commit_prefill(pending.slot);
         }
         result.prefills.push_back(std::move(output));
-    }
-    if (telemetry_on) {
-        for (const PrefillOutput & output : result.prefills) {
-            std::fprintf(stderr,
-                "[qwen4exp-output] step=%llu kind=prefill slot=%d token=%d status=%d done_abs=%.9f\n",
-                (unsigned long long) telemetry_step, output.slot, output.token,
-                (int) output.status, mono_now_s());
-        }
-        std::fprintf(stderr,
-            "[qwen4exp-step-done] step=%llu begin_abs=%.9f done_abs=%.9f decode_rows=%zu prefill_slices=%zu\n",
-            (unsigned long long) telemetry_step, step_begin_s, mono_now_s(),
-            result.decode.size(), result.prefills.size());
     }
     return result;
 }

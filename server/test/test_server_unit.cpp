@@ -22,6 +22,7 @@
 #include "server/image_input.h"
 #include "qwen35/qwen35_backend.h"
 #include "qwen4exp/qwen4exp_graph.h"
+#include "common/cuda_graph_overrides.h"
 #include "engine/luce_engine.h"
 #include "server/chat_template.h"
 #include "common/concurrency/seq_engine.h"
@@ -5439,7 +5440,10 @@ TEST_CASE(ServerUnitFixture, test_qwen4exp_qsa_batch_boundary) {
     TEST_ASSERT(qwen4exp_can_batch(w, spans, 2, true)); // 512 blocks + 3 tail tokens
     spans[1].pos0 = 2051;
     TEST_ASSERT(!qwen4exp_can_batch(w, spans, 2, true)); // first 513th block, before executing
-    TEST_ASSERT(qwen4exp_can_batch(w, spans, 2, false)); // QSA off / UPSTREAM
+    TEST_ASSERT(qwen4exp_can_batch(w, spans, 2, false)); // generic device, QSA off
+    caches[1].reference = true;
+    TEST_ASSERT(!qwen4exp_can_batch(w, spans, 2, false)); // reference math runs solo
+    caches[1].reference = false;
     std::swap(spans[0], spans[1]);
     TEST_ASSERT(!qwen4exp_can_batch(w, spans, 2, true)); // any slot, independent of order
     spans[0].pos0 = 16;
@@ -5449,6 +5453,7 @@ TEST_CASE(ServerUnitFixture, test_qwen4exp_qsa_batch_boundary) {
     spans[0].n_tokens = 1;
     Qwen4ExpForwardSegment rows[5] = {spans[0], spans[1], spans[0], spans[1], spans[0]};
     TEST_ASSERT(qwen4exp_can_batch(w, rows, 4, true));
+    TEST_ASSERT(qwen4exp_can_batch(w, rows, 3, true));
     TEST_ASSERT(!qwen4exp_can_batch(w, rows, 5, true)); // batch-invariant MMID ceiling
     TEST_ASSERT(!qwen4exp_can_batch(w, rows, 5, false));
     w.indexer_top_k = 1024;
@@ -5466,6 +5471,39 @@ TEST_CASE(ServerUnitFixture, test_qwen4exp_qsa_batch_boundary) {
 
 // Qwen4Exp QSA indexer pooling: block b is the mean of the r consecutive token keys r*b .. r*b+r-1
 // (reference modeling_qwen4_exp.py: block_token_indices.view(n, ratio) then mean over the ratio axis).
+TEST_CASE(ServerUnitFixture, test_qwen4exp_profile_is_scoped) {
+    using namespace luce::common;
+    auto set = ggml_backend_cuda_set_qwen4exp_profile;
+    TEST_ASSERT(set(GGML_CUDA_QWEN4EXP_DEFAULT) == GGML_CUDA_QWEN4EXP_OFF);
+    ggml_backend_t cpu = ggml_backend_cpu_init();
+    const bool supported = ggml_backend_cuda_qwen4exp_supported(cpu);
+    TEST_ASSERT(!supported);
+    {
+        Qwen4ExpCudaScope reference(true, true);
+        TEST_ASSERT(!reference.optimized);
+        TEST_ASSERT(set(GGML_CUDA_QWEN4EXP_REFERENCE) == GGML_CUDA_QWEN4EXP_REFERENCE);
+        // An unsupported backend masks a nested profile, then restores it.
+        [&] { Qwen4ExpCudaScope generic(supported); TEST_ASSERT(!generic.optimized);
+              TEST_ASSERT(set(GGML_CUDA_QWEN4EXP_OFF) == GGML_CUDA_QWEN4EXP_OFF); }();
+        TEST_ASSERT(set(GGML_CUDA_QWEN4EXP_REFERENCE) == GGML_CUDA_QWEN4EXP_REFERENCE);
+        bool isolated = false;
+        std::thread other([&] { isolated = set(GGML_CUDA_QWEN4EXP_OFF) == GGML_CUDA_QWEN4EXP_OFF; });
+        other.join();
+        TEST_ASSERT(isolated);
+    }
+    [&] { Qwen4ExpCudaScope optimized(true); TEST_ASSERT(optimized.optimized);
+          TEST_ASSERT(set(GGML_CUDA_QWEN4EXP_DEFAULT) == GGML_CUDA_QWEN4EXP_DEFAULT);
+          TEST_ASSERT(!ggml_backend_cuda_set_mmvq_batch_invariant(false));
+          {
+              ScopedCudaGraphOverrides batch(false, 0, false, 0, true);
+              TEST_ASSERT(ggml_backend_cuda_set_mmvq_batch_invariant(true));
+              TEST_ASSERT(set(GGML_CUDA_QWEN4EXP_DEFAULT) == GGML_CUDA_QWEN4EXP_DEFAULT);
+          }
+          TEST_ASSERT(!ggml_backend_cuda_set_mmvq_batch_invariant(false)); }();
+    TEST_ASSERT(set(GGML_CUDA_QWEN4EXP_OFF) == GGML_CUDA_QWEN4EXP_DEFAULT);
+    ggml_backend_free(cpu);
+}
+
 TEST_CASE(ServerUnitFixture, test_qwen4exp_pool_blocks_averages_consecutive_tokens) {
     ggml_init_params ip{1 << 20, nullptr, false};
     ggml_context * c = ggml_init(ip);

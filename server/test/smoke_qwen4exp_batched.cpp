@@ -48,11 +48,6 @@ int main(int argc, char ** argv) {
     const int ctx = argc > 3 ? std::atoi(argv[3]) : 32768;
     const int steps = argc > 4 ? std::atoi(argv[4]) : 3;
     if (prompt_n <= 0 || steps <= 0 || prompt_n + steps + 1 >= ctx) return 2;
-    setenv("QWEN4EXP_BATCHED_DECODE", "1", 1);
-#if defined(GGML_USE_HIP) || defined(LUCE_BACKEND_HIP)
-    // These probes bypass Qwen4ExpBackend's gfx1151 defaults.
-    setenv("QWEN4EXP_QSA", "1", 0);
-#endif
     ggml_backend_t backend = ggml_backend_cuda_init(0);
     if (!backend) { std::fprintf(stderr, "no GPU backend\n"); return 77; }
     Qwen4ExpWeights w;
@@ -62,7 +57,7 @@ int main(int argc, char ** argv) {
         ptrs[s] = &caches[s];
         if (!create_qwen4exp_cache(backend, w, ctx, GGML_TYPE_F16, caches[s])) return 1;
     }
-    const bool qsa = std::getenv("QWEN4EXP_QSA") && std::atoi(std::getenv("QWEN4EXP_QSA")) != 0;
+    const bool qsa = w.gfx1151;
     Qwen4ExpBatchedDecodeWorkspace workspace;
     int failures = 0;
 

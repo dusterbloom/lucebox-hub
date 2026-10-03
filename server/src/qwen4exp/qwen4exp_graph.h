@@ -1,7 +1,7 @@
 // Qwen4Exp forward graph.
 //
 // qwen4exp_forward() runs n_tokens new tokens starting at cache position pos0
-// through the 48-layer hybrid trunk and writes last-token logits. The optional
+// through the 48-layer hybrid trunk and writes last-token logits. The multi-slot
 // batched decode entry point below handles independent one-token slot rows.
 // Ported from upstream llama.cpp src/models/qwen4exp.cpp
 // (hyper-connections, gated delta net linear attention, dense full attention,
@@ -43,7 +43,7 @@ struct Qwen4ExpForwardSegment {
 };
 
 // Pure decision for validated spans: at most four one-token rows, all dense in the solo path.
-// use_qsa is the effective QSA setting (false under UPSTREAM).
+// use_qsa is the cached gfx1151 capability; reference caches always run solo.
 bool qwen4exp_can_batch(const Qwen4ExpWeights & w,
                        const Qwen4ExpForwardSegment * segments, int n_segments, bool use_qsa);
 
@@ -57,14 +57,15 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
                                        const int32_t * tokens,
                                        int n_tokens,
                                        int pos0,
-                                       std::vector<float> & out_logits);
+                                       std::vector<float> & out_logits,
+                                       bool dump = false);  // test-only activation summaries
 
 // Decode one next token for each independent slot. `caches[s]` owns that
 // sequence's KV and recurrent state; `tokens[s]` and `positions[s]` are never
 // interpreted as a common time axis. The shared workspace must outlive calls
 // and is normally owned by the sequence-engine/model instance.
 // If any slot needs QSA or more than four slots are active, use per-slot solo forwards.
-// Enabled only when QWEN4EXP_BATCHED_DECODE=1 and never under UPSTREAM.
+// Reference caches also use per-slot solo forwards. The server admits at most four slots.
 Qwen4ExpForwardResult qwen4exp_forward_batched(
                                        ggml_backend_t backend,
                                        const Qwen4ExpWeights & w,

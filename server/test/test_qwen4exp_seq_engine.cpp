@@ -1,4 +1,4 @@
-// GPU adapter contract and lifecycle soak for the experimental full-cache engine.
+// GPU adapter contract and lifecycle soak for the full-cache engine.
 // Usage: test_qwen4exp_seq_engine <iq4nl-shard1.gguf> [ctx=32768]
 #include "qwen4exp_seq_engine.h"
 #include "qwen4exp_graph.h"
@@ -214,7 +214,7 @@ static bool run_qsa_boundary(Qwen4ExpSeqEngine & engine, ggml_backend_t backend,
                              const std::vector<Qwen4ExpCache *> & caches) {
     using namespace qwen4exp_test;
     constexpr int N = 4;
-    const bool qsa = std::getenv("QWEN4EXP_QSA") && std::atoi(std::getenv("QWEN4EXP_QSA")) != 0;
+    const bool qsa = w.gfx1151;
     std::vector<std::vector<int32_t>> prompts(N);
     std::vector<int32_t> next(N);
     // Only these small contexts are needed by the reference streams.
@@ -344,11 +344,6 @@ int main(int argc, char ** argv) {
     }
     const int ctx = argc > 2 ? std::atoi(argv[2]) : 32768;
     if (ctx != 32768) return 2;
-    setenv("QWEN4EXP_BATCHED_DECODE", "1", 1);
-#if defined(GGML_USE_HIP) || defined(LUCE_BACKEND_HIP)
-    // These probes bypass Qwen4ExpBackend's gfx1151 defaults.
-    setenv("QWEN4EXP_QSA", "1", 0);
-#endif
 
     ggml_backend_t backend = ggml_backend_cuda_init(0);
     if (!backend) return 77;
@@ -370,7 +365,7 @@ int main(int argc, char ** argv) {
     for (auto & cache : caches) ptrs.push_back(&cache);
 
     bool ok = true;
-    for (int n : {2, 4}) {
+    for (int n : {2, 3, 4}) {
         Qwen4ExpSeqEngine engine(backend, weights,
             std::vector<Qwen4ExpCache *>(ptrs.begin(), ptrs.begin() + n), ctx);
         const auto violations = check_seq_engine_contract(engine);

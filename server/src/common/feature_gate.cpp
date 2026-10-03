@@ -6,8 +6,6 @@
 #include "paged_attention_config.h"
 
 #include <climits>
-#include <cstdlib>
-#include <cstring>
 
 namespace luce::common {
 
@@ -295,21 +293,14 @@ std::string check_feature_compatibility(
     }
     if (args.max_concurrency > 1) {
         if (!args.paged_attention) {
-            const char * seq = std::getenv("LUCE_QWEN4EXP_SEQ_ENGINE");
-            const char * batch = std::getenv("QWEN4EXP_BATCHED_DECODE");
-            const char * upstream = std::getenv("QWEN4EXP_UPSTREAM");
-            const bool qwen4exp_seq = arch == "qwen4exp" &&
-                seq && std::strcmp(seq, "1") == 0 &&
-                batch && std::strcmp(batch, "1") == 0 &&
-                !(upstream && std::atoi(upstream) != 0);
-            if (!qwen4exp_seq)
+            if (arch != "qwen4exp")
                 return "--max-concurrency requires --paged-attention";
             if (args.max_concurrency > 4)
                 return "qwen4exp full-cache concurrency supports at most 4 slots";
             if (args.kv_pool_tokens != 0)
                 return "qwen4exp full-cache concurrency does not use --kv-pool-tokens";
-            if (args.device.max_ctx != 32768)
-                return "qwen4exp v1 sequence engine requires --max-ctx 32768";
+            if (args.device.max_ctx <= 0)
+                return "qwen4exp full-cache concurrency requires a positive --max-ctx";
             if (args.device.is_layer_split() || args.device.is_tensor_parallel() ||
                 args.remote_target_shard.enabled())
                 return "qwen4exp full-cache concurrency requires one local target device";
