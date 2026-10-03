@@ -9,6 +9,7 @@
 // stays on disk behind a pread pool regardless of which shard owns it.
 
 #include "qwen4exp_internal.h"
+#include "qwen4exp_mtp.h"
 
 #include "common/gguf_bounds.h"
 #include "common/gguf_mmap.h"
@@ -21,6 +22,7 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -344,13 +346,44 @@ bool Qwen4ExpPleReader::gather(const int32_t * rows, int64_t n, float * dst) con
 
 // ─── Loader ─────────────────────────────────────────────────────────────
 
+std::string pick_qwen4exp_mtp_sidecar(std::vector<std::string> names) {
+    std::sort(names.begin(), names.end());
+    for (const std::string & name : names) {
+        if (name.size() > 9 && name.compare(0, 4, "mtp-") == 0 && name.compare(name.size() - 5, 5, ".gguf") == 0) {
+            return name;
+        }
+    }
+    return {};
+}
+
+std::string find_qwen4exp_mtp_sidecar(const std::string & model_path) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path dir = fs::absolute(model_path, ec).parent_path().parent_path() / "MTP";
+    std::vector<std::string> names;
+    for (const fs::directory_entry & entry : fs::directory_iterator(dir, ec)) {
+        if (entry.is_regular_file(ec)) names.push_back(entry.path().filename().string());
+    }
+    const std::string name = pick_qwen4exp_mtp_sidecar(std::move(names));
+    return name.empty() ? std::string() : (dir / name).string();
+}
+
 bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
-                        Qwen4ExpWeights & out, bool reference) {
+                        Qwen4ExpWeights & out, const std::string & mtp_override, bool reference) {
     out.gfx1151 = ggml_backend_cuda_qwen4exp_supported(backend);
     const Qwen4ExpCudaScope profile(out.gfx1151, reference);
-    // Open every shard of the model; a single-file GGUF is a one-element list.
+    // Open every shard of the model; a single-file GGUF is a one-element list. An MTP sidecar
+    // (e.g. MTP/mtp-*-shared-Q8_0.gguf) joins as one more shard: its blk.<n_layer> tensors resolve by name like the
+    // trunk's, and it borrows the trunk's token_embd/output.
+    const std::string mtp_path = mtp_override == "0" ? std::string() :
+        mtp_override.empty() ? find_qwen4exp_mtp_sidecar(path) : mtp_override;
+    std::vector<std::string> shard_paths = discover_shard_paths(path);
+    if (!mtp_path.empty()) {
+        std::fprintf(stderr, "[qwen4exp] MTP sidecar: %s\n", mtp_path.c_str());
+        shard_paths.push_back(mtp_path);
+    }
     std::vector<ShardSource> shards;
-    for (const std::string & shard_path : discover_shard_paths(path)) {
+    for (const std::string & shard_path : shard_paths) {
         ShardSource shard;
         shard.path = shard_path;
         gguf_init_params params{};
@@ -379,6 +412,7 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
         }
         out.embedder.tok_embd_owned.clear();
         out.embedder.tok_embd_bytes = nullptr;
+        reset_qwen4exp_mtp_fields(out);
         for (ShardSource & shard : shards) {
             gguf_free(shard.gctx);
             if (shard.meta) {
@@ -542,10 +576,11 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
     }
     out.n_vocab = static_cast<int>(out.tok_embd->ne[1]);
 
-    for (uint32_t il = 0; il < n_layer; ++il) {
-        Qwen4ExpLayer & layer = out.layers[il];
-        layer.is_full_attention = out.compress_ratios[il] > 0;
-        layer.is_ple = is_ple_layer(il);
+    for (uint32_t il = 0; il < n_layer + (mtp_path.empty() ? 0u : 1u); ++il) {
+        const bool is_mtp = il == n_layer;   // the sidecar's layer: full attention, no PLE
+        Qwen4ExpLayer & layer = is_mtp ? out.mtp : out.layers[il];
+        layer.is_full_attention = is_mtp || out.compress_ratios[il] > 0;
+        layer.is_ple = !is_mtp && is_ple_layer(il);
 
         layer.hc_attn_norm = layer_tensor(il, "hc_attn_norm.weight");
         layer.hc_attn_down = layer_tensor(il, "hc_attn_down.weight");
@@ -624,8 +659,34 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
         }
     }
 
-    // Allocate exactly the referenced trunk tensors (MTP, if any, and the
-    // shard-2 PLE table are never uploaded).
+    if (!mtp_path.empty()) {
+        out.mtp_enorm     = layer_tensor(n_layer, "nextn.enorm.weight");
+        out.mtp_hnorm     = layer_tensor(n_layer, "nextn.hnorm.weight");
+        out.mtp_eh_proj   = layer_tensor(n_layer, "nextn.eh_proj.weight");
+        out.mtp_head_norm = layer_tensor(n_layer, "nextn.hc_head_norm.weight");
+        out.mtp_head_down = layer_tensor(n_layer, "nextn.hc_head_down.weight");
+        out.mtp_head_up   = layer_tensor(n_layer, "nextn.hc_head_up.weight");
+        const Qwen4ExpLayer * full = nullptr;
+        for (const Qwen4ExpLayer & layer : out.layers) if (layer.is_full_attention) { full = &layer; break; }
+        if (!out.mtp_enorm || !out.mtp_hnorm || !out.mtp_eh_proj || !out.mtp_head_norm ||
+            !out.mtp_head_down || !out.mtp_head_up || !full ||
+            !ggml_are_same_shape(out.mtp.wq, full->wq) || !ggml_are_same_shape(out.mtp.ffn_gate_exps, full->ffn_gate_exps)) {
+            return fail("MTP sidecar " + mtp_path + " does not match this trunk");
+        }
+        // Every shape the MTP forward graph (qwen4exp_graph.cpp: mtp_forward_batch) feeds into a
+        // matmul/reshape with no further checking, validated once here instead of failing deep in the
+        // graph (or worse, silently producing garbage).
+        if (!qwen4exp_mtp_shapes_valid({
+                    out.mtp_eh_proj->ne[0], out.mtp_eh_proj->ne[1],
+                    out.mtp_enorm->ne[0], out.mtp_hnorm->ne[0], out.mtp_head_norm->ne[0],
+                    out.mtp_head_down->ne[0], out.mtp_head_down->ne[1],
+                    out.mtp_head_up->ne[0], out.mtp_head_up->ne[1]},
+                (int64_t) n_embd, (int64_t) n_hc, (int64_t) hc_lr)) {
+            return fail("MTP sidecar " + mtp_path + " has mismatched projection/head tensor shapes");
+        }
+    }
+
+    // Allocate exactly the referenced tensors (the shard-2 PLE table is never uploaded).
     std::unordered_set<ggml_tensor *> wanted;
     auto add = [&](ggml_tensor * value) { if (value) wanted.insert(value); };
     add(out.out_norm);
@@ -633,7 +694,9 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
     add(out.output_hc_norm);
     add(out.output_hc_down);
     add(out.output_hc_up);
-    for (Qwen4ExpLayer & layer : out.layers) {
+    for (ggml_tensor * t : {out.mtp_enorm, out.mtp_hnorm, out.mtp_eh_proj, out.mtp_head_norm, out.mtp_head_down, out.mtp_head_up}) add(t);
+    for (uint32_t il = 0; il < n_layer + (mtp_path.empty() ? 0u : 1u); ++il) {
+        Qwen4ExpLayer & layer = il == n_layer ? out.mtp : out.layers[il];
         add(layer.hc_attn_norm); add(layer.hc_attn_down); add(layer.hc_attn_up);
         add(layer.hc_attn_inject); add(layer.hc_ffn_norm); add(layer.hc_ffn_down);
         add(layer.hc_ffn_up); add(layer.hc_ffn_inject);
@@ -828,6 +891,7 @@ void free_qwen4exp_weights(Qwen4ExpWeights & w) {
     w.output_hc_norm = nullptr;
     w.output_hc_down = nullptr;
     w.output_hc_up = nullptr;
+    reset_qwen4exp_mtp_fields(w);
     w.backend = nullptr;
 }
 

@@ -96,7 +96,7 @@ all three quants.
 | gfx1151 kernels: MMB bf16 and Q8_0 -> F16 WMMA GEMMs, fused HC / GDN / PLE, M-RoPE into the flash-attention layout | done |
 | Chat template, reasoning effort, thinking budget, `preserve_thinking`, `sampling_no_thinking` | done |
 | Concurrent serving (`--max-concurrency > 1`) | refused; exact 4-slot serving is a follow-up PR |
-| MTP speculative decoding | follow-up PR |
+| MTP speculative decoding | sidecar discovered automatically; adaptive k=1..3 by default, `--verify-width 1` disables, `2..5` selects fixed k=1..4 |
 | Layer split | refused |
 | Other GPUs | generic paths; kernels, defaults and quality gates are tuned and measured on gfx1151 only |
 
@@ -134,3 +134,21 @@ controls are test-only. The harness also accepts `--token-file`, `--output-dir`
 and `--calibrate`. Binary activation dumps and the HC16-off comparison were
 removed. The chunk differential remains available as
 `qwen4exp_forward_diff.py qsa --server BINARY --model MODEL --port 8711`.
+
+MTP uses the same scoped profile for drafting, verification, rollback and the
+K/V fill inside trunk prefill. `--draft PATH` selects a sidecar explicitly;
+without a sidecar the server decodes autoregressively. No MTP environment
+variables are required. The existing global adaptive-width override remains
+readable, but adaptive MTP is enabled by default without it.
+
+```bash
+server/build-hip/smoke_qwen4exp_forward MODEL.gguf 2200 --mtp 128 --mtp-all --chunk 2048
+python3 server/scripts/qwen4exp_forward_diff.py mtp --server BINARY --model MODEL \
+  --draft auto,1,2,3,4 --sidecar MTP.gguf
+```
+
+The smoke's `--mtp-draft 1..4` selects one fixed draft cap; `--mtp-all` checks
+all four at S=16 and the requested sequence length. `--chunk N` controls MTP
+prefill chunks, `--tg N` controls ordinary decode length, and `--stable N`
+checks the final N tokens against rebuilt QSA graphs. `--draft PATH|0` selects
+or disables the smoke sidecar. The MTP smoke requires the default graph.
