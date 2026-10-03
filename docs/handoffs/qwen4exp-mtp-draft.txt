@@ -1,8 +1,11 @@
 Qwen4Exp chained MTP delivery
 
 Implementation
-QWEN4EXP_MTP_DRAFT defaults to 1. Integers clamp to 1..4; malformed values use 1.
-The configured maximum is read once at cache creation. Generation reduces k
+The server's --verify-width selects MTP: 1 = off, 0 (default) = adaptive k=1..3,
+and 2..5 = fixed k=1..4. The cap is passed once at cache creation; there are no
+MTP environment controls. The sidecar is discovered in <repo>/MTP/mtp-*.gguf,
+or selected with --draft PATH. Without a sidecar generation stays autoregressive.
+Generation reduces k
 near the output/context limit. Each later draft consumes the previous draft
 and the MTP layer's last HC residual. Pending verified trunk pairs replace the
 speculative MTP KV suffix before the next chain.
@@ -39,7 +42,7 @@ worked. Network downloads are unavailable, so JSON3.11.3 was copied from the
 installed cuDNN frontend header to /tmp/qwen4exp-mtp-deps for this build.
 luce_server, smoke_qwen4exp_forward, test_server_unit and test_qwen4exp_mtp all
 built with -j4. Six changed C++ translation units also compiled independently.
-New pure tests: 376 acceptance/rollback cases plus env validation passed;
+New pure tests: 376 acceptance/rollback cases plus adaptive policy checks passed;
 its registered CTest passed. The Python --draft parser checks passed.
 test_server_unit: 582 passed, 28 failed, 3 skipped. All failures are socket
 creation/shutdown/setsockopt cases; independent probes confirm sandbox EPERM
@@ -49,24 +52,27 @@ Logs: /tmp/qwen4exp-mtp-delivery/build.log, build-final.log, test-server-unit.lo
 GPU qualification (from the repository root on gfx1151)
 Set model/sidecar paths to the files installed on that box. Use a free port.
 
-export QWEN4EXP_MODEL=/absolute/path/to/model-00001-of-00003.gguf
-export QWEN4EXP_MTP=/absolute/path/to/mtp-Q8_0.gguf
-export QWEN4EXP_DIFF_PORT=8711
-unset QWEN4EXP_UPSTREAM QWEN4EXP_DUMP
+model=/absolute/path/to/model-00001-of-00003.gguf
+sidecar=/absolute/path/to/mtp-Q8_0.gguf
 cmake -S server -B server/build-hip -G Ninja -DLUCE_GPU_BACKEND=hip -DCMAKE_HIP_ARCHITECTURES=gfx1151 -DLUCE_FA_ALL_QUANTS=OFF
-cmake --build server/build-hip --target luce_server smoke_qwen4exp_forward test_server_unit test_qwen4exp_mtp -j4
-server/build-hip/test_server_unit
+cmake --build server/build-hip --target luce_server smoke_qwen4exp_forward test_server_unit test_qwen4exp_mtp test_qwen4exp_mtp_dispatch -j4
+server/build-hip/test_server_unit test_qwen4exp
 server/build-hip/test_qwen4exp_mtp
+server/build-hip/test_qwen4exp_mtp_dispatch
 set -euo pipefail
 for s in 16 2200 2048; do
   for k in 1 2 3 4; do
-    QWEN4EXP_MTP_DRAFT=$k QWEN4EXP_SMOKE_MTP=128 server/build-hip/smoke_qwen4exp_forward "$QWEN4EXP_MODEL" "$s" 2>&1 | tee "/tmp/qwen4exp-mtp-S${s}-k${k}.log"
+    server/build-hip/smoke_qwen4exp_forward "$model" "$s" --draft "$sidecar" --mtp 128 --mtp-draft "$k" \
+      2>&1 | tee "/tmp/qwen4exp-mtp-S${s}-k${k}.log"
   done
 done
-QWEN4EXP_MTP=0 QWEN4EXP_SMOKE_STABLE=256 server/build-hip/smoke_qwen4exp_forward "$QWEN4EXP_MODEL" 2308
-export QWEN4EXP_SERVER="$PWD/server/build-hip/luce_server"
-python3 server/scripts/qwen4exp_forward_diff.py mtp --draft 1,2,3,4 --max-tokens 128
-python3 server/scripts/qwen4exp_forward_diff.py mtp --draft 1,2,3,4 --max-tokens 128 --temperature 0.7 --seed 123
+# One model load for S=16/2200, k=1..4, plus the single-row chunk fallback:
+server/build-hip/smoke_qwen4exp_forward "$model" 2200 --draft "$sidecar" --mtp 128 --mtp-all --chunk 2048
+server/build-hip/smoke_qwen4exp_forward "$model" 2308 --draft 0 --stable 256
+python3 server/scripts/qwen4exp_forward_diff.py mtp --model "$model" --sidecar "$sidecar" \
+  --server "$PWD/server/build-hip/luce_server" --draft auto,1,2,3,4 --max-tokens 128
+python3 server/scripts/qwen4exp_forward_diff.py mtp --model "$model" --sidecar "$sidecar" \
+  --server "$PWD/server/build-hip/luce_server" --draft auto,1,2,3,4 --max-tokens 128 --temperature 0.7 --seed 123
 
 Required results
 Every smoke must return 0, tokens_identical=1, logits_identical=1, and forced
@@ -78,5 +84,13 @@ report positive QSA replays and identical bits. Server A/B must report exact=Tru
 for short, crossing and long prompts at every k, load a sidecar and log actual
 speculation. Compare drafts/accepted/rate/tokens_per_step and decode tok/s;
 performance gains are measurements, not prerequisites for exactness.
-Repeat smoke with QWEN4EXP_SMOKE_CHUNK=8 to cover chunked MTP prompt catch-up.
+Repeat smoke with --chunk 8 to cover chunked MTP prompt catch-up.
 GPU equality and throughput have not been tested locally (no GPU).
+
+Session72 no-environment merge
+The gfx1151 profile is resolved once during load and scoped on the calling
+thread around trunk prefill/decode/verify, the embedded MTP K/V fill, standalone
+MTP catch-up/drafting, and rollback. The batch-invariant verify override nests
+inside that scope and restores independently. Reference/dump tests use explicit
+arguments and cannot enter MTP verification. See noenv-mtp/session72.sh for the
+same-session c993ed73 versus merged gates; GPU results remain pending that run.

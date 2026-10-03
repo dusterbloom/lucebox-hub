@@ -75,24 +75,6 @@ int main() {
     test_reset_qwen4exp_mtp_fields();
     test_qwen4exp_mtp_shapes_valid();
 
-    CHECK(qwen4exp_mtp_draft_length(nullptr) == 1);
-    for (const char * v : {"", "0", "-3", "garbage", "2x", "2.5", "999999999999999999999x"}) {
-        CHECK(qwen4exp_mtp_draft_length(v) == 1);
-    }
-    CHECK(qwen4exp_mtp_draft_length("2") == 2);
-    CHECK(qwen4exp_mtp_draft_length("3") == 3);
-    CHECK(qwen4exp_mtp_draft_length("4") == 4);
-    CHECK(qwen4exp_mtp_draft_length("5") == 4);
-    CHECK(qwen4exp_mtp_draft_length("999999999999999999999") == 4);
-    CHECK(qwen4exp_mtp_draft_length("-999999999999999999999") == 1);
-
-    CHECK(qwen4exp_mtp_verify_width(0, nullptr) == 0);
-    CHECK(qwen4exp_mtp_verify_width(0, "") == 0);
-    CHECK(qwen4exp_mtp_verify_width(0, "4") == 5);
-    CHECK(qwen4exp_mtp_verify_width(0, "2") == 3);
-    CHECK(qwen4exp_mtp_verify_width(1, "4") == 1); // explicit off wins
-    CHECK(qwen4exp_mtp_verify_width(2, "4") == 2); // explicit fixed wins
-
     // Same controller and cost seeds as the server. A rejection must narrow;
     // clean drafts at that narrower width must recover without unseen-depth
     // evidence being frozen forever. Fixed widths must never adapt.

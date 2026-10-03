@@ -6,29 +6,13 @@
 #include <array>
 #include <cassert>
 #include <cstdint>
-#include <cstdlib>
 
 namespace luce::common {
 
 constexpr int QWEN4EXP_MTP_MAX_DRAFT = 4;
 constexpr int QWEN4EXP_MTP_MAX_VERIFY = QWEN4EXP_MTP_MAX_DRAFT + 1;
 
-// Malformed values use the default; numeric values (including overflow) clamp.
-inline int qwen4exp_mtp_draft_length(const char * value) {
-    if (!value || !*value) return 1;
-    char * end = nullptr;
-    const long n = std::strtol(value, &end, 10);
-    if (end == value || *end) return 1;
-    return (int) std::clamp(n, 1L, (long) QWEN4EXP_MTP_MAX_DRAFT);
-}
-
 // Server --verify-width: 0 = adaptive k=1..3, 1 = off, 2..5 = fixed k=1..4.
-// Keep the old environment override for existing fixed-width A/B runs.
-inline int qwen4exp_mtp_verify_width(int configured, const char * legacy_draft) {
-    return configured == 0 && legacy_draft && *legacy_draft
-        ? qwen4exp_mtp_draft_length(legacy_draft) + 1 : configured;
-}
-
 inline AdaptiveSpecWidth qwen4exp_mtp_width_policy(int max_draft, bool adaptive) {
     AdaptiveSpecWidth policy(max_draft + 1, 2, adaptive);
     // Total draft + verify + rollback ms, indexed by seed-inclusive width.

@@ -357,9 +357,6 @@ std::string pick_qwen4exp_mtp_sidecar(std::vector<std::string> names) {
 }
 
 std::string find_qwen4exp_mtp_sidecar(const std::string & model_path) {
-    if (const char * env = getenv("QWEN4EXP_MTP"); env && *env) {
-        return std::strcmp(env, "0") == 0 ? std::string() : std::string(env);
-    }
     namespace fs = std::filesystem;
     std::error_code ec;
     const fs::path dir = fs::absolute(model_path, ec).parent_path().parent_path() / "MTP";
@@ -372,7 +369,9 @@ std::string find_qwen4exp_mtp_sidecar(const std::string & model_path) {
 }
 
 bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
-                        Qwen4ExpWeights & out, const std::string & mtp_override) {
+                        Qwen4ExpWeights & out, const std::string & mtp_override, bool reference) {
+    out.gfx1151 = ggml_backend_cuda_qwen4exp_supported(backend);
+    const Qwen4ExpCudaScope profile(out.gfx1151, reference);
     // Open every shard of the model; a single-file GGUF is a one-element list. An MTP sidecar
     // (e.g. MTP/mtp-*-shared-Q8_0.gguf) joins as one more shard: its blk.<n_layer> tensors resolve by name like the
     // trunk's, and it borrows the trunk's token_embd/output.

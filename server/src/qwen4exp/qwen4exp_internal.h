@@ -8,6 +8,7 @@
 #pragma once
 
 #include "internal.h"
+#include "ggml-cuda.h"
 #include "common/gguf_mmap.h"
 
 #include <cstdint>
@@ -15,6 +16,19 @@
 #include <vector>
 
 namespace luce::common {
+
+// Match ggml's calling-thread overrides, restoring them even on early returns.
+struct Qwen4ExpCudaScope {
+    const bool optimized;
+    const ggml_cuda_qwen4exp_profile previous;
+    explicit Qwen4ExpCudaScope(bool gfx1151, bool reference = false)
+        : optimized(gfx1151 && !reference),
+          previous(ggml_backend_cuda_set_qwen4exp_profile(reference ? GGML_CUDA_QWEN4EXP_REFERENCE :
+                   optimized ? GGML_CUDA_QWEN4EXP_DEFAULT : GGML_CUDA_QWEN4EXP_OFF)) {}
+    ~Qwen4ExpCudaScope() { ggml_backend_cuda_set_qwen4exp_profile(previous); }
+    Qwen4ExpCudaScope(const Qwen4ExpCudaScope &) = delete;
+    Qwen4ExpCudaScope & operator=(const Qwen4ExpCudaScope &) = delete;
+};
 
 struct Qwen4ExpLayer {
     // Hyper-connections (hc_count streams). Norm is [n_embd] reshaped to
@@ -113,6 +127,7 @@ private:
 };
 
 struct Qwen4ExpWeights {
+    bool gfx1151 = false;  // Cache profile support at load, before any allocation.
     ggml_context *        ctx     = nullptr;  // shard 1 tensor descriptors
     // Descriptor contexts of shards 2..N (split GGUFs); `ctx` covers shard 1.
     std::vector<ggml_context *> extra_meta_ctxs;
@@ -130,7 +145,7 @@ struct Qwen4ExpWeights {
 
     std::vector<Qwen4ExpLayer> layers;
 
-    // MTP draft head from a QWEN4EXP_MTP sidecar: one full-attention layer (blk.<n_layer>) and the nextn
+    // MTP draft head from an MTP sidecar: one full-attention layer (blk.<n_layer>) and the nextn
     // projections; it borrows token_embd/output. mtp_eh_proj is null when no sidecar is loaded.
     Qwen4ExpLayer mtp;
     ggml_tensor * mtp_enorm = nullptr, * mtp_hnorm = nullptr, * mtp_eh_proj = nullptr;
@@ -213,9 +228,9 @@ inline void reset_qwen4exp_mtp_fields(Qwen4ExpWeights & w) {
 bool load_qwen4exp_gguf(const std::string & path,
                         ggml_backend_t backend,
                         Qwen4ExpWeights & out,
-                        const std::string & mtp_override = ""); // empty = discovery/env, "0" = off
+                        const std::string & mtp_override = "", bool reference = false); // empty = discovery, "0" = off
 
-// MTP sidecar of a model: QWEN4EXP_MTP=<path> names one and QWEN4EXP_MTP=0 turns MTP off; otherwise the Unsloth
+// Discover an MTP sidecar in the Unsloth
 // layout <repo>/<quant>/<model>.gguf -> <repo>/MTP/mtp-*.gguf is searched. Empty when there is none.
 std::string find_qwen4exp_mtp_sidecar(const std::string & model_path);
 

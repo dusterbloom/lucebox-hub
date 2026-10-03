@@ -64,6 +64,7 @@ struct Qwen4ExpDecodeWorkspace {
 };
 
 struct Qwen4ExpCache {
+    bool reference = false;  // test-only upstream differential (padded KV and reference math)
     ggml_context *        ctx     = nullptr;
     ggml_backend_buffer_t buf     = nullptr;
 
@@ -122,14 +123,14 @@ struct Qwen4ExpCache {
     // Pinned graph-input ring (see Qwen4ExpInputRing).
     Qwen4ExpInputRing input_ring;
 
-    // T=1 decode workspace reuse (excluded under QWEN4EXP_UPSTREAM=1); the verify and MTP draft graphs keep their own.
+    // T=1 decode workspace reuse (excluded in reference tests); the verify and MTP draft graphs keep their own.
     Qwen4ExpDecodeWorkspace decode_workspace, verify_workspace, mtp_workspace;
 };
 
 // `mtp` adds the MTP draft layer's K/V and the verify rollback state (needs a loaded sidecar).
 bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
                            int max_ctx, ggml_type kv_type, Qwen4ExpCache & out, bool mtp = false,
-                           int mtp_draft = 0); // 0 = legacy environment/default; otherwise allocate this cap once
+                           int mtp_draft = 1, bool reference = false); // allocate the explicit draft cap once
 
 void free_qwen4exp_cache(Qwen4ExpCache & c);
 

@@ -62,9 +62,10 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
                                        std::vector<float> * out_hidden = nullptr,
                                        bool verify = false,
                                        bool qsa_rebuild_reference = false, // smoke oracle only
-                                       bool mtp_prefill = false);
+                                       bool mtp_prefill = false,
+                                       bool dump = false); // test-only activation summaries
 
-// The cache was created with `mtp` and the graph is the default one (not QWEN4EXP_UPSTREAM / QWEN4EXP_DUMP).
+// The cache was created with `mtp` and the graph is the default one (not a reference test).
 bool qwen4exp_verify_supported(const Qwen4ExpCache & cache);
 
 // Retain the first `retained` verify inputs (accepted drafts + 1, or fewer at EOS).

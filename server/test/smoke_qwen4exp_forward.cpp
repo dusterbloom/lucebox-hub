@@ -8,26 +8,25 @@
 // Usage:
 //   smoke_qwen4exp_forward <shard1.gguf> [seq_len=16]
 //
-// QWEN4EXP_SMOKE_MTP=N (needs the MTP sidecar): greedy-decodes N tokens after the seq_len-token prompt with plain
+// --mtp N (needs the MTP sidecar): greedy-decodes N tokens after the seq_len-token prompt with plain
 // decode and with MTP speculation and fails unless both give the same tokens from bit-identical logits. Use a
 // seq_len past 2052 to cover QSA decode, e.g.
-//   QWEN4EXP_MTP_DRAFT=4 QWEN4EXP_SMOKE_MTP=128 smoke_qwen4exp_forward <shard1.gguf> 2200
+//   smoke_qwen4exp_forward <shard1.gguf> 2200 --mtp 128 --mtp-draft 4
 // Also forces every retained prefix at all four block alignments and compares
 // cache bytes plus replacement-token logits, including QSA block recompletion.
 
 #include "qwen4exp_internal.h"
 #include "qwen4exp_graph.h"
 #include "qwen4exp_cache.h"
-#include "common/platform_env.h"
 
 #include "ggml-cuda.h"
 
 #include <algorithm>
 #include <chrono>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -68,28 +67,27 @@ uint64_t logits_hash(const std::vector<float> & x) {
     return h;
 }
 
-// QWEN4EXP_SMOKE_MTP: greedy-decode n_gen tokens after `prompt` twice -- plain T=1 steps, then MTP speculation
+// --mtp: greedy-decode n_gen tokens after `prompt` twice -- plain T=1 steps, then MTP speculation
 // (k chained drafts, k+1-token verify, rollback on reject) -- and require the same tokens from bit-identical logits at every
-// position. Prefill runs in chunks of QWEN4EXP_SMOKE_CHUNK (default: the whole prompt).
+// position. Prefill runs in chunks of --chunk (default: the whole prompt).
 bool same_cache(const Qwen4ExpCache & a, const Qwen4ExpCache & b, int tokens, bool same_pooled_count);
 
-int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::vector<int32_t> & prompt, int n_gen) {
+int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::vector<int32_t> & prompt, int n_gen, int k, int chunk) {
     Qwen4ExpCache cache;
     const int S = (int) prompt.size();
     if (!w.mtp_eh_proj || n_gen < 1 ||
-        !create_qwen4exp_cache(backend, w, S + n_gen + 4, GGML_TYPE_F16, cache, /*mtp=*/true) ||
+        !create_qwen4exp_cache(backend, w, S + n_gen + 4, GGML_TYPE_F16, cache, /*mtp=*/true, k) ||
         !qwen4exp_verify_supported(cache)) {
-        std::fprintf(stderr, "[smoke] mtp: needs a sidecar (QWEN4EXP_MTP or <repo>/MTP/mtp-*.gguf) and the default graph\n");
+        std::fprintf(stderr, "[smoke] mtp: needs a sidecar (--draft PATH or <repo>/MTP/mtp-*.gguf) and the default graph\n");
         free_qwen4exp_cache(cache);
         return 1;
     }
     Qwen4ExpCache folded;
-    if (!create_qwen4exp_cache(backend, w, S + n_gen + 4, GGML_TYPE_F16, folded, /*mtp=*/true)) {
+    if (!create_qwen4exp_cache(backend, w, S + n_gen + 4, GGML_TYPE_F16, folded, /*mtp=*/true, k)) {
         free_qwen4exp_cache(cache);
         return 1;
     }
-    const char * chunk_env = getenv("QWEN4EXP_SMOKE_CHUNK");
-    const int chunk = chunk_env ? std::max(1, std::atoi(chunk_env)) : S;
+    if (chunk == 0) chunk = S;
     const size_t V = (size_t) w.n_vocab, hd = (size_t) w.n_embd * w.n_hc;
     auto top = [&](const float * row) { return (int32_t) (std::max_element(row, row + V) - row); };
     std::vector<float> logits, hidden, mtp_h, mtp_logits;
@@ -284,13 +282,12 @@ bool same_cache(const Qwen4ExpCache & a, const Qwen4ExpCache & b, int tokens, bo
 // model's natural acceptance rate. After truncation replace the first rejected
 // input and finish its block; compare authoritative state and logits with AR.
 int run_mtp_rollback_check(ggml_backend_t backend, const Qwen4ExpWeights & w,
-                           const std::vector<int32_t> & prompt) {
+                           const std::vector<int32_t> & prompt, int k) {
     Qwen4ExpCache cache, reference;
     const int S = (int) prompt.size();
     const int capacity = S + 512;
-    bool ok = create_qwen4exp_cache(backend, w, capacity, GGML_TYPE_F16, cache, true) &&
+    bool ok = create_qwen4exp_cache(backend, w, capacity, GGML_TYPE_F16, cache, true, k) &&
               create_qwen4exp_cache(backend, w, capacity, GGML_TYPE_F16, reference);
-    const int k = cache.mtp_draft;
     std::vector<float> actual, expected, verified;
     ok = ok && qwen4exp_forward(backend, w, cache, prompt.data(), S, 0, actual).ok &&
                qwen4exp_forward(backend, w, reference, prompt.data(), S, 0, expected).ok;
@@ -343,16 +340,46 @@ int run_mtp_rollback_check(ggml_backend_t backend, const Qwen4ExpWeights & w,
 
 int main(int argc, char ** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <shard1.gguf> [seq_len=16]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <shard1.gguf> [seq_len=16] [--token-file FILE] [--split N[:chunk]] [--reference] [--dump] [--draft PATH|0] [--mtp N] [--mtp-draft 1..4] [--mtp-all] [--chunk N] [--tg N] [--stable N]\n", argv[0]);
         return 2;
     }
     const std::string path = argv[1];
-    const int S = (argc >= 3) ? std::atoi(argv[2]) : 16;
-    if (S < 1) {
-        std::fprintf(stderr, "[smoke] seq_len must be >= 1\n");
-        return 2;
+    int S = 16, N = 0, step = 1;
+    int n_gen = 1, mtp_gen = 0, mtp_draft = 1, chunk = 0, stable = 0;
+    bool mtp_all = false;
+    std::string draft;
+    const char * token_file = nullptr;
+    bool reference = false, dump = false;
+    auto positive = [](const char * first, const char * last, int & n) {
+        const auto r = std::from_chars(first, last, n);
+        return r.ec == std::errc{} && r.ptr == last && n > 0;
+    };
+    int arg = 2;
+    if (arg < argc && argv[arg][0] != '-') {
+        if (!positive(argv[arg], argv[arg] + std::strlen(argv[arg]), S)) return 2;
+        ++arg;
     }
-
+    for (; arg < argc; ++arg) {
+        const std::string opt = argv[arg];
+        if (opt == "--reference") reference = true;
+        else if (opt == "--dump") dump = true;
+        else if (opt == "--mtp-all") mtp_all = true;
+        else if (opt == "--draft" && arg + 1 < argc) draft = argv[++arg];
+        else if ((opt == "--tg" || opt == "--mtp" || opt == "--mtp-draft" || opt == "--chunk" || opt == "--stable") && arg + 1 < argc) {
+            int & value = opt == "--tg" ? n_gen : opt == "--mtp" ? mtp_gen :
+                          opt == "--mtp-draft" ? mtp_draft : opt == "--chunk" ? chunk : stable;
+            const char * val = argv[++arg];
+            if (!positive(val, val + std::strlen(val), value)) return 2;
+        }
+        else if (opt == "--token-file" && arg + 1 < argc) token_file = argv[++arg];
+        else if (opt == "--split" && arg + 1 < argc) {
+            const char * val = argv[++arg], * end = val + std::strlen(val), * colon = std::strchr(val, ':');
+            if (!positive(val, colon ? colon : end, N) || N >= S ||
+                (colon && !positive(colon + 1, end, step))) return 2;
+        } else { std::fprintf(stderr, "invalid option: %s\n", argv[arg]); return 2; }
+    }
+    if (mtp_draft > QWEN4EXP_MTP_MAX_DRAFT || stable >= S ||
+        (mtp_all && (mtp_gen == 0 || S < 16)) || (mtp_gen && (reference || dump))) return 2;
     ggml_backend_t backend = ggml_backend_cuda_init(0);
     if (!backend) {
         std::fprintf(stderr, "[smoke] no GPU backend available\n");
@@ -361,7 +388,7 @@ int main(int argc, char ** argv) {
 
     Qwen4ExpWeights w;
     auto t_load0 = std::chrono::steady_clock::now();
-    if (!load_qwen4exp_gguf(path, backend, w)) {
+    if (!load_qwen4exp_gguf(path, backend, w, draft, reference)) {
         std::fprintf(stderr, "[smoke] load_qwen4exp_gguf failed\n");
         ggml_backend_free(backend);
         return 1;
@@ -371,10 +398,8 @@ int main(int argc, char ** argv) {
         std::chrono::duration<double>(t_load1 - t_load0).count(),
         w.n_layer, w.n_vocab, w.ple_reader.available() ? "yes" : "no");
 
-    const char * tg_env = getenv("QWEN4EXP_SMOKE_TG");
-    const int n_gen = tg_env ? std::max(1, std::atoi(tg_env)) : 1;
     Qwen4ExpCache cache;
-    if (!create_qwen4exp_cache(backend, w, S + std::max(4, n_gen), GGML_TYPE_F16, cache)) {
+    if (!create_qwen4exp_cache(backend, w, S + std::max(4, n_gen), GGML_TYPE_F16, cache, false, 1, reference)) {
         std::fprintf(stderr, "[smoke] create_qwen4exp_cache failed\n");
         free_qwen4exp_weights(w);
         ggml_backend_free(backend);
@@ -386,11 +411,11 @@ int main(int argc, char ** argv) {
         tokens[(size_t) i] = (int32_t) ((i * 7919 + 13) % w.n_vocab);
     }
 
-    if (const char * file = getenv("QWEN4EXP_TOKEN_FILE")) {
-        std::ifstream input(file);
+    if (token_file) {
+        std::ifstream input(token_file);
         for (int i = 0; i < S; ++i) {
             if (!(input >> tokens[i]) || tokens[i] < 0 || tokens[i] >= w.n_vocab) {
-                std::fprintf(stderr, "invalid QWEN4EXP_TOKEN_FILE\n");
+                std::fprintf(stderr, "invalid --token-file\n");
                 return 2;
             }
         }
@@ -399,7 +424,7 @@ int main(int argc, char ** argv) {
     }
     std::vector<float> logits;
     auto t0 = std::chrono::steady_clock::now();
-    const Qwen4ExpForwardResult pre = qwen4exp_forward(backend, w, cache, tokens.data(), S, 0, logits);
+    const Qwen4ExpForwardResult pre = qwen4exp_forward(backend, w, cache, tokens.data(), S, 0, logits, nullptr, false, false, false, dump);
     auto t1 = std::chrono::steady_clock::now();
 
     int rc = 0;
@@ -416,7 +441,7 @@ int main(int argc, char ** argv) {
         auto d0 = std::chrono::steady_clock::now();
         for (int i = 0; i < n_gen; ++i) {
             const int32_t next = (int32_t) argmax(logits);
-            const auto dec = qwen4exp_forward(backend, w, cache, &next, 1, S + i, logits);
+            const auto dec = qwen4exp_forward(backend, w, cache, &next, 1, S + i, logits, nullptr, false, false, false, dump);
             if (!dec.ok || logits.size() != (size_t) w.n_vocab || !all_finite(logits)) {
                 std::fprintf(stderr, "[smoke] decode FAILED pos=%d\n", S + i);
                 rc = 1;
@@ -430,8 +455,8 @@ int main(int argc, char ** argv) {
 
     // Optional exact differential: identical prefill, then every T=1 step with
     // stable QSA enabled vs the original per-step rebuild (including cache bits).
-    if (const char * check = getenv("QWEN4EXP_SMOKE_STABLE"); rc == 0 && check) {
-        const int n = std::atoi(check), start = S - n;
+    if (rc == 0 && stable > 0) {
+        const int n = stable, start = S - n;
         Qwen4ExpCache reference;
         bool ok = n > 0 && n < S && create_qwen4exp_cache(backend, w, cache.max_ctx, GGML_TYPE_F16, reference);
         std::vector<float> expected, actual;
@@ -458,22 +483,19 @@ int main(int argc, char ** argv) {
         if (!ok || replays == 0) rc = 1;
     }
 
-    // QWEN4EXP_SMOKE_SPLIT=N[:c]: the same S tokens as one prefill vs a prefill of S-N plus the last N tokens in
+    // --split N[:c]: the same S tokens as one prefill vs a prefill of S-N plus the last N tokens in
     // chunks of c (default 1, i.e. decode) must give the same last-position distribution. QSA selection is
     // chunk-invariant, so past the block budget this checks decode (c=1) against prefill; c in 9..127 runs dense
     // attention there and shows how far a wrong selection drifts.
-    if (const char * split_env = getenv("QWEN4EXP_SMOKE_SPLIT"); rc == 0 && split_env) {
-        const int N = std::atoi(split_env);
-        const char * colon = std::strchr(split_env, ':');
-        const int step = colon ? std::max(1, std::atoi(colon + 1)) : 1;
+    if (rc == 0 && N > 0) {
         std::vector<float> full, split;
         reset_qwen4exp_state(backend, cache);
-        bool ok = N > 0 && N < S && qwen4exp_forward(backend, w, cache, tokens.data(), S, 0, full).ok;
+        bool ok = N > 0 && N < S && qwen4exp_forward(backend, w, cache, tokens.data(), S, 0, full, nullptr, false, false, false, dump).ok;
         reset_qwen4exp_state(backend, cache);
-        ok = ok && qwen4exp_forward(backend, w, cache, tokens.data(), S - N, 0, split).ok;
+        ok = ok && qwen4exp_forward(backend, w, cache, tokens.data(), S - N, 0, split, nullptr, false, false, false, dump).ok;
         for (int i = S - N; ok && i < S; i += step) {
             const int n = std::min(step, S - i);
-            ok = qwen4exp_forward(backend, w, cache, &tokens[i], n, i, split).ok;
+            ok = qwen4exp_forward(backend, w, cache, &tokens[i], n, i, split, nullptr, false, false, false, dump).ok;
         }
         float max_diff = 0.0f;
         double kl = 0.0;
@@ -507,42 +529,39 @@ int main(int argc, char ** argv) {
         if (!ok || argmax(full) != argmax(split)) rc = 1;
     }
 
-    if (const char * mtp_env = getenv("QWEN4EXP_SMOKE_MTP"); rc == 0 && mtp_env) {
-        // Session69: load the 79-GiB model once for all k/depth gates.
-        const bool all = getenv("QWEN4EXP_SMOKE_MTP_ALL") != nullptr;
-        for (int n : all ? std::vector<int>{16, S} : std::vector<int>{S}) {
-            if (n > S) { rc = 1; break; }
+    if (rc == 0 && mtp_gen > 0) {
+        // Load the model once for all widths and both depths.
+        for (int n : mtp_all ? std::vector<int>{16, S} : std::vector<int>{S}) {
             const std::vector<int32_t> prompt(tokens.begin(), tokens.begin() + n);
-            for (int k = 1; k <= (all ? 4 : 1); ++k) {
-                if (all) set_environment_variable("QWEN4EXP_MTP_DRAFT", std::to_string(k).c_str(), true);
-                const int decode_rc = run_mtp_check(backend, w, prompt, std::atoi(mtp_env));
+            for (int k = mtp_all ? 1 : mtp_draft; k <= (mtp_all ? 4 : mtp_draft); ++k) {
+                const int decode_rc = run_mtp_check(backend, w, prompt, mtp_gen, k, chunk);
                 // Independent caches: report rollback even when natural drafting differs.
-                const int rollback_rc = run_mtp_rollback_check(backend, w, prompt);
+                const int rollback_rc = run_mtp_rollback_check(backend, w, prompt, k);
                 rc |= decode_rc || rollback_rc;
             }
         }
-        if (all && S > 2048) {
+        if (mtp_all && S > 2048) {
             // A 2048-row chunk followed by one row exercises the server fallback.
             rc |= run_mtp_check(backend, w, std::vector<int32_t>(tokens.begin(), tokens.begin() + 2049),
-                                std::atoi(mtp_env));
+                                mtp_gen, 4, 2048);
         }
     }
 
     // A reset/reuse must match a freshly allocated cache for the same prefix.
     if (rc == 0) {
         Qwen4ExpCache fresh;
-        if (!create_qwen4exp_cache(backend, w, S + 4, GGML_TYPE_F16, fresh)) {
+        if (!create_qwen4exp_cache(backend, w, S + 4, GGML_TYPE_F16, fresh, false, 1, reference)) {
             std::fprintf(stderr, "[smoke] fresh cache creation failed\n");
             rc = 1;
         } else {
             reset_qwen4exp_state(backend, cache);
             reset_qwen4exp_state(backend, fresh);
             std::vector<float> tmp, reused_logits, fresh_logits;
-            const bool p1 = qwen4exp_forward(backend, w, cache, tokens.data(), S, 0, tmp).ok;
-            const bool p2 = qwen4exp_forward(backend, w, fresh, tokens.data(), S, 0, tmp).ok;
+            const bool p1 = qwen4exp_forward(backend, w, cache, tokens.data(), S, 0, tmp, nullptr, false, false, false, dump).ok;
+            const bool p2 = qwen4exp_forward(backend, w, fresh, tokens.data(), S, 0, tmp, nullptr, false, false, false, dump).ok;
             const int32_t reuse_token = 77 % w.n_vocab;
-            const Qwen4ExpForwardResult rr = qwen4exp_forward(backend, w, cache, &reuse_token, 1, S, reused_logits);
-            const Qwen4ExpForwardResult fr = qwen4exp_forward(backend, w, fresh, &reuse_token, 1, S, fresh_logits);
+            const Qwen4ExpForwardResult rr = qwen4exp_forward(backend, w, cache, &reuse_token, 1, S, reused_logits, nullptr, false, false, false, dump);
+            const Qwen4ExpForwardResult fr = qwen4exp_forward(backend, w, fresh, &reuse_token, 1, S, fresh_logits, nullptr, false, false, false, dump);
             if (!p1 || !p2 || !rr.ok || !fr.ok || !same_bits(reused_logits, fresh_logits)) {
                 std::fprintf(stderr, "[smoke] cancel-reset-reuse FAILED\n");
                 rc = 1;

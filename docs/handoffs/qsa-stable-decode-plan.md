@@ -95,7 +95,7 @@ during an inference session, as in the existing dense stable path.
 in buckets around every selection boundary, including all widths 513..1088,
 all-zero/all-equal/cutoff/discrete ties and unique scores. Runtime inputs change
 while the padded graph survives. `test_qwen4exp_indexer_score` adds bitwise
-masked/padded-vs-exact T=1 comparisons. `QWEN4EXP_SMOKE_STABLE` uses a function
+masked/padded-vs-exact T=1 comparisons. `--stable N` uses a function
 argument for the original rebuilding oracle, compares every logit and live
 cache byte, and checks build/replay counters (pointer equality could miss a
 rebuild into recycled metadata).
@@ -121,12 +121,12 @@ GGML_DS4_TOPK_BLOCK_RADIX=0 server/build/test_qwen4exp_qsa_ids
 GGML_DS4_TOPK_BLOCK_RADIX=1 server/build/test_qwen4exp_qsa_ids
 server/build/test_qwen4exp_indexer_score
 for split in 100:1 200:1 100:100 256:128; do
-  QWEN4EXP_QSA=1 QWEN4EXP_TOKEN_FILE="$QSA_TOKENS" QWEN4EXP_SMOKE_SPLIT="$split" server/build/smoke_qwen4exp_forward "$QSA_MODEL" 6000
+  server/build/smoke_qwen4exp_forward "$QSA_MODEL" 6000 --token-file "$QSA_TOKENS" --split "$split"
 done
 # Exact KL in order: 0.082874 / 0.118543 / 0.652715 / 0.734763.
-QWEN4EXP_QSA=1 QWEN4EXP_TOKEN_FILE="$QSA_TOKENS" QWEN4EXP_SMOKE_STABLE=3952 server/build/smoke_qwen4exp_forward "$QSA_MODEL" 6000
-QWEN4EXP_QSA=1 QWEN4EXP_SMOKE_TG=128 QWEN4EXP_TOKEN_FILE="$QSA_TOKENS_4K" server/build/smoke_qwen4exp_forward "$QSA_MODEL" 4096
-QWEN4EXP_QSA=1 QWEN4EXP_SMOKE_TG=128 QWEN4EXP_TOKEN_FILE="$QSA_TOKENS_16K" server/build/smoke_qwen4exp_forward "$QSA_MODEL" 16384
+server/build/smoke_qwen4exp_forward "$QSA_MODEL" 6000 --token-file "$QSA_TOKENS" --stable 3952
+server/build/smoke_qwen4exp_forward "$QSA_MODEL" 4096 --token-file "$QSA_TOKENS_4K" --tg 128
+server/build/smoke_qwen4exp_forward "$QSA_MODEL" 16384 --token-file "$QSA_TOKENS_16K" --tg 128
 ```
 
 The stable comparison must be bitwise; its long run crosses dense-to-QSA,
