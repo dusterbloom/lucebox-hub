@@ -36,7 +36,7 @@ Qwen4ExpSeqEngine::Qwen4ExpSeqEngine(
       pool_(pool_blocks(max_ctx, caches_.size()),
             (uint32_t)caches_.size(), 256),
       slots_(pool_, max_ctx),
-      prefill_chunk_(std::clamp(prefill_chunk, 1, 512)) {}
+      prefill_chunk_(std::max(prefill_chunk, 1)) {}
 
 Qwen4ExpSeqEngine::~Qwen4ExpSeqEngine() {
     ggml_backend_synchronize(backend_);

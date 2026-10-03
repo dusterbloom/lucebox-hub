@@ -98,7 +98,7 @@ bool Qwen4ExpBackend::init() {
         }
         seq_engine_ = std::make_unique<Qwen4ExpSeqEngine>(
             backend_, weights_, std::move(caches), cfg_.device.max_ctx,
-            std::min(cfg_.chunk, 512));
+            cfg_.chunk);
         std::fprintf(stderr,
             "[qwen4exp-seq] experimental independent-slot engine enabled: %d full F16 caches, ctx=%d\n",
             cfg_.max_concurrency, cfg_.device.max_ctx);
@@ -169,7 +169,7 @@ bool Qwen4ExpBackend::unpark(ParkTarget target) {
         }
         seq_engine_ = std::make_unique<Qwen4ExpSeqEngine>(
             backend_, weights_, std::move(caches), cfg_.device.max_ctx,
-            std::min(cfg_.chunk, 512));
+            cfg_.chunk);
     }
     parked_ = false;
     std::printf("[qwen4exp] target unparked\n");
