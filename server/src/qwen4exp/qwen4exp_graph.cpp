@@ -87,6 +87,18 @@ ggml_tensor * repeat_dim1(ggml_context * c, ggml_tensor * x, int64_t hc) {
     return ggml_repeat_4d(c, x, x->ne[0], hc, x->ne[2], x->ne[3]);
 }
 
+// Shared by the standalone draft/oracle and the device-only prefill slices.
+static ggml_tensor * mtp_input(ggml_context * ctx, const Qwen4ExpWeights & w,
+                               ggml_tensor * inp_emb, ggml_tensor * inp_h) {
+    const int64_t H = w.n_embd, hc = w.n_hc, T = inp_emb->ne[1];
+    // nextn front: stream s of the new residual is eh_proj [enorm(e) ; hnorm(h)_s]; hnorm spans all HC streams.
+    ggml_tensor * e = ggml_mul(ctx, ggml_rms_norm(ctx, inp_emb, w.rms_eps), w.mtp_enorm);
+    ggml_tensor * h = ggml_mul(ctx, ggml_rms_norm(ctx, inp_h, w.rms_eps), w.mtp_hnorm);
+    ggml_tensor * x = ggml_concat(ctx, repeat_dim1(ctx, ggml_reshape_3d(ctx, e, H, 1, T), hc),
+                                  ggml_reshape_3d(ctx, h, H, hc, T), 0);                        // [2H, hc, T]
+    return ggml_reshape_3d(ctx, mm(ctx, w.mtp_eh_proj, ggml_reshape_2d(ctx, x, 2 * H, hc * T)), H, hc, T);
+}
+
 // ── Hyper-connections ───────────────────────────────────────────────────
 
 static ggml_tensor * hc_mix_body(ggml_context * c, ggml_tensor * xn, ggml_tensor * w_down,
@@ -907,10 +919,13 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
                                        int pos0,
                                        std::vector<float> & out_logits,
                                        std::vector<float> * out_hidden,
-                                       bool verify, bool qsa_rebuild_reference) {
+                                       bool verify, bool qsa_rebuild_reference, bool mtp_prefill) {
     Qwen4ExpForwardResult res;
     if (n_tokens <= 0 || pos0 < 0 || !tokens) return res;
     if (verify && (n_tokens < 2 || n_tokens > cache.mtp_draft + 1 || !qwen4exp_verify_supported(cache))) return res;
+    if (mtp_prefill && (n_tokens <= 1 || verify || qsa_rebuild_reference || !out_hidden ||
+        !qwen4exp_verify_supported(cache) || !cache.mtp_prev_hidden ||
+        (pos0 > 0 && cache.mtp_prev_pos != pos0 - 1))) return res;
     cache.spec_tokens = 0;
     // QWEN4EXP_DUMP=1 materialises per-layer activations and prints finite/absmax/mean.
     static const bool dump = getenv("QWEN4EXP_DUMP") != nullptr;
@@ -1366,6 +1381,39 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
         ggml_build_forward_expand(gf, hidden);
     }
 
+    ggml_tensor * mtp_positions = nullptr;
+    if (mtp_prefill) {
+        const int64_t H = w.n_embd, hc = w.n_hc, hd = H * hc;
+        const int64_t first = pos0 == 0 ? 1 : 0, pairs = T - first, start = pos0 - (1 - first);
+        ggml_tensor * h = ggml_reshape_2d(ctx, hidden, hd, T);
+        if (pos0 > 0) {
+            h = ggml_concat(ctx, cache.mtp_prev_hidden,
+                ggml_view_2d(ctx, h, hd, T - 1, h->nb[1], 0), 1);
+        }
+        mtp_positions = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 4 * pairs);
+        ggml_set_input(mtp_positions);
+        // One submission, but exactly the old 512-row GEMMs, including the first
+        // chunk's short final slice. A single wider GEMM changes the K/V bytes.
+        for (int64_t i = 0; i < pairs; i += 512) {
+            const int64_t n = std::min<int64_t>(512, pairs - i);
+            ggml_tensor * e = ggml_view_2d(ctx, inp_emb, H, n, inp_emb->nb[1], (i + first) * inp_emb->nb[1]);
+            ggml_tensor * hi = ggml_view_2d(ctx, h, hd, n, h->nb[1], i * h->nb[1]);
+            ggml_tensor * p = ggml_reshape_1d(ctx, ggml_cont(ctx,
+                ggml_view_2d(ctx, mtp_positions, n, 4, pairs * sizeof(int32_t), i * sizeof(int32_t))), 4 * n);
+            ggml_tensor * r = mtp_input(ctx, w, e, hi);
+            const auto & L = w.mtp;
+            ggml_tensor * cur = hc_mix(ctx, r, L.hc_attn_norm, L.hc_attn_down, L.hc_attn_up,
+                nullptr, nullptr, H, hc, w.rms_eps);
+            build_full_attn(ctx, gf, cur, L, w, cache.mtp_k, cache.mtp_v, nullptr, nullptr,
+                p, nullptr, nullptr, start + i + n, start + i, 4, 0, QSA_DENSE, w.n_layer,
+                {}, nullptr, nullptr, /*kv_only=*/true);
+        }
+        // Carry one authoritative hidden row across chunks; only this row is
+        // read back for the first decode step. All prompt pairs stay on device.
+        hidden = ggml_view_2d(ctx, hidden, hd, 1, hidden->nb[2], (T - 1) * hidden->nb[2]);
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, hidden, cache.mtp_prev_hidden));
+    }
+
     // Point input tensors at this call's pinned ring slot before allocation so the gallocr leaves them alone.
     char * ring_embd = nullptr;
     char * ring_pos  = nullptr;
@@ -1474,6 +1522,12 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
             }
         }
     }
+    if (mtp_positions) {
+        const int64_t pairs = T - (pos0 == 0 ? 1 : 0), start = pos0 == 0 ? 0 : pos0 - 1;
+        std::vector<int32_t> p((size_t) 4 * pairs, 0);
+        for (int64_t i = 0; i < pairs; ++i) p[i] = p[pairs + i] = p[2 * pairs + i] = (int32_t) (start + i);
+        ggml_backend_tensor_set(mtp_positions, p.data(), 0, ggml_nbytes(mtp_positions));
+    }
     const int32_t kv_row_value = pos0;
     upload_qsa(decode_ws);
     if (use_stable_graph) {
@@ -1533,6 +1587,7 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
     }
     // Commit only after the graph computed: a failed compute must not mark blocks the kernel never pooled.
     cache.cur_pos = (int) kv_len;
+    if (mtp_prefill) cache.mtp_prev_pos = pos0 + n_tokens - 1;
     if (verify) { cache.spec_pos = pos0; cache.spec_tokens = n_tokens; }
     if (qsa != QSA_DENSE) cache.indexer_blocks = (int) ((pos0 + T) / qsa_ratio(w));
 
@@ -1677,12 +1732,7 @@ bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4E
     ggml_tensor * mask      = !kv_only && T > 1 ? ggml_new_tensor_2d(ctx, GGML_TYPE_F16, kv_len, T) : nullptr;
     for (ggml_tensor * t : {inp_emb, inp_h, positions, mask}) if (t) ggml_set_input(t);
 
-    // nextn front: stream s of the new residual is eh_proj [enorm(e) ; hnorm(h)_s]; hnorm spans all HC streams.
-    ggml_tensor * e = ggml_mul(ctx, ggml_rms_norm(ctx, inp_emb, w.rms_eps), w.mtp_enorm);
-    ggml_tensor * h = ggml_mul(ctx, ggml_rms_norm(ctx, inp_h, w.rms_eps), w.mtp_hnorm);
-    ggml_tensor * x = ggml_concat(ctx, repeat_dim1(ctx, ggml_reshape_3d(ctx, e, H, 1, T), hc),
-                                  ggml_reshape_3d(ctx, h, H, hc, T), 0);                        // [2H, hc, T]
-    ggml_tensor * res = ggml_reshape_3d(ctx, mm(ctx, w.mtp_eh_proj, ggml_reshape_2d(ctx, x, 2 * H, hc * T)), H, hc, T);
+    ggml_tensor * res = mtp_input(ctx, w, inp_emb, inp_h);
 
     // One trunk-style layer (upstream-order HC helpers; dense attention on the draft layer's own K/V).
     const Qwen4ExpLayer & L = w.mtp;

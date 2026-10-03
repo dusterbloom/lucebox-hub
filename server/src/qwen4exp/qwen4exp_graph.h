@@ -50,6 +50,8 @@ struct Qwen4ExpForwardResult {
 // (batch-invariant matmuls, per-token attention), out_logits holds all rows,
 // and the cache keeps the state after every token for
 // qwen4exp_verify_rollback.
+// mtp_prefill (n_tokens > 1, contiguous prompt chunks): append K/V-only MTP
+// slices to this graph. out_hidden receives only the last pending trunk row.
 Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
                                        const Qwen4ExpWeights & w,
                                        Qwen4ExpCache & cache,
@@ -59,7 +61,8 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
                                        std::vector<float> & out_logits,
                                        std::vector<float> * out_hidden = nullptr,
                                        bool verify = false,
-                                       bool qsa_rebuild_reference = false); // smoke oracle only
+                                       bool qsa_rebuild_reference = false, // smoke oracle only
+                                       bool mtp_prefill = false);
 
 // The cache was created with `mtp` and the graph is the default one (not QWEN4EXP_UPSTREAM / QWEN4EXP_DUMP).
 bool qwen4exp_verify_supported(const Qwen4ExpCache & cache);

@@ -18,6 +18,7 @@
 #include "qwen4exp_internal.h"
 #include "qwen4exp_graph.h"
 #include "qwen4exp_cache.h"
+#include "common/platform_env.h"
 
 #include "ggml-cuda.h"
 
@@ -70,6 +71,8 @@ uint64_t logits_hash(const std::vector<float> & x) {
 // QWEN4EXP_SMOKE_MTP: greedy-decode n_gen tokens after `prompt` twice -- plain T=1 steps, then MTP speculation
 // (k chained drafts, k+1-token verify, rollback on reject) -- and require the same tokens from bit-identical logits at every
 // position. Prefill runs in chunks of QWEN4EXP_SMOKE_CHUNK (default: the whole prompt).
+bool same_cache(const Qwen4ExpCache & a, const Qwen4ExpCache & b, int tokens, bool same_pooled_count);
+
 int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::vector<int32_t> & prompt, int n_gen) {
     Qwen4ExpCache cache;
     const int S = (int) prompt.size();
@@ -77,6 +80,11 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
         !create_qwen4exp_cache(backend, w, S + n_gen + 4, GGML_TYPE_F16, cache, /*mtp=*/true) ||
         !qwen4exp_verify_supported(cache)) {
         std::fprintf(stderr, "[smoke] mtp: needs a sidecar (QWEN4EXP_MTP or <repo>/MTP/mtp-*.gguf) and the default graph\n");
+        free_qwen4exp_cache(cache);
+        return 1;
+    }
+    Qwen4ExpCache folded;
+    if (!create_qwen4exp_cache(backend, w, S + n_gen + 4, GGML_TYPE_F16, folded, /*mtp=*/true)) {
         free_qwen4exp_cache(cache);
         return 1;
     }
@@ -91,9 +99,10 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
 
     // Full MTP is the oracle: compare the actual F16 K/V bytes for every prompt
     // pair, including the pair carried across a trunk chunk boundary.
-    auto mtp_kv_bytes = [&](int pos, int n) {
+    auto mtp_kv_bytes = [&](const Qwen4ExpCache & c, int pos, int n) {
         std::vector<char> bytes;
-        for (ggml_tensor * t : {cache.mtp_k, cache.mtp_v}) {
+        if (n == 0) return bytes;
+        for (ggml_tensor * t : {c.mtp_k, c.mtp_v}) {
             const size_t size = (size_t) n * t->nb[1];
             for (int64_t h = 0; h < t->ne[2]; ++h) {
                 const size_t start = bytes.size();
@@ -107,6 +116,7 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
     // Prefill; with `mtp` also the draft layer's catch-up over the prompt (as Qwen4ExpBackend::generate_impl).
     auto prefill = [&](bool mtp) {
         reset_qwen4exp_state(backend, cache);
+        if (mtp) reset_qwen4exp_state(backend, folded);
         mtp_h.clear();
         mtp_pos = 0;
         for (int pos = 0; pos < S; pos += chunk) {
@@ -123,7 +133,7 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
                 return false;
             }
             if (n_pairs > 0) {
-                const auto expected = mtp_kv_bytes(mtp_pos, n_pairs);
+                const auto expected = mtp_kv_bytes(cache, mtp_pos, n_pairs);
                 // Poison the destination so a missing/partial write cannot pass on stale oracle bytes.
                 for (ggml_tensor * t : {cache.mtp_k, cache.mtp_v}) {
                     for (int64_t h = 0; h < t->ne[2]; ++h) {
@@ -133,12 +143,35 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
                 }
                 if (!qwen4exp_mtp_forward(backend, w, cache, mtp_tok.data(), mtp_h.data(), n_pairs, mtp_pos,
                                           mtp_logits, nullptr, /*kv_only=*/true)) return false;
-                prefill_kv_identical = expected == mtp_kv_bytes(mtp_pos, n_pairs) && mtp_logits.empty();
+                prefill_kv_identical = expected == mtp_kv_bytes(cache, mtp_pos, n_pairs) && mtp_logits.empty();
                 if (!prefill_kv_identical) return false;
+            }
+            // Independently advance the new server path. Poison its destination,
+            // then compare against the unchanged standalone/full MTP oracle.
+            for (ggml_tensor * t : {folded.mtp_k, folded.mtp_v}) {
+                for (int64_t h = 0; h < t->ne[2] && n_pairs > 0; ++h) {
+                    ggml_backend_tensor_memset(t, 0xa5, h * t->nb[2] + (size_t) mtp_pos * t->nb[1],
+                                               (size_t) n_pairs * t->nb[1]);
+                }
+            }
+            std::vector<float> folded_logits, pending;
+            if (!qwen4exp_forward(backend, w, folded, prompt.data() + pos, n, pos,
+                                  folded_logits, &pending, false, false, n > 1).ok) return false;
+            if (n == 1 && n_pairs > 0 && !qwen4exp_mtp_forward(backend, w, folded, mtp_tok.data(), mtp_h.data(),
+                                                              n_pairs, mtp_pos, mtp_logits, nullptr, true)) return false;
+            const bool trunk_same = same_bits(logits, folded_logits) && same_cache(cache, folded, pos + n, true);
+            const bool pending_same = pending.size() == hd &&
+                std::memcmp(pending.data(), hidden.data() + hidden.size() - hd, hd * sizeof(float)) == 0;
+            prefill_kv_identical = mtp_kv_bytes(cache, mtp_pos, n_pairs) == mtp_kv_bytes(folded, mtp_pos, n_pairs);
+            if (!trunk_same || !pending_same || !prefill_kv_identical) {
+                std::fprintf(stderr, "[smoke] folded prefill pos=%d n=%d trunk_identical=%d pending_identical=%d kv_identical=%d\n",
+                    pos, n, (int) trunk_same, (int) pending_same, (int) prefill_kv_identical);
+                return false;
             }
             mtp_h.erase(mtp_h.begin(), mtp_h.begin() + (std::ptrdiff_t) ((size_t) n_pairs * hd));
             mtp_pos += n_pairs;
         }
+        if (mtp) std::swap(cache, folded); // decode/rollback must consume the new path's cache
         return true;
     };
 
@@ -203,8 +236,10 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
         }
     }
     const double spec_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (ok && configured_k == 4) ok = prefill(true); // reset/reuse must discard the preceding prompt's carried row
     std::printf("[smoke] mtp prefill S=%d chunk=%d kv_identical=%d\n", S, chunk, (int) (ok && prefill_kv_identical));
     free_qwen4exp_cache(cache);
+    free_qwen4exp_cache(folded);
 
     int first_token = -1;
     for (size_t i = 0; ok && i < ref.size() && i < out.size(); ++i) {
@@ -473,10 +508,24 @@ int main(int argc, char ** argv) {
     }
 
     if (const char * mtp_env = getenv("QWEN4EXP_SMOKE_MTP"); rc == 0 && mtp_env) {
-        const int decode_rc = run_mtp_check(backend, w, tokens, std::atoi(mtp_env));
-        // Independent caches: report rollback even when natural drafting differs.
-        const int rollback_rc = run_mtp_rollback_check(backend, w, tokens);
-        rc = decode_rc || rollback_rc;
+        // Session69: load the 79-GiB model once for all k/depth gates.
+        const bool all = getenv("QWEN4EXP_SMOKE_MTP_ALL") != nullptr;
+        for (int n : all ? std::vector<int>{16, S} : std::vector<int>{S}) {
+            if (n > S) { rc = 1; break; }
+            const std::vector<int32_t> prompt(tokens.begin(), tokens.begin() + n);
+            for (int k = 1; k <= (all ? 4 : 1); ++k) {
+                if (all) set_environment_variable("QWEN4EXP_MTP_DRAFT", std::to_string(k).c_str(), true);
+                const int decode_rc = run_mtp_check(backend, w, prompt, std::atoi(mtp_env));
+                // Independent caches: report rollback even when natural drafting differs.
+                const int rollback_rc = run_mtp_rollback_check(backend, w, prompt);
+                rc |= decode_rc || rollback_rc;
+            }
+        }
+        if (all && S > 2048) {
+            // A 2048-row chunk followed by one row exercises the server fallback.
+            rc |= run_mtp_check(backend, w, std::vector<int32_t>(tokens.begin(), tokens.begin() + 2049),
+                                std::atoi(mtp_env));
+        }
     }
 
     // A reset/reuse must match a freshly allocated cache for the same prefix.

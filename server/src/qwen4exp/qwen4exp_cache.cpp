@@ -113,6 +113,7 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
     if (mtp && w.mtp_eh_proj) {   // the MTP draft layer's own K/V (dense attention, no indexer) and the verify rollback
         out.mtp_k = ggml_new_tensor_3d(out.ctx, kv_type, w.n_embd_head_k, kv_capacity, w.n_head_kv);
         out.mtp_v = ggml_new_tensor_3d(out.ctx, kv_type, w.n_embd_head_v, kv_capacity, w.n_head_kv);
+        out.mtp_prev_hidden = ggml_new_tensor_2d(out.ctx, GGML_TYPE_F32, w.n_embd * w.n_hc, 1);
         const int count = out.mtp_draft + 1;
         for (size_t i = 0; i < n_linear; ++i) {
             ggml_tensor * states = ggml_new_tensor_4d(out.ctx, GGML_TYPE_F32, S_v, S_v, H_v, count);
@@ -208,6 +209,8 @@ void free_qwen4exp_cache(Qwen4ExpCache & c) {
     c.attn_k.clear();
     c.attn_v.clear();
     c.mtp_k = c.mtp_v = nullptr;
+    c.mtp_prev_hidden = nullptr;
+    c.mtp_prev_pos = -1;
     c.spec_ssm.clear();
     c.spec_ssm_rows.clear();
     c.spec_conv_rows.clear();
@@ -244,6 +247,7 @@ void reset_qwen4exp_state(ggml_backend_t backend, Qwen4ExpCache & c) {
     }
     c.cur_pos = 0;
     c.spec_pos = -1;
+    c.mtp_prev_pos = -1;
     c.spec_tokens = 0;
     c.indexer_blocks = 0;
     c.kv_bucket_base = 0;

@@ -167,14 +167,19 @@ GenerateResult Qwen4ExpBackend::generate_impl(const GenerateRequest & req,
     const auto t_pre0 = std::chrono::steady_clock::now();
     for (size_t i = 0; i < req.prompt.size(); i += (size_t) chunk) {
         const int n = (int) std::min((size_t) chunk, req.prompt.size() - i);
+        const bool mtp_prefill = spec && n > 1;
         const Qwen4ExpForwardResult r = qwen4exp_forward(
-            backend_, weights_, cache_, req.prompt.data() + i, n, pos, logits, spec ? &hidden : nullptr);
+            backend_, weights_, cache_, req.prompt.data() + i, n, pos, logits, spec ? &hidden : nullptr,
+            false, false, mtp_prefill);
         if (!r.ok) {
             result.fail(GenerateErrorCode::PrefillFailed,
                         "qwen4exp prefill forward failed");
             return result;
         }
-        if (spec) {   // this chunk's tokens complete every pending pair but the one of its own last row
+        if (mtp_prefill) {
+            mtp_h.swap(hidden);
+            mtp_pos = pos + n - 1;
+        } else if (spec) {   // single-row chunk: retain the original catch-up path
             mtp_tok.assign(req.prompt.begin() + pos + (pos == 0 ? 1 : 0), req.prompt.begin() + pos + n);
             mtp_h.insert(mtp_h.end(), hidden.begin(), hidden.end());
             const int n_pairs = (int) mtp_tok.size();

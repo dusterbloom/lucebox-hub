@@ -79,6 +79,8 @@ struct Qwen4ExpCache {
     std::vector<ggml_tensor *> attn_v;
     ggml_tensor * mtp_k = nullptr;      // MTP draft layer, same layout; null unless created with `mtp`
     ggml_tensor * mtp_v = nullptr;
+    ggml_tensor * mtp_prev_hidden = nullptr; // one pending trunk row, for the next prefill chunk's first pair
+    int mtp_prev_pos = -1;
 
     // QSA indexer. indexer_raw holds every token's raw (pre-pool) key, [indexer_head_size, max_ctx] f32;
     // indexer_k holds pooled complete blocks (mean of `ratio` consecutive raw keys, normed and M-RoPE'd at the
