@@ -232,7 +232,9 @@ void free_qwen4exp_cache(Qwen4ExpCache & c) {
 }
 
 void reset_qwen4exp_state(ggml_backend_t backend, Qwen4ExpCache & c) {
-    (void) backend;
+    // A rejected final MTP verify leaves rollback copies queued on the backend
+    // stream; the memsets below run on another stream and must not race them.
+    ggml_backend_synchronize(backend);
     // A reset makes any stable T=1 graph's captured recurrent/KV state stale.
     // Batched graphs are rebuilt each call and use a separate shared arena.
     clear_qwen4exp_decode_workspace(c.decode_workspace);
