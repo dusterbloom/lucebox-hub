@@ -74,7 +74,21 @@ uint64_t logits_hash(const std::vector<float> & x) {
 // position. Prefill runs in chunks of --chunk (default: the whole prompt).
 bool same_cache(const Qwen4ExpCache & a, const Qwen4ExpCache & b, int tokens, bool same_pooled_count);
 
-int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::vector<int32_t> & prompt, int n_gen, int k, int chunk, bool adaptive = false) {
+std::vector<char> mtp_kv_bytes(const Qwen4ExpCache & c, int pos, int n) {
+        std::vector<char> bytes;
+        if (n == 0) return bytes;
+        for (ggml_tensor * t : {c.mtp_k, c.mtp_v}) {
+            const size_t size = (size_t) n * t->nb[1];
+            for (int64_t h = 0; h < t->ne[2]; ++h) {
+                const size_t start = bytes.size();
+                bytes.resize(start + size);
+                ggml_backend_tensor_get(t, bytes.data() + start, h * t->nb[2] + (size_t) pos * t->nb[1], size);
+            }
+        }
+        return bytes;
+    }
+
+int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::vector<int32_t> & prompt, int n_gen, int k, int chunk, bool adaptive = false, int window = 0) {
     Qwen4ExpCache cache;
     const int S = (int) prompt.size();
     if (!w.mtp_eh_proj || n_gen < 1 ||
@@ -89,6 +103,7 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
         free_qwen4exp_cache(cache);
         return 1;
     }
+    cache.mtp_window = folded.mtp_window = window;
     if (chunk == 0) chunk = S;
     const size_t V = (size_t) w.n_vocab, hd = (size_t) w.n_embd * w.n_hc;
     auto top = [&](const float * row) { return (int32_t) (std::max_element(row, row + V) - row); };
@@ -99,19 +114,7 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
 
     // Full MTP is the oracle: compare the actual F16 K/V bytes for every prompt
     // pair, including the pair carried across a trunk chunk boundary.
-    auto mtp_kv_bytes = [&](const Qwen4ExpCache & c, int pos, int n) {
-        std::vector<char> bytes;
-        if (n == 0) return bytes;
-        for (ggml_tensor * t : {c.mtp_k, c.mtp_v}) {
-            const size_t size = (size_t) n * t->nb[1];
-            for (int64_t h = 0; h < t->ne[2]; ++h) {
-                const size_t start = bytes.size();
-                bytes.resize(start + size);
-                ggml_backend_tensor_get(t, bytes.data() + start, h * t->nb[2] + (size_t) pos * t->nb[1], size);
-            }
-        }
-        return bytes;
-    };
+
 
     // Prefill; with `mtp` also the draft layer's catch-up over the prompt (as Qwen4ExpBackend::generate_impl).
     auto prefill = [&](bool mtp) {
@@ -193,7 +196,7 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
 
     long long drafts = 0, accepted = 0, steps = 0;
     const int configured_k = cache.mtp_draft;
-    auto policy = qwen4exp_mtp_width_policy(configured_k, adaptive);
+    auto policy = qwen4exp_mtp_width_policy(configured_k, adaptive, S);
     auto emit = [&](const float * row) {
         const size_t index = out.size();
         out.push_back(top(row));
@@ -209,11 +212,44 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
         int pos = S;
         std::vector<int32_t> draft_tokens;
         while (ok && (int) out.size() < n_gen) {
-            const int k = std::min(policy.next_width_cost_aware({}) - 1, n_gen - (int) out.size() - 1);
+            const int k = std::min(qwen4exp_mtp_next_width(policy) - 1, n_gen - (int) out.size() - 1);
             const auto step_start = std::chrono::steady_clock::now();
             const bool verify = k > 0;
-            if (verify) ok = qwen4exp_mtp_draft(backend, w, cache, mtp_tok.data(), mtp_h.data(),
-                                                (int) mtp_tok.size(), mtp_pos, k, draft_tokens);
+            std::vector<char> catchup_kv;
+            if (verify) {
+                ok = qwen4exp_mtp_forward(backend, w, cache, mtp_tok.data(), mtp_h.data(),
+                                           (int) mtp_tok.size(), mtp_pos, mtp_logits);
+                catchup_kv = mtp_kv_bytes(cache, mtp_pos, (int) mtp_tok.size());
+                for (ggml_tensor * t : {cache.mtp_k, cache.mtp_v}) for (int64_t h = 0; h < t->ne[2]; ++h)
+                    ggml_backend_tensor_memset(t, 0xa5, h * t->nb[2] + (size_t) mtp_pos * t->nb[1],
+                                              mtp_tok.size() * t->nb[1]);
+                ok = ok && qwen4exp_mtp_draft(backend, w, cache, mtp_tok.data(), mtp_h.data(),
+                                              (int) mtp_tok.size(), mtp_pos, k, draft_tokens);
+                ok = ok && catchup_kv == mtp_kv_bytes(cache, mtp_pos, (int) mtp_tok.size());
+                // Once per run, independently chain CPU embeddings/hidden with
+                // the full head. Allow only tied argmax alternatives. Window
+                // arms have a deliberately different draft oracle; target and
+                // catch-up K/V still have the exact checks above and below.
+                if (ok && steps == 0 && window == 0) {
+                    std::vector<float> chain_h, chain_logits;
+                    for (int rank = 0; ok && rank < k; ++rank) {
+                        ok = qwen4exp_mtp_forward(backend, w, cache,
+                            rank ? &draft_tokens[rank - 1] : mtp_tok.data(), rank ? chain_h.data() : mtp_h.data(),
+                            rank ? 1 : (int) mtp_tok.size(), rank ? mtp_pos + (int) mtp_tok.size() + rank - 1 : mtp_pos,
+                            chain_logits, &chain_h, false, true);
+                        if (!ok || !all_finite(chain_logits)) { ok = false; break; }
+                        const int32_t chosen = draft_tokens[rank];
+                        const auto & ids = w.mtp_vocab_ids;
+                        const auto best = *std::max_element(ids.begin(), ids.end(),
+                            [&](int a, int b) { return chain_logits[a] < chain_logits[b]; });
+                        ok = std::binary_search(ids.begin(), ids.end(), chosen) && chain_logits[chosen] == chain_logits[best];
+                    }
+                    std::vector<float> device_h(hd);
+                    ggml_backend_tensor_get(cache.mtp_chain_hidden, device_h.data(), 0, hd * sizeof(float));
+                    ok = ok && same_bits(chain_h, device_h);
+                    std::printf("[smoke] mtp device S=%d k=%d ranks=%d chain_identical=%d\n", S, configured_k, k, (int) ok);
+                }
+            }
             std::array<int32_t, QWEN4EXP_MTP_MAX_VERIFY> in{}, samples{};
             in[0] = next;
             if (verify) std::copy(draft_tokens.begin(), draft_tokens.end(), in.begin() + 1);
@@ -240,7 +276,7 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
         }
     }
     const double spec_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    if (ok && configured_k == 4) ok = prefill(true); // reset/reuse must discard the preceding prompt's carried row
+    if (ok && configured_k == QWEN4EXP_MTP_MAX_DRAFT) ok = prefill(true); // reset/reuse must discard the preceding prompt's carried row
     std::printf("[smoke] mtp prefill S=%d chunk=%d kv_identical=%d\n", S, chunk, (int) (ok && prefill_kv_identical));
     free_qwen4exp_cache(cache);
     free_qwen4exp_cache(folded);
@@ -294,7 +330,8 @@ int run_mtp_rollback_check(ggml_backend_t backend, const Qwen4ExpWeights & w,
     const int capacity = S + 512;
     bool ok = create_qwen4exp_cache(backend, w, capacity, GGML_TYPE_F16, cache, true, k) &&
               create_qwen4exp_cache(backend, w, capacity, GGML_TYPE_F16, reference);
-    std::vector<float> actual, expected, verified;
+    std::vector<float> actual, expected, verified, hidden, draft_logits;
+    for (auto * t : {cache.mtp_k, cache.mtp_v}) if (t) ggml_backend_tensor_memset(t, 0, 0, ggml_nbytes(t));
     ok = ok && qwen4exp_forward(backend, w, cache, prompt.data(), S, 0, actual).ok &&
                qwen4exp_forward(backend, w, reference, prompt.data(), S, 0, expected).ok;
     int pos = S, cases = 0;
@@ -314,7 +351,16 @@ int run_mtp_rollback_check(ggml_backend_t backend, const Qwen4ExpWeights & w,
             while (ok && pos % 4 != alignment) ok = advance((pos * 7919 + 13) % w.n_vocab);
             std::array<int32_t, QWEN4EXP_MTP_MAX_VERIFY> in{};
             for (int i = 0; i <= k; ++i) in[i] = ((pos + i) * 7919 + 13) % w.n_vocab;
-            ok = ok && qwen4exp_forward(backend, w, cache, in.data(), k + 1, pos, verified, nullptr, true).ok;
+            ok = ok && qwen4exp_forward(backend, w, cache, in.data(), k + 1, pos, verified, &hidden, true).ok;
+            if (ok) {
+                ok = qwen4exp_mtp_forward(backend, w, cache, in.data(), hidden.data(), retained, pos, draft_logits);
+                const auto kv = mtp_kv_bytes(cache, pos, retained);
+                for (ggml_tensor * t : {cache.mtp_k, cache.mtp_v}) for (int64_t h = 0; h < t->ne[2]; ++h)
+                    ggml_backend_tensor_memset(t, 0xa5, h * t->nb[2] + (size_t) pos * t->nb[1], retained * t->nb[1]);
+                std::vector<int32_t> unused;
+                ok = ok && qwen4exp_mtp_draft(backend, w, cache, in.data(), hidden.data(), retained, pos, 1, unused);
+                ok = ok && kv == mtp_kv_bytes(cache, pos, retained);
+            }
             for (int i = 0; ok && i < retained; ++i) {
                 ok = qwen4exp_forward(backend, w, reference, &in[i], 1, pos + i, expected).ok &&
                      all_finite(expected) &&
@@ -339,6 +385,7 @@ int run_mtp_rollback_check(ggml_backend_t backend, const Qwen4ExpWeights & w,
                 S, k, cases, 4 * (k + 1), (int) ok);
     free_qwen4exp_cache(cache);
     free_qwen4exp_cache(reference);
+    std::printf("[smoke] mtp catchup S=%d k=%d cases=%d/%d kv_identical=%d\n", S, k, cases, 4 * (k + 1), (int) ok);
     return ok ? 0 : 1;
 }
 
@@ -346,12 +393,13 @@ int run_mtp_rollback_check(ggml_backend_t backend, const Qwen4ExpWeights & w,
 
 int main(int argc, char ** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <shard1.gguf> [seq_len=16] [--token-file FILE] [--split N[:chunk]] [--reference] [--dump] [--draft PATH|0] [--mtp N] [--mtp-draft 1..4] [--mtp-all] [--chunk N] [--tg N] [--stable N] [--compare-chunk N] [--plan-ctx N --slots N]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <shard1.gguf> [seq_len=16] [--token-file FILE] [--split N[:chunk]] [--reference] [--dump] [--draft PATH|0] [--mtp N] [--mtp-draft 1..7] [--mtp-vocab 40000|64000|106000] [--mtp-window 32768] [--mtp-all] [--chunk N] [--tg N] [--stable N] [--compare-chunk N] [--plan-ctx N --slots N]\n", argv[0]);
         return 2;
     }
     const std::string path = argv[1];
     int S = 16, N = 0, step = 1;
     int n_gen = 1, mtp_gen = 0, mtp_draft = 1, chunk = 0, stable = 0;
+    int mtp_vocab = QWEN4EXP_MTP_VOCAB, mtp_window = 0;
     int compare_chunk = 0, plan_ctx = 0, slots = 1;
     bool mtp_all = false;
     std::string draft;
@@ -371,6 +419,11 @@ int main(int argc, char ** argv) {
         if (opt == "--reference") reference = true;
         else if (opt == "--dump") dump = true;
         else if (opt == "--mtp-all") mtp_all = true;
+        else if ((opt == "--mtp-vocab" || opt == "--mtp-window") && arg + 1 < argc) {
+            const char * val = argv[++arg];
+            int & value = opt == "--mtp-vocab" ? mtp_vocab : mtp_window;
+            if (!positive(val, val + std::strlen(val), value)) return 2;
+        }
         else if (opt == "--draft" && arg + 1 < argc) draft = argv[++arg];
         else if ((opt == "--tg" || opt == "--mtp" || opt == "--mtp-draft" || opt == "--chunk" || opt == "--stable") && arg + 1 < argc) {
             int & value = opt == "--tg" ? n_gen : opt == "--mtp" ? mtp_gen :
@@ -390,7 +443,9 @@ int main(int argc, char ** argv) {
                 (colon && !positive(colon + 1, end, step))) return 2;
         } else { std::fprintf(stderr, "invalid option: %s\n", argv[arg]); return 2; }
     }
-    if (mtp_draft > QWEN4EXP_MTP_MAX_DRAFT || stable >= S ||
+    if ((mtp_vocab != 40000 && mtp_vocab != 64000 && mtp_vocab != 106000) ||
+        (mtp_window != 0 && mtp_window != 32768) ||
+        mtp_draft > QWEN4EXP_MTP_MAX_DRAFT || stable >= S ||
         (mtp_all && (mtp_gen == 0 || S < 16)) || (mtp_gen && (reference || dump))) return 2;
     ggml_backend_t backend = ggml_backend_cuda_init(0);
     if (!backend) {
@@ -400,7 +455,7 @@ int main(int argc, char ** argv) {
 
     Qwen4ExpWeights w;
     auto t_load0 = std::chrono::steady_clock::now();
-    if (!load_qwen4exp_gguf(path, backend, w, draft, reference)) {
+    if (!load_qwen4exp_gguf(path, backend, w, draft, reference, mtp_vocab)) {
         std::fprintf(stderr, "[smoke] load_qwen4exp_gguf failed\n");
         ggml_backend_free(backend);
         return 1;
@@ -637,18 +692,18 @@ int main(int argc, char ** argv) {
         // Load the model once for all widths and both depths.
         for (int n : mtp_all ? std::vector<int>{16, S} : std::vector<int>{S}) {
             const std::vector<int32_t> prompt(tokens.begin(), tokens.begin() + n);
-            for (int k = mtp_all ? 1 : mtp_draft; k <= (mtp_all ? 4 : mtp_draft); ++k) {
-                const int decode_rc = run_mtp_check(backend, w, prompt, mtp_gen, k, chunk);
+            for (int k = mtp_all ? 1 : mtp_draft; k <= (mtp_all ? QWEN4EXP_MTP_MAX_DRAFT : mtp_draft); ++k) {
+                const int decode_rc = run_mtp_check(backend, w, prompt, mtp_gen, k, chunk, false, mtp_window);
                 // Independent caches: report rollback even when natural drafting differs.
                 const int rollback_rc = run_mtp_rollback_check(backend, w, prompt, k);
                 rc |= decode_rc || rollback_rc;
             }
-            if (mtp_all) rc |= run_mtp_check(backend, w, prompt, mtp_gen, 3, chunk, true);
+            if (mtp_all) rc |= run_mtp_check(backend, w, prompt, mtp_gen, QWEN4EXP_MTP_MAX_DRAFT, chunk, true, mtp_window);
         }
         if (mtp_all && S > 2048) {
             // A 2048-row chunk followed by one row exercises the server fallback.
             rc |= run_mtp_check(backend, w, std::vector<int32_t>(tokens.begin(), tokens.begin() + 2049),
-                                mtp_gen, 4, 2048);
+                                mtp_gen, QWEN4EXP_MTP_MAX_DRAFT, 2048, false, mtp_window);
         }
     }
 

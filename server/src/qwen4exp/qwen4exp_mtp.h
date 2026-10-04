@@ -9,18 +9,55 @@
 
 namespace luce::common {
 
-constexpr int QWEN4EXP_MTP_MAX_DRAFT = 4;
+constexpr int QWEN4EXP_MTP_MAX_DRAFT = 7;
 constexpr int QWEN4EXP_MTP_MAX_VERIFY = QWEN4EXP_MTP_MAX_DRAFT + 1;
 
-// Server --verify-width: 0 = adaptive k=1..3, 1 = off, 2..5 = fixed k=1..4.
-inline AdaptiveSpecWidth qwen4exp_mtp_width_policy(int max_draft, bool adaptive) {
+// Server --verify-width: 0 = adaptive k=1..7, 1 = off, 2..8 = fixed k=1..7.
+// Eight verify rows is the RDNA3 batch-invariant MMVQ/MMID ceiling.
+inline AdaptiveSpecWidth qwen4exp_mtp_width_policy(int max_draft, bool adaptive, int prompt_tokens = 0) {
     AdaptiveSpecWidth policy(max_draft + 1, 2, adaptive);
-    // Total draft + verify + rollback ms, indexed by seed-inclusive width.
-    // gfx1151 UD-Q4_K_XL: clean k=1/2/3 runs commit 2/3/4 tokens at
-    // 31.3/36.6/41.4 tok/s. The shared controller refines costs and prefix
-    // survival online, ignores cold cost samples, and can re-widen after rejects.
-    policy.set_relative_costs({0.0f, 0.0f, 64.0f, 82.0f, 97.0f});
+    // Session86: 45.9/47.6 ms AR at 16K/64K, 115.96 ms per counting
+    // cycle (3.931 / 33.9). Subtract ~9 ms for subset head + last-row
+    // catch-up + host argmax: R4 prior ~107 ms. Other widths extrapolate
+    // ~20 ms/draft+verify row. Priors, not new measurements; observe refits.
+    const float seed = prompt_tokens >= 32768 ? 47.0f : 45.0f;
+    std::vector<float> costs(QWEN4EXP_MTP_MAX_VERIFY + 1);
+    for (int width = 2; width <= QWEN4EXP_MTP_MAX_VERIFY; ++width) {
+        costs[width] = seed + 20.0f * (width - 1);
+    }
+    policy.set_relative_costs(costs);
     return policy;
+}
+
+// Probe beyond the initial two drafts only as clean acceptance supports it.
+// Fixed widths bypass both feedback and cost adaptation.
+inline int qwen4exp_mtp_next_width(const AdaptiveSpecWidth & policy) {
+    return policy.next_width_cost_aware({}, policy.next_width());
+}
+
+// Fixed production choice; smoke/session controls can measure other budgets.
+constexpr int QWEN4EXP_MTP_VOCAB = 64000;
+
+// Low BPE IDs are a rank heuristic, not a corpus-frequency guarantee. Reserve
+// every tokenizer control first, then fill with the lowest ordinary IDs. Sort
+// so local subset IDs and their embedding rows have one deterministic mapping.
+inline std::vector<int32_t> qwen4exp_mtp_vocab_ids(int n_vocab, int budget,
+                                                  const std::vector<int32_t> & required) {
+    if (n_vocab <= 0 || budget <= 0) return {};
+    std::vector<bool> keep((size_t) n_vocab, false);
+    int count = 0;
+    for (int32_t id : required) if (id >= 0 && id < n_vocab && !keep[id]) {
+        keep[id] = true;
+        ++count;
+    }
+    for (int id = 0; id < n_vocab && count < budget; ++id) if (!keep[id]) {
+        keep[id] = true;
+        ++count;
+    }
+    std::vector<int32_t> ids;
+    ids.reserve(count);
+    for (int id = 0; id < n_vocab; ++id) if (keep[id]) ids.push_back(id);
+    return ids;
 }
 
 struct Qwen4ExpMtpAcceptance {

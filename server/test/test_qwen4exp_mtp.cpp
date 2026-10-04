@@ -26,6 +26,8 @@ static void test_reset_qwen4exp_mtp_fields() {
     w->mtp_head_norm = &sentinel;
     w->mtp_head_down = &sentinel;
     w->mtp_head_up = &sentinel;
+    w->mtp_output = w->mtp_embd = &sentinel;
+    w->mtp_vocab_ids = {1, 2};
     w->tok_embd = &sentinel;   // unrelated field: must survive the reset untouched
 
     reset_qwen4exp_mtp_fields(*w);
@@ -39,6 +41,7 @@ static void test_reset_qwen4exp_mtp_fields() {
     CHECK(w->mtp_head_down == nullptr);
     CHECK(w->mtp_head_up == nullptr);
     CHECK(w->tok_embd == &sentinel);
+    CHECK(!w->mtp_output && !w->mtp_embd && w->mtp_vocab_ids.empty());
 }
 
 // P2: the loader checked eh_proj.ne[0] but not its output dimension, nor any of the other five MTP tensor
@@ -74,33 +77,50 @@ static void test_qwen4exp_mtp_shapes_valid() {
 int main() {
     test_reset_qwen4exp_mtp_fields();
     test_qwen4exp_mtp_shapes_valid();
+    CHECK(qwen4exp_mtp_vocab_ids(10, 4, {8, 9, 9, -1, 10}) == std::vector<int32_t>({0, 1, 8, 9}));
+    CHECK(qwen4exp_mtp_vocab_ids(4, 10, {}) == std::vector<int32_t>({0, 1, 2, 3}));
+    CHECK(qwen4exp_mtp_vocab_ids(10, 1, {8, 9}) == std::vector<int32_t>({8, 9}));
+    CHECK(qwen4exp_mtp_vocab_ids(10, 0, {8}).empty());
 
     // Same controller and cost seeds as the server. A rejection must narrow;
     // clean drafts at that narrower width must recover without unseen-depth
     // evidence being frozen forever. Fixed widths must never adapt.
-    for (int k = 1; k <= 4; ++k) {
+    for (int k = 1; k <= QWEN4EXP_MTP_MAX_DRAFT; ++k) {
         auto fixed = qwen4exp_mtp_width_policy(k, false);
         for (int i = 0; i < 32; ++i) {
             fixed.observe(1, k + 1, 1000.0f);
-            CHECK(fixed.next_width_cost_aware({}) == k + 1);
+            CHECK(qwen4exp_mtp_next_width(fixed) == k + 1);
         }
     }
     auto adaptive = qwen4exp_mtp_width_policy(3, true);
     CHECK(adaptive.next_width_cost_aware({}, 1) == 1); // remaining-token cap
-    for (int i = 0; i < 32; ++i) adaptive.observe(1, adaptive.next_width_cost_aware({}));
-    CHECK(adaptive.next_width_cost_aware({}) == 2);
+    for (int i = 0; i < 32; ++i) adaptive.observe(1, qwen4exp_mtp_next_width(adaptive));
+    CHECK(qwen4exp_mtp_next_width(adaptive) == 2);
     for (int i = 0; i < 32; ++i) {
-        const int width = adaptive.next_width_cost_aware({});
+        const int width = qwen4exp_mtp_next_width(adaptive);
         CHECK(width >= 2 && width <= 4);
         adaptive.observe(width, width);
     }
-    CHECK(adaptive.next_width_cost_aware({}) == 4);
+    CHECK(qwen4exp_mtp_next_width(adaptive) == 4);
+
+    auto wide = qwen4exp_mtp_width_policy(QWEN4EXP_MTP_MAX_DRAFT, true, 66060);
+    CHECK(qwen4exp_mtp_next_width(wide) <= 3);
+    for (int i = 0; i < 128; ++i) {
+        const int width = qwen4exp_mtp_next_width(wide);
+        CHECK(width >= 2 && width <= QWEN4EXP_MTP_MAX_VERIFY);
+        wide.observe(width, width, 47.0f + 20.0f * (width - 1));
+    }
+    CHECK(qwen4exp_mtp_next_width(wide) == QWEN4EXP_MTP_MAX_VERIFY);
+    for (int i = 0; i < 64; ++i) wide.observe(1, qwen4exp_mtp_next_width(wide));
+    CHECK(qwen4exp_mtp_next_width(wide) == 2);
+    for (int i = 0; i < 128; ++i) { const int width = qwen4exp_mtp_next_width(wide); wide.observe(width, width); }
+    CHECK(qwen4exp_mtp_next_width(wide) == QWEN4EXP_MTP_MAX_VERIFY);
 
     // Deterministic stationary prefix distributions: structured, code-like,
     // intermediate and prose-like acceptance. Check realized throughput, not
     // just the last chosen width, against the best fixed width for each case.
     // These are synthetic policy tests, not predictions of GPU performance.
-    const std::array<float, 5> costs{0, 0, 64, 82, 97};
+    const std::array<float, 5> costs{0, 0, 65, 85, 105};
     for (const auto & survival : std::vector<std::array<float, 3>>{
             {1.0f, 1.0f, 1.0f}, {0.94f, 0.86f, 0.75f},
             {0.85f, 0.69f, 0.47f}, {0.79f, 0.56f, 0.36f},
@@ -109,7 +129,7 @@ int main() {
         uint32_t random = 1;
         double tokens = 0, elapsed = 0;
         for (int i = 0; i < 10000; ++i) {
-            const int width = policy.next_width_cost_aware({});
+            const int width = qwen4exp_mtp_next_width(policy);
             CHECK(width >= 2 && width <= 4);
             random = random * 1664525u + 1013904223u;
             const double draw = random / 4294967296.0;
@@ -130,8 +150,8 @@ int main() {
     }
 
     int cases = 0;
-    for (int k = 0; k <= 4; ++k) {
-        std::array<int32_t, 5> drafts{11, 22, 33, 44, 55}, samples{};
+    for (int k = 0; k <= QWEN4EXP_MTP_MAX_DRAFT; ++k) {
+        std::array<int32_t, QWEN4EXP_MTP_MAX_VERIFY> drafts{11, 22, 33, 44, 55, 66, 77, 88}, samples{};
         // Every equality pattern, including later matches following a reject.
         for (int mask = 0; mask < (1 << (k + 1)); ++mask) {
             for (int i = 0; i <= k; ++i) samples[i] = drafts[i] + ((mask >> i) & 1);
@@ -151,7 +171,7 @@ int main() {
     // Rollback at all block alignments and accepted prefixes, including a
     // five-token verify that completes TWO blocks. Stale pooled rows must be
     // excluded, then recomputed from replacement raw keys on block completion.
-    for (int k = 1; k <= 4; ++k) {
+    for (int k = 1; k <= QWEN4EXP_MTP_MAX_DRAFT; ++k) {
         for (int alignment = 0; alignment < 4; ++alignment) {
             for (int retained = 1; retained <= k + 1; ++retained) {
                 const int pos = 2200 + alignment, end = pos + retained;

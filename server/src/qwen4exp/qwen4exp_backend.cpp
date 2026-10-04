@@ -109,6 +109,10 @@ Qwen4ExpBackend::~Qwen4ExpBackend() {
 }
 
 bool Qwen4ExpBackend::init() {
+    if (cfg_.verify_width < 0 || cfg_.verify_width > QWEN4EXP_MTP_MAX_VERIFY) {
+        std::fprintf(stderr, "[qwen4exp] --verify-width must be 0..%d\n", QWEN4EXP_MTP_MAX_VERIFY);
+        return false;
+    }
     if (cfg_.device.is_layer_split()) {
         std::fprintf(stderr, "[qwen4exp] layer split is not supported yet\n");
         return false;
@@ -127,7 +131,7 @@ bool Qwen4ExpBackend::init() {
     }
     if (!create_qwen4exp_cache(backend_, weights_, cfg_.device.max_ctx,
                                GGML_TYPE_F16, cache_, /*mtp=*/true,
-                               cfg_.verify_width == 0 ? 3 : std::max(1, cfg_.verify_width - 1))) {
+                               cfg_.verify_width == 0 ? QWEN4EXP_MTP_MAX_DRAFT : std::max(1, cfg_.verify_width - 1))) {
         std::fprintf(stderr, "[qwen4exp] cache creation failed\n");
         return false;
     }
@@ -178,7 +182,7 @@ bool Qwen4ExpBackend::unpark(ParkTarget target) {
     }
     if (!create_qwen4exp_cache(backend_, weights_, cfg_.device.max_ctx,
                                GGML_TYPE_F16, cache_, /*mtp=*/true,
-                               cfg_.verify_width == 0 ? 3 : std::max(1, cfg_.verify_width - 1))) {
+                               cfg_.verify_width == 0 ? QWEN4EXP_MTP_MAX_DRAFT : std::max(1, cfg_.verify_width - 1))) {
         std::fprintf(stderr, "[qwen4exp] unpark cache creation failed\n");
         free_qwen4exp_weights(weights_);
         return false;
@@ -295,7 +299,7 @@ GenerateResult Qwen4ExpBackend::generate_impl(const GenerateRequest & req,
     long long drafts = 0, accepted = 0, steps = 0;
     std::array<long long, QWEN4EXP_MTP_MAX_VERIFY> width_steps{};
     auto width_policy = qwen4exp_mtp_width_policy(cache_.mtp_draft,
-        spec && cfg_.verify_width == 0 && (!std::getenv("LUCE_ADAPTIVE_SPEC_WIDTH") || adaptive_spec_width_globally_enabled()));
+        spec && cfg_.verify_width == 0 && (!std::getenv("LUCE_ADAPTIVE_SPEC_WIDTH") || adaptive_spec_width_globally_enabled()), (int) req.prompt.size());
     double draft_s = 0.0;
     const auto t_dec0 = std::chrono::steady_clock::now();
     int32_t next = sample(logits.data());
@@ -303,7 +307,7 @@ GenerateResult Qwen4ExpBackend::generate_impl(const GenerateRequest & req,
     if (spec) mtp_tok.assign(1, next);
     std::vector<int32_t> draft_tokens;
     while (more) {
-        const int k = spec ? std::max(0, std::min({width_policy.next_width_cost_aware({}) - 1,
+        const int k = spec ? std::max(0, std::min({qwen4exp_mtp_next_width(width_policy) - 1,
             req.n_gen - (int) result.tokens.size() - 1, cache_.max_ctx - pos - 1})) : 0;
         const bool verify = k > 0;
         const auto step_start = verify ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
@@ -367,10 +371,11 @@ GenerateResult Qwen4ExpBackend::generate_impl(const GenerateRequest & req,
         const double decoded = (double) result.tokens.size() - 1.0;   // the first token came from the prefill
         std::fprintf(stderr,
             "[qwen4exp-mtp] k=%d drafts=%lld accepted=%lld rate=%.3f tokens_per_step=%.3f draft_ms=%.2f decode=%.2f tok/s "
-            "adaptive=%d steps_k1=%lld steps_k2=%lld steps_k3=%lld steps_k4=%lld\n",
+            "adaptive=%d steps_k1=%lld steps_k2=%lld steps_k3=%lld steps_k4=%lld steps_k5=%lld steps_k6=%lld steps_k7=%lld\n",
             cache_.mtp_draft, drafts, accepted, (double) accepted / (double) drafts, steps > 0 ? decoded / (double) steps : 0.0,
             1e3 * draft_s / (double) drafts, result.decode_s > 0.0 ? decoded / result.decode_s : 0.0,
-            (int) width_policy.enabled(), width_steps[1], width_steps[2], width_steps[3], width_steps[4]);
+            (int) width_policy.enabled(), width_steps[1], width_steps[2], width_steps[3], width_steps[4],
+            width_steps[5], width_steps[6], width_steps[7]);
     }
 
     result.succeed();

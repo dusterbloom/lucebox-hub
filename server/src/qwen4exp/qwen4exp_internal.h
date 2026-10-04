@@ -8,6 +8,7 @@
 #pragma once
 
 #include "internal.h"
+#include "qwen4exp_mtp.h"
 #include "ggml-cuda.h"
 #include "common/gguf_mmap.h"
 
@@ -151,6 +152,12 @@ struct Qwen4ExpWeights {
     ggml_tensor * mtp_enorm = nullptr, * mtp_hnorm = nullptr, * mtp_eh_proj = nullptr;
     ggml_tensor * mtp_head_norm = nullptr, * mtp_head_down = nullptr, * mtp_head_up = nullptr;
 
+    // Draft-only gathered output rows and exact CPU-dequantized embeddings.
+    ggml_context * mtp_vocab_ctx = nullptr;
+    ggml_backend_buffer_t mtp_vocab_buf = nullptr;
+    ggml_tensor * mtp_output = nullptr, * mtp_embd = nullptr;
+    std::vector<int32_t> mtp_vocab_ids;
+
     // Config (GGUF `qwen4exp.*`).
     int n_layer               = 48;
     int n_embd                = 2560;
@@ -218,6 +225,8 @@ inline void reset_qwen4exp_mtp_fields(Qwen4ExpWeights & w) {
     w.mtp = Qwen4ExpLayer{};
     w.mtp_enorm = w.mtp_hnorm = w.mtp_eh_proj = nullptr;
     w.mtp_head_norm = w.mtp_head_down = w.mtp_head_up = nullptr;
+    w.mtp_output = w.mtp_embd = nullptr;
+    w.mtp_vocab_ids.clear();
 }
 
 // Load the autoregressive trunk of a Qwen3.8-Flash-Next (`qwen4exp`) GGUF.
@@ -228,7 +237,8 @@ inline void reset_qwen4exp_mtp_fields(Qwen4ExpWeights & w) {
 bool load_qwen4exp_gguf(const std::string & path,
                         ggml_backend_t backend,
                         Qwen4ExpWeights & out,
-                        const std::string & mtp_override = "", bool reference = false); // empty = discovery, "0" = off
+                        const std::string & mtp_override = "", bool reference = false,
+                        int mtp_vocab = QWEN4EXP_MTP_VOCAB); // empty = discovery, "0" = off
 
 // Discover an MTP sidecar in the Unsloth
 // layout <repo>/<quant>/<model>.gguf -> <repo>/MTP/mtp-*.gguf is searched. Empty when there is none.
