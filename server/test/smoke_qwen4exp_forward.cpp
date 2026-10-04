@@ -213,7 +213,6 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
         std::vector<int32_t> draft_tokens;
         while (ok && (int) out.size() < n_gen) {
             const int k = std::min(qwen4exp_mtp_next_width(policy) - 1, n_gen - (int) out.size() - 1);
-            const auto step_start = std::chrono::steady_clock::now();
             const bool verify = k > 0;
             std::vector<char> catchup_kv;
             if (verify) {
@@ -271,8 +270,8 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
                 ok = qwen4exp_verify_rollback(backend, w, cache, pos, retained);
             }
             pos += retained;
-            if (verify) policy.observe(decision.n_accepted + 1, k + 1,
-                (float) std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - step_start).count());
+            // Oracle work is deliberately much heavier than a serving cycle.
+            if (verify) policy.observe(decision.n_accepted + 1, k + 1);
         }
     }
     const double spec_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();

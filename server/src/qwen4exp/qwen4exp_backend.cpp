@@ -299,7 +299,7 @@ GenerateResult Qwen4ExpBackend::generate_impl(const GenerateRequest & req,
     long long drafts = 0, accepted = 0, steps = 0;
     std::array<long long, QWEN4EXP_MTP_MAX_VERIFY> width_steps{};
     auto width_policy = qwen4exp_mtp_width_policy(cache_.mtp_draft,
-        spec && cfg_.verify_width == 0 && (!std::getenv("LUCE_ADAPTIVE_SPEC_WIDTH") || adaptive_spec_width_globally_enabled()), (int) req.prompt.size());
+        spec && cfg_.verify_width == 0, (int) req.prompt.size());
     double draft_s = 0.0;
     const auto t_dec0 = std::chrono::steady_clock::now();
     int32_t next = sample(logits.data());
