@@ -14,10 +14,12 @@
 //   smoke_qwen4exp_forward <shard1.gguf> 2200 --mtp 128 --mtp-draft 4
 // Also forces every retained prefix at all four block alignments and compares
 // cache bytes plus replacement-token logits, including QSA block recompletion.
+//   smoke_qwen4exp_forward <shard1.gguf> [seq_len=16] [--token-file FILE] [--split N[:chunk]] [--reference] [--dump] [--chunk N] [--compare-chunk N] [--plan-ctx N --slots N]
 
 #include "qwen4exp_internal.h"
 #include "qwen4exp_graph.h"
 #include "qwen4exp_cache.h"
+#include "qwen4exp_chunk.h"
 
 #include "ggml-cuda.h"
 
@@ -72,7 +74,7 @@ uint64_t logits_hash(const std::vector<float> & x) {
 // position. Prefill runs in chunks of --chunk (default: the whole prompt).
 bool same_cache(const Qwen4ExpCache & a, const Qwen4ExpCache & b, int tokens, bool same_pooled_count);
 
-int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::vector<int32_t> & prompt, int n_gen, int k, int chunk) {
+int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::vector<int32_t> & prompt, int n_gen, int k, int chunk, bool adaptive = false) {
     Qwen4ExpCache cache;
     const int S = (int) prompt.size();
     if (!w.mtp_eh_proj || n_gen < 1 ||
@@ -191,6 +193,7 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
 
     long long drafts = 0, accepted = 0, steps = 0;
     const int configured_k = cache.mtp_draft;
+    auto policy = qwen4exp_mtp_width_policy(configured_k, adaptive);
     auto emit = [&](const float * row) {
         const size_t index = out.size();
         out.push_back(top(row));
@@ -206,7 +209,8 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
         int pos = S;
         std::vector<int32_t> draft_tokens;
         while (ok && (int) out.size() < n_gen) {
-            const int k = std::min(configured_k, n_gen - (int) out.size() - 1);
+            const int k = std::min(policy.next_width_cost_aware({}) - 1, n_gen - (int) out.size() - 1);
+            const auto step_start = std::chrono::steady_clock::now();
             const bool verify = k > 0;
             if (verify) ok = qwen4exp_mtp_draft(backend, w, cache, mtp_tok.data(), mtp_h.data(),
                                                 (int) mtp_tok.size(), mtp_pos, k, draft_tokens);
@@ -231,6 +235,8 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
                 ok = qwen4exp_verify_rollback(backend, w, cache, pos, retained);
             }
             pos += retained;
+            if (verify) policy.observe(decision.n_accepted + 1, k + 1,
+                (float) std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - step_start).count());
         }
     }
     const double spec_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -245,11 +251,11 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
     }
     const bool same = ok && ref.size() == out.size() && first_token < 0 && first_logits < 0;
     std::printf("[smoke] mtp S=%d k=%d n_gen=%d ok=%d tokens_identical=%d logits_identical=%d first_token_diff=%d "
-                "first_logits_diff=%d drafts=%lld accepted=%lld rate=%.3f tokens_per_step=%.3f spec_s=%.2f\n",
+                "first_logits_diff=%d drafts=%lld accepted=%lld rate=%.3f tokens_per_step=%.3f spec_s=%.2f adaptive=%d\n",
                 S, configured_k, n_gen, (int) ok, (int) (ok && ref.size() == out.size() && first_token < 0),
                 (int) (ok && ref.size() == out.size() && first_logits < 0), first_token,
                 first_logits, drafts, accepted, drafts ? (double) accepted / (double) drafts : 0.0,
-                steps ? (double) (out.size() - 1) / (double) steps : 0.0, spec_s);
+                steps ? (double) (out.size() - 1) / (double) steps : 0.0, spec_s, (int) adaptive);
     return same ? 0 : 1;
 }
 
@@ -340,12 +346,13 @@ int run_mtp_rollback_check(ggml_backend_t backend, const Qwen4ExpWeights & w,
 
 int main(int argc, char ** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <shard1.gguf> [seq_len=16] [--token-file FILE] [--split N[:chunk]] [--reference] [--dump] [--draft PATH|0] [--mtp N] [--mtp-draft 1..4] [--mtp-all] [--chunk N] [--tg N] [--stable N]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <shard1.gguf> [seq_len=16] [--token-file FILE] [--split N[:chunk]] [--reference] [--dump] [--draft PATH|0] [--mtp N] [--mtp-draft 1..4] [--mtp-all] [--chunk N] [--tg N] [--stable N] [--compare-chunk N] [--plan-ctx N --slots N]\n", argv[0]);
         return 2;
     }
     const std::string path = argv[1];
     int S = 16, N = 0, step = 1;
     int n_gen = 1, mtp_gen = 0, mtp_draft = 1, chunk = 0, stable = 0;
+    int compare_chunk = 0, plan_ctx = 0, slots = 1;
     bool mtp_all = false;
     std::string draft;
     const char * token_file = nullptr;
@@ -370,6 +377,11 @@ int main(int argc, char ** argv) {
                           opt == "--mtp-draft" ? mtp_draft : opt == "--chunk" ? chunk : stable;
             const char * val = argv[++arg];
             if (!positive(val, val + std::strlen(val), value)) return 2;
+        }
+        else if ((opt == "--compare-chunk" || opt == "--plan-ctx" || opt == "--slots") && arg + 1 < argc) {
+            const char * val = argv[++arg];
+            int & dst = opt == "--compare-chunk" ? compare_chunk : opt == "--plan-ctx" ? plan_ctx : slots;
+            if (!positive(val, val + std::strlen(val), dst)) return 2;
         }
         else if (opt == "--token-file" && arg + 1 < argc) token_file = argv[++arg];
         else if (opt == "--split" && arg + 1 < argc) {
@@ -399,11 +411,20 @@ int main(int argc, char ** argv) {
         w.n_layer, w.n_vocab, w.ple_reader.available() ? "yes" : "no");
 
     Qwen4ExpCache cache;
-    if (!create_qwen4exp_cache(backend, w, S + std::max(4, n_gen), GGML_TYPE_F16, cache, false, 1, reference)) {
+    if (!create_qwen4exp_cache(backend, w, plan_ctx ? plan_ctx : S + std::max(compare_chunk ? 132 : 4, n_gen), GGML_TYPE_F16, cache, plan_ctx && draft != "0", 3, reference)) {
         std::fprintf(stderr, "[smoke] create_qwen4exp_cache failed\n");
         free_qwen4exp_weights(w);
         ggml_backend_free(backend);
         return 1;
+    }
+
+    if (plan_ctx) {
+        const int selected = qwen4exp_select_chunk(backend, w, cache, slots);
+        std::printf("[smoke] memory-plan ctx=%d slots=%d chunk=%d\n", plan_ctx, slots, selected);
+        free_qwen4exp_cache(cache);
+        free_qwen4exp_weights(w);
+        ggml_backend_free(backend);
+        return selected > 0 ? 0 : 1;
     }
 
     std::vector<int32_t> tokens((size_t) S);
@@ -422,9 +443,87 @@ int main(int argc, char ** argv) {
         int extra;
         if (input >> extra) { std::fprintf(stderr, "too many input tokens\n"); return 2; }
     }
+    auto prefill = [&](Qwen4ExpCache & state, int length, std::vector<float> & logits, bool summaries) {
+        Qwen4ExpForwardResult r;
+        const int stride = chunk > 0 ? chunk : length;
+        for (int pos = 0; pos < length; pos += stride) {
+            r = qwen4exp_forward(backend, w, state, tokens.data() + pos,
+                                std::min(stride, length - pos), pos, logits, nullptr, false, false, false, summaries);
+            if (!r.ok) break;
+        }
+        return r;
+    };
+    if (compare_chunk) {
+        // Both free-running greedy and teacher-forced distributions are needed:
+        // KL after independently diverged tokens measures a different context.
+        const int baseline_chunk = chunk > 0 ? chunk : 2048;
+        constexpr int generate = 128;
+        std::vector<int32_t> reference_tokens, candidate_tokens;
+        std::vector<std::vector<float>> reference_logits;
+        std::vector<float> logits;
+        bool ok = true;
+        auto begin = [&](int c) {
+            chunk = c;
+            reset_qwen4exp_state(backend, cache);
+            return prefill(cache, S, logits, false).ok && all_finite(logits);
+        };
+        ok = begin(baseline_chunk);
+        for (int i = 0; ok && i < generate; ++i) {
+            reference_logits.push_back(logits);
+            reference_tokens.push_back(argmax(logits));
+            if (i + 1 < generate) ok = qwen4exp_forward(backend, w, cache,
+                &reference_tokens.back(), 1, S + i, logits).ok && all_finite(logits);
+        }
+        auto kl = [](const std::vector<float> & a, const std::vector<float> & b) {
+            const double ma = *std::max_element(a.begin(), a.end());
+            const double mb = *std::max_element(b.begin(), b.end());
+            double za = 0, zb = 0, d = 0;
+            for (size_t i = 0; i < a.size(); ++i) { za += std::exp(a[i] - ma); zb += std::exp(b[i] - mb); }
+            for (size_t i = 0; i < a.size(); ++i) {
+                const double la = a[i] - ma - std::log(za), lb = b[i] - mb - std::log(zb);
+                d += std::exp(la) * (la - lb);
+            }
+            return d;
+        };
+        double kl_sum = 0, kl_max = 0, initial_kl = 0;
+        int forced_disagreements = 0, bits_differ = 0;
+        ok = ok && begin(compare_chunk);
+        for (int i = 0; ok && i < generate; ++i) {
+            const double d = kl(reference_logits[i], logits);
+            if (i == 0) initial_kl = d;
+            kl_sum += d;
+            kl_max = std::max(kl_max, d);
+            forced_disagreements += argmax(logits) != reference_tokens[i];
+            bits_differ += !same_bits(reference_logits[i], logits);
+            if (i + 1 < generate) ok = qwen4exp_forward(backend, w, cache,
+                &reference_tokens[i], 1, S + i, logits).ok && all_finite(logits);
+        }
+        ok = ok && begin(compare_chunk);
+        int first = -1;
+        for (int i = 0; ok && i < generate; ++i) {
+            candidate_tokens.push_back(argmax(logits));
+            if (first < 0 && candidate_tokens.back() != reference_tokens[i]) first = i;
+            if (i + 1 < generate) ok = qwen4exp_forward(backend, w, cache,
+                &candidate_tokens.back(), 1, S + i, logits).ok && all_finite(logits);
+        }
+        std::printf("[chunk-compare] {\"ok\":%s,\"baseline\":%d,\"candidate\":%d,\"prompt_tokens\":%d,"
+            "\"generated\":%d,\"first_greedy_divergence\":%d,\"teacher_argmax_disagreements\":%d,"
+            "\"logit_rows_differ\":%d,\"initial_kl\":%.9g,\"teacher_kl_mean\":%.9g,\"teacher_kl_max\":%.9g}\n",
+            ok ? "true" : "false", baseline_chunk, compare_chunk, S, generate, first,
+            forced_disagreements, bits_differ, initial_kl, kl_sum / generate, kl_max);
+        for (const auto * sequence : {&reference_tokens, &candidate_tokens}) {
+            std::printf("[chunk-tokens] %s", sequence == &reference_tokens ? "baseline" : "candidate");
+            for (int32_t t : *sequence) std::printf(" %d", t);
+            std::printf("\n");
+        }
+        free_qwen4exp_cache(cache);
+        free_qwen4exp_weights(w);
+        ggml_backend_free(backend);
+        return ok ? 0 : 1; // A numerics change is reported, never silently blessed.
+    }
     std::vector<float> logits;
     auto t0 = std::chrono::steady_clock::now();
-    const Qwen4ExpForwardResult pre = qwen4exp_forward(backend, w, cache, tokens.data(), S, 0, logits, nullptr, false, false, false, dump);
+    const Qwen4ExpForwardResult pre = prefill(cache, S, logits, dump);
     auto t1 = std::chrono::steady_clock::now();
 
     int rc = 0;
@@ -483,20 +582,25 @@ int main(int argc, char ** argv) {
         if (!ok || replays == 0) rc = 1;
     }
 
-    // --split N[:c]: the same S tokens as one prefill vs a prefill of S-N plus the last N tokens in
-    // chunks of c (default 1, i.e. decode) must give the same last-position distribution. QSA selection is
-    // chunk-invariant, so past the block budget this checks decode (c=1) against prefill; c in 9..127 runs dense
-    // attention there and shows how far a wrong selection drifts.
+    // --split N[:c]: compare one prefill with S-N prompt tokens followed by N
+    // tokens in chunks of c (default 1: decode). These are numerical probes,
+    // not a bitwise prefill/decode contract: short QSA and packed QSA use
+    // different reductions. At S=6000 the established KLs for 100:1, 200:1,
+    // 100:100, 256:128 are .082874/.118543/.652715/.734763 (the last flips
+    // argmax 271 -> 17 and exits 1). Below the budget, T=1 deliberately keeps
+    // dense decode while multi-row prompt prefill uses precise QSA.
     if (rc == 0 && N > 0) {
         std::vector<float> full, split;
         reset_qwen4exp_state(backend, cache);
-        bool ok = N > 0 && N < S && qwen4exp_forward(backend, w, cache, tokens.data(), S, 0, full, nullptr, false, false, false, dump).ok;
+        bool ok = N > 0 && N < S && prefill(cache, S, full, dump).ok;
         reset_qwen4exp_state(backend, cache);
-        ok = ok && qwen4exp_forward(backend, w, cache, tokens.data(), S - N, 0, split, nullptr, false, false, false, dump).ok;
+        ok = ok && prefill(cache, S - N, split, dump).ok;
         for (int i = S - N; ok && i < S; i += step) {
             const int n = std::min(step, S - i);
             ok = qwen4exp_forward(backend, w, cache, &tokens[i], n, i, split, nullptr, false, false, false, dump).ok;
         }
+        ok = ok && full.size() == (size_t) w.n_vocab && split.size() == full.size() &&
+             all_finite(full) && all_finite(split);
         float max_diff = 0.0f;
         double kl = 0.0;
         int overlap = 0;
@@ -539,6 +643,7 @@ int main(int argc, char ** argv) {
                 const int rollback_rc = run_mtp_rollback_check(backend, w, prompt, k);
                 rc |= decode_rc || rollback_rc;
             }
+            if (mtp_all) rc |= run_mtp_check(backend, w, prompt, mtp_gen, 3, chunk, true);
         }
         if (mtp_all && S > 2048) {
             // A 2048-row chunk followed by one row exercises the server fallback.
@@ -550,15 +655,15 @@ int main(int argc, char ** argv) {
     // A reset/reuse must match a freshly allocated cache for the same prefix.
     if (rc == 0) {
         Qwen4ExpCache fresh;
-        if (!create_qwen4exp_cache(backend, w, S + 4, GGML_TYPE_F16, fresh, false, 1, reference)) {
+        if (!create_qwen4exp_cache(backend, w, cache.max_ctx, GGML_TYPE_F16, fresh, false, 1, reference)) {
             std::fprintf(stderr, "[smoke] fresh cache creation failed\n");
             rc = 1;
         } else {
             reset_qwen4exp_state(backend, cache);
             reset_qwen4exp_state(backend, fresh);
             std::vector<float> tmp, reused_logits, fresh_logits;
-            const bool p1 = qwen4exp_forward(backend, w, cache, tokens.data(), S, 0, tmp, nullptr, false, false, false, dump).ok;
-            const bool p2 = qwen4exp_forward(backend, w, fresh, tokens.data(), S, 0, tmp, nullptr, false, false, false, dump).ok;
+            const bool p1 = prefill(cache, S, tmp, dump).ok;
+            const bool p2 = prefill(fresh, S, tmp, dump).ok;
             const int32_t reuse_token = 77 % w.n_vocab;
             const Qwen4ExpForwardResult rr = qwen4exp_forward(backend, w, cache, &reuse_token, 1, S, reused_logits, nullptr, false, false, false, dump);
             const Qwen4ExpForwardResult fr = qwen4exp_forward(backend, w, fresh, &reuse_token, 1, S, fresh_logits, nullptr, false, false, false, dump);

@@ -7,9 +7,11 @@
 // 512-expert top-10 MoE, per-layer n-gram embedding) into Luzebox's ggml graph
 // style.
 //
-// Single sequence (n_seqs = 1). Past the indexer's block budget, full attention uses QSA selected attention
-// (gfx1151: prefill chunks of >= 128 tokens and decode); below it QSA equals dense attention. The PLE table is
-// read through Qwen4ExpPleReader and is never uploaded in full.
+// Single sequence (n_seqs = 1). On gfx1151, multi-row prompt prefill uses QSA
+// with F32 accumulation, including below the selection budget. T=1 retains
+// dense attention below the budget and selected attention beyond it. Verify
+// rows use the T=1 attention path at each position, excluding prompt promotion.
+// The PLE table is read through Qwen4ExpPleReader, never uploaded in full.
 
 #pragma once
 
@@ -39,6 +41,25 @@ struct Qwen4ExpForwardResult {
     int  pos0 = 0;
 };
 
+// Host-only input preparation; safe to run for the next prompt chunk while
+// the current graph computes. The caller owns the immutable token span.
+struct Qwen4ExpInputs {
+    bool ok = false;
+    std::vector<float> emb, ple;
+    std::vector<int32_t> ple_prev;
+};
+Qwen4ExpInputs qwen4exp_prepare_inputs(const Qwen4ExpWeights & w,
+    const int32_t * tokens, int n_tokens, const std::vector<int32_t> & ple_prev);
+
+struct Qwen4ExpGraphMemory {
+    size_t graph = 0, inputs = 0, mask = 0, host = 0, scratch = 0, metadata = 0;
+};
+// Allocation plan only: no GPU allocation, input reads, compute or state update.
+Qwen4ExpGraphMemory qwen4exp_graph_memory(ggml_backend_t backend, const Qwen4ExpWeights & w,
+    Qwen4ExpCache & cache, int n_tokens, int pos0, bool verify = false);
+Qwen4ExpGraphMemory qwen4exp_mtp_graph_memory(ggml_backend_t backend, const Qwen4ExpWeights & w,
+    Qwen4ExpCache & cache, int n_tokens, int pos0);
+
 // Run the trunk. `tokens` has n_tokens entries, processed as one contiguous
 // single-sequence span at positions [pos0, pos0 + n_tokens). On success the
 // cache is advanced to pos0 + n_tokens and out_logits holds n_vocab floats
@@ -63,7 +84,8 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
                                        bool verify = false,
                                        bool qsa_rebuild_reference = false, // smoke oracle only
                                        bool mtp_prefill = false,
-                                       bool dump = false); // test-only activation summaries
+                                       bool dump = false, // test-only activation summaries
+                                       const Qwen4ExpInputs * inputs = nullptr);
 
 // The cache was created with `mtp` and the graph is the default one (not a reference test).
 bool qwen4exp_verify_supported(const Qwen4ExpCache & cache);
