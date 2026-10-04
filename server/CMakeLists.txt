@@ -1869,6 +1869,12 @@ if(LUCE_TESTS)
     target_compile_options(test_qwen4exp_chunk PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>)
     add_test(NAME test_qwen4exp_chunk COMMAND test_qwen4exp_chunk)
 
+    add_executable(test_qwen4exp_prefix_cache test/test_qwen4exp_prefix_cache.cpp)
+    target_include_directories(test_qwen4exp_prefix_cache PRIVATE ${LUCE_SRC_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+    target_link_libraries(test_qwen4exp_prefix_cache PRIVATE luce_common ggml ggml-cpu ${LUCE_GGML_BACKEND_TARGET})
+    add_test(NAME qwen4exp_prefix_cache COMMAND test_qwen4exp_prefix_cache)
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_qwen4exp_forward.cpp")
         add_executable(smoke_qwen4exp_forward test/smoke_qwen4exp_forward.cpp)
         target_include_directories(smoke_qwen4exp_forward PRIVATE ${LUCE_SRC_INCLUDE_DIRS})

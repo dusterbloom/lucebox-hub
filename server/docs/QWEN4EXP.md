@@ -99,6 +99,7 @@ all three quants.
 | Chat template, reasoning effort, thinking budget, `preserve_thinking`, `sampling_no_thinking` | done |
 | Concurrent serving (`--max-concurrency > 1`) | refused; exact 4-slot serving is a follow-up PR |
 | MTP speculative decoding | sidecar discovered automatically; adaptive k=1..3 by default, `--verify-width 1` disables, `2..5` selects fixed k=1..4 |
+| Prefix cache | done: snapshots at chat cut points, restored on hits; a 64K agent turn's first token in ~3.5 s instead of ~65 s (131K context). Prefill keeps a 4096-row chunk first and snapshots get the remaining memory, so at 262K context with MTP long prefixes do not fit: use `--max-ctx 131072` or less for agent workloads |
 | Layer split | refused |
 | Other GPUs | generic paths; kernels, defaults and quality gates are tuned and measured on gfx1151 only |
 
