@@ -785,13 +785,13 @@ void test_model_capability_tables() {
 void test_qwen4exp_mtp_options() {
     auto args = gate_args_hip_deepseek4();
     args.draft_path = "/nonexistent/mtp.gguf";
-    for (int width = 0; width <= 5; ++width) {
+    for (int width = 0; width <= 8; ++width) {
         args.verify_width = width;
         CHECK(gate_result(args, "qwen4exp", PlacementBackend::Hip).empty());
         CHECK(!warns_about(warn_result(args, "qwen4exp"), "--draft"));
         CHECK(!warns_about(warn_result(args, "qwen4exp"), "--verify-width"));
     }
-    for (int width : {-1, 6, INT_MAX}) {
+    for (int width : {-1, 9, INT_MAX}) {
         args.verify_width = width;
         CHECK(!gate_result(args, "qwen4exp", PlacementBackend::Hip).empty());
     }
