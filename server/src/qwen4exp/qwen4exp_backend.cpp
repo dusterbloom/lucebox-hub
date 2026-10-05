@@ -114,6 +114,16 @@ bool Qwen4ExpBackend::init() {
         std::fprintf(stderr, "[qwen4exp] --verify-width must be 0..%d\n", QWEN4EXP_MTP_MAX_VERIFY);
         return false;
     }
+    if (cfg_.max_concurrency < 1 || cfg_.max_concurrency > 4) {
+        std::fprintf(stderr, "[qwen4exp] --max-concurrency must be between 1 and 4\n");
+        return false;
+    }
+    // ponytail: concurrent slots decode without MTP or prefix snapshots (the
+    // seq engine replaces the serial loop that owns both); per-slot MTP is follow-up.
+    if (cfg_.max_concurrency > 1 && cfg_.verify_width != 1) {
+        std::fprintf(stderr, "[qwen4exp] --max-concurrency %d: MTP off\n", cfg_.max_concurrency);
+        cfg_.verify_width = 1;
+    }
     if (cfg_.device.is_layer_split()) {
         std::fprintf(stderr, "[qwen4exp] layer split is not supported yet\n");
         return false;
@@ -138,15 +148,40 @@ bool Qwen4ExpBackend::init() {
     }
     if (cfg_.chunk > 0) {
         chunk_ = cfg_.chunk;
+    } else if (cfg_.max_concurrency > 1) {
+        // Cap at the single-slot speed target: a larger chunk only holds the
+        // other slots' decode for longer (and filled 93 GB at 4x32K: 12800 rows).
+        chunk_ = std::min(4096, qwen4exp_select_chunk(backend_, weights_, cache_, cfg_.max_concurrency, 1));
     } else {
         snapshot_budget_ = 3 * snapshot_bytes_estimate(cache_.max_ctx);
-        chunk_ = qwen4exp_select_chunk(backend_, weights_, cache_, cfg_.slots, 1, &snapshot_budget_);
+        chunk_ = qwen4exp_select_chunk(backend_, weights_, cache_, 1, 1, &snapshot_budget_);
         std::fprintf(stderr, "[qwen4exp] prefix snapshot allowance=%zu bytes\n", snapshot_budget_);
     }
     if (chunk_ <= 0) {
         std::fprintf(stderr, "[qwen4exp] insufficient prefill memory at configured context/slots\n");
         return false;
     }
+    if (!start_seq_engine()) {
+        std::fprintf(stderr, "[qwen4exp] full-cache slot allocation failed\n");
+        return false;
+    }
+    return true;
+}
+
+bool Qwen4ExpBackend::start_seq_engine() {
+    if (cfg_.max_concurrency <= 1) return true;
+    seq_caches_.resize((size_t)cfg_.max_concurrency - 1);
+    std::vector<Qwen4ExpCache *> caches{&cache_};
+    for (Qwen4ExpCache & cache : seq_caches_) {
+        if (!create_qwen4exp_cache(backend_, weights_, cfg_.device.max_ctx,
+                                   GGML_TYPE_F16, cache)) return false;
+        caches.push_back(&cache);
+    }
+    seq_engine_ = std::make_unique<Qwen4ExpSeqEngine>(
+        backend_, weights_, std::move(caches), cfg_.device.max_ctx, chunk_);
+    std::fprintf(stderr,
+        "[qwen4exp-seq] independent-slot engine enabled: %d full F16 caches, ctx=%d, chunk=%d\n",
+        cfg_.max_concurrency, cfg_.device.max_ctx, chunk_);
     return true;
 }
 
@@ -170,6 +205,9 @@ bool Qwen4ExpBackend::park(ParkTarget target) {
     if (parked_) return true;
     for (int i = 0; i < kMaxSlots; ++i) snapshot_free(i);
     tokens_.clear(); logits_.clear();
+    seq_engine_.reset();
+    for (Qwen4ExpCache & cache : seq_caches_) free_qwen4exp_cache(cache);
+    seq_caches_.clear();
     free_qwen4exp_cache(cache_);
     free_qwen4exp_weights(weights_);
     parked_ = true;
@@ -197,6 +235,10 @@ bool Qwen4ExpBackend::unpark(ParkTarget target) {
         return false;
     }
     // Keep the resolved serving policy across park/unpark (and /props stable).
+    if (!start_seq_engine()) {
+        std::fprintf(stderr, "[qwen4exp] unpark slot allocation failed\n");
+        return false;
+    }
     parked_ = false;
     std::printf("[qwen4exp] target unparked\n");
     std::fflush(stdout);
@@ -587,6 +629,9 @@ void Qwen4ExpBackend::free_drafter() {}
 void Qwen4ExpBackend::shutdown() {
     for (int i = 0; i < kMaxSlots; ++i) snapshot_free(i);
     tokens_.clear(); logits_.clear();
+    seq_engine_.reset();
+    for (Qwen4ExpCache & cache : seq_caches_) free_qwen4exp_cache(cache);
+    seq_caches_.clear();
     free_qwen4exp_cache(cache_);
     free_qwen4exp_weights(weights_);
     if (backend_) {
