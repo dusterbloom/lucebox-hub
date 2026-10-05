@@ -98,7 +98,7 @@ all three quants.
 | gfx1151 kernels: MMB bf16 and Q8_0 -> F16 WMMA GEMMs, fused HC / GDN / PLE, M-RoPE into the flash-attention layout | done |
 | Chat template, reasoning effort, thinking budget, `preserve_thinking`, `sampling_no_thinking` | done |
 | Concurrent serving (`--max-concurrency > 1`) | refused; exact 4-slot serving is a follow-up PR |
-| MTP speculative decoding | sidecar discovered automatically; adaptive k=1..3 by default, `--verify-width 1` disables, `2..5` selects fixed k=1..4 |
+| MTP speculative decoding | sidecar discovered automatically; adaptive k=1..7 by default (code 16K / 64K 32.4 / 28.2 tok/s, counting 43.5), output identical to MTP off; `--verify-width 1` disables, `2..8` selects fixed k=1..7 |
 | Prefix cache | done: snapshots at chat cut points, restored on hits; a 64K agent turn's first token in ~3.5 s instead of ~65 s (131K context). Prefill keeps a 4096-row chunk first and snapshots get the remaining memory, so at 262K context with MTP long prefixes do not fit: use `--max-ctx 131072` or less for agent workloads |
 | Layer split | refused |
 | Other GPUs | generic paths; kernels, defaults and quality gates are tuned and measured on gfx1151 only |

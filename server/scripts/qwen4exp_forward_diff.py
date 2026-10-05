@@ -207,8 +207,8 @@ def cmd_mtp(args: argparse.Namespace) -> int:
 
 def draft_list(value: str) -> list[str]:
     values = value.split(",")
-    if any(k not in ("auto", "1", "2", "3", "4") for k in values):
-        raise argparse.ArgumentTypeError("--draft must be a comma-separated list of auto and/or 1..4")
+    if any(k not in ("auto", "1", "2", "3", "4", "5", "6", "7") for k in values):
+        raise argparse.ArgumentTypeError("--draft must be a comma-separated list of auto and/or 1..7")
     return list(dict.fromkeys(values))
 
 

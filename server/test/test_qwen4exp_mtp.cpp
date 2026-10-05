@@ -26,6 +26,8 @@ static void test_reset_qwen4exp_mtp_fields() {
     w->mtp_head_norm = &sentinel;
     w->mtp_head_down = &sentinel;
     w->mtp_head_up = &sentinel;
+    w->mtp_output = w->mtp_embd = &sentinel;
+    w->mtp_vocab_ids = {1, 2};
     w->tok_embd = &sentinel;   // unrelated field: must survive the reset untouched
 
     reset_qwen4exp_mtp_fields(*w);
@@ -39,6 +41,7 @@ static void test_reset_qwen4exp_mtp_fields() {
     CHECK(w->mtp_head_down == nullptr);
     CHECK(w->mtp_head_up == nullptr);
     CHECK(w->tok_embd == &sentinel);
+    CHECK(!w->mtp_output && !w->mtp_embd && w->mtp_vocab_ids.empty());
 }
 
 // P2: the loader checked eh_proj.ne[0] but not its output dimension, nor any of the other five MTP tensor
@@ -74,64 +77,115 @@ static void test_qwen4exp_mtp_shapes_valid() {
 int main() {
     test_reset_qwen4exp_mtp_fields();
     test_qwen4exp_mtp_shapes_valid();
+    CHECK(qwen4exp_mtp_vocab_ids(10, 4, {8, 9, 9, -1, 10}) == std::vector<int32_t>({0, 1, 8, 9}));
+    CHECK(qwen4exp_mtp_vocab_ids(4, 10, {}) == std::vector<int32_t>({0, 1, 2, 3}));
+    CHECK(qwen4exp_mtp_vocab_ids(10, 1, {8, 9}) == std::vector<int32_t>({8, 9}));
+    CHECK(qwen4exp_mtp_vocab_ids(10, 0, {8}).empty());
 
-    // Same controller and cost seeds as the server. A rejection must narrow;
-    // clean drafts at that narrower width must recover without unseen-depth
-    // evidence being frozen forever. Fixed widths must never adapt.
-    for (int k = 1; k <= 4; ++k) {
+    // Fixed overrides ignore all feedback, including invalid/cold timings.
+    for (int k = 1; k <= QWEN4EXP_MTP_MAX_DRAFT; ++k) {
         auto fixed = qwen4exp_mtp_width_policy(k, false);
         for (int i = 0; i < 32; ++i) {
             fixed.observe(1, k + 1, 1000.0f);
-            CHECK(fixed.next_width_cost_aware({}) == k + 1);
+            CHECK(qwen4exp_mtp_next_width(fixed) == k + 1);
         }
     }
-    auto adaptive = qwen4exp_mtp_width_policy(3, true);
-    CHECK(adaptive.next_width_cost_aware({}, 1) == 1); // remaining-token cap
-    for (int i = 0; i < 32; ++i) adaptive.observe(1, adaptive.next_width_cost_aware({}));
-    CHECK(adaptive.next_width_cost_aware({}) == 2);
-    for (int i = 0; i < 32; ++i) {
-        const int width = adaptive.next_width_cost_aware({});
-        CHECK(width >= 2 && width <= 4);
-        adaptive.observe(width, width);
+    auto recover = qwen4exp_mtp_width_policy(7, true, 66060);
+    for (int i = 0; i < 128; ++i) recover.observe(1, qwen4exp_mtp_next_width(recover));
+    int probes = 0;
+    for (int i = 0; i < 64; ++i) {
+        const int w = qwen4exp_mtp_next_width(recover);
+        probes += w > 2;
+        recover.observe(1, w);
     }
-    CHECK(adaptive.next_width_cost_aware({}) == 4);
+    CHECK(probes >= 3); // k=1 cannot suppress the exploration floor
+    for (int i = 0; i < 1500; ++i) {
+        const int w = qwen4exp_mtp_next_width(recover);
+        recover.observe(w, w);
+    }
+    CHECK(qwen4exp_mtp_next_width(recover) == 8);
 
-    // Deterministic stationary prefix distributions: structured, code-like,
-    // intermediate and prose-like acceptance. Check realized throughput, not
-    // just the last chosen width, against the best fixed width for each case.
-    // These are synthetic policy tests, not predictions of GPU performance.
-    const std::array<float, 5> costs{0, 0, 64, 82, 97};
-    for (const auto & survival : std::vector<std::array<float, 3>>{
-            {1.0f, 1.0f, 1.0f}, {0.94f, 0.86f, 0.75f},
-            {0.85f, 0.69f, 0.47f}, {0.79f, 0.56f, 0.36f},
-            {0.68f, 0.34f, 0.18f}, {0.40f, 0.16f, 0.064f}}) {
-        auto policy = qwen4exp_mtp_width_policy(3, true);
-        uint32_t random = 1;
-        double tokens = 0, elapsed = 0;
-        for (int i = 0; i < 10000; ++i) {
-            const int width = policy.next_width_cost_aware({});
-            CHECK(width >= 2 && width <= 4);
-            random = random * 1664525u + 1013904223u;
-            const double draw = random / 4294967296.0;
-            int accepted = 1;
-            while (accepted < width && draw < survival[accepted - 1]) ++accepted;
-            policy.observe(accepted, width, costs[width]);
-            if (i >= 100) {
-                tokens += accepted;
-                elapsed += costs[width];
+    // Stationary prefix distributions, including a sharp depth-2 cliff. The
+    // same latent prefix stream is used regardless of the selected width.
+    // Test actual useful tokens/time against every fixed k, not final width.
+    const std::vector<std::array<double, 7>> distributions{
+        {1, 1, 1, 1, 1, 1, 1}, {.94, .86, .75, .62, .50, .40, .30},
+        {.85, .69, .47, .30, .20, .10, .05}, {.79, .56, .36, .20, .10, .05, .02},
+        {.68, .34, .18, .09, .045, .02, .01}, {.40, .16, .064, .0256, .01, .004, .001},
+        {.95, .10, .08, .06, .04, .02, .01}};
+    double worst_ratio = 1.0;
+    for (int context : {16000, 66060}) for (const auto & survival : distributions) {
+        const double base = context < 32768 ? 45 : 47;
+        // Include a substantially different per-context slope to exercise
+        // measured cost adaptation, not merely agreement with the priors.
+        for (double slope : {16.0, 20.0, 28.0}) for (bool noisy : {false, true}) {
+            auto policy = qwen4exp_mtp_width_policy(7, true, context);
+            uint32_t random = 1;
+            double tokens = 0, elapsed = 0;
+            for (int i = 0; i < 12000; ++i) {
+                const int width = qwen4exp_mtp_next_width(policy);
+                CHECK(width >= 2 && width <= 8);
+                random = random * 1664525u + 1013904223u;
+                const double draw = random / 4294967296.0;
+                int accepted = 1;
+                while (accepted < width && draw < survival[accepted - 1]) ++accepted;
+                const double cost = base + slope * (width - 1);
+                // Early shape costs and a delayed 900ms spike, then zero-mean
+                // +/-20% jitter. Accounting uses the true cost, not its noise.
+                const double measured = noisy ? (i < 8 || i == 80 ? cost + 900 :
+                                                  cost * (i % 2 ? 1.2 : .8)) : cost;
+                policy.observe(accepted, width, measured);
+                if (i >= 1000) { tokens += accepted; elapsed += cost; }
             }
+            double best = 0, expected = 1;
+            for (int k = 1; k <= 7; ++k) {
+                expected += survival[k - 1];
+                best = std::max(best, expected / (base + slope * k));
+            }
+            worst_ratio = std::min(worst_ratio, tokens / elapsed / best);
+            CHECK(tokens / elapsed >= 0.95 * best);
         }
-        double best = 0, expected = 1;
-        for (int width = 2; width <= 4; ++width) {
-            expected += survival[width - 2];
-            best = std::max(best, expected / costs[width]);
+    }
+    std::printf("MTP policy stationary/noisy worst ratio to best fixed: %.4f\n", worst_ratio);
+
+    // Short requests resemble the session's code length and counting cell.
+    // Feed identical latent acceptance to clean/noisy controllers; a spike
+    // must not create a throughput collapse or an absorbing narrow width.
+    for (int seed = 1; seed <= 3; ++seed) for (bool counting : {false, true}) {
+        double rates[2]{};
+        for (int noise = 0; noise < 2; ++noise) {
+            auto policy = qwen4exp_mtp_width_policy(7, true, 66060);
+            uint32_t random = seed;
+            double elapsed = 0;
+            int tokens = 0, steps = 0;
+            std::array<int, 8> histogram{};
+            while (tokens < (counting ? 511 : 1023)) {
+                const int width = qwen4exp_mtp_next_width(policy);
+                ++histogram[width - 1];
+                random = random * 1664525u + 1013904223u;
+                const double draw = random / 4294967296.0;
+                int accepted = 1;
+                while (accepted < width && draw < distributions[counting ? 0 : 1][accepted - 1]) ++accepted;
+                const double cost = 47 + 20 * (width - 1);
+                policy.observe(accepted, width, noise ? (steps == 80 ? cost + 900 :
+                                                           cost * (steps % 2 ? 1.2 : .8)) : cost);
+                tokens += accepted;
+                elapsed += cost;
+                ++steps;
+            }
+            rates[noise] = tokens / elapsed;
+            CHECK(histogram[1] < steps / 10);
+            std::printf("MTP synthetic %s seed=%d noise=%d tps=%.3f tokens/step=%.3f k1..7=",
+                        counting ? "counting" : "code", seed, noise, rates[noise] * 1000, double(tokens) / steps);
+            for (int k = 1; k <= 7; ++k) std::printf("%s%d", k == 1 ? "" : "/", histogram[k]);
+            std::printf("\n");
         }
-        CHECK(tokens / elapsed >= 0.95 * best);
+        CHECK(rates[1] >= .98 * rates[0]);
     }
 
     int cases = 0;
-    for (int k = 0; k <= 4; ++k) {
-        std::array<int32_t, 5> drafts{11, 22, 33, 44, 55}, samples{};
+    for (int k = 0; k <= QWEN4EXP_MTP_MAX_DRAFT; ++k) {
+        std::array<int32_t, QWEN4EXP_MTP_MAX_VERIFY> drafts{11, 22, 33, 44, 55, 66, 77, 88}, samples{};
         // Every equality pattern, including later matches following a reject.
         for (int mask = 0; mask < (1 << (k + 1)); ++mask) {
             for (int i = 0; i <= k; ++i) samples[i] = drafts[i] + ((mask >> i) & 1);
@@ -151,7 +205,7 @@ int main() {
     // Rollback at all block alignments and accepted prefixes, including a
     // five-token verify that completes TWO blocks. Stale pooled rows must be
     // excluded, then recomputed from replacement raw keys on block completion.
-    for (int k = 1; k <= 4; ++k) {
+    for (int k = 1; k <= QWEN4EXP_MTP_MAX_DRAFT; ++k) {
         for (int alignment = 0; alignment < 4; ++alignment) {
             for (int retained = 1; retained <= k + 1; ++retained) {
                 const int pos = 2200 + alignment, end = pos + retained;

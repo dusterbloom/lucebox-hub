@@ -632,11 +632,12 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
                               int64_t n_pooled, Qwen4ExpQsaMode qsa, int il,
                               const std::function<void(ggml_tensor *, const char *)> & dump_mark = {},
                               const std::vector<Qwen4ExpAttnRow> * rows = nullptr,
-                              const Qwen4ExpDecodeWorkspace * qsa_ws = nullptr, bool kv_only = false) {
+                              const Qwen4ExpDecodeWorkspace * qsa_ws = nullptr, bool kv_only = false,
+                              bool last_only = false, int draft_window = 0) {
     const int64_t D      = w.n_embd_head_k;   // 256
     const int64_t Hq     = w.n_head;          // 24
     const int64_t Hk     = w.n_head_kv;       // 2
-    const int64_t T      = cur->ne[1];
+    int64_t T            = cur->ne[1];
     const float   eps    = w.rms_eps;
 
     if (dump_mark) {
@@ -713,11 +714,25 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
     // A single MTP layer needs only these writes for prompt catch-up. Q/gate and
     // everything after attention have no cache consumers and are not in gf yet.
     if (kv_only) return nullptr;
+    if (last_only && T > 1) {
+        // All retained pairs keep their original K/V projection width above.
+        // Only the final query feeds the next proposal; its prefix is causal.
+        GGML_ASSERT(qsa == QSA_DENSE && !rows && !indexer_raw && !kv_row);
+        Q = ggml_view_3d(c, Q, D, Hq, 1, Q->nb[1], Q->nb[2], (T - 1) * Q->nb[2]);
+        gate = ggml_view_2d(c, gate, D * Hq, 1, gate->nb[1], (T - 1) * gate->nb[1]);
+        qfull = ggml_view_2d(c, qfull, qfull->ne[0], 1, qfull->nb[1], (T - 1) * qfull->nb[1]);
+        T = 1;
+        mask = nullptr;
+    }
+    // Session arm only: keep absolute RoPE/cache writes and restrict just the
+    // draft query's visible K/V. Target calls always leave draft_window zero.
+    const int64_t kv_start = draft_window > 0 ? std::max<int64_t>(0, kv_len - draft_window) : 0;
+    GGML_ASSERT(!draft_window || (last_only && T == 1 && !mask && qsa == QSA_DENSE));
 
-    ggml_tensor * K_full = ggml_view_3d(c, k_cache, D, kv_len, Hk,
-        k_cache->nb[1], k_cache->nb[2], 0);
-    ggml_tensor * V_full = ggml_view_3d(c, v_cache, D, kv_len, Hk,
-        v_cache->nb[1], v_cache->nb[2], 0);
+    ggml_tensor * K_full = ggml_view_3d(c, k_cache, D, kv_len - kv_start, Hk,
+        k_cache->nb[1], k_cache->nb[2], kv_start * k_cache->nb[1]);
+    ggml_tensor * V_full = ggml_view_3d(c, v_cache, D, kv_len - kv_start, Hk,
+        v_cache->nb[1], v_cache->nb[2], kv_start * v_cache->nb[1]);
 
     // Every token's raw indexer key goes to the cache, so blocks can be pooled whenever QSA first needs them.
     ggml_tensor * kraw = nullptr;
@@ -1768,12 +1783,13 @@ namespace {
 bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache,
                        const int32_t * tokens, const float * hidden, int n, int pos0,
                        std::vector<float> & out_logits, std::vector<float> * out_hidden, bool kv_only,
-                       Qwen4ExpGraphMemory * measure = nullptr) {
+                       bool last_only = false, int draft_rank = -1, Qwen4ExpGraphMemory * measure = nullptr) {
     const Qwen4ExpCudaScope profile(w.gfx1151, cache.reference);
     const bool f16 = !cache.reference;
     const int64_t H = w.n_embd, hc = w.n_hc, T = n, kv_len = pos0 + n;
-    std::vector<float> emb(measure ? 0 : (size_t) H * T);
-    if (!measure && !w.embedder.embed(tokens, n, emb.data())) return false;
+    const bool device_draft = draft_rank >= 0, chain = draft_rank > 0;
+    std::vector<float> emb(measure || chain ? 0 : (size_t) H * T);
+    if (!measure && !chain && !w.embedder.embed(tokens, n, emb.data())) return false;
 
     Qwen4ExpDecodeWorkspace local_ws;
     Qwen4ExpDecodeWorkspace & ws = measure ? local_ws : cache.mtp_workspace;
@@ -1791,11 +1807,14 @@ bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4E
     ggml_context * ctx = ws.ctx;
     ggml_cgraph * gf = ggml_new_graph_custom(ctx, 8192, false);
 
-    ggml_tensor * inp_emb   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, H, T);
-    ggml_tensor * inp_h     = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, H * hc, T);
+    ggml_tensor * inp_emb = chain ? ggml_get_rows(ctx, w.mtp_embd,
+        ggml_view_1d(ctx, cache.mtp_chain_ids, 1, (draft_rank - 1) * sizeof(int32_t)))
+        : ggml_new_tensor_2d(ctx, GGML_TYPE_F32, H, T);
+    ggml_tensor * inp_h = chain ? cache.mtp_chain_hidden : ggml_new_tensor_2d(ctx, GGML_TYPE_F32, H * hc, T);
     ggml_tensor * positions = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 4 * T);
-    ggml_tensor * mask      = !kv_only && T > 1 ? ggml_new_tensor_2d(ctx, GGML_TYPE_F16, kv_len, T) : nullptr;
-    for (ggml_tensor * t : {inp_emb, inp_h, positions, mask}) if (t) ggml_set_input(t);
+    ggml_tensor * mask = !kv_only && !last_only && T > 1 ? ggml_new_tensor_2d(ctx, GGML_TYPE_F16, kv_len, T) : nullptr;
+    if (!chain) { ggml_set_input(inp_emb); ggml_set_input(inp_h); }
+    for (ggml_tensor * t : {positions, mask}) if (t) ggml_set_input(t);
 
     ggml_tensor * res = mtp_input(ctx, w, inp_emb, inp_h);
 
@@ -1807,27 +1826,40 @@ bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4E
     // Decode still attends densely over the entire prompt; prefill only fills its K/V.
     cur = build_full_attn(ctx, gf, cur, L, w, f16, cache.mtp_k, cache.mtp_v, /*indexer_k=*/nullptr, /*indexer_raw=*/nullptr,
                           positions, mask, nullptr, kv_len, pos0, /*ratio=*/4, /*n_pooled=*/0, QSA_DENSE, w.n_layer,
-                          {}, nullptr, nullptr, kv_only);
+                          {}, nullptr, nullptr, kv_only, last_only, device_draft ? cache.mtp_window : 0);
     ggml_tensor * draft_hidden = nullptr, * logits = nullptr;
     if (!kv_only) {
-        res = hc_combine(ctx, res, cur, inject, H, hc, T);
+        const int64_t output_T = last_only ? 1 : T;
+        if (last_only && T > 1) {
+            res = ggml_view_3d(ctx, res, H, hc, 1, res->nb[1], res->nb[2], (T - 1) * res->nb[2]);
+            inject = ggml_view_2d(ctx, inject, hc, 1, inject->nb[1], (T - 1) * inject->nb[1]);
+        }
+        res = hc_combine(ctx, res, cur, inject, H, hc, output_T);
         cur = hc_mix(ctx, res, L.hc_ffn_norm, L.hc_ffn_down, L.hc_ffn_up, L.hc_ffn_inject, &inject, H, hc, w.rms_eps);
-        res = hc_combine(ctx, res, build_moe(ctx, cur, L, w, w.n_layer, cache.reference), inject, H, hc, T);
+        res = hc_combine(ctx, res, build_moe(ctx, cur, L, w, w.n_layer, cache.reference), inject, H, hc, output_T);
 
-        ggml_tensor * last = ggml_view_3d(ctx, res, H, hc, 1, res->nb[1], res->nb[2], (size_t) (T - 1) * res->nb[2]);
+        ggml_tensor * last = ggml_view_3d(ctx, res, H, hc, 1, res->nb[1], res->nb[2], (size_t) (output_T - 1) * res->nb[2]);
         draft_hidden = out_hidden ? ggml_cont(ctx, last) : nullptr;
         if (draft_hidden) { ggml_set_output(draft_hidden); ggml_build_forward_expand(gf, draft_hidden); }
         ggml_tensor * head = hc_mix(ctx, last, w.mtp_head_norm, w.mtp_head_down, w.mtp_head_up, nullptr, nullptr,
                                     H, hc, w.rms_eps);
-        logits = ggml_mul_mat(ctx, w.output, head);
-        ggml_set_output(logits);
-        ggml_build_forward_expand(gf, logits);
+        logits = ggml_mul_mat(ctx, device_draft ? w.mtp_output : w.output, head);
+        if (device_draft) {
+            ggml_tensor * best = ggml_argmax(ctx, logits);
+            ggml_build_forward_expand(gf, ggml_cpy(ctx, best,
+                ggml_view_1d(ctx, cache.mtp_chain_ids, 1, draft_rank * sizeof(int32_t))));
+            // All readers of the preceding rank's residual precede this copy.
+            ggml_build_forward_expand(gf, ggml_cpy(ctx, ggml_reshape_2d(ctx, last, H * hc, 1), cache.mtp_chain_hidden));
+        } else {
+            ggml_set_output(logits);
+            ggml_build_forward_expand(gf, logits);
+        }
     }
 
     if (measure) {
         graph_memory(backend, ctx, gf, w.gfx1151, *measure);
         measure->host = (size_t) T * (H * (hc + 1) * sizeof(float) + 4 * sizeof(int32_t)) +
-                        (size_t) w.n_vocab * sizeof(float);
+                        (device_draft ? sizeof(int32_t) * cache.mtp_draft : (size_t) w.n_vocab * sizeof(float));
         ggml_free(ctx);
         return true;
     }
@@ -1840,8 +1872,10 @@ bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4E
         for (int64_t i = 0; i < T; ++i) {
             pos[(size_t) i] = pos[(size_t) (T + i)] = pos[(size_t) (2 * T + i)] = (int32_t) (pos0 + i);
         }
-        ggml_backend_tensor_set(inp_emb, emb.data(), 0, ggml_nbytes(inp_emb));
-        ggml_backend_tensor_set(inp_h, hidden, 0, ggml_nbytes(inp_h));
+        if (!chain) {
+            ggml_backend_tensor_set(inp_emb, emb.data(), 0, ggml_nbytes(inp_emb));
+            ggml_backend_tensor_set(inp_h, hidden, 0, ggml_nbytes(inp_h));
+        }
         ggml_backend_tensor_set(positions, pos.data(), 0, ggml_nbytes(positions));
         if (mask) {
             std::vector<ggml_fp16_t> m((size_t) kv_len * T);
@@ -1855,8 +1889,8 @@ bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4E
         ok = ggml_backend_graph_compute(backend, gf) == GGML_STATUS_SUCCESS;
     }
     if (ok) {
-        out_logits.resize(kv_only ? 0 : (size_t) w.n_vocab);
-        if (logits) ggml_backend_tensor_get(logits, out_logits.data(), 0, sizeof(float) * w.n_vocab);
+        out_logits.resize(kv_only || device_draft ? 0 : (size_t) w.n_vocab);
+        if (logits && !device_draft) ggml_backend_tensor_get(logits, out_logits.data(), 0, sizeof(float) * w.n_vocab);
         if (out_hidden) {
             out_hidden->resize((size_t) H * hc);
             ggml_backend_tensor_get(draft_hidden, out_hidden->data(), 0, out_hidden->size() * sizeof(float));
@@ -1871,9 +1905,9 @@ bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4E
 
 bool qwen4exp_mtp_forward(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache,
                           const int32_t * tokens, const float * hidden, int n, int pos0,
-                          std::vector<float> & out_logits, std::vector<float> * out_hidden, bool kv_only) {
+                          std::vector<float> & out_logits, std::vector<float> * out_hidden, bool kv_only, bool last_only) {
     if (!w.mtp_eh_proj || !cache.mtp_k || !tokens || !hidden || n <= 0 || pos0 < 0 || pos0 + n > cache.max_ctx ||
-        (kv_only && out_hidden)) {
+        (kv_only && (out_hidden || last_only))) {
         return false;
     }
     // Keep the original slices even for K/V-only prefill: matmul dispatch/numerics depend on batch width.
@@ -1882,7 +1916,7 @@ bool qwen4exp_mtp_forward(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwe
     for (int i = 0; i < n; i += slice) {
         const int m = std::min(slice, n - i);
         if (!mtp_forward_batch(backend, w, cache, tokens + i, hidden + (size_t) i * hd, m, pos0 + i,
-                               out_logits, i + m == n ? out_hidden : nullptr, kv_only)) {
+                               out_logits, i + m == n ? out_hidden : nullptr, kv_only, last_only)) {
             return false;
         }
     }
@@ -1892,16 +1926,23 @@ bool qwen4exp_mtp_forward(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwe
 bool qwen4exp_mtp_draft(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache,
                         const int32_t * tokens, const float * hidden, int n, int pos0, int k,
                         std::vector<int32_t> & drafts) {
-    if (k < 1 || k > cache.mtp_draft) return false;
-    std::vector<float> logits, chain_hidden;
+    if (k < 1 || k > cache.mtp_draft || n < 1 || n > cache.mtp_draft + 1 || pos0 < 0 ||
+        pos0 + n + k - 1 > cache.max_ctx || !tokens || !hidden || !w.mtp_output || !w.mtp_embd ||
+        !cache.mtp_chain_hidden || !cache.mtp_chain_ids) return false;
     drafts.clear();
-    // Catch up with authoritative trunk pairs, replacing any speculative MTP
-    // KV suffix from the preceding step before chaining predicted hidden states.
-    if (!qwen4exp_mtp_forward(backend, w, cache, tokens, hidden, n, pos0, logits, &chain_hidden)) return false;
-    for (int i = 0; i < k; ++i) {
-        drafts.push_back((int32_t) (std::max_element(logits.begin(), logits.end()) - logits.begin()));
-        if (i + 1 < k && !qwen4exp_mtp_forward(backend, w, cache, &drafts.back(), chain_hidden.data(), 1,
-                                              pos0 + n + i, logits, &chain_hidden)) return false;
+    std::vector<float> unused;
+    // First rank replaces every retained authoritative K/V pair. Later ranks
+    // read the preceding GPU argmax and HC residual directly. MTP has no PLE.
+    for (int rank = 0; rank < k; ++rank) {
+        if (!mtp_forward_batch(backend, w, cache, tokens, hidden, rank ? 1 : n,
+                                rank ? pos0 + n + rank - 1 : pos0, unused, nullptr,
+                                false, true, rank)) return false;
+    }
+    drafts.resize(k);
+    ggml_backend_tensor_get(cache.mtp_chain_ids, drafts.data(), 0, k * sizeof(int32_t));
+    for (int32_t & id : drafts) {
+        if (id < 0 || (size_t) id >= w.mtp_vocab_ids.size()) return false;
+        id = w.mtp_vocab_ids[id];
     }
     return true;
 }
@@ -1937,7 +1978,7 @@ Qwen4ExpGraphMemory qwen4exp_mtp_graph_memory(ggml_backend_t backend, const Qwen
     Qwen4ExpGraphMemory memory;
     std::vector<float> unused;
     if (!mtp_forward_batch(backend, w, cache, nullptr, nullptr, n_tokens, pos0,
-                           unused, &unused, false, &memory)) memory.graph = SIZE_MAX;
+                           unused, nullptr, false, true, 0, &memory)) memory.graph = SIZE_MAX;
     return memory;
 }
 

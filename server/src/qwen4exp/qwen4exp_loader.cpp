@@ -369,7 +369,7 @@ std::string find_qwen4exp_mtp_sidecar(const std::string & model_path) {
 }
 
 bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
-                        Qwen4ExpWeights & out, const std::string & mtp_override, bool reference) {
+                        Qwen4ExpWeights & out, const std::string & mtp_override, bool reference, int mtp_vocab) {
     out.gfx1151 = ggml_backend_cuda_qwen4exp_supported(backend);
     const Qwen4ExpCudaScope profile(out.gfx1151, reference);
     // Open every shard of the model; a single-file GGUF is a one-element list. An MTP sidecar
@@ -412,6 +412,10 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
         }
         out.embedder.tok_embd_owned.clear();
         out.embedder.tok_embd_bytes = nullptr;
+        if (out.mtp_vocab_buf) ggml_backend_buffer_free(out.mtp_vocab_buf);
+        if (out.mtp_vocab_ctx) ggml_free(out.mtp_vocab_ctx);
+        out.mtp_vocab_buf = nullptr;
+        out.mtp_vocab_ctx = nullptr;
         reset_qwen4exp_mtp_fields(out);
         for (ShardSource & shard : shards) {
             gguf_free(shard.gctx);
@@ -820,6 +824,69 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
     out.embedder.n_vocab = out.n_vocab;
     out.embedder.row_bytes = token_size / static_cast<size_t>(out.n_vocab);
 
+    if (out.mtp_eh_proj) {
+        const auto types = get_i32_array(gctx, "tokenizer.ggml.token_type");
+        const int64_t names = gguf_find_key(gctx, "tokenizer.ggml.tokens");
+        const int64_t merges = gguf_find_key(gctx, "tokenizer.ggml.merges");
+        if (mtp_vocab <= 0 || types.size() != (size_t) out.n_vocab || names < 0 || merges < 0 ||
+            gguf_get_kv_type(gctx, names) != GGUF_TYPE_ARRAY || gguf_get_arr_type(gctx, names) != GGUF_TYPE_STRING ||
+            gguf_get_arr_n(gctx, names) != (size_t) out.n_vocab ||
+            gguf_get_kv_type(gctx, merges) != GGUF_TYPE_ARRAY || gguf_get_arr_type(gctx, merges) != GGUF_TYPE_STRING ||
+            gguf_get_arr_n(gctx, merges) == 0) {
+            return fail("MTP subset requires BPE tokens, merges and token types");
+        }
+        std::vector<int32_t> required{out.eos_id, out.eos_chat_id, out.ple_eos_token_id, out.ple_image_token_id};
+        for (int id = 0; id < out.n_vocab; ++id) {
+            const std::string name = gguf_get_arr_str(gctx, names, id);
+            // Normal=1; retain every other type plus explicitly delimited
+            // control spellings even if a converter marked them as normal.
+            if (types[id] != 1 || (name.size() >= 2 && name.front() == '<' && name.back() == '>')) required.push_back(id);
+        }
+        for (int64_t key = 0; key < gguf_get_n_kv(gctx); ++key) {
+            const std::string name = gguf_get_key(gctx, key);
+            if (name.compare(0, 15, "tokenizer.ggml.") == 0 && name.size() >= 9 &&
+                name.compare(name.size() - 9, 9, "_token_id") == 0) {
+                const auto type = gguf_get_kv_type(gctx, key);
+                if (type == GGUF_TYPE_UINT32) required.push_back((int32_t) gguf_get_val_u32(gctx, key));
+                if (type == GGUF_TYPE_INT32) required.push_back(gguf_get_val_i32(gctx, key));
+            }
+        }
+        out.mtp_vocab_ids = qwen4exp_mtp_vocab_ids(out.n_vocab, mtp_vocab, required);
+        const int64_t nv = (int64_t) out.mtp_vocab_ids.size();
+        ggml_init_params vp{ggml_tensor_overhead() * 2 + 1024, nullptr, true};
+        out.mtp_vocab_ctx = ggml_init(vp);
+        if (!out.mtp_vocab_ctx) return fail("MTP subset metadata allocation failed");
+        out.mtp_output = ggml_new_tensor_2d(out.mtp_vocab_ctx, out.output->type, out.n_embd, nv);
+        // F32 preserves CpuEmbedder's results for all input quant types; CUDA
+        // GET_ROWS does not support every K/IQ quantization of token_embd.
+        out.mtp_embd = ggml_new_tensor_2d(out.mtp_vocab_ctx, GGML_TYPE_F32, out.n_embd, nv);
+        out.mtp_vocab_buf = ggml_backend_alloc_ctx_tensors(out.mtp_vocab_ctx, backend);
+        if (!out.mtp_vocab_buf) return fail("MTP subset buffer allocation failed");
+        ggml_backend_buffer_set_usage(out.mtp_vocab_buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        const uint8_t * output_bytes = nullptr;
+        for (const auto & a : allocations) if (a.tensor == out.output) {
+            output_bytes = static_cast<const uint8_t *>(mmaps[a.shard].data()) + a.file_offset;
+        }
+        if (!output_bytes) return fail("MTP subset output source missing");
+        // Small batches bound temporary RAM and avoid thousands of tiny uploads.
+        const size_t rb = ggml_row_size(out.output->type, out.n_embd);
+        std::vector<uint8_t> rows(256 * rb);
+        std::vector<float> embeddings((size_t) 256 * out.n_embd);
+        for (int64_t begin = 0; begin < nv; begin += 256) {
+            const int count = (int) std::min<int64_t>(256, nv - begin);
+            for (int i = 0; i < count; ++i) std::memcpy(rows.data() + i * rb,
+                output_bytes + (size_t) out.mtp_vocab_ids[begin + i] * rb, rb);
+            if (!out.embedder.embed(out.mtp_vocab_ids.data() + begin, count, embeddings.data())) {
+                return fail("MTP subset embedding gather failed");
+            }
+            ggml_backend_tensor_set(out.mtp_output, rows.data(), begin * rb, count * rb);
+            ggml_backend_tensor_set(out.mtp_embd, embeddings.data(), (size_t) begin * out.n_embd * sizeof(float),
+                                    (size_t) count * out.n_embd * sizeof(float));
+        }
+        std::fprintf(stderr, "[qwen4exp-mtp] subset budget=%d rows=%lld head_bytes=%zu embedding_bytes=%zu\n",
+                     mtp_vocab, (long long) nv, ggml_nbytes(out.mtp_output), ggml_nbytes(out.mtp_embd));
+    }
+
     // The PLE lookup table is served lazily from whichever shard holds it
     // (ISTA-DASLab isolates it in a separate shard; bartowski-style splits keep
     // it in shard 1; single-file models trivially have it in `path`).
@@ -891,6 +958,10 @@ void free_qwen4exp_weights(Qwen4ExpWeights & w) {
     w.output_hc_norm = nullptr;
     w.output_hc_down = nullptr;
     w.output_hc_up = nullptr;
+    if (w.mtp_vocab_buf) ggml_backend_buffer_free(w.mtp_vocab_buf);
+    if (w.mtp_vocab_ctx) ggml_free(w.mtp_vocab_ctx);
+    w.mtp_vocab_buf = nullptr;
+    w.mtp_vocab_ctx = nullptr;
     reset_qwen4exp_mtp_fields(w);
     w.backend = nullptr;
 }

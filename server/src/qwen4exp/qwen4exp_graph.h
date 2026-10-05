@@ -101,9 +101,11 @@ bool qwen4exp_verify_rollback(ggml_backend_t backend, const Qwen4ExpWeights & w,
 // last MTP HC residual, which feeds the next autoregressive draft step.
 // kv_only fills the same prompt K/V without evaluating attention or the draft head;
 // out_logits is cleared and out_hidden must be null. Slice sizes stay unchanged.
+// last_only preserves every K/V write but evaluates only the final attention/FFN row.
+// The default full-row/full-head path is retained as the smoke oracle.
 bool qwen4exp_mtp_forward(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache,
                           const int32_t * tokens, const float * hidden, int n, int pos0,
-                          std::vector<float> & out_logits, std::vector<float> * out_hidden = nullptr, bool kv_only = false);
+                          std::vector<float> & out_logits, std::vector<float> * out_hidden = nullptr, bool kv_only = false, bool last_only = false);
 
 // Catch up pending trunk pairs, then chain k predictions with the MTP residual.
 bool qwen4exp_mtp_draft(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4ExpCache & cache,

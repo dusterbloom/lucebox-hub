@@ -117,6 +117,8 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
         out.mtp_k = ggml_new_tensor_3d(out.ctx, kv_type, w.n_embd_head_k, kv_capacity, w.n_head_kv);
         out.mtp_v = ggml_new_tensor_3d(out.ctx, kv_type, w.n_embd_head_v, kv_capacity, w.n_head_kv);
         out.mtp_prev_hidden = ggml_new_tensor_2d(out.ctx, GGML_TYPE_F32, w.n_embd * w.n_hc, 1);
+        out.mtp_chain_hidden = ggml_new_tensor_2d(out.ctx, GGML_TYPE_F32, hc_dim, 1);
+        out.mtp_chain_ids = ggml_new_tensor_1d(out.ctx, GGML_TYPE_I32, out.mtp_draft);
         const int count = out.mtp_draft + 1;
         for (size_t i = 0; i < n_linear; ++i) {
             ggml_tensor * states = ggml_new_tensor_4d(out.ctx, GGML_TYPE_F32, S_v, S_v, H_v, count);
@@ -213,6 +215,7 @@ void free_qwen4exp_cache(Qwen4ExpCache & c) {
     c.attn_v.clear();
     c.mtp_k = c.mtp_v = nullptr;
     c.mtp_prev_hidden = nullptr;
+    c.mtp_chain_hidden = c.mtp_chain_ids = nullptr;
     c.mtp_prev_pos = -1;
     c.spec_ssm.clear();
     c.spec_ssm_rows.clear();
