@@ -20,8 +20,8 @@ std::string check_feature_compatibility(
         return "failed to detect model architecture";
     }
 
-    if (arch == "qwen4exp" && (args.verify_width < 0 || args.verify_width > 5)) {
-        return "qwen4exp --verify-width expects 0 (adaptive), 1 (off), or 2..5 (fixed k=1..4)";
+    if (arch == "qwen4exp" && (args.verify_width < 0 || args.verify_width > 8)) {
+        return "qwen4exp --verify-width expects 0 (adaptive), 1 (off), or 2..8 (fixed k=1..7)";
     }
 
     // ── target placement × compiled backend
