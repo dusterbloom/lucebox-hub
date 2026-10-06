@@ -323,7 +323,7 @@ bool same_cache(const Qwen4ExpCache & a, const Qwen4ExpCache & b, int tokens, bo
 // model's natural acceptance rate. After truncation replace the first rejected
 // input and finish its block; compare authoritative state and logits with AR.
 int run_mtp_rollback_check(ggml_backend_t backend, const Qwen4ExpWeights & w,
-                           const std::vector<int32_t> & prompt, int k) {
+                           const std::vector<int32_t> & prompt, int k, int chunk) {
     Qwen4ExpCache cache, reference;
     const int S = (int) prompt.size();
     const int capacity = S + 512;
@@ -331,8 +331,14 @@ int run_mtp_rollback_check(ggml_backend_t backend, const Qwen4ExpWeights & w,
               create_qwen4exp_cache(backend, w, capacity, GGML_TYPE_F16, reference);
     std::vector<float> actual, expected, verified, hidden, draft_logits;
     for (auto * t : {cache.mtp_k, cache.mtp_v}) if (t) ggml_backend_tensor_memset(t, 0, 0, ggml_nbytes(t));
-    ok = ok && qwen4exp_forward(backend, w, cache, prompt.data(), S, 0, actual).ok &&
-               qwen4exp_forward(backend, w, reference, prompt.data(), S, 0, expected).ok;
+    // Honor --chunk: a monolithic long prompt's compute graph cannot be allocated (~25.6 GiB at S=70000).
+    if (chunk <= 0) chunk = S;
+    for (int p = 0; ok && p < S; p += chunk) {
+        const int n = std::min(chunk, S - p);
+        ok = qwen4exp_forward(backend, w, cache, prompt.data() + p, n, p, actual).ok &&
+             qwen4exp_forward(backend, w, reference, prompt.data() + p, n, p, expected).ok;
+    }
+    if (!ok) std::fprintf(stderr, "[smoke] rollback setup failed S=%d chunk=%d (cache/prefill)\n", S, chunk);
     int pos = S, cases = 0;
     auto advance = [&](int32_t token) {
         const bool same = qwen4exp_forward(backend, w, cache, &token, 1, pos, actual).ok &&
@@ -694,7 +700,7 @@ int main(int argc, char ** argv) {
             for (int k = mtp_all ? 1 : mtp_draft; k <= (mtp_all ? QWEN4EXP_MTP_MAX_DRAFT : mtp_draft); ++k) {
                 const int decode_rc = run_mtp_check(backend, w, prompt, mtp_gen, k, chunk, false, mtp_window);
                 // Independent caches: report rollback even when natural drafting differs.
-                const int rollback_rc = run_mtp_rollback_check(backend, w, prompt, k);
+                const int rollback_rc = run_mtp_rollback_check(backend, w, prompt, k, chunk);
                 rc |= decode_rc || rollback_rc;
             }
             if (mtp_all) rc |= run_mtp_check(backend, w, prompt, mtp_gen, QWEN4EXP_MTP_MAX_DRAFT, chunk, true, mtp_window);
