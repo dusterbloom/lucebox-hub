@@ -5613,7 +5613,7 @@ TEST_CASE(ServerUnitFixture, test_qwen4exp_mtp_profile_and_verify_restore) {
     using namespace luce::common;
     auto profile = ggml_backend_cuda_set_qwen4exp_profile;
     auto invariant = ggml_backend_cuda_set_mmvq_batch_invariant;
-    const auto previous = profile(GGML_CUDA_QWEN4EXP_REFERENCE);
+    const auto previous = profile(GGML_CUDA_QWEN4EXP_OFF);
     const bool previous_invariant = invariant(false);
     [&] {
         Qwen4ExpCudaScope scope(true);
@@ -5621,7 +5621,7 @@ TEST_CASE(ServerUnitFixture, test_qwen4exp_mtp_profile_and_verify_restore) {
         TEST_ASSERT(profile(GGML_CUDA_QWEN4EXP_DEFAULT) == GGML_CUDA_QWEN4EXP_DEFAULT);
         TEST_ASSERT(invariant(true));
     }();
-    TEST_ASSERT(profile(GGML_CUDA_QWEN4EXP_REFERENCE) == GGML_CUDA_QWEN4EXP_REFERENCE);
+    TEST_ASSERT(profile(GGML_CUDA_QWEN4EXP_OFF) == GGML_CUDA_QWEN4EXP_OFF);
     TEST_ASSERT(!invariant(false));
     // Invalid verify/rollback return before any GPU access, restoring the caller's profile.
     Qwen4ExpWeights weights;
@@ -5630,9 +5630,9 @@ TEST_CASE(ServerUnitFixture, test_qwen4exp_mtp_profile_and_verify_restore) {
     std::vector<float> logits;
     const int32_t tokens[] = {1, 2};
     TEST_ASSERT(!qwen4exp_forward(nullptr, weights, cache, tokens, 2, 0, logits, nullptr, true).ok);
-    TEST_ASSERT(profile(GGML_CUDA_QWEN4EXP_REFERENCE) == GGML_CUDA_QWEN4EXP_REFERENCE);
+    TEST_ASSERT(profile(GGML_CUDA_QWEN4EXP_OFF) == GGML_CUDA_QWEN4EXP_OFF);
     TEST_ASSERT(!qwen4exp_verify_rollback(nullptr, weights, cache, 0, 1));
-    TEST_ASSERT(profile(previous) == GGML_CUDA_QWEN4EXP_REFERENCE);
+    TEST_ASSERT(profile(previous) == GGML_CUDA_QWEN4EXP_OFF);
     TEST_ASSERT(!invariant(previous_invariant));
 }
 
