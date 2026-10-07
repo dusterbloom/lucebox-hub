@@ -27,7 +27,6 @@ struct Qwen4ExpBackendConfig {
     std::optional<std::string> draft_path; // MTP sidecar; absent = auto-discover
     int             verify_width = 0;     // 0 = adaptive, 1 = off, 2..8 = fixed
     DevicePlacement device;
-    int             stream_fd = -1;
     int             chunk     = 0;  // auto: measured allocation budget
     int             max_concurrency = 1;
 };

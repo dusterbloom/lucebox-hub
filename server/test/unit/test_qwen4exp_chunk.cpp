@@ -15,6 +15,7 @@ int main() {
     assert(qwen4exp_fit_chunk(4096, 50000, 4040, workspace) == 4096); // exact fit
     assert(qwen4exp_fit_chunk(4096, 50000, 4041, workspace) == 3840);
     assert(qwen4exp_fit_chunk(4096, 50000, 0, [](int) { return SIZE_MAX; }) == 0);
+    assert(qwen4exp_fit_chunk(131072, size_t(1) << 40, 0, workspace) == 32768);
     // Snapshots cannot buy memory by shrinking an otherwise viable 4096-row
     // chunk. Includes the fixed runtime and 10% headroom, with no underflow.
     size_t snapshots = 100000;

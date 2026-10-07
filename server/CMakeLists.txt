@@ -1913,6 +1913,8 @@ if(LUCE_TESTS)
     target_link_libraries(test_qwen4exp_chunk PRIVATE ggml)
     target_compile_options(test_qwen4exp_chunk PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>)
     add_test(NAME test_qwen4exp_chunk COMMAND test_qwen4exp_chunk)
+    set_tests_properties(test_qwen4exp_chunk PROPERTIES LABELS cpu)
+    list(APPEND _luce_cpu_test_targets test_qwen4exp_chunk)
 
     add_executable(test_qwen4exp_prefix_cache test/unit/test_qwen4exp_prefix_cache.cpp)
     target_include_directories(test_qwen4exp_prefix_cache PRIVATE ${LUCE_SRC_INCLUDE_DIRS}

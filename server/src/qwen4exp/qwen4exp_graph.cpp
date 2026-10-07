@@ -1259,6 +1259,8 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
     std::vector<int> full_idx(w.n_layer, -1);
     for (size_t i = 0; i < cache.linear_layer_ids.size(); ++i) lin_idx[cache.linear_layer_ids[i]] = (int) i;
     for (size_t i = 0; i < cache.full_layer_ids.size(); ++i)   full_idx[cache.full_layer_ids[i]] = (int) i;
+    std::vector<int> ple_idx(w.n_layer, -1);
+    for (size_t i = 0; i < cache.ple_layer_ids.size(); ++i)    ple_idx[cache.ple_layer_ids[i]] = (int) i;
 
     const bool has_ple = !cache.ple_layer_ids.empty() && w.ple_reader.available();
     const int64_t ple_heads = w.ple_n_heads;
@@ -1544,7 +1546,7 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
         if (L.is_ple && has_ple) {
             res_hc = build_ple(ctx, gf, res_hc, ple_in, L, w,
                                cache.ple_conv_state.empty() ? nullptr :
-                                   cache.ple_conv_state[0], dump_mark, verify ? cache.spec_ple : nullptr);
+                                   cache.ple_conv_state[ple_idx[il]], dump_mark, verify ? cache.spec_ple : nullptr);
             xn_next = nullptr;   // PLE changed the residual; the norm must rerun
         }
 

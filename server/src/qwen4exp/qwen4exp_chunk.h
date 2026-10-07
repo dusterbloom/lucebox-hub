@@ -8,10 +8,13 @@
 
 namespace luce::common {
 
-// Largest 256-row tile multiple within a measured workspace budget. Above
-// 512, the dense/QSA peak envelope grows with T. Small contexts / low-memory
-// fallbacks also try 256, 128, ... 1. Keep 10% of available memory for runtime,
-// driver and OS growth; private backend scratch is an estimate, not gallocr.
+// The gfx1151 MoE route sort serves at most 32768 prompt rows.
+constexpr int kQwen4ExpMaxChunk = 32768;
+
+// Largest 256-row tile multiple within a measured workspace budget, capped at
+// kQwen4ExpMaxChunk. Above 512, the dense/QSA peak envelope grows with T. Small
+// contexts / low-memory fallbacks also try 256, 128, ... 1. Keep 10% of
+// available memory for runtime, driver and OS growth.
 template<class Measure>
 int qwen4exp_fit_chunk(int max_ctx, size_t available, size_t fixed, Measure measure,
                      size_t * snapshot_budget = nullptr) {
@@ -27,7 +30,7 @@ int qwen4exp_fit_chunk(int max_ctx, size_t available, size_t fixed, Measure meas
         fixed += *snapshot_budget;
     }
     if (max_ctx <= 0 || fixed >= budget) return 0;
-    int best = 0, lo = 2, hi = max_ctx / 256;
+    int best = 0, lo = 2, hi = std::min(max_ctx, kQwen4ExpMaxChunk) / 256;
     while (lo <= hi) {
         const int mid = lo + (hi - lo) / 2;
         if (measure(mid * 256) <= budget - fixed) { best = mid * 256; lo = mid + 1; }
