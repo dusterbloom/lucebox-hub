@@ -461,10 +461,14 @@ static void model(const char * path, int width, int chunk, int ctx) {
     interrupted.on_token = [](int32_t) { return false; };
     CHECK(b.generate(interrupted, {}).error_code() == "cancelled");
     CHECK(!b.snapshot_save(5));
-    CHECK(b.generate(r, {}).ok());
+    const auto before_park = b.generate(r, {});
+    CHECK(before_park.ok());
     for (int i = 0; i < 6; ++i) { b.snapshot_free(i); CHECK(!b.snapshot_used(i)); }
     CHECK(b.park(ParkTarget::All));
     CHECK(b.snapshot_bytes_estimate(65536) == 0);
+    CHECK(b.unpark(ParkTarget::All));
+    const auto after_unpark = b.generate(r, {});
+    CHECK(after_unpark.ok() && after_unpark.tokens == before_park.tokens);
     std::printf("PASS backend prefix lifecycle, partial match, cancel, resident, MTP rollback width=%d\n", width);
 }
 
