@@ -581,7 +581,6 @@ static ggml_tensor * build_qsa_attn(ggml_context * c, ggml_tensor * cur,
         attn->src[6] = qsa_pack_keys(c, Kc);
         attn->src[7] = qsa_pack_values(c, Vc);
     }
-    ggml_flash_attn_ext_set_n_kv_max(attn, (int32_t) ids->ne[0]);
     ggml_flash_attn_ext_set_prec(attn, GGML_PREC_F32);
     return attn;
 }
