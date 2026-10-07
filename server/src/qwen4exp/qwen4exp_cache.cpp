@@ -8,18 +8,13 @@ namespace luce::common {
 
 namespace {
 
-// The ring engages when the compute device is an integrated GPU that can read
-// the (pinned) host buffer type directly — the same condition the scheduler
-// UMA detection uses in ggml-backend.cpp.
+// The ring engages on the gfx1151 iGPU, which reads the pinned host buffer
+// type in place (the device stays reported as a GPU for every other model).
 bool qwen4exp_uma_ring_supported(ggml_backend_t backend) {
     if (getenv("GGML_CUDA_NO_PINNED") != nullptr) return false;
+    if (!ggml_backend_cuda_qwen4exp_supported(backend)) return false;
     ggml_backend_dev_t dev = ggml_backend_get_device(backend);
-    if (!dev || ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_IGPU) {
-        return false;
-    }
-    ggml_backend_buffer_type_t host_buft = ggml_backend_dev_host_buffer_type(dev);
-    return host_buft != nullptr &&
-           ggml_backend_dev_supports_buft(dev, host_buft);
+    return dev != nullptr && ggml_backend_dev_host_buffer_type(dev) != nullptr;
 }
 
 }  // namespace
@@ -28,7 +23,9 @@ bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
                            int max_ctx, ggml_type kv_type, Qwen4ExpCache & out, bool mtp, int mtp_draft, bool reference) {
     const Qwen4ExpCudaScope profile(w.gfx1151, reference);
     out.reference = reference;
-    if (max_ctx <= 0 || mtp_draft < 1 || mtp_draft > QWEN4EXP_MTP_MAX_DRAFT) return false;
+    // QSA's exact integer cell IDs require positions below 2^24.
+    if (max_ctx <= 0 || max_ctx >= (1 << 24) ||
+        mtp_draft < 1 || mtp_draft > QWEN4EXP_MTP_MAX_DRAFT) return false;
 
     out.full_layer_ids.clear();
     out.linear_layer_ids.clear();

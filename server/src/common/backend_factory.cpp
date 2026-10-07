@@ -280,9 +280,7 @@ std::unique_ptr<ModelBackend> construct_backend(
         cfg.draft_path = speculation.draft_path;
         cfg.verify_width = speculation.verify_width;
         cfg.device = placement.target;
-        cfg.stream_fd = execution.stream_fd;
         cfg.chunk = execution.chunk;
-        cfg.slots = execution.max_concurrency;
 
         auto backend = std::make_unique<Qwen4ExpBackend>(std::move(cfg));
         if (!backend->init()) {
