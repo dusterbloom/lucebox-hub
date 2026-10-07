@@ -383,10 +383,13 @@ GenerateResult Qwen4ExpBackend::run(const GenerateRequest & req, const DaemonIO 
     auto sample = [&](const float * row) {
         return (int32_t) sample_logits(row, weights_.n_vocab, req.sampler, history, rng);
     };
-    static const bool gpu_argmax_enabled = [] {
+    static const int gpu_argmax_override = [] {
         const char * value = std::getenv("LUCE_GPU_ARGMAX");
-        return value && value[0] == '1' && value[1] == '\0';
+        if (!value) return -1;
+        return value[0] == '1' && value[1] == '\0' ? 1 : 0;
     }();
+    // Keep the automatic hardware decision local to this backend instance.
+    const bool gpu_argmax_enabled = gpu_argmax_override < 0 ? weights_.gfx1151 : gpu_argmax_override != 0;
     BudgetHookState budget;   // thinking force-close: keeps the reply reserve of the budget for the answer
     bool cancelled = false;
     // Commits a sampled token, after the budget hook's substitution; false once generation ends.

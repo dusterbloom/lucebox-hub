@@ -1152,7 +1152,7 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
         const char * value = std::getenv("LUCE_QWEN_SHARED_OVERLAP");
         return value && std::strcmp(value, "1") == 0;
     }();
-    // Hidden-export trunk forwards and verify/draft/prefill retain the serial path.
+    // Hidden-export, verify and MTP prefill forwards retain the serial path.
     const bool build_shared_overlap = shared_overlap_requested && use_stable_graph &&
         !measure && w.gfx1151 && w.n_layer == 48 && n_tokens == 1 &&
         !verify && !mtp_prefill && !out_hidden && !std::getenv("GGML_CUDA_DISABLE_FUSION");
