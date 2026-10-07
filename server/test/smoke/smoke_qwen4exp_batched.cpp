@@ -55,7 +55,7 @@ int main(int argc, char ** argv) {
     Qwen4ExpCache caches[N]; Qwen4ExpCache * ptrs[N];
     for (int s = 0; s < N; ++s) {
         ptrs[s] = &caches[s];
-        if (!create_qwen4exp_cache(backend, w, ctx, GGML_TYPE_F16, caches[s])) return 1;
+        if (!create_qwen4exp_cache(backend, w, ctx, caches[s])) return 1;
     }
     const bool qsa = w.gfx1151;
     Qwen4ExpBatchedDecodeWorkspace workspace;
@@ -151,7 +151,7 @@ int main(int argc, char ** argv) {
 
         // A reset/reuse must match a freshly allocated cache for the same prefix.
         Qwen4ExpCache fresh;
-        if (!create_qwen4exp_cache(backend, w, ctx, GGML_TYPE_F16, fresh)) return 1;
+        if (!create_qwen4exp_cache(backend, w, ctx, fresh)) return 1;
         reset_qwen4exp_state(backend, caches[0]);
         reset_qwen4exp_state(backend, fresh);
         std::vector<int32_t> prompt((size_t) prompt_n);

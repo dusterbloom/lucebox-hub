@@ -75,18 +75,16 @@ struct Qwen4ExpBatchedDecodeWorkspace {
 };
 
 struct Qwen4ExpCache {
-    bool reference = false;  // test-only upstream differential (padded KV and reference math)
     ggml_context *        ctx     = nullptr;
     ggml_backend_buffer_t buf     = nullptr;
 
     int       max_ctx  = 0;
     int       cur_pos  = 0;
-    ggml_type kv_type  = GGML_TYPE_F16;
 
     std::vector<int> full_layer_ids;    // size = 12
     std::vector<int> linear_layer_ids;  // size = 36
 
-    // Full attention: [head_dim, max_ctx, n_head_kv] (flash_attn_ext layout).
+    // Full attention: F16 [head_dim, max_ctx, n_head_kv] (flash_attn_ext layout).
     std::vector<ggml_tensor *> attn_k;  // size = n_full
     std::vector<ggml_tensor *> attn_v;
     ggml_tensor * mtp_k = nullptr;      // MTP draft layer, same layout; null unless created with `mtp`
@@ -137,22 +135,22 @@ struct Qwen4ExpCache {
     // Pinned graph-input ring (see Qwen4ExpInputRing).
     Qwen4ExpInputRing input_ring;
 
-    // T=1 decode workspace reuse (excluded in reference tests); the verify and MTP draft graphs keep their own.
+    // T=1 decode workspace reuse; the verify and MTP draft graphs keep their own.
     Qwen4ExpDecodeWorkspace decode_workspace, verify_workspace, mtp_workspace;
 };
 
 // `mtp` adds the MTP draft layer's K/V and the verify rollback state (needs a loaded sidecar).
 bool create_qwen4exp_cache(ggml_backend_t backend, const Qwen4ExpWeights & w,
-                           int max_ctx, ggml_type kv_type, Qwen4ExpCache & out, bool mtp = false,
-                           int mtp_draft = 1, bool reference = false); // allocate the explicit draft cap once
+                           int max_ctx, Qwen4ExpCache & out, bool mtp = false,
+                           int mtp_draft = 1); // allocate the explicit draft cap once
 
 void free_qwen4exp_cache(Qwen4ExpCache & c);
 
 void clear_qwen4exp_decode_workspace(Qwen4ExpDecodeWorkspace & workspace);
 void clear_qwen4exp_batched_decode_workspace(Qwen4ExpBatchedDecodeWorkspace & workspace);
 
-// Zero the recurrent state and conv history and reset cur_pos. KV is left
-// intact; callers that need a clean sequence also reset cur_pos themselves.
+// Zero the recurrent state, conv history and pooled-block prefix and reset
+// cur_pos. KV is left intact: the next sequence overwrites it from position 0.
 void reset_qwen4exp_state(ggml_backend_t backend, Qwen4ExpCache & c);
 
 // Prefix-sized device copies. Live strip views remain valid until the cache is

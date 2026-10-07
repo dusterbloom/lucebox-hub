@@ -5548,9 +5548,6 @@ TEST_CASE(ServerUnitFixture, test_qwen4exp_qsa_batch_boundary) {
     spans[1].pos0 = 2051;
     TEST_ASSERT(!qwen4exp_can_batch(w, spans, 2, true)); // first 513th block, before executing
     TEST_ASSERT(qwen4exp_can_batch(w, spans, 2, false)); // generic device, QSA off
-    caches[1].reference = true;
-    TEST_ASSERT(!qwen4exp_can_batch(w, spans, 2, false)); // reference math runs solo
-    caches[1].reference = false;
     std::swap(spans[0], spans[1]);
     TEST_ASSERT(!qwen4exp_can_batch(w, spans, 2, true)); // any slot, independent of order
     spans[0].pos0 = 16;

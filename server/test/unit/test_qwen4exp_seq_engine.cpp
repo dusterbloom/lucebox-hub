@@ -125,7 +125,7 @@ static bool run_distinct(Qwen4ExpSeqEngine & engine, ggml_backend_t backend,
     // Compare full-vocabulary logits and complete engine token streams exactly.
     // One reusable solo cache keeps the peak at five full caches, not eight.
     Qwen4ExpCache solo;
-    if (!create_qwen4exp_cache(backend, weights, 32768, GGML_TYPE_F16, solo))
+    if (!create_qwen4exp_cache(backend, weights, 32768, solo))
         return false;
     std::vector<std::vector<std::vector<float>>> solo_logits(N);
     std::vector<std::vector<int32_t>> solo_streams(N);
@@ -220,7 +220,7 @@ static bool run_qsa_boundary(Qwen4ExpSeqEngine & engine, ggml_backend_t backend,
     // Only these small contexts are needed by the reference streams.
     Qwen4ExpCache solo[N];
     for (int s = 0; s < N; ++s) {
-        if (!create_qwen4exp_cache(backend, w, 3072, GGML_TYPE_F16, solo[s])) {
+        if (!create_qwen4exp_cache(backend, w, 3072, solo[s])) {
             for (auto & cache : solo) free_qwen4exp_cache(cache);
             return false;
         }
@@ -358,7 +358,7 @@ int main(int argc, char ** argv) {
     }
     std::vector<Qwen4ExpCache> caches(4);
     for (auto & cache : caches) {
-        if (!create_qwen4exp_cache(backend, weights, ctx, GGML_TYPE_F16, cache)) {
+        if (!create_qwen4exp_cache(backend, weights, ctx, cache)) {
             for (auto & c : caches) free_qwen4exp_cache(c);
             free_qwen4exp_weights(weights);
             ggml_backend_free(backend);
