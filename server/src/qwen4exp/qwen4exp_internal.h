@@ -24,8 +24,8 @@ struct Qwen4ExpCudaScope {
     const ggml_cuda_qwen4exp_profile previous;
     explicit Qwen4ExpCudaScope(bool gfx1151, bool reference = false)
         : optimized(gfx1151 && !reference),
-          previous(ggml_backend_cuda_set_qwen4exp_profile(reference ? GGML_CUDA_QWEN4EXP_REFERENCE :
-                   optimized ? GGML_CUDA_QWEN4EXP_DEFAULT : GGML_CUDA_QWEN4EXP_OFF)) {}
+          previous(ggml_backend_cuda_set_qwen4exp_profile(
+              optimized ? GGML_CUDA_QWEN4EXP_DEFAULT : GGML_CUDA_QWEN4EXP_OFF)) {}
     ~Qwen4ExpCudaScope() { ggml_backend_cuda_set_qwen4exp_profile(previous); }
     Qwen4ExpCudaScope(const Qwen4ExpCudaScope &) = delete;
     Qwen4ExpCudaScope & operator=(const Qwen4ExpCudaScope &) = delete;
