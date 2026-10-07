@@ -1038,8 +1038,10 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
                                        int pos0,
                                        std::vector<float> & out_logits, std::vector<float> * out_hidden,
                                        bool verify, bool mtp_prefill,
-                                       const Qwen4ExpInputs * inputs, Qwen4ExpGraphMemory * measure) {
+                                       const Qwen4ExpInputs * inputs, int32_t * out_argmax,
+                                       Qwen4ExpGraphMemory * measure) {
     Qwen4ExpForwardResult res;
+    if (out_argmax) *out_argmax = -1;
     if (n_tokens <= 0 || pos0 < 0 || (!tokens && !measure)) return res;
     const Qwen4ExpCudaScope profile(w.gfx1151);
     if (verify && (n_tokens < 2 || n_tokens > cache.mtp_draft + 1 || !qwen4exp_verify_supported(cache))) return res;
@@ -1078,6 +1080,7 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
         }
     }
     const bool use_stable_graph = reuse_ws && (qsa == QSA_DENSE || stable_qsa);
+    const bool gpu_argmax = out_argmax && use_stable_graph && !verify;
     // Context and allocator reused across calls: the T=1 decode workspace, or the verify forward's own.
     Qwen4ExpDecodeWorkspace * pool = measure ? nullptr : reuse_ws ? &cache.decode_workspace : verify ? &cache.verify_workspace : nullptr;
     if (pos0 > cache.max_ctx || n_tokens > cache.max_ctx - pos0) {
@@ -1177,8 +1180,13 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
             clear_qwen4exp_decode_workspace(ws);
             return false;
         }
-        out_logits.resize((size_t) w.n_vocab);
-        ggml_backend_tensor_get(ws.logits, out_logits.data(), 0, sizeof(float) * w.n_vocab);
+        if (gpu_argmax && ws.argmax) {
+            out_logits.clear();
+            ggml_backend_tensor_get(ws.argmax, out_argmax, 0, sizeof(*out_argmax));
+        } else {
+            out_logits.resize((size_t) w.n_vocab);
+            ggml_backend_tensor_get(ws.logits, out_logits.data(), 0, sizeof(float) * w.n_vocab);
+        }
         if (out_hidden && ws.hidden) {
             out_hidden->resize((size_t) ggml_nelements(ws.hidden));
             ggml_backend_tensor_get(ws.hidden, out_hidden->data(), 0, ggml_nbytes(ws.hidden));
@@ -1189,6 +1197,7 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
     if (use_stable_graph && decode_ws.gf && kv_len <= decode_ws.kv_bucket &&
         (decode_ws.qsa_blocks >= 0) == stable_qsa && decode_ws.next_pos == pos0 &&
         (decode_ws.hidden != nullptr) == (out_hidden != nullptr) &&
+        (decode_ws.argmax != nullptr) == gpu_argmax &&
         (!stable_qsa || (decode_ws.kv_bucket == stable_kv_bucket &&
                         decode_ws.qsa_budget == w.indexer_top_k / 4 && cache.indexer_blocks == pos0 / 4))) {
         if (!run_stable(decode_ws)) return res;
@@ -1398,6 +1407,14 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
     ggml_set_output(logits);
     ggml_set_name(logits, "logits");
     ggml_build_forward_expand(gf, logits);
+    ggml_tensor * argmax = nullptr;
+    if (gpu_argmax) {
+        argmax = ggml_argmax(ctx, logits);
+        const int32_t cpu_first_tie = 1;
+        std::memcpy(argmax->op_params, &cpu_first_tie, sizeof(cpu_first_tie));
+        ggml_set_output(argmax);
+        ggml_build_forward_expand(gf, argmax);
+    }
     // The final HC residual of every row feeds the MTP draft head. Appended after the logits so the logits path keeps
     // its node order; a row-selected prefill builds the other rows' FFN half on the side.
     ggml_tensor * hidden = nullptr;
@@ -1538,6 +1555,7 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
         decode_ws.ple_in = ple_in;
         decode_ws.kv_row = kv_row;
         decode_ws.logits = logits;
+        decode_ws.argmax = argmax;
         decode_ws.hidden = hidden;
         decode_ws.kv_bucket = stable_kv_bucket;
         decode_ws.qsa_blocks = stable_qsa ? stable_kv_bucket / 4 : -1;
@@ -1642,8 +1660,13 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
         cache.indexer_blocks = (int) ((pos0 + T) / qsa_ratio(w));
     }
 
-    out_logits.resize((size_t) ggml_nelements(logits));   // n_vocab, per row when verifying
-    ggml_backend_tensor_get(logits, out_logits.data(), 0, ggml_nbytes(logits));
+    if (gpu_argmax && argmax) {
+        out_logits.clear();
+        ggml_backend_tensor_get(argmax, out_argmax, 0, sizeof(*out_argmax));
+    } else {
+        out_logits.resize((size_t) ggml_nelements(logits));   // n_vocab, per row when verifying
+        ggml_backend_tensor_get(logits, out_logits.data(), 0, ggml_nbytes(logits));
+    }
     if (out_hidden && hidden) {
         out_hidden->resize((size_t) ggml_nelements(hidden));
         ggml_backend_tensor_get(hidden, out_hidden->data(), 0, ggml_nbytes(hidden));
@@ -1860,9 +1883,9 @@ bool qwen4exp_mtp_draft(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4
 Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend, const Qwen4ExpWeights & w,
         Qwen4ExpCache & cache, const int32_t * tokens, int n_tokens, int pos0,
         std::vector<float> & logits, std::vector<float> * out_hidden,
-        bool verify, bool mtp_prefill, const Qwen4ExpInputs * inputs) {
+        bool verify, bool mtp_prefill, const Qwen4ExpInputs * inputs, int32_t * out_argmax) {
     return forward_impl(backend, w, cache, tokens, n_tokens, pos0, logits, out_hidden,
-                        verify, mtp_prefill, inputs, nullptr);
+                        verify, mtp_prefill, inputs, out_argmax, nullptr);
 }
 
 Qwen4ExpGraphMemory qwen4exp_graph_memory(ggml_backend_t backend, const Qwen4ExpWeights & w,
@@ -1876,7 +1899,7 @@ Qwen4ExpGraphMemory qwen4exp_graph_memory(ggml_backend_t backend, const Qwen4Exp
     cache.indexer_blocks = pos0 / ratio <= w.indexer_top_k / ratio ? 0 : (int) (pos0 / ratio);
     const bool ok = forward_impl(backend, w, cache, nullptr, n_tokens, pos0, unused,
                                 mtp ? &unused : nullptr, verify, mtp && n_tokens > 1 && !verify,
-                                nullptr, &memory).ok;
+                                nullptr, nullptr, &memory).ok;
     cache.indexer_blocks = blocks;
     cache.kv_bucket_base = bucket_base;
     if (!ok) memory.graph = SIZE_MAX;

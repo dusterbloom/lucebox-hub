@@ -55,6 +55,7 @@ struct Qwen4ExpDecodeWorkspace {
     ggml_tensor * qsa_visibility = nullptr;
     // I32[10]: valid count, four raw rows, destination row, four M-RoPE positions.
     ggml_tensor * qsa_params = nullptr;
+    ggml_tensor * argmax = nullptr;   // optional greedy result; logits remains an output for snapshots
     uint64_t builds = 0;      // smoke-test evidence: metadata addresses can be recycled
     uint64_t replays = 0;
     int qsa_budget = 0;
