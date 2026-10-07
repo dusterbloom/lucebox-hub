@@ -37,9 +37,10 @@ the calling thread's profile flag. It does not read qwen4exp environment variabl
 environment; other models retain their own dispatch. Without `--chunk`, the
 prefill chunk is the largest 256-row multiple that fits the memory left after
 weights, caches and (with MTP) the draft and verify graphs, keeping 10% free:
-UD at 262K context and one slot gets 7424 rows without the sidecar and 4864
-with MTP. The banner and `/props` report it. Prompt attention accumulates in
-F32; verify rows keep the T=1 attention path, so MTP output equals MTP off.
+UD at 262K context gets 7424 rows without the sidecar and 4864 with MTP. The
+banner and `/props` report it. Prompt attention accumulates in F32: on UD an 18K
+prompt prefilled in 2048- or 7424-row chunks gives logits bitwise equal to one
+pass. Verify rows keep the T=1 attention path, so MTP output equals MTP off.
 
 Build:
 
@@ -93,8 +94,9 @@ all three quants.
 
 | Piece | State |
 | --- | --- |
-| Loader, graph and cache: Gated DeltaNet, full attention, hyper-connections, n-gram embeddings, MoE | done, byte-exact against upstream llama.cpp's reference path (0 expert-ID mismatches across 48 layers on IQ4_NL and UD) |
+| Loader, graph and cache: Gated DeltaNet, full attention, hyper-connections, n-gram embeddings, MoE | done, matched byte for byte against upstream llama.cpp during the port (0 expert-ID mismatches across 48 layers on IQ4_NL and UD) |
 | QSA at prefill and decode, keys pooled per 4-token block | done (exactly dense up to 2,051 tokens) |
+| Attention block ratios other than 4, contexts of 2^24 tokens or more | refused at load |
 | gfx1151 kernels: MMB bf16 and Q8_0 -> F16 WMMA GEMMs, fused HC / GDN / PLE, M-RoPE into the flash-attention layout | done |
 | Chat template, reasoning effort, thinking budget, `preserve_thinking`, `sampling_no_thinking` | done |
 | Concurrent serving (`--max-concurrency > 1`) | refused; exact 4-slot serving is a follow-up PR |
@@ -120,24 +122,18 @@ CONT fusion alias), `test_backend_plan` (default prefill chunk), `test_qwen4exp_
 `test_server_unit`, and `smoke_qwen4exp_forward` (split-prefill KLs and
 cancel/reset/reuse on a real GGUF).
 
-The smoke binary uses the same gfx1151 defaults as the server. Its test controls
-are command-line arguments:
+The smoke binary uses the same gfx1151 defaults as the server:
 
 ```bash
 server/build-hip/smoke_qwen4exp_forward MODEL.gguf 6000 \
   --token-file tokens6000.txt --split 100:1
-python3 server/scripts/qwen4exp_upstream_diff.py --model MODEL.gguf \
-  --llama-tree /path/to/llama-qwen4 --our-bin server/build-hip/smoke_qwen4exp_forward \
-  --seq 16 --reference
+server/build-hip/smoke_qwen4exp_forward MODEL.gguf 16000 --compare-chunk 4096
 ```
 
-`--split N[:chunk]` compares one prefill against a split suffix. `--reference`
-selects upstream graph/attention/RoPE math, and `--dump` prints activation
-summaries; the differential harness passes both to the smoke binary. These
-controls are test-only. The harness also accepts `--token-file`, `--output-dir`
-and `--calibrate`. Binary activation dumps and the HC16-off comparison were
-removed. The chunk differential remains available as
-`qwen4exp_forward_diff.py qsa --server BINARY --model MODEL --port 8711`.
+`--split N[:chunk]` compares one prefill against a split suffix.
+`--compare-chunk N` prefills in N-row chunks against `--chunk` (default 2048)
+and reports the first greedy divergence and the teacher-forced KL over 128
+generated tokens.
 
 MTP uses the same scoped profile for drafting, verification, rollback and the
 K/V fill inside trunk prefill. `--draft PATH` selects a sidecar explicitly;
@@ -147,12 +143,10 @@ readable, but adaptive MTP is enabled by default without it.
 
 ```bash
 server/build-hip/smoke_qwen4exp_forward MODEL.gguf 2200 --mtp 128 --mtp-all --chunk 2048
-python3 server/scripts/qwen4exp_forward_diff.py mtp --server BINARY --model MODEL \
-  --draft auto,1,2,3,4 --sidecar MTP.gguf
 ```
 
-The smoke's `--mtp-draft 1..4` selects one fixed draft cap; `--mtp-all` checks
-all four at S=16 and the requested sequence length. `--chunk N` controls MTP
+The smoke's `--mtp-draft 1..7` selects one fixed draft cap; `--mtp-all` checks
+all seven at S=16 and the requested sequence length. `--chunk N` controls MTP
 prefill chunks, `--tg N` controls ordinary decode length, and `--stable N`
-checks the final N tokens against rebuilt QSA graphs. `--draft PATH|0` selects
-or disables the smoke sidecar. The MTP smoke requires the default graph.
+checks the final N replayed QSA decode steps against graphs built fresh at each
+step. `--draft PATH|0` selects or disables the smoke sidecar.

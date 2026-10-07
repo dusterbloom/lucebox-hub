@@ -63,9 +63,13 @@ int qwen4exp_select_chunk(ggml_backend_t backend, const Qwen4ExpWeights & w,
             if (n > 1 && !retain(qwen4exp_graph_memory(backend, w, cache, n, end - n, true), verify)) return 0;
         }
     }
-    const size_t fixed = (slots - resident_slots) * state + shadow + shadow_tmp + slots * (decode + verify + draft);
+    // The decode workspaces stay resident while the next prompt prefills.
+    const size_t fixed = (slots - resident_slots) * state + shadow + shadow_tmp +
+                         slots * (decode + verify + draft);
     std::fprintf(stderr, "[qwen4exp] chunk-runtime mtp=%d decode=%zu verify=%zu draft=%zu scratch=%zu host=%zu\n",
         (int) mtp, decode, verify, draft, runtime_scratch, runtime_host);
+    struct Plan { size_t graph = 0, ring = 0, host = 0, scratch = 0; };
+    std::vector<std::pair<int, Plan>> plans;   // one per probed chunk size
     const int chunk = qwen4exp_fit_chunk(cache.max_ctx, available, fixed, [&](int n) {
         size_t graph = 0, inputs = 0, mask = 0, host = runtime_host, scratch = runtime_scratch;
         // End-of-context QSA workspace, and the largest dense span before QSA.
@@ -130,8 +134,7 @@ bool Qwen4ExpBackend::init() {
                      luce_last_error());
         return false;
     }
-    if (!create_qwen4exp_cache(backend_, weights_, cfg_.device.max_ctx,
-                               GGML_TYPE_F16, cache_, /*mtp=*/true,
+    if (!create_qwen4exp_cache(backend_, weights_, cfg_.device.max_ctx, cache_, /*mtp=*/true,
                                cfg_.verify_width == 0 ? QWEN4EXP_MTP_MAX_DRAFT : std::max(1, cfg_.verify_width - 1))) {
         std::fprintf(stderr, "[qwen4exp] cache creation failed\n");
         return false;
@@ -140,11 +143,11 @@ bool Qwen4ExpBackend::init() {
         chunk_ = cfg_.chunk;
     } else {
         snapshot_budget_ = 3 * snapshot_bytes_estimate(cache_.max_ctx);
-        chunk_ = qwen4exp_select_chunk(backend_, weights_, cache_, cfg_.slots, 1, &snapshot_budget_);
+        chunk_ = qwen4exp_select_chunk(backend_, weights_, cache_, 1, 1, &snapshot_budget_);
         std::fprintf(stderr, "[qwen4exp] prefix snapshot allowance=%zu bytes\n", snapshot_budget_);
     }
     if (chunk_ <= 0) {
-        std::fprintf(stderr, "[qwen4exp] insufficient prefill memory at configured context/slots\n");
+        std::fprintf(stderr, "[qwen4exp] insufficient prefill memory at the configured context\n");
         return false;
     }
     return true;
@@ -190,8 +193,7 @@ bool Qwen4ExpBackend::unpark(ParkTarget target) {
                      luce_last_error());
         return false;
     }
-    if (!create_qwen4exp_cache(backend_, weights_, cfg_.device.max_ctx,
-                               GGML_TYPE_F16, cache_, /*mtp=*/true,
+    if (!create_qwen4exp_cache(backend_, weights_, cfg_.device.max_ctx, cache_, /*mtp=*/true,
                                cfg_.verify_width == 0 ? QWEN4EXP_MTP_MAX_DRAFT : std::max(1, cfg_.verify_width - 1))) {
         std::fprintf(stderr, "[qwen4exp] unpark cache creation failed\n");
         free_qwen4exp_weights(weights_);
@@ -294,7 +296,7 @@ GenerateResult Qwen4ExpBackend::run(const GenerateRequest & req, const DaemonIO 
         const bool mtp_prefill = mtp && n > 1;
         const Qwen4ExpForwardResult r = qwen4exp_forward(
             backend_, weights_, cache_, req.prompt.data() + pos, n, pos, logits, mtp ? &hidden : nullptr,
-            false, false, mtp_prefill, false, &inputs);
+            false, mtp_prefill, &inputs);
         if (!r.ok) {
             result.fail(GenerateErrorCode::PrefillFailed, "qwen4exp prefill forward failed");
             return result;

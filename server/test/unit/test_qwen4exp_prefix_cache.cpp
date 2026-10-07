@@ -128,8 +128,8 @@ struct Qwen4ExpPrefixTest {
             free_qwen4exp_cache(b.cache_);
             b.cache_ = {};
             b.cfg_.device.max_ctx = ctx;
-            CHECK(create_qwen4exp_cache(b.backend_, b.weights_, ctx, GGML_TYPE_F16,
-                b.cache_, true, b.cfg_.verify_width == 0 ? 3 : std::max(1, b.cfg_.verify_width - 1)));
+            CHECK(create_qwen4exp_cache(b.backend_, b.weights_, ctx, b.cache_, true,
+                b.cfg_.verify_width == 0 ? 3 : std::max(1, b.cfg_.verify_width - 1)));
             b.snapshot_budget_ = 3 * b.snapshot_bytes_estimate(ctx);
             b.chunk_ = qwen4exp_select_chunk(b.backend_, b.weights_, b.cache_, 1, 1, &b.snapshot_budget_);
         }
