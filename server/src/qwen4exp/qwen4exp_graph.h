@@ -37,8 +37,6 @@ int64_t qwen4exp_stable_kv_span(int64_t & base, int64_t max_ctx, int64_t kv_len)
 
 struct Qwen4ExpForwardResult {
     bool ok = false;
-    int  n_tokens = 0;
-    int  pos0 = 0;
 };
 
 // Host-only input preparation; safe to run for the next prompt chunk while
@@ -82,12 +80,10 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
                                        std::vector<float> & out_logits,
                                        std::vector<float> * out_hidden = nullptr,
                                        bool verify = false,
-                                       bool qsa_rebuild_reference = false, // smoke oracle only
                                        bool mtp_prefill = false,
-                                       bool dump = false, // test-only activation summaries
                                        const Qwen4ExpInputs * inputs = nullptr);
 
-// The cache was created with `mtp` and the graph is the default one (not a reference test).
+// The cache was created with `mtp` (and a loaded sidecar).
 bool qwen4exp_verify_supported(const Qwen4ExpCache & cache);
 
 // Retain the first `retained` verify inputs (accepted drafts + 1, or fewer at EOS).
