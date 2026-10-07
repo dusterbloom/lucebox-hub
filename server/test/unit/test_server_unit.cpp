@@ -5605,7 +5605,7 @@ TEST_CASE(ServerUnitFixture, test_qwen4exp_profile_is_scoped) {
               TEST_ASSERT(set(GGML_CUDA_QWEN4EXP_DEFAULT) == GGML_CUDA_QWEN4EXP_DEFAULT);
           }
           TEST_ASSERT(!ggml_backend_cuda_set_mmvq_batch_invariant(false)); }();
-    TEST_ASSERT(set(GGML_CUDA_QWEN4EXP_OFF) == GGML_CUDA_QWEN4EXP_DEFAULT);
+    TEST_ASSERT(set(GGML_CUDA_QWEN4EXP_OFF) == GGML_CUDA_QWEN4EXP_OFF);
     ggml_backend_free(cpu);
 }
 
