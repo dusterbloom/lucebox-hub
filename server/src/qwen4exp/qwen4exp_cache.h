@@ -11,6 +11,7 @@
 #include "ggml.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
+#include "ggml-cuda.h"
 
 #include <vector>
 #include <utility>
@@ -63,6 +64,14 @@ struct Qwen4ExpDecodeWorkspace {
     int max_ctx = 0;
     const Qwen4ExpWeights * model = nullptr;
     ggml_backend_t backend = nullptr;  // owns native captures; must outlive the workspace
+
+    // Opt-in T=1 shared-expert overlap. Every shared-branch destination
+    // lives in this private buffer, outside gallocr's reusable activation arena.
+    ggml_context * shared_ctx = nullptr;
+    ggml_backend_buffer_t shared_buf = nullptr;
+    void * shared_overlap = nullptr;
+    std::vector<ggml_tensor *> shared_slots;
+    std::vector<ggml_cuda_qwen_shared_overlap_layer> shared_layers;
 };
 
 // Shared arena for exact-width independent-sequence decode. Unlike the stable
