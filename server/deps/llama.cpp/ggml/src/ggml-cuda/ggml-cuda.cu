@@ -6197,6 +6197,7 @@ extern "C" size_t ggml_backend_cuda_trim_pool(ggml_backend_t backend) {
     while (!cuda_ctx->luce_q8_memo.empty()) {
         cuda_ctx->luce_q8_memo.pop_back();
     }
+    ggml_cuda_mmb_release_all(); // MMB caches and the bf16 weight shadows keyed by weight address
 
     size_t freed = 0;
     for (int device = 0; device < GGML_CUDA_MAX_DEVICES; ++device) {
@@ -7294,7 +7295,6 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                 switch (a->type) {
                     case GGML_TYPE_F32:
                     case GGML_TYPE_F16:
-                    case GGML_TYPE_Q2_0:
                     case GGML_TYPE_Q4_0:
                     case GGML_TYPE_Q4_1:
                     case GGML_TYPE_Q5_0:
@@ -7338,7 +7338,6 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_F32:
                     case GGML_TYPE_BF16:
                     case GGML_TYPE_I32:
-                    case GGML_TYPE_Q2_0:
                     case GGML_TYPE_Q4_0:
                     case GGML_TYPE_Q4_1:
                     case GGML_TYPE_Q5_0:

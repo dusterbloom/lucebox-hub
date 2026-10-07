@@ -210,6 +210,7 @@ bool Qwen4ExpBackend::park(ParkTarget target) {
     seq_caches_.clear();
     free_qwen4exp_cache(cache_);
     free_qwen4exp_weights(weights_);
+    ggml_backend_cuda_trim_pool(backend_); // also frees the bf16 weight shadows keyed by the freed weights' addresses
     parked_ = true;
     std::printf("[qwen4exp] target parked\n");
     std::fflush(stdout);
