@@ -1217,9 +1217,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "HC_COMBINE_NORM",
     "GATED_RMS_NORM_F16",
     "QSA_DECODE_IDS",
+    "MOE_ROUTE",
 };
 
-static_assert(GGML_OP_COUNT == 113, "GGML_OP_COUNT != 113");
+static_assert(GGML_OP_COUNT == 114, "GGML_OP_COUNT != 114");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1353,9 +1354,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "hc_combine_norm(inj,res,blk,gamma)",
     "gated_rms_norm_f16(x,gamma,z)",
     "qsa_decode_ids(blocks,positions)",
+    "moe_route(mixed,w_router,w_shexp)",
 };
 
-static_assert(GGML_OP_COUNT == 113, "GGML_OP_COUNT != 113");
+static_assert(GGML_OP_COUNT == 114, "GGML_OP_COUNT != 114");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -9804,3 +9806,73 @@ struct ggml_tensor * ggml_gated_f16(
         struct ggml_tensor  * z) {
     return ggml_gated_rms_norm_f16(ctx, x, NULL, z, 0.0f);
 }
+
+// Packed layout: part 0 sel I32 [NU, T], part 1 wsel F32 [NU, T], part 2 sh_gate F32 [1, T]; every part starts
+// 256-byte aligned. op_params: 0 NE, 1 NU, 2 T, 3..5 part offsets (i32 bytes).
+#define GGML_MOE_ROUTE_ALIGN 256
+static size_t ggml_moe_route_align(size_t n) { return (n + GGML_MOE_ROUTE_ALIGN - 1) / GGML_MOE_ROUTE_ALIGN * GGML_MOE_ROUTE_ALIGN; }
+
+struct ggml_tensor * ggml_moe_route(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * mixed,
+        struct ggml_tensor  * w_router,
+        struct ggml_tensor  * w_shexp,
+        int64_t               n_used) {
+    GGML_ASSERT(mixed && w_router && w_shexp);
+    const int64_t N = mixed->ne[0], T = mixed->ne[1];
+    const int64_t NE = w_router->ne[1];
+    GGML_ASSERT(mixed->type == GGML_TYPE_F32 && ggml_is_contiguous(mixed) && mixed->ne[2] == 1 && mixed->ne[3] == 1);
+    GGML_ASSERT(T >= 1 && T <= GGML_HC_BOUNDARY_MAX_T);
+    GGML_ASSERT(w_router->type == GGML_TYPE_BF16 && ggml_is_contiguous(w_router) && w_router->ne[0] == N);
+    GGML_ASSERT(w_shexp->type == GGML_TYPE_F32 && ggml_is_contiguous(w_shexp) && ggml_nelements(w_shexp) == N);
+    GGML_ASSERT(n_used >= 1 && n_used <= NE);
+
+    size_t off[3];
+    size_t total = 0;
+    off[0] = total; total = ggml_moe_route_align(total + (size_t) T * n_used * sizeof(int32_t));
+    off[1] = total; total = ggml_moe_route_align(total + (size_t) T * n_used * sizeof(float));
+    off[2] = total; total = ggml_moe_route_align(total + (size_t) T * sizeof(float));
+
+    struct ggml_tensor * result = ggml_new_tensor_1d(ctx, GGML_TYPE_I8, (int64_t) total);
+    result->op     = GGML_OP_MOE_ROUTE;
+    result->src[0] = mixed;
+    result->src[1] = w_router;
+    result->src[2] = w_shexp;
+    ggml_set_op_params_i32(result, 0, (int32_t) NE);
+    ggml_set_op_params_i32(result, 1, (int32_t) n_used);
+    ggml_set_op_params_i32(result, 2, (int32_t) T);
+    for (int i = 0; i < 3; ++i) ggml_set_op_params_i32(result, 3 + i, (int32_t) off[i]);
+    return result;
+}
+
+size_t ggml_moe_route_part_offset(const struct ggml_tensor * p, int part) {
+    GGML_ASSERT(p->op == GGML_OP_MOE_ROUTE && part >= 0 && part < 3);
+    return (size_t) ggml_get_op_params_i32(p, 3 + part);
+}
+
+static struct ggml_tensor * ggml_moe_route_view(struct ggml_context * ctx, struct ggml_tensor * p, enum ggml_type type,
+        int n_dims, const int64_t * ne, int part) {
+    const size_t offset = ggml_moe_route_part_offset(p, part);
+    struct ggml_tensor * result = ggml_new_tensor_impl(ctx, type, n_dims, ne, p, offset);
+    ggml_format_name(result, "%s (view)", p->name);
+    ggml_set_op_params(result, &offset, sizeof(offset));
+    result->op     = GGML_OP_VIEW;
+    result->src[0] = p;
+    return result;
+}
+
+struct ggml_tensor * ggml_moe_route_sel(struct ggml_context * ctx, struct ggml_tensor * p) {
+    const int64_t ne[2] = { ggml_get_op_params_i32(p, 1), ggml_get_op_params_i32(p, 2) };
+    return ggml_moe_route_view(ctx, p, GGML_TYPE_I32, 2, ne, 0);
+}
+
+struct ggml_tensor * ggml_moe_route_wsel(struct ggml_context * ctx, struct ggml_tensor * p) {
+    const int64_t ne[2] = { ggml_get_op_params_i32(p, 1), ggml_get_op_params_i32(p, 2) };
+    return ggml_moe_route_view(ctx, p, GGML_TYPE_F32, 2, ne, 1);
+}
+
+struct ggml_tensor * ggml_moe_route_sh_gate(struct ggml_context * ctx, struct ggml_tensor * p) {
+    const int64_t ne[2] = { 1, ggml_get_op_params_i32(p, 2) };
+    return ggml_moe_route_view(ctx, p, GGML_TYPE_F32, 2, ne, 2);
+}
+

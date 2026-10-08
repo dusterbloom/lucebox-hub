@@ -37,6 +37,7 @@
 #include "ggml-cuda/hc-mix.cuh"
 #include "ggml-cuda/hc-cn.cuh"
 #include "ggml-cuda/gated-norm.cuh"
+#include "ggml-cuda/moe-route.cuh"
 #include "ggml-cuda/ple-conv.cuh"
 #include "ggml-cuda/gdn-conv.cuh"
 #include "ggml-cuda/mmq.cuh"
@@ -4210,6 +4211,9 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
                 ggml_cuda_op_hc_combine_norm(ctx, a);
             }
         } break;
+        case GGML_OP_MOE_ROUTE:
+            ggml_cuda_op_moe_route(ctx, dst);
+            break;
 #endif // defined(GGML_USE_HIP)
         case GGML_OP_GROUP_NORM:
             ggml_cuda_op_group_norm(ctx, dst);
@@ -8530,9 +8534,15 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                    op->src[2]->type == GGML_TYPE_F32 && op->src[3]->type == GGML_TYPE_F32 &&
                    ggml_is_contiguous(op->src[0]) && ggml_is_contiguous(op->src[1]) &&
                    ggml_is_contiguous(op->src[2]) && ggml_is_contiguous(op->src[3]);
+        case GGML_OP_MOE_ROUTE:
+            return op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_BF16 &&
+                   op->src[2]->type == GGML_TYPE_F32 &&
+                   ggml_cuda_moe_route_shape_ok(op->src[0]->ne[0], ggml_get_op_params_i32(op, 0),
+                                                ggml_get_op_params_i32(op, 1), ggml_get_op_params_i32(op, 2));
 #else
         case GGML_OP_HC_COMBINE_NORM:
         case GGML_OP_GATED_RMS_NORM_F16:
+        case GGML_OP_MOE_ROUTE:
             return false;
 #endif
         case GGML_OP_MUL_MAT:
@@ -9290,6 +9300,15 @@ bool ggml_backend_cuda_mmb_f16_input_ok(const ggml_tensor * w, int64_t n_tokens)
 #else
     GGML_UNUSED(w);
     GGML_UNUSED(n_tokens);
+    return false;
+#endif
+}
+
+bool ggml_backend_cuda_moe_route_supported(int64_t n_embd, int64_t n_expert, int64_t n_used, int64_t T) {
+#if defined(GGML_USE_HIP)
+    return ggml_cuda_moe_route_shape_ok(n_embd, n_expert, n_used, T);
+#else
+    GGML_UNUSED(n_embd); GGML_UNUSED(n_expert); GGML_UNUSED(n_used); GGML_UNUSED(T);
     return false;
 #endif
 }

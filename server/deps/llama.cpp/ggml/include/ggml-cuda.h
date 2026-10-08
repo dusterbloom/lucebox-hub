@@ -279,6 +279,8 @@ GGML_BACKEND_API bool ggml_backend_cuda_qwen4exp_supported(ggml_backend_t backen
 // True when a matmul with weight w over n_tokens rows can take an F16 activation (HIP MMB Q8_0 -> F16 route).
 GGML_BACKEND_API bool ggml_backend_cuda_mmb_f16_input_ok(const struct ggml_tensor * w, int64_t n_tokens);
 // True when MMB serves this qwen4exp prefill batch on gfx1151.
+// True when GGML_OP_MOE_ROUTE is available for this expert geometry and row width (HIP builds only).
+GGML_BACKEND_API bool ggml_backend_cuda_moe_route_supported(int64_t n_embd, int64_t n_expert, int64_t n_used, int64_t T);
 GGML_BACKEND_API bool ggml_backend_cuda_mmb_prefill(int64_t n_tokens);
 
 // Integrated GPUs only. While on, a buffer allocation on `device` that would

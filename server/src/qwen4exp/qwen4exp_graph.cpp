@@ -265,6 +265,27 @@ static ggml_tensor * hc_norm_xn(ggml_context * c, ggml_tensor * fused,
 
 // ── MoE FFN: 512 experts top-10 (softmax), gated shared expert ──────────
 
+// Fused MoE router (GGML_OP_MOE_ROUTE, fusion-design.md K5): router GEMV + exact top-k selection + shexp gate
+// sigmoid in one launch, decode and verify rows only (T <= GGML_HC_BOUNDARY_MAX_T). Only usable on the direct
+// (non-`parts`) path below: the op bakes in the shexp sigmoid, but the `parts`/fold path needs the raw
+// pre-sigmoid logit for ggml_hc_combine_norm_moe's own fused sigmoid. Selected ids/order match
+// ggml_argsort_top_k's tie-break (ties -> lowest expert id) by construction; validated by gate_moe_route.
+// Gated default-off: set LUCE_QWEN_K5=1 to enable.
+static bool moe_route_env_on() {
+    static const bool on = [] {
+        const char * value = std::getenv("LUCE_QWEN_K5");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    return on;
+}
+
+static bool moe_route_on(const Qwen4ExpWeights & w, const Qwen4ExpLayer & L, int64_t T) {
+    return moe_route_env_on() &&
+           L.ffn_gate_inp && L.ffn_gate_inp->type == GGML_TYPE_BF16 && ggml_is_contiguous(L.ffn_gate_inp) &&
+           L.ffn_gate_inp_shexp && L.ffn_gate_inp_shexp->type == GGML_TYPE_F32 && ggml_is_contiguous(L.ffn_gate_inp_shexp) &&
+           ggml_backend_cuda_moe_route_supported(w.n_embd, w.n_expert, w.n_expert_used, T);
+}
+
 // Un-combined MoE outputs, for folding the combine into the next HC_COMBINE_NORM (ggml_hc_combine_norm_moe).
 struct Qwen4ExpMoeParts {
     ggml_tensor * down         = nullptr;   // [n_embd, n_used, T]
@@ -289,31 +310,47 @@ struct Qwen4ExpMoeParts {
         if (dump_mark && t) { std::snprintf(dlab, sizeof dlab, "L%02d.%s", il, tag); dump_mark(t, dlab); }
     };
 
-    ggml_tensor * router = bf16_router && n_tokens == 1 && L.ffn_gate_inp_bf16
-        ? L.ffn_gate_inp_bf16 : L.ffn_gate_inp;
-    ggml_tensor * logits = mm(c, router, cur);      // [n_expert, T]
-    dmark(logits, "mlogit");
-    ggml_tensor * probs  = ggml_soft_max(c, logits);
-    dmark(probs, "mprob");
-    static const bool exact_router_suffix = [] {
-        const char * value = std::getenv("LUCE_QWEN_EXACT_ROUTER_SUFFIX");
-        return value && std::strcmp(value, "1") == 0;
-    }();
-    ggml_tensor * probs3 = exact_router_suffix && bf16_router && !reference && n_tokens == 1
-        ? ggml_reshape_3d(c, probs, 1, n_expert, n_tokens) : nullptr;
-    ggml_tensor * sel    = ggml_argsort_top_k(c, probs, (int) n_used);  // [n_used, T]
-    dmark(sel, "mid");
-    dmark(logits, "rlogit");
+    // parts != nullptr needs the raw pre-sigmoid shexp logit (see comment above); overlap scheduling also needs a
+    // distinct pre-sigmoid logit graph node to split at. Only fuse on the plain direct path (no parts, no overlap).
+    const bool fused_route = !parts && !overlap && n_tokens <= GGML_HC_BOUNDARY_MAX_T && moe_route_on(w, L, n_tokens);
 
-    if (!probs3) probs3 = ggml_reshape_3d(c, probs, 1, n_expert, n_tokens);
-    ggml_tensor * wsel   = ggml_reshape_2d(c, ggml_get_rows(c, probs3, sel), n_used, n_tokens);
-    wsel = ggml_div(c, wsel, ggml_clamp(c, ggml_sum_rows(c, wsel), 6.103515625e-5f, INFINITY));
-    if (exact_router_suffix && bf16_router && !reference && n_tokens == 1) {
-        ggml_tensor * wsel3 = ggml_reshape_3d(c, wsel, 1, n_used, n_tokens);
-        ggml_build_forward_expand(gf, wsel3);
-        wsel = ggml_reshape_2d(c, wsel3, n_used, n_tokens);
+    ggml_tensor * sel, * wsel, * shared_gate_or_logit;
+    if (fused_route) {
+        ggml_tensor * p = ggml_moe_route(c, cur, L.ffn_gate_inp, L.ffn_gate_inp_shexp, n_used);
+        sel                  = ggml_moe_route_sel(c, p);
+        wsel                 = ggml_moe_route_wsel(c, p);
+        shared_gate_or_logit = ggml_moe_route_sh_gate(c, p);   // already sigmoid(logit)
+        dmark(sel, "mid");
+        dmark(wsel, "mwt");
+    } else {
+        ggml_tensor * router = bf16_router && n_tokens == 1 && L.ffn_gate_inp_bf16
+            ? L.ffn_gate_inp_bf16 : L.ffn_gate_inp;
+        ggml_tensor * logits = mm(c, router, cur);      // [n_expert, T]
+        dmark(logits, "mlogit");
+        ggml_tensor * probs  = ggml_soft_max(c, logits);
+        dmark(probs, "mprob");
+        static const bool exact_router_suffix = [] {
+            const char * value = std::getenv("LUCE_QWEN_EXACT_ROUTER_SUFFIX");
+            return value && std::strcmp(value, "1") == 0;
+        }();
+        ggml_tensor * probs3 = exact_router_suffix && bf16_router && !reference && n_tokens == 1
+            ? ggml_reshape_3d(c, probs, 1, n_expert, n_tokens) : nullptr;
+        sel = ggml_argsort_top_k(c, probs, (int) n_used);  // [n_used, T]
+        dmark(sel, "mid");
+        dmark(logits, "rlogit");
+
+        if (!probs3) probs3 = ggml_reshape_3d(c, probs, 1, n_expert, n_tokens);
+        wsel = ggml_reshape_2d(c, ggml_get_rows(c, probs3, sel), n_used, n_tokens);
+        wsel = ggml_div(c, wsel, ggml_clamp(c, ggml_sum_rows(c, wsel), 6.103515625e-5f, INFINITY));
+        if (exact_router_suffix && bf16_router && !reference && n_tokens == 1) {
+            ggml_tensor * wsel3 = ggml_reshape_3d(c, wsel, 1, n_used, n_tokens);
+            ggml_build_forward_expand(gf, wsel3);
+            wsel = ggml_reshape_2d(c, wsel3, n_used, n_tokens);
+        }
+        dmark(wsel, "mwt");
+
+        shared_gate_or_logit = mm(c, L.ffn_gate_inp_shexp, cur);   // raw logit, parts path sigmoids it itself
     }
-    dmark(wsel, "mwt");
 
     ggml_tensor * cur3 = ggml_reshape_3d(c, cur, n_embd, 1, n_tokens);
 
@@ -332,12 +369,11 @@ struct Qwen4ExpMoeParts {
     ggml_tensor * sh_gu   = ggml_swiglu_split(c, sh_gate, sh_up);
     ggml_tensor * shared_down = mm(c, L.ffn_down_shexp, sh_gu);
 
-    ggml_tensor * shared_logit = mm(c, L.ffn_gate_inp_shexp, cur);
-    if (parts) {   // the caller folds the combine into the next HC_COMBINE_NORM
-        *parts = { down, wsel, shared_down, shared_logit };
+    if (parts) {   // the caller folds the combine into the next HC_COMBINE_NORM (never set when fused_route)
+        *parts = { down, wsel, shared_down, shared_gate_or_logit };
         return nullptr;
     }
-    ggml_tensor * shared_gate = ggml_sigmoid(c, shared_logit);
+    ggml_tensor * shared_gate = fused_route ? shared_gate_or_logit : ggml_sigmoid(c, shared_gate_or_logit);
     ggml_tensor * shared = ggml_mul(c, shared_down, shared_gate);   // [n_embd,T] * [1,T] broadcasts over dim 0
     dmark(shared, "msh");
 

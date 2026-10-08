@@ -290,6 +290,65 @@ static void ggml_compute_forward_ds4_indexer_mask(
     }
 }
 
+// Reference for GGML_OP_MOE_ROUTE (ggml.h, fusion-design K5): router GEMV + softmax top-k + shexp gate, one
+// thread. Tie-break on exact logit ties: lowest expert id wins, matching ggml_argsort_top_k's stable DESC order.
+static void ggml_compute_forward_moe_route(
+        const struct ggml_compute_params * params,
+        struct ggml_tensor * dst) {
+    if (params->ith != 0) return;
+    const struct ggml_tensor * mixed    = dst->src[0];
+    const struct ggml_tensor * w_router = dst->src[1];
+    const struct ggml_tensor * w_shexp  = dst->src[2];
+    const int64_t NE = ggml_get_op_params_i32(dst, 0);
+    const int64_t NU = ggml_get_op_params_i32(dst, 1);
+    const int64_t T  = ggml_get_op_params_i32(dst, 2);
+    const int64_t N  = mixed->ne[0];
+
+    char * base = (char *) dst->data;
+    int32_t * sel     = (int32_t *) (base + ggml_moe_route_part_offset(dst, 0));
+    float   * wsel    = (float *)   (base + ggml_moe_route_part_offset(dst, 1));
+    float   * sh_gate = (float *)   (base + ggml_moe_route_part_offset(dst, 2));
+
+    const float * mx = (const float *) mixed->data;
+    const ggml_bf16_t * wr = (const ggml_bf16_t *) w_router->data;
+    const float * ws = (const float *) w_shexp->data;
+
+    float * logits = (float *) malloc((size_t) NE * sizeof(float));
+    bool  * taken  = (bool *)  malloc((size_t) NE * sizeof(bool));
+    for (int64_t t = 0; t < T; ++t) {
+        const float * xcol = mx + t * N;
+        for (int64_t e = 0; e < NE; ++e) {
+            const ggml_bf16_t * row = wr + (size_t) e * N;
+            double acc = 0.0;
+            for (int64_t i = 0; i < N; ++i) acc += (double) GGML_BF16_TO_FP32(row[i]) * xcol[i];
+            logits[e] = (float) acc;
+            taken[e] = false;
+        }
+        double sh_acc = 0.0;
+        for (int64_t i = 0; i < N; ++i) sh_acc += (double) ws[i] * xcol[i];
+        sh_gate[t] = 1.0f / (1.0f + expf(-(float) sh_acc));
+
+        int32_t * tsel = sel + t * NU;
+        for (int64_t k = 0; k < NU; ++k) {
+            float best = -INFINITY; int64_t best_i = -1;
+            for (int64_t e = 0; e < NE; ++e) {
+                if (taken[e]) continue;
+                if (logits[e] > best || (best_i < 0)) { best = logits[e]; best_i = e; }
+            }
+            tsel[k] = (int32_t) best_i;
+            taken[best_i] = true;
+        }
+        float mx_logit = -INFINITY;
+        for (int64_t k = 0; k < NU; ++k) mx_logit = fmaxf(mx_logit, logits[tsel[k]]);
+        double sum = 0.0;
+        float * twsel = wsel + t * NU;
+        for (int64_t k = 0; k < NU; ++k) { twsel[k] = expf(logits[tsel[k]] - mx_logit); sum += twsel[k]; }
+        const double denom = sum > 6.103515625e-5 ? sum : 6.103515625e-5;
+        for (int64_t k = 0; k < NU; ++k) twsel[k] = (float) (twsel[k] / denom);
+    }
+    free(logits); free(taken);
+}
+
 static void ggml_compute_forward_ds4_moe_combine(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst) {
@@ -2130,6 +2189,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             } break;
         case GGML_OP_HC_COMBINE_NORM:
             GGML_ABORT("GGML_OP_HC_COMBINE_NORM is only supported on the CUDA/HIP backend");
+        case GGML_OP_MOE_ROUTE:
+            {
+                ggml_compute_forward_moe_route(params, tensor);
+            } break;
         case GGML_OP_GATED_RMS_NORM_F16:
             GGML_ABORT("GGML_OP_GATED_RMS_NORM_F16 is only supported on the CUDA/HIP backend");
         case GGML_OP_OUT_PROD:
@@ -2693,6 +2756,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_DS4_INDEXER_MASK:
         case GGML_OP_QSA_DECODE_IDS:
         case GGML_OP_DS4_MOE_COMBINE:
+        case GGML_OP_MOE_ROUTE:
         case GGML_OP_FLASH_ATTN_EXT:
         case GGML_OP_FLASH_ATTN_SPARSE:
         case GGML_OP_PAGED_ATTN:

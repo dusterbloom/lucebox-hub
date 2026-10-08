@@ -225,6 +225,9 @@
 #define GGML_MAX_N_THREADS      512
 #define GGML_MAX_OP_PARAMS      64
 
+// Row-width ceiling for qwen4exp decode/verify fusion ops (K3/K4/K5): T <= this uses the fused kernel path.
+#define GGML_HC_BOUNDARY_MAX_T 8
+
 #ifndef GGML_MAX_NAME
 #   define GGML_MAX_NAME        64
 #endif
@@ -633,6 +636,7 @@ extern "C" {
         GGML_OP_GATED_RMS_NORM_F16, // rms_norm(x) * gamma * sigmoid(z) -> F16 (qwen4exp GDN tail)
 
         GGML_OP_QSA_DECODE_IDS, // Sort selected blocks and expand visible QSA cells
+        GGML_OP_MOE_ROUTE,      // Fused MoE router: router GEMV + top-k + shexp gate sigmoid, T <= 8 (K5)
 
         GGML_OP_COUNT,
     };
@@ -3004,6 +3008,26 @@ extern "C" {
             struct ggml_context * ctx,
             struct ggml_tensor  * x,
             struct ggml_tensor  * z);
+
+    // Fused MoE router (qwen4exp decode/verify, T <= GGML_HC_BOUNDARY_MAX_T rows, fusion-design.md K5), one launch:
+    //   logits = concat(w_router @ mixed, w_shexp @ mixed)                                [NE+1]
+    //   sel    = top-k(softmax order) over logits[0..NE), ties -> lowest expert id, matching
+    //            ggml_argsort_top_k's k_argsort_f32_i32<DESC> tie-break exactly                        [NU]
+    //   wsel   = softmax(logits[sel]) renormalised to sum 1                                             [NU]
+    //   sh_gate = sigmoid(logits[NE])                                                                   [1]
+    // mixed [N, T], w_router BF16 [N, NE] (row r = expert r's router weight), w_shexp F32 [N]. NU (n_expert_used)
+    // is read from w_router/mixed's caller-provided n_used. Result is a packed byte tensor; read the parts
+    // through the ggml_moe_route_* views below.
+    GGML_API struct ggml_tensor * ggml_moe_route(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * mixed,
+            struct ggml_tensor  * w_router,
+            struct ggml_tensor  * w_shexp,
+            int64_t               n_used);
+    GGML_API struct ggml_tensor * ggml_moe_route_sel     (struct ggml_context * ctx, struct ggml_tensor * p); // I32 [NU, T]
+    GGML_API struct ggml_tensor * ggml_moe_route_wsel    (struct ggml_context * ctx, struct ggml_tensor * p); // F32 [NU, T]
+    GGML_API struct ggml_tensor * ggml_moe_route_sh_gate (struct ggml_context * ctx, struct ggml_tensor * p); // F32 [1, T]
+    GGML_API size_t ggml_moe_route_part_offset(const struct ggml_tensor * p, int part); // 0 sel, 1 wsel, 2 sh_gate
 
     // TODO: needs to be adapted to ggml_flash_attn_ext
     GGML_API struct ggml_tensor * ggml_flash_attn_back(

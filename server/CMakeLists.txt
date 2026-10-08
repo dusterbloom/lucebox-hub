@@ -1323,6 +1323,65 @@ if(LUCE_TESTS)
         luce_add_ggml_gpu_executable(bench_fattn_mma256 test/bench/bench_fattn_mma256.cpp)
         target_compile_definitions(bench_fattn_mma256 PRIVATE GGML_USE_HIP)
 
+        # fusion-design.md Experiment 1: fused HC boundary microbenchmark (HIP only; the kernels are .cu compiled as HIP)
+        if(LUCE_GPU_BACKEND STREQUAL "hip" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/bench/bench_hc_boundary.cpp")
+            add_executable(bench_hc_boundary test/bench/bench_hc_boundary.cpp test/bench/hc_boundary_kernels.cu)
+            set_source_files_properties(test/bench/hc_boundary_kernels.cu PROPERTIES LANGUAGE HIP)
+            target_link_libraries(bench_hc_boundary PRIVATE ggml ${LUCE_GGML_BACKEND_TARGET} ggml-base ggml-cpu hip::host ${CMAKE_DL_LIBS})
+            target_include_directories(bench_hc_boundary PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+        endif()
+
+        # fusion-design.md Experiment 2: fused MoE router (K5) + shared-as-slot-11 (K6) microbenchmark
+        if(LUCE_GPU_BACKEND STREQUAL "hip" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/bench/bench_moe_route.cpp")
+            add_executable(bench_moe_route test/bench/bench_moe_route.cpp test/bench/moe_route_kernels.cu)
+            set_source_files_properties(test/bench/moe_route_kernels.cu PROPERTIES LANGUAGE HIP)
+            target_link_libraries(bench_moe_route PRIVATE ggml ${LUCE_GGML_BACKEND_TARGET} ggml-base ggml-cpu hip::host ${CMAKE_DL_LIBS})
+            target_include_directories(bench_moe_route PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+        endif()
+
+        if(LUCE_GPU_BACKEND STREQUAL "hip" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/bench/bench_gdn_fusion.cpp")
+            add_executable(bench_gdn_fusion test/bench/bench_gdn_fusion.cpp test/bench/gdn_fusion_kernels.cu)
+            set_source_files_properties(test/bench/gdn_fusion_kernels.cu PROPERTIES LANGUAGE HIP)
+            target_link_libraries(bench_gdn_fusion PRIVATE ggml ${LUCE_GGML_BACKEND_TARGET} ggml-base ggml-cpu hip::host ${CMAKE_DL_LIBS})
+            target_include_directories(bench_gdn_fusion PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+        endif()
+
+        # fusion-wire3 S1 gate: GGML_OP_GDN_TAIL (K4) vs the validated gdn_post_kernel + CPU reference
+        if(LUCE_GPU_BACKEND STREQUAL "hip" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/bench/gate_gdn_tail.cpp")
+            add_executable(gate_gdn_tail test/bench/gate_gdn_tail.cpp test/bench/gdn_fusion_kernels.cu)
+            set_source_files_properties(test/bench/gdn_fusion_kernels.cu PROPERTIES LANGUAGE HIP)
+            target_link_libraries(gate_gdn_tail PRIVATE ggml ${LUCE_GGML_BACKEND_TARGET} ggml-base ggml-cpu hip::host ${CMAKE_DL_LIBS})
+            target_include_directories(gate_gdn_tail PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+        endif()
+
+        # fusion-wire3 S1 gate: GGML_OP_GDN_PREP (K3) vs the validated gdn_pre_kernel + CPU reference
+        if(LUCE_GPU_BACKEND STREQUAL "hip" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/bench/gate_gdn_prep.cpp")
+            add_executable(gate_gdn_prep test/bench/gate_gdn_prep.cpp test/bench/gdn_fusion_kernels.cu)
+            set_source_files_properties(test/bench/gdn_fusion_kernels.cu PROPERTIES LANGUAGE HIP)
+            target_link_libraries(gate_gdn_prep PRIVATE ggml ${LUCE_GGML_BACKEND_TARGET} ggml-base ggml-cpu hip::host ${CMAKE_DL_LIBS})
+            target_include_directories(gate_gdn_prep PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+        endif()
+
+        # fusion-design.md Experiment 4: QSA mixer Q/K norm-fusion microbenchmark (K7-lite)
+        if(LUCE_GPU_BACKEND STREQUAL "hip" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/bench/bench_qsa_glue.cpp")
+            add_executable(bench_qsa_glue test/bench/bench_qsa_glue.cpp test/bench/qsa_glue_kernels.cu)
+            set_source_files_properties(test/bench/qsa_glue_kernels.cu PROPERTIES LANGUAGE HIP)
+            target_link_libraries(bench_qsa_glue PRIVATE ggml ${LUCE_GGML_BACKEND_TARGET} ggml-base ggml-cpu hip::host ${CMAKE_DL_LIBS})
+            target_include_directories(bench_qsa_glue PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+        endif()
+
         # Two-mode differential test for the stage-1 WMMA paged-attention
         # kernel (RDNA4): runs the op through the WMMA route and the V_DOT2
         # decode route, then test/bench/compare_paged_attn.py compares the dumps.
