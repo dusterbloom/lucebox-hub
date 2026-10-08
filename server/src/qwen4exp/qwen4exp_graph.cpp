@@ -565,7 +565,12 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
     if (producer_q8 && T == 1 && f16 && !spec_states && !spec_conv) {
         ggml_build_forward_expand(gf, z);
     }
-    if (T <= GGML_HC_BOUNDARY_MAX_T && gdn_tail_on(D)) {
+    // Already covered when the producer_q8 branch above just claimed this exact decode row: its runtime
+    // ggml_cuda_gdn_q8_match fuses the same rms_norm*gamma*sigmoid(z) chain into one kernel (producing Q8_1
+    // for the following MMVQ directly) and asserts an exact 36-site count across all linear layers -- stacking
+    // GGML_OP_GDN_TAIL on the same T==1 rows would starve that count and trip the assert.
+    const bool producer_q8_claims_this_row = producer_q8 && T == 1 && f16 && !spec_states && !spec_conv;
+    if (!producer_q8_claims_this_row && T <= GGML_HC_BOUNDARY_MAX_T && gdn_tail_on(D)) {
         // Fused GDN tail (GGML_OP_GDN_TAIL, K4): rms_norm(attn)*gamma*sigmoid(z) in one launch.
         gdn_tail_debug_note(true, T);
         ggml_tensor * out = ggml_gdn_tail(c, attn, L.ssm_norm, ggml_reshape_4d(c, z, D, Hv, T, 1), eps);
@@ -1225,12 +1230,10 @@ static ggml_tensor * build_linear_attn_projected(ggml_context * c, ggml_cgraph *
         ggml_row_size(gdn->type, D), ggml_row_size(gdn->type, D * D),
         ggml_row_size(gdn->type, D * D * Hv), ggml_row_size(gdn->type, D * Hv));
     ggml_build_forward_expand(gf, ggml_cpy(c, new_state, state4));
-    if (gdn_tail_on(D)) {
-        // Fused GDN tail (GGML_OP_GDN_TAIL, K4): rms_norm(attn)*gamma*sigmoid(z) in one launch.
-        gdn_tail_debug_note(true, 1);
-        ggml_tensor * out = ggml_gdn_tail(c, attn, L.ssm_norm, ggml_reshape_4d(c, z, D, Hv, 1, 1), eps);
-        return ggml_reshape_2d(c, out, d_in, 1);
-    }
+    // This path is always T==1 (speculative-projected decode column), the same row shape the pre-existing
+    // runtime producer_q8 (ggml_cuda_gdn_q8_match) fusion already claims whenever LUCE_QWEN_PRODUCER_Q8=1 is
+    // active (the headline env always sets it) -- not wired to GGML_OP_GDN_TAIL here; see build_linear_attn's
+    // producer_q8_claims_this_row guard for the single-decode-row case and STACK-RESULTS.md K4 section.
     gdn_tail_debug_note(false, 1);
     ggml_tensor * normed = ggml_mul(c, ggml_rms_norm(c, attn, eps), L.ssm_norm);
     ggml_tensor * out = ggml_mul(c, normed,

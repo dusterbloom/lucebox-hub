@@ -205,7 +205,21 @@ differences) for a path this isn't measuring. Reverted the trial cherry-pick in 
 HEAD --` on all six touched files, deleted the three new files) — working tree is clean, no K3
 artifacts left in the commit.
 
-## K4 (GDN tail: `rms_norm(x)*gamma*sigmoid(z)`)
+## K4 (GDN tail: `rms_norm(x)*gamma*sigmoid(z)`) — ported, inactive under the 38.41 env
 
-Not yet attempted. Overlap check against "the gated-norm path" (per coordinator instruction) is the
-next step, following the same investigate-first/gate/time/commit protocol used for K5.
+Ported `GGML_OP_GDN_TAIL` (`afcb400e` + `59812fe8`), gated `LUCE_QWEN_K4=1` (default off), wired into
+`build_linear_attn`'s `T<=8` unfused fallback. First attempt crashed
+(`GGML_ASSERT(producer_gdn_sites == (on ? 36 : 0))`): the existing runtime fusion
+`ggml_cuda_gdn_q8_match` (gated by `LUCE_QWEN_PRODUCER_Q8=1`, on by default in `run_stack.sh`'s full
+env) already pattern-matches this exact `rms_norm→mul→sigmoid→mul` chain at `T==1` and fuses it into
+one kernel producing a `Q8_1` image for the following MMVQ — the same scope `GGML_OP_GDN_TAIL`
+targets. Added a guard so `GGML_OP_GDN_TAIL` only fires when the producer_q8 branch does *not* claim
+the row (`T==1 && f16 && !spec_states && !spec_conv`); disabled it entirely in
+`build_linear_attn_projected` (always `T==1`, same overlap). With the guard in place, added
+`LUCE_QWEN_K4_DEBUG=1` fire/skip counter (kept, env-gated, silent unless set): under the full 38.41
+env, `[k4-debug] fired=0 skipped=513` — every decode row at `T==1` is already claimed by
+`producer_q8`, so `GGML_OP_GDN_TAIL` never executes. **Recorded as inactive under the 38.41 env, not
+a timing result** — same class of result as K5 (bit-identical/gated-off path, but the fused op never
+fires in the headline config because the scope it targets is already covered by an existing runtime
+fusion). The only slice `GDN_TAIL` could still cover (`T` in `2..8`, verify/speculative rows) is not
+exercised by the single-token greedy `measure_tokens` benchmark this session is timing against.
