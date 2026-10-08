@@ -3248,7 +3248,7 @@ static bool ggml_cuda_try_hc_down_inject(
     } else if (luce_ko_empty_hc()) {
         luce_ko_noop_kernel<<<1, 32, 0, stream>>>();
         CUDA_CHECK(cudaGetLastError());
-    } else if (luce_hc_gemv_fast()) {
+    } else if (luce_hc_gemv_fast_downinject()) {
     hc_down_inject_mixed_fast<<<40, dim3(32, 8, 1), 0, stream>>>(
         src0_dd_i, reinterpret_cast<const block_q8_1 *>(src1_ddq_i), dst_dd_i,
         static_cast<const float *>(iw->data), src1_ddf_i,
@@ -3427,7 +3427,7 @@ void ggml_cuda_mul_mat_vec_q(
             // skip: timing-bound-only, h.mixed left stale.
         } else if (luce_ko_empty_hc()) {
             luce_ko_noop_kernel<<<1, 32, 0, stream>>>();
-        } else if (luce_hc_gemv_fast()) {
+        } else if (luce_hc_gemv_fast_upmix()) {
         hc_upmix_row8_exact_fast<false><<<1280, dim3(32,8), 0, stream>>>(src0->data,
             (const block_q8_1 *)src1_q8_d, (const float *)h.xn->data,
             (float *)h.mixed->data, nullptr, h.scale, h.bias);
