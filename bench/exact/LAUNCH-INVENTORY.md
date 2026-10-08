@@ -108,6 +108,65 @@ per-column value into one launch — bit-identical to today's two-kernel path
   `producer_hc_sites==95` invariants in `ggml-cuda.cu`; extending those exact
   sealed invariants blind, without the box, is the unsafe part — not the
   kernel itself).
+
+## 4. Real site analysis (on-box, 2026-10-08) — Candidate 1's hypothesis falsified
+
+Added a zero-cost, env-gated (`LUCE_QWEN_LAUNCH_CUT_DEBUG=1`) debug hook at the
+one call site in `mmvq.cu` that actually invokes `quantize_row_q8_1_cuda` for
+the generic (non-producer-claimed) path, logging each distinct
+`(dst, src0_type, ne10, src1_op, src1_name)` tuple once. Ran the full
+38.41-baseline env stack (all `LUCE_QWEN_*` gates on, matching
+`run_stack.sh`/`PROFILE-38.md`) through `gpu_exec.sh`, 256 tokens × 8 reps
+(the only driver invocation shape that accepts this prompt; `(n=64,reps=1)`
+"census" mode returned rc=2 for this prompt/build, unexplained, not pursued).
+
+**Result: 266 distinct call sites, zero of which have `src1_op=RMS_NORM`.**
+Breakdown by `(src1_op, ne10)`:
+
+| src1_op | ne10 | count | likely identity |
+|---|---|---|---|
+| SCALE | 2560 | 101 | post-attention scale op, d_model-width activation |
+| GLU | 640 | 100 | SwiGLU (silu-gate × up) output, FFN intermediate width |
+| RESHAPE | 2560 | 50 | a view, not a real producer — real producer is upstream of the reshape |
+| MUL | 6144 | 12 | overlaps `hc_lo`/`hc_down` producer widths (out of scope, see candidate 2/3) |
+| MUL | 10240 | 2 | same family as above (out of scope) |
+
+**Conclusion: candidate 1 as originally scoped (fuse `quantize_q8_1` into a
+plain `RMS_NORM * gamma` producer) has zero applicable sites in the live
+38.41-baseline graph.** Static reading of `qwen4exp_graph.cpp` had already
+suggested this (all 6 textual `ggml_mul(rms_norm(...), gamma)` sites turned
+out to be either MTP/draft-only, already GDN-producer-claimed, or feeding
+RoPE/WMMA rather than a quantized matmul) — the runtime trace confirms it
+directly. The real uncovered producers are `SCALE`/`GLU`/`RESHAPE`, not
+`RMS_NORM`.
+
+**Re-risk-rated candidates for this real site list:**
+- `GLU@640` (100 sites) is the cleanest new target: a single, uniform
+  activation-function op, same shape every site — directly analogous to the
+  already-implemented norm+Q8 fusion. **But** the existing claim mechanism
+  for "producer writes Q8_1 directly, consumer skips quantize"
+  (`g_producer_q8_handoff` in `ggml-cuda.cu:5820-5850`) is a **single-slot
+  handoff**: one pointer, one claimant, asserted empty at graph-build start
+  (`ggml-cuda.cu:7322`) and torn down at each seal point, already contended
+  between the GDN and HC producers (`hc_lo_fixed` check at `ggml-cuda.cu:7177`
+  is adjacent to this same struct). Claiming it a third time for 100
+  per-token GLU sites needs a **multi-slot or keyed handoff redesign**, not a
+  drop-in reuse — this raises candidate 1's effort from "medium" to
+  **high**, and touches code directly adjacent to the other agent's
+  `hc_lo`/`hc_down` producer logic, so it needs explicit scope sign-off
+  before editing.
+- `SCALE@2560` (101 sites) and `RESHAPE@2560` (50 sites, not a real producer)
+  are attention-output-adjacent, lower understood, not sized up.
+- `MUL@6144`/`MUL@10240` (14 sites) are in the hc_lo/hc_down family width
+  range — **out of scope**, same as candidates 2/3.
+
+Given the GPU-lock/timing-slot constraints in force during this phase (one
+8-rep native-mode run already spent on this site analysis — more than the
+single minimal correctness check intended, noted as overspend), implementing
+and testing the `GLU@640` handoff redesign is deferred to the next
+box-access window rather than attempted blind. The `rms_norm_mul_q8_1_f32`
+kernel built for the original (now-falsified) candidate 1 is kept as a
+tested, unused building block; it is not the lever for the real 266 sites.
 - `bench/exact/test_launch_cut_bitexact.cpp`: standalone HIP unit test
   (no ggml graph), exercising the exported hook
   `ggml_cuda_test_launch_cut_rms_norm_mul_q8_1` — runs the fused kernel (A)

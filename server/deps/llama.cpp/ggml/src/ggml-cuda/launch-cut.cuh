@@ -31,6 +31,21 @@ void ggml_cuda_rms_norm_mul_q8_1_cuda(
         int64_t mul_stride_row, int64_t mul_stride_channel, int64_t mul_stride_sample,
         float eps, cudaStream_t stream);
 
+// Site-analysis instrumentation for bench/exact/LAUNCH-INVENTORY.md: records,
+// once per unique (dst, src1-producer-op, ne10) triple, which generic
+// `quantize_q8_1` call sites (mmvq.cu) exist in the live graph -- i.e. which
+// mul_mat_vec_q activations are NOT already covered by a producer-side Q8
+// write (GDN/HC producer_q8, or the g_mmvq_fixed_q8 shared/producer
+// whitelist). No-op (false) unless LUCE_QWEN_LAUNCH_CUT_DEBUG=1; the checked
+// env read happens once (same pattern as every other LUCE_QWEN_* gate in
+// this tree) so this is zero-cost on the default/measured path.
+bool ggml_cuda_launch_cut_debug_enabled();
+void ggml_cuda_launch_cut_debug_note(
+        const ggml_tensor * dst, const ggml_tensor * src1, int src0_type, int64_t ne10);
+// Prints the accumulated site table (call once at process exit or from a
+// driver's teardown hook).
+void ggml_cuda_launch_cut_debug_dump();
+
 // Standalone bit-identity test hook (bench/exact/test_launch_cut_bitexact.cpp):
 // runs the fused kernel (A) and a from-scratch reproduction of the unfused
 // two-kernel baseline -- rms_norm_f32<block,do_multiply=true> (norm.cu) then

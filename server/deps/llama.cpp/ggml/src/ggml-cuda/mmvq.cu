@@ -1,5 +1,6 @@
 #include "mmvq.cuh"
 #include "luce-knockout.cuh"
+#include "launch-cut.cuh"
 
 static thread_local char * g_mmvq_fixed_q8 = nullptr;
 static thread_local size_t g_mmvq_fixed_q8_bytes = 0;
@@ -3195,6 +3196,14 @@ void ggml_cuda_mul_mat_vec_q(
         const int64_t s11 = src1->nb[1] / ts_src1;
         const int64_t s12 = src1->nb[2] / ts_src1;
         const int64_t s13 = src1->nb[3] / ts_src1;
+        // LUCE_QWEN_LAUNCH_CUT site analysis (bench/exact/LAUNCH-INVENTORY.md): dump each
+        // distinct (dst, src1-producer-op, ne10) site hitting this generic quantize path
+        // once, so the 256/tok `quantize_q8_1` launches can be attributed to their actual
+        // producer op (not just guessed from static graph reading). No-op unless set;
+        // zero cost on the default/measured path.
+        if (ggml_cuda_launch_cut_debug_enabled()) {
+            ggml_cuda_launch_cut_debug_note(dst, src1, (int) src0->type, ne10);
+        }
         quantize_row_q8_1_cuda(src1_d, nullptr, q8_dst, src0->type, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
         src1_q8_d = q8_dst;
     }

@@ -1,11 +1,44 @@
 #include "launch-cut.cuh"
 
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <set>
+#include <string>
 
 // Matches CUDA_QUANTIZE_BLOCK_SIZE in quantize.cuh (not included here, to keep
 // this translation unit's reference path independent of quantize.cu/.cuh).
 #define CUDA_QUANTIZE_BLOCK_SIZE_REF 256
+
+// ---------------------------------------------------------------------------
+// 0. Site-analysis instrumentation (see launch-cut.cuh for the full comment).
+bool ggml_cuda_launch_cut_debug_enabled() {
+    static const bool on = [] {
+        const char * e = std::getenv("LUCE_QWEN_LAUNCH_CUT_DEBUG");
+        return e && e[0] == '1' && e[1] == '\0';
+    }();
+    return on;
+}
+
+void ggml_cuda_launch_cut_debug_note(
+        const ggml_tensor * dst, const ggml_tensor * src1, int src0_type, int64_t ne10) {
+    static std::set<std::string> seen;
+    char key[256];
+    std::snprintf(key, sizeof(key), "dst=%s src0_type=%d ne10=%lld src1_op=%s src1=%s",
+        dst && dst->name[0] ? dst->name : "?", src0_type, (long long) ne10,
+        src1 ? ggml_op_name(src1->op) : "?", src1 && src1->name[0] ? src1->name : "?");
+    if (seen.insert(key).second) {
+        fprintf(stderr, "[LUCE_QWEN_LAUNCH_CUT_DEBUG] new site #%zu: %s\n", seen.size(), key);
+    }
+}
+
+void ggml_cuda_launch_cut_debug_dump() {
+    // The note() function already prints on first sight; this is a
+    // lightweight marker for driver teardown hooks to confirm the
+    // instrumentation ran at all (distinguishes "0 sites" from "never called").
+    fprintf(stderr, "[LUCE_QWEN_LAUNCH_CUT_DEBUG] dump requested (see preceding 'new site' lines for the full table)\n");
+}
 
 // ---------------------------------------------------------------------------
 // A. Fused kernel: rms_norm(x) * gamma, with the Q8_1 quantization of that
