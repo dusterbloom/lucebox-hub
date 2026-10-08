@@ -3,6 +3,8 @@
 // hc_mix(ffn) -> MoE -> hc_combine) -> hc_mix(output) -> lm_head. Single sequence.
 
 #include "qwen4exp_graph.h"
+#include "qwen4exp_pipeline.h"
+#include "ggml-impl.h"   // ggml_graph_view: the two halves of the pipelined stable graph
 
 #include "common/cuda_graph_overrides.h"
 #include "delta_net_chunked.h"
@@ -1298,6 +1300,34 @@ Qwen4ExpInputs qwen4exp_prepare_inputs(const Qwen4ExpWeights & w,
     return res;
 }
 
+// Stable T=1 decode inputs as pure functions of the token position (qwen4exp_pipeline.h precomputes them).
+struct Qwen4ExpStableInputs {
+    int32_t pos[4];          // M-RoPE sections 0..2 carry the position, 3 is zero
+    int32_t kv_row;
+    int32_t qsa_params[10];  // valid count, four raw rows, destination row, four M-RoPE positions
+    int qsa_valid;           // visible pooled blocks
+};
+static Qwen4ExpStableInputs stable_decode_inputs(int pos0, int max_ctx) {
+    Qwen4ExpStableInputs s{};
+    s.pos[0] = s.pos[1] = s.pos[2] = pos0;
+    s.kv_row = pos0;
+    const int n = (pos0 + 1) / 4, first = 4 * (n - 1);
+    s.qsa_valid = n;
+    s.qsa_params[0] = n;
+    for (int i = 0; i < 4; ++i) s.qsa_params[1 + i] = first + i;
+    s.qsa_params[5] = (pos0 + 1) % 4 == 0 ? n - 1 : (max_ctx + 3) / 4;
+    s.qsa_params[6] = s.qsa_params[7] = s.qsa_params[8] = first;
+    return s;
+}
+static void stable_decode_visibility(int qsa_valid, int64_t qsa_blocks, float * visibility) {
+    std::fill_n(visibility, (size_t) qsa_blocks, -INFINITY);
+    std::fill_n(visibility, (size_t) qsa_valid, 0.0f);
+}
+static void stable_decode_mask(int64_t kv_len, int64_t kv_bucket, ggml_fp16_t * mask) {
+    std::fill_n(mask, (size_t) kv_bucket, ggml_fp32_to_fp16(-INFINITY));
+    std::fill_n(mask, (size_t) kv_len, ggml_fp32_to_fp16(0.0f));
+}
+
 static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
                                        const Qwen4ExpWeights & w,
                                        Qwen4ExpCache & cache,
@@ -1307,10 +1337,14 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
                                        std::vector<float> & out_logits, std::vector<float> * out_hidden,
                                        bool verify, bool qsa_rebuild_reference, bool mtp_prefill, bool dump,
                                        const Qwen4ExpInputs * inputs, int32_t * out_argmax,
-                                       Qwen4ExpGraphMemory * measure) {
+                                       Qwen4ExpGraphMemory * measure,
+                                       Qwen4ExpPipeline * pipe = nullptr) {
     Qwen4ExpForwardResult res;
     if (out_argmax) *out_argmax = -1;
     if (n_tokens <= 0 || pos0 < 0 || (!tokens && !measure)) return res;
+    // Pipelined session: build (or keep) the split stable graph for this position; the session runs it.
+    if (pipe && (n_tokens != 1 || verify || qsa_rebuild_reference || mtp_prefill || dump || out_hidden ||
+                measure || !out_argmax)) return res;
     const bool upstream = cache.reference;
     const Qwen4ExpCudaScope profile(w.gfx1151, upstream);
     const bool f16 = !upstream && !dump;
@@ -1366,10 +1400,11 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
         return value && std::strcmp(value, "1") == 0;
     }();
     const bool build_shared_overlap = shared_overlap_requested && use_stable_graph &&
-        w.gfx1151 && n_tokens == 1 && !verify && !upstream && !dump && !mtp_prefill;
+        w.gfx1151 && n_tokens == 1 && !pipe && !verify && !upstream && !dump && !mtp_prefill;
     const bool elide_qsa_cont = qsa_cont_elision_requested() && stable_qsa && use_stable_graph &&
         w.gfx1151 && n_tokens == 1 && !verify && !upstream && !dump && !mtp_prefill;
     const bool gpu_argmax = out_argmax && use_stable_graph;
+    if (pipe && (!use_stable_graph || shared_overlap_requested)) return res;
     // Context and allocator reused across calls: the T=1 decode workspace, or the verify forward's own.
     Qwen4ExpDecodeWorkspace * pool = measure ? nullptr : reuse_ws ? &cache.decode_workspace : verify ? &cache.verify_workspace : nullptr;
     std::vector<std::pair<ggml_tensor *, std::string>> dump_t;
@@ -1395,11 +1430,11 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
     const bool has_ple = !cache.ple_layer_ids.empty() && w.ple_reader.available();
     const int64_t ple_heads = w.ple_n_heads;
     Qwen4ExpInputs local_inputs;
-    if (!measure && !inputs) {
+    if (!measure && !inputs && !pipe) {
         local_inputs = qwen4exp_prepare_inputs(w, tokens, n_tokens, cache.ple_prev);
         inputs = &local_inputs;
     }
-    if (!measure && (!inputs->ok || inputs->emb.size() != (size_t) w.n_embd * n_tokens ||
+    if (!measure && !pipe && (!inputs->ok || inputs->emb.size() != (size_t) w.n_embd * n_tokens ||
         inputs->ple.size() != (has_ple ? (size_t) w.ple_head_dim * ple_heads * n_tokens : 0))) return res;
     if (verify && !measure) {
         auto prev = cache.ple_prev;
@@ -1411,8 +1446,8 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
             cache.spec_ple_prev[t] = prev;
         }
     }
-    const auto & emb = measure ? local_inputs.emb : inputs->emb;
-    const auto & ple_data = measure ? local_inputs.ple : inputs->ple;
+    const auto & emb = (measure || pipe) ? local_inputs.emb : inputs->emb;
+    const auto & ple_data = (measure || pipe) ? local_inputs.ple : inputs->ple;
 
     const int64_t T = n_tokens;
     const int64_t kv_len = pos0 + n_tokens;
@@ -1492,12 +1527,16 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
         return true;
     };
 
-    if (use_stable_graph && decode_ws.gf && kv_len <= decode_ws.kv_bucket &&
-        (decode_ws.qsa_blocks >= 0) == stable_qsa && decode_ws.next_pos == pos0 &&
+    // A session commits next_pos only once a step's pick is on the host; indexer_blocks advances at enqueue.
+    const bool stable_fits = use_stable_graph && decode_ws.gf && kv_len <= decode_ws.kv_bucket &&
+        (decode_ws.qsa_blocks >= 0) == stable_qsa && (pipe || decode_ws.next_pos == pos0) &&
         (decode_ws.hidden != nullptr) == (out_hidden != nullptr) &&
         (decode_ws.argmax != nullptr) == gpu_argmax &&
+        decode_ws.pipelined == (pipe != nullptr) && (!pipe || decode_ws.tok_in == pipe->tok_in) &&
         (!stable_qsa || (decode_ws.kv_bucket == stable_kv_bucket &&
-                        decode_ws.qsa_budget == w.indexer_top_k / 4 && cache.indexer_blocks == pos0 / 4))) {
+                        decode_ws.qsa_budget == w.indexer_top_k / 4 && cache.indexer_blocks == pos0 / 4));
+    if (stable_fits) {
+        if (pipe) { res.ok = true; return res; }
         if (!run_stable(decode_ws)) return res;
         decode_ws.next_pos = (int) kv_len;
         cache.cur_pos = (int) kv_len;
@@ -1507,6 +1546,10 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
         res.ok = true;
         res.n_tokens = n_tokens;
         res.pos0 = pos0;
+        return res;
+    }
+    if (pipe && !pipe->rebuild_ok) {   // the session drains and commits first, then asks again
+        pipe->needs_rebuild = true;
         return res;
     }
     // Dense decode may not have maintained the pooled prefix. Bootstrap only
@@ -1564,8 +1607,21 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
     const int64_t mask_len = use_stable_graph ? stable_kv_bucket
         : (fa_pad256 ? (kv_len + 255)/256*256 : kv_len);
 
-    ggml_tensor * inp_emb = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, w.n_embd, T);
-    ggml_set_input(inp_emb);
+    // Pipelined: the embedding row is gathered on the device from the fed token (Q8_0 get_rows is d*q, the CPU
+    // embedder's exact value); the pre-PLE recurrent states are snapshotted first so end() can undo a lookahead step.
+    ggml_tensor * inp_emb = nullptr;
+    if (pipe) {
+        inp_emb = ggml_get_rows(ctx, pipe->tok_embd, pipe->tok_in);
+        for (size_t i = 0; i < pipe->snap_layers.size(); ++i) {
+            const int li = lin_idx[pipe->snap_layers[i]];
+            ggml_build_forward_expand(gf, ggml_cpy(ctx, cache.ssm_state[li], pipe->snap_ssm[i]));
+            ggml_build_forward_expand(gf, ggml_cpy(ctx, cache.conv_state[li], pipe->snap_conv[i]));
+        }
+    } else {
+        inp_emb = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, w.n_embd, T);
+        ggml_set_input(inp_emb);
+    }
+    int split = -1;
     dump_mark(inp_emb, "L00.inp");
     ggml_tensor * positions = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 4 * T);
     ggml_set_input(positions);
@@ -1693,6 +1749,12 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
     for (int il = 0; il < w.n_layer; ++il) {
         const Qwen4ExpLayer & L = w.layers[il];
 
+        if (pipe && il == pipe->ple_layer) {
+            // Close the pre-PLE half: nodes [0, split) need only tok_in; the rest also needs this token's PLE rows.
+            ggml_build_forward_expand(gf, res_hc);
+            if (xn_next) ggml_build_forward_expand(gf, xn_next);
+            split = ggml_graph_n_nodes(gf);
+        }
         if (L.is_ple && has_ple) {
             res_hc = build_ple(ctx, gf, res_hc, ple_in, L, w,
                                cache.ple_conv_state.empty() ? nullptr :
@@ -1771,7 +1833,9 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
         std::memcpy(argmax->op_params, &cpu_first_tie, sizeof(cpu_first_tie));
         ggml_set_output(argmax);
         ggml_build_forward_expand(gf, argmax);
+        if (pipe) ggml_build_forward_expand(gf, ggml_cpy(ctx, argmax, pipe->tok_in));   // greedy feed of the next step
     }
+    if (pipe && split < 0) split = ggml_graph_n_nodes(gf);   // no PLE layer: the whole step is the lookahead half
     // The final HC residual of every row feeds the MTP draft head. Appended after the logits so the logits path keeps
     // its node order; a row-selected prefill builds the other rows' FFN half on the side.
     ggml_tensor * hidden = nullptr;
@@ -1942,6 +2006,14 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
         ++decode_ws.builds;
         decode_ws.qsa_budget = stable_qsa ? w.indexer_top_k / 4 : 0;
         decode_ws.next_pos = (int) kv_len;
+        decode_ws.pipelined = pipe != nullptr;
+        decode_ws.split = pipe ? split : -1;
+        decode_ws.tok_in = pipe ? pipe->tok_in : nullptr;
+        if (pipe) {   // nothing ran: the session uploads inputs and computes the two halves itself
+            decode_ws.next_pos = pos0;
+            res.ok = true;
+            return res;
+        }
     }
 
     // M-RoPE sections are section-major [s*T + i]: 0..2 carry the position, 3 is zero.
@@ -2664,6 +2736,235 @@ Qwen4ExpForwardResult qwen4exp_forward_batched(
     result.n_tokens = n_slots;
     result.pos0 = positions[0];
     return result;
+}
+
+// ---- Pipelined T=1 greedy decode session (qwen4exp_pipeline.h) ----
+
+namespace {
+
+template <typename T> T * pipe_slot(Qwen4ExpPipeline & p, int step, size_t off) {
+    return reinterpret_cast<T *>(p.host + (size_t) (step % p.slots) * p.slot_bytes + off);
+}
+size_t pipe_align(size_t v) { return (v + 255) & ~size_t(255); }
+
+// Waits for step s's pick, feeds it to the host-side input sequence when greedy, commits the position.
+bool pipe_sync_through(Qwen4ExpPipeline & p, int through) {
+    auto & ws = p.cache->decode_workspace;
+    while (p.synced <= through) {
+        const int s = p.synced;
+        ggml_backend_event_synchronize(p.events[s % p.slots]);
+        const int32_t v = *pipe_slot<int32_t>(p, s, p.off_pick);
+        if (v < 0 || v >= p.w->n_vocab) return false;
+        p.picks.push_back(v);
+        if ((int) p.inputs.size() == s + 1) p.inputs.push_back(v);
+        p.cache->cur_pos = p.pos0 + s + 1;
+        ws.next_pos = p.cache->cur_pos;
+        ++ws.replays;
+        p.synced = s + 1;
+    }
+    return true;
+}
+
+void pipe_commit_ple_prev(Qwen4ExpPipeline & p) {
+    if (!p.cache->decode_workspace.ple_in) return;
+    std::vector<int32_t> seq = p.ple_prev_base;
+    seq.insert(seq.end(), p.inputs.begin(), p.inputs.begin() + p.synced);
+    const size_t keep = std::min<size_t>((size_t) std::max(0, p.w->ple_ngram_size - 1), seq.size());
+    p.cache->ple_prev.assign(seq.end() - (std::ptrdiff_t) keep, seq.end());
+}
+
+// The split stable graph for step `step`; rebuilding drains and commits everything enqueued first.
+bool pipe_ensure_graph(Qwen4ExpPipeline & p, int step) {
+    std::vector<float> no_logits;
+    int32_t dummy = -1;
+    const int32_t tok = p.inputs[std::min<size_t>((size_t) step, p.inputs.size() - 1)];
+    p.needs_rebuild = false;
+    p.rebuild_ok = false;
+    if (forward_impl(p.backend, *p.w, *p.cache, &tok, 1, p.pos0 + step, no_logits, nullptr,
+                     false, false, false, false, nullptr, &dummy, nullptr, &p).ok) return true;
+    if (!p.needs_rebuild) return false;
+    if (!pipe_sync_through(p, p.enqueued_b)) return false;
+    ggml_backend_synchronize(p.backend);
+    p.rebuild_ok = true;
+    const bool ok = forward_impl(p.backend, *p.w, *p.cache, &tok, 1, p.pos0 + step, no_logits, nullptr,
+                                 false, false, false, false, nullptr, &dummy, nullptr, &p).ok;
+    p.rebuild_ok = false;
+    return ok;
+}
+
+// Step i's position-only inputs (+ forced token) and its pre-PLE half.
+bool pipe_enqueue_a(Qwen4ExpPipeline & p, int i, const int32_t * forced) {
+    if (i >= p.slots && !pipe_sync_through(p, i - p.slots)) return false;   // the slot's last reader is done
+    if (!pipe_ensure_graph(p, i)) return false;
+    auto & ws = p.cache->decode_workspace;
+    const int P = p.pos0 + i;
+    const Qwen4ExpStableInputs in = stable_decode_inputs(P, p.cache->max_ctx);
+    auto * pos = pipe_slot<int32_t>(p, i, p.off_pos);
+    auto * kv_row = pipe_slot<int32_t>(p, i, p.off_kv_row);
+    std::memcpy(pos, in.pos, sizeof(in.pos));
+    *kv_row = in.kv_row;
+    ggml_backend_tensor_set_async(p.backend, ws.positions, pos, 0, sizeof(in.pos));
+    ggml_backend_tensor_set_async(p.backend, ws.kv_row, kv_row, 0, sizeof(int32_t));
+    if (ws.qsa_blocks >= 0) {
+        auto * vis = pipe_slot<float>(p, i, p.off_vis);
+        auto * params = pipe_slot<int32_t>(p, i, p.off_params);
+        stable_decode_visibility(in.qsa_valid, ws.qsa_blocks, vis);
+        std::memcpy(params, in.qsa_params, sizeof(in.qsa_params));
+        ggml_backend_tensor_set_async(p.backend, ws.qsa_visibility, vis, 0, (size_t) ws.qsa_blocks * sizeof(float));
+        ggml_backend_tensor_set_async(p.backend, ws.qsa_params, params, 0, sizeof(in.qsa_params));
+    }
+    if (ws.mask) {
+        auto * mask = pipe_slot<ggml_fp16_t>(p, i, p.off_mask);
+        stable_decode_mask(P + 1, ws.kv_bucket, mask);
+        ggml_backend_tensor_set_async(p.backend, ws.mask, mask, 0, (size_t) ws.kv_bucket * sizeof(ggml_fp16_t));
+    }
+    if (forced) {
+        auto * tok = pipe_slot<int32_t>(p, i, p.off_tok);
+        *tok = *forced;
+        ggml_backend_tensor_set_async(p.backend, ws.tok_in, tok, 0, sizeof(int32_t));
+    }
+    ggml_cgraph a = ggml_graph_view(ws.gf, 0, ws.split);
+    if (a.n_nodes > 0 && ggml_backend_graph_compute_async(p.backend, &a) != GGML_STATUS_SUCCESS) return false;
+    p.enqueued_a = i;
+    return true;
+}
+
+}  // namespace
+
+Qwen4ExpPipeline * qwen4exp_pipeline_create(ggml_backend_t backend, const Qwen4ExpWeights & w,
+                                            Qwen4ExpCache & cache, int slots) {
+    if (!backend || slots < 2 || !w.embedder.tok_embd_bytes || cache.max_ctx <= 0 || w.n_vocab <= 0) return nullptr;
+    ggml_backend_dev_t dev = ggml_backend_get_device(backend);
+    ggml_backend_buffer_type_t host_buft = dev ? ggml_backend_dev_host_buffer_type(dev) : nullptr;
+    if (!host_buft) return nullptr;
+    auto * p = new Qwen4ExpPipeline();
+    p->backend = backend;
+    p->w = &w;
+    p->cache = &cache;
+    p->slots = slots;
+    p->ple_layer = w.n_layer;
+    const bool has_ple = !cache.ple_layer_ids.empty() && w.ple_reader.available();
+    if (has_ple) {
+        for (int il = 0; il < w.n_layer; ++il) if (w.layers[il].is_ple) { p->ple_layer = il; break; }
+    }
+    std::vector<int> lin_idx(w.n_layer, -1);
+    for (size_t i = 0; i < cache.linear_layer_ids.size(); ++i) lin_idx[cache.linear_layer_ids[i]] = (int) i;
+    for (int il = 0; il < p->ple_layer; ++il) if (!w.layers[il].is_full_attention) p->snap_layers.push_back(il);
+
+    ggml_init_params ip{ ggml_tensor_overhead() * (4 + 2 * p->snap_layers.size()), nullptr, true };
+    p->ctx = ggml_init(ip);
+    if (!p->ctx) { qwen4exp_pipeline_destroy(p); return nullptr; }
+    p->tok_embd = ggml_new_tensor_2d(p->ctx, w.embedder.tok_embd_type, w.n_embd, w.n_vocab);
+    p->tok_in = ggml_new_tensor_1d(p->ctx, GGML_TYPE_I32, 1);
+    for (int il : p->snap_layers) {
+        const int li = lin_idx[il];
+        if (li < 0) { qwen4exp_pipeline_destroy(p); return nullptr; }
+        p->snap_ssm.push_back(ggml_dup_tensor(p->ctx, cache.ssm_state[li]));
+        p->snap_conv.push_back(ggml_dup_tensor(p->ctx, cache.conv_state[li]));
+    }
+    if (ggml_nbytes(p->tok_embd) != w.embedder.row_bytes * (size_t) w.n_vocab) { qwen4exp_pipeline_destroy(p); return nullptr; }
+    p->buf = ggml_backend_alloc_ctx_tensors(p->ctx, backend);
+    if (!p->buf) { qwen4exp_pipeline_destroy(p); return nullptr; }
+    ggml_backend_tensor_set(p->tok_embd, w.embedder.tok_embd_bytes, 0, ggml_nbytes(p->tok_embd));
+
+    const size_t vis_bytes = pipe_align(((size_t) cache.max_ctx / 4 + 1) * sizeof(float));
+    const size_t ple_bytes = pipe_align(has_ple ? (size_t) w.ple_head_dim * w.ple_n_heads * sizeof(float) : 0);
+    const size_t mask_bytes = pipe_align((size_t) cache.max_ctx * sizeof(ggml_fp16_t));
+    p->off_tok = 0; p->off_pick = 64; p->off_pos = 128; p->off_kv_row = 192; p->off_params = 256;
+    p->off_vis = 512;
+    p->off_ple = p->off_vis + vis_bytes;
+    p->off_mask = p->off_ple + ple_bytes;
+    p->slot_bytes = p->off_mask + mask_bytes;
+    p->host_buf = ggml_backend_buft_alloc_buffer(host_buft, p->slot_bytes * (size_t) slots);
+    if (!p->host_buf) { qwen4exp_pipeline_destroy(p); return nullptr; }
+    p->host = static_cast<char *>(ggml_backend_buffer_get_base(p->host_buf));
+    for (int s = 0; s < slots; ++s) {
+        ggml_backend_event_t ev = ggml_backend_event_new(dev);
+        if (!ev) { qwen4exp_pipeline_destroy(p); return nullptr; }
+        p->events.push_back(ev);
+    }
+    return p;
+}
+
+void qwen4exp_pipeline_destroy(Qwen4ExpPipeline * p) {
+    if (!p) return;
+    if (p->backend) ggml_backend_synchronize(p->backend);
+    if (p->cache && p->cache->decode_workspace.pipelined && p->cache->decode_workspace.tok_in == p->tok_in) {
+        clear_qwen4exp_decode_workspace(p->cache->decode_workspace);   // its graph references session tensors
+    }
+    for (ggml_backend_event_t ev : p->events) ggml_backend_event_free(ev);
+    if (p->host_buf) ggml_backend_buffer_free(p->host_buf);
+    if (p->buf) ggml_backend_buffer_free(p->buf);
+    if (p->ctx) ggml_free(p->ctx);
+    delete p;
+}
+
+bool qwen4exp_pipeline_begin(Qwen4ExpPipeline & p, int32_t x0) {
+    if (p.active || x0 < 0 || x0 >= p.w->n_vocab) return false;
+    const Qwen4ExpCudaScope profile(p.w->gfx1151);
+    p.pos0 = p.cache->cur_pos;
+    p.inputs.assign(1, x0);
+    p.picks.clear();
+    p.synced = 0;
+    p.enqueued_a = p.enqueued_b = -1;
+    p.ple_prev = p.ple_prev_base = p.cache->ple_prev;
+    p.active = true;
+    if (pipe_enqueue_a(p, 0, &x0)) return true;
+    p.active = false;
+    return false;
+}
+
+bool qwen4exp_pipeline_step(Qwen4ExpPipeline & p, const int32_t * next) {
+    const int i = p.enqueued_a;
+    if (!p.active || i != p.enqueued_b + 1 || (int) p.inputs.size() <= i) return false;
+    if (next && (*next < 0 || *next >= p.w->n_vocab)) return false;
+    const Qwen4ExpCudaScope profile(p.w->gfx1151);
+    auto & ws = p.cache->decode_workspace;
+    if (ws.ple_in) {   // the one host input that depends on the previous pick: hidden under the pre-PLE half
+        const Qwen4ExpInputs in = qwen4exp_prepare_inputs(*p.w, &p.inputs[i], 1, p.ple_prev);
+        if (!in.ok || in.ple.size() * sizeof(float) > p.off_mask - p.off_ple) return false;
+        auto * ple = pipe_slot<float>(p, i, p.off_ple);
+        std::memcpy(ple, in.ple.data(), in.ple.size() * sizeof(float));
+        ggml_backend_tensor_set_async(p.backend, ws.ple_in, ple, 0, in.ple.size() * sizeof(float));
+        p.ple_prev = in.ple_prev;
+    }
+    ggml_cgraph b = ggml_graph_view(ws.gf, ws.split, ggml_graph_n_nodes(ws.gf));
+    if (b.n_nodes > 0 && ggml_backend_graph_compute_async(p.backend, &b) != GGML_STATUS_SUCCESS) return false;
+    ggml_backend_tensor_get_async(p.backend, ws.argmax, pipe_slot<int32_t>(p, i, p.off_pick), 0, sizeof(int32_t));
+    ggml_backend_event_record(p.events[i % p.slots], p.backend);
+    p.enqueued_b = i;
+    if (ws.qsa_blocks >= 0) p.cache->indexer_blocks = (p.pos0 + i + 1) / 4;
+    if (next) p.inputs.push_back(*next);
+    if (p.pos0 + i + 1 >= p.cache->max_ctx) return true;   // context full: nothing to look ahead to
+    return pipe_enqueue_a(p, i + 1, next);
+}
+
+bool qwen4exp_pipeline_wait(Qwen4ExpPipeline & p, int i, int32_t & pick) {
+    if (!p.active || i < 0 || i > p.enqueued_b) return false;
+    if (!pipe_sync_through(p, i)) return false;
+    pick = p.picks[(size_t) i];
+    return true;
+}
+
+bool qwen4exp_pipeline_end(Qwen4ExpPipeline & p) {
+    if (!p.active) return false;
+    const Qwen4ExpCudaScope profile(p.w->gfx1151);
+    const bool ok = pipe_sync_through(p, p.enqueued_b);
+    if (p.enqueued_a > p.enqueued_b) {   // undo the lookahead half-step: layer states only, it wrote no KV
+        std::vector<int> lin_idx(p.w->n_layer, -1);
+        for (size_t k = 0; k < p.cache->linear_layer_ids.size(); ++k) lin_idx[p.cache->linear_layer_ids[k]] = (int) k;
+        for (size_t k = 0; k < p.snap_layers.size(); ++k) {
+            const int li = lin_idx[p.snap_layers[k]];
+            ggml_backend_tensor_copy_async(p.backend, p.backend, p.snap_ssm[k], p.cache->ssm_state[li]);
+            ggml_backend_tensor_copy_async(p.backend, p.backend, p.snap_conv[k], p.cache->conv_state[li]);
+        }
+    }
+    ggml_backend_synchronize(p.backend);
+    pipe_commit_ple_prev(p);
+    p.cache->cur_pos = p.pos0 + p.synced;
+    p.cache->decode_workspace.next_pos = p.cache->cur_pos;
+    p.active = false;
+    return ok;
 }
 
 }  // namespace luce::common

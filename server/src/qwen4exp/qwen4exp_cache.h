@@ -56,6 +56,11 @@ struct Qwen4ExpDecodeWorkspace {
     // I32[10]: valid count, four raw rows, destination row, four M-RoPE positions.
     ggml_tensor * qsa_params = nullptr;
     ggml_tensor * argmax = nullptr;   // optional greedy decode result; logits remains an output for snapshots
+    // Pipelined greedy session graph (qwen4exp_pipeline.h): inp_emb is get_rows(tok_in), nodes [0, split) are
+    // the embedding and the layers before the first PLE layer, argmax is copied into tok_in at the end.
+    bool pipelined = false;
+    int split = -1;
+    ggml_tensor * tok_in = nullptr;   // session-owned
     uint64_t builds = 0;      // smoke-test evidence: metadata addresses can be recycled
     uint64_t replays = 0;
     int qsa_budget = 0;

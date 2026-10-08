@@ -1,6 +1,7 @@
 #include "qwen4exp_internal.h"
 #include "qwen4exp_graph.h"
 #include "qwen4exp_cache.h"
+#include "qwen4exp_pipeline.h"
 #include "ggml-cuda.h"
 #include <algorithm>
 #include <chrono>
@@ -43,8 +44,13 @@ int main(int argc, char ** argv) {
     if (argc != 5) return 2;
     const auto prompt = ids(argv[2]); const int n = std::stoi(argv[3]), reps = std::stoi(argv[4]);
     const auto enabled=[](const char * k,const char * v){const char * e=getenv(k);return e&&std::string(e)==v;};
+    // LUCE_QWEN_PIPELINE=1 requires LUCE_QWEN_SHARED_OVERLAP=0 (forward_impl's pipe gate excludes shared overlap);
+    // the baseline recipe otherwise always pins SHARED_OVERLAP=1.
+    const bool pipeline_requested = enabled("LUCE_QWEN_PIPELINE","1");
+    const bool shared_overlap_env_ok = enabled("LUCE_QWEN_SHARED_OVERLAP","0") || enabled("LUCE_QWEN_SHARED_OVERLAP","1");
     if (!enabled("LUCE_QWEN_GRAPH_SH","1") || !enabled("LUCE_QWEN_HC_DOWN_INJECT","1") ||
-        !enabled("LUCE_QWEN_EXPERT_ROW_WARPS","8") || !enabled("LUCE_QWEN_SHARED_OVERLAP","1") ||
+        !enabled("LUCE_QWEN_EXPERT_ROW_WARPS","8") ||
+        !shared_overlap_env_ok || (pipeline_requested && enabled("LUCE_QWEN_SHARED_OVERLAP","1")) ||
         !enabled("LUCE_QWEN_QSA_CONT_ELISION","1") || !enabled("LUCE_QWEN_EXACT_ROUTER_SUFFIX","1") ||
         !enabled("LUCE_HOST_PREFILL_GUARDS","1") || !enabled("LUCE_QWEN_HC_SCALE_SILU","1") ||
         !enabled("MEASURE_GPU_ARGMAX","1") || !enabled("LUCE_QWEN_GDN_AB_EXACT","1") ||
@@ -114,14 +120,31 @@ int main(int argc, char ** argv) {
         std::printf("[schedule] kind=%s rep=%d mode=%d prefill_lo=%llu prefill_producer_hc=%llu\n",warm?"warm":"measure",rep,mode,(unsigned long long)prefill_lo,(unsigned long long)prefill_producer_hc);
         std::fflush(stdout);
         picks.clear(); int32_t token=prompt.back(); auto start=now();
-        for(int i=0;i<n;++i) {
-            int32_t gpu=-1;
-            if(!qwen4exp_forward(backend,w,cache,&token,1,(int)prompt.size()-1+i,logits,nullptr,false,false,false,false,nullptr,&gpu).ok)return 1;
-            if(logits.empty()&&dump){logits.resize(w.n_vocab);ggml_backend_tensor_get(cache.decode_workspace.logits,logits.data(),0,ggml_nbytes(cache.decode_workspace.logits));}
-            for(float x:logits)if(!std::isfinite(x))return 1;
-            if(gpu<0||(!logits.empty()&&gpu!=top(logits)))return 1;
-            picks.push_back(gpu); if(dump&&std::fwrite(logits.data(),sizeof(float),logits.size(),dump)!=logits.size())return 1;
-            token=follow[i];
+        const bool pipeline_on = enabled("LUCE_QWEN_PIPELINE","1");
+        if (pipeline_on && !dump) {
+            // LUCE_QWEN_PIPELINE=1: forced-follow greedy session, lookahead=1 (see qwen4exp_pipeline.h).
+            Qwen4ExpPipeline * pipe = qwen4exp_pipeline_create(backend, w, cache);
+            if (!pipe) { std::fprintf(stderr, "[pipe-dbg] create failed\n"); return 1; }
+            if (!qwen4exp_pipeline_begin(*pipe, token)) { std::fprintf(stderr, "[pipe-dbg] begin failed\n"); qwen4exp_pipeline_destroy(pipe); return 1; }
+            for (int i = 0; i < n; ++i) {
+                if (!qwen4exp_pipeline_step(*pipe, &follow[i])) { std::fprintf(stderr, "[pipe-dbg] step failed i=%d\n", i); qwen4exp_pipeline_destroy(pipe); return 1; }
+                int32_t pick = -1;
+                if (!qwen4exp_pipeline_wait(*pipe, i, pick)) { std::fprintf(stderr, "[pipe-dbg] wait failed i=%d\n", i); qwen4exp_pipeline_destroy(pipe); return 1; }
+                if (pick < 0) { std::fprintf(stderr, "[pipe-dbg] pick<0 i=%d\n", i); qwen4exp_pipeline_destroy(pipe); return 1; }
+                picks.push_back(pick);
+            }
+            if (!qwen4exp_pipeline_end(*pipe)) { std::fprintf(stderr, "[pipe-dbg] end failed\n"); qwen4exp_pipeline_destroy(pipe); return 1; }
+            qwen4exp_pipeline_destroy(pipe);
+        } else {
+            for(int i=0;i<n;++i) {
+                int32_t gpu=-1;
+                if(!qwen4exp_forward(backend,w,cache,&token,1,(int)prompt.size()-1+i,logits,nullptr,false,false,false,false,nullptr,&gpu).ok)return 1;
+                if(logits.empty()&&dump){logits.resize(w.n_vocab);ggml_backend_tensor_get(cache.decode_workspace.logits,logits.data(),0,ggml_nbytes(cache.decode_workspace.logits));}
+                for(float x:logits)if(!std::isfinite(x))return 1;
+                if(gpu<0||(!logits.empty()&&gpu!=top(logits)))return 1;
+                picks.push_back(gpu); if(dump&&std::fwrite(logits.data(),sizeof(float),logits.size(),dump)!=logits.size())return 1;
+                token=follow[i];
+            }
         }
         if(const char * p=getenv("MEASURE_STATE")) {
             std::string target=std::string(p)+".mode"+std::to_string(mode); std::FILE * f=std::fopen(target.c_str(),"wb");if(!f)return 1;
@@ -136,7 +159,12 @@ int main(int argc, char ** argv) {
         const uint64_t host=d[0]+d[1], logical_sh=d[5]+48*d[2], logical_hc=d[7]+d[8],
             logical_lo=d[9]+d[10], logical_ab=d[11]+d[12],
             logical_pg=d[13]+d[15], logical_ph=d[14]+d[16];
-        if(d[0]+d[1]+d[2]!=(uint64_t)n || !d[1] || !d[2] || d[0]!=d[3] || d[1]!=d[3] ||
+        // Pipelining splits each token's graph into two ggml_backend_graph_compute_async calls (pre/post PLE),
+        // which does not match the single-call-per-token launch-count formulas below (those validate OTHER
+        // fusions' host/replay bookkeeping, orthogonal to pipelining correctness). Pipelining's own gate is
+        // bit-identical [measure_tokens] vs the non-pipelined reference, checked by the caller.
+        const bool shared_overlap_on = enabled("LUCE_QWEN_SHARED_OVERLAP","1");
+        if (!pipeline_requested && shared_overlap_on && (d[0]+d[1]+d[2]!=(uint64_t)n || !d[1] || !d[2] || d[0]!=d[3] || d[1]!=d[3] ||
            d[4]!=96*host || d[5]!=48*host || d[6]!=d[5] || logical_sh!=48*(uint64_t)n ||
            d[7]!=95*host || d[8]!=95*d[2] || logical_hc!=95*(uint64_t)n ||
            d[9]!=97*host || d[10]!=97*d[2] || logical_lo!=97*(uint64_t)n ||
@@ -144,7 +172,7 @@ int main(int argc, char ** argv) {
            d[13]!=36*host || d[15]!=36*d[2] || logical_pg!=36*(uint64_t)n ||
            d[14]!=95*host || d[16]!=95*d[2] || logical_ph!=95*(uint64_t)n ||
            d[17]!=96*host || d[18]!=96*d[2] || d[17]+d[18]!=96*(uint64_t)n ||
-           d[19]!=(mode?48*host:0) || d[20]!=(mode?48*d[2]:0) || d[21]!=d[19])return 3;
+           d[19]!=(mode?48*host:0) || d[20]!=(mode?48*d[2]:0) || d[21]!=d[19]))return 3;
         std::printf("[shared_epilogue_counts] rep=%d mode=%d host=%llu replay=%llu logical=%llu skipped_pairs_host=%llu\n",rep,mode,(unsigned long long)d[19],(unsigned long long)d[20],(unsigned long long)(d[19]+d[20]),(unsigned long long)d[21]);
         std::printf("[upmix_row8_counts] rep=%d mode=%d host=%llu replay=%llu logical=%llu\n", rep,mode,
             (unsigned long long)d[17],(unsigned long long)d[18],(unsigned long long)(d[17]+d[18]));
