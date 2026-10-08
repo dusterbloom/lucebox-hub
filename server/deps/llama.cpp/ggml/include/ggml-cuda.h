@@ -35,6 +35,34 @@ extern "C" {
 
 // backend API
 GGML_BACKEND_API ggml_backend_t ggml_backend_cuda_init(int device);
+GGML_BACKEND_API size_t ggml_backend_cuda_get_expert_row_warps_launch_count(void);
+
+// Opt-in Qwen4Exp T=1 shared-expert overlap. The graph builder supplies
+// exact tensor identities; the CUDA backend validates the complete plan before
+// launching any branch on stream 1.
+struct ggml_cuda_qwen_shared_overlap_layer {
+    struct ggml_tensor * routed_gate;
+    struct ggml_tensor * shared_gate;
+    struct ggml_tensor * shared_up;
+    struct ggml_tensor * shared_glu;
+    struct ggml_tensor * shared_down;
+    struct ggml_tensor * shared_logit;
+    struct ggml_tensor * shared_sigmoid;
+    struct ggml_tensor * shared_out;
+    struct ggml_tensor * combine;
+};
+
+GGML_BACKEND_API void * ggml_backend_cuda_qwen_shared_overlap_create(ggml_backend_t backend);
+GGML_BACKEND_API void   ggml_backend_cuda_qwen_shared_overlap_destroy(void * handle);
+GGML_BACKEND_API bool   ggml_backend_cuda_qwen_shared_overlap_prepare(
+        void * handle, struct ggml_cgraph * graph, ggml_backend_buffer_t private_buffer,
+        const struct ggml_cuda_qwen_shared_overlap_layer * layers, size_t n_layers);
+GGML_BACKEND_API bool   ggml_backend_cuda_qwen_shared_overlap_activate(void * handle, struct ggml_cgraph * graph);
+GGML_BACKEND_API size_t ggml_backend_cuda_get_qwen_shared_overlap_fork_count(void);
+GGML_BACKEND_API size_t ggml_backend_cuda_get_qwen_shared_overlap_join_count(void);
+// Private graph probe. kind: 0 eager, 1 capture+launch, 2 replay, 3 sealed generations.
+GGML_BACKEND_API void ggml_backend_cuda_qwen_graph_seal(void * handle, struct ggml_cgraph * graph);
+GGML_BACKEND_API uint64_t ggml_backend_cuda_qwen_graph_probe_count(int kind);
 
 GGML_BACKEND_API bool ggml_backend_is_cuda(ggml_backend_t backend);
 

@@ -23,9 +23,15 @@ struct ggml_cuda_hc_combine_norm_args {
     const ggml_tensor * moe_sh_logit = nullptr;   // [1, T]             F32
     bool                moe_down_f16 = false;     // moe_down holds F16 in place (F16-only mark)
     int8_t *            out_q8       = nullptr;   // Q8 activation tiles of xn for the W8A8 HC down (mmb-w8a8.cuh layout)
+    block_q8_1 *        out_q8_1     = nullptr;   // standard MMVQ activation blocks; decode-only, xn remains F32
 };
 
 bool ggml_cuda_hc_combine_norm_supported(const ggml_cuda_hc_combine_norm_args & args, int warp_size);
+
+extern "C" GGML_BACKEND_API int ggml_cuda_test_hc_q8_producer(
+        const float * inject, const float * residual, const float * block_out, const float * gamma,
+        float * out_res, float * out_xn, block_q8_1 * q8,
+        float s1, float b1, float s2, float b2, float eps, void * stream);
 void ggml_cuda_op_hc_combine_norm(ggml_backend_cuda_context & ctx, const ggml_cuda_hc_combine_norm_args & args);
 
 // Packed two-output entry: writes out_res[n_embd,hc,T] and out_xn[n_embd,hc,T].

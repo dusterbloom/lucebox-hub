@@ -3,6 +3,8 @@
 void argsort_qsa_bitonic_cuda(const float * x, int * dst, const int * valid, cudaStream_t stream);
 
 void ggml_cuda_op_argsort(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+void ggml_cuda_op_argsort_topk_norm(ggml_backend_cuda_context & ctx, ggml_tensor * argsort,
+                                    ggml_tensor * weights, float clamp_min, float clamp_max);
 
 #if defined(GGML_CUDA_USE_CUB) || defined(GGML_CUDA_USE_HIPCUB)
 void argsort_f32_i32_cuda_cub(ggml_cuda_pool & pool,

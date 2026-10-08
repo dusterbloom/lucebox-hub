@@ -27,3 +27,6 @@ void ggml_cuda_op_mul_mat_vec_q(
     const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const char * src0_dd_i, const float * src1_ddf_i,
     const char * src1_ddq_i, float * dst_dd_i, const int64_t row_low, const int64_t row_high, const int64_t src1_ncols,
     const int64_t src1_padded_row_size, cudaStream_t stream);
+
+// Private graph probe: scoped stream-1 scratch, never a cross-stream memo.
+void ggml_cuda_mmvq_fixed_q8_for_capture(char * ptr, size_t bytes, bool prequantized = false);

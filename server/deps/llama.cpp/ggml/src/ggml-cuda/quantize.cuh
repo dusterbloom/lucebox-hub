@@ -16,10 +16,19 @@ typedef void (*quantize_cuda_t)(
         ggml_type type_src0, int64_t ne00, int64_t s01, int64_t s02, int64_t s03,
         int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3, cudaStream_t stream);
 
+void quantize_hc_lo_q8_1_cuda(
+        const float * x, float * dst, void * vy, bool in_place,
+        float scale, float bias, cudaStream_t stream);
+
 void quantize_row_q8_1_cuda(
         const float * x, const int32_t * ids, void * vy,
         ggml_type type_src0, int64_t ne00, int64_t s01, int64_t s02, int64_t s03,
         int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3, cudaStream_t stream);
+
+// Private fixture entry point: the unmodified canonical row quantizer on one
+// contiguous F32 row. Only the two producer shapes are admitted.
+extern "C" GGML_BACKEND_API int ggml_cuda_test_canonical_q8_1(
+        const float * x, block_q8_1 * q8, int64_t n, void * stream);
 
 void quantize_mmq_q8_1_cuda(
         const float * x, const int32_t * ids, void * vy,

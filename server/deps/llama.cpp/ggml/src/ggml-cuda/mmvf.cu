@@ -384,6 +384,89 @@ static __global__ void mul_mat_vec_f(
     }
 }
 
+// Exact Qwen4Exp T=1 alpha/beta projections. The dot body and two-stage
+// Wave32 reduction deliberately mirror mul_mat_vec_f<float,float,1,256>.
+static __global__ void gdn_ab_exact_f32(
+        const float * __restrict__ alpha_weight,
+        const float * __restrict__ beta_weight,
+        const float * __restrict__ activation,
+        const float * __restrict__ dt_bias,
+        const float * __restrict__ ssm_a,
+        float * __restrict__ gate,
+        float * __restrict__ beta,
+        int ncols2,
+        int weight_stride2) {
+    constexpr int warp_size = 32;
+    const int out_row = blockIdx.x;
+    const bool is_beta = out_row >= 48;
+    const int row = is_beta ? out_row - 48 : out_row;
+    const int tid = threadIdx.x;
+    const float * weight = is_beta ? beta_weight : alpha_weight;
+    const float2 * x2 = reinterpret_cast<const float2 *>(weight) + row*weight_stride2;
+    const float2 * y2 = reinterpret_cast<const float2 *>(activation);
+
+    extern __shared__ float buf_iw[];
+    if (tid < warp_size) {
+        buf_iw[tid] = 0.0f;
+    }
+    __syncthreads();
+
+    float sumf = 0.0f;
+    for (int col2 = tid; col2 < ncols2; col2 += 256) {
+        const float2 tmpx = x2[col2];
+        const float2 tmpy = y2[col2];
+        ggml_cuda_mad(sumf, tmpx.x, tmpy.x);
+        ggml_cuda_mad(sumf, tmpx.y, tmpy.y);
+    }
+    sumf = warp_reduce_sum<warp_size>(sumf);
+    buf_iw[tid/warp_size] = sumf;
+    __syncthreads();
+    if (tid < warp_size) {
+        sumf = buf_iw[tid];
+        sumf = warp_reduce_sum<warp_size>(sumf);
+    }
+    __syncthreads();
+
+    if (tid == 0) {
+        if (is_beta) {
+            beta[row] = 1.0f / (1.0f + expf(-sumf));
+        } else {
+            const float biased = sumf + dt_bias[row];
+            const float softplus = biased > 20.0f ? biased : logf(1.0f + expf(biased));
+            gate[row] = softplus * ssm_a[row];
+        }
+    }
+}
+
+void ggml_cuda_gdn_ab_exact(ggml_backend_cuda_context & ctx,
+                            const ggml_cuda_gdn_ab_exact_args & args) {
+    GGML_ASSERT(args.alpha_weight && args.beta_weight && args.activation &&
+                args.dt_bias && args.ssm_a && args.gate && args.beta);
+    GGML_ASSERT(args.alpha_weight->type == GGML_TYPE_F32 &&
+                args.beta_weight->type == GGML_TYPE_F32 &&
+                args.activation->type == GGML_TYPE_F32 &&
+                args.dt_bias->type == GGML_TYPE_F32 && args.ssm_a->type == GGML_TYPE_F32 &&
+                args.gate->type == GGML_TYPE_F32 && args.beta->type == GGML_TYPE_F32);
+    GGML_ASSERT(args.alpha_weight->ne[0] == 2560 && args.alpha_weight->ne[1] == 48 &&
+                args.beta_weight->ne[0] == 2560 && args.beta_weight->ne[1] == 48 &&
+                ggml_nelements(args.activation) == 2560 &&
+                ggml_nelements(args.dt_bias) == 48 && ggml_nelements(args.ssm_a) == 48 &&
+                ggml_nelements(args.gate) == 48 && ggml_nelements(args.beta) == 48);
+    GGML_ASSERT(args.alpha_weight->nb[1] == args.beta_weight->nb[1] &&
+                args.alpha_weight->nb[1] % sizeof(float2) == 0);
+    GGML_ASSERT(ggml_cuda_info().devices[ctx.device].cc == GGML_CUDA_CC_OFFSET_AMD + 0x1151);
+
+    gdn_ab_exact_f32<<<96, 256, 32*sizeof(float), ctx.stream()>>>(
+        static_cast<const float *>(args.alpha_weight->data),
+        static_cast<const float *>(args.beta_weight->data),
+        static_cast<const float *>(args.activation->data),
+        static_cast<const float *>(args.dt_bias->data),
+        static_cast<const float *>(args.ssm_a->data),
+        static_cast<float *>(args.gate->data),
+        static_cast<float *>(args.beta->data),
+        2560/2, args.alpha_weight->nb[1]/sizeof(float2));
+}
+
 template<typename T, typename type_acc, int ncols_dst, int block_size, bool is_multi_token_id = false>
 static void mul_mat_vec_f_switch_fusion(
         const T * x, const float * y, const int32_t * ids, const ggml_cuda_mm_fusion_args_device fusion, float * dst,

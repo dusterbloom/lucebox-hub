@@ -1,6 +1,28 @@
 #include "quantize.cuh"
 #include <cstdint>
 
+static __device__ __forceinline__ void q8_1_store_lane(
+        block_q8_1 * y, const int64_t i_cont, const float xi) {
+    const int64_t ib  = i_cont / QK8_1;
+    const int64_t iqs = i_cont % QK8_1;
+    float amax = fabsf(xi);
+    float sum = xi;
+
+    amax = warp_reduce_max<QK8_1>(amax);
+    sum  = warp_reduce_sum<QK8_1>(sum);
+
+    const float  d = amax / 127.0f;
+    const int8_t q = amax == 0.0f ? 0 : roundf(xi / d);
+
+    y[ib].qs[iqs] = q;
+
+    if (iqs > 0) {
+        return;
+    }
+
+    y[ib].ds = make_half2(d, sum);
+}
+
 __launch_bounds__(CUDA_QUANTIZE_BLOCK_SIZE, 1)
 static __global__ void quantize_q8_1(
         const float * __restrict__ x, void * __restrict__ vy,
@@ -24,27 +46,27 @@ static __global__ void quantize_q8_1(
     const int64_t i_cont = ((i3*ne2.z + i2) * ne1 + i1) * ne0 + i0;
 
     block_q8_1 * y = (block_q8_1 *) vy;
-
-    const int64_t ib  = i_cont / QK8_1; // block index
-    const int64_t iqs = i_cont % QK8_1; // quant index
-
     const float xi = i0 < ne00 ? x[i03*s03 + i02*s02 + i01*s01 + i00] : 0.0f;
-    float amax = fabsf(xi);
-    float sum = xi;
+    q8_1_store_lane(y, i_cont, xi);
+}
 
-    amax = warp_reduce_max<QK8_1>(amax);
-    sum  = warp_reduce_sum<QK8_1>(sum);
-
-    const float  d = amax / 127.0f;
-    const int8_t q = amax == 0.0f ? 0 : roundf(xi / d);
-
-    y[ib].qs[iqs] = q;
-
-    if (iqs > 0) {
-        return;
+template <bool IN_PLACE>
+__launch_bounds__(CUDA_QUANTIZE_BLOCK_SIZE, 1)
+static __global__ void quantize_hc_lo_q8_1(
+        const float * x, float * dst, block_q8_1 * y, const float scale, const float bias) {
+    const int64_t i = (int64_t) blockDim.x*blockIdx.x + threadIdx.x;
+    if (i >= MATRIX_ROW_PADDING) return;
+    float xi = 0.0f;
+    if (i < 320) {
+        const float scaled = scale*x[i] + bias;
+        xi = scaled / (1.0f + expf(-scaled));
+        if constexpr (IN_PLACE) {
+            const_cast<float *>(x)[i] = xi;
+        } else {
+            dst[i] = xi;
+        }
     }
-
-    y[ib].ds = make_half2(d, sum);
+    q8_1_store_lane(y, i, xi);
 }
 
 __device__ __forceinline__ uint8_t compute_e8m0_scale(float amax) {
@@ -284,6 +306,21 @@ static __global__ void quantize_mmq_q8_1(
     }
 }
 
+void quantize_hc_lo_q8_1_cuda(
+        const float * x, float * dst, void * vy, bool in_place,
+        const float scale, const float bias, cudaStream_t stream) {
+    GGML_ASSERT(x && vy && (in_place || dst));
+    const dim3 blocks(MATRIX_ROW_PADDING / CUDA_QUANTIZE_BLOCK_SIZE, 1, 1);
+    const dim3 threads(CUDA_QUANTIZE_BLOCK_SIZE, 1, 1);
+    if (in_place) {
+        quantize_hc_lo_q8_1<true><<<blocks, threads, 0, stream>>>(
+            x, nullptr, (block_q8_1 *) vy, scale, bias);
+    } else {
+        quantize_hc_lo_q8_1<false><<<blocks, threads, 0, stream>>>(
+            x, dst, (block_q8_1 *) vy, scale, bias);
+    }
+}
+
 void quantize_row_q8_1_cuda(
         const float * x, const int32_t * ids, void * vy, const ggml_type type_src0,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
@@ -298,6 +335,14 @@ void quantize_row_q8_1_cuda(
     const dim3 block_size(CUDA_QUANTIZE_BLOCK_SIZE, 1, 1);
     quantize_q8_1<<<num_blocks, block_size, 0, stream>>>(x, vy, ne00, s01, s02, s03, ne0, ne1, ne2_fastdiv);
     GGML_UNUSED(type_src0);
+}
+
+extern "C" GGML_BACKEND_API int ggml_cuda_test_canonical_q8_1(
+        const float * x, block_q8_1 * q8, const int64_t n, void * raw_stream) {
+    if (!x || !q8 || (n != 6144 && n != 10240)) return 0;
+    quantize_row_q8_1_cuda(x, nullptr, q8, GGML_TYPE_Q8_0,
+        n, n, n, n, n, 1, 1, 1, (cudaStream_t) raw_stream);
+    return cudaGetLastError() == cudaSuccess;
 }
 
 void quantize_mmq_q8_1_cuda(

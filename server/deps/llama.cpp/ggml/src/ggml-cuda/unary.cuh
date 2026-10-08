@@ -31,6 +31,9 @@ void ggml_cuda_op_gelu(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
 void ggml_cuda_op_silu(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
+// HC down SCALE + SiLU; runtime scale/bias preserve SCALE arithmetic.
+void ggml_cuda_op_hc_scale_silu(ggml_backend_cuda_context & ctx, ggml_tensor * scale, ggml_tensor * dst);
+
 void ggml_cuda_op_silu_back(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
 void ggml_cuda_op_gelu_erf(ggml_backend_cuda_context & ctx, ggml_tensor * dst);

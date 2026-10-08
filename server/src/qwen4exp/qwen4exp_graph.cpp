@@ -9,8 +9,10 @@
 #include "ggml-cuda.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <string>
@@ -18,7 +20,16 @@
 #include <vector>
 
 namespace luce::common {
+
 namespace {
+
+static bool qsa_cont_elision_requested() {
+    static const bool requested = [] {
+        const char * value = std::getenv("LUCE_QWEN_QSA_CONT_ELISION");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    return requested;
+}
 
 size_t ring_align_up(size_t value) {
     const size_t remainder = value % 256;
@@ -43,6 +54,66 @@ static void graph_memory(ggml_backend_t backend, ggml_context * ctx, ggml_cgraph
     // for those plus one Q8 activation and two largest-node scratch buffers
     // (conversion/attention and a retired pool allocation during growth).
     memory.scratch = gfx1151 ? (4 + 4 + 4) * 2 * activation + activation + 2 * largest : 2 * largest;
+}
+
+static bool bind_shared_overlap_arena(
+        Qwen4ExpDecodeWorkspace & ws, ggml_backend_t backend,
+        const std::vector<ggml_cuda_qwen_shared_overlap_layer> & layers) {
+    constexpr size_t outputs_per_layer = 7;
+    if (layers.size() != 48) return false;
+
+    auto outputs = [](const ggml_cuda_qwen_shared_overlap_layer & l) {
+        return std::array<ggml_tensor *, outputs_per_layer>{
+            l.shared_gate, l.shared_up, l.shared_glu, l.shared_down,
+            l.shared_logit, l.shared_sigmoid, l.shared_out };
+    };
+    if (!ws.shared_ctx) {
+        auto failed_init = [&] {
+            if (ws.shared_overlap) ggml_backend_cuda_qwen_shared_overlap_destroy(ws.shared_overlap);
+            if (ws.shared_buf) ggml_backend_buffer_free(ws.shared_buf);
+            if (ws.shared_ctx) ggml_free(ws.shared_ctx);
+            ws.shared_overlap = nullptr;
+            ws.shared_buf = nullptr;
+            ws.shared_ctx = nullptr;
+            ws.shared_slots.clear();
+            ws.shared_layers.clear();
+            return false;
+        };
+        ggml_init_params p{};
+        p.mem_size = ggml_tensor_overhead() * (outputs_per_layer * layers.size() + 8) + (1u << 20);
+        p.no_alloc = true;
+        ws.shared_ctx = ggml_init(p);
+        if (!ws.shared_ctx) return false;
+        for (const auto & layer : layers) {
+            for (ggml_tensor * tensor : outputs(layer)) {
+                if (!tensor || tensor->view_src) return failed_init();
+                ws.shared_slots.push_back(ggml_dup_tensor(ws.shared_ctx, tensor));
+            }
+        }
+        ws.shared_buf = ggml_backend_alloc_ctx_tensors(ws.shared_ctx, backend);
+        ws.shared_overlap = ggml_backend_cuda_qwen_shared_overlap_create(backend);
+        if (!ws.shared_buf || !ws.shared_overlap) return failed_init();
+    }
+    if (ws.shared_slots.size() != outputs_per_layer * layers.size()) return false;
+
+    size_t slot = 0;
+    for (const auto & layer : layers) {
+        for (ggml_tensor * tensor : outputs(layer)) {
+            ggml_tensor * storage = ws.shared_slots[slot++];
+            if (!tensor || tensor->view_src || tensor->type != storage->type ||
+                !ggml_are_same_shape(tensor, storage) ||
+                ggml_backend_tensor_alloc(ws.shared_buf, tensor, storage->data) != GGML_STATUS_SUCCESS) {
+                return false;
+            }
+        }
+    }
+    ws.shared_layers = layers;
+    return true;
+}
+
+static bool activate_shared_overlap(Qwen4ExpDecodeWorkspace & ws) {
+    return !ws.shared_overlap ||
+        ggml_backend_cuda_qwen_shared_overlap_activate(ws.shared_overlap, ws.gf);
 }
 
 // Grow-only: slots keep their addresses across forwards, so captured CUDA graphs stay valid.
@@ -200,10 +271,12 @@ struct Qwen4ExpMoeParts {
     ggml_tensor * shared_logit = nullptr;   // [1, T]
 };
 
-[[maybe_unused]] ggml_tensor * build_moe(ggml_context * c, ggml_tensor * cur,
+[[maybe_unused]] ggml_tensor * build_moe(ggml_context * c, ggml_cgraph * gf, ggml_tensor * cur,
                         const Qwen4ExpLayer & L, const Qwen4ExpWeights & w, int il, bool reference,
+                        bool bf16_router,
                         const std::function<void(ggml_tensor *, const char *)> & dump_mark = {},
-                        Qwen4ExpMoeParts * parts = nullptr) {
+                        Qwen4ExpMoeParts * parts = nullptr,
+                        ggml_cuda_qwen_shared_overlap_layer * overlap = nullptr) {
     const int64_t n_embd   = w.n_embd;
     const int64_t n_tokens = cur->ne[1];
     const int64_t n_expert = w.n_expert;
@@ -214,17 +287,30 @@ struct Qwen4ExpMoeParts {
         if (dump_mark && t) { std::snprintf(dlab, sizeof dlab, "L%02d.%s", il, tag); dump_mark(t, dlab); }
     };
 
-    ggml_tensor * logits = mm(c, L.ffn_gate_inp, cur);      // [n_expert, T]
+    ggml_tensor * router = bf16_router && n_tokens == 1 && L.ffn_gate_inp_bf16
+        ? L.ffn_gate_inp_bf16 : L.ffn_gate_inp;
+    ggml_tensor * logits = mm(c, router, cur);      // [n_expert, T]
     dmark(logits, "mlogit");
     ggml_tensor * probs  = ggml_soft_max(c, logits);
     dmark(probs, "mprob");
+    static const bool exact_router_suffix = [] {
+        const char * value = std::getenv("LUCE_QWEN_EXACT_ROUTER_SUFFIX");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    ggml_tensor * probs3 = exact_router_suffix && bf16_router && !reference && n_tokens == 1
+        ? ggml_reshape_3d(c, probs, 1, n_expert, n_tokens) : nullptr;
     ggml_tensor * sel    = ggml_argsort_top_k(c, probs, (int) n_used);  // [n_used, T]
     dmark(sel, "mid");
     dmark(logits, "rlogit");
 
-    ggml_tensor * probs3 = ggml_reshape_3d(c, probs, 1, n_expert, n_tokens);
+    if (!probs3) probs3 = ggml_reshape_3d(c, probs, 1, n_expert, n_tokens);
     ggml_tensor * wsel   = ggml_reshape_2d(c, ggml_get_rows(c, probs3, sel), n_used, n_tokens);
     wsel = ggml_div(c, wsel, ggml_clamp(c, ggml_sum_rows(c, wsel), 6.103515625e-5f, INFINITY));
+    if (exact_router_suffix && bf16_router && !reference && n_tokens == 1) {
+        ggml_tensor * wsel3 = ggml_reshape_3d(c, wsel, 1, n_used, n_tokens);
+        ggml_build_forward_expand(gf, wsel3);
+        wsel = ggml_reshape_2d(c, wsel3, n_used, n_tokens);
+    }
     dmark(wsel, "mwt");
 
     ggml_tensor * cur3 = ggml_reshape_3d(c, cur, n_embd, 1, n_tokens);
@@ -242,15 +328,15 @@ struct Qwen4ExpMoeParts {
     ggml_tensor * sh_gate = mm(c, L.ffn_gate_shexp, cur);
     ggml_tensor * sh_up   = mm(c, L.ffn_up_shexp, cur);
     ggml_tensor * sh_gu   = ggml_swiglu_split(c, sh_gate, sh_up);
-    ggml_tensor * shared  = mm(c, L.ffn_down_shexp, sh_gu);
+    ggml_tensor * shared_down = mm(c, L.ffn_down_shexp, sh_gu);
 
     ggml_tensor * shared_logit = mm(c, L.ffn_gate_inp_shexp, cur);
     if (parts) {   // the caller folds the combine into the next HC_COMBINE_NORM
-        *parts = { down, wsel, shared, shared_logit };
+        *parts = { down, wsel, shared_down, shared_logit };
         return nullptr;
     }
     ggml_tensor * shared_gate = ggml_sigmoid(c, shared_logit);
-    shared = ggml_mul(c, shared, shared_gate);   // [n_embd,T] * [1,T] broadcasts over dim 0
+    ggml_tensor * shared = ggml_mul(c, shared_down, shared_gate);   // [n_embd,T] * [1,T] broadcasts over dim 0
     dmark(shared, "msh");
 
     ggml_tensor * moe_out;
@@ -268,6 +354,10 @@ struct Qwen4ExpMoeParts {
         moe_out = ggml_add(c, ggml_reshape_2d(c, acc, n_embd, n_tokens), shared);
     } else {
         moe_out = ggml_ds4_moe_fused_combine_shared(c, down, wsel, shared);
+    }
+    if (overlap) {
+        *overlap = { gate, sh_gate, sh_up, sh_gu, shared_down,
+                     shared_logit, shared_gate, shared, moe_out };
     }
     dmark(moe_out, "mout");
     return moe_out;
@@ -300,28 +390,34 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
     alpha = ggml_softplus(c, ggml_add(c, alpha, L.ssm_dt_bias));
     ggml_tensor * gate = ggml_reshape_4d(c, ggml_mul(c, alpha, L.ssm_a), 1, Hv, T, 1);
 
-    ggml_tensor * hist = ggml_reshape_3d(c, conv_state, kernel - 1, conv_channels, 1);
-    // Keep the transpose as a view: the fused concat+transpose kernel keys off src1->nb[1] == sizeof(float).
-    ggml_tensor * qkv_t = ggml_transpose(c, ggml_reshape_2d(c, qkv, conv_channels, T));
-    ggml_tensor * conv_input = ggml_concat(c, hist, qkv_t, 0);
+    ggml_tensor * conv;
+    if (T == 1 && f16 && !spec_conv) {
+        // Decode step: update the three-row history and compute SiLU(conv) in one kernel.
+        conv = ggml_ssm_conv_step(c, qkv, L.ssm_conv1d, conv_state, nullptr);
+    } else {
+        ggml_tensor * hist = ggml_reshape_3d(c, conv_state, kernel - 1, conv_channels, 1);
+        // Keep the transpose as a view: the fused concat+transpose kernel keys off src1->nb[1] == sizeof(float).
+        ggml_tensor * qkv_t = ggml_transpose(c, ggml_reshape_2d(c, qkv, conv_channels, T));
+        ggml_tensor * conv_input = ggml_concat(c, hist, qkv_t, 0);
 
-    // nb[0] is the element size, so the tail offset is T*nb[0], NOT T*nb[1].
-    ggml_tensor * new_hist = ggml_cont(c, ggml_view_3d(c, conv_input, kernel - 1, conv_channels, 1,
-        conv_input->nb[1], conv_input->nb[2], (size_t) T * conv_input->nb[0]));
-    ggml_build_forward_expand(gf, ggml_cpy(c, new_hist,
-        ggml_reshape_3d(c, conv_state, kernel - 1, conv_channels, 1)));
-    for (int64_t t = 0; spec_conv && t < T; ++t) {
-        ggml_build_forward_expand(gf, ggml_cpy(c, ggml_cont(c, ggml_view_3d(c, conv_input, kernel - 1, conv_channels, 1,
-            conv_input->nb[1], conv_input->nb[2], (t + 1) * conv_input->nb[0])),
-            ggml_view_3d(c, spec_conv, kernel - 1, conv_channels, 1,
-                spec_conv->nb[1], spec_conv->nb[2], t * spec_conv->nb[2])));
+        // nb[0] is the element size, so the tail offset is T*nb[0], NOT T*nb[1].
+        ggml_tensor * new_hist = ggml_cont(c, ggml_view_3d(c, conv_input, kernel - 1, conv_channels, 1,
+            conv_input->nb[1], conv_input->nb[2], (size_t) T * conv_input->nb[0]));
+        ggml_build_forward_expand(gf, ggml_cpy(c, new_hist,
+            ggml_reshape_3d(c, conv_state, kernel - 1, conv_channels, 1)));
+        for (int64_t t = 0; spec_conv && t < T; ++t) {
+            ggml_build_forward_expand(gf, ggml_cpy(c, ggml_cont(c, ggml_view_3d(c, conv_input, kernel - 1, conv_channels, 1,
+                conv_input->nb[1], conv_input->nb[2], (t + 1) * conv_input->nb[0])),
+                ggml_view_3d(c, spec_conv, kernel - 1, conv_channels, 1,
+                    spec_conv->nb[1], spec_conv->nb[2], t * spec_conv->nb[2])));
+        }
+
+        ggml_tensor * conv_op = ggml_ssm_conv(c, conv_input, L.ssm_conv1d);
+        // The gfx1151 fusion reads CONCAT's input at this later node. src[3] is
+        // unused by ordinary SSM_CONV and gives the allocator the real lifetime.
+        conv_op->src[3] = qkv_t;
+        conv = ggml_silu(c, conv_op);
     }
-
-    ggml_tensor * conv_op = ggml_ssm_conv(c, conv_input, L.ssm_conv1d);
-    // The gfx1151 fusion reads CONCAT's input at this later node. src[3] is
-    // unused by ordinary SSM_CONV and gives the allocator the real lifetime.
-    conv_op->src[3] = qkv_t;
-    ggml_tensor * conv = ggml_silu(c, conv_op);
     if (dump_mark) {
         char dlab[32];
         std::snprintf(dlab, sizeof dlab, "L%02d.conv", il);
@@ -340,7 +436,12 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
     ggml_tensor * v_c = ggml_view_3d(c, conv, D, Hv, T, D * esz, tstride, 2 * D * Hk * esz);
 
     ggml_tensor * state4 = ggml_reshape_4d(c, ssm_state, D, D, Hv, 1);
-    ggml_tensor * gdn = ggml_gated_delta_net(c, q_c, k_c, v_c, gate, beta, state4);
+    // Ordinary decode can commit the final recurrent state in the GDN kernel.
+    // Verify keeps the packed state so accepted-prefix rollback remains unchanged.
+    const bool inplace_state = T == 1 && f16 && !spec_states && !spec_conv;
+    ggml_tensor * gdn = inplace_state
+        ? ggml_gated_delta_net_inplace(c, q_c, k_c, v_c, gate, beta, state4)
+        : ggml_gated_delta_net(c, q_c, k_c, v_c, gate, beta, state4);
     // Only speculative rollback needs per-token intermediate states; skipping keeps the packed result allocatable.
     ggml_gated_delta_net_set_skip_intermediate(gdn, true);
     // The kernel writes them straight to spec_states (same F32 transposed layout as the state, token-major); the
@@ -352,18 +453,29 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
         ggml_row_size(gdn->type, D),
         ggml_row_size(gdn->type, D * Hv),
         ggml_row_size(gdn->type, D * Hv * T), 0);
-    ggml_tensor * new_state = ggml_view_4d(c, gdn, D, D, Hv, 1,
-        ggml_row_size(gdn->type, D),
-        ggml_row_size(gdn->type, D * D),
-        ggml_row_size(gdn->type, D * D * Hv),
-        ggml_row_size(gdn->type, D * Hv * T));
-    ggml_build_forward_expand(gf, ggml_cpy(c, new_state, state4));
+    if (!inplace_state) {
+        ggml_tensor * new_state = ggml_view_4d(c, gdn, D, D, Hv, 1,
+            ggml_row_size(gdn->type, D),
+            ggml_row_size(gdn->type, D * D),
+            ggml_row_size(gdn->type, D * D * Hv),
+            ggml_row_size(gdn->type, D * Hv * T));
+        ggml_build_forward_expand(gf, ggml_cpy(c, new_state, state4));
+    }
 
     // Gated norm written as F16 in one pass, read directly by ssm_out's Q8_0 -> F16 GEMM (same arithmetic as the
     // chain below, so bit-exact).
     if (f16 && ggml_backend_cuda_mmb_f16_input_ok(L.ssm_out, T)) {
         ggml_tensor * lin_raw = mm(c, L.ssm_out, ggml_gated_rms_norm_f16(c, attn, L.ssm_norm, z, eps));
         return ggml_reshape_2d(c, lin_raw, w.n_embd, T);
+    }
+    static const bool producer_q8 = [] {
+        const char * value = std::getenv("LUCE_QWEN_PRODUCER_Q8");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    // Build the independent gate projection first so the normalization suffix
+    // is contiguous and its producer can supply MMVQ's activation directly.
+    if (producer_q8 && T == 1 && f16 && !spec_states && !spec_conv) {
+        ggml_build_forward_expand(gf, z);
     }
     ggml_tensor * normed = ggml_mul(c, ggml_rms_norm(c, attn, eps), L.ssm_norm);
     ggml_tensor * out = ggml_mul(c, normed, ggml_sigmoid(c, ggml_reshape_4d(c, z, D, Hv, T, 1)));
@@ -402,15 +514,24 @@ static ggml_tensor * qsa_pack_values(ggml_context * c, ggml_tensor * values) {
 
 }  // namespace
 
-ggml_tensor * qwen4exp_pool_blocks(ggml_context * c, ggml_tensor * keys, int64_t r) {
+static ggml_tensor * qwen4exp_pool_blocks_impl(
+        ggml_context * c, ggml_tensor * keys, int64_t r, bool elide_cont) {
     const int64_t idim = keys->ne[0], nb = keys->ne[1] / r;
     ggml_tensor * k3 = ggml_reshape_3d(c, ggml_is_contiguous(keys) ? keys : ggml_cont(c, keys), idim, r, nb);
     ggml_tensor * sum = nullptr;
     for (int64_t i = 0; i < r; ++i) {
         ggml_tensor * tok = ggml_view_2d(c, k3, idim, nb, k3->nb[2], (size_t) i * k3->nb[1]);   // token r*b+i of every block
-        sum = sum ? ggml_add(c, sum, tok) : ggml_cont(c, tok);
+        if (sum) {
+            sum = ggml_add(c, sum, tok);
+        } else {
+            sum = elide_cont && ggml_is_contiguous(tok) ? tok : ggml_cont(c, tok);
+        }
     }
     return ggml_scale(c, sum, 1.0f / (float) r);
+}
+
+ggml_tensor * qwen4exp_pool_blocks(ggml_context * c, ggml_tensor * keys, int64_t r) {
+    return qwen4exp_pool_blocks_impl(c, keys, r, false);
 }
 
 int64_t qwen4exp_stable_kv_span(int64_t & base, int64_t max_ctx, int64_t kv_len) {
@@ -467,12 +588,13 @@ static ggml_tensor * qsa_pooled_keys(ggml_context * c, ggml_cgraph * gf, const Q
 // row. Other steps write the permanent scratch row, outside every score view.
 static ggml_tensor * qsa_pooled_keys_stable(ggml_context * c, const Qwen4ExpLayer & L,
         const Qwen4ExpWeights & w, ggml_tensor * indexer_k, ggml_tensor * raw_written,
-        const Qwen4ExpDecodeWorkspace & ws) {
+        const Qwen4ExpDecodeWorkspace & ws, bool elide_cont) {
     ggml_tensor * rows = ggml_view_1d(c, ws.qsa_params, 4, sizeof(int32_t));
     ggml_tensor * row = ggml_view_1d(c, ws.qsa_params, 1, 5 * sizeof(int32_t));
     ggml_tensor * pos = ggml_view_1d(c, ws.qsa_params, 4, 6 * sizeof(int32_t));
     ggml_tensor * span = ggml_get_rows(c, raw_written, rows);
-    ggml_tensor * fresh = qsa_pool_norm_rope(c, L, w, qwen4exp_pool_blocks(c, span, 4), pos);
+    ggml_tensor * fresh = qsa_pool_norm_rope(c, L, w,
+        qwen4exp_pool_blocks_impl(c, span, 4, elide_cont), pos);
     ggml_tensor * written = ggml_set_rows(c, indexer_k, fresh, row);
     return ggml_view_3d(c, written, w.indexer_head_size, ws.qsa_blocks, 1,
         written->nb[1], written->nb[2], 0);
@@ -528,7 +650,8 @@ static ggml_tensor * build_qsa_attn(ggml_context * c, ggml_tensor * cur,
         ggml_tensor * Q, ggml_tensor * Kf, ggml_tensor * Vf,
         const Qwen4ExpLayer & L, const Qwen4ExpWeights & w, int64_t ratio,
         ggml_tensor * positions, int64_t kv_pad, int64_t kv_len, int64_t kv_start,
-        ggml_tensor * pooled, int64_t nb, bool packed, const Qwen4ExpDecodeWorkspace * ws = nullptr) {
+        ggml_tensor * pooled, int64_t nb, bool packed, const Qwen4ExpDecodeWorkspace * ws = nullptr,
+        bool elide_cont = false) {
     const int64_t idim   = w.indexer_head_size;
     const int64_t nih    = w.indexer_n_head;
     const int64_t r      = ratio;
@@ -555,8 +678,9 @@ static ggml_tensor * build_qsa_attn(ggml_context * c, ggml_tensor * cur,
             GGML_ROPE_TYPE_MROPE, 0, w.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
         if (!ggml_is_contiguous(qi)) qi = ggml_cont(c, qi);
 
+        ggml_tensor * pooled_cont = elide_cont && ggml_is_contiguous(pooled) ? pooled : ggml_cont(c, pooled);
         ggml_tensor * comp16 = ggml_cast(c,
-            ggml_reshape_2d(c, ggml_cont(c, pooled), idim, nb), GGML_TYPE_F16);
+            ggml_reshape_2d(c, pooled_cont, idim, nb), GGML_TYPE_F16);
         ggml_tensor * hw = ggml_reshape_2d(c,
             ggml_scale_bias(c, ggml_scale(c, ggml_arange(c, 0.0f, (float) (nih * T), 1.0f), 0.0f), 0.0f, 1.0f),
             nih, T);
@@ -645,7 +769,8 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
                               const std::function<void(ggml_tensor *, const char *)> & dump_mark = {},
                               const std::vector<Qwen4ExpAttnRow> * rows = nullptr,
                               const Qwen4ExpDecodeWorkspace * qsa_ws = nullptr, bool kv_only = false,
-                              bool last_only = false, int draft_window = 0) {
+                              bool last_only = false, int draft_window = 0,
+                              bool elide_qsa_cont = false) {
     const int64_t D      = w.n_embd_head_k;   // 256
     const int64_t Hq     = w.n_head;          // 24
     const int64_t Hk     = w.n_head_kv;       // 2
@@ -703,7 +828,8 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
         // Graph-stable append: the destination and graph topology stay fixed;
         // only the device input row changes between decode steps.
         ggml_tensor * Krows = ggml_cont(c, ggml_permute(c, K, 0, 2, 1, 3));
-        ggml_tensor * Vrows = ggml_cont(c, ggml_permute(c, V, 0, 2, 1, 3));
+        ggml_tensor * Vperm = ggml_permute(c, V, 0, 2, 1, 3);
+        ggml_tensor * Vrows = elide_qsa_cont && ggml_is_contiguous(Vperm) ? Vperm : ggml_cont(c, Vperm);
         ggml_tensor * Kwrite = ggml_set_rows(c, k_cache, Krows, kv_row);
         ggml_tensor * Vwrite = ggml_set_rows(c, v_cache, Vrows, kv_row);
         ggml_build_forward_expand(gf, Kwrite);
@@ -793,7 +919,7 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
         GGML_ASSERT(kraw && indexer_k && ratio > 1);
         const int64_t n_after = (pos0 + T) / ratio;   // complete blocks visible to the last query
         ggml_tensor * pooled = qsa_ws
-            ? qsa_pooled_keys_stable(c, L, w, indexer_k, indexer_raw, *qsa_ws)
+            ? qsa_pooled_keys_stable(c, L, w, indexer_k, indexer_raw, *qsa_ws, elide_qsa_cont)
             : n_after > w.indexer_top_k / ratio
                 ? qsa_pooled_keys(c, gf, L, w, indexer_k, indexer_raw, kraw, pos0, ratio, n_pooled, n_after)
                 : nullptr;
@@ -821,7 +947,8 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
                                   kv_pad, kv_len, pos0, pooled, n_after, true);
         } else {
             attn = build_qsa_attn(c, cur, Q, K_full, V_full, L, w, ratio, positions,
-                                  kv_len, kv_len, pos0, pooled, qsa_ws ? qsa_ws->qsa_blocks : n_after, false, qsa_ws);
+                                  kv_len, kv_len, pos0, pooled, qsa_ws ? qsa_ws->qsa_blocks : n_after, false, qsa_ws,
+                                  elide_qsa_cont);
         }
         if (dump_mark) {   // the last query's selected cells
             ggml_tensor * ids = attn->src[5];
@@ -971,7 +1098,6 @@ static ggml_tensor * build_linear_attn_projected(ggml_context * c, ggml_cgraph *
         ggml_tensor * ssm_state, ggml_tensor * conv_state) {
     const int64_t D = w.ssm_d_state, Hk = w.ssm_n_group;
     const int64_t Hv = w.linear_value_heads, d_in = w.ssm_d_inner;
-    const int64_t kernel = w.ssm_d_conv;
     const int64_t conv_channels = 2 * Hk * D + d_in;
     const float eps = w.rms_eps;
 
@@ -981,19 +1107,7 @@ static ggml_tensor * build_linear_attn_projected(ggml_context * c, ggml_cgraph *
     ggml_tensor * gate = ggml_reshape_4d(c,
         ggml_mul(c, alpha, L.ssm_a), 1, Hv, 1, 1);
 
-    ggml_tensor * hist = ggml_reshape_3d(c, conv_state, kernel - 1, conv_channels, 1);
-    ggml_tensor * qkv_t = ggml_transpose(c, qkv);
-    ggml_tensor * conv_input = ggml_concat(c, hist, qkv_t, 0);
-    ggml_tensor * new_hist = ggml_cont(c, ggml_view_3d(c, conv_input,
-        kernel - 1, conv_channels, 1, conv_input->nb[1], conv_input->nb[2],
-        conv_input->nb[0]));
-    ggml_build_forward_expand(gf, ggml_cpy(c, new_hist,
-        ggml_reshape_3d(c, conv_state, kernel - 1, conv_channels, 1)));
-
-    ggml_tensor * conv_op = ggml_ssm_conv(c, conv_input, L.ssm_conv1d);
-    // Preserve the fusion allocator dependency used by the single-sequence path.
-    conv_op->src[3] = qkv_t;
-    ggml_tensor * conv = ggml_silu(c, conv_op);
+    ggml_tensor * conv = ggml_ssm_conv_step(c, qkv, L.ssm_conv1d, conv_state, nullptr);
     const size_t esz = ggml_element_size(conv);
     const size_t tstride = (size_t) conv_channels * esz;
     ggml_tensor * q_raw = ggml_view_3d(c, conv, D, Hk, 1, D * esz, tstride, 0);
@@ -1192,8 +1306,10 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
                                        int pos0,
                                        std::vector<float> & out_logits, std::vector<float> * out_hidden,
                                        bool verify, bool qsa_rebuild_reference, bool mtp_prefill, bool dump,
-                                       const Qwen4ExpInputs * inputs, Qwen4ExpGraphMemory * measure) {
+                                       const Qwen4ExpInputs * inputs, int32_t * out_argmax,
+                                       Qwen4ExpGraphMemory * measure) {
     Qwen4ExpForwardResult res;
+    if (out_argmax) *out_argmax = -1;
     if (n_tokens <= 0 || pos0 < 0 || (!tokens && !measure)) return res;
     const bool upstream = cache.reference;
     const Qwen4ExpCudaScope profile(w.gfx1151, upstream);
@@ -1207,6 +1323,13 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
     // The fused reduction can differ from upstream's ggml_rms_norm below one
     // ulp; keep the unfused form for upstream differential checks.
     const bool hc_fused = !upstream;
+    // Private probe: expose inject's earlier lifetime to gallocr in BOTH modes.
+    static const bool hc_inject_hint_enabled = [] {
+        const char * e = std::getenv("LUCE_QWEN_HC_DOWN_INJECT");
+        return e && std::strcmp(e, "1") == 0;
+    }();
+    const bool hc_inject_hint = hc_inject_hint_enabled && profile.optimized && f16 &&
+        n_tokens == 1 && !verify && !qsa_rebuild_reference && !mtp_prefill && !out_hidden && !measure;
     const Qwen4ExpQsaMode qsa = qsa_mode(w, cache, verify ? 1 : n_tokens, pos0, profile.optimized);
     const bool reuse_ws = !upstream && n_tokens == 1 && !dump;
     const int64_t logical_blocks = qsa == QSA_DENSE ? -1 : (int64_t(pos0) + n_tokens) / qsa_ratio(w);
@@ -1238,6 +1361,15 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
         }
     }
     const bool use_stable_graph = reuse_ws && (qsa == QSA_DENSE || stable_qsa);
+    static const bool shared_overlap_requested = [] {
+        const char * value = std::getenv("LUCE_QWEN_SHARED_OVERLAP");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    const bool build_shared_overlap = shared_overlap_requested && use_stable_graph &&
+        w.gfx1151 && n_tokens == 1 && !verify && !upstream && !dump && !mtp_prefill;
+    const bool elide_qsa_cont = qsa_cont_elision_requested() && stable_qsa && use_stable_graph &&
+        w.gfx1151 && n_tokens == 1 && !verify && !upstream && !dump && !mtp_prefill;
+    const bool gpu_argmax = out_argmax && use_stable_graph;
     // Context and allocator reused across calls: the T=1 decode workspace, or the verify forward's own.
     Qwen4ExpDecodeWorkspace * pool = measure ? nullptr : reuse_ws ? &cache.decode_workspace : verify ? &cache.verify_workspace : nullptr;
     std::vector<std::pair<ggml_tensor *, std::string>> dump_t;
@@ -1340,13 +1472,19 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
                                           sizeof(float) * ple_data.size());
         }
         upload_qsa(ws);
+        (void) activate_shared_overlap(ws);  // a rejected plan runs the unchanged serial graph
         if (ggml_backend_graph_compute(backend, ws.gf) != GGML_STATUS_SUCCESS) {
             std::fprintf(stderr, "[qwen4exp] stable graph compute failed\n");
             clear_qwen4exp_decode_workspace(ws);
             return false;
         }
-        out_logits.resize((size_t) w.n_vocab);
-        ggml_backend_tensor_get(ws.logits, out_logits.data(), 0, sizeof(float) * w.n_vocab);
+        if (gpu_argmax && ws.argmax) {
+            out_logits.clear();
+            ggml_backend_tensor_get(ws.argmax, out_argmax, 0, sizeof(*out_argmax));
+        } else {
+            out_logits.resize((size_t) w.n_vocab);
+            ggml_backend_tensor_get(ws.logits, out_logits.data(), 0, sizeof(float) * w.n_vocab);
+        }
         if (out_hidden && ws.hidden) {
             out_hidden->resize((size_t) ggml_nelements(ws.hidden));
             ggml_backend_tensor_get(ws.hidden, out_hidden->data(), 0, ggml_nbytes(ws.hidden));
@@ -1357,6 +1495,7 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
     if (use_stable_graph && decode_ws.gf && kv_len <= decode_ws.kv_bucket &&
         (decode_ws.qsa_blocks >= 0) == stable_qsa && decode_ws.next_pos == pos0 &&
         (decode_ws.hidden != nullptr) == (out_hidden != nullptr) &&
+        (decode_ws.argmax != nullptr) == gpu_argmax &&
         (!stable_qsa || (decode_ws.kv_bucket == stable_kv_bucket &&
                         decode_ws.qsa_budget == w.indexer_top_k / 4 && cache.indexer_blocks == pos0 / 4))) {
         if (!run_stable(decode_ws)) return res;
@@ -1402,6 +1541,10 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
             // Retire captures before recycling metadata/allocator addresses.
             ggml_backend_cuda_graph_invalidate_range(backend,
                 ggml_get_mem_buffer(pool->ctx), ggml_get_mem_size(pool->ctx));
+            if (pool->shared_overlap) {
+                (void) ggml_backend_cuda_qwen_shared_overlap_prepare(
+                    pool->shared_overlap, nullptr, nullptr, nullptr, 0);
+            }
             ggml_reset(pool->ctx);
         }
         ctx = pool->ctx;
@@ -1414,6 +1557,8 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
     }
     if (!ctx) return res;
     ggml_cgraph * gf = ggml_new_graph_custom(ctx, 200000, false);
+    std::vector<ggml_cuda_qwen_shared_overlap_layer> shared_overlap_layers;
+    if (build_shared_overlap) shared_overlap_layers.reserve((size_t) w.n_layer);
 
     const int64_t graph_kv_len = use_stable_graph ? stable_kv_bucket : kv_len;
     const int64_t mask_len = use_stable_graph ? stable_kv_bucket
@@ -1496,6 +1641,7 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
             cur = hc_mix(ctx, res_hc, L.hc_ffn_norm, L.hc_ffn_down, L.hc_ffn_up,
                          L.hc_ffn_inject, &inject, w.n_embd, w.n_hc, w.rms_eps);
         }
+        if (hc_inject_hint) ggml_build_forward_expand(gf, inject);
         std::snprintf(dlab, sizeof dlab, "L%02d.fmix", il);
         mark(cur, dlab);
         const bool next_ple = (il + 1 < w.n_layer) && w.layers[il + 1].is_ple && has_ple;
@@ -1503,7 +1649,13 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
         // from FMA contraction in the new kernel, covered by the long-prompt quality gate). Not at T=1: it cost ~1.7% decode.
         Qwen4ExpMoeParts moe_parts;
         const bool fold = f16 && hc_fused && !next_ple && ggml_backend_cuda_mmb_prefill(layer_T);
-        cur = build_moe(ctx, cur, L, w, il, upstream, mark, fold ? &moe_parts : nullptr);
+        ggml_cuda_qwen_shared_overlap_layer * overlap = nullptr;
+        if (build_shared_overlap && layer_T == 1 && !fold) {
+            shared_overlap_layers.emplace_back();
+            overlap = &shared_overlap_layers.back();
+        }
+        cur = build_moe(ctx, gf, cur, L, w, il, upstream, f16 && T == 1,
+                        mark, fold ? &moe_parts : nullptr, overlap);
         std::snprintf(dlab, sizeof dlab, "L%02d.moe", il);
         mark(cur, dlab);
 
@@ -1561,6 +1713,7 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
                          w.n_embd, w.n_hc, w.rms_eps);
             xn_next = nullptr;
         }
+        if (hc_inject_hint) ggml_build_forward_expand(gf, inject);
         std::snprintf(dlab, sizeof dlab, "L%02d.hcmix", il);
         dump_mark(cur, dlab);
         if (L.is_full_attention) {
@@ -1570,7 +1723,8 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
                                   profile.optimized ? cache.indexer_raw[fi] : nullptr,
                                   positions, mask, kv_row, graph_kv_len, pos0,
                                   il < (int) w.compress_ratios.size() ? w.compress_ratios[il] : 0,
-                                  cache.indexer_blocks, qsa, il, dump_mark, verify ? &rows : nullptr, stable_qsa ? &decode_ws : nullptr);
+                                  cache.indexer_blocks, qsa, il, dump_mark, verify ? &rows : nullptr,
+                                  stable_qsa ? &decode_ws : nullptr, false, false, 0, elide_qsa_cont);
         } else {
             const int li = lin_idx[il];
             cur = build_linear_attn(ctx, gf, cur, L, w, f16,
@@ -1610,6 +1764,14 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
     ggml_set_name(logits, "logits");
     dump_mark(logits, "logits");
     ggml_build_forward_expand(gf, logits);
+    ggml_tensor * argmax = nullptr;
+    if (gpu_argmax) {
+        argmax = ggml_argmax(ctx, logits);
+        const int32_t cpu_first_tie = 1;
+        std::memcpy(argmax->op_params, &cpu_first_tie, sizeof(cpu_first_tie));
+        ggml_set_output(argmax);
+        ggml_build_forward_expand(gf, argmax);
+    }
     // The final HC residual of every row feeds the MTP draft head. Appended after the logits so the logits path keeps
     // its node order; a row-selected prefill builds the other rows' FFN half on the side.
     ggml_tensor * hidden = nullptr;
@@ -1711,6 +1873,16 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
         }
     }
 
+    const bool shared_overlap_bound = build_shared_overlap &&
+        bind_shared_overlap_arena(decode_ws, backend, shared_overlap_layers);
+    if (build_shared_overlap && !shared_overlap_bound) {
+        static bool warned = false;
+        if (!warned) {
+            std::fprintf(stderr, "[qwen4exp] shared overlap disabled: private arena bind failed\n");
+            warned = true;
+        }
+    }
+
     ggml_gallocr_t galloc = nullptr;
     if (pool) {
         if (pool->alloc == nullptr) {
@@ -1742,7 +1914,20 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
     }
     if (pool) pool->planned = true;
 
+    const bool shared_overlap_prepared = shared_overlap_bound &&
+        ggml_backend_cuda_qwen_shared_overlap_prepare(
+            decode_ws.shared_overlap, gf, decode_ws.shared_buf,
+            decode_ws.shared_layers.data(), decode_ws.shared_layers.size());
+    if (!shared_overlap_prepared && decode_ws.shared_overlap) {
+        // Preparation is deliberately fail-closed. The externally bound
+        // tensors remain valid and the ordinary serial evaluator consumes them.
+        decode_ws.shared_layers.clear();
+        (void) ggml_backend_cuda_qwen_shared_overlap_prepare(
+            decode_ws.shared_overlap, nullptr, nullptr, nullptr, 0);
+    }
+
     if (use_stable_graph) {
+        ggml_backend_cuda_qwen_graph_seal(decode_ws.shared_overlap, gf);
         decode_ws.gf = gf;
         decode_ws.inp_emb = inp_emb;
         decode_ws.positions = positions;
@@ -1750,6 +1935,7 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
         decode_ws.ple_in = ple_in;
         decode_ws.kv_row = kv_row;
         decode_ws.logits = logits;
+        decode_ws.argmax = argmax;
         decode_ws.hidden = hidden;
         decode_ws.kv_bucket = stable_kv_bucket;
         decode_ws.qsa_blocks = stable_qsa ? stable_kv_bucket / 4 : -1;
@@ -1830,6 +2016,7 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
     ggml_status status;
     {   // verify: every matmul column equals its single-token product (see ggml_backend_cuda_set_mmvq_batch_invariant)
         ScopedCudaGraphOverrides invariant(false, 0, false, 0, /*mmvq_batch_invariant=*/verify);
+        if (shared_overlap_prepared) (void) activate_shared_overlap(decode_ws);
         status = ggml_backend_graph_compute(backend, gf);
     }
     if (status != GGML_STATUS_SUCCESS) {
@@ -1854,8 +2041,13 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
         cache.indexer_blocks = (int) ((pos0 + T) / qsa_ratio(w));
     }
 
-    out_logits.resize((size_t) ggml_nelements(logits));   // n_vocab, per row when verifying
-    ggml_backend_tensor_get(logits, out_logits.data(), 0, ggml_nbytes(logits));
+    if (gpu_argmax && argmax) {
+        out_logits.clear();
+        ggml_backend_tensor_get(argmax, out_argmax, 0, sizeof(*out_argmax));
+    } else {
+        out_logits.resize((size_t) ggml_nelements(logits));   // n_vocab, per row when verifying
+        ggml_backend_tensor_get(logits, out_logits.data(), 0, ggml_nbytes(logits));
+    }
     if (out_hidden && hidden) {
         out_hidden->resize((size_t) ggml_nelements(hidden));
         ggml_backend_tensor_get(hidden, out_hidden->data(), 0, ggml_nbytes(hidden));
@@ -2004,7 +2196,8 @@ bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4E
         }
         res = hc_combine(ctx, res, cur, inject, H, hc, output_T);
         cur = hc_mix(ctx, res, L.hc_ffn_norm, L.hc_ffn_down, L.hc_ffn_up, L.hc_ffn_inject, &inject, H, hc, w.rms_eps);
-        res = hc_combine(ctx, res, build_moe(ctx, cur, L, w, w.n_layer, cache.reference), inject, H, hc, output_T);
+        res = hc_combine(ctx, res, build_moe(ctx, gf, cur, L, w, w.n_layer,
+            cache.reference, false), inject, H, hc, output_T);
 
         ggml_tensor * last = ggml_view_3d(ctx, res, H, hc, 1, res->nb[1], res->nb[2], (size_t) (output_T - 1) * res->nb[2]);
         draft_hidden = out_hidden ? ggml_cont(ctx, last) : nullptr;
@@ -2118,9 +2311,10 @@ bool qwen4exp_mtp_draft(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4
 Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend, const Qwen4ExpWeights & w,
         Qwen4ExpCache & cache, const int32_t * tokens, int n_tokens, int pos0,
         std::vector<float> & logits, std::vector<float> * out_hidden,
-        bool verify, bool qsa_rebuild_reference, bool mtp_prefill, bool dump, const Qwen4ExpInputs * inputs) {
+        bool verify, bool qsa_rebuild_reference, bool mtp_prefill, bool dump,
+        const Qwen4ExpInputs * inputs, int32_t * out_argmax) {
     return forward_impl(backend, w, cache, tokens, n_tokens, pos0, logits, out_hidden,
-                        verify, qsa_rebuild_reference, mtp_prefill, dump, inputs, nullptr);
+                        verify, qsa_rebuild_reference, mtp_prefill, dump, inputs, out_argmax, nullptr);
 }
 
 Qwen4ExpGraphMemory qwen4exp_graph_memory(ggml_backend_t backend, const Qwen4ExpWeights & w,
@@ -2134,7 +2328,7 @@ Qwen4ExpGraphMemory qwen4exp_graph_memory(ggml_backend_t backend, const Qwen4Exp
     cache.indexer_blocks = pos0 / ratio <= w.indexer_top_k / ratio ? 0 : (int) (pos0 / ratio);
     const bool ok = forward_impl(backend, w, cache, nullptr, n_tokens, pos0, unused,
                                 mtp ? &unused : nullptr, verify, false, mtp && n_tokens > 1 && !verify,
-                                false, nullptr, &memory).ok;
+                                false, nullptr, nullptr, &memory).ok;
     cache.indexer_blocks = blocks;
     cache.kv_bucket_base = bucket_base;
     if (!ok) memory.graph = SIZE_MAX;
@@ -2395,7 +2589,8 @@ Qwen4ExpForwardResult qwen4exp_forward_batched(
             cur = hc_mix(ctx, res_hc, L.hc_ffn_norm, L.hc_ffn_down,
                 L.hc_ffn_up, L.hc_ffn_inject, &inject, w.n_embd, w.n_hc, w.rms_eps);
         }
-        cur = build_moe(ctx, cur, L, w, il, /*reference=*/false);
+        cur = build_moe(ctx, gf, cur, L, w, il, /*reference=*/false,
+                        /*bf16_router=*/true);
         const bool next_ple = (il + 1 < w.n_layer) && w.layers[il + 1].is_ple && has_ple;
         if (next_ple) {
             // Match the single-sequence graph's PLE boundary: do not fold the

@@ -132,6 +132,14 @@ struct TensorAllocation {
     size_t shard = 0;
 };
 
+bool exact_bf16_roundtrip(const float * values, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        const float roundtrip = ggml_bf16_to_fp32(ggml_fp32_to_bf16(values[i]));
+        if (std::memcmp(values + i, &roundtrip, sizeof(float)) != 0) return false;
+    }
+    return true;
+}
+
 // One opened GGUF shard of a (possibly split) model.
 struct ShardSource {
     std::string    path;
@@ -410,6 +418,11 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
             ggml_backend_buffer_free(out.buf);
             out.buf = nullptr;
         }
+        if (out.router_buf) ggml_backend_buffer_free(out.router_buf);
+        if (out.router_ctx) ggml_free(out.router_ctx);
+        out.router_buf = nullptr;
+        out.router_ctx = nullptr;
+        for (Qwen4ExpLayer & layer : out.layers) layer.ffn_gate_inp_bf16 = nullptr;
         out.embedder.tok_embd_owned.clear();
         out.embedder.tok_embd_bytes = nullptr;
         if (out.mtp_vocab_buf) ggml_backend_buffer_free(out.mtp_vocab_buf);
@@ -789,6 +802,70 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
             0, allocation.file_size);
     }
 
+    // The shipped F32 routers contain BF16 values exactly. Keep the originals
+    // for prefill/reference/dumps and add a smaller decode-only shadow only for
+    // layers whose every value survives a bit-exact F32 -> BF16 -> F32 roundtrip.
+    if (out.gfx1151 && !reference) {
+        struct RouterSource {
+            Qwen4ExpLayer * layer;
+            const float * values;
+            size_t count;
+            size_t index;
+        };
+        std::vector<RouterSource> routers;
+        routers.reserve(out.layers.size());
+        for (size_t il = 0; il < out.layers.size(); ++il) {
+            Qwen4ExpLayer & layer = out.layers[il];
+            ggml_tensor * router = layer.ffn_gate_inp;
+            if (!router || router->type != GGML_TYPE_F32) continue;
+            const TensorAllocation * source = nullptr;
+            for (const TensorAllocation & allocation : allocations) {
+                if (allocation.tensor == router) { source = &allocation; break; }
+            }
+            const size_t count = (size_t) ggml_nelements(router);
+            if (!source || source->file_size != count * sizeof(float)) continue;
+            const float * values = reinterpret_cast<const float *>(
+                static_cast<const uint8_t *>(mmaps[source->shard].data()) + source->file_offset);
+            if (exact_bf16_roundtrip(values, count)) routers.push_back({&layer, values, count, il});
+        }
+        if (!routers.empty()) {
+            ggml_init_params rp{};
+            rp.mem_size = (routers.size() + 1) * ggml_tensor_overhead() + 1024;
+            rp.no_alloc = true;
+            out.router_ctx = ggml_init(rp);
+            if (out.router_ctx) {
+                size_t bytes = 0;
+                for (size_t i = 0; i < routers.size(); ++i) {
+                    ggml_tensor * source = routers[i].layer->ffn_gate_inp;
+                    routers[i].layer->ffn_gate_inp_bf16 = ggml_new_tensor_2d(
+                        out.router_ctx, GGML_TYPE_BF16, source->ne[0], source->ne[1]);
+                    char name[64];
+                    std::snprintf(name, sizeof(name), "blk.%zu.ffn_gate_inp.bf16", routers[i].index);
+                    ggml_set_name(routers[i].layer->ffn_gate_inp_bf16, name);
+                    bytes += ggml_nbytes(routers[i].layer->ffn_gate_inp_bf16);
+                }
+                out.router_buf = ggml_backend_alloc_ctx_tensors(out.router_ctx, backend);
+                if (out.router_buf) {
+                    ggml_backend_buffer_set_usage(out.router_buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+                    std::vector<ggml_bf16_t> converted;
+                    for (const RouterSource & router : routers) {
+                        converted.resize(router.count);
+                        ggml_fp32_to_bf16_row(router.values, converted.data(), (int64_t) router.count);
+                        ggml_backend_tensor_set(router.layer->ffn_gate_inp_bf16,
+                            converted.data(), 0, router.count * sizeof(ggml_bf16_t));
+                    }
+                    std::fprintf(stderr,
+                        "[qwen4exp] exact BF16 router shadows: %zu/%zu layers, %.2f MiB\n",
+                        routers.size(), out.layers.size(), bytes / (1024.0 * 1024.0));
+                } else {
+                    for (Qwen4ExpLayer & layer : out.layers) layer.ffn_gate_inp_bf16 = nullptr;
+                    ggml_free(out.router_ctx);
+                    out.router_ctx = nullptr;
+                }
+            }
+        }
+    }
+
     size_t token_shard = 0;
     int64_t token_tid = -1;
     for (size_t s = 0; s < shards.size(); ++s) {
@@ -938,6 +1015,10 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
 
 void free_qwen4exp_weights(Qwen4ExpWeights & w) {
     w.ple_reader.close();
+    if (w.router_buf) ggml_backend_buffer_free(w.router_buf);
+    if (w.router_ctx) ggml_free(w.router_ctx);
+    w.router_buf = nullptr;
+    w.router_ctx = nullptr;
     if (w.buf) {
         ggml_backend_buffer_free(w.buf);
         w.buf = nullptr;

@@ -78,7 +78,8 @@ struct Qwen4ExpLayer {
     ggml_tensor * ple_norm_query = nullptr;
 
     // MoE FFN (all 48 layers).
-    ggml_tensor * ffn_gate_inp        = nullptr;  // router
+    ggml_tensor * ffn_gate_inp        = nullptr;  // F32 router from the GGUF
+    ggml_tensor * ffn_gate_inp_bf16   = nullptr;  // exact decode-only shadow, when lossless
     ggml_tensor * ffn_gate_exps       = nullptr;
     ggml_tensor * ffn_up_exps         = nullptr;
     ggml_tensor * ffn_down_exps       = nullptr;
@@ -134,6 +135,8 @@ struct Qwen4ExpWeights {
     std::vector<ggml_context *> extra_meta_ctxs;
     ggml_backend_t        backend = nullptr;
     ggml_backend_buffer_t buf     = nullptr;
+    ggml_context *        router_ctx = nullptr;
+    ggml_backend_buffer_t router_buf = nullptr;
 
     CpuEmbedder           embedder;
 

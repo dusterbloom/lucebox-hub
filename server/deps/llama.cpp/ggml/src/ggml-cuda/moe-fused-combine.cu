@@ -12,6 +12,7 @@
 // Uses vectorized float4 128-bit memory transactions and sequential non-FMA FP32 accumulation
 // to preserve the legacy route-order reduction.
 
+template<bool gate_shared = false>
 static __global__ void moe_fused_combine_shared_kernel_f32(
         const float4 * __restrict__ down_e,
         const float  * __restrict__ weights,
@@ -24,7 +25,7 @@ static __global__ void moe_fused_combine_shared_kernel_f32(
         const size_t down_nb2,
         const size_t weights_nb1,
         const size_t shared_nb1,
-        const size_t out_nb1) {
+        const size_t out_nb1, const float * shared_logit) {
 
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int total = n_embd_vec4 * n_tokens;
@@ -63,7 +64,14 @@ static __global__ void moe_fused_combine_shared_kernel_f32(
     }
 
     if (shared_out != nullptr) {
-        const float4 sh = shared_out[h4 + t * shared_nb1];
+        float4 sh = shared_out[h4 + t * shared_nb1];
+        if constexpr (gate_shared) {
+            const float g = 1.0f / (1.0f + expf(-shared_logit[t]));
+            sh = make_float4(__fmul_rn(sh.x, g), __fmul_rn(sh.y, g), __fmul_rn(sh.z, g), __fmul_rn(sh.w, g));
+#if defined(__HIPCC__) || defined(GGML_USE_HIP)
+            asm volatile("" : "+v"(sh.x), "+v"(sh.y), "+v"(sh.z), "+v"(sh.w));
+#endif
+        }
         sum0 = __fadd_rn(sh.x, sum0);
         sum1 = __fadd_rn(sh.y, sum1);
         sum2 = __fadd_rn(sh.z, sum2);
@@ -73,10 +81,11 @@ static __global__ void moe_fused_combine_shared_kernel_f32(
     output[h4 + t * out_nb1] = make_float4(sum0, sum1, sum2, sum3);
 }
 
-void ggml_cuda_op_ds4_moe_combine(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+template<bool gate_shared>
+static void moe_combine_impl(ggml_backend_cuda_context & ctx, ggml_tensor * dst, const ggml_tensor * raw_shared = nullptr, const ggml_tensor * shared_logit = nullptr) {
     const ggml_tensor * down_e     = dst->src[0];
     const ggml_tensor * weights    = dst->src[1];
-    const ggml_tensor * shared_out = dst->src[2];
+    const ggml_tensor * shared_out = gate_shared ? raw_shared : dst->src[2];
 
     GGML_ASSERT(down_e->type == GGML_TYPE_F32);
     GGML_ASSERT(weights->type == GGML_TYPE_F32);
@@ -129,7 +138,7 @@ void ggml_cuda_op_ds4_moe_combine(ggml_backend_cuda_context & ctx, ggml_tensor *
 
     cudaStream_t stream = ctx.stream();
 
-    moe_fused_combine_shared_kernel_f32<<<grid_size, block_size, 0, stream>>>(
+    moe_fused_combine_shared_kernel_f32<gate_shared><<<grid_size, block_size, 0, stream>>>(
         (const float4 *) down_e->data,
         (const float *)  weights->data,
         shared_out ? (const float4 *) shared_out->data : nullptr,
@@ -141,7 +150,15 @@ void ggml_cuda_op_ds4_moe_combine(ggml_backend_cuda_context & ctx, ggml_tensor *
         down_nb2,
         weights_nb1,
         shared_nb1,
-        out_nb1
+        out_nb1, shared_logit ? (const float *) shared_logit->data : nullptr
     );
     CUDA_CHECK(cudaGetLastError());
+}
+
+void ggml_cuda_op_ds4_moe_combine(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    moe_combine_impl<false>(ctx, dst);
+}
+void ggml_cuda_op_ds4_moe_combine_shared_gate(ggml_backend_cuda_context & ctx, ggml_tensor * dst, const ggml_tensor * shared_down, const ggml_tensor * shared_logit) {
+    GGML_ASSERT(ggml_nelements(shared_down) == 2560 && ggml_nelements(shared_logit) == 1 && dst->src[0]->ne[1] == 10 && ggml_nrows(dst) == 1);
+    moe_combine_impl<true>(ctx, dst, shared_down, shared_logit);
 }

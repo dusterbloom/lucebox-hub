@@ -174,6 +174,25 @@ void ggml_cuda_op_gelu_quick(ggml_backend_cuda_context & ctx, ggml_tensor * dst)
     ggml_cuda_op_unary<op_gelu_quick>(ctx, dst);
 }
 
+// Keep the original SCALE expression (including +0 bias) and FP32 boundary.
+static __global__ void hc_scale_silu_f32(const float * x, float * dst, int n, float scale, float bias) {
+    const int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < n) {
+        const float scaled = scale * x[i] + bias;
+        dst[i] = ggml_cuda_op_silu_single(scaled);
+    }
+}
+
+void ggml_cuda_op_hc_scale_silu(ggml_backend_cuda_context & ctx, ggml_tensor * scale, ggml_tensor * dst) {
+    float factor, bias;
+    memcpy(&factor, (float *) scale->op_params + 0, sizeof(float));
+    memcpy(&bias,   (float *) scale->op_params + 1, sizeof(float));
+    const int n = ggml_nelements(dst);
+    hc_scale_silu_f32<<<(n + CUDA_SILU_BLOCK_SIZE - 1) / CUDA_SILU_BLOCK_SIZE,
+                       CUDA_SILU_BLOCK_SIZE, 0, ctx.stream()>>>(
+        (const float *) scale->src[0]->data, (float *) dst->data, n, factor, bias);
+}
+
 void ggml_cuda_op_silu(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_op_unary<op_silu>(ctx, dst);
 }

@@ -164,9 +164,10 @@ static inline __device__ void ggml_cuda_swap(T & a, T & b) {
 #    define GGML_ARGSORT_SHFL_XOR(v, mask) __shfl_xor_sync(0xffffffffu, (v), (mask))
 #endif
 
-template<ggml_sort_order order>
+template<ggml_sort_order order, bool topk_norm = false>
 static __global__ void k_argsort_f32_i32(const float * x, int * dst, const int capacity, int ncols_pad,
-                                        const int * valid = nullptr, int top_k = 0) {
+                                        const int * valid = nullptr, int top_k = 0, float * weights = nullptr,
+                                        float clamp_min = 0.0f, float clamp_max = 0.0f) {
     const int ncols = valid ? *valid : capacity;
     if (valid && ncols > 1024) return; // uniform device branch, capture-safe
 
@@ -270,11 +271,51 @@ static __global__ void k_argsort_f32_i32(const float * x, int * dst, const int c
         }
     }
 
+    if constexpr (topk_norm) {
+        const int   selected_id = col < top_k ? dst_row[col] : 0;
+        const float selected    = col < top_k ? val_row[col] : 0.0f;
+        float       sum_temp[8] = { 0.0f };
+        float       temp[8];
+        for (int idx = col; idx < top_k;) {
+#pragma unroll
+            for (int j = 0; j < 8; ++j, idx += blockDim.x) {
+                temp[j] = idx < top_k ? val_row[idx] : 0.0f;
+            }
+#pragma unroll
+            for (int j = 0; j < 8; ++j) {
+                sum_temp[j] += temp[j];
+            }
+        }
+        float sum = 0.0f;
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            sum += sum_temp[j];
+        }
+        __syncthreads(); // val_row becomes block_reduce scratch only after every lane has read it
+        sum = block_reduce<block_reduce_method::SUM>(sum, val_row);
+        const float denom = fminf(fmaxf(sum, clamp_min), clamp_max);
+        if (col < top_k) {
+            dst[col]     = selected_id;
+            weights[col] = selected / denom;
+        }
+        return;
+    }
+
     // copy the result to dst without the padding
     const int out_cols = valid ? top_k : ncols;
     if (col < out_cols) {
         dst[row * out_cols + col] = dst_row[col];
     }
+}
+
+void ggml_cuda_op_argsort_topk_norm(ggml_backend_cuda_context & ctx, ggml_tensor * argsort,
+                                    ggml_tensor * weights, float clamp_min, float clamp_max) {
+    const ggml_tensor * probs = argsort->src[0];
+    GGML_ASSERT(probs->type == GGML_TYPE_F32 && argsort->type == GGML_TYPE_I32 && weights->type == GGML_TYPE_F32);
+    GGML_ASSERT(probs->ne[0] == 512 && ggml_nrows(probs) == 1 && ggml_nelements(weights) == 10);
+    k_argsort_f32_i32<GGML_SORT_ORDER_DESC, true><<<1, 512, 512 * (sizeof(int) + sizeof(float)), ctx.stream()>>>(
+        (const float *) probs->data, (int *) argsort->data, 512, 512, nullptr, 10,
+        (float *) weights->data, clamp_min, clamp_max);
 }
 
 static int next_power_of_2(int x) {

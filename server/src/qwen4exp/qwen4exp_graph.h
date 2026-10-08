@@ -99,7 +99,8 @@ Qwen4ExpForwardResult qwen4exp_forward(ggml_backend_t backend,
                                        bool qsa_rebuild_reference = false, // smoke oracle only
                                        bool mtp_prefill = false,
                                        bool dump = false, // test-only activation summaries
-                                       const Qwen4ExpInputs * inputs = nullptr);
+                                       const Qwen4ExpInputs * inputs = nullptr,
+                                       int32_t * out_argmax = nullptr); // stable T=1 only; skips full logit readback
 
 // The cache was created with `mtp` and the graph is the default one (not a reference test).
 bool qwen4exp_verify_supported(const Qwen4ExpCache & cache);
