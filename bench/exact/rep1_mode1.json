@@ -1,0 +1,791 @@
+{
+ "run_index": 3,
+ "skip_steps": 16,
+ "n_tokens_analyzed": 240,
+ "wall_us_per_token": 40609.053074999996,
+ "busy_us_per_token": 33046.653608333334,
+ "idle_us_per_token": 7562.399466666667,
+ "launches_per_token": 1871.0,
+ "weight_stream_us_per_token": 28386.55503333307,
+ "other_us_per_token": 9771.560891666428,
+ "gap_hist": {
+  "<2us": {
+   "count": 31366,
+   "count_per_token": 130.69166666666666,
+   "total_us": 40000.669999999685,
+   "us_per_token": 166.66945833333202
+  },
+  "2-5us": {
+   "count": 69330,
+   "count_per_token": 288.875,
+   "total_us": 218919.6839999982,
+   "us_per_token": 912.1653499999925
+  },
+  "5-20us": {
+   "count": 157264,
+   "count_per_token": 655.2666666666667,
+   "total_us": 1180059.5529999903,
+   "us_per_token": 4916.914804166626
+  },
+  ">20us": {
+   "count": 1689,
+   "count_per_token": 7.0375,
+   "total_us": 375995.9649999993,
+   "us_per_token": 1566.6498541666638
+  }
+ },
+ "biggest_gaps_top20": [
+  [
+   20184.942,
+   191,
+   "before 90668117178427"
+  ],
+  [
+   10181.053,
+   190,
+   "before 90668052703067"
+  ],
+  [
+   7029.094,
+   173,
+   "before 90667362720921"
+  ],
+  [
+   5836.43,
+   174,
+   "before 90667398609293"
+  ],
+  [
+   5318.303,
+   138,
+   "before 90665948491173"
+  ],
+  [
+   4708.216,
+   190,
+   "before 90668042519117"
+  ],
+  [
+   4148.546,
+   33,
+   "before 90661734732397"
+  ],
+  [
+   3559.927,
+   68,
+   "before 90663139815519"
+  ],
+  [
+   3383.404,
+   190,
+   "before 90668056382267"
+  ],
+  [
+   2863.769,
+   103,
+   "before 90664542456915"
+  ],
+  [
+   2804.907,
+   208,
+   "before 90668810145304"
+  ],
+  [
+   2605.201,
+   243,
+   "before 90670262423197"
+  ],
+  [
+   2500.525,
+   215,
+   "before 90669090446239"
+  ],
+  [
+   2226.539,
+   214,
+   "before 90669047544091"
+  ],
+  [
+   1989.062,
+   232,
+   "before 90669792935778"
+  ],
+  [
+   1941.632,
+   226,
+   "before 90669543103791"
+  ],
+  [
+   1925.762,
+   246,
+   "before 90670377471127"
+  ],
+  [
+   1907.689,
+   237,
+   "before 90670002464358"
+  ],
+  [
+   1822.79,
+   234,
+   "before 90669877385808"
+  ],
+  [
+   1815.205,
+   247,
+   "before 90670419703547"
+  ]
+ ],
+ "per_token_wall_us": [
+  40621.17,
+  39957.11,
+  39870.67,
+  39825.61,
+  39868.11,
+  40201.15,
+  39930.14,
+  39887.41,
+  39892.08,
+  39881.51,
+  39789.67,
+  40308.43,
+  39910.18,
+  39805.86,
+  39862.69,
+  39802.76,
+  40153.97,
+  46443.8,
+  40307.26,
+  40012.79,
+  39775.8,
+  40306.59,
+  39886.22,
+  39936.55,
+  39902.85,
+  39882.64,
+  40215.69,
+  40143.21,
+  39852.45,
+  40069.75,
+  40001.76,
+  40354.47,
+  39941.32,
+  39861.57,
+  39903.54,
+  39824.36,
+  39942.49,
+  40522.68,
+  39866.06,
+  39855.2,
+  39817.75,
+  39825.83,
+  40183.14,
+  39918.49,
+  39871.24,
+  39816.03,
+  39854.86,
+  40528.79,
+  39981.97,
+  39910.98,
+  39859.99,
+  39824.54,
+  43756.74,
+  40334.6,
+  39886.61,
+  39886.78,
+  39851.08,
+  39822.93,
+  40154.25,
+  39900.47,
+  40148.83,
+  40060.18,
+  39885.95,
+  40335.93,
+  40044.48,
+  40085.51,
+  39837.9,
+  39831.44,
+  40328.78,
+  39893.87,
+  39886.69,
+  39863.52,
+  39897.82,
+  40544.35,
+  39920.47,
+  39860.62,
+  39794.69,
+  39831.27,
+  40146.4,
+  39917.39,
+  39859.98,
+  39838.89,
+  40007.7,
+  39961.7,
+  40519.7,
+  39934.64,
+  39883.23,
+  44969.13,
+  40168.32,
+  40425.72,
+  40005.46,
+  39841.4,
+  39857.18,
+  39875.51,
+  40192.37,
+  39933.39,
+  39817.82,
+  39724.38,
+  39871.32,
+  40296.3,
+  40082.51,
+  39840.49,
+  39892.07,
+  39896.27,
+  40240.52,
+  39891.14,
+  39815.67,
+  39881.09,
+  39876.13,
+  39842.01,
+  40272.4,
+  39830.85,
+  39992.56,
+  39857.43,
+  39876.87,
+  40242.0,
+  39982.39,
+  39857.55,
+  39736.95,
+  39853.74,
+  40547.59,
+  39882.85,
+  46738.55,
+  40147.09,
+  39939.94,
+  40587.79,
+  39871.75,
+  39846.45,
+  39953.46,
+  39882.07,
+  40434.4,
+  39891.43,
+  39912.99,
+  39844.33,
+  39912.99,
+  40044.46,
+  40496.19,
+  40000.39,
+  39865.38,
+  39831.78,
+  39887.44,
+  40176.28,
+  39864.86,
+  39819.78,
+  39796.87,
+  39829.0,
+  40064.45,
+  39869.13,
+  39829.76,
+  39880.46,
+  39844.45,
+  40309.62,
+  39894.87,
+  39841.56,
+  39846.51,
+  39744.99,
+  39989.35,
+  45856.19,
+  46395.31,
+  40488.82,
+  39934.79,
+  39943.61,
+  40362.84,
+  39927.98,
+  39871.69,
+  39835.15,
+  39942.83,
+  40495.0,
+  39942.62,
+  39861.98,
+  40029.7,
+  40066.04,
+  40424.8,
+  39935.11,
+  59014.21,
+  60785.86,
+  40236.09,
+  39904.36,
+  39893.66,
+  39837.11,
+  40432.89,
+  39862.31,
+  39866.01,
+  39872.17,
+  39845.36,
+  40116.78,
+  39949.5,
+  39801.38,
+  39760.33,
+  39824.61,
+  40421.3,
+  39870.95,
+  41877.01,
+  40207.08,
+  41135.69,
+  41964.78,
+  42260.43,
+  40487.81,
+  42636.47,
+  42862.96,
+  41101.14,
+  41401.65,
+  40616.25,
+  40148.02,
+  41368.08,
+  40889.35,
+  41284.6,
+  41616.4,
+  40960.49,
+  40962.27,
+  42423.57,
+  42165.34,
+  41382.52,
+  41166.51,
+  42111.16,
+  40549.91,
+  42696.91,
+  41919.63,
+  42124.78,
+  41479.74,
+  41386.11,
+  42670.58,
+  40564.7,
+  39896.67,
+  41573.36,
+  41876.37,
+  42002.27,
+  42779.47,
+  41691.37,
+  41901.59,
+  42372.18,
+  42345.93,
+  42057.67,
+  40652.84,
+  40707.81,
+  41154.77,
+  41051.04,
+  42536.1,
+  41227.25,
+  41967.97
+ ],
+ "kernel_table": [
+  {
+   "name": "void mul_mat_vec_q<(ggml_type)8, 1, false, false, 0, false, false, false, false, false, 1>(void const*, void const*, int const*, ggml_cuda_mm_fusion_args_device, float*, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, unsigned int, bool)",
+   "launches_total": 50400,
+   "launches_per_token": 210.0,
+   "us_per_token": 16712.93965000003,
+   "mean_us_per_launch": 79.58542690476204,
+   "category": "weight_stream"
+  },
+  {
+   "name": "void mul_mat_vec_q<(ggml_type)12, 1, true, false, 0, false, false, false, false, false, 8>(void const*, void const*, int const*, ggml_cuda_mm_fusion_args_device, float*, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, unsigned int, bool)",
+   "launches_total": 11280,
+   "launches_per_token": 47.0,
+   "us_per_token": 5594.890783333337,
+   "mean_us_per_launch": 119.04022943262419,
+   "category": "weight_stream"
+  },
+  {
+   "name": "void mul_mat_vec_q<(ggml_type)7, 1, false, false, 0, false, false, false, false, false, 8>(void const*, void const*, int const*, ggml_cuda_mm_fusion_args_device, float*, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, unsigned int, bool)",
+   "launches_total": 10320,
+   "launches_per_token": 43.0,
+   "us_per_token": 2649.3499208333265,
+   "mean_us_per_launch": 61.61278885658899,
+   "category": "weight_stream"
+  },
+  {
+   "name": "hc_down_inject_mixed(void const*, block_q8_1 const*, float*, float const*, float const*, float*)",
+   "launches_total": 22800,
+   "launches_per_token": 95.0,
+   "us_per_token": 1995.9144166666606,
+   "mean_us_per_launch": 21.00962543859643,
+   "category": "other"
+  },
+  {
+   "name": "void hc_upmix_row8_exact<false>(void const*, block_q8_1 const*, float const*, float*, float*, float, float)",
+   "launches_total": 23040,
+   "launches_per_token": 96.0,
+   "us_per_token": 1991.051979166677,
+   "mean_us_per_launch": 20.740124782986218,
+   "category": "other"
+  },
+  {
+   "name": "void gated_delta_net_cuda_grouped_cols<128, 4, 16, 32, false, false, float>(float const*, float const*, float const*, float const*, float const*, float const*, int const*, float*, float*, int const*, float*, float*, long, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float, float const*, float const*)",
+   "launches_total": 8640,
+   "launches_per_token": 36.0,
+   "us_per_token": 1254.3523208333356,
+   "mean_us_per_launch": 34.84312002314821,
+   "category": "other"
+  },
+  {
+   "name": "void mul_mat_vec_q<(ggml_type)8, 1, true, false, 0, false, false, false, false, false, 1>(void const*, void const*, int const*, ggml_cuda_mm_fusion_args_device, float*, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, unsigned int, bool)",
+   "launches_total": 11520,
+   "launches_per_token": 48.0,
+   "us_per_token": 1199.985295833339,
+   "mean_us_per_launch": 24.999693663194563,
+   "category": "weight_stream"
+  },
+  {
+   "name": "void mul_mat_vec_f<__hip_bfloat16, float, 1, 256, false, false>(__hip_bfloat16 const*, float const*, int const*, ggml_cuda_mm_fusion_args_device, float*, int, HIP_vector_type<unsigned int, 3u>, int, int, int, HIP_vector_type<unsigned int, 3u>, int, int, int, HIP_vector_type<unsigned int, 3u>, int, int, int, int)",
+   "launches_total": 17280,
+   "launches_per_token": 72.0,
+   "us_per_token": 1077.1731666666667,
+   "mean_us_per_launch": 14.960738425925927,
+   "category": "weight_stream"
+  },
+  {
+   "name": "hc_combine_norm_f32_b256(float const*, float const*, float const*, float const*, float*, float*, unsigned short*, bool, unsigned short const*, unsigned short*, unsigned short const*, int, float, float, float, float, float, signed char*, block_q8_1*)",
+   "launches_total": 22800,
+   "launches_per_token": 95.0,
+   "us_per_token": 952.8200999999983,
+   "mean_us_per_launch": 10.029685263157877,
+   "category": "other"
+  },
+  {
+   "name": "void mul_mat_vec_f<float, float, 1, 256, false, false>(float const*, float const*, int const*, ggml_cuda_mm_fusion_args_device, float*, int, HIP_vector_type<unsigned int, 3u>, int, int, int, HIP_vector_type<unsigned int, 3u>, int, int, int, HIP_vector_type<unsigned int, 3u>, int, int, int, int)",
+   "launches_total": 11760,
+   "launches_per_token": 49.0,
+   "us_per_token": 590.8598749999998,
+   "mean_us_per_launch": 12.058364795918362,
+   "category": "weight_stream"
+  },
+  {
+   "name": "quantize_q8_1(float const*, void*, long, long, long, long, long, unsigned int, HIP_vector_type<unsigned int, 3u>)",
+   "launches_total": 61440,
+   "launches_per_token": 256.0,
+   "us_per_token": 534.0556958333322,
+   "mean_us_per_launch": 2.0861550618489537,
+   "category": "other"
+  },
+  {
+   "name": "void mul_mat_vec_q<(ggml_type)8, 1, false, false, 0, false, false, false, false, false, 8>(void const*, void const*, int const*, ggml_cuda_mm_fusion_args_device, float*, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, unsigned int, bool)",
+   "launches_total": 1200,
+   "launches_per_token": 5.0,
+   "us_per_token": 422.1102958333333,
+   "mean_us_per_launch": 84.42205916666666,
+   "category": "weight_stream"
+  },
+  {
+   "name": "qsa_decode_wmma_partial(char const*, char const*, char const*, char const*, char const*, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, int, int, int, int, float, float*)",
+   "launches_total": 2880,
+   "launches_per_token": 12.0,
+   "us_per_token": 348.9184125000002,
+   "mean_us_per_launch": 29.07653437500002,
+   "category": "other"
+  },
+  {
+   "name": "void k_argsort_f32_i32<(ggml_sort_order)1, true>(float const*, int*, int, int, int const*, int, float*, float, float)",
+   "launches_total": 11520,
+   "launches_per_token": 48.0,
+   "us_per_token": 302.625204166666,
+   "mean_us_per_launch": 6.304691753472208,
+   "category": "other"
+  },
+  {
+   "name": "gdn_ab_exact_f32(float const*, float const*, float const*, float const*, float const*, float*, float*, int, int)",
+   "launches_total": 8640,
+   "launches_per_token": 36.0,
+   "us_per_token": 247.11665833333234,
+   "mean_us_per_launch": 6.864351620370343,
+   "category": "other"
+  },
+  {
+   "name": "void moe_fused_combine_shared_kernel_f32<true>(HIP_vector_type<float, 4u> const*, float const*, HIP_vector_type<float, 4u> const*, HIP_vector_type<float, 4u>*, int, int, int, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, float const*)",
+   "launches_total": 11520,
+   "launches_per_token": 48.0,
+   "us_per_token": 218.2278083333318,
+   "mean_us_per_launch": 4.546412673611079,
+   "category": "other"
+  },
+  {
+   "name": "void quantize_hc_lo_q8_1<true>(float const*, float*, block_q8_1*, float, float)",
+   "launches_total": 23280,
+   "launches_per_token": 97.0,
+   "us_per_token": 165.58736249999933,
+   "mean_us_per_launch": 1.7070862113401992,
+   "category": "other"
+  },
+  {
+   "name": "void rope_multi<true, false, false, float>(float const*, float*, int, int, int, int, int, int, int, int, int, int, int const*, float, float, float, rope_corr_dims, float, float const*, mrope_sections, bool)",
+   "launches_total": 11520,
+   "launches_per_token": 48.0,
+   "us_per_token": 151.32501249999916,
+   "mean_us_per_launch": 3.152604427083316,
+   "category": "other"
+  },
+  {
+   "name": "void mul_mat_vec_q<(ggml_type)13, 1, true, false, 0, false, false, false, false, false, 8>(void const*, void const*, int const*, ggml_cuda_mm_fusion_args_device, float*, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, HIP_vector_type<unsigned int, 3u>, unsigned int, unsigned int, unsigned int, unsigned int, bool)",
+   "launches_total": 240,
+   "launches_per_token": 1.0,
+   "us_per_token": 139.24604583333337,
+   "mean_us_per_launch": 139.24604583333337,
+   "category": "weight_stream"
+  },
+  {
+   "name": "ds4_indexer_score_decode_wmma_kernel(float*, float const*, float const*, __half const*, float const*, int, int, int, int)",
+   "launches_total": 2880,
+   "launches_per_token": 12.0,
+   "us_per_token": 130.0488541666667,
+   "mean_us_per_launch": 10.837404513888892,
+   "category": "other"
+  },
+  {
+   "name": "void argmax_f32<true>(float const*, int*, long)",
+   "launches_total": 240,
+   "launches_per_token": 1.0,
+   "us_per_token": 129.693725,
+   "mean_us_per_launch": 129.693725,
+   "category": "other"
+  },
+  {
+   "name": "void ssm_conv_step_f32<4>(float const*, int, int, float const*, int, float*, int, int, float*, int, int, float*, int, int, int, int)",
+   "launches_total": 8640,
+   "launches_per_token": 36.0,
+   "us_per_token": 129.2386333333332,
+   "mean_us_per_launch": 3.5899620370370338,
+   "category": "other"
+  },
+  {
+   "name": "qsa_decode_ids(char const*, unsigned long, int const*, int*, int, int, int)",
+   "launches_total": 2880,
+   "launches_per_token": 12.0,
+   "us_per_token": 126.92920416666658,
+   "mean_us_per_launch": 10.577433680555549,
+   "category": "other"
+  },
+  {
+   "name": "qsa_decode_merge(float const*, float*, int)",
+   "launches_total": 2880,
+   "launches_per_token": 12.0,
+   "us_per_token": 116.84887083333328,
+   "mean_us_per_launch": 9.737405902777773,
+   "category": "other"
+  },
+  {
+   "name": "void cpy_scalar_contiguous<float, __half>(char const*, char*, long)",
+   "launches_total": 2880,
+   "launches_per_token": 12.0,
+   "us_per_token": 108.90949166666663,
+   "mean_us_per_launch": 9.075790972222219,
+   "category": "other"
+  },
+  {
+   "name": "rms_norm_scale_f32(float const*, float*, int, long, long, long, float, float, float)",
+   "launches_total": 17280,
+   "launches_per_token": 72.0,
+   "us_per_token": 105.7052499999998,
+   "mean_us_per_launch": 1.4681284722222194,
+   "category": "other"
+  },
+  {
+   "name": "void k_topk_block_radix_f32_i32<8>(float const*, int*, int, int)",
+   "launches_total": 2880,
+   "launches_per_token": 12.0,
+   "us_per_token": 103.1392583333336,
+   "mean_us_per_launch": 8.594938194444467,
+   "category": "other"
+  },
+  {
+   "name": "void soft_max_f32<true, 512, 512, float>(float const*, float const*, float const*, float*, soft_max_params)",
+   "launches_total": 11520,
+   "launches_per_token": 48.0,
+   "us_per_token": 91.20041250000028,
+   "mean_us_per_launch": 1.9000085937500057,
+   "category": "other"
+  },
+  {
+   "name": "void rms_norm_f32<256, true, false>(float const*, float*, int, long, long, long, float, float const*, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float const*, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>)",
+   "launches_total": 11520,
+   "launches_per_token": 48.0,
+   "us_per_token": 87.36720416666684,
+   "mean_us_per_launch": 1.8201500868055591,
+   "category": "other"
+  },
+  {
+   "name": "void gated_rms_norm2_kernel<true>(float const*, float const*, float const*, void*, block_q8_1*, int, int, long, long, long, long, int, float)",
+   "launches_total": 8640,
+   "launches_per_token": 36.0,
+   "us_per_token": 82.05599583333354,
+   "mean_us_per_launch": 2.2793332175925984,
+   "category": "other"
+  },
+  {
+   "name": "void k_bin_bcast<&(op_add(float, float)), float, float, float, float const*>(float const*, float const*, float*, int, int, int, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, int, int, int, int, int, int, int, int, int, int, int, float const*)",
+   "launches_total": 10080,
+   "launches_per_token": 42.0,
+   "us_per_token": 59.13747083333346,
+   "mean_us_per_launch": 1.4080350198412728,
+   "category": "other"
+  },
+  {
+   "name": "void k_set_rows<float, int, __half>(float const*, int const*, __half*, long, long, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, bool)",
+   "launches_total": 5760,
+   "launches_per_token": 24.0,
+   "us_per_token": 51.47696249999993,
+   "mean_us_per_launch": 2.144873437499997,
+   "category": "other"
+  },
+  {
+   "name": "void cpy_scalar<&(void cpy_1_scalar<float, float>(char const*, char*))>(char const*, char*, long, long, long, long, long, long, long, long, long, long, long, long, long, long, long)",
+   "launches_total": 5040,
+   "launches_per_token": 21.0,
+   "us_per_token": 47.758491666666714,
+   "mean_us_per_launch": 2.274213888888891,
+   "category": "other"
+  },
+  {
+   "name": "void k_set_rows<float, int, float>(float const*, int const*, float*, long, long, long, long, long, long, long, long, long, long, long, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, bool)",
+   "launches_total": 5760,
+   "launches_per_token": 24.0,
+   "us_per_token": 46.836620833333455,
+   "mean_us_per_launch": 1.9515258680555607,
+   "category": "other"
+  },
+  {
+   "name": "scale_f32(float const*, float*, float, float, long)",
+   "launches_total": 9360,
+   "launches_per_token": 39.0,
+   "us_per_token": 43.738379166666505,
+   "mean_us_per_launch": 1.1214969017093976,
+   "category": "other"
+  },
+  {
+   "name": "void k_get_rows_float<float, float>(float const*, int const*, float*, long, long, long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long)",
+   "launches_total": 2880,
+   "launches_per_token": 12.0,
+   "us_per_token": 31.495062499999936,
+   "mean_us_per_launch": 2.624588541666661,
+   "category": "other"
+  },
+  {
+   "name": "void k_bin_bcast<&(op_mul(float, float)), float, float, float, float const*>(float const*, float const*, float*, int, int, int, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, int, int, int, int, int, int, int, int, int, int, int, float const*)",
+   "launches_total": 3120,
+   "launches_per_token": 13.0,
+   "us_per_token": 23.944433333333315,
+   "mean_us_per_launch": 1.8418794871794857,
+   "category": "other"
+  },
+  {
+   "name": "__amd_rocclr_copyBuffer",
+   "launches_total": 2640,
+   "launches_per_token": 11.0,
+   "us_per_token": 21.558416666666705,
+   "mean_us_per_launch": 1.9598560606060642,
+   "category": "other"
+  },
+  {
+   "name": "void unary_gated_op_kernel<&(op_sigmoid(float)), float>(float const*, float const*, float*, long, long, long, long)",
+   "launches_total": 2880,
+   "launches_per_token": 12.0,
+   "us_per_token": 19.834949999999935,
+   "mean_us_per_launch": 1.6529124999999947,
+   "category": "other"
+  },
+  {
+   "name": "arange_f32(float*, int, float, float)",
+   "launches_total": 2880,
+   "launches_per_token": 12.0,
+   "us_per_token": 14.190983333333355,
+   "mean_us_per_launch": 1.1825819444444463,
+   "category": "other"
+  },
+  {
+   "name": "void rms_norm_f32<1024, false, false>(float const*, float*, int, long, long, long, float, float const*, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, float const*, long, long, long, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>)",
+   "launches_total": 1200,
+   "launches_per_token": 5.0,
+   "us_per_token": 12.144874999999997,
+   "mean_us_per_launch": 2.4289749999999994,
+   "category": "other"
+  },
+  {
+   "name": "void k_bin_bcast<&(op_repeat(float, float)), float, float, float>(float const*, float const*, float*, int, int, int, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, HIP_vector_type<unsigned int, 3u>, int, int, int, int, int, int, int, int, int, int, int)",
+   "launches_total": 720,
+   "launches_per_token": 3.0,
+   "us_per_token": 7.077779166666669,
+   "mean_us_per_launch": 2.359259722222223,
+   "category": "other"
+  },
+  {
+   "name": "concat_dim0_dense_transpose_f32(float const*, float const*, float*, long, long, long)",
+   "launches_total": 240,
+   "launches_per_token": 1.0,
+   "us_per_token": 6.436641666666661,
+   "mean_us_per_launch": 6.436641666666661,
+   "category": "other"
+  },
+  {
+   "name": "void unary_op_kernel<&(op_sigmoid(float)), float>(float const*, float*, int)",
+   "launches_total": 480,
+   "launches_per_token": 2.0,
+   "us_per_token": 2.5881250000000007,
+   "mean_us_per_launch": 1.2940625000000003,
+   "category": "other"
+  },
+  {
+   "name": "hc_mix_reduce_f32_hc4_parallel(float const*, float const*, float*, long, long, float, float)",
+   "launches_total": 240,
+   "launches_per_token": 1.0,
+   "us_per_token": 2.0856041666666667,
+   "mean_us_per_launch": 2.0856041666666667,
+   "category": "other"
+  },
+  {
+   "name": "void reduce_rows_f32<false>(float const*, float*, int)",
+   "launches_total": 240,
+   "launches_per_token": 1.0,
+   "us_per_token": 1.7923958333333339,
+   "mean_us_per_launch": 1.7923958333333339,
+   "category": "other"
+  },
+  {
+   "name": "void unary_op_kernel<&(op_silu(float)), float>(float const*, float*, int)",
+   "launches_total": 240,
+   "launches_per_token": 1.0,
+   "us_per_token": 1.366283333333334,
+   "mean_us_per_launch": 1.366283333333334,
+   "category": "other"
+  },
+  {
+   "name": "void op_clamp_kernel<float>(float const*, float*, float, float, int)",
+   "launches_total": 240,
+   "launches_per_token": 1.0,
+   "us_per_token": 1.3111541666666668,
+   "mean_us_per_launch": 1.3111541666666668,
+   "category": "other"
+  },
+  {
+   "name": "void unary_op_kernel<&(op_sqrt(float)), float>(float const*, float*, int)",
+   "launches_total": 240,
+   "launches_per_token": 1.0,
+   "us_per_token": 1.2950208333333326,
+   "mean_us_per_launch": 1.2950208333333326,
+   "category": "other"
+  },
+  {
+   "name": "void unary_op_kernel<&(op_sgn(float)), float>(float const*, float*, int)",
+   "launches_total": 240,
+   "launches_per_token": 1.0,
+   "us_per_token": 1.2795333333333336,
+   "mean_us_per_launch": 1.2795333333333336,
+   "category": "other"
+  },
+  {
+   "name": "void unary_op_kernel<&(op_abs(float)), float>(float const*, float*, int)",
+   "launches_total": 240,
+   "launches_per_token": 1.0,
+   "us_per_token": 1.0798375000000004,
+   "mean_us_per_launch": 1.0798375000000004,
+   "category": "other"
+  }
+ ]
+}
