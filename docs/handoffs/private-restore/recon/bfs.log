@@ -1,0 +1,32 @@
+server/deps/llama.cpp/ggml/include/ggml-cuda.h: depth1 seeds=58 sections=15 new=227
+server/deps/llama.cpp/ggml/include/ggml-cuda.h: depth2 seeds=58 sections=15 new=224
+server/deps/llama.cpp/ggml/include/ggml-cuda.h: depth3 seeds=58 sections=15 new=224
+MISS server/deps/llama.cpp/ggml/include/ggml-cuda.h
+HIT server/deps/llama.cpp/ggml/src/ggml-cuda/gated-norm.cu depth1 via /home/peppi/Dev/lucebox/.claude/worktrees/qwen4exp-prefix-cache/docs/handoffs/strata-valid-comparison/methods/producer-q8-graph-private-v2-assets/producer-q8-graph-composed-exact-v2.patch
+server/deps/llama.cpp/ggml/src/ggml-cuda/gated-norm.cu: depth1 seeds=5 sections=12 new=0
+HIT server/deps/llama.cpp/ggml/src/ggml-cuda/gated-norm.cuh depth1 via /home/peppi/Dev/lucebox/.claude/worktrees/qwen4exp-prefix-cache/docs/handoffs/strata-valid-comparison/methods/producer-q8-graph-private-v2-assets/producer-q8-graph-composed-exact-v2.patch
+server/deps/llama.cpp/ggml/src/ggml-cuda/gated-norm.cuh: depth1 seeds=3 sections=10 new=0
+HIT server/deps/llama.cpp/ggml/src/ggml-cuda/hc-cn.cu depth1 via /home/peppi/Dev/lucebox/.claude/worktrees/qwen4exp-prefix-cache/docs/handoffs/strata-valid-comparison/methods/producer-q8-graph-private-v2-assets/producer-q8-graph-composed-exact-v2.patch
+server/deps/llama.cpp/ggml/src/ggml-cuda/hc-cn.cu: depth1 seeds=5 sections=10 new=0
+HIT server/deps/llama.cpp/ggml/src/ggml-cuda/hc-cn.cuh depth1 via /home/peppi/Dev/lucebox/.claude/worktrees/qwen4exp-prefix-cache/docs/handoffs/strata-valid-comparison/methods/producer-q8-graph-private-v2-assets/producer-q8-graph-composed-exact-v2.patch
+server/deps/llama.cpp/ggml/src/ggml-cuda/hc-cn.cuh: depth1 seeds=4 sections=10 new=0
+server/deps/llama.cpp/ggml/src/ggml-cuda/mmvq.cu: depth1 seeds=70 sections=51 new=189
+server/deps/llama.cpp/ggml/src/ggml-cuda/mmvq.cu: depth2 seeds=70 sections=51 new=323
+server/deps/llama.cpp/ggml/src/ggml-cuda/mmvq.cu: depth3 seeds=70 sections=51 new=727
+MISS server/deps/llama.cpp/ggml/src/ggml-cuda/mmvq.cu
+server/deps/llama.cpp/ggml/src/ggml-cuda/mmvq.cuh: depth1 seeds=8 sections=10 new=13
+server/deps/llama.cpp/ggml/src/ggml-cuda/mmvq.cuh: depth2 seeds=8 sections=10 new=10
+server/deps/llama.cpp/ggml/src/ggml-cuda/mmvq.cuh: depth3 seeds=8 sections=10 new=3
+MISS server/deps/llama.cpp/ggml/src/ggml-cuda/mmvq.cuh
+server/deps/llama.cpp/ggml/src/ggml-cuda/moe-fused-combine.cu: depth1 seeds=4 sections=0 new=0
+server/deps/llama.cpp/ggml/src/ggml-cuda/moe-fused-combine.cu: depth2 seeds=4 sections=0 new=0
+server/deps/llama.cpp/ggml/src/ggml-cuda/moe-fused-combine.cu: depth3 seeds=4 sections=0 new=0
+MISS server/deps/llama.cpp/ggml/src/ggml-cuda/moe-fused-combine.cu
+server/deps/llama.cpp/ggml/src/ggml-cuda/moe-fused-combine.cuh: depth1 seeds=2 sections=0 new=0
+server/deps/llama.cpp/ggml/src/ggml-cuda/moe-fused-combine.cuh: depth2 seeds=2 sections=0 new=0
+server/deps/llama.cpp/ggml/src/ggml-cuda/moe-fused-combine.cuh: depth3 seeds=2 sections=0 new=0
+MISS server/deps/llama.cpp/ggml/src/ggml-cuda/moe-fused-combine.cuh
+HIT server/deps/llama.cpp/ggml/src/ggml-cuda/quantize.cu depth1 via /home/peppi/Dev/lucebox/.claude/worktrees/qwen4exp-prefix-cache/docs/handoffs/strata-valid-comparison/methods/producer-q8-graph-private-v2-assets/producer-q8-graph-composed-exact-v2.patch
+server/deps/llama.cpp/ggml/src/ggml-cuda/quantize.cu: depth1 seeds=4 sections=14 new=0
+HIT server/deps/llama.cpp/ggml/src/ggml-cuda/quantize.cuh depth1 via /home/peppi/Dev/lucebox/.claude/worktrees/qwen4exp-prefix-cache/docs/handoffs/strata-valid-comparison/methods/producer-q8-graph-private-v2-assets/producer-q8-graph-composed-exact-v2.patch
+server/deps/llama.cpp/ggml/src/ggml-cuda/quantize.cuh: depth1 seeds=3 sections=14 new=1

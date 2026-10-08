@@ -1,0 +1,8 @@
+{
+"c6b728f8cf354ebe23ec1645177a261cd76f98513c0da85603de8d6fdcd36dbd": "blob:d1be6bcc69a7943b505148f36ccdbb8764781feb",
+"1b937c845e5bec317942fafd91ecbc0d807a059ad00942b848d7ee0783b228b4": "blob:dd52feb9c29d7f3948d6ef059face685ab1d08b0",
+"3dba29405c198ea2d129f969116e7b7e4a8f839d57145585bdac1bf1e5be2b52": "file:/home/peppi/Dev/lucebox/.claude/worktrees/qwen4exp-prefix-cache/docs/handoffs/strata-valid-comparison/methods/shared-logit-combine-exact-v1-assets/driver_shared_epilogue.cpp",
+"f3206ebfb01ae9aece3faf03f6dd79f565980f3df953d0e1dee23b4fccf9fe2a": "file:/home/peppi/Dev/lucebox/.claude/worktrees/qwen4exp-prefix-cache/docs/handoffs/strata-valid-comparison/methods/private-fullserver-vs-native-attribution-20261007/source/argsort.cu",
+"27773dadb3a70891b3eea11609fc9c4ee3b695f46c10315c4abdcf4f57a6230e": "file:/home/peppi/Dev/lucebox/.claude/worktrees/qwen4exp-prefix-cache/docs/handoffs/strata-valid-comparison/methods/private-fullserver-vs-native-attribution-20261007/source/ggml-cuda.cu",
+"8e98059cd4d3aae6803a927d6991b19a538174fabcb7d9d925bd1bad9ced5a3f": "file:/home/peppi/Dev/lucebox/.claude/worktrees/qwen4exp-prefix-cache/docs/handoffs/strata-valid-comparison/methods/hc-upmix-mtp-scope-exact-v1-assets/parent-qwen4exp_graph.cpp"
+}
