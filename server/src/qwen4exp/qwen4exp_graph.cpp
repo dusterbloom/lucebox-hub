@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -313,6 +314,23 @@ struct Qwen4ExpMoeParts {
     // parts != nullptr needs the raw pre-sigmoid shexp logit (see comment above); overlap scheduling also needs a
     // distinct pre-sigmoid logit graph node to split at. Only fuse on the plain direct path (no parts, no overlap).
     const bool fused_route = !parts && !overlap && n_tokens <= GGML_HC_BOUNDARY_MAX_T && moe_route_on(w, L, n_tokens);
+    // LUCE_QWEN_K5_DEBUG=1: count build_moe calls where the fused route actually fires vs is skipped, so an A/B
+    // timing run can be checked for "did this code path even execute" before trusting the ms/token delta.
+    if (moe_route_env_on()) {
+        static const bool debug_on = [] {
+            const char * v = std::getenv("LUCE_QWEN_K5_DEBUG");
+            return v && std::strcmp(v, "1") == 0;
+        }();
+        if (debug_on) {
+            static std::atomic<long> fired{0}, skipped{0};
+            if (fused_route) ++fired; else ++skipped;
+            static std::atomic<int> printed{0};
+            if (printed.fetch_add(1) % 512 == 0) {
+                std::fprintf(stderr, "[k5-debug] fired=%ld skipped=%ld (overlap=%d parts=%d T=%lld)\n",
+                             fired.load(), skipped.load(), overlap != nullptr, parts != nullptr, (long long) n_tokens);
+            }
+        }
+    }
 
     ggml_tensor * sel, * wsel, * shared_gate_or_logit;
     if (fused_route) {

@@ -117,20 +117,95 @@ OFF arm's own first-sample reps show no comparable exclusion-worthy spike, so th
 apples-to-apples (unfiltered both sides it would be 38.466 OFF median / 38.510 ON median — same
 conclusion either way).
 
-**Delta: ON − OFF = +0.048 ms/token**, inside the ±0.15 ms noise band. K5 does not move the needle
-on this decode workload: at T=1 the router GEMV + softmax + shexp-gate GEMV are tiny relative to
-the per-step MoE expert GEMMs (`mul_mat_id` on 512 experts) and the HC-boundary/shared-overlap
-machinery already dominates the critical path per step; collapsing a handful of small launches into
-one fused kernel doesn't show up at this granularity.
+**Delta: ON − OFF = +0.048 ms/token**, inside the ±0.15 ms noise band.
 
-**Decision: gated OFF (default), not stacked.** Correctness (bit-identity) holds, but the port is
-noise-neutral — no regression, no measurable win. Kept in the tree behind `LUCE_QWEN_K5=1` for any
-future workload (larger T / batched verify) where the fused launch might matter more, per the stop
-rule ("two honest failed attempts" does not apply here — this is a single clean port that measured
-neutral, not a failure).
+**CORRECTION (caught in review, confirmed by instrumentation): the above timing comparison is
+meaningless as a test of the fused kernel.** `fused_route = !parts && !overlap && T<=8 &&
+moe_route_on(...)` (see code above), and the headline 38.41 config sets
+`LUCE_QWEN_SHARED_OVERLAP=1`, which makes `build_moe`'s main T=1 decode call site
+(`qwen4exp_graph.cpp:1745`, `build_shared_overlap && layer_T==1 && !fold`) pass a non-null
+`overlap` for essentially every layer. `fused_route` is therefore `false` on the hot decode path
+regardless of `LUCE_QWEN_K5`, and `GGML_OP_MOE_ROUTE` never executes in this config — both "ON" and
+"OFF" ran the identical unfused code path. That is also why bit-identity "passed": there was nothing
+different to diverge.
 
-## K3 / K4 (GDN-prep fusion, GDN tail)
+Added a debug counter (`LUCE_QWEN_K5_DEBUG=1`, `fired`/`skipped` atomics in `build_moe`, gated off
+a static `getenv` check, zero cost when unset) and reran `LUCE_QWEN_K5=1 LUCE_QWEN_K5_DEBUG=1` under
+the full env. Every logged checkpoint, including `overlap=1 parts=0 T=1` (the real decode call
+site), reads `fired=0`:
+```
+[k5-debug] fired=0 skipped=1 (overlap=0 parts=0 T=4096)
+[k5-debug] fired=0 skipped=513 (overlap=1 parts=0 T=1)
+[k5-debug] fired=0 skipped=1025 (overlap=0 parts=1 T=3138)
+[k5-debug] fired=0 skipped=1537 (overlap=0 parts=0 T=4096)
+```
+Confirmed: **0 fires** across the whole run. `moe_route_on(w, L, n_tokens)` and
+`ggml_backend_cuda_moe_route_supported` were never even reached for the `overlap=1` case because the
+`!overlap` guard short-circuits first.
 
-Not yet attempted. K5 is complete and committed/pushed; K3 (`3fa48a54`, overlap check against
-`GDN_AB_EXACT`) and K4 (`59812fe8`+`afcb400e`, overlap check against the gated-norm path) remain,
-in that order, following the same investigate-first/gate/time/commit protocol used above.
+**Decision: gated OFF (default), not stacked.** Record corrected from "measured-neutral" to
+**"inactive under `SHARED_OVERLAP=1`, not executed — not a timing result at all"**. Per the
+coordinator's instruction, deferred: K5 would need `fused_route` to also emit the pre-sigmoid shexp
+logit as a separate output view (so the `overlap`-scheduling path can still split the graph at a
+distinct node the way the unfused path does today), making it overlap-compatible. That redesign is
+picked up only after K3/K4 are done, not this pass. `LUCE_QWEN_K5_DEBUG=1` stays in the tree
+(zero-cost when unset) so any future re-attempt can re-verify fire counts before trusting a timing
+number.
+
+## K3 (GDN-prep: beta/gate projections + conv+silu + q/k l2-norm) — investigated, skipped
+
+Reference: `3fa48a54`. K3 fuses three things into one launch for `T <= GGML_HC_BOUNDARY_MAX_T`:
+(1) `beta = sigmoid(w_beta @ mixed)` + `gate = softplus(w_alpha @ mixed + dt_bias) * ssm_a`, (2) a
+causal conv1d + SiLU over the concatenated qkv history, (3) q/k l2-norm over the conv output.
+
+**Overlap check against this tree's actual `build_linear_attn`/`build_linear_attn_projected`** (not
+just the reference's own pre-K3 baseline, which has drifted from ours — this tree has its own,
+independently-evolved fast paths):
+
+1. **Beta/gate projections (K3 part 1)**: already covered by `GDN_AB_EXACT`
+   (`LUCE_QWEN_GDN_AB_EXACT=1`, on by default in `run_stack.sh`'s full env). Read
+   `ggml_cuda_gdn_ab_exact_match` in `ggml-cuda.cu`: its op-list
+   `{MUL_MAT, RESHAPE, ADD, UNARY(SOFTPLUS), MUL, RESHAPE, MUL_MAT, RESHAPE, UNARY(SIGMOID)}` is
+   *exactly* K3's beta/gate math (alpha-GEMM→+dt_bias→softplus→*ssm_a, beta-GEMM→sigmoid), runtime
+   subgraph-detected and fused on this tree's existing `GGML_OP_GATED_DELTA_NET` call site. Confirmed
+   identical in both `build_linear_attn` (solo decode) and the batched-decode caller that feeds
+   `build_linear_attn_projected`'s per-slot `beta`/`alpha` params.
+2. **Conv+SiLU (K3 part 2), the dominant case**: this tree has its own fused kernel,
+   `ggml_ssm_conv_step` (conv + causal-history update + SiLU in one launch), used unconditionally by
+   `build_linear_attn_projected` (the batched decode path, every call) and by `build_linear_attn`'s
+   `T==1 && f16 && !spec_conv` fast path (`qwen4exp_graph.cpp:434` — i.e. every ordinary T=1 decode
+   step). This does not exist in the K3 reference's lineage at all; it is this tree's own, narrower,
+   earlier fusion of the same conv+silu scope. K3's generic `ggml_concat(hist,qkv_t)` +
+   `ggml_ssm_conv` + `ggml_silu` route only survives in `build_linear_attn`'s `else` branch — taken
+   only for `T>1` (speculative/verify multi-token batches), not the hot single-token decode step that
+   `STACK-RESULTS.md`'s ms/token measurements are based on.
+3. **Q/K l2-norm (K3 part 3)**: genuinely not fused anywhere in this tree (separate
+   `ggml_rms_norm`+`ggml_scale` per q/k) — the only part of K3 with no existing counterpart.
+
+**Attempted a cherry-pick of `3fa48a54` to check feasibility of porting just the residual (l2-norm)
+scope**: the ggml-level plumbing (`ggml.h`/`ggml.c`/`ggml-cpu.c`/`ggml-cuda.cu` + new
+`gdn-prep.cu`/`.cuh`) is tree-agnostic and merged cleanly (same pattern as K5: prune
+HC_BOUNDARY/GDN_TAIL, keep only GDN_PREP, `GGML_OP_COUNT` 114→115). The `qwen4exp_graph.cpp` hunks
+did not: the reference's diff context assumes a `build_linear_attn` shape with `mm_q8`/`cur_q8`
+(quantized producer) and no `ggml_ssm_conv_step` fast path, neither of which match this tree's
+current, already-more-fused structure — the 3-way merge imported dead, non-native helpers
+(`HcPending`, `hc_boundary()`, `mm_q8()`) that don't belong here and silently skipped reconciling
+the real call sites. Correctly wiring K3 against this tree's actual code would mean hand-writing the
+fusion into the `T>1` branch of `build_linear_attn` only (since `T==1` already goes through
+`ggml_ssm_conv_step`, which does not produce the packed layout `GGML_OP_GDN_PREP` expects) — a
+narrower, single-purpose port (just q/k l2-norm fused into the verify/speculative path) for a path
+that is not on the per-token decode critical path this session is optimizing for.
+
+**Decision: skip, not ported.** Two of K3's three fused components are already covered by existing
+fusions on the hot decode path (`GDN_AB_EXACT` for beta/gate, `ggml_ssm_conv_step` for conv+silu);
+the only uncovered piece (q/k l2-norm) only matters on the `T>1` verify path, and porting it there
+would require a hand-built graph rewrite rather than a mechanical cherry-pick, with correctness risk
+the original commit itself flags (solo/batched GDN-recurrence divergence from ULP-level fusion
+differences) for a path this isn't measuring. Reverted the trial cherry-pick in full (`git checkout
+HEAD --` on all six touched files, deleted the three new files) — working tree is clean, no K3
+artifacts left in the commit.
+
+## K4 (GDN tail: `rms_norm(x)*gamma*sigmoid(z)`)
+
+Not yet attempted. Overlap check against "the gated-norm path" (per coordinator instruction) is the
+next step, following the same investigate-first/gate/time/commit protocol used for K5.
