@@ -149,9 +149,116 @@ static __global__ void __launch_bounds__(HC_CN_BLOCK2, 4) hc_combine_norm_f32_b2
     }
 }
 
+// Gamma-prefetch variant of hc_combine_norm_f32_b256, gated by LUCE_QWEN_HC_CN_FAST.
+// Identical grid/block (one launch, dim3(hc,n_tokens,1) blocks of HC_CN_BLOCK2 threads),
+// identical per-element formulas, identical block_reduce<SUM,HC_CN_BLOCK2> order. The ONLY
+// change: gamma[c,col] is loaded during the first (residual/block_out) pass -- hidden behind
+// that pass's memory latency and the reduction's __syncthreads round trip -- and held in
+// registers (g0[k]/g1[k]) instead of being re-read from global memory after the sync. The
+// second-pass expression `scale * xs[...] * g{0,1}[k]` is the exact same left-to-right chain,
+// on the exact same float values (same address, same bytes), as today's
+// `scale * xs[...] * gv.{x,y}` -- bit-identical output, strictly earlier load timing.
+static __global__ void __launch_bounds__(HC_CN_BLOCK2, 4) hc_combine_norm_f32_b256_fast(
+        const float * inject, const float * residual,
+        const float * block_out, const float * gamma,
+        float * out_res, float * out_xn, uint16_t * out_xn_bf16, const bool store_xn_f32,
+        const uint16_t * res_in_bf16, uint16_t * res_out_bf16, const uint16_t * blk_in_bf16,
+        const int n_embd, const float s1, const float b1, const float s2, const float b2, const float eps,
+        int8_t * q8 = nullptr, block_q8_1 * q8_1 = nullptr) {
+    __shared__ float s_sum[32];
+    const int c = blockIdx.x, t = blockIdx.y, hc = gridDim.x, tid = threadIdx.x;
+    const float x1 = s1 * inject[(int64_t) t * hc + c] + b1;
+    const float x2 = hc_sigmoid(x1);
+    const float w  = s2 * x2 + b2;
+    const int64_t row = (int64_t) t * hc + c;
+    const float *    res   = residual + row * n_embd;
+    const uint16_t * res16 = res_in_bf16  ? res_in_bf16  + row * n_embd : nullptr;
+    float *          dst   = out_res      + row * n_embd;
+    uint16_t *       dst16 = res_out_bf16 ? res_out_bf16 + row * n_embd : nullptr;
+    const float *    blk   = block_out + (int64_t) t * n_embd;
+    const uint16_t * blk16 = blk_in_bf16 ? blk_in_bf16 + (int64_t) t * n_embd : nullptr;
+    const float *    g     = gamma + (int64_t) c * n_embd;
+    constexpr int KP = (HC_CN_MAX_EMB / 2 + HC_CN_BLOCK2 - 1) / HC_CN_BLOCK2;
+    float xs[2 * KP];
+    float g0[KP], g1[KP];
+    float tmp = 0.0f;
+#pragma unroll
+    for (int k = 0; k < KP; ++k) {
+        const int col = (tid + k * HC_CN_BLOCK2) * 2;
+        xs[2 * k] = 0.0f; xs[2 * k + 1] = 0.0f;
+        g0[k] = 0.0f; g1[k] = 0.0f;
+        if (col + 1 < n_embd) {
+            float r0, r1, m0, m1;
+            if (res16) { const uint32_t u = *(const uint32_t *)(res16 + col); r0 = hc_lo(u); r1 = hc_hi(u); }
+            else       { const float2   v = *(const float2 *)(res + col);     r0 = v.x;      r1 = v.y; }
+            if (blk16) { const uint32_t u = *(const uint32_t *)(blk16 + col); m0 = hc_lo(u); m1 = hc_hi(u); }
+            else       { const float2   v = *(const float2 *)(blk + col);     m0 = v.x;      m1 = v.y; }
+            const float2 gv = *(const float2 *)(g + col);
+            g0[k] = gv.x; g1[k] = gv.y;
+            const float a0 = hc_add_rn(r0, hc_mul_rn(m0, w));
+            const float a1 = hc_add_rn(r1, hc_mul_rn(m1, w));
+            if (dst16) *(uint32_t *)(dst16 + col) = hc_pack2(a0, a1);
+            else       *(float2 *)(dst + col)     = make_float2(a0, a1);
+            xs[2 * k] = a0; xs[2 * k + 1] = a1;
+            tmp += a0 * a0 + a1 * a1;
+        } else if (col < n_embd) {
+            const float r0 = res16 ? hc_bf2f32(res16[col]) : res[col];
+            const float m0 = blk16 ? hc_bf2f32(blk16[col]) : blk[col];
+            g0[k] = g[col];
+            const float a0 = hc_add_rn(r0, hc_mul_rn(m0, w));
+            if (dst16) dst16[col] = hc_f2bf32(a0); else dst[col] = a0;
+            xs[2 * k] = a0;
+            tmp += a0 * a0;
+        }
+    }
+    tmp = block_reduce<block_reduce_method::SUM, HC_CN_BLOCK2>(tmp, s_sum);
+    const float mean  = tmp / n_embd;
+    const float scale = rsqrtf(mean + eps);
+    float *       xn = out_xn + row * n_embd;
+    uint16_t *    xh = out_xn_bf16 ? out_xn_bf16 + row * n_embd : nullptr;
+#pragma unroll
+    for (int k = 0; k < KP; ++k) {
+        const int col = (tid + k * HC_CN_BLOCK2) * 2;
+        if (col + 1 < n_embd) {
+            const float v0 = scale * xs[2 * k] * g0[k], v1 = scale * xs[2 * k + 1] * g1[k];
+            if (store_xn_f32) *(float2 *)(xn + col) = make_float2(v0, v1);
+            if (xh) *(uint32_t *)(xh + col) = hc_pack2(v0, v1);
+            if (q8) hc_q8_pair(q8, gridDim.x * n_embd / 32, t, c * n_embd + col, v0, v1);
+            if (q8_1) hc_q8_1_pair(q8_1, n_embd, row, col, v0, v1);
+        } else if (col < n_embd) {
+            const float v0 = scale * xs[2 * k] * g0[k];
+            if (store_xn_f32) xn[col] = v0;
+            if (xh) xh[col] = hc_f2bf32(v0);
+        }
+    }
+}
+
 static bool hc_test_disjoint(const void * a, size_t an, const void * b, size_t bn) {
     const uintptr_t pa = (uintptr_t) a, pb = (uintptr_t) b;
     return pa + an <= pb || pb + bn <= pa;
+}
+
+// Test-only hook: runs the baseline hc_combine_norm_f32_b256 and the gamma-prefetch
+// hc_combine_norm_f32_b256_fast on identical inputs into separate output buffers so a host
+// test can memcmp them for bit-identity. Not used by production code paths.
+extern "C" GGML_BACKEND_API int ggml_cuda_test_hc_combine_norm_bitexact(
+        const float * inject, const float * residual, const float * block_out, const float * gamma,
+        float * out_res_a, float * out_xn_a, float * out_res_b, float * out_xn_b,
+        int n_embd, int hc, int n_tokens,
+        float s1, float b1, float s2, float b2, float eps, void * raw_stream) {
+    if (!inject || !residual || !block_out || !gamma ||
+        !out_res_a || !out_xn_a || !out_res_b || !out_xn_b ||
+        eps < 0 || n_embd <= 0 || n_embd > HC_CN_MAX_EMB || hc <= 0 || n_tokens <= 0) return 0;
+    cudaStream_t stream = (cudaStream_t) raw_stream;
+    hc_combine_norm_f32_b256<<<dim3((unsigned) hc, (unsigned) n_tokens, 1), HC_CN_BLOCK2, 0, stream>>>(
+        inject, residual, block_out, gamma, out_res_a, out_xn_a, nullptr, true,
+        nullptr, nullptr, nullptr, n_embd, s1, b1, s2, b2, eps, nullptr, nullptr);
+    if (cudaGetLastError() != cudaSuccess) return 0;
+    hc_combine_norm_f32_b256_fast<<<dim3((unsigned) hc, (unsigned) n_tokens, 1), HC_CN_BLOCK2, 0, stream>>>(
+        inject, residual, block_out, gamma, out_res_b, out_xn_b, nullptr, true,
+        nullptr, nullptr, nullptr, n_embd, s1, b1, s2, b2, eps, nullptr, nullptr);
+    if (cudaGetLastError() != cudaSuccess) return 0;
+    return cudaStreamSynchronize(stream) == cudaSuccess ? 1 : 0;
 }
 
 extern "C" GGML_BACKEND_API int ggml_cuda_test_hc_q8_producer(
@@ -348,6 +455,14 @@ void ggml_cuda_op_hc_combine_norm(ggml_backend_cuda_context & ctx, const ggml_cu
     } else if (luce_ko_empty_hc()) {
         luce_ko_noop_kernel<<<1, 32, 0, ctx.stream()>>>();
         CUDA_CHECK(cudaGetLastError());
+    } else if (luce_hc_cn_fast()) {
+    hc_combine_norm_f32_b256_fast<<<dim3((unsigned) hc, (unsigned) n_tokens, 1), HC_CN_BLOCK2, 0, ctx.stream()>>>(
+        (const float *) a.inject->data, (const float *) a.residual->data,
+        (const float *) a.block_out->data, (const float *) a.gamma->data,
+        (float *) a.out_res->data, (float *) a.out_xn->data, a.out_xn_bf16, a.store_xn_f32,
+        a.res_in_bf16, a.res_out_bf16, a.blk_in_bf16,
+        (int) n_embd, a.s1, a.b1, a.s2, a.b2, a.eps, a.out_q8, a.out_q8_1);
+    CUDA_CHECK(cudaGetLastError());
     } else {
     hc_combine_norm_f32_b256<<<dim3((unsigned) hc, (unsigned) n_tokens, 1), HC_CN_BLOCK2, 0, ctx.stream()>>>(
         (const float *) a.inject->data, (const float *) a.residual->data,
