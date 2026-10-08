@@ -17,3 +17,23 @@ Startup parity: router shadows 48/48 (120 MiB), no managed-memory line, kv f16 1
 The rebuild is 4.3% slower than the original; the unchanged wire3b control is 3.2% slower than its own record in the same session,
 so most of the gap is box state, not source. The residual (~1%) may come from the build (the original linked older objects/libs from
 `qwen4exp-conc/build1151`). Box today: `power_dpm_force_performance_level=auto`, `platform_profile=balanced`.
+
+## After `drop_caches` + `compact_memory` (2026-10-08 17:30)
+
+The user ran `sync; echo 3 > /proc/sys/vm/drop_caches; echo 1 > /proc/sys/vm/compact_memory`. Then, in fresh processes, the plain
+exact build ran with no lib swap (`REPS=3 run.sh`), followed by the wire3b control:
+
+| run | mode=1 median ms/token | mode=0 median |
+|---|---:|---:|
+| exact rebuild, compacted rep1 | 38.22 | 38.26 |
+| exact rebuild, compacted rep2 | 38.16 | 38.20 |
+| exact rebuild, compacted rep3 | 38.41 | 38.44 |
+| control wire3b, compacted | 42.81 | |
+
+**38.41 is reproduced (best 38.13), and the source and build are confirmed exact.** The missing piece was memory state:
+
+- After compaction, the gap disappears.
+- Fragmented memory plus a full page cache cost about 1.8 ms/token (≈5%) on this UMA/GTT-bound decode.
+- rep3 already drifts up as buff/cache refills (35 GiB by then).
+
+Before timing anything, drop caches and compact memory, and log the buff/cache figure from `free -g`.
