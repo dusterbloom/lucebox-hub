@@ -18,3 +18,9 @@ void ggml_cuda_gated_rms_norm_q8_1(ggml_backend_cuda_context & ctx,
 extern "C" GGML_BACKEND_API int ggml_cuda_test_gdn_q8_producer(
         const float * x, const float * gamma, const float * z, float * dst,
         block_q8_1 * q8, int gamma_rows, float eps, void * stream);
+
+// GGML_OP_GDN_TAIL (fusion-design.md K4): same arithmetic as ggml_cuda_op_gated_rms_norm_f16 but F32 output --
+// the decode ssm_out consumer needs the un-rounded activation (the f16-gated GEMM path is prefill-only,
+// mmb_min_t() == 512). Rows <= 128 (GDN's D=128) only.
+bool ggml_cuda_gdn_tail_shape_ok(int64_t ncols);
+void ggml_cuda_op_gdn_tail(ggml_backend_cuda_context & ctx, ggml_tensor * dst);

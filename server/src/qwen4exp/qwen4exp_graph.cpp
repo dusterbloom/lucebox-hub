@@ -264,6 +264,38 @@ static ggml_tensor * hc_norm_xn(ggml_context * c, ggml_tensor * fused,
         (size_t) n_embd * hc * nt * sizeof(float));
 }
 
+// Fused GDN tail (GGML_OP_GDN_TAIL, fusion-design.md K4): rms_norm(attn)*gamma*sigmoid(z) in one launch, decode
+// rows only (GDN's D==128). Gated default-off: set LUCE_QWEN_K4=1 to enable.
+static bool gdn_tail_env_on() {
+    static const bool on = [] {
+        const char * value = std::getenv("LUCE_QWEN_K4");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    return on;
+}
+
+static bool gdn_tail_on(int64_t ncols) {
+    return gdn_tail_env_on() && ggml_backend_cuda_gdn_tail_supported(ncols);
+}
+
+// LUCE_QWEN_K4_DEBUG=1: count build calls where the fused GDN tail actually fires vs is skipped, so an A/B
+// timing run can be checked for "did this code path even execute" before trusting the ms/token delta.
+static void gdn_tail_debug_note(bool fired, int64_t T) {
+    if (!gdn_tail_env_on()) return;
+    static const bool debug_on = [] {
+        const char * v = std::getenv("LUCE_QWEN_K4_DEBUG");
+        return v && std::strcmp(v, "1") == 0;
+    }();
+    if (!debug_on) return;
+    static std::atomic<long> fired_n{0}, skipped_n{0};
+    if (fired) ++fired_n; else ++skipped_n;
+    static std::atomic<int> printed{0};
+    if (printed.fetch_add(1) % 512 == 0) {
+        std::fprintf(stderr, "[k4-debug] fired=%ld skipped=%ld (T=%lld)\n",
+                     fired_n.load(), skipped_n.load(), (long long) T);
+    }
+}
+
 // ── MoE FFN: 512 experts top-10 (softmax), gated shared expert ──────────
 
 // Fused MoE router (GGML_OP_MOE_ROUTE, fusion-design.md K5): router GEMV + exact top-k selection + shexp gate
@@ -533,6 +565,15 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
     if (producer_q8 && T == 1 && f16 && !spec_states && !spec_conv) {
         ggml_build_forward_expand(gf, z);
     }
+    if (T <= GGML_HC_BOUNDARY_MAX_T && gdn_tail_on(D)) {
+        // Fused GDN tail (GGML_OP_GDN_TAIL, K4): rms_norm(attn)*gamma*sigmoid(z) in one launch.
+        gdn_tail_debug_note(true, T);
+        ggml_tensor * out = ggml_gdn_tail(c, attn, L.ssm_norm, ggml_reshape_4d(c, z, D, Hv, T, 1), eps);
+        ggml_tensor * final = ggml_reshape_3d(c, out, d_in, T, 1);
+        ggml_tensor * lin_raw = mm(c, L.ssm_out, final);
+        return ggml_reshape_2d(c, lin_raw, w.n_embd, T);
+    }
+    gdn_tail_debug_note(false, T);
     ggml_tensor * normed = ggml_mul(c, ggml_rms_norm(c, attn, eps), L.ssm_norm);
     ggml_tensor * out = ggml_mul(c, normed, ggml_sigmoid(c, ggml_reshape_4d(c, z, D, Hv, T, 1)));
     if (dump_mark) {
@@ -1184,6 +1225,13 @@ static ggml_tensor * build_linear_attn_projected(ggml_context * c, ggml_cgraph *
         ggml_row_size(gdn->type, D), ggml_row_size(gdn->type, D * D),
         ggml_row_size(gdn->type, D * D * Hv), ggml_row_size(gdn->type, D * Hv));
     ggml_build_forward_expand(gf, ggml_cpy(c, new_state, state4));
+    if (gdn_tail_on(D)) {
+        // Fused GDN tail (GGML_OP_GDN_TAIL, K4): rms_norm(attn)*gamma*sigmoid(z) in one launch.
+        gdn_tail_debug_note(true, 1);
+        ggml_tensor * out = ggml_gdn_tail(c, attn, L.ssm_norm, ggml_reshape_4d(c, z, D, Hv, 1, 1), eps);
+        return ggml_reshape_2d(c, out, d_in, 1);
+    }
+    gdn_tail_debug_note(false, 1);
     ggml_tensor * normed = ggml_mul(c, ggml_rms_norm(c, attn, eps), L.ssm_norm);
     ggml_tensor * out = ggml_mul(c, normed,
         ggml_sigmoid(c, ggml_reshape_4d(c, z, D, Hv, 1, 1)));

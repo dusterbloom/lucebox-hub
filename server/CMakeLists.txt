@@ -1352,26 +1352,6 @@ if(LUCE_TESTS)
                 ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
         endif()
 
-        # fusion-wire3 S1 gate: GGML_OP_GDN_TAIL (K4) vs the validated gdn_post_kernel + CPU reference
-        if(LUCE_GPU_BACKEND STREQUAL "hip" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/bench/gate_gdn_tail.cpp")
-            add_executable(gate_gdn_tail test/bench/gate_gdn_tail.cpp test/bench/gdn_fusion_kernels.cu)
-            set_source_files_properties(test/bench/gdn_fusion_kernels.cu PROPERTIES LANGUAGE HIP)
-            target_link_libraries(gate_gdn_tail PRIVATE ggml ${LUCE_GGML_BACKEND_TARGET} ggml-base ggml-cpu hip::host ${CMAKE_DL_LIBS})
-            target_include_directories(gate_gdn_tail PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
-                ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
-        endif()
-
-        # fusion-wire3 S1 gate: GGML_OP_GDN_PREP (K3) vs the validated gdn_pre_kernel + CPU reference
-        if(LUCE_GPU_BACKEND STREQUAL "hip" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/bench/gate_gdn_prep.cpp")
-            add_executable(gate_gdn_prep test/bench/gate_gdn_prep.cpp test/bench/gdn_fusion_kernels.cu)
-            set_source_files_properties(test/bench/gdn_fusion_kernels.cu PROPERTIES LANGUAGE HIP)
-            target_link_libraries(gate_gdn_prep PRIVATE ggml ${LUCE_GGML_BACKEND_TARGET} ggml-base ggml-cpu hip::host ${CMAKE_DL_LIBS})
-            target_include_directories(gate_gdn_prep PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
-                ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
-        endif()
-
         # fusion-design.md Experiment 4: QSA mixer Q/K norm-fusion microbenchmark (K7-lite)
         if(LUCE_GPU_BACKEND STREQUAL "hip" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/bench/bench_qsa_glue.cpp")
             add_executable(bench_qsa_glue test/bench/bench_qsa_glue.cpp test/bench/qsa_glue_kernels.cu)

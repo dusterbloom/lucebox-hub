@@ -637,6 +637,7 @@ extern "C" {
 
         GGML_OP_QSA_DECODE_IDS, // Sort selected blocks and expand visible QSA cells
         GGML_OP_MOE_ROUTE,      // Fused MoE router: router GEMV + top-k + shexp gate sigmoid, T <= 8 (K5)
+        GGML_OP_GDN_TAIL,       // Fused GDN tail: rms_norm(x) * gamma * sigmoid(z) -> F32 (qwen4exp decode, K4)
 
         GGML_OP_COUNT,
     };
@@ -3008,6 +3009,17 @@ extern "C" {
             struct ggml_context * ctx,
             struct ggml_tensor  * x,
             struct ggml_tensor  * z);
+
+    // Fused GDN tail (qwen4exp decode/verify, fusion-design.md K4): rms_norm(x) * gamma * sigmoid(z) -> F32,
+    // same math/shape contract as ggml_gated_rms_norm_f16 but F32 output (the decode ssm_out consumer needs the
+    // un-rounded activation, unlike the f16-gated GEMM path which is prefill-only). x is [ncols, heads, tokens],
+    // gamma has ncols elements, z is [ncols, heads, tokens] or [ncols*heads, tokens].
+    GGML_API struct ggml_tensor * ggml_gdn_tail(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * x,
+            struct ggml_tensor  * gamma,
+            struct ggml_tensor  * z,
+            float                 eps);
 
     // Fused MoE router (qwen4exp decode/verify, T <= GGML_HC_BOUNDARY_MAX_T rows, fusion-design.md K5), one launch:
     //   logits = concat(w_router @ mixed, w_shexp @ mixed)                                [NE+1]

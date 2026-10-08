@@ -150,3 +150,44 @@ extern "C" GGML_BACKEND_API int ggml_cuda_test_gdn_q8_producer(
         x, gamma, z, dst, q8, 128, 48, 128, 6144, 128, 6144, gamma_rows, eps);
     return cudaGetLastError() == cudaSuccess;
 }
+
+// GGML_OP_GDN_TAIL (fusion-design.md K4): rms_norm(x) * gamma * sigmoid(z) -> F32. One block per (head, token),
+// ncols threads/block -- same grid/reduction shape as the validated gdn_post_kernel prototype
+// (docs/handoffs/third-eye/fusion-exp3.md), just without its Q8_1 side-emit (the decode ssm_out consumer here
+// reads the un-rounded F32 activation directly).
+static __global__ void gdn_tail_kernel(const float * x, const float * gamma, const float * z, float * dst,
+        const int ncols, const int nh, const int64_t x_s1, const int64_t x_s2, const int64_t z_sh, const int64_t z_st,
+        const float eps) {
+    const int h = blockIdx.x, t = blockIdx.y, tid = threadIdx.x;
+    const float * xr = x + t * x_s2 + (int64_t) h * x_s1;
+    const float xi = xr[tid];
+    __shared__ float s_warp[4];
+    const int lane = tid & 31, warp = tid >> 5;
+    float sq = warp_reduce_sum(xi * xi);
+    if (lane == 0) s_warp[warp] = sq;
+    __syncthreads();
+    const float total = s_warp[0] + s_warp[1] + s_warp[2] + s_warp[3];
+    const float scale = rsqrtf(total / ncols + eps);
+    const float v = scale * xi * gamma[tid];
+    const float * zr = z + t * z_st + (int64_t) h * z_sh;
+    dst[((int64_t) t * nh + h) * ncols + tid] = v / (1.0f + expf(-zr[tid]));
+}
+
+bool ggml_cuda_gdn_tail_shape_ok(int64_t ncols) {
+    return ncols > 0 && ncols <= 128;
+}
+
+void ggml_cuda_op_gdn_tail(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    const ggml_tensor * x = dst->src[0], * gamma = dst->src[1], * z = dst->src[2];
+    const int ncols = (int) x->ne[0], nh = (int) x->ne[1], T = (int) x->ne[2];
+    GGML_ASSERT(ggml_cuda_gdn_tail_shape_ok(ncols) && dst->type == GGML_TYPE_F32 && ggml_is_contiguous(dst));
+    float eps;
+    memcpy(&eps, dst->op_params, sizeof(float));
+    const int64_t z_sh = z->ne[0] == ncols * nh ? ncols : (int64_t) (z->nb[1] / sizeof(float));
+    const int64_t z_st = z->ne[0] == ncols * nh ? (int64_t) (z->nb[1] / sizeof(float)) : (int64_t) (z->nb[2] / sizeof(float));
+    const int64_t x_s1 = (int64_t) (x->nb[1] / sizeof(float)), x_s2 = (int64_t) (x->nb[2] / sizeof(float));
+    gdn_tail_kernel<<<dim3((unsigned) nh, (unsigned) T, 1), ncols, 0, ctx.stream()>>>(
+        (const float *) x->data, (const float *) gamma->data, (const float *) z->data, (float *) dst->data,
+        ncols, nh, x_s1, x_s2, z_sh, z_st, eps);
+    CUDA_CHECK(cudaGetLastError());
+}

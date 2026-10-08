@@ -4214,6 +4214,9 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_MOE_ROUTE:
             ggml_cuda_op_moe_route(ctx, dst);
             break;
+        case GGML_OP_GDN_TAIL:
+            ggml_cuda_op_gdn_tail(ctx, dst);
+            break;
 #endif // defined(GGML_USE_HIP)
         case GGML_OP_GROUP_NORM:
             ggml_cuda_op_group_norm(ctx, dst);
@@ -8539,10 +8542,14 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                    op->src[2]->type == GGML_TYPE_F32 &&
                    ggml_cuda_moe_route_shape_ok(op->src[0]->ne[0], ggml_get_op_params_i32(op, 0),
                                                 ggml_get_op_params_i32(op, 1), ggml_get_op_params_i32(op, 2));
+        case GGML_OP_GDN_TAIL:
+            return op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32 &&
+                   op->src[2]->type == GGML_TYPE_F32 && ggml_cuda_gdn_tail_shape_ok(op->src[0]->ne[0]);
 #else
         case GGML_OP_HC_COMBINE_NORM:
         case GGML_OP_GATED_RMS_NORM_F16:
         case GGML_OP_MOE_ROUTE:
+        case GGML_OP_GDN_TAIL:
             return false;
 #endif
         case GGML_OP_MUL_MAT:
@@ -9309,6 +9316,15 @@ bool ggml_backend_cuda_moe_route_supported(int64_t n_embd, int64_t n_expert, int
     return ggml_cuda_moe_route_shape_ok(n_embd, n_expert, n_used, T);
 #else
     GGML_UNUSED(n_embd); GGML_UNUSED(n_expert); GGML_UNUSED(n_used); GGML_UNUSED(T);
+    return false;
+#endif
+}
+
+bool ggml_backend_cuda_gdn_tail_supported(int64_t ncols) {
+#if defined(GGML_USE_HIP)
+    return ggml_cuda_gdn_tail_shape_ok(ncols);
+#else
+    GGML_UNUSED(ncols);
     return false;
 #endif
 }

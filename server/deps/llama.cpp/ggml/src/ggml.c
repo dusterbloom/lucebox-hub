@@ -1218,9 +1218,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GATED_RMS_NORM_F16",
     "QSA_DECODE_IDS",
     "MOE_ROUTE",
+    "GDN_TAIL",
 };
 
-static_assert(GGML_OP_COUNT == 114, "GGML_OP_COUNT != 114");
+static_assert(GGML_OP_COUNT == 115, "GGML_OP_COUNT != 115");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1355,9 +1356,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "gated_rms_norm_f16(x,gamma,z)",
     "qsa_decode_ids(blocks,positions)",
     "moe_route(mixed,w_router,w_shexp)",
+    "gdn_tail(x,gamma,z)",
 };
 
-static_assert(GGML_OP_COUNT == 114, "GGML_OP_COUNT != 114");
+static_assert(GGML_OP_COUNT == 115, "GGML_OP_COUNT != 115");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -9876,3 +9878,25 @@ struct ggml_tensor * ggml_moe_route_sh_gate(struct ggml_context * ctx, struct gg
     return ggml_moe_route_view(ctx, p, GGML_TYPE_F32, 2, ne, 2);
 }
 
+struct ggml_tensor * ggml_gdn_tail(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * x,
+        struct ggml_tensor  * gamma,
+        struct ggml_tensor  * z,
+        float                 eps) {
+    GGML_ASSERT(x && gamma && z);
+    GGML_ASSERT(x->type == GGML_TYPE_F32 && gamma->type == GGML_TYPE_F32 && z->type == GGML_TYPE_F32);
+    const int64_t ncols = x->ne[0], nh = x->ne[1], nt = x->ne[2];
+    GGML_ASSERT(x->ne[3] == 1 && x->nb[0] == sizeof(float) && z->nb[0] == sizeof(float));
+    GGML_ASSERT(ggml_is_contiguous(gamma) && gamma->ne[0] == ncols && ggml_nelements(gamma) == ncols);
+    GGML_ASSERT((z->ne[0] == ncols * nh && ggml_nrows(z) == nt) ||
+                (z->ne[0] == ncols && z->ne[1] == nh && z->ne[2] == nt && z->ne[3] == 1));
+
+    struct ggml_tensor * result = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, ncols * nh, nt);
+    result->op     = GGML_OP_GDN_TAIL;
+    result->src[0] = x;
+    result->src[1] = gamma;
+    result->src[2] = z;
+    ggml_set_op_params_f32(result, 0, eps);
+    return result;
+}

@@ -349,6 +349,37 @@ static void ggml_compute_forward_moe_route(
     free(logits); free(taken);
 }
 
+// Reference for GGML_OP_GDN_TAIL (ggml.h, fusion-design K4): rms_norm(x) * gamma * sigmoid(z) -> F32, one thread.
+static void ggml_compute_forward_gdn_tail(
+        const struct ggml_compute_params * params,
+        struct ggml_tensor * dst) {
+    if (params->ith != 0) return;
+    const struct ggml_tensor * x     = dst->src[0];
+    const struct ggml_tensor * gamma = dst->src[1];
+    const struct ggml_tensor * z     = dst->src[2];
+    const float eps = ggml_get_op_params_f32(dst, 0);
+    const int64_t ncols = x->ne[0], nh = x->ne[1], nt = x->ne[2];
+    const bool z_headed = z->ne[0] == ncols && ggml_n_dims(z) >= 2 && z->ne[1] == nh;
+    const int64_t z_sh = z_headed ? (int64_t) (z->nb[1] / sizeof(float)) : ncols;
+    const int64_t z_st = z_headed ? (int64_t) (z->nb[2] / sizeof(float)) : (int64_t) (z->nb[1] / sizeof(float));
+    const float * g = (const float *) gamma->data;
+    float * out = (float *) dst->data;
+    for (int64_t t = 0; t < nt; ++t) {
+        for (int64_t h = 0; h < nh; ++h) {
+            const float * xr = (const float *) ((const char *) x->data + t * x->nb[2] + h * x->nb[1]);
+            const float * zr = (const float *) z->data + t * z_st + h * z_sh;
+            float * d = out + (t * nh + h) * ncols;
+            double ss = 0.0;
+            for (int64_t i = 0; i < ncols; ++i) ss += (double) xr[i] * xr[i];
+            const float scale = 1.0f / sqrtf((float) (ss / (double) ncols) + eps);
+            for (int64_t i = 0; i < ncols; ++i) {
+                const float v = scale * xr[i] * g[i];
+                d[i] = v / (1.0f + expf(-zr[i]));
+            }
+        }
+    }
+}
+
 static void ggml_compute_forward_ds4_moe_combine(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst) {
@@ -2193,6 +2224,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_moe_route(params, tensor);
             } break;
+        case GGML_OP_GDN_TAIL:
+            {
+                ggml_compute_forward_gdn_tail(params, tensor);
+            } break;
         case GGML_OP_GATED_RMS_NORM_F16:
             GGML_ABORT("GGML_OP_GATED_RMS_NORM_F16 is only supported on the CUDA/HIP backend");
         case GGML_OP_OUT_PROD:
@@ -2757,6 +2792,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_QSA_DECODE_IDS:
         case GGML_OP_DS4_MOE_COMBINE:
         case GGML_OP_MOE_ROUTE:
+        case GGML_OP_GDN_TAIL:
         case GGML_OP_FLASH_ATTN_EXT:
         case GGML_OP_FLASH_ATTN_SPARSE:
         case GGML_OP_PAGED_ATTN:
