@@ -67,27 +67,20 @@ were run interleaved in this one session on the same binary/box.
 
 No crashes, no NaN-traps, `rc=0` on every run; `GPU_EXEC_DONE rc=0` for all 12 processes.
 
-## Interpretation
+## Interpretation (corrected by coordinator)
 
-- **A - baseline = -6.29 ms/token**: total upper-bound cost of the hc_* family on the critical
-  path if it were free (zero launches, zero work). This is somewhat larger than PROFILE-38's
-  raw-kernel-time estimate (5.11 ms/token raw sum) because A also removes the per-launch
-  host-dispatch gap for all 383 hc launches/token, which the raw-kernel-time sum doesn't capture.
-- **B - baseline = -5.36 ms/token**: the launch/dispatch-gap part alone (same 383 launches/token,
-  now doing nothing) — this is the part attributable to *having 383 extra kernel launches*,
-  independent of what those kernels compute.
-- **A - B = -0.92 ms/token**: the hc_* kernels' own compute work, isolated from launch overhead.
-  Small relative to the launch-overhead component — consistent with PROFILE-38's framing that
-  launch-overhead idle (the 5-20 µs gap bucket) and the hc_* family were "roughly tied" buckets;
-  this knockout shows the hc_* family's bound (6.29 ms) is itself *mostly* launch-overhead
-  (5.36 of the 6.29 ms, ~85%), with its actual arithmetic work contributing only ~0.92 ms/token.
-- **C - baseline = -0.40 ms/token**: upper bound for eliminating quantize_q8_1's launch overhead
-  alone (256 launches/token, ~2 µs each per PROFILE-38) — small and in line with the profile's
-  534 µs/token raw-time estimate for this kernel.
+Arm B keeps all 383 hc launches per token but makes each one an empty kernel. It removes the hc
+kernels' work and keeps their launch and gap cost. Arm A removes both.
 
-These are upper bounds on a fused/eliminated-kernel win, not a projected real speedup — fusing
-hc_down_inject_mixed + hc_upmix_row8_exact + hc_combine_norm_f32_b256 + quantize_hc_lo_q8_1 into
-1-2 real kernels would still have to do the ~0.92 ms/token of actual work plus whatever reduced
-launch count remains, so the realistic win is somewhere between 0.92 ms (B-style, work-only) and
-6.29 ms (A-style, zero-cost fantasy) per token, closer to the 5-6 ms end if a fusion gets down to
-1-2 launches instead of 383.
+- **A − baseline = −6.29 ms/token**: the total critical-path cost of the hc_* family.
+- **B − baseline = −5.36 ms/token**: the hc kernels' own work. This is the dominant part.
+- **A − B = −0.92 ms/token**: the launch and dispatch-gap cost of 383 launches, about 2.4 µs each.
+- **C − baseline = −0.40 ms/token**: quantize_q8_1's own work, from 256 launches per token.
+
+The four hc kernels spend about 5.4 ms/token on work. They are small hyper-connection mixing ops,
+so this is far above a memory-bandwidth estimate for that work, and they are the first rewrite
+target. Fusing them into fewer launches would recover at most about 0.9 ms. Making their work
+efficient is where the remaining 4–5 ms can come from.
+
+Caveat: when hc is knocked out, downstream activations become garbage, so the MoE may pick
+different experts. The step count is unchanged. Only a same-work rewrite proves the saving.
