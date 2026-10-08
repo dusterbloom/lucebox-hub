@@ -43,3 +43,14 @@ static inline bool luce_hc_cn_fast() {
     static const bool v = luce_ko_flag("LUCE_QWEN_HC_CN_FAST");
     return v;
 }
+
+// LUCE_QWEN_HC_GEMV_FAST=1 -- opt-in to the geometry-only fast variants of the two hc_*
+// GEMV kernels (hc_down_inject_mixed_fast, hc_upmix_row8_exact_fast), gfx1151-only, see
+// mmvq.cu for the per-kernel rationale. Both variants keep the exact per-output
+// accumulation order of the baseline kernel -- same vec_dot_q_mmvq calls, same
+// warp_reduce_sum, same cross-stream/cross-wave combine -- so output is bit-identical.
+// Default off: byte-identical to today's kernels.
+static inline bool luce_hc_gemv_fast() {
+    static const bool v = luce_ko_flag("LUCE_QWEN_HC_GEMV_FAST");
+    return v;
+}

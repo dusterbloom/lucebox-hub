@@ -388,6 +388,204 @@ static __global__ void hc_down_inject_mixed(
     }
 }
 
+// Fast variant of hc_upmix_row8_exact, gated by LUCE_QWEN_HC_GEMV_FAST (geometry-only).
+// Identical body, identical row mapping (same e/c/row formula), identical
+// vec_dot_q_mmvq/warp_reduce_sum accumulation and identical cross-stream combine order as
+// hc_upmix_row8_exact -- the ONLY change is the launch_bounds occupancy hint. Today's
+// kernel pins __launch_bounds__(256,1), forcing the compiler to guarantee only one
+// 256-thread (8-warp) block resident per CU, so the GPU cannot overlap one block's
+// warp_reduce+epilogue latency with the next block's weight prefetch; with grid=1280 over
+// 40 CUs (gfx1151) that is 32 sequential blocks/CU, each paying the full round trip with no
+// overlap. Raising the hint to (256,2) asks the compiler to fit two resident blocks (if
+// register budget allows) so the hardware can hide one block's reduction/sync latency
+// behind the next block's memory fetch; if the compiler can't fit 2 blocks in this build's
+// register budget it silently keeps occupancy at 1 and the compiled code is unchanged
+// either way. This is a compiler scheduling hint only -- same instructions, same
+// per-thread values, same shared-memory reduction order -- so the numeric result cannot
+// differ from hc_upmix_row8_exact.
+template<bool Raw>
+__launch_bounds__(256, 2)
+static __global__ void hc_upmix_row8_exact_fast(
+        const void * __restrict__ weights, const block_q8_1 * __restrict__ lo_q8,
+        const float * __restrict__ xn, float * __restrict__ mixed,
+        float * __restrict__ raw, const float scale, const float bias) {
+    constexpr int qk = ggml_cuda_type_traits<GGML_TYPE_Q8_0>::qk;
+    constexpr int qi = ggml_cuda_type_traits<GGML_TYPE_Q8_0>::qi;
+    constexpr int vdr = VDR_Q8_0_Q8_1_MMVQ;
+    constexpr int blocks_per_row = 320/qk;
+    constexpr int blocks_per_iter = vdr*32/qi;
+    const int lane = threadIdx.x, wave = threadIdx.y;
+    const int e = 2*blockIdx.x + wave/4, c = wave%4;
+    const int row = e + c*2560;
+    float sum = 0.0f;
+    for (int kbx = lane/(qi/vdr); kbx < blocks_per_row; kbx += blocks_per_iter) {
+        const int kby = kbx*(qk/QK8_1), kqs = vdr*(lane%(qi/vdr));
+        sum += vec_dot_q_mmvq<GGML_TYPE_Q8_0, false>(
+            weights, &lo_q8[kby], row*blocks_per_row+kbx, kqs);
+    }
+    sum = warp_reduce_sum<32>(sum);
+    __shared__ float products[8];
+    if (lane == 0) {
+        if constexpr (Raw) raw[row] = sum;
+        products[wave] = hc_mul_rn(xn[row], hc_sigmoid(sum));
+    }
+    __syncthreads();
+    if (lane == 0 && c == 0) {
+        float acc = products[wave];
+        acc = hc_add_rn(acc, products[wave+1]);
+        acc = hc_add_rn(acc, products[wave+2]);
+        acc = hc_add_rn(acc, products[wave+3]);
+        mixed[e] = scale*acc + bias;
+    }
+}
+
+// Fast variant of hc_down_inject_mixed, gated by LUCE_QWEN_HC_GEMV_FAST (geometry-only).
+// The baseline launches <<<44, dim3(32,8,1)>>>: 40 blocks compute the down projection (one
+// block per CU on gfx1151's 40 CUs -- a single, fully-saturating wave) plus 4 more blocks
+// for the unrelated inject projection. Those 4 extra blocks cannot start until a CU frees
+// up, so once the 40 down-projection blocks (roughly uniform duration) retire together they
+// land in a second, 36-of-40-CUs-idle wave that still pays a full block's launch+sync
+// latency with nothing else to overlap it against -- a textbook ramp/tail inefficiency from
+// a grid sized just past a multiple of the CU count. This variant launches exactly 40
+// blocks (one full wave, zero tail) and folds the 4 inject rows into blocks 0..3 as a
+// second phase of the SAME block that already computed a down-projection row: the per-
+// thread tid mapping, the x2/w2 strided accumulation, and the two-level
+// warp_reduce_sum+shared-partial reduction are byte-for-byte identical to the baseline's
+// tail branch, just with row = blockIdx.x instead of blockIdx.x-40 (same value set
+// {0,1,2,3}). down_dst and inject_dst are disjoint buffers with no data dependency between
+// the two phases, so interleaving them inside one block changes nothing about either
+// phase's arithmetic or accumulation order -- only which wave does the work.
+static __global__ void hc_down_inject_mixed_fast(
+        const void * __restrict__ down, const block_q8_1 * __restrict__ xq,
+        float * __restrict__ down_dst, const float * __restrict__ inject,
+        const float * __restrict__ x, float * __restrict__ inject_dst) {
+    constexpr int ncols = 10240;
+    constexpr int qk = ggml_cuda_type_traits<GGML_TYPE_Q8_0>::qk;
+    constexpr int qi = ggml_cuda_type_traits<GGML_TYPE_Q8_0>::qi;
+    constexpr int vdr = VDR_Q8_0_Q8_1_MMVQ;
+    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+    constexpr int blocks = ncols/qk;
+    const int lane = threadIdx.x;
+
+    // Down projection: identical to hc_down_inject_mixed's blockIdx.x<40 branch, now
+    // unconditional since every block in this 40-block grid computes one such row.
+    {
+        const int row = 8*blockIdx.x + threadIdx.y;
+        float sum = 0.0f;
+        for (int kbx = lane/(qi/vdr); kbx < blocks; kbx += vdr*warp_size/qi) {
+            const int kby = kbx*(qk/QK8_1);
+            const int kqs = vdr*(lane % (qi/vdr));
+            sum += vec_dot_q_mmvq<GGML_TYPE_Q8_0, false>(
+                down, &xq[kby], row*blocks + kbx, kqs);
+        }
+        sum = warp_reduce_sum<warp_size>(sum);
+        if (lane == 0) down_dst[row] = sum;
+    }
+
+    if (blockIdx.x >= 4) return;
+
+    // Inject projection: identical to hc_down_inject_mixed's tail branch (row =
+    // blockIdx.x instead of blockIdx.x-40; same tid mapping, same reduction).
+    const int tid = threadIdx.y*warp_size + lane;
+    const int row = blockIdx.x;
+    const float2 * x2 = reinterpret_cast<const float2 *>(x);
+    const float2 * w2 = reinterpret_cast<const float2 *>(inject + row*ncols);
+    float sum = 0.0f;
+    for (int col2 = tid; col2 < ncols/2; col2 += 8*warp_size) {
+        const float2 xv = x2[col2];
+        const float2 wv = w2[col2];
+        ggml_cuda_mad(sum, wv.x, xv.x);
+        ggml_cuda_mad(sum, wv.y, xv.y);
+    }
+    __shared__ float partial[warp_size];
+    if (tid < warp_size) partial[tid] = 0.0f;
+    __syncthreads();
+    sum = warp_reduce_sum<warp_size>(sum);
+    partial[tid/warp_size] = sum;
+    __syncthreads();
+    if (tid < warp_size) {
+        sum = partial[tid];
+        sum = warp_reduce_sum<warp_size>(sum);
+        if (tid == 0) inject_dst[row] = sum;
+    }
+}
+
+// Test-only hook: runs the baseline hc_upmix_row8_exact and hc_upmix_row8_exact_fast on
+// identical inputs into separate output buffers so a host test can memcmp them for
+// bit-identity. Not used by production code paths.
+extern "C" GGML_BACKEND_API int ggml_cuda_test_hc_upmix_bitexact(
+        const void * weights, const block_q8_1 * lo_q8, const float * xn,
+        float * mixed_a, float * mixed_b, float scale, float bias, void * raw_stream) {
+    if (!weights || !lo_q8 || !xn || !mixed_a || !mixed_b) return 0;
+    cudaStream_t stream = (cudaStream_t) raw_stream;
+    hc_upmix_row8_exact<false><<<1280, dim3(32,8), 0, stream>>>(
+        weights, lo_q8, xn, mixed_a, nullptr, scale, bias);
+    if (cudaGetLastError() != cudaSuccess) return 0;
+    hc_upmix_row8_exact_fast<false><<<1280, dim3(32,8), 0, stream>>>(
+        weights, lo_q8, xn, mixed_b, nullptr, scale, bias);
+    if (cudaGetLastError() != cudaSuccess) return 0;
+    return cudaStreamSynchronize(stream) == cudaSuccess ? 1 : 0;
+}
+
+// Test-only hook: runs the baseline hc_down_inject_mixed (grid 44) and
+// hc_down_inject_mixed_fast (grid 40) on identical inputs into separate output buffers so a
+// host test can memcmp them for bit-identity. Not used by production code paths.
+extern "C" GGML_BACKEND_API int ggml_cuda_test_hc_down_inject_bitexact(
+        const void * down, const block_q8_1 * xq, float * down_dst_a, float * down_dst_b,
+        const float * inject, const float * x, float * inject_dst_a, float * inject_dst_b,
+        void * raw_stream) {
+    if (!down || !xq || !down_dst_a || !down_dst_b || !inject || !x ||
+        !inject_dst_a || !inject_dst_b) return 0;
+    cudaStream_t stream = (cudaStream_t) raw_stream;
+    hc_down_inject_mixed<<<44, dim3(32, 8, 1), 0, stream>>>(
+        down, xq, down_dst_a, inject, x, inject_dst_a);
+    if (cudaGetLastError() != cudaSuccess) return 0;
+    hc_down_inject_mixed_fast<<<40, dim3(32, 8, 1), 0, stream>>>(
+        down, xq, down_dst_b, inject, x, inject_dst_b);
+    if (cudaGetLastError() != cudaSuccess) return 0;
+    return cudaStreamSynchronize(stream) == cudaSuccess ? 1 : 0;
+}
+
+// Test-only microbench hooks: issue `n_reps` launches of ONE kernel variant back-to-back on
+// `stream` without syncing in between, then sync once at the end. The host wraps this in a
+// timer to get µs/launch for that variant in isolation (as opposed to the paired bitexact
+// hooks above, which always launch both). Not used by production code paths.
+extern "C" GGML_BACKEND_API int ggml_cuda_bench_hc_upmix(
+        int use_fast, const void * weights, const block_q8_1 * lo_q8, const float * xn,
+        float * mixed, float scale, float bias, int n_reps, void * raw_stream) {
+    if (!weights || !lo_q8 || !xn || !mixed || n_reps <= 0) return 0;
+    cudaStream_t stream = (cudaStream_t) raw_stream;
+    for (int i = 0; i < n_reps; ++i) {
+        if (use_fast) {
+            hc_upmix_row8_exact_fast<false><<<1280, dim3(32,8), 0, stream>>>(
+                weights, lo_q8, xn, mixed, nullptr, scale, bias);
+        } else {
+            hc_upmix_row8_exact<false><<<1280, dim3(32,8), 0, stream>>>(
+                weights, lo_q8, xn, mixed, nullptr, scale, bias);
+        }
+    }
+    if (cudaGetLastError() != cudaSuccess) return 0;
+    return cudaStreamSynchronize(stream) == cudaSuccess ? 1 : 0;
+}
+
+extern "C" GGML_BACKEND_API int ggml_cuda_bench_hc_down_inject(
+        int use_fast, const void * down, const block_q8_1 * xq, float * down_dst,
+        const float * inject, const float * x, float * inject_dst, int n_reps, void * raw_stream) {
+    if (!down || !xq || !down_dst || !inject || !x || !inject_dst || n_reps <= 0) return 0;
+    cudaStream_t stream = (cudaStream_t) raw_stream;
+    for (int i = 0; i < n_reps; ++i) {
+        if (use_fast) {
+            hc_down_inject_mixed_fast<<<40, dim3(32, 8, 1), 0, stream>>>(
+                down, xq, down_dst, inject, x, inject_dst);
+        } else {
+            hc_down_inject_mixed<<<44, dim3(32, 8, 1), 0, stream>>>(
+                down, xq, down_dst, inject, x, inject_dst);
+        }
+    }
+    if (cudaGetLastError() != cudaSuccess) return 0;
+    return cudaStreamSynchronize(stream) == cudaSuccess ? 1 : 0;
+}
+
 enum mmvq_parameter_table_id {
     MMVQ_PARAMETERS_GENERIC = 0,
     MMVQ_PARAMETERS_GCN,
@@ -3050,6 +3248,12 @@ static bool ggml_cuda_try_hc_down_inject(
     } else if (luce_ko_empty_hc()) {
         luce_ko_noop_kernel<<<1, 32, 0, stream>>>();
         CUDA_CHECK(cudaGetLastError());
+    } else if (luce_hc_gemv_fast()) {
+    hc_down_inject_mixed_fast<<<40, dim3(32, 8, 1), 0, stream>>>(
+        src0_dd_i, reinterpret_cast<const block_q8_1 *>(src1_ddq_i), dst_dd_i,
+        static_cast<const float *>(iw->data), src1_ddf_i,
+        static_cast<float *>(inject->data));
+    CUDA_CHECK(cudaGetLastError());
     } else {
     hc_down_inject_mixed<<<44, dim3(32, 8, 1), 0, stream>>>(
         src0_dd_i, reinterpret_cast<const block_q8_1 *>(src1_ddq_i), dst_dd_i,
@@ -3223,6 +3427,10 @@ void ggml_cuda_mul_mat_vec_q(
             // skip: timing-bound-only, h.mixed left stale.
         } else if (luce_ko_empty_hc()) {
             luce_ko_noop_kernel<<<1, 32, 0, stream>>>();
+        } else if (luce_hc_gemv_fast()) {
+        hc_upmix_row8_exact_fast<false><<<1280, dim3(32,8), 0, stream>>>(src0->data,
+            (const block_q8_1 *)src1_q8_d, (const float *)h.xn->data,
+            (float *)h.mixed->data, nullptr, h.scale, h.bias);
         } else {
         hc_upmix_row8_exact<false><<<1280, dim3(32,8), 0, stream>>>(src0->data,
             (const block_q8_1 *)src1_q8_d, (const float *)h.xn->data,
