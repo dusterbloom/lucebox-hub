@@ -1,4 +1,5 @@
 #include "mmvq.cuh"
+#include "luce-knockout.cuh"
 
 static thread_local char * g_mmvq_fixed_q8 = nullptr;
 static thread_local size_t g_mmvq_fixed_q8_bytes = 0;
@@ -3044,11 +3045,18 @@ static bool ggml_cuda_try_hc_down_inject(
         !overlaps(inject->data, ggml_nbytes(inject), src0->data, ggml_nbytes(src0)) &&
         !overlaps(inject->data, ggml_nbytes(inject), iw->data, ggml_nbytes(iw));
     GGML_ASSERT(safe_ranges);
+    if (luce_ko_hc()) {
+        // skip: timing-bound-only, dst_dd_i/inject left stale.
+    } else if (luce_ko_empty_hc()) {
+        luce_ko_noop_kernel<<<1, 32, 0, stream>>>();
+        CUDA_CHECK(cudaGetLastError());
+    } else {
     hc_down_inject_mixed<<<44, dim3(32, 8, 1), 0, stream>>>(
         src0_dd_i, reinterpret_cast<const block_q8_1 *>(src1_ddq_i), dst_dd_i,
         static_cast<const float *>(iw->data), src1_ddf_i,
         static_cast<float *>(inject->data));
     CUDA_CHECK(cudaGetLastError());
+    }
     g_hc_down_inject_consumed = true;
     ++g_hc_down_inject_launch_count;
     return true;
@@ -3211,9 +3219,15 @@ void ggml_cuda_mul_mat_vec_q(
         GGML_ASSERT(disjoint(h.mixed->data, ggml_nbytes(h.mixed), src0->data, ggml_nbytes(src0)) &&
             disjoint(h.mixed->data, ggml_nbytes(h.mixed), h.xn->data, ggml_nbytes(h.xn)) &&
             disjoint(h.mixed->data, ggml_nbytes(h.mixed), dst->data, ggml_nbytes(dst)));
+        if (luce_ko_hc()) {
+            // skip: timing-bound-only, h.mixed left stale.
+        } else if (luce_ko_empty_hc()) {
+            luce_ko_noop_kernel<<<1, 32, 0, stream>>>();
+        } else {
         hc_upmix_row8_exact<false><<<1280, dim3(32,8), 0, stream>>>(src0->data,
             (const block_q8_1 *)src1_q8_d, (const float *)h.xn->data,
             (float *)h.mixed->data, nullptr, h.scale, h.bias);
+        }
         g_upmix_row8.consumed = true; ++g_upmix_row8_host; return;
     }
 

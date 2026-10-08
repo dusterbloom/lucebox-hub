@@ -1,4 +1,5 @@
 #include "quantize.cuh"
+#include "luce-knockout.cuh"
 #include <cstdint>
 
 static __device__ __forceinline__ void q8_1_store_lane(
@@ -312,7 +313,11 @@ void quantize_hc_lo_q8_1_cuda(
     GGML_ASSERT(x && vy && (in_place || dst));
     const dim3 blocks(MATRIX_ROW_PADDING / CUDA_QUANTIZE_BLOCK_SIZE, 1, 1);
     const dim3 threads(CUDA_QUANTIZE_BLOCK_SIZE, 1, 1);
-    if (in_place) {
+    if (luce_ko_hc()) {
+        // skip: timing-bound-only, dst/vy left stale.
+    } else if (luce_ko_empty_hc()) {
+        luce_ko_noop_kernel<<<1, 32, 0, stream>>>();
+    } else if (in_place) {
         quantize_hc_lo_q8_1<true><<<blocks, threads, 0, stream>>>(
             x, nullptr, (block_q8_1 *) vy, scale, bias);
     } else {
@@ -333,7 +338,11 @@ void quantize_row_q8_1_cuda(
     const int64_t block_num_x = (ne0 + CUDA_QUANTIZE_BLOCK_SIZE - 1) / CUDA_QUANTIZE_BLOCK_SIZE;
     const dim3 num_blocks(block_num_x, ne1, ne2*ne3);
     const dim3 block_size(CUDA_QUANTIZE_BLOCK_SIZE, 1, 1);
-    quantize_q8_1<<<num_blocks, block_size, 0, stream>>>(x, vy, ne00, s01, s02, s03, ne0, ne1, ne2_fastdiv);
+    if (luce_ko_empty_q8()) {
+        luce_ko_noop_kernel<<<1, 32, 0, stream>>>();
+    } else {
+        quantize_q8_1<<<num_blocks, block_size, 0, stream>>>(x, vy, ne00, s01, s02, s03, ne0, ne1, ne2_fastdiv);
+    }
     GGML_UNUSED(type_src0);
 }
 

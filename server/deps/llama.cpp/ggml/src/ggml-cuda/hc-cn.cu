@@ -1,4 +1,5 @@
 #include "hc-cn.cuh"
+#include "luce-knockout.cuh"
 #include <cstdlib>
 
 #if defined(__HIP_PLATFORM_AMD__)
@@ -342,6 +343,12 @@ void ggml_cuda_op_hc_combine_norm(ggml_backend_cuda_context & ctx, const ggml_cu
                 ggml_nelements(a.inject) == hc * n_tokens);
     GGML_ASSERT(!a.out_q8_1 || (n_tokens == 1 && a.store_xn_f32 && n_embd % QK8_1 == 0));
 
+    if (luce_ko_hc()) {
+        // skip: timing-bound-only, out_res/out_xn/out_q8_1 left stale.
+    } else if (luce_ko_empty_hc()) {
+        luce_ko_noop_kernel<<<1, 32, 0, ctx.stream()>>>();
+        CUDA_CHECK(cudaGetLastError());
+    } else {
     hc_combine_norm_f32_b256<<<dim3((unsigned) hc, (unsigned) n_tokens, 1), HC_CN_BLOCK2, 0, ctx.stream()>>>(
         (const float *) a.inject->data, (const float *) a.residual->data,
         (const float *) a.block_out->data, (const float *) a.gamma->data,
@@ -349,4 +356,5 @@ void ggml_cuda_op_hc_combine_norm(ggml_backend_cuda_context & ctx, const ggml_cu
         a.res_in_bf16, a.res_out_bf16, a.blk_in_bf16,
         (int) n_embd, a.s1, a.b1, a.s2, a.b2, a.eps, a.out_q8, a.out_q8_1);
     CUDA_CHECK(cudaGetLastError());
+    }
 }
