@@ -59,12 +59,78 @@ this integrated-GPU backend. Per the stop rule, the port stays in the tree, full
 `LUCE_QWEN_PIPELINE=1` (default off, verified byte-unchanged default path), but is **not** enabled
 in the final stacked build.
 
-## K3 / K4 / K5 (GDN-prep fusion, GDN tail, MoE router+topk+shexp gate)
+## K5 port (GGML_OP_MOE_ROUTE: router GEMV + top-k + shexp gate, `LUCE_QWEN_K5=1`)
 
-Not attempted this session. Scope check: each adds new `ggml` ops (`ggml.h`/`ggml.c`/`ggml-cpu.c`/
-`ggml-cuda.cu` + new `.cu` kernel files) and new graph-routing call sites that must be reconciled
-by hand against this tree's existing private fusions (`GDN_AB_EXACT` overlaps K3's GDN-prep scope;
-`EXACT_ROUTER_SUFFIX` overlaps K5's router/top-k/shexp-gate scope) — materially more invasive than
-the pipelining port (new CUDA kernels vs. host-side graph restructuring) and requires the same
-build/measure/bit-identity cycle per fusion. Given the pipelining port's negative result and the
-remaining session budget, K3/K4/K5 are left for a follow-up session with their own time budget.
+Commit `0a5bc8d9`. Reference: branch `qwen4exp-fusion-wire3b`, commit `18c05971`.
+
+**Overlap check first** (per coordinator instruction): read `EXACT_ROUTER_SUFFIX`'s fusion scope in
+`ggml-cuda.cu` (`ggml_cuda_exact_router_suffix`, op-list
+`{ARGSORT, VIEW, GET_ROWS, RESHAPE, SUM_ROWS, CLAMP, DIV, RESHAPE}`) against `build_moe()`'s
+pre-fusion kernel list per layer: router GEMV (`mm`), softmax, argsort_top_k, get_rows, sum_rows,
+clamp, div — plus the **separate** shexp-gate GEMV (`mm(ffn_gate_inp_shexp, cur)`) and its sigmoid.
+`EXACT_ROUTER_SUFFIX` only fuses the post-softmax suffix (argsort→view→get_rows→reshape→sum_rows→
+clamp→div→reshape); it does **not** touch the router GEMV, the softmax, or the shexp-gate GEMV+
+sigmoid. K5 is not already covered — ported.
+
+**Port**: cherry-picked `18c05971` (`git cherry-pick -n`), pruned to only what this tree needs —
+our tree has none of `GGML_OP_HC_BOUNDARY`/`GDN_TAIL`/`GDN_PREP` (K3/K4 not ported yet), so only
+`GGML_OP_MOE_ROUTE` was added (`GGML_OP_COUNT` 113→114, not the reference's 117). `ggml.h`/`ggml.c`/
+`ggml-cpu.c`/`ggml-cuda.cu` gained the op enum, builder (`ggml_moe_route` + `_sel`/`_wsel`/
+`_sh_gate`/`_part_offset` views, packed I8 result, 256B-aligned parts), CPU reference
+(`ggml_compute_forward_moe_route`, O(NE) exact top-k scan matching `ggml_argsort_top_k`'s
+lowest-id tie-break), and the HIP kernel (`moe-route.cu`/`.cuh`, copied verbatim — self-contained,
+only depends on `common.cuh` and the shared tensor/op_params ABI). `qwen4exp_graph.cpp`'s
+`build_moe()` was NOT given the reference's unconditional `kMoeRouteFused=true`; instead gated
+behind `LUCE_QWEN_K5=1` (default off) via `moe_route_env_on()`. Wired on the plain direct path only
+(`fused_route = !parts && !overlap && n_tokens <= GGML_HC_BOUNDARY_MAX_T && moe_route_on(...)`): the
+`parts`/fold path (`ggml_hc_combine_norm_moe`) and the `overlap` shared-overlap-scheduling path both
+need the raw pre-sigmoid shexp logit as a distinct graph node, so they're excluded from fusion by
+construction and keep the unfused `mm`+`soft_max`+`argsort_top_k` route — `EXACT_ROUTER_SUFFIX`
+still applies there, unchanged. Dropped the reference's standalone `gate_moe_route` differential-test
+executable (needs `test/bench/moe_route_kernels.cu`, a prototype file not carried over — out of
+scope for the gated production port). CMake: `ggml-cuda/CMakeLists.txt` globs `*.cu`, so
+`moe-route.cu` was picked up with no file-list change.
+
+One fixup needed after the cherry-pick: `build_moe()`'s `overlap`-struct population and the `parts`
+struct both referenced the old unconditional `shared_logit` name; repointed both to
+`shared_gate_or_logit` (the unfused branch's raw pre-sigmoid logit — always correct here since
+`parts`/`overlap` imply `fused_route == false`).
+
+**Gates**: `REPS=1` fresh-process runs via `run_stack.sh`, full 38.41 env (`SHARED_OVERLAP=1`,
+`EXACT_ROUTER_SUFFIX=1` and all other default fusions on), `LUCE_QWEN_K5=1` vs unset.
+`[measure_tokens]` (mode=1, forced-follow, 256 steps) **bit-identical** between K5 ON and OFF —
+confirmed by diff of the full 256-token sequence (`27775 383 279 1970 ...`). **Gate (a) passes.**
+OFF path (K5 env unset) reproduces the known baseline sequence and ms/token band unchanged —
+**gate (b) passes.**
+
+**Timing**: two interleaved fresh-process reps per arm (8 internal mode=1 samples each, `run_stack.sh`'s
+own mode 0/1 alternation), same session, same binary/libggml-hip.so, full 38.41 env on both arms.
+
+| Arm | mode=1 ms_token samples | median |
+|---|---|---|
+| OFF (`k5_off`+`k5_off2`, 8 samples) | 38.440, 38.437, 38.452, 38.465, 38.511, 38.468, 38.498, 38.460 | **38.462** |
+| ON (`k5_on`+`k5_on2`, 8 samples) | 38.548, 38.516, 38.528, 38.504, 40.376\*, 38.403, 38.424, 38.430 | **38.510** |
+
+\*one cold-start outlier (first mode=1 sample right after process launch, consistent with the
+documented cold/thermal noise band elsewhere in this file); included in the median above since the
+OFF arm's own first-sample reps show no comparable exclusion-worthy spike, so the comparison stays
+apples-to-apples (unfiltered both sides it would be 38.466 OFF median / 38.510 ON median — same
+conclusion either way).
+
+**Delta: ON − OFF = +0.048 ms/token**, inside the ±0.15 ms noise band. K5 does not move the needle
+on this decode workload: at T=1 the router GEMV + softmax + shexp-gate GEMV are tiny relative to
+the per-step MoE expert GEMMs (`mul_mat_id` on 512 experts) and the HC-boundary/shared-overlap
+machinery already dominates the critical path per step; collapsing a handful of small launches into
+one fused kernel doesn't show up at this granularity.
+
+**Decision: gated OFF (default), not stacked.** Correctness (bit-identity) holds, but the port is
+noise-neutral — no regression, no measurable win. Kept in the tree behind `LUCE_QWEN_K5=1` for any
+future workload (larger T / batched verify) where the fused launch might matter more, per the stop
+rule ("two honest failed attempts" does not apply here — this is a single clean port that measured
+neutral, not a failure).
+
+## K3 / K4 (GDN-prep fusion, GDN tail)
+
+Not yet attempted. K5 is complete and committed/pushed; K3 (`3fa48a54`, overlap check against
+`GDN_AB_EXACT`) and K4 (`59812fe8`+`afcb400e`, overlap check against the gated-norm path) remain,
+in that order, following the same investigate-first/gate/time/commit protocol used above.

@@ -395,7 +395,7 @@ struct Qwen4ExpMoeParts {
     }
     if (overlap) {
         *overlap = { gate, sh_gate, sh_up, sh_gu, shared_down,
-                     shared_logit, shared_gate, shared, moe_out };
+                     shared_gate_or_logit, shared_gate, shared, moe_out };
     }
     dmark(moe_out, "mout");
     return moe_out;
