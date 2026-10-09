@@ -703,3 +703,85 @@ one additional Q6_K-quantized consumer path rather than a correctness bug.
 
 Per instruction, stopping before timing. Next: A3 vs A4 interleaved x3, plus
 one Q8 arm, after the user's drop_caches + compact_memory.
+
+## Do A4's 4 top-1 flips come from the handoff, or from Q6_K precision?
+
+### 1(a)/(b). Env gate for the GDN q8 producer, and the disable attempt
+
+The only env gate is `LUCE_QWEN_PRODUCER_Q8` (checked via
+`ggml_cuda_producer_q8_requested()`, `ggml-cuda.cu:329-332`) -- it is a single
+flag for the whole producer-q8 family, gating **both** the GDN path
+(`ggml_cuda_gdn_q8_match`/`ggml_cuda_gated_rms_norm_q8_1`, used at
+`ggml-cuda.cu:7085-7090`) and the unrelated HC path
+(`g_hc_q8_1_consumer`/`ggml_cuda_producer_q8_reserve`, `ggml-cuda.cu:7503-7513`,
+feeding the `producer_hc_sites` counter) -- there is no finer-grained,
+GDN-only env knob.
+
+Tried `LUCE_QWEN_PRODUCER_Q8=0` against the golden-mode harness (A4 model,
+same full env otherwise): **rejected outright**, `GPU_EXEC_DONE rc=2`, before
+the model even loads. This is `driver_shared_epilogue.cpp:57-58`'s own
+startup guard: `!enabled("LUCE_QWEN_PRODUCER_Q8","1")` unconditionally returns
+2, for every mode (golden/native/census share the same guard, checked before
+the mode branch). This is a **harder block than losing SHARED_OVERLAP
+sealing** -- the coordinator's fallback ("if the only way to turn it off also
+turns off sealing, use that") doesn't apply here because there is no way to
+turn it off via this harness at all, sealed or not. No dump (b) could be
+captured this way.
+
+### 3. `ggml_cuda_test_gdn_q8_producer` harness
+
+Defined (`gated-norm.cu:138-150`, `gated-norm.cuh:18-20`) as a "private
+emitted-byte fixture entry point" that launches the raw producer kernel
+(`gated_rms_norm2_kernel<true>`) against caller-supplied pointers, bypassing
+the graph/memo/consumer-matching machinery entirely. `grep -rln
+"ggml_cuda_test_gdn_q8_producer"` across `src/server/` finds **no caller** --
+the symbol exists in the compiled `.so` but no test binary in this tree
+invokes it. Nothing to run; not fabricating a harness that doesn't exist.
+
+### 2. Decisive answer via direct diff inspection (fork `2c3b8883`)
+
+With no live A/B possible, inspected the full A4 diff directly (`git show
+2c3b8883`, 2 files, 7 insertions/5 deletions total) rather than guess:
+
+```diff
+- consumer->src[0]->type != GGML_TYPE_Q8_0 || consumer->src[1]->type != GGML_TYPE_F32 ||
++ (consumer->src[0]->type != GGML_TYPE_Q8_0 && consumer->src[0]->type != GGML_TYPE_Q6_K) ||
++ consumer->src[1]->type != GGML_TYPE_F32 ||
+...
+- e.src0_type = (int) GGML_TYPE_Q8_0;
++ e.src0_type = (int) consumer->src[0]->type;
+...
+- mm->src[0]->type != GGML_TYPE_Q8_0) return false;
++ (mm->src[0]->type != GGML_TYPE_Q8_0 && mm->src[0]->type != GGML_TYPE_Q6_K)) return false;
+...
+- GGML_ASSERT(!ids && src0->type == GGML_TYPE_Q8_0 &&
++ GGML_ASSERT(!ids && (src0->type == GGML_TYPE_Q8_0 ||
++         (producer && ne10 == 6144 && src0->type == GGML_TYPE_Q6_K)) &&
+```
+
+Every changed line is an **accept/reject predicate or a cache key** --
+`ggml_cuda_gdn_q8_match`'s consumer-type check (gate), `ggml_cuda_
+producer_q8_reserve`'s consumer-type check + memo key (gate + cache-key
+correctness, so a Q6_K-consumer entry can't collide with a differently-typed
+cached entry), and the `mmvq.cu` `GGML_ASSERT` (gate). **Zero lines change
+the kernel that actually computes the producer's output bytes** --
+`ggml_cuda_gated_rms_norm_q8_1`/`gated_rms_norm2_kernel` (the function that
+writes `out_q8`, `gated-norm.cu:112-130`) is untouched by this commit, and the
+commit message states the underlying reason precisely: *"q8_1 activation
+layout is weight-type independent (`quantize_row_q8_1_cuda` ignores
+`type_src0`)"* -- the producer computes the same q8_1 bytes no matter what
+type the downstream consumer's weight turns out to be; the consumer's weight
+type only matters on the *other* side of the dot product (MMVQ's dequant of
+`src0`), and that Q6_K dequant-and-dot kernel is pre-existing code already
+exercised by every other Q6_K dense tensor in A3/A4 (attn_qkv, attn_gate,
+etc.), not something new introduced here.
+
+**Conclusion: the handoff is exact by construction, not by measurement.**
+Widening three accept/reject gates cannot change the value that flows through
+them -- there is no code path by which the GDN handoff itself could introduce
+numerical error. A4's extra divergence vs A3 (the 4 flipped positions) is
+therefore attributable to Q6_K's precision loss on the `ssm_out` weight
+itself (the operand the GDN's q8_1 activation now gets dot-producted
+against), not to any handoff/semantics bug -- consistent with A4 simply
+exercising one more Q6_K-quantized tensor than A3 does, with no fusion-level
+correctness issue.
