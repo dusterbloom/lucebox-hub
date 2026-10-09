@@ -154,3 +154,103 @@ given this result.
   (SHARED_OVERLAP env flipped relative to `run_stack.sh`).
 - Model: `/home/duster/models/qwen4exp-dense-q6k/Qwen3.8-Flash-Next-dense-Q6K-0000{1..4}-of-00004.gguf`
   on lucebox4 (not committed -- binary weights, box-local only).
+
+---
+
+# Arm A2: keep ffn_{gate,up,down}_shexp at Q8_0
+
+Hypothesis (coordinator): SHARED_OVERLAP's "shape/type contract" reject in option A
+was caused by the shared-expert tensors becoming type-inconsistent (gate/up became
+Q6_K, down stayed Q8_0 because its row width can't fit a 256-superblock) rather than
+by the main dense stack (attn_qkv/attn_gate/ssm_out/attn_q/attn_output/output.weight)
+being Q6_K. **Confirmed correct, but it exposes a second, independent, hard-crashing
+contract.**
+
+## 1. Build
+
+Same `requant_q6.cpp` tool, `--keep-shexp-q8` flag added: `should_requant()` no longer
+touches `ffn_gate_shexp`/`ffn_up_shexp` (join `ffn_down_shexp`, which already couldn't
+convert -- ne0=640 isn't a multiple of 256). 157 tensors converted this time (vs 253 in
+option A; the 96-tensor difference is `ffn_gate_shexp`+`ffn_up_shexp` across 36 layers
+plus the handful that only cleared the 256-divisibility bar when counted per-shard).
+Shard 00001 (metadata-only, 0 tensors) hardlinked, not copied, per instruction. Shards
+00002/00003/00004 rewritten (same tool, same byte-exact-copy-for-untouched-tensors
+approach as option A). Verified with gguf-py: tensor counts 297/752/175 match
+source, all 4 shards open cleanly.
+
+Byte accounting (sum over the 157 converted tensors): old (Q8_0) = 3.275 GiB, new
+(Q6_K) = 2.528 GiB, **saved = 0.746 GiB** (less than option A's 0.800 GiB, as
+expected -- keeping 72 shexp tensors at Q8_0 gives up some of the savings). Whole
+model: 103 GiB (same as option A to the GiB).
+
+Model path: `/home/duster/models/qwen4exp-dense-q6k-a2/Qwen3.8-Flash-Next-dense-Q6K-a2-0000{1..4}-of-00004.gguf`
+
+## 2. Fusion survival -- SHARED_OVERLAP fixed, HC_UPMIX_ROW8 now hard-crashes
+
+Running the full `run_stack.sh` env (`LUCE_QWEN_SHARED_OVERLAP=1` and everything else
+on) against the A2 model: **no `[qwen4exp] shared overlap disabled ... shape/type
+contract` message at all** -- confirms the coordinator's hypothesis: SHARED_OVERLAP's
+`q8_weight(shared_gate, 2560, 640) / q8_weight(shared_up, 2560, 640) /
+q8_weight(shared_down, 640, 2560)` contract (ggml-cuda.cu:5321-5323, all three must be
+exactly `GGML_TYPE_Q8_0`) is satisfied again now that the shared-expert triple is
+type-consistent.
+
+But the process now hard-aborts (SIGABRT, rc=134) a few hundred ms into warmup rep 0:
+```
+ggml-cuda.cu:6530: GGML_ASSERT(upmix_row8 && upmix_row8->pairs.size() == 96) failed
+```
+This assert only fires when `sealed_sh` is true (ggml-cuda.cu:6393/6530) -- i.e. only
+once SHARED_OVERLAP itself has successfully sealed/captured. In option A, SHARED_OVERLAP
+never sealed (it was rejected at the contract check), so this stricter invariant never
+ran and HC_UPMIX_ROW8 fell back to its host path uneventfully. In A2, SHARED_OVERLAP
+*does* seal, which activates a second, independent structural contract:
+`ggml_cuda_prepare_hc_upmix_row8()`'s positional graph-node scan
+(`ggml_cuda_hc_upmix_row8_pair_quick_valid`, ggml-cuda.cu:6250-6279) expects to find
+exactly 96 fixed-shape `MUL_MAT` sites (`weight` = the untouched `hc_attn_up`/
+`hc_ffn_up` tensor, 320x10240, still Q8_0 -- not something we changed) at specific,
+hard-coded positions in the capture graph. Converting attn_qkv/attn_gate/ssm_out/
+attn_q/attn_output/output.weight to Q6_K changes the CUDA kernel dispatch for those
+MUL_MATs (K-quant vs Q8_0 take different code paths), which shifts node
+indices/adjacency in the captured graph enough that fewer than 96 of the expected
+upmix sites pattern-match. It is a type-independent **positional** contract on the
+*rest* of the dense stack, triggered only once SHARED_OVERLAP seals.
+
+**Tried to route around it with an env flag (not a code patch) and hit a second,
+intentional guard:** `driver_shared_epilogue.cpp:58` hard-requires
+`LUCE_QWEN_HC_UPMIX_ROW8=1` (together with `SHARED_EPILOGUE=1`) at process startup --
+`LUCE_QWEN_HC_UPMIX_ROW8=0` makes the driver `return 2` immediately, before even
+opening the model. So there is no supported env-only way to keep SHARED_OVERLAP sealed
+while skipping HC_UPMIX_ROW8's 96-pair scan.
+
+**Conclusion for step 2: cannot be satisfied without a code change.** Per instruction,
+no patch was attempted. The exact contract that needs to change (in
+`ggml_cuda_prepare_hc_upmix_row8`/`ggml_cuda_hc_upmix_row8_pair_quick_valid`,
+ggml-cuda.cu:6250-6360) is the fixed assumption that the graph positions of 96 upmix
+sites are stable regardless of neighboring dense-tensor quant types -- it would need
+to either tolerate <96 matched pairs (relaxing the `GGML_ASSERT` at line 6530 to a
+graceful partial-capture, mirroring how SHARED_OVERLAP's own `reject()` degrades) or
+re-derive the 96 expected sites from the actual (Q6_K-aware) graph shape instead of a
+hard-coded count.
+
+## 3. Quality / 4. Timing -- blocked
+
+Both require a non-crashing full-stack (`SHARED_OVERLAP=1`, which the plan explicitly
+wants for the "full 38.41 env") run of the A2 model, which is not currently possible
+(see above). Did not fabricate numbers from a crashing config, and did not run
+quality/timing with `SHARED_OVERLAP=0` for A2 either, since that would just reproduce
+option A's already-reported "no net win" result (the whole point of A2 was to test
+*with* SHARED_OVERLAP sealed) -- re-running the already-known SO=0 arm would not answer
+the question asked. **Stopping here pending a decision**: either (a) accept
+option A's SO=0 numbers as the answer for the shexp-fixed model too (since A2 can't
+run with SO=1), or (b) someone patches the HC_UPMIX_ROW8 positional contract, at which
+point this section's steps 3-4 can be completed against a real A2+SHARED_OVERLAP run.
+
+## A2 Artifacts
+
+- `requant_q6.cpp --keep-shexp-q8` -- same tool, flag added (committed).
+- `run_a2_full.sh` -- full 38.41 env, SHARED_OVERLAP=1 (aborts, rc=134, log kept
+  for the stack trace above).
+- `run_a2_noupmix.sh` -- attempted HC_UPMIX_ROW8=0 workaround; refused by the
+  driver's own startup guard (rc=2, `driver_shared_epilogue.cpp:58`).
+- Model: `/home/duster/models/qwen4exp-dense-q6k-a2/Qwen3.8-Flash-Next-dense-Q6K-a2-0000{1..4}-of-00004.gguf`
+  on lucebox4 (not committed -- binary weights, box-local only).

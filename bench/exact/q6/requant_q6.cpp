@@ -10,15 +10,22 @@
 #include <vector>
 #include <stdexcept>
 
-static bool should_requant(const std::string &name) {
+// keep_shexp_q8: SHARED_OVERLAP's shape/type contract (ggml-cuda.cu q8_weight())
+// hard-requires ffn_gate_shexp/ffn_up_shexp/ffn_down_shexp to ALL be exactly
+// GGML_TYPE_Q8_0 (2560x640 / 2560x640 / 640x2560). ffn_down_shexp already can't
+// become Q6_K (ne0=640 isn't a multiple of the 256-element superblock); A2 keeps
+// gate/up_shexp at Q8_0 too so all three stay type-consistent.
+static bool should_requant(const std::string &name, bool keep_shexp_q8) {
     if (name.find("attn_qkv") != std::string::npos) return true;
     if (name.find("attn_gate") != std::string::npos) return true;
     if (name.find("ssm_out") != std::string::npos) return true;
     if (name == "output.weight") return true;
     if (name.find("attn_output") != std::string::npos) return true;
-    if (name.find("ffn_gate_shexp") != std::string::npos) return true;
-    if (name.find("ffn_up_shexp") != std::string::npos) return true;
-    if (name.find("ffn_down_shexp") != std::string::npos) return true;
+    if (!keep_shexp_q8) {
+        if (name.find("ffn_gate_shexp") != std::string::npos) return true;
+        if (name.find("ffn_up_shexp") != std::string::npos) return true;
+        if (name.find("ffn_down_shexp") != std::string::npos) return true;
+    }
     if (name.find("attn_k.weight") != std::string::npos) return true;
     if (name.find("attn_v.weight") != std::string::npos) return true;
     if (name.find("attn_q.weight") != std::string::npos) return true;
@@ -26,8 +33,8 @@ static bool should_requant(const std::string &name) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 4) {
-        fprintf(stderr, "usage: %s <in.gguf> <out.gguf> <Q6_K|Q5_K>\n", argv[0]);
+    if (argc != 4 && argc != 5) {
+        fprintf(stderr, "usage: %s <in.gguf> <out.gguf> <Q6_K|Q5_K> [--keep-shexp-q8]\n", argv[0]);
         return 1;
     }
     const char *in_path = argv[1];
@@ -37,6 +44,7 @@ int main(int argc, char **argv) {
     if (type_name == "Q6_K") new_type = GGML_TYPE_Q6_K;
     else if (type_name == "Q5_K") new_type = GGML_TYPE_Q5_K;
     else { fprintf(stderr, "unsupported type %s\n", type_name.c_str()); return 1; }
+    bool keep_shexp_q8 = (argc == 5 && std::string(argv[4]) == "--keep-shexp-q8");
 
     ggml_context *meta_ctx = nullptr;
     gguf_init_params params = { /*no_alloc=*/true, /*ctx=*/&meta_ctx };
@@ -60,7 +68,7 @@ int main(int argc, char **argv) {
         ggml_type t = old_type;
         ggml_tensor *src_t0 = ggml_get_tensor(meta_ctx, name);
         if (!src_t0) { fprintf(stderr, "missing tensor meta for %s\n", name); return 1; }
-        if (old_type == GGML_TYPE_Q8_0 && should_requant(name)) {
+        if (old_type == GGML_TYPE_Q8_0 && should_requant(name, keep_shexp_q8)) {
             // K-quants need the row (ne[0]) divisible by the 256-element superblock.
             // Tensors that don't fit (e.g. small attn_k/attn_v rows) stay at Q8_0.
             if (src_t0->ne[0] % 256 == 0) {
