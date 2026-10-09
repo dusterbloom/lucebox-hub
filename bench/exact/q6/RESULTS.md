@@ -785,3 +785,82 @@ itself (the operand the GDN's q8_1 activation now gets dot-producted
 against), not to any handoff/semantics bug -- consistent with A4 simply
 exercising one more Q6_K-quantized tensor than A3 does, with no fusion-level
 correctness issue.
+
+## Timing: Q8 vs A3 vs A4 (post second drop_caches + compact_memory)
+
+Same binaries as the quality gate (`libggml-hip.so` sha256
+`43ee5a859aaf6a9ce10a7d83d44b5b3ddb5bcad55c28cd91e5c4741dd47431b0`,
+`driver-stack` sha256 `b10336db1bb039bf518281e1865d5c894949c19a664b37ed9b296f6306e620e4`,
+confirmed before the run), full 38.41 env, native mode (256 tok, 8 reps),
+`MEASURE_FOLLOW=follow.ids`. `free -g` before start: `total=125 used=2
+free=123 buff/cache=0 available=122`. **9 fresh processes**, interleaved
+**Q8, A3, A4 x 3 rounds**, all through `gpu_exec.sh`, nothing else running on
+the box for the duration.
+
+| Arm | n (mode=1) | median ms/token | mean | best | max |
+|---|---|---|---|---|---|
+| Q8_0 baseline | 12 | **38.2450** | 38.3724 | 38.1981 | 39.6550 |
+| A3 | 12 | **35.6494** | 35.6650 | 35.4757 | 35.8402 |
+| A4 | 12 | **35.3080** | 35.2622 | 35.0879 | 35.3709 |
+
+**Deltas (median ms/token):**
+
+| Comparison | delta | % |
+|---|---|---|
+| A3 - Q8 | -2.5956 | -6.79% |
+| A4 - Q8 | -2.9370 | -7.68% |
+| A4 - A3 | -0.3414 | -0.96% |
+
+**Per-process medians** (3 interleaved rounds, 4 mode=1 values each, in run
+order):
+
+| Arm | round 1 | round 2 | round 3 |
+|---|---|---|---|
+| Q8 | 38.2131 | 38.3393 | 38.2368 |
+| A3 | 35.6494 | 35.5342 | 35.7902 |
+| A4 | 35.3101 | 35.1282 | 35.3481 |
+
+No monotonic drift across rounds for any arm -- round 2 is the low point for
+both Q8 and A3 (and A4 too, to a lesser degree) then round 3 ticks back up,
+consistent with box-level noise rather than thermal/memory drift in one
+direction. Q8's round 2 included one outlier (39.655 ms/token, the rest of
+that round's 4 values are tightly clustered at ~38.32-38.36) -- the median is
+robust to it; included raw values below for transparency.
+
+Raw mode=1 values (ms/token, run order within each process) --
+Q8: process1 `[38.2081, 38.2112, 38.2151, 38.2377]`, process2 `[39.6550,
+38.3227, 38.3224, 38.3560]`, process3 `[38.2213, 38.1981, 38.2523, 38.2688]`;
+A3: process1 `[35.6370, 35.6619, 35.6366, 35.7443]`, process2 `[35.4757,
+35.5167, 35.5531, 35.5516]`, process3 `[35.7828, 35.7853, 35.7951, 35.8402]`;
+A4: process1 `[35.2906, 35.2818, 35.3365, 35.3297]`, process2 `[35.1318,
+35.0879, 35.1247, 35.1712]`, process3 `[35.3531, 35.3255, 35.3709, 35.3431]`.
+
+**`[measure_tokens]` determinism:** for each arm, all 24 `[measure_tokens]`
+lines (3 processes x 8 reps) collapse to **exactly 1 unique token sequence**
+per arm (Q8, A3, and A4 each) -- fully deterministic across all 9 fresh
+processes.
+
+**Sanity checks against the prior runs:**
+- Q8 median **38.2450** vs the prior 38.2487 -- matches to within 0.01%,
+  essentially perfect reproducibility, and lands inside the original
+  38.16-38.5 band.
+- A3 median **35.6494** vs the prior 35.8801 -- 0.65% lower this run (both
+  inside normal box-level run-to-run noise given the ~0.2-0.3ms/token spread
+  seen within single processes above); still clearly separated from Q8 by
+  the same ~6-7% margin both times.
+
+**Reading all three together:** A4 is faster than A3 at the median by 0.34
+ms/token (0.96%) -- small but consistent with A4 shipping strictly more
+bandwidth savings (0.619 GiB/token for A3 vs the implied larger savings carried
+by keeping `ssm_out` at Q6_K too) on top of an otherwise-identical fusion
+footprint (both fully sealed, byte-identical replay counts to Q8 per the
+contract checks above). Combined with the quality gate -- A3 at a clean
+128/128 top-1 and A4 at 124/128 (4 isolated flips attributable to `ssm_out`'s
+own Q6_K precision, not a handoff bug, per the analysis above) -- the tradeoff
+is explicit: A4 buys an extra ~1% decode speed for a small, non-cascading
+quality cost beyond A3's.
+
+## A4 Timing Artifacts
+
+- Logs: `t2_{q8,a3,a4}_{1,2,3}.log` on the box (`~/qwen4exp-q6/logs/`, not
+  committed -- raw run output). Same `run_native.sh` harness as A3's timing.
