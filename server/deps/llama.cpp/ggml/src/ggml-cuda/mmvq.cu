@@ -3144,7 +3144,8 @@ void ggml_cuda_mul_mat_vec_q(
             ((ne10 == 320 && q8_bytes == 576) ||
              (ne10 == 6144 && q8_bytes == 6912) ||
              (ne10 == 10240 && q8_bytes == 11520));
-        GGML_ASSERT(!ids && src0->type == GGML_TYPE_Q8_0 &&
+        GGML_ASSERT(!ids && (src0->type == GGML_TYPE_Q8_0 ||
+                (producer && ne10 == 6144 && src0->type == GGML_TYPE_Q6_K)) &&
             ne11 == 1 && ne12 == 1 && ne13 == 1 && (shared || producer) &&
             q8_bytes <= g_mmvq_fixed_q8_bytes && (!g_mmvq_fixed_q8_prequantized || producer));
     }

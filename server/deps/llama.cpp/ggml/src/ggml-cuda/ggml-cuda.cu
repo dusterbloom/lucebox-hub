@@ -5836,7 +5836,8 @@ static bool ggml_cuda_producer_q8_enabled(ggml_backend_cuda_context & ctx) {
 static block_q8_1 * ggml_cuda_producer_q8_reserve(
         ggml_backend_cuda_context & ctx, const ggml_tensor * consumer) {
     if (!consumer || consumer->op != GGML_OP_MUL_MAT || !consumer->src[0] || !consumer->src[1] ||
-        consumer->src[0]->type != GGML_TYPE_Q8_0 || consumer->src[1]->type != GGML_TYPE_F32 ||
+        (consumer->src[0]->type != GGML_TYPE_Q8_0 && consumer->src[0]->type != GGML_TYPE_Q6_K) ||
+        consumer->src[1]->type != GGML_TYPE_F32 ||
         consumer->type != GGML_TYPE_F32 || !consumer->src[1]->buffer ||
         !ggml_is_contiguous(consumer->src[1])) return nullptr;
     const ggml_tensor * src1 = consumer->src[1];
@@ -5851,11 +5852,11 @@ static block_q8_1 * ggml_cuda_producer_q8_reserve(
     }
     for (const auto & e : ctx.luce_q8_memo)
         if (e.src1_node == (const void *) src1 && e.src1_data == src1->data &&
-            e.src0_type == (int) GGML_TYPE_Q8_0 && e.ne[0] == src1->ne[0] &&
+            e.src0_type == (int) consumer->src[0]->type && e.ne[0] == src1->ne[0] &&
             e.ne[1] == 1 && e.ne[2] == 1 && e.ne[3] == 1) return (block_q8_1 *) e.buf->ptr;
     ggml_backend_cuda_context::luce_q8_memo_entry e;
     e.src1_node = (const void *) src1; e.src1_data = src1->data;
-    e.src0_type = (int) GGML_TYPE_Q8_0;
+    e.src0_type = (int) consumer->src[0]->type;
     e.ne[0] = src1->ne[0]; e.ne[1] = 1; e.ne[2] = 1; e.ne[3] = 1;
     e.buf = std::make_unique<ggml_cuda_pool_alloc<char>>(ctx.pool(), bytes);
     block_q8_1 * out = (block_q8_1 *) e.buf->ptr;
@@ -5881,7 +5882,7 @@ static bool ggml_cuda_gdn_q8_match(const ggml_cgraph * cgraph, int i, ggml_cuda_
     if (!gamma || sig->src[0] != zr || ggml_get_unary_op(sig) != GGML_UNARY_OP_SIGMOID ||
         !((out->src[0] == mul && out->src[1] == sig) || (out->src[1] == mul && out->src[0] == sig)) ||
         flat->src[0] != out || mm->op != GGML_OP_MUL_MAT || !mm->src[0] || mm->src[1] != flat ||
-        mm->src[0]->type != GGML_TYPE_Q8_0) return false;
+        (mm->src[0]->type != GGML_TYPE_Q8_0 && mm->src[0]->type != GGML_TYPE_Q6_K)) return false;
     const ggml_tensor * x = norm->src[0];
     if (!x || x->type != GGML_TYPE_F32 || gamma->type != GGML_TYPE_F32 || zr->type != GGML_TYPE_F32 ||
         norm->type != GGML_TYPE_F32 || mul->type != GGML_TYPE_F32 || sig->type != GGML_TYPE_F32 ||
