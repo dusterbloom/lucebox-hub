@@ -595,3 +595,111 @@ with **zero measurable quality noise above the deterministic floor** (KL mean
   by model path/tag/run-index (used for all 6 interleaved runs).
 - Logs: `timing_q8_{1,2,3}.log`, `timing_a3_{1,2,3}.log` on the box
   (`~/qwen4exp-q6/logs/`, not committed -- raw run output).
+
+---
+
+# Arm A4: GDN matcher widened in-source (main session), drop the ssm_out keep
+
+The main session applied a source-level fix for the GDN producer/consumer
+handoff (fork commit `2c3b8883`): `ggml_cuda_gdn_q8_match()`'s consumer-type
+check, `ggml_cuda_producer_q8_reserve()`'s memo (now keyed on the actual
+consumer type instead of assuming `Q8_0`), and the `mmvq` fixed-q8 assert were
+all widened/updated so the GDN producer can hand off to a `Q6_K` `ssm_out`
+consumer -- the thing A3 worked around by keeping `ssm_out` at `Q8_0`. This is
+a real semantics change (not pure bookkeeping, per the coordinator's earlier
+analysis), done directly on the box by the main session with user approval;
+this agent did not edit or build anything for this arm, per instruction.
+
+Confirmed source/build state before running anything:
+- `ggml-cuda.cu` md5: `8a96fa12215455df0b4f7557f2ac67ca`
+- `mmvq.cu` md5: `2f81603bc4d4aa77f7510c091edb21ca`
+- `libggml-hip.so` sha256: `43ee5a859aaf6a9ce10a7d83d44b5b3ddb5bcad55c28cd91e5c4741dd47431b0`
+- `driver-stack` sha256: `b10336db1bb039bf518281e1865d5c894949c19a664b37ed9b296f6306e620e4`
+  (unchanged -- the GDN fix lives in `libggml-hip.so`, `driver-stack` only
+  links against it).
+
+## 1. Q8 model, full env -- PASS, confirms the GDN fix is neutral on Q8
+
+`hc-upmix-row8-capture sites=96` (all events), `graph_producer_q8_counts`
+byte-identical to the pre-patch baseline (`lo_replay=24444`,
+`ab_replay=9072`, `producer_gdn_replay=9072`, `producer_hc_replay=23940`,
+etc. -- same line as `base_rep1.log`'s own `mode=1` entry,
+`producer_gdn_host=144` -> 36/rep). The 256-step `[measure_tokens]` stream is
+byte-identical to the pre-patch baseline capture (diff empty). The A4 source
+change does not alter Q8 behavior, as expected.
+
+## 2. Build
+
+Same `requant_q6.cpp --keep` mechanism, A4 = A3's keeps minus `ssm_out`:
+`--keep ffn_gate_shexp --keep ffn_up_shexp --keep ffn_down_shexp` (identical
+to A2's keep set). Shard 00001 hardlinked. Shards 00002/00003/00004: 40 + 96 +
+21 = **157 tensors requantized** (same count as A2, as expected since the
+keep list is identical to A2's). gguf-py: tensor counts 0/297/752/175 match
+source exactly.
+
+Byte accounting: old (Q8_0) = 3,516,416,000 bytes, new (Q6_K) = 2,714,880,000
+bytes, **saved = 801,536,000 bytes = 0.746 GiB** -- matches the ~0.75 GiB
+estimate exactly (and matches A2's saved bytes exactly, as expected: A4 and A2
+requantize the identical tensor set, the only difference is the GDN matcher
+now accepting the resulting `Q6_K` `ssm_out` instead of crashing).
+
+Model path: `/home/duster/models/qwen4exp-dense-q6k-a4/Qwen3.8-Flash-Next-dense-Q6K-a4-0000{1..4}-of-00004.gguf`
+
+(One transient build hiccup, not a source/semantics issue: the first parallel
+`requant_q6` invocation for shard 00002 produced a truncated 528 MB output
+with an empty log -- stdout buffering lost on an unclean exit while running
+concurrently with the GPU job. Rerun sequentially, clean rc=0, full-size
+output, matches the deterministic byte-accounting above.)
+
+## 3. A4, full env -- PASS, identical contracts to Q8 and A3
+
+`GPU_EXEC_DONE rc=0`, no abort. `hc-upmix-row8-capture sites=96` on every
+capture event. `shared_epilogue_counts` (mode=1: `host=192 replay=12096
+logical=12288 skipped_pairs_host=192`) and every field of
+`graph_producer_q8_counts` (`lo_replay=24444`, `ab_replay=9072`,
+`producer_gdn_replay=9072`, `producer_hc_replay=23940`, `hc_replay=23940`,
+`sh_logical=12288`, ...) are **byte-identical, line-for-line, to both the Q8
+baseline and A3's own counts.** `producer_gdn_host=144` -> `producer_gdn_sites
+== 36` holds every rep -- the GDN matcher now accepts the `Q6_K` `ssm_out`
+consumer without tripping the assert that killed A2, exactly as the fix was
+designed to do. No further contract assert fired.
+
+## 4. Quality gate
+
+Golden-mode logits (same harness/vocab/process layout as A3's quality gate:
+`n=128 reps=2`, 248,320-wide vocab, `mode1` dumps, 1 fresh process per arm).
+Reused the existing `q8a`/`q8b`/`a3` dumps (valid reference -- step 1 above
+already proved the A4 source change is byte-identical-behavior-preserving on
+Q8, so the pre-A4-rebuild `q8a` dump is numerically equivalent to a fresh
+post-A4 Q8 capture) plus one new `a4` golden run.
+
+| Comparison | KL mean | KL p99 | KL max | top-1 agreement |
+|---|---|---|---|---|
+| Q8a vs Q8b (noise reference) | 0.0 | 0.0 | 0.0 | 128/128 = 100.00% |
+| Q8a vs A3 | 5.056e-03 | 4.079e-02 | 4.376e-02 | 128/128 = 100.00% |
+| **Q8a vs A4** | **5.515e-03** | **6.486e-02** | **7.047e-02** | **124/128 = 96.88%** |
+| **A4 vs A3** | **2.771e-03** | **3.001e-02** | **3.587e-02** | **124/128 = 96.88%** |
+
+A4 diverges from Q8 at 4 of 128 teacher-forced positions (`[0, 16, 73, 90]`) --
+**the same 4 positions** it diverges from A3 at. This points to A4 itself
+(the arm that actually exercises the new Q6_K-ssm_out GDN handoff path) as the
+source of the extra divergence, not A3. A4's divergence is larger than A3's on
+every metric (mean KL ~9% higher, p99/max roughly 1.6x higher, top-1 drops
+from a clean 128/128 to 124/128) but still far smaller than Option A's flagged
+96.1%/no-KL result, and the 4 divergent positions are isolated (no cascading
+drift), consistent with a real-but-small numerics perturbation from exercising
+one additional Q6_K-quantized consumer path rather than a correctness bug.
+
+## A4 Artifacts
+
+- Model: `/home/duster/models/qwen4exp-dense-q6k-a4/Qwen3.8-Flash-Next-dense-Q6K-a4-0000{1..4}-of-00004.gguf`
+  on lucebox4 (not committed -- binary weights, box-local only).
+- Reused `run_native.sh`, `run_golden.sh`, `kl_gate.py` from the A3 arm (no
+  harness changes needed).
+- Logs: `a4step1_q8_1.log` (step 1), `a4_full_1.log` (step 3),
+  `a4_shard{2,3,4}.log` (build), golden dumps `logits/a4.mode{0,1}` on the box.
+
+## Status: ready for the timing compaction handshake
+
+Per instruction, stopping before timing. Next: A3 vs A4 interleaved x3, plus
+one Q8 arm, after the user's drop_caches + compact_memory.
