@@ -57,6 +57,36 @@ extern "C" GGML_BACKEND_API size_t ggml_backend_cuda_get_hc_down_inject_launch_c
     return g_hc_down_inject_launch_count;
 }
 
+// LUCE_QWEN_HC_LO_FUSED: set by the dispatch loop (ggml-cuda.cu) right before the
+// down node runs, whenever this exact down_inject pair's scale/silu/quantize is
+// about to be absorbed into hc_down_inject_mixed_lo_fused's epilogue. Consumed
+// (and cleared) by ggml_cuda_hc_lo_q8_try on the very next node (the scale node)
+// so it can skip its own quantize_hc_lo_q8_1_cuda launch for that site.
+static thread_local bool   g_hc_lo_fuse_active   = false;
+static thread_local char * g_hc_lo_fuse_q8       = nullptr;
+static thread_local float * g_hc_lo_fuse_dst     = nullptr;
+static thread_local bool   g_hc_lo_fuse_in_place = false;
+static thread_local bool   g_hc_lo_fuse_done      = false;
+static thread_local size_t g_hc_lo_fuse_launch_count = 0;
+
+void ggml_cuda_mmvq_set_hc_down_inject_lo_fuse(char * q8, float * dst, bool in_place) {
+    g_hc_lo_fuse_active   = q8 != nullptr;
+    g_hc_lo_fuse_q8       = q8;
+    g_hc_lo_fuse_dst      = dst;
+    g_hc_lo_fuse_in_place = in_place;
+}
+
+bool ggml_cuda_mmvq_hc_down_inject_lo_fuse_consume(const char * q8, const float * dst, bool in_place) {
+    const bool match = g_hc_lo_fuse_done && g_hc_lo_fuse_q8 == q8 &&
+        g_hc_lo_fuse_dst == dst && g_hc_lo_fuse_in_place == in_place;
+    g_hc_lo_fuse_done = false;
+    return match;
+}
+
+extern "C" GGML_BACKEND_API size_t ggml_backend_cuda_get_hc_lo_fuse_launch_count(void) {
+    return g_hc_lo_fuse_launch_count;
+}
+
 extern "C" GGML_BACKEND_API size_t ggml_backend_cuda_get_expert_row_warps_launch_count(void) {
     return g_expert_row_warps_launch_count;
 }
@@ -386,6 +416,126 @@ static __global__ void hc_down_inject_mixed(
         sum = warp_reduce_sum<warp_size>(sum);
         if (tid == 0) inject_dst[row] = sum;
     }
+}
+
+// LUCE_QWEN_HC_LO_FUSED variant: folds quantize_hc_lo_q8_1's scale+silu+quantize
+// epilogue (quantize.cu) into the down-projection half of hc_down_inject_mixed,
+// removing that separate kernel's launch for every site this fires on. Bit-exact
+// requirement: the down-projection warp-per-row reduction (first 320 blocks' worth
+// of lanes) is UNCHANGED math, just regrouped so that all 32 rows of one q8_1
+// block (QK8_1 == 32) share a CUDA block and can synchronize with __syncthreads()
+// instead of needing a second kernel launch. Row r's sum is computed by exactly
+// the same warp (32 lanes, same vec_dot_q_mmvq + warp_reduce_sum<warp_size> tree)
+// as the unfused kernel; only which grid block that warp lives in changes. The
+// quantize epilogue (lane 0..31 of the block's first warp, i.e. threadIdx.y==0)
+// then reproduces quantize_hc_lo_q8_1's per-lane formula and q8_1_store_lane's
+// warp_reduce_max<QK8_1>/warp_reduce_sum<QK8_1> reduction verbatim, over the
+// exact same 32 float values (down's row sums), in the same lane order -- so the
+// quantized output is bit-identical to running the two kernels back to back.
+// Inject branch (rows 320..323 of the fused "inject" GEMV) is untouched except
+// for the grid-index shift (10 blocks instead of 40) and a threadIdx.y<8 guard,
+// since blockDim.y is now 32 (needed by the down branch) instead of 8; the extra
+// 24 y-rows per inject block simply return without touching any shared state.
+static __global__ void hc_down_inject_mixed_lo_fused(
+        const void * __restrict__ down, const block_q8_1 * __restrict__ xq,
+        float * __restrict__ down_dst, const float * __restrict__ inject,
+        const float * __restrict__ x, float * __restrict__ inject_dst,
+        block_q8_1 * __restrict__ lo_q8, float * __restrict__ lo_dst, const bool lo_in_place,
+        const float lo_scale, const float lo_bias) {
+    constexpr int ncols = 10240;
+    constexpr int qk = ggml_cuda_type_traits<GGML_TYPE_Q8_0>::qk;
+    constexpr int qi = ggml_cuda_type_traits<GGML_TYPE_Q8_0>::qi;
+    constexpr int vdr = VDR_Q8_0_Q8_1_MMVQ;
+    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+    constexpr int blocks = ncols/qk;
+    const int lane = threadIdx.x;
+
+    if (blockIdx.x < 10) {
+        static_assert(QK8_1 == 32, "one fused block must cover exactly one q8_1 block's rows");
+        __shared__ float s_sum[QK8_1];
+        const int row = QK8_1*blockIdx.x + threadIdx.y;
+        float sum = 0.0f;
+        for (int kbx = lane/(qi/vdr); kbx < blocks; kbx += vdr*warp_size/qi) {
+            const int kby = kbx*(qk/QK8_1);
+            const int kqs = vdr*(lane % (qi/vdr));
+            sum += vec_dot_q_mmvq<GGML_TYPE_Q8_0, false>(
+                down, &xq[kby], row*blocks + kbx, kqs);
+        }
+        sum = warp_reduce_sum<warp_size>(sum);
+        if (lane == 0) {
+            down_dst[row] = sum;
+            s_sum[threadIdx.y] = sum;
+        }
+        __syncthreads();
+        if (threadIdx.y == 0) {
+            const int i = lane;
+            const int grow = QK8_1*blockIdx.x + i;
+            const float v = s_sum[i];
+            const float scaled = lo_scale*v + lo_bias;
+            const float xi = scaled / (1.0f + expf(-scaled));
+            if (lo_in_place) down_dst[grow] = xi; else lo_dst[grow] = xi;
+            float amax = fabsf(xi);
+            float s = xi;
+            amax = warp_reduce_max<QK8_1>(amax);
+            s     = warp_reduce_sum<QK8_1>(s);
+            const float d = amax / 127.0f;
+            const int8_t q = amax == 0.0f ? 0 : roundf(xi / d);
+            lo_q8[blockIdx.x].qs[i] = q;
+            if (i == 0) lo_q8[blockIdx.x].ds = make_half2(d, s);
+        }
+        return;
+    }
+
+    if (threadIdx.y >= 8) return;
+    const int tid = threadIdx.y*warp_size + lane;
+    const int row = blockIdx.x - 10;
+    const float2 * x2 = reinterpret_cast<const float2 *>(x);
+    const float2 * w2 = reinterpret_cast<const float2 *>(inject + row*ncols);
+    float sum = 0.0f;
+    for (int col2 = tid; col2 < ncols/2; col2 += 8*warp_size) {
+        const float2 xv = x2[col2];
+        const float2 wv = w2[col2];
+        ggml_cuda_mad(sum, wv.x, xv.x);
+        ggml_cuda_mad(sum, wv.y, xv.y);
+    }
+    __shared__ float partial[warp_size];
+    if (tid < warp_size) partial[tid] = 0.0f;
+    __syncthreads();
+    sum = warp_reduce_sum<warp_size>(sum);
+    partial[tid/warp_size] = sum;
+    __syncthreads();
+    if (tid < warp_size) {
+        sum = partial[tid];
+        sum = warp_reduce_sum<warp_size>(sum);
+        if (tid == 0) inject_dst[row] = sum;
+    }
+}
+
+// Test-only hook: runs the baseline two-kernel path (hc_down_inject_mixed +
+// quantize_hc_lo_q8_1_cuda) and the fused single-kernel path
+// (hc_down_inject_mixed_lo_fused) on identical inputs into separate output
+// buffers, so a host test can memcmp them for bit-identity. Not used by
+// production code paths.
+extern "C" GGML_BACKEND_API int ggml_cuda_test_hc_down_inject_lo_fused_bitexact(
+        const void * down_w, const void * xq, const float * inject_w, const float * x,
+        float * down_dst_a, float * inject_dst_a, void * lo_q8_a, float * lo_dst_a,
+        float * down_dst_b, float * inject_dst_b, void * lo_q8_b, float * lo_dst_b,
+        int in_place, void * raw_stream) {
+    if (!down_w || !xq || !inject_w || !x || !down_dst_a || !inject_dst_a || !lo_q8_a ||
+        !down_dst_b || !inject_dst_b || !lo_q8_b) return 0;
+    cudaStream_t stream = (cudaStream_t) raw_stream;
+    hc_down_inject_mixed<<<44, dim3(32, 8, 1), 0, stream>>>(
+        down_w, reinterpret_cast<const block_q8_1 *>(xq), down_dst_a,
+        inject_w, x, inject_dst_a);
+    if (cudaGetLastError() != cudaSuccess) return 0;
+    quantize_hc_lo_q8_1_cuda(down_dst_a, lo_dst_a, lo_q8_a, in_place != 0, 0.25f, 0.0f, stream);
+    if (cudaGetLastError() != cudaSuccess) return 0;
+    hc_down_inject_mixed_lo_fused<<<14, dim3(32, 32, 1), 0, stream>>>(
+        down_w, reinterpret_cast<const block_q8_1 *>(xq), down_dst_b,
+        inject_w, x, inject_dst_b,
+        reinterpret_cast<block_q8_1 *>(lo_q8_b), lo_dst_b, in_place != 0, 0.25f, 0.0f);
+    if (cudaGetLastError() != cudaSuccess) return 0;
+    return cudaStreamSynchronize(stream) == cudaSuccess ? 1 : 0;
 }
 
 enum mmvq_parameter_table_id {
@@ -3050,6 +3200,16 @@ static bool ggml_cuda_try_hc_down_inject(
     } else if (luce_ko_empty_hc()) {
         luce_ko_noop_kernel<<<1, 32, 0, stream>>>();
         CUDA_CHECK(cudaGetLastError());
+    } else if (g_hc_lo_fuse_active) {
+        hc_down_inject_mixed_lo_fused<<<14, dim3(32, 32, 1), 0, stream>>>(
+            src0_dd_i, reinterpret_cast<const block_q8_1 *>(src1_ddq_i), dst_dd_i,
+            static_cast<const float *>(iw->data), src1_ddf_i,
+            static_cast<float *>(inject->data),
+            reinterpret_cast<block_q8_1 *>(g_hc_lo_fuse_q8), g_hc_lo_fuse_dst, g_hc_lo_fuse_in_place,
+            0.25f, 0.0f);
+        CUDA_CHECK(cudaGetLastError());
+        g_hc_lo_fuse_done = true;
+        ++g_hc_lo_fuse_launch_count;
     } else {
     hc_down_inject_mixed<<<44, dim3(32, 8, 1), 0, stream>>>(
         src0_dd_i, reinterpret_cast<const block_q8_1 *>(src1_ddq_i), dst_dd_i,
@@ -3057,6 +3217,9 @@ static bool ggml_cuda_try_hc_down_inject(
         static_cast<float *>(inject->data));
     CUDA_CHECK(cudaGetLastError());
     }
+    g_hc_lo_fuse_active = false;
+    g_hc_lo_fuse_q8 = nullptr;
+    g_hc_lo_fuse_dst = nullptr;
     g_hc_down_inject_consumed = true;
     ++g_hc_down_inject_launch_count;
     return true;

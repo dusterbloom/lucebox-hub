@@ -337,6 +337,17 @@ static bool ggml_cuda_producer_q8_requested() {
 
 void ggml_cuda_mmvq_set_hc_down_inject(const ggml_tensor * inject);
 bool ggml_cuda_mmvq_hc_down_inject_consumed();
+void ggml_cuda_mmvq_set_hc_down_inject_lo_fuse(char * q8, float * dst, bool in_place);
+bool ggml_cuda_mmvq_hc_down_inject_lo_fuse_consume(const char * q8, const float * dst, bool in_place);
+extern "C" GGML_BACKEND_API size_t ggml_backend_cuda_get_hc_lo_fuse_launch_count(void);
+
+static bool ggml_cuda_hc_lo_fused_requested() {
+    static const bool enabled = [] {
+        const char * e = getenv("LUCE_QWEN_HC_LO_FUSED");
+        return e && e[0] == '1' && e[1] == '\0';
+    }();
+    return enabled;
+}
 
 extern "C" GGML_BACKEND_API int ggml_backend_cuda_set_hc_down_inject_for_test(int mode) {
     GGML_ASSERT(mode == 0 || mode == 1);
@@ -5975,6 +5986,14 @@ static bool ggml_cuda_hc_lo_q8_try(
                ggml_cuda_byte_ranges_overlap(q8, bytes, dst->data, ggml_nbytes(dst))) {
         return false;
     }
+    // LUCE_QWEN_HC_LO_FUSED: if the down_inject dispatch for this exact site
+    // (same q8/dst/in_place triple) already ran hc_down_inject_mixed_lo_fused's
+    // epilogue, the scale+silu+quantize work this function exists to do is
+    // already sitting in q8/dst -- skip the separate kernel launch entirely.
+    if (ggml_cuda_mmvq_hc_down_inject_lo_fuse_consume(q8, (const float *) dst->data, in_place)) {
+        ++g_hc_lo_q8_count;
+        return true;
+    }
     float factor, bias;
     memcpy(&factor, (const float *) scale->op_params, sizeof(factor));
     memcpy(&bias, (const float *) scale->op_params + 1, sizeof(bias));
@@ -7176,6 +7195,24 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     g_producer_q8_handoff.ptr, g_producer_q8_handoff.bytes, true);
                 ggml_tensor * mixed_inject = hc_down_inject ? hc_down_inject->inject_for_down[i] : nullptr;
                 if (mixed_inject) ggml_cuda_mmvq_set_hc_down_inject(mixed_inject);
+                if (mixed_inject && ggml_cuda_hc_lo_fused_requested() &&
+                    sealed_sh && qwen_shared && ggml_cuda_hc_lo_q8_requested() &&
+                    cuda_ctx->curr_stream_no == 0 && cuda_ctx->stream_context().concurrent_events.empty()) {
+                    // hc_down_inject_pair_contract_valid (above, where this pair was
+                    // built) already proved nodes[i+1..i+3] are exactly the
+                    // scale(0.25,0)->silu->up(Q8_0,320x10240) pattern hc_lo_q8_try
+                    // expects, so it is safe to precompute that epilogue here and
+                    // have the scale node skip its own kernel launch. The stream/
+                    // concurrent-event guard mirrors hc_lo_q8_try's own precondition
+                    // (ggml-cuda.cu ggml_cuda_hc_lo_q8_try) so this can never engage
+                    // on a site where that function would bail for a reason other
+                    // than "already fused" -- if it ever did, the scale node would
+                    // fall through to recomputing silu on an already-silu'd buffer.
+                    ggml_tensor * silu_node = cgraph->nodes[i + 2];
+                    char * fixed_q8 = qwen_shared->q8_stream1->ptr + 2880;
+                    ggml_cuda_mmvq_set_hc_down_inject_lo_fuse(
+                        fixed_q8, (float *) silu_node->data, node->data == silu_node->data);
+                }
                 const int upmix_pair = upmix_row8 ? upmix_row8->pair_for_up[i] : -1;
                 if (upmix_pair >= 0) {
                     const auto & p = upmix_row8->pairs[upmix_pair];
