@@ -409,3 +409,129 @@ it is a different matcher than the one explicitly authorized, and this agent's
 sandbox cannot write to the box regardless. Quality gate and timing remain
 blocked on this second contract landing; stopping here to report rather than
 expanding patch scope without authorization.
+
+---
+
+# Arm A3: also keep ssm_out (the GDN consumer) at Q8_0
+
+Decision (coordinator): don't patch `ggml_cuda_gdn_q8_match()`. The GDN
+producer writes q8_1 activations directly into the consumer MMVQ through
+`g_producer_q8_handoff`/the memo map; `ggml_cuda_producer_q8_reserve()`
+(`ggml-cuda.cu:5836-5862`) only accepts a `Q8_0` consumer and keys its memo on
+`src0_type == Q8_0`. Widening the matcher would change handoff semantics for a
+`Q6_K` MMVQ consumer that was never verified -- a real numerics/memory-layout
+risk, not just a bookkeeping allowlist like the upmix case. Instead: build A3,
+which keeps the GDN's actual consumer (`ssm_out`, `ne0=6144`) at `Q8_0` so the
+matcher's existing contract is satisfied without touching the matcher.
+
+## 1. Build
+
+`requant_q6.cpp` changed from the special-cased `--keep-shexp-q8` flag to a
+generic, repeatable `--keep <substring>` flag: `should_requant()` now always
+evaluates the same always-requantize candidate list (attn_qkv/attn_gate/
+ssm_out/output.weight/attn_output/attn_k/attn_v/attn_q/ffn_{gate,up,down}_shexp),
+then subtracts any name matching one of the `--keep` substrings. A2's behavior
+is reproduced with `--keep ffn_gate_shexp --keep ffn_up_shexp --keep
+ffn_down_shexp`; A3 adds `--keep ssm_out` on top.
+
+Rebuilt against the box's `libggml-base.so.0` (same include/link paths as the
+original tool). Ran against the same source
+(`/home/duster/models/Qwen3.8-Flash-Next-UD-Q4_K_XL/UD-Q4_K_XL/...`, dense
+tensors already `Q8_0` in this mixed-precision UD quant) with
+`--keep ffn_gate_shexp --keep ffn_up_shexp --keep ffn_down_shexp --keep ssm_out`.
+Shard 00001 hardlinked (0 tensors, metadata-only, same inode as the source --
+verified via `ls -la` link count = 2). Shards 00002/00003/00004 rewritten:
+31 + 74 + 16 = 121 tensors requantized to Q6_K (vs A2's 157 -- the 36-tensor
+difference is exactly `ssm_out` x 36 linear layers, now excluded).
+
+Byte accounting (sum over the 121 converted tensors): old (Q8_0) =
+2,914,795,520 bytes, new (Q6_K) = 2,250,393,600 bytes, **saved = 664,401,920
+bytes = 0.619 GiB** -- matches the coordinator's ~0.6 GiB estimate (A2 saved
+0.746 GiB; the ~0.13 GiB gap is `ssm_out`'s share, consistent with its
+tensor count).
+
+Verified with gguf-py: tensor counts 0/297/752/175 match source/A2/Option A
+exactly, all 4 shards open cleanly.
+
+Model path: `/home/duster/models/qwen4exp-dense-q6k-a3/Qwen3.8-Flash-Next-dense-Q6K-a3-0000{1..4}-of-00004.gguf`
+
+## 2. Q8 baseline -- no rerun (step already passed)
+
+Step 1 from the prior A2 resumption already confirmed, against the current
+patched binary (source md5 `90ecef47c09f4b106432ef369a12078e`, `driver-stack`
+sha256 `b10336db1bb039bf518281e1865d5c894949c19a664b37ed9b296f6306e620e4`,
+`libggml-hip.so.0.9.11` sha256
+`0bff406a9bf92ad8f3d5bb1d56a2221f067d898825b448ce3edcdfae25f7b322`):
+`hc-upmix-row8-capture sites=96` on all 20 capture events, and a byte-identical
+256-step `[measure_tokens]` vs the pre-patch baseline. Not rerun here.
+
+## 3. A3, full env -- PASS, all contracts hold
+
+Ran `driver-stack` against the A3 model with the full 38.41 env
+(`LUCE_QWEN_SHARED_OVERLAP=1` and every other fusion flag on, same recipe as
+`run_stack.sh`/`run_a2_full.sh`): **`GPU_EXEC_DONE rc=0`, no abort.**
+
+- `[hc-upmix-row8-capture]`: every one of 20 capture events reports `sites=96`
+  (uniform, confirmed via `sort -u` over all captured values).
+- `[shared_epilogue_counts]` (mode=1): `host=192 replay=12096 logical=12288
+  skipped_pairs_host=192` on every measure rep -- **byte-identical to the Q8
+  baseline's own `shared_epilogue_counts` mode=1 lines.** SHARED_OVERLAP is
+  sealed (these nonzero replay/skipped-pairs counts only appear once sealed).
+- `[graph_producer_q8_counts]`: every field --
+  `lo_replay=24444`, `ab_replay=9072`, `producer_gdn_replay=9072`,
+  `producer_hc_replay=23940`, `hc_replay=23940`, `sh_logical=12288`, etc. --
+  **byte-identical, line-for-line, to the Q8 baseline's `graph_producer_q8_counts`.**
+  In particular `producer_gdn_host=144` (144/4 reps = 36 per rep, i.e.
+  `producer_gdn_sites == 36` held on every rep -- the assert that killed A2
+  does not fire here, confirming the GDN consumer's type contract is satisfied
+  by keeping `ssm_out` at Q8_0).
+
+No further contract asserts fired. All acceptance criteria from the
+coordinator's step 3 are met exactly.
+
+## 4. Quality gate
+
+Golden-mode logits (`n=128 reps=2`, `MEASURE_LOGITS`+`MEASURE_STATE`+
+`MEASURE_GPU_ARGMAX=1`, full env, teacher-forced via `MEASURE_FOLLOW`), vocab
+248,320 (the model's actual `n_vocab`, not the 64000 MTP-window constant),
+3 fresh `driver-stack` processes: Q8 run A, Q8 run B (noise reference), A3 run.
+Comparisons use each run's `mode1` dump (the sealed/production epilogue path;
+`mode0` vs `mode1` within the same run sanity-checked identical, confirming
+both modes compute the same math). `kl_gate.py` (committed here) computes
+`KL(P_q8 || P_cand)` per step from the raw float32 logit dumps, log-softmax in
+float64.
+
+| Comparison | KL mean | KL p99 | KL max | top-1 agreement |
+|---|---|---|---|---|
+| Q8a vs Q8b (noise reference, fresh process x2) | 0.0 | 0.0 | 0.0 | 128/128 = 100.00% |
+| Q8a vs A3 | 5.056e-03 | 4.079e-02 | 4.376e-02 | 128/128 = 100.00% |
+
+The noise floor is exactly zero -- this stack is fully deterministic at temp 0
+(teacher-forced greedy, same GPU kernels, no run-to-run variance at all), so
+any nonzero KL on the A3 comparison is 100% attributable to the Q6_K
+requantization, not measurement noise. A3's divergence is small (mean KL
+~0.005 nats, max ~0.044 nats across 128 teacher-forced steps) and **top-1
+agreement is perfect, 128/128**, a clear improvement over Option A's flagged
+96.1% (246/256, no KL computed) -- keeping both the shexp triple and the GDN
+consumer at Q8_0 removes essentially all the quality risk the earlier arms
+showed.
+
+## A3 Artifacts
+
+- `requant_q6.cpp` -- generic `--keep <substring>` flag (replaces the
+  A2-specific `--keep-shexp-q8`; committed, updated in place).
+- `run_a3_full.sh` -- full 38.41 env timing/contract-check harness for A3
+  (rc=0, log kept as `a3_full.log` on the box).
+- `run_golden.sh` -- golden-mode (`n=128 reps=2`) capture harness, parameterized
+  by model path and output prefix (used for all three quality-gate runs).
+- `kl_gate.py` -- KL mean/p99/max + top-1 agreement computation from raw
+  golden-mode logit dumps.
+- Model: `/home/duster/models/qwen4exp-dense-q6k-a3/Qwen3.8-Flash-Next-dense-Q6K-a3-0000{1..4}-of-00004.gguf`
+  on lucebox4 (not committed -- binary weights, box-local only).
+
+## Status: ready for the timing compaction handshake
+
+Per instruction, stopping before timing. `free -g` was not re-checked in this
+pass (no timing run attempted); the user's `drop_caches`/`compact_memory`
+(root) step from past sessions' lore is still needed before a trustworthy A3
+vs Q8 timing comparison, per the bench-parity rule.
