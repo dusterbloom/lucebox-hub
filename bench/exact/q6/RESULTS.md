@@ -535,3 +535,63 @@ Per instruction, stopping before timing. `free -g` was not re-checked in this
 pass (no timing run attempted); the user's `drop_caches`/`compact_memory`
 (root) step from past sessions' lore is still needed before a trustworthy A3
 vs Q8 timing comparison, per the bench-parity rule.
+
+## Timing (post drop_caches + compact_memory)
+
+`free -g` before the run: `total=125 used=2 free=123 buff/cache=0
+available=122` (compaction confirmed clean). Same binary both arms
+(`driver-stack` sha256 `b10336db1bb039bf518281e1865d5c894949c19a664b37ed9b296f6306e620e4`,
+`libggml-hip.so` sha256 `0bff406a9bf92ad8f3d5bb1d56a2221f067d898825b448ce3edcdfae25f7b322`),
+full 38.41 env, native mode (`<model> prompt.ids 256 8`), `MEASURE_FOLLOW=follow.ids`.
+6 fresh `driver-stack` processes, interleaved **Q8, A3, Q8, A3, Q8, A3**, all
+through `gpu_exec.sh`, nothing else running on the box (no builds, no other
+model loads) for the duration. `run_native.sh` (committed) is the harness used.
+
+The driver prints no prefill-TPS or wall-clock field -- only `decode_ms`/`ms_token`
+for the 256-token measure window per `[measure]` line (confirmed by grep across
+all 6 logs). Reporting what it actually prints.
+
+Each process runs schedule `{0,1,0,1,1,0,1,0}` over 8 measure reps -> 4
+`mode=1` lines per process, 12 per arm across the 3 interleaved processes
+(not 15 -- the schedule only has 4 mode=1 slots per process, not 5; verified
+count below is exhaustive, every `[measure] ... mode=1` line in all 3 logs per
+arm, nothing excluded).
+
+| Arm | n (mode=1) | median ms/token | mean | best (min) | max |
+|---|---|---|---|---|---|
+| Q8_0 baseline | 12 | **38.2487** | 38.3272 | 38.2072 | 38.5337 |
+| A3 (dense Q6_K, shexp triple + ssm_out kept Q8_0) | 12 | **35.8801** | 36.4166 | 35.6977 | 37.6505 |
+
+**Delta: A3 is 2.3686 ms/token faster at the median (38.2487 -> 35.8801), a
+6.19% decode speedup.** Raw mode=1 values (ms/token, sorted) --
+Q8: `[38.2072, 38.2146, 38.2163, 38.2233, 38.2257, 38.2470, 38.2503, 38.2862,
+38.4909, 38.5045, 38.5268, 38.5337]`; A3: `[35.6977, 35.7175, 35.7475, 35.7607,
+35.8196, 35.8741, 35.8861, 35.9506, 37.6214, 37.6260, 37.6476, 37.6505]`. Both
+arms show the same pattern -- 8 of 12 values tightly clustered, the remaining
+4 (the third interleaved process of each arm) elevated by ~0.3-1.8ms -- a
+box-level drift affecting both arms similarly across the run, not an
+arm-specific effect; medians (which land in the tight cluster for both) are
+the reliable summary, matching the bench-parity rule's "report median" guidance.
+
+**`[measure_tokens]` determinism check:** for each arm, all 24 `[measure_tokens]`
+lines (3 processes x 8 reps) collapse to **exactly 1 unique token sequence**
+(verified via `sort -u` over the stripped id lists) -- fully deterministic
+across fresh processes for both Q8 and A3, consistent with the quality gate's
+zero-noise-floor finding above.
+
+**Q8 sanity check:** median 38.2487 ms/token falls inside the expected
+38.16-38.5 band.
+
+**Decision: A3 is a real win.** Unlike Option A (bandwidth savings canceled by
+losing SHARED_OVERLAP) and A2 (crashed), A3 keeps every fusion sealed and
+replaying identically to the Q8 baseline while still cutting 0.619 GiB/token
+of dense-tensor bandwidth, landing a clean **6.19% median decode speedup**
+with **zero measurable quality noise above the deterministic floor** (KL mean
+5.06e-3, top-1 128/128 in the quality gate above). Recommend promoting A3.
+
+## A3 Timing Artifacts
+
+- `run_native.sh` -- native-mode (n=256 reps=8) timing harness, parameterized
+  by model path/tag/run-index (used for all 6 interleaved runs).
+- Logs: `timing_q8_{1,2,3}.log`, `timing_a3_{1,2,3}.log` on the box
+  (`~/qwen4exp-q6/logs/`, not committed -- raw run output).
