@@ -6273,7 +6273,8 @@ static bool ggml_cuda_hc_upmix_row8_pair_quick_valid(
         pair.memo_src1->data == pair.mixed->data && pair.memo_src1->buffer &&
         pair.scale == 0.25f && pair.bias == 0.0f &&
         (pair.memo_src0_type == GGML_TYPE_Q8_0 ||
-         pair.memo_src0_type == GGML_TYPE_Q4_K || pair.memo_src0_type == GGML_TYPE_Q5_K);
+         pair.memo_src0_type == GGML_TYPE_Q4_K || pair.memo_src0_type == GGML_TYPE_Q5_K ||
+         pair.memo_src0_type == GGML_TYPE_Q6_K);
     if (!shape_ok || !weight->data || !lo->data || !pair.up->data ||
         !pair.xn->data || !pair.mixed->data) {
         return false;
@@ -6308,11 +6309,16 @@ static const ggml_tensor * ggml_cuda_hc_upmix_row8_consumer(
             weight_type = wt;
             return src1;
         }
-        if (direct && wt == GGML_TYPE_Q8_0 && !q8) {
+        // Direct (non-expert) consumer: historically Q8_0-only dense weight.
+        // The upmix kernel itself never reads this weight (see call site at
+        // ggml_cuda_mmvq_set_hc_upmix_row8, which only takes xn/mixed/scale/bias),
+        // so this is purely an aliasing/handoff sanity check -- safe to widen to
+        // any dense type this consumer can legitimately be (Q8_0 or Q6_K).
+        if (direct && (wt == GGML_TYPE_Q8_0 || wt == GGML_TYPE_Q6_K) && !q8) {
             q8 = src1;
+            weight_type = wt;
         }
     }
-    if (q8) weight_type = GGML_TYPE_Q8_0;
     return q8;
 }
 
