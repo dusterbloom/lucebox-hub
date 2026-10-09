@@ -45,3 +45,68 @@ CLI binary), and no existing driver hook reports ggml_cgraph node count to
 an external caller — exposing one would require a production-source edit,
 which was out of scope per the task's minimal-edit constraint. Flagging this
 as the one unmet sub-goal rather than fabricating a number.
+
+## Graph-replay headroom (measurement only, no source edits)
+
+Lib: same build1151 libggml-hip.so.0.9.11, sha256
+`96ac2100d2794842849d16a5788dbb0b0a1ea6f668f09fdd196a4dc045851772`
+(no rebuild happened between runs below).
+
+Knob found: `GGML_CUDA_DISABLE_GRAPHS_DEVICES=<device-index>`
+(ggml-cuda.cu:416-434, consulted at ggml-cuda.cu:7754). Device index inside
+the process after `HIP_VISIBLE_DEVICES=1` is `0` (confirmed from the
+`Device 0: Radeon 8060S` log line). This knob disables HIP graph
+capture/replay only; the qwen4exp stable decode workspace (`decode_ws`,
+same `ggml_cgraph`, same device buffers) is untouched either way — it is
+arm B as specified (replay off, persistent workspace kept). No second knob
+exists to force a full per-call eager rebuild of the T=1 stable graph
+without a source edit (`use_stable_graph` has no env override in
+qwen4exp_graph.cpp), and routing k=1 through `reference=true` would also
+swap in the unfused/differential-check kernels, not just the graph
+strategy, so that is not a clean arm C — arm C is skipped rather than
+faked. Confirmed with `GGML_CUDA_GRAPH_STATS=1` (ggml-cuda.cu:7837-7855,
+`GGML_CUDA_GRAPH_STATS_EVERY=5`) that the knob does what it claims: arm A
+shows `replay=18/20` (warmup then steady-state replay) at `n_nodes=5227`;
+arm B on the same build shows `eager=20/20, replay=0` at the same
+`n_nodes=5227`. No `LUCE_QWEN_*` fusion envs were set in either arm
+(matches verify's default-off fusions).
+
+20 reps after 3-rep warmup, Q8 model, 8K-ish context (pos 8021-8423,
+identical range to the table above), fresh process per arm, interleaved:
+
+| arm | k | median ms | delta vs A |
+|---|---|------:|------:|
+| A (graphs on, default) | 1 | 43.11 / 43.09 (two runs) | — |
+| B (`GGML_CUDA_DISABLE_GRAPHS_DEVICES=0`) | 1 | 43.07 / 42.96 (two runs) | **-0.1 ms (-0.2%)** |
+| A (graphs on, default) | 3 (verify) | 67.52 / 67.40 (two runs) | — |
+| B (`GGML_CUDA_DISABLE_GRAPHS_DEVICES=0`) | 3 (verify) | 67.08 / 66.70 (two runs) | -0.3..-0.8 ms, within the arm's own run-to-run spread |
+
+The A-B spread (±0.1-0.2 ms) is the same size as each arm's own
+run-to-run noise. **The graph-replay prize for a single T=1 forward is
+~0, not a few ms** — HIP graph replay only removes kernel-launch overhead,
+and at `n_nodes=5227` over a ~43 ms forward that overhead is a rounding
+error against the actual GEMV/MoE compute time.
+
+Node counts (from the same `GGML_CUDA_GRAPH_STATS=1` capture,
+`GGML_CUDA_GRAPH_STATS_EVERY=1`): k=1 stable graph = **5227 nodes**, fixed
+across calls (that's what makes replay possible). k=3 verify = **6499-6847
+nodes**, a different count on almost every call (6847, 6499, 6847 across 3
+consecutive forwards) — the verify graph is never structurally identical
+twice, so `ggml_cuda_graph_update_required` would see a "properties
+changed" graph every time even if capture were attempted.
+
+Verify k=3 with HIP graphs enabled vs disabled: **identical — eager both
+ways**, `total=1` per distinct call with `replay=0, capture=0, eager=1` in
+every sample whether `GGML_CUDA_DISABLE_GRAPHS_DEVICES` is set or not.
+Generic CUDA-graph capture does nothing for verify today: it never even
+attempts to capture (node count isn't stable enough to pass
+`ggml_cuda_graph_update_required` twice in a row), so the "enabled" flag
+in the knob is moot for k>1.
+
+**Bottom line for anyone about to spend days on this**: at k=1 the
+replay path already exists, is active 90% of the time (18/20 after
+warmup), and still buys ~0 ms. Building graph replay for verify(k) would
+have to first get the k>1 node graph to stop changing shape call-to-call
+(mask/indexer-driven branching), and even then the ceiling demonstrated
+by the k=1 A-B delta is ~0.1-0.2 ms out of 43-68 ms. Not worth building
+on this box/model/context regime.
