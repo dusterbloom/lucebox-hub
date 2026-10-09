@@ -340,6 +340,7 @@ bool ggml_cuda_mmvq_hc_down_inject_consumed();
 void ggml_cuda_mmvq_set_hc_down_inject_lo_fuse(char * q8, float * dst, bool in_place);
 bool ggml_cuda_mmvq_hc_down_inject_lo_fuse_consume(const char * q8, const float * dst, bool in_place);
 extern "C" GGML_BACKEND_API size_t ggml_backend_cuda_get_hc_lo_fuse_launch_count(void);
+extern "C" size_t ggml_backend_cuda_get_hc_lo_fuse_debug_counts(int);
 
 static bool ggml_cuda_hc_lo_fused_requested() {
     static const bool enabled = [] {
@@ -7297,6 +7298,15 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 qwen_shared->captured_upmix_row8_sites = upmix_row8_recorded_sites;
                 std::fprintf(stderr, "[hc-upmix-row8-capture] uid=%llu mode=%d sites=%zu\n",
                     (unsigned long long) qwen_shared->captured_uid, qwen_upmix_row8_mode(), upmix_row8_recorded_sites);
+                if (ggml_cuda_hc_lo_fused_requested()) {
+                    std::fprintf(stderr, "[hc-lo-fuse-capture] uid=%llu armed=%zu matched=%zu stale=%zu launched=%zu called=%zu\n",
+                        (unsigned long long) cgraph->uid,
+                        ggml_backend_cuda_get_hc_lo_fuse_debug_counts(0),
+                        ggml_backend_cuda_get_hc_lo_fuse_debug_counts(1),
+                        ggml_backend_cuda_get_hc_lo_fuse_debug_counts(2),
+                        ggml_backend_cuda_get_hc_lo_fuse_launch_count(),
+                        ggml_backend_cuda_get_hc_lo_fuse_debug_counts(3));
+                }
                 static const bool lifecycle_audit = [] {
                     const char * e = getenv("LUCE_QWEN_HC_LO_LIFECYCLE_AUDIT");
                     return e && e[0] == '1' && e[1] == '\0';

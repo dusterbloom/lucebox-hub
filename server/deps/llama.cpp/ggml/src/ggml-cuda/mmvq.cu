@@ -68,23 +68,49 @@ static thread_local float * g_hc_lo_fuse_dst     = nullptr;
 static thread_local bool   g_hc_lo_fuse_in_place = false;
 static thread_local bool   g_hc_lo_fuse_done      = false;
 static thread_local size_t g_hc_lo_fuse_launch_count = 0;
+static thread_local size_t g_hc_lo_fuse_armed_count = 0;
+static thread_local size_t g_hc_lo_fuse_matched_count = 0;
+static thread_local size_t g_hc_lo_fuse_stale_count = 0;
 
 void ggml_cuda_mmvq_set_hc_down_inject_lo_fuse(char * q8, float * dst, bool in_place) {
+    if (g_hc_lo_fuse_done) ++g_hc_lo_fuse_stale_count;
+    g_hc_lo_fuse_done = false;
     g_hc_lo_fuse_active   = q8 != nullptr;
+    if (g_hc_lo_fuse_active) ++g_hc_lo_fuse_armed_count;
     g_hc_lo_fuse_q8       = q8;
     g_hc_lo_fuse_dst      = dst;
     g_hc_lo_fuse_in_place = in_place;
 }
 
+static thread_local size_t g_hc_lo_fuse_consume_called_count = 0;
 bool ggml_cuda_mmvq_hc_down_inject_lo_fuse_consume(const char * q8, const float * dst, bool in_place) {
+    ++g_hc_lo_fuse_consume_called_count;
     const bool match = g_hc_lo_fuse_done && g_hc_lo_fuse_q8 == q8 &&
         g_hc_lo_fuse_dst == dst && g_hc_lo_fuse_in_place == in_place;
+    if (match) ++g_hc_lo_fuse_matched_count;
+    else if (g_hc_lo_fuse_consume_called_count <= 5) {
+        std::fprintf(stderr,
+            "[hc-lo-fuse-mismatch] call=%zu done=%d q8=%p==%p dst=%p==%p inplace=%d==%d\n",
+            g_hc_lo_fuse_consume_called_count, (int) g_hc_lo_fuse_done,
+            (const void *) g_hc_lo_fuse_q8, (const void *) q8,
+            (const void *) g_hc_lo_fuse_dst, (const void *) dst,
+            (int) g_hc_lo_fuse_in_place, (int) in_place);
+    }
     g_hc_lo_fuse_done = false;
     return match;
 }
 
 extern "C" GGML_BACKEND_API size_t ggml_backend_cuda_get_hc_lo_fuse_launch_count(void) {
     return g_hc_lo_fuse_launch_count;
+}
+extern "C" GGML_BACKEND_API size_t ggml_backend_cuda_get_hc_lo_fuse_debug_counts(int kind) {
+    switch (kind) {
+        case 0: return g_hc_lo_fuse_armed_count;
+        case 1: return g_hc_lo_fuse_matched_count;
+        case 2: return g_hc_lo_fuse_stale_count;
+        case 3: return g_hc_lo_fuse_consume_called_count;
+        default: return 0;
+    }
 }
 
 extern "C" GGML_BACKEND_API size_t ggml_backend_cuda_get_expert_row_warps_launch_count(void) {
@@ -3217,9 +3243,12 @@ static bool ggml_cuda_try_hc_down_inject(
         static_cast<float *>(inject->data));
     CUDA_CHECK(cudaGetLastError());
     }
+    // Do NOT clear g_hc_lo_fuse_q8/g_hc_lo_fuse_dst here: when the fused branch
+    // ran, ggml_cuda_mmvq_hc_down_inject_lo_fuse_consume (called from the SCALE
+    // node's hc_lo_q8_try one iteration later) needs these exact pointers to
+    // confirm it's looking at the same site; g_hc_lo_fuse_done is the only flag
+    // that gates re-use, and consume() already resets it after reading.
     g_hc_lo_fuse_active = false;
-    g_hc_lo_fuse_q8 = nullptr;
-    g_hc_lo_fuse_dst = nullptr;
     g_hc_down_inject_consumed = true;
     ++g_hc_down_inject_launch_count;
     return true;
