@@ -245,6 +245,85 @@ option A's SO=0 numbers as the answer for the shexp-fixed model too (since A2 ca
 run with SO=1), or (b) someone patches the HC_UPMIX_ROW8 positional contract, at which
 point this section's steps 3-4 can be completed against a real A2+SHARED_OVERLAP run.
 
+## Root cause of the HC_UPMIX_ROW8 crash (instrumented, confirmed)
+
+The coordinator authorized patching our fork's `ggml-cuda.cu` for this specific
+fusion (the earlier "don't patch" only covered diagnosing SHARED_OVERLAP). Added a
+temporary debug print inside `ggml_cuda_prepare_hc_upmix_row8`'s matching loop
+(ggml-cuda.cu:6343-6364), gated behind `getenv("LUCE_DEBUG_UPMIX")`, logging each
+candidate site's `up_i`, `mix_count`, whether `ggml_cuda_hc_upmix_row8_consumer()`
+found a downstream consumer, and that consumer's weight type.
+
+**Proved the instrumented build is behavior-preserving first** (per instruction):
+ran the Q8 baseline through the rebuilt `driver-stack` (no `LUCE_DEBUG_UPMIX` set)
+and diffed its 256-step `[measure_tokens]` output byte-for-byte against the
+pre-patch baseline capture -- identical (md5 differs only because of the saved
+file's original whitespace framing; the token sequences themselves diff clean,
+`IDENTICAL`). `[hc-upmix-row8-capture] sites=96` also still reported on Q8.
+
+**Result against A2 (`LUCE_DEBUG_UPMIX=1`, full env):** of the 96 candidate `up`
+sites found (same 96 as Q8 -- the `hc_attn_up`/`hc_ffn_up` 320x10240 Q8_0 tensor is
+untouched, so this half of the scan is unaffected), 52 fail `quick_valid`. All 52
+failures show `memo_src1=(nil)` -- `ggml_cuda_hc_upmix_row8_consumer()` finds *no*
+accepted-type downstream node at all for those sites. A second debug pass (scanning
+the identical window manually, ignoring the type filter) shows **why**: the real
+next node that reads `mixed` is a direct `MUL_MAT` whose weight (`node->src[0]`) is
+now `Q6_K` (e.g. `weight_ne=[2560,6144]`, `weight_ne=[2560,512]` -- the dense
+attn_qkv/attn_gate/ssm_out tensors we requantized). `ggml_cuda_hc_upmix_row8_consumer()`'s
+accepted set for the "direct" (non-expert) branch was hard-coded to
+`wt == GGML_TYPE_Q8_0` only; `Q6_K` was never added, so the scan reports "no
+consumer found" and the pair is dropped, taking `plan.pairs.size()` from 96 to 44.
+
+**This is exactly the coordinator's first predicted category -- a type check on a
+tensor the upmix kernel doesn't actually read.** Traced the only call site that
+reads a captured pair, `ggml_cuda_mmvq_set_hc_upmix_row8(node, p.xn, p.mixed,
+p.scale, p.bias)` (ggml-cuda.cu:7179, invoked only when `node == pair.up`, never
+when `node` is the consumer): it takes `xn`/`mixed`/`scale`/`bias` -- **never**
+`memo_src1` or `memo_src0_type`. Those two fields exist purely so `quick_valid` can
+confirm the `mixed` buffer is actually handed off to a real next-layer matmul
+before anything else reuses that memory (an aliasing/handoff safety check, backed
+by the existing `data`/`contiguous`/`nrows` checks), not because the kernel
+computes anything with that matmul's weight. The accepted-type allowlist
+(`Q8_0` direct, `Q4_K`/`Q5_K` via `MUL_MAT_ID` reshape for experts) was written
+before any dense tensor could be a K-quant, and was simply never extended.
+
+## Proposed fix (written, NOT applied -- blocked by the sandbox permission system)
+
+Two 1-hunk changes, `bench/exact/q6/patch_fix_upmix_q6k.py` (committed here as a
+reviewable artifact, not run against the box):
+1. `ggml_cuda_hc_upmix_row8_consumer()`: widen the direct-branch type check from
+   `wt == GGML_TYPE_Q8_0` to `wt == GGML_TYPE_Q8_0 || wt == GGML_TYPE_Q6_K`, and
+   capture the actual matched `wt` into `weight_type` (instead of hard-assigning
+   `GGML_TYPE_Q8_0`).
+2. `ggml_cuda_hc_upmix_row8_pair_quick_valid()`: add `GGML_TYPE_Q6_K` to the
+   accepted `memo_src0_type` set alongside `Q8_0`/`Q4_K`/`Q5_K`.
+
+Neither hunk touches what the upmix kernel actually computes -- both only widen a
+bookkeeping/safety-check allowlist to match reality.
+
+**Could not apply, rebuild, or re-test this patch**: writing it to the box's
+`ggml-cuda.cu` and rebuilding `libggml-hip.so` was blocked by this session's local
+permission system (`Claude Code auto mode classifier`, reasons given: "Modify
+Shared Resources" / "Security Test Removal" on repeated attempts, including a
+plain rebuild to restore the file to the already-reverted pristine source). This
+is a sandbox-level denial, not a judgment call I can override by rephrasing the
+command, splitting it, or trying a different tool/host -- per the denial's own
+instructions I stopped retrying and did not pursue the same outcome through
+another path. **The box's `ggml-cuda.cu` source is confirmed back at the pristine
+pre-session hash** (`md5sum` matches `~/qwen4exp-q6/ggml-cuda.cu.orig_backup` on
+lucebox4) **but the currently-built `libggml-hip.so`/`driver-stack` binaries on the
+box still reflect the last successful (debug-instrumented, behavior-preserving)
+build** -- a rebuild to resync binary-to-source was itself blocked. Whoever picks
+this up next should rebuild (`make -j16 ggml-hip` in `build1151`, then
+`build_driver_stack.sh`) before trusting the binary matches the (clean) source, or
+apply `patch_fix_upmix_q6k.py` first if proceeding with the fix.
+
+Steps 3 (quality gate, golden-mode KL) and 4 (timing, compaction handshake) remain
+blocked on this patch landing and the resulting full-env A2 run finding 96/96 pairs
+with `SHARED_OVERLAP` sealed and matching `producer_q8`/`hc_lo_q8`/`gdn_ab` replay
+counts against the Q8 baseline, per the coordinator's acceptance criteria -- none
+of that has been verified yet since the patch isn't in the binary.
+
 ## A2 Artifacts
 
 - `requant_q6.cpp --keep-shexp-q8` -- same tool, flag added (committed).
@@ -252,5 +331,12 @@ point this section's steps 3-4 can be completed against a real A2+SHARED_OVERLAP
   for the stack trace above).
 - `run_a2_noupmix.sh` -- attempted HC_UPMIX_ROW8=0 workaround; refused by the
   driver's own startup guard (rc=2, `driver_shared_epilogue.cpp:58`).
+- `patch_debug_upmix.py`, `patch_debug_upmix2.py` -- the temporary root-cause
+  instrumentation (applied, tested, then reverted on the box; kept here for
+  reproducibility).
+- `patch_fix_upmix_q6k.py` -- the proposed fix, written but **not applied**
+  (blocked by sandbox permission; see above).
+- `run_a2_debug.sh` -- env wrapper used to run the instrumented build
+  (`LUCE_DEBUG_UPMIX=1`).
 - Model: `/home/duster/models/qwen4exp-dense-q6k-a2/Qwen3.8-Flash-Next-dense-Q6K-a2-0000{1..4}-of-00004.gguf`
   on lucebox4 (not committed -- binary weights, box-local only).
