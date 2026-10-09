@@ -340,3 +340,72 @@ of that has been verified yet since the patch isn't in the binary.
   (`LUCE_DEBUG_UPMIX=1`).
 - Model: `/home/duster/models/qwen4exp-dense-q6k-a2/Qwen3.8-Flash-Next-dense-Q6K-a2-0000{1..4}-of-00004.gguf`
   on lucebox4 (not committed -- binary weights, box-local only).
+
+## Fix applied (by the user, directly on lucebox4) and verified
+
+The user applied `patch_fix_upmix_q6k.py` to the box's own shell (bypassing this
+session's sandbox denial, which only blocked *this agent's* write access) and
+rebuilt:
+
+- `ggml-cuda.cu` md5 after patch: `90ecef47c09f4b106432ef369a12078e` (debug
+  instrumentation removed -- patch applied directly to the pristine source).
+- `driver-stack` sha256: `b10336db1bb039bf518281e1865d5c894949c19a664b37ed9b296f6306e620e4`
+- `libggml-hip.so.0.9.11` sha256: `0bff406a9bf92ad8f3d5bb1d56a2221f067d898825b448ce3edcdfae25f7b322`
+  (verified identical across `.so`, `.so.0`, `.so.0.9.11` in `build1151/deps/llama.cpp/ggml/src/ggml-hip/`).
+
+**Step 1 (Q8 model, full env) -- PASS.** `[hc-upmix-row8-capture]` reports
+`sites=96` on every one of 20 capture events (2 warm + 8 measure reps x mode
+0/1 pairs). The 256-step `[measure_tokens]` greedy-argmax id stream is
+byte-identical to the pre-patch baseline capture (`logs/base_rep1.log`, built
+before the fix, captured on this box at 2026-10-09 00:14): both logs collapse
+to one unique token sequence across all measure reps, and `diff` of the
+sorted-unique sequences is empty. The patch is behavior-neutral on the
+untouched Q8_0 model, as expected (widening an accepted-type set to include
+Q6_K cannot change matching behavior when no tensor is actually Q6_K).
+
+**Step 2 (A2 model, full env) -- still aborts, but past the HC_UPMIX_ROW8 assert
+and the SHARED_OVERLAP contract.** The `ggml-cuda.cu:6530`
+`GGML_ASSERT(upmix_row8 && upmix_row8->pairs.size() == 96)` no longer fires --
+confirms the applied fix (widening `ggml_cuda_hc_upmix_row8_consumer()`'s
+direct-branch type check and `quick_valid()`'s accepted `memo_src0_type` set to
+include `Q6_K`) works as designed. The process now hard-aborts on a **different,
+structurally identical** assert a few hundred nodes later:
+
+```
+ggml-cuda.cu:7231: GGML_ASSERT(producer_gdn_sites == (on ? 36 : 0)) failed
+```
+
+Root cause (read-only trace, no patch attempted -- this matcher was not in the
+coordinator's authorization, which was scoped to the HC_UPMIX_ROW8 matcher
+only): `producer_gdn_sites` is incremented at `ggml-cuda.cu:7090` only when
+`ggml_cuda_gdn_q8_match()` (defined `ggml-cuda.cu:5871-5899`) returns true for a
+candidate gated-RMSNorm site. That matcher's downstream-consumer check at line
+~5883 is hard-coded:
+
+```cpp
+mm->op != GGML_OP_MUL_MAT || !mm->src[0] || mm->src[1] != flat ||
+    mm->src[0]->type != GGML_TYPE_Q8_0) return false;
+```
+
+`mm` is the real next-layer matmul consuming the gated-RMSNorm's flattened
+output (`flat->ne[0] == 6144`, `mm->src[0]->ne[0] == 6144`) -- one of the dense
+tensors this requant converts to `Q6_K` (`attn_gate`/`ssm_out`, both ne0=6144
+and both in the always-requantized set in `requant_q6.cpp`). Exactly the same
+bug class as the HC_UPMIX_ROW8 consumer: a bookkeeping/aliasing type-allowlist
+on a tensor the fused kernel (`ggml_cuda_gated_rms_norm_q8_1`) never reads --
+it only takes `qa.x/qa.gamma/qa.z/qa.out` plus the separately-reserved `q8`
+staging buffer, never `qa.consumer`'s weight itself (`qa.consumer = mm` is
+stored only so `ggml_cuda_producer_q8_reserve()` can key its handoff map by
+it). The parallel `producer_hc_sites` assert (same line, checked alongside
+`producer_gdn_sites`) is unaffected -- its matcher (`ggml-cuda.cu:7504-7513`,
+`g_hc_q8_1_consumer` population loop) matches against the `hc_attn_up`/
+`hc_ffn_up` weight (`ne0=10240`), which this requant never touches and which
+stays `Q8_0`.
+
+**Not patched.** Per the "investigate then fix everywhere" pattern this is
+almost certainly the same 1-line-class fix (widen `mm->src[0]->type !=
+GGML_TYPE_Q8_0` at `ggml-cuda.cu:~5883` to also accept `GGML_TYPE_Q6_K`), but
+it is a different matcher than the one explicitly authorized, and this agent's
+sandbox cannot write to the box regardless. Quality gate and timing remain
+blocked on this second contract landing; stopping here to report rather than
+expanding patch scope without authorization.
