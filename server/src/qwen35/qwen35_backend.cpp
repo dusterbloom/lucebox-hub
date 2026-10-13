@@ -1015,12 +1015,15 @@ void Qwen35Backend::state_ladder_clear() {
     state_ladder_head_ = -1;
 }
 
-// State-only checkpoint (ssm + conv + target_feat, no KV) of the live cache at
-// `pos`, then LRU eviction down to KVFLASH_STATE_LADDER_MIB (default 3072).
+// State-only checkpoint (ssm + conv, no KV; plus target_feat when a drafter
+// is configured) of the live cache at `pos`, then LRU eviction down to
+// KVFLASH_STATE_LADDER_MIB (default 3072).
 bool Qwen35Backend::state_ladder_capture(int pos) {
     if (pos <= 0 || pos != cache_.cur_pos) return false;
     StateCheckpoint & ck = state_ladder_[pos];
-    if (!snapshot_target_cache(w_, cache_, snap_backend_, ck.snap, /*skip_kv=*/true)) {
+    if (!snapshot_target_cache(w_, cache_, snap_backend_, ck.snap, /*skip_kv=*/true,
+                              /*kvflash_blob=*/nullptr,
+                              /*skip_target_feat=*/!cfg_.draft_path)) {
         free_prefix_snapshot(ck.snap);
         state_ladder_.erase(pos);
         return false;
