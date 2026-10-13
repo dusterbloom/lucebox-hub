@@ -3,7 +3,6 @@
 #include <cuda_fp16.h>
 #endif
 #include <cstdlib>
-#include <type_traits>
 
 static thread_local size_t g_gdn_scalar_launch_count = 0;
 static thread_local size_t g_gdn_grouped_cols_launch_count = 0;
@@ -965,9 +964,18 @@ gated_delta_net_rowsplit_cuda(const float * q, const float * k, const float * v,
         //   St   += k * (delta / c)          (one in-place FMA per element)
         //   attn  = c * (St.q)
         // St is folded back (St *= c, c = 1) at the end of each window, or
-        // earlier if c underflows, so the decay costs 64 multiplies per window
-        // instead of per token.
+        // earlier when c gets small, so the decay costs 64 multiplies per
+        // window instead of per token.
         float c = 1.0f;
+        const auto fold = [&]() {
+#pragma unroll
+            for (int rr = 0; rr < ROWS; ++rr)
+#pragma unroll
+                for (int i = 0; i < VEC; ++i) {
+                    s[rr][i].x *= c; s[rr][i].y *= c; s[rr][i].z *= c; s[rr][i].w *= c;
+                }
+            c = 1.0f;
+        };
         const auto token = [&](int tl) {
             float u[ROWS][4];
 #pragma unroll
@@ -990,9 +998,14 @@ gated_delta_net_rowsplit_cuda(const float * q, const float * k, const float * v,
             for (int rr = 0; rr < ROWS; ++rr) U[rr] = (u[rr][0] + u[rr][1]) + (u[rr][2] + u[rr][3]);
 #pragma unroll
             for (int rr = 0; rr < ROWS; ++rr) U[rr] = gdn_row4_reduce_sum(U[rr]);
-            const float gc = gv * c;          // scale of the decayed state
-            c = gc;
-            const float inv_c = gdn_rcp(gc);
+            // Scale of the decayed state. Real gates underflow expf(g) to 0;
+            // c is floored at 1e-24 so 1/c stays finite. The floor misstates
+            // the decayed state by at most 1e-24*|St| <= 1e-12 (St is folded
+            // whenever c < 1e-12), far below float32 noise, and the true gc
+            // is still used for the delta term.
+            const float gc = gv * c;
+            c = fmaxf(gc, 1e-24f);
+            const float inv_c = gdn_rcp(c);
 #pragma unroll
             for (int rr = 0; rr < ROWS; ++rr) {
                 const float dsc = (fmaf(-gc, U[rr], vr[rr]) * bt) * inv_c;
@@ -1036,18 +1049,9 @@ gated_delta_net_rowsplit_cuda(const float * q, const float * k, const float * v,
 #pragma unroll
             for (int rr = 0; rr < ROWS; ++rr) vr[rr] = vrn[rr];
         };
-        const auto fold = [&]() {
-#pragma unroll
-            for (int rr = 0; rr < ROWS; ++rr)
-#pragma unroll
-                for (int i = 0; i < VEC; ++i) {
-                    s[rr][i].x *= c; s[rr][i].y *= c; s[rr][i].z *= c; s[rr][i].w *= c;
-                }
-            c = 1.0f;
-        };
         for (int tl = 0; tl < t_end; ++tl) {
             token(tl);
-            if (c < 1e-18f) fold();   // block-uniform: g is per head
+            if (c < 1e-12f) fold();  // block-uniform: g is per head
         }
         fold();
         // The other LDS slot was last read before the previous barrier.

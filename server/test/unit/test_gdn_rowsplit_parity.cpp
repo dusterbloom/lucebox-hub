@@ -47,9 +47,12 @@ struct Dev {
     ~Dev() { if (p) hipFree(p); }
 };
 
+// Max |a-b| / max(|a|, 1e-3); any non-finite element returns NaN (fmax
+// would silently drop it).
 double max_rel(const std::vector<float> & a, const std::vector<float> & b) {
     double worst = 0.0;
     for (size_t i = 0; i < a.size(); ++i) {
+        if (!std::isfinite(a[i]) || !std::isfinite(b[i])) return NAN;
         const double den = std::fmax(std::fabs((double) a[i]), 1e-3);
         worst = std::fmax(worst, std::fabs((double) a[i] - b[i]) / den);
     }
@@ -77,9 +80,11 @@ bool run_case(int T) {
     }
     std::vector<float> g((size_t) T * H), beta(g.size()), state0((size_t) H * D * D);
     for (size_t i = 0; i < g.size(); ++i) {
-        // log-decay: mostly mild, with occasional near-total forgetting so the
-        // row-split kernel's scaled-state fold is exercised.
-        g[i]    = (ud(rng) < 0.02f) ? -30.0f : -0.3f * ud(rng);
+        // log-decay: mostly mild, with occasional near-total forgetting (the
+        // row-split kernel's scaled-state fold) and total forgetting, where
+        // expf(g) underflows to exactly 0 as it does for real qwen4exp gates.
+        const float r = ud(rng);
+        g[i] = r < 0.01f ? -200.0f : r < 0.03f ? -30.0f : -0.3f * ud(rng);
         beta[i] = 1.0f / (1.0f + std::exp(-nd(rng)));
     }
     for (float & x : state0) x = 0.1f * nd(rng);

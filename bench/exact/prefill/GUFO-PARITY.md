@@ -1417,32 +1417,61 @@ are against the legacy tiled kernel, rel = |a-b| / max(|a|, 1e-3).
 | new v3: branch-free token loop, next-token k prefetched under attn | 4.292 | 8.6e-6 | 2.7e-5 |
 | new v4: scaled state S = c*St, fold per window (no per-token decay mul, no phi copies), 2r x 4w x 8win | 3.539 | 1.1e-5 | 4.2e-5 |
 | new v5: + native ext_vector prefetch ring (HIP float4 union kept it in scratch) | 3.251 | 1.1e-5 | 4.2e-5 |
-| **new v6: + 2-deep ring (shipped: 2 rows x 4 waves x 8-token window, 96 blk x 128 thr)** | **3.178** | 1.1e-5 | 4.2e-5 |
+| new v6: + 2-deep ring (2 rows x 4 waves x 8-token window, 96 blk x 128 thr) | 3.178 | 1.1e-5 | 4.2e-5 |
+| **new v7: + floored scale `c = max(g*c, 1e-24)` (shipped; v6 produced NaN on real gates, see below)** | **3.231** | 1.1e-5 | 4.2e-5 |
 
 | Kernel (T=512) | ms |
 | --- | ---: |
 | legacy tiled | 0.839 |
 | gufo row-split (+PrepKq) | 0.543 (+0.045) |
-| new v6 | 0.417 |
+| new v7 | 0.419 |
 
 Rejected along the way (T=4096 ms): full window unroll (7.3-9.6, VGPR
 spills), 1 row per lane (5.7-5.9, doubles LDS reads per FMA), 4 rows per
 lane (3.7-4.6, 256 VGPRs), 2 waves x 8-token window (5.0, 227 VGPRs at
 occupancy 4), 12/16-token windows (4.3-4.9), k.q by full-wave reduce
 instead of post-update attn (4.85), 3-deep ring (3.24 vs 3.18, inside
-noise; 2-deep is simpler and uses 24 fewer VGPRs).
+noise; 2-deep is simpler and uses 24 fewer VGPRs). After the NaN fix:
+per-token uniform branch to a direct-decay path when `expf(g) == 0`
+(3.79), per-window safe/fast split via a templated token lambda (4.42:
+both bodies inlined, 256 VGPRs + 61 spilled).
+
+Zero-decay bug found by the first end-to-end run, not by the unit test:
+real qwen4exp gates hit `expf(g) == 0`, so `c` became 0, `1/c` inf, the
+state NaN, and the server emitted `!!!!` while "winning" the A/B by +20%.
+The synthetic test gates never underflowed and `std::fmax` dropped the NaN
+from the max-rel. Fixed the test first (1% of tokens at g=-200 so expf
+underflows, NaN-aware max) -> reproduced FAIL -> floored the scale in the
+kernel (v7). The floor misstates the decayed state by at most
+`1e-24 * |St| <= 1e-12` (St is folded whenever `c < 1e-12`) and the true
+`g*c` is still used in the delta term; costs 0.05 ms over v6.
 
 Why it is faster than gufo's layout port: the legacy and gufo kernels both
 spend 2 VALU per state element per token on the decay (`g*S` multiply +
 FMA, and on this compiler an extra `v_mov` per element because `v_fmac`
 cannot write the accumulator in place). Keeping the state scaled
 (`S = c*St`, `St += k*(delta/c)`, `c *= g`, fold `St *= c` once per
-8-token window or when `c < 1e-18`) makes the update one in-place
+8-token window or when `c < 1e-12`) makes the update one in-place
 `v_dual_fmac`, so a token costs ~200 VALU slots per lane instead of ~300.
 The DPP reductions, LDS staging and 2-deep global prefetch are gufo's.
 
-Per-layer at T=4096: 6.96 -> 3.18 ms (2.19x vs legacy, 1.34x vs gufo's
-kernel alone, 1.43x vs gufo kernel + PrepKq). Unit test
-`test_gdn_rowsplit_parity` (T in {1,5,33,512,4096}, with 2% of tokens at
-g=exp(-30) to exercise the fold): out max rel 3.0e-6..9.4e-6, state max rel
-1.6e-5..4.5e-5, PASS on lucebox4.
+Per-layer at T=4096: 6.96 -> 3.23 ms (2.15x vs legacy, 1.32x vs gufo's
+kernel alone, 1.41x vs gufo kernel + PrepKq). Unit test
+`test_gdn_rowsplit_parity` (T in {1,5,33,512,4096}; 1% of tokens at g=-200
+so expf underflows to 0, 2% at g=-30 to exercise the fold): out max rel
+3.0e-6..9.7e-6, state max rel 1.6e-5..4.3e-5, PASS on lucebox4.
+
+### End to end, lucebox4 (p4096 request, `rocprofv3 --kernel-trace`)
+
+Same `luce_server` build, `LUCE_GDN_LEGACY=1` vs default, 2 requests per
+arm traced (72 launches = 36 layers x 2), chunk plan rows=16640 so each
+layer is one launch:
+
+| arm | kernel | per launch | GDN per p4096 request |
+| --- | --- | ---: | ---: |
+| legacy | `gated_delta_net_tiled_cuda<128,8,8,16>` | 6.990 ms | 251.6 ms |
+| new | `gated_delta_net_rowsplit_cuda<2,4,8>` | 2.991 ms | **107.7 ms** |
+| gufo (ledger) | `GdnRowSplitKernel` + PrepKq + Epilogue | - | 183.5 + 13.2 + 43.7 = 240.4 ms |
+
+Note: the in-server launch is 2.99 ms vs 3.23 ms in the microbench (the
+microbench's uniform random gates fold more often than real gates).
