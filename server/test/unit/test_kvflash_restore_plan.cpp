@@ -185,3 +185,31 @@ TEST_CASE(KvflashRestorePlanFixture, grid_plan_batch_end_matches_the_list) {
         }
     }
 }
+
+// ---- S9b: one extra cut point on the grid ---------------------------------
+
+TEST_CASE(KvflashRestorePlanFixture, turn_cut_splits_one_batch_and_keeps_the_grid) {
+    const Batches b = kvflash_prefill_batches(0, 2000, kU, kU, 1300);
+    CHECK(b == (Batches{{0, 512}, {512, 1024}, {1024, 1300}, {1300, 1536}, {1536, 2000}}));
+    // Per-position form agrees.
+    for (const auto & p : b) CHECK(kvflash_prefill_batch_end(p.first, 2000, kU, kU, 1300) == p.second);
+}
+
+TEST_CASE(KvflashRestorePlanFixture, turn_cut_near_the_end_leaves_a_short_final_batch) {
+    // Pend = 1000, k = 4: the last batch is the 4 generation-suffix tokens.
+    CHECK(kvflash_prefill_batches(0, 1000, kU, kU, 996) == (Batches{{0, 512}, {512, 996}, {996, 1000}}));
+}
+
+TEST_CASE(KvflashRestorePlanFixture, turn_cut_outside_or_on_the_grid_changes_nothing) {
+    for (int cut : {-1, 0, 512, 1024, 2000, 5000}) {
+        CHECK(kvflash_prefill_batches(0, 2000, kU, kU, cut) == kvflash_prefill_batches(0, 2000, kU, kU));
+    }
+    // A cut at or below the start of the range is ignored (restore at C == cut).
+    CHECK(kvflash_prefill_batches(1300, 2000, kU, kU, 1300) == kvflash_prefill_batches(1300, 2000, kU, kU));
+    check_plan(kvflash_prefill_batches(1300, 2000, kU, kU, 1300), 1300, 2000, kU, kU);
+}
+
+TEST_CASE(KvflashRestorePlanFixture, turn_cut_with_wide_batches) {
+    CHECK(kvflash_prefill_batches(0, 3000, kU, 1024, 1300) ==
+          (Batches{{0, 1024}, {1024, 1300}, {1300, 2048}, {2048, 3000}}));
+}

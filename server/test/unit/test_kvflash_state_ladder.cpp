@@ -68,3 +68,54 @@ TEST_CASE(KvflashLadderFixture, evict_stops_when_only_protected_remain) {
     // no head protection when head is unknown: only the newest is protected.
     CHECK((kvflash_ladder_evict(e, 0, 100, -1) == Pos{1024, 8192}));
 }
+
+// ---- S9b: turn rung at the end of the previous prompt minus the suffix ----
+
+namespace {
+constexpr int32_t kStart = 900, kAsst = 901, kNl = 902;
+}
+
+TEST_CASE(KvflashLadderFixture, turn_cut_found_after_the_assistant_header) {
+    // ... <start> assistant \n <think> \n </think> \n\n   (thinking off, 4 tokens)
+    std::vector<int32_t> p{1, 2, kStart, 5, 6, kStart, kAsst, kNl, 70, 71, 72, 73};
+    CHECK(kvflash_turn_cut(p, kStart, kAsst, kNl) == 8);
+    // thinking on: 2-token suffix
+    std::vector<int32_t> q{1, kStart, kAsst, kNl, 70, 71};
+    CHECK(kvflash_turn_cut(q, kStart, kAsst, kNl) == 4);
+    // header at the very end of the prompt (no suffix): cut == size, no use
+    std::vector<int32_t> r{1, kStart, kAsst, kNl};
+    CHECK(kvflash_turn_cut(r, kStart, kAsst, kNl) == -1);
+}
+
+TEST_CASE(KvflashLadderFixture, turn_cut_not_found) {
+    CHECK(kvflash_turn_cut({}, kStart, kAsst, kNl) == -1);
+    CHECK(kvflash_turn_cut({1, 2, 3}, kStart, kAsst, kNl) == -1);
+    // user header only, or a broken header
+    CHECK(kvflash_turn_cut({kStart, 5, kNl, 7}, kStart, kAsst, kNl) == -1);
+    CHECK(kvflash_turn_cut({kStart, kAsst, 5, 7}, kStart, kAsst, kNl) == -1);
+    // unknown ids (< 0) never match
+    CHECK(kvflash_turn_cut({1, 2, 3, 4}, -1, -1, -1) == -1);
+}
+
+TEST_CASE(KvflashLadderFixture, turn_cut_takes_the_last_of_several_headers) {
+    std::vector<int32_t> p{kStart, kAsst, kNl, 1, 2, kStart, kAsst, kNl, 3, kStart, kAsst, kNl, 4, 5};
+    CHECK(kvflash_turn_cut(p, kStart, kAsst, kNl) == 12);
+}
+
+TEST_CASE(KvflashLadderFixture, positions_include_the_turn_rung) {
+    // 18813-token prompt, turn rung at 18809: grid rungs plus the off-grid one.
+    CHECK((kvflash_state_ladder_positions(1300, 18813, 512, 8192, 18809) == Pos{1024, 8192, 16384, 18432, 18809}));
+    // absent / out of range: unchanged
+    CHECK((kvflash_state_ladder_positions(1300, 18813, 512, 8192, -1) == kvflash_state_ladder_positions(1300, 18813, 512, 8192)));
+    CHECK((kvflash_state_ladder_positions(1300, 18813, 512, 8192, 99999) == kvflash_state_ladder_positions(1300, 18813, 512, 8192)));
+    // a turn rung on a grid point does not duplicate
+    CHECK((kvflash_state_ladder_positions(-1, 9000, 512, 8192, 8704) == Pos{8192, 8704}));
+}
+
+TEST_CASE(KvflashLadderFixture, evict_several_turn_rungs_keeps_the_newest) {
+    // turn rungs of turns 1..3 at 4000/7000/9000 (ticks 2/5/8); budget for two:
+    // head and the newest stay, the oldest turn rung goes first.
+    const std::vector<KvflashLadderEntry> e{{1024, 1}, {4000, 2}, {7000, 5}, {9000, 8}};
+    CHECK((kvflash_ladder_evict(e, 200, 100, 1024) == Pos{4000, 7000}));
+    CHECK((kvflash_ladder_evict(e, 300, 100, 1024) == Pos{4000}));
+}
