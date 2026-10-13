@@ -173,6 +173,44 @@ inline bool kvflash_state_ladder_enabled() {
     return v != nullptr && v[0] == '1' && v[1] == '\0';
 }
 
+// KVFLASH_LIVE_RESTORE=1 (requires KVFLASH_STATE_LADDER=1) restores a new
+// request from the single live KVFlash session instead of prefilling from 0.
+inline bool kvflash_live_restore_enabled() {
+    const char * v = std::getenv("KVFLASH_LIVE_RESTORE");
+    return v != nullptr && v[0] == '1' && v[1] == '\0' && kvflash_state_ladder_enabled();
+}
+
+// Decision for a restore from the live session (S8a).
+//   L             longest common prefix of the prompt and the live history,
+//                 capped at cur_pos (the history is exact only up to there)
+//   C             checkpoint to resume from: greatest rung <= L, or -1. Also
+//                 capped at prompt_len-1: the last prompt token must run so
+//                 prefill produces the logits decode starts from.
+//   replay_from   first prompt index to prefill (C, or 0 without a rung)
+//   discard_above rungs strictly above this describe diverged history
+struct KvflashLiveRestore {
+    int L = 0;
+    int C = -1;
+    int replay_from = 0;
+    int discard_above = 0;
+};
+
+inline KvflashLiveRestore kvflash_live_restore_decide(
+        const std::vector<int32_t> & prompt, const std::vector<int32_t> & history,
+        int cur_pos, const std::vector<int> & ladder_positions) {
+    KvflashLiveRestore d;
+    const size_t cap = std::min<size_t>({prompt.size(), history.size(),
+                                         (size_t)std::max(cur_pos, 0)});
+    size_t l = 0;
+    while (l < cap && prompt[l] == history[l]) l++;
+    d.L = (int)l;
+    d.discard_above = d.L;
+    const int pickable = std::min(d.L, (int)prompt.size() - 1);
+    const int c = kvflash_ladder_pick(ladder_positions, pickable);
+    if (c > 0) { d.C = c; d.replay_from = c; }
+    return d;
+}
+
 // What a restore does with a snapshot. Dense: the existing path. Consume:
 // pooled snapshot, pager blob restored, only the suffix prefills. FullReprefill:
 // drop the snapshot and prefill the whole prompt from 0. Reject: fail the
