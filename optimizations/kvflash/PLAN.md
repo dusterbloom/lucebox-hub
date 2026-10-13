@@ -66,11 +66,51 @@ Go/no-go for E: R0 reproduced and R1(b) passes. If R1(b) fails, stop and report.
 |---|---|---|---|
 | S1 pager serialize/restore, pins, score ledger | 902b99de | committed b64d1630 | 9 unit cases, ASan/UBSan clean |
 | S2 pager blob inside prefix snapshots | fd166b39 | committed b03f6ea7 | 2 unit cases; callers compile |
-| S3 pooled snapshot at chunk boundary | fd166b39, 70f2a4b5 | committed (with S4), GPU gate running | GPU |
-| S4 restore + prefill only new tokens, `KVFLASH_RESTORE_CONSUME` off by default | 56168347, 3156aec9 | committed, 9 unit cases; GPU gate running | GPU: turn-3 output identical with and without restore at 20K/35K/64K (donor saw divergence above 35K, never explained); suffix-only prefill visible in logs |
+| S3 pooled snapshot at chunk boundary | fd166b39, 70f2a4b5 | committed 6b9f8b59, GPU-verified | lucebox6, Qwen3.8-27B, `--kvflash 8192` |
+| S4 restore + prefill only new tokens, `KVFLASH_RESTORE_CONSUME` off by default | 56168347, 3156aec9 | committed 6b9f8b59, GPU-verified | turn-3 output identical with and without restore at 20K/35K/64K; turn 2–3 prefill 19/33/62 s → 0.5/0.5–1.8/0.2 s; decode unchanged (27–28 tok/s); turn 1 +1.5 s |
 
-Default-on only after the S4 identity gate passes. Disk persistence of pooled
-snapshots comes after S4.
+**Gap found by the GPU run.** The server asks for a snapshot at the prompt end
+(18813) but S3 can only save at the chunk boundary below it (18432). Later turns
+log "boundary snapshot skipped: pooled prefill relocates chunks", so only the
+turn-1 snapshot is ever reused and the re-prefilled suffix grows every turn.
+Each snapshot also copies all KV to host RAM. S1–S4 are a correct stepping
+stone, not the end state.
+
+### Decision: one live session store, aligned compute grid (S5–S9)
+
+Design reviewed against Codex's alternative; Codex's version adopted. Goal:
+an unaligned cut is impossible by construction, and full re-prefill from 0
+happens only for a new conversation.
+
+Principles:
+- **KV is never snapshotted per turn.** The session keeps its live pager and
+  pool; going back to position P is `truncate(P)`, which works for any P
+  because full-attention KV at a position does not depend on later tokens.
+- **Only DeltaNet state needs checkpoints** (149.6 MiB each: 144 SSM + 5.6 conv).
+- **Every KVFlash prefill runs on an absolute grid of U = 512 tokens**
+  (multiple of the 64-token chunk). Batches never start off-grid, so the
+  unaligned-start batch accounting (qwen35_backend.cpp:2154,
+  kvflash_pager.h:627) and the 2-token-batch NaN on R9700
+  (prefill_helpers.h:15/:51) cannot occur.
+- **Restore = greatest checkpoint C ≤ common prefix L**, `truncate(C)`,
+  replay [C, prompt end). Missing checkpoint → fall back to an earlier one,
+  never to 0 while a session exists.
+- **Publish the cut actually made**, not the one requested
+  (http_server.cpp:4185, prefix_cache.cpp `commit_at` :555).
+
+| Patch | What | Test / gate |
+|---|---|---|
+| S5 `pager.truncate(P)` | drop logical positions ≥ P, free their blocks, keep pins/ledger consistent | unit: truncate at chunk edge, mid-chunk, inside tail, after eviction; serialize ↔ truncate round trip |
+| S6 aligned prefill grid | KVFlash prefill batches start on multiples of U; the remainder below U runs as the last batch | unit: batch plan for prompt lengths 1, 511, 512, 513, 18813; GPU: no NaN on R9700 for every remainder size 1–64 |
+| S7 DeltaNet checkpoint ladder | checkpoints at the system/tools head, every 8192 tokens, and at the grid point below each prompt end; LRU-bounded (~2.9 GiB at 131K) | unit: selection of C for synthetic L; memory bound respected |
+| S8 per-session store + restore | live pager + checkpoints keyed by session; restore as above; actual cut published | GPU: 10-turn session, every turn re-prefills < U + new tokens; output identical to cold prefill at turns 3, 5, 10 |
+| S9 generation-end checkpoint | checkpoint after decode so the next turn skips re-reading the answer | gated: enabled only if DeltaNet state after generation equals cold prefill of the same tokens (greedy tokens identical over 5 sessions) |
+
+The pager blob (S1/S2) stays only for export and disk persistence. Refcounted
+copy-on-write blocks are the follow-up if sibling conversations (forks of one
+session) become a requirement; that belongs to track C.
+
+Default-on for S4 is dropped: S8 replaces it.
 
 ## Track B0: baseline of today's system
 
@@ -82,7 +122,7 @@ snapshots comes after S4.
 | a | llama-server | `--max-ctx 131072` |
 | b | lucebox, KVFlash off | `--max-ctx 131072` |
 | c | lucebox, KVFlash `8192` qk | `--max-ctx 196608` |
-| d | arm c + S1–S4 | after S4 |
+| d | arm c + S5–S8 | after S8 |
 
 Per turn: prefill, decode, wall (median), `pt`, degenerate yes/no.
 Needs the replay client and `degeneration_scan.py` copied into this repo
