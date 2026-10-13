@@ -207,3 +207,153 @@ an architecture change, and both apply to every ggml user of `mul_mat`/
 The "dense K-quant tensors stay on int8 MMQ" explanation above is **refuted**. Every dense tensor in UD-Q4_K_XL is Q8_0. That covers attn_*, ssm_out, the shexp triple and hc_*. The two exceptions are indexer.q_proj (BF16) and per_layer_token_embd (IQ4_NL). So the dense projections are already eligible for lucebox's Q8_0->F16 WMMA MMB path.
 
 The only K-quant and Q5_1 tensors are the routed experts. The leading hypothesis is therefore the routed MoE. gufo's `RoutedF16GEMMKernel` decodes the weights inside the kernel into FP16 WMMA and picks the tile width from a histogram of tokens per expert. Lucebox instead falls back to integer MMQ for quantized 512-expert mul_mat_id. This is unproven until a rocprofv3 kernel trace shows where the gap is.
+
+## Kernel trace (p=4096)
+
+Box: lucebox4, Strix iGPU (`gfx1151`), discrete `gfx1201` hidden (same pinning as
+the parity run). `rocprofv3 --kernel-trace --stats -f csv` from the extracted
+`/home/duster/gufo-parity/rocprof-root/opt/rocm-7.2.2/bin/rocprofv3`. Same
+binaries as the parity run (`/home/duster/gufo-parity/src/build/release/gufo`,
+`/home/duster/qwen4exp-exact-stack/build1151/luce_server`), same GGUF
+(`/home/duster/lucebox-models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf`).
+Scratch: `~/qwen4exp-f16/scratch/gufo/prof/`. GPU was idle (0-3% busy, no
+resident server) before each run; no other processes were touched.
+
+**gufo**: `gufo bench -m <gguf> -p 4096 -n 0 -r 1 -v` under rocprofv3
+(`HIP_VISIBLE_DEVICES=1`). One repetition only, so the trace has exactly two
+phases: model load (fillBufferAligned/copyBuffer, no GEMM kernels, ends at
+t+20.2s) then the single pp4096 call (first `*GEMMKernel` launch to the last
+kernel end). The prefill-only window used below is that second phase:
+**5.574 s wall, 6926 kernel launches, 3.76% idle** (sum of kernel durations /
+wall). Tool-reported throughput under instrumentation was 1532.5 tok/s (vs
+1741.7 unprofiled — rocprofv3 serializes launches, so this run's wall time
+is inflated and not comparable 1:1 to the parity numbers; only the
+*composition* below is trustworthy).
+
+**lucebox**: cold `luce_server` under rocprofv3 (`ROCR_VISIBLE_DEVICES=1`,
+`--max-ctx 20480`), single request via a scratch client
+(`single_pp_client.py`, distinct random-token prompt, `temperature:0`,
+`max_tokens:1`, `stream:true` — not committed) calibrated to 587 words ->
+4092 prompt tokens (gufo's tokenizer-exact `-p 4096` isn't available through
+the HTTP API; 4092 vs 4096 is noise). The trace's first ~87s of wall time is
+dominated by on-disk model streaming (103 GiB GGUF); a clean **5.17 s gap**
+separates that from the single forward pass. The prefill-only window is
+everything after that gap: **4.556 s wall, 7319 kernel launches, 16.78%
+idle**. Server-reported `prefill_ms=4618.5` for 4092 tokens (886 tok/s under
+instrumentation vs 1135.6 unprofiled median — same profiling-overhead
+caveat as gufo).
+
+### Bucket table (% of each engine's own prefill wall time)
+
+| Class | gufo ms | gufo % | lucebox ms | lucebox % | Δ (luce − gufo, pp) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Dense GEMMs | 2051.4 | 36.80 | 1177.9 | 25.85 | **−10.95** |
+| Routed gate/up GEMM | 732.4 | 13.14 | — | — | — |
+| Routed down GEMM | 1006.8 | 18.06 | — | — | — |
+| Routed experts (all) | 1739.2 | 31.20 | 1032.6 | 22.66 | **−8.54** |
+| Expert sort/scatter/gather | 23.7 | 0.42 | 359.3 | 7.89 | **+7.47** |
+| GDN recurrence | 506.5 | 9.09 | 314.1 | 6.89 | −2.20 |
+| Attention | 291.2 | 5.22 | 226.1 | 4.96 | −0.26 |
+| hc_*/norms/elementwise | 715.1 | 12.83 | 669.4 | 14.69 | +1.86 |
+| Other | 37.3 | 0.67 | 12.4 | 0.27 | −0.40 |
+| **Idle (wall − Σkernels)** | 209.5 | 3.76 | 764.6 | 16.78 | **+13.02** |
+| **Wall** | **5573.8** | 100 | **4556.4** | 100 | — |
+| Launch count | 6926 | — | 7319 | — | — |
+
+(gufo's routed gate/up vs down split comes from `RoutedF16GEMMKernel`'s
+`WeightType` template param: 7/8 = gate/up tiles [48/64], 12/13 = down tiles
+[64/128]; lucebox's routed-expert number above is not split gate/up vs down
+— see kernel list below for why.)
+
+### Top 15 kernels — gufo (post-load window)
+
+| Total ms | Calls | Mean µs | Kernel |
+| ---: | ---: | ---: | --- |
+| 1739.18 | 384 | 4529.1 | `RoutedF16GEMMKernel` (WeightType 7/8/12/13, gate-up+down) |
+| 1622.21 | 1256 | 1291.6 | `DenseF16GEMMKernel` |
+| 369.73 | 144 | 2567.6 | `GdnRowSplitKernel` |
+| 329.02 | 188 | 1750.1 | `HcCombineMoeF16Kernel` |
+| 290.88 | 48 | 6060.1 | `WmmaCausalAttentionKernel` |
+| 274.76 | 768 | 357.8 | `W8A8BlockedWmmaGEMMKernel` (dense, narrow-but-deep int8 route) |
+| 247.03 | 196 | 1260.4 | `HcCombineVec4Kernel` |
+| 95.67 | 48 | 1993.2 | `WKQuantA8BlockedWmmaGEMMKernel` |
+| 92.05 | 376 | 244.8 | `HcMixEpilogueF16Kernel` |
+| 87.38 | 144 | 606.8 | `GdnEpilogueKernel` |
+| 46.23 | 72 | 642.0 | `Cijk_...` (Tensile/hipBLASLt dense GEMM) |
+| 27.08 | 144 | 188.1 | `GdnPrepKqKernel` |
+| 21.24 | 144 | 147.5 | `SsmConvBoundaryKernel` |
+| 18.39 | 47 | 391.2 | `RmsNormKernel` |
+| 16.34 | 55 | 297.1 | `QuantizeQ8TiledVec4Kernel` |
+
+### Top 15 kernels — lucebox (post-gap window)
+
+| Total ms | Calls | Mean µs | Kernel |
+| ---: | ---: | ---: | --- |
+| 814.93 | 301 | 2707.4 | `mmb_q8f16_kernel` (dense Q8_0 -> F16 WMMA, MMB) |
+| 542.26 | 94 | 5768.8 | `mmb_routed_glu_kernel` (routed gate+up fused SwiGLU, F16 WMMA, MMB) |
+| 325.01 | 235 | 1383.0 | `mm_ids_helper` (mul_mat_id expert sort/compaction, `mmid.cu`) |
+| 282.00 | 94 | 3000.0 | `mmb_routed_kernel` (routed down-proj, F16 WMMA, MMB) |
+| 251.28 | 72 | 3490.0 | `gated_delta_net_tiled_cuda` (GDN recurrence) |
+| 198.68 | 630 | 315.4 | `mul_mat_q` (int8 MMQ, `mmq.cu` — see below) |
+| 180.38 | 46 | 3921.4 | `hc_combine_norm_moe_f32_b256` |
+| 136.04 | 95 | 1432.0 | `hc_gate_mix_kernel` |
+| 132.47 | 144 | 919.9 | `hc_combine_norm_f32_b256` |
+| 110.80 | 12 | 9233.2 | `qsa3_attn_kernel` |
+| 97.56 | 142 | 687.0 | `mmb_small_m_kernel` |
+| 85.84 | 93 | 923.0 | `mmb_w8a8_kernel` |
+| 76.18 | 119 | 640.2 | `mmb_f32split_kernel` |
+| 71.63 | 12 | 5968.9 | `qsa3_rows_kernel` |
+| 68.14 | 36 | 1892.8 | `gated_rms_norm2_kernel` |
+
+### Hypothesis verdict: refuted in its strong form, confirmed in a narrower form
+
+lucebox's routed-expert path is **not** uniformly int8 MMQ. Most of the
+routed-expert kernel time (824.3 ms of 1032.6 ms, 80%) already runs through
+lucebox's own F16 WMMA path (`mmb_routed_kernel` / `mmb_routed_glu_kernel`,
+the fused gate+up+SwiGLU analogue of gufo's `RoutedGatedF16Gemm`), dispatched
+from `ggml-cuda.cu:3773` (`if (ggml_cuda_mmb_supported_mmid(...)) { ...
+ggml_cuda_mul_mat_id_mmb(...); return; }`) inside `ggml_cuda_mul_mat_id()`
+(`ggml-cuda.cu:3682`). `mmb_quant_type()` (`mmb-quant.cuh:220`) lists `Q4_K`
+and `Q5_1` as MMB-eligible, so the K-quant/Q5_1 routed weights are not
+blanket-excluded from WMMA the way the uncorrected hypothesis assumed.
+
+The remaining 198.7 ms (19%) of routed-expert time **does** fall through to
+classic int8 MMQ: when `ggml_cuda_mmb_supported_mmid()` returns false for a
+given mul_mat_id call (shape/tile-count gate in `mmb.cu:898-911`, e.g.
+`n_used > 64` or the tile-index-overflow check `(T*n_used)>>16 >= 1024`),
+dispatch falls to `ggml_cuda_should_use_mmq(...)` at `ggml-cuda.cu:3780`,
+which calls `ggml_cuda_mul_mat_q()` (`ggml-cuda.cu:3782`) ->
+`ggml_cuda_mul_mat_q_switch_type()` (`mmq.cu:78`) -> `case GGML_TYPE_Q4_K:
+mul_mat_q_case<GGML_TYPE_Q4_K>(...)` (`mmq.cu:146-147`) for the gate/up
+weight at this batch size. So the MMQ fallback is real but partial, gated by
+a tile/count condition rather than by quant type.
+
+The two clearest trace-level contributors to the gap instead are:
+
+1. **Dense GEMMs are a bigger relative share of gufo's wall time than
+   lucebox's** (36.80% vs 25.85%, −10.95 pp) — consistent with gufo's
+   adaptive F16-WMMA dequant switch applying to *more* dense shapes than
+   lucebox's narrower Q8_0-only `mmb_q8f16_kernel`/`mmb_w8a8_kernel` gate
+   (lucebox still has a non-trivial 274.76+85.84 ms narrow-but-deep int8
+   dense fallback on the gufo side too — `W8A8BlockedWmmaGEMMKernel` — so
+   this isn't a clean WMMA-vs-MMQ split either; it is a relative-weighting
+   difference, not a missing capability).
+2. **Expert sort/scatter and idle time are both far larger on lucebox.**
+   `mm_ids_helper` (lucebox's host-driven `mmid.cu` compaction kernel) costs
+   7.89% of wall time vs gufo's in-kernel `ExpertCountsKernel`-style
+   bookkeeping at 0.42% (+7.47 pp), and lucebox's idle time (gaps between
+   kernel launches — mostly the host-side readback/sync this compaction
+   needs) is 16.78% of wall vs gufo's 3.76% (+13.02 pp). Combined,
+   non-GEMM/non-recurrence overhead (sort/scatter + idle) is **24.67% of
+   lucebox's prefill wall time vs 4.18% of gufo's** — the single largest
+   bucket-level delta in this trace, and it matches the minimal-LOC fix #2
+   proposed above (reuse the already-computed `expert_bounds` instead of a
+   separate host round trip).
+
+Caveat: rocprofv3 instrumentation inflates both engines' wall time
+non-uniformly (gufo's unprofiled 1741.7 tok/s drops to 1532.5 profiled;
+lucebox's unprofiled 1135.6 median drops to ~886 profiled), so the *absolute*
+1.35-1.53x gap from the parity run should not be read directly off this
+trace's wall times — only the per-class composition and idle/sort-scatter
+shares, which are consistent with (and partly explain) the unprofiled gap
+being larger at shorter p.
