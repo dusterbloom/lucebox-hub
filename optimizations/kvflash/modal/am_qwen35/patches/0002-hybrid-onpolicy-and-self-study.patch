@@ -1,0 +1,153 @@
+diff -ruN -x __pycache__ -x '*.pyc' p1/compaction/compaction_methods/per_layer_head_on_policy.py work/compaction/compaction_methods/per_layer_head_on_policy.py
+--- a/compaction/compaction_methods/per_layer_head_on_policy.py	2026-10-13 17:30:31.519303312 +0200
++++ b/compaction/compaction_methods/per_layer_head_on_policy.py	2026-10-13 17:33:39.067562509 +0200
+@@ -148,6 +148,12 @@
+         device = past_key_values[ref_layer_idx][0].device
+         dtype = past_key_values[ref_layer_idx][0].dtype
+ 
++        # Query tensors carry one row per layer that owns attention queries (all layers for pure-attention
++        # models, only the full-attention layers for hybrids such as Qwen3.5).
++        from models.generate import get_linear_layer_indices
++        _linear = get_linear_layer_indices(model)
++        query_row = {l: r for r, l in enumerate(i for i in range(num_layers) if i not in _linear)}
++
+         # Generate original queries for all layers
+         print("Generating original queries for all layers...")
+         generator = QueryGenerator(
+@@ -384,7 +390,7 @@
+                 # Extract on-policy queries and combine with original queries
+                 if not on_policy_extractors:
+                     # No on-policy methods, use original queries
+-                    queries_on_policy_layer = original_queries[layer_idx]
++                    queries_on_policy_layer = original_queries[query_row[layer_idx]]
+                 else:
+                     # Extract on-policy queries for each method
+                     on_policy_queries = {}
+@@ -408,7 +414,7 @@
+ 
+                         # Add original queries before this on-policy range
+                         if start > current_pos:
+-                            parts.append(original_queries[layer_idx, :, current_pos:start, :])
++                            parts.append(original_queries[query_row[layer_idx], :, current_pos:start, :])
+ 
+                         # Add on-policy queries for this method
+                         parts.append(on_policy_queries[method])
+@@ -416,7 +422,7 @@
+ 
+                     # Add remaining original queries after last on-policy range
+                     if current_pos < total_queries:
+-                        parts.append(original_queries[layer_idx, :, current_pos:, :])
++                        parts.append(original_queries[query_row[layer_idx], :, current_pos:, :])
+ 
+                     queries_on_policy_layer = torch.cat(parts, dim=1)  # (num_heads, total_queries, head_dim)
+ 
+@@ -439,7 +445,7 @@
+                     V = V_full
+ 
+                 # Get original queries for this head
+-                queries_original = original_queries[layer_idx, head_idx, :, :]  # (n_queries, head_dim)
++                queries_original = original_queries[query_row[layer_idx], head_idx, :, :]  # (n_queries, head_dim)
+ 
+                 # Select queries based on layer: first global layer uses original, others use on-policy
+                 # (num_compacted_global_layers == 0 means this is the first global layer we're compacting)
+@@ -717,6 +723,9 @@
+         num_kv_groups = num_attn_heads // num_kv_heads
+ 
+         sliding_indices = sliding_layer_indices or set()
++        from models.generate import get_linear_layer_indices
++        _linear = get_linear_layer_indices(model)
++        query_row = {l: r for r, l in enumerate(i for i in range(num_layers) if i not in _linear)}
+ 
+         # Determine which cache to use as base
+         # Use past_key_values_for_queries if available (KV-based chunking), otherwise fall back to past_key_values
+@@ -869,7 +878,7 @@
+                 continue
+ 
+             # q_all_layers: (num_layers, num_attn_heads, n_tokens, head_dim)
+-            q_layer = q_all_layers[layer_idx]  # (num_attn_heads, n_tokens, head_dim)
++            q_layer = q_all_layers[query_row[layer_idx]]  # (num_attn_heads, n_tokens, head_dim)
+ 
+             per_seq_q_layer.append(q_layer)
+ 
+diff -ruN -x __pycache__ -x '*.pyc' p1/compaction/query_generation/self_study.py work/compaction/query_generation/self_study.py
+--- a/compaction/query_generation/self_study.py	2026-10-13 17:30:35.141857223 +0200
++++ b/compaction/query_generation/self_study.py	2026-10-13 17:33:17.761658711 +0200
+@@ -37,7 +37,8 @@
+     try:
+         from vllm import SamplingParams
+     except ImportError:
+-        raise ImportError("vLLM is required")
++        # No vLLM in the image (Qwen3.5 hybrids): the HF generate shim reads the same four fields.
++        from types import SimpleNamespace as SamplingParams
+ 
+     if enable_thinking:
+         return SamplingParams(
+diff -ruN -x __pycache__ -x '*.pyc' p1/evaluation/utils.py work/evaluation/utils.py
+--- a/evaluation/utils.py	2026-10-13 17:30:31.519303312 +0200
++++ b/evaluation/utils.py	2026-10-13 17:33:11.704658684 +0200
+@@ -1178,9 +1178,9 @@
+         moved_layers = []
+         for (C1, beta, C2) in compacted_cache:
+             moved_layers.append((
+-                C1.to(device=device, dtype=model.dtype),
++                C1.to(device=device, dtype=C1.dtype if C1.ndim == 3 else model.dtype),
+                 beta.to(device=device, dtype=model.dtype),
+-                C2.to(device=device, dtype=model.dtype),
++                C2.to(device=device, dtype=C2.dtype if C1.ndim == 3 else model.dtype),
+             ))
+ 
+         cache = CompactedPrefixCache(
+@@ -1287,9 +1287,9 @@
+     moved_layers = []
+     for (C1, beta, C2) in compacted_cache:
+         moved_layers.append((
+-            C1.to(device=device, dtype=model.dtype),
++            C1.to(device=device, dtype=C1.dtype if C1.ndim == 3 else model.dtype),
+             beta.to(device=device, dtype=model.dtype),
+-            C2.to(device=device, dtype=model.dtype),
++            C2.to(device=device, dtype=C2.dtype if C1.ndim == 3 else model.dtype),
+         ))
+ 
+     cache = CompactedPrefixCache(
+@@ -1497,9 +1497,9 @@
+     moved_layers = []
+     for (C1, beta, C2) in compacted_cache:
+         moved_layers.append((
+-            C1.to(device=device, dtype=model.dtype),
++            C1.to(device=device, dtype=C1.dtype if C1.ndim == 3 else model.dtype),
+             beta.to(device=device, dtype=model.dtype),
+-            C2.to(device=device, dtype=model.dtype),
++            C2.to(device=device, dtype=C2.dtype if C1.ndim == 3 else model.dtype),
+         ))
+ 
+     cache = CompactedPrefixCache(
+diff -ruN -x __pycache__ -x '*.pyc' p1/models/cache.py work/models/cache.py
+--- a/models/cache.py	2026-10-13 17:30:35.141857223 +0200
++++ b/models/cache.py	2026-10-13 17:32:57.705042429 +0200
+@@ -168,7 +168,11 @@
+         """
+         layers: List[Union[CompactedPrefixLayer, DynamicSlidingWindowLayer]] = []
+         sliding_indices = sliding_layer_indices or set()
+-        linear_indices = linear_layer_indices or set()
++        linear_indices = set(linear_layer_indices or set())
++        # Callers that only know "sliding" (get_sliding_layer_info now includes recurrent layers) hand Gated DeltaNet
++        # layers over as (conv_state[B, conv_dim, K], _, recurrent_state): a 3-D C1 marks them.
++        linear_indices |= {i for i in sliding_indices if i < len(compacted_cache) and compacted_cache[i][0].ndim == 3}
++        sliding_indices = sliding_indices - linear_indices
+ 
+         # Track the maximum compacted prefix length to compute rope_base
+         max_compacted_len = 0
+diff -ruN -x __pycache__ -x '*.pyc' p1/models/generate.py work/models/generate.py
+--- a/models/generate.py	2026-10-13 17:30:35.141857223 +0200
++++ b/models/generate.py	2026-10-13 17:32:50.883042429 +0200
+@@ -160,7 +160,9 @@
+         sliding_window = getattr(config, 'sliding_window', None)
+         if layer_types is not None:
+             for layer_idx, layer_type in enumerate(layer_types):
+-                if layer_type == "sliding_attention":
++                # Gated DeltaNet layers (Qwen3.5 hybrids) are carried through unchanged like sliding layers;
++                # CompactedPrefixCache turns their (conv, _, recurrent) entries into LinearAttentionLayers.
++                if layer_type in ("sliding_attention", "linear_attention"):
+                     sliding_layer_indices.add(layer_idx)
+ 
+     return sliding_layer_indices, sliding_window

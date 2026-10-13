@@ -26,9 +26,9 @@ image = (
     .run_commands("git clone https://github.com/adamzweiger/compaction /repo",
                   f"cd /repo && git checkout {SHA}")
     .add_local_dir(HERE, "/am", copy=True, ignore=["__pycache__", "*.pyc", "*.log"])
-    .run_commands("cd /repo && git apply /am/patches/0001-hybrid-qwen3_5-cache-and-compaction.patch",
+    .run_commands("cd /repo && git apply /am/patches/0001-hybrid-qwen3_5-cache-and-compaction.patch /am/patches/0002-hybrid-onpolicy-and-self-study.patch",
                   "cp -r /am/overlay/models/qwen3_5 /repo/models/qwen3_5",
-                  "mkdir -p /repo/am_tests && cp /am/tests/test_adapter.py /repo/am_tests/")
+                  "mkdir -p /repo/am_tests && cp /am/tests/test_*.py /repo/am_tests/")
 )
 app = modal.App("kvflash-am-r1a", image=image)
 results = modal.Volume.from_name("kvflash-am-results", create_if_missing=True)
@@ -41,7 +41,7 @@ USD_PER_S = {"H200": 4.54 / 3600, "H100": 3.95 / 3600}
 @app.function(timeout=1800, cpu=4, memory=16384)
 def unit():
     r = subprocess.run([sys.executable, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider",
-                        "/repo/am_tests/test_adapter.py"], cwd="/repo", capture_output=True, text=True,
+                        "/repo/am_tests"], cwd="/repo", capture_output=True, text=True,
                        env={**os.environ, "PYTHONPATH": "/repo"})
     print(r.stdout[-6000:], r.stderr[-3000:])
     return r.returncode

@@ -2,11 +2,13 @@
 from .cache_convert import (
     compacted_cache_from_triples,
     dynamic_cache_to_kv_tuples,
+    dynamic_cache_to_pseudo_kv,
     dynamic_cache_to_triples,
     greedy_decode,
     inject_linear_state,
     linear_layer_set,
 )
+from .hf_generate import HFGenerateShim
 from .modeling_qwen3_5 import (
     Qwen3_5CompactableAttention,
     Qwen3_5CompactableTextModel,
@@ -28,6 +30,8 @@ __all__ = [
     "compacted_cache_from_triples",
     "dynamic_cache_to_kv_tuples",
     "dynamic_cache_to_triples",
+    "dynamic_cache_to_pseudo_kv",
+    "HFGenerateShim",
     "greedy_decode",
     "inject_linear_state",
     "linear_layer_set",

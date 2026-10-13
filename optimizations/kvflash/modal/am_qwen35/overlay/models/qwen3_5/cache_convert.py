@@ -45,6 +45,22 @@ def dynamic_cache_to_kv_tuples(cache, layer_types):
     return tuple(out)
 
 
+def dynamic_cache_to_pseudo_kv(cache, layer_types):
+    """Legacy ((K, V), ...) tuples where a Gated DeltaNet layer carries (conv_state, recurrent_state) in the K/V slots.
+
+    The repo code treats such layers like sliding-window layers (carried through, never compacted) and
+    `CompactedPrefixCache` recognises the 3-D conv state, so the head-budget and on-policy code paths keep the
+    real recurrent state without knowing about it.
+    """
+    out = []
+    for layer, kind in zip(cache.layers, layer_types):
+        if kind == "linear_attention":
+            out.append((layer.conv_states[0], layer.recurrent_states[0]))
+        else:
+            out.append((layer.keys, layer.values))
+    return tuple(out)
+
+
 def inject_linear_state(compacted, cache, layer_types) -> Tuple[Triple, ...]:
     """Replace the placeholder entries the compaction code returns for DeltaNet layers with the real
     conv/recurrent state of `cache` (cloned)."""

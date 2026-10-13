@@ -95,7 +95,7 @@ class Qwen3_5CompactableTextModel(Qwen3_5TextModel):
         inputs_embeds=None,
         use_cache=None,
         cache_position=None,  # accepted for the repo's call sites (chunked_prefill); positions come from the cache
-        max_layer=None,  # accepted and ignored: no early exit, hooks simply fire on the layers they registered
+        max_layer=None,  # query capture only: stop after this layer (the logits of such a call are not meaningful)
         **kwargs,
     ):
         if not isinstance(past_key_values, CompactedPrefixCache):
@@ -139,6 +139,8 @@ class Qwen3_5CompactableTextModel(Qwen3_5TextModel):
 
         hidden_states = inputs_embeds
         for i, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
+            if max_layer is not None and i > max_layer:
+                break
             is_full = self.config.layer_types[i] == "full_attention"
             hidden_states = decoder_layer(
                 hidden_states,
