@@ -72,7 +72,32 @@ except to know which numbers are already seen (selection articles 0-9 overlap it
 
 ## Deviations
 
-(none yet)
+(see Amendment 1; no outcome data of the matrix had been seen when it was written. The pilot only gave timings and 33-question accuracies on 2 articles, not used for any choice.)
+
+## Amendment 1 (written after the timing pilot and the AIME Table 9 block, before any matrix, held-out or vs-random run)
+
+Measured (H100, selection articles 0-1, target 0.10, uniform budget, per article; generating ~17 answers is ~75 s per cell regardless of method):
+
+| Key selection | compaction time | all-in per article-cell (prefill/repeat queries) |
+|---|---|---|
+| HighestAttnKeys | ~12 s | ~1.6 min (~$0.10) |
+| OMP-fast (k4 int2) | ~250 s | ~5.6 min (~$0.37) |
+| OMP | ~1450 s | ~25 min (~$1.65) |
+
+Self-study queries add roughly 1.5-2.5 min per article-cell (first pass: ~2.5 min per article-cell all-in for HA). The full 72-cell matrix on 20 articles projects to ~$320, the held-out ceiling with OMP on 95 articles to ~$100+, the vs-random test on 115 articles at both targets to ~$50. Total > $450 against the $150 cap, so the cost gate trips. Spent before this amendment: first pass ~$43 (previous task), AIME Table 9 $56, pilot ~$25 (the self-study pilot arm was still finishing). Remaining for this launch: ~$65.
+
+Reductions (all from cost only, decided before seeing any matrix outcome):
+1. Target 0.10 only. Target 0.05 is not run.
+2. Selection matrix (articles 0-19, 357 q): 6 cells instead of 72, all on-policy except where stated, all `best` config methods:
+   S1 HA repeat per-head; S2 HA repeat uniform; S3 HA context-prefill per-head; S4 OMP-fast repeat per-head; S5 HA self-study (ss-plus-repeat) per-head; S6 OMP-fast self-study per-head.
+   Not run: plain OMP in every cell; non-on-policy variants; OMP-fast context-prefill; uniform-budget variants other than S2; target 0.05.
+3. Ceiling = S6 key selection (OMP-fast `omp_nnls0_-inf_7_drop-7_lsq_k4int2_on-policy`) + ss-plus-repeat + per-head budgets, replacing plain OMP in the definition above (plain OMP costs ~5x more). The ceiling is therefore possibly below the paper's ceiling.
+4. Held-out for the online-vs-ceiling and stale-query comparisons: articles 20-49 (30 articles, ~540 q) instead of 20-114. Minimum detectable difference at that n is ~6 points, so a verdict is given only when the CI is inside the +-3 margin; otherwise "inconclusive at this n".
+5. AM vs random keys stays at all 115 articles (2086 q) but target 0.10 only, repeat queries, uniform budget, `highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy` vs `random_subset_keys_nnls2_-3_3_lsq_on-policy` plus `original`; `truncate` not run (first pass: 9-19 points worse at n=181). Minimum detectable ~3.3 points as pre-registered.
+6. `--compute-stats 0` for all QuALITY runs (skips reconstruction statistics; accuracy and perplexity unaffected).
+7. Selection rule unchanged: best online cell among S1-S4 by selection accuracy at 0.10; ties within 1 question go to lower compaction time.
+8. The vs-random run is split into 5 article ranges (start-article/n-articles) and merged for analysis; same configs in every shard.
+9. AIME Table 9 block cost $56 vs $50 projected; design unchanged.
 
 ## Rung R1a: Qwen3.8-27B adapter is exact without compaction
 

@@ -79,7 +79,7 @@ def reasoning(name: str, mode: str, max_seq_len: int, max_compactions: int = 0,
     return _run(name, argv)
 
 
-@app.function(gpu=GPU, volumes=VOLS, timeout=8 * 3600, max_containers=4)
+@app.function(gpu=GPU, volumes=VOLS, timeout=8 * 3600, max_containers=8)
 def quality(name: str, target: float, budget: bool, query_config: str, n_articles: int = 10,
             methods: list[str] = ("original", "highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy"),
             algorithm_config: str = "best", start_article: int = 0, compute_stats: int = 1):
@@ -214,3 +214,36 @@ def pilot():
              for qc in ("context-prefill", "repeat", "ss-plus-repeat")]
     for k in calls:
         print(k.get())
+
+
+HAON, OMPFON = HA + "_on-policy", OMPF + "_on-policy"
+RND = "random_subset_keys_nnls2_-3_3_lsq_on-policy"
+
+
+@app.local_entrypoint()
+def stage_vs_random(shards: int = 5):
+    """PREREG: AM vs random keys (same fit), all 115 articles, target 0.10, repeat queries, uniform (Amendment 1)."""
+    n = 115
+    step = -(-n // shards)
+    calls = []
+    for i in range(shards):
+        s, k = i * step, min(step, n - i * step)
+        calls.append(quality.spawn(f"vsrandom_t0.1_repeat_a{s}_{k}", 0.1, False, "repeat", k,
+                                   ["original", "highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy", RND],
+                                   "key-selection", s, 0))
+    for c in calls:
+        print(c.get())
+
+
+@app.local_entrypoint()
+def stage_select():
+    """Selection matrix subset on articles 0-19, target 0.10 (Amendment 1 cell list)."""
+    cells = [  # name, query config, per-head budget, methods
+        ("sel_repeat_uniform", "repeat", False, [HAON]),
+        ("sel_repeat_perhead", "repeat", True, ["original", HAON, OMPFON]),
+        ("sel_ctxprefill_perhead", "context-prefill", True, [HAON]),
+        ("sel_ss_perhead", "ss-plus-repeat", True, [HAON, OMPFON]),
+    ]
+    calls = [quality.spawn(f"{n}_t0.1", 0.1, b, q, 20, m, "best", 0, 0) for n, q, b, m in cells]
+    for c in calls:
+        print(c.get())
