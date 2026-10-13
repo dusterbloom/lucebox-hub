@@ -56,6 +56,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -68,6 +69,12 @@
 #endif
 
 namespace luce::common {
+
+// Largest multiple of chunk_tokens that is <= pos. Aligns a snapshot boundary
+// (serialize(max_chunks)) to a whole number of pager chunks.
+inline int floor_to_chunk(int pos, int chunk_tokens) {
+    return (pos / chunk_tokens) * chunk_tokens;
+}
 
 struct KvFlashConfig {
     int chunk_tokens       = 64;  // logical tokens per page
@@ -184,6 +191,7 @@ public:
         cur_chunk_ = 0;
         epoch_++;
         has_pending_page_in_ = false;
+        unpin_all();   // pins are per-request; the backend re-applies them
         // Drop any relevance scoring from the previous request: a stale
         // score_hook could otherwise select an in-flight chunk of a multi-chunk
         // prefill ubatch as an eviction victim. It is re-installed by the
@@ -212,6 +220,36 @@ public:
 
     // Optional external relevance score; higher = keep. Falls back to LRU.
     std::function<float(int /*chunk*/)> score_hook;
+
+    // Pin the chunks overlapping logical token range [tok_lo, tok_hi)
+    // (half-open). Pinned chunks are never eviction victims and are always
+    // kept by reselect(), on top of the sink/tail protections. Pins are
+    // cleared by reset() (and so by deserialize()). Best-effort deadlock
+    // guard: if sink + tail + pinned + 2 would exceed the pool the whole span
+    // is refused with a warning and no pin is set. Empty/inverted ranges are
+    // no-ops.
+    void pin_range(int64_t tok_lo, int64_t tok_hi) {
+        if (!attached() || tok_lo < 0 || tok_hi <= tok_lo) return;
+        const int c_lo = (int)(tok_lo / cfg_.chunk_tokens);
+        const int c_hi = (int)((tok_hi - 1) / cfg_.chunk_tokens);   // inclusive
+        int pinned = 0, fresh = 0;
+        for (uint8_t f : pinned_) pinned += f;
+        for (int c = c_lo; c <= c_hi; c++) fresh += !is_pinned(c);
+        if (cfg_.sink_chunks + cfg_.tail_window_chunks + pinned + fresh + 2 > n_blocks_) {
+            std::fprintf(stderr,
+                "[kvflash] pin_range [%lld,%lld) refused: sink=%d tail=%d "
+                "pinned=%d new=%d pool_blocks=%d would deadlock eviction\n",
+                (long long)tok_lo, (long long)tok_hi, cfg_.sink_chunks,
+                cfg_.tail_window_chunks, pinned, fresh, n_blocks_);
+            return;
+        }
+        if (c_hi + 1 > (int)pinned_.size()) pinned_.resize((size_t)c_hi + 1, 0);
+        for (int c = c_lo; c <= c_hi; c++) pinned_[(size_t)c] = 1;
+    }
+    bool is_pinned(int c) const {
+        return c >= 0 && c < (int)pinned_.size() && pinned_[(size_t)c];
+    }
+    void unpin_all() { std::fill(pinned_.begin(), pinned_.end(), 0); }
 
     // Allocate slots for [kv_start, kv_start + n_tok) ahead of a forward
     // step (evicting LRU/low-score chunks as needed). False — with a
@@ -403,7 +441,8 @@ public:
             const ChunkState & st = chunks_[c];
             if (st.block < 0 && !st.on_host) continue;     // never materialized
             const bool prot = c < cfg_.sink_chunks ||
-                              c > cur_chunk_ - 1 - cfg_.tail_window_chunks;
+                              c > cur_chunk_ - 1 - cfg_.tail_window_chunks ||
+                              is_pinned(c);
             cands.push_back({c, prot ? 3.4e38f : score_hook(c)});
         }
         std::sort(cands.begin(), cands.end(),
@@ -424,11 +463,153 @@ public:
         return events;
     }
 
+    // Per-chunk relevance ledger (QK scorer): set before serialize() so the
+    // scores round-trip. -inf = never scored.
+    void set_chunk_score(int c, float s) {
+        if (c >= 0 && c < (int)chunks_.size()) chunks_[(size_t)c].score = s;
+    }
+    float chunk_score(int c) const {
+        return c >= 0 && c < (int)chunks_.size()
+            ? chunks_[(size_t)c].score : -std::numeric_limits<float>::infinity();
+    }
+
+    // ggml_type of the K cache recorded in the most recent successfully
+    // deserialized blob.
+    uint32_t serialized_kv_k_type() const { return last_serialized_kv_k_type_; }
+
+    // Snapshot chunks [0, max_chunks) (all when max_chunks < 0 or beyond
+    // n_chunks) into a flat blob; pair with deserialize(). Resident chunks are
+    // read from the pool tensors, paged-out chunks from their host backing
+    // (pinned host_data on async-DMA builds), never-written chunks are zero.
+    //
+    // Layout, magic "KVFLASH1" (little-endian u64):
+    //   8 x uint32 header: nc, chunk_tokens, n_head_kv, k_seg_bytes,
+    //                      v_seg_bytes, chunk_bytes, ggml_type(K), has_ledger(=1)
+    //   nc x chunk_bytes   KV bytes, segment order of copy_chunk()
+    //   nc x 8 bytes       ledger: u8 was_resident, 3 pad, f32 score
+    // Not serialized: physical block numbers, LRU order, pins.
+    std::vector<uint8_t> serialize(int max_chunks = -1) const {
+        synchronize_page_stream_();   // queued D2H must land in host_data first
+        const int nc = (max_chunks >= 0 && max_chunks < (int)chunks_.size())
+                       ? max_chunks : (int)chunks_.size();
+        const size_t kv_bytes = (size_t)nc * chunk_bytes_;
+        std::vector<uint8_t> out(kBlobHdr + kv_bytes + (size_t)nc * kLedgerEntry, 0);
+        uint8_t * p = out.data();
+        std::memcpy(p, &kBlobMagic, 8); p += 8;
+        const uint32_t hdr[8] = {(uint32_t)nc, (uint32_t)cfg_.chunk_tokens,
+            (uint32_t)n_head_kv_, (uint32_t)k_seg_bytes_, (uint32_t)v_seg_bytes_,
+            (uint32_t)chunk_bytes_, live_k_type_(), 1u};
+        std::memcpy(p, hdr, sizeof(hdr));
+        for (int c = 0; c < nc; ++c) {
+            const ChunkState & st = chunks_[(size_t)c];
+            uint8_t * dst = out.data() + kBlobHdr + (size_t)c * chunk_bytes_;
+            if (st.block >= 0 && has_tensor_storage()) {
+                for (size_t l = 0; l < attn_k_.size(); ++l) {
+                    for (int kv = 0; kv < 2; ++kv) {
+                        ggml_tensor * t = kv == 0 ? attn_k_[l] : attn_v_[l];
+                        const size_t seg = kv == 0 ? k_seg_bytes_ : v_seg_bytes_;
+                        for (int h = 0; h < n_head_kv_; ++h) {
+                            const size_t off = (size_t)st.block * cfg_.chunk_tokens * t->nb[1] +
+                                               (size_t)h * t->nb[2];
+                            ggml_backend_tensor_get(t, dst, off, seg);
+                            dst += seg;
+                        }
+                    }
+                }
+            } else if (st.block < 0 && st.on_host && has_tensor_storage()) {
+#ifdef KVFLASH_HAS_ASYNC_DMA
+                std::memcpy(dst, st.host_data, chunk_bytes_);
+#else
+                std::memcpy(dst, st.host_data.data(), chunk_bytes_);
+#endif
+            }
+            uint8_t * lp = out.data() + kBlobHdr + kv_bytes + (size_t)c * kLedgerEntry;
+            lp[0] = st.block >= 0 ? 1u : 0u;
+            std::memcpy(lp + 4, &st.score, 4);
+        }
+        return out;
+    }
+
+    // Replace the pager state with a serialize() blob. The blob is fully
+    // validated (magic, geometry, KV dtype, length, resident count <= pool)
+    // BEFORE any state is touched: a rejected blob returns false and leaves
+    // the pager as it was. On success: reset() semantics (pins cleared),
+    // chunks that were resident get a pool block (identity order, bytes
+    // restored), the rest stay host-backed and recallable via page_in(), and
+    // scores are restored. Pool slot numbers and LRU order are NOT preserved,
+    // only the logical residency set. Callers must rebuild slot masks (epoch
+    // advances). Returns false (pager reset/empty) only if a pinned host
+    // buffer cannot be allocated.
+    bool deserialize(const uint8_t * data, size_t n) {
+        if (!attached() || !data || n < kBlobHdr) return false;
+        uint64_t magic = 0;
+        std::memcpy(&magic, data, 8);
+        if (magic != kBlobMagic) return false;
+        uint32_t h[8];
+        std::memcpy(h, data + 8, sizeof(h));
+        const size_t nc = h[0];
+        if ((int)h[1] != cfg_.chunk_tokens || (int)h[2] != n_head_kv_ ||
+            h[3] != k_seg_bytes_ || h[4] != v_seg_bytes_ || h[5] != chunk_bytes_ ||
+            h[6] != live_k_type_() || h[7] != 1u) {
+            return false;
+        }
+        // Overflow-safe length check: nc comes from the (untrusted) blob.
+        if (nc > (n - kBlobHdr) / (chunk_bytes_ + kLedgerEntry)) return false;
+        const uint8_t * kv = data + kBlobHdr;
+        const uint8_t * lp = kv + nc * chunk_bytes_;
+        size_t n_resident = 0;
+        for (size_t c = 0; c < nc; ++c) n_resident += lp[c * kLedgerEntry] != 0;
+        if (n_resident > (size_t)n_blocks_) return false;
+
+        reset();
+        last_serialized_kv_k_type_ = h[6];
+        chunks_.resize(nc);
+        for (size_t c = 0; c < nc; ++c) {
+            ChunkState & st = chunks_[c];
+            if (has_tensor_storage()) {
+                const uint8_t * src = kv + c * chunk_bytes_;
+#ifdef KVFLASH_HAS_ASYNC_DMA
+                if (cudaMallocHost(&st.host_data, chunk_bytes_) != cudaSuccess) {
+                    st.host_data = nullptr;
+                    chunks_.clear();
+                    return false;
+                }
+                std::memcpy(st.host_data, src, chunk_bytes_);
+#else
+                st.host_data.assign(src, src + chunk_bytes_);
+#endif
+                stats_.host_bytes += (int64_t)chunk_bytes_;
+            }
+            st.on_host = true;
+            std::memcpy(&st.score, lp + c * kLedgerEntry + 4, 4);
+            // slot_for()'s recall branch copies host_data into the new block.
+            if (lp[c * kLedgerEntry] != 0) slot_for((int64_t)c * cfg_.chunk_tokens);
+        }
+        if (nc > 0 && cur_chunk_ < (int)nc - 1) cur_chunk_ = (int)nc - 1;
+        if (has_pending_page_in_) synchronize_paging();   // async recalls settle
+        return true;
+    }
+
 private:
+    static constexpr uint64_t kBlobMagic = 0x4b56464c41534831ULL;  // "KVFLASH1"
+    static constexpr size_t kBlobHdr = sizeof(uint64_t) + 8 * sizeof(uint32_t);
+    static constexpr size_t kLedgerEntry = 8;
+
+    uint32_t live_k_type_() const {
+        return !attn_k_.empty() && attn_k_[0] ? (uint32_t)attn_k_[0]->type
+                                              : (uint32_t)GGML_TYPE_F16;
+    }
+    void synchronize_page_stream_() const {
+#ifdef KVFLASH_HAS_ASYNC_DMA
+        cudaStreamSynchronize(page_stream_);
+#endif
+    }
+
     struct ChunkState {
         int      block    = -1;       // pool block index, -1 = not resident
         bool     on_host  = false;    // backing store holds valid bytes
         uint64_t last_use = 0;
+        float    score    = -std::numeric_limits<float>::infinity();  // QK ledger
 #ifdef KVFLASH_HAS_ASYNC_DMA
         void *   host_data = nullptr; // cudaMallocHost-pinned; allocated on first page_out
 #else
@@ -447,6 +628,7 @@ private:
             if (chunks_[c].block < 0) continue;
             if (c < cfg_.sink_chunks) continue;
             if (c > cur_chunk_ - 1 - cfg_.tail_window_chunks) continue;
+            if (is_pinned(c)) continue;
             if (score_hook) {
                 const float s = score_hook(c);
                 if (victim < 0 || s < v_score) { victim = c; v_score = s; }
@@ -572,11 +754,13 @@ private:
     std::vector<ChunkState> chunks_;
     std::vector<int> free_blocks_;
     std::vector<uint8_t> zero_buf_;   // used by zero_block() in non-CUDA builds
+    std::vector<uint8_t> pinned_;     // per-chunk pin flag; empty = no pins
     KvFlashStats stats_;
     size_t k_seg_bytes_ = 0, v_seg_bytes_ = 0, chunk_bytes_ = 0;
     int n_blocks_ = 0, n_head_kv_ = 0, cur_chunk_ = 0;
     uint64_t clock_ = 0;
     uint64_t epoch_ = 0;
+    uint32_t last_serialized_kv_k_type_ = (uint32_t)GGML_TYPE_F16;
 
 #ifdef KVFLASH_HAS_ASYNC_DMA
     cudaStream_t page_stream_ = nullptr;
