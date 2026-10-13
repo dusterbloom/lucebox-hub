@@ -77,6 +77,21 @@ int main(int argc, char ** argv) {
             // indexer_blocks valid for the next call's row_spans.
             if (verify && !qwen4exp_verify_rollback(backend, w, cache, pos, k)) return 1;
             const double ms = std::chrono::duration<double, std::milli>(now() - t0).count();
+            if (rep == reps + WARMUP - 1 && std::getenv("LUCE_PRINT_ARGMAX")) {
+                // Cheap determinism check across A/B/C arms: sum of per-row
+                // argmax token ids on the last rep of this width.
+                const int n_vocab = (int) (logits.size() / (size_t) k);
+                long long argmax_sum = 0;
+                for (int row = 0; row < k; ++row) {
+                    const float * row_logits = logits.data() + (size_t) row * n_vocab;
+                    int best = 0;
+                    for (int v = 1; v < n_vocab; ++v) {
+                        if (row_logits[v] > row_logits[best]) best = v;
+                    }
+                    argmax_sum += best;
+                }
+                std::printf("[argmax] k=%d argmax_sum=%lld\n", k, argmax_sum);
+            }
             pos += k;
             idx = (idx + (size_t) k) % n_ids;
             if (rep >= WARMUP) ms_reps.push_back(ms);

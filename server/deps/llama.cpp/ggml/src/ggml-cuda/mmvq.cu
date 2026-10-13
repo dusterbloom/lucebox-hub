@@ -825,9 +825,11 @@ static bool mmvq_env_flag(const char * name, bool default_value = false) {
 static bool mmid_grouped_type_ok(ggml_type type) {
     // bit0 = Q4_K, bit1 = Q6_K, bit2 = Q4_0/Q8_0/Q5_K,
     // bit3 = Q2_0_ROCMFP2/Q3_0_ROCMFPX, bit4 = ROCmFP4-fast,
-    // bit5 = ROCmFP3 only, bit6 = Q5_0. Q5_0 has additional architecture,
-    // batch and projection-shape guards below. LUCE_MMID_GROUPED_TYPES is an
-    // experimental override; 7 restores the policy without Q5_0.
+    // bit5 = ROCmFP3 only, bit6 = Q5_0, bit7 = Q5_1 (experimental; trunk's
+    // routed down_exps are Q5_1 in 41/48 layers). Q5_0 has additional
+    // architecture, batch and projection-shape guards below.
+    // LUCE_MMID_GROUPED_TYPES is an experimental override; 7 restores the
+    // policy without Q5_0/Q5_1.
     static const int mask = []() {
         const char * e = std::getenv("LUCE_MMID_GROUPED_TYPES");
         if (e == nullptr || e[0] == '\0') {
@@ -838,6 +840,8 @@ static bool mmid_grouped_type_ok(ggml_type type) {
     switch (type) {
         case GGML_TYPE_Q5_0:
             return (mask & 64) != 0;
+        case GGML_TYPE_Q5_1:
+            return (mask & 128) != 0;
         case GGML_TYPE_Q4_K:
             return (mask & 1) != 0;
         case GGML_TYPE_Q6_K:
@@ -2136,6 +2140,10 @@ static bool mul_mat_vec_q_grouped_dispatch(
     switch (type) {
         case GGML_TYPE_Q5_0:
             mul_mat_vec_q_moe_grouped_launch<GGML_TYPE_Q5_0>(vx, vy, meta, fusion, dst, ncols_x, nchannels_y_fd, nrows_x,
+                stride_row_x, stride_col_y, stride_col_dst, stride_channel_x, stride_channel_y, stride_channel_dst, max_groups, warp_size, stream);
+            return true;
+        case GGML_TYPE_Q5_1:
+            mul_mat_vec_q_moe_grouped_launch<GGML_TYPE_Q5_1>(vx, vy, meta, fusion, dst, ncols_x, nchannels_y_fd, nrows_x,
                 stride_row_x, stride_col_y, stride_col_dst, stride_channel_x, stride_channel_y, stride_channel_dst, max_groups, warp_size, stream);
             return true;
         case GGML_TYPE_Q4_0:
