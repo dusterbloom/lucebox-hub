@@ -238,26 +238,32 @@ inline KvflashLiveRestore kvflash_live_restore_decide(
 }
 
 // What a restore does with a snapshot. Dense: the existing path. Consume:
-// pooled snapshot, pager blob restored, only the suffix prefills. FullReprefill:
-// drop the snapshot and prefill the whole prompt from 0. Reject: fail the
-// request (a pooled snapshot cannot be used and the full prompt is unknown).
-enum class KvflashRestorePlan { Dense, Consume, FullReprefill, Reject };
+// pooled snapshot, pager blob restored, only the suffix prefills. AdoptDense:
+// dense snapshot whose prompt outgrows the pool; its rows already sit in the
+// pool tensor in the identity layout (chunk c in block c), so the pager adopts
+// them by bookkeeping and the pooled prefill continues from the cut.
+// FullReprefill: drop the snapshot and prefill the whole prompt from 0.
+// Reject: fail the request (a pooled snapshot cannot be used and the full
+// prompt is unknown).
+enum class KvflashRestorePlan { Dense, Consume, FullReprefill, Reject, AdoptDense };
 
 // A pooled snapshot resumes only at a whole pager chunk: a restored prefix
 // that ends mid-chunk would need the partial chunk re-sealed. Anything that
 // cannot consume must re-prefill the WHOLE prompt (never just the suffix).
+// adopt_dense (live restore on) keeps a dense prefix across the pool boundary.
 inline KvflashRestorePlan kvflash_restore_plan(bool consume_enabled, bool is_pooled,
                                                int kv_offset, int chunk_tokens,
                                                bool have_full_prompt,
-                                               int total_tokens = 0, int pool_tokens = 0) {
+                                               int total_tokens = 0, int pool_tokens = 0,
+                                               bool adopt_dense = false) {
     if (!is_pooled) {
-        // A dense snapshot cannot continue into a pooled prefill (that needs a
-        // fresh pager), so a prompt that outgrows the pool re-prefills whole.
-        // ponytail: adopting the dense rows [0, kv_offset) as pager chunks
-        // would keep the cached prefix; the pager has no no-copy adopt yet.
+        // A dense snapshot cannot continue into a pooled prefill unless the
+        // pager adopts its rows, so a prompt that outgrows the pool otherwise
+        // re-prefills whole.
         if (have_full_prompt && pool_tokens > 0 && kv_offset > 0 &&
             total_tokens > kv_offset && total_tokens > pool_tokens - chunk_tokens)
-            return KvflashRestorePlan::FullReprefill;
+            return adopt_dense ? KvflashRestorePlan::AdoptDense
+                               : KvflashRestorePlan::FullReprefill;
         return KvflashRestorePlan::Dense;
     }
     if (consume_enabled && kv_offset > 0 && chunk_tokens > 0 &&
@@ -266,6 +272,20 @@ inline KvflashRestorePlan kvflash_restore_plan(bool consume_enabled, bool is_poo
     }
     return have_full_prompt ? KvflashRestorePlan::FullReprefill
                             : KvflashRestorePlan::Reject;
+}
+
+// Prompt tokens the server's snapshot lets the request skip under `plan`.
+inline int kvflash_server_cut(KvflashRestorePlan plan, int snap_pos) {
+    return plan == KvflashRestorePlan::FullReprefill || plan == KvflashRestorePlan::Reject
+        ? 0 : snap_pos;
+}
+
+// Server snapshot (restore_and_generate) or live session (S8a): the larger cut
+// wins, ties keep the server snapshot (no state restore needed). A live cut of
+// -1 means no usable rung.
+enum class KvflashResume { Server, Live };
+inline KvflashResume kvflash_pick_resume(int server_cut, int live_cut) {
+    return live_cut > server_cut ? KvflashResume::Live : KvflashResume::Server;
 }
 
 // Token history for [0, kv_offset + suffix): real ids for the restored prefix
