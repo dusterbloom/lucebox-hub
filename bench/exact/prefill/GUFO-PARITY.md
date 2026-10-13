@@ -507,3 +507,98 @@ T=6) is itself a function of this specific prompt's routing distribution and
 would very likely shift under gufo's cyclic-ID prompt or a different natural
 prompt — the bucket-table percentages above should be read as this-prompt-
 specific, not fundamental to either engine.
+
+## Bounded sort gate experiment
+
+One-line experiment: `ggml_cuda_launch_mm_ids_bounded`'s token-count gate in
+`mmid.cu:374` rejected every prefill chunk (`tokens<=4096 || tokens>32768`),
+forcing every 4096-row prefill chunk onto the slow one-warp-per-expert
+`mm_ids_helper` (measured ~359 ms, 7.9% of wall at p=4092 in the prior kernel
+trace). The bounded path's ordering claim — ascending `expert, then
+token*used+slot` within each tile, replicated in increasing chunk order —
+is identical to the helper's ascending-token-order compact layout whenever
+`used == MM_IDS_ROUTE_EXPERTS` tile math (`MM_IDS_ROUTE_BITS=10` covers the
+full 1024-route tile regardless of total token count `T`), so relaxing the
+gate's lower bound should be a pure speed change, not a correctness change.
+
+**Test first.** No existing test drove the bounded kernel (`rg
+"mm_ids_bounded|mm_ids_route"` over `server/test` only found the classic-path
+regression test, `test_ds4_mmid_regression.cpp`). Added
+`server/test/unit/test_mmid_bounded_parity.cpp`: for experts=512, used=10
+(the only shape the bounded path accepts), it runs `ggml_cuda_launch_mm_ids_helper`
+and `ggml_cuda_launch_mm_ids_bounded` on the *same* randomized routing (with
+masked/negative ids sprinkled in, same generator shape as the existing
+regression test) and asserts `ids_src1`, `ids_dst`, and `expert_bounds` are
+byte-identical, across `channels ∈ {1, 10}`, `inverse ∈ {false, true}`,
+`tokens ∈ {512, 1000, 4096, 4097}`. Wired into `LUCE_TESTS` next to
+`test_ds4_mmid_regression` in `server/CMakeLists.txt`.
+
+**Gate change.** `mmid.cu:374`: `tokens<=4096` → `tokens<512` (cap at 32768
+unchanged). `MM_IDS_ROUTE_BITS=10` encodes only the local index within one
+1024-route tile, so it is independent of total `T` at every value in
+[512, 4096] — confirmed by inspection, not just the test.
+
+**Build provenance (lucebox4).** `/home/duster/qwen4exp-exact-stack/build1151`
+was built from `/home/duster/qwen4exp-exact-stack/src/server`
+(`mmid.cu` md5 `d32939834cb21a58e89eac9afb946865`, matches this worktree's
+HEAD exactly — verified before touching anything). Copied that tree twice
+into `~/qwen4exp-f16/scratch/sortgate/` (`src_a`, `src_b`), left `src_b` with
+the gate change, reverted `src_a`'s `mmid.cu:374` back to `tokens<=4096`
+(baseline). Configured and built both with `build1151`'s CMakeCache flags
+(Release, HIP, `gfx1151`, `LUCE_TESTS=ON`, same `clang++`/`c++` compilers).
+
+- A (gate unchanged, baseline): `luce_server` md5
+  `41627a7b6da4ad24c38c0f52ee951c66`
+- B (gate `tokens<512`): `luce_server` md5
+  `5ac86fb6a22ff837bb5ddc76acd010d3`
+
+**Test result on the iGPU** (`ROCR_VISIBLE_DEVICES=1`, binary B):
+`test_mmid_bounded_parity` — **PASS**, all 16 cases (4 token counts × 2
+channel counts × 2 inverse modes). On binary A (old gate, sanity check): the
+12 cases with `tokens ∈ {512, 1000, 4096}` correctly report "bounded path
+[not] accepted" (gate still closed) and the 4 cases at `tokens=4097`
+(already past the old gate) pass — confirming the harness itself and that A
+and B differ by exactly the one gate line.
+
+**Timing A/B** (indicative: caches not dropped). GPU confirmed idle
+(`rocm-smi` 0% on both agents, no other `luce_server`/`gufo` process) before
+each load; one server loaded at a time, same flags as the gufo-parity run
+above (`ROCR_VISIBLE_DEVICES=1 ./luce_server <shard1.gguf> --port <P>
+--max-ctx 20480`), same `lucebox_pp_bench.py` client (distinct random prompt
+per rep, `temperature=0`, cold each session), 3 reps per point:
+
+| Binary | p | prefill tok/s (3 reps) | median |
+| --- | ---: | --- | ---: |
+| A (gate unchanged) | 4096  | 1008.6, 1102.3, 1126.6 | **1102.3** |
+| B (gate `tokens<512`) | 4096  | 1068.1, 1137.5, 1193.9 | **1137.5** |
+| A (gate unchanged) | 16384 | 1249.6, 1279.0, 1294.0 | **1279.0** |
+| B (gate `tokens<512`) | 16384 | 1208.6, 1262.7, 1282.0 | **1262.7** |
+
+B is +3.2% at p=4096 and −1.3% at p=16384 — both inside the ±4-8% rep-to-rep
+spread seen on *each* binary alone, i.e. noise, not a measurable win. This is
+expected: the prior kernel trace put the classic-helper sort at ~8% of wall
+for a 4096-row chunk, and the bounded path only engages for that one 4096-row
+chunk per prefill call (p=16384 still spends most of its chunks `>4096`,
+already on the bounded path on both A and B) — the gate relaxation's
+reachable savings are a fraction of that single chunk's sort time, within
+this harness's noise floor. A finer, trace-level measurement (not a
+wall-clock A/B) would be needed to isolate it; out of scope for this
+one-line experiment.
+
+**Output equivalence.** Fixed prompt ("Explain in one short paragraph why
+the sky is blue."), `temperature=0`, `max_tokens=32`, non-streaming, on both
+A (port 19080) and B (port 19081): generated text is **identical** —
+`"\n\n\nThe sky appears blue due to a phenomenon called Rayleigh scattering.
+As sunlight reaches Earth's atmosphere, it collides with gas molecules and
+scatters in"` on both, same `content_tokens`/`total_tokens`. (This prompt is
+only 64 tokens, below the gate on both binaries, so it exercises the shared
+`mm_ids_helper` path rather than the changed one directly — the byte-level
+ordering equivalence for the changed path is what the unit test above
+proves; this is an end-to-end sanity check, not an isolated probe of the new
+path.)
+
+**Verdict:** correctness proven (test PASS, output identical); the gate
+relaxation is safe to land, but on this harness it is not a measurable
+prefill speedup — the 4096-row-chunk sort is too small a fraction of total
+prefill wall time for a single-chunk win to clear the noise floor at p=4096
+or p=16384.

@@ -1240,6 +1240,24 @@ if(LUCE_TESTS)
             hip::host)
         list(APPEND _raw_unit_test_targets test_ds4_mmid_regression)
 
+        # Guards the bounded (1024-route bitonic) mmid sort used on the
+        # prefill-chunk path: for experts=512/used=10 it must produce
+        # byte-identical ids_src1/ids_dst/expert_bounds as the classic
+        # mm_ids_helper it replaces, across the token-count gate boundary.
+        add_executable(test_mmid_bounded_parity test/unit/test_mmid_bounded_parity.cpp)
+        set_source_files_properties(test/unit/test_mmid_bounded_parity.cpp PROPERTIES LANGUAGE HIP)
+        set_target_properties(test_mmid_bounded_parity PROPERTIES HIP_ARCHITECTURES "${_luce_archs}")
+        target_compile_definitions(test_mmid_bounded_parity PRIVATE GGML_USE_HIP)
+        target_include_directories(test_mmid_bounded_parity PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+        target_link_libraries(test_mmid_bounded_parity PRIVATE
+            ggml
+            ggml-base
+            ${LUCE_GGML_BACKEND_TARGET}
+            hip::host)
+        list(APPEND _raw_unit_test_targets test_mmid_bounded_parity)
+
         add_executable(test_qwen35_gdn_verify_fusion test/unit/test_qwen35_gdn_verify_fusion.cpp)
         set_source_files_properties(test/unit/test_qwen35_gdn_verify_fusion.cpp PROPERTIES LANGUAGE HIP)
         set_target_properties(test_qwen35_gdn_verify_fusion PROPERTIES HIP_ARCHITECTURES "${_luce_archs}")

@@ -371,7 +371,7 @@ bool ggml_cuda_launch_mm_ids_bounded(
     const int device=ggml_cuda_get_device();
     if (!GGML_CUDA_CC_IS_RDNA3_5(ggml_cuda_info().devices[device].cc) ||
             experts!=MM_IDS_ROUTE_EXPERTS || used!=MM_IDS_ROUTE_USED ||
-            tokens<=4096 || tokens>32768 || (channels!=1 && channels!=used) ||
+            tokens<512 || tokens>32768 || (channels!=1 && channels!=used) ||
             ids_stride<used || token_stride<channels) return false;
     const int routes=tokens*used;
     const int chunks=(routes+MM_IDS_ROUTE_TILE-1)/MM_IDS_ROUTE_TILE;
