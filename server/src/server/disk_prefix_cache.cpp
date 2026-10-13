@@ -276,6 +276,7 @@ void DiskPrefixCache::learn_layout(int slot) {
         return;
     }
 
+    if (ref.pooled) return;  // no dense KV tensors: would fingerprint a wrong layout
     std::array<uint8_t, 16> prev_id = layout_id_;
     bool had_disk_layout = layout_from_disk_;
 
@@ -457,6 +458,13 @@ bool DiskPrefixCache::save(int slot, const std::vector<int32_t> & prompt_ids) {
 
     auto ref = backend_.snapshot_ref(slot);
     if (!ref.ctx) return false;
+    // Pooled snapshots keep KV in a pager blob that is not a ggml tensor in
+    // ref.ctx; a file written from ref.ctx would restore with no KV. Refuse
+    // until the blob is persisted (patch 4).
+    if (ref.pooled) {
+        std::fprintf(stderr, "[disk-cache] skip save: pooled (KVFlash) snapshot not persistable yet\n");
+        return false;
+    }
 
     // A file is keyed by the hash of `prompt_ids` only, and a hit restores
     // the whole snapshot. A snapshot that extends past its key would be
