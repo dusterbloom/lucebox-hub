@@ -248,8 +248,18 @@ enum class KvflashRestorePlan { Dense, Consume, FullReprefill, Reject };
 // cannot consume must re-prefill the WHOLE prompt (never just the suffix).
 inline KvflashRestorePlan kvflash_restore_plan(bool consume_enabled, bool is_pooled,
                                                int kv_offset, int chunk_tokens,
-                                               bool have_full_prompt) {
-    if (!is_pooled) return KvflashRestorePlan::Dense;
+                                               bool have_full_prompt,
+                                               int total_tokens = 0, int pool_tokens = 0) {
+    if (!is_pooled) {
+        // A dense snapshot cannot continue into a pooled prefill (that needs a
+        // fresh pager), so a prompt that outgrows the pool re-prefills whole.
+        // ponytail: adopting the dense rows [0, kv_offset) as pager chunks
+        // would keep the cached prefix; the pager has no no-copy adopt yet.
+        if (have_full_prompt && pool_tokens > 0 && kv_offset > 0 &&
+            total_tokens > kv_offset && total_tokens > pool_tokens - chunk_tokens)
+            return KvflashRestorePlan::FullReprefill;
+        return KvflashRestorePlan::Dense;
+    }
     if (consume_enabled && kv_offset > 0 && chunk_tokens > 0 &&
         kv_offset % chunk_tokens == 0) {
         return KvflashRestorePlan::Consume;
