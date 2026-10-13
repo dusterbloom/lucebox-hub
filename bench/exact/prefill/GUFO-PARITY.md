@@ -357,3 +357,153 @@ lucebox's unprofiled 1135.6 median drops to ~886 profiled), so the *absolute*
 trace's wall times — only the per-class composition and idle/sort-scatter
 shares, which are consistent with (and partly explain) the unprofiled gap
 being larger at shorter p.
+
+## Idle and sort root cause
+
+Box: lucebox4, Strix iGPU pinned (`ROCR_VISIBLE_DEVICES=1`), GPU confirmed
+idle (0-3%) before and after. Server: cold `build1151/luce_server` launched
+with `LUCE_MMID_TELEMETRY=1`, same flags as the parity run
+(`--port 19080 --max-ctx 20480`), one cold p≈4111 prefill via the existing
+`lucebox_pp_bench.py` client (distinct random prompt, `max_tokens:1`). Scratch:
+`~/qwen4exp-f16/scratch/gufo/idle/` on the box. Server was shut down after the
+run; GPU returned to idle.
+
+### 1. `mm_ids_helper` does NOT do a host round-trip — the claim is refuted
+
+Grepped every `cudaStreamSynchronize` / `cudaMemcpy*ToHost` /
+`ggml_backend_synchronize` reachable from a qwen4exp prefill forward:
+`mmb.cu`, `mmid.cu`, `mmq.cu`, `mix-wmma-moe.cu`, `mmf.cu` have **zero** host
+syncs or D2H copies. The only host round-trip in the whole `mul_mat_id`
+dispatch tree is the generic `sync_fallback` path in
+`ggml-cuda.cu:3793` (`cudaMemcpyAsync`+`cudaStreamSynchronize` at
+`ggml-cuda.cu:3823-3824`, a second pair at `3862-3865`) — and the telemetry
+census (`LUCE_MMID_TELEMETRY=1`, one cold p=4111 prefill) shows **zero**
+`path=sync_fallback` dispatches. Every routed `mul_mat_id` call in this run
+went through one of `mmb` (47 calls, the 4105-wide routed down-proj,
+`ggml-cuda.cu:3773`), `mmq` (94 calls, all `ne11=1 width=6` — a narrow T=6
+batch, not the main 4105-token GEMM), or `mmvq` (49 calls, also T=6). None of
+these three paths synchronizes the host.
+
+**Why the T=6 calls fail `ggml_cuda_mmb_supported_mmid`**: the gate at
+`mmb.cu:910` is `if (T < mmb_min_t() || n_used > 64 || (T*n_used)>>16 >= 1024)
+return false;` and `mmb_min_t()` returns **512** (`mmb.cu:790`). All 94 `mmq`
+dispatches have `T=6` (`width=6` in the telemetry line), i.e. `6 < 512` —
+that's the only failing term (`n_used=10 <= 64` and `(6*10)>>16=0 < 1024` both
+pass). The q5_1/q8_0-typed T=6 calls instead land on `mmvq`
+(`mmvq_max=8 >= 6`); the q4_K/q5_K-typed T=6 calls have a lower
+`mmvq_mmid_max=4 < 6` so they fall through mmvq *and* mmb's 512-floor, landing
+on `mmq` (`ggml-cuda.cu:3780-3784` → `mmq.cu:146-147`,
+`mul_mat_q_case<GGML_TYPE_Q4_K>`). These T=6 calls are cheap (198.7 ms / 630
+underlying kernel launches = 315 µs mean per the earlier trace) — they are
+not the 19% "routed time" headline; that number is dominated by the
+`mul_mat_q` launches' aggregate share of wall time, not by host stalls.
+
+**Where the 764.6 ms / 16.78% idle actually comes from**: `ggml-cuda.cu`'s
+CUDA-graph compatibility check (`ggml_cuda_graph_check_compability`,
+`ggml-cuda.cu:4752-4762` `[TAG_MUL_MAT_ID_CUDA_GRAPHS]`) only tests
+`mmid_mmvq_ok`, `mmid_mmq_ok`, `mmid_rocmfp3_ok` — it has **no `mmb_ok` or
+`mix_wmma_ok` branch at all**, even though neither of those paths syncs the
+host either (confirmed above). In this run's telemetry every
+`event=graph node_eligible=1`, so this particular check is not disabling
+graphs outright here — but warmup still never completes: a cold one-shot
+p≈4111 benchmark forward's call is, by construction, the *first* call at that
+exact graph shape (`ggml-cuda.cu:7776-7784`, "Warmup: need at least 2 calls
+with no property change on the 2nd call"), and lucebox's chunk planner logs
+show chunk row counts varying per request (`chunk-plan rows=2304/3328/.../
+16640` in the server log) — a single pp-only bench exercises exactly one
+shape once, so it always executes eagerly, never via `cudaGraphLaunch`
+replay. Per-kernel host dispatch/bookkeeping overhead (pool allocs in
+`ggml_cuda_pool_alloc` for `ids_src1`/`ids_dst`/`bounds`/`desc_big`/
+`desc_small` on every `mmb`/`mmq` call, plus the full
+`ggml_cuda_graph_update_required` property scan run every call since
+`warmup_complete` never latches) sums to the 104 µs/launch average idle gap
+(764.6 ms / 7319 launches) vs gufo's 30 µs/launch (209.5 ms / 6926) — gufo
+does not appear to use HIP graphs either, so the ~3.5x gap is per-launch host
+overhead, not graph-vs-no-graph. **Minimal-LOC fix**: none of the existing
+fast paths need a sync, so the actual lever is reducing host-side
+per-dispatch bookkeeping (skip the `ggml_cuda_graph_update_required` full
+property re-scan once warmup has failed N times for a given one-shot shape,
+and/or add `mmb_ok`/`mix_wmma_ok` to the graph-compatibility whitelist so a
+*repeated* chunk shape, e.g. a real multi-turn server workload with
+recurring prompt lengths, can actually warm up and replay) — ~5-15 lines,
+estimated gain bounded by how much of the 764 ms is pool-alloc/property-scan
+overhead vs irreducible per-kernel-launch latency; not fully quantified here
+(would need per-call CPU-side timestamps, not just kernel timestamps, to
+split the two).
+
+### 2. Sort cost: lucebox sorts 2x per layer (glu-fused + down), not 3x
+
+`mm_ids_helper` (`mmid.cu:33-134`) is called from **two independent sites per
+layer** when the mmb path is taken: `ggml_cuda_mul_mat_id_mmb_glu`
+(`mmb.cu:1112-1126`, the fused gate+up SwiGLU call — gate and up share **one**
+sort here, not two) and `ggml_cuda_mul_mat_id_mmb` (`mmb.cu:1055-1069`, the
+down-proj call). Both build their own independent `ids_src1`/`ids_dst`/
+`bounds` from the *same* `ids` tensor (identical routing for gate, up, and
+down within a layer — the router only runs once per layer) via two separate
+calls to `ggml_cuda_launch_mm_ids_helper`/`ggml_cuda_launch_mm_ids_bounded`.
+That is a real, avoidable 2x: the second call recomputes a sort whose input
+and output are byte-identical to the first. 235 total `mm_ids_helper`/
+`mm_ids_helper_fast` calls were observed across the run (2 sites x ~48
+layers plus the `mmq`/`mix_wmma` fallback sites in `mmq.cu:415`,
+`mix-wmma-moe.cu:436`, `mmf.cu:87` which also call it independently).
+
+`mm_ids_helper`'s algorithm (`mmid.cu:33-130`) is a **serial-per-token, one
+block per expert** compaction: 512 blocks (one per expert, `grid.x = E`),
+each block loops `it` from 0 to `n_tokens` doing a per-warp scan + shared-mem
+store + a second write-back loop — O(E x n_tokens) total work issued across
+blocks even though each token only matches `top_k=10` of 512 experts, so
+most of the 512 x 4105 iteration space is wasted "not my expert" checks.
+Mean 1383 µs/call x 235 calls = 325 ms.
+
+gufo's equivalent is `RoutedPadBoundsKernel` + `RoutedScatterKernel`
+(`kernels.hip.cpp:5367-5420` and `mmq/mmid.hip.cpp`, local gufo clone at
+`/home/peppi/.claude/jobs/559c1173/tmp/gufo`): `RoutedPadBoundsKernel` is a
+single-block O(E) exclusive scan over per-expert counts (**no per-token
+loop** — it consumes precomputed histogram counts), and `RoutedScatterKernel`
+is a flat `O(slots)` grid-stride kernel doing one `atomicAdd` per
+(token, slot) pair directly into the 16-padded bucket — no per-expert serial
+loop, no double write-back pass. This is algorithmically cheaper (single
+atomic scatter vs lucebox's warp-scan-then-rewrite) and is launched once,
+consistent with gufo's 23.7 ms / 0.42% total.
+
+**Minimal-LOC fix**: (a) cache `ids_src1`/`ids_dst`/`bounds` computed by the
+glu-fused call and reuse them for the immediately-following down-proj call on
+the same `ids` tensor within a layer — same mechanism (same `ids`, `E`, `T`,
+`n_used`), a few lines threading a cache key/pointer through
+`ggml_cuda_mul_mat_id_mmb`'s caller, saves ~half of 325 ms ≈ **162 ms**
+directly. (b) Replatform `mm_ids_helper` on a histogram-then-atomic-scatter
+scheme like gufo's instead of the per-expert serial token loop — bigger
+change, out of scope for a "minimal-LOC" fix, but is the deeper reason
+lucebox's sort is ~14x gufo's.
+
+### 3. Prompt parity check: the two engines' synthetic prompts are not comparable
+
+gufo's `bench -p` generates tokens via `MakeBenchmarkTokens`
+(`src/cli/bench/bench.cpp:280-287`, local gufo clone):
+```
+tokens[i] = ((start_pos + i) % 1000) + 100
+```
+i.e. a deterministic **cyclic sequence of raw token IDs 100-1099**, repeating
+every 1000 positions — not natural-language text, no tokenizer involved.
+lucebox's `lucebox_pp_bench.py` instead builds a natural-language string from
+a 40-word vocabulary (`WORDS = ("the quick brown fox jumps over lazy river
+delta canyon ..." split())`) and runs it through the model's real 248k-vocab
+BPE tokenizer.
+
+These are **not** plausibly routing-equivalent. gufo's token-ID-cycling
+scheme touches a narrow, low-ID band of the embedding table in a fixed
+repeating pattern — hidden states (and therefore router logits) for
+positions `i` and `i+1000` are identical inputs to the embedding lookup,
+giving a highly periodic, likely much less diverse router activation
+pattern than lucebox's natural-English-text embeddings, which draw from a
+real word-frequency distribution and produce semantically varied hidden
+states at every position. Since this is a **512-expert, top-10** MoE,
+routing skew directly changes which experts get large vs. tiny token counts
+each call — and that skew feeds straight into both engines' bucket-size-
+dependent code paths (lucebox's 16/48-row-tile and mmb-vs-mmq-vs-sync_fallback
+gates; gufo's 16/48/64/128 adaptive tile ladder). The dispatch-path split
+measured here (mmb 47 / mmq 94 / mmvq 49 calls, almost all mmq/mmvq calls at
+T=6) is itself a function of this specific prompt's routing distribution and
+would very likely shift under gufo's cyclic-ID prompt or a different natural
+prompt — the bucket-table percentages above should be read as this-prompt-
+specific, not fundamental to either engine.
