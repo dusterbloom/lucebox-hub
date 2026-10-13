@@ -1,0 +1,1334 @@
+{
+  "repo_sha": "2020f6d37940fe013e7e7f1ebf409e5d107c5670",
+  "model": "Qwen/Qwen3-4B",
+  "model_hf_revision": "1cfa9a7208912126459214e8b04321603b3df60c",
+  "datasets": {
+    "aime2025": {
+      "hf": "opencompass/AIME2025",
+      "split": "test",
+      "revisions": {
+        "AIME2025-I": "a6ad95f611d72cf628a80b58bd0432ef6638f958",
+        "AIME2025-II": "a6ad95f611d72cf628a80b58bd0432ef6638f958"
+      }
+    },
+    "quality": "repo-bundled data/QuALITY.v1.0.1.htmlstripped.dev"
+  },
+  "pip_freeze": [
+    "accelerate==1.12.0",
+    "agent-detector==2.0.0",
+    "aiohappyeyeballs==2.7.1",
+    "aiohttp==3.14.5",
+    "aiosignal==1.4.0",
+    "annotated-doc==0.0.5",
+    "annotated-types==0.8.0",
+    "anyio==4.15.1",
+    "astor==0.8.1",
+    "attrs==26.1.0",
+    "blake3==1.0.11",
+    "cachetools==7.2.1",
+    "cbor2==6.1.5",
+    "certifi==2026.7.22",
+    "cffi==2.1.1",
+    "charset-normalizer==3.5.2",
+    "click==8.5.0",
+    "cloudpickle==3.1.2",
+    "compressed-tensors==0.11.0",
+    "cuda-pathfinder==1.8.3",
+    "cupy-cuda12x==14.2.0",
+    "datasets==4.4.1",
+    "depyf==0.19.0",
+    "detect-installer==0.2.1",
+    "dill==0.4.0",
+    "diskcache==5.6.3",
+    "dnspython==2.9.0",
+    "einops==0.8.2",
+    "email-validator==2.3.0",
+    "fastapi==0.143.0",
+    "fastapi-cli==0.0.32",
+    "fastapi-cloud-cli==0.26.0",
+    "fastar==0.12.0",
+    "filelock==4.1.1",
+    "frozendict==2.4.7",
+    "frozenlist==1.8.0",
+    "fsspec==2025.10.0",
+    "gguf==0.19.0",
+    "googleapis-common-protos==1.75.5",
+    "grpclib==0.4.8",
+    "h11==0.16.0",
+    "h2==4.2.0",
+    "hf-xet==1.7.0",
+    "hpack==4.1.0",
+    "httpcore==1.0.9",
+    "httpcore2==2.13.1",
+    "httptools==0.9.0",
+    "httpx==0.28.1",
+    "httpx2==2.13.1",
+    "huggingface_hub==0.36.2",
+    "hyperframe==6.1.0",
+    "idna==3.20",
+    "interegular==0.3.3",
+    "Jinja2==3.1.6",
+    "jiter==0.17.0",
+    "jsonschema==4.26.0",
+    "jsonschema-specifications==2025.9.1",
+    "lark==1.2.2",
+    "llguidance==0.7.30",
+    "llvmlite==0.44.0",
+    "lm-format-enforcer==0.11.3",
+    "markdown-it-py==4.2.0",
+    "MarkupSafe==3.0.4",
+    "mdurl==0.1.2",
+    "mistral_common==1.12.0",
+    "mpmath==1.3.0",
+    "msgpack==1.2.3",
+    "msgspec==0.22.0",
+    "multidict==7.1.0",
+    "multiprocess==0.70.18",
+    "networkx==3.7",
+    "ninja==1.13.2",
+    "numba==0.61.2",
+    "numpy==2.2.6",
+    "nvidia-cublas-cu12==12.8.4.1",
+    "nvidia-cuda-cupti-cu12==12.8.90",
+    "nvidia-cuda-nvrtc-cu12==12.8.93",
+    "nvidia-cuda-runtime-cu12==12.8.90",
+    "nvidia-cudnn-cu12==9.10.2.21",
+    "nvidia-cufft-cu12==11.3.3.83",
+    "nvidia-cufile-cu12==1.13.1.3",
+    "nvidia-curand-cu12==10.3.9.90",
+    "nvidia-cusolver-cu12==11.7.3.90",
+    "nvidia-cusparse-cu12==12.5.8.93",
+    "nvidia-cusparselt-cu12==0.7.1",
+    "nvidia-nccl-cu12==2.27.3",
+    "nvidia-nvjitlink-cu12==12.8.93",
+    "nvidia-nvtx-cu12==12.8.90",
+    "openai==3.29.0",
+    "openai-harmony==0.0.8",
+    "opencv-python-headless==5.0.0.93",
+    "opentelemetry-api==1.45.1",
+    "opentelemetry-exporter-http-transport==0.66b1",
+    "opentelemetry-exporter-otlp-common==0.66b1",
+    "opentelemetry-exporter-otlp-proto-common==1.45.1",
+    "opentelemetry-exporter-otlp-proto-http==1.45.1",
+    "opentelemetry-proto==1.45.1",
+    "opentelemetry-sdk==1.45.1",
+    "opentelemetry-semantic-conventions==0.66b1",
+    "outlines_core==0.2.11",
+    "packaging==26.3",
+    "pandas==3.0.6",
+    "partial-json-parser==0.2.1.1.post7",
+    "pillow==12.3.0",
+    "prometheus-fastapi-instrumentator==8.1.0",
+    "prometheus_client==0.26.0",
+    "propcache==0.5.4",
+    "protobuf==7.36.2",
+    "psutil==7.2.2",
+    "py-cpuinfo==9.0.0",
+    "pyarrow==26.0.0",
+    "pybase64==1.5.1",
+    "pycountry==26.2.16",
+    "pycparser==3.11",
+    "pydantic==2.14.1",
+    "pydantic-extra-types==2.11.1",
+    "pydantic-settings==2.15.0",
+    "pydantic_core==2.50.1",
+    "Pygments==2.21.0",
+    "python-dateutil==2.9.0.post0",
+    "python-dotenv==1.2.4",
+    "python-json-logger==4.2.0",
+    "python-multipart==0.0.32",
+    "PyYAML==6.0.3",
+    "pyzmq==27.2.0",
+    "ray==2.59.0",
+    "referencing==0.37.0",
+    "regex==2026.9.29",
+    "requests==2.34.2",
+    "rich==15.0.0",
+    "rich-toolkit==0.20.6",
+    "rignore==0.8.1",
+    "rpds-py==2026.9.1",
+    "safetensors==0.8.0",
+    "scipy==1.18.1",
+    "sentencepiece==0.2.2",
+    "sentry-sdk==2.72.0",
+    "setproctitle==1.3.8",
+    "setuptools==79.0.1",
+    "shellingham==1.5.4",
+    "six==1.17.0",
+    "sniffio==1.3.1",
+    "soundfile==0.14.0",
+    "soxr==1.1.0",
+    "starlette==1.8.0",
+    "sympy==1.14.0",
+    "tiktoken==0.14.0",
+    "tokenizers==0.22.2",
+    "torch==2.8.0",
+    "torchaudio==2.8.0",
+    "torchvision==0.23.0",
+    "tqdm==4.70.1",
+    "transformers==4.57.1",
+    "triton==3.4.0",
+    "truststore==0.10.5",
+    "typer==0.27.3",
+    "typing-inspection==0.4.4",
+    "typing_extensions==4.16.0",
+    "urllib3==2.8.0",
+    "uv==0.7.19",
+    "uvicorn==0.54.0",
+    "uvloop==0.23.0",
+    "vllm==0.11.0",
+    "watchfiles==1.3.0",
+    "websockets==17.2",
+    "wheel==0.45.1",
+    "xformers==0.0.32.post1",
+    "xgrammar==0.1.25",
+    "xxhash==4.0.1",
+    "yarl==1.25.1"
+  ],
+  "runs": [
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 16384 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --log-dir /results/qwen3-4b/baseline_16384_s1_p0 --name baseline_16384_s1_p0",
+      "wall_s": 268,
+      "est_cost_usd": 0.29,
+      "start_time": "20261013_091524"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 16384 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --log-dir /results/qwen3-4b/baseline_16384_s1_p1 --name baseline_16384_s1_p1",
+      "wall_s": 525,
+      "est_cost_usd": 0.58,
+      "start_time": "20261013_092123"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 16384 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --log-dir /results/qwen3-4b/baseline_16384_s1_p2 --name baseline_16384_s1_p2",
+      "wall_s": 496,
+      "est_cost_usd": 0.54,
+      "start_time": "20261013_092137"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 16384 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --log-dir /results/qwen3-4b/baseline_16384_s1_p3 --name baseline_16384_s1_p3",
+      "wall_s": 506,
+      "est_cost_usd": 0.56,
+      "start_time": "20261013_092208"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 16384 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --log-dir /results/qwen3-4b/baseline_16384_s1_p4 --name baseline_16384_s1_p4",
+      "wall_s": 586,
+      "est_cost_usd": 0.64,
+      "start_time": "20261013_092453"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s1_p0 --name baseline_2048_s1_p0",
+      "wall_s": 117,
+      "est_cost_usd": 0.13,
+      "start_time": "20261013_090258"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s1_p1 --name baseline_2048_s1_p1",
+      "wall_s": 119,
+      "est_cost_usd": 0.13,
+      "start_time": "20261013_090318"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s1_p2 --name baseline_2048_s1_p2",
+      "wall_s": 139,
+      "est_cost_usd": 0.15,
+      "start_time": "20261013_090410"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s1_p3 --name baseline_2048_s1_p3",
+      "wall_s": 110,
+      "est_cost_usd": 0.12,
+      "start_time": "20261013_090451"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s1_p4 --name baseline_2048_s1_p4",
+      "wall_s": 121,
+      "est_cost_usd": 0.13,
+      "start_time": "20261013_090521"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s2_p0 --name baseline_2048_s2_p0",
+      "wall_s": 126,
+      "est_cost_usd": 0.14,
+      "start_time": "20261013_110942"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s2_p1 --name baseline_2048_s2_p1",
+      "wall_s": 122,
+      "est_cost_usd": 0.13,
+      "start_time": "20261013_111131"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s2_p2 --name baseline_2048_s2_p2",
+      "wall_s": 126,
+      "est_cost_usd": 0.14,
+      "start_time": "20261013_111150"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s2_p3 --name baseline_2048_s2_p3",
+      "wall_s": 116,
+      "est_cost_usd": 0.13,
+      "start_time": "20261013_111141"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s2_p4 --name baseline_2048_s2_p4",
+      "wall_s": 126,
+      "est_cost_usd": 0.14,
+      "start_time": "20261013_111341"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s3_p0 --name baseline_2048_s3_p0",
+      "wall_s": 112,
+      "est_cost_usd": 0.12,
+      "start_time": "20261013_113301"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s3_p1 --name baseline_2048_s3_p1",
+      "wall_s": 123,
+      "est_cost_usd": 0.13,
+      "start_time": "20261013_113352"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s3_p2 --name baseline_2048_s3_p2",
+      "wall_s": 116,
+      "est_cost_usd": 0.13,
+      "start_time": "20261013_113352"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s3_p3 --name baseline_2048_s3_p3",
+      "wall_s": 124,
+      "est_cost_usd": 0.14,
+      "start_time": "20261013_113431"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s3_p4 --name baseline_2048_s3_p4",
+      "wall_s": 108,
+      "est_cost_usd": 0.12,
+      "start_time": "20261013_113450"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s4_p0 --name baseline_2048_s4_p0",
+      "wall_s": 128,
+      "est_cost_usd": 0.14,
+      "start_time": "20261013_115439"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s4_p1 --name baseline_2048_s4_p1",
+      "wall_s": 111,
+      "est_cost_usd": 0.12,
+      "start_time": "20261013_115522"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s4_p2 --name baseline_2048_s4_p2",
+      "wall_s": 133,
+      "est_cost_usd": 0.15,
+      "start_time": "20261013_115652"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s4_p3 --name baseline_2048_s4_p3",
+      "wall_s": 127,
+      "est_cost_usd": 0.14,
+      "start_time": "20261013_115648"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 2048 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --log-dir /results/qwen3-4b/baseline_2048_s4_p4 --name baseline_2048_s4_p4",
+      "wall_s": 112,
+      "est_cost_usd": 0.12,
+      "start_time": "20261013_115715"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s1_p0 --name baseline_4096_s1_p0",
+      "wall_s": 188,
+      "est_cost_usd": 0.21,
+      "start_time": "20261013_090640"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s1_p1 --name baseline_4096_s1_p1",
+      "wall_s": 201,
+      "est_cost_usd": 0.22,
+      "start_time": "20261013_090733"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s1_p2 --name baseline_4096_s1_p2",
+      "wall_s": 183,
+      "est_cost_usd": 0.2,
+      "start_time": "20261013_090756"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s1_p3 --name baseline_4096_s1_p3",
+      "wall_s": 184,
+      "est_cost_usd": 0.2,
+      "start_time": "20261013_090827"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s1_p4 --name baseline_4096_s1_p4",
+      "wall_s": 216,
+      "est_cost_usd": 0.24,
+      "start_time": "20261013_090903"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s2_p0 --name baseline_4096_s2_p0",
+      "wall_s": 177,
+      "est_cost_usd": 0.19,
+      "start_time": "20261013_111439"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s2_p1 --name baseline_4096_s2_p1",
+      "wall_s": 193,
+      "est_cost_usd": 0.21,
+      "start_time": "20261013_111505"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s2_p2 --name baseline_4096_s2_p2",
+      "wall_s": 203,
+      "est_cost_usd": 0.22,
+      "start_time": "20261013_111615"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s2_p3 --name baseline_4096_s2_p3",
+      "wall_s": 191,
+      "est_cost_usd": 0.21,
+      "start_time": "20261013_111653"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s2_p4 --name baseline_4096_s2_p4",
+      "wall_s": 177,
+      "est_cost_usd": 0.19,
+      "start_time": "20261013_111738"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s3_p0 --name baseline_4096_s3_p0",
+      "wall_s": 174,
+      "est_cost_usd": 0.19,
+      "start_time": "20261013_113647"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s3_p1 --name baseline_4096_s3_p1",
+      "wall_s": 186,
+      "est_cost_usd": 0.2,
+      "start_time": "20261013_113701"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s3_p2 --name baseline_4096_s3_p2",
+      "wall_s": 204,
+      "est_cost_usd": 0.22,
+      "start_time": "20261013_113755"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s3_p3 --name baseline_4096_s3_p3",
+      "wall_s": 173,
+      "est_cost_usd": 0.19,
+      "start_time": "20261013_113744"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s3_p4 --name baseline_4096_s3_p4",
+      "wall_s": 198,
+      "est_cost_usd": 0.22,
+      "start_time": "20261013_113946"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s4_p0 --name baseline_4096_s4_p0",
+      "wall_s": 187,
+      "est_cost_usd": 0.21,
+      "start_time": "20261013_115913"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s4_p1 --name baseline_4096_s4_p1",
+      "wall_s": 186,
+      "est_cost_usd": 0.2,
+      "start_time": "20261013_115957"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s4_p2 --name baseline_4096_s4_p2",
+      "wall_s": 200,
+      "est_cost_usd": 0.22,
+      "start_time": "20261013_120014"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s4_p3 --name baseline_4096_s4_p3",
+      "wall_s": 173,
+      "est_cost_usd": 0.19,
+      "start_time": "20261013_120010"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 4096 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --log-dir /results/qwen3-4b/baseline_4096_s4_p4 --name baseline_4096_s4_p4",
+      "wall_s": 192,
+      "est_cost_usd": 0.21,
+      "start_time": "20261013_120225"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s1_p0 --name baseline_8192_s1_p0",
+      "wall_s": 254,
+      "est_cost_usd": 0.28,
+      "start_time": "20261013_091055"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s1_p1 --name baseline_8192_s1_p1",
+      "wall_s": 344,
+      "est_cost_usd": 0.38,
+      "start_time": "20261013_091319"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s1_p2 --name baseline_8192_s1_p2",
+      "wall_s": 278,
+      "est_cost_usd": 0.3,
+      "start_time": "20261013_091236"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s1_p3 --name baseline_8192_s1_p3",
+      "wall_s": 311,
+      "est_cost_usd": 0.34,
+      "start_time": "20261013_091340"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s1_p4 --name baseline_8192_s1_p4",
+      "wall_s": 357,
+      "est_cost_usd": 0.39,
+      "start_time": "20261013_091504"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s2_p0 --name baseline_8192_s2_p0",
+      "wall_s": 276,
+      "est_cost_usd": 0.3,
+      "start_time": "20261013_111942"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s2_p1 --name baseline_8192_s2_p1",
+      "wall_s": 321,
+      "est_cost_usd": 0.35,
+      "start_time": "20261013_112138"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s2_p2 --name baseline_8192_s2_p2",
+      "wall_s": 298,
+      "est_cost_usd": 0.33,
+      "start_time": "20261013_112152"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s2_p3 --name baseline_8192_s2_p3",
+      "wall_s": 309,
+      "est_cost_usd": 0.34,
+      "start_time": "20261013_112248"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s2_p4 --name baseline_8192_s2_p4",
+      "wall_s": 308,
+      "est_cost_usd": 0.34,
+      "start_time": "20261013_112331"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s3_p0 --name baseline_8192_s3_p0",
+      "wall_s": 263,
+      "est_cost_usd": 0.29,
+      "start_time": "20261013_114111"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s3_p1 --name baseline_8192_s3_p1",
+      "wall_s": 299,
+      "est_cost_usd": 0.33,
+      "start_time": "20261013_114202"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s3_p2 --name baseline_8192_s3_p2",
+      "wall_s": 266,
+      "est_cost_usd": 0.29,
+      "start_time": "20261013_114210"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s3_p3 --name baseline_8192_s3_p3",
+      "wall_s": 342,
+      "est_cost_usd": 0.38,
+      "start_time": "20261013_114340"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s3_p4 --name baseline_8192_s3_p4",
+      "wall_s": 333,
+      "est_cost_usd": 0.37,
+      "start_time": "20261013_114520"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s4_p0 --name baseline_8192_s4_p0",
+      "wall_s": 290,
+      "est_cost_usd": 0.32,
+      "start_time": "20261013_120438"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s4_p1 --name baseline_8192_s4_p1",
+      "wall_s": 304,
+      "est_cost_usd": 0.33,
+      "start_time": "20261013_120503"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s4_p2 --name baseline_8192_s4_p2",
+      "wall_s": 281,
+      "est_cost_usd": 0.31,
+      "start_time": "20261013_120453"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s4_p3 --name baseline_8192_s4_p3",
+      "wall_s": 319,
+      "est_cost_usd": 0.35,
+      "start_time": "20261013_120534"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode baseline --max-seq-len 8192 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --log-dir /results/qwen3-4b/baseline_8192_s4_p4 --name baseline_8192_s4_p4",
+      "wall_s": 334,
+      "est_cost_usd": 0.37,
+      "start_time": "20261013_120800"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --target-size 0.2 --max-compactions 1 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/compact_2048_t0.2_c1_s1_p0 --name compact_2048_t0.2_c1_s1_p0",
+      "wall_s": 456,
+      "est_cost_usd": 0.5,
+      "start_time": "20261013_085208"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --target-size 0.2 --max-compactions 1 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/compact_2048_t0.2_c1_s1_p1 --name compact_2048_t0.2_c1_s1_p1",
+      "wall_s": 457,
+      "est_cost_usd": 0.5,
+      "start_time": "20261013_085210"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --target-size 0.2 --max-compactions 1 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/compact_2048_t0.2_c1_s1_p2 --name compact_2048_t0.2_c1_s1_p2",
+      "wall_s": 525,
+      "est_cost_usd": 0.58,
+      "start_time": "20261013_085317"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --target-size 0.2 --max-compactions 1 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/compact_2048_t0.2_c1_s1_p3 --name compact_2048_t0.2_c1_s1_p3",
+      "wall_s": 527,
+      "est_cost_usd": 0.58,
+      "start_time": "20261013_085320"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --target-size 0.2 --max-compactions 1 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/compact_2048_t0.2_c1_s1_p4 --name compact_2048_t0.2_c1_s1_p4",
+      "wall_s": 508,
+      "est_cost_usd": 0.56,
+      "start_time": "20261013_085301"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --target-size 0.2 --max-compactions 3 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/compact_2048_t0.2_c3_s1_p0 --name compact_2048_t0.2_c3_s1_p0",
+      "wall_s": 1036,
+      "est_cost_usd": 1.14,
+      "start_time": "20261013_090148"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --target-size 0.2 --max-compactions 3 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/compact_2048_t0.2_c3_s1_p1 --name compact_2048_t0.2_c3_s1_p1",
+      "wall_s": 1249,
+      "est_cost_usd": 1.37,
+      "start_time": "20261013_090522"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --target-size 0.2 --max-compactions 3 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/compact_2048_t0.2_c3_s1_p2 --name compact_2048_t0.2_c3_s1_p2",
+      "wall_s": 926,
+      "est_cost_usd": 1.02,
+      "start_time": "20261013_090058"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --target-size 0.2 --max-compactions 3 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/compact_2048_t0.2_c3_s1_p3 --name compact_2048_t0.2_c3_s1_p3",
+      "wall_s": 943,
+      "est_cost_usd": 1.03,
+      "start_time": "20261013_090116"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --target-size 0.2 --max-compactions 3 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/compact_2048_t0.2_c3_s1_p4 --name compact_2048_t0.2_c3_s1_p4",
+      "wall_s": 1076,
+      "est_cost_usd": 1.18,
+      "start_time": "20261013_090330"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --target-size 0.2 --max-compactions 8 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/compact_2048_t0.2_c8_s1_p0 --name compact_2048_t0.2_c8_s1_p0",
+      "wall_s": 1498,
+      "est_cost_usd": 1.64,
+      "start_time": "20261013_091707"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --target-size 0.2 --max-compactions 8 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/compact_2048_t0.2_c8_s1_p1 --name compact_2048_t0.2_c8_s1_p1",
+      "wall_s": 2673,
+      "est_cost_usd": 2.93,
+      "start_time": "20261013_093644"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --target-size 0.2 --max-compactions 8 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/compact_2048_t0.2_c8_s1_p2 --name compact_2048_t0.2_c8_s1_p2",
+      "wall_s": 2509,
+      "est_cost_usd": 2.75,
+      "start_time": "20261013_093451"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --target-size 0.2 --max-compactions 8 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/compact_2048_t0.2_c8_s1_p3 --name compact_2048_t0.2_c8_s1_p3",
+      "wall_s": 2613,
+      "est_cost_usd": 2.87,
+      "start_time": "20261013_093653"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --target-size 0.2 --max-compactions 8 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/compact_2048_t0.2_c8_s1_p4 --name compact_2048_t0.2_c8_s1_p4",
+      "wall_s": 3043,
+      "est_cost_usd": 3.34,
+      "start_time": "20261013_094404"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 10 --start-article 20 --compute-stats 0 --target-size 0.1 --methods omp_nnls0_-inf_7_drop-7_lsq_k4int2_on-policy --query-config ss-plus-repeat --algorithm-config best --model-name Qwen/Qwen3-4B --precomputed-budget-path head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json --max-ratio-per-head 0.75 --log-dir /results/qwen3-4b/heldout_ceil_a20_10 --name heldout_ceil_a20_10",
+      "wall_s": 9696,
+      "est_cost_usd": 10.64,
+      "start_time": "20261013_225129"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 10 --start-article 20 --compute-stats 0 --target-size 0.1 --methods original highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy --query-config repeat --algorithm-config best --model-name Qwen/Qwen3-4B --precomputed-budget-path head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json --max-ratio-per-head 0.75 --log-dir /results/qwen3-4b/heldout_win_a20_10 --name heldout_win_a20_10",
+      "wall_s": 1798,
+      "est_cost_usd": 1.97,
+      "start_time": "20261013_203947"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 10 --start-article 30 --compute-stats 0 --target-size 0.1 --methods original highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy --query-config repeat --algorithm-config best --model-name Qwen/Qwen3-4B --precomputed-budget-path head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json --max-ratio-per-head 0.75 --log-dir /results/qwen3-4b/heldout_win_a30_10 --name heldout_win_a30_10",
+      "wall_s": 1729,
+      "est_cost_usd": 1.9,
+      "start_time": "20261013_203838"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 10 --start-article 40 --compute-stats 0 --target-size 0.1 --methods original highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy --query-config repeat --algorithm-config best --model-name Qwen/Qwen3-4B --precomputed-budget-path head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json --max-ratio-per-head 0.75 --log-dir /results/qwen3-4b/heldout_win_a40_10 --name heldout_win_a40_10",
+      "wall_s": 1664,
+      "est_cost_usd": 1.83,
+      "start_time": "20261013_203734"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 2 --start-article 0 --compute-stats 0 --target-size 0.1 --methods original highest_attn_keys_rms_nnls2_-3_3_lsq highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy omp_nnls0_-inf_7_drop-7_lsq omp_nnls0_-inf_7_drop-7_lsq_on-policy omp_nnls0_-inf_7_drop-7_lsq_k4int2 omp_nnls0_-inf_7_drop-7_lsq_k4int2_on-policy --query-config context-prefill --algorithm-config best --model-name Qwen/Qwen3-4B --log-dir /results/qwen3-4b/pilot_context-prefill --name pilot_context-prefill",
+      "wall_s": 7806,
+      "est_cost_usd": 8.56,
+      "start_time": "20261013_141656"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 2 --start-article 0 --compute-stats 0 --target-size 0.1 --methods original highest_attn_keys_rms_nnls2_-3_3_lsq highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy omp_nnls0_-inf_7_drop-7_lsq omp_nnls0_-inf_7_drop-7_lsq_on-policy omp_nnls0_-inf_7_drop-7_lsq_k4int2 omp_nnls0_-inf_7_drop-7_lsq_k4int2_on-policy --query-config repeat --algorithm-config best --model-name Qwen/Qwen3-4B --log-dir /results/qwen3-4b/pilot_repeat --name pilot_repeat",
+      "wall_s": 8202,
+      "est_cost_usd": 9.0,
+      "start_time": "20261013_142333"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 2 --start-article 0 --compute-stats 0 --target-size 0.1 --methods original highest_attn_keys_rms_nnls2_-3_3_lsq highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy omp_nnls0_-inf_7_drop-7_lsq omp_nnls0_-inf_7_drop-7_lsq_on-policy omp_nnls0_-inf_7_drop-7_lsq_k4int2 omp_nnls0_-inf_7_drop-7_lsq_k4int2_on-policy --query-config ss-plus-repeat --algorithm-config best --model-name Qwen/Qwen3-4B --log-dir /results/qwen3-4b/pilot_ss-plus-repeat --name pilot_ss-plus-repeat",
+      "wall_s": 10094,
+      "est_cost_usd": 11.07,
+      "start_time": "20261013_145631"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 10 --start-article 0 --compute-stats 1 --target-size 0.05 --methods original highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy --query-config ss-plus-repeat --algorithm-config best --model-name Qwen/Qwen3-4B --precomputed-budget-path head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json --max-ratio-per-head 0.75 --log-dir /results/qwen3-4b/quality_t0.05_optbud_ss-plus-repeat --name quality_t0.05_optbud_ss-plus-repeat",
+      "wall_s": 1843,
+      "est_cost_usd": 2.02,
+      "start_time": "20261013_100013"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 10 --start-article 0 --compute-stats 1 --target-size 0.05 --methods random_subset_keys_nnls2_-3_3_lsq_on-policy truncate_nnls2_-3_3_lsq_on-policy --query-config ss-plus-repeat --algorithm-config key-selection --model-name Qwen/Qwen3-4B --log-dir /results/qwen3-4b/quality_t0.05_uniform_ctrl_ss-plus-repeat --name quality_t0.05_uniform_ctrl_ss-plus-repeat",
+      "wall_s": 2670,
+      "est_cost_usd": 2.93,
+      "start_time": "20261013_101359"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 10 --start-article 0 --compute-stats 1 --target-size 0.05 --methods original highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy --query-config ss-plus-repeat --algorithm-config best --model-name Qwen/Qwen3-4B --log-dir /results/qwen3-4b/quality_t0.05_uniform_ss-plus-repeat --name quality_t0.05_uniform_ss-plus-repeat",
+      "wall_s": 1512,
+      "est_cost_usd": 1.66,
+      "start_time": "20261013_095442"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 10 --start-article 0 --compute-stats 1 --target-size 0.1 --methods original highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy --query-config ss-plus-repeat --algorithm-config best --model-name Qwen/Qwen3-4B --precomputed-budget-path head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json --max-ratio-per-head 0.75 --log-dir /results/qwen3-4b/quality_t0.1_optbud_ss-plus-repeat --name quality_t0.1_optbud_ss-plus-repeat",
+      "wall_s": 2203,
+      "est_cost_usd": 2.42,
+      "start_time": "20261013_100740"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 10 --start-article 0 --compute-stats 1 --target-size 0.1 --methods random_subset_keys_nnls2_-3_3_lsq_on-policy truncate_nnls2_-3_3_lsq_on-policy --query-config ss-plus-repeat --algorithm-config key-selection --model-name Qwen/Qwen3-4B --log-dir /results/qwen3-4b/quality_t0.1_uniform_ctrl_ss-plus-repeat --name quality_t0.1_uniform_ctrl_ss-plus-repeat",
+      "wall_s": 3219,
+      "est_cost_usd": 3.53,
+      "start_time": "20261013_102259"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 10 --start-article 0 --compute-stats 1 --target-size 0.1 --methods original highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy --query-config ss-plus-repeat --algorithm-config best --model-name Qwen/Qwen3-4B --log-dir /results/qwen3-4b/quality_t0.1_uniform_ss-plus-repeat --name quality_t0.1_uniform_ss-plus-repeat",
+      "wall_s": 1821,
+      "est_cost_usd": 2.0,
+      "start_time": "20261013_095952"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 20 --start-article 0 --compute-stats 0 --target-size 0.1 --methods highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy --query-config context-prefill --algorithm-config best --model-name Qwen/Qwen3-4B --precomputed-budget-path head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json --max-ratio-per-head 0.75 --log-dir /results/qwen3-4b/sel_ctxprefill_perhead_t0.1 --name sel_ctxprefill_perhead_t0.1",
+      "wall_s": 2807,
+      "est_cost_usd": 3.08,
+      "start_time": "20261013_151538"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 20 --start-article 0 --compute-stats 0 --target-size 0.1 --methods original highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy omp_nnls0_-inf_7_drop-7_lsq_k4int2_on-policy --query-config repeat --algorithm-config best --model-name Qwen/Qwen3-4B --precomputed-budget-path head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json --max-ratio-per-head 0.75 --log-dir /results/qwen3-4b/sel_repeat_perhead_t0.1 --name sel_repeat_perhead_t0.1",
+      "wall_s": 19579,
+      "est_cost_usd": 21.48,
+      "start_time": "20261013_195509"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 20 --start-article 0 --compute-stats 0 --target-size 0.1 --methods highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy --query-config repeat --algorithm-config best --model-name Qwen/Qwen3-4B --log-dir /results/qwen3-4b/sel_repeat_uniform_t0.1 --name sel_repeat_uniform_t0.1",
+      "wall_s": 2607,
+      "est_cost_usd": 2.86,
+      "start_time": "20261013_151131"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 20 --start-article 0 --compute-stats 0 --target-size 0.1 --methods highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy omp_nnls0_-inf_7_drop-7_lsq_k4int2_on-policy --query-config ss-plus-repeat --algorithm-config best --model-name Qwen/Qwen3-4B --precomputed-budget-path head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json --max-ratio-per-head 0.75 --log-dir /results/qwen3-4b/sel_ss_perhead_t0.1 --name sel_ss_perhead_t0.1",
+      "wall_s": 23983,
+      "est_cost_usd": 26.31,
+      "start_time": "20261013_210844"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m examples.qa_demo --model Qwen/Qwen3-4B --target-size 0.1",
+      "wall_s": 91,
+      "est_cost_usd": 0.1,
+      "start_time": {}
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s1_p0 --name t9_compact_2048_t0.5_c2_s1_p0",
+      "wall_s": 665,
+      "est_cost_usd": 0.73,
+      "start_time": "20261013_105611"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s1_p1 --name t9_compact_2048_t0.5_c2_s1_p1",
+      "wall_s": 689,
+      "est_cost_usd": 0.76,
+      "start_time": "20261013_105636"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s1_p2 --name t9_compact_2048_t0.5_c2_s1_p2",
+      "wall_s": 623,
+      "est_cost_usd": 0.68,
+      "start_time": "20261013_105530"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s1_p3 --name t9_compact_2048_t0.5_c2_s1_p3",
+      "wall_s": 642,
+      "est_cost_usd": 0.7,
+      "start_time": "20261013_105550"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s1_p4 --name t9_compact_2048_t0.5_c2_s1_p4",
+      "wall_s": 549,
+      "est_cost_usd": 0.6,
+      "start_time": "20261013_105417"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s2_p0 --name t9_compact_2048_t0.5_c2_s2_p0",
+      "wall_s": 496,
+      "est_cost_usd": 0.54,
+      "start_time": "20261013_110233"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s2_p1 --name t9_compact_2048_t0.5_c2_s2_p1",
+      "wall_s": 568,
+      "est_cost_usd": 0.62,
+      "start_time": "20261013_110501"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s2_p2 --name t9_compact_2048_t0.5_c2_s2_p2",
+      "wall_s": 570,
+      "est_cost_usd": 0.63,
+      "start_time": "20261013_110522"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s2_p3 --name t9_compact_2048_t0.5_c2_s2_p3",
+      "wall_s": 653,
+      "est_cost_usd": 0.72,
+      "start_time": "20261013_110706"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s2_p4 --name t9_compact_2048_t0.5_c2_s2_p4",
+      "wall_s": 656,
+      "est_cost_usd": 0.72,
+      "start_time": "20261013_110734"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s3_p0 --name t9_compact_2048_t0.5_c2_s3_p0",
+      "wall_s": 610,
+      "est_cost_usd": 0.67,
+      "start_time": "20261013_112955"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s3_p1 --name t9_compact_2048_t0.5_c2_s3_p1",
+      "wall_s": 645,
+      "est_cost_usd": 0.71,
+      "start_time": "20261013_113224"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s3_p2 --name t9_compact_2048_t0.5_c2_s3_p2",
+      "wall_s": 592,
+      "est_cost_usd": 0.65,
+      "start_time": "20261013_113147"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s3_p3 --name t9_compact_2048_t0.5_c2_s3_p3",
+      "wall_s": 499,
+      "est_cost_usd": 0.55,
+      "start_time": "20261013_113107"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s3_p4 --name t9_compact_2048_t0.5_c2_s3_p4",
+      "wall_s": 502,
+      "est_cost_usd": 0.55,
+      "start_time": "20261013_113154"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s4_p0 --name t9_compact_2048_t0.5_c2_s4_p0",
+      "wall_s": 504,
+      "est_cost_usd": 0.55,
+      "start_time": "20261013_114935"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s4_p1 --name t9_compact_2048_t0.5_c2_s4_p1",
+      "wall_s": 592,
+      "est_cost_usd": 0.65,
+      "start_time": "20261013_115155"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s4_p2 --name t9_compact_2048_t0.5_c2_s4_p2",
+      "wall_s": 509,
+      "est_cost_usd": 0.56,
+      "start_time": "20261013_115040"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s4_p3 --name t9_compact_2048_t0.5_c2_s4_p3",
+      "wall_s": 655,
+      "est_cost_usd": 0.72,
+      "start_time": "20261013_115436"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --target-size 0.5 --max-compactions 2 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c2_s4_p4 --name t9_compact_2048_t0.5_c2_s4_p4",
+      "wall_s": 642,
+      "est_cost_usd": 0.7,
+      "start_time": "20261013_115603"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s1_p0 --name t9_compact_2048_t0.5_c6_s1_p0",
+      "wall_s": 1228,
+      "est_cost_usd": 1.35,
+      "start_time": "20261013_110535"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s1_p1 --name t9_compact_2048_t0.5_c6_s1_p1",
+      "wall_s": 1476,
+      "est_cost_usd": 1.62,
+      "start_time": "20261013_110944"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s1_p2 --name t9_compact_2048_t0.5_c6_s1_p2",
+      "wall_s": 1456,
+      "est_cost_usd": 1.6,
+      "start_time": "20261013_110925"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s1_p3 --name t9_compact_2048_t0.5_c6_s1_p3",
+      "wall_s": 1660,
+      "est_cost_usd": 1.82,
+      "start_time": "20261013_111248"
+    },
+    {
+      "seed": 1,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 1 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s1_p4 --name t9_compact_2048_t0.5_c6_s1_p4",
+      "wall_s": 2450,
+      "est_cost_usd": 2.69,
+      "start_time": "20261013_112601"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s2_p0 --name t9_compact_2048_t0.5_c6_s2_p0",
+      "wall_s": 948,
+      "est_cost_usd": 1.04,
+      "start_time": "20261013_111821"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s2_p1 --name t9_compact_2048_t0.5_c6_s2_p1",
+      "wall_s": 1469,
+      "est_cost_usd": 1.61,
+      "start_time": "20261013_112933"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s2_p2 --name t9_compact_2048_t0.5_c6_s2_p2",
+      "wall_s": 1333,
+      "est_cost_usd": 1.46,
+      "start_time": "20261013_112736"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s2_p3 --name t9_compact_2048_t0.5_c6_s2_p3",
+      "wall_s": 1439,
+      "est_cost_usd": 1.58,
+      "start_time": "20261013_112935"
+    },
+    {
+      "seed": 2,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 2 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s2_p4 --name t9_compact_2048_t0.5_c6_s2_p4",
+      "wall_s": 1760,
+      "est_cost_usd": 1.93,
+      "start_time": "20261013_113627"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s3_p0 --name t9_compact_2048_t0.5_c6_s3_p0",
+      "wall_s": 1552,
+      "est_cost_usd": 1.7,
+      "start_time": "20261013_115154"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s3_p1 --name t9_compact_2048_t0.5_c6_s3_p1",
+      "wall_s": 1441,
+      "est_cost_usd": 1.58,
+      "start_time": "20261013_115141"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s3_p2 --name t9_compact_2048_t0.5_c6_s3_p2",
+      "wall_s": 1372,
+      "est_cost_usd": 1.51,
+      "start_time": "20261013_115228"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s3_p3 --name t9_compact_2048_t0.5_c6_s3_p3",
+      "wall_s": 1432,
+      "est_cost_usd": 1.57,
+      "start_time": "20261013_115328"
+    },
+    {
+      "seed": 3,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 3 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s3_p4 --name t9_compact_2048_t0.5_c6_s3_p4",
+      "wall_s": 1790,
+      "est_cost_usd": 1.96,
+      "start_time": "20261013_115946"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 0 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s4_p0 --name t9_compact_2048_t0.5_c6_s4_p0",
+      "wall_s": 1086,
+      "est_cost_usd": 1.19,
+      "start_time": "20261013_120742"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 6 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s4_p1 --name t9_compact_2048_t0.5_c6_s4_p1",
+      "wall_s": 1283,
+      "est_cost_usd": 1.41,
+      "start_time": "20261013_121203"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 12 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s4_p2 --name t9_compact_2048_t0.5_c6_s4_p2",
+      "wall_s": 1341,
+      "est_cost_usd": 1.47,
+      "start_time": "20261013_121405"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 18 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s4_p3 --name t9_compact_2048_t0.5_c6_s4_p3",
+      "wall_s": 2268,
+      "est_cost_usd": 2.49,
+      "start_time": "20261013_122943"
+    },
+    {
+      "seed": 4,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_reasoning_evaluation --mode compaction --max-seq-len 2048 --seed 4 --model-name Qwen/Qwen3-4B --start-problem 24 --n-problems 6 --target-size 0.5 --max-compactions 6 --method AM-HighestAttnKeys-basic --query-config repeat --algorithm-config default --log-dir /results/qwen3-4b/t9_compact_2048_t0.5_c6_s4_p4 --name t9_compact_2048_t0.5_c6_s4_p4",
+      "wall_s": 1576,
+      "est_cost_usd": 1.73,
+      "start_time": "20261013_121815"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 23 --start-article 0 --compute-stats 0 --target-size 0.1 --methods original highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy random_subset_keys_nnls2_-3_3_lsq_on-policy --query-config repeat --algorithm-config key-selection --model-name Qwen/Qwen3-4B --log-dir /results/qwen3-4b/vsrandom_t0.1_repeat_a0_23 --name vsrandom_t0.1_repeat_a0_23",
+      "wall_s": 6236,
+      "est_cost_usd": 6.84,
+      "start_time": "20261013_161150"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 23 --start-article 23 --compute-stats 0 --target-size 0.1 --methods original highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy random_subset_keys_nnls2_-3_3_lsq_on-policy --query-config repeat --algorithm-config key-selection --model-name Qwen/Qwen3-4B --log-dir /results/qwen3-4b/vsrandom_t0.1_repeat_a23_23 --name vsrandom_t0.1_repeat_a23_23",
+      "wall_s": 5972,
+      "est_cost_usd": 6.55,
+      "start_time": "20261013_160726"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 23 --start-article 46 --compute-stats 0 --target-size 0.1 --methods original highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy random_subset_keys_nnls2_-3_3_lsq_on-policy --query-config repeat --algorithm-config key-selection --model-name Qwen/Qwen3-4B --log-dir /results/qwen3-4b/vsrandom_t0.1_repeat_a46_23 --name vsrandom_t0.1_repeat_a46_23",
+      "wall_s": 6643,
+      "est_cost_usd": 7.29,
+      "start_time": "20261013_161837"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 23 --start-article 69 --compute-stats 0 --target-size 0.1 --methods original highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy random_subset_keys_nnls2_-3_3_lsq_on-policy --query-config repeat --algorithm-config key-selection --model-name Qwen/Qwen3-4B --log-dir /results/qwen3-4b/vsrandom_t0.1_repeat_a69_23 --name vsrandom_t0.1_repeat_a69_23",
+      "wall_s": 6090,
+      "est_cost_usd": 6.68,
+      "start_time": "20261013_160926"
+    },
+    {
+      "seed": null,
+      "gpu": "NVIDIA H100 80GB HBM3, 81559 MiB",
+      "command": "python -u -m evaluation.run_qa_evaluation --dataset-name quality --n-articles 23 --start-article 92 --compute-stats 0 --target-size 0.1 --methods original highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy random_subset_keys_nnls2_-3_3_lsq_on-policy --query-config repeat --algorithm-config key-selection --model-name Qwen/Qwen3-4B --log-dir /results/qwen3-4b/vsrandom_t0.1_repeat_a92_23 --name vsrandom_t0.1_repeat_a92_23",
+      "wall_s": 5746,
+      "est_cost_usd": 6.3,
+      "start_time": "20261013_160344"
+    }
+  ]
+}

@@ -11,7 +11,7 @@ data = {}   # method -> {qid: (article, correct)}
 cost = {}   # method -> [seconds per article]
 for f in glob.glob(f"{root}/{pat}/*_2026*.json"):
     for r in json.load(open(f))["results"]:
-        m = r["method"]
+        m = r["method"] if not __import__("os").environ.get("KEY_DIR") else f.split("/")[-2].replace("_t0.1","") + ":" + r["method"].replace("highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy","HA").replace("omp_nnls0_-inf_7_drop-7_lsq_k4int2_on-policy","OMPF")
         cost.setdefault(m, []).append(r.get("compaction_time", 0) + r.get("query_generation_time", 0))
         for q in r["qa_results"]["results_per_question"]:
             data.setdefault(m, {})[q["question_id"]] = (r["article_id"], int(bool(q["is_correct"])))

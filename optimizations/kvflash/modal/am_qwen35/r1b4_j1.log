@@ -1,0 +1,2148 @@
+✓ Initialized. View run at 
+https://modal.com/apps/davide-83641/main/ap-CPXIsBIW6CHx1ARODxk93c
+Building image im-i2gLgLhErA32LH9bEn88cR
+
+=> Step 0: FROM base
+
+=> Step 1: COPY . /
+Saving image...
+Image saved, took 734.02ms
+
+Built image im-i2gLgLhErA32LH9bEn88cR in 1.41s
+
+
+✓ Created objects.
+├── ✓ Uploaded 
+│   /home/peppi/Dev/lucebox/.claude/worktrees/kvflash-am/optimizations/kvflash/m
+│   odal/am_qwen35/r1b4.py
+├── ✓ Uploaded 
+│   /home/peppi/Dev/lucebox/.claude/worktrees/kvflash-am/optimizations/kvflash/m
+│   odal/am_qwen35
+└── ✓ Created Function cells.
+Loading model: Qwen/Qwen3-4B
+
+[1ALoading checkpoint shards:   0%|          | 0/3 [00:00<?, ?it/s]
+[1ALoading checkpoint shards:  33%|███▎      | 1/3 [00:01<00:03,  1.79s/it]
+[1ALoading checkpoint shards:  67%|██████▋   | 2/3 [00:03<00:01,  1.69s/it]Loading checkpoint shards: 100%|██████████| 3/3 [00:03<00:00,  1.15s/it]
+Model loaded successfully
+Loading QuALITY data from: data/QuALITY.v1.0.1.htmlstripped.dev
+Loaded 115 unique articles (from 230 entries)
+[r1b] art 7 quality_30035 orig t0.1: acc 14/18 wall 2.1s {}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.10GB allocated, 8.29GB reserved, 79.17GB total
+GPU Memory available: 71.07GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (16547 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: Shure and begorra, it was a great day for the Earth! The
+ first envoy from another world was about t...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 4181 tokens
+  Using all 4181 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-16724 in final queries (total: 16724)
+Generated 16724 original queries per KV head
+Original queries shape: torch.Size([36, 8, 16724, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.1000
+  Max allowed proportion: 0.026054
+  Original max proportion: 0.031472
+  New max proportion: 0.026054
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=119670, min=57, max=3121, mean=415.5
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:16724)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 7 quality_30035 O1 t0.1: acc 14/18 wall 18.1s {'compaction_s': 16.59, 'query_gen_s': 8.6, 'full_layer_len_mean': 1454.8, 'nan_layers': []}
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Generated 16656 original queries per KV head
+Original queries shape: torch.Size([36, 8, 16656, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.1000
+  Max allowed proportion: 0.026054
+  Original max proportion: 0.031472
+  New max proportion: 0.026054
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=119670, min=57, max=3121, mean=415.5
+Compacting layer 1/36
+Compacting layer 2/36
+  No on-policy methods - using original queries
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 7 quality_30035 F t0.1: acc 14/18 wall 12.6s {'compaction_s': 7.34, 'query_gen_s': 0.15, 'full_layer_len_mean': 1454.8, 'nan_layers': []}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.31GB allocated, 8.51GB reserved, 79.17GB total
+GPU Memory available: 70.87GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (16547 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: Shure and begorra, it was a great day for the Earth! The
+ first envoy from another world was about t...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 4181 tokens
+  Using all 4181 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-16724 in final queries (total: 16724)
+Generated 16724 original queries per KV head
+Original queries shape: torch.Size([36, 8, 16724, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.1000
+  Max allowed proportion: 0.026054
+  Original max proportion: 0.031472
+  New max proportion: 0.026054
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=119670, min=57, max=3121, mean=415.5
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:16724)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 7 quality_30035 O2 t0.1: acc 14/18 wall 271.4s {'compaction_s': 268.42, 'query_gen_s': 8.65, 'full_layer_len_mean': 1454.8, 'nan_layers': []}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.31GB allocated, 8.50GB reserved, 79.17GB total
+GPU Memory available: 70.86GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+Generated 3 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (16547 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 6 answers with vLLM across 2 parameter groups
+  [Conv 1/7] Starter: Repeat the previous context verbatim.
+  [Conv 1/7] Answer: Shure and begorra, it was a great day for the Earth! The
+ first envoy from another world was about t...
+  [Conv 1/7] Extracting queries from answer...
+  [Conv 1/7] Extracted 4181 tokens
+  [Conv 2/7] Starter: Summarize the main points of the context.
+  [Conv 2/7] Answer: The story "Shure and begorra, it was a great day for the Earth!" by Mack Reynolds follows the arriva...
+  [Conv 2/7] Extracting queries from answer...
+  [Conv 2/7] Extracted 317 tokens
+  [Conv 3/7] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/7] Answer: Here are the key facts mentioned in the context:
+
+1. **Alien Arrival**: Dameri Tass, an alien from a...
+  [Conv 3/7] Extracting queries from answer...
+  [Conv 3/7] Extracted 497 tokens
+  [Conv 4/7] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/7] Answer: ```json
+{
+  "story": "The First Envoy from Another World",
+  "author": "Mack Reynolds",
+  "illustrat...
+  [Conv 4/7] Extracting queries from answer...
+  [Conv 4/7] Extracted 1519 tokens
+  [Conv 5/7] Starter: What did Dameri Tass initially misunderstand about Earth's status in the Galactic League?  
+A) Earth was a member  
+B) Earth was not a member  
+C) Earth was a rival planet  
+D) Earth was a neutral zone
+  [Conv 5/7] Answer: <think>
+Okay, let's see. The question is about what Dameri Tass initially misunderstood regarding Ea...
+  [Conv 5/7] Extracting queries from answer...
+  [Conv 5/7] Extracted 2842 tokens
+  [Conv 6/7] Starter: How did Dameri Tass learn to communicate with humans?  
+A) Through a translation device  
+B) By wearing a helmet that enabled speech  
+C) By learning the language instinctively  
+D) Through a telepathic link
+  [Conv 6/7] Answer: <think>
+Okay, let's see. The question is asking how Dameri Tass learned to communicate with humans. ...
+  [Conv 6/7] Extracting queries from answer...
+  [Conv 6/7] Extracted 505 tokens
+  [Conv 7/7] Starter: What did Dameri Tass decide to take with him when leaving Earth?  
+A) Only his spacecraft  
+B) His dog, cat, and mouse  
+C) The horse and his spacecraft  
+D) The horse and the spacecraft
+  [Conv 7/7] Answer: <think>
+Okay, let me try to figure this out. The question is asking what Dameri Tass decided to take...
+  [Conv 7/7] Extracting queries from answer...
+  [Conv 7/7] Extracted 792 tokens
+  Using all 10653 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-42612 in final queries (total: 42612)
+Generated 42612 original queries per KV head
+Original queries shape: torch.Size([36, 8, 42612, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.1000
+  Max allowed proportion: 0.026054
+  Original max proportion: 0.031472
+  New max proportion: 0.026054
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=119670, min=57, max=3121, mean=415.5
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:42612)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 7 quality_30035 C t0.1: acc 14/18 wall 557.7s {'compaction_s': 553.99, 'query_gen_s': 200.8, 'full_layer_len_mean': 1454.8, 'nan_layers': []}
+[r1b] article 7 done in 862s
+[r1b] art 8 quality_61285 orig t0.1: acc 15/17 wall 4.5s {}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.74GB allocated, 11.33GB reserved, 79.17GB total
+GPU Memory available: 70.43GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (29467 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: THE DESERT AND THE STARS
+BY KEITH LAUMER
+The Aga Kaga wanted peace—a
+
+ piece of everything in sight!...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 7342 tokens
+  Using all 7342 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-29368 in final queries (total: 29368)
+Generated 29368 original queries per KV head
+Original queries shape: torch.Size([36, 8, 29368, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.1000
+  Max allowed proportion: 0.026052
+  Original max proportion: 0.031472
+  New max proportion: 0.026052
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=210732, min=101, max=5492, mean=731.7
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:29368)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 8 quality_61285 O1 t0.1: acc 14/17 wall 38.3s {'compaction_s': 35.36, 'query_gen_s': 14.51, 'full_layer_len_mean': 2541.3, 'nan_layers': []}
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Generated 29300 original queries per KV head
+Original queries shape: torch.Size([36, 8, 29300, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.1000
+  Max allowed proportion: 0.026052
+  Original max proportion: 0.031472
+  New max proportion: 0.026052
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=210732, min=101, max=5492, mean=731.7
+Compacting layer 1/36
+Compacting layer 2/36
+  No on-policy methods - using original queries
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 8 quality_61285 F t0.1: acc 16/17 wall 22.0s {'compaction_s': 16.04, 'query_gen_s': 0.31, 'full_layer_len_mean': 2541.3, 'nan_layers': []}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.89GB allocated, 11.58GB reserved, 79.17GB total
+GPU Memory available: 70.28GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (29467 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: THE DESERT AND THE STARS
+BY KEITH LAUMER
+The Aga Kaga wanted peace—a
+
+ piece of everything in sight!...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 7342 tokens
+  Using all 7342 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-29368 in final queries (total: 29368)
+Generated 29368 original queries per KV head
+Original queries shape: torch.Size([36, 8, 29368, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.1000
+  Max allowed proportion: 0.026052
+  Original max proportion: 0.031472
+  New max proportion: 0.026052
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=210732, min=101, max=5492, mean=731.7
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:29368)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 8 quality_61285 O2 t0.1: acc 16/17 wall 985.4s {'compaction_s': 979.78, 'query_gen_s': 14.56, 'full_layer_len_mean': 2541.3, 'nan_layers': []}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.89GB allocated, 11.76GB reserved, 79.17GB total
+GPU Memory available: 70.28GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+Generated 3 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (29467 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 6 answers with vLLM across 2 parameter groups
+  [Conv 1/7] Starter: Repeat the previous context verbatim.
+  [Conv 1/7] Answer: THE DESERT AND THE STARS
+BY KEITH LAUMER
+The Aga Kaga wanted peace—a
+
+ piece of everything in sight!...
+  [Conv 1/7] Extracting queries from answer...
+  [Conv 1/7] Extracted 7342 tokens
+  [Conv 2/7] Starter: Summarize the main points of the context.
+  [Conv 2/7] Answer: The story "The Desert and the Stars" by Keith Laumer revolves around a diplomatic conflict between t...
+  [Conv 2/7] Extracting queries from answer...
+  [Conv 2/7] Extracted 324 tokens
+  [Conv 3/7] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/7] Answer: Here are the key facts from the context of the story "The Desert and the Stars" by Keith Laumer:
+
+1....
+  [Conv 3/7] Extracting queries from answer...
+  [Conv 3/7] Extracted 696 tokens
+  [Conv 4/7] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/7] Answer: {
+  "title": "The Desert and the Stars",
+  "author": "Keith Laumer",
+  "publication": "Worlds of If ...
+  [Conv 4/7] Extracting queries from answer...
+  [Conv 4/7] Extracted 680 tokens
+  [Conv 5/7] Starter: What is the main reason the Aga Kagans are moving into Flamme?  
+A) To establish a new colony for their people  
+B) To claim land that the Boyars have already terraformed  
+C) To protest the Boyars' use of the Corps' resources
+  [Conv 5/7] Answer: <think>
+Okay, let's tackle this question. The user is asking for the main reason the Aga Kagans are ...
+  [Conv 5/7] Extracting queries from answer...
+  [Conv 5/7] Extracted 625 tokens
+  [Conv 6/7] Starter: What is the purpose of the "Note" that Retief is trying to deliver?  
+A) To request military support from the Corps  
+B) To formally protest the Aga Kagans' land claims  
+C) To declare ownership of Flamme by the Boyars
+  [Conv 6/7] Answer: <think>
+Okay, let's see. The user is asking about the purpose of the "Note" that Retief is trying to...
+  [Conv 6/7] Extracting queries from answer...
+  [Conv 6/7] Extracted 525 tokens
+  [Conv 7/7] Starter: How does the Aga Kagan leader, Stanley, view the Boyars during their meeting?  
+A) As naive and easily manipulated  
+B) As a rival with whom he must negotiate  
+C) As a necessary obstacle to his expansion plans
+  [Conv 7/7] Answer: <think>
+Okay, let's see. The question is about how the Aga Kagan leader, Stanley, views the Boyars d...
+  [Conv 7/7] Extracting queries from answer...
+  [Conv 7/7] Extracted 631 tokens
+  Using all 10823 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-43292 in final queries (total: 43292)
+Generated 43292 original queries per KV head
+Original queries shape: torch.Size([36, 8, 43292, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.1000
+  Max allowed proportion: 0.026052
+  Original max proportion: 0.031472
+  New max proportion: 0.026052
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=210732, min=101, max=5492, mean=731.7
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:43292)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 8 quality_61285 C t0.1: acc 14/17 wall 1248.4s {'compaction_s': 1243.14, 'query_gen_s': 105.99, 'full_layer_len_mean': 2541.3, 'nan_layers': []}
+[r1b] article 8 done in 2299s
+[r1b] art 9 quality_62261 orig t0.1: acc 11/18 wall 5.4s {}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.78GB allocated, 12.32GB reserved, 79.17GB total
+GPU Memory available: 70.39GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (27826 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: Planet of No-Return
+By WILBUR S. PEACOCK
+The orders were explicit: "Destroy the
+
+ 'THING' of Venus."...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 6517 tokens
+  Using all 6517 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-26068 in final queries (total: 26068)
+Generated 26068 original queries per KV head
+Original queries shape: torch.Size([36, 8, 26068, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026074
+  Original max proportion: 0.031472
+  New max proportion: 0.026074
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=186769, min=89, max=4873, mean=648.5
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:26068)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 9 quality_62261 O1 t0.1: acc 14/18 wall 32.0s {'compaction_s': 28.95, 'query_gen_s': 12.19, 'full_layer_len_mean': 2256.3, 'nan_layers': []}
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Generated 26000 original queries per KV head
+Original queries shape: torch.Size([36, 8, 26000, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026074
+  Original max proportion: 0.031472
+  New max proportion: 0.026074
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=186769, min=89, max=4873, mean=648.5
+Compacting layer 1/36
+Compacting layer 2/36
+  No on-policy methods - using original queries
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 9 quality_62261 F t0.1: acc 14/18 wall 19.6s {'compaction_s': 13.23, 'query_gen_s': 0.27, 'full_layer_len_mean': 2256.3, 'nan_layers': []}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.74GB allocated, 12.50GB reserved, 79.17GB total
+GPU Memory available: 70.43GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (27826 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: Planet of No-Return
+By WILBUR S. PEACOCK
+The orders were explicit: "Destroy the
+
+ 'THING' of Venus."...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 6517 tokens
+  Using all 6517 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-26068 in final queries (total: 26068)
+Generated 26068 original queries per KV head
+Original queries shape: torch.Size([36, 8, 26068, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026074
+  Original max proportion: 0.031472
+  New max proportion: 0.026074
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=186769, min=89, max=4873, mean=648.5
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:26068)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 9 quality_62261 O2 t0.1: acc 13/18 wall 746.9s {'compaction_s': 743.78, 'query_gen_s': 12.26, 'full_layer_len_mean': 2256.3, 'nan_layers': []}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.74GB allocated, 12.50GB reserved, 79.17GB total
+GPU Memory available: 70.43GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+Generated 3 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (27826 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 6 answers with vLLM across 2 parameter groups
+  [Conv 1/7] Starter: Repeat the previous context verbatim.
+  [Conv 1/7] Answer: Planet of No-Return
+By WILBUR S. PEACOCK
+The orders were explicit: "Destroy the
+
+ 'THING' of Venus."...
+  [Conv 1/7] Extracting queries from answer...
+  [Conv 1/7] Extracted 6517 tokens
+  [Conv 2/7] Starter: Summarize the main points of the context.
+  [Conv 2/7] Answer: The story "Planet of No-Return" by WILBUR S. PEACOCK follows the journey of two space pilots, Kerry ...
+  [Conv 2/7] Extracting queries from answer...
+  [Conv 2/7] Extracted 481 tokens
+  [Conv 3/7] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/7] Answer: Here are the key facts mentioned in the context of "Planet of No-Return":
+
+1. **Mission Objective**:...
+  [Conv 3/7] Extracting queries from answer...
+  [Conv 3/7] Extracted 505 tokens
+  [Conv 4/7] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/7] Answer: {
+  "title": "Planet of No-Return",
+  "author": "WILBUR S. PEACOCK",
+  "publication": "Planet Storie...
+  [Conv 4/7] Extracting queries from answer...
+  [Conv 4/7] Extracted 1037 tokens
+  [Conv 5/7] Starter: What is the main objective of Kerry Blane and Splinter Wood's mission to Venus?  
+A) To explore the floating islands and study the planet's atmosphere  
+B) To destroy the "THING" of Venus and investigate its origins  
+C) To test the Zelta guns on the water planet  
+D) To repair their damaged space ship and return to Earth
+  [Conv 5/7] Answer: <think>
+Okay, let's see. The user is asking about the main objective of Kerry Blane and Splinter Woo...
+  [Conv 5/7] Extracting queries from answer...
+  [Conv 5/7] Extracted 439 tokens
+  [Conv 6/7] Starter: Why do the Zelta guns fail to function during their mission on Venus?  
+A) The guns are outdated and no longer effective in space combat  
+B) The crash damaged the ship's power system, rendering the guns useless  
+C) Solar rays cannot penetrate Venus's thick cloud cover  
+D) The guns were designed for Earth's atmosphere and not for Venus's environment
+  [Conv 6/7] Answer: <think>
+Okay, let's tackle this question. The user is asking why the Zelta guns failed on Venus. The...
+  [Conv 6/7] Extracting queries from answer...
+  [Conv 6/7] Extracted 616 tokens
+  [Conv 7/7] Starter: How does the story portray the relationship between Kerry Blane and Splinter Wood?  
+A) They are rivals competing for the mission's success  
+B) They are mentor and apprentice, with Kerry guiding Splinter  
+C) They are strangers forced to work together under pressure  
+D) They are opponents with conflicting goals and personalities
+  [Conv 7/7] Answer: <think>
+Okay, let's see. The user is asking about the relationship between Kerry Blane and Splinter ...
+  [Conv 7/7] Extracting queries from answer...
+  [Conv 7/7] Extracted 1111 tokens
+  Using all 10706 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-42824 in final queries (total: 42824)
+Generated 42824 original queries per KV head
+Original queries shape: torch.Size([36, 8, 42824, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026074
+  Original max proportion: 0.031472
+  New max proportion: 0.026074
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=186769, min=89, max=4873, mean=648.5
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:42824)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 9 quality_62261 C t0.1: acc 11/18 wall 1037.0s {'compaction_s': 1031.44, 'query_gen_s': 132.58, 'full_layer_len_mean': 2256.3, 'nan_layers': []}
+[r1b] article 9 done in 1841s
+[r1b] art 10 quality_62314 orig t0.1: acc 15/20 wall 3.9s {}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.70GB allocated, 13.17GB reserved, 79.17GB total
+GPU Memory available: 70.47GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (25445 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: STRANGER FROM SPACE
+By HANNES BOK
+She prayed that a God would come from the skies
+
+ and carry her aw...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 6213 tokens
+  Using all 6213 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-24852 in final queries (total: 24852)
+Generated 24852 original queries per KV head
+Original queries shape: torch.Size([36, 8, 24852, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026058
+  Original max proportion: 0.031472
+  New max proportion: 0.026058
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=178159, min=85, max=4645, mean=618.6
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:24852)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 10 quality_62314 O1 t0.1: acc 13/20 wall 31.6s {'compaction_s': 27.74, 'query_gen_s': 12.16, 'full_layer_len_mean': 2153.0, 'nan_layers': []}
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Generated 24784 original queries per KV head
+Original queries shape: torch.Size([36, 8, 24784, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026058
+  Original max proportion: 0.031472
+  New max proportion: 0.026058
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=178159, min=85, max=4645, mean=618.6
+Compacting layer 1/36
+Compacting layer 2/36
+  No on-policy methods - using original queries
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 10 quality_62314 F t0.1: acc 14/20 wall 22.2s {'compaction_s': 12.29, 'query_gen_s': 0.25, 'full_layer_len_mean': 2153.0, 'nan_layers': []}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.69GB allocated, 12.01GB reserved, 79.17GB total
+GPU Memory available: 70.48GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (25445 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: STRANGER FROM SPACE
+By HANNES BOK
+She prayed that a God would come from the skies
+
+ and carry her aw...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 6213 tokens
+  Using all 6213 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-24852 in final queries (total: 24852)
+Generated 24852 original queries per KV head
+Original queries shape: torch.Size([36, 8, 24852, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026058
+  Original max proportion: 0.031472
+  New max proportion: 0.026058
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=178159, min=85, max=4645, mean=618.6
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:24852)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 10 quality_62314 O2 t0.1: acc 14/20 wall 654.5s {'compaction_s': 651.18, 'query_gen_s': 12.14, 'full_layer_len_mean': 2153.0, 'nan_layers': []}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.69GB allocated, 12.02GB reserved, 79.17GB total
+GPU Memory available: 70.48GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+Generated 3 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (25445 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 6 answers with vLLM across 2 parameter groups
+  [Conv 1/7] Starter: Repeat the previous context verbatim.
+  [Conv 1/7] Answer: STRANGER FROM SPACE
+By HANNES BOK
+She prayed that a God would come from the skies
+
+ and carry her aw...
+  [Conv 1/7] Extracting queries from answer...
+  [Conv 1/7] Extracted 6213 tokens
+  [Conv 2/7] Starter: Summarize the main points of the context.
+  [Conv 2/7] Answer: The story "Stranger from Space" by Hannes Bok is set on Venus and follows Koroby, a Venusian woman w...
+  [Conv 2/7] Extracting queries from answer...
+  [Conv 2/7] Extracted 337 tokens
+  [Conv 3/7] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/7] Answer: Here are the key facts from the context of "Stranger from Space" by Hannes Bok:
+
+1. **Setting**: The...
+  [Conv 3/7] Extracting queries from answer...
+  [Conv 3/7] Extracted 642 tokens
+  [Conv 4/7] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/7] Answer: {
+  "title": "Stranger from Space",
+  "author": "Hannes Bok",
+  "publication_date": "1943-03",
+  "se...
+  [Conv 4/7] Extracting queries from answer...
+  [Conv 4/7] Extracted 1488 tokens
+  [Conv 5/7] Starter: What is the significance of the metal globe found on Venus?  
+A) It is a broken spaceship from another world.  
+B) It is a gift from Koroby's future husband.  
+C) It is a ceremonial object used in Venusian weddings.  
+D) It is a toy made to resemble a human.
+  [Conv 5/7] Answer: <think>
+Okay, let's see. The user is asking about the significance of the metal globe found on Venus...
+  [Conv 5/7] Extracting queries from answer...
+  [Conv 5/7] Extracted 561 tokens
+  [Conv 6/7] Starter: What does Koroby realize about the stranger (Robert) during their interaction?  
+A) He is a god sent to rescue her.  
+B) He is a human from a distant planet.  
+C) He is a robot designed to mimic human behavior.  
+D) He is a rival for Yasak's affection.
+  [Conv 6/7] Answer: <think>
+Okay, let's see. The question is asking what Koroby realizes about the stranger, Robert, dur...
+  [Conv 6/7] Extracting queries from answer...
+  [Conv 6/7] Extracted 1930 tokens
+  [Conv 7/7] Starter: How does the story conclude regarding Robert's true nature?  
+A) He is revealed to be a human who left Venus.  
+B) He is a mechanical being created by Venusians.  
+C) He is a supernatural entity from another dimension.  
+D) He is a malfunctioning machine with no real purpose.
+  [Conv 7/7] Answer: <think>
+Okay, let's see. The user is asking about the conclusion of the story regarding Robert's tru...
+  [Conv 7/7] Extracting queries from answer...
+  [Conv 7/7] Extracted 1536 tokens
+  Subsampled 12707 → 12500 tokens per attention head
+Putting vLLM to sleep...
+Self-study queries occupy range 0-50000 in final queries (total: 50000)
+Generated 50000 original queries per KV head
+Original queries shape: torch.Size([36, 8, 50000, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026058
+  Original max proportion: 0.031472
+  New max proportion: 0.026058
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=178159, min=85, max=4645, mean=618.6
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:50000)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 10 quality_62314 C t0.1: acc 15/20 wall 1048.2s {'compaction_s': 1043.48, 'query_gen_s': 199.84, 'full_layer_len_mean': 2153.0, 'nan_layers': []}
+[r1b] article 10 done in 1760s
+[r1b] art 11 quality_61430 orig t0.1: acc 14/18 wall 5.8s {}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.77GB allocated, 12.60GB reserved, 79.17GB total
+GPU Memory available: 70.40GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (29254 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: MANNERS AND CUSTOMS OF THE THRID
+BY MURRAY LEINSTER
+The Thrid were the wisest creatures in
+
+ space—t...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 6856 tokens
+  Using all 6856 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-27424 in final queries (total: 27424)
+Generated 27424 original queries per KV head
+Original queries shape: torch.Size([36, 8, 27424, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026068
+  Original max proportion: 0.031472
+  New max proportion: 0.026068
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=196582, min=94, max=5127, mean=682.6
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:27424)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 11 quality_61430 O1 t0.1: acc 13/18 wall 37.3s {'compaction_s': 31.69, 'query_gen_s': 13.26, 'full_layer_len_mean': 2372.9, 'nan_layers': []}
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Generated 27356 original queries per KV head
+Original queries shape: torch.Size([36, 8, 27356, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026068
+  Original max proportion: 0.031472
+  New max proportion: 0.026068
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=196582, min=94, max=5127, mean=682.6
+Compacting layer 1/36
+Compacting layer 2/36
+  No on-policy methods - using original queries
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 11 quality_61430 F t0.1: acc 15/18 wall 22.3s {'compaction_s': 14.51, 'query_gen_s': 0.31, 'full_layer_len_mean': 2372.9, 'nan_layers': []}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.81GB allocated, 9.33GB reserved, 79.17GB total
+GPU Memory available: 70.37GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (29254 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: MANNERS AND CUSTOMS OF THE THRID
+BY MURRAY LEINSTER
+The Thrid were the wisest creatures in
+
+ space—t...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 6856 tokens
+  Using all 6856 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-27424 in final queries (total: 27424)
+Generated 27424 original queries per KV head
+Original queries shape: torch.Size([36, 8, 27424, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026068
+  Original max proportion: 0.031472
+  New max proportion: 0.026068
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=196582, min=94, max=5127, mean=682.6
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:27424)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 11 quality_61430 O2 t0.1: acc 14/18 wall 832.7s {'compaction_s': 826.95, 'query_gen_s': 13.65, 'full_layer_len_mean': 2372.9, 'nan_layers': []}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.81GB allocated, 11.41GB reserved, 79.17GB total
+GPU Memory available: 70.36GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+Generated 3 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (29254 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 6 answers with vLLM across 2 parameter groups
+  [Conv 1/7] Starter: Repeat the previous context verbatim.
+  [Conv 1/7] Answer: MANNERS AND CUSTOMS OF THE THRID
+BY MURRAY LEINSTER
+The Thrid were the wisest creatures in
+
+ space—t...
+  [Conv 1/7] Extracting queries from answer...
+  [Conv 1/7] Extracted 6856 tokens
+  [Conv 2/7] Starter: Summarize the main points of the context.
+  [Conv 2/7] Answer: The story "Manners and Customs of the Thrid" by Murray Leinster explores the conflict between a huma...
+  [Conv 2/7] Extracting queries from answer...
+  [Conv 2/7] Extracted 610 tokens
+  [Conv 3/7] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/7] Answer: Here are the key facts mentioned in the context:
+
+1. The Thrid are described as the wisest creatures...
+  [Conv 3/7] Extracting queries from answer...
+  [Conv 3/7] Extracted 592 tokens
+  [Conv 4/7] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/7] Answer: ```json
+{
+  "title": "Manners and Customs of the Thrid",
+  "author": "Murray Leinster",
+  "publicati...
+  [Conv 4/7] Extracting queries from answer...
+  [Conv 4/7] Extracted 1104 tokens
+  [Conv 5/7] Starter: What is the Thrid's belief about the Grand Panjandrum?  
+A) He can make mistakes but is never punished.  
+B) He is infallible and always correct.  
+C) He is a regular Thrid who can be wrong.  
+D) He is a symbol of Thrid society, not a real person.
+  [Conv 5/7] Answer: <think>
+Okay, let's see. The user is asking about the Thrid's belief regarding the Grand Panjandrum....
+  [Conv 5/7] Extracting queries from answer...
+  [Conv 5/7] Extracted 503 tokens
+  [Conv 6/7] Starter: How does Jorgenson react to the Grand Panjandrum's declaration?  
+A) He accepts it as a business opportunity.  
+B) He challenges it, leading to his imprisonment.  
+C) He ignores it and continues his trade.  
+D) He tries to negotiate with the Thrid officials.
+  [Conv 6/7] Answer: <think>
+Okay, let's see. The question is about how Jorgenson reacts to the Grand Panjandrum's declar...
+  [Conv 6/7] Extracting queries from answer...
+  [Conv 6/7] Extracted 439 tokens
+  [Conv 7/7] Starter: What is the purpose of the cave on the island?  
+A) To hide from the copter's surveillance.  
+B) To store food and water for the prisoners.  
+C) To serve as a prison for future prisoners.  
+D) To provide shelter from the harsh weather.
+  [Conv 7/7] Answer: <think>
+Okay, let's see. The user is asking about the purpose of the cave on the island in the story...
+  [Conv 7/7] Extracting queries from answer...
+  [Conv 7/7] Extracted 628 tokens
+  Using all 10732 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-42928 in final queries (total: 42928)
+Generated 42928 original queries per KV head
+Original queries shape: torch.Size([36, 8, 42928, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026068
+  Original max proportion: 0.031472
+  New max proportion: 0.026068
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=196582, min=94, max=5127, mean=682.6
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:42928)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 11 quality_61430 C t0.1: acc 13/18 wall 1098.1s {'compaction_s': 1092.11, 'query_gen_s': 117.51, 'full_layer_len_mean': 2372.9, 'nan_layers': []}
+[r1b] article 11 done in 1996s
+[r1b] art 12 quality_52855 orig t0.1: acc 7/19 wall 5.1s {}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.84GB allocated, 13.41GB reserved, 79.17GB total
+GPU Memory available: 70.33GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (28973 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: THE STAR-SENT KNAVES
+BY KEITH LAUMER
+
+
+ Illustrated by Gaughan
+
+
+ [Transcriber's Note: This etext wa...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 7068 tokens
+  Using all 7068 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-28272 in final queries (total: 28272)
+Generated 28272 original queries per KV head
+Original queries shape: torch.Size([36, 8, 28272, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026075
+  Original max proportion: 0.031472
+  New max proportion: 0.026075
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=202667, min=97, max=5286, mean=703.7
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:28272)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 12 quality_52855 O1 t0.1: acc 10/19 wall 35.7s {'compaction_s': 33.02, 'query_gen_s': 13.69, 'full_layer_len_mean': 2445.4, 'nan_layers': []}
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Generated 28204 original queries per KV head
+Original queries shape: torch.Size([36, 8, 28204, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026075
+  Original max proportion: 0.031472
+  New max proportion: 0.026075
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=202667, min=97, max=5286, mean=703.7
+Compacting layer 1/36
+Compacting layer 2/36
+  No on-policy methods - using original queries
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 12 quality_52855 F t0.1: acc 9/19 wall 23.5s {'compaction_s': 15.24, 'query_gen_s': 0.31, 'full_layer_len_mean': 2445.4, 'nan_layers': []}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.85GB allocated, 9.71GB reserved, 79.17GB total
+GPU Memory available: 70.32GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (28973 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: THE STAR-SENT KNAVES
+BY KEITH LAUMER
+
+
+ Illustrated by Gaughan
+
+
+ [Transcriber's Note: This etext wa...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 7068 tokens
+  Using all 7068 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-28272 in final queries (total: 28272)
+Generated 28272 original queries per KV head
+Original queries shape: torch.Size([36, 8, 28272, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026075
+  Original max proportion: 0.031472
+  New max proportion: 0.026075
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=202667, min=97, max=5286, mean=703.7
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:28272)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 12 quality_52855 O2 t0.1: acc 9/19 wall 896.0s {'compaction_s': 889.17, 'query_gen_s': 14.08, 'full_layer_len_mean': 2445.4, 'nan_layers': []}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.85GB allocated, 9.90GB reserved, 79.17GB total
+GPU Memory available: 70.32GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+Generated 3 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (28973 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 6 answers with vLLM across 2 parameter groups
+  [Conv 1/7] Starter: Repeat the previous context verbatim.
+  [Conv 1/7] Answer: THE STAR-SENT KNAVES
+BY KEITH LAUMER
+
+
+ Illustrated by Gaughan
+
+
+ [Transcriber's Note: This etext wa...
+  [Conv 1/7] Extracting queries from answer...
+  [Conv 1/7] Extracted 7068 tokens
+  [Conv 2/7] Starter: Summarize the main points of the context.
+  [Conv 2/7] Answer: The story "The Star-Sent Knaves" by Keith Laumer is a sci-fi tale involving time travel and a myster...
+  [Conv 2/7] Extracting queries from answer...
+  [Conv 2/7] Extracted 411 tokens
+  [Conv 3/7] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/7] Answer: Here are the key facts mentioned in the context of "The Star-Sent Knaves" by Keith Laumer:
+
+1. **Dan...
+  [Conv 3/7] Extracting queries from answer...
+  [Conv 3/7] Extracted 551 tokens
+  [Conv 4/7] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/7] Answer: {
+  "title": "The Star-Sent Knaves",
+  "author": "Keith Laumer",
+  "illustrator": "Gaughan",
+  "publ...
+  [Conv 4/7] Extracting queries from answer...
+  [Conv 4/7] Extracted 998 tokens
+  [Conv 5/7] Starter: What is the primary purpose of the time machine in the story?  
+A) To travel through space  
+B) To transport stolen art  
+C) To facilitate time travel for the Vegan Confederation  
+D) To serve as a communication device
+  [Conv 5/7] Answer: <think>
+Okay, let's tackle this question. The user is asking about the primary purpose of the time m...
+  [Conv 5/7] Extracting queries from answer...
+  [Conv 5/7] Extracted 704 tokens
+  [Conv 6/7] Starter: Who is the alien character that Dzhackoon introduces as a colleague?  
+A) Blote  
+B) Kelly  
+C) Dan Slane  
+D) The Inter-dimensional Monitor Service
+  [Conv 6/7] Answer: <think>
+Okay, let's see. The user is asking about the alien character that Dzhackoon introduces as a...
+  [Conv 6/7] Extracting queries from answer...
+  [Conv 6/7] Extracted 987 tokens
+  [Conv 7/7] Starter: What is the name of the organization that Dzhackoon represents?  
+A) The Galactic Union  
+B) The Vegan Confederation  
+C) The Inter-dimensional Monitor Service  
+D) The Star-Sent Knaves
+  [Conv 7/7] Answer: <think>
+Okay, let's see. The user is asking for the name of the organization that Dzhackoon represen...
+  [Conv 7/7] Extracting queries from answer...
+  [Conv 7/7] Extracted 382 tokens
+  Using all 11101 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-44404 in final queries (total: 44404)
+Generated 44404 original queries per KV head
+Original queries shape: torch.Size([36, 8, 44404, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026075
+  Original max proportion: 0.031472
+  New max proportion: 0.026075
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=202667, min=97, max=5286, mean=703.7
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:44404)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 12 quality_52855 C t0.1: acc 8/19 wall 1199.3s {'compaction_s': 1191.61, 'query_gen_s': 129.98, 'full_layer_len_mean': 2445.4, 'nan_layers': []}
+[r1b] article 12 done in 2160s
+[r1b] art 13 quality_62085 orig t0.1: acc 11/17 wall 7.5s {}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.71GB allocated, 12.33GB reserved, 79.17GB total
+GPU Memory available: 70.46GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (25254 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: Pied Piper of Mars
+By FREDERIC ARNOLD KUMMER, Jr.
+Elath Taen made mad music for the men of Mars.
+
+ T...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 6084 tokens
+  Using all 6084 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-24336 in final queries (total: 24336)
+Generated 24336 original queries per KV head
+Original queries shape: torch.Size([36, 8, 24336, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026063
+  Original max proportion: 0.031472
+  New max proportion: 0.026063
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=174355, min=83, max=4548, mean=605.4
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:24336)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 13 quality_62085 O1 t0.1: acc 12/17 wall 32.6s {'compaction_s': 26.61, 'query_gen_s': 11.71, 'full_layer_len_mean': 2108.2, 'nan_layers': []}
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Generated 24268 original queries per KV head
+Original queries shape: torch.Size([36, 8, 24268, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026063
+  Original max proportion: 0.031472
+  New max proportion: 0.026063
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=174355, min=83, max=4548, mean=605.4
+Compacting layer 1/36
+Compacting layer 2/36
+  No on-policy methods - using original queries
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 13 quality_62085 F t0.1: acc 12/17 wall 19.9s {'compaction_s': 12.1, 'query_gen_s': 0.26, 'full_layer_len_mean': 2108.2, 'nan_layers': []}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.67GB allocated, 9.27GB reserved, 79.17GB total
+GPU Memory available: 70.50GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (25254 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: Pied Piper of Mars
+By FREDERIC ARNOLD KUMMER, Jr.
+Elath Taen made mad music for the men of Mars.
+
+ T...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 6084 tokens
+  Using all 6084 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-24336 in final queries (total: 24336)
+Generated 24336 original queries per KV head
+Original queries shape: torch.Size([36, 8, 24336, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026063
+  Original max proportion: 0.031472
+  New max proportion: 0.026063
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=174355, min=83, max=4548, mean=605.4
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:24336)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 13 quality_62085 O2 t0.1: acc 13/17 wall 618.9s {'compaction_s': 611.44, 'query_gen_s': 11.67, 'full_layer_len_mean': 2108.2, 'nan_layers': []}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.67GB allocated, 9.29GB reserved, 79.17GB total
+GPU Memory available: 70.50GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+Generated 3 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (25254 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 6 answers with vLLM across 2 parameter groups
+  [Conv 1/7] Starter: Repeat the previous context verbatim.
+  [Conv 1/7] Answer: Pied Piper of Mars
+By FREDERIC ARNOLD KUMMER, Jr.
+Elath Taen made mad music for the men of Mars.
+
+ T...
+  [Conv 1/7] Extracting queries from answer...
+  [Conv 1/7] Extracted 6084 tokens
+  [Conv 2/7] Starter: Summarize the main points of the context.
+  [Conv 2/7] Answer: The story "Pied Piper of Mars" by Fredric Arnold Kummer, Jr., revolves around the mysterious death o...
+  [Conv 2/7] Extracting queries from answer...
+  [Conv 2/7] Extracted 530 tokens
+  [Conv 3/7] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/7] Answer: Here are the key facts from the context of "Pied Piper of Mars":
+
+1. **Setting**: The story is set o...
+  [Conv 3/7] Extracting queries from answer...
+  [Conv 3/7] Extracted 605 tokens
+  [Conv 4/7] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/7] Answer: ```json
+{
+  "title": "Pied Piper of Mars",
+  "author": "Fredric Arnold Kummer, Jr.",
+  "publication"...
+  [Conv 4/7] Extracting queries from answer...
+  [Conv 4/7] Extracted 1198 tokens
+  [Conv 5/7] Starter: What is the primary function of the Martian Broadcasting Company (M.B.C.) as described in the story?  
+A) To provide entertainment for Martian citizens  
+B) To control Martian society through propaganda  
+C) To conduct scientific research on Martian music  
+D) To monitor Martian weather patterns
+  [Conv 5/7] Answer: <think>
+Okay, let's see. The question is asking about the primary function of the Martian Broadcasti...
+  [Conv 5/7] Extracting queries from answer...
+  [Conv 5/7] Extracted 573 tokens
+  [Conv 6/7] Starter: What is the effect of the mysterious music on those who hear it?  
+A) It grants them superhuman strength  
+B) It causes them to experience hallucinations and lose control  
+C) It improves their physical health  
+D) It enhances their ability to communicate with robots
+  [Conv 6/7] Answer: <think>
+Okay, let's see. The user is asking about the effect of the mysterious music in the story "P...
+  [Conv 6/7] Extracting queries from answer...
+  [Conv 6/7] Extracted 538 tokens
+  [Conv 7/7] Starter: What is the name of the device Ranson uses to track the source of the music?  
+A) The electric bloodhound  
+B) The astralux arc  
+C) The vivavox roll  
+D) The flame-gun
+  [Conv 7/7] Answer: <think>
+Okay, let's see. The user is asking about the name of the device Ranson uses to track the so...
+  [Conv 7/7] Extracting queries from answer...
+  [Conv 7/7] Extracted 418 tokens
+  Using all 9946 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-39784 in final queries (total: 39784)
+Generated 39784 original queries per KV head
+Original queries shape: torch.Size([36, 8, 39784, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026063
+  Original max proportion: 0.031472
+  New max proportion: 0.026063
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=174355, min=83, max=4548, mean=605.4
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:39784)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 13 quality_62085 C t0.1: acc 12/17 wall 855.8s {'compaction_s': 848.58, 'query_gen_s': 111.75, 'full_layer_len_mean': 2108.2, 'nan_layers': []}
+[r1b] article 13 done in 1535s
+Stopping app - local entrypoint completed.
+✓ App completed. View run at 
+https://modal.com/apps/davide-83641/main/ap-CPXIsBIW6CHx1ARODxk93c

@@ -1,0 +1,258 @@
+✓ Initialized. View run at 
+https://modal.com/apps/davide-83641/main/ap-2WmP7YSBzo0VtruQZLQEvy
+✓ Created objects.
+├── ✓ Uploaded 
+│   /home/peppi/Dev/lucebox/.claude/worktrees/kvflash-am/optimizations/kvflash/m
+│   odal/am_qwen35/r1b4.py
+├── ✓ Uploaded 
+│   /home/peppi/Dev/lucebox/.claude/worktrees/kvflash-am/optimizations/kvflash/m
+│   odal/am_qwen35
+└── ✓ Created Function cells.
+Loading model: Qwen/Qwen3-4B
+
+[1ALoading checkpoint shards:   0%|          | 0/3 [00:00<?, ?it/s]
+[1ALoading checkpoint shards:  33%|███▎      | 1/3 [00:01<00:03,  1.73s/it]
+[1ALoading checkpoint shards:  67%|██████▋   | 2/3 [00:03<00:01,  1.77s/it]
+[1ALoading checkpoint shards: 100%|██████████| 3/3 [00:03<00:00,  1.19s/it]
+Model loaded successfully
+Loading QuALITY data from: data/QuALITY.v1.0.1.htmlstripped.dev
+Loaded 115 unique articles (from 230 entries)
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Generated 26160 original queries per KV head
+Original queries shape: torch.Size([36, 8, 26160, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026074
+  Original max proportion: 0.031472
+  New max proportion: 0.026074
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=187977, min=90, max=4903, mean=652.7
+Compacting layer 1/36
+Compacting layer 2/36
+  No on-policy methods - using original queries
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 0 quality_52845 F t0.1: acc 10/14 wall 18.2s {'compaction_s': 13.1, 'query_gen_s': 0.45, 'full_layer_len_mean': 2270.1, 'nan_layers': []}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.74GB allocated, 8.88GB reserved, 139.80GB total
+GPU Memory available: 131.06GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (28514 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: THE GIRL IN HIS MIND
+By ROBERT F. YOUNG
+
+
+ [Transcriber's Note: This etext was produced from
+
+ World...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 6557 tokens
+  Using all 6557 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-26228 in final queries (total: 26228)
+Generated 26228 original queries per KV head
+Original queries shape: torch.Size([36, 8, 26228, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026074
+  Original max proportion: 0.031472
+  New max proportion: 0.026074
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=187977, min=90, max=4903, mean=652.7
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:26228)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 0 quality_52845 O2 t0.1: acc 10/14 wall 712.8s {'compaction_s': 709.52, 'query_gen_s': 11.57, 'full_layer_len_mean': 2270.1, 'nan_layers': []}
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 8.75GB allocated, 11.00GB reserved, 139.80GB total
+GPU Memory available: 131.05GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+Generated 3 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (28514 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 6 answers with vLLM across 2 parameter groups
+  [Conv 1/7] Starter: Repeat the previous context verbatim.
+  [Conv 1/7] Answer: THE GIRL IN HIS MIND
+By ROBERT F. YOUNG
+
+
+ [Transcriber's Note: This etext was produced from
+
+ World...
+  [Conv 1/7] Extracting queries from answer...
+  [Conv 1/7] Extracted 6557 tokens
+  [Conv 2/7] Starter: Summarize the main points of the context.
+  [Conv 2/7] Answer: The story "The Girl in His Mind" by Robert F. Young explores the concept of mind-worlds, where indiv...
+  [Conv 2/7] Extracting queries from answer...
+  [Conv 2/7] Extracted 473 tokens
+  [Conv 3/7] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/7] Answer: Here is an aggregation of the key facts mentioned in the context of "The Girl in His Mind" by Robert...
+  [Conv 3/7] Extracting queries from answer...
+  [Conv 3/7] Extracted 455 tokens
+  [Conv 4/7] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/7] Answer: ```json
+{
+  "title": "The Girl in His Mind",
+  "author": "Robert F. Young",
+  "publication_date": "1...
+  [Conv 4/7] Extracting queries from answer...
+  [Conv 4/7] Extracted 1027 tokens
+  [Conv 5/7] Starter: What is the significance of the kitchen range named "Sabrina York" in Blake's mind-world?  
+A) It confirms Sabrina's presence in his mind  
+B) It is a memory-image of his childhood home  
+C) It is a reflection of his mother's favorite detergent brand  
+D) It is a random coincidence in the mind-world
+  [Conv 5/7] Answer: <think>
+Okay, let's see. The user is asking about the significance of the kitchen range named "Sabri...
+  [Conv 5/7] Extracting queries from answer...
+  [Conv 5/7] Extracted 521 tokens
+  [Conv 6/7] Starter: What does Blake realize about the three pursuers in his mind-world?  
+A) They are ordinary memory-images from his past  
+B) They are super-images created by someone else  
+C) They are manifestations of his own subconscious fears  
+D) They are real people from his childhood school
+  [Conv 6/7] Answer: <think>
+Okay, let's see. The question is asking what Blake realizes about the three pursuers in his ...
+  [Conv 6/7] Extracting queries from answer...
+  [Conv 6/7] Extracted 963 tokens
+  [Conv 7/7] Starter: How does Blake's encounter with Deirdre Eldoria at the graduation ceremony affect him?  
+A) It reinforces his belief in the innocence of the mind-world  
+B) It highlights his unresolved feelings for her  
+C) It confirms his suspicion of Sabrina's presence  
+D) It reveals the truth about his own mental instability
+  [Conv 7/7] Answer: <think>
+Okay, let's tackle this question. The user is asking how Blake's encounter with Deirdre Eldo...
+  [Conv 7/7] Extracting queries from answer...
+  [Conv 7/7] Extracted 1390 tokens
+  Using all 11386 extracted tokens per attention head (requested 12500)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-45544 in final queries (total: 45544)
+Generated 45544 original queries per KV head
+Original queries shape: torch.Size([36, 8, 45544, 128])
+Loading per-head budgets from /repo/head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json...
+Applied max ratio cap (max_ratio_per_head=0.75)
+  Target ratio: 0.0999
+  Max allowed proportion: 0.026074
+  Original max proportion: 0.031472
+  New max proportion: 0.026074
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=187977, min=90, max=4903, mean=652.7
+Compacting layer 1/36
+Compacting layer 2/36
+  Extracting on-policy queries from self_study (range 0:45544)
+Compacting layer 3/36
+Compacting layer 4/36
+Compacting layer 5/36
+Compacting layer 6/36
+Compacting layer 7/36
+Compacting layer 8/36
+Compacting layer 9/36
+Compacting layer 10/36
+Compacting layer 11/36
+Compacting layer 12/36
+Compacting layer 13/36
+Compacting layer 14/36
+Compacting layer 15/36
+Compacting layer 16/36
+Compacting layer 17/36
+Compacting layer 18/36
+Compacting layer 19/36
+Compacting layer 20/36
+Compacting layer 21/36
+Compacting layer 22/36
+Compacting layer 23/36
+Compacting layer 24/36
+Compacting layer 25/36
+Compacting layer 26/36
+Compacting layer 27/36
+Compacting layer 28/36
+Compacting layer 29/36
+Compacting layer 30/36
+Compacting layer 31/36
+Compacting layer 32/36
+Compacting layer 33/36
+Compacting layer 34/36
+Compacting layer 35/36
+Compacting layer 36/36
+[r1b] art 0 quality_52845 C t0.1: acc 10/14 wall 1009.2s {'compaction_s': 1006.09, 'query_gen_s': 137.13, 'full_layer_len_mean': 2270.1, 'nan_layers': []}
+[r1b] article 0 done in 1740s
+Stopping app - local entrypoint completed.
+✓ App completed. View run at 
+https://modal.com/apps/davide-83641/main/ap-2WmP7YSBzo0VtruQZLQEvy

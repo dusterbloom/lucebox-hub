@@ -1,0 +1,230 @@
+✓ Initialized. View run at 
+https://modal.com/apps/davide-83641/main/ap-chhYSw5VOOlzfJwCkiqCug
+Building image im-RtSRPVDe9uc7EO3FnAtT78
+
+=> Step 0: FROM base
+
+=> Step 1: COPY . /
+Saving image...
+Image saved, took 845.16ms
+
+Built image im-RtSRPVDe9uc7EO3FnAtT78 in 1.71s
+
+
+Building image im-TGUopGg64kMgECf8PhM978
+
+=> Step 0: FROM base
+
+=> Step 1: RUN cd /repo && git apply /am/patches/0001-hybrid-qwen3_5-cache-and-compaction.patch
+
+=> Step 2: RUN cp -r /am/overlay/models/qwen3_5 /repo/models/qwen3_5
+
+=> Step 3: RUN mkdir -p /repo/am_tests && cp /am/tests/test_adapter.py /repo/am_tests/
+Saving image...
+Image saved, took 715.08ms
+
+Built image im-TGUopGg64kMgECf8PhM978 in 2.86s
+
+
+✓ Created objects.
+├── ✓ Uploaded 
+│   /home/peppi/Dev/lucebox/.claude/worktrees/kvflash-am/optimizations/kvflash/m
+│   odal/am_qwen35/r1a.py
+├── ✓ Uploaded 
+│   /home/peppi/Dev/lucebox/.claude/worktrees/kvflash-am/optimizations/kvflash/m
+│   odal/am_qwen35
+├── ✓ Created Function unit.
+├── ✓ Created Function prefetch.
+└── ✓ Created Function run.
+
+[1ALoading weights:   0%|          | 0/851 [00:00<?, ?it/s]
+[1ALoading weights:   0%|          | 1/851 [00:01<15:46,  1.11s/it]
+[1ALoading weights:   0%|          | 2/851 [00:02<16:58,  1.20s/it]
+[1ALoading weights:   1%|▏         | 11/851 [00:02<02:07,  6.60it/s]
+[1ALoading weights:   2%|▏         | 15/851 [00:02<01:37,  8.56it/s]
+[1ALoading weights:   3%|▎         | 24/851 [00:02<00:50, 16.43it/s]
+[1ALoading weights:   3%|▎         | 29/851 [00:03<00:48, 16.97it/s]
+[1ALoading weights:   4%|▍         | 37/851 [00:03<00:33, 24.40it/s]
+[1ALoading weights:   5%|▍         | 42/851 [00:03<00:32, 25.27it/s]
+[1ALoading weights:   6%|▌         | 47/851 [00:03<00:34, 23.60it/s]
+[1ALoading weights:   6%|▌         | 51/851 [00:03<00:30, 26.01it/s]
+[1ALoading weights:   7%|▋         | 59/851 [00:03<00:23, 33.98it/s]
+[1ALoading weights:   8%|▊         | 66/851 [00:04<00:20, 38.22it/s]
+[1ALoading weights:   8%|▊         | 71/851 [00:04<00:21, 36.46it/s]
+[1ALoading weights:   9%|▉         | 76/851 [00:04<00:20, 38.48it/s]
+[1ALoading weights:  10%|▉         | 81/851 [00:04<00:22, 34.23it/s]
+[1ALoading weights:  10%|█         | 86/851 [00:04<00:20, 36.59it/s]
+[1ALoading weights:  11%|█         | 94/851 [00:04<00:18, 41.67it/s]
+[1ALoading weights:  12%|█▏        | 99/851 [00:04<00:23, 32.55it/s]
+[1ALoading weights:  12%|█▏        | 103/851 [00:05<00:25, 28.79it/s]
+[1ALoading weights:  14%|█▎        | 115/851 [00:05<00:16, 43.41it/s]
+[1ALoading weights:  14%|█▍        | 120/851 [00:05<00:19, 36.91it/s]
+[1ALoading weights:  15%|█▍        | 126/851 [00:05<00:19, 37.07it/s]
+[1ALoading weights:  16%|█▌        | 132/851 [00:05<00:18, 39.73it/s]
+[1ALoading weights:  16%|█▌        | 137/851 [00:05<00:18, 38.04it/s]
+[1ALoading weights:  17%|█▋        | 144/851 [00:06<00:15, 44.34it/s]
+[1ALoading weights:  18%|█▊        | 149/851 [00:06<00:21, 32.37it/s]
+[1ALoading weights:  18%|█▊        | 153/851 [00:06<00:24, 28.36it/s]
+[1ALoading weights:  19%|█▉        | 165/851 [00:06<00:15, 44.52it/s]
+[1ALoading weights:  20%|██        | 172/851 [00:06<00:15, 45.16it/s]
+[1ALoading weights:  21%|██        | 178/851 [00:06<00:16, 40.78it/s]
+[1ALoading weights:  22%|██▏       | 185/851 [00:07<00:14, 46.29it/s]
+[1ALoading weights:  22%|██▏       | 191/851 [00:07<00:16, 39.42it/s]
+[1ALoading weights:  23%|██▎       | 196/851 [00:07<00:16, 40.78it/s]
+[1ALoading weights:  24%|██▎       | 201/851 [00:07<00:17, 36.58it/s]
+[1ALoading weights:  24%|██▍       | 206/851 [00:07<00:24, 26.45it/s]
+[1ALoading weights:  26%|██▌       | 221/851 [00:08<00:14, 44.78it/s]
+[1ALoading weights:  27%|██▋       | 227/851 [00:08<00:16, 36.77it/s]
+[1ALoading weights:  28%|██▊       | 236/851 [00:08<00:13, 44.82it/s]
+[1ALoading weights:  28%|██▊       | 242/851 [00:08<00:15, 38.13it/s]
+[1ALoading weights:  29%|██▉       | 251/851 [00:08<00:12, 47.28it/s]
+[1ALoading weights:  30%|███       | 257/851 [00:09<00:16, 36.53it/s]
+[1ALoading weights:  31%|███       | 262/851 [00:09<00:17, 33.52it/s]
+[1ALoading weights:  32%|███▏      | 270/851 [00:09<00:14, 40.92it/s]
+[1ALoading weights:  33%|███▎      | 278/851 [00:09<00:12, 44.75it/s]
+[1ALoading weights:  33%|███▎      | 284/851 [00:09<00:13, 43.21it/s]
+[1ALoading weights:  34%|███▍      | 290/851 [00:09<00:12, 45.92it/s]
+[1ALoading weights:  35%|███▍      | 296/851 [00:09<00:14, 38.38it/s]
+[1ALoading weights:  36%|███▌      | 303/851 [00:10<00:12, 42.85it/s]
+[1ALoading weights:  36%|███▌      | 308/851 [00:10<00:15, 34.55it/s]
+[1ALoading weights:  37%|███▋      | 312/851 [00:10<00:16, 33.10it/s]
+[1ALoading weights:  37%|███▋      | 316/851 [00:10<00:15, 34.44it/s]
+[1ALoading weights:  38%|███▊      | 327/851 [00:10<00:11, 45.64it/s]
+[1ALoading weights:  39%|███▉      | 332/851 [00:10<00:13, 38.78it/s]
+[1ALoading weights:  40%|███▉      | 337/851 [00:11<00:12, 40.44it/s]
+[1ALoading weights:  40%|████      | 342/851 [00:11<00:12, 41.61it/s]
+[1ALoading weights:  41%|████      | 347/851 [00:11<00:15, 33.23it/s]
+[1ALoading weights:  42%|████▏     | 356/851 [00:11<00:11, 44.29it/s]
+[1ALoading weights:  43%|████▎     | 362/851 [00:11<00:15, 30.84it/s]
+[1ALoading weights:  43%|████▎     | 367/851 [00:12<00:17, 28.21it/s]
+[1ALoading weights:  44%|████▍     | 377/851 [00:12<00:11, 39.75it/s]
+[1ALoading weights:  45%|████▌     | 383/851 [00:12<00:11, 41.51it/s]
+[1ALoading weights:  46%|████▌     | 389/851 [00:12<00:12, 37.24it/s]
+[1ALoading weights:  47%|████▋     | 396/851 [00:12<00:10, 41.44it/s]
+[1ALoading weights:  47%|████▋     | 401/851 [00:12<00:12, 35.57it/s]
+[1ALoading weights:  48%|████▊     | 409/851 [00:12<00:10, 41.32it/s]
+[1ALoading weights:  49%|████▊     | 414/851 [00:13<00:12, 33.80it/s]
+[1ALoading weights:  49%|████▉     | 418/851 [00:13<00:13, 32.44it/s]
+[1ALoading weights:  50%|████▉     | 422/851 [00:13<00:12, 33.13it/s]
+[1ALoading weights:  51%|█████     | 433/851 [00:13<00:08, 47.55it/s]
+[1ALoading weights:  52%|█████▏    | 439/851 [00:13<00:11, 35.97it/s]
+[1ALoading weights:  53%|█████▎    | 449/851 [00:13<00:09, 44.12it/s]
+[1ALoading weights:  53%|█████▎    | 455/851 [00:14<00:10, 38.71it/s]
+[1ALoading weights:  54%|█████▍    | 462/851 [00:14<00:09, 42.54it/s]
+[1ALoading weights:  55%|█████▍    | 467/851 [00:14<00:12, 30.44it/s]
+[1ALoading weights:  55%|█████▌    | 471/851 [00:14<00:12, 30.49it/s]
+[1ALoading weights:  56%|█████▌    | 475/851 [00:14<00:11, 31.65it/s]
+[1ALoading weights:  57%|█████▋    | 486/851 [00:14<00:08, 44.21it/s]
+[1ALoading weights:  58%|█████▊    | 491/851 [00:15<00:09, 37.43it/s]
+[1ALoading weights:  58%|█████▊    | 497/851 [00:15<00:08, 41.83it/s]
+[1ALoading weights:  59%|█████▉    | 502/851 [00:15<00:08, 41.48it/s]
+[1ALoading weights:  60%|█████▉    | 507/851 [00:15<00:10, 33.42it/s]
+[1ALoading weights:  61%|██████    | 515/851 [00:15<00:08, 41.65it/s]
+[1ALoading weights:  61%|██████    | 520/851 [00:16<00:11, 29.08it/s]
+[1ALoading weights:  62%|██████▏   | 524/851 [00:16<00:12, 25.52it/s]
+[1ALoading weights:  63%|██████▎   | 538/851 [00:16<00:08, 39.03it/s]
+[1ALoading weights:  64%|██████▍   | 544/851 [00:16<00:08, 34.28it/s]
+[1ALoading weights:  65%|██████▌   | 555/851 [00:16<00:06, 43.95it/s]
+[1ALoading weights:  66%|██████▌   | 561/851 [00:17<00:07, 38.14it/s]
+[1ALoading weights:  67%|██████▋   | 568/851 [00:17<00:06, 43.59it/s]
+[1ALoading weights:  67%|██████▋   | 574/851 [00:17<00:08, 32.99it/s]
+[1ALoading weights:  68%|██████▊   | 579/851 [00:17<00:08, 30.61it/s]
+[1ALoading weights:  69%|██████▉   | 589/851 [00:17<00:06, 41.60it/s]
+[1ALoading weights:  70%|██████▉   | 595/851 [00:17<00:05, 43.21it/s]
+[1ALoading weights:  71%|███████   | 601/851 [00:18<00:06, 37.33it/s]
+[1ALoading weights:  71%|███████▏  | 608/851 [00:18<00:05, 40.85it/s]
+[1ALoading weights:  72%|███████▏  | 613/851 [00:18<00:06, 35.07it/s]
+[1ALoading weights:  73%|███████▎  | 622/851 [00:18<00:06, 34.30it/s]
+[1ALoading weights:  74%|███████▎  | 626/851 [00:18<00:06, 35.24it/s]
+[1ALoading weights:  74%|███████▍  | 630/851 [00:19<00:06, 32.94it/s]
+[1ALoading weights:  75%|███████▍  | 634/851 [00:19<00:06, 34.12it/s]
+[1ALoading weights:  76%|███████▌  | 644/851 [00:19<00:04, 46.96it/s]
+[1ALoading weights:  76%|███████▋  | 650/851 [00:19<00:04, 41.07it/s]
+[1ALoading weights:  77%|███████▋  | 655/851 [00:19<00:04, 42.86it/s]
+[1ALoading weights:  78%|███████▊  | 663/851 [00:19<00:04, 39.17it/s]
+[1ALoading weights:  79%|███████▊  | 670/851 [00:19<00:04, 44.80it/s]
+[1ALoading weights:  80%|███████▉  | 677/851 [00:20<00:03, 45.99it/s]
+[1ALoading weights:  80%|████████  | 682/851 [00:20<00:04, 35.20it/s]
+[1ALoading weights:  81%|████████  | 687/851 [00:20<00:05, 31.45it/s]
+[1ALoading weights:  82%|████████▏ | 698/851 [00:20<00:03, 45.72it/s]
+[1ALoading weights:  83%|████████▎ | 704/851 [00:20<00:04, 35.72it/s]
+[1ALoading weights:  84%|████████▍ | 714/851 [00:20<00:02, 46.68it/s]
+[1ALoading weights:  85%|████████▍ | 721/851 [00:21<00:03, 40.13it/s]
+[1ALoading weights:  85%|████████▌ | 727/851 [00:21<00:02, 43.51it/s]
+[1ALoading weights:  86%|████████▌ | 733/851 [00:21<00:03, 33.64it/s]
+[1ALoading weights:  87%|████████▋ | 738/851 [00:21<00:03, 29.83it/s]
+[1ALoading weights:  88%|████████▊ | 748/851 [00:21<00:02, 40.38it/s]
+[1ALoading weights:  89%|████████▊ | 755/851 [00:22<00:02, 41.88it/s]
+[1ALoading weights:  89%|████████▉ | 760/851 [00:22<00:02, 38.90it/s]
+[1ALoading weights:  90%|█████████ | 766/851 [00:22<00:02, 42.21it/s]
+[1ALoading weights:  91%|█████████ | 771/851 [00:22<00:02, 33.61it/s]
+[1ALoading weights:  92%|█████████▏| 779/851 [00:22<00:01, 42.57it/s]
+[1ALoading weights:  92%|█████████▏| 785/851 [00:23<00:01, 33.64it/s]
+[1ALoading weights:  93%|█████████▎| 790/851 [00:23<00:02, 29.79it/s]
+[1ALoading weights:  94%|█████████▍| 800/851 [00:23<00:01, 41.72it/s]
+[1ALoading weights:  95%|█████████▍| 807/851 [00:23<00:01, 42.02it/s]
+[1ALoading weights:  96%|█████████▌| 813/851 [00:23<00:00, 42.05it/s]
+[1ALoading weights:  96%|█████████▌| 818/851 [00:23<00:00, 43.10it/s]
+[1ALoading weights:  97%|█████████▋| 823/851 [00:23<00:00, 37.96it/s]
+[1ALoading weights:  97%|█████████▋| 829/851 [00:24<00:00, 41.13it/s]
+[1ALoading weights:  98%|█████████▊| 834/851 [00:24<00:00, 41.53it/s]
+[1ALoading weights:  99%|█████████▊| 839/851 [00:24<00:00, 32.50it/s]
+[1ALoading weights:  99%|█████████▉| 843/851 [00:24<00:00, 26.72it/s]
+[1ALoading weights: 100%|██████████| 851/851 [00:24<00:00, 34.43it/s]
+[r1a] loaded Qwen3_5ForCausalLM in 40 s on NVIDIA H200
+[R1a] eager P1_short: 29 tokens
+[transformers] `causal_conv1d_fn` is falling back to its reference PyTorch implementation because `causal_conv1d` is not installed. This is correct but much slower; install `causal_conv1d` for the optimized kernel.
+[transformers] `causal_conv1d_update` is falling back to its reference PyTorch implementation because `causal_conv1d` is not installed. This is correct but much slower; install `causal_conv1d` for the optimized kernel.
+[R1a] eager P1_short: identical=True first_step_diff=0 all_steps_diff=0 div=None
+[R1a] eager P2_code: 36 tokens
+[R1a] eager P2_code: identical=True first_step_diff=0 all_steps_diff=0 div=None
+[R1a] eager P3_qa2k: 2281 tokens
+[R1a] eager P3_qa2k: identical=True first_step_diff=0 all_steps_diff=0 div=None
+[R1a] eager P4_qa8k: 8277 tokens
+[R1a] eager P4_qa8k: identical=True first_step_diff=0 all_steps_diff=0 div=None
+[R1a] eager P5_qa16k: 16581 tokens
+[R1a] eager P5_qa16k: identical=True first_step_diff=0 all_steps_diff=0 div=None
+[R1a] sdpa P1_short: 29 tokens
+[R1a] sdpa P1_short: identical=False first_step_diff=0 all_steps_diff=26.87 div=135
+[R1a] sdpa P2_code: 36 tokens
+[R1a] sdpa P2_code: identical=True first_step_diff=0 all_steps_diff=1.398 div=None
+[R1a] sdpa P3_qa2k: 2281 tokens
+[R1a] sdpa P3_qa2k: identical=False first_step_diff=0 all_steps_diff=51.25 div=42
+[R1a] sdpa P4_qa8k: 8277 tokens
+[R1a] sdpa P4_qa8k: identical=False first_step_diff=0 all_steps_diff=48.52 div=3
+[R1a] sdpa P5_qa16k: 16581 tokens
+[R1a] sdpa P5_qa16k: identical=False first_step_diff=0 all_steps_diff=43.63 div=32
+Traceback (most recent call last):
+Stopping app - uncaught exception raised in remote container: ImportError("cannot import name 'FullCacheCompactionAlgorithm' from partially initialized module 'compaction.compaction_methods' (most likely due to a circular import) (/repo/compaction/compaction_methods/__init__.py)").
+  File "/pkg/modal/_runtime/container_io_manager.py", line 987, in handle_input_exception
+    yield
+  File "/pkg/modal/_container_entrypoint.py", line 189, in run_input_sync
+    values = io_context.call_function_sync()
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/pkg/modal/_runtime/container_io_manager.py", line 266, in call_function_sync
+    expected_value_or_values = self.finalized_function.callable(*args, **kwargs)
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/r1a.py", line 86, in run
+    out["smoke"] = core.run_smoke(model, tok)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/am/r1a_core.py", line 180, in run_smoke
+    from compaction.compaction_methods.registry import get_compaction_method
+  File "/repo/compaction/compaction_methods/__init__.py", line 10, in <module>
+    from .base import FullCacheCompactionAlgorithm
+  File "/repo/compaction/compaction_methods/base.py", line 13, in <module>
+    from ..query_generation import QueryConfig
+  File "/repo/compaction/query_generation/__init__.py", line 13, in <module>
+    from .self_study import SelfStudyQueryGenerator
+  File "/repo/compaction/query_generation/self_study.py", line 9, in <module>
+    from evaluation.utils import detect_user_tags
+  File "/repo/evaluation/__init__.py", line 10, in <module>
+    from .qa_evaluator import QAEvaluator
+  File "/repo/evaluation/qa_evaluator.py", line 16, in <module>
+    from compaction.compaction_methods import FullCacheCompactionAlgorithm
+ImportError: cannot import name 'FullCacheCompactionAlgorithm' from partially initialized module 'compaction.compaction_methods' (most likely due to a circular import) (/repo/compaction/compaction_methods/__init__.py)
+Runner terminated.
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ cannot import name 'FullCacheCompactionAlgorithm' from partially initialized │
+│ module 'compaction.compaction_methods' (most likely due to a circular        │
+│ import) (/repo/compaction/compaction_methods/__init__.py)                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
