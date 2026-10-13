@@ -129,3 +129,58 @@ Written 2026-10-13 before any run of the adapter on the 27B model. Only tokenize
 2. The smoke test uses `algorithm=global_highest_attention_keys` (the AM-HighestAttnKeys registry method), not the per-layer-head variant of `examples/qa_demo.py`, with `query_config=repeat`, `rms` scores, `nnls_iters=2`, `lsq` values.
 
 Smoke test (not pass/fail, same task): one compaction at target 0.1 of the article tokens on QuALITY dev article loader index 0 with `AM-HighestAttnKeys` (config as in the repo's `examples/qa_demo.py`: rms scores, nnls_iters 2, bounds 0.05/20, c2_method lsq, uniform budget because no head-budget file exists for this model), query config `repeat`, then the first 3 questions of the article answered from the compacted cache, greedy, max 256 new tokens, thinking off. Reported: answers, correctness against the gold label, any NaN or crash.
+
+## Rung R1b/R1c: Qwen3.8-27B, four configurations and head budgets
+
+Written 2026-10-13 after R1a passed (commit a90ea3bf) and before any R1b or R1c run on the 27B. Only the one smoke compaction of R1a (3 questions, not used for any choice) has been seen. Budget for this block: $270 Modal, separate from the R1a $15 and the R0 $150. H200 at $4.54/h; a running cost total is kept in `R1b.md`; cells run in the priority order below and the block stops when the cumulative actual cost plus the projected cost of the next item exceeds $270.
+
+### Fixed provenance
+
+- Adapter: `modal/am_qwen35/` at a90ea3bf (patch on `adamzweiger/compaction` @ 2020f6d3 + overlay), extended only where a method needs hybrid handling (`per_layer_head*.py`, head-budget code). Every extension keeps R1a's exactness test passing (eager, 5 prompts) and adds a CPU unit test. Model `Qwen/Qwen3.8-27B` BF16, transformers 5.19.0, torch 2.8.0, sdpa attention for the QuALITY runs (R1a: eager and sdpa agree at beta = 0 up to kernel noise; sdpa is the production kernel), one H200 per job, up to 3 jobs in parallel.
+- QuALITY: same splits as R0 (loader indices 0-19 selection, 357 q; 20-49 held-out as in Amendment 1, about 540 q). Prompts via the repo's `format_context` / `format_question` / `parse_model_choice`, non-thinking (`enable_thinking=False`), greedy, at most 256 new tokens. Query configs as shipped (`repeat`, `context-prefill`, `ss-plus-repeat`); self-study sampling seed 1.
+- `original` = the same 27B uncompacted through the adapter (bit-identical to HF by R1a): the model's own baseline, computed once per article and paired with every cell. (The repo's own `original` method uses vLLM; the 27B has no vLLM here, and within-model pairing makes this immaterial.)
+- Compaction targets: 0.10 and 0.05 of the article tokens (non-article tokens are kept, as in the repo).
+
+### R1(c) first: head-sensitivity curves and the per-head budget file
+
+- Procedure: the paper's `head_budget_optimization.run` (per-head influence curves of the log-perplexity of reference answers against the head's budget, then the solver), adapted to the 16 full-attention layers x 4 KV heads = 64 heads; DeltaNet layers have no budget. Method `highest_attn_keys_rms_nnls2_-3_3_lsq`, baseline schedule uniform, query config `repeat` (the paper uses `ss-plus-repeat`; `repeat` is used because self-study on the 27B per fit article multiplies the cost; the budget file is then used for every per-head cell), target ratio 0.05, `--max-ratio 0.5`, 21 evaluation points (paper: 51), solve ratios 0.05 and 0.10, fit articles = loader indices 90-94 (5 articles; none in 0-49).
+- Deliverables on volume `kvflash-am-results`: `head_curves.json` and `Qwen3.8-27B/optimized_agnostic.json` (per-head budgets, same schema as `head_budget_optimization/head_budgets/Qwen3-4B/optimized_agnostic.json`). All per-head cells use it with `--max-ratio-per-head 0.75`.
+- Check (reported, not a gate): on loader indices 95-99 (not in the fit), mean log-perplexity of reference answers after compaction at 0.10 with the per-head file vs uniform budgets, same method and queries, paired over articles. Expectation: per-head <= uniform.
+
+### R1(b): configurations (`best` algorithm config; all `_on-policy`)
+
+| id | role | query source | key selection | budget | R0 4B reference cell |
+|---|---|---|---|---|---|
+| F | floor | context-prefill | `highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy` | per-head | S3 |
+| O1 | online candidate 1 | repeat | same HA | per-head | S1 |
+| O2 | online candidate 2 | repeat | `omp_nnls0_-inf_7_drop-7_lsq_k4int2_on-policy` (OMP-fast) | per-head | S4 |
+| C | ceiling | ss-plus-repeat | OMP-fast | per-head | S6 |
+
+Why these two online candidates, named before data: both use queries that exist the moment a segment has been prefilled (no extra generation, hence no pause, which is the property E needs). O1 is the cheapest per-head option. O2 pays about 20x more compaction time for OMP-fast keys on the same queries; it measures whether key selection matters on the hybrid at equal query information, and it shares the ceiling's key selection, so C - O2 isolates the query source. F differs from O1 only in the query source (the context as queries, nothing generated), so O1 - F isolates the query source for HA. The four cells coincide with R0 cells S3, S1, S4, S6 of Amendment 1, which is what gives a paired 4B reference at 0.10 on the same 357 questions. The ceiling is OMP-fast, not plain OMP, as in Amendment 1 item 3; plain OMP is not run.
+
+Controls (27B, selection split, both targets, `repeat`, uniform budget, on-policy NNLS/lsq fit): `highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy` ("U-AM"), `random_subset_keys_nnls2_-3_3_lsq_on-policy`, `truncate_nnls2_-3_3_lsq_on-policy`.
+
+### R1(b): statistics and pass criteria
+
+- Unit: question; paired cluster bootstrap over articles (10,000 resamples, 95% percentile); McNemar exact as a secondary check. n questions and n articles are reported with every number.
+- Degradation of configuration X on model M: D_M(X) = acc_M(original) - acc_M(X), in points, per question.
+- PASS per configuration (primary: selection split, target 0.10, n = 357 q, 20 articles): Delta(X) = D_27B(X) - D_4B(X), paired per question against the matching R0 4B cell in the table, same questions. X passes if the upper 95% bound of Delta(X) <= +3.0 points (the 27B degrades at most 3 points more than the 4B). X fails if the lower 95% bound of Delta(X) > 0 and the point estimate > +3.0. Otherwise the verdict is "inconclusive at this n" and is not reported as a pass. The paired SE of Delta at n = 357 is expected near 2.5-3 points, so a pass needs the 27B to degrade about as little as, or less than, the 4B; this is accepted.
+- R1b overall PASS (the go/no-go for E): C passes and at least one of O1, O2 passes. F is reported and does not gate. Otherwise R1b is reported as not passed, with the numbers.
+- Secondary, not gating: Delta at target 0.05 where a matched 4B cell exists (descriptive otherwise); the held-out (20-49) online-vs-ceiling gap for O1 and O2 vs C by the R0 rule (lower bound of online - ceiling >= -3 points -> within 3 points; a CI wider than the margin -> inconclusive at this n); the 27B degradation with its 95% CI; U-AM vs random and vs truncate (R0 rule: lower bound > 0 -> AM better; inside +-3 -> equivalent; else inconclusive); GPU-seconds per compaction (compaction + query generation) of every cell.
+- If an R0 4B reference cell is missing when R1b is analysed, that 4B cell is run once with the unmodified `am_repro.py` and its cost is counted here.
+
+### n, seeds, order, cost cutting
+
+- n: 20 articles / 357 q (selection) and 30 articles / about 540 q (held-out) per cell. One run per cell, greedy decoding; the only randomness is self-study generation (seed 1). No cell is repeated.
+- Priority order (cells launched in this order, after one cell has been timed):
+  1. R1(c) budget file (5 fit articles; if the projection exceeds $45, drop to 3 fit articles and 11 evaluation points, stated in the report).
+  2. Selection, 0.10: `original`, O1, F, O2 (articles 0-19).
+  3. Selection, 0.10: C.
+  4. Selection, 0.10 controls: U-AM, random, truncate.
+  5. Held-out (20-49), 0.10: `original`, O1, O2, C.
+  6. Selection, 0.05: `original`, O1, O2, C, F, then the controls at 0.05.
+  7. Held-out, 0.05: O1, O2, C.
+  8. R1(c) validation on articles 95-99.
+  9. Missing 4B reference cells.
+  When the projection of the items not yet run exceeds the remaining budget, items are removed from the bottom of this list (9 first), never reordered, and the report lists every cell not run. An item is run completely or not at all, except that it may be split by article range with an identical configuration.
+- Timing: before step 2, one cell (O1 on 2 selection articles) is timed and the per-cell cost is projected from it for each configuration; projection and actual are both logged in `R1b.md`.
