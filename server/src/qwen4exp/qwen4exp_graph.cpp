@@ -524,30 +524,61 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
     ggml_tensor * v_c = ggml_view_3d(c, conv, D, Hv, T, D * esz, tstride, 2 * D * Hk * esz);
 
     ggml_tensor * state4 = ggml_reshape_4d(c, ssm_state, D, D, Hv, 1);
-    // Ordinary decode can commit the final recurrent state in the GDN kernel.
-    // Verify keeps the packed state so accepted-prefix rollback remains unchanged.
-    const bool inplace_state = T == 1 && f16 && !spec_states && !spec_conv;
-    ggml_tensor * gdn = inplace_state
-        ? ggml_gated_delta_net_inplace(c, q_c, k_c, v_c, gate, beta, state4)
-        : ggml_gated_delta_net(c, q_c, k_c, v_c, gate, beta, state4);
-    // Only speculative rollback needs per-token intermediate states; skipping keeps the packed result allocatable.
-    ggml_gated_delta_net_set_skip_intermediate(gdn, true);
-    // The kernel writes them straight to spec_states (same F32 transposed layout as the state, token-major); the
-    // packed result stays compact because skip was set first.
-    if (spec_states) gdn->src[7] = spec_states;
+    // Prefill-only chunked GDN: re-expresses the token-serial recurrence as matmul/tri/cumsum ops
+    // (see delta_net_chunked.h). Chain-only, no per-token intermediate capture, so it's gated off
+    // whenever spec_states/spec_conv need the sequential kernel's rollback fanout.
+    static const bool gdn_chunked_env = [] {
+        const char * value = std::getenv("LUCE_QWEN4EXP_GDN_CHUNKED");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    // Cap at 4096: the per-chunk loop emits ~9 graph nodes per 32-token chunk, and the
+    // 200000-node graph budget (ggml_new_graph_custom above forward_impl) is shared across
+    // all 48 layers. qwen4exp_select_chunk's memory-fit bisection probes candidate T up to
+    // max_ctx with measure()-only calls through this same path, so an unbounded T here blows
+    // the node budget during startup even though real forward calls stay within --chunk
+    // (default 512). 4096 matches qwen4exp_fit_chunk's own "reserve 4096 rows" design point.
+    const bool use_chunked = gdn_chunked_env && T > 1 && T <= 4096 && !spec_states && !spec_conv;
+    ggml_tensor * attn;
+    if (use_chunked) {
+        ggml_tensor * q4 = ggml_reshape_4d(c, q_c, D, Hk, T, 1);
+        ggml_tensor * k4 = ggml_reshape_4d(c, k_c, D, Hk, T, 1);
+        if (Hk != Hv) {
+            // build_delta_net_chunked assumes H_k == H_v post-repeat (same as qwen35's use_chunked path).
+            q4 = ggml_repeat_4d(c, q4, D, Hv, T, 1);
+            k4 = ggml_repeat_4d(c, k4, D, Hv, T, 1);
+        }
+        // v_c is a raw strided view into conv (never materialized, unlike q_c/k_c which are
+        // rms_norm/scale outputs), so it needs ggml_cont before reshape_4d can accept it.
+        ggml_tensor * v4 = ggml_reshape_4d(c, ggml_cont(c, v_c), D, Hv, T, 1);
+        auto r = luce::common::build_delta_net_chunked(c, q4, k4, v4, gate, beta, state4);
+        attn = r.output;
+        ggml_build_forward_expand(gf, ggml_cpy(c, r.new_state, state4));
+    } else {
+        // Ordinary decode can commit the final recurrent state in the GDN kernel.
+        // Verify keeps the packed state so accepted-prefix rollback remains unchanged.
+        const bool inplace_state = T == 1 && f16 && !spec_states && !spec_conv;
+        ggml_tensor * gdn = inplace_state
+            ? ggml_gated_delta_net_inplace(c, q_c, k_c, v_c, gate, beta, state4)
+            : ggml_gated_delta_net(c, q_c, k_c, v_c, gate, beta, state4);
+        // Only speculative rollback needs per-token intermediate states; skipping keeps the packed result allocatable.
+        ggml_gated_delta_net_set_skip_intermediate(gdn, true);
+        // The kernel writes them straight to spec_states (same F32 transposed layout as the state, token-major); the
+        // packed result stays compact because skip was set first.
+        if (spec_states) gdn->src[7] = spec_states;
 
-    // packed: [ attn S_v*H_v*T | final_state S_v*S_v*H_v ]
-    ggml_tensor * attn = ggml_view_4d(c, gdn, D, Hv, T, 1,
-        ggml_row_size(gdn->type, D),
-        ggml_row_size(gdn->type, D * Hv),
-        ggml_row_size(gdn->type, D * Hv * T), 0);
-    if (!inplace_state) {
-        ggml_tensor * new_state = ggml_view_4d(c, gdn, D, D, Hv, 1,
+        // packed: [ attn S_v*H_v*T | final_state S_v*S_v*H_v ]
+        attn = ggml_view_4d(c, gdn, D, Hv, T, 1,
             ggml_row_size(gdn->type, D),
-            ggml_row_size(gdn->type, D * D),
-            ggml_row_size(gdn->type, D * D * Hv),
-            ggml_row_size(gdn->type, D * Hv * T));
-        ggml_build_forward_expand(gf, ggml_cpy(c, new_state, state4));
+            ggml_row_size(gdn->type, D * Hv),
+            ggml_row_size(gdn->type, D * Hv * T), 0);
+        if (!inplace_state) {
+            ggml_tensor * new_state = ggml_view_4d(c, gdn, D, D, Hv, 1,
+                ggml_row_size(gdn->type, D),
+                ggml_row_size(gdn->type, D * D),
+                ggml_row_size(gdn->type, D * D * Hv),
+                ggml_row_size(gdn->type, D * Hv * T));
+            ggml_build_forward_expand(gf, ggml_cpy(c, new_state, state4));
+        }
     }
 
     // Gated norm written as F16 in one pass, read directly by ssm_out's Q8_0 -> F16 GEMM (same arithmetic as the

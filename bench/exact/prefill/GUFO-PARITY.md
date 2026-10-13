@@ -1308,3 +1308,83 @@ reuse the maps" as specified, and was not implemented or benchmarked in this
 session given the time budget -- reporting the finding rather than shipping
 an under-tested kernel-path change late in the session, per the task's
 skip instruction for when the inputs don't match.
+
+## Chunked GDN prefill experiment (`LUCE_QWEN4EXP_GDN_CHUNKED=1`), lucebox4
+
+Wired the existing chunked, matmul-shaped gated delta-net builder
+(`luce::common::build_delta_net_chunked`, `server/src/delta_net_chunked.{h,cpp}`,
+already used by qwen35) into qwen4exp's `build_linear_attn` prefill path
+(`server/src/qwen4exp/qwen4exp_graph.cpp`), behind `LUCE_QWEN4EXP_GDN_CHUNKED=1`
+(default off). Q/K are rms_norm+1/sqrt(D)-scaled (the l2-norm-equivalent form
+this exact-stack already uses) then reshaped to 4D and repeated from
+`Hk=16` to `Hv=48` heads to match qwen35's own `use_chunked` head-repeat
+(chunked assumes `H_k==H_v` post-repeat, no GQA broadcast inside it); V is a
+raw strided view into the fused qkv-conv buffer and needs an explicit
+`ggml_cont` before `ggml_reshape_4d` (qwen35 never reshapes its raw view
+directly -- it only ever feeds it into ops that pad-and-materialize first).
+Gate/beta already match qwen35's shapes exactly (`[1, Hv, T, 1]`), no change
+needed. Decode (T==1) is untouched; the new branch only fires for `T>1` and
+only when no spec_states/spec_conv rollback capture is requested (chunked is
+chain-only, no per-token intermediate writeback).
+
+**Node-budget cap.** The naive gate (`T>1`, any size) crashes at server
+startup: `qwen4exp_select_chunk`'s memory-fit bisection (`qwen4exp_chunk.h`)
+probes candidate chunk sizes up to `max_ctx` (20480 here) through the same
+`forward_impl`/`build_linear_attn` path used for real inference, and chunked
+emits ~9 graph nodes per 32-token sub-chunk per layer across 36 linear
+layers -- at T=20480 that is ~207k nodes against the 200000-node
+`ggml_new_graph_custom` budget in `forward_impl`, so `GGML_ASSERT(cgraph->n_nodes
+< cgraph->size)` fires before a single request is ever served. Real serving
+never needs a chunk that large in one graph build regardless (this box's own
+autosized `--chunk` came out to 16384, and the usual config default is 512),
+so the fix is a plain `T <= 4096` cap on the new branch -- 4096 matches
+`qwen4exp_fit_chunk`'s own "reserve 4096 rows" design point, stays inside the
+node budget (~41k nodes), and still covers the p4096 bench point; p16384
+exceeds the cap and silently falls back to the existing sequential kernel.
+
+**Correctness.** Same prompt (507-token Python source excerpt,
+`qwen4exp-f16/scratch/gufo/textparity/prompt_decode512_r0.txt`), temperature
+0, 64 decoded tokens, chunked off vs on. The greedy decode **diverges at the
+very first token** (off: `"\n\n\nThis code appears to be part of an asyncio
+SSL protocol implementation, likely from Python's \`asyncio\` library..."`;
+on: `"\n\n\nBased on the code provided, this appears to be a Python
+implementation of an SSL/TLS protocol handler, likely part of an
+asynchronous networking library..."`) -- both are plausible, on-topic
+completions, consistent with the chunked path being numerically
+non-bit-exact by design (same category of sensitivity the adjacent
+`q_c`/`k_c` l2-norm-vs-rms_norm comment in this file already documents: a
+~1e-6 relative seed difference that "flips MoE routing" 36 layers deep).
+**First-token logit max-abs-diff could not be measured**: this server's
+`/v1/chat/completions` does not implement `logprobs`/`top_logprobs` (request
+accepted, field silently dropped, verified by direct `curl`), so only the
+token-sequence comparison above is available without building a dedicated
+logit-dumping driver, which was out of scope for this session's time budget.
+
+**Performance**, lucebox4, `gfx1151` pinned via `HIP_VISIBLE_DEVICES=1`,
+`--max-ctx 20480 --prefix-cache-slots 0`, one server process per arm
+(restart between off/on), 5 reps per point, first rep dropped as warm-up
+(cold-cache-vs-warm gap was visible and consistent in both arms), median
+of the remaining 4:
+
+| Metric | off | on | delta | A-vs-A spread (range, off) | real? |
+| --- | ---: | ---: | ---: | ---: | :--- |
+| prefill p4096 tok/s | 1260.8 (1204.5–1271.7) | 1257.0 (1193.7–1271.7) | −0.3% | 67.2 | no (delta < spread) |
+| prefill p16384 tok/s | 1315.7 (1295.5–1328.7) | 1315.1 (1262.3–1318.9) | −0.05% | 33.2 | no (chunked disabled, T=16384 > 4096 cap) |
+| decode tok/s (128 tok) | 24.97 (24.88–24.97) | 25.18 (25.18–25.18, warm 4) | +0.8% | 0.09 | no (decode path untouched by this change; both numbers are noise) |
+
+`sudo -n` drop_caches/compact_memory was unavailable on this box (password
+required), so these numbers are **indicative, not cache-controlled** --
+though the tight within-arm spread above (and agreement with the earlier
+gufo-parity session's 1135–1328 tok/s range for the same quant/box) suggests
+caching state was not the dominant noise source here.
+
+**Verdict: reject.** p4096 (the one point where the cap lets chunked fire)
+shows no measurable prefill speedup -- the delta is smaller than the
+run's own warm-up-excluded A-vs-A spread, i.e. indistinguishable from noise.
+The GDN recurrence's measured 393 ms/p4096 cost is a small slice of the
+~3.3 s total prefill wall time here, so even a large relative win on the
+recurrence itself would be hard to see at the wall-clock level, and this
+run shows no win at all. Code stays committed with the env gate defaulting
+off; `LUCE_QWEN4EXP_GDN_CHUNKED` is available for anyone who wants to probe
+further (e.g. with a wider graph budget to lift the 4096 cap, or isolated
+per-layer timing instead of end-to-end wall).
