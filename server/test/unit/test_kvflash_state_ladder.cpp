@@ -119,3 +119,27 @@ TEST_CASE(KvflashLadderFixture, evict_several_turn_rungs_keeps_the_newest) {
     CHECK((kvflash_ladder_evict(e, 200, 100, 1024) == Pos{4000, 7000}));
     CHECK((kvflash_ladder_evict(e, 300, 100, 1024) == Pos{4000}));
 }
+
+TEST_CASE(KvflashLadderFixture, turn_cuts_all_headers_in_order) {
+    std::vector<int32_t> p{kStart, kAsst, kNl, 1, 2, kStart, kAsst, kNl, 3, kStart, kAsst, kNl, 4, 5};
+    CHECK((kvflash_turn_cuts(p, kStart, kAsst, kNl) == Pos{3, 8, 12}));
+    CHECK(kvflash_turn_cut(p, kStart, kAsst, kNl) == 12);
+}
+
+TEST_CASE(KvflashLadderFixture, turn_cuts_none_and_trailing_header) {
+    CHECK((kvflash_turn_cuts({1, 2, 3}, kStart, kAsst, kNl) == Pos{}));
+    CHECK((kvflash_turn_cuts({1, 2, 3}, -1, -1, -1) == Pos{}));
+    // header ends the prompt: no cut at size
+    CHECK((kvflash_turn_cuts({1, kStart, kAsst, kNl}, kStart, kAsst, kNl) == Pos{}));
+    // an earlier header still counts when the last one ends the prompt
+    CHECK((kvflash_turn_cuts({kStart, kAsst, kNl, 7, kStart, kAsst, kNl}, kStart, kAsst, kNl) == Pos{3}));
+}
+
+TEST_CASE(KvflashLadderFixture, turn_cuts_header_on_a_grid_point) {
+    // header ends exactly at 512: the cut coincides with the grid, batches unchanged
+    std::vector<int32_t> p(1000, 1);
+    p[509] = kStart; p[510] = kAsst; p[511] = kNl;
+    const Pos cuts = kvflash_turn_cuts(p, kStart, kAsst, kNl);
+    CHECK((cuts == Pos{512}));
+    CHECK(kvflash_prefill_batches(0, 1000, 512, 512, cuts) == kvflash_prefill_batches(0, 1000, 512, 512));
+}
