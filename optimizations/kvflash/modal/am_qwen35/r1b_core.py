@@ -61,63 +61,96 @@ def method_for(cell, budget_path):
 
 
 class Session:
-    """Model + tokenizer + adapter state shared by all cells of a job."""
+    """Model + tokenizer + cache plumbing shared by all cells of a job. Hybrid (Qwen3.5/3.8: DeltaNet layers carried
+    through the adapter) or plain full-attention (Qwen3-4B on the repo's own modeling, PREREG R1b Amendment 1)."""
 
-    def __init__(self, model, tok, shim=None):
-        from models.qwen3_5 import adapt_model, linear_layer_set
-        self.model, self.tok, self.shim = model, tok, shim
+    def __init__(self, model, tok, shim=None, name=NAME):
+        self.model, self.tok, self.shim, self.name = model, tok, shim, name
         self.dev = next(model.parameters()).device
-        self.layer_types = model.config.get_text_config().layer_types
-        self.linear = linear_layer_set(self.layer_types)
+        self.layer_types = getattr(model.config.get_text_config(), "layer_types", None)
+        self.hybrid = bool(self.layer_types) and "linear_attention" in self.layer_types
+        self.linear = {i for i, t in enumerate(self.layer_types or []) if t == "linear_attention"}
         self.eos = {tok.convert_tokens_to_ids("<|im_end|>"), tok.eos_token_id} - {None}
-        adapt_model(model)
+        if self.hybrid:
+            from models.qwen3_5 import adapt_model
+            adapt_model(model)
 
     def prefill(self, article):
         from evaluation.utils import compute_article_indices, format_context
-        from models.qwen3_5 import dynamic_cache_to_pseudo_kv
-        formatted = format_context(self.tok, article, None, NAME)
+        formatted = format_context(self.tok, article, None, self.name)
         ids = self.tok(formatted, return_tensors="pt", add_special_tokens=False)["input_ids"].to(self.dev)
+        pf = {"formatted": formatted, "seq_len": ids.shape[1], "dyn": None,
+              "article_idx": compute_article_indices(self.tok, formatted, article)}
         with torch.no_grad():
-            dyn = self.model(input_ids=ids, use_cache=True, logits_to_keep=1).past_key_values
-        return {"formatted": formatted, "seq_len": ids.shape[1], "article_idx": compute_article_indices(self.tok, formatted, article),
-                "dyn": dyn, "kv": dynamic_cache_to_pseudo_kv(dyn, self.layer_types)}
+            if self.hybrid:
+                from models.qwen3_5 import dynamic_cache_to_pseudo_kv
+                pf["dyn"] = self.model(input_ids=ids, use_cache=True, logits_to_keep=1).past_key_values
+                pf["kv"] = dynamic_cache_to_pseudo_kv(pf["dyn"], self.layer_types)
+            else:
+                pf["kv"] = self.model(ids, use_cache=True).past_key_values
+        return pf
 
     def original_triples(self, pf):
+        trip = tuple((k, k.new_zeros(k.shape[:3]), v) for k, v in pf["kv"])
+        if not self.hybrid:
+            return trip
         from models.qwen3_5 import inject_linear_state
-        return inject_linear_state(tuple((k, k.new_zeros(k.shape[:3]), v) for k, v in pf["kv"]), pf["dyn"], self.layer_types)
+        return inject_linear_state(trip, pf["dyn"], self.layer_types)
+
+    def _cache(self, triples, seq_len):
+        if self.hybrid:
+            from models.qwen3_5 import compacted_cache_from_triples
+            return compacted_cache_from_triples(triples, self.linear, seq_len)
+        from models.cache import CompactedPrefixCache
+        return CompactedPrefixCache(tuple((a.clone(), b.clone(), c.clone()) for a, b, c in triples),
+                                    original_seq_len=seq_len)
+
+    @torch.no_grad()
+    def _greedy(self, cache, first_logits, n_new):
+        toks, logits = [], first_logits
+        for step in range(n_new):
+            nxt = int(logits[0, -1].argmax())
+            toks.append(nxt)
+            if nxt in self.eos or step == n_new - 1:
+                break
+            logits = self.model(input_ids=torch.tensor([[nxt]], device=self.dev), past_key_values=cache,
+                                use_cache=True).logits
+        return toks
 
     def answer(self, triples, seq_len, questions, max_new=N_NEW, thinking=False):
         """Greedy answers to every question on one prefix. Returns [(text, finite_logits)]."""
         from evaluation.utils import format_question
-        from models.qwen3_5 import compacted_cache_from_triples, greedy_decode
         res = []
         for q in questions:
-            prompt = format_question(self.tok, q["question"], q["options"], NAME, enable_thinking=thinking)
+            prompt = format_question(self.tok, q["question"], q["options"], self.name, enable_thinking=thinking)
             qids = self.tok(prompt, return_tensors="pt", add_special_tokens=False)["input_ids"].to(self.dev)
-            cache = compacted_cache_from_triples(triples, self.linear, seq_len)
+            cache = self._cache(triples, seq_len)
             with torch.no_grad():
-                o = self.model(input_ids=qids, past_key_values=cache, use_cache=True, logits_to_keep=1)
-                toks, _ = greedy_decode(self.model, cache, o.logits, max_new, stop_ids=self.eos)
-            res.append((self.tok.decode(toks, skip_special_tokens=True), bool(torch.isfinite(o.logits).all())))
+                o = self.model(input_ids=qids, past_key_values=cache, use_cache=True, **({'logits_to_keep': 1} if self.hybrid else {}))
+            res.append((self.tok.decode(self._greedy(cache, o.logits, max_new), skip_special_tokens=True),
+                        bool(torch.isfinite(o.logits[:, -1]).all())))
         return res
 
     def compact(self, cell, pf, target, budget_path):
         from evaluation.configs.utils import load_query_config
         from models.generate import get_sliding_layer_info
-        from models.qwen3_5 import inject_linear_state
         n_art = len(pf["article_idx"])
         actual = max(1, int(n_art * target)) + (pf["seq_len"] - n_art)
         sliding, _ = get_sliding_layer_info(self.model)
+        extra = {"past_key_values_for_queries": pf["dyn"]} if self.hybrid else {}
         t0 = time.time()
         compacted, stats = method_for(cell, budget_path).compact_kv_cache(
             past_key_values=pf["kv"], target_size=actual, indices=pf["article_idx"],
             query_config=load_query_config(CELLS[cell][2]), model=self.model, tokenizer=self.tok,
             formatted_context=pf["formatted"], compute_stats=False, vllm_model=self.shim,
-            sliding_layer_indices=sliding, past_key_values_for_queries=pf["dyn"])
+            sliding_layer_indices=sliding, **extra)
         wall = time.time() - t0
         qs = stats.get("query_generation", {}) if isinstance(stats, dict) else {}
         info = {"compaction_s": round(wall, 2), "query_gen_s": round(qs.get("query_generation_time", 0.0), 2)}
-        triples = inject_linear_state(compacted, pf["dyn"], self.layer_types)
+        triples = compacted
+        if self.hybrid:
+            from models.qwen3_5 import inject_linear_state
+            triples = inject_linear_state(compacted, pf["dyn"], self.layer_types)
         full = [t[0].shape[2] for i, t in enumerate(triples) if i not in self.linear]
         info["full_layer_len_mean"] = round(sum(full) / len(full), 1)
         info["nan_layers"] = [i for i, t in enumerate(triples) if i not in self.linear and
@@ -136,11 +169,11 @@ def _rows(art, results, questions, cell, extra):
     return out
 
 
-def run_cells(model, tok, shim, out, cells, split, target, budget_path, articles, log=print, data=None):
+def run_cells(model, tok, shim, out, cells, split, target, budget_path, articles, log=print, data=None, name=NAME):
     """Per article: prefill once, `original` (if requested as 'orig') and each configuration; resume by article."""
     from evaluation.datasets import load_dataset
     data = data or load_dataset("quality")
-    S = Session(model, tok, shim)
+    S = Session(model, tok, shim, name)
     os.makedirs(out, exist_ok=True)
     for ai in articles:
         art = data[ai]
