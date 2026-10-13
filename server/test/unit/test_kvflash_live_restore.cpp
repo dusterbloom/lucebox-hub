@@ -169,3 +169,21 @@ TEST_CASE(KvflashLiveRestoreFixture, history_append_nothing_generated_truncates_
     kvflash_history_set_generated(hist, 55, out, 0);
     CHECK(hist.size() == 55);
 }
+
+TEST_CASE(KvflashLiveRestoreFixture, turn_rung_catches_the_final_answer_rerender) {
+    // Previous prompt Pend = 5000, turn rung at Pend-4 = 4996, gen ckpt G = 5300.
+    // The new prompt re-renders the old assistant turn without the think block,
+    // so it matches the history only up to 4996 and then diverges.
+    Toks hist = seq(5300);
+    Toks prompt = seq(4996);
+    for (int i = 0; i < 400; i++) prompt.push_back(90000 + i);
+    const std::vector<int> rungs = {1024, 4608, 4996, 5300};
+    auto d = kvflash_live_restore_decide(prompt, hist, 5300, rungs);
+    CHECK(d.L == 4996);
+    CHECK(d.C == 4996);
+    CHECK(d.replay_from == 4996);
+    CHECK(d.discard_above == 4996);   // the gen rung 5300 is dropped
+    // without the turn rung it falls back to the grid
+    auto e = kvflash_live_restore_decide(prompt, hist, 5300, {1024, 4608, 5300});
+    CHECK(e.C == 4608);
+}
