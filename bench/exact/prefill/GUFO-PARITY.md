@@ -1475,3 +1475,45 @@ layer is one launch:
 
 Note: the in-server launch is 2.99 ms vs 3.23 ms in the microbench (the
 microbench's uniform random gates fold more often than real gates).
+
+### Wall before/after, lucebox4
+
+One `luce_server` binary (`libggml-hip.so` md5 e21e92b95aa9fe2f71b1586c840930b5),
+`HIP_VISIBLE_DEVICES=1 --max-ctx 20480 --prefix-cache-slots 0`, arms
+alternated legacy/new/legacy/new across server restarts (2 rounds), one
+warm-up p4096 per restart dropped, box otherwise idle. Spread = |median
+round 0 - median round 1| of the legacy arm; a delta counts only if it is
+> 2x that spread. `sudo -n` drop_caches is unavailable on this box
+(password), so the numbers are indicative, not cache-controlled.
+
+Run 1 (3 reps per restart, n=6 per arm):
+
+| metric | legacy median (min-max) | new median (min-max) | delta | legacy spread | real? |
+| --- | ---: | ---: | ---: | ---: | :--- |
+| prefill p4096 tok/s | 1233.9 (1187.2-1261.9) | 1305.6 (1201.8-1314.1) | +5.8% | 36.5 | borderline (71.7 vs 2x spread 73.0) |
+| prefill p16384 tok/s | 1285.0 (1168.7-1293.4) | 1312.4 (1224.5-1369.9) | +2.1% | 8.6 | yes (27.3 vs 17.3) |
+| decode tok/s (128 tok) | 25.0 (24.5-25.0) | 25.0 (24.5-25.0) | +0.1% | 0.0 | no (T=1 path untouched) |
+
+Run 2 (5 reps per restart, n=10 per arm):
+
+| metric | legacy median (min-max) | new median (min-max) | delta | legacy spread | real? |
+| --- | ---: | ---: | ---: | ---: | :--- |
+| prefill p4096 tok/s | 1251.4 (1170.8-1274.9) | 1302.0 (1238.4-1318.2) | +4.0% | 5.4 | yes (50.6 vs 10.9) |
+| prefill p16384 tok/s | 1306.6 (1151.0-1323.2) | 1367.9 (1234.5-1377.0) | +4.7% | 7.6 | yes (61.3 vs 15.2) |
+| decode tok/s (128 tok) | 25.0 (24.5-25.0) | 25.0 (24.5-25.0) | +0.0% | 0.0 | no |
+
+The p4096 gain matches the kernel saving: 144 ms of a ~3.3 s prefill is
+4.4%.
+
+**Correctness** (greedy, temperature 0, 64 tokens, p4096 prompt): each arm
+is deterministic across requests and restarts (4 of 4 identical per arm),
+and the two arms diverge at character 86 (~token 20): legacy `"...This
+appears to be a concatenation of two Python standard library modules..."`,
+new `"...This code contains two distinct Python modules..."`. Both are
+on-topic; the kernels agree to ~1e-5 relative (unit test), and a
+reassociation-level difference flipping MoE routing 36 layers deep is the
+same sensitivity documented for the chunked path above. The server has no
+`logprobs`, so the logit margin at the flip was not measured.
+
+**Verdict: ship.** Row-split is the T>1 default on gfx1151;
+`LUCE_GDN_LEGACY=1` restores the tiled kernel.
