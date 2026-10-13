@@ -288,6 +288,12 @@ protected:
     bool kvflash_restore_pooled(const PrefixSnapshot & snap,
                                 const std::vector<int32_t> & prompt);
     bool kvflash_consume_restore_ = false;   // set around the suffix do_prefill
+    // S8a: restore the single live KVFlash session (pager + KV rows + token
+    // history) from the DeltaNet ladder checkpoint C <= LCP(prompt, history).
+    // Returns C and leaves the cache at cur_pos == C, or -1 for the cold path.
+    // KVFLASH_LIVE_RESTORE=1 (needs KVFLASH_STATE_LADDER=1).
+    int  kvflash_live_restore(const std::vector<int32_t> & prompt);
+    bool kvflash_live_restore_active_ = false;   // set around the suffix do_prefill
     // Upload the slot-validity mask (host rebuild on epoch change, device
     // upload every step — the input's buffer region is reused by compute).
     void kvflash_upload_mask();
