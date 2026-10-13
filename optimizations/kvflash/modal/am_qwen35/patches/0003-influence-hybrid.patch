@@ -1,0 +1,95 @@
+--- a/head_budget_optimization/influence.py	2026-10-13 17:39:51.047864655 +0200
++++ b/head_budget_optimization/influence.py	2026-10-13 17:40:14.500794189 +0200
+@@ -49,6 +49,7 @@
+         algorithm_name: str = "highest_attention_keys",
+         device: str = "cuda",
+         vllm_model: Optional[Any] = None,
++        enable_thinking: bool = True,
+     ):
+         """
+         Initialize the head influence computer.
+@@ -77,14 +78,14 @@
+         self.algorithm_name = algorithm_name
+         self.device = device
+         self.vllm_model = vllm_model
++        self.enable_thinking = enable_thinking
++        self.query_cache = None  # hybrids: the model's own cache object, set per article by the caller
+ 
+-        # Model config
+-        self.num_layers = model.config.num_hidden_layers
+-        self.num_kv_heads = model.config.num_key_value_heads
+-        self.head_dim = getattr(
+-            model.config, 'head_dim',
+-            model.config.hidden_size // model.config.num_attention_heads
+-        )
++        # Model config (text config: composite multimodal configs keep the text fields one level down)
++        tcfg = model.config.get_text_config()
++        self.num_layers = tcfg.num_hidden_layers
++        self.num_kv_heads = tcfg.num_key_value_heads
++        self.head_dim = getattr(tcfg, 'head_dim', tcfg.hidden_size // tcfg.num_attention_heads)
+ 
+         # Sliding window support - only optimize global (non-sliding) layers
+         self.sliding_layer_indices, self.sliding_window = get_sliding_layer_info(model)
+@@ -92,6 +93,8 @@
+             i for i in range(self.num_layers) if i not in self.sliding_layer_indices
+         ]
+         self.num_global_layers = len(self.global_layer_indices)
++        # queries have one row per full-attention layer; row of layer l (hybrids have fewer rows than layers)
++        self.query_row = {l: r for r, l in enumerate(self.global_layer_indices)}
+ 
+     def _create_algorithm(self) -> Union[HighestAttentionKeysCompaction, OMPCompaction]:
+         """Create an instance of the configured algorithm."""
+@@ -158,14 +161,14 @@
+             tokenizer=self.tokenizer,
+             config=self.query_config,
+             device=self.device,
+-            dtype=past_key_values[0][0].dtype,
++            dtype=past_key_values[ref_layer_idx][0].dtype,
+             vllm_model=self.vllm_model,
+         )
+ 
+         # Generate queries: (num_layers, num_kv_heads, n_queries, head_dim)
+         queries, query_stats, _ = generator.generate_queries(
+             formatted_context=formatted_context,
+-            past_key_values=past_key_values,
++            past_key_values=self.query_cache if self.query_cache is not None else past_key_values,
+             indices=article_indices,
+         )
+ 
+@@ -201,7 +204,7 @@
+                 V = values_layer[head_idx, list(article_indices), :]
+ 
+                 # Get queries for this head
+-                queries_head = queries[layer_idx, head_idx, :, :]  # (n_queries, head_dim)
++                queries_head = queries[self.query_row[layer_idx], head_idx, :, :]  # (n_queries, head_dim)
+ 
+                 # For OMP: get the selection order for later reuse
+                 # Optimize by limiting max_keys based on eval_ratios
+@@ -507,7 +510,7 @@
+         # New budget: ratio * article_len (ratio is proportion of original keys)
+         new_budget = max(1, int(new_ratio * article_len))
+ 
+-        queries_head = queries[layer_idx, head_idx, :, :]
++        queries_head = queries[self.query_row[layer_idx], head_idx, :, :]
+ 
+         # For OMP, pass the cached selection order for efficient reuse
+         if self.algorithm_name == 'omp' and cached_selection_order is not None:
+@@ -546,7 +549,8 @@
+ 
+             question_formatted = format_question(
+                 self.tokenizer, question_text, options,
+-                self.model.config._name_or_path if hasattr(self.model.config, '_name_or_path') else None
++                self.model.config._name_or_path if hasattr(self.model.config, '_name_or_path') else None,
++                enable_thinking=self.enable_thinking,
+             )
+ 
+             ppl, log_ppl = compute_perplexity_on_compacted_cache(
+@@ -738,7 +742,7 @@
+             q = questions[i]
+             question_formatted = format_question(
+                 self.tokenizer, q['question'], q.get('options', None),
+-                model_name
++                model_name, enable_thinking=self.enable_thinking,
+             )
+             ppl, log_ppl = compute_perplexity_on_compacted_cache(
+                 model=self.model,
