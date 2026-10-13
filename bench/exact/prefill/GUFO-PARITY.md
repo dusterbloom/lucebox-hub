@@ -841,3 +841,147 @@ specifically the glu/gate-up tile shape/width choice that is the lever to
 retune first, since the down-proj tile choice for the same kernel family is
 already competitive or ahead. Dense GEMM and GDN deltas are smaller and
 closely tied with each other; they are secondary to the gate/up tile.
+
+## Prefill host-overhead breakdown
+
+Box: lucebox4, Strix iGPU (`gfx1151`) pinned, discrete `gfx1201` hidden, GPU
+confirmed idle (0-3%) before every load. **Measurement only** — no engine
+source changes landed anywhere in this repo/worktree; all instrumentation
+lives in a scratch copy and scratch build, per the task's hard rule.
+
+**Scratch tree**: `~/qwen4exp-f16/scratch/idle2/` on lucebox4 —
+`src_timers/` (a full copy of `~/qwen4exp-f16/scratch/sortgate/src_b`, i.e.
+this worktree's HEAD-equivalent `server/` tree, `mmid.cu` md5
+`61e9e8bd606bbd1ed9fe4e037dce1274`, matching `src_b`'s gate-relaxed `mmid.cu`
+from the prior sortgate experiment — unrelated to this section's findings,
+which are all in the chunk-graph/dispatch/sync path, not `mmid.cu`),
+`build_timers/` (fresh `cmake -S src_timers/server -B build_timers
+-DCMAKE_BUILD_TYPE=Release -DLUCE_GPU_BACKEND=hip
+-DCMAKE_HIP_ARCHITECTURES=gfx1151 -DLUCE_TESTS=OFF`, built with
+`cmake --build . --target luce_server -j32`), `patch_timers*.py` (the four
+anchor-based source patches applied, kept for provenance), `server_timers2.log`
+(raw timer output, not committed), reusing the existing
+`~/qwen4exp-f16/scratch/gufo/textparity/` prompt slices and
+`text_bench_client.py` for the driving requests (same distinct-text,
+`--prefix-cache-slots 0`, `temperature=0`, `max_tokens=1` harness as the
+text-parity rerun above).
+
+**Timers added** (env-gated on `LUCE_PREFILL_TIMERS=1`, `std::chrono::steady_clock`,
+printed once per prefill forward call, `n_tokens > 1` only):
+
+1. `server/src/qwen4exp/qwen4exp_graph.cpp`, `forward_impl` — wall-clock split
+   of: ctx-init → graph-built (ggml op construction), gallocr reserve+alloc,
+   host-side input upload (positions/mask/embeddings), the
+   `ggml_backend_graph_compute(backend, gf)` call itself, and the post-compute
+   logits/argmax readback (`ggml_backend_tensor_get`).
+2. `server/deps/llama.cpp/ggml/src/ggml-cuda/ggml-cuda.cu`,
+   `ggml_cuda_graph_evaluate_and_capture` — wall-clock around the entire eager
+   per-node dispatch loop (every `GGML_OP_*` dispatch call for every node in
+   the graph, taken because `use_cuda_graph` is false for every one-shot
+   prefill shape here, confirmed by the existing warmup-never-latches finding
+   above).
+3. `server/deps/llama.cpp/ggml/src/ggml-backend.cpp`, the generic
+   `ggml_backend_graph_compute()` wrapper — split into
+   `ggml_backend_graph_compute_async()` (issuing all the eager launches) vs.
+   the subsequent `ggml_backend_synchronize()` call (blocking until the GPU
+   drains the queue). This is the authoritative async-submit-vs-sync-wait
+   split; the other two timers are diagnostic context around it.
+
+### Results (unprofiled — no rocprofv3, so these are directly comparable to
+the parity/text-parity wall-clock numbers above, unlike the earlier
+rocprofv3 kernel-trace section)
+
+One cold server load, one discarded warmup request (`prompt_p4096_r0.txt`),
+then two more distinct-text requests at p=4096 (`r1`, `r2`) and, in a second
+cold load, the same warmup/measured pattern at p=16384:
+
+| p | rep | shape | n_nodes | async_submit_us | sync_wait_us | submit % of (submit+sync) | client prefill tok/s |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 4096  | r0 (cold, first-ever call at this shape) | T=4136 | 5418 | 364,722 | 3,151,757 | 10.4% | 948.9 |
+| 4096  | r1 (second distinct shape, same process) | T=4131 | 5502 |   9,158 | 3,232,083 |  0.3% | 1135.2 |
+| 4096  | r2 | T=4135 | 5502 |   8,731 | 3,213,073 |  0.3% | 1135.9 |
+| 16384 | r0 (cold, fresh server) | T=16384 | 5418 | 180,444 | 11,467,379 |  1.5% | 1211.8 |
+| 16384 | r1 | T=16384 | 5418 |   9,802 | 11,676,890 |  0.08% | 1232.0 |
+
+(n_nodes is the ggml graph's node count for the one prefill graph that covers
+the whole request — confirmed single-shot, not chunked, consistent with the
+matched-text kernel trace's "no chunking multiplier" finding above; the
+chunk planner's configured chunk size for this `--max-ctx 20480` run is large
+enough to cover both 4096 and 16384 in one graph.)
+
+Host dispatch-loop cost per node (`luce-dispatch-timer`, the per-node eager
+launch loop alone, a subset of `async_submit_us` above): **66.6 µs/node cold,
+1.0-1.2 µs/node warm** at p=4096; **32.7 µs/node cold, 1.2-1.5 µs/node warm**
+at p=16384 — a **~30-65x cold-vs-warm ratio**, but even the cold absolute
+number (360.8 ms / 177.3 ms) is a small fraction of total wall time.
+
+### Verdict: GPU-bound, not launch-bound
+
+The CPU does **not** finish early and wait — `ggml_backend_synchronize()`
+(the blocking call) is where **89.6-99.9%** of `ggml_backend_graph_compute`'s
+wall time goes, at every p and every warm/cold state measured. The host-side
+eager-dispatch loop — the mechanism the "7300 eager launches, ~42 µs/launch
+of gap" framing in this task's brief was built on — accounts for at most
+10.4% of wall time (the one-time cold-shape penalty) and **under 0.3-1.5%
+once warm**, which is the steady-state a real multi-request server actually
+runs in. This directly contradicts reading the earlier rocprofv3 kernel
+trace's "764.6 ms / 16.78% idle, 104 µs/launch" figure as host-dispatch
+overhead: rocprofv3 intercepts and serializes every kernel launch (already
+flagged above as inflating both engines' wall time non-uniformly), and that
+inflation is exactly where the earlier idle number came from — it is a
+profiling artifact, not a real host stall in unprofiled operation. Unprofiled,
+the host races ahead and submits the entire ~5400-5750-node graph in single-
+digit milliseconds once warm; the remaining 3.2-3.3 s (p=4096) / 11.5-11.7 s
+(p=16384) is the GPU actually executing the kernels Σkernels already measured
+in the matched-text trace (lucebox 3343.10 ms at p=4096, same order as the
+3.15-3.23 s `sync_wait_us` measured here).
+
+### Top 3 host costs in µs/node
+
+Since host dispatch is 1-2 µs/node warm, there is no large per-op host cost to
+chase in steady state — the only measurable host cost worth naming is the
+**one-time cold-shape tax** (66.6 µs/node at p=4096, 32.7 µs/node at
+p=16384, vanishing to ~1.2 µs/node on the next distinct-shape call in the same
+process). This is consistent with first-touch allocator-pool growth
+(`ggml_cuda_pool_alloc` doing a real `hipMalloc` instead of a pool hit),
+graph-key creation, and the one-time
+`ggml_cuda_graph_check_compability`/property-scan cost that only runs fully
+on a never-before-seen graph key — all amortized to near-zero by the second
+call. No individual dispatch function (`ggml_cuda_mmb_supported_mmid`,
+`ggml_cuda_pool_alloc`, the property-scan) was profiled in isolation because
+the aggregate per-node host cost is already below the threshold where
+splitting it further would change the GPU-bound verdict; `perf record` was
+not run for the same reason (the chrono split already answers launch-bound
+vs. GPU-bound unambiguously).
+
+### A/B: forcing graph capture on the first call
+
+No existing env/flag does this. Grepped every `getenv("LUCE_*")` and
+`getenv("GGML_CUDA_*")` in the scratch tree (`ggml-cuda.cu` and every
+`server/src/**/*.cpp`): `ggml_cuda_skip_props_check` (set via
+`ScopedCudaGraphOverrides`'s `skip_property_check_`) only skips the
+properties-changed check on a **subsequent** call to an **already-warm**
+graph key — it does not shortcut the warmup state machine's hard "2 identical
+calls" requirement at `ggml-cuda.cu:7776-7784`, and no `LUCE_*`/`GGML_CUDA_*`
+variable bypasses that gate. **A/B skipped, with justification**: even in the
+worst case this task could reach (the cold first-call penalty above),
+forcing single-call capture would reclaim at most the `async_submit_us`
+column — 364.7 ms of 3.52 s (10.4%) at p=4096, 180.4 ms of 11.65 s (1.5%) at
+p=16384 — and only for literally the first request at a given exact chunk
+shape per process lifetime; every subsequent request already pays ≤1.5 µs/node.
+Given the verdict above (GPU-bound, Σkernels dominates), forcing graph
+capture is not the lever regardless of whether a flag existed — it would not
+touch the 89.6-99.9% of wall time spent waiting on the GPU.
+
+### Smallest fix and expected gain
+
+There is no cheap host-side fix with a meaningful payoff here, because the
+host is not the bottleneck. The only host-side saving on the table is the
+one-time cold-shape allocator/graph-key warmup tax (≤365 ms, once per
+distinct chunk shape per process lifetime) — not worth engineering around for
+a steady-state server. The actual lever remains what the matched-text kernel
+trace above already identified: **kernel time**, specifically the routed
+gate/up tile width/shape (`mmb.cu:1146-1147`, +177.71 ms vs. gufo at p=4096)
+and the broader dense/GDN deltas — i.e., retuning GPU-side kernel tile
+choices, not reducing host dispatch overhead, which this measurement shows is
+already negligible.
