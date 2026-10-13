@@ -73,3 +73,30 @@ except to know which numbers are already seen (selection articles 0-9 overlap it
 ## Deviations
 
 (none yet)
+
+## Rung R1a: Qwen3.8-27B adapter is exact without compaction
+
+Written 2026-10-13 before any run of the adapter on the 27B model. Only tokenizer-length counts of the candidate prompts were taken (CPU, no model weights) to fix the 8K+ prompts. Adapter code: `../../modal/am_qwen35/` (patches on top of `adamzweiger/compaction` @ 2020f6d3). Cost cap for the whole R1a task: $15.
+
+- Hypothesis: with a `CompactedPrefixCache` that holds the uncompacted prefix (C1/C2 = the original K/V of the 16 full-attention layers, beta = 0, DeltaNet conv/recurrent state carried through as-is), the adapter reproduces HF transformers exactly: same greedy tokens, same first-step logits.
+- Model: `Qwen/Qwen3.8-27B` BF16, `Qwen3_5ForConditionalGeneration`, transformers 5.19.0, torch 2.8.0, one H200 (H100 80GB if unavailable). The same loaded weights serve reference and adapter in one process (reference runs first; the adapter classes are swapped in afterwards).
+- Prompts (all through the HF chat template, `add_generation_prompt=True, enable_thinking=False`, one user turn; article text = QuALITY.v1.0.1 dev article as shipped in the repo, `article.strip()`, id = QuALITY article_id):
+  - P1 (short): "Explain in three paragraphs why the sky is blue and why sunsets are red."
+  - P2 (code): "Write a Python function that merges overlapping intervals, with a docstring and three unit tests, then explain its time complexity."
+  - P3 (2.3K tokens, measured 2281): article 20041, then "\n\nQuestion: Summarize the story in five sentences."
+  - P4 (8.3K tokens, measured 8277): article 51350, then "\n\nQuestion: Summarize the story in five sentences."
+  - P5 (16.6K tokens, measured 16581): article 51350, "\n\n", article 22876, then "\n\nQuestion: Summarize the two stories in five sentences."
+  P4 and P5 are 8K+; every full-attention layer attends over thousands of cached tokens there.
+- Split: the tokenised prompt is cut after `len(ids) - 32` tokens. The first part is the context (prefilled by unmodified HF into a `DynamicCache`), the last 32 tokens are the suffix (question and assistant header).
+- Arms, all greedy (argmax), 256 new tokens, EOS not treated as a stop (the 256 tokens are compared one for one):
+  - R_split (gating reference): unmodified HF; context prefill, then suffix, then decode, continuing the same `DynamicCache`.
+  - R_whole (informational): unmodified HF, whole prompt in one prefill, then decode.
+  - ADAPTER: context prefilled by unmodified HF, the `DynamicCache` converted to a `CompactedPrefixCache` (C1/C2 = the cached K/V, beta = 0, linear-attention state moved over unchanged), then suffix and decode through the adapter classes.
+- Two attention backends, same arms in each:
+  - `eager` (gating). With beta = 0 the adapter's mask differs from HF's only by `+ 0.0`, so the result must be bit-identical; this isolates the adapter logic (positions, mask, cache carry-over, gate, DeltaNet state) from kernel dispatch.
+  - `sdpa` (production backend of the repo; reported, not gating). HF passes mask=None for single-token decode (SDPA GQA path), while the adapter always passes an explicit additive mask because beta lives there, so different kernels may be selected and differ by a bf16 ulp. Any token divergence under `sdpa` is reported with the top-1/top-2 logit margin at the divergence step; a margin below one bf16 ulp of the logit is classed as kernel noise, anything else as an adapter fault.
+- Metrics: (1) greedy tokens ADAPTER vs R_split, count of prompts with all 256 tokens identical; (2) max over vocab of |logit_ADAPTER - logit_R_split| (BF16 logits cast to float32) at the first step, i.e. the logits at the last prompt position; (3) the same max over all 256 steps (informational); (4) R_whole vs R_split tokens identical count (informational: the noise floor of re-chunking the prefill, not an adapter quantity).
+- Pass threshold (`eager`): tokens identical on 5/5 prompts and first-step max |logit diff| <= 1e-2 on every prompt. Why 1e-2: BF16 has 8 bits of mantissa, so one ulp of a logit of magnitude 2-4 is 0.0156 and of magnitude 16-32 is 0.125. A threshold of 1e-2 admits only bit-identical logits for every logit of magnitude >= 2 (and sub-ulp differences below that); it is that strict on purpose because the adapter has to be a no-op at beta = 0. A genuine fault (wrong RoPE offset, mask, dropped DeltaNet state, changed gate) moves logits by >= 0.1 and flips tokens within a few steps.
+- Failure handling: a fail is reported as a fail with the numbers; the threshold is not relaxed afterwards. Fixes to the adapter are allowed (they are bugs); each re-run is logged and counted in the cost.
+
+Smoke test (not pass/fail, same task): one compaction at target 0.1 of the article tokens on QuALITY dev article loader index 0 with `AM-HighestAttnKeys` (config as in the repo's `examples/qa_demo.py`: rms scores, nnls_iters 2, bounds 0.05/20, c2_method lsq, uniform budget because no head-budget file exists for this model), query config `repeat`, then the first 3 questions of the article answered from the compacted cache, greedy, max 256 new tokens, thinking off. Reported: answers, correctness against the gold label, any NaN or crash.
