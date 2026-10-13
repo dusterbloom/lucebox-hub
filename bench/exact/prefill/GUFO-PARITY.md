@@ -1388,3 +1388,61 @@ run shows no win at all. Code stays committed with the env gate defaulting
 off; `LUCE_QWEN4EXP_GDN_CHUNKED` is available for anyone who wants to probe
 further (e.g. with a wider graph budget to lift the 4096 cap, or isolated
 per-layer timing instead of end-to-end wall).
+
+## Row-split GDN prefill kernel (`gated_delta_net_rowsplit_cuda`), lucebox4
+
+Target from the roofline ledger (`ROOFLINE.md`, p4096, 36 linear layers):
+lucebox `gated_delta_net_tiled_cuda` 36 launches / 252.1 ms = **7.00 ms per
+layer at T=4096**; gufo `GdnRowSplitKernel` 108 launches / 183.5 ms (3
+chunks per layer) = **5.10 ms per layer**, plus `GdnPrepKqKernel` 13.2 ms and
+`GdnEpilogueKernel` 43.7 ms. The 393 vs 252 ms class totals include the
+conv/concat/epilogue launches around the recurrence.
+
+### Microbench (`~/qwen4exp-f16/scratch/gdnrow/bench.hip`)
+
+One layer, H=48, Hk=16, S_k=S_v=128, F32 state, qwen4exp layouts (q/k
+contiguous `[128,16,T]`, v a stride-10240 view into the conv row, g/beta
+`[1,48,T]`), gfx1151 pinned via `ROCR_VISIBLE_DEVICES=1`, `hipcc -O3`,
+hipEvent median of 20 after 3 warm-ups. gufo's `GdnRowSplitKernelT<2,2>`
+is a verbatim copy (MIT) fed its own conv layout from the same data; its
+`GdnPrepKqKernel` (per-token q/k scales + k.q) is timed separately. Diffs
+are against the legacy tiled kernel, rel = |a-b| / max(|a|, 1e-3).
+
+| Kernel (T=4096) | ms | out max rel | state max rel |
+| --- | ---: | ---: | ---: |
+| legacy `gated_delta_net_tiled_cuda<128,8,8,16>` (96 blk x 256 thr) | 6.960 | - | - |
+| gufo `GdnRowSplitKernelT<2,2>` (192 blk x 64 thr) | 4.254 (+0.296 PrepKq) | 1.4e-5 | 6.5e-5 |
+| new v1: gufo layout, k.q in-kernel, 2 rows x 2 waves x 4-token window | 4.759 | 1.2e-5 | 2.9e-5 |
+| new v1 + attn from the updated state (one reduction on the state chain) | 4.584 | 9.2e-6 | 2.1e-5 |
+| new v3: branch-free token loop, next-token k prefetched under attn | 4.292 | 8.6e-6 | 2.7e-5 |
+| new v4: scaled state S = c*St, fold per window (no per-token decay mul, no phi copies), 2r x 4w x 8win | 3.539 | 1.1e-5 | 4.2e-5 |
+| new v5: + native ext_vector prefetch ring (HIP float4 union kept it in scratch) | 3.251 | 1.1e-5 | 4.2e-5 |
+| **new v6: + 2-deep ring (shipped: 2 rows x 4 waves x 8-token window, 96 blk x 128 thr)** | **3.178** | 1.1e-5 | 4.2e-5 |
+
+| Kernel (T=512) | ms |
+| --- | ---: |
+| legacy tiled | 0.839 |
+| gufo row-split (+PrepKq) | 0.543 (+0.045) |
+| new v6 | 0.417 |
+
+Rejected along the way (T=4096 ms): full window unroll (7.3-9.6, VGPR
+spills), 1 row per lane (5.7-5.9, doubles LDS reads per FMA), 4 rows per
+lane (3.7-4.6, 256 VGPRs), 2 waves x 8-token window (5.0, 227 VGPRs at
+occupancy 4), 12/16-token windows (4.3-4.9), k.q by full-wave reduce
+instead of post-update attn (4.85), 3-deep ring (3.24 vs 3.18, inside
+noise; 2-deep is simpler and uses 24 fewer VGPRs).
+
+Why it is faster than gufo's layout port: the legacy and gufo kernels both
+spend 2 VALU per state element per token on the decay (`g*S` multiply +
+FMA, and on this compiler an extra `v_mov` per element because `v_fmac`
+cannot write the accumulator in place). Keeping the state scaled
+(`S = c*St`, `St += k*(delta/c)`, `c *= g`, fold `St *= c` once per
+8-token window or when `c < 1e-18`) makes the update one in-place
+`v_dual_fmac`, so a token costs ~200 VALU slots per lane instead of ~300.
+The DPP reductions, LDS staging and 2-deep global prefetch are gufo's.
+
+Per-layer at T=4096: 6.96 -> 3.18 ms (2.19x vs legacy, 1.34x vs gufo's
+kernel alone, 1.43x vs gufo kernel + PrepKq). Unit test
+`test_gdn_rowsplit_parity` (T in {1,5,33,512,4096}, with 2% of tokens at
+g=exp(-30) to exercise the fold): out max rel 3.0e-6..9.4e-6, state max rel
+1.6e-5..4.5e-5, PASS on lucebox4.
