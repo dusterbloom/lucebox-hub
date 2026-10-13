@@ -233,6 +233,33 @@ public:
         cur_chunk_ = keep > 0 ? keep - 1 : 0;
         epoch_++;
         synchronize_paging();   // zeroing is queued on page_stream_
+        refill_after_truncate_();
+        synchronize_paging();   // recalls are queued on page_stream_
+    }
+
+    // After truncate the pool holds what the dropped tail left behind: after a
+    // long decode that is the NEWEST chunks, with older prompt chunks on host
+    // and free blocks to spare. A pager that only ever saw P tokens would hold
+    // the best ones that fit (recency, or score when a scorer is attached), so
+    // recall host chunks into the free blocks the same way, then renumber the
+    // use clock in logical order (as appending produces it) so later evictions
+    // pick the same victims. Residency is exact either way (host copies are
+    // bit-exact); this only changes which chunks decode and replay attend over.
+    void refill_after_truncate_() {
+        std::vector<int> host;
+        for (int c = 0; c < (int)chunks_.size(); c++)
+            if (chunks_[(size_t)c].block < 0 && chunks_[(size_t)c].on_host) host.push_back(c);
+        if (score_hook)
+            std::stable_sort(host.begin(), host.end(),
+                             [&](int a, int b) { return score_hook(a) > score_hook(b); });
+        else
+            std::reverse(host.begin(), host.end());          // newest first
+        std::vector<int> take(host.begin(),
+                              host.begin() + std::min(host.size(), free_blocks_.size()));
+        std::sort(take.begin(), take.end());                  // recall oldest first
+        for (int c : take) page_in(c);
+        for (auto & st : chunks_) st.last_use = 0;
+        for (int c = 0; c < (int)chunks_.size(); c++) chunks_[(size_t)c].last_use = ++clock_;
     }
 
     // Zero every currently-free block. reset() drops mappings but leaves the
@@ -496,6 +523,29 @@ public:
         }
         if (has_pending_page_in_) synchronize_paging();
         return events;
+    }
+
+    // Debug: resident chunk ids as "a-b,c" ranges, and a hash of the score
+    // ledger of chunks < upto (KVFLASH_DEBUG_RESIDENT).
+    std::string debug_resident(int upto) const {
+        std::string out;
+        char buf[48];
+        for (int c = 0, n = (int)chunks_.size(); c < n;) {
+            if (chunks_[(size_t)c].block < 0) { c++; continue; }
+            int e = c;
+            while (e + 1 < n && chunks_[(size_t)e + 1].block >= 0) e++;
+            std::snprintf(buf, sizeof buf, "%s%d-%d", out.empty() ? "" : ",", c, e);
+            out += buf;
+            c = e + 1;
+        }
+        uint64_t h = 1469598103934665603ULL;
+        for (int c = 0; c < upto && c < (int)chunks_.size(); c++) {
+            uint32_t b; const float sc = chunks_[(size_t)c].score;
+            std::memcpy(&b, &sc, 4);
+            h = (h ^ b) * 1099511628211ULL;
+        }
+        std::snprintf(buf, sizeof buf, " nchunks=%d ledger_hash=%016llx", (int)chunks_.size(), (unsigned long long)h);
+        return out + buf;
     }
 
     // Per-chunk relevance ledger (QK scorer): set before serialize() so the

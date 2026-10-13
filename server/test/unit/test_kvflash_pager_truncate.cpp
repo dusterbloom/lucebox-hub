@@ -264,3 +264,30 @@ TEST_CASE(KvflashPagerTruncateFixture, serialize_truncate_serialize_roundtrip) {
     CHECK(pb.serialize() == blob);
     CHECK(pb.n_chunks() == 4);
 }
+
+// S9b follow-up: after a long decode the resident set holds the NEWEST chunks
+// (older prompt chunks went to host). truncate(C) must leave the resident set
+// of a pager that only ever appended C tokens, or the replay after a live
+// restore attends over a different chunk set than a cold prefill does.
+TEST_CASE(KvflashPagerTruncateFixture, truncate_leaves_the_resident_set_a_fresh_pager_reaches) {
+    for (int P : {12 * kChunk + 10, 12 * kChunk, 9 * kChunk + 63, 5 * kChunk}) {
+        Harness A, R;
+        KvFlashPager pa, pr;
+        must(pa.attach(make_cfg(), A.k, A.v));
+        must(pr.attach(make_cfg(), R.k, R.v));
+        append(A, pa, 0, 20 * kChunk);          // long decode: tail is resident, prompt chunks on host
+        append(R, pr, 0, P);
+        pa.truncate(P);
+        pa.synchronize_paging();
+        REQUIRE(pa.n_chunks() == pr.n_chunks());
+        std::vector<int> ra, rr;
+        for (int c = 0; c < pa.n_chunks(); c++) {
+            if (pa.is_resident(c)) ra.push_back(c);
+            if (pr.is_resident(c)) rr.push_back(c);
+        }
+        CHECK(ra == rr);
+        CHECK(kv_blob(pa) == kv_blob(pr));
+        // ledger: untouched scores of kept chunks stay -inf like the fresh pager's
+        for (int c = 0; c < pa.n_chunks(); c++) CHECK(pa.chunk_score(c) == pr.chunk_score(c));
+    }
+}

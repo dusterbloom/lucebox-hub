@@ -2743,6 +2743,11 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         }
     }
 
+    if (kvflash_active() && std::getenv("KVFLASH_DEBUG_RESIDENT")) {
+        std::printf("[kvflash-dbg] after prefill kv_offset=%d committed=%d resident=%s\n", kv_offset, committed,
+                    kvflash_pager_.debug_resident(committed / kvflash_pager_.chunk_tokens()).c_str());
+        std::fflush(stdout);
+    }
     return committed;
 }
 
