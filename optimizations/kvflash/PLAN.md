@@ -133,6 +133,24 @@ The pager blob (S1/S2) stays only for export and disk persistence. Refcounted
 copy-on-write blocks are the follow-up if sibling conversations (forks of one
 session) become a requirement; that belongs to track C.
 
+S9 assessment (2026-10-13, 3090, evidence `/mnt/kimi-k3/artifacts/kvflash-am-gpu/s9assess/`):
+L ≥ G already holds for tool-call turns with thinking off (ToolMemory replays
+the raw turn). Thinking-on tool turns miss by one replayed newline (fix in
+progress). Final-answer turns can never match: the template drops the think
+block by design, so S9b adds an exact rung at the end of the previous prompt
+minus the generation suffix (4 tokens thinking off, 2 on), so the replay is
+just answer + new message. `preserve_thinking` (jinja path) gives 6/6.
+
+Found on the way, fixed before AM work:
+- prompt growing across the pool → HTTP 500 `prefill_failed` (fix in progress);
+- tool-call format degrades past the 8192 pool (Q4_K_M, 9K tokens): measure
+  with the system/tools chunks pinned (S1 `pin_range`); this is the first
+  agentic-quality baseline for AM;
+- C++ chat renderer differs from the official Qwen3.6 template (no think
+  blocks in open tool loops, no trim, two system blocks, sorted tools-header
+  keys, sorted argument keys); the jinja path is faithful except key order.
+  Owner decision needed: separate issue, not KVFlash scope.
+
 Default-on for S4 is dropped: S8 replaces it.
 
 ## Track B0: baseline of today's system
