@@ -3799,6 +3799,75 @@ TEST_CASE(ServerUnitFixture, test_qwen_completed_tool_turn_preserves_generation_
     }
 }
 
+// Thinking-on tool-call turn: the model emits `</think>` (one special token),
+// then `\n\n` (id 271), then the tool call. The synthetic text the server maps
+// onto `</think>` must not add a newline of its own, or the tool-memory replay
+// reads `</think>\n\n\n<tool_call>` (id 1358) and never matches the generation.
+TEST_CASE(ServerUnitFixture, test_qwen_tool_memory_replay_is_byte_exact) {
+    const std::string sentinel = "__AGENT_TURN_SENTINEL__";
+    const std::string call =
+        "<tool_call>\n<function=read>\n<parameter=path>\n/a\n</parameter>\n"
+        "</function>\n</tool_call>";
+    const json tools = json::array({
+        {{"type", "function"}, {"function", {
+             {"name", "read"},
+             {"parameters", {{"type", "object"},
+                             {"properties", {{"path", {{"type", "string"}}}}}}}}}}});
+    for (bool thinking : {true, false}) {
+        std::vector<ChatMessage> messages = {{"user", "inspect the repo"}};
+        const std::string generation = render_chat_template(
+            messages, ChatFormat::QWEN3, true, thinking);
+        messages.push_back({"assistant", sentinel});
+        const std::string probe = render_chat_template(
+            messages, ChatFormat::QWEN3, false, thinking);
+
+        // What the model generated, token by token, as the server delivers it.
+        std::vector<std::string> pieces;
+        auto deliver = [&](const std::string & raw_token) {
+            std::string text = raw_token;
+            http_detail::think_marker_text(raw_token, text);  // keeps text if unmapped
+            pieces.push_back(text);
+        };
+        if (thinking) {
+            deliver("reasoning");
+            deliver("</think>");
+            deliver("\n\n");
+        }
+        deliver(call);
+
+        SseEmitter em = make_emitter(ApiFormat::OPENAI_CHAT, tools, thinking);
+        for (const auto & piece : pieces) em.emit_token(piece);
+        em.emit_finish(1);
+        const std::string generated =
+            std::string(thinking ? "reasoning</think>\n\n" : "") + call;
+        TEST_ASSERT(em.accumulated_raw() == generated);
+
+        std::string content;
+        TEST_ASSERT(http_detail::canonical_assistant_content(
+            generation, probe, sentinel, em.accumulated_raw(), content));
+
+        ToolMemory memory;
+        memory.remember({"call_1"}, content);
+        const json history = json::array({
+            {{"role", "user"}, {"content", "inspect the repo"}},
+            {{"role", "assistant"}, {"content", nullptr},
+             {"tool_calls", json::array({
+                 {{"id", "call_1"}, {"type", "function"},
+                  {"function", {{"name", "read"},
+                                {"arguments", R"({"path":"/a"})"}}}}})}},
+            {{"role", "tool"}, {"tool_call_id", "call_1"}, {"content", "ok"}},
+        });
+        const auto chat = normalize_chat_messages(history, ApiFormat::OPENAI_CHAT, memory);
+        const std::string rendered = render_chat_template(
+            chat, ChatFormat::QWEN3, true, thinking);
+        // generation prompt tail + generated text, byte for byte
+        const size_t head = probe.find(sentinel);
+        const std::string expected = generation.substr(head) + em.accumulated_raw();
+        TEST_ASSERT(rendered.find(expected) != std::string::npos);
+        TEST_ASSERT(rendered.find("\n\n\n<tool_call>") == std::string::npos);
+    }
+}
+
 TEST_CASE(ServerUnitFixture, test_parse_dsml_v41_tool_calls) {
     // DeepSeek V4.1 spells DSML tags with a leading-space name.
     const std::string text =
