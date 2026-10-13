@@ -985,3 +985,135 @@ gate/up tile width/shape (`mmb.cu:1146-1147`, +177.71 ms vs. gufo at p=4096)
 and the broader dense/GDN deltas — i.e., retuning GPU-side kernel tile
 choices, not reducing host dispatch overhead, which this measurement shows is
 already negligible.
+
+## MMB 128-row tile threshold (Codex idea #1)
+
+**Idea.** `mmb.cu`'s two routed MMB dispatchers (`ggml_cuda_mul_mat_id_mmb`,
+`ggml_cuda_mul_mat_id_mmb_glu`) assign a single 128-row ("big") tile to
+experts with `>= THRESH` routed rows, and one-or-more 64-row ("small") tiles
+below that. `THRESH` was a duplicated `constexpr int ... = 128` in both
+dispatchers. Codex's idea: lower it to 65, so a 65-127-row expert gets one
+128-row tile instead of two 64-row tiles (each re-streaming the expert's
+quantized weights). With T=4096 tokens, 10/512 experts used, the average is
+~80 rows/expert — squarely in the affected band.
+
+**Change.** Replaced the duplicated `constexpr THRESH = 128` in both
+dispatchers with one named accessor, `mmb_tile128_min()` (`mmb.cu`, next to
+`mmb_build_desc2`), defaulting to 65 and overridable via
+`LUCE_MMB_TILE128_MIN` (read fresh per call, not cached, so a parity test or
+operator can flip it without a restart). `BN_SMALL=64` stays a `constexpr`;
+only the threshold moved.
+
+**Correctness test.** New `server/test/unit/test_mmb_tile128_threshold.cpp`
+(registered in `server/CMakeLists.txt` next to `test_mmb_cublas_diff`): 512
+experts, 10 used, T=4096, routing built so **all 512 experts land in the
+65-127 row band** (deterministic round-robin routing, exactly 80 rows/expert
+— the worst case for exercising the change). Runs both routed dispatchers —
+a plain Q5_1 "down" `MUL_MAT_ID`, and a fused Q4_K gate/up `SwiGLU` —
+through the public `ggml_mul_mat_id`/`ggml_swiglu_split` graph API on the
+real CUDA/HIP backend, once with `LUCE_MMB_TILE128_MIN=128` (old) and once
+with `=65` (new), plus a CPU-backend reference for a loose sanity bound.
+Result on lucebox4 (gfx1151, `ROCR_VISIBLE_DEVICES=1`):
+
+```
+[tile128] routing: 512/512 experts land in the 65-127 row band (min=80 max=80)
+[tile128] down (Q5_1): bit-identical(128 vs 65)=YES maxdiff=0
+[tile128] glu  (Q4_K): bit-identical(128 vs 65)=YES maxdiff=0
+[tile128] PASS
+```
+
+Both dispatchers are **bit-identical** between THRESH=128 and THRESH=65, as
+expected: the tile width changes how many tokens are processed per launch
+per expert, not the K-accumulation order per output element.
+
+**Prefill A/B.** lucebox4, gfx1151 iGPU, same `luce_server` binary (only
+`LUCE_MMB_TILE128_MIN` differs), Qwen3.8-Flash-Next UD-Q4_K_XL,
+`--max-ctx 20480 --prefix-cache-slots 0`, textparity harness
+(`~/qwen4exp-f16/scratch/gufo/textparity/`), byte-identical CPython-text
+slices, temp 0, 3 reps/arm. **The two arms could not run concurrently**: the
+76 GB model does not fit twice in the iGPU's 98 GB UMA pool, so A and B are
+two sequential server processes on the same port, not truly alternating
+request-by-request. A third run of arm A (A2, bracketing B) was added to
+estimate run-to-run noise for the same binary/threshold.
+
+| length | A (128) raw tok/s | A2 (128, re-run) raw tok/s | B (65) raw tok/s | A median | B median | Δ% (A→B) |
+|---|---|---|---|---|---|---|
+| p≈4096  | 998.8, 1169.7, 1214.6 | 945.6, 1138.9, 1138.5 | 899.4, 1045.1, 1131.5 | 1169.7 | 1045.1 | **-10.7%** |
+| p≈16384 | 1225.6, 1259.1, 1288.9 | — | 1176.0, 1230.8, 1253.1 | 1259.1 | 1230.8 | **-2.2%** |
+
+A-vs-A2 run-to-run noise at p4096 was ~2.7% (median 1169.7 vs 1138.5); B is
+8-11% below *both* A runs, i.e. outside that noise band. **Verdict: reject.**
+This is not a wash, it is a small but real **regression** at p4096 and a
+smaller one at p16384, the opposite of the idea's premise. A plausible
+reason: with an exactly-80-rows-per-expert routing (and more generally with
+real traffic, most experts well above 65), moving an expert that used to
+split into 64+16 (one full 64-row tile, one 16-row tile) into a single
+128-row tile means the 128-row GEMM now does ~1.6x the useful-row work for
+the SAME wasted-row ratio as before per tile, but fewer, larger launches
+reduce how well the GPU hides the per-launch fixed/setup cost against a
+batch this small — i.e. the premise ("one bigger tile reads weights once
+instead of twice") is true, but is outweighed here by larger, more serialized
+per-tile work replacing more numerous, more parallelizable small tiles.
+Per Codex's own rejection bar (<1% gain), this fails outright; it regresses.
+**Determinism**: fixed-prompt, temp 0, max_tokens 256/32 generations were
+byte-identical text between the 128 and 65 arms at every rep (see decode
+table below) — the threshold change does not alter generated tokens, only
+speed, and here it makes it slightly slower.
+
+**Decode (same server runs, as requested for before/after reporting).**
+512-token prompt, temp 0, max_tokens 256, decode tok/s = (completion_tokens-1)
+/ (wall - time-to-first-token), 3 reps/arm:
+
+| arm | raw decode tok/s | median | ms/token |
+|---|---|---|---|
+| A (128) | 23.79, 23.68, 23.90 | 23.79 | 42.04 |
+| B (65)  | 23.75, 23.60, 23.83 | 23.75 | 42.11 |
+
+Decode is flat (-0.17%, inside noise), as expected: decode batches are
+T=1 per sequence, far below `mmb_min_t()=512`, so routed MMB (and this
+threshold) never engages during decode. Generated text was byte-identical
+between arms at every rep, confirming the change is prefill-path-only and
+produces no token-level drift.
+
+### Summary table (before=128, after=65)
+
+| metric | before (128) | after (65) | Δ% |
+|---|---|---|---|
+| prefill p≈4096 (tok/s, median) | 1169.7 | 1045.1 | -10.7% |
+| prefill p≈16384 (tok/s, median) | 1259.1 | 1230.8 | -2.2% |
+| decode (tok/s, median) | 23.79 | 23.75 | -0.2% |
+
+## Cold-shape tax on varied prompt lengths
+
+Baseline arm (`LUCE_MMB_TILE128_MIN=128`), same server, 6 distinct-text
+prompts at p≈{3000, 3500, 4000, 4500, 5200, 6100} tokens, sent once each
+("pass 1"), then the identical 6 prompts sent again ("pass 2", same shapes,
+now definitely warm):
+
+| length | pass 1 tok/s | pass 2 tok/s | Δ% |
+|---|---|---|---|
+| 2997  | 1200.8 | 1178.3 | -1.9% |
+| 3502  | 1243.2 | 1189.3 | -4.3% |
+| 4011  | 1263.4 | 1270.9 | +0.6% |
+| 4502  | 1277.7 | 1278.4 | +0.1% |
+| 5195  | 1307.6 | 1301.3 | -0.5% |
+| 6103  | 1328.3 | 1321.6 | -0.5% |
+
+No cold-shape cliff is visible here (all deltas are within ~1-2 run-to-run
+noise, except 3502 at -4.3% which is still far short of the ~66 µs/node /
+~365 ms-at-p4096 cliff reported previously). **Caveat, and why this result is
+inconclusive**: the prompt slices for pass 1 were generated by a calibration
+script that queries the live server 1-6 times per target length while
+narrowing in on the exact token count (see `make_varied_slices.py` attempts
+in the transcript) — each calibration attempt is itself a prefill request at
+a length very close to the final one. So by the time "pass 1" ran, the
+server's graph-shape cache had very likely already seen each of these 6
+shapes (or one within a few tokens of it) 1-5 times during calibration. This
+measurement therefore can't distinguish a genuinely cold first-touch from an
+already-warm shape; it is NOT the test the task asked for. A clean version
+needs a freshly-launched server (zero prior requests) hitting each of the 6
+lengths exactly once, in increasing or randomized order, with no calibration
+traffic beforehand — not done here due to time/VRAM-reload budget (each
+`luce_server` restart costs ~70-90s to reload the 76 GB model). Flagging this
+as an open follow-up rather than reporting a false negative on the cold-tax
+question.
