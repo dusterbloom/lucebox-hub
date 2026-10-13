@@ -131,3 +131,41 @@ TEST_CASE(KvflashLiveRestoreFixture, gen_ckpt_position_needs_history_to_cover_cu
     CHECK(kvflash_gen_ckpt_pos(0, 10) == -1);
     CHECK(kvflash_gen_ckpt_pos(-3, 10) == -1);
 }
+
+// ---- spec decode: committed ids are appended to the history ---------------
+
+TEST_CASE(KvflashLiveRestoreFixture, history_append_takes_generated_ids_after_entry) {
+    Toks hist = seq(100);
+    const Toks out = {7, 8, 9, 10};              // out_tokens, nothing before entry
+    kvflash_history_set_generated(hist, 100, out, 0);
+    CHECK(hist.size() == 104);
+    CHECK(hist[100] == 7);
+    CHECK(hist[103] == 10);
+}
+
+TEST_CASE(KvflashLiveRestoreFixture, history_append_is_idempotent_over_ar_fallback) {
+    // The AR fallback inside spec decode already pushed some ids; resyncing
+    // from out_tokens must not duplicate them.
+    Toks hist = seq(100);
+    hist.push_back(7); hist.push_back(8);
+    const Toks out = {7, 8, 9};
+    kvflash_history_set_generated(hist, 100, out, 0);
+    CHECK(hist.size() == 103);
+    CHECK(hist[102] == 9);
+}
+
+TEST_CASE(KvflashLiveRestoreFixture, history_append_skips_tokens_before_entry) {
+    Toks hist = seq(50);
+    const Toks out = {1, 2, 3, 4};               // 2 came from an earlier phase
+    kvflash_history_set_generated(hist, 50, out, 2);
+    CHECK(hist.size() == 52);
+    CHECK(hist[50] == 3);
+    CHECK(hist[51] == 4);
+}
+
+TEST_CASE(KvflashLiveRestoreFixture, history_append_nothing_generated_truncates_to_base) {
+    Toks hist = seq(60);
+    const Toks out = {};
+    kvflash_history_set_generated(hist, 55, out, 0);
+    CHECK(hist.size() == 55);
+}
