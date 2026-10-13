@@ -1013,6 +1013,7 @@ void Qwen35Backend::state_ladder_clear() {
     state_ladder_.clear();
     state_ladder_ckpt_bytes_ = 0;
     state_ladder_head_ = -1;
+    kvflash_gen_ckpt_pos_ = -1;
 }
 
 // State-only checkpoint (ssm + conv, no KV; plus target_feat when a drafter
@@ -1059,14 +1060,31 @@ int Qwen35Backend::kvflash_live_restore(const std::vector<int32_t> & prompt) {
     for (const auto & kv : state_ladder_) rungs.push_back(kv.first);
     const KvflashLiveRestore d =
         kvflash_live_restore_decide(prompt, kvflash_history_, cache_.cur_pos, rungs);
+    // S9: report whether the re-rendered history still covers the generation-end rung.
+    if (kvflash_gen_ckpt_pos_ > 0) {
+        std::printf("[kvflash] gen ckpt check: G=%d L=%d L>=G=%d", kvflash_gen_ckpt_pos_, d.L,
+                    d.L >= kvflash_gen_ckpt_pos_ ? 1 : 0);
+        if (d.L < kvflash_gen_ckpt_pos_) {
+            std::printf(" first-diff@%d prompt=[", d.L);
+            for (size_t i = d.L; i < prompt.size() && i < (size_t)d.L + 8; i++) std::printf("%s%d", i > (size_t)d.L ? "," : "", prompt[i]);
+            std::printf("] history=[");
+            for (size_t i = d.L; i < kvflash_history_.size() && i < (size_t)d.L + 8; i++) std::printf("%s%d", i > (size_t)d.L ? "," : "", kvflash_history_[i]);
+            std::printf("]");
+        }
+        std::printf("\n");
+        std::fflush(stdout);
+    }
     // Rungs above the common prefix describe tokens that no longer match.
     for (auto it = state_ladder_.upper_bound(d.discard_above); it != state_ladder_.end();) {
         free_prefix_snapshot(it->second.snap);
         it = state_ladder_.erase(it);
     }
+    // C need not be chunk-aligned: the S9 gen rung is off-grid, and
+    // pager.truncate (S5) zeroes the rows >= C of a partial chunk, which the
+    // replay then rewrites through slot_for.
     const int ct = kvflash_pager_.chunk_tokens();
     int C = d.C;
-    if (C > 0 && (ct <= 0 || C % ct != 0 || state_ladder_.find(C) == state_ladder_.end())) C = -1;
+    if (C > 0 && (ct <= 0 || state_ladder_.find(C) == state_ladder_.end())) C = -1;
     std::printf("[kvflash] live restore: L=%d C=%d replay=%d\n", d.L, C,
                 C > 0 ? (int)prompt.size() - C : (int)prompt.size());
     std::fflush(stdout);
@@ -1808,6 +1826,22 @@ GenerateResult Qwen35Backend::generate_impl(const GenerateRequest & req,
             std::chrono::steady_clock::now() - t_decode_start).count();
     }
 
+    // S9: checkpoint the DeltaNet state at the generation end so the next turn
+    // resumes after the answer. After any speculative rollback cur_pos is the
+    // committed position, where KV and state hold exactly history[0:G].
+    if (kvflash_gen_ckpt_enabled() && kvflash_active() && !cfg_.paged_attention &&
+        !has_images && req.n_gen > 0) {
+        const int G = kvflash_gen_ckpt_pos(cache_.cur_pos, kvflash_history_.size());
+        if (G > 0 && state_ladder_capture(G)) {
+            kvflash_gen_ckpt_pos_ = G;
+            std::printf("[kvflash] gen ckpt @%d\n", G);
+            std::fflush(stdout);
+        } else {
+            std::fprintf(stderr, "[kvflash] gen ckpt skipped (cur_pos=%d history=%zu)\n",
+                         cache_.cur_pos, kvflash_history_.size());
+        }
+    }
+
     result.succeed();
     return result;
 }
@@ -2159,7 +2193,8 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     // A consuming restore (kvflash_restore_pooled already rebuilt the pager
     // from the snapshot blob) continues the pooled prefill at kv_offset.
     const bool kvf_consume = kvflash_active() && kvflash_consume_restore_ && kv_offset > 0;
-    if (kvf_consume && kv_offset % kvflash_pager_.chunk_tokens() != 0) {
+    if (kvf_consume && !kvflash_live_restore_active_ &&
+        kv_offset % kvflash_pager_.chunk_tokens() != 0) {
         std::fprintf(stderr, "[kvflash] consuming restore at unaligned offset %d "
                              "(chunk %d)\n", kv_offset, kvflash_pager_.chunk_tokens());
         set_last_error("kvflash: unaligned pooled restore offset");

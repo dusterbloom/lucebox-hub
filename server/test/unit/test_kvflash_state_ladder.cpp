@@ -45,6 +45,21 @@ TEST_CASE(KvflashLadderFixture, evict_lru_under_budget_protecting_head_and_newes
     CHECK((kvflash_ladder_evict(e, 300, 100, 1024) == Pos{16384, 24576}));
 }
 
+TEST_CASE(KvflashLadderFixture, pick_prefers_an_off_grid_gen_rung) {
+    const Pos c{1024, 4096, 4300};   // 4300 = generation end, off the 512 grid
+    CHECK(kvflash_ladder_pick(c, 4299) == 4096);
+    CHECK(kvflash_ladder_pick(c, 4300) == 4300);
+    CHECK(kvflash_ladder_pick(c, 9000) == 4300);
+}
+
+TEST_CASE(KvflashLadderFixture, evict_keeps_the_newest_gen_rung) {
+    // The gen rung (4300) is the newest; even with a budget of zero it stays,
+    // and the older grid rungs go LRU first, the head last of all.
+    const std::vector<KvflashLadderEntry> e{{1024, 1}, {4096, 2}, {8192, 3}, {4300, 9}};
+    CHECK((kvflash_ladder_evict(e, 200, 100, 1024) == Pos{4096, 8192}));
+    CHECK((kvflash_ladder_evict(e, 0, 100, 1024) == Pos{4096, 8192}));
+}
+
 TEST_CASE(KvflashLadderFixture, evict_stops_when_only_protected_remain) {
     const std::vector<KvflashLadderEntry> e{{1024, 1}, {8192, 2}, {16384, 3}};
     // budget fits one; two protected (head, newest) survive regardless.

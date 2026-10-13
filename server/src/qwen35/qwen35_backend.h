@@ -294,6 +294,7 @@ protected:
     // KVFLASH_LIVE_RESTORE=1 (needs KVFLASH_STATE_LADDER=1).
     int  kvflash_live_restore(const std::vector<int32_t> & prompt);
     bool kvflash_live_restore_active_ = false;   // set around the suffix do_prefill
+    int  kvflash_gen_ckpt_pos_ = -1;             // S9: G of the last generation-end rung
     // Upload the slot-validity mask (host rebuild on epoch change, device
     // upload every step — the input's buffer region is reused by compute).
     void kvflash_upload_mask();
