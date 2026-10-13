@@ -732,3 +732,112 @@ The qualitative result (content changes gufo's number by ~20%+, barely moves
 lucebox's) is large relative to the ±5-8% rep-to-rep noise and is the
 headline finding; the exact +16%/+9% gap figures should be read as
 directionally solid but not noise-free to the last digit.
+
+## Matched-text kernel trace (p=4096)
+
+Box: lucebox4, Strix iGPU (`gfx1151`) pinned, discrete `gfx1201` hidden, GPU
+confirmed idle (0-3%) before each load. Same binaries/GGUF md5s as the
+text-parity rerun above. Scratch: `~/qwen4exp-f16/scratch/gufo/trace2/`
+(`gufo_out_csv/`, `lucebox_out_csv/`, raw kernel-trace CSVs, not committed).
+
+**Method.** Both engines launched in HTTP `serve` mode under
+`rocprofv3 --kernel-trace --stats -f csv` (same tool as before). Each server
+was warmed with one full text request (`prompt_p4096_r0.txt`, discarded),
+then exactly one measured request on **distinct** text (`prompt_p4096_r1.txt`,
+4091/4131 prompt tokens after chat-template offset) was sent through the same
+`text_bench_client.py` used in the text-parity rerun. The server was then
+SIGTERM'd to flush the rocprofv3 CSV before the next engine was started — one
+engine at a time, nothing else touched. The measured request's kernel window
+was isolated from the full process trace by finding the largest multi-second
+gap between consecutive kernel end/start timestamps (clean separator between
+warmup-request kernels and measured-request kernels, confirmed distinct from
+the ~18-105s model-load gap at the front of each trace) and validated by
+per-layer call counts: lucebox's measured window has exactly 36
+`gated_delta_net_tiled_cuda` and 12 `qsa3_attn_kernel` calls — the expected
+36-GDN/12-attention-layer count for one clean forward pass, no chunking
+multiplier. gufo's measured window has 108 `GdnRowSplitKernel` / 36
+`WmmaCausalAttentionKernel` calls — exactly 3x the 36/12 layer count, i.e.
+gufo's serve path internally **chunks** a 4096-token prefill into 3 chunks
+per request (confirmed identical 108/36 in both the warmup and measured
+windows), not multiple duplicate forward passes of the kind that made the
+earlier bench-mode trace unreliable (that one had a 4x multiplier from
+bundled reps, not per-request chunking).
+
+### Per-class kernel-duration sums (measured request only, ms)
+
+| Class | gufo ms | lucebox ms | Δ (luce − gufo) |
+| --- | ---: | ---: | ---: |
+| Dense GEMM | 1024.21 | 1166.74 | **+142.53** |
+| Routed gate/up | 431.47 | 609.18 | **+177.71** |
+| Routed down | 590.23 | 340.41 | **−249.82** |
+| Expert sort/scatter/gather | 8.54 | 31.65 | +23.11 |
+| GDN | 253.16 | 393.33 | **+140.17** |
+| Attention | 194.24 | 217.03 | +22.79 |
+| hc_* | 338.92 | 456.44 | +117.52 |
+| Norms/elementwise/quantize | 28.71 | 126.49 | +97.78 |
+| Other | 17.41 | 1.83 | −15.58 |
+| **Σ kernels** | **2886.88** | **3343.10** | **+456.22** |
+| Idle (wall − Σkernels) | 108.32 (3.6%) | 309.35 (8.5%) | **+201.03** |
+| **Wall (profiled, this request)** | **2995.21** | **3652.44** | **+657.23** |
+
+### Kernel-vs-overhead verdict
+
+The gap is **kernel time, not launch/idle overhead**. Σkernels alone account
+for +456 ms of the +657 ms profiled-wall delta (69%); idle only adds +201 ms
+(31%), and even lucebox's idle share (8.5%) is modest in absolute terms
+compared to the kernel-time deltas. Against the unprofiled textparity wall
+numbers (lucebox 1151.6 tok/s ≈ 3.56 s, gufo 1333.4 tok/s ≈ 3.07 s, gap
+≈ 490 ms), the profiled delta (657 ms) is the same order of magnitude and
+dominated by the same classes — rocprofv3 instrumentation inflates both
+engines' wall time but does not manufacture the gap; it was already present
+unprofiled, and the per-class composition here is the real explanation.
+
+Top 3 delta classes (by |Δ|, excluding the small "other" residual):
+
+1. **Routed down, −249.82 ms (lucebox wins this one).**
+   - gufo: `RoutedF16GEMMKernel<WeightType=12, 128, 64, 2, true>` — 94 calls,
+     5922.11 µs mean (556.68 ms), the dominant down-proj tile.
+   - lucebox: `mmb_routed_kernel<128, 128, 32, 64, WT, false, true>` — 42
+     calls, 3858.68 µs mean (162.06 ms) plus `mmb_routed_kernel<128, 64, 32,
+     32, WT, false, true>` — 42 calls, 3322.90 µs mean (139.56 ms). Dispatch:
+     `server/deps/llama.cpp/ggml/src/ggml-cuda/mmb.cu:1090-1094`
+     (`mmb_routed_kernel<128, BN, 32, 64, WT, false, true>` /
+     `mmb_routed_kernel<128, BN_SMALL, 32, 32, WT, false, true>`).
+
+2. **Routed gate/up, +177.71 ms (gufo wins this one).**
+   - gufo: `RoutedF16GEMMKernel<WeightType=7, 128, 48, 2, false>` — 86 calls,
+     4325.78 µs mean (372.02 ms), the dominant gate/up tile.
+   - lucebox: `mmb_routed_glu_kernel<64, 128, 32, 32, 44, false>` — 46 calls,
+     6571.25 µs mean (302.28 ms) plus `mmb_routed_glu_kernel<64, 64, 16, 32,
+     44, false>` — 46 calls, 5752.17 µs mean (264.60 ms). Dispatch:
+     `server/deps/llama.cpp/ggml/src/ggml-cuda/mmb.cu:1146-1147`
+     (`mmb_routed_glu_kernel<64, BN, 32, 32, WT>` /
+     `mmb_routed_glu_kernel<64, BN_SMALL, 16, 32, WT>`). Per-call mean is
+     ~1.4-1.7x gufo's despite fewer total calls — lucebox's fused glu kernel
+     is doing meaningfully more work per launch than gufo's gate/up tile for
+     this routing distribution.
+
+3. **Dense GEMM, +142.53 ms (gufo wins this one; GDN is a near-tie at
+   +140.17 ms, same order).**
+   - gufo: `DenseF16GEMMKernel<256,128,2,8,1,1,false,true,false,false>` — 72
+     calls, 4977.64 µs mean (358.39 ms), the largest single dense-GEMM
+     instantiation.
+   - lucebox: `mmb_q8f16_kernel<256, 128, 2, 8, 1, 1>` — 84 calls, 5920.25 µs
+     mean (497.30 ms) plus `mmb_q8f16_kernel<256, 128, 2, 8, 1, 0>` — 97
+     calls, 2713.59 µs mean (263.22 ms). Dispatch:
+     `server/deps/llama.cpp/ggml/src/ggml-cuda/mmb-q8f16.cuh:254-256`
+     (`mmb_q8f16_kernel<256, 128, 2, 8, 1, xt>` for `xt` in {0,1,2}).
+
+### Top lever
+
+**Routed gate/up is the single largest class where lucebox is slower in
+absolute terms and the mechanism is visible in the trace**: lucebox's fused
+`mmb_routed_glu_kernel` runs fewer total launches than gufo's gate/up tile
+but at 1.4-1.7x the per-call mean latency for this routing distribution
+(`mmb.cu:1146-1147`). Routed down is the mirror case where lucebox already
+beats gufo (−250 ms) with the same kernel family (`mmb.cu:1090-1094`), so the
+routed-expert story is not "lucebox's MMB path is slow" in general — it is
+specifically the glu/gate-up tile shape/width choice that is the lever to
+retune first, since the down-proj tile choice for the same kernel family is
+already competitive or ahead. Dense GEMM and GDN deltas are smaller and
+closely tied with each other; they are secondary to the gate/up tile.
