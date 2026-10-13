@@ -303,6 +303,27 @@ bool ends_with_tool_result(const std::vector<ChatMessage> & messages) {
     return false;
 }
 
+bool think_marker_text(const std::string & raw, std::string & text) {
+    if (raw == "<|channel>" || raw == "<think>") {
+        text = "<think>";
+        return true;
+    }
+    // Qwen's `</think>` is followed by the model's own `\n\n` token. A newline
+    // added here would land in the tool-memory replay text
+    // (`</think>\n\n\n<tool_call>`) and break byte-exact reuse of the
+    // generated turn. Gemma4's channel marker has no such trailing token, so
+    // it keeps the separator.
+    if (raw == "</think>") {
+        text = "</think>";
+        return true;
+    }
+    if (raw == "<channel|>") {
+        text = "</think>\n";
+        return true;
+    }
+    return false;
+}
+
 bool canonical_turn_matches_checkpoint(
         const std::vector<int32_t> & prompt,
         const std::vector<int32_t> & completed_turn,
@@ -2822,12 +2843,7 @@ TokenDelivery classify_generated_token(
     // hit the generic "<...>" strip below and be silently dropped, the
     // emitter would never see the reasoning→content transition, and the
     // whole answer would land in reasoning_content with empty content.
-    if (raw == "<|channel>" || raw == "<think>") {
-        text = "<think>";
-        return TokenDelivery::kThinkTag;
-    }
-    if (raw == "<channel|>" || raw == "</think>") {
-        text = "</think>\n";
+    if (http_detail::think_marker_text(raw, text)) {
         return TokenDelivery::kThinkTag;
     }
 

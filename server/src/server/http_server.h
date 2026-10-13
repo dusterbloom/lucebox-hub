@@ -292,6 +292,9 @@ bool should_clamp_flowkv_disk_cache(
 // Agent clients append system notes (a context budget, reminders) after
 // the tool results; those notes are append-only history too.
 bool ends_with_tool_result(const std::vector<ChatMessage> & messages);
+// Maps a thinking-boundary marker token (`<think>`, `</think>`, Gemma4
+// channel markers) to the text the emitter sees. False for any other token.
+bool think_marker_text(const std::string & raw, std::string & text);
 bool canonical_turn_matches_checkpoint(
     const std::vector<int32_t> & prompt,
     const std::vector<int32_t> & completed_turn,
