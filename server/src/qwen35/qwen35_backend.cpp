@@ -3195,6 +3195,23 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
 
     out_spec_ran = true;
 
+    // KVFlash history: every committed id (accepted drafts, bonus, replay and
+    // injected tokens) lands in out_tokens in order; mirror them into
+    // kvflash_history_ on every exit so live restore sees the answer.
+    struct HistoryGuard {
+        Qwen35Backend * self; const std::vector<int32_t> & out;
+        size_t base, entry;
+        ~HistoryGuard() {
+            if (!self->kvflash_active()) return;
+            kvflash_history_set_generated(self->kvflash_history_, base, out, entry);
+            const size_t hs = self->kvflash_history_.size();
+            const size_t cp = (size_t)std::max(self->cache_.cur_pos, 0);
+            if (hs < cp || hs > cp + 1)   // cur_pos, +1 for a pending token
+                std::fprintf(stderr, "[kvflash] WARNING: history size %zu != cur_pos %zu "
+                             "after spec decode\n", hs, cp);
+        }
+    } history_guard{this, out_tokens, kvflash_history_.size(), out_tokens.size()};
+
     // Sampled-verify: cache_.last_tok is do_prefill's argmax, and the spec
     // loop commits it verbatim as the first generated token. The first token
     // is the highest-entropy decision of the whole generation (e.g. "answer
