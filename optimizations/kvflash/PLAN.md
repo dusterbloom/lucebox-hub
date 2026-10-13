@@ -60,6 +60,27 @@ B0 baseline of today's system ──► the number every later step is compared 
 | **R3** our implementation | fitter → C++ `am_fit` | local | on R2 fixtures: same selected keys ≥ 99%, outputs within 1e-3 relative |
 | **R4** end to end | lucebox with E1–E3 | lucebox6 / 3090 | same QuALITY subset within CI of R1; 120-turn trace 120/120 with 0 degenerate turns; harness 36/36; NIAH ≥ today; decode median within noise |
 
+R1 adapter, exactly (repo `adamzweiger/compaction` @ 2020f6d3):
+`models/qwen3_5/modeling_qwen3_5.py` subclasses the transformers 5.x Qwen3.5
+model and patches only the full-attention layer: the β-into-mask block of
+`models/qwen3/modeling_qwen3.py:223-260` (β added after the softmax scale,
+before the output gate, so the gate is untouched). Gated DeltaNet layers run
+unchanged. `models/generate.py:get_sliding_layer_info` gains a third set,
+`linear_layer_indices` (`layer_types == "linear_attention"`), which every
+compaction loop skips (`global_highest_attention_keys.py:165/256/377/541`);
+`models/cache.py:CompactedPrefixCache` carries the DeltaNet conv/recurrent
+state through as-is. Query capture hooks only the 16 full-attention layers.
+
+Evaluation for agentic coding (after R1, before E):
+1. Teacher-forced replay of real long agent trajectories (our own 120-turn
+   traces plus `nebius/SWE-agent-trajectories` filtered to ≥ 32K tokens):
+   per-turn tool-call exact match, KL vs full cache, first divergent turn.
+   Same data on Modal (R1) and lucebox (R4), deterministic, cheap.
+2. Recall probes inside those sessions: questions about earlier tool outputs
+   (file lines, error messages), plus RepoQA and RULER for calibration.
+3. Outcome: SWE-bench Verified subset (≥ 50 tasks, mini-SWE-agent) and
+   Terminal-Bench; resolve rate full vs KVFlash vs KVFlash+AM, paired by task.
+
 Go/no-go for E: R0 reproduced and R1(b) passes. If R1(b) fails, stop and report.
 
 ## Track S: sessions survive turns (port of fork code)
