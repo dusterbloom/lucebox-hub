@@ -247,3 +247,23 @@ def stage_select():
     calls = [quality.spawn(f"{n}_t0.1", 0.1, b, q, 20, m, "best", 0, 0) for n, q, b, m in cells]
     for c in calls:
         print(c.get())
+
+
+@app.local_entrypoint()
+def stage_heldout(win_query: str, win_key: str, win_budget: int, r0s_n: int = 0, ceil_n: int = 10, shards: int = 3):
+    """Held-out at target 0.10 (Amendment 2): winner + original on articles 20-49; R0s stale arm (ss-plus-repeat, winner key)
+    and ceiling S6 (OMP-fast + ss-plus-repeat + per-head) on the first r0s_n / ceil_n held-out articles (20..).
+    win_key is the full method name incl. suffixes."""
+    calls = []
+    step = 30 // shards
+    for i in range(shards):
+        calls.append(quality.spawn(f"heldout_win_a{20 + i * step}_{step}", 0.1, bool(win_budget), win_query, step,
+                                   ["original", win_key], "best", 20 + i * step, 0))
+    if r0s_n:
+        calls.append(quality.spawn(f"heldout_stale_a20_{r0s_n}", 0.1, bool(win_budget), "ss-plus-repeat", r0s_n,
+                                   [win_key], "best", 20, 0))
+    if ceil_n:
+        calls.append(quality.spawn(f"heldout_ceil_a20_{ceil_n}", 0.1, True, "ss-plus-repeat", ceil_n,
+                                   [OMPFON], "best", 20, 0))
+    for c in calls:
+        print(c.get())

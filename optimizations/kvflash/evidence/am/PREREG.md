@@ -99,6 +99,12 @@ Reductions (all from cost only, decided before seeing any matrix outcome):
 8. The vs-random run is split into 5 article ranges (start-article/n-articles) and merged for analysis; same configs in every shard.
 9. AIME Table 9 block cost $56 vs $50 projected; design unchanged.
 
+## Amendment 2 (written after S1-S4 selection results, before any held-out result; the user raised the cap to $190)
+
+- Winner by the Amendment-1 rule: S1 (HighestAttnKeys, repeat queries, per-head budget, on-policy), see `R0_quality_selection.md` (S1 258/357, S4 259/357, tie -> lower cost).
+- Selection OMP-fast cells cost ~714 s per article (more than the pilot suggested), so the ceiling arm (S6) on 30 held-out articles would cost ~$30+ and the projection would pass $190. Held-out is therefore: winner S1 + original on articles 20-49 (30 articles, all 3 shards); ceiling S6 (OMP-fast + ss-plus-repeat + per-head) on articles 20-29 only (10 articles). The R0s stale arm on held-out is dropped (the instructed first cut); R0s is answered on the selection split by S5 (HA ss-plus-repeat, per-head) vs S1 (same, repeat queries), n=357.
+- Consequence: the primary comparison (online S1 vs ceiling S6) runs on 10 held-out articles (~180 q); the minimum detectable difference is ~10 points, so the verdict is "within margin" only if the paired CI lies inside +-3, otherwise "inconclusive at this n". The selection-split S1 vs S6 comparison (n=357) is reported next to it as an exploratory (selection-contaminated) number.
+
 ## Rung R1a: Qwen3.8-27B adapter is exact without compaction
 
 Written 2026-10-13 before any run of the adapter on the 27B model. Only tokenizer-length counts of the candidate prompts were taken (CPU, no model weights) to fix the 8K+ prompts. Adapter code: `../../modal/am_qwen35/` (patches on top of `adamzweiger/compaction` @ 2020f6d3). Cost cap for the whole R1a task: $15.

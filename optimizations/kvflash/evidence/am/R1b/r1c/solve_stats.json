@@ -1,0 +1,26 @@
+{
+ "agnostic_stats": {
+  "target_ratios": [
+   0.05,
+   0.1
+  ],
+  "weights": null,
+  "method": "swap",
+  "step_size": 0.001,
+  "per_ratio_stats": {
+   "0.05": {
+    "optimized_loss": -0.6002088396489208,
+    "uniform_loss": -0.17519413709962234,
+    "improvement": 0.42501470254929846
+   },
+   "0.1": {
+    "optimized_loss": -1.052363883457501,
+    "uniform_loss": -0.5685189926415158,
+    "improvement": 0.48384489081598525
+   }
+  },
+  "average_optimized_loss": -0.826286361553211,
+  "average_uniform_loss": -0.37185656487056906,
+  "average_improvement": 0.45442979668264194
+ }
+}
