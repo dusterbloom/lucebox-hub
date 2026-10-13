@@ -66,25 +66,25 @@ def smoke():
     return _run("smoke", ["examples.qa_demo", "--model", MODEL, "--target-size", "0.1"], log_dir=False)
 
 
-@app.function(gpu=GPU, volumes=VOLS, timeout=6 * 3600)
+@app.function(gpu=GPU, volumes=VOLS, timeout=6 * 3600, max_containers=6)
 def reasoning(name: str, mode: str, max_seq_len: int, max_compactions: int = 0,
-              start_problem: int = 0, n_problems: int = -1):
+              start_problem: int = 0, n_problems: int = -1, seed: int = 1, target: float = 0.2):
     argv = ["evaluation.run_reasoning_evaluation", "--mode", mode, "--max-seq-len", str(max_seq_len),
-            "--seed", "1", "--model-name", MODEL, "--start-problem", str(start_problem),
+            "--seed", str(seed), "--model-name", MODEL, "--start-problem", str(start_problem),
             "--n-problems", str(n_problems)]
     if mode == "compaction":
-        argv += ["--target-size", "0.2", "--max-compactions", str(max_compactions),
+        argv += ["--target-size", str(target), "--max-compactions", str(max_compactions),
                  "--method", "AM-HighestAttnKeys-basic", "--query-config", "repeat",
                  "--algorithm-config", "default"]
     return _run(name, argv)
 
 
-@app.function(gpu=GPU, volumes=VOLS, timeout=5 * 3600)
+@app.function(gpu=GPU, volumes=VOLS, timeout=8 * 3600, max_containers=4)
 def quality(name: str, target: float, budget: bool, query_config: str, n_articles: int = 10,
             methods: list[str] = ("original", "highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy"),
-            algorithm_config: str = "best"):
+            algorithm_config: str = "best", start_article: int = 0, compute_stats: int = 1):
     argv = ["evaluation.run_qa_evaluation", "--dataset-name", "quality", "--n-articles", str(n_articles),
-            "--start-article", "0", "--compute-stats", "1", "--target-size", str(target),
+            "--start-article", str(start_article), "--compute-stats", str(compute_stats), "--target-size", str(target),
             "--methods", *methods,
             "--query-config", query_config, "--algorithm-config", algorithm_config, "--model-name", MODEL]
     if budget:
@@ -178,5 +178,39 @@ def quality_ctrl(query_config: str = "ss-plus-repeat"):
             f"quality_t{t}_uniform_ctrl_{query_config}", t, False, query_config, 10,
             ["random_subset_keys_nnls2_-3_3_lsq_on-policy", "truncate_nnls2_-3_3_lsq_on-policy"],
             "key-selection"))
+    for k in calls:
+        print(k.get())
+
+
+@app.local_entrypoint()
+def aime_table9(seeds: str = "1,2,3,4", split: int = 5, skip_seed1_baselines: bool = True):
+    """Paper Table 9: phys 2048, 50% per compaction, <=2 and <=6 compactions; baselines 2048/4096/8192."""
+    jobs = []
+    for s in [int(x) for x in seeds.split(",")]:
+        for c in (2, 6):
+            jobs.append((f"t9_compact_2048_t0.5_c{c}_s{s}", "compaction", 2048, c, s, 0.5))
+        if not (s == 1 and skip_seed1_baselines):
+            for L in (2048, 4096, 8192):
+                jobs.append((f"baseline_{L}_s{s}", "baseline", L, 0, s, 0.2))
+    calls = []
+    step = 30 // split
+    for n, m, L, c, s, t in jobs:
+        for i in range(split):
+            calls.append(reasoning.spawn(f"{n}_p{i}", m, L, c, i * step, step, s, t))
+    for k in calls:
+        print(k.get())
+
+
+HA = "highest_attn_keys_rms_nnls2_-3_3_lsq"
+OMP = "omp_nnls0_-inf_7_drop-7_lsq"
+OMPF = "omp_nnls0_-inf_7_drop-7_lsq_k4int2"
+
+
+@app.local_entrypoint()
+def pilot():
+    """Timing-only pilot on selection articles 0-1 (PREREG Amendment 1)."""
+    ms = [m + s for m in (HA, OMP, OMPF) for s in ("", "_on-policy")]
+    calls = [quality.spawn(f"pilot_{qc}", 0.1, False, qc, 2, ["original", *ms], "best", 0, 0)
+             for qc in ("context-prefill", "repeat", "ss-plus-repeat")]
     for k in calls:
         print(k.get())
