@@ -195,6 +195,17 @@ inline int kvflash_gen_ckpt_pos(int cur_pos, size_t history_size) {
     return cur_pos > 0 && history_size >= (size_t)cur_pos ? cur_pos : -1;
 }
 
+// History after a decode phase: history[0:base] followed by the generated ids
+// out_tokens[out_entry:]. Rebuilds from `base` rather than appending, so it is
+// idempotent over an AR fallback that already pushed some of the same ids.
+inline void kvflash_history_set_generated(std::vector<int32_t> & history, size_t base,
+                                          const std::vector<int32_t> & out_tokens,
+                                          size_t out_entry) {
+    history.resize(std::min(base, history.size()));
+    if (out_entry < out_tokens.size())
+        history.insert(history.end(), out_tokens.begin() + out_entry, out_tokens.end());
+}
+
 // Decision for a restore from the live session (S8a).
 //   L             longest common prefix of the prompt and the live history,
 //                 capped at cur_pos (the history is exact only up to there)
