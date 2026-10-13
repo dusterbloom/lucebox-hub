@@ -384,9 +384,11 @@ struct ModelBackend {
         }
         // A deferred snapshot the first attempt continued in place no
         // longer exists (snapshot_save_deferred()); prefill the prompt.
-        GenerateResult merged =
-            merge_empty_spec_retry_result(result, generate_impl(retry, io));
-        merged.restored_prefix_tokens = 0;
+        GenerateResult again = generate_impl(retry, io);
+        const int again_prefix = again.restored_prefix_tokens;
+        GenerateResult merged = merge_empty_spec_retry_result(result, std::move(again));
+        // Only the retry's own cut counts (a live-session restore can reuse a prefix).
+        merged.restored_prefix_tokens = again_prefix;
         return merged;
     }
 
