@@ -46,6 +46,24 @@ TEST_CASE(KvflashRestorePlanFixture, degenerate_geometry_falls_back) {
     CHECK(kvflash_restore_plan(true, true, 640, 0, false) == KvflashRestorePlan::Reject);
 }
 
+// A dense snapshot (restored prefix 7039) plus a prompt that crosses the pool
+// (8192, chunk 64) cannot continue densely and the pooled prefill needs a fresh
+// request: the plan must re-prefill the whole prompt, never fail.
+TEST_CASE(KvflashRestorePlanFixture, dense_restore_that_outgrows_the_pool_reprefills) {
+    CHECK(kvflash_restore_plan(false, false, 7039, 64, true, 7039 + 1354, 8192) == KvflashRestorePlan::FullReprefill);
+    CHECK(kvflash_restore_plan(false, false, 316, 64, true, 9000, 8192) == KvflashRestorePlan::FullReprefill);
+    CHECK(kvflash_restore_plan(true,  false, 316, 64, true, 9000, 8192) == KvflashRestorePlan::FullReprefill);
+}
+
+TEST_CASE(KvflashRestorePlanFixture, dense_restore_inside_the_pool_stays_dense) {
+    CHECK(kvflash_restore_plan(false, false, 7039, 64, true, 8000, 8192) == KvflashRestorePlan::Dense);
+    CHECK(kvflash_restore_plan(false, false, 7039, 64, true, 8192 - 64, 8192) == KvflashRestorePlan::Dense);
+    CHECK(kvflash_restore_plan(false, false, 7039, 64, true, 8192 - 63, 8192) == KvflashRestorePlan::FullReprefill);
+    // kvflash off (pool 0) or an exact hit: untouched.
+    CHECK(kvflash_restore_plan(false, false, 7039, 64, true, 20000, 0) == KvflashRestorePlan::Dense);
+    CHECK(kvflash_restore_plan(false, false, 9000, 64, true, 9000, 8192) == KvflashRestorePlan::Dense);
+}
+
 TEST_CASE(KvflashRestorePlanFixture, history_cold_prefill_is_just_the_tokens) {
     const std::vector<int32_t> tok = {5, 6, 7};
     const auto h = kvflash_restore_history(tok, 0, nullptr);
