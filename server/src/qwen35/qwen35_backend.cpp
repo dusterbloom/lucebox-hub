@@ -2467,6 +2467,13 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     // without a snap_pos the head rung is simply absent.
     std::vector<int> ladder;
     int turn_cut = -1;
+    std::vector<int> turn_cuts;
+    if (kvflash_active() && !images && kvflash_turn_ckpt_enabled()) {
+        // Every prefill (cold included, ladder or not) cuts after every assistant
+        // header, so a restore at a turn rung replays the batches a cold prefill ran.
+        turn_cuts = kvflash_turn_cuts(tokens, w_.im_start_id, w_.assistant_id, w_.newline_id);
+        for (int & c : turn_cuts) c += kv_offset;
+    }
     if (kvflash_active() && !images && kvflash_state_ladder_enabled()) {
         if (kv_offset == 0) state_ladder_clear();
         // A live restore keeps the head rung unless the server names a new cut.
@@ -2474,10 +2481,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             state_ladder_head_ = snap_pos > 0 ? snap_pos / kQwen35PrefillUbatch * kQwen35PrefillUbatch : -1;
         }
         // S9b: an exact rung just after the last assistant header (Pend - k).
-        if (kvflash_turn_ckpt_enabled()) {
-            const int c = kvflash_turn_cut(tokens, w_.im_start_id, w_.assistant_id, w_.newline_id);
-            if (c > 0) turn_cut = kv_offset + c;
-        }
+        if (!turn_cuts.empty()) turn_cut = turn_cuts.back();
         ladder = kvflash_state_ladder_positions(snap_pos, kv_offset + prompt_len,
                                                 kQwen35PrefillUbatch, 8192, turn_cut);
     }
@@ -2499,7 +2503,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         // kvflash_prefill_batch_end) and never snapshots mid-batch.
         const int n_tokens = kvf_paged
             ? kvflash_prefill_batch_end(kv_pos, kv_offset + prompt_len,
-                                        kQwen35PrefillUbatch, prefill_ubatch, turn_cut) - kv_pos
+                                        kQwen35PrefillUbatch, prefill_ubatch, turn_cuts) - kv_pos
             : qwen35_prefill_chunk_tokens(
                   kv_pos, prompt_len - start, prefill_ubatch, restore_points,
                   start == 0 && restored_off_grid ? kQwen35OffGridLeadTokens
