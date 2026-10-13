@@ -103,7 +103,7 @@ Principles:
 | S5 `pager.truncate(P)` | drop logical positions ≥ P, free their blocks, keep pins/ledger consistent | unit: truncate at chunk edge, mid-chunk, inside tail, after eviction; serialize ↔ truncate round trip |
 | S6 aligned prefill grid | KVFlash prefill batches start on multiples of U; the remainder below U runs as the last batch | unit: batch plan for prompt lengths 1, 511, 512, 513, 18813; GPU: no NaN on R9700 for every remainder size 1–64 |
 | S7 DeltaNet checkpoint ladder | checkpoints at the system/tools head, every 8192 tokens, and at the grid point below each prompt end; LRU-bounded (~2.9 GiB at 131K) | unit: selection of C for synthetic L; memory bound respected |
-| S8 per-session store + restore | live pager + checkpoints keyed by session; restore as above; actual cut published | GPU: 10-turn session, every turn re-prefills < U + new tokens; output identical to cold prefill at turns 3, 5, 10 |
+| S8 per-session store + restore | live pager + checkpoints keyed by session id, under one global GPU-block and host-RAM budget (idle sessions page out whole, LRU across sessions); restore as above; actual cut published | GPU: 10-turn session, every turn re-prefills < U + new tokens; output identical to cold prefill at turns 3, 5, 10 |
 | S9 generation-end checkpoint | checkpoint after decode so the next turn skips re-reading the answer | gated: enabled only if DeltaNet state after generation equals cold prefill of the same tokens (greedy tokens identical over 5 sessions) |
 
 The pager blob (S1/S2) stays only for export and disk persistence. Refcounted
@@ -140,7 +140,7 @@ without `/tmp` locks or fork-only env vars.
 ## Track C: concurrency (after S)
 
 C0 one-page design of one pager per `seq_*` slot over the shared pool;
-C1 refcount + COW + chained salted hash in `paged_kv_pool`; C2 KVFlash per slot
+C1 refcount + COW over sealed 64-token chunks + chained salted hash in `paged_kv_pool` (shared system/tools prefix stored once; forks and AM compaction copy only the chunks they change); C2 KVFlash per slot
 (lifts the `--max-concurrency` refusal). Gate: 2 and 4 concurrent replays,
 each identical to its solo run, decode median per session flat.
 
