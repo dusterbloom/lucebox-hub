@@ -200,6 +200,41 @@ public:
         score_hook = nullptr;
     }
 
+    // Drop every logical position >= P: chunks entirely >= P give their pool
+    // block back to the free list and lose their host copy and score; the
+    // chunk containing P keeps its block (or host copy) with rows >= P zeroed.
+    // Pins on dropped chunks are removed, so a pin range is clipped to P. The
+    // result matches a pager that only ever saw P tokens. P <= 0 empties the
+    // pager (pins kept clipped to nothing); P at or beyond the materialized
+    // length is a no-op. Valid for any P because full-attention KV at a
+    // position does not depend on later tokens.
+    void truncate(int64_t P) {
+        if (!attached()) return;
+        if (P < 0) P = 0;
+        if (P >= (int64_t)chunks_.size() * cfg_.chunk_tokens) return;
+        synchronize_paging();   // queued page DMA must not touch what is freed below
+        const int keep = (int)((P + cfg_.chunk_tokens - 1) / cfg_.chunk_tokens);
+        for (int c = (int)chunks_.size() - 1; c >= keep; c--) {
+            ChunkState & st = chunks_[(size_t)c];
+            if (st.block >= 0) {
+                zero_block(st.block);
+                free_blocks_.push_back(st.block);
+            }
+            if (st.on_host && has_tensor_storage()) {
+                release_host_(st);
+                stats_.host_bytes -= (int64_t)chunk_bytes_;
+            }
+        }
+        chunks_.resize((size_t)keep);
+        if (pinned_.size() > (size_t)keep) pinned_.resize((size_t)keep);
+        if (keep > 0 && P % cfg_.chunk_tokens != 0) {
+            zero_chunk_rows_(keep - 1, (int)(P % cfg_.chunk_tokens));
+        }
+        cur_chunk_ = keep > 0 ? keep - 1 : 0;
+        epoch_++;
+        synchronize_paging();   // zeroing is queued on page_stream_
+    }
+
     // Zero every currently-free block. reset() drops mappings but leaves the
     // previous request's bytes in place; maskless consumers (the qwen35moe
     // pipelined decode reads the whole padded pool span with no slot mask)
@@ -713,6 +748,58 @@ private:
 #else
                     ggml_backend_tensor_set(t, zero_buf_.data(), off, seg);
 #endif
+                }
+            }
+        }
+    }
+
+    // Free one chunk's host backing store.
+    void release_host_(ChunkState & st) {
+#ifdef KVFLASH_HAS_ASYNC_DMA
+        if (st.host_data) {
+            cudaError_t err = cudaFreeHost(st.host_data);
+            if (err != cudaSuccess) {
+                std::fprintf(stderr, "[kvflash] cudaFreeHost failed: %s\n",
+                             cudaGetErrorString(err));
+            }
+            st.host_data = nullptr;
+        }
+#else
+        std::vector<uint8_t>().swap(st.host_data);
+#endif
+        st.on_host = false;
+    }
+
+    // Zero rows [row0, chunk_tokens) of chunk c, wherever its bytes live: the
+    // pool block when resident, else the host copy. (A resident chunk's host
+    // copy is stale by construction and overwritten on the next page_out.)
+    void zero_chunk_rows_(int c, int row0) {
+        if (!has_tensor_storage()) return;
+        ChunkState & st = chunks_[(size_t)c];
+        size_t host_off = 0;
+        for (size_t l = 0; l < attn_k_.size(); l++) {
+            for (int kv = 0; kv < 2; kv++) {
+                ggml_tensor * t = kv == 0 ? attn_k_[l] : attn_v_[l];
+                const size_t seg = kv == 0 ? k_seg_bytes_ : v_seg_bytes_;
+                const size_t row = seg / (size_t)cfg_.chunk_tokens;
+                const size_t n = seg - (size_t)row0 * row;
+                for (int h = 0; h < n_head_kv_; h++) {
+                    if (st.block >= 0) {
+                        const size_t off = (size_t)st.block * cfg_.chunk_tokens * t->nb[1] +
+                                           (size_t)h * t->nb[2] + (size_t)row0 * row;
+#ifdef KVFLASH_HAS_ASYNC_DMA
+                        cudaMemsetAsync((uint8_t *)t->data + off, 0, n, page_stream_);
+#else
+                        ggml_backend_tensor_set(t, zero_buf_.data(), off, n);
+#endif
+                    } else if (st.on_host) {
+#ifdef KVFLASH_HAS_ASYNC_DMA
+                        std::memset((uint8_t *)st.host_data + host_off + (size_t)row0 * row, 0, n);
+#else
+                        std::memset(st.host_data.data() + host_off + (size_t)row0 * row, 0, n);
+#endif
+                    }
+                    host_off += seg;
                 }
             }
         }
