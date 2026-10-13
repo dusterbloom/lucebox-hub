@@ -21,6 +21,7 @@
 #include "ddtree.h"
 
 #include <limits>
+#include <map>
 #include "dflash_feature_ring.h"
 #include "common/dflash_draft_kv.h"
 #include "common/concurrency/paged_kv_pool.h"
@@ -335,6 +336,18 @@ private:
     // ── Prefix cache (snapshots) ─────────────────────────────────────
     static constexpr int PREFIX_SLOTS = 64;
     PrefixSnapshot prefix_snapshots_[PREFIX_SLOTS];
+
+    // KVFLASH_STATE_LADDER (S7): state-only (skip_kv) DeltaNet checkpoints at
+    // ladder positions, owned by the backend. Keyed by position only; cleared
+    // at every cold prefill (kv_offset == 0), so they describe the prompt of
+    // the current/last pooled prefill. Per-session identity is S8.
+    struct StateCheckpoint { PrefixSnapshot snap; uint64_t tick = 0; };
+    std::map<int, StateCheckpoint> state_ladder_;
+    uint64_t state_ladder_tick_ = 0;
+    int      state_ladder_head_ = -1;
+    size_t   state_ladder_ckpt_bytes_ = 0;   // bytes of one checkpoint (fixed)
+    void   state_ladder_clear();
+    bool   state_ladder_capture(int pos);    // cache_.cur_pos must == pos
 
     // ── Park state ───────────────────────────────────────────────────
     bool target_parked_ = false;

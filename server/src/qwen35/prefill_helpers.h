@@ -108,6 +108,71 @@ inline bool kvflash_restore_consume_enabled() {
     return v != nullptr && v[0] == '1' && v[1] == '\0';
 }
 
+// ─── DeltaNet state checkpoint ladder (S7) ────────────────────────
+// Recurrent state cannot be sliced back to an earlier position, so a prefix
+// reuse at common-prefix length L needs a state checkpoint at some C <= L.
+// Rungs, all multiples of `grid` (= the S6 batch ends): the system/tools head
+// (rounded down), every `stride` tokens, and the grid point at or below the
+// prompt end. A head < 0 (unknown) leaves that rung out.
+inline std::vector<int> kvflash_state_ladder_positions(int head, int end, int grid, int stride) {
+    std::vector<int> out;
+    if (grid <= 0 || end < grid) return out;
+    if (head >= grid) out.push_back(head / grid * grid);
+    if (stride > 0) {
+        const int s = (stride + grid - 1) / grid * grid;
+        for (int p = s; p <= end; p += s) out.push_back(p);
+    }
+    out.push_back(end / grid * grid);
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    while (!out.empty() && out.back() > end) out.pop_back();
+    return out;
+}
+
+// Greatest checkpoint position C <= L, or -1. `positions` need not be sorted.
+inline int kvflash_ladder_pick(const std::vector<int> & positions, int L) {
+    int best = -1;
+    for (int c : positions) if (c <= L && c > best) best = c;
+    return best;
+}
+
+struct KvflashLadderEntry {
+    int      pos;
+    uint64_t tick;   // last use / insertion order; larger is newer
+};
+
+// Positions to evict (least recently used first) so that
+// entries.size() * ckpt_bytes <= budget_bytes. The head checkpoint (pos ==
+// head_pos) and the newest entry (greatest tick) are never evicted, so the
+// result may leave the store over budget when only those remain.
+inline std::vector<int> kvflash_ladder_evict(const std::vector<KvflashLadderEntry> & entries,
+                                             size_t budget_bytes, size_t ckpt_bytes,
+                                             int head_pos) {
+    std::vector<KvflashLadderEntry> cand;
+    uint64_t newest = 0;
+    for (const auto & e : entries) newest = std::max(newest, e.tick);
+    for (const auto & e : entries) {
+        if (e.pos != head_pos && e.tick != newest) cand.push_back(e);
+    }
+    std::sort(cand.begin(), cand.end(),
+              [](const KvflashLadderEntry & a, const KvflashLadderEntry & b) { return a.tick < b.tick; });
+    std::vector<int> out;
+    size_t total = entries.size() * ckpt_bytes;
+    for (const auto & e : cand) {
+        if (total <= budget_bytes) break;
+        out.push_back(e.pos);
+        total -= ckpt_bytes;
+    }
+    return out;
+}
+
+// KVFLASH_STATE_LADDER=1 opts in to saving DeltaNet state checkpoints at the
+// ladder positions during pooled prefill. Default OFF.
+inline bool kvflash_state_ladder_enabled() {
+    const char * v = std::getenv("KVFLASH_STATE_LADDER");
+    return v != nullptr && v[0] == '1' && v[1] == '\0';
+}
+
 // What a restore does with a snapshot. Dense: the existing path. Consume:
 // pooled snapshot, pager blob restored, only the suffix prefills. FullReprefill:
 // drop the snapshot and prefill the whole prompt from 0. Reject: fail the
