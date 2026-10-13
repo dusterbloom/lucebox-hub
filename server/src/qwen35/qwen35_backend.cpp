@@ -1905,7 +1905,8 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
     const KvflashRestorePlan plan = kvflash_restore_plan(
         kvflash_restore_consume_enabled(), snap_pooled, snap_pos,
         kvflash_active() ? kvflash_pager_.chunk_tokens() : 0,
-        !req.prompt.empty());
+        !req.prompt.empty(), (int)req.prompt.size(),
+        kvflash_active() ? kvflash_tokens_ : 0);
     if (plan == KvflashRestorePlan::Reject) {
         result.fail(GenerateErrorCode::BackendSpecific,
                     "kvflash: pooled snapshot cannot be restored (misaligned or "
@@ -1928,8 +1929,10 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
         if (cache_.base_buf) ggml_backend_buffer_clear(cache_.base_buf, 0);
         if (full_reprefill) {
             std::fprintf(stderr,
-                "[kvflash] pooled snapshot (pos=%d) not consumable: full re-prefill "
-                "of %zu prompt tokens\n", snap_pos, req.prompt.size());
+                "[kvflash] snapshot (pos=%d) %s: full re-prefill "
+                "of %zu prompt tokens\n", snap_pos,
+                snap_pooled ? "not consumable" : "dense prefix cannot continue past the pool",
+                req.prompt.size());
             reset_recurrent_state(cache_);
         } else if (consume) {
             if (!restore_target_cache(prefix_snapshots_[slot], cache_, /*skip_kv=*/true) ||
