@@ -7,7 +7,6 @@
 #include "mmid.cuh"
 #include <vector>
 #include <unordered_set>
-#include <cstdlib>
 
 #if defined(__gfx1151__) || !defined(__HIP_DEVICE_COMPILE__)
 
@@ -655,18 +654,6 @@ mmb_f32split_kernel(const float * __restrict__ W, const void * __restrict__ Xv, 
 }
 #endif
 
-// Minimum row count for an expert to get a single 128-row ("big") tile instead of 64-row ("small") tiles.
-// Default 65: an expert with 65-127 rows previously took two 64-row tiles (each re-streaming the expert's
-// weights); one 128-row tile reads the weights once. Override via LUCE_MMB_TILE128_MIN for A/B testing
-// (e.g. the old value 128 restores the two-small-tile behavior for experts with 65-127 rows).
-// Read fresh (not cached) so a single process -- e.g. a parity test -- can flip
-// LUCE_MMB_TILE128_MIN between calls without a restart. This runs once per routed
-// mul_mat_id call (not per tile), so the getenv cost is negligible next to the launch.
-static int mmb_tile128_min() {
-    if (const char * e = getenv("LUCE_MMB_TILE128_MIN")) { const int p = atoi(e); if (p > 0) return p; }
-    return 65;
-}
-
 // two tile classes: experts with >= thresh rows get BN_BIG-row tiles, the rest BN_SMALL-row tiles (fewer wasted rows on tiny experts)
 __global__ void mmb_build_desc2(const int32_t * __restrict__ bounds, uint32_t * __restrict__ desc_big, uint32_t * __restrict__ desc_small,
         const int E, const int nbig_max, const int nsmall_max, const int BN_BIG, const int BN_SMALL, const int thresh) {
@@ -1085,8 +1072,7 @@ void ggml_cuda_mul_mat_id_mmb(ggml_backend_cuda_context & ctx, const ggml_tensor
     // Experts under THRESH rows take BN_SMALL-token tiles. Every tile re-streams the expert's weights; at ~40 rows per
     // expert (T=2048, top-10 of 512) 64-token tiles read each expert once where 32 read most twice. The per-output
     // K order is unchanged, so the tile width is bit-exact.
-    constexpr int BN_SMALL = 64;
-    const int THRESH = mmb_tile128_min();
+    constexpr int BN_SMALL = 64, THRESH = 128;
     const int nbig_max   = n_rows / BN + E + 1;
     const int nsmall_max = E * ((THRESH + BN_SMALL - 1) / BN_SMALL) + 1;
     ggml_cuda_pool_alloc<uint32_t> desc_big(ctx.pool(), nbig_max);
@@ -1143,8 +1129,7 @@ void ggml_cuda_mul_mat_id_mmb_glu(ggml_backend_cuda_context & ctx, const ggml_te
     // Experts under THRESH rows take BN_SMALL-token tiles. Every tile re-streams the expert's weights; at ~40 rows per
     // expert (T=2048, top-10 of 512) 64-token tiles read each expert once where 32 read most twice. The per-output
     // K order is unchanged, so the tile width is bit-exact.
-    constexpr int BN_SMALL = 64;
-    const int THRESH = mmb_tile128_min();
+    constexpr int BN_SMALL = 64, THRESH = 128;
     const int nbig_max   = n_rows / BN + E + 1;
     const int nsmall_max = E * ((THRESH + BN_SMALL - 1) / BN_SMALL) + 1;
     ggml_cuda_pool_alloc<uint32_t> desc_big(ctx.pool(), nbig_max);

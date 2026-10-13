@@ -1302,16 +1302,6 @@ if(LUCE_TESTS)
             list(APPEND _raw_unit_test_targets test_mmb_cublas_diff)
         endif()
 
-        # Routed MMB 128-row-tile threshold A/B: THRESH=128 (two 64-row tiles for
-        # 65-127-row experts) vs THRESH=65 (one 128-row tile), via LUCE_MMB_TILE128_MIN.
-        # See the file header.
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/unit/test_mmb_tile128_threshold.cpp")
-            luce_add_ggml_gpu_executable(test_mmb_tile128_threshold test/unit/test_mmb_tile128_threshold.cpp)
-            target_compile_definitions(test_mmb_tile128_threshold PRIVATE GGML_USE_HIP)
-            target_link_libraries(test_mmb_tile128_threshold PRIVATE ggml-cpu)
-            list(APPEND _raw_unit_test_targets test_mmb_tile128_threshold)
-        endif()
-
         # Vectorized bf16<->f32 cast vs the scalar fallback, bit-exact.
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/unit/test_convert_vec.cpp")
             add_executable(test_convert_vec test/unit/test_convert_vec.cpp)
