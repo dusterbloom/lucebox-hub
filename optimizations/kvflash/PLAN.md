@@ -100,10 +100,10 @@ Principles:
 
 | Patch | What | Test / gate |
 |---|---|---|
-| S5 `pager.truncate(P)` | drop logical positions ≥ P, free their blocks, keep pins/ledger consistent | unit: truncate at chunk edge, mid-chunk, inside tail, after eviction; serialize ↔ truncate round trip |
-| S6 aligned prefill grid | KVFlash prefill batches start on multiples of U; the remainder below U runs as the last batch | unit: batch plan for prompt lengths 1, 511, 512, 513, 18813; GPU: no NaN on R9700 for every remainder size 1–64 |
-| S7 DeltaNet checkpoint ladder | checkpoints at the system/tools head, every 8192 tokens, and at the grid point below each prompt end; LRU-bounded (~2.9 GiB at 131K) | unit: selection of C for synthetic L; memory bound respected |
-| S8 per-session store + restore | live pager + checkpoints keyed by session id, under one global GPU-block and host-RAM budget (idle sessions page out whole, LRU across sessions); restore as above; actual cut published | GPU: 10-turn session, every turn re-prefills < U + new tokens; output identical to cold prefill at turns 3, 5, 10 |
+| S5 `pager.truncate(P)` (5cd2a923, 7 unit cases, GPU pending) | drop logical positions ≥ P, free their blocks, keep pins/ledger consistent | unit: truncate at chunk edge, mid-chunk, inside tail, after eviction; serialize ↔ truncate round trip |
+| S6 aligned prefill grid (03ea42af, 9 unit cases, GPU pending) | KVFlash prefill batches start on multiples of U; the remainder below U runs as the last batch | unit: batch plan for prompt lengths 1, 511, 512, 513, 18813; GPU: no NaN on R9700 for every remainder size 1–64 |
+| S7 DeltaNet checkpoint ladder (7154dfb1, 5 unit cases, GPU pending) | checkpoints at the system/tools head, every 8192 tokens, and at the grid point below each prompt end; LRU-bounded (~2.9 GiB at 131K) | unit: selection of C for synthetic L; memory bound respected |
+| S8 per-session store + restore (S8a single live session: 1e853bfd, 8 unit cases, GPU pending; S8b many sessions: after C) | live pager + checkpoints keyed by session id, under one global GPU-block and host-RAM budget (idle sessions page out whole, LRU across sessions); restore as above; actual cut published | GPU: 10-turn session, every turn re-prefills < U + new tokens; output identical to cold prefill at turns 3, 5, 10 |
 | S9 generation-end checkpoint | checkpoint after decode so the next turn skips re-reading the answer | gated: enabled only if DeltaNet state after generation equals cold prefill of the same tokens (greedy tokens identical over 5 sessions) |
 
 The pager blob (S1/S2) stays only for export and disk persistence. Refcounted
