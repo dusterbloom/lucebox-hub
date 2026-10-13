@@ -602,3 +602,133 @@ relaxation is safe to land, but on this harness it is not a measurable
 prefill speedup — the 4096-row-chunk sort is too small a fraction of total
 prefill wall time for a single-chunk win to clear the noise floor at p=4096
 or p=16384.
+
+## Text-prompt parity rerun (2026-10-13)
+
+The parity numbers above are **void on prompt-content parity**: gufo's
+`bench -p` tool feeds a deterministic cyclic token-ID sequence
+(`((start_pos+i)%1000)+100`, `bench.cpp:280-287` — see "Prompt parity check"
+above), while lucebox was fed tokenized natural-language text. For a
+512-expert top-10 MoE, router logits (and therefore which per-shape/per-tile
+code path each engine takes) depend on content, so the two engines were not
+doing the same work. This section re-runs both engines through gufo's own
+HTTP `serve` mode (OpenAI-compatible, not the `bench` CLI) so both consume
+**byte-identical text** per rep.
+
+### Parity contract (this rerun)
+
+1. **Model**: same file, same shard path as the main parity run above
+   (`/home/duster/lucebox-models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf`).
+   Binary md5s captured before touching anything:
+   `luce_server` `7afa92f0da68d7b7a21f209a7c8e77b9`,
+   `gufo` `c2a41962cc816a8eb6f1c827ed040898`,
+   GGUF shard1 `1958631667f5320c7969d047b43b5829`.
+2. **Device**: both pinned to the Strix iGPU (`gfx1151`) —
+   `HIP_VISIBLE_DEVICES=1` for gufo, `ROCR_VISIBLE_DEVICES=1` for lucebox —
+   same as the main run, hiding the discrete `gfx1201`.
+3. **Context**: `--max-ctx 20480` (lucebox), `--context 20480` (gufo serve).
+4. **Prompt content**: real text, not synthetic tokens. Source: concatenated
+   CPython 3.12 stdlib `.py` files found on the box
+   (`find /usr/lib/python3.12 -maxdepth 2 -iname '*.py' | sort | xargs cat`,
+   9.77 MB corpus, `~/qwen4exp-f16/scratch/gufo/textparity/corpus.txt`).
+   Six distinct, non-overlapping slices (3 reps × 2 lengths) were cut from
+   this corpus at increasing offsets (so no rep repeats another rep's text)
+   and calibrated against gufo's live tokenizer by proportional retry until
+   `prompt_tokens` landed within 15 tokens of the 4096/16384 targets. The
+   **same slice files** (byte-identical) were then posted to both engines —
+   lucebox's own chat template adds a fixed ~40-43-token wrapper, so its
+   `prompt_tokens` read ~40 tokens higher than gufo's for the same underlying
+   text (4136 vs 4096, 16421 vs 16381, etc.) — this offset is the chat
+   template, not a content mismatch, and is small relative to p.
+5. **Sampling**: greedy (temperature 0), `max_tokens=1`, `stream=true`, same
+   OpenAI-compatible client script against both engines
+   (`text_bench_client.py`), reading `usage.prompt_tokens` and wall time as
+   TTFT (first and only token).
+6. **Caching symmetry — verified on both sides, not assumed:**
+   - gufo: every request logged `cache=miss cached_tokens=0` in its verbose
+     server log (`gufo_serve2.log`) — confirmed no prefix reuse across the 6
+     distinct-content reps.
+   - lucebox: **first attempt was NOT symmetric** — lucebox's prefix cache is
+     ON by default (`prefix_cache = 32 slots`) and, even with 6 distinct
+     prompt bodies, it cached the ~43-token chat-template preamble common to
+     all of them (`restore=true slot=0 prefix_len=43` from rep 2 onward,
+     `luce_serve.log`). That is a real, if small (43 of 4096-16430 tokens),
+     asymmetry against gufo's zero-cache behavior, so that run was discarded.
+     Server was restarted with `--prefix-cache-slots 0`; the rerun logged
+     `restore=false slot=-1 prefix_len=0` on **every** request
+     (`luce_serve_nocache.log`) — now symmetric with gufo's `cache=miss`.
+     **All numbers below are from the `--prefix-cache-slots 0` run.**
+7. One engine loaded at a time; GPU confirmed idle (0-3% busy on both
+   `gfx1151`/`gfx1201` via `/sys/class/drm/card{1,2}/device/gpu_busy_percent`)
+   before each load, no other process touched.
+
+### Commands
+
+- gufo server: `HIP_VISIBLE_DEVICES=1 LD_LIBRARY_PATH=/opt/rocm-7.2.2/lib
+  /home/duster/gufo-parity/src/build/release/gufo serve --port 18090 llm
+  -m <shard1.gguf> --context 20480 --served-model-name bench --think off
+  --max-pending-per-client 8 -v`
+- lucebox server: `ROCR_VISIBLE_DEVICES=1
+  /home/duster/qwen4exp-exact-stack/build1151/luce_server <shard1.gguf>
+  --port 19080 --max-ctx 20480 --prefix-cache-slots 0`
+- slice generation: `python3 make_slices.py 18090 corpus.txt slices.json .`
+  (binary-search-by-proportional-retry against gufo's live tokenizer)
+- timed reps (same script, same files, against each engine's port):
+  `python3 text_bench_client.py <port> prompt_p<4096|16384>_r<0|1|2>.txt`
+- Scratch (box): `~/qwen4exp-f16/scratch/gufo/textparity/` — `corpus.txt`,
+  `make_slices.py`, `text_bench_client.py`, `prompt_p{4096,16384}_r{0,1,2}.txt`,
+  `slices.json`, `gufo_serve2.log`, `luce_serve_nocache.log`,
+  `gufo_timed_results.jsonl`, `luce_timed_results_nocache.jsonl`.
+
+### Raw per-rep arrays (prefill tok/s = prompt_tokens / client wall time)
+
+| Engine | p target | rep0 | rep1 | rep2 | median | mean | best | min |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| gufo   | 4096  | 1252.9 | 1355.9 | 1333.4 | **1333.4** | 1314.1 | 1355.9 | 1252.9 |
+| gufo   | 16384 | 1323.2 | 1323.6 | 1317.1 | **1323.2** | 1321.3 | 1323.6 | 1317.1 |
+| lucebox| 4096  |  972.2 | 1151.6 | 1162.1 | **1151.6** | 1095.3 | 1162.1 |  972.2 |
+| lucebox| 16384 | 1189.4 | 1216.5 | 1241.3 | **1216.5** | 1215.7 | 1241.3 | 1189.4 |
+
+(prompt_tokens actually served, for the record: gufo 4096/4091/4095 and
+16381/16379/16390; lucebox 4136/4131/4135 and 16421/16419/16430 — the
+~40-token offset is lucebox's chat template, confirmed above.)
+
+### New gap vs the old cyclic-token gap
+
+| p | old gap (cyclic ids, gufo `bench` vs lucebox text) | new gap (real text, both engines) |
+| ---: | ---: | ---: |
+| 4096  | gufo 1741.7 vs lucebox 1135.6 → **1.53x (+53.4%)** | gufo 1333.4 vs lucebox 1151.6 → **1.16x (+15.8%)** |
+| 16384 | gufo 1681.1 vs lucebox 1247.0 → **1.35x (+34.9%)** | gufo 1323.2 vs lucebox 1216.5 → **1.09x (+8.8%)** |
+
+**Prompt content changed gufo's numbers, not lucebox's.** gufo's cyclic-token
+`bench` numbers (1741.7 / 1681.1 tok/s) were **~24% and ~21% higher** than its
+own real-text `serve` numbers (1333.4 / 1323.2 tok/s) on the same GGUF, same
+device, same context — gufo's narrow, periodic, low-ID-band synthetic prompt
+was measurably easier for its adaptive per-shape/per-expert-histogram tiling
+than real natural-language-derived routing. lucebox's numbers, by contrast,
+were already measured on real text in the original run and move only
+slightly (1135.6→1151.6 at p=4096, 1247.0→1216.5 at p=16384 — both within
+this harness's normal rep-to-rep noise band, ±5-8%, not a content effect).
+So essentially all of the ~35-50% "gufo wins big" headline in the original
+parity table was an artifact of gufo's own benchmark tool feeding itself an
+easier synthetic workload — on matched real text the gap shrinks to
+**+16% at p=4096 and +9% at p=16384**, still a real lucebox deficit but far
+smaller than previously reported.
+
+### Step 5 (lucebox fed gufo-style cyclic token IDs) — skipped
+
+lucebox's HTTP API has no raw-token-ID prompt endpoint: `/v1/completions`
+with an integer-array `prompt` returns `unknown endpoint` (only
+`/v1/chat/completions` with string `content` is implemented), so there is no
+way to feed lucebox the exact same cyclic-ID sequence gufo's `bench` tool
+uses without going through its BPE tokenizer (which would re-encode the
+integers as text, not reproduce raw IDs). Per the task's fallback
+instruction, this half of the experiment was skipped rather than faked.
+
+**Caveat:** indicative, not fully converged — 3 reps/point, caches not
+dropped between reps (though confirmed non-reused per-request above), and
+page/host memory state was whatever each engine's own cold-start left it in.
+The qualitative result (content changes gufo's number by ~20%+, barely moves
+lucebox's) is large relative to the ±5-8% rep-to-rep noise and is the
+headline finding; the exact +16%/+9% gap figures should be read as
+directionally solid but not noise-free to the last digit.
