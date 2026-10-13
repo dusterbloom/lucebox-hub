@@ -231,10 +231,13 @@ inline bool kvflash_gen_ckpt_enabled() {
 // KVFLASH_TURN_CKPT=1 cuts every KVFlash prefill after each assistant header
 // (kvflash_turn_cuts) and, with the state ladder on, captures a rung at the
 // last one (S9b). Needs no live restore, so a cold reference can run the same
-// cuts. Default OFF.
+// cuts. Default ON with KVFLASH_LIVE_RESTORE=1: under eviction the cut points
+// change the target's features, so cold and restored requests must share them.
+// KVFLASH_TURN_CKPT=0 turns it off.
 inline bool kvflash_turn_ckpt_enabled() {
     const char * v = std::getenv("KVFLASH_TURN_CKPT");
-    return v != nullptr && v[0] == '1' && v[1] == '\0';
+    if (v != nullptr && (v[0] == '0' || v[0] == '1') && v[1] == '\0') return v[0] == '1';
+    return kvflash_live_restore_enabled();
 }
 
 // Position of the generation-end checkpoint: cur_pos, where KV and DeltaNet
