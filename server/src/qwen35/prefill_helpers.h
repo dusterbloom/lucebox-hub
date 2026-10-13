@@ -83,17 +83,24 @@ inline int kvflash_pooled_ubatch(int prefill_ubatch, int chunk_tokens, int pool_
 // end-of-prompt remainder (as in the dense path); the GPU gate covers
 // remainders 1..64. If max_batch < grid the grid shrinks to max_batch; a
 // max_batch that is not a multiple of the grid is rounded down to one.
-inline int kvflash_prefill_batch_end(int pos, int end, int grid, int max_batch) {
+//
+// S9b: `cut` (>= 0) is one extra batch boundary off the grid, the turn rung
+// Pend - k. A batch that would straddle it ends there; the batch after it
+// starts off-grid and runs to the next grid point, so the grid is otherwise
+// untouched. A cut at or before `pos`, or at or after the natural end, is a
+// no-op.
+inline int kvflash_prefill_batch_end(int pos, int end, int grid, int max_batch, int cut = -1) {
     const int g = max_batch < grid ? std::max(1, max_batch) : grid;
     const int maxb = (std::max(max_batch, 1) / g) * g;
-    return std::min(end, ((pos + maxb) / g) * g);
+    const int e = std::min(end, ((pos + maxb) / g) * g);
+    return cut > pos && cut < e ? cut : e;
 }
 
 inline std::vector<std::pair<int, int>> kvflash_prefill_batches(int start, int end, int grid,
-                                                                int max_batch) {
+                                                                int max_batch, int cut = -1) {
     std::vector<std::pair<int, int>> out;
     for (int pos = start; pos < end;) {
-        const int e = kvflash_prefill_batch_end(pos, end, grid, max_batch);
+        const int e = kvflash_prefill_batch_end(pos, end, grid, max_batch, cut);
         out.emplace_back(pos, e);
         pos = e;
     }
@@ -113,8 +120,10 @@ inline bool kvflash_restore_consume_enabled() {
 // reuse at common-prefix length L needs a state checkpoint at some C <= L.
 // Rungs, all multiples of `grid` (= the S6 batch ends): the system/tools head
 // (rounded down), every `stride` tokens, and the grid point at or below the
-// prompt end. A head < 0 (unknown) leaves that rung out.
-inline std::vector<int> kvflash_state_ladder_positions(int head, int end, int grid, int stride) {
+// prompt end. A head < 0 (unknown) leaves that rung out. S9b: `turn_cut` > 0
+// (the off-grid turn rung, see kvflash_turn_cut) is added when it is <= end.
+inline std::vector<int> kvflash_state_ladder_positions(int head, int end, int grid, int stride,
+                                                       int turn_cut = -1) {
     std::vector<int> out;
     if (grid <= 0 || end < grid) return out;
     if (head >= grid) out.push_back(head / grid * grid);
@@ -123,10 +132,27 @@ inline std::vector<int> kvflash_state_ladder_positions(int head, int end, int gr
         for (int p = s; p <= end; p += s) out.push_back(p);
     }
     out.push_back(end / grid * grid);
+    if (turn_cut > 0) out.push_back(turn_cut);
     std::sort(out.begin(), out.end());
     out.erase(std::unique(out.begin(), out.end()), out.end());
     while (!out.empty() && out.back() > end) out.pop_back();
     return out;
+}
+
+// S9b turn rung: the position just after the last `<|im_start|> assistant \n`
+// header of `prompt`, i.e. Pend - k, where k is the length of the generation
+// suffix (the think block). The next turn's template re-renders the assistant
+// turn as `<|im_start|>assistant\n` + content, so its common prefix with this
+// prompt ends exactly here. -1 when there is no header, an id is unknown (< 0),
+// or the header ends the prompt (nothing after it, k = 0: no use).
+inline int kvflash_turn_cut(const std::vector<int32_t> & prompt, int32_t im_start,
+                            int32_t assistant, int32_t newline) {
+    if (im_start < 0 || assistant < 0 || newline < 0) return -1;
+    for (int i = (int)prompt.size(); i >= 3; i--) {
+        if (prompt[i - 3] == im_start && prompt[i - 2] == assistant && prompt[i - 1] == newline)
+            return i < (int)prompt.size() ? i : -1;
+    }
+    return -1;
 }
 
 // Greatest checkpoint position C <= L, or -1. `positions` need not be sorted.
@@ -184,6 +210,13 @@ inline bool kvflash_live_restore_enabled() {
 // state checkpoint when a generation ends (S9). Default OFF.
 inline bool kvflash_gen_ckpt_enabled() {
     const char * v = std::getenv("KVFLASH_GEN_CKPT");
+    return v != nullptr && v[0] == '1' && v[1] == '\0' && kvflash_live_restore_enabled();
+}
+
+// KVFLASH_TURN_CKPT=1 (requires KVFLASH_LIVE_RESTORE=1) captures one more
+// state checkpoint per prefill at kvflash_turn_cut (S9b). Default OFF.
+inline bool kvflash_turn_ckpt_enabled() {
+    const char * v = std::getenv("KVFLASH_TURN_CKPT");
     return v != nullptr && v[0] == '1' && v[1] == '\0' && kvflash_live_restore_enabled();
 }
 
