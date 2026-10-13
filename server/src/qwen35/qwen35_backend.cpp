@@ -1008,6 +1008,49 @@ bool Qwen35Backend::snapshot_save_pooled_at(int slot, int snap_boundary) {
                                  /*skip_kv=*/true, &blob);
 }
 
+void Qwen35Backend::state_ladder_clear() {
+    for (auto & kv : state_ladder_) free_prefix_snapshot(kv.second.snap);
+    state_ladder_.clear();
+    state_ladder_ckpt_bytes_ = 0;
+    state_ladder_head_ = -1;
+}
+
+// State-only checkpoint (ssm + conv + target_feat, no KV) of the live cache at
+// `pos`, then LRU eviction down to KVFLASH_STATE_LADDER_MIB (default 3072).
+bool Qwen35Backend::state_ladder_capture(int pos) {
+    if (pos <= 0 || pos != cache_.cur_pos) return false;
+    StateCheckpoint & ck = state_ladder_[pos];
+    if (!snapshot_target_cache(w_, cache_, snap_backend_, ck.snap, /*skip_kv=*/true)) {
+        free_prefix_snapshot(ck.snap);
+        state_ladder_.erase(pos);
+        return false;
+    }
+    ck.tick = ++state_ladder_tick_;
+    size_t bytes = 0;
+    for (const auto * v : {&ck.snap.ssm_state_snap, &ck.snap.conv_state_snap}) {
+        for (const ggml_tensor * t : *v) if (t) bytes += ggml_nbytes(t);
+    }
+    if (ck.snap.target_feat_snap) bytes += ggml_nbytes(ck.snap.target_feat_snap);
+    state_ladder_ckpt_bytes_ = bytes;
+
+    static const size_t budget = [] {
+        const char * v = std::getenv("KVFLASH_STATE_LADDER_MIB");
+        const long mib = v ? std::atol(v) : 3072;
+        return (size_t)(mib > 0 ? mib : 3072) << 20;
+    }();
+    std::vector<KvflashLadderEntry> entries;
+    for (const auto & kv : state_ladder_) entries.push_back({kv.first, kv.second.tick});
+    for (int p : kvflash_ladder_evict(entries, budget, bytes, state_ladder_head_)) {
+        free_prefix_snapshot(state_ladder_[p].snap);
+        state_ladder_.erase(p);
+    }
+    std::printf("[kvflash] state ladder: ckpt @%d (%.1f MiB each, %zu held, %.1f MiB)\n",
+                pos, (double)bytes / (1 << 20), state_ladder_.size(),
+                (double)(state_ladder_.size() * bytes) / (1 << 20));
+    std::fflush(stdout);
+    return true;
+}
+
 bool Qwen35Backend::snapshot_save(int slot) {
     if (cfg_.paged_attention) {
         static bool warned = false;
@@ -1647,6 +1690,7 @@ void Qwen35Backend::shutdown() {
         free_prefix_snapshot(prefix_snapshots_[i]);
         free_prefix_snapshot(displaced_snapshots_[i]);
     }
+    state_ladder_clear();
     if (!target_parked_) free_target_weights(w_);
     vision_.reset();  // its buffers belong to target_backend_, freed below
     if (!use_remote_draft && !draft_parked_) free_draft_weights(dw_);
@@ -2262,6 +2306,18 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     const bool restored_off_grid = kv_offset > 0 &&
         !std::binary_search(restore_points.begin(), restore_points.end(), kv_offset);
 
+    // S7 state ladder: checkpoints are keyed by position only, so a cold
+    // prefill starts a fresh ladder. The head rung is the server's snapshot cut
+    // (snap_pos); ponytail: no separate system-anchor length is plumbed, so
+    // without a snap_pos the head rung is simply absent.
+    std::vector<int> ladder;
+    if (kvf_paged && !images && kvflash_state_ladder_enabled()) {
+        if (kv_offset == 0) state_ladder_clear();
+        state_ladder_head_ = snap_pos > 0 ? snap_pos / kQwen35PrefillUbatch * kQwen35PrefillUbatch : -1;
+        ladder = kvflash_state_ladder_positions(snap_pos, kv_offset + prompt_len,
+                                                kQwen35PrefillUbatch, 8192);
+    }
+
     // Chunked prefill
     std::vector<float> embed_buf((size_t)hidden * prefill_ubatch);
     int committed = kv_offset;
@@ -2457,6 +2513,12 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
 
         committed = kv_pos + n_tokens;
         cache_.cur_pos = committed;
+
+        // S7: batch ends are grid points, so ladder rungs coincide with them.
+        if (!ladder.empty() && std::binary_search(ladder.begin(), ladder.end(), committed) &&
+            !state_ladder_capture(committed)) {
+            std::fprintf(stderr, "[kvflash] state ladder capture failed @%d\n", committed);
+        }
 
         // QK policy: pool the post-RoPE keys of chunks this batch sealed
         // (they are resident — sealed inside the protected tail window).
