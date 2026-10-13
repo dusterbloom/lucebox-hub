@@ -1,0 +1,371 @@
+diff --git a/compaction/compaction_methods/global_highest_attention_keys.py b/compaction/compaction_methods/global_highest_attention_keys.py
+index 38eaea7..9f3b094 100644
+--- a/compaction/compaction_methods/global_highest_attention_keys.py
++++ b/compaction/compaction_methods/global_highest_attention_keys.py
+@@ -115,6 +115,7 @@ class GlobalHighestAttentionKeysCompaction(FullCacheCompactionAlgorithm):
+         vllm_model: Optional[Any] = None,
+         sliding_layer_indices: Optional[set] = None,
+         past_key_values_for_queries: Optional[Any] = None,
++        linear_layer_indices: Optional[set] = None,
+     ) -> Tuple[Tuple[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], ...], Dict]:
+         """
+         Compact KV cache using global top-k key selection.
+@@ -159,7 +160,12 @@ class GlobalHighestAttentionKeysCompaction(FullCacheCompactionAlgorithm):
+         num_layers = len(past_key_values)
+         # Find a non-sliding layer to get the full sequence length
+         # (sliding layers may have shorter seq_len due to window size)
+-        sliding_layer_indices = sliding_layer_indices or set()
++        # Recurrent (Gated DeltaNet) layers of hybrid models have no per-token K/V: every loop below that skips
++        # sliding-window layers (ref layer, K/V extraction, layer loop, length stats) skips them the same way.
++        linear_layer_indices = linear_layer_indices or set()
++        sliding_layer_indices = set(sliding_layer_indices or set()) | set(linear_layer_indices)
++        # Query tensors carry one row per layer that owns attention queries (all layers for pure-attention models).
++        query_row = {l: r for r, l in enumerate(i for i in range(num_layers) if i not in linear_layer_indices)}
+         ref_layer_idx = 0
+         for i in range(num_layers):
+             if i not in sliding_layer_indices:
+@@ -311,7 +317,7 @@ class GlobalHighestAttentionKeysCompaction(FullCacheCompactionAlgorithm):
+         # Only compute for global (non-sliding) layers
+         print("Computing global attention scores...")
+         # Extract queries only for global layers
+-        queries_global_layers = base_queries[global_layer_indices, :, :, :]
++        queries_global_layers = base_queries[[query_row[l] for l in global_layer_indices], :, :, :]
+         global_scores, layer_head_info, key_scores_dict = self._compute_global_attention_scores(
+             K_all_layers, queries_global_layers, global_layer_indices
+         )
+@@ -402,7 +408,7 @@ class GlobalHighestAttentionKeysCompaction(FullCacheCompactionAlgorithm):
+                 K_keep_after = K_keep_after_all[global_idx][head_idx]
+                 V_keep_after = V_keep_after_all[global_idx][head_idx]
+ 
+-                queries_head = base_queries[layer_idx, head_idx, :, :]  # (n_queries, head_dim)
++                queries_head = base_queries[query_row[layer_idx], head_idx, :, :]  # (n_queries, head_dim)
+ 
+                 if key in selected_by_layer_head:
+                     # This head has selected positions
+diff --git a/compaction/query_generation/context_prefill.py b/compaction/query_generation/context_prefill.py
+index 9be2d2a..e27de2e 100644
+--- a/compaction/query_generation/context_prefill.py
++++ b/compaction/query_generation/context_prefill.py
+@@ -199,8 +199,16 @@ class ContextPrefillQueryGenerator:
+             num_layers = self.model.config.num_hidden_layers
+             num_attention_heads = self.model.config.num_attention_heads
+ 
+-            # Storage for queries from all layers
++            # Storage for queries from all layers that own attention queries (every layer for pure-attention
++            # models, only the full-attention layers for hybrids such as Qwen3.5)
+             all_layer_queries = []
++            try:
++                from models.qwen3_5.query_capture import attention_layer_indices, get_decoder_layers, project_queries
++                layer_ids = attention_layer_indices(self.model, num_layers)
++            except ImportError:
++                get_decoder_layers = lambda m: m.model.layers
++                project_queries = lambda module, hs, pe: None
++                layer_ids = list(range(num_layers))
+ 
+             # Hook function to capture queries at each layer for ALL tokens
+             def make_hook_all_tokens(layer_idx):
+@@ -216,6 +224,11 @@ class ContextPrefillQueryGenerator:
+                         # Get position_embeddings from kwargs (passed by the model)
+                         position_embeddings = kwargs.get('position_embeddings')
+ 
++                        q35 = project_queries(module, hidden_states, position_embeddings)
++                        if q35 is not None:  # Qwen3.5 full-attention layer (q_proj also emits the output gate)
++                            all_layer_queries.append(q35[0])
++                            return
++
+                         # Apply query projection: Q = hidden_states @ W_q
+                         q = module.q_proj(hidden_states)  # (batch, seq_len, num_heads * head_dim)
+ 
+@@ -252,8 +265,8 @@ class ContextPrefillQueryGenerator:
+             # Register hooks on all layers
+             hooks = []
+             try:
+-                for layer_idx in range(num_layers):
+-                    target_layer = self.model.model.layers[layer_idx].self_attn
++                for layer_idx in layer_ids:
++                    target_layer = get_decoder_layers(self.model)[layer_idx].self_attn
+                     handle = target_layer.register_forward_pre_hook(
+                         make_hook_all_tokens(layer_idx),
+                         with_kwargs=True
+diff --git a/compaction/query_generation/query_generator.py b/compaction/query_generation/query_generator.py
+index d1a5fbc..756e563 100644
+--- a/compaction/query_generation/query_generator.py
++++ b/compaction/query_generation/query_generator.py
+@@ -254,6 +254,8 @@ class QueryGenerator:
+             num_attention_heads,
+         )
+         heads_per_kv_head = max(1, num_attention_heads // num_kv_heads)
++        layer_types = getattr(self.model.config, "layer_types", None) or []
++        num_query_layers = num_layers - sum(1 for t in layer_types if t == "linear_attention")
+ 
+         # Budget is specified per KV head
+         n_train_per_kv_head = self.config.max_query_vectors_per_kv_head
+@@ -354,12 +356,12 @@ class QueryGenerator:
+             else:
+                 raise ValueError(f"Unknown method: {method}")
+ 
+-            # Sanity: ensure KV-space shape
+-            if method_queries_kv.shape[0] != num_layers or method_queries_kv.shape[1] != num_kv_heads:
++            # Sanity: ensure KV-space shape (one row per layer that owns queries; hybrids skip recurrent layers)
++            if method_queries_kv.shape[0] != num_query_layers or method_queries_kv.shape[1] != num_kv_heads:
+                 raise ValueError(
+                     f"Method '{method}' produced KV queries of shape "
+                     f"{tuple(method_queries_kv.shape)}, expected "
+-                    f"(num_layers={num_layers}, num_kv_heads={num_kv_heads}, *, head_dim={head_dim})"
++                    f"(num_layers={num_query_layers}, num_kv_heads={num_kv_heads}, *, head_dim={head_dim})"
+                 )
+ 
+             all_queries_by_method_kv.append(method_queries_kv)
+diff --git a/compaction/query_generation/self_study.py b/compaction/query_generation/self_study.py
+index f05e0ab..9117c4f 100644
+--- a/compaction/query_generation/self_study.py
++++ b/compaction/query_generation/self_study.py
+@@ -658,9 +658,19 @@ class SelfStudyQueryGenerator:
+             # Determine how many layers we actually need
+             layers_to_process = num_layers if max_layer is None else (max_layer + 1)
+ 
++            # Layers that own attention queries: every layer for pure-attention models, only the
++            # full-attention layers for hybrids such as Qwen3.5 (Gated DeltaNet layers have no queries).
++            try:
++                from models.qwen3_5.query_capture import attention_layer_indices, get_decoder_layers, project_queries
++                layer_ids = attention_layer_indices(self.model, layers_to_process)
++            except ImportError:
++                get_decoder_layers = lambda m: m.model.layers
++                project_queries = lambda module, hs, pe: None
++                layer_ids = list(range(layers_to_process))
++
+             # Storage for queries from all layers (dict keyed by layer_idx)
+             # Each layer maps to a list of query tensors (one per chunk when using chunked_prefill)
+-            all_layer_queries = {layer_idx: [] for layer_idx in range(layers_to_process)}
++            all_layer_queries = {layer_idx: [] for layer_idx in layer_ids}
+ 
+             # Hook function to capture queries at each layer for ALL tokens
+             def make_hook_all_tokens(layer_idx):
+@@ -676,6 +686,11 @@ class SelfStudyQueryGenerator:
+                         # Get position_embeddings from kwargs (passed by the model)
+                         position_embeddings = kwargs.get('position_embeddings')
+ 
++                        q35 = project_queries(module, hidden_states, position_embeddings)
++                        if q35 is not None:  # Qwen3.5 full-attention layer (q_proj also emits the output gate)
++                            all_layer_queries[layer_idx].append(q35[0])
++                            return
++
+                         # Apply query projection: Q = hidden_states @ W_q
+                         q = module.q_proj(hidden_states)  # (batch, seq_len, num_heads * head_dim)
+ 
+@@ -713,8 +728,8 @@ class SelfStudyQueryGenerator:
+             # Register hooks only on the layers we need
+             hooks = []
+             try:
+-                for layer_idx in range(layers_to_process):
+-                    target_layer = self.model.model.layers[layer_idx].self_attn
++                for layer_idx in layer_ids:
++                    target_layer = get_decoder_layers(self.model)[layer_idx].self_attn
+                     handle = target_layer.register_forward_pre_hook(
+                         make_hook_all_tokens(layer_idx),
+                         with_kwargs=True
+@@ -765,7 +780,7 @@ class SelfStudyQueryGenerator:
+                 if all_layer_queries and any(len(v) > 0 for v in all_layer_queries.values()):
+                     # Concatenate queries per layer (along seq_len dimension), then stack layers
+                     layer_queries = []
+-                    for layer_idx in range(layers_to_process):
++                    for layer_idx in layer_ids:
+                         layer_query_list = all_layer_queries[layer_idx]
+                         if len(layer_query_list) == 1:
+                             # Single chunk - no concatenation needed
+diff --git a/models/cache.py b/models/cache.py
+index 2cb5d26..12bb79c 100644
+--- a/models/cache.py
++++ b/models/cache.py
+@@ -5,6 +5,11 @@ from torch import Tensor
+ 
+ from transformers.cache_utils import CacheLayerMixin, Cache, DynamicCache, DynamicLayer, DynamicSlidingWindowLayer
+ 
++try:  # transformers >= 5: recurrent (Gated DeltaNet) layers have their own cache layer
++    from transformers.cache_utils import LinearAttentionLayer
++except ImportError:  # pragma: no cover
++    LinearAttentionLayer = None
++
+ 
+ class CompactedPrefixLayer(CacheLayerMixin):
+     """
+@@ -82,7 +87,8 @@ class CompactedPrefixLayer(CacheLayerMixin):
+         starting index (0 for full attention).
+         """
+         kv_offset = 0
+-        query_length = cache_position.shape[0]
++        # transformers >= 5 passes the query length as an int, 4.x passed cache_position
++        query_length = cache_position if isinstance(cache_position, int) else cache_position.shape[0]
+         kv_length = self.get_seq_length() + query_length
+         return kv_length, kv_offset
+ 
+@@ -95,6 +101,10 @@ class CompactedPrefixLayer(CacheLayerMixin):
+             return 0
+         return int(self.keys.shape[-2])
+ 
++    def get_max_length(self) -> int:
++        """transformers >= 5 abstract method: no maximum."""
++        return -1
++
+     def get_max_cache_shape(self) -> int:
+         """
+         Dynamic cache: no static maximum length.
+@@ -137,6 +147,7 @@ class CompactedPrefixCache(Cache):
+         clone: bool = False,
+         sliding_layer_indices: Optional[set] = None,
+         sliding_window: Optional[int] = None,
++        linear_layer_indices: Optional[set] = None,
+     ):
+         """
+         Parameters
+@@ -150,15 +161,31 @@ class CompactedPrefixCache(Cache):
+             Set of layer indices that use sliding window attention.
+         sliding_window : int, optional
+             Sliding window size for sliding layers. Required if sliding_layer_indices is provided.
++        linear_layer_indices : set, optional
++            Layers that are recurrent (Gated DeltaNet, Qwen3.5 hybrids). For these C1 is the conv state,
++            C2 the recurrent state and beta is ignored; they are copied into a LinearAttentionLayer and
++            never compacted. They have no sequence length and are skipped by rope_base/get_seq_length.
+         """
+         layers: List[Union[CompactedPrefixLayer, DynamicSlidingWindowLayer]] = []
+         sliding_indices = sliding_layer_indices or set()
++        linear_indices = linear_layer_indices or set()
+ 
+         # Track the maximum compacted prefix length to compute rope_base
+         max_compacted_len = 0
+ 
+         for layer_idx, (C1, beta, C2) in enumerate(compacted_cache):
+-            if layer_idx in sliding_indices:
++            if layer_idx in linear_indices:
++                if LinearAttentionLayer is None:
++                    raise RuntimeError("linear_layer_indices needs transformers >= 5 (LinearAttentionLayer)")
++                lin = LinearAttentionLayer()
++                lin.lazy_initialization(
++                    conv_states=C1, recurrent_states=C2, state_idx=0, conv_kernel_size=C1.shape[-1]
++                )
++                lin.conv_states[0].copy_(C1)
++                lin.recurrent_states[0].copy_(C2)
++                lin.has_previous_state[0] = True
++                layers.append(lin)
++            elif layer_idx in sliding_indices:
+                 # Use DynamicSlidingWindowLayer for sliding layers
+                 # C1 = keys, C2 = values, beta is ignored (should be zeros)
+                 if sliding_window is None:
+@@ -194,6 +221,7 @@ class CompactedPrefixCache(Cache):
+ 
+         self._pad_counts = pad_counts
+         self._sliding_layer_indices = sliding_indices
++        self._linear_layer_indices = linear_indices
+ 
+     def rope_base(self) -> int:
+         """
+@@ -244,28 +272,31 @@ class CompactedPrefixCache(Cache):
+         if layer_idx >= len(self.layers):
+             return 0
+ 
+-        # Find the maximum length across all global (non-sliding) layers
++        # Find the maximum length across all global (non-sliding, non-recurrent) layers
+         max_len = 0
+         for i, layer in enumerate(self.layers):
+-            if i not in self._sliding_layer_indices:
++            if i not in self._sliding_layer_indices and i not in self._linear_layer_indices:
+                 layer_len = layer.get_seq_length()
+                 if layer_len > max_len:
+                     max_len = layer_len
+ 
+         # Fallback: if somehow all layers are sliding (shouldn't happen), use layer 0
+         if max_len == 0:
++            if layer_idx in self._linear_layer_indices:  # recurrent layers have no sequence length
++                return 0
+             return self.layers[layer_idx].get_seq_length()
+         return max_len
+ 
+-    def get_mask_sizes(self, cache_position: Tensor, layer_idx: int = 0) -> Tuple[int, int]:
++    def get_mask_sizes(self, cache_position, layer_idx: int = 0) -> Tuple[int, int]:
+         """
+         Return mask sizes for nonuniform caches.
+ 
+         For sliding layers, return that specific layer's actual KV length.
+         For global layers, return the MAXIMUM length across all global layers.
++        `cache_position` is a tensor (transformers 4.x) or the query length (transformers >= 5).
+         """
+         kv_offset = 0
+-        query_length = cache_position.shape[0]
++        query_length = cache_position if isinstance(cache_position, int) else cache_position.shape[0]
+ 
+         # For sliding layers, return that specific layer's actual length
+         if layer_idx < len(self.layers) and layer_idx in self._sliding_layer_indices:
+@@ -280,6 +311,9 @@ class CompactedPrefixCache(Cache):
+ 
+ def clone_dynamic_cache(pkv: DynamicCache) -> DynamicCache:
+     """Clone a DynamicCache by creating a new instance with cloned tensors."""
++    if LinearAttentionLayer is not None and any(isinstance(l, LinearAttentionLayer) for l in pkv.layers):
++        import copy  # hybrid cache (recurrent layers): the generic deep copy carries conv/recurrent state too
++        return copy.deepcopy(pkv)
+     out = DynamicCache(offloading=getattr(pkv, "offloading", False),
+                        offload_only_non_sliding=getattr(pkv, "only_non_sliding", False))
+     out.layers = []
+@@ -303,10 +337,17 @@ def clone_compacted_prefix_cache(pkv: CompactedPrefixCache) -> CompactedPrefixCa
+     """Clone a CompactedPrefixCache by extracting the base prefix from each layer."""
+     compacted_cache_tuples = []
+     sliding_layer_indices = set()
++    linear_layer_indices = set()
+     sliding_window = None
+ 
+     for layer_idx, layer in enumerate(pkv.layers):
+-        if isinstance(layer, DynamicSlidingWindowLayer):
++        if LinearAttentionLayer is not None and isinstance(layer, LinearAttentionLayer):
++            # Recurrent layer: carry conv/recurrent state through unchanged (beta is a placeholder)
++            C1 = layer.conv_states[0].clone()
++            C2 = layer.recurrent_states[0].clone()
++            compacted_cache_tuples.append((C1, C1.new_zeros(C1.shape[0], 1, 0), C2))
++            linear_layer_indices.add(layer_idx)
++        elif isinstance(layer, DynamicSlidingWindowLayer):
+             # For sliding window layers, clone the full keys/values
+             # Beta is zeros (not used for sliding layers)
+             C1 = layer.keys.clone()
+@@ -337,4 +378,5 @@ def clone_compacted_prefix_cache(pkv: CompactedPrefixCache) -> CompactedPrefixCa
+         pad_counts=pkv.pad_counts(),
+         sliding_layer_indices=sliding_layer_indices if sliding_layer_indices else None,
+         sliding_window=sliding_window,
++        linear_layer_indices=linear_layer_indices if linear_layer_indices else None,
+     )
+diff --git a/models/generate.py b/models/generate.py
+index a19f1b4..6508c9b 100644
+--- a/models/generate.py
++++ b/models/generate.py
+@@ -165,6 +165,18 @@ def get_sliding_layer_info(model) -> Tuple[Set[int], Optional[int]]:
+ 
+     return sliding_layer_indices, sliding_window
+ 
++
++def get_linear_layer_indices(model) -> Set[int]:
++    """
++    Indices of recurrent (Gated DeltaNet) layers of a hybrid model such as Qwen3.5/Qwen3.8
++    (config.layer_types == "linear_attention"). They have no per-token K/V: every compaction loop
++    skips them and CompactedPrefixCache carries their conv/recurrent state through unchanged.
++    """
++    layer_types = getattr(getattr(model, 'config', None), 'layer_types', None)
++    if layer_types is None:
++        return set()
++    return {i for i, t in enumerate(layer_types) if t == "linear_attention"}
++
+ @torch.inference_mode()
+ def generate_with_full_context(
+     model,
+@@ -397,6 +409,7 @@ def generate_with_compacted_cache(
+         original_seq_len=original_seq_len,
+         sliding_layer_indices=sliding_layer_indices if sliding_layer_indices else None,
+         sliding_window=sliding_window,
++        linear_layer_indices=get_linear_layer_indices(model) or None,
+     )
+ 
+     enc = tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
+@@ -589,6 +602,7 @@ def generate_with_compacted_cache_batch(
+         pad_counts=pad_counts,
+         sliding_layer_indices=sliding_layer_indices if sliding_layer_indices else None,
+         sliding_window=sliding_window,
++        linear_layer_indices=get_linear_layer_indices(model) or None,
+     )
+     past_seen_tokens = cache.get_seq_length() # Length of the compacted prefix (t)
+ 

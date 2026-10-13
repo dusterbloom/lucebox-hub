@@ -1,0 +1,550 @@
+{
+ "meta": {
+  "model": "Qwen/Qwen3.8-27B",
+  "gpu": "NVIDIA H200",
+  "torch": "2.8.0+cu128",
+  "load_s": 40,
+  "class": "Qwen3_5ForCausalLM",
+  "text_cfg_output_gate_type": "swish",
+  "layer_types_counts": {
+   "linear_attention": 48,
+   "full_attention": 16
+  }
+ },
+ "r1a": {
+  "eager": {
+   "per_prompt": {
+    "P1_short": {
+     "attn_impl": "eager",
+     "prompt_tokens": 29,
+     "ctx_tokens": 15,
+     "suffix_tokens": 14,
+     "adapter_vs_split": {
+      "tokens_identical": true,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": null,
+      "first_step_max_logit_diff": 0.0,
+      "all_steps_max_logit_diff": 0.0
+     },
+     "tokens_split_head": [
+      760,
+      5839,
+      2781,
+      279,
+      12515,
+      7701,
+      6105,
+      2261,
+      279,
+      1834,
+      369,
+      264,
+      24057,
+      3750,
+      430,
+      12870
+     ],
+     "wall_split_adapter_s": 121.4,
+     "whole_vs_split": {
+      "tokens_identical": true,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": null,
+      "first_step_max_logit_diff": 0.25,
+      "all_steps_max_logit_diff": 0.3125
+     },
+     "adapter_vs_whole_tokens_identical": true,
+     "wall_whole_s": 25.7,
+     "tokens_split_text": "The primary reason the sky appears blue during the day is a phenomenon known as Rayleigh scattering. When sunlight enters Earth's atmosphere, it collides with gas molecules and small particles. Sunlight is composed of all colors of the visible spectrum, each with a different wavelength. Shorter wavelengths, such as blue and violet, scatter much more strongly than longer wavelengths like red and orange. Although violet light scatters even more than blue, our eyes are more sensitive to blue, and some of the violet light is absorbed by the upper atmosphere, resulting in the characteristic blue hue we perceive.\n\nSunsets and sunrises appear red or orange because the sun is at a low angle relative to the horizon, causing sunlight to travel through a significantly thicker layer of the atmosphere to reach our eyes. As the light traverses this longer path, the shorter blue and green wavelengths are scattered out of the direct line of sight almost entirely. This leaves the longer wavelengths\u2014reds, oranges, and yellows\u2014to pass through with less scattering, dominating the light that reaches the observer. The intensity of these colors can be further enhanced by atmospheric conditions, such as the presence of dust, smoke, or pollution, which can scatter light in ways that deepen the reds and oranges.\n\nIn summary, the",
+     "tokens_adapter_text_equal_split_text": true
+    },
+    "P2_code": {
+     "attn_impl": "eager",
+     "prompt_tokens": 36,
+     "ctx_tokens": 18,
+     "suffix_tokens": 18,
+     "adapter_vs_split": {
+      "tokens_identical": true,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": null,
+      "first_step_max_logit_diff": 0.0,
+      "all_steps_max_logit_diff": 0.0
+     },
+     "tokens_split_head": [
+      71093,
+      12305,
+      198,
+      727,
+      10562,
+      87682,
+      1494,
+      40798,
+      25,
+      1103,
+      65342,
+      18078,
+      28649,
+      1411,
+      1103,
+      65342
+     ],
+     "wall_split_adapter_s": 51.9,
+     "whole_vs_split": {
+      "tokens_identical": true,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": null,
+      "first_step_max_logit_diff": 0.517578125,
+      "all_steps_max_logit_diff": 4.6328125
+     },
+     "adapter_vs_whole_tokens_identical": true,
+     "wall_whole_s": 25.5,
+     "tokens_split_text": "```python\ndef merge_intervals(intervals: list[list[int]]) -> list[list[int]]:\n    \"\"\"\n    Merge all overlapping intervals in the given list.\n\n    Args:\n        intervals: A list of intervals, where each interval is a list of two integers [start, end].\n\n    Returns:\n        A list of merged, non-overlapping intervals sorted by start time.\n\n    Example:\n        >>> merge_intervals([[1, 3], [2, 6], [8, 10], [15, 18]])\n        [[1, 6], [8, 10], [15, 18]]\n    \"\"\"\n    if not intervals:\n        return []\n\n    # Sort intervals by start time\n    sorted_intervals = sorted(intervals, key=lambda x: x[0])\n\n    merged = [sorted_intervals[0]]\n\n    for current in sorted_intervals[1:]:\n        last = merged[-1]\n        # If current interval overlaps with the last merged interval\n        if current[0] <= last[1]:\n            # Update the end of the last merged interval if needed\n            last[1] = max(last[1], current",
+     "tokens_adapter_text_equal_split_text": true
+    },
+    "P3_qa2k": {
+     "attn_impl": "eager",
+     "prompt_tokens": 2281,
+     "ctx_tokens": 2249,
+     "suffix_tokens": 32,
+     "adapter_vs_split": {
+      "tokens_identical": true,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": null,
+      "first_step_max_logit_diff": 0.0,
+      "all_steps_max_logit_diff": 0.0
+     },
+     "tokens_split_head": [
+      760,
+      3049,
+      27601,
+      421,
+      328,
+      85,
+      355,
+      11816,
+      78693,
+      1068,
+      2074,
+      1,
+      682,
+      59076,
+      569,
+      8396
+     ],
+     "wall_split_adapter_s": 62.8,
+     "whole_vs_split": {
+      "tokens_identical": false,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": 74,
+      "first_step_max_logit_diff": 0.25,
+      "all_steps_max_logit_diff": 42.28125,
+      "margin_at_divergence": 0.125,
+      "top1_logit_at_divergence": 19.625
+     },
+     "adapter_vs_whole_tokens_identical": false,
+     "wall_whole_s": 26.0,
+     "tokens_split_text": "The author argues that \"vulgar Keynesianism\" has distorted public understanding of economics by promoting simplistic and outdated paradoxes, such as the idea that increased savings harm economic growth. He contends that these theories are largely irrelevant in the modern era because the Federal Reserve actively manages interest rates to maintain target employment levels, effectively ensuring that higher savings translate into higher investment. The text criticizes contemporary commentators and intellectuals for ignoring the Fed\u2019s stabilizing role and instead relying on caricatured Keynesian ideas to explain economic phenomena like trade deficits and consumer spending. The author highlights the logical inconsistency of critics who claim savings are detrimental because the Fed cannot stimulate investment, while simultaneously blaming the Fed for economic stagnation and advocating for lower interest rates. Ultimately, the piece asserts that in a functioning economy with an active central bank, the fear that saving is bad for growth is a cultural misconception rather than an economic reality.<|im_end|>\n<|endoftext|><|im_start|><|im_end|>\n<|im_start|>user\n<|im_end|>\n<|im_start|>assistant\n<think>\nThe user wants me to summarize the article \"Vulgar Keynesians\" in five sentences. Let me identify the key points:\n\n1. The article argues that Keynesian economics has been reduced to a \"vulgar\" caricature in public consciousness, where ideas like the \"paradox of",
+     "tokens_adapter_text_equal_split_text": true
+    },
+    "P4_qa8k": {
+     "attn_impl": "eager",
+     "prompt_tokens": 8277,
+     "ctx_tokens": 8245,
+     "suffix_tokens": 32,
+     "adapter_vs_split": {
+      "tokens_identical": true,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": null,
+      "first_step_max_logit_diff": 0.0,
+      "all_steps_max_logit_diff": 0.0
+     },
+     "tokens_split_head": [
+      54,
+      8082,
+      21587,
+      11,
+      852,
+      68443,
+      17297,
+      1867,
+      27090,
+      9065,
+      1332,
+      40237,
+      513,
+      8341,
+      303,
+      46368
+     ],
+     "wall_split_adapter_s": 63.7,
+     "whole_vs_split": {
+      "tokens_identical": false,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": 3,
+      "first_step_max_logit_diff": 0.765625,
+      "all_steps_max_logit_diff": 45.78125,
+      "margin_at_divergence": 0.0,
+      "top1_logit_at_divergence": 22.625
+     },
+     "adapter_vs_whole_tokens_identical": false,
+     "wall_whole_s": 38.8,
+     "tokens_split_text": "Warden Walker, who oversees Dreamland\u2014a prison where inmates are kept in sensory immersion to serve their sentences\u2014faces a crisis when Councilman Coleman suggests that Walker\u2019s own reality might just be another dream. To test Walker\u2019s moral integrity, Coleman is sentenced to Dreamland, forcing Walker to navigate the ethical dilemma of whether his actions matter if his existence is potentially artificial. Walker devises a plan to keep two desperate ex-inmates, Horbit and Paulson, occupied by convincing them they are in a parallel dimension fighting a cosmic enemy, thereby avoiding the legal impossibility of re-imprisoning them. Ultimately, Walker decides to act as if his life is real, granting Coleman a probationary sentence rather than the life imprisonment Coleman secretly desired, proving his sanity and moral fortitude. The story concludes with Walker maintaining his grip on reality and his position, ready to face the next bizarre case brought before him.<|im_end|>\n<|endoftext|><|im_start|>user\n<|im_end|>\n<|im_start|><|im_start|><think>\nThe user asked me to summarize the story in five sentences. I already provided a summary in my previous response. Let me check if the user is asking again or if this is a new request. Looking at the conversation, it seems like the user is repeating the same question. I'll provide the same or",
+     "tokens_adapter_text_equal_split_text": true
+    },
+    "P5_qa16k": {
+     "attn_impl": "eager",
+     "prompt_tokens": 16581,
+     "ctx_tokens": 16549,
+     "suffix_tokens": 32,
+     "adapter_vs_split": {
+      "tokens_identical": true,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": null,
+      "first_step_max_logit_diff": 0.0,
+      "all_steps_max_logit_diff": 0.0
+     },
+     "tokens_split_head": [
+      623,
+      328,
+      2665,
+      3593,
+      89484,
+      1288,
+      457,
+      8082,
+      21587,
+      314,
+      17297,
+      1867,
+      11,
+      264,
+      9065,
+      1332
+     ],
+     "wall_split_adapter_s": 54.5,
+     "whole_vs_split": {
+      "tokens_identical": false,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": 32,
+      "first_step_max_logit_diff": 0.515625,
+      "all_steps_max_logit_diff": 36.6484375,
+      "margin_at_divergence": 0.0,
+      "top1_logit_at_divergence": 22.75
+     },
+     "adapter_vs_whole_tokens_identical": false,
+     "wall_whole_s": 40.1,
+     "tokens_split_text": "In \"No Substitutions,\" Warden Walker of Dreamland, a prison where inmates live out simulated lives, is told by a councilman that his own reality is merely a dream, forcing him to navigate ethical dilemmas to prove his sanity and moral integrity. In \"The Link,\" Ravdin and Dana belong to a peaceful, artistic people who have spent millennia fleeing from the militaristic Hunters, who view them as enemies. When the Hunters close in again, Ravdin and Dana defy their leader\u2019s orders to flee, choosing instead to stay behind and attempt to make peace with their pursuers. They use their unique musical technology to briefly break through the Hunter leader\u2019s hostility, planting a seed of doubt before they are tortured and forced to erase their own memories to protect their people\u2019s location. The story ends with the couple left as amnesiacs in the jungle, unaware that their sacrifice has begun to change the Hunters\u2019 perception of them.<|im_end|>\n<|endoftext|><|im_start|><|im_start|><|im_start|><|im_start|><|im_end|>\n<|im_start|>user\n<|im_end|>\n<|im_start|><|im_end|>\n<|im_start|><think>\nThe user asked me to summarize the two stories in five sentences. Let me craft a concise five-sentence summary that covers both stories.\n\nStory 1: \"No Substitutions\" by Jim Harmon - About Warden Walker who runs",
+     "tokens_adapter_text_equal_split_text": true
+    }
+   },
+   "verdict": {
+    "tokens_identical_all": true,
+    "first_step_logit_diff_ok": true,
+    "pass": true,
+    "n_identical": 5,
+    "n_prompts": 5
+   }
+  },
+  "sdpa": {
+   "per_prompt": {
+    "P1_short": {
+     "attn_impl": "sdpa",
+     "prompt_tokens": 29,
+     "ctx_tokens": 15,
+     "suffix_tokens": 14,
+     "adapter_vs_split": {
+      "tokens_identical": false,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": 135,
+      "first_step_max_logit_diff": 0.0,
+      "all_steps_max_logit_diff": 26.8671875,
+      "margin_at_divergence": 0.0,
+      "top1_logit_at_divergence": 24.375
+     },
+     "tokens_split_head": [
+      760,
+      5839,
+      2781,
+      279,
+      12515,
+      7701,
+      6105,
+      2261,
+      279,
+      1834,
+      369,
+      264,
+      24057,
+      3750,
+      430,
+      12870
+     ],
+     "wall_split_adapter_s": 50.3,
+     "whole_vs_split": {
+      "tokens_identical": false,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": 135,
+      "first_step_max_logit_diff": 0.15625,
+      "all_steps_max_logit_diff": 26.8671875,
+      "margin_at_divergence": 0.0,
+      "top1_logit_at_divergence": 24.375
+     },
+     "adapter_vs_whole_tokens_identical": true,
+     "wall_whole_s": 25.6,
+     "tokens_split_text": "The primary reason the sky appears blue during the day is a phenomenon known as Rayleigh scattering. When sunlight enters Earth's atmosphere, it collides with gas molecules and small particles. Sunlight is composed of all colors of the visible spectrum, each with a different wavelength. Shorter wavelengths, such as blue and violet, scatter much more strongly than longer wavelengths like red and orange. Although violet light scatters even more than blue, our eyes are more sensitive to blue, and some of the violet light is absorbed by the upper atmosphere, resulting in the characteristic blue hue we perceive.\n\nSunsets and sunrises appear red or orange because the sun is at a low angle in the sky, causing sunlight to travel through a significantly thicker layer of the atmosphere to reach our eyes. As the light traverses this longer path, the shorter blue and violet wavelengths are scattered out of the direct line of sight almost entirely. This leaves the longer wavelengths\u2014reds, oranges, and yellows\u2014to pass through the atmosphere with less scattering. Consequently, the direct light from the sun and the surrounding sky are dominated by these warm colors, creating the vibrant displays we see at the horizon.\n\nThe intensity of these colors can vary depending on atmospheric conditions. The presence of dust, smoke, or pollution",
+     "tokens_adapter_text_equal_split_text": false
+    },
+    "P2_code": {
+     "attn_impl": "sdpa",
+     "prompt_tokens": 36,
+     "ctx_tokens": 18,
+     "suffix_tokens": 18,
+     "adapter_vs_split": {
+      "tokens_identical": true,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": null,
+      "first_step_max_logit_diff": 0.0,
+      "all_steps_max_logit_diff": 1.3984375
+     },
+     "tokens_split_head": [
+      71093,
+      12305,
+      198,
+      727,
+      10562,
+      87682,
+      1494,
+      40798,
+      25,
+      1103,
+      65342,
+      18078,
+      28649,
+      1411,
+      1103,
+      65342
+     ],
+     "wall_split_adapter_s": 51.3,
+     "whole_vs_split": {
+      "tokens_identical": true,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": null,
+      "first_step_max_logit_diff": 0.2578125,
+      "all_steps_max_logit_diff": 1.1796875
+     },
+     "adapter_vs_whole_tokens_identical": true,
+     "wall_whole_s": 25.6,
+     "tokens_split_text": "```python\ndef merge_intervals(intervals: list[list[int]]) -> list[list[int]]:\n    \"\"\"\n    Merge all overlapping intervals in the given list.\n\n    Args:\n        intervals: A list of intervals, where each interval is a list of two integers [start, end].\n\n    Returns:\n        A list of merged, non-overlapping intervals sorted by start time.\n\n    Example:\n        >>> merge_intervals([[1, 3], [2, 6], [8, 10], [15, 18]])\n        [[1, 6], [8, 10], [15, 18]]\n    \"\"\"\n    if not intervals:\n        return []\n\n    # Sort intervals by start time\n    sorted_intervals = sorted(intervals, key=lambda x: x[0])\n\n    merged = [sorted_intervals[0]]\n\n    for current in sorted_intervals[1:]:\n        last = merged[-1]\n        # If current interval overlaps with the last merged interval\n        if current[0] <= last[1]:\n            # Update the end of the last merged interval if needed\n            last[1] = max(last[1], current",
+     "tokens_adapter_text_equal_split_text": true
+    },
+    "P3_qa2k": {
+     "attn_impl": "sdpa",
+     "prompt_tokens": 2281,
+     "ctx_tokens": 2249,
+     "suffix_tokens": 32,
+     "adapter_vs_split": {
+      "tokens_identical": false,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": 42,
+      "first_step_max_logit_diff": 0.0,
+      "all_steps_max_logit_diff": 51.25,
+      "margin_at_divergence": 0.125,
+      "top1_logit_at_divergence": 22.5
+     },
+     "tokens_split_head": [
+      760,
+      3049,
+      27601,
+      421,
+      328,
+      85,
+      355,
+      11816,
+      78693,
+      1068,
+      2074,
+      1,
+      682,
+      59076,
+      569,
+      8396
+     ],
+     "wall_split_adapter_s": 50.1,
+     "whole_vs_split": {
+      "tokens_identical": false,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": 189,
+      "first_step_max_logit_diff": 0.359375,
+      "all_steps_max_logit_diff": 43.1875,
+      "margin_at_divergence": 0.125,
+      "top1_logit_at_divergence": 22.75
+     },
+     "adapter_vs_whole_tokens_identical": false,
+     "wall_whole_s": 25.4,
+     "tokens_split_text": "The author argues that \"vulgar Keynesianism\" has distorted public understanding of economics by promoting simplistic and outdated paradoxes, such as the idea that increased savings harm economic growth. He contends that these theories ignore the critical role of the Federal Reserve, which actively manages interest rates to maintain target employment levels, thereby ensuring that higher savings are translated into higher investment. The text highlights a logical contradiction among critics who claim savings are detrimental because the Fed cannot stimulate investment, while simultaneously blaming the Fed for economic stagnation and advocating for lower interest rates to boost growth. The author dismisses the notion that the Fed is impotent in the current U.S. context, noting that interest rates remain positive and responsive, unlike in the 1930s or modern Japan. Ultimately, the piece criticizes prominent commentators and economists for perpetuating this caricatured view of Keynesian economics, which fails to account for the central bank's ability to offset demand shocks.<|im_end|>\n<|endoftext|><|im_start|><|im_end|>\n<|im_start|>user\n<|im_end|>\n<|im_start|><|im_end|>\n<|im_start|>assistant\n<think>\nThe user wants me to summarize the article \"Vulgar Keynesians\" in five sentences. Let me identify the key points:\n\n1. The article argues that Keynesian economics has been reduced to a \"vulgar",
+     "tokens_adapter_text_equal_split_text": false
+    },
+    "P4_qa8k": {
+     "attn_impl": "sdpa",
+     "prompt_tokens": 8277,
+     "ctx_tokens": 8245,
+     "suffix_tokens": 32,
+     "adapter_vs_split": {
+      "tokens_identical": false,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": 3,
+      "first_step_max_logit_diff": 0.0,
+      "all_steps_max_logit_diff": 48.515625,
+      "margin_at_divergence": 0.125,
+      "top1_logit_at_divergence": 22.75
+     },
+     "tokens_split_head": [
+      54,
+      8082,
+      21587,
+      314,
+      17297,
+      1867,
+      11,
+      264,
+      9065,
+      1332,
+      40237,
+      513,
+      8341,
+      303,
+      46368,
+      72019
+     ],
+     "wall_split_adapter_s": 51.9,
+     "whole_vs_split": {
+      "tokens_identical": false,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": 3,
+      "first_step_max_logit_diff": 0.40625,
+      "all_steps_max_logit_diff": 40.6015625,
+      "margin_at_divergence": 0.125,
+      "top1_logit_at_divergence": 22.75
+     },
+     "adapter_vs_whole_tokens_identical": false,
+     "wall_whole_s": 26.3,
+     "tokens_split_text": "Warden Walker of Dreamland, a prison where inmates are kept in sensory immersion, is told by Councilman Coleman that his own life is merely a dream and that he will be released if he passes a moral test over the next twenty-four hours. Walker faces ethical dilemmas when two former inmates, Horbit and Paulson, attempt to force their way back into the prison, leading him to fabricate a fantastical fourth-dimensional story to keep them occupied without breaking the law. When Coleman returns as a prisoner for misuse of authority, Walker must decide whether to grant him a short sentence or a long one, ultimately choosing a five-year probation to prove his moral integrity. Walker deduces that Coleman\u2019s initial claim was a manipulation tactic to test his sanity, and he rejects the idea that his reality is false, asserting that he must act as if his life is real regardless of the truth. The story concludes with Walker maintaining his composure and professional judgment, ready to face the next challenge as another inmate arrives.<|im_end|>\n<|endoftext|><|im_start|>user\n<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nWarden Walker of Dreamland, a prison where inmates are kept in sensory immersion, is told by Councilman Coleman that his own life is merely a dream and that he will be released if he",
+     "tokens_adapter_text_equal_split_text": false
+    },
+    "P5_qa16k": {
+     "attn_impl": "sdpa",
+     "prompt_tokens": 16581,
+     "ctx_tokens": 16549,
+     "suffix_tokens": 32,
+     "adapter_vs_split": {
+      "tokens_identical": false,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": 32,
+      "first_step_max_logit_diff": 0.0,
+      "all_steps_max_logit_diff": 43.630859375,
+      "margin_at_divergence": 0.0,
+      "top1_logit_at_divergence": 22.75
+     },
+     "tokens_split_head": [
+      623,
+      328,
+      2665,
+      3593,
+      89484,
+      1288,
+      457,
+      8082,
+      21587,
+      314,
+      17297,
+      1867,
+      11,
+      264,
+      9065,
+      1332
+     ],
+     "wall_split_adapter_s": 53.6,
+     "whole_vs_split": {
+      "tokens_identical": false,
+      "n_tokens": [
+       256,
+       256
+      ],
+      "first_divergence": 49,
+      "first_step_max_logit_diff": 0.328125,
+      "all_steps_max_logit_diff": 45.96875,
+      "margin_at_divergence": 0.25,
+      "top1_logit_at_divergence": 18.375
+     },
+     "adapter_vs_whole_tokens_identical": false,
+     "wall_whole_s": 26.9,
+     "tokens_split_text": "In \"No Substitutions,\" Warden Walker of Dreamland, a prison where inmates live out simulated lives, is told by a councilman that his own reality is merely a dream, forcing him to navigate ethical dilemmas to prove his sanity and moral integrity. In \"The Link,\" Ravdin and Dana belong to a peaceful, artistic people who have spent millennia fleeing from the militaristic Hunters, who view them as enemies. When the Hunters close in again, Ravdin and Dana defy their leader\u2019s orders to flee, choosing instead to stay behind and attempt to make peace with their pursuers. They use their unique musical technology to briefly break through the Hunter leader\u2019s hostility, but he reacts with violent rage and orders them tortured. Ultimately, the couple erases their own memories to survive, leaving them as amnesiacs in the jungle, though the brief moment of connection plants a seed of doubt in the Hunter leader\u2019s mind.<|im_end|>\n<|endoftext|><|im_start|><|im_start|><|im_start|><|im_start|><|im_end|>\n<|im_start|>user\n<|im_end|>\n<|im_start|><|im_start|><|im_end|>\n<|im_start|>assistant\n<think>\nThe user asked me to summarize the two stories in five sentences. Let me re-read both stories carefully and craft a precise five-sentence summary.\n\nStory 1: \"No Substitutions\" by Jim Harmon\n- Warden",
+     "tokens_adapter_text_equal_split_text": false
+    }
+   },
+   "verdict": {
+    "tokens_identical_all": false,
+    "first_step_logit_diff_ok": true,
+    "pass": false,
+    "n_identical": 1,
+    "n_prompts": 5
+   }
+  }
+ }
+}

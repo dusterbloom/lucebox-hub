@@ -1,0 +1,91 @@
+{
+ "meta": {
+  "model": "Qwen/Qwen3.8-27B",
+  "gpu": "NVIDIA H200",
+  "torch": "2.8.0+cu128",
+  "load_s": 29,
+  "class": "Qwen3_5ForCausalLM",
+  "text_cfg_output_gate_type": "swish",
+  "layer_types_counts": {
+   "full_attention": 16,
+   "linear_attention": 48
+  }
+ },
+ "smoke": {
+  "info": {
+   "article_id": "quality_52845",
+   "seq_len": 6651,
+   "article_tokens": 6626,
+   "target": 0.1,
+   "target_article_tokens": 662,
+   "compaction_s": 34.4,
+   "full_layer_prefix_len_min_max_mean": [
+    167,
+    3958,
+    1558.9375
+   ],
+   "nan_layers": [],
+   "n_full_layers": 16,
+   "n_linear_layers": 48
+  },
+  "uncompacted_adapter": [
+   {
+    "question": "How much time has passed between Blake's night with Eldoria and his search for Sabrina York in his mind-world?",
+    "answer": "B",
+    "parsed": "B",
+    "gold": "B",
+    "correct": true,
+    "finite_logits": true
+   },
+   {
+    "question": "Why does Deirdre get so upset when Blake Past suggests she go to prom with the young man?",
+    "answer": "C",
+    "parsed": "C",
+    "gold": "B",
+    "correct": false,
+    "finite_logits": true
+   },
+   {
+    "question": "Why does shame flame in Blake's cheeks when Deirdre goes to prepare Eldoria's dias?",
+    "answer": "C",
+    "parsed": "C",
+    "gold": "C",
+    "correct": true,
+    "finite_logits": true
+   }
+  ],
+  "compacted": [
+   {
+    "question": "How much time has passed between Blake's night with Eldoria and his search for Sabrina York in his mind-world?",
+    "answer": "D",
+    "parsed": "D",
+    "gold": "B",
+    "correct": false,
+    "finite_logits": true
+   },
+   {
+    "question": "Why does Deirdre get so upset when Blake Past suggests she go to prom with the young man?",
+    "answer": "C",
+    "parsed": "C",
+    "gold": "B",
+    "correct": false,
+    "finite_logits": true
+   },
+   {
+    "question": "Why does shame flame in Blake's cheeks when Deirdre goes to prepare Eldoria's dias?",
+    "answer": "C",
+    "parsed": "C",
+    "gold": "C",
+    "correct": true,
+    "finite_logits": true
+   }
+  ],
+  "n_correct_uncompacted": 2,
+  "n_correct_compacted": 1
+ },
+ "cost": {
+  "wall_s": 112,
+  "usd_est": 0.14,
+  "gpu": "NVIDIA H200"
+ }
+}
