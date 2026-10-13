@@ -25,3 +25,13 @@ A==B and A==C on all 10 turns (cmp.out: IDENTICAL). Greedy spec decode is lossle
 
 ## B restore pattern vs q38/t1
 Restored prefix L per turn (B): t1 none (L=1, replay 11606) | t2 11602 | t3 11954 | t4 12400 | t5 12609 | t6 12894 | t7 13261 | t8 13707 | t9 13917 | t10 14201. These equal q38/t1 exactly (11602, 11954, 12400, 12609, 12894, 13261, 13707, 13917, 14201). C (no drafter) has the same L, C and replay values as B on every turn. B prefill 0.3-0.8 s per restored turn vs A 9.1-11.3 s.
+
+## Correction / replication (decode tok/s, server-side)
+The client-side decode numbers above (A 73.7, B 60.9, C 53.7) are a measurement artifact: the client computes (completion_tokens-1)/(total-ttft) on a 29-token stream, and spec decode commits tokens in bursts. Server-side "[spec-decode] speed" / "chat DONE decode=" from the same session: A 50.5, B 50.6, C 46.7 tok/s (medians; per-turn A/B within 1-2 tok/s). The drafter gives about +8% decode over C; A vs B shows no gap.
+Alternating replication A,B,A,B at HEAD 595b40b9 (binary md5 0d3d6abbb270021a51676bdc4e30215a, includes the pager truncate fix), same flags, no sudo so no drop_caches, GPU idle on 2 polls before every arm: rep/r1 and rep/r2, scripts/rep_cmp.py.
+| run | A median tok/s | B median tok/s | B/A |
+|---|---|---|---|
+| r1 | 51.0 | 51.0 | +0.1% |
+| r2 | 50.8 | 51.3 | +1.0% |
+Per-step time (ms/step, 80-89) and acceptance (223/528) are identical between A and B on every turn. The gap does not exist; no pool-residency investigation was needed.
+(Discarded: an earlier rep attempt on the pre-pager-fix binary never started a run.)
