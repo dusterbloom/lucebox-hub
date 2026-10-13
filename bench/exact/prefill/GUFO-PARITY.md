@@ -1117,3 +1117,67 @@ traffic beforehand — not done here due to time/VRAM-reload budget (each
 `luce_server` restart costs ~70-90s to reload the 76 GB model). Flagging this
 as an open follow-up rather than reporting a false negative on the cold-tax
 question.
+
+## Fable #3: Routed GLU output-row tile 64 -> 128
+
+Rejected. `ggml_cuda_mul_mat_id_mmb_glu`'s fused gate+up SwiGLU dispatch used a
+64-row output tile (`mmb_routed_glu_kernel<64, ...>`) where the down-proj
+dispatch (`ggml_cuda_mul_mat_id_mmb`) already used 128. Made the GLU tile
+runtime-selectable (`mmb_glu_bm()`, env `LUCE_MMB_GLU_BM`, default 128,
+override 64 for the A/B unit test only) and widened `WTM` proportionally
+(32->64 for the big tile, 16->32 for the small tile) to keep
+`WAVES_M * WAVES_N == MMB_NT/32 == 8`, the kernel's hard-coded occupancy
+invariant.
+
+**Risk found during review** (per the task's ask to check LDS/register budget
+and why 64 was chosen): `mmb_tile_gemm_glu`'s Q4_K fast load path
+(`Q4K_SPLIT`, stripe-packed register loads, two threads/row) is gated on
+`4 * BM == MMB_NT` (256), which only holds at `BM=64`. At `BM=128` the kernel
+silently falls back to the generic per-row dequant path for Q4_K -- same
+arithmetic (confirmed bit-exact below) but a different, presumably slower,
+load strategy for exactly the weight type (Q4_K gate/up) this change targets.
+This is very likely why 64 was chosen originally and why the change
+regresses below.
+
+**Test.** `server/test/unit/test_mmb_glu_bm128.cpp` (new): E=512, n_used=10,
+T=4096, Q4_K gate/up weights, routing skewed (8 distinct bases x 512 tokens
+each) so 78 experts land >=128 rows (exercises the big-tile path) and 434
+stay <128 rows (small-tile path). Runs the GLU GPU kernel with
+`LUCE_MMB_GLU_BM=64` then `=128` in the same process and asserts
+`memcmp`-exact output, plus a CPU-reference sanity bound (same caveat as
+`test_mmb_cublas_diff`: CPU vec_dot quantizes activations, not an oracle).
+**Result: PASS** -- `bit-identical(64 vs 128)=YES maxdiff=0`.
+
+**Build (lucebox4).** `~/qwen4exp-f16/scratch/fable/3/{src,build}` (BM=128,
+`git archive HEAD` + this change's diff) and `~/qwen4exp-f16/scratch/fable/3/
+{base_src,base_build}` (unpatched HEAD, baseline A). Same cmake flags as
+`~/qwen4exp-f16/scratch/tile128/build`. Binary md5s:
+- A (baseline, HEAD): `luce_server` `5644a7469bb953ebee9e3bc19179fce6`
+- B (BM=128 default): `luce_server` `aea3b3849f94bb8f12c1a9085fbeac82`
+
+**A/B** (text-parity harness, `~/qwen4exp-f16/scratch/gufo/textparity/`,
+`--prefix-cache-slots 0`, `--max-ctx 20480`, `ROCR_VISIBLE_DEVICES=1`, GPU
+confirmed idle before each load, one server at a time, order A, B, A2):
+
+| Point | A (median) | B (median) | A2 (median) | B vs A | B vs A2 | A/A2 noise |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| prefill p4096  | 1211.0 | 1143.2 | 1177.2 | -5.6% | -2.9% | 2.8% |
+| prefill p16384 | 1230.9 | 1177.6 | 1239.2 | -4.3% | -5.0% | 0.7% |
+| decode (512p/256t) | 23.93 | 23.74 | 23.84 | -0.8% | -0.4% | 0.4% |
+
+Raw reps, tok/s: A p4096 [1163.5, 1218.6, 1211.0], B p4096 [1186.0, 1143.2,
+1140.6], A2 p4096 [1182.3, 1125.5, 1177.2]; A p16384 [1215.2, 1230.9, 1245.7],
+B p16384 [1148.1, 1198.4, 1177.6], A2 p16384 [1219.0, 1239.2, 1252.1]; A
+decode [23.93, 23.58, 23.99], B decode [22.59, 23.74, 23.95], A2 decode
+[23.84, 23.71, 23.96]. Generated text sampled byte-identical across A/B/A2 at
+the one decode prompt checked.
+
+**Verdict: REJECTED.** p16384's regression (-4.3%/-5.0%) is ~6-7x the
+A/A2 noise floor at that length (0.7%); p4096's regression (-5.6%/-2.9%) is
+also net negative against both baselines despite a noisier floor there
+(2.8%). Decode is flat (within noise). Reverted locally
+(`git checkout -- server/CMakeLists.txt server/deps/llama.cpp/ggml/src/
+ggml-cuda/mmb.cu`, removed the new test file) -- HEAD is unchanged. Consistent
+with the Q4K_SPLIT-loss hypothesis above: the fused-kernel fast path for Q4_K
+only exists at BM=64, so doubling the output tile for this specific
+weight type trades away more than the halved weight-restreaming saves.
