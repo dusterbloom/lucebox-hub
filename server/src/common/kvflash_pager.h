@@ -674,6 +674,14 @@ private:
         return victim >= 0 && page_out(victim);
     }
 
+#ifdef KVFLASH_HAS_ASYNC_DMA
+    // True when the tensor lives in host memory (CPU backend / partial offload):
+    // cudaMemcpyAsync/cudaMemsetAsync on such pointers are invalid.
+    static bool is_host_tensor_(const ggml_tensor * t) {
+        return t->buffer && ggml_backend_buffer_is_host(t->buffer);
+    }
+#endif
+
     // Move one chunk between pool slots and host backing.
     // Segment order is fixed (layer-major, K then V, head-minor).
     // When KVFLASH_HAS_ASYNC_DMA: transfers are issued on page_stream_
@@ -695,6 +703,12 @@ private:
                         (size_t)h * t->nb[2];
                     void * host_ptr = (uint8_t *)st.host_data + host_off;
                     void * dev_ptr  = (uint8_t *)t->data + dev_off;
+                    if (is_host_tensor_(t)) {  // CPU-backend tensor: plain memcpy
+                        if (to_host) std::memcpy(host_ptr, dev_ptr, seg);
+                        else         std::memcpy(dev_ptr, host_ptr, seg);
+                        host_off += seg;
+                        continue;
+                    }
                     cudaError_t err;
                     if (to_host)
                         err = cudaMemcpyAsync(host_ptr, dev_ptr, seg,
@@ -740,6 +754,7 @@ private:
                 for (int h = 0; h < n_head_kv_; h++) {
                     const size_t off = (size_t)block * cfg_.chunk_tokens * t->nb[1] + (size_t)h * t->nb[2];
 #ifdef KVFLASH_HAS_ASYNC_DMA
+                    if (is_host_tensor_(t)) { std::memset((uint8_t *)t->data + off, 0, seg); continue; }
                     cudaError_t err = cudaMemsetAsync((uint8_t *)t->data + off, 0, seg, page_stream_);
                     if (err != cudaSuccess) {
                         std::fprintf(stderr, "[kvflash] cudaMemsetAsync failed: %s\n",
@@ -788,7 +803,8 @@ private:
                         const size_t off = (size_t)st.block * cfg_.chunk_tokens * t->nb[1] +
                                            (size_t)h * t->nb[2] + (size_t)row0 * row;
 #ifdef KVFLASH_HAS_ASYNC_DMA
-                        cudaMemsetAsync((uint8_t *)t->data + off, 0, n, page_stream_);
+                        if (is_host_tensor_(t)) std::memset((uint8_t *)t->data + off, 0, n);
+                        else cudaMemsetAsync((uint8_t *)t->data + off, 0, n, page_stream_);
 #else
                         ggml_backend_tensor_set(t, zero_buf_.data(), off, n);
 #endif
