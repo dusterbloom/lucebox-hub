@@ -180,6 +180,21 @@ inline bool kvflash_live_restore_enabled() {
     return v != nullptr && v[0] == '1' && v[1] == '\0' && kvflash_state_ladder_enabled();
 }
 
+// KVFLASH_GEN_CKPT=1 (requires KVFLASH_LIVE_RESTORE=1) captures one more
+// state checkpoint when a generation ends (S9). Default OFF.
+inline bool kvflash_gen_ckpt_enabled() {
+    const char * v = std::getenv("KVFLASH_GEN_CKPT");
+    return v != nullptr && v[0] == '1' && v[1] == '\0' && kvflash_live_restore_enabled();
+}
+
+// Position of the generation-end checkpoint: cur_pos, where KV and DeltaNet
+// state hold exactly history[0:cur_pos] (a final pending token is in the
+// history but not in KV). -1 when the history does not cover cur_pos, e.g. a
+// decode path that does not record generated ids.
+inline int kvflash_gen_ckpt_pos(int cur_pos, size_t history_size) {
+    return cur_pos > 0 && history_size >= (size_t)cur_pos ? cur_pos : -1;
+}
+
 // Decision for a restore from the live session (S8a).
 //   L             longest common prefix of the prompt and the live history,
 //                 capped at cur_pos (the history is exact only up to there)

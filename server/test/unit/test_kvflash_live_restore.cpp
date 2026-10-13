@@ -95,3 +95,39 @@ TEST_CASE(KvflashLiveRestoreFixture, history_capped_at_cur_pos) {
     CHECK(d.L == 3000);
     CHECK(d.C == 2048);
 }
+
+// ---- S9: generation-end checkpoint at an off-grid position ----------------
+
+TEST_CASE(KvflashLiveRestoreFixture, gen_rung_off_grid_is_picked_when_prompt_extends_history) {
+    // G = 4300 is not a multiple of 512; the next turn re-renders the whole
+    // history and appends a new user turn.
+    const std::vector<int> rungs = {1024, 2048, 4096, 4300};
+    Toks hist = seq(4301);                       // 4300 in KV + 1 pending token
+    Toks prompt = seq(4301);
+    for (int i = 0; i < 80; i++) prompt.push_back(90000 + i);
+    auto d = kvflash_live_restore_decide(prompt, hist, 4300, rungs);
+    CHECK(d.L == 4300);
+    CHECK(d.C == 4300);
+    CHECK(d.replay_from == 4300);
+    CHECK((int)prompt.size() - d.C == 81);       // only the new tokens replay
+    CHECK(d.discard_above == 4300);              // the gen rung survives
+}
+
+TEST_CASE(KvflashLiveRestoreFixture, gen_rung_dropped_when_template_rewrites_the_answer) {
+    const std::vector<int> rungs = {1024, 2048, 4096, 4300};
+    Toks hist = seq(4300);
+    Toks prompt = seq(4400);
+    prompt[4250] = -5;                           // the re-rendered answer differs
+    auto d = kvflash_live_restore_decide(prompt, hist, 4300, rungs);
+    CHECK(d.L == 4250);
+    CHECK(d.C == 4096);
+    CHECK(d.discard_above == 4250);              // 4300 is stale and gets erased
+}
+
+TEST_CASE(KvflashLiveRestoreFixture, gen_ckpt_position_needs_history_to_cover_cur_pos) {
+    CHECK(kvflash_gen_ckpt_pos(4300, 4301) == 4300);   // one pending token is fine
+    CHECK(kvflash_gen_ckpt_pos(4300, 4300) == 4300);
+    CHECK(kvflash_gen_ckpt_pos(4300, 4000) == -1);     // history lacks generated ids
+    CHECK(kvflash_gen_ckpt_pos(0, 10) == -1);
+    CHECK(kvflash_gen_ckpt_pos(-3, 10) == -1);
+}
