@@ -15,17 +15,19 @@ TARGETS = ("0.1", "0.05")
 SPLITS = ("sel", "held")
 
 
-def cells_in(d):
+def cells_in(dirs):
+    """dirs: comma-separated result dirs (parallel jobs write separate dirs); cell -> list of jsonl paths."""
     out = {}
-    for p in glob.glob(f"{d}/*__t*__*.jsonl"):
-        c, t, s = os.path.basename(p)[:-6].split("__")
-        out[(c, t[1:], s)] = p
+    for d in dirs.split(","):
+        for p in sorted(glob.glob(f"{d}/*__t*__*.jsonl")):
+            c, t, s = os.path.basename(p)[:-6].split("__")
+            out.setdefault((c, t[1:], s), []).append(p)
     return out
 
 
 def timing(path):
     import json
-    rows = [json.loads(l) for l in open(path) if l.strip()]
+    rows = [json.loads(l) for p in path for l in open(p) if l.strip()]
     per_art = {}
     for r in rows:
         per_art[r["article_id"]] = (r.get("compaction_s", 0.0), r.get("query_gen_s", 0.0), r.get("cell_wall_s", 0.0))

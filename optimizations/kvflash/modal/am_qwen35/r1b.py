@@ -58,9 +58,8 @@ def _cost(name, t0, gpu, **extra):
     wall = time.time() - t0
     rec = {"name": name, "gpu": gpu, "wall_s": round(wall),
            "usd_est": round(wall * USD_PER_S["H200" if "H200" in gpu else "H100"], 2), **extra}
-    os.makedirs(ROOT, exist_ok=True)
-    with open(f"{ROOT}/cost_log.jsonl", "a") as f:
-        f.write(json.dumps(rec) + "\n")
+    os.makedirs(f"{ROOT}/cost", exist_ok=True)  # one file per job: parallel jobs must not write the same volume file
+    json.dump(rec, open(f"{ROOT}/cost/{int(time.time())}_{os.getpid()}.json", "w"))
     results.commit()
     return rec
 
@@ -106,11 +105,12 @@ def validate(articles: str = "95,96,97,98,99", target: float = 0.10):
 
 
 @app.function(gpu=GPU, volumes=VOLS, timeout=8 * 3600)
-def cells(cells: str = "orig,O1", split: str = "sel", target: float = 0.10, start: int = 0, n: int = 2):
+def cells(cells: str = "orig,O1", split: str = "sel", target: float = 0.10, start: int = 0, n: int = 2,
+          budget: str = BUDGET, out: str = "r1b"):
     tok, model, t0, gpu = _boot()
     import r1b_core as core
     from models.qwen3_5 import HFGenerateShim
-    out = f"{ROOT}/r1b"
+    out = f"{ROOT}/{out}"
     arts = core.split_range(split, start, n)
-    core.run_cells(model, tok, HFGenerateShim(model, tok, seed=1), out, cells.split(","), split, target, BUDGET, arts)
+    core.run_cells(model, tok, HFGenerateShim(model, tok, seed=1), out, cells.split(","), split, target, budget, arts)
     return _cost(f"cells {cells} {split} t{target} [{arts.start},{arts.stop})", t0, gpu)

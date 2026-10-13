@@ -35,13 +35,14 @@ def mcnemar_exact(a, b):
     return x, y, min(1.0, p)
 
 
-def load_cell(path):
-    """jsonl of per-question rows -> {(article_id, qi): correct(0/1)}."""
+def load_cell(paths):
+    """jsonl file(s) of per-question rows -> {(article_id, qi): correct(0/1)}."""
     out = {}
-    for line in open(path):
-        if line.strip():
-            r = json.loads(line)
-            out[(r["article_id"], r["qi"])] = int(r["correct"])
+    for path in [paths] if isinstance(paths, str) else paths:
+        for line in open(path):
+            if line.strip():
+                r = json.loads(line)
+                out[(r["article_id"], r["qi"])] = int(r["correct"])
     return out
 
 

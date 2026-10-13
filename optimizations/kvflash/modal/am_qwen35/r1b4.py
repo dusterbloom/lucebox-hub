@@ -61,17 +61,17 @@ def _cost(name, t0, gpu, **extra):
     wall = time.time() - t0
     rec = {"name": name, "gpu": gpu, "wall_s": round(wall),
            "usd_est": round(wall * USD_PER_S["H200" if "H200" in gpu else "H100"], 2), **extra}
-    os.makedirs(ROOT, exist_ok=True)
-    with open(f"{ROOT}/cost_log.jsonl", "a") as f:
-        f.write(json.dumps(rec) + "\n")
+    os.makedirs(f"{ROOT}/cost", exist_ok=True)  # one file per job: parallel jobs must not write the same volume file
+    json.dump(rec, open(f"{ROOT}/cost/{int(time.time())}_{os.getpid()}.json", "w"))
     results.commit()
     return rec
 
 
 @app.function(gpu=GPU, volumes=VOLS, timeout=8 * 3600)
-def cells(cells: str = "orig,O1", split: str = "sel", target: float = 0.10, start: int = 0, n: int = 2):
+def cells(cells: str = "orig,O1", split: str = "sel", target: float = 0.10, start: int = 0, n: int = 2,
+          out: str = "r1b"):
     model, tok, shim, t0, gpu = _boot()
     import r1b_core as core
     arts = core.split_range(split, start, n)
-    core.run_cells(model, tok, shim, f"{ROOT}/r1b", cells.split(","), split, target, BUDGET, arts, name=MODEL)
+    core.run_cells(model, tok, shim, f"{ROOT}/{out}", cells.split(","), split, target, BUDGET, arts, name=MODEL)
     return _cost(f"cells4b {cells} {split} t{target} [{arts.start},{arts.stop})", t0, gpu)
