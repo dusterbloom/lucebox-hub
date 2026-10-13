@@ -1158,6 +1158,7 @@ ModelBackend::SnapshotRef Qwen35Backend::snapshot_ref(int slot) const {
     ref.buf      = snap.buf;
     ref.cur_pos  = snap.cur_pos;
     ref.last_tok = snap.last_tok;
+    ref.pooled   = snap.is_pooled;
     return ref;
 }
 
