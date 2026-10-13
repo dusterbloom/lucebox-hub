@@ -61,6 +61,26 @@ pass, and that path is untouched by this change. No logprob endpoint exists to m
 mismatch, so the near-tie classification is by inference, not measurement. Treat the byte-identity criterion as
 unmet and open for triage; the gap measurement is the follow-up the speed-profile doc already asks for.
 
+## Control: DFlash 1 drafter (Arm D1) decides it is batched-verify numerics
+
+Same binary, prompts and flags; drafter `/home/peppi/models/qwen3.6-27b-dflash/dflash-draft-3.6-q8_0.gguf` on the Qwen3.8
+target (loaded fine; avg 84 tok/s decode median 83.3). Raw: `m3_d1_*`. First divergent position per pair (character
+index in reasoning+text, approximate token index in parentheses; `=` is identical; no token ids are exposed):
+
+| Prompt | D1 vs AR | D1 vs DFlash2 | DFlash2 vs AR |
+|---|---|---|---|
+| gsm_01 | chr125 (~38) | = | chr125 (~38) |
+| gsm_02 | = | = | = |
+| gsm_03 | = | chr348 (~113) | chr348 (~113) |
+| gsm_04 | chr61 (~19) | chr61 (~19) | = |
+| gsm_05 | chr630 (~190) | chr133 (~40) | chr133 (~40) |
+| gsm_06 | chr38 (~14) | chr38 (~14) | = |
+| gsm_07 | = | = | = |
+| gsm_08 | chr322 (~108) | chr167 (~55) | chr167 (~56) |
+
+D1 diverges from AR on 5 of 8 prompts (DFlash2: 4 of 8), at similar shallow depths (tens to low hundreds of tokens).
+Conclusion: the mismatch is inherent to batched verify numerics on this target, not DFlash2-specific. Code left alone.
+
 ## Optional tensor byte-compare vs our own converter: skipped
 
 The HF `Qwen3.8-27B-DFlash2` safetensors are not present locally (only the GGUF is), so there was nothing to convert;
