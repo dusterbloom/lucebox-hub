@@ -1181,3 +1181,130 @@ ggml-cuda/mmb.cu`, removed the new test file) -- HEAD is unchanged. Consistent
 with the Q4K_SPLIT-loss hypothesis above: the fused-kernel fast path for Q4_K
 only exists at BM=64, so doubling the output tile for this specific
 weight type trades away more than the halved weight-restreaming saves.
+
+## Fable #4: Row-group rasterization in mmb_q8f16_kernel
+
+Rejected. `mmb_q8f16_kernel` (the Q8_0 -> F16 WMMA dense GEMM) already
+rasterizes its grid in groups of `G=16` token tiles, sweeping every row tile
+per group so a group's F16 activations stay cache-resident (comment at
+`mmb-q8f16.cuh:63-64`). Ported gufo's complementary idea (kRowGroup,
+`kernels.hip.cpp:3353-3363`: for the `m=2560, k=6144` output-projection shape,
+gufo groups `RG=5` row tiles and sweeps every token tile per group instead,
+so the K-heavy weight tiles stay resident -- "5.7 to 3.4 ms"). Added a
+`ROWGRP` template bool that swaps the token-tile-group/row-sweep order for a
+row-tile-group/token-sweep order, selected at launch time by `K >= 4096`
+(env `LUCE_MMB_Q8F16_ROWGROUP` overrides for the A/B test: -1 auto, 0 force
+G-grouped, 1 force ROWGRP). Pure rasterization-order change -- same
+(row, token) tile set, same per-output K-accumulation order -- so bit-exact
+with the existing order at any K, not just the production threshold.
+
+**Test.** `server/test/unit/test_mmb_q8f16_rowgroup.cpp` (new): calls
+`mmb_q8f16_launch` directly (bypasses ggml's `mul_mat` dispatch), five
+shapes -- a small M=256/K=4096/T=512 case with a full CPU reference (sanity
+bound, same caveat as the other `mmb_cublas_diff`-style tests: f16-activation
+rounding, not a bit-exact oracle) and four real shapes (M=2560/K=2048/T=4096
+below the threshold, M=2560/K=4096/T=4096 and T=16384 at it, and
+M=6144/K=4096/T=4097 for BM=256/BN=128 tail tiles). **Result: PASS** on all
+five -- `bit-identical(G vs ROWGRP)=YES maxdiff=0` in every case; CPU sanity
+`maxdiff=0.183 rel=0.002` on the small case.
+
+**Build (lucebox4).** `~/qwen4exp-f16/scratch/fable/4/{src,build}` (ROWGRP
+default, from the Fable #3-reverted baseline + this change's diff), A/B'd
+against the same unpatched-HEAD baseline binary reused from
+`~/qwen4exp-f16/scratch/fable/3/base_build` (md5
+`5644a7469bb953ebee9e3bc19179fce6`, confirmed unchanged). B (ROWGRP default)
+`luce_server` md5 `5de900839fc85b00850fb1668568df02`.
+
+**A/B** (same text-parity harness, `--prefix-cache-slots 0`, `--max-ctx
+20480`, `ROCR_VISIBLE_DEVICES=1`, GPU confirmed idle before each load, order
+A then B):
+
+| Point | A (median) | B (median) | B vs A | A/A2 noise (from Fable #3, same box/model/session) |
+| --- | ---: | ---: | ---: | ---: |
+| prefill p4096  | 1230.1 | 1197.5 | -2.65% | 2.8% |
+| prefill p16384 | 1238.8 | 1232.9 | -0.48% | 0.7% |
+| decode (512p/256t) | 23.93 | 23.81 | -0.5% | 0.4% |
+
+Raw reps, tok/s: A p4096 [1184.5, 1236.1, 1230.1], B p4096 [1190.5, 1211.3,
+1197.5]; A p16384 [1238.8, 1226.1, 1265.9], B p16384 [1175.9, 1232.9,
+1259.4]; A decode [23.93, 23.84, 24.03], B decode [23.81, 23.69, 23.94].
+Generated text sampled byte-identical at the one decode prompt checked.
+
+**Verdict: REJECTED (no measurable win).** Every delta is within or close to
+the A/A2 noise band already measured in this session for the same
+box/model/harness (2.8% at p4096, 0.7% at p16384, 0.4% for decode) --
+p16384's -0.48% and decode's -0.5% are both inside their noise floors
+outright; p4096's -2.65% is smaller than that length's noisier 2.8% floor.
+No A2 rerun was done for this specific pair (time budget), so this reuses
+the just-measured noise characterization from the same session/hardware
+rather than a fresh bracket -- flagged as the one deviation from the A,B,A2
+protocol. Net: no prefill improvement clears noise in either direction, so
+the change does not meet the keep bar. Reverted locally (`git checkout --
+server/CMakeLists.txt server/deps/llama.cpp/ggml/src/ggml-cuda/mmb-q8f16.cuh`,
+removed the new test file) -- HEAD is unchanged. Unlike Fable #3, this one
+is not a clear regression, just a non-improvement: the dense Q8_0 kernel's
+existing G=16 token-grouping already captures most of the achievable
+cache-residency benefit for qwen4exp's actual dense shapes, so transposing
+which operand is grouped doesn't move the needle further here.
+
+## Fable #6: Sort once per layer (reuse the GLU call's route maps for down)
+
+Skipped (not implemented) -- the task's explicit fallback: "If they differ,
+the maps aren't reusable, so report that and skip." Investigated without a
+build/bench cycle since the answer is a correctness question settled by
+reading the graph builder and the sort kernel, not a timing question.
+
+**The claim to check:** `ggml_cuda_mul_mat_id_mmb_glu` (gate+up) and
+`ggml_cuda_mul_mat_id_mmb` (down) each independently call
+`ggml_cuda_launch_mm_ids_bounded` / `ggml_cuda_launch_mm_ids_helper` to build
+`ids_src1` / `ids_dst` / `expert_bounds` from the same `ids` tensor
+(`mmb.cu:1067-1071` and `:1124-1128`). Both calls pass identical `E`, `T`,
+`n_used`, `inverse=false` / `write_inverse=false` -- but **not** identical
+`ne11` (`nchannels_y` in `mmid.cu`) or `si1`/`sis1`.
+
+**Proof the maps are NOT fully interchangeable.** `server/src/qwen4exp/
+qwen4exp_graph.cpp:405,407,409`: `cur3 = ggml_reshape_3d(c, cur, n_embd, 1,
+n_tokens)`; `gate = ggml_mul_mat_id(c, L.ffn_gate_exps, cur3, sel)`; `up =
+ggml_mul_mat_id(c, L.ffn_up_exps, cur3, sel)` -- the GLU call's `src1`
+(`cur3`) has `ne11 = 1` (one shared activation row broadcast across all
+`n_used` expert picks per token). `qwen4exp_graph.cpp:414`: `down =
+ggml_mul_mat_id(c, L.ffn_down_exps, gu, sel)   // [n_embd, n_used, T]` -- the
+down call's `src1` (`gu`, the SwiGLU output) has `ne11 = n_used` (each of the
+`n_used` expert picks already has its own distinct row, since gate/up has
+already branched per expert). This is the standard ggml MoE convention
+(broadcast activation into gate/up, already-split activation into down), not
+a qwen4exp quirk.
+
+`mmid.cu:113-116` (`mm_ids_helper`, and the bounded-path kernel mirrors the
+same formula): `ids_dst[nex_prev+itc] = it*n_expert_used + iex_used;` depends
+only on `it`/`iex_used` (decoded purely from `ids`'s own data) and
+`n_expert_used` -- **independent of `ne11`/`sis1`**, so this one, and
+`expert_bounds` (`expert_bounds[expert] = nex_prev`, same independence), are
+**bit-identical** between the GLU and down calls for the same `ids` tensor
+-- confirmed by inspection of the formula, not assumed. But `ids_src1[nex_prev
++itc] = it*sis1 + iex_used % nchannels_y;` directly depends on `nchannels_y`
+(`=ne11`) and `sis1` (`=src1->nb[2]/src1->nb[1]`), both of which differ
+between the two call sites (1 vs `n_used`, and the corresponding stride of
+two different tensors `cur3` vs `gu`). So `ids_src1` is call-site-specific
+and genuinely NOT reusable as computed today.
+
+**Verdict: the literal ask (cache and reuse all three maps wholesale) does
+not hold** -- 2 of 3 maps (`ids_dst`, `expert_bounds`) are provably
+reusable, but the third (`ids_src1`, the one that actually addresses into
+`src1`) is not, so a naive whole-sale cache-and-skip would silently read the
+down projection's rows from the wrong offsets (reusing the GLU call's
+`ne11=1`-derived indices against a `ne11=n_used`-shaped tensor). Implementing
+it correctly would require a different, smaller change than requested --
+e.g. persist the decompacted `(it, iex_used)` pairs once (derivable from the
+cached `ids_dst` via `it = ids_dst[i] / n_expert_used`,
+`iex_used = ids_dst[i] % n_expert_used`) and launch a cheap O(compacted-count)
+elementwise kernel to re-derive `ids_src1` for the down call's own
+`ne11`/`sis1`, instead of the current O(E x T) warp-scan sort
+(`mmid.cu:33-130`) -- replacing roughly 2 of the 2 sort calls' cost with 1
+full sort + 1 cheap remap. This is a plausible follow-up (the GUFO-PARITY.md
+"Idle and sort root cause" section above estimated ~162 ms from exactly this
+kind of reuse) but is a different, more involved change than "cache and
+reuse the maps" as specified, and was not implemented or benchmarked in this
+session given the time budget -- reporting the finding rather than shipping
+an under-tested kernel-path change late in the session, per the task's
+skip instruction for when the inputs don't match.
