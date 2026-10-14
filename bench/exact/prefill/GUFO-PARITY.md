@@ -2234,3 +2234,55 @@ Default for Q4_K experts with E <= 1024 and M % 8 == 0 (`mode 1` in
 Expected saving at p4096: 0.46 ms x 44 layers = ~20 ms/request.
 
 Commits: 8060060f (kernel + test), 4ed932b6 (register footprint fixes).
+
+### Real routing, the in-situ grid bug and the end-to-end A/B (lucebox4, 2026-10-14)
+
+Real top-10 ids (`LUCE_MMB_GLU_DUMP=<dir>` in `ggml_cuda_mul_mat_id_mmb_glu`,
+one `[T][10]` int32 file per layer, the microbench's `-ids` format) from the
+p4096 request: 4136 tokens, 603..671 128-token tiles per layer, i.e. a
+little more fragmented than the synthetic skew (617). Microbench on four
+layers' real routing (ms per layer, bf16 out, median of 15):
+
+| layer ids | legacy 2-launch (big + small) | gufo 128-tok | new grid 40 | new grid 60 | new grid 80 | new grid 160 |
+|---|---:|---:|---:|---:|---:|---:|
+| 001 | 11.70 (4.20 + 7.66) | 9.81 | 12.25 | 10.99 | 11.03 | 11.07 |
+| 012 | 11.98 (5.31 + 6.80) | 10.12 | 12.67 | 11.38 | 11.38 | 11.44 |
+| 024 | 12.33 (5.81 + 5.96) | 10.05 | 12.69 | 11.26 | 11.37 | 11.41 |
+| 040 | 11.52 (6.33 + 5.49) | 10.22 | 12.78 | 11.45 | 11.48 | 11.57 |
+
+The first server A/B (one binary md5 983c73cc, `LUCE_MMB_GLU_LEGACY=1` vs 0,
+2 rounds x 5 reps) came out flat to negative (p4096 -0.9% / -3.2%, p16384
+-4.4% / +0.5% over two runs with the arm order swapped), and the in-situ
+rocprofv3 trace of one p4096 request explained it: the server launched the
+persistent kernel with `Grid_Size_X = 10240` = 40 blocks, because HIP's
+`multiProcessorCount` on gfx1151 is 20 (WGPs), so `2 * nsm` under-filled the
+60 resident block slots (3 per WGP at 41 KB LDS); grid 40 is the 12.3 ms row
+above. In situ: legacy `<64,128>` + `<64,64>` 265.6 + 288.9 ms over 46 Q4_K
+layers (12.05 ms/layer), new at grid 40 601.0 ms (13.07 ms/layer, +8.5%).
+Fixed by launching `4 * nsm` (80 on gfx1151; the persistent loop makes any
+grid >= 60 equivalent): in situ 555.6 ms (median 11.6 ms/layer).
+
+A/B with the fix (same protocol, arms old/new alternating, 2 x 5, warm-up
+dropped, no `drop_caches` (no sudo), BOX_LOCK could not be written from the
+agent sandbox -- the box was verified idle, no lock file, before every run):
+
+| metric | old median | new median | delta | old-vs-old spread | verdict |
+|---|---:|---:|---:|---:|---|
+| p4096 prefill tok/s | 1283.8 | 1293.6 | +0.77% | 2.32% | inside noise (expected +1.4%: 46 x 0.5..1 ms of 3.2 s) |
+| p16384 prefill tok/s | 1324.0 | 1344.4 | +1.54% | 1.87% | inside noise |
+| decode tok/s (ms/token) | 28.55 (35.03) | 28.49 (35.11) | -0.22% (+0.08 ms) | 0.10% | kernel is not on the T=1 path; same binary, env only |
+
+Greedy-64 at temp 0 on `prompt_decode512_r0` and `prompt_p4096_r0`: all four
+arms byte-identical, as the parity test predicts (passes on lucebox4).
+
+Verdict: the single-launch kernel is bit-exact, ~4-6% faster than the
+two-launch pair in isolation on real routing and neutral-to-positive end to
+end (inside prefill noise, which is 2-5% round to round on this box). It
+stays on by default (`LUCE_MMB_GLU_LEGACY=1` restores the pair). gufo's
+`RoutedF16GEMMKernel` remains 10-12% faster per layer; closing that needs the
+raw-nibble LDS layout and the 128x128 tile (half the LDS bytes and LDS reads
+per flop), which is a different kernel, not a tuning of this one.
+
+Harness: `bench/exact/prefill/ab_glu.sh` (server A/B, `ARMS="new old"` to
+swap the order), `pprof.sh` (one prefill request under rocprofv3),
+`insitu_glu.py` (per-kernel ledger of the last request).

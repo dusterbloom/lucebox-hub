@@ -948,6 +948,15 @@ void ggml_cuda_mul_mat_id_mmb_glu(ggml_backend_cuda_context & ctx, const ggml_te
         ggml_cuda_launch_mm_ids_helper((const int32_t *) ids->data, ids_src1.get(), ids_dst.get(), bounds.get(),
             E, T, n_used, ne11, si1, sis1, /*write_inverse=*/false, stream);
     }
+    // LUCE_MMB_GLU_DUMP=<dir>: write the real top-k ids of every T>=1024 call ([T][n_used] int32, bench/exact -ids format).
+    if (static const char * dump = getenv("LUCE_MMB_GLU_DUMP"); dump && T >= 1024) {
+        static int call = 0;
+        std::vector<int32_t> h((size_t) T * n_used);
+        CUDA_CHECK(cudaMemcpy2DAsync(h.data(), n_used * sizeof(int32_t), ids->data, ids->nb[1], n_used * sizeof(int32_t), T, cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        char path[512]; snprintf(path, sizeof(path), "%s/ids_T%d_%03d.bin", dump, T, call++);
+        if (FILE * f = fopen(path, "wb")) { fwrite(h.data(), sizeof(int32_t), h.size(), f); fclose(f); }
+    }
     // A bf16-only GLU output (every consumer is an MMB MUL_MAT_ID) holds its bf16 form in place and skips the F32 store.
     const bool bf16_only = ggml_cuda_mmb_is_bf16_only(glu);
     uint16_t * Dh = bf16_only ? (uint16_t *) glu->data : ggml_cuda_mmb_slot_reserve(ctx, 2, glu, (size_t) n_rows * M);
@@ -958,7 +967,9 @@ void ggml_cuda_mul_mat_id_mmb_glu(ggml_backend_cuda_context & ctx, const ggml_te
     mmb_dispatch_quant(gw->type, [&](auto tag) {
         constexpr int WT = decltype(tag)::value;
         mmb_glu_run<WT>(mode, Wg, Wu, eb, xhp, D, Dh, store_f32, ids_src1.get(), ids_dst.get(), bounds.get(), scratch.get(), E, n_rows, M, K,
-            2 * ggml_cuda_info().devices[ctx.device].nsm, stream);
+            // HIP reports WGPs (20 on gfx1151), not CUs, so 2*nsm = 40 persistent blocks under-fills the 60 resident
+            // slots (3 blocks/WGP at 41 KB LDS): lucebox4 microbench grid 40 = 12.3 ms, 60..160 = 11.0 ms.
+            4 * ggml_cuda_info().devices[ctx.device].nsm, stream);
     });
     CUDA_CHECK(cudaGetLastError());
 }
