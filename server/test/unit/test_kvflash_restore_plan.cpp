@@ -154,15 +154,15 @@ TEST_CASE(KvflashRestorePlanFixture, history_without_full_prompt_zero_fills_pref
 }
 
 TEST_CASE(KvflashRestorePlanFixture, consume_flag_is_off_unless_exactly_one) {
-    unsetenv("KVFLASH_RESTORE_CONSUME");
+    unsetenv("LUCE_KVFLASH_RESTORE_CONSUME");
     CHECK(!kvflash_restore_consume_enabled());
-    setenv("KVFLASH_RESTORE_CONSUME", "0", 1);
+    setenv("LUCE_KVFLASH_RESTORE_CONSUME", "0", 1);
     CHECK(!kvflash_restore_consume_enabled());
-    setenv("KVFLASH_RESTORE_CONSUME", "", 1);
+    setenv("LUCE_KVFLASH_RESTORE_CONSUME", "", 1);
     CHECK(!kvflash_restore_consume_enabled());
-    setenv("KVFLASH_RESTORE_CONSUME", "1", 1);
+    setenv("LUCE_KVFLASH_RESTORE_CONSUME", "1", 1);
     CHECK(kvflash_restore_consume_enabled());
-    unsetenv("KVFLASH_RESTORE_CONSUME");
+    unsetenv("LUCE_KVFLASH_RESTORE_CONSUME");
 }
 
 // ---- S6: KVFlash prefill on an absolute grid ------------------------------

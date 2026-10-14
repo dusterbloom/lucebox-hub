@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# GPU e2e: KVFlash pooled-session restore (KVFLASH_RESTORE_CONSUME) identity test.
+# GPU e2e: KVFlash pooled-session restore (LUCE_KVFLASH_RESTORE_CONSUME) identity test.
 #
 # For each turn-1 size N, runs a 3-turn greedy conversation twice against a
 # fresh server (--kvflash 8192 --max-ctx 131072):
-#   KVFLASH_RESTORE_CONSUME=0  reference: pooled snapshots are not saved, every
+#   LUCE_KVFLASH_RESTORE_CONSUME=0  reference: pooled snapshots are not saved, every
 #                              turn re-prefills its whole prompt
-#   KVFLASH_RESTORE_CONSUME=1  turns 2 and 3 restore the pooled snapshot and
+#   LUCE_KVFLASH_RESTORE_CONSUME=1  turns 2 and 3 restore the pooled snapshot and
 #                              prefill only the new tokens
 # Asserts (a) the turn-3 text is identical across the two runs and (b) with =1,
 # turns 2 and 3 prefill suffix-only: restore=true with a non-zero prefix_len in
@@ -58,7 +58,7 @@ start_server() {  # $1 = consume flag, $2 = log file
     [ -n "${CHAT_TEMPLATE:-}" ] && args+=(--chat-template-file "$CHAT_TEMPLATE")
     # shellcheck disable=SC2206
     [ -n "${EXTRA_ARGS:-}" ] && args+=($EXTRA_ARGS)
-    KVFLASH_RESTORE_CONSUME="$1" "$SERVER_BIN" "${args[@]}" >"$2" 2>&1 &
+    LUCE_KVFLASH_RESTORE_CONSUME="$1" "$SERVER_BIN" "${args[@]}" >"$2" 2>&1 &
     SERVER_PID=$!
     for _ in $(seq 1 300); do
         curl -fsS "http://$HOST:$PORT/v1/models" >/dev/null 2>&1 && return 0

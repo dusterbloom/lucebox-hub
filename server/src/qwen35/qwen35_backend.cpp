@@ -1018,7 +1018,7 @@ void Qwen35Backend::state_ladder_clear() {
 
 // State-only checkpoint (ssm + conv, no KV; plus target_feat when a drafter
 // is configured) of the live cache at `pos`, then LRU eviction down to
-// KVFLASH_STATE_LADDER_MIB (default 3072).
+// LUCE_KVFLASH_STATE_LADDER_MIB (default 3072).
 bool Qwen35Backend::state_ladder_capture(int pos) {
     if (pos <= 0 || pos != cache_.cur_pos) return false;
     StateCheckpoint & ck = state_ladder_[pos];
@@ -1038,7 +1038,7 @@ bool Qwen35Backend::state_ladder_capture(int pos) {
     state_ladder_ckpt_bytes_ = bytes;
 
     static const size_t budget = [] {
-        const char * v = std::getenv("KVFLASH_STATE_LADDER_MIB");
+        const char * v = std::getenv("LUCE_KVFLASH_STATE_LADDER_MIB");
         const long mib = v ? std::atol(v) : 3072;
         return (size_t)(mib > 0 ? mib : 3072) << 20;
     }();
@@ -1148,14 +1148,14 @@ bool Qwen35Backend::snapshot_save(int slot) {
     // that can exceed the physical pool once decode has paged, and dense
     // snapshots copy rows assuming the identity layout, which pooled prefill /
     // eviction breaks. Pooled state is saved as a pager blob instead
-    // (KVFLASH_RESTORE_CONSUME=1); without it the old refusal stands.
+    // (LUCE_KVFLASH_RESTORE_CONSUME=1); without it the old refusal stands.
     if (kvflash_active() &&
         (cache_.cur_pos > kvflash_tokens_ || !kvflash_pager_.is_identity())) {
         if (!luce::common::kvflash_restore_consume_enabled()) {
             static bool warned = false;
             if (!warned) {
                 std::fprintf(stderr, "[kvflash] snapshot skipped: cur_pos %d exceeds "
-                                     "pool %d (set KVFLASH_RESTORE_CONSUME=1 to save "
+                                     "pool %d (set LUCE_KVFLASH_RESTORE_CONSUME=1 to save "
                                      "pooled snapshots)\n",
                              cache_.cur_pos, kvflash_tokens_);
                 warned = true;
@@ -2085,7 +2085,7 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
                                       : prefix_snapshots_[slot].cur_pos;
 
     // A KVFlash pooled snapshot either feeds the suffix-only prefill (consume,
-    // KVFLASH_RESTORE_CONSUME=1) or is dropped for a full re-prefill from 0.
+    // LUCE_KVFLASH_RESTORE_CONSUME=1) or is dropped for a full re-prefill from 0.
     // It is never read as a dense snapshot and never half-applied.
     const bool snap_pooled = !live_restore && prefix_snapshots_[slot].is_pooled;
     const KvflashRestorePlan plan = kvflash_restore_plan(
@@ -2763,7 +2763,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         }
     }
 
-    if (kvflash_active() && std::getenv("KVFLASH_DEBUG_RESIDENT")) {
+    if (kvflash_active() && std::getenv("LUCE_KVFLASH_DEBUG_RESIDENT")) {
         std::printf("[kvflash-dbg] after prefill kv_offset=%d committed=%d resident=%s\n", kv_offset, committed,
                     kvflash_pager_.debug_resident(committed / kvflash_pager_.chunk_tokens()).c_str());
         std::fflush(stdout);

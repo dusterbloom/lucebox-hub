@@ -112,11 +112,11 @@ inline std::vector<std::pair<int, int>> kvflash_prefill_batches(int start, int e
     return out;
 }
 
-// KVFLASH_RESTORE_CONSUME=1 opts in to carrying a pooled KVFlash session
+// LUCE_KVFLASH_RESTORE_CONSUME=1 opts in to carrying a pooled KVFlash session
 // across turns: pooled prefix snapshots are saved and a restore consumes them
 // instead of re-prefilling the prompt. Default OFF.
 inline bool kvflash_restore_consume_enabled() {
-    const char * v = std::getenv("KVFLASH_RESTORE_CONSUME");
+    const char * v = std::getenv("LUCE_KVFLASH_RESTORE_CONSUME");
     return v != nullptr && v[0] == '1' && v[1] == '\0';
 }
 
@@ -207,16 +207,16 @@ inline std::vector<int> kvflash_ladder_evict(const std::vector<KvflashLadderEntr
     return out;
 }
 
-// KVFLASH_SESSION is the one switch for KVFlash session restore: the DeltaNet
+// LUCE_KVFLASH_SESSION is the one switch for KVFlash session restore: the DeltaNet
 // state ladder, live restore, generation-end checkpoint (S9) and per-turn
 // checkpoints (S9b). Default ON (callers also require KVFlash itself to be
-// active); KVFLASH_SESSION=0 turns all four off. Pure so it is unit-testable.
+// active); LUCE_KVFLASH_SESSION=0 turns all four off. Pure so it is unit-testable.
 inline bool kvflash_session_flag(const char * v) {
     return !(v != nullptr && v[0] == '0' && v[1] == '\0');
 }
 
 inline bool kvflash_session_enabled() {
-    return kvflash_session_flag(std::getenv("KVFLASH_SESSION"));
+    return kvflash_session_flag(std::getenv("LUCE_KVFLASH_SESSION"));
 }
 
 // Position of the generation-end checkpoint: cur_pos, where KV and DeltaNet

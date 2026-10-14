@@ -526,7 +526,7 @@ public:
     }
 
     // Debug: resident chunk ids as "a-b,c" ranges, and a hash of the score
-    // ledger of chunks < upto (KVFLASH_DEBUG_RESIDENT).
+    // ledger of chunks < upto (LUCE_KVFLASH_DEBUG_RESIDENT).
     std::string debug_resident(int upto) const {
         std::string out;
         char buf[48];

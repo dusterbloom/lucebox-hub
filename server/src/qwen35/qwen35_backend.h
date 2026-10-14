@@ -290,14 +290,14 @@ protected:
                               int kv_offset,
                               const std::vector<int32_t> * full_prompt = nullptr);
     // Rebuild the pager (and QK pool) from a pooled snapshot for a consuming
-    // restore (KVFLASH_RESTORE_CONSUME=1).
+    // restore (LUCE_KVFLASH_RESTORE_CONSUME=1).
     bool kvflash_restore_pooled(const PrefixSnapshot & snap,
                                 const std::vector<int32_t> & prompt);
     bool kvflash_consume_restore_ = false;   // set around the suffix do_prefill
     // S8a: restore the single live KVFlash session (pager + KV rows + token
     // history) from the DeltaNet ladder checkpoint C <= LCP(prompt, history).
     // Returns C and leaves the cache at cur_pos == C, or -1 for the cold path.
-    // Gated by KVFLASH_SESSION (default on; =0 disables).
+    // Gated by LUCE_KVFLASH_SESSION (default on; =0 disables).
     int  kvflash_live_restore(const std::vector<int32_t> & prompt);
     int  kvflash_live_cut_peek(const std::vector<int32_t> & prompt) const;
     bool kvflash_live_restore_active_ = false;   // set around the suffix do_prefill
@@ -358,7 +358,7 @@ private:
     bool adopt_paged_snapshot(int slot, ggml_context * ctx,
                               ggml_backend_buffer_t buf, int cur_pos);
 
-    // S7 (gated by KVFLASH_SESSION): state-only (skip_kv) DeltaNet checkpoints at
+    // S7 (gated by LUCE_KVFLASH_SESSION): state-only (skip_kv) DeltaNet checkpoints at
     // ladder positions, owned by the backend. Keyed by position only; cleared
     // at every cold prefill (kv_offset == 0), so they describe the prompt of
     // the current/last pooled prefill. Per-session identity is S8.

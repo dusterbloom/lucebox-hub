@@ -144,7 +144,7 @@ TEST_CASE(KvflashLadderFixture, turn_cuts_header_on_a_grid_point) {
     CHECK(kvflash_prefill_batches(0, 1000, 512, 512, cuts) == kvflash_prefill_batches(0, 1000, 512, 512));
 }
 
-// KVFLASH_SESSION replaces KVFLASH_STATE_LADDER / LIVE_RESTORE / GEN_CKPT /
+// LUCE_KVFLASH_SESSION replaces KVFLASH_STATE_LADDER / LIVE_RESTORE / GEN_CKPT /
 // TURN_CKPT: default on, only "0" turns the whole session stack off.
 TEST_CASE(KvflashLadderFixture, session_switch_defaults_on_and_zero_disables) {
     CHECK(kvflash_session_flag(nullptr));
@@ -153,11 +153,11 @@ TEST_CASE(KvflashLadderFixture, session_switch_defaults_on_and_zero_disables) {
     CHECK_FALSE(kvflash_session_flag("0"));
     CHECK(kvflash_session_flag("00"));
 
-    unsetenv("KVFLASH_SESSION");
+    unsetenv("LUCE_KVFLASH_SESSION");
     CHECK(kvflash_session_enabled());
-    setenv("KVFLASH_SESSION", "0", 1);
+    setenv("LUCE_KVFLASH_SESSION", "0", 1);
     CHECK_FALSE(kvflash_session_enabled());
-    setenv("KVFLASH_SESSION", "1", 1);
+    setenv("LUCE_KVFLASH_SESSION", "1", 1);
     CHECK(kvflash_session_enabled());
-    unsetenv("KVFLASH_SESSION");
+    unsetenv("LUCE_KVFLASH_SESSION");
 }
