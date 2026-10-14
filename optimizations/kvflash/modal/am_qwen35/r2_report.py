@@ -14,7 +14,7 @@ import numpy as np  # noqa: E402
 
 from r1b_stats import boot_mean, mcnemar_exact  # noqa: E402
 
-ARMS = ("FULL", "F-SEG", "F-BLK", "F-RE")
+ARMS = ("FULL", "F-SEG", "F-BLK", "F-RE", "F-RE-UNI")
 
 
 def read(path):
