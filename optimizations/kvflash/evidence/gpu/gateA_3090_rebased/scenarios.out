@@ -1,0 +1,83 @@
+[s1] A1: prompt_tokens=9284 ttft=7.83s answer='The secret code is QX-7319-ZEBRA.'
+[s1] A2: prompt_tokens=9574 ttft=0.49s answer='Update 2.0 reports that record R2000 shows alpha-0 with a st'
+[s1] B: prompt_tokens=2744 ttft=0.46s answer='The secret code is QX-7319-ZEBRA. It is explicitly stated in'
+[s1] P1: prompt_tokens=9637 ttft=1.37s answer='Update 3.0 reports that record R3000 shows alpha-5.'
+[s1] P2: prompt_tokens=9287 ttft=10.32s answer='The secret code is QX-7319-ZEBRA.'
+[s1] probe P1: EQUAL
+[s1] probe P2: EQUAL
+[s1] engaged log lines:
+  [kvflash] state ladder: ckpt @9280 (149.6 MiB each, 3 held, 448.9 MiB)
+  [snap] alloc right-sized: cur_pos=9299 buf=149.62 MiB backend=CPU
+  [kvflash] state ladder: ckpt @9299 (149.6 MiB each, 4 held, 598.5 MiB)
+  [pc] inline-snap committed slot=0 prefix_len=9278 protect=0 bytes=536477696 resident=536477696
+  [server] chat DONE chatcmpl_0000000000000001 ok=true in=9284 effective_in=9284 out=16 8.1s 2.0 tok/s finish=stop restore=false slot=-1 prefix_len=0 prefill=7.7s decode=0.3s(47.8tok/s) error=- detail=-
+  [pc] lookup hit slot=0 prefix_len=9278 (of 9574 total)
+  [server] chat CACHE chatcmpl_0000000000000002 restore=true slot=0 prefix_len=9216 effective_prompt=9574 pflash=false disk_policy=full disk_hit=false snap_slot=1 snap_pos=9568 full_snap_slot=-1 full_snap_pos=0
+  [kvflash] resume: live cut 9280 beats server cut 9216 (slot 0)
+  [kvflash] live restore: L=9280 C=9280 replay=294
+  [kvflash] boundary snapshot skipped: pooled prefill relocates chunks
+  [snap] alloc right-sized: cur_pos=9570 buf=149.62 MiB backend=CPU
+  [kvflash] state ladder: ckpt @9570 (149.6 MiB each, 4 held, 598.5 MiB)
+  [snap] alloc right-sized: cur_pos=9597 buf=149.62 MiB backend=CPU
+  [kvflash] state ladder: ckpt @9597 (149.6 MiB each, 5 held, 748.1 MiB)
+  [server] chat DONE chatcmpl_0000000000000002 ok=true in=9574 effective_in=9574 out=24 0.9s 26.7 tok/s finish=stop restore=true slot=0 prefix_len=9216 prefill=0.3s decode=0.5s(47.1tok/s) error=- detail=-
+  [server] chat CACHE chatcmpl_0000000000000003 restore=true slot=63 prefix_len=2738 effective_prompt=2744 pflash=false disk_policy=full disk_hit=true snap_slot=-1 snap_pos=0 full_snap_slot=-1 full_snap_pos=0
+  [server] chat DONE chatcmpl_0000000000000003 ok=true in=2744 effective_in=2744 out=34 1.1s 32.2 tok/s finish=stop restore=true slot=63 prefix_len=2738 prefill=0.1s decode=0.7s(46.6tok/s) error=- detail=-
+  [pc] lookup hit slot=0 prefix_len=9278 (of 9637 total)
+  [server] chat CACHE chatcmpl_0000000000000004 restore=true slot=0 prefix_len=9216 effective_prompt=9637 pflash=false disk_policy=full disk_hit=false snap_slot=2 snap_pos=9631 full_snap_slot=-1 full_snap_pos=0
+  [kvflash] pooled restore: consume kv_offset=9216 suffix=421 prompt=9637
+  [snap] alloc right-sized: cur_pos=9570 buf=349.62 MiB backend=CPU
+  [snap] pooled boundary slot=2 cur_pos=9570 (req snap_pos=9631 chunks=149)
+  [snap] alloc right-sized: cur_pos=9633 buf=149.62 MiB backend=CPU
+  [kvflash] state ladder: ckpt @9633 (149.6 MiB each, 1 held, 149.6 MiB)
+  [pc] inline-snap committed slot=2 prefix_len=9631 protect=0 bytes=543002624 resident=1079480320
+  [server] chat DONE chatcmpl_0000000000000004 ok=true in=9637 effective_in=9637 out=19 1.6s 11.6 tok/s finish=stop restore=true slot=0 prefix_len=9216 prefill=0.9s decode=0.4s(47.4tok/s) error=- detail=-
+  [server] chat CACHE chatcmpl_0000000000000005 restore=false slot=-1 prefix_len=0 effective_prompt=9287 pflash=false disk_policy=full disk_hit=false snap_slot=3 snap_pos=9281 full_snap_slot=-1 full_snap_pos=0
+  [kvflash] live restore: L=8982 C=-1 replay=9287
+  [snap] alloc right-sized: cur_pos=8192 buf=149.62 MiB backend=CPU
+  [kvflash] state ladder: ckpt @8192 (149.6 MiB each, 1 held, 149.6 MiB)
+  [snap] alloc right-sized: cur_pos=9216 buf=149.62 MiB backend=CPU
+  [kvflash] state ladder: ckpt @9216 (149.6 MiB each, 2 held, 299.2 MiB)
+  [snap] alloc right-sized: cur_pos=9216 buf=349.62 MiB backend=CPU
+  [snap] pooled boundary slot=3 cur_pos=9216 (req snap_pos=9281 chunks=144)
+  [snap] alloc right-sized: cur_pos=9283 buf=149.62 MiB backend=CPU
+  [kvflash] state ladder: ckpt @9283 (149.6 MiB each, 3 held, 448.9 MiB)
+  [snap] alloc right-sized: cur_pos=9302 buf=149.62 MiB backend=CPU
+  [kvflash] state ladder: ckpt @9302 (149.6 MiB each, 4 held, 598.5 MiB)
+  [pc] inline-snap committed slot=3 prefix_len=9281 protect=0 bytes=536477696 resident=1615958016
+  [server] chat DONE chatcmpl_0000000000000005 ok=true in=9287 effective_in=9287 out=16 7.6s 2.1 tok/s finish=stop restore=false slot=-1 prefix_len=0 prefill=7.2s decode=0.3s(48.3tok/s) error=- detail=-
+SCENARIO 1: PASS
+[s2] A: prompt_tokens=11138 ttft=9.23s answer='The secret code is QX-7319-ZEBRA. It is explicitly stated in'
+[s2] B: prompt_tokens=1351 ttft=0.45s answer='The secret code is QX-7319-ZEBRA.'
+[s2] P: prompt_tokens=1392 ttft=0.40s answer='The secret code is QX-7319-ZEBRA.'
+[s2] B2: prompt_tokens=1317 ttft=0.40s answer='The secret code is QX-7319-ZEBRA.'
+[s2] P2: prompt_tokens=1308 ttft=0.42s answer='The secret code is QX-7319-ZEBRA.'
+[s2] probe P: EQUAL
+[s2] probe P2: EQUAL
+[s2] engaged log lines:
+  [server] chat CACHE chatcmpl_0000000000000000 restore=true slot=63 prefix_len=1313 effective_prompt=1319 pflash=false disk_policy=full disk_hit=true snap_slot=-1 snap_pos=0 full_snap_slot=-1 full_snap_pos=0
+  [server] chat DONE chatcmpl_0000000000000000 ok=true in=1319 effective_in=1319 out=4 0.5s 8.1 tok/s finish=length restore=true slot=63 prefix_len=1313 prefill=0.2s decode=0.2s(23.4tok/s) error=- detail=-
+  [server] chat CACHE chatcmpl_0000000000000001 restore=false slot=-1 prefix_len=0 effective_prompt=11138 pflash=false disk_policy=full disk_hit=false snap_slot=0 snap_pos=11132 full_snap_slot=-1 full_snap_pos=0
+  [kvflash] live restore: L=1 C=-1 replay=11138
+  [snap] alloc right-sized: cur_pos=8192 buf=149.62 MiB backend=CPU
+  [kvflash] state ladder: ckpt @8192 (149.6 MiB each, 1 held, 149.6 MiB)
+  [snap] alloc right-sized: cur_pos=10752 buf=149.62 MiB backend=CPU
+  [kvflash] state ladder: ckpt @10752 (149.6 MiB each, 2 held, 299.2 MiB)
+  [snap] alloc right-sized: cur_pos=10752 buf=349.62 MiB backend=CPU
+  [snap] pooled boundary slot=0 cur_pos=10752 (req snap_pos=11132 chunks=168)
+  [snap] alloc right-sized: cur_pos=11134 buf=149.62 MiB backend=CPU
+  [kvflash] state ladder: ckpt @11134 (149.6 MiB each, 3 held, 448.9 MiB)
+  [snap] alloc right-sized: cur_pos=11174 buf=149.62 MiB backend=CPU
+  [kvflash] state ladder: ckpt @11174 (149.6 MiB each, 4 held, 598.5 MiB)
+  [pc] inline-snap committed slot=0 prefix_len=11132 protect=0 bytes=564789248 resident=564789248
+  [server] chat DONE chatcmpl_0000000000000001 ok=true in=11138 effective_in=11138 out=37 9.9s 3.7 tok/s finish=stop restore=false slot=-1 prefix_len=0 prefill=9.1s decode=0.8s(46.4tok/s) error=- detail=-
+  [server] chat CACHE chatcmpl_0000000000000002 restore=true slot=63 prefix_len=1345 effective_prompt=1351 pflash=false disk_policy=full disk_hit=true snap_slot=-1 snap_pos=0 full_snap_slot=-1 full_snap_pos=0
+  [server] chat DONE chatcmpl_0000000000000002 ok=true in=1351 effective_in=1351 out=16 0.7s 24.5 tok/s finish=stop restore=true slot=63 prefix_len=1345 prefill=0.1s decode=0.3s(48.1tok/s) error=- detail=-
+  [server] chat CACHE chatcmpl_0000000000000003 restore=true slot=63 prefix_len=1386 effective_prompt=1392 pflash=false disk_policy=full disk_hit=true snap_slot=-1 snap_pos=0 full_snap_slot=-1 full_snap_pos=0
+  [server] chat DONE chatcmpl_0000000000000003 ok=true in=1392 effective_in=1392 out=16 0.6s 26.5 tok/s finish=stop restore=true slot=63 prefix_len=1386 prefill=0.1s decode=0.3s(47.9tok/s) error=- detail=-
+  [server] chat CACHE chatcmpl_0000000000000004 restore=true slot=63 prefix_len=1311 effective_prompt=1317 pflash=false disk_policy=full disk_hit=true snap_slot=-1 snap_pos=0 full_snap_slot=-1 full_snap_pos=0
+  [server] chat DONE chatcmpl_0000000000000004 ok=true in=1317 effective_in=1317 out=16 0.6s 26.6 tok/s finish=stop restore=true slot=63 prefix_len=1311 prefill=0.1s decode=0.3s(48.1tok/s) error=- detail=-
+  [server] chat CACHE chatcmpl_0000000000000005 restore=true slot=63 prefix_len=1302 effective_prompt=1308 pflash=false disk_policy=full disk_hit=true snap_slot=-1 snap_pos=0 full_snap_slot=-1 full_snap_pos=0
+  [server] chat DONE chatcmpl_0000000000000005 ok=true in=1308 effective_in=1308 out=16 0.6s 25.3 tok/s finish=stop restore=true slot=63 prefix_len=1302 prefill=0.1s decode=0.4s(45.2tok/s) error=- detail=-
+SCENARIO 2: PASS
+SCENARIO 3: SKIP (KV_MMPROJ unset or missing: '')

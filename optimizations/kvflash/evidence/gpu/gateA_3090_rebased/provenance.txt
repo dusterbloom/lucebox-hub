@@ -1,0 +1,1 @@
+bin=/mnt/kimi-k3/build/sr-split-cuda/luce_server md5=6ef2c99b367754e5a768cd675fa27d54 mode=plain turns=10 out=/mnt/kimi-k3/kvflash-gate-rebased-fc5563d1/out/plain-20261014-235127
