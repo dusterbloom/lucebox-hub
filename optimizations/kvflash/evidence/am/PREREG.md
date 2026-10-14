@@ -274,3 +274,18 @@ Per-head slots for one 64-slot block over a 640-token block with the R1b budget 
 4. GPU. F-RE needs more than 80 GB (A100 OOM; 89 GB peak on H200 at k = 8 with a 46K-token context), so every R2 arm of the pilot and of the full run runs on one H200; A100 and H100 are excluded for R2. The H200 rate is $4.54/h (`r1b.py` `USD_PER_S`), the rate used for the projection. The k = 0 F and orig rows ran on the H100/H200 mix of R1b Amendment 2 item 5.
 5. Distractor lengths: the 8 distractors of probe 0 and probe 1 average about 5K tokens, so k = 8 contexts are about 46K tokens, not 60K.
 6. Cost: this amendment adds one more diagnostic arm to the pilot and to the full-run projection; the pilot cap of $10 is unchanged.
+
+## R1(e) on lucebox6 iGPU: segment-local vs global F queries, uniform budgets
+
+Written 2026-10-14 before any R1(e) run. What has been seen: the existing R1b rows (orig, F, F-UNI on Modal H100/H200), the R2 pilot, and the repo source (`r2_core.py` `gen_fblk`). No LOCAL-arm accuracy has been seen.
+
+1. Question. M8 (segment-local compaction in the engine) can only ship if compacting each sealed block from its own prefill queries loses little against compacting the whole article from whole-article queries. Everything else is held equal: same algorithm (`highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy`, cell FUNI), same uniform budget (every head the same), same total budget 0.10 of the article tokens.
+2. Arms, all run on this hardware (lucebox6 integrated GPU, Radeon 8060S gfx1151, ROCm torch, HIP_VISIBLE_DEVICES=1, one session, one code copy):
+   - ORIG: uncompacted context, R1b `original_triples` path.
+   - F-UNI-GLOBAL: R1b cell FUNI at target 0.10 (whole-article context-prefill queries, uniform budget), as in R1b Amendment 3.
+   - F-UNI-LOCAL: the formatted context cut into sealed 640-token blocks by stream position; each block compacted once to 64 slots per head (uniform, all 640 block tokens as indices) from its OWN prefill queries computed behind the already compacted prefix (the `gen_fblk` / `segment_step` path of `r2_core.py` with cell FUNI instead of F). The open tail (< 640 tokens) stays exact. DeltaNet state carried through as in R2.
+3. Splits and order. Selection split first (loader indices 0-19, 357 questions), held-out second (indices 20-49, 537 questions). Greedy decoding, 256 new tokens, non-thinking, same question prompts as R1b. Model Qwen/Qwen3.8-27B bf16, transformers 5.19.0, SDPA attention, pinned code adamzweiger/compaction @ 2020f6d3 with patches 0001-0003 and the overlay. torch is a ROCm build (not the torch 2.8.0 CUDA build of Modal), so kernels differ.
+4. Comparability. These rows are not comparable to the H100/H200 rows of R1b/R2 (different GPU, torch build, kernels). All three arms run on this hardware and only the within-session differences are interpreted. The ORIG row here is the reference for degradation; the Modal ORIG row is reported next to it as a sanity check of the platform, not as a gate.
+5. Statistics. LOCAL - GLOBAL, paired over the same questions and articles, cluster bootstrap over articles (10,000 resamples, seed 0, 95% percentile), McNemar exact as secondary (`r1b_stats.py`). Also reported: each arm vs ORIG, n questions and n articles with every number, per-arm prefill/compaction wall time and peak memory.
+6. Decision rule (held-out, primary). If the lower 95% bound of LOCAL - GLOBAL is above -3 points, M8 ships segment-local F. Otherwise M8 needs a global or query-reservoir design. The selection split is reported first for sanity and does not decide.
+7. Cost: no Modal spend. Runs are resumable per article; a smoke article measures prefill/decode speed before the split is launched.
