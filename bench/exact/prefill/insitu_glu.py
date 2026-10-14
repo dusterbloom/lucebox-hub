@@ -16,6 +16,8 @@ pats = [
     ("glu legacy <64,128>", r"mmb_routed_glu_kernel<64, 128"),
     ("glu legacy <64,64>", r"mmb_routed_glu_kernel<64, 64"),
     ("glu single-launch", r"mmb_routed_glu_q4k_kernel"),
+    ("glu F16 single-launch", r"mmb_routed_glu_f16_kernel"),
+    ("cvt bf16->F16 act", r"mmb_cvt_bf16_f16"),
     ("mmb_build_tiles", r"mmb_build_tiles"),
     ("mmb_build_desc2", r"mmb_build_desc2"),
 ]

@@ -3,7 +3,8 @@
 # vs unset (new, the default), arms alternating across restarts. Same protocol as decode/ab.sh:
 # per restart: warm-up decode, REPS x decode128, 1 warm-up + REPS x p4096, 1 warm-up + REPS x p16384,
 # greedy-64 on two prompts.
-# usage: [ARMS="new old"] ab_glu.sh <outdir> <reps> <rounds>
+# usage: [ARMS="new old"] [OLD_ENV=... NEW_ENV=...] ab_glu.sh <outdir> <reps> <rounds>
+#   (F16 kernel A/B: OLD_ENV=LUCE_MMB_GLU_F16=0 NEW_ENV=LUCE_MMB_GLU_F16=1)
 set -u
 S=/home/duster/qwen4exp-f16/scratch
 TP=$S/gufo/textparity
@@ -17,7 +18,7 @@ sudo -n sh -c 'echo 3 > /proc/sys/vm/drop_caches' 2>/dev/null && echo "drop_cach
 for r in $(seq 1 $ROUNDS); do
 for arm in ${ARMS:-old new}; do
   TAG=${arm}${r}
-  if [ $arm = old ]; then EXTRA="LUCE_MMB_GLU_LEGACY=1"; else EXTRA="LUCE_MMB_GLU_LEGACY=0"; fi
+  if [ $arm = old ]; then EXTRA="${OLD_ENV:-LUCE_MMB_GLU_LEGACY=1}"; else EXTRA="${NEW_ENV:-LUCE_MMB_GLU_LEGACY=0}"; fi
   env HIP_VISIBLE_DEVICES=1 GGML_CUDA_GRAPH_STATS=1 $EXTRA nohup $LUCE --model "$MODEL" --port $PORT --max-ctx 20480 --prefix-cache-slots 0 > $OUT/serve_$TAG.log 2>&1 &
   SPID=$!
   for i in $(seq 1 900); do
