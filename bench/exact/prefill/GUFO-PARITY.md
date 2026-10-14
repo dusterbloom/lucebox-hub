@@ -1517,3 +1517,54 @@ same sensitivity documented for the chunked path above. The server has no
 
 **Verdict: ship.** Row-split is the T>1 default on gfx1151;
 `LUCE_GDN_LEGACY=1` restores the tiled kernel.
+
+## Same-session parity baseline, lucebox HEAD vs gufo scratch build (2026-10-14)
+
+Box lucebox4, Strix iGPU `gfx1151` (`HIP_VISIBLE_DEVICES=1`, both engines; setting
+`ROCR_VISIBLE_DEVICES=1` as well makes luce_server see no device). One session,
+one engine loaded at a time, arms alternated luce/gufo/luce/gufo across restarts
+(2 rounds x 5 reps, one p4096 warm-up per restart dropped). Scripts and raw
+jsonl: `lucebox4:~/qwen4exp-f16/scratch/dense/{parity.sh,summarize.py,parity1/}`.
+
+Parity contract: same GGUF (shard1 md5 `1958631667f5320c7969d047b43b5829`);
+lucebox `build1151/luce_server` rebuilt from this branch's HEAD 96ba158f
+(`libggml-hip.so.0.9.11` md5 `4244ed4a37ec0985276b7a0a1f63e227`; the box tree had
+been two commits behind on mmid.cu/mmvq.cu); gufo
+`~/qwen4exp-f16/scratch/gufo/build/release/gufo` md5 `fd490446ccfbc1d293ef0082f5bcc7e7`
+(GPU-only build, NPU stub) -- note this is a newer build than the `c2a41962`
+binary of the earlier sections and is ~20% faster at p4096 than that one was;
+`--max-ctx 20480` / `--context 20480`; greedy temp 0, `max_tokens=1`, same
+`text_bench_client.py` and the same slice files (`prompt_p4096_r0.txt`,
+`prompt_p16384_r0.txt`, `prompt_decode512_r0.txt`, 128 decode tokens);
+prompt_tokens served: luce 4136/16421, gufo 4096/16381 (lucebox chat-template
+wrapper, as before).
+
+Caching symmetry, verified: lucebox `--prefix-cache-slots 0`, every request logged
+`restore=false slot=-1 prefix_len=0`. gufo serve needs `--cache-ram-bytes 1`:
+without it the first attempt logged `cache=memory cached_tokens=4096/16381` from
+the second rep on and reported 272k "tok/s" (discarded, `parity0/`). With the
+flag every gufo request logged `cache=miss cached_tokens=0` (33/33).
+
+Spread = |median round 0 - median round 1| of the luce arm; a delta counts only
+if it exceeds 2x that spread. `sudo -n` drop_caches is unavailable on this box,
+so the numbers are indicative, not cache-controlled.
+
+| metric | luce median (min-max), n=10 | gufo median (min-max), n=10 | gufo vs luce | luce spread | real? |
+| --- | ---: | ---: | ---: | ---: | :--- |
+| prefill p4096 tok/s | 1309.1 (1214.5-1332.6) | 1600.9 (1578.4-1616.3) | +22.3% | 19.2 | yes (291.8 vs 38.4) |
+| prefill p16384 tok/s | 1322.9 (1252.8-1383.8) | 1614.9 (1576.9-1627.1) | +22.1% | 53.9 | yes (292.0 vs 107.8) |
+| decode tok/s (128 tok, 512-token prompt) | 24.9 (24.6-25.0) | 32.9 (32.5-32.9) | +32.0% | 0.1 | yes (8.0 vs 0.2) |
+
+Raw tok/s (round 0 then round 1): luce p4096 [1268.2, 1332.6, 1326.0, 1326.1,
+1328.1, 1214.5, 1260.6, 1306.9, 1309.6, 1308.6]; gufo p4096 [1609.1, 1616.3,
+1612.8, 1590.9, 1591.2, 1597.2, 1606.8, 1604.5, 1578.4, 1579.3]; luce p16384
+[1262.3, 1310.8, 1317.9, 1327.9, 1315.7, 1252.8, 1378.4, 1383.8, 1369.6, 1365.8];
+gufo p16384 [1598.3, 1627.1, 1624.7, 1622.3, 1620.2, 1576.9, 1615.8, 1614.0,
+1613.9, 1611.9]; luce decode [24.6, 25.0, 25.0, 25.0, 25.0, 24.9, 24.9, 24.9,
+24.6, 24.9]; gufo decode [32.6, 32.9, 32.9, 32.9, 32.9, 32.5, 32.9, 32.9, 32.9,
+32.9]. gufo's own log agrees (`prefill_tps=1600-1630` at p4096).
+
+Verdict: we do not lead at p16384 either; against the current gufo build the gap
+is 22% at both lengths (p4096 wall 3.16 s vs 2.56 s), plus 32% on decode.
+Greedy-64 texts differ from the first character (different engines, different
+kernels; both on-topic).
