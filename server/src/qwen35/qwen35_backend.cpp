@@ -2139,9 +2139,10 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
                 out_io.emit(-1);
                 return result;
             }
+            // Rungs belong to the live session, not to this snapshot's lineage
+            // (a consuming restore replaces the pager and history too).
+            if (kvflash_active() && kvflash_session_enabled()) state_ladder_clear();
             if (!consume) {
-                // Rungs belong to the live session, not to this snapshot's lineage.
-                if (kvflash_active() && kvflash_session_enabled()) state_ladder_clear();
                 if (adopt) {
                     // Dense rows [0, snap_pos) already sit in the pool tensor with
                     // chunk c in block c: register them as pager chunks, no copy.
