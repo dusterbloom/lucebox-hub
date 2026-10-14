@@ -1,0 +1,7 @@
+commit=c2b912fd40d51b398b0ae24be7d3ada7febf1b18
+branch=kvflash/session-restore-main
+bin=luce_server, CUDA Release, built from that commit in /mnt/kimi-k3/build/sr-main-cuda
+md5=12a187a66995b66be78e6caf5d3414f8
+gpu=NVIDIA GeForce RTX 3090 (WSL2), idle verified with nvidia-smi --query-compute-apps before start
+model=Qwen3.8-27B-UD-Q4_K_M.gguf
+runs=run_gate.sh plain 10 (tag plain-r1), run_scenarios.sh all (tag scenarios-r1); scripts adapted from lucebox6 ~/kvflash-gate (paths only)
