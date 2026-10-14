@@ -45,3 +45,29 @@ TEST_CASE(PooledSnapshotFixture, copy_and_move_preserve_blob) {
     CHECK(m.cur_pos == 1234);
     CHECK(m.kvflash_blob == make_blob());
 }
+
+// #839 hazard: the RAM->SSD handoff (snapshot_detach / snapshot_take_displaced)
+// turns a PrefixSnapshot into an OwnedSnapshot, which carries ggml tensors
+// only. A pooled snapshot has no dense KV tensors and its pager blob cannot
+// ride along, so a file written from it would restore with no KV. It must
+// never be persisted, with or without a blob.
+TEST_CASE(PooledSnapshotFixture, pooled_snapshot_is_never_disk_persistable) {
+    using Layout = PrefixSnapshot::Layout;
+    PrefixSnapshot s;
+    s.layout = Layout::dense;
+    CHECK(s.disk_persistable());
+
+    s.is_pooled = true;                       // pooled, blob missing
+    CHECK_FALSE(s.disk_persistable());
+    s.kvflash_blob = make_blob();             // pooled, blob present: still not
+    CHECK_FALSE(s.disk_persistable());
+
+    PrefixSnapshot paged;
+    paged.layout = Layout::paged;
+    CHECK(paged.disk_persistable());
+    for (Layout l : {Layout::empty, Layout::thin}) {
+        PrefixSnapshot t;
+        t.layout = l;
+        CHECK_FALSE(t.disk_persistable());
+    }
+}

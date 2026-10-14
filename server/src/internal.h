@@ -645,6 +645,13 @@ struct PrefixSnapshot {
     // lives in kvflash_blob (valid iff is_pooled). Plain dense path only.
     bool                 is_pooled    = false;
     std::vector<uint8_t> kvflash_blob;
+
+    // Only a full dense/paged ggml state may go to the SSD tier. An
+    // OwnedSnapshot holds tensors only, so a pooled snapshot (KV in the pager
+    // blob) would be written with no KV and restore garbage: never persist it.
+    bool disk_persistable() const {
+        return !is_pooled && (layout == Layout::dense || layout == Layout::paged);
+    }
 };
 
 // Snapshot the slim state of `cache` into `snap`. KV tensors are RIGHT-SIZED

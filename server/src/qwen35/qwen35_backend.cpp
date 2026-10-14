@@ -1310,11 +1310,11 @@ ModelBackend::SnapshotRef Qwen35Backend::snapshot_ref(int slot) const {
 
 // Hand a PrefixSnapshot's payload to an OwnedSnapshot and leave it empty.
 // Only full states (dense, paged) are useful on disk; a thin KV-only one is
-// freed instead. A payload outside host memory is copied to host first.
+// freed instead, and so is a pooled one (its KV lives in the pager blob, which
+// an OwnedSnapshot cannot carry). A payload outside host memory is copied to
+// host first.
 static OwnedSnapshot take_prefix_snapshot(PrefixSnapshot & snap) {
-    if (!snap.ctx || !snap.buf ||
-        (snap.layout != PrefixSnapshot::Layout::dense &&
-         snap.layout != PrefixSnapshot::Layout::paged)) {
+    if (!snap.ctx || !snap.buf || !snap.disk_persistable()) {
         free_prefix_snapshot(snap);
         return {};
     }
