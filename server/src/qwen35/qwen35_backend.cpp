@@ -2439,6 +2439,10 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
                     "(%d-token chunks, ubatch=%d, evicting)\n",
                     prompt_len, kvflash_tokens_, kvf_chunk, prefill_ubatch);
         std::fflush(stdout);
+    } else if (kvflash_active() && kv_offset == 0) {
+        // Dense prefill rebuilds the pager only at completion. A boundary
+        // snapshot before then must not see the previous request's mapping.
+        kvflash_pager_.reset();
     }
 
     // Skip KV-cache migration when resuming from a snapshot — the cache was

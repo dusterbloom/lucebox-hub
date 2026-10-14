@@ -257,6 +257,16 @@ TEST_CASE(KvflashPagerSerdeFixture, ledger_scores_roundtrip) {
     CHECK(pb.chunk_score(1) == kNegInf);
 }
 
+TEST_CASE(KvflashPagerSerdeFixture, reset_pager_is_identity_so_dense_snapshots_ignore_stale_mapping) {
+    Harness A;
+    KvFlashPager pa;
+    build_source(A, pa, 3);
+    REQUIRE(!pa.is_identity());   // previous request left a paged mapping
+    pa.reset();
+    CHECK(pa.is_identity());
+    CHECK(pa.n_chunks() == 0);
+}
+
 TEST_CASE(KvflashPagerSerdeFixture, serialized_dtype_is_recorded) {
     Harness A;
     KvFlashPager pa;
