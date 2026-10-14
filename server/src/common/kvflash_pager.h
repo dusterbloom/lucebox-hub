@@ -656,7 +656,7 @@ public:
 #ifdef KVFLASH_HAS_ASYNC_DMA
                 if (cudaMallocHost(&st.host_data, chunk_bytes_) != cudaSuccess) {
                     st.host_data = nullptr;
-                    chunks_.clear();
+                    reset();   // frees the host buffers allocated so far
                     return false;
                 }
                 std::memcpy(st.host_data, src, chunk_bytes_);
