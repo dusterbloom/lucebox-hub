@@ -2286,3 +2286,114 @@ per flop), which is a different kernel, not a tuning of this one.
 Harness: `bench/exact/prefill/ab_glu.sh` (server A/B, `ARMS="new old"` to
 swap the order), `pprof.sh` (one prefill request under rocprofv3),
 `insitu_glu.py` (per-kernel ledger of the last request).
+
+## Routed gate/up F16 (2026-10-14, lucebox6 gfx1151)
+
+The gufo-class kernel the previous section said would be "a different kernel":
+`mmb_routed_glu_f16_kernel` in `mmb-routed-f16.cuh`, default on
+(`LUCE_MMB_GLU_F16=0` restores the bf16 single-launch kernel,
+`LUCE_MMB_GLU_LEGACY=1` the two-launch pair; mode 2 / 1 / 0 in
+`mmb_glu_run`). Same block as the bf16 kernel (64 gate + 64 up rows x 128
+tokens, 8 waves, balanced wave map, persistent atomic tile schedule over
+`mmb_build_tiles`), different operands and LDS plan:
+
+- weights dequantized once per block at LDS-store time into F16 with the
+  1024-magic (`v_perm` to `0x64|q` = F16 1024+q, `pk_add` -1024, `pk_fma`
+  scale / -min): 15 VALU per 8 elements against ~70 for the f32 fma + bf16
+  RNE pack, no half-wave duplication;
+- F16 activations (the bf16-only src1 converted once per layer through the
+  per-graph F16 cache, `mmb_cvt_bf16_f16`, 0.19 ms at p4096 / 0.69 ms at
+  p16384), `wmma_f32_16x16x16_f16`;
+- chunk-major LDS tiles `[16-byte chunk of the 64-wide K step][row]`:
+  fragment reads are 128 contiguous bytes per eight lanes (conflict-free
+  without a row pad) and the chunk is an immediate offset (no address VGPRs);
+  32768 B total so four blocks fit a WGP: 192 VGPRs, 0 scratch, occupancy 8
+  (the bf16 kernel is 41 KB / 172 VGPRs / 3 blocks);
+- the work-item slot lives in the gate tile, written between the K loop and
+  the epilogue when that tile is dead.
+
+Not bit-exact with the bf16 kernels (F16 weights carry three more mantissa
+bits), so the bar moved to the error against an exact reference, below.
+
+### Microbench (real routing ids, medians of 15, ms per layer)
+
+`bench/exact/prefill/moe/` (`moe2_bench.hip` + `f16kern.cuh` + `f16exp.cuh`,
+`build.sh` on lucebox6 against the rsynced ggml tree and gufo's static lib;
+`MOE_F16_ONLY=1` skips the other arms and the double reference). gfx1151 =
+`HIP_VISIBLE_DEVICES=1`, GPU idle before every run.
+
+| ids | legacy 2-launch | current bf16 single-launch (grid 80) | gufo RoutedF16GEMM 128-tok | new F16 (grid 80) | new vs gufo | new vs current |
+|---|---:|---:|---:|---:|---:|---:|
+| p4096 layer 001 | 11.81 | 11.25 | 9.82 | 9.92 | +1.0% | -11.9% |
+| p4096 layer 012 | 11.86 | 11.27 | 10.16 | 10.16 | 0.0% | -9.8% |
+| p4096 layer 024 | 12.01 | 11.50 | 10.25 | 10.14 | -1.0% | -11.8% |
+| p4096 layer 040 | 11.61 | 11.63 | 10.28 | 10.22 | -0.6% | -12.1% |
+| p16384 layer 047 | 34.34 | 33.28 | 31.00 | 30.64 | -1.2% | -7.9% |
+| p16384 layer 058 | 34.73 | 33.54 | 31.44 | 30.71 | -2.3% | -8.4% |
+| p16384 layer 070 | 34.80 | 33.79 | 31.29 | 31.02 | -0.8% | -8.2% |
+| p16384 layer 086 | 34.74 | 33.82 | 31.55 | 31.01 | -1.7% | -8.3% |
+
+Grid 60 / 120 / 160 are within 1% of 80 on every layer (persistent loop);
+the server keeps `4 * nsm` = 80. gufo's 64-token tiles are 5-9% slower than
+its 128-token ones on these ids. Verdict: parity with gufo at p4096 (within
+the +-1% run-to-run noise of this box; one isolated run had 9.46-9.73 vs
+9.85), 1-2% ahead at p16384, 8-12% ahead of the bf16 single-launch kernel.
+
+### Error vs an exact double reference (real ids, p4096 layer 001, 26.5 M outputs)
+
+Exact Q4_K dequant, double products and sums, double silu
+(`ref_f64_kernel`); ref rms 29.39, maxabs 766.9. The other three p4096
+layers and the p16384 ones agree to the third digit.
+
+| arm | maxabs | rms | rms / ref rms |
+|---|---:|---:|---:|
+| reference rounded to bf16 (floor for bf16 out) | 1.989 | 0.04879 | 1.66e-3 |
+| reference rounded to F16 (floor for F16 out) | 0.2497 | 0.006093 | 2.07e-4 |
+| legacy / current bf16 kernel, F32 out | 1.168 | 0.05796 | 1.97e-3 |
+| legacy / current bf16 kernel, bf16 out | 2.552 | 0.07574 | 2.58e-3 |
+| gufo RoutedF16GEMMKernel, F16 out | 0.4306 | 0.01196 | 4.07e-4 |
+| new F16 kernel, F32 out | 0.2113 | 0.01029 | 3.50e-4 |
+| new F16 kernel, bf16 out | 2.091 | 0.04987 | 1.70e-3 |
+
+The F32 output is 5.6x closer to the exact value than the bf16 path (and
+closer than gufo's F16 output); the bf16 output sits on the bf16 rounding
+floor. `test_mmb_routed_glu_parity` (LUCE_TESTS) runs the mode-2 arm on the
+same synthetic routing as the bf16 arms: in-situ bf16 output identical to
+the F32+bf16 run, rms-relative error vs the exact reference <= 1e-3 and no
+worse than the bf16 kernel on rms and maxabs (measured 4.2e-4 / 0.157 vs
+2.05e-3 / 0.518 on the 1024x128x512 case, 3.2e-4 / 0.052 vs 1.55e-3 / 0.246
+on the ragged 800x136x256 case). Passes on lucebox6 gfx1151 (fresh
+`build1151` of this tree, Release, LUCE_TESTS=ON).
+
+### Ablations (p4096 layer 001, first-draft numbers, ms)
+
+BASE 9.7; no dequant (raw copy) 8.4; no WMMA 7.0; weights from one block only
+9.3; tokens from one chunk only 9.6; `launch_bounds` 6 waves/EU instead of 8:
+9.8; without the accumulator pins 33 (the WMMAs get hoisted and spill). With
+real routing a wave averages ~2 live token fragments, so the per-tile fixed
+cost (dequant, LDS writes, loads, barriers) and the LDS fragment reads set
+the floor, not the WMMA rate (5.96 ms at 2.2 GHz).
+
+Tried and dropped, each measured against BASE on the same ids:
+
+- 128-row m slice with every wave on all eight token fragments (a third less
+  LDS fragment traffic): 128 accumulators per lane spill at 256 VGPRs, 11.2.
+- branchless masked token loads (dead rows read row 0, zeroed with a mask):
+  10.3, the dead rows cost real loads.
+- per-slice 16-byte weight loads + next item prefetched/parked in the gate
+  tile (instead of one 5 x 16 B block load per 4 steps): 11.6-12.2 together.
+- fast silu (`v_exp` + `v_rcp`): 9.63 vs 9.57, neutral; the exact one stays.
+
+Not tried: f16-packed scale math in the dequant, a tile order that keeps an
+expert's rows on one WGP (L2 reuse of the weights), the XOR swizzle (cost
+address VGPRs and scratch the first time).
+
+### Integration
+
+`ggml_cuda_mul_mat_id_mmb_glu`: mode 2 when Q4_K, E <= 1024, M % 8 == 0 and
+neither switch is set; `mmb_f16_activation` converts a bf16-only src1 from
+bf16 (F32 src1 from F32 as before) into the per-graph F16 cache, so one
+conversion per layer is shared by every consumer. Scratch words unchanged
+(tiles + ctl). End-to-end A/B on lucebox4 (`ab_glu.sh` with
+`LUCE_MMB_GLU_F16=0` as the old arm) and the greedy-64 first-divergence
+check are pending.
