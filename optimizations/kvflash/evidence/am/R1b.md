@@ -1,24 +1,33 @@
-# R1b/R1c: Qwen3.8-27B, four configurations and head budgets (running log)
+# R1b/R1c: Qwen3.8-27B, four configurations and head budgets
 
-Pre-registration: `PREREG.md` sections "Rung R1b/R1c" and "R1b Amendment 1" (commits f8645db9, 88dc84ec). Code: `modal/am_qwen35/{r1b.py, r1b4.py, r1b_core.py, r1b_stats.py, r1b_report.py, r1b_merge.py}`, patches 0001-0003 on `adamzweiger/compaction` @ 2020f6d3, overlay `models/qwen3_5/`. Per-question rows: `R1b/27b/*.jsonl`, `R1b/4b/*.jsonl` (one file per cell, target and split; columns `article_id, qi, gold, parsed, correct, finite, answer, compaction_s, query_gen_s, ...`). Budget file and curves: `R1b/r1c/`.
+Pre-registration: `PREREG.md` sections "Rung R1b/R1c" and "R1b Amendment 1" (commits f8645db9, 88dc84ec). Code: `modal/am_qwen35/{r1b.py, r1b4.py, r1b_core.py, r1b_stats.py, r1b_report.py, r1b_merge.py}`, patches 0001-0003 on `adamzweiger/compaction` @ 2020f6d3, overlay `models/qwen3_5/`; CPU tests `tests/test_{adapter,onpolicy,influence}.py` (13 pass, tiny hybrid with the real tokenizer). Per-question rows: `R1b/27b/*.jsonl` and `R1b/4b/*.jsonl` (one file per cell, target and split). Budget file, curves, validation: `R1b/r1c/`. Tables below are produced by `python3 modal/am_qwen35/r1b_report.py R1b/27b R1b/4b`.
 
 ## Protocol as run
 
-27B: Qwen3.8-27B BF16, transformers 5.19.0, torch 2.8.0, sdpa, non-thinking, greedy, at most 256 new tokens, adapter exact without compaction (R1a). 4B reference: Qwen3-4B on the repo's own modeling, transformers 4.57.1, same driver and prompts (Amendment 1 item 1). Selection split = loader indices 0-19 (357 questions, 20 articles); target 0.10 of the article tokens. Per-head budgets: 27B `R1b/r1c/optimized_agnostic.json` (R1c below), 4B the repo's shipped `Qwen3-4B/optimized_agnostic.json`; both with `max_ratio_per_head` 0.75. Self-study generation for C uses the HF shim (Amendment 1 item 3) in both models. Paired cluster bootstrap over articles, 10,000 resamples, seed 0.
+27B: Qwen3.8-27B BF16, transformers 5.19.0, torch 2.8.0, sdpa, non-thinking, greedy, at most 256 new tokens, adapter exact without compaction (R1a). 4B reference: Qwen3-4B on the repo's own unpatched modeling, transformers 4.57.1, same driver, prompts, splits, query configs, key selection and decoding (Amendment 1 item 1). Selection split = loader indices 0-19 (357 questions, 20 articles); held-out = 20-49 (537 questions, 30 articles). Targets 0.10 and 0.05 of the article tokens. Per-head budgets: 27B `R1b/r1c/optimized_agnostic.json`, 4B the repo's shipped `Qwen3-4B/optimized_agnostic.json`; both with `max_ratio_per_head` 0.75. Self-study generation for C uses the HF shim (Amendment 1 item 3) in both models, seed 1. Paired cluster bootstrap over articles, 10,000 resamples, seed 0; McNemar exact as a secondary.
 
-Nothing in the cell definitions, targets or pass rule changed after the first result was seen.
+Cell definitions, targets and the pass rule were not changed after the first result was seen. Every priority-list item ran; nothing was cut. The R0 selection winner on the 4B (S1 = HA + repeat + per-head + on-policy) is configuration O1 here, so there is no gap against R0.
 
-## R1(c): head-sensitivity curves and the budget file
+## Verdict
 
-- Fit articles loader indices 90-94 (5 articles, 18-19 reference answers each; 64 heads = 16 full-attention layers x 4 KV heads; 21 evaluation points 0 to 0.5; method `highest_attn_keys_rms_nnls2_-3_3_lsq`, query config `repeat`, baseline uniform at 0.05; reference answers greedy non-thinking, at most 128 tokens, Amendment 1 item 2).
-- Cost: about 50-58 min of H200 per article (14,777 s of evaluation for the five), projected from article 90 as about $4.3 per article, so the full block (about $19) was below the $45 gate and was run with 5 fit articles and 21 points as registered.
-- Solver: ratio-agnostic, target ratios 0.05 and 0.10, step 0.001; 271 iterations. The file is spiky: min 0.0006, median 0.0156 (uniform is 0.0156), max 0.0866 (L43H0), sums to 1.0. The solver's own objective (on the interpolated aggregated curves) improves from -0.57 to -1.05 at 0.10; the curves have deltas of order 0.01 log-perplexity, so most of that objective is within noise. Treat the file as a noisy allocation, not a validated one; the registered paired check (item 8) is pending.
+**R1b is NOT PASSED.** The registered primary (selection, 0.10, 20 articles / 357 questions) gives FAIL for every configuration including the ceiling C (Delta = 27B degradation minus matched-protocol 4B degradation, pass if the upper 95% bound <= +3.0, fail if the lower bound > 0 and the point estimate > +3.0):
 
-## R1(b), selection split, target 0.10, 27B (n = 357 questions, 20 articles)
+| cell | D 27B | D 4B | Delta [95% CI], points | verdict |
+|---|---|---|---|---|
+| C ceiling | 2.8 | -0.6 | +3.4 [+0.8, +6.0] | FAIL |
+| O2 | 3.1 | -1.7 | +4.8 [+1.9, +7.9] | FAIL |
+| F floor | 3.1 | -1.1 | +4.2 [+0.3, +8.1] | FAIL |
+| O1 | 7.6 | -0.6 | +8.1 [+3.4, +12.8] | FAIL |
 
-Own baseline (`orig` through the adapter): 89.6%.
+Overall rule (C passes and one of O1/O2 passes) is not met. What the numbers say: at 0.10 the 27B loses about 3 points with C, F or O2 (its own baseline is 89.6%) and 7.6 with O1; the matched 4B (original 67.2% in this protocol) shows no measurable loss at the same ratio (every 4B CI contains 0). Against that yardstick the 27B hybrid compacts worse than the 4B by 3.4 to 8 points. The 4B result is itself a floor effect of this protocol (67% accuracy in non-thinking greedy leaves little to lose), so the FAIL is a statement relative to the registered yardstick, not that the 27B compaction is broken: it keeps 83-87% of 89.6% with a 10x smaller cache in the full-attention layers.
 
-| cell | acc % | degradation D vs own original, points [95% CI] | McNemar only-orig / only-X, p | compaction s / article | query generation s / article |
+## R1(b), 27B, selection split, original = 89.6% (n = 357 q, 20 articles)
+
+D = accuracy(original) - accuracy(cell), points [95% CI]. Time columns are per article on one H100/H200; the second is the part of the first spent on query generation (for C the HF self-study shim).
+
+Target 0.10:
+
+| cell | acc % | D [95% CI] | McNemar only-orig / only-X, p | compaction s | query gen s |
 |---|---|---|---|---|---|
 | C ceiling (ss-plus-repeat, OMP-fast, per-head) | 86.8 | 2.8 [0.3, 5.2] | 14 / 4, 0.031 | 345 | 225 |
 | F floor (context-prefill, HA, per-head) | 86.6 | 3.1 [0.6, 5.7] | 16 / 5, 0.027 | 7 | 3 |
@@ -28,41 +37,88 @@ Own baseline (`orig` through the adapter): 89.6%.
 | random keys (uniform) | 82.4 | 7.3 [4.9, 9.8] | 33 / 7, <0.001 | 16 | 11 |
 | truncate (uniform) | 60.5 | 29.1 [22.7, 35.7] | 111 / 7, <0.001 | 16 | 11 |
 
-Timings are per article on one H100/H200 (mixed), compaction time includes query generation (the second column is the part of it spent generating queries; for C that is the HF self-study shim).
+Target 0.05:
 
-Controls (AM minus control, points; R0 rule): U-AM vs truncate +19.3 [+14.0, +24.7] -> AM better. U-AM vs random keys -2.5 [-5.4, +0.3] -> inconclusive (HA with uniform budgets is not better than random keys with the same fit on this model and split).
+| cell | acc % | D [95% CI] | McNemar only-orig / only-X, p | compaction s | query gen s |
+|---|---|---|---|---|---|
+| C | 84.6 | 5.0 [2.5, 7.5] | 21 / 3, <0.001 | 306 | 271 |
+| F | 84.0 | 5.6 [2.5, 8.5] | 26 / 6, 0.001 | 6 | 4 |
+| O2 | 84.9 | 4.8 [2.0, 7.4] | 23 / 6, 0.002 | 44 | 11 |
+| O1 | 79.6 | 10.1 [6.1, 14.3] | 46 / 10, <0.001 | 16 | 13 |
+| U-AM | 75.9 | 13.7 [9.3, 18.1] | 59 / 10, <0.001 | 15 | 11 |
+| random keys | 75.1 | 14.6 [10.5, 18.7] | 59 / 7, <0.001 | 14 | 11 |
+| truncate | 54.6 | 35.0 [29.5, 40.5] | 131 / 6, <0.001 | 14 | 11 |
 
-Online vs ceiling (online minus C): O2 -0.3 [-2.6, +1.9] -> within 3 points; F -0.3 [-2.3, +1.7] -> within 3 points; O1 -4.8 [-7.7, -1.4] -> inconclusive (not within 3, not clearly worse).
+Online vs ceiling, selection (online minus C, points; R0 rule: lower bound >= -3 -> within 3 points):
 
-## R1(b) primary verdict: Delta against the matched-protocol 4B (selection, 0.10)
-
-4B (matched protocol: same driver, non-thinking greedy 256): original 67.2%; C 67.8, F 68.3, O1 67.8, O2 68.9 (n = 357, 20 articles each). At target 0.10 the 4B does not degrade under this protocol (D = -0.6 to -1.7 points, every CI contains 0), so Delta(X) = D_27B(X) - D_4B(X) is essentially the 27B's own degradation plus a small amount.
-
-| cell | D 27B | D 4B | Delta [95% CI], points | verdict (pass: upper <= +3.0; fail: lower > 0 and point > +3.0) |
+| cell | 0.10 | verdict | 0.05 | verdict |
 |---|---|---|---|---|
-| C | 2.8 | -0.6 | +3.4 [+0.8, +6.0] | FAIL |
-| O2 | 3.1 | -1.7 | +4.8 [+1.9, +7.9] | FAIL |
-| F | 3.1 | -1.1 | +4.2 [+0.3, +8.1] | FAIL |
-| O1 | 7.6 | -0.6 | +8.1 [+3.4, +12.8] | FAIL |
+| O2 | -0.3 [-2.6, +1.9] | within 3 points | +0.3 [-1.9, +2.5] | within 3 points |
+| F | -0.3 [-2.3, +1.7] | within 3 points | -0.6 [-3.7, +2.4] | inconclusive |
+| O1 | -4.8 [-7.7, -1.4] | inconclusive | -5.0 [-8.9, -1.4] | inconclusive |
 
-By the registered rule, C fails, so **R1b overall is NOT PASSED** (it needs C to pass and one of O1/O2). The four verdicts are all FAIL (lower bound > 0 and point > +3.0), not inconclusive. Reading: the 27B loses 3 points at best (C, F, O2 cluster at 2.8-3.1, with overlapping CIs) and 7.6 for O1; the Qwen3-4B at 67% original accuracy shows no measurable loss at the same ratio in the same protocol, so the 27B hybrid is worse than the 4B by the registered yardstick. The R0 4B cells (thinking-mode, sampled, 2048 tokens, vLLM `original`; secondary reference, protocol-different) are in `R0_quality_selection.md`.
+U-AM vs controls (AM minus control; R0 rule):
 
-Observation, not a registered result: C, F and O2 are indistinguishable from each other (within 0.3 points); the extra queries of the ceiling (self-study, 225 s/article) buy nothing over `context-prefill` (3 s/article) with the same keys-and-per-head setup on this split, and OMP-fast on `repeat` matches both.
+| control | 0.10 | verdict | 0.05 | verdict |
+|---|---|---|---|---|
+| truncate | +19.3 [+14.0, +24.7] | AM better | +21.3 [+16.1, +26.5] | AM better |
+| random keys, same fit | -2.5 [-5.4, +0.3] | inconclusive | +0.8 [-3.8, +5.3] | inconclusive |
 
-## Cost ledger (Modal, workspace davide-83641; running total, estimated at H200 $4.54/h or H100 $3.95/h)
+Per-head budgets vs uniform for the same method (O1 minus U-AM, points): 0.10 +2.2 [-0.8, +5.3]; 0.05 +3.6 [+0.3, +6.8]. On the 4B, R0 measured +10 points for per-head budgets over uniform; on the 27B they are worth 2 to 4 points here.
 
-Per-job cost records are in `modal/_dl/cost27` (scratch; the shared `cost_log.jsonl` lost entries to concurrent writes from the first parallel batch, so those rows are reconstructed from job wall times printed in the logs and counted at the H200 rate, an upper bound).
+## R1(b), 27B, held-out split (20-49; n = 537 q, 30 articles), original = 85.7%
 
-| item | wall | est. $ |
-|---|---|---|
-| R1(c) curves, articles 90-94 | 14,970 s (5 jobs) | 18.9 |
-| 27B timing cell (article 0, 5 cells) | 625 s | 0.7 |
-| 27B selection 0.10, 8 cells, 3 jobs | 12,094 s | 13.3 |
-| 4B timing (articles 0-1) | about 2,100 s | 2.4 |
-| 4B selection 0.10, 5 cells, 3 jobs | 36,019 s | 41.4 |
+| cell | target | acc % | D [95% CI] | online minus C | verdict |
+|---|---|---|---|---|---|
+| C | 0.10 | 83.6 | 2.0 [0.4, 3.6] | | |
+| O2 | 0.10 | 83.4 | 2.2 [-0.2, 4.8] | -0.2 [-1.9, +1.3] | within 3 points |
+| O1 | 0.10 | 79.1 | 6.5 [3.8, 9.4] | -4.5 [-7.0, -2.0] | inconclusive |
+| C | 0.05 | 80.8 | 4.8 [2.8, 7.1] | | |
+| O2 | 0.05 | 79.1 | 6.5 [3.9, 9.2] | -1.7 [-3.9, +0.6] | inconclusive |
+| O1 | 0.05 | 76.0 | 9.7 [6.1, 13.5] | -4.8 [-7.6, -2.1] | inconclusive |
 
-Subtotal about $77 of $270 at this commit. Remaining registered items are in progress (see below); this file is updated as blocks complete.
+Held-out agrees with selection: O2 is within 3 points of the ceiling at 0.10 on both splits and O1 is 4.5-5 points below it on every split and target.
 
-## Not yet run (at this commit)
+## Matched-protocol 4B (Qwen3-4B, same driver), selection split, original = 67.2%
 
-Held-out (20-49) 0.10 for orig/O1/O2/C (running); selection 0.05 and controls; held-out 0.05; R1(c) validation on articles 95-99; 4B at 0.05.
+| cell | acc % 0.10 | D 0.10 | acc % 0.05 | D 0.05 |
+|---|---|---|---|---|
+| C | 67.8 | -0.6 [-2.6, 1.4] | 66.1 | 1.1 [-1.7, 3.8] |
+| F | 68.3 | -1.1 [-5.1, 2.8] | 69.2 | -2.0 [-5.4, 1.4] |
+| O1 | 67.8 | -0.6 [-4.0, 2.5] | 63.3 | 3.9 [-1.2, 8.8] |
+| O2 | 68.9 | -1.7 [-4.8, 1.1] | 67.2 | 0.0 [-4.0, 3.9] |
+
+Compaction time per article on the 4B: O1 29 s, F 13 s, O2 717 s, C 1016 s (target 0.10).
+
+Secondary, Delta at 0.05 (descriptive, same rule): C +3.9 [+0.3, +7.8] FAIL; O2 +4.8 [+0.8, +8.9] FAIL; F +7.6 [+2.7, +12.6] FAIL; O1 +6.2 [-0.6, +13.2] inconclusive.
+
+## R1(c): head-sensitivity curves and the budget file
+
+- Fit articles loader indices 90-94 (5 articles, 64 heads = 16 full-attention layers x 4 KV heads, 21 evaluation points 0 to 0.5, method `highest_attn_keys_rms_nnls2_-3_3_lsq`, query config `repeat`, baseline uniform at 0.05; reference answers greedy non-thinking, at most 128 tokens, Amendment 1 item 2). About 40-58 min per article; the projected block cost ($19) was below the $45 gate, so no reduction was made.
+- Ratio-agnostic solve for 0.05 and 0.10: 271 iterations; the file is spiky (min 0.0006, median 0.0156, max 0.0866 at L43H0; sums to 1.0). The curve deltas are of order 0.01 log-perplexity, so the solver's own objective improvement is largely noise.
+- Registered check (articles 95-99, not in the fit; mean log-perplexity of reference answers after compaction at 0.10, per-head file vs uniform, same method and queries): per-head lower on 5 of 5 articles, mean difference -0.094 (0.14 vs 0.20, 0.77 vs 0.80, 0.79 vs 0.90, 0.40 vs 0.66, 0.42 vs 0.44). Expectation (per-head <= uniform) met, on 5 articles.
+
+## Cost ledger (Modal workspace davide-83641, estimated at H200 $4.54/h and H100 $3.95/h; cap $270)
+
+| item | est. $ |
+|---|---|
+| R1(c) curves, articles 90-94 (5 jobs, 14,970 s; reconstructed from job logs at the H200 rate, upper bound, because concurrent writes lost their cost rows) | 18.9 |
+| R1(c) validation | 0.4 |
+| 27B timing cell | 0.7 |
+| 27B selection 0.10 (8 cells, 3 jobs) | 13.3 |
+| 27B held-out 0.10 (4 cells, 3 jobs) | 18.5 |
+| 27B selection 0.05 (8 cells, 3 jobs) | 12.7 |
+| 27B held-out 0.05 (4 cells, 3 jobs) | 16.0 |
+| 4B timing (articles 0-1) | 2.4 |
+| 4B selection 0.10 (5 cells, 3 jobs) | 41.4 |
+| 4B selection 0.05 (5 cells, 3 jobs) | 14.6 |
+| total | about 139 |
+
+Under the registered $270 cap with $131 unspent. The R1a block ($15 cap) and R0 ($150 cap) are accounted separately.
+
+## Not run / limits
+
+- 4B held-out cells (the pass rule is selection-only; not needed) and 4B controls were not run.
+- n is 20 articles / 357 questions for the primary; paired SE of Delta is 2.5-3 points, as registered. The primary FAIL is outside noise for all four cells (lower bounds +0.3 to +3.4), but the margin for F (+0.3) and C (+0.8) is thin.
+- One run per cell, greedy decoding; only self-study sampling has randomness (seed 1). Runs landed on a mix of H100 and H200; decode is greedy in bf16, so cross-GPU numerics may flip a few borderline answers.
+- Query generation timing for C is dominated by the HF `generate` shim (225-292 s per article), not by a tuned inference server; a production number would be lower.

@@ -1,0 +1,3493 @@
+✓ Initialized. View run at 
+https://modal.com/apps/davide-83641/main/ap-bwwoEvhxX35glVLWD4VPAN
+✓ Created objects.
+├── ✓ Uploaded 
+│   /home/peppi/Dev/lucebox/.claude/worktrees/kvflash-am/optimizations/kvflash/m
+│   odal/am_qwen35/r1b.py
+├── ✓ Uploaded 
+│   /home/peppi/Dev/lucebox/.claude/worktrees/kvflash-am/optimizations/kvflash/m
+│   odal/am_qwen35
+├── ✓ Created Function unit.
+├── ✓ Created Function curves.
+├── ✓ Created Function solve.
+├── ✓ Created Function validate.
+└── ✓ Created Function cells.
+
+[1ALoading weights:   0%|          | 0/851 [00:00<?, ?it/s]
+[1ALoading weights:   0%|          | 1/851 [00:01<15:23,  1.09s/it]
+[1ALoading weights:   0%|          | 2/851 [00:02<16:44,  1.18s/it]
+[1ALoading weights:   1%|          | 10/851 [00:02<02:19,  6.03it/s]
+[1ALoading weights:   2%|▏         | 14/851 [00:02<01:39,  8.42it/s]
+[1ALoading weights:   2%|▏         | 20/851 [00:02<01:00, 13.68it/s]
+[1ALoading weights:   3%|▎         | 24/851 [00:02<00:51, 16.12it/s]
+[1ALoading weights:   3%|▎         | 28/851 [00:03<00:51, 16.05it/s]
+[1ALoading weights:   4%|▍         | 37/851 [00:03<00:30, 26.72it/s]
+[1ALoading weights:   5%|▍         | 42/851 [00:03<00:30, 26.74it/s]
+[1ALoading weights:   6%|▌         | 47/851 [00:03<00:33, 24.18it/s]
+[1ALoading weights:   6%|▌         | 51/851 [00:03<00:30, 26.10it/s]
+[1ALoading weights:   7%|▋         | 61/851 [00:03<00:20, 37.87it/s]
+[1ALoading weights:   8%|▊         | 66/851 [00:04<00:20, 39.07it/s]
+[1ALoading weights:   8%|▊         | 71/851 [00:04<00:22, 35.44it/s]
+[1ALoading weights:   9%|▉         | 78/851 [00:04<00:18, 42.52it/s]
+[1ALoading weights:  10%|▉         | 83/851 [00:04<00:24, 31.96it/s]
+[1ALoading weights:  11%|█         | 91/851 [00:04<00:19, 39.60it/s]
+[1ALoading weights:  11%|█▏        | 96/851 [00:04<00:23, 31.54it/s]
+[1ALoading weights:  12%|█▏        | 100/851 [00:05<00:24, 30.16it/s]
+[1ALoading weights:  12%|█▏        | 104/851 [00:05<00:23, 31.99it/s]
+[1ALoading weights:  14%|█▎        | 115/851 [00:05<00:16, 44.07it/s]
+[1ALoading weights:  14%|█▍        | 120/851 [00:05<00:19, 37.47it/s]
+[1ALoading weights:  15%|█▍        | 127/851 [00:05<00:16, 43.99it/s]
+[1ALoading weights:  16%|█▌        | 132/851 [00:05<00:15, 45.16it/s]
+[1ALoading weights:  16%|█▌        | 137/851 [00:05<00:19, 36.96it/s]
+[1ALoading weights:  17%|█▋        | 145/851 [00:06<00:16, 43.16it/s]
+[1ALoading weights:  18%|█▊        | 150/851 [00:06<00:20, 34.11it/s]
+[1ALoading weights:  18%|█▊        | 154/851 [00:06<00:25, 27.43it/s]
+[1ALoading weights:  20%|█▉        | 166/851 [00:06<00:15, 43.75it/s]
+[1ALoading weights:  20%|██        | 172/851 [00:06<00:16, 40.64it/s]
+[1ALoading weights:  21%|██        | 178/851 [00:07<00:16, 40.30it/s]
+[1ALoading weights:  22%|██▏       | 185/851 [00:07<00:14, 44.73it/s]
+[1ALoading weights:  22%|██▏       | 191/851 [00:07<00:17, 37.50it/s]
+[1ALoading weights:  23%|██▎       | 198/851 [00:07<00:15, 41.01it/s]
+[1ALoading weights:  24%|██▍       | 203/851 [00:07<00:19, 33.72it/s]
+[1ALoading weights:  24%|██▍       | 207/851 [00:07<00:22, 28.96it/s]
+[1ALoading weights:  26%|██▌       | 218/851 [00:08<00:14, 42.75it/s]
+[1ALoading weights:  26%|██▋       | 225/851 [00:08<00:14, 43.22it/s]
+[1ALoading weights:  27%|██▋       | 230/851 [00:08<00:15, 39.86it/s]
+[1ALoading weights:  28%|██▊       | 238/851 [00:08<00:12, 47.41it/s]
+[1ALoading weights:  29%|██▊       | 244/851 [00:08<00:15, 39.68it/s]
+[1ALoading weights:  29%|██▉       | 251/851 [00:08<00:13, 45.83it/s]
+[1ALoading weights:  30%|███       | 257/851 [00:09<00:17, 33.31it/s]
+[1ALoading weights:  31%|███       | 262/851 [00:09<00:19, 30.71it/s]
+[1ALoading weights:  31%|███▏      | 267/851 [00:09<00:17, 34.12it/s]
+[1ALoading weights:  32%|███▏      | 275/851 [00:09<00:13, 41.80it/s]
+[1ALoading weights:  33%|███▎      | 280/851 [00:09<00:17, 33.53it/s]
+[1ALoading weights:  34%|███▍      | 290/851 [00:09<00:12, 43.57it/s]
+[1ALoading weights:  35%|███▍      | 296/851 [00:10<00:14, 37.10it/s]
+[1ALoading weights:  36%|███▌      | 303/851 [00:10<00:13, 41.15it/s]
+[1ALoading weights:  36%|███▌      | 308/851 [00:10<00:19, 27.70it/s]
+[1ALoading weights:  37%|███▋      | 312/851 [00:10<00:20, 26.88it/s]
+[1ALoading weights:  37%|███▋      | 316/851 [00:10<00:19, 27.07it/s]
+[1ALoading weights:  38%|███▊      | 324/851 [00:11<00:14, 36.77it/s]
+[1ALoading weights:  39%|███▊      | 329/851 [00:11<00:13, 38.94it/s]
+[1ALoading weights:  39%|███▉      | 334/851 [00:11<00:18, 28.20it/s]
+[1ALoading weights:  40%|████      | 342/851 [00:11<00:14, 36.06it/s]
+[1ALoading weights:  41%|████      | 347/851 [00:11<00:18, 27.25it/s]
+[1ALoading weights:  42%|████▏     | 356/851 [00:12<00:13, 36.23it/s]
+[1ALoading weights:  42%|████▏     | 361/851 [00:12<00:16, 28.91it/s]
+[1ALoading weights:  43%|████▎     | 365/851 [00:12<00:17, 28.00it/s]
+[1ALoading weights:  43%|████▎     | 369/851 [00:12<00:17, 27.96it/s]
+[1ALoading weights:  44%|████▍     | 376/851 [00:12<00:13, 35.28it/s]
+[1ALoading weights:  45%|████▍     | 381/851 [00:12<00:12, 38.08it/s]
+[1ALoading weights:  45%|████▌     | 386/851 [00:13<00:17, 26.52it/s]
+[1ALoading weights:  46%|████▋     | 395/851 [00:13<00:12, 36.41it/s]
+[1ALoading weights:  47%|████▋     | 400/851 [00:13<00:16, 27.98it/s]
+[1ALoading weights:  48%|████▊     | 408/851 [00:13<00:12, 36.43it/s]
+[1ALoading weights:  49%|████▊     | 413/851 [00:13<00:14, 30.60it/s]
+[1ALoading weights:  49%|████▉     | 418/851 [00:14<00:17, 25.01it/s]
+[1ALoading weights:  50%|████▉     | 422/851 [00:14<00:16, 25.95it/s]
+[1ALoading weights:  51%|█████     | 431/851 [00:14<00:11, 36.57it/s]
+[1ALoading weights:  51%|█████     | 436/851 [00:14<00:11, 36.31it/s]
+[1ALoading weights:  52%|█████▏    | 441/851 [00:14<00:14, 27.60it/s]
+[1ALoading weights:  53%|█████▎    | 448/851 [00:15<00:11, 34.00it/s]
+[1ALoading weights:  53%|█████▎    | 453/851 [00:15<00:17, 22.53it/s]
+[1ALoading weights:  54%|█████▍    | 461/851 [00:15<00:13, 27.98it/s]
+[1ALoading weights:  55%|█████▍    | 465/851 [00:15<00:13, 27.78it/s]
+[1ALoading weights:  55%|█████▌    | 469/851 [00:16<00:17, 21.55it/s]
+[1ALoading weights:  55%|█████▌    | 472/851 [00:16<00:22, 17.02it/s]
+[1ALoading weights:  57%|█████▋    | 481/851 [00:16<00:13, 26.53it/s]
+[1ALoading weights:  57%|█████▋    | 486/851 [00:16<00:12, 29.58it/s]
+[1ALoading weights:  58%|█████▊    | 491/851 [00:16<00:14, 24.16it/s]
+[1ALoading weights:  58%|█████▊    | 495/851 [00:17<00:13, 26.22it/s]
+[1ALoading weights:  59%|█████▉    | 501/851 [00:17<00:10, 32.29it/s]
+[1ALoading weights:  59%|█████▉    | 506/851 [00:17<00:15, 22.97it/s]
+[1ALoading weights:  60%|██████    | 514/851 [00:17<00:11, 30.56it/s]
+[1ALoading weights:  61%|██████    | 519/851 [00:17<00:13, 25.13it/s]
+[1ALoading weights:  61%|██████▏   | 523/851 [00:18<00:14, 21.94it/s]
+[1ALoading weights:  62%|██████▏   | 526/851 [00:18<00:18, 18.05it/s]
+[1ALoading weights:  63%|██████▎   | 535/851 [00:18<00:11, 26.58it/s]
+[1ALoading weights:  64%|██████▍   | 543/851 [00:18<00:09, 32.87it/s]
+[1ALoading weights:  64%|██████▍   | 548/851 [00:18<00:09, 32.53it/s]
+[1ALoading weights:  65%|██████▌   | 554/851 [00:19<00:07, 37.40it/s]
+[1ALoading weights:  66%|██████▌   | 559/851 [00:19<00:10, 29.18it/s]
+[1ALoading weights:  67%|██████▋   | 568/851 [00:19<00:07, 36.58it/s]
+[1ALoading weights:  67%|██████▋   | 573/851 [00:19<00:09, 28.38it/s]
+[1ALoading weights:  68%|██████▊   | 577/851 [00:19<00:10, 27.36it/s]
+[1ALoading weights:  68%|██████▊   | 581/851 [00:20<00:09, 28.38it/s]
+[1ALoading weights:  69%|██████▉   | 588/851 [00:20<00:07, 35.97it/s]
+[1ALoading weights:  70%|██████▉   | 593/851 [00:20<00:06, 37.26it/s]
+[1ALoading weights:  70%|███████   | 598/851 [00:20<00:10, 23.93it/s]
+[1ALoading weights:  71%|███████▏  | 607/851 [00:20<00:07, 34.06it/s]
+[1ALoading weights:  72%|███████▏  | 612/851 [00:21<00:08, 28.09it/s]
+[1ALoading weights:  73%|███████▎  | 621/851 [00:21<00:06, 37.96it/s]
+[1ALoading weights:  74%|███████▎  | 627/851 [00:21<00:07, 30.08it/s]
+[1ALoading weights:  74%|███████▍  | 632/851 [00:21<00:07, 28.06it/s]
+[1ALoading weights:  75%|███████▌  | 642/851 [00:21<00:05, 39.01it/s]
+[1ALoading weights:  76%|███████▌  | 648/851 [00:21<00:05, 39.92it/s]
+[1ALoading weights:  77%|███████▋  | 653/851 [00:22<00:06, 30.60it/s]
+[1ALoading weights:  78%|███████▊  | 661/851 [00:22<00:04, 38.32it/s]
+[1ALoading weights:  78%|███████▊  | 666/851 [00:22<00:05, 31.30it/s]
+[1ALoading weights:  79%|███████▉  | 674/851 [00:22<00:04, 39.22it/s]
+[1ALoading weights:  80%|███████▉  | 680/851 [00:23<00:05, 31.04it/s]
+[1ALoading weights:  80%|████████  | 685/851 [00:23<00:06, 27.52it/s]
+[1ALoading weights:  81%|████████▏ | 693/851 [00:23<00:04, 35.34it/s]
+[1ALoading weights:  82%|████████▏ | 701/851 [00:23<00:03, 41.85it/s]
+[1ALoading weights:  83%|████████▎ | 707/851 [00:23<00:04, 33.29it/s]
+[1ALoading weights:  84%|████████▍ | 713/851 [00:23<00:03, 36.13it/s]
+[1ALoading weights:  84%|████████▍ | 718/851 [00:24<00:05, 25.47it/s]
+[1ALoading weights:  85%|████████▌ | 727/851 [00:24<00:03, 34.03it/s]
+[1ALoading weights:  86%|████████▌ | 732/851 [00:24<00:04, 27.62it/s]
+[1ALoading weights:  86%|████████▋ | 736/851 [00:24<00:04, 27.56it/s]
+[1ALoading weights:  87%|████████▋ | 740/851 [00:24<00:03, 29.19it/s]
+[1ALoading weights:  88%|████████▊ | 751/851 [00:25<00:02, 41.42it/s]
+[1ALoading weights:  89%|████████▉ | 756/851 [00:25<00:02, 35.44it/s]
+[1ALoading weights:  89%|████████▉ | 761/851 [00:25<00:02, 37.20it/s]
+[1ALoading weights:  90%|█████████ | 766/851 [00:25<00:02, 38.38it/s]
+[1ALoading weights:  91%|█████████ | 771/851 [00:25<00:03, 24.68it/s]
+[1ALoading weights:  92%|█████████▏| 779/851 [00:26<00:02, 32.41it/s]
+[1ALoading weights:  92%|█████████▏| 784/851 [00:26<00:02, 28.71it/s]
+[1ALoading weights:  93%|█████████▎| 788/851 [00:26<00:02, 24.69it/s]
+[1ALoading weights:  93%|█████████▎| 792/851 [00:26<00:02, 26.95it/s]
+[1ALoading weights:  94%|█████████▎| 796/851 [00:26<00:01, 28.29it/s]
+[1ALoading weights:  94%|█████████▍| 803/851 [00:26<00:01, 33.51it/s]
+[1ALoading weights:  95%|█████████▍| 808/851 [00:27<00:01, 31.77it/s]
+[1ALoading weights:  95%|█████████▌| 812/851 [00:27<00:01, 25.53it/s]
+[1ALoading weights:  96%|█████████▌| 819/851 [00:27<00:00, 33.37it/s]
+[1ALoading weights:  97%|█████████▋| 824/851 [00:27<00:01, 25.73it/s]
+[1ALoading weights:  98%|█████████▊| 832/851 [00:27<00:00, 33.96it/s]
+[1ALoading weights:  98%|█████████▊| 837/851 [00:28<00:00, 24.83it/s]
+[1ALoading weights:  99%|█████████▉| 841/851 [00:28<00:00, 20.29it/s]
+[1ALoading weights:  99%|█████████▉| 844/851 [00:28<00:00, 16.03it/s]
+[1ALoading weights: 100%|██████████| 851/851 [00:29<00:00, 29.33it/s]
+Loading QuALITY data from: data/QuALITY.v1.0.1.htmlstripped.dev
+Loaded 115 unique articles (from 230 entries)
+[transformers] `causal_conv1d_fn` is falling back to its reference PyTorch implementation because `causal_conv1d` is not installed. This is correct but much slower; install `causal_conv1d` for the optimized kernel.
+[transformers] `causal_conv1d_update` is falling back to its reference PyTorch implementation because `causal_conv1d` is not installed. This is correct but much slower; install `causal_conv1d` for the optimized kernel.
+[r1b] art 40 quality_20002 orig t0.05: acc 16/18 wall 31.9s {}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.44GB allocated, 50.63GB reserved, 139.79GB total
+GPU Memory available: 89.35GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (12773 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: The Absurdity of Family Love 
+
+         Don't get me wrong. Kids are great. I have some, and I adore...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 2755 tokens
+  Using all 2755 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-16530 in final queries (total: 16530)
+Generated 16530 original queries per KV head
+Original queries shape: torch.Size([16, 4, 16530, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=34799, min=5, max=753, mean=543.7
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 40 quality_20002 O1 t0.05: acc 16/18 wall 10.9s {'compaction_s': 6.12, 'query_gen_s': 3.83, 'full_layer_len_mean': 251.0, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.60GB allocated, 50.79GB reserved, 139.79GB total
+GPU Memory available: 89.19GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (12773 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: The Absurdity of Family Love 
+
+         Don't get me wrong. Kids are great. I have some, and I adore...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 2755 tokens
+  Using all 2755 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-16530 in final queries (total: 16530)
+Generated 16530 original queries per KV head
+Original queries shape: torch.Size([16, 4, 16530, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=34799, min=5, max=753, mean=543.7
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 40 quality_20002 O2 t0.05: acc 16/18 wall 15.5s {'compaction_s': 10.73, 'query_gen_s': 4.27, 'full_layer_len_mean': 251.0, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.60GB allocated, 50.82GB reserved, 139.79GB total
+GPU Memory available: 89.19GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+Generated 3 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (12773 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 6 answers with vLLM across 2 parameter groups
+  [Conv 1/7] Starter: Repeat the previous context verbatim.
+  [Conv 1/7] Answer: The Absurdity of Family Love 
+
+         Don't get me wrong. Kids are great. I have some, and I adore...
+  [Conv 1/7] Extracting queries from answer...
+  [Conv 1/7] Extracted 2755 tokens
+  [Conv 2/7] Starter: Summarize the main points of the context.
+  [Conv 2/7] Answer: Based on the provided text, here is a summary of the main points regarding the "absurdity" of family...
+  [Conv 2/7] Extracting queries from answer...
+  [Conv 2/7] Extracted 714 tokens
+  [Conv 3/7] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/7] Answer: Based on the provided text, here is an aggregation of the key facts and arguments regarding the biol...
+  [Conv 3/7] Extracting queries from answer...
+  [Conv 3/7] Extracted 1191 tokens
+  [Conv 4/7] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/7] Answer: {
+  "title": "The Absurdity of Family Love",
+  "author_context": {
+    "personal_details": {
+      "...
+  [Conv 4/7] Extracting queries from answer...
+  [Conv 4/7] Extracted 1311 tokens
+  [Conv 5/7] Starter: 1. According to the “Loving Bob” example, why would genes for sibling love spread over time?
+
+A. Because Loving Bob was personally more likely to survive the rescue.
+B. Because Loveless Bob’s genes were automatically eliminated by natural selection.
+C. Because Loving Bob’s gene could also survive if his sibling shared the same gene.
+D. Because the river only threatened people without love genes.
+  [Conv 5/7] Answer: We need answer multiple choice based on passage. Need analyze in English (user English). Need produc...
+  [Conv 5/7] Extracting queries from answer...
+  [Conv 5/7] Extracted 325 tokens
+  [Conv 6/7] Starter: 2. What does the Kimberly Mays example show about “kin-recognition mechanisms”?
+
+A. They always identify genetic relatives with perfect accuracy.
+B. They can be triggered by non-genetic bonding experiences.
+C. They only operate in fathers, not mothers.
+D. They prove that adoption cannot create real love.
+  [Conv 6/7] Answer: We need answer multiple choice. Need reason based on context. Question: What does Kimberly Mays exam...
+  [Conv 6/7] Extracting queries from answer...
+  [Conv 6/7] Extracted 243 tokens
+  [Conv 7/7] Starter: 3. What is the author’s main point in “Misconception No. 3”?
+
+A. Genes are clever enough to direct love only to the people who best serve their self-interest.
+B. Familial love may have evolved through genetic selfishness, but it now often fails to be efficiently selfish.
+C. People should avoid loving relatives because it is morally wrong.
+D. Cross-ethnic adoption is biologically impossible.
+  [Conv 7/7] Answer: We need answer multiple choice based on passage. Need identify main point in Misconception No. 3. Le...
+  [Conv 7/7] Extracting queries from answer...
+  [Conv 7/7] Extracted 620 tokens
+  Using all 7159 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-42954 in final queries (total: 42954)
+Generated 42954 original queries per KV head
+Original queries shape: torch.Size([16, 4, 42954, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=34799, min=5, max=753, mean=543.7
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 40 quality_20002 C t0.05: acc 16/18 wall 296.0s {'compaction_s': 291.32, 'query_gen_s': 284.13, 'full_layer_len_mean': 251.0, 'nan_layers': []}
+[r1b] article 40 done in 354s
+[r1b] art 41 quality_51650 orig t0.05: acc 16/18 wall 5.0s {}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.90GB allocated, 51.25GB reserved, 139.79GB total
+GPU Memory available: 88.89GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (30162 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: INNOCENT AT LARGE
+By POUL AND KAREN ANDERSON
+
+
+ Illustrated by WOOD
+
+
+ [Transcriber's Note: This ete...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 7668 tokens
+  Using all 7668 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-46008 in final queries (total: 46008)
+Generated 46008 original queries per KV head
+Original queries shape: torch.Size([16, 4, 46008, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=97777, min=15, max=2117, mean=1527.8
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 41 quality_51650 O1 t0.05: acc 16/18 wall 23.5s {'compaction_s': 18.85, 'query_gen_s': 14.16, 'full_layer_len_mean': 660.4, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.94GB allocated, 51.56GB reserved, 139.79GB total
+GPU Memory available: 88.86GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (30162 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: INNOCENT AT LARGE
+By POUL AND KAREN ANDERSON
+
+
+ Illustrated by WOOD
+
+
+ [Transcriber's Note: This ete...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 7668 tokens
+  Using all 7668 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-46008 in final queries (total: 46008)
+Generated 46008 original queries per KV head
+Original queries shape: torch.Size([16, 4, 46008, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=97777, min=15, max=2117, mean=1527.8
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 41 quality_51650 O2 t0.05: acc 14/18 wall 64.8s {'compaction_s': 60.18, 'query_gen_s': 14.08, 'full_layer_len_mean': 660.4, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.93GB allocated, 51.51GB reserved, 139.79GB total
+GPU Memory available: 88.86GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+Generated 3 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (30162 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 6 answers with vLLM across 2 parameter groups
+  [Conv 1/7] Starter: Repeat the previous context verbatim.
+  [Conv 1/7] Answer: INNOCENT AT LARGE
+By POUL AND KAREN ANDERSON
+
+
+ Illustrated by WOOD
+
+
+ [Transcriber's Note: This ete...
+  [Conv 1/7] Extracting queries from answer...
+  [Conv 1/7] Extracted 7668 tokens
+  [Conv 2/7] Starter: Summarize the main points of the context.
+  [Conv 2/7] Answer: Based on the provided text, here is a summary of the main points of the story "Innocent at Large" by...
+  [Conv 2/7] Extracting queries from answer...
+  [Conv 2/7] Extracted 821 tokens
+  [Conv 3/7] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/7] Answer: Based on the text provided, here is an aggregation of the key facts, categorized by character, setti...
+  [Conv 3/7] Extracting queries from answer...
+  [Conv 3/7] Extracted 954 tokens
+  [Conv 4/7] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/7] Answer: ```json
+{
+  "title": "INNOCENT AT LARGE",
+  "authors": [
+    "POUL ANDERSON",
+    "KAREN ANDERSON"
+ ...
+  [Conv 4/7] Extracting queries from answer...
+  [Conv 4/7] Extracted 1952 tokens
+  [Conv 5/7] Starter: 1. What is Gus Doran’s main interest in the Martian visitor, as explained in his call to Peri?
+A) He wants to hire the Martian as a permanent business consultant.
+B) He wants to use the Martian’s un-audited expense money for a one-night scheme.
+C) He wants to introduce the Martian to Peri’s current date.
+D) He wants to help the Martian return to the Martian Embassy.
+  [Conv 5/7] Answer: We need answer multiple choice based on text. Need analyze in English (same language as user). Need ...
+  [Conv 5/7] Extracting queries from answer...
+  [Conv 5/7] Extracted 277 tokens
+  [Conv 6/7] Starter: 2. Why does Matheny become confused and leave the crap table at the Church of Choice?
+A) He believes the dice have been switched and he is being cheated.
+B) He realizes the place is a religious establishment rather than a casino.
+C) He expects the dice to be rigged and is puzzled when the game seems fair.
+D) He is embarrassed because he has lost all of his chips.
+  [Conv 6/7] Answer: We need answer question based on text. Need analyze. User asks: "2. Why does Matheny become confused...
+  [Conv 6/7] Extracting queries from answer...
+  [Conv 6/7] Extracted 1603 tokens
+  [Conv 7/7] Starter: 3. What does Matheny reveal to Doran about the “Old Martian” relics sold on Earth?
+A) They are genuine but too costly to transport to Earth.
+B) They were made by an extinct race a million years ago.
+C) They have been manufactured by Martians since the Billingsworth Expedition.
+D) They are used as legal currency in Martian trade.
+  [Conv 7/7] Answer: We need answer multiple choice based on provided text. Need analyze. User asks: What does Matheny re...
+  [Conv 7/7] Extracting queries from answer...
+  [Conv 7/7] Extracted 245 tokens
+  Subsampled 13520 → 8334 tokens per attention head
+Putting vLLM to sleep...
+Self-study queries occupy range 0-50004 in final queries (total: 50004)
+Generated 50004 original queries per KV head
+Original queries shape: torch.Size([16, 4, 50004, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=97777, min=15, max=2117, mean=1527.8
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 41 quality_51650 C t0.05: acc 17/18 wall 584.0s {'compaction_s': 561.96, 'query_gen_s': 515.35, 'full_layer_len_mean': 660.4, 'nan_layers': []}
+[r1b] article 41 done in 677s
+[r1b] art 42 quality_51483 orig t0.05: acc 16/20 wall 57.5s {}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.88GB allocated, 51.21GB reserved, 139.79GB total
+GPU Memory available: 88.91GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (27958 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: The Reluctant Heroes
+By FRANK M. ROBINSON
+
+
+ Illustrated by DON SIBLEY
+
+
+ [Transcriber's Note: This ...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 6883 tokens
+  Using all 6883 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-41298 in final queries (total: 41298)
+Generated 41298 original queries per KV head
+Original queries shape: torch.Size([16, 4, 41298, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=87787, min=13, max=1901, mean=1371.7
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 42 quality_51483 O1 t0.05: acc 12/20 wall 21.2s {'compaction_s': 15.74, 'query_gen_s': 12.09, 'full_layer_len_mean': 595.4, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.88GB allocated, 51.38GB reserved, 139.79GB total
+GPU Memory available: 88.91GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (27958 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: The Reluctant Heroes
+By FRANK M. ROBINSON
+
+
+ Illustrated by DON SIBLEY
+
+
+ [Transcriber's Note: This ...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 6883 tokens
+  Using all 6883 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-41298 in final queries (total: 41298)
+Generated 41298 original queries per KV head
+Original queries shape: torch.Size([16, 4, 41298, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=87787, min=13, max=1901, mean=1371.7
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 42 quality_51483 O2 t0.05: acc 13/20 wall 53.8s {'compaction_s': 48.56, 'query_gen_s': 13.04, 'full_layer_len_mean': 595.4, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.88GB allocated, 51.51GB reserved, 139.79GB total
+GPU Memory available: 88.91GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+Generated 3 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (27958 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 6 answers with vLLM across 2 parameter groups
+  [Conv 1/7] Starter: Repeat the previous context verbatim.
+  [Conv 1/7] Answer: The Reluctant Heroes
+By FRANK M. ROBINSON
+
+
+ Illustrated by DON SIBLEY
+
+
+ [Transcriber's Note: This ...
+  [Conv 1/7] Extracting queries from answer...
+  [Conv 1/7] Extracted 6883 tokens
+  [Conv 2/7] Starter: Summarize the main points of the context.
+  [Conv 2/7] Answer: Here is a summary of the main points from "The Reluctant Heroes" by Frank M. Robinson:
+
+**The Centra...
+  [Conv 2/7] Extracting queries from answer...
+  [Conv 2/7] Extracted 640 tokens
+  [Conv 3/7] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/7] Answer: Based on the text provided, here is an aggregation of the key facts:
+
+**Setting and Context**
+*   **...
+  [Conv 3/7] Extracting queries from answer...
+  [Conv 3/7] Extracted 1037 tokens
+  [Conv 4/7] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/7] Answer: {
+  "title": "The Reluctant Heroes",
+  "author": "Frank M. Robinson",
+  "illustrator": "Don Sibley",...
+  [Conv 4/7] Extracting queries from answer...
+  [Conv 4/7] Extracted 1632 tokens
+  [Conv 5/7] Starter: Which statement best explains why the very young man is reluctant to join the Venus expedition?
+
+A. He is afraid the new air units will make smoking dangerous.
+B. He worries he will miss familiar people and things, and that the excitement will fade.
+C. He wants to remain on Earth to become a research scientist.
+D. He believes the expedition will last much longer than two years.
+  [Conv 5/7] Answer: We need answer multiple choice based on text. Need identify why very young man reluctant to join Ven...
+  [Conv 5/7] Extracting queries from answer...
+  [Conv 5/7] Extracted 446 tokens
+  [Conv 6/7] Starter: What does Chapman reveal about his original role on the Moon?
+
+A. He was a geologist who stayed because he enjoyed the scientific work.
+B. He was the pilot of the first ship and stayed because he was useful with machinery while others brought data home.
+C. He was a doctor assigned to keep the research team healthy.
+D. He was sent by the Commission to become Director of the Luna Laboratories.
+  [Conv 6/7] Answer: We need answer multiple choice based on text. Need analyze. User asks: What does Chapman reveal abou...
+  [Conv 6/7] Extracting queries from answer...
+  [Conv 6/7] Extracted 373 tokens
+  [Conv 7/7] Starter: Why does Dahl ask Chapman to stay for stopover?
+
+A. He wants to avoid being paid less than the other researchers.
+B. He is engaged and does not want to tell his fiancée that he will be delayed another eighteen months.
+C. He believes Chapman secretly enjoys the Moon and would prefer to stay.
+D. He wants to test whether Chapman is qualified to lead the expanded laboratory.
+  [Conv 7/7] Answer: We need answer multiple choice based on story. Need analyze. User asks: Why does Dahl ask Chapman to...
+  [Conv 7/7] Extracting queries from answer...
+  [Conv 7/7] Extracted 255 tokens
+  Subsampled 11266 → 8334 tokens per attention head
+Putting vLLM to sleep...
+Self-study queries occupy range 0-50004 in final queries (total: 50004)
+Generated 50004 original queries per KV head
+Original queries shape: torch.Size([16, 4, 50004, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=87787, min=13, max=1901, mean=1371.7
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 42 quality_51483 C t0.05: acc 14/20 wall 386.5s {'compaction_s': 381.39, 'query_gen_s': 343.8, 'full_layer_len_mean': 595.4, 'nan_layers': []}
+[r1b] article 42 done in 519s
+[r1b] art 43 quality_51461 orig t0.05: acc 16/17 wall 4.7s {}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.91GB allocated, 51.40GB reserved, 139.79GB total
+GPU Memory available: 88.88GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (30982 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: A Pail of Air
+By FRITZ LEIBER
+
+
+ Illustrated by ED ALEXANDER
+
+
+ [Transcriber's Note: This etext was ...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 7449 tokens
+  Using all 7449 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-44694 in final queries (total: 44694)
+Generated 44694 original queries per KV head
+Original queries shape: torch.Size([16, 4, 44694, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=94950, min=14, max=2056, mean=1483.6
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 43 quality_51461 O1 t0.05: acc 15/17 wall 22.7s {'compaction_s': 18.0, 'query_gen_s': 13.71, 'full_layer_len_mean': 641.9, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.93GB allocated, 51.49GB reserved, 139.79GB total
+GPU Memory available: 88.87GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (30982 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: A Pail of Air
+By FRITZ LEIBER
+
+
+ Illustrated by ED ALEXANDER
+
+
+ [Transcriber's Note: This etext was ...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 7449 tokens
+  Using all 7449 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-44694 in final queries (total: 44694)
+Generated 44694 original queries per KV head
+Original queries shape: torch.Size([16, 4, 44694, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=94950, min=14, max=2056, mean=1483.6
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 43 quality_51461 O2 t0.05: acc 15/17 wall 58.4s {'compaction_s': 53.76, 'query_gen_s': 11.1, 'full_layer_len_mean': 641.9, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.92GB allocated, 51.47GB reserved, 139.79GB total
+GPU Memory available: 88.87GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+Generated 3 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (30982 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 6 answers with vLLM across 2 parameter groups
+  [Conv 1/7] Starter: Repeat the previous context verbatim.
+  [Conv 1/7] Answer: A Pail of Air
+By FRITZ LEIBER
+
+
+ Illustrated by ED ALEXANDER
+
+
+ [Transcriber's Note: This etext was ...
+  [Conv 1/7] Extracting queries from answer...
+  [Conv 1/7] Extracted 7449 tokens
+  [Conv 2/7] Starter: Summarize the main points of the context.
+  [Conv 2/7] Answer: Here is a summary of the main points from Fritz Leiber’s short story "A Pail of Air":
+
+**The Setting...
+  [Conv 2/7] Extracting queries from answer...
+  [Conv 2/7] Extracted 659 tokens
+  [Conv 3/7] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/7] Answer: Based on the text provided, here is an aggregation of the key facts regarding the setting, character...
+  [Conv 3/7] Extracting queries from answer...
+  [Conv 3/7] Extracted 1102 tokens
+  [Conv 4/7] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/7] Answer: ```json
+{
+  "title": "A Pail of Air",
+  "author": "Fritz Leiber",
+  "illustrator": "Ed Alexander",
+ ...
+  [Conv 4/7] Extracting queries from answer...
+  [Conv 4/7] Extracted 1564 tokens
+  [Conv 5/7] Starter: 1. What did Harry first think he saw in the opposite apartment?
+A. A young lady's face
+B. A moving light
+C. A frozen animal
+D. A falling star
+  [Conv 5/7] Answer: We need answer multiple choice based on story. Need produce final answer. Question: What did Harry f...
+  [Conv 5/7] Extracting queries from answer...
+  [Conv 5/7] Extracted 161 tokens
+  [Conv 6/7] Starter: 2. Why must the fire in the Nest never go out?
+A. To keep the clocks running
+B. To keep the family warm and help maintain the Nest
+C. To cook the pails of air
+D. To signal other survivors
+  [Conv 6/7] Answer: We need answer multiple choice based on text. Need analyze. User asks: "2. Why must the fire in the ...
+  [Conv 6/7] Extracting queries from answer...
+  [Conv 6/7] Extracted 296 tokens
+  [Conv 7/7] Starter: 3. How did the strangers from Los Alamos discover the family?
+A. They followed radio signals
+B. They heard the family through the blankets
+C. They used an instrument that detected faint heat waves
+D. They saw the family through the windows
+  [Conv 7/7] Answer: We need answer multiple choice based on text. Need analyze in English (same language as user). Need ...
+  [Conv 7/7] Extracting queries from answer...
+  [Conv 7/7] Extracted 201 tokens
+  Subsampled 11432 → 8334 tokens per attention head
+Putting vLLM to sleep...
+Self-study queries occupy range 0-50004 in final queries (total: 50004)
+Generated 50004 original queries per KV head
+Original queries shape: torch.Size([16, 4, 50004, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=94950, min=14, max=2056, mean=1483.6
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 43 quality_51461 C t0.05: acc 15/17 wall 337.3s {'compaction_s': 332.85, 'query_gen_s': 289.42, 'full_layer_len_mean': 641.9, 'nan_layers': []}
+[r1b] article 43 done in 423s
+[r1b] art 44 quality_50818 orig t0.05: acc 15/18 wall 5.0s {}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.91GB allocated, 51.27GB reserved, 139.79GB total
+GPU Memory available: 88.88GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (29951 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: HOW TO MAKE FRIENDS
+By JIM HARMON
+
+
+ Illustrated by WEST
+
+
+ [Transcriber's Note: This etext was prod...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 7242 tokens
+  Using all 7242 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-43452 in final queries (total: 43452)
+Generated 43452 original queries per KV head
+Original queries shape: torch.Size([16, 4, 43452, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=92395, min=14, max=2001, mean=1443.7
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 44 quality_50818 O1 t0.05: acc 12/18 wall 22.2s {'compaction_s': 17.56, 'query_gen_s': 13.34, 'full_layer_len_mean': 625.4, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.91GB allocated, 51.40GB reserved, 139.79GB total
+GPU Memory available: 88.88GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (29951 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: HOW TO MAKE FRIENDS
+By JIM HARMON
+
+
+ Illustrated by WEST
+
+
+ [Transcriber's Note: This etext was prod...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 7242 tokens
+  Using all 7242 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-43452 in final queries (total: 43452)
+Generated 43452 original queries per KV head
+Original queries shape: torch.Size([16, 4, 43452, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=92395, min=14, max=2001, mean=1443.7
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 44 quality_50818 O2 t0.05: acc 12/18 wall 58.1s {'compaction_s': 53.49, 'query_gen_s': 13.33, 'full_layer_len_mean': 625.4, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.91GB allocated, 51.38GB reserved, 139.79GB total
+GPU Memory available: 88.88GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+Generated 3 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (29951 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 6 answers with vLLM across 2 parameter groups
+  [Conv 1/7] Starter: Repeat the previous context verbatim.
+  [Conv 1/7] Answer: HOW TO MAKE FRIENDS
+By JIM HARMON
+
+
+ Illustrated by WEST
+
+
+ [Transcriber's Note: This etext was prod...
+  [Conv 1/7] Extracting queries from answer...
+  [Conv 1/7] Extracted 7242 tokens
+  [Conv 2/7] Starter: Summarize the main points of the context.
+  [Conv 2/7] Answer: Here is a summary of the main points from the story "How to Make Friends" by Jim Harmon:
+
+**The Sett...
+  [Conv 2/7] Extracting queries from answer...
+  [Conv 2/7] Extracted 631 tokens
+  [Conv 3/7] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/7] Answer: Based on the text provided, here are the aggregated key facts:
+
+**Setting and Protagonist**
+*   **Lo...
+  [Conv 3/7] Extracting queries from answer...
+  [Conv 3/7] Extracted 931 tokens
+  [Conv 4/7] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/7] Answer: ```json
+{
+  "title": "HOW TO MAKE FRIENDS",
+  "author": "JIM HARMON",
+  "illustrator": "WEST",
+  "so...
+  [Conv 4/7] Extracting queries from answer...
+  [Conv 4/7] Extracted 1362 tokens
+  [Conv 5/7] Starter: 1. Why was William Manet placed alone at Atmosphere Seeder Station 131-47?
+
+A. He passed strict psychological tests and was considered the best candidate for isolation.  
+B. The job required a human overseer, but the government did not select well-balanced people for it.  
+C. He volunteered because he wanted to prove that loneliness could make a man into a god.  
+D. The station was too dangerous for anyone else, so they assigned him as a punishment.
+  [Conv 5/7] Answer: We need answer multiple choice based on text. Need analyze in English (same language as user). Need ...
+  [Conv 5/7] Extracting queries from answer...
+  [Conv 5/7] Extracted 393 tokens
+  [Conv 6/7] Starter: 2. What is the main idea behind Trader Tom’s “Trader Tom Credit Card”?
+
+A. Manet can buy things now and pay for them later with his salary.  
+B. Manet can buy things now, and the charges will be deducted from his estate when he dies.  
+C. Manet can trade his own inventions and discoveries for goods on the ship.  
+D. Manet can receive goods for free because the government has agreed to pay Trader Tom.
+  [Conv 6/7] Answer: We need answer multiple choice based on text. Need identify main idea behind Trader Tom Credit Card....
+  [Conv 6/7] Extracting queries from answer...
+  [Conv 6/7] Extracted 258 tokens
+  [Conv 7/7] Starter: 3. What is Victor’s function in the Lifo kit?
+
+A. He is the Modifier, the part that allows Manet to change Ronald and Veronica.  
+B. He is the Final Model, an adversary meant to challenge Manet and prevent him from being passive.  
+C. He is a companion created to be cheerful, submissive, and cooperative like Ronald.  
+D. He is a romantic companion created to be sweet, forgiving, and emotionally dependent.
+  [Conv 7/7] Answer: We need answer multiple choice based on text. Need analyze. User asks: 3. What is Victor’s function ...
+  [Conv 7/7] Extracting queries from answer...
+  [Conv 7/7] Extracted 344 tokens
+  Subsampled 11161 → 8334 tokens per attention head
+Putting vLLM to sleep...
+Self-study queries occupy range 0-50004 in final queries (total: 50004)
+Generated 50004 original queries per KV head
+Original queries shape: torch.Size([16, 4, 50004, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=92395, min=14, max=2001, mean=1443.7
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 44 quality_50818 C t0.05: acc 14/18 wall 309.7s {'compaction_s': 304.9, 'query_gen_s': 262.8, 'full_layer_len_mean': 625.4, 'nan_layers': []}
+[r1b] article 44 done in 395s
+[r1b] art 45 quality_51687 orig t0.05: acc 16/18 wall 4.9s {}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.93GB allocated, 52.56GB reserved, 139.79GB total
+GPU Memory available: 88.87GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (30946 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: THE SPY IN THE ELEVATOR
+By DONALD E. WESTLAKE
+
+
+ Illustrated by WEST
+
+
+ [Transcriber's Note: This et...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 7620 tokens
+  Using all 7620 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-45720 in final queries (total: 45720)
+Generated 45720 original queries per KV head
+Original queries shape: torch.Size([16, 4, 45720, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=97264, min=15, max=2106, mean=1519.8
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 45 quality_51687 O1 t0.05: acc 15/18 wall 20.6s {'compaction_s': 16.0, 'query_gen_s': 11.38, 'full_layer_len_mean': 657.1, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.93GB allocated, 52.72GB reserved, 139.79GB total
+GPU Memory available: 88.87GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (30946 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: THE SPY IN THE ELEVATOR
+By DONALD E. WESTLAKE
+
+
+ Illustrated by WEST
+
+
+ [Transcriber's Note: This et...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 7620 tokens
+  Using all 7620 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-45720 in final queries (total: 45720)
+Generated 45720 original queries per KV head
+Original queries shape: torch.Size([16, 4, 45720, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=97264, min=15, max=2106, mean=1519.8
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 45 quality_51687 O2 t0.05: acc 14/18 wall 63.9s {'compaction_s': 59.25, 'query_gen_s': 14.18, 'full_layer_len_mean': 657.1, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.93GB allocated, 52.67GB reserved, 139.79GB total
+GPU Memory available: 88.87GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+[SelfStudy] Warning: Extraction failed for spec 4 (extraction_fn=extract_after_thinking_then_split), attempt 1/3. Generated text preview: We need answer user's request. Need write 3 questions testing understanding of different parts of context. Only questions and options, no correct answer, separated by 2 newlines. Need likely multiple ...
+[SelfStudy] Warning: Extraction failed for spec 4 (extraction_fn=extract_after_thinking_then_split), attempt 2/3. Generated text preview: We need answer user's request. Need write 3 questions testing understanding of different parts of context. Only questions and options, no correct answer, separated by 2 newlines. Need likely multiple ...
+[SelfStudy] Warning: Extraction failed for spec 4 (extraction_fn=extract_after_thinking_then_split), attempt 3/3. Generated text preview: We need answer user's request. Need write 3 questions testing understanding of different parts of context. Only questions and options, no correct answer, separated by 2 newlines. Need likely multiple ...
+[SelfStudy] Error: Extraction failed for spec 4 (extraction_fn=extract_after_thinking_then_split) after 3 attempts. Skipping.
+Generated 0 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (30946 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 3 answers with vLLM across 1 parameter groups
+  [Conv 1/4] Starter: Repeat the previous context verbatim.
+  [Conv 1/4] Answer: THE SPY IN THE ELEVATOR
+By DONALD E. WESTLAKE
+
+
+ Illustrated by WEST
+
+
+ [Transcriber's Note: This et...
+  [Conv 1/4] Extracting queries from answer...
+  [Conv 1/4] Extracted 7620 tokens
+  [Conv 2/4] Starter: Summarize the main points of the context.
+  [Conv 2/4] Answer: Based on the provided text, here is a summary of the main points of the story "The Spy in the Elevat...
+  [Conv 2/4] Extracting queries from answer...
+  [Conv 2/4] Extracted 677 tokens
+  [Conv 3/4] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/4] Answer: Based on the text provided, here is an aggregation of the key facts:
+
+**The Protagonist and His Situ...
+  [Conv 3/4] Extracting queries from answer...
+  [Conv 3/4] Extracted 923 tokens
+  [Conv 4/4] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/4] Answer: ```json
+{
+  "title": "THE SPY IN THE ELEVATOR",
+  "author": "DONALD E. WESTLAKE",
+  "illustrator": "...
+  [Conv 4/4] Extracting queries from answer...
+  [Conv 4/4] Extracted 1501 tokens
+  Subsampled 10721 → 8334 tokens per attention head
+Putting vLLM to sleep...
+Self-study queries occupy range 0-50004 in final queries (total: 50004)
+Generated 50004 original queries per KV head
+Original queries shape: torch.Size([16, 4, 50004, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=97264, min=15, max=2106, mean=1519.8
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 45 quality_51687 C t0.05: acc 15/18 wall 420.9s {'compaction_s': 416.33, 'query_gen_s': 370.13, 'full_layer_len_mean': 657.1, 'nan_layers': []}
+[r1b] article 45 done in 511s
+[r1b] art 46 quality_51027 orig t0.05: acc 17/19 wall 5.1s {}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.91GB allocated, 52.42GB reserved, 139.79GB total
+GPU Memory available: 88.88GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (28790 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: JAYWALKER
+BY ROSS ROCKLYNNE
+
+
+ Illustrated by DON DIBLEY
+
+
+ [Transcriber's Note: This etext was prod...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 7312 tokens
+  Using all 7312 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-43872 in final queries (total: 43872)
+Generated 43872 original queries per KV head
+Original queries shape: torch.Size([16, 4, 43872, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=93160, min=14, max=2018, mean=1455.6
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 46 quality_51027 O1 t0.05: acc 17/19 wall 20.0s {'compaction_s': 15.19, 'query_gen_s': 10.88, 'full_layer_len_mean': 630.4, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.91GB allocated, 52.74GB reserved, 139.79GB total
+GPU Memory available: 88.88GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (28790 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: JAYWALKER
+BY ROSS ROCKLYNNE
+
+
+ Illustrated by DON DIBLEY
+
+
+ [Transcriber's Note: This etext was prod...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 7312 tokens
+  Using all 7312 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-43872 in final queries (total: 43872)
+Generated 43872 original queries per KV head
+Original queries shape: torch.Size([16, 4, 43872, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=93160, min=14, max=2018, mean=1455.6
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 46 quality_51027 O2 t0.05: acc 17/19 wall 59.3s {'compaction_s': 54.46, 'query_gen_s': 13.61, 'full_layer_len_mean': 630.4, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.91GB allocated, 52.51GB reserved, 139.79GB total
+GPU Memory available: 88.88GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+Generated 3 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (28790 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 6 answers with vLLM across 2 parameter groups
+  [Conv 1/7] Starter: Repeat the previous context verbatim.
+  [Conv 1/7] Answer: JAYWALKER
+BY ROSS ROCKLYNNE
+
+
+ Illustrated by DON DIBLEY
+
+
+ [Transcriber's Note: This etext was prod...
+  [Conv 1/7] Extracting queries from answer...
+  [Conv 1/7] Extracted 7312 tokens
+  [Conv 2/7] Starter: Summarize the main points of the context.
+  [Conv 2/7] Answer: Here is a summary of the main points from the story "Jaywalker" by Ross Rocklynne:
+
+**The Premise an...
+  [Conv 2/7] Extracting queries from answer...
+  [Conv 2/7] Extracted 524 tokens
+  [Conv 3/7] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/7] Answer: Based on the text provided, here is an aggregation of the key facts:
+
+**Characters and Relationships...
+  [Conv 3/7] Extracting queries from answer...
+  [Conv 3/7] Extracted 1270 tokens
+  [Conv 4/7] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/7] Answer: ```json
+{
+  "title": "Jaywalker",
+  "author": "Ross Rocklynne",
+  "illustrator": "Don Dibley",
+  "pu...
+  [Conv 4/7] Extracting queries from answer...
+  [Conv 4/7] Extracted 1139 tokens
+  [Conv 5/7] Starter: 1. Why did Marcia board the spaceship using Nellie Foster’s validation?
+
+A. She wanted to surprise Jack with a trip to the Moon.  
+B. She was pregnant and believed forcing Jack to save her would make him fight for the marriage.  
+C. She was fleeing an argument and did not think about the consequences.  
+D. She wanted to test whether the ship’s safety rules were strict enough.
+  [Conv 5/7] Answer: We need answer multiple choice based on text. Need produce final answer. Let's analyze: Question: Wh...
+  [Conv 5/7] Extracting queries from answer...
+  [Conv 5/7] Extracted 267 tokens
+  [Conv 6/7] Starter: 2. What made the *Elsinore* crisis dangerous for the passenger who boarded on someone else’s validation?
+
+A. The passenger had never traveled before and panicked during launch.  
+B. The passenger had a glandular condition that could be fatal in free fall, and the crew did not know.  
+C. The passenger refused to take a physical examination and hid a weapon.  
+D. The passenger was too heavy for the ship’s calculated orbit.
+  [Conv 6/7] Answer: We need answer multiple choice based on text. Need analyze in English (same language as user). Need ...
+  [Conv 6/7] Extracting queries from answer...
+  [Conv 6/7] Extracted 270 tokens
+  [Conv 7/7] Starter: 3. Why is spinning the ship to protect Marcia so difficult for Jack?
+
+A. The ship must stop all engines and drift to the Moon.  
+B. The spin makes steering jets, instruments, fuel calculations, and gyroscopic effects extremely complex.  
+C. The passengers would be thrown into the walls and injured.  
+D. The Moon’s gravity would make the ship break apart.
+  [Conv 7/7] Answer: We need answer multiple choice. Need reason from context. The question: Why is spinning the ship to ...
+  [Conv 7/7] Extracting queries from answer...
+  [Conv 7/7] Extracted 233 tokens
+  Subsampled 11015 → 8334 tokens per attention head
+Putting vLLM to sleep...
+Self-study queries occupy range 0-50004 in final queries (total: 50004)
+Generated 50004 original queries per KV head
+Original queries shape: torch.Size([16, 4, 50004, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=93160, min=14, max=2018, mean=1455.6
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 46 quality_51027 C t0.05: acc 17/19 wall 288.8s {'compaction_s': 284.09, 'query_gen_s': 241.98, 'full_layer_len_mean': 630.4, 'nan_layers': []}
+[r1b] article 46 done in 373s
+[r1b] art 47 quality_51267 orig t0.05: acc 16/18 wall 4.8s {}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.93GB allocated, 53.78GB reserved, 139.79GB total
+GPU Memory available: 88.86GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (31176 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: END AS A HERO
+By KEITH LAUMER
+
+
+ Illustrated by SCHELLING
+
+
+ [Transcriber's Note: This etext was pro...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 7657 tokens
+  Using all 7657 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-45942 in final queries (total: 45942)
+Generated 45942 original queries per KV head
+Original queries shape: torch.Size([16, 4, 45942, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=97520, min=15, max=2112, mean=1523.8
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 47 quality_51267 O1 t0.05: acc 9/18 wall 20.1s {'compaction_s': 15.6, 'query_gen_s': 11.09, 'full_layer_len_mean': 658.8, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.93GB allocated, 52.25GB reserved, 139.79GB total
+GPU Memory available: 88.86GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (31176 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: END AS A HERO
+By KEITH LAUMER
+
+
+ Illustrated by SCHELLING
+
+
+ [Transcriber's Note: This etext was pro...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 7657 tokens
+  Using all 7657 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-45942 in final queries (total: 45942)
+Generated 45942 original queries per KV head
+Original queries shape: torch.Size([16, 4, 45942, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=97520, min=15, max=2112, mean=1523.8
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 47 quality_51267 O2 t0.05: acc 14/18 wall 61.0s {'compaction_s': 56.37, 'query_gen_s': 11.33, 'full_layer_len_mean': 658.8, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.93GB allocated, 52.43GB reserved, 139.79GB total
+GPU Memory available: 88.86GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+Generated 3 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (31176 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 6 answers with vLLM across 2 parameter groups
+  [Conv 1/7] Starter: Repeat the previous context verbatim.
+  [Conv 1/7] Answer: END AS A HERO
+By KEITH LAUMER
+
+
+ Illustrated by SCHELLING
+
+
+ [Transcriber's Note: This etext was pro...
+  [Conv 1/7] Extracting queries from answer...
+  [Conv 1/7] Extracted 7657 tokens
+  [Conv 2/7] Starter: Summarize the main points of the context.
+  [Conv 2/7] Answer: Here is a summary of the main points from the story "End As a Hero" by Keith Laumer:
+
+**The Situatio...
+  [Conv 2/7] Extracting queries from answer...
+  [Conv 2/7] Extracted 654 tokens
+  [Conv 3/7] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/7] Answer: Based on the text provided, here is an aggregation of the key facts regarding the plot, characters, ...
+  [Conv 3/7] Extracting queries from answer...
+  [Conv 3/7] Extracted 942 tokens
+  [Conv 4/7] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/7] Answer: ```json
+{
+  "title": "END AS A HERO",
+  "author": "Keith Laumer",
+  "illustrator": "Schelling",
+  "s...
+  [Conv 4/7] Extracting queries from answer...
+  [Conv 4/7] Extracted 1897 tokens
+  [Conv 5/7] Starter: 1. What did Granthan learn from the Gool mind that he tried to explain to Kayle?
+
+A. The Gool could build a weapon that would destroy Earth.
+B. The Gool could transmit matter across space.
+C. The Gool could control every human ship in the fleet.
+D. The Gool could create unlimited energy from sunlight.
+  [Conv 5/7] Answer: The user is asking a multiple-choice question about the story "End as a Hero" by Keith Laumer. I nee...
+  [Conv 5/7] Extracting queries from answer...
+  [Conv 5/7] Extracted 533 tokens
+  [Conv 6/7] Starter: 2. How did Granthan end up in the lifeboat after the Belshazzar was sabotaged?
+
+A. He escaped by swimming through the river of white fire.
+B. Another crew member helped him crawl to the escape hatch.
+C. A Gool telehypnotic probe directed his body after his decoy personality yielded.
+D. He launched himself using one of the acceleration couches.
+  [Conv 6/7] Answer: We need answer multiple choice based on text. Need analyze. User asks: How did Granthan end up in th...
+  [Conv 6/7] Extracting queries from answer...
+  [Conv 6/7] Extracted 341 tokens
+  [Conv 7/7] Starter: 3. What did Granthan do to get past the DEW line patrol?
+
+A. He used his mind to make the Signals Officer give him clearance.
+B. He destroyed the patrol vessel before it could respond.
+C. He changed his course and waited for the patrol to leave.
+D. He asked Kayle to override the patrol’s orders.
+  [Conv 7/7] Answer: We need answer multiple choice based on provided text. Need analyze question: "What did Granthan do ...
+  [Conv 7/7] Extracting queries from answer...
+  [Conv 7/7] Extracted 385 tokens
+  Subsampled 12409 → 8334 tokens per attention head
+Putting vLLM to sleep...
+Self-study queries occupy range 0-50004 in final queries (total: 50004)
+Generated 50004 original queries per KV head
+Original queries shape: torch.Size([16, 4, 50004, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=97520, min=15, max=2112, mean=1523.8
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 47 quality_51267 C t0.05: acc 13/18 wall 373.5s {'compaction_s': 368.79, 'query_gen_s': 323.01, 'full_layer_len_mean': 658.8, 'nan_layers': []}
+[r1b] article 47 done in 460s
+[r1b] art 48 quality_51351 orig t0.05: acc 14/17 wall 4.7s {}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.96GB allocated, 52.52GB reserved, 139.79GB total
+GPU Memory available: 88.83GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (32533 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: THE SPICY SOUND OF SUCCESS
+By JIM HARMON
+
+
+ Illustrated by DICK FRANCIS
+
+
+ [Transcriber's Note: This...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 8155 tokens
+  Using all 8155 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-48930 in final queries (total: 48930)
+Generated 48930 original queries per KV head
+Original queries shape: torch.Size([16, 4, 48930, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=103919, min=16, max=2250, mean=1623.7
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 48 quality_51351 O1 t0.05: acc 11/17 wall 21.0s {'compaction_s': 16.83, 'query_gen_s': 11.82, 'full_layer_len_mean': 700.2, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.97GB allocated, 52.65GB reserved, 139.79GB total
+GPU Memory available: 88.83GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (32533 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: THE SPICY SOUND OF SUCCESS
+By JIM HARMON
+
+
+ Illustrated by DICK FRANCIS
+
+
+ [Transcriber's Note: This...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 8155 tokens
+  Using all 8155 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-48930 in final queries (total: 48930)
+Generated 48930 original queries per KV head
+Original queries shape: torch.Size([16, 4, 48930, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=103919, min=16, max=2250, mean=1623.7
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 48 quality_51351 O2 t0.05: acc 12/17 wall 69.2s {'compaction_s': 64.86, 'query_gen_s': 11.97, 'full_layer_len_mean': 700.2, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.97GB allocated, 52.56GB reserved, 139.79GB total
+GPU Memory available: 88.82GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+Generated 3 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (32533 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 6 answers with vLLM across 2 parameter groups
+  [Conv 1/7] Starter: Repeat the previous context verbatim.
+  [Conv 1/7] Answer: THE SPICY SOUND OF SUCCESS
+By JIM HARMON
+
+
+ Illustrated by DICK FRANCIS
+
+
+ [Transcriber's Note: This...
+  [Conv 1/7] Extracting queries from answer...
+  [Conv 1/7] Extracted 8155 tokens
+  [Conv 2/7] Starter: Summarize the main points of the context.
+  [Conv 2/7] Answer: Here is a summary of the main points from "The Spicy Sound of Success" by Jim Harmon:
+
+**The Conflic...
+  [Conv 2/7] Extracting queries from answer...
+  [Conv 2/7] Extracted 723 tokens
+  [Conv 3/7] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/7] Answer: Based on the text provided, here is an aggregation of the key facts:
+
+**Characters and Roles**
+*   *...
+  [Conv 3/7] Extracting queries from answer...
+  [Conv 3/7] Extracted 1055 tokens
+  [Conv 4/7] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/7] Answer: ```json
+{
+  "title": "THE SPICY SOUND OF SUCCESS",
+  "author": "JIM HARMON",
+  "illustrator": "DICK ...
+  [Conv 4/7] Extracting queries from answer...
+  [Conv 4/7] Extracted 1292 tokens
+  [Conv 5/7] Starter: 1. What does Ordinary Spaceman Quade insist the blank video screen proves?
+
+A. The ship’s radar has been damaged by hostile natives.  
+B. The crew is experiencing transphasia.  
+C. The planet has no gravitational field.  
+D. The captain is unfit to command the mission.
+  [Conv 5/7] Answer: We need answer multiple choice based on provided text. Need analyze. User asks: 1. What does Ordinar...
+  [Conv 5/7] Extracting queries from answer...
+  [Conv 5/7] Extracted 223 tokens
+  [Conv 6/7] Starter: 2. Why does Captain Gavin order the remaining alcohol to be turned into light wine for the crew?
+
+A. To calm the men before a dangerous landing.  
+B. To punish them for questioning his authority.  
+C. To sharpen their taste and smell so they can better interpret transphasia.  
+D. To celebrate the discovery of the alien creatures.
+  [Conv 6/7] Answer: The user is asking a multiple-choice question about why Captain Gavin orders the remaining alcohol t...
+  [Conv 6/7] Extracting queries from answer...
+  [Conv 6/7] Extracted 678 tokens
+  [Conv 7/7] Starter: 3. At the end of the story, what explanation does Captain Gavin give for the aliens’ behavior toward the crew?
+
+A. The aliens were trying to capture the crew as slaves.  
+B. The aliens wanted Earthmen to colonize their planet.  
+C. The aliens were testing whether the crew could survive transphasia.  
+D. The aliens were afraid of the spaceship and tried to drive it away.
+  [Conv 7/7] Answer: We need answer multiple choice based on text. Need analyze in English same language as user? User En...
+  [Conv 7/7] Extracting queries from answer...
+  [Conv 7/7] Extracted 278 tokens
+  Subsampled 12404 → 8334 tokens per attention head
+Putting vLLM to sleep...
+Self-study queries occupy range 0-50004 in final queries (total: 50004)
+Generated 50004 original queries per KV head
+Original queries shape: torch.Size([16, 4, 50004, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=103919, min=16, max=2250, mean=1623.7
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 48 quality_51351 C t0.05: acc 13/17 wall 346.6s {'compaction_s': 342.07, 'query_gen_s': 290.38, 'full_layer_len_mean': 700.2, 'nan_layers': []}
+[r1b] article 48 done in 442s
+[r1b] art 49 quality_51605 orig t0.05: acc 14/19 wall 5.6s {}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.88GB allocated, 52.47GB reserved, 139.79GB total
+GPU Memory available: 88.91GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (27877 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: JAMIESON
+By BILL DOEDE
+
+
+ Illustrated by GRAY
+
+
+ [Transcriber's Note: This etext was produced from
+
+...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 6791 tokens
+  Using all 6791 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-40746 in final queries (total: 40746)
+Generated 40746 original queries per KV head
+Original queries shape: torch.Size([16, 4, 40746, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=86510, min=13, max=1873, mean=1351.7
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 49 quality_51605 O1 t0.05: acc 11/19 wall 21.8s {'compaction_s': 16.29, 'query_gen_s': 12.67, 'full_layer_len_mean': 587.2, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.87GB allocated, 52.62GB reserved, 139.79GB total
+GPU Memory available: 88.92GB
+Generating conversations from 1 ConversationSpecs with vLLM...
+Extracted article for prefill (27877 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+  [Conv 1/1] Starter: Repeat the previous context verbatim.
+  [Conv 1/1] Answer: JAMIESON
+By BILL DOEDE
+
+
+ Illustrated by GRAY
+
+
+ [Transcriber's Note: This etext was produced from
+
+...
+  [Conv 1/1] Extracting queries from answer...
+  [Conv 1/1] Extracted 6791 tokens
+  Using all 6791 extracted tokens per attention head (requested 8334)
+Putting vLLM to sleep...
+Self-study queries occupy range 0-40746 in final queries (total: 40746)
+Generated 40746 original queries per KV head
+Original queries shape: torch.Size([16, 4, 40746, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=86510, min=13, max=1873, mean=1351.7
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 49 quality_51605 O2 t0.05: acc 12/19 wall 52.4s {'compaction_s': 47.28, 'query_gen_s': 12.7, 'full_layer_len_mean': 587.2, 'nan_layers': []}
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Using provided vLLM model instance
+Generating ~50000 queries per KV head using 'self_study' method...
+Waking up vLLM for generation...
+GPU Memory before vLLM wake: 50.87GB allocated, 52.57GB reserved, 139.79GB total
+GPU Memory available: 88.92GB
+Generating conversations from 5 ConversationSpecs with vLLM...
+Generated 3 conversation starters from 1 seed prompts with vLLM
+Extracted article for prefill (27877 chars)
+Prefilled 1 answers with article content (bypassing vLLM)
+Generated 6 answers with vLLM across 2 parameter groups
+  [Conv 1/7] Starter: Repeat the previous context verbatim.
+  [Conv 1/7] Answer: JAMIESON
+By BILL DOEDE
+
+
+ Illustrated by GRAY
+
+
+ [Transcriber's Note: This etext was produced from
+
+...
+  [Conv 1/7] Extracting queries from answer...
+  [Conv 1/7] Extracted 6791 tokens
+  [Conv 2/7] Starter: Summarize the main points of the context.
+  [Conv 2/7] Answer: Based on the story "Jamieson" by Bill Doede, here is a summary of the main points:
+
+**The Technology...
+  [Conv 2/7] Extracting queries from answer...
+  [Conv 2/7] Extracted 865 tokens
+  [Conv 3/7] Starter: Aggregate all the key facts mentioned in the context.
+  [Conv 3/7] Answer: Based on the text provided, here is an aggregation of the key facts regarding the characters, techno...
+  [Conv 3/7] Extracting queries from answer...
+  [Conv 3/7] Extracted 1368 tokens
+  [Conv 4/7] Starter: Structure the information in JSON form and include all important details like dates, times, names, and numerical values.
+  [Conv 4/7] Answer: ```json
+{
+  "title": "JAMIESON",
+  "author": "BILL DOEDE",
+  "illustrator": "GRAY",
+  "source": {
+  ...
+  [Conv 4/7] Extracting queries from answer...
+  [Conv 4/7] Extracted 1719 tokens
+  [Conv 5/7] Starter: 1. What is the thin scar behind Mrs. Jamieson’s ear, and why does she keep her hair long?
+
+A. It hides a Konv cylinder, and she covers it to avoid suspicion.
+
+B. It is a mark from an Agent’s weapon, and she hides it to protect Earl.
+
+C. It is a surgical scar from saving her husband, and she hides it out of shame.
+
+D. It is a tattoo from Bangkok, and she hides it because it is illegal.
+  [Conv 5/7] Answer: We need answer multiple choice based on provided text. Need analyze. User asks: 1. What is the thin ...
+  [Conv 5/7] Extracting queries from answer...
+  [Conv 5/7] Extracted 358 tokens
+  [Conv 6/7] Starter: 2. Why does Mrs. Jamieson think Earl’s meeting with the Agent in Bangkok puts them in danger?
+
+A. The Agent learned their location and thought patterns, making it easier for Agents to find them.
+
+B. The Agent stole Earl’s cylinder and can now control it remotely.
+
+C. The Agent gave Earl a second cylinder, which will be detected by law enforcement.
+
+D. The Agent reported that Earl killed Tom Palieu, giving Agents a direct confession.
+  [Conv 6/7] Answer: We need answer multiple choice based on text. Need analyze. User asks: Why does Mrs. Jamieson think ...
+  [Conv 6/7] Extracting queries from answer...
+  [Conv 6/7] Extracted 792 tokens
+  [Conv 7/7] Starter: 3. What does Benjamin reveal about E. Mason Jamieson’s death and the Stinson Effect?
+
+A. Jamieson was killed by an Agent because he refused to leave Earth, and hate increases cylinder power.
+
+B. Jamieson was killed by mistake after an undesirable Konv committed crimes, and love is connected to the cylinders’ power.
+
+C. Jamieson was killed by Stinson to keep the secret safe, and greed has no effect on the cylinders.
+
+D. Jamieson was killed by Agents in Bangkok because he tried to steal their detectors, and fear makes the cylinders stronger.
+  [Conv 7/7] Answer: We need answer multiple choice based on text. Need analyze. User asks: What does Benjamin reveal abo...
+  [Conv 7/7] Extracting queries from answer...
+  [Conv 7/7] Extracted 463 tokens
+  Subsampled 12356 → 8334 tokens per attention head
+Putting vLLM to sleep...
+Self-study queries occupy range 0-50004 in final queries (total: 50004)
+Generated 50004 original queries per KV head
+Original queries shape: torch.Size([16, 4, 50004, 256])
+Loading per-head budgets from /results/qwen3.8-27b/r1c/optimized_agnostic.json...
+Per-head proportions sum to: 1.0000
+Per-head budget distribution: total=86510, min=13, max=1873, mean=1351.7
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 49 quality_51605 C t0.05: acc 13/19 wall 435.2s {'compaction_s': 429.49, 'query_gen_s': 392.23, 'full_layer_len_mean': 587.2, 'nan_layers': []}
+[r1b] article 49 done in 515s
+Stopping app - local entrypoint completed.
+Runner terminated.
+✓ App completed. View run at 
+https://modal.com/apps/davide-83641/main/ap-bwwoEvhxX35glVLWD4VPAN

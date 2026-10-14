@@ -1,0 +1,38 @@
+{
+ "target": 0.1,
+ "rows": [
+  {
+   "article_index": 95,
+   "article_id": "quality_23160",
+   "per_head": 0.13997311062282985,
+   "uniform": 0.19646750556098092
+  },
+  {
+   "article_index": 96,
+   "article_id": "quality_23563",
+   "per_head": 0.771619294819079,
+   "uniform": 0.8006206311677632
+  },
+  {
+   "article_index": 97,
+   "article_id": "quality_24290",
+   "per_head": 0.7899322509765625,
+   "uniform": 0.897369384765625
+  },
+  {
+   "article_index": 98,
+   "article_id": "quality_31736",
+   "per_head": 0.39854736328125,
+   "uniform": 0.65692138671875
+  },
+  {
+   "article_index": 99,
+   "article_id": "quality_59368",
+   "per_head": 0.424029541015625,
+   "uniform": 0.4421234130859375
+  }
+ ],
+ "mean_diff_per_head_minus_uniform": -0.09388015211674204,
+ "n_articles": 5,
+ "per_head_le_uniform": 5
+}
