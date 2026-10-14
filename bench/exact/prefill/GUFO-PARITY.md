@@ -1916,3 +1916,117 @@ The norms class is now ~150 ms/request against gufo's 30; what is left is
 (both ~2x their byte floor), then `qsa3_attn` (12 x 9.0-12.8 = 108-154 ms vs
 gufo's 87) -- the attention gate and remaining `rms_norm_f32<256>` Q norm
 (12 x 1.54) are each 18 ms and at ~1.3x floor.
+
+## Decode gap vs gufo (lucebox4, 2026-10-14)
+
+Same session, same GGUF (`Qwen3.8-Flash-Next-UD-Q4_K_XL`), `--max-ctx 20480`,
+prefix cache off on both sides (`--prefix-cache-slots 0`, gufo
+`--cache-ram-bytes 1`; `prefix_len=0` / `cache=miss` read on every turn),
+greedy temp 0, 128 decode tokens after the 507-token `prompt_decode512_r0`,
+16-token warm-up on `_r1` first. Unprofiled walls are the decode client's
+`(completion-1)/(wall-ttft)`.
+
+### The three numbers reconciled
+
+| arm | ms/token | tok/s | what differs |
+|---|---:|---:|---|
+| luce server, old default env | 40.0 | 25.0 | 2647 kernels/token, 4770 graph nodes |
+| luce server + the 13-knob exact-stack env of `bench/exact/run.sh` | 35.3 | 28.3 | 1666 kernels/token, 4867 nodes, same greedy text |
+| gufo `GUFO_DECODE_Q5=0` (Q8_0 dense, like-for-like bytes) | 33.9 | 29.5 | 1382 kernels/token |
+| gufo default (`RequantQ8_0ToQ5_1` decode copies, 1.87 GiB) | 30.7 | 32.6 | -0.83 GB/token, not exact |
+
+- 40.2 -> 35.3: the server never set the exact-stack knobs. Every one is read
+  as `getenv(...) && strcmp(...,"1")==0` and latched at first compute
+  (`qwen4exp_graph.cpp:31,385,612,1523-1566`, `ggml-cuda.cu:123-331,5178-7604`),
+  so the driver's 35.31 (`bench/exact/q6/RESULTS.md` A4) and the server's 40.2
+  were the same kernels with 981 extra launches: un-fused HC up-mix / down
+  inject (`hc_upmix_row8_exact`, `hc_down_inject_mixed`), separate shared-expert
+  epilogue, scalar router suffix, 4-warp expert GEMV, host argmax, no graph
+  sharing. HIP graph replay was already on in both (`replay=48/50`).
+- 35.3 vs 33.9: the true engine gap on identical bytes is ~1.4 ms/token, and
+  the per-class ledger below puts ~1.2 ms of it in one place: the routed
+  gate/up Q4_K GEMV (`mul_mat_vec_q<Q4_K,1,true,...,row_warps=8>`,
+  `mmvq.cu:1164-1176, 2606-2628`) runs 47 x 119.7 us vs gufo's
+  `mul_mat_vec_q_moe<Q4_K,2,true>` (`mmvq.hip.cpp:275`, grid (rows/2, experts),
+  wave 0 gate / wave 1 up, LDS combine) at 47 x 94.7 us. Ours moves 1.504 GB
+  of expert bytes at ~77% of the 220 GB/s floor, gufo at ~86%.
+- 33.9 -> 30.7: gufo's `device_model.cpp:560-590` requantizes the four big dense
+  tensors (ssm_in, ssm_out, attn_qkv, attn_out) to Q5_1 at load and decodes
+  through them (`executor.cpp:1620-1628`, `qfn_mmq_dense_vec(kQ5_1,...)`).
+  That is a different model at decode, not a kernel win; the same trick on our
+  side is the A3/A4 Q6_K study (-2.9 ms in the driver) and stays opt-in.
+
+### Per-token kernel ledger (rocprofv3 --kernel-trace, 32 decode tokens)
+
+rocprof inflates T=1 (luce 121 / gufo 77 ms per profiled token vs 35 / 31
+unprofiled), so only the kernel sums and ratios are meaningful. Bytes are the
+per-token weight bytes of each class from the GGUF (10 of 512 experts), floor
+at 220 GB/s.
+
+| class | luce us | gufo us | delta us | GB/token | floor us |
+|---|---:|---:|---:|---:|---:|
+| dense trunk GEMV (Q8_0; gufo Q5_1 copies) | 13968 | 10202 | +3766 | 2.957 (Q8_0) | 13440 |
+| routed experts (gate/up Q4_K, down Q5_1/Q8_0) | 8891 | 8472 | +419 | 1.504 | 6836 |
+| HC mix (up/down, inject) | 4236 | 4544 | -308 | 0.688 | 3127 |
+| lm_head Q8_0 248320x2560 | 2991 | 2988 | +3 | 0.682 | 3100 |
+| GDN recurrence | 1518 | 1230 | +288 | - | - |
+| small GEMV (router F32, GDN a/b, indexer bf16) | 1514 | 1033 | +481 | 0.252 | 1145 |
+| shared expert Q8_0 | 1255 | 919 | +336 | 0.251 | 1141 |
+| HC combine | 973 | 879 | +94 | - | - |
+| norms / quantize / convert | 945 | 298 | +647 | - | - |
+| router / topk | 647 | 350 | +297 | - | - |
+| attention (12 layers) | 397 | 753 | -356 | - | - |
+| argmax / sampling | 151 | 0 (host) | +151 | - | - |
+| GDN conv | 133 | 246 | -113 | - | - |
+| elementwise | 121 | 0 | +121 | - | - |
+| kernels / token | 1666 | 1382 | | | |
+| kernel sum (profiled) | 37.74 ms | 31.98 ms | | 6.334 | 28.79 ms |
+
+The dense trunk delta is bytes (Q8_0 vs Q5_1 copies), not efficiency: both
+engines run those GEMVs at ~93% of floor. The exact-stack luce column is
+what the server now runs by default. Of the remaining +2.4 ms of kernel
+time on identical bytes, the expert GEMV (+1.2 ms unprofiled-equivalent) is
+the only class worth a kernel; the rest is 256 x 2.4 us `quantize_q8_1` and
+other sub-10 us launches that HIP graph replay already hides at T=1.
+
+### Fix shipped: exact-stack defaults in the server
+
+`qwen4exp_loader.cpp` now `setenv()`s the 14 knobs (the 13 above plus
+`LUCE_GPU_ARGMAX`) before any graph code runs, for the profile they were
+validated on: 48 layers as 36 GDN + 12 attention, dense trunk and HC mixers
+Q8_0 or Q6_K, shared expert Q8_0, routed gate/up Q4_K or Q5_K, routed down
+Q5_1 or Q8_0 (A2's Q6_K shared expert, which aborted the 96-site HC up-mix
+contract, is rejected and logged). An explicitly set knob always wins;
+`LUCE_QWEN_EXACT_STACK=0` restores the old default. Off gfx1151 and in
+reference mode nothing changes. `test_qwen4exp_exact_stack_env` (LUCE_TESTS)
+covers the rules.
+
+A/B: one binary (md5 983c73cc), `LUCE_QWEN_EXACT_STACK=0` (old) vs default
+(new), arms alternated across restarts, 2 rounds x 5 reps each, warm-up
+dropped, `prefix_len=0` on every request, no `drop_caches` (not available
+without a password on this box: indicative, but the old-vs-old spread below
+is the noise bound).
+
+| metric | old median | new median | delta | old-vs-old spread | verdict |
+|---|---:|---:|---:|---:|---|
+| decode tok/s (ms/token) | 24.99 (40.01) | 28.32 (35.31) | +13.3% (-4.70 ms) | 0.03% | real |
+| p4096 prefill tok/s | 1282.9 | 1292.3 | +0.7% | 2.2% | inside noise |
+| p16384 prefill tok/s | 1335.1 | 1341.7 | +0.5% | 1.8% | inside noise |
+
+Greedy-64 at temp 0 on `prompt_decode512_r0` (289 chars) and `prompt_p4096_r0`
+(232 chars): all four arms byte-identical. Per-rep decode: old
+[25.00, 24.99, 24.42, 25.00, 25.00 / 25.00, 24.41, 25.00, 25.00, 25.00], new
+[28.34, 28.32, 27.52, 28.32, 28.30 / 28.35, 28.32, 27.45, 28.32, 28.34].
+
+### Not shipped, ranked by ms/token per hour
+
+1. Routed gate/up GEMV at gufo's 94.7 us/call instead of 119.7 (exact,
+   ~1.2 ms/token = 3.4%): split gate and up across two waves of one block and
+   combine through LDS instead of one 8-warp wave walking both, so each wave
+   streams one contiguous Q4_K row set. Kernel work in `mmvq.cu`; the
+   bf16/F32 parity test pattern of `test_mmid_bounded_parity.cpp` applies.
+2. Decode-only Q6_K (or Q5_1) copies of ssm_in/ssm_out/attn_qkv/attn_out like
+   gufo (-2.9..3.8 ms/token, NOT exact: A4 in `bench/exact/q6/RESULTS.md`
+   measured the quality delta; would stay opt-in and change the served model).
+3. Fusing the 256 per-token `quantize_q8_1` launches into their producers
+   (<=0.5 ms, graph replay already hides most of the launch cost).
