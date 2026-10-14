@@ -1275,6 +1275,24 @@ if(LUCE_TESTS)
             hip::host)
         list(APPEND _raw_unit_test_targets test_mmvq_routed_gate_up_parity)
 
+        # Guards the QSA3 prefill union builder (qsa.cu): the bitmap kernel
+        # (default), the compacting rows kernel + merge (LUCE_QSA_UNION_LEGACY=1)
+        # and the legacy rank-sort rows + merge (LUCE_QSA_ROWS_LEGACY=1) must all
+        # match a CPU set union on qsa_decode_ids-style rows with holes, shuffled
+        # rows and out-of-range keys.
+        add_executable(test_qsa3_union_parity test/unit/test_qsa3_union_parity.cpp)
+        set_source_files_properties(test/unit/test_qsa3_union_parity.cpp PROPERTIES LANGUAGE HIP)
+        set_target_properties(test_qsa3_union_parity PROPERTIES HIP_ARCHITECTURES "${_luce_archs}")
+        target_compile_definitions(test_qsa3_union_parity PRIVATE GGML_USE_HIP)
+        target_include_directories(test_qsa3_union_parity PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include)
+        target_link_libraries(test_qsa3_union_parity PRIVATE
+            ggml
+            ggml-base
+            ${LUCE_GGML_BACKEND_TARGET}
+            hip::host)
+        list(APPEND _raw_unit_test_targets test_qsa3_union_parity)
+
         # Guards the exact-stack default policy (qwen4exp_loader.cpp): the 38.41
         # decode fusion set turns itself on only for the validated quant
         # profile; the master switch and explicitly set knobs win. Pure, no GPU.
@@ -1393,6 +1411,10 @@ if(LUCE_TESTS)
         list(APPEND _raw_unit_test_targets test_mul_mat_host_input)
         luce_add_ggml_gpu_executable(test_rms_norm_scale test/unit/test_rms_norm_scale.cpp)
         list(APPEND _raw_unit_test_targets test_rms_norm_scale)
+        # Guards the per-forward M-RoPE cos/sin table (rope.cu): bit-identical to the inline FP64 angle
+        # code (child process under LUCE_ROPE_TABLE_LEGACY=1) across two computes that reuse the positions tensor.
+        luce_add_ggml_gpu_executable(test_rope_table_parity test/unit/test_rope_table_parity.cpp)
+        list(APPEND _raw_unit_test_targets test_rope_table_parity)
         luce_add_ggml_gpu_executable(test_qwen4exp_indexer_score test/unit/test_qwen4exp_indexer_score.cpp)
         target_link_libraries(test_qwen4exp_indexer_score PRIVATE ggml-cpu)
         list(APPEND _raw_unit_test_targets test_qwen4exp_indexer_score)

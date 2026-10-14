@@ -7542,6 +7542,7 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
 #if defined(GGML_USE_HIP)
     // Drop last graph's mmb activation cache: keyed by raw data pointers the pool recycles.
     ggml_cuda_mmb_begin_graph();
+    ggml_cuda_rope_begin_graph();
     g_hc_marked_xn.clear();
     g_hc_q8_xn.clear();
     g_hc_q8_1_consumer.clear();

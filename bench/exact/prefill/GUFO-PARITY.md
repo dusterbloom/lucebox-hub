@@ -2397,3 +2397,120 @@ conversion per layer is shared by every consumer. Scratch words unchanged
 (tiles + ctl). End-to-end A/B on lucebox4 (`ab_glu.sh` with
 `LUCE_MMB_GLU_F16=0` as the old arm) and the greedy-64 first-divergence
 check are pending.
+
+## Attention (QSA3 prefill), 2026-10-14, lucebox4 gfx1151
+
+### What each engine computes
+
+Same math on both sides: Qwen3.8-Flash-Next sparse attention over the
+indexer's top-2048 cells (512 blocks of 4 keys) per query, GQA 24 q heads
+over 2 kv heads, head dim 256, F16 K/V, F32 Q and output, online softmax.
+Queries with at most 512 visible blocks are dense by construction.
+
+- ours: `server/src/qwen4exp/qwen4exp_graph.cpp` `build_qsa_attn` (803-866)
+  emits id rows of ns = 2051 (`qsa_decode_ids`, `qsa-ids.cu`: 512 sorted
+  blocks x 4 cells, future blocks as -1 holes, then 3 tail cells) and one
+  `GGML_OP_FLASH_ATTN_EXT` with packed K/V. `ggml-cuda/qsa.cu`
+  `ggml_cuda_flash_attn_ext_qsa` (580) builds a per-4-query-group union of
+  blocks (ublk/umask/ucount) and runs `qsa3_attn_kernel` (272): one block per
+  (group, kv head), 48 rows = 4 queries x 12 heads, 16-key chunks, 8 waves
+  each own 32 dims of QK (partial S reduced through LDS), 3 waves softmax,
+  WMMA f16 PV on `pk[block][dchunk16][key4][d16]` / `pv[block][d][key4]`.
+- gufo (MIT): `kernels.hip.cpp` 3560-4200 `WmmaCausalAttentionKernel<4,16,true>`
+  for queries >= 2048 (bitmask union in-kernel, K/V staged through LDS, 6
+  waves QK over two 128-dim halves, 4-lane softmax, 8 waves PV) and
+  `<16,16,false>` dense for queries < 2048, chosen in `executor.cpp` 2725-2990
+  (the "attend" lambda), rope fused into the projection kernels, sigmoid
+  output gate fused in the epilogue.
+
+Before this work the per-layer attention bucket was 14.5 ms at p4096 vs
+gufo 10.1, with 5.1 ms in `qsa3_rows_kernel` alone, and rope was 48 x 0.43 ms
+per request.
+
+### Fixes (each behind a kill switch, bit-identical outputs)
+
+1. Union builder. The -1 holes sit *between* the selected cells and the tail
+   cells in every row before position 2048, so the legacy sortedness check
+   failed and the O(ns^2) rank sort ran on half the rows. First a compacting
+   rows kernel (`qsa3_rows_compact_kernel`, 51: block scan compaction,
+   bitonic fallback only for rows still out of order), then the whole union
+   in one kernel (`qsa3_union_bitmap_kernel`, 224: each group ORs its 4 rows'
+   valid keys into an LDS array of 16-bit masks indexed by block, then a block
+   scan compacts the non-zero entries; sorted for free, no merge). Default
+   bitmap; `LUCE_QSA_UNION_LEGACY=1` = compact rows + merge,
+   `LUCE_QSA_ROWS_LEGACY=1` = legacy rank sort + merge.
+2. Rope. `rope_multi_heads` (rope.cu 348) computed the FP64 angle per
+   (token, pair) in every call; K [256,2,T] and the indexer q [128,4,T] were
+   angle-bound (70 GB/s), Q [256,24,T] is bandwidth-bound (200 GB/s). A
+   per-forward cos/sin table (`rope_multi_table`, 393; cache keyed by the
+   positions node + data pointer + a generation bumped per graph compute in
+   `ggml_backend_cuda_graph_compute`, two entries: main and pooled positions)
+   is built once per positions tensor and read by every rope of the forward.
+   `LUCE_ROPE_TABLE_LEGACY=1` restores the inline angle code.
+
+### Microbench (`bench/exact/prefill/attn`, real id rows from `LUCE_QSA_DUMP`, medians, ms per layer)
+
+| p4096 (T=4136) | rows | union/merge | attn | total |
+|---|---|---|---|---|
+| ours before | 5.1 | 0.7 | 8.7 | 14.5 |
+| ours compact rows | 0.29 | 0.78 | 8.7 | 9.77 |
+| ours bitmap union | 0.003 | 0.23 | 9.1 | 9.35 |
+| gufo | - | - | 6.8 sparse + 3.5 dense | 10.36 |
+
+| p16384 (T=15616) | rows | union/merge | attn | total |
+|---|---|---|---|---|
+| ours compact rows | 1.14 | 3.27 | 53.6 | 58.0 |
+| ours bitmap union | 0.003 | 1.04 | 54.4 | 55.4 |
+| gufo | - | - | 54.4 sparse + 3.4 dense | 57.9 |
+
+Mean union 616 blocks per sparse group at p4096, 803 at p16k. Error vs an
+F64 reference on 96 sampled queries x 24 heads: ours max_abs 1.66e-4 rms
+8.5e-6 (ref rms 4.2e-2), gufo identical to the printed digits, no non-finite
+values; the three union variants are byte-identical on every group.
+
+Rope (`rope_bench`, ms per call, bit-identical table vs legacy on every shape):
+
+| shape | p4096 legacy | table hit | p16k legacy | table hit |
+|---|---|---|---|---|
+| Q [256,24,T] | 1.010 | 1.000 | 3.651 | 3.650 |
+| K [256,2,T] | 0.241 | 0.029 | 0.883 | 0.299 |
+| indexer q [128,4,T] | 0.248 | 0.029 | 0.885 | 0.299 |
+| pooled [128,1,T/4] | 0.064 | 0.008 | 0.226 | 0.014 |
+
+Table build 0.03-0.1 ms, twice per request. Per request: 18.8 -> 12.8 ms at
+p4096, 67.7 -> 51.1 ms at p16k. The Q rope is pure bandwidth (200 MB per
+layer at p4096); only fusing it into the q-norm producer or the attention
+Q load removes it.
+
+### End-to-end A/B (lucebox4, one binary md5 983c73cc, 2 rounds x 5 reps, `ab_attn.sh`)
+
+Rows kernel alone (`LUCE_QSA_ROWS_LEGACY`): decode 28.29 -> 28.28 tok/s
+(-0.05%, spread 0.89%), p4096 1296.7 -> 1302.9 (+0.48%, spread 1.36%),
+p16384 1333.1 -> 1335.7 (+0.19%, spread 5.31%); greedy-64 identical on all
+four arms, both prompts.
+
+Bitmap union + rope table on top (`LUCE_ROPE_TABLE_LEGACY LUCE_QSA_UNION_LEGACY`):
+
+| | old (median) | new (median) | delta | old-vs-old spread |
+|---|---|---|---|---|
+| decode tok/s | 28.57 | 28.55 | -0.08% | 0.09% |
+| p4096 tok/s | 1256.5 | 1323.5 | +5.34% | 8.37% (old1 round was slow) |
+| p16384 tok/s | 1358.2 | 1359.7 | +0.11% | 1.49% |
+
+Both inside noise, as expected: the whole attention-side saving is ~16 ms of
+a 3.1 s p4096 request and ~57 ms of a 12 s p16k request (0.5%). Greedy-64
+identical on all four arms for both prompts (d512 289 chars, p4096 232
+chars). Unit tests `test_qsa3_union_parity` (three variants vs a CPU set
+union) and `test_rope_table_parity` (table vs inline code across two graph
+computes that reuse the positions tensor, child process for the legacy arm)
+pass on lucebox4 under `LUCE_TESTS`.
+
+### What is left in the bucket
+
+Per layer at p4096 the attention kernel is 9.1 ms against a WMMA floor of
+about 4 ms: the 8-wave partial-S reduction through `part[3][8][64]` and the
+two barriers per 16-key chunk are the cost. The next structure is gufo's:
+each wave owns full-depth QK for one (query tile, 16-key sub-chunk) with K
+staged through LDS, split-K softmax state merged at the end, so the partial
+reduction and one barrier per chunk disappear. Not done here; the e2e share
+of the whole bucket is 3-5%.
