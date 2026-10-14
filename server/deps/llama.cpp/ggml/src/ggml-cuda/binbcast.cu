@@ -1,5 +1,7 @@
 #include "binbcast.cuh"
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <utility>
 
 static __device__ __forceinline__ float op_repeat(const float a, const float b) {
@@ -428,8 +430,41 @@ static void ggml_cuda_op_bin_bcast(
     }
 }
 
+// Row broadcast: contiguous src and dst with the same ne0, repeated only along dims 1..3 (the qwen4exp HC stream
+// expansion [n_embd, 1, T] -> [n_embd, hc, T]). One 256-thread block copies one destination row in 16-byte units,
+// so the pass runs at copy bandwidth instead of k_bin_bcast's per-element index math (LUCE_REPEAT_ROWS=0 disables).
+static __global__ void k_repeat_rows_16b(const uint4 * __restrict__ src, uint4 * __restrict__ dst, const int64_t row_units,
+        const int ne1, const int ne2, const int ne01, const int ne02, const int ne03) {
+    const int64_t row = blockIdx.x;
+    const int i1 = (int) (row % ne1);
+    const int64_t r12 = row / ne1;
+    const int i2 = (int) (r12 % ne2), i3 = (int) (r12 / ne2);
+    const int64_t srow = ((int64_t) (i3 % ne03) * ne02 + (i2 % ne02)) * ne01 + (i1 % ne01);
+    const uint4 * s = src + srow * row_units;
+    uint4 * d = dst + row * row_units;
+    for (int64_t u = threadIdx.x; u < row_units; u += blockDim.x) d[u] = s[u];
+}
+
+static bool repeat_rows_enabled() {
+    static const bool on = [] {
+        const char * v = getenv("LUCE_REPEAT_ROWS");
+        return !(v && strcmp(v, "0") == 0);
+    }();
+    return on;
+}
+
 void ggml_cuda_op_repeat(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src = dst->src[0];
+    const int64_t row_bytes = dst->ne[0] * (int64_t) ggml_type_size(dst->type);
+    const int64_t n_rows = dst->ne[1] * dst->ne[2] * dst->ne[3];
+    if (repeat_rows_enabled() && src->type == dst->type && ggml_is_contiguous(src) && ggml_is_contiguous(dst) &&
+        src->ne[0] == dst->ne[0] && row_bytes % 16 == 0 && ((uintptr_t) src->data % 16) == 0 &&
+        ((uintptr_t) dst->data % 16) == 0 && n_rows > 0 && n_rows < (1LL << 31) && dst->ne[1] < (1LL << 31) &&
+        dst->ne[2] < (1LL << 31)) {
+        k_repeat_rows_16b<<<(unsigned) n_rows, 256, 0, ctx.stream()>>>((const uint4 *) src->data, (uint4 *) dst->data,
+            row_bytes / 16, (int) dst->ne[1], (int) dst->ne[2], (int) src->ne[1], (int) src->ne[2], (int) src->ne[3]);
+        return;
+    }
     if (src->type == GGML_TYPE_I32 && dst->type == GGML_TYPE_I32) {
         GGML_ASSERT(ggml_is_contiguous(src));
         GGML_ASSERT(ggml_is_contiguous(dst));

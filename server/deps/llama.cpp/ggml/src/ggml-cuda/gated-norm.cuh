@@ -19,6 +19,13 @@ extern "C" GGML_BACKEND_API int ggml_cuda_test_gdn_q8_producer(
         const float * x, const float * gamma, const float * z, float * dst,
         block_q8_1 * q8, int gamma_rows, float eps, void * stream);
 
+// Parity-test entry point: runs the block-per-row (wave == 0) or wave-per-row (wave != 0) gated norm family on raw
+// device pointers with the op's stride contract (gamma == NULL selects the sigmoid(z) * x gate).
+extern "C" { GGML_BACKEND_API int ggml_cuda_test_gated_rms_norm_f16(int wave,
+        const float * x, const float * gamma, const float * z, void * dst,
+        int ncols, int nh, int T, int64_t x_s1, int64_t x_s2, int64_t z_sh, int64_t z_st, int gamma_rows, float eps,
+        void * stream); }
+
 // GGML_OP_GDN_TAIL (fusion-design.md K4): same arithmetic as ggml_cuda_op_gated_rms_norm_f16 but F32 output --
 // the decode ssm_out consumer needs the un-rounded activation (the f16-gated GEMM path is prefill-only,
 // mmb_min_t() == 512). Rows <= 128 (GDN's D=128) only.

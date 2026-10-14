@@ -216,9 +216,11 @@ static ggml_tensor * hc_mix_body(ggml_context * c, ggml_tensor * xn, ggml_tensor
     const int64_t hc_dim = hc * n_embd;
     const int64_t nt     = x->ne[2];
 
+    // gamma applied on the 3-D norm output (w_norm viewed [n_embd, hc]) so the backend fuses RMS_NORM + MUL into
+    // one kernel; the fused kernel forms (scale * x) * gamma with the same two roundings as the separate ops.
     ggml_tensor * xn = ggml_rms_norm(c, x, eps);          // per (hc, token)
+    xn = ggml_mul(c, xn, ggml_reshape_2d(c, w_norm, n_embd, hc));  // [n_embd, hc, nt] gamma
     xn = ggml_reshape_2d(c, xn, hc_dim, nt);
-    xn = ggml_mul(c, xn, w_norm);                         // [hc_dim, nt] gamma
 
     return hc_mix_body(c, xn, w_down, w_up, w_inject, inject, n_embd, hc);
 }
@@ -478,6 +480,24 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
     alpha = ggml_softplus(c, ggml_add(c, alpha, L.ssm_dt_bias));
     ggml_tensor * gate = ggml_reshape_4d(c, ggml_mul(c, alpha, L.ssm_a), 1, Hv, T, 1);
 
+    // Prefill-only chunked GDN: re-expresses the token-serial recurrence as matmul/tri/cumsum ops
+    // (see delta_net_chunked.h). Chain-only, no per-token intermediate capture, so it's gated off
+    // whenever spec_states/spec_conv need the sequential kernel's rollback fanout.
+    static const bool gdn_chunked_env = [] {
+        const char * value = std::getenv("LUCE_QWEN4EXP_GDN_CHUNKED");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    // q/k L2 norm folded into the gfx1151 gdn_conv_direct epilogue (same arithmetic as the RMS_NORM -> SCALE
+    // kernel it replaces, bit-exact); LUCE_GDN_CONV_QKNORM=0 restores the two separate norm passes. The gate
+    // mirrors gdn_conv_check's shape rule (T >= 256, C % 256 == 0); the generic SSM_CONV kernel aborts if the
+    // fusion still fails to match, so a silently un-normalised q/k cannot reach the recurrence.
+    static const bool conv_qknorm_env = [] {
+        const char * value = std::getenv("LUCE_GDN_CONV_QKNORM");
+        return !(value && std::strcmp(value, "0") == 0);
+    }();
+    const bool conv_qknorm = conv_qknorm_env && !gdn_chunked_env && D == 128 && T >= 256 &&
+                             conv_channels % 256 == 0 && (2 * Hk * D) % 256 == 0 && !(T == 1 && f16 && !spec_conv);
+
     ggml_tensor * conv;
     if (T == 1 && f16 && !spec_conv) {
         // Decode step: update the three-row history and compute SiLU(conv) in one kernel.
@@ -504,6 +524,12 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
         // The gfx1151 fusion reads CONCAT's input at this later node. src[3] is
         // unused by ordinary SSM_CONV and gives the allocator the real lifetime.
         conv_op->src[3] = qkv_t;
+        if (conv_qknorm) {
+            ggml_set_op_params_i32(conv_op, 1, (int32_t) (2 * Hk * D));
+            ggml_set_op_params_f32(conv_op, 2, eps / (float) D);
+            ggml_set_op_params_f32(conv_op, 3, 1.0f / sqrtf((float) D));
+            ggml_set_op_params_f32(conv_op, 4, 0.0f);
+        }
         conv = ggml_silu(c, conv_op);
     }
     if (dump_mark) {
@@ -519,18 +545,13 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
     // Upstream build_gdn_l2_norm is rms_norm(x, eps/n) * (1/sqrt(n)) == x/sqrt(sum(x^2)+eps).
     // ggml_l2_norm instead rounds x*rsqrtf(max(sum(x^2), eps^2)), a ~1e-6 relative difference
     // that seeds the GDN recurrence and flips MoE routing.
-    ggml_tensor * q_c = ggml_scale(c, ggml_rms_norm(c, q_raw, eps / (float) D), 1.0f / sqrtf((float) D));
-    ggml_tensor * k_c = ggml_scale(c, ggml_rms_norm(c, k_raw, eps / (float) D), 1.0f / sqrtf((float) D));
+    // With conv_qknorm the conv epilogue already wrote these channels normalised, so the raw views feed the
+    // recurrence directly (contiguous rows, same strides for q and k, as ggml_gated_delta_net requires).
+    ggml_tensor * q_c = conv_qknorm ? q_raw : ggml_scale(c, ggml_rms_norm(c, q_raw, eps / (float) D), 1.0f / sqrtf((float) D));
+    ggml_tensor * k_c = conv_qknorm ? k_raw : ggml_scale(c, ggml_rms_norm(c, k_raw, eps / (float) D), 1.0f / sqrtf((float) D));
     ggml_tensor * v_c = ggml_view_3d(c, conv, D, Hv, T, D * esz, tstride, 2 * D * Hk * esz);
 
     ggml_tensor * state4 = ggml_reshape_4d(c, ssm_state, D, D, Hv, 1);
-    // Prefill-only chunked GDN: re-expresses the token-serial recurrence as matmul/tri/cumsum ops
-    // (see delta_net_chunked.h). Chain-only, no per-token intermediate capture, so it's gated off
-    // whenever spec_states/spec_conv need the sequential kernel's rollback fanout.
-    static const bool gdn_chunked_env = [] {
-        const char * value = std::getenv("LUCE_QWEN4EXP_GDN_CHUNKED");
-        return value && std::strcmp(value, "1") == 0;
-    }();
     // Cap at 4096: the per-chunk loop emits ~9 graph nodes per 32-token chunk, and the
     // 200000-node graph budget (ggml_new_graph_custom above forward_impl) is shared across
     // all 48 layers. qwen4exp_select_chunk's memory-fit bisection probes candidate T up to
@@ -1130,11 +1151,13 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
 // ── Per-layer n-gram embedding (PLE) ────────────────────────────────────
 
 // spec_state (verify forward): receives the conv history after each token.
+// query_pre: hidden already normalised by ple_norm_query (the previous layer's HC_COMBINE_NORM emitted it as its
+// second channel), so the grouped query norm is skipped.
 ggml_tensor * build_ple(ggml_context * c, ggml_cgraph * gf, ggml_tensor * hidden,
                         ggml_tensor * ple_emb, const Qwen4ExpLayer & L,
                         const Qwen4ExpWeights & w, ggml_tensor * ple_conv_state,
                         const std::function<void(ggml_tensor *, const char *)> & dump_mark,
-                        ggml_tensor * spec_state = nullptr) {
+                        ggml_tensor * spec_state = nullptr, ggml_tensor * query_pre = nullptr) {
     const int64_t n_embd = w.n_embd;
     const int64_t hc     = w.n_hc;
     const int64_t hc_dim = hc * n_embd;
@@ -1144,12 +1167,11 @@ ggml_tensor * build_ple(ggml_context * c, ggml_cgraph * gf, ggml_tensor * hidden
     ggml_tensor * key   = mm(c, L.ple_key,   ple_emb);   // [hc_dim, T]
     ggml_tensor * value = mm(c, L.ple_value, ple_emb);   // [n_embd, T]
 
+    // gamma applied on the 3-D norm output (nw viewed [n_embd, hc]) so RMS_NORM + MUL fuse into one kernel.
     auto grouped_norm = [&](ggml_tensor * x, ggml_tensor * nw) {
         ggml_tensor * t = ggml_reshape_3d(c, x, n_embd, hc, T);
         t = ggml_rms_norm(c, t, eps);
-        t = ggml_reshape_2d(c, t, hc_dim, T);
-        t = ggml_mul(c, t, nw);
-        return ggml_reshape_3d(c, t, n_embd, hc, T);
+        return ggml_mul(c, t, ggml_reshape_2d(c, nw, n_embd, hc));
     };
 
     dump_mark(ple_emb, "ple.inp");
@@ -1157,7 +1179,7 @@ ggml_tensor * build_ple(ggml_context * c, ggml_cgraph * gf, ggml_tensor * hidden
     dump_mark(value, "ple.value");
     key = grouped_norm(key, L.ple_norm_key);
     dump_mark(key, "ple.knorm");
-    ggml_tensor * query = grouped_norm(hidden, L.ple_norm_query);
+    ggml_tensor * query = query_pre ? query_pre : grouped_norm(hidden, L.ple_norm_query);
     dump_mark(query, "ple.qnorm");
 
     ggml_tensor * s = ggml_sum_rows(c, ggml_mul(c, key, query));   // [1, hc, T]
@@ -1493,6 +1515,13 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
     // The fused reduction can differ from upstream's ggml_rms_norm below one
     // ulp; keep the unfused form for upstream differential checks.
     const bool hc_fused = !upstream;
+    // PLE boundary: emit the PLE's query norm from the preceding HC_COMBINE_NORM (LUCE_PLE_QNORM_FOLD=0 restores
+    // the separate hc_combine + grouped rms_norm chain).
+    static const bool ple_qnorm_fold_env = [] {
+        const char * value = std::getenv("LUCE_PLE_QNORM_FOLD");
+        return !(value && std::strcmp(value, "0") == 0);
+    }();
+    const bool ple_qnorm_fold = ple_qnorm_fold_env && hc_fused;
     // Private probe: expose inject's earlier lifetime to gallocr in BOTH modes.
     static const bool hc_inject_hint_enabled = [] {
         const char * e = std::getenv("LUCE_QWEN_HC_DOWN_INJECT");
@@ -1858,6 +1887,16 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
                 moe_parts.shared, moe_parts.shared_logit, gamma, 1.0f / (float) w.n_hc, 0.0f, 2.0f, 0.0f, w.rms_eps);
             res_hc = hc_norm_res(ctx, f, w.n_embd, w.n_hc, layer_T);
             xn_next = hc_norm_xn(ctx, f, w.n_embd, w.n_hc, layer_T);
+        } else if (next_ple && hc_fused && ple_qnorm_fold) {
+            // The PLE layer's grouped query norm is this combine's second channel (gamma = ple_norm_query), so the
+            // repeat/mul/add + separate rms_norm/mul chain collapses into the one HC_COMBINE_NORM every other
+            // layer boundary already uses. The PLE then consumes xn_next as its query.
+            ggml_tensor * f = hc_combine_norm(ctx, inject, res_hc, cur,
+                w.layers[il + 1].ple_norm_query, w.n_embd, w.n_hc, layer_T, w.rms_eps);
+            res_hc = hc_norm_res(ctx, f, w.n_embd, w.n_hc, layer_T);
+            xn_next = hc_norm_xn(ctx, f, w.n_embd, w.n_hc, layer_T);
+            std::snprintf(dlab, sizeof dlab, "L%02d.res", il);
+            mark(f, dlab);
         } else if (next_ple) {
             res_hc = hc_combine(ctx, res_hc, cur, inject, w.n_embd, w.n_hc, layer_T);
             xn_next = nullptr;
@@ -1892,9 +1931,11 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
             split = ggml_graph_n_nodes(gf);
         }
         if (L.is_ple && has_ple) {
+            // xn_next here is res_hc normalised by ple_norm_query (ple_qnorm_fold), never an hc_attn_norm stream.
             res_hc = build_ple(ctx, gf, res_hc, ple_in, L, w,
                                cache.ple_conv_state.empty() ? nullptr :
-                                   cache.ple_conv_state[0], dump_mark, verify ? cache.spec_ple : nullptr);
+                                   cache.ple_conv_state[0], dump_mark, verify ? cache.spec_ple : nullptr,
+                               ple_qnorm_fold ? xn_next : nullptr);
             xn_next = nullptr;   // PLE changed the residual; the norm must rerun
         }
 
