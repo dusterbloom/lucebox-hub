@@ -2112,3 +2112,125 @@ Remaining decode gap on identical bytes vs gufo `GUFO_DECODE_Q5=0`: 35.0 vs
 1, and the shared-expert overlap now makes in-situ kernel durations of the
 routed class non-comparable to gufo's, so the next ledger must be isolated
 microbenches or total-time deltas, not per-kernel rocprof rows.
+
+## Routed gate/up: single-launch balanced Q4_K kernel (`mmb_routed_glu_q4k_kernel`), 2026-10-14
+
+Target: the prefill MoE gate/up routed GEMM (fused gate+up SwiGLU on Q4_K
+experts; hidden 2560, 512 experts, top-10, 2560 -> 640 per matrix). At p4096
+this is 40960 routed rows per layer: 268 GFLOP over 944 MB of Q4_K (4.3 ms at
+220 GB/s). The lucebox4 trace had it at 12.9 ms/layer (two launches of
+`mmb_routed_glu_kernel<64,128,...>` + `<64,64,...>`) against gufo's
+`RoutedF16GEMMKernel<12,128,128,2,true>` at 9.88 ms, i.e. +133 ms/request
+over 44 layers.
+
+### Structural diff (old two-launch vs gufo vs new)
+
+| | ours legacy (2 launches) | gufo `RoutedF16GEMMKernel` | ours new (1 launch) |
+|---|---|---|---|
+| block tile | 64 weight rows x 128 or 64 tokens, gate and up in one block | 128 x 128, gate and up in one block | 64 rows of gate AND up x 128 tokens |
+| grid | one block per (desc, m-slice): 833 + 1025 grid rows of which 255 / 468 are real tiles (the rest exit on an empty descriptor), experts of 65..127 rows pay a second 64-token launch | one block per 128-token tile, M-loop inside | persistent, `2 * nsm` = 80 blocks pull (tile, m-slice) items from an atomic counter, m fastest so the 10 blocks on one tile share the tokens in L2 |
+| tail handling | partial tile = partial waves idle | `live_tok_tiles` skips dead 16-token fragments | balanced: wave `w` owns weight rows `16*(w&3)` of gate+up and token fragments `(w>>2) + 2j`; a tile with L live fragments costs `ceil(L/2)` fragments on every wave instead of idling half the block |
+| weights | Q4_K split load (2 threads/row, 144 B block in registers for 4 K-steps), dequant to bf16 into LDS | raw nibbles in LDS, dequant at fragment time, F16 | same as legacy (bit-exact with it) |
+| activations | bf16, 16 B per thread per K-step, LDS stride 72 | F16 | same as legacy |
+| LDS | 41 KB (gate 64x72 + up 64x72 + tokens 128x72) | 21.5 KB | 41 KB (3 blocks/WGP, 6 waves/SIMD at 172 VGPRs) |
+| epilogue | per-16x16 tile staging through LDS, `mmb_store_tile` | F16 direct | bf16 tile staged in the token buffer, each routed row leaves as one 128-byte line |
+| tile list | `mmb_build_desc2` (two desc arrays, fixed grid) | host side | `mmb_build_tiles`: one 1024-thread prefix-sum kernel, `tiles[] = e | jt << 16`, `ctl = {n_tiles, counter}`, 18 us |
+
+Codex #1 (65..127-row experts on 128 tiles, -10.7%) and Fable #3 (BM 128,
+-5.6%) failed because they changed the *grid*, not the per-wave work
+balance: a half-live 128-token tile still idles half the waves. The new wave
+mapping makes the cost of a tile proportional to its live fragments, so one
+tile width (128) covers every expert size, and the second launch disappears.
+
+### Register footprint (gfx1151, `-Rpass-analysis=kernel-resource-usage`)
+
+The first straight-line version compiled to 256 VGPRs with up to 640 B/lane of
+scratch (occupancy 5). Three compiler effects, found in the ISA, were the
+cause, and each needed a specific fix:
+
+1. The work item read from LDS (`s_item`) is divergent as far as LLVM knows,
+   so every address derived from it lived in VGPRs: `__builtin_amdgcn_readfirstlane`.
+2. Guarding each token fragment with `if (jact[j])` put the WMMAs in 16
+   conditional blocks per K step and copied both accumulator sets at every
+   merge: the K loop is now specialized on the wave's live fragment count
+   (`switch (nj)` into a templated lambda), so each variant is branch-free.
+3. LLVM sank the pure WMMA chain below all 24 fragment loads of a 64-wide K
+   step (sched_barrier does not pin NoMem intrinsics): each 16-wide step is
+   fenced with `asm volatile("" : "+v"(acc))` on the accumulators plus a
+   memory clobber, which restores load/WMMA interleaving.
+
+Result: 172 VGPRs, 32 B scratch (one b96 spill in the Q4_K scale path),
+occupancy 6 waves/SIMD, the same as the legacy kernel.
+
+### Microbench (lucebox4 gfx1151, idle box, median of 15 hipEvent runs, ms per layer)
+
+`~/qwen4exp-f16/scratch/moe/moe_bench.hip`: synthetic skewed routing
+`exp(-3 rank/E)` with 1/20 dead experts (p4096: 617 128-token tiles, expert
+rows p50 56 / mean 80 / max 283, 25 empty, 106 in 65..127, 125 >= 128),
+random Q4_K experts, random bf16 activations, identical inputs for all arms,
+gufo linked from its lucebox4 build (`scratch/gufo`, F16 activations
+converted from the same bf16 values). Legacy and new run through the real
+`mmb_glu_run` dispatch (`LUCE_MMB_GLU_LEGACY`).
+
+| arm | T=4096 | T=16384 | bit-exact vs legacy |
+|---|---:|---:|---|
+| legacy two-launch `mmb_routed_glu_kernel<64,128>` + `<64,64>` | 11.50 | 35.3 | (reference) |
+| gufo `RoutedF16GEMMKernel<12,128,128,2,true>` | 9.72 | 31.3 | no (F16; maxabs 1.3 on values of 640, F16 rounding) |
+| new `mmb_routed_glu_q4k_kernel<128>` (default) | 11.04 | 33.8 | yes (F32 and in-situ bf16 memcmp over 40960 x 640) |
+| new, BN=256 (256-token tiles, 49 KB LDS, occupancy 4) | 12.4 | 35.6 | yes |
+| new + LDS-only barrier (`s_barrier` without `vmcnt(0)`/`gl0_inv`) | 11.0 | - | yes |
+| new + 4-step register prefetch of the next Q4_K block (200 VGPRs, 0 scratch) | 11.0 | - | yes |
+
+New vs legacy: -4.0% at p4096, -4.2% at p16384. gufo is still 12% faster.
+
+Where the time goes (ablations of the new kernel, T=4096, each removes one
+thing and is not bit-exact, so numbers are diagnostic only):
+
+| variant | ms | note |
+|---|---:|---|
+| full kernel | 11.04 | |
+| no weight global loads (`NOWLOAD`) | 10.4 | DRAM is not the bound (944 MB = 4.3 ms) |
+| no activation global loads (`NOXLOAD`) | 10.5 | |
+| no LDS writes of A or B (`NOLDSA`, `NOLDSB`) | ~11.0 | LDS bandwidth is not the bound |
+| no Q4_K dequant (`NODQ`, raw words into LDS) | 8.5 | dequant ~ 2.5 ms of VALU |
+| no WMMA (`NOWMMA`) | 7.3 | |
+| skeleton (loads + dequant + LDS, no WMMA) | 7.6 | |
+| skeleton without barriers and LDS stores | 6.5 | |
+| no K loop at all | 0.82 | tile schedule + epilogue |
+
+rocprofv3 counters (`GRBM_GUI_ACTIVE`, `SQ_WAVES`, `SQ_BUSY_CYCLES`,
+`SQ_INSTS_VALU`, `SQ_INSTS_LDS`): the shader clock under this kernel is
+2.2 GHz (GRBM_GUI_ACTIVE / duration), not the 2.9 GHz boost, so the WMMA
+floor for 268 GFLOP is 5.96 ms, not 4.52; 5.4e8 VALU instructions (the Q4_K
+dequant is ~240 of the ~280 VALU per wave K-step) and 8.4e7 LDS instructions
+at 6 waves/SIMD. The SIMD issue slot is shared by WMMA (avg 2.07 live
+fragments x 2 matrices x 4 sub-steps), the dequant VALU and the LDS traffic,
+with ~18% of busy cycles stalled; the kernel is issue-bound, not bandwidth-
+bound. gufo's advantage is the raw-nibble LDS layout (half the LDS bytes,
+3 blocks of 21.5 KB per WGP, dequant folded into the fragment load at F16)
+and a 128x128 tile (half our per-flop LDS reads); both are structural and
+neither is bit-exact with the legacy bf16 path. BN=256 losing 12% with
+occupancy 4 says latency hiding is the sensitive axis, but 4 blocks/WGP needs
+<= 32 KB and the backend adds an unexplained 4096 B to the declared 36868 B
+group segment (present on the legacy routed kernels too, absent on the dense
+q8f16 kernel, not from `launch_bounds` or the epilogue), so that path was not
+pursued.
+
+### Unit test
+
+`server/test/unit/test_mmb_routed_glu_parity.cpp` (LUCE_TESTS, wired in
+`server/CMakeLists.txt` after the raster test): E=512, top-10, skewed routing
+with an empty expert, a 257-row, a 128-row, a 1-row and a 100-row expert;
+runs legacy F32+bf16, new F32+bf16 and new bf16-only on (T=1024, M=128,
+K=512, grid 80) and (T=800, M=136, K=256, grid 7); byte-compares every output
+and spot-checks 64 points against a double reference (max rel 1.5e-5).
+Passes on lucebox6 and lucebox4 gfx1151; returns 77 (skip) without a HIP device.
+
+### Integration
+
+Default for Q4_K experts with E <= 1024 and M % 8 == 0 (`mode 1` in
+`mmb_glu_run`); scratch is `n_rows/128 + 3E + 4` words from the pool.
+`LUCE_MMB_GLU_LEGACY=1` restores the two-launch kernels (the e2e A/B toggle).
+Expected saving at p4096: 0.46 ms x 44 layers = ~20 ms/request.
+
+Commits: 8060060f (kernel + test), 4ed932b6 (register footprint fixes).
