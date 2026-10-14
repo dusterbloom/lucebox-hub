@@ -1146,7 +1146,14 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
         // Expanded first so the VIEW node does not sit between FLASH_ATTN_EXT and GATED_RMS_NORM_F16: the qsa3
         // prefill store folds the gate in only when the two are adjacent (LUCE_QSA_GATE_LEGACY=1 keeps them apart).
         ggml_build_forward_expand(gf, gate3);
-        return mm(c, L.wo, ggml_gated_f16(c, attn, gate3));
+        ggml_tensor * gated = ggml_gated_f16(c, attn, gate3);
+        // The fused store still reads the attention operands (q, packed K/V, ids) while it writes `gated`; the
+        // allocator frees them right after FLASH_ATTN_EXT and would hand their blocks to `gated` (in situ every site
+        // overlapped K/V, ids and the packed K/V), which the backend's memory-range check rightly refuses. Holding
+        // them as extra (unread) operands keeps them live through the gated node.
+        const int held[] = { 0, 1, 2, 5, 6, 7 };   // q, K, V, ids, packed K, packed V
+        for (int s = 0; s < 6; ++s) gated->src[3 + s] = attn->src[held[s]];
+        return mm(c, L.wo, gated);
     }
     ggml_tensor * attn2 = ggml_reshape_2d(c, attn, D * Hq, T);
     attn2 = ggml_mul(c, attn2, ggml_sigmoid(c, gate));

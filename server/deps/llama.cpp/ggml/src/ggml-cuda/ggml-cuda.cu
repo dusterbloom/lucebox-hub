@@ -7205,6 +7205,26 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     }
 
                     // qsa3 prefill attention with the sigmoid output gate applied in its store (F16 out for wo).
+                    static const bool qsa_gate_debug = getenv("LUCE_QSA_GATE_DEBUG") != nullptr;
+                    if (qsa_gate_debug && node->op == GGML_OP_FLASH_ATTN_EXT && ggml_cuda_qsa_gate_enabled() &&
+                        i + 1 < cgraph->n_nodes && node->src[0]->ne[1] >= 128) {   // why a prefill site did not fuse
+                        const ggml_tensor * nx = cgraph->nodes[i+1];
+                        const int outs[] = { i + 1 };
+                        const bool sup = ggml_cuda_flash_attn_ext_qsa_gate_supported(*cuda_ctx, node, nx);
+                        const bool sub = ggml_can_fuse_subgraph(cgraph, i, { GGML_OP_FLASH_ATTN_EXT, GGML_OP_GATED_RMS_NORM_F16 }, { i + 1 });
+                        const bool rng = nx->op == GGML_OP_GATED_RMS_NORM_F16 && ggml_cuda_check_fusion_memory_ranges(cgraph, i, 2, outs, 1);
+                        if (!(sup && sub && rng)) fprintf(stderr, "[qsa-gate] unfused n_q=%lld next=%s supported=%d subgraph=%d ranges=%d", (long long) node->src[0]->ne[1], ggml_op_name(nx->op), sup, sub, rng);
+                        if (!(sup && sub && rng) && nx->op == GGML_OP_GATED_RMS_NORM_F16) {
+                            const int64_t d0 = (int64_t) nx->data, d1 = d0 + ggml_nbytes(nx);
+                            for (int s = 0; s < GGML_MAX_SRC; ++s) {
+                                const ggml_tensor * src = node->src[s];
+                                if (!src) continue;
+                                const int64_t s0 = (int64_t) src->data, s1 = s0 + ggml_nbytes(src);
+                                if ((s0 <= d0 && d0 < s1) || (d0 <= s0 && s0 < d1)) fprintf(stderr, " overlap:src[%d]=%s", s, src->name);
+                            }
+                        }
+                        if (!(sup && sub && rng)) fprintf(stderr, "\n");
+                    }
                     if (node->op == GGML_OP_FLASH_ATTN_EXT && ggml_cuda_qsa_gate_enabled() && i + 1 < cgraph->n_nodes &&
                         ggml_cuda_flash_attn_ext_qsa_gate_supported(*cuda_ctx, node, cgraph->nodes[i+1]) &&
                         ggml_cuda_can_fuse(cgraph, i, { GGML_OP_FLASH_ATTN_EXT, GGML_OP_GATED_RMS_NORM_F16 }, {})) {
