@@ -1,0 +1,18 @@
+[server] request path=/v1/chat/completions body_bytes=29986
+[server] chat chatcmpl_0000000000000001 format=chat stream=false msgs=2 tools=0 prompt_tokens=6712 max_tokens=64 max_ctx=65536 thinking=false reasoning_effort=none started_in_thinking=false stops=0 grammar=off model=luce
+[server] chat START chatcmpl_0000000000000001 format=chat stream=false prompt_tokens=6712 max_tokens=64 tools=0
+[server] chat CACHE chatcmpl_0000000000000001 restore=false slot=-1 prefix_len=0 effective_prompt=6712 pflash=false disk_policy=full disk_hit=false snap_slot=1 snap_pos=6706 full_snap_slot=-1 full_snap_pos=0
+[kvflash] gen ckpt check: G=769 L=1 L>=G=0 first-diff@1 prompt=[8678,198,2523,513,264,16097,17313,852] history=[846,198,91986,5072,13,8029,235212,1122]
+[kvflash] live restore: L=1 C=-1 replay=6712
+[snap] alloc right-sized: cur_pos=6656 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @6656 (149.6 MiB each, 1 held, 149.6 MiB)
+[snap] alloc right-sized: cur_pos=6706 buf=467.50 MiB backend=CPU
+[snap] boundary slot=1 cur_pos=6706 (req snap_pos=6706)
+[ar-decode] tokens=23 time=0.939 s speed=24.50 tok/s
+[snap] alloc right-sized: cur_pos=6734 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @6734 (149.6 MiB each, 2 held, 299.2 MiB)
+[kvflash] gen ckpt @6734
+[vram] released scratch buffers; trimmed 145.4 MiB from device pools
+[pc] inline snapshot requested=6706 saved=6706 slot=1
+[pc] inline-snap committed slot=1 prefix_len=6706 protect=0 bytes=490213376 resident=700026880
+[server] chat DONE chatcmpl_0000000000000001 ok=true in=6712 effective_in=6712 out=23 7.5s 3.1 tok/s finish=stop restore=false slot=-1 prefix_len=0 prefill=6.5s decode=0.9s(24.5tok/s) error=- detail=-

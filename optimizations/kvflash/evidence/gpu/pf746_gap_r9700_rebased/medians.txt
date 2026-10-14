@@ -1,0 +1,10 @@
+arm A prefill tok/s: median 912.7 mean 926.6 min 847.8 max 1046.8
+arm A decode tok/s: median 24.5 mean 24.4 min 23.9 max 24.6
+arm A wall s: median 11.0 mean 10.6 min 7.4 max 12.9
+arm B prefill tok/s: median 845.5 mean 895.3 min 841.9 max 1039.6
+arm B decode tok/s: median 24.5 mean 24.2 min 23.8 max 24.5
+arm B wall s: median 11.1 mean 10.5 min 7.5 max 12.7
+arm C prefill tok/s: median 844.8 mean 894.3 min 842.3 max 1037.1
+arm C decode tok/s: median 24.5 mean 24.2 min 23.8 max 24.5
+arm C wall s: median 11.1 mean 10.5 min 7.5 max 12.7
+B vs C byte-identical per turn: [True, True, True, True, True]

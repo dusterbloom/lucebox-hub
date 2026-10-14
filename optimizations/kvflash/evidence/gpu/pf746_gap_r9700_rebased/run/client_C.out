@@ -1,0 +1,5 @@
+{"turn": 1, "prompt_tokens": 6712, "completion_tokens": 23, "wall_s": 7.502899169921875, "pflash": null, "cached": 0, "prefilled": 6712, "eff": 6712, "prefill_ms": 6471.6, "tps": 24.5}
+{"turn": 2, "prompt_tokens": 13825, "completion_tokens": 23, "wall_s": 8.999231815338135, "pflash": null, "cached": 6706, "prefilled": 7119, "eff": 13825, "prefill_ms": 7884.0, "tps": 24.5}
+{"turn": 3, "prompt_tokens": 22236, "completion_tokens": 22, "wall_s": 11.100445985794067, "pflash": null, "cached": 13819, "prefilled": 8417, "eff": 22236, "prefill_ms": 9962.8, "tps": 24.5}
+{"turn": 4, "prompt_tokens": 31067, "completion_tokens": 49, "wall_s": 12.662190675735474, "pflash": null, "cached": 22232, "prefilled": 8835, "eff": 31067, "prefill_ms": 10466.9, "tps": 23.8}
+{"turn": 5, "prompt_tokens": 39456, "completion_tokens": 48, "wall_s": 12.129088401794434, "pflash": null, "cached": 31063, "prefilled": 8393, "eff": 39456, "prefill_ms": 9964.0, "tps": 23.8}

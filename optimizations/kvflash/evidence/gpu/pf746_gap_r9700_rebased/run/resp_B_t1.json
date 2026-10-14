@@ -1,0 +1,39 @@
+{
+ "choices": [
+  {
+   "finish_reason": "stop",
+   "index": 0,
+   "message": {
+    "content": "(A) The beacon's shutdown forced ships to take fifteen-light-year detours, disrupting main hyperspace routes.",
+    "role": "assistant"
+   }
+  }
+ ],
+ "created": 1792015593,
+ "id": "chatcmpl_0000000000000001",
+ "model": "luce",
+ "object": "chat.completion",
+ "usage": {
+  "accept_rate": 0.0,
+  "completion_tokens": 23,
+  "completion_tokens_details": {
+   "reasoning_tokens": 0
+  },
+  "prompt_tokens": 6712,
+  "prompt_tokens_details": {
+   "cached_tokens": 0
+  },
+  "spec_decode_ran": false,
+  "timings": {
+   "agent_turn_cache_hit": false,
+   "cache_hit": false,
+   "cached_prefix_tokens": 0,
+   "decode_ms": 937.2,
+   "decode_tokens_per_sec": 24.5,
+   "effective_prompt_tokens": 6712,
+   "prefill_ms": 6456.6,
+   "prefilled_tokens": 6712
+  },
+  "total_tokens": 6735
+ }
+}

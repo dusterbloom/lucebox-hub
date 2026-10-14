@@ -1,0 +1,51 @@
+{
+ "choices": [
+  {
+   "finish_reason": "stop",
+   "index": 0,
+   "message": {
+    "content": "Jan was sent to Rathole to pick up a boy suffering from the Venus Shadow, a fatal disease that required immediate evacuation to Earth. He had to cross the dangerous Den Hoorn terrain to reach the settlement before the ship's launch deadline.",
+    "role": "assistant"
+   }
+  }
+ ],
+ "created": 1792016050,
+ "id": "chatcmpl_0000000000000004",
+ "model": "luce",
+ "object": "chat.completion",
+ "usage": {
+  "accept_rate": 0.0,
+  "completion_tokens": 49,
+  "completion_tokens_details": {
+   "reasoning_tokens": 0
+  },
+  "prompt_tokens": 31067,
+  "prompt_tokens_details": {
+   "cached_tokens": 22232
+  },
+  "spec_decode_ran": false,
+  "timings": {
+   "agent_turn_cache_hit": false,
+   "cache_hit": true,
+   "cached_prefix_tokens": 22232,
+   "decode_ms": 2055.5,
+   "decode_tokens_per_sec": 23.8,
+   "effective_prompt_tokens": 31067,
+   "pflash": {
+    "admission": {
+     "cached_droppable": 22146,
+     "cached_tokens": 22232,
+     "decision": "under_threshold",
+     "droppable": 26624,
+     "raw_fits": true,
+     "threshold": 16384,
+     "uncached_droppable": 4478,
+     "view": false
+    }
+   },
+   "prefill_ms": 10463.7,
+   "prefilled_tokens": 8835
+  },
+  "total_tokens": 31116
+ }
+}

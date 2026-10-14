@@ -1,0 +1,6 @@
+arm=C tag=rebased date=2026-10-14T22:07:23+00:00 host=lucebox6
+bin=/home/duster/pf746r/bin/luce_server-B md5=e64839e22f98c896d4b87fb1b9342901
+B fc5563d1e61af3daadbf6017a2b525678b44d0eb e64839e22f98c896d4b87fb1b9342901
+target=/home/duster/models/Qwen3.8-27B-UD-Q4_K_M.gguf md5=76f527022f010d42bc0dff5905c60444
+drafter=/home/duster/models/ggml-org/Qwen3.5-0.8B-BF16.gguf md5=c1a081ce2cac247a659ff03225f6def1
+KV_POOL=16384 KV_MAX_CTX=65536 PASTE_CHARS=28000,28000,40000,40000,40000 PASTE_IDS=22073,22346,22876,22590,22867 PASTE_SKIP=0

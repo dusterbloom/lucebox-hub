@@ -1,0 +1,39 @@
+{
+ "choices": [
+  {
+   "finish_reason": "stop",
+   "index": 0,
+   "message": {
+    "content": "(D) A thick, constantly shifting shell of meteorites and satellite fragments surrounds their planet, making escape impossible.",
+    "role": "assistant"
+   }
+  }
+ ],
+ "created": 1792015603,
+ "id": "chatcmpl_0000000000000002",
+ "model": "luce",
+ "object": "chat.completion",
+ "usage": {
+  "accept_rate": 0.0,
+  "completion_tokens": 23,
+  "completion_tokens_details": {
+   "reasoning_tokens": 0
+  },
+  "prompt_tokens": 13825,
+  "prompt_tokens_details": {
+   "cached_tokens": 6706
+  },
+  "spec_decode_ran": false,
+  "timings": {
+   "agent_turn_cache_hit": false,
+   "cache_hit": true,
+   "cached_prefix_tokens": 6706,
+   "decode_ms": 938.9,
+   "decode_tokens_per_sec": 24.5,
+   "effective_prompt_tokens": 13825,
+   "prefill_ms": 7863.5,
+   "prefilled_tokens": 7119
+  },
+  "total_tokens": 13848
+ }
+}

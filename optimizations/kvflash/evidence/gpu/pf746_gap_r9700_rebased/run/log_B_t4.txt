@@ -1,0 +1,22 @@
+[server] request path=/v1/chat/completions body_bytes=132350
+[server] chat chatcmpl_0000000000000004 format=chat stream=false msgs=8 tools=0 prompt_tokens=31067 max_tokens=64 max_ctx=65536 thinking=false reasoning_effort=none started_in_thinking=false stops=0 grammar=off model=luce
+[server] chat START chatcmpl_0000000000000004 format=chat stream=false prompt_tokens=31067 max_tokens=64 tools=0
+[pflash-admission] under_threshold cached=22232 cached_droppable~22146 uncached_droppable~4478 droppable~26624 threshold=16384
+[pc] lookup hit slot=2 prefix_len=13819 (of 31067 total)
+[server] chat CACHE chatcmpl_0000000000000004 restore=true slot=2 prefix_len=13819 effective_prompt=31067 pflash=false disk_policy=full disk_hit=false snap_slot=4 snap_pos=31061 full_snap_slot=-1 full_snap_pos=0
+[kvflash] resume: live cut 22232 beats server cut 13819 (slot 2)
+[kvflash] live restore: L=22232 C=22232 replay=8835
+[kvflash] pooled prefill: 8835 tokens through a 16384-token pool (64-token chunks, ubatch=512, evicting)
+[snap] alloc right-sized: cur_pos=24576 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @24576 (149.6 MiB each, 4 held, 598.5 MiB)
+[snap] alloc right-sized: cur_pos=30720 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @30720 (149.6 MiB each, 5 held, 748.1 MiB)
+[kvflash] boundary snapshot skipped: pooled prefill relocates chunks
+[snap] alloc right-sized: cur_pos=31063 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @31063 (149.6 MiB each, 6 held, 897.8 MiB)
+[ar-decode] tokens=49 time=2.055 s speed=23.84 tok/s
+[snap] alloc right-sized: cur_pos=31115 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @31115 (149.6 MiB each, 7 held, 1047.4 MiB)
+[kvflash] gen ckpt @31115
+[vram] released scratch buffers; trimmed 253.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000004 ok=true in=31067 effective_in=31067 out=49 12.7s 3.9 tok/s finish=stop restore=true slot=2 prefix_len=13819 prefill=10.5s decode=2.1s(23.8tok/s) error=- detail=-

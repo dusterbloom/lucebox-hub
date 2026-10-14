@@ -1,0 +1,51 @@
+{
+ "choices": [
+  {
+   "finish_reason": "stop",
+   "index": 0,
+   "message": {
+    "content": "Walter was anxious because the sales and production reports on his desk were the worst in seven years, indicating the company was failing under union management. He feared that Torkleson would use these dismal figures to fire him for incompetence.",
+    "role": "assistant"
+   }
+  }
+ ],
+ "created": 1792015642,
+ "id": "chatcmpl_0000000000000005",
+ "model": "luce",
+ "object": "chat.completion",
+ "usage": {
+  "accept_rate": 0.0,
+  "completion_tokens": 48,
+  "completion_tokens_details": {
+   "reasoning_tokens": 0
+  },
+  "prompt_tokens": 39456,
+  "prompt_tokens_details": {
+   "cached_tokens": 31063
+  },
+  "spec_decode_ran": false,
+  "timings": {
+   "agent_turn_cache_hit": false,
+   "cache_hit": true,
+   "cached_prefix_tokens": 31063,
+   "decode_ms": 2011.8,
+   "decode_tokens_per_sec": 23.9,
+   "effective_prompt_tokens": 39456,
+   "pflash": {
+    "admission": {
+     "cached_droppable": 30949,
+     "cached_tokens": 31063,
+     "decision": "under_threshold",
+     "droppable": 33792,
+     "raw_fits": true,
+     "threshold": 16384,
+     "uncached_droppable": 2843,
+     "view": false
+    }
+   },
+   "prefill_ms": 9968.8,
+   "prefilled_tokens": 8393
+  },
+  "total_tokens": 39504
+ }
+}

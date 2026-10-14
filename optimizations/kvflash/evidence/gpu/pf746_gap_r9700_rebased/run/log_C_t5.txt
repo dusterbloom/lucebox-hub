@@ -1,0 +1,22 @@
+[server] request path=/v1/chat/completions body_bytes=168291
+[server] chat chatcmpl_0000000000000005 format=chat stream=false msgs=10 tools=0 prompt_tokens=39456 max_tokens=64 max_ctx=65536 thinking=false reasoning_effort=none started_in_thinking=false stops=0 grammar=off model=luce
+[server] chat START chatcmpl_0000000000000005 format=chat stream=false prompt_tokens=39456 max_tokens=64 tools=0
+[pc] lookup hit slot=2 prefix_len=13819 (of 39456 total)
+[server] chat CACHE chatcmpl_0000000000000005 restore=true slot=2 prefix_len=13819 effective_prompt=39456 pflash=false disk_policy=full disk_hit=false snap_slot=5 snap_pos=39450 full_snap_slot=-1 full_snap_pos=0
+[kvflash] resume: live cut 31063 beats server cut 13819 (slot 2)
+[kvflash] gen ckpt check: G=31115 L=31063 L>=G=0 first-diff@31063 prompt=[17770,557,3106,310,82503,1219,310,3608] history=[248068,271,248069,271,17770,557,3106,310]
+[kvflash] live restore: L=31063 C=31063 replay=8393
+[kvflash] pooled prefill: 8393 tokens through a 16384-token pool (64-token chunks, ubatch=512, evicting)
+[snap] alloc right-sized: cur_pos=32768 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @32768 (149.6 MiB each, 7 held, 1047.4 MiB)
+[snap] alloc right-sized: cur_pos=39424 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @39424 (149.6 MiB each, 8 held, 1197.0 MiB)
+[kvflash] boundary snapshot skipped: pooled prefill relocates chunks
+[snap] alloc right-sized: cur_pos=39452 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @39452 (149.6 MiB each, 9 held, 1346.6 MiB)
+[ar-decode] tokens=48 time=2.013 s speed=23.85 tok/s
+[snap] alloc right-sized: cur_pos=39503 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @39503 (149.6 MiB each, 10 held, 1496.2 MiB)
+[kvflash] gen ckpt @39503
+[vram] released scratch buffers; trimmed 250.1 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000005 ok=true in=39456 effective_in=39456 out=48 12.1s 4.0 tok/s finish=stop restore=true slot=2 prefix_len=13819 prefill=10.0s decode=2.0s(23.8tok/s) error=- detail=-
