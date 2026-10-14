@@ -140,6 +140,10 @@ public:
     void snapshot_free(int slot) override;
     bool snapshot_used(int slot) const override;
     int  snapshot_cur_pos(int slot) const override;
+    // With KVFlash on: the larger of the snapshot cut a restore would take and
+    // the live session's cut. Otherwise `slot_tokens`.
+    int  restorable_prefix(const std::vector<int32_t> & prompt, int slot,
+                           int slot_tokens) const override;
     // The first prefill chunk after a restore runs up to 64 tokens
     // (kQwen35OffGridLeadTokens), so a closer restore point starts no chunk.
     int  snapshot_granularity() const override;

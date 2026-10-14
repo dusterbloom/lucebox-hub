@@ -333,6 +333,15 @@ struct ModelBackend {
     virtual bool snapshot_used(int slot) const = 0;
     virtual int  snapshot_cur_pos(int slot) const = 0;
 
+    // Prompt tokens a request for `prompt` would skip, given the server's best
+    // snapshot (`slot`, -1 for none, matching `slot_tokens` of the prompt). The
+    // default trusts the snapshot; a backend that keeps more (KVFlash's live
+    // session) or cannot use a snapshot says so. No side effects.
+    virtual int restorable_prefix(const std::vector<int32_t> & prompt, int slot, int slot_tokens) const {
+        (void) prompt; (void) slot;
+        return slot_tokens;
+    }
+
     // A snapshot lands at least this many positions past the restore point,
     // so a cut closer than that cannot be saved. Backends that start a
     // prefill chunk at every restore point (Qwen: beyond this distance) save

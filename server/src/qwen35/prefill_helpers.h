@@ -320,6 +320,25 @@ inline KvflashResume kvflash_pick_resume(int server_cut, int live_cut) {
     return live_cut > server_cut ? KvflashResume::Live : KvflashResume::Server;
 }
 
+// Prompt tokens a restore would skip: the larger of the server snapshot's cut
+// (capped by the tokens the slot matches; 0 without a snapshot) and the live
+// session's cut. Mirrors the choice restore_and_generate_impl makes, so a
+// cache reports what the backend takes rather than what the snapshot holds.
+inline int kvflash_restorable_tokens(bool has_snapshot, bool consume_enabled, bool is_pooled,
+                                     int snap_pos, int slot_tokens, int chunk_tokens,
+                                     int prompt_tokens, int pool_tokens,
+                                     bool session_enabled, int live_cut) {
+    const int server = has_snapshot
+        ? std::min(slot_tokens,
+                   kvflash_server_cut(kvflash_restore_plan(consume_enabled, is_pooled, snap_pos,
+                                                           chunk_tokens, prompt_tokens > 0,
+                                                           prompt_tokens, pool_tokens,
+                                                           session_enabled),
+                                      snap_pos))
+        : 0;
+    return std::max({server, live_cut, 0});
+}
+
 // Token history for [0, kv_offset + suffix): real ids for the restored prefix
 // when the full prompt is known, zeros otherwise (the old behaviour).
 inline std::vector<int32_t> kvflash_restore_history(

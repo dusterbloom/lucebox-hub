@@ -1236,6 +1236,20 @@ int Qwen35Backend::snapshot_cur_pos(int slot) const {
     return prefix_snapshots_[slot].cur_pos;
 }
 
+// The arguments are the ones restore_and_generate_impl gives kvflash_restore_plan
+// and kvflash_live_cut_peek, so the number reported is the cut that restore takes.
+int Qwen35Backend::restorable_prefix(const std::vector<int32_t> & prompt, int slot,
+                                     int slot_tokens) const {
+    if (!kvflash_active()) return slot_tokens;
+    const bool have = slot >= 0 && snapshot_used(slot);
+    return kvflash_restorable_tokens(
+        have, kvflash_restore_consume_enabled(),
+        have && prefix_snapshots_[slot].is_pooled,
+        have ? prefix_snapshots_[slot].cur_pos : 0, slot_tokens,
+        kvflash_pager_.chunk_tokens(), (int)prompt.size(), kvflash_tokens_,
+        kvflash_session_enabled(), kvflash_live_cut_peek(prompt));
+}
+
 size_t Qwen35Backend::snapshot_bytes_estimate(int tokens) const {
     // Paged serving keeps no single-sequence snapshots.
     if (cfg_.paged_attention || !snap_backend_ || tokens <= 0) return 0;
