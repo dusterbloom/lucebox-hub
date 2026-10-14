@@ -145,7 +145,9 @@ static void gated_rms_norm_f16_launch(bool wave, const float * x, const float * 
     constexpr int ROWS = 4;
     const int64_t n_rows = (int64_t) nh * T;
     const unsigned blocks = (unsigned) ((n_rows + 8 * ROWS - 1) / (8 * ROWS));
-    if (wave && gamma && ncols == 128) {
+    // Prefill kernel: below ~one block per CU the block-per-row kernel's wider parallelism wins (decode T=1 is
+    // 48 rows), so small row counts keep the old path and the decode step is untouched.
+    if (wave && gamma && ncols == 128 && n_rows >= 8 * ROWS * 40) {
         gated_rms_norm_wave_kernel<ROWS><<<blocks, 256, 0, stream>>>(
             x, gamma, z, dst, ncols, nh, n_rows, x_s1, x_s2, z_sh, z_st, gamma_rows, eps);
     } else if (gamma && ncols <= 128) {

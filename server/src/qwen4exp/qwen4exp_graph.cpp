@@ -1515,11 +1515,13 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
     // The fused reduction can differ from upstream's ggml_rms_norm below one
     // ulp; keep the unfused form for upstream differential checks.
     const bool hc_fused = !upstream;
-    // PLE boundary: emit the PLE's query norm from the preceding HC_COMBINE_NORM (LUCE_PLE_QNORM_FOLD=0 restores
-    // the separate hc_combine + grouped rms_norm chain).
+    // PLE boundary: emit the PLE's query norm from the preceding HC_COMBINE_NORM instead of the separate
+    // hc_combine + repeat/mul/add + grouped rms_norm chain. Opt-in (LUCE_PLE_QNORM_FOLD=1): the fused kernel's
+    // reduction order differs from rms_norm_f32<1024> below one ulp, which on lucebox4 moved greedy-64 at token ~15
+    // of prompt_p4096_r0 for a ~4 ms (0.1%) saving per p4096 request (GUFO-PARITY.md, norm fusion section).
     static const bool ple_qnorm_fold_env = [] {
         const char * value = std::getenv("LUCE_PLE_QNORM_FOLD");
-        return !(value && std::strcmp(value, "0") == 0);
+        return value && std::strcmp(value, "1") == 0;
     }();
     const bool ple_qnorm_fold = ple_qnorm_fold_env && hc_fused;
     // Private probe: expose inject's earlier lifetime to gallocr in BOTH modes.

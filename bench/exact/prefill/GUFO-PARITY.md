@@ -1783,3 +1783,136 @@ spread: end to end neutral, kept on as default because it is bit-exact and
 strictly cheaper on the kernel. The remaining dense gap is structural (gufo fuses
 qkv+gate+conv into one M=16384 launch, and W8A8 for attn_o/shexp); the wall gap
 is dominated by non-GEMM kernels (table above).
+
+## Non-GEMM prefill overhead: norm / conv / repeat fusion (lucebox4, 2026-10-14)
+
+Targets from the class table above: `k_bin_bcast<op_repeat>` and the
+norms/quant/convert class (`gated_rms_norm2`, `rms_norm_scale_f32`,
+`gated_rms_norm_f16<256,false>`, `rms_norm_f32<256>`). Method: rocprofv3
+per-kernel time on one p4096 request (T=4131, `prof.sh`), bandwidth floor at
+220 GB/s, every change behind an env kill switch, bit-exact (parity unit test
+on the box) or off by default. Build: lucebox4 `build1151`, gfx1151, HIP device
+flags `-O3` (`-ffp-contract=fast-honor-pragmas`: the device compiler contracts
+`x*x` into the reduction's first add unless told not to, see below).
+
+### Bandwidth floors and per-kernel result (ms per call, p4096 request)
+
+| kernel (per layer shape) | calls | old ms/call | floor | new ms/call | per request |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `gated_rms_norm2_kernel<false>` GDN tail [128,48,T] f32 x,z -> F16 (x 101.5 MB + z 101.5 MB + out 50.8 MB) | 36 | 1.428 (base) / 2.053 (old-arm trace) | 1.15 | **`gated_rms_norm_wave_kernel<4>` 1.315** | 51.4 / 73.9 -> **47.3** |
+| `gdn_conv_direct<true,128>` [10240,T] (169 MB in + 169 MB out) + 2 x `rms_norm_scale_f32` q/k [128,16,T] (67.7 MB in + out each) | 36 + 72 | 1.663 + 2 x 0.406 = 2.48 | 1.54 + 2 x 0.31 | **`gdn_conv_direct<true,128>` (v, 6144 ch) 1.070 + `gdn_conv_direct_norm_kernel<128,16>` (q/k, 4096 ch) 0.705 = 1.775** | 89.1 -> **63.9** |
+| `gated_rms_norm_f16_kernel<256,false>` attention output gate [256,24,T] | 12 | 1.549 | 1.15 | wave-per-row tried: 2.668, then 1.900 with hoisted loads -> **dropped, stays 1.537** | 18.6 -> 18.5 |
+| `k_bin_bcast<op_repeat>` [1280,4,T] (21 MB in + 85 MB out) | 3 | 1.243 / 1.195 | 0.48 | 16-byte row copy `k_repeat_rows_16b` 1.071 / 1.233 -> **dropped, generic kernel kept** | 3.7 -> 3.7 |
+| PLE boundary: `rms_norm_f32<1024>` 1.80 + `op_repeat` 1.2 + `op_mul` [1280,4,T] 1.38 + `op_add` unravel 2.4 vs one more `hc_combine_norm_f32_b256` 2.51 | 1 | 6.8 | - | 2.5 (`LUCE_PLE_QNORM_FOLD=1`, **opt-in**: not bit-exact, see correctness) | -4.3 (off by default) |
+
+Per-request kernel time on the two shipped changes: 140.5 -> 111.2 ms, **-29.3
+ms (-0.9% of a ~3.3 s p4096 request)**. The op_repeat row in the earlier class
+table ("3 x 19.8 = 59.5 ms") came from a different trace; in all five traces of
+this session it is 3 x 1.2 ms, so there was no 60 ms lever there.
+
+Traces (same binary, same session; kernel sums differ run to run by up to
++-8% -- MoE expert GEMMs and `qsa3_attn` alone moved +60/+50 ms between two
+consecutive old-arm traces -- so only the per-kernel rows above are compared):
+base `prof_base` 3101.7 ms kernel sum (1196 tok/s), old arm via env
+`prof_old` 3268.8 (1119 tok/s), new arms `prof_new` 3353.8 (1094), `prof_new2`
+3227.5 (1138), shipped `prof_new3` 3057.9 (1214). Launches 3306 -> 3263.
+Summaries kept in `~/qwen4exp-f16/scratch/norms/prof_*.kstat.txt`, trace dirs
+deleted (disk at 100%).
+
+### What each change is
+
+- **Wave-per-row gated norm** (`LUCE_GATED_NORM_WAVE=0` restores the block
+  kernel; `gated-norm.cu`): one 32-lane wave owns 4 (head, token) rows, lane l
+  holds columns l, 32+l, 64+l, 96+l -- the values warp w of the 128-thread
+  block held in lane l -- so the four per-warp xor-tree partials and their
+  `(p0+p2)+(p1+p3)` combination reproduce `block_reduce`'s two-stage tree bit
+  for bit without LDS or a barrier. All z/gamma loads are issued before the
+  first store (1.453 -> 1.318 ms). Rows < 1280 (decode T=1 is 48 rows) stay on
+  the block kernel. Unit test `test_gated_norm_wave_parity` (T = 1, 7, 333 with
+  per-head gamma, 4096): 0 mismatching F16 of 25.2M.
+- **GDN q/k norm folded into the conv epilogue** (`LUCE_GDN_CONV_QKNORM=0`
+  restores the two `rms_norm_scale_f32` passes; `gdn-conv.cu`, graph sets
+  SSM_CONV op_params[1..4] = qk_channels, eps/D, 1/sqrt(D), 0): the q/k
+  channels' conv block (256 threads = 2 heads) computes SiLU(conv), reduces the
+  squares per 16-token sub-tile through LDS with the same tree, and writes
+  `post_scale * __fmul_rn(scale, y) + bias`; v channels run the plain kernel
+  with a channel offset. The generic SSM_CONV path asserts op_params[1] == 0 so
+  an unmatched fusion cannot feed un-normalised q/k into the recurrence. Unit
+  test `test_gdn_conv_qknorm_parity` (C=10240, T = 256, 333, 4096): 0
+  mismatches against plain conv + `rms_norm_scale_f32`.
+- **hc_mix / PLE grouped norms as RMS_NORM+MUL** (graph only, both arms): gamma
+  applied on the 3-D norm output so the backend's fused `rms_norm_f32<256,true>`
+  runs (`scale * x * mul`, same two roundings as the separate ops). Not switchable
+  and present in both A/B arms, so its effect is not separated here.
+- **Bit-exactness trap**: the HIP device build contracts `tmp = x*x;
+  warp_reduce_sum(tmp)` into `fma(x, x, shfl(...))` while the original kernels
+  (square under a conditional) stay mul+add; the first builds mismatched by
+  1-2 F32 ulps on 75% of elements / 11 of 2M F16. `#pragma clang fp
+  contract(off)` around the square (and around `sum / 128 + eps`, which
+  otherwise becomes `fma(sum, 1/128, eps)`) made both tests exact.
+
+### End to end, lucebox4 (`scratch/norms/ab.sh`, one binary, env-switched arms, 2 rounds x 5 reps, warm-up dropped, `--max-ctx 20480 --prefix-cache-slots 0`, every request `prefix_len=0` on both arms, `sudo -n` drop_caches unavailable = indicative)
+
+Shipped configuration (`ab2`: legacy = `LUCE_GATED_NORM_WAVE=0
+LUCE_GDN_CONV_QKNORM=0`, new = unset; luce_server md5 `3b8f02ee...`,
+`libggml-hip.so.0.9.11` md5 `3bcabc17...`). Spread = |median round 0 - median
+round 1| of the legacy arm.
+
+| metric | old median (min-max), n=10 | new median (min-max), n=10 | delta | old-vs-old spread | real? |
+| --- | ---: | ---: | ---: | ---: | :--- |
+| prefill p4096 tok/s | 1282.3 (1170.6-1304.5) | 1296.8 (1205.7-1311.0) | +1.1% | 5.0 | yes (14.5 vs 10.1) |
+| prefill p16384 tok/s | 1325.2 (1194.3-1334.7) | 1334.4 (1213.4-1345.3) | +0.7% | 7.3 | no (9.2 vs 14.5) |
+| decode tok/s (128 tok) | 25.1 (24.6-25.1) | 25.0 (25.0-25.0) | -0.2% | 0.0 | see decode-only run below |
+
+Raw (round 0 then 1): old p4096 [1222.0, 1282.7, 1283.7, 1304.5, 1297.5,
+1170.6, 1219.9, 1282.2, 1282.3, 1278.7]; new p4096 [1205.7, 1298.1, 1295.3,
+1296.3, 1297.2, 1284.3, 1311.0, 1307.1, 1296.0, 1302.5]; old p16384 [1194.3,
+1250.4, 1331.7, 1330.1, 1334.7, 1212.1, 1311.2, 1327.7, 1330.3, 1322.8]; new
+p16384 [1213.4, 1294.2, 1328.3, 1339.8, 1339.7, 1259.2, 1334.0, 1334.8, 1345.1,
+1345.3]; decode old [24.6, 25.1, 25.0, 25.1, 25.1, 24.6, 25.1, 25.1, 25.0, 25.1],
+new [25.0 x 10].
+
+Earlier run with the PLE fold also on (`ab1`, legacy additionally
+`LUCE_PLE_QNORM_FOLD=0`): p4096 1258.2 -> 1298.3 (+3.2%, spread 43.5, not above
+2x spread), p16384 1317.9 -> 1337.1 (+1.5%, spread 1.5), decode 25.0 -> 25.0.
+Both runs point the same way; the +1% is the size of the 29 ms kernel saving.
+
+Decode-only run of the shipped binary (`ab_decode.sh`, 2 rounds x 5 reps of
+128 tokens after `prompt_decode512_r0`, `libggml-hip.so.0.9.11` md5
+`3477b17b...` with the rows < 1280 routing): old median 25.03 (24.51-25.06),
+new 24.99 (24.95-25.01), -0.16% = 0.04 tok/s, old-vs-old spread 0.02 -- at the
+2x-spread boundary. At T=1 neither change is exercised by construction (the
+conv fold needs T >= 256, the wave norm needs >= 1280 rows and decode has 48),
+so the decode graph and kernels are the legacy ones on both arms; the 0.04
+tok/s is run ordering, not code. Raw old [24.51, 25.06, 25.05, 25.05, 25.05,
+25.03, 25.03, 25.03, 25.03, 25.02], new [24.95, 24.96, 24.97, 24.96, 24.97,
+25.00, 25.01, 25.00, 25.00, 25.00]; greedy-64 identical.
+
+### Correctness
+
+- Shipped configuration: greedy-64 at temp 0 on `prompt_p4096_r0.txt` identical
+  between arms (64 tokens, no divergence), as expected for bit-exact kernels.
+- With the PLE query-norm fold on, greedy-64 diverged at char 66 (~token 15):
+  `hc_combine_norm_f32_b256`'s 1280-column reduction tree differs from
+  `rms_norm_f32<1024>` below one ulp (the code already notes this for the
+  upstream differential path). Isolated by a probe with only
+  `LUCE_PLE_QNORM_FOLD=0` (wave + conv fold on): text identical to legacy. The
+  fold is therefore opt-in (`LUCE_PLE_QNORM_FOLD=1`), recorded as a 4.3 ms
+  (0.13%) saving that is not bit-exact.
+
+### Dropped after measurement
+
+- Wave-per-row 256-wide gate (gamma == NULL): 2.668 then 1.900 ms/call vs the
+  block kernel's 1.54 (floor 1.15); the block kernel keeps 8x more waves in
+  flight for the same bytes. Removed.
+- 16-byte row-copy `op_repeat`: 1.07-1.23 vs 1.20 ms/call; the generic
+  broadcast kernel is already at the box's effective write bandwidth for an
+  85 MB output (same ~1.3 ms as `op_mul` on the same shape). Removed.
+
+### Next
+
+The norms class is now ~150 ms/request against gufo's 30; what is left is
+`hc_combine_norm_moe` 46 x 4.2 = 194 ms and `hc_combine_norm` 48 x 2.5 = 121 ms
+(both ~2x their byte floor), then `qsa3_attn` (12 x 9.0-12.8 = 108-154 ms vs
+gufo's 87) -- the attention gate and remaining `rms_norm_f32<256>` Q norm
+(12 x 1.54) are each 18 ms and at ~1.3x floor.
