@@ -86,6 +86,7 @@ def main():
                 triples, seq_len, info = local_triples(R, S, art["article"])
             else:
                 pf = S.prefill(art["article"])
+                torch.cuda.synchronize()  # GPU work is async; time what was actually computed
                 seq_len = pf["seq_len"]
                 info = {"prefill_s": round(time.time() - t1, 2)}
                 if arm == "ORIG":
@@ -94,6 +95,7 @@ def main():
                     triples, more = S.compact("FUNI", pf, RATIO, None)
                     info.update(more)
                 del pf
+            torch.cuda.synchronize()
             build_s = round(time.time() - t1, 1)
             t2 = time.time()
             res = S.answer(triples, seq_len, qs)
