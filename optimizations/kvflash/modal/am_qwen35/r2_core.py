@@ -27,7 +27,8 @@ RATIO = 0.10
 BLOCK = 640
 USER_TAG = "<|im_start|>user"
 DISTRACTOR_POOL = range(50, 90)  # loader indices outside selection (0-19), held-out (20-49) and R1c fit/val (90-99)
-ARMS = ("FULL", "F-SEG", "F-BLK", "F-RE")
+ARMS = ("FULL", "F-SEG", "F-BLK", "F-RE", "F-RE-UNI")  # F-RE-UNI: R2 Amendment 1 diagnostic (uniform budget, no padding)
+ARM_CELL = {"F-RE-UNI": "FUNI"}  # arm -> R1b cell that supplies the compactor (default "F")
 
 
 # ---------------------------------------------------------------- pure helpers (CPU-testable)
@@ -194,9 +195,9 @@ def full_layer_len(triples, linear):
 # ---------------------------------------------------------------- compaction steps
 
 class Runner:
-    def __init__(self, S, budget, ratio=RATIO):
+    def __init__(self, S, budget, ratio=RATIO, cell="F"):
         self.S, self.budget, self.ratio = S, budget, ratio
-        self.method = method_for("F", budget)
+        self.cell, self.method = cell, method_for(cell, budget)
 
     def _pseudo_kv(self, triples, linear, last=None):
         return tuple((t[0], t[2]) if i in linear else
@@ -279,7 +280,7 @@ def gen_fseg(R, segs, articles, ks):
     S = R.S
     pf = S.prefill(articles[0])  # identical to the k=0 rows of R1b
     t0 = time.time()
-    triples, _ = S.compact("F", pf, R.ratio, R.budget)
+    triples, _ = S.compact(R.cell, pf, R.ratio, R.budget)
     orig_len, trace = pf["seq_len"], [{"prefill_s": 0.0, "compact_s": round(time.time() - t0, 2)}]
     del pf
     for i in range(1, max(ks) + 1):
@@ -312,7 +313,7 @@ def gen_fre(R, segs, articles, ks):
     S = R.S
     pf = S.prefill(articles[0])
     t0 = time.time()
-    triples, _ = S.compact("F", pf, R.ratio, R.budget)
+    triples, _ = S.compact(R.cell, pf, R.ratio, R.budget)
     orig_len, trace = pf["seq_len"], [{"prefill_s": 0.0, "compact_s": round(time.time() - t0, 2)}]
     del pf
     text = segs[0].text
@@ -324,7 +325,7 @@ def gen_fre(R, segs, articles, ks):
             yield i, triples, orig_len, {**_info(R, triples, orig_len, trace), "recompactions": i + 1}
 
 
-ARM_GENS = {"FULL": gen_full, "F-SEG": gen_fseg, "F-BLK": gen_fblk, "F-RE": gen_fre}
+ARM_GENS = {"FULL": gen_full, "F-SEG": gen_fseg, "F-BLK": gen_fblk, "F-RE": gen_fre, "F-RE-UNI": gen_fre}
 
 
 # ---------------------------------------------------------------- driver
@@ -338,7 +339,7 @@ def run_r2(model, tok, shim, out, probes, ks, arms, budget, split="sel", n_quest
     from evaluation.datasets import load_dataset
     data = data or load_dataset("quality")
     S = Session(model, tok, shim)
-    R = Runner(S, budget)
+    runners = {}
     os.makedirs(out, exist_ok=True)
     for ai in probes:
         art = data[ai]
@@ -353,7 +354,10 @@ def run_r2(model, tok, shim, out, probes, ks, arms, budget, split="sel", n_quest
             if not todo:
                 continue
             torch.cuda.reset_peak_memory_stats()
-            for k, triples, orig_len, info in ARM_GENS[arm](R, segs, articles, todo):
+            cell = ARM_CELL.get(arm, "F")
+            if cell not in runners:
+                runners[cell] = Runner(S, budget, cell=cell)
+            for k, triples, orig_len, info in ARM_GENS[arm](runners[cell], segs, articles, todo):
                 t1 = time.time()
                 res = S.answer(triples, orig_len, qs)
                 ans_s = round(time.time() - t1, 1)
