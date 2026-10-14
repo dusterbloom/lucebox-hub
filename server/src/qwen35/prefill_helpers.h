@@ -207,34 +207,16 @@ inline std::vector<int> kvflash_ladder_evict(const std::vector<KvflashLadderEntr
     return out;
 }
 
-// KVFLASH_STATE_LADDER=1 opts in to saving DeltaNet state checkpoints at the
-// ladder positions during pooled prefill. Default OFF.
-inline bool kvflash_state_ladder_enabled() {
-    const char * v = std::getenv("KVFLASH_STATE_LADDER");
-    return v != nullptr && v[0] == '1' && v[1] == '\0';
+// KVFLASH_SESSION is the one switch for KVFlash session restore: the DeltaNet
+// state ladder, live restore, generation-end checkpoint (S9) and per-turn
+// checkpoints (S9b). Default ON (callers also require KVFlash itself to be
+// active); KVFLASH_SESSION=0 turns all four off. Pure so it is unit-testable.
+inline bool kvflash_session_flag(const char * v) {
+    return !(v != nullptr && v[0] == '0' && v[1] == '\0');
 }
 
-// KVFLASH_LIVE_RESTORE=1 (requires KVFLASH_STATE_LADDER=1) restores a new
-// request from the single live KVFlash session instead of prefilling from 0.
-inline bool kvflash_live_restore_enabled() {
-    const char * v = std::getenv("KVFLASH_LIVE_RESTORE");
-    return v != nullptr && v[0] == '1' && v[1] == '\0' && kvflash_state_ladder_enabled();
-}
-
-// KVFLASH_GEN_CKPT=1 (requires KVFLASH_LIVE_RESTORE=1) captures one more
-// state checkpoint when a generation ends (S9). Default OFF.
-inline bool kvflash_gen_ckpt_enabled() {
-    const char * v = std::getenv("KVFLASH_GEN_CKPT");
-    return v != nullptr && v[0] == '1' && v[1] == '\0' && kvflash_live_restore_enabled();
-}
-
-// KVFLASH_TURN_CKPT=1 cuts every KVFlash prefill after each assistant header
-// (kvflash_turn_cuts) and, with the state ladder on, captures a rung at the
-// last one (S9b). Needs no live restore, so a cold reference can run the same
-// cuts. Default OFF.
-inline bool kvflash_turn_ckpt_enabled() {
-    const char * v = std::getenv("KVFLASH_TURN_CKPT");
-    return v != nullptr && v[0] == '1' && v[1] == '\0';
+inline bool kvflash_session_enabled() {
+    return kvflash_session_flag(std::getenv("KVFLASH_SESSION"));
 }
 
 // Position of the generation-end checkpoint: cur_pos, where KV and DeltaNet

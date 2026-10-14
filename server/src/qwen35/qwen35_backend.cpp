@@ -1057,7 +1057,7 @@ bool Qwen35Backend::state_ladder_capture(int pos) {
 
 // Cut a live restore of `prompt` would resume from, or -1. No side effects.
 int Qwen35Backend::kvflash_live_cut_peek(const std::vector<int32_t> & prompt) const {
-    if (!kvflash_live_restore_enabled() || !kvflash_active() || cfg_.paged_attention ||
+    if (!kvflash_session_enabled() || !kvflash_active() || cfg_.paged_attention ||
         prompt.empty() || kvflash_pager_.chunk_tokens() <= 0) return -1;
     std::vector<int> rungs;
     for (const auto & kv : state_ladder_) rungs.push_back(kv.first);
@@ -1858,7 +1858,7 @@ GenerateResult Qwen35Backend::generate_impl(const GenerateRequest & req,
     // S8a: resume from the live session when a ladder rung covers the common
     // prefix; the state checkpoint replaces the zeroing.
     int live_cut = -1;
-    if (kvflash_live_restore_enabled() && kvflash_active() && !cfg_.paged_attention &&
+    if (kvflash_session_enabled() && kvflash_active() && !cfg_.paged_attention &&
         !req.images) {
         live_cut = kvflash_live_restore(req.prompt);
     }
@@ -2001,7 +2001,7 @@ GenerateResult Qwen35Backend::generate_impl(const GenerateRequest & req,
     // S9: checkpoint the DeltaNet state at the generation end so the next turn
     // resumes after the answer. After any speculative rollback cur_pos is the
     // committed position, where KV and state hold exactly history[0:G].
-    if (kvflash_gen_ckpt_enabled() && kvflash_active() && !cfg_.paged_attention &&
+    if (kvflash_session_enabled() && kvflash_active() && !cfg_.paged_attention &&
         !has_images && req.n_gen > 0) {
         const int G = kvflash_gen_ckpt_pos(cache_.cur_pos, kvflash_history_.size());
         if (G > 0 && state_ladder_capture(G)) {
@@ -2079,7 +2079,7 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
         kvflash_active() ? kvflash_pager_.chunk_tokens() : 0,
         !req.prompt.empty(), (int)req.prompt.size(),
         kvflash_active() ? kvflash_tokens_ : 0,
-        kvflash_active() && kvflash_live_restore_enabled());
+        kvflash_active() && kvflash_session_enabled());
 
     // The live KVFlash session may cover more of the prompt than the server's
     // snapshot (or the snapshot cannot be used at all): take the larger cut,
@@ -2141,7 +2141,7 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
             }
             if (!consume) {
                 // Rungs belong to the live session, not to this snapshot's lineage.
-                if (kvflash_active() && kvflash_state_ladder_enabled()) state_ladder_clear();
+                if (kvflash_active() && kvflash_session_enabled()) state_ladder_clear();
                 if (adopt) {
                     // Dense rows [0, snap_pos) already sit in the pool tensor with
                     // chunk c in block c: register them as pager chunks, no copy.
@@ -2468,13 +2468,13 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     std::vector<int> ladder;
     int turn_cut = -1;
     std::vector<int> turn_cuts;
-    if (kvflash_active() && !images && kvflash_turn_ckpt_enabled()) {
+    if (kvflash_active() && !images && kvflash_session_enabled()) {
         // Every prefill (cold included, ladder or not) cuts after every assistant
         // header, so a restore at a turn rung replays the batches a cold prefill ran.
         turn_cuts = kvflash_turn_cuts(tokens, w_.im_start_id, w_.assistant_id, w_.newline_id);
         for (int & c : turn_cuts) c += kv_offset;
     }
-    if (kvflash_active() && !images && kvflash_state_ladder_enabled()) {
+    if (kvflash_active() && !images && kvflash_session_enabled()) {
         if (kv_offset == 0) state_ladder_clear();
         // A live restore keeps the head rung unless the server names a new cut.
         if (!kvflash_live_restore_active_ || snap_pos > 0) {
