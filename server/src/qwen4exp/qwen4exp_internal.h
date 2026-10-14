@@ -252,4 +252,29 @@ std::string pick_qwen4exp_mtp_sidecar(std::vector<std::string> names);
 
 void free_qwen4exp_weights(Qwen4ExpWeights & w);
 
+// The exact-stack decode fusions (LUCE_QWEN_GRAPH_SH, HC_DOWN_INJECT,
+// SHARED_OVERLAP, PRODUCER_Q8, ...) are opt-in knob by knob and carry hard graph
+// contracts (96 HC up-mix sites, 48 shared epilogues, 36 GDN layers) that abort
+// on an unvalidated quant profile. The loader turns the whole set on by default
+// only for the profile it was validated on (bench/exact/q6/RESULTS.md): 48
+// layers as 36 GDN + 12 attention, dense trunk and HC mixers Q8_0 or Q6_K,
+// shared expert Q8_0, routed gate/up Q4_K or Q5_K, routed down Q5_1 or Q8_0.
+// Decode on the shipped UD-Q4_K_XL goes from 40.2 to 35.3 ms/token with the set
+// (bench/exact/prefill/GUFO-PARITY.md, "Decode gap vs gufo").
+struct Qwen4ExpTensorType {
+    std::string name;
+    ggml_type type;
+};
+
+// Pure: empty when the profile matches, else the first mismatch (for the log).
+std::string qwen4exp_exact_stack_mismatch(const std::vector<Qwen4ExpTensorType> & tensors, int n_layer);
+
+// The knob set as name/value pairs (the "full 38.41 env" of bench/exact/run.sh).
+const std::vector<std::pair<const char *, const char *>> & qwen4exp_exact_stack_knobs();
+
+// setenv()s every knob that is not already set (an explicit value always wins).
+// Skipped, returning -1, off gfx1151, in reference mode, on a profile mismatch,
+// or with LUCE_QWEN_EXACT_STACK=0. Otherwise returns the number of knobs set.
+int apply_qwen4exp_exact_stack_env(bool gfx1151, bool reference, const std::string & mismatch);
+
 }  // namespace luce::common

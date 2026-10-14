@@ -20,6 +20,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -138,6 +139,47 @@ bool exact_bf16_roundtrip(const float * values, size_t count) {
         if (std::memcmp(values + i, &roundtrip, sizeof(float)) != 0) return false;
     }
     return true;
+}
+
+// The quant profile the exact-stack fusion set was validated on
+// (bench/exact/q6/RESULTS.md: Q8 baseline, A3 and A4 pass; A2 aborts). Tensor
+// classes by `blk.N.<suffix>` with the types allowed for each.
+struct ExactStackRule {
+    const char * suffix;
+    ggml_type allowed[2];  // one or two types; a single type is repeated
+};
+
+const ExactStackRule kExactStackRules[] = {
+    {"attn_qkv.weight", {GGML_TYPE_Q8_0, GGML_TYPE_Q6_K}},
+    {"attn_gate.weight", {GGML_TYPE_Q8_0, GGML_TYPE_Q6_K}},
+    {"ssm_out.weight", {GGML_TYPE_Q8_0, GGML_TYPE_Q6_K}},
+    {"attn_q.weight", {GGML_TYPE_Q8_0, GGML_TYPE_Q6_K}},
+    {"attn_k.weight", {GGML_TYPE_Q8_0, GGML_TYPE_Q6_K}},
+    {"attn_v.weight", {GGML_TYPE_Q8_0, GGML_TYPE_Q6_K}},
+    {"attn_output.weight", {GGML_TYPE_Q8_0, GGML_TYPE_Q6_K}},
+    {"hc_attn_up.weight", {GGML_TYPE_Q8_0, GGML_TYPE_Q6_K}},
+    {"hc_attn_down.weight", {GGML_TYPE_Q8_0, GGML_TYPE_Q6_K}},
+    {"hc_ffn_up.weight", {GGML_TYPE_Q8_0, GGML_TYPE_Q6_K}},
+    {"hc_ffn_down.weight", {GGML_TYPE_Q8_0, GGML_TYPE_Q6_K}},
+    {"ffn_gate_shexp.weight", {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0}},
+    {"ffn_up_shexp.weight", {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0}},
+    {"ffn_down_shexp.weight", {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0}},
+    {"ffn_gate_exps.weight", {GGML_TYPE_Q4_K, GGML_TYPE_Q5_K}},
+    {"ffn_up_exps.weight", {GGML_TYPE_Q4_K, GGML_TYPE_Q5_K}},
+    {"ffn_down_exps.weight", {GGML_TYPE_Q5_1, GGML_TYPE_Q8_0}},
+};
+
+// Returns the layer index of a trunk tensor name (`blk.N.<suffix>` with
+// N < n_layer) and the suffix, or -1 for anything else (MTP sidecar, embeddings).
+int trunk_layer(const std::string & name, int n_layer, std::string & suffix) {
+    if (name.compare(0, 4, "blk.") != 0) return -1;
+    const size_t dot = name.find('.', 4);
+    if (dot == std::string::npos) return -1;
+    char * end = nullptr;
+    const long il = std::strtol(name.c_str() + 4, &end, 10);
+    if (end != name.c_str() + dot || il < 0 || il >= n_layer) return -1;
+    suffix = name.substr(dot + 1);
+    return static_cast<int>(il);
 }
 
 // One opened GGUF shard of a (possibly split) model.
@@ -560,6 +602,28 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
     out.eos_chat_id = eot == missing_token ? -1 : static_cast<int32_t>(eot);
 
     out.layers.assign(n_layer, Qwen4ExpLayer{});
+
+    // Turn the exact-stack decode fusions on for the validated profile before
+    // any graph code reads its knobs (they are latched at first compute).
+    {
+        std::vector<Qwen4ExpTensorType> types;
+        for (const ShardSource & shard : shards) {
+            const int64_t n_tensors = gguf_get_n_tensors(shard.gctx);
+            for (int64_t tid = 0; tid < n_tensors; ++tid) {
+                types.push_back({gguf_get_tensor_name(shard.gctx, tid), gguf_get_tensor_type(shard.gctx, tid)});
+            }
+        }
+        const std::string mismatch = qwen4exp_exact_stack_mismatch(types, static_cast<int>(n_layer));
+        const int applied = apply_qwen4exp_exact_stack_env(out.gfx1151, reference, mismatch);
+        if (applied < 0) {
+            std::fprintf(stderr, "[qwen4exp] exact-stack defaults: off (%s)\n",
+                         !out.gfx1151 ? "not gfx1151" : reference ? "reference mode" :
+                         !mismatch.empty() ? mismatch.c_str() : "LUCE_QWEN_EXACT_STACK=0");
+        } else {
+            std::fprintf(stderr, "[qwen4exp] exact-stack defaults: on (%d knobs set, %zu already explicit)\n",
+                         applied, qwen4exp_exact_stack_knobs().size() - applied);
+        }
+    }
 
     // Resolve a tensor by name across every shard's descriptor context.
     auto tensor = [&](const char * name) {
@@ -1045,6 +1109,54 @@ void free_qwen4exp_weights(Qwen4ExpWeights & w) {
     w.mtp_vocab_ctx = nullptr;
     reset_qwen4exp_mtp_fields(w);
     w.backend = nullptr;
+}
+
+std::string qwen4exp_exact_stack_mismatch(const std::vector<Qwen4ExpTensorType> & tensors, int n_layer) {
+    if (n_layer != 48) return "block_count " + std::to_string(n_layer) + " (contracts assume 48)";
+    int n_gdn = 0, n_attn = 0;
+    std::string suffix;
+    for (const Qwen4ExpTensorType & t : tensors) {
+        if (trunk_layer(t.name, n_layer, suffix) < 0) continue;
+        if (suffix == "ssm_out.weight") ++n_gdn;
+        if (suffix == "attn_output.weight") ++n_attn;
+        for (const ExactStackRule & rule : kExactStackRules) {
+            if (suffix != rule.suffix) continue;
+            if (t.type != rule.allowed[0] && t.type != rule.allowed[1]) {
+                return t.name + " is " + ggml_type_name(t.type);
+            }
+        }
+    }
+    if (n_gdn != 36 || n_attn != 12) {
+        return "layer mix " + std::to_string(n_gdn) + " GDN + " + std::to_string(n_attn) +
+               " attention (contracts assume 36 + 12)";
+    }
+    return "";
+}
+
+const std::vector<std::pair<const char *, const char *>> & qwen4exp_exact_stack_knobs() {
+    // bench/exact/run.sh "full 38.41 env"; MEASURE_* are driver-only and omitted.
+    static const std::vector<std::pair<const char *, const char *>> knobs = {
+        {"LUCE_QWEN_GRAPH_SH", "1"},          {"LUCE_QWEN_HC_DOWN_INJECT", "1"},
+        {"LUCE_QWEN_SHARED_OVERLAP", "1"},    {"LUCE_QWEN_QSA_CONT_ELISION", "1"},
+        {"LUCE_QWEN_EXACT_ROUTER_SUFFIX", "1"}, {"LUCE_QWEN_EXPERT_ROW_WARPS", "8"},
+        {"LUCE_HOST_PREFILL_GUARDS", "1"},    {"LUCE_QWEN_HC_SCALE_SILU", "1"},
+        {"LUCE_QWEN_HC_LO_Q8", "1"},          {"LUCE_QWEN_PRODUCER_Q8", "1"},
+        {"LUCE_QWEN_HC_UPMIX_ROW8", "1"},     {"LUCE_QWEN_SHARED_EPILOGUE", "1"},
+        {"LUCE_QWEN_GDN_AB_EXACT", "1"},      {"LUCE_GPU_ARGMAX", "1"},
+    };
+    return knobs;
+}
+
+int apply_qwen4exp_exact_stack_env(bool gfx1151, bool reference, const std::string & mismatch) {
+    const char * master = std::getenv("LUCE_QWEN_EXACT_STACK");
+    if (!gfx1151 || reference || !mismatch.empty() || (master && std::strcmp(master, "0") == 0)) return -1;
+    int applied = 0;
+    for (const auto & knob : qwen4exp_exact_stack_knobs()) {
+        if (std::getenv(knob.first)) continue;
+        setenv(knob.first, knob.second, 0);
+        ++applied;
+    }
+    return applied;
 }
 
 }  // namespace luce::common
