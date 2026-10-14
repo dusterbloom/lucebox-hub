@@ -13,6 +13,7 @@ void ggml_cuda_mmvq_fixed_q8_for_capture(char * ptr, size_t bytes, bool prequant
 #include "quantize.cuh"
 #include "unary.cuh"
 #include "vecdotq.cuh"
+#include "mmvq-routed-gu.cuh"
 
 #include <cstdint>
 #include <cstdio>
@@ -37,6 +38,7 @@ extern "C" GGML_BACKEND_API size_t ggml_backend_cuda_get_hc_upmix_row8_launch_co
 static thread_local size_t g_mmvq_launch_count = 0;
 static thread_local size_t g_mmvq_mmid_grouped_launch_count = 0;
 static thread_local size_t g_expert_row_warps_launch_count = 0;
+static thread_local size_t g_routed_gate_up_launch_count = 0;
 static thread_local const ggml_tensor * g_hc_down_inject = nullptr;
 static thread_local bool g_hc_down_inject_consumed = false;
 static thread_local size_t g_hc_down_inject_launch_count = 0;
@@ -116,6 +118,24 @@ extern "C" GGML_BACKEND_API size_t ggml_backend_cuda_get_hc_lo_fuse_debug_counts
 extern "C" GGML_BACKEND_API size_t ggml_backend_cuda_get_expert_row_warps_launch_count(void) {
     return g_expert_row_warps_launch_count;
 }
+
+extern "C" GGML_BACKEND_API size_t ggml_backend_cuda_get_routed_gate_up_launch_count(void) {
+    return g_routed_gate_up_launch_count;
+}
+
+// Two-wave gate/up split for the T=1 routed expert GEMV (mmvq-routed-gu.cuh).
+// Default on; LUCE_MMVQ_MOE_GU2W=0 restores the legacy 8-warp launch.
+static bool mmvq_routed_gate_up_two_wave_enabled() {
+    static const bool enabled = []() {
+        const char * e = std::getenv("LUCE_MMVQ_MOE_GU2W");
+        return !(e && e[0] == '0' && e[1] == '\0');
+    }();
+    return enabled;
+}
+// Production shape of the two-wave kernel: one row per wave, one pair per block
+// (lucebox4 gfx1151 microbench, bench/exact/prefill/GUFO-PARITY.md).
+#define LUCE_MMVQ_GU2W_ROWS  1
+#define LUCE_MMVQ_GU2W_PAIRS 1
 
 extern "C" size_t ggml_backend_cuda_get_mmvq_launch_count(void) {
     return g_mmvq_launch_count;
@@ -2614,6 +2634,15 @@ static void mul_mat_vec_q_switch_ncols_dst(
             nchannels_x == 512 && nchannels_dst == 10 && nchannels_y == (gu ? 1 : 10) &&
             nsamples_x == 1 && nsamples_dst == 1 && (gu || down) && nrows_x % 8 == 0 &&
             !fusion.x_bias && !fusion.gate_bias && (!fusion.gate || (gu && fusion.glu_op == GGML_GLU_OP_SWIGLU))) {
+            if constexpr (type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K) {
+                if (gu && fusion.gate && mmvq_routed_gate_up_two_wave_enabled()) {
+                    launch_mul_mat_vec_q_routed_gate_up<type, LUCE_MMVQ_GU2W_ROWS, LUCE_MMVQ_GU2W_PAIRS>(
+                        fusion.gate, vx, vy, ids, dst, ncols_x, nrows_x, nchannels_dst,
+                        stride_row_x, stride_channel_x, stride_channel_dst, warp_size, stream);
+                    ++g_routed_gate_up_launch_count;
+                    return;
+                }
+            }
             mul_mat_vec_q_switch_fusion<type, 1, false, 0, false, false, false, false, false, 8>(
                 vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
                 channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst, sample_ratio_fd,
@@ -3608,4 +3637,45 @@ void ggml_cuda_op_mul_mat_vec_q(
         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, stream);
 
     GGML_UNUSED_VARS(src1, dst, src1_ddf_i, src1_ncols, src1_padded_row_size);
+}
+
+// Test / bench entry for the T=1 routed gate/up GEMV: launches the production
+// kernels with the production MUL_MAT_ID strides for one token
+// (ids[nchannels_dst], y = one q8_1 row, dst[nchannels_dst][nrows_x]).
+// variant 0: legacy 8-warp mul_mat_vec_q (one wave walks gate and up),
+// variant 1: the two-wave gate/up split of mmvq-routed-gu.cuh.
+extern "C" GGML_BACKEND_API void ggml_backend_cuda_launch_mmvq_routed_gate_up(
+        int type_, const void * up, const void * gate, const void * y_q8_1, const int32_t * ids, float * dst,
+        int ncols_x, int nrows_x, int nchannels_dst, int variant, cudaStream_t stream) {
+    const ggml_type type = (ggml_type) type_;
+    GGML_ASSERT(type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K);
+    GGML_ASSERT(ncols_x % 512 == 0 && nrows_x % 8 == 0);
+    const int warp_size = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
+    const uint32_t stride_row_x = ncols_x / ggml_blck_size(type);
+    const uint32_t stride_col_y = ncols_x / QK8_1;
+    const uint32_t stride_channel_x = nrows_x*stride_row_x;
+    const uint32_t stride_channel_dst = nrows_x;
+    const uint32_t stride_col_dst = nrows_x*nchannels_dst;
+    ggml_cuda_mm_fusion_args_device fusion{};
+    fusion.gate = gate;
+    fusion.glu_op = GGML_GLU_OP_SWIGLU;
+    auto run = [&](auto type_tag) {
+        constexpr ggml_type T = decltype(type_tag)::value;
+        if (variant == 1) {
+            launch_mul_mat_vec_q_routed_gate_up<T, LUCE_MMVQ_GU2W_ROWS, LUCE_MMVQ_GU2W_PAIRS>(
+                gate, up, y_q8_1, ids, dst, ncols_x, nrows_x, nchannels_dst,
+                stride_row_x, stride_channel_x, stride_channel_dst, warp_size, stream);
+            return;
+        }
+        GGML_ASSERT(variant == 0);
+        mul_mat_vec_q_switch_fusion<T, 1, false, 0, false, false, false, false, false, 8>(
+            up, y_q8_1, ids, fusion, dst, ncols_x, init_fastdiv_values(1), stride_row_x, stride_col_y, stride_col_dst,
+            make_uint3(0, 0, 0), stride_channel_x, stride_col_y, stride_channel_dst, init_fastdiv_values(1),
+            1, 1, 1, dim3(nrows_x/8, nchannels_dst, 1), dim3(warp_size, 8, 1), 0, nchannels_dst, stream);
+    };
+    if (type == GGML_TYPE_Q4_K) {
+        run(std::integral_constant<ggml_type, GGML_TYPE_Q4_K>{});
+    } else {
+        run(std::integral_constant<ggml_type, GGML_TYPE_Q5_K>{});
+    }
 }

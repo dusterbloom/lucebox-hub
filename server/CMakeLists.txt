@@ -1258,6 +1258,23 @@ if(LUCE_TESTS)
             hip::host)
         list(APPEND _raw_unit_test_targets test_mmid_bounded_parity)
 
+        # Guards the two-wave routed gate/up GEMV (mmvq-routed-gu.cuh) that
+        # replaces the legacy 8-warp launch on the Qwen4exp T=1 decode path:
+        # byte-identical dst vs the legacy kernel for Q4_K/Q5_K on random
+        # weights, activations and masked routings.
+        add_executable(test_mmvq_routed_gate_up_parity test/unit/test_mmvq_routed_gate_up_parity.cpp)
+        set_source_files_properties(test/unit/test_mmvq_routed_gate_up_parity.cpp PROPERTIES LANGUAGE HIP)
+        set_target_properties(test_mmvq_routed_gate_up_parity PROPERTIES HIP_ARCHITECTURES "${_luce_archs}")
+        target_compile_definitions(test_mmvq_routed_gate_up_parity PRIVATE GGML_USE_HIP)
+        target_include_directories(test_mmvq_routed_gate_up_parity PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include)
+        target_link_libraries(test_mmvq_routed_gate_up_parity PRIVATE
+            ggml
+            ggml-base
+            ${LUCE_GGML_BACKEND_TARGET}
+            hip::host)
+        list(APPEND _raw_unit_test_targets test_mmvq_routed_gate_up_parity)
+
         # Guards the exact-stack default policy (qwen4exp_loader.cpp): the 38.41
         # decode fusion set turns itself on only for the validated quant
         # profile; the master switch and explicitly set knobs win. Pure, no GPU.

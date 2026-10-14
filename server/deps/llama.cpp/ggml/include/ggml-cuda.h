@@ -36,6 +36,7 @@ extern "C" {
 // backend API
 GGML_BACKEND_API ggml_backend_t ggml_backend_cuda_init(int device);
 GGML_BACKEND_API size_t ggml_backend_cuda_get_expert_row_warps_launch_count(void);
+GGML_BACKEND_API size_t ggml_backend_cuda_get_routed_gate_up_launch_count(void);
 
 // Opt-in Qwen4Exp T=1 shared-expert overlap. The graph builder supplies
 // exact tensor identities; the CUDA backend validates the complete plan before
