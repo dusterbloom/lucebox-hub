@@ -3,11 +3,13 @@
 // K = 2560 -> M = 640, gate/up Q4_K or Q5_K.
 //
 // The legacy path (mul_mat_vec_q<..., row_warps = 8>) has one wave walk a row
-// of gate AND the same row of up, so every wave drives two weight streams
-// 1.5 GB apart.  Here a block is c_pairs pairs of waves: wave 2p streams
-// c_rows adjacent rows of gate, wave 2p+1 the same rows of up, and the pair
-// combines through LDS.  Each wave now streams one contiguous row set, which
-// is what gufo's mul_mat_vec_q_moe<Q4_K, 2, true> does.
+// of gate AND the same row of up.  Here a block is c_pairs pairs of waves:
+// wave 2p streams c_rows rows of gate, wave 2p+1 the same rows of up, and the
+// pair combines through LDS, the shape of gufo's mul_mat_vec_q_moe<Q4_K, 2,
+// true>.  The lucebox4 gfx1151 microbench (GUFO-PARITY.md, "Decode routed
+// gate/up GEMV") showed the split by itself is neutral; the gain is the
+// branch-free Q4_K scale pair below, which this self-contained kernel can use
+// without touching every other Q4_K MMVQ launch in vecdotq.cuh.
 //
 // Exactness: the lane -> K-block mapping (kbx = lane / (qi/vdr) + iter *
 // blocks_per_iter), the per-lane accumulation order, warp_reduce_sum and the

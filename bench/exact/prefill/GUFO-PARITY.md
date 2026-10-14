@@ -2030,3 +2030,85 @@ Greedy-64 at temp 0 on `prompt_decode512_r0` (289 chars) and `prompt_p4096_r0`
    measured the quality delta; would stay opt-in and change the served model).
 3. Fusing the 256 per-token `quantize_q8_1` launches into their producers
    (<=0.5 ms, graph replay already hides most of the launch cost).
+
+## Decode routed gate/up GEMV (lucebox4, 2026-10-14)
+
+Item 1 above, shipped: `mmvq-routed-gu.cuh`, `mul_mat_vec_q_routed_gate_up`,
+on by default for the Qwen4exp T=1 profile, `LUCE_MMVQ_MOE_GU2W=0` restores
+the 8-warp `mul_mat_vec_q<Q4_K,1,true,...,8>` launch. Harness in
+`bench/exact/decodemoe/` (microbench, A/B, in-situ profile summariser).
+
+### The 119.7 vs 94.7 was mostly an in-situ artifact, not a kernel deficit
+
+Isolated microbench on the lucebox4 gfx1151 (`gu_bench.hip`: 512 experts,
+10 routed, gate/up 2560->640 Q4_K, T=1, four weight copies rotated per call so
+the 18.4 MB working set never comes from the 32 MB MALL; gufo's
+`mul_mat_vec_q_moe<Q4_K,2,true>` compiled from its vendored `mmvq.hip.cpp`
+(MIT) on identical buffers; medians of 800 per-call events and median of 30
+back-to-back 47-call batches; three runs agreed to 0.3 us):
+
+| kernel | per call median us | per call min | 47-call batch avg us | vs legacy dst |
+|---|---:|---:|---:|---|
+| legacy `mul_mat_vec_q<..., row_warps=8>` (wave walks gate and up) | 90.1-90.6 | 88.0 | 86.3-87.5 | reference |
+| **new `mul_mat_vec_q_routed_gate_up<1,1>` (default)** | **85.4-85.5** | 83.3 | **82.1-82.8** | bit-identical |
+| gufo `mul_mat_vec_q_moe<Q4_K,2,true>` | 85.7-86.6 | 83.8 | 82.5-83.8 | 25504/32000 exact, max 13 ulp (its `x*(1/(1+__expf(-x)))` silu) |
+| split rows=1 pairs=1, branchy scales | 91.5-91.8 | 89.0 | 88.7-89.1 | bit-identical |
+| split rows=2 pairs=1, scale pair (gufo's shape) | 86.7-87.6 | 85.2 | 83.4-84.8 | bit-identical |
+| split rows=4 pairs=1 | 87.5-89.2 | 85.7 | 85.4-87.4 | bit-identical |
+| split rows=1 pairs=2 / pairs=4 (8 waves per block) | 85.6-85.8 / 85.8 | 83.7 / 84.1 | 82.4-83.1 / 83.0 | bit-identical |
+
+Floor: 18.4 MB of expert bytes per call at 220 GB/s = 83.7 us; the new
+kernel's 47-call batch average sits on it. In isolation the legacy kernel was
+never 26% slower than gufo's, it was 4.5% slower (90.5 vs 86.5), and the gap
+is not the wave split: the split with the stock `vec_dot_q4_K_q8_1` is as slow
+as the legacy launch (91.5). The whole win is gufo's `q4_K_scale_pair`: the
+twelve Q4_K scale bytes read as three words with both packings formed before
+a select, instead of `if (j < 2) ... else ...` on the sub-block index, which
+made the compiler sink the third word's load into the `j >= 2` side so its
+wait covered every load the wave had in flight. Integer-only, same aux words,
+same float math, so bit-identical. The two-wave kernel is kept because it is
+self-contained (the scale pair is local to it; `vecdotq.cuh` is untouched for
+every other Q4_K MMVQ launch) and matches gufo's structure; rows=1 pairs=1
+(grid 640 x 10, 2 waves per block) is the fastest shape. Register profiles are
+the same (new 42 VGPRs / 22 SGPRs, gufo 44 / 22, 16 waves/SIMD, no spills).
+
+In situ (rocprofv3 kernel trace of the server, 32 decode tokens, last request,
+`insitu.py`): legacy median 120.8 us (mean 119.8, the 119.7 of the ledger
+above), new 108.8 us (mean 111.3); routed down kernels unchanged (Q5_1 62.6 vs
+62.2, Q8_0 85.8 vs 86.1). The in-situ number is ~30 us above the isolated one
+on both of ours because `LUCE_QWEN_SHARED_OVERLAP=1` runs the shared-expert
+Q8_0 GEMV on stream 1 concurrently with the routed gate/up, so the routed
+kernel's duration includes shared bandwidth; gufo serialises, so its 94.7 is
+an isolated-style number. Comparing the two in-situ durations measured the
+overlap, not the kernel; the honest per-kernel gap was 4.5%, now -0.3%.
+
+### A/B: one binary, `LUCE_MMVQ_MOE_GU2W` toggle (`ab_gu2w.sh ab1 5 2`)
+
+Same protocol as the exact-stack A/B above: `luce_server` md5 983c73cc with
+`libggml-hip.so.0.9.11` md5 c6d91c68 (the kernel lives in the shared backend,
+so the server binary hash alone does not change), `--max-ctx 20480`,
+`--prefix-cache-slots 0`, `prefix_len=0` on every request, exact-stack
+defaults on in all arms, arms alternated across restarts, 2 rounds x 5 reps,
+warm-up dropped, no `drop_caches`.
+
+| metric | old median | new median | delta | old-vs-old spread | verdict |
+|---|---:|---:|---:|---:|---|
+| decode tok/s (ms/token) | 28.32 (35.32) | 28.58 (34.99) | +0.92% (-0.32 ms) | 0.09% | real (2x rule) |
+| p4096 prefill tok/s | 1292.9 | 1287.0 | -0.45% | 0.35% | inside noise (kernel not on the prefill path) |
+| p16384 prefill tok/s | 1349.8 | 1343.4 | -0.48% | 1.28% | inside noise |
+
+Per-rep decode: old [28.29, 27.41, 28.32, 28.29, 28.31 / 28.32, 27.45, 28.34,
+28.33, 28.32], new [28.58, 28.55, 28.61, 28.57, 28.59 / 28.57, 27.65, 28.59,
+28.56, 28.58]. -0.32 ms/token is 47 x 6.8 us, the isolated delta (47 x 5 us =
+0.24 ms) plus a little of the overlap relief. Greedy-64 at temp 0 on
+`prompt_decode512_r0` (289 chars) and `prompt_p4096_r0` (232 chars):
+all four arms byte-identical, as the parity test predicts
+(`test_mmvq_routed_gate_up_parity`, LUCE_TESTS: Q4_K and Q5_K, K/M =
+2560/640, 512/8, 1024/72, masked routes, dst byte-identical to the legacy
+kernel; passes on lucebox4).
+
+Remaining decode gap on identical bytes vs gufo `GUFO_DECODE_Q5=0`: 35.0 vs
+33.9 ms/token (~1.1 ms); the ranked remainder above is unchanged except item
+1, and the shared-expert overlap now makes in-situ kernel durations of the
+routed class non-comparable to gufo's, so the next ledger must be isolated
+microbenches or total-time deltas, not per-kernel rocprof rows.
