@@ -3,10 +3,9 @@
 // as the default (LUCE_GATED_NORM_WAVE=0 restores the old family).
 //
 // Claim under test: for the qwen4exp GDN tail (ncols = 128, gamma per head,
-// z the [ncols*nh, T] gate projection) and the attention output gate
-// (gamma == NULL, ncols = 256, z a strided [ncols, nh, T] view), both kernel
-// families emit byte-identical F16 for every (head, token) row, including
-// row counts that leave a partial block.
+// z the [ncols*nh, T] gate projection) both kernel families emit byte-identical
+// F16 for every (head, token) row, including row counts that leave a partial
+// block. (The 256-wide gamma == NULL gate stays on the block kernel.)
 //
 // The launcher is declared with hipStream_t (the HIP build maps cudaStream_t
 // to it), same as test_gdn_rowsplit_parity.
@@ -37,14 +36,13 @@ struct Dev {
     ~Dev() { if (p) hipFree(p); }
 };
 
-// norm: GDN tail shape (x contiguous [128, nh, T], gamma [128, gamma_rows], z [128*nh, T]).
-// !norm: attention gate shape (x [256, nh, T], z a view with head stride 2*256 and token stride 2*256*nh).
-bool run_case(bool norm, int nh, int T, int gamma_rows) {
-    const int ncols = norm ? 128 : 256;
+// GDN tail shape: x contiguous [128, nh, T], gamma [128, gamma_rows], z [128*nh, T].
+bool run_case(int nh, int T, int gamma_rows) {
+    const int ncols = 128;
     std::mt19937 rng(99 + nh * 7 + T);
     std::normal_distribution<float> nd(0.f, 1.f);
     const size_t n = (size_t) ncols * nh * T;
-    const int64_t z_sh = norm ? ncols : 2 * ncols, z_st = norm ? (int64_t) ncols * nh : (int64_t) 2 * ncols * nh;
+    const int64_t z_sh = ncols, z_st = (int64_t) ncols * nh;
     std::vector<float> x(n), z((size_t) z_st * T), g((size_t) ncols * gamma_rows);
     for (float & v : x) v = 3.0f * nd(rng);
     for (float & v : z) v = 2.0f * nd(rng);
@@ -61,7 +59,7 @@ bool run_case(bool norm, int nh, int T, int gamma_rows) {
     std::vector<uint16_t> out[2];
     for (int arm = 0; arm < 2; ++arm) {
         (void) hipMemset(dout.p, 0xff, n * 2);
-        if (!ggml_cuda_test_gated_rms_norm_f16(arm, (const float *) dx.p, norm ? (const float *) dg.p : nullptr,
+        if (!ggml_cuda_test_gated_rms_norm_f16(arm, (const float *) dx.p, (const float *) dg.p,
                 (const float *) dz.p, dout.p, ncols, nh, T, ncols, (int64_t) ncols * nh, z_sh, z_st, gamma_rows,
                 1e-6f, (hipStream_t) 0) || hipDeviceSynchronize() != hipSuccess) {
             std::printf("  arm %d launch failed\n", arm);
@@ -86,8 +84,8 @@ bool run_case(bool norm, int nh, int T, int gamma_rows) {
     bool finite = true;
     for (size_t i = 0; i < n; ++i) if ((out[0][i] & 0x7c00) == 0x7c00) finite = false;
     const bool ok = mismatches == 0 && finite;
-    std::printf("[gated-norm-wave-parity] %s nh=%d T=%d gamma_rows=%d rows=%d: %zu/%zu mismatching F16 (first %zd)%s %s\n",
-                norm ? "norm128" : "gate256", nh, T, gamma_rows, nh * T, mismatches, n, first == n ? (ptrdiff_t) -1 : (ptrdiff_t) first,
+    std::printf("[gated-norm-wave-parity] norm128 nh=%d T=%d gamma_rows=%d rows=%d: %zu/%zu mismatching F16 (first %zd)%s %s\n",
+                nh, T, gamma_rows, nh * T, mismatches, n, first == n ? (ptrdiff_t) -1 : (ptrdiff_t) first,
                 finite ? "" : " NON-FINITE", ok ? "ok" : "FAIL");
     return ok;
 }
@@ -102,13 +100,10 @@ int main() {
         return 77;
     }
     bool ok = true;
-    ok = run_case(true, 48, 1, 1) && ok;       // decode row
-    ok = run_case(true, 48, 7, 1) && ok;       // partial block of waves
-    ok = run_case(true, 48, 333, 48) && ok;    // per-head gamma
-    ok = run_case(true, 48, 4096, 1) && ok;    // prefill chunk
-    ok = run_case(false, 24, 1, 1) && ok;
-    ok = run_case(false, 24, 333, 1) && ok;
-    ok = run_case(false, 24, 4096, 1) && ok;
+    ok = run_case(48, 1, 1) && ok;       // decode row
+    ok = run_case(48, 7, 1) && ok;       // partial block of waves
+    ok = run_case(48, 333, 48) && ok;    // per-head gamma
+    ok = run_case(48, 4096, 1) && ok;    // prefill chunk
     std::printf("[gated-norm-wave-parity] %s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 #else

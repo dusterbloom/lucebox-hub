@@ -19,8 +19,8 @@ extern "C" GGML_BACKEND_API int ggml_cuda_test_gdn_q8_producer(
         const float * x, const float * gamma, const float * z, float * dst,
         block_q8_1 * q8, int gamma_rows, float eps, void * stream);
 
-// Parity-test entry point: runs the block-per-row (wave == 0) or wave-per-row (wave != 0) gated norm family on raw
-// device pointers with the op's stride contract (gamma == NULL selects the sigmoid(z) * x gate).
+// Parity-test entry point: runs the block-per-row (wave == 0) or wave-per-row (wave != 0, gamma && ncols == 128 only;
+// other shapes fall back to the block kernels) gated norm family on raw device pointers with the op's stride contract.
 extern "C" { GGML_BACKEND_API int ggml_cuda_test_gated_rms_norm_f16(int wave,
         const float * x, const float * gamma, const float * z, void * dst,
         int ncols, int nh, int T, int64_t x_s1, int64_t x_s2, int64_t z_sh, int64_t z_st, int gamma_rows, float eps,

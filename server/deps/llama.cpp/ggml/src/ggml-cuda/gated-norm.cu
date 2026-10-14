@@ -85,17 +85,17 @@ static __global__ void gated_rms_norm2_kernel(const float * x, const float * gam
     }
 }
 
-// Wave-per-row variants (LUCE_GATED_NORM_WAVE=0 restores the block-per-row kernels above). One 32-lane wave owns
-// ROWS (head, token) rows in turn; lane l holds columns l, 32+l, 64+l, ... -- exactly the values that warp w of the
-// 128/256-thread mapping held in lane l -- so for the ncols == 128 norm the four per-warp xor-tree partials p_w and
-// their (p0+p2)+(p1+p3) combination (what block_reduce's second stage computes over [p0..p3, 0, ...]) reproduce
-// gated_rms_norm2_kernel<false> bit for bit, with no LDS and no block barrier. NORM = false is the elementwise
-// sigmoid(z) * x gate (any ncols % 32 == 0), bit-exact to gated_rms_norm_f16_kernel<256, false> trivially.
-// 8 waves per block; the block-per-row kernels launch nh*T blocks of 256 threads for 128..256 elements each.
-template <bool NORM, int ROWS>
-static __global__ void __launch_bounds__(256) gated_rms_norm_wave_kernel(const float * x, const float * gamma, const float * z,
-        half * dst, const int ncols, const int nh, const int64_t n_rows, const int64_t x_s1, const int64_t x_s2,
-        const int64_t z_sh, const int64_t z_st, const int gamma_rows, const float eps) {
+// Wave-per-row ncols == 128 norm (LUCE_GATED_NORM_WAVE=0 restores gated_rms_norm2_kernel). One 32-lane wave owns
+// ROWS (head, token) rows in turn; lane l holds columns l, 32+l, 64+l, 96+l -- exactly the values that warp w of the
+// 128-thread mapping held in lane l -- so the four per-warp xor-tree partials p_w and their (p0+p2)+(p1+p3)
+// combination (what block_reduce's second stage computes over [p0..p3, 0, ...]) reproduce gated_rms_norm2_kernel<false>
+// bit for bit, with no LDS and no block barrier. 8 waves per block. (A wave-per-row version of the gamma == NULL
+// 256-wide gate was measured slower than the block kernel on gfx1151, 1.90 vs 1.54 ms at T=4131, so it was dropped.)
+template <int ROWS>
+static __global__ void __launch_bounds__(256) gated_rms_norm_wave_kernel(const float * __restrict__ x,
+        const float * __restrict__ gamma, const float * __restrict__ z, half * __restrict__ dst, const int ncols,
+        const int nh, const int64_t n_rows, const int64_t x_s1, const int64_t x_s2, const int64_t z_sh,
+        const int64_t z_st, const int gamma_rows, const float eps) {
     const int lane = threadIdx.x & 31;
     const int64_t row0 = ((int64_t) blockIdx.x * 8 + (threadIdx.x >> 5)) * ROWS;
     for (int r = 0; r < ROWS; ++r) {
@@ -105,29 +105,27 @@ static __global__ void __launch_bounds__(256) gated_rms_norm_wave_kernel(const f
         const float * xr = x + t * x_s2 + (int64_t) h * x_s1;
         const float * zr = z + t * z_st + (int64_t) h * z_sh;
         half * d = dst + row * ncols;
-        if constexpr (!NORM) {
-            for (int col = lane; col < ncols; col += 32) d[col] = gn_f2h_sat(gn_sigmoid(zr[col]) * xr[col]);
-        } else {
-            float xv[4], p[4];
+        // All loads of a row are issued before its first store so the memory latency overlaps.
+        float xv[4], p[4], zv[4], gv[4];
+        const float * g = gamma + (int64_t) (h % gamma_rows) * ncols;
 #pragma unroll
-            for (int j = 0; j < 4; ++j) {
-                // The HIP device build runs -ffp-contract=fast-honor-pragmas: without this pragma the square is
-                // contracted into warp_reduce_sum's first add (fma(x, x, shfl)), which the block kernels never do.
+        for (int j = 0; j < 4; ++j) { zv[j] = zr[lane + 32 * j]; gv[j] = g[lane + 32 * j]; }
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            // The HIP device build runs -ffp-contract=fast-honor-pragmas: without this pragma the square is
+            // contracted into warp_reduce_sum's first add (fma(x, x, shfl)), which the block kernels never do.
 #pragma clang fp contract(off)
-                xv[j] = xr[lane + 32 * j];
-                const float sq = xv[j] * xv[j];
-                p[j] = warp_reduce_sum(sq);
-            }
-            const float tmp   = (p[0] + p[2]) + (p[1] + p[3]);
-            const float mean  = tmp / ncols;
-            const float scale = rsqrtf(mean + eps);
-            const float * g  = gamma + (int64_t) (h % gamma_rows) * ncols;
+            xv[j] = xr[lane + 32 * j];
+            const float sq = xv[j] * xv[j];
+            p[j] = warp_reduce_sum(sq);
+        }
+        const float tmp   = (p[0] + p[2]) + (p[1] + p[3]);
+        const float mean  = tmp / ncols;
+        const float scale = rsqrtf(mean + eps);
 #pragma unroll
-            for (int j = 0; j < 4; ++j) {
-                const int col = lane + 32 * j;
-                const float v = scale * xv[j] * g[col];
-                d[col] = gn_f2h_sat(gn_sigmoid(zr[col]) * v);
-            }
+        for (int j = 0; j < 4; ++j) {
+            const float v = scale * xv[j] * gv[j];
+            d[lane + 32 * j] = gn_f2h_sat(gn_sigmoid(zv[j]) * v);
         }
     }
 }
@@ -148,11 +146,8 @@ static void gated_rms_norm_f16_launch(bool wave, const float * x, const float * 
     const int64_t n_rows = (int64_t) nh * T;
     const unsigned blocks = (unsigned) ((n_rows + 8 * ROWS - 1) / (8 * ROWS));
     if (wave && gamma && ncols == 128) {
-        gated_rms_norm_wave_kernel<true, ROWS><<<blocks, 256, 0, stream>>>(
+        gated_rms_norm_wave_kernel<ROWS><<<blocks, 256, 0, stream>>>(
             x, gamma, z, dst, ncols, nh, n_rows, x_s1, x_s2, z_sh, z_st, gamma_rows, eps);
-    } else if (wave && !gamma && ncols % 32 == 0) {
-        gated_rms_norm_wave_kernel<false, ROWS><<<blocks, 256, 0, stream>>>(
-            x, nullptr, z, dst, ncols, nh, n_rows, x_s1, x_s2, z_sh, z_st, 1, eps);
     } else if (gamma && ncols <= 128) {
         gated_rms_norm2_kernel<false><<<dim3((unsigned) ((nh + 1) / 2), (unsigned) T, 1), 256, 0, stream>>>(
             x, gamma, z, dst, nullptr, ncols, nh, x_s1, x_s2, z_sh, z_st, gamma_rows, eps);
@@ -186,7 +181,7 @@ void ggml_cuda_op_gated_rms_norm_f16(ggml_backend_cuda_context & ctx, ggml_tenso
     const int64_t z_st = z->ne[0] == ncols * nh ? (int64_t) (z->nb[1] / sizeof(float)) : (int64_t) (z->nb[2] / sizeof(float));
     const dim3 grid((unsigned) nh, (unsigned) T, 1);
     const int64_t x_s1 = (int64_t) (x->nb[1] / sizeof(float)), x_s2 = (int64_t) (x->nb[2] / sizeof(float));
-    if (gated_norm_wave_enabled() && ((gamma && ncols == 128) || (!gamma && ncols % 32 == 0))) {
+    if (gated_norm_wave_enabled() && gamma && ncols == 128) {
         gated_rms_norm_f16_launch(true, (const float *) x->data, gamma ? (const float *) gamma->data : nullptr,
             (const float *) z->data, (half *) dst->data, ncols, nh, T, x_s1, x_s2, z_sh, z_st,
             gamma ? (int) (ggml_nelements(gamma) / ncols) : 1, eps, ctx.stream());
