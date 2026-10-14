@@ -1,0 +1,101 @@
+[server] load balancing disabled; primary=luce target=auto:0
+[server] loading tokenizer from /home/duster/models/Qwen3.8-27B-UD-Q4_K_M.gguf
+[tokenizer] added_tokens: 33 special tokens
+[tokenizer] loaded vocab=248320 merges=247587 bos=248044 eos=248046 eot=248046 pre=qwen35 sp=no
+[server] creating backend...
+[backend_factory] detected arch=qwen35
+ggml_cuda_init: found 1 ROCm devices (Total VRAM: 32624 MiB):
+  Device 0: AMD Radeon Graphics, gfx1201 (0x1201), VMM: no, Wave Size: 32, VRAM: 32624 MiB
+[loader] ignoring 1 embedded NextN/MTP block: target_layers=64 total_blocks=65
+[loader] stacked 71 projection pairs (zero-copy aliases)
+[loader] eos_id=248046 eos_chat_id=-1
+[target] target loaded: layers [0,64) output=1, 850 tensors on GPU 14.33 GiB, tok_embd 682 MiB CPU-only (q4_K)
+[kvflash] resident pool 8192 tokens (logical max_ctx 131072), tau=64, policy=lru (recency-only: no Qwen3-0.6B drafter found next to the model or in --prefill-drafter)
+[server] gguf meta: general.name='Qwen3.8-27B' general.architecture='qwen35'
+[model_card] no share/model_cards/ directory found; tried 4 candidate(s)
+[model_card] using family fallback for arch='qwen35'
+[server] effort-tier ceiling = max_ctx(131072) - hard_limit_reply_budget(4096) = 126976
+
+[server] ╭─── Configuration ───────────────────────────────────╮
+[server] │  host            = 127.0.0.1
+[server] │  port            = 18291
+[server] │  model           = /home/duster/models/Qwen3.8-27B-UD-Q4_K_M.gguf
+[server] │  draft           = (none)
+[server] │  model_name      = luce
+[server] │  max_ctx         = 131072
+[server] │  model_card      = family:qwen35
+[server] │  max_tokens      = 32768 (family:qwen35)
+[server] │  think_max_tokens= 28672 (family:qwen35)
+[server] │  hard_limit_reply= 4096 (family:qwen35)
+[server] │  effort tiers    = low=3584 (family:qwen35)
+[server] │                    medium=14336 (family:qwen35)
+[server] │                    high=28672 (family:qwen35)
+[server] │                    x-high=28672 (family:qwen35)
+[server] │                    max=28672 (family:qwen35)
+[server] │  target_device   = auto:0
+[server] │  target_split    = layer
+[server] │  draft_device    = auto:0
+[server] │  draft_exec      = local
+[server] │  peer_access     = off
+[server] │  chunk           = 512
+[server] │  admission_wait  = 20 ms
+[server] │  fa_window       = 0
+[server] │  ddtree          = off
+[server] │  specla          = off
+[server] │  fast_rollback   = ON
+[server] │  ddtree_budget   = 22
+[server] │  prefix_cache    = 32 slots
+[server] │  prefix_cache_ram= 7960 MiB resident limit (auto)
+[server] │  agent_turn_cache= off
+[server] │  prefill_cache   = 0 slots
+[server] │  cors            = ON
+[server] │  cache_type_k    = q4_0
+[server] │  cache_type_v    = q4_0
+[server] │  pflash          = off
+[server] │  draft_residency = auto
+[server] ╰─────────────────────────────────────────────────────╯
+
+[server] level-2 force-close (marker-only, 8 chars → 1 tokens, hard_limit_reply_budget = 4096)
+[server] level-2 force-close token ids: 248069
+[pc] enabled: cap=32 family=qwen resident_budget=7960 MiB
+[disk-cache] scanned 8 files, 1951.5 MB (0 removed)
+[disk-cache] budget 96.1 GB (configured 128.0 GB, free space 110.1 GB)
+[disk-cache] initialized dir=/home/duster/.cache/lucebox/kv-cache budget=96.1 GB (configured 128.0 GB) ttl=259200s files=8 used=1951.5 MB layout=6631602a5a8072fd8567a8da1dcd758f
+[ppp] enabled=1 rearrange=0 lcp_window=8 min_pin=512 max_ephemeral=256
+[server] model luce automatic decode KV offload budget: 0 bytes
+[server] listening on http://127.0.0.1:18291
+[server] request path=/v1/chat/completions body_bytes=3002
+[server] chat chatcmpl_0000000000000000 format=chat stream=true msgs=1 tools=0 prompt_tokens=1319 max_tokens=4 max_ctx=131072 thinking=false reasoning_effort=none started_in_thinking=false stops=0 grammar=off model=luce
+[server] chat START chatcmpl_0000000000000000 format=chat stream=true prompt_tokens=1319 max_tokens=4 tools=0
+[disk-cache] read c24359074aa246bafcea4b27174c79ae.dkv (1313 pos, 236.8 MB, 0.07s)
+[qwen35] snapshot adopted slot=63 pos=1313 last_tok=248045
+[disk-cache] hit policy=full len=1313 slot=63 pos=1313 (RAM had 0)
+[pc] inline snap blocked: boundaries=1 restored=1313 target<=0 (deepen target not past restored prefix; logged once)
+[server] chat CACHE chatcmpl_0000000000000000 restore=true slot=63 prefix_len=1313 effective_prompt=1319 pflash=false disk_policy=full disk_hit=true snap_slot=-1 snap_pos=0 full_snap_slot=-1 full_snap_pos=0
+[ar-decode] tokens=4 time=0.152 s speed=26.39 tok/s
+[vram] released scratch buffers; trimmed 12.9 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000000 ok=true in=1319 effective_in=1319 out=4 0.5s 8.4 tok/s finish=length restore=true slot=63 prefix_len=1313 prefill=0.2s decode=0.2s(26.4tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=19706
+[server] chat chatcmpl_0000000000000001 format=chat stream=true msgs=2 tools=0 prompt_tokens=9287 max_tokens=64 max_ctx=131072 thinking=false reasoning_effort=none started_in_thinking=false stops=0 grammar=off model=luce
+[server] chat START chatcmpl_0000000000000001 format=chat stream=true prompt_tokens=9287 max_tokens=64 tools=0
+[server] chat CACHE chatcmpl_0000000000000001 restore=false slot=-1 prefix_len=0 effective_prompt=9287 pflash=false disk_policy=full disk_hit=false snap_slot=0 snap_pos=9281 full_snap_slot=-1 full_snap_pos=0
+[kvflash] live restore: L=1 C=-1 replay=9287
+[kvflash] pooled prefill: 9287 tokens through a 8192-token pool (64-token chunks, ubatch=512, evicting)
+[snap] alloc right-sized: cur_pos=8192 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @8192 (149.6 MiB each, 1 held, 149.6 MiB)
+[snap] alloc right-sized: cur_pos=9216 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @9216 (149.6 MiB each, 2 held, 299.2 MiB)
+[snap] alloc right-sized: cur_pos=9216 buf=349.62 MiB backend=CPU
+[snap] pooled boundary slot=0 cur_pos=9216 (req snap_pos=9281 chunks=144)
+[snap] alloc right-sized: cur_pos=9283 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @9283 (149.6 MiB each, 3 held, 448.9 MiB)
+[ar-decode] tokens=16 time=0.572 s speed=27.97 tok/s
+[snap] alloc right-sized: cur_pos=9302 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @9302 (149.6 MiB each, 4 held, 598.5 MiB)
+[kvflash] gen ckpt @9302
+[vram] released scratch buffers; trimmed 93.2 MiB from device pools
+[pc] inline snapshot requested=9281 saved=9216 slot=0
+[pc] inline-snap committed slot=0 prefix_len=9281 protect=0 bytes=536477696 resident=536477696
+[server] chat DONE chatcmpl_0000000000000001 ok=true in=9287 effective_in=9287 out=16 11.7s 1.4 tok/s finish=stop restore=false slot=-1 prefix_len=0 prefill=11.1s decode=0.6s(28.0tok/s) error=- detail=-
+[disk-cache] shutdown flush: 0 snapshots queued (0 edit backups not written), 0 files 0.0 MB written in 0.01s (limit 120s; 0 writes and 0 snapshots dropped by it)
+[disk-cache] shutdown flush: 0 snapshots queued (0 edit backups not written), 0 files 0.0 MB written in 0.00s (limit 120s; 0 writes and 0 snapshots dropped by it)

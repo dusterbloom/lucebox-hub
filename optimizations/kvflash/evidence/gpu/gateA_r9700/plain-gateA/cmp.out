@@ -1,0 +1,14 @@
+turn ptok A_pf B_pf A_tps B_tps B_restore identical
+1 11606 12.0 12.4 27.8 27.9 L=1 C=-1 replay=11606 True
+2 11958 11.7 0.6 26.9 27.0 L=11602 C=11602 replay=356 True
+3 12404 12.1 0.7 26.9 27.0 L=11954 C=11954 replay=450 True
+4 12613 12.4 0.4 26.9 27.0 L=12400 C=12400 replay=213 True
+5 12898 12.7 0.5 26.9 27.1 L=12609 C=12609 replay=289 True
+6 13265 13.1 0.5 26.9 27.1 L=12894 C=12894 replay=371 True
+7 13711 13.5 0.7 26.9 27.1 L=13261 C=13261 replay=450 True
+8 13921 13.7 0.5 26.9 27.1 L=13707 C=13707 replay=214 True
+9 14205 14.0 0.4 26.9 27.1 L=13917 C=13917 replay=288 True
+10 14597 14.4 0.7 26.9 27.0 L=14201 C=14201 replay=396 True
+A server-side medians: prefill 12.90 s, decode 26.9 tok/s, wall 13.90 s (n=10)
+B server-side medians: prefill 0.55 s, decode 27.1 tok/s, wall 1.75 s (n=10)
+IDENTICAL 10/10

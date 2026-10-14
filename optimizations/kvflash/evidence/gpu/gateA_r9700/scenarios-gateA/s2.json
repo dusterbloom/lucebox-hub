@@ -1,0 +1,40 @@
+{
+ "results": {
+  "P": {
+   "live": "The secret code is QX-7319-ZEBRA.",
+   "cold": "The secret code is QX-7319-ZEBRA.",
+   "equal": true
+  },
+  "P2": {
+   "live": "The secret code is QX-7319-ZEBRA.",
+   "cold": "The secret code is QX-7319-ZEBRA.",
+   "equal": true
+  }
+ },
+ "engaged": [
+  "[server] chat CACHE chatcmpl_0000000000000000 restore=true slot=63 prefix_len=1313 effective_prompt=1319 pflash=false disk_policy=full disk_hit=true snap_slot=-1 snap_pos=0 full_snap_slot=-1 full_snap_pos=0",
+  "[server] chat DONE chatcmpl_0000000000000000 ok=true in=1319 effective_in=1319 out=4 0.5s 8.3 tok/s finish=length restore=true slot=63 prefix_len=1313 prefill=0.2s decode=0.1s(26.8tok/s) error=- detail=-",
+  "[server] chat CACHE chatcmpl_0000000000000001 restore=false slot=-1 prefix_len=0 effective_prompt=11138 pflash=false disk_policy=full disk_hit=false snap_slot=0 snap_pos=11132 full_snap_slot=-1 full_snap_pos=0",
+  "[kvflash] live restore: L=1 C=-1 replay=11138",
+  "[snap] alloc right-sized: cur_pos=8192 buf=149.62 MiB backend=CPU",
+  "[kvflash] state ladder: ckpt @8192 (149.6 MiB each, 1 held, 149.6 MiB)",
+  "[snap] alloc right-sized: cur_pos=10752 buf=149.62 MiB backend=CPU",
+  "[kvflash] state ladder: ckpt @10752 (149.6 MiB each, 2 held, 299.2 MiB)",
+  "[snap] alloc right-sized: cur_pos=10752 buf=349.62 MiB backend=CPU",
+  "[snap] pooled boundary slot=0 cur_pos=10752 (req snap_pos=11132 chunks=168)",
+  "[snap] alloc right-sized: cur_pos=11134 buf=149.62 MiB backend=CPU",
+  "[kvflash] state ladder: ckpt @11134 (149.6 MiB each, 3 held, 448.9 MiB)",
+  "[snap] alloc right-sized: cur_pos=11174 buf=149.62 MiB backend=CPU",
+  "[kvflash] state ladder: ckpt @11174 (149.6 MiB each, 4 held, 598.5 MiB)",
+  "[pc] inline-snap committed slot=0 prefix_len=11132 protect=0 bytes=564789248 resident=564789248",
+  "[server] chat DONE chatcmpl_0000000000000001 ok=true in=11138 effective_in=11138 out=37 14.3s 2.6 tok/s finish=stop restore=false slot=-1 prefix_len=0 prefill=12.9s decode=1.4s(26.9tok/s) error=- detail=-",
+  "[server] chat CACHE chatcmpl_0000000000000002 restore=true slot=63 prefix_len=1345 effective_prompt=1351 pflash=false disk_policy=full disk_hit=true snap_slot=-1 snap_pos=0 full_snap_slot=-1 full_snap_pos=0",
+  "[server] chat DONE chatcmpl_0000000000000002 ok=true in=1351 effective_in=1351 out=16 0.8s 19.2 tok/s finish=stop restore=true slot=63 prefix_len=1345 prefill=0.1s decode=0.6s(27.9tok/s) error=- detail=-",
+  "[server] chat CACHE chatcmpl_0000000000000003 restore=true slot=63 prefix_len=1386 effective_prompt=1392 pflash=false disk_policy=full disk_hit=true snap_slot=-1 snap_pos=0 full_snap_slot=-1 full_snap_pos=0",
+  "[server] chat DONE chatcmpl_0000000000000003 ok=true in=1392 effective_in=1392 out=16 0.8s 19.7 tok/s finish=stop restore=true slot=63 prefix_len=1386 prefill=0.1s decode=0.6s(28.0tok/s) error=- detail=-",
+  "[server] chat CACHE chatcmpl_0000000000000004 restore=true slot=63 prefix_len=1311 effective_prompt=1317 pflash=false disk_policy=full disk_hit=true snap_slot=-1 snap_pos=0 full_snap_slot=-1 full_snap_pos=0",
+  "[server] chat DONE chatcmpl_0000000000000004 ok=true in=1317 effective_in=1317 out=16 0.8s 19.7 tok/s finish=stop restore=true slot=63 prefix_len=1311 prefill=0.1s decode=0.6s(27.9tok/s) error=- detail=-",
+  "[server] chat CACHE chatcmpl_0000000000000005 restore=true slot=63 prefix_len=1302 effective_prompt=1308 pflash=false disk_policy=full disk_hit=true snap_slot=-1 snap_pos=0 full_snap_slot=-1 full_snap_pos=0",
+  "[server] chat DONE chatcmpl_0000000000000005 ok=true in=1308 effective_in=1308 out=16 0.8s 19.7 tok/s finish=stop restore=true slot=63 prefix_len=1302 prefill=0.1s decode=0.6s(28.0tok/s) error=- detail=-"
+ ]
+}

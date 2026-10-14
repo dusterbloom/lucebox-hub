@@ -1,0 +1,1 @@
+bin=/home/duster/kvflash-gate/bin/luce_server-17ac4dae-d2 md5=a5101df1459b7d6a35e9fd28a99d0e9a mode=dflash2 turns=10 out=/home/duster/kvflash-gate/out/dflash2-gateA
