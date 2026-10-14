@@ -1,0 +1,882 @@
+✓ Initialized. View run at 
+https://modal.com/apps/davide-83641/main/ap-8veZjrK7q9KXY4FSVoW03Y
+Building image im-2k0bQgFy3oXYgVtPcWi8w6
+
+=> Step 0: FROM base
+
+=> Step 1: COPY . /
+Saving image...
+Image saved, took 910.16ms
+
+Built image im-2k0bQgFy3oXYgVtPcWi8w6 in 1.65s
+
+
+Building image im-qmCvd5VhOiCvwH9LaRp7M5
+
+=> Step 0: FROM base
+
+=> Step 1: RUN cd /repo && git apply /am/patches/0001-hybrid-qwen3_5-cache-and-compaction.patch /am/patches/0002-hybrid-onpolicy-and-self-study.patch /am/patches/0003-influence-hybrid.patch
+
+=> Step 2: RUN cp -r /am/overlay/models/qwen3_5 /repo/models/qwen3_5
+
+=> Step 3: RUN mkdir -p /repo/am_tests && cp /am/tests/test_*.py /repo/am_tests/
+Saving image...
+Image saved, took 1.28s
+
+Built image im-qmCvd5VhOiCvwH9LaRp7M5 in 3.36s
+
+
+✓ Created objects.
+├── ✓ Uploaded 
+│   /home/peppi/Dev/lucebox/.claude/worktrees/kvflash-am/optimizations/kvflash/m
+│   odal/am_qwen35/r1b.py
+├── ✓ Uploaded 
+│   /home/peppi/Dev/lucebox/.claude/worktrees/kvflash-am/optimizations/kvflash/m
+│   odal/am_qwen35
+├── ✓ Created Function unit.
+├── ✓ Created Function curves.
+├── ✓ Created Function solve.
+├── ✓ Created Function validate.
+└── ✓ Created Function cells.
+
+[1ALoading weights:   0%|          | 0/851 [00:00<?, ?it/s]
+[1ALoading weights:   0%|          | 1/851 [00:00<13:14,  1.07it/s]
+[1ALoading weights:   0%|          | 2/851 [00:01<13:58,  1.01it/s]
+[1ALoading weights:   1%|▏         | 12/851 [00:02<01:38,  8.51it/s]
+[1ALoading weights:   2%|▏         | 16/851 [00:02<01:13, 11.33it/s]
+[1ALoading weights:   3%|▎         | 24/851 [00:02<00:42, 19.56it/s]
+[1ALoading weights:   3%|▎         | 29/851 [00:02<00:38, 21.36it/s]
+[1ALoading weights:   5%|▍         | 39/851 [00:02<00:24, 33.21it/s]
+[1ALoading weights:   5%|▌         | 45/851 [00:02<00:25, 31.90it/s]
+[1ALoading weights:   6%|▌         | 50/851 [00:03<00:27, 29.63it/s]
+[1ALoading weights:   7%|▋         | 60/851 [00:03<00:19, 41.19it/s]
+[1ALoading weights:   8%|▊         | 66/851 [00:03<00:20, 38.40it/s]
+[1ALoading weights:   9%|▉         | 76/851 [00:03<00:15, 49.20it/s]
+[1ALoading weights:  10%|▉         | 83/851 [00:03<00:18, 42.53it/s]
+[1ALoading weights:  11%|█         | 94/851 [00:03<00:14, 50.73it/s]
+[1ALoading weights:  12%|█▏        | 100/851 [00:04<00:18, 39.91it/s]
+[1ALoading weights:  12%|█▏        | 106/851 [00:04<00:17, 41.72it/s]
+[1ALoading weights:  14%|█▎        | 117/851 [00:04<00:13, 54.63it/s]
+[1ALoading weights:  15%|█▍        | 124/851 [00:04<00:15, 48.38it/s]
+[1ALoading weights:  16%|█▌        | 133/851 [00:04<00:14, 50.59it/s]
+[1ALoading weights:  16%|█▋        | 139/851 [00:04<00:14, 49.26it/s]
+[1ALoading weights:  17%|█▋        | 147/851 [00:04<00:13, 50.29it/s]
+[1ALoading weights:  18%|█▊        | 153/851 [00:05<00:18, 36.92it/s]
+[1ALoading weights:  19%|█▊        | 158/851 [00:05<00:17, 39.09it/s]
+[1ALoading weights:  19%|█▉        | 165/851 [00:05<00:15, 44.34it/s]
+[1ALoading weights:  20%|██        | 173/851 [00:05<00:14, 46.68it/s]
+[1ALoading weights:  21%|██        | 179/851 [00:05<00:14, 45.80it/s]
+[1ALoading weights:  22%|██▏       | 186/851 [00:05<00:14, 46.70it/s]
+[1ALoading weights:  23%|██▎       | 196/851 [00:05<00:11, 56.72it/s]
+[1ALoading weights:  24%|██▎       | 202/851 [00:06<00:14, 44.33it/s]
+[1ALoading weights:  24%|██▍       | 207/851 [00:06<00:17, 37.67it/s]
+[1ALoading weights:  26%|██▌       | 220/851 [00:06<00:11, 55.44it/s]
+[1ALoading weights:  27%|██▋       | 227/851 [00:06<00:13, 45.75it/s]
+[1ALoading weights:  28%|██▊       | 237/851 [00:06<00:12, 51.00it/s]
+[1ALoading weights:  29%|██▊       | 243/851 [00:07<00:12, 50.04it/s]
+[1ALoading weights:  30%|██▉       | 253/851 [00:07<00:10, 54.41it/s]
+[1ALoading weights:  30%|███       | 259/851 [00:07<00:16, 36.59it/s]
+[1ALoading weights:  32%|███▏      | 274/851 [00:07<00:10, 54.24it/s]
+[1ALoading weights:  33%|███▎      | 282/851 [00:07<00:11, 48.06it/s]
+[1ALoading weights:  34%|███▍      | 289/851 [00:08<00:12, 43.72it/s]
+[1ALoading weights:  35%|███▌      | 299/851 [00:08<00:10, 52.29it/s]
+[1ALoading weights:  36%|███▌      | 306/851 [00:08<00:12, 44.27it/s]
+[1ALoading weights:  37%|███▋      | 312/851 [00:08<00:11, 46.24it/s]
+[1ALoading weights:  37%|███▋      | 318/851 [00:08<00:11, 46.07it/s]
+[1ALoading weights:  39%|███▉      | 331/851 [00:08<00:08, 59.22it/s]
+[1ALoading weights:  40%|███▉      | 338/851 [00:08<00:09, 54.75it/s]
+[1ALoading weights:  41%|████      | 345/851 [00:09<00:09, 54.90it/s]
+[1ALoading weights:  41%|████      | 351/851 [00:09<00:09, 50.36it/s]
+[1ALoading weights:  42%|████▏     | 359/851 [00:09<00:10, 48.12it/s]
+[1ALoading weights:  43%|████▎     | 364/851 [00:09<00:10, 46.08it/s]
+[1ALoading weights:  43%|████▎     | 369/851 [00:09<00:11, 41.78it/s]
+[1ALoading weights:  45%|████▍     | 380/851 [00:09<00:09, 52.03it/s]
+[1ALoading weights:  45%|████▌     | 386/851 [00:10<00:10, 43.42it/s]
+[1ALoading weights:  47%|████▋     | 398/851 [00:10<00:08, 53.70it/s]
+[1ALoading weights:  47%|████▋     | 404/851 [00:10<00:08, 49.87it/s]
+[1ALoading weights:  48%|████▊     | 412/851 [00:10<00:08, 51.91it/s]
+[1ALoading weights:  49%|████▉     | 418/851 [00:10<00:10, 39.68it/s]
+[1ALoading weights:  50%|████▉     | 424/851 [00:10<00:10, 41.31it/s]
+[1ALoading weights:  51%|█████▏    | 437/851 [00:11<00:09, 42.48it/s]
+[1ALoading weights:  53%|█████▎    | 449/851 [00:11<00:07, 54.26it/s]
+[1ALoading weights:  54%|█████▎    | 456/851 [00:11<00:08, 46.96it/s]
+[1ALoading weights:  55%|█████▍    | 465/851 [00:11<00:07, 50.38it/s]
+[1ALoading weights:  55%|█████▌    | 471/851 [00:11<00:09, 39.92it/s]
+[1ALoading weights:  56%|█████▌    | 477/851 [00:12<00:09, 40.95it/s]
+[1ALoading weights:  58%|█████▊    | 490/851 [00:12<00:06, 52.72it/s]
+[1ALoading weights:  58%|█████▊    | 496/851 [00:12<00:07, 50.67it/s]
+[1ALoading weights:  59%|█████▉    | 502/851 [00:12<00:06, 51.44it/s]
+[1ALoading weights:  60%|█████▉    | 508/851 [00:12<00:07, 44.11it/s]
+[1ALoading weights:  61%|██████    | 518/851 [00:12<00:06, 52.31it/s]
+[1ALoading weights:  62%|██████▏   | 524/851 [00:13<00:08, 40.53it/s]
+[1ALoading weights:  62%|██████▏   | 530/851 [00:13<00:07, 40.84it/s]
+[1ALoading weights:  64%|██████▍   | 543/851 [00:13<00:05, 52.20it/s]
+[1ALoading weights:  65%|██████▍   | 549/851 [00:13<00:05, 51.03it/s]
+[1ALoading weights:  65%|██████▌   | 557/851 [00:13<00:05, 52.15it/s]
+[1ALoading weights:  66%|██████▌   | 563/851 [00:13<00:05, 48.54it/s]
+[1ALoading weights:  67%|██████▋   | 571/851 [00:13<00:05, 52.60it/s]
+[1ALoading weights:  68%|██████▊   | 577/851 [00:14<00:07, 38.89it/s]
+[1ALoading weights:  68%|██████▊   | 582/851 [00:14<00:06, 40.66it/s]
+[1ALoading weights:  69%|██████▉   | 588/851 [00:14<00:05, 44.58it/s]
+[1ALoading weights:  70%|███████   | 596/851 [00:14<00:04, 52.37it/s]
+[1ALoading weights:  71%|███████   | 602/851 [00:14<00:04, 50.97it/s]
+[1ALoading weights:  72%|███████▏  | 609/851 [00:14<00:04, 54.32it/s]
+[1ALoading weights:  72%|███████▏  | 615/851 [00:14<00:05, 44.89it/s]
+[1ALoading weights:  73%|███████▎  | 624/851 [00:15<00:04, 50.35it/s]
+[1ALoading weights:  74%|███████▍  | 630/851 [00:15<00:05, 38.76it/s]
+[1ALoading weights:  75%|███████▍  | 635/851 [00:15<00:05, 38.53it/s]
+[1ALoading weights:  76%|███████▋  | 649/851 [00:15<00:03, 54.85it/s]
+[1ALoading weights:  77%|███████▋  | 655/851 [00:15<00:03, 51.01it/s]
+[1ALoading weights:  78%|███████▊  | 663/851 [00:15<00:03, 47.01it/s]
+[1ALoading weights:  79%|███████▉  | 672/851 [00:16<00:03, 53.89it/s]
+[1ALoading weights:  80%|███████▉  | 678/851 [00:16<00:03, 47.54it/s]
+[1ALoading weights:  80%|████████  | 684/851 [00:16<00:04, 37.59it/s]
+[1ALoading weights:  82%|████████▏ | 698/851 [00:16<00:02, 53.54it/s]
+[1ALoading weights:  83%|████████▎ | 705/851 [00:16<00:03, 45.66it/s]
+[1ALoading weights:  84%|████████▍ | 715/851 [00:16<00:02, 55.71it/s]
+[1ALoading weights:  85%|████████▍ | 722/851 [00:17<00:02, 48.41it/s]
+[1ALoading weights:  86%|████████▌ | 730/851 [00:17<00:02, 52.89it/s]
+[1ALoading weights:  87%|████████▋ | 737/851 [00:17<00:03, 37.64it/s]
+[1ALoading weights:  88%|████████▊ | 751/851 [00:17<00:01, 52.50it/s]
+[1ALoading weights:  89%|████████▉ | 758/851 [00:17<00:02, 45.55it/s]
+[1ALoading weights:  90%|█████████ | 769/851 [00:18<00:01, 47.02it/s]
+[1ALoading weights:  92%|█████████▏| 779/851 [00:18<00:01, 54.38it/s]
+[1ALoading weights:  92%|█████████▏| 786/851 [00:18<00:01, 44.22it/s]
+[1ALoading weights:  93%|█████████▎| 792/851 [00:18<00:01, 40.44it/s]
+[1ALoading weights:  94%|█████████▍| 804/851 [00:18<00:00, 52.99it/s]
+[1ALoading weights:  95%|█████████▌| 811/851 [00:19<00:00, 44.78it/s]
+[1ALoading weights:  97%|█████████▋| 822/851 [00:19<00:00, 52.70it/s]
+[1ALoading weights:  97%|█████████▋| 829/851 [00:19<00:00, 51.22it/s]
+[1ALoading weights:  98%|█████████▊| 835/851 [00:19<00:00, 47.49it/s]
+[1ALoading weights:  99%|█████████▉| 841/851 [00:19<00:00, 41.10it/s]
+[1ALoading weights:  99%|█████████▉| 846/851 [00:19<00:00, 38.27it/s]
+[1ALoading weights: 100%|██████████| 851/851 [00:19<00:00, 42.80it/s]
+Loading QuALITY data from: data/QuALITY.v1.0.1.htmlstripped.dev
+Loaded 115 unique articles (from 230 entries)
+[transformers] `causal_conv1d_fn` is falling back to its reference PyTorch implementation because `causal_conv1d` is not installed. This is correct but much slower; install `causal_conv1d` for the optimized kernel.
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Generated 40314 original queries per KV head
+Original queries shape: torch.Size([16, 4, 40314, 256])
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[transformers] `causal_conv1d_update` is falling back to its reference PyTorch implementation because `causal_conv1d` is not installed. This is correct but much slower; install `causal_conv1d` for the optimized kernel.
+[r1b] art 30 quality_62382 FUNI t0.1: acc 16/19 wall 43.6s {'compaction_s': 17.82, 'query_gen_s': 13.41, 'full_layer_len_mean': 696.0, 'nan_layers': []}
+[r1b] article 30 done in 44s
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Generated 41262 original queries per KV head
+Original queries shape: torch.Size([16, 4, 41262, 256])
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 31 quality_63862 FUNI t0.1: acc 12/16 wall 8.3s {'compaction_s': 4.91, 'query_gen_s': 0.9, 'full_layer_len_mean': 712.0, 'nan_layers': []}
+[r1b] article 31 done in 8s
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Generated 40206 original queries per KV head
+Original queries shape: torch.Size([16, 4, 40206, 256])
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 32 quality_40965 FUNI t0.1: acc 16/16 wall 8.2s {'compaction_s': 4.74, 'query_gen_s': 0.87, 'full_layer_len_mean': 694.0, 'nan_layers': []}
+[r1b] article 32 done in 8s
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Subsampled 'context_prefill' from 26574 to 26573 queries per KV head to maintain fraction 1.00
+Generated 26573 original queries per KV head
+Original queries shape: torch.Size([16, 4, 26573, 256])
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 33 quality_32665 FUNI t0.1: acc 19/19 wall 6.9s {'compaction_s': 2.83, 'query_gen_s': 0.73, 'full_layer_len_mean': 467.0, 'nan_layers': []}
+[r1b] article 33 done in 7s
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Generated 39912 original queries per KV head
+Original queries shape: torch.Size([16, 4, 39912, 256])
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 34 quality_55815 FUNI t0.1: acc 12/16 wall 36.8s {'compaction_s': 4.56, 'query_gen_s': 0.87, 'full_layer_len_mean': 690.0, 'nan_layers': []}
+[r1b] article 34 done in 37s
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Generated 39690 original queries per KV head
+Original queries shape: torch.Size([16, 4, 39690, 256])
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 35 quality_63812 FUNI t0.1: acc 14/19 wall 8.2s {'compaction_s': 4.64, 'query_gen_s': 0.83, 'full_layer_len_mean': 686.0, 'nan_layers': []}
+[r1b] article 35 done in 8s
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Generated 40698 original queries per KV head
+Original queries shape: torch.Size([16, 4, 40698, 256])
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 36 quality_63392 FUNI t0.1: acc 13/18 wall 8.0s {'compaction_s': 4.81, 'query_gen_s': 0.86, 'full_layer_len_mean': 703.0, 'nan_layers': []}
+[r1b] article 36 done in 8s
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Generated 39318 original queries per KV head
+Original queries shape: torch.Size([16, 4, 39318, 256])
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 37 quality_63130 FUNI t0.1: acc 16/19 wall 20.6s {'compaction_s': 4.59, 'query_gen_s': 0.83, 'full_layer_len_mean': 680.0, 'nan_layers': []}
+[r1b] article 37 done in 21s
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Generated 38586 original queries per KV head
+Original queries shape: torch.Size([16, 4, 38586, 256])
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 38 quality_63916 FUNI t0.1: acc 16/18 wall 7.9s {'compaction_s': 4.48, 'query_gen_s': 0.83, 'full_layer_len_mean': 667.0, 'nan_layers': []}
+[r1b] article 38 done in 8s
+Using 48 sliding window layers (indices: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62])
+Only compacting 16 global attention layers
+Generating original queries for all layers...
+Generating ~100000 queries per KV head using 'context_prefill' method...
+Generated 38772 original queries per KV head
+Original queries shape: torch.Size([16, 4, 38772, 256])
+Layer 1/64: sliding window (keeping original KV)
+Layer 2/64: sliding window (keeping original KV)
+Layer 3/64: sliding window (keeping original KV)
+Compacting layer 4/64
+Layer 5/64: sliding window (keeping original KV)
+Layer 6/64: sliding window (keeping original KV)
+Layer 7/64: sliding window (keeping original KV)
+Compacting layer 8/64
+Layer 9/64: sliding window (keeping original KV)
+Layer 10/64: sliding window (keeping original KV)
+Layer 11/64: sliding window (keeping original KV)
+Compacting layer 12/64
+Layer 13/64: sliding window (keeping original KV)
+Layer 14/64: sliding window (keeping original KV)
+Layer 15/64: sliding window (keeping original KV)
+Compacting layer 16/64
+Layer 17/64: sliding window (keeping original KV)
+Layer 18/64: sliding window (keeping original KV)
+Layer 19/64: sliding window (keeping original KV)
+Compacting layer 20/64
+Layer 21/64: sliding window (keeping original KV)
+Layer 22/64: sliding window (keeping original KV)
+Layer 23/64: sliding window (keeping original KV)
+Compacting layer 24/64
+Layer 25/64: sliding window (keeping original KV)
+Layer 26/64: sliding window (keeping original KV)
+Layer 27/64: sliding window (keeping original KV)
+Compacting layer 28/64
+Layer 29/64: sliding window (keeping original KV)
+Layer 30/64: sliding window (keeping original KV)
+Layer 31/64: sliding window (keeping original KV)
+Compacting layer 32/64
+Layer 33/64: sliding window (keeping original KV)
+Layer 34/64: sliding window (keeping original KV)
+Layer 35/64: sliding window (keeping original KV)
+Compacting layer 36/64
+Layer 37/64: sliding window (keeping original KV)
+Layer 38/64: sliding window (keeping original KV)
+Layer 39/64: sliding window (keeping original KV)
+Compacting layer 40/64
+Layer 41/64: sliding window (keeping original KV)
+Layer 42/64: sliding window (keeping original KV)
+Layer 43/64: sliding window (keeping original KV)
+Compacting layer 44/64
+Layer 45/64: sliding window (keeping original KV)
+Layer 46/64: sliding window (keeping original KV)
+Layer 47/64: sliding window (keeping original KV)
+Compacting layer 48/64
+Layer 49/64: sliding window (keeping original KV)
+Layer 50/64: sliding window (keeping original KV)
+Layer 51/64: sliding window (keeping original KV)
+Compacting layer 52/64
+Layer 53/64: sliding window (keeping original KV)
+Layer 54/64: sliding window (keeping original KV)
+Layer 55/64: sliding window (keeping original KV)
+Compacting layer 56/64
+Layer 57/64: sliding window (keeping original KV)
+Layer 58/64: sliding window (keeping original KV)
+Layer 59/64: sliding window (keeping original KV)
+Compacting layer 60/64
+Layer 61/64: sliding window (keeping original KV)
+Layer 62/64: sliding window (keeping original KV)
+Layer 63/64: sliding window (keeping original KV)
+Compacting layer 64/64
+[r1b] art 39 quality_63833 FUNI t0.1: acc 16/18 wall 7.8s {'compaction_s': 4.41, 'query_gen_s': 0.83, 'full_layer_len_mean': 671.0, 'nan_layers': []}
+[r1b] article 39 done in 8s
+Stopping app - local entrypoint completed.
+Runner terminated.
+✓ App completed. View run at 
+https://modal.com/apps/davide-83641/main/ap-8veZjrK7q9KXY4FSVoW03Y

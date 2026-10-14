@@ -150,3 +150,35 @@ Paired differences, F minus cell (points, 95% CI; "within 3 points" = lower boun
 | F - O1 | +2.6 [-0.2, +5.5] | within 3 points | +4.3 [+0.6, +8.3] | within 3 points |
 
 Reading: at 0.05 F is statistically indistinguishable from C and O2 and better than O1 (lower bound +0.6). At 0.10 F sits between O2/C and O1: F - O1 is positive with a CI touching zero, and F - C and F - O2 are not resolved by this n. Compaction time per article: F 6 s (0.10) and 4 s (0.05) against 346 s and 327 s for C. F is not shown to match the ceiling at 0.10. Exploratory; no earlier verdict changes.
+
+## Amendment 3 result: F-UNI, F with a uniform budget (post hoc, exploratory)
+
+Added after the R1b results were read (PREREG R1b Amendment 3). F-UNI = context-prefill queries, HighestAttnKeys, the same uniform budget for every head (no `optimized_agnostic.json`). Selection split (loader indices 0-19, 357 q) and held-out split (20-49, 537 q), targets 0.10 and 0.05. Rows: `R1b/27b/FUNI__t{0.1,0.05}__{sel,held}.jsonl`; driver cell `FUNI` in `r1b_core.py`, launch `r1b_funi_launch.sh`, tables `r1b_funi_report.py`. Cluster bootstrap 10,000 resamples, seed 0.
+
+GPU parity: each range ran on the GPU type of its `orig` cell. Selection 0.10: H100 (articles 0-19); selection 0.05: H200; held-out 0.10: 20-29 H200, 30-39 H100 (pinned `H100!`), 40-49 H200; held-out 0.05: H200. `--start` was relative to the split start; each article ran once. Cost $2.50 (cost records: 0.36 + 0.48 + 0.39 + 0.27 + 0.28 + 0.72), cap $5.
+
+Correct answers (the F, orig and U-AM columns reuse the existing rows; U-AM exists on the selection split only):
+
+| split | target | n q | orig | F | FUNI | UAM |
+|---|---|---|---|---|---|---|
+| sel | 0.1 | 357 | 320 (89.6%) | 309 (86.6%) | 306 (85.7%) | 285 (79.8%) |
+| sel | 0.05 | 357 | 320 (89.6%) | 300 (84.0%) | 280 (78.4%) | 271 (75.9%) |
+| held | 0.1 | 537 | 460 (85.7%) | 439 (81.8%) | 435 (81.0%) | - |
+| held | 0.05 | 537 | 460 (85.7%) | 431 (80.3%) | 417 (77.7%) | - |
+
+| split | target | comparison | n q | diff points [95% CI] | McNemar only-A/only-B, p | verdict |
+|---|---|---|---|---|---|---|
+| sel | 0.1 | D = orig - F-UNI | 357 | 3.9 [1.2, 6.5] | 20/6, 0.009 | |
+| sel | 0.1 | F - F-UNI | 357 | +0.8 [-1.1, +3.0] | 12/9, 0.664 | uniform within 3 points of F |
+| sel | 0.1 | F-UNI - U-AM | 357 | +5.9 [+3.2, +8.5] | 31/10, 0.001 | AM better |
+| sel | 0.05 | D = orig - F-UNI | 357 | 11.2 [7.8, 14.8] | 46/6, 0.000 | |
+| sel | 0.05 | F - F-UNI | 357 | +5.6 [+1.7, +9.8] | 29/9, 0.002 | inconclusive |
+| sel | 0.05 | F-UNI - U-AM | 357 | +2.5 [-1.1, +5.9] | 26/17, 0.222 | inconclusive |
+| held | 0.1 | D = orig - F-UNI | 537 | 4.7 [2.6, 6.8] | 39/14, 0.001 | |
+| held | 0.1 | F - F-UNI | 537 | +0.7 [-0.6, +2.0] | 15/11, 0.557 | uniform within 3 points of F |
+| held | 0.05 | D = orig - F-UNI | 537 | 8.0 [5.5, 10.6] | 60/17, 0.000 | |
+| held | 0.05 | F - F-UNI | 537 | +2.6 [+0.2, +5.1] | 22/8, 0.016 | inconclusive |
+
+Verdict column for F - F-UNI uses the R1b rule in the direction of the decision: "uniform within 3 points of F" when the upper 95% bound of F - F-UNI is <= +3 (equivalently the lower bound of F-UNI - F >= -3). Other verdicts: inconclusive when the CI is wider than the margin; for F-UNI - U-AM the R0 rule (lower bound > 0 is "AM better").
+
+Reading: at 0.10 per-head budgets add +0.8 [-1.1, +3.0] on selection and +0.7 [-0.6, +2.0] on held-out, both inside 3 points, so uniform budgets cost nothing resolvable at the 0.10 target and the engine can use them (decision rule of Amendment 3 item 5 met). At 0.05 per-head budgets add +5.6 [+1.7, +9.8] (selection) and +2.6 [+0.2, +5.1] (held-out), significant and not bounded within 3 points. Under uniform budgets, context-prefill queries beat the repeat-prompt queries at 0.10 (F-UNI - U-AM +5.9 [+3.2, +8.5]); at 0.05 the difference is +2.5 [-1.1, +5.9], inconclusive. Exploratory; no earlier verdict changes.

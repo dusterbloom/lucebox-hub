@@ -27,6 +27,7 @@ CELLS = {
     "O2": ("best", OMPF, "repeat", True),
     "C": ("best", OMPF, "ss-plus-repeat", True),
     "UAM": ("best", HA, "repeat", False),
+    "FUNI": ("best", HA, "context-prefill", False),
     "RND": ("key-selection", "random_subset_keys_nnls2_-3_3_lsq_on-policy", "repeat", False),
     "TRN": ("key-selection", "truncate_nnls2_-3_3_lsq_on-policy", "repeat", False),
 }
