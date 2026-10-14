@@ -1258,6 +1258,15 @@ if(LUCE_TESTS)
             hip::host)
         list(APPEND _raw_unit_test_targets test_mmid_bounded_parity)
 
+        # Guards the exact-stack default policy (qwen4exp_loader.cpp): the 38.41
+        # decode fusion set turns itself on only for the validated quant
+        # profile; the master switch and explicitly set knobs win. Pure, no GPU.
+        add_executable(test_qwen4exp_exact_stack_env test/unit/test_qwen4exp_exact_stack_env.cpp)
+        target_include_directories(test_qwen4exp_exact_stack_env PRIVATE ${LUCE_SRC_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+        target_link_libraries(test_qwen4exp_exact_stack_env PRIVATE luce_common ggml ggml-cpu ${LUCE_GGML_BACKEND_TARGET})
+        list(APPEND _raw_unit_test_targets test_qwen4exp_exact_stack_env)
+
         # Guards the row-split GDN prefill recurrence (default for T>1 on
         # RDNA3.5) against the legacy tiled kernel: same attention output and
         # final state within float32 reassociation noise at T in {1,5,33,512,4096}.
@@ -1291,6 +1300,24 @@ if(LUCE_TESTS)
             ${LUCE_GGML_BACKEND_TARGET}
             hip::host)
         list(APPEND _raw_unit_test_targets test_mmb_q8f16_raster_parity)
+
+        # Guards the single-launch balanced Q4_K routed gate/up kernel against the
+        # legacy two-launch kernels: byte-identical F32 and bf16 outputs on skewed
+        # routing (0/1/65..127/128/>256-row experts), ragged M, blocks looping over
+        # many work items, and the in-situ bf16-only mode.
+        add_executable(test_mmb_routed_glu_parity test/unit/test_mmb_routed_glu_parity.cpp)
+        set_source_files_properties(test/unit/test_mmb_routed_glu_parity.cpp PROPERTIES LANGUAGE HIP)
+        set_target_properties(test_mmb_routed_glu_parity PROPERTIES HIP_ARCHITECTURES "${_luce_archs}")
+        target_compile_definitions(test_mmb_routed_glu_parity PRIVATE GGML_USE_HIP)
+        target_include_directories(test_mmb_routed_glu_parity PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+        target_link_libraries(test_mmb_routed_glu_parity PRIVATE
+            ggml
+            ggml-base
+            ${LUCE_GGML_BACKEND_TARGET}
+            hip::host)
+        list(APPEND _raw_unit_test_targets test_mmb_routed_glu_parity)
 
         # Guards the wave-per-row gated norm kernels (GDN tail ncols=128 with gamma,
         # attention gate ncols=256 without) against the block-per-row kernels they

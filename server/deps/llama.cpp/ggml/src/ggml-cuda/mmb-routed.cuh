@@ -238,15 +238,19 @@ template <int BN, typename XRowFn, typename DRowFn>
 __device__ __forceinline__ void mmb_tile_gemm_glu_q4k(const uint8_t * __restrict__ Wg, const uint8_t * __restrict__ Wu, const size_t wrow_bytes, const int a_rows,
         const uint16_t * __restrict__ Xh, const int K, XRowFn xrow, float * __restrict__ D, uint16_t * __restrict__ Dh, const bool store_f32, const int M, DRowFn drow, const int m0,
         const int n_cols, uint16_t * Ag, uint16_t * Au, uint16_t * Bs) {
-    constexpr int BM = 64, NF = BN / 32, B_ITEMS = BN * 8 / MMB_NT;
+    constexpr int BM = 64, TN = BN / 32, B_ITEMS = (BN * 8) / MMB_NT;
     static_assert(4 * BM == MMB_NT && BN % 32 == 0, "two threads per gate/up row, two token-fragment groups");
-    const int tid = threadIdx.x, lane = tid & 31, wave = tid >> 5, wr = wave & 3, wg = wave >> 2;
-    const int s_mat = tid / (2 * BM), s_row = (tid >> 1) % BM, s_half = tid & 1;
-    uint4 sq0, sq1, sq2, sq3, sqm, bst[B_ITEMS];
+    const int tid = threadIdx.x, lane = tid & 31, wave = __builtin_amdgcn_readfirstlane(tid >> 5);
+    const int wr = wave & 3, wg = wave >> 2;   // weight rows 16*wr..+16 of both matrices; token fragments wg, wg+2, ...
+    uint4 bst[B_ITEMS];
     int brow[B_ITEMS];
 #pragma unroll
-    for (int i = 0; i < B_ITEMS; ++i) brow[i] = xrow((tid + i * MMB_NT) >> 3);
+    for (int i = 0; i < B_ITEMS; ++i) { const int c = tid + i * MMB_NT; brow[i] = xrow(c >> 3); }
+    int weight_ks = 0;
+    const int s_mat = tid / (2 * BM), s_row = (tid >> 1) % BM, s_half = tid & 1;
+    uint4 sq0, sq1, sq2, sq3, sqm;
     auto load_regs = [&](const int ks) {
+        weight_ks = ks;
         if ((ks & 3) == 0) {
             if (s_row < a_rows) {
                 const uint8_t * p = (s_mat ? Wu : Wg) + (size_t)s_row * wrow_bytes + (size_t)(ks / 4) * sizeof(block_q4_K);
@@ -258,60 +262,75 @@ __device__ __forceinline__ void mmb_tile_gemm_glu_q4k(const uint8_t * __restrict
         }
 #pragma unroll
         for (int i = 0; i < B_ITEMS; ++i) {
-            const int c = tid + i * MMB_NT;
-            bst[i] = (brow[i] >= 0) ? *(const uint4 *)(Xh + (size_t)brow[i] * K + ks * MMB_BK + (c & 7) * 8) : make_uint4(0,0,0,0);
+            const int c = tid + i * MMB_NT; const int off = (c & 7) * 8;
+            bst[i] = (brow[i] >= 0) ? *(const uint4 *)(Xh + (size_t)brow[i] * K + ks * MMB_BK + off) : make_uint4(0,0,0,0);
         }
     };
-    auto store_lds = [&](const int ks) {
-        const int slice = ks & 3;
+    auto store_lds = [&]() {
+        const int slice = weight_ks & 3;
         const uint4 q = slice == 0 ? sq0 : slice == 1 ? sq1 : slice == 2 ? sq2 : sq3;
         mmb_dq_q4k_stripe(q, sqm, slice, (uint32_t *)((s_mat ? Au : Ag) + s_row * MMB_LDS_STRIDE) + 8 * s_half);
 #pragma unroll
         for (int i = 0; i < B_ITEMS; ++i) { const int c = tid + i * MMB_NT; *(uint4 *)(Bs + (c >> 3) * MMB_LDS_STRIDE + (c & 7) * 8) = bst[i]; }
     };
-    v8f accg[NF], accu[NF];
-    bool jact[NF];
-#pragma unroll
-    for (int j = 0; j < NF; ++j) {
-        jact[j] = (wg + 2 * j) * 16 < n_cols;
-#pragma unroll
-        for (int e = 0; e < 8; ++e) { accg[j][e] = 0.f; accu[j][e] = 0.f; }
-    }
+    // The K loop and epilogue are specialized on this wave's live fragment count NJ (uniform: wg is readfirstlane'd
+    // and the tile comes from an SGPR work item). Guarding each fragment with `if (jact[j])` instead left the WMMAs
+    // in 16 conditional blocks per K step and the accumulators were copied at every merge (256 VGPRs, 250 B/lane
+    // of spills); straight-line loops per NJ coalesce.
     const int nks = K / MMB_BK;
-    load_regs(0); store_lds(0); __syncthreads();
-    for (int ks = 0; ks < nks; ++ks) {
-        if (ks + 1 < nks) load_regs(ks + 1);
+    const int cm = lane & 15, cn = lane >> 4, col = m0 + wr * 16 + cm;
+    auto kloop = [&](auto njc) __attribute__((always_inline)) {
+        constexpr int NJ = decltype(njc)::value;
+        v8f accg[NJ > 0 ? NJ : 1], accu[NJ > 0 ? NJ : 1];
 #pragma unroll
-        for (int kk = 0; kk < MMB_BK; kk += 16) {
-            const int r = lane & 15, off = (wr * 16 + r) * MMB_LDS_STRIDE + kk;
-            const v16s ag = __builtin_bit_cast(v16s, (uint4[2]){*(const uint4 *)(Ag + off), *(const uint4 *)(Ag + off + 8)});
-            const v16s au = __builtin_bit_cast(v16s, (uint4[2]){*(const uint4 *)(Au + off), *(const uint4 *)(Au + off + 8)});
+        for (int j = 0; j < NJ; ++j)
 #pragma unroll
-            for (int j = 0; j < NF; ++j) {
-                if (!jact[j]) continue;
-                const uint16_t * p = Bs + ((wg + 2 * j) * 16 + r) * MMB_LDS_STRIDE + kk;
-                const v16s b = __builtin_bit_cast(v16s, (uint4[2]){*(const uint4 *)p, *(const uint4 *)(p + 8)});
-                accg[j] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(b, ag, accg[j]);
-                accu[j] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(b, au, accu[j]);
+            for (int e = 0; e < 8; ++e) { accg[j][e] = 0.f; accu[j][e] = 0.f; }
+        load_regs(0); store_lds(); __syncthreads();
+        for (int ks = 0; ks < nks; ++ks) {
+            if (ks + 1 < nks) load_regs(ks + 1);
+#pragma unroll
+            for (int kk = 0; kk < MMB_BK; kk += 16) {
+                const int r = lane & 15, off = (wr * 16 + r) * MMB_LDS_STRIDE + kk;
+                const v16s ag = __builtin_bit_cast(v16s, (uint4[2]){*(const uint4 *)(Ag + off), *(const uint4 *)(Ag + off + 8)});
+                const v16s au = __builtin_bit_cast(v16s, (uint4[2]){*(const uint4 *)(Au + off), *(const uint4 *)(Au + off + 8)});
+#pragma unroll
+                for (int j = 0; j < NJ; ++j) {
+                    const uint16_t * p = Bs + ((wg + 2 * j) * 16 + r) * MMB_LDS_STRIDE + kk;
+                    const v16s b = __builtin_bit_cast(v16s, (uint4[2]){*(const uint4 *)p, *(const uint4 *)(p + 8)});
+                    accg[j] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(b, ag, accg[j]);
+                    accu[j] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(b, au, accu[j]);
+                    // pin the WMMAs to this K step: LLVM sank the (pure) WMMA chain to the end of the loop body
+                    // and hoisted all 24 fragment loads of the 64-wide step above it, 192 VGPRs on top of the
+                    // accumulators, 400 B/lane of spills. Volatile asms keep program order among themselves.
+                    asm volatile("" : "+v"(accg[j]), "+v"(accu[j]));
+                }
+                asm volatile("" ::: "memory");
+            }
+            __syncthreads();
+            if (ks + 1 < nks) store_lds();
+            __syncthreads();
+        }
+        // Epilogue: silu(g)*u. Lane holds tokens 2e+cn of each fragment at column cm. The bf16 tile is staged in Bs
+        // so every token row leaves as one 128-byte line; the F32 copy (parity tests only) goes straight from registers.
+#pragma unroll
+        for (int j = 0; j < NJ; ++j) {
+#pragma unroll
+            for (int e = 0; e < 8; ++e) {
+                const int n = (wg + 2 * j) * 16 + 2 * e + cn;
+                const float v = ggml_cuda_op_silu_single(accg[j][e]) * accu[j][e];
+                if (Dh) Bs[n * MMB_LDS_STRIDE + wr * 16 + cm] = mmb_f2bf(v);
+                if (store_f32 && col < M) { const int dr = drow(n); if (dr >= 0) D[(size_t)dr * M + col] = v; }
             }
         }
-        __syncthreads();
-        if (ks + 1 < nks) store_lds(ks + 1);
-        __syncthreads();
-    }
-    // Epilogue: silu(g)*u. Lane holds tokens 2e+cn of each fragment at column cm. The bf16 tile is staged in Bs so
-    // every token row leaves as one 128-byte line; the F32 copy (parity tests only) goes straight from registers.
-    const int cm = lane & 15, cn = lane >> 4, col = m0 + wr * 16 + cm;
-#pragma unroll
-    for (int j = 0; j < NF; ++j) {
-        if (!jact[j]) continue;
-#pragma unroll
-        for (int e = 0; e < 8; ++e) {
-            const int n = (wg + 2 * j) * 16 + 2 * e + cn;
-            const float v = ggml_cuda_op_silu_single(accg[j][e]) * accu[j][e];
-            if (Dh) Bs[n * MMB_LDS_STRIDE + wr * 16 + cm] = mmb_f2bf(v);
-            if (store_f32 && col < M) { const int dr = drow(n); if (dr >= 0) D[(size_t)dr * M + col] = v; }
-        }
+    };
+    const int nlive = (n_cols + 15) / 16, nj = min(TN, max(0, (nlive - wg + 1) / 2));   // fragments wg, wg+2, ... < nlive
+    switch (nj) {
+        case 0: kloop(std::integral_constant<int, 0>{}); break;
+        case 1: kloop(std::integral_constant<int, 1>{}); break;
+        case 2: kloop(std::integral_constant<int, 2>{}); break;
+        case 3: kloop(std::integral_constant<int, 3>{}); break;
+        default: kloop(std::integral_constant<int, TN>{}); break;
     }
     if (Dh) {
         __syncthreads();
@@ -339,7 +358,9 @@ mmb_routed_glu_q4k_kernel(const uint8_t * __restrict__ Wg, const uint8_t * __res
     if (threadIdx.x == 0) s_item = atomicAdd(ctl + 1, 1);
     __syncthreads();
     for (;;) {
-        const int item = s_item;
+        // readfirstlane: an LDS broadcast is a VGPR value, so without it the tile (e, jt, cnt) and every jact branch
+        // around the WMMAs became divergent -- the compiler masked each WMMA through copies and spilled 500 B/lane.
+        const int item = __builtin_amdgcn_readfirstlane(s_item);
         if (item >= n_items) return;
         const uint32_t dsc = tiles[item / mt];
         const int e = dsc & 0xffff, jt = dsc >> 16, m0 = (item % mt) * 64;
