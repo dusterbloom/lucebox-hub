@@ -12,14 +12,23 @@ backend (`ModelBackend::restorable_prefix`, commit 30c09935) close the gap?
 2. FIX WORKS on arm B (same + the http_server.cpp change): restorable = 31063 (the live cut), uncached droppable = 2843, decision under_threshold, prompt served raw
    (39456 tokens), KVFlash live restore `L=31063 C=31063 replay=8393`, i.e. only the new tokens are prefilled.
 3. B answers are byte-identical to the exact reference C (compression off) on all 5 turns; A's turn-5 answer differs from C.
-   Wall at turn 5: A 12.9 s (4.8 s drafter scoring + 6.9 s prefill + 1.1 s decode), B 12.2 s, C 12.2 s: compressing was lossy and not faster here (n = 1 per arm).
+   Wall at turn 5: A 12.9 s (4.8 s compress call + 6.9 s prefill + 1.1 s decode), B 12.2 s, C 12.2 s (n = 1 per arm). Not a speed result:
+   the compress call includes a cold drafter load and free under `--prefill-skip-park`, and A generated 26 tokens against 48 for B and C
+   (time before decode: A 11.7 s, B 10.0 s).
+
+Correction after review (verifier, parity lens): arm C runs with compression off and never loads the PFlash drafter, and KVFlash's
+residency scorer attached only in arm A turn 5, inside the compress call. So the arms are not identical in drafter use, and a longer
+chat with a residency reselect could make B and C differ. The skip that fired on turns 3 and 4 is
+`[kvflash] boundary snapshot skipped: pooled prefill relocates chunks` (the mid-prefill boundary snapshot, `qwen35_backend.cpp` near line 2561
+on 30c09935), not the `snapshot_save` "exceeds pool" message. The admission branch is only reached with strict selection
+(`PFLASH_SELECT_MODE=budget_only`, the release-profile default with a trained head), see deviation 1.
 
 ## Parity contract (every arm)
 
 | axis | value |
 |---|---|
 | target | `~/models/Qwen3.8-27B-UD-Q4_K_M.gguf`, md5 76f527022f010d42bc0dff5905c60444 |
-| drafter (PFlash scorer and KVFlash residency scorer) | `~/models/Qwen3.5-0.8B-BF16.gguf`, md5 16671eda429ac1aaff071a3f903380da, passed with `--prefill-drafter` on all three arms |
+| drafter (PFlash scorer and KVFlash residency scorer) | `~/models/Qwen3.5-0.8B-BF16.gguf`, md5 16671eda429ac1aaff071a3f903380da, passed with `--prefill-drafter` on all three arms (loaded only where PFlash compresses: arm A turn 5; arm C has compression off) |
 | KV cache | default `q4_0` / `q4_0` (HIP default, printed in each server log) |
 | `--max-ctx` / `--kvflash` | 65536 / 16384 |
 | sampling | temperature 0, seed 1, max_tokens 64, non-streaming |
@@ -37,7 +46,7 @@ B and C `luce_server-B` md5 ab232f231e91cbf938191b9a5edd1c4e (kvflash/pf746-merg
 Columns: `prompt tok` = request prompt tokens; `admission` = PFlash decision (`usage.timings.pflash.admission.decision`; `-` = no admission evaluated: prompt below the 16384 threshold in turns 1 and 2, or compression off in arm C); `served tok` = `effective_prompt_tokens`; `restorable (admission)` = tokens the admission
 believed restorable (`cached_tokens`); `uncached droppable` as logged by `[pflash-admission]`; `prefix_len` = the `chat DONE` prefix_len;
 `live restore` = the `[kvflash] live restore: L= C= replay=` line; `cached_prefix` / `prefilled` = `usage.timings`; prefill tok/s = prefilled / prefill s;
-`compress s` = drafter scoring time (`pflash.compress_ms`, not part of prefill s); wall = client wall seconds per request.
+`compress s` = the whole compress call (`pflash.compress_ms`: drafter load, scoring, free, retokenization; not part of prefill s); wall = client wall seconds per request.
 
 ### Arm A (merge, compression auto)
 
