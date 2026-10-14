@@ -1,0 +1,1 @@
+{"arm": "POOL8K", "binary": "/mnt/kimi-k3/build/kvflash-am-cuda/luce_server", "binary_md5": "13c65b5cdce446f00f348a4101432de9", "model": "/mnt/kimi-k3/home-models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf", "max_ctx": 52224, "pool": 8192, "started": "2026-10-14 15:18:08"}
