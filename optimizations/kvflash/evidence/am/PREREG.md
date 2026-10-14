@@ -275,6 +275,16 @@ Per-head slots for one 64-slot block over a 640-token block with the R1b budget 
 5. Distractor lengths: the 8 distractors of probe 0 and probe 1 average about 5K tokens, so k = 8 contexts are about 46K tokens, not 60K.
 6. Cost: this amendment adds one more diagnostic arm to the pilot and to the full-run projection; the pilot cap of $10 is unchanged.
 
+### R2 Amendment 2 (2026-10-14, written after the whole pilot table was read and before any full-run row; the user approved the full run without F-RE)
+
+1. What was seen: the pilot table only (probes 0-1, 33 questions, H200), correct at k = 1 / k = 8: FULL 29 / 29, F-SEG 28 / 29, F-BLK 29 / 30, F-RE 10 / 0, F-RE-UNI 23 / 0. F-RE-UNI collapses like F-RE, so by Amendment 1 item 3 the collapse goes with the dropped beta on re-compaction, not with per-head padding. This is a pilot reading at n = 33, reported as such.
+2. Arms of the full run: FULL, F-SEG, F-BLK. F-RE and F-RE-UNI are not run. Both produce gibberish at k = 8 on both pilot articles, the engine never re-compacts compacted tokens (M8 compacts each sealed block once), and F-RE is the most expensive arm (pilot k = 8: 166 s compaction and 251 s answering per article). Pre-registered question 2 is withdrawn; it is reported as "not run, the pilot shows collapse at k = 8" next to the pilot rows.
+3. k in {1, 8}. k = 2 and 4 served only question 2. Question 1 needs k = 8; k = 1 is kept as the midpoint.
+4. Probe set: loader indices 0-19 (357 questions), the pilot articles 0-1 included and re-run; pilot rows are not merged into the full run.
+5. GPU: one H200 for the whole run (Amendment 1 item 4), one container, articles in order, output `r2_full` on `kvflash-am-results`, entry point `r2.py::pilot` with `--probes 0..19 --ks 1,8 --arms FULL,F-SEG,F-BLK --out r2_full`.
+6. Cost: the pilot timings project about 200 s per article for the three arms at k in {1, 8}, about 70 minutes and $5.5 with the model load. Cap $8: the run is stopped if the running cost passes it, and the articles done so far are reported as a prefix of the probe set.
+7. Analysis unchanged: question 1 (lower 95% bound of F-SEG(8) - F(0) >= -3 points) with F-SEG(8) - FULL(8) next to it, F-BLK exploratory, `r2_report.py --stats`. Rows go to `evidence/am/R2/`.
+
 ## R1(e) on lucebox6 iGPU: segment-local vs global F queries, uniform budgets
 
 Written 2026-10-14 before any R1(e) run. What has been seen: the existing R1b rows (orig, F, F-UNI on Modal H100/H200), the R2 pilot, and the repo source (`r2_core.py` `gen_fblk`). No LOCAL-arm accuracy has been seen.
