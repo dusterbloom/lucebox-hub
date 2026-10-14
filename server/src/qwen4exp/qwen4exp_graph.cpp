@@ -210,7 +210,7 @@ static ggml_tensor * hc_mix_body(ggml_context * c, ggml_tensor * xn, ggml_tensor
     return mixed;
 }
 
-[[maybe_unused]] ggml_tensor * hc_mix(ggml_context * c, ggml_tensor * x, ggml_tensor * w_norm,
+[[maybe_unused]] ggml_tensor * hc_mix(ggml_context * c, ggml_cgraph * gf, ggml_tensor * x, ggml_tensor * w_norm,
                      ggml_tensor * w_down, ggml_tensor * w_up, ggml_tensor * w_inject,
                      ggml_tensor ** inject, int64_t n_embd, int64_t hc, float eps) {
     const int64_t hc_dim = hc * n_embd;
@@ -218,8 +218,15 @@ static ggml_tensor * hc_mix_body(ggml_context * c, ggml_tensor * xn, ggml_tensor
 
     // gamma applied on the 3-D norm output (w_norm viewed [n_embd, hc]) so the backend fuses RMS_NORM + MUL into
     // one kernel; the fused kernel forms (scale * x) * gamma with the same two roundings as the separate ops.
+    // The gamma view is expanded into the graph first: visited as the MUL's second operand it would land between
+    // RMS_NORM and MUL in node order and defeat the (adjacent-node) fusion -- in situ the five such sites per
+    // prefill ran rms_norm_f32<1024, false> plus op_mul (5 x 1.8 + 1.5 ms at p4096). LUCE_HC_NORM_MUL_LEGACY=1
+    // keeps that order.
+    static const bool mul_legacy = [] { const char * e = std::getenv("LUCE_HC_NORM_MUL_LEGACY"); return e && std::atoi(e); }();
+    ggml_tensor * gamma = ggml_reshape_2d(c, w_norm, n_embd, hc);
+    if (!mul_legacy) ggml_build_forward_expand(gf, gamma);
     ggml_tensor * xn = ggml_rms_norm(c, x, eps);          // per (hc, token)
-    xn = ggml_mul(c, xn, ggml_reshape_2d(c, w_norm, n_embd, hc));  // [n_embd, hc, nt] gamma
+    xn = ggml_mul(c, xn, gamma);                          // [n_embd, hc, nt] gamma
     xn = ggml_reshape_2d(c, xn, hc_dim, nt);
 
     return hc_mix_body(c, xn, w_down, w_up, w_inject, inject, n_embd, hc);
@@ -1136,6 +1143,9 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
     // Q8_0 -> F16 GEMM. Same product as below, so bit-exact.
     if (f16 && ggml_backend_cuda_mmb_f16_input_ok(L.wo, T)) {
         ggml_tensor * gate3 = ggml_view_3d(c, qfull, D, Hq, T, 2 * D * qe, 2 * D * Hq * qe, D * qe);
+        // Expanded first so the VIEW node does not sit between FLASH_ATTN_EXT and GATED_RMS_NORM_F16: the qsa3
+        // prefill store folds the gate in only when the two are adjacent (LUCE_QSA_GATE_LEGACY=1 keeps them apart).
+        ggml_build_forward_expand(gf, gate3);
         return mm(c, L.wo, ggml_gated_f16(c, attn, gate3));
     }
     ggml_tensor * attn2 = ggml_reshape_2d(c, attn, D * Hq, T);
@@ -1861,7 +1871,7 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
             // Upstream build_hc_combine + build_hc_mix: the grouped RMSNorm runs
             // as its own ggml_rms_norm (1024-thread reduction), bit-matching upstream.
             res_hc = hc_combine(ctx, res_hc, cur, inject, w.n_embd, w.n_hc, layer_T);
-            cur = hc_mix(ctx, res_hc, L.hc_ffn_norm, L.hc_ffn_down, L.hc_ffn_up,
+            cur = hc_mix(ctx, gf, res_hc, L.hc_ffn_norm, L.hc_ffn_down, L.hc_ffn_up,
                          L.hc_ffn_inject, &inject, w.n_embd, w.n_hc, w.rms_eps);
         }
         if (hc_inject_hint) ggml_build_forward_expand(gf, inject);
@@ -1949,7 +1959,7 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
                                  L.hc_attn_inject, &inject, w.n_embd, w.n_hc);
             xn_next = nullptr;
         } else {
-            cur = hc_mix(ctx, res_hc, L.hc_attn_norm, L.hc_attn_down,
+            cur = hc_mix(ctx, gf, res_hc, L.hc_attn_norm, L.hc_attn_down,
                          L.hc_attn_up, L.hc_attn_inject, &inject,
                          w.n_embd, w.n_hc, w.rms_eps);
             xn_next = nullptr;
@@ -1993,7 +2003,7 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
     ggml_tensor * final = (xn_next != nullptr)
         ? hc_mix_from_xn(ctx, xn_next, w.output_hc_down, w.output_hc_up,
                          nullptr, nullptr, w.n_embd, w.n_hc)
-        : hc_mix(ctx, res_hc, w.output_hc_norm, w.output_hc_down,
+        : hc_mix(ctx, gf, res_hc, w.output_hc_norm, w.output_hc_down,
                  w.output_hc_up, nullptr, nullptr,
                  w.n_embd, w.n_hc, w.rms_eps);
     dump_mark(final, "final");
@@ -2046,7 +2056,7 @@ static Qwen4ExpForwardResult forward_impl(ggml_backend_t backend,
                 ggml_view_2d(ctx, mtp_positions, n, 4, pairs * sizeof(int32_t), i * sizeof(int32_t))), 4 * n);
             ggml_tensor * r = mtp_input(ctx, w, e, hi);
             const auto & L = w.mtp;
-            ggml_tensor * cur = hc_mix(ctx, r, L.hc_attn_norm, L.hc_attn_down, L.hc_attn_up,
+            ggml_tensor * cur = hc_mix(ctx, gf, r, L.hc_attn_norm, L.hc_attn_down, L.hc_attn_up,
                 nullptr, nullptr, H, hc, w.rms_eps);
             build_full_attn(ctx, gf, cur, L, w, f16, cache.mtp_k, cache.mtp_v, nullptr, nullptr,
                 p, nullptr, nullptr, start + i + n, start + i, 4, 0, QSA_DENSE, w.n_layer,
@@ -2432,7 +2442,7 @@ bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4E
     // One trunk-style layer (upstream-order HC helpers; dense attention on the draft layer's own K/V).
     const Qwen4ExpLayer & L = w.mtp;
     ggml_tensor * inject = nullptr;
-    ggml_tensor * cur = hc_mix(ctx, res, L.hc_attn_norm, L.hc_attn_down, L.hc_attn_up, L.hc_attn_inject, &inject,
+    ggml_tensor * cur = hc_mix(ctx, gf, res, L.hc_attn_norm, L.hc_attn_down, L.hc_attn_up, L.hc_attn_inject, &inject,
                                H, hc, w.rms_eps);
     // Decode still attends densely over the entire prompt; prefill only fills its K/V.
     cur = build_full_attn(ctx, gf, cur, L, w, f16, cache.mtp_k, cache.mtp_v, /*indexer_k=*/nullptr, /*indexer_raw=*/nullptr,
@@ -2446,14 +2456,14 @@ bool mtp_forward_batch(ggml_backend_t backend, const Qwen4ExpWeights & w, Qwen4E
             inject = ggml_view_2d(ctx, inject, hc, 1, inject->nb[1], (T - 1) * inject->nb[1]);
         }
         res = hc_combine(ctx, res, cur, inject, H, hc, output_T);
-        cur = hc_mix(ctx, res, L.hc_ffn_norm, L.hc_ffn_down, L.hc_ffn_up, L.hc_ffn_inject, &inject, H, hc, w.rms_eps);
+        cur = hc_mix(ctx, gf, res, L.hc_ffn_norm, L.hc_ffn_down, L.hc_ffn_up, L.hc_ffn_inject, &inject, H, hc, w.rms_eps);
         res = hc_combine(ctx, res, build_moe(ctx, gf, cur, L, w, w.n_layer,
             cache.reference, false), inject, H, hc, output_T);
 
         ggml_tensor * last = ggml_view_3d(ctx, res, H, hc, 1, res->nb[1], res->nb[2], (size_t) (output_T - 1) * res->nb[2]);
         draft_hidden = out_hidden ? ggml_cont(ctx, last) : nullptr;
         if (draft_hidden) { ggml_set_output(draft_hidden); ggml_build_forward_expand(gf, draft_hidden); }
-        ggml_tensor * head = hc_mix(ctx, last, w.mtp_head_norm, w.mtp_head_down, w.mtp_head_up, nullptr, nullptr,
+        ggml_tensor * head = hc_mix(ctx, gf, last, w.mtp_head_norm, w.mtp_head_down, w.mtp_head_up, nullptr, nullptr,
                                     H, hc, w.rms_eps);
         logits = ggml_mul_mat(ctx, device_draft ? w.mtp_output : w.output, head);
         if (device_draft) {
@@ -2770,23 +2780,10 @@ Qwen4ExpForwardResult qwen4exp_forward_batched(
         }
 
         ggml_tensor * inject = nullptr;
-        ggml_tensor * cur = hc_fused
-            ? hc_mix_from_xn(ctx, xn_next ? xn_next : [&]() {
-                ggml_tensor * xn = ggml_rms_norm(ctx, res_hc, w.rms_eps);
-                // Gamma on the 3-D norm output (as hc_mix does) so the backend's RMS_NORM + MUL fusion matches:
-                // with the RESHAPE in between, the five such sites per prefill ran rms_norm_f32<1024, false> plus
-                // a separate op_mul (5 x 1.8 + 1.5 ms at p4096). Same (scale * x) * gamma roundings either way.
-                // LUCE_HC_NORM_MUL_LEGACY=1 keeps the reshape-first order.
-                static const bool mul_legacy = [] { const char * e = std::getenv("LUCE_HC_NORM_MUL_LEGACY"); return e && std::atoi(e); }();
-                if (mul_legacy) {
-                    xn = ggml_reshape_2d(ctx, xn, w.n_embd * w.n_hc, T);
-                    xn = ggml_mul(ctx, xn, L.hc_attn_norm);
-                    return ggml_reshape_3d(ctx, xn, w.n_embd, w.n_hc, T);
-                }
-                return ggml_mul(ctx, xn, ggml_reshape_2d(ctx, L.hc_attn_norm, w.n_embd, w.n_hc));
-                }(), L.hc_attn_down, L.hc_attn_up, L.hc_attn_inject,
+        ggml_tensor * cur = hc_fused && xn_next
+            ? hc_mix_from_xn(ctx, xn_next, L.hc_attn_down, L.hc_attn_up, L.hc_attn_inject,
                 &inject, w.n_embd, w.n_hc)
-            : hc_mix(ctx, res_hc, L.hc_attn_norm, L.hc_attn_down,
+            : hc_mix(ctx, gf, res_hc, L.hc_attn_norm, L.hc_attn_down,
                 L.hc_attn_up, L.hc_attn_inject, &inject,
                 w.n_embd, w.n_hc, w.rms_eps);
         xn_next = nullptr;
@@ -2845,7 +2842,7 @@ Qwen4ExpForwardResult qwen4exp_forward_batched(
                 L.hc_ffn_down, L.hc_ffn_up, L.hc_ffn_inject, &inject, w.n_embd, w.n_hc);
         } else {
             res_hc = hc_combine(ctx, res_hc, cur, inject, w.n_embd, w.n_hc, T);
-            cur = hc_mix(ctx, res_hc, L.hc_ffn_norm, L.hc_ffn_down,
+            cur = hc_mix(ctx, gf, res_hc, L.hc_ffn_norm, L.hc_ffn_down,
                 L.hc_ffn_up, L.hc_ffn_inject, &inject, w.n_embd, w.n_hc, w.rms_eps);
         }
         cur = build_moe(ctx, gf, cur, L, w, il, /*reference=*/false,
@@ -2872,7 +2869,7 @@ Qwen4ExpForwardResult qwen4exp_forward_batched(
     ggml_tensor * final = xn_next
         ? hc_mix_from_xn(ctx, xn_next, w.output_hc_down, w.output_hc_up,
                          nullptr, nullptr, w.n_embd, w.n_hc)
-        : hc_mix(ctx, res_hc, w.output_hc_norm, w.output_hc_down,
+        : hc_mix(ctx, gf, res_hc, w.output_hc_norm, w.output_hc_down,
                  w.output_hc_up, nullptr, nullptr, w.n_embd, w.n_hc, w.rms_eps);
     ggml_tensor * logits = ggml_mul_mat(ctx, w.output, final);
     ggml_set_output(logits);

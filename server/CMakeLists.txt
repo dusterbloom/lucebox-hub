@@ -1423,6 +1423,10 @@ if(LUCE_TESTS)
         # chains must match (LUCE_NORM_ROPE_DEBUG=1 lines) and hash-equal the separate kernels (LUCE_NORM_ROPE_LEGACY=1).
         luce_add_ggml_gpu_executable(test_norm_rope_fusion test/unit/test_norm_rope_fusion.cpp)
         list(APPEND _raw_unit_test_targets test_norm_rope_fusion)
+        # Guards the hc grouped norm node order (qwen4exp_graph.cpp hc_mix): gamma view expanded first makes
+        # RMS_NORM and MUL adjacent (fusable) and hash-equal to the legacy order.
+        luce_add_ggml_gpu_executable(test_hc_norm_mul_fusion test/unit/test_hc_norm_mul_fusion.cpp)
+        list(APPEND _raw_unit_test_targets test_hc_norm_mul_fusion)
         # Guards the qsa3 attention store with the sigmoid gate folded in (qsa.cu): byte-identical F16 to the plain
         # store + gate kernel. gfx1151 only.
         add_executable(test_qsa3_gate_parity test/unit/test_qsa3_gate_parity.cpp)
