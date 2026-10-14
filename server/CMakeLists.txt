@@ -1419,6 +1419,19 @@ if(LUCE_TESTS)
         # "no match" lines) and hash-equal the unfused nodes (child process under LUCE_PLE_CONV_LEGACY=1).
         luce_add_ggml_gpu_executable(test_ple_conv_fusion test/unit/test_ple_conv_fusion.cpp)
         list(APPEND _raw_unit_test_targets test_ple_conv_fusion)
+        # Guards the fused RMS_NORM -> MUL -> ROPE [-> PERMUTE -> CONT] kernel (rope.cu): the qwen4exp Q/K/indexer
+        # chains must match (LUCE_NORM_ROPE_DEBUG=1 lines) and hash-equal the separate kernels (LUCE_NORM_ROPE_LEGACY=1).
+        luce_add_ggml_gpu_executable(test_norm_rope_fusion test/unit/test_norm_rope_fusion.cpp)
+        list(APPEND _raw_unit_test_targets test_norm_rope_fusion)
+        # Guards the qsa3 attention store with the sigmoid gate folded in (qsa.cu): byte-identical F16 to the plain
+        # store + gate kernel. gfx1151 only.
+        add_executable(test_qsa3_gate_parity test/unit/test_qsa3_gate_parity.cpp)
+        set_source_files_properties(test/unit/test_qsa3_gate_parity.cpp PROPERTIES LANGUAGE HIP)
+        set_target_properties(test_qsa3_gate_parity PROPERTIES HIP_ARCHITECTURES "${_luce_archs}")
+        target_compile_definitions(test_qsa3_gate_parity PRIVATE GGML_USE_HIP)
+        target_include_directories(test_qsa3_gate_parity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include)
+        target_link_libraries(test_qsa3_gate_parity PRIVATE ggml ggml-base ${LUCE_GGML_BACKEND_TARGET} hip::host)
+        list(APPEND _raw_unit_test_targets test_qsa3_gate_parity)
         luce_add_ggml_gpu_executable(test_qwen4exp_indexer_score test/unit/test_qwen4exp_indexer_score.cpp)
         target_link_libraries(test_qwen4exp_indexer_score PRIVATE ggml-cpu)
         list(APPEND _raw_unit_test_targets test_qwen4exp_indexer_score)

@@ -2773,9 +2773,17 @@ Qwen4ExpForwardResult qwen4exp_forward_batched(
         ggml_tensor * cur = hc_fused
             ? hc_mix_from_xn(ctx, xn_next ? xn_next : [&]() {
                 ggml_tensor * xn = ggml_rms_norm(ctx, res_hc, w.rms_eps);
-                xn = ggml_reshape_2d(ctx, xn, w.n_embd * w.n_hc, T);
+                // Gamma on the 3-D norm output (as hc_mix does) so the backend's RMS_NORM + MUL fusion matches:
+                // with the RESHAPE in between, the five such sites per prefill ran rms_norm_f32<1024, false> plus
+                // a separate op_mul (5 x 1.8 + 1.5 ms at p4096). Same (scale * x) * gamma roundings either way.
+                // LUCE_HC_NORM_MUL_LEGACY=1 keeps the reshape-first order.
+                static const bool mul_legacy = [] { const char * e = std::getenv("LUCE_HC_NORM_MUL_LEGACY"); return e && std::atoi(e); }();
+                if (mul_legacy) {
+                    xn = ggml_reshape_2d(ctx, xn, w.n_embd * w.n_hc, T);
                     xn = ggml_mul(ctx, xn, L.hc_attn_norm);
                     return ggml_reshape_3d(ctx, xn, w.n_embd, w.n_hc, T);
+                }
+                return ggml_mul(ctx, xn, ggml_reshape_2d(ctx, L.hc_attn_norm, w.n_embd, w.n_hc));
                 }(), L.hc_attn_down, L.hc_attn_up, L.hc_attn_inject,
                 &inject, w.n_embd, w.n_hc)
             : hc_mix(ctx, res_hc, L.hc_attn_norm, L.hc_attn_down,
