@@ -2394,9 +2394,55 @@ address VGPRs and scratch the first time).
 neither switch is set; `mmb_f16_activation` converts a bf16-only src1 from
 bf16 (F32 src1 from F32 as before) into the per-graph F16 cache, so one
 conversion per layer is shared by every consumer. Scratch words unchanged
-(tiles + ctl). End-to-end A/B on lucebox4 (`ab_glu.sh` with
-`LUCE_MMB_GLU_F16=0` as the old arm) and the greedy-64 first-divergence
-check are pending.
+(tiles + ctl).
+
+### End-to-end A/B (lucebox4 gfx1151, 2026-10-14)
+
+`ab_glu.sh ab1 5 2` with `OLD_ENV=LUCE_MMB_GLU_F16=0 NEW_ENV=LUCE_MMB_GLU_F16=1`:
+one binary (`luce_server` md5 983c73cc, `libggml-hip.so.0.9.11` md5
+968ba8d07bbaac50ce45f835bafc2df9 rebuilt from this tree plus the box's
+uncommitted `mmvq-routed-gu.cuh`), arms old/new alternating, 2 rounds x 5
+reps, warm-ups dropped, `--max-ctx 20480 --prefix-cache-slots 0`, every
+request `prefix_len=0` on all four arms (160/160), no `drop_caches` (no sudo),
+box idle before the run. `test_mmb_routed_glu_parity` passes on this box
+(same numbers as lucebox6).
+
+| metric | old median | new median | delta | old-vs-old spread | verdict |
+|---|---:|---:|---:|---:|---|
+| p4096 prefill tok/s | 1322.6 | 1351.8 | +2.21% | 1.80% | inside noise (2x rule); matches the in-situ -72 ms |
+| p16384 prefill tok/s | 1361.3 | 1359.9 | -0.10% | 3.24% | inside noise |
+| decode tok/s (ms/token) | 28.55 (35.03) | 28.58 (34.99) | +0.10% | 0.29% | not on the T=1 path |
+
+Raw tok/s (round 1 then 2): old p4096 [1230.5, 1350.3, 1343.2, 1349.4,
+1342.8, 1178.9, 1323.7, 1319.4, 1321.5, 1314.9]; new p4096 [1154.5, 1366.9,
+1363.0, 1366.8, 1366.2, 1248.2, 1346.7, 1349.2, 1354.4, 1345.6]; old p16384
+[1279.0, 1365.9, 1394.4, 1397.9, 1392.3, 1258.8, 1347.5, 1348.2, 1356.5,
+1373.6]; new p16384 [1290.7, 1352.3, 1355.1, 1364.7, 1383.9, 1308.2, 1373.5,
+1368.2, 1369.3, 1353.3]; old decode [27.71, 28.54, 28.55, 28.52, 28.49, 27.70,
+28.61, 28.60, 28.62, 28.60]; new decode [27.91, 28.68, 28.67, 28.69, 28.67,
+28.46, 28.56, 28.57, 28.59, 28.55]. The first rep after a restart is the slow
+one on every arm (1150-1250 at p4096), as in the earlier A/Bs.
+
+Greedy-64 at temp 0 on `prompt_decode512_r0` (289 chars) and
+`prompt_p4096_r0` (232 chars): all four arms byte-identical, so no first
+divergence to report; the F16 kernel is not bit-exact (bf16 outputs within
+the bf16 rounding floor of the bf16 kernel's), but the argmax never moved on
+these two prompts over 2 x 64 tokens.
+
+In-situ proof that the new arm runs the new kernel (`pprof.sh`, rocprofv3
+kernel trace of one p4096 request each, `insitu_glu.py`):
+
+| arm | routed gate/up kernel, 46 layers | per layer median | cvt bf16->F16 | request kernel wall |
+|---|---:|---:|---:|---:|
+| `LUCE_MMB_GLU_F16=0` | `mmb_routed_glu_q4k_kernel` 543.8 ms | 11.66 ms | - | 3493 ms (3114 busy) |
+| `LUCE_MMB_GLU_F16=1` | `mmb_routed_glu_f16_kernel` 458.7 ms | 9.94 ms | 46 x 0.285 = 13.1 ms | 3327 ms (2982 busy) |
+
+-85 ms on the kernel (-15.7%, the microbench said -10..-12%) and +13 ms for
+the per-layer activation conversion (0.285 ms in situ against 0.19 in the
+microbench: the server's kernel is scalar, one element per thread; an 8-wide
+version is a 4 ms / 0.1% follow-up), net -72 ms = 2.1% of the 3.4 s request,
+which is the +2.2% the A/B median shows and is below the 2x-spread bar of
+this box. One layer (E > 1024) still runs the legacy pair on both arms.
 
 ## Attention (QSA3 prefill), 2026-10-14, lucebox4 gfx1151
 
@@ -2514,3 +2560,78 @@ each wave owns full-depth QK for one (query tile, 16-key sub-chunk) with K
 staged through LDS, split-K softmax state merged at the end, so the partial
 reduction and one barrier per chunk disappear. Not done here; the e2e share
 of the whole bucket is 3-5%.
+
+## Cumulative 2026-10-14 (lucebox4 gfx1151): start-of-day luce vs HEAD vs gufo
+
+Every change of the day was inside end-to-end noise on its own; this measures
+the stack as a whole, in one session, arms alternating across restarts
+(A, B, C, D per round), 3 rounds x 5 reps, harness
+`bench/exact/prefill/cumul/{cumul.sh,cumsum.py}` (same clients, prompts and
+flags as the "Same-session parity baseline" section: `text_bench_client.py`
+on `prompt_p4096_r0` / `prompt_p16384_r0`, `decode_bench_client.py` 128
+tokens on `prompt_decode512_r0`, one p4096 warm-up and one 16-token decode
+warm-up per restart dropped, `--max-ctx 20480` / `--context 20480`, greedy
+temp 0, no `drop_caches`). Raw jsonl and server logs:
+`lucebox4:~/qwen4exp-f16/scratch/cumul/run1/`.
+
+Arms (one luce binary: `luce_server` md5 983c73cc, `libggml-hip.so.0.9.11`
+md5 968ba8d07bbaac50ce45f835bafc2df9, this tree at 6e2f12e1 + the F16 routed
+gate/up kernel; gufo `build/release/gufo` md5 fd490446; GGUF shard1 md5
+1958631667f5320c7969d047b43b5829):
+
+- **A, luce start of day**: every kill switch added since c786560d set to
+  its legacy value, each name and parse verified in the code:
+  `LUCE_GDN_LEGACY=1` (tiled GDN recurrence, `gated_delta_net.cu:1147`,
+  any value), `LUCE_MMB_Q8F16_RASTER=16` (16-tile raster group,
+  `mmb-q8f16.cuh:255`), `LUCE_GATED_NORM_WAVE=0` (`gated-norm.cu:135`),
+  `LUCE_GDN_CONV_QKNORM=0` (`gdn-conv.cu:119`, `qwen4exp_graph.cpp:495`),
+  `LUCE_QWEN_EXACT_STACK=0` (loader leaves the 14 exact-stack knobs unset,
+  `qwen4exp_loader.cpp:1151`, log line "exact-stack defaults: off"),
+  `LUCE_MMVQ_MOE_GU2W=0` (8-warp decode GEMV, `mmvq.cu:130`),
+  `LUCE_MMB_GLU_LEGACY=1` (two-launch routed gate/up, mode 0, which also
+  bypasses the F16 kernel), `LUCE_QSA_UNION_LEGACY=1` and
+  `LUCE_QSA_ROWS_LEGACY=1` (`qsa.cu:604`), `LUCE_ROPE_TABLE_LEGACY=1`
+  (`rope.cu:434`). The other `LUCE_*` names added in that range are opt-in
+  and off by default on both arms (`LUCE_QWEN4EXP_GDN_CHUNKED`,
+  `LUCE_PLE_QNORM_FOLD`, `LUCE_GPU_ARGMAX` / `LUCE_QWEN_EXPERT_ROW_WARPS` /
+  `LUCE_QWEN_GRAPH_SH` are exact-stack knobs covered by the master switch,
+  `LUCE_MMB_GLU_DUMP` / `LUCE_QSA_DUMP` are dumps); nothing is missing from
+  the list.
+- **B, luce default (HEAD)**: no env.
+- **C, gufo default**: `--cache-ram-bytes 1`, Q5_1 decode copies.
+- **D, gufo `GUFO_DECODE_Q5=0`**: Q8_0 dense decode, like-for-like bytes;
+  decode only.
+
+Caching symmetry, verified on every restart: luce logged `prefix_len=0` on
+all requests of all 6 A/B restarts, gufo logged `cache=miss cached_tokens=0`
+on all requests of all 6 C/D restarts. prompt_tokens served: luce 4136 /
+16421, gufo 4096 / 16381 (chat-template wrapper, as before).
+
+| metric | A start of day, median (min-max) | B HEAD, median (min-max) | C gufo, median (min-max) | B vs A | C vs B | A-vs-A spread | B-vs-B spread |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| p4096 prefill tok/s | 1222.1 (1061.0-1229.5) | 1358.5 (1232.3-1367.7) | 1602.9 (1583.8-1607.7) | **+11.2%** | +18.0% | 0.95% | 0.26% |
+| p16384 prefill tok/s | 1254.7 (1123.3-1284.8) | 1369.7 (1252.1-1385.5) | 1616.9 (1565.8-1619.7) | **+9.2%** | +18.1% | 0.23% | 1.11% |
+| decode tok/s (ms/token) | 24.98 (24.54-25.01) = 40.04 ms | 28.58 (28.03-28.73) = 34.99 ms | 32.91 (32.79-32.93) = 30.38 ms; D 29.52 (29.40-29.56) = 33.87 ms | **+14.5%** | +15.2% (D: +3.3%) | 0.11% | 0.68% |
+
+Spread = (max - min) of the three per-round medians, in % of the arm
+median; n = 15 per cell. Per-round medians: A p4096 [1224.3, 1212.7,
+1223.0], B [1357.0, 1360.4, 1358.7], C [1599.5, 1604.4, 1603.4]; A p16384
+[1251.8, 1254.7, 1254.7], B [1380.0, 1370.0, 1364.8], C [1617.3, 1616.0,
+1616.8]; A decode [25.0, 25.0, 25.0], B [28.6, 28.7, 28.5], C [32.9, 32.9,
+32.9], D [29.5, 29.5, 29.5]. The minimum of every luce cell is the first rep
+after a restart (1061-1285 at p4096); gufo's first reps are within 1.5% of
+its median.
+
+Reading: the day's stack is worth +11.2% / +9.2% prefill and +14.5% decode
+end to end, 10-40x the round-to-round spread of either luce arm, so it is
+real even though no single step cleared the 2x-spread bar on its own. The
+gap to gufo closed from +31% / +29% / +32% (C vs A) to +18% / +18% / +15%
+(C vs B), and to +3.3% on decode with identical bytes (D vs B: 33.87 vs
+34.99 ms/token). Greedy-64 at temp 0: A vs B differ at char 86 of the p4096
+answer ("This appears to be a concatenation of two Pyt..." vs "This code
+contains two distinct Python module...") and at char 96 of the decode512
+answer ("...from Python's `asyncio` library..." vs "...from Python's standard
+library..."), both on-topic. The F16 routed gate/up kernel alone was
+greedy-identical to its old arm on these prompts (A/B above), so the
+divergence comes from another step or the combination; not attributed here.
+B vs C differ from char 0 (different engines, both on-topic).
