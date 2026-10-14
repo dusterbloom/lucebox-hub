@@ -2933,3 +2933,57 @@ and HC combine +41 (both at the byte floor on f32 residual; gufo's lead is its h
 and routed GEMMs -14. Everything left above 1% is a GEMM-epilogue/prologue fusion (3+ h each); the sub-1% items
 (Q rope into the attention Q load 15 ms, half strided copies 8 ms) are below the e2e noise floor and need the in-situ
 trace, not an A/B, to bank.
+
+## GDN qkv|gate row-concat GEMM (one M=16384 launch, gufo's `ssm_in` stack): measured and rejected (lucebox4 gfx1151, 2026-10-14/15)
+
+Target: the dense-GEMM class (+143 ms per p4096 request in the night ledger), whose largest structural difference is
+gufo stacking `ssm_qkv` and `ssm_gate` into one Q8_0 `ssm_in` [2560 -> 16384] (`device_model.cpp:390 Stack({&l.ssm_qkv,
+&l.ssm_gate})`, `batch.cpp:108` "aliases qkvz, but has a different row stride") and issuing one `DenseF16GEMMKernel`
+launch of 36 x 9.8 = 348-354 ms, against our two launches. Implemented the same thing end to end
+(`bench/exact/prefill/qkvz/fuse.patch`, 9 files, +276/-39): the loader places `attn_qkv` / `attn_gate` on the two halves
+of one `attn_qkvz` Q8_0 tensor inside the weight buffer (same bytes, uploaded once; the decode GEMVs keep reading the
+halves), `build_linear_attn` issues one `mm(attn_qkvz)` for T > 1 and views the halves with row pitch 16384,
+`gdn_conv_direct` / `gdn_concat_tail` / the fused concat-transpose kernel take an `x_pitch` so the matcher accepts the
+strided transposed view, the gated norm and `gdn_tail` already read z with its own strides. Kill switch
+`LUCE_QKVZ_FUSE_LEGACY=1`. `test_qkvz_fuse_parity` (LUCE_TESTS, qwen4exp CUDA profile, synthetic Q8_0 weights) hashes
+the silu(conv) output, the new conv history and the gated-norm output of the fused graph against the two-GEMM graph at
+T = 1028 / 300 / 200: byte-identical on all three (the folded q/k norm abort proves the conv fusion matched the strided
+input); `test_gdn_conv_qknorm_parity` and `test_ple_conv_fusion` still pass. Built and run on lucebox4 (fused build
+`luce_server` md5 06b4e374 / `libggml-hip.so` de516d0e; the HEAD rebuild afterwards reproduced the pre-session
+983c73cc / 1633d93f bit for bit).
+
+Ledger first, one binary, two rocprofv3 traces per the `prof.sh` protocol (warm-up p4096_r0, traced p4096_r1, T = 4131,
+`pershape.py`); the legacy arm is HEAD behaviour:
+
+| dense GEMM shape (in situ, p4096) | legacy (two launches) | fused G=16 (default raster) | fused G=1 (`LUCE_MMB_Q8F16_RASTER=1`) | gufo (night ledger) |
+| --- | ---: | ---: | ---: | ---: |
+| GDN qkv 2560 -> 10240 | 36 x 6.295 = 226.6 | | | |
+| GDN gate 2560 -> 6144 | 36 x 3.892 = 140.1 | | | |
+| qkv+gate total | **366.7** | 36 x 11.880 = **427.7** (+61.0) | 36 x 10.650 = **383.4** (+16.7) | 36 x 9.8 = 348-354 |
+| ssm_out + attn_output + shexp_dn (M~2560) | 96 x 2.323 = 223.0 | 222.1 | 218.0 | 127 + 48 + 27 = 203 |
+| attention q 2560 -> 12288 | 12 x 7.435 = 89.2 | 92.1 | 92.7 | 101-109 |
+| HC down (W8A8) | 93 x 1.126 = 104.7 | 105.6 | 103.9 | 96-97 |
+| shared expert gate/up (M=640) | 94 x 0.649 = 61.0 | 62.4 | 57.4 | 48 |
+| router (f32 split) | 47 x 1.135 = 53.3 | 54.4 | 52.8 | 34 |
+| dense GEMM class total | 966.5 | 1034.2 | 977.3 | 851-867 |
+| request kernel wall (ms) | 3051.9 | 3244.0 | 3160.0 | 2596-2627 |
+
+Microbench of the kernel alone (`scratch/dense/bench_qkvz.hip`, the production `mmb_q8f16_kernel<256,128,2,8,1>`,
+median of 15 / 7, HIP_VISIBLE_DEVICES=1, bf16 activations = the in-situ XT=1 route):
+
+| T | qkv | gate | qkv + gate | fused 2560 -> 16384 | fused vs sum |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 4096 | 6.103 (35.2 TF/s) | 3.977 (32.4) | 10.080 | 10.206 (33.7) | +0.126 ms/layer (+1.2%) |
+| 16384 | 24.542 (35.0) | 15.154 (34.0) | 39.696 | 38.466 (35.7) | -1.230 ms/layer (-3.1%) |
+
+Verdict: **rejected, nothing shipped** (tree reverted to 9107aa9d; the patch and this section are the record). The
+launch count was never the cost: our two launches already run at 35 / 32 TF/s, i.e. 366.7 ms in situ vs gufo's fused
+348-354, a +13..19 ms (0.4%) item, not the +143 class delta. Fusing them on our kernel is slower in situ (+61 ms at the
+default raster, +17 ms at G=1: the 44.6 MB M=16384 weight set no longer stays MALL-resident across the 16-token-tile
+raster group, and even the best raster only reaches the microbench's parity-with-the-sum); the microbench's best case
+(p16384, -1.23 ms/layer = 44 ms of an 11.6 s request) is 0.4% e2e, below the 1% gate. The GDN conv class moved +8 ms
+with the strided reads (64.9 -> 72.6), the gated norm -3.5. The remaining dense-GEMM gap vs gufo is spread thin:
+qkv+gate +13..19, the K=6144 / shexp_dn M~2560 group +20, router +19, shared-expert gate/up +13, HC down +8, and we win
+attention q by 15; no single dense-GEMM item is a >1% lever. gufo's ssm-conv-in-epilogue (its `SsmConvTail`) saves 22 ms
+of conv on top of its stack, which only makes sense if the stack itself were free -- it is not on this kernel. Trace dirs
+deleted; the box tree and `luce_server` were restored to HEAD (`rsync -rnc` empty, rebuilt).

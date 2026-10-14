@@ -1,0 +1,626 @@
+diff --git a/server/CMakeLists.txt b/server/CMakeLists.txt
+index 83f8aa3f..a91022ae 100644
+--- a/server/CMakeLists.txt
++++ b/server/CMakeLists.txt
+@@ -1419,6 +1419,10 @@ if(LUCE_TESTS)
+         # "no match" lines) and hash-equal the unfused nodes (child process under LUCE_PLE_CONV_LEGACY=1).
+         luce_add_ggml_gpu_executable(test_ple_conv_fusion test/unit/test_ple_conv_fusion.cpp)
+         list(APPEND _raw_unit_test_targets test_ple_conv_fusion)
++        # Guards the GDN qkv|gate row-concat GEMM (attn_qkvz): the strided qkv / z views through the conv chain
++        # (gdn_conv_direct must match) and the gated norm hash-equal the two-GEMM graph at T in {1028, 300, 200}.
++        luce_add_ggml_gpu_executable(test_qkvz_fuse_parity test/unit/test_qkvz_fuse_parity.cpp)
++        list(APPEND _raw_unit_test_targets test_qkvz_fuse_parity)
+         luce_add_ggml_gpu_executable(test_qwen4exp_indexer_score test/unit/test_qwen4exp_indexer_score.cpp)
+         target_link_libraries(test_qwen4exp_indexer_score PRIVATE ggml-cpu)
+         list(APPEND _raw_unit_test_targets test_qwen4exp_indexer_score)
+diff --git a/server/deps/llama.cpp/ggml/src/ggml-cuda/concat.cu b/server/deps/llama.cpp/ggml/src/ggml-cuda/concat.cu
+index a69714bf..54acb690 100644
+--- a/server/deps/llama.cpp/ggml/src/ggml-cuda/concat.cu
++++ b/server/deps/llama.cpp/ggml/src/ggml-cuda/concat.cu
+@@ -31,7 +31,8 @@ concat_dim0_dense_transpose_f32(
+               float * __restrict__ dst,
+         int64_t prefix,
+         int64_t tokens,
+-        int64_t channels) {
++        int64_t channels,
++        int64_t src1_pitch) {   // floats between consecutive tokens of src1 (channels when dense)
+     __shared__ float tile[CUDA_CONCAT_TRANSPOSE_TILE][CUDA_CONCAT_TRANSPOSE_TILE + 1];
+ 
+     const int64_t channel_base = (int64_t) blockIdx.x * CUDA_CONCAT_TRANSPOSE_TILE;
+@@ -40,7 +41,7 @@ concat_dim0_dense_transpose_f32(
+     const int64_t channel      = channel_base + threadIdx.x;
+ 
+     const int64_t src0_sequence_stride = prefix * channels;
+-    const int64_t src1_sequence_stride = tokens * channels;
++    const int64_t src1_sequence_stride = tokens * src1_pitch;
+     const int64_t dst_sequence_stride  = (prefix + tokens) * channels;
+ 
+     const float * src0_sequence = src0 + sequence * src0_sequence_stride;
+@@ -72,7 +73,7 @@ concat_dim0_dense_transpose_f32(
+         const int64_t token = token_base + local_token;
+         if (channel < channels && token < tokens) {
+             tile[local_token][threadIdx.x] =
+-                src1_sequence[token * channels + channel];
++                src1_sequence[token * src1_pitch + channel];
+         }
+     }
+     __syncthreads();
+@@ -103,6 +104,9 @@ static bool concat_dim0_dense_transpose_f32_cuda(
+     const int64_t tokens    = src1->ne[0];
+     const int64_t channels  = dst->ne[1];
+     const int64_t sequences = dst->ne[2];
++    // src1 is the transpose of a [channels, tokens] matrix; a column view of a wider matrix (the fused qkv|gate
++    // GEMM output) carries its row pitch in nb[0].
++    const int64_t src1_pitch = (int64_t) (src1->nb[0] / element_size);
+ 
+     // Keep this a strict layout specialization.  Anything padded, permuted in
+     // more than the first two dimensions, unusually large, or non-F32 falls
+@@ -123,8 +127,8 @@ static bool concat_dim0_dense_transpose_f32_cuda(
+         src0->nb[1] == (size_t) prefix * element_size &&
+         src0->nb[2] == (size_t) prefix * channels * element_size &&
+         src1->nb[1] == element_size &&
+-        src1->nb[0] == (size_t) channels * element_size &&
+-        src1->nb[2] == (size_t) tokens * channels * element_size &&
++        src1->nb[0] % element_size == 0 && src1_pitch >= channels &&
++        src1->nb[2] == (size_t) tokens * src1->nb[0] &&
+         dst->nb[0] == element_size &&
+         dst->nb[1] == (size_t) (prefix + tokens) * element_size &&
+         dst->nb[2] == (size_t) (prefix + tokens) * channels * element_size;
+@@ -142,7 +146,7 @@ static bool concat_dim0_dense_transpose_f32_cuda(
+         (const float *) src0->data,
+         (const float *) src1->data,
+         (float *) dst->data,
+-        prefix, tokens, channels);
++        prefix, tokens, channels, src1_pitch);
+     g_concat_transpose_f32_count.fetch_add(1, std::memory_order_relaxed);
+     return true;
+ }
+diff --git a/server/deps/llama.cpp/ggml/src/ggml-cuda/gdn-conv.cu b/server/deps/llama.cpp/ggml/src/ggml-cuda/gdn-conv.cu
+index 624cff4a..e8e5766b 100644
+--- a/server/deps/llama.cpp/ggml/src/ggml-cuda/gdn-conv.cu
++++ b/server/deps/llama.cpp/ggml/src/ggml-cuda/gdn-conv.cu
+@@ -8,7 +8,7 @@ static bool gdn_conv_enabled() { return true; }
+ // Preserve the old recurrent state in otherwise-unused concat columns, then
+ // materialize only the tail consumed by the state checkpoint.
+ static __global__ void gdn_concat_tail(const float * __restrict__ state, const float * __restrict__ x, float * __restrict__ out,
+-                                       const int C, const int T, const int tail_from, const int row_stride) {
++                                       const int C, const int T, const int tail_from, const int row_stride, const int x_pitch) {
+     const int ncols = T + 3 - tail_from;
+     const int64_t idx = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+     if (idx >= (int64_t) C * (3 + ncols)) return;
+@@ -17,13 +17,13 @@ static __global__ void gdn_concat_tail(const float * __restrict__ state, const f
+         out[(size_t) c * row_stride + col] = state[c * 3 + col];
+     } else {
+         const int j = tail_from + col - 3;
+-        out[(size_t) c * row_stride + j] = (j < 3) ? state[c * 3 + j] : x[(size_t) (j - 3) * C + c];
++        out[(size_t) c * row_stride + j] = (j < 3) ? state[c * 3 + j] : x[(size_t) (j - 3) * x_pitch + c];
+     }
+ }
+ 
+ template <bool apply_silu, int TT>
+ static __global__ void __launch_bounds__(256) gdn_conv_direct_kernel(const float * __restrict__ saved_state, const float * __restrict__ x,
+-        const float * __restrict__ w, float * __restrict__ y, const int C, const int T, const int state_stride, const int c0) {
++        const float * __restrict__ w, float * __restrict__ y, const int C, const int T, const int state_stride, const int c0, const int x_pitch) {
+     const int c  = c0 + blockIdx.x * 256 + threadIdx.x;
+     const int t0 = blockIdx.y * TT;
+     if (c >= C) return;
+@@ -32,7 +32,7 @@ static __global__ void __launch_bounds__(256) gdn_conv_direct_kernel(const float
+     for (int j = 0; j < 4; ++j) wr[j] = w[c * 4 + j];
+     float xw[4];
+ #pragma unroll
+-    for (int k = 0; k < 4; ++k) { const int jp = t0 + k; xw[k] = (jp < 3) ? saved_state[(size_t) c * state_stride + jp] : x[(size_t) (jp - 3) * C + c]; }
++    for (int k = 0; k < 4; ++k) { const int jp = t0 + k; xw[k] = (jp < 3) ? saved_state[(size_t) c * state_stride + jp] : x[(size_t) (jp - 3) * x_pitch + c]; }
+     const float b = 0.0f;
+     const int tend = min(T, t0 + TT);
+     for (int t = t0; t < tend; ++t) {
+@@ -42,7 +42,7 @@ static __global__ void __launch_bounds__(256) gdn_conv_direct_kernel(const float
+         sumf += b;
+         y[(size_t) t * C + c] = apply_silu ? ggml_cuda_op_silu_single(sumf) : sumf;
+         xw[0] = xw[1]; xw[1] = xw[2]; xw[2] = xw[3];
+-        const int jp = t + 4; xw[3] = (jp < 3) ? saved_state[(size_t) c * state_stride + jp] : ((jp - 3) < T ? x[(size_t) (jp - 3) * C + c] : 0.0f);
++        const int jp = t + 4; xw[3] = (jp < 3) ? saved_state[(size_t) c * state_stride + jp] : ((jp - 3) < T ? x[(size_t) (jp - 3) * x_pitch + c] : 0.0f);
+     }
+ }
+ 
+@@ -56,7 +56,7 @@ static __global__ void __launch_bounds__(256) gdn_conv_direct_kernel(const float
+ template <int TT, int ST>
+ static __global__ void __launch_bounds__(256) gdn_conv_direct_norm_kernel(const float * __restrict__ saved_state,
+         const float * __restrict__ x, const float * __restrict__ w, float * __restrict__ y, const int C, const int T,
+-        const int state_stride, const float eps, const float post_scale, const float bias) {
++        const int state_stride, const float eps, const float post_scale, const float bias, const int x_pitch) {
+     constexpr int ncols = 128;
+     static_assert(TT % ST == 0, "sub-tiles must divide the token tile");
+     const int c  = blockIdx.x * 256 + threadIdx.x;
+@@ -68,7 +68,7 @@ static __global__ void __launch_bounds__(256) gdn_conv_direct_norm_kernel(const
+     for (int j = 0; j < 4; ++j) wr[j] = w[c * 4 + j];
+     float xw[4];
+ #pragma unroll
+-    for (int k = 0; k < 4; ++k) { const int jp = t0 + k; xw[k] = (jp < 3) ? saved_state[(size_t) c * state_stride + jp] : x[(size_t) (jp - 3) * C + c]; }
++    for (int k = 0; k < 4; ++k) { const int jp = t0 + k; xw[k] = (jp < 3) ? saved_state[(size_t) c * state_stride + jp] : x[(size_t) (jp - 3) * x_pitch + c]; }
+     const float b = 0.0f;
+     const int tend = min(T, t0 + TT);
+     for (int ts = t0; ts < tend; ts += ST) {
+@@ -93,7 +93,7 @@ static __global__ void __launch_bounds__(256) gdn_conv_direct_norm_kernel(const
+                 tmp = warp_reduce_sum(tmp);
+                 if (lane == 0) s_part[buf][i][warp] = tmp;
+                 xw[0] = xw[1]; xw[1] = xw[2]; xw[2] = xw[3];
+-                const int jp = ts + i + 4; xw[3] = (jp < 3) ? saved_state[(size_t) c * state_stride + jp] : ((jp - 3) < T ? x[(size_t) (jp - 3) * C + c] : 0.0f);
++                const int jp = ts + i + 4; xw[3] = (jp < 3) ? saved_state[(size_t) c * state_stride + jp] : ((jp - 3) < T ? x[(size_t) (jp - 3) * x_pitch + c] : 0.0f);
+             }
+         }
+         __syncthreads();
+@@ -123,27 +123,29 @@ static bool gdn_conv_qknorm_enabled() {
+ }
+ 
+ // Plain conv over all C channels, or the split launch: norm kernel over [0, qk_channels), plain conv over the rest.
++// x_pitch: floats between consecutive tokens of x (C when x is a dense [C, T] matrix; the fused qkv|gate GEMM's
++// row length when x is the qkv half of its output).
+ static void gdn_conv_direct_launch(const float * saved_state, const float * x, const float * w, float * y, int C, int T,
+-        int state_stride, int qk_channels, float eps, float post_scale, float bias, cudaStream_t stream) {
++        int state_stride, int qk_channels, float eps, float post_scale, float bias, int x_pitch, cudaStream_t stream) {
+     constexpr int TT = 128;
+     const unsigned ty = (unsigned) ((T + TT - 1) / TT);
+     if (qk_channels > 0) {
+         gdn_conv_direct_norm_kernel<TT, 16><<<dim3((unsigned) (qk_channels / 256), ty), 256, 0, stream>>>(
+-            saved_state, x, w, y, C, T, state_stride, eps, post_scale, bias);
++            saved_state, x, w, y, C, T, state_stride, eps, post_scale, bias, x_pitch);
+     }
+     if (C > qk_channels) {
+         gdn_conv_direct_kernel<true, TT><<<dim3((unsigned) ((C - qk_channels) / 256), ty), 256, 0, stream>>>(
+-            saved_state, x, w, y, C, T, state_stride, qk_channels);
++            saved_state, x, w, y, C, T, state_stride, qk_channels, x_pitch);
+     }
+ }
+ 
+ extern "C" { GGML_BACKEND_API int ggml_cuda_test_gdn_conv_direct(int norm, const float * saved_state, const float * x,
+         const float * w, float * y, int C, int T, int state_stride, int qk_channels, float eps, float post_scale,
+-        float bias, void * stream) {
++        float bias, int x_pitch, void * stream) {
+     if (!saved_state || !x || !w || !y || C <= 0 || C % 256 != 0 || T <= 0 || state_stride < 3 ||
+-        qk_channels < 0 || qk_channels > C || qk_channels % 256 != 0) return 0;
++        qk_channels < 0 || qk_channels > C || qk_channels % 256 != 0 || x_pitch < C) return 0;
+     gdn_conv_direct_launch(saved_state, x, w, y, C, T, state_stride, norm ? qk_channels : 0, eps, post_scale, bias,
+-        (cudaStream_t) stream);
++        x_pitch, (cudaStream_t) stream);
+     return cudaGetLastError() == cudaSuccess;
+ } }
+ 
+@@ -154,11 +156,15 @@ static bool gdn_conv_check(const ggml_cgraph * cgraph, int i, ggml_cuda_gdn_conv
+     const ggml_tensor * st = cc->src[0]; const ggml_tensor * tr = cc->src[1];
+     if (!st || !tr || st->type != GGML_TYPE_F32 || tr->type != GGML_TYPE_F32) return false;
+     if (tr->op != GGML_OP_TRANSPOSE || !tr->view_src) return false;
++    // tr is the transpose of a [C, T] matrix: a contiguous GEMM output, or a column view (row pitch tr->nb[0]) of
++    // the fused qkv|gate GEMM output. The pitch is carried in tr->nb[0]; the root only has to be contiguous.
+     const ggml_tensor * x = tr->view_src;
+     if (x->type != GGML_TYPE_F32 || !ggml_is_contiguous(x) || x->ne[2] != 1 || x->ne[3] != 1) return false;
+-    const int64_t C = x->ne[0], T = x->ne[1];
++    const int64_t T = tr->ne[0], C = tr->ne[1];
++    if (tr->ne[2] != 1 || tr->ne[3] != 1 || tr->nb[1] != sizeof(float) || tr->nb[0] % sizeof(float) != 0 ||
++        tr->nb[0] < (size_t) C * sizeof(float) || tr->nb[0] != x->nb[1] || tr->view_offs % sizeof(float) != 0 ||
++        x->ne[1] != T || (int64_t) (tr->view_offs / sizeof(float)) + C > x->ne[0]) return false;
+     if (st->ne[0] != 3 || st->ne[1] != C || st->ne[2] != 1 || st->ne[3] != 1 || !ggml_is_contiguous(st)) return false;
+-    if (tr->ne[0] != T || tr->ne[1] != C || tr->view_offs != 0) return false;
+     if (cc->ne[0] != T + 3 || cc->ne[1] != C || cc->ne[2] != 1 || cc->ne[3] != 1 || !ggml_is_contiguous(cc)) return false;
+     if (T < 256 || C % 256 != 0) return false;
+     if (i + 1 >= cgraph->n_nodes || cgraph->nodes[i + 1]->op != GGML_OP_VIEW || cgraph->nodes[i + 1]->view_src != cc) return false;
+@@ -188,7 +194,7 @@ static bool gdn_conv_check(const ggml_cgraph * cgraph, int i, ggml_cuda_gdn_conv
+     for (int n = conv + 2; n < cgraph->n_nodes; ++n) { const ggml_tensor * t = cgraph->nodes[n];
+         for (int s = 0; s < GGML_MAX_SRC && t->src[s]; ++s) if (t->src[s] == cv || t->src[s]->view_src == cv) return false; }
+     m.concat_idx = i; m.conv_idx = conv; m.input = tr; m.state = st; m.concat = cc; m.w = w; m.conv_out = cgraph->nodes[conv + 1];
+-    m.C = C; m.T = T; m.tail_from = tail_from; m.silu = true;
++    m.C = C; m.T = T; m.tail_from = tail_from; m.silu = true; m.x_pitch = (int64_t) (tr->nb[0] / sizeof(float));
+     // Folded q/k norm request (qwen4exp graph, LUCE_GDN_CONV_QKNORM): op_params[1] = channels, [2] eps, [3] scale, [4] bias.
+     m.qk_channels = ggml_get_op_params_i32(cv, 1);
+     if (m.qk_channels != 0) {
+@@ -211,13 +217,13 @@ void ggml_cuda_gdn_conv_write_tail(ggml_backend_cuda_context & ctx, const ggml_c
+     const int ncols = (int) (m.T + 3 - m.tail_from);
+     const int64_t n = m.C * (3 + ncols);
+     gdn_concat_tail<<<(unsigned) ((n + 255) / 256), 256, 0, ctx.stream()>>>((const float *) m.state->data, (const float *) m.input->data,
+-        (float *) m.concat->data, (int) m.C, (int) m.T, (int) m.tail_from, (int) (m.concat->nb[1] / sizeof(float)));
++        (float *) m.concat->data, (int) m.C, (int) m.T, (int) m.tail_from, (int) (m.concat->nb[1] / sizeof(float)), (int) m.x_pitch);
+     CUDA_CHECK(cudaGetLastError());
+ }
+ 
+ void ggml_cuda_gdn_conv_direct(ggml_backend_cuda_context & ctx, const ggml_cuda_gdn_conv_match & m) {
+     gdn_conv_direct_launch((const float *) m.concat->data, (const float *) m.input->data, (const float *) m.w->data,
+         (float *) m.conv_out->data, (int) m.C, (int) m.T, (int) (m.concat->nb[1] / sizeof(float)),
+-        m.qk_channels, m.norm_eps, m.norm_scale, m.norm_bias, ctx.stream());
++        m.qk_channels, m.norm_eps, m.norm_scale, m.norm_bias, (int) m.x_pitch, ctx.stream());
+     CUDA_CHECK(cudaGetLastError());
+ }
+diff --git a/server/deps/llama.cpp/ggml/src/ggml-cuda/gdn-conv.cuh b/server/deps/llama.cpp/ggml/src/ggml-cuda/gdn-conv.cuh
+index ced3db2d..96532455 100644
+--- a/server/deps/llama.cpp/ggml/src/ggml-cuda/gdn-conv.cuh
++++ b/server/deps/llama.cpp/ggml/src/ggml-cuda/gdn-conv.cuh
+@@ -8,6 +8,7 @@ struct ggml_cuda_gdn_conv_match {
+     const ggml_tensor * w = nullptr;
+     ggml_tensor * conv_out = nullptr;
+     int64_t C = 0, T = 0, tail_from = 0;  // first concat column that must be materialized
++    int64_t x_pitch = 0;                  // floats between consecutive tokens of `input`'s source (C, or the fused qkv|gate row)
+     bool silu = false;
+     // q/k L2 norm folded into the conv epilogue (SSM_CONV op_params[1..4], set by the qwen4exp graph): channels
+     // [0, qk_channels) are rms_norm(eps) * post_scale + bias per 128-channel head. 0 = plain conv.
+@@ -15,10 +16,11 @@ struct ggml_cuda_gdn_conv_match {
+     float norm_eps = 0.0f, norm_scale = 1.0f, norm_bias = 0.0f;
+ };
+ // Parity-test entry point: plain conv (norm == 0) or the qk-norm split launch (norm != 0) on raw device pointers;
+-// saved_state is the [3, C] history (row stride `state_stride` floats), x is [C, T], w is [4, C], y is [C, T].
++// saved_state is the [3, C] history (row stride `state_stride` floats), x is [C, T] with `x_pitch` floats between
++// tokens (x_pitch == C when dense), w is [4, C], y is [C, T].
+ extern "C" { GGML_BACKEND_API int ggml_cuda_test_gdn_conv_direct(int norm, const float * saved_state, const float * x,
+         const float * w, float * y, int C, int T, int state_stride, int qk_channels, float eps, float post_scale,
+-        float bias, void * stream); }
++        float bias, int x_pitch, void * stream); }
+ bool ggml_cuda_gdn_conv_match_at_concat(const ggml_cgraph * cgraph, int i, ggml_cuda_gdn_conv_match & m);
+ bool ggml_cuda_gdn_conv_match_at_conv(const ggml_cgraph * cgraph, int j, ggml_cuda_gdn_conv_match & m);
+ void ggml_cuda_gdn_conv_write_tail(ggml_backend_cuda_context & ctx, const ggml_cuda_gdn_conv_match & m);
+diff --git a/server/src/qwen4exp/qwen4exp_graph.cpp b/server/src/qwen4exp/qwen4exp_graph.cpp
+index e7ecb017..ae93df3c 100644
+--- a/server/src/qwen4exp/qwen4exp_graph.cpp
++++ b/server/src/qwen4exp/qwen4exp_graph.cpp
+@@ -471,8 +471,20 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor
+     const int64_t conv_channels = 2 * Hk * D + d_in;   // 10240
+     const float   eps    = w.rms_eps;
+ 
+-    ggml_tensor * qkv = mm(c, L.attn_qkv, cur);        // [conv_channels, T]
+-    ggml_tensor * z   = mm(c, L.attn_gate, cur);       // [d_in, T]
++    // Prefill: one [conv_channels + d_in, T] GEMM on the row-concatenated weight (loader; LUCE_QKVZ_FUSE_LEGACY=1
++    // leaves attn_qkvz null), the halves are strided views (row pitch 16384 floats). Decode keeps the two GEMVs on
++    // the aliased halves. Bit-identical: the same rows, the same K order.
++    ggml_tensor * qkv, * z;
++    if (L.attn_qkvz && T > 1) {
++        ggml_tensor * qkvz = mm(c, L.attn_qkvz, cur);   // [conv_channels + d_in, T]
++        qkv = ggml_view_2d(c, qkvz, conv_channels, T, qkvz->nb[1], 0);
++        z   = ggml_view_2d(c, qkvz, d_in, T, qkvz->nb[1], (size_t) conv_channels * ggml_element_size(qkvz));
++    } else {
++        qkv = mm(c, L.attn_qkv, cur);                    // [conv_channels, T]
++        z   = mm(c, L.attn_gate, cur);                   // [d_in, T]
++    }
++    // z as [D, Hv, T] for the gated norm; the strided view cannot be reshaped.
++    auto z_heads = [&]() { return ggml_view_4d(c, z, D, Hv, T, 1, D * ggml_element_size(z), z->nb[1], z->nb[1] * T, 0); };
+ 
+     ggml_tensor * beta = ggml_sigmoid(c,
+         ggml_reshape_4d(c, mm(c, L.ssm_beta, cur), 1, Hv, T, 1));
+@@ -505,7 +517,9 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor
+     } else {
+         ggml_tensor * hist = ggml_reshape_3d(c, conv_state, kernel - 1, conv_channels, 1);
+         // Keep the transpose as a view: the fused concat+transpose kernel keys off src1->nb[1] == sizeof(float).
+-        ggml_tensor * qkv_t = ggml_transpose(c, ggml_reshape_2d(c, qkv, conv_channels, T));
++        // qkv is [conv_channels, T] (row pitch conv_channels, or the fused GEMM's pitch); the transposed view
++        // carries that pitch in nb[0] and the concat / gdn_conv_direct kernels read it from there.
++        ggml_tensor * qkv_t = ggml_transpose(c, qkv);
+         ggml_tensor * conv_input = ggml_concat(c, hist, qkv_t, 0);
+ 
+         // nb[0] is the element size, so the tail offset is T*nb[0], NOT T*nb[1].
+@@ -625,14 +639,15 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor
+     if (!producer_q8_claims_this_row && T <= GGML_HC_BOUNDARY_MAX_T && gdn_tail_on(D)) {
+         // Fused GDN tail (GGML_OP_GDN_TAIL, K4): rms_norm(attn)*gamma*sigmoid(z) in one launch.
+         gdn_tail_debug_note(true, T);
+-        ggml_tensor * out = ggml_gdn_tail(c, attn, L.ssm_norm, ggml_reshape_4d(c, z, D, Hv, T, 1), eps);
++        ggml_tensor * out = ggml_gdn_tail(c, attn, L.ssm_norm, z, eps);   // [d_in, T] z: head stride D, token stride nb[1]
+         ggml_tensor * final = ggml_reshape_3d(c, out, d_in, T, 1);
+         ggml_tensor * lin_raw = mm(c, L.ssm_out, final);
+         return ggml_reshape_2d(c, lin_raw, w.n_embd, T);
+     }
+     gdn_tail_debug_note(false, T);
+     ggml_tensor * normed = ggml_mul(c, ggml_rms_norm(c, attn, eps), L.ssm_norm);
+-    ggml_tensor * out = ggml_mul(c, normed, ggml_sigmoid(c, ggml_reshape_4d(c, z, D, Hv, T, 1)));
++    ggml_tensor * z4 = ggml_is_contiguous(z) ? ggml_reshape_4d(c, z, D, Hv, T, 1) : ggml_cont(c, z_heads());
++    ggml_tensor * out = ggml_mul(c, normed, ggml_sigmoid(c, z4));
+     if (dump_mark) {
+         char dlab[32];
+         std::snprintf(dlab, sizeof dlab, "L%02d.gnorm", il);
+diff --git a/server/src/qwen4exp/qwen4exp_internal.h b/server/src/qwen4exp/qwen4exp_internal.h
+index fb6968b8..945faf5d 100644
+--- a/server/src/qwen4exp/qwen4exp_internal.h
++++ b/server/src/qwen4exp/qwen4exp_internal.h
+@@ -47,6 +47,10 @@ struct Qwen4ExpLayer {
+     // Linear attention (gated delta net), 36 layers.
+     ggml_tensor * attn_qkv       = nullptr;  // fused q|k|v projection
+     ggml_tensor * attn_gate      = nullptr;  // the output gate ("z") projection
++    // Row concat [attn_qkv ; attn_gate] (same bytes: attn_qkv / attn_gate alias its two halves), so prefill
++    // issues one M=16384 GEMM and views the two halves. Null under LUCE_QKVZ_FUSE_LEGACY=1 or when the
++    // two weights differ in type / K.
++    ggml_tensor * attn_qkvz      = nullptr;
+     ggml_tensor * ssm_conv1d     = nullptr;  // depthwise causal conv
+     ggml_tensor * ssm_alpha      = nullptr;  // per-token alpha input projection
+     ggml_tensor * ssm_beta       = nullptr;  // per-token beta input projection
+@@ -137,6 +141,7 @@ struct Qwen4ExpWeights {
+     ggml_backend_buffer_t buf     = nullptr;
+     ggml_context *        router_ctx = nullptr;
+     ggml_backend_buffer_t router_buf = nullptr;
++    ggml_context *        qkvz_ctx   = nullptr;  // attn_qkvz descriptors; their bytes live in `buf`
+ 
+     CpuEmbedder           embedder;
+ 
+diff --git a/server/src/qwen4exp/qwen4exp_loader.cpp b/server/src/qwen4exp/qwen4exp_loader.cpp
+index 00440c3f..03807fb0 100644
+--- a/server/src/qwen4exp/qwen4exp_loader.cpp
++++ b/server/src/qwen4exp/qwen4exp_loader.cpp
+@@ -27,6 +27,7 @@
+ #include <stdexcept>
+ #include <string>
+ #include <thread>
++#include <unordered_map>
+ #include <unordered_set>
+ #include <utility>
+ #include <vector>
+@@ -462,9 +463,11 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
+         }
+         if (out.router_buf) ggml_backend_buffer_free(out.router_buf);
+         if (out.router_ctx) ggml_free(out.router_ctx);
++        if (out.qkvz_ctx) ggml_free(out.qkvz_ctx);
+         out.router_buf = nullptr;
+         out.router_ctx = nullptr;
+-        for (Qwen4ExpLayer & layer : out.layers) layer.ffn_gate_inp_bf16 = nullptr;
++        out.qkvz_ctx = nullptr;
++        for (Qwen4ExpLayer & layer : out.layers) { layer.ffn_gate_inp_bf16 = nullptr; layer.attn_qkvz = nullptr; }
+         out.embedder.tok_embd_owned.clear();
+         out.embedder.tok_embd_bytes = nullptr;
+         if (out.mtp_vocab_buf) ggml_backend_buffer_free(out.mtp_vocab_buf);
+@@ -796,27 +799,71 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
+         add(layer.ffn_up_shexp); add(layer.ffn_down_shexp);
+     }
+ 
++    // GDN qkv|gate row concat (LUCE_QKVZ_FUSE_LEGACY=1 keeps two GEMMs): one Q8_0 [K, 10240 + 6144] tensor per
++    // linear layer, with attn_qkv / attn_gate placed on its two halves, so the bytes are uploaded once and both
++    // the fused prefill GEMM and the per-half decode GEMVs read the same memory. Q8_0 rows are self-contained
++    // (per-row blocks), so the concat is exact.
++    static const bool qkvz_fuse = [] {
++        const char * value = std::getenv("LUCE_QKVZ_FUSE_LEGACY");
++        return !(value && std::strcmp(value, "1") == 0);
++    }();
++    std::unordered_map<ggml_tensor *, std::pair<ggml_tensor *, size_t>> qkvz_half;   // half -> (fused, byte offset)
++    if (qkvz_fuse && !reference) {
++        ggml_init_params qp{};
++        qp.mem_size = (out.layers.size() + 1) * ggml_tensor_overhead() + 1024;
++        qp.no_alloc = true;
++        out.qkvz_ctx = ggml_init(qp);
++        for (size_t il = 0; out.qkvz_ctx && il < out.layers.size(); ++il) {
++            Qwen4ExpLayer & layer = out.layers[il];
++            ggml_tensor * a = layer.attn_qkv, * b = layer.attn_gate;
++            if (!a || !b || a->type != b->type || a->type != GGML_TYPE_Q8_0 || a->ne[0] != b->ne[0] ||
++                !ggml_is_contiguous(a) || !ggml_is_contiguous(b)) continue;
++            layer.attn_qkvz = ggml_new_tensor_2d(out.qkvz_ctx, a->type, a->ne[0], a->ne[1] + b->ne[1]);
++            char name[64];
++            std::snprintf(name, sizeof(name), "blk.%zu.attn_qkvz.weight", il);
++            ggml_set_name(layer.attn_qkvz, name);
++            wanted.insert(layer.attn_qkvz);
++            qkvz_half[a] = {layer.attn_qkvz, 0};
++            qkvz_half[b] = {layer.attn_qkvz, ggml_nbytes(a)};
++        }
++        std::fprintf(stderr, "[qwen4exp] GDN qkv|gate row concat: %zu layers\n", qkvz_half.size() / 2);
++    }
++
+     ggml_backend_buffer_type_t buffer_type =
+         ggml_backend_get_default_buffer_type(backend);
+     const size_t alignment = ggml_backend_buft_get_alignment(buffer_type);
+     std::vector<TensorAllocation> allocations;
+     allocations.reserve(wanted.size());
+     size_t allocation_size = 0;
++    std::unordered_map<ggml_tensor *, size_t> placed;   // fused tensor -> buffer offset
+     for (size_t s = 0; s < shards.size(); ++s) {
+         const int64_t n_tensors = gguf_get_n_tensors(shards[s].gctx);
+         for (int64_t tid = 0; tid < n_tensors; ++tid) {
+             const char * name = gguf_get_tensor_name(shards[s].gctx, tid);
+             ggml_tensor * value = ggml_get_tensor(shards[s].meta, name);
+             if (!value || wanted.find(value) == wanted.end()) continue;
+-            allocation_size = align_up(allocation_size, alignment);
+             TensorAllocation allocation;
+             allocation.tensor = value;
+             allocation.file_offset = gguf_get_data_offset(shards[s].gctx) +
+                                      gguf_get_tensor_offset(shards[s].gctx, tid);
+             allocation.file_size = gguf_get_tensor_size(shards[s].gctx, tid);
+-            allocation.buffer_offset = allocation_size;
+             allocation.shard = s;
+-            allocation_size += ggml_backend_buft_get_alloc_size(buffer_type, value);
++            const auto half = qkvz_half.find(value);
++            if (half == qkvz_half.end()) {
++                allocation_size = align_up(allocation_size, alignment);
++                allocation.buffer_offset = allocation_size;
++                allocation_size += ggml_backend_buft_get_alloc_size(buffer_type, value);
++            } else {
++                ggml_tensor * fused = half->second.first;
++                auto at = placed.find(fused);
++                if (at == placed.end()) {
++                    allocation_size = align_up(allocation_size, alignment);
++                    at = placed.emplace(fused, allocation_size).first;
++                    allocation_size += ggml_backend_buft_get_alloc_size(buffer_type, fused);
++                    allocations.push_back({fused, 0, 0, at->second, s});   // nothing to upload: the halves fill it
++                }
++                allocation.buffer_offset = at->second + half->second.second;
++            }
+             allocations.push_back(allocation);
+         }
+     }
+diff --git a/server/test/unit/test_gdn_conv_qknorm_parity.cpp b/server/test/unit/test_gdn_conv_qknorm_parity.cpp
+index cd0f5399..3765239a 100644
+--- a/server/test/unit/test_gdn_conv_qknorm_parity.cpp
++++ b/server/test/unit/test_gdn_conv_qknorm_parity.cpp
+@@ -28,7 +28,7 @@
+ 
+ extern "C" int ggml_cuda_test_gdn_conv_direct(int norm, const float * saved_state, const float * x,
+         const float * w, float * y, int C, int T, int state_stride, int qk_channels, float eps, float post_scale,
+-        float bias, void * stream);
++        float bias, int x_pitch, void * stream);
+ extern "C" int ggml_cuda_test_rms_norm_scale(const float * x, float * dst, int ncols, int nrows,
+         int nchannels, int nsamples, int64_t stride_row, int64_t stride_channel, int64_t stride_sample, float eps,
+         float post_scale, float bias, void * stream);
+@@ -65,7 +65,7 @@ bool run_case(int T) {
+ 
+     // Reference: plain conv, then rms_norm_scale over the q/k heads ([128, 2*Hk, T] view, row pitch C).
+     (void) hipMemset(dy.p, 0, (size_t) C * T * 4);
+-    if (!ggml_cuda_test_gdn_conv_direct(0, dstate.p, dx.p, dw.p, dy.p, C, T, state_stride, QK, eps, post_scale, bias, (hipStream_t) 0) ||
++    if (!ggml_cuda_test_gdn_conv_direct(0, dstate.p, dx.p, dw.p, dy.p, C, T, state_stride, QK, eps, post_scale, bias, C, (hipStream_t) 0) ||
+         !ggml_cuda_test_rms_norm_scale(dy.p, dref.p, D, 2 * Hk, T, 1, D, C, (int64_t) C * T, eps, post_scale, bias, (hipStream_t) 0) ||
+         hipDeviceSynchronize() != hipSuccess) {
+         std::printf("  reference launch failed\n");
+@@ -76,7 +76,7 @@ bool run_case(int T) {
+     (void) hipMemcpy(ref.data(), dref.p, ref.size() * 4, hipMemcpyDeviceToHost);
+ 
+     (void) hipMemset(dy.p, 0, (size_t) C * T * 4);
+-    if (!ggml_cuda_test_gdn_conv_direct(1, dstate.p, dx.p, dw.p, dy.p, C, T, state_stride, QK, eps, post_scale, bias, (hipStream_t) 0) ||
++    if (!ggml_cuda_test_gdn_conv_direct(1, dstate.p, dx.p, dw.p, dy.p, C, T, state_stride, QK, eps, post_scale, bias, C, (hipStream_t) 0) ||
+         hipDeviceSynchronize() != hipSuccess) {
+         std::printf("  fused launch failed\n");
+         return false;
+diff --git a/server/test/unit/test_qkvz_fuse_parity.cpp b/server/test/unit/test_qkvz_fuse_parity.cpp
+new file mode 100644
+index 00000000..0a2da66b
+--- /dev/null
++++ b/server/test/unit/test_qkvz_fuse_parity.cpp
+@@ -0,0 +1,154 @@
++// Parity test for the GDN qkv|gate row-concat GEMM (qwen4exp_loader.cpp attn_qkvz, qwen4exp_graph.cpp
++// build_linear_attn; LUCE_QKVZ_FUSE_LEGACY=1 keeps the two GEMMs). Rebuilds the prefill subgraph both ways on
++// synthetic Q8_0 weights under the qwen4exp CUDA profile (the mmb Q8_0 -> F16 GEMM route, as in production):
++//   legacy: qkv = W_qkv x, z = W_z x (two GEMMs, dense outputs)
++//   fused:  qkvz = [W_qkv ; W_z] x, qkv / z = column views with row pitch 16384
++// and then the consumers that must read the strided views: transpose -> concat(hist) -> SSM_CONV with the folded
++// q/k norm (gdn_conv_direct, which must match -- the generic kernel aborts when the norm is requested without the
++// fusion) -> silu, and gated_rms_norm_f16(attn, gamma, z). The silu output, the new conv history and the gated
++// norm output must be byte-identical between the arms. T = 1028 (fusion + raster path), 300 (fusion, ragged),
++// 200 (below the fusion's T >= 256: plain SSM_CONV over the generic concat of the strided view).
++// SKIP (77) without a GPU.
++#include "ggml-backend.h"
++#include "ggml-cuda.h"
++#include "ggml-impl.h"   // ggml_set_op_params_*: the folded q/k norm request lives in SSM_CONV op_params
++#include "ggml.h"
++
++#include <cmath>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <vector>
++
++namespace {
++
++constexpr int64_t K = 2560, D = 128, Hk = 16, Hv = 48, Cq = 2 * Hk * D + Hv * D /* 10240 */, Cz = Hv * D /* 6144 */;
++
++uint64_t fnv(const void * p, size_t n, uint64_t h) {
++    const unsigned char * b = (const unsigned char *) p;
++    for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; }
++    return h;
++}
++
++struct Lcg {
++    uint32_t r;
++    float next(float scale) { r = r * 1664525u + 1013904223u; return scale * (((r >> 8) & 0xFFFF) / 32768.0f - 1.0f); }
++};
++
++// Q8_0 rows quantised on the host; the concat weight is the byte concat of the two (rows are self-contained).
++std::vector<uint8_t> q8_rows(Lcg & g, int64_t rows) {
++    const size_t row_bytes = ggml_row_size(GGML_TYPE_Q8_0, K);
++    std::vector<uint8_t> out(row_bytes * rows);
++    std::vector<float> row(K);
++    for (int64_t r = 0; r < rows; ++r) {
++        for (float & v : row) v = g.next(0.05f);
++        ggml_quantize_chunk(GGML_TYPE_Q8_0, row.data(), out.data() + r * row_bytes, 0, 1, K, nullptr);
++    }
++    return out;
++}
++
++struct Case { uint64_t hash = 0; bool ok = false; };
++
++Case run(ggml_backend_t gpu, int64_t T, bool fused, const std::vector<uint8_t> & wq, const std::vector<uint8_t> & wz,
++         const std::vector<float> & x, const std::vector<float> & hist0, const std::vector<float> & conv_w,
++         const std::vector<float> & attn, const std::vector<float> & gamma) {
++    Case res;
++    ggml_init_params ip{ 64 * 1024 * 1024, nullptr, true };
++    ggml_context * cw = ggml_init(ip);
++    ggml_tensor * Wq = ggml_new_tensor_2d(cw, GGML_TYPE_Q8_0, K, Cq);
++    ggml_tensor * Wz = ggml_new_tensor_2d(cw, GGML_TYPE_Q8_0, K, Cz);
++    ggml_tensor * Wqz = ggml_new_tensor_2d(cw, GGML_TYPE_Q8_0, K, Cq + Cz);
++    ggml_backend_buffer_t bufw = ggml_backend_alloc_ctx_tensors(cw, gpu);
++    if (!bufw) { ggml_free(cw); return res; }
++    ggml_backend_buffer_set_usage(bufw, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
++    ggml_backend_tensor_set(Wq, wq.data(), 0, wq.size());
++    ggml_backend_tensor_set(Wz, wz.data(), 0, wz.size());
++    ggml_backend_tensor_set(Wqz, wq.data(), 0, wq.size());
++    ggml_backend_tensor_set(Wqz, wz.data(), wq.size(), wz.size());
++
++    ggml_context * c = ggml_init(ip);
++    ggml_tensor * X     = ggml_new_tensor_2d(c, GGML_TYPE_F32, K, T);
++    ggml_tensor * state = ggml_new_tensor_1d(c, GGML_TYPE_F32, 3 * Cq);
++    ggml_tensor * CW    = ggml_new_tensor_2d(c, GGML_TYPE_F32, 4, Cq);
++    ggml_tensor * A     = ggml_new_tensor_3d(c, GGML_TYPE_F32, D, Hv, T);
++    ggml_tensor * G     = ggml_new_tensor_1d(c, GGML_TYPE_F32, D);
++    for (ggml_tensor * t : { X, state, CW, A, G }) ggml_set_input(t);
++    ggml_cgraph * gf = ggml_new_graph(c);
++
++    ggml_tensor * qkv, * z;
++    if (fused) {
++        ggml_tensor * qkvz = ggml_mul_mat(c, Wqz, X);
++        qkv = ggml_view_2d(c, qkvz, Cq, T, qkvz->nb[1], 0);
++        z   = ggml_view_2d(c, qkvz, Cz, T, qkvz->nb[1], (size_t) Cq * sizeof(float));
++    } else {
++        qkv = ggml_mul_mat(c, Wq, X);
++        z   = ggml_mul_mat(c, Wz, X);
++    }
++    // build_linear_attn's prefill conv chain.
++    ggml_tensor * hist = ggml_reshape_3d(c, state, 3, Cq, 1);
++    ggml_tensor * qkv_t = ggml_transpose(c, qkv);
++    ggml_tensor * conv_input = ggml_concat(c, hist, qkv_t, 0);
++    ggml_tensor * new_hist = ggml_cont(c, ggml_view_3d(c, conv_input, 3, Cq, 1, conv_input->nb[1], conv_input->nb[2],
++                                                       (size_t) T * conv_input->nb[0]));
++    ggml_build_forward_expand(gf, ggml_cpy(c, new_hist, ggml_reshape_3d(c, state, 3, Cq, 1)));
++    ggml_tensor * conv_op = ggml_ssm_conv(c, conv_input, CW);
++    conv_op->src[3] = qkv_t;
++    if (T >= 256) {
++        ggml_set_op_params_i32(conv_op, 1, (int32_t) (2 * Hk * D));
++        ggml_set_op_params_f32(conv_op, 2, 1e-6f / (float) D);
++        ggml_set_op_params_f32(conv_op, 3, 1.0f / sqrtf((float) D));
++        ggml_set_op_params_f32(conv_op, 4, 0.0f);
++    }
++    ggml_tensor * conv = ggml_silu(c, conv_op);
++    ggml_tensor * gated = ggml_gated_rms_norm_f16(c, A, G, z, 1e-6f);
++    for (ggml_tensor * t : { conv, gated }) { ggml_set_output(t); ggml_build_forward_expand(gf, t); }
++
++    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(c, gpu);
++    if (!buf) { ggml_backend_buffer_free(bufw); ggml_free(cw); ggml_free(c); return res; }
++    ggml_backend_tensor_set(X, x.data(), 0, ggml_nbytes(X));
++    ggml_backend_tensor_set(state, hist0.data(), 0, ggml_nbytes(state));
++    ggml_backend_tensor_set(CW, conv_w.data(), 0, ggml_nbytes(CW));
++    ggml_backend_tensor_set(A, attn.data(), 0, ggml_nbytes(A));
++    ggml_backend_tensor_set(G, gamma.data(), 0, ggml_nbytes(G));
++    res.ok = ggml_backend_graph_compute(gpu, gf) == GGML_STATUS_SUCCESS;
++    uint64_t h = 1469598103934665603ull;
++    for (ggml_tensor * t : { conv, state, gated }) {
++        std::vector<uint8_t> v(ggml_nbytes(t));
++        ggml_backend_tensor_get(t, v.data(), 0, v.size());
++        h = fnv(v.data(), v.size(), h);
++    }
++    res.hash = h;
++    ggml_backend_buffer_free(buf);
++    ggml_backend_buffer_free(bufw);
++    ggml_free(cw);
++    ggml_free(c);
++    return res;
++}
++
++}  // namespace
++
++int main() {
++    ggml_backend_t gpu = ggml_backend_cuda_init(0);
++    if (!gpu) { std::printf("[qkvz-fuse] SKIP: no GPU\n"); return 77; }
++    ggml_backend_cuda_set_qwen4exp_profile(GGML_CUDA_QWEN4EXP_DEFAULT);
++    Lcg g{ 7u };
++    const std::vector<uint8_t> wq = q8_rows(g, Cq), wz = q8_rows(g, Cz);
++    bool ok = true;
++    for (int64_t T : { 1028, 300, 200 }) {
++        std::vector<float> x((size_t) K * T), hist0((size_t) 3 * Cq), conv_w((size_t) 4 * Cq), attn((size_t) D * Hv * T), gamma(D);
++        for (float & v : x) v = g.next(1.0f);
++        for (float & v : hist0) v = g.next(1.0f);
++        for (float & v : conv_w) v = g.next(0.5f);
++        for (float & v : attn) v = g.next(2.0f);
++        for (float & v : gamma) v = 1.0f + g.next(0.25f);
++        const Case legacy = run(gpu, T, false, wq, wz, x, hist0, conv_w, attn, gamma);
++        const Case fused  = run(gpu, T, true,  wq, wz, x, hist0, conv_w, attn, gamma);
++        const bool pass = legacy.ok && fused.ok && legacy.hash == fused.hash;
++        std::printf("[qkvz-fuse] T=%lld legacy %llx fused %llx %s\n", (long long) T,
++                    (unsigned long long) legacy.hash, (unsigned long long) fused.hash, pass ? "PASS" : "FAIL");
++        ok = ok && pass;
++    }
++    ggml_backend_free(gpu);
++    return ok ? 0 : 1;
++}
