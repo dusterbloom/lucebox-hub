@@ -389,3 +389,5 @@ __global__ void mmb_build_tiles(const int32_t * __restrict__ bounds, uint32_t * 
     for (int jt = 0; jt < t; ++jt) { if (base + jt < n_max) tiles[base + jt] = (uint32_t)e | ((uint32_t)jt << 16); }
     if (e == 1023) { ctl[0] = min(s[e], n_max); ctl[1] = 0; }
 }
+
+#include "mmb-routed-f16.cuh"

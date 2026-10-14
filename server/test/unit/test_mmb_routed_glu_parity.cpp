@@ -29,6 +29,10 @@ namespace {
 
 constexpr int E = 512, NU = 10, Q4K_BLOCK = 144;
 constexpr double TOL = 2.0e-3;   // F32 accumulation of exact bf16 products vs double
+// F16 kernel (mode 2) vs the exact double reference, error rms over the sample relative to the reference rms:
+// 3.5e-4 measured on real routing (bench/exact/prefill/GUFO-PARITY.md 'Routed gate/up F16', bf16 path 2.0e-3), and
+// the kernel must be no worse than the bf16 path (rms and maxabs) against the same exact reference.
+constexpr double TOL_F16 = 1.0e-3;
 
 uint16_t f2h(float f) { _Float16 h = (_Float16) f; uint16_t u; std::memcpy(&u, &h, 2); return u; }
 float h2f(uint16_t u) { _Float16 h; std::memcpy(&h, &u, 2); return (float) h; }
@@ -48,6 +52,20 @@ float q4k_value_bf16(const uint8_t * b, int within) {
     const uint8_t q = qs[slice * 32 + (w % 32)];
     const int v = w < 32 ? (q & 15) : (q >> 4);
     return bf2f(f2bf(std::fmaf(ds, (float) v, -ms)));
+}
+
+// exact value `within` of one Q4_K block (the F16 kernel's reference: dequant and dot in double)
+double q4k_value_exact(const uint8_t * b, int within) {
+    const double d = h2f((uint16_t) (b[0] | (b[1] << 8))), dmin = h2f((uint16_t) (b[2] | (b[3] << 8)));
+    const uint8_t * sc = b + 4; const uint8_t * qs = b + 16;
+    const int j = within / 32;
+    uint8_t s, m;
+    if (j < 4) { s = sc[j] & 63; m = sc[j + 4] & 63; }
+    else { s = (sc[j + 4] & 15) | ((sc[j - 4] >> 6) << 4); m = (sc[j + 4] >> 4) | ((sc[j] >> 6) << 4); }
+    const int slice = within / 64, w = within % 64;
+    const uint8_t q = qs[slice * 32 + (w % 32)];
+    const int v = w < 32 ? (q & 15) : (q >> 4);
+    return d * s * v - dmin * m;
 }
 
 bool check(bool cond, const char * what) { if (!cond) std::fprintf(stderr, "  FAIL: %s\n", what); return cond; }
@@ -106,28 +124,28 @@ bool run_case(int T, int M, int K, int grid, std::mt19937 & rng) {
         }
     };
     fill_w(wg); fill_w(wu);
-    std::vector<uint16_t> xb((size_t) n_rows_x * K);
-    for (auto & v : xb) v = f2bf(xd(rng));
+    std::vector<uint16_t> xb((size_t) n_rows_x * K), xh(xb.size());   // the F16 kernel reads the same values as F16 (exact)
+    for (size_t i = 0; i < xb.size(); ++i) { xb[i] = f2bf(xd(rng)); xh[i] = f2h(bf2f(xb[i])); }
 
     const size_t out_n = (size_t) R.n_rows * M;
-    uint8_t * d_wg = nullptr, * d_wu = nullptr; uint16_t * d_x = nullptr, * d_dh = nullptr; float * d_d = nullptr;
+    uint8_t * d_wg = nullptr, * d_wu = nullptr; uint16_t * d_x = nullptr, * d_xh = nullptr, * d_dh = nullptr; float * d_d = nullptr;
     int32_t * d_src = nullptr, * d_dst = nullptr, * d_bounds = nullptr; uint32_t * d_scratch = nullptr;
     const int words = ggml_cuda_mmb_glu_scratch_words(E, R.n_rows);
-    ok = check(hipMalloc(&d_wg, w_bytes) == hipSuccess && hipMalloc(&d_wu, w_bytes) == hipSuccess && hipMalloc(&d_x, xb.size() * 2) == hipSuccess
+    ok = check(hipMalloc(&d_wg, w_bytes) == hipSuccess && hipMalloc(&d_wu, w_bytes) == hipSuccess && hipMalloc(&d_x, xb.size() * 2) == hipSuccess && hipMalloc(&d_xh, xh.size() * 2) == hipSuccess
             && hipMalloc(&d_d, out_n * 4) == hipSuccess && hipMalloc(&d_dh, out_n * 2) == hipSuccess
             && hipMalloc(&d_src, R.n_rows * 4) == hipSuccess && hipMalloc(&d_dst, R.n_rows * 4) == hipSuccess && hipMalloc(&d_bounds, (E + 1) * 4) == hipSuccess
             && hipMalloc(&d_scratch, (size_t) words * 4) == hipSuccess, "hipMalloc") && ok;
     if (!ok) return false;
     hipMemcpy(d_wg, wg.data(), w_bytes, hipMemcpyHostToDevice); hipMemcpy(d_wu, wu.data(), w_bytes, hipMemcpyHostToDevice);
-    hipMemcpy(d_x, xb.data(), xb.size() * 2, hipMemcpyHostToDevice);
+    hipMemcpy(d_x, xb.data(), xb.size() * 2, hipMemcpyHostToDevice); hipMemcpy(d_xh, xh.data(), xh.size() * 2, hipMemcpyHostToDevice);
     hipMemcpy(d_src, R.ids_src.data(), R.n_rows * 4, hipMemcpyHostToDevice); hipMemcpy(d_dst, R.ids_dst.data(), R.n_rows * 4, hipMemcpyHostToDevice);
     hipMemcpy(d_bounds, R.bounds.data(), (E + 1) * 4, hipMemcpyHostToDevice);
 
-    std::vector<float> f_legacy(out_n), f_new(out_n);
-    std::vector<uint16_t> h_legacy(out_n), h_new(out_n), h_insitu(out_n);
+    std::vector<float> f_legacy(out_n), f_new(out_n), f_f16(out_n);
+    std::vector<uint16_t> h_legacy(out_n), h_new(out_n), h_insitu(out_n), h_f16(out_n), h_f16_insitu(out_n);
     auto run = [&](int mode, bool f32, std::vector<float> * f, std::vector<uint16_t> * h) {
         hipMemset(d_d, 0, out_n * 4); hipMemset(d_dh, 0, out_n * 2);
-        ggml_cuda_mmb_glu_launch(mode, d_wg, d_wu, expert_bytes, d_x, f32 ? d_d : nullptr, d_dh, d_src, d_dst, d_bounds, d_scratch, E, R.n_rows, M, K, grid, 0);
+        ggml_cuda_mmb_glu_launch(mode, d_wg, d_wu, expert_bytes, mode == 2 ? d_xh : d_x, f32 ? d_d : nullptr, d_dh, d_src, d_dst, d_bounds, d_scratch, E, R.n_rows, M, K, grid, 0);
         const hipError_t err = hipDeviceSynchronize();
         if (!check(err == hipSuccess, "kernel")) { std::fprintf(stderr, "  %s\n", hipGetErrorString(err)); return false; }
         if (f) hipMemcpy(f->data(), d_d, out_n * 4, hipMemcpyDeviceToHost);
@@ -137,32 +155,45 @@ bool run_case(int T, int M, int K, int grid, std::mt19937 & rng) {
     ok = run(0, true, &f_legacy, &h_legacy) && ok;
     ok = run(1, true, &f_new, &h_new) && ok;
     ok = run(1, false, nullptr, &h_insitu) && ok;
+    ok = run(2, true, &f_f16, &h_f16) && ok;
+    ok = run(2, false, nullptr, &h_f16_insitu) && ok;
+    ok = check(std::memcmp(h_f16.data(), h_f16_insitu.data(), out_n * 2) == 0, "F16 kernel: bf16-only (in-situ) output byte-identical to the F32+bf16 run") && ok;
     ok = check(std::memcmp(f_legacy.data(), f_new.data(), out_n * 4) == 0, "F32 output byte-identical to legacy") && ok;
     ok = check(std::memcmp(h_legacy.data(), h_new.data(), out_n * 2) == 0, "bf16 output byte-identical to legacy") && ok;
     ok = check(std::memcmp(h_legacy.data(), h_insitu.data(), out_n * 2) == 0, "bf16-only (in-situ) output byte-identical to legacy") && ok;
 
-    // double reference spot check (expert 1 >256 rows, expert 3 one row, plus random positions)
-    double worst = 0;
-    for (int n = 0; n < 64; ++n) {
+    // double reference spot check (expert 1 >256 rows, expert 3 one row, plus random positions); the F16 kernel is
+    // measured against the exact reference and must be no worse there than the bf16 kernel.
+    double worst = 0, se_f16 = 0, se_bf16 = 0, s_ref = 0, max_f16 = 0, max_bf16 = 0;
+    for (int n = 0; n < 512; ++n) {
         const int pos = n == 0 ? R.bounds[3] : n == 1 ? R.bounds[1] + 200 : (int) (rng() % R.n_rows), col = (int) (rng() % M);
         int e = 0; while (R.bounds[e + 1] <= pos) ++e;
         const int tok = R.ids_src[pos], dst = R.ids_dst[pos];
         const uint8_t * rg = wg.data() + (size_t) e * expert_bytes + (size_t) col * row_bytes, * ru = wu.data() + (size_t) e * expert_bytes + (size_t) col * row_bytes;
-        double g = 0, u = 0;
+        double g = 0, u = 0, ge = 0, ue = 0;
         for (int k = 0; k < K; ++k) {
             const double x = bf2f(xb[(size_t) tok * K + k]);
-            g += (double) q4k_value_bf16(rg + (k / 256) * Q4K_BLOCK, k % 256) * x;
-            u += (double) q4k_value_bf16(ru + (k / 256) * Q4K_BLOCK, k % 256) * x;
+            const uint8_t * bg = rg + (k / 256) * Q4K_BLOCK, * bu = ru + (k / 256) * Q4K_BLOCK;
+            g += (double) q4k_value_bf16(bg, k % 256) * x; u += (double) q4k_value_bf16(bu, k % 256) * x;
+            ge += q4k_value_exact(bg, k % 256) * x;         ue += q4k_value_exact(bu, k % 256) * x;
         }
+        auto rel = [](double want, double got) { return std::fabs(want - got) / std::max(std::fabs(want), 1e-2); };
         const double want = g / (1.0 + std::exp(-g)) * u, got = f_new[(size_t) dst * M + col];
-        worst = std::max(worst, std::fabs(want - got) / std::max(std::fabs(want), 1e-2));
-        const double got_h = bf2f(h_new[(size_t) dst * M + col]);
+        const double want_e = ge / (1.0 + std::exp(-ge)) * ue, got_f16 = f_f16[(size_t) dst * M + col];
+        worst = std::max(worst, rel(want, got));
+        const double e16 = std::fabs(want_e - got_f16), e_bf = std::fabs(want_e - got);
+        se_f16 += e16 * e16; se_bf16 += e_bf * e_bf; s_ref += want_e * want_e; max_f16 = std::max(max_f16, e16); max_bf16 = std::max(max_bf16, e_bf);
+        const double got_h = bf2f(h_new[(size_t) dst * M + col]), got_h16 = bf2f(h_f16[(size_t) dst * M + col]);
         ok = check(std::fabs(got_h - got) <= std::fabs(got) * 4e-3 + 1e-6, "bf16 output is the rounded F32 output") && ok;
+        ok = check(std::fabs(got_h16 - got_f16) <= std::fabs(got_f16) * 4e-3 + 1e-6, "F16 kernel: bf16 output is the rounded F32 output") && ok;
     }
     ok = check(worst <= TOL, "F32 output within tolerance of the double reference") && ok;
-    std::printf("[mmb-routed-glu-parity]   byte-identical F32/bf16/in-situ %s, ref maxrel=%.2e\n", ok ? "ok" : "FAIL", worst);
+    const double rel_f16 = std::sqrt(se_f16 / s_ref), rel_bf16 = std::sqrt(se_bf16 / s_ref);
+    ok = check(rel_f16 <= TOL_F16, "F16 kernel: F32 output within tolerance of the exact double reference") && ok;
+    ok = check(rel_f16 <= rel_bf16 && max_f16 <= max_bf16, "F16 kernel: no worse than the bf16 kernel against the exact reference") && ok;
+    std::printf("[mmb-routed-glu-parity]   byte-identical F32/bf16/in-situ %s, ref maxrel=%.2e; vs exact reference rms-rel / maxabs: F16 kernel %.2e / %.2e, bf16 kernel %.2e / %.2e\n", ok ? "ok" : "FAIL", worst, rel_f16, max_f16, rel_bf16, max_bf16);
 
-    hipFree(d_wg); hipFree(d_wu); hipFree(d_x); hipFree(d_d); hipFree(d_dh); hipFree(d_src); hipFree(d_dst); hipFree(d_bounds); hipFree(d_scratch);
+    hipFree(d_wg); hipFree(d_wu); hipFree(d_x); hipFree(d_xh); hipFree(d_d); hipFree(d_dh); hipFree(d_src); hipFree(d_dst); hipFree(d_bounds); hipFree(d_scratch);
     return ok;
 }
 

@@ -105,11 +105,13 @@ __device__ __forceinline__ void mmb_dq_row68(const uint4 w0, const uint4 w1, con
 #include "mmb-routed.cuh"
 
 bool mmb_glu_legacy() { static const bool v = [] { const char * e = getenv("LUCE_MMB_GLU_LEGACY"); return e && atoi(e) != 0; }(); return v; }
+// LUCE_MMB_GLU_F16=0 keeps the bf16 single-launch kernel (mode 1) instead of the F16 one (mode 2).
+bool mmb_glu_f16() { static const bool v = [] { const char * e = getenv("LUCE_MMB_GLU_F16"); return !e || atoi(e) != 0; }(); return v; }
 // legacy: desc_big (n_rows/128+E+1) + desc_small (2E+1); single-launch: tiles (n_rows/128+E+1) + ctl[2]
 int mmb_glu_scratch_words(int E, int n_rows) { return n_rows / 128 + 3 * E + 4; }
 
-// Routed gate/up on raw pointers. mode 1 = single-launch balanced Q4_K kernel (grid = blocks to launch),
-// mode 0 = legacy two-launch kernels: experts under THRESH rows take BN_SMALL-token tiles (every tile re-streams the
+// Routed gate/up on raw pointers. mode 2 = single-launch F16 Q4_K kernel (Xh holds F16 activations, grid = blocks
+// to launch), mode 1 = the bf16 one, mode 0 = legacy two-launch kernels: experts under THRESH rows take BN_SMALL-token tiles (every tile re-streams the
 // expert's weights; at ~40 rows per expert 64-token tiles read each expert once where 32 read most twice).
 template <int WT>
 void mmb_glu_run(const int mode, const uint8_t * Wg, const uint8_t * Wu, const size_t eb, const uint16_t * Xh, float * D, uint16_t * Dh, const bool store_f32,
@@ -122,6 +124,13 @@ void mmb_glu_run(const int mode, const uint8_t * Wg, const uint8_t * Wu, const s
             int * ctl = (int *) (scratch + n_max);
             mmb_build_tiles<<<1, 1024, 0, stream>>>(bounds, scratch, ctl, E, n_max, BN);
             mmb_routed_glu_q4k_kernel<BN, WT><<<grid, MMB_NT, 0, stream>>>(Wg, Wu, eb, Xh, D, Dh, store_f32, ids_src, ids_dst, bounds, scratch, ctl, M, K);
+            return;
+        }
+        if (mode == 2) {
+            const int n_max = n_rows / BN + E + 1;
+            int * ctl = (int *) (scratch + n_max);
+            mmb_build_tiles<<<1, 1024, 0, stream>>>(bounds, scratch, ctl, E, n_max, BN);
+            mmb_routed_glu_f16_kernel<BN, WT><<<grid, MMB_NT, 0, stream>>>(Wg, Wu, eb, (const _Float16 *) Xh, D, Dh, store_f32, ids_src, ids_dst, bounds, scratch, ctl, M, K);
             return;
         }
     }
@@ -534,13 +543,20 @@ __global__ void mmb_cvt_f32_f16(const float * __restrict__ x, _Float16 * __restr
     const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) y[i] = mq_f2h_sat(x[i]);
 }
+__global__ void mmb_cvt_bf16_f16(const uint16_t * __restrict__ x, _Float16 * __restrict__ y, const size_t n) {
+    const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = mq_f2h_sat(__uint_as_float((uint32_t) x[i] << 16));
+}
+// A bf16-only src1 (in-place bf16 form) converts from bf16, anything else from F32.
 static const _Float16 * mmb_f16_activation(ggml_backend_cuda_context & ctx, const ggml_tensor * src1, const size_t n, cudaStream_t stream) {
     const ggml_tensor * root = mmb_root(src1);
     for (auto & e : g_mmb_f16_cache) if (e.root == root && e.data == src1->data && e.n == n) return (const _Float16 *) e.buf->get();
     if (g_mmb_f16_cache.size() >= mmb_cache_max()) { delete g_mmb_f16_cache.front().buf; g_mmb_f16_cache.erase(g_mmb_f16_cache.begin()); }
     auto * buf = new ggml_cuda_pool_alloc<uint16_t>(ctx.pool(), n);
     g_mmb_f16_cache.push_back({root, src1->data, n, buf});
-    mmb_cvt_f32_f16<<<(unsigned) ((n + 255) / 256), 256, 0, stream>>>((const float *) src1->data, (_Float16 *) buf->get(), n);
+    const unsigned blocks = (unsigned) ((n + 255) / 256);
+    if (const uint16_t * xb = ggml_cuda_mmb_bf16_src(src1)) mmb_cvt_bf16_f16<<<blocks, 256, 0, stream>>>(xb, (_Float16 *) buf->get(), n);
+    else mmb_cvt_f32_f16<<<blocks, 256, 0, stream>>>((const float *) src1->data, (_Float16 *) buf->get(), n);
     return (const _Float16 *) buf->get();
 }
 
@@ -937,7 +953,8 @@ void ggml_cuda_mul_mat_id_mmb_glu(ggml_backend_cuda_context & ctx, const ggml_te
     const int ne11 = (int) src1->ne[1], T = (int) src1->ne[2], n_used = (int) ids->ne[0];
     const int n_rows_x = ne11 * T, n_rows = n_used * T;
     constexpr int BN = 128;
-    const uint16_t * xhp = mmb_bf16_activation(ctx, src1, (size_t) n_rows_x * K, stream);
+    const int mode = !(gw->type == GGML_TYPE_Q4_K && E <= 1024 && (M & 7) == 0) || mmb_glu_legacy() ? 0 : mmb_glu_f16() ? 2 : 1;
+    const uint16_t * xhp = mode == 2 ? (const uint16_t *) mmb_f16_activation(ctx, src1, (size_t) n_rows_x * K, stream) : mmb_bf16_activation(ctx, src1, (size_t) n_rows_x * K, stream);
     ggml_cuda_pool_alloc<int32_t> ids_src1(ctx.pool(), n_rows);
     ggml_cuda_pool_alloc<int32_t> ids_dst(ctx.pool(), n_rows);
     ggml_cuda_pool_alloc<int32_t> bounds(ctx.pool(), E + 1);
@@ -962,20 +979,21 @@ void ggml_cuda_mul_mat_id_mmb_glu(ggml_backend_cuda_context & ctx, const ggml_te
     uint16_t * Dh = bf16_only ? (uint16_t *) glu->data : ggml_cuda_mmb_slot_reserve(ctx, 2, glu, (size_t) n_rows * M);
     const bool store_f32 = !bf16_only;
     const uint8_t * Wg = (const uint8_t *) gw->data, * Wu = (const uint8_t *) uw->data; float * D = (float *) glu->data; const size_t eb = (size_t) gw->nb[2];
-    const int mode = (!mmb_glu_legacy() && gw->type == GGML_TYPE_Q4_K && E <= 1024 && (M & 7) == 0) ? 1 : 0;
     ggml_cuda_pool_alloc<uint32_t> scratch(ctx.pool(), mmb_glu_scratch_words(E, n_rows));
     mmb_dispatch_quant(gw->type, [&](auto tag) {
         constexpr int WT = decltype(tag)::value;
         mmb_glu_run<WT>(mode, Wg, Wu, eb, xhp, D, Dh, store_f32, ids_src1.get(), ids_dst.get(), bounds.get(), scratch.get(), E, n_rows, M, K,
             // HIP reports WGPs (20 on gfx1151), not CUs, so 2*nsm = 40 persistent blocks under-fills the 60 resident
-            // slots (3 blocks/WGP at 41 KB LDS): lucebox4 microbench grid 40 = 12.3 ms, 60..160 = 11.0 ms.
+            // slots (3 blocks/WGP at 41 KB LDS): lucebox4 microbench grid 40 = 12.3 ms, 60..160 = 11.0 ms. The F16
+            // kernel (32 KB) fits four per WGP; 60..160 are within noise of each other there too.
             4 * ggml_cuda_info().devices[ctx.device].nsm, stream);
     });
     CUDA_CHECK(cudaGetLastError());
 }
 
-// Shared with test_mmb_routed_glu_parity.cpp: Q4_K gate/up on raw pointers (bf16 activations [n_rows_x][K], F32 out
-// [n_rows][M] when D is set, bf16 out when Dh is set). mode 0 = legacy two-launch, 1 = single-launch balanced kernel.
+// Shared with test_mmb_routed_glu_parity.cpp / test_mmb_routed_glu_f16_parity.cpp: Q4_K gate/up on raw pointers
+// (activations [n_rows_x][K], bf16 for modes 0/1 and F16 for mode 2; F32 out [n_rows][M] when D is set, bf16 out
+// when Dh is set). mode 0 = legacy two-launch, 1 = single-launch bf16 kernel, 2 = single-launch F16 kernel.
 int ggml_cuda_mmb_glu_scratch_words(int E, int n_rows) { return mmb_glu_scratch_words(E, n_rows); }
 void ggml_cuda_mmb_glu_launch(int mode, const uint8_t * Wg, const uint8_t * Wu, size_t expert_bytes, const uint16_t * Xh, float * D, uint16_t * Dh,
         const int32_t * ids_src, const int32_t * ids_dst, const int32_t * bounds, uint32_t * scratch, int E, int n_rows, int M, int K, int grid, hipStream_t stream) {
