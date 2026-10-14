@@ -1672,6 +1672,15 @@ from the per-shape table above.
 | GDN recurrence | 108.4 | 204.5 | -96.1 |
 | **request wall** | **3505.4** | **2613.2** | **+892.3** |
 
+The "inter-kernel gaps" row is a rocprof artifact, not wall time. Prefill runs
+eagerly (HIP graphs never latch for one-shot prefill shapes, see the
+host-overhead section above); host submit is ~9 ms for ~5500 nodes warm and
+sync_wait is 89-99.9% of compute. Unprofiled wall at p4096 is 4131/1309 = 3.16 s,
+*less* than lucebox's profiled kernel sum of 3505 - 268 = 3237 ms; gufo
+4096/1601 = 2.56 s vs a kernel sum of 2573 ms. So real inter-kernel idle is ~0
+on both engines and the true ~600 ms gap is all kernel time: do not chase launch
+gaps or graph capture for prefill.
+
 Top kernels per class (ms = calls x mean):
 
 - gaps: luce averages 81 us between dispatches vs gufo 18 us; 1145 more
@@ -1718,7 +1727,59 @@ Top kernels per class (ms = calls x mean):
   gufo `GdnRowSplitKernelT<2,2>` 36 x 4.44 = 160.0 + `GdnEpilogue` 36 x 1.24 =
   44.6 -- our row-split recurrence is 1.9x faster than theirs.
 
-Ranked by what would close the wall gap: launch gaps (+228), dense GEMM fusion
+Ranked by what would close the wall gap (kernel time only): dense GEMM fusion
 qkv+gate+conv (+167 incl. the conv/prep +39), MoE gate/up expert GEMM (+133),
 unfused norms (+113), attention (+87), the 60 ms `op_repeat` (+60 of the +85
 elementwise), MoE combine (+61).
+
+### Raster A/B end to end (lucebox4, one binary, `LUCE_MMB_Q8F16_RASTER=16` = old vs unset = new)
+
+`scratch/dense/ab.sh`: arms alternated legacy/new/legacy/new across server
+restarts, 2 rounds x 5 reps per metric, warm-up p4096 dropped, `--max-ctx 20480
+--prefix-cache-slots 0` (every request logged `prefix_len=0`), `sudo -n`
+drop_caches unavailable (indicative). Binary: luce_server md5 `eccdef5c...`
+unchanged (the kernel lives in `libggml-hip.so.0.9.11`, md5
+`9513ead2b8542ac65339616572289475`, built from 88897fc7 + the test export).
+Spread = |median round 0 - median round 1| of the legacy arm.
+
+Post-reboot run (`ab_raster2`, the box rebooted between the two runs; this is
+the clean one):
+
+| metric | old median (min-max), n=10 | new median (min-max), n=10 | delta | old-vs-old spread | real? |
+| --- | ---: | ---: | ---: | ---: | :--- |
+| prefill p4096 tok/s | 1316.5 (1229.9-1349.2) | 1310.4 (1190.7-1328.8) | -0.5% | 57.3 | no (6.2 vs 114.7) |
+| prefill p16384 tok/s | 1369.6 (1236.6-1424.2) | 1377.0 (1217.9-1399.1) | +0.5% | 55.1 | no (7.4 vs 110.2) |
+| decode tok/s (128 tok) | 25.1 (24.5-25.2) | 25.0 (24.5-25.1) | -0.2% | 0.1 | no |
+
+Raw (round 0 then 1): old p4096 [1328.6, 1349.2, 1341.0, 1333.3, 1329.7,
+1229.9, 1275.9, 1263.3, 1299.2, 1304.4]; new p4096 [1304.9, 1328.8, 1318.0,
+1311.8, 1311.9, 1190.7, 1194.6, 1315.0, 1308.9, 1308.6]; old p16384 [1285.3,
+1346.3, 1424.2, 1420.4, 1412.0, 1236.6, 1382.6, 1382.3, 1356.9, 1331.2]; new
+p16384 [1292.0, 1339.6, 1399.1, 1397.8, 1388.3, 1217.9, 1359.4, 1376.5, 1380.8,
+1377.5]; decode old [24.6, 25.2, 25.2, 25.2, 25.2, 24.5, 25.1, 25.1, 25.1, 25.1],
+new [25.1, 25.1, 25.1, 25.1, 25.1, 24.5, 25.0, 25.0, 25.0, 25.0].
+
+The earlier complete pre-reboot run (`ab_raster_prereboot`, same binary) agreed:
+p4096 1301.8 vs 1298.6 (-0.2%, spread 18.9), p16384 1350.3 vs 1360.6 (+0.8%,
+spread 19.9), decode 25.0 vs 25.0.
+
+Correctness: greedy-64 at temp 0 on `prompt_p4096_r0.txt` identical between arms
+in both runs (64 tokens, no divergence), as expected for a bit-exact reorder;
+unit test `test_mmb_q8f16_raster_parity` passes on the box (G=1 vs G=16
+bit-exact at K=6144 T=333/2176 and K=2560 T=300, sampled double reference
+max_rel <= 3.2e-3).
+
+rocprof per arm (one p4096 request each, same session, `prof.sh`): K=6144
+`mmb_q8f16<256,128,2,8,1,0>` grid 330 (ssm_out + attn_output, 49 calls): old
+211.2 ms (mean 4.310) -> new 198.4 ms (mean 4.049), **-6.1% / -12.8 ms per
+request** on the targeted shape; dense GEMM total 991.1 -> 997.1 ms (the other
+groups moved +19 ms, run-to-run noise); profiled wall 3328.2 vs 3329.2 ms.
+
+Verdict: the targeted shape is now below gufo in both the microbench and in situ
+(4.05 vs gufo's 3.54 ssm_out + 4.03 attn_o W8A8 mean ~3.66 -- still +0.4 ms per
+call in situ, where gufo's padded `ldx` helps it and our 33rd ragged token tile
+costs +3%), but 13 ms of a 3.2 s request is 0.4%, far inside the 4% old-vs-old
+spread: end to end neutral, kept on as default because it is bit-exact and
+strictly cheaper on the kernel. The remaining dense gap is structural (gufo fuses
+qkv+gate+conv into one M=16384 launch, and W8A8 for attn_o/shexp); the wall gap
+is dominated by non-GEMM kernels (table above).
