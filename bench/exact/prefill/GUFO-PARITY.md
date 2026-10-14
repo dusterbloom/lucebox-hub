@@ -2635,3 +2635,184 @@ library..."), both on-topic. The F16 routed gate/up kernel alone was
 greedy-identical to its old arm on these prompts (A/B above), so the
 divergence comes from another step or the combination; not attributed here.
 B vs C differ from char 0 (different engines, both on-topic).
+
+## Fresh ledger 2026-10-14 evening (lucebox4 gfx1151): HEAD vs gufo, 2 traces per engine
+
+rocprofv3 kernel traces (`scratch/dense/prof.sh`, warm-up request on
+`prompt_p4096_r0` then the traced request on `prompt_p4096_r1`, last request
+isolated by the >1 s gap; server stdout to /dev/null), **two traces per
+engine in one session, arms alternating luce/gufo/luce/gufo**, so the
+trace-to-trace columns say which deltas are real. luce = this tree at
+a6fff158 (`luce_server` md5 983c73cc, `libggml-hip.so.0.9.11` md5 968ba8d0,
+every kill switch at its default), gufo fd490446. prompt_tokens 4131 (luce) /
+4091 (gufo); the traced requests ran at 1212.6 / 1178.1 tok/s (luce) and
+1546.0 / 1564.2 (gufo) under the profiler. Classes by
+`scratch/dense/otherclass.py` (regexes extended for
+`mmb_routed_glu_f16_kernel`, `mmb_cvt_*`, `k_topk`, `mm_ids_route_*`;
+`cpy_scalar` is binned under norms/quant/convert as before). Trace dirs
+deleted after summarising (the disk is at 100%).
+
+| class | luce t1 / t2 ms | gufo t1 / t2 ms | delta ms (luce - gufo, means) | luce t1-t2 | gufo t1-t2 |
+|---|---:|---:|---:|---:|---:|
+| norms / quant / convert | 184.2 / 197.1 | 29.6 / 28.5 | +161.5 | 12.9 | 1.1 |
+| dense GEMM (prefill tiles) | 1027.7 / 1008.1 | 867.5 / 851.2 | +158.5 | 19.6 | 16.3 |
+| MoE routing + MoE combine (topk/sort/softmax/counts/combine) | 219.6 / 228.9 | 146.2 / 146.2 | +78.1 | 9.3 | 0.0 |
+| GDN conv / prep / concat | 67.8 / 67.8 | 23.0 / 22.3 | +45.2 | 0.0 | 0.7 |
+| elementwise / copies | 51.9 / 52.0 | 9.2 / 8.5 | +43.1 | 0.2 | 0.8 |
+| HC combine (non-MoE layers) | 130.0 / 121.7 | 86.6 / 87.7 | +38.7 | 8.3 | 1.2 |
+| HC mix / small-M GEMM / router GEMM | 235.0 / 249.6 | 205.2 / 205.7 | +36.8 | 14.6 | 0.5 |
+| MoE routed expert GEMMs | 857.9 / 847.7 | 850.4 / 816.0 | +19.6 | 10.2 | 34.4 |
+| attention (incl. rope, indexer) | 135.7 / 142.2 | 135.2 / 134.6 | +4.1 | 6.5 | 0.6 |
+| unclassified | 2.6 / 2.6 | 0.0 / 0.0 | +2.5 | 0.0 | 0.0 |
+| PLE / embed (once per request) | 0.0 / 0.0 | 10.5 / 10.1 | -10.3 | 0.0 | 0.4 |
+| GDN recurrence | 109.4 / 108.5 | 204.9 / 203.2 | -95.1 | 1.0 | 1.8 |
+| inter-kernel gaps (rocprof artifact) | 257.7 / 390.7 | 58.5 / 81.8 | +254.1 | 132.9 | 23.3 |
+| kernel sum (wall - gaps) | 3021.7 / 3026.2 | 2568.6 / 2514.2 | +482.5 | 4.4 | 54.4 |
+| wall (first start -> last end) | 3279.5 / 3416.8 | 2627.1 / 2596.0 | +736.6 | 137.4 | 31.1 |
+| kernel launches | 3271 / 3271 | 2146 / 2146 | | | |
+
+The kernel sum (wall minus rocprof gaps) is the real gap: **+482 ms per
+p4096 request** (3024 vs 2541 ms, luce trace-to-trace 4 ms, gufo 54 ms, the
+latter from one gufo trace's slower `RoutedF16GEMMKernel<7>`). Gaps are a
+rocprof artifact (see the earlier ledger) and are not chased.
+
+Ranked by what can be moved per hour of work (delta ms, then the kernel
+behind it):
+
+1. `cpy_scalar<cpy_1_scalar<float,float>>` 57 x 0.95 = 54 ms: a generic
+   strided F32 copy (GGML_OP_CONT of a non-contiguous view), gufo has no
+   equivalent. The largest single cheap item.
+2. HC combine, MoE layers `hc_combine_norm_moe_f32_b256` 46 x 3.9 = 179-182
+   vs gufo `HcCombineMoeF16Kernel<half>` 128 (+51), and non-MoE layers
+   `hc_combine_norm_f32_b256` 49 x 2.5-2.65 = 122-130 vs `HcCombineVec4`
+   87 (+39). gufo keeps a half residual stream (half the bytes); ours runs
+   the 4 streams as 4 serial block reductions per token.
+3. Elementwise: `k_bin_bcast<op_mul>` 51 x 0.36 = 18 ms and `<op_add>`
+   78 x 0.19 = 15 ms (+33 vs gufo's 9 ms class), `unary silu` 5 + 3.
+4. `mmb_cvt_bf16_f16` 46 x 0.30-0.43 = 14-20 ms: scalar bf16->F16 feed of
+   the F16 routed gate/up kernel.
+5. Norms: `gated_rms_norm_wave_kernel<4>` 36 x 1.32 = 47 ms,
+   `rms_norm_f32<256>` 48 x 0.45-0.58 = 22-28 ms, `gated_rms_norm_f16`
+   12 x 1.54 = 18 ms; gufo fuses these into GEMM prologues/epilogues (its
+   whole class is 29 ms).
+6. GDN conv `gdn_conv_direct_kernel` 36 x 1.07 = 39 + `_norm_kernel` 36 x
+   0.71 = 25 ms vs gufo's conv-in-GEMM-epilogue 22 ms (+45): structural
+   (needs the qkv+gate fusion below).
+7. Dense GEMM +158: gufo's fused qkv+gate M=16384 launch 36 x 9.8 = 348-354
+   vs our qkv + gate pair (inside the 84 x 5.7-5.96 = 480-500 of
+   `mmb_q8f16<256,128,2,8,1,1>`, which also holds attention q); the
+   per-shape microbench section shows our kernel is faster per launch, the
+   in-situ fused launch is what wins. Structural, 3+ h.
+8. HC mix +37: `hc_gate_mix_kernel` 95 x 1.39-1.54 = 132-146 (trace-to-trace
+   14.6 ms, the noisiest luce kernel) + `mmb_small_m` 97 vs gufo's HcMix GEMM
+   114 + epilogue 47 + router 35.
+9. Attention: **at parity** (136-142 vs 135). The earlier "4 ms WMMA floor"
+   note stands, but gufo does not reach it either; not a lever vs gufo.
+10. MoE routed GEMMs: parity (858/848 vs 850/816). GDN recurrence: we win by
+    95 ms. PLE: gufo spends 10 ms we do not.
+
+Top kernels per class (trace 1 / trace 2):
+
+### norms / quant / convert
+- luce: 54.0 = 57 x 0.948 / 54.8 = 57 x 0.961  `cpy_scalar<&(cpy_1_scalar<float, float>(char const*, char*))>`
+- luce: 47.4 = 36 x 1.317 / 47.6 = 36 x 1.321  `gated_rms_norm_wave_kernel<4>`
+- luce: 21.5 = 48 x 0.449 / 27.6 = 48 x 0.575  `rms_norm_f32<256, true, false>`
+- luce: 13.9 = 46 x 0.302 / 19.9 = 46 x 0.433  `mmb_cvt_bf16_f16`
+- luce: 18.4 = 12 x 1.537 / 18.6 = 12 x 1.546  `gated_rms_norm_f16_kernel<256, false>`
+- gufo: 9.5 = 14 x 0.682 / 9.7 = 14 x 0.694  `QuantizeQ8TiledVec4Kernel`
+- gufo: 7.9 = 7 x 1.135 / 7.8 = 7 x 1.108  `RmsNormCachedKernel<10u>`
+- gufo: 5.1 = 12 x 0.425 / 4.1 = 12 x 0.343  `NarrowKernel<hip_bfloat16>`
+- gufo: 2.2 = 2 x 1.120 / 2.3 = 2 x 1.134  `ResToHalfKernel`
+- gufo: 2.1 = 2 x 1.062 / 2.2 = 2 x 1.096  `ResToFloatKernel`
+### dense GEMM (prefill tiles)
+- luce: 500.6 = 84 x 5.960 / 480.3 = 84 x 5.718  `mmb_q8f16_kernel<256, 128, 2, 8, 1, 1>`
+- luce: 230.1 = 97 x 2.372 / 233.3 = 97 x 2.405  `mmb_q8f16_kernel<256, 128, 2, 8, 1, 0>`
+- luce: 104.8 = 93 x 1.127 / 104.3 = 93 x 1.121  `mmb_w8a8_kernel<64, 128, 4, 2, 4>`
+- luce: 83.1 = 118 x 0.704 / 77.5 = 118 x 0.657  `mmb_q8f16_kernel<128, 256, 2, 2, 4, 1>`
+- luce: 54.6 = 47 x 1.161 / 60.8 = 47 x 1.294  `mmb_f32split_kernel<128, 128, 32, 64, true, true>`
+- gufo: 353.7 = 36 x 9.825 / 347.9 = 36 x 9.665  `DenseF16GEMMKernel<256, 128, 2, 8, 1, 2, false, true, false, false, false, false`
+- gufo: 127.0 = 36 x 3.529 / 128.6 = 36 x 3.573  `DenseF16GEMMKernel<256, 128, 2, 8, 1, 5, false, false, false, false, false, fals`
+- gufo: 108.8 = 12 x 9.069 / 101.4 = 12 x 8.451  `DenseF16GEMMKernel<256, 128, 1, 8, 1, 4, false, false, true, false, false, false`
+- gufo: 96.2 = 94 x 1.023 / 97.4 = 94 x 1.036  `W8A8BlockedWmmaGEMMKernel<64, 128, 4, 2, 4, true>`
+- gufo: 48.6 = 96 x 0.506 / 48.2 = 96 x 0.502  `W8A8BlockedWmmaGEMMKernel<128, 128, 2, 4, 2, false>`
+### MoE routing + MoE combine (topk/sort/softmax/counts/combine)
+- luce: 178.9 = 46 x 3.890 / 182.1 = 46 x 3.958  `hc_combine_norm_moe_f32_b256<true>`
+- luce: 19.3 = 48 x 0.402 / 19.2 = 48 x 0.400  `k_argsort_f32_i32<(ggml_sort_order)1, false>`
+- luce: 4.2 = 48 x 0.087 / 10.3 = 48 x 0.216  `soft_max_f32<true, 512, 512, float>`
+- luce: 7.1 = 12 x 0.589 / 7.1 = 12 x 0.592  `k_topk_block_radix_f32_i32<8>`
+- luce: 4.5 = 94 x 0.048 / 4.4 = 94 x 0.047  `mm_ids_route_sort`
+- gufo: 128.0 = 46 x 2.783 / 127.8 = 46 x 2.779  `HcCombineMoeF16Kernel<__half, true>`
+- gufo: 6.8 = 48 x 0.141 / 7.0 = 48 x 0.145  `RouterTopKKernel<512u>`
+- gufo: 5.7 = 2 x 2.854 / 5.7 = 2 x 2.853  `HcCombineMoeF16Kernel<float, false>`
+- gufo: 2.4 = 96 x 0.025 / 2.4 = 96 x 0.025  `SelectScoreKernel`
+- gufo: 2.2 = 96 x 0.023 / 2.2 = 96 x 0.023  `SelectMarkKernel`
+### GDN conv / prep / concat
+- luce: 38.6 = 36 x 1.072 / 38.6 = 36 x 1.072  `gdn_conv_direct_kernel<true, 128>`
+- luce: 25.4 = 36 x 0.706 / 25.4 = 36 x 0.705  `gdn_conv_direct_norm_kernel<128, 16>`
+- luce: 2.7 = 1 x 2.704 / 2.7 = 1 x 2.696  `concat_dim0_dense_transpose_f32`
+- luce: 1.0 = 36 x 0.028 / 1.1 = 36 x 0.030  `gdn_concat_tail`
+- luce: 0.0 = 36 x 0.001 / 0.1 = 36 x 0.001  `arange_f32`
+- gufo: 11.5 = 36 x 0.318 / 10.8 = 36 x 0.300  `SsmConvBoundaryKernel`
+- gufo: 11.0 = 36 x 0.305 / 11.0 = 36 x 0.306  `GdnPrepKqKernel`
+- gufo: 0.6 = 36 x 0.016 / 0.5 = 36 x 0.014  `GdnPrepAbKernel`
+### elementwise / copies
+- luce: 18.4 = 51 x 0.361 / 18.3 = 51 x 0.359  `k_bin_bcast<&(op_mul(float, float)), float, float, float, float const*>`
+- luce: 15.0 = 78 x 0.192 / 14.9 = 78 x 0.191  `k_bin_bcast<&(op_add(float, float)), float, float, float, float const*>`
+- luce: 5.4 = 47 x 0.115 / 5.3 = 47 x 0.113  `unary_gated_op_kernel<&(op_silu(float)), float>`
+- luce: 3.9 = 3 x 1.293 / 4.3 = 3 x 1.431  `k_bin_bcast<&(op_repeat(float, float)), float, float, float>`
+- luce: 3.0 = 96 x 0.031 / 3.0 = 96 x 0.031  `unary_op_kernel<&(op_silu(float)), float>`
+- gufo: 5.0 = 328 x 0.015 / 4.4 = 328 x 0.014  `__amd_rocclr_copyBuffer`
+- gufo: 2.8 = 48 x 0.058 / 2.9 = 48 x 0.060  `SwigluHalfKernel`
+- gufo: 1.4 = 121 x 0.011 / 1.0 = 121 x 0.009  `__amd_rocclr_fillBufferAligned`
+- gufo: 0.1 = 37 x 0.002 / 0.1 = 37 x 0.002  `CopyKernel`
+### HC combine (non-MoE layers)
+- luce: 130.0 = 49 x 2.652 / 121.7 = 49 x 2.483  `hc_combine_norm_f32_b256`
+- gufo: 86.6 = 48 x 1.804 / 87.7 = 48 x 1.828  `HcCombineVec4Kernel<__half, __half>`
+### HC mix / small-M GEMM / router GEMM
+- luce: 132.4 = 95 x 1.393 / 146.4 = 95 x 1.541  `hc_gate_mix_kernel<4, 1, 16, 1>`
+- luce: 96.8 = 140 x 0.691 / 97.2 = 140 x 0.694  `mmb_small_m_kernel<4, false, true, 2>`
+- luce: 3.2 = 7 x 0.455 / 3.2 = 7 x 0.456  `mul_mat_vec_q<(ggml_type)8, 1, false, false, 0, false, false, false, false, fals`
+- luce: 2.5 = 2 x 1.261 / 2.6 = 2 x 1.287  `mmb_small_m_kernel<4, false, false, 2>`
+- luce: 0.1 = 1 x 0.088 / 0.1 = 1 x 0.092  `mul_mat_vec_q_routed_gate_up<(ggml_type)12, 1, 1, true>`
+- gufo: 113.9 = 94 x 1.212 / 112.9 = 94 x 1.201  `DenseF16GEMMKernel<256, 128, 1, 4, 2, 8, true, false, false, false, false, false`
+- gufo: 46.6 = 94 x 0.495 / 47.2 = 94 x 0.502  `HcMixEpilogueF16Kernel<false>`
+- gufo: 34.9 = 24 x 1.453 / 35.8 = 24 x 1.491  `Cijk_Alik_Bljk_BSS_BH_Bias_HA_S_UserArgs_MT32x32x64_MI16x16x1_SN_LDSB0_AFC1_AFEM`
+- gufo: 6.0 = 2 x 3.016 / 6.0 = 2 x 3.011  `qfn_mmq::mul_mat_vec_q8<1, false, 1, false, 1, false>`
+- gufo: 3.8 = 2 x 1.887 / 3.7 = 2 x 1.873  `HcMixEpilogueVec4Kernel<float>`
+### MoE routed expert GEMMs
+- luce: 465.1 = 46 x 10.110 / 460.5 = 46 x 10.011  `mmb_routed_glu_f16_kernel<128, 44>`
+- luce: 165.8 = 42 x 3.949 / 162.2 = 42 x 3.862  `mmb_routed_kernel<128, 128, 32, 64, 39, false, true>`
+- luce: 149.3 = 42 x 3.554 / 147.3 = 42 x 3.508  `mmb_routed_kernel<128, 64, 32, 32, 39, false, true>`
+- luce: 25.6 = 1 x 25.604 / 25.5 = 1 x 25.484  `mmb_routed_glu_kernel<64, 64, 16, 32, 45, false>`
+- luce: 15.4 = 4 x 3.846 / 15.4 = 4 x 3.840  `mmb_routed_kernel<128, 64, 32, 32, 1, false, true>`
+- gufo: 463.3 = 47 x 9.857 / 465.2 = 47 x 9.898  `RoutedF16GEMMKernel<(gufo::models::qwen38_flash_next::rocm::WeightType)12, 128, `
+- gufo: 334.4 = 43 x 7.776 / 302.8 = 43 x 7.043  `RoutedF16GEMMKernel<(gufo::models::qwen38_flash_next::rocm::WeightType)7, 128, 4`
+- gufo: 41.9 = 5 x 8.374 / 37.0 = 5 x 7.409  `RoutedF16GEMMKernel<(gufo::models::qwen38_flash_next::rocm::WeightType)8, 128, 4`
+- gufo: 10.9 = 1 x 10.924 / 10.9 = 1 x 10.930  `RoutedF16GEMMKernel<(gufo::models::qwen38_flash_next::rocm::WeightType)13, 128, `
+### attention (incl. rope, indexer)
+- luce: 107.9 = 12 x 8.994 / 114.6 = 12 x 9.547  `qsa3_attn_kernel`
+- luce: 15.2 = 48 x 0.316 / 15.1 = 48 x 0.315  `rope_multi_heads<true, false, true, float>`
+- luce: 4.3 = 12 x 0.361 / 4.3 = 12 x 0.358  `qsa_decode_ids`
+- luce: 3.5 = 12 x 0.293 / 3.4 = 12 x 0.287  `ds4_indexer_score_wmma_m32_prefill_kernel<true, false, false>`
+- luce: 3.3 = 12 x 0.277 / 3.3 = 12 x 0.278  `qsa3_union_bitmap_kernel`
+- gufo: 86.8 = 24 x 3.617 / 86.8 = 24 x 3.617  `WmmaCausalAttentionKernel<4u, 16u, true, false>`
+- gufo: 47.2 = 12 x 3.936 / 46.7 = 12 x 3.891  `WmmaCausalAttentionKernel<16u, 16u, false, false>`
+- gufo: 0.3 = 74 x 0.005 / 0.3 = 74 x 0.005  `HistoryShiftKernel`
+- gufo: 0.3 = 12 x 0.024 / 0.3 = 12 x 0.024  `RopeKernel`
+- gufo: 0.3 = 12 x 0.024 / 0.2 = 12 x 0.019  `StoreRowsKernel`
+### unclassified
+- luce: 2.3 = 48 x 0.048 / 2.3 = 48 x 0.048  `k_get_rows_scalar<float, float>`
+- luce: 0.2 = 46 x 0.003 / 0.2 = 46 x 0.003  `mmb_build_tiles`
+- luce: 0.1 = 49 x 0.002 / 0.1 = 49 x 0.002  `op_clamp_kernel<float>`
+- gufo: 0.0 = 2 x 0.022 / 0.0 = 2 x 0.020  `SiluScaleKernel`
+- gufo: 0.0 = 2 x 0.002 / 0.0 = 2 x 0.002  `SiluScaleQ8Kernel`
+### PLE / embed (once per request)
+- gufo: 3.7 = 1 x 3.685 / 3.7 = 1 x 3.657  `PleGateKernel`
+- gufo: 3.1 = 1 x 3.055 / 3.0 = 1 x 3.046  `PleInjectKernel`
+- gufo: 3.0 = 1 x 3.018 / 2.7 = 1 x 2.661  `PleConvKernel`
+- gufo: 0.8 = 1 x 0.786 / 0.8 = 1 x 0.769  `EmbedKernel`
+### GDN recurrence
+- luce: 109.4 = 36 x 3.040 / 108.5 = 36 x 3.013  `gated_delta_net_rowsplit_cuda<2, 4, 8>`
+- gufo: 159.9 = 36 x 4.442 / 158.0 = 36 x 4.390  `GdnRowSplitKernelT<2, 2>`
+- gufo: 45.0 = 36 x 1.251 / 45.1 = 36 x 1.254  `GdnEpilogueKernel<false>`
+
