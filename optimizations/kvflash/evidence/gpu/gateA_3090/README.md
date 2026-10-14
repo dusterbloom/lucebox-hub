@@ -54,3 +54,31 @@ B turn 1 is a cold prefill (8.8 s, same as A's 8.3 s); turns 2-10 prefill only t
 Same prompt token counts per turn (11606 ... 14597) and the same restore points
 (L=11602, 11954, ..., 14201; replay 356, 450, 213, ...) on both GPUs, identical 10/10 on both. Restored prefill is
 about 23x faster than cold on the 3090 (about 23x on the R9700), decode is unchanged between arms.
+
+## Re-run after the env rename
+
+The four session-restore environment variables were renamed to the `LUCE_KVFLASH_` prefix
+(for example `KVFLASH_SESSION` became `LUCE_KVFLASH_SESSION`). This re-run uses the in-repo scripts
+(`optimizations/kvflash/tests/gate/`) on the same 3090 and model, with a `luce_server` built from source commit
+27336cc3 (md5 9580b44b0e547841c802dfd82100ad45). Raw outputs are in `rerun-27336cc3/`.
+
+The check that the renamed switch is read: arm A (`LUCE_KVFLASH_SESSION=0`) must report `prefix_len=0` on
+every turn, and arm B (`LUCE_KVFLASH_SESSION=1`) must restore from turn 2. Both held (warm-up request
+dropped; `prefix_len` from the server's `chat DONE` lines):
+
+| turn | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| A prefix_len | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| B prefix_len | 0 | 11602 | 11954 | 12400 | 12609 | 12894 | 13261 | 13707 | 13917 | 14201 |
+
+Answers B == A on 10/10 turns. Scenario 1 (P1, P2) PASS and scenario 2 (P, P2) PASS, both probes equal to
+their cold reference; scenario 3 (image) skipped because `KV_MMPROJ` is unset.
+
+Server-side medians (n=10, warm-up dropped):
+
+| | prefill s | prefill tok/s (prompt tokens / prefill s) | decode tok/s | wall s |
+|---|---|---|---|---|
+| A cold | 9.25 | 1419 | 47.4 | 9.90 |
+| B live restore | 0.40 | 31070 (effective, prefill timer has 0.1 s resolution) | 47.0 | 1.05 |
+
+These match the first run above within noise (A 9.20 s / 47.3 tok/s, B 0.40 s / 47.1 tok/s).

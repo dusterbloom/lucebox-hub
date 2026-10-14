@@ -1,0 +1,3 @@
+bin=/mnt/kimi-k3/build/sr-main-cuda/luce_server md5=9580b44b0e547841c802dfd82100ad45 mode=plain turns=10 out=/mnt/kimi-k3/kvflash-gate-r2/out/plain-r2
+bin=/mnt/kimi-k3/build/sr-main-cuda/luce_server md5=9580b44b0e547841c802dfd82100ad45 scenarios=all out=/mnt/kimi-k3/kvflash-gate-r2/out/scenarios-r2
+source commit 27336cc3 (kvflash/session-restore-main); scripts: optimizations/kvflash/tests/gate; GPU: RTX 3090; model Qwen3.8-27B-UD-Q4_K_M.gguf; --max-ctx 131072 --kvflash 8192
