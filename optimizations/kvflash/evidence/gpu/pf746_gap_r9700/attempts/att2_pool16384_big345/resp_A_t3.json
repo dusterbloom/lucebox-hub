@@ -1,0 +1,51 @@
+{
+ "choices": [
+  {
+   "finish_reason": "stop",
+   "index": 0,
+   "message": {
+    "content": "(C) Ravdin had spotted the Hunter fleet just seven light years away, moving directly toward their city.",
+    "role": "assistant"
+   }
+  }
+ ],
+ "created": 1791990296,
+ "id": "chatcmpl_0000000000000003",
+ "model": "luce",
+ "object": "chat.completion",
+ "usage": {
+  "accept_rate": 0.0,
+  "completion_tokens": 22,
+  "completion_tokens_details": {
+   "reasoning_tokens": 0
+  },
+  "prompt_tokens": 22236,
+  "prompt_tokens_details": {
+   "cached_tokens": 13819
+  },
+  "spec_decode_ran": false,
+  "timings": {
+   "agent_turn_cache_hit": false,
+   "cache_hit": true,
+   "cached_prefix_tokens": 13819,
+   "decode_ms": 896.8,
+   "decode_tokens_per_sec": 24.5,
+   "effective_prompt_tokens": 22236,
+   "pflash": {
+    "admission": {
+     "cached_droppable": 13764,
+     "cached_tokens": 13819,
+     "decision": "under_threshold",
+     "droppable": 18432,
+     "raw_fits": true,
+     "threshold": 16384,
+     "uncached_droppable": 4668,
+     "view": false
+    }
+   },
+   "prefill_ms": 9919.0,
+   "prefilled_tokens": 8417
+  },
+  "total_tokens": 22258
+ }
+}

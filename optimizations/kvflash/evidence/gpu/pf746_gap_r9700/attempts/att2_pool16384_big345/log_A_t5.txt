@@ -1,0 +1,35 @@
+[server] request path=/v1/chat/completions body_bytes=168291
+[server] chat chatcmpl_0000000000000005 format=chat stream=false msgs=10 tools=0 prompt_tokens=39456 max_tokens=64 max_ctx=65536 thinking=false reasoning_effort=none started_in_thinking=false stops=0 grammar=off model=luce
+[server] chat START chatcmpl_0000000000000005 format=chat stream=false prompt_tokens=39456 max_tokens=64 tools=0
+[pflash-admission] compress cached=13819 cached_droppable~13764 uncached_droppable~20028 droppable~33792 threshold=16384
+[pflash-select] kept=5664 droppable=33792 keep_ratio=0.050000 effective=0.186400
+[pflash-parser] {"content_begin":31116,"content_end":39447,"expected_query_ids":[271],"extra_query_spans":[],"history_queries":3,"input_fingerprint_fnv1a64":"0e88045017804583","input_kind":"messages","input_tokens":39456,"query_begin":39455,"query_end":39456,"query_parser":"arbitrary_tail","query_span_begin":39455,"query_span_end":39456,"query_suffix_candidates":false,"requested_query_tokens":8,"required_instruction_spans":[[1,26],[6705,6731],[6732,6735],[13818,13844],[13845,13848],[22229,22254],[22255,22258],[31060,31112],[31113,31116],[39449,39456]],"required_text_count":0,"schema_version":1,"selection_rule":"prompt_end","turn_query_begin":39439,"turn_query_end":39447}
+[pflash] scorer query mapped to drafter tokens [39455,39456); rendered suffix=0 tokens
+[compress] loading drafter from /home/duster/models/Qwen3.5-0.8B-BF16.gguf ...
+[loader] stacked 36 projection pairs (zero-copy aliases)
+[drafter] loaded qwen35: n_layer=24 n_head=8 n_head_kv=2 n_embd=1024 n_ff=3584 head_dim=256 vocab=248320 gpu=0
+[compress] drafter ready
+[kvflash] drafter scorer attached (tau=64)
+[pflash-select] config mode=budget_only active=1 chunk=1024 query_parser=arbitrary_tail query_cap=8 query_actual=1 top_p=0.95 top_k=0 suffix_candidates=0 input=39456
+[pflash-select] selected mode=budget_only scorer=single segments=fixed score=sum chunk=1024 query=1 budget=7354 selected_tokens=6688 chunks=7/39 stop=budget_reached mass=0.0535446635
+[compress] 39456 -> 6688 tokens
+[loader] eos_id=248046 eos_chat_id=-1
+[drafter] freed
+[pflash-select] final target tokens=6691 ceiling=7354
+[pflash-view] fresh turn=1 served=6691
+[pflash] 39456 -> 6688 -> 6691 tokens (17.0% kept)
+[server] chat CACHE chatcmpl_0000000000000005 restore=false slot=-1 prefix_len=0 effective_prompt=6691 pflash=true disk_policy=full disk_hit=false snap_slot=3 snap_pos=6684 full_snap_slot=-1 full_snap_pos=0
+[kvflash] gen ckpt check: G=31115 L=2048 L>=G=0 first-diff@2048 prompt=[271,6470,310,1724,424,13,198,3095] history=[11,5642,198,279,854,13,353,557]
+[kvflash] live restore: L=2048 C=-1 replay=6691
+[snap] alloc right-sized: cur_pos=6656 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @6656 (149.6 MiB each, 1 held, 149.6 MiB)
+[snap] alloc right-sized: cur_pos=6684 buf=467.12 MiB backend=CPU
+[snap] boundary slot=3 cur_pos=6684 (req snap_pos=6684)
+[ar-decode] tokens=26 time=1.068 s speed=24.34 tok/s
+[snap] alloc right-sized: cur_pos=6716 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @6716 (149.6 MiB each, 2 held, 299.2 MiB)
+[kvflash] gen ckpt @6716
+[vram] released scratch buffers; trimmed 145.4 MiB from device pools
+[pc] inline snapshot requested=6684 saved=6684 slot=3
+[pc] inline-snap committed slot=3 prefix_len=6684 protect=0 bytes=489807872 resident=1111128064
+[server] chat DONE chatcmpl_0000000000000005 ok=true in=39456 effective_in=6691 out=26 13.8s 1.9 tok/s finish=stop restore=false slot=-1 prefix_len=0 prefill=7.7s decode=1.1s(24.3tok/s) error=- detail=-

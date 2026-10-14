@@ -1,0 +1,213 @@
+{
+ "arm": "A",
+ "pool": "24576",
+ "max_ctx": "65536",
+ "paste_chars": 28000,
+ "paste_skip": 0,
+ "turns": [
+  {
+   "turn": 1,
+   "article_id": "22073",
+   "prompt_tokens": 6712,
+   "completion_tokens": 23,
+   "timings": {
+    "agent_turn_cache_hit": false,
+    "cache_hit": false,
+    "cached_prefix_tokens": 0,
+    "decode_ms": 1036.3,
+    "decode_tokens_per_sec": 22.2,
+    "effective_prompt_tokens": 6712,
+    "prefill_ms": 6468.3,
+    "prefilled_tokens": 6712
+   },
+   "wall_s": 7.5990471839904785,
+   "answer": "(A) The beacon's shutdown forced ships to take fifteen-light-year detours, disrupting main hyperspace routes.",
+   "finish_reason": "stop",
+   "log_lines": [
+    "[server] chat CACHE chatcmpl_0000000000000001 restore=false slot=-1 prefix_len=0 effective_prompt=6712 pflash=false disk_policy=full disk_hit=false snap_slot=1 snap_pos=6706 full_snap_slot=-1 full_snap_pos=0",
+    "[kvflash] gen ckpt check: G=769 L=1 L>=G=0 first-diff@1 prompt=[8678,198,2523,513,264,16097,17313,852] history=[846,198,91986,5072,13,8029,235212,1122]",
+    "[kvflash] live restore: L=1 C=-1 replay=6712",
+    "[snap] alloc right-sized: cur_pos=6656 buf=149.62 MiB backend=CPU",
+    "[kvflash] state ladder: ckpt @6656 (149.6 MiB each, 1 held, 149.6 MiB)",
+    "[snap] alloc right-sized: cur_pos=6706 buf=467.50 MiB backend=CPU",
+    "[snap] boundary slot=1 cur_pos=6706 (req snap_pos=6706)",
+    "[snap] alloc right-sized: cur_pos=6734 buf=149.62 MiB backend=CPU",
+    "[kvflash] state ladder: ckpt @6734 (149.6 MiB each, 2 held, 299.2 MiB)",
+    "[kvflash] gen ckpt @6734",
+    "[pc] inline-snap committed slot=1 prefix_len=6706 protect=0 bytes=490213376 resident=700026880",
+    "[server] chat DONE chatcmpl_0000000000000001 ok=true in=6712 effective_in=6712 out=23 7.6s 3.0 tok/s finish=stop restore=false slot=-1 prefix_len=0 prefill=6.5s decode=1.0s(22.2tok/s) error=- detail=-"
+   ]
+  },
+  {
+   "turn": 2,
+   "article_id": "22218",
+   "prompt_tokens": 13264,
+   "completion_tokens": 27,
+   "timings": {
+    "agent_turn_cache_hit": false,
+    "cache_hit": true,
+    "cached_prefix_tokens": 6706,
+    "decode_ms": 1224.4,
+    "decode_tokens_per_sec": 22.1,
+    "effective_prompt_tokens": 13264,
+    "prefill_ms": 7273.4,
+    "prefilled_tokens": 6558
+   },
+   "wall_s": 8.672505617141724,
+   "answer": "(D) His book argued that human mass suggestion holds the physical fate of the earth, a revolutionary idea that cost him his post.",
+   "finish_reason": "stop",
+   "log_lines": [
+    "[pc] lookup hit slot=1 prefix_len=6706 (of 13264 total)",
+    "[server] chat CACHE chatcmpl_0000000000000002 restore=true slot=1 prefix_len=6706 effective_prompt=13264 pflash=false disk_policy=full disk_hit=false snap_slot=2 snap_pos=13258 full_snap_slot=-1 full_snap_pos=0",
+    "[snap] alloc right-sized: cur_pos=8192 buf=149.62 MiB backend=CPU",
+    "[kvflash] state ladder: ckpt @8192 (149.6 MiB each, 1 held, 149.6 MiB)",
+    "[snap] alloc right-sized: cur_pos=12800 buf=149.62 MiB backend=CPU",
+    "[kvflash] state ladder: ckpt @12800 (149.6 MiB each, 2 held, 299.2 MiB)",
+    "[snap] alloc right-sized: cur_pos=13258 buf=582.68 MiB backend=CPU",
+    "[snap] boundary slot=2 cur_pos=13258 (req snap_pos=13258)",
+    "[pc] inline-snap committed slot=2 prefix_len=13258 protect=0 bytes=610979840 resident=1311006720",
+    "[server] chat DONE chatcmpl_0000000000000002 ok=true in=13264 effective_in=13264 out=27 8.7s 3.1 tok/s finish=stop restore=true slot=1 prefix_len=6706 prefill=7.3s decode=1.2s(22.1tok/s) error=- detail=-"
+   ]
+  },
+  {
+   "turn": 3,
+   "article_id": "22346",
+   "prompt_tokens": 20381,
+   "completion_tokens": 23,
+   "timings": {
+    "agent_turn_cache_hit": false,
+    "cache_hit": true,
+    "cached_prefix_tokens": 13258,
+    "decode_ms": 1037.3,
+    "decode_tokens_per_sec": 22.2,
+    "effective_prompt_tokens": 20381,
+    "pflash": {
+     "admission": {
+      "cached_droppable": 13203,
+      "cached_tokens": 13258,
+      "decision": "under_threshold",
+      "droppable": 16384,
+      "raw_fits": true,
+      "threshold": 16384,
+      "uncached_droppable": 3181,
+      "view": false
+     }
+    },
+    "prefill_ms": 8945.8,
+    "prefilled_tokens": 7123
+   },
+   "wall_s": 10.21693468093872,
+   "answer": "(D) A thick, constantly shifting shell of meteorites and satellite fragments surrounds their planet, making escape impossible.",
+   "finish_reason": "stop",
+   "log_lines": [
+    "[pflash-admission] under_threshold cached=13258 cached_droppable~13203 uncached_droppable~3181 droppable~16384 threshold=16384",
+    "[pc] lookup hit slot=2 prefix_len=13258 (of 20381 total)",
+    "[server] chat CACHE chatcmpl_0000000000000003 restore=true slot=2 prefix_len=13258 effective_prompt=20381 pflash=false disk_policy=full disk_hit=false snap_slot=3 snap_pos=20375 full_snap_slot=-1 full_snap_pos=0",
+    "[snap] alloc right-sized: cur_pos=16384 buf=149.62 MiB backend=CPU",
+    "[kvflash] state ladder: ckpt @16384 (149.6 MiB each, 1 held, 149.6 MiB)",
+    "[snap] alloc right-sized: cur_pos=19968 buf=149.62 MiB backend=CPU",
+    "[kvflash] state ladder: ckpt @19968 (149.6 MiB each, 2 held, 299.2 MiB)",
+    "[snap] alloc right-sized: cur_pos=20375 buf=707.78 MiB backend=CPU",
+    "[snap] boundary slot=3 cur_pos=20375 (req snap_pos=20375)",
+    "[pc] inline-snap committed slot=3 prefix_len=20375 protect=0 bytes=742160384 resident=2053167104",
+    "[server] chat DONE chatcmpl_0000000000000003 ok=true in=20381 effective_in=20381 out=23 10.2s 2.3 tok/s finish=stop restore=true slot=2 prefix_len=13258 prefill=8.9s decode=1.0s(22.2tok/s) error=- detail=-"
+   ]
+  },
+  {
+   "turn": 4,
+   "article_id": "22462",
+   "prompt_tokens": 27456,
+   "completion_tokens": 22,
+   "timings": {
+    "agent_turn_cache_hit": false,
+    "cache_hit": true,
+    "cached_prefix_tokens": 20375,
+    "decode_ms": 992.7,
+    "decode_tokens_per_sec": 22.2,
+    "effective_prompt_tokens": 27456,
+    "pflash": {
+     "admission": {
+      "cached_droppable": 20287,
+      "cached_tokens": 20375,
+      "decision": "under_threshold",
+      "droppable": 22528,
+      "raw_fits": true,
+      "threshold": 16384,
+      "uncached_droppable": 2241,
+      "view": false
+     }
+    },
+    "prefill_ms": 9534.3,
+    "prefilled_tokens": 7081
+   },
+   "wall_s": 10.851569652557373,
+   "answer": "(C) Paul plans to ask her to marry him after his mission, indicating she is his romantic interest.",
+   "finish_reason": "stop",
+   "log_lines": [
+    "[pflash-admission] under_threshold cached=20375 cached_droppable~20287 uncached_droppable~2241 droppable~22528 threshold=16384",
+    "[pc] lookup hit slot=3 prefix_len=20375 (of 27456 total)",
+    "[server] chat CACHE chatcmpl_0000000000000004 restore=true slot=3 prefix_len=20375 effective_prompt=27456 pflash=false disk_policy=full disk_hit=false snap_slot=4 snap_pos=27450 full_snap_slot=-1 full_snap_pos=0",
+    "[kvflash] adopt dense: 20375 rows, 319 chunks, no copy",
+    "[kvflash] pooled prefill: 7081 tokens through a 24576-token pool (64-token chunks, ubatch=512, evicting)",
+    "[snap] alloc right-sized: cur_pos=24576 buf=149.62 MiB backend=CPU",
+    "[kvflash] state ladder: ckpt @24576 (149.6 MiB each, 1 held, 149.6 MiB)",
+    "[snap] alloc right-sized: cur_pos=27136 buf=149.62 MiB backend=CPU",
+    "[kvflash] state ladder: ckpt @27136 (149.6 MiB each, 2 held, 299.2 MiB)",
+    "[kvflash] boundary snapshot skipped: pooled prefill relocates chunks",
+    "[snap] alloc right-sized: cur_pos=27452 buf=149.62 MiB backend=CPU",
+    "[kvflash] state ladder: ckpt @27452 (149.6 MiB each, 3 held, 448.9 MiB)",
+    "[server] chat DONE chatcmpl_0000000000000004 ok=true in=27456 effective_in=27456 out=22 10.8s 2.0 tok/s finish=stop restore=true slot=3 prefix_len=20375 prefill=9.5s decode=1.0s(22.2tok/s) error=- detail=-"
+   ]
+  },
+  {
+   "turn": 5,
+   "article_id": "22524",
+   "prompt_tokens": 34933,
+   "completion_tokens": 23,
+   "timings": {
+    "agent_turn_cache_hit": false,
+    "cache_hit": true,
+    "cached_prefix_tokens": 27452,
+    "decode_ms": 1040.2,
+    "decode_tokens_per_sec": 22.1,
+    "effective_prompt_tokens": 34933,
+    "pflash": {
+     "admission": {
+      "cached_droppable": 20287,
+      "cached_tokens": 20375,
+      "decision": "under_threshold",
+      "droppable": 29696,
+      "raw_fits": true,
+      "threshold": 16384,
+      "uncached_droppable": 9409,
+      "view": false
+     }
+    },
+    "prefill_ms": 10131.6,
+    "prefilled_tokens": 7481
+   },
+   "wall_s": 11.351816177368164,
+   "answer": "(D) The girls were at the zoo specifically to hear the famous actor-hunter Curt George speak to them.",
+   "finish_reason": "stop",
+   "log_lines": [
+    "[pflash-admission] under_threshold cached=20375 cached_droppable~20287 uncached_droppable~9409 droppable~29696 threshold=16384",
+    "[pc] lookup hit slot=3 prefix_len=20375 (of 34933 total)",
+    "[server] chat CACHE chatcmpl_0000000000000005 restore=true slot=3 prefix_len=20375 effective_prompt=34933 pflash=false disk_policy=full disk_hit=false snap_slot=5 snap_pos=34927 full_snap_slot=-1 full_snap_pos=0",
+    "[kvflash] resume: live cut 27452 beats server cut 20375 (slot 3)",
+    "[kvflash] live restore: L=27452 C=27452 replay=7481",
+    "[kvflash] pooled prefill: 7481 tokens through a 24576-token pool (64-token chunks, ubatch=512, evicting)",
+    "[snap] alloc right-sized: cur_pos=32768 buf=149.62 MiB backend=CPU",
+    "[kvflash] state ladder: ckpt @32768 (149.6 MiB each, 4 held, 598.5 MiB)",
+    "[snap] alloc right-sized: cur_pos=34816 buf=149.62 MiB backend=CPU",
+    "[kvflash] state ladder: ckpt @34816 (149.6 MiB each, 5 held, 748.1 MiB)",
+    "[kvflash] boundary snapshot skipped: pooled prefill relocates chunks",
+    "[snap] alloc right-sized: cur_pos=34929 buf=149.62 MiB backend=CPU",
+    "[kvflash] state ladder: ckpt @34929 (149.6 MiB each, 6 held, 897.8 MiB)",
+    "[snap] alloc right-sized: cur_pos=34955 buf=149.62 MiB backend=CPU",
+    "[kvflash] state ladder: ckpt @34955 (149.6 MiB each, 7 held, 1047.4 MiB)",
+    "[kvflash] gen ckpt @34955",
+    "[server] chat DONE chatcmpl_0000000000000005 ok=true in=34933 effective_in=34933 out=23 11.3s 2.0 tok/s finish=stop restore=true slot=3 prefix_len=20375 prefill=10.1s decode=1.0s(22.1tok/s) error=- detail=-"
+   ]
+  }
+ ]
+}

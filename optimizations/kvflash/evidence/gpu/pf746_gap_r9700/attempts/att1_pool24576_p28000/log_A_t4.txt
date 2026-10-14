@@ -1,0 +1,18 @@
+[server] request path=/v1/chat/completions body_bytes=118573
+[server] chat chatcmpl_0000000000000004 format=chat stream=false msgs=8 tools=0 prompt_tokens=27456 max_tokens=64 max_ctx=65536 thinking=false reasoning_effort=none started_in_thinking=false stops=0 grammar=off model=luce
+[server] chat START chatcmpl_0000000000000004 format=chat stream=false prompt_tokens=27456 max_tokens=64 tools=0
+[pflash-admission] under_threshold cached=20375 cached_droppable~20287 uncached_droppable~2241 droppable~22528 threshold=16384
+[pc] lookup hit slot=3 prefix_len=20375 (of 27456 total)
+[server] chat CACHE chatcmpl_0000000000000004 restore=true slot=3 prefix_len=20375 effective_prompt=27456 pflash=false disk_policy=full disk_hit=false snap_slot=4 snap_pos=27450 full_snap_slot=-1 full_snap_pos=0
+[kvflash] adopt dense: 20375 rows, 319 chunks, no copy
+[kvflash] pooled prefill: 7081 tokens through a 24576-token pool (64-token chunks, ubatch=512, evicting)
+[snap] alloc right-sized: cur_pos=24576 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @24576 (149.6 MiB each, 1 held, 149.6 MiB)
+[snap] alloc right-sized: cur_pos=27136 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @27136 (149.6 MiB each, 2 held, 299.2 MiB)
+[kvflash] boundary snapshot skipped: pooled prefill relocates chunks
+[snap] alloc right-sized: cur_pos=27452 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @27452 (149.6 MiB each, 3 held, 448.9 MiB)
+[ar-decode] tokens=22 time=0.993 s speed=22.16 tok/s
+[vram] released scratch buffers; trimmed 281.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000004 ok=true in=27456 effective_in=27456 out=22 10.8s 2.0 tok/s finish=stop restore=true slot=3 prefix_len=20375 prefill=9.5s decode=1.0s(22.2tok/s) error=- detail=-

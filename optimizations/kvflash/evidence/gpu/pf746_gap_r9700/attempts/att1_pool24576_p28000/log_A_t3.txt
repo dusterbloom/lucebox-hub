@@ -1,0 +1,17 @@
+[server] request path=/v1/chat/completions body_bytes=89218
+[server] chat chatcmpl_0000000000000003 format=chat stream=false msgs=6 tools=0 prompt_tokens=20381 max_tokens=64 max_ctx=65536 thinking=false reasoning_effort=none started_in_thinking=false stops=0 grammar=off model=luce
+[server] chat START chatcmpl_0000000000000003 format=chat stream=false prompt_tokens=20381 max_tokens=64 tools=0
+[pflash-admission] under_threshold cached=13258 cached_droppable~13203 uncached_droppable~3181 droppable~16384 threshold=16384
+[pc] lookup hit slot=2 prefix_len=13258 (of 20381 total)
+[server] chat CACHE chatcmpl_0000000000000003 restore=true slot=2 prefix_len=13258 effective_prompt=20381 pflash=false disk_policy=full disk_hit=false snap_slot=3 snap_pos=20375 full_snap_slot=-1 full_snap_pos=0
+[snap] alloc right-sized: cur_pos=16384 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @16384 (149.6 MiB each, 1 held, 149.6 MiB)
+[snap] alloc right-sized: cur_pos=19968 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @19968 (149.6 MiB each, 2 held, 299.2 MiB)
+[snap] alloc right-sized: cur_pos=20375 buf=707.78 MiB backend=CPU
+[snap] boundary slot=3 cur_pos=20375 (req snap_pos=20375)
+[ar-decode] tokens=23 time=1.037 s speed=22.17 tok/s
+[vram] released scratch buffers; trimmed 583.5 MiB from device pools
+[pc] inline snapshot requested=20375 saved=20375 slot=3
+[pc] inline-snap committed slot=3 prefix_len=20375 protect=0 bytes=742160384 resident=2053167104
+[server] chat DONE chatcmpl_0000000000000003 ok=true in=20381 effective_in=20381 out=23 10.2s 2.3 tok/s finish=stop restore=true slot=2 prefix_len=13258 prefill=8.9s decode=1.0s(22.2tok/s) error=- detail=-

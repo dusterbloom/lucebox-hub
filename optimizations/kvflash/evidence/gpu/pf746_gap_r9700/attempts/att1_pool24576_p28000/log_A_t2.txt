@@ -1,0 +1,16 @@
+[server] request path=/v1/chat/completions body_bytes=59135
+[server] chat chatcmpl_0000000000000002 format=chat stream=false msgs=4 tools=0 prompt_tokens=13264 max_tokens=64 max_ctx=65536 thinking=false reasoning_effort=none started_in_thinking=false stops=0 grammar=off model=luce
+[server] chat START chatcmpl_0000000000000002 format=chat stream=false prompt_tokens=13264 max_tokens=64 tools=0
+[pc] lookup hit slot=1 prefix_len=6706 (of 13264 total)
+[server] chat CACHE chatcmpl_0000000000000002 restore=true slot=1 prefix_len=6706 effective_prompt=13264 pflash=false disk_policy=full disk_hit=false snap_slot=2 snap_pos=13258 full_snap_slot=-1 full_snap_pos=0
+[snap] alloc right-sized: cur_pos=8192 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @8192 (149.6 MiB each, 1 held, 149.6 MiB)
+[snap] alloc right-sized: cur_pos=12800 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @12800 (149.6 MiB each, 2 held, 299.2 MiB)
+[snap] alloc right-sized: cur_pos=13258 buf=582.68 MiB backend=CPU
+[snap] boundary slot=2 cur_pos=13258 (req snap_pos=13258)
+[ar-decode] tokens=27 time=1.224 s speed=22.05 tok/s
+[vram] released scratch buffers; trimmed 474.1 MiB from device pools
+[pc] inline snapshot requested=13258 saved=13258 slot=2
+[pc] inline-snap committed slot=2 prefix_len=13258 protect=0 bytes=610979840 resident=1311006720
+[server] chat DONE chatcmpl_0000000000000002 ok=true in=13264 effective_in=13264 out=27 8.7s 3.1 tok/s finish=stop restore=true slot=1 prefix_len=6706 prefill=7.3s decode=1.2s(22.1tok/s) error=- detail=-

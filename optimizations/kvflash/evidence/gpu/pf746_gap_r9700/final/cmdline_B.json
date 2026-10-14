@@ -1,0 +1,31 @@
+{
+ "argv": [
+  "/home/duster/pf746/bin/luce_server-B",
+  "/home/duster/models/Qwen3.8-27B-UD-Q4_K_M.gguf",
+  "--host",
+  "127.0.0.1",
+  "--port",
+  "18292",
+  "--max-ctx",
+  "65536",
+  "--kvflash",
+  "16384",
+  "--model-name",
+  "luce",
+  "--prefill-drafter",
+  "/home/duster/models/Qwen3.5-0.8B-BF16.gguf",
+  "--prefill-compression",
+  "auto",
+  "--prefill-threshold",
+  "16384",
+  "--prefill-skip-park",
+  "--no-kv-cache"
+ ],
+ "env": {
+  "TMPDIR": "/home/duster/pf746/tmp",
+  "HIP_VISIBLE_DEVICES": "0",
+  "PFLASH_ADMISSION": "cache",
+  "PFLASH_SELECT_MODE": "budget_only",
+  "PFLASH_SELECT_SCORER": "legacy"
+ }
+}

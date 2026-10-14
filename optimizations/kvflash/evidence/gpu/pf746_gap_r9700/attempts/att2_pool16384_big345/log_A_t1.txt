@@ -1,0 +1,10 @@
+[server] request path=/v1/chat/completions body_bytes=29986
+[server] chat chatcmpl_0000000000000001 format=chat stream=false msgs=2 tools=0 prompt_tokens=6712 max_tokens=64 max_ctx=65536 thinking=false reasoning_effort=none started_in_thinking=false stops=0 grammar=off model=luce
+[server] chat START chatcmpl_0000000000000001 format=chat stream=false prompt_tokens=6712 max_tokens=64 tools=0
+[disk-cache] read 5681396ddfcecfe0824b52cb0b5f2c85.dkv (6706 pos, 467.5 MB, 0.15s)
+[qwen35] snapshot adopted slot=63 pos=6706 last_tok=248046
+[disk-cache] hit policy=full len=6706 slot=63 pos=6706 (RAM had 0)
+[server] chat CACHE chatcmpl_0000000000000001 restore=true slot=63 prefix_len=6706 effective_prompt=6712 pflash=false disk_policy=full disk_hit=true snap_slot=-1 snap_pos=0 full_snap_slot=-1 full_snap_pos=0
+[ar-decode] tokens=23 time=0.934 s speed=24.63 tok/s
+[vram] released scratch buffers; trimmed 35.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000001 ok=true in=6712 effective_in=6712 out=23 1.4s 16.7 tok/s finish=stop restore=true slot=63 prefix_len=6706 prefill=0.1s decode=0.9s(24.6tok/s) error=- detail=-

@@ -1,0 +1,6 @@
+arm=A tag=att1_pool24576_p28000 date=2026-10-14T14:59:11+00:00 host=lucebox6
+bin=/home/duster/pf746/bin/luce_server-A md5=39d0d160e05973ede56aa69dc94b71be
+kvflash/pf746-merge da9347580d91767430a03930f40221101fa17ef3 39d0d160e05973ede56aa69dc94b71be
+target=/home/duster/models/Qwen3.8-27B-UD-Q4_K_M.gguf md5=76f527022f010d42bc0dff5905c60444
+drafter=/home/duster/models/Qwen3.5-0.8B-BF16.gguf md5=16671eda429ac1aaff071a3f903380da
+KV_POOL=24576 KV_MAX_CTX=65536 PASTE_CHARS=28000 PASTE_SKIP=0

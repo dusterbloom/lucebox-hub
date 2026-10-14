@@ -1,0 +1,37 @@
+diff --git a/server/src/server/http_server.cpp b/server/src/server/http_server.cpp
+index ee9872ff..696a6e8c 100644
+--- a/server/src/server/http_server.cpp
++++ b/server/src/server/http_server.cpp
+@@ -6541,21 +6541,23 @@ std::string HttpServer::apply_pflash_compression(
+ 
+ int HttpServer::restorable_prefix_tokens(
+         const std::vector<int32_t> & prompt) {
+-    if (prefix_cache_.disabled()) return 0;
+-    int limit = (int) prompt.size();
++    int slot = -1, slot_tokens = 0;
++    int limit = prefix_cache_.disabled() ? 0 : (int) prompt.size();
+     while (limit > 0) {
+-        const auto [slot, length] =
+-            prefix_cache_.lookup_candidate(prompt, limit);
+-        if (slot < 0 || length <= 0) return 0;
+-        if (backend_.snapshot_used(slot)) {
+-            const int position = backend_.snapshot_cur_pos(slot);
+-            if (position > 0) return (std::min)(length, position);
++        const auto [s, length] = prefix_cache_.lookup_candidate(prompt, limit);
++        if (s < 0 || length <= 0) break;
++        if (backend_.snapshot_used(s) && backend_.snapshot_cur_pos(s) > 0) {
++            slot = s;
++            slot_tokens = (std::min)(length, backend_.snapshot_cur_pos(s));
++            break;
+         }
+         // A key whose snapshot is gone: try the next shorter one; the
+         // generation path invalidates it when it gets there.
+         limit = length - 1;
+     }
+-    return 0;
++    // The backend decides what a request really skips (KVFlash's live session
++    // covers more than the RAM snapshot, or less when it cannot use it).
++    return backend_.restorable_prefix(prompt, slot, slot_tokens);
+ }
+ 
+ json HttpServer::pflash_failure_counters_json() const {

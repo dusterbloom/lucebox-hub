@@ -1,0 +1,51 @@
+78b483bb fix(server): restorable_prefix_tokens defers to the backend's restorable_prefix
+-- Warning: ccache not found - consider installing it for faster compilation or disable this warning with GGML_CCACHE=OFF
+-- CMAKE_SYSTEM_PROCESSOR: x86_64
+-- GGML_SYSTEM_ARCH: x86
+-- Including CPU backend
+-- Found OpenMP_C: -fopenmp (found version "4.5") 
+-- Found OpenMP_CXX: -fopenmp (found version "4.5") 
+-- x86 detected
+-- Adding CPU backend variant ggml-cpu: -march=native 
+-- HIP and hipBLAS found
+-- hipBLASLt found: building the DS4V vision ops
+-- Including HIP backend
+-- ggml version: 0.9.11
+-- ggml commit:  78b483bb
+-- luce: HIP Phase 2 - rocWMMA flashprefill kernels enabled
+-- Found OpenMP_C: -fopenmp (found version "4.5") 
+-- Found OpenMP_CXX: -fopenmp (found version "4.5") 
+CMake Warning at CMakeLists.txt:3095 (message):
+  CURL not found — building luce_server without passthrough proxy
+
+
+-- Configuring done (0.2s)
+-- Generating done (0.1s)
+-- Build files have been written to: /home/duster/pf746/src/server/build-hip
+[1/21] Building CXX object deps/llama.cpp/ggml/src/CMakeFiles/ggml-base.dir/ggml-threading.cpp.o
+[2/21] Building CXX object deps/llama.cpp/ggml/src/CMakeFiles/ggml-base.dir/ggml.cpp.o
+[3/21] Building C object deps/llama.cpp/ggml/src/CMakeFiles/ggml-base.dir/ggml-alloc.c.o
+[4/21] Building C object deps/llama.cpp/ggml/src/CMakeFiles/ggml-base.dir/__/rocmfp4/rocmfp4.c.o
+[5/21] Building CXX object deps/llama.cpp/ggml/src/CMakeFiles/ggml-base.dir/ggml-opt.cpp.o
+[6/21] Building C object deps/llama.cpp/ggml/src/CMakeFiles/ggml-base.dir/__/rocmfpx/rocmfpx.c.o
+[7/21] Building CXX object deps/llama.cpp/ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o
+[8/21] Building C object deps/llama.cpp/ggml/src/CMakeFiles/ggml-base.dir/ggml.c.o
+[9/21] Building CXX object deps/llama.cpp/ggml/src/CMakeFiles/ggml-base.dir/ggml-backend-meta.cpp.o
+/home/duster/pf746/src/server/deps/llama.cpp/ggml/src/ggml-backend-meta.cpp: In lambda function:
+/home/duster/pf746/src/server/deps/llama.cpp/ggml/src/ggml-backend-meta.cpp:573:57: warning: missing initializer for member ‘ggml_backend_meta_split_state::nr’ [-Wmissing-field-initializers]
+  573 |         return {GGML_BACKEND_SPLIT_AXIS_MIRRORED, {0}, 1};
+      |                                                         ^
+[10/21] Building CXX object deps/llama.cpp/ggml/src/CMakeFiles/ggml-base.dir/gguf.cpp.o
+[11/21] Building C object deps/llama.cpp/ggml/src/CMakeFiles/ggml-base.dir/ggml-quants.c.o
+[12/21] Linking CXX shared library deps/llama.cpp/ggml/src/libggml-base.so.0.9.11
+[13/21] Creating library symlink deps/llama.cpp/ggml/src/libggml-base.so.0 deps/llama.cpp/ggml/src/libggml-base.so
+[14/21] Linking CXX shared library deps/llama.cpp/ggml/src/libggml-cpu.so.0.9.11
+[15/21] Creating library symlink deps/llama.cpp/ggml/src/libggml-cpu.so.0 deps/llama.cpp/ggml/src/libggml-cpu.so
+[16/21] Linking HIP shared library deps/llama.cpp/ggml/src/ggml-hip/libggml-hip.so.0.9.11
+[17/21] Creating library symlink deps/llama.cpp/ggml/src/ggml-hip/libggml-hip.so.0 deps/llama.cpp/ggml/src/ggml-hip/libggml-hip.so
+[18/21] Linking CXX shared library deps/llama.cpp/ggml/src/libggml.so.0.9.11
+[19/21] Creating library symlink deps/llama.cpp/ggml/src/libggml.so.0 deps/llama.cpp/ggml/src/libggml.so
+[20/21] Building CXX object CMakeFiles/luce_server.dir/src/server/http_server.cpp.o
+[21/21] Linking HIP executable luce_server
+ab232f231e91cbf938191b9a5edd1c4e  build-hip/luce_server
+archived /home/duster/pf746/bin/luce_server-B

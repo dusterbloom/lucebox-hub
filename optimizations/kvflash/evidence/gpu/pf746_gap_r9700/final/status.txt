@@ -1,0 +1,4 @@
+arm A exit 0
+arm B exit 0
+arm C exit 0
+done

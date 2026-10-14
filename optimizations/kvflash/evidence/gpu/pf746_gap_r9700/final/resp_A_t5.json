@@ -1,0 +1,100 @@
+{
+ "choices": [
+  {
+   "finish_reason": "stop",
+   "index": 0,
+   "message": {
+    "content": "(C) He was terrified of the confrontation with Torkleson regarding the disastrous sales and dividend reports waiting on his desk.",
+    "role": "assistant"
+   }
+  }
+ ],
+ "created": 1791990530,
+ "id": "chatcmpl_0000000000000005",
+ "model": "luce",
+ "object": "chat.completion",
+ "usage": {
+  "accept_rate": 0.0,
+  "completion_tokens": 26,
+  "completion_tokens_details": {
+   "reasoning_tokens": 0
+  },
+  "prompt_tokens": 39456,
+  "prompt_tokens_details": {
+   "cached_tokens": 0
+  },
+  "spec_decode_ran": false,
+  "timings": {
+   "agent_turn_cache_hit": false,
+   "cache_hit": false,
+   "cached_prefix_tokens": 0,
+   "decode_ms": 1068.9,
+   "decode_tokens_per_sec": 24.3,
+   "effective_prompt_tokens": 6691,
+   "pflash": {
+    "admission": {
+     "cached_droppable": 13764,
+     "cached_tokens": 13819,
+     "decision": "compress",
+     "droppable": 33792,
+     "raw_fits": true,
+     "threshold": 16384,
+     "uncached_droppable": 20028,
+     "view": false
+    },
+    "compress_ms": 4778.0,
+    "compressed_tokens": 6691,
+    "drafter_fingerprint_fnv1a64": "0e88045017804583",
+    "drafter_input_tokens": 39456,
+    "history_queries": 3,
+    "keep_ratio": 0.18640004098415375,
+    "kept_tokens": 5664,
+    "query_rule": "prompt_end",
+    "scorer_forward_ms": 0.0,
+    "scorer_new_tokens": -1,
+    "scorer_resume": -1,
+    "view": {
+     "fresh_tokens": 6691,
+     "mode": "fresh",
+     "pieces": [
+      [
+       0,
+       2048,
+       "raw"
+      ],
+      [
+       6144,
+       7168,
+       "raw"
+      ],
+      [
+       13312,
+       14336,
+       "raw"
+      ],
+      [
+       21504,
+       22528,
+       "raw"
+      ],
+      [
+       30720,
+       31744,
+       "raw"
+      ],
+      [
+       38912,
+       39456,
+       "raw"
+      ]
+     ],
+     "served_tokens": 6691,
+     "turn": 1
+    }
+   },
+   "prefill_ms": 6877.7,
+   "prefilled_tokens": 6691
+  },
+  "total_tokens": 39482
+ }
+}
