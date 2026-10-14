@@ -539,6 +539,12 @@ static const uint16_t * mmb_bf16_activation(ggml_backend_cuda_context & ctx, con
 // graph and shared by every GEMM that reads it (qkv/gate, q/k/v); converting in the tile load instead re-reads F32
 // per row tile and ran ssm_out/HC down at half speed (docs/performance/qwen4exp-q8-dense).
 static std::vector<mmb_cache_entry> g_mmb_f16_cache;
+// Eight elements per thread, 16-byte stores (the scalar form ran at 147 GB/s on gfx1151, 0.285 ms per MoE layer at p4096);
+// the per-element value is mq_f2h_sat of the same float, so the output is bit-identical. LUCE_MMB_CVT_LEGACY=1 restores
+// the scalar kernels.
+__device__ __forceinline__ uint32_t mmb_pack2h(const float a, const float b) {
+    return (uint32_t) __builtin_bit_cast(uint16_t, mq_f2h_sat(a)) | ((uint32_t) __builtin_bit_cast(uint16_t, mq_f2h_sat(b)) << 16);
+}
 __global__ void mmb_cvt_f32_f16(const float * __restrict__ x, _Float16 * __restrict__ y, const size_t n) {
     const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) y[i] = mq_f2h_sat(x[i]);
@@ -547,6 +553,31 @@ __global__ void mmb_cvt_bf16_f16(const uint16_t * __restrict__ x, _Float16 * __r
     const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) y[i] = mq_f2h_sat(__uint_as_float((uint32_t) x[i] << 16));
 }
+__global__ void mmb_cvt_f32_f16_v8(const float * __restrict__ x, _Float16 * __restrict__ y, const size_t n) {
+    const size_t i = ((size_t) blockIdx.x * blockDim.x + threadIdx.x) * 8;
+    if (i + 8 <= n) {
+        const float4 a = *(const float4 *)(x + i), b = *(const float4 *)(x + i + 4);
+        uint4 o; o.x = mmb_pack2h(a.x, a.y); o.y = mmb_pack2h(a.z, a.w); o.z = mmb_pack2h(b.x, b.y); o.w = mmb_pack2h(b.z, b.w);
+        *(uint4 *)(y + i) = o;
+    } else {
+        for (size_t j = i; j < n; ++j) y[j] = mq_f2h_sat(x[j]);
+    }
+}
+__global__ void mmb_cvt_bf16_f16_v8(const uint16_t * __restrict__ x, _Float16 * __restrict__ y, const size_t n) {
+    const size_t i = ((size_t) blockIdx.x * blockDim.x + threadIdx.x) * 8;
+    if (i + 8 <= n) {
+        const uint4 a = *(const uint4 *)(x + i);
+        uint4 o;
+        o.x = mmb_pack2h(__uint_as_float(a.x << 16), __uint_as_float(a.x & 0xffff0000u));
+        o.y = mmb_pack2h(__uint_as_float(a.y << 16), __uint_as_float(a.y & 0xffff0000u));
+        o.z = mmb_pack2h(__uint_as_float(a.z << 16), __uint_as_float(a.z & 0xffff0000u));
+        o.w = mmb_pack2h(__uint_as_float(a.w << 16), __uint_as_float(a.w & 0xffff0000u));
+        *(uint4 *)(y + i) = o;
+    } else {
+        for (size_t j = i; j < n; ++j) y[j] = mq_f2h_sat(__uint_as_float((uint32_t) x[j] << 16));
+    }
+}
+static bool mmb_cvt_legacy() { static const bool v = [] { const char * e = getenv("LUCE_MMB_CVT_LEGACY"); return e && atoi(e) != 0; }(); return v; }
 // A bf16-only src1 (in-place bf16 form) converts from bf16, anything else from F32.
 static const _Float16 * mmb_f16_activation(ggml_backend_cuda_context & ctx, const ggml_tensor * src1, const size_t n, cudaStream_t stream) {
     const ggml_tensor * root = mmb_root(src1);
@@ -554,8 +585,14 @@ static const _Float16 * mmb_f16_activation(ggml_backend_cuda_context & ctx, cons
     if (g_mmb_f16_cache.size() >= mmb_cache_max()) { delete g_mmb_f16_cache.front().buf; g_mmb_f16_cache.erase(g_mmb_f16_cache.begin()); }
     auto * buf = new ggml_cuda_pool_alloc<uint16_t>(ctx.pool(), n);
     g_mmb_f16_cache.push_back({root, src1->data, n, buf});
-    const unsigned blocks = (unsigned) ((n + 255) / 256);
-    if (const uint16_t * xb = ggml_cuda_mmb_bf16_src(src1)) mmb_cvt_bf16_f16<<<blocks, 256, 0, stream>>>(xb, (_Float16 *) buf->get(), n);
+    const uint16_t * xb = ggml_cuda_mmb_bf16_src(src1);
+    // 16-byte vector path needs 16-byte aligned src/dst (pool buffers are; tensor data may not be).
+    const bool v8 = !mmb_cvt_legacy() && ((uintptr_t) (xb ? (const void *) xb : src1->data) & 15) == 0 && ((uintptr_t) buf->get() & 15) == 0;
+    const unsigned blocks = (unsigned) (v8 ? (n / 8 + 255) / 256 : (n + 255) / 256);
+    if (v8) {
+        if (xb) mmb_cvt_bf16_f16_v8<<<blocks, 256, 0, stream>>>(xb, (_Float16 *) buf->get(), n);
+        else    mmb_cvt_f32_f16_v8<<<blocks, 256, 0, stream>>>((const float *) src1->data, (_Float16 *) buf->get(), n);
+    } else if (xb) mmb_cvt_bf16_f16<<<blocks, 256, 0, stream>>>(xb, (_Float16 *) buf->get(), n);
     else mmb_cvt_f32_f16<<<blocks, 256, 0, stream>>>((const float *) src1->data, (_Float16 *) buf->get(), n);
     return (const _Float16 *) buf->get();
 }

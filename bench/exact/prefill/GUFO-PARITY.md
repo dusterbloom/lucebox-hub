@@ -2816,3 +2816,83 @@ Top kernels per class (trace 1 / trace 2):
 - gufo: 159.9 = 36 x 4.442 / 158.0 = 36 x 4.390  `GdnRowSplitKernelT<2, 2>`
 - gufo: 45.0 = 36 x 1.251 / 45.1 = 36 x 1.254  `GdnEpilogueKernel<false>`
 
+
+## Attack on the fresh ledger (lucebox4 gfx1151, 2026-10-14 night): PLE conv matcher fix, vectorised F16 activation cvt, HC combine all-streams measured and rejected
+
+Three items from the ranked ledger above, in rank order. Same binary on both arms of every e2e A/B
+(`bench/exact/prefill/ab_glu.sh` with `OLD_ENV`/`NEW_ENV`), `--max-ctx 20480 --prefix-cache-slots 0`, 2 rounds x 5 reps,
+`prefix_len=0` on every request, greedy-64 on both prompts.
+
+### 1. Rank 1 (`cpy_scalar<float,float>` 57 x 0.95 = 54 ms) + rank 3 (elementwise) were the unfused PLE layer
+
+`LUCE_OP_TRACE=1` (new diagnostic in `ggml-cuda.cu`: one stderr line per CPY/CONT/ADD/MUL/NORM node with op, src, shape,
+strides, NONCONTIG flag; copies printed on every execution) attributed every f32 strided `cpy_scalar` to
+`CONT f32 [10240,4136]` nodes of the PLE conv taps, and the biggest `k_bin_bcast` mul/add and the `[2560,4,4136]` repeat/norm
+launches to the same layer: the `ple_conv_check` matcher in `ple-conv.cu` never matched the qwen4exp graph. `LUCE_PLE_DEBUG=1`
+(new: prints the `ple-conv.cu` line where the matcher gives up) showed `no match at node 140: ple-conv.cu:66` on every graph:
+the matcher took the conv input's shape from `tr->view_src`, which in this graph is the 3-D grouped-norm output
+`[2560, 4, T]` (`x->ne[2] != 1`), while the logical `[hc*n_embd, T]` lives on the `reshape_2d` in between (`tr->src[0]`).
+Fix: take the shape from `tr->src[0]` and the contiguity from the root (`ggml_is_contiguous(x) && ggml_is_contiguous(tr->view_src)`,
+`view_offs == 0`, same element count). The fused path (`ple_concat_tail` + `ple_conv_kernel<4,3,128,float>`, designed
+bit-exact with `v_mul_f32`/`v_add_f32` in the same order as the unfused nodes) replaces concat + 4 transposed CONTs + 4 muls +
+3 adds + silu + cont. Kill switch `LUCE_PLE_CONV_LEGACY=1` restores the unfused nodes (added to `cumul.sh` LEGACY_ENV).
+
+In-situ rocprofv3 (one p4096 request, last request of a 2-request session, same `prof.sh`; fixed build vs trace 1 of the
+ledger above):
+
+| kernel | before (ledger t1) | after | delta |
+|---|---:|---:|---:|
+| `cpy_scalar<cpy_1_scalar<float,float>>` (strided f32 copy) | 57 x 0.948 = 54.0 ms | 49 x 0.013 = 0.6 ms | -53.4 |
+| `k_bin_bcast<op_mul>` | 51 x 0.361 = 18.4 | 47 x 0.272 = 12.8 | -5.6 |
+| `k_bin_bcast<op_add>` | 78 x 0.192 = 15.0 | 75 x 0.101 = 7.6 | -7.4 |
+| `concat_dim0_dense_transpose_f32` | 1 x 2.70 = 2.7 | 0 | -2.7 |
+| `ple_concat_tail` + `ple_conv_kernel<4,3,128,float>` | 0 | 0.02 + 1.81 = 1.8 | +1.8 |
+| class "norms / quant / convert" | 184.2 | 127.4 | -56.8 |
+| class "elementwise / copies" | 51.9 | 37.6 | -14.3 |
+| class "PLE / embed" (gufo: 10.5) | 0.0 | 1.8 | +1.8 |
+| kernel sum (wall - gaps) | 3021.8 | 2922.8 | -99.0 |
+
+(The -99 includes -17 dense GEMM and -22 routed GEMM that are trace-to-trace drift of the big GEMMs, not this change; the
+attributable part is -53 copies, -13 elementwise, -3 concat, +2 fused, and -8 from item 2 below: about -75 ms of a 3.0 s
+request, 2.5%, scaling with T.) Our whole PLE layer is now 1.8 ms vs gufo's 10.5 (PleGate 3.7 + PleInject 3.1 + PleConv 3.0).
+
+### 2. Rank 4: bf16->F16 / f32->F16 activation conversion, scalar -> 8 elements per thread
+
+`mmb_cvt_bf16_f16` (46 x 0.302-0.433 = 14-20 ms) and `mmb_cvt_f32_f16` were one element per thread. `mmb_cvt_bf16_f16_v8`
+/ `mmb_cvt_f32_f16_v8` in `mmb.cu`: uint4 / 2 x float4 loads, 8 conversions, one uint4 store, scalar tail, same per-element
+rounding (`mq_f2h_sat`, bf16 is exact in F16 range) so byte-identical. Chosen when both pointers are 16-byte aligned, else the
+scalar kernels; `LUCE_MMB_CVT_LEGACY=1` forces scalar (added to `cumul.sh` LEGACY_ENV). In situ: `mmb_cvt_bf16_f16_v8`
+46 x 0.144 = 6.6 ms (-7 to -13), `mmb_cvt_f32_f16_v8` 50 x 0.079 = 3.9 ms.
+
+### 3. Rank 2: HC combine all-streams kernels, measured and rejected
+
+`hc_combine_norm_f32_b256` (grid hc x T, 48 x 2.45 ms) and `hc_combine_norm_moe_f32_b256` (one block per token, serial per-stream
+reduce, 46 x 3.9 ms) vs gufo HcCombine / HcCombineMoeF16. Tried: one block per token doing all 4 streams in one pass
+(`hc_combine_norm_f32_all<4>`, `hc_combine_norm_moe_f32_all<4,true>`), bit-identical outputs (res, bf16 xn, q8 tiles) in
+the microbench. Microbench (`bench/exact/prefill/hccn/`, T 4136, n_embd 2560, hc 4, n_used 10, medians of 30, lucebox4):
+
+| kernel | old (HEAD) | all-streams | gufo | byte floor @220 GB/s |
+|---|---:|---:|---:|---:|
+| combine (non-MoE): res f32 r+w, blk f32, xn bf16, q8 | 2.483 ms | 2.720 | 2.776 (f32 res, f32 xn, no q8) | 2.33 (514 MB) |
+| combine-moe: + 10 F16 expert rows | 3.732 | 3.785 | 3.675 f32-res / 2.776 half-res | 3.30 (725 MB) |
+
+The old kernels are at 94% / 88% of the byte floor and beat gufo's f32-residual kernels on identical bytes; the all-streams
+variant is slower (fewer blocks, longer serial chain). gufo's 2.78 ms MoE combine is its half-precision residual stream
+(fewer bytes), not a better kernel, and is out under the accuracy bar. Reverted; `hc-cn.cu` is unchanged.
+(An in-situ trace with the rejected kernels, taken by mistake before the box tree was re-synced, showed them a wash in situ:
+47 x 2.709 vs 49 x 2.652 and 46 x 3.906 vs 46 x 3.890.)
+
+### e2e A/B of 1 + 2 (one binary md5 983c73cc, `LUCE_PLE_CONV_LEGACY=1 LUCE_MMB_CVT_LEGACY=1` vs both 0, 2 x 5)
+
+| metric | old (legacy both) | new | delta | old-vs-old round spread | 2x rule |
+|---|---:|---:|---:|---:|---|
+| prefill p4096 tok/s | 1336.2 (rounds 1335.9 / 1342.2) | 1335.2 (1320.8 / 1379.7) | -0.07% | 0.47% | inside noise (new round spread 4.4%: new1 climbs 1200 -> 1356 across its 5 reps, still warming) |
+| prefill p16384 tok/s | 1374.0 (1371.1 / 1378.5) | 1398.4 (1393.0 / 1401.8) | +1.78% | 0.53% | REAL |
+| decode tok/s (ms/token) | 28.52 (35.06) | 28.54 (35.04) | +0.05% | 0.33% | inside noise (not on the T=1 path) |
+| greedy-64 p4096 / d512 | identical on all four arms (232 / 289 chars) | | | | |
+
+The PLE conv is O(T) bytes so its share is the same at both lengths (~2.5% of kernel time); the p16384 arm shows it, the
+p4096 arm is lost in a 4.4% round spread this night (every first rep of every round is 8-10% low on both arms). The
+3 x 5 cumulative run below re-measures p4096 with more reps. Unit test `test_ple_conv_fusion` (under LUCE_TESTS) rebuilds
+the exact qwen4exp PLE subgraph at T 1028 and 300, requires zero `[ple-conv] no match` lines under `LUCE_PLE_DEBUG=1` and a
+hash-equal silu output + conv state vs a child process under `LUCE_PLE_CONV_LEGACY=1`.

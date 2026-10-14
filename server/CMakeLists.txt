@@ -1415,6 +1415,10 @@ if(LUCE_TESTS)
         # code (child process under LUCE_ROPE_TABLE_LEGACY=1) across two computes that reuse the positions tensor.
         luce_add_ggml_gpu_executable(test_rope_table_parity test/unit/test_rope_table_parity.cpp)
         list(APPEND _raw_unit_test_targets test_rope_table_parity)
+        # Guards the fused PLE conv matcher (ple-conv.cu): the qwen4exp subgraph must match (no LUCE_PLE_DEBUG
+        # "no match" lines) and hash-equal the unfused nodes (child process under LUCE_PLE_CONV_LEGACY=1).
+        luce_add_ggml_gpu_executable(test_ple_conv_fusion test/unit/test_ple_conv_fusion.cpp)
+        list(APPEND _raw_unit_test_targets test_ple_conv_fusion)
         luce_add_ggml_gpu_executable(test_qwen4exp_indexer_score test/unit/test_qwen4exp_indexer_score.cpp)
         target_link_libraries(test_qwen4exp_indexer_score PRIVATE ggml-cpu)
         list(APPEND _raw_unit_test_targets test_qwen4exp_indexer_score)

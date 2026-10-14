@@ -3943,7 +3943,36 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         nb1, nb2, nb3, stream);
 }
 
+// LUCE_OP_TRACE=1: one stderr line per unfused CPY/CONT/DUP/ADD/MUL/SCALE/NORM node (op, name, srcs, shapes, strides),
+// printed once per distinct signature, to attribute generic kernels in a rocprof trace to graph nodes.
+static void luce_op_trace(const ggml_tensor * dst) {
+    static const bool on = [] { const char * e = getenv("LUCE_OP_TRACE"); return e && atoi(e) != 0; }();
+    if (!on) return;
+    switch (dst->op) {
+        case GGML_OP_CPY: case GGML_OP_CONT: case GGML_OP_DUP: case GGML_OP_ADD: case GGML_OP_MUL: case GGML_OP_SCALE:
+        case GGML_OP_RMS_NORM: case GGML_OP_SILU_BACK: case GGML_OP_GLU: case GGML_OP_UNARY: case GGML_OP_REPEAT: break;
+        default: return;
+    }
+    static std::unordered_set<std::string> seen;
+    std::string sig = std::string(ggml_op_name(dst->op)) + " " + dst->name;
+    char buf[512];
+    snprintf(buf, sizeof buf, " dst %s [%ld,%ld,%ld,%ld] nb[%zu,%zu,%zu,%zu]", ggml_type_name(dst->type),
+        (long) dst->ne[0], (long) dst->ne[1], (long) dst->ne[2], (long) dst->ne[3], dst->nb[0], dst->nb[1], dst->nb[2], dst->nb[3]);
+    sig += buf;
+    for (int i = 0; i < GGML_MAX_SRC && dst->src[i]; ++i) {
+        const ggml_tensor * t = dst->src[i];
+        snprintf(buf, sizeof buf, " | src%d %s(%s) %s [%ld,%ld,%ld,%ld] nb[%zu,%zu,%zu,%zu]%s", i, t->name, ggml_op_name(t->op), ggml_type_name(t->type),
+            (long) t->ne[0], (long) t->ne[1], (long) t->ne[2], (long) t->ne[3], t->nb[0], t->nb[1], t->nb[2], t->nb[3],
+            ggml_is_contiguous(t) ? "" : " NONCONTIG");
+        sig += buf;
+    }
+    // copies are printed on every execution (several distinct nodes share a generic name); the rest once per signature
+    const bool is_copy = dst->op == GGML_OP_CPY || dst->op == GGML_OP_CONT || dst->op == GGML_OP_DUP;
+    if (is_copy || seen.insert(sig).second) fprintf(stderr, "[op-trace]%s %s\n", is_copy ? "*" : "", sig.c_str());
+}
+
 static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
+    luce_op_trace(dst);
 #if defined(GGML_USE_HIP)
     // A bf16-only tensor holds only its bf16 form; an unfused op reading it would read garbage.
     if (ggml_cuda_mmb_marks_count() > 0 && dst->op != GGML_OP_MUL_MAT && dst->op != GGML_OP_MUL_MAT_ID && dst->op != GGML_OP_VIEW &&
