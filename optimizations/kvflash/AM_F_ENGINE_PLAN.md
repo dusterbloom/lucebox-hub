@@ -26,6 +26,64 @@ committed jsonl rows (Qwen3.8-27B BF16 on Modal):
 | held-out (537 q, 30 articles) | 0.10 | 460 | 439 | 3.9 [2.0, 5.9] |
 | held-out | 0.05 | 460 | 431 | 5.4 [3.1, 7.9] |
 
+## Revision 2 (2026-10-15): uniform blocks, after R1(e), R2 and a capacity check
+
+Where this section disagrees with sections 2-4 below, this section wins.
+Sections 2-4 stay as the record of the first design.
+
+**Evidence.**
+- R1(e): uniform budgets, every 640-token block to 64 slots in every head and
+  layer, match whole-article F: +0.74 [-1.87, +3.36].
+- R2 (`evidence/am/R2.md`, 50K context at k = 8 distractor articles):
+  - F-SEG(8) - F(0) = -0.6 [-3.3, +2.2]. The loss doesn't compound over
+    rounds, but n = 20 articles can't prove it stays under 3 points.
+  - Per-head budgets on 64-slot blocks (F-BLK) lose 3.6 points, most of it
+    already at k = 1.
+  - Re-compaction (F-RE, F-RE-UNI) collapses at k = 8 in the pilot.
+- Prerequisite stack rebased: fork branches `kvflash/2.0a-A-pager` to
+  `kvflash/2.0a-E-turn-checkpoints` (tip fc5563d1) on main af64ae9f. Gate A
+  passes there (`evidence/gpu/gateA_3090_rebased/`).
+
+**Design changes.**
+1. Uniform budgets. Each sealed 640-token block gets 64 slots in every head
+   and layer, at `--kvflash-am-ratio` 0.10. M1 (budget loader) is dropped.
+2. Never re-compact. Each block is fitted once, from its own prefill queries.
+   Section 4 items 2 and 3 (merge-refit and bias-aware re-compaction) are
+   dropped. A compacted block that goes cold pages out to host like any chunk.
+3. A compacted block is one ordinary 64-slot pool chunk plus a beta column in
+   `kv_bias`. Region B, per-layer extents and the segment map go away. M6
+   becomes a compacted flag on the chunk, beta in the `kv_bias` upload, and
+   beta in the pager serde. The shared mask is unchanged.
+4. M3 captures only the queries of the block being sealed: 640 x 24 heads x
+   256 x 2 B = 7.9 MB per layer, freed at the seal.
+5. M4 is top-64 per head. M5 solves 64 x 64 systems.
+6. M7 has no `am_compact` request field. The gate runs the automatic path on
+   QuALITY and compares with the R1(e) segment-local rows. M8 merges into M7.
+7. M9 moves up to right after M7. It writes compacted chunks and beta through
+   the pager blob, and it changes the RAM prefix-cache default from "three
+   snapshots at --max-ctx" to a byte budget (see the capacity check).
+8. A last gate on agentic traces: the B0 harness (`evidence/agentic/B0_3090/`)
+   with compaction on. The bar is to beat POOL16K's recall of 75.6% of what
+   full KV recalls, while staying close to the pool arms' decode speed.
+
+**Order:** M2 -> M3 -> M4 + M5 -> M6 -> M7 (QuALITY gate) -> M9 -> agentic
+gate. About 20 engineering days (rough), against 28 in the first design.
+
+**Capacity check** (Qwen3.8-27B, default q4_0 KV, from the B0 server logs on
+the 3090):
+- KV costs 18 KiB per token, because only 16 of 64 layers use attention. A
+  prefix snapshot is about 350 MiB fixed (recurrent state plus buffers) plus
+  18 KiB per token.
+- So a compacted session shrinks 4.4x at 128K tokens and 6x at 262K, not 10x:
+  the fixed part doesn't shrink.
+- Today's RAM default would shrink with the snapshots (3 x 0.81 GiB at 262K)
+  instead of holding more sessions. Hence the byte budget in M9.
+- KVFlash runs one request at a time: `--max-concurrency` > 1 needs
+  `--paged-attention`, which refuses KVFlash. Concurrent KVFlash stays track C,
+  after 2.0b.
+- 2.0a pooled snapshots never reach disk. An idle session evicted from RAM is
+  prefilled again from scratch, so for shared boxes M9 matters more than speed.
+
 ## 0. Findings that shape the plan
 
 1. **On-policy is a no-op for F, so F needs no second pass.** I read
@@ -354,10 +412,11 @@ Effort is engineering days for one person, tests included.
   uninterrupted run.
 
 Total: about 28 engineering days after the prerequisite stack, plus the R1(e)
-Modal run before M8.
+Modal run before M8. Revision 2 replaces this with about 20 days and its own
+order.
 
-Order: M1 -> M2 -> M3 -> M4 -> M5 -> M6 -> M7 (gate) -> R1(e) -> M8 -> M9.
-M1 and M3 can run alongside M2.
+Order (first design): M1 -> M2 -> M3 -> M4 -> M5 -> M6 -> M7 (gate) -> R1(e)
+-> M8 -> M9. M1 and M3 can run alongside M2.
 
 ## 4. Multiple rounds of compaction
 
