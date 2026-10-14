@@ -2475,8 +2475,9 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         turn_cuts = kvflash_turn_cuts(tokens, w_.im_start_id, w_.assistant_id, w_.newline_id);
         for (int & c : turn_cuts) c += kv_offset;
     }
+    // A cold prefill replaces the live session, image or not: drop its rungs.
+    if (kvflash_active() && kvflash_session_enabled() && kv_offset == 0) state_ladder_clear();
     if (kvflash_active() && !images && kvflash_session_enabled()) {
-        if (kv_offset == 0) state_ladder_clear();
         // A live restore keeps the head rung unless the server names a new cut.
         if (!kvflash_live_restore_active_ || snap_pos > 0) {
             state_ladder_head_ = snap_pos > 0 ? snap_pos / kQwen35PrefillUbatch * kQwen35PrefillUbatch : -1;
