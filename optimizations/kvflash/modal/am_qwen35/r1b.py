@@ -36,7 +36,7 @@ app = modal.App("kvflash-am-r1b", image=image)
 results = modal.Volume.from_name("kvflash-am-results", create_if_missing=True)
 hfcache = modal.Volume.from_name("kvflash-am-hfcache", create_if_missing=True)
 VOLS = {"/results": results, "/root/.cache/huggingface": hfcache}
-GPU = ["H200", "H100"]
+GPU = os.environ.get("KVFLASH_GPU", "H200,H100").split(",")  # e.g. KVFLASH_GPU="H100!" pins H100 with no upgrade
 USD_PER_S = {"H200": 4.54 / 3600, "H100": 3.95 / 3600}
 
 

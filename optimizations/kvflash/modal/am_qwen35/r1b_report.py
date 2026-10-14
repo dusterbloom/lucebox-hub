@@ -86,6 +86,15 @@ def main(d27, d4=None):
                         r = st.online_vs_ceiling(a, b, cl)
                         lines.append(f"| {c} | {r['n_q']} | {fmt(r, True)} | {r['verdict']} |")
                 lines.append("")
+            if ("F", t, split) in c27 and split == "held":  # PREREG R1b Amendment 2 (post hoc)
+                lines += ["F minus other cells (points; same rule as online vs ceiling)", "",
+                          "| comparison | n q | diff [95% CI] | verdict |", "|---|---|---|---|"]
+                for c in ("C", "O2", "O1"):
+                    if (c, t, split) in c27:
+                        (a, b), cl = st.align(st.load_cell(c27[("F", t, split)]), st.load_cell(c27[(c, t, split)]))
+                        r = st.online_vs_ceiling(a, b, cl)
+                        lines.append(f"| F - {c} | {r['n_q']} | {fmt(r, True)} | {r['verdict']} |")
+                lines.append("")
             if ("UAM", t, split) in c27:
                 lines += ["U-AM vs controls (AM minus control, points; R0 rule)", "",
                           "| control | n q | diff [95% CI] | verdict |", "|---|---|---|---|"]

@@ -122,3 +122,31 @@ Under the registered $270 cap with $131 unspent. The R1a block ($15 cap) and R0 
 - n is 20 articles / 357 questions for the primary; paired SE of Delta is 2.5-3 points, as registered. The primary FAIL is outside noise for all four cells (lower bounds +0.3 to +3.4), but the margin for F (+0.3) and C (+0.8) is thin.
 - One run per cell, greedy decoding; only self-study sampling has randomness (seed 1). Runs landed on a mix of H100 and H200; decode is greedy in bf16, so cross-GPU numerics may flip a few borderline answers.
 - Query generation timing for C is dominated by the HF `generate` shim (225-292 s per article), not by a tuned inference server; a production number would be lower.
+
+## Amendment 2 result: cell F on the 27B held-out split (post hoc, exploratory)
+
+Added after the R1b results were read (PREREG R1b Amendment 2). F = context-prefill queries, HighestAttnKeys, per-head budgets (`r1c/optimized_agnostic.json`, max ratio per head 0.75), held-out loader indices 20-49, n = 537 q, 30 articles. Rows: `R1b/27b/F__t0.1__held.jsonl`, `F__t0.05__held.jsonl`.
+
+GPU parity: F ran on the GPU type of the `orig` cell of the same article range. Target 0.10: articles 20-29 H200, 30-39 H100 (pinned `H100!`), 40-49 H200. Target 0.05: all H200 (as the existing 0.05 held-out cells). A first launch used the wrong `--start` (it is relative to the split start) and produced only articles 40-49 plus two empty jobs; the missing ranges were then run with corrected arguments, no article was run twice. Cost about $1.8 (cost records $1.75 plus $0.08 for the two empty jobs), cap $15.
+
+Correct answers out of 537:
+
+| cell | 0.10 | 0.05 |
+|---|---|---|
+| orig | 460 (85.7%) | 460 (85.7%) |
+| C | 449 (83.6%) | 434 (80.8%) |
+| O2 | 448 (83.4%) | 425 (79.1%) |
+| F | 439 (81.8%) | 431 (80.3%) |
+| O1 | 425 (79.1%) | 408 (76.0%) |
+
+Degradation D = orig - F (points, paired, cluster bootstrap 10,000, seed 0): 0.10: 3.9 [2.0, 5.9], McNemar 32/11, p = 0.002; 0.05: 5.4 [3.1, 7.9], McNemar 46/17, p < 0.001.
+
+Paired differences, F minus cell (points, 95% CI; "within 3 points" = lower bound >= -3, unchanged R1b rule):
+
+| comparison | 0.10 | verdict | 0.05 | verdict |
+|---|---|---|---|---|
+| F - C | -1.9 [-3.6, -0.2] | inconclusive | -0.6 [-3.0, +1.7] | within 3 points |
+| F - O2 | -1.7 [-3.8, +0.6] | inconclusive | +1.1 [-1.1, +3.6] | within 3 points |
+| F - O1 | +2.6 [-0.2, +5.5] | within 3 points | +4.3 [+0.6, +8.3] | within 3 points |
+
+Reading: at 0.05 F is statistically indistinguishable from C and O2 and better than O1 (lower bound +0.6). At 0.10 F sits between O2/C and O1: F - O1 is positive with a CI touching zero, and F - C and F - O2 are not resolved by this n. Compaction time per article: F 6 s (0.10) and 4 s (0.05) against 346 s and 327 s for C. F is not shown to match the ceiling at 0.10. Exploratory; no earlier verdict changes.
