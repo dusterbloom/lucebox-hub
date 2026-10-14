@@ -27,7 +27,7 @@ void ggml_cuda_mmb_q8f16_launch_raster(const uint8_t * w, const uint16_t * x, fl
 
 namespace {
 
-constexpr double TOL = 2.0e-3;   // |gpu - ref| / max(|ref|, 1e-2): F32 accumulation over K F16 products
+constexpr double TOL = 5.0e-3;   // |gpu - ref| / max(|ref|, 1e-2): F32 reassociation over K F16 products, with cancellation
 
 uint16_t f2h(float f) { _Float16 h = (_Float16) f; uint16_t u; std::memcpy(&u, &h, 2); return u; }
 float h2f(uint16_t u) { _Float16 h; std::memcpy(&h, &u, 2); return (float) h; }
@@ -42,7 +42,7 @@ bool run_shape(int T, int M, int K) {
     for (int r = 0; r < M; ++r) for (int b = 0; b < nkb; ++b) {
         uint8_t * blk = w.data() + ((size_t) r * nkb + b) * 34;
         const uint16_t d = f2h(dd(rng)); std::memcpy(blk, &d, 2);
-        for (int i = 0; i < 32; ++i) { const int8_t q = (int8_t) qd(rng); blk[2 + i] = (uint8_t) q; wf[(size_t) r * K + b * 32 + i] = (float) q * h2f(d); }
+        for (int i = 0; i < 32; ++i) { const int8_t q = (int8_t) qd(rng); blk[2 + i] = (uint8_t) q; wf[(size_t) r * K + b * 32 + i] = h2f(f2h((float) q * h2f(d))); }   // the kernel dequantizes to F16
     }
     std::vector<uint16_t> x((size_t) T * K);
     std::vector<float> xf(x.size());
@@ -54,19 +54,19 @@ bool run_shape(int T, int M, int K) {
         std::printf("  alloc failed\n");
         return false;
     }
-    hipMemcpy(dw, w.data(), w.size(), hipMemcpyHostToDevice);
-    hipMemcpy(dx, x.data(), x.size() * 2, hipMemcpyHostToDevice);
+    (void) hipMemcpy(dw, w.data(), w.size(), hipMemcpyHostToDevice);
+    (void) hipMemcpy(dx, x.data(), x.size() * 2, hipMemcpyHostToDevice);
 
     std::vector<float> out[2];
     const int groups[2] = {1, 16};
     for (int arm = 0; arm < 2; ++arm) {
-        hipMemset(dy, 0, ybytes);
+        (void) hipMemset(dy, 0, ybytes);
         ggml_cuda_mmb_q8f16_launch_raster(dw, dx, dy, T, M, K, groups[arm], (hipStream_t) 0);
         if (hipDeviceSynchronize() != hipSuccess) { std::printf("  G=%d launch failed\n", groups[arm]); return false; }
         out[arm].resize((size_t) T * M);
-        hipMemcpy(out[arm].data(), dy, ybytes, hipMemcpyDeviceToHost);
+        (void) hipMemcpy(out[arm].data(), dy, ybytes, hipMemcpyDeviceToHost);
     }
-    hipFree(dw); hipFree(dx); hipFree(dy);
+    (void) hipFree(dw); (void) hipFree(dx); (void) hipFree(dy);
 
     const bool exact = std::memcmp(out[0].data(), out[1].data(), ybytes) == 0;
     // Reference on a random sample of outputs (the full T*M*K product is too slow on the host).

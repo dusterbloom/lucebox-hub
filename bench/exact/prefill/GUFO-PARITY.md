@@ -1645,3 +1645,80 @@ size (16 = previous behaviour). Unit test
 `server/test/unit/test_mmb_q8f16_raster_parity.cpp` (LUCE_TESTS): rule table,
 G=1 vs G=16 bit-exact at K=6144 (T=333 ragged, T=2176) and K=2560, sampled
 double reference within 2e-3.
+
+## Where the other ~840 ms goes: kernel classes outside the dense GEMMs (p4096, same traces)
+
+Same two rocprofv3 traces as the per-shape table (luce T=4131, gufo T=4091, one
+request each), every kernel of the request binned by name
+(`scratch/dense/otherclass.py`); "gaps" = sum of idle time between consecutive
+kernel dispatches. gufo's HC-mix GEMM (`DenseF16GEMMKernel<...,8,true,...>`,
+116.5 ms) is binned under HC mix here, not dense GEMM, so the dense row differs
+from the per-shape table above.
+
+| class | luce ms | gufo ms | luce - gufo |
+| --- | ---: | ---: | ---: |
+| inter-kernel gaps (3291 vs 2146 launches) | 268.0 | 39.6 | +228.4 |
+| dense GEMM prefill tiles (gufo without HC mix) | 1031.1 | 864.1 | +167.0 |
+| MoE routed expert GEMMs | 984.4 | 851.4 | +133.0 |
+| norms / quant / convert | 142.1 | 29.6 | +112.5 |
+| attention (incl. rope, indexer) | 222.8 | 135.8 | +87.0 |
+| elementwise / copies | 93.7 | 9.1 | +84.6 |
+| MoE routing + MoE combine | 208.2 | 147.0 | +61.2 |
+| GDN conv / prep / concat | 61.6 | 23.0 | +38.6 |
+| HC mix / small-M GEMM / router GEMM | 240.0 | 208.7 | +31.4 |
+| HC combine (non-MoE layers) | 119.9 | 88.8 | +31.1 |
+| unclassified (topk radix, f32->f16/bf16 converts, route sort/prefix/scatter) | 23.5 | 0.9 | +22.6 |
+| PLE / embed (once per request) | 1.8 | 10.6 | -8.9 |
+| GDN recurrence | 108.4 | 204.5 | -96.1 |
+| **request wall** | **3505.4** | **2613.2** | **+892.3** |
+
+Top kernels per class (ms = calls x mean):
+
+- gaps: luce averages 81 us between dispatches vs gufo 18 us; 1145 more
+  launches (per-op ggml graph vs gufo's fused per-layer kernels).
+- dense GEMM: luce `mmb_q8f16<256,128,2,8,1,1>` 84 x 5.68 = 477.4 (bf16-act
+  qkv/gate), `<...,0>` 97 x 2.77 = 269.1, `mmb_w8a8<64,128,4,2,4>` 93 x 1.09 =
+  101.2, `mmb_q8f16<128,256,2,2,4,1>` 118 x 0.65 = 77.0; gufo fused qkv+gate
+  36 x 9.81 = 353.0, ssm_out 36 x 3.54 = 127.5, attention halfw 12 x 8.78 =
+  105.3, HC down W8A8 94 x 1.03 = 97.2.
+- MoE experts: luce `mmb_routed_glu<64,128,32,32,44>` 46 x 7.14 = 328.4,
+  `mmb_routed_glu<64,64,16,32,44>` 46 x 5.79 = 266.4, `mmb_routed<128,128,...>`
+  42 x 3.87 = 162.7, `mmb_routed<128,64,...>` 42 x 3.53 = 148.2; gufo
+  `RoutedF16GEMMKernel<WeightType 12>` 47 x 9.88 = 464.5, `<WeightType 7>` 43 x
+  7.76 = 333.7, `<8>` 5 x 8.42 = 42.1. Per layer luce spends 12.9 ms (gate/up)
+  + 7.4 ms (down) vs gufo 9.9 + 7.8 ms: the gate/up pass is +3 ms/layer.
+- norms/quant/convert: luce `gated_rms_norm2` 36 x 1.44 = 52.0,
+  `rms_norm_scale_f32` 72 x 0.42 = 29.9, `rms_norm_f32<256>` 48 x 0.45 = 21.6,
+  `gated_rms_norm_f16` 12 x 1.55 = 18.6; gufo `QuantizeQ8TiledVec4` 14 x 0.68
+  = 9.5, `RmsNormCached<10>` 7 x 1.14 = 7.9, `Narrow<bf16>` 12 x 0.42 = 5.1
+  (gufo fuses most norms into GEMM prologues/epilogues).
+- attention: luce `qsa3_attn_kernel` 12 x 10.39 = 124.7, `qsa3_rows_kernel` 12
+  x 4.98 = 59.8, `rope_multi_heads` 48 x 0.43 = 20.6, `qsa3_merge` 12 x 0.73 =
+  8.7; gufo `WmmaCausalAttentionKernel<4,16,true>` 24 x 3.63 = 87.0,
+  `<16,16,false>` 12 x 3.97 = 47.6, rope 12 x 0.03 = 0.3.
+- elementwise: luce `k_bin_bcast<op_repeat>` **3 x 19.8 = 59.5** (a 20 ms
+  broadcast repeat, three times per request -- the single cheapest fix in this
+  table), `k_bin_bcast<op_mul>` 47 x 0.29 = 13.4, `<op_add>` 75 x 0.10 = 7.6,
+  `unary_gated<silu>` 47 x 0.12 = 5.5; gufo copyBuffer 328 x 0.015 = 4.9,
+  `SwigluHalf` 48 x 0.06 = 3.0.
+- MoE routing/combine: luce `hc_combine_norm_moe_f32_b256` 46 x 3.92 = 180.1,
+  `k_argsort` 48 x 0.41 = 19.7, `soft_max<512>` 48 x 0.10 = 4.6; gufo
+  `HcCombineMoeF16<half>` 46 x 2.82 = 129.7, `RouterTopK<512>` 48 x 0.14 = 6.8,
+  `SelectScore`/`SelectMark` 96 x 0.025 each.
+- GDN conv/prep: luce `gdn_conv_direct<true,128>` 36 x 1.68 = 60.4; gufo
+  `SsmConvBoundary` 36 x 0.32 = 11.5 + `GdnPrepKq` 36 x 0.31 = 11.0 (conv is
+  fused into its qkv GEMM epilogue: `kSsmConv=true` on the fused kernel).
+- HC mix: luce `hc_gate_mix_kernel<4,1,16,1>` 95 x 1.45 = 137.5,
+  `mmb_small_m<4,...>` 140 x 0.69 = 96.8; gufo HcMix GEMM 94 x 1.24 = 116.5,
+  `HcMixEpilogueF16` 94 x 0.50 = 47.1, router `Cijk_..MT32x32x64` (hipBLASLt)
+  24 x 1.46 = 35.1.
+- HC combine: luce `hc_combine_norm_f32_b256` 49 x 2.45 = 119.9; gufo
+  `HcCombineVec4<half,half>` 48 x 1.85 = 88.8 (half residual stream).
+- GDN recurrence: luce `gated_delta_net_rowsplit<2,4,8>` 36 x 3.01 = 108.4;
+  gufo `GdnRowSplitKernelT<2,2>` 36 x 4.44 = 160.0 + `GdnEpilogue` 36 x 1.24 =
+  44.6 -- our row-split recurrence is 1.9x faster than theirs.
+
+Ranked by what would close the wall gap: launch gaps (+228), dense GEMM fusion
+qkv+gate+conv (+167 incl. the conv/prep +39), MoE gate/up expert GEMM (+133),
+unfused norms (+113), attention (+87), the 60 ms `op_repeat` (+60 of the +85
+elementwise), MoE combine (+61).
