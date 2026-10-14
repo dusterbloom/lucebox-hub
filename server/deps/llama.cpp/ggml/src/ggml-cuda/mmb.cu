@@ -37,6 +37,14 @@ __global__ void mmb_cvt_f32_bf16(const float * __restrict__ x, uint16_t * __rest
 #include "mmb-q8f16.cuh"
 #include "mmb-w8a8.cuh"
 #include "mmb-small-m.cuh"
+
+// Shared by test_mmb_q8f16_raster_parity.cpp: the 256x128 Q8_0 -> F16 WMMA kernel with an explicit raster
+// group (bypasses LUCE_MMB_Q8F16_RASTER), plus the pure group-size rule. F16 activations [T][K], F32 out [T][M].
+int ggml_cuda_mmb_q8f16_raster_group(int K, int forced) { return mmb_q8f16_raster_group(K, forced); }
+void ggml_cuda_mmb_q8f16_launch_raster(const uint8_t * w, const uint16_t * x, float * y, int T, int M, int K, int G, hipStream_t stream) {
+    const unsigned grid = ((T + 127) / 128) * ((M + 255) / 256);
+    mmb_q8f16_kernel<256, 128, 2, 8, 1, 0><<<grid, 256, 0, stream>>>(w, x, y, nullptr, T, M, K, G);
+}
 namespace {
 
 // dequantize one weight row's two consecutive IQ4_NL blocks (36 bytes) into 64 bf16 in LDS.
@@ -1239,5 +1247,7 @@ void ggml_cuda_mmb_mark_f16_only(const ggml_tensor *) {}
 bool ggml_cuda_mmb_is_f16_only(const ggml_tensor *) { return false; }
 int8_t * ggml_cuda_mmb_q8_reserve(ggml_backend_cuda_context &, const ggml_tensor *, size_t) { return nullptr; }
 size_t ggml_cuda_mmb_w8a8_tile_bytes(int, int) { return 0; }
+int ggml_cuda_mmb_q8f16_raster_group(int, int) { return 0; }
+void ggml_cuda_mmb_q8f16_launch_raster(const uint8_t *, const uint16_t *, float *, int, int, int, int, hipStream_t) {}
 
 #endif // defined(__gfx1151__)

@@ -32,6 +32,7 @@
 // Self-contained so the standalone microbench can include it.
 
 #include <cstdint>
+#include <cstdlib>
 
 typedef _Float16 mq_v16h __attribute__((ext_vector_type(16)));
 typedef _Float16 mq_h2   __attribute__((ext_vector_type(2)));
@@ -44,7 +45,7 @@ __device__ __forceinline__ _Float16 mq_f2h_sat(float v) { return (_Float16) (fab
 // (saturating, RNE) while committing to LDS, so no separate conversion pass or scratch buffer is needed.
 template <int BM, int BN, int BK, int WM, int WN, int XT = 0>
 __global__ void __launch_bounds__(256) mmb_q8f16_kernel(const uint8_t * __restrict__ w, const void * __restrict__ xv,
-        float * __restrict__ y, uint16_t * __restrict__ yh, const int T, const int M, const int K) {
+        float * __restrict__ y, uint16_t * __restrict__ yh, const int T, const int M, const int K, const int G) {
     static_assert(WM * WN == 8, "256 threads = 8 waves");
     constexpr int RT = BM / 16 / WM, TT = BN / 16 / WN;       // row / token tiles per wave
     static_assert(RT % 2 == 0 && RT * WM * 16 == BM && TT * WN * 16 == BN, "wave tiling");
@@ -62,7 +63,8 @@ __global__ void __launch_bounds__(256) mmb_q8f16_kernel(const uint8_t * __restri
     const int wr = wave / WN, wt = wave % WN;
     // Rasterize in groups of G token tiles: a group's F16 activations stay cache-resident while every row tile
     // sweeps them (at T=16384 a plain row-major walk re-streams ~84 MB of activations per row tile).
-    constexpr int G = 16;
+    // G = token tiles per raster group (see mmb_q8f16_raster_group): G=1 walks all row tiles of one token tile before
+    // moving on, G=16 keeps 16 token tiles of activations cache-resident while every row tile sweeps them.
     const int gx = (T + BN - 1) / BN, gy = (M + BM - 1) / BM, b = blockIdx.x;
     const int grp = b / (G * gy), rem = b % (G * gy), gcur = min(G, gx - grp * G);
     const int r0 = (rem / gcur) * BM, t0 = (grp * G + rem % gcur) * BN;
@@ -239,20 +241,37 @@ __global__ void __launch_bounds__(256) mmb_q8f16_kernel(const uint8_t * __restri
 // One plan: 256 rows x 128 tokens (BK=2, 8x1 waves), measured best or tied on every target shape at T=2048 and
 // T=16384 (docs/performance/qwen4exp-q8-dense). Rejected there: 128x256 / 64x128 tiles for M <= 512 and a K split
 // for the small-grid HC down (320x10240, ~17 TFLOPS: M=320 wastes 3/8 of the second row tile; gufo uses int8 there).
+// Raster group (token tiles per group). Activation rows whose byte pitch is a multiple of 4 KiB (K = 6144: ssm_out,
+// attn_output) alias channels when 16 token tiles are swept per row tile; walking one token tile at a time instead
+// (G=1, the weights stay MALL-resident) measured 3.72 vs 3.87 ms at T=4096 and 13.9 vs 14.3 ms at T=16384 on
+// gfx1151 (bench/exact/prefill/GUFO-PARITY.md), bit-exact. Other K are pitch-insensitive and keep G=16.
+// LUCE_MMB_Q8F16_RASTER=<n> forces one group size for every shape (16 = previous behaviour).
+static int mmb_q8f16_raster_group(const int K, const int forced) {
+    if (forced > 0) return forced;
+    return (K * 2) % 4096 == 0 ? 1 : 16;
+}
+
+static int mmb_q8f16_raster_env() {
+    static const int v = [] { const char * e = getenv("LUCE_MMB_Q8F16_RASTER"); return e ? atoi(e) : 0; }();
+    return v;
+}
+
 // xt: 0 = F16, 1 = bf16, 2 = F32 activation rows [T][K].
 static bool mmb_q8f16_launch(const uint8_t * w, const void * x, const int xt, float * y, uint16_t * yh,
         const int T, const int M, const int K, hipStream_t stream) {
     if (K % 64 != 0 || T < 96 || M < 1 || xt < 0 || xt > 2) return false;
     if (M <= 1024) {   // few output rows (shared expert, k/v): 128-row x 256-token tiles, bit-exact (0.33 -> 0.22 ms at M=640)
         const unsigned grid_s = ((T + 255) / 256) * ((M + 127) / 128);
-        if (xt == 0) mmb_q8f16_kernel<128, 256, 2, 2, 4, 0><<<grid_s, 256, 0, stream>>>(w, x, y, yh, T, M, K);
-        if (xt == 1) mmb_q8f16_kernel<128, 256, 2, 2, 4, 1><<<grid_s, 256, 0, stream>>>(w, x, y, yh, T, M, K);
-        if (xt == 2) mmb_q8f16_kernel<128, 256, 2, 2, 4, 2><<<grid_s, 256, 0, stream>>>(w, x, y, yh, T, M, K);
+        const int G = mmb_q8f16_raster_group(K, mmb_q8f16_raster_env());
+        if (xt == 0) mmb_q8f16_kernel<128, 256, 2, 2, 4, 0><<<grid_s, 256, 0, stream>>>(w, x, y, yh, T, M, K, G);
+        if (xt == 1) mmb_q8f16_kernel<128, 256, 2, 2, 4, 1><<<grid_s, 256, 0, stream>>>(w, x, y, yh, T, M, K, G);
+        if (xt == 2) mmb_q8f16_kernel<128, 256, 2, 2, 4, 2><<<grid_s, 256, 0, stream>>>(w, x, y, yh, T, M, K, G);
         return true;
     }
     const unsigned grid = ((T + 127) / 128) * ((M + 255) / 256);
-    if (xt == 0) mmb_q8f16_kernel<256, 128, 2, 8, 1, 0><<<grid, 256, 0, stream>>>(w, x, y, yh, T, M, K);
-    if (xt == 1) mmb_q8f16_kernel<256, 128, 2, 8, 1, 1><<<grid, 256, 0, stream>>>(w, x, y, yh, T, M, K);
-    if (xt == 2) mmb_q8f16_kernel<256, 128, 2, 8, 1, 2><<<grid, 256, 0, stream>>>(w, x, y, yh, T, M, K);
+    const int G = mmb_q8f16_raster_group(K, mmb_q8f16_raster_env());
+    if (xt == 0) mmb_q8f16_kernel<256, 128, 2, 8, 1, 0><<<grid, 256, 0, stream>>>(w, x, y, yh, T, M, K, G);
+    if (xt == 1) mmb_q8f16_kernel<256, 128, 2, 8, 1, 1><<<grid, 256, 0, stream>>>(w, x, y, yh, T, M, K, G);
+    if (xt == 2) mmb_q8f16_kernel<256, 128, 2, 8, 1, 2><<<grid, 256, 0, stream>>>(w, x, y, yh, T, M, K, G);
     return true;
 }

@@ -1275,6 +1275,23 @@ if(LUCE_TESTS)
             hip::host)
         list(APPEND _raw_unit_test_targets test_gdn_rowsplit_parity)
 
+        # Guards the Q8_0 -> F16 WMMA prefill GEMM raster rule (G=1 for 4 KiB-aliased
+        # activation pitches, G=16 otherwise): both group sizes bit-exact to each other
+        # and within F16-product tolerance of a double reference at K in {6144, 2560}.
+        add_executable(test_mmb_q8f16_raster_parity test/unit/test_mmb_q8f16_raster_parity.cpp)
+        set_source_files_properties(test/unit/test_mmb_q8f16_raster_parity.cpp PROPERTIES LANGUAGE HIP)
+        set_target_properties(test_mmb_q8f16_raster_parity PROPERTIES HIP_ARCHITECTURES "${_luce_archs}")
+        target_compile_definitions(test_mmb_q8f16_raster_parity PRIVATE GGML_USE_HIP)
+        target_include_directories(test_mmb_q8f16_raster_parity PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+        target_link_libraries(test_mmb_q8f16_raster_parity PRIVATE
+            ggml
+            ggml-base
+            ${LUCE_GGML_BACKEND_TARGET}
+            hip::host)
+        list(APPEND _raw_unit_test_targets test_mmb_q8f16_raster_parity)
+
         add_executable(test_qwen35_gdn_verify_fusion test/unit/test_qwen35_gdn_verify_fusion.cpp)
         set_source_files_properties(test/unit/test_qwen35_gdn_verify_fusion.cpp PROPERTIES LANGUAGE HIP)
         set_target_properties(test_qwen35_gdn_verify_fusion PROPERTIES HIP_ARCHITECTURES "${_luce_archs}")

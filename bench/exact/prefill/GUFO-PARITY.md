@@ -1568,3 +1568,80 @@ Verdict: we do not lead at p16384 either; against the current gufo build the gap
 is 22% at both lengths (p4096 wall 3.16 s vs 2.56 s), plus 32% on decode.
 Greedy-64 texts differ from the first character (different engines, different
 kernels; both on-topic).
+
+## Per-shape dense GEMM breakdown and raster fix (2026-10-14)
+
+rocprofv3 kernel traces of one p4096 request per engine (same session as the
+baseline above; `scratch/dense/prof.sh`, warm-up request then measured request
+on distinct text, last request isolated by the >1 s gap). Dense GEMM kernels
+grouped by template + grid; T = 4131 (luce) / 4091 (gufo).
+
+| kernel (in situ, p4096) | luce calls x mean ms = ms | gufo calls x mean ms = ms |
+| --- | ---: | ---: |
+| GDN qkv (2560 -> 10240) + gate (2560 -> 6144) | 36 x 6.61 + 36 x 4.05 = 383.8 | fused M=16384: 36 x 9.81 = 353.0 (35 TF/s) |
+| ssm_out + attn_output (6144 -> 2560) | 48 x ~4.4 = ~211 | 36 x 3.54 + 12 x 4.03 (W8A8 wave64) = 175.8 |
+| attention q (2560 -> 12288) | 12 x 7.81 = 93.7 | halfw M=13312: 12 x 8.78 = 105.3 |
+| HC down (W8A8) | 93 x 1.09 = 101.2 | 96 x 1.03 = 98.9 |
+| shared expert gate/up (M=640) | 94 x 0.66 = 61.9 | W8A8: 96 x 0.50 = 48.0 |
+| shared expert down (640 -> 2560) | 48 x 0.59 = 28 | 49 x 0.56 = 27.2 |
+| router (f32 split) | 47 x 1.15 = 54.0 | 64x64: 48 x 0.71 = 34.1 |
+| GDN alpha/beta + qsa + k/v | 20.9 + 26.1 + 15.1 = 62.1 | HcMix M=10240: 94 x 1.24 = 116.5 |
+| dense GEMM total | 1031.1 | 980.6 |
+| other kernels | 2206.3 | 1592.9 |
+| request wall (kernel span) | 3505.4 | 2613.2 |
+
+The dense-GEMM gap is ~50 ms of the ~890 ms request gap; the rest is outside
+the GEMMs (GDN recurrence, norms, HC combine, MoE routing/experts, launch gaps).
+
+### Microbench (scratch/dense/bench.hip, T=4096, median of 15, bit-exact unless noted)
+
+Ours = `mmb_q8f16_kernel<256,128,2,8,1>` with F16 activations (XT=0); gufo =
+`DenseF16Gemm` (its production Q8_0 route, ldx=0) linked from the scratch
+build's `libgufo_qwen38_flash_next.a`. TFLOP/s = 2*T*M*K / ms.
+
+| shape (K -> M) | ours ms (TF/s) | gufo DenseF16Gemm ms (TF/s) | notes |
+| --- | ---: | ---: | --- |
+| gdn_qkv 2560 -> 10240 | 6.07-6.11 (35.4) | 7.74 (27.7) | bf16 activations (XT=1, in-situ path) +3% |
+| gdn_gate 2560 -> 6144 | 3.86 (33.4) | 5.45 (23.7) | |
+| attn_q 2560 -> 12288 | 7.48 (34.5) | 8.66 (29.8) | |
+| ssm_out 6144 -> 2560 | 3.87 (33.3) | 3.86 (33.4); in situ 3.54 with padded ldx | the one shape we lose |
+| attn_kv 2560 -> 512 | 0.36 (30.0) | 0.52 (20.7) | |
+| shexp_gu 2560 -> 1280 | 0.81 (33.2) | 0.95 (28.1) | |
+| shexp_dn 640 -> 2560 | 0.52 (26.0) | 0.50 (26.7) | 3-6% behind, K=640 is prologue-bound |
+
+Rejected (measured, not kept): pre-dequantized F16 weights (6.35 vs 6.09 ms on
+qkv; gufo HalfWeight 11.08), int8 W8A8 (26-28 TF/s and not exact), BK=1 (8.95),
+4x2 waves (6.34), 128-row tiles, occupancy 2 (spills), output-pitch padding (no
+change), tile 128x256 / 128x128 for shexp_dn (0.60-0.63 vs 0.52).
+Diagnostics on qkv (6.19 ms base): no global fetch 5.79, no fetch + no dequant
+5.68, no barriers 6.29, none of the three 5.17 (41.5 TF/s) -- the remaining loss
+is global fetch and epilogue, not dequant or barriers. Synthetic ceilings on this
+box: pure WMMA 53 TF/s, WMMA + LDS fragment reads at the kernel's ratio 50 TF/s.
+
+Root cause for ssm_out: K=6144 F16 rows have a 12288-byte pitch (3 x 4 KiB), so
+the 16-token-tile raster group has every row tile sweep activation rows that
+alias the same channels. gufo avoids it by padding the activation pitch (`ldx`);
+re-laying our activations at K+64 gave 3.56-3.70 ms at T=4096 but nothing at
+T=16384. Changing only the raster order is cheaper and bit-exact: G=1 (walk all
+row tiles of one token tile, weights stay MALL-resident) measured, interleaved
+with G=4/G=16 over 8 rounds (median, round min-max):
+
+| shape | T | G=1 | G=4 | G=16 (old) | gufo |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| ssm_out | 4096 | **3.686** (3.587-3.764) | 4.241 | 3.869 (3.812-3.969) | 3.834 |
+| ssm_out | 16384 | **14.526** (13.992-14.658) | 17.304 | 14.918 (14.467-15.083) | 14.871 |
+| gdn_qkv | 4096 | 6.166 | 6.085 | 6.114 | 9.191 |
+| gdn_gate | 4096 | 3.891 | 3.789 | 3.784 | 5.776 |
+| attn_q | 4096 | 7.514 | 7.358 | 7.270 | 9.788 |
+| shexp_dn | 4096 | 0.535 | 0.544 | 0.539 | 0.502 |
+| gdn_qkv | 16384 | 25.367 | 24.899 | 24.713 | 47.476 |
+| attn_q | 16384 | 30.984 | 30.100 | 29.824 | 62.269 |
+
+G=1 wins only where the pitch aliases (K=6144: -4.7% at T=4096, -2.6% at
+T=16384, now below gufo's in-microbench kernel on both); every K=2560/640 shape
+is best or tied at G=16. Shipped as `mmb_q8f16_raster_group(K, forced)`: G=1
+when `K*2 % 4096 == 0`, else 16; `LUCE_MMB_Q8F16_RASTER=<n>` forces one group
+size (16 = previous behaviour). Unit test
+`server/test/unit/test_mmb_q8f16_raster_parity.cpp` (LUCE_TESTS): rule table,
+G=1 vs G=16 bit-exact at K=6144 (T=333 ragged, T=2176) and K=2560, sampled
+double reference within 2e-3.
