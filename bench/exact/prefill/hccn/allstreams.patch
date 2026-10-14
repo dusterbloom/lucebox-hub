@@ -1,0 +1,275 @@
+--- server/deps/llama.cpp/ggml/src/ggml-cuda/hc-cn.cu	2026-10-14 20:44:17.994375623 +0200
++++ /home/peppi/.claude/jobs/559c1173/tmp/hc-cn-all.cu	2026-10-14 20:42:14.798828194 +0200
+@@ -397,6 +397,237 @@
+     }
+ }
+ 
++
++// All-streams variants (prefill): one block per token handles every stream of the hyper-connection row in one
++// pass, so the 4 residual streams' loads are in flight together and the 4 block reductions share a single
++// __syncthreads (s_sum[HC][32]) instead of 4 serial block_reduce round trips. Per-element expressions, the
++// per-thread partial sums (same column -> thread map, same accumulation statement) and the shuffle order of the
++// reduction are those of hc_combine_norm_f32_b256 / hc_combine_norm_moe_f32_b256, so the outputs are bit-identical.
++// LUCE_HC_CN_ALL=0 restores the per-stream / per-token-serial kernels.
++#define HC_CN_MAX_HC 4
++template <int HC>
++static __device__ __forceinline__ void hc_cn_reduce_all(float (&tmp)[HC], float (*s_sum)[32]) {
++    const int lane = threadIdx.x % WARP_SIZE, warp = threadIdx.x / WARP_SIZE;
++#pragma unroll
++    for (int c = 0; c < HC; ++c) {
++        tmp[c] = warp_reduce_sum(tmp[c]);
++        if (lane == 0) s_sum[c][warp] = tmp[c];
++    }
++    __syncthreads();
++#pragma unroll
++    for (int c = 0; c < HC; ++c) {
++        float v = 0.0f;
++        if (lane < HC_CN_BLOCK2 / WARP_SIZE) v = s_sum[c][lane];
++        tmp[c] = warp_reduce_sum(v);
++    }
++}
++
++template <int HC>
++static __global__ void __launch_bounds__(HC_CN_BLOCK2, 2) hc_combine_norm_f32_all(
++        const float * inject, const float * residual, const float * block_out, const float * gamma,
++        float * out_res, float * out_xn, uint16_t * out_xn_bf16, const bool store_xn_f32,
++        const int n_embd, const float s1, const float b1, const float s2, const float b2, const float eps,
++        int8_t * q8) {
++    __shared__ float s_sum[HC][32];
++    const int t = blockIdx.x, tid = threadIdx.x;
++    constexpr int KP = (HC_CN_MAX_EMB / 2 + HC_CN_BLOCK2 - 1) / HC_CN_BLOCK2;
++    float w[HC], tmp[HC];
++#pragma unroll
++    for (int c = 0; c < HC; ++c) {
++        const float x1 = s1 * inject[(int64_t) t * HC + c] + b1;
++        const float x2 = hc_sigmoid(x1);
++        w[c] = s2 * x2 + b2;
++        tmp[c] = 0.0f;
++    }
++    const float * blk = block_out + (int64_t) t * n_embd;
++    float xs[HC][2 * KP];
++#pragma unroll
++    for (int k = 0; k < KP; ++k) {
++        const int col = (tid + k * HC_CN_BLOCK2) * 2;
++        if (col + 1 < n_embd) {
++            const float2 mv = *(const float2 *)(blk + col);
++            const float m0 = mv.x, m1 = mv.y;
++#pragma unroll
++            for (int c = 0; c < HC; ++c) {
++                const int64_t row = (int64_t) t * HC + c;
++                const float2 v = *(const float2 *)(residual + row * n_embd + col);
++                const float a0 = hc_add_rn(v.x, hc_mul_rn(m0, w[c]));
++                const float a1 = hc_add_rn(v.y, hc_mul_rn(m1, w[c]));
++                *(float2 *)(out_res + row * n_embd + col) = make_float2(a0, a1);
++                xs[c][2 * k] = a0; xs[c][2 * k + 1] = a1;
++                tmp[c] += a0 * a0 + a1 * a1;
++            }
++        } else {
++#pragma unroll
++            for (int c = 0; c < HC; ++c) { xs[c][2 * k] = 0.0f; xs[c][2 * k + 1] = 0.0f; }
++            if (col < n_embd) {
++                const float m0 = blk[col];
++#pragma unroll
++                for (int c = 0; c < HC; ++c) {
++                    const int64_t row = (int64_t) t * HC + c;
++                    const float a0 = hc_add_rn(residual[row * n_embd + col], hc_mul_rn(m0, w[c]));
++                    out_res[row * n_embd + col] = a0;
++                    xs[c][2 * k] = a0;
++                    tmp[c] += a0 * a0;
++                }
++            }
++        }
++    }
++    hc_cn_reduce_all<HC>(tmp, s_sum);
++#pragma unroll
++    for (int c = 0; c < HC; ++c) {
++        const float mean  = tmp[c] / n_embd;
++        const float scale = rsqrtf(mean + eps);
++        const int64_t row = (int64_t) t * HC + c;
++        const float * g  = gamma  + (int64_t) c * n_embd;
++        float *       xn = out_xn + row * n_embd;
++        uint16_t *    xh = out_xn_bf16 ? out_xn_bf16 + row * n_embd : nullptr;
++#pragma unroll
++        for (int k = 0; k < KP; ++k) {
++            const int col = (tid + k * HC_CN_BLOCK2) * 2;
++            if (col + 1 < n_embd) {
++                const float2 gv = *(const float2 *)(g + col);
++                const float v0 = scale * xs[c][2 * k] * gv.x, v1 = scale * xs[c][2 * k + 1] * gv.y;
++                if (store_xn_f32) *(float2 *)(xn + col) = make_float2(v0, v1);
++                if (xh) *(uint32_t *)(xh + col) = hc_pack2(v0, v1);
++                if (q8) hc_q8_pair(q8, HC * n_embd / 32, t, c * n_embd + col, v0, v1);
++            } else if (col < n_embd) {
++                const float v0 = scale * xs[c][2 * k] * g[col];
++                if (store_xn_f32) xn[col] = v0;
++                if (xh) xh[col] = hc_f2bf32(v0);
++            }
++        }
++    }
++}
++
++template <int HC, bool DOWN_F16>
++static __global__ void __launch_bounds__(HC_CN_BLOCK2, 2) hc_combine_norm_moe_f32_all(
++        const float * inject, const float * residual, const float * gamma,
++        const void * down, const float * moe_w, const float * shared, const float * sh_logit,
++        float * out_res, float * out_xn, uint16_t * out_xn_bf16, const bool store_xn_f32,
++        const int n_embd, const int n_used, const int64_t down_s1, const int64_t down_s2,
++        const int64_t w_s1, const int64_t sh_s1,
++        const float s1, const float b1, const float s2, const float b2, const float eps, int8_t * q8) {
++    __shared__ float s_sum[HC][32];
++    const int t = blockIdx.x, tid = threadIdx.x;
++    constexpr int KP = (HC_CN_MAX_EMB / 2 + HC_CN_BLOCK2 - 1) / HC_CN_BLOCK2;
++    float ms[2 * KP];
++    const float sig = hc_sigmoid(sh_logit[t]);
++    const float * wr = moe_w + (int64_t) t * w_s1;
++#pragma unroll
++    for (int i = 0; i < 2 * KP; ++i) ms[i] = 0.0f;
++    for (int e = 0; e < n_used; ++e) {
++        const float w = wr[e];
++        if (w == 0.0f) continue;
++        const int64_t rb = (int64_t) t * down_s2 + (int64_t) e * down_s1;
++#pragma unroll
++        for (int k = 0; k < KP; ++k) {
++            const int col = (tid + k * HC_CN_BLOCK2) * 2;
++            if (col + 1 < n_embd) {
++                float v0, v1;
++                if constexpr (DOWN_F16) {
++                    const __half2 h = *(const __half2 *) ((const half *) down + rb + col);
++                    v0 = __low2float(h); v1 = __high2float(h);
++                } else {
++                    const float2 f = *(const float2 *) ((const float *) down + rb + col);
++                    v0 = f.x; v1 = f.y;
++                }
++                ms[2 * k]     = __fadd_rn(ms[2 * k],     __fmul_rn(v0, w));
++                ms[2 * k + 1] = __fadd_rn(ms[2 * k + 1], __fmul_rn(v1, w));
++            } else if (col < n_embd) {
++                const float v0 = DOWN_F16 ? __half2float(((const half *) down)[rb + col]) : ((const float *) down)[rb + col];
++                ms[2 * k] = __fadd_rn(ms[2 * k], __fmul_rn(v0, w));
++            }
++        }
++    }
++#pragma unroll
++    for (int k = 0; k < KP; ++k) {
++        const int col = (tid + k * HC_CN_BLOCK2) * 2;
++#pragma unroll
++        for (int j = 0; j < 2; ++j) {
++            if (col + j < n_embd) {
++                const float sh = shared[(int64_t) t * sh_s1 + col + j] * sig;
++                ms[2 * k + j] = __fadd_rn(sh, ms[2 * k + j]);
++            }
++        }
++    }
++    float w[HC], tmp[HC];
++#pragma unroll
++    for (int c = 0; c < HC; ++c) {
++        const float x1 = s1 * inject[(int64_t) t * HC + c] + b1;
++        const float x2 = hc_sigmoid(x1);
++        w[c] = s2 * x2 + b2;
++        tmp[c] = 0.0f;
++    }
++    float xs[HC][2 * KP];
++#pragma unroll
++    for (int k = 0; k < KP; ++k) {
++        const int col = (tid + k * HC_CN_BLOCK2) * 2;
++        if (col + 1 < n_embd) {
++            const float m0 = ms[2 * k], m1 = ms[2 * k + 1];
++#pragma unroll
++            for (int c = 0; c < HC; ++c) {
++                const int64_t row = (int64_t) t * HC + c;
++                const float2 v = *(const float2 *)(residual + row * n_embd + col);
++                const float a0 = hc_add_rn(v.x, hc_mul_rn(m0, w[c]));
++                const float a1 = hc_add_rn(v.y, hc_mul_rn(m1, w[c]));
++                *(float2 *)(out_res + row * n_embd + col) = make_float2(a0, a1);
++                xs[c][2 * k] = a0; xs[c][2 * k + 1] = a1;
++                tmp[c] += a0 * a0 + a1 * a1;
++            }
++        } else {
++#pragma unroll
++            for (int c = 0; c < HC; ++c) { xs[c][2 * k] = 0.0f; xs[c][2 * k + 1] = 0.0f; }
++            if (col < n_embd) {
++                const float m0 = ms[2 * k];
++#pragma unroll
++                for (int c = 0; c < HC; ++c) {
++                    const int64_t row = (int64_t) t * HC + c;
++                    const float a0 = hc_add_rn(residual[row * n_embd + col], hc_mul_rn(m0, w[c]));
++                    out_res[row * n_embd + col] = a0;
++                    xs[c][2 * k] = a0;
++                    tmp[c] += a0 * a0;
++                }
++            }
++        }
++    }
++    hc_cn_reduce_all<HC>(tmp, s_sum);
++#pragma unroll
++    for (int c = 0; c < HC; ++c) {
++        const float mean  = tmp[c] / n_embd;
++        const float scale = rsqrtf(mean + eps);
++        const int64_t row = (int64_t) t * HC + c;
++        const float * g  = gamma  + (int64_t) c * n_embd;
++        float *       xn = out_xn + row * n_embd;
++        uint16_t *    xh = out_xn_bf16 ? out_xn_bf16 + row * n_embd : nullptr;
++#pragma unroll
++        for (int k = 0; k < KP; ++k) {
++            const int col = (tid + k * HC_CN_BLOCK2) * 2;
++            if (col + 1 < n_embd) {
++                const float2 gv = *(const float2 *)(g + col);
++                const float v0 = scale * xs[c][2 * k] * gv.x, v1 = scale * xs[c][2 * k + 1] * gv.y;
++                if (store_xn_f32) *(float2 *)(xn + col) = make_float2(v0, v1);
++                if (xh) *(uint32_t *)(xh + col) = hc_pack2(v0, v1);
++                if (q8) hc_q8_pair(q8, HC * n_embd / 32, t, c * n_embd + col, v0, v1);
++            } else if (col < n_embd) {
++                const float v0 = scale * xs[c][2 * k] * g[col];
++                if (store_xn_f32) xn[col] = v0;
++                if (xh) xh[col] = hc_f2bf32(v0);
++            }
++        }
++    }
++}
++
++static bool hc_cn_all_enabled() {
++    static const bool v = [] { const char * e = getenv("LUCE_HC_CN_ALL"); return !(e && atoi(e) == 0); }();
++    return v;
++}
++// The all-streams kernels take over for hc == 4 batches (one block per token wants a batch; decode keeps the
++// per-stream grid and the q8_1 producer).
++static bool hc_cn_use_all(const int64_t hc, const int64_t n_tokens) {
++    return hc_cn_all_enabled() && hc == HC_CN_MAX_HC && n_tokens >= 16;
++}
++
+ bool ggml_cuda_hc_combine_norm_supported(const ggml_cuda_hc_combine_norm_args & a, const int warp_size) {
+     const int64_t n_embd = a.out_res->ne[0];
+     const int64_t hc     = a.out_res->ne[1];
+@@ -430,6 +661,20 @@
+         GGML_ASSERT(a.moe_shared->ne[0] == n_embd && ggml_nrows(a.moe_shared) == n_tokens && ggml_nelements(a.moe_sh_logit) == n_tokens);
+         // moe_down_f16: the routed down rows hold F16 in place (element strides unchanged, 2 bytes each).
+         const size_t esz = a.moe_down_f16 ? sizeof(half) : sizeof(float);
++        if (hc_cn_use_all(hc, n_tokens)) {
++            auto kern = a.moe_down_f16 ? hc_combine_norm_moe_f32_all<HC_CN_MAX_HC, true> : hc_combine_norm_moe_f32_all<HC_CN_MAX_HC, false>;
++            kern<<<dim3((unsigned) n_tokens, 1, 1), HC_CN_BLOCK2, 0, ctx.stream()>>>(
++                (const float *) a.inject->data, (const float *) a.residual->data, (const float *) a.gamma->data,
++                (const void *) a.moe_down->data, (const float *) a.moe_w->data, (const float *) a.moe_shared->data,
++                (const float *) a.moe_sh_logit->data,
++                (float *) a.out_res->data, (float *) a.out_xn->data, a.out_xn_bf16, a.store_xn_f32,
++                (int) n_embd, (int) a.moe_down->ne[1],
++                (int64_t) (a.moe_down->nb[1] / sizeof(float)), (int64_t) (a.moe_down->nb[2] / sizeof(float)),
++                (int64_t) (a.moe_w->nb[1] / sizeof(float)), (int64_t) (a.moe_shared->nb[1] / sizeof(float)),
++                a.s1, a.b1, a.s2, a.b2, a.eps, a.out_q8);
++            CUDA_CHECK(cudaGetLastError());
++            return;
++        }
+         auto kern = a.moe_down_f16 ? hc_combine_norm_moe_f32_b256<true> : hc_combine_norm_moe_f32_b256<false>;
+         kern<<<dim3((unsigned) n_tokens, 1, 1), HC_CN_BLOCK2, 0, ctx.stream()>>>(
+             (const float *) a.inject->data, (const float *) a.residual->data, (const float *) a.gamma->data,
+@@ -455,6 +700,13 @@
+     } else if (luce_ko_empty_hc()) {
+         luce_ko_noop_kernel<<<1, 32, 0, ctx.stream()>>>();
+         CUDA_CHECK(cudaGetLastError());
++    } else if (hc_cn_use_all(hc, n_tokens) && !a.res_in_bf16 && !a.res_out_bf16 && !a.blk_in_bf16 && !a.out_q8_1) {
++        hc_combine_norm_f32_all<HC_CN_MAX_HC><<<dim3((unsigned) n_tokens, 1, 1), HC_CN_BLOCK2, 0, ctx.stream()>>>(
++            (const float *) a.inject->data, (const float *) a.residual->data,
++            (const float *) a.block_out->data, (const float *) a.gamma->data,
++            (float *) a.out_res->data, (float *) a.out_xn->data, a.out_xn_bf16, a.store_xn_f32,
++            (int) n_embd, a.s1, a.b1, a.s2, a.b2, a.eps, a.out_q8);
++        CUDA_CHECK(cudaGetLastError());
+     } else if (luce_hc_cn_fast()) {
+     hc_combine_norm_f32_b256_fast<<<dim3((unsigned) hc, (unsigned) n_tokens, 1), HC_CN_BLOCK2, 0, ctx.stream()>>>(
+         (const float *) a.inject->data, (const float *) a.residual->data,

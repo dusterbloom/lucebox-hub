@@ -2896,3 +2896,40 @@ p4096 arm is lost in a 4.4% round spread this night (every first rep of every ro
 3 x 5 cumulative run below re-measures p4096 with more reps. Unit test `test_ple_conv_fusion` (under LUCE_TESTS) rebuilds
 the exact qwen4exp PLE subgraph at T 1028 and 300, requires zero `[ple-conv] no match` lines under `LUCE_PLE_DEBUG=1` and a
 hash-equal silu output + conv state vs a child process under `LUCE_PLE_CONV_LEGACY=1`.
+
+## Cumulative 2026-10-14 night (lucebox4 gfx1151): after the PLE conv fix + cvt v8, 3 x 5, arms alternating A/B/C/D
+
+Same `cumul.sh` protocol as the 'Cumulative 2026-10-14' section (restarts alternating A/B/C/D, per restart: p4096 warm-up
+dropped, 5 x p4096, 5 x p16384, 16-token decode warm-up dropped, 5 x decode128; greedy-64 in round 0), 3 rounds.
+Box tree checksum-identical to local HEAD fd01e592 (`rsync -rnc`, only `hc-cn.cu` had drifted and was re-synced before the
+build), `libggml-hip.so` md5 1633d93f, gufo fd490446, model 19586316. Caching symmetric: luce `prefix_len=0` on every request,
+gufo `cache=miss cached_tokens=0` on every request. A = HEAD with every kill switch since c786560d set to legacy, now
+including `LUCE_MMB_CVT_LEGACY=1 LUCE_PLE_CONV_LEGACY=1`.
+
+| arm | p4096 tok/s (round medians, spread) | p16384 tok/s | decode tok/s (ms/tok) |
+|---|---:|---:|---:|
+| A luce all-legacy | 1226.5 (1184.3 / 1225.2 / 1229.7, 3.70%) | 1265.3 (1277.5 / 1257.8 / 1265.3, 1.55%) | 24.96 (40.06) |
+| B luce HEAD fd01e592 | 1391.2 (1400.8 / 1390.7 / 1391.2, 0.73%) | 1412.6 (1417.1 / 1410.9 / 1417.8, 0.49%) | 28.56 (35.02) |
+| C gufo fd490446 | 1599.4 (1597.7 / 1606.0 / 1604.5, 0.52%) | 1617.7 (1611.7 / 1620.2 / 1618.0, 0.53%) | 32.93 (30.37) |
+| D gufo GUFO_DECODE_Q5=0 | | | 29.53 (33.86) |
+| B vs A | +13.42% | +11.64% | +14.39% |
+| C vs B (remaining gap) | +14.97% | +14.53% | +15.32% |
+| C vs A | +30.40% | +27.86% | +31.92% |
+
+Versus the earlier 'Cumulative 2026-10-14' section (same box, same protocol, B then 1358.5 / 1369.7 / 28.58): B is
+**+2.4% at p4096 and +3.1% at p16384**, decode unchanged (-0.07%, not on the T=1 path); the gap to gufo closed from
++18.0 / +18.1 / +15.2% to +15.0 / +14.5 / +15.3%. This is the PLE fix + cvt v8 banked on 15 reps per arm (the 2 x 5 A/B
+above had the p4096 arm inside a 4.4% round spread; the 3 x 5 B round spread here is 0.73%). Greedy-64 A vs B differ at
+char 86 (p4096) / 96 (decode512) -- the same characters as in the earlier cumulative section, i.e. no new divergence from
+this night's changes (the one-binary A/B above was byte-identical on all four arms); B vs C differ at char 0 as before.
+Both on-topic.
+
+Remaining ranked gap (from the in-situ trace of the fixed build vs gufo t1, kernel sum 2923 vs 2569 ms, +354 per p4096
+request): dense GEMM +143 (gufo fuses qkv+gate into one M=16384 launch with the ssm conv in its epilogue), norms/quant/convert
++98 (gated_rms_norm 48 + rms_norm 27 + gated_rms_norm_f16 19 vs gufo's 30 fused into GEMM prologues), MoE routing/combine +78
+and HC combine +41 (both at the byte floor on f32 residual; gufo's lead is its half residual stream), GDN conv +42
+(gdn_conv_direct 39 + norm 25 vs SsmConv 11 + GdnPrepKq 11, needs the epilogue fusion), HC mix +33, elementwise +28
+(`cpy_scalar<half,half>` 60 x 0.134 = 8 ms strided half copies, k_bin_bcast 20), attention +6; we win GDN recurrence -95
+and routed GEMMs -14. Everything left above 1% is a GEMM-epilogue/prologue fusion (3+ h each); the sub-1% items
+(Q rope into the attention Q load 15 ms, half strided copies 8 ms) are below the e2e noise floor and need the in-situ
+trace, not an A/B, to bank.
