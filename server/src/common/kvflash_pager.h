@@ -290,6 +290,7 @@ public:
 #endif
     }
 
+    bool reset_identity(int64_t) { return false; }   // STUB (red run)
     bool attached() const { return n_blocks_ > 0; }
     int pool_tokens() const { return cfg_.pool_tokens; }
     int chunk_tokens() const { return cfg_.chunk_tokens; }
@@ -1055,6 +1056,8 @@ private:
 #endif
     bool has_pending_page_in_ = false;
 };
+
+inline bool kvflash_parse_test_compact(const char *, int, int &, float &) { return false; }  // STUB (red run)
 
 // ── Shared backend helpers ─────────────────────────────────────────────
 //

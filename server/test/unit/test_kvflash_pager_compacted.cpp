@@ -5,6 +5,7 @@
 // CPU ggml backend, no GPU.
 #include "CppUnitTestFramework.hpp"
 #include "../../src/common/kvflash_pager.h"
+#include "../../src/qwen35/kv_bias_check.h"
 
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
@@ -12,6 +13,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -357,6 +359,273 @@ TEST_CASE(KvflashPagerCompactedFixture, with_no_compacted_chunk_the_mask_and_the
     std::vector<uint16_t> want(kPool, 0xFC00);
     for (int i = 0; i < 6 * kChunk; i++) want[(size_t)i] = 0x0000;
     CHECK(std::memcmp(m.data(), want.data(), kPool * 2) == 0);
+}
 
-    CHECK(p.serialize().size() == kHdr + 6 * kChunkBytes + 6 * 8);   // no trailer
+// ---- review fixes -----------------------------------------------------------
+
+namespace {
+
+// Chunks 0..7 fill the pool; [1,3) and [4,6) are compacted blocks (span 2 each).
+void build2(Harness & hs, KvFlashPager & p) {
+    must(p.attach(make_cfg(), hs.k, hs.v));
+    must(p.alloc_span(0, 8 * kChunk));
+    for (int b = 0; b < 8; b++) stamp(hs, b);
+    must(p.mark_compacted(1, 2, make_beta()));
+    std::vector<float> b2 = make_beta();
+    for (float & x : b2) x += 1.0f;
+    must(p.mark_compacted(4, 2, b2));
+}
+
+constexpr size_t kBase8 = kHdr + 8 * kChunkBytes + 8 * 8;   // end of the base payload of build2()
+
+} // namespace
+
+TEST_CASE(KvflashPagerCompactedFixture, reset_identity_drops_every_compaction) {
+    Harness hs;
+    KvFlashPager p;
+    build(hs, p);
+    const uint64_t e = p.epoch();
+
+    CHECK(p.reset_identity(300));                 // an exact snapshot hit rebuilds the mapping from scratch
+    CHECK(p.epoch() != e);
+    CHECK(!p.any_compacted());
+    CHECK(!p.is_covered(3));
+    CHECK(p.is_identity());
+    CHECK(p.n_chunks() == 5);
+    CHECK(p.resident_blocks() == 5);
+    CHECK(p.slot_of(299) == 299);
+    CHECK(bias_of(p, 0) == expect_bias(0, -1));
+    CHECK(bias_of(p, 1) == expect_bias(1, -1));
+
+    CHECK(p.reset_identity(0));
+    CHECK(p.n_chunks() == 0);
+    CHECK(!p.reset_identity(kPool + 1));          // does not fit the pool
+}
+
+TEST_CASE(KvflashPagerCompactedFixture, slot_for_rejects_writes_into_a_compacted_head) {
+    Harness hs;
+    KvFlashPager p;
+    build(hs, p);
+    const uint64_t e = p.epoch();
+    const int resident = p.resident_blocks();
+
+    CHECK(p.slot_for(2 * kChunk) == -1);          // the head's first position
+    CHECK(p.slot_for(2 * kChunk + 40) == -1);
+    CHECK(p.slot_for(4 * kChunk + 1) == -1);      // covered
+    CHECK(!p.alloc_span(2 * kChunk, 4));
+    CHECK(p.epoch() == e);
+    CHECK(p.resident_blocks() == resident);
+
+    // Recall still works for the compacted head itself.
+    CHECK(p.page_out(2));
+    CHECK(p.page_in(2));
+    p.synchronize_paging();
+    CHECK(p.block_of(2) >= 0);
+}
+
+TEST_CASE(KvflashPagerCompactedFixture, the_test_hook_spec_is_parsed_strictly) {
+    int c = -7;
+    float beta = -7.f;
+    CHECK(kvflash_parse_test_compact("20:0", 100, c, beta));
+    CHECK(c == 79);
+    CHECK(beta == 0.0f);
+    CHECK(kvflash_parse_test_compact("1:-1000", 100, c, beta));
+    CHECK(c == 98);
+    CHECK(beta == -1000.0f);
+    CHECK(kvflash_parse_test_compact("3:0.25", 10, c, beta));
+    CHECK(c == 6);
+    CHECK(!kvflash_parse_test_compact("0:0", 100, c, beta));      // k = 0 is the append head
+    CHECK(!kvflash_parse_test_compact("-2:0", 100, c, beta));
+    CHECK(!kvflash_parse_test_compact("5", 100, c, beta));        // no beta
+    CHECK(!kvflash_parse_test_compact("5:", 100, c, beta));
+    CHECK(!kvflash_parse_test_compact("x:1", 100, c, beta));
+    CHECK(!kvflash_parse_test_compact("5:y", 100, c, beta));
+    CHECK(!kvflash_parse_test_compact("5:1z", 100, c, beta));
+    CHECK(!kvflash_parse_test_compact("", 100, c, beta));
+    CHECK(!kvflash_parse_test_compact(nullptr, 100, c, beta));
+    CHECK(!kvflash_parse_test_compact("20:0", 20, c, beta));      // chunk would be negative
+    CHECK(kvflash_parse_test_compact("19:0", 20, c, beta));
+    CHECK(c == 0);
+}
+
+TEST_CASE(KvflashPagerCompactedFixture, every_damaged_compaction_trailer_is_rejected_before_any_state_changes) {
+    Harness hs;
+    KvFlashPager p;
+    build2(hs, p);
+    const std::vector<uint8_t> blob = p.serialize();
+    REQUIRE(blob.size() == kBase8 + 8 + 2 * (8 + 256 * 4));
+
+    Harness hs2;
+    KvFlashPager q;
+    must(q.attach(make_cfg(), hs2.k, hs2.v));
+    must(q.alloc_span(0, 2 * kChunk));
+    const uint64_t e = q.epoch();
+    auto rejected = [&](const std::vector<uint8_t> & b) {
+        const bool r = !q.deserialize(b.data(), b.size());
+        return r && q.epoch() == e && q.n_chunks() == 2 && !q.any_compacted();
+    };
+
+    CHECK(rejected(std::vector<uint8_t>(blob.begin(), blob.begin() + kBase8)));        // trailer cut off entirely
+    CHECK(rejected(std::vector<uint8_t>(blob.begin(), blob.begin() + kBase8 + 4)));    // short: no count
+    CHECK(rejected(std::vector<uint8_t>(blob.begin(), blob.begin() + kBase8 + 7)));
+    { auto b = blob; b[kBase8] ^= 0x5a;  CHECK(rejected(b)); }                         // wrong magic
+    { auto b = blob; b[kBase8 + 4] = 1;  CHECK(rejected(b)); }                         // count too low: one entry left over
+    { auto b = blob; b[kBase8 + 4] = 3;  CHECK(rejected(b)); }                         // count too high
+    { auto b = blob; b[kBase8 + 4] = 0;  CHECK(rejected(b)); }                         // empty trailer
+    { auto b = blob; b.push_back(0xAB);  CHECK(rejected(b)); }                         // trailing garbage
+    { auto b = blob; b.resize(b.size() - 1); CHECK(rejected(b)); }                     // beta cut short
+    { auto b = blob; b[8 + 28] = 1;      CHECK(rejected(b)); }                         // header says "no compaction" but a trailer follows
+
+    // The intact blob loads, and a blob that ends at the base payload is a plain blob only when it says so.
+    CHECK(q.deserialize(blob.data(), blob.size()));
+    CHECK(q.is_compacted(1));
+    CHECK(q.is_compacted(4));
+    CHECK(q.compacted_span(4) == 2);
+}
+
+TEST_CASE(KvflashPagerCompactedFixture, trailing_bytes_after_an_uncompacted_blob_are_rejected) {
+    Harness hs;
+    KvFlashPager p;
+    must(p.attach(make_cfg(), hs.k, hs.v));
+    must(p.alloc_span(0, 3 * kChunk));
+    const std::vector<uint8_t> blob = p.serialize();
+    Harness hs2;
+    KvFlashPager q;
+    must(q.attach(make_cfg(), hs2.k, hs2.v));
+    CHECK(q.deserialize(blob.data(), blob.size()));
+    auto b = blob;
+    b.push_back(0);
+    CHECK(!q.deserialize(b.data(), b.size()));
+}
+
+TEST_CASE(KvflashPagerCompactedFixture, a_pin_on_any_chunk_of_the_span_protects_the_head) {
+    for (int pinned = 0; pinned < 2; pinned++) {
+        Harness hs;
+        KvFlashPager p;
+        must(p.attach(make_cfg(), hs.k, hs.v));
+        must(p.alloc_span(0, 6 * kChunk));
+        must(p.mark_compacted(2, 3, make_beta()));            // head 2, covered 3 and 4
+        if (pinned) p.pin_range(4 * kChunk, 4 * kChunk + 1);  // a covered chunk
+        must(p.alloc_span(6 * kChunk, 4 * kChunk));            // pool is full again
+        must(p.slot_for(1 * kChunk) >= 0);                     // refresh 1 and 5: the head is now the oldest
+        must(p.slot_for(5 * kChunk) >= 0);
+        must(p.slot_for(10 * kChunk) >= 0);                    // forces one eviction
+        if (pinned) {
+            CHECK(p.block_of(2) >= 0);
+            CHECK(p.block_of(1) < 0);
+        } else {
+            CHECK(p.block_of(2) < 0);                          // control: unprotected, it is the victim
+        }
+    }
+}
+
+TEST_CASE(KvflashPagerCompactedFixture, pins_count_one_representative_per_block_for_the_capacity_guard) {
+    Harness hs;
+    KvFlashPager p;
+    must(p.attach(make_cfg(), hs.k, hs.v));
+    must(p.alloc_span(0, 6 * kChunk));
+    must(p.mark_compacted(2, 3, make_beta()));
+    // sink 1 + tail 4 + 2 spare blocks leave room for exactly one more protected block.
+    p.pin_range(2 * kChunk, 5 * kChunk);                      // three chunks, one representative
+    CHECK(p.is_pinned(2));
+    CHECK(p.is_pinned(3));
+    CHECK(p.is_pinned(4));
+}
+
+TEST_CASE(KvflashPagerCompactedFixture, a_block_that_touches_the_trailing_window_is_protected) {
+    Harness hs;
+    KvFlashPager p;
+    must(p.attach(make_cfg(), hs.k, hs.v));
+    must(p.alloc_span(0, 8 * kChunk));
+    must(p.mark_compacted(4, 3, make_beta()));                // head 4, covered 5 and 6
+    must(p.alloc_span(8 * kChunk, 2 * kChunk));               // chunks 8 and 9: full again
+    for (int c : {1, 2, 3, 7, 8, 9}) must(p.slot_for(c * kChunk) >= 0);   // the head is the oldest
+    must(p.slot_for(10 * kChunk) >= 0);                       // tail window = chunks 6..10: it reaches the block
+    CHECK(p.block_of(4) >= 0);
+    CHECK(p.block_of(1) < 0);
+}
+
+TEST_CASE(KvflashPagerCompactedFixture, an_uncompacted_blob_is_byte_for_byte_the_old_format) {
+    Harness hs;
+    KvFlashPager p;
+    must(p.attach(make_cfg(), hs.k, hs.v));
+    must(p.alloc_span(0, 6 * kChunk));
+    for (int b = 0; b < 6; b++) stamp(hs, b);
+
+    std::vector<uint8_t> want;
+    auto put = [&](const void * d, size_t n) { const uint8_t * s = (const uint8_t *)d; want.insert(want.end(), s, s + n); };
+    const uint64_t magic = 0x4b56464c41534831ULL;
+    put(&magic, 8);
+    const size_t seg = (size_t)kChunk * hs.k[0]->nb[1];
+    const uint32_t hdr[8] = {6, (uint32_t)kChunk, (uint32_t)kNHeadKv, (uint32_t)seg, (uint32_t)seg,
+                             (uint32_t)kChunkBytes, (uint32_t)GGML_TYPE_F16, 1u};
+    put(hdr, sizeof(hdr));
+    for (int c = 0; c < 6; c++)
+        for (int l = 0; l < kNLayer; l++) for (int kv = 0; kv < 2; kv++) for (int h = 0; h < kNHeadKv; h++) {
+            ggml_tensor * x = kv == 0 ? hs.k[l] : hs.v[l];
+            std::vector<uint8_t> b(seg);
+            ggml_backend_tensor_get(x, b.data(), (size_t)c * kChunk * x->nb[1] + (size_t)h * x->nb[2], seg);
+            put(b.data(), seg);
+        }
+    const float ninf = -std::numeric_limits<float>::infinity();
+    for (int c = 0; c < 6; c++) {
+        const uint8_t flag[4] = {1, 0, 0, 0};
+        put(flag, 4);
+        put(&ninf, 4);
+    }
+    const std::vector<uint8_t> got = p.serialize();
+    CHECK(got.size() == want.size());
+    CHECK(got == want);
+}
+
+TEST_CASE(KvflashPagerCompactedFixture, the_target_cache_allocates_kv_bias_for_a_pool_equal_to_max_ctx) {
+    CHECK(target_cache_wants_kv_bias(true, 8192, 131072, false, false, false));
+    CHECK(target_cache_wants_kv_bias(true, 8192, 8192, false, false, false));     // equal: was dropped
+    CHECK(!target_cache_wants_kv_bias(false, 8192, 8192, false, false, false));   // kvflash off
+    CHECK(!target_cache_wants_kv_bias(true, 0, 8192, false, false, false));
+    CHECK(!target_cache_wants_kv_bias(true, 16384, 8192, false, false, false));   // pool beyond the cache
+    CHECK(!target_cache_wants_kv_bias(true, 8192, 8192, true, false, false));
+    CHECK(!target_cache_wants_kv_bias(true, 8192, 8192, false, true, false));
+    CHECK(!target_cache_wants_kv_bias(true, 8192, 8192, false, false, true));
+}
+
+TEST_CASE(KvflashPagerCompactedFixture, each_attention_layer_takes_its_own_kv_bias_only_when_it_is_on) {
+    constexpr int kLayers = 3;
+    ggml_init_params ip{};
+    ip.mem_size = 64 * ggml_tensor_overhead() + ggml_graph_overhead_custom(64, false) + 65536;
+    ip.no_alloc = true;
+    ggml_context * ctx = ggml_init(ip);
+    REQUIRE(ctx != nullptr);
+
+    std::vector<ggml_tensor *> K, V, B;
+    for (int l = 0; l < kLayers; l++) {
+        K.push_back(ggml_new_tensor_3d(ctx, GGML_TYPE_F16, kHeadDim, kPool, kNHeadKv));
+        V.push_back(ggml_new_tensor_3d(ctx, GGML_TYPE_F16, kHeadDim, kPool, kNHeadKv));
+        B.push_back(ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kPool, kNHeadKv));
+    }
+    ggml_tensor * q = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, kHeadDim, 1, 4, 1);
+
+    // swap_first_two models the bug where layer 0 reads layer 1's bias.
+    auto build = [&](bool on, bool swap_first_two) {
+        ggml_cgraph * gf = ggml_new_graph_custom(ctx, 64, false);
+        for (int l = 0; l < kLayers; l++) {
+            ggml_tensor * kv = ggml_view_3d(ctx, K[l], kHeadDim, kPool, kNHeadKv, K[l]->nb[1], K[l]->nb[2], 0);
+            ggml_tensor * vv = ggml_view_3d(ctx, V[l], kHeadDim, kPool, kNHeadKv, V[l]->nb[1], V[l]->nb[2], 0);
+            ggml_tensor * a = ggml_flash_attn_ext(ctx, q, kv, vv, nullptr, 0.5f, 0.0f, 0.0f);
+            const int src = swap_first_two && l < 2 ? 1 - l : l;
+            if (on) ggml_flash_attn_ext_add_kv_bias(a, B[src]);
+            ggml_build_forward_expand(gf, a);
+        }
+        return gf;
+    };
+
+    int n_fa = 0;
+    CHECK(kv_bias_attachment_errors(build(true, false), K, B, true, &n_fa) == 0);
+    CHECK(n_fa == kLayers);
+    CHECK(kv_bias_attachment_errors(build(false, false), K, B, false, &n_fa) == 0);
+    CHECK(n_fa == kLayers);
+    CHECK(kv_bias_attachment_errors(build(false, false), K, B, true) == kLayers);   // flag on, nothing attached
+    CHECK(kv_bias_attachment_errors(build(true, false), K, B, false) == kLayers);   // flag off, bias attached
+    CHECK(kv_bias_attachment_errors(build(true, true), K, B, true) == 2);           // layers 0 and 1 cross-wired
+    ggml_free(ctx);
 }
