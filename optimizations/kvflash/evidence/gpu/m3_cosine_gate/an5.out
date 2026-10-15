@@ -1,0 +1,4 @@
+K per kv head cosine [0.9977 0.9968 0.997  0.9965] norm ratio [1.0002 0.9986 0.9999 1.0005]
+V per kv head cosine [0.9894 0.9912 0.9927 0.9975] norm ratio [0.9946 0.9956 0.9947 0.9961]
+best-match cosine over 15360 rows, default KV (Q4_0, FWHT-rotated Q): min 0.1422 median 0.2289 max 0.3682
+best-match cosine over 15360 rows, LUCE_KV_F16=1: min 0.9625 median 0.9981 max 0.9998

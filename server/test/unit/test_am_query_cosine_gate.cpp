@@ -226,6 +226,7 @@ struct GateBackend : Qwen35Backend {
     std::vector<int> sealed;
     std::vector<uint16_t> plane;  // [layer][head][token][dim] F16, fa layers in order
     TargetWeights & weights() { return target_weights(); }
+    TargetCache & cache() { return target_cache(); }
 protected:
     void kvflash_am_seal_block(int block, int slot) override {
         sealed.push_back(block);
@@ -271,6 +272,8 @@ TEST_CASE(AmGateFixture, q4km_queries_match_the_bf16_dump_of_trajectory_1_block)
 
     const luce_test::ScopedEnvVar cap("LUCE_KVFLASH_AM_CAPTURE", "1");
     const luce_test::ScopedEnvVar nokvf("LUCE_KVFLASH", nullptr);
+    const char * kv_dump = std::getenv("LUCE_AM_DUMP_KV");  // diagnosis aid: K and V rows of the block at the first full-attention layer
+    const luce_test::ScopedEnvVar kvf16("LUCE_KV_F16", kv_dump ? "1" : std::getenv("LUCE_KV_F16"));
     Qwen35Config cfg;
     cfg.target_path = gguf;
     cfg.device.gpu = 0;
@@ -299,6 +302,21 @@ TEST_CASE(AmGateFixture, q4km_queries_match_the_bf16_dump_of_trajectory_1_block)
     GenerateRequest req; req.prompt = prefix; req.n_gen = 1;
     DaemonIO io;
     (void)be.generate_impl(req, io);
+    if (kv_dump) {
+        TargetCache & c = be.cache();
+        for (int which = 0; which < 2; which++) {
+            ggml_tensor * t = which ? c.attn_v[0] : c.attn_k[0];
+            REQUIRE(t->type == GGML_TYPE_F16);
+            std::vector<uint16_t> out;  // [kv head][token][dim]
+            for (int h = 0; h < (int)t->ne[2]; h++) {
+                std::vector<uint16_t> rows((size_t)D * T);
+                ggml_backend_tensor_get(t, rows.data(), (size_t)h * t->nb[2] + (size_t)block * T * t->nb[1], rows.size() * 2);
+                out.insert(out.end(), rows.begin(), rows.end());
+            }
+            std::ofstream o(std::string(kv_dump) + (which ? "_v.f16" : "_k.f16"), std::ios::binary);
+            o.write((const char *)out.data(), (std::streamsize)(out.size() * 2));
+        }
+    }
     REQUIRE(!be.sealed.empty());
     CHECK(be.sealed.back() == block);
     REQUIRE(!be.plane.empty());
