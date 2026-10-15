@@ -633,6 +633,7 @@ add_library(luce_common STATIC
     src/deepseek4/deepseek4_dspark_spec.cpp
     src/deepseek4/deepseek4_cluster.cpp
     src/deepseek4/deepseek4_vision.cpp
+    src/common/am_fit_solve.cpp
     src/common/gpu_page_pool.cpp
     src/common/host_stream_flag.cpp
     src/common/vision/image_decode.cpp
@@ -1230,6 +1231,17 @@ if(LUCE_TESTS)
             $<IF:$<STREQUAL:${LUCE_GPU_BACKEND},hip>,GGML_USE_HIP,GGML_USE_CUDA>)
         target_link_libraries(test_fattn_kv_bias PRIVATE ggml-cpu)
         list(APPEND _raw_unit_test_targets test_fattn_kv_bias)
+    endif()
+
+    # AM fit solver (M5): host fp64 solvers plus backend Gram accumulation, CPU and GPU.
+    if(LUCE_GPU_BACKEND STREQUAL "cuda" OR LUCE_GPU_BACKEND STREQUAL "hip")
+        luce_add_ggml_gpu_executable(test_am_fit_solve test/unit/test_am_fit_solve.cpp)
+        target_sources(test_am_fit_solve PRIVATE src/common/am_fit_solve.cpp)
+        target_include_directories(test_am_fit_solve PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_compile_definitions(test_am_fit_solve PRIVATE
+            $<IF:$<STREQUAL:${LUCE_GPU_BACKEND},hip>,GGML_USE_HIP,GGML_USE_CUDA>)
+        target_link_libraries(test_am_fit_solve PRIVATE ggml-cpu)
+        list(APPEND _raw_unit_test_targets test_am_fit_solve)
     endif()
 
     if(LUCE_ENABLE_MIXED_CUDA_HIP)
