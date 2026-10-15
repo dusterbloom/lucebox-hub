@@ -47,6 +47,7 @@ struct Shape { const char * name; int D, n_head, n_head_kv, n_kv; };
 const Shape SHAPES[] = {
     {"D256 h24/4 kv1024", 256, 24, 4, 1024},  // Qwen3.8-27B attention
     {"D64 h4/2 kv576",     64,  4, 2,  576},
+    {"D72 h4/2 kv576",     72,  4, 2,  576},  // tile kernel on sm_86 (F16 only)
 };
 const ggml_type KV_TYPES[] = { GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_Q4_0, GGML_TYPE_TQ3_0 };
 const int N_QS[] = { 1, 16, 512 };
@@ -285,11 +286,13 @@ int main(int argc, char ** argv) {
 #endif
     std::vector<Case> cases;
     for (const Shape & s : SHAPES)
-        for (ggml_type ty : KV_TYPES)
+        for (ggml_type ty : KV_TYPES) {
+            if (s.D % ggml_blck_size(ty) != 0) continue;  // e.g. D72 only fits F16
             for (int nq : N_QS)
                 for (int mask = 0; mask < 2; ++mask)
                     for (int sinks = 0; sinks < 2; ++sinks)
                         cases.push_back({ s, ty, nq, (bool) mask, (bool) sinks, 0.0f });
+        }
     // softcap: the bias is added after the cap (D64 softcap has no mma kernel)
     for (ggml_type ty : { GGML_TYPE_F16, GGML_TYPE_Q8_0 })
         for (int nq : N_QS) cases.push_back({ SHAPES[0], ty, nq, true, false, 20.0f });

@@ -4813,10 +4813,10 @@ bool ggml_cuda_flash_attn_ext_supported(int device, const ggml_tensor * dst) {
         return false;
 #endif // defined(GGML_USE_HIP)
     }
+    const best_fattn_kernel kernel = ggml_cuda_get_best_fattn_kernel(device, dst);
     // kv_bias (src[9]) is only honoured by the kernels that read it.
-    if (dst->src[9] != nullptr &&
-        ggml_cuda_get_best_fattn_kernel(device, dst) != BEST_FATTN_KERNEL_VEC) {
+    if (dst->src[9] != nullptr && kernel != BEST_FATTN_KERNEL_VEC && kernel != BEST_FATTN_KERNEL_TILE) {
         return false;
     }
-    return ggml_cuda_get_best_fattn_kernel(device, dst) != BEST_FATTN_KERNEL_NONE;
+    return kernel != BEST_FATTN_KERNEL_NONE;
 }
