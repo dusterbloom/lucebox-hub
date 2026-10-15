@@ -53,7 +53,8 @@ bool score_keys(ggml_backend_t backend, const ScoreDims & dims, const ggml_fp16_
 
 // Tensor form, no host round trip: q and k already live in buffers of
 // `backend` (for M3, a plane view of cache.q_blk and the block's K).
-//   q: F16 [head_dim, n_queries, n_head]; nb[0] = 2, any nb[1], nb[2]
+//   q: F16 or F32 [head_dim, n_queries, n_head]; contiguous rows, any nb[1], nb[2]
+//      (F32 skips the cast; the engine feeds F16, the R3 gate also runs F32)
 //   k: F16 or F32 [head_dim, n_keys, n_kv_head]; nb[0] = type size, any nb[1], nb[2]
 // Dimensions come from the tensors. Neither tensor is modified.
 bool score_keys(ggml_backend_t backend, ggml_tensor * q, ggml_tensor * k, int chunk_rows,

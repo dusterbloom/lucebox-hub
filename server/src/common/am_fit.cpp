@@ -32,7 +32,7 @@ void build_chunk(ggml_context * ctx, ggml_cgraph * gf, const ScoreDims & D, ggml
     const int G = D.n_head / D.n_kv_head;
     ggml_tensor * qc = ggml_view_3d(ctx, q16, D.head_dim, nq, D.n_head, q16->nb[1], q16->nb[2],
                                     (size_t) q0 * q16->nb[1]);
-    ggml_tensor * qf = ggml_cast(ctx, qc, GGML_TYPE_F32);                          // [d, nq, n_head]
+    ggml_tensor * qf = q16->type == GGML_TYPE_F32 ? qc : ggml_cast(ctx, qc, GGML_TYPE_F32);  // [d, nq, n_head]
     ggml_tensor * s  = ggml_mul_mat(ctx, kt, qf);                                  // [T, nq, n_head]
     // The default precision lets CUDA round the logits to F16 (error ~1e-3 in
     // the scores); the softmax needs fp32 logits.
@@ -53,7 +53,8 @@ bool score_keys(ggml_backend_t backend, ggml_tensor * q, ggml_tensor * k, int ch
                 std::vector<float> & scores, std::string * err) {
     auto fail = [&](const char * msg) { if (err) *err = msg; return false; };
     if (!backend || !q || !k) return fail("null argument");
-    if (q->type != GGML_TYPE_F16 || q->nb[0] != sizeof(ggml_fp16_t) || q->ne[3] != 1) return fail("q must be a 3D F16 tensor");
+    if ((q->type != GGML_TYPE_F16 && q->type != GGML_TYPE_F32) || q->nb[0] != ggml_type_size(q->type) || q->ne[3] != 1)
+        return fail("q must be a 3D F16 or F32 tensor");
     if (k->type != GGML_TYPE_F16 && k->type != GGML_TYPE_F32) return fail("k type must be F16 or F32");
     if (k->nb[0] != ggml_type_size(k->type) || k->ne[3] != 1) return fail("k must be a 3D tensor with contiguous rows");
     if (!buffer_of(q) || !buffer_of(k)) return fail("q and k must live in a backend buffer");
