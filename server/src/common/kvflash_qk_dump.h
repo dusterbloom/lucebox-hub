@@ -25,6 +25,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace luce::common {
@@ -81,11 +82,23 @@ inline void kvflash_qk_fold_max(const std::vector<const float *> & pooled_keys,
                                 const KvFlashQkDims & d, std::vector<float> & running) {
     const size_t qsize = (size_t)d.n_layers * d.n_q_heads * d.head_dim;
     if (running.size() < pooled_keys.size()) running.resize(pooled_keys.size(), -2.0f);
-    std::vector<float> tmp;
-    for (int t = 0; t < n_q; t++) {
-        kvflash_qk_chunk_scores(pooled_keys, queries + (size_t)t * qsize, d, tmp);
-        for (size_t c = 0; c < tmp.size(); c++) running[c] = std::max(running[c], tmp[c]);
-    }
+    if (n_q <= 0) return;
+    // Queries are independent and the fold is a max, so threads give the same result.
+    const int nt = std::max(1, std::min<int>({n_q, 12, (int)std::thread::hardware_concurrency()}));
+    std::vector<std::vector<float>> part((size_t)nt, running);
+    auto work = [&](int w) {
+        std::vector<float> tmp;
+        for (int t = w; t < n_q; t += nt) {
+            kvflash_qk_chunk_scores(pooled_keys, queries + (size_t)t * qsize, d, tmp);
+            for (size_t c = 0; c < tmp.size(); c++) part[(size_t)w][c] = std::max(part[(size_t)w][c], tmp[c]);
+        }
+    };
+    std::vector<std::thread> th;
+    for (int w = 1; w < nt; w++) th.emplace_back(work, w);
+    work(0);
+    for (auto & x : th) x.join();
+    for (const auto & p : part)
+        for (size_t c = 0; c < running.size(); c++) running[c] = std::max(running[c], p[c]);
 }
 
 // scores_last: scores of the last prefill token's query over the sealed chunks.

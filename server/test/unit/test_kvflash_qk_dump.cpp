@@ -157,6 +157,21 @@ TEST_CASE(KvflashQkDumpFixture, kvflash_qk_dump_suite) {
         CHECK(run[0] == std::max(a[0], b[0]));
     }
 
+    // Many queries (threaded fold) equal the sequential max.
+    {
+        const int nq = 37;
+        std::vector<float> qs((size_t)nq * qsize);
+        for (float & x : qs) x = rnd();
+        std::vector<float> seq, par, t1;
+        for (int t = 0; t < nq; t++) {
+            kvflash_qk_chunk_scores(pk, qs.data() + (size_t)t * qsize, d, t1);
+            if (t == 0) seq = t1;
+            else for (size_t c = 0; c < t1.size(); c++) seq[c] = std::max(seq[c], t1[c]);
+        }
+        kvflash_qk_fold_max(pk, qs.data(), nq, d, par);
+        CHECK(par == seq);
+    }
+
     // Prompt hash: stable, order-sensitive.
     const std::vector<int32_t> t1{1, 2, 3}, t2{3, 2, 1};
     CHECK(kvflash_qk_prompt_hash(t1) == kvflash_qk_prompt_hash(t1));
