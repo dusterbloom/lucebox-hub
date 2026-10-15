@@ -1,0 +1,14 @@
+[
+ {
+  "prompt": 0,
+  "text": "Record 750: alpha-23 bravo-82. Record 751: alpha-30 bravo-6. Record 752: alpha-37 bravo-19. Record 753: alpha-44 bravo-32. Record 754: alpha-51 bravo-45. Record 755: alpha-58 bravo-58. Record 756: alpha-65 bravo-71. Record 757: alpha-72 bravo-84. Record 758: alpha-79 bravo-8. Record 759: alpha-86 bravo-21. Record 760: alpha-93 bravo-34. Record 761: alpha-3 bravo-47. Record 762: alpha-10 bravo-60. Record 763: alpha-17 bravo-73. Record 764: alpha-24 bravo-17. Record 765: alpha-31 bravo-30. Record 766: alpha-38 bravo-43. Record 76",
+  "prompt_tokens": 11129,
+  "ct": 256,
+  "cache": [
+   "[server] chat CACHE chatcmpl_0000000000000001 restore=false slot=-1 prefix_len=0 effective_prompt=11129 pflash=false disk_policy=full disk_hit=false snap_slot=1 snap_pos=11123 full_snap_slot=-1 full_snap_pos=0"
+  ],
+  "done": [
+   "[server] chat DONE chatcmpl_0000000000000001 ok=true in=11129 effective_in=11129 out=256 13.7s 18.7 tok/s finish=length restore=false slot=-1 prefix_len=0 prefill=7.9s decode=5.8s(44.5tok/s) error=- detail=-"
+  ]
+ }
+]

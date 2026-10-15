@@ -1,0 +1,248 @@
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp: In function ‘void {anonymous}::build(Harness&, luce::common::KvFlashPager&)’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:112:12: error: ‘class luce::common::KvFlashPager’ has no member named ‘mark_compacted’
+  112 |     must(p.mark_compacted(2, 3, make_beta()));
+      |            ^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp: In function ‘std::vector<float> {anonymous}::bias_of(const luce::common::KvFlashPager&, int)’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:117:7: error: ‘const class luce::common::KvFlashPager’ has no member named ‘fill_kv_bias’
+  117 |     p.fill_kv_bias(layer, b.data());
+      |       ^~~~~~~~~~~~
+In file included from /home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:6:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp: In member function ‘void {anonymous}::TestCase_fill_kv_bias_puts_beta_in_compacted_columns_and_0_in_exact_ones::Run()’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:137:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘any_compacted’
+  137 |     CHECK(p.any_compacted());
+      |             ^~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:138:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘is_compacted’
+  138 |     CHECK(p.is_compacted(2));
+      |             ^~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp: In member function ‘void {anonymous}::TestCase_logical_positions_count_chunks_not_rows::Run()’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:155:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘compacted_span’
+  155 |     CHECK(p.compacted_span(2) == 3);
+      |             ^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:156:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘is_covered’
+  156 |     CHECK(p.is_covered(3));
+      |             ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:157:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘is_covered’
+  157 |     CHECK(p.is_covered(4));
+      |             ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:158:14: error: ‘class luce::common::KvFlashPager’ has no member named ‘is_covered’
+  158 |     CHECK(!p.is_covered(2));
+      |              ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:159:14: error: ‘class luce::common::KvFlashPager’ has no member named ‘is_covered’
+  159 |     CHECK(!p.is_covered(5));
+      |              ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp: In member function ‘void {anonymous}::TestCase_mark_compacted_rejects_bad_geometry_and_changes_nothing::Run()’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:197:14: error: ‘class luce::common::KvFlashPager’ has no member named ‘mark_compacted’
+  197 |     CHECK(!p.mark_compacted(2, 0, beta));                      // empty span
+      |              ^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:198:14: error: ‘class luce::common::KvFlashPager’ has no member named ‘mark_compacted’
+  198 |     CHECK(!p.mark_compacted(4, 3, beta));                      // runs past the materialized chunks
+      |              ^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:199:14: error: ‘class luce::common::KvFlashPager’ has no member named ‘mark_compacted’
+  199 |     CHECK(!p.mark_compacted(2, 1, std::vector<float>(10)));    // wrong beta size
+      |              ^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:201:14: error: ‘class luce::common::KvFlashPager’ has no member named ‘mark_compacted’
+  201 |     CHECK(!p.mark_compacted(3, 1, beta));                      // the head chunk must be resident
+      |              ^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:203:12: error: ‘class luce::common::KvFlashPager’ has no member named ‘mark_compacted’
+  203 |     must(p.mark_compacted(2, 2, beta));
+      |            ^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:206:14: error: ‘class luce::common::KvFlashPager’ has no member named ‘mark_compacted’
+  206 |     CHECK(!p.mark_compacted(1, 2, beta));                      // overlaps the compacted block
+      |              ^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:207:14: error: ‘class luce::common::KvFlashPager’ has no member named ‘mark_compacted’
+  207 |     CHECK(!p.mark_compacted(3, 1, beta));                      // inside it
+      |              ^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp: In member function ‘void {anonymous}::TestCase_truncate_inside_a_compacted_chunk_drops_it_and_returns_its_start::Run()’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:215:43: error: invalid operands of types ‘void’ and ‘int’ to binary ‘operator==’
+  215 |         CHECK(p.truncate(3 * kChunk + 10) == 2 * kChunk);
+      |               ~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^~ ~~~~~~~~~~
+      |                         |                      |
+      |                         void                   int
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:217:18: error: ‘class luce::common::KvFlashPager’ has no member named ‘any_compacted’
+  217 |         CHECK(!p.any_compacted());
+      |                  ^~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:224:38: error: invalid operands of types ‘void’ and ‘int’ to binary ‘operator==’
+  224 |         CHECK(p.truncate(2 * kChunk) == 2 * kChunk);
+      |               ~~~~~~~~~~~~~~~~~~~~~~ ^~ ~~~~~~~~~~
+      |                         |                 |
+      |                         void              int
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:226:18: error: ‘class luce::common::KvFlashPager’ has no member named ‘any_compacted’
+  226 |         CHECK(!p.any_compacted());
+      |                  ^~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:230:38: error: invalid operands of types ‘void’ and ‘int’ to binary ‘operator==’
+  230 |         CHECK(p.truncate(5 * kChunk) == 5 * kChunk);
+      |               ~~~~~~~~~~~~~~~~~~~~~~ ^~ ~~~~~~~~~~
+      |                         |                 |
+      |                         void              int
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:232:17: error: ‘class luce::common::KvFlashPager’ has no member named ‘is_compacted’
+  232 |         CHECK(p.is_compacted(2));
+      |                 ^~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:237:42: error: invalid operands of types ‘void’ and ‘int’ to binary ‘operator==’
+  237 |         CHECK(p.truncate(5 * kChunk + 7) == 5 * kChunk + 7);
+      |               ~~~~~~~~~~~~~~~~~~~~~~~~~~ ^~ ~~~~~~~~~~~~~~
+      |                         |                              |
+      |                         void                           int
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:238:17: error: ‘class luce::common::KvFlashPager’ has no member named ‘is_compacted’
+  238 |         CHECK(p.is_compacted(2));
+      |                 ^~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:239:39: error: invalid operands of types ‘void’ and ‘int’ to binary ‘operator==’
+  239 |         CHECK(p.truncate(10 * kChunk) == 10 * kChunk);
+      |               ~~~~~~~~~~~~~~~~~~~~~~~ ^~ ~~~~~~~~~~~
+      |                         |                   |
+      |                         void                int
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:240:30: error: invalid operands of types ‘void’ and ‘int’ to binary ‘operator==’
+  240 |         CHECK(p.truncate(-5) == 0);
+      |               ~~~~~~~~~~~~~~ ^~ ~
+      |                         |       |
+      |                         void    int
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:242:18: error: ‘class luce::common::KvFlashPager’ has no member named ‘any_compacted’
+  242 |         CHECK(!p.any_compacted());
+      |                  ^~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp: In member function ‘void {anonymous}::TestCase_page_out_and_page_in_keep_beta_and_the_flag::Run()’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:252:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘is_compacted’
+  252 |     CHECK(p.is_compacted(2));
+      |             ^~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:253:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘compacted_span’
+  253 |     CHECK(p.compacted_span(2) == 3);
+      |             ^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:254:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘is_covered’
+  254 |     CHECK(p.is_covered(3));
+      |             ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:264:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘is_compacted’
+  264 |     CHECK(p.is_compacted(2));
+      |             ^~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp: In member function ‘void {anonymous}::TestCase_serialize_then_deserialize_keeps_flags_and_beta::Run()’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:281:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘is_compacted’
+  281 |     CHECK(q.is_compacted(2));
+      |             ^~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:282:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘compacted_span’
+  282 |     CHECK(q.compacted_span(2) == 3);
+      |             ^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:283:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘is_covered’
+  283 |     CHECK(q.is_covered(3));
+      |             ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:284:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘is_covered’
+  284 |     CHECK(q.is_covered(4));
+      |             ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:300:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘is_compacted’
+  300 |     CHECK(r.is_compacted(2));
+      |             ^~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:314:14: error: ‘class luce::common::KvFlashPager’ has no member named ‘any_compacted’
+  314 |     CHECK(!s.any_compacted());
+      |              ^~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp: In member function ‘void {anonymous}::TestCase_a_bad_compaction_trailer_is_rejected_without_touching_state::Run()’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:338:14: error: ‘class luce::common::KvFlashPager’ has no member named ‘any_compacted’
+  338 |     CHECK(!q.any_compacted());
+      |              ^~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp: In member function ‘void {anonymous}::TestCase_with_no_compacted_chunk_the_mask_and_the_blob_are_unchanged::Run()’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:351:14: error: ‘class luce::common::KvFlashPager’ has no member named ‘any_compacted’
+  351 |     CHECK(!p.any_compacted());                    // so the engine never attaches kv_bias
+      |              ^~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~

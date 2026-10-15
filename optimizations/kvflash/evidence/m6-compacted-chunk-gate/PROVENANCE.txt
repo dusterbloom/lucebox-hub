@@ -1,0 +1,46 @@
+flock command: flock /mnt/kimi-k3/build/3090.lock /mnt/kimi-k3/build/m6c-ab/ab_all.sh
+start: 2026-10-15T23:04:55+02:00
+workload: ab_m6.py, 5 distinct ~19K-token prompts per server run (salts 11..15), max_tokens 256, temperature 0, Qwen3.8-27B-UD-Q4_K_M, --max-ctx 131072, --kvflash 8192, LUCE_KVFLASH_POLICY=lru, --no-kv-cache, default KV type
+arms: main = 6f2b1795 (wt-main-6f2b); m6c = branch kvflash/2.0b-m6-compacted-chunk 6fe4893f, nothing compacted; neutral = same binary, LUCE_KVFLASH_TEST_COMPACT=20:0 (chunk 20 behind the append head marked compacted, K/V untouched, beta 0)
+main binary: /mnt/kimi-k3/build/main-6f2b-ab/luce_server md5 117e87665bc2d60cb715a35d7f2c4076 runpath ggml dir /mnt/kimi-k3/build/main-6f2b-cuda/deps/llama.cpp/ggml/src
+56e714da50d4679c9117cb76af1b032f  /mnt/kimi-k3/build/main-6f2b-cuda/deps/llama.cpp/ggml/src/libggml-base.so.0.9.11
+92cfc356bf351e9cc152f51b13686d58  /mnt/kimi-k3/build/main-6f2b-cuda/deps/llama.cpp/ggml/src/libggml-cpu.so.0.9.11
+27bce702f56cc59e38021a2d0de25b79  /mnt/kimi-k3/build/main-6f2b-cuda/deps/llama.cpp/ggml/src/libggml.so.0.9.11
+cb05afca10c6b69faa0ff72a5b48f608  /mnt/kimi-k3/build/main-6f2b-cuda/deps/llama.cpp/ggml/src/ggml-cuda/libggml-cuda.so.0.9.11
+m6c binary: /mnt/kimi-k3/build/m6c-cuda/luce_server md5 bd724c8ad41e07904e1ffdbfa8ca1124 runpath ggml dir /mnt/kimi-k3/build/m6c-cuda/deps/llama.cpp/ggml/src
+fea55b8dfd9380b27cf50a4e6dab3a5d  /mnt/kimi-k3/build/m6c-cuda/deps/llama.cpp/ggml/src/libggml-base.so.0.9.11
+201a6582258547340a6c7185ff88c659  /mnt/kimi-k3/build/m6c-cuda/deps/llama.cpp/ggml/src/libggml-cpu.so.0.9.11
+55dea5c567863fbd1938077f635e2d2c  /mnt/kimi-k3/build/m6c-cuda/deps/llama.cpp/ggml/src/libggml.so.0.9.11
+035adfd927d54d2884f72a343296a9e9  /mnt/kimi-k3/build/m6c-cuda/deps/llama.cpp/ggml/src/ggml-cuda/libggml-cuda.so.0.9.11
+drop_caches/compact_memory: sudo needs a password in this session, so NOT done; page cache was warm for all arms (model file re-read each run)
+run main_1: bin /mnt/kimi-k3/build/main-6f2b-ab/luce_server | 2026-10-15T23:04:56+02:00 | compute apps before start: []
+exit=0
+run m6c_1: bin /mnt/kimi-k3/build/m6c-cuda/luce_server | 2026-10-15T23:06:55+02:00 | compute apps before start: []
+exit=0
+run neutral_1: bin /mnt/kimi-k3/build/m6c-cuda/luce_server | 2026-10-15T23:08:51+02:00 | compute apps before start: []
+exit=0
+run main_2: bin /mnt/kimi-k3/build/main-6f2b-ab/luce_server | 2026-10-15T23:10:50+02:00 | compute apps before start: []
+exit=0
+run m6c_2: bin /mnt/kimi-k3/build/m6c-cuda/luce_server | 2026-10-15T23:12:48+02:00 | compute apps before start: []
+exit=0
+run neutral_2: bin /mnt/kimi-k3/build/m6c-cuda/luce_server | 2026-10-15T23:14:46+02:00 | compute apps before start: []
+exit=0
+run main_3: bin /mnt/kimi-k3/build/main-6f2b-ab/luce_server | 2026-10-15T23:16:44+02:00 | compute apps before start: []
+exit=0
+run m6c_3: bin /mnt/kimi-k3/build/m6c-cuda/luce_server | 2026-10-15T23:18:40+02:00 | compute apps before start: []
+exit=0
+run neutral_3: bin /mnt/kimi-k3/build/m6c-cuda/luce_server | 2026-10-15T23:20:36+02:00 | compute apps before start: []
+exit=0
+run main_4: bin /mnt/kimi-k3/build/main-6f2b-ab/luce_server | 2026-10-15T23:22:34+02:00 | compute apps before start: []
+exit=0
+run m6c_4: bin /mnt/kimi-k3/build/m6c-cuda/luce_server | 2026-10-15T23:24:30+02:00 | compute apps before start: []
+exit=0
+run neutral_4: bin /mnt/kimi-k3/build/m6c-cuda/luce_server | 2026-10-15T23:26:25+02:00 | compute apps before start: []
+exit=0
+run main_5: bin /mnt/kimi-k3/build/main-6f2b-ab/luce_server | 2026-10-15T23:28:25+02:00 | compute apps before start: []
+exit=0
+run m6c_5: bin /mnt/kimi-k3/build/m6c-cuda/luce_server | 2026-10-15T23:30:24+02:00 | compute apps before start: []
+exit=0
+run neutral_5: bin /mnt/kimi-k3/build/m6c-cuda/luce_server | 2026-10-15T23:32:19+02:00 | compute apps before start: []
+exit=0
+end: 2026-10-15T23:34:21+02:00

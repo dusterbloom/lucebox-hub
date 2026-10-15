@@ -1,0 +1,7 @@
+Running 26 test cases...
+[kvflash] pin_range [64,192) refused: sink=1 tail=4 pinned=0 new=2 pool_blocks=8 would deadlock eviction
+[kvflash] pin_range [128,192) refused: sink=1 tail=4 pinned=1 new=1 pool_blocks=8 would deadlock eviction
+Complete.
+    Passed:  26
+    Failed:  0
+    Skipped: 0
