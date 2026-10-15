@@ -346,7 +346,7 @@ def _collect(R, cs, ks):
     return out, comp, exact
 
 
-def test_e3_swapping_the_only_block_is_the_identity_and_swapping_nothing_is_the_shipping_state(setup, monkeypatch):
+def test_e3_swapping_the_only_block_restores_its_exact_kv_and_keeps_the_shipping_tail_and_swapping_nothing_is_the_shipping_state(setup, monkeypatch):
     import a1_e
     S, segs = setup
     _blocks24(monkeypatch)
@@ -369,7 +369,11 @@ def test_e3_swapping_the_only_block_is_the_identity_and_swapping_nothing_is_the_
                 assert torch.equal(g[0], ship[i][0])                                            # DeltaNet state as in the shipping arm
             else:
                 assert g[0].shape == r[0].shape
-                assert torch.allclose(g[0], r[0], atol=1e-4) and torch.allclose(g[2], r[2], atol=1e-4), i
+                b = r[0].shape[2] - tail                                                            # the swapped block is the exact KV
+                assert torch.allclose(g[0][:, :, :b], r[0][:, :, :b], atol=1e-4) and torch.allclose(g[2][:, :, :b], r[2][:, :, :b], atol=1e-4), i
+                # the open tail stays as in the shipping arm (PREREG E3): past the first full-attention layer its KV was computed
+                # under the compacted block, so it is not FULL-CHK's tail
+                assert torch.equal(g[0][:, :, b:], ship[i][0][:, :, -tail:]) and torch.equal(g[2][:, :, b:], ship[i][2][:, :, -tail:]), i
         assert swapped[sess.layer_types.index("full_attention")][0].shape[2] == 30
 
 
