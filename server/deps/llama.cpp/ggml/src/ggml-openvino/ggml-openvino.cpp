@@ -818,6 +818,9 @@ static bool is_op_unsupported_case(const ggml_tensor * op) {
         break;
     }
     case GGML_OP_FLASH_ATTN_EXT: {
+        if (ggml_flash_attn_ext_get_kv_bias(op)) {
+            return true;  // kv_bias unsupported
+        }
         if (op->src[4] != nullptr) {
             // GGML_LOG_WARN("OpenVINO backend does not support FLASH_ATTN_EXT with sinks\n");
             return true;
