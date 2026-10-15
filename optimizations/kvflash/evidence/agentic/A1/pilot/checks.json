@@ -1,0 +1,9 @@
+{
+ "gate3": {
+  "trajectories": 6,
+  "correct": 118,
+  "attempted": 204,
+  "yield": 0.5784313725490197,
+  "in_range": true
+ }
+}
