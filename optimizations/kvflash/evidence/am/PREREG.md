@@ -364,3 +364,12 @@ What does not change the rule: the secondary contrast cannot rescue or fail the 
 2. A new driver `lucebox/r2b/r2b_run.py`, modelled on `lucebox/r1e/r1e_run.py` (same model path, same ROCm environment, same resume behaviour), calling the existing `r2_core.run_r2` with the split label `held` or `sel` in the row file names, probes 20-49 then 0-19, ks 1 and 8, arms `FULL-CHK,F-BLK-UNI`, and an `--n_questions` option for the smoke. The Modal entry `r2.py::pilot` is not used.
 3. A new report `lucebox/r2b/r2b_report.py`. `r2_report.py` reads only `__sel.jsonl` names and the R1b `orig`/`F` k = 0 rows, so it cannot be reused as is. The new one reads R2b rows for k = 1 and 8, takes k = 0 from the R1(e) rows (ORIG as FULL, F-UNI-LOCAL as the shipping arm) for the matching split, and computes every contrast above with `r1b_stats.py` for held-out, selection and pooled, plus the repeatability count.
 4. Nothing else: no change to the compaction code, prompts, parser, scoring, budgets or patches.
+
+### R2b Amendment 1 (2026-10-15, before any R2b row): run order and stage 2
+
+Written after the drivers were committed (003bb8a2) and before the smoke or any row. Nothing in the arms, k values, articles, prompts, scoring or decision rule changes. Two things change.
+
+1. **Run order.** The primary contrast uses only the shipping arm; the k = 0 reference rows already exist. So the shipping arm runs first, over all 30 held-out articles at k = 1 and 8. That takes about 30 x 240 s = 2.0 h, since R1(e) saw no long answers in this arm. Then the repeatability check runs, then FULL over the same 30 articles, which takes about 3.2 h. The primary verdict is computed as soon as the 30 shipping rows exist. FULL is not part of the primary, so this order cannot change the verdict. The secondary contrast G is reported once FULL completes.
+2. **Stage 2 only on INCONCLUSIVE.** The decision rule uses the 20 selection articles only when stage 1 is INCONCLUSIVE ("stage 2 cannot turn a held-out PASS or FAIL into anything else"). So stage 2 runs only in that case, shipping arm first, then FULL. After a PASS or FAIL it is not run under this preregistration.
+
+Why: the original order interleaved both arms and ran stage 2 regardless of the verdict. That put the primary verdict about 6 h and the full run about 10 h away, though only about 2 h of it decides anything. More hours do not tighten the interval. Its width is set by the number of articles (see "Planning arithmetic"), and that number is unchanged.
