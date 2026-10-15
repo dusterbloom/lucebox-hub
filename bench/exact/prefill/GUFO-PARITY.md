@@ -2987,3 +2987,125 @@ qkv+gate +13..19, the K=6144 / shexp_dn M~2560 group +20, router +19, shared-exp
 attention q by 15; no single dense-GEMM item is a >1% lever. gufo's ssm-conv-in-epilogue (its `SsmConvTail`) saves 22 ms
 of conv on top of its stack, which only makes sense if the stack itself were free -- it is not on this kernel. Trace dirs
 deleted; the box tree and `luce_server` were restored to HEAD (`rsync -rnc` empty, rebuilt).
+
+## Norms class: attention norm sites fused (lucebox4 gfx1151, 2026-10-15) -- norm+rope one launch, gate in the qsa3 store, hc norm+gamma adjacency
+
+Target: the norms/quant/convert class (+98 ms per p4096 request in the night ledger; gufo folds its norms into GEMM
+prologues / epilogues). Ledger first, one rocprofv3 trace of HEAD a8e3a4f2 (p4096_r1, T = 4131, `kstat.py`), gufo from
+the evening ledger (`fd490446`, same protocol); per p4096 request:
+
+| norm site (kernel) | luce HEAD | gufo | delta | verdict |
+|---|---:|---:|---:|---|
+| GDN tail gated norm `gated_rms_norm_wave_kernel<4>` | 36 x 1.32 = 47.7 | GdnEpilogueKernel 36 x 1.25 = 45 (binned under GDN recurrence) | +2.7 | parity, left alone |
+| attention Q norm `rms_norm_f32<256,true>` | 12 x 1.53 = 18.4 | in the projection GEMM epilogue (~0) | +18.4 | **fuse** |
+| attention Q rope `rope_multi_heads` | 12 x 1.14 = 13.7 | same epilogue (~0) | +13.4 | **fuse** |
+| attention output gate `gated_rms_norm_f16_kernel<256,false>` | 12 x 1.54 = 18.5 | in WmmaCausalAttention's store (~5 NarrowKernel) | +13.4 | **fuse** |
+| hc norm unfused `rms_norm_f32<1024,false>` + `op_mul` (5 sites) | 5 x 1.81 + 5 x 1.47 = 16.5 | RmsNormCached 5 x 1.6 = 7.9 | +8.6 | **fuse** (RMS_NORM+MUL exists) |
+| K norm + rope (2 heads) | 2 x 0.5 + 2 x 0.5 = 2.0 | ~0 | +2 | rides on the Q kernel |
+| indexer q norm `rms_norm_f32<128,true>` | 12 x 0.12 = 1.4 | ~0 | +1.4 | rides on the Q kernel |
+| activation cvt `mmb_cvt_*_v8` | 46 x 0.43 = 19.6 | 14.5 | +5 | already v8, byte floor |
+| `cpy_scalar<half,half>` strided | 60 x 0.13 = 7.9 | 0 | +7.9 | not a norm, left |
+| GDN conv norm `gdn_conv_direct_norm_kernel` | 36 x 0.70 = 25.3 | GdnPrepKq 11 | +14 | needs the conv epilogue, left |
+
+The only cheap bit-exact group is the attention layer: Q norm + Q rope + output gate + the hc norm/gamma order,
+~62 ms of launches whose work (minus the fused stores) is ~40 ms, i.e. ~1.3% of the 3.0 s kernel sum at p4096.
+
+### What changed (three kill switches, all bit-exact)
+
+1. `rope.cu` `rope_multi_heads_norm<forward,has_ff,use_tab>`: RMS_NORM -> MUL(gamma) -> ROPE [-> PERMUTE -> CONT] in one
+   launch, one 256-thread block per token looping the heads. The reduction is `rms_norm_f32<256,true>`'s (one column per
+   thread, `tmp += x*x`, `block_reduce`), the row is staged as `(scale * x) * gamma` in LDS, the rotation is
+   `rope_multi_heads`'s exact `fmaf(x0, c, -__fmul_rn(x1, s))` from the per-forward cos/sin table. The norm input is read
+   through its own strides (the `[q | gate]` projection view), so the normalised rows are never written or re-read.
+   Matcher in `ggml_cuda_can_fuse` ({RMS_NORM, MUL, ROPE} and the 5-op form with PERMUTE+CONT): rows <= 256, gamma `[ne0]`
+   or per head `[ne0, heads]`, no freq factors, MROPE non-vision, T >= 64. `LUCE_NORM_ROPE_LEGACY=1`.
+2. `qsa.cu` `qsa3_attn_kernel<GATED>`: FLASH_ATTN_EXT (qsa3 prefill) -> GATED_RMS_NORM_F16 without gamma. The attention
+   store loads the gate float4 from the projection view and writes `gn_f2h_sat(gn_sigmoid(z) * o)` as F16 straight into
+   the gated node (helpers moved to `gated-norm.cuh`), so the F32 attention output is never written. `LUCE_QSA_GATE_LEGACY=1`.
+3. `qwen4exp_graph.cpp` hc norm: gamma applied on the 3-D norm output so the backend's RMS_NORM+MUL fusion
+   (`rms_norm_f32<1024,true>`, `scale * x * mul` = the same two roundings) matches. `LUCE_HC_NORM_MUL_LEGACY=1`.
+
+Two graph-order bugs then had to be fixed before 2 and 3 engaged in situ (the first trace after the change showed only
+the norm-rope kernel):
+
+- ggml's DFS appends a *fresh* VIEW / RESHAPE operand between a producer and its consumer: `FLASH_ATTN_EXT, VIEW(gate),
+  GATED` and `RMS_NORM, RESHAPE(gamma), MUL`. Both the backend's RMS_NORM+MUL fusion and the new gate fusion need
+  adjacent nodes -- the old `hc_mix` comment claiming the fusion had never been true in situ. Fix: `hc_mix` takes the
+  cgraph and expands the gamma view before building the norm; `build_full_attn` expands the gate view before
+  `ggml_gated_f16`.
+- With the pair adjacent, `ggml_cuda_check_fusion_memory_ranges` still refused every site (a `LUCE_QSA_GATE_DEBUG=1`
+  diagnostic kept in the graph loop prints `supported / subgraph / ranges` and the overlapping operands for unfused
+  prefill sites): the allocator frees K, V, ids and the packed K/V right after FLASH_ATTN_EXT and hands their blocks to
+  the gated output, which the fused store still reads. Fix: the gated node holds q, K, V, ids, packed K/V as extra
+  (unread) operands so they stay live through it.
+
+Tests (LUCE_TESTS, all PASS on lucebox4): `test_norm_rope_fusion` rebuilds the Q (5-op), K and per-head-gamma indexer-q
+(3-op) chains at T 1028/300/64, requires 9 `[norm-rope] fused` lines and hash parity vs a `LUCE_NORM_ROPE_LEGACY=1` child
+(d2aa0840d086e8dc both); `test_qsa3_gate_parity` drives the raw launchers on random q / packed K/V / union at T
+1028/300/129 and compares the gated F16 store to plain store + gate kernel byte for byte (0 / 6316032, 0 / 1843200,
+0 / 792576 mismatches); `test_hc_norm_mul_fusion` builds the `[2560, 4, T]` chain both ways at T 1028/300/1 and requires
+RMS_NORM/MUL adjacency only on the expanded-first graph plus hash parity; `test_rope_table_parity` still passes.
+
+### In situ (rocprofv3, p4096_r1, T = 4131, per request)
+
+| kernel | HEAD a8e3a4f2 | after (build 62275777) |
+|---|---:|---:|
+| `rms_norm_f32<256,true>` (Q, K, indexer q) | 48 x 0.581 = 27.9 | 12 x 0.008 = 0.1 (decode-size leftovers) |
+| `rope_multi_heads` | 48 x 0.314 = 15.1 | 12 x 0.004 = 0.05 |
+| `rope_multi_heads_norm` (new) | -- | 36 x 0.578 = 20.8 |
+| `qsa3_attn_kernel` | `<false>` 12 x 10.43 = 125.2 | `<true>` 12 x 9.24 = 110.9 |
+| `gated_rms_norm_f16_kernel<256,false>` | 12 x 2.09 = 25.1 (median call 1.54) | gone |
+| `rms_norm_f32<1024,false>` + `op_mul` (hc, 5 sites) | 5 x 1.82 = 9.1 + 47 x 0.277 = 13.0 | 3 x 1.82 = 5.5 + 45 x 0.220 = 9.9 |
+| `rms_norm_f32<1024,true>` (hc fused) | -- | 2 x 1.91 = 3.8 |
+| kernel sum (whole request) | 3027.7 | 2918.2 |
+
+Norm + rope: 43.0 -> 20.8 ms (-22). Gate: -18.5 ms of kernel, the gated store costs ~0 over the plain store (the
+`<true>` calls are also 1.2 ms/call faster than the `<false>` trace, trace-to-trace variance of the attention kernel
+is that size). hc: 2 of the 5 sites fuse (-2.6 ms); the 3 that still run `rms_norm_f32<1024,false>` + `op_mul` are
+the PLE-layer sites whose residual comes out of `build_ple` (not chased, ~4 ms).
+
+### e2e A/B (one binary, `ab_glu.sh` 2 x 5, warm-up dropped, `prefix_len=0` on all 160 requests, arms old1 new1 old2 new2)
+
+OLD = `LUCE_NORM_ROPE_LEGACY=1 LUCE_QSA_GATE_LEGACY=1 LUCE_HC_NORM_MUL_LEGACY=1`, NEW = default. Median of the two
+round medians; spread = |round1 - round2| / median.
+
+| build | p4096 tok/s OLD -> NEW (old / new spread) | p16384 tok/s | decode tok/s (ms/tok) | greedy-64 |
+|---|---:|---:|---:|---|
+| 330c0072 (norm-rope only engaged) | 1390.0 -> 1380.2, -0.71% (1.50 / 1.57%) | 1408.8 -> 1402.8, -0.42% (1.03 / 1.27%) | 28.55 -> 28.55 (35.03 / 35.03) | identical x4 (d512, p4096) |
+| 6c9086fe (+ hc, gate still unfused) | 1391.3 -> 1394.9, +0.26% (1.33 / 0.36%) | 1403.0 -> 1405.9, +0.21% (0.39 / 0.38%) | 28.59 -> 28.62 (34.98 / 34.95) | identical x4 |
+| 62275777 (all three) round A | 1351.6 -> 1404.1, +3.89% (4.97 / 0.29%; old1 outlier 1318) | 1409.9 -> 1419.7, +0.69% (0.13 / 0.95%) | 28.57 -> 28.58 (35.00 / 34.99) | identical x4 |
+| 62275777 round B | 1389.6 -> 1400.8, +0.81% (0.91 / 0.14%) | 1404.2 -> 1409.6, +0.38% (0.73 / 0.58%) | 28.58 -> 28.59 (34.99 / 34.97) | identical x4 |
+
+p4096 over the two rounds of the final build: every NEW arm median is >= 1399.9 (1406.1 / 1402.1 / 1401.8 / 1399.9) and
+every OLD arm median <= 1395.9 (1318.0 / 1385.2 / 1395.9 / 1383.4) -- non-overlapping, +1.3% on the pooled medians, in
+line with the ~40 ms kernel-level saving; no single round clears the 2x-spread bar on its own. p16384 is +0.4-0.7%
+inside its spread (the attention layer is a smaller share there). Decode untouched (T = 1 takes the per-row paths), greedy-64
+byte-identical on every arm of every round. Decision: the three fusions stay on (bit-exact, fewer launches, kernel-level
+evidence unambiguous); `LUCE_NORM_ROPE_LEGACY=1 LUCE_QSA_GATE_LEGACY=1 LUCE_HC_NORM_MUL_LEGACY=1` added to
+`cumul.sh` LEGACY_ENV.
+
+### Cumulative 2026-10-15 (lucebox4 gfx1151): `cumul.sh` 3 x 5, arms alternating A/B/C/D, build 62275777 / libggml-hip f39c4afa, gufo fd490446
+
+A = HEAD with every kill switch since c786560d set to legacy, now also `LUCE_NORM_ROPE_LEGACY=1 LUCE_QSA_GATE_LEGACY=1
+LUCE_HC_NORM_MUL_LEGACY=1`. Caching symmetric: luce `prefix_len=0` on every request, gufo `cache=miss cached_tokens=0`.
+
+| arm | p4096 tok/s (round medians, spread) | p16384 tok/s | decode tok/s (ms/tok) |
+|---|---:|---:|---:|
+| A luce all-legacy | 1225.6 (1160.9 / 1223.2 / 1225.9, 5.30%) | 1272.6 (1277.4 / 1273.8 / 1266.4, 0.87%) | 24.98 (40.04) |
+| B luce HEAD 38598bfc | 1406.4 (1406.2 / 1408.9 / 1409.1, 0.21%) | 1417.1 (1415.4 / 1417.2 / 1421.5, 0.43%) | 28.60 (34.97) |
+| C gufo fd490446 | 1599.4 (1605.4 / 1607.2 / 1596.3, 0.68%) | 1616.1 (1616.1 / 1614.2 / 1618.0, 0.23%) | 32.93 (30.37) |
+| D gufo GUFO_DECODE_Q5=0 | | | 29.52 (33.87) |
+| B vs A | +14.75% | +11.36% | +14.49% |
+| C vs B (remaining gap) | +13.72% | +14.04% | +15.16% |
+| C vs A | +30.50% | +26.99% | +31.85% |
+
+Versus the 'Cumulative 2026-10-14 night' section (same box, protocol, gufo binary; B then 1391.2 / 1412.6 / 28.56): B is
+**+1.1% at p4096** (5x this run's 0.21% B round spread and 1.5x the previous 0.73%), +0.3% at p16384 (inside spread),
+decode +0.1% (inside spread); the gap to gufo closed from +15.0 / +14.5 / +15.3% to +13.7 / +14.0 / +15.2%. Greedy-64
+A vs B differ at char 86 (p4096) / 96 (decode512), the same characters as in every cumulative section since the exact
+stack -- no new divergence from these fusions (the one-binary A/B was byte-identical on all arms); B vs C at char 0 as
+before, all on-topic.
+
+Remaining norms-class gap after this: GDN tail gated norm at parity, attention norms gone, hc norm 3 PLE-layer sites
+(~4 ms), activation cvt +5, GDN conv norm +14 (conv epilogue). The class is no longer above the 1% bar; the next levers
+are the GEMM-epilogue items in the dense class and the GDN conv.
