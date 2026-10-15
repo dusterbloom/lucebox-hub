@@ -4813,5 +4813,9 @@ bool ggml_cuda_flash_attn_ext_supported(int device, const ggml_tensor * dst) {
         return false;
 #endif // defined(GGML_USE_HIP)
     }
+    // kv_bias (src[9]) is only honoured by the kernels that read it.
+    if (dst->src[9] != nullptr) {
+        return false;
+    }
     return ggml_cuda_get_best_fattn_kernel(device, dst) != BEST_FATTN_KERNEL_NONE;
 }

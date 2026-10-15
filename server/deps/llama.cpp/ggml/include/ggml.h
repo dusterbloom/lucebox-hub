@@ -2606,6 +2606,14 @@ extern "C" {
             struct ggml_tensor * a,
             struct ggml_tensor * sinks);
 
+    // Per-KV-head key bias. kv_bias is F32 [n_kv, n_head_kv]; kv_bias[ik2][ic] is
+    // added to the scaled (and softcapped) logit of key ic for every query head
+    // that maps to KV head ik2. 0 leaves the logit unchanged, -inf masks the key.
+    // Lives in src[9], shared with the DS4 lane KV, so the two are mutually exclusive.
+    GGML_API void ggml_flash_attn_ext_add_kv_bias(
+            struct ggml_tensor * a,
+            struct ggml_tensor * kv_bias);
+
     // Block-sparse flash attention (pFlash).
     // Selects top-scoring K-blocks dynamically based on alpha threshold.
     // alpha=1.0 selects all blocks (equivalent to dense attention).

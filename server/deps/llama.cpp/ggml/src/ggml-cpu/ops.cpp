@@ -8308,6 +8308,7 @@ static void ggml_compute_forward_flash_attn_ext_f16_one_chunk(
     const ggml_tensor * v     = dst->src[2];
     const ggml_tensor * mask  = dst->src[3];
     const ggml_tensor * sinks = dst->src[4];
+    const ggml_tensor * kv_bias = dst->src[9]; // F32 [n_kv, n_head_kv], optional
 
     GGML_TENSOR_LOCALS(int64_t, neq, q,   ne)
     GGML_TENSOR_LOCALS(size_t,  nbq, q,   nb)
@@ -8425,6 +8426,11 @@ static void ggml_compute_forward_flash_attn_ext_f16_one_chunk(
                 continue;
             }
 
+            const float kb = kv_bias ? ((const float *) kv_bias->data)[ik2*nek1 + ic] : 0.0f;
+            if (kb == -INFINITY) {
+                continue;
+            }
+
             float s; // KQ value
 
             const char * k_data = (const char *) k->data + ( ic*nbk1 + ik2*nbk2 + ik3*nbk3);
@@ -8437,6 +8443,7 @@ static void ggml_compute_forward_flash_attn_ext_f16_one_chunk(
             }
 
             s += mv; // apply mask
+            s += kb; // apply kv bias
 
             const float Mold = M;
 
@@ -8542,6 +8549,7 @@ static void ggml_compute_forward_flash_attn_ext_tiled(
     const ggml_tensor * v     = dst->src[2];
     const ggml_tensor * mask  = dst->src[3];
     const ggml_tensor * sinks = dst->src[4];
+    const ggml_tensor * kv_bias = dst->src[9]; // F32 [n_kv, n_head_kv], optional
 
     GGML_TENSOR_LOCALS(int64_t, neq, q,   ne)
     GGML_TENSOR_LOCALS(size_t,  nbq, q,   nb)
@@ -8737,6 +8745,15 @@ static void ggml_compute_forward_flash_attn_ext_tiled(
 
             if (mask) {
                 ggml_vec_add_f32(tile_rows * KV_TILE_SZ, KQ, KQ, mask32);
+            }
+
+            if (kv_bias) {
+                const float * kb = (const float *) kv_bias->data + ik2*nek1 + ic;
+                for (int tq = 0; tq < tile_rows; tq++) {
+                    for (int tk = 0; tk < kv_tile; tk++) {
+                        KQ[tq * KV_TILE_SZ + tk] += kb[tk];
+                    }
+                }
             }
 
             bool skip[Q_TILE_SZ] = {};

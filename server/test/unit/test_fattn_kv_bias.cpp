@@ -268,6 +268,7 @@ void run_case(const char * bname, ggml_backend_t be, const Case & c, const Data 
 } // namespace
 
 int main(int argc, char ** argv) {
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
     bool cpu_only = false;
     std::string filter;
     for (int i = 1; i < argc; ++i) {
@@ -302,7 +303,13 @@ int main(int argc, char ** argv) {
         const ggml_fp16_t * mask = c.mask ? d.mask.data() : nullptr;
         const std::vector<float> ref_bias = reference(c, d, d.beta.data(), mask);
         const std::vector<float> ref_inf  = reference(c, d, beta_inf.data(), mask);
-        run_case("cpu", cpu, c, d, ref_bias, ref_inf, beta_inf, tc);
+        // ggml-cpu's FA calls K's vec_dot unchecked; TQ3_0 has none on CPU.
+        if (ggml_get_type_traits_cpu(c.type)->vec_dot == nullptr) {
+            ++tc.skip;
+            std::printf("SKIP    cpu   %s (no CPU vec_dot)\n", c.name().c_str());
+        } else {
+            run_case("cpu", cpu, c, d, ref_bias, ref_inf, beta_inf, tc);
+        }
         if (gpu) run_case("gpu", gpu, c, d, ref_bias, ref_inf, beta_inf, tg);
     }
     std::printf("\nSUMMARY cpu: pass %d fail %d unsupp %d skip %d, max abs err %.3e, max nmse %.3e\n",
