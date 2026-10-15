@@ -33,21 +33,36 @@ __device__ __forceinline__ mmbf_h2 mmbf_q4k_sb(const uint4 meta) {
     return mmbf_h2{(_Float16) (d * (float) sc), (_Float16) (-(dm * (float) mn))};
 }
 
-// 16 code bytes q -> 16 low-nibble halves (lo0, lo1: K order of the bytes) and 16 high-nibble halves (hi0, hi1),
-// sub-block pairs slo / shi.
-__device__ __forceinline__ void mmbf_dq16(const uint4 q, const mmbf_h2 slo, const mmbf_h2 shi, uint4 & lo0, uint4 & lo1, uint4 & hi0, uint4 & hi1) {
+// Two code planes of 16 bytes (one code 0..31 per byte, K order) -> 16 low-plane halves (lo0, lo1) and 16
+// high-plane halves (hi0, hi1), sub-block pairs slo / shi.
+__device__ __forceinline__ void mmbf_dq16_planes(const uint4 lo, const uint4 hi, const mmbf_h2 slo, const mmbf_h2 shi, uint4 & lo0, uint4 & lo1, uint4 & hi0, uint4 & hi1) {
     const mmbf_h2 m1024 = mmbf_h2{(_Float16) -1024.f, (_Float16) -1024.f};
     const mmbf_h2 sl = mmbf_h2{slo.x, slo.x}, bl = mmbf_h2{slo.y, slo.y}, sh = mmbf_h2{shi.x, shi.x}, bh = mmbf_h2{shi.y, shi.y};
     auto conv = [&](const uint32_t n, const mmbf_h2 s2, const mmbf_h2 b2, uint32_t & o0, uint32_t & o1) {
-        // v_perm: {0x64, n_b1, 0x64, n_b0} and {.., n_b3, .., n_b2} = F16 1024 + q, exact
+        // v_perm: {0x64, n_b1, 0x64, n_b0} and {.., n_b3, .., n_b2} = F16 1024 + q, exact for q < 32 (4- and 5-bit codes)
         const uint32_t p0 = __builtin_amdgcn_perm(n, 0x64646464u, 0x01050004u), p1 = __builtin_amdgcn_perm(n, 0x64646464u, 0x03070206u);
         o0 = __builtin_bit_cast(uint32_t, __builtin_elementwise_fma(__builtin_bit_cast(mmbf_h2, p0) + m1024, s2, b2));
         o1 = __builtin_bit_cast(uint32_t, __builtin_elementwise_fma(__builtin_bit_cast(mmbf_h2, p1) + m1024, s2, b2));
     };
-    conv(q.x & 0x0F0F0F0Fu, sl, bl, lo0.x, lo0.y); conv(q.y & 0x0F0F0F0Fu, sl, bl, lo0.z, lo0.w);
-    conv(q.z & 0x0F0F0F0Fu, sl, bl, lo1.x, lo1.y); conv(q.w & 0x0F0F0F0Fu, sl, bl, lo1.z, lo1.w);
-    conv((q.x >> 4) & 0x0F0F0F0Fu, sh, bh, hi0.x, hi0.y); conv((q.y >> 4) & 0x0F0F0F0Fu, sh, bh, hi0.z, hi0.w);
-    conv((q.z >> 4) & 0x0F0F0F0Fu, sh, bh, hi1.x, hi1.y); conv((q.w >> 4) & 0x0F0F0F0Fu, sh, bh, hi1.z, hi1.w);
+    conv(lo.x, sl, bl, lo0.x, lo0.y); conv(lo.y, sl, bl, lo0.z, lo0.w); conv(lo.z, sl, bl, lo1.x, lo1.y); conv(lo.w, sl, bl, lo1.z, lo1.w);
+    conv(hi.x, sh, bh, hi0.x, hi0.y); conv(hi.y, sh, bh, hi0.z, hi0.w); conv(hi.z, sh, bh, hi1.x, hi1.y); conv(hi.w, sh, bh, hi1.z, hi1.w);
+}
+
+// Q4_K: 16 code bytes q -> low-nibble plane (elements 0..15 of the thread's half slice) and high-nibble plane (32..47).
+__device__ __forceinline__ void mmbf_dq16(const uint4 q, const mmbf_h2 slo, const mmbf_h2 shi, uint4 & lo0, uint4 & lo1, uint4 & hi0, uint4 & hi1) {
+    constexpr uint32_t m = 0x0F0F0F0Fu;
+    mmbf_dq16_planes(make_uint4(q.x & m, q.y & m, q.z & m, q.w & m), make_uint4((q.x >> 4) & m, (q.y >> 4) & m, (q.z >> 4) & m, (q.w >> 4) & m), slo, shi, lo0, lo1, hi0, hi1);
+}
+
+// Q5_K: the same nibble planes plus the fifth bit from the qh bytes of the same 16 positions (dequantize_q5_K: bit
+// 2S of qh[p] for the low plane of slice S, bit 2S+1 for the high plane), exact dequant as the generic kernel's.
+template <int S>
+__device__ __forceinline__ void mmbf_dq16_q5(const uint4 q, const uint4 qh, const mmbf_h2 slo, const mmbf_h2 shi, uint4 & lo0, uint4 & lo1, uint4 & hi0, uint4 & hi1) {
+    constexpr uint32_t m = 0x0F0F0F0Fu, b = 0x01010101u;
+    auto plane = [](const uint32_t w, const uint32_t h, const int bit) { return (w & m) | (((h >> bit) & b) << 4); };
+    mmbf_dq16_planes(make_uint4(plane(q.x, qh.x, 2 * S), plane(q.y, qh.y, 2 * S), plane(q.z, qh.z, 2 * S), plane(q.w, qh.w, 2 * S)),
+                     make_uint4(plane(q.x >> 4, qh.x, 2 * S + 1), plane(q.y >> 4, qh.y, 2 * S + 1), plane(q.z >> 4, qh.z, 2 * S + 1), plane(q.w >> 4, qh.w, 2 * S + 1)),
+                     slo, shi, lo0, lo1, hi0, hi1);
 }
 
 // One (tile, 64-row m slice) work item. LDS tiles are chunk-major: element offset of 16-byte chunk c of row r is
@@ -56,11 +71,12 @@ __device__ __forceinline__ void mmbf_dq16(const uint4 q, const mmbf_h2 slo, cons
 // consecutive rows at one chunk (conflict-free writes, 64 contiguous bytes per row per load). Wave w computes rows
 // 16*(w&3) of gate and up against token fragments (w>>2) + 2 j. `fetch` (thread 0) returns the next work item; it
 // is parked in the gate tile between the K loop and the epilogue.
-template <int BN, typename XRowFn, typename DRowFn, typename FetchFn>
+template <int BN, int WTYPE, typename XRowFn, typename DRowFn, typename FetchFn>
 __device__ __forceinline__ void mmb_tile_gemm_glu_f16(const uint8_t * __restrict__ Wg, const uint8_t * __restrict__ Wu, const size_t wrow_bytes, const int a_rows,
         const _Float16 * __restrict__ Xh, const int K, XRowFn xrow, float * __restrict__ D, uint16_t * __restrict__ Dh, const bool store_f32, const int M, DRowFn drow, const int m0,
         const int n_cols, _Float16 * Ag, _Float16 * Au, _Float16 * Bs, FetchFn fetch) {
     constexpr int TN = BN / 32, B_ITEMS = (BN * 8) / MMB_NT, AP = 64 * 8, BP = BN * 8;   // halves per chunk plane
+    constexpr bool Q5 = WTYPE == 32 + GGML_TYPE_Q5_K;   // block: header 16 B, qh 32 B, qs 128 B (Q4_K: header, qs)
     static_assert(BN == 128, "token staging map below assumes 128 rows x 8 chunks = 4 chunks per thread");
     const int tid = threadIdx.x, lane = tid & 31, wave = __builtin_amdgcn_readfirstlane(tid >> 5);
     const int wr = wave & 3, wg = wave >> 2;
@@ -76,14 +92,16 @@ __device__ __forceinline__ void mmb_tile_gemm_glu_f16(const uint8_t * __restrict
     _Float16 * As = (s_mat ? Au : Ag) + s_row * 8;
     const bool wlive = s_row < a_rows;
     const uint8_t * wp = (s_mat ? Wu : Wg) + (size_t) s_row * wrow_bytes;
-    uint4 sqm, sq0, sq1, sq2, sq3;
+    uint4 sqm, sq0, sq1, sq2, sq3, sqh = make_uint4(0, 0, 0, 0);   // sqh: the Q5_K high bits of this thread's 16 positions
     auto load_w = [&](const int kb) {
         if (wlive) {
-            const uint8_t * p = wp + (size_t) kb * sizeof(block_q4_K);
+            const uint8_t * p = wp + (size_t) kb * (Q5 ? sizeof(block_q5_K) : sizeof(block_q4_K));
             sqm = *(const uint4 *) p;
-            p += 16 + s_half * 16;
+            p += 16;
+            if constexpr (Q5) { sqh = *(const uint4 *) (p + s_half * 16); p += 32; }
+            p += s_half * 16;
             sq0 = *(const uint4 *) p; sq1 = *(const uint4 *) (p + 32); sq2 = *(const uint4 *) (p + 64); sq3 = *(const uint4 *) (p + 96);
-        } else { sqm = sq0 = sq1 = sq2 = sq3 = make_uint4(0, 0, 0, 0); }
+        } else { sqm = sq0 = sq1 = sq2 = sq3 = sqh = make_uint4(0, 0, 0, 0); }
     };
     auto load_b = [&](const int ks) {
 #pragma unroll
@@ -94,7 +112,8 @@ __device__ __forceinline__ void mmb_tile_gemm_glu_f16(const uint8_t * __restrict
         constexpr int S = decltype(sc)::value;
         const uint4 q = S == 0 ? sq0 : S == 1 ? sq1 : S == 2 ? sq2 : sq3;
         uint4 l0, l1, h0, h1;
-        mmbf_dq16(q, mmbf_q4k_sb<2 * S>(sqm), mmbf_q4k_sb<2 * S + 1>(sqm), l0, l1, h0, h1);
+        if constexpr (Q5) mmbf_dq16_q5<S>(q, sqh, mmbf_q4k_sb<2 * S>(sqm), mmbf_q4k_sb<2 * S + 1>(sqm), l0, l1, h0, h1);
+        else mmbf_dq16(q, mmbf_q4k_sb<2 * S>(sqm), mmbf_q4k_sb<2 * S + 1>(sqm), l0, l1, h0, h1);
         // low nibbles = elements 16*half .. +16 of the slice (chunks 2*half, 2*half+1), high nibbles = 32 + 16*half ..
         *(uint4 *) (As + (2 * s_half) * AP)     = l0; *(uint4 *) (As + (2 * s_half + 1) * AP) = l1;
         *(uint4 *) (As + (4 + 2 * s_half) * AP) = h0; *(uint4 *) (As + (5 + 2 * s_half) * AP) = h1;
@@ -182,7 +201,7 @@ mmb_routed_glu_f16_kernel(const uint8_t * __restrict__ Wg, const uint8_t * __res
         float * __restrict__ D, uint16_t * __restrict__ Dh, const bool store_f32,
         const int32_t * __restrict__ ids_src, const int32_t * __restrict__ ids_dst, const int32_t * __restrict__ bounds,
         const uint32_t * __restrict__ tiles, int * __restrict__ ctl, const int M, const int K) {
-    static_assert(WTYPE == 32 + GGML_TYPE_Q4_K, "Q4_K experts only");
+    static_assert(WTYPE == 32 + GGML_TYPE_Q4_K || WTYPE == 32 + GGML_TYPE_Q5_K, "Q4_K / Q5_K experts only");
     __shared__ __align__(16) _Float16 Ag[64 * 64];
     __shared__ __align__(16) _Float16 Au[64 * 64];
     __shared__ __align__(16) _Float16 Bs[BN * 64];
@@ -198,7 +217,7 @@ mmb_routed_glu_f16_kernel(const uint8_t * __restrict__ Wg, const uint8_t * __res
         const uint32_t dsc = tiles[item / mt];
         const int e = dsc & 0xffff, jt = dsc >> 16, m0 = (item % mt) * 64;
         const int r0 = bounds[e] + jt * BN, cnt = bounds[e + 1] - r0;
-        mmb_tile_gemm_glu_f16<BN>(Wg + (size_t) e * expert_bytes + (size_t) m0 * wrow_bytes, Wu + (size_t) e * expert_bytes + (size_t) m0 * wrow_bytes, wrow_bytes, M - m0, Xh, K,
+        mmb_tile_gemm_glu_f16<BN, WTYPE>(Wg + (size_t) e * expert_bytes + (size_t) m0 * wrow_bytes, Wu + (size_t) e * expert_bytes + (size_t) m0 * wrow_bytes, wrow_bytes, M - m0, Xh, K,
             [&](int i) { return (i < cnt) ? ids_src[r0 + i] : -1; }, D, Dh, store_f32, M, [&](int i) { return (i < cnt) ? ids_dst[r0 + i] : -1; }, m0, cnt, Ag, Au, Bs, fetch);
     }
 }

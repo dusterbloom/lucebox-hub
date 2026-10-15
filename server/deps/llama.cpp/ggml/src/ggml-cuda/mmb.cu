@@ -126,6 +126,8 @@ void mmb_glu_run(const int mode, const uint8_t * Wg, const uint8_t * Wu, const s
             mmb_routed_glu_q4k_kernel<BN, WT><<<grid, MMB_NT, 0, stream>>>(Wg, Wu, eb, Xh, D, Dh, store_f32, ids_src, ids_dst, bounds, scratch, ctl, M, K);
             return;
         }
+    }
+    if constexpr (WT == 32 + GGML_TYPE_Q4_K || WT == 32 + GGML_TYPE_Q5_K) {   // the F16 kernel has a Q5_K tile loader
         if (mode == 2) {
             const int n_max = n_rows / BN + E + 1;
             int * ctl = (int *) (scratch + n_max);
@@ -990,7 +992,11 @@ void ggml_cuda_mul_mat_id_mmb_glu(ggml_backend_cuda_context & ctx, const ggml_te
     const int ne11 = (int) src1->ne[1], T = (int) src1->ne[2], n_used = (int) ids->ne[0];
     const int n_rows_x = ne11 * T, n_rows = n_used * T;
     constexpr int BN = 128;
-    const int mode = !(gw->type == GGML_TYPE_Q4_K && E <= 1024 && (M & 7) == 0) || mmb_glu_legacy() ? 0 : mmb_glu_f16() ? 2 : 1;
+    // Q5_K gate/up (blk.2 of the UD-Q4_K_XL model) takes the F16 single-launch kernel too (mode 2 has a Q5_K tile
+    // loader; the bf16 kernel, mode 1, is Q4_K-only). LUCE_MMB_GLU_Q5K_LEGACY=1 keeps Q5_K on the legacy pair.
+    static const bool q5k_legacy = [] { const char * e = getenv("LUCE_MMB_GLU_Q5K_LEGACY"); return e && atoi(e) != 0; }();
+    const bool q4k = gw->type == GGML_TYPE_Q4_K, q5k = gw->type == GGML_TYPE_Q5_K && !q5k_legacy && mmb_glu_f16();
+    const int mode = !((q4k || q5k) && E <= 1024 && (M & 7) == 0) || mmb_glu_legacy() ? 0 : mmb_glu_f16() ? 2 : 1;
     const uint16_t * xhp = mode == 2 ? (const uint16_t *) mmb_f16_activation(ctx, src1, (size_t) n_rows_x * K, stream) : mmb_bf16_activation(ctx, src1, (size_t) n_rows_x * K, stream);
     ggml_cuda_pool_alloc<int32_t> ids_src1(ctx.pool(), n_rows);
     ggml_cuda_pool_alloc<int32_t> ids_dst(ctx.pool(), n_rows);
@@ -1028,13 +1034,14 @@ void ggml_cuda_mul_mat_id_mmb_glu(ggml_backend_cuda_context & ctx, const ggml_te
     CUDA_CHECK(cudaGetLastError());
 }
 
-// Shared with test_mmb_routed_glu_parity.cpp / test_mmb_routed_glu_f16_parity.cpp: Q4_K gate/up on raw pointers
-// (activations [n_rows_x][K], bf16 for modes 0/1 and F16 for mode 2; F32 out [n_rows][M] when D is set, bf16 out
-// when Dh is set). mode 0 = legacy two-launch, 1 = single-launch bf16 kernel, 2 = single-launch F16 kernel.
+// Shared with test_mmb_routed_glu_parity.cpp: Q4_K / Q5_K gate/up on raw pointers (activations [n_rows_x][K], bf16
+// for modes 0/1 and F16 for mode 2; F32 out [n_rows][M] when D is set, bf16 out when Dh is set). mode 0 = legacy
+// two-launch, 1 = single-launch bf16 kernel (Q4_K only), 2 = single-launch F16 kernel.
 int ggml_cuda_mmb_glu_scratch_words(int E, int n_rows) { return mmb_glu_scratch_words(E, n_rows); }
-void ggml_cuda_mmb_glu_launch(int mode, const uint8_t * Wg, const uint8_t * Wu, size_t expert_bytes, const uint16_t * Xh, float * D, uint16_t * Dh,
+void ggml_cuda_mmb_glu_launch(int mode, ggml_type type, const uint8_t * Wg, const uint8_t * Wu, size_t expert_bytes, const uint16_t * Xh, float * D, uint16_t * Dh,
         const int32_t * ids_src, const int32_t * ids_dst, const int32_t * bounds, uint32_t * scratch, int E, int n_rows, int M, int K, int grid, hipStream_t stream) {
-    mmb_glu_run<32 + GGML_TYPE_Q4_K>(mode, Wg, Wu, expert_bytes, Xh, D, Dh, D != nullptr, ids_src, ids_dst, bounds, scratch, E, n_rows, M, K, grid, stream);
+    if (type == GGML_TYPE_Q5_K) mmb_glu_run<32 + GGML_TYPE_Q5_K>(mode, Wg, Wu, expert_bytes, Xh, D, Dh, D != nullptr, ids_src, ids_dst, bounds, scratch, E, n_rows, M, K, grid, stream);
+    else mmb_glu_run<32 + GGML_TYPE_Q4_K>(mode, Wg, Wu, expert_bytes, Xh, D, Dh, D != nullptr, ids_src, ids_dst, bounds, scratch, E, n_rows, M, K, grid, stream);
 }
 
 // Called from graph_optimize (outside stream capture): create the shadow for an eligible IQ4_NL dense weight.
@@ -1130,6 +1137,6 @@ size_t ggml_cuda_mmb_w8a8_tile_bytes(int, int) { return 0; }
 int ggml_cuda_mmb_q8f16_raster_group(int, int) { return 0; }
 void ggml_cuda_mmb_q8f16_launch_raster(const uint8_t *, const uint16_t *, float *, int, int, int, int, hipStream_t) {}
 int ggml_cuda_mmb_glu_scratch_words(int, int) { return 0; }
-void ggml_cuda_mmb_glu_launch(int, const uint8_t *, const uint8_t *, size_t, const uint16_t *, float *, uint16_t *, const int32_t *, const int32_t *, const int32_t *, uint32_t *, int, int, int, int, int, hipStream_t) {}
+void ggml_cuda_mmb_glu_launch(int, ggml_type, const uint8_t *, const uint8_t *, size_t, const uint16_t *, float *, uint16_t *, const int32_t *, const int32_t *, const int32_t *, uint32_t *, int, int, int, int, int, hipStream_t) {}
 
 #endif // defined(__gfx1151__)
