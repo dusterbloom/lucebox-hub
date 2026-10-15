@@ -2,16 +2,17 @@
 
 State at a cut (r2_core.gen_fblk_window, one build pass per trajectory and window W):
   P  the sealed blocks overlapping the rendered system message and tool schema stay exact (E7, `exact_blocks`);
-  W  the last window_blocks(W) sealed blocks stay exact;
+  W  the last W sealed blocks stay exact;
   the other sealed 640-token blocks are compacted to 64 slots (ratio 0.10), their exact K/V kept aside (on_block, as E3);
   the open tail and the DeltaNet state are as the generator leaves them.
 Per probe: (1) routing pass: prefill the question suffix under that state, capture its queries (r2_core.extend), score every
 compacted block (not P, not W) with the compacted-slot attention mass at the last question token (a1_e.router_mass); the pass's KV
-is dropped. (2) fetch: the top k blocks swap to exact (a1_e.oracle_triples: the compacted entry is replaced), k lowered per cut so
-that rows <= CAP. (3) answer: r2_core.answer_ids on the swapped state, exactly as A1.
-  stage sel:    python3 a1_a3.py --stage sel --out OUT --ref-dir PILOT_DIR [--ws 4096,8192 --ks 4,8]   (6 pilot trajectories)
-  stage proper: python3 a1_a3.py --stage proper --out OUT --ref-dir A1_DIR --w W --k K                  (trajectories 7-60)
-Resumable per trajectory, window and arm: rerun the same command. Helpers above the driver are pure and tested in test_a1_a3.py."""
+is dropped. (2) fetch: the top k blocks swap to exact (a1_e.oracle_triples: the compacted entry is replaced), k = the most blocks
+that keep rows <= CAP (capped at the candidates). (3) answer: r2_core.answer_ids on the swapped state, exactly as A1.
+  stage sel:    python3 a1_a3.py --stage sel --out OUT --ref-dir PILOT_DIR [--ws 2,6]   (6 pilot trajectories; W in blocks)
+  stage proper: python3 a1_a3.py --stage proper --out OUT --ref-dir A1_DIR --w W        (trajectories 7-60)
+k is not a parameter: at each cut it is the largest number of router-ordered candidates that keeps rows <= CAP.
+Resumable per trajectory and window: rerun the same command. Helpers above the driver are pure and tested in test_a1_a3.py."""
 import argparse
 import json
 import os
@@ -29,24 +30,19 @@ import a1_e67 as e67  # noqa: E402
 BLOCK, SLOTS = 640, 64                       # sealed block tokens; slots a compacted block keeps (ratio 0.10)
 CAP = 16384                                  # rows of POOL16K (B0): the equal-memory budget
 KV_BYTES_PER_TOKEN = 64 * 1024               # 16 full-attention layers x 4 KV heads x 256 x K and V x 2 bytes
-SEL_WS, SEL_KS = (4096, 8192), (4, 8)
+SEL_WBS = (2, 6)                             # window grid, in blocks (1,280 and 3,840 tokens)
 PILOT_N = 6                                  # the pilot trajectories; stage proper runs the rest
 RECALL_KS = a1_e.KS
 
 
 # ---------------------------------------------------------------- pure: names, row budget, candidates
 
-def window_blocks(w_tokens, block=BLOCK):
-    """W is a token budget; the window is the largest whole number of blocks inside it (4096 -> 6 blocks, 8192 -> 12)."""
-    return w_tokens // block
+def arm_name(wb):
+    return f"A3_W{wb}"
 
 
-def arm_name(w_tokens, k):
-    return f"A3_W{w_tokens}_K{k}"
-
-
-def route_name(w_tokens):
-    return f"A3_W{w_tokens}_route"
+def route_name(wb):
+    return f"A3_W{wb}_route"
 
 
 def exact_set(nb, p, wb):
@@ -69,15 +65,14 @@ def rows_at(nb, tail, p, wb, k, block=BLOCK, slots=SLOTS):
     return block * (n_ex + k) + slots * (n_c - k) + tail
 
 
-def choose_k(nb, tail, p, wb, k_req, cap=CAP, block=BLOCK, slots=SLOTS):
-    """Largest k <= k_req (and <= the number of candidates) with rows <= cap. When even k = 0 is over the cap the cut is
-    flagged over_budget and runs at k = 0."""
+def choose_k(nb, tail, p, wb, cap=CAP, block=BLOCK, slots=SLOTS):
+    """The budget fills: k is the largest number of router-ordered candidates with rows <= cap, capped at the candidates. When even
+    k = 0 is over the cap the cut is flagged over_budget and runs at k = 0 (the configuration is then ineligible)."""
     n_c = len(candidates(nb, p, wb))
     r0 = rows_at(nb, tail, p, wb, 0, block, slots)
-    k_fit = (cap - r0) // (block - slots) if r0 <= cap else 0
-    k = max(0, min(k_req, n_c, k_fit))
+    k = min(n_c, (cap - r0) // (block - slots)) if r0 <= cap else 0
     r = rows_at(nb, tail, p, wb, k, block, slots)
-    return {"k_req": k_req, "k": k, "rows": r, "rows_k0": r0, "n_cand": n_c, "over_budget": r > cap, "lowered": k < min(k_req, n_c)}
+    return {"k": k, "rows": r, "rows_k0": r0, "n_cand": n_c, "over_budget": r > cap, "lowered": k < n_c}
 
 
 def rank_candidates(scores, cand):
@@ -109,13 +104,12 @@ def a3_state(ship, comp, exact, nb, tail, p, wb, fetch, linear):
 
 def select_config(table):
     """Stage 1 rule: highest retention, ties by fewer mean rows, among eligible configurations (no cut over the row cap at k = 0).
-    `selected_unrestricted` ignores eligibility, for the report. table: {"W4096_K4": {correct, n, mean_rows, eligible}}."""
+    table: {"W6": {correct, n, mean_rows, eligible}}."""
     def key(name):
         v = table[name]
         return (-v["correct"] / v["n"], v["mean_rows"], name)
     ok = sorted((n for n in table if table[n]["eligible"]), key=key)
-    return {"selected": ok[0] if ok else None, "selected_unrestricted": min(table, key=key) if table else None,
-            "order_eligible": ok}
+    return {"selected": ok[0] if ok else None, "order_eligible": ok}
 
 
 def final_verdict(ci, bar=core.BAR):
@@ -175,28 +169,22 @@ def route_a_last(S, st, suffix):
     return cand, a[-1], {"route_s": round(t1 - t0, 3), "router_s": round(time.time() - t1, 3)}
 
 
-def answer_item(S, st, item, ks, cap=CAP, block=BLOCK, slots=SLOTS):
-    """One probe: route once, then for each requested k fetch the top k_eff blocks and answer. Identical fetch sets are answered
-    once. Returns {cand, ranked, route, arms: {k_req: budget fields + fetched + gen + timing}}."""
+def answer_item(S, st, item, cap=CAP, block=BLOCK, slots=SLOTS):
+    """One probe: route once, fetch the top k blocks (k fills the budget, choose_k), answer. Returns
+    {cand, ranked, route, budget, fetched, fetch_bytes, gen, timing}."""
     import r2_core as r2
     cand, a_last, rt = route_a_last(S, st, item.suffix)
     ranked = rank_candidates(a_last, cand) if cand else []
-    arms, done = {}, {}
-    for k_req in ks:
-        bud = choose_k(st.nb, st.tail, st.p, st.wb, k_req, cap, block, slots)
-        fetched = ranked[:bud["k"]]
-        key = tuple(sorted(fetched))
-        if key not in done:
-            trip = a3_state(st.triples, st.comp, st.exact, st.nb, st.tail, st.p, st.wb, fetched, st.linear)
-            got = _full_rows(trip, st.full_layers)
-            assert got == bud["rows"], f"state has {got} rows, budget says {bud['rows']}"
-            tm = {}
-            gen = r2.answer_ids(S, trip, st.t_len, item.suffix, item.max_new, timing=tm)
-            done[key] = (gen, tm)
-            del trip
-        gen, tm = done[key]
-        arms[k_req] = {**bud, "fetched": list(fetched), "fetch_bytes": bud["k"] * block * KV_BYTES_PER_TOKEN, "gen": gen, "timing": tm}
-    return {"cand": cand, "ranked": ranked, "route": rt, "arms": arms}
+    bud = choose_k(st.nb, st.tail, st.p, st.wb, cap, block, slots)
+    fetched = ranked[:bud["k"]]
+    trip = a3_state(st.triples, st.comp, st.exact, st.nb, st.tail, st.p, st.wb, fetched, st.linear)
+    got = _full_rows(trip, st.full_layers)
+    assert got == bud["rows"], f"state has {got} rows, budget says {bud['rows']}"
+    tm = {}
+    gen = r2.answer_ids(S, trip, st.t_len, item.suffix, item.max_new, timing=tm)
+    del trip
+    return {"cand": cand, "ranked": ranked, "route": rt, "budget": bud, "fetched": list(fetched),
+            "fetch_bytes": bud["k"] * block * KV_BYTES_PER_TOKEN, "gen": gen, "timing": tm}
 
 
 # ---------------------------------------------------------------- driver
@@ -205,18 +193,16 @@ def _ids(path):
     return {r["id"] for r in core.read_rows(path)}
 
 
-def run_trajectory(ctx, out, W, ks, tid, traj, tasks, full_rows, log, cap=CAP):
-    """One trajectory, one window: build the P+W state once, answer every retained probe for every k in `ks`. Rows go to
-    A3_W{W}_K{k}.jsonl (harness row schema) and A3_W{W}_route.jsonl (router ranks, fetch plan per k). Finished probes are skipped."""
+def run_trajectory(ctx, out, wb, tid, traj, tasks, full_rows, log, cap=CAP):
+    """One trajectory, one window of `wb` blocks: build the P+W state once, answer every retained probe (k fills the budget). Rows go
+    to A3_W{wb}.jsonl (harness row schema) and A3_W{wb}_route.jsonl (router ranks, fetch plan). Finished probes are skipped."""
     import r2_core as r2
     H, S, R = ctx.H, ctx.S, ctx.R
-    wb = window_blocks(W)
-    paths = {k: os.path.join(out, arm_name(W, k) + ".jsonl") for k in ks}
-    rpath = os.path.join(out, route_name(W) + ".jsonl")
-    done = {k: _ids(paths[k]) for k in ks}
-    done_route = _ids(rpath)
+    path = os.path.join(out, arm_name(wb) + ".jsonl")
+    rpath = os.path.join(out, route_name(wb) + ".jsonl")
+    done, done_route = _ids(path), _ids(rpath)
     ret = core.retained_probe_ids(H, tasks, full_rows)
-    todo = {t["id"] for t in tasks if t["id"] in ret and (t["id"] not in done_route or any(t["id"] not in done[k] for k in ks))}
+    todo = {t["id"] for t in tasks if t["id"] in ret and (t["id"] not in done_route or t["id"] not in done)}
     if not todo:
         return None
     plan = core.restrict(core.plan_trajectory(H, traj, [t for t in tasks if t["id"] in todo]), todo)
@@ -226,9 +212,9 @@ def run_trajectory(ctx, out, W, ks, tid, traj, tasks, full_rows, log, cap=CAP):
     full_layers = [i for i in range(len(S.layer_types)) if i not in S.linear]
     exact, comp = [], []
     segs = core.segs_from_checkpoints(plan.stream, [c.end for c in plan.cuts])
-    stats = {"traj": tid, "W": W, "window_blocks": wb, "p_blocks": p, "system_end_tok": end, "n_rows": 0, "build_s": 0.0,
+    stats = {"traj": tid, "window_blocks": wb, "p_blocks": p, "system_end_tok": end, "n_rows": 0, "build_s": 0.0,
              "answer_s": 0.0}
-    log(f"[a3] {tid[-8:]} W {W} ({wb} blocks): system+tools end at token {end}, {p} exact prefix blocks")
+    log(f"[a3] {tid[-8:]} W {wb} blocks: system+tools end at token {end}, {p} exact prefix blocks")
     t_mark = time.time()
     for k_, trip, t_len, info in r2.gen_fblk_window(R, segs, list(range(len(segs))), wb, exact_blocks=p,
                                                     on_block=lambda j, a, b, ex, cp: (exact.append(ex), comp.append(cp))):
@@ -240,40 +226,39 @@ def run_trajectory(ctx, out, W, ks, tid, traj, tasks, full_rows, log, cap=CAP):
         for item in cut.items:
             t = item.task
             t0 = time.time()
-            res = answer_item(S, st, item, ks, cap)
+            res = answer_item(S, st, item, cap)
             lo = t["src_tok"]
             gold_len = len(H.ids(t["answer"]))
             span = a1_e.locate_span(lambda sel: S.tok.decode(sel, skip_special_tokens=False), plan.stream, lo, cut.end, t["answer"])
             src = a1_e.overlap_blocks(*span, nb) if span else []
             status = source_status(span is not None, src, nb, p, wb)
             wall = round(time.time() - t0, 2)
-            for k in ks:
-                if t["id"] in done[k]:
-                    continue
-                a = res["arms"][k]
-                text = S.tok.decode(core.strip_stop(a["gen"], S.eos), skip_special_tokens=False)
-                extra = {"cut_index": cut.cut_index, "ctx_len": t_len, "decode_tokens": len(a["gen"]), "W": W, "window_blocks": wb,
-                         "p_blocks": p, "n_blocks": nb, "tail_tokens": tail, "k_req": k, "k": a["k"], "fetched_blocks": a["fetched"],
-                         "rows": a["rows"], "rows_k0": a["rows_k0"], "over_budget": a["over_budget"], "n_cand": a["n_cand"],
-                         "fetch_bytes": a["fetch_bytes"], "route_s": res["route"]["route_s"], "probe_wall_s": wall,
+            bud = res["budget"]
+            if t["id"] not in done:
+                text = S.tok.decode(core.strip_stop(res["gen"], S.eos), skip_special_tokens=False)
+                extra = {"cut_index": cut.cut_index, "ctx_len": t_len, "decode_tokens": len(res["gen"]), "window_blocks": wb,
+                         "p_blocks": p, "n_blocks": nb, "tail_tokens": tail, "k": bud["k"], "fetched_blocks": res["fetched"],
+                         "rows": bud["rows"], "rows_k0": bud["rows_k0"], "over_budget": bud["over_budget"], "n_cand": bud["n_cand"],
+                         "fetch_bytes": res["fetch_bytes"], "route_s": res["route"]["route_s"], "probe_wall_s": wall,
                          "src_blocks": src, "src_status": status,
-                         "timings": {"prefill_ms": round(a["timing"]["prefill_s"] * 1000, 1),
-                                     "decode_ms": round(a["timing"]["decode_s"] * 1000, 1)}}
-                core.append_row(paths[k], core.make_row(item, arm_name(W, k), a["gen"], text, ctx.parse(text, plan.tools), S.eos, extra))
+                         "timings": {"prefill_ms": round(res["timing"]["prefill_s"] * 1000, 1),
+                                     "decode_ms": round(res["timing"]["decode_s"] * 1000, 1)}}
+                core.append_row(path, core.make_row(item, arm_name(wb), res["gen"], text, ctx.parse(text, plan.tools), S.eos, extra))
                 stats["n_rows"] += 1
             if t["id"] not in done_route:
                 row = {"id": t["id"], "traj": tid, "type": t.get("type"), "distance_tok": t["distance_tok"], "ctx_len": t_len,
-                       "cut_index": cut.cut_index, "W": W, "n_blocks": nb, "tail_tokens": tail, "p_blocks": p, "window_blocks": wb,
+                       "cut_index": cut.cut_index, "n_blocks": nb, "tail_tokens": tail, "p_blocks": p, "window_blocks": wb,
                        "n_cand": len(res["cand"]), "located": span is not None, "src_span": list(span) if span else [lo, lo + gold_len],
                        "src_blocks": src, "src_status": status, "rank_a_last": rank_of(res["ranked"], src),
                        "ranked_top16": res["ranked"][:16], **res["route"], "probe_wall_s": wall,
-                       "per_k": {str(k): {kk: res["arms"][k][kk] for kk in ("k", "rows", "rows_k0", "over_budget", "fetched", "fetch_bytes")}
-                                 | {"source_exact_at_answer": bool(src) and all(
-                                     j in exact_set(nb, p, wb) or j in res["arms"][k]["fetched"] for j in src)} for k in ks}}
+                       "k": bud["k"], "rows": bud["rows"], "rows_k0": bud["rows_k0"], "over_budget": bud["over_budget"],
+                       "fetched": res["fetched"], "fetch_bytes": res["fetch_bytes"],
+                       "source_exact_at_answer": bool(src) and all(j in exact_set(nb, p, wb) or j in res["fetched"] for j in src),
+                       "source_fetched": bool(src) and any(j in res["fetched"] for j in src)}
                 core.append_row(rpath, row)
             stats["answer_s"] += wall
         a_, r_ = core.mem_gib()
-        log(f"[a3] {tid[-8:]} W {W} cut {k_ + 1}/{len(segs)} ctx {t_len} blocks {nb} tail {tail} peak alloc {a_:.1f} reserved {r_:.1f} GiB")
+        log(f"[a3] {tid[-8:]} W {wb} cut {k_ + 1}/{len(segs)} ctx {t_len} blocks {nb} tail {tail} peak alloc {a_:.1f} reserved {r_:.1f} GiB")
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         t_mark = time.time()
@@ -282,8 +267,8 @@ def run_trajectory(ctx, out, W, ks, tid, traj, tasks, full_rows, log, cap=CAP):
     return stats
 
 
-def run_sel(ctx, out, ref_dir, ws, ks, n, log):
-    """Stage 1: the first n (6) pilot trajectories, one build pass per window, the pilot FULL rows as reference (read only)."""
+def run_sel(ctx, out, ref_dir, wbs, n, log):
+    """Stage 1: the first n (6) pilot trajectories, one build pass per window (in blocks), the pilot FULL rows as reference (read only)."""
     H = ctx.H
     trajs, tasks = H.load_trajs(), H.load_tasks()
     full = core.read_rows(os.path.join(ref_dir, "FULL.jsonl"))
@@ -291,15 +276,15 @@ def run_sel(ctx, out, ref_dir, ws, ks, n, log):
         tp = [t for t in tasks if t["traj"] == tid and t["kind"] == "probe"]
         fr = [r for r in full if r["traj"] == tid]
         assert fr, f"no reference FULL rows for {tid} in {ref_dir}"
-        for W in ws:
+        for wb in wbs:
             t0 = time.time()
-            st = run_trajectory(ctx, out, W, ks, tid, trajs[tid], tp, fr, log)
+            st = run_trajectory(ctx, out, wb, tid, trajs[tid], tp, fr, log)
             if st:
-                core.append_row(os.path.join(out, "progress.jsonl"), {**st, "arm": f"A3_W{W}", "wall_s": round(time.time() - t0, 1)})
+                core.append_row(os.path.join(out, "progress.jsonl"), {**st, "arm": arm_name(wb), "wall_s": round(time.time() - t0, 1)})
     return {"stopped": None, "trajectories": list(trajs)[:n]}
 
 
-def run_proper(ctx, out, ref_dir, W, k, early_at, log, cap=CAP):
+def run_proper(ctx, out, ref_dir, wb, early_at, log, cap=CAP):
     """Stage 2: trajectories PILOT_N+1 .. end in file order. FULL rows come from the A1 proper run where they exist, the rest are
     computed with the A1 FULL arm (r2_core.gen_fullchk, same flags). One Haybittle-Peto look at `early_at` held-out trajectories."""
     import r2_core as r2
@@ -308,12 +293,12 @@ def run_proper(ctx, out, ref_dir, W, k, early_at, log, cap=CAP):
     order = list(trajs)[PILOT_N:]
     fpath = os.path.join(out, "FULL.jsonl")
     log(f"[a3] seeded {seed_reference(os.path.join(ref_dir, 'FULL.jsonl'), fpath, order)} reference FULL rows from {ref_dir}")
-    arm = arm_name(W, k)
+    arm = arm_name(wb)
     apath = os.path.join(out, arm + ".jsonl")
     by = {}
     for t in all_tasks:
         by.setdefault(t["traj"], []).append(t)
-    finished, summary = [], {"stopped": None, "W": W, "k": k, "arm": arm}
+    finished, summary = [], {"stopped": None, "window_blocks": wb, "arm": arm}
     try:
         for tid in order:
             tp = [t for t in by.get(tid, []) if t["kind"] == "probe"]
@@ -325,7 +310,7 @@ def run_proper(ctx, out, ref_dir, W, k, early_at, log, cap=CAP):
                 core.append_row(os.path.join(out, "progress.jsonl"), st)
             fr = [r for r in core.read_rows(fpath) if r["traj"] == tid]
             t0 = time.time()
-            st = run_trajectory(ctx, out, W, (k,), tid, trajs[tid], tp, fr, log, cap)
+            st = run_trajectory(ctx, out, wb, tid, trajs[tid], tp, fr, log, cap)
             if st:
                 core.append_row(os.path.join(out, "progress.jsonl"), {**st, "arm": arm, "wall_s": round(time.time() - t0, 1)})
             finished.append(tid)
@@ -352,16 +337,14 @@ def main(argv=None):
     ap.add_argument("--ref-dir", required=True, help="sel: the pilot dir (FULL.jsonl, read only); proper: the A1 proper dir")
     ap.add_argument("--model", default=os.path.expanduser("~/r1e/models/Qwen3.8-27B"))
     ap.add_argument("--n", type=int, default=PILOT_N, help="sel: how many pilot trajectories")
-    ap.add_argument("--ws", default=",".join(map(str, SEL_WS)))
-    ap.add_argument("--ks", default=",".join(map(str, SEL_KS)))
-    ap.add_argument("--w", type=int, help="proper: the selected window in tokens")
-    ap.add_argument("--k", type=int, help="proper: the selected k")
+    ap.add_argument("--ws", default=",".join(map(str, SEL_WBS)), help="sel: window sizes in blocks")
+    ap.add_argument("--w", type=int, help="proper: the selected window in blocks")
     ap.add_argument("--early-at", type=int, default=core.EARLY_AT)
     ap.add_argument("--cap", type=int, default=CAP)
     ap.add_argument("--mem-cap-gib", type=float, default=100)
     a = ap.parse_args(argv)
-    if a.stage == "proper" and (a.w is None or a.k is None):
-        ap.error("--stage proper needs --w and --k (the selected configuration)")
+    if a.stage == "proper" and a.w is None:
+        ap.error("--stage proper needs --w (the selected window, in blocks)")
     os.makedirs(a.out, exist_ok=True)
     logf = open(os.path.join(a.out, "run.log"), "a", buffering=1)
 
@@ -374,9 +357,9 @@ def main(argv=None):
     m = core.load_model(a.model, a.mem_cap_gib, log)
     ctx = SimpleNamespace(S=m.S, R=m.R, H=H, parse=tool_parse.parse)
     if a.stage == "sel":
-        summary = run_sel(ctx, a.out, a.ref_dir, [int(x) for x in a.ws.split(",")], [int(x) for x in a.ks.split(",")], a.n, log)
+        summary = run_sel(ctx, a.out, a.ref_dir, [int(x) for x in a.ws.split(",")], a.n, log)
     else:
-        summary = run_proper(ctx, a.out, a.ref_dir, a.w, a.k, a.early_at, log, a.cap)
+        summary = run_proper(ctx, a.out, a.ref_dir, a.w, a.early_at, log, a.cap)
     with open(os.path.join(a.out, "summary.json"), "w") as f:
         json.dump(summary, f, indent=1)
     log(f"[a3] done: {summary}")

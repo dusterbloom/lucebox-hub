@@ -71,35 +71,43 @@ def test_row_formula_matches_the_state_the_generator_builds(built):
         assert rows_of(trip) == a3.rows_at(NB, TAIL, P, WB, k, block=BLOCK, slots=KEEP), k
 
 
-def test_choose_k_lowers_k_until_the_rows_fit_and_logs_it():
-    # shipping numbers: head 10 blocks (6400 rows), window 6 blocks (3840 tokens), 57 blocks and a 639-token tail
-    full = a3.choose_k(57, 639, 10, 6, 8)
-    assert full["k_req"] == 8 and full["k"] == 5 and not full["over_budget"] and full["rows"] <= a3.CAP
+def test_choose_k_fills_the_budget_with_the_most_blocks_that_fit():
+    # head 10 blocks (6400 rows); W = 6 blocks: 57 blocks and a 639-token tail
+    full = a3.choose_k(57, 639, 10, 6)
+    assert full["k"] == 5 and not full["over_budget"] and full["rows"] <= a3.CAP
     assert a3.rows_at(57, 639, 10, 6, 6) > a3.CAP                   # one more block would not fit
-    short = a3.choose_k(30, 100, 10, 6, 8)                          # short context: everything requested fits
-    assert short["k"] == 8 and short["rows"] == a3.rows_at(30, 100, 10, 6, 8) <= a3.CAP
-    assert a3.choose_k(57, 639, 10, 6, 4)["k"] == 4                 # the worst shipping cut still takes k = 4 for W = 4096
+    assert a3.CAP - full["rows"] < a3.BLOCK - a3.SLOTS               # less than one block of room is left: the budget is filled
+    mid = a3.choose_k(30, 100, 10, 6)                               # 14 candidates, room for 8
+    assert mid["k"] == 8 and mid["n_cand"] == 14 and mid["rows"] == a3.rows_at(30, 100, 10, 6, 8) <= a3.CAP
+    assert a3.choose_k(57, 639, 10, 2)["k"] == 9                    # W = 2 blocks leaves more room: k = 9
+
+
+def test_choose_k_fetches_everything_at_short_contexts():
+    short = a3.choose_k(17, 5, 10, 2)                               # 5 candidates, 12 exact blocks
+    assert short["k"] == short["n_cand"] == 5 and short["rows"] == 17 * a3.BLOCK + 5      # all exact, like POOL16K
+    assert not short["lowered"]
 
 
 def test_choose_k_caps_at_the_number_of_candidates():
-    few = a3.choose_k(12, 0, 10, 1, 8)                              # 1 candidate block
+    few = a3.choose_k(12, 0, 10, 1)                                 # 1 candidate block
     assert few["n_cand"] == 1 and few["k"] == 1
 
 
 def test_choose_k_flags_a_cut_that_is_over_budget_even_at_k_zero():
-    over = a3.choose_k(57, 639, 10, 12, 4)                          # W = 8192: 14,080 exact + 35 x 64 + 639
+    over = a3.choose_k(57, 639, 10, 12)                             # 14,080 exact + 35 x 64 + 639
     assert over["k"] == 0 and over["over_budget"] and over["rows"] == over["rows_k0"] > a3.CAP
+
+
+def test_the_grid_windows_are_never_over_budget_at_the_longest_probe_cut():
+    for wb in a3.SEL_WBS:                                           # 36,974 tokens = 57 sealed blocks and the longest tail
+        assert not a3.choose_k(57, 639, 10, wb)["over_budget"]
 
 
 def test_overlapping_prefix_and_window_are_counted_once():
     assert a3.exact_set(5, 3, 4) == {0, 1, 2, 3, 4}
     assert a3.rows_at(5, 7, 3, 4, 0) == 5 * a3.BLOCK + 7
     assert a3.candidates(5, 3, 4) == []
-    assert a3.choose_k(5, 7, 3, 4, 8)["k"] == 0
-
-
-def test_window_blocks_is_the_largest_window_inside_w_tokens():
-    assert [a3.window_blocks(x) for x in (4096, 8192)] == [6, 12]
+    assert a3.choose_k(5, 7, 3, 4)["k"] == 0
 
 
 # ---------------------------------------------------------------- router never ranks P, W or the tail
@@ -166,40 +174,34 @@ def test_routing_pass_kv_is_discarded_before_the_answer_prefill(built, monkeypat
 
     monkeypatch.setattr(r2, "answer_ids", spy_answer)
     item = SimpleNamespace(suffix=[41, 42, 43], max_new=4)
-    out = a3.answer_item(R.S, st, item, ks=[2], cap=10 ** 9, block=BLOCK, slots=KEEP)
+    cap = a3.rows_at(NB, TAIL, P, WB, 2, block=BLOCK, slots=KEEP)                   # room for exactly 2 fetched blocks
+    out = a3.answer_item(R.S, st, item, cap=cap, block=BLOCK, slots=KEEP)
     routed = [c for c in log if c["want_queries"]]
     assert len(routed) == 1 and routed[0]["n"] == 3                                  # exactly one routing pass, over the question suffix
     routing_ids = {id(x) for e in routed[0]["ret"] for x in e}
     assert len(answered) == 1
     assert answered[0]["ids"].isdisjoint(routing_ids)                                # the answer never sees the routing pass's KV
     assert answered[0]["seq_len"] == st.t_len                                        # no question tokens are carried over
-    assert answered[0]["rows"] == a3.rows_at(NB, TAIL, P, WB, 2, block=BLOCK, slots=KEEP) == out["arms"][2]["rows"]
+    assert answered[0]["rows"] == a3.rows_at(NB, TAIL, P, WB, 2, block=BLOCK, slots=KEEP) == out["budget"]["rows"] and out["budget"]["k"] == 2
     assert all(torch.equal(x, y) for a, b in zip(snap, st.triples) for x, y in zip(a, b))   # the cut state is untouched by routing
 
 
-def test_the_same_fetch_set_is_answered_once_for_two_requested_ks(built, monkeypatch):
+def test_the_fetched_blocks_are_the_top_k_of_the_router_order_and_the_budget_is_filled(built, monkeypatch):
     R, st, _ = built
-    calls = []
-
-    def spy_answer(S, triples, seq_len, suffix, max_new, timing=None):
-        calls.append(rows_of(triples))
-        if timing is not None:
-            timing.update(prefill_s=0.0, decode_s=0.0)
-        return [1]
-
-    monkeypatch.setattr(r2, "answer_ids", spy_answer)
-    cap = a3.rows_at(NB, TAIL, P, WB, 2, block=BLOCK, slots=KEEP)                   # only k = 2 fits: k_req 4 and 8 both become 2
-    out = a3.answer_item(R.S, st, SimpleNamespace(suffix=[41, 42], max_new=4), ks=[4, 8], cap=cap, block=BLOCK, slots=KEEP)
-    assert [out["arms"][k]["k"] for k in (4, 8)] == [2, 2] and out["arms"][4]["fetched"] == out["arms"][8]["fetched"]
-    assert len(calls) == 1
+    monkeypatch.setattr(r2, "answer_ids", lambda *a, **k: [1])
+    cap = a3.rows_at(NB, TAIL, P, WB, 3, block=BLOCK, slots=KEEP) + BLOCK - KEEP - 1      # room for 3 blocks, one row short of a 4th
+    out = a3.answer_item(R.S, st, SimpleNamespace(suffix=[41, 42], max_new=4), cap=cap, block=BLOCK, slots=KEEP)
+    assert out["budget"]["k"] == 3 and out["fetched"] == out["ranked"][:3] and len(out["ranked"]) == len(CAND)
+    full = a3.answer_item(R.S, st, SimpleNamespace(suffix=[41, 42], max_new=4), cap=10 ** 9, block=BLOCK, slots=KEEP)
+    assert full["budget"]["k"] == len(CAND) and not full["budget"]["lowered"]
 
 
 def test_no_candidates_means_no_routing_pass_and_the_shipping_prefix_window_state(built, monkeypatch):
     R, st, log = built
     st.p, st.wb = NB, 0                                                              # everything is the exact prefix
     monkeypatch.setattr(r2, "answer_ids", lambda *a, **k: [1])
-    out = a3.answer_item(R.S, st, SimpleNamespace(suffix=[41], max_new=2), ks=[4], cap=10 ** 9, block=BLOCK, slots=KEEP)
-    assert not [c for c in log if c["want_queries"]] and out["arms"][4]["k"] == 0 and out["cand"] == []
+    out = a3.answer_item(R.S, st, SimpleNamespace(suffix=[41], max_new=2), cap=10 ** 9, block=BLOCK, slots=KEEP)
+    assert not [c for c in log if c["want_queries"]] and out["budget"]["k"] == 0 and out["cand"] == []
 
 
 # ---------------------------------------------------------------- source status, selection, verdict (pure)
@@ -215,14 +217,14 @@ def test_source_status_and_rank_of_the_located_block():
 
 
 def test_select_config_prefers_retention_then_fewer_mean_rows_and_only_eligible_ones():
-    t = {"W4096_K4": {"correct": 50, "n": 118, "mean_rows": 13000, "eligible": True},
-         "W4096_K8": {"correct": 50, "n": 118, "mean_rows": 13500, "eligible": True},
-         "W8192_K4": {"correct": 60, "n": 118, "mean_rows": 15000, "eligible": False},
-         "W8192_K8": {"correct": 55, "n": 118, "mean_rows": 14000, "eligible": True}}
-    assert a3.select_config(t)["selected"] == "W8192_K8"
-    assert a3.select_config(t)["selected_unrestricted"] == "W8192_K4"
-    t["W8192_K8"]["correct"] = 50
-    assert a3.select_config(t)["selected"] == "W4096_K4"                            # tie on retention: fewer mean rows
+    t = {"W2": {"correct": 50, "n": 118, "mean_rows": 15000, "eligible": True},
+         "W6": {"correct": 55, "n": 118, "mean_rows": 14000, "eligible": True}}
+    assert a3.select_config(t)["selected"] == "W6"
+    assert "selected_unrestricted" not in a3.select_config(t)
+    t["W6"]["correct"] = 50
+    assert a3.select_config(t)["selected"] == "W6"                                  # tie on retention: fewer mean rows
+    t["W6"]["eligible"] = False
+    assert a3.select_config(t)["selected"] == "W2"
     assert a3.select_config({k: {**v, "eligible": False} for k, v in t.items()})["selected"] is None
 
 
@@ -235,7 +237,7 @@ def test_final_verdict_follows_a1_section_6():
 
 
 def test_arm_names_are_stable_file_stems():
-    assert a3.arm_name(4096, 8) == "A3_W4096_K8" and a3.route_name(4096) == "A3_W4096_route"
+    assert a3.arm_name(6) == "A3_W6" and a3.route_name(6) == "A3_W6_route" and a3.SEL_WBS == (2, 6)
 
 
 # ---------------------------------------------------------------- reference seeding and the report tables
@@ -250,17 +252,36 @@ def test_seed_reference_copies_only_the_wanted_trajectories_unedited_and_never_o
     assert a3.seed_reference(str(ref), str(out), ["a"]) == 0 and out.read_text() == "mine\n"
 
 
-def _row(traj, cut, k, k_req, rows, over=False, n_cand=7, dist=100):
-    return {"traj": traj, "cut_index": cut, "k": k, "k_req": k_req, "rows": rows, "over_budget": over, "n_cand": n_cand,
+def _row(traj, cut, k, rows, over=False, n_cand=7, dist=100):
+    return {"traj": traj, "cut_index": cut, "k": k, "rows": rows, "over_budget": over, "n_cand": n_cand,
             "distance_tok": dist, "route_s": 1.0, "fetch_bytes": 10, "probe_wall_s": 2.0, "decode_tokens": 5}
 
 
-def test_cuts_table_counts_each_cut_once_and_flags_lowered_and_over_budget_cuts():
+def test_cuts_table_counts_each_cut_once_logs_k_and_rows_and_flags_over_budget_cuts():
     import a1_a3_report as rep
-    rows = [_row("t", 1, 4, 4, 9000), _row("t", 1, 4, 4, 9000), _row("t", 2, 2, 4, 16000), _row("t", 3, 0, 4, 17000, over=True)]
+    rows = [_row("t", 1, 7, 9000), _row("t", 1, 7, 9000), _row("t", 2, 2, 16000), _row("t", 3, 0, 17000, over=True)]
     c = rep.cuts_table(rows)
-    assert c["cuts"] == 3 and c["cuts_over_cap_at_k0"] == 1 and c["cuts_k_lowered"] == 2
-    assert c["k_used_histogram"] == {"4": 1, "2": 1, "0": 1} and c["max_rows"] == 17000
+    assert c["cuts"] == 3 and c["cuts_over_cap_at_k0"] == 1 and c["cuts_k_below_candidates"] == 2 and "cuts_k_lowered" not in c
+    assert c["k_used_histogram"] == {"7": 1, "2": 1, "0": 1} and c["max_rows"] == 17000
+
+
+def test_retention_by_k_used_groups_probes_by_the_k_of_their_cut():
+    import a1_a3_report as rep
+    rows = [{"id": "a", "k": 9}, {"id": "b", "k": 9}, {"id": "c", "k": 3}, {"id": "d", "k": 0}]
+    got = rep.by_k_used(rows, ["a", "b", "c", "d"], [1, 0, 1, 0])
+    assert got == {"0": {"n": 1, "correct": 0}, "3": {"n": 1, "correct": 1}, "9": {"n": 2, "correct": 1}}
+
+
+def test_router_recall_within_the_fetched_set_splits_a_miss_into_routing_and_compaction():
+    import a1_a3_report as rep
+
+    def rr(i, status, fetched):
+        return {"id": i, "src_status": status, "source_fetched": fetched}
+
+    route = [rr("a", "candidate", True), rr("b", "candidate", True), rr("c", "candidate", False), rr("d", "exact_resident", False)]
+    got = rep.fetched_vs_retention(route, {"a": 1, "b": 0, "c": 0, "d": 1})
+    assert got == {"candidate_probes": 3, "source_fetched": {"n": 2, "correct": 1}, "source_not_fetched": {"n": 1, "correct": 0},
+                   "router_recall_in_fetched_set": 2 / 3}
 
 
 def test_router_tables_use_only_candidate_probes_with_a_rank():

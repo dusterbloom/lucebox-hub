@@ -1,6 +1,6 @@
 #!/bin/bash
 # runs ON lucebox6, AFTER any other GPU job has exited (one job at a time): A3 stage 1, configuration selection (PREREG "A3 routed exact fetch"),
-# probes only, pilot trajectories 1 to 6, W in {4096, 8192} x k in {4, 8}. One build pass per trajectory and W serves both k.
+# probes only, pilot trajectories 1 to 6, W in {2, 6} blocks (1,280 and 3,840 tokens); k fills the 16,384-row budget at every cut.
 # Reads ~/r1e/out/a1_pilot/FULL.jsonl as the reference, never writes there. Output ~/r1e/out/a3sel/.
 source ~/r1e/code/r1e/env.sh           # HIP_VISIBLE_DEVICES=1
 export A1_TP_BUILD=$HOME/r1e/code/a1/tool_parser/build
@@ -25,11 +25,11 @@ mkdir -p $O
   echo "--- code md5"
   bash ~/r1e/md5set.sh ~/r1e/code/a1 ~/r1e/code/am_qwen35
   md5sum $A1_TP_BUILD/tool_parser_cli $A1_TP_BUILD/tokenize_cli ~/r1e/data/a1/*.jsonl ~/r1e/data/a1/*.jinja ~/r1e/data/a1/*.gguf ~/r1e/data/a1/request_ids.sha256
-  echo "--- cmd: a1_a3.py --stage sel --out $O --ref-dir $PILOT --n 6 --ws 4096,8192 --ks 4,8 --cap 16384"
+  echo "--- cmd: a1_a3.py --stage sel --out $O --ref-dir $PILOT --n 6 --ws 2,6 --cap 16384"
   free -m
 } > $O/provenance.txt
 cd ~/r1e/code/repo
-setsid nohup $PY ~/r1e/code/a1/a1_a3.py --stage sel --out $O --ref-dir $PILOT --n 6 --ws 4096,8192 --ks 4,8 --cap 16384 > $O/stdout.log 2>&1 < /dev/null &
+setsid nohup $PY ~/r1e/code/a1/a1_a3.py --stage sel --out $O --ref-dir $PILOT --n 6 --ws 2,6 --cap 16384 > $O/stdout.log 2>&1 < /dev/null &
 PID=$!
 echo $PID > $O/pid
 setsid nohup $PY ~/r1e/code/a1/a1_watchdog.py $PID $O > $O/watchdog.out 2>&1 < /dev/null &

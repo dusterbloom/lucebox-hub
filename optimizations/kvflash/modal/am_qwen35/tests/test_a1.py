@@ -456,7 +456,7 @@ def _a3_build(S, segs, sess, a1_a3, ratio=0.25):
     return R, st
 
 
-def test_a3_row_budget_lowers_k_and_matches_the_rows_of_the_real_state(setup, monkeypatch):
+def test_a3_row_budget_fills_k_and_matches_the_rows_of_the_real_state(setup, monkeypatch):
     import a1_a3
     S, segs = setup
     _blocks24(monkeypatch)
@@ -467,9 +467,10 @@ def test_a3_row_budget_lowers_k_and_matches_the_rows_of_the_real_state(setup, mo
             trip = a1_a3.a3_state(st.triples, st.comp, st.exact, st.nb, st.tail, st.p, st.wb, a1_a3.candidates(12, A3_P, A3_WB)[:k], sess.linear)
             assert trip[st.full_layers[0]][0].shape[2] == a1_a3.rows_at(12, 12, A3_P, A3_WB, k, block=BLOCK_W, slots=slots), k
         cap = a1_a3.rows_at(12, 12, A3_P, A3_WB, 2, block=BLOCK_W, slots=slots)
-        got = a1_a3.choose_k(12, 12, A3_P, A3_WB, 5, cap=cap, block=BLOCK_W, slots=slots)
+        got = a1_a3.choose_k(12, 12, A3_P, A3_WB, cap=cap, block=BLOCK_W, slots=slots)
         assert got["k"] == 2 and got["lowered"] and got["rows"] <= cap and not got["over_budget"]
-        assert a1_a3.choose_k(12, 12, A3_P, A3_WB, 5, cap=cap - 1, block=BLOCK_W, slots=slots)["k"] == 1
+        assert a1_a3.choose_k(12, 12, A3_P, A3_WB, cap=cap - 1, block=BLOCK_W, slots=slots)["k"] == 1
+        assert a1_a3.choose_k(12, 12, A3_P, A3_WB, cap=10 ** 9, block=BLOCK_W, slots=slots)["k"] == 7     # candidates 2-8, all fetched
 
 
 def test_a3_router_never_ranks_the_prefix_the_window_or_the_tail(setup, monkeypatch):
@@ -539,16 +540,18 @@ def test_a3_routing_pass_kv_is_discarded_before_the_answer_prefill(setup, monkey
         monkeypatch.setattr(r2, "extend", spy_extend)
         monkeypatch.setattr(r2, "answer_ids", spy_answer)
         slots = r2.slots_for(BLOCK_W, 0.25)
-        out = a1_a3.answer_item(sess, st, SimpleNamespace(suffix=suffix, max_new=4), ks=[2], cap=10 ** 9, block=BLOCK_W, slots=slots)
+        cap = a1_a3.rows_at(12, 12, A3_P, A3_WB, 2, block=BLOCK_W, slots=slots)           # room for exactly 2 fetched blocks
+        out = a1_a3.answer_item(sess, st, SimpleNamespace(suffix=suffix, max_new=4), cap=cap, block=BLOCK_W, slots=slots)
+        assert out["budget"]["k"] == 2
         assert len(routing) == 1 and len(seen) == 1
         assert seen[0][0] == st.t_len and not (seen[0][1] & routing[0])             # logical length without question tokens; no shared tensor
         assert seen[0][2] == a1_a3.rows_at(12, 12, A3_P, A3_WB, 2, block=BLOCK_W, slots=slots)
         assert all(torch.equal(x, y) for a, b in zip(snap, st.triples) for x, y in zip(a, b))      # the cut state survived the routing pass
         monkeypatch.setattr(r2, "extend", real_extend)
         monkeypatch.setattr(r2, "answer_ids", real_answer)
-        clean = r2.answer_ids(sess, a1_a3.a3_state(st.triples, st.comp, st.exact, 12, 12, A3_P, A3_WB, out["arms"][2]["fetched"], sess.linear),
+        clean = r2.answer_ids(sess, a1_a3.a3_state(st.triples, st.comp, st.exact, 12, 12, A3_P, A3_WB, out["fetched"], sess.linear),
                               st.t_len, suffix, 4)
-        assert out["arms"][2]["gen"] == clean                                       # the same tokens as an answer that never routed
+        assert out["gen"] == clean                                      # the same tokens as an answer that never routed
 
 
 # ---------------------------------------------------------------- real data, CPU
