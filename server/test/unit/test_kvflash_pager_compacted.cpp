@@ -164,11 +164,6 @@ TEST_CASE(KvflashPagerCompactedFixture, logical_positions_count_chunks_not_rows)
     CHECK(!p.is_identity());
     CHECK(!p.identity_prefix_covers(6 * kChunk));
 
-    // The append head continues at logical position 384, in the next free block.
-    CHECK(p.slot_for(6 * kChunk) >= 0);
-    CHECK(p.n_chunks() == 7);
-    CHECK(p.resident_blocks() == 5);
-
     // Slot positions: a compacted row stands somewhere inside its 192 positions,
     // in order, so the causal mask sees it for every later query.
     std::vector<int32_t> pos(kPool);
@@ -184,6 +179,11 @@ TEST_CASE(KvflashPagerCompactedFixture, logical_positions_count_chunks_not_rows)
     CHECK(m[3 * kChunk] == 0xFC00);
     CHECK(m[4 * kChunk + 63] == 0xFC00);
     CHECK(m[5 * kChunk] == 0x0000);
+
+    // The append head continues at logical position 384, in the next free block.
+    CHECK(p.slot_for(6 * kChunk) >= 0);
+    CHECK(p.n_chunks() == 7);
+    CHECK(p.resident_blocks() == 5);
 }
 
 TEST_CASE(KvflashPagerCompactedFixture, mark_compacted_rejects_bad_geometry_and_changes_nothing) {

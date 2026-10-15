@@ -208,10 +208,23 @@ public:
     // pager (pins kept clipped to nothing); P at or beyond the materialized
     // length is a no-op. Valid for any P because full-attention KV at a
     // position does not depend on later tokens.
-    void truncate(int64_t P) {
-        if (!attached()) return;
+    //
+    // A compacted block has 64 rows for `span` chunks of tokens, so a cut
+    // strictly inside one cannot keep a prefix of it: the whole block is dropped
+    // and the cut moves to its start. Returns the effective P (the argument
+    // otherwise); callers that resume at P must use the returned value.
+    int64_t truncate(int64_t P) {
+        if (!attached()) return std::max<int64_t>(P, 0);
         if (P < 0) P = 0;
-        if (P >= (int64_t)chunks_.size() * cfg_.chunk_tokens) return;
+        for (int c = 0; c < (int)chunks_.size(); c++) {
+            const int64_t lo = (int64_t)c * cfg_.chunk_tokens;
+            if (chunks_[(size_t)c].compacted &&
+                P > lo && P < lo + (int64_t)chunks_[(size_t)c].span * cfg_.chunk_tokens) {
+                P = lo;
+                break;
+            }
+        }
+        if (P >= (int64_t)chunks_.size() * cfg_.chunk_tokens) return P;
         synchronize_paging();   // queued page DMA must not touch what is freed below
         const int keep = (int)((P + cfg_.chunk_tokens - 1) / cfg_.chunk_tokens);
         for (int c = (int)chunks_.size() - 1; c >= keep; c--) {
@@ -235,6 +248,7 @@ public:
         synchronize_paging();   // zeroing is queued on page_stream_
         refill_after_truncate_();
         synchronize_paging();   // recalls are queued on page_stream_
+        return P;
     }
 
     // After truncate the pool holds what the dropped tail left behind: after a
@@ -348,6 +362,7 @@ public:
         if (c > cur_chunk_) cur_chunk_ = c;
         if ((int)chunks_.size() <= c) chunks_.resize(c + 1);
         ChunkState & st = chunks_[c];
+        if (st.covered) return -1;   // sealed inside a compacted block: no rows of its own
         if (st.block < 0) {
             if (!ensure_free_block()) {
                 cur_chunk_ = prev_cur_chunk;
@@ -426,6 +441,7 @@ public:
         for (int c = 0; c < (int)chunks_.size(); c++) {
             if (chunks_[c].block >= 0 && chunks_[c].block != c) return false;
             if (chunks_[c].block < 0 && chunks_[c].on_host) return false;
+            if (chunks_[c].compacted || chunks_[c].covered) return false;
         }
         return true;
     }
@@ -440,7 +456,7 @@ public:
         const int nc = (n_tok + cfg_.chunk_tokens - 1) / cfg_.chunk_tokens;
         if (nc > (int)chunks_.size()) return false;
         for (int c = 0; c < nc; c++)
-            if (chunks_[c].block != c) return false;
+            if (chunks_[c].block != c || chunks_[c].compacted) return false;
         return true;
     }
     int block_of(int c) const {
@@ -452,7 +468,7 @@ public:
     // need an allocation must use slot_for() beforehand.
     int slot_of(int64_t pos) const {
         const int c = (int)(pos / cfg_.chunk_tokens);
-        if (c >= (int)chunks_.size() || chunks_[c].block < 0) return -1;
+        if (c >= (int)chunks_.size() || chunks_[c].block < 0 || chunks_[c].compacted) return -1;
         return chunks_[c].block * cfg_.chunk_tokens + (int)(pos % cfg_.chunk_tokens);
     }
 
@@ -465,8 +481,10 @@ public:
         for (int c = 0; c < (int)chunks_.size(); c++) {
             if (chunks_[c].block < 0) continue;
             int32_t * p = dst + (size_t)chunks_[c].block * cfg_.chunk_tokens;
+            // A compacted row stands for `span` tokens: spread over the block's
+            // range, in order, all before the block's end.
             for (int i = 0; i < cfg_.chunk_tokens; i++)
-                p[i] = (int32_t)c * cfg_.chunk_tokens + i;
+                p[i] = (int32_t)c * cfg_.chunk_tokens + i * chunks_[c].span;
         }
     }
     const KvFlashStats & stats() const { return stats_; }
@@ -488,6 +506,73 @@ public:
             if (chunks_[c].block < 0) continue;
             uint16_t * p = dst + (size_t)chunks_[c].block * cfg_.chunk_tokens;
             for (int i = 0; i < cfg_.chunk_tokens; i++) p[i] = F16_ZERO;
+        }
+    }
+
+    // Compaction (AM): turn logical chunks [c0, c0 + span) into ONE compacted
+    // block. Chunk c0's pool block already holds the 64 compacted rows (C1 keys,
+    // C2 values, written by the caller); the other span-1 chunks give up their
+    // blocks and host copies and become "covered" (no rows, no slot). The block
+    // then pages, serializes and truncates like any chunk, and stands for
+    // span * chunk_tokens logical tokens: positions are logical, rows are not.
+    // `beta` is the key bias per (attention layer, KV head, slot):
+    // beta[(layer * n_head_kv + head) * chunk_tokens + slot]. False, nothing
+    // touched, if the geometry is wrong or c0 is not resident.
+    bool mark_compacted(int c0, int span, const std::vector<float> & beta) {
+        if (!attached() || span < 1 || c0 < 0 || c0 + span > (int)chunks_.size()) return false;
+        if (beta.size() != beta_floats_()) return false;
+        if (chunks_[(size_t)c0].block < 0) return false;
+        for (int c = c0; c < c0 + span; c++) {
+            const ChunkState & st = chunks_[(size_t)c];
+            if (st.compacted || st.covered) return false;
+            if (c > c0 && st.block < 0 && !st.on_host) return false;   // never materialized
+        }
+        synchronize_paging();   // queued page DMA must not touch what is freed below
+        for (int c = c0 + 1; c < c0 + span; c++) {
+            ChunkState & st = chunks_[(size_t)c];
+            if (st.block >= 0) {
+                zero_block(st.block);
+                free_blocks_.push_back(st.block);
+                st.block = -1;
+            }
+            if (st.on_host && has_tensor_storage()) {
+                release_host_(st);
+                stats_.host_bytes -= (int64_t)chunk_bytes_;
+            }
+            st.on_host = false;
+            st.covered = true;
+            st.score = -std::numeric_limits<float>::infinity();
+        }
+        ChunkState & head = chunks_[(size_t)c0];
+        head.compacted = true;
+        head.span = span;
+        head.beta = beta;
+        epoch_++;
+        synchronize_paging();   // the zeroing is queued on page_stream_
+        return true;
+    }
+    bool is_compacted(int c) const { return c >= 0 && c < (int)chunks_.size() && chunks_[(size_t)c].compacted; }
+    bool is_covered(int c) const { return c >= 0 && c < (int)chunks_.size() && chunks_[(size_t)c].covered; }
+    int compacted_span(int c) const { return is_compacted(c) ? chunks_[(size_t)c].span : 0; }
+    bool any_compacted() const {
+        for (const ChunkState & st : chunks_) if (st.compacted) return true;
+        return false;
+    }
+
+    // F32 key bias of attention layer `layer` for the shared FA mask: [pool_tokens
+    // columns, n_head_kv] with the head on the slow axis (the ggml_flash_attn_ext_
+    // add_kv_bias layout). beta on the slots of resident compacted blocks, 0
+    // everywhere else: exact chunks, and free or paged-out blocks, which the
+    // mask closes anyway. `dst` holds pool_tokens * n_head_kv floats; every one
+    // is written. Cache it by epoch().
+    void fill_kv_bias(int layer, float * dst) const {
+        std::fill(dst, dst + (size_t)cfg_.pool_tokens * n_head_kv_, 0.0f);
+        for (const ChunkState & st : chunks_) {
+            if (!st.compacted || st.block < 0) continue;
+            for (int h = 0; h < n_head_kv_; h++)
+                std::copy_n(st.beta.data() + ((size_t)layer * n_head_kv_ + h) * cfg_.chunk_tokens,
+                            cfg_.chunk_tokens,
+                            dst + (size_t)h * cfg_.pool_tokens + (size_t)st.block * cfg_.chunk_tokens);
         }
     }
 
@@ -549,13 +634,22 @@ public:
     //                      v_seg_bytes, chunk_bytes, ggml_type(K), has_ledger(=1)
     //   nc x chunk_bytes   KV bytes, segment order of copy_chunk()
     //   nc x 8 bytes       ledger: u8 was_resident, 3 pad, f32 score
+    //   [compaction trailer, only when a chunk is compacted: see parse_compacted_().
+    //    Covered chunks carry zero KV bytes; a blob without compaction has no trailer.]
     // Not serialized: physical block numbers, LRU order, pins.
     std::vector<uint8_t> serialize(int max_chunks = -1) const {
         synchronize_page_stream_();   // queued D2H must land in host_data first
-        const int nc = (max_chunks >= 0 && max_chunks < (int)chunks_.size())
-                       ? max_chunks : (int)chunks_.size();
+        int nc = (max_chunks >= 0 && max_chunks < (int)chunks_.size())
+                 ? max_chunks : (int)chunks_.size();
+        int n_comp = 0;
+        for (int c = 0; c < (int)chunks_.size() && c < nc; ++c) {
+            if (!chunks_[(size_t)c].compacted) continue;
+            if (c + chunks_[(size_t)c].span > nc) nc = c;   // a cut never splits a compacted block
+            else n_comp++;
+        }
         const size_t kv_bytes = (size_t)nc * chunk_bytes_;
-        std::vector<uint8_t> out(kBlobHdr + kv_bytes + (size_t)nc * kLedgerEntry, 0);
+        const size_t comp_bytes = n_comp ? 8 + (size_t)n_comp * (8 + beta_floats_() * 4) : 0;
+        std::vector<uint8_t> out(kBlobHdr + kv_bytes + (size_t)nc * kLedgerEntry + comp_bytes, 0);
         uint8_t * p = out.data();
         std::memcpy(p, &kBlobMagic, 8); p += 8;
         const uint32_t hdr[8] = {(uint32_t)nc, (uint32_t)cfg_.chunk_tokens,
@@ -588,6 +682,18 @@ public:
             uint8_t * lp = out.data() + kBlobHdr + kv_bytes + (size_t)c * kLedgerEntry;
             lp[0] = st.block >= 0 ? 1u : 0u;
             std::memcpy(lp + 4, &st.score, 4);
+        }
+        if (n_comp) {
+            uint8_t * tp = out.data() + kBlobHdr + kv_bytes + (size_t)nc * kLedgerEntry;
+            const uint32_t head[2] = {kCompactMagic, (uint32_t)n_comp};
+            std::memcpy(tp, head, 8); tp += 8;
+            for (int c = 0; c < nc; ++c) {
+                const ChunkState & st = chunks_[(size_t)c];
+                if (!st.compacted) continue;
+                const uint32_t cs[2] = {(uint32_t)c, (uint32_t)st.span};
+                std::memcpy(tp, cs, 8); tp += 8;
+                std::memcpy(tp, st.beta.data(), beta_floats_() * 4); tp += beta_floats_() * 4;
+            }
         }
         return out;
     }
@@ -622,12 +728,26 @@ public:
         size_t n_resident = 0;
         for (size_t c = 0; c < nc; ++c) n_resident += lp[c * kLedgerEntry] != 0;
         if (n_resident > (size_t)n_blocks_) return false;
+        std::vector<size_t> comp_c0;
+        std::vector<uint32_t> comp_span;
+        std::vector<const uint8_t *> comp_beta;
+        if (!parse_compacted_(lp + nc * kLedgerEntry, data + n, nc, comp_c0, comp_span, comp_beta))
+            return false;
 
         reset();
         last_serialized_kv_k_type_ = h[6];
         chunks_.resize(nc);
+        for (size_t i = 0; i < comp_c0.size(); ++i) {
+            ChunkState & hd = chunks_[comp_c0[i]];
+            hd.compacted = true;
+            hd.span = (int)comp_span[i];
+            hd.beta.resize(beta_floats_());
+            std::memcpy(hd.beta.data(), comp_beta[i], beta_floats_() * 4);
+            for (size_t c = comp_c0[i] + 1; c < comp_c0[i] + comp_span[i]; ++c) chunks_[c].covered = true;
+        }
         for (size_t c = 0; c < nc; ++c) {
             ChunkState & st = chunks_[c];
+            if (st.covered) continue;   // no rows, no host copy
             if (has_tensor_storage()) {
                 const uint8_t * src = kv + c * chunk_bytes_;
 #ifdef KVFLASH_HAS_ASYNC_DMA
@@ -657,6 +777,40 @@ private:
     static constexpr size_t kBlobHdr = sizeof(uint64_t) + 8 * sizeof(uint32_t);
     static constexpr size_t kLedgerEntry = 8;
 
+    size_t beta_floats_() const {
+        return attn_k_.size() * (size_t)n_head_kv_ * (size_t)cfg_.chunk_tokens;
+    }
+    // Optional blob trailer, only when a chunk is compacted: u32 magic, u32 n,
+    // then per block u32 c0, u32 span, beta (beta_floats_() floats).
+    static constexpr uint32_t kCompactMagic = 0x47534b56;
+
+    // Parse the trailer at [p, end). False on any inconsistency. Bytes that are
+    // not a trailer (no magic) are tolerated, as before.
+    bool parse_compacted_(const uint8_t * p, const uint8_t * end, size_t nc,
+                          std::vector<size_t> & c0, std::vector<uint32_t> & span,
+                          std::vector<const uint8_t *> & beta) const {
+        uint32_t magic = 0, n = 0;
+        if ((size_t)(end - p) < 8) return true;
+        std::memcpy(&magic, p, 4);
+        if (magic != kCompactMagic) return true;
+        std::memcpy(&n, p + 4, 4);
+        p += 8;
+        const size_t entry = 8 + beta_floats_() * 4;
+        if (n > nc || (size_t)(end - p) / entry < n) return false;
+        size_t floor_c = 0;
+        for (uint32_t i = 0; i < n; i++, p += entry) {
+            uint32_t a = 0, s = 0;
+            std::memcpy(&a, p, 4);
+            std::memcpy(&s, p + 4, 4);
+            if (s < 1 || a < floor_c || (size_t)a + s > nc) return false;
+            floor_c = (size_t)a + s;
+            c0.push_back(a);
+            span.push_back(s);
+            beta.push_back(p + 8);
+        }
+        return true;
+    }
+
     uint32_t live_k_type_() const {
         return !attn_k_.empty() && attn_k_[0] ? (uint32_t)attn_k_[0]->type
                                               : (uint32_t)GGML_TYPE_F16;
@@ -672,6 +826,10 @@ private:
         bool     on_host  = false;    // backing store holds valid bytes
         uint64_t last_use = 0;
         float    score    = -std::numeric_limits<float>::infinity();  // QK ledger
+        bool     compacted = false;   // 64 AM rows standing for `span` chunks of tokens
+        bool     covered   = false;   // sealed inside the compacted block before it
+        int      span      = 1;
+        std::vector<float> beta;      // compacted only: see mark_compacted()
 #ifdef KVFLASH_HAS_ASYNC_DMA
         void *   host_data = nullptr; // cudaMallocHost-pinned; allocated on first page_out
 #else
