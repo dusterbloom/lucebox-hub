@@ -321,6 +321,10 @@ Effort is engineering days for one person, tests included.
     Modal F takes 6-7 s per article.
 
 ### M6. Region B, segment map, per-layer ragged extents (5 d)
+Superseded by Revision 2 item 3: a compacted chunk flag plus beta in `kv_bias`.
+This first design was built on `kvflash/2.0b-m6-region-b` and failed its gate
+(evidence `m6-region-b-gate/` there): one of 5 prompts diverged and decode was
+3.6% slower, because the empty B columns widen the flash-attention span.
 - Files:
   - KV allocation in `qwen35/qwen35_target_graph.cpp:197`: pool tensors of
     `A + B_L` per layer;
