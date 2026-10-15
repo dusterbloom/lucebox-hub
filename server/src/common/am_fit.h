@@ -43,9 +43,20 @@ struct ScoreDims {
 //   k: k_type (F16 or F32), contiguous [head_dim, n_keys, n_kv_head]
 //   scores: resized to n_kv_head * n_keys, head-major (scores[h*n_keys + j])
 // The graph is chunked over queries: at most `chunk_rows` softmax rows
-// (n_head * queries) are live at once. Returns false and fills *err on failure.
+// (n_head * queries) are live at once, so chunk_rows must be >= n_head (one
+// query per head is the smallest chunk); smaller values are rejected.
+// Returns false and fills *err on failure. This host-pointer form uploads q
+// and k to `backend` and calls the tensor form below.
 bool score_keys(ggml_backend_t backend, const ScoreDims & dims, const ggml_fp16_t * q,
                 ggml_type k_type, const void * k, int chunk_rows,
+                std::vector<float> & scores, std::string * err);
+
+// Tensor form, no host round trip: q and k already live in buffers of
+// `backend` (for M3, a plane view of cache.q_blk and the block's K).
+//   q: F16 [head_dim, n_queries, n_head]; nb[0] = 2, any nb[1], nb[2]
+//   k: F16 or F32 [head_dim, n_keys, n_kv_head]; nb[0] = type size, any nb[1], nb[2]
+// Dimensions come from the tensors. Neither tensor is modified.
+bool score_keys(ggml_backend_t backend, ggml_tensor * q, ggml_tensor * k, int chunk_rows,
                 std::vector<float> & scores, std::string * err);
 
 // Pure host selection: indices of the k largest scores, ordered by score
@@ -56,6 +67,10 @@ void select_top_k(const float * scores, int n, int k, int32_t * out);
 // head-major (out[h*top_k + r] is the r-th ranked key index of head h).
 bool select_keys(ggml_backend_t backend, const ScoreDims & dims, const ggml_fp16_t * q,
                  ggml_type k_type, const void * k, int top_k, int chunk_rows,
+                 std::vector<int32_t> & out, std::string * err);
+
+// Tensor-form score_keys + select_top_k per KV head.
+bool select_keys(ggml_backend_t backend, ggml_tensor * q, ggml_tensor * k, int top_k, int chunk_rows,
                  std::vector<int32_t> & out, std::string * err);
 
 }  // namespace luce::am

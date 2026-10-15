@@ -76,10 +76,12 @@ Problem make_problem(int d, int n_head, int n_kv, int T, int n) {
 }
 
 // Reference scores in double: sum over the head's pooled queries of w^2.
-std::vector<double> ref_scores(const Problem & p) {
+// scale <= 0 selects 1/sqrt(d); skip_last drops the last query row of every head
+// (used only to prove a fixture notices an omitted row).
+std::vector<double> ref_scores(const Problem & p, double scale = 0.0, int skip_last = 0) {
     const ScoreDims & D = p.dims;
     const int G = D.n_head / D.n_kv_head;
-    const double inv = 1.0 / std::sqrt((double) D.head_dim);
+    const double inv = scale > 0 ? scale : 1.0 / std::sqrt((double) D.head_dim);
     std::vector<double> out((size_t) D.n_kv_head * D.n_keys, 0.0);
     std::vector<double> kd((size_t) D.n_keys * D.head_dim), s(D.n_keys);
     for (int h = 0; h < D.n_kv_head; ++h) {
@@ -87,7 +89,7 @@ std::vector<double> ref_scores(const Problem & p) {
             kd[i] = ggml_fp16_to_fp32(p.k[(size_t) h * D.n_keys * D.head_dim + i]);
         for (int g = 0; g < G; ++g) {
             const int head = h * G + g;
-            for (int i = 0; i < D.n_queries; ++i) {
+            for (int i = 0; i < D.n_queries - skip_last; ++i) {
                 const ggml_fp16_t * qr = &p.q[((size_t) head * D.n_queries + i) * D.head_dim];
                 double mx = -1e300;
                 for (int j = 0; j < D.n_keys; ++j) {
@@ -179,6 +181,7 @@ void test_select_top_k_pure() {
 }
 
 void run_backend_suite(const Backend & b) {
+    g_rng = 0x9e3779b97f4a7c15ull;  // same fixtures on every backend
     // MHA, T = 700 keys, n = 4200 queries, t = 64.
     {
         Problem p = make_problem(128, 1, 1, 700, 4200);
@@ -254,6 +257,147 @@ void run_backend_suite(const Backend & b) {
     }
 }
 
+
+// Raw-score agreement metric: worst |got-ref| / (1e-4*ref + 1e-6*max(ref)) over
+// all keys; <= 1 means every score is within 1e-4 relative (plus a 1e-6 floor
+// relative to the largest score of the problem).
+double score_err(const std::vector<float> & got, const std::vector<double> & ref) {
+    if (got.size() != ref.size()) return 1e30;
+    double mx = 0;
+    for (double r : ref) mx = std::max(mx, r);
+    double worst = 0;
+    for (size_t i = 0; i < ref.size(); ++i)
+        worst = std::max(worst, std::fabs(got[i] - ref[i]) / (1e-4 * ref[i] + 1e-6 * mx));
+    return worst;
+}
+
+void run_scores(const Backend & b, const std::string & name, const Problem & p, int chunk_rows,
+                const std::vector<double> & ref) {
+    std::vector<float> got;
+    std::string err;
+    const bool ok = luce::am::score_keys(b.be, p.dims, p.q.data(), GGML_TYPE_F16, p.k.data(), chunk_rows, got, &err);
+    const double e = ok ? score_err(got, ref) : 1e30;
+    char buf[64];
+    std::snprintf(buf, sizeof buf, " err/tol=%.3g", e);
+    check(ok && e <= 1.0, std::string(b.name) + " scores " + name + buf + (ok ? "" : " (" + err + ")"));
+}
+
+std::vector<float> to_float(const std::vector<double> & v) { return std::vector<float>(v.begin(), v.end()); }
+
+void run_extra_suite(const Backend & b) {
+    g_rng = 0x1234abcd5678ef01ull;  // same fixtures on every backend
+    // Raw score values against the double reference, whole and chunked.
+    {
+        Problem p = make_problem(128, 1, 1, 700, 4200);
+        const auto ref = ref_scores(p);
+        run_scores(b, "MHA T=700 n=4200", p, 8192, ref);
+        run_scores(b, "MHA T=700 n=4200 chunk_rows=1000", p, 1000, ref);
+    }
+    Problem real = make_problem(256, 24, 4, 640, 640);
+    const auto real_ref = ref_scores(real);
+    run_scores(b, "real shape", real, 8192, real_ref);
+    run_scores(b, "real shape chunk_rows=1000", real, 1000, real_ref);
+    run_scores(b, "real shape chunk_rows=24 (one query per head per chunk)", real, 24, real_ref);
+
+    // chunk_rows below n_head cannot be honoured and must be rejected.
+    {
+        std::vector<float> sc;
+        std::string err;
+        const bool lo = luce::am::score_keys(b.be, real.dims, real.q.data(), GGML_TYPE_F16, real.k.data(), 23, sc, &err);
+        check(!lo && err.find("chunk_rows") != std::string::npos, std::string(b.name) + " chunk_rows < n_head is rejected: '" + err + "'");
+        std::vector<int32_t> sel;
+        check(!luce::am::select_keys(b.be, real.dims, real.q.data(), GGML_TYPE_F16, real.k.data(), 64, 1, sel, &err),
+              std::string(b.name) + " select_keys chunk_rows=1 with 24 heads is rejected");
+    }
+
+    // The last query row alone decides the top-k: every other row is zero (uniform
+    // attention, equal contribution to all keys). A chunked loop that drops the
+    // final row leaves all scores tied and selects keys 0..t-1.
+    {
+        const int d = 64, nh = 8, nkv = 2, T = 200, n = 100, t = 8, G = nh / nkv;
+        Problem p = make_problem(d, nh, nkv, T, n);
+        std::fill(p.q.begin(), p.q.end(), ggml_fp32_to_fp16(0.0f));
+        // Eight planted identical keys per KV head; the last query row of every
+        // head in the group points at them. Everything else is uniform attention.
+        for (int h = 0; h < nkv; ++h) {
+            std::vector<ggml_fp16_t> v(d);
+            for (auto & x : v) x = ggml_fp32_to_fp16(2.0f * next_gauss());
+            for (int i = 0; i < t; ++i)
+                std::memcpy(&p.k[((size_t) h * T + 40 + 17 * i + h) * d], v.data(), d * sizeof(ggml_fp16_t));
+            for (int g = 0; g < G; ++g)
+                std::memcpy(&p.q[((size_t) (h * G + g) * n + (n - 1)) * d], v.data(), d * sizeof(ggml_fp16_t));
+        }
+        const auto ref = ref_scores(p);
+        const auto ref_dropped = ref_scores(p, 0.0, 1);
+        bool sensitive = true;
+        for (int h = 0; h < nkv; ++h) {
+            auto order = ref_topk(&ref[(size_t) h * T], T, t + 1);
+            auto c = sorted_copy(ref_topk(&ref_dropped[(size_t) h * T], T, t));
+            const double s8 = ref[(size_t) h * T + order[t - 1]], s9 = ref[(size_t) h * T + order[t]];
+            // the last row picks a top-8 that differs from the all-tied one, with a
+            // rank-8/rank-9 gap far above the fp32-vs-double noise
+            sensitive = sensitive && sorted_copy(std::vector<int32_t>(order.begin(), order.begin() + t)) != c &&
+                        (s8 - s9) > 1e-3 * s8;
+        }
+        check(sensitive, "last-row fixture: dropping the last row changes the top-8, rank-8/9 gap > 1e-3 relative");
+        for (int rows : { 8192, 8, 24 }) {
+            run_case(b, "last-row fixture chunk_rows=" + std::to_string(rows), p, t, rows, false, ref);
+            run_scores(b, "last-row fixture chunk_rows=" + std::to_string(rows), p, rows, ref);
+        }
+    }
+    // Scale sensitivity: sharp logits so that 1/sqrt(d) vs 1/d vs no scale give
+    // scores that differ by far more than the tolerance.
+    {
+        Problem p = make_problem(64, 4, 2, 128, 64);
+        for (auto & x : p.q) x = ggml_fp32_to_fp16(2.0f * ggml_fp16_to_fp32(x));
+        const auto ref = ref_scores(p);
+        const double e_invd = score_err(to_float(ref_scores(p, 1.0 / 64)), ref);
+        const double e_one = score_err(to_float(ref_scores(p, 1.0)), ref);
+        check(e_invd > 100 && e_one > 100, "scale fixture: 1/d and unscaled scores are far outside the tolerance");
+        run_scores(b, "scale fixture (1/sqrt(d))", p, 8192, ref);
+        run_case(b, "scale fixture", p, 16, 8192, false, ref);
+    }
+    // Tensor entry point on device-resident planes of 4D buffers shaped like
+    // cache.q_blk [d, 640, n_head, n_layers]: plane 1 holds the real data, the
+    // neighbours hold other data, so a wrong plane offset changes the result.
+    {
+        const int d = 256, nh = 24, nkv = 4, T = 640, n = 640, planes = 3, plane = 1;
+        Problem other = make_problem(d, nh, nkv, T, n);
+        ggml_init_params ip = { ggml_tensor_overhead() * 8, nullptr, true };
+        ggml_context * ctx = ggml_init(ip);
+        ggml_tensor * q4 = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, n, nh, planes);
+        ggml_tensor * k4 = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, T, nkv, planes);
+        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, b.be);
+        for (int pl = 0; pl < planes; ++pl) {
+            const Problem & src = pl == plane ? real : other;
+            ggml_backend_tensor_set(q4, src.q.data(), pl * q4->nb[3], q4->nb[3]);
+            ggml_backend_tensor_set(k4, src.k.data(), pl * k4->nb[3], k4->nb[3]);
+        }
+        ggml_context * vctx = ggml_init(ip);
+        ggml_tensor * qv = ggml_view_3d(vctx, q4, d, n, nh, q4->nb[1], q4->nb[2], plane * q4->nb[3]);
+        ggml_tensor * kv = ggml_view_3d(vctx, k4, d, T, nkv, k4->nb[1], k4->nb[2], plane * k4->nb[3]);
+        std::vector<float> sc;
+        std::string err;
+        const bool ok = luce::am::score_keys(b.be, qv, kv, 8192, sc, &err);
+        const double e = ok ? score_err(sc, real_ref) : 1e30;
+        check(ok && e <= 1.0, std::string(b.name) + " tensor form on plane views of 4D device buffers matches the reference " + err);
+        std::vector<float> host_sc;
+        luce::am::score_keys(b.be, real.dims, real.q.data(), GGML_TYPE_F16, real.k.data(), 8192, host_sc, &err);
+        check(ok && sc == host_sc, std::string(b.name) + " tensor form is bit-identical to the host-pointer form");
+        std::vector<int32_t> sel;
+        const bool sok = luce::am::select_keys(b.be, qv, kv, 64, 1000, sel, &err);
+        bool same = sok;
+        for (int h = 0; sok && h < nkv; ++h) {
+            auto want = sorted_copy(ref_topk(&real_ref[(size_t) h * T], T, 64));
+            same = same && want == sorted_copy(std::vector<int32_t>(sel.begin() + h * 64, sel.begin() + (h + 1) * 64));
+        }
+        check(same, std::string(b.name) + " tensor-form select_keys matches the reference");
+        ggml_backend_buffer_free(buf);
+        ggml_free(vctx);
+        ggml_free(ctx);
+    }
+}
+
 void run_bench(const Backend & b) {
     Problem p = make_problem(256, 24, 4, 640, 640);
     std::vector<int32_t> out;
@@ -295,7 +439,7 @@ int main(int argc, char ** argv) {
     (void) cpu_only;
 #endif
     for (const Backend & b : backends) {
-        if (bench) run_bench(b); else run_backend_suite(b);
+        if (bench) run_bench(b); else { run_backend_suite(b); run_extra_suite(b); }
     }
     if (gpu) ggml_backend_free(gpu);
     ggml_backend_free(cpu);
