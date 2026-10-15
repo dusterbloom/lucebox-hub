@@ -538,3 +538,10 @@ The project owner chose the machine and asked for a short pilot before the prope
   - **The pilot decides nothing.** It only says whether the proper run (Amendment 1: early look at 20, then 60) goes ahead as written.
   - If nothing in the design changes after the pilot, its rows are the first 6 trajectories of the proper run. If anything changes (arms, ratio, render, limits), its rows are discarded and the proper run starts from trajectory 1.
 - **Pilot time:** about 6/60 of stage 1, about 1.1 h plus the model load.
+
+### R2b correction (2026-10-15): the smoke had written rows
+
+An independent fact-check found that two R2b texts said "before any row" when that was not true.
+- **The smoke started before Amendment 1.** The smoke run on lucebox6 had already started when Amendment 1 was committed (fe8a834c, 09:40:15). So "before the smoke" in that amendment is wrong.
+- **The smoke wrote throwaway rows before the withdrawal.** It wrote `~/r1e/out/r2b_smoke/FULL-CHK__k1__t0.1__held.jsonl` at 09:40:49: 3 rows, held-out article 20, k = 1, full KV. The withdrawal came later (f8abef0d, 09:48:06), so "before any row" there is wrong. Both texts should say "before any kept row".
+- **Nothing changes.** Smoke rows are throwaway under the R2b text. Nobody read their accuracy for any purpose; only build seconds, answer seconds and peak memory were reported. The file stays on lucebox6, unused.
