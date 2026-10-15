@@ -1,7 +1,7 @@
 """Reference fixtures for the engine's AM gates (M3 query capture, M4 selection, M5 beta and value fit): the shipping fit's inputs and
 outputs on real blocks, as raw little-endian files a C++ test reads with the manifest alone (no numpy, no pickle).
 
-Cases (shipping arm: gen_fblk_window with window 0, uniform 64 slots of a 640-token block, context-prefill queries, ratio 0.10):
+Cases (the first three: shipping arm: gen_fblk_window with window 0, uniform 64 slots of a 640-token block, context-prefill queries, ratio 0.10):
   traj1_first   the first sealed block after the system prefix of pilot trajectory 1
   traj1_12k     the sealed block that holds token 12,000 of pilot trajectory 1
   article_r1e   block 3 of the first article of the R1(e) selection split (formatted context as R1(e) builds it)
@@ -9,6 +9,8 @@ Per case and per full-attention layer (16), in ggml element order (fastest dimen
   q [d, 640, n_head] post-RoPE context-prefill queries the fit used     k, v [d, 640, n_kv] the block's post-RoPE keys and values
   scores [640, n_kv] raw HighestAttnKeys key scores (the fit's own method)   idx [64, n_kv] int32 selected positions in rank order
   beta [64, n_kv]     c2 [d, 64, n_kv] fitted values       and tokens [640] / positions [640] int32 (once per case).
+  traj1_12k_exactq: the same block's post-RoPE queries when trajectory 1 is prefilled EXACTLY (no compaction, 640-token chunks) from token 0:
+  only q per layer, plus tokens / positions of the block and prefix_tokens [block end] (what the engine's prefill sees).
   python3 am_fixture_dump.py --out ~/r1e/out/am_fixtures"""
 import argparse
 import hashlib
@@ -109,12 +111,25 @@ def assemble_layers(records, q_all, layer_ids):
     return layers, {"q_group_check": bool(q_ok), "scores_reproduce_indices": bool(rep_ok)}
 
 
-def write_case(directory, layers, tokens, positions, meta):
+def model_identity(model_dir, config):
+    """What the 3090 side needs to confirm the GGUF is the same base weights: config _name_or_path / commit hash, md5 of config.json and the
+    safetensors file names with sizes."""
+    d = os.path.expanduser(model_dir)
+    cfg = os.path.join(d, "config.json")
+    return {"model_path": d, "_name_or_path": getattr(config, "_name_or_path", None), "revision": getattr(config, "_commit_hash", None),
+            "config_json_md5": hashlib.md5(open(cfg, "rb").read()).hexdigest() if os.path.exists(cfg) else None,
+            "weight_files": sorted((f, os.path.getsize(os.path.join(d, f))) for f in os.listdir(d) if f.endswith((".safetensors", ".json")))
+            if os.path.isdir(d) else []}
+
+
+def write_case(directory, layers, tokens, positions, meta, extra=None):
     """Write the raw files and manifest.json of one case. layers: {layer: {q,k,v,scores,idx,beta,c2}} (torch layouts: q (H,n,d), k/v (n_kv,n,d),
     scores (n_kv,n), idx/beta (n_kv,slots), c2 (n_kv,slots,d))."""
     os.makedirs(directory, exist_ok=True)
     files = [{"layer": None, "name": "tokens", **write_tensor(directory, "tokens.i32", tokens, "int32")},
              {"layer": None, "name": "positions", **write_tensor(directory, "positions.i32", positions, "int32")}]
+    for name, t in (extra or {}).items():
+        files.append({"layer": None, "name": name, **write_tensor(directory, f"{name}.i32", t, "int32")})
     for layer in sorted(layers):
         for name, t in layers[layer].items():
             dt = "int32" if name == "idx" else "float32"
@@ -124,6 +139,20 @@ def write_case(directory, layers, tokens, positions, meta):
     with open(os.path.join(directory, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=1)
     return manifest
+
+
+def exact_block_queries(S, ids, block, chunk=BLOCK):
+    """Prefill ids[:, :(block + 1) * chunk] exactly (no compaction, `chunk`-token pieces behind the exact cache, as FULL-CHK does) and return
+    the post-RoPE queries of piece `block`: (16, 24, chunk, d)."""
+    import r2_core as r2
+    triples, orig_len, q = None, 0, None
+    for j in range(block + 1):
+        triples, orig_len, q = r2.extend(S.model, S.layer_types, triples, orig_len, ids[:, j * chunk:(j + 1) * chunk].to(S.dev),
+                                         want_queries=(j == block))
+        if j < block:
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    del triples
+    return q.detach().float().cpu()
 
 
 def code_md5(paths):
@@ -216,7 +245,8 @@ def main(argv=None):
     layer_ids = [i for i in range(len(S.layer_types)) if i not in S.linear]
     here = os.path.dirname(os.path.abspath(__file__))
     md5 = code_md5([os.path.join(here, "am_fixture_dump.py"), os.path.join(here, "a1_core.py"), r2.__file__])
-    common = {"model": a.model, "code_md5": md5, "layer_types_full_attention": layer_ids}
+    common = {"model": a.model, "model_identity": model_identity(a.model, m.model.config), "code_md5": md5,
+              "layer_types_full_attention": layer_ids}
 
     trajs, tasks = H.load_trajs(), H.load_tasks()
     tid = list(trajs)[0]
@@ -232,6 +262,19 @@ def main(argv=None):
         _, chk = dump_case(a.out, label, stream, b, got[b], layer_ids, {**common, "source": {"trajectory": tid, "system_end_token": end}}, S, R)
         log(f"[fixtures] {label} block {b} written; {chk}")
     del got
+    torch.cuda.empty_cache()
+    b = blocks[1]
+    q = exact_block_queries(S, stream, b)
+    lo, hi = b * BLOCK, (b + 1) * BLOCK
+    write_case(os.path.join(a.out, "traj1_12k_exactq"), {layer: {"q": q[i]} for i, layer in enumerate(layer_ids)}, stream[0, lo:hi],
+               torch.arange(lo, hi), {**common, "case": "traj1_12k_exactq", "block_index": b, "start_token": lo, "end_token": hi, "n_tokens": BLOCK,
+                                      "head_dim": q.shape[-1], "n_head": q.shape[1], "source": {"trajectory": tid},
+                                      "precision": "model bf16; queries dumped as float32 (exact upcast)",
+                                      "fit": "none: trajectory 1 prefilled exactly from token 0 in 640-token pieces, no compaction; q is the "
+                                             "post-RoPE query tensor of the block's piece (what an engine prefill with exact history sees)"},
+               extra={"prefix_tokens": stream[0, :hi]})
+    log(f"[fixtures] traj1_12k_exactq block {b} written, prefix {hi} tokens")
+    del q
     torch.cuda.empty_cache()
 
     from evaluation.datasets import load_dataset

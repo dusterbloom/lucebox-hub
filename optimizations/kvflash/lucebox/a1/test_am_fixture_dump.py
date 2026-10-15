@@ -5,6 +5,7 @@ import os
 import sys
 
 import torch
+from types import SimpleNamespace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -118,3 +119,38 @@ def test_assemble_layers_orders_calls_by_layer_then_head_and_checks_the_query_gr
 def test_target_blocks_are_the_first_after_the_system_prefix_and_the_one_near_12k():
     assert fx.trajectory_blocks(system_end=7200, block=640) == [12, 18]        # ceil(7200/640) = 12; 12000 is inside block 18
     assert fx.trajectory_blocks(system_end=0, block=640) == [0, 18]
+
+
+def test_exact_case_files_match_the_manifest_and_carry_the_prefix_tokens(tmp_path):
+    layers = {2: {"q": fake_layer(3)["q"]}, 9: {"q": fake_layer(4)["q"]}}
+    prefix = torch.arange(500, 500 + 3 * N)
+    fx.write_case(str(tmp_path), layers, prefix[-N:], torch.arange(2 * N, 3 * N), {"case": "exactq"}, extra={"prefix_tokens": prefix})
+    m = json.load(open(tmp_path / "manifest.json"))
+    by = {(e["layer"], e["name"]): e for e in m["files"]}
+    assert sorted(k for k in by if k[0] is not None) == [(2, "q"), (9, "q")]                      # q only, no k/v/fit tensors
+    assert by[(2, "q")]["shape_ggml"] == [D, N, HKV * G] and torch.equal(read_back(str(tmp_path), by[(9, "q")]), layers[9]["q"])
+    e = by[(None, "prefix_tokens")]
+    assert e["file"] == "prefix_tokens.i32" and e["shape_ggml"] == [3 * N] and read_back(str(tmp_path), e).tolist() == prefix.tolist()
+
+
+def test_model_identity_reports_config_name_revision_and_weight_files(tmp_path):
+    (tmp_path / "config.json").write_text('{"a": 1}')
+    (tmp_path / "model-00001.safetensors").write_bytes(b"xyz")
+    mi = fx.model_identity(str(tmp_path), SimpleNamespace(_name_or_path="Qwen/X", _commit_hash="abc"))
+    assert mi["_name_or_path"] == "Qwen/X" and mi["revision"] == "abc" and len(mi["config_json_md5"]) == 32
+    assert ["model-00001.safetensors", 3] in [list(x) for x in mi["weight_files"]]
+
+
+def test_exact_prefill_runs_pieces_behind_the_exact_cache_and_captures_only_the_last(monkeypatch):
+    sys.path.insert(0, os.path.join(HERE, "..", "..", "modal", "am_qwen35"))
+    import r2_core as r2
+    calls = []
+
+    def ext(model, layer_types, triples, orig_len, ids, want_queries=False):
+        calls.append((triples is None, orig_len, ids[0, 0].item(), ids.shape[1], want_queries))
+        return ("T%d" % len(calls),), (orig_len or 0) + ids.shape[1], (torch.ones(2, 2, ids.shape[1], 4) if want_queries else None)
+
+    monkeypatch.setattr(r2, "extend", ext)
+    S = SimpleNamespace(model=None, layer_types=[], dev="cpu")
+    q = fx.exact_block_queries(S, torch.arange(15).view(1, -1), block=2, chunk=5)
+    assert calls == [(True, 0, 0, 5, False), (False, 5, 5, 5, False), (False, 10, 10, 5, True)] and q.shape == (2, 2, 5, 4)
