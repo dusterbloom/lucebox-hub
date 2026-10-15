@@ -247,6 +247,30 @@ bool bit_equal(const std::vector<float> & a, const std::vector<float> & b) {
     return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
 }
 
+// Zero-bias vs no-bias. They run the same kernel, so the output must be bit-identical, except under
+// LUCE_FA256_WMMA=1 where the no-bias masked op takes WMMA and the zero-bias op is routed off it: two kernels,
+// so compare within the NMSE tolerance instead.
+struct ZeroCheck { bool ok; const char * how; };
+ZeroCheck zero_bias_check(const std::vector<float> & zero, const std::vector<float> & base, bool wmma_env) {
+    if (!wmma_env) {
+        const bool same = bit_equal(zero, base);
+        return { same, same ? "bit-identical" : "DIFFERS" };
+    }
+    const bool close = compare(zero, base).nmse <= NMSE_TOL;
+    return { close, close ? "within-tol (WMMA)" : "DIFFERS (WMMA)" };
+}
+
+bool test_zero_check_modes() {
+    const std::vector<float> base = { 1.0f, -2.0f, 3.0f, 0.5f };
+    std::vector<float> near_ = base; near_[2] += 1e-5f;
+    std::vector<float> far_  = base; far_[2]  += 1.0f;
+    const bool ok = zero_bias_check(base, base, false).ok && !zero_bias_check(near_, base, false).ok &&
+                    zero_bias_check(near_, base, true).ok && !zero_bias_check(far_, base, true).ok &&
+                    zero_bias_check(base, base, true).ok;
+    std::printf("%s zero-bias check modes (bit-exact by default, tolerance under LUCE_FA256_WMMA)\n", ok ? "PASS   " : "FAIL   ");
+    return ok;
+}
+
 void run_case(const char * bname, ggml_backend_t be, const Case & c, const Data & d,
               const std::vector<float> & ref_bias, const std::vector<float> & ref_inf,
               const std::vector<float> & beta_inf, Tally & t) {
@@ -278,14 +302,15 @@ void run_case(const char * bname, ggml_backend_t be, const Case & c, const Data 
     }
     const Err e = compare(biased, ref_bias);
     const Err ei = compare(inf, ref_inf);
-    const bool identity = bit_equal(zero, base);
+    const ZeroCheck zc = zero_bias_check(zero, base, std::getenv("LUCE_FA256_WMMA") != nullptr);
+    const bool identity = zc.ok;
     const bool ok = e.nmse <= NMSE_TOL && ei.nmse <= NMSE_TOL && identity;
     t.worst_abs = std::max({ t.worst_abs, e.max_abs, ei.max_abs });
     t.worst_nmse = std::max({ t.worst_nmse, e.nmse, ei.nmse });
     ++(ok ? t.pass : t.fail);
     std::printf("%s %-5s %-44s nmse %.2e abs %.2e | -inf nmse %.2e abs %.2e | zero-bias %s\n",
                 ok ? "PASS   " : "FAIL   ", bname, c.name().c_str(), e.nmse, e.max_abs, ei.nmse,
-                ei.max_abs, identity ? "bit-identical" : "DIFFERS");
+                ei.max_abs, zc.how);
 }
 
 // src[9] is shared with the DS4 lane KV: add_kv_bias(op, nullptr) on a DS4 op
@@ -373,6 +398,7 @@ int main(int argc, char ** argv) {
         ggml_backend_cuda_set_graphs_disabled_override(true);
     }
 #endif
+    const bool zero_ok = test_zero_check_modes();
     const bool qsa_ok = !gpu || test_qsa_bias_not_admitted(gpu);
     std::vector<Case> cases;
     for (const Shape & s : SHAPES)
@@ -429,6 +455,6 @@ int main(int argc, char ** argv) {
     if (gpu) std::printf("SUMMARY gpu: pass %d fail %d unsupp %d skip %d, max abs err %.3e, max nmse %.3e\n",
                 tg.pass, tg.fail, tg.unsupp, tg.skip, tg.worst_abs, tg.worst_nmse);
     const bool strict = std::getenv("FATTN_KV_BIAS_STRICT") != nullptr;
-    const int bad = !guard_ok + !qsa_ok + fail_nodisc + tc.fail + tg.fail + tc.unsupp + (strict ? tg.unsupp : 0);
+    const int bad = !guard_ok + !qsa_ok + !zero_ok + fail_nodisc + tc.fail + tg.fail + tc.unsupp + (strict ? tg.unsupp : 0);
     return bad ? 1 : 0;
 }
