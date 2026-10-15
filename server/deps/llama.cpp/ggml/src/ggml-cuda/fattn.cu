@@ -4815,9 +4815,18 @@ bool ggml_cuda_flash_attn_ext_supported(int device, const ggml_tensor * dst) {
     }
     const best_fattn_kernel kernel = ggml_cuda_get_best_fattn_kernel(device, dst);
     // kv_bias (src[9]) is only honoured by the kernels that read it.
-    if (dst->src[9] != nullptr && kernel != BEST_FATTN_KERNEL_VEC && kernel != BEST_FATTN_KERNEL_TILE &&
-        kernel != BEST_FATTN_KERNEL_MMA_F16) {
-        return false;
+    if (dst->src[9] != nullptr) {
+        if (kernel == BEST_FATTN_KERNEL_CHUNKED) {
+            // The chunked path ignores sinks, softcap and ALiBi; do not stack kv_bias on that.
+            float max_bias = 0.0f, logit_softcap = 0.0f;
+            memcpy(&max_bias,      (const float *) dst->op_params + 1, sizeof(float));
+            memcpy(&logit_softcap, (const float *) dst->op_params + 2, sizeof(float));
+            return dst->src[4] == nullptr && max_bias == 0.0f && logit_softcap == 0.0f;
+        }
+        if (kernel != BEST_FATTN_KERNEL_VEC && kernel != BEST_FATTN_KERNEL_TILE &&
+            kernel != BEST_FATTN_KERNEL_MMA_F16) {
+            return false;
+        }
     }
     return kernel != BEST_FATTN_KERNEL_NONE;
 }

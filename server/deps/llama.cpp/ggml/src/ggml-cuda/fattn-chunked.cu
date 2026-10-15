@@ -136,6 +136,7 @@ void ggml_cuda_flash_attn_ext_chunked(ggml_backend_cuda_context & ctx, ggml_tens
     const ggml_tensor * K    = dst->src[1];
     const ggml_tensor * V    = dst->src[2];
     const ggml_tensor * mask = dst->src[3];
+    const ggml_tensor * kv_bias = dst->src[9];
 
     const int64_t D     = Q->ne[0];
     const int64_t nq    = Q->ne[1];
@@ -303,7 +304,8 @@ void ggml_cuda_flash_attn_ext_chunked(ggml_backend_cuda_context & ctx, ggml_tens
                         chunk_len_int, chunk_pad,
                         D, nq, q_len, q_start,
                         nh_q,
-                        mask_seq, mask_stride, kv_start, tbq_chunk);
+                        mask_seq, mask_stride, kv_start, tbq_chunk,
+                        kv_bias ? (const float *) kv_bias->data : nullptr, gqa, nkv);
                     CUDA_CHECK(cudaGetLastError());
                 }
 

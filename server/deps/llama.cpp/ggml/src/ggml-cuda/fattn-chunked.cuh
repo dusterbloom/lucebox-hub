@@ -94,7 +94,10 @@ static __global__ void k_chunked_softmax_update(
         const half  * __restrict__ mask, // [nq_total, nkv_total] f16 mask, or nullptr
         const int64_t mask_stride,
         const int64_t kv_start,
-        const int s_stride) {
+        const int s_stride,
+        const float * __restrict__ kv_bias, // [nkv_total, nh_kv] f32 key bias, or nullptr
+        const int64_t gqa,
+        const int64_t nkv_total) {
     const int64_t hq_idx  = (int64_t)blockIdx.x;
     const int64_t head    = hq_idx / q_batch;
     const int64_t q_local = hq_idx % q_batch;
@@ -114,6 +117,9 @@ static __global__ void k_chunked_softmax_update(
             float val = S[s_base + c];
             if (mask != nullptr) {
                 val += __half2float(mask[q_pos * mask_stride + kv_start + c]);
+            }
+            if (kv_bias != nullptr) {
+                val += kv_bias[(head / gqa) * nkv_total + kv_start + c];
             }
             sm[c] = val;
         } else {
@@ -139,6 +145,9 @@ static __global__ void k_chunked_softmax_update(
             float val = S[s_base + c];
             if (mask != nullptr) {
                 val += __half2float(mask[q_pos * mask_stride + kv_start + c]);
+            }
+            if (kv_bias != nullptr) {
+                val += kv_bias[(head / gqa) * nkv_total + kv_start + c];
             }
             sm[c] = __expf(val - m_chunk);
         } else {
@@ -192,6 +201,9 @@ static __global__ void k_chunked_softmax_update(
             float val = S[s_base + c];
             if (mask != nullptr) {
                 val += __half2float(mask[q_pos * mask_stride + kv_start + c]);
+            }
+            if (kv_bias != nullptr) {
+                val += kv_bias[(head / gqa) * nkv_total + kv_start + c];
             }
             S[s_base + c] = beta * __expf(val - m_chunk);
         }
