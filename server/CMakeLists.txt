@@ -1230,6 +1230,16 @@ if(LUCE_TESTS)
             $<IF:$<STREQUAL:${LUCE_GPU_BACKEND},hip>,GGML_USE_HIP,GGML_USE_CUDA>)
         target_link_libraries(test_fattn_kv_bias PRIVATE ggml-cpu)
         list(APPEND _raw_unit_test_targets test_fattn_kv_bias)
+
+        # AM compaction M4: HighestAttnKeys scoring (common/am_fit) vs a double
+        # reference, CPU and GPU. am_fit.cpp is compiled into the test directly.
+        luce_add_ggml_gpu_executable(test_am_fit test/unit/test_am_fit.cpp)
+        target_sources(test_am_fit PRIVATE src/common/am_fit.cpp)
+        target_include_directories(test_am_fit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_compile_definitions(test_am_fit PRIVATE
+            $<IF:$<STREQUAL:${LUCE_GPU_BACKEND},hip>,GGML_USE_HIP,GGML_USE_CUDA>)
+        target_link_libraries(test_am_fit PRIVATE ggml-cpu)
+        list(APPEND _raw_unit_test_targets test_am_fit)
     endif()
 
     if(LUCE_ENABLE_MIXED_CUDA_HIP)
