@@ -556,16 +556,9 @@ def test_a3_routing_pass_kv_is_discarded_before_the_answer_prefill(setup, monkey
         clean = r2.answer_ids(sess, a1_a3.a3_state(st.triples, st.comp, st.exact, 12, 12, A3_P, A3_WB, out["fetched"], sess.linear),
                               st.t_len, suffix, 4)
         assert out["gen"] == clean                                      # the same tokens as an answer that never routed
-        for r in routing[0]:                                            # storage independence: changing a routing tensor leaves the answer's alone
-            if not r.is_floating_point():
-                continue
-            orig = r.clone()
-            for a in seen[0][1]:
-                if a.shape == r.shape and a.dtype == r.dtype:
-                    before = a.clone()
-                    r.add_(1)
-                    assert torch.equal(a, before), "routing-pass tensor shares storage with the answer state"
-                    r.copy_(orig)
+        routed = {r.untyped_storage().data_ptr() for r in routing[0] if r.numel()}          # storage independence, any shape or dtype
+        kept = {a.untyped_storage().data_ptr() for a in seen[0][1] if a.numel()}
+        assert routed and kept and routed.isdisjoint(kept), "a routing-pass tensor shares storage with the answer state"
 
 
 # ---------------------------------------------------------------- real data, CPU

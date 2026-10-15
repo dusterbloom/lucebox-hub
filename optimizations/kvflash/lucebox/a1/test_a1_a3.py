@@ -101,7 +101,9 @@ def test_choose_k_flags_a_cut_that_is_over_budget_even_at_k_zero():
 
 def test_the_grid_windows_are_never_over_budget_at_the_longest_probe_cut():
     for wb in a3.SEL_WBS:                                           # 36,974 tokens = 57 sealed blocks and the longest tail
-        assert not a3.choose_k(57, 639, 10, wb)["over_budget"]
+        for reserve in (0, 164, 2000):                              # 2000: a 1,936-token question and 64 new tokens, far above any suffix
+            got = a3.choose_k(57, 639, 10, wb, reserve)
+            assert not got["over_budget"] and got["peak_rows"] <= a3.CAP
 
 
 def test_overlapping_prefix_and_window_are_counted_once():
@@ -217,16 +219,15 @@ def test_source_status_and_rank_of_the_located_block():
     assert a3.rank_of(ranked, [4, 9]) == 3 and a3.rank_of(ranked, [9]) is None
 
 
-def test_select_config_prefers_retention_then_fewer_mean_rows_and_only_eligible_ones():
-    t = {"W2": {"correct": 50, "n": 118, "mean_rows": 15000, "eligible": True},
-         "W6": {"correct": 55, "n": 118, "mean_rows": 14000, "eligible": True}}
+def test_select_config_prefers_retention_then_fewer_mean_rows_then_the_smaller_w():
+    t = {"W2": {"correct": 50, "n": 118, "mean_rows": 15000},
+         "W6": {"correct": 55, "n": 118, "mean_rows": 14000}}
     assert a3.select_config(t)["selected"] == "W6"
-    assert "selected_unrestricted" not in a3.select_config(t)
     t["W6"]["correct"] = 50
     assert a3.select_config(t)["selected"] == "W6"                                  # tie on retention: fewer mean rows
-    t["W6"]["eligible"] = False
-    assert a3.select_config(t)["selected"] == "W2"
-    assert a3.select_config({k: {**v, "eligible": False} for k, v in t.items()})["selected"] is None
+    t["W6"]["mean_rows"] = 15000
+    assert a3.select_config(t)["selected"] == "W2"                                  # tie on both: the smaller W
+    assert a3.select_config({})["selected"] is None
 
 
 def test_final_verdict_follows_a1_section_6():
@@ -253,17 +254,19 @@ def test_seed_reference_copies_only_the_wanted_trajectories_unedited_and_never_o
     assert a3.seed_reference(str(ref), str(out), ["a"]) == 0 and out.read_text() == "mine\n"
 
 
-def _row(traj, cut, k, rows, over=False, n_cand=7, dist=100):
-    return {"traj": traj, "cut_index": cut, "k": k, "rows": rows, "over_budget": over, "n_cand": n_cand,
+def _row(traj, cut, k, rows, reserve=164, n_cand=7, dist=100):
+    return {"traj": traj, "cut_index": cut, "k": k, "rows": rows, "reserve": reserve, "peak_rows": rows + reserve, "n_cand": n_cand,
             "distance_tok": dist, "route_s": 1.0, "fetch_bytes": 10, "probe_wall_s": 2.0, "decode_tokens": 5}
 
 
-def test_cuts_table_counts_each_cut_once_logs_k_and_rows_and_flags_over_budget_cuts():
+def test_cuts_table_counts_each_cut_once_and_keeps_k_rows_reserve_and_peak_rows():
     import a1_a3_report as rep
-    rows = [_row("t", 1, 7, 9000), _row("t", 1, 7, 9000), _row("t", 2, 2, 16000), _row("t", 3, 0, 17000, over=True)]
+    rows = [_row("t", 1, 7, 9000), _row("t", 1, 7, 9000), _row("t", 2, 2, 16000, reserve=300), _row("t", 3, 0, 12000, n_cand=0)]
     c = rep.cuts_table(rows)
-    assert c["cuts"] == 3 and c["cuts_over_cap_at_k0"] == 1 and c["cuts_k_below_candidates"] == 2 and "cuts_k_lowered" not in c
-    assert c["k_used_histogram"] == {"7": 1, "2": 1, "0": 1} and c["max_rows"] == 17000
+    assert c["cuts"] == 3 and c["cuts_k_below_candidates"] == 1 and c["cuts_without_candidates"] == 1
+    assert not [k for k in c if "over_cap" in k]                                   # a cut over budget aborts the run: no such count
+    assert c["k_used_histogram"] == {"7": 1, "2": 1, "0": 1} and c["max_rows"] == 16000
+    assert c["max_reserve"] == 300 and c["max_peak_rows"] == 16300 and c["mean_peak_rows"] == (9164 + 16300 + 12164) / 3
 
 
 def test_retention_by_k_used_groups_probes_by_the_k_of_their_cut():
@@ -326,7 +329,10 @@ def test_the_reserve_defaults_to_the_item_question_plus_max_new(built, monkeypat
     item = SimpleNamespace(suffix=[1] * 5, max_new=7)
     out = a3.answer_item(R.S, st, item, cap=base + 12 + BLOCK - KEEP, block=BLOCK, slots=KEEP)          # room for 1 block after 5 + 7 rows
     assert out["budget"]["reserve"] == 12 and out["budget"]["k"] == 1
-    st.reserve = 100                                                  # a cut-level reserve (longest question) wins
+    st.reserve = 100                                                  # a cut-level reserve (longest question) wins: no room even at k = 0
+    with pytest.raises(RuntimeError, match="over budget"):
+        a3.answer_item(R.S, st, item, cap=base + 12 + BLOCK - KEEP, block=BLOCK, slots=KEEP)
+    st.reserve = 12 + BLOCK - KEEP
     assert a3.answer_item(R.S, st, item, cap=base + 12 + BLOCK - KEEP, block=BLOCK, slots=KEEP)["budget"]["k"] == 0
 
 
@@ -363,18 +369,39 @@ def test_row_guard_asserts_the_cap_at_the_question_prefill_and_at_every_decode_s
             S.model(input_ids=torch.zeros(1, 5, dtype=torch.long))   # the question prefill alone is over
 
 
-def test_answer_item_runs_the_answer_inside_the_guard(built, monkeypatch):
+def test_a_real_cap_trips_the_guard_in_the_answer_and_an_exact_fit_passes(built, monkeypatch):
     R, st, _ = built
-    seen = []
+    item = SimpleNamespace(suffix=[1, 2], max_new=4)
 
-    def spy(S, triples, seq_len, suffix, max_new, timing=None):
-        seen.append(type(S.model).__name__)
+    class Fake:
+        def __call__(self, input_ids=None, **k):
+            return None
+
+    def feed(S, triples, seq_len, suffix, max_new, timing=None):          # the question prefill, then max_new - 1 decode steps
+        S.model(input_ids=torch.tensor([suffix]))
+        for _ in range(max_new - 1):
+            S.model(input_ids=torch.tensor([[1]]))
         return [1]
 
-    monkeypatch.setattr(r2, "answer_ids", spy)
-    R.S.model = SimpleNamespace()
-    a3.answer_item(R.S, st, SimpleNamespace(suffix=[1, 2], max_new=3), cap=10 ** 9, block=BLOCK, slots=KEEP)
-    assert seen == ["_RowGuard"] and type(R.S.model).__name__ == "SimpleNamespace"
+    R.S.model = Fake()
+    monkeypatch.setattr(r2, "answer_ids", feed)
+    base = a3.rows_at(NB, TAIL, P, WB, 2, block=BLOCK, slots=KEEP)
+    out = a3.answer_item(R.S, st, item, cap=base + 2 + 4, block=BLOCK, slots=KEEP)       # k = 2 and the answer fits with a row to spare
+    assert out["budget"]["k"] == 2 and type(R.S.model).__name__ == "Fake"
+    st.reserve = 1                                                         # a reserve that forgets the answer: k = 2, but 5 rows are fed
+    with pytest.raises(AssertionError, match="cap"):
+        a3.answer_item(R.S, st, item, cap=base + 1, block=BLOCK, slots=KEEP)
+    assert type(R.S.model).__name__ == "Fake"                              # the guard is removed even when it trips
+
+
+def test_a_cut_over_budget_at_k_zero_aborts_instead_of_running_uncapped(built, monkeypatch):
+    R, st, _ = built
+    monkeypatch.setattr(r2, "answer_ids", lambda *a, **k: pytest.fail("must not answer"))
+    base = a3.rows_at(NB, TAIL, P, WB, 0, block=BLOCK, slots=KEEP)
+    with pytest.raises(RuntimeError, match="over budget"):
+        a3.answer_item(R.S, st, SimpleNamespace(suffix=[1, 2], max_new=4), cap=base + 5, block=BLOCK, slots=KEEP)    # reserve 6 > 5 spare
+    with pytest.raises(RuntimeError, match="over budget"):
+        a3.answer_item(R.S, st, SimpleNamespace(suffix=[1, 2], max_new=4), cap=base - 1, block=BLOCK, slots=KEEP)
 
 
 def test_full_fallback_binds_the_per_block_cleanup_into_the_generator_through_run_unit(monkeypatch):
@@ -408,17 +435,98 @@ def test_selection_refuses_a_cap_other_than_the_registered_one():
         a3.main(["--stage", "sel", "--out", "unused", "--ref-dir", "unused", "--cap", "20000"])
 
 
+def _sel_report(**kw):
+    arm = lambda c, m: {"n": a3.PILOT_PROBES, "correct": c, "mean_rows": m}            # noqa: E731
+    return {"stage": "sel", "complete": True, "trajectories": a3.PILOT_N, "reference_md5": a3.PILOT_REF_MD5,
+            "arms": {"W2": arm(60, 15000.0), "W6": arm(55, 14000.0)}, "selection": {"selected": "W2"}, **kw}
+
+
 def test_stage_2_needs_the_selection_report_and_takes_w_from_it(tmp_path):
     with pytest.raises(SystemExit):
         a3.main(["--stage", "proper", "--out", "unused", "--ref-dir", "unused"])
-    ok = {"stage": "sel", "complete": True, "arms": {"W2": {}, "W6": {}}, "selection": {"selected": "W6"}}
+    ok = _sel_report()
     p = tmp_path / "a3_report.json"
     p.write_text(json.dumps(ok))
-    assert a3.load_selection(str(p)) == (6, a3.sha256_file(str(p)))
-    for bad in ({**ok, "selection": {"selected": None}}, {**ok, "complete": False}, {**ok, "arms": {"W6": {}}}, {**ok, "stage": "proper"}):
-        p.write_text(json.dumps(bad))
+    assert a3.load_selection(str(p)) == (2, a3.canonical_sha256(str(p)))
+    p.write_text(json.dumps(ok, indent=4, sort_keys=True))                             # reformatting does not change the digest
+    assert a3.canonical_sha256(str(p)) == a3.load_selection(str(p))[1]
+    arm = lambda n: {**ok["arms"]["W6"], "n": n}                                      # noqa: E731
+    bad = [{**ok, "selection": {"selected": "W6"}},                                    # not what the rule gives
+           {**ok, "selection": {"selected": None}}, {**ok, "complete": False}, {**ok, "arms": {"W6": ok["arms"]["W6"]}},
+           {**ok, "stage": "proper"}, {**ok, "trajectories": 5}, {**ok, "reference_md5": "0" * 32},
+           {**ok, "arms": {"W2": ok["arms"]["W2"], "W6": arm(117)}},                   # not the fixed 118
+           {**ok, "arms": {"W2": {}, "W6": {}}},                                       # empty arm summaries
+           {**ok, "arms": {"W2": {"n": 118}, "W6": {"n": 118}}}]                       # counts but no results
+    for b in bad:
+        p.write_text(json.dumps(b))
         with pytest.raises(SystemExit):
             a3.load_selection(str(p))
+
+
+def test_main_reaches_run_proper_with_the_window_of_a_valid_report_and_writes_the_manifest(tmp_path, monkeypatch):
+    rep = tmp_path / "a3_report.json"
+    rep.write_text(json.dumps(_sel_report(selection={"selected": "W2"})))
+    ref, out = tmp_path / "ref", tmp_path / "out"
+    ref.mkdir()
+    (ref / "FULL.jsonl").write_text("")
+    data = {k: str(tmp_path / k) for k in ("traj", "tasks", "template", "tokenizer")}
+    for f in data.values():
+        open(f, "w").write("x")
+    monkeypatch.setattr(a3.core, "default_paths", lambda: data)
+    monkeypatch.setattr(a3.core, "Harness", lambda paths: "H")
+    monkeypatch.setattr(a3.core, "load_model", lambda *a, **k: SimpleNamespace(S="S", R="R"))
+    monkeypatch.setitem(sys.modules, "tool_parse", SimpleNamespace(parse=None))
+    got = {}
+    monkeypatch.setattr(a3, "run_proper", lambda ctx, o, rd, wb, early, log, attempt, cap: got.update(wb=wb, attempt=attempt) or {"ok": 1})
+    argv = ["--stage", "proper", "--out", str(out), "--ref-dir", str(ref), "--sel-report", str(rep)]
+    assert a3.main(argv) == 0
+    man = json.load(open(out / "manifest.json"))
+    assert got["wb"] == 2 and man["window_blocks"] == 2 and man["sel_report_sha256"] == a3.canonical_sha256(str(rep))
+    assert man["ref_dir"] == str(ref) and set(man["ref_full_md5"]) and set(man["data_md5"]) == set(data)
+    assert "r1b_core.py" in man["code_md5"] and "r2_core.py" in man["code_md5"]
+    assert a3.main(argv + ["--attempt", "again"]) == 0                                # same manifest: resumes
+    rep.write_text(json.dumps(_sel_report(selection={"selected": "W2"}, extra=1)))   # changed content: refuses
+    with pytest.raises(SystemExit, match="different run"):
+        a3.main(argv)
+    runs = [f for f in os.listdir(out) if f.startswith("run.")]
+    assert len(runs) == 3 and "run.again.log" in runs                                  # one log per attempt, none shared
+
+
+def test_selection_refuses_a_pilot_count_other_than_the_registered_one():
+    with pytest.raises(SystemExit):
+        a3.main(["--stage", "sel", "--out", "unused", "--ref-dir", "unused", "--n", "5"])
+
+
+def test_attempt_ids_are_unique_even_within_one_second():
+    assert len({a3.new_attempt_id() for _ in range(200)}) == 200
+
+
+def test_a_torn_final_line_is_dropped_and_logged_a_bad_line_elsewhere_still_raises(tmp_path):
+    p = tmp_path / "a.jsonl"
+    p.write_text('{"traj": "t1", "id": 1}\n{"traj": "t1", "id": 2}\n{"traj": "t2", "id"')
+    logged = []
+    assert a3.repair_tail(str(p), logged.append) and "torn" in logged[0]
+    assert [r["id"] for r in a3.core.read_rows(str(p))] == [1, 2] and p.read_text().endswith("\n")
+    assert not a3.repair_tail(str(p), logged.append) and len(logged) == 1               # a clean file is left alone
+    p.write_text('{"traj": "t1", "id": 1}')                                            # whole last line, no newline: newline added
+    assert not a3.repair_tail(str(p)) and p.read_text() == '{"traj": "t1", "id": 1}\n'
+    p.write_text('{"traj": "t1"\n{"traj": "t1", "id": 2}\n')                           # bad line in the middle
+    assert not a3.repair_tail(str(p))
+    with pytest.raises(ValueError):
+        a3.core.read_rows(str(p))
+    assert not a3.repair_tail(str(tmp_path / "missing.jsonl"))
+
+
+def test_prepare_window_repairs_then_purges_so_the_torn_trajectory_is_redone(tmp_path):
+    out = str(tmp_path)
+    ans, route, done = a3._paths(out, 2)
+    open(done, "w").write(json.dumps({"traj": "t1"}) + "\n" + '{"traj": "t2"')              # t2's marker is torn: t2 is not done
+    for p in (ans, route):
+        open(p, "w").write(json.dumps({"traj": "t1", "id": "a"}) + "\n" + json.dumps({"traj": "t2", "id": "b"}) + "\n" + '{"traj": "t2", "i')
+    a3.prepare_window(out, 2, lambda m: None)
+    for p in (ans, route):
+        assert [r["id"] for r in a3.core.read_rows(p)] == ["a"]
+    assert [r["traj"] for r in a3.core.read_rows(done)] == ["t1"]
 
 
 def test_manifest_is_written_once_and_a_changed_run_refuses_to_resume(tmp_path):

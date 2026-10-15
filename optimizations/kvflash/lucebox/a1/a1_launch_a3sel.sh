@@ -10,7 +10,7 @@ export A1_TP_BUILD=$HOME/r1e/code/a1/tool_parser/build
 O=$HOME/r1e/out/a3sel
 PILOT=$HOME/r1e/out/a1_pilot
 PY=~/r1e/venv/bin/python
-ATT=$(date +%Y%m%dT%H%M%S)
+ATT=$(date +%Y%m%dT%H%M%S%N)
 if [ -e $O/pid ] && kill -0 "$(cat $O/pid)" 2>/dev/null; then echo "a3sel is running (pid $(cat $O/pid))"; exit 1; fi
 if pgrep -f 'a1_(run|e|e67|a3)\.py' > /dev/null; then echo "another a1 job is running"; exit 1; fi
 $PY - <<'EOF' || { echo "launch gate FAILED"; exit 1; }

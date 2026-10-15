@@ -36,6 +36,13 @@ CAP = 16384                                  # rows of POOL16K (B0): the equal-m
 KV_BYTES_PER_TOKEN = 64 * 1024               # 16 full-attention layers x 4 KV heads x 256 x K and V x 2 bytes
 SEL_WBS = (2, 6)                             # window grid, in blocks (1,280 and 3,840 tokens)
 PILOT_N = 6                                  # the pilot trajectories; stage proper runs the rest
+# The fixed reference universe (Amendment 2), next to the md5 of the file it is counted from. Counted with a1_core.retained_probe_ids
+# (the harness scorer, as A1) on the 60-trajectory task file.
+PILOT_PROBES = 118                           # reference-correct probes of trajectories 1-6 in evidence/agentic/A1/pilot/FULL.jsonl
+PILOT_REF_MD5 = "93a29de59549954ebd9d46ffd9214047"
+A1_REF_MD5 = "7ca44b131ecfb3b85f57169af8bc4501"      # evidence/agentic/A1/proper/FULL.jsonl, trajectories 1-20 (337 correct = 118 + 219)
+A1_HELDOUT_END = 20                          # A1 proper's reference covers held-out trajectories 7-20
+A1_HELDOUT_PROBES = 219                      # their reference-correct probes (A1 report: 337 in 20 trajectories, 118 of them pilot)
 RECALL_KS = a1_e.KS
 
 
@@ -74,7 +81,7 @@ def choose_k(nb, tail, p, wb, reserve=0, cap=CAP, block=BLOCK, slots=SLOTS):
         rows + reserve <= cap,   rows = P + W + slots*(compacted not fetched) + block*k + tail,
     capped at the candidates. `reserve` is what the answer appends to the cut: the question (longest suffix at the cut) plus the
     maximum new tokens, because B0's pool holds those inside its rows. When even k = 0 is over the cap the cut is flagged
-    over_budget and runs at k = 0 (the configuration is then ineligible)."""
+    over_budget; answer_item then aborts the run (on this grid it can only fire on a bug)."""
     n_c = len(candidates(nb, p, wb))
     r0 = rows_at(nb, tail, p, wb, 0, block, slots)
     k = min(n_c, (cap - reserve - r0) // (block - slots)) if r0 + reserve <= cap else 0
@@ -147,13 +154,12 @@ def a3_state(ship, comp, exact, nb, tail, p, wb, fetch, linear):
 
 
 def select_config(table):
-    """Stage 1 rule: highest retention, ties by fewer mean rows, among eligible configurations (no cut over the row cap at k = 0).
-    table: {"W6": {correct, n, mean_rows, eligible}}."""
+    """Stage 1 rule: highest retention, ties by fewer mean rows, then by the smaller W. table: {"W6": {correct, n, mean_rows}}."""
     def key(name):
         v = table[name]
-        return (-v["correct"] / v["n"], v["mean_rows"], name)
-    ok = sorted((n for n in table if table[n]["eligible"]), key=key)
-    return {"selected": ok[0] if ok else None, "order_eligible": ok}
+        return (-v["correct"] / v["n"], v["mean_rows"], int(name[1:]))
+    order = sorted(table, key=key)
+    return {"selected": order[0] if order else None, "order": order}
 
 
 def final_verdict(ci, bar=core.BAR):
@@ -182,22 +188,82 @@ def seed_reference(ref_path, out_path, traj_ids):
     return n
 
 
-def sha256_file(path):
+def md5_file(path):
+    h = hashlib.md5()
     with open(path, "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def canonical_sha256(path):
+    """sha256 of the JSON content with sorted keys, so that reformatting the report does not change it."""
+    return hashlib.sha256(json.dumps(json.load(open(path)), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def check_reference(path, md5):
+    got = md5_file(path)
+    if got != md5:
+        raise SystemExit(f"{path}: md5 {got}, the registered reference is {md5}")
+
+
+def universe_ids(H, tasks, full, T):
+    """Reference-correct probes (the harness scorer) of the trajectories in T."""
+    traj = {t["id"]: t["traj"] for t in tasks}
+    return {i for i in core.retained_probe_ids(H, tasks, full) if traj[i] in T}
+
+
+def check_universe(ids, n, what):
+    if len(ids) != n:
+        raise SystemExit(f"{what}: {len(ids)} reference-correct probes, the registered universe has {n}")
 
 
 def load_selection(path):
-    """The stage-1 report stage 2 must follow: returns (window_blocks, sha256). Refuses a report that is not a complete stage-1
-    report of exactly the registered windows, or that selected nothing."""
+    """The stage-1 report stage 2 must follow: returns (window_blocks, canonical sha256). Refuses a report that is not complete,
+    not of exactly the registered arms over the fixed universe (6 trajectories, 118 probes per arm, the registered pilot reference),
+    or whose selected window is not what the preregistered rule gives when recomputed from the arm summaries."""
     rep = json.load(open(path))
     names = sorted(f"W{w}" for w in SEL_WBS)
-    if rep.get("stage") != "sel" or not rep.get("complete") or sorted(rep.get("arms", {})) != names:
+    arms = rep.get("arms") or {}
+    if rep.get("stage") != "sel" or not rep.get("complete") or sorted(arms) != names:
         raise SystemExit(f"{path} is not a complete stage-1 report of {names}")
-    sel = (rep.get("selection") or {}).get("selected")
-    if sel not in rep["arms"]:
-        raise SystemExit(f"{path} selected no configuration ({sel!r}): amend the PREREG first")
-    return int(sel[1:]), sha256_file(path)
+    if rep.get("trajectories") != PILOT_N or rep.get("reference_md5") != PILOT_REF_MD5:
+        raise SystemExit(f"{path}: not over the registered {PILOT_N} pilot trajectories and reference {PILOT_REF_MD5}")
+    for n in names:
+        if arms[n].get("n") != PILOT_PROBES:
+            raise SystemExit(f"{path}: arm {n} has n = {arms[n].get('n')}, the registered universe has {PILOT_PROBES}")
+    try:
+        want = select_config({n: {k: arms[n][k] for k in ("correct", "n", "mean_rows")} for n in names})["selected"]
+    except (KeyError, TypeError) as e:
+        raise SystemExit(f"{path}: arm summaries are incomplete ({e!r})")
+    if (rep.get("selection") or {}).get("selected") != want:
+        raise SystemExit(f"{path}: selected {(rep.get('selection') or {}).get('selected')!r}, the rule gives {want!r}")
+    return int(want[1:]), canonical_sha256(path)
+
+
+def repair_tail(path, log=print):
+    """Resume: a final line that does not parse (a write cut by a kill) is dropped and logged, and the file always ends in a newline
+    so the next append starts a fresh line. A bad line anywhere else is left for the reader to raise."""
+    if not os.path.exists(path):
+        return False
+    text = open(path).read()
+    lines = text.split("\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not lines:
+        return False
+    bad = False
+    try:
+        json.loads(lines[-1])
+    except ValueError:
+        bad = True
+        log(f"[a3] {path}: dropped a torn final line ({len(lines[-1])} chars)")
+        lines.pop()
+    if bad or not text.endswith("\n"):
+        with open(path + ".part", "w") as f:
+            f.write("".join(l + "\n" for l in lines))
+        os.replace(path + ".part", path)
+    return bad
 
 
 def code_md5(paths):
@@ -275,15 +341,16 @@ def answer_item(S, st, item, cap=CAP, block=BLOCK, slots=SLOTS):
     import r2_core as r2
     reserve = getattr(st, "reserve", None) or len(item.suffix) + item.max_new
     bud = choose_k(st.nb, st.tail, st.p, st.wb, reserve, cap, block, slots)
-    checked = None if bud["over_budget"] else cap                    # an over-budget cut is flagged and run, not aborted
-    cand, a_last, rt = route_a_last(S, st, item.suffix, checked)
+    if bud["over_budget"]:                                           # on this grid only a bug gets here: stop, never run uncapped
+        raise RuntimeError(f"cut over budget: {bud['rows_k0']} rows at k = 0 + reserve {reserve} > {cap}")
+    cand, a_last, rt = route_a_last(S, st, item.suffix, cap)
     ranked = rank_candidates(a_last, cand) if cand else []
     fetched = ranked[:bud["k"]]
     trip = a3_state(st.triples, st.comp, st.exact, st.nb, st.tail, st.p, st.wb, fetched, st.linear)
     got = _full_rows(trip, st.full_layers)
     assert got == bud["rows"], f"state has {got} rows, budget says {bud['rows']}"
     tm = {}
-    with row_guard(S, got, checked if checked is not None else 10 ** 12):
+    with row_guard(S, got, cap):
         gen = r2.answer_ids(S, trip, st.t_len, item.suffix, item.max_new, timing=tm)
     del trip
     return {"cand": cand, "ranked": ranked, "route": rt, "budget": bud, "fetched": list(fetched),
@@ -301,9 +368,12 @@ def _paths(out, wb):
             os.path.join(out, f"done_{arm_name(wb)}.jsonl"))
 
 
-def prepare_window(out, wb):
-    """Resume: keep only the rows of trajectories with a done marker; a trajectory killed mid-way is redone from scratch."""
+def prepare_window(out, wb, log=print):
+    """Resume: drop a torn final line of each file, then keep only the rows of trajectories with a done marker; a trajectory killed
+    mid-way is redone from scratch."""
     path, rpath, dpath = _paths(out, wb)
+    for p in (path, rpath, dpath):
+        repair_tail(p, log)
     purge_partial([path, rpath], {r["traj"] for r in core.read_rows(dpath)})
 
 
@@ -352,7 +422,7 @@ def run_trajectory(ctx, out, wb, tid, traj, tasks, full_rows, log, attempt, cap=
             wall = round(time.time() - t0, 2)
             bud = res["budget"]
             fields = {"attempt": attempt, "k": bud["k"], "rows": bud["rows"], "reserve": bud["reserve"], "peak_rows": bud["peak_rows"],
-                      "rows_k0": bud["rows_k0"], "over_budget": bud["over_budget"], "n_cand": bud["n_cand"],
+                      "rows_k0": bud["rows_k0"], "n_cand": bud["n_cand"],
                       "fetch_bytes": res["fetch_bytes"], "probe_wall_s": wall, "window_blocks": wb, "p_blocks": p, "n_blocks": nb,
                       "tail_tokens": tail, "src_blocks": src, "src_status": status}
             text = S.tok.decode(core.strip_stop(res["gen"], S.eos), skip_special_tokens=False)
@@ -387,8 +457,10 @@ def run_sel(ctx, out, ref_dir, wbs, n, log, attempt, cap=CAP):
     H = ctx.H
     trajs, tasks = H.load_trajs(), H.load_tasks()
     full = core.read_rows(os.path.join(ref_dir, "FULL.jsonl"))
+    check_reference(os.path.join(ref_dir, "FULL.jsonl"), PILOT_REF_MD5)
+    check_universe(universe_ids(H, tasks, full, set(list(trajs)[:n])), PILOT_PROBES, "pilot reference")
     for wb in wbs:
-        prepare_window(out, wb)
+        prepare_window(out, wb, log)
     for tid in list(trajs)[:n]:
         tp = [t for t in tasks if t["traj"] == tid and t["kind"] == "probe"]
         fr = [r for r in full if r["traj"] == tid]
@@ -420,11 +492,15 @@ def run_proper(ctx, out, ref_dir, wb, early_at, log, attempt, cap=CAP):
     order = list(trajs)[PILOT_N:]
     ref = os.path.join(ref_dir, "FULL.jsonl")
     fpath = os.path.join(out, "FULL.jsonl")
+    check_reference(ref, A1_REF_MD5)
+    check_universe(universe_ids(H, all_tasks, core.read_rows(ref), set(order[:A1_HELDOUT_END - PILOT_N])), A1_HELDOUT_PROBES,
+                   "A1 proper reference, held-out trajectories 7-20")
     reused = {r["traj"] for r in core.read_rows(ref)} & set(order)
     log(f"[a3] seeded {seed_reference(ref, fpath, order)} reference FULL rows from {ref_dir}")
     arm = arm_name(wb)
     apath = os.path.join(out, arm + ".jsonl")
-    prepare_window(out, wb)
+    repair_tail(fpath, log)
+    prepare_window(out, wb, log)
     by = {}
     for t in all_tasks:
         by.setdefault(t["traj"], []).append(t)
@@ -459,6 +535,11 @@ def run_proper(ctx, out, ref_dir, wb, early_at, log, attempt, cap=CAP):
     return summary
 
 
+def new_attempt_id():
+    """Second-resolution stamp plus nanoseconds and the pid: two attempts never share log names."""
+    return time.strftime("%Y%m%dT%H%M%S") + f"{time.time_ns() % 10 ** 9:09d}-{os.getpid()}"
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage", required=True, choices=("sel", "proper"))
@@ -470,20 +551,28 @@ def main(argv=None):
     ap.add_argument("--sel-report", help="proper: the stage-1 a3_report.json; W is read from it, never given")
     ap.add_argument("--early-at", type=int, default=core.EARLY_AT)
     ap.add_argument("--cap", type=int, default=CAP)
-    ap.add_argument("--attempt", default=time.strftime("%Y%m%dT%H%M%S") + f"-{os.getpid()}")
+    ap.add_argument("--attempt", default=new_attempt_id())
     ap.add_argument("--mem-cap-gib", type=float, default=100)
     a = ap.parse_args(argv)
     if a.stage == "proper" and not a.sel_report:
         ap.error("--stage proper needs --sel-report (the window is the stage-1 selection, not an argument)")
     if a.stage == "sel" and a.cap != CAP:
         ap.error(f"--cap {a.cap}: selection runs at the registered {CAP} rows only")
+    if a.stage == "sel" and a.n != PILOT_N:
+        ap.error(f"--n {a.n}: selection runs over the registered {PILOT_N} pilot trajectories only")
+    wbs = sorted(int(x) for x in a.ws.split(","))
     os.makedirs(a.out, exist_ok=True)
     wb, sel_sha = load_selection(a.sel_report) if a.stage == "proper" else (None, None)
+    import r1b_core
     import r2_core as r2
     here = os.path.dirname(os.path.abspath(__file__))
-    fp = {"stage": a.stage, "ws": a.ws if a.stage == "sel" else None, "n": a.n if a.stage == "sel" else None, "window_blocks": wb,
-          "early_at": a.early_at, "cap": a.cap, "model": a.model, "sel_report_sha256": sel_sha,
-          "code_md5": code_md5([os.path.join(here, f) for f in ("a1_a3.py", "a1_e.py", "a1_core.py", "a1_e67.py")] + [r2.__file__])}
+    paths = core.default_paths()
+    fp = {"stage": a.stage, "ws": wbs if a.stage == "sel" else None, "n": a.n if a.stage == "sel" else None, "window_blocks": wb,
+          "early_at": a.early_at, "cap": a.cap, "model": a.model, "sel_report_sha256": sel_sha, "ref_dir": a.ref_dir,
+          "ref_full_md5": md5_file(os.path.join(a.ref_dir, "FULL.jsonl")),
+          "data_md5": {k: md5_file(paths[k]) for k in ("traj", "tasks", "template", "tokenizer")},
+          "code_md5": code_md5([os.path.join(here, f) for f in ("a1_a3.py", "a1_e.py", "a1_core.py", "a1_e67.py")]
+                               + [r2.__file__, r1b_core.__file__])}
     logf = open(os.path.join(a.out, f"run.{a.attempt}.log"), "a", buffering=1)
 
     def log(m):
@@ -496,7 +585,7 @@ def main(argv=None):
     m = core.load_model(a.model, a.mem_cap_gib, log)
     ctx = SimpleNamespace(S=m.S, R=m.R, H=H, parse=tool_parse.parse)
     if a.stage == "sel":
-        summary = run_sel(ctx, a.out, a.ref_dir, [int(x) for x in a.ws.split(",")], a.n, log, a.attempt, a.cap)
+        summary = run_sel(ctx, a.out, a.ref_dir, wbs, a.n, log, a.attempt, a.cap)
     else:
         summary = run_proper(ctx, a.out, a.ref_dir, wb, a.early_at, log, a.attempt, a.cap)
     with open(os.path.join(a.out, "summary.json"), "w") as f:
