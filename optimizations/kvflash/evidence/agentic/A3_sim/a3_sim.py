@@ -20,21 +20,23 @@ def rows(p):
     return {r["id"]: r for r in map(json.loads, open(p))}
 
 
-def plan(nb, tail, reserve, W, k_cap=None):
-    """(exact set without fetch, candidates, k) under the A3 row budget; W=None means the window fills the budget after k_cap."""
+def plan(nb, tail, reserve, W, k_cap=None, idx=True):
+    """(exact set without fetch, candidates, k) under the A3 row budget; W=None means the window fills the budget after k_cap.
+    idx=False: no compacted index on the GPU (blocks not exact are absent, as in a plain pool), so a candidate costs no rows."""
+    SL = SLOTS if idx else 0
     P = set(range(min(P_BLOCKS, nb)))
     if W is None:                                   # hybrid: reserve k_cap fetch blocks, then grow the window as far as rows allow
         W = 0
         while W < nb:
             E = len(P | set(range(nb - W - 1, nb)))
             k = min(k_cap, nb - E)
-            if BLK * (E + k) + SLOTS * (nb - E - k) + tail + reserve > CAP:
+            if BLK * (E + k) + SL * (nb - E - k) + tail + reserve > CAP:
                 break
             W += 1
     ex = P | set(range(nb - W, nb))
     cand = nb - len(ex)
     k = 0
-    while k < cand and BLK * (len(ex) + k + 1) + SLOTS * (nb - len(ex) - k - 1) + tail + reserve <= CAP:
+    while k < cand and BLK * (len(ex) + k + 1) + SL * (nb - len(ex) - k - 1) + tail + reserve <= CAP:
         k += 1
     if k_cap is not None:
         k = min(k, k_cap)
@@ -55,6 +57,7 @@ def main(d, pilot, pool_path, tasks_path):
         q[key] = max(q.get(key, 0), e3[i]["prompt_tokens"] - e3[i]["ctx_len"])
     policies = [("SHIP (all compacted)", "ship"), ("E3 oracle", "oracle"), ("A3 W=2", (2, None)), ("A3 W=6", (6, None))]
     policies += [(f"hybrid k={k}, W fills", (None, k)) for k in (2, 4, 8)]
+    policies += [("no index W=2 (a_last proxy)", (2, None, False)), ("no index W=6 (a_last proxy)", (6, None, False))]
     print(f"probes {len(ids)} (E3 rows with a located source); POOL16K rows for {sum(i in pool for i in ids)}")
     print(f"{'policy':24} {'est. correct lo-hi':>20} {'0-4K':>9} {'4-8K':>9} {'8-16K':>9} {'>16K':>9}  mean k")
     for name, pol in policies:
