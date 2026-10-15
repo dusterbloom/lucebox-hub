@@ -561,3 +561,15 @@ Written at about 12:05 CEST, after the pilot started on lucebox6 at 09:53:12 UTC
 3. **A record, not a change: the tool-parser round trip of section 1 item 1 passes.**
    - 1400 of 1400 gold calls match on names and argument dicts.
    - The other 38 of the 1438 decision points have no gold call, so there is nothing to round-trip. 37 are at the end of a trajectory and 1 has no call.
+
+### A1 Amendment 4 (2026-10-15, after the pilot and D1, before the proper run): the proper run goes ahead as written
+
+What has been seen:
+- **The pilot** (`evidence/agentic/A1/pilot/`, 8f8f54f8). Retention is 10 of 118, 8.5% [4.4, 12.5], with only 6 clusters. B0 POOL16K gets 88 of 111 on the same trajectories.
+- **The D1 identity diagnostic** (`evidence/agentic/A1/diag_identity/`, 7e531d7d). This is outside A1. The shipping-arm generator, with every block kept at 640 of 640 slots, answers 38 of 38 of the reference-correct probes on trajectories 1 and 2. The compaction path is therefore mechanically sound on agentic streams, and the pilot's 8.5% is the effect of ratio 0.10.
+
+The proper run (Amendment 1: stage 1, probes, one early look at 20 trajectories at 99.9%) goes ahead as written, on the same machine, under the same rules.
+- **The pilot rows stay as trajectories 1 to 6.** The only code change since the pilot is 7e531d7d. It adds a `ratio` option to `load_model` and `a1_run.py`, whose default (0.10) is `torch.equal` to the pilot's shipping arm, tensor for tensor (CPU test `test_d1_ratio_option_default_is_the_shipping_ratio_and_ratio_1_keeps_every_slot`). So nothing in the design changed, and Amendment 2's discard rule does not apply.
+- **Expected outcome.** The early look at 20 is expected to stop stage 1 with FAIL. It runs anyway for two reasons: it is the preregistered verdict, which the pilot is not; and its FULL-CHK rows are the reference that A2 reuses (section 6, item 3).
+- **What is run.** The block-512 control runs after stage 1 as in Amendment 1. Stage 2 (decisions) is not started by this amendment. Whether it runs, and on what, is set after the stage-1 verdict.
+- **A2.** A2 is preregistered separately before any A2 row, as section 6 requires.
