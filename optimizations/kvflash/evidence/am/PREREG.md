@@ -635,4 +635,13 @@ W = 18 is the largest window whose rows at the engine's 52,224-token limit stay 
 
 - The window arms build like the shipping arm, about 140 s per trajectory. They answer behind about 12K to 16K exact rows, at about 10 s per probe for about 20 probes.
 - That is about 340 s per arm per trajectory. Both arms on 20 trajectories take about 3.8 h. All 60 take about 11 h, plus FULL-CHK on trajectories 21 to 60 if A1 stopped at 20 (about 8 h).
-- Machine: the lucebox6 integrated GPU, at $0.
+- Machine: the lucebox6 integrated GPU, at $0. (Superseded by A2 Amendment 1 below.)
+
+### A2 Amendment 1: machine (2026-10-15, before any A2 row and before any Modal job)
+
+Changes only the machine and the start condition. Arms, the primary `WIN18`, the early look at 20 trajectories on `WIN18` (99.9%), gates, statistics and the decision rule are as above.
+- **Machine.** One Modal H200, pinned with `KVFLASH_GPU=H200`, no fallback to A100-80GB (the reference reserves up to 100 GiB on lucebox6). lucebox6 keeps A1 and its block-512 control and is not touched by A2.
+- **Own reference.** A2 makes its own FULL-CHK on the H200, in the same session and code copy as `WIN18` and `WIN25`. No lucebox6 row is mixed into an A2 contrast (the parity rule, A1 section 3). A1's FULL-CHK rows are not read.
+- **Start.** A2 starts without waiting for A1's early look. The A1 pilot gave 10 of 118 (8.5%), and A2 is informative under any A1 verdict. This replaces "A2 starts after A1's stage-1 verdict" in the section above.
+- **Cost.** About $5 expected to the early look at $4.54 per hour, hard cap $20 (owner-approved). The run stops when the spent amount plus the projected cost of the next trajectory would pass the cap. If stage 1 does not stop at the early look, it continues on the H200 within the cap.
+- **Command.** `modal run --detach am_qwen35/a1.py::stage1` with `--arms FULL,WIN18,WIN25 --primary WIN18 --early-at 20 --gate3-after 99`, output dir `a2_h200` on volume `kvflash-am-results`.
