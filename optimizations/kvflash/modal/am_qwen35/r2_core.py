@@ -307,14 +307,18 @@ def gen_fblk_window(R, segs, ks, window):
     S = R.S
     stream = torch.cat([s.ids for s in segs], 1)
     ends = [sum(s.n for s in segs[:i + 1]) for i in range(len(segs))]
-    comp, wins, last, orig_len, consumed, trace = None, [], None, 0, 0, []
+    n_layers = len(S.layer_types)
+    comp, wins, lin, orig_len, consumed, trace = None, [], None, 0, 0, []   # lin: the linear (DeltaNet) states after the latest block, held once
 
     def compose():
-        if last is None:
+        if lin is None:
             return None
-        return tuple(last[i] if i in S.linear else tuple(
+        return tuple(lin[i] if i in S.linear else tuple(
             torch.cat([x for x in ([comp[i][c]] if comp is not None else []) + [w[0][i][c] for w in wins]], 2) for c in range(3))
-            for i in range(len(last)))
+            for i in range(n_layers))
+
+    def attn_only(t):
+        return tuple(None if i in S.linear else t[i] for i in range(n_layers))
 
     for k in sorted(ks):
         blocks, new_end = sealed_blocks(consumed, ends[k])
@@ -325,10 +329,10 @@ def gen_fblk_window(R, segs, ks, window):
             t1 = time.time()
             seg, _ = R._compact(R._pseudo_kv(state, S.linear, last=n), slots_for(n, R.ratio), range(0, n), S.tok.decode(ids[0]),
                                 queries=q)
-            seg = R._inject_linear(seg, state)
-            exact = tuple(None if i in S.linear else tuple(x[:, :, -n:].clone() for x in state[i]) for i in range(len(state)))
-            wins.append((exact, seg))
-            last = state
+            exact = tuple(None if i in S.linear else tuple(x[:, :, -n:].clone() for x in state[i]) for i in range(n_layers))
+            wins.append((exact, attn_only(seg)))
+            lin = {i: state[i] for i in S.linear}
+            del state, seg
             while len(wins) > window:
                 comp = splice(comp, wins.pop(0)[1], S.linear)
             trace.append({"prefill_s": round(t1 - t0, 2), "compact_s": round(time.time() - t1, 2)})

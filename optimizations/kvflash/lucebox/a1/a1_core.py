@@ -429,6 +429,16 @@ class StageStop(Exception):
         self.reason, self.detail = reason, detail
 
 
+def resolve_primary(arms, primary=None):
+    """The arm the early look reads: the first non-FULL arm unless given; it must be one of the selected arms (a stale arm file in
+    the output dir must never supply the verdict)."""
+    cands = [a for a in arms if a in ARM_WINDOW]
+    primary = primary or (cands[0] if cands else None)
+    if primary not in cands:
+        raise ValueError(f"primary arm {primary!r} is not among the selected block-generator arms {cands} (--arms {','.join(arms)})")
+    return primary
+
+
 def run_stage(ctx, out, kinds=("probe",), arms=("FULL", "SHIP"), start=0, n=None, gate3_after=5, early_at=EARLY_AT,
               decision_stride=1, det_repeat=0, control_n=0, log=print, primary="SHIP"):
     """Stage loop. ctx has S, R, H, parse. Trajectories in file order [start, start+n); per trajectory the arms in order; rows are

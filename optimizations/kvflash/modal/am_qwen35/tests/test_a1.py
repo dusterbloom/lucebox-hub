@@ -250,9 +250,11 @@ def test_a2_window_0_is_torch_equal_to_the_a1_gen_fblk_at_every_checkpoint(setup
         R = r2.Runner(sess, None, cell="FUNI", ratio=0.25)
         ref = _snapshot(r2.gen_fblk(R, cs, None, list(range(5))))
         got = _snapshot(r2.gen_fblk(R, cs, None, list(range(5)), window=0))
+        via_window_code = _snapshot(r2.gen_fblk_window(R, cs, list(range(5)), 0))      # the new path, independent of the A1 path
     for k in ref:
-        assert ref[k][1] == got[k][1]
+        assert ref[k][1] == got[k][1] == via_window_code[k][1]
         assert all(torch.equal(x, y) for a, b in zip(ref[k][0], got[k][0]) for x, y in zip(a, b)), k
+        assert all(torch.equal(x, y) for a, b in zip(ref[k][0], via_window_code[k][0]) for x, y in zip(a, b)), k
 
 
 def test_a2_window_at_least_the_number_of_blocks_equals_full_chk(setup, monkeypatch):
@@ -283,18 +285,29 @@ def test_a2_older_blocks_hold_their_seal_time_fit_window_blocks_their_exact_kv(s
     S, segs = setup
     _blocks24(monkeypatch)
     cs = a1_core.segs_from_checkpoints(stream_of(segs)[:300], [300])
-    calls = []
+    calls, captured, fit_queries = [], [], []
     real = r2.Runner._compact
+    real_extend = r2.extend
+
+    def extend_spy(*a, **kw):
+        out = real_extend(*a, **kw)
+        if kw.get("want_queries"):
+            captured.append(out[2])
+        return out
 
     def spy(self, kv, target_size, indices, text, queries=None):
+        fit_queries.append(queries)
         out = real(self, kv, target_size, indices, text, queries=queries)
         calls.append((tuple(tuple(x.clone() for x in e) for e in kv), out[0]))   # kv: per layer (K, V) of the block, as handed to the fit
         return out
 
     monkeypatch.setattr(r2.Runner, "_compact", spy)
+    monkeypatch.setattr(r2, "extend", extend_spy)
     with session(S) as sess:
         R = r2.Runner(sess, None, cell="FUNI", ratio=0.25)
         (_, tr, n, info), = list(r2.gen_fblk(R, cs, None, [0], window=W))
+        assert len(captured) == len(fit_queries) == 300 // BLOCK_W
+        assert all(q is not None and q is c for q, c in zip(fit_queries, captured))   # each fit gets its own block's prefill queries
         nb, tail, slots = 300 // BLOCK_W, 300 % BLOCK_W, r2.slots_for(BLOCK_W, 0.25)
         assert len(calls) == nb and info["tail_tokens"] == tail and n == 300       # every block fitted once, at seal time
         older = nb - W
