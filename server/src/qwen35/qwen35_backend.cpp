@@ -571,6 +571,9 @@ bool Qwen35Backend::init() {
             return false;
         }
     }
+    // KVFlash AM compaction: persistent per-layer kv_bias (attached to the graph
+    // only while a pager chunk is compacted).
+    cache_.kvflash_bias = kvflash_active() && !cfg_.paged_attention && n_slots == 1;
     const int ctx_alloc = n_slots > 1
         ? (int)(pool_tokens + scratch_tokens)
         : (cfg_.paged_attention
@@ -1778,6 +1781,7 @@ GenerateResult Qwen35Backend::generate_impl(const GenerateRequest & req,
     // inherit stale hidden state from the previous request. KV cache is
     // position-addressed and will be overwritten during prefill.
     reset_recurrent_state(cache_);
+    kvflash_bias_epoch_ = (uint64_t)-1;   // the clear also zeroed the persistent kv_bias
 
     if (cfg_.paged_attention) {
         // The pool's block rounding can hold up to PAGED_BLOCK_SIZE-1 tokens
@@ -2038,6 +2042,7 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
             "[pc] snapshot longer than prompt (snap=%d > prompt=%d) — "
             "fresh prefill fallback\n", snap_pos, prompt_len);
         reset_recurrent_state(cache_);
+        kvflash_bias_epoch_ = (uint64_t)-1;
         cache_.cur_pos = 0;
         result.restored_prefix_tokens = 0;
         auto t_prefill_start = std::chrono::steady_clock::now();
@@ -2312,6 +2317,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         // decode-time windowed attention will later read.
         static const bool prefill_timing = std::getenv("LUCE_PREFILL_TIMING") != nullptr;
         const auto t_build0 = std::chrono::steady_clock::now();
+        kvflash_sync_bias_flag();
         if (!build_target_step(sg_, w_, cache_, target_backend_,
                                /*kv_start=*/kv_pos, /*n_tokens=*/n_tokens,
                                with_mask, /*capture=*/true,
@@ -2358,6 +2364,8 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         }
         ggml_backend_tensor_set(sg_.positions, pos_buf.data(), 0,
                                 sizeof(int32_t) * pos_buf.size());
+
+        kvflash_upload_bias();
 
         // Mask — full attention during prefill (no windowing)
         if (sg_.attn_mask && kvf_paged) {
@@ -2461,6 +2469,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             kvflash_history_.assign(tokens.begin(), tokens.end());
             kvflash_pager_.zero_free_blocks();
             kvflash_mask_epoch_ = (uint64_t)-1;
+            kvflash_test_compact();
         } else {
             kvflash_sync_prefill(committed, tokens, kv_offset);
         }
@@ -2534,7 +2543,57 @@ void Qwen35Backend::kvflash_qk_pool_to(int committed) {
     kvflash_qk_pooled_upto_ = std::max(kvflash_qk_pooled_upto_, sealed);
 }
 
+// The step graph attaches kv_bias only while a pager chunk is compacted. Call
+// before every build_target_step: with none compacted the graph is unchanged.
+void Qwen35Backend::kvflash_sync_bias_flag() {
+    cache_.kv_bias_on = kvflash_active() && !cache_.kv_bias.empty() && kvflash_pager_.any_compacted();
+}
+
+// Upload each layer's key bias (beta on compacted slots, 0 elsewhere). The
+// tensors are persistent, so this only runs when the pager epoch moved or a
+// cache clear zeroed them. LUCE_KVFLASH_TEST_COMPACT also reads them back and
+// compares with the pager's own table.
+void Qwen35Backend::kvflash_upload_bias() {
+    if (!cache_.kv_bias_on || kvflash_pager_.epoch() == kvflash_bias_epoch_) return;
+    int bad = 0;
+    for (size_t l = 0; l < cache_.kv_bias.size(); l++) {
+        ggml_tensor * t = cache_.kv_bias[l];
+        if (!t || (int)t->ne[0] != kvflash_tokens_) { bad++; continue; }
+        kvflash_bias_buf_.resize((size_t)ggml_nelements(t));
+        kvflash_pager_.fill_kv_bias((int)l, kvflash_bias_buf_.data());
+        ggml_backend_tensor_set(t, kvflash_bias_buf_.data(), 0, ggml_nbytes(t));
+        if (kvflash_test_compact_) {
+            std::vector<float> back(kvflash_bias_buf_.size());
+            ggml_backend_tensor_get(t, back.data(), 0, ggml_nbytes(t));
+            if (back != kvflash_bias_buf_) bad++;
+        }
+    }
+    kvflash_bias_epoch_ = kvflash_pager_.epoch();
+    if (kvflash_test_compact_) {
+        std::printf("[kvflash] kv_bias readback: %s (%zu layers)\n",
+                    bad ? "MISMATCH" : "match", cache_.kv_bias.size());
+        std::fflush(stdout);
+    }
+}
+
+// Test hook, off unless LUCE_KVFLASH_TEST_COMPACT="<k>:<beta>" is set: mark the
+// chunk k behind the append head compacted (span 1, its K/V rows untouched)
+// with a constant beta. Proves the beta path end to end before M7 produces
+// real compaction; with beta 0 the output must not change.
+void Qwen35Backend::kvflash_test_compact() {
+    if (!kvflash_test_compact_) return;
+    int k = 0; float beta = 0.0f;
+    std::sscanf(kvflash_test_compact_, "%d:%f", &k, &beta);
+    const int c = kvflash_pager_.n_chunks() - 1 - k;
+    const std::vector<float> b((size_t)cache_.attn_k.size() * w_.n_head_kv *
+                               kvflash_pager_.chunk_tokens(), beta);
+    const bool ok = kvflash_pager_.mark_compacted(c, 1, b);
+    std::printf("[kvflash] test compact: chunk %d beta %g -> %s\n", c, beta, ok ? "marked" : "REFUSED");
+    std::fflush(stdout);
+}
+
 void Qwen35Backend::kvflash_upload_mask() {
+    kvflash_upload_bias();
     if (!sg_.attn_mask) return;
     const size_t need = (size_t)sg_.attn_mask->ne[0] * sg_.attn_mask->ne[1];
     if (kvflash_mask_buf_.size() != need || kvflash_pager_.epoch() != kvflash_mask_epoch_) {
@@ -2686,6 +2745,7 @@ bool Qwen35Backend::do_ar_decode(int committed, ThinkingBudget & budget,
         // step-invariant set_rows write; the FA span clamps to the pool.
         const bool pool = kvflash_active();
         const bool paged = cfg_.paged_attention;
+        kvflash_sync_bias_flag();
         if (!build_target_step(sg_, w_, cache_, target_backend_,
                                /*kv_start=*/committed, /*n_tokens=*/1,
                                /*with_mask=*/pool || w_.is_bailingmoe3,

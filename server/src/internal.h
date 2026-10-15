@@ -481,6 +481,16 @@ struct TargetCache {
     std::vector<ggml_tensor *> attn_k;   // size = n_full_attn_layers (16)
     std::vector<ggml_tensor *> attn_v;
 
+    // KVFlash AM compaction. kvflash_bias is an input the caller sets before
+    // create_target_cache(): with a bounded kvflash pool every attention layer
+    // gets a persistent F32 key bias kv_bias[l] [pool, n_head_kv] (uploaded when
+    // the pager epoch moves). kv_bias_on is set per step by the caller: the
+    // graph attaches the bias only while it is true, i.e. while a pager chunk
+    // is compacted; otherwise it is today's graph.
+    bool kvflash_bias = false;
+    bool kv_bias_on = false;
+    std::vector<ggml_tensor *> kv_bias;   // size = n_full_attn_layers when allocated
+
     // Gated DeltaNet recurrent state: one per delta-net layer.
     // ssm_state: [S_v, S_v, H_v, n_seq_slots] f32  (head_v_dim^2 × num_v_heads)
     // conv_state: [(kernel-1), conv_channels, n_seq_slots] f32

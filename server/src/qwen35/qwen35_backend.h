@@ -258,6 +258,9 @@ protected:
     std::vector<uint16_t>          kvflash_mask_buf_;    // host mirror of slot mask
     std::string                    kvflash_drafter_path_; // LUCE_KVFLASH_DRAFTER
     uint64_t                       kvflash_mask_epoch_ = (uint64_t)-1;
+    std::vector<float>             kvflash_bias_buf_;    // host staging for one layer's kv_bias
+    uint64_t                       kvflash_bias_epoch_ = (uint64_t)-1;
+    const char *                   kvflash_test_compact_ = std::getenv("LUCE_KVFLASH_TEST_COMPACT");
     int  kvflash_tokens_ = 0;                       // 0 = off
     int  kvflash_tau_    = 64;
     bool kvflash_drafter_failed_ = false;           // don't retry a failed load
@@ -285,6 +288,9 @@ protected:
     // Upload the slot-validity mask (host rebuild on epoch change, device
     // upload every step — the input's buffer region is reused by compute).
     void kvflash_upload_mask();
+    void kvflash_sync_bias_flag();
+    void kvflash_upload_bias();
+    void kvflash_test_compact();
     // Drafter rescore + reselect every kvflash_tau_ generated tokens.
     void kvflash_maybe_reselect(int generated);
     // Attach the drafter scorer if a drafter path is configured and the
