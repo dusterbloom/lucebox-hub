@@ -1,0 +1,52 @@
+Running 1086 test cases...
+Test: AmCompactFixture::with_0_and_0_every_sealed_block_compacts
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:83 CHECK: IsTrue(compacting(on(), 6651) == range(0, 10))
+Test: AmCompactFixture::the_exact_prefix_keeps_the_first_P_blocks
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:87 CHECK: IsTrue(compacting(on(3, 0), 6651) == range(3, 10))
+Test: AmCompactFixture::the_recent_window_keeps_the_last_W_sealed_blocks_of_the_prompt
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:93 CHECK: IsTrue(compacting(on(0, 2), 6651) == range(0, 8))
+Test: AmCompactFixture::prefix_and_window_combine
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:99 CHECK: IsTrue(compacting(on(2, 3), 6651) == range(2, 7))
+Test: AmCompactFixture::pinned_blocks_never_compact
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:104 CHECK: IsTrue(compacting(on(), 6651, 0, {0, 4}) == std::vector<int>({1, 2, 3, 5, 6, 7, 8, 9}))
+Test: AmCompactFixture::a_block_touching_the_exact_tail_stays_exact
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:109 CHECK: IsTrue(compacting(on(), 7100, 0) == range(0, 11))
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:110 CHECK: IsTrue(compacting(on(), 7100, 60) == range(0, 11))
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:111 CHECK: IsTrue(compacting(on(), 7100, 61) == range(0, 10))
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:112 CHECK: IsTrue(compacting(on(), 7100, 700) == range(0, 10))
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:113 CHECK: IsTrue(compacting(on(), 7100, 701) == range(0, 9))
+Test: AmCompactFixture::ratio_010_with_P_and_W_parses
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:145 CHECK: IsTrue(c.enabled())
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:146 CHECK: IsTrue(c.prefix_blocks == 2)
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:147 CHECK: IsTrue(c.recent_blocks == 3)
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:149 CHECK: IsTrue(d.enabled())
+Test: AmCompactFixture::unsupported_or_malformed_options_are_rejected_and_leave_it_off
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:159 CHECK: IsTrue(!err.empty())
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:159 CHECK: IsTrue(!err.empty())
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:159 CHECK: IsTrue(!err.empty())
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:159 CHECK: IsTrue(!err.empty())
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:159 CHECK: IsTrue(!err.empty())
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:159 CHECK: IsTrue(!err.empty())
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:159 CHECK: IsTrue(!err.empty())
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:163 CHECK: IsTrue(!err.empty())
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:166 CHECK: IsTrue(!err.empty())
+Test: AmCompactFixture::the_automatic_path_needs_the_pager_and_a_supported_architecture
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:170 CHECK: IsTrue(auto_active(on(), true, true))
+Test: AmCompactFixture::the_reserve_covers_the_ring_and_one_layer_of_f32_block_scratch
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:182 CHECK: IsTrue(r >= ring + 2 * block_f32)
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:184 CHECK: IsTrue(auto_reserve_bytes(0, 256, 4) > 0)
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:185 CHECK: IsTrue(auto_reserve_bytes(ring, 256, 4) > auto_reserve_bytes(ring / 2, 256, 4))
+Test: AmCompactFixture::sort_sel_ascending_orders_every_head
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:193 CHECK: IsTrue(sel == std::vector<int32_t>({ 1, 3, 5, 9, 0, 2, 4, 7 }))
+Test: AmCompactFixture::gather_rows_copies_the_kept_rows_in_order
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:203 CHECK: IsTrue(out == std::vector<uint8_t>({ 3, 4, 5, 12, 13, 14, 15, 16, 17 }))
+  compact_block_host: stub
+Test: AmCompactFixture::keeping_every_key_reproduces_the_block_exactly
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:239 REQUIRE: IsTrue(ok)
+  compact_block_host: stub
+Test: AmCompactFixture::fixture_blocks_select_and_fit_within_the_m4_and_m5_bars
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:354 REQUIRE: IsTrue(ok)
+Complete.
+    Passed:  4
+    Failed:  14
+    Skipped: 1068

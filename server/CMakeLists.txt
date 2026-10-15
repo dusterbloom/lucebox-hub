@@ -633,7 +633,9 @@ add_library(luce_common STATIC
     src/deepseek4/deepseek4_dspark_spec.cpp
     src/deepseek4/deepseek4_cluster.cpp
     src/deepseek4/deepseek4_vision.cpp
+    src/common/am_fit.cpp
     src/common/am_fit_solve.cpp
+    src/common/am_compact.cpp
     src/common/gpu_page_pool.cpp
     src/common/host_stream_flag.cpp
     src/common/vision/image_decode.cpp
@@ -2513,6 +2515,7 @@ if(LUCE_TESTS)
             test/unit/test_kvflash_ubatch.cpp
             test/unit/test_qwen35_q_block_capture.cpp
             test/unit/test_am_query_cosine_gate.cpp
+            test/unit/test_am_compact.cpp
             test/unit/test_qwen35_mask_upload.cpp
             test/unit/test_adaptive_keep_ratio.cpp
             test/unit/test_skip_park_guard.cpp
