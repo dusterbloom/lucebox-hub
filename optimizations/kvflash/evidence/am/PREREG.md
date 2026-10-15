@@ -636,3 +636,52 @@ W = 18 is the largest window whose rows at the engine's 52,224-token limit stay 
 - The window arms build like the shipping arm, about 140 s per trajectory. They answer behind about 12K to 16K exact rows, at about 10 s per probe for about 20 probes.
 - That is about 340 s per arm per trajectory. Both arms on 20 trajectories take about 3.8 h. All 60 take about 11 h, plus FULL-CHK on trajectories 21 to 60 if A1 stopped at 20 (about 8 h).
 - Machine: the lucebox6 integrated GPU, at $0.
+
+## E1: router recall of the target-QK index at prefill end (diagnostic)
+
+Preregistered 2026-10-15, before any E1 row. This is a diagnostic. It decides nothing and changes no default behaviour. It informs the design of a router that pages chunks back in by score.
+
+### Question
+
+At the end of prefill, before the first decode token, does luce_server's existing target-QK residency index (`LUCE_KVFLASH_POLICY=qk`, `server/src/common/kvflash_qk.h`) rank the chunk that holds the source of a recalled fact inside its top k? Today the reselect runs only during decode, every tau = max(64, history/45) generated tokens, so a probe answer of at most 64 tokens never triggers it. E1 measures what the index would pick if it ran once at prefill end.
+
+### Binary and branch
+
+- A new opt-in env var `KVFLASH_QK_DUMP=<dir>` on a branch `kvflash/2.0r-e1-router-recall`, created from `kvflash/2.0a-E-turn-checkpoints` (09bde623), the 2.0a stack that B0 ran on. With the variable unset, behaviour and graph are unchanged (unit-tested).
+- The dump writes, at the end of every prefill and before the first decode token, one JSON line per request: a prompt hash, `n_chunks`, the score of every sealed chunk, and which chunks are resident.
+- The B0 binary md5 was 13c65b5cdce446f00f348a4101432de9. E1 uses a rebuilt binary from the branch above. Its md5 and the ggml .so md5s are recorded in the evidence folder.
+
+### Probe set
+
+- All 951 retained B0 probes (`optimizations/kvflash/evidence/agentic/B0_3090/retained.json`, tasks `tasks_all60.jsonl` with `src_tok`, `cut_tok`, `distance_tok`, `answer`).
+- Primary subset: the 207 probes whose fact is older than 16,384 tokens (`distance_tok` > 16384). POOL16K recalled 12 of these. The other 744 (707 recalled) are the secondary subset. The 951 together are reported as "all".
+
+### Run
+
+- Machine: the 3090, under `flock /mnt/kimi-k3/build/3090.lock`, one 27B server at a time, GPU confirmed idle first.
+- B0's POOL16K server flags: `--kvflash 16384`, `KVFLASH_STATE_LADDER=1 KVFLASH_LIVE_RESTORE=1`, same GGUF, `--max-ctx 52224`, temperature 0, seed 1, same chat template. Added: `LUCE_KVFLASH_POLICY=qk` and `KVFLASH_QK_DUMP`.
+- Replay: the B0 harness (`optimizations/kvflash/agentic_eval/`), probes only, same trajectories and same prompts.
+- Disk KV cache: off (`--no-kv-cache` or a fresh per-run `--kv-cache-dir`), with `disk_hit=false` confirmed.
+
+### Metric
+
+- A fact is **hit at k** if any chunk (64 tokens) that covers the token range [src_tok, src_tok + gold length in tokens] is among the top k chunks by score. Gold length is the tokenized `answer`.
+- **recall@k** for k in {8, 16, 32, 64, 128} chunks, over the primary subset, the secondary subset and all.
+- The **rank distribution**: the best (smallest) rank of any covering chunk, as a histogram and as median and quartiles.
+- The number of probes whose source chunk was already **resident** at prefill end (under LRU most of the 16K window is resident). Recall is also reported over the non-resident probes alone, since a resident hit costs nothing.
+- Two query variants, if both are feasible:
+  - (a) the query of the last prefill token;
+  - (b) the max score over all of the question's prefill tokens.
+  Variant (b) needs per-token prefill queries. If the engine captures only one query on the prefill graph, only (a) is run and (b) is reported as not feasible, with the reason.
+- Chance level is reported next to each recall: k divided by n_chunks, averaged over probes.
+
+### What this does not decide
+
+No threshold is set and no pass or fail applies. The numbers go to the design of the router (does a prefill-end score find old facts, and at what k). They do not change a default, do not replace B0's POOL16K results and are not an accuracy result: E1 does not check that the model answers correctly once the chunk is paged in.
+
+### Parity notes
+
+- This is a within-engine measurement, not an engine comparison, so bench-engine-parity does not apply as a comparison. The workload is B0's own, with B0's flags.
+- Different from B0: the residency policy (qk instead of lru) and the dump. Because the policy differs, the engine's recall of the probe answer is not compared with B0's and is not reported as such.
+- Scores are read once per request at prefill end. Reselect at decode time is not exercised (answers are at most 64 tokens), as in B0.
+- Median, mean, best and min are reported for rank. Decode and prefill speeds are not the subject; the run records the three speeds only as provenance.
