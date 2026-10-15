@@ -151,7 +151,7 @@ requantised model, MTP + copies commits exact-weight verify logits, so the greed
 AR + copies and recover the ~10% on the verify call, but it changes the verified distribution; left as is, acceptance
 and KL would have to be re-measured first (decode-requant/RESULTS.md has the KL gate for T=1).
 
-## Route union (LUCE_MMID_UNION, opt-in, kept for A/B)
+## Route union (LUCE_MMID_UNION, rejected, kept as mmid_union.patch)
 
 Goal: read each distinct expert once per verify window (top-10 union over 4 rows is 0.69-0.73 x 4x10 experts). Done
 as a new MUL_MAT_ID kernel `mul_mat_vec_q_moe_union` (mmvq.cu, `[TAG_MMID_UNION]`): `mmid_group_prep` sorts the
@@ -205,8 +205,9 @@ engaged at T=1 (telemetry: 0 `variant=union` launches at k=1), so the k=1 deltas
 arms with identical settings). `LUCE_PRINT_ARGMAX=1` sums identical on every arm at every k (k=1 16049, k=2 25088,
 k=3 22992, k=4 66549, k=8 115903; matrix k=1 619, k=4 20992).
 
-Decision: stop rule (reachable saving < 1 ms per window; it is negative). `LUCE_MMID_UNION` is opt-in (unset = off),
-the kernel and test stay for A/B on other targets. The e2e mtp_ab A/B was not run: the verify call is its direct
+Decision: stop rule (reachable saving < 1 ms per window; it is negative). The kernel, its `LUCE_MMID_UNION` switch
+and `test_mmid_union_parity` were taken out of the tree and kept as `bench/exact/mtp/mmid_union.patch` (applies
+cleanly; apply it to rerun the A/B on other targets). The e2e mtp_ab A/B was not run: the verify call is its direct
 input and is slower at every width. The largest remaining class is the dense Q8_0 trunk at T=5 (0.55 ms/layer, ~26 ms
 per k=4 call, 2x the routed gate/up): under `mmvq_batch_invariant` each row is one column through the generic
 kernel, so a multi-column kernel that keeps the per-row reduction order (same kbx stride and per-lane accumulation,

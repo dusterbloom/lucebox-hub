@@ -40,7 +40,6 @@ consolidation of this list into CLI flags is tracked as follow-up work.
 | `LUCE_MMID_GROUPED` | unset | Grouped MUL_MAT_ID kernel for small verify batches; candidate for CLI promotion. |
 | `LUCE_MMID_GROUPED_TYPES` | 71 | Grouped-kernel type mask; bit 3 (`8`) opts ROCmFP2/ROCmFP3 into the path. Bit 6 (`64`) enables Q5_0 subject to its sm_86 and projection-shape guards; `7` disables Q5_0 while retaining the previously enabled formats. |
 | `LUCE_MMID_GROUPED_DEVICE` | -1 | Optional zero-based device restriction; unset/-1 applies to every eligible device. |
-| `LUCE_MMID_UNION` | unset (off) | `1` = route-union MUL_MAT_ID kernel for 2..16-token batches (MTP verify rows): each distinct expert's weights read once per wave-run, per-row arithmetic unchanged (bit-identical to T=1). Opt-in: slower than the per-pair kernels on gfx1151 (bench/exact/mtp/MTP-E2E.md). `LUCE_MMID_UNION_ROWS` (1/2/4, default 2) tunes rows per wave. |
 | `LUCE_DS4_MOE_TP` / `LUCE_DS4_MOE_TP_INPROC` | unset | BURN-IN: enable DeepSeek4 route-owner expert parallelism in one process. Prefer the CLI: `--expert-device <backend:gpu>` sets both with the device and backend. |
 | `LUCE_DS4_MOE_TP_BACKEND` / `LUCE_MOE_TP_BACKEND` | peer runtime in a mixed build; compiled runtime otherwise | Select the in-process cold expert owner backend. |
 | `LUCE_DS4_MOE_TP_GPU` | peer backend device 0 in a mixed build; other local device otherwise | Device index within the cold DeepSeek4 expert backend. |
@@ -207,7 +206,6 @@ consolidation of this list into CLI flags is tracked as follow-up work.
 - `LUCE_MMID_GROUPED` - deepseek4_backend.cpp, mmvq.cu
 - `LUCE_MMID_GROUPED_DEVICE` - mmvq.cu
 - `LUCE_MMID_GROUPED_TYPES` - deepseek4_backend.cpp, mmvq.cu
-- `LUCE_MMID_UNION` / `LUCE_MMID_UNION_ROWS` - mmvq.cu
 - `LUCE_MOE_TP_DYNAMIC_MAIN_SLOTS_X4` - moe_hybrid_ffn_eval.cpp
 - `LUCE_MOE_TP_DYNAMIC_ROUTE_BALANCE` - moe_hybrid_ffn_eval.cpp
 - `LUCE_QWEN35_ROCTX` - qwen35_roctx.cpp

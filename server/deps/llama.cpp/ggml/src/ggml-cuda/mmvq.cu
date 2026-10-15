@@ -37,7 +37,6 @@ extern "C" GGML_BACKEND_API size_t ggml_backend_cuda_get_hc_upmix_row8_launch_co
 
 static thread_local size_t g_mmvq_launch_count = 0;
 static thread_local size_t g_mmvq_mmid_grouped_launch_count = 0;
-static thread_local size_t g_mmvq_mmid_union_launch_count = 0;
 static thread_local size_t g_expert_row_warps_launch_count = 0;
 static thread_local size_t g_routed_gate_up_launch_count = 0;
 static thread_local const ggml_tensor * g_hc_down_inject = nullptr;
@@ -144,10 +143,6 @@ extern "C" size_t ggml_backend_cuda_get_mmvq_launch_count(void) {
 
 extern "C" size_t ggml_backend_cuda_get_mmvq_mmid_grouped_launch_count(void) {
     return g_mmvq_mmid_grouped_launch_count;
-}
-
-extern "C" size_t ggml_backend_cuda_get_mmvq_mmid_union_launch_count(void) {
-    return g_mmvq_mmid_union_launch_count;
 }
 
 typedef float (*vec_dot_q_cuda_t)(const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs);
@@ -806,13 +801,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna4(ggml_type
 #define MMID_META_GS (MMID_META_GE + MMID_GROUPED_MAX_PAIRS)
 #define MMID_META_PT (MMID_META_GS + MMID_GROUPED_MAX_PAIRS + 1)
 #define MMID_META_PS (MMID_META_PT + MMID_GROUPED_MAX_PAIRS)
-// [TAG_MMID_UNION] runs of sorted pairs sharing one expert (at most MMID_UNION_MAX_RUN pairs each):
-// nr = run count, rs[r] = first sorted pair of run r, rl[r] = its pair count.
-#define MMID_UNION_MAX_RUN 8
-#define MMID_META_NR (MMID_META_PS + MMID_GROUPED_MAX_PAIRS)
-#define MMID_META_RS (MMID_META_NR + 1)
-#define MMID_META_RL (MMID_META_RS + MMID_GROUPED_MAX_PAIRS)
-#define MMID_META_INTS (MMID_META_RL + MMID_GROUPED_MAX_PAIRS)
+#define MMID_META_INTS (MMID_META_PS + MMID_GROUPED_MAX_PAIRS)
 
 // [TAG_MMID_ADAPTIVE_K] per-token expert budget. The graph builder tags the
 // mmid ids tensor via ->extra with this struct; the prep kernel then drops
@@ -1923,38 +1912,15 @@ static __global__ void mmid_group_prep(
         e = sh_expert[i];
     }
     __syncthreads();
-    // [TAG_MMID_UNION] r = sorted position, c = position within this pair's expert group, g = group size.
-    __shared__ int sh_start[MMID_GROUPED_MAX_PAIRS];
-    __shared__ int sh_len[MMID_GROUPED_MAX_PAIRS];
-    int r = 0;
     if (i < np) {
-        int c = 0, g = 0;
+        int r = 0;
         for (int j = 0; j < np; ++j) {
             const int ej = sh_expert[j];
             r += (ej < e || (ej == e && j < i)) ? 1 : 0;
-            c += (ej == e && j < i) ? 1 : 0;
-            g += (ej == e) ? 1 : 0;
         }
         meta[MMID_META_GE + r] = e == 0x7FFFFFFF ? -1 : e;
         meta[MMID_META_PT + r] = i / n_slots;
         meta[MMID_META_PS + r] = i % n_slots;
-        // A run starts every MMID_UNION_MAX_RUN pairs of one expert group (sentinels form their own group).
-        sh_start[r] = (c % MMID_UNION_MAX_RUN) == 0 ? 1 : 0;
-        sh_len[r]   = min(MMID_UNION_MAX_RUN, g - c);
-    }
-    __syncthreads();
-    if (i < np) {
-        int run = 0;
-        for (int q = 0; q < r; ++q) run += sh_start[q];
-        if (sh_start[r]) {
-            meta[MMID_META_RS + run] = r;
-            meta[MMID_META_RL + run] = sh_len[r];
-        }
-        if (i == 0) {
-            int nr = 0;
-            for (int q = 0; q < np; ++q) nr += sh_start[q];
-            meta[MMID_META_NR] = nr;
-        }
     }
 }
 
@@ -2273,269 +2239,6 @@ static bool mul_mat_vec_q_grouped_dispatch(
         default:
             return false;
     }
-}
-
-// [TAG_MMID_UNION] route-union MoE kernel. One wave handles one RUN: up to MMID_UNION_MAX_RUN sorted pairs that
-// route to the same expert (mmid_group_prep). Every weight block of the expert's rows is loaded once per wave and
-// dotted against each pair's activation, so the expert's weights cross DRAM once per run instead of once per
-// pair (verify rows reuse experts: the union of top-10 over a 4-token window is ~0.7 x 4 x 10). Per pair the
-// arithmetic is that of mul_mat_vec_q_moe and of the single-column mul_mat_vec_q on wave32 (one wave per
-// (pair, row): kbx stride vdr*warp_size/qi, tmp += vec_dot in kbx order, warp_reduce_sum), so each pair's output
-// is bit-identical to the per-row kernels and to the T=1 product of that token.
-template <ggml_type type, int c_rows_per_block, bool has_fusion, int warps_per_block>
-__launch_bounds__(warps_per_block*ggml_cuda_get_physical_warp_size(), 1)
-static __global__ void mul_mat_vec_q_moe_union(
-        const void * __restrict__ vx, const void * __restrict__ vy, const int32_t * __restrict__ meta,
-        const ggml_cuda_mm_fusion_args_device fusion,
-        float * __restrict__ dst,
-        const uint32_t ncols_x, const uint3 nchannels_y, const uint32_t nrows_x,
-        const uint32_t stride_row_x, const uint32_t stride_col_y, const uint32_t stride_col_dst,
-        const uint32_t stride_channel_x, const uint32_t stride_channel_y, const uint32_t stride_channel_dst) {
-
-    constexpr int qk  = ggml_cuda_type_traits<type>::qk;
-    constexpr int qi  = ggml_cuda_type_traits<type>::qi;
-    constexpr int vdr = get_vdr_mmvq(type);
-    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
-    constexpr int MR = MMID_UNION_MAX_RUN;
-    constexpr vec_dot_q_cuda_t vec_dot_q_cuda = get_vec_dot_q_cuda(type);
-
-    const int run = blockIdx.y*warps_per_block + threadIdx.y;
-    if (run >= meta[MMID_META_NR]) {
-        return;
-    }
-    const int s         = meta[MMID_META_RS + run];
-    const int n         = meta[MMID_META_RL + run];
-    const int channel_x = meta[MMID_META_GE + s];
-    const int row0      = c_rows_per_block*blockIdx.x;
-
-    int tok[MR], slot[MR];
-    const block_q8_1 * y[MR];
-#pragma unroll
-    for (int p = 0; p < MR; ++p) {
-        const int q = p < n ? s + p : s;
-        tok[p]  = meta[MMID_META_PT + q];
-        slot[p] = meta[MMID_META_PS + q];
-        y[p] = ((const block_q8_1 *) vy) + fastmodulo((uint32_t) slot[p], nchannels_y)*stride_channel_y + tok[p]*stride_col_y;
-    }
-
-    const bool row_ok = threadIdx.x < c_rows_per_block &&
-        (c_rows_per_block == 1 || uint32_t(row0 + threadIdx.x) < nrows_x);
-    // Dropped slot (-1): exact zeros, as in the grouped kernel.
-    if (channel_x < 0) {
-        if (row_ok) {
-#pragma unroll
-            for (int p = 0; p < MR; ++p) {
-                if (p < n) dst[slot[p]*stride_channel_dst + tok[p]*stride_col_dst + row0 + threadIdx.x] = 0.0f;
-            }
-        }
-        return;
-    }
-    const int blocks_per_row_x = ncols_x / qk;
-    constexpr int blocks_per_iter = vdr * warp_size / qi;
-    const int kbx_offset = channel_x*stride_channel_x + row0*stride_row_x;
-
-    bool use_gate = false;
-    bool use_bias = false;
-    bool use_gate_bias = false;
-    const void * vgate = nullptr;
-    const float * x_bias = nullptr;
-    const float * gate_bias = nullptr;
-    ggml_glu_op active_glu;
-    float glu_param0 = 0.0f;
-    float glu_param1 = 0.0f;
-    float gate_value_scale = 1.0f;
-    float x_value_scale = 1.0f;
-    if constexpr (has_fusion) {
-        use_gate      = fusion.gate      != nullptr;
-        use_bias      = fusion.x_bias    != nullptr;
-        use_gate_bias = fusion.gate_bias != nullptr && use_gate;
-        vgate         = fusion.gate;
-        x_bias        = (const float *) fusion.x_bias;
-        gate_bias     = (const float *) fusion.gate_bias;
-        active_glu    = fusion.glu_op;
-        glu_param0    = fusion.glu_param0;
-        glu_param1    = fusion.glu_param1;
-        gate_value_scale = fusion.gate_value_scale;
-        x_value_scale = fusion.x_value_scale;
-    }
-
-    float tmp[MR][c_rows_per_block] = {{0.0f}};
-    float tmp_gate[MR][c_rows_per_block] = {{0.0f}};
-
-    for (int kbx = threadIdx.x / (qi/vdr); kbx < blocks_per_row_x; kbx += blocks_per_iter) {
-        const int kby = kbx * (qk/QK8_1);
-        const int kqs = vdr * (threadIdx.x % (qi/vdr));
-#pragma unroll
-        for (int i = 0; i < c_rows_per_block; ++i) {
-            const int ibx = kbx_offset + i*stride_row_x + kbx;
-#pragma unroll
-            for (int p = 0; p < MR; ++p) {
-                if (p < n) {
-                    tmp[p][i] += vec_dot_q_cuda(vx, &y[p][kby], ibx, kqs);
-                }
-            }
-            if constexpr (has_fusion) {
-                if (use_gate) {
-#pragma unroll
-                    for (int p = 0; p < MR; ++p) {
-                        if (p < n) {
-                            tmp_gate[p][i] += vec_dot_q_cuda(vgate, &y[p][kby], ibx, kqs);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-#pragma unroll
-    for (int p = 0; p < MR; ++p) {
-#pragma unroll
-        for (int i = 0; i < c_rows_per_block; ++i) {
-            tmp[p][i] = warp_reduce_sum<warp_size>(tmp[p][i]);
-            if constexpr (has_fusion) {
-                if (use_gate) {
-                    tmp_gate[p][i] = warp_reduce_sum<warp_size>(tmp_gate[p][i]);
-                }
-            }
-        }
-    }
-
-    if (row_ok) {
-#pragma unroll
-        for (int p = 0; p < MR; ++p) {
-            if (p >= n) continue;
-            float result = tmp[p][threadIdx.x];
-            if constexpr (has_fusion) {
-                if (use_bias) {
-                    result += x_bias[channel_x*stride_channel_dst + row0 + threadIdx.x];
-                }
-                if (use_gate) {
-                    float gate_value = tmp_gate[p][threadIdx.x];
-                    if (use_gate_bias) {
-                        gate_value += gate_bias[channel_x*stride_channel_dst + row0 + threadIdx.x];
-                    }
-                    switch (active_glu) {
-                        case GGML_GLU_OP_SWIGLU:
-                            result *= ggml_cuda_op_silu_single(gate_value);
-                            break;
-                        case GGML_GLU_OP_GEGLU:
-                            result *= ggml_cuda_op_gelu_single(gate_value);
-                            break;
-                        case GGML_GLU_OP_SWIGLU_OAI:
-                            result = ggml_cuda_op_swiglu_oai_single(gate_value, result, glu_param0, glu_param1);
-                            break;
-                        case GGML_GLU_OP_SWIGLU_DS4:
-                            if (gate_value_scale != 1.0f) gate_value *= gate_value_scale;
-                            if (x_value_scale != 1.0f) result *= x_value_scale;
-                            result = ggml_cuda_op_swiglu_ds4_single(gate_value, result, glu_param0);
-                            break;
-                        default:
-                            result = result * gate_value;
-                            break;
-                    }
-                }
-            }
-            dst[slot[p]*stride_channel_dst + tok[p]*stride_col_dst + row0 + threadIdx.x] = result;
-        }
-    }
-
-    if constexpr (!has_fusion) {
-        GGML_UNUSED_VARS(use_gate, use_bias, use_gate_bias, vgate, x_bias,
-                         gate_bias, active_glu, glu_param0, glu_param1,
-                         gate_value_scale, x_value_scale, tmp_gate);
-    }
-}
-
-template <ggml_type type, int rows_per_block>
-static void mul_mat_vec_q_moe_union_launch_rpb(
-        const void * vx, const void * vy, const int32_t * meta, const ggml_cuda_mm_fusion_args_device & fusion, float * dst,
-        const uint32_t ncols_x, const uint3 nchannels_y, const uint32_t nrows_x,
-        const uint32_t stride_row_x, const uint32_t stride_col_y, const uint32_t stride_col_dst,
-        const uint32_t stride_channel_x, const uint32_t stride_channel_y, const uint32_t stride_channel_dst,
-        const int np, const int warp_size, cudaStream_t stream) {
-    constexpr int warps_per_block = 2;
-    // The run count is only known on the device: launch one wave per pair (an upper bound), the kernel retires
-    // the waves past the run count.
-    const dim3 block_nums((nrows_x + rows_per_block - 1)/rows_per_block, (np + warps_per_block - 1)/warps_per_block);
-    const dim3 block_dims(warp_size, warps_per_block);
-    const bool has_fusion = fusion.gate != nullptr || fusion.x_bias != nullptr || fusion.gate_bias != nullptr;
-    if (has_fusion) {
-        mul_mat_vec_q_moe_union<type, rows_per_block, true, warps_per_block><<<block_nums, block_dims, 0, stream>>>(
-            vx, vy, meta, fusion, dst, ncols_x, nchannels_y, nrows_x, stride_row_x, stride_col_y, stride_col_dst,
-            stride_channel_x, stride_channel_y, stride_channel_dst);
-    } else {
-        mul_mat_vec_q_moe_union<type, rows_per_block, false, warps_per_block><<<block_nums, block_dims, 0, stream>>>(
-            vx, vy, meta, fusion, dst, ncols_x, nchannels_y, nrows_x, stride_row_x, stride_col_y, stride_col_dst,
-            stride_channel_x, stride_channel_y, stride_channel_dst);
-    }
-}
-
-template <ggml_type type>
-static void mul_mat_vec_q_moe_union_launch(
-        const void * vx, const void * vy, const int32_t * meta, const ggml_cuda_mm_fusion_args_device & fusion, float * dst,
-        const uint32_t ncols_x, const uint3 nchannels_y, const uint32_t nrows_x,
-        const uint32_t stride_row_x, const uint32_t stride_col_y, const uint32_t stride_col_dst,
-        const uint32_t stride_channel_x, const uint32_t stride_channel_y, const uint32_t stride_channel_dst,
-        const int np, const int warp_size, cudaStream_t stream) {
-    // LUCE_MMID_UNION_ROWS = 1 | 2 | 4 output rows per wave (tuning only; every value is bit-identical).
-    static const int rows = []() {
-        const char * e = std::getenv("LUCE_MMID_UNION_ROWS");
-        const int v = e && e[0] ? std::atoi(e) : 2;
-        return v == 1 || v == 4 ? v : 2;
-    }();
-    switch (rows) {
-        case 1:  mul_mat_vec_q_moe_union_launch_rpb<type, 1>(vx, vy, meta, fusion, dst, ncols_x, nchannels_y, nrows_x,
-                     stride_row_x, stride_col_y, stride_col_dst, stride_channel_x, stride_channel_y, stride_channel_dst, np, warp_size, stream); break;
-        case 4:  mul_mat_vec_q_moe_union_launch_rpb<type, 4>(vx, vy, meta, fusion, dst, ncols_x, nchannels_y, nrows_x,
-                     stride_row_x, stride_col_y, stride_col_dst, stride_channel_x, stride_channel_y, stride_channel_dst, np, warp_size, stream); break;
-        default: mul_mat_vec_q_moe_union_launch_rpb<type, 2>(vx, vy, meta, fusion, dst, ncols_x, nchannels_y, nrows_x,
-                     stride_row_x, stride_col_y, stride_col_dst, stride_channel_x, stride_channel_y, stride_channel_dst, np, warp_size, stream); break;
-    }
-}
-
-static bool mul_mat_vec_q_union_dispatch(
-        const ggml_type type, const void * vx, const void * vy, const int32_t * meta,
-        const ggml_cuda_mm_fusion_args_device & fusion, float * dst,
-        const int ncols_x, const int nrows_x, const int nchannels_y,
-        const int stride_row_x, const int stride_col_y, const int stride_col_dst,
-        const int stride_channel_x, const int stride_channel_y, const int stride_channel_dst,
-        const int np, cudaStream_t stream) {
-    const int warp_size = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
-    const uint3 nchannels_y_fd = init_fastdiv_values((uint32_t) nchannels_y);
-#define GGML_MMID_UNION_CASE(T) \
-    case T: mul_mat_vec_q_moe_union_launch<T>(vx, vy, meta, fusion, dst, ncols_x, nchannels_y_fd, nrows_x, \
-        stride_row_x, stride_col_y, stride_col_dst, stride_channel_x, stride_channel_y, stride_channel_dst, np, warp_size, stream); \
-        return true
-    switch (type) {
-        GGML_MMID_UNION_CASE(GGML_TYPE_Q4_0);
-        GGML_MMID_UNION_CASE(GGML_TYPE_Q5_1);
-        GGML_MMID_UNION_CASE(GGML_TYPE_Q8_0);
-        GGML_MMID_UNION_CASE(GGML_TYPE_Q4_K);
-        GGML_MMID_UNION_CASE(GGML_TYPE_Q5_K);
-        GGML_MMID_UNION_CASE(GGML_TYPE_Q6_K);
-        default: return false;
-    }
-#undef GGML_MMID_UNION_CASE
-}
-
-// [TAG_MMID_UNION] admission: opt-in (LUCE_MMID_UNION=1). Measured on lucebox4 (gfx1151, qwen4exp k=4 verify,
-// bench/exact/mtp/MTP-E2E.md): bit-identical but slower than the per-pair kernels (+0.12 ms per routed launch,
-// +9 ms per k=4 call) -- the per-pair launch already runs at DRAM speed on the union byte count because the
-// L2/MALL serve the duplicate expert reads inside one launch, and serialising pairs per wave lengthens the
-// short (2-3 K-iteration) waves' latency chain. Kept for A/B and other targets.
-static bool mmid_union_enabled(ggml_type type, int cc, int64_t ncols_dst, int64_t np) {
-    static const bool on = []() {
-        const char * e = std::getenv("LUCE_MMID_UNION");
-        return e && e[0] == '1' && e[1] == '\0';
-    }();
-    if (!on) return false;
-    switch (type) {
-        case GGML_TYPE_Q4_0: case GGML_TYPE_Q5_1: case GGML_TYPE_Q8_0:
-        case GGML_TYPE_Q4_K: case GGML_TYPE_Q5_K: case GGML_TYPE_Q6_K: break;
-        default: return false;
-    }
-    return ncols_dst >= 2 && ncols_dst <= MMVQ_MAX_MOE_BATCH_SIZE && np <= MMID_GROUPED_MAX_PAIRS &&
-        mmid_grouped_arch_ok(cc);
 }
 
 template<ggml_type type>
@@ -3792,33 +3495,6 @@ void ggml_cuda_mul_mat_vec_q(
         const char * value = std::getenv("LUCE_MMID_TELEMETRY");
         return value != nullptr && std::strcmp(value, "0") != 0;
     }();
-
-    // [TAG_MMID_UNION] route-union path: each distinct expert's weights are read once per batch. Fixed top-k
-    // ids only (adaptive-k gating tags ids->extra and stays on the grouped path below).
-    if (ids && ids->extra == nullptr && mmid_union_enabled(src0->type, cc, ncols_dst, nchannels_dst*ncols_dst)) {
-        const int np = (int) (nchannels_dst*ncols_dst);
-        ggml_cuda_pool_alloc<int32_t> mmid_meta(ctx.pool(), MMID_META_INTS);
-        const int prep_warp = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
-        const int prep_threads = ((np + prep_warp - 1)/prep_warp)*prep_warp;
-        mmid_group_prep<<<1, prep_threads, 0, stream>>>(
-            const_cast<int32_t *>(ids_d), mmid_meta.ptr, (int) nchannels_dst, (int) ncols_dst, (int) ids_stride,
-            nullptr, 0, 0.0f);
-        CUDA_CHECK(cudaGetLastError());
-        if (mul_mat_vec_q_union_dispatch(
-                src0->type, src0->data, src1_q8_d, mmid_meta.ptr, fusion_local, dst_d,
-                (int) ne00, (int) ne01, (int) nchannels_y,
-                (int) s01, (int) stride_col_y, (int) stride_col_dst,
-                (int) s02, (int) stride_channel_y, (int) stride_channel_dst,
-                np, stream)) {
-            ++g_mmvq_mmid_union_launch_count;
-            if (mmid_telemetry) {
-                std::fprintf(stderr,
-                    "[dflash-mmid] event=mmvq type=%s width=%lld pairs=%d variant=union\n",
-                    ggml_type_name(src0->type), (long long) ncols_dst, np);
-            }
-            return;
-        }
-    }
 
     // [TAG_MMID_GROUPED] grouped-expert path for small MUL_MAT_ID batches.
     // Qualify Q5_0 for the Gemma 4 expert-down projection. A wider shape

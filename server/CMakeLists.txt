@@ -1438,10 +1438,6 @@ if(LUCE_TESTS)
         # to a host reference on the vector-eligible shapes and on the shapes that fall back to the scalar kernel.
         luce_add_ggml_gpu_executable(test_cpy_vec_parity test/unit/test_cpy_vec_parity.cpp)
         list(APPEND _raw_unit_test_targets test_cpy_vec_parity)
-        # Guards the route-union MUL_MAT_ID kernel (mmvq.cu mul_mat_vec_q_moe_union, the MTP verify rows): every row
-        # of a T=2..8 batch byte-identical to the T=1 product of that token on the qwen4exp expert shapes.
-        luce_add_ggml_gpu_executable(test_mmid_union_parity test/unit/test_mmid_union_parity.cpp)
-        list(APPEND _raw_unit_test_targets test_mmid_union_parity)
         # Guards the qsa3 attention store with the sigmoid gate folded in (qsa.cu): byte-identical F16 to the plain
         # store + gate kernel. gfx1151 only.
         add_executable(test_qsa3_gate_parity test/unit/test_qsa3_gate_parity.cpp)
