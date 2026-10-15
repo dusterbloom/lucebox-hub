@@ -57,6 +57,7 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -290,7 +291,18 @@ public:
 #endif
     }
 
-    bool reset_identity(int64_t) { return false; }   // STUB (red run)
+    // Rebuild the mapping of [0, n_tokens) from scratch, identity-style: chunk c
+    // in block c, nothing compacted, nothing on host. For state that was
+    // restored as one contiguous prefix (prefill, exact snapshot restore): the
+    // previous request's mapping and compaction must not survive it. False if
+    // n_tokens does not fit the pool.
+    bool reset_identity(int64_t n_tokens) {
+        if (!attached() || n_tokens < 0 || n_tokens > cfg_.pool_tokens) return false;
+        reset();
+        for (int64_t p = 0; p < n_tokens; p++)
+            if (slot_for(p) != (int)p) return false;
+        return true;
+    }
     bool attached() const { return n_blocks_ > 0; }
     int pool_tokens() const { return cfg_.pool_tokens; }
     int chunk_tokens() const { return cfg_.chunk_tokens; }
@@ -309,9 +321,14 @@ public:
         if (!attached() || tok_lo < 0 || tok_hi <= tok_lo) return;
         const int c_lo = (int)(tok_lo / cfg_.chunk_tokens);
         const int c_hi = (int)((tok_hi - 1) / cfg_.chunk_tokens);   // inclusive
-        int pinned = 0, fresh = 0;
-        for (uint8_t f : pinned_) pinned += f;
-        for (int c = c_lo; c <= c_hi; c++) fresh += !is_pinned(c);
+        // One protected block per owner head: a pin anywhere on a compacted span
+        // protects the one block, so count blocks, not chunks.
+        std::set<int> owners;
+        for (int c = 0; c < (int)pinned_.size(); c++)
+            if (pinned_[(size_t)c]) owners.insert(owner_(c));
+        const int pinned = (int)owners.size();
+        int fresh = 0;
+        for (int c = c_lo; c <= c_hi; c++) fresh += owners.insert(owner_(c)).second;
         if (cfg_.sink_chunks + cfg_.tail_window_chunks + pinned + fresh + 2 > n_blocks_) {
             std::fprintf(stderr,
                 "[kvflash] pin_range [%lld,%lld) refused: sink=%d tail=%d "
@@ -325,6 +342,19 @@ public:
     }
     bool is_pinned(int c) const {
         return c >= 0 && c < (int)pinned_.size() && pinned_[(size_t)c];
+    }
+    // Head chunk of the block that holds chunk c's rows (c itself unless covered).
+    int owner_(int c) const {
+        while (c > 0 && c < (int)chunks_.size() && chunks_[(size_t)c].covered) c--;
+        return c;
+    }
+    // Sink, trailing window, or pinned on any chunk of the block's span.
+    bool protected_(int c) const {
+        const int span = c < (int)chunks_.size() ? chunks_[(size_t)c].span : 1;
+        if (c < cfg_.sink_chunks) return true;
+        if (c + span - 1 > cur_chunk_ - 1 - cfg_.tail_window_chunks) return true;
+        for (int k = c; k < c + span; k++) if (is_pinned(k)) return true;
+        return false;
     }
     void unpin_all() { std::fill(pinned_.begin(), pinned_.end(), 0); }
 
@@ -354,6 +384,16 @@ public:
     // appended token, in logical order.
     int slot_for(int64_t pos) {
         const int c = (int)(pos / cfg_.chunk_tokens);
+        // A compacted block is sealed: its 64 rows are fitted values, not a
+        // write target, and covered chunks have no rows at all.
+        if (c < (int)chunks_.size() && (chunks_[c].compacted || chunks_[c].covered)) return -1;
+        return materialize_(c) ? chunks_[c].block * cfg_.chunk_tokens + (int)(pos % cfg_.chunk_tokens) : -1;
+    }
+
+    // Give chunk c a pool block (evicting if the pool is full) and restore its
+    // paged-out bytes. Used for appends (via slot_for) and for recalling a
+    // compacted head.
+    bool materialize_(int c) {
         // cur_chunk_ tracks the append head only; a page_in of an older
         // chunk must not shrink the protected tail window. It must advance
         // BEFORE eviction (so the victim search protects the new tail), but
@@ -363,11 +403,10 @@ public:
         if (c > cur_chunk_) cur_chunk_ = c;
         if ((int)chunks_.size() <= c) chunks_.resize(c + 1);
         ChunkState & st = chunks_[c];
-        if (st.covered) return -1;   // sealed inside a compacted block: no rows of its own
         if (st.block < 0) {
             if (!ensure_free_block()) {
                 cur_chunk_ = prev_cur_chunk;
-                return -1;
+                return false;
             }
             st.block = free_blocks_.back();
             free_blocks_.pop_back();
@@ -382,7 +421,7 @@ public:
             }
         }
         st.last_use = ++clock_;
-        return st.block * cfg_.chunk_tokens + (int)(pos % cfg_.chunk_tokens);
+        return true;
     }
 
     // Force a chunk out of the pool (host backing + zeroed slots).
@@ -416,7 +455,7 @@ public:
     // Recall a chunk into the pool (used by reselect / tests).
     bool page_in(int c) {
         if (c >= (int)chunks_.size() || !chunks_[c].on_host || chunks_[c].block >= 0) return false;
-        return slot_for((int64_t)c * cfg_.chunk_tokens) >= 0;
+        return materialize_(c);
     }
 
     // Block until queued page DMA on page_stream_ completes. Hot paths
@@ -588,9 +627,7 @@ public:
         for (int c = 0; c < (int)chunks_.size(); c++) {
             const ChunkState & st = chunks_[c];
             if (st.block < 0 && !st.on_host) continue;     // never materialized
-            const bool prot = c < cfg_.sink_chunks ||
-                              c > cur_chunk_ - 1 - cfg_.tail_window_chunks ||
-                              is_pinned(c);
+            const bool prot = protected_(c);
             cands.push_back({c, prot ? 3.4e38f : score_hook(c)});
         }
         std::sort(cands.begin(), cands.end(),
@@ -655,7 +692,7 @@ public:
         std::memcpy(p, &kBlobMagic, 8); p += 8;
         const uint32_t hdr[8] = {(uint32_t)nc, (uint32_t)cfg_.chunk_tokens,
             (uint32_t)n_head_kv_, (uint32_t)k_seg_bytes_, (uint32_t)v_seg_bytes_,
-            (uint32_t)chunk_bytes_, live_k_type_(), 1u};
+            (uint32_t)chunk_bytes_, live_k_type_(), n_comp ? 2u : 1u};
         std::memcpy(p, hdr, sizeof(hdr));
         for (int c = 0; c < nc; ++c) {
             const ChunkState & st = chunks_[(size_t)c];
@@ -719,7 +756,7 @@ public:
         const size_t nc = h[0];
         if ((int)h[1] != cfg_.chunk_tokens || (int)h[2] != n_head_kv_ ||
             h[3] != k_seg_bytes_ || h[4] != v_seg_bytes_ || h[5] != chunk_bytes_ ||
-            h[6] != live_k_type_() || h[7] != 1u) {
+            h[6] != live_k_type_() || (h[7] != 1u && h[7] != 2u)) {
             return false;
         }
         // Overflow-safe length check: nc comes from the (untrusted) blob.
@@ -732,7 +769,8 @@ public:
         std::vector<size_t> comp_c0;
         std::vector<uint32_t> comp_span;
         std::vector<const uint8_t *> comp_beta;
-        if (!parse_compacted_(lp + nc * kLedgerEntry, data + n, nc, comp_c0, comp_span, comp_beta))
+        if (!parse_compacted_(lp + nc * kLedgerEntry, data + n, nc, h[7] == 2u,
+                              comp_c0, comp_span, comp_beta))
             return false;
 
         reset();
@@ -765,8 +803,8 @@ public:
             }
             st.on_host = true;
             std::memcpy(&st.score, lp + c * kLedgerEntry + 4, 4);
-            // slot_for()'s recall branch copies host_data into the new block.
-            if (lp[c * kLedgerEntry] != 0) slot_for((int64_t)c * cfg_.chunk_tokens);
+            // materialize_()'s recall branch copies host_data into the new block.
+            if (lp[c * kLedgerEntry] != 0) materialize_((int)c);
         }
         if (nc > 0 && cur_chunk_ < (int)nc - 1) cur_chunk_ = (int)nc - 1;
         if (has_pending_page_in_) synchronize_paging();   // async recalls settle
@@ -785,19 +823,21 @@ private:
     // then per block u32 c0, u32 span, beta (beta_floats_() floats).
     static constexpr uint32_t kCompactMagic = 0x47534b56;
 
-    // Parse the trailer at [p, end). False on any inconsistency. Bytes that are
-    // not a trailer (no magic) are tolerated, as before.
-    bool parse_compacted_(const uint8_t * p, const uint8_t * end, size_t nc,
+    // Parse the trailer at [p, end). With want_trailer (header flag 2) the
+    // trailer is mandatory; without it nothing may follow the ledger. Any
+    // damage (short, bad magic, count too low or high, trailing bytes) fails.
+    bool parse_compacted_(const uint8_t * p, const uint8_t * end, size_t nc, bool want_trailer,
                           std::vector<size_t> & c0, std::vector<uint32_t> & span,
                           std::vector<const uint8_t *> & beta) const {
+        if (!want_trailer) return p == end;
         uint32_t magic = 0, n = 0;
-        if ((size_t)(end - p) < 8) return true;
+        if ((size_t)(end - p) < 8) return false;
         std::memcpy(&magic, p, 4);
-        if (magic != kCompactMagic) return true;
         std::memcpy(&n, p + 4, 4);
+        if (magic != kCompactMagic || n < 1 || n > nc) return false;
         p += 8;
         const size_t entry = 8 + beta_floats_() * 4;
-        if (n > nc || (size_t)(end - p) / entry < n) return false;
+        if ((size_t)(end - p) != (size_t)n * entry) return false;
         size_t floor_c = 0;
         for (uint32_t i = 0; i < n; i++, p += entry) {
             uint32_t a = 0, s = 0;
@@ -847,9 +887,7 @@ private:
         uint64_t v_use = 0;
         for (int c = 0; c < (int)chunks_.size(); c++) {
             if (chunks_[c].block < 0) continue;
-            if (c < cfg_.sink_chunks) continue;
-            if (c > cur_chunk_ - 1 - cfg_.tail_window_chunks) continue;
-            if (is_pinned(c)) continue;
+            if (protected_(c)) continue;
             if (score_hook) {
                 const float s = score_hook(c);
                 if (victim < 0 || s < v_score) { victim = c; v_score = s; }
@@ -1057,7 +1095,21 @@ private:
     bool has_pending_page_in_ = false;
 };
 
-inline bool kvflash_parse_test_compact(const char *, int, int &, float &) { return false; }  // STUB (red run)
+// Test hook spec for LUCE_KVFLASH_TEST_COMPACT: "<k>:<beta>" marks the chunk k
+// behind the last materialized one. k >= 1 so the append head is never hit, the
+// whole string must parse, and the chunk must exist. False otherwise.
+inline bool kvflash_parse_test_compact(const char * spec, int n_chunks, int & chunk, float & beta) {
+    if (!spec) return false;
+    char * end = nullptr;
+    const long k = std::strtol(spec, &end, 10);
+    if (end == spec || *end != ':' || k < 1 || k > n_chunks - 1) return false;
+    const char * b = end + 1;
+    const float v = std::strtof(b, &end);
+    if (end == b || *end != '\0') return false;
+    chunk = n_chunks - 1 - (int)k;
+    beta = v;
+    return true;
+}
 
 // ── Shared backend helpers ─────────────────────────────────────────────
 //
