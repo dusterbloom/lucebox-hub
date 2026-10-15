@@ -4495,6 +4495,9 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     }
 
     const int cc = ggml_cuda_info().devices[device].cc;
+    // The wmma kernel has no kv_bias path (untested on hardware): an op that carries one is routed to the
+    // kernel the non-wmma selection below would pick (mma where available).
+    const bool no_wmma = ggml_flash_attn_ext_get_kv_bias(dst) != nullptr;
 
     switch (K->ne[0]) {
         case  40:
@@ -4649,7 +4652,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     // On RDNA4 the rocWMMA kernel is not qualified (fragment layouts do not
     // match the hand-rolled softmax reductions), so it is reachable only
     // through the env-gated head-256 block below.
-    if (ggml_cuda_should_use_wmma_fattn(cc) && !GGML_CUDA_CC_IS_RDNA4(cc) && K->ne[1] % FATTN_KQ_STRIDE == 0 && Q->ne[0] != 40 && Q->ne[0] != 72 && Q->ne[0] != 512 && Q->ne[0] != 576) {
+    if (!no_wmma && ggml_cuda_should_use_wmma_fattn(cc) && !GGML_CUDA_CC_IS_RDNA4(cc) && K->ne[1] % FATTN_KQ_STRIDE == 0 && Q->ne[0] != 40 && Q->ne[0] != 72 && Q->ne[0] != 512 && Q->ne[0] != 576) {
         if (can_use_vector_kernel && Q->ne[1] <= 2) {
             return BEST_FATTN_KERNEL_VEC;
         }
@@ -4710,7 +4713,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         while (gqa_ratio % (2*gqa_ratio_eff) == 0 && gqa_ratio_eff < 8) {
             gqa_ratio_eff *= 2;
         }
-        if (fa256_wmma && ggml_cuda_should_use_wmma_fattn(cc) && K->ne[1] % FATTN_KQ_STRIDE == 0) {
+        if (!no_wmma && fa256_wmma && ggml_cuda_should_use_wmma_fattn(cc) && K->ne[1] % FATTN_KQ_STRIDE == 0) {
             return BEST_FATTN_KERNEL_WMMA_F16;
         }
         if (fa256_wmma && !ggml_cuda_should_use_wmma_fattn(cc)) {
@@ -4721,7 +4724,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             }
         }
         if (fa256_tc && Q->ne[1] * gqa_ratio_eff > 32) {
-            if (ggml_cuda_should_use_wmma_fattn(cc) && K->ne[1] < fa256_wmma_max_kv) {
+            if (!no_wmma && ggml_cuda_should_use_wmma_fattn(cc) && K->ne[1] < fa256_wmma_max_kv) {
                 return BEST_FATTN_KERNEL_WMMA_F16;
             }
             return BEST_FATTN_KERNEL_MMA_F16;
@@ -4825,7 +4828,7 @@ bool ggml_cuda_flash_attn_ext_supported(int device, const ggml_tensor * dst) {
             return dst->src[4] == nullptr && max_bias == 0.0f && logit_softcap == 0.0f;
         }
         if (kernel != BEST_FATTN_KERNEL_VEC && kernel != BEST_FATTN_KERNEL_TILE &&
-            kernel != BEST_FATTN_KERNEL_MMA_F16) {
+            kernel != BEST_FATTN_KERNEL_MMA_F16) {  // never WMMA_F16: the selector routes kv_bias away from it
             return false;
         }
     }
