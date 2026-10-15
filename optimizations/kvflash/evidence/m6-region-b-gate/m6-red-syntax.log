@@ -1,0 +1,32 @@
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:85:12: error: ‘class luce::common::KvFlashPager’ has no member named ‘insert_compacted’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:89:36: error: ‘const class luce::common::KvFlashPager’ has no member named ‘layer_cols’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:90:7: error: ‘const class luce::common::KvFlashPager’ has no member named ‘fill_kv_bias’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:100:29: error: ‘const class luce::common::KvFlashPager’ has no member named ‘b_row’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:108:29: error: ‘const class luce::common::KvFlashPager’ has no member named ‘segments’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:128:15: error: ‘class luce::common::KvFlashPager’ has no member named ‘segments’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:129:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘segments’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:130:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘segments’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:131:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘segments’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:132:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘segments’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:142:19: error: ‘class luce::common::KvFlashPager’ has no member named ‘layer_cols’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:167:14: error: ‘class luce::common::KvFlashPager’ has no member named ‘insert_compacted’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:168:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘segments’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:178:34: error: invalid operands of types ‘void’ and ‘int’ to binary ‘operator==’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:179:34: error: invalid operands of types ‘void’ and ‘int’ to binary ‘operator==’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:180:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘segments’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:182:38: error: invalid operands of types ‘void’ and ‘int’ to binary ‘operator==’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:183:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘segments’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:185:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘b_free_blocks’; did you mean ‘std::vector<int> luce::common::KvFlashPager::free_blocks_’? (not accessible from this context)
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:186:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘b_free_blocks’; did you mean ‘std::vector<int> luce::common::KvFlashPager::free_blocks_’? (not accessible from this context)
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:191:40: error: ‘class luce::common::KvFlashPager’ has no member named ‘layer_cols’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:205:34: error: invalid operands of types ‘void’ and ‘int’ to binary ‘operator==’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:206:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘segments’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:207:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘b_free_blocks’; did you mean ‘std::vector<int> luce::common::KvFlashPager::free_blocks_’? (not accessible from this context)
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:223:16: error: ‘class luce::common::KvFlashPager’ has no member named ‘segments’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:224:26: error: ‘class luce::common::KvFlashPager’ has no member named ‘segments’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:225:26: error: ‘class luce::common::KvFlashPager’ has no member named ‘segments’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:248:35: error: invalid operands of types ‘void’ and ‘int’ to binary ‘operator==’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:249:14: error: ‘class luce::common::KvFlashPager’ has no member named ‘b_free_blocks’; did you mean ‘std::vector<int> luce::common::KvFlashPager::free_blocks_’? (not accessible from this context)
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:262:14: error: ‘class luce::common::KvFlashPager’ has no member named ‘segments’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:304:29: error: ‘class luce::common::KvFlashPager’ has no member named ‘layer_cols’
+/home/peppi/Dev/lucebox-builds/wt-m6/server/test/unit/test_kvflash_pager_region_b.cpp:309:14: error: ‘class luce::common::KvFlashPager’ has no member named ‘layer_cols’

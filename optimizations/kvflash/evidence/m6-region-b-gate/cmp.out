@@ -1,0 +1,18 @@
+disk_hit values: {'false'}
+prefix_len/effective_in equal across arms: True
+greedy text identical across arms, all 25 pairs: False
+  prompt 0: distinct texts across 10 runs = 1
+  prompt 1: distinct texts across 10 runs = 1
+  prompt 2: distinct texts across 10 runs = 1
+  prompt 3: distinct texts across 10 runs = 1
+  prompt 4: distinct texts across 10 runs = 2
+metric        arm      median     mean      min      max
+prefill tok/s main    1345.43  1340.05  1247.42  1374.82
+prefill tok/s m6      1307.99  1299.90  1155.52  1345.36
+              m6 vs main median: -2.78%
+decode tok/s  main      44.40    44.02    40.70    45.80
+decode tok/s  m6        42.80    43.12    40.90    44.70
+              m6 vs main median: -3.60%
+wall s        main      19.80    19.90    19.30    20.90
+wall s        m6        20.40    20.47    19.70    22.10
+              m6 vs main median: +3.03%
