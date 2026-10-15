@@ -1,0 +1,24 @@
+[a1] model loaded in 165s on Radeon 8060S Graphics torch 2.9.1+rocm7.13.0a20260513
+[E7] 58f9f17c system+tools end at token 5920: 10 exact blocks = 6400 tokens
+[a1] 58f9f17c E7 cut 1/2 ctx 23522 build 113.2s answer 30.8s (4 items) peak alloc 54.1 reserved 78.5 GiB
+[a1] 58f9f17c E7 cut 2/2 ctx 36590 build 77.1s answer 56.0s (7 items) peak alloc 55.4 reserved 78.5 GiB
+[E7] bef6b39d system+tools end at token 5920: 10 exact blocks = 6400 tokens
+[a1] bef6b39d E7 cut 1/3 ctx 11194 build 47.4s answer 78.5s (11 items) peak alloc 53.6 reserved 61.7 GiB
+[a1] bef6b39d E7 cut 2/3 ctx 24239 build 71.5s answer 225.3s (9 items) peak alloc 54.7 reserved 72.4 GiB
+[a1] bef6b39d E7 cut 3/3 ctx 36550 build 73.7s answer 79.8s (7 items) peak alloc 55.4 reserved 76.1 GiB
+[E7] 22767e8f system+tools end at token 5920: 10 exact blocks = 6400 tokens
+[a1] 22767e8f E7 cut 1/3 ctx 12088 build 51.3s answer 109.7s (5 items) peak alloc 53.7 reserved 62.6 GiB
+[a1] 22767e8f E7 cut 2/3 ctx 24495 build 69.9s answer 246.2s (12 items) peak alloc 54.8 reserved 72.6 GiB
+[a1] 22767e8f E7 cut 3/3 ctx 33349 build 51.6s answer 108.2s (8 items) peak alloc 55.2 reserved 72.6 GiB
+[E7] d5b2f250 system+tools end at token 5920: 10 exact blocks = 6400 tokens
+[a1] d5b2f250 E7 cut 1/3 ctx 11205 build 47.4s answer 38.1s (3 items) peak alloc 53.6 reserved 61.8 GiB
+[a1] d5b2f250 E7 cut 2/3 ctx 23955 build 70.5s answer 53.3s (3 items) peak alloc 54.7 reserved 72.6 GiB
+[a1] d5b2f250 E7 cut 3/3 ctx 36489 build 73.6s answer 186.6s (7 items) peak alloc 55.4 reserved 76.0 GiB
+[E7] 93b0bbdc system+tools end at token 5920: 10 exact blocks = 6400 tokens
+[a1] 93b0bbdc E7 cut 1/3 ctx 12287 build 52.9s answer 175.6s (6 items) peak alloc 53.7 reserved 64.0 GiB
+[a1] 93b0bbdc E7 cut 2/3 ctx 24567 build 66.9s answer 94.3s (6 items) peak alloc 54.8 reserved 71.9 GiB
+[a1] 93b0bbdc E7 cut 3/3 ctx 36118 build 67.7s answer 133.7s (9 items) peak alloc 55.3 reserved 73.7 GiB
+[E7] b02cfcfc system+tools end at token 5920: 10 exact blocks = 6400 tokens
+[a1] b02cfcfc E7 cut 1/3 ctx 11628 build 49.5s answer 101.6s (9 items) peak alloc 53.7 reserved 63.2 GiB
+[a1] b02cfcfc E7 cut 2/3 ctx 24259 build 68.2s answer 106.4s (6 items) peak alloc 54.7 reserved 71.7 GiB
+[a1] b02cfcfc E7 cut 3/3 ctx 35554 build 67.7s answer 135.3s (6 items) peak alloc 55.3 reserved 73.4 GiB

@@ -289,6 +289,70 @@
    ]
   }
  },
+ "E7_system_prefix_exact": {
+  "n": 118,
+  "correct": 9,
+  "retention": {
+   "mean": 0.07627118644067797,
+   "lo": 0.03571428571428571,
+   "hi": 0.125,
+   "n_q": 118,
+   "n_art": 6,
+   "level": 95.0
+  },
+  "by_distance": {
+   "0-4096": [
+    2,
+    41
+   ],
+   "4096-8192": [
+    2,
+    26
+   ],
+   "8192-16384": [
+    3,
+    33
+   ],
+   "16384-inf": [
+    2,
+    18
+   ]
+  },
+  "by_type": {
+   "defname": [
+    2,
+    24
+   ],
+   "line": [
+    1,
+    61
+   ],
+   "cmdline_path": [
+    2,
+    14
+   ],
+   "cmdline_text": [
+    1,
+    15
+   ],
+   "traceback": [
+    0,
+    1
+   ],
+   "failed_test": [
+    3,
+    3
+   ]
+  },
+  "exact_tokens_per_trajectory": {
+   "58f9f17c": 6400,
+   "bef6b39d": 6400,
+   "22767e8f": 6400,
+   "d5b2f250": 6400,
+   "93b0bbdc": 6400,
+   "b02cfcfc": 6400
+  }
+ },
  "E2": {
   "probes": 118,
   "eligible": 118,
