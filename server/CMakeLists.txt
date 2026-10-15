@@ -1438,6 +1438,11 @@ if(LUCE_TESTS)
         # to a host reference on the vector-eligible shapes and on the shapes that fall back to the scalar kernel.
         luce_add_ggml_gpu_executable(test_cpy_vec_parity test/unit/test_cpy_vec_parity.cpp)
         list(APPEND _raw_unit_test_targets test_cpy_vec_parity)
+        # Guards the weight rows per wave on the batch-invariant Q8_0 multi-column MMVQ launch (mmvq.cu
+        # c_invariant_rpb, the MTP verify rows): every column byte-identical to its own one-column product at
+        # 1 / 2 / 4 rows per wave on the qwen4exp dense shapes.
+        luce_add_ggml_gpu_executable(test_mmvq_invariant_rows_parity test/unit/test_mmvq_invariant_rows_parity.cpp)
+        list(APPEND _raw_unit_test_targets test_mmvq_invariant_rows_parity)
         # Guards the qsa3 attention store with the sigmoid gate folded in (qsa.cu): byte-identical F16 to the plain
         # store + gate kernel. gfx1151 only.
         add_executable(test_qsa3_gate_parity test/unit/test_qsa3_gate_parity.cpp)

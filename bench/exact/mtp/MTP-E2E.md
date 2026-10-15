@@ -110,8 +110,9 @@ still launch/replay overhead and small per-row kernels, not bytes:
    ~1.8 us per replayed node that is ~0.9 ms/row, ~13 ms per k=4 call in total. Fewer nodes per row (the per-row
    attention sub-graphs: QSA score / top-k / gather / wmma / merge per row, kv set_rows, rope) is the lever; main's
    at-once QSA path (tokenwise indexer score + multi-row top_k_qsa) does exactly that and needs those two ops.
-3. The rest (~4 ms/row): T>1 GEMV columns run batch-invariant (`mmvq_batch_invariant`, one column per row for the
-   exactness guarantee), so the dense trunk GEMVs scale with rows instead of sharing the weight read.
+3. The rest (~4 ms/row): the dense Q8_0 trunk GEMVs at T>1. They already share the weight read across the rows
+   (one width-invariant launch per GEMV) but run 1.45-1.8x the T=1 launch time on the same bytes; two weight rows
+   per wave recover 3.8 ms per T=5 call -- "Dense Q8_0 trunk at T=5" below.
 
 A rocprofv3 --kernel-trace of the retained k=4 call is not usable for the idle question: the tracer inflates the
 graph replay 3x (221 ms per call under the tracer vs 77 unprofiled), so a per-kernel ledger of the replayed verify
@@ -209,7 +210,128 @@ Decision: stop rule (reachable saving < 1 ms per window; it is negative). The ke
 and `test_mmid_union_parity` were taken out of the tree and kept as `bench/exact/mtp/mmid_union.patch` (applies
 cleanly; apply it to rerun the A/B on other targets). The e2e mtp_ab A/B was not run: the verify call is its direct
 input and is slower at every width. The largest remaining class is the dense Q8_0 trunk at T=5 (0.55 ms/layer, ~26 ms
-per k=4 call, 2x the routed gate/up): under `mmvq_batch_invariant` each row is one column through the generic
-kernel, so a multi-column kernel that keeps the per-row reduction order (same kbx stride and per-lane accumulation,
-rows interleaved the way the union kernel does) would share the weight read across the 5 rows; that is the lever
-to try next, not the experts.
+per k=4 call, 2x the routed gate/up); the next section takes it up. (The guess here was that each row runs as its own
+column through the generic kernel; it does not -- see below.)
+
+## Dense Q8_0 trunk at T=5: rows per wave (LUCE_MMVQ_INVARIANT_ROWS, shipped)
+
+Same box, binary luce_server 9a720376 / ggml-hip 4e1b1748 (the tree at this commit), `bench_verify_realtok` relinked
+against it. Traces: `rocprofv3 --kernel-trace` of the eager verify (`LUCE_VERIFY_GRAPH_LEGACY=1`) at k=1 and k=5
+(T=5), per launch, grouped by kernel template and grid; the window is the last 5 forward calls (`op_sgn` is the
+once-per-forward marker). Scratch on the box: `~/qwen4exp-f16/scratch/densever/` (`trace.sh`, `launches.py`,
+`sweep.sh`).
+
+### Launch structure (what the tree already did)
+
+`mmvq_batch_invariant` does **not** run one column per row for Q8_0. `mul_mat_vec_q_switch_type` has a Q8_0-only
+branch (`c_width_invariant=true`): one launch per GEMV with all T rows as columns, the single-column block shape
+(gfx1151 RDNA2 table: one wave per weight row, 8 blocks per iteration) and `tmp[j]` per column, so each wave reads
+its weight row once and dots it against the T activation columns; per column the kbx traversal, per-lane
+accumulation and `warp_reduce_sum` are those of the T=1 kernel, which is the bit-exactness guarantee. The trace
+shows it: at T=5 every dense Q8_0 GEMV is `mul_mat_vec_q<Q8_0, 5, ..., width_invariant=true>` with the same grid as
+its T=1 launch (attn_qkv 10240 waves, attn_q 12288, attn_gate 6144, ssm_out / attn_output 2560, hc_up 10240, hc_down
+320, shexp 640 / 2560, attn_k / v 512, lm head 248320). The other types (Q4_K / Q5_K / Q6_K dense) run one column
+per row; this model's dense trunk is all Q8_0, so that path is not exercised here.
+
+### Bytes ledger (read-once floor at 220 GB/s)
+
+Per layer: GDN layer attn_qkv 26.6 + attn_gate 15.9 + ssm_out 15.9 = 58.4 MiB; attention layer attn_q 31.9 +
+attn_output 15.9 + attn_k / v 2.7 = 50.5 MiB; every layer hc_attn / hc_ffn up + down 13.3 MiB and the shared
+expert 5.0 MiB. Per forward 3586 MiB = 17.1 ms, plus the Q8_0 lm head 644 MiB = 3.1 ms (T=5 needs all five rows'
+logits), ~20 ms floor. The weights are read once at every width, so "read each weight once for all rows" had
+nothing left to save; the headroom is the T=5 launch itself: same grid, same bytes, 1.45-1.8x the T=1 time.
+
+### Per launch, T=1 vs T=5 (median us, same grid, one row per wave)
+
+| GEMV | MiB | T=1 | GB/s | T=5 | ratio |
+|---|---|---|---|---|---|
+| attn_qkv [2560 x 10240] | 26.6 | 124.0 | 225 | 178.5 | 1.44 |
+| attn_q [2560 x 12288] | 31.9 | 147.7 | 226 | 218.4 | 1.48 |
+| attn_gate [2560 x 6144] | 15.9 | 74.7 | 224 | 130.7 | 1.75 |
+| ssm_out / attn_output [6144 x 2560] | 15.9 | 76.7 | 218 | 137.2 | 1.79 |
+| lm head [2560 x 248320] | 644 | 2987 | 226 | 4336 | 1.45 |
+| hc_up [320 x 10240] | 3.3 | 21.1 (hc_upmix_row8_exact) | 165 | 36.1 | 1.71 |
+| hc_down [10240 x 320] | 3.3 | 21.5 (hc_down_inject_mixed) | 162 | 45.1 | 2.10 |
+| shexp gate + up [2560 x 640] | 3.3 | 19.3 (fused pair) | 180 | 2 x 15.3 | 1.59 |
+| shexp down [640 x 2560] | 1.7 | 16.7 | 104 | 16.0 | 0.96 |
+| attn_k / v [2560 x 512] | 1.3 | 8.6 | 162 | 13.6 | 1.58 |
+
+Q8_0 class per forward: T=1 22.4 ms (18.3 ms of `mul_mat_vec_q<Q8_0,1>` + 4.1 ms of the fused HC kernels), T=5
+35.2 ms: +12.9 ms per k=4 call for zero extra DRAM bytes. The large launches sit at the DRAM floor at T=1 and at
+~155 GB/s at T=5. What a T=5 wave does per 8-byte weight chunk and lane: one weight load, then for each of the five
+columns the q8_1 `qs` and `ds` loads (from L0/L1: every wave streams the whole 5-column activation, 14.5 KB, again)
+and the two dp4a -- the launch is bound by the activation loads and VMEM issue, not by weight bytes. VGPR 16 at T=1,
+32 at T=5, no scratch.
+
+### The knob: rows per wave (`c_invariant_rpb`, LUCE_MMVQ_INVARIANT_ROWS)
+
+`mul_mat_vec_q` gained a trailing template parameter `c_invariant_rpb` (1 / 2 / 4), used only on the
+width-invariant launch: a wave handles 2 or 4 weight rows and shares the per-column activation loads across them.
+`rows_per_cuda_block` already parameterises the kernel (upstream uses 2 on the generic table); the per-row chain --
+same kbx sequence, same per-lane `tmp[j][i]` accumulation, same `warp_reduce_sum`, `nwarps` stays 1 so no
+shared-memory combine -- is untouched, only the row-to-wave assignment and the grid change. Host side:
+`calc_launch_params(..., width_invariant, invariant_rpb)` and `mmvq_invariant_rows()` (override API
+`ggml_backend_cuda_set_mmvq_invariant_rows_override`, then `LUCE_MMVQ_INVARIANT_ROWS`, then the default 2; only when
+the device table runs one wave per row and `nrows % rows == 0`, else 1). T=1 and every non-Q8_0 or non-invariant
+launch are not in this branch. `test_mmvq_invariant_rows_parity` (HIP-gated like the other GPU unit tests): the
+eleven qwen4exp dense Q8_0 shapes plus 1002- and 1001-row fallbacks, T = 2, 3, 4, 5, 8, rows 1 / 2 / 4, every column
+memcmp-equal to its own one-column MUL_MAT (invariance off, the T=1 kernel): 165 cases PASS on lucebox4.
+`test_qwen4exp_mtp` (4236 cases) and `smoke_qwen4exp_forward --mtp` (tokens / logits / rollback / hidden decode
+identical) pass on the final library.
+
+Per launch at T=5 (median us), rows 1 / 2 / 4: attn_qkv 178.5 / **144.4** / 162.3, attn_q 218.4 / **173.1** / 202.7,
+attn_gate 130.7 / **124.0** / 147.5, ssm_out / attn_output 137.2 / **130.9** / 146.6, lm head 4336 / **3289** / 4391,
+hc_up 36.1 / 33.6 / 32.7, hc_down 45.1 / 44.6 / 50.8, shexp gate / up 15.3 / 14.7 / 17.2, shexp down 16.0 / 14.8 /
+14.3, attn_k / v 13.6 / 13.6 / 15.7. Q8_0 class per T=5 call: 35.2 / **31.4** / 35.8 ms. Two rows win on every
+shape (-3.8 ms per call, -1.05 ms of it the lm head); four rows compile to 80 VGPRs (32 at two), which caps the
+occupancy at 6 waves per SIMD instead of 16, and the 320-640-row projections are left with 80-160 waves: the large
+launches give the gain back and the small ones lose. Default: 2.
+
+### bench_verify_realtok (8K ids, 20 reps, max_ctx 12000, median ms per call; arms rows=1, 2, 4, 4, 2, 1)
+
+| k | rows=1 | rows=2 | rows=4 | rows=4 | rows=2 | rows=1 |
+|---|---|---|---|---|---|---|
+| 1 (decode) | 40.11 | 41.95 | 40.09 | 41.79 | 39.96 | 39.91 |
+| 2 | 55.29 | 58.03 | 57.72 | 62.18 | 54.64 | 55.06 |
+| 3 | 65.97 | 68.80 | 67.47 | 74.22 | 63.81 | 65.78 |
+| 4 | 77.37 | 74.94 | 78.65 | 80.36 | 74.26 | 76.93 |
+| 5 | 89.51 | 86.01 | 89.03 | 90.63 | 85.04 | 89.89 |
+| 8 | 122.94 | 119.12 | 121.88 | 124.22 | 117.36 | 123.03 |
+
+rows=2 vs rows=1 at k=4 / 5 / 8: -2.6 / -4.2 / -4.8 ms (both rows=2 runs below both rows=1 runs); k=2 / 3 inside
+the run spread (the Q8_0 class at T=2..3 is ~1/3 of the T=5 one). `LUCE_PRINT_ARGMAX=1` sums identical on all six
+runs at every k (k=1 16049, k=2 25088, k=3 22992, k=4 66549, k=5 56401, k=8 99096; k=1..4 and 8 equal the route-union
+table above). The k=1 decode path does not enter the branch (ncols_dst = 1).
+
+### e2e (mtp_ab.sh, 2 rounds x 5 reps, arms alternating, PREFILL=1, `densever/ab/`)
+
+One binary (luce_server 9a720376 / ggml-hip 4e1b1748), `new` = default (two rows per wave), `old` =
+`LUCE_MMVQ_INVARIANT_ROWS=1`, fixed k=4 arms the same, `ar` = `--verify-width 1 --no-draft`; `prefix_len=0` on every
+request of every arm (server logs). Client decode tok/s, median of 10 (round-median spread in parentheses); server
+`decode=` / acceptance / tokens per step / width histogram.
+
+| arm | code16k | prose16k | counting |
+|---|---|---|---|
+| new, adaptive | **31.37** (1.0%) -- 30.28, 0.656, 2.03, k1 68% k2 16% k3 9% k4 6% | **31.24** (0.6%) -- 30.19, 0.680, 2.07, k1 60% k2 26% k3 13% | **64.72** (0.03%) -- 57.45, 0.995, 7.29, k7 74% k6 15% |
+| old, adaptive | 31.09 (2.0%) -- 29.94, 0.665, 2.17, k1 53% k2 27% k3 12% k4 7% | 30.66 (2.2%) -- 29.68, 0.686, 2.03, k1 66% k2 21% k3 12% | 61.44 (0.1%) -- 54.59, 0.978, 7.29, k7 69% k6 17% |
+| new, fixed k=4 | **28.36** (0.4%) -- 27.30, 0.457, 2.82 | **30.92** (0.2%) -- 29.77, 0.520, 3.07 | **57.01** (0.2%) -- 51.59, 0.995, 4.90 |
+| old, fixed k=4 | 27.25 (0.2%) -- 26.22, 0.457, 2.82 | 29.62 (0.0%) -- 28.52, 0.522, 3.08 | 54.70 (0.0%) -- 49.47, 0.995, 4.90 |
+| AR, no sidecar | 26.58 (0.3%) | 26.56 (0.3%) | 29.87 (0.3%) |
+
+new vs old: fixed k=4 **+4.1% / +4.4% / +4.2%** (code16k / prose16k / counting; every delta > 2x both arms' round
+spread, same acceptance and tokens per step on both), adaptive **+0.9% / +1.9% / +5.3%** (the adaptive arms' round
+spread is 1-2% on the 16K prompts, so only counting and prose are clearly above it: the adaptive policy runs k=1 on
+53-68% of the steps there, where the branch is not entered). Fixed k=4 on counting no longer crashes (73f55611).
+Greedy-256 texts identical across new / old / fixed k=4 / AR on all three workloads. AR 26.58 / 26.56 / 29.87 and
+prefill p4096 new 1337 (0.03%) vs old 1338 (0.08%), p16384 1389 (0.2%) vs 1391 (0.9%): untouched (neither enters the
+branch). MTP vs AR now +18% code16k, +18% prose16k, +117% counting (adaptive).
+
+What the adaptive policy picks now (`Qwen4ExpMtpWidth`): code16k k1 68% / k2 16% / k3 9% / k4 6% (2.03 tokens
+per step at 0.656 acceptance), prose16k k1 60% / k2 26% / k3 13% (2.07 at 0.680), counting k7 74% / k6 15% (7.29 at
+0.995). Cheaper wide windows nudge it toward k=1 even more on code16k (53% -> 68%) because the cycle-cost fit's base
+also moved; the 16K prompts' 0.65-0.68 acceptance keeps the utility at narrow windows regardless.
+
+Decision: shipped (default 2 rows per wave; `LUCE_MMVQ_INVARIANT_ROWS=1` restores one). What remains of the T=5
+Q8_0 class is 31.4 ms per call vs 22.4 at T=1 on the same bytes; the activation stream per wave is the lever
+(staging the T columns' q8_1 blocks once per block, or rows=2 with the loads hoisted out of the column loop), still
+inside the per-row reduction order.
