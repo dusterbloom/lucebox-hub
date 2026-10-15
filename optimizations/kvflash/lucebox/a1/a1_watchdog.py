@@ -11,6 +11,7 @@ import a1_core as core  # noqa: E402
 
 
 def main(pid, out):
+    base = core.parse_free(subprocess.run(["free", "-m"], capture_output=True, text=True).stdout)["swap_used"]
     with open(os.path.join(out, "mem.log"), "a", buffering=1) as f:
         while True:
             try:
@@ -18,7 +19,7 @@ def main(pid, out):
             except OSError:
                 return 0
             mem = core.parse_free(subprocess.run(["free", "-m"], capture_output=True, text=True).stdout)
-            why = core.watchdog_reason(mem)
+            why = core.watchdog_reason(mem, swap_base=base)
             f.write(f"{time.strftime('%F %T')} used {mem['used']} avail {mem['available']} swap {mem['swap_used']}"
                     f"{' KILL ' + why if why else ''}\n")
             if why:

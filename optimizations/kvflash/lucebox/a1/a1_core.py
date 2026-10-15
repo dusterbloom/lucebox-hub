@@ -313,11 +313,11 @@ def parse_free(text):
     return out
 
 
-def watchdog_reason(mem, used_limit=MEM_USED_LIMIT_MIB, swap_limit=SWAP_LIMIT_MIB):
+def watchdog_reason(mem, used_limit=MEM_USED_LIMIT_MIB, swap_limit=SWAP_LIMIT_MIB, swap_base=0):
     if mem["used"] >= used_limit:
         return f"used {mem['used']} MiB >= {used_limit} MiB"
-    if mem["swap_used"] > swap_limit:
-        return f"swap used {mem['swap_used']} MiB > {swap_limit} MiB"
+    if mem["swap_used"] - swap_base > swap_limit:
+        return f"swap used {mem['swap_used']} MiB (at start {swap_base}) grew by more than {swap_limit} MiB"
     return None
 
 

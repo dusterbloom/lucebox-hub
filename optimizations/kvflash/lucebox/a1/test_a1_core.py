@@ -94,6 +94,9 @@ def test_parse_free_and_gates():
     assert core.watchdog_reason(m) is None
     assert "used" in core.watchdog_reason({**m, "used": 120 * 1024})
     assert core.watchdog_reason({**m, "used": 120 * 1024 - 1}) is None
+    # swap already in use when the run starts is not the run's (lucebox6 idles at 459 MiB): the limit is on the growth
+    assert core.watchdog_reason({**m, "swap_used": 1483}, swap_base=459) is None
+    assert "swap" in core.watchdog_reason({**m, "swap_used": 1484}, swap_base=459)
     assert "swap" in core.watchdog_reason({**m, "swap_used": 1025}) and core.watchdog_reason({**m, "swap_used": 1024}) is None
 
 
