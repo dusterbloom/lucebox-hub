@@ -28,6 +28,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -939,15 +940,24 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
     // Decode-only requantized copies of the dense trunk (LUCE_DECODE_REQ=<type>, lossy, opt-in): the T == 1
     // graph reads them instead of the Q8_0 tensors, prefill does not. Requantized from the mmapped Q8_0 bytes on
     // host threads, one upload per tensor.
-    const ggml_type dec_type = qwen4exp_decode_req_type(std::getenv("LUCE_DECODE_REQ"));
-    if (const char * value = std::getenv("LUCE_DECODE_REQ");
-        value && std::strcmp(value, "0") != 0 && *value && dec_type == GGML_TYPE_COUNT) {
-        std::fprintf(stderr, "[qwen4exp] LUCE_DECODE_REQ=%s: unknown type, decode copies off\n", value);
+    // LUCE_DECODE_REQ=<type> names the copy type of the GDN layers (and of the attention layers unless
+    // LUCE_DECODE_REQ_ATTN=<type|0> overrides it: the attention trunk is ~3.5x as KL-sensitive per byte saved,
+    // bench/exact/decode-requant). Unknown names are logged and treated as off.
+    const char * req_gdn = std::getenv("LUCE_DECODE_REQ"), * req_attn = std::getenv("LUCE_DECODE_REQ_ATTN");
+    const ggml_type dec_gdn = qwen4exp_decode_req_type(req_gdn);
+    const ggml_type dec_attn = req_attn ? qwen4exp_decode_req_type(req_attn) : dec_gdn;
+    for (const auto & [name, value, type] : { std::tuple{"LUCE_DECODE_REQ", req_gdn, dec_gdn},
+                                              std::tuple{"LUCE_DECODE_REQ_ATTN", req_attn, dec_attn} }) {
+        if (value && std::strcmp(value, "0") != 0 && *value && type == GGML_TYPE_COUNT) {
+            std::fprintf(stderr, "[qwen4exp] %s=%s: unknown type, decode copies off for that class\n", name, value);
+        }
     }
-    if (dec_type != GGML_TYPE_COUNT && !reference) {
-        struct DecSource { ggml_tensor ** slot; ggml_tensor * src; const uint8_t * data; };
+    if ((dec_gdn != GGML_TYPE_COUNT || dec_attn != GGML_TYPE_COUNT) && !reference) {
+        struct DecSource { ggml_tensor ** slot; ggml_tensor * src; const uint8_t * data; ggml_type type; };
         std::vector<DecSource> sources;
         for (Qwen4ExpLayer & layer : out.layers) {
+            const ggml_type dec_type = layer.is_full_attention ? dec_attn : dec_gdn;
+            if (dec_type == GGML_TYPE_COUNT) continue;
             const std::pair<ggml_tensor *, ggml_tensor **> pairs[] = {
                 {layer.attn_qkv, &layer.attn_qkv_dec}, {layer.attn_gate, &layer.attn_gate_dec},
                 {layer.ssm_out, &layer.ssm_out_dec}, {layer.wq, &layer.wq_dec}, {layer.wk, &layer.wk_dec},
@@ -958,7 +968,8 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
                 for (const TensorAllocation & allocation : allocations) {
                     if (allocation.tensor != src) continue;
                     sources.push_back({slot, src,
-                        static_cast<const uint8_t *>(mmaps[allocation.shard].data()) + allocation.file_offset});
+                        static_cast<const uint8_t *>(mmaps[allocation.shard].data()) + allocation.file_offset,
+                        dec_type});
                 }
             }
         }
@@ -969,7 +980,7 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
         size_t bytes = 0, bytes_q8 = 0;
         if (out.decode_req_ctx) {
             for (const DecSource & s : sources) {
-                *s.slot = ggml_new_tensor_2d(out.decode_req_ctx, dec_type, s.src->ne[0], s.src->ne[1]);
+                *s.slot = ggml_new_tensor_2d(out.decode_req_ctx, s.type, s.src->ne[0], s.src->ne[1]);
                 ggml_format_name(*s.slot, "%s.dec", s.src->name);
                 bytes += ggml_nbytes(*s.slot);
                 bytes_q8 += ggml_nbytes(s.src);
@@ -986,7 +997,7 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
                 workers.emplace_back([&] {
                     for (size_t i; (i = next_index.fetch_add(1)) < sources.size();) {
                         converted[i].resize(ggml_nbytes(*sources[i].slot));
-                        qwen4exp_requant_q8_0(dec_type, sources[i].data, sources[i].src->ne[0],
+                        qwen4exp_requant_q8_0(sources[i].type, sources[i].data, sources[i].src->ne[0],
                                               sources[i].src->ne[1], converted[i].data());
                     }
                 });
@@ -996,9 +1007,10 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
                 ggml_backend_tensor_set(*sources[i].slot, converted[i].data(), 0, converted[i].size());
             }
             std::fprintf(stderr,
-                "[qwen4exp] decode %s copies: %zu tensors, %.2f GiB (Q8_0 %.2f GiB, -%.3f GB per decode token)\n",
-                ggml_type_name(dec_type), sources.size(), bytes / (1024.0 * 1024.0 * 1024.0),
-                bytes_q8 / (1024.0 * 1024.0 * 1024.0), (bytes_q8 - bytes) / 1e9);
+                "[qwen4exp] decode copies (gdn %s, attn %s): %zu tensors, %.2f GiB (Q8_0 %.2f GiB, -%.3f GB per decode token)\n",
+                dec_gdn == GGML_TYPE_COUNT ? "off" : ggml_type_name(dec_gdn),
+                dec_attn == GGML_TYPE_COUNT ? "off" : ggml_type_name(dec_attn), sources.size(),
+                bytes / (1024.0 * 1024.0 * 1024.0), bytes_q8 / (1024.0 * 1024.0 * 1024.0), (bytes_q8 - bytes) / 1e9);
         } else {
             for (Qwen4ExpLayer & layer : out.layers) {
                 layer.attn_qkv_dec = layer.attn_gate_dec = layer.ssm_out_dec = nullptr;
@@ -1006,7 +1018,7 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
             }
             if (out.decode_req_ctx) ggml_free(out.decode_req_ctx);
             out.decode_req_ctx = nullptr;
-            std::fprintf(stderr, "[qwen4exp] decode %s copies: allocation failed, off\n", ggml_type_name(dec_type));
+            std::fprintf(stderr, "[qwen4exp] decode copies: allocation failed, off\n");
         }
     }
 

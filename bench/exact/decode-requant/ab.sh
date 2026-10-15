@@ -4,24 +4,24 @@
 # GUFO_DECODE_Q5=0 (decode only). Arms alternate A/B/C/D across restarts; per restart: p4096 warm-up (dropped),
 # REPS x p4096, REPS x p16384, 16-token decode warm-up (dropped), REPS x decode128; greedy-64 on p4096 and
 # decode512 in round 0; VRAM in use after the warm-up (rocm-smi) per restart.
-# usage: ab.sh <outdir> <rounds> <type> [reps]
+# usage: ab.sh <outdir> <rounds> <gdn_type>[:<attn_type>] [reps]   (LUCE_DECODE_REQ[:LUCE_DECODE_REQ_ATTN])
 set -u
 S=/home/duster/qwen4exp-f16/scratch
 TP=$S/gufo/textparity
 LUCE=/home/duster/qwen4exp-exact-stack/build1151/luce_server
 GUFO=/home/duster/qwen4exp-f16/scratch/gufo/build/release/gufo
 MODEL=/home/duster/lucebox-models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
-OUT=$1; ROUNDS=$2; TYPE=$3; REPS=${4:-5}
+OUT=$1; ROUNDS=$2; TYPE=${3%%:*}; ATTN=""; [ "$3" != "$TYPE" ] && ATTN="LUCE_DECODE_REQ_ATTN=${3#*:}"; REPS=${4:-5}
 PORT=18097
 mkdir -p $OUT
 md5sum $LUCE $(dirname $LUCE)/deps/llama.cpp/ggml/src/ggml-hip/libggml-hip.so.0.9.11 $GUFO $MODEL > $OUT/binary.md5
-{ echo "A: luce default (exact)"; echo "B: luce LUCE_DECODE_REQ=$TYPE"; echo "C: gufo --cache-ram-bytes 1";
+{ echo "A: luce default (exact)"; echo "B: luce LUCE_DECODE_REQ=$TYPE $ATTN"; echo "C: gufo --cache-ram-bytes 1";
   echo "D: gufo GUFO_DECODE_Q5=0 (decode only)"; } > $OUT/arms.txt
 
 start_server() {  # $1 = arm $2 = round
   local arm=$1 extra=""
   case $arm in
-    B) extra="LUCE_DECODE_REQ=$TYPE" ;;
+    B) extra="LUCE_DECODE_REQ=$TYPE $ATTN" ;;
     D) extra="GUFO_DECODE_Q5=0" ;;
   esac
   if [ "$arm" = A ] || [ "$arm" = B ]; then
