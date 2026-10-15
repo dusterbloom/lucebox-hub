@@ -30,6 +30,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace luce_am;
@@ -671,7 +672,9 @@ void test_fit_vs_ref(ggml_backend_t be, const char * name, SolveRoute route, boo
         }
     }
     std::printf("  beta err %.2e  C2 err %.2e\n", eb, ec);
-    const double tol = bf16 ? 2e-2 : 1e-4;  // bf16 rounding flips (beta 2^-8, scores) move single entries
+    // bf16 rounding flips (beta 2^-8, scores) move single entries; the Gram route squares the condition number
+    // of A (C2 error 1e-4 here against 5e-7 for QR on the same problem).
+    const double tol = bf16 ? 2e-2 : (route == SolveRoute::Gram ? 5e-4 : 1e-4);
     CHECK(eb < tol && ec < tol, "pipeline differs from the reference");
 }
 
@@ -694,6 +697,33 @@ void test_block_failure(ggml_backend_t be, const char * name, SolveRoute route) 
     CHECK(!ok, "a NaN head must fail the whole block");
     CHECK(bad.beta.empty() && bad.c2.empty(), "failed fit published beta/C2");
     CHECK(err.find("head 1") != std::string::npos, "error does not name the head: %s", err.c_str());
+}
+
+// ==== Gram is the default; a failed Cholesky falls back to QR ===========================================================
+
+void test_gram_fallback(ggml_backend_t be, const char * name) {
+    std::printf("[gram default + QR fallback %s]\n", name);
+    CHECK(NnlsParams{}.route == SolveRoute::Gram, "default route is not Gram");
+    Problem p = make_problem(32, 70, 4, 2, 80, 8, 32);
+    NnlsParams gram;  // defaults
+    NnlsParams forced = gram;
+    forced.chol_rel_tol = 1.0;  // no pivot can exceed its own diagonal: every Cholesky fails
+    NnlsParams qr;
+    qr.route = SolveRoute::Qr;
+    FitResult rg, rf, rq;
+    std::string err;
+    CHECK(fit_block(be, p.shape, p.in(), gram, rg, &err), "gram: %s", err.c_str());
+    CHECK(fit_block(be, p.shape, p.in(), forced, rf, &err), "forced: %s", err.c_str());
+    CHECK(fit_block(be, p.shape, p.in(), qr, rq, &err), "qr: %s", err.c_str());
+    CHECK(rg.qr_fallbacks == 0, "healthy Gram fit fell back %d times", rg.qr_fallbacks);
+    CHECK(rf.qr_fallbacks == 4, "forced Cholesky failure: %d fallbacks, expected 2 stages x 2 heads", rf.qr_fallbacks);
+    if (rf.beta.size() != rq.beta.size() || rf.c2.size() != rq.c2.size()) { CHECK(false, "sizes"); return; }
+    double eb = 0, ec = 0;
+    for (size_t i = 0; i < rq.beta.size(); ++i) eb = std::max(eb, (double) std::fabs(rf.beta[i] - rq.beta[i]));
+    for (size_t i = 0; i < rq.c2.size(); ++i) ec = std::max(ec, (double) std::fabs(rf.c2[i] - rq.c2[i]));
+    std::printf("  forced-fallback vs QR route: beta %.2e C2 %.2e\n", eb, ec);
+    CHECK(eb < 1e-6 && ec < 1e-6, "fallback result differs from the QR route");
+    for (SolveStatus s : rf.status) CHECK(s == SolveStatus::Ok, "fallback head status %d", (int) s);
 }
 
 // ==== 7. device-tensor entry point ==========================================================================
@@ -756,13 +786,19 @@ void test_device_path(ggml_backend_t be, const char * name) {
 }
 
 // ==== 8. real-data gate ==========================================================================================
-// Pure pieces first (tested below with synthetic data), then the driver.
+// The reference fits in fp32 (gels), so on an ill-conditioned head its beta and C2 are only accurate to
+// about cond * 6e-8 and elementwise parity with it is the wrong criterion. The gate binds on objective parity
+// per KV head, computed on the host in fp64 on the reference's own problem (bf16 logits, fitq, K, V, idx):
+//   beta : ||M exp(beta) - y||^2  of the engine <= reference * (1 + slack) + 1e-12 ||y||^2
+//   out  : ||attn(fitq; K[idx], beta, C2) - attn(fitq; K, V)||_F / ||attn(fitq; K, V)||_F
+//          of the engine <= reference * (1 + slack) + 1e-6
+// Elementwise errors are printed but do not bind.
 
 struct GateErr {
     double abs = 0;        // max |a - ref|
     double nmax = 0;       // abs / max|ref|: error normalised by the tensor's largest reference entry
     double rel_elem = 0;   // max |a - ref| / max(|ref|, 1e-3 max|ref|): elementwise relative, floored
-    bool   finite = true;  // false if a or ref holds NaN/inf: never a pass
+    bool   finite = true;  // false if a or ref holds NaN/inf
 };
 GateErr gate_compare(const float * a, const float * ref, size_t n) {
     GateErr e;
@@ -781,9 +817,8 @@ GateErr gate_compare(const float * a, const float * ref, size_t n) {
     e.nmax = e.abs / std::max(scale, 1e-30);
     return e;
 }
-bool gate_pass(const GateErr & e, double limit) { return e.finite && e.nmax <= limit; }
 
-// LUCE_AM_TOL: unset or empty -> def; otherwise a finite number > 0 or the parse fails.
+// LUCE_AM_TOL (the relative objective slack): unset or empty -> def; otherwise a finite number > 0 or the parse fails.
 bool parse_tol(const char * s, double def, double & tol) {
     tol = def;
     if (!s || !*s) return true;
@@ -795,124 +830,315 @@ bool parse_tol(const char * s, double def, double & tol) {
 }
 // With LUCE_AM_FIXTURES set the gate must actually run at least one case.
 bool gate_ran(bool root_set, int cases_run) { return !root_set || cases_run > 0; }
+bool objective_ok(double eng, double ref, double slack, double abs_floor) {
+    return std::isfinite(eng) && std::isfinite(ref) && eng <= ref * (1.0 + slack) + abs_floor;
+}
+
+// Largest over smallest singular value of a column-major n x t matrix (one-sided Jacobi); inf if rank deficient.
+double cond_number(std::vector<double> a, int n, int t) {
+    for (int sweep = 0; sweep < 40; ++sweep) {
+        bool rotated = false;
+        for (int p = 0; p < t - 1; ++p)
+            for (int q = p + 1; q < t; ++q) {
+                double * cp = &a[(size_t) p * n], * cq = &a[(size_t) q * n];
+                double al = 0, be = 0, ga = 0;
+                for (int r = 0; r < n; ++r) { al += cp[r] * cp[r]; be += cq[r] * cq[r]; ga += cp[r] * cq[r]; }
+                if (ga == 0.0 || std::fabs(ga) <= 1e-15 * std::sqrt(al * be)) continue;
+                const double zeta = (be - al) / (2.0 * ga);
+                const double tt = std::copysign(1.0, zeta) / (std::fabs(zeta) + std::sqrt(1.0 + zeta * zeta));
+                const double c = 1.0 / std::sqrt(1.0 + tt * tt), s = c * tt;
+                for (int r = 0; r < n; ++r) { const double x = cp[r], y = cq[r]; cp[r] = c * x - s * y; cq[r] = s * x + c * y; }
+                rotated = true;
+            }
+        if (!rotated) break;
+    }
+    double mn = 1e300, mx = 0;
+    for (int j = 0; j < t; ++j) {
+        double s = 0;
+        for (int r = 0; r < n; ++r) s += a[(size_t) j * n + r] * a[(size_t) j * n + r];
+        s = std::sqrt(s);
+        mn = std::min(mn, s);
+        mx = std::max(mx, s);
+    }
+    return mn > 0 ? mx / mn : INFINITY;
+}
+
+// One KV head's fit problem as the reference states it, in fp64 on the host.
+struct HeadObj {
+    int n = 0, t = 0, d = 0;
+    std::vector<double> M;      // n x t column-major: exp(s - rowmax) at the selected keys
+    std::vector<double> y;      // rowsum of exp(s - rowmax) over all keys
+    std::vector<double> ssel;   // n x t row-major scaled logits at the selected keys
+    std::vector<double> otrue;  // n x d row-major: softmax(s) V
+    double y_norm2 = 0, o_norm2 = 0;
+    double beta_ref_obj = 0, out_ref_err = 0, cond_M = 0, cond_A = 0;
+    int ref_lo = 0, ref_hi = 0;  // reference beta entries at the lower and upper clamp
+    double beta_obj(const float * beta) const {
+        double tot = 0;
+        std::vector<double> w(t);
+        for (int i = 0; i < t; ++i) w[i] = std::exp((double) beta[i]);
+        for (int r = 0; r < n; ++r) {
+            double s = 0;
+            for (int i = 0; i < t; ++i) s += M[(size_t) i * n + r] * w[i];
+            tot += (s - y[r]) * (s - y[r]);
+        }
+        return tot;
+    }
+    // Rows of softmax(ssel + beta) as a column-major n x t matrix.
+    std::vector<double> attn_matrix(const float * beta) const {
+        std::vector<double> A((size_t) n * t);
+        std::vector<double> e(t);
+        for (int r = 0; r < n; ++r) {
+            double mx = -1e300, z = 0;
+            for (int i = 0; i < t; ++i) mx = std::max(mx, ssel[(size_t) r * t + i] + (double) beta[i]);
+            for (int i = 0; i < t; ++i) z += (e[i] = std::exp(ssel[(size_t) r * t + i] + (double) beta[i] - mx));
+            for (int i = 0; i < t; ++i) A[(size_t) i * n + r] = e[i] / z;
+        }
+        return A;
+    }
+    double out_err(const float * beta, const float * c2) const {
+        const std::vector<double> A = attn_matrix(beta);
+        double err = 0;
+        for (int r = 0; r < n; ++r)
+            for (int c = 0; c < d; ++c) {
+                double o = 0;
+                for (int i = 0; i < t; ++i) o += A[(size_t) i * n + r] * (double) c2[(size_t) i * d + c];
+                const double df = o - otrue[(size_t) r * d + c];
+                err += df * df;
+            }
+        return std::sqrt(err / std::max(o_norm2, 1e-300));
+    }
+};
+
+// q [d, n], K and V [d, T], idx [t], beta_ref [t], c2_ref [t][d] (slot-major rows of d).
+HeadObj make_head_obj(const float * q, int n, const float * K, const float * V, int T, const int32_t * idx, int t, int d, float scale,
+                      const float * beta_ref, const float * c2_ref) {
+    HeadObj h;
+    h.n = n; h.t = t; h.d = d;
+    h.M.assign((size_t) n * t, 0.0);
+    h.y.assign(n, 0.0);
+    h.ssel.assign((size_t) n * t, 0.0);
+    h.otrue.assign((size_t) n * d, 0.0);
+    std::vector<double> s(T), e(T);
+    for (int r = 0; r < n; ++r) {
+        const float * qr = q + (size_t) r * d;
+        double mx = -1e300;
+        for (int j = 0; j < T; ++j) {
+            const float * kj = K + (size_t) j * d;
+            double a = 0;
+            for (int c = 0; c < d; ++c) a += (double) qr[c] * (double) kj[c];
+            s[j] = (double) round_bf16((float) a) * (double) scale;  // the reference's logits: a bf16 matmul, then the scale
+            mx = std::max(mx, s[j]);
+        }
+        double z = 0;
+        for (int j = 0; j < T; ++j) z += (e[j] = std::exp(s[j] - mx));
+        h.y[r] = z;
+        for (int i = 0; i < t; ++i) { h.M[(size_t) i * n + r] = e[idx[i]]; h.ssel[(size_t) r * t + i] = s[idx[i]]; }
+        double * o = &h.otrue[(size_t) r * d];
+        for (int j = 0; j < T; ++j) {
+            const double pj = e[j] / z;
+            const float * vj = V + (size_t) j * d;
+            for (int c = 0; c < d; ++c) o[c] += pj * (double) vj[c];
+        }
+    }
+    for (double v : h.y) h.y_norm2 += v * v;
+    for (double v : h.otrue) h.o_norm2 += v * v;
+    h.beta_ref_obj = h.beta_obj(beta_ref);
+    h.out_ref_err = h.out_err(beta_ref, c2_ref);
+    h.cond_M = cond_number(h.M, n, t);
+    h.cond_A = cond_number(h.attn_matrix(beta_ref), n, t);
+    for (int i = 0; i < t; ++i) {
+        if (beta_ref[i] <= -3.0f + 1e-3f) ++h.ref_lo;
+        if (beta_ref[i] >= 3.0f - 1e-3f) ++h.ref_hi;
+    }
+    return h;
+}
 
 void test_gate_logic() {
     std::printf("[gate logic]\n");
     const float ref[4] = {1.0f, -2.0f, 4.0f, 0.5f}, same[4] = {1.0f, -2.0f, 4.0f, 0.5f};
     GateErr e = gate_compare(same, ref, 4);
-    CHECK(e.finite && e.abs == 0 && gate_pass(e, 1e-3), "identical tensors must pass");
+    CHECK(e.finite && e.abs == 0, "identical tensors");
     const float off[4] = {1.0f, -2.0f, 4.004f, 0.5f};
     e = gate_compare(off, ref, 4);
     CHECK(std::fabs(e.nmax - 1e-3) < 1e-5 && std::fabs(e.rel_elem - 1e-3) < 1e-5, "nmax %.3e rel_elem %.3e", e.nmax, e.rel_elem);
-    CHECK(!gate_pass(e, 5e-4) && gate_pass(e, 2e-3), "limit not applied");
-    const float small_off[4] = {1.0f, -2.0f, 4.0f, 0.6f};  // small entry: elementwise error 20%, normalised 2.5%
-    e = gate_compare(small_off, ref, 4);
-    CHECK(e.rel_elem > 0.19 && e.nmax < 0.03, "elementwise error not separate from normalised (%.3e, %.3e)", e.rel_elem, e.nmax);
     const float nanref[4] = {NAN, NAN, NAN, NAN};
-    CHECK(!gate_pass(gate_compare(same, nanref, 4), 1e30), "all-NaN reference passed");
-    CHECK(!gate_pass(gate_compare(nanref, ref, 4), 1e30), "all-NaN result passed");
-    const float infres[4] = {1.0f, INFINITY, 4.0f, 0.5f};
-    CHECK(!gate_pass(gate_compare(infres, ref, 4), 1e30), "inf result passed");
+    CHECK(!gate_compare(same, nanref, 4).finite && !gate_compare(nanref, ref, 4).finite, "non-finite not flagged");
     double tol = 0;
-    CHECK(parse_tol(nullptr, 1e-3, tol) && tol == 1e-3, "unset default");
-    CHECK(parse_tol("2e-3", 1e-3, tol) && tol == 2e-3, "valid value");
-    CHECK(!parse_tol("nan", 1e-3, tol), "NaN tolerance accepted");
-    CHECK(!parse_tol("inf", 1e-3, tol), "inf tolerance accepted");
-    CHECK(!parse_tol("abc", 1e-3, tol) && !parse_tol("1e-3x", 1e-3, tol), "garbage tolerance accepted");
-    CHECK(!parse_tol("0", 1e-3, tol) && !parse_tol("-1", 1e-3, tol), "non-positive tolerance accepted");
-    CHECK(gate_ran(false, 0), "unset root is a skip");
-    CHECK(!gate_ran(true, 0), "set root with no case run passed");
-    CHECK(gate_ran(true, 1), "set root with a case failed");
+    CHECK(parse_tol(nullptr, 1e-2, tol) && tol == 1e-2, "unset default");
+    CHECK(parse_tol("2e-3", 1e-2, tol) && tol == 2e-3, "valid value");
+    CHECK(!parse_tol("nan", 1e-2, tol) && !parse_tol("inf", 1e-2, tol), "NaN or inf tolerance accepted");
+    CHECK(!parse_tol("abc", 1e-2, tol) && !parse_tol("1e-3x", 1e-2, tol), "garbage tolerance accepted");
+    CHECK(!parse_tol("0", 1e-2, tol) && !parse_tol("-1", 1e-2, tol), "non-positive tolerance accepted");
+    CHECK(gate_ran(false, 0) && !gate_ran(true, 0) && gate_ran(true, 1), "gate_ran");
+    CHECK(objective_ok(1.0, 1.0, 1e-2, 0) && objective_ok(1.009, 1.0, 1e-2, 0) && !objective_ok(1.02, 1.0, 1e-2, 0), "slack");
+    CHECK(objective_ok(5e-13, 0.0, 1e-2, 1e-12), "absolute floor");
+    CHECK(!objective_ok(NAN, 1.0, 1e-2, 1.0) && !objective_ok(INFINITY, 1.0, 1e-2, 1.0), "non-finite engine objective passed");
+    CHECK(!objective_ok(0.0, NAN, 1e-2, 1.0), "NaN reference passed");
+    // Condition number: diag(1, 1e-6, 5) padded to 6 rows, rotated by an orthogonal mix.
+    std::vector<double> A(6 * 3, 0.0);
+    A[0 * 6 + 0] = 1.0; A[1 * 6 + 1] = 1e-6; A[2 * 6 + 2] = 5.0;
+    const double c = cond_number(A, 6, 3);
+    CHECK(std::fabs(c - 5e6) < 1.0, "cond %g, expected 5e6", c);
+    A[2 * 6 + 2] = 0.0;
+    CHECK(std::isinf(cond_number(A, 6, 3)), "rank-deficient cond not inf");
+}
+
+// The objectives separate a fit from a non-fit and agree with the independent reference pipeline.
+void test_head_objectives() {
+    std::printf("[head objectives]\n");
+    const int d = 16, n = 120, T = 60, t = 10;
+    std::vector<float> q((size_t) d * n), K((size_t) d * T), V((size_t) d * T), c2ref((size_t) t * d), bref(t);
+    for (auto & x : q) x = round_bf16((float) rnd_norm());
+    for (auto & x : K) x = round_bf16((float) rnd_norm());
+    for (auto & x : V) x = round_bf16((float) rnd_norm());
+    std::vector<int32_t> idx(t);
+    for (int i = 0; i < t; ++i) idx[i] = i * (T / t);
+    const float scale = 1.0f / std::sqrt((float) d);
+    // reference fit by the standalone fp64 pipeline, treated as the "stored" reference
+    Problem pr = make_problem(d, n, 1, 1, T, t, 40);
+    for (int i = 0; i < n * d; ++i) pr.q[i] = ggml_fp32_to_fp16(q[i]);
+    pr.k = K; pr.v = V; pr.sel = idx;
+    pr.shape.bf16_scores = true;
+    pr.shape.scale = scale;
+    std::vector<float> bb;
+    Mat C2;
+    CHECK(ref_fit_head(pr, 0, false, bb, C2), "reference fit");
+    if (bb.size() != (size_t) t) return;
+    for (int i = 0; i < t; ++i) bref[i] = bb[i];
+    for (int i = 0; i < t; ++i)
+        for (int c = 0; c < d; ++c) c2ref[(size_t) i * d + c] = (float) C2.at(i, c);
+    const HeadObj h = make_head_obj(q.data(), n, K.data(), V.data(), T, idx.data(), t, d, scale, bref.data(), c2ref.data());
+    NnlsParams np;
+    FitResult res;
+    std::string err;
+    ggml_backend_t cpu = ggml_backend_cpu_init();
+    const bool fitted = fit_block(cpu, pr.shape, pr.in(), np, res, &err);
+    ggml_backend_free(cpu);
+    CHECK(fitted, "fit_block: %s", err.c_str());
+    if (res.beta.size() != (size_t) t) return;
+    const double be = h.beta_obj(res.beta.data()), oe = h.out_err(res.beta.data(), res.c2.data());
+    std::printf("  beta objective: engine %.4e reference %.4e; output error: engine %.4e reference %.4e\n", be, h.beta_ref_obj, oe, h.out_ref_err);
+    CHECK(objective_ok(be, h.beta_ref_obj, 1e-2, 1e-12 * h.y_norm2), "engine beta objective worse than the reference");
+    CHECK(objective_ok(oe, h.out_ref_err, 1e-2, 1e-6), "engine output error worse than the reference");
+    // negative controls: a perturbed beta and a zeroed C2 must score clearly worse
+    std::vector<float> badb(res.beta), badc(res.c2);
+    for (int i = 0; i < t; ++i) badb[i] += (i % 2 ? 0.7f : -0.7f);
+    for (float & x : badc) x = 0.0f;
+    CHECK(h.beta_obj(badb.data()) > 2.0 * h.beta_ref_obj + 1e-6, "perturbed beta not detected");
+    CHECK(h.out_err(res.beta.data(), badc.data()) > 0.9, "zeroed C2 not detected");
+    CHECK(!objective_ok(h.out_err(res.beta.data(), badc.data()), h.out_ref_err, 1e-2, 1e-6), "zeroed C2 passed the output gate");
 }
 
 // Returns the number of cases run (0: nothing found). Dimensions come from each manifest; every file's size is
 // checked against them by the reader.
 int run_fixture_gate(ggml_backend_t be, const char * name) {
     const char * root = std::getenv("LUCE_AM_FIXTURES");
-    double tol = 0;
-    if (!parse_tol(std::getenv("LUCE_AM_TOL"), 1e-3, tol)) { CHECK(false, "LUCE_AM_TOL is not a finite positive number"); return 0; }
+    double slack = 0;
+    if (!parse_tol(std::getenv("LUCE_AM_TOL"), 1e-2, slack)) { CHECK(false, "LUCE_AM_TOL is not a finite positive number"); return 0; }
     const std::vector<std::string> dirs = am_fixture::case_dirs(root);
     int ran = 0;
-    // Binding limit = tol + the bf16 storage budget: the reference stores beta and C2 in bf16, so any
-    // fp32 result is up to 2^-9 relative (2^-8 normalised, with slack) away from it by construction;
-    // an arm that rounds like the reference can still differ by one bf16 ulp (2^-7) where a rounding flips.
-    struct Cfg { const char * label; SolveRoute route; bool ref_sem; double quant; };
-    const Cfg cfgs[] = {{"qr+fp32", SolveRoute::Qr, false, 1.0 / 256}, {"qr+bf16-semantics", SolveRoute::Qr, true, 1.0 / 128},
-                        {"gram+fp32", SolveRoute::Gram, false, 1.0 / 256}, {"gram+bf16-semantics", SolveRoute::Gram, true, 1.0 / 128}};
-    GramAccumulator acc;
+    struct Cfg { const char * label; SolveRoute route; bool ref_sem; };
+    const Cfg cfgs[] = {{"gram+bf16-semantics", SolveRoute::Gram, true}, {"gram+fp32", SolveRoute::Gram, false},
+                        {"qr+bf16-semantics", SolveRoute::Qr, true}, {"qr+fp32", SolveRoute::Qr, false}};
+    GramAccumulator accs[2];  // [bf16 semantics]: the graphs differ, so one accumulator per semantics
     for (const std::string & dir : dirs) {
         am_fixture::Case c;
         std::string err;
         if (!am_fixture::load_case(dir, c, &err)) { CHECK(false, "%s", err.c_str()); continue; }
         if (c.slots == 0) { std::printf("[fixture gate %s] case %s: no fit outputs (queries only), skipped\n", name, c.name.c_str()); continue; }
-        const int d = c.head_dim, n_tok = c.n_tokens, n_head = c.n_head, n_kv = c.n_kv, T = c.n_tokens, t = c.slots;
-        if (d <= 0 || n_tok <= 0 || n_head <= 0 || n_kv <= 0 || n_head % n_kv != 0 || t <= 0 || t > T) {
-            CHECK(false, "case %s: bad dimensions in manifest (d %d tokens %d heads %d/%d slots %d)", c.name.c_str(), d, n_tok, n_head, n_kv, t);
+        const int d = c.head_dim, n_kv = c.n_kv, T = c.n_tokens, t = c.slots;
+        if (d <= 0 || c.n_tokens <= 0 || c.n_head <= 0 || n_kv <= 0 || c.n_head % n_kv != 0 || t <= 0 || t > T) {
+            CHECK(false, "case %s: bad dimensions in manifest (d %d tokens %d heads %d/%d slots %d)", c.name.c_str(), d, c.n_tokens, c.n_head, n_kv, t);
             continue;
         }
         ++ran;
-        std::printf("[fixture gate %s] case %s, %zu layers, d%d tokens%d heads %d/%d slots %d, tol %.1e\n", name, c.name.c_str(),
-                    c.layers.size(), d, n_tok, n_head, n_kv, t, tol);
-        for (const Cfg & cfg : cfgs) {
-            double worst_b = 0, worst_c = 0, worst_be = 0, worst_ce = 0;
-            bool all_ok = true;
-            for (int layer : c.layers) {
-                std::vector<float> q, k, v, beta_ref, c2_ref;
-                std::vector<int32_t> idx;
-                // The reference fit sees fitq (the grouped queries it received, after its own truncation and
-                // drop), [d, nfit, n_kv] per layer. Never fall back to q.
-                const std::vector<long> fs = am_fixture::entry_shape(c, layer, "fitq", "f32");
-                if (fs.size() != 3 || fs[0] != d || fs[1] <= 0 || fs[2] != n_kv) {
-                    CHECK(false, "case %s layer %d: no valid fitq entry in the manifest", c.name.c_str(), layer);
-                    all_ok = false;
-                    break;
-                }
-                const int nfit = (int) fs[1];
-                if (!am_fixture::read_f32(c, layer, "fitq", (size_t) d * nfit * n_kv, q, &err) ||
-                    !am_fixture::read_f32(c, layer, "k", (size_t) d * T * n_kv, k, &err) ||
-                    !am_fixture::read_f32(c, layer, "v", (size_t) d * T * n_kv, v, &err) ||
-                    !am_fixture::read_i32(c, layer, "idx", (size_t) t * n_kv, idx, &err) ||
-                    !am_fixture::read_f32(c, layer, "beta", (size_t) t * n_kv, beta_ref, &err) ||
-                    !am_fixture::read_f32(c, layer, "c2", (size_t) d * t * n_kv, c2_ref, &err)) {
-                    CHECK(false, "%s", err.c_str());
-                    all_ok = false;
-                    break;
-                }
-                std::vector<ggml_fp16_t> q16(q.size());
-                for (size_t i = 0; i < q.size(); ++i) q16[i] = ggml_fp32_to_fp16(q[i]);
+        std::printf("[fixture gate %s] case %s, %zu layers, d%d tokens%d heads %d/%d slots %d, objective slack %.1e\n", name, c.name.c_str(),
+                    c.layers.size(), d, c.n_tokens, c.n_head, n_kv, t, slack);
+        struct Stat { int heads = 0, fail_b = 0, fail_o = 0; double worst_b = 0, worst_o = 0, worst_nmax = 0; };
+        Stat st[4];
+        for (int layer : c.layers) {
+            std::vector<float> q, k, v, beta_ref, c2_ref;
+            std::vector<int32_t> idx;
+            // The reference fit sees fitq (the grouped queries it received, after its own truncation and drop),
+            // [d, nfit, n_kv] per layer. Never fall back to q.
+            const std::vector<long> fs = am_fixture::entry_shape(c, layer, "fitq", "f32");
+            if (fs.size() != 3 || fs[0] != d || fs[1] <= 0 || fs[2] != n_kv) {
+                CHECK(false, "case %s layer %d: no valid fitq entry in the manifest", c.name.c_str(), layer);
+                break;
+            }
+            const int nfit = (int) fs[1];
+            if (!am_fixture::read_f32(c, layer, "fitq", (size_t) d * nfit * n_kv, q, &err) ||
+                !am_fixture::read_f32(c, layer, "k", (size_t) d * T * n_kv, k, &err) ||
+                !am_fixture::read_f32(c, layer, "v", (size_t) d * T * n_kv, v, &err) ||
+                !am_fixture::read_i32(c, layer, "idx", (size_t) t * n_kv, idx, &err) ||
+                !am_fixture::read_f32(c, layer, "beta", (size_t) t * n_kv, beta_ref, &err) ||
+                !am_fixture::read_f32(c, layer, "c2", (size_t) d * t * n_kv, c2_ref, &err)) {
+                CHECK(false, "%s", err.c_str());
+                break;
+            }
+            const float scale = 1.0f / std::sqrt((float) d);
+            std::vector<HeadObj> heads(n_kv);
+            {
+                std::vector<std::thread> th;
+                for (int g = 0; g < n_kv; ++g)
+                    th.emplace_back([&, g] {
+                        heads[g] = make_head_obj(&q[(size_t) g * nfit * d], nfit, &k[(size_t) g * T * d], &v[(size_t) g * T * d], T,
+                                                 &idx[(size_t) g * t], t, d, scale, &beta_ref[(size_t) g * t], &c2_ref[(size_t) g * t * d]);
+                    });
+                for (auto & x : th) x.join();
+            }
+            for (int g = 0; g < n_kv; ++g) {
+                const HeadObj & h = heads[g];
+                std::printf("  DIAG L%02d h%d  cond(M) %.2e cond(A) %.2e  ref beta at lower clamp %d upper clamp %d (of %d)  beta objective(ref) %.4e  output error(ref) %.4e\n",
+                            layer, g, h.cond_M, h.cond_A, h.ref_lo, h.ref_hi, t, h.beta_ref_obj, h.out_ref_err);
+            }
+            std::vector<ggml_fp16_t> q16(q.size());
+            for (size_t i = 0; i < q.size(); ++i) q16[i] = ggml_fp32_to_fp16(q[i]);
+            for (int ai = 0; ai < 4; ++ai) {
+                const Cfg & cfg = cfgs[ai];
                 BlockShape s;
                 // fitq is already grouped per KV head: one query head per KV head, nfit rows each.
                 s.head_dim = d; s.n_tokens = nfit; s.n_head = n_kv; s.n_head_kv = n_kv; s.n_keys = T; s.t = t;
-                s.scale = 1.0f / std::sqrt((float) d);
+                s.scale = scale;
                 s.bf16_scores = cfg.ref_sem;
                 NnlsParams np;
                 np.route = cfg.route;
                 np.round_beta_bf16 = cfg.ref_sem;
                 FitResult res;
                 BlockInputs in{q16.data(), k.data(), v.data(), idx.data()};
-                if (!fit_block(acc, be, s, in, np, res, &err)) {
+                if (!fit_block(accs[cfg.ref_sem ? 1 : 0], be, s, in, np, res, &err)) {
                     CHECK(false, "%s layer %d: %s", cfg.label, layer, err.c_str());
-                    all_ok = false;
+                    st[ai].fail_b += n_kv; st[ai].fail_o += n_kv; st[ai].heads += n_kv;
                     continue;
                 }
                 // The reference returns C2 in the model dtype: compare like with like.
                 if (cfg.ref_sem) for (float & x : res.c2) x = round_bf16(x);
                 for (int g = 0; g < n_kv; ++g) {
-                    const GateErr eb = gate_compare(&res.beta[(size_t) g * t], &beta_ref[(size_t) g * t], t);
-                    const GateErr ec = gate_compare(&res.c2[(size_t) g * t * d], &c2_ref[(size_t) g * t * d], (size_t) t * d);
-                    std::printf("  %-20s L%02d h%d  beta abs %.2e norm %.2e elem %.2e   C2 abs %.2e norm %.2e elem %.2e   status %d%s\n",
-                                cfg.label, layer, g, eb.abs, eb.nmax, eb.rel_elem, ec.abs, ec.nmax, ec.rel_elem, (int) res.status[g],
-                                (eb.finite && ec.finite) ? "" : "  NON-FINITE");
-                    const double lim = tol + cfg.quant;
-                    if (!gate_pass(eb, lim) || !gate_pass(ec, lim)) all_ok = false;
-                    worst_b = std::max(worst_b, eb.nmax);  worst_be = std::max(worst_be, eb.rel_elem);
-                    worst_c = std::max(worst_c, ec.nmax);  worst_ce = std::max(worst_ce, ec.rel_elem);
+                    const HeadObj & h = heads[g];
+                    const float * eb = &res.beta[(size_t) g * t], * ec = &res.c2[(size_t) g * t * d];
+                    const double bo = h.beta_obj(eb), oe = h.out_err(eb, ec);
+                    const bool ok_b = objective_ok(bo, h.beta_ref_obj, slack, 1e-12 * h.y_norm2);
+                    const bool ok_o = objective_ok(oe, h.out_ref_err, slack, 1e-6);
+                    const GateErr gb = gate_compare(eb, &beta_ref[(size_t) g * t], t);
+                    const GateErr gc = gate_compare(ec, &c2_ref[(size_t) g * t * d], (size_t) t * d);
+                    std::printf("  %-20s L%02d h%d  beta obj %.4e (ref %.4e) %s   out err %.4e (ref %.4e) %s   [elementwise, informational: beta norm %.1e C2 norm %.1e]%s\n",
+                                cfg.label, layer, g, bo, h.beta_ref_obj, ok_b ? "ok" : "FAIL", oe, h.out_ref_err, ok_o ? "ok" : "FAIL",
+                                gb.nmax, gc.nmax, (gb.finite && gc.finite) ? "" : "  NON-FINITE");
+                    Stat & x = st[ai];
+                    ++x.heads;
+                    x.fail_b += !ok_b; x.fail_o += !ok_o;
+                    x.worst_b = std::max(x.worst_b, bo / std::max(h.beta_ref_obj, 1e-300));
+                    x.worst_o = std::max(x.worst_o, oe / std::max(h.out_ref_err, 1e-300));
+                    x.worst_nmax = std::max(x.worst_nmax, std::max(gb.nmax, gc.nmax));
                 }
             }
-            std::printf("  %-20s WORST norm: beta %.2e C2 %.2e | elementwise: beta %.2e C2 %.2e | limit %.2e\n", cfg.label, worst_b,
-                        worst_c, worst_be, worst_ce, tol + cfg.quant);
-            // Every route and every semantics arm binds; the default (qr+fp32) is not a printout.
-            CHECK(all_ok, "gate missed: case %s arm %s", c.name.c_str(), cfg.label);
+        }
+        for (int ai = 0; ai < 4; ++ai) {
+            const Stat & x = st[ai];
+            std::printf("  %-20s %s: %d heads, beta-objective failures %d, output failures %d | worst engine/reference ratio: beta objective %.3f output error %.3f | worst elementwise norm %.1e\n",
+                        cfgs[ai].label, c.name.c_str(), x.heads, x.fail_b, x.fail_o, x.worst_b, x.worst_o, x.worst_nmax);
+            CHECK(x.heads > 0 && x.fail_b == 0 && x.fail_o == 0, "gate missed: case %s arm %s", c.name.c_str(), cfgs[ai].label);
         }
     }
     return ran;
@@ -971,6 +1197,7 @@ int main(int argc, char ** argv) {
         test_scaled_full_rank();
         test_narrow_f32();
         test_gate_logic();
+        test_head_objectives();
     }
 
     struct Be { const char * name; ggml_backend_t be; };
@@ -1004,6 +1231,7 @@ int main(int argc, char ** argv) {
         }
         test_fit_vs_ref(b.be, b.name, SolveRoute::Qr, true);
         test_device_path(b.be, b.name);
+        test_gram_fallback(b.be, b.name);
         if (!gate_ran(std::getenv("LUCE_AM_FIXTURES") != nullptr, run_fixture_gate(b.be, b.name))) {
             ++g_fail;
             std::printf("FAIL: LUCE_AM_FIXTURES is set but no case ran\n");

@@ -90,7 +90,7 @@ bool spd_solve(const double * G, const double * B, int t, int nrhs, double rel_t
 // Gram route: plain solve first; the ridge only when that fails (a non-positive pivot or non-finite result).
 SolveStatus solve_spd(const double * G, const double * B, int t, int nrhs, const NnlsParams & p, double * X) {
     if (spd_solve(G, B, t, nrhs, p.chol_rel_tol, 0.0, X)) return SolveStatus::Ok;
-    if (spd_solve(G, B, t, nrhs, p.chol_rel_tol, p.ridge, X)) return SolveStatus::RidgeUsed;
+    if (p.gram_ridge && spd_solve(G, B, t, nrhs, p.chol_rel_tol, p.ridge, X)) return SolveStatus::RidgeUsed;
     return SolveStatus::Failed;
 }
 
@@ -702,11 +702,13 @@ bool GramAccumulator::value_design(const float * beta, ValueDesign & out, std::s
 
 namespace {
 
-bool fit_after_init(GramAccumulator & acc, const BlockShape & shape, const NnlsParams & p, FitResult & out, std::string * err,
+bool fit_after_init(GramAccumulator & acc, const BlockShape & shape, const NnlsParams & p_in, FitResult & out, std::string * err,
                     std::chrono::steady_clock::time_point t0, const TransferStats & x0) {
     using clk = std::chrono::steady_clock;
     auto ms = [](clk::time_point a, clk::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
     const int t = shape.t, d = shape.head_dim, n_kv = shape.n_head_kv;
+    NnlsParams p = p_in;
+    p.gram_ridge = false;
     const bool qr = p.route == SolveRoute::Qr;
     const auto t1 = clk::now();
 
@@ -717,9 +719,16 @@ bool fit_after_init(GramAccumulator & acc, const BlockShape & shape, const NnlsP
 
     if (!(qr ? acc.beta_design(bd, err) : acc.beta_grams(bg, err))) return false;
     const auto t2 = clk::now();
+    int fallbacks = 0;
+    bool have_bd = qr;
     for (int g = 0; g < n_kv; ++g) {
         status[g] = qr ? solve_beta_qr(&bd.M[(size_t) g * t * bd.rows], &bd.y[(size_t) g * bd.rows], bd.rows, t, p, beta.data())
                        : solve_beta(&bg.MtM[(size_t) g * t * t], &bg.Mty[(size_t) g * t], t, p, beta.data());
+        if (!qr && status[g] != SolveStatus::Ok) {  // Cholesky failed or non-finite: redo this head on the QR route
+            if (!have_bd) { if (!acc.beta_design(bd, err)) return false; have_bd = true; }
+            status[g] = solve_beta_qr(&bd.M[(size_t) g * t * bd.rows], &bd.y[(size_t) g * bd.rows], bd.rows, t, p, beta.data());
+            ++fallbacks;
+        }
         if (status[g] != SolveStatus::Failed && !narrow_f32(beta.data(), t, &beta_f[(size_t) g * t])) status[g] = SolveStatus::Failed;
     }
     const auto t3 = clk::now();
@@ -729,9 +738,15 @@ bool fit_after_init(GramAccumulator & acc, const BlockShape & shape, const NnlsP
 
     if (!(qr ? acc.value_design(beta_f.data(), vd, err) : acc.value_grams(beta_f.data(), vg, err))) return false;
     const auto t4 = clk::now();
+    bool have_vd = qr;
     for (int g = 0; g < n_kv; ++g) {
-        const SolveStatus sv = qr ? solve_values_qr(&vd.A[(size_t) g * t * vd.rows], &vd.Y[(size_t) g * d * vd.rows], vd.rows, t, d, p, c2.data())
-                                  : solve_values(&vg.AtA[(size_t) g * t * t], &vg.AtY[(size_t) g * t * d], t, d, p, c2.data());
+        SolveStatus sv = qr ? solve_values_qr(&vd.A[(size_t) g * t * vd.rows], &vd.Y[(size_t) g * d * vd.rows], vd.rows, t, d, p, c2.data())
+                            : solve_values(&vg.AtA[(size_t) g * t * t], &vg.AtY[(size_t) g * t * d], t, d, p, c2.data());
+        if (!qr && sv != SolveStatus::Ok) {
+            if (!have_vd) { if (!acc.value_design(beta_f.data(), vd, err)) return false; have_vd = true; }
+            sv = solve_values_qr(&vd.A[(size_t) g * t * vd.rows], &vd.Y[(size_t) g * d * vd.rows], vd.rows, t, d, p, c2.data());
+            ++fallbacks;
+        }
         if (sv > status[g]) status[g] = sv;  // Ok < RidgeUsed < Failed
         // A finite double outside the F32 range must not be published: fail the block.
         if (sv != SolveStatus::Failed && !narrow_f32(c2.data(), c2.size(), &c2_f[(size_t) g * t * d])) status[g] = SolveStatus::Failed;
@@ -749,6 +764,7 @@ bool fit_after_init(GramAccumulator & acc, const BlockShape & shape, const NnlsP
     out.ms_value_grams = ms(t3, t4);
     out.ms_value_solve = ms(t4, t5);
     const TransferStats x1 = acc.transfers();
+    out.qr_fallbacks = fallbacks;
     out.transfers = {x1.h2d_calls - x0.h2d_calls, x1.d2h_calls - x0.d2h_calls, x1.h2d_bytes - x0.h2d_bytes, x1.d2h_bytes - x0.d2h_bytes};
     return true;
 }

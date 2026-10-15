@@ -63,7 +63,10 @@ struct NnlsParams {
     // reference semantics: LAPACK gels only fails on an exactly zero R_kk; a tiny but nonzero pivot (a
     // softmax-tail column) is solved, not regularised. The ridge is for exact singularity and non-finite results.
     double qr_rank_tol = 0.0;
-    SolveRoute route = SolveRoute::Qr;
+    // Route Gram: a failed plain Cholesky goes to the ridge here only when gram_ridge is set. fit_block
+    // clears it so that a Cholesky failure falls back to the QR route (which has its own ridge fallback).
+    bool   gram_ridge = true;
+    SolveRoute route = SolveRoute::Gram;  // cheap; fit_block falls back to Qr per head when the Cholesky fails
     // The reference stores beta in the model dtype before fitting C2 (bf16 for the Qwen3.8 runs).
     bool   round_beta_bf16 = false;
 };
@@ -201,6 +204,7 @@ struct FitResult {
     // Wall time of the phases, ms: upload + prep graph, beta Grams/design, beta solve, value Grams/design, value solve.
     double ms_init = 0, ms_beta_grams = 0, ms_beta_solve = 0, ms_value_grams = 0, ms_value_solve = 0;
     TransferStats transfers;          // host<->device traffic of this fit
+    int qr_fallbacks = 0;             // route Gram: head-stages (beta, values) that fell back to QR
 };
 
 // Returns false (and leaves `out` empty) when the inputs are bad, a backend call fails, or any KV
