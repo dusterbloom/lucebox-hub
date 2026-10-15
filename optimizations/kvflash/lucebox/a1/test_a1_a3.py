@@ -1,6 +1,7 @@
 """Stub tests for A3 routed exact fetch (a1_a3.py; PREREG "A3 routed exact fetch"): row budget, router candidates, the k = 0 and
 fetch-everything states, the discarded routing pass, and the pure selection/verdict helpers. No compaction repo, no weights.
 The same five checks on the tiny random hybrid are in modal/am_qwen35/tests/test_a1.py (run on lucebox6)."""
+import json
 import os
 import sys
 from types import SimpleNamespace
@@ -174,7 +175,7 @@ def test_routing_pass_kv_is_discarded_before_the_answer_prefill(built, monkeypat
 
     monkeypatch.setattr(r2, "answer_ids", spy_answer)
     item = SimpleNamespace(suffix=[41, 42, 43], max_new=4)
-    cap = a3.rows_at(NB, TAIL, P, WB, 2, block=BLOCK, slots=KEEP)                   # room for exactly 2 fetched blocks
+    cap = a3.rows_at(NB, TAIL, P, WB, 2, block=BLOCK, slots=KEEP) + 3 + 4          # 2 fetched blocks, the 3-token question, 4 new tokens
     out = a3.answer_item(R.S, st, item, cap=cap, block=BLOCK, slots=KEEP)
     routed = [c for c in log if c["want_queries"]]
     assert len(routed) == 1 and routed[0]["n"] == 3                                  # exactly one routing pass, over the question suffix
@@ -189,7 +190,7 @@ def test_routing_pass_kv_is_discarded_before_the_answer_prefill(built, monkeypat
 def test_the_fetched_blocks_are_the_top_k_of_the_router_order_and_the_budget_is_filled(built, monkeypatch):
     R, st, _ = built
     monkeypatch.setattr(r2, "answer_ids", lambda *a, **k: [1])
-    cap = a3.rows_at(NB, TAIL, P, WB, 3, block=BLOCK, slots=KEEP) + BLOCK - KEEP - 1      # room for 3 blocks, one row short of a 4th
+    cap = a3.rows_at(NB, TAIL, P, WB, 3, block=BLOCK, slots=KEEP) + 2 + 4 + BLOCK - KEEP - 1   # 3 blocks, question 2 + 4 new, a 4th one row short
     out = a3.answer_item(R.S, st, SimpleNamespace(suffix=[41, 42], max_new=4), cap=cap, block=BLOCK, slots=KEEP)
     assert out["budget"]["k"] == 3 and out["fetched"] == out["ranked"][:3] and len(out["ranked"]) == len(CAND)
     full = a3.answer_item(R.S, st, SimpleNamespace(suffix=[41, 42], max_new=4), cap=10 ** 9, block=BLOCK, slots=KEEP)
@@ -272,16 +273,22 @@ def test_retention_by_k_used_groups_probes_by_the_k_of_their_cut():
     assert got == {"0": {"n": 1, "correct": 0}, "3": {"n": 1, "correct": 1}, "9": {"n": 2, "correct": 1}}
 
 
-def test_router_recall_within_the_fetched_set_splits_a_miss_into_routing_and_compaction():
+def test_fetch_coverage_reads_none_partial_or_all_of_the_candidate_source_blocks():
+    assert a3.fetch_coverage([4], NB, P, WB, [4, 5]) == "all" and a3.fetch_coverage([4, 5], NB, P, WB, [4]) == "partial"
+    assert a3.fetch_coverage([4, 5], NB, P, WB, [7]) == "none" and a3.fetch_coverage([0, 11], NB, P, WB, [4]) is None
+    assert a3.fetch_coverage([1, 4], NB, P, WB, [4]) == "all"          # block 1 is exact already: only candidates count
+
+
+def test_fetch_coverage_vs_retention_counts_each_coverage_class_without_causal_wording():
     import a1_a3_report as rep
 
-    def rr(i, status, fetched):
-        return {"id": i, "src_status": status, "source_fetched": fetched}
+    def rr(i, status, cov):
+        return {"id": i, "src_status": status, "source_fetch_coverage": cov}
 
-    route = [rr("a", "candidate", True), rr("b", "candidate", True), rr("c", "candidate", False), rr("d", "exact_resident", False)]
-    got = rep.fetched_vs_retention(route, {"a": 1, "b": 0, "c": 0, "d": 1})
-    assert got == {"candidate_probes": 3, "source_fetched": {"n": 2, "correct": 1}, "source_not_fetched": {"n": 1, "correct": 0},
-                   "router_recall_in_fetched_set": 2 / 3}
+    route = [rr("a", "candidate", "all"), rr("b", "candidate", "all"), rr("c", "candidate", "none"), rr("e", "candidate", "partial"),
+             rr("d", "exact_resident", None)]
+    got = rep.fetch_coverage_vs_retention(route, {"a": 1, "b": 0, "c": 0, "d": 1, "e": 1})
+    assert got == {"candidate_probes": 4, "all": {"n": 2, "correct": 1}, "partial": {"n": 1, "correct": 1}, "none": {"n": 1, "correct": 0}}
 
 
 def test_router_tables_use_only_candidate_probes_with_a_rank():
@@ -295,3 +302,177 @@ def test_router_tables_use_only_candidate_probes_with_a_rank():
     assert t["source_status"] == {"candidate": 2, "exact_resident": 1, "tail": 1, "not_located": 1}
     assert t["a_last"]["candidate_probes"]["n"] == 2 and t["a_last"]["candidate_probes"]["recall"]["8"] == 0.5
     assert t["a_last"]["candidate_probes_over_16K"]["n"] == 1
+
+
+# ---------------------------------------------------------------- review fixes: budget reserve, guard, selection, resume
+
+def test_choose_k_reserves_the_question_and_the_decode_tokens():
+    assert a3.choose_k(57, 64, 10, 6)["k"] == 6 and a3.choose_k(57, 64, 10, 6)["rows"] == a3.CAP     # the cut alone fills 16,384 exactly
+    got = a3.choose_k(57, 64, 10, 6, reserve=1)                      # any question at all: one block fewer
+    assert got["k"] == 5 and got["rows"] + got["reserve"] <= a3.CAP and not got["over_budget"]
+    big = a3.choose_k(57, 639, 10, 6, reserve=150 + 64)             # 150-token question + 64 new tokens
+    assert big["k"] == 4 and big["peak_rows"] == big["rows"] + 214 <= a3.CAP
+    assert a3.choose_k(57, 639, 10, 6, reserve=214 + 576)["k"] == 3  # one more block of reserve takes one more block of k
+    over = a3.choose_k(57, 639, 10, 12, reserve=100)
+    assert over["k"] == 0 and over["over_budget"]
+    edge = a3.choose_k(57, 639, 10, 6, reserve=a3.CAP - 13503 + 1)   # k = 0 fits by the cut alone but not with the reserve
+    assert edge["k"] == 0 and edge["over_budget"]
+
+
+def test_the_reserve_defaults_to_the_item_question_plus_max_new(built, monkeypatch):
+    R, st, _ = built
+    monkeypatch.setattr(r2, "answer_ids", lambda *a, **k: [1])
+    base = a3.rows_at(NB, TAIL, P, WB, 0, block=BLOCK, slots=KEEP)
+    item = SimpleNamespace(suffix=[1] * 5, max_new=7)
+    out = a3.answer_item(R.S, st, item, cap=base + 12 + BLOCK - KEEP, block=BLOCK, slots=KEEP)          # room for 1 block after 5 + 7 rows
+    assert out["budget"]["reserve"] == 12 and out["budget"]["k"] == 1
+    st.reserve = 100                                                  # a cut-level reserve (longest question) wins
+    assert a3.answer_item(R.S, st, item, cap=base + 12 + BLOCK - KEEP, block=BLOCK, slots=KEEP)["budget"]["k"] == 0
+
+
+def test_the_routing_pass_is_checked_against_the_cap(built):
+    R, st, _ = built
+    base = rows_of(st.triples)
+    a3.route_a_last(R.S, st, [1, 2, 3], cap=base + 3)
+    with pytest.raises(AssertionError, match="routing pass"):
+        a3.route_a_last(R.S, st, [1, 2, 3], cap=base + 2)
+
+
+def test_row_guard_asserts_the_cap_at_the_question_prefill_and_at_every_decode_step():
+    calls = []
+
+    class Model:
+        def __call__(self, input_ids=None, **k):
+            calls.append(input_ids.shape[-1])
+            return "out"
+
+        config = "cfg"
+
+    S = SimpleNamespace(model=Model())
+    real = S.model
+    with a3.row_guard(S, rows=100, cap=100 + 5 + 3):                 # a 5-token question then 3 decode steps fit exactly
+        assert S.model.config == "cfg"
+        S.model(input_ids=torch.zeros(1, 5, dtype=torch.long))
+        for _ in range(3):
+            S.model(input_ids=torch.zeros(1, 1, dtype=torch.long))
+        with pytest.raises(AssertionError, match="cap"):
+            S.model(input_ids=torch.zeros(1, 1, dtype=torch.long))   # the 4th decode step is one row over
+    assert S.model is real and calls == [5, 1, 1, 1]
+    with a3.row_guard(S, rows=100, cap=104):
+        with pytest.raises(AssertionError):
+            S.model(input_ids=torch.zeros(1, 5, dtype=torch.long))   # the question prefill alone is over
+
+
+def test_answer_item_runs_the_answer_inside_the_guard(built, monkeypatch):
+    R, st, _ = built
+    seen = []
+
+    def spy(S, triples, seq_len, suffix, max_new, timing=None):
+        seen.append(type(S.model).__name__)
+        return [1]
+
+    monkeypatch.setattr(r2, "answer_ids", spy)
+    R.S.model = SimpleNamespace()
+    a3.answer_item(R.S, st, SimpleNamespace(suffix=[1, 2], max_new=3), cap=10 ** 9, block=BLOCK, slots=KEEP)
+    assert seen == ["_RowGuard"] and type(R.S.model).__name__ == "SimpleNamespace"
+
+
+def test_full_fallback_binds_the_per_block_cleanup_into_the_generator_through_run_unit(monkeypatch):
+    import a1_core
+    calls = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append(1))
+    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda: None)
+    monkeypatch.setattr(a1_core, "mem_gib", lambda: (0.0, 0.0))
+    monkeypatch.setattr(r2, "extend", lambda model, lt, tr, ln, ids, **k: ("T", ln + ids.shape[1], None))
+    monkeypatch.setattr(r2, "_info", lambda R, tr, ln, trace: {})
+    monkeypatch.setattr(r2, "answer_ids", lambda S, tr, ln, sfx, mx, timing=None: timing.update(prefill_s=0.0, decode_s=0.0) or [1])
+    S = SimpleNamespace(dev="cpu", eos={9}, layer_types=[], model=None, linear=set(), tok=SimpleNamespace(decode=lambda ids, **k: "x"))
+    R = SimpleNamespace(S=S)
+    item = a1_core.Item({"id": "T:a", "traj": "T", "kind": "probe"}, [1, 2], 3, 0, "sha")
+    n = 2 * r2.BLOCK + 5                                              # two sealed blocks and a tail at the single cut
+    plan = a1_core.Plan("T", [], list(range(n)), [a1_core.Cut(0, n, [item])])
+    ctx = SimpleNamespace(S=S, R=R, parse=lambda text, tools: {"cleaned_text": text, "tool_calls": []})
+    rows = []
+    monkeypatch.setattr(a1_core, "append_row", lambda path, row: rows.append(row))
+    a3.compute_full(ctx, plan, "unused", lambda m: None)
+    assert len(rows) == 1 and len(calls) == 2 + 1                     # one empty_cache per sealed block (generator) + one per cut (run_unit)
+    calls.clear()
+    a1_core.run_unit(S, R, plan, r2.gen_fullchk, ctx.parse, rows.append, "FULL", log=lambda m: None, empty_cache=True)
+    assert len(calls) == 1                                            # what the old call did: the per-block cleanup never ran
+
+
+def test_selection_refuses_a_cap_other_than_the_registered_one():
+    with pytest.raises(SystemExit):
+        a3.main(["--stage", "sel", "--out", "unused", "--ref-dir", "unused", "--cap", "20000"])
+
+
+def test_stage_2_needs_the_selection_report_and_takes_w_from_it(tmp_path):
+    with pytest.raises(SystemExit):
+        a3.main(["--stage", "proper", "--out", "unused", "--ref-dir", "unused"])
+    ok = {"stage": "sel", "complete": True, "arms": {"W2": {}, "W6": {}}, "selection": {"selected": "W6"}}
+    p = tmp_path / "a3_report.json"
+    p.write_text(json.dumps(ok))
+    assert a3.load_selection(str(p)) == (6, a3.sha256_file(str(p)))
+    for bad in ({**ok, "selection": {"selected": None}}, {**ok, "complete": False}, {**ok, "arms": {"W6": {}}}, {**ok, "stage": "proper"}):
+        p.write_text(json.dumps(bad))
+        with pytest.raises(SystemExit):
+            a3.load_selection(str(p))
+
+
+def test_manifest_is_written_once_and_a_changed_run_refuses_to_resume(tmp_path):
+    path = str(tmp_path / "manifest.json")
+    fp = {"stage": "proper", "window_blocks": 6, "sel_report_sha256": "abc", "code_md5": {"a1_a3.py": "1"}}
+    assert a3.claim_manifest(path, fp) == "new" and a3.claim_manifest(path, fp) == "match"
+    for change in ({"sel_report_sha256": "zzz"}, {"window_blocks": 2}, {"code_md5": {"a1_a3.py": "2"}}):
+        with pytest.raises(SystemExit, match="different run"):
+            a3.claim_manifest(path, {**fp, **change})
+    assert json.load(open(path)) == fp
+
+
+def test_a_trajectory_without_a_done_marker_is_purged_so_it_is_redone(tmp_path):
+    a, r = str(tmp_path / "a.jsonl"), str(tmp_path / "r.jsonl")
+    for p in (a, r):
+        with open(p, "w") as f:
+            for t, i in (("t1", 1), ("t1", 2), ("t2", 3)):
+                f.write(json.dumps({"traj": t, "id": f"{t}:{i}"}) + "\n")
+    a3.purge_partial([a, r], {"t1"})
+    for p in (a, r):
+        assert [x["id"] for x in a3.core.read_rows(p)] == ["t1:1", "t1:2"]
+    a3.purge_partial([a, r], {"t1"})                                  # idempotent, nothing else touched
+    assert not os.path.exists(a + ".part")
+
+
+def test_seed_reference_is_atomic_an_interrupted_copy_leaves_no_destination(tmp_path):
+    ref, out = tmp_path / "FULL.jsonl", tmp_path / "out.jsonl"
+    ref.write_text('{"id": "a:1", "traj": "a"}\n{"id": "a:2", "traj": "a"\n')           # the second record is cut off
+    with pytest.raises(ValueError):
+        a3.seed_reference(str(ref), str(out), ["a"])
+    assert not out.exists()                                           # a later run copies again, it never trusts a prefix
+    ref.write_text('{"id": "a:1", "traj": "a"}\n{"id": "a:2", "traj": "a"}\n')
+    assert a3.seed_reference(str(ref), str(out), ["a"]) == 2 and len(out.read_text().splitlines()) == 2
+
+
+def _arec(i, attempt="x", **kw):
+    return {"id": i, "traj": "t", "attempt": attempt, **kw}
+
+
+def test_check_complete_refuses_missing_extra_duplicate_and_mixed_attempt_records():
+    import a1_a3_report as rep
+    exp = {"a", "b"}
+    rep.check_complete("W6", [_arec("a"), _arec("b")], [_arec("a"), _arec("b")], exp)
+    bad = [([_arec("a")], [_arec("a"), _arec("b")], "missing"), ([_arec("a"), _arec("b"), _arec("c")], [_arec("a"), _arec("b")], "unexpected"),
+           ([_arec("a"), _arec("b"), _arec("b")], [_arec("a"), _arec("b")], "duplicate"),
+           ([_arec("a"), _arec("b")], [_arec("a"), _arec("b", attempt="y")], "attempt")]
+    for ans, route, word in bad:
+        with pytest.raises(rep.IncompleteRun, match=word):
+            rep.check_complete("W6", ans, route, exp)
+
+
+def test_selection_needs_exactly_the_registered_windows():
+    import a1_a3_report as rep
+    rep.check_windows(["W2", "W6"])
+    for found in (["W6"], ["W2"], ["W2", "W6", "W12"], []):
+        with pytest.raises(rep.IncompleteRun):
+            rep.check_windows(found)

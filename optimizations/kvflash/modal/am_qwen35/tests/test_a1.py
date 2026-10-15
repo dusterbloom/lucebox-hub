@@ -471,6 +471,7 @@ def test_a3_row_budget_fills_k_and_matches_the_rows_of_the_real_state(setup, mon
         assert got["k"] == 2 and got["lowered"] and got["rows"] <= cap and not got["over_budget"]
         assert a1_a3.choose_k(12, 12, A3_P, A3_WB, cap=cap - 1, block=BLOCK_W, slots=slots)["k"] == 1
         assert a1_a3.choose_k(12, 12, A3_P, A3_WB, cap=10 ** 9, block=BLOCK_W, slots=slots)["k"] == 7     # candidates 2-8, all fetched
+        assert a1_a3.choose_k(12, 12, A3_P, A3_WB, reserve=1, cap=cap, block=BLOCK_W, slots=slots)["k"] == 1   # the question takes a block
 
 
 def test_a3_router_never_ranks_the_prefix_the_window_or_the_tail(setup, monkeypatch):
@@ -530,21 +531,24 @@ def test_a3_routing_pass_kv_is_discarded_before_the_answer_prefill(setup, monkey
         def spy_extend(*a, **k):
             out = real_extend(*a, **k)
             if k.get("want_queries"):
-                routing.append({id(x) for e in out[0] for x in e})
+                routing.append([x for e in out[0] for x in e])                     # strong references: no id reuse
             return out
 
         def spy_answer(S_, triples, seq_len, sfx, max_new, timing=None):
-            seen.append((seq_len, {id(x) for e in triples for x in e}, triples[st.full_layers[0]][0].shape[2]))
+            seen.append((seq_len, [x for e in triples for x in e], triples[st.full_layers[0]][0].shape[2],
+                         tuple(tuple(x.clone() for x in e) for e in triples)))
             return real_answer(S_, triples, seq_len, sfx, max_new, timing=timing)
 
         monkeypatch.setattr(r2, "extend", spy_extend)
         monkeypatch.setattr(r2, "answer_ids", spy_answer)
         slots = r2.slots_for(BLOCK_W, 0.25)
-        cap = a1_a3.rows_at(12, 12, A3_P, A3_WB, 2, block=BLOCK_W, slots=slots)           # room for exactly 2 fetched blocks
+        cap = a1_a3.rows_at(12, 12, A3_P, A3_WB, 2, block=BLOCK_W, slots=slots) + len(suffix) + 4   # 2 fetched blocks, question, 4 new
         out = a1_a3.answer_item(sess, st, SimpleNamespace(suffix=suffix, max_new=4), cap=cap, block=BLOCK_W, slots=slots)
         assert out["budget"]["k"] == 2
         assert len(routing) == 1 and len(seen) == 1
-        assert seen[0][0] == st.t_len and not (seen[0][1] & routing[0])             # logical length without question tokens; no shared tensor
+        assert seen[0][0] == st.t_len                                               # logical length without question tokens
+        for i in sess.linear:                                                       # the answer starts from the cut's DeltaNet state
+            assert all(torch.equal(x, y) for x, y in zip(seen[0][3][i], snap[i]))
         assert seen[0][2] == a1_a3.rows_at(12, 12, A3_P, A3_WB, 2, block=BLOCK_W, slots=slots)
         assert all(torch.equal(x, y) for a, b in zip(snap, st.triples) for x, y in zip(a, b))      # the cut state survived the routing pass
         monkeypatch.setattr(r2, "extend", real_extend)
@@ -552,6 +556,16 @@ def test_a3_routing_pass_kv_is_discarded_before_the_answer_prefill(setup, monkey
         clean = r2.answer_ids(sess, a1_a3.a3_state(st.triples, st.comp, st.exact, 12, 12, A3_P, A3_WB, out["fetched"], sess.linear),
                               st.t_len, suffix, 4)
         assert out["gen"] == clean                                      # the same tokens as an answer that never routed
+        for r in routing[0]:                                            # storage independence: changing a routing tensor leaves the answer's alone
+            if not r.is_floating_point():
+                continue
+            orig = r.clone()
+            for a in seen[0][1]:
+                if a.shape == r.shape and a.dtype == r.dtype:
+                    before = a.clone()
+                    r.add_(1)
+                    assert torch.equal(a, before), "routing-pass tensor shares storage with the answer state"
+                    r.copy_(orig)
 
 
 # ---------------------------------------------------------------- real data, CPU

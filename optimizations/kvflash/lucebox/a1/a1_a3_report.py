@@ -26,6 +26,39 @@ def _mean(xs):
     return sum(xs) / len(xs) if xs else None
 
 
+class IncompleteRun(ValueError):
+    """A run (or a mix of attempts) that cannot back a selection or a verdict."""
+
+
+def check_windows(found):
+    want = sorted(f"W{w}" for w in a1_a3.SEL_WBS)
+    if sorted(found) != want:
+        raise IncompleteRun(f"stage 1 needs exactly the arms {want}, found {sorted(found)}")
+
+
+def check_complete(name, answers, route, expected):
+    """Exactly one answer record and one router record per expected probe, from the same attempt. Refuses otherwise."""
+    problems = []
+    for label, rows in (("answer", answers), ("router", route)):
+        ids = [r["id"] for r in rows]
+        dup = sorted({i for i in ids if ids.count(i) > 1})
+        miss, extra = sorted(expected - set(ids)), sorted(set(ids) - expected)
+        for what, xs in (("missing", miss), ("unexpected", extra), ("duplicate", dup)):
+            if xs:
+                problems.append(f"{label} records {what}: {len(xs)} (e.g. {xs[0]})")
+    a, r = {x["id"]: x.get("attempt") for x in answers}, {x["id"]: x.get("attempt") for x in route}
+    mixed = sorted(i for i in a if i in r and (a[i] != r[i] or a[i] is None))
+    if mixed:
+        problems.append(f"answer and router records from different attempts (or none): {len(mixed)} (e.g. {mixed[0]})")
+    if problems:
+        raise IncompleteRun(f"{name}: " + "; ".join(problems))
+
+
+def expected_ids(H, tasks, full, T):
+    traj = {t["id"]: t["traj"] for t in tasks}
+    return {i for i in C.retained_probe_ids(H, tasks, full) if traj[i] in T}
+
+
 def cuts_table(rows):
     """One entry per (trajectory, cut): rows kept, k used, over-budget flag, candidates. Rows of one cut share all of them."""
     cuts = {}
@@ -51,15 +84,15 @@ def by_k_used(rows, ids, vals):
     return dict(sorted(out.items(), key=lambda kv: int(kv[0])))
 
 
-def fetched_vs_retention(route_rows, val_by_id):
-    """Candidate probes (source block compacted before the fetch): was the source block in the fetched set, and was the probe
-    answered correctly. A miss with the source fetched reads as compaction-free failure; a miss with it not fetched reads as routing."""
+def fetch_coverage_vs_retention(route_rows, val_by_id):
+    """Candidate probes (source block compacted before the fetch) by how much of their candidate source blocks the fetch restored
+    (none, partial, all), with the number answered correctly. Descriptive: it does not say why a probe failed (the other blocks, the
+    carried DeltaNet state and the history's K/V are still affected by compaction)."""
     cand = [r for r in route_rows if r["src_status"] == "candidate" and r["id"] in val_by_id]
     out = {"candidate_probes": len(cand)}
-    for name, want in (("source_fetched", True), ("source_not_fetched", False)):
-        sel = [r for r in cand if r["source_fetched"] == want]
+    for name in ("none", "partial", "all"):
+        sel = [r for r in cand if r["source_fetch_coverage"] == name]
         out[name] = {"n": len(sel), "correct": sum(val_by_id[r["id"]] for r in sel)}
-    out["router_recall_in_fetched_set"] = out["source_fetched"]["n"] / len(cand) if cand else None
     return out
 
 
@@ -104,11 +137,11 @@ def arm_summary(H, tasks, full, rows, route, T):
     return {"n": len(vals), "correct": sum(vals), "retention": C.boot_ci(vals, cl) if vals else None,
             "retention_ci99.9": C.boot_ci(vals, cl, 99.9) if vals else None,
             "by_distance": C.retention_by_distance(tasks, ids, vals), "by_type": by_type(tasks, ids, vals),
-            "by_k_used": by_k_used(used, ids, vals), "source_fetched_vs_retention": fetched_vs_retention(route, dict(zip(ids, vals))),
+            "by_k_used": by_k_used(used, ids, vals), "source_fetch_coverage_vs_retention": fetch_coverage_vs_retention(route, dict(zip(ids, vals))),
             "source_exact_at_answer": exact_at_answer(route),
             "probes_over_cap_at_k0": sum(1 for r in used if r["over_budget"]),
             "within_cap_only": {"n": len(within), "correct": sum(v for v, _ in within)},
-            "mean_rows": _mean(r["rows"] for r in used), "cuts": cuts_table(used), "provenance": provenance(used) if used else None,
+            "mean_rows": _mean(r["rows"] for r in used), "mean_peak_rows": _mean(r["peak_rows"] for r in used), "cuts": cuts_table(used), "provenance": provenance(used) if used else None,
             "_ids": ids, "_vals": vals}
 
 
@@ -139,18 +172,23 @@ def report_sel(sel, pilot, b0):
     full = C.read_rows(os.path.join(pilot, "FULL.jsonl"))
     T = set(list(H.load_trajs())[:a1_a3.PILOT_N])
     rep, table = {"stage": "sel", "trajectories": a1_a3.PILOT_N, "arms": {}, "router": {}}, {}
+    want = expected_ids(H, tasks, full, T)
     wbs = sorted({int(f.split("_")[1][1:]) for f in os.listdir(sel) if f.startswith("A3_W") and f.endswith("_route.jsonl")})
+    check_windows([f"W{wb}" for wb in wbs])
     for wb in wbs:
         name = f"W{wb}"
         route = [r for r in C.read_rows(os.path.join(sel, a1_a3.route_name(wb) + ".jsonl")) if r["traj"] in T]
         rep["router"][name] = router_tables(route)
         rows = [r for r in C.read_rows(os.path.join(sel, a1_a3.arm_name(wb) + ".jsonl")) if r["traj"] in T]
+        check_complete(name, rows, route, want)
         s = arm_summary(H, tasks, full, rows, route, T)
         s["pool16k"] = pool_block(H, tasks, b0, T, s["_ids"], s["_vals"])
         table[name] = {"correct": s["correct"], "n": s["n"], "mean_rows": s["mean_rows"] if s["mean_rows"] is not None else 0.0,
                        "eligible": s["probes_over_cap_at_k0"] == 0 and s["n"] > 0}
         rep["arms"][name] = strip(s)
     rep["table"] = table
+    rep["complete"] = True                                   # check_windows and check_complete passed: a winner may be named
+    rep["expected_probes"] = len(want)
     rep["selection"] = a1_a3.select_config(table)
     rep["selection_rule"] = "highest retention among windows with no cut over the row cap at k = 0; ties by fewer mean rows"
     return rep
@@ -165,6 +203,8 @@ def report_proper(out, a1, b0):
     wb = summ["window_blocks"]
     rows = [r for r in C.read_rows(os.path.join(out, a1_a3.arm_name(wb) + ".jsonl")) if r["traj"] in T]
     route = [r for r in C.read_rows(os.path.join(out, a1_a3.route_name(wb) + ".jsonl")) if r["traj"] in T]
+    check_complete(summ["arm"], rows, route, expected_ids(H, tasks, full, T))
+    manifest = json.load(open(os.path.join(out, "manifest.json")))
     s = arm_summary(H, tasks, full, rows, route, T)
     ok, att = C.reference_yield(H, tasks, full, T)
     n_ret = sum(1 for t in tasks if t["id"] in C.retained_probe_ids(H, tasks, full) and t["traj"] in T)
@@ -175,12 +215,12 @@ def report_proper(out, a1, b0):
     else:
         decision = {"basis": "final, 95% interval (A1 section 6)", "verdict": a1_a3.final_verdict(ci95) if ci95 else None}
     meets = len(T) >= 50 and n_ret >= 600
-    rep = {"stage": "proper", "arm": summ["arm"], "window_blocks": wb, "trajectories": len(T), "reference_yield": [ok, att],
+    rep = {"stage": "proper", "arm": summ["arm"], "window_blocks": wb, "selection_report_sha256": manifest["sel_report_sha256"], "trajectories": len(T), "reference_yield": [ok, att],
            "retained_probes": n_ret, "retention": {k_: s[k_] for k_ in ("n", "correct", "retention", "retention_ci99.9")}, "bar": C.BAR,
            "decision": decision, "size_requirement_50_trajectories_and_600_retained_met": meets,
            "size_note": None if meets or decision["basis"].startswith("early") else "fewer than 50 trajectories or 600 retained probes: a prefix, say so",
            "early_look": early, "by_distance": s["by_distance"], "by_type": s["by_type"], "by_k_used": s["by_k_used"],
-           "source_fetched_vs_retention": s["source_fetched_vs_retention"], "probes_over_cap_at_k0": s["probes_over_cap_at_k0"],
+           "source_fetch_coverage_vs_retention": s["source_fetch_coverage_vs_retention"], "probes_over_cap_at_k0": s["probes_over_cap_at_k0"],
            "within_cap_only": s["within_cap_only"], "mean_rows": s["mean_rows"], "cuts": s["cuts"], "provenance": s["provenance"],
            "router": router_tables(route), "source_exact_at_answer": s["source_exact_at_answer"],
            "pool16k": pool_block(H, tasks, b0, T, s["_ids"], s["_vals"]),
