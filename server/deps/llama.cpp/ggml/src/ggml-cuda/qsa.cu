@@ -456,7 +456,7 @@ bool ggml_cuda_flash_attn_ext_qsa_supported(ggml_backend_cuda_context & ctx, con
     const auto * q = dst->src[0], * k = dst->src[1], * v = dst->src[2], * m = dst->src[3], * ids = dst->src[5];
     const auto * packed = dst->src[6], * pv = dst->src[7];
     const int cc = ggml_cuda_info().devices[ctx.device].cc;
-    if (!q || !k || !v || !ids || dst->src[4] || !packed || !pv ||
+    if (!q || !k || !v || !ids || dst->src[4] || dst->src[9] || !packed || !pv ||
         (!GGML_CUDA_CC_IS_RDNA3_5(cc) && !GGML_CUDA_CC_IS_RDNA4(cc))) { return false; }
     if (q->ne[1] < 128) { return false; }
     float bias, softcap; memcpy(&bias, (const char *) dst->op_params + 4, 4); memcpy(&softcap, (const char *) dst->op_params + 8, 4);

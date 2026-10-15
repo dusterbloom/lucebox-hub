@@ -4760,11 +4760,12 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_set_device(ctx.device);
 #if defined(GGML_USE_HIP)
-    if (ggml_cuda_flash_attn_ext_qsa_decode_supported(ctx, dst)) {
+    // The QSA kernels do not read kv_bias (src[9]); their predicates reject it too.
+    if (dst->src[9] == nullptr && ggml_cuda_flash_attn_ext_qsa_decode_supported(ctx, dst)) {
         ggml_cuda_flash_attn_ext_qsa_decode(ctx, dst);
         return;
     }
-    if (ggml_cuda_flash_attn_ext_qsa_supported(ctx, dst)) {
+    if (dst->src[9] == nullptr && ggml_cuda_flash_attn_ext_qsa_supported(ctx, dst)) {
         ggml_cuda_flash_attn_ext_qsa(ctx, dst);
         return;
     }
