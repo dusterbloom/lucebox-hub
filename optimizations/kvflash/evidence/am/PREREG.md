@@ -526,3 +526,15 @@ Written after efb31219 and before any smoke or row. Arms, the reference, the par
 3. **Stage 2, the decision points,** runs after the stage-1 verdict, on the same machine and in the same session as stage 1. It uses all 1,438 decision points, with the full stream to 48K, and reports next-call agreement with no rule attached. The engine's agentic gate measures next-call agreement anyway. Gate 2's subsampling applies only to stage 2.
 
 Time for stage 1, using section 3's rates: FULL-CHK build of about 2.2M tokens at about 5 s per 1K tokens (shorter contexts) is about 11,000 s; FULL-CHK probes 14,300 s; the shipping-arm build about 7,700 s; shipping-arm probes 5,000 s. All 60 trajectories take about 10.6 h on lucebox6, and the early look comes after about 3.5 h. On a Modal H200, with section 3's assumed decode of 25 tokens per second, all 60 trajectories take about 1.1 h, roughly $5. The machine is chosen in the next amendment.
+
+### A1 Amendment 2 (2026-10-15, before any A1 row): lucebox6, and a 6-session pilot first
+
+The project owner chose the machine and asked for a short pilot before the proper run.
+
+- **Machine:** lucebox6 integrated GPU, $0. No Modal job is started.
+- **Pilot:** the first 6 trajectories in file order, both arms, stage-1 probes only.
+  - The pilot replaces the smoke. The memory gate and watchdog of section 3 apply, the determinism check of section 4 item 1 runs on its first trajectory, and Gate 3 (the reference's yield, 35% to 70%) is checked on its 6 trajectories.
+  - It reports, with counts: the reference's correct probes, retention with its interval (6 clusters, so the interval is only indicative), retention by distance, build and answer seconds, and peak memory.
+  - **The pilot decides nothing.** It only says whether the proper run (Amendment 1: early look at 20, then 60) goes ahead as written.
+  - If nothing in the design changes after the pilot, its rows are the first 6 trajectories of the proper run. If anything changes (arms, ratio, render, limits), its rows are discarded and the proper run starts from trajectory 1.
+- **Pilot time:** about 6/60 of stage 1, about 1.1 h plus the model load.
