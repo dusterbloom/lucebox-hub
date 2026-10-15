@@ -1,0 +1,2 @@
+bed2fd3aef709243cf5e82c729cafcd4  /mnt/kimi-k3/build/m3-cuda/luce_server
+7690af4619341f6571531d2920926a62  /mnt/kimi-k3/build/m2-fd1a7b96-ab/luce_server
