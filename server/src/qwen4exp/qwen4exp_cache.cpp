@@ -215,7 +215,7 @@ void clear_qwen4exp_batched_decode_workspace(Qwen4ExpBatchedDecodeWorkspace & wo
 
 void free_qwen4exp_cache(Qwen4ExpCache & c) {
     clear_qwen4exp_decode_workspace(c.decode_workspace);
-    clear_qwen4exp_decode_workspace(c.verify_workspace);
+    for (auto & ws : c.verify_workspace) clear_qwen4exp_decode_workspace(ws);
     clear_qwen4exp_decode_workspace(c.mtp_workspace);
     if (c.input_ring.buf) {
         ggml_backend_buffer_free(c.input_ring.buf);

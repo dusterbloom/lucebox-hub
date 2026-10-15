@@ -275,6 +275,18 @@ int run_mtp_check(ggml_backend_t backend, const Qwen4ExpWeights & w, const std::
         }
     }
     const double spec_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    // Retained verify graphs: each width builds once and replays after (LUCE_VERIFY_GRAPH_LEGACY=1 rebuilds every
+    // call). The logits/token identity with plain decode above covers both paths' bits.
+    uint64_t verify_builds = 0, verify_replays = 0;
+    for (const auto & ws : cache.verify_workspace) { verify_builds += ws.builds; verify_replays += ws.replays; }
+    const char * legacy = std::getenv("LUCE_VERIFY_GRAPH_LEGACY");
+    const bool retained = !(legacy && std::strcmp(legacy, "1") == 0);
+    if (ok && steps > 1 && retained && verify_replays == 0) {
+        std::fprintf(stderr, "[smoke] mtp: verify graphs never replayed (builds=%llu)\n", (unsigned long long) verify_builds);
+        ok = false;
+    }
+    std::printf("[smoke] mtp verify graphs builds=%llu replays=%llu retained=%d\n",
+                (unsigned long long) verify_builds, (unsigned long long) verify_replays, (int) retained);
     if (ok && configured_k == QWEN4EXP_MTP_MAX_DRAFT) ok = prefill(true); // reset/reuse must discard the preceding prompt's carried row
     std::printf("[smoke] mtp prefill S=%d chunk=%d kv_identical=%d\n", S, chunk, (int) (ok && prefill_kv_identical));
     free_qwen4exp_cache(cache);

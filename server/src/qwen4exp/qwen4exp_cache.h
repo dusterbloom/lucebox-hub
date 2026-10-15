@@ -52,9 +52,13 @@ struct Qwen4ExpDecodeWorkspace {
     ggml_tensor * hidden = nullptr;   // final HC residual, set when an MTP sidecar is loaded
     int64_t kv_bucket = 0;
     int64_t qsa_blocks = -1;  // -1 for dense; fixed score capacity otherwise
-    ggml_tensor * qsa_visibility = nullptr;
-    // I32[10]: valid count, four raw rows, destination row, four M-RoPE positions.
+    ggml_tensor * qsa_visibility = nullptr;   // F32[qsa_blocks] per row
+    // I32[10] per row: valid count, four raw rows, destination row, four M-RoPE positions.
     ggml_tensor * qsa_params = nullptr;
+    // Verify (a retained graph of T rows): each row's dense K/V span (0 for a QSA row) keys the graph; its
+    // input is that row's dense mask or M-RoPE positions.
+    std::vector<int64_t> row_spans;
+    std::vector<ggml_tensor *> row_inputs;
     ggml_tensor * argmax = nullptr;   // optional greedy decode result; logits remains an output for snapshots
     // Pipelined greedy session graph (qwen4exp_pipeline.h): inp_emb is get_rows(tok_in), nodes [0, split) are
     // the embedding and the layers before the first PLE layer, argmax is copied into tok_in at the end.
@@ -151,8 +155,10 @@ struct Qwen4ExpCache {
     // Pinned graph-input ring (see Qwen4ExpInputRing).
     Qwen4ExpInputRing input_ring;
 
-    // T=1 decode workspace reuse (excluded in reference tests); the verify and MTP draft graphs keep their own.
-    Qwen4ExpDecodeWorkspace decode_workspace, verify_workspace, mtp_workspace;
+    // T=1 decode workspace reuse (excluded in reference tests); the MTP draft graph keeps its own. One retained
+    // verify graph per width (indexed by n_tokens); LUCE_VERIFY_GRAPH_LEGACY=1 rebuilds verify every call.
+    Qwen4ExpDecodeWorkspace decode_workspace, mtp_workspace;
+    std::array<Qwen4ExpDecodeWorkspace, QWEN4EXP_MTP_MAX_VERIFY + 1> verify_workspace;
 };
 
 // `mtp` adds the MTP draft layer's K/V and the verify rollback state (needs a loaded sidecar).

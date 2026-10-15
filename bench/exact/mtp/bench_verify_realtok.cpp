@@ -98,7 +98,11 @@ int main(int argc, char ** argv) {
         }
         std::sort(ms_reps.begin(), ms_reps.end());
         const char * tag = verify ? "verify" : "decode";
-        std::printf("[%s] k=%d median_ms=%.4f n=%zu pos=%d\n", tag, k, ms_reps[ms_reps.size() / 2], ms_reps.size(), pos);
+        // Retained-graph evidence: builds / replays of this width's workspace (verify_workspace is indexed by width).
+        const Qwen4ExpDecodeWorkspace & ws = verify ? cache.verify_workspace[(size_t) k] : cache.decode_workspace;
+        std::printf("[%s] k=%d median_ms=%.4f n=%zu pos=%d builds=%llu replays=%llu\n", tag, k,
+                    ms_reps[ms_reps.size() / 2], ms_reps.size(), pos,
+                    (unsigned long long) ws.builds, (unsigned long long) ws.replays);
         std::fflush(stdout);
     }
     free_qwen4exp_cache(cache);
