@@ -1,0 +1,9 @@
+Running 1031 test cases...
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24575 MiB):
+  Device 0: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24575 MiB
+[q_blk] layer 0 worst max|dq|/max|q| vs scalar reference: 4.95e-04
+[q_blk] layer 1 worst max|dq|/max|q| vs scalar reference: 1.23e-03
+Complete.
+    Passed:  8
+    Failed:  0
+    Skipped: 1023

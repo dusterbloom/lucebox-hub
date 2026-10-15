@@ -1,0 +1,34 @@
+answers byte-identical across the 10 m2+m3 runs: True (turns: 10)
+answers of m3cap runs identical to m2: True (chunk cuts differ under capture, so this may legitimately be False)
+prefix_len identical turn for turn: True [0, 11600, 11952, 12398, 12607, 12892, 13259, 13705, 13915, 14199]
+disk_hit=false everywhere: True (150 lines)
+turns per run: {'m2_1': 10, 'm2_2': 10, 'm2_3': 10, 'm2_4': 10, 'm2_5': 10, 'm3_1': 10, 'm3_2': 10, 'm3_3': 10, 'm3_4': 10, 'm3_5': 10, 'm3cap_1': 10, 'm3cap_2': 10, 'm3cap_3': 10, 'm3cap_4': 10, 'm3cap_5': 10}
+
+metric (per-run value pooled by arm)    median      mean       min       max
+m2
+  turn-1 prefill tok/s (5 runs)      1381.67   1375.92   1318.86   1415.37
+  turns 2-10 prefill tok/s (pooled)    716.00    664.94    537.50    796.00
+  turns 2-10 prefill, per-run medians    725.00    698.03    596.67    727.50
+  decode tok/s (all turns pooled)      45.60     45.34     41.60     47.60
+  wall s (all turns pooled)             1.20      1.99      1.10      9.20
+  turn-1 prefill in run order: ['1382', '1319', '1365', '1398', '1415']
+  turn-1 prefill seconds: ['8.40', '8.80', '8.50', '8.30', '8.20']
+  turn-1 wall s: ['8.80', '9.20', '8.80', '8.60', '8.50']
+m3
+  turn-1 prefill tok/s (5 runs)      1381.67   1372.88   1304.04   1415.37
+  turns 2-10 prefill tok/s (pooled)    663.33    661.89    537.50    796.00
+  turns 2-10 prefill, per-run medians    663.33    675.17    596.67    727.50
+  decode tok/s (all turns pooled)      45.45     45.37     43.00     47.80
+  wall s (all turns pooled)             1.30      2.01      1.10      9.30
+  turn-1 prefill in run order: ['1382', '1415', '1304', '1382', '1382']
+  turn-1 prefill seconds: ['8.40', '8.20', '8.90', '8.40', '8.40']
+  turn-1 wall s: ['8.80', '8.60', '9.30', '8.70', '8.70']
+m3cap
+  turn-1 prefill tok/s (5 runs)      1398.31   1365.07   1247.96   1415.37
+  turns 2-10 prefill tok/s (pooled)    663.33    650.39    537.50    753.33
+  turns 2-10 prefill, per-run medians    645.71    650.48    596.67    725.00
+  decode tok/s (all turns pooled)      45.40     45.13     41.50     47.60
+  wall s (all turns pooled)             1.30      2.01      1.10      9.70
+  turn-1 prefill in run order: ['1398', '1248', '1415', '1398', '1365']
+  turn-1 prefill seconds: ['8.30', '9.30', '8.20', '8.30', '8.50']
+  turn-1 wall s: ['8.60', '9.70', '8.60', '8.70', '8.80']

@@ -1,0 +1,45 @@
+flock command: flock /mnt/kimi-k3/build/3090.lock /mnt/kimi-k3/build/m3-ab/ab_all.sh
+start: 2026-10-15T17:41:27+02:00
+workload: gate4_live.py A (turn 1 ~11.6K tokens cold prefill), Qwen3.8-27B-UD-Q4_K_M, --max-ctx 131072, --no-kv-cache, no --kvflash, default KV type, temp default of the chat client (greedy, answers compared byte for byte)
+arms: m2 = M2 tip fd1a7b96, m3 = M3 capture off (default), m3cap = M3 with LUCE_KVFLASH_AM_CAPTURE=1
+m2 binary: /mnt/kimi-k3/build/m2-fd1a7b96-ab/luce_server md5 7690af4619341f6571531d2920926a62 runpath ggml dir /mnt/kimi-k3/build/m2-cuda/deps/llama.cpp/ggml/src
+40f4e050c763851987d3de28044643cd  /mnt/kimi-k3/build/m2-cuda/deps/llama.cpp/ggml/src/libggml-base.so.0.9.11
+71647ba71595c5bafaffbfbdbda458cb  /mnt/kimi-k3/build/m2-cuda/deps/llama.cpp/ggml/src/libggml-cpu.so.0.9.11
+78ecf2898f47319df4b19d83121565ca  /mnt/kimi-k3/build/m2-cuda/deps/llama.cpp/ggml/src/libggml.so.0.9.11
+a956d65370b10167663ece59307adc81  /mnt/kimi-k3/build/m2-cuda/deps/llama.cpp/ggml/src/ggml-cuda/libggml-cuda.so.0.9.11
+m3 binary: /mnt/kimi-k3/build/m3-cuda/luce_server md5 c5cd15cbfcdd1731f8388b564a4aae78 runpath ggml dir /mnt/kimi-k3/build/m3-cuda/deps/llama.cpp/ggml/src
+7a6a683b45db6751291b8ad88d1176bd  /mnt/kimi-k3/build/m3-cuda/deps/llama.cpp/ggml/src/libggml-base.so.0.9.11
+86678a23e684d77a2eaf99df5be69fa9  /mnt/kimi-k3/build/m3-cuda/deps/llama.cpp/ggml/src/libggml-cpu.so.0.9.11
+135c796c50fc7f435ad03ca2956329ea  /mnt/kimi-k3/build/m3-cuda/deps/llama.cpp/ggml/src/libggml.so.0.9.11
+17043d5adbf6f570649d2e3f0f94eb80  /mnt/kimi-k3/build/m3-cuda/deps/llama.cpp/ggml/src/ggml-cuda/libggml-cuda.so.0.9.11
+run m2_1: bin /mnt/kimi-k3/build/m2-fd1a7b96-ab/luce_server AM_CAP=0 | 2026-10-15T17:41:28+02:00 | compute apps before start: []
+exit=0
+run m3_1: bin /mnt/kimi-k3/build/m3-cuda/luce_server AM_CAP=0 | 2026-10-15T17:42:04+02:00 | compute apps before start: []
+exit=0
+run m3cap_1: bin /mnt/kimi-k3/build/m3-cuda/luce_server AM_CAP=1 | 2026-10-15T17:42:41+02:00 | compute apps before start: []
+exit=0
+run m2_2: bin /mnt/kimi-k3/build/m2-fd1a7b96-ab/luce_server AM_CAP=0 | 2026-10-15T17:43:16+02:00 | compute apps before start: []
+exit=0
+run m3_2: bin /mnt/kimi-k3/build/m3-cuda/luce_server AM_CAP=0 | 2026-10-15T17:43:53+02:00 | compute apps before start: []
+exit=0
+run m3cap_2: bin /mnt/kimi-k3/build/m3-cuda/luce_server AM_CAP=1 | 2026-10-15T17:44:28+02:00 | compute apps before start: []
+exit=0
+run m2_3: bin /mnt/kimi-k3/build/m2-fd1a7b96-ab/luce_server AM_CAP=0 | 2026-10-15T17:45:05+02:00 | compute apps before start: []
+exit=0
+run m3_3: bin /mnt/kimi-k3/build/m3-cuda/luce_server AM_CAP=0 | 2026-10-15T17:45:40+02:00 | compute apps before start: []
+exit=0
+run m3cap_3: bin /mnt/kimi-k3/build/m3-cuda/luce_server AM_CAP=1 | 2026-10-15T17:46:17+02:00 | compute apps before start: []
+exit=0
+run m2_4: bin /mnt/kimi-k3/build/m2-fd1a7b96-ab/luce_server AM_CAP=0 | 2026-10-15T17:46:52+02:00 | compute apps before start: []
+exit=0
+run m3_4: bin /mnt/kimi-k3/build/m3-cuda/luce_server AM_CAP=0 | 2026-10-15T17:47:29+02:00 | compute apps before start: []
+exit=0
+run m3cap_4: bin /mnt/kimi-k3/build/m3-cuda/luce_server AM_CAP=1 | 2026-10-15T17:48:07+02:00 | compute apps before start: []
+exit=0
+run m2_5: bin /mnt/kimi-k3/build/m2-fd1a7b96-ab/luce_server AM_CAP=0 | 2026-10-15T17:48:44+02:00 | compute apps before start: []
+exit=0
+run m3_5: bin /mnt/kimi-k3/build/m3-cuda/luce_server AM_CAP=0 | 2026-10-15T17:49:20+02:00 | compute apps before start: []
+exit=0
+run m3cap_5: bin /mnt/kimi-k3/build/m3-cuda/luce_server AM_CAP=1 | 2026-10-15T17:49:55+02:00 | compute apps before start: []
+exit=0
+end: 2026-10-15T17:50:31+02:00

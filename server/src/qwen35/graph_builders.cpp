@@ -383,7 +383,8 @@ bool build_target_step(
     const QwenPrefillSegment * prefill_segments,
     int n_prefill_segments,
     int n_logits_rows,
-    bool compact_slots) {
+    bool compact_slots,
+    std::vector<QBlockWindow> q_blk_windows) {
     step_graph_free(sg);
 
     // Compact n_seqs is a decode graph bucket width, not the physical
@@ -657,6 +658,7 @@ bool build_target_step(
     gi.active_slot_ids            = sg.active_slot_ids;
     gi.state_slot_ids             = sg.state_slot_ids;
     gi.q_capture                  = capture_qk;
+    gi.q_blk_windows              = std::move(q_blk_windows);
     gi.n_seqs                     = n_seqs;
     gi.seq_slot                   = seq_slot;
     gi.paged_max_kv_len           = paged_max_kv_len;

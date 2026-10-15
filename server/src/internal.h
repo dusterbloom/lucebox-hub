@@ -579,6 +579,21 @@ struct TargetCache {
     // when QwenGraphInputs::q_capture is set. F32 [head_dim, n_head, n_fa].
     ggml_tensor * q_cap = nullptr;
 
+    // KVFlash AM query-block capture (M3). The post-RoPE queries of the block
+    // being sealed, one plane per full-attention layer: F16
+    // [head_dim, block_tokens, n_head, n_fa]. Unlike q_cap it is NOT part of
+    // base_buf: it exists only between alloc_q_block_capture() and
+    // free_q_block_capture(), so a cache with capture off holds no extra
+    // device memory. Row r of a plane is block token r; the layout is the
+    // Q operand of ggml_mul_mat(K[d, n, h_kv], Q[d, T, h]) so the scoring
+    // pass (M4) and the Gram accumulation (M5) read it without a permute.
+    ggml_context *        q_blk_ctx = nullptr;
+    ggml_backend_buffer_t q_blk_buf = nullptr;
+    ggml_tensor *         q_blk     = nullptr;   // == q_blk_ring[0]
+    // Ring of block planes (same shape as q_blk each). A prefill chunk may
+    // straddle block boundaries, so block b is written to ring[b % size].
+    std::vector<ggml_tensor *> q_blk_ring;
+
     // Paged-attention metadata, resident next to the K/V pool (only when the
     // cache was created with paged_attention). Living here instead of as
     // gallocr-managed graph inputs lets decode steps update them append-only
@@ -798,6 +813,18 @@ bool create_target_cache_partial(const TargetWeights & w,
 
 void free_target_cache(TargetCache & c);
 
+// Bytes of the query-block capture buffer for one block (all
+// full-attention layers). Pure: 640 tokens x 24 heads x 256 x 2 B = 7.86 MB
+// per layer, 125.8 MB for the 16 layers of Qwen3.8-27B.
+size_t q_block_capture_bytes(const TargetWeights & w, int block_tokens, int n_slots = 1);
+
+// Allocate / free the query-block capture buffer on c.backend. Alloc is
+// idempotent for the same block_tokens and fails (false) if the cache already
+// holds a buffer of another size. Free is safe when nothing is allocated, and
+// free_target_cache() calls it.
+bool alloc_q_block_capture(TargetCache & c, const TargetWeights & w, int block_tokens, int n_slots = 1);
+void free_q_block_capture(TargetCache & c);
+
 // Zero all state tensors (KV, SSM, conv, target_feat, rollback) in place
 // without freeing/reallocating GPU buffers. Used by daemon mode between
 // requests to avoid the ~5 s overhead of full cache destruction + recreation.
@@ -895,6 +922,16 @@ struct QwenPrefillSegment {
     int seq_slot = 0;
 };
 
+// Which tokens of one ubatch go to the query-block capture ring, and where
+// (see QwenGraphInputs::q_blk_windows): ubatch tokens [first, first + count)
+// go to rows [dst, dst + count) of ring plane `slot`.
+struct QBlockWindow {
+    int first = 0;
+    int count = 0;
+    int dst   = 0;
+    int slot  = 0;
+};
+
 struct QwenGraphInputs {
     ggml_tensor * inp_embed;      // [hidden, n_tokens, 1] f32 — pre-embedded by the caller
     ggml_tensor * positions;      // [4 * n_tokens] i32 (M-RoPE needs 4 per token)
@@ -986,6 +1023,13 @@ struct QwenGraphInputs {
     // layer into cache.q_cap (KVFlash target-QK scorer). Step-invariant:
     // node properties depend only on n_tokens and the layer index.
     bool q_capture = false;
+    // Query-block capture (M3). For each window (needs cache.q_blk_ring), the
+    // ubatch tokens are written (as F16) to the window's ring plane, in every
+    // full-attention layer. These are the tensors flash attention consumes, so
+    // the capture is the attention's own query. A ubatch that straddles a
+    // block boundary carries one window per block. Node properties depend on
+    // the windows, which is fine: the prefill graph is rebuilt per ubatch.
+    std::vector<QBlockWindow> q_blk_windows;
 
     // SpecLA topology masks for the fully factorized compatibility route.
     ggml_tensor * specla_m_strict = nullptr;

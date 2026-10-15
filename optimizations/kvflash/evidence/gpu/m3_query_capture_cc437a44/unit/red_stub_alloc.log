@@ -1,0 +1,14 @@
+Running 1029 test cases...
+Test: QBlockCaptureFixture::bytes_match_the_plan_for_qwen38_27b_dims
+    @/home/peppi/Dev/lucebox-builds/wt-m3/server/test/unit/test_qwen35_q_block_capture.cpp:327 CHECK: IsTrue(q_block_capture_bytes(w, 640) == (size_t)640 * 24 * 256 * 2 * 16)
+    @/home/peppi/Dev/lucebox-builds/wt-m3/server/test/unit/test_qwen35_q_block_capture.cpp:328 CHECK: IsTrue(q_block_capture_bytes(w, 640) / 16 == (size_t)7864320)
+Test: QBlockCaptureFixture::captured_queries_match_the_scalar_reference_across_ubatches
+    @/home/peppi/Dev/lucebox-builds/wt-m3/server/test/unit/test_qwen35_q_block_capture.cpp:340 REQUIRE: IsTrue(alloc_q_block_capture(cache, m.w, kBlock))
+Test: QBlockCaptureFixture::window_inside_a_ubatch_and_bitwise_match_with_q_cap
+    @/home/peppi/Dev/lucebox-builds/wt-m3/server/test/unit/test_qwen35_q_block_capture.cpp:380 REQUIRE: IsTrue(alloc_q_block_capture(cache, m.w, kBlock))
+Test: QBlockCaptureFixture::capture_off_is_a_no_op
+    @/home/peppi/Dev/lucebox-builds/wt-m3/server/test/unit/test_qwen35_q_block_capture.cpp:434 REQUIRE: IsTrue(alloc_q_block_capture(idle, m.w, 16))
+Complete.
+    Passed:  2
+    Failed:  4
+    Skipped: 1023

@@ -43,6 +43,43 @@ inline int qwen35_prefill_chunk_tokens(int kv_pos, int remaining, int ubatch,
     return end - kv_pos;
 }
 
+// KVFlash 2.0b query-block capture. AM compaction fits each sealed block of
+// kKvflashAmBlockTokens tokens from the queries of that block's own prefill.
+// Capture never changes the chunk plan: a chunk that straddles block
+// boundaries writes each block's rows into that block's plane of a ring.
+inline constexpr int kKvflashAmBlockTokens = 640;
+
+// Ring planes needed so that every block a chunk of up to max_chunk tokens
+// touches has its own plane (the block before them is already sealed).
+inline int q_block_slots(int max_chunk, int block_tokens) {
+    return (block_tokens + max_chunk - 2) / block_tokens + 1;
+}
+
+struct QBlockSeg {
+    int  first = 0;        // chunk tokens [first, first + count) belong to `block`
+    int  count = 0;
+    int  dst   = 0;        // row of chunk token `first` inside the block
+    int  slot  = 0;        // ring plane of the block
+    int  block = 0;
+    bool seals = false;    // the chunk contains the block's last token
+};
+
+// Segments of the chunk [kv_pos, kv_pos + n_tokens), one per block it touches.
+// A block that began before this prefill (prefill_start, a restored prefix)
+// is incomplete here and is never captured or sealed.
+inline std::vector<QBlockSeg> plan_q_block_segments(int kv_pos, int n_tokens, int block_tokens,
+                                                    int prefill_start, int n_slots) {
+    std::vector<QBlockSeg> out;
+    for (int b = kv_pos / block_tokens; b <= (kv_pos + n_tokens - 1) / block_tokens; b++) {
+        const int bs = b * block_tokens;
+        if (bs < prefill_start) continue;
+        const int lo = std::max(bs, kv_pos);
+        const int hi = std::min(bs + block_tokens, kv_pos + n_tokens);
+        out.push_back({lo - kv_pos, hi - lo, lo - bs, b % n_slots, b, hi == bs + block_tokens});
+    }
+    return out;
+}
+
 inline int qwen35_prefill_ubatch(int fallback) {
     const char * value = std::getenv("LUCE_PREFILL_UBATCH");
     return value ? std::max(1, std::atoi(value)) : fallback;

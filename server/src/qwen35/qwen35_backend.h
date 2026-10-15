@@ -279,6 +279,10 @@ protected:
     KvFlashQkPool           kvflash_qk_pool_;
     KvFlashTargetQkScorer * kvflash_qk_scorer_ = nullptr;  // owned by kvflash_scorer_
     int                     kvflash_qk_pooled_upto_ = 0;   // chunks pooled so far
+    // KVFlash 2.0b M3: capture the post-RoPE queries of the block being
+    // sealed during prefill (LUCE_KVFLASH_AM_CAPTURE=1, off by default).
+    bool kvflash_am_capture_ = false;
+    virtual void kvflash_am_seal_block(int block, int slot);
     // Pool keys for every chunk sealed before `committed` not pooled yet.
     void kvflash_qk_pool_to(int committed);
     // Rebuild pager mapping after (re)prefill: positions [0, committed)

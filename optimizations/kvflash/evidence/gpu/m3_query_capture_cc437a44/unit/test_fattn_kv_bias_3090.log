@@ -1,0 +1,285 @@
+PASS    lane-kv guard: accessor ok, lane kv kept yes, add_kv_bias(nullptr) on DS4 op aborts
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24575 MiB):
+  Device 0: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24575 MiB
+PASS    zero-bias check modes (bit-exact by default, tolerance under LUCE_FA256_WMMA)
+PASS    qsa ids + kv_bias, 1 queries: gpu supports_op declines
+PASS    qsa ids + kv_bias, 128 queries: gpu supports_op declines
+PASS    cpu   D256 h24/4 kv1024 f16 q1                     nmse 4.87e-06 abs 4.87e-04 | -inf nmse 4.28e-06 abs 2.33e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q1                     nmse 3.08e-14 abs 2.98e-08 | -inf nmse 2.84e-14 abs 1.49e-08 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 f16 q1 sinks               nmse 5.01e-06 abs 4.35e-04 | -inf nmse 4.13e-06 abs 2.32e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q1 sinks               nmse 2.85e-14 abs 2.98e-08 | -inf nmse 2.89e-14 abs 1.68e-08 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 f16 q1 mask                nmse 4.77e-06 abs 3.58e-04 | -inf nmse 4.52e-06 abs 2.48e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q1 mask                nmse 1.35e-07 abs 4.85e-05 | -inf nmse 1.50e-07 abs 3.32e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 f16 q1 mask sinks          nmse 5.03e-06 abs 3.80e-04 | -inf nmse 4.31e-06 abs 2.39e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q1 mask sinks          nmse 1.45e-07 abs 5.42e-05 | -inf nmse 1.45e-07 abs 2.93e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 f16 q16                    nmse 1.98e-05 abs 1.50e-03 | -inf nmse 1.72e-05 abs 8.22e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q16                    nmse 1.70e-07 abs 7.99e-05 | -inf nmse 1.83e-07 abs 4.33e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 f16 q16 sinks              nmse 2.05e-05 abs 1.54e-03 | -inf nmse 1.72e-05 abs 8.90e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q16 sinks              nmse 1.82e-07 abs 8.33e-05 | -inf nmse 1.93e-07 abs 4.20e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 f16 q16 mask               nmse 1.98e-05 abs 1.92e-03 | -inf nmse 1.75e-05 abs 9.66e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q16 mask               nmse 2.28e-07 abs 9.52e-05 | -inf nmse 2.33e-07 abs 4.85e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 f16 q16 mask sinks         nmse 1.94e-05 abs 1.62e-03 | -inf nmse 1.70e-05 abs 9.86e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q16 mask sinks         nmse 2.18e-07 abs 7.59e-05 | -inf nmse 2.30e-07 abs 4.85e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 f16 q512                   nmse 3.38e-13 abs 2.38e-07 | -inf nmse 2.93e-13 abs 1.38e-07 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q512                   nmse 2.22e-06 abs 5.48e-04 | -inf nmse 2.18e-06 abs 4.00e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 f16 q512 sinks             nmse 3.15e-13 abs 2.09e-07 | -inf nmse 2.90e-13 abs 1.23e-07 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q512 sinks             nmse 2.04e-06 abs 6.12e-04 | -inf nmse 2.16e-06 abs 3.56e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 f16 q512 mask              nmse 2.36e-13 abs 2.83e-07 | -inf nmse 2.11e-13 abs 1.49e-07 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q512 mask              nmse 2.09e-06 abs 8.82e-04 | -inf nmse 2.12e-06 abs 6.25e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 f16 q512 mask sinks        nmse 2.35e-13 abs 2.53e-07 | -inf nmse 2.10e-13 abs 1.49e-07 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q512 mask sinks        nmse 2.08e-06 abs 7.16e-04 | -inf nmse 2.11e-06 abs 5.90e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q1                    nmse 1.60e-06 abs 1.75e-04 | -inf nmse 1.55e-06 abs 1.06e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q1                    nmse 1.60e-06 abs 1.75e-04 | -inf nmse 1.55e-06 abs 1.06e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q1 sinks              nmse 1.61e-06 abs 1.82e-04 | -inf nmse 1.57e-06 abs 1.06e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q1 sinks              nmse 1.61e-06 abs 1.81e-04 | -inf nmse 1.57e-06 abs 1.04e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q1 mask               nmse 1.48e-06 abs 1.70e-04 | -inf nmse 1.53e-06 abs 1.06e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q1 mask               nmse 1.47e-06 abs 1.71e-04 | -inf nmse 1.53e-06 abs 1.06e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q1 mask sinks         nmse 1.35e-06 abs 1.57e-04 | -inf nmse 1.44e-06 abs 1.03e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q1 mask sinks         nmse 1.35e-06 abs 1.57e-04 | -inf nmse 1.44e-06 abs 1.04e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q16                   nmse 1.62e-06 abs 1.96e-04 | -inf nmse 1.62e-06 abs 1.27e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q16                   nmse 2.31e-07 abs 7.78e-05 | -inf nmse 2.40e-07 abs 4.71e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q16 sinks             nmse 1.55e-06 abs 2.16e-04 | -inf nmse 1.55e-06 abs 1.27e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q16 sinks             nmse 2.17e-07 abs 8.00e-05 | -inf nmse 2.33e-07 abs 5.14e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q16 mask              nmse 1.53e-06 abs 1.95e-04 | -inf nmse 1.57e-06 abs 1.26e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q16 mask              nmse 2.58e-07 abs 8.21e-05 | -inf nmse 2.61e-07 abs 5.28e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q16 mask sinks        nmse 1.70e-06 abs 2.34e-04 | -inf nmse 1.75e-06 abs 1.14e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q16 mask sinks        nmse 2.68e-07 abs 8.71e-05 | -inf nmse 2.87e-07 abs 4.94e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q512                  nmse 1.50e-06 abs 2.48e-04 | -inf nmse 1.65e-06 abs 1.38e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q512                  nmse 2.06e-06 abs 7.17e-04 | -inf nmse 2.19e-06 abs 5.41e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q512 sinks            nmse 1.55e-06 abs 2.31e-04 | -inf nmse 1.60e-06 abs 1.51e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q512 sinks            nmse 2.13e-06 abs 7.99e-04 | -inf nmse 2.13e-06 abs 3.85e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q512 mask             nmse 1.54e-06 abs 3.04e-04 | -inf nmse 1.52e-06 abs 1.74e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q512 mask             nmse 2.06e-06 abs 7.87e-04 | -inf nmse 2.13e-06 abs 5.03e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q512 mask sinks       nmse 1.71e-06 abs 3.02e-04 | -inf nmse 1.57e-06 abs 1.77e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q512 mask sinks       nmse 2.11e-06 abs 6.94e-04 | -inf nmse 2.13e-06 abs 4.32e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q4_0 q1                    nmse 1.53e-06 abs 1.49e-04 | -inf nmse 1.63e-06 abs 1.00e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q4_0 q1                    nmse 5.42e-06 abs 3.05e-04 | -inf nmse 5.81e-06 abs 2.01e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q4_0 q1 sinks              nmse 1.48e-06 abs 1.71e-04 | -inf nmse 1.48e-06 abs 9.56e-05 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q4_0 q1 sinks              nmse 5.28e-06 abs 3.74e-04 | -inf nmse 5.32e-06 abs 2.02e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q4_0 q1 mask               nmse 1.52e-06 abs 1.78e-04 | -inf nmse 1.53e-06 abs 1.07e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q4_0 q1 mask               nmse 5.85e-06 abs 3.78e-04 | -inf nmse 5.68e-06 abs 2.22e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q4_0 q1 mask sinks         nmse 1.56e-06 abs 1.81e-04 | -inf nmse 1.56e-06 abs 1.21e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q4_0 q1 mask sinks         nmse 5.39e-06 abs 3.70e-04 | -inf nmse 5.83e-06 abs 2.16e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q4_0 q16                   nmse 1.47e-06 abs 2.16e-04 | -inf nmse 1.51e-06 abs 1.35e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q4_0 q16                   nmse 2.04e-07 abs 7.39e-05 | -inf nmse 2.22e-07 abs 4.71e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q4_0 q16 sinks             nmse 1.53e-06 abs 1.93e-04 | -inf nmse 1.54e-06 abs 1.19e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q4_0 q16 sinks             nmse 2.13e-07 abs 7.75e-05 | -inf nmse 2.25e-07 abs 4.56e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q4_0 q16 mask              nmse 1.43e-06 abs 2.33e-04 | -inf nmse 1.40e-06 abs 1.16e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q4_0 q16 mask              nmse 2.34e-07 abs 8.08e-05 | -inf nmse 2.35e-07 abs 5.77e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q4_0 q16 mask sinks        nmse 1.53e-06 abs 1.92e-04 | -inf nmse 1.59e-06 abs 1.14e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q4_0 q16 mask sinks        nmse 2.54e-07 abs 8.63e-05 | -inf nmse 2.67e-07 abs 5.23e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q4_0 q512                  nmse 1.58e-06 abs 2.36e-04 | -inf nmse 1.57e-06 abs 1.34e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q4_0 q512                  nmse 2.10e-06 abs 7.95e-04 | -inf nmse 2.11e-06 abs 3.91e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q4_0 q512 sinks            nmse 1.51e-06 abs 2.48e-04 | -inf nmse 1.49e-06 abs 1.37e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q4_0 q512 sinks            nmse 2.14e-06 abs 7.55e-04 | -inf nmse 2.06e-06 abs 6.19e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q4_0 q512 mask             nmse 1.57e-06 abs 2.90e-04 | -inf nmse 1.50e-06 abs 1.78e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q4_0 q512 mask             nmse 2.14e-06 abs 7.63e-04 | -inf nmse 2.17e-06 abs 4.69e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q4_0 q512 mask sinks       nmse 1.59e-06 abs 2.98e-04 | -inf nmse 1.56e-06 abs 1.81e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q4_0 q512 mask sinks       nmse 2.15e-06 abs 8.87e-04 | -inf nmse 2.13e-06 abs 4.11e-04 | zero-bias bit-identical
+SKIP    cpu   D256 h24/4 kv1024 tq3_0 q1 (no CPU vec_dot)
+PASS    gpu   D256 h24/4 kv1024 tq3_0 q1                   nmse 3.79e-14 abs 2.98e-08 | -inf nmse 3.33e-14 abs 1.86e-08 | zero-bias bit-identical
+SKIP    cpu   D256 h24/4 kv1024 tq3_0 q1 sinks (no CPU vec_dot)
+PASS    gpu   D256 h24/4 kv1024 tq3_0 q1 sinks             nmse 3.76e-14 abs 2.98e-08 | -inf nmse 3.57e-14 abs 1.49e-08 | zero-bias bit-identical
+SKIP    cpu   D256 h24/4 kv1024 tq3_0 q1 mask (no CPU vec_dot)
+PASS    gpu   D256 h24/4 kv1024 tq3_0 q1 mask              nmse 3.51e-14 abs 2.98e-08 | -inf nmse 3.43e-14 abs 1.86e-08 | zero-bias bit-identical
+SKIP    cpu   D256 h24/4 kv1024 tq3_0 q1 mask sinks (no CPU vec_dot)
+PASS    gpu   D256 h24/4 kv1024 tq3_0 q1 mask sinks        nmse 3.86e-14 abs 2.98e-08 | -inf nmse 3.40e-14 abs 1.49e-08 | zero-bias bit-identical
+SKIP    cpu   D256 h24/4 kv1024 tq3_0 q16 (no CPU vec_dot)
+PASS    gpu   D256 h24/4 kv1024 tq3_0 q16                  nmse 2.25e-07 abs 7.80e-05 | -inf nmse 2.29e-07 abs 4.73e-05 | zero-bias bit-identical
+SKIP    cpu   D256 h24/4 kv1024 tq3_0 q16 sinks (no CPU vec_dot)
+PASS    gpu   D256 h24/4 kv1024 tq3_0 q16 sinks            nmse 2.17e-07 abs 7.14e-05 | -inf nmse 2.31e-07 abs 4.85e-05 | zero-bias bit-identical
+SKIP    cpu   D256 h24/4 kv1024 tq3_0 q16 mask (no CPU vec_dot)
+PASS    gpu   D256 h24/4 kv1024 tq3_0 q16 mask             nmse 4.92e-14 abs 4.84e-08 | -inf nmse 3.89e-14 abs 2.98e-08 | zero-bias bit-identical
+SKIP    cpu   D256 h24/4 kv1024 tq3_0 q16 mask sinks (no CPU vec_dot)
+UNSUPP  gpu   D256 h24/4 kv1024 tq3_0 q16 mask sinks
+SKIP    cpu   D256 h24/4 kv1024 tq3_0 q512 (no CPU vec_dot)
+PASS    gpu   D256 h24/4 kv1024 tq3_0 q512                 nmse 2.17e-06 abs 8.08e-04 | -inf nmse 2.08e-06 abs 4.45e-04 | zero-bias bit-identical
+SKIP    cpu   D256 h24/4 kv1024 tq3_0 q512 sinks (no CPU vec_dot)
+PASS    gpu   D256 h24/4 kv1024 tq3_0 q512 sinks           nmse 2.26e-06 abs 6.28e-04 | -inf nmse 2.11e-06 abs 4.37e-04 | zero-bias bit-identical
+SKIP    cpu   D256 h24/4 kv1024 tq3_0 q512 mask (no CPU vec_dot)
+PASS    gpu   D256 h24/4 kv1024 tq3_0 q512 mask            nmse 8.47e-08 abs 7.07e-05 | -inf nmse 8.41e-08 abs 4.36e-05 | zero-bias bit-identical
+SKIP    cpu   D256 h24/4 kv1024 tq3_0 q512 mask sinks (no CPU vec_dot)
+UNSUPP  gpu   D256 h24/4 kv1024 tq3_0 q512 mask sinks
+PASS    cpu   D64 h4/2 kv576 f16 q1                        nmse 3.17e-06 abs 3.42e-04 | -inf nmse 2.14e-06 abs 1.80e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 f16 q1                        nmse 1.47e-07 abs 4.86e-05 | -inf nmse 1.26e-07 abs 3.30e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 f16 q1 sinks                  nmse 3.23e-06 abs 2.50e-04 | -inf nmse 3.13e-06 abs 2.09e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 f16 q1 sinks                  nmse 1.23e-07 abs 4.76e-05 | -inf nmse 1.89e-07 abs 4.12e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 f16 q1 mask                   nmse 3.24e-06 abs 2.79e-04 | -inf nmse 2.68e-06 abs 1.81e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 f16 q1 mask                   nmse 1.60e-07 abs 5.28e-05 | -inf nmse 1.57e-07 abs 3.15e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 f16 q1 mask sinks             nmse 2.72e-06 abs 2.42e-04 | -inf nmse 2.67e-06 abs 1.50e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 f16 q1 mask sinks             nmse 1.48e-07 abs 6.57e-05 | -inf nmse 1.45e-07 abs 3.15e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 f16 q16                       nmse 1.00e-05 abs 1.01e-03 | -inf nmse 1.13e-05 abs 7.66e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 f16 q16                       nmse 9.22e-08 abs 6.36e-05 | -inf nmse 1.15e-07 abs 3.31e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 f16 q16 sinks                 nmse 1.06e-05 abs 8.98e-04 | -inf nmse 1.11e-05 abs 6.09e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 f16 q16 sinks                 nmse 9.63e-08 abs 5.67e-05 | -inf nmse 1.19e-07 abs 3.87e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 f16 q16 mask                  nmse 1.03e-05 abs 1.37e-03 | -inf nmse 9.79e-06 abs 6.97e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 f16 q16 mask                  nmse 9.83e-08 abs 6.92e-05 | -inf nmse 1.09e-07 abs 2.99e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 f16 q16 mask sinks            nmse 1.15e-05 abs 9.05e-04 | -inf nmse 9.37e-06 abs 5.36e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 f16 q16 mask sinks            nmse 9.62e-08 abs 6.29e-05 | -inf nmse 9.16e-08 abs 3.67e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 f16 q512                      nmse 2.10e-13 abs 2.09e-07 | -inf nmse 1.66e-13 abs 1.04e-07 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 f16 q512                      nmse 4.44e-07 abs 1.70e-04 | -inf nmse 4.01e-07 abs 1.10e-04 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 f16 q512 sinks                nmse 1.92e-13 abs 1.94e-07 | -inf nmse 1.58e-13 abs 1.12e-07 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 f16 q512 sinks                nmse 4.18e-07 abs 2.04e-04 | -inf nmse 4.18e-07 abs 1.02e-04 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 f16 q512 mask                 nmse 8.50e-14 abs 1.79e-07 | -inf nmse 7.18e-14 abs 8.94e-08 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 f16 q512 mask                 nmse 3.34e-07 abs 3.86e-04 | -inf nmse 3.15e-07 abs 1.84e-04 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 f16 q512 mask sinks           nmse 8.13e-14 abs 1.79e-07 | -inf nmse 7.21e-14 abs 1.12e-07 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 f16 q512 mask sinks           nmse 2.94e-07 abs 4.30e-04 | -inf nmse 3.08e-07 abs 3.00e-04 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q8_0 q1                       nmse 1.88e-06 abs 1.81e-04 | -inf nmse 1.31e-06 abs 9.33e-05 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q8_0 q1                       nmse 1.69e-07 abs 5.17e-05 | -inf nmse 1.83e-07 abs 2.99e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q8_0 q1 sinks                 nmse 1.24e-06 abs 2.13e-04 | -inf nmse 1.58e-06 abs 1.00e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q8_0 q1 sinks                 nmse 1.57e-07 abs 6.28e-05 | -inf nmse 2.14e-07 abs 3.49e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q8_0 q1 mask                  nmse 1.58e-06 abs 1.73e-04 | -inf nmse 1.67e-06 abs 1.11e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q8_0 q1 mask                  nmse 1.84e-07 abs 5.48e-05 | -inf nmse 1.92e-07 abs 3.55e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q8_0 q1 mask sinks            nmse 1.58e-06 abs 2.11e-04 | -inf nmse 1.95e-06 abs 1.09e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q8_0 q1 mask sinks            nmse 1.47e-07 abs 5.64e-05 | -inf nmse 2.16e-07 abs 4.14e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q8_0 q16                      nmse 1.44e-06 abs 2.39e-04 | -inf nmse 1.56e-06 abs 1.40e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q8_0 q16                      nmse 1.21e-07 abs 6.49e-05 | -inf nmse 1.33e-07 abs 4.08e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q8_0 q16 sinks                nmse 1.38e-06 abs 2.73e-04 | -inf nmse 1.71e-06 abs 1.53e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q8_0 q16 sinks                nmse 1.37e-07 abs 6.18e-05 | -inf nmse 1.43e-07 abs 3.98e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q8_0 q16 mask                 nmse 2.00e-06 abs 2.19e-04 | -inf nmse 1.77e-06 abs 1.35e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q8_0 q16 mask                 nmse 1.72e-07 abs 6.94e-05 | -inf nmse 1.66e-07 abs 4.03e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q8_0 q16 mask sinks           nmse 1.40e-06 abs 2.01e-04 | -inf nmse 1.70e-06 abs 1.30e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q8_0 q16 mask sinks           nmse 1.19e-07 abs 5.68e-05 | -inf nmse 1.40e-07 abs 3.99e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q8_0 q512                     nmse 1.46e-06 abs 2.90e-04 | -inf nmse 1.49e-06 abs 1.71e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q8_0 q512                     nmse 4.08e-07 abs 1.58e-04 | -inf nmse 4.20e-07 abs 1.16e-04 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q8_0 q512 sinks               nmse 1.41e-06 abs 2.82e-04 | -inf nmse 1.33e-06 abs 1.64e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q8_0 q512 sinks               nmse 4.27e-07 abs 1.84e-04 | -inf nmse 3.86e-07 abs 1.24e-04 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q8_0 q512 mask                nmse 1.63e-06 abs 6.99e-04 | -inf nmse 1.61e-06 abs 4.09e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q8_0 q512 mask                nmse 3.76e-07 abs 4.04e-04 | -inf nmse 3.30e-07 abs 2.88e-04 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q8_0 q512 mask sinks          nmse 1.54e-06 abs 7.84e-04 | -inf nmse 1.60e-06 abs 4.06e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q8_0 q512 mask sinks          nmse 3.49e-07 abs 3.77e-04 | -inf nmse 3.30e-07 abs 2.73e-04 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q4_0 q1                       nmse 2.10e-06 abs 2.06e-04 | -inf nmse 1.34e-06 abs 1.11e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q4_0 q1                       nmse 1.97e-07 abs 6.02e-05 | -inf nmse 1.67e-07 abs 3.57e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q4_0 q1 sinks                 nmse 1.99e-06 abs 1.92e-04 | -inf nmse 1.74e-06 abs 9.95e-05 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q4_0 q1 sinks                 nmse 1.58e-07 abs 6.09e-05 | -inf nmse 1.51e-07 abs 3.30e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q4_0 q1 mask                  nmse 1.32e-06 abs 1.59e-04 | -inf nmse 1.36e-06 abs 1.07e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q4_0 q1 mask                  nmse 1.51e-07 abs 5.88e-05 | -inf nmse 1.57e-07 abs 3.28e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q4_0 q1 mask sinks            nmse 1.78e-06 abs 1.75e-04 | -inf nmse 1.80e-06 abs 9.35e-05 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q4_0 q1 mask sinks            nmse 1.94e-07 abs 6.55e-05 | -inf nmse 1.62e-07 abs 3.40e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q4_0 q16                      nmse 1.61e-06 abs 2.39e-04 | -inf nmse 1.74e-06 abs 1.15e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q4_0 q16                      nmse 1.33e-07 abs 6.31e-05 | -inf nmse 1.60e-07 abs 4.39e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q4_0 q16 sinks                nmse 1.52e-06 abs 2.38e-04 | -inf nmse 1.41e-06 abs 1.24e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q4_0 q16 sinks                nmse 1.28e-07 abs 5.76e-05 | -inf nmse 1.32e-07 abs 3.62e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q4_0 q16 mask                 nmse 1.91e-06 abs 2.10e-04 | -inf nmse 1.48e-06 abs 1.29e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q4_0 q16 mask                 nmse 1.64e-07 abs 6.83e-05 | -inf nmse 1.22e-07 abs 4.08e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q4_0 q16 mask sinks           nmse 1.49e-06 abs 2.36e-04 | -inf nmse 1.69e-06 abs 1.40e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q4_0 q16 mask sinks           nmse 1.12e-07 abs 6.41e-05 | -inf nmse 1.40e-07 abs 4.47e-05 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q4_0 q512                     nmse 1.43e-06 abs 2.71e-04 | -inf nmse 1.56e-06 abs 1.66e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q4_0 q512                     nmse 4.27e-07 abs 1.81e-04 | -inf nmse 4.29e-07 abs 1.19e-04 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q4_0 q512 sinks               nmse 1.60e-06 abs 2.66e-04 | -inf nmse 1.73e-06 abs 1.58e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q4_0 q512 sinks               nmse 4.65e-07 abs 1.95e-04 | -inf nmse 4.93e-07 abs 1.35e-04 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q4_0 q512 mask                nmse 1.49e-06 abs 6.57e-04 | -inf nmse 1.38e-06 abs 4.05e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q4_0 q512 mask                nmse 3.56e-07 abs 3.84e-04 | -inf nmse 3.22e-07 abs 2.41e-04 | zero-bias bit-identical
+PASS    cpu   D64 h4/2 kv576 q4_0 q512 mask sinks          nmse 1.49e-06 abs 7.37e-04 | -inf nmse 1.57e-06 abs 4.11e-04 | zero-bias bit-identical
+PASS    gpu   D64 h4/2 kv576 q4_0 q512 mask sinks          nmse 3.33e-07 abs 4.45e-04 | -inf nmse 3.54e-07 abs 2.55e-04 | zero-bias bit-identical
+SKIP    cpu   D64 h4/2 kv576 tq3_0 q1 (no CPU vec_dot)
+PASS    gpu   D64 h4/2 kv576 tq3_0 q1                      nmse 1.61e-07 abs 6.74e-05 | -inf nmse 2.04e-07 abs 4.55e-05 | zero-bias bit-identical
+SKIP    cpu   D64 h4/2 kv576 tq3_0 q1 sinks (no CPU vec_dot)
+PASS    gpu   D64 h4/2 kv576 tq3_0 q1 sinks                nmse 1.96e-07 abs 8.08e-05 | -inf nmse 1.59e-07 abs 3.54e-05 | zero-bias bit-identical
+SKIP    cpu   D64 h4/2 kv576 tq3_0 q1 mask (no CPU vec_dot)
+PASS    gpu   D64 h4/2 kv576 tq3_0 q1 mask                 nmse 2.26e-14 abs 2.24e-08 | -inf nmse 1.96e-14 abs 1.49e-08 | zero-bias bit-identical
+SKIP    cpu   D64 h4/2 kv576 tq3_0 q1 mask sinks (no CPU vec_dot)
+UNSUPP  gpu   D64 h4/2 kv576 tq3_0 q1 mask sinks
+SKIP    cpu   D64 h4/2 kv576 tq3_0 q16 (no CPU vec_dot)
+PASS    gpu   D64 h4/2 kv576 tq3_0 q16                     nmse 1.50e-07 abs 7.62e-05 | -inf nmse 1.59e-07 abs 4.28e-05 | zero-bias bit-identical
+SKIP    cpu   D64 h4/2 kv576 tq3_0 q16 sinks (no CPU vec_dot)
+PASS    gpu   D64 h4/2 kv576 tq3_0 q16 sinks               nmse 1.39e-07 abs 8.31e-05 | -inf nmse 1.38e-07 abs 5.49e-05 | zero-bias bit-identical
+SKIP    cpu   D64 h4/2 kv576 tq3_0 q16 mask (no CPU vec_dot)
+PASS    gpu   D64 h4/2 kv576 tq3_0 q16 mask                nmse 5.62e-14 abs 5.22e-08 | -inf nmse 3.96e-14 abs 2.61e-08 | zero-bias bit-identical
+SKIP    cpu   D64 h4/2 kv576 tq3_0 q16 mask sinks (no CPU vec_dot)
+UNSUPP  gpu   D64 h4/2 kv576 tq3_0 q16 mask sinks
+SKIP    cpu   D64 h4/2 kv576 tq3_0 q512 (no CPU vec_dot)
+PASS    gpu   D64 h4/2 kv576 tq3_0 q512                    nmse 4.84e-07 abs 2.07e-04 | -inf nmse 4.94e-07 abs 1.04e-04 | zero-bias bit-identical
+SKIP    cpu   D64 h4/2 kv576 tq3_0 q512 sinks (no CPU vec_dot)
+PASS    gpu   D64 h4/2 kv576 tq3_0 q512 sinks              nmse 4.31e-07 abs 1.80e-04 | -inf nmse 5.33e-07 abs 1.11e-04 | zero-bias bit-identical
+SKIP    cpu   D64 h4/2 kv576 tq3_0 q512 mask (no CPU vec_dot)
+PASS    gpu   D64 h4/2 kv576 tq3_0 q512 mask               nmse 7.46e-08 abs 1.31e-04 | -inf nmse 9.33e-08 abs 8.32e-05 | zero-bias bit-identical
+SKIP    cpu   D64 h4/2 kv576 tq3_0 q512 mask sinks (no CPU vec_dot)
+UNSUPP  gpu   D64 h4/2 kv576 tq3_0 q512 mask sinks
+PASS    cpu   D72 h4/2 kv576 f16 q1                        nmse 2.42e-06 abs 2.53e-04 | -inf nmse 2.32e-06 abs 1.52e-04 | zero-bias bit-identical
+PASS    gpu   D72 h4/2 kv576 f16 q1                        nmse 1.00e-06 abs 1.78e-04 | -inf nmse 1.18e-06 abs 1.39e-04 | zero-bias bit-identical
+PASS    cpu   D72 h4/2 kv576 f16 q1 sinks                  nmse 2.74e-06 abs 2.07e-04 | -inf nmse 2.62e-06 abs 1.49e-04 | zero-bias bit-identical
+PASS    gpu   D72 h4/2 kv576 f16 q1 sinks                  nmse 1.28e-06 abs 1.89e-04 | -inf nmse 1.38e-06 abs 1.17e-04 | zero-bias bit-identical
+PASS    cpu   D72 h4/2 kv576 f16 q1 mask                   nmse 3.29e-06 abs 3.16e-04 | -inf nmse 2.47e-06 abs 1.24e-04 | zero-bias bit-identical
+PASS    gpu   D72 h4/2 kv576 f16 q1 mask                   nmse 1.62e-06 abs 1.92e-04 | -inf nmse 1.21e-06 abs 1.13e-04 | zero-bias bit-identical
+PASS    cpu   D72 h4/2 kv576 f16 q1 mask sinks             nmse 3.41e-06 abs 4.32e-04 | -inf nmse 2.39e-06 abs 1.18e-04 | zero-bias bit-identical
+PASS    gpu   D72 h4/2 kv576 f16 q1 mask sinks             nmse 1.20e-06 abs 1.91e-04 | -inf nmse 1.46e-06 abs 1.12e-04 | zero-bias bit-identical
+PASS    cpu   D72 h4/2 kv576 f16 q16                       nmse 1.10e-05 abs 7.75e-04 | -inf nmse 9.67e-06 abs 6.06e-04 | zero-bias bit-identical
+PASS    gpu   D72 h4/2 kv576 f16 q16                       nmse 1.42e-06 abs 2.20e-04 | -inf nmse 1.05e-06 abs 1.38e-04 | zero-bias bit-identical
+PASS    cpu   D72 h4/2 kv576 f16 q16 sinks                 nmse 1.20e-05 abs 1.29e-03 | -inf nmse 8.54e-06 abs 5.94e-04 | zero-bias bit-identical
+PASS    gpu   D72 h4/2 kv576 f16 q16 sinks                 nmse 1.22e-06 abs 2.24e-04 | -inf nmse 9.54e-07 abs 1.54e-04 | zero-bias bit-identical
+PASS    cpu   D72 h4/2 kv576 f16 q16 mask                  nmse 1.09e-05 abs 8.31e-04 | -inf nmse 9.52e-06 abs 4.88e-04 | zero-bias bit-identical
+PASS    gpu   D72 h4/2 kv576 f16 q16 mask                  nmse 1.37e-06 abs 2.73e-04 | -inf nmse 1.29e-06 abs 1.41e-04 | zero-bias bit-identical
+PASS    cpu   D72 h4/2 kv576 f16 q16 mask sinks            nmse 1.30e-05 abs 1.69e-03 | -inf nmse 1.05e-05 abs 6.23e-04 | zero-bias bit-identical
+PASS    gpu   D72 h4/2 kv576 f16 q16 mask sinks            nmse 1.54e-06 abs 2.20e-04 | -inf nmse 1.43e-06 abs 1.24e-04 | zero-bias bit-identical
+PASS    cpu   D72 h4/2 kv576 f16 q512                      nmse 1.73e-13 abs 1.64e-07 | -inf nmse 1.62e-13 abs 1.04e-07 | zero-bias bit-identical
+PASS    gpu   D72 h4/2 kv576 f16 q512                      nmse 2.65e-06 abs 4.10e-04 | -inf nmse 2.23e-06 abs 2.46e-04 | zero-bias bit-identical
+PASS    cpu   D72 h4/2 kv576 f16 q512 sinks                nmse 2.01e-13 abs 1.94e-07 | -inf nmse 1.71e-13 abs 1.19e-07 | zero-bias bit-identical
+PASS    gpu   D72 h4/2 kv576 f16 q512 sinks                nmse 3.09e-06 abs 4.17e-04 | -inf nmse 2.72e-06 abs 2.55e-04 | zero-bias bit-identical
+PASS    cpu   D72 h4/2 kv576 f16 q512 mask                 nmse 8.35e-14 abs 1.86e-07 | -inf nmse 7.32e-14 abs 9.69e-08 | zero-bias bit-identical
+PASS    gpu   D72 h4/2 kv576 f16 q512 mask                 nmse 1.20e-06 abs 7.75e-04 | -inf nmse 1.30e-06 abs 5.68e-04 | zero-bias bit-identical
+PASS    cpu   D72 h4/2 kv576 f16 q512 mask sinks           nmse 7.94e-14 abs 1.79e-07 | -inf nmse 7.21e-14 abs 9.69e-08 | zero-bias bit-identical
+PASS    gpu   D72 h4/2 kv576 f16 q512 mask sinks           nmse 1.32e-06 abs 1.00e-03 | -inf nmse 1.24e-06 abs 8.14e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 f16 q1 mask softcap20.0    nmse 5.00e-06 abs 3.43e-04 | -inf nmse 4.54e-06 abs 2.02e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q1 mask softcap20.0    nmse 1.68e-07 abs 5.61e-05 | -inf nmse 1.69e-07 abs 3.24e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 f16 q16 mask softcap20.0   nmse 1.98e-05 abs 1.31e-03 | -inf nmse 1.78e-05 abs 9.17e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q16 mask softcap20.0   nmse 2.44e-07 abs 7.53e-05 | -inf nmse 2.65e-07 abs 7.75e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 f16 q512 mask softcap20.0  nmse 2.45e-13 abs 2.38e-07 | -inf nmse 2.11e-13 abs 1.60e-07 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q512 mask softcap20.0  nmse 2.20e-06 abs 7.01e-04 | -inf nmse 2.13e-06 abs 4.30e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q1 mask softcap20.0   nmse 1.57e-06 abs 1.62e-04 | -inf nmse 1.66e-06 abs 9.77e-05 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q1 mask softcap20.0   nmse 1.57e-06 abs 1.58e-04 | -inf nmse 1.66e-06 abs 9.64e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q16 mask softcap20.0  nmse 1.54e-06 abs 2.05e-04 | -inf nmse 1.65e-06 abs 1.21e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q16 mask softcap20.0  nmse 2.74e-07 abs 9.10e-05 | -inf nmse 2.95e-07 abs 5.43e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q512 mask softcap20.0 nmse 1.53e-06 abs 2.97e-04 | -inf nmse 1.47e-06 abs 1.90e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q512 mask softcap20.0 nmse 2.15e-06 abs 8.20e-04 | -inf nmse 2.15e-06 abs 4.24e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 f16 q1 mask alibi          nmse 4.61e-06 abs 3.96e-04 | -inf nmse 4.46e-06 abs 2.11e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q1 mask alibi          nmse 2.96e-14 abs 2.98e-08 | -inf nmse 3.06e-14 abs 1.54e-08 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 f16 q16 mask alibi         nmse 1.91e-05 abs 1.48e-03 | -inf nmse 1.65e-05 abs 9.12e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q16 mask alibi         nmse 1.75e-07 abs 7.10e-05 | -inf nmse 1.85e-07 abs 4.81e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 f16 q512 mask alibi        nmse 2.27e-13 abs 2.38e-07 | -inf nmse 2.09e-13 abs 1.42e-07 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q512 mask alibi        nmse 1.62e-06 abs 9.03e-04 | -inf nmse 1.68e-06 abs 4.07e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q1 mask alibi         nmse 1.58e-06 abs 1.64e-04 | -inf nmse 1.54e-06 abs 1.11e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q1 mask alibi         nmse 1.58e-06 abs 1.62e-04 | -inf nmse 1.54e-06 abs 1.11e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q16 mask alibi        nmse 1.60e-06 abs 1.95e-04 | -inf nmse 1.60e-06 abs 1.17e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q16 mask alibi        nmse 2.25e-07 abs 7.98e-05 | -inf nmse 2.36e-07 abs 4.96e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv1024 q8_0 q512 mask alibi       nmse 1.59e-06 abs 2.81e-04 | -inf nmse 1.54e-06 abs 1.84e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q512 mask alibi       nmse 1.72e-06 abs 7.12e-04 | -inf nmse 1.74e-06 abs 4.20e-04 | zero-bias bit-identical
+        D256 h24/4 kv1024 f16 q1 mask softcap0.10: bias-before-cap reference differs by nmse 6.35e-01 (tolerance 5e-04)
+PASS    cpu   D256 h24/4 kv1024 f16 q1 mask softcap0.10    nmse 5.22e-06 abs 4.16e-04 | -inf nmse 4.51e-06 abs 2.21e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q1 mask softcap0.10    nmse 1.55e-07 abs 4.96e-05 | -inf nmse 1.33e-07 abs 2.77e-05 | zero-bias bit-identical
+        D256 h24/4 kv1024 f16 q16 mask softcap0.10: bias-before-cap reference differs by nmse 6.58e-01 (tolerance 5e-04)
+PASS    cpu   D256 h24/4 kv1024 f16 q16 mask softcap0.10   nmse 1.96e-05 abs 1.32e-03 | -inf nmse 1.76e-05 abs 7.93e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q16 mask softcap0.10   nmse 2.16e-07 abs 7.60e-05 | -inf nmse 2.02e-07 abs 4.85e-05 | zero-bias bit-identical
+        D256 h24/4 kv1024 f16 q512 mask softcap0.10: bias-before-cap reference differs by nmse 6.62e-01 (tolerance 5e-04)
+PASS    cpu   D256 h24/4 kv1024 f16 q512 mask softcap0.10  nmse 2.17e-13 abs 1.94e-07 | -inf nmse 1.95e-13 abs 1.49e-07 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 f16 q512 mask softcap0.10  nmse 2.03e-06 abs 6.03e-04 | -inf nmse 2.07e-06 abs 4.43e-04 | zero-bias bit-identical
+        D256 h24/4 kv1024 q8_0 q1 mask softcap0.10: bias-before-cap reference differs by nmse 6.73e-01 (tolerance 5e-04)
+PASS    cpu   D256 h24/4 kv1024 q8_0 q1 mask softcap0.10   nmse 2.35e-07 abs 6.12e-05 | -inf nmse 2.60e-07 abs 3.50e-05 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q1 mask softcap0.10   nmse 2.33e-07 abs 6.12e-05 | -inf nmse 2.59e-07 abs 3.60e-05 | zero-bias bit-identical
+        D256 h24/4 kv1024 q8_0 q16 mask softcap0.10: bias-before-cap reference differs by nmse 6.38e-01 (tolerance 5e-04)
+PASS    cpu   D256 h24/4 kv1024 q8_0 q16 mask softcap0.10  nmse 2.33e-07 abs 7.97e-05 | -inf nmse 2.36e-07 abs 4.65e-05 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q16 mask softcap0.10  nmse 2.43e-07 abs 7.31e-05 | -inf nmse 2.21e-07 abs 4.69e-05 | zero-bias bit-identical
+        D256 h24/4 kv1024 q8_0 q512 mask softcap0.10: bias-before-cap reference differs by nmse 6.63e-01 (tolerance 5e-04)
+PASS    cpu   D256 h24/4 kv1024 q8_0 q512 mask softcap0.10 nmse 2.33e-07 abs 1.26e-04 | -inf nmse 2.38e-07 abs 6.93e-05 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv1024 q8_0 q512 mask softcap0.10 nmse 2.10e-06 abs 6.28e-04 | -inf nmse 2.08e-06 abs 5.16e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv4608 f16 q1 mask                nmse 2.17e-05 abs 3.75e-04 | -inf nmse 2.16e-05 abs 2.50e-04 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv4608 f16 q1 mask                nmse 4.12e-07 abs 3.95e-05 | -inf nmse 4.29e-07 abs 2.68e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv4608 f16 q16 mask               nmse 8.14e-05 abs 1.31e-03 | -inf nmse 7.84e-05 abs 1.01e-03 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv4608 f16 q16 mask               nmse 7.00e-07 abs 6.96e-05 | -inf nmse 6.96e-07 abs 4.17e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv4608 f16 q512 mask              nmse 1.28e-12 abs 3.09e-07 | -inf nmse 1.10e-12 abs 1.34e-07 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv4608 f16 q512 mask              nmse 1.17e-05 abs 7.95e-04 | -inf nmse 1.14e-05 abs 3.99e-04 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv4608 q8_0 q1 mask               nmse 1.74e-06 abs 8.02e-05 | -inf nmse 1.63e-06 abs 5.10e-05 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv4608 q8_0 q1 mask               nmse 1.74e-06 abs 8.08e-05 | -inf nmse 1.63e-06 abs 5.09e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv4608 q8_0 q16 mask              nmse 1.60e-06 abs 9.93e-05 | -inf nmse 1.62e-06 abs 6.15e-05 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv4608 q8_0 q16 mask              nmse 7.77e-07 abs 6.19e-05 | -inf nmse 8.05e-07 abs 4.10e-05 | zero-bias bit-identical
+PASS    cpu   D256 h24/4 kv4608 q8_0 q512 mask             nmse 1.56e-06 abs 1.11e-04 | -inf nmse 1.65e-06 abs 6.68e-05 | zero-bias bit-identical
+PASS    gpu   D256 h24/4 kv4608 q8_0 q512 mask             nmse 1.20e-05 abs 7.73e-04 | -inf nmse 1.20e-05 abs 4.68e-04 | zero-bias bit-identical
+SKIP    cpu   D256 h24/4 kv4608 tq3_0 q1 mask (no CPU vec_dot)
+PASS    gpu   D256 h24/4 kv4608 tq3_0 q1 mask              nmse 5.38e-14 abs 1.49e-08 | -inf nmse 4.98e-14 abs 1.12e-08 | zero-bias bit-identical
+SKIP    cpu   D256 h24/4 kv4608 tq3_0 q16 mask (no CPU vec_dot)
+PASS    gpu   D256 h24/4 kv4608 tq3_0 q16 mask             nmse 5.43e-14 abs 2.24e-08 | -inf nmse 4.63e-14 abs 1.12e-08 | zero-bias bit-identical
+SKIP    cpu   D256 h24/4 kv4608 tq3_0 q512 mask (no CPU vec_dot)
+PASS    gpu   D256 h24/4 kv4608 tq3_0 q512 mask            nmse 8.45e-08 abs 2.74e-05 | -inf nmse 9.33e-08 abs 1.55e-05 | zero-bias bit-identical
+
+SUMMARY cpu: pass 108 fail 0 unsupp 0 skip 27, max abs err 1.920e-03, max nmse 8.137e-05
+SUMMARY gpu: pass 130 fail 0 unsupp 5 skip 0, max abs err 1.002e-03, max nmse 1.202e-05

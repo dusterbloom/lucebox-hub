@@ -1,0 +1,25 @@
+[am-gate] identity: manifest model={"_name_or_path":"/home/duster/r1e/models/Qwen3.8-27B","config_json_md5":"0ecc077f5c9eb49889aa0022f4ae9fa7","model_path":"/home/duster/r1e/models/Qwen3.8-27B","revision":null,"weight_files":[["config.json",4312],["generation_config.json",202],["model-00001-of-00018.safetensors",3966730552],["model-00002-of-00018.safetensors",3043080328],["model-00003-of-00018.safetensors",2542796952],["model-00004-of-00018.safetensors",3988973152],["model-00005-of-00018.safetensors",2099339864],["model-00006-of-00018.safetensors",3979553696],["model-00007-of-00018.safetensors
+[am-gate] layer  3  head cos min 0.9957 median 0.9972 mean 0.9973
+[am-gate] layer  7  head cos min 0.9945 median 0.9966 mean 0.9967
+[am-gate] layer 11  head cos min 0.9965 median 0.9980 mean 0.9978
+[am-gate] layer 15  head cos min 0.9957 median 0.9972 mean 0.9970
+[am-gate] layer 19  head cos min 0.9960 median 0.9969 mean 0.9969
+[am-gate] layer 23  head cos min 0.9946 median 0.9966 mean 0.9965
+[am-gate] layer 27  head cos min 0.9942 median 0.9961 mean 0.9961
+[am-gate] layer 31  head cos min 0.9902 median 0.9926 mean 0.9928
+[am-gate] layer 35  head cos min 0.9792 median 0.9819 mean 0.9824
+[am-gate] layer 39  head cos min 0.9570 median 0.9679 mean 0.9688
+[am-gate] layer 43  head cos min 0.9410 median 0.9558 mean 0.9576
+[am-gate] layer 47  head cos min 0.9251 median 0.9413 mean 0.9416
+[am-gate] layer 51  head cos min 0.8882 median 0.9060 mean 0.9088
+[am-gate] layer 55  head cos min 0.8849 median 0.9127 mean 0.9105
+[am-gate] layer 59  head cos min 0.8738 median 0.9090 mean 0.9128
+[am-gate] layer 63  head cos min 0.8880 median 0.9251 mean 0.9249
+[am-gate] per-layer mean cosine: min 0.9088 median 0.9876 mean 0.9674
+[am-gate] per-head  mean cosine: min 0.8738 median 0.9902 mean 0.9674 (384 heads); worst single (head,token) 0.1108
+[am-gate] SUMMARY case=traj1_12k_exactq per-head cos min 0.8738 median 0.9902 p10 0.9085 | norm ratio min 0.9952 median 1.0001 max 1.0065 | worst cos (layer 59, head 1) 0.8738 | worst ratio (layer 51, head 8) 1.0065
+[am-gate] per-head norm ratio eng/ref: min 0.9952 median 1.0001 mean 0.9999
+[am-gate] head violations:
+    @/home/peppi/Dev/lucebox-builds/wt-m3/server/test/unit/test_am_query_cosine_gate.cpp:370 CHECK: IsTrue(violations.empty())
+    Passed:  10
+    Failed:  1
