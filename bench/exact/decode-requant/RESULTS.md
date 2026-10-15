@@ -1,7 +1,7 @@
 # Decode-only requantized copies (lucebox4 gfx1151, 2026-10-15)
 
 Opt-in, lossy, off by default. `LUCE_DECODE_REQ=<type>` (GDN layers; also the attention layers unless
-`LUCE_DECODE_REQ_ATTN=<type|0>` overrides). Commits 77317f11, b3182d8a, 2c2daad2 on qwen4exp-exact-stack.
+`LUCE_DECODE_REQ_ATTN=<type|0>` overrides). Commits 77317f11, b3182d8a, 2c2daad2 and the allocation-order fix below on qwen4exp-exact-stack.
 
 ## What gufo does (GUFO_DECODE_Q5, default on)
 
@@ -85,7 +85,8 @@ text as gufo's do; B vs C and A vs C diverge at char 0 (they always did).
 
 Control `abq8/` (`LUCE_DECODE_REQ=q8_0`: same bytes, same graph, separate buffer; greedy-64 byte-identical on
 both prompts), 2 rounds x 5, binary 43d080d1: decode 28.56 -> 28.02 (-1.9 %), p4096 1414.4 -> 1383.0 (-2.2 %),
-p16384 1431.3 -> 1394.2 (-2.6 %). So ~2 % of every B arm, prefill and decode alike, is the extra allocation
+p16384 1431.3 -> 1394.2 (-2.6 %). (Superseded by the allocation-order section below: it was when the buffer
+was allocated, not that it was.) So ~2 % of every B arm, prefill and decode alike, is the extra allocation
 (every buffer allocated after the weights, copies / KV / compute, lands on worse pages on this uncompacted
 box; the memory note puts uncompacted decode ~5 % slow and we cannot run compact_memory here). Net of that
 control the quant itself is 28.02 -> 30.81 = +10.0 % (3.2 of the 4.2 ms ceiling, 77 %; gufo gets 92 % of its
@@ -108,10 +109,55 @@ tuned for this part is the follow-up if the last ~1 ms matters.
 RAM: +1.79 GiB device memory for the chosen arm (loader line `decode copies (gdn q5_K, attn q6_K): 156
 tensors, 1.79 GiB`); VmRSS 1.25 -> 1.33-1.36 GB (host staging freed after upload).
 
+## The control-arm cost: allocation order, not footprint (fixed)
+
+The ~2 % the Q8_0 control paid above was blamed on "every buffer allocated after the weights lands on worse
+pages". Three one-binary 2x5 runs (`ab2.sh`, arms alternating across restarts, warm-up dropped, prefix_len=0 on
+every arm, greedy-64 byte-identical on every arm) pin it down. Decode is the only axis with signal: its round
+spread is 0.01-0.27 %, prefill's is 0.9-3.5 % on this box, so every prefill delta below is inside its own noise.
+
+1. Not the prefill chunk. The chunk auto-sizer (`qwen4exp_select_chunk`) reads the free GTT (96 GiB
+   `amdgpu.gttsize` cap, weights 76.2 GiB) and the copies drop it 20.2 -> 17.3 GB, so the control got chunk
+   13056 against 15616 for exact. `chunk/` (binary 43d080d1): exact `--chunk 13056` is 28.55 vs 28.59 tok/s
+   (-0.13 %), p4096 -1.3 %, p16384 +0.5 %; the control with `--chunk 15616` is still 28.03 (-1.95 %), same as
+   the control at 13056 (28.03). Chunk is not it.
+2. Not GTT page quality as such. `pages/pagebw.hip` (hipMalloc 76 GiB, mmap-read the three shards through the
+   page cache, then allocate 2.65 + 1 + 2 GiB) reads every late buffer at 241-244 GB/s streaming and 224-226 GB/s
+   with an mmvq-like one-warp-per-2720-byte-row kernel, same as the early buffer and as the weights, on a
+   fresh box and on a fragmented one (order-10 free blocks 5176 -> 0, GPUReclaim pool 62 GB -> 0).
+3. Not the footprint. `place/` (binary 82cecfbb, the loader with two experiment knobs since removed): a 2.65 GiB
+   device buffer allocated after the upload and never read (`PAD`) decodes at 28.60 vs 28.58 (+0.07 %).
+4. It is when the copy buffer is allocated. The old loader allocated it after the 76 GiB of shards had streamed
+   through the page cache; moving the allocation to right after the weight buffer (before any shard is mapped)
+   makes the same-bytes control cost nothing: `Q8` 28.59 vs 28.58 (+0.03 %), and inside the weight buffer
+   (`Q8I`, one contiguous allocation) 28.65 (+0.22 %). Old placement, three runs: 28.02 / 28.03 / 28.03 vs
+   28.56 / 28.59 / 28.59 exact (-1.9 / -1.95 / -1.95 %). The micro-probe cannot reproduce the late-buffer penalty,
+   so the hardware mechanism (page order / GPU TLB fragments is the candidate; `/sys/kernel/debug/dri` is root-
+   only here) stays unproven; the effect itself is reproduced five times with the server.
+
+Fix (`qwen4exp_loader.cpp`): the decode-copy tensors are selected and their buffer allocated right after the
+weight buffer, before the shard mmaps; the requant + upload stays where it was (after the trunk upload, host
+threads). The exact path is untouched (no env: no ctx, no buffer, same code order), greedy-64 byte-identical.
+Separate buffer kept (the contiguous variant was no better and needs offset bookkeeping).
+
+After the fix, `fix/` (binary 938bea37, 2x5, same session):
+
+| arm | p4096 tok/s | p16384 tok/s | decode tok/s | ms/token | vs exact |
+|---|---|---|---|---|---|
+| exact | 1382.6 (rounds 1354.4 / 1402.2, spread 3.5 %) | 1388.9 (3.3 %) | 28.58 (0.08 %) | 34.99 | - |
+| q8_0 control | 1405.0 (3.0 %) | 1425.9 (0.6 %) | 28.62 (0.19 %) | 34.94 | +1.6 / +2.7 / **+0.14 %** |
+| q5_k:q6_k | 1344.8 (2.0 %) | 1429.8 (0.9 %) | 31.57 (0.23 %) | 31.68 | -2.7 / +3.0 / **+10.44 %** |
+
+Before (old placement, `abq8/` and `ab/`): control -2.2 / -2.6 / -1.9 %; q5_k:q6_k -3.2 / -1.1 / +8.0 % (30.81
+tok/s, 32.46 ms). The quant arm now shows its full +10.4 % (3.31 of the 4.20 ms ceiling, 79 %; gufo's Q5_1
+realises 92 % of 3.80 ms) and its prefill deltas sit inside the 2-3.5 % round spread of the exact arm
+(p16384 +3.0 % is noise: the exact arm's round 1 was the slow one, 1361.8 vs 1408.0).
+
 ## Recommendation
 
 Keep it opt-in (lossy; the user decides). If enabled, `LUCE_DECODE_REQ=q5_k LUCE_DECODE_REQ_ATTN=q6_k`:
-+8.0 % decode measured (+10 % net of the allocation penalty), KL 0.0100 / top-1 98.25 % / NLL 0.2808 vs
-0.2765 exact, strictly better quality and more bytes saved than gufo's Q5_1. `LUCE_DECODE_REQ=q5_k` alone is the
-speed point (+9.2 %, NLL 0.2911). The ~2 % allocation penalty on prefill is the one real cost; allocating the
-copies after the KV / compute buffers (or a compacted box) is the thing to try before making anything default.
++10.4 % decode measured after the allocation-order fix (31.57 tok/s, 31.68 ms vs 34.99), KL 0.0100 / top-1
+98.25 % / NLL 0.2808 vs 0.2765 exact, strictly better quality and more bytes saved than gufo's Q5_1, prefill
+inside the day's spread. `LUCE_DECODE_REQ=q5_k` alone is the speed point (NLL 0.2911). The remaining cost is
+1.79 GiB of device memory, which also lowers the auto prefill chunk on a GTT-capped box (15616 -> 13824 here,
+measured as no cost).
