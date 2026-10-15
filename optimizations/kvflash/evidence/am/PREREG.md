@@ -752,3 +752,10 @@ No threshold applies and neither result changes the A1 or A2 rule. If E6 recover
 ### Code checks before any row (CPU, build host)
 
 Stub tests (`lucebox/a1/test_a1_e67.py`): the clone does not mutate the generator's cache or state (the stub scribbles on its input in the repeat pass and the final state still equals the shipping arm's); the repeated tokens are teacher-forced from position (block end) onward; the fit receives the captured repeat queries and not the context ones; E7 keeps exactly the leading blocks exact and compacts the others; zero exact blocks equals the shipping state. Real-model tests (`modal/am_qwen35/tests/test_a1.py`, run on lucebox6 before the launch): E6 differs from the shipping arm in the fitted tensors; E7 with a zero-length prefix equals the shipping arm and a two-block prefix holds the FULL-CHK rows.
+
+### E1 deviations (2026-10-15, written after the run; no PREREG-time rule is changed, only what the data forced)
+
+- **Base commit.** The branch is based on 0697848b, not 09bde623: the B0 binary (md5 13c65b5c...) was built from this worktree's `server/` at 0697848b, and 09bde623 is a different lineage.
+- **Hit rule.** `src_tok` in the tasks is the start of the assistant call that produced the tool message, not the fact. The primary hit uses the fact's own token span (the answer located in the tool message). The rule as written is reported as `lit`, and the whole source message as `msg`.
+- **Variant (b).** Feasible only with a new capture (`q_cap_all`). It folds the per-token queries of every prefill batch ending within the last 512 prompt tokens, because the final batch of a probe holds only the tokens after the last assistant header.
+- **Replay.** Probes only, so the request history differs from B0's; answers match B0's POOL16K on 783 of 951 probes (old facts 12 and 12 recalled, within 16K 688 and 707). Details in `evidence/agentic/E1_router_recall/README.md`.

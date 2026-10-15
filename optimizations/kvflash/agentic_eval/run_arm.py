@@ -6,6 +6,10 @@ Arms (identical GGUF, KV type default, temp 0, seed 1, --max-ctx, chat template;
   FULLB   : identical to FULL (nondeterminism / prefix-cache-order control)
   POOL8K  : --kvflash 8192  + KVFLASH_STATE_LADDER=1 KVFLASH_LIVE_RESTORE=1
   POOL16K : --kvflash 16384 + KVFLASH_STATE_LADDER=1 KVFLASH_LIVE_RESTORE=1
+  QK16KND : POOL16K flags + LUCE_KVFLASH_POLICY=qk, no dump (parity control for QK16K)
+  QK16K   : POOL16K flags + LUCE_KVFLASH_POLICY=qk + KVFLASH_QK_DUMP=$E1_DUMP_DIR (E1 router-recall diagnostic;
+            binary from $E1_BIN; run with --probes-only)
+--probes-only: with --retained, run the retained probes only (no decision requests).
 Probe tasks: if --retained is given, only probes whose id is listed run (the list is decided on FULL alone).
 Resumable: results append to <out_dir>/<arm>.jsonl, finished ids are skipped."""
 import hashlib
@@ -20,13 +24,13 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import convert  # noqa: E402
 
-BIN = "/mnt/kimi-k3/build/kvflash-am-cuda/luce_server"
+BIN = os.environ.get("E1_BIN", "/mnt/kimi-k3/build/kvflash-am-cuda/luce_server")
 MODEL = "/mnt/kimi-k3/home-models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf"
 MAX_CTX = 52224
 PORT = 18290
 URL = f"http://127.0.0.1:{PORT}"
 TMPDIR = "/mnt/kimi-k3/build/tmp"
-ARMS = {"FULL": None, "FULLB": None, "POOL8K": 8192, "POOL16K": 16384}
+ARMS = {"FULL": None, "FULLB": None, "POOL8K": 8192, "POOL16K": 16384, "QK16K": 16384, "QK16KND": 16384}
 PROBE_MAX_TOKENS, DECISION_MAX_TOKENS = 64, 256
 PC_MIB = 12288  # host prefix-cache budget, same on every arm
 PC_SLOTS = int(os.environ.get("AE_PC_SLOTS", "4"))  # few slots: keeps the shared probe prefix from being LRU-evicted by one-shot probe leaves
@@ -61,6 +65,10 @@ def start_server(arm, log_path):
     if ARMS[arm]:
         env.update({"KVFLASH_STATE_LADDER": "1", "KVFLASH_LIVE_RESTORE": "1"})
         args += ["--kvflash", str(ARMS[arm])]
+    if arm in ("QK16K", "QK16KND"):
+        env["LUCE_KVFLASH_POLICY"] = "qk"
+    if arm == "QK16K":
+        env["KVFLASH_QK_DUMP"] = os.environ["E1_DUMP_DIR"]
     f = open(log_path, "a")
     f.write("### start %s %s\n" % (arm, " ".join(args)))
     f.flush()
@@ -133,7 +141,8 @@ def main():
     tasks = [json.loads(l) for l in open(tasks_p)]
     tasks = [t for t in tasks if t["traj"] in trajs]
     if retained is not None:
-        tasks = [t for t in tasks if t["kind"] == "decision" or t["id"] in retained]
+        probes_only = "--probes-only" in sys.argv
+        tasks = [t for t in tasks if (t["kind"] == "decision" and not probes_only) or t["id"] in retained]
     res_p = os.path.join(out_dir, arm + ".jsonl")
     done = set()
     if os.path.exists(res_p):

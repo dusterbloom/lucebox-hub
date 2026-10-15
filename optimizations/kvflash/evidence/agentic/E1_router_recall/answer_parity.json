@@ -1,0 +1,23 @@
+{
+ "older_than_16K": {
+  "n": 207,
+  "E1_correct": 12,
+  "B0_POOL16K_correct": 12,
+  "same_text": 95,
+  "both_correct": 11
+ },
+ "within_16K": {
+  "n": 744,
+  "E1_correct": 688,
+  "B0_POOL16K_correct": 707,
+  "same_text": 688,
+  "both_correct": 678
+ },
+ "all": {
+  "n": 951,
+  "E1_correct": 700,
+  "B0_POOL16K_correct": 719,
+  "same_text": 783,
+  "both_correct": 689
+ }
+}
