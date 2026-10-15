@@ -32,6 +32,7 @@
 #include "kvflash_pager.h"         // bounded KV residency pool
 #include "kvflash_scorer.h"        // chunk-relevance policy interface
 #include "kvflash_qk.h"            // target-QK scorer (pooled keys + query)
+#include "kvflash_qk_dump.h"       // KVFLASH_QK_DUMP diagnostic
 
 #include "ggml.h"
 #include "ggml-backend.h"
@@ -276,6 +277,15 @@ protected:
     int                     kvflash_qk_pooled_upto_ = 0;   // chunks pooled so far
     // Pool keys for every chunk sealed before `committed` not pooled yet.
     void kvflash_qk_pool_to(int committed);
+    // KVFLASH_QK_DUMP (diagnostic, opt-in): score every sealed chunk against
+    // the final prefill batch's queries and append one JSON line.
+    bool                    kvflash_qk_dump_ = false;
+    uint64_t                kvflash_qk_dump_seq_ = 0;
+    std::vector<float>      kvflash_qk_dump_max_;   // running per-chunk max over folded queries
+    int                     kvflash_qk_dump_nq_ = 0;
+    void kvflash_qk_dump_fold(int committed, int batch_tokens);
+    void kvflash_qk_dump_prefill(const std::vector<int32_t> & tokens, int kv_offset,
+                                 int committed, const std::vector<int32_t> * full_prompt);
     // Rebuild pager mapping after (re)prefill: positions [0, committed)
     // occupy pool slots identity-mapped (prefill is contiguous).
     // `full_prompt` (optional) supplies the real ids of the restored prefix

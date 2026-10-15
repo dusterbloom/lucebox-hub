@@ -208,7 +208,8 @@ static int64_t concurrent_fixed_cache_bytes(
         (int64_t)sizeof(uint16_t);
     const int64_t q_capture =
         (int64_t)w.n_embd_head_k * w.n_head * n_full_attn *
-        (int64_t)sizeof(float);
+        (int64_t)sizeof(float) *
+        (luce::common::kvflash_qk_dump_dir().empty() ? 1 : 1 + luce::common::kQkDumpQueryTokens);
     const int64_t paged_metadata =
         ((int64_t)paged_block_count(max_ctx) * n_slots + n_slots) *
         (int64_t)sizeof(int32_t);
@@ -424,6 +425,7 @@ bool Qwen35Backend::init() {
     // model (Spark's pattern). LRU is the fallback when nothing is found
     // (or the explicit choice via --kvflash-policy lru).
     kvflash_qk_policy_ = kvflash_policy_is_qk();
+    kvflash_qk_dump_ = kvflash_qk_policy_ && !luce::common::kvflash_qk_dump_dir().empty();
     if (std::getenv("LUCE_KVFLASH") && !kvflash_qk_policy_) {
         kvflash_drafter_path_ = kvflash_find_drafter(
             cfg_.target_path.c_str());
@@ -2317,6 +2319,8 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     // Chunked prefill
     std::vector<float> embed_buf((size_t)hidden * prefill_ubatch);
     int committed = kv_offset;
+    int last_batch_tokens = 0;   // tokens of the final batch (KVFLASH_QK_DUMP)
+    if (kvflash_qk_dump_) { kvflash_qk_dump_max_.clear(); kvflash_qk_dump_nq_ = 0; }
     for (int start = 0; start < prompt_len;) {
         if (io.is_cancelled()) break;
         const int kv_pos = kv_offset + start;
@@ -2407,7 +2411,8 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
                                    (start + n_tokens < prompt_len ? 1 : 0),
                                cfg_.kq_stride_pad,
                                should_capture_moe_router(),
-                               /*kvflash_mask=*/kvf_paged)) {
+                               /*kvflash_mask=*/kvf_paged,
+                               /*capture_qk=*/kvflash_qk_dump_ && kvflash_active())) {
             std::fprintf(stderr, "prefill build @%d\n", kv_pos);
             return -1;
         }
@@ -2509,6 +2514,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
 
         committed = kv_pos + n_tokens;
         cache_.cur_pos = committed;
+        last_batch_tokens = n_tokens;
 
         // S7: batch ends are grid points, so ladder rungs coincide with them.
         if (!ladder.empty() && std::binary_search(ladder.begin(), ladder.end(), committed) &&
@@ -2519,6 +2525,11 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         // QK policy: pool the post-RoPE keys of chunks this batch sealed
         // (they are resident — sealed inside the protected tail window).
         if (kvflash_active() && kvflash_qk_policy_) kvflash_qk_pool_to(committed);
+        // KVFLASH_QK_DUMP: fold the queries of batches near the prompt end.
+        if (kvflash_qk_dump_ && kvflash_active() &&
+            committed > kv_offset + prompt_len - luce::common::kQkDumpWindowTokens) {
+            kvflash_qk_dump_fold(committed, n_tokens);
+        }
 
         // Sync draft-side features if active.
         if (remote_draft_.active() && !draft_parked_) {
@@ -2556,6 +2567,10 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         } else {
             kvflash_sync_prefill(committed, tokens, kv_offset, full_prompt);
         }
+    }
+
+    if (kvflash_qk_dump_ && kvflash_active() && last_batch_tokens > 0) {
+        kvflash_qk_dump_prefill(tokens, kv_offset, committed, full_prompt);
     }
 
     // End-of-prefill snapshot: scoped disk-cache saves (auto/fixed policy)
@@ -2661,6 +2676,82 @@ void Qwen35Backend::kvflash_qk_pool_to(int committed) {
         }
     }
     kvflash_qk_pooled_upto_ = std::max(kvflash_qk_pooled_upto_, sealed);
+}
+
+// KVFLASH_QK_DUMP helpers. All read-only: the pool, pager and cache are untouched.
+
+// Regroup the last n_tok tokens' queries of the batch just computed from
+// q_cap_all's [fa][head][T_alloc][hd] layout to the scorer's per-token
+// [fa][head][hd]. Returns the token count (0 when not captured).
+static int kvflash_qk_dump_read_queries(const TargetCache & cache, const KvFlashQkDims & d,
+                                        int batch_tokens, std::vector<float> & q_all) {
+    if (!cache.q_cap_all) return 0;
+    const int T = cache.q_cap_all_tokens;
+    const int n_q = std::min(batch_tokens, T);
+    const size_t qsize = (size_t)d.n_layers * d.n_q_heads * d.head_dim;
+    std::vector<float> raw((size_t)ggml_nelements(cache.q_cap_all));
+    ggml_backend_tensor_get(cache.q_cap_all, raw.data(), 0, raw.size() * sizeof(float));
+    q_all.resize((size_t)n_q * qsize);
+    const size_t planes = (size_t)d.n_layers * d.n_q_heads;
+    for (int t = 0; t < n_q; t++)
+        for (size_t p = 0; p < planes; p++)
+            std::memcpy(q_all.data() + (size_t)t * qsize + p * d.head_dim,
+                        raw.data() + (p * T + t) * d.head_dim, d.head_dim * sizeof(float));
+    return n_q;
+}
+
+// After a prefill batch that ends within the last kQkDumpWindowTokens of the
+// prompt: fold its per-token queries into the running per-chunk max.
+void Qwen35Backend::kvflash_qk_dump_fold(int committed, int batch_tokens) {
+    const int ct = kvflash_pager_.chunk_tokens();
+    const KvFlashQkDims & d = kvflash_qk_pool_.dims();
+    if (ct <= 0 || d.n_layers <= 0) return;
+    std::vector<float> q_all;
+    const int n_q = kvflash_qk_dump_read_queries(cache_, d, batch_tokens, q_all);
+    if (n_q <= 0) return;
+    const int sealed = committed / ct;
+    std::vector<const float *> pk((size_t)sealed, nullptr);
+    for (int c = 0; c < sealed; c++) pk[(size_t)c] = kvflash_qk_pool_.data(c);
+    kvflash_qk_fold_max(pk, q_all.data(), n_q, d, kvflash_qk_dump_max_);
+    kvflash_qk_dump_nq_ += n_q;
+}
+
+// End of prefill, before the first decode token: score every sealed chunk
+// against the last prefill token's query, and write the line.
+void Qwen35Backend::kvflash_qk_dump_prefill(const std::vector<int32_t> & tokens, int kv_offset,
+                                            int committed,
+                                            const std::vector<int32_t> * full_prompt) {
+    const int ct = kvflash_pager_.chunk_tokens();
+    const KvFlashQkDims & d = kvflash_qk_pool_.dims();
+    if (ct <= 0 || d.n_layers <= 0 || !cache_.q_cap) return;
+    const size_t qsize = (size_t)d.n_layers * d.n_q_heads * d.head_dim;
+    if ((size_t)ggml_nelements(cache_.q_cap) != qsize) return;
+
+    std::vector<float> q_last(qsize);
+    ggml_backend_tensor_get(cache_.q_cap, q_last.data(), 0, qsize * sizeof(float));
+
+    const int sealed = committed / ct;
+    std::vector<const float *> pk((size_t)sealed, nullptr);
+    std::vector<uint8_t> resident((size_t)sealed, 0);
+    int n_pooled = 0;
+    for (int c = 0; c < sealed; c++) {
+        pk[(size_t)c] = kvflash_qk_pool_.data(c);
+        n_pooled += pk[(size_t)c] != nullptr;
+        resident[(size_t)c] = kvflash_pager_.block_of(c) >= 0;
+    }
+    std::vector<float> last;
+    kvflash_qk_chunk_scores(pk, q_last.data(), d, last);
+    kvflash_qk_dump_max_.resize((size_t)sealed, -2.0f);
+
+    KvFlashQkDumpMeta m;
+    m.seq = kvflash_qk_dump_seq_++;
+    m.prompt_hash = kvflash_qk_prompt_hash(full_prompt ? *full_prompt : tokens);
+    m.prompt_len = full_prompt ? (int)full_prompt->size() : kv_offset + (int)tokens.size();
+    m.kv_offset = kv_offset;
+    m.committed = committed;
+    m.chunk_tokens = ct;
+    kvflash_qk_dump_append(kvflash_qk_dump_dir(),
+        kvflash_qk_dump_line(m, n_pooled, last, kvflash_qk_dump_max_, kvflash_qk_dump_nq_, resident));
 }
 
 void Qwen35Backend::kvflash_upload_mask() {
