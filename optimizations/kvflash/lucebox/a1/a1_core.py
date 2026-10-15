@@ -19,6 +19,7 @@ from array import array
 from dataclasses import dataclass, field
 
 PROBE_MAX, DECISION_MAX = 64, 256            # run_arm.PROBE_MAX_TOKENS, DECISION_MAX_TOKENS (asserted against the harness)
+SHIP_RATIO = 0.10                             # slots kept per sealed block by the shipping arm (r2_core.RATIO)
 BAR = 0.756                                   # B0 POOL16K retention, fixed by PREREG section 6
 GATE3 = (0.35, 0.70)                          # reference yield after 5 trajectories (PREREG section 7)
 EARLY_AT, EARLY_LEVEL = 20, 99.9              # Amendment 1: one Haybittle-Peto look at 20 trajectories, 99.9% interval
@@ -494,8 +495,8 @@ def run_stage(ctx, out, kinds=("probe",), arms=("FULL", "SHIP"), start=0, n=None
 
 # ---------------------------------------------------------------- model loading (shared by every entry point)
 
-def load_model(model_path, mem_cap_gib=None, log=print):
-    """Qwen3.8-27B bf16 on the current CUDA/ROCm device, SDPA attention as R1(e). `mem_cap_gib` sets the per-process memory
+def load_model(model_path, mem_cap_gib=None, log=print, ratio=SHIP_RATIO):
+    """Qwen3.8-27B bf16 on the current CUDA/ROCm device, SDPA attention as R1(e). `ratio` is the slots kept per sealed block (default 0.10, the shipping arm; 1.0 only for the D1 identity diagnostic). `mem_cap_gib` sets the per-process memory
     fraction (lucebox6: 100); None leaves it alone (Modal H200). Returns a SimpleNamespace(S, R, tok, model, gpu)."""
     from types import SimpleNamespace
     import torch
@@ -513,4 +514,4 @@ def load_model(model_path, mem_cap_gib=None, log=print):
     gpu = torch.cuda.get_device_name(0)
     log(f"[a1] model loaded in {time.time() - t0:.0f}s on {gpu} torch {torch.__version__}")
     S = r1b_core.Session(model, tok, HFGenerateShim(model, tok, seed=1))
-    return SimpleNamespace(S=S, R=r2.Runner(S, None, cell="FUNI"), tok=tok, model=model, gpu=gpu)
+    return SimpleNamespace(S=S, R=r2.Runner(S, None, cell="FUNI", ratio=ratio), tok=tok, model=model, gpu=gpu)

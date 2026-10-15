@@ -205,7 +205,26 @@ def test_run_unit_rows_are_harness_rows_and_match_generate(setup, monkeypatch):
     assert [r.get("repeat_equal") for r in rows] == [True, True, None, None]               # determinism check on the first two
 
 
-# ---------------------------------------------------------------- real data, CPU
+def test_d1_ratio_option_default_is_the_shipping_ratio_and_ratio_1_keeps_every_slot(setup, monkeypatch):
+    import inspect
+    assert inspect.signature(a1_core.load_model).parameters["ratio"].default == a1_core.SHIP_RATIO == r2.RATIO == 0.10
+    assert inspect.signature(r2.Runner).parameters["ratio"].default == r2.RATIO
+    S, _ = setup
+    _small_blocks(monkeypatch)
+    segs0, _ = r2.build_segments(S.tok, [ART[0]])
+    ids = stream_of(segs0)
+    cs = a1_core.segs_from_checkpoints(ids, [len(ids)])
+    with session(S) as sess:
+        dflt, = [t for _, t, _, _ in r2.gen_fblk(r2.Runner(sess, None, cell="FUNI"), cs, None, [0])]
+        same, = [t for _, t, _, _ in r2.gen_fblk(r2.Runner(sess, None, cell="FUNI", ratio=r2.RATIO), cs, None, [0])]
+        for x, y in zip(dflt, same):
+            assert all(torch.equal(p, q) for p, q in zip(x, y))                    # default path == explicit 0.10
+        full, = [t for _, t, _, _ in r2.gen_fullchk(r2.Runner(sess, None, cell="FUNI"), cs, None, [0])]
+        ident, = [t for _, t, _, _ in r2.gen_fblk(r2.Runner(sess, None, cell="FUNI", ratio=1.0), cs, None, [0])]
+        for i, (f, d, c) in enumerate(zip(full, ident, dflt)):
+            if i not in sess.linear:
+                assert d[0].shape == f[0].shape and c[0].shape[2] < f[0].shape[2], f"layer {i}"   # every slot kept vs 0.10
+                print(f"D1 layer {i} max|dK| {float((d[0] - f[0]).abs().max()):.3g}")
 
 _P = a1_core.default_paths()
 HAVE_DATA = all(os.path.exists(_P[k]) for k in ("traj", "tasks", "template", "tokenizer"))

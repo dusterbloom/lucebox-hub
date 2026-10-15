@@ -1,0 +1,7 @@
+[a1] model loaded in 27s on Radeon 8060S Graphics torch 2.9.1+rocm7.13.0a20260513
+[a1] 58f9f17c SHIP cut 1/2 ctx 23522 build 227.3s answer 36.0s (4 items) peak alloc 58.6 reserved 99.9 GiB
+[a1] 58f9f17c SHIP cut 2/2 ctx 36590 build 200.7s answer 71.7s (7 items) peak alloc 64.9 reserved 99.9 GiB
+[a1] bef6b39d SHIP cut 1/3 ctx 11194 build 88.8s answer 128.2s (11 items) peak alloc 54.4 reserved 57.8 GiB
+[a1] bef6b39d SHIP cut 2/3 ctx 24239 build 147.5s answer 83.6s (9 items) peak alloc 59.7 reserved 94.9 GiB
+[a1] bef6b39d SHIP cut 3/3 ctx 36550 build 191.6s answer 99.3s (7 items) peak alloc 64.9 reserved 99.1 GiB
+[a1] done: {'stopped': None, 'trajectories': ['chatcmpl-40fe82c8835837b664f4a16458f9f17c', 'chatcmpl-905125c7406f0c2f85fa42f3bef6b39d']}

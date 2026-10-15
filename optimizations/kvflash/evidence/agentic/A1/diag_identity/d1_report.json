@@ -1,0 +1,40 @@
+{
+ "retention_overall": [
+  38,
+  38
+ ],
+ "per_trajectory": {
+  "chatcmpl-40fe82c8835837b664f4a16458f9f17c": [
+   11,
+   11
+  ],
+  "chatcmpl-905125c7406f0c2f85fa42f3bef6b39d": [
+   27,
+   27
+  ]
+ },
+ "misses": [],
+ "units": [
+  {
+   "traj": "chatcmpl-40fe82c8835837b664f4a16458f9f17c",
+   "arm": "SHIP",
+   "n_rows": 11,
+   "build_s": 428.0,
+   "answer_s": 107.7,
+   "wall_s": 536.1,
+   "peak_alloc_gib": 64.9,
+   "peak_reserved_gib": 99.9
+  },
+  {
+   "traj": "chatcmpl-905125c7406f0c2f85fa42f3bef6b39d",
+   "arm": "SHIP",
+   "n_rows": 27,
+   "build_s": 427.9,
+   "answer_s": 311.1,
+   "wall_s": 739.5,
+   "peak_alloc_gib": 64.9,
+   "peak_reserved_gib": 99.1
+  }
+ ],
+ "reference_correct_without_d1_row": []
+}
