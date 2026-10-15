@@ -456,6 +456,13 @@ TEST_CASE(AmCompactFixture, a_compacted_block_is_its_head_chunk_with_the_covered
         CHECK(x > prev);
         prev = x;
     }
+    // Scored residency treats the compacted block as one unit: the head chunk is a candidate with its own
+    // score, the nine covered chunks are not candidates and are never recalled.
+    p.score_hook = [](int) { return 0.0f; };
+    p.reselect();
+    CHECK(p.is_compacted(c0));
+    CHECK(p.is_resident(c0));
+    for (int c = c0 + 1; c < c0 + span; c++) CHECK(!p.is_resident(c));
     p.synchronize_paging();
     if (buf) ggml_backend_buffer_free(buf);
     ggml_free(ctx);

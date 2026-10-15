@@ -43,6 +43,12 @@ class QwenTemplate:
         return out
 
 
+def die_with_parent():
+    """The server must never outlive the harness (and so the 3090 lock the harness runs under)."""
+    import ctypes
+    ctypes.CDLL("libc.so.6").prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+
+
 def start_server(extra, log):
     env = dict(os.environ)
     for k in list(env):
@@ -52,7 +58,8 @@ def start_server(extra, log):
             "--max-ctx", os.environ.get("KV_MAX_CTX", "131072"), "--model-name", "luce",
             "--no-kv-cache", "--prefix-cache-slots", "0", "--kvflash", os.environ.get("KV_POOL", "8192")] + extra
     f = open(log, "w")
-    p = subprocess.Popen(args, stdout=f, stderr=subprocess.STDOUT, env=env, stdin=subprocess.DEVNULL)
+    p = subprocess.Popen(args, stdout=f, stderr=subprocess.STDOUT, env=env, stdin=subprocess.DEVNULL,
+                         preexec_fn=die_with_parent)
     for _ in range(300):
         if p.poll() is not None:
             raise RuntimeError("server died; see " + log)

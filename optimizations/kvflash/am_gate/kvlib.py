@@ -10,6 +10,12 @@ PORT = int(os.environ.get("KV_PORT", "18090"))
 URL = f"http://127.0.0.1:{PORT}"
 
 
+def die_with_parent():
+    """The server must never outlive the harness (and so the 3090 lock the harness runs under)."""
+    import ctypes
+    ctypes.CDLL("libc.so.6").prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+
+
 class Server:
     def __init__(self, log, env=None, extra=()):
         self.log, self.env, self.extra, self.p = log, env or {}, list(extra), None
@@ -25,7 +31,8 @@ class Server:
                 "--model-name", "luce"] + os.environ.get("KV_EXTRA", "").split() + self.extra
         self.f = open(self.log, "w")
         self.p = subprocess.Popen(args, stdout=self.f, stderr=subprocess.STDOUT, env=e,
-                                  stdin=subprocess.DEVNULL)
+                                  stdin=subprocess.DEVNULL,
+                         preexec_fn=die_with_parent)
         for _ in range(300):
             if self.p.poll() is not None:
                 raise RuntimeError("server died; see " + self.log)

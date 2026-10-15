@@ -1,5 +1,6 @@
 #!/bin/bash
-# Run under: flock /mnt/kimi-k3/build/3090.lock <this script>
+# Takes the 3090 lock itself (re-execs under flock), so it cannot run unlocked.
+[ -n "$M7_LOCKED" ] || exec flock /mnt/kimi-k3/build/3090.lock env M7_LOCKED=1 "$0" "$@"
 # Interleaved: for each of 5 rounds run main, m7 (compaction off, the graph under test), m7on (informational).
 D=/mnt/kimi-k3/build
 O=/mnt/kimi-k3/kvflash-gate-m7/speed
