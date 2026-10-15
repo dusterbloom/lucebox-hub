@@ -122,6 +122,17 @@ path (builds=1 replays=29, tokens and logits identical, rollback 20/20), so the 
 sequence (16K QSA prompts, then the 72-token prompt at fixed k=4): `mtp_ab.sh out 1 1 "k4=/--verify-width 5"`
 reproduces it on both paths and on the HEAD binary. Owner: the exact-stack fusion plan (LUCE_QWEN_HC_UPMIX_ROW8).
 
+Resolved (follow-up commit): the crash is the T=1 decode graph that also returns the MTP hidden row, which the
+server builds at any k=0 step (the last token when exactly one remains -- the counting prompt at fixed k=4 hits it,
+the 16K prompts happened to end on k=1/k=2 steps -- and every step with n_gen <= 2 or teacher forcing). With a hidden
+output `hc_inject_hint` is off, the allocation differs, all 97 HC up-mix sites validate (the plain decode graph has 96:
+site 10 aliases its input) and layer 0's GDN A/B outputs overlap its activation; the exact-stack contracts asserted the
+plain graph's counts. The probes now engage the sites that validate and record that count per sealed graph (reported as
+`[exact-stack-capture] ... noncanonical sites: ab=35/36 upmix=97/96`), the plain T=1 graph still captures 96/36/97.
+`smoke_qwen4exp_forward --mtp` gained the hidden-decode check (T=1 with the hidden row: plain decode's logits bit for
+bit, verify path's hidden row bit for bit); it aborts on the old library and passes on the fix. A fresh server on the
+counting prompt alone does crash at its last step (the note above was wrong).
+
 ## With the decode copies (`LUCE_DECODE_REQ=q5_k LUCE_DECODE_REQ_ATTN=q6_k`, retained path, 1 x 5, `abreq/`)
 
 | arm | code16k | prose16k | counting | p4096 | p16384 |

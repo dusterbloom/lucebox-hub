@@ -406,6 +406,65 @@ int run_mtp_rollback_check(ggml_backend_t backend, const Qwen4ExpWeights & w,
     return ok ? 0 : 1;
 }
 
+// The server asks every decode step for the MTP hidden row, T=1 steps included (a k=0 step: the last token of
+// a fixed-width generation, n_gen <= 2, teacher forcing). That T=1 graph is laid out differently from the plain
+// decode graph (hc_inject_hint is off with a hidden output), so the exact-stack probes see other aliasing:
+// each must engage what validates and never assert. n_gen greedy T=1 steps with the hidden row must give the
+// plain decode's logits bit for bit, and the hidden row must equal the verify path's row for the same token.
+int run_hidden_decode_check(ggml_backend_t backend, const Qwen4ExpWeights & w,
+                            const std::vector<int32_t> & prompt, int n_gen, int k) {
+    Qwen4ExpCache cache;
+    const int S = (int) prompt.size();
+    if (!w.mtp_eh_proj || !create_qwen4exp_cache(backend, w, S + n_gen + 4, GGML_TYPE_F16, cache, true, k)) {
+        free_qwen4exp_cache(cache);
+        return 1;
+    }
+    const size_t V = (size_t) w.n_vocab, hd = (size_t) w.n_embd * w.n_hc;
+    std::vector<float> logits, hidden, ref_rows, hidden_rows;
+    std::vector<int32_t> ref;
+    auto prefill = [&] {
+        reset_qwen4exp_state(backend, cache);
+        return qwen4exp_forward(backend, w, cache, prompt.data(), S, 0, logits, &hidden, false, false, true).ok;
+    };
+    // Plain T=1 decode: ref[i] is fed at S + i and ref_rows[i] is its logits row.
+    bool ok = prefill();
+    for (int i = 0; ok && i < n_gen; ++i) {
+        ref.push_back(argmax(logits));
+        ok = qwen4exp_forward(backend, w, cache, &ref.back(), 1, S + i, logits).ok && all_finite(logits);
+        ref_rows.insert(ref_rows.end(), logits.begin(), logits.end());
+    }
+    if (ok) ref.push_back(argmax(logits));
+    // The same steps asking for the hidden row.
+    int first_logits = -1, first_hidden = -1;
+    ok = ok && prefill();
+    for (int i = 0; ok && i < n_gen; ++i) {
+        ok = qwen4exp_forward(backend, w, cache, &ref[i], 1, S + i, logits, &hidden).ok &&
+            all_finite(logits) && hidden.size() == hd && all_finite(hidden);
+        if (!ok) break;
+        if (first_logits < 0 && std::memcmp(logits.data(), ref_rows.data() + (size_t) i * V, V * sizeof(float)) != 0) {
+            first_logits = i;
+        }
+        hidden_rows.insert(hidden_rows.end(), hidden.begin(), hidden.end());
+    }
+    // Hidden oracle: the verify path (rows ref[i], ref[i+1] at S + i, keep row 0) returns S + i's hidden row.
+    float hidden_max_diff = 0.0f;
+    ok = ok && prefill();
+    for (int i = 0; ok && i < n_gen; ++i) {
+        ok = qwen4exp_forward(backend, w, cache, &ref[i], 2, S + i, logits, &hidden, true).ok &&
+            hidden.size() == 2 * hd && qwen4exp_verify_rollback(backend, w, cache, S + i, 1);
+        if (!ok) break;
+        const float * row = hidden_rows.data() + (size_t) i * hd;
+        for (size_t j = 0; j < hd; ++j) hidden_max_diff = std::max(hidden_max_diff, std::fabs(row[j] - hidden[j]));
+        if (first_hidden < 0 && std::memcmp(row, hidden.data(), hd * sizeof(float)) != 0) first_hidden = i;
+    }
+    free_qwen4exp_cache(cache);
+    std::printf("[smoke] hidden decode S=%d k=%d n_gen=%d ok=%d logits_identical=%d first_logits_diff=%d "
+                "hidden_identical=%d first_hidden_diff=%d hidden_max_abs_diff=%g\n",
+                S, k, n_gen, (int) ok, (int) (ok && first_logits < 0), first_logits,
+                (int) (ok && first_hidden < 0), first_hidden, hidden_max_diff);
+    return ok && first_logits < 0 && first_hidden < 0 ? 0 : 1;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
@@ -722,6 +781,7 @@ int main(int argc, char ** argv) {
             rc |= run_mtp_check(backend, w, std::vector<int32_t>(tokens.begin(), tokens.begin() + 2049),
                                 mtp_gen, QWEN4EXP_MTP_MAX_DRAFT, 2048, false, mtp_window);
         }
+        if (rc == 0) rc = run_hidden_decode_check(backend, w, tokens, std::min(mtp_gen, 8), mtp_draft);
     }
 
     // A reset/reuse must match a freshly allocated cache for the same prefix.
