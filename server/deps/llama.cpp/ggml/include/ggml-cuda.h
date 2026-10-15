@@ -117,6 +117,8 @@ GGML_BACKEND_API size_t ggml_backend_cuda_get_mmvq_launch_count(void);
 GGML_BACKEND_API size_t ggml_backend_cuda_get_mmq_launch_count(void);
 GGML_BACKEND_API size_t ggml_backend_cuda_get_mla_stream_topk_launch_count(void);
 GGML_BACKEND_API size_t ggml_backend_cuda_get_mmvq_mmid_grouped_launch_count(void);
+// [TAG_MMID_UNION] route-union MUL_MAT_ID launches (each distinct expert read once per batch).
+GGML_BACKEND_API size_t ggml_backend_cuda_get_mmvq_mmid_union_launch_count(void);
 
 // Calling-thread launch counters for the scalar and grouped-column GDN
 // kernels. Focused qualification tests use these to reject silent fallback.

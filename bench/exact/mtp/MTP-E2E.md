@@ -102,8 +102,10 @@ From the unprofiled bench (retained path): k=1 40-42 ms, then **~12 ms per extra
 per row: every row routes to its own top-k experts; route-union reuse r_4 ~ 0.69, ROUTE-UNION.md), so ~5 ms/row is
 still launch/replay overhead and small per-row kernels, not bytes:
 
-1. Routed expert reads per row (~6.75 ms/row GPU busy): grouped route-union expert GEMV (ROUTE-UNION.md) is the only
-   lever on bytes; estimated 8-9 ms per k=4 window.
+1. Routed expert reads per row (~6.75 ms/row GPU busy): grouped route-union expert GEMV (ROUTE-UNION.md) was the
+   estimated lever on bytes (8-9 ms per k=4 window). **Tried and measured, no saving** -- see "Route union" below:
+   the per-pair launch already runs at DRAM speed on the union byte count, the duplicate expert reads are served by
+   L2/MALL inside the launch, and a kernel that reads each expert once is 9 ms slower per k=4 call.
 2. Per-node replay overhead: the k=4 graph has 7234 nodes vs 5298 at k=1 (+484 nodes per row); at this box's
    ~1.8 us per replayed node that is ~0.9 ms/row, ~13 ms per k=4 call in total. Fewer nodes per row (the per-row
    attention sub-graphs: QSA score / top-k / gather / wmma / merge per row, kv set_rows, rope) is the lever; main's
@@ -148,3 +150,65 @@ requantised model, MTP + copies commits exact-weight verify logits, so the greed
 (code16k, prose16k; counting identical). Extending the copies to verify rows would make MTP + copies consistent with
 AR + copies and recover the ~10% on the verify call, but it changes the verified distribution; left as is, acceptance
 and KL would have to be re-measured first (decode-requant/RESULTS.md has the KL gate for T=1).
+
+## Route union (LUCE_MMID_UNION, opt-in, kept for A/B)
+
+Goal: read each distinct expert once per verify window (top-10 union over 4 rows is 0.69-0.73 x 4x10 experts). Done
+as a new MUL_MAT_ID kernel `mul_mat_vec_q_moe_union` (mmvq.cu, `[TAG_MMID_UNION]`): `mmid_group_prep` sorts the
+(token,slot) pairs by expert and cuts runs of up to 8 pairs with the same expert; one wave per run loads each weight
+block once and dots it against every pair's q8_1 row, same kbx order, same `warp_reduce_sum`, so each row's result
+is bit-identical to the T=1 kernel. Gate/up fused GLU and down, types Q4_0/Q5_1/Q8_0/Q4_K/Q5_K/Q6_K, 2..16 rows,
+`LUCE_MMID_UNION_ROWS` 1/2/4 rows per wave. `test_mmid_union_parity` (qwen4exp shapes, 64 experts, top-10; window /
+same / random routings at T=2,3,4,5,8, duplicate and sentinel(-1) ids at T=4; gate/up Q4_K + swiglu + down Q5_1 and
+Q8_0): every batch row memcmp-equal to its T=1 run, 34 cases x {on, rows=1, rows=4, off}, all PASS on lucebox4.
+
+### Ledger of the k=4 verify (rocprofv3 kernel-trace, eager verify `LUCE_VERIFY_GRAPH_LEGACY=1`, T=5, per layer x48)
+
+| class | per layer (ms) | per k=4 call | union arm |
+|---|---|---|---|
+| dense trunk mmvq Q8_0 (batch-invariant, one column per row) | 0.55 | 26.4 | 0.55 |
+| routed gate/up Q4_K (`mul_mat_vec_q_moe`, fused GLU, rows_per_block 2) | 0.27 | 13.0 | 0.39 |
+| routed down Q5_1 / Q8_0 (`mul_mat_vec_q_moe`) | 0.18 | 8.6 | 0.30 |
+| other | 0.14 | 6.7 | 0.14 |
+| attention / QSA / router | 0.10 | 4.8 | 0.10 |
+| elementwise / norm / copy | 0.08 | 3.8 | 0.08 |
+| GDN | 0.04 | 1.9 | 0.04 |
+| quantize | 0.02 | 1.0 | 0.02 |
+| busy / idle | 1.38 / 0.25 | 66 / 12 | 1.62 / 0.25 |
+
+What the existing grouped path does in the verify graph: nothing by default on HIP (`LUCE_MMID_GROUPED` is off);
+the gfx1151 dispatcher sends T=2..4 Q4_K and T=2..8 Q5_1/Q8_0 to `mul_mat_vec_q_moe` (one wave per (token,slot)
+pair, gate/up GLU fused), Q4_K at T=5..8 to the generic tokenwise `mul_mat_vec_q`, T=9 to MMQ. The grouped kernel
+with all type bits (`LUCE_MMID_GROUPED=1 LUCE_MMID_GROUPED_TYPES=133`) only sorts pairs by expert: k=4 76.49 ms vs
+76.65 off, nothing to gain.
+
+Why the union kernel loses: the baseline gate/up launch moves 50 pairs x 2 x 921.6 KB = 92 MB nominal in 0.27 ms =
+340 GB/s, above the 220 GB/s DRAM floor; at the measured 0.65 union ratio that is 222 GB/s, i.e. the per-pair launch
+already streams exactly the union bytes -- the duplicate expert reads hit the 2 MB L2 / 32 MB MALL within the
+launch. The union kernel cannot cut bytes further and lengthens each wave's dependent chain (the routed waves are
+only 2-3 K-iterations long, latency-bound; serialising up to 8 pairs per wave makes them longer, not fewer):
++0.12 ms per routed launch, +0.24 ms per layer, +9-12 ms per k=4 call. No scratch spills (fused Q4_K rows=2: 120
+VGPRs, occupancy 12); rows=1/4 do not help.
+
+### bench_verify_realtok (8K ids, 20 reps, max_ctx 12000, median ms per call; off/on/on/off arms)
+
+| k | off | union | union | off |
+|---|---|---|---|---|
+| 1 | 41.89 | 39.98 | 40.04 | 41.89 |
+| 2 | 58.42 | 60.72 | 60.67 | 58.31 |
+| 3 | 70.68 | 73.46 | 73.47 | 70.65 |
+| 4 | 77.38 | 86.71 | 86.76 | 77.51 |
+| 8 | 123.19 | 137.46 | 137.48 | 123.71 |
+
+k=4 matrix (10 reps): off 76.65, grouped 76.49, union rows=1 89.36, rows=2 86.01, rows=4 86.07. The union path is not
+engaged at T=1 (telemetry: 0 `variant=union` launches at k=1), so the k=1 deltas are run spread (40.0-44.1 ms across
+arms with identical settings). `LUCE_PRINT_ARGMAX=1` sums identical on every arm at every k (k=1 16049, k=2 25088,
+k=3 22992, k=4 66549, k=8 115903; matrix k=1 619, k=4 20992).
+
+Decision: stop rule (reachable saving < 1 ms per window; it is negative). `LUCE_MMID_UNION` is opt-in (unset = off),
+the kernel and test stay for A/B on other targets. The e2e mtp_ab A/B was not run: the verify call is its direct
+input and is slower at every width. The largest remaining class is the dense Q8_0 trunk at T=5 (0.55 ms/layer, ~26 ms
+per k=4 call, 2x the routed gate/up): under `mmvq_batch_invariant` each row is one column through the generic
+kernel, so a multi-column kernel that keeps the per-row reduction order (same kbx stride and per-lane accumulation,
+rows interleaved the way the union kernel does) would share the weight read across the 5 rows; that is the lever
+to try next, not the experts.
