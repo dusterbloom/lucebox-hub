@@ -721,3 +721,34 @@ Context: the A1 pilot showed compacted blocks keep about 8.5% of verbatim facts 
 
 - lucebox6, `HIP_VISIBLE_DEVICES=1`, the A1 launch memory gate and watchdog (host used under 120 GiB, swap growth under 1 GiB). Outputs `~/r1e/out/e3e2/` and `~/r1e/out/e5/`; the pilot rows are copied, never edited. E3/E2 and E5 run one after the other, never together.
 - No result of E1, E2, E3 or E5 changes A1's or A2's preregistered rule. A diagnostic that is read as a bar would need its own amendment first.
+
+## Diagnostics E6, E7 (2026-10-15, before any row)
+
+Context: Codex's read-only root-cause audit of the A1 pilot (`/mnt/kimi-k3/build/codex_a1_rootcause.md`) found no plumbing bug. The paper's only needle test (RULER, Appendix F.4: Qwen3-4B 90.2% at 12.5% cache against 93.9% full) uses repeat-prefill queries and keeps the system and template tokens exact. The shipping arm does neither: it fits every 640-token block on its own context-prefill queries, and it compacts every token, including the rendered system message (about 11.5K characters) and the tool schema (about 14.7K characters). E6 and E7 each remove one of those two differences. They decide nothing and change no A1 or A2 rule.
+
+### Common rules
+
+- Same 6 pilot trajectories and the same 118 reference-correct probes as the pilot, the pilot FULL-CHK rows as the reference (copied unedited into the output directory), the same tables as E2/E3/E5: retention overall (bootstrap interval, trajectory as the cluster), by distance, by probe type, next to the pilot's shipping arm (8.5%) on the same probes.
+- The shipping arm otherwise unchanged: 640-token blocks, each compacted once to 64 slots (ratio 0.10) at seal time, DeltaNet state carried, open tail exact, answers by `answer_ids` (64 tokens, harness scoring). Both arms are options of `gen_fblk_window`; with the option off it is the shipping arm (checked by the code tests).
+- lucebox6, `HIP_VISIBLE_DEVICES=1`, the A1 launch memory gate and watchdog. Outputs `~/r1e/out/e6/` and `~/r1e/out/e7/`. The runs go one after the other, after E3/E2 and E5 and before A2: E3/E2, E5, E6, E7, never together.
+
+### E6: repeat-prefill queries at ratio 0.10
+
+- **Change.** At each seal, take a clone of the cache the block was just prefilled into (earlier blocks compacted, the current block exact, the DeltaNet state after the block). On the clone, teacher-force the repeat instruction followed by the block's 640 tokens, at the logical positions that continue after the block. Capture the post-RoPE queries of every token of that pass on the 16 full-attention layers (24 query heads). Those queries replace the context-prefill queries in key selection, beta fit and value fit of that block. Then the clone is dropped: the generator's cache and DeltaNet state never see the repeat, so the next block is prefilled behind the same state as in the shipping arm (except that earlier blocks were fitted differently).
+- **Instruction text, from the am-compaction source** (`compaction/query_generation/conversation_specs.py`, spec `repeat`: `conversation_starter="Repeat the previous context verbatim."`, `prefill_with_article=True`; and `self_study.py`, where the starter is rendered as one user turn through the chat template with `add_generation_prompt=True` and `enable_thinking=False`, followed by the prefilled article as the answer, and the queries of that whole suffix, prompt tokens and article tokens, are extracted behind the context cache). Read only; the source is not run, imported or copied. Rendered as the model's own tokenizer chat template gives it, expected `<|im_start|>user\nRepeat the previous context verbatim.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n`; the run logs the exact string and token count and they are quoted in the report. Following the source, the captured queries are those of the instruction tokens plus the repeated block tokens (about 20 + 640 queries per block).
+- **Differences from the paper stated.** The paper repeats the context to be compacted as a whole; here the repeat is per 640-token block behind the already compacted earlier blocks, because that is the shipping arm's unit. The repeated text is exactly the block's tokens. The fit's other inputs (block keys and values from the context prefill, slot count, algorithm and budgets) are unchanged.
+- **Cost.** One extra forward of about 660 tokens per block.
+
+### E7: system and tool prefix exact
+
+- **Change.** Every sealed block that overlaps tokens [0, end of the rendered system message) stays exact, rounded up to block granularity; the end is one past the first `<|im_end|>` of the rendered stream (the template puts the tool schema inside the first system message). The kept blocks are a contiguous leading range, held exact with beta 0 and not fitted. All other sealed blocks are compacted at 0.10 exactly as in the shipping arm, each prefilled behind the cache as it stands (exact prefix plus compacted earlier blocks). A contiguous leading range does not trigger the noncontiguous partial-reconstruction bug Codex noted at `per_layer_head_on_policy.py:492` (uncompacted positions inside a noncontiguous compaction range disappear); no repo code path is used for the exact blocks.
+- **Reported.** The exact-token count per trajectory (system end token, exact blocks, exact tokens), so the extra capacity is visible.
+- **No matched-capacity control for now.** E7 holds more rows than the shipping arm (the exact prefix is not part of the 10% budget). A control with the same extra rows spent elsewhere (for example one more exact recent window) is skipped. It is added, with its own prereg section before any row, if E7 shows a gain.
+
+### What these do not decide
+
+No threshold applies and neither result changes the A1 or A2 rule. If E6 recovers retention, query mismatch is implicated and a repeat-prefill fit becomes a candidate for its own preregistered test; if E7 recovers it, the control-prompt tokens are implicated. Both are read next to E5 (capacity) and E3 (oracle exact source block). Decode and prefill speeds are recorded as provenance only.
+
+### Code checks before any row (CPU, build host)
+
+Stub tests (`lucebox/a1/test_a1_e67.py`): the clone does not mutate the generator's cache or state (the stub scribbles on its input in the repeat pass and the final state still equals the shipping arm's); the repeated tokens are teacher-forced from position (block end) onward; the fit receives the captured repeat queries and not the context ones; E7 keeps exactly the leading blocks exact and compacts the others; zero exact blocks equals the shipping state. Real-model tests (`modal/am_qwen35/tests/test_a1.py`, run on lucebox6 before the launch): E6 differs from the shipping arm in the fitted tensors; E7 with a zero-length prefix equals the shipping arm and a two-block prefix holds the FULL-CHK rows.
