@@ -1,0 +1,18 @@
+date: 2026-10-15T11:32:34+02:00
+GPU: RTX 3090 (local); run under flock /mnt/kimi-k3/build/3090.lock; one 27B server at a time
+3ef3e74c4ae3868e305fb5e8037a7d36  /mnt/kimi-k3/build/diskrestore-repro/bin/luce_server-main-6f2b1795
+7301e208232e723efdc3bc0f84f42eba  /mnt/kimi-k3/build/diskrestore-repro/bin/luce_server-E-09bde623-gate
+76f527022f010d42bc0dff5905c60444  /mnt/kimi-k3/home-models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf
+
+GPU idle checks (nvidia-smi --query-compute-apps=pid,used_memory --format=csv; empty = no compute apps) taken just before each server start:
+== main-run1 idle check: 
+main-run1 exit=0
+== E-run1 idle check: 
+E-run1 exit=0
+== main-run2 idle check: 
+main-run2 exit=0
+== E-run2 idle check: 
+E-run2 exit=0
+
+server flags: <model> --host 127.0.0.1 --port 18190 --max-ctx 131072 --model-name luce --no-kv-cache (no --kvflash, no LUCE_KVFLASH_* variables)
+full logs: /mnt/kimi-k3/kvflash-gate-kvoff-6f2b1795/
