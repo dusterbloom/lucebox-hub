@@ -299,11 +299,12 @@ def window_rows(tokens, window, block=BLOCK, ratio=RATIO):
     return w * block + (nb - w) * slots_for(block, ratio) + tail
 
 
-def gen_fblk_window(R, segs, ks, window):
+def gen_fblk_window(R, segs, ks, window, on_block=None):
     """A2: gen_fblk with the last `window` sealed blocks kept exact. Every block is fitted once, at seal time, exactly as
     `Runner.segment_step` does (the block's own keys and values, its own prefill queries, prefilled behind what the cache holds
     at that moment: compacted older blocks plus the exact window). A block's compacted form replaces its exact form only
-    when it leaves the window; it is never re-fitted. Exact rows carry beta 0 (what `extend` appends)."""
+    when it leaves the window; it is never re-fitted. Exact rows carry beta 0 (what `extend` appends). `on_block(j, a, b, exact,
+    comp)` (diagnostics E2/E3) is called at seal time with the block's exact and compacted full-attention entries; default off."""
     S = R.S
     stream = torch.cat([s.ids for s in segs], 1)
     ends = [sum(s.n for s in segs[:i + 1]) for i in range(len(segs))]
@@ -331,6 +332,8 @@ def gen_fblk_window(R, segs, ks, window):
                                 queries=q)
             exact = tuple(None if i in S.linear else tuple(x[:, :, -n:].clone() for x in state[i]) for i in range(n_layers))
             wins.append((exact, attn_only(seg)))
+            if on_block is not None:
+                on_block(len(trace), a, b, exact, wins[-1][1])
             lin = {i: state[i] for i in S.linear}
             del state, seg
             while len(wins) > window:

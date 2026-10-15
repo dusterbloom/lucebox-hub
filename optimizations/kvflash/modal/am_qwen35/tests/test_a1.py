@@ -338,6 +338,62 @@ def test_a2_row_arithmetic_at_52224_tokens():
     assert r2.window_rows(1000, 100) == 1000                  # a window larger than the stream keeps everything exact
 
 
+# ---------------------------------------------------------------- E3 / E2 on the tiny hybrid (lucebox/a1/a1_e.py)
+
+def _collect(R, cs, ks):
+    comp, exact = [], []
+    out = list(r2.gen_fblk_window(R, cs, ks, 0, on_block=lambda j, a, b, ex, cp: (exact.append(ex), comp.append(cp))))
+    return out, comp, exact
+
+
+def test_e3_swapping_the_only_block_is_the_identity_and_swapping_nothing_is_the_shipping_state(setup, monkeypatch):
+    import a1_e
+    S, segs = setup
+    _blocks24(monkeypatch)
+    stream = stream_of(segs)[:30]                                   # one sealed block of 24 and a tail of 6
+    cs = a1_core.segs_from_checkpoints(stream, [30])
+    chunk = question_ids(S)
+    with session(S) as sess:
+        R = r2.Runner(sess, None, cell="FUNI", ratio=0.25)
+        ref = _snapshot(r2.gen_fblk(R, cs, None, [0], window=0))
+        got, comp, exact = _collect(R, cs, [0])
+        (_, ship, n, info), = got
+        tail = info["tail_tokens"]
+        assert tail == 6 and len(comp) == len(exact) == 1
+        none = a1_e.oracle_triples(ship, comp, exact, [], tail, sess.linear)
+        assert all(torch.equal(x, y) for a, b in zip(ref[0][0], none) for x, y in zip(a, b))        # no swap == the A1 shipping state
+        swapped = a1_e.oracle_triples(ship, comp, exact, [0], tail, sess.linear)
+        full, = [(tr, nn) for _, tr, nn, _ in r2.gen_fullchk(R, cs, None, [0], block=BLOCK_W)]
+        for i, (r, g) in enumerate(zip(full[0], swapped)):
+            if i in sess.linear:
+                assert torch.equal(g[0], ship[i][0])                                            # DeltaNet state as in the shipping arm
+            else:
+                assert g[0].shape == r[0].shape
+                assert torch.allclose(g[0], r[0], atol=1e-4) and torch.allclose(g[2], r[2], atol=1e-4), i
+        assert swapped[sess.layer_types.index("full_attention")][0].shape[2] == 30
+
+
+def test_e2_router_inputs_on_the_real_model_have_the_expected_shapes(setup, monkeypatch):
+    import a1_e
+    S, segs = setup
+    _blocks24(monkeypatch)
+    cs = a1_core.segs_from_checkpoints(stream_of(segs)[:100], [100])     # 4 blocks + tail of 4
+    with session(S) as sess:
+        R = r2.Runner(sess, None, cell="FUNI", ratio=0.25)
+        got, comp, exact = _collect(R, cs, [0])
+        (_, ship, n, info), = got
+        full = [i for i in range(len(ship)) if i not in sess.linear]
+        slots = r2.slots_for(BLOCK_W, 0.25)
+        spans = [(j * slots, (j + 1) * slots) for j in range(4)]
+        _, _, q = r2.extend(sess.model, sess.layer_types, ship, n, question_ids(S), want_queries=True)
+        assert q.shape[0] == len(full) and q.shape[2] == question_ids(S).shape[1]
+        share = a1_e.router_mass(q, [ship[i][0][0, :, :4 * slots] for i in full], [ship[i][1][0, :, :4 * slots] for i in full], spans)
+        assert share.shape == (q.shape[2], 4) and torch.allclose(share.sum(-1), torch.ones(q.shape[2]), atol=1e-4)
+        pooled = torch.cat([a1_e.pooled_chunk_keys([exact[j][i][0][0] for i in full], chunk=12) for j in range(4)])
+        sc = a1_e.block_scores(a1_e.qk_chunk_scores(pooled, q), 2)
+        assert sc.shape == (4, q.shape[2]) and float(sc.abs().max()) <= 1.0 + 1e-4
+
+
 # ---------------------------------------------------------------- real data, CPU
 
 _P = a1_core.default_paths()
