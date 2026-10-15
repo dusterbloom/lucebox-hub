@@ -7,7 +7,7 @@
 set -u
 S=/home/duster/qwen4exp-f16/scratch
 TP=$S/gufo/textparity
-LUCE=/home/duster/qwen4exp-exact-stack/build1151/luce_server
+LUCE=${LUCE:-/home/duster/qwen4exp-exact-stack/build1151/luce_server}
 MODEL=/home/duster/lucebox-models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
 OUT=$1; ROUNDS=$2; REPS=$3; shift 3
 PORT=18097

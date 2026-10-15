@@ -3109,3 +3109,24 @@ before, all on-topic.
 Remaining norms-class gap after this: GDN tail gated norm at parity, attention norms gone, hc norm 3 PLE-layer sites
 (~4 ms), activation cvt +5, GDN conv norm +14 (conv epilogue). The class is no longer above the 1% bar; the next levers
 are the GEMM-epilogue items in the dense class and the GDN conv.
+
+## Fusion-audit fixes (lucebox4 gfx1151, 2026-10-15 evening): PLE norm+gamma adjacency, PLE cont, Q5_K F16 routed GLU, 16-byte K/V cache copy
+
+The in-situ audit (`bench/exact/FUSION-AUDIT.md`, 690478d3) found two fusions not engaging and two copies worth
+removing. Fixed in four commits (f5a881da, 12761eed, e7f7e29c, b852a0a9), each test-first with a kill switch and a
+rocprofv3 proof; the router top-k item was skipped (bitonic argsort has no index tie-break, so a top-k cannot be
+proven tie-identical). Details and the kernel ledger in FUSION-AUDIT.md section 4.
+
+| site | before (per p4096 request) | after | exactness |
+|---|---:|---:|---|
+| PLE grouped_norm x3 (`rms_norm_f32<1024,false>` + `op_mul`) | 3 x 1.84 + 3 x ~1.5 = ~10 ms | 3 fused `rms_norm_f32<1024,true,false>` (5/5 with the hc_mix sites) | bit-exact |
+| PLE `ggml_cont(silu)` after the fused conv | 169 MB copyBuffer, 1.7 ms | gone | bit-exact |
+| blk.2 Q5_K routed GLU (legacy two kernels) | 41.9 ms | `mmb_routed_glu_f16_kernel<128,45>` 12.6 ms | F16 rounding (closer to the exact reference than legacy: rms-rel 3.3e-4 vs 1.9e-3) |
+| K/V cache append `cpy_scalar<half,half>` 60 | 14.1 ms | `cpy_vec16<8>` 2.5 ms | bit-exact |
+
+e2e (one binary a7e4c91c, `ab2.sh` 2 x 5, arms alternating, warm-up dropped, `prefix_len=0` on all 144 requests;
+OLD = `LUCE_PLE_NORM_MUL_LEGACY=1 LUCE_CPY_VEC_LEGACY=1 LUCE_MMB_GLU_Q5K_LEGACY=1`): p4096 1372.3 -> 1385.4 tok/s
+(+0.95%; round medians 1370.7 / 1372.8 vs 1392.0 / 1380.7), p16384 1386.5 -> 1417.0 (+2.20%; 1398.9 / 1376.5 vs
+1415.5 / 1420.0, non-overlapping), decode 28.51 -> 28.58 tok/s (35.08 -> 34.98 ms, inside spread). Greedy-64 d512
+identical; p4096 differs at char 86 and the two attribution restarts pin it on the Q5_K F16 GLU alone (items 1, 2, 4
+greedy-identical). The three switches are in `cumul.sh` LEGACY_ENV; the next cumulative run picks them up.

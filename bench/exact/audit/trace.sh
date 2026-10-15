@@ -7,7 +7,7 @@
 # usage: trace.sh <pf|dec|req> [outdir-root]   (lock ~/BOX_LOCK must be held by the caller)
 set -u
 S=/home/duster/qwen4exp-f16/scratch; TP=$S/gufo/textparity
-LUCE=/home/duster/qwen4exp-exact-stack/build1151/luce_server
+LUCE=${LUCE:-/home/duster/qwen4exp-exact-stack/build1151/luce_server}
 MODEL=/home/duster/lucebox-models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
 RP=/home/duster/pr823-release-20261007/artifacts/profiler-root/opt/rocm-7.2.2/bin/rocprofv3
 LIB=/home/duster/gufo-parity/rocprof-root/opt/rocm-7.2.2/lib
