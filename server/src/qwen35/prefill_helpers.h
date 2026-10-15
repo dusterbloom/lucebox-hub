@@ -43,6 +43,40 @@ inline int qwen35_prefill_chunk_tokens(int kv_pos, int remaining, int ubatch,
     return end - kv_pos;
 }
 
+// KVFlash 2.0b query-block capture. AM compaction fits each sealed block of
+// kKvflashAmBlockTokens tokens from the queries of that block's own prefill.
+inline constexpr int kKvflashAmBlockTokens = 640;
+
+// Tokens of the chunk at kv_pos that stay inside kv_pos's block, so one
+// ubatch never feeds two blocks' capture buffers.
+inline int q_block_chunk_tokens(int kv_pos, int n_tokens, int block_tokens) {
+    return std::min(n_tokens, block_tokens - kv_pos % block_tokens);
+}
+
+struct QBlockPlan {
+    int  first = 0;        // chunk tokens [first, first + count) are captured
+    int  count = 0;        // 0: nothing to capture in this chunk
+    int  dst   = 0;        // block row of chunk token `first`
+    int  block = 0;        // index of the block kv_pos lies in
+    bool seals = false;    // the chunk ends exactly on the block's last token
+};
+
+// Capture plan for a chunk [kv_pos, kv_pos + n_tokens) that does not cross a
+// block boundary (see q_block_chunk_tokens). A block that began before this
+// prefill (prefill_start, a restored prefix) is incomplete here and is never
+// captured or sealed.
+inline QBlockPlan plan_q_block_window(int kv_pos, int n_tokens, int block_tokens,
+                                      int prefill_start) {
+    QBlockPlan p;
+    const int block_start = kv_pos - kv_pos % block_tokens;
+    p.block = kv_pos / block_tokens;
+    if (block_start < prefill_start) return p;
+    p.count = n_tokens;
+    p.dst = kv_pos - block_start;
+    p.seals = (kv_pos + n_tokens) % block_tokens == 0;
+    return p;
+}
+
 inline int qwen35_prefill_ubatch(int fallback) {
     const char * value = std::getenv("LUCE_PREFILL_UBATCH");
     return value ? std::max(1, std::atoi(value)) : fallback;

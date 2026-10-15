@@ -425,6 +425,10 @@ bool Qwen35Backend::init() {
     // model (Spark's pattern). LRU is the fallback when nothing is found
     // (or the explicit choice via --kvflash-policy lru).
     kvflash_qk_policy_ = kvflash_policy_is_qk();
+    {
+        const char * am = std::getenv("LUCE_KVFLASH_AM_CAPTURE");
+        kvflash_am_capture_ = am && am[0] == '1';
+    }
     if (std::getenv("LUCE_KVFLASH") && !kvflash_qk_policy_) {
         kvflash_drafter_path_ = kvflash_find_drafter(
             cfg_.target_path.c_str());
@@ -2244,6 +2248,17 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     const bool restored_off_grid = kv_offset > 0 &&
         !std::binary_search(restore_points.begin(), restore_points.end(), kv_offset);
 
+    // KVFlash AM query capture (LUCE_KVFLASH_AM_CAPTURE=1): single-device
+    // dense Qwen only. The buffer is allocated at the first captured chunk of
+    // a block and freed at its seal (kvflash_am_seal_block) or when the
+    // prefill ends, whichever comes first.
+    bool am_capture = kvflash_am_capture_ && !w_.is_bailingmoe3 &&
+                      !cfg_.device.is_tensor_parallel();
+    struct AmCaptureGuard {
+        TargetCache & cache;
+        ~AmCaptureGuard() { free_q_block_capture(cache); }
+    } am_capture_guard{cache_};
+
     // Chunked prefill
     std::vector<float> embed_buf((size_t)hidden * prefill_ubatch);
     int committed = kv_offset;
@@ -2258,12 +2273,17 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         // Between restore points chunks keep to the ubatch grid: attention
         // over chunks off it is markedly slower.
         // Pooled kvflash prefill keeps its own chunking and never snapshots.
-        const int n_tokens = kvf_paged
+        const int planned_tokens = kvf_paged
             ? std::min(prefill_ubatch, prompt_len - start)
             : qwen35_prefill_chunk_tokens(
                   kv_pos, prompt_len - start, prefill_ubatch, restore_points,
                   start == 0 && restored_off_grid ? kQwen35OffGridLeadTokens
                                                   : kQwen35MinChunkTokens);
+        // Query capture keeps each chunk inside one AM block (see
+        // q_block_chunk_tokens); capture off leaves the chunking untouched.
+        const int n_tokens = am_capture
+            ? q_block_chunk_tokens(kv_pos, planned_tokens, kKvflashAmBlockTokens)
+            : planned_tokens;
         // When snap_pos falls inside this chunk (a cut that is not a restore
         // point), snapshot at the chunk START kv_pos: the largest chunk
         // boundary <= snap_pos, strictly within the requested prefix, so a
@@ -2311,6 +2331,16 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         // definitions at prompt start to propagate into KV values that
         // decode-time windowed attention will later read.
         static const bool prefill_timing = std::getenv("LUCE_PREFILL_TIMING") != nullptr;
+        QBlockPlan am_plan;
+        if (am_capture) {
+            am_plan = plan_q_block_window(kv_pos, n_tokens, kKvflashAmBlockTokens, kv_offset);
+            if (am_plan.count > 0 &&
+                !alloc_q_block_capture(cache_, w_, kKvflashAmBlockTokens)) {
+                std::fprintf(stderr, "[kvflash-am] query capture off: %s\n", luce_last_error());
+                am_capture = false;
+                am_plan = QBlockPlan{};
+            }
+        }
         const auto t_build0 = std::chrono::steady_clock::now();
         if (!build_target_step(sg_, w_, cache_, target_backend_,
                                /*kv_start=*/kv_pos, /*n_tokens=*/n_tokens,
@@ -2321,7 +2351,13 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
                                    (start + n_tokens < prompt_len ? 1 : 0),
                                cfg_.kq_stride_pad,
                                should_capture_moe_router(),
-                               /*kvflash_mask=*/kvf_paged)) {
+                               /*kvflash_mask=*/kvf_paged,
+                               /*capture_qk=*/false, /*paged_attention=*/false,
+                               /*n_seqs=*/1, /*seq_slot=*/0, /*paged_max_kv_len=*/0,
+                               /*n_prefill_tokens=*/0, /*prefill_segments=*/nullptr,
+                               /*n_prefill_segments=*/0, /*n_logits_rows=*/0,
+                               /*compact_slots=*/false,
+                               QBlockWindow{am_plan.first, am_plan.count, am_plan.dst})) {
             std::fprintf(stderr, "prefill build @%d\n", kv_pos);
             return -1;
         }
@@ -2409,6 +2445,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             return -1;
         }
         after_target_compute(sg_, kv_pos, n_tokens);
+        if (am_plan.seals) kvflash_am_seal_block(am_plan.block);
 
         int32_t last_tok = -1;
         const bool is_final_chunk = (start + n_tokens >= prompt_len);
@@ -2608,6 +2645,15 @@ void Qwen35Backend::kvflash_maybe_reselect(int generated) {
                      generated, events, kvflash_pager_.resident_blocks(),
                      kvflash_tokens_ / kvflash_pager_.chunk_tokens());
     }
+}
+
+void Qwen35Backend::kvflash_am_seal_block(int block) {
+    // M4 (scoring) and M5 (fit) consume cache_.q_blk here, while the block's
+    // queries are on the device; the buffer is freed right after.
+    std::fprintf(stderr, "[kvflash-am] sealed block %d (%d tokens), query capture %.1f MiB freed\n",
+                 block, kKvflashAmBlockTokens,
+                 (double)q_block_capture_bytes(w_, kKvflashAmBlockTokens) / (1024.0 * 1024.0));
+    free_q_block_capture(cache_);
 }
 
 bool Qwen35Backend::do_ar_decode(int committed, ThinkingBudget & budget,
