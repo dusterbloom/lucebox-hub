@@ -20,8 +20,13 @@ uint64_t fnv(const void * p, size_t n, uint64_t h = 1469598103934665603ull) {
     return h;
 }
 
+// Graph forms: EXPANDED = gamma view expanded first (hc_mix and the PLE grouped norms, default); HC_LEGACY = the
+// view visited as the MUL operand (LUCE_HC_NORM_MUL_LEGACY=1 / LUCE_PLE_NORM_MUL_LEGACY=1); PLE_ROW_LEGACY = the old
+// decode PLE form, MUL on a 2-D RESHAPE of the norm output by the flat gamma (the RESHAPE sits between the two).
+enum Form { EXPANDED, HC_LEGACY, PLE_ROW_LEGACY };
+
 // Returns the output hash; `adjacent` reports whether the MUL node directly follows the RMS_NORM node.
-uint64_t run(ggml_backend_t gpu, int T, bool expand_first, bool & adjacent) {
+uint64_t run(ggml_backend_t gpu, int T, Form form, bool & adjacent) {
     const int n_embd = 2560, hc = 4;
     ggml_init_params ip{ 16 * 1024 * 1024, nullptr, true };
     ggml_context * c = ggml_init(ip);
@@ -30,8 +35,10 @@ uint64_t run(ggml_backend_t gpu, int T, bool expand_first, bool & adjacent) {
     ggml_set_input(x); ggml_set_input(w);
     ggml_cgraph * gf = ggml_new_graph(c);
     ggml_tensor * gamma = ggml_reshape_2d(c, w, n_embd, hc);
-    if (expand_first) ggml_build_forward_expand(gf, gamma);
-    ggml_tensor * out = ggml_mul(c, ggml_rms_norm(c, x, 1e-6f), gamma);
+    if (form == EXPANDED) ggml_build_forward_expand(gf, gamma);
+    ggml_tensor * out = form == PLE_ROW_LEGACY
+        ? ggml_reshape_3d(c, ggml_mul(c, ggml_reshape_2d(c, ggml_rms_norm(c, x, 1e-6f), n_embd * hc, T), w), n_embd, hc, T)
+        : ggml_mul(c, ggml_rms_norm(c, x, 1e-6f), gamma);
     ggml_set_output(out);
     ggml_build_forward_expand(gf, out);
     adjacent = false;
@@ -64,11 +71,11 @@ int main() {
     if (!gpu) { std::printf("[hc-norm-mul] SKIP: no GPU\n"); return 77; }
     bool ok = true;
     for (int T : { 1028, 300, 1 }) {
-        bool adj_new = false, adj_old = false;
-        const uint64_t hn = run(gpu, T, true, adj_new), ho = run(gpu, T, false, adj_old);
-        const bool pass = hn && hn == ho && adj_new && !adj_old;
-        std::printf("[hc-norm-mul] T=%d expanded-first %llx (adjacent %d) legacy %llx (adjacent %d) %s\n", T,
-                    (unsigned long long) hn, adj_new, (unsigned long long) ho, adj_old, pass ? "PASS" : "FAIL");
+        bool adj_new = false, adj_old = false, adj_row = false;
+        const uint64_t hn = run(gpu, T, EXPANDED, adj_new), ho = run(gpu, T, HC_LEGACY, adj_old), hr = run(gpu, T, PLE_ROW_LEGACY, adj_row);
+        const bool pass = hn && hn == ho && hn == hr && adj_new && !adj_old && !adj_row;
+        std::printf("[hc-norm-mul] T=%d expanded-first %llx (adjacent %d) legacy %llx (adjacent %d) ple-row-legacy %llx (adjacent %d) %s\n", T,
+                    (unsigned long long) hn, adj_new, (unsigned long long) ho, adj_old, (unsigned long long) hr, adj_row, pass ? "PASS" : "FAIL");
         ok = ok && pass;
     }
     ggml_backend_free(gpu);

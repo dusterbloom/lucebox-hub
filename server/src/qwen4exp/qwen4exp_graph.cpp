@@ -1193,6 +1193,22 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
 
 // ── Per-layer n-gram embedding (PLE) ────────────────────────────────────
 
+// The PLE grouped norm: RMS_NORM over [n_embd, hc, T] then MUL by the gamma weight viewed [n_embd, hc]. The gamma
+// view is expanded into the graph first so RMS_NORM and MUL are adjacent nodes and the backend fuses them (as in
+// hc_mix; the fused kernel forms (scale * x) * gamma with the same two roundings). Visited as the MUL's operand the
+// RESHAPE landed between them and the three sites per forward ran rms_norm_f32 + op_mul (FUSION-AUDIT.md).
+// LUCE_PLE_NORM_MUL_LEGACY=1 keeps that order.
+static bool ple_norm_mul_legacy() {
+    static const bool v = [] { const char * e = std::getenv("LUCE_PLE_NORM_MUL_LEGACY"); return e && std::atoi(e); }();
+    return v;
+}
+static ggml_tensor * ple_grouped_norm(ggml_context * c, ggml_cgraph * gf, ggml_tensor * x, ggml_tensor * nw,
+                                      int64_t n_embd, int64_t hc, int64_t T, float eps) {
+    ggml_tensor * gamma = ggml_reshape_2d(c, nw, n_embd, hc);
+    if (!ple_norm_mul_legacy()) ggml_build_forward_expand(gf, gamma);
+    return ggml_mul(c, ggml_rms_norm(c, ggml_reshape_3d(c, x, n_embd, hc, T), eps), gamma);
+}
+
 // spec_state (verify forward): receives the conv history after each token.
 // query_pre: hidden already normalised by ple_norm_query (the previous layer's HC_COMBINE_NORM emitted it as its
 // second channel), so the grouped query norm is skipped.
@@ -1210,12 +1226,7 @@ ggml_tensor * build_ple(ggml_context * c, ggml_cgraph * gf, ggml_tensor * hidden
     ggml_tensor * key   = mm(c, L.ple_key,   ple_emb);   // [hc_dim, T]
     ggml_tensor * value = mm(c, L.ple_value, ple_emb);   // [n_embd, T]
 
-    // gamma applied on the 3-D norm output (nw viewed [n_embd, hc]) so RMS_NORM + MUL fuse into one kernel.
-    auto grouped_norm = [&](ggml_tensor * x, ggml_tensor * nw) {
-        ggml_tensor * t = ggml_reshape_3d(c, x, n_embd, hc, T);
-        t = ggml_rms_norm(c, t, eps);
-        return ggml_mul(c, t, ggml_reshape_2d(c, nw, n_embd, hc));
-    };
+    auto grouped_norm = [&](ggml_tensor * x, ggml_tensor * nw) { return ple_grouped_norm(c, gf, x, nw, n_embd, hc, T, eps); };
 
     dump_mark(ple_emb, "ple.inp");
     dump_mark(key, "ple.key");
@@ -1388,11 +1399,7 @@ static ggml_tensor * build_ple_row(ggml_context * c, ggml_cgraph * gf,
         const Qwen4ExpLayer & L, const Qwen4ExpWeights & w, ggml_tensor * state) {
     const int64_t n_embd = w.n_embd, hc = w.n_hc, hc_dim = n_embd * hc;
     const float eps = w.rms_eps;
-    auto grouped_norm = [&](ggml_tensor * x, ggml_tensor * nw) {
-        ggml_tensor * t = ggml_rms_norm(c, ggml_reshape_3d(c, x, n_embd, hc, 1), eps);
-        return ggml_reshape_3d(c, ggml_mul(c, ggml_reshape_2d(c, t, hc_dim, 1), nw),
-                               n_embd, hc, 1);
-    };
+    auto grouped_norm = [&](ggml_tensor * x, ggml_tensor * nw) { return ple_grouped_norm(c, gf, x, nw, n_embd, hc, 1, eps); };
     key = grouped_norm(key, L.ple_norm_key);
     ggml_tensor * query = grouped_norm(hidden, L.ple_norm_query);
     ggml_tensor * score = ggml_scale(c, ggml_sum_rows(c, ggml_mul(c, key, query)),
