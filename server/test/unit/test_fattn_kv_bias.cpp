@@ -290,9 +290,9 @@ int main(int argc, char ** argv) {
                 for (int mask = 0; mask < 2; ++mask)
                     for (int sinks = 0; sinks < 2; ++sinks)
                         cases.push_back({ s, ty, nq, (bool) mask, (bool) sinks, 0.0f });
-    // softcap: the bias is added after the cap
+    // softcap: the bias is added after the cap (D64 softcap has no mma kernel)
     for (ggml_type ty : { GGML_TYPE_F16, GGML_TYPE_Q8_0 })
-        for (int nq : N_QS) cases.push_back({ SHAPES[1], ty, nq, true, false, 20.0f });
+        for (int nq : N_QS) cases.push_back({ SHAPES[0], ty, nq, true, false, 20.0f });
 
     Tally tc, tg;
     for (const Case & c : cases) {
