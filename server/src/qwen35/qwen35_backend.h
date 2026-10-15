@@ -279,7 +279,7 @@ protected:
     // KVFlash 2.0b M3: capture the post-RoPE queries of the block being
     // sealed during prefill (LUCE_KVFLASH_AM_CAPTURE=1, off by default).
     bool kvflash_am_capture_ = false;
-    void kvflash_am_seal_block(int block, int slot);
+    virtual void kvflash_am_seal_block(int block, int slot);
     // Pool keys for every chunk sealed before `committed` not pooled yet.
     void kvflash_qk_pool_to(int committed);
     // Rebuild pager mapping after (re)prefill: positions [0, committed)
