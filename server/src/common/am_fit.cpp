@@ -22,6 +22,18 @@ ggml_backend_buffer_t buffer_of(const ggml_tensor * t) {
     return (t->view_src ? t->view_src : t)->buffer;
 }
 
+// An operand as a sum of F16 tensors: {x} for F16, {hi, lo} for F32 with x = hi + lo (22
+// mantissa bits). CUDA runs F32 matmuls on TF32 tensor cores whatever the op precision says
+// (cuBLAS math mode TF32, MMF kernels), which costs ~1e-3 relative in the logits; F16
+// operands honour GGML_PREC_F32 (fp32 accumulation, exact F16 products), so F32 inputs are
+// split and multiplied as F16 pieces. F16 inputs (the engine's feed) take the single term.
+std::vector<ggml_tensor *> f16_parts(ggml_context * ctx, ggml_tensor * x) {
+    if (x->type == GGML_TYPE_F16) return { x };
+    ggml_tensor * hi = ggml_cast(ctx, x, GGML_TYPE_F16);
+    ggml_tensor * lo = ggml_cast(ctx, ggml_sub(ctx, x, ggml_cast(ctx, hi, GGML_TYPE_F32)), GGML_TYPE_F16);
+    return { hi, lo };
+}
+
 // Scores of one query chunk, summed over queries and over the G query heads of
 // every KV head, added in place into `acc` [1, T, n_kv]. All softmax work is
 // fp32. Layout trick: ggml_mul_mat broadcasts src0 (K, n_kv) over src1 (Q,
@@ -32,11 +44,16 @@ void build_chunk(ggml_context * ctx, ggml_cgraph * gf, const ScoreDims & D, ggml
     const int G = D.n_head / D.n_kv_head;
     ggml_tensor * qc = ggml_view_3d(ctx, q16, D.head_dim, nq, D.n_head, q16->nb[1], q16->nb[2],
                                     (size_t) q0 * q16->nb[1]);
-    ggml_tensor * qf = q16->type == GGML_TYPE_F32 ? qc : ggml_cast(ctx, qc, GGML_TYPE_F32);  // [d, nq, n_head]
-    ggml_tensor * s  = ggml_mul_mat(ctx, kt, qf);                                  // [T, nq, n_head]
-    // The default precision lets CUDA round the logits to F16 (error ~1e-3 in
-    // the scores); the softmax needs fp32 logits.
-    ggml_mul_mat_set_prec(s, GGML_PREC_F32);
+    ggml_tensor * s = nullptr;                                                     // [T, nq, n_head]
+    const std::vector<ggml_tensor *> kp = f16_parts(ctx, kt);
+    const std::vector<ggml_tensor *> qp = f16_parts(ctx, qc);
+    for (size_t i = 0; i < kp.size(); ++i)
+        for (size_t j = 0; j < qp.size(); ++j) {
+            if (i == 1 && j == 1) continue;  // lo x lo is below 2^-22 relative
+            ggml_tensor * t = ggml_mul_mat(ctx, kp[i], ggml_cast(ctx, qp[j], GGML_TYPE_F32));
+            ggml_mul_mat_set_prec(t, GGML_PREC_F32);
+            s = s ? ggml_add(ctx, s, t) : t;
+        }
     ggml_tensor * w  = ggml_soft_max_ext(ctx, s, nullptr, 1.0f / std::sqrt((float) D.head_dim), 0.0f);
     ggml_tensor * w2 = ggml_sqr(ctx, w);
     ggml_tensor * wt = ggml_cont(ctx, ggml_permute(ctx, w2, 1, 0, 2, 3));          // [nq, T, n_head]
@@ -76,7 +93,7 @@ bool score_keys(ggml_backend_t backend, ggml_tensor * q, ggml_tensor * k, int ch
     const int nq_chunk = chunk_rows / D.n_head;  // >= 1
     for (int q0 = 0; q0 < D.n_queries; q0 += nq_chunk) {
         const int nq = std::min(nq_chunk, D.n_queries - q0);
-        ggml_init_params gp = { ggml_tensor_overhead() * 32 + ggml_graph_overhead(), nullptr, true };
+        ggml_init_params gp = { ggml_tensor_overhead() * 128 + ggml_graph_overhead(), nullptr, true };
         CtxPtr gctx(ggml_init(gp));
         if (!gctx) return fail("ggml_init failed");
         ggml_cgraph * gf = ggml_new_graph(gctx.get());

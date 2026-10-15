@@ -298,6 +298,7 @@ void run_extra_suite(const Backend & b) {
     run_scores(b, "real shape", real, 8192, real_ref);
     run_scores(b, "real shape chunk_rows=1000", real, 1000, real_ref);
     run_scores(b, "real shape chunk_rows=24 (one query per head per chunk)", real, 24, real_ref);
+    run_scores(b, "real shape chunk_rows=192 (8 queries per chunk, MMF width)", real, 192, real_ref);
 
     // chunk_rows below n_head cannot be honoured and must be rejected.
     {
@@ -398,6 +399,64 @@ void run_extra_suite(const Backend & b) {
     }
 }
 
+// General (not F16-representable) F32 inputs through the tensor form, against a double
+// reference that sees the same float values. Catches matmul paths that round the logits
+// below fp32 (F16 output, TF32 tensor cores) on narrow chunks, which F16-exact test data hides.
+void run_f32_general(const Backend & b) {
+    g_rng = 0x51ed270b8a1c3d29ull;
+    const int d = 256, nh = 24, nkv = 4, T = 640, n = 640;
+    std::vector<float> q((size_t) d * n * nh), kf((size_t) d * T * nkv);
+    for (float & x : q) x = next_gauss();
+    for (int h = 0; h < nkv; ++h)
+        for (int j = 0; j < T; ++j) {
+            const float scale = std::exp(0.5f * next_gauss());
+            for (int c = 0; c < d; ++c) kf[((size_t) h * T + j) * d + c] = scale * next_gauss();
+        }
+    for (ggml_type kt : { GGML_TYPE_F32, GGML_TYPE_F16 }) {
+        std::vector<ggml_fp16_t> k16;
+        std::vector<float> kref = kf;  // what the backend will see
+        if (kt == GGML_TYPE_F16) {
+            k16.resize(kf.size());
+            for (size_t i = 0; i < kf.size(); ++i) { k16[i] = ggml_fp32_to_fp16(kf[i]); kref[i] = ggml_fp16_to_fp32(k16[i]); }
+        }
+        // double reference on the exact float values
+        const int G = nh / nkv;
+        std::vector<double> ref((size_t) nkv * T, 0.0), s(T);
+        for (int h = 0; h < nkv; ++h)
+            for (int g = 0; g < G; ++g)
+                for (int i = 0; i < n; ++i) {
+                    double mx = -1e300;
+                    for (int j = 0; j < T; ++j) {
+                        double a = 0;
+                        for (int c = 0; c < d; ++c) a += (double) q[((size_t) (h * G + g) * n + i) * d + c] * kref[((size_t) h * T + j) * d + c];
+                        s[j] = a / std::sqrt((double) d);
+                        mx = std::max(mx, s[j]);
+                    }
+                    double sum = 0;
+                    for (int j = 0; j < T; ++j) { s[j] = std::exp(s[j] - mx); sum += s[j]; }
+                    for (int j = 0; j < T; ++j) ref[(size_t) h * T + j] += (s[j] / sum) * (s[j] / sum);
+                }
+        ggml_init_params ip = { ggml_tensor_overhead() * 4, nullptr, true };
+        ggml_context * ctx = ggml_init(ip);
+        ggml_tensor * qt = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, d, n, nh);
+        ggml_tensor * ktn = ggml_new_tensor_3d(ctx, kt, d, T, nkv);
+        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, b.be);
+        ggml_backend_tensor_set(qt, q.data(), 0, ggml_nbytes(qt));
+        ggml_backend_tensor_set(ktn, kt == GGML_TYPE_F32 ? (const void *) kf.data() : (const void *) k16.data(), 0, ggml_nbytes(ktn));
+        for (int rows : { 8192, 1000, 192, 24 }) {
+            std::vector<float> got;
+            std::string err;
+            const bool ok = luce::am::score_keys(b.be, qt, ktn, rows, got, &err);
+            const double e = ok ? score_err(got, ref) : 1e30;
+            char nb[96];
+            std::snprintf(nb, sizeof nb, " K=%s chunk_rows=%d err/tol=%.3g", kt == GGML_TYPE_F32 ? "F32" : "F16", rows, e);
+            check(ok && e <= 1.0, std::string(b.name) + " general F32 Q inputs vs double reference" + nb + (ok ? "" : " " + err));
+        }
+        ggml_backend_buffer_free(buf);
+        ggml_free(ctx);
+    }
+}
+
 void run_bench(const Backend & b) {
     Problem p = make_problem(256, 24, 4, 640, 640);
     std::vector<int32_t> out;
@@ -439,7 +498,7 @@ int main(int argc, char ** argv) {
     (void) cpu_only;
 #endif
     for (const Backend & b : backends) {
-        if (bench) run_bench(b); else { run_backend_suite(b); run_extra_suite(b); }
+        if (bench) run_bench(b); else { run_backend_suite(b); run_extra_suite(b); run_f32_general(b); }
     }
     if (gpu) ggml_backend_free(gpu);
     ggml_backend_free(cpu);

@@ -15,7 +15,9 @@
 // Tie-aware equality of one head: every key in our top-k but not in the reference's has a
 // reference score within `tol` (relative) of the reference's k-th score, and every key in the
 // reference's top-k but not in ours is likewise within `tol` of that k-th score.
-// Env: LUCE_AM_TOL overrides the default tol 1e-3.
+// Bars (fixed constants, no override): scores within 1e-3 relative per head, selected-key
+// overlap >= 99%, at most 2 boundary swaps per head, every head tie-aware equal, and at least one
+// case with scores must run.
 //
 // usage: test_am_fit_gate [--cpu-only]
 #include "am_fixture.h"
@@ -60,24 +62,28 @@ struct TieCmp {
     bool   tie_aware_eq = true;
 };
 
-TieCmp compare_topk(const int32_t * ours, const int32_t * ref, int k, const float * ref_scores, double tol) {
+TieCmp compare_topk(const int32_t * ours, const int32_t * ref, int k, int n, const float * ref_scores, double tol) {
     TieCmp r;
+    // Anything that is not a finite, usable comparison is "not equal"; NaN must never pass a `gap > tol` test.
+    if (!(tol >= 0.0) || !std::isfinite(tol) || k < 1) { r.tie_aware_eq = false; return r; }
     double kth = 1e300;
-    for (int i = 0; i < k; ++i) kth = std::min<double>(kth, ref_scores[ref[i]]);
+    for (int i = 0; i < k; ++i) {
+        if (ref[i] < 0 || ref[i] >= n || ours[i] < 0 || ours[i] >= n) { r.tie_aware_eq = false; return r; }
+        kth = std::min<double>(kth, ref_scores[ref[i]]);
+    }
+    if (!std::isfinite(kth)) { r.tie_aware_eq = false; return r; }
     const double den = std::max(kth, 1e-30);
     auto in = [k](const int32_t * set, int32_t key) { return std::find(set, set + k, key) != set + k; };
+    auto note = [&](double gap) {
+        r.worst_gap = std::isfinite(gap) ? std::max(r.worst_gap, gap) : r.worst_gap;
+        if (!(gap <= tol)) r.tie_aware_eq = false;  // NaN fails here
+    };
     for (int i = 0; i < k; ++i) {
         if (!in(ref, ours[i])) {
             ++r.swapped;
-            const double gap = std::fabs(kth - ref_scores[ours[i]]) / den;
-            r.worst_gap = std::max(r.worst_gap, gap);
-            if (gap > tol) r.tie_aware_eq = false;
+            note(std::fabs(kth - ref_scores[ours[i]]) / den);
         }
-        if (!in(ours, ref[i])) {
-            const double gap = std::fabs(ref_scores[ref[i]] - kth) / den;
-            r.worst_gap = std::max(r.worst_gap, gap);
-            if (gap > tol) r.tie_aware_eq = false;
-        }
+        if (!in(ours, ref[i])) note(std::fabs(ref_scores[ref[i]] - kth) / den);
     }
     return r;
 }
@@ -87,23 +93,23 @@ void test_compare_topk() {
     const int32_t ref[] = { 0, 1, 2, 3 };
     {
         const int32_t o[] = { 3, 2, 1, 0 };
-        const TieCmp c = compare_topk(o, ref, 4, sc, 1e-3);
+        const TieCmp c = compare_topk(o, ref, 4, 7, sc, 1e-3);
         check(c.tie_aware_eq && c.swapped == 0 && c.worst_gap == 0.0, "compare_topk: same set in another order is equal, 0 swaps");
     }
     {
         const int32_t o[] = { 0, 1, 2, 4 };  // 6.9995 is within 1e-3 of 7
-        const TieCmp c = compare_topk(o, ref, 4, sc, 1e-3);
+        const TieCmp c = compare_topk(o, ref, 4, 7, sc, 1e-3);
         check(c.tie_aware_eq && c.swapped == 1 && c.worst_gap > 6e-5 && c.worst_gap < 8e-5, "compare_topk: swap inside tolerance is equal, 1 swap, gap 7.1e-5");
     }
     {
         const int32_t o[] = { 0, 1, 2, 5 };  // 6.0 is 14% below 7
-        const TieCmp c = compare_topk(o, ref, 4, sc, 1e-3);
+        const TieCmp c = compare_topk(o, ref, 4, 7, sc, 1e-3);
         check(!c.tie_aware_eq && c.swapped == 1 && c.worst_gap > 0.14, "compare_topk: swap outside tolerance fails");
     }
     {
         const float flat[] = { 5, 5, 5, 5, 5 };  // exact ties: any members are equal
         const int32_t r2[] = { 0, 1 }, o2[] = { 3, 4 };
-        const TieCmp c = compare_topk(o2, r2, 2, flat, 1e-3);
+        const TieCmp c = compare_topk(o2, r2, 2, 5, flat, 1e-3);
         check(c.tie_aware_eq && c.swapped == 2 && c.worst_gap == 0.0, "compare_topk: exact ties swap freely");
     }
 }
@@ -143,48 +149,88 @@ bool our_rms_scores(const Backend & b, const std::vector<float> & q, const std::
 struct ArmStats {
     double max_rel_err = 0, max_err_over_tol = 0, worst_gap = 0;
     int    heads = 0, bad_heads = 0, swapped_total = 0, swapped_max = 0;
+    int    score_bad_heads = 0, selected = 0;
 };
+
+// Gate bars (plan R3: same selected keys >= 99%, outputs within 1e-3 relative). Fixed constants:
+// there is no knob to loosen them.
+constexpr double kScoreTol       = 1e-3;
+constexpr double kMinOverlap     = 0.99;
+constexpr int    kMaxSwapsPerHead = 2;    // boundary swaps, each already required to sit within kScoreTol of the cutoff
+
+// Empty when the arm passes the gate, else the reason.
+std::string gate_verdict(const ArmStats & s) {
+    if (s.heads <= 0 || s.selected <= 0) return "no heads were compared";
+    if (s.bad_heads) return std::to_string(s.bad_heads) + " heads not tie-aware equal";
+    if (s.score_bad_heads) return std::to_string(s.score_bad_heads) + " heads with a score error above tolerance";
+    const double overlap = 1.0 - (double) s.swapped_total / s.selected;
+    if (overlap < kMinOverlap) return "selected-key overlap " + std::to_string(overlap) + " below " + std::to_string(kMinOverlap);
+    if (s.swapped_max > kMaxSwapsPerHead) return "a head has " + std::to_string(s.swapped_max) + " boundary swaps, bound is " + std::to_string(kMaxSwapsPerHead);
+    return "";
+}
 
 // Returns false only on a fixture / run error. Fills per-arm stats (index 0: q16, 1: q32).
 bool gate_case(const Backend & b, const am_fixture::Case & c, double tol, ArmStats st[2], std::string * err) {
+    auto fail = [&](const std::string & m) { if (err) *err = c.name + ": " + m; return false; };
+    if (!(tol > 0.0) || !std::isfinite(tol)) return fail("tolerance must be finite and positive");
     std::string manifest;
     am_fixture::read_file(c.dir + "/manifest.json", manifest);
     int64_t d = 0, n = 0, nh = 0, nkv = 0, slots = 0;
     if (!am_fixture::manifest_int(manifest, "head_dim", d) || !am_fixture::manifest_int(manifest, "n_tokens", n) ||
         !am_fixture::manifest_int(manifest, "n_head", nh) || !am_fixture::manifest_int(manifest, "n_kv", nkv) ||
-        !am_fixture::manifest_int(manifest, "slots", slots)) {
-        if (err) *err = c.name + ": manifest lacks head_dim/n_tokens/n_head/n_kv/slots";
-        return false;
-    }
+        !am_fixture::manifest_int(manifest, "slots", slots))
+        return fail("manifest lacks head_dim/n_tokens/n_head/n_kv/slots");
+    // Bound every dimension before it sizes an allocation or a subscript (the files are then checked
+    // against these counts by size).
+    constexpr int64_t kMaxDim = 1 << 16;
+    if (d < 1 || d > kMaxDim || n < 1 || n > kMaxDim || nh < 1 || nh > 1024 || nkv < 1 || nkv > nh || nh % nkv != 0 ||
+        slots < 1 || slots > n)
+        return fail("implausible dimensions head_dim=" + std::to_string(d) + " n_tokens=" + std::to_string(n) + " n_head=" +
+                    std::to_string(nh) + " n_kv=" + std::to_string(nkv) + " slots=" + std::to_string(slots));
     const size_t sm = manifest.find("\"score_method\"");
-    if (sm != std::string::npos && manifest.find("rms", sm) > sm + 48) {
-        if (err) *err = c.name + ": the fixture's score_method is not rms, scores are not comparable";
-        return false;
-    }
+    if (sm != std::string::npos && manifest.find("rms", sm) > sm + 48)
+        return fail("the fixture's score_method is not rms, scores are not comparable");
     for (int layer : c.layers) {
         std::vector<float> q, k, ref;
         std::vector<int32_t> idx;
         if (!am_fixture::read_f32(c, layer, "q", d * n * nh, q, err) || !am_fixture::read_f32(c, layer, "k", d * n * nkv, k, err) ||
             !am_fixture::read_f32(c, layer, "scores", n * nkv, ref, err) || !am_fixture::read_i32(c, layer, "idx", slots * nkv, idx, err))
             return false;
+        for (float x : q) if (!std::isfinite(x)) return fail("non-finite value in q");
+        for (float x : k) if (!std::isfinite(x)) return fail("non-finite value in k");
+        for (float x : ref) if (!std::isfinite(x) || x < 0.0f) return fail("non-finite or negative reference score");
+        for (int h = 0; h < nkv; ++h) {
+            std::vector<char> seen(n, 0);
+            for (int r = 0; r < slots; ++r) {
+                const int32_t key = idx[(size_t) h * slots + r];
+                if (key < 0 || key >= n) return fail("reference index " + std::to_string(key) + " out of range [0, " + std::to_string(n) + ")");
+                if (seen[key]) return fail("reference indices are not unique (head " + std::to_string(h) + ")");
+                seen[key] = 1;
+            }
+        }
         for (int arm = 0; arm < 2; ++arm) {
             std::vector<float> rms;
             if (!our_rms_scores(b, q, k, (int) d, (int) n, (int) nh, (int) nkv, arm == 0, rms, err)) return false;
+            for (float x : rms) if (!std::isfinite(x)) return fail("non-finite score from am_fit");
             ArmStats & s = st[arm];
             for (int h = 0; h < nkv; ++h) {
                 const float * rs = &ref[(size_t) h * n];
                 const float * os = &rms[(size_t) h * n];
                 double mx = 0;
                 for (int j = 0; j < n; ++j) mx = std::max<double>(mx, rs[j]);
+                double head_err = 0;
                 for (int j = 0; j < n; ++j) {
                     const double e = std::fabs((double) os[j] - rs[j]);
                     s.max_rel_err = std::max(s.max_rel_err, e / std::max<double>(rs[j], 1e-30));
-                    s.max_err_over_tol = std::max(s.max_err_over_tol, e / (tol * rs[j] + 1e-6 * mx));
+                    head_err = std::max(head_err, e / (tol * rs[j] + 1e-6 * mx));
                 }
+                s.max_err_over_tol = std::max(s.max_err_over_tol, head_err);
+                if (!(head_err <= 1.0)) ++s.score_bad_heads;
                 std::vector<int32_t> ours(slots);
                 luce::am::select_top_k(os, (int) n, (int) slots, ours.data());
-                const TieCmp t = compare_topk(ours.data(), &idx[(size_t) h * slots], (int) slots, rs, tol);
+                const TieCmp t = compare_topk(ours.data(), &idx[(size_t) h * slots], (int) slots, (int) n, rs, tol);
                 ++s.heads;
+                s.selected += (int) slots;
                 s.bad_heads += t.tie_aware_eq ? 0 : 1;
                 s.swapped_total += t.swapped;
                 s.swapped_max = std::max(s.swapped_max, t.swapped);
@@ -195,26 +241,37 @@ bool gate_case(const Backend & b, const am_fixture::Case & c, double tol, ArmSta
     return true;
 }
 
-void report_gate(const Backend & b, const std::string & root, const std::string & label, double tol) {
+// Runs every case under `root`; true when the gate passes. Prints one GATE line per case and arm.
+bool gate_root(const Backend & b, const std::string & root, double tol, int * ran_out = nullptr) {
     const std::vector<std::string> dirs = am_fixture::case_dirs(root.c_str());
-    check(!dirs.empty(), std::string(b.name) + " " + label + ": fixture root has cases");
+    bool pass = true;
+    int ran = 0;
     for (const std::string & dir : dirs) {
         am_fixture::Case c;
         std::string err;
-        if (!am_fixture::load_case(dir, c, &err)) { check(false, std::string(b.name) + " " + dir + ": " + err); continue; }
+        if (!am_fixture::load_case(dir, c, &err)) { std::printf("GATEFAIL %s %s: %s\n", b.name, dir.c_str(), err.c_str()); pass = false; continue; }
         if (!std::ifstream(am_fixture::layer_path(c, c.layers[0], "scores", "f32"))) {
             std::printf("SKIP  %s %s: no scores/idx (queries-only case)\n", b.name, c.name.c_str());
             continue;
         }
         ArmStats st[2];
-        if (!gate_case(b, c, tol, st, &err)) { check(false, std::string(b.name) + " " + c.name + ": " + err); continue; }
+        if (!gate_case(b, c, tol, st, &err)) { std::printf("GATEFAIL %s %s: %s\n", b.name, c.name.c_str(), err.c_str()); pass = false; continue; }
+        ++ran;
         static const char * arm_name[2] = { "q16", "q32" };
         for (int a = 0; a < 2; ++a)
-            std::printf("GATE  %s %-14s %s layers=%zu heads=%d  max_rel_err=%.3g max_err/tol=%.3g  swapped_total=%d swapped_max/head=%d worst_boundary_gap=%.3g  tie_aware_unequal_heads=%d  (tol %.0e)\n",
+            std::printf("GATE  %s %-14s %s layers=%zu heads=%d  max_rel_err=%.3g max_err/tol=%.3g  swapped_total=%d swapped_max/head=%d worst_boundary_gap=%.3g  score_bad_heads=%d tie_aware_unequal_heads=%d  (tol %.0e)\n",
                         b.name, c.name.c_str(), arm_name[a], c.layers.size(), st[a].heads, st[a].max_rel_err, st[a].max_err_over_tol,
-                        st[a].swapped_total, st[a].swapped_max, st[a].worst_gap, st[a].bad_heads, tol);
-        check(st[0].bad_heads == 0, std::string(b.name) + " " + c.name + " q16 arm: tie-aware equal on every head and layer");
+                        st[a].swapped_total, st[a].swapped_max, st[a].worst_gap, st[a].score_bad_heads, st[a].bad_heads, tol);
+        const std::string why = gate_verdict(st[0]);
+        if (!why.empty()) { std::printf("GATEFAIL %s %s q16 arm: %s\n", b.name, c.name.c_str(), why.c_str()); pass = false; }
     }
+    if (ran_out) *ran_out = ran;
+    if (ran == 0) { std::printf("GATEFAIL %s: no case with scores ran under %s\n", b.name, root.c_str()); pass = false; }
+    return pass;
+}
+
+void report_gate(const Backend & b, const std::string & root, double tol) {
+    check(gate_root(b, root, tol), std::string(b.name) + " real fixtures: gate passes");
 }
 
 // ---------------------------------------------------------------- self tests: reader + pipeline on a written fixture
@@ -328,6 +385,93 @@ void test_reader_and_pipeline(const std::vector<Backend> & backends) {
         write_bin(dir + "/L03_scores.f32", rms_ref[0]);
     }
 
+    // ---- hardening: the gate must bind (Codex follow-up review)
+    {
+        const Backend & b = backends[0];
+        auto rewrite_scores = [&](const std::vector<float> & v) { write_bin(dir + "/L03_scores.f32", v); };
+        auto rewrite_idx = [&](const std::vector<int32_t> & v) { write_bin(dir + "/L03_idx.i32", v); };
+        std::string good_manifest;
+        am_fixture::read_file(dir + "/manifest.json", good_manifest);
+        ArmStats st[2];
+
+        std::vector<float> dbl = rms_ref[0];
+        for (float & x : dbl) x *= 2.0f;
+        rewrite_scores(dbl);
+        const bool ok_dbl = gate_case(b, c, 1e-3, st, &err);
+        check(ok_dbl && !gate_verdict(st[0]).empty() && st[0].score_bad_heads > 0,
+              "gate binds on score error: doubling every reference score fails the verdict (" + gate_verdict(st[0]) + ")");
+        rewrite_scores(rms_ref[0]);
+
+        std::vector<int32_t> bad_idx = idx_ref[0];
+        bad_idx[5] = -1;
+        rewrite_idx(bad_idx);
+        check(!gate_case(b, c, 1e-3, st, &err) && err.find("index") != std::string::npos,
+              "reference index -1 is rejected before use as a subscript: " + err);
+        bad_idx = idx_ref[0];
+        bad_idx[5] = n;
+        rewrite_idx(bad_idx);
+        check(!gate_case(b, c, 1e-3, st, &err), "reference index == n is rejected");
+        bad_idx = idx_ref[0];
+        bad_idx[5] = bad_idx[4];
+        rewrite_idx(bad_idx);
+        check(!gate_case(b, c, 1e-3, st, &err) && err.find("unique") != std::string::npos,
+              "duplicate reference indices are rejected: " + err);
+        rewrite_idx(idx_ref[0]);
+
+        std::vector<float> nan_sc = rms_ref[0];
+        nan_sc[10] = std::nanf("");
+        rewrite_scores(nan_sc);
+        check(!gate_case(b, c, 1e-3, st, &err), "a NaN reference score fails the gate instead of leaving the max error at 0");
+        rewrite_scores(rms_ref[0]);
+
+        check(!gate_case(b, c, std::nan(""), st, &err), "a NaN tolerance is rejected");
+        check(!gate_case(b, c, 0.0, st, &err) && !gate_case(b, c, -1.0, st, &err), "a non-positive tolerance is rejected");
+        {
+            const float sc2[] = { 10, 9, 8, 7, 1 };
+            const int32_t rr[] = { 0, 1, 2, 3 }, oo[] = { 0, 1, 2, 4 };
+            check(!compare_topk(oo, rr, 4, 5, sc2, std::nan("")).tie_aware_eq, "compare_topk: a NaN tolerance never accepts a swap");
+            const float nan_sc2[] = { 10, 9, 8, 7, std::nanf("") };
+            check(!compare_topk(oo, rr, 4, 5, nan_sc2, 1e-3).tie_aware_eq, "compare_topk: a NaN score never accepts a swap");
+            const int32_t oor[] = { 0, 1, 2, 9 };
+            check(!compare_topk(oor, rr, 4, 5, sc2, 1e-3).tie_aware_eq, "compare_topk: an out-of-range key is not equal");
+        }
+
+        auto set_manifest = [&](const std::string & from, const std::string & to) {
+            std::string t = good_manifest;
+            t.replace(t.find(from), from.size(), to);
+            write_text(dir + "/manifest.json", t);
+        };
+        set_manifest("\"n_head\": 8", "\"n_head\": 7");
+        check(!gate_case(b, c, 1e-3, st, &err), "n_head not a multiple of n_kv is rejected");
+        set_manifest("\"n_tokens\": 200", "\"n_tokens\": 2000000000");
+        check(!gate_case(b, c, 1e-3, st, &err), "an absurd n_tokens is rejected before any allocation");
+        set_manifest("\"slots\": 16", "\"slots\": 201");
+        check(!gate_case(b, c, 1e-3, st, &err), "slots > n_tokens is rejected");
+        set_manifest("\"n_kv\": 2", "\"n_kv\": 0");
+        check(!gate_case(b, c, 1e-3, st, &err), "n_kv == 0 is rejected");
+        write_text(dir + "/manifest.json", good_manifest);
+
+        ArmStats v;
+        v.heads = 4; v.selected = 4 * 64; v.swapped_total = 3; v.swapped_max = 1;
+        check(!gate_verdict(v).empty(), "verdict: 3 of 256 selected keys swapped is below the 99% overlap bar");
+        v.swapped_total = 2; v.swapped_max = 3;
+        check(!gate_verdict(v).empty(), "verdict: more than 2 boundary swaps in one head fails");
+        v.swapped_total = 2; v.swapped_max = 2;
+        check(gate_verdict(v).empty(), "verdict: 2 of 256 swapped (99.2% overlap, 2 per head) passes");
+
+        int ran = 0;
+        check(gate_root(b, r, 1e-3, &ran) && ran == 1, "gate_root runs the synthetic case");
+        const std::string empty_root = r + "/qonly_root";
+        mkdir(empty_root.c_str(), 0755);
+        mkdir((empty_root + "/qonly").c_str(), 0755);
+        write_text(empty_root + "/qonly/manifest.json", "{\"layers\": [3]}");
+        check(!gate_root(b, empty_root, 1e-3, &ran) && ran == 0, "a root where no case ran (queries-only) fails the gate");
+        std::remove((empty_root + "/qonly/manifest.json").c_str());
+        rmdir((empty_root + "/qonly").c_str());
+        check(!gate_root(b, empty_root, 1e-3, &ran) && ran == 0, "an empty root fails the gate");
+        rmdir(empty_root.c_str());
+    }
+
     // cleanup
     for (int li = 0; li < 2; ++li)
         for (const char * nm : { "q.f32", "k.f32", "scores.f32", "idx.i32" }) {
@@ -364,9 +508,7 @@ int main(int argc, char ** argv) {
 #endif
     test_reader_and_pipeline(backends);
     if (const char * root = std::getenv("LUCE_AM_FIXTURES")) {
-        const char * t = std::getenv("LUCE_AM_TOL");
-        const double tol = t ? std::atof(t) : 1e-3;
-        for (const Backend & b : backends) report_gate(b, root, "real fixtures", tol);
+        for (const Backend & b : backends) report_gate(b, root, kScoreTol);
     } else {
         std::printf("SKIP  real fixture gate (LUCE_AM_FIXTURES not set)\n");
     }
