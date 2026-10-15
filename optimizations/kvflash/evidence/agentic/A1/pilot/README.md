@@ -39,3 +39,9 @@ By probe type, shipping arm:
 | traceback | 0 / 1 |
 
 The shipping arm's wrong answers are fluent and on topic, but not the fact asked for. They give a name, path or line from the same repository and the same file, but not the one in question. For example, gold `./src/plopp/graphics/graphicalview.py` became `./src/plopp/backends/plotly/canvas.py`, and gold `panzoom` became `Canvas`. They are not gibberish and they do not run to the length limit (1 of the 20 rows sampled hit 64 tokens).
+
+**The 64-token answer cap explains none of the losses** (`cap_check.py`, run 2026-10-15). The cap is the harness's `PROBE_MAX_TOKENS`, the same in B0 (asserted in `a1_core.Harness`). Scoring is exact match after whitespace, period and quote normalization. So a capped answer can only lose a correct gold when the gold itself does not fit.
+- The longest gold of the 204 probes is 118 characters, about 39 tokens. Every retained probe's gold fit, because the reference answered it within the cap.
+- 10 of the 118 shipping-arm rows hit the cap, against 2 of 204 for the reference. None was cut partway through its gold. All 10 are non-answers: the model calls a tool (`sed -n '259p' ...`), reasons aloud ("The user is asking me to recall the exact text of line 5 ..."), or emits a `finish` call. Exact match scores them wrong at any cap.
+- Counting all 10 as correct would still give 20/118, 16.9%.
+- No row in A1 or B0 has reasoning or think tokens.
