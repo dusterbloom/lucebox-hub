@@ -240,7 +240,13 @@ void run_case(const char * bname, ggml_backend_t be, const Case & c, const Data 
               const std::vector<float> & beta_inf, Tally & t) {
     const ggml_fp16_t * mask = c.mask ? d.mask.data() : nullptr;
     std::vector<float> base, biased, zero, inf;
-    if (run_fa(be, c, d, nullptr, mask, base) != Run::OK) {
+    const Run r0 = run_fa(be, c, d, nullptr, mask, base);
+    if (r0 == Run::FAILED) {  // a crash/alloc failure is never a skip
+        ++t.fail;
+        std::printf("FAIL    %-5s %s (no-bias compute failed)\n", bname, c.name().c_str());
+        return;
+    }
+    if (r0 == Run::UNSUPPORTED) {
         ++t.skip;
         std::printf("SKIP    %-5s %s (no-bias op unsupported)\n", bname, c.name().c_str());
         return;
