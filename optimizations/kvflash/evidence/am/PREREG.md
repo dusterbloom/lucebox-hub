@@ -545,3 +545,19 @@ An independent fact-check found that two R2b texts said "before any row" when th
 - **The smoke started before Amendment 1.** The smoke run on lucebox6 had already started when Amendment 1 was committed (fe8a834c, 09:40:15). So "before the smoke" in that amendment is wrong.
 - **The smoke wrote throwaway rows before the withdrawal.** It wrote `~/r1e/out/r2b_smoke/FULL-CHK__k1__t0.1__held.jsonl` at 09:40:49: 3 rows, held-out article 20, k = 1, full KV. The withdrawal came later (f8abef0d, 09:48:06), so "before any row" there is wrong. Both texts should say "before any kept row".
 - **Nothing changes.** Smoke rows are throwaway under the R2b text. Nobody read their accuracy for any purpose; only build seconds, answer seconds and peak memory were reported. The file stays on lucebox6, unused.
+
+### A1 Amendment 3 (2026-10-15, after the pilot started, before any pilot row was read): the server's tokenizer, and the swap rule
+
+Written at about 12:05 CEST, after the pilot started on lucebox6 at 09:53:12 UTC. At that point `FULL.jsonl` held 12 rows, from trajectory 1's first probe cut. Nobody has read whether they are correct. Both changes below were already in the code the pilot runs. They are commits 7725ffc2 and 53cfda9a. The files on lucebox6 have the committed md5s, and each was last modified before the launch. So the pilot runs under this amendment, and Amendment 2's discard rule ("if anything changes ... its rows are discarded") is not triggered.
+
+1. **A1 tokenizes with the server's own tokenizer.** This replaces the tokenizer choice in section 1 items 2 and 3.
+   - **The cause of the 1-to-44-token shortfall is found.** The server's hand-written Qwen3.5 pre-tokenizer (`server/src/server/tokenizer.cpp`) splits a whitespace-only line such as "\n   \n" into "\n" and "   \n". Hugging Face `tokenizers` keeps it as one piece. The template engine is not the cause.
+   - **The fix.** A1 now tokenizes with that `tokenizer.cpp`, compiled unchanged into `tokenize_cli` (`lucebox/a1/server_tok.py`). It runs over a tokenizer-only GGUF derived from the engine GGUF (`lucebox/a1/make_tok_gguf.py`).
+   - **Checked against B0.** Against `usage.prompt_tokens` of every FULL request in B0, 3292 of 3292 counts are equal, on both machines. The known departure in item 2 no longer exists.
+   - **Cut positions and the hash file.** Cut positions are recomputed with this tokenizer. The request-id hash file `evidence/agentic/A1/request_ids.sha256` (md5 b8da5217...) is generated under it and is identical on both machines. The prefix property holds on all 60 trajectories. The B0 labels are kept as before.
+2. **The swap rule in section 3 counts growth.** "Swap use exceeds 1 GiB" becomes "swap use grows by more than 1 GiB over its level when the watchdog starts". The 120 GiB `used` limit is unchanged.
+   - lucebox6 idles at about 459 MiB of swap.
+   - The first launch (09:50:34 UTC) was stopped during the model load when swap reached 1027 MiB. It wrote no row. It is kept in `~/r1e/out/a1_pilot.try1_swapkill`.
+3. **A record, not a change: the tool-parser round trip of section 1 item 1 passes.**
+   - 1400 of 1400 gold calls match on names and argument dicts.
+   - The other 38 of the 1438 decision points have no gold call, so there is nothing to round-trip. 37 are at the end of a trajectory and 1 has no call.
