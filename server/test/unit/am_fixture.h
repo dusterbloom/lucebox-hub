@@ -29,7 +29,17 @@ struct Case {
     std::string      dir;
     std::string      name;
     std::vector<int> layers;  // full-attention layer ids, in manifest order
+    // Top-level integers of the manifest, 0 when absent (the queries-only case has no fit dims).
+    int head_dim = 0, n_tokens = 0, n_head = 0, n_kv = 0, slots = 0;
 };
+
+// First integer value of `"key":` in the manifest text, or 0.
+inline int manifest_int(const std::string & m, const char * key) {
+    const size_t k = m.find(std::string("\"") + key + "\"");
+    if (k == std::string::npos) return 0;
+    const size_t colon = m.find(':', k);
+    return colon == std::string::npos ? 0 : (int) std::strtol(m.c_str() + colon + 1, nullptr, 10);
+}
 
 inline bool read_file(const std::string & path, std::string & out) {
     std::ifstream f(path, std::ios::binary);
@@ -48,6 +58,11 @@ inline bool load_case(const std::string & dir, Case & c, std::string * err = nul
     c.dir = dir;
     const size_t slash = dir.find_last_of('/');
     c.name = slash == std::string::npos ? dir : dir.substr(slash + 1);
+    c.head_dim = manifest_int(m, "head_dim");
+    c.n_tokens = manifest_int(m, "n_tokens");
+    c.n_head = manifest_int(m, "n_head");
+    c.n_kv = manifest_int(m, "n_kv");
+    c.slots = manifest_int(m, "slots");
     const size_t key = m.find("\"layers\"");
     const size_t open = key == std::string::npos ? key : m.find('[', key);
     const size_t close = open == std::string::npos ? open : m.find(']', open);

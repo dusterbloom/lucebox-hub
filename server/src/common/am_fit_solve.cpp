@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cfloat>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -286,6 +287,15 @@ SolveStatus solve_values_qr(const double * A_cm, const double * Y_cm, int n, int
     const SolveStatus st = lstsq_with_fallback(A_cm, n, t, Y_cm, d, p, C2_out);
     if (st == SolveStatus::Failed) std::fill(C2_out, C2_out + (size_t) t * d, 0.0);
     return st;
+}
+
+bool narrow_f32(const double * src, size_t n, float * dst) {
+    for (size_t i = 0; i < n; ++i) {
+        if (!std::isfinite(src[i]) || std::fabs(src[i]) > (double) FLT_MAX) return false;
+        dst[i] = (float) src[i];
+        if (!std::isfinite(dst[i])) return false;
+    }
+    return true;
 }
 
 // =====================================================================================
@@ -710,7 +720,7 @@ bool fit_after_init(GramAccumulator & acc, const BlockShape & shape, const NnlsP
     for (int g = 0; g < n_kv; ++g) {
         status[g] = qr ? solve_beta_qr(&bd.M[(size_t) g * t * bd.rows], &bd.y[(size_t) g * bd.rows], bd.rows, t, p, beta.data())
                        : solve_beta(&bg.MtM[(size_t) g * t * t], &bg.Mty[(size_t) g * t], t, p, beta.data());
-        for (int i = 0; i < t; ++i) beta_f[(size_t) g * t + i] = (float) beta[i];
+        if (status[g] != SolveStatus::Failed && !narrow_f32(beta.data(), t, &beta_f[(size_t) g * t])) status[g] = SolveStatus::Failed;
     }
     const auto t3 = clk::now();
     // A head whose beta solve failed has no valid beta: stop before the value stage.
@@ -723,7 +733,8 @@ bool fit_after_init(GramAccumulator & acc, const BlockShape & shape, const NnlsP
         const SolveStatus sv = qr ? solve_values_qr(&vd.A[(size_t) g * t * vd.rows], &vd.Y[(size_t) g * d * vd.rows], vd.rows, t, d, p, c2.data())
                                   : solve_values(&vg.AtA[(size_t) g * t * t], &vg.AtY[(size_t) g * t * d], t, d, p, c2.data());
         if (sv > status[g]) status[g] = sv;  // Ok < RidgeUsed < Failed
-        for (size_t i = 0; i < c2.size(); ++i) c2_f[(size_t) g * t * d + i] = (float) c2[i];
+        // A finite double outside the F32 range must not be published: fail the block.
+        if (sv != SolveStatus::Failed && !narrow_f32(c2.data(), c2.size(), &c2_f[(size_t) g * t * d])) status[g] = SolveStatus::Failed;
     }
     const auto t5 = clk::now();
     for (int g = 0; g < n_kv; ++g)

@@ -59,8 +59,10 @@ struct NnlsParams {
     double ridge = 1e-6;         // absolute diagonal ridge of the fallback (reference: 1e-6)
     // Route Gram: a Cholesky pivot not above chol_rel_tol * diagonal is a failure (0: pivot must be > 0).
     double chol_rel_tol = 0.0;
-    // Route Qr: R is numerically singular when min|R_kk| <= qr_rank_tol * max|R_kk|.
-    double qr_rank_tol = 1.4e-14;
+    // Route Qr: the plain solve is rejected when min|R_kk| <= qr_rank_tol * max|R_kk|. 0 (default) is the
+    // reference semantics: LAPACK gels only fails on an exactly zero R_kk; a tiny but nonzero pivot (a
+    // softmax-tail column) is solved, not regularised. The ridge is for exact singularity and non-finite results.
+    double qr_rank_tol = 0.0;
     SolveRoute route = SolveRoute::Qr;
     // The reference stores beta in the model dtype before fitting C2 (bf16 for the Qwen3.8 runs).
     bool   round_beta_bf16 = false;
@@ -80,6 +82,10 @@ SolveStatus solve_beta_qr(const double * M_cm, const double * y, int n, int t, c
 // Route Qr. A_cm column-major [t][n], Y_cm column-major [d][n]. C2_out row-major [t][d].
 SolveStatus solve_values_qr(const double * A_cm, const double * Y_cm, int n, int t, int d, const NnlsParams & p,
                             double * C2_out);
+
+// Narrows doubles to F32 for publication. False (dst unspecified) if any value is non-finite or
+// outside the F32 range, or becomes non-finite after the conversion.
+bool narrow_f32(const double * src, size_t n, float * dst);
 
 // ---- Backend accumulation -----------------------------------------------------
 

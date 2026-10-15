@@ -12,7 +12,7 @@
 //   7. the device-tensor entry point gives the host path's result with less traffic;
 //   8. real-data gate, only when LUCE_AM_FIXTURES points at the dumped fixtures.
 //
-// usage: test_am_fit_solve [--cpu-only] [--time]
+// usage: test_am_fit_solve [--cpu-only | --gpu-only] [--time]
 #include "common/am_fit_solve.h"
 #include "am_fixture.h"
 
@@ -318,23 +318,24 @@ void test_conditioning() {
     for (int i = 0; i < t; ++i) worst = std::max(worst, std::fabs(beta[i] - std::log(w[i])));
     std::printf("  near-dependent (cond 1e8): gram route status %d, beta error %.2e\n", (int) st, worst);
 
-    // Exactly dependent: the ridge fallback engages and everything stays finite and in the box.
+    // Exactly singular (zero columns: R_kk == 0, what the reference's gels cannot solve): the ridge
+    // fallback engages and everything stays finite and in the box.
     Mat Md(n, t), Xd(n, t), Yd(n, d);
     std::vector<double> yd(n);
     for (int r = 0; r < n; ++r) {
         for (int i = 0; i < t; ++i) Md.at(r, i) = 0.05 + rnd01();
-        Md.at(r, 5) = Md.at(r, 2);
-        Md.at(r, 9) = 2.0 * Md.at(r, 2);
+        Md.at(r, 5) = 0.0;
+        Md.at(r, 9) = 0.0;
         yd[r] = 1.0 + rnd01();
         for (int i = 0; i < t; ++i) Xd.at(r, i) = Md.at(r, i) / 10.0;
         for (int k = 0; k < d; ++k) Yd.at(r, k) = rnd_norm();
     }
     st = solve_beta_qr(to_cm(Md).data(), yd.data(), n, t, p, beta.data());
-    CHECK(st == SolveStatus::RidgeUsed, "dependent beta status %d", (int) st);
+    CHECK(st == SolveStatus::RidgeUsed, "singular beta status %d", (int) st);
     for (int i = 0; i < t; ++i) CHECK(std::isfinite(beta[i]) && std::fabs(beta[i]) <= 3.0 + 1e-12, "beta[%d]=%g", i, beta[i]);
     std::vector<double> C2((size_t) t * d);
     st = solve_values_qr(to_cm(Xd).data(), to_cm(Yd).data(), n, t, d, p, C2.data());
-    CHECK(st == SolveStatus::RidgeUsed, "dependent values status %d", (int) st);
+    CHECK(st == SolveStatus::RidgeUsed, "singular values status %d", (int) st);
     for (double v : C2) CHECK(std::isfinite(v), "C2 not finite");
     // NaN in the design: Failed, neutral output.
     Md.at(3, 3) = std::nan("");
@@ -347,6 +348,52 @@ void test_conditioning() {
     gram_of(Md, Yd1, Gd, bd);
     st = solve_beta(Gd.data(), bd.data(), t, pg, beta.data());
     CHECK(st == SolveStatus::Failed, "gram nan status %d", (int) st);
+}
+
+// A full-rank problem whose columns differ in scale by 1e20 (a softmax tail): plain least squares
+// solves it, the ridge must not engage, and the clamped beta must match the reference's.
+void test_scaled_full_rank() {
+    std::printf("[scaled full-rank M: no ridge, beta checked]\n");
+    const int n = 200, t = 6;
+    Mat M(n, t);
+    std::vector<double> w(t), y(n);
+    for (auto & v : M.a) v = 0.05 + rnd01();
+    for (int r = 0; r < n; ++r) M.at(r, 3) *= 1e-20;  // column 3: tail scale
+    for (int i = 0; i < t; ++i) w[i] = std::exp(-1.0 + 2.0 * rnd01());
+    w[3] = 5e19;  // its contribution is ~1: least squares gives w3 ~ 5e19, clamped to e^3
+    for (int r = 0; r < n; ++r) {
+        double s = 0;
+        for (int i = 0; i < t; ++i) s += M.at(r, i) * w[i];
+        y[r] = s;
+    }
+    NnlsParams p;
+    std::vector<double> beta(t);
+    const SolveStatus st = solve_beta_qr(to_cm(M).data(), y.data(), n, t, p, beta.data());
+    CHECK(st == SolveStatus::Ok, "full-rank scaled M used the ridge (status %d)", (int) st);
+    const std::vector<double> ref = ref_beta(M, y, p.lo, p.hi, 2, 3);
+    CHECK(!ref.empty(), "reference failed");
+    if (ref.empty()) return;
+    CHECK(std::fabs(ref[3] - 3.0) < 1e-9, "reference beta[3]=%g, test problem is not scaled as intended", ref[3]);
+    double worst = 0;
+    for (int i = 0; i < t; ++i) worst = std::max(worst, std::fabs(beta[i] - ref[i]));
+    std::printf("  beta[3] = %.6f (reference %.6f), worst |beta - reference| %.2e\n", beta[3], ref[3], worst);
+    CHECK(beta[3] > 2.999, "tail weight regularised to %g instead of clamped to +3", beta[3]);
+    CHECK(worst < 1e-6, "beta off the reference by %.2e", worst);
+}
+
+void test_narrow_f32() {
+    std::printf("[narrow_f32]\n");
+    float out[3];
+    const double ok[3] = {1.0, -3.0e38, 1e-30};
+    CHECK(narrow_f32(ok, 3, out) && out[1] == -3.0e38f, "in-range values rejected");
+    const double big[3] = {1.0, 1e300, 2.0};
+    CHECK(!narrow_f32(big, 3, out), "1e300 published as F32");
+    const double over[1] = {3.5e38};
+    CHECK(!narrow_f32(over, 1, out), "3.5e38 published as F32");
+    const double nan1[1] = {std::nan("")};
+    CHECK(!narrow_f32(nan1, 1, out), "NaN published");
+    const double inf1[1] = {-INFINITY};
+    CHECK(!narrow_f32(inf1, 1, out), "-inf published");
 }
 
 // ==== block problems and the reference pipeline ======================================================
@@ -709,33 +756,106 @@ void test_device_path(ggml_backend_t be, const char * name) {
 }
 
 // ==== 8. real-data gate ==========================================================================================
+// Pure pieces first (tested below with synthetic data), then the driver.
 
-struct Err { double abs = 0, rel = 0; };  // rel: max |a - b| / max |b| over the tensor
-Err compare(const float * a, const std::vector<float> & ref, size_t off, size_t n) {
-    Err e;
+struct GateErr {
+    double abs = 0;        // max |a - ref|
+    double nmax = 0;       // abs / max|ref|: error normalised by the tensor's largest reference entry
+    double rel_elem = 0;   // max |a - ref| / max(|ref|, 1e-3 max|ref|): elementwise relative, floored
+    bool   finite = true;  // false if a or ref holds NaN/inf: never a pass
+};
+GateErr gate_compare(const float * a, const float * ref, size_t n) {
+    GateErr e;
     double scale = 0;
-    for (size_t i = 0; i < n; ++i) scale = std::max(scale, (double) std::fabs(ref[off + i]));
-    for (size_t i = 0; i < n; ++i) e.abs = std::max(e.abs, (double) std::fabs(a[i] - ref[off + i]));
-    e.rel = e.abs / std::max(scale, 1e-30);
+    for (size_t i = 0; i < n; ++i) {
+        if (!std::isfinite(a[i]) || !std::isfinite(ref[i])) e.finite = false;
+        else scale = std::max(scale, (double) std::fabs(ref[i]));
+    }
+    if (!e.finite) return e;
+    const double floor_ = std::max(1e-3 * scale, 1e-30);
+    for (size_t i = 0; i < n; ++i) {
+        const double d = std::fabs((double) a[i] - (double) ref[i]);
+        e.abs = std::max(e.abs, d);
+        e.rel_elem = std::max(e.rel_elem, d / std::max((double) std::fabs(ref[i]), floor_));
+    }
+    e.nmax = e.abs / std::max(scale, 1e-30);
     return e;
 }
+bool gate_pass(const GateErr & e, double limit) { return e.finite && e.nmax <= limit; }
 
-void run_fixture_gate(ggml_backend_t be, const char * name) {
-    const std::vector<std::string> dirs = am_fixture::case_dirs(std::getenv("LUCE_AM_FIXTURES"));
-    if (dirs.empty()) { std::printf("[fixture gate %s] SKIP: LUCE_AM_FIXTURES unset or no cases\n", name); return; }
-    const int d = 256, n_tok = 640, n_head = 24, n_kv = 4, T = 640, t = 64;
-    struct Cfg { const char * label; SolveRoute route; bool ref_sem; };
-    const Cfg cfgs[] = {{"qr+bf16-semantics", SolveRoute::Qr, true}, {"qr+fp32", SolveRoute::Qr, false},
-                        {"gram+bf16-semantics", SolveRoute::Gram, true}, {"gram+fp32", SolveRoute::Gram, false}};
+// LUCE_AM_TOL: unset or empty -> def; otherwise a finite number > 0 or the parse fails.
+bool parse_tol(const char * s, double def, double & tol) {
+    tol = def;
+    if (!s || !*s) return true;
+    char * end = nullptr;
+    const double v = std::strtod(s, &end);
+    if (end == s || *end != '\0' || !std::isfinite(v) || !(v > 0.0)) return false;
+    tol = v;
+    return true;
+}
+// With LUCE_AM_FIXTURES set the gate must actually run at least one case.
+bool gate_ran(bool root_set, int cases_run) { return !root_set || cases_run > 0; }
+
+void test_gate_logic() {
+    std::printf("[gate logic]\n");
+    const float ref[4] = {1.0f, -2.0f, 4.0f, 0.5f}, same[4] = {1.0f, -2.0f, 4.0f, 0.5f};
+    GateErr e = gate_compare(same, ref, 4);
+    CHECK(e.finite && e.abs == 0 && gate_pass(e, 1e-3), "identical tensors must pass");
+    const float off[4] = {1.0f, -2.0f, 4.004f, 0.5f};
+    e = gate_compare(off, ref, 4);
+    CHECK(std::fabs(e.nmax - 1e-3) < 1e-5 && std::fabs(e.rel_elem - 1e-3) < 1e-5, "nmax %.3e rel_elem %.3e", e.nmax, e.rel_elem);
+    CHECK(!gate_pass(e, 5e-4) && gate_pass(e, 2e-3), "limit not applied");
+    const float small_off[4] = {1.0f, -2.0f, 4.0f, 0.6f};  // small entry: elementwise error 20%, normalised 2.5%
+    e = gate_compare(small_off, ref, 4);
+    CHECK(e.rel_elem > 0.19 && e.nmax < 0.03, "elementwise error not separate from normalised (%.3e, %.3e)", e.rel_elem, e.nmax);
+    const float nanref[4] = {NAN, NAN, NAN, NAN};
+    CHECK(!gate_pass(gate_compare(same, nanref, 4), 1e30), "all-NaN reference passed");
+    CHECK(!gate_pass(gate_compare(nanref, ref, 4), 1e30), "all-NaN result passed");
+    const float infres[4] = {1.0f, INFINITY, 4.0f, 0.5f};
+    CHECK(!gate_pass(gate_compare(infres, ref, 4), 1e30), "inf result passed");
+    double tol = 0;
+    CHECK(parse_tol(nullptr, 1e-3, tol) && tol == 1e-3, "unset default");
+    CHECK(parse_tol("2e-3", 1e-3, tol) && tol == 2e-3, "valid value");
+    CHECK(!parse_tol("nan", 1e-3, tol), "NaN tolerance accepted");
+    CHECK(!parse_tol("inf", 1e-3, tol), "inf tolerance accepted");
+    CHECK(!parse_tol("abc", 1e-3, tol) && !parse_tol("1e-3x", 1e-3, tol), "garbage tolerance accepted");
+    CHECK(!parse_tol("0", 1e-3, tol) && !parse_tol("-1", 1e-3, tol), "non-positive tolerance accepted");
+    CHECK(gate_ran(false, 0), "unset root is a skip");
+    CHECK(!gate_ran(true, 0), "set root with no case run passed");
+    CHECK(gate_ran(true, 1), "set root with a case failed");
+}
+
+// Returns the number of cases run (0: nothing found). Dimensions come from each manifest; every file's size is
+// checked against them by the reader.
+int run_fixture_gate(ggml_backend_t be, const char * name) {
+    const char * root = std::getenv("LUCE_AM_FIXTURES");
+    double tol = 0;
+    if (!parse_tol(std::getenv("LUCE_AM_TOL"), 1e-3, tol)) { CHECK(false, "LUCE_AM_TOL is not a finite positive number"); return 0; }
+    const std::vector<std::string> dirs = am_fixture::case_dirs(root);
+    int ran = 0;
+    // Binding limit = tol + the bf16 storage budget: the reference stores beta and C2 in bf16, so any
+    // fp32 result is up to 2^-9 relative (2^-8 normalised, with slack) away from it by construction;
+    // an arm that rounds like the reference can still differ by one bf16 ulp (2^-7) where a rounding flips.
+    struct Cfg { const char * label; SolveRoute route; bool ref_sem; double quant; };
+    const Cfg cfgs[] = {{"qr+fp32", SolveRoute::Qr, false, 1.0 / 256}, {"qr+bf16-semantics", SolveRoute::Qr, true, 1.0 / 128},
+                        {"gram+fp32", SolveRoute::Gram, false, 1.0 / 256}, {"gram+bf16-semantics", SolveRoute::Gram, true, 1.0 / 128}};
     GramAccumulator acc;
     for (const std::string & dir : dirs) {
         am_fixture::Case c;
         std::string err;
         if (!am_fixture::load_case(dir, c, &err)) { CHECK(false, "%s", err.c_str()); continue; }
-        if (c.name.find("exactq") != std::string::npos) continue;  // queries only, no fit outputs
-        std::printf("[fixture gate %s] case %s, %zu layers\n", name, c.name.c_str(), c.layers.size());
+        if (c.slots == 0) { std::printf("[fixture gate %s] case %s: no fit outputs (queries only), skipped\n", name, c.name.c_str()); continue; }
+        const int d = c.head_dim, n_tok = c.n_tokens, n_head = c.n_head, n_kv = c.n_kv, T = c.n_tokens, t = c.slots;
+        if (d <= 0 || n_tok <= 0 || n_head <= 0 || n_kv <= 0 || n_head % n_kv != 0 || t <= 0 || t > T) {
+            CHECK(false, "case %s: bad dimensions in manifest (d %d tokens %d heads %d/%d slots %d)", c.name.c_str(), d, n_tok, n_head, n_kv, t);
+            continue;
+        }
+        ++ran;
+        std::printf("[fixture gate %s] case %s, %zu layers, d%d tokens%d heads %d/%d slots %d, tol %.1e\n", name, c.name.c_str(),
+                    c.layers.size(), d, n_tok, n_head, n_kv, t, tol);
         for (const Cfg & cfg : cfgs) {
-            double worst_b = 0, worst_c = 0;
+            double worst_b = 0, worst_c = 0, worst_be = 0, worst_ce = 0;
+            bool all_ok = true;
             for (int layer : c.layers) {
                 std::vector<float> q, k, v, beta_ref, c2_ref;
                 std::vector<int32_t> idx;
@@ -746,6 +866,7 @@ void run_fixture_gate(ggml_backend_t be, const char * name) {
                     !am_fixture::read_f32(c, layer, "beta", (size_t) t * n_kv, beta_ref, &err) ||
                     !am_fixture::read_f32(c, layer, "c2", (size_t) d * t * n_kv, c2_ref, &err)) {
                     CHECK(false, "%s", err.c_str());
+                    all_ok = false;
                     break;
                 }
                 std::vector<ggml_fp16_t> q16(q.size());
@@ -759,21 +880,32 @@ void run_fixture_gate(ggml_backend_t be, const char * name) {
                 np.round_beta_bf16 = cfg.ref_sem;
                 FitResult res;
                 BlockInputs in{q16.data(), k.data(), v.data(), idx.data()};
-                if (!fit_block(acc, be, s, in, np, res, &err)) { CHECK(false, "layer %d: %s", layer, err.c_str()); continue; }
+                if (!fit_block(acc, be, s, in, np, res, &err)) {
+                    CHECK(false, "%s layer %d: %s", cfg.label, layer, err.c_str());
+                    all_ok = false;
+                    continue;
+                }
+                // The reference returns C2 in the model dtype: compare like with like.
+                if (cfg.ref_sem) for (float & x : res.c2) x = round_bf16(x);
                 for (int g = 0; g < n_kv; ++g) {
-                    const Err eb = compare(&res.beta[(size_t) g * t], beta_ref, (size_t) g * t, t);
-                    const Err ec = compare(&res.c2[(size_t) g * t * d], c2_ref, (size_t) g * t * d, (size_t) t * d);
-                    std::printf("  %-20s L%02d h%d  beta abs %.2e rel %.2e   C2 abs %.2e rel %.2e   status %d\n", cfg.label, layer, g,
-                                eb.abs, eb.rel, ec.abs, ec.rel, (int) res.status[g]);
-                    worst_b = std::max(worst_b, eb.rel);
-                    worst_c = std::max(worst_c, ec.rel);
+                    const GateErr eb = gate_compare(&res.beta[(size_t) g * t], &beta_ref[(size_t) g * t], t);
+                    const GateErr ec = gate_compare(&res.c2[(size_t) g * t * d], &c2_ref[(size_t) g * t * d], (size_t) t * d);
+                    std::printf("  %-20s L%02d h%d  beta abs %.2e norm %.2e elem %.2e   C2 abs %.2e norm %.2e elem %.2e   status %d%s\n",
+                                cfg.label, layer, g, eb.abs, eb.nmax, eb.rel_elem, ec.abs, ec.nmax, ec.rel_elem, (int) res.status[g],
+                                (eb.finite && ec.finite) ? "" : "  NON-FINITE");
+                    const double lim = tol + cfg.quant;
+                    if (!gate_pass(eb, lim) || !gate_pass(ec, lim)) all_ok = false;
+                    worst_b = std::max(worst_b, eb.nmax);  worst_be = std::max(worst_be, eb.rel_elem);
+                    worst_c = std::max(worst_c, ec.nmax);  worst_ce = std::max(worst_ce, ec.rel_elem);
                 }
             }
-            std::printf("  %-20s WORST rel: beta %.2e  C2 %.2e\n", cfg.label, worst_b, worst_c);
-            // The binding gate: the faithful route with the reference's semantics, within 1e-3 relative.
-            if (cfg.route == SolveRoute::Qr && cfg.ref_sem) CHECK(worst_b <= 1e-3 && worst_c <= 1e-3, "R3 gate missed on %s", c.name.c_str());
+            std::printf("  %-20s WORST norm: beta %.2e C2 %.2e | elementwise: beta %.2e C2 %.2e | limit %.2e\n", cfg.label, worst_b,
+                        worst_c, worst_be, worst_ce, tol + cfg.quant);
+            // Every route and every semantics arm binds; the default (qr+fp32) is not a printout.
+            CHECK(all_ok, "gate missed: case %s arm %s", c.name.c_str(), cfg.label);
         }
     }
+    return ran;
 }
 
 // ==== timing at the real shape (synthetic data) ====================================================================
@@ -812,9 +944,10 @@ void time_real_shape(ggml_backend_t be, const char * name, SolveRoute route) {
 }  // namespace
 
 int main(int argc, char ** argv) {
-    bool cpu_only = false, time_only = false;
+    bool cpu_only = false, time_only = false, gpu_only = false;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--cpu-only")) cpu_only = true;
+        if (!std::strcmp(argv[i], "--gpu-only")) gpu_only = true;
         if (!std::strcmp(argv[i], "--time")) time_only = true;
     }
 
@@ -825,11 +958,14 @@ int main(int argc, char ** argv) {
         }
         test_pg_parity();
         test_conditioning();
+        test_scaled_full_rank();
+        test_narrow_f32();
+        test_gate_logic();
     }
 
     struct Be { const char * name; ggml_backend_t be; };
     std::vector<Be> backends;
-    backends.push_back({"CPU", ggml_backend_cpu_init()});
+    if (!gpu_only) backends.push_back({"CPU", ggml_backend_cpu_init()});
 #if defined(GGML_USE_CUDA) || defined(GGML_USE_HIP)
     if (!cpu_only) {
         if (ggml_backend_t gpu = ggml_backend_cuda_init(0)) backends.push_back({"GPU", gpu});
@@ -858,7 +994,10 @@ int main(int argc, char ** argv) {
         }
         test_fit_vs_ref(b.be, b.name, SolveRoute::Qr, true);
         test_device_path(b.be, b.name);
-        run_fixture_gate(b.be, b.name);
+        if (!gate_ran(std::getenv("LUCE_AM_FIXTURES") != nullptr, run_fixture_gate(b.be, b.name))) {
+            ++g_fail;
+            std::printf("FAIL: LUCE_AM_FIXTURES is set but no case ran\n");
+        }
     }
     for (const Be & b : backends) ggml_backend_free(b.be);
     std::printf(g_fail ? "FAILED (%d)\n" : "ALL PASS\n", g_fail);
