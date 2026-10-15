@@ -1286,7 +1286,8 @@ ggml_tensor * build_ple(ggml_context * c, ggml_cgraph * gf, ggml_tensor * hidden
         ggml_tensor * term = ggml_mul(c, shifted, wk);
         conv_out = conv_out ? ggml_add(c, conv_out, term) : term;
     }
-    conv_out = ggml_reshape_3d(c, ggml_cont(c, ggml_silu(c, conv_out)), n_embd, hc, T);
+    // silu's output is a fresh contiguous tensor (reshape asserts it): no CONT (it was a 169 MB copyBuffer at p4096).
+    conv_out = ggml_reshape_3d(c, ggml_silu(c, conv_out), n_embd, hc, T);
 
     dump_mark(conv_out, "ple.conv");
     ggml_tensor * ple_out = ggml_add(c, hidden, ggml_add(c, gated, conv_out));
@@ -1436,7 +1437,7 @@ static ggml_tensor * build_ple_row(ggml_context * c, ggml_cgraph * gf,
         ggml_tensor * term = ggml_mul(c, shifted, wk);
         conv_out = conv_out ? ggml_add(c, conv_out, term) : term;
     }
-    conv_out = ggml_reshape_3d(c, ggml_cont(c, ggml_silu(c, conv_out)), n_embd, hc, 1);
+    conv_out = ggml_reshape_3d(c, ggml_silu(c, conv_out), n_embd, hc, 1);
     return ggml_add(c, hidden, ggml_add(c, gated, conv_out));
 }
 

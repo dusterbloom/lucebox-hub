@@ -62,7 +62,7 @@ uint64_t run(ggml_backend_t gpu, int T) {
         ggml_tensor * term = ggml_mul(c, shifted, wk);
         conv_out = conv_out ? ggml_add(c, conv_out, term) : term;
     }
-    ggml_tensor * out = ggml_cont(c, ggml_silu(c, conv_out));
+    ggml_tensor * out = ggml_silu(c, conv_out);   // consumed through a RESHAPE in the graph: no CONT after the silu
     ggml_set_output(out);
     ggml_build_forward_expand(gf, out);
 
