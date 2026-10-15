@@ -165,6 +165,59 @@ TEST_CASE(AmGateFixture, identity_check_accepts_the_same_model_and_rejects_each_
     CHECK(identity_mismatch(fx.manifest, e).empty());
 }
 
+TEST_CASE(AmGateFixture, head_gate_fails_one_negated_head_that_the_layer_mean_hides) {
+    const int H = 24, n = 3, d = 4;
+    const auto q = ramp(H * n * d);
+    auto e = q;
+    for (int i = 0; i < n * d; i++) e[(size_t)7 * n * d + i] = -e[(size_t)7 * n * d + i];
+    const auto r = cosine_per_head(q.data(), to_f16(e).data(), H, n, d);
+    CHECK(summarize(r.mean).mean > 0.9);  // the layer average passes, which is the hole
+    const std::string v = head_violation(r);
+    CHECK(v.find("head 7") != std::string::npos);
+    const auto ok = cosine_per_head(q.data(), to_f16(q).data(), H, n, d);
+    CHECK(head_violation(ok).empty());
+}
+
+TEST_CASE(AmGateFixture, head_gate_fails_a_positive_scale_error_that_cosine_cannot_see) {
+    const int H = 4, n = 3, d = 4;
+    const auto q = ramp(H * n * d);
+    auto e = q;
+    for (int i = 0; i < n * d; i++) e[(size_t)2 * n * d + i] *= 1.2f;
+    const auto r = cosine_per_head(q.data(), to_f16(e).data(), H, n, d);
+    CHECK(r.mean[2] > 0.999);
+    CHECK(std::fabs(r.ratio[2] - 1.2) < 1e-2);
+    CHECK(head_violation(r).find("head 2") != std::string::npos);
+}
+
+TEST_CASE(AmGateFixture, reader_rejects_dimensions_that_overflow_or_are_not_positive) {
+    for (const char * shape : {"[4611686018427387910, 4]", "[-4, -3]", "[0, 4]", "[3037000500, 3037000500]"}) {
+        TmpDir t; write_synthetic(t.p, ramp(24), 3);
+        std::string m;
+        { std::ifstream in(t.p / "manifest.json"); m.assign(std::istreambuf_iterator<char>(in), {}); }
+        const std::string from = "\"shape_ggml\": [4, 3, 2]";
+        const auto at = m.find(from);
+        REQUIRE(at != std::string::npos);
+        m.replace(at, from.size(), std::string("\"shape_ggml\": ") + shape);
+        { std::ofstream o(t.p / "manifest.json"); o << m; }
+        Fixture fx; std::string err;
+        CHECK(!Fixture::open(t.p.string(), fx, err));
+        CHECK(err.find("L03_q.f32") != std::string::npos);
+    }
+}
+
+TEST_CASE(AmGateFixture, identity_check_survives_a_null_name_or_path) {
+    TmpDir t; write_synthetic(t.p, ramp(24), 3);
+    Fixture fx; std::string err;
+    REQUIRE(Fixture::open(t.p.string(), fx, err));
+    fx.manifest["model_identity"]["_name_or_path"] = nullptr;
+    GgufFacts g;
+    g.n_layer = 4; g.full_attention_interval = 4; g.n_head = 2; g.head_dim = 4;
+    g.names = {"Qwen3.8 27B"};
+    CHECK(identity_mismatch(fx.manifest, g).empty());   // falls back to model_path
+    g.names = {"Qwen3.6 27B"};
+    CHECK(!identity_mismatch(fx.manifest, g).empty());
+}
+
 // ---- the gate ----
 namespace {
 struct GateBackend : Qwen35Backend {
@@ -253,7 +306,8 @@ TEST_CASE(AmGateFixture, q4km_queries_match_the_bf16_dump_of_trajectory_1_block)
     const int n_fa = (int)(be.plane.size() / ((size_t)D * T * H));
     const auto & layers = fx.manifest["layers"];
     REQUIRE((int)layers.size() == n_fa);
-    std::vector<double> layer_means, head_means;
+    std::vector<double> layer_means, head_means, head_ratios;
+    std::string violations;
     std::vector<std::pair<int, double>> per_layer;
     double worst_token = 1.0;
     for (int i = 0; i < n_fa; i++) {
@@ -267,11 +321,17 @@ TEST_CASE(AmGateFixture, q4km_queries_match_the_bf16_dump_of_trajectory_1_block)
         for (double m : r.min) worst_token = std::min(worst_token, m);
         std::printf("[am-gate] layer %2d  head cos min %.4f median %.4f mean %.4f\n", layer, hs.min, hs.median, hs.mean);
         layer_means.push_back(hs.mean);
+        head_ratios.insert(head_ratios.end(), r.ratio.begin(), r.ratio.end());
+        const std::string v = head_violation(r);
+        if (!v.empty()) violations += "layer " + std::to_string(layer) + " " + v + "\n";
         head_means.insert(head_means.end(), r.mean.begin(), r.mean.end());
     }
     const Summary ls = summarize(layer_means), hs = summarize(head_means);
     std::printf("[am-gate] per-layer mean cosine: min %.4f median %.4f mean %.4f\n", ls.min, ls.median, ls.mean);
     std::printf("[am-gate] per-head  mean cosine: min %.4f median %.4f mean %.4f (%zu heads); worst single (head,token) %.4f\n",
                 hs.min, hs.median, hs.mean, head_means.size(), worst_token);
-    CHECK(ls.min > 0.9);  // tripwire only: wrong RoPE, head order, layer map or pre-norm Q lands far below
+    const Summary rs = summarize(head_ratios);
+    std::printf("[am-gate] per-head norm ratio eng/ref: min %.4f median %.4f mean %.4f\n", rs.min, rs.median, rs.mean);
+    if (!violations.empty()) std::printf("[am-gate] head violations:\n%s", violations.c_str());
+    CHECK(violations.empty());  // every head: mean cosine > 0.9 and norm ratio in [0.95, 1.05]; layer means above are reported only
 }

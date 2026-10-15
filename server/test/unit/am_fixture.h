@@ -52,10 +52,15 @@ struct Fixture {
                 f.dtype = e.at("dtype").get<std::string>();
                 f.shape_ggml = e.at("shape_ggml").get<std::vector<int64_t>>();
                 f.bytes = e.at("bytes").get<size_t>();
-                int64_t n = 1;
-                for (int64_t s : f.shape_ggml) n *= s;
                 if (f.dtype != "float32" && f.dtype != "int32") { err = f.file + ": unsupported dtype " + f.dtype; return false; }
-                if ((size_t)n * 4 != f.bytes) { err = f.file + ": manifest bytes disagree with shape"; return false; }
+                // Every dimension positive and bounded, the product checked, before any size is trusted.
+                int64_t n = 1;
+                constexpr int64_t kMaxDim = int64_t(1) << 31, kMaxElems = int64_t(1) << 40;
+                for (int64_t s : f.shape_ggml)
+                    if (s < 1 || s > kMaxDim || __builtin_mul_overflow(n, s, &n) || n > kMaxElems) {
+                        err = f.file + ": shape_ggml has a non-positive, oversized or overflowing dimension"; return false;
+                    }
+                if ((uint64_t)n * 4 != f.bytes) { err = f.file + ": manifest bytes disagree with shape"; return false; }
                 std::error_code ec;
                 const auto sz = fs::file_size(fs::path(dir) / f.file, ec);
                 if (ec || sz != f.bytes) { err = f.file + ": missing or size differs from manifest"; return false; }
@@ -105,6 +110,7 @@ private:
 struct HeadCosine {
     std::vector<double> mean;  // per head: mean over tokens of cos(ref row, engine row)
     std::vector<double> min;   // per head: worst token
+    std::vector<double> ratio; // per head: ||engine|| / ||ref|| over the whole head
 };
 
 // ref: F32 [H][n][d] (the dump); eng: F16 [H][n][d] (the ring plane of one layer).
@@ -112,7 +118,7 @@ struct HeadCosine {
 inline HeadCosine cosine_per_head(const float * ref, const uint16_t * eng, int H, int n, int d) {
     HeadCosine r;
     for (int h = 0; h < H; h++) {
-        double sum = 0, lo = 1.0;
+        double sum = 0, lo = 1.0, ref2 = 0, eng2 = 0;
         for (int t = 0; t < n; t++) {
             const size_t o = ((size_t)h * n + t) * d;
             double dot = 0, na = 0, nb = 0;
@@ -121,12 +127,32 @@ inline HeadCosine cosine_per_head(const float * ref, const uint16_t * eng, int H
                 dot += a * b; na += a * a; nb += b * b;
             }
             const double c = (na > 0 && nb > 0) ? dot / std::sqrt(na * nb) : 0.0;
-            sum += c; lo = std::min(lo, c);
+            sum += c; lo = std::min(lo, c); ref2 += na; eng2 += nb;
         }
         r.mean.push_back(sum / n);
         r.min.push_back(lo);
+        r.ratio.push_back(ref2 > 0 ? std::sqrt(eng2 / ref2) : 0.0);
     }
     return r;
+}
+
+// Every head must clear the gate on its own: the layer average hides one bad head
+// (one negated head of 24 still averages 0.917), and cosine cannot see a scale error.
+// Constants are tripwires (the plan fixes no number: "Q4-vs-BF16 noise floor"), to be
+// replaced by the measured floor.
+struct HeadGate { double min_cos = 0.9, ratio_lo = 0.95, ratio_hi = 1.05; };
+
+inline std::string head_violation(const HeadCosine & r, HeadGate g = {}) {
+    std::string out;
+    for (size_t h = 0; h < r.mean.size(); h++) {
+        const bool ok = r.mean[h] > g.min_cos && r.ratio[h] >= g.ratio_lo && r.ratio[h] <= g.ratio_hi;  // NaN fails
+        if (!ok) {
+            char b[96];
+            std::snprintf(b, sizeof b, "head %zu: cos %.4f norm ratio %.4f; ", h, r.mean[h], r.ratio[h]);
+            out += b;
+        }
+    }
+    return out;
 }
 
 struct Summary { double min = 0, median = 0, mean = 0; };
@@ -173,8 +199,9 @@ inline std::string identity_mismatch(const nlohmann::json & manifest, const Gguf
         if (have != expect) return "full-attention layers differ: dump lists " + std::to_string(have.size()) + ", gguf has " + std::to_string(expect.size());
     }
     const auto & id = manifest.value("model_identity", nlohmann::json::object());
-    std::string path = id.value("_name_or_path", std::string());
-    if (path.empty()) path = id.value("model_path", std::string());
+    std::string path;
+    for (const char * k : {"_name_or_path", "model_path"})
+        if (path.empty() && id.contains(k) && id[k].is_string()) path = id[k].get<std::string>();
     while (!path.empty() && path.back() == '/') path.pop_back();
     const std::string dump_name = alnum_lower(std::filesystem::path(path).filename().string());
     if (!dump_name.empty() && !g.names.empty()) {
