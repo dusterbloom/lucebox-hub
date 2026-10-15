@@ -9,6 +9,8 @@ Per case and per full-attention layer (16), in ggml element order (fastest dimen
   q [d, 640, n_head] post-RoPE context-prefill queries the fit used     k, v [d, 640, n_kv] the block's post-RoPE keys and values
   scores [640, n_kv] raw HighestAttnKeys key scores (the fit's own method)   idx [64, n_kv] int32 selected positions in rank order
   beta [64, n_kv]     c2 [d, 64, n_kv] fitted values       and tokens [640] / positions [640] int32 (once per case).
+  fitq [d, nq, n_kv] the queries the fit actually received per kv head (manifest checks: q_group_max_abs_diff against q grouped
+  head-major, fit_queries_per_kv_head); M4 and M5 parity uses fitq, M3 capture parity uses q.
   traj1_12k_exactq: the same block's post-RoPE queries when trajectory 1 is prefilled EXACTLY (no compaction, 640-token chunks) from token 0:
   only q per layer, plus tokens / positions of the block and prefix_tokens [block end] (what the engine's prefill sees).
   python3 am_fixture_dump.py --out ~/r1e/out/am_fixtures"""
@@ -97,18 +99,26 @@ def make_spy(algo_cls, records):
 
 def assemble_layers(records, q_all, layer_ids):
     """Group the spy records (called layer by layer, kv head by kv head) into per-layer tensors with a leading kv-head axis; check that the
-    queries the fit received are the captured ones grouped per kv head. q_all: (L, H, n, d). Returns ({layer: tensors}, checks)."""
+    queries the fit received are the captured ones grouped per kv head. q_all: (L, H, n, d). Returns ({layer: tensors}, checks).
+    fitq (n_kv, nq, d) is what the fit received, stored as is; checks carry the max |fitq - grouped q| (None when a shape differs) and the
+    distinct per-kv-head query counts the fit saw."""
     L, H = q_all.shape[0], q_all.shape[1]
     assert len(layer_ids) == L and len(records) % L == 0
     n_kv = len(records) // L
-    layers, q_ok, rep_ok = {}, True, True
+    layers, q_ok, rep_ok, diff, counts = {}, True, True, 0.0, set()
     for li, layer in enumerate(layer_ids):
         rs = records[li * n_kv:(li + 1) * n_kv]
         grouped = group_queries(q_all[li].float().cpu(), n_kv)
         q_ok &= all(torch.equal(r["queries"], grouped[h]) for h, r in enumerate(rs))
         rep_ok &= all(r["reproduces"] for r in rs)
+        counts |= {r["queries"].shape[0] for r in rs}
+        same = all(r["queries"].shape == grouped[h].shape for h, r in enumerate(rs))
+        diff = None if diff is None or not same else max(diff, max((r["queries"] - grouped[h]).abs().max().item() for h, r in enumerate(rs)))
         layers[layer] = {"q": q_all[li].float().cpu(), **{k: torch.stack([r[k] for r in rs]) for k in ("k", "v", "scores", "idx", "beta", "c2")}}
-    return layers, {"q_group_check": bool(q_ok), "scores_reproduce_indices": bool(rep_ok)}
+        if len({r["queries"].shape for r in rs}) == 1:
+            layers[layer]["fitq"] = torch.stack([r["queries"] for r in rs])
+    return layers, {"q_group_check": bool(q_ok), "scores_reproduce_indices": bool(rep_ok), "q_group_max_abs_diff": diff,
+                    "fit_queries_per_kv_head": sorted(counts)}
 
 
 def model_identity(model_dir, config):
@@ -213,13 +223,14 @@ def dump_case(out, label, stream_ids, block, captured, layer_ids, meta, S, R):
     manifest = write_case(os.path.join(out, label), layers, stream_ids[0, a:b], torch.arange(a, b), {
         "case": label, "block_index": block, "start_token": a, "end_token": b, "n_tokens": BLOCK, "slots": SLOTS_NOTE,
         "head_dim": q_all.shape[-1], "n_head": q_all.shape[1], "n_kv": len(records) // q_all.shape[0], "checks": checks,
-        "precision": "model bf16; tensors dumped as float32 (exact upcast of the bf16 values); scores computed in fp32 as the reference does",
+        "precision": "model bf16; tensors dumped as float32 (exact upcast of the bf16 values); scores: the logits are the bf16 matmul of the "
+                     "fit inputs (as the reference computes them), then softmax and aggregation in fp32",
         "fit": {"arm": "A1 shipping (gen_fblk_window window 0), uniform slots per head, context-prefill queries", "cell": R.cell,
                 "ratio": R.ratio, "slots": SLOTS_NOTE, "algorithm_class": f"{algo.__module__}.{algo.__name__}",
                 "algorithm_kwargs": {k: repr(v) for k, v in R.method.algorithm_kwargs.items()}, "seed": 0,
                 "queries_per_kv_head": "the group's query heads concatenated along the query axis (head-major)"},
         **meta})
-    log_checks = f"q_group_check={checks['q_group_check']} scores_reproduce_indices={checks['scores_reproduce_indices']}"
+    log_checks = " ".join(f"{k}={v}" for k, v in checks.items())
     return manifest, log_checks
 
 

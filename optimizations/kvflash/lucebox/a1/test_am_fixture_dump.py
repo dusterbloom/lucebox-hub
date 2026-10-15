@@ -110,10 +110,19 @@ def test_assemble_layers_orders_calls_by_layer_then_head_and_checks_the_query_gr
             rec.append({"k": K, "v": V, "queries": grouped[h], "scores": torch.rand(N), "idx": idx, "beta": torch.randn(T),
                         "c2": torch.randn(T, D), "reproduces": True})
     layers, info = fx.assemble_layers(rec, q_all, layer_ids)
-    assert sorted(layers) == [3, 7] and info == {"q_group_check": True, "scores_reproduce_indices": True}
+    assert sorted(layers) == [3, 7] and info == {"q_group_check": True, "scores_reproduce_indices": True, "q_group_max_abs_diff": 0.0,
+                                                 "fit_queries_per_kv_head": [G * N]}
     assert layers[7]["k"].shape == (HKV, N, D) and torch.equal(layers[7]["idx"][1], rec[3]["idx"]) and layers[3]["q"].shape == (HKV * G, N, D)
+    assert torch.equal(layers[7]["fitq"][1], rec[3]["queries"])      # what the fit received, stored as is
     rec[0]["queries"] = rec[0]["queries"] + 1
-    assert fx.assemble_layers(rec, q_all, layer_ids)[1]["q_group_check"] is False
+    info = fx.assemble_layers(rec, q_all, layer_ids)[1]
+    assert info["q_group_check"] is False and abs(info["q_group_max_abs_diff"] - 1.0) < 1e-5
+    rec[1]["queries"] = rec[1]["queries"][:N]                          # a fit that saw a subset of the queries: the shape is reported
+    info = fx.assemble_layers(rec[2:], q_all[1:], layer_ids[1:])[1]
+    assert info["q_group_check"] is True
+    layers, info = fx.assemble_layers(rec, q_all, layer_ids)
+    assert info["q_group_max_abs_diff"] is None and info["fit_queries_per_kv_head"] == [N, G * N]
+    assert "fitq" not in layers[3] and "fitq" in layers[7]             # ragged per-head query sets are not stacked
 
 
 def test_target_blocks_are_the_first_after_the_system_prefix_and_the_one_near_12k():
