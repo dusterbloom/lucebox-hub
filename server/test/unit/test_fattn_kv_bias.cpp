@@ -33,8 +33,10 @@
 #include <vector>
 
 #include <csignal>
+#ifndef _WIN32
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 namespace {
 
@@ -304,6 +306,13 @@ bool test_lane_kv_guard() {
     const bool acc_ok = ggml_flash_attn_ext_get_kv_bias(fa) == nullptr &&
                         ggml_flash_attn_ext_get_kv_bias(fb) == kb;
     const bool lane_kept = fa->src[9] != nullptr;
+#ifdef _WIN32
+    // The abort check needs fork/waitpid; skip it on Windows.
+    ggml_free(ctx);
+    std::printf("%s lane-kv guard: accessor %s, lane kv kept %s, abort case SKIPPED on Windows\n",
+                acc_ok && lane_kept ? "PASS   " : "FAIL   ", acc_ok ? "ok" : "WRONG", lane_kept ? "yes" : "NO");
+    return acc_ok && lane_kept;
+#else
     fflush(stdout);
     const pid_t pid = fork();
     if (pid == 0) {
@@ -320,6 +329,7 @@ bool test_lane_kv_guard() {
                 ok ? "PASS   " : "FAIL   ", acc_ok ? "ok" : "WRONG", lane_kept ? "yes" : "NO",
                 aborted ? "aborts" : "RETURNED");
     return ok;
+#endif
 }
 
 // A maskless op with QSA selected ids (src[5]) and a kv_bias: no kernel honours that pair (the QSA predicates
