@@ -4122,6 +4122,10 @@ static bool ggml_opencl_supports_op(ggml_backend_dev_t dev, const struct ggml_te
             return op->src[0]->type == GGML_TYPE_F32;
         case GGML_OP_FLASH_ATTN_EXT:
             {
+                // src[9] kv_bias (per-KV-head key bias) is implemented by the CUDA/HIP and CPU backends only
+                if (ggml_flash_attn_ext_get_kv_bias(op)) {
+                    return false;
+                }
                 const ggml_tensor * q = op->src[0];
                 const ggml_tensor * k = op->src[1];
                 const ggml_tensor * v = op->src[2];

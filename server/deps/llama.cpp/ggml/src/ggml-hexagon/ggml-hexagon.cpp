@@ -2114,6 +2114,10 @@ static inline bool ggml_backend_buffer_is_hexagon_repack(const struct ggml_backe
 }
 
 static bool ggml_hexagon_supported_flash_attn_ext(const struct ggml_hexagon_session * sess, const struct ggml_tensor * op) {
+    // src[9] kv_bias (per-KV-head key bias) is implemented by the CUDA/HIP and CPU backends only
+    if (ggml_flash_attn_ext_get_kv_bias(op)) {
+        return false;
+    }
     const struct ggml_tensor * src0 = op->src[0];
     const struct ggml_tensor * src1 = op->src[1];
     const struct ggml_tensor * src2 = op->src[2];

@@ -23,7 +23,7 @@ bool ggml_cuda_flash_attn_ext_qsa_decode_supported(ggml_backend_cuda_context & c
     const int cc = ggml_cuda_info().devices[ctx.device].cc;
     if (!GGML_CUDA_CC_IS_RDNA3_5(cc) && !GGML_CUDA_CC_IS_RDNA4(cc)) { return false; }
     const auto * q = dst->src[0], * k = dst->src[1], * v = dst->src[2], * m = dst->src[3], * ids = dst->src[5];
-    if (!q || !k || !v || !ids || dst->src[4] || dst->src[6] || dst->src[7]) { return false; }
+    if (!q || !k || !v || !ids || dst->src[4] || dst->src[6] || dst->src[7] || dst->src[9]) { return false; }
     float bias, cap;
     memcpy(&bias, (const char *) dst->op_params + 4, 4);
     memcpy(&cap, (const char *) dst->op_params + 8, 4);

@@ -2622,6 +2622,10 @@ static bool ggml_backend_cann_supports_op(ggml_backend_dev_t dev, const ggml_ten
             return true;
         case GGML_OP_FLASH_ATTN_EXT:
             {
+                // src[9] kv_bias (per-KV-head key bias) is implemented by the CUDA/HIP and CPU backends only
+                if (ggml_flash_attn_ext_get_kv_bias(op)) {
+                    return false;
+                }
 #ifdef ASCEND_310P
                 // FA not support on 310p device
                 return false;

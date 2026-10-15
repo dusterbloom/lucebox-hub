@@ -4495,6 +4495,9 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     }
 
     const int cc = ggml_cuda_info().devices[device].cc;
+    // The wmma kernel has no kv_bias path (untested on hardware): an op that carries one is routed to the
+    // kernel the non-wmma selection below would pick (mma where available).
+    const bool no_wmma = ggml_flash_attn_ext_get_kv_bias(dst) != nullptr;
 
     switch (K->ne[0]) {
         case  40:
@@ -4649,7 +4652,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     // On RDNA4 the rocWMMA kernel is not qualified (fragment layouts do not
     // match the hand-rolled softmax reductions), so it is reachable only
     // through the env-gated head-256 block below.
-    if (ggml_cuda_should_use_wmma_fattn(cc) && !GGML_CUDA_CC_IS_RDNA4(cc) && K->ne[1] % FATTN_KQ_STRIDE == 0 && Q->ne[0] != 40 && Q->ne[0] != 72 && Q->ne[0] != 512 && Q->ne[0] != 576) {
+    if (!no_wmma && ggml_cuda_should_use_wmma_fattn(cc) && !GGML_CUDA_CC_IS_RDNA4(cc) && K->ne[1] % FATTN_KQ_STRIDE == 0 && Q->ne[0] != 40 && Q->ne[0] != 72 && Q->ne[0] != 512 && Q->ne[0] != 576) {
         if (can_use_vector_kernel && Q->ne[1] <= 2) {
             return BEST_FATTN_KERNEL_VEC;
         }
@@ -4710,7 +4713,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         while (gqa_ratio % (2*gqa_ratio_eff) == 0 && gqa_ratio_eff < 8) {
             gqa_ratio_eff *= 2;
         }
-        if (fa256_wmma && ggml_cuda_should_use_wmma_fattn(cc) && K->ne[1] % FATTN_KQ_STRIDE == 0) {
+        if (!no_wmma && fa256_wmma && ggml_cuda_should_use_wmma_fattn(cc) && K->ne[1] % FATTN_KQ_STRIDE == 0) {
             return BEST_FATTN_KERNEL_WMMA_F16;
         }
         if (fa256_wmma && !ggml_cuda_should_use_wmma_fattn(cc)) {
@@ -4721,7 +4724,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             }
         }
         if (fa256_tc && Q->ne[1] * gqa_ratio_eff > 32) {
-            if (ggml_cuda_should_use_wmma_fattn(cc) && K->ne[1] < fa256_wmma_max_kv) {
+            if (!no_wmma && ggml_cuda_should_use_wmma_fattn(cc) && K->ne[1] < fa256_wmma_max_kv) {
                 return BEST_FATTN_KERNEL_WMMA_F16;
             }
             return BEST_FATTN_KERNEL_MMA_F16;
@@ -4760,11 +4763,12 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_set_device(ctx.device);
 #if defined(GGML_USE_HIP)
-    if (ggml_cuda_flash_attn_ext_qsa_decode_supported(ctx, dst)) {
+    // The QSA kernels do not read kv_bias (src[9]); their predicates reject it too.
+    if (dst->src[9] == nullptr && ggml_cuda_flash_attn_ext_qsa_decode_supported(ctx, dst)) {
         ggml_cuda_flash_attn_ext_qsa_decode(ctx, dst);
         return;
     }
-    if (ggml_cuda_flash_attn_ext_qsa_supported(ctx, dst)) {
+    if (dst->src[9] == nullptr && ggml_cuda_flash_attn_ext_qsa_supported(ctx, dst)) {
         ggml_cuda_flash_attn_ext_qsa(ctx, dst);
         return;
     }
@@ -4813,5 +4817,33 @@ bool ggml_cuda_flash_attn_ext_supported(int device, const ggml_tensor * dst) {
         return false;
 #endif // defined(GGML_USE_HIP)
     }
-    return ggml_cuda_get_best_fattn_kernel(device, dst) != BEST_FATTN_KERNEL_NONE;
+    // Selected ids (src[5]) are honoured only by the QSA kernels, which do not read kv_bias; the generic
+    // kernels would abort at dispatch on a maskless op, so a biased QSA op is never admitted.
+    if (dst->src[5] != nullptr && dst->src[9] != nullptr) {
+        return false;
+    }
+    const best_fattn_kernel kernel = ggml_cuda_get_best_fattn_kernel(device, dst);
+    // kv_bias (src[9]) is only honoured by the kernels that read it.
+    if (dst->src[9] != nullptr) {
+        if (kernel == BEST_FATTN_KERNEL_CHUNKED) {
+            // The chunked path ignores sinks, softcap and ALiBi; do not stack kv_bias on that.
+            float max_bias = 0.0f, logit_softcap = 0.0f;
+            memcpy(&max_bias,      (const float *) dst->op_params + 1, sizeof(float));
+            memcpy(&logit_softcap, (const float *) dst->op_params + 2, sizeof(float));
+            return dst->src[4] == nullptr && max_bias == 0.0f && logit_softcap == 0.0f;
+        }
+        if (kernel != BEST_FATTN_KERNEL_VEC && kernel != BEST_FATTN_KERNEL_TILE &&
+            kernel != BEST_FATTN_KERNEL_MMA_F16) {  // never WMMA_F16: the selector routes kv_bias away from it
+            return false;
+        }
+    }
+#if defined(GGML_USE_HIP)
+    // HIP compiles no TQ3_0 vec instance (ggml_cuda_flash_attn_ext_vec), and the selector only
+    // sends TQ3_0 to CHUNKED when there is a mask. Anything else that lands on VEC would abort.
+    if (kernel == BEST_FATTN_KERNEL_VEC &&
+        (dst->src[1]->type == GGML_TYPE_TQ3_0 || dst->src[2]->type == GGML_TYPE_TQ3_0)) {
+        return false;
+    }
+#endif // defined(GGML_USE_HIP)
+    return kernel != BEST_FATTN_KERNEL_NONE;
 }

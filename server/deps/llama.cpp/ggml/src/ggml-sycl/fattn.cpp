@@ -223,5 +223,9 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
 }
 
 bool ggml_sycl_flash_attn_ext_supported(int device, const ggml_tensor * dst) {
+    // src[9] kv_bias (per-KV-head key bias) is implemented by the CUDA/HIP and CPU backends only
+    if (ggml_flash_attn_ext_get_kv_bias(dst)) {
+        return false;
+    }
     return ggml_sycl_get_best_fattn_kernel(device, dst) != BEST_FATTN_KERNEL_NONE;
 }

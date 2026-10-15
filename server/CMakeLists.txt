@@ -1223,6 +1223,15 @@ if(LUCE_TESTS)
             ggml-cuda ggml ggml-base)
     endif()
 
+    # ggml_flash_attn_ext_add_kv_bias: CPU and GPU against a double reference.
+    if(LUCE_GPU_BACKEND STREQUAL "cuda" OR LUCE_GPU_BACKEND STREQUAL "hip")
+        luce_add_ggml_gpu_executable(test_fattn_kv_bias test/unit/test_fattn_kv_bias.cpp)
+        target_compile_definitions(test_fattn_kv_bias PRIVATE
+            $<IF:$<STREQUAL:${LUCE_GPU_BACKEND},hip>,GGML_USE_HIP,GGML_USE_CUDA>)
+        target_link_libraries(test_fattn_kv_bias PRIVATE ggml-cpu)
+        list(APPEND _raw_unit_test_targets test_fattn_kv_bias)
+    endif()
+
     if(LUCE_ENABLE_MIXED_CUDA_HIP)
         add_executable(test_mixed_cuda_hip test/unit/test_mixed_cuda_hip.cpp)
         target_include_directories(test_mixed_cuda_hip PRIVATE
