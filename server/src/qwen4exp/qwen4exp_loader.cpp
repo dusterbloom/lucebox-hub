@@ -1245,8 +1245,9 @@ const std::vector<std::pair<const char *, const char *>> & qwen4exp_exact_stack_
 
 ggml_type qwen4exp_decode_req_type(const char * value) {
     if (!value || !*value || std::strcmp(value, "0") == 0) return GGML_TYPE_COUNT;
+    // Q8_0 is a same-size re-encoding (a placement control for A/B runs: same bytes, same graph, separate buffer).
     for (ggml_type t : { GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_Q4_K,
-                         GGML_TYPE_Q5_K, GGML_TYPE_Q6_K }) {
+                         GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, GGML_TYPE_Q8_0 }) {
         if (strcasecmp(value, ggml_type_name(t)) == 0) return t;
     }
     return GGML_TYPE_COUNT;

@@ -41,7 +41,7 @@ static void test_type_parser() {
     CHECK(qwen4exp_decode_req_type("") == GGML_TYPE_COUNT);
     CHECK(qwen4exp_decode_req_type("0") == GGML_TYPE_COUNT);
     CHECK(qwen4exp_decode_req_type("bogus") == GGML_TYPE_COUNT);
-    CHECK(qwen4exp_decode_req_type("q8_0") == GGML_TYPE_COUNT);   // a copy must be narrower than the source
+    CHECK(qwen4exp_decode_req_type("q8_0") == GGML_TYPE_Q8_0);   // same-size control copy (placement A/B)
     CHECK(qwen4exp_decode_req_type("q5_1") == GGML_TYPE_Q5_1);
     CHECK(qwen4exp_decode_req_type("Q5_K") == GGML_TYPE_Q5_K);
     CHECK(qwen4exp_decode_req_type("q6_K") == GGML_TYPE_Q6_K);

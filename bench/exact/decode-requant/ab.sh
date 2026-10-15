@@ -4,7 +4,7 @@
 # GUFO_DECODE_Q5=0 (decode only). Arms alternate A/B/C/D across restarts; per restart: p4096 warm-up (dropped),
 # REPS x p4096, REPS x p16384, 16-token decode warm-up (dropped), REPS x decode128; greedy-64 on p4096 and
 # decode512 in round 0; VRAM in use after the warm-up (rocm-smi) per restart.
-# usage: ab.sh <outdir> <rounds> <gdn_type>[:<attn_type>] [reps]   (LUCE_DECODE_REQ[:LUCE_DECODE_REQ_ATTN])
+# usage: [ARMS="A B"] ab.sh <outdir> <rounds> <gdn_type>[:<attn_type>] [reps]   (LUCE_DECODE_REQ[:LUCE_DECODE_REQ_ATTN])
 set -u
 S=/home/duster/qwen4exp-f16/scratch
 TP=$S/gufo/textparity
@@ -65,6 +65,6 @@ run_arm() {  # $1 = arm, $2 = round
 }
 
 for r in $(seq 0 $((ROUNDS-1))); do
-  for arm in A B C D; do run_arm $arm $r || exit 1; done
+  for arm in ${ARMS:-A B C D}; do run_arm $arm $r || exit 1; done
 done
 echo AB_DONE
