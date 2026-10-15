@@ -20,6 +20,7 @@ OUT=$1; ROUNDS=$2; REPS=$3; shift 3
 PORT=${PORT:-18098}
 NTOK=${NTOK:-256}
 PREFILL=${PREFILL:-0}
+WORKLOADS=${WORKLOADS-code16k prose16k counting}   # WORKLOADS="" with PREFILL=1: prefill only
 mkdir -p $OUT
 md5sum $LUCE $(dirname $LUCE)/deps/llama.cpp/ggml/src/ggml-hip/libggml-hip.so.0.9.11 $MODEL > $OUT/binary.md5
 printf '%s\n' "$@" > $OUT/arms.txt
@@ -61,7 +62,7 @@ run_arm() {  # $1 = arm spec, $2 = round
   local name=${1%%=*} r=$2
   start_server "$1" $r || return 1
   { echo "arm $name round $r"; grep VmRSS /proc/$SPID/status; grep -E "chunk-auto|chunk  |verify-width|mtp" $OUT/serve_${name}_$r.log | head -5; } >> $OUT/mem.txt
-  for wl in code16k prose16k counting; do
+  for wl in $WORKLOADS; do
     decode $name $r $wl /dev/null || { echo "arm $name round $r $wl failed"; stop_server; return 1; }   # warm-up, dropped
     for i in $(seq 1 $REPS); do decode $name $r $wl $OUT/${name}${r}_${wl}.tsv || { echo "arm $name round $r $wl failed"; stop_server; return 1; }; done
   done
@@ -71,7 +72,7 @@ run_arm() {  # $1 = arm spec, $2 = round
     for i in $(seq 1 $REPS); do python3 $TP/text_bench_client.py $PORT $TP/prompt_p16384_r0.txt >> $OUT/${name}${r}_p16384.jsonl; done
   fi
   if [ "$r" = 0 ]; then
-    for wl in code16k prose16k counting; do python3 $S/decode/greedy64.py $PORT ${WL[$wl]} $NTOK > $OUT/${name}_greedy_${wl}.json; done
+    for wl in $WORKLOADS; do python3 $S/decode/greedy64.py $PORT ${WL[$wl]} $NTOK > $OUT/${name}_greedy_${wl}.json; done
   fi
   stop_server
 }
