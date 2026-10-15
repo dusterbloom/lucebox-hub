@@ -392,3 +392,18 @@ TEST_CASE(KvflashPagerSerdeFixture, no_new_api_use_keeps_eviction_unchanged) {
     CHECK(!p.is_resident(1));
     CHECK(p.is_resident(8));
 }
+
+TEST_CASE(KvflashPagerSerdeFixture, reselect_recalls_top_scored_host_chunk_and_keeps_tail) {
+    Harness A;
+    KvFlashPager p;
+    REQUIRE(p.attach(make_cfg(), A.k, A.v));
+    REQUIRE(p.alloc_span(0, 12 * kChunk));       // 8 blocks: 4 chunks go to host
+    int cold = -1;
+    for (int c = 1; c < 8 && cold < 0; c++) if (!p.is_resident(c)) cold = c;
+    REQUIRE(cold > 0);
+    p.score_hook = [cold](int c) { return c == cold ? 1e9f : (float)-c; };
+    CHECK(p.reselect() > 0);
+    CHECK(p.is_resident(cold));
+    CHECK(p.is_resident(0));                      // sink
+    for (int c = 8; c < 12; c++) CHECK(p.is_resident(c));   // tail window
+}

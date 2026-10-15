@@ -2463,6 +2463,7 @@ if(LUCE_TESTS)
             test/unit/test_kvflash_pool_sizing.cpp
             test/unit/test_kvflash_qk.cpp
             test/unit/test_kvflash_qk_dump.cpp
+            test/unit/test_kvflash_prefill_reselect.cpp
             test/unit/test_qwen35moe_routing_stats.cpp
             test/unit/test_qwen35moe_expert_placement.cpp
             test/unit/test_qwen35moe_swap_manager.cpp
