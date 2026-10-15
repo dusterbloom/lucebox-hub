@@ -759,3 +759,115 @@ Stub tests (`lucebox/a1/test_a1_e67.py`): the clone does not mutate the generato
 - **Hit rule.** `src_tok` in the tasks is the start of the assistant call that produced the tool message, not the fact. The primary hit uses the fact's own token span (the answer located in the tool message). The rule as written is reported as `lit`, and the whole source message as `msg`.
 - **Variant (b).** Feasible only with a new capture (`q_cap_all`). It folds the per-token queries of every prefill batch ending within the last 512 prompt tokens, because the final batch of a probe holds only the tokens after the last assistant header.
 - **Replay.** Probes only, so the request history differs from B0's; answers match B0's POOL16K on 783 of 951 probes (old facts 12 and 12 recalled, within 16K 688 and 707). Details in `evidence/agentic/E1_router_recall/README.md`.
+
+## A3 routed exact fetch (2026-10-15, before any row)
+
+Written before any A3 row exists. Paths are relative to `optimizations/kvflash/`; "key-value cache" is written KV; "B0" is the 3090 baseline run of the agentic harness (`evidence/agentic/B0_3090/`) and POOL16K its exact 16,384-row pool arm, the bar's source; "A1" is the rung that ran the shipping design on the B0 probes (section "Rung A1" and its amendments above), "A2" the exact-recent-window rung, "E2", "E3" and "E7" the diagnostics above; "FULL-CHK" is full KV built block by block with no compaction (the A1 reference); "DeltaNet" is the Gated DeltaNet recurrent layers of Qwen3.8, whose state is carried through, never compacted; "SDPA" is PyTorch scaled-dot-product attention; "iGPU" is the integrated GPU of lucebox6.
+
+What has been seen:
+- **A1 proper** (`evidence/agentic/A1/proper/`): the shipping design (every sealed 640-token block compacted once to 64 slots) kept 38 of 337 reference-correct probes, 11.3%, over 20 trajectories; early look FAIL. FULL-CHK rows exist for trajectories 1 to 20 in file order (trajectories 1 to 6 are the pilot).
+- **E3** (`evidence/agentic/E3E2/`, 6 pilot trajectories, 118 probes): swapping the one block that holds the fact back to exact K/V brings retention from 10 of 118 to 99 of 118 (83.9%, 95% interval [77.5, 91.1]), 1.04 blocks swapped per probe, the fact located in 118 of 118.
+- **E2** (same run): ranking the compacted blocks by the attention mass their 64 slots receive from the question's last token puts the source block in the top 8 for 85.6% of probes and for 18 of 18 facts older than 16K (38.5 blocks per cut on average).
+- Nothing from any A3 configuration. Nobody has run a router-driven fetch, and nobody has run any window-plus-prefix state with a fetch.
+
+### Question
+
+Can the design the 2.0b engine would ship, **an exact system/tool prefix and an exact recent window in front of compacted older blocks, whose exact K/V lives in host RAM and is fetched back by a router that reads only the compacted blocks**, recall more of what full KV recalled than POOL16K does, at the same number of rows? E3 says the right block is enough; E2 says the compacted blocks can find it. A3 is the first run where the router, not the located-block oracle, chooses the block.
+
+### State at a cut (built over the trajectory's token stream by `r2_core.gen_fblk_window`, one build pass per trajectory and window)
+
+- **P, the exact system/tool prefix.** Every sealed block that overlaps the tokens [0, end of the rendered system message) stays exact, as in E7 (`exact_blocks`, rounded up to whole blocks; 5,921 tokens in every B0 trajectory, 10 blocks, 6,400 rows).
+- **W, the exact recent window.** The last `window_blocks(W) = floor(W / 640)` sealed blocks stay exact (`window` of `gen_fblk_window`, as A2). W = 4096 is 6 blocks (3,840 tokens), W = 8192 is 12 blocks (7,680 tokens); W is a ceiling in tokens, so the exact window never exceeds it. A block is fitted once, at seal time, behind what the cache holds at that moment, and its compacted form replaces its exact form when it leaves the window; it is never re-fitted. P and W can overlap early in a trajectory and are then counted once.
+- **The other sealed 640-token blocks**, the **candidates**, are compacted to 64 uniform slots (ratio 0.10, cell FUNI, the shipping fit). Their exact K/V, as computed at seal time, is kept (the `on_block` hook, as E3); it is what a fetch brings back. The engine keeps it in host RAM at 64 KiB per token (16 full-attention layers x 4 KV heads x 256 x K and V x 2 bytes); this offline run keeps it on the same device, which changes no number.
+- **Carried state.** The DeltaNet state is carried through every block, and the open tail (under 640 tokens) stays exact, exactly as in the A1 shipping arm.
+
+### Per probe
+
+1. **Routing pass.** The question suffix (the harness's question turn and generation prompt, the same token ids A1 appended) is prefilled under the cut state and its queries are captured on the 16 full-attention layers (`r2_core.extend(..., want_queries=True)`, as E2). The pass's KV and DeltaNet state are dropped at once; nothing from it reaches the answer.
+2. **Router `a_last`.** Each candidate block (never P, never W, and the open tail is not a block) is scored by the attention mass its compacted slots receive at the **last** question token: softmax of q.k/sqrt(d) + beta over the candidate blocks' slots only, summed per block, mean over layers and query heads (`a1_e.router_mass`, the E2 router (a) with the last-token aggregation). E2's normalisation ran over all blocks because all were compacted; here P and W are exact and are left out of the normalisation, so the router sees only what it ranks. Ties go to the lower block index. `a_last` is the only router A3 uses; the other three E2 scorers are not run.
+3. **Fetch.** The top k candidates, k as the row budget allows, are **swapped** to exact: the block's compacted entry is replaced by its exact K/V (`a1_e.oracle_triples`, E3's function), never kept next to it. The open tail and the DeltaNet state stay as the generator left them (the tail's KV was computed under the unswapped state, as in E3).
+4. **Answer.** The routing-pass question KV is discarded, the question is prefilled again on the swapped state, and the probe is answered as in A1: `r2_core.answer_ids`, greedy, at most 64 new tokens, the harness scorer.
+
+### Row budget (equal memory with B0 POOL16K)
+
+Rows per full-attention layer at a cut with `nb` sealed blocks, an open tail of `tail` tokens, `E = |P union W|` exact blocks and `k` fetched blocks:
+
+    rows = 640 * (E + k) + 64 * (nb - E - k) + tail      (= P + W + 64 * (compacted blocks not fetched) + 640 * k + tail)
+
+The cap is 16,384, POOL16K's pool. At every cut k is the largest value that is at most the requested k, at most the number of candidates, and keeps `rows` at most 16,384. This is a function of the cut alone, so every probe of a cut uses the same k; the router only decides which blocks. The cut's rows and k, and whether k was lowered, are written into every row. The DeltaNet state is a fixed part not counted in the pool's rows and is the same in every arm.
+
+If `rows` at k = 0 is already above 16,384 (P + W + the compacted blocks + the tail do not fit), the cut is **over budget**: it runs at k = 0, is flagged, and is counted. That is a property of the state, not of the router. Worked numbers (rows at the chosen k; k for a requested 4 and 8; `tail` 0 and 639):
+
+| W (blocks) | cut tokens (sealed blocks) | k used for 4 / 8 | rows at that k |
+|---|---|---|---|
+| 4096 (6) | 12,288 (19) | 3 / 3 (only 3 candidates) | 12,160 to 12,799 |
+| 4096 (6) | 24,576 (38) | 4 / 8 or 7 | 13,952 to 16,319 |
+| 4096 (6) | 36,864 (57) | 4 / 6 or 5 | 15,168 to 16,383 |
+| 8192 (12) | 12,288 (19) | 0 / 0 (no candidates: everything is exact) | 12,160 to 12,799 |
+| 8192 (12) | 24,576 (38) | 2 or 1 / 2 or 1 | 16,256 to 16,319 |
+| 8192 (12) | 36,864 (57) | 0 / 0 | 16,320 to **16,959 (over budget when the tail is above 64 tokens)** |
+
+So W = 4096 never goes over budget at the probe cuts (at most 36,974 tokens) and requested k = 4 is always honoured except at cuts with fewer than 4 candidates; k = 8 is already 7 or 8 at 24K tokens and falls to 5 or 6 at 33K tokens and beyond. W = 8192 leaves room for k of at most 2 from 24K tokens on (0 from about 32K) and is over budget on the longest cuts. These are arithmetic facts about the design, stated before any row.
+
+### Stage 1: selection (6 pilot trajectories)
+
+- **Data.** The 6 pilot trajectories, probes only, the 118 reference-correct probes of `evidence/agentic/A1/pilot/`, the pilot FULL-CHK rows (`~/r1e/out/a1_pilot/FULL.jsonl`, read only) as the reference. The probes are the ones E3 and E2 used.
+- **Grid.** W in {4096, 8192} x requested k in {4, 8}: four configurations. One state is built per W and trajectory and serves both k; a probe whose two k give the same fetch set is answered once.
+- **Rule.** Retention of a configuration = correct probes over the 118 (A1's definition, trajectory as the cluster for the interval). The selected configuration is the one with the highest retention **among eligible configurations**; ties go to the fewer mean rows (mean over its 118 probes of the cut's `rows`), then to the smaller W, then to the smaller k. A configuration is **eligible** only if none of its probes sits at an over-budget cut, because the budget "at most 16,384 rows at every cut" is the point of the arm. The report also prints `selected_unrestricted` (the best of all four, ignoring eligibility) for the record; it selects nothing. If no configuration is eligible, stage 2 does not start and this section is amended first.
+- **What stage 1 decides.** Only the configuration used in stage 2. It sets no bar and no verdict. All four configurations are reported with the retention table, mean rows, k and rows per cut, and the router recall below. Stage 2's trajectories (7 to 60) are disjoint from stage 1's (1 to 6), so the selection does not leak into stage 2.
+
+### Stage 2: held-out proper run
+
+- **Trajectories.** The 60 minus the 6 pilot ones: trajectories 7 to 60 in file order, 54 trajectories.
+- **Configuration.** The one stage 1 selected, fixed before any stage-2 row, run as one arm (`A3_W<W>_K<k>`).
+- **Reference.** FULL-CHK rows. For trajectories 7 to 20 they are copied unedited from the A1 proper run (`evidence/agentic/A1/proper/FULL.jsonl`, `~/r1e/out/a1/FULL.jsonl` on lucebox6). For trajectories 21 to 60 they are computed with the same FULL arm code (`r2_core.gen_fullchk`, 640-token blocks, `empty_cache` after every block, same prompts, limits and stop tokens), in trajectory order, as each trajectory is reached. The functions `extend`, `gen_fullchk` and `answer_ids` of `r2_core.py` are unchanged between the A1 proper commit (9c0f1958) and A3: the later diff only adds code (checked with `git diff 9c0f1958 HEAD`); the md5 of the code in use is recorded in `provenance.txt`.
+- **Rule.** The A1 proper rule and bar, unchanged. Quoted verbatim from this file.
+
+  A1 Amendment 1, item 2: "**One early look, at 20 trajectories.** After the first 20 trajectories in file order, retention is computed with `r1b_stats.boot_mean` (10,000 resamples, seed 0) at **99.9%**, using the 0.05th and 99.95th percentiles. This is the Haybittle-Peto rule: an early stop needs overwhelming evidence, so the final 95% analysis keeps its error rate. If the 99.9% lower bound is above 75.6%, the result is PASS and stage 1 stops. If the 99.9% upper bound is below 75.6%, the result is FAIL and stage 1 stops. Otherwise all 60 trajectories run and section 6 decides at 95%, unchanged. Gate 3 (the reference's yield after 5 trajectories) still applies. This replaces "no interim look at R" in section 7."
+
+  A1 section 6: "The bar is B0's POOL16K retention, 75.6%, taken as a fixed number from the plan (it has its own interval, 72.9 to 78.2, and the rule does not widen for it). The comparison is each side's retention against its own full KV, measured on different weights, cache types and machines; it is not a comparison of accuracy between engines. The test needs at least 50 trajectories finished with at least 600 retained probes; otherwise the result is reported as a prefix with its size." "Primary: R and its 95% interval [lo, hi] (section 5)." "1. **PASS:** lo > 75.6%." "2. **INCONCLUSIVE, point estimate at or above 75.6%** (interval contains 75.6)". "3. **FAIL:** hi < 75.6%, or INCONCLUSIVE with the point estimate under 75.6%." Interval method: `r1b_stats.boot_mean`, the trajectory as the cluster (`a1_core.boot_ci`, which equals it at 95%).
+
+  How A3 applies it: the early look is taken after the first **20 held-out trajectories in file order** (trajectories 7 to 26), at 99.9%, on the A3 arm; PASS or FAIL ends stage 2. Otherwise all 54 run and the verdict is the 95% rule above (54 is at least 50; the retained-probe count is checked against 600 and the report states a prefix if either floor is missed). The 120-trajectory extension in A1 section 6, item 2, is not used. Gate 3 is not re-applied: it checks that the FULL arm's yield is plausible, A1 passed it (57.7%) on the same code, and trajectories 7 to 20 are bit-identical copies of its rows; the report prints the reference yield of the A3 trajectories anyway. What PASS, INCONCLUSIVE or FAIL mean for the engine plan is not set here; the numbers go to the project owner, as A2's FAIL branch does.
+- **Reported next to the rule, never part of it.**
+  - B0 POOL16K on the same probes: its retention over the same trajectories, and the per-probe comparison on the probes retained by both (counts and McNemar exact via `r1b_stats.mcnemar_exact`).
+  - Retention by distance bin (0-4096, 4096-8192, 8192-16384, over 16384 tokens) and by probe type, next to POOL16K's bins.
+  - Router recall of the source block, using E3's located-block definition (the blocks overlapping the first occurrence of the gold string, `a1_e.locate_span`): recall at k in {1, 2, 4, 8, 16} among the probes whose source block is a candidate, overall and for facts older than 16K; the numbers of probes whose source block is already exact (P or W), is in the open tail, or was not located; and the share of located probes whose source block is exact in the answer state.
+  - Fetch count and rows per cut: for each cut, the rows kept, k used, k requested, whether k was lowered, whether the cut is over budget; with the mean, the maximum and the histogram of k.
+  - Retention restricted to probes at within-budget cuts, next to the all-probe retention (equal at W = 4096 by the table above).
+- **Provenance only, never a gate.** Routing-pass prefill seconds, fetch bytes (k x 640 tokens x 64 KiB), wall seconds per probe, answer decode tokens.
+
+### Outputs
+
+Rows (harness row schema plus A3 fields: `k_req`, `k`, `fetched_blocks`, `rows`, `rows_k0`, `over_budget`, `n_cand`, `fetch_bytes`, `route_s`, `probe_wall_s`, `src_blocks`, `src_status`): `~/r1e/out/a3sel/A3_W<W>_K<k>.jsonl` and `A3_W<W>_route.jsonl` (router ranks, fetch plan per requested k) for stage 1; `~/r1e/out/a3/` with the same names plus `FULL.jsonl` for stage 2. `progress.jsonl`, `checks.json` (early look), `summary.json`, `provenance.txt`, `mem.log`, `run.log`. Report: `lucebox/a1/a1_a3_report.py` prints JSON and writes `a3_report.json`; evidence is copied to `evidence/agentic/A3/sel/` and `evidence/agentic/A3/proper/`. Runs resume per trajectory, window and arm: rerun the same launch.
+
+### Parity contract
+
+Model Qwen/Qwen3.8-27B bf16, the same files, for every arm and the reference; KV bf16; greedy (argmax) with A1's limits (64 new tokens for a probe) and stop tokens; the rendered ids of each request are A1's (one tokenization per trajectory by the server's own tokenizer, hashes in `evidence/agentic/A1/request_ids.sha256`); SDPA attention as A1; one code copy, whose md5s are recorded in `provenance.txt` next to the A1 proper list (the FULL path of `r2_core.py` unchanged, above); no disk cache and no prefix cache anywhere (no server: every stream is built from scratch per trajectory and window, so the caching axis is symmetric by construction); ratio 0.10, 640-token blocks, 64 uniform slots, cell FUNI as in A1; the same retained probes (the reference's correct ones) in every arm. The B0 numbers come from another machine, other weights and another cache type and are worded as in A1: each side's retention against its own full KV.
+
+### Machine, memory gates
+
+lucebox6 iGPU, `HIP_VISIBLE_DEVICES=1`, $0, no Modal job. One job at a time: stage 1, then its report, then stage 2; never next to any other A1, A2, E or D job (the launch scripts refuse to start while one is running). The A1 launch gate (start only with host `used` at most 70 GiB and `available` at least 55 GiB), the per-process cap of 100 GiB, `empty_cache` after every cut and every FULL-CHK block, and the A1 watchdog (`a1_watchdog.py`: stop the run, resumable, when host `used` reaches 120 GiB or swap use grows by more than 1 GiB over its level when the watchdog starts) apply unchanged. A3's own peak is expected near E3/E2's 55 GiB allocated (weights plus the exact blocks kept aside, about 40 MiB per block, plus a state of at most 16,384 rows, about 1 GiB); stage 2's FULL-CHK builds reproduce A1's 65 GiB allocated and up to 100 GiB reserved. The two launch scripts are `lucebox/a1/a1_launch_a3sel.sh` and `lucebox/a1/a1_launch_a3.sh`; stage 2 reads the stage-1 selection from `a3_report.json` unless given W and k, and records them in `provenance.txt`.
+
+### Time (estimates from E3/E2 and A1 proper, not gates)
+
+- **Stage 1.** E3/E2 took 42 minutes for the 6 trajectories (build 142 s per trajectory, 15 minutes in total; about 240 answers at 6 to 7 s, inferred from the 1,456 s of answer time; 84 s of routing). A3 builds twice (one pass per W, same per-block cost, attention behind 11K to 17K exact rows adds under 10 s per trajectory), answers about 340 times (W = 4096 answers about 1.8 fetch sets per probe, W = 8192 about 1.1 because most cuts cap k at 0 to 2) at 7 to 8 s, and routes 236 times at 1 to 2 s. Expected **about 1.3 to 1.5 hours, at most 2 hours**, plus the model load.
+- **Stage 2.** Per held-out trajectory: build about 160 s, about 17 probes x about 10 s (routing plus answer), about 5.5 minutes. FULL-CHK for trajectories 21 to 60 takes about 750 s each (A1 proper). To the early look: 20 x 5.5 min + 6 x 12.5 min = about 3.1 hours. All 54 trajectories: about 5 hours of A3 plus about 8.3 hours of FULL-CHK, about 13 hours.
+
+### Code and CPU checks before any row
+
+`lucebox/a1/a1_a3.py` reuses `a1_e` (`router_mass`, `oracle_triples`, `locate_span`, `overlap_blocks`), `a1_e67` (`system_end`, `prefix_blocks`), `a1_core` (plan, rows, early look, interval) and `r2_core` (`gen_fblk_window`, `extend`, `answer_ids`, `gen_fullchk`); it adds only the budget arithmetic, the candidate set, the fetch plan and the driver. Tests, written first and seen failing before the code existed:
+- `lucebox/a1/test_a1_a3.py` (stub model, runs anywhere with torch): the row budget lowers k when needed and flags a cut that is over budget at k = 0; the row formula equals the rows of the real generator state; the router ranks only candidates even when the prefix and window slots would win; k = 0 is torch-equal to the prefix-plus-window state; fetching every candidate equals E3's swap of all blocks and is all exact; a fetched block replaces its compacted entry; the routing pass's KV is not what the answer sees and the cut state is untouched; identical fetch sets are answered once; no candidates means no routing pass; the selection and verdict helpers; the reference seeding; the report tables.
+- `modal/am_qwen35/tests/test_a1.py`, the five A3 tests on the tiny random hybrid (run on lucebox6 through `a1_pytest.sh`, with the compaction checkout): row budget lowers k and matches the real state's rows; the router never ranks P, W or the tail; k = 0 equals the prefix-plus-window state; fetching every candidate equals E3's swap and is all exact (explicit concatenation of the per-block exact K/V plus the tail); the routing pass's KV is discarded before the answer prefill, and the answer's tokens equal those of an answer that never routed.
+Gate: all pass on lucebox6 before the stage-1 launch.
+
+### What A3 does not change
+
+The A1 rule and the 75.6% bar (above), the A1 reference, scorer, limits and render, and the A2 rule and its window arms (WIN18, WIN25), all stand. No ratio, window or k is tuned inside stage 2; stage 1's selection is the only choice, made on the 6 pilot trajectories. A3's results are not read as an A1 or A2 result, and neither changes A3's rule. Stage 1's router recall and E2's are different measurements (different state, normalisation over candidates only) and are not combined.
+
+### Details fixed here (readings of the design, chosen before any row)
+
+1. W is a ceiling in tokens: the window is `floor(W / 640)` blocks (A2 gave W in blocks; A3's grid is in tokens).
+2. The router is normalised over the candidate blocks' slots only (E2: over all blocks, all compacted then; PREREG line 706).
+3. Eligibility for selection (above) excludes a configuration with any over-budget cut; the design says "pick the highest retention", and the budget "at most 16,384 at every cut" would otherwise be broken by the winner.
+4. The exact K/V a fetch returns is the block's own prefill under the P-plus-window-plus-compacted state at seal time (what the engine would hold). E3's exact blocks were prefilled behind an all-compacted prefix, so A3's fetched K/V differ slightly from E3's.
+5. Gate 3 is not re-applied (above).

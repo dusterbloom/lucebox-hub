@@ -439,6 +439,118 @@ def test_e7_zero_prefix_equals_the_shipping_state_and_a_prefix_holds_the_exact_r
         assert any((e7[i][1][:, :, 2 * BLOCK_W:2 * BLOCK_W + 2 * slots] != 0).any() for i in range(len(e7)) if i not in sess.linear)   # then compacted blocks
 
 
+# ---------------------------------------------------------------- A3 routed exact fetch on the tiny hybrid (lucebox/a1/a1_a3.py)
+
+A3_P, A3_WB = 2, 3          # block 24: stream of 300 = 12 sealed blocks + tail 12; exact prefix blocks 0-1, window blocks 9-11, candidates 2-8
+
+
+def _a3_build(S, segs, sess, a1_a3, ratio=0.25):
+    cs = a1_core.segs_from_checkpoints(stream_of(segs)[:300], [300])
+    R = r2.Runner(sess, None, cell="FUNI", ratio=ratio)
+    comp, exact = [], []
+    (_, trip, t_len, info), = list(r2.gen_fblk_window(R, cs, [0], A3_WB, exact_blocks=A3_P,
+                                                      on_block=lambda j, a, b, ex, cp: (exact.append(ex), comp.append(cp))))
+    st = SimpleNamespace(triples=trip, t_len=t_len, nb=info["blocks"], tail=info["tail_tokens"], comp=comp, exact=exact, p=A3_P,
+                         wb=A3_WB, linear=sess.linear, full_layers=[i for i in range(len(sess.layer_types)) if i not in sess.linear])
+    assert st.nb == 12 and st.tail == 12
+    return R, st
+
+
+def test_a3_row_budget_lowers_k_and_matches_the_rows_of_the_real_state(setup, monkeypatch):
+    import a1_a3
+    S, segs = setup
+    _blocks24(monkeypatch)
+    with session(S) as sess:
+        R, st = _a3_build(S, segs, sess, a1_a3)
+        slots = r2.slots_for(BLOCK_W, 0.25)
+        for k in range(0, 4):
+            trip = a1_a3.a3_state(st.triples, st.comp, st.exact, st.nb, st.tail, st.p, st.wb, a1_a3.candidates(12, A3_P, A3_WB)[:k], sess.linear)
+            assert trip[st.full_layers[0]][0].shape[2] == a1_a3.rows_at(12, 12, A3_P, A3_WB, k, block=BLOCK_W, slots=slots), k
+        cap = a1_a3.rows_at(12, 12, A3_P, A3_WB, 2, block=BLOCK_W, slots=slots)
+        got = a1_a3.choose_k(12, 12, A3_P, A3_WB, 5, cap=cap, block=BLOCK_W, slots=slots)
+        assert got["k"] == 2 and got["lowered"] and got["rows"] <= cap and not got["over_budget"]
+        assert a1_a3.choose_k(12, 12, A3_P, A3_WB, 5, cap=cap - 1, block=BLOCK_W, slots=slots)["k"] == 1
+
+
+def test_a3_router_never_ranks_the_prefix_the_window_or_the_tail(setup, monkeypatch):
+    import a1_a3
+    S, segs = setup
+    _blocks24(monkeypatch)
+    with session(S) as sess:
+        R, st = _a3_build(S, segs, sess, a1_a3)
+        cand, a_last, tm = a1_a3.route_a_last(sess, st, question_ids(S)[0].tolist())
+        assert cand == list(range(A3_P, 12 - A3_WB)) and a_last.shape == (len(cand),)
+        assert torch.allclose(a_last.sum(), torch.tensor(1.0), atol=1e-4)
+        ranked = a1_a3.rank_candidates(a_last, cand)
+        assert sorted(ranked) == cand and not set(ranked) & (set(range(A3_P)) | set(range(12 - A3_WB, 12)))
+
+
+def test_a3_k_zero_is_the_prefix_plus_window_shipping_state(setup, monkeypatch):
+    import a1_a3
+    S, segs = setup
+    _blocks24(monkeypatch)
+    with session(S) as sess:
+        R, st = _a3_build(S, segs, sess, a1_a3)
+        trip = a1_a3.a3_state(st.triples, st.comp, st.exact, st.nb, st.tail, st.p, st.wb, [], sess.linear)
+        assert all(torch.equal(x, y) for a, b in zip(trip, st.triples) for x, y in zip(a, b))
+
+
+def test_a3_fetching_every_compacted_block_is_the_e3_swap_and_all_exact(setup, monkeypatch):
+    import a1_a3
+    import a1_e
+    S, segs = setup
+    _blocks24(monkeypatch)
+    with session(S) as sess:
+        R, st = _a3_build(S, segs, sess, a1_a3)
+        cand = a1_a3.candidates(12, A3_P, A3_WB)
+        trip = a1_a3.a3_state(st.triples, st.comp, st.exact, st.nb, st.tail, st.p, st.wb, cand, sess.linear)
+        e3 = a1_e.oracle_triples(st.triples, st.comp, st.exact, set(range(12)), st.tail, sess.linear)
+        assert all(torch.equal(x, y) for a, b in zip(trip, e3) for x, y in zip(a, b))
+        for i in st.full_layers:
+            for c in range(3):
+                want = torch.cat([st.exact[j][i][c] for j in range(12)] + [st.triples[i][c][:, :, -st.tail:]], 2)
+                assert torch.equal(trip[i][c], want), (i, c)
+            assert trip[i][0].shape[2] == 12 * BLOCK_W + st.tail
+        for i in sess.linear:                                       # the DeltaNet state is the generator's, untouched by the swap
+            assert all(torch.equal(x, y) for x, y in zip(trip[i], st.triples[i]))
+
+
+def test_a3_routing_pass_kv_is_discarded_before_the_answer_prefill(setup, monkeypatch):
+    import a1_a3
+    S, segs = setup
+    _blocks24(monkeypatch)
+    with session(S) as sess:
+        R, st = _a3_build(S, segs, sess, a1_a3)
+        snap = tuple(tuple(x.clone() for x in e) for e in st.triples)
+        suffix = question_ids(S)[0].tolist()
+        seen, real_answer, real_extend = [], r2.answer_ids, r2.extend
+        routing = []
+
+        def spy_extend(*a, **k):
+            out = real_extend(*a, **k)
+            if k.get("want_queries"):
+                routing.append({id(x) for e in out[0] for x in e})
+            return out
+
+        def spy_answer(S_, triples, seq_len, sfx, max_new, timing=None):
+            seen.append((seq_len, {id(x) for e in triples for x in e}, triples[st.full_layers[0]][0].shape[2]))
+            return real_answer(S_, triples, seq_len, sfx, max_new, timing=timing)
+
+        monkeypatch.setattr(r2, "extend", spy_extend)
+        monkeypatch.setattr(r2, "answer_ids", spy_answer)
+        slots = r2.slots_for(BLOCK_W, 0.25)
+        out = a1_a3.answer_item(sess, st, SimpleNamespace(suffix=suffix, max_new=4), ks=[2], cap=10 ** 9, block=BLOCK_W, slots=slots)
+        assert len(routing) == 1 and len(seen) == 1
+        assert seen[0][0] == st.t_len and not (seen[0][1] & routing[0])             # logical length without question tokens; no shared tensor
+        assert seen[0][2] == a1_a3.rows_at(12, 12, A3_P, A3_WB, 2, block=BLOCK_W, slots=slots)
+        assert all(torch.equal(x, y) for a, b in zip(snap, st.triples) for x, y in zip(a, b))      # the cut state survived the routing pass
+        monkeypatch.setattr(r2, "extend", real_extend)
+        monkeypatch.setattr(r2, "answer_ids", real_answer)
+        clean = r2.answer_ids(sess, a1_a3.a3_state(st.triples, st.comp, st.exact, 12, 12, A3_P, A3_WB, out["arms"][2]["fetched"], sess.linear),
+                              st.t_len, suffix, 4)
+        assert out["arms"][2]["gen"] == clean                                       # the same tokens as an answer that never routed
+
+
 # ---------------------------------------------------------------- real data, CPU
 
 _P = a1_core.default_paths()
