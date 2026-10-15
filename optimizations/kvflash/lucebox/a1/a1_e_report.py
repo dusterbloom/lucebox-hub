@@ -1,6 +1,8 @@
 """Report for diagnostics E3, E3SPEC, E2 (dir 1) and E5 (dir 2) against the pilot's FULL-CHK reference and shipping rows.
-    python3 a1_e_report.py <e3e2_dir> <e5_dir> <pilot_dir> [<e6_dir> <e7_dir>]    -> prints JSON, writes <e3e2_dir>/e_report.json
-Decides nothing (PREREG "Diagnostics E2, E3, E5 before A2" and "Diagnostics E6, E7")."""
+    python3 a1_e_report.py <e3e2_dir> <e5_dir> <pilot_dir> [<e6_dir> <e7_dir> <e8_dir>]    -> prints JSON, writes <e3e2_dir>/e_report.json
+Decides nothing (PREREG "Diagnostics E2, E3, E5 before A2" and "Diagnostics E6, E7"; E8: "Diagnostic E8").
+E8 reads <e8_dir>/SHIP.jsonl and checks that <e8_dir>/FULL.jsonl is byte-equal to the pilot FULL.jsonl (md5)."""
+import hashlib
 import json
 import os
 import sys
@@ -29,7 +31,11 @@ def e2_tables(rows):
     return out
 
 
-def main(d32, d5, pilot, d6=None, d7=None):
+def md5(path):
+    return hashlib.md5(open(path, "rb").read()).hexdigest()
+
+
+def main(d32, d5, pilot, d6=None, d7=None, d8=None):
     H = C.Harness(C.default_paths())
     tasks = H.load_tasks()
     full = C.read_rows(os.path.join(pilot, "FULL.jsonl"))
@@ -48,6 +54,10 @@ def main(d32, d5, pilot, d6=None, d7=None):
             if name[:2] == "E7":
                 pr = [r for r in C.read_rows(os.path.join(d, "progress.jsonl")) if "exact_tokens" in r]
                 rep[name]["exact_tokens_per_trajectory"] = {r["traj"][-8:]: r["exact_tokens"] for r in pr}
+    if d8 and os.path.exists(os.path.join(d8, "SHIP.jsonl")):
+        ref = md5(os.path.join(pilot, "FULL.jsonl"))
+        assert md5(os.path.join(d8, "FULL.jsonl")) == ref, "E8 reference is not the pilot FULL.jsonl"
+        rep["E8_select_only"] = {**retention(H, tasks, full, C.read_rows(os.path.join(d8, "SHIP.jsonl")), T), "reference_md5": ref}
     rep["E2"] = e2_tables(C.read_rows(os.path.join(d32, "e2.jsonl")))
     sc = os.path.join(d32, "ship_check.json")
     rep["ship_check"] = json.load(open(sc)) if os.path.exists(sc) else None
@@ -57,4 +67,4 @@ def main(d32, d5, pilot, d6=None, d7=None):
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:6])
+    main(*sys.argv[1:7])

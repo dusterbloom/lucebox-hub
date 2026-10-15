@@ -28,6 +28,7 @@ def main(argv=None):
     ap.add_argument("--control-n", type=int, default=0, help="block-512 control on the first N trajectories (probes)")
     ap.add_argument("--det-repeat", type=int, default=0, help="re-answer the first N items of trajectory 1 and compare")
     ap.add_argument("--mem-cap-gib", type=float, default=100)
+    ap.add_argument("--select-only", action="store_true", help="E8: keep the selected original K/V rows, bias 0, no fitted values")
     ap.add_argument("--ratio", type=float, default=0.10, help="slots kept per sealed block; 1.0 = D1 identity diagnostic, never for A1")
     a = ap.parse_args(argv)
     arms = tuple(a.arms.split(","))
@@ -45,6 +46,8 @@ def main(argv=None):
     import tool_parse
     H = core.Harness(core.default_paths())
     m = core.load_model(a.model, a.mem_cap_gib, log, ratio=a.ratio)
+    if a.select_only:
+        m.R.method.algorithm_class = core.select_only(m.R.method.algorithm_class)
     ctx = SimpleNamespace(S=m.S, R=m.R, H=H, parse=tool_parse.parse)
     kinds = ("probe", "decision") if a.stage2 else ("probe",)
     summary = core.run_stage(ctx, a.out, kinds=kinds, arms=arms, start=a.start, n=a.n,

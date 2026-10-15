@@ -505,6 +505,19 @@ def run_stage(ctx, out, kinds=("probe",), arms=("FULL", "SHIP"), start=0, n=None
     return summary
 
 
+def select_only(algo_cls):
+    """E8: the algorithm class with its fit thrown away. The wrapped class still scores and ranks the keys (its own `idx`, the
+    HighestAttnKeys rank order); the block keeps those rows verbatim: K[idx], V[idx], bias 0 (beta's shape and dtype, all zeros)."""
+    import torch
+
+    class SelectOnly(algo_cls):
+        def compute_compacted_cache(self, K, V, queries, t, *a, **kw):
+            _c1, beta, _c2, idx = super().compute_compacted_cache(K, V, queries, t, *a, **kw)
+            i = torch.as_tensor(idx, device=K.device).long()
+            return K[i], torch.zeros_like(beta), V[i], idx
+    return SelectOnly
+
+
 # ---------------------------------------------------------------- model loading (shared by every entry point)
 
 def load_model(model_path, mem_cap_gib=None, log=print, ratio=SHIP_RATIO):

@@ -439,6 +439,29 @@ def test_e7_zero_prefix_equals_the_shipping_state_and_a_prefix_holds_the_exact_r
         assert any((e7[i][1][:, :, 2 * BLOCK_W:2 * BLOCK_W + 2 * slots] != 0).any() for i in range(len(e7)) if i not in sess.linear)   # then compacted blocks
 
 
+def test_e8_select_only_state_has_bias_zero_the_same_shape_and_rows_taken_from_the_exact_block(setup, monkeypatch):
+    S, segs = setup
+    _blocks24(monkeypatch)
+    cs = a1_core.segs_from_checkpoints(stream_of(segs)[:100], [100])
+    with session(S) as sess:
+        R = r2.Runner(sess, None, cell="FUNI", ratio=0.25)
+        (_, ship, _, _), = list(r2.gen_fblk_window(R, cs, [0], 0))
+        R.method.algorithm_class = a1_core.select_only(R.method.algorithm_class)
+        (_, e8, _, _), = list(r2.gen_fblk_window(R, cs, [0], 0))
+        full_chk, = [tr for _, tr, _, _ in r2.gen_fullchk(R, cs, None, [0], block=BLOCK_W)]
+        slots = r2.slots_for(BLOCK_W, 0.25)
+        for i in range(len(e8)):
+            if i in sess.linear:
+                continue
+            assert e8[i][0].shape == ship[i][0].shape and e8[i][2].shape == ship[i][2].shape      # same rows per layer as the shipping arm
+            assert not e8[i][1].any()                                                             # bias 0 everywhere
+            for h in range(e8[i][0].shape[1]):      # block 0 has no compacted prefix, so its exact K/V are FULL-CHK's: each kept row is one of them
+                src_k, src_v = full_chk[i][0][0, h, :BLOCK_W], full_chk[i][2][0, h, :BLOCK_W]
+                kept_k, kept_v = e8[i][0][0, h, :slots], e8[i][2][0, h, :slots]
+                pos = [(src_k - r).abs().sum(-1).argmin().item() for r in kept_k]
+                assert torch.allclose(kept_k, src_k[pos], atol=1e-4) and torch.allclose(kept_v, src_v[pos], atol=1e-4)
+
+
 # ---------------------------------------------------------------- A3 routed exact fetch on the tiny hybrid (lucebox/a1/a1_a3.py)
 
 A3_P, A3_WB = 2, 3          # block 24: stream of 300 = 12 sealed blocks + tail 12; exact prefix blocks 0-1, window blocks 9-11, candidates 2-8
