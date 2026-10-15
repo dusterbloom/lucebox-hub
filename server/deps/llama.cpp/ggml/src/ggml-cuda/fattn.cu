@@ -4825,7 +4825,7 @@ bool ggml_cuda_flash_attn_ext_supported(int device, const ggml_tensor * dst) {
             return dst->src[4] == nullptr && max_bias == 0.0f && logit_softcap == 0.0f;
         }
         if (kernel != BEST_FATTN_KERNEL_VEC && kernel != BEST_FATTN_KERNEL_TILE &&
-            kernel != BEST_FATTN_KERNEL_MMA_F16 && kernel != BEST_FATTN_KERNEL_WMMA_F16) {
+            kernel != BEST_FATTN_KERNEL_MMA_F16) {
             return false;
         }
     }

@@ -96,8 +96,6 @@ static __global__ void flash_attn_ext_f16(
     const half  * maskh  = (const half  *) (mask + nb33*(sequence % ne33)                           + nb31*ic0);
     const half2 * mask2  = (const half2 *)  maskh;
     const float * sinksf = (const float *) sinks;
-    // Per-KV-head key bias, F32 [ne11, ne12].
-    const float * kv_bias_h = kv_bias ? kv_bias + int64_t(head / gqa_ratio)*ne11 : nullptr;
 
     const int stride_Q  = nb01 / sizeof(float);
     const int stride_KV = nb11 / sizeof(half);
@@ -244,9 +242,6 @@ static __global__ void flash_attn_ext_f16(
 
                     KQ_f_tmp[k0/warp_size] += mask && ic0 + j < int(ne01.z) ?
                         __half2float(slopeh*maskh[j*(nb31/sizeof(half)) + k_VKQ_0 + k]) : 0.0f;
-                    if (kv_bias_h) {
-                        KQ_f_tmp[k0/warp_size] += kv_bias_h[k_VKQ_0 + k];
-                    }
                     KQ_max_new = max(KQ_max_new, KQ_f_tmp[k0/warp_size] + FATTN_KQ_MAX_OFFSET);
                 }
                 KQ_max_new = warp_reduce_max<warp_size>(KQ_max_new);
@@ -299,9 +294,6 @@ static __global__ void flash_attn_ext_f16(
                     const int k = k0 + threadIdx.x;
 
                     KQ2_tmp[k0/warp_size] += mask && ic0 + j < int(ne01.z) ? slope2*mask2[(j*ne11 + k_VKQ_0)/2 + k] : make_half2(0.0f, 0.0f);
-                    if (kv_bias_h) {
-                        KQ2_tmp[k0/warp_size] += make_half2(kv_bias_h[k_VKQ_0 + 2*k], kv_bias_h[k_VKQ_0 + 2*k + 1]);
-                    }
                     KQ_max_new = ggml_cuda_hmax2(KQ_max_new, KQ2_tmp[k0/warp_size]);
                 }
                 KQ_max_new = __half2half2(warp_reduce_max<warp_size>(ggml_cuda_hmax(__low2half(KQ_max_new), __high2half(KQ_max_new))));
