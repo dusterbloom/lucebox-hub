@@ -31,6 +31,7 @@ struct Case {
     std::vector<int> layers;  // full-attention layer ids, in manifest order
     // Top-level integers of the manifest, 0 when absent (the queries-only case has no fit dims).
     int head_dim = 0, n_tokens = 0, n_head = 0, n_kv = 0, slots = 0;
+    std::string manifest;     // raw manifest text
 };
 
 // First integer value of `"key":` in the manifest text, or 0.
@@ -56,6 +57,7 @@ inline bool load_case(const std::string & dir, Case & c, std::string * err = nul
     if (!read_file(dir + "/manifest.json", m)) { if (err) *err = "no manifest.json in " + dir; return false; }
     c = Case{};
     c.dir = dir;
+    c.manifest = m;
     const size_t slash = dir.find_last_of('/');
     c.name = slash == std::string::npos ? dir : dir.substr(slash + 1);
     c.head_dim = manifest_int(m, "head_dim");
@@ -78,6 +80,30 @@ inline bool load_case(const std::string & dir, Case & c, std::string * err = nul
     }
     if (c.layers.empty()) { if (err) *err = "empty layers array in manifest of " + dir; return false; }
     return true;
+}
+
+// shape_ggml of the manifest entry whose file is L<layer>_<name>.<ext>; empty if there is no such entry.
+inline std::vector<long> entry_shape(const Case & c, int layer, const char * name, const char * ext) {
+    char f[64];
+    std::snprintf(f, sizeof f, "\"L%02d_%s.%s\"", layer, name, ext);
+    std::vector<long> out;
+    const size_t k = c.manifest.find(f);
+    if (k == std::string::npos) return out;
+    const size_t sg = c.manifest.find("\"shape_ggml\"", k);
+    const size_t nextfile = c.manifest.find("\"file\"", k + 1);
+    if (sg == std::string::npos || sg > nextfile) return out;
+    const size_t open = c.manifest.find('[', sg), close = c.manifest.find(']', sg);
+    if (open == std::string::npos || close == std::string::npos) return out;
+    const char * p = c.manifest.c_str() + open + 1;
+    const char * end = c.manifest.c_str() + close;
+    while (p < end) {
+        char * next = nullptr;
+        const long v = std::strtol(p, &next, 10);
+        if (next == p) { ++p; continue; }
+        out.push_back(v);
+        p = next;
+    }
+    return out;
 }
 
 template <class T>

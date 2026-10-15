@@ -859,7 +859,16 @@ int run_fixture_gate(ggml_backend_t be, const char * name) {
             for (int layer : c.layers) {
                 std::vector<float> q, k, v, beta_ref, c2_ref;
                 std::vector<int32_t> idx;
-                if (!am_fixture::read_f32(c, layer, "q", (size_t) d * n_tok * n_head, q, &err) ||
+                // The reference fit sees fitq (the grouped queries it received, after its own truncation and
+                // drop), [d, nfit, n_kv] per layer. Never fall back to q.
+                const std::vector<long> fs = am_fixture::entry_shape(c, layer, "fitq", "f32");
+                if (fs.size() != 3 || fs[0] != d || fs[1] <= 0 || fs[2] != n_kv) {
+                    CHECK(false, "case %s layer %d: no valid fitq entry in the manifest", c.name.c_str(), layer);
+                    all_ok = false;
+                    break;
+                }
+                const int nfit = (int) fs[1];
+                if (!am_fixture::read_f32(c, layer, "fitq", (size_t) d * nfit * n_kv, q, &err) ||
                     !am_fixture::read_f32(c, layer, "k", (size_t) d * T * n_kv, k, &err) ||
                     !am_fixture::read_f32(c, layer, "v", (size_t) d * T * n_kv, v, &err) ||
                     !am_fixture::read_i32(c, layer, "idx", (size_t) t * n_kv, idx, &err) ||
@@ -872,7 +881,8 @@ int run_fixture_gate(ggml_backend_t be, const char * name) {
                 std::vector<ggml_fp16_t> q16(q.size());
                 for (size_t i = 0; i < q.size(); ++i) q16[i] = ggml_fp32_to_fp16(q[i]);
                 BlockShape s;
-                s.head_dim = d; s.n_tokens = n_tok; s.n_head = n_head; s.n_head_kv = n_kv; s.n_keys = T; s.t = t;
+                // fitq is already grouped per KV head: one query head per KV head, nfit rows each.
+                s.head_dim = d; s.n_tokens = nfit; s.n_head = n_kv; s.n_head_kv = n_kv; s.n_keys = T; s.t = t;
                 s.scale = 1.0f / std::sqrt((float) d);
                 s.bf16_scores = cfg.ref_sem;
                 NnlsParams np;
