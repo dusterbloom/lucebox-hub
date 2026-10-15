@@ -27,8 +27,9 @@ RATIO = 0.10
 BLOCK = 640
 USER_TAG = "<|im_start|>user"
 DISTRACTOR_POOL = range(50, 90)  # loader indices outside selection (0-19), held-out (20-49) and R1c fit/val (90-99)
-ARMS = ("FULL", "F-SEG", "F-BLK", "F-RE", "F-RE-UNI")  # F-RE-UNI: R2 Amendment 1 diagnostic (uniform budget, no padding)
-ARM_CELL = {"F-RE-UNI": "FUNI"}  # arm -> R1b cell that supplies the compactor (default "F")
+ARMS = ("FULL", "F-SEG", "F-BLK", "F-RE", "F-RE-UNI", "FULL-CHK", "F-BLK-UNI")
+# F-RE-UNI: R2 Amendment 1 diagnostic (uniform budget, no padding). FULL-CHK, F-BLK-UNI: R2b (PREREG "Rung R2b").
+ARM_CELL = {"F-RE-UNI": "FUNI", "F-BLK-UNI": "FUNI", "FULL-CHK": "FUNI"}  # arm -> R1b cell that supplies the compactor (default "F"); FULL-CHK never compacts, FUNI needs no budget file
 
 
 # ---------------------------------------------------------------- pure helpers (CPU-testable)
@@ -309,6 +310,29 @@ def gen_fblk(R, segs, articles, ks):
         yield k, t_tr, t_len, {**_info(R, t_tr, t_len, trace), "tail_tokens": int(tail.shape[1]), "blocks": len(trace)}
 
 
+def gen_fullchk(R, segs, articles, ks):
+    """R2b FULL: the gen_fblk cut (640-token blocks by stream position), every block through `extend` uncompacted; the open
+    tail is added the same way, without being kept for the next checkpoint."""
+    S = R.S
+    stream = torch.cat([s.ids for s in segs], 1)
+    ends = [sum(s.n for s in segs[:i + 1]) for i in range(len(segs))]
+    triples, orig_len, consumed, trace = None, 0, 0, []
+    for k in sorted(ks):
+        blocks, new_end = sealed_blocks(consumed, ends[k])
+        for a, b in blocks:
+            t0 = time.time()
+            triples, orig_len, _ = extend(S.model, S.layer_types, triples, orig_len, stream[:, a:b].to(S.dev))
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            trace.append({"prefill_s": round(time.time() - t0, 2)})
+        consumed = new_end
+        tail = stream[:, consumed:ends[k]]
+        t_tr, t_len = triples, orig_len
+        if tail.shape[1]:
+            t_tr, t_len, _ = extend(S.model, S.layer_types, triples, orig_len, tail.to(S.dev))
+        yield k, t_tr, t_len, {**_info(R, t_tr, t_len, trace), "tail_tokens": int(tail.shape[1]), "blocks": len(trace)}
+
+
 def gen_fre(R, segs, articles, ks):
     S = R.S
     pf = S.prefill(articles[0])
@@ -325,7 +349,8 @@ def gen_fre(R, segs, articles, ks):
             yield i, triples, orig_len, {**_info(R, triples, orig_len, trace), "recompactions": i + 1}
 
 
-ARM_GENS = {"FULL": gen_full, "F-SEG": gen_fseg, "F-BLK": gen_fblk, "F-RE": gen_fre, "F-RE-UNI": gen_fre}
+ARM_GENS = {"FULL": gen_full, "F-SEG": gen_fseg, "F-BLK": gen_fblk, "F-RE": gen_fre, "F-RE-UNI": gen_fre,
+             "FULL-CHK": gen_fullchk, "F-BLK-UNI": gen_fblk}
 
 
 # ---------------------------------------------------------------- driver
