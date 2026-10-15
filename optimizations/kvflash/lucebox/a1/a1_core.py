@@ -23,7 +23,8 @@ SHIP_RATIO = 0.10                             # slots kept per sealed block by t
 BAR = 0.756                                   # B0 POOL16K retention, fixed by PREREG section 6
 GATE3 = (0.35, 0.70)                          # reference yield after 5 trajectories (PREREG section 7)
 EARLY_AT, EARLY_LEVEL = 20, 99.9              # Amendment 1: one Haybittle-Peto look at 20 trajectories, 99.9% interval
-ARM_FILE = {"FULL": "FULL.jsonl", "SHIP": "SHIP.jsonl", "FULLB": "FULLB.jsonl"}
+ARM_FILE = {"FULL": "FULL.jsonl", "SHIP": "SHIP.jsonl", "FULLB": "FULLB.jsonl", "WIN18": "WIN18.jsonl", "WIN25": "WIN25.jsonl"}
+ARM_WINDOW = {"SHIP": 0, "WIN18": 18, "WIN25": 25}   # arms on gen_fblk and their exact-window size in blocks (A2; SHIP = A1 shipping arm)
 DISTANCE_BINS = [(0, 4096), (4096, 8192), (8192, 16384), (16384, 10 ** 9)]
 MEM_USED_LIMIT_MIB, SWAP_LIMIT_MIB = 120 * 1024, 1024   # watchdog (PREREG section 3)
 
@@ -429,7 +430,7 @@ class StageStop(Exception):
 
 
 def run_stage(ctx, out, kinds=("probe",), arms=("FULL", "SHIP"), start=0, n=None, gate3_after=5, early_at=EARLY_AT,
-              decision_stride=1, det_repeat=0, control_n=0, log=print):
+              decision_stride=1, det_repeat=0, control_n=0, log=print, primary="SHIP"):
     """Stage loop. ctx has S, R, H, parse. Trajectories in file order [start, start+n); per trajectory the arms in order; rows are
     appended per task, finished tasks are skipped on restart (resume per trajectory and arm). Returns a summary dict."""
     import r2_core as r2
@@ -466,12 +467,13 @@ def run_stage(ctx, out, kinds=("probe",), arms=("FULL", "SHIP"), start=0, n=None
                 go(tid, "FULL", ids_all, r2.gen_fullchk, empty_cache=True)
             full_rows = [r for r in read_rows(paths["FULL"]) if r["traj"] == tid]
             keep = retained_probe_ids(H, tasks_of(tid), full_rows) | parsed_decision_ids(H, tasks_of(tid), full_rows)
-            if "SHIP" in arms:
-                go(tid, "SHIP", keep, r2.gen_fblk)
+            for arm in arms:                     # block-generator arms in the order given (A2: WIN18 then WIN25)
+                if arm in ARM_WINDOW:
+                    go(tid, arm, keep, r2.gen_fblk, **({"window": ARM_WINDOW[arm]} if ARM_WINDOW[arm] else {}))
             finished.append(tid)
             done = set(finished)
             tasks_done = [t for t in all_tasks if t["traj"] in done]
-            chk = stage_checks(H, tasks_done, read_rows(paths["FULL"]), read_rows(paths["SHIP"]), finished, gate3_after, early_at)
+            chk = stage_checks(H, tasks_done, read_rows(paths["FULL"]), read_rows(paths[primary]), finished, gate3_after, early_at)
             with open(os.path.join(out, "checks.json"), "w") as f:
                 json.dump(chk, f, indent=1)
             if "gate3" in chk and len(finished) == chk["gate3"]["trajectories"]:

@@ -226,6 +226,107 @@ def test_d1_ratio_option_default_is_the_shipping_ratio_and_ratio_1_keeps_every_s
                 assert d[0].shape == f[0].shape and c[0].shape[2] < f[0].shape[2], f"layer {i}"   # every slot kept vs 0.10
                 print(f"D1 layer {i} max|dK| {float((d[0] - f[0]).abs().max()):.3g}")
 
+
+# ---------------------------------------------------------------- A2: window of exact recent blocks
+
+W_ENDS = [10, 48, 55, 70, 300]          # block 24: 12 sealed blocks at 300, tail 12
+BLOCK_W = 24
+
+
+def _blocks24(monkeypatch):
+    real = r2.sealed_blocks
+    monkeypatch.setattr(r2, "sealed_blocks", lambda start, total, block_=BLOCK_W: real(start, total, block_))
+
+
+def _snapshot(gen):
+    return {k: (tuple(tuple(x.clone() for x in t) for t in tr), n) for k, tr, n, _ in gen}
+
+
+def test_a2_window_0_is_torch_equal_to_the_a1_gen_fblk_at_every_checkpoint(setup, monkeypatch):
+    S, segs = setup
+    _blocks24(monkeypatch)
+    cs = a1_core.segs_from_checkpoints(stream_of(segs)[:300], W_ENDS)
+    with session(S) as sess:
+        R = r2.Runner(sess, None, cell="FUNI", ratio=0.25)
+        ref = _snapshot(r2.gen_fblk(R, cs, None, list(range(5))))
+        got = _snapshot(r2.gen_fblk(R, cs, None, list(range(5)), window=0))
+    for k in ref:
+        assert ref[k][1] == got[k][1]
+        assert all(torch.equal(x, y) for a, b in zip(ref[k][0], got[k][0]) for x, y in zip(a, b)), k
+
+
+def test_a2_window_at_least_the_number_of_blocks_equals_full_chk(setup, monkeypatch):
+    S, segs = setup
+    _blocks24(monkeypatch)
+    cs = a1_core.segs_from_checkpoints(stream_of(segs)[:300], W_ENDS)
+    chunk = question_ids(S)
+    with session(S) as sess:
+        R = r2.Runner(sess, None, cell="FUNI", ratio=0.25)
+        ref = {k: (tr, n) for k, tr, n, _ in r2.gen_fullchk(R, cs, None, list(range(5)), block=BLOCK_W)}
+        for W in (12, 40):
+            got = {k: (tr, n) for k, tr, n, _ in r2.gen_fblk(R, cs, None, list(range(5)), window=W)}
+            for k in ref:
+                (rt, rn), (gt, gn) = ref[k], got[k]
+                assert rn == gn
+                for i, (r, g) in enumerate(zip(rt, gt)):
+                    if i in sess.linear:
+                        assert torch.allclose(g[0], r[0], atol=1e-4) and torch.allclose(g[2], r[2], atol=1e-3), (W, k, i)
+                    else:
+                        assert g[0].shape == r[0].shape
+                        assert torch.allclose(g[0], r[0], atol=1e-4) and torch.allclose(g[2], r[2], atol=1e-4), (W, k, i)
+                a, b = suffix_logits(sess, rt, rn, chunk), suffix_logits(sess, gt, gn, chunk)
+                assert torch.allclose(a, b, atol=1e-3), (W, k, float((a - b).abs().max()))
+
+
+@pytest.mark.parametrize("W", [1, 3, 5])
+def test_a2_older_blocks_hold_their_seal_time_fit_window_blocks_their_exact_kv(setup, monkeypatch, W):
+    S, segs = setup
+    _blocks24(monkeypatch)
+    cs = a1_core.segs_from_checkpoints(stream_of(segs)[:300], [300])
+    calls = []
+    real = r2.Runner._compact
+
+    def spy(self, kv, target_size, indices, text, queries=None):
+        out = real(self, kv, target_size, indices, text, queries=queries)
+        calls.append((tuple(tuple(x.clone() for x in e) for e in kv), out[0]))   # kv: per layer (K, V) of the block, as handed to the fit
+        return out
+
+    monkeypatch.setattr(r2.Runner, "_compact", spy)
+    with session(S) as sess:
+        R = r2.Runner(sess, None, cell="FUNI", ratio=0.25)
+        (_, tr, n, info), = list(r2.gen_fblk(R, cs, None, [0], window=W))
+        nb, tail, slots = 300 // BLOCK_W, 300 % BLOCK_W, r2.slots_for(BLOCK_W, 0.25)
+        assert len(calls) == nb and info["tail_tokens"] == tail and n == 300       # every block fitted once, at seal time
+        older = nb - W
+        for i in range(len(tr)):
+            if i in sess.linear:
+                continue
+            K, B, V = tr[i]
+            assert K.shape[2] == slots * older + BLOCK_W * W + tail, i
+            pos = 0
+            for j, (kv, seg) in enumerate(calls):
+                if j < older:                                    # left the window: exactly the seal-time fit
+                    sl = slice(pos, pos + slots)
+                    want = (seg[i][0], seg[i][1], seg[i][2])
+                    pos += slots
+                else:                                            # in the window: the block's own exact keys and values, beta 0
+                    sl = slice(pos, pos + BLOCK_W)
+                    want = (kv[i][0], torch.zeros_like(B[:, :, sl]), kv[i][1])
+                    pos += BLOCK_W
+                assert torch.equal(K[:, :, sl], want[0]) and torch.equal(V[:, :, sl], want[2]), (W, i, j)
+                assert torch.equal(B[:, :, sl], want[1]), (W, i, j)
+
+
+def test_a2_row_arithmetic_at_52224_tokens():
+    assert r2.window_rows(52224, 18) == 15936 <= 16384
+    assert r2.window_rows(52224, 25) == 19968
+    assert r2.window_rows(52224, 19) == 16512 > 16384
+    assert r2.window_rows(52224, 0) == 81 * 64 + 384
+    assert r2.window_rows(1000, 100) == 1000                  # a window larger than the stream keeps everything exact
+
+
+# ---------------------------------------------------------------- real data, CPU
+
 _P = a1_core.default_paths()
 HAVE_DATA = all(os.path.exists(_P[k]) for k in ("traj", "tasks", "template", "tokenizer"))
 

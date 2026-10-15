@@ -174,3 +174,29 @@ class TestWithHarness:
                                                                     "function": {"name": "t", "arguments": '{"a": "b"}'}}]}]
         txt = core.generated_text(H, m[:1], m[1], [])
         assert txt.startswith("hi") and "<tool_call>" in txt and "<|im_end|>" not in txt
+
+
+# ---------------------------------------------------------------- A2 driver arms
+
+PILOT = os.path.join(HERE, "../../evidence/agentic/A1/pilot")
+
+
+def test_a2_arm_files_and_windows():
+    assert core.ARM_WINDOW == {"SHIP": 0, "WIN18": 18, "WIN25": 25}
+    assert core.ARM_FILE["WIN18"] == "WIN18.jsonl" and core.ARM_FILE["WIN25"] == "WIN25.jsonl"
+
+
+@pytest.mark.skipif(not (HAVE_DATA and os.path.exists(PILOT + "/FULL.jsonl")), reason="A1 data or pilot rows absent")
+def test_a2_run_stage_runs_win18_then_win25_per_trajectory_with_the_window_and_reads_the_reference(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    H = core.Harness(PATHS)
+    first = next(iter(H.load_trajs()))
+    with open(tmp_path / "FULL.jsonl", "w") as f:                       # A1's reference rows, one trajectory
+        f.writelines(l for l in open(PILOT + "/FULL.jsonl") if json.loads(l)["traj"] == first)
+    calls = []
+    monkeypatch.setattr(core, "run_unit", lambda S, R, plan, gen, parse, emit, arm, **kw: calls.append((arm, gen.__name__, kw.get("window")))
+                        or {"traj": plan.traj, "arm": arm, "n_rows": 0})
+    core.run_stage(SimpleNamespace(S=None, R=None, H=H, parse=None), str(tmp_path), arms=("FULL", "WIN18", "WIN25"), n=1,
+                   primary="WIN18", gate3_after=99, log=lambda s: None)
+    assert calls == [("WIN18", "gen_fblk", 18), ("WIN25", "gen_fblk", 25)]      # FULL rows already there: not re-run

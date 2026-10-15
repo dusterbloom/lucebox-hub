@@ -20,6 +20,7 @@ def main(argv=None):
     ap.add_argument("--start", type=int, default=0)
     ap.add_argument("--n", type=int, default=None)
     ap.add_argument("--arms", default="FULL,SHIP")
+    ap.add_argument("--primary", default="SHIP", help="arm the early look reads (A2: WIN18)")
     ap.add_argument("--stage2", action="store_true", help="also run the decision tasks")
     ap.add_argument("--decision-stride", type=int, default=2, help="stage 2 subsample: positions 2, 4, 6, ... (Gate 2)")
     ap.add_argument("--gate3-after", type=int, default=5)
@@ -44,7 +45,7 @@ def main(argv=None):
     summary = core.run_stage(ctx, a.out, kinds=kinds, arms=tuple(a.arms.split(",")), start=a.start, n=a.n,
                              gate3_after=a.gate3_after, early_at=a.early_at,
                              decision_stride=a.decision_stride if a.stage2 else 1,
-                             det_repeat=a.det_repeat, control_n=a.control_n, log=log)
+                             det_repeat=a.det_repeat, control_n=a.control_n, log=log, primary=a.primary)
     with open(os.path.join(a.out, "summary.json"), "w") as f:
         json.dump(summary, f, indent=1)
     log(f"[a1] done: {summary}")

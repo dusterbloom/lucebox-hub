@@ -291,7 +291,61 @@ def gen_fseg(R, segs, articles, ks):
             yield i, triples, orig_len, _info(R, triples, orig_len, trace)
 
 
-def gen_fblk(R, segs, articles, ks):
+def window_rows(tokens, window, block=BLOCK, ratio=RATIO):
+    """A2 row arithmetic per full-attention layer: the last `window` sealed blocks exact, older sealed blocks at `ratio`, plus
+    the open tail (window 0 is the A1 shipping arm)."""
+    nb, tail = divmod(tokens, block)
+    w = min(window, nb)
+    return w * block + (nb - w) * slots_for(block, ratio) + tail
+
+
+def gen_fblk_window(R, segs, ks, window):
+    """A2: gen_fblk with the last `window` sealed blocks kept exact. Every block is fitted once, at seal time, exactly as
+    `Runner.segment_step` does (the block's own keys and values, its own prefill queries, prefilled behind what the cache holds
+    at that moment: compacted older blocks plus the exact window). A block's compacted form replaces its exact form only
+    when it leaves the window; it is never re-fitted. Exact rows carry beta 0 (what `extend` appends)."""
+    S = R.S
+    stream = torch.cat([s.ids for s in segs], 1)
+    ends = [sum(s.n for s in segs[:i + 1]) for i in range(len(segs))]
+    comp, wins, last, orig_len, consumed, trace = None, [], None, 0, 0, []
+
+    def compose():
+        if last is None:
+            return None
+        return tuple(last[i] if i in S.linear else tuple(
+            torch.cat([x for x in ([comp[i][c]] if comp is not None else []) + [w[0][i][c] for w in wins]], 2) for c in range(3))
+            for i in range(len(last)))
+
+    for k in sorted(ks):
+        blocks, new_end = sealed_blocks(consumed, ends[k])
+        for a, b in blocks:
+            ids, n = stream[:, a:b], b - a
+            t0 = time.time()
+            state, orig_len, q = extend(S.model, S.layer_types, compose(), orig_len, ids.to(S.dev), want_queries=True)
+            t1 = time.time()
+            seg, _ = R._compact(R._pseudo_kv(state, S.linear, last=n), slots_for(n, R.ratio), range(0, n), S.tok.decode(ids[0]),
+                                queries=q)
+            seg = R._inject_linear(seg, state)
+            exact = tuple(None if i in S.linear else tuple(x[:, :, -n:].clone() for x in state[i]) for i in range(len(state)))
+            wins.append((exact, seg))
+            last = state
+            while len(wins) > window:
+                comp = splice(comp, wins.pop(0)[1], S.linear)
+            trace.append({"prefill_s": round(t1 - t0, 2), "compact_s": round(time.time() - t1, 2)})
+            del q
+        consumed = new_end
+        tail = stream[:, consumed:ends[k]]
+        t_tr, t_len = compose(), orig_len
+        if tail.shape[1]:
+            t_tr, t_len, _ = extend(S.model, S.layer_types, t_tr, orig_len, tail.to(S.dev))
+        yield k, t_tr, t_len, {**_info(R, t_tr, t_len, trace), "tail_tokens": int(tail.shape[1]), "blocks": len(trace),
+                               "window": window}
+
+
+def gen_fblk(R, segs, articles, ks, window=0):
+    if window:
+        yield from gen_fblk_window(R, segs, ks, window)
+        return
     S = R.S
     stream = torch.cat([s.ids for s in segs], 1)
     ends = [sum(s.n for s in segs[:i + 1]) for i in range(len(segs))]
