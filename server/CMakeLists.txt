@@ -2504,6 +2504,7 @@ if(LUCE_TESTS)
             test/unit/test_gguf_mmap.cpp
             test/unit/test_kv_quant.cpp
             test/unit/test_kvflash_pager_serde.cpp
+            test/unit/test_kvflash_pager_compacted.cpp
             test/unit/test_kvflash_pager_truncate.cpp
             test/unit/test_kvflash_placement.cpp
             test/unit/test_kvflash_pool_sizing.cpp
