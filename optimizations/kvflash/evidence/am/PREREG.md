@@ -373,3 +373,11 @@ Written after the drivers were committed (003bb8a2) and before the smoke or any 
 2. **Stage 2 only on INCONCLUSIVE.** The decision rule uses the 20 selection articles only when stage 1 is INCONCLUSIVE ("stage 2 cannot turn a held-out PASS or FAIL into anything else"). So stage 2 runs only in that case, shipping arm first, then FULL. After a PASS or FAIL it is not run under this preregistration.
 
 Why: the original order interleaved both arms and ran stage 2 regardless of the verdict. That put the primary verdict about 6 h and the full run about 10 h away, though only about 2 h of it decides anything. More hours do not tighten the interval. Its width is set by the number of articles (see "Planning arithmetic"), and that number is unchanged.
+
+### R2b withdrawn (2026-10-15, before any R2b row)
+
+R2b is withdrawn. No row was produced and no smoke was used.
+- **The multi-round question is closed.** The project owner ruled on the R2 pilot: re-compaction damages accuracy (F-RE and F-RE-UNI collapse at k = 8), and the compact-once design holds (F-SEG(8) - F(0) = -0.6 points). R2b re-asked that question on more articles.
+- **Accuracy is decided on agentic coding traces,** not on articles. The B0 harness is in `evidence/agentic/B0_3090/`: 60 OpenHands trajectories, recall probes and next tool call. The bar is to beat POOL16K's 75.6% retention.
+- **The articles that remain have one job.** In M7 they check that the engine reproduces the Python reference rows that already exist. That is a parity check, not an accuracy question.
+- **The drivers in 003bb8a2 stay.** They feed a token stream to the shipping arm (F-BLK-UNI) and to block-by-block full KV (FULL-CHK), which is the stream an agentic trace needs.
