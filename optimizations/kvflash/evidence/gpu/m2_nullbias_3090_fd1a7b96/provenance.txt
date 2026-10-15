@@ -1,0 +1,26 @@
+flock command: flock /mnt/kimi-k3/build/3090.lock /mnt/kimi-k3/build/kvoff-parity/ab_all.sh
+start: 2026-10-15T11:57:51+02:00
+workload: gate4_live.py A, Qwen3.8-27B-UD-Q4_K_M, --max-ctx 131072, --no-kv-cache, no --kvflash, default KV type
+main: /mnt/kimi-k3/build/main-6f2b-ab/luce_server md5 117e87665bc2d60cb715a35d7f2c4076 commit 6f2b17958ebb49f2b7060ac0a40ce6509aa90039
+m2:   /mnt/kimi-k3/build/m2-fd1a7b96-ab/luce_server md5 7690af4619341f6571531d2920926a62 commit fd1a7b96 (kvflash/2.0b-m2-kv-bias)
+run main_1: bin /mnt/kimi-k3/build/main-6f2b-ab/luce_server md5 117e87665bc2d60cb715a35d7f2c4076 | 2026-10-15T11:57:51+02:00 | compute apps before start: []
+exit=0
+run m2_1: bin /mnt/kimi-k3/build/m2-fd1a7b96-ab/luce_server md5 7690af4619341f6571531d2920926a62 | 2026-10-15T11:58:26+02:00 | compute apps before start: []
+exit=0
+run main_2: bin /mnt/kimi-k3/build/main-6f2b-ab/luce_server md5 117e87665bc2d60cb715a35d7f2c4076 | 2026-10-15T11:59:01+02:00 | compute apps before start: []
+exit=0
+run m2_2: bin /mnt/kimi-k3/build/m2-fd1a7b96-ab/luce_server md5 7690af4619341f6571531d2920926a62 | 2026-10-15T11:59:39+02:00 | compute apps before start: []
+exit=0
+run main_3: bin /mnt/kimi-k3/build/main-6f2b-ab/luce_server md5 117e87665bc2d60cb715a35d7f2c4076 | 2026-10-15T12:00:14+02:00 | compute apps before start: []
+exit=0
+run m2_3: bin /mnt/kimi-k3/build/m2-fd1a7b96-ab/luce_server md5 7690af4619341f6571531d2920926a62 | 2026-10-15T12:00:49+02:00 | compute apps before start: []
+exit=0
+run main_4: bin /mnt/kimi-k3/build/main-6f2b-ab/luce_server md5 117e87665bc2d60cb715a35d7f2c4076 | 2026-10-15T12:01:24+02:00 | compute apps before start: []
+exit=0
+run m2_4: bin /mnt/kimi-k3/build/m2-fd1a7b96-ab/luce_server md5 7690af4619341f6571531d2920926a62 | 2026-10-15T12:01:59+02:00 | compute apps before start: []
+exit=0
+run main_5: bin /mnt/kimi-k3/build/main-6f2b-ab/luce_server md5 117e87665bc2d60cb715a35d7f2c4076 | 2026-10-15T12:02:35+02:00 | compute apps before start: []
+exit=0
+run m2_5: bin /mnt/kimi-k3/build/m2-fd1a7b96-ab/luce_server md5 7690af4619341f6571531d2920926a62 | 2026-10-15T12:03:10+02:00 | compute apps before start: []
+exit=0
+end: 2026-10-15T12:03:45+02:00

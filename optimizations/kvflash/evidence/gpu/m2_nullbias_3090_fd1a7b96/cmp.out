@@ -1,0 +1,24 @@
+answers byte-identical across all 10 runs: True (turns: 10)
+prefix_len identical turn for turn: True [0, 11600, 11952, 12398, 12607, 12892, 13259, 13705, 13915, 14199]
+disk_hit=false everywhere: True (100 lines)
+turns per run: {'main_1': 10, 'main_2': 10, 'main_3': 10, 'main_4': 10, 'main_5': 10, 'm2_1': 10, 'm2_2': 10, 'm2_3': 10, 'm2_4': 10, 'm2_5': 10}
+
+metric (per-run value pooled by arm)    median      mean       min       max
+main
+  turn-1 prefill tok/s (5 runs)      1398.31   1391.81   1365.41   1415.37
+  turns 2-10 prefill tok/s (pooled)    663.33    653.80    432.00    753.33
+  turns 2-10 prefill, per-run medians    663.33    673.87    663.33    716.00
+  decode tok/s (all turns pooled)      43.80     43.97     39.90     47.50
+  wall s (all turns pooled)             1.30      2.02      1.10      8.90
+  turn-1 prefill in run order: ['1382', '1398', '1365', '1415', '1398']
+  turn-1 prefill seconds: ['8.40', '8.30', '8.50', '8.20', '8.30']
+  turn-1 wall s: ['8.80', '8.70', '8.90', '8.50', '8.60']
+m2
+  turn-1 prefill tok/s (5 runs)      1398.31   1395.07   1381.67   1415.37
+  turns 2-10 prefill tok/s (pooled)    716.00    664.58    432.00    753.33
+  turns 2-10 prefill, per-run medians    716.00    705.47    663.33    716.00
+  decode tok/s (all turns pooled)      43.70     43.74     40.10     47.70
+  wall s (all turns pooled)             1.30      2.02      1.10      8.70
+  turn-1 prefill in run order: ['1382', '1398', '1415', '1398', '1382']
+  turn-1 prefill seconds: ['8.40', '8.30', '8.20', '8.30', '8.40']
+  turn-1 wall s: ['8.70', '8.60', '8.50', '8.60', '8.70']
