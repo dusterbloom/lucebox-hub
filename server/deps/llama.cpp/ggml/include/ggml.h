@@ -2614,6 +2614,10 @@ extern "C" {
             struct ggml_tensor * a,
             struct ggml_tensor * kv_bias);
 
+    // The attached kv_bias, or NULL (also NULL on DS4 ops, whose src[9] is the lane KV).
+    GGML_API struct ggml_tensor * ggml_flash_attn_ext_get_kv_bias(
+            const struct ggml_tensor * a);
+
     // Block-sparse flash attention (pFlash).
     // Selects top-scoring K-blocks dynamically based on alpha threshold.
     // alpha=1.0 selects all blocks (equivalent to dense attention).

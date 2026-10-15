@@ -32,6 +32,10 @@
 #include <string>
 #include <vector>
 
+#include <csignal>
+#include <sys/wait.h>
+#include <unistd.h>
+
 namespace {
 
 constexpr int GGML_KQ_MASK_PAD = 64;  // llama.cpp mask row padding
@@ -266,6 +270,42 @@ void run_case(const char * bname, ggml_backend_t be, const Case & c, const Data 
                 ei.max_abs, identity ? "bit-identical" : "DIFFERS");
 }
 
+// src[9] is shared with the DS4 lane KV: add_kv_bias(op, nullptr) on a DS4 op
+// must abort instead of silently clearing the lane KV, and the accessor must
+// not mistake the lane KV for a bias.
+bool test_lane_kv_guard() {
+    ggml_context * ctx = ggml_init({ 16u << 20, nullptr, true });
+    ggml_tensor * q  = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 64, 2, 4);
+    ggml_tensor * kv = ggml_new_tensor_3d(ctx, GGML_TYPE_F16, 64, 128, 1);
+    ggml_tensor * fa = ggml_flash_attn_ext(ctx, q, kv, kv, nullptr, 0.125f, 0.0f, 0.0f);
+    ggml_flash_attn_ext_set_ds4_lane_rows(fa, ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 2),
+                                          ggml_new_tensor_2d(ctx, GGML_TYPE_F16, 64, 2));
+    ggml_tensor * k2 = ggml_new_tensor_3d(ctx, GGML_TYPE_F16, 64, 128, 2);
+    ggml_tensor * v2 = ggml_new_tensor_3d(ctx, GGML_TYPE_F16, 64, 128, 2);
+    ggml_tensor * fb = ggml_flash_attn_ext(ctx, q, k2, v2, nullptr, 0.125f, 0.0f, 0.0f);
+    ggml_tensor * kb = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 128, 2);
+    ggml_flash_attn_ext_add_kv_bias(fb, kb);
+    const bool acc_ok = ggml_flash_attn_ext_get_kv_bias(fa) == nullptr &&
+                        ggml_flash_attn_ext_get_kv_bias(fb) == kb;
+    const bool lane_kept = fa->src[9] != nullptr;
+    fflush(stdout);
+    const pid_t pid = fork();
+    if (pid == 0) {
+        std::freopen("/dev/null", "w", stderr);  // the GGML_ASSERT message is expected
+        ggml_flash_attn_ext_add_kv_bias(fa, nullptr);
+        _exit(0);  // returned: the guard is missing
+    }
+    int st = 0;
+    waitpid(pid, &st, 0);
+    const bool aborted = WIFSIGNALED(st) && WTERMSIG(st) == SIGABRT;
+    ggml_free(ctx);
+    const bool ok = acc_ok && lane_kept && aborted;
+    std::printf("%s lane-kv guard: accessor %s, lane kv kept %s, add_kv_bias(nullptr) on DS4 op %s\n",
+                ok ? "PASS   " : "FAIL   ", acc_ok ? "ok" : "WRONG", lane_kept ? "yes" : "NO",
+                aborted ? "aborts" : "RETURNED");
+    return ok;
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {
@@ -275,6 +315,7 @@ int main(int argc, char ** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--cpu-only")) cpu_only = true; else filter = argv[i];
     }
+    const bool guard_ok = test_lane_kv_guard();
     ggml_backend_t cpu = ggml_backend_cpu_init();
     ggml_backend_t gpu = nullptr;
 #if defined(GGML_USE_CUDA) || defined(GGML_USE_HIP)
@@ -320,6 +361,6 @@ int main(int argc, char ** argv) {
     if (gpu) std::printf("SUMMARY gpu: pass %d fail %d unsupp %d skip %d, max abs err %.3e, max nmse %.3e\n",
                 tg.pass, tg.fail, tg.unsupp, tg.skip, tg.worst_abs, tg.worst_nmse);
     const bool strict = std::getenv("FATTN_KV_BIAS_STRICT") != nullptr;
-    const int bad = tc.fail + tg.fail + tc.unsupp + (strict ? tg.unsupp : 0);
+    const int bad = !guard_ok + tc.fail + tg.fail + tc.unsupp + (strict ? tg.unsupp : 0);
     return bad ? 1 : 0;
 }

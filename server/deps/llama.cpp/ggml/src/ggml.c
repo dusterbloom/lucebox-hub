@@ -5942,13 +5942,15 @@ void ggml_flash_attn_ext_add_sinks(
 void ggml_flash_attn_ext_add_kv_bias(
         struct ggml_tensor * a,
         struct ggml_tensor * kv_bias) {
+    GGML_ASSERT(a->op == GGML_OP_FLASH_ATTN_EXT);
+    // src[9] holds the DS4 lane KV on DS4 ops: neither set nor clear it here.
+    GGML_ASSERT(!ggml_flash_attn_ext_is_ds4(a));
+
     if (!kv_bias) {
         a->src[9] = NULL;
         return;
     }
 
-    GGML_ASSERT(a->op == GGML_OP_FLASH_ATTN_EXT);
-    GGML_ASSERT(!ggml_flash_attn_ext_is_ds4(a));
     GGML_ASSERT(a->src[9] == NULL);
     GGML_ASSERT(kv_bias->type == GGML_TYPE_F32);
     GGML_ASSERT(ggml_is_contiguous(kv_bias));
@@ -5958,6 +5960,10 @@ void ggml_flash_attn_ext_add_kv_bias(
     GGML_ASSERT(a->src[1]->ne[3] == 1);
 
     a->src[9] = kv_bias;
+}
+
+struct ggml_tensor * ggml_flash_attn_ext_get_kv_bias(const struct ggml_tensor * a) {
+    return a && a->op == GGML_OP_FLASH_ATTN_EXT && !ggml_flash_attn_ext_is_ds4(a) ? a->src[9] : NULL;
 }
 
 // ggml_flash_attn_sparse
