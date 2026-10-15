@@ -248,6 +248,13 @@ bool Qwen35DFlashTarget::verify_batch(
 
     // kvflash: allocate slots for the verify block up front (may evict at
     // a chunk boundary; protections keep sinks + the tail window safe).
+    // Compacted chunks are not wired into the spec-verify path (the bias upload
+    // lives in the backend): refuse loudly rather than attend without beta.
+    // Checked before any slot is allocated so a refusal leaves the pager alone.
+    if (pool && pager_->any_compacted()) {
+        std::fprintf(stderr, "verify_batch: kvflash compaction is not supported in spec verify\n");
+        return false;
+    }
     std::vector<int> slots;
     if (pool) {
         slots.resize(n_tokens);
@@ -265,12 +272,6 @@ bool Qwen35DFlashTarget::verify_batch(
     // skip capture under the pager so --ddtree + --kvflash doesn't fail verify.
     const bool do_capture = fast_rollback_ && capture_ssm_intermediates && pager_ == nullptr;
 
-    // Compacted chunks are not wired into the spec-verify path (the bias upload
-    // lives in the backend): refuse loudly rather than attend without beta.
-    if (pool && pager_->any_compacted()) {
-        std::fprintf(stderr, "verify_batch: kvflash compaction is not supported in spec verify\n");
-        return false;
-    }
     cache_.kv_bias_on = false;
     if (!build_target_step(sg_, w_, cache_, backend_,
                            /*kv_start=*/base_pos, n_tokens,

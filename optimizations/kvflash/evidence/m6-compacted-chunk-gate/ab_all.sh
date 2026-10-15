@@ -23,10 +23,14 @@ for i in 1 2 3 4 5; do
     name=${1}_$i
     apps="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)"
     echo "run $name: bin $2 | $(date -Is) | compute apps before start: [$apps]" >> $P
+    waited=0
+    while [ -n "$apps" ] && [ $waited -lt 3600 ]; do sleep 20; waited=$((waited+20)); apps="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)"; done
     if [ -n "$apps" ]; then echo "ABORT: GPU busy before $name" >> $P; exit 1; fi
+    if [ $waited -gt 0 ]; then echo "run $name: waited ${waited}s for another GPU user (not ours), now idle" >> $P; fi
     if [ "$1" = neutral ]; then export M6_TEST_COMPACT=20:0; else unset M6_TEST_COMPACT; fi
-    $D/m6c-ab/ab_run.sh $name $2 >> $P
+    $D/m6c-ab/ab_run.sh $name $2 >> $P || { echo "ABORT: $name failed (see $O/$name/driver.out)" >> $P; exit 1; }
   done
 done
 unset M6_TEST_COMPACT
 echo "end: $(date -Is)" >> $P
+python3 -I $D/m6c-ab/ab_cmp.py > $O/cmp.out 2>&1; echo "ab_cmp exit=$?" >> $P

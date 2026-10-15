@@ -1,19 +1,21 @@
+main: 25 rows
+m6c: 25 rows
+neutral: 25 rows
 disk_hit values: {'false'}
-prefix_len/effective_in equal across the three arms: True
-GATE (a) greedy text identical, main vs m6c, all 25 pairs: True
-GATE (b) greedy text identical, neutral vs m6c, all 25 pairs: True
+GATE (a) main == m6c greedy text on 25 keyed pairs; GATE (b) neutral == m6c on 25
   prompt 0: distinct texts across 15 runs = 1
   prompt 1: distinct texts across 15 runs = 1
   prompt 2: distinct texts across 15 runs = 1
   prompt 3: distinct texts across 15 runs = 1
   prompt 4: distinct texts across 15 runs = 1
 metric        arm         median     mean      min      max   vs main
-prefill tok/s main       1355.04  1347.73  1298.97  1374.89    +0.00%
-prefill tok/s m6c        1364.86  1354.20  1290.07  1384.93    +0.72%
-prefill tok/s neutral    1355.04  1348.86  1290.14  1374.89    +0.00%
-decode tok/s  main         44.30    44.20    42.20    45.30    +0.00%
-decode tok/s  m6c          44.80    44.72    43.30    45.60    +1.13%
-decode tok/s  neutral      44.60    44.12    41.50    45.30    +0.68%
-wall s        main         19.70    19.76    19.40    20.40    +0.00%
-wall s        m6c          19.60    19.64    19.40    20.20    -0.51%
-wall s        neutral      19.70    19.79    19.30    20.60    +0.00%
+prefill tok/s main       1385.00  1387.04  1374.82  1405.60    +0.00%
+prefill tok/s m6c        1385.00  1387.45  1364.86  1405.60    +0.00%
+prefill tok/s neutral    1385.00  1388.69  1364.93  1405.60    +0.00%
+decode tok/s  main         45.80    45.37    40.30    46.40    +0.00%
+decode tok/s  m6c          45.80    45.89    45.30    46.40    +0.00%
+decode tok/s  neutral      45.80    45.85    45.30    46.30    +0.00%
+wall s        main         19.20    19.25    19.00    20.00    +0.00%
+wall s        m6c          19.20    19.16    18.90    19.40    +0.00%
+wall s        neutral      19.20    19.16    18.90    19.40    +0.00%
+RESULT: PASS

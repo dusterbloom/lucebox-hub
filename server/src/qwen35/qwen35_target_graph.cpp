@@ -35,6 +35,7 @@
 #include "delta_net_chunked.h"
 #include "delta_net_specla.h"
 #include "kv_quant.h"
+#include "kv_bias_check.h"
 #include "qwen35_ops.h"
 #include "qwen35moe_ffn.h"
 #include "common/chain_rollback_policy.h"
@@ -218,8 +219,8 @@ bool create_target_cache_partial(const TargetWeights & w,
     // KVFlash AM compaction: a persistent F32 key bias per attention layer
     // (single-sequence bounded pool only), attached to the graph only while a
     // pager chunk is compacted.
-    const bool want_bias = bounded_pool && !paged_attention && !multi_slot &&
-                           out.kvflash_bias && !w.is_bailingmoe3;
+    const bool want_bias = luce::common::target_cache_wants_kv_bias(
+        out.kvflash_bias, ctx_alloc, max_ctx, paged_attention, multi_slot, w.is_bailingmoe3);
     out.kv_bias.clear();
     if (want_bias) out.kv_bias.assign(n_full_attn, nullptr);
 

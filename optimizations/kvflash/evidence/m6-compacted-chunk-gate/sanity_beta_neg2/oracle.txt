@@ -1,0 +1,3 @@
+same prompts and flags; arm A hook 20:0 (beta 0), arm B hook 1:-1000 (beta -1000)
+prompt 0: texts identical=False first differing char=58
+prompt 1: texts identical=True first differing char=None

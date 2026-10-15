@@ -26,3 +26,16 @@ with Server(log, env=env):
                         cache=[l for l in seg if "chat CACHE" in l], done=[l for l in seg if "chat DONE" in l]))
         print(json.dumps({k: v for k, v in rec[-1].items() if k != "text"}), flush=True)
 json.dump(rec, open(f"{ROOT}/m6_run.json", "w"), indent=1)
+
+# Under the test hook the engine aborts on a readback or graph mismatch; also demand
+# the proof lines, so a run where the hook silently did nothing cannot pass.
+if os.environ.get("M6_TEST_COMPACT"):
+    txt = open(log, errors="replace").read()
+    bad = [l for l in txt.splitlines() if re.search(r"MISMATCH|REFUSED|FATAL", l)]
+    marked = len(re.findall(r"test compact: chunk \d+ beta \S+ -> marked", txt))
+    ok_rb = len(re.findall(r"kv_bias readback: match", txt))
+    ok_gr = "bias graph check: ok (" in txt and "bias on)" in txt
+    print(json.dumps(dict(hook_marked=marked, readback_match=ok_rb, graph_check_on=ok_gr, bad=bad)))
+    if bad or marked != N_PROMPTS or ok_rb < 1 or not ok_gr:
+        print("HOOK CHECK FAILED")
+        sys.exit(1)

@@ -330,9 +330,10 @@ TEST_CASE(KvflashPagerSerdeFixture, malformed_blobs_are_rejected_without_touchin
     }
     CHECK(untouched());
 
-    // Trailing bytes after a valid blob are tolerated; the blob still loads.
-    { auto b = good; b.push_back(0xAB); CHECK(pb.deserialize(b.data(), b.size())); }
-    CHECK(pb.n_chunks() == 6);
+    // Bytes after the base payload must be a whole compaction trailer: a lone
+    // trailing byte is a damaged blob, rejected like the rest.
+    { auto b = good; b.push_back(0xAB); CHECK(rejected(b)); }
+    CHECK(untouched());
 }
 
 TEST_CASE(KvflashPagerSerdeFixture, pin_range_is_half_open_and_pinned_chunks_are_never_evicted) {

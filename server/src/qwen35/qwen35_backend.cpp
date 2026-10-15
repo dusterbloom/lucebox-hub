@@ -14,6 +14,7 @@
 #include "common/dflash_draft_graph.h"
 #include "peer_access.h"
 #include "attn_masks.h"
+#include "kv_bias_check.h"
 #include "prefill_helpers.h"
 #include "common/sampler.h"
 #ifdef LUCE_HAVE_GPU_SAMPLER
@@ -2018,6 +2019,24 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
             out_io.emit(-1);
             return result;
         }
+        // The restored rows are one contiguous prefix. The previous request's
+        // mapping and compaction must not survive it: rebuild the pager
+        // identity-style (an exact hit skips do_prefill, which would do it),
+        // drop the bias flag and force a bias re-upload.
+        if (kvflash_active()) {
+            if (!kvflash_pager_.reset_identity(snap_pos)) {
+                std::fprintf(stderr, "[kvflash] restore slot=%d: snapshot of %d tokens does not fit the pool\n",
+                             slot, snap_pos);
+                cache_.cur_pos = 0;
+                result.fail(GenerateErrorCode::InvalidSnapshotSlot, "kvflash: snapshot does not fit the pool");
+                out_io.emit(-1);
+                return result;
+            }
+            kvflash_history_.assign((size_t)snap_pos, 0);
+            kvflash_mask_epoch_ = (uint64_t)-1;
+            cache_.kv_bias_on = false;
+            kvflash_bias_epoch_ = (uint64_t)-1;
+        }
     }
 
     // Now generate from restored state
@@ -2421,6 +2440,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             std::fprintf(stderr, "prefill build @%d\n", kv_pos);
             return -1;
         }
+        kvflash_check_bias_graph();
         if (kvf_paged) {
             if (!sg_.kv_write_rows) {
                 std::fprintf(stderr, "[kvflash] pooled prefill requires the set_rows path\n");
@@ -2596,16 +2616,8 @@ void Qwen35Backend::kvflash_sync_prefill(int committed,
     // Prefill (and snapshot restore) place rows physically contiguous at
     // [0, committed): rebuild the pager mapping identity-style and reset
     // the token history to match.
-    kvflash_pager_.reset();
-    for (int p = 0; p < committed; p++) {
-        const int slot = kvflash_pager_.slot_for(p);
-        if (slot != p) {
-            // Cannot happen while prompt <= pool (blocks are handed out in
-            // order from a freshly reset pager); guard against future
-            // changes to the hand-out order.
-            std::fprintf(stderr, "[kvflash] prefill slot mismatch %d != %d\n", slot, p);
-        }
-    }
+    if (!kvflash_pager_.reset_identity(committed))
+        std::fprintf(stderr, "[kvflash] prefill mapping does not fit the pool (%d tokens)\n", committed);
     if (kv_offset == 0) {
         kvflash_history_.assign(tokens.begin(), tokens.end());
     } else {
@@ -2644,7 +2656,36 @@ void Qwen35Backend::kvflash_qk_pool_to(int committed) {
 // The step graph attaches kv_bias only while a pager chunk is compacted. Call
 // before every build_target_step: with none compacted the graph is unchanged.
 void Qwen35Backend::kvflash_sync_bias_flag() {
-    cache_.kv_bias_on = kvflash_active() && !cache_.kv_bias.empty() && kvflash_pager_.any_compacted();
+    const bool compacted = kvflash_active() && kvflash_pager_.any_compacted();
+    if (compacted && cache_.kv_bias.empty()) {
+        // A compacted chunk without its beta attends with the wrong weights.
+        std::fprintf(stderr, "[kvflash] FATAL: a chunk is compacted but the cache has no kv_bias tensors\n");
+        std::abort();
+    }
+    cache_.kv_bias_on = compacted;
+}
+
+// Test hook only: every step graph must carry kv_bias_<il> on its own layer's
+// flash-attention node exactly when the bias is on (slot-mapped path), and on
+// no node otherwise. Fatal on any deviation.
+void Qwen35Backend::kvflash_check_bias_graph() {
+    if (!kvflash_test_compact_ || !kvflash_active() || cache_.kv_bias.empty()) return;
+    const bool expect = cache_.kv_bias_on && sg_.kv_write_rows && sg_.attn_mask;
+    int n_fa = 0;
+    const int bad = luce::common::kv_bias_attachment_errors(sg_.gf, cache_.attn_k, cache_.kv_bias, expect, &n_fa);
+    if (bad || n_fa != (int)cache_.attn_k.size()) {
+        std::printf("[kvflash] bias graph check: MISMATCH bad=%d fa_nodes=%d layers=%zu expect_on=%d\n",
+                    bad, n_fa, cache_.attn_k.size(), (int)expect);
+        std::fflush(stdout);
+        std::abort();
+    }
+    static bool printed_on = false, printed_off = false;
+    bool & printed = expect ? printed_on : printed_off;
+    if (!printed) {
+        printed = true;
+        std::printf("[kvflash] bias graph check: ok (%d fa nodes, bias %s)\n", n_fa, expect ? "on" : "off");
+        std::fflush(stdout);
+    }
 }
 
 // Upload each layer's key bias (beta on compacted slots, 0 elsewhere). The
@@ -2656,7 +2697,11 @@ void Qwen35Backend::kvflash_upload_bias() {
     int bad = 0;
     for (size_t l = 0; l < cache_.kv_bias.size(); l++) {
         ggml_tensor * t = cache_.kv_bias[l];
-        if (!t || (int)t->ne[0] != kvflash_tokens_) { bad++; continue; }
+        if (!t || (int)t->ne[0] != kvflash_tokens_) {
+            std::fprintf(stderr, "[kvflash] FATAL: kv_bias layer %zu missing or sized %d != pool %d\n",
+                         l, t ? (int)t->ne[0] : -1, kvflash_tokens_);
+            std::abort();
+        }
         kvflash_bias_buf_.resize((size_t)ggml_nelements(t));
         kvflash_pager_.fill_kv_bias((int)l, kvflash_bias_buf_.data());
         ggml_backend_tensor_set(t, kvflash_bias_buf_.data(), 0, ggml_nbytes(t));
@@ -2671,6 +2716,7 @@ void Qwen35Backend::kvflash_upload_bias() {
         std::printf("[kvflash] kv_bias readback: %s (%zu layers)\n",
                     bad ? "MISMATCH" : "match", cache_.kv_bias.size());
         std::fflush(stdout);
+        if (bad) std::abort();
     }
 }
 
@@ -2680,14 +2726,19 @@ void Qwen35Backend::kvflash_upload_bias() {
 // real compaction; with beta 0 the output must not change.
 void Qwen35Backend::kvflash_test_compact() {
     if (!kvflash_test_compact_) return;
-    int k = 0; float beta = 0.0f;
-    std::sscanf(kvflash_test_compact_, "%d:%f", &k, &beta);
-    const int c = kvflash_pager_.n_chunks() - 1 - k;
+    int c = 0; float beta = 0.0f;
+    if (!kvflash_parse_test_compact(kvflash_test_compact_, kvflash_pager_.n_chunks(), c, beta)) {
+        std::printf("[kvflash] test compact: REFUSED bad spec '%s' (want <k>:<beta>, 1 <= k < %d chunks)\n",
+                    kvflash_test_compact_, kvflash_pager_.n_chunks());
+        std::fflush(stdout);
+        std::abort();
+    }
     const std::vector<float> b((size_t)cache_.attn_k.size() * w_.n_head_kv *
                                kvflash_pager_.chunk_tokens(), beta);
     const bool ok = kvflash_pager_.mark_compacted(c, 1, b);
     std::printf("[kvflash] test compact: chunk %d beta %g -> %s\n", c, beta, ok ? "marked" : "REFUSED");
     std::fflush(stdout);
+    if (!ok) std::abort();
 }
 
 void Qwen35Backend::kvflash_upload_mask() {
@@ -3051,6 +3102,7 @@ bool Qwen35Backend::do_ar_decode(int committed, ThinkingBudget & budget,
                                /*paged_attention=*/paged)) {
             return false;
         }
+        kvflash_check_bias_graph();
 
         // Fill kv_write_rows with this step's cache slot for set_rows: the
         // paged append row, its pool slot in kvflash mode, or the logical
