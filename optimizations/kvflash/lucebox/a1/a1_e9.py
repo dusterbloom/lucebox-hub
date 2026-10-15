@@ -80,6 +80,37 @@ def budget_row(nb, tail, p, wb, reserve, ranks_cand):
 
 # ---------------------------------------------------------------- driver
 
+class BlockStore:
+    """What `on_block` keeps per sealed block (full-attention layers only): the exact keys, the compacted keys and beta, the pooled chunk keys."""
+
+    def __init__(self, full_layers, chunk=a1_e.CHUNK):
+        self.full_layers, self.chunk = full_layers, chunk
+        self.exact_k, self.comp_k, self.comp_b, self.pooled = [], [], [], []
+
+    def on_block(self, j, a, b, ex, cp):
+        fl = self.full_layers
+        self.exact_k.append([ex[i][0][0] for i in fl])
+        self.comp_k.append([cp[i][0][0] for i in fl])
+        self.comp_b.append([cp[i][1][0] for i in fl])
+        self.pooled.append(a1_e.pooled_chunk_keys([ex[i][0][0] for i in fl], self.chunk))
+
+
+def probe_rows(q, store, nb, tail, p, reserve, src, block=a1_e.BLOCK, chunk=a1_e.CHUNK, wbs=a1_a3.SEL_WBS):
+    """One eligible probe: (ranks over every block, {str(W): budget row}) from the question queries q (L, H, n, d) and the blocks kept."""
+    bsc = a1_e.block_scores(a1_e.qk_chunk_scores(torch.cat(store.pooled), q), block // chunk)            # (B, n)
+    allb = list(range(nb))
+    ranks = ranks_for(compacted_mass(q, store.comp_k, store.comp_b, allb), exact_mass(q, store.exact_k, allb), bsc, allb, src)
+    budget = {}
+    for wb in wbs:
+        cand = a1_a3.candidates(nb, p, wb)
+        rc = None
+        if cand and any(j in cand for j in src):
+            rc = ranks_for(compacted_mass(q, store.comp_k, store.comp_b, cand), exact_mass(q, store.exact_k, cand), bsc[cand], cand, src)
+        budget[str(wb)] = budget_row(nb, tail, p, wb, reserve, rc)
+    return ranks, budget
+
+
+
 def run_trajectory(ctx, out, tid, traj, tasks, full_rows, log):
     import r2_core as r2
     H, S, R = ctx.H, ctx.S, ctx.R
@@ -92,13 +123,8 @@ def run_trajectory(ctx, out, tid, traj, tasks, full_rows, log):
     full_layers = [i for i in range(len(S.layer_types)) if i not in S.linear]
     end = e67.system_end(plan.stream, S.tok.convert_tokens_to_ids("<|im_end|>"))
     p = e67.prefix_blocks(end)
-    exact_k, comp_k, comp_b, pooled = [], [], [], []
-
-    def on_block(j, a, b, ex, cp):
-        exact_k.append([ex[i][0][0] for i in full_layers])
-        comp_k.append([cp[i][0][0] for i in full_layers])
-        comp_b.append([cp[i][1][0] for i in full_layers])
-        pooled.append(a1_e.pooled_chunk_keys([ex[i][0][0] for i in full_layers]))
+    store = BlockStore(full_layers)
+    on_block = store.on_block
 
     segs = core.segs_from_checkpoints(plan.stream, [c.end for c in plan.cuts])
     stats = {"traj": tid, "n_rows": 0, "build_s": 0.0, "route_s": 0.0, "system_end_tok": end, "prefix_blocks": p}
@@ -106,7 +132,7 @@ def run_trajectory(ctx, out, tid, traj, tasks, full_rows, log):
     for k, t_tr, t_len, info in r2.gen_fblk_window(R, segs, list(range(len(segs))), 0, on_block=on_block):
         stats["build_s"] += time.time() - t_mark
         cut, nb, tail = plan.cuts[k], info["blocks"], info["tail_tokens"]
-        assert len(exact_k) == nb and t_len == cut.end
+        assert len(store.exact_k) == nb and t_len == cut.end
         reserve = max(len(i.suffix) + i.max_new for i in cut.items)
         for item in cut.items:
             t = item.task
@@ -122,17 +148,8 @@ def run_trajectory(ctx, out, tid, traj, tasks, full_rows, log):
             if row["eligible"]:
                 ids = torch.tensor([item.suffix], dtype=torch.long).to(S.dev)
                 _, _, q = r2.extend(S.model, S.layer_types, t_tr, t_len, ids, want_queries=True)
-                bsc = a1_e.block_scores(a1_e.qk_chunk_scores(torch.cat(pooled), q), a1_e.BLOCK // a1_e.CHUNK)      # (B, n)
-                allb = list(range(nb))
-                row["ranks"] = ranks_for(compacted_mass(q, comp_k, comp_b, allb), exact_mass(q, exact_k, allb), bsc, allb, src)
-                row["budget"] = {}
-                for wb in a1_a3.SEL_WBS:
-                    cand = a1_a3.candidates(nb, p, wb)
-                    rc = None
-                    if cand and any(j in cand for j in src):
-                        rc = ranks_for(compacted_mass(q, comp_k, comp_b, cand), exact_mass(q, exact_k, cand), bsc[cand], cand, src)
-                    row["budget"][str(wb)] = budget_row(nb, tail, p, wb, reserve, rc)
-                del q, bsc
+                row["ranks"], row["budget"] = probe_rows(q, store, nb, tail, p, reserve, src)
+                del q
             core.append_row(path, row)
             stats["n_rows"] += 1
             stats["route_s"] += time.time() - t1
