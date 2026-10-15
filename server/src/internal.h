@@ -481,6 +481,15 @@ struct TargetCache {
     std::vector<ggml_tensor *> attn_k;   // size = n_full_attn_layers (16)
     std::vector<ggml_tensor *> attn_v;
 
+    // KVFlash region B (AM compaction). Input: the caller sets kvflash_b_tokens
+    // before create_target_cache(); with a bounded kvflash pool every
+    // full-attention K/V gets that many extra rows after the pool (rounded up
+    // to 256), [head_dim, pool + B, n_head_kv], and kv_bias[l] is its F32 key
+    // bias [pool + B, n_head_kv], persistent so it is uploaded only when the
+    // pager epoch moves. Empty / 0 = today's cache.
+    int kvflash_b_tokens = 0;
+    std::vector<ggml_tensor *> kv_bias;   // size = n_full_attn_layers when B is on
+
     // Gated DeltaNet recurrent state: one per delta-net layer.
     // ssm_state: [S_v, S_v, H_v, n_seq_slots] f32  (head_v_dim^2 × num_v_heads)
     // conv_state: [(kernel-1), conv_channels, n_seq_slots] f32

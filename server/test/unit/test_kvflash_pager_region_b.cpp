@@ -308,3 +308,26 @@ TEST_CASE(KvflashPagerRegionBFixture, empty_b_leaves_region_a_masks_byte_identic
     }
     CHECK(pp.layer_cols(0) == kPool);   // no B: just region A
 }
+
+TEST_CASE(KvflashPagerRegionBFixture, fill_b_slot_mask_opens_only_blocks_a_segment_uses) {
+    Harness h;
+    KvFlashPager p;
+    build(h, p);   // layer 0 uses B blocks 0-1, layer 1 block 0
+
+    constexpr uint16_t F16_ZERO = 0x0000, F16_NEG_INF = 0xFC00;
+    const int width = kPool + kBTokens[1];
+    std::vector<uint16_t> m((size_t)width, F16_NEG_INF);
+    p.fill_slot_mask(m.data());
+    const std::vector<uint16_t> a_only = m;
+    p.fill_b_slot_mask(m.data());
+    for (int c = 0; c < kPool; c++) CHECK(m[(size_t)c] == a_only[(size_t)c]);   // region A untouched
+    for (int c = kPool; c < width; c++)
+        CHECK(m[(size_t)c] == (c < kPool + 2 * kChunk ? F16_ZERO : F16_NEG_INF));
+
+    // No segment: B stays closed, the mask is the region A mask.
+    REQUIRE(p.truncate(2 * kChunk) == 2 * kChunk);
+    std::vector<uint16_t> e((size_t)width, F16_NEG_INF);
+    p.fill_slot_mask(e.data());
+    p.fill_b_slot_mask(e.data());
+    for (int c = kPool; c < width; c++) CHECK(e[(size_t)c] == F16_NEG_INF);
+}

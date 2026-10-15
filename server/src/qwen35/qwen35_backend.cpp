@@ -571,6 +571,11 @@ bool Qwen35Backend::init() {
             return false;
         }
     }
+    // KVFlash region B (opt-in, uniform across layers): extra cache rows after
+    // the pool plus a persistent per-layer kv_bias. Empty until a segment is inserted.
+    if (kvflash_active() && !cfg_.paged_attention && n_slots == 1) {
+        cache_.kvflash_b_tokens = std::max(0, env_int_or_default("LUCE_KVFLASH_B_TOKENS", 0));
+    }
     const int ctx_alloc = n_slots > 1
         ? (int)(pool_tokens + scratch_tokens)
         : (cfg_.paged_attention
@@ -664,6 +669,11 @@ bool Qwen35Backend::init() {
             auto qs = std::make_unique<KvFlashTargetQkScorer>(&kvflash_qk_pool_);
             kvflash_qk_scorer_ = qs.get();
             kvflash_scorer_ = std::move(qs);
+        }
+        if (!cache_.kv_bias.empty()) {
+            kvflash_upload_bias();
+            std::printf("[kvflash] region B: %d rows per layer after the %d-token pool\n",
+                        (int)cache_.attn_k[0]->ne[1] - kvflash_tokens_, kvflash_tokens_);
         }
         std::printf("[kvflash] resident pool %d tokens (logical max_ctx %d), "
                     "tau=%d, policy=%s\n",
@@ -1778,6 +1788,7 @@ GenerateResult Qwen35Backend::generate_impl(const GenerateRequest & req,
     // inherit stale hidden state from the previous request. KV cache is
     // position-addressed and will be overwritten during prefill.
     reset_recurrent_state(cache_);
+    kvflash_bias_epoch_ = (uint64_t)-1;   // the clear also zeroed the persistent kv_bias
 
     if (cfg_.paged_attention) {
         // The pool's block rounding can hold up to PAGED_BLOCK_SIZE-1 tokens
@@ -2038,6 +2049,7 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
             "[pc] snapshot longer than prompt (snap=%d > prompt=%d) — "
             "fresh prefill fallback\n", snap_pos, prompt_len);
         reset_recurrent_state(cache_);
+        kvflash_bias_epoch_ = (uint64_t)-1;
         cache_.cur_pos = 0;
         result.restored_prefix_tokens = 0;
         auto t_prefill_start = std::chrono::steady_clock::now();
@@ -2359,6 +2371,8 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         ggml_backend_tensor_set(sg_.positions, pos_buf.data(), 0,
                                 sizeof(int32_t) * pos_buf.size());
 
+        if (kvflash_active()) kvflash_upload_bias();
+
         // Mask — full attention during prefill (no windowing)
         if (sg_.attn_mask && kvf_paged) {
             // Slot-space mask (same recipe as verify_batch): row q attends
@@ -2368,6 +2382,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             const size_t kvd = (size_t)sg_.attn_mask->ne[0];
             const int q_pad = (int)sg_.attn_mask->ne[1];
             std::vector<uint16_t> mask_buf((size_t)kvd * q_pad, F16_NEG_INF);
+            kvflash_pager_.fill_b_slot_mask(mask_buf.data());
             const int ct = kvflash_pager_.chunk_tokens();
             for (int c = 0; c < kvflash_pager_.n_chunks(); c++) {
                 const int blk = kvflash_pager_.block_of(c);
@@ -2534,12 +2549,29 @@ void Qwen35Backend::kvflash_qk_pool_to(int committed) {
     kvflash_qk_pooled_upto_ = std::max(kvflash_qk_pooled_upto_, sealed);
 }
 
+// Region B key bias, one persistent F32 tensor per layer. Re-uploaded only when
+// the pager epoch moves (or after a cache clear zeroed it): 0 on region A, beta
+// on live compacted slots, -inf on the rest of B.
+void Qwen35Backend::kvflash_upload_bias() {
+    if (cache_.kv_bias.empty() || kvflash_pager_.epoch() == kvflash_bias_epoch_) return;
+    for (size_t l = 0; l < cache_.kv_bias.size(); l++) {
+        ggml_tensor * t = cache_.kv_bias[l];
+        if (!t) continue;
+        kvflash_bias_buf_.resize(ggml_nelements(t));
+        kvflash_pager_.fill_kv_bias((int)l, kvflash_bias_buf_.data());
+        ggml_backend_tensor_set(t, kvflash_bias_buf_.data(), 0, ggml_nbytes(t));
+    }
+    kvflash_bias_epoch_ = kvflash_pager_.epoch();
+}
+
 void Qwen35Backend::kvflash_upload_mask() {
+    kvflash_upload_bias();
     if (!sg_.attn_mask) return;
     const size_t need = (size_t)sg_.attn_mask->ne[0] * sg_.attn_mask->ne[1];
     if (kvflash_mask_buf_.size() != need || kvflash_pager_.epoch() != kvflash_mask_epoch_) {
         kvflash_mask_buf_.assign(need, F16_NEG_INF);
         kvflash_pager_.fill_slot_mask(kvflash_mask_buf_.data());   // q row 0
+        kvflash_pager_.fill_b_slot_mask(kvflash_mask_buf_.data());
         kvflash_mask_epoch_ = kvflash_pager_.epoch();
     }
     // Upload before EVERY compute: the input tensor's buffer region is

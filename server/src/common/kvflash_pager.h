@@ -612,6 +612,18 @@ public:
         }
     }
 
+    // Open (0) the columns of a full-width mask row that belong to B blocks any
+    // layer's segment uses; every other column is left as the caller set it
+    // (-inf), so a trailing run of unused B tiles stays skippable. Pair with
+    // fill_slot_mask(); the kv_bias then decides per layer and head.
+    void fill_b_slot_mask(uint16_t * dst) const {
+        for (const KvFlashSegment & sg : segments_)
+            for (size_t l = 0; l < sg.blocks.size(); l++)
+                for (int blk : sg.blocks[l])
+                    std::fill(dst + b_row((int)l, blk), dst + b_row((int)l, blk) + cfg_.chunk_tokens,
+                              (uint16_t)0x0000);
+    }
+
     // Lookahead reselect (FlashMemory τ-step): rebuild the resident set as
     // the top-pool chunks by score_hook among ALL known chunks (resident or
     // host-backed). Sinks and the trailing window are always kept. Returns

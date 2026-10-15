@@ -215,10 +215,16 @@ bool create_target_cache_partial(const TargetWeights & w,
     const int max_ctx_alloc = needs_256_stride
         ? ((ctx_phys + 255) / 256) * 256
         : ctx_phys;
+    // KVFlash region B rows after the pool (single-sequence bounded pool only).
+    const int b_rows = (bounded_pool && !paged_attention && !multi_slot &&
+                        out.kvflash_b_tokens > 0 && !w.is_bailingmoe3)
+        ? ((out.kvflash_b_tokens + 255) / 256) * 256 : 0;
+    out.kv_bias.clear();
+    if (b_rows) out.kv_bias.assign(n_full_attn, nullptr);
 
     // ── Base context: KV cache + SSM/conv state + target_feat ────────
     {
-        const int base_tensors = 2 * n_full_attn + 2 * n_delta + 2;
+        const int base_tensors = (b_rows ? 3 : 2) * n_full_attn + 2 * n_delta + 2;
         ggml_init_params ip{};
         ip.mem_size   = (size_t)(base_tensors + 16) * ggml_tensor_overhead();
         ip.mem_buffer = nullptr;
@@ -234,12 +240,12 @@ bool create_target_cache_partial(const TargetWeights & w,
                 if (!owns_layer) { fa_idx++; continue; }
                 // [head_dim, max_ctx_alloc, n_head_kv]
                 ggml_tensor * K = ggml_new_tensor_3d(out.base_ctx, kv_k_type,
-                                                     head_dim, max_ctx_alloc, w.n_head_kv);
+                                                     head_dim, max_ctx_alloc + b_rows, w.n_head_kv);
                 const int v_head_dim = w.is_bailingmoe3
                     ? w.n_embd_head_v : head_dim;
                 ggml_tensor * V = ggml_new_tensor_3d(
                     out.base_ctx, kv_v_type, v_head_dim,
-                    max_ctx_alloc, w.n_head_kv);
+                    max_ctx_alloc + b_rows, w.n_head_kv);
                 char name[64];
                 std::snprintf(name, sizeof(name), "cache_k_%d", il);
                 ggml_set_name(K, name);
@@ -247,6 +253,13 @@ bool create_target_cache_partial(const TargetWeights & w,
                 ggml_set_name(V, name);
                 out.attn_k[fa_idx] = K;
                 out.attn_v[fa_idx] = V;
+                if (b_rows) {
+                    ggml_tensor * KB = ggml_new_tensor_2d(out.base_ctx, GGML_TYPE_F32,
+                                                          max_ctx_alloc + b_rows, w.n_head_kv);
+                    std::snprintf(name, sizeof(name), "kv_bias_%d", il);
+                    ggml_set_name(KB, name);
+                    out.kv_bias[fa_idx] = KB;
+                }
                 fa_idx++;
             } else {
                 if (!owns_layer) { dn_idx++; continue; }
@@ -471,6 +484,7 @@ void free_target_cache(TargetCache & c) {
     if (c.rollback_ctx) { ggml_free(c.rollback_ctx);               c.rollback_ctx = nullptr; }
     c.attn_k.clear();
     c.attn_v.clear();
+    c.kv_bias.clear();
     c.ssm_state.clear();
     c.conv_state.clear();
     c.ssm_state_snap.clear();
@@ -1161,7 +1175,11 @@ static ggml_tensor * build_full_attn_block(
     int tree_width = 0,
     int tree_scratch_base = 0,
     int tree_scratch_stride = 0,
-    int paged_logical_max_ctx = 0
+    int paged_logical_max_ctx = 0,
+    // KVFlash region B: per-KV-head key bias [cache_k->ne[1], n_head_kv]
+    // (0 on region A, beta on compacted slots, -inf elsewhere). Attached on
+    // the slot-mapped (kvflash) path, whose view is the whole tensor.
+    ggml_tensor * kv_bias = nullptr
 ) {
     const int head_dim = w.n_embd_head_k;
     const int n_head = w.n_head;
@@ -1443,7 +1461,8 @@ static ggml_tensor * build_full_attn_block(
         // instead; the mask, sized from that same pool, is what decides which
         // slots are readable. Detect the mode by the pair only slot-mapped
         // verify sets: a set_rows KV write together with an explicit mask.
-        if (kv_write_rows != nullptr && attn_mask != nullptr) {
+        const bool slot_mapped = kv_write_rows != nullptr && attn_mask != nullptr;
+        if (slot_mapped) {
             win_len_padded = (int)cache_k->ne[1];
         }
 
@@ -1460,6 +1479,9 @@ static ggml_tensor * build_full_attn_block(
         // A single query needs no causal mask. Multi-token callers supply one.
         attn = ggml_flash_attn_ext(ctx, Qfa, Kfa, Vfa, attn_mask,
                                    kq_scale, 0.0f, 0.0f);
+        // Region B: the bias is the tensor's full width, which the slot-mapped view
+        // spans. Tree verify (no slot map) reads [0, kv_len) inside region A only.
+        if (kv_bias && slot_mapped) ggml_flash_attn_ext_add_kv_bias(attn, kv_bias);
     }
     // Dense output is [D,Hq,n_tokens]; paged output is [D,n_seq,Hq]. They are
     // layout-equivalent when n_tokens/n_seq is one (classic paged decode);
@@ -2298,7 +2320,10 @@ static ggml_tensor * build_single_layer(
                 attn_mask, kv_start, n_tokens,
                 cache.kv_k_type, cache.kv_v_type,
                 cache.kv_k_rotated, fa_window,
-                q_tail_capture, q_tail_start, kv_write_rows);
+                q_tail_capture, q_tail_start, kv_write_rows,
+                nullptr, nullptr, nullptr, nullptr, nullptr, 0, nullptr,
+                nullptr, nullptr, 0, 0, 0, 0,
+                fa_idx < (int)cache.kv_bias.size() ? cache.kv_bias[fa_idx] : nullptr);
     } else {
         int dn_idx = 0;
         for (int il = 0; il < layer_idx; il++) {
@@ -2462,7 +2487,8 @@ QwenGraphOutputs build_qwen35_graph(
                                             in.tree_width,
                                             in.tree_scratch_base,
                                             in.tree_scratch_stride,
-                                            cache.max_ctx);
+                                            cache.max_ctx,
+                                            fa_idx < (int)cache.kv_bias.size() ? cache.kv_bias[fa_idx] : nullptr);
             }
             if (want_q_cap && q_fa) {
                 // Last token's Q, all heads: src [head_dim, 1, n_head] view of
