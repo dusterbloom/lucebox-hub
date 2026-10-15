@@ -7,7 +7,7 @@
 // holding the cases) and LUCE_AM_GGUF (the Q4_K_M target) are set.
 #include "CppUnitTestFramework.hpp"
 #include "scoped_env.h"
-#include "am_fixture.h"
+#include "am_fixture_gate.h"
 
 #include "internal.h"
 #include "qwen35/qwen35_backend.h"

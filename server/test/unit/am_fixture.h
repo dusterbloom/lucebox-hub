@@ -1,216 +1,170 @@
-// Reader for the AM reference fixtures written by
-// optimizations/kvflash/lucebox/a1/am_fixture_dump.py (manifest.json plus raw
-// little-endian tensor files, no header; shape_ggml lists the fastest
-// dimension first), and the arithmetic the M3 cosine gate needs.
-// Minimal on purpose: the M5 fit tests carry their own reader and the two
-// unify at integration.
+// Reader for the AM reference fixtures (generator: optimizations/kvflash/lucebox/a1/am_fixture_dump.py).
+//
+// One directory per case (traj1_first, traj1_12k, article_r1e, ...) holds manifest.json, the
+// per-case tokens.i32 / positions.i32 and one raw little-endian file per layer and tensor:
+//   L<layer:02d>_<name>.f32 (or .i32 for idx), in ggml element order, fastest dimension first:
+//     q [d, n, n_head]  k, v [d, n, n_kv]  scores [n, n_kv]  idx [slots, n_kv] (int32, rank order)
+//     beta [slots, n_kv]  c2 [d, slots, n_kv]
+// Header only, no JSON library: the manifest is searched for its "layers" array, and every file is
+// checked against the expected element count by its size.
+//
+// Used by the M5 fit gate (test_am_fit_solve) and meant for the M4 selection gate.
 #pragma once
 
-#include <nlohmann/json.hpp>
-
-#include "ggml.h"
-
 #include <algorithm>
-#include <cctype>
-#include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
-#include <filesystem>
+#include <cstdlib>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
-namespace luce::amfix {
+#include <dirent.h>
 
-struct File {
-    int layer = -1;  // -1: not per layer
-    std::string name, file, dtype;
-    std::vector<int64_t> shape_ggml;
-    size_t bytes = 0;
+namespace am_fixture {
+
+struct Case {
+    std::string      dir;
+    std::string      name;
+    std::vector<int> layers;  // full-attention layer ids, in manifest order
+    // Top-level integers of the manifest, 0 when absent (the queries-only case has no fit dims).
+    int head_dim = 0, n_tokens = 0, n_head = 0, n_kv = 0, slots = 0;
+    std::string manifest;     // raw manifest text
 };
 
-struct Fixture {
-    std::string dir;
-    nlohmann::json manifest;
-    std::vector<File> files;
-
-    // Parses manifest.json and checks every listed file exists with exactly
-    // the byte count the manifest (and shape and dtype) claims.
-    static bool open(const std::string & dir, Fixture & out, std::string & err) {
-        namespace fs = std::filesystem;
-        out = Fixture{};
-        out.dir = dir;
-        std::ifstream mf(fs::path(dir) / "manifest.json");
-        if (!mf) { err = "cannot open " + dir + "/manifest.json"; return false; }
-        try {
-            out.manifest = nlohmann::json::parse(mf);
-            for (const auto & e : out.manifest.at("files")) {
-                File f;
-                f.layer = e.at("layer").is_null() ? -1 : e.at("layer").get<int>();
-                f.name = e.at("name").get<std::string>();
-                f.file = e.at("file").get<std::string>();
-                f.dtype = e.at("dtype").get<std::string>();
-                f.shape_ggml = e.at("shape_ggml").get<std::vector<int64_t>>();
-                f.bytes = e.at("bytes").get<size_t>();
-                if (f.dtype != "float32" && f.dtype != "int32") { err = f.file + ": unsupported dtype " + f.dtype; return false; }
-                // Every dimension positive and bounded, the product checked, before any size is trusted.
-                int64_t n = 1;
-                constexpr int64_t kMaxDim = int64_t(1) << 31, kMaxElems = int64_t(1) << 40;
-                for (int64_t s : f.shape_ggml)
-                    if (s < 1 || s > kMaxDim || __builtin_mul_overflow(n, s, &n) || n > kMaxElems) {
-                        err = f.file + ": shape_ggml has a non-positive, oversized or overflowing dimension"; return false;
-                    }
-                if ((uint64_t)n * 4 != f.bytes) { err = f.file + ": manifest bytes disagree with shape"; return false; }
-                std::error_code ec;
-                const auto sz = fs::file_size(fs::path(dir) / f.file, ec);
-                if (ec || sz != f.bytes) { err = f.file + ": missing or size differs from manifest"; return false; }
-                out.files.push_back(std::move(f));
-            }
-        } catch (const std::exception & e) {
-            err = std::string("manifest.json: ") + e.what();
-            return false;
-        }
-        return true;
-    }
-
-    const File * find(const std::string & name, int layer = -1) const {
-        for (const File & f : files) if (f.name == name && f.layer == layer) return &f;
-        return nullptr;
-    }
-
-    std::vector<int> layers() const {
-        std::vector<int> l;
-        for (const auto & v : manifest.value("layers", nlohmann::json::array())) l.push_back(v.get<int>());
-        return l;
-    }
-
-    bool read_f32(const std::string & name, int layer, std::vector<float> & out, std::string & err) const {
-        return read(name, layer, "float32", out, err);
-    }
-    bool read_i32(const std::string & name, std::vector<int32_t> & out, std::string & err) const {
-        return read(name, -1, "int32", out, err);
-    }
-
-private:
-    template <class T>
-    bool read(const std::string & name, int layer, const char * dtype, std::vector<T> & out, std::string & err) const {
-        const File * f = find(name, layer);
-        if (!f) { err = "no entry " + name + " layer " + std::to_string(layer); return false; }
-        if (f->dtype != dtype) { err = f->file + ": dtype is " + f->dtype + ", asked for " + dtype; return false; }
-        out.resize(f->bytes / sizeof(T));
-        std::ifstream in(std::filesystem::path(dir) / f->file, std::ios::binary);
-        in.read((char *)out.data(), (std::streamsize)f->bytes);
-        if (!in) { err = f->file + ": short read"; return false; }
-        return true;
-    }
-};
-
-// ---- cosine arithmetic ----
-
-struct HeadCosine {
-    std::vector<double> mean;  // per head: mean over tokens of cos(ref row, engine row)
-    std::vector<double> min;   // per head: worst token
-    std::vector<double> ratio; // per head: ||engine|| / ||ref|| over the whole head
-};
-
-// ref: F32 [H][n][d] (the dump); eng: F16 [H][n][d] (the ring plane of one layer).
-// A row with a zero norm on either side counts as cosine 0.
-inline HeadCosine cosine_per_head(const float * ref, const uint16_t * eng, int H, int n, int d) {
-    HeadCosine r;
-    for (int h = 0; h < H; h++) {
-        double sum = 0, lo = 1.0, ref2 = 0, eng2 = 0;
-        for (int t = 0; t < n; t++) {
-            const size_t o = ((size_t)h * n + t) * d;
-            double dot = 0, na = 0, nb = 0;
-            for (int i = 0; i < d; i++) {
-                const double a = ref[o + i], b = ggml_fp16_to_fp32(eng[o + i]);
-                dot += a * b; na += a * a; nb += b * b;
-            }
-            const double c = (na > 0 && nb > 0) ? dot / std::sqrt(na * nb) : 0.0;
-            sum += c; lo = std::min(lo, c); ref2 += na; eng2 += nb;
-        }
-        r.mean.push_back(sum / n);
-        r.min.push_back(lo);
-        r.ratio.push_back(ref2 > 0 ? std::sqrt(eng2 / ref2) : 0.0);
-    }
-    return r;
+// First integer value of `"key":` in the manifest text, or 0.
+inline int manifest_int(const std::string & m, const char * key) {
+    const size_t k = m.find(std::string("\"") + key + "\"");
+    if (k == std::string::npos) return 0;
+    const size_t colon = m.find(':', k);
+    return colon == std::string::npos ? 0 : (int) std::strtol(m.c_str() + colon + 1, nullptr, 10);
 }
 
-// Every head must clear the gate on its own: the layer average hides one bad head
-// (one negated head of 24 still averages 0.917), and cosine cannot see a scale error.
-// Constants from the measured Q4_K_M-vs-bf16 profile (F16 KV, traj1_12k_exactq, 384 heads): the layer-mean
-// cosine is 0.997 at layer 3 and 0.909 at layer 51, drifting down with depth; the worst head is 0.874
-// (layer 59, head 1). A capture bug lands near 0 or -1, so 0.85 still separates it clearly.
-struct HeadGate { double min_cos = 0.85, ratio_lo = 0.95, ratio_hi = 1.05; };
+// Same lookup with a found flag and a 64-bit value (the M4 gate uses this form).
+inline bool manifest_int(const std::string & manifest, const char * key, int64_t & out) {
+    const std::string k = std::string("\"") + key + "\"";
+    const size_t at = manifest.find(k);
+    if (at == std::string::npos) return false;
+    const char * p = manifest.c_str() + at + k.size();
+    while (*p == ' ' || *p == ':' || *p == '\t' || *p == '\n') ++p;
+    char * end = nullptr;
+    const long long v = std::strtoll(p, &end, 10);
+    if (end == p) return false;
+    out = v;
+    return true;
+}
 
-inline std::string head_violation(const HeadCosine & r, HeadGate g = {}) {
-    std::string out;
-    for (size_t h = 0; h < r.mean.size(); h++) {
-        const bool ok = r.mean[h] > g.min_cos && r.ratio[h] >= g.ratio_lo && r.ratio[h] <= g.ratio_hi;  // NaN fails
-        if (!ok) {
-            char b[96];
-            std::snprintf(b, sizeof b, "head %zu: cos %.4f norm ratio %.4f; ", h, r.mean[h], r.ratio[h]);
-            out += b;
-        }
+inline bool read_file(const std::string & path, std::string & out) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    out = ss.str();
+    return true;
+}
+
+// Loads dir/manifest.json. False (with *err) if it is missing or lists no layers.
+inline bool load_case(const std::string & dir, Case & c, std::string * err = nullptr) {
+    std::string m;
+    if (!read_file(dir + "/manifest.json", m)) { if (err) *err = "no manifest.json in " + dir; return false; }
+    c = Case{};
+    c.dir = dir;
+    c.manifest = m;
+    const size_t slash = dir.find_last_of('/');
+    c.name = slash == std::string::npos ? dir : dir.substr(slash + 1);
+    c.head_dim = manifest_int(m, "head_dim");
+    c.n_tokens = manifest_int(m, "n_tokens");
+    c.n_head = manifest_int(m, "n_head");
+    c.n_kv = manifest_int(m, "n_kv");
+    c.slots = manifest_int(m, "slots");
+    const size_t key = m.find("\"layers\"");
+    const size_t open = key == std::string::npos ? key : m.find('[', key);
+    const size_t close = open == std::string::npos ? open : m.find(']', open);
+    if (close == std::string::npos) { if (err) *err = "no layers array in manifest of " + dir; return false; }
+    const char * p = m.c_str() + open + 1;
+    const char * end = m.c_str() + close;
+    while (p < end) {
+        char * next = nullptr;
+        const long v = std::strtol(p, &next, 10);
+        if (next == p) { ++p; continue; }
+        c.layers.push_back((int) v);
+        p = next;
+    }
+    if (c.layers.empty()) { if (err) *err = "empty layers array in manifest of " + dir; return false; }
+    return true;
+}
+
+// shape_ggml of the manifest entry whose file is L<layer>_<name>.<ext>; empty if there is no such entry.
+inline std::vector<long> entry_shape(const Case & c, int layer, const char * name, const char * ext) {
+    char f[64];
+    std::snprintf(f, sizeof f, "\"L%02d_%s.%s\"", layer, name, ext);
+    std::vector<long> out;
+    const size_t k = c.manifest.find(f);
+    if (k == std::string::npos) return out;
+    const size_t sg = c.manifest.find("\"shape_ggml\"", k);
+    const size_t nextfile = c.manifest.find("\"file\"", k + 1);
+    if (sg == std::string::npos || sg > nextfile) return out;
+    const size_t open = c.manifest.find('[', sg), close = c.manifest.find(']', sg);
+    if (open == std::string::npos || close == std::string::npos) return out;
+    const char * p = c.manifest.c_str() + open + 1;
+    const char * end = c.manifest.c_str() + close;
+    while (p < end) {
+        char * next = nullptr;
+        const long v = std::strtol(p, &next, 10);
+        if (next == p) { ++p; continue; }
+        out.push_back(v);
+        p = next;
     }
     return out;
 }
 
-struct Summary { double min = 0, median = 0, mean = 0; };
-
-inline Summary summarize(std::vector<double> v) {
-    Summary s;
-    if (v.empty()) return s;
-    std::sort(v.begin(), v.end());
-    s.min = v.front();
-    s.median = v.size() % 2 ? v[v.size() / 2] : 0.5 * (v[v.size() / 2 - 1] + v[v.size() / 2]);
-    double t = 0; for (double x : v) t += x;
-    s.mean = t / (double)v.size();
-    return s;
-}
-
-// ---- same base model? ----
-
-struct GgufFacts {
-    int n_layer = 0, full_attention_interval = 0, n_head = 0, head_dim = 0;
-    std::vector<std::string> names;  // general.name, basename, ... as found
-};
-
-inline std::string alnum_lower(const std::string & s) {
-    std::string o;
-    for (char c : s) if (std::isalnum((unsigned char)c)) o += (char)std::tolower((unsigned char)c);
-    return o;
-}
-
-// "" when the GGUF and the dump describe the same base model, else why not.
-// Structure (head counts, head_dim, which layers are full attention) is always
-// compared; the name only when both sides carry one.
-inline std::string identity_mismatch(const nlohmann::json & manifest, const GgufFacts & g) {
-    auto want = [&](const char * k, int have) -> std::string {
-        if (manifest.contains(k) && manifest[k].get<int>() != have)
-            return std::string(k) + ": dump " + std::to_string(manifest[k].get<int>()) + " vs gguf " + std::to_string(have);
-        return "";
-    };
-    for (const std::string & e : {want("n_head", g.n_head), want("head_dim", g.head_dim)}) if (!e.empty()) return e;
-    if (g.full_attention_interval > 0) {
-        std::vector<int> expect;
-        for (int l = 0; l < g.n_layer; l++) if (l % g.full_attention_interval == g.full_attention_interval - 1) expect.push_back(l);
-        std::vector<int> have;
-        for (const auto & v : manifest.value("layers", nlohmann::json::array())) have.push_back(v.get<int>());
-        if (have != expect) return "full-attention layers differ: dump lists " + std::to_string(have.size()) + ", gguf has " + std::to_string(expect.size());
+template <class T>
+inline bool read_raw(const std::string & path, std::vector<T> & out, size_t expect_elems, std::string * err) {
+    std::string bytes;
+    if (!read_file(path, bytes)) { if (err) *err = "cannot read " + path; return false; }
+    if (bytes.size() != expect_elems * sizeof(T)) {
+        if (err) *err = path + ": " + std::to_string(bytes.size()) + " bytes, expected " + std::to_string(expect_elems * sizeof(T));
+        return false;
     }
-    const auto & id = manifest.value("model_identity", nlohmann::json::object());
-    std::string path;
-    for (const char * k : {"_name_or_path", "model_path"})
-        if (path.empty() && id.contains(k) && id[k].is_string()) path = id[k].get<std::string>();
-    while (!path.empty() && path.back() == '/') path.pop_back();
-    const std::string dump_name = alnum_lower(std::filesystem::path(path).filename().string());
-    if (!dump_name.empty() && !g.names.empty()) {
-        bool found = false;
-        for (const std::string & n : g.names) found |= alnum_lower(n).find(dump_name) != std::string::npos;
-        if (!found) return "model name differs: dump '" + dump_name + "' not in the gguf names";
-    }
-    return "";
+    out.resize(expect_elems);
+    std::memcpy(out.data(), bytes.data(), bytes.size());  // little-endian host
+    return true;
 }
 
-}  // namespace luce::amfix
+// Per-layer tensor L<layer>_<name>.f32 / .i32.
+inline std::string layer_path(const Case & c, int layer, const char * name, const char * ext) {
+    char b[64];
+    std::snprintf(b, sizeof b, "/L%02d_%s.%s", layer, name, ext);
+    return c.dir + b;
+}
+inline bool read_f32(const Case & c, int layer, const char * name, size_t n, std::vector<float> & out, std::string * err = nullptr) {
+    return read_raw(layer_path(c, layer, name, "f32"), out, n, err);
+}
+inline bool read_i32(const Case & c, int layer, const char * name, size_t n, std::vector<int32_t> & out, std::string * err = nullptr) {
+    return read_raw(layer_path(c, layer, name, "i32"), out, n, err);
+}
+// Per-case tensor <name>.i32 (tokens, positions).
+inline bool read_case_i32(const Case & c, const char * name, size_t n, std::vector<int32_t> & out, std::string * err = nullptr) {
+    return read_raw(c.dir + "/" + name + ".i32", out, n, err);
+}
+
+// Subdirectories of `root` that hold a manifest.json, sorted by name. Empty if root is unset.
+inline std::vector<std::string> case_dirs(const char * root) {
+    std::vector<std::string> dirs;
+    if (!root || !*root) return dirs;
+    if (DIR * d = opendir(root)) {
+        while (const dirent * e = readdir(d)) {
+            if (e->d_name[0] == '.') continue;
+            const std::string sub = std::string(root) + "/" + e->d_name;
+            std::ifstream probe(sub + "/manifest.json");
+            if (probe) dirs.push_back(sub);
+        }
+        closedir(d);
+    }
+    std::sort(dirs.begin(), dirs.end());
+    return dirs;
+}
+
+}  // namespace am_fixture
