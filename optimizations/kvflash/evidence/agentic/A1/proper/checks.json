@@ -1,0 +1,22 @@
+{
+ "gate3": {
+  "trajectories": 5,
+  "correct": 97,
+  "attempted": 168,
+  "yield": 0.5773809523809523,
+  "in_range": true
+ },
+ "early": {
+  "ci": {
+   "mean": 0.11275964391691394,
+   "lo": 0.06109276425576919,
+   "hi": 0.16719284364767945,
+   "n_q": 337,
+   "n_art": 20,
+   "level": 99.9
+  },
+  "verdict": "FAIL",
+  "trajectories": 20,
+  "bar": 0.756
+ }
+}

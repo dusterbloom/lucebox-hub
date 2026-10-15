@@ -1,0 +1,187 @@
+{
+ "trajectories": 20,
+ "reference_yield": [
+  337,
+  642
+ ],
+ "retained_probes_in_20": 337,
+ "retention": {
+  "ci95": {
+   "mean": 0.11275964391691394,
+   "lo": 0.08157099697885196,
+   "hi": 0.14381908621960196,
+   "n_q": 337,
+   "n_art": 20,
+   "level": 95.0
+  },
+  "ci99.9": {
+   "mean": 0.11275964391691394,
+   "lo": 0.06109276425576919,
+   "hi": 0.16719284364767945,
+   "n_q": 337,
+   "n_art": 20,
+   "level": 99.9
+  },
+  "correct": 38,
+  "n": 337,
+  "bar": 0.756
+ },
+ "retention_by_distance": {
+  "0-4096": [
+   15,
+   116
+  ],
+  "4096-8192": [
+   8,
+   56
+  ],
+  "8192-16384": [
+   8,
+   104
+  ],
+  "16384-inf": [
+   7,
+   61
+  ]
+ },
+ "retention_by_type": {
+  "defname": [
+   9,
+   58
+  ],
+  "line": [
+   9,
+   160
+  ],
+  "cmdline_path": [
+   5,
+   45
+  ],
+  "cmdline_text": [
+   6,
+   63
+  ],
+  "traceback": [
+   4,
+   6
+  ],
+  "failed_test": [
+   5,
+   5
+  ]
+ },
+ "retained_without_ship_row": [],
+ "b0_pool16k_same_trajs": {
+  "ci95": {
+   "mean": 0.7757575757575758,
+   "lo": 0.7455608014739752,
+   "hi": 0.8079100351384869,
+   "n_q": 330,
+   "n_art": 20,
+   "level": 95.0
+  },
+  "correct": 256,
+  "n": 330
+ },
+ "b0_pool16k_by_distance": {
+  "0-4096": [
+   104,
+   108
+  ],
+  "4096-8192": [
+   49,
+   55
+  ],
+  "8192-16384": [
+   101,
+   106
+  ],
+  "16384-inf": [
+   2,
+   61
+  ]
+ },
+ "same_probe": {
+  "n": 309,
+  "ship": 37,
+  "pool16k": 243,
+  "mcnemar_only_ship_only_pool_p": [
+   7,
+   213,
+   5.513922811819537e-54
+  ]
+ },
+ "control_fullb_vs_full_chk": {
+  "trajectories": 8,
+  "probes_with_both_rows": 147,
+  "reference_correct_retained": 147,
+  "control_flips_of_retained": 1,
+  "flip_share_of_retained": 0.006802721088435374,
+  "flip_ids": [
+   "chatcmpl-2a396fbe44469a27e135f99fb02cfcfc:p12:10"
+  ],
+  "correctness_agreement": [
+   146,
+   147
+  ],
+  "identical_answer_token_ids": [
+   146,
+   147
+  ],
+  "soft_reference_if_over_5_points": false
+ },
+ "seconds_note": "summed over progress.jsonl rows (a unit interrupted by a watchdog stop and rerun appears once per completed run)",
+ "seconds": {
+  "FULL": {
+   "build_s": 5453.3,
+   "answer_s": 9607.2,
+   "wall_s": 15074.8
+  },
+  "SHIP": {
+   "build_s": 2844.1,
+   "answer_s": 2662.2,
+   "wall_s": 5522.8
+  },
+  "FULLB": {
+   "build_s": 2201.4,
+   "answer_s": 1798.9,
+   "wall_s": 4005.3
+  }
+ },
+ "peak_gib": {
+  "FULL": {
+   "alloc": 64.8,
+   "reserved": 99.9
+  },
+  "SHIP": {
+   "alloc": 52.4,
+   "reserved": 61.0
+  },
+  "FULLB": {
+   "alloc": 63.6,
+   "reserved": 100.0
+  }
+ },
+ "checks": {
+  "gate3": {
+   "trajectories": 5,
+   "correct": 97,
+   "attempted": 168,
+   "yield": 0.5773809523809523,
+   "in_range": true
+  },
+  "early": {
+   "ci": {
+    "mean": 0.11275964391691394,
+    "lo": 0.06109276425576919,
+    "hi": 0.16719284364767945,
+    "n_q": 337,
+    "n_art": 20,
+    "level": 99.9
+   },
+   "verdict": "FAIL",
+   "trajectories": 20,
+   "bar": 0.756
+  }
+ }
+}

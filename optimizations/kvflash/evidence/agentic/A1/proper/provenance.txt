@@ -1,0 +1,47 @@
+A1 proper run, stage 1 (probes only), launched 2026-10-15T12:32:25+00:00
+PREREG A1 Amendment 4 (9c0f1958); code commit 9c0f1958 (worktree-kvflash-am); ratio 0.10 (default); HIP_VISIBLE_DEVICES=1
+pilot rows copied unedited from a1_pilot: trajectories 1-6
+93a29de59549954ebd9d46ffd9214047  /home/duster/r1e/out/a1_pilot/FULL.jsonl
+2e1e4aea3062d0442714c54cd9d4fc91  /home/duster/r1e/out/a1_pilot/SHIP.jsonl
+93a29de59549954ebd9d46ffd9214047  /home/duster/r1e/out/a1/FULL.jsonl
+2e1e4aea3062d0442714c54cd9d4fc91  /home/duster/r1e/out/a1/SHIP.jsonl
+--- code md5 (identical to the git tree at 9c0f1958, checked against the build host)
+16d2af3d9f5a8fdc6f98909d8bf5e2bc  a1_core.py
+4fc2793e57d07f7a8900df9b47b9ca92  a1_d1_report.py
+43e13b1d6efd9757dc95f37c812413ba  a1_hash.py
+b42d943affb78ddc368fde6e1d39578f  a1_pilot_report.py
+e41e82c81ce40513b3e40b5ed9524ac4  a1_run.py
+1508dc4d215c5156b06bc4c3a09c49e1  a1_watchdog.py
+5027928ef873f2a9835553464e172a66  make_tok_gguf.py
+c971f996d5cedd3e476a64d0fbae66b3  server_tok.py
+7653f9d643eb62f0eaffd9d6f8a320b2  test_a1_core.py
+c21c564a76a2cb444cafa776100708e6  test_a1_render.py
+dcfeca4a92087908baf8d25b6ca95c6e  test_tool_parser.py
+c0a1f6657ba08f080cecb7ab951f447e  tool_parse.py
+3baee31e54e1b89d4e65069c7f16d4a7  tool_parser/Makefile
+a97852917d39a7020fcbd403e7b264e4  tool_parser/tokenize_cli.cpp
+5c8d5485de89b6120a894fa5573f112d  tool_parser/tool_parser_cli.cpp
+d31b50571b7af65e2fa3aa2143afe6ab  r1b_core.py
+11c01a756dd5770c46703ace7eae9b89  r2_core.py
+46bf35a5e69bac3da974e477f7942144  tests/test_a1.py
+b0b324a3946f20652c3404c2558dc9c5  /home/duster/r1e/code/a1/tool_parser/build/tool_parser_cli
+c6d79d92ca3fafbc2aa568b3153c6f51  /home/duster/r1e/code/a1/tool_parser/build/tokenize_cli
+80d14862d19ef04e06bd01062917f998  /home/duster/r1e/data/a1/B0_FULL.jsonl
+10d9da8d568463073ddb3c6234986ac8  /home/duster/r1e/data/a1/tasks_all60.jsonl
+4f2f96e2db420acb3b54e987c32ab6e4  /home/duster/r1e/data/a1/trajectories.jsonl
+a7f294a5f0be5f1903214304f259f87f  /home/duster/r1e/data/a1/qwen36_template.jinja
+77d3489a35fbccc145250fa37e6c0fb0  /home/duster/r1e/data/a1/qwen3.8-tokenizer.gguf
+b8da521798ea7a0b8d656a106e981665  /home/duster/r1e/data/a1/request_ids.sha256
+--- cmd: a1_run.py --out /home/duster/r1e/out/a1 --ratio 0.10 --gate3-after 5 --early-at 20 --control-n 8 (no --stage2)
+               total        used        free      shared  buff/cache   available
+Mem:          128089       65832       32295           0       31089       62257
+Swap:           8191         465        7726
+--- resume (try2_swapkill) 2026-10-15T16:10:31+00:00: the previous attempt was stopped by the watchdog; rows resume per trajectory and arm
+code md5 identical to the launch list: yes (/home/duster/r1e/out/a1/md5_resume_try2_swapkill.txt)
+   582 /home/duster/r1e/out/a1/FULL.jsonl
+   310 /home/duster/r1e/out/a1/SHIP.jsonl
+    36 /home/duster/r1e/out/a1/progress.jsonl
+   928 total
+               total        used        free      shared  buff/cache   available
+Mem:          128089       66582       62091           0         500       61507
+Swap:           8191         466        7725

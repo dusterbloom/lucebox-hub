@@ -1,0 +1,40 @@
+{
+ "stopped": {
+  "reason": "early-FAIL",
+  "detail": {
+   "ci": {
+    "mean": 0.11275964391691394,
+    "lo": 0.06109276425576919,
+    "hi": 0.16719284364767945,
+    "n_q": 337,
+    "n_art": 20,
+    "level": 99.9
+   },
+   "verdict": "FAIL",
+   "trajectories": 20,
+   "bar": 0.756
+  }
+ },
+ "trajectories": [
+  "chatcmpl-40fe82c8835837b664f4a16458f9f17c",
+  "chatcmpl-905125c7406f0c2f85fa42f3bef6b39d",
+  "chatcmpl-9ad087ddb4caf2f06e6685fd22767e8f",
+  "chatcmpl-31effae850e2879cd435597bd5b2f250",
+  "chatcmpl-8a9e6a7c8230d26407b5072b93b0bbdc",
+  "chatcmpl-2a396fbe44469a27e135f99fb02cfcfc",
+  "chatcmpl-08db2cebdcf5a106502475fba3d0c14f",
+  "chatcmpl-f9b0f6072abe7d7d31ee12992f5fd055",
+  "chatcmpl-00bb5a89c1dd98ea404d3af76801a5ac",
+  "chatcmpl-6cdaf687a4f15c3c1ddfc0c93a9a0504",
+  "chatcmpl-61d280ef06a0b69b89a1c3bd0077a092",
+  "chatcmpl-45bf50980276d93d5e1aaff37fa8af14",
+  "chatcmpl-ec4d53753e73d33a9b36e8ed716cf4f1",
+  "chatcmpl-d005386703d3d2289b1e28e619653264",
+  "chatcmpl-7c1d51ce245430c3ceedf32ab64e0d5c",
+  "chatcmpl-79155ee6f1526d48f9b32c56ea2fa02a",
+  "chatcmpl-3d900cff00936bc2a482be4a4cb6a899",
+  "chatcmpl-2c8e3d0382b084c9507b86f28ac46ba2",
+  "chatcmpl-080e1c822da5419ca38e02718984f360",
+  "chatcmpl-ebcd0a793008fe097b75912da36d1800"
+ ]
+}
