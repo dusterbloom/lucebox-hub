@@ -36,6 +36,7 @@
 #include "placement/draft_residency.h"
 #include "placement/device_select.h"
 #include "kvflash_pager.h"
+#include "common/am_compact.h"
 #include "kv_quant.h"
 
 #include <filesystem>
@@ -288,6 +289,11 @@ static void print_usage(const char * prog) {
         "  --kvflash <tokens|auto>       Enable bounded KV residency\n"
         "  --kvflash-policy <policy>     drafter, lru, or qk (default: drafter)\n"
         "  --kvflash-tau <N>             Drafter-policy reselect interval (default: 64)\n"
+        "  --kvflash-am-ratio <r>        Compact each sealed 640-token block to 64 rows at prefill\n"
+        "                                (Attention Matching); only 0.10 is supported. Off by default;\n"
+        "                                needs --kvflash with a pool below --max-ctx\n"
+        "  --kvflash-am-prefix-blocks <P> Keep the first P blocks of a prompt exact (default: 0)\n"
+        "  --kvflash-am-recent-blocks <W> Keep the last W sealed blocks of a prompt exact (default: 0)\n"
         "\n"
         "PFlash (speculative prefill compression):\n"
         "  --prefill-compression off|auto|always  (default: off)\n"
@@ -422,6 +428,7 @@ struct ModelOptions {
     // Keep process-wide options inert until the selected model is loaded.
     std::string adaptive_experts_tau;
     std::string kvflash_pool, kvflash_policy, kvflash_tau;
+    std::string kvflash_am_ratio, kvflash_am_prefix, kvflash_am_recent;
 
     // Track whether the operator passed the legacy --max-tokens alias.
     // When set and --default-max-tokens is NOT also passed, --max-tokens
@@ -895,6 +902,23 @@ static int parse_model_options(int argc, char ** argv, ModelOptions & model,
                 return 1;
             }
             model.kvflash_tau = argv[i];
+        } else if ((std::strcmp(argv[i], "--kvflash-am-ratio") == 0 ||
+                    std::strcmp(argv[i], "--kvflash-am-prefix-blocks") == 0 ||
+                    std::strcmp(argv[i], "--kvflash-am-recent-blocks") == 0) && i + 1 < argc) {
+            const std::string opt = argv[i];
+            const char * val = argv[++i];
+            std::string am_err;
+            luce::am::auto_config_from_strings(
+                opt == "--kvflash-am-ratio" ? val : nullptr,
+                opt == "--kvflash-am-prefix-blocks" ? val : nullptr,
+                opt == "--kvflash-am-recent-blocks" ? val : nullptr, &am_err);
+            if (!am_err.empty()) {
+                std::fprintf(stderr, "%s\n", am_err.c_str());
+                return 1;
+            }
+            (opt == "--kvflash-am-ratio" ? model.kvflash_am_ratio
+             : opt == "--kvflash-am-prefix-blocks" ? model.kvflash_am_prefix
+                                                    : model.kvflash_am_recent) = val;
         } else if (std::strcmp(argv[i], "--spark") == 0) {
             spark_autotune = true;
         } else if (std::strcmp(argv[i], "--spark-slots") == 0 && i + 1 < argc) {
@@ -1367,6 +1391,12 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
         set_environment_variable("LUCE_KVFLASH_POLICY", model.kvflash_policy.c_str(), true);
     if (!model.kvflash_tau.empty())
         set_environment_variable("LUCE_KVFLASH_TAU", model.kvflash_tau.c_str(), true);
+    if (!model.kvflash_am_ratio.empty())
+        set_environment_variable("LUCE_KVFLASH_AM_RATIO", model.kvflash_am_ratio.c_str(), true);
+    if (!model.kvflash_am_prefix.empty())
+        set_environment_variable("LUCE_KVFLASH_AM_PREFIX_BLOCKS", model.kvflash_am_prefix.c_str(), true);
+    if (!model.kvflash_am_recent.empty())
+        set_environment_variable("LUCE_KVFLASH_AM_RECENT_BLOCKS", model.kvflash_am_recent.c_str(), true);
     // KVFlash can use this drafter even when prefill compression is off.
     if (!model.sconfig.pflash_drafter_path.empty())
         set_environment_variable("LUCE_KVFLASH_DRAFTER", model.sconfig.pflash_drafter_path.c_str(), true);

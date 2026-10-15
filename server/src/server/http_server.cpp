@@ -1789,6 +1789,14 @@ const std::vector<int32_t> & ppp_tool_prefix_source(
 // Sampler parameters. When the request omits a value, fall back to the
 // model card's sampling defaults (spec §3.3); when the card doesn't
 // supply one either, use the hard-coded default.
+int parse_am_exact_tail(const json & body) {
+    if (!body.is_object() || !body.contains("kvflash_am_exact_tail")) return -1;
+    const json & v = body["kvflash_am_exact_tail"];
+    if (!v.is_number_integer()) return -1;
+    const long long n = v.get<long long>();
+    return n < 0 || n > 100000000 ? -1 : (int)n;
+}
+
 SamplerCfg parse_request_sampler(const json & body,
                                  const SamplingDefaults & defaults) {
     SamplerCfg sampler;
@@ -3754,6 +3762,7 @@ bool HttpServer::parse_common_request_fields(
     }
 
     req.sampler = parse_request_sampler(body, config_.sampler_defaults);
+    req.am_exact_tail = parse_am_exact_tail(body);
     if (body.contains("tools")) req.tools = body["tools"];
     // Tool choice constraint for hint generation.
     if (body.contains("tool_choice")) req.tool_choice = body["tool_choice"];
@@ -9731,6 +9740,7 @@ void HttpServer::prepare_generation_inputs(
     // the last image).
     inputs.request.n_gen = inputs.generation_cap;
     inputs.request.sampler = req.sampler;
+    inputs.request.am_exact_tail = req.am_exact_tail;
     inputs.request.do_sample = req.sampler.needs_logit_processing();
     // A grammar masks one position at a time: no speculative blocks.
     inputs.request.force_ar_decode = req.sampler.constraint != nullptr;

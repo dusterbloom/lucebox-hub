@@ -16,6 +16,9 @@
 #include "CppUnitTestFramework.hpp"
 #include "common/am_compact.h"
 #include "am_fixture.h"
+#include "common/kvflash_pager.h"
+#include "server/http_server.h"
+#include "ggml-alloc.h"
 
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
@@ -396,4 +399,65 @@ TEST_CASE(AmCompactFixture, fixture_blocks_select_and_fit_within_the_m4_and_m5_b
     }
     ggml_backend_free(be);
     REQUIRE(cases > 0);
+}
+
+// ---- 6. request field and pager layout the engine relies on -----------------------------------
+
+TEST_CASE(AmCompactFixture, the_exact_tail_request_field_parses_to_a_non_negative_int_or_minus_one) {
+    using luce::common::parse_am_exact_tail;
+    CHECK(parse_am_exact_tail(nlohmann::json::parse(R"({})")) == -1);
+    CHECK(parse_am_exact_tail(nlohmann::json::parse(R"({"kvflash_am_exact_tail": 123})")) == 123);
+    CHECK(parse_am_exact_tail(nlohmann::json::parse(R"({"kvflash_am_exact_tail": 0})")) == 0);
+    CHECK(parse_am_exact_tail(nlohmann::json::parse(R"({"kvflash_am_exact_tail": -5})")) == -1);
+    CHECK(parse_am_exact_tail(nlohmann::json::parse(R"({"kvflash_am_exact_tail": "9"})")) == -1);
+    CHECK(parse_am_exact_tail(nlohmann::json::parse(R"({"kvflash_am_exact_tail": 1.5})")) == -1);
+    CHECK(parse_am_exact_tail(nlohmann::json::parse(R"([1,2])")) == -1);
+}
+
+// A compacted 640-token block is one pager chunk: its 64 rows sit in the head chunk's block, the
+// nine covered chunks own no block, and every row's mask position lies inside the block (fill_slot_pos
+// is mask metadata; the keys carry their own RoPE, and the Qwen3.5 masks do not read it).
+TEST_CASE(AmCompactFixture, a_compacted_block_is_its_head_chunk_with_the_covered_chunks_unmapped) {
+    constexpr int kChunk = 64, kPool = 1024, kHeads = 2, kD = 4, kLayers = 2;
+    ggml_backend_t be = ggml_backend_cpu_init();
+    ggml_init_params ip{};
+    ip.mem_size = 16 * ggml_tensor_overhead();
+    ip.no_alloc = true;
+    ggml_context * ctx = ggml_init(ip);
+    std::vector<ggml_tensor *> k, v;
+    for (int l = 0; l < kLayers; l++) {
+        k.push_back(ggml_new_tensor_3d(ctx, GGML_TYPE_F16, kD, kPool, kHeads));
+        v.push_back(ggml_new_tensor_3d(ctx, GGML_TYPE_F16, kD, kPool, kHeads));
+    }
+    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, be);
+    luce::common::KvFlashConfig cfg;
+    cfg.pool_tokens = kPool;
+    luce::common::KvFlashPager p;
+    REQUIRE(p.attach(cfg, k, v));
+    REQUIRE(p.alloc_span(0, 12 * kChunk));
+    const int c0 = 0, span = kAutoBlockTokens / kChunk;
+    REQUIRE(p.mark_compacted(c0, span, std::vector<float>((size_t)kLayers * kHeads * kChunk, 0.0f)));
+
+    CHECK(p.is_compacted(c0));
+    CHECK(p.block_of(c0) >= 0);
+    for (int c = c0 + 1; c < c0 + span; c++) {
+        CHECK(p.is_covered(c));
+        CHECK(p.block_of(c) == -1);
+    }
+    CHECK(p.block_of(span) >= 0);   // the chunk after the block is exact and resident
+    std::vector<int32_t> pos(kPool);
+    p.fill_slot_pos(pos.data());
+    const int blk = p.block_of(c0);
+    int prev = -1;
+    for (int i = 0; i < kChunk; i++) {
+        const int32_t x = pos[(size_t)blk * kChunk + i];
+        CHECK(x >= c0 * kChunk);
+        CHECK(x < (c0 + span) * kChunk);
+        CHECK(x > prev);
+        prev = x;
+    }
+    p.synchronize_paging();
+    if (buf) ggml_backend_buffer_free(buf);
+    ggml_free(ctx);
+    ggml_backend_free(be);
 }

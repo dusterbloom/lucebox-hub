@@ -793,6 +793,7 @@ struct ParsedRequest {
     int                       max_output   = 4096;
     bool                      stream       = true;
     SamplerCfg                sampler;
+    int                       am_exact_tail = -1;   // see parse_am_exact_tail
     std::string               model;
     // Tool definitions (stored as JSON for response formatting)
     json                      tools;
@@ -883,6 +884,11 @@ PrefixCacheBudget resolve_prefix_cache_budget(const ServerConfig & config,
 // Parse request sampler fields, applying model-card defaults where present.
 SamplerCfg parse_request_sampler(const json & body,
                                  const SamplingDefaults & defaults);
+
+// KVFlash AM auto-compaction: the request's `kvflash_am_exact_tail` (tokens at
+// the end of the prompt that stay exact), or -1 when absent, not an integer,
+// or negative (the server default applies).
+int parse_am_exact_tail(const json & body);
 
 // Overlay the model card's no-thinking sampler defaults onto an
 // already-parsed `sampler`, for any field the request body did not

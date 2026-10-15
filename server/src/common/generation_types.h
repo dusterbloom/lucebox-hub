@@ -47,6 +47,10 @@ struct GenerateRequest {
     BudgetHook budget_hook;
     // Set only for the single autoregressive retry after empty spec output.
     bool force_ar_decode = false;
+    // KVFlash AM auto-compaction (--kvflash-am-ratio): tokens at the END of this
+    // prompt that stay exact (a block touching them is not compacted). -1: the
+    // server default (LUCE_KVFLASH_AM_TAIL). Ignored when compaction is off.
+    int am_exact_tail = -1;
 };
 
 // Backend-independent failure categories. generate_error_code() is their

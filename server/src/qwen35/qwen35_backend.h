@@ -31,6 +31,7 @@
 #include "kvflash_pager.h"         // bounded KV residency pool
 #include "kvflash_scorer.h"        // chunk-relevance policy interface
 #include "kvflash_qk.h"            // target-QK scorer (pooled keys + query)
+#include "common/am_compact.h"     // automatic AM compaction (KVFlash 2.0b M7)
 
 #include "ggml.h"
 #include "ggml-backend.h"
@@ -283,6 +284,28 @@ protected:
     // sealed during prefill (LUCE_KVFLASH_AM_CAPTURE=1, off by default).
     bool kvflash_am_capture_ = false;
     virtual void kvflash_am_seal_block(int block, int slot);
+    // KVFlash 2.0b M7: automatic compaction at the seal of a 640-token block
+    // (--kvflash-am-ratio). Off unless configured and supported; then the
+    // graph, masks and outputs are today's.
+    luce::am::AutoConfig am_cfg_;
+    bool   kvflash_am_auto_ = false;     // resolved in init()
+    int    am_tail_default_ = 0;         // LUCE_KVFLASH_AM_TAIL
+    int    am_request_tail_ = -1;        // GenerateRequest::am_exact_tail of the running request
+    int    am_prompt_len_ = 0;           // prompt of the running prefill
+    int    am_tail_ = 0;                 // exact-tail tokens of the running prefill
+    bool   am_fatal_ = false;            // a compaction published half-way: abort the prefill
+    struct AmStats {
+        int sealed = 0, compacted = 0, skipped = 0, failed = 0;
+        double ms_select = 0, ms_fit = 0, ms_io = 0, ms_total = 0;
+        std::vector<int> nan_layers;
+    } am_stats_;
+    std::unique_ptr<luce_am::GramAccumulator> am_acc_;
+    ggml_context *        am_ctx_ = nullptr;   // K / V F32 scratch of one layer's block
+    ggml_backend_buffer_t am_buf_ = nullptr;
+    ggml_tensor *         am_k_ = nullptr;
+    ggml_tensor *         am_v_ = nullptr;
+    bool kvflash_am_scratch_();
+    void kvflash_am_end_prefill();
     // Pool keys for every chunk sealed before `committed` not pooled yet.
     void kvflash_qk_pool_to(int committed);
     // Rebuild pager mapping after (re)prefill: positions [0, committed)
