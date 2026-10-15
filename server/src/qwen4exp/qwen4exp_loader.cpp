@@ -17,6 +17,7 @@
 #include "gguf.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
@@ -33,6 +34,7 @@
 
 #if !defined(_WIN32)
 #include <fcntl.h>
+#include <strings.h>
 #include <unistd.h>
 #endif
 
@@ -464,6 +466,10 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
         if (out.router_ctx) ggml_free(out.router_ctx);
         out.router_buf = nullptr;
         out.router_ctx = nullptr;
+        if (out.decode_req_buf) ggml_backend_buffer_free(out.decode_req_buf);
+        if (out.decode_req_ctx) ggml_free(out.decode_req_ctx);
+        out.decode_req_buf = nullptr;
+        out.decode_req_ctx = nullptr;
         for (Qwen4ExpLayer & layer : out.layers) layer.ffn_gate_inp_bf16 = nullptr;
         out.embedder.tok_embd_owned.clear();
         out.embedder.tok_embd_bytes = nullptr;
@@ -930,6 +936,80 @@ bool load_qwen4exp_gguf(const std::string & path, ggml_backend_t backend,
         }
     }
 
+    // Decode-only requantized copies of the dense trunk (LUCE_DECODE_REQ=<type>, lossy, opt-in): the T == 1
+    // graph reads them instead of the Q8_0 tensors, prefill does not. Requantized from the mmapped Q8_0 bytes on
+    // host threads, one upload per tensor.
+    const ggml_type dec_type = qwen4exp_decode_req_type(std::getenv("LUCE_DECODE_REQ"));
+    if (const char * value = std::getenv("LUCE_DECODE_REQ");
+        value && std::strcmp(value, "0") != 0 && *value && dec_type == GGML_TYPE_COUNT) {
+        std::fprintf(stderr, "[qwen4exp] LUCE_DECODE_REQ=%s: unknown type, decode copies off\n", value);
+    }
+    if (dec_type != GGML_TYPE_COUNT && !reference) {
+        struct DecSource { ggml_tensor ** slot; ggml_tensor * src; const uint8_t * data; };
+        std::vector<DecSource> sources;
+        for (Qwen4ExpLayer & layer : out.layers) {
+            const std::pair<ggml_tensor *, ggml_tensor **> pairs[] = {
+                {layer.attn_qkv, &layer.attn_qkv_dec}, {layer.attn_gate, &layer.attn_gate_dec},
+                {layer.ssm_out, &layer.ssm_out_dec}, {layer.wq, &layer.wq_dec}, {layer.wk, &layer.wk_dec},
+                {layer.wv, &layer.wv_dec}, {layer.wo, &layer.wo_dec},
+            };
+            for (const auto & [src, slot] : pairs) {
+                if (!src || src->type != GGML_TYPE_Q8_0 || src->ne[0] % ggml_blck_size(dec_type) != 0) continue;
+                for (const TensorAllocation & allocation : allocations) {
+                    if (allocation.tensor != src) continue;
+                    sources.push_back({slot, src,
+                        static_cast<const uint8_t *>(mmaps[allocation.shard].data()) + allocation.file_offset});
+                }
+            }
+        }
+        ggml_init_params dp{};
+        dp.mem_size = (sources.size() + 1) * ggml_tensor_overhead() + 1024;
+        dp.no_alloc = true;
+        out.decode_req_ctx = sources.empty() ? nullptr : ggml_init(dp);
+        size_t bytes = 0, bytes_q8 = 0;
+        if (out.decode_req_ctx) {
+            for (const DecSource & s : sources) {
+                *s.slot = ggml_new_tensor_2d(out.decode_req_ctx, dec_type, s.src->ne[0], s.src->ne[1]);
+                ggml_format_name(*s.slot, "%s.dec", s.src->name);
+                bytes += ggml_nbytes(*s.slot);
+                bytes_q8 += ggml_nbytes(s.src);
+            }
+            out.decode_req_buf = ggml_backend_alloc_ctx_tensors(out.decode_req_ctx, backend);
+        }
+        if (out.decode_req_buf) {
+            ggml_backend_buffer_set_usage(out.decode_req_buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+            std::vector<std::vector<uint8_t>> converted(sources.size());
+            std::atomic<size_t> next_index{0};
+            std::vector<std::thread> workers;
+            const unsigned n_workers = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+            for (unsigned t = 0; t < n_workers; ++t) {
+                workers.emplace_back([&] {
+                    for (size_t i; (i = next_index.fetch_add(1)) < sources.size();) {
+                        converted[i].resize(ggml_nbytes(*sources[i].slot));
+                        qwen4exp_requant_q8_0(dec_type, sources[i].data, sources[i].src->ne[0],
+                                              sources[i].src->ne[1], converted[i].data());
+                    }
+                });
+            }
+            for (std::thread & worker : workers) worker.join();
+            for (size_t i = 0; i < sources.size(); ++i) {
+                ggml_backend_tensor_set(*sources[i].slot, converted[i].data(), 0, converted[i].size());
+            }
+            std::fprintf(stderr,
+                "[qwen4exp] decode %s copies: %zu tensors, %.2f GiB (Q8_0 %.2f GiB, -%.3f GB per decode token)\n",
+                ggml_type_name(dec_type), sources.size(), bytes / (1024.0 * 1024.0 * 1024.0),
+                bytes_q8 / (1024.0 * 1024.0 * 1024.0), (bytes_q8 - bytes) / 1e9);
+        } else {
+            for (Qwen4ExpLayer & layer : out.layers) {
+                layer.attn_qkv_dec = layer.attn_gate_dec = layer.ssm_out_dec = nullptr;
+                layer.wq_dec = layer.wk_dec = layer.wv_dec = layer.wo_dec = nullptr;
+            }
+            if (out.decode_req_ctx) ggml_free(out.decode_req_ctx);
+            out.decode_req_ctx = nullptr;
+            std::fprintf(stderr, "[qwen4exp] decode %s copies: allocation failed, off\n", ggml_type_name(dec_type));
+        }
+    }
+
     size_t token_shard = 0;
     int64_t token_tid = -1;
     for (size_t s = 0; s < shards.size(); ++s) {
@@ -1083,6 +1163,10 @@ void free_qwen4exp_weights(Qwen4ExpWeights & w) {
     if (w.router_ctx) ggml_free(w.router_ctx);
     w.router_buf = nullptr;
     w.router_ctx = nullptr;
+    if (w.decode_req_buf) ggml_backend_buffer_free(w.decode_req_buf);
+    if (w.decode_req_ctx) ggml_free(w.decode_req_ctx);
+    w.decode_req_buf = nullptr;
+    w.decode_req_ctx = nullptr;
     if (w.buf) {
         ggml_backend_buffer_free(w.buf);
         w.buf = nullptr;
@@ -1145,6 +1229,31 @@ const std::vector<std::pair<const char *, const char *>> & qwen4exp_exact_stack_
         {"LUCE_QWEN_GDN_AB_EXACT", "1"},      {"LUCE_GPU_ARGMAX", "1"},
     };
     return knobs;
+}
+
+ggml_type qwen4exp_decode_req_type(const char * value) {
+    if (!value || !*value || std::strcmp(value, "0") == 0) return GGML_TYPE_COUNT;
+    for (ggml_type t : { GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_Q4_K,
+                         GGML_TYPE_Q5_K, GGML_TYPE_Q6_K }) {
+        if (strcasecmp(value, ggml_type_name(t)) == 0) return t;
+    }
+    return GGML_TYPE_COUNT;
+}
+
+bool qwen4exp_requant_q8_0(ggml_type dst_type, const void * q8, int64_t ne0, int64_t ne1, void * dst) {
+    if (ne0 <= 0 || ne1 < 0 || ne0 % ggml_blck_size(dst_type) != 0 || ne0 % ggml_blck_size(GGML_TYPE_Q8_0) != 0) {
+        return false;
+    }
+    const ggml_type_traits * q8_traits = ggml_get_type_traits(GGML_TYPE_Q8_0);
+    const size_t q8_row = ggml_row_size(GGML_TYPE_Q8_0, ne0), dst_row = ggml_row_size(dst_type, ne0);
+    const int64_t rows_per_chunk = std::max<int64_t>(1, (4 << 20) / (ne0 * (int64_t) sizeof(float)));
+    std::vector<float> f32((size_t) rows_per_chunk * ne0);
+    for (int64_t r0 = 0; r0 < ne1; r0 += rows_per_chunk) {
+        const int64_t n = std::min(rows_per_chunk, ne1 - r0);
+        q8_traits->to_float(static_cast<const uint8_t *>(q8) + r0 * q8_row, f32.data(), n * ne0);
+        ggml_quantize_chunk(dst_type, f32.data(), static_cast<uint8_t *>(dst) + r0 * dst_row, 0, n, ne0, nullptr);
+    }
+    return true;
 }
 
 int apply_qwen4exp_exact_stack_env(bool gfx1151, bool reference, const std::string & mismatch) {

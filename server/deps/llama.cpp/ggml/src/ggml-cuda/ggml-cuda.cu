@@ -5923,7 +5923,7 @@ static bool ggml_cuda_producer_q8_enabled(ggml_backend_cuda_context & ctx) {
 static block_q8_1 * ggml_cuda_producer_q8_reserve(
         ggml_backend_cuda_context & ctx, const ggml_tensor * consumer) {
     if (!consumer || consumer->op != GGML_OP_MUL_MAT || !consumer->src[0] || !consumer->src[1] ||
-        (consumer->src[0]->type != GGML_TYPE_Q8_0 && consumer->src[0]->type != GGML_TYPE_Q6_K) ||
+        !ggml_cuda_dense_decode_weight_ok(consumer->src[0]->type) ||
         consumer->src[1]->type != GGML_TYPE_F32 ||
         consumer->type != GGML_TYPE_F32 || !consumer->src[1]->buffer ||
         !ggml_is_contiguous(consumer->src[1])) return nullptr;
@@ -5969,7 +5969,7 @@ static bool ggml_cuda_gdn_q8_match(const ggml_cgraph * cgraph, int i, ggml_cuda_
     if (!gamma || sig->src[0] != zr || ggml_get_unary_op(sig) != GGML_UNARY_OP_SIGMOID ||
         !((out->src[0] == mul && out->src[1] == sig) || (out->src[1] == mul && out->src[0] == sig)) ||
         flat->src[0] != out || mm->op != GGML_OP_MUL_MAT || !mm->src[0] || mm->src[1] != flat ||
-        (mm->src[0]->type != GGML_TYPE_Q8_0 && mm->src[0]->type != GGML_TYPE_Q6_K)) return false;
+        !ggml_cuda_dense_decode_weight_ok(mm->src[0]->type)) return false;
     const ggml_tensor * x = norm->src[0];
     if (!x || x->type != GGML_TYPE_F32 || gamma->type != GGML_TYPE_F32 || zr->type != GGML_TYPE_F32 ||
         norm->type != GGML_TYPE_F32 || mul->type != GGML_TYPE_F32 || sig->type != GGML_TYPE_F32 ||
@@ -6367,9 +6367,7 @@ static bool ggml_cuda_hc_upmix_row8_pair_quick_valid(
         ggml_nrows(pair.memo_src1) == 1 && ggml_is_contiguous(pair.memo_src1) &&
         pair.memo_src1->data == pair.mixed->data && pair.memo_src1->buffer &&
         pair.scale == 0.25f && pair.bias == 0.0f &&
-        (pair.memo_src0_type == GGML_TYPE_Q8_0 ||
-         pair.memo_src0_type == GGML_TYPE_Q4_K || pair.memo_src0_type == GGML_TYPE_Q5_K ||
-         pair.memo_src0_type == GGML_TYPE_Q6_K);
+        ggml_cuda_dense_decode_weight_ok(pair.memo_src0_type);   // direct dense consumer or the routed Q4_K/Q5_K
     if (!shape_ok || !weight->data || !lo->data || !pair.up->data ||
         !pair.xn->data || !pair.mixed->data) {
         return false;
@@ -6407,9 +6405,10 @@ static const ggml_tensor * ggml_cuda_hc_upmix_row8_consumer(
         // Direct (non-expert) consumer: historically Q8_0-only dense weight.
         // The upmix kernel itself never reads this weight (see call site at
         // ggml_cuda_mmvq_set_hc_upmix_row8, which only takes xn/mixed/scale/bias),
-        // so this is purely an aliasing/handoff sanity check -- safe to widen to
-        // any dense type this consumer can legitimately be (Q8_0 or Q6_K).
-        if (direct && (wt == GGML_TYPE_Q8_0 || wt == GGML_TYPE_Q6_K) && !q8) {
+        // so this is purely an aliasing/handoff sanity check -- widened to every
+        // dense type this consumer can legitimately be (the GGUF's Q8_0 / Q6_K and
+        // the LUCE_DECODE_REQ copies).
+        if (direct && ggml_cuda_dense_decode_weight_ok(wt) && !q8) {
             q8 = src1;
             weight_type = wt;
         }

@@ -88,6 +88,16 @@ struct Qwen4ExpLayer {
     ggml_tensor * ffn_up_shexp        = nullptr;
     ggml_tensor * ffn_down_shexp      = nullptr;
 
+    // Decode-only requantized copies of the dense trunk (loader, LUCE_DECODE_REQ=<type>): T == 1 reads the
+    // narrower copy, every other T the GGUF tensor. Null when off. Lossy.
+    ggml_tensor * attn_qkv_dec  = nullptr;
+    ggml_tensor * attn_gate_dec = nullptr;
+    ggml_tensor * ssm_out_dec   = nullptr;
+    ggml_tensor * wq_dec        = nullptr;
+    ggml_tensor * wk_dec        = nullptr;
+    ggml_tensor * wv_dec        = nullptr;
+    ggml_tensor * wo_dec        = nullptr;
+
     bool is_full_attention = false;
     bool is_ple            = false;
 };
@@ -137,6 +147,8 @@ struct Qwen4ExpWeights {
     ggml_backend_buffer_t buf     = nullptr;
     ggml_context *        router_ctx = nullptr;
     ggml_backend_buffer_t router_buf = nullptr;
+    ggml_context *        decode_req_ctx = nullptr;   // LUCE_DECODE_REQ copies (see Qwen4ExpLayer::*_dec)
+    ggml_backend_buffer_t decode_req_buf = nullptr;
 
     CpuEmbedder           embedder;
 
@@ -276,5 +288,22 @@ const std::vector<std::pair<const char *, const char *>> & qwen4exp_exact_stack_
 // Skipped, returning -1, off gfx1151, in reference mode, on a profile mismatch,
 // or with LUCE_QWEN_EXACT_STACK=0. Otherwise returns the number of knobs set.
 int apply_qwen4exp_exact_stack_env(bool gfx1151, bool reference, const std::string & mismatch);
+
+// Decode-only requantized copies of the dense trunk (LUCE_DECODE_REQ): the GGUF's
+// Q8_0 attn_qkv / attn_gate / ssm_out (36 GDN layers) and attn_q / attn_k /
+// attn_v / attn_output (12 attention layers) are requantized at load to a
+// narrower type that the T == 1 graph reads instead (gufo's GUFO_DECODE_Q5
+// trick: those tensors are 2.84 GB of the ~6.3 GB a decode token streams).
+// Prefill keeps the Q8_0 tensors. Lossy, opt-in; unset / "0" = exact.
+
+// Pure: the ggml type named by the env value (q5_1, q5_0, q5_k, q6_k, q4_k, ...),
+// GGML_TYPE_COUNT when unset, "0" or unknown.
+ggml_type qwen4exp_decode_req_type(const char * value);
+
+// Pure: requantize a contiguous Q8_0 [ne0, ne1] tensor into `dst` (ggml row
+// layout of dst_type, ggml_row_size(dst_type, ne0) * ne1 bytes) through ggml's
+// reference quantizer, dequantizing Q8_0 -> F32 first. False when ne0 is not a
+// multiple of the destination block size.
+bool qwen4exp_requant_q8_0(ggml_type dst_type, const void * q8, int64_t ne0, int64_t ne1, void * dst);
 
 }  // namespace luce::common

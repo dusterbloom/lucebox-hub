@@ -165,6 +165,9 @@ ggml_tensor * mm(ggml_context * c, ggml_tensor * w, ggml_tensor * x, float s = 1
     return s == 1.0f ? y : ggml_scale(c, y, s);
 }
 
+// The decode-only requantized copy (LUCE_DECODE_REQ, loader) for the single-token graph, the GGUF tensor otherwise.
+ggml_tensor * dec(ggml_tensor * w, ggml_tensor * copy, int64_t T) { return T == 1 && copy ? copy : w; }
+
 // One op: the hc-combine-norm matcher requires GGML_OP_REPEAT, not a concat chain.
 ggml_tensor * repeat_dim1(ggml_context * c, ggml_tensor * x, int64_t hc) {
     return ggml_repeat_4d(c, x, x->ne[0], hc, x->ne[2], x->ne[3]);
@@ -478,8 +481,8 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
     const int64_t conv_channels = 2 * Hk * D + d_in;   // 10240
     const float   eps    = w.rms_eps;
 
-    ggml_tensor * qkv = mm(c, L.attn_qkv, cur);        // [conv_channels, T]
-    ggml_tensor * z   = mm(c, L.attn_gate, cur);       // [d_in, T]
+    ggml_tensor * qkv = mm(c, dec(L.attn_qkv, L.attn_qkv_dec, T), cur);     // [conv_channels, T]
+    ggml_tensor * z   = mm(c, dec(L.attn_gate, L.attn_gate_dec, T), cur);   // [d_in, T]
 
     ggml_tensor * beta = ggml_sigmoid(c,
         ggml_reshape_4d(c, mm(c, L.ssm_beta, cur), 1, Hv, T, 1));
@@ -634,7 +637,7 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
         gdn_tail_debug_note(true, T);
         ggml_tensor * out = ggml_gdn_tail(c, attn, L.ssm_norm, ggml_reshape_4d(c, z, D, Hv, T, 1), eps);
         ggml_tensor * final = ggml_reshape_3d(c, out, d_in, T, 1);
-        ggml_tensor * lin_raw = mm(c, L.ssm_out, final);
+        ggml_tensor * lin_raw = mm(c, dec(L.ssm_out, L.ssm_out_dec, T), final);
         return ggml_reshape_2d(c, lin_raw, w.n_embd, T);
     }
     gdn_tail_debug_note(false, T);
@@ -648,7 +651,7 @@ ggml_tensor * build_linear_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor 
 
     ggml_tensor * final = ggml_reshape_3d(c, out, d_in, T, 1);
     // lin is a reshape view; dump the contiguous GEMM output so the buffer is output-protected.
-    ggml_tensor * lin_raw = mm(c, L.ssm_out, final);
+    ggml_tensor * lin_raw = mm(c, dec(L.ssm_out, L.ssm_out_dec, T), final);
     if (dump_mark) {
         char dlab[32];
         std::snprintf(dlab, sizeof dlab, "L%02d.lin", il);
@@ -945,7 +948,7 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
     }
 
     // wq holds [q | gate] interleaved per head
-    ggml_tensor * qfull = mm(c, L.wq, cur);   // [2*D*Hq, T]
+    ggml_tensor * qfull = mm(c, dec(L.wq, L.wq_dec, T), cur);   // [2*D*Hq, T]
     const size_t  qe    = ggml_element_size(qfull);
     ggml_tensor * Q = ggml_rms_norm(c,
         ggml_view_3d(c, qfull, D, Hq, T, 2 * D * qe, 2 * D * Hq * qe, 0), eps);
@@ -954,10 +957,10 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
         ggml_view_3d(c, qfull, D, Hq, T, 2 * D * qe, 2 * D * Hq * qe, D * qe), D * Hq, T);
 
     ggml_tensor * K = ggml_rms_norm(c,
-        ggml_reshape_3d(c, mm(c, L.wk, cur), D, Hk, T), eps);
+        ggml_reshape_3d(c, mm(c, dec(L.wk, L.wk_dec, T), cur), D, Hk, T), eps);
     K = ggml_mul(c, K, L.k_norm);
     // V is a view; dump the contiguous pre-reshape GEMM so the buffer is output-protected.
-    ggml_tensor * Vraw = mm(c, L.wv, cur);
+    ggml_tensor * Vraw = mm(c, dec(L.wv, L.wv_dec, T), cur);
     ggml_tensor * V    = ggml_reshape_3d(c, Vraw, D, Hk, T);
 
     if (dump_mark) {
@@ -1162,7 +1165,7 @@ ggml_tensor * build_full_attn(ggml_context * c, ggml_cgraph * gf, ggml_tensor * 
         std::snprintf(dlab, sizeof dlab, "L%02d.gated", il);
         dump_mark(attn2, dlab);
     }
-    return mm(c, L.wo, attn2);
+    return mm(c, dec(L.wo, L.wo_dec, T), attn2);
 }
 
 // ── Per-layer n-gram embedding (PLE) ────────────────────────────────────

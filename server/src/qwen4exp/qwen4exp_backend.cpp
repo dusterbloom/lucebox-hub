@@ -258,9 +258,55 @@ GenerateResult Qwen4ExpBackend::generate_impl(const GenerateRequest & req,
     return run(req, io, 0);
 }
 
-GenerateResult Qwen4ExpBackend::run(const GenerateRequest & req, const DaemonIO & raw_io, int restored, int restore_slot) {
+namespace {
+
+// Teacher-forced decode for the quality gates (bench/exact/decode-requant): LUCE_TEACHER_TAIL=n runs the last n
+// prompt tokens (after dropping LUCE_TEACHER_DROP chat-template tokens from the end) through the decode path, each
+// step committing the real next token instead of the sample, and LUCE_TEACHER_LOGITS=<path> appends every step's
+// logits as [int32 token][n_vocab F16] after an int32 n_vocab header. Off unless LUCE_TEACHER_TAIL is set.
+struct TeacherMode {
+    int tail = 0, drop = 0;
+    const char * logits_path = nullptr;
+    static const TeacherMode & get() {
+        static const TeacherMode mode = [] {
+            TeacherMode m;
+            if (const char * v = std::getenv("LUCE_TEACHER_TAIL")) m.tail = std::atoi(v);
+            if (const char * v = std::getenv("LUCE_TEACHER_DROP")) m.drop = std::atoi(v);
+            m.logits_path = std::getenv("LUCE_TEACHER_LOGITS");
+            return m;
+        }();
+        return mode;
+    }
+    void dump(const float * row, int32_t tok, int n_vocab) const {
+        if (!logits_path) return;
+        FILE * f = std::fopen(logits_path, "ab");
+        if (!f) return;
+        if (std::ftell(f) == 0) std::fwrite(&n_vocab, sizeof(n_vocab), 1, f);
+        std::fwrite(&tok, sizeof(tok), 1, f);
+        std::vector<ggml_fp16_t> half((size_t) n_vocab);
+        ggml_fp32_to_fp16_row(row, half.data(), n_vocab);
+        std::fwrite(half.data(), sizeof(ggml_fp16_t), half.size(), f);
+        std::fclose(f);
+    }
+};
+
+}  // namespace
+
+GenerateResult Qwen4ExpBackend::run(const GenerateRequest & req_in, const DaemonIO & raw_io, int restored, int restore_slot) {
     GenerateResult result;
     result.restored_prefix_tokens = restored;
+    const TeacherMode & teacher = TeacherMode::get();
+    std::vector<int32_t> forced;
+    GenerateRequest teach_req;
+    if (teacher.tail > 0 && (int) req_in.prompt.size() > teacher.tail + teacher.drop + 1) {
+        teach_req = req_in;
+        const auto end = teach_req.prompt.end() - teacher.drop;
+        forced.assign(end - teacher.tail, end);
+        teach_req.prompt.erase(end - teacher.tail, teach_req.prompt.end());
+        teach_req.n_gen = teacher.tail;
+        teach_req.force_ar_decode = true;
+    }
+    const GenerateRequest & req = forced.empty() ? req_in : teach_req;
     const DaemonIO io = raw_io.with_token_callback(req.on_token);
     // A failed graph may have changed recurrent state. Never publish it.
     struct Guard {
@@ -384,6 +430,11 @@ GenerateResult Qwen4ExpBackend::run(const GenerateRequest & req, const DaemonIO 
                                               : std::random_device{}());
     std::vector<int32_t> history = req.prompt;
     auto sample = [&](const float * row) {
+        if (!forced.empty()) {   // teacher forcing: log the step's logits, commit the real next token
+            const int32_t tok = forced[std::min(result.tokens.size(), forced.size() - 1)];
+            teacher.dump(row, tok, weights_.n_vocab);
+            return tok;
+        }
         return (int32_t) sample_logits(row, weights_.n_vocab, req.sampler, history, rng);
     };
     // Opt in only after GGML ARGMAX passes finite-value and tie parity gates.
@@ -437,7 +488,7 @@ GenerateResult Qwen4ExpBackend::run(const GenerateRequest & req, const DaemonIO 
         if (verify) std::copy(draft_tokens.begin(), draft_tokens.end(), in.begin() + 1);
         int32_t gpu_next = -1;
         const bool gpu_greedy = gpu_argmax_enabled && !verify && !req.sampler.needs_logit_processing() &&
-            !decode_check_;
+            !decode_check_ && forced.empty();
         const Qwen4ExpForwardResult r = qwen4exp_forward(
             backend_, weights_, cache_, in.data(), k + 1, pos, logits, mtp ? &hidden : nullptr,
             verify, false, false, false, nullptr, gpu_greedy ? &gpu_next : nullptr);

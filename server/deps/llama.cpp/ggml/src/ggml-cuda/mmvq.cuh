@@ -30,3 +30,11 @@ void ggml_cuda_op_mul_mat_vec_q(
 
 // Private graph probe: scoped stream-1 scratch, never a cross-stream memo.
 void ggml_cuda_mmvq_fixed_q8_for_capture(char * ptr, size_t bytes, bool prequantized = false);
+
+// Dense trunk weight types the qwen4exp T=1 producer / memo handoffs accept: the GGUF's Q8_0 or Q6_K and the
+// decode-only requantized copies (qwen4exp_loader.cpp, LUCE_DECODE_REQ). The handoffs carry q8_1 activations, which
+// every mmvq weight type consumes; the weight type only selects the vec_dot.
+static inline bool ggml_cuda_dense_decode_weight_ok(ggml_type t) {
+    return t == GGML_TYPE_Q8_0 || t == GGML_TYPE_Q6_K || t == GGML_TYPE_Q5_K || t == GGML_TYPE_Q4_K ||
+           t == GGML_TYPE_Q5_1 || t == GGML_TYPE_Q5_0 || t == GGML_TYPE_Q4_1 || t == GGML_TYPE_Q4_0;
+}

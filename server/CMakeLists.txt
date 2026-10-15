@@ -1301,6 +1301,13 @@ if(LUCE_TESTS)
             ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
         target_link_libraries(test_qwen4exp_exact_stack_env PRIVATE luce_common ggml ggml-cpu ${LUCE_GGML_BACKEND_TARGET})
         list(APPEND _raw_unit_test_targets test_qwen4exp_exact_stack_env)
+        # Guards the decode-only requantized copies (qwen4exp_loader.cpp, LUCE_DECODE_REQ): env parser, byte
+        # parity with ggml's reference quantizer, and the T=1 GEMV on a copy (CPU, and GPU when present).
+        add_executable(test_qwen4exp_decode_requant test/unit/test_qwen4exp_decode_requant.cpp)
+        target_include_directories(test_qwen4exp_decode_requant PRIVATE ${LUCE_SRC_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+        target_link_libraries(test_qwen4exp_decode_requant PRIVATE luce_common ggml ggml-cpu ${LUCE_GGML_BACKEND_TARGET})
+        list(APPEND _raw_unit_test_targets test_qwen4exp_decode_requant)
 
         # Guards the row-split GDN prefill recurrence (default for T>1 on
         # RDNA3.5) against the legacy tiled kernel: same attention output and
