@@ -1434,6 +1434,10 @@ if(LUCE_TESTS)
         # RMS_NORM and MUL adjacent (fusable) and hash-equal to the legacy order.
         luce_add_ggml_gpu_executable(test_hc_norm_mul_fusion test/unit/test_hc_norm_mul_fusion.cpp)
         list(APPEND _raw_unit_test_targets test_hc_norm_mul_fusion)
+        # Guards the 16-byte strided same-type CPY (cpy.cu cpy_vec16, the qwen4exp K/V cache append): byte-identical
+        # to a host reference on the vector-eligible shapes and on the shapes that fall back to the scalar kernel.
+        luce_add_ggml_gpu_executable(test_cpy_vec_parity test/unit/test_cpy_vec_parity.cpp)
+        list(APPEND _raw_unit_test_targets test_cpy_vec_parity)
         # Guards the qsa3 attention store with the sigmoid gate folded in (qsa.cu): byte-identical F16 to the plain
         # store + gate kernel. gfx1151 only.
         add_executable(test_qsa3_gate_parity test/unit/test_qsa3_gate_parity.cpp)
