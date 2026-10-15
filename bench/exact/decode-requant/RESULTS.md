@@ -153,6 +153,71 @@ tok/s, 32.46 ms). The quant arm now shows its full +10.4 % (3.31 of the 4.20 ms 
 realises 92 % of 3.80 ms) and its prefill deltas sit inside the 2-3.5 % round spread of the exact arm
 (p16384 +3.0 % is noise: the exact arm's round 1 was the slow one, 1361.8 vs 1408.0).
 
+## The last 0.9 ms: per-kernel ledger and the K-quant GEMV kernel search (negative result)
+
+Question: the q5_k:q6_k arm realises 3.31 of the 4.20 ms byte ceiling; is the rest in the Q5_K / Q6_K
+`mul_mat_vec_q` dot (the earlier reading: "k-quant mmvq costs more ALU per byte than Q5_1")?
+
+### Ledger (rocprofv3 --kernel-trace on luce_server, `prof.sh` / `ktledger.py`, 120 steady decode tokens)
+
+Both arms, same binary 938bea37, same session, profiler on (+9 % wall). Everything outside the copy GEMVs is
+identical across arms (routed gate/up 5.0-5.1 ms, hc_* 5.1 ms, GDN 1.26 ms, ...); the delta is entirely the
+156 copy GEMVs. Grid = rows x 32 work-items, one 32-lane wave per row (RDNA3.5 takes the RDNA2 mmvq table:
+nwarps 1, rows_per_block 1), VGPR 16 (Q8_0) / 24 (Q6_K) / 32 (Q5_K), no LDS, no scratch:
+
+| tensor (per token) | exact Q8_0 us/launch (GB/s) | requant us/launch (GB/s) | saved us/token |
+|---|---|---|---|
+| attn_qkv [2560 x 10240] x36 | 123.6 (225) | Q5_K 81.9 (220) | 1503 |
+| attn_gate [2560 x 6144] x36 | 74.5 (224) | Q5_K 51.6 (210) | 825 |
+| ssm_out [6144 x 2560] x36 + attn_output x12 | 76.3 (219) | Q5_K 53.6 (202) / Q6_K 62.3 (207) | 985 |
+| attn_q [2560 x 12288] x12 | 147.4 (227) | Q6_K 115.5 (223) | 383 |
+| attn_k, attn_v [2560 x 512] x24 | 8.5 (164) | Q6_K 8.9 (121) | -9 |
+| total | 12.77 ms | 9.08 ms | 3.69 ms (wall 38.47 -> 34.94, 3.53 ms) |
+
+The copies stream 1.92 GB per token; at the Q8_0 kernels' own rate (219-227 GB/s on the same shapes) they would
+take 8.6-8.7 ms, so Q8_0-parity of the k-quant kernels is worth ~0.4 ms/token, the asymptotic 231 GB/s of this
+kernel family ~0.5 ms, and the 243 GB/s streaming peak (pagebw.hip) ~1.2 ms. The k/v GEMVs are latency-bound
+(512 waves) on both arms: 0.2 ms/token together, nothing to recover there.
+
+### Micro-benchmark (`gemvbench.cpp` / `gemv.sh` / `ktsum.py`: 8 distinct copies > the 32 MiB MALL, rocprofv3 kernel medians)
+
+Reproduces the server rates to 1-2 %: Q8_0 227-230, Q5_1 231, Q5_K 211-222, Q6_K 216-227 GB/s on the decode
+shapes. Row-count sweep at K=2560: at 40960 rows Q8_0 / Q5_K / Q6_K all converge to **230.3 / 230.8 / 231.0
+GB/s** (the dot costs nothing per byte asymptotically); at 2560 rows Q8_0 221 vs Q5_K 207; at K=6144 x 10240 rows
+(195 us) Q5_K still 221 vs Q8_0 232. So the k-quant deficit is a per-launch / per-wave effect on the smaller and
+longer-K launches (2560-row ssm_out / attn_output are 2 rounds of the 1280 resident waves), not ALU per byte.
+
+Kernel search, `mmvq.cu mul_mat_vec_q_kq_dense<type, nwarps, unroll, rows_per_wave>` and
+`mul_mat_vec_q_kq_dense_pipe<type>` (gfx1151, dense, ncols_dst 1, no ids / fusion; `LUCE_KQ_DENSE=w<n>u<u>r<r>`
+or `pipe`), same lane -> block mapping and per-lane vec_dot as the generic kernel, so the one-wave variants are
+bit-identical to it (unit test `test_qwen4exp_decode_requant`, every variant on [2560|6144 x 256], split-K
+within the generic error). Median us per launch, generic first (`gemv/sweep.log` on lucebox4):
+
+| variant | q5_K 2560x10240 | q5_K 2560x6144 | q5_K 6144x2560 | q6_K 2560x12288 | q6_K 6144x2560 |
+|---|---|---|---|---|---|
+| generic (legacy) | 81.2 | 49.9 | 51.6 | 113.9 | 59.7 |
+| w1u1r1 (same shape, own kernel) | 81.0 | 49.9 | 52.1 | 112.9 | 59.4 |
+| w1u2r1 (K loop unrolled 2) | 82.5 | 51.4 | 52.6 | 112.0 | 58.0 |
+| w1u4r1 | 83.3 | 52.5 | 53.4 | 113.4 | 58.8 |
+| w1u2r2 (2 rows per wave) | 84.8 | 55.1 | 56.0 | 114.0 | 59.8 |
+| w2u1r1 (split-K, 2 waves per row) | 89.1 | 54.5 | 50.7 | 116.3 | 58.7 |
+| w2u2r1 | 90.2 | 55.9 | 53.5 | 113.8 | 57.4 |
+| w4u2r1 | 108.9 | 67.8 | 56.1 | 123.6 | 57.0 |
+| w8u1r1 | 111.2 | 64.5 | 54.4 | 138.1 | 59.3 |
+| pipe (next block's words loaded before this one's dot) | 86.6 | 52.4 | 54.1 | 114.4 | 60.1 |
+
+Nothing beats the generic kernel beyond the 1-3 % run-to-run spread: more loads in flight per wave (unroll,
+pipeline, 2 rows) is neutral to worse, split-K is worse (each wave's stream becomes strided), the only positive
+cells are Q6_K unroll 2 at +1.5-3 % (~40 us/token, under the e2e decode noise). The one-wave-per-row generic
+kernel is at the rate this memory system gives the pattern; the 0.9 ms is the per-launch ramp / tail of 156
+small GEMVs per token (5-8 us each on every type: 6.96 MB Q8_0 at 2560 rows loses 1.3 us to its own asymptote,
+4.5 MB Q5_K 2.3 us), which a vec_dot rewrite cannot touch. Below the task's 0.35 ms bar, so no e2e A/B was run
+and the variants stay opt-in (unset = generic kernel, the production path is unchanged).
+
+Follow-up if the 0.9 ms matters: cut launches, not bytes -- attn_qkv + attn_gate read the same `cur` in every
+GDN layer and could be one launch (36 ramps/token, ~0.15-0.25 ms), or run on two streams; the same applies to
+the exact arm.
+
 ## Recommendation
 
 Keep it opt-in (lossy; the user decides). If enabled, `LUCE_DECODE_REQ=q5_k LUCE_DECODE_REQ_ATTN=q6_k`:
