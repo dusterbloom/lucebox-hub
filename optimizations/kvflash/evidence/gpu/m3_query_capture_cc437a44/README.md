@@ -1,5 +1,7 @@
 # KVFlash 2.0b M3, query capture during prefill: evidence
 
+**Superseded by `../m3_query_capture_a4d37de1/` (review fix: capture no longer changes the chunk plan).** This directory is the "before" record: capture-on prefill -4.5%.
+
 Commit under test: `cc437a44` (branch `kvflash/2.0b-m3-query-capture`, parent `fd1a7b96` = M2 tip).
 GPU: local RTX 3090. Every GPU run was under `flock /mnt/kimi-k3/build/3090.lock`, with
 `nvidia-smi --query-compute-apps` empty before each start (see `provenance.txt`), except two

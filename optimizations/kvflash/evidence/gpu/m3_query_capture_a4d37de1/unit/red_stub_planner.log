@@ -1,0 +1,9 @@
+Running 1031 test cases...
+[q_blk] layer 0 worst max|dq|/max|q| vs scalar reference: 2.93e-04
+[q_blk] layer 1 worst max|dq|/max|q| vs scalar reference: 6.92e-04
+Test: QBlockCaptureFixture::a_straddling_chunk_gets_one_segment_per_block
+Test: QBlockCaptureFixture::restore_at_639_keeps_the_planner_chunks_and_skips_the_partial_block
+Complete.
+    Passed:  6
+    Failed:  2
+    Skipped: 1023
