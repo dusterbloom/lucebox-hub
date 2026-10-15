@@ -685,3 +685,39 @@ No threshold is set and no pass or fail applies. The numbers go to the design of
 - Different from B0: the residency policy (qk instead of lru) and the dump. Because the policy differs, the engine's recall of the probe answer is not compared with B0's and is not reported as such.
 - Scores are read once per request at prefill end. Reselect at decode time is not exercised (answers are at most 64 tokens), as in B0.
 - Median, mean, best and min are reported for rank. Decode and prefill speeds are not the subject; the run records the three speeds only as provenance.
+
+## Diagnostics E2, E3, E5 before A2 (2026-10-15, before any row)
+
+Context: the A1 pilot showed compacted blocks keep about 8.5% of verbatim facts (10 of 118). The design under test is one where the exact KV lives in host RAM, the compacted blocks act as summary and index, a router picks the blocks a question needs, their exact KV is paged in, and their compacted slots are masked. These three diagnostics ask whether that can work. They run on lucebox6 (`HIP_VISIBLE_DEVICES=1`, $0), **after A1 has exited and before A2**, on the 6 pilot trajectories, probes only, with the pilot's FULL-CHK rows (`~/r1e/out/a1_pilot/FULL.jsonl`, read only) as the reference and the same reference-correct probes the pilot asked (118). **They decide nothing**, change no rung or bar, and inform the retrieval design only. A2 runs after them, unchanged.
+
+### E3: oracle exact source block
+
+- **State.** The A1 shipping state, built by `gen_fblk_window` with window 0 (the same operations as the A1 shipping arm; checked below). Before each sealed 640-token block is compacted, its exact keys and values are kept (about 64 KiB per token).
+- **Intervention.** For each probe, the blocks that hold the fact are swapped back to exact at question time: the block's compacted entry is **replaced** by its exact K/V (never both). Everything else is as in the shipping arm: other blocks compacted, the open tail exact, the DeltaNet state as carried. The probe is answered as in the pilot (`answer_ids`, 64 tokens, the harness scorer).
+- **Which blocks (two variants, both reported).**
+  - `E3`, located: the first occurrence of the gold string in the stream tokens from the probe's `src_tok` (the start of the source tool message) to the cut; the blocks overlapping that token span. If the gold string is not found in the span, the probe falls back to the interval below and is counted as not located.
+  - `E3SPEC`, as first specified: every block overlapping [`src_tok`, `src_tok` + gold length in tokens]. `src_tok` is the start of the source message, so for a fact deep inside a long message this variant can swap the wrong block; it is reported for that reason, next to the located variant. When both variants swap the same blocks the answer is computed once.
+- **Output.** Retention against the FULL-CHK reference on the retained probes, with the pilot report's tables: overall (bootstrap interval, trajectory as the cluster), by distance, by probe type; next to the pilot's shipping-arm numbers on the same probes. Number of blocks swapped and located share.
+
+### E2: router recall
+
+- **State and query.** The E3 state and the same question prefill. For each probe the question suffix tokens' queries are captured on the 16 full-attention layers (24 query heads, post-norm, post-RoPE, under the shipping cache).
+- **Two routers**, each scoring every sealed block at the cut (the open tail is not a block):
+  - (a) compacted router: the block's share of attention mass from its compacted slots, `sum over its slots of exp(q.k/sqrt(d) + beta)`, normalised over all blocks (max-subtracted for stability), mean over layers and query heads;
+  - (b) the engine's mean-pooled-key cosine, computed on the **exact** keys of each 64-token chunk of the block exactly as `kvflash_qk_chunk_scores` (`server/src/common/kvflash_qk.h`): post-RoPE keys summed over the chunk and L2-normalised with the same `+1e-6`, the query normalised with the same `+1e-6`, cosine, max over the query heads of the KV group's heads (all 24 heads, each against its KV head), mean over layers; the block score is the max over its 10 chunks.
+  - Both are aggregated over the question tokens two ways: max over tokens, and the last token only. Four score vectors per probe.
+- **Metric.** The rank of the best-ranked source block (the located blocks of E3) among the sealed blocks; recall@k for k in {1, 2, 4, 8, 16}; the rank distribution (median, mean, quartiles). Reported for all retained probes and for those more than 16,384 tokens back. Probes whose source falls in the open tail, or that were not located, are counted and excluded from E2.
+- **Reading.** The engine's own router (b) is the one the retrieval design would ship; (a) shows how much a router built from the compacted slots alone could do. E1 (the engine's index on the 3090) is a separate measurement.
+
+### E5: shipping arm at ratio 0.25
+
+- The A1 shipping arm with `--ratio 0.25` (64 slots become 160 per block; the option exists since D1), on the same 6 trajectories and probes, scored against the same reference rows. Output: retention with the same tables, next to the pilot's 8.5% at ratio 0.10 and D1's 38 of 38 at 1.0. It shows how retention moves with the slot budget.
+
+### Reproducibility check
+
+- In the E3/E2 pass the shipping arm is re-answered from the unswapped state and each answer's token ids must equal the pilot's `SHIP.jsonl` row for the same task. This is done for the first trajectory (about 950 s of answer time for all six; extended to more trajectories only if time allows). A mismatch is recorded in `ship_check.json` and reported, and E3/E2 numbers are then read with that mismatch stated. The same model, code copy, flags and `--no-kv-cache` equivalent (this driver has no disk cache) hold as in the pilot.
+
+### Machine and rules
+
+- lucebox6, `HIP_VISIBLE_DEVICES=1`, the A1 launch memory gate and watchdog (host used under 120 GiB, swap growth under 1 GiB). Outputs `~/r1e/out/e3e2/` and `~/r1e/out/e5/`; the pilot rows are copied, never edited. E3/E2 and E5 run one after the other, never together.
+- No result of E1, E2, E3 or E5 changes A1's or A2's preregistered rule. A diagnostic that is read as a bar would need its own amendment first.
