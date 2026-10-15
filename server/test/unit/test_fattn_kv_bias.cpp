@@ -383,7 +383,7 @@ bool test_qsa_bias_not_admitted(ggml_backend_t gpu) {
 
 int main(int argc, char ** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
-    bool cpu_only = false;
+    [[maybe_unused]] bool cpu_only = false;
     std::string filter;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--cpu-only")) cpu_only = true; else filter = argv[i];
