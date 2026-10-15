@@ -14,7 +14,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <utility>
 #include <vector>
 
 using luce::common::qwen4exp_decode_req_type;
@@ -68,9 +67,17 @@ static void test_requant_parity() {
     CHECK(qwen4exp_requant_q8_0(GGML_TYPE_Q5_1, q8_320.data(), 320, 2, out.data()));
 }
 
-// y = W x on `backend` for a [ne0, ne1] weight of type t; empty on failure.
-static std::vector<float> gemv(ggml_backend_t backend, ggml_type t, const std::vector<uint8_t> & copy,
-                               const std::vector<float> & x, int64_t ne0, int64_t ne1) {
+// y = W x on `backend` for a [ne0, ne1] weight of type t built from q8; compared with the F64 product of the
+// copy's dequantized rows. The activation is q8_1-quantized by every backend's quantized GEMV, so the bound is
+// the 8-bit activation error, not bit-exactness.
+static bool gemv_matches(ggml_backend_t backend, const char * label, ggml_type t, const std::vector<uint8_t> & q8,
+                         int64_t ne0, int64_t ne1) {
+    std::vector<uint8_t> copy(ggml_row_size(t, ne0) * ne1);
+    if (!qwen4exp_requant_q8_0(t, q8.data(), ne0, ne1, copy.data())) return false;
+    std::vector<float> w((size_t) (ne0 * ne1));
+    ggml_get_type_traits(t)->to_float(copy.data(), w.data(), ne0 * ne1);
+    const std::vector<float> x = random_rows(ne0, 1, 23u);
+
     ggml_init_params ip{ ggml_tensor_overhead() * 8 + ggml_graph_overhead(), nullptr, true };
     ggml_context * c = ggml_init(ip);
     ggml_tensor * W = ggml_new_tensor_2d(c, t, ne0, ne1);
@@ -79,7 +86,7 @@ static std::vector<float> gemv(ggml_backend_t backend, ggml_type t, const std::v
     ggml_cgraph * gf = ggml_new_graph(c);
     ggml_build_forward_expand(gf, Y);
     ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(c, backend);
-    if (!buf) { ggml_free(c); return {}; }
+    if (!buf) { ggml_free(c); return false; }
     ggml_backend_tensor_set(W, copy.data(), 0, copy.size());
     ggml_backend_tensor_set(X, x.data(), 0, ggml_nbytes(X));
     const bool computed = ggml_backend_graph_compute(backend, gf) == GGML_STATUS_SUCCESS;
@@ -87,12 +94,8 @@ static std::vector<float> gemv(ggml_backend_t backend, ggml_type t, const std::v
     if (computed) ggml_backend_tensor_get(Y, y.data(), 0, ggml_nbytes(Y));
     ggml_backend_buffer_free(buf);
     ggml_free(c);
-    return computed ? y : std::vector<float>{};
-}
+    if (!computed) return false;
 
-// max |y - W x| in F64 over the dequantized rows w, and max |W x|.
-static std::pair<double, double> gemv_error(const std::vector<float> & w, const std::vector<float> & x,
-                                            const std::vector<float> & y, int64_t ne0, int64_t ne1) {
     double max_abs = 0.0, max_err = 0.0;
     for (int64_t r = 0; r < ne1; ++r) {
         double ref = 0.0;
@@ -100,30 +103,6 @@ static std::pair<double, double> gemv_error(const std::vector<float> & w, const 
         max_abs = std::max(max_abs, std::fabs(ref));
         max_err = std::max(max_err, std::fabs(ref - (double) y[(size_t) r]));
     }
-    return { max_err, max_abs };
-}
-
-// The copy of type t built from q8; w gets its dequantized rows. Empty if the type cannot take the row width.
-static std::vector<uint8_t> requant_copy(ggml_type t, const std::vector<uint8_t> & q8, int64_t ne0, int64_t ne1,
-                                         std::vector<float> & w) {
-    std::vector<uint8_t> copy(ggml_row_size(t, ne0) * ne1);
-    if (!qwen4exp_requant_q8_0(t, q8.data(), ne0, ne1, copy.data())) return {};
-    w.assign((size_t) (ne0 * ne1), 0.0f);
-    ggml_get_type_traits(t)->to_float(copy.data(), w.data(), ne0 * ne1);
-    return copy;
-}
-
-// The copy's GEMV on `backend` against the F64 product of its dequantized rows. The activation is q8_1-quantized
-// by every backend's quantized GEMV, so the bound is the 8-bit activation error, not bit-exactness.
-static bool gemv_matches(ggml_backend_t backend, const char * label, ggml_type t, const std::vector<uint8_t> & q8,
-                         int64_t ne0, int64_t ne1) {
-    std::vector<float> w;
-    const std::vector<uint8_t> copy = requant_copy(t, q8, ne0, ne1, w);
-    if (copy.empty()) return false;
-    const std::vector<float> x = random_rows(ne0, 1, 23u);
-    const std::vector<float> y = gemv(backend, t, copy, x, ne0, ne1);
-    if (y.empty()) return false;
-    const auto [max_err, max_abs] = gemv_error(w, x, y, ne0, ne1);
     // Q5_1 / Q4_1 on FAST_FP16 GPUs form the min term m * sum(x) in half (vecdotq.cuh vec_dot_q5_1_q8_1_impl),
     // and y is the cancellation of that term against the unsigned-quant dot: measured 3.3% of max |y| at
     // [2560 x 64] on gfx1151 against 0.5% for Q5_K / Q6_K and the CPU path. The gate below is for the wiring; the
@@ -134,45 +113,7 @@ static bool gemv_matches(ggml_backend_t backend, const char * label, ggml_type t
     return ok;
 }
 
-// The gfx1151 dense Q5_K / Q6_K T=1 kernel variants (mmvq.cu mul_mat_vec_q_kq_dense / _pipe, LUCE_KQ_DENSE)
-// against the generic kernel on the decode-copy row widths: every variant within the generic kernel's F64 error,
-// the one-wave variants bit-identical to it (same per-lane order, same warp reduction). Where the kernel is not
-// selected (not gfx1151) every variant is the generic kernel and the checks hold trivially.
-extern "C" void ggml_backend_cuda_set_kq_dense_for_test(int nwarps, int unroll, int rows);
-static void test_kq_dense_variants(ggml_backend_t gpu) {
-    const int variants[][3] = { { 1, 0, 1 }, { 1, 2, 1 }, { 1, 4, 1 }, { 1, 2, 2 }, { 2, 2, 1 }, { 4, 2, 1 }, { 2, 2, 2 } };
-    for (ggml_type t : { GGML_TYPE_Q5_K, GGML_TYPE_Q6_K }) {
-        for (int64_t ne0 : { 2560, 6144 }) {
-            const int64_t ne1 = 256;
-            const std::vector<uint8_t> q8 = q8_rows(random_rows(ne0, ne1, 7u), ne0, ne1);
-            std::vector<float> w;
-            const std::vector<uint8_t> copy = requant_copy(t, q8, ne0, ne1, w);
-            const std::vector<float> x = random_rows(ne0, 1, 29u);
-            ggml_backend_cuda_set_kq_dense_for_test(0, 0, 0);
-            const std::vector<float> y0 = gemv(gpu, t, copy, x, ne0, ne1);
-            CHECK(!y0.empty());
-            const auto [err0, max_abs] = gemv_error(w, x, y0, ne0, ne1);
-            for (const auto & v : variants) {
-                ggml_backend_cuda_set_kq_dense_for_test(v[0], v[1], v[2]);
-                const std::vector<float> y = gemv(gpu, t, copy, x, ne0, ne1);
-                CHECK(!y.empty());
-                const double err = gemv_error(w, x, y, ne0, ne1).first;
-                const bool exact = y.size() == y0.size() && std::memcmp(y.data(), y0.data(), y.size() * sizeof(float)) == 0;
-                const bool ok = err <= err0 * 1.05 + 1e-7 * max_abs && (v[0] > 1 || exact);
-                std::printf("[decode-requant] kq_dense w%du%dr%d %s [%lld x %lld]: max err %.3g vs generic %.3g%s %s\n",
-                            v[0], v[1], v[2], ggml_type_name(t), (long long) ne0, (long long) ne1, err, err0,
-                            exact ? " (bit-identical)" : "", ok ? "ok" : "FAIL");
-                CHECK(ok);
-            }
-            ggml_backend_cuda_set_kq_dense_for_test(-1, 0, 0);
-        }
-    }
-}
-
 int main() {
-    // Every gemv() below is a fresh graph at the same addresses; with HIP-graph replay the backend would re-run
-    // the kernel captured for the previous variant.
-    setenv("GGML_CUDA_DISABLE_GRAPHS_DEVICES", "0", 0);
     test_type_parser();
     test_requant_parity();
     const int64_t ne0 = 2560, ne1 = 64;
@@ -184,7 +125,6 @@ int main() {
     ggml_backend_t gpu = ggml_backend_cuda_init(0);
     if (!gpu) { std::printf("[decode-requant] cpu checks pass; SKIP gpu gemv: no GPU\n"); return 77; }
     for (ggml_type t : { GGML_TYPE_Q5_1, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K }) CHECK(gemv_matches(gpu, "gpu", t, q8, ne0, ne1));
-    test_kq_dense_variants(gpu);
     ggml_backend_free(gpu);
     std::printf("[decode-requant] %s\n", failures ? "FAIL" : "all checks pass");
     return failures ? 1 : 0;

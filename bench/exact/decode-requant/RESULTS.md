@@ -191,7 +191,9 @@ Kernel search, `mmvq.cu mul_mat_vec_q_kq_dense<type, nwarps, unroll, rows_per_wa
 `mul_mat_vec_q_kq_dense_pipe<type>` (gfx1151, dense, ncols_dst 1, no ids / fusion; `LUCE_KQ_DENSE=w<n>u<u>r<r>`
 or `pipe`), same lane -> block mapping and per-lane vec_dot as the generic kernel, so the one-wave variants are
 bit-identical to it (unit test `test_qwen4exp_decode_requant`, every variant on [2560|6144 x 256], split-K
-within the generic error). Median us per launch, generic first (`gemv/sweep.log` on lucebox4):
+within the generic error). None beat the generic kernel beyond noise, so the kernels and test variants were
+taken out of the tree and kept as `kq_dense.patch` (apply it to rerun `gemv.sh` with `LUCE_KQ_DENSE`).
+Median us per launch, generic first (`gemv/sweep.log` on lucebox4):
 
 | variant | q5_K 2560x10240 | q5_K 2560x6144 | q5_K 6144x2560 | q6_K 2560x12288 | q6_K 6144x2560 |
 |---|---|---|---|---|---|
