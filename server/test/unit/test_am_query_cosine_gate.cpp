@@ -303,13 +303,19 @@ TEST_CASE(AmGateFixture, q4km_queries_match_the_bf16_dump_of_trajectory_1_block)
     CHECK(be.sealed.back() == block);
     REQUIRE(!be.plane.empty());
 
+    if (const char * dump = std::getenv("LUCE_AM_DUMP_PLANE")) {  // diagnosis aid: the raw F16 plane, [layer][head][token][dim]
+        std::ofstream o(dump, std::ios::binary);
+        o.write((const char *)be.plane.data(), (std::streamsize)(be.plane.size() * sizeof(uint16_t)));
+    }
     const int n_fa = (int)(be.plane.size() / ((size_t)D * T * H));
     const auto & layers = fx.manifest["layers"];
     REQUIRE((int)layers.size() == n_fa);
     std::vector<double> layer_means, head_means, head_ratios;
     std::string violations;
     std::vector<std::pair<int, double>> per_layer;
-    double worst_token = 1.0;
+    double worst_token = 1.0, worst_cos = 2.0, worst_ratio_dev = -1.0;
+    int wc_layer = -1, wc_head = -1, wr_layer = -1, wr_head = -1;
+    double wr_val = 0;
     for (int i = 0; i < n_fa; i++) {
         const int layer = layers[(size_t)i].get<int>();
         CHECK(layer / w.full_attention_interval == i);
@@ -319,6 +325,11 @@ TEST_CASE(AmGateFixture, q4km_queries_match_the_bf16_dump_of_trajectory_1_block)
         const auto r = cosine_per_head(ref.data(), be.plane.data() + (size_t)i * H * T * D, H, T, D);
         const Summary hs = summarize(r.mean);
         for (double m : r.min) worst_token = std::min(worst_token, m);
+        for (int h = 0; h < H; h++) {
+            if (r.mean[(size_t)h] < worst_cos) { worst_cos = r.mean[(size_t)h]; wc_layer = layer; wc_head = h; }
+            const double dev = std::fabs(r.ratio[(size_t)h] - 1.0);
+            if (dev > worst_ratio_dev) { worst_ratio_dev = dev; wr_layer = layer; wr_head = h; wr_val = r.ratio[(size_t)h]; }
+        }
         std::printf("[am-gate] layer %2d  head cos min %.4f median %.4f mean %.4f\n", layer, hs.min, hs.median, hs.mean);
         layer_means.push_back(hs.mean);
         head_ratios.insert(head_ratios.end(), r.ratio.begin(), r.ratio.end());
@@ -331,6 +342,11 @@ TEST_CASE(AmGateFixture, q4km_queries_match_the_bf16_dump_of_trajectory_1_block)
     std::printf("[am-gate] per-head  mean cosine: min %.4f median %.4f mean %.4f (%zu heads); worst single (head,token) %.4f\n",
                 hs.min, hs.median, hs.mean, head_means.size(), worst_token);
     const Summary rs = summarize(head_ratios);
+    auto p10 = [](std::vector<double> v) { std::sort(v.begin(), v.end()); return v[(size_t)((v.size() - 1) * 0.10)]; };
+    std::printf("[am-gate] SUMMARY case=%s per-head cos min %.4f median %.4f p10 %.4f | norm ratio min %.4f median %.4f max %.4f | "
+                "worst cos (layer %d, head %d) %.4f | worst ratio (layer %d, head %d) %.4f\n",
+                fx.manifest["case"].get<std::string>().c_str(), hs.min, hs.median, p10(head_means), rs.min, rs.median,
+                *std::max_element(head_ratios.begin(), head_ratios.end()), wc_layer, wc_head, worst_cos, wr_layer, wr_head, wr_val);
     std::printf("[am-gate] per-head norm ratio eng/ref: min %.4f median %.4f mean %.4f\n", rs.min, rs.median, rs.mean);
     if (!violations.empty()) std::printf("[am-gate] head violations:\n%s", violations.c_str());
     CHECK(violations.empty());  // every head: mean cosine > 0.9 and norm ratio in [0.95, 1.05]; layer means above are reported only

@@ -1,0 +1,22 @@
+[am-gate] identity: manifest model={"_name_or_path":"/home/duster/r1e/models/Qwen3.8-27B","config_json_md5":"0ecc077f5c9eb49889aa0022f4ae9fa7","model_path":"/home/duster/r1e/models/Qwen3.8-27B","revision":null,"weight_files":[["config.json",4312],["generation_config.json",202],["model-00001-of-00018.safetensors",3966730552],["model-00002-of-00018.safetensors",3043080328],["model-00003-of-00018.saf
+[am-gate] layer  3  head cos min -0.1057 median 0.0435 mean 0.0353
+[am-gate] layer  7  head cos min -0.0308 median 0.0096 mean 0.0185
+[am-gate] layer 11  head cos min -0.0201 median 0.0301 mean 0.0309
+[am-gate] layer 15  head cos min -0.0228 median 0.0029 mean 0.0099
+[am-gate] layer 19  head cos min -0.0378 median 0.0074 mean 0.0092
+[am-gate] layer 23  head cos min -0.0515 median -0.0043 mean -0.0084
+[am-gate] layer 27  head cos min -0.0445 median -0.0039 mean -0.0022
+[am-gate] layer 31  head cos min -0.0522 median -0.0008 mean -0.0038
+[am-gate] layer 35  head cos min -0.0232 median 0.0161 mean 0.0165
+[am-gate] layer 39  head cos min -0.0482 median 0.0087 mean 0.0013
+[am-gate] layer 43  head cos min -0.0132 median 0.0106 mean 0.0108
+[am-gate] layer 47  head cos min -0.0545 median 0.0006 mean -0.0062
+[am-gate] layer 51  head cos min -0.0273 median 0.0190 mean 0.0161
+[am-gate] layer 55  head cos min -0.0642 median -0.0061 mean -0.0081
+[am-gate] layer 59  head cos min -0.0296 median 0.0363 mean 0.0361
+[am-gate] layer 63  head cos min -0.0938 median -0.0165 mean -0.0141
+[am-gate] per-layer mean cosine: min -0.0141 median 0.0095 mean 0.0089
+[am-gate] per-head  mean cosine: min -0.1057 median 0.0083 mean 0.0089 (384 heads); worst single (head,token) -0.2915
+[am-gate] SUMMARY case=traj1_12k_exactq per-head cos min -0.1057 median 0.0083 p10 -0.0286 | norm ratio min 0.9960 median 1.0003 max 1.0063 | worst cos (layer 3, head 4) -0.1057 | worst ratio (layer 47, head 21) 1.0063
+[am-gate] per-head norm ratio eng/ref: min 0.9960 median 1.0003 mean 1.0005
+[am-gate] head violations:
