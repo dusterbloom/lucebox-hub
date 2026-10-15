@@ -310,20 +310,24 @@ def gen_fblk(R, segs, articles, ks):
         yield k, t_tr, t_len, {**_info(R, t_tr, t_len, trace), "tail_tokens": int(tail.shape[1]), "blocks": len(trace)}
 
 
-def gen_fullchk(R, segs, articles, ks):
+def gen_fullchk(R, segs, articles, ks, block=None, empty_cache=False):
     """R2b FULL: the gen_fblk cut (640-token blocks by stream position), every block through `extend` uncompacted; the open
-    tail is added the same way, without being kept for the next checkpoint."""
+    tail is added the same way, without being kept for the next checkpoint. A1: `block` overrides the block size (default
+    BLOCK; the 512-token control), `empty_cache` frees the allocator's cached blocks after every block (default off, numerically
+    inert; the memory mitigation of PREREG A1 section 3)."""
     S = R.S
     stream = torch.cat([s.ids for s in segs], 1)
     ends = [sum(s.n for s in segs[:i + 1]) for i in range(len(segs))]
     triples, orig_len, consumed, trace = None, 0, 0, []
     for k in sorted(ks):
-        blocks, new_end = sealed_blocks(consumed, ends[k])
+        blocks, new_end = sealed_blocks(consumed, ends[k]) if block is None else sealed_blocks(consumed, ends[k], block)
         for a, b in blocks:
             t0 = time.time()
             triples, orig_len, _ = extend(S.model, S.layer_types, triples, orig_len, stream[:, a:b].to(S.dev))
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
+                if empty_cache:
+                    torch.cuda.empty_cache()
             trace.append({"prefill_s": round(time.time() - t0, 2)})
         consumed = new_end
         tail = stream[:, consumed:ends[k]]
@@ -347,6 +351,22 @@ def gen_fre(R, segs, articles, ks):
         trace.append(st)
         if i in ks:
             yield i, triples, orig_len, {**_info(R, triples, orig_len, trace), "recompactions": i + 1}
+
+
+@torch.no_grad()
+def answer_ids(S, triples, seq_len, suffix_ids, max_new, timing=None):
+    """A1 generic answer: clone the checkpoint (`Session._cache`), prefill the suffix token ids, greedy decode at most `max_new`
+    tokens (64 for a probe, 256 for a decision), stopping on S.eos (the stop token is included in the result). Returns the ids;
+    `timing`, if given, receives prefill_s and decode_s."""
+    t0 = time.time()
+    ids = torch.as_tensor(suffix_ids, dtype=torch.long).view(1, -1).to(S.dev)
+    cache = S._cache(triples, seq_len)
+    o = S.model(input_ids=ids, past_key_values=cache, use_cache=True, **({"logits_to_keep": 1} if S.hybrid else {}))
+    t1 = time.time()
+    out = S._greedy(cache, o.logits, max_new)
+    if timing is not None:
+        timing.update(prefill_s=t1 - t0, decode_s=time.time() - t1)
+    return out
 
 
 ARM_GENS = {"FULL": gen_full, "F-SEG": gen_fseg, "F-BLK": gen_fblk, "F-RE": gen_fre, "F-RE-UNI": gen_fre,
