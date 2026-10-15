@@ -48,6 +48,7 @@ float next_float() {  // [-1, 1)
 }
 
 struct Shape { const char * name; int D, n_head, n_head_kv, n_kv; };
+const Shape LONG_KV = {"D256 h24/4 kv4608", 256, 24, 4, 4608};  // > 4096: a chunked path must carry its chunk offset
 const Shape SHAPES[] = {
     {"D256 h24/4 kv1024", 256, 24, 4, 1024},  // Qwen3.8-27B attention
     {"D64 h4/2 kv576",     64,  4, 2,  576},
@@ -57,12 +58,15 @@ const ggml_type KV_TYPES[] = { GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_Q4_0, GG
 const int N_QS[] = { 1, 16, 512 };
 
 struct Case {
-    Shape shape; ggml_type type; int n_q; bool mask; bool sinks; float softcap;
+    Shape shape; ggml_type type; int n_q; bool mask; bool sinks; float softcap; float max_bias = 0.0f;
     std::string name() const {
         char b[160];
-        std::snprintf(b, sizeof b, "%s %s q%d%s%s%s", shape.name, ggml_type_name(type), n_q,
-                      mask ? " mask" : "", sinks ? " sinks" : "", softcap > 0 ? " softcap" : "");
-        return b;
+        std::snprintf(b, sizeof b, "%s %s q%d%s%s", shape.name, ggml_type_name(type), n_q,
+                      mask ? " mask" : "", sinks ? " sinks" : "");
+        std::string n = b;
+        if (softcap > 0) n += " softcap" + std::to_string(softcap).substr(0, 4);
+        if (max_bias > 0) n += " alibi";
+        return n;
     }
 };
 
@@ -128,11 +132,15 @@ Data make_data(const Case & c) {
 
 // Double-precision reference. `beta` and `mask` may be null.
 std::vector<float> reference(const Case & c, const Data & d, const float * beta,
-                             const ggml_fp16_t * mask) {
+                             const ggml_fp16_t * mask, bool bias_before_cap = false) {
     const Shape & s = c.shape;
     const float scale = 1.0f / std::sqrt((float) s.D);
     std::vector<float> out((size_t) s.D * s.n_head * c.n_q);
+    // ALiBi slope scales the mask only, never the kv_bias.
+    const int n_log2 = 1 << (int) std::floor(std::log2((double) s.n_head));
+    const double m0 = std::pow(2.0, -c.max_bias / n_log2), m1 = std::pow(2.0, -(c.max_bias / 2.0) / n_log2);
     auto head = [&](int h) {
+        const double slope = c.max_bias <= 0 ? 1.0 : h < n_log2 ? std::pow(m0, h + 1) : std::pow(m1, 2 * (h - n_log2) + 1);
         const int hk = h / (s.n_head / s.n_head_kv);
         std::vector<double> p(s.n_kv), acc(s.D);
         for (int i = 0; i < c.n_q; ++i) {
@@ -143,9 +151,11 @@ std::vector<float> reference(const Case & c, const Data & d, const float * beta,
                 double dot = 0.0;
                 for (int e = 0; e < s.D; ++e) dot += (double) q[e] * k[e];
                 double l = dot * scale;
+                const double b = beta ? beta[(size_t) hk * s.n_kv + j] : 0.0;
+                if (bias_before_cap) l += b;  // the wrong order, only to prove a case can tell
                 if (c.softcap > 0) l = c.softcap * std::tanh(l / c.softcap);
-                if (mask) l += ggml_fp16_to_fp32(mask[(size_t) i * s.n_kv + j]);
-                if (beta) l += beta[(size_t) hk * s.n_kv + j];
+                if (mask) l += slope * ggml_fp16_to_fp32(mask[(size_t) i * s.n_kv + j]);
+                if (!bias_before_cap) l += b;
                 p[j] = l;
                 mx = std::max(mx, l);
             }
@@ -180,7 +190,7 @@ Run run_fa(ggml_backend_t backend, const Case & c, const Data & d, const float *
     ggml_tensor * k = ggml_new_tensor_4d(ctx, c.type, s.D, s.n_kv, s.n_head_kv, 1);
     ggml_tensor * v = ggml_new_tensor_4d(ctx, c.type, s.D, s.n_kv, s.n_head_kv, 1);
     ggml_tensor * m = mask ? ggml_new_tensor_2d(ctx, GGML_TYPE_F16, s.n_kv, GGML_PAD(c.n_q, GGML_KQ_MASK_PAD)) : nullptr;
-    ggml_tensor * fa = ggml_flash_attn_ext(ctx, q, k, v, m, 1.0f / std::sqrt((float) s.D), 0.0f, c.softcap);
+    ggml_tensor * fa = ggml_flash_attn_ext(ctx, q, k, v, m, 1.0f / std::sqrt((float) s.D), c.max_bias, c.softcap);
     ggml_tensor * sk = nullptr, * kb = nullptr;
     if (c.sinks) {
         sk = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, s.n_head);
@@ -344,6 +354,17 @@ int main(int argc, char ** argv) {
     for (ggml_type ty : { GGML_TYPE_F16, GGML_TYPE_Q8_0 })
         for (int nq : N_QS) cases.push_back({ SHAPES[0], ty, nq, true, false, 20.0f });
 
+    // ALiBi: slope scales the mask, not the bias (the chunked path refuses ALiBi: UNSUPP there)
+    for (ggml_type ty : { GGML_TYPE_F16, GGML_TYPE_Q8_0 })
+        for (int nq : N_QS) cases.push_back({ SHAPES[0], ty, nq, true, false, 0.0f, 8.0f });
+    // saturating softcap: bias-before-cap is clamped to +-cap, so only the right order matches
+    for (ggml_type ty : { GGML_TYPE_F16, GGML_TYPE_Q8_0 })
+        for (int nq : N_QS) cases.push_back({ SHAPES[0], ty, nq, true, false, 0.1f });
+    // kv beyond one 4096 chunk
+    for (ggml_type ty : { GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_TQ3_0 })
+        for (int nq : N_QS) cases.push_back({ LONG_KV, ty, nq, true, false, 0.0f });
+
+    int fail_nodisc = 0;
     Tally tc, tg;
     for (const Case & c : cases) {
         if (!filter.empty() && c.name().find(filter) == std::string::npos) continue;
@@ -353,6 +374,14 @@ int main(int argc, char ** argv) {
         const ggml_fp16_t * mask = c.mask ? d.mask.data() : nullptr;
         const std::vector<float> ref_bias = reference(c, d, d.beta.data(), mask);
         const std::vector<float> ref_inf  = reference(c, d, beta_inf.data(), mask);
+        if (c.softcap > 0 && c.softcap < 1.0f) {  // the case must fail the wrong order, or it proves nothing
+            const Err w = compare(reference(c, d, d.beta.data(), mask, true), ref_bias);
+            std::printf("        %s: bias-before-cap reference differs by nmse %.2e (tolerance %.0e)\n", c.name().c_str(), w.nmse, NMSE_TOL);
+            if (w.nmse <= 10 * NMSE_TOL) {
+                ++fail_nodisc;
+                std::printf("FAIL    %s: wrong cap order is not distinguishable (nmse %.2e)\n", c.name().c_str(), w.nmse);
+            }
+        }
         // ggml-cpu's FA calls K's vec_dot unchecked; TQ3_0 has none on CPU.
         if (ggml_get_type_traits_cpu(c.type)->vec_dot == nullptr) {
             ++tc.skip;
@@ -367,6 +396,6 @@ int main(int argc, char ** argv) {
     if (gpu) std::printf("SUMMARY gpu: pass %d fail %d unsupp %d skip %d, max abs err %.3e, max nmse %.3e\n",
                 tg.pass, tg.fail, tg.unsupp, tg.skip, tg.worst_abs, tg.worst_nmse);
     const bool strict = std::getenv("FATTN_KV_BIAS_STRICT") != nullptr;
-    const int bad = !guard_ok + tc.fail + tg.fail + tc.unsupp + (strict ? tg.unsupp : 0);
+    const int bad = !guard_ok + fail_nodisc + tc.fail + tg.fail + tc.unsupp + (strict ? tg.unsupp : 0);
     return bad ? 1 : 0;
 }
