@@ -1,0 +1,45 @@
+E3/E2 diagnostics, launched 2026-10-15T19:31:41+00:00; HIP_VISIBLE_DEVICES=1
+--- reference rows (read only)
+93a29de59549954ebd9d46ffd9214047  /home/duster/r1e/out/a1_pilot/FULL.jsonl
+2e1e4aea3062d0442714c54cd9d4fc91  /home/duster/r1e/out/a1_pilot/SHIP.jsonl
+--- code md5
+77ebd9f8ec395dea1a6f5906206bf3ee  a1_core.py
+4fc2793e57d07f7a8900df9b47b9ca92  a1_d1_report.py
+c414124457ba1c3333108bd3a6a439d6  a1_e67.py
+a7505243afd828fdc89d6837011c457b  a1_e.py
+87b8d5d3f331f04e8ec10a3f4f1fbef6  a1_e_report.py
+43e13b1d6efd9757dc95f37c812413ba  a1_hash.py
+b42d943affb78ddc368fde6e1d39578f  a1_pilot_report.py
+40d6919c63dd9043ad80eb200d19bfb9  a1_proper_report.py
+0978707b6fb2098eb8b98f2e5f09f057  a1_run.py
+1508dc4d215c5156b06bc4c3a09c49e1  a1_watchdog.py
+c35835a6dfc5301e0f37db059ab0e3df  am_fixture_dump.py
+ad4648f0d36d2ae81c210f58658b0f1f  fixture_qcheck.py
+5027928ef873f2a9835553464e172a66  make_tok_gguf.py
+c971f996d5cedd3e476a64d0fbae66b3  server_tok.py
+7254f0e87dacab6876b80bcc753d1b16  test_a1_core.py
+0a9f8ecdc21cc4ef8440d5fd2b92e036  test_a1_e67.py
+5f91538f2cc8b17c542709554990e061  test_a1_e.py
+c21c564a76a2cb444cafa776100708e6  test_a1_render.py
+85ec62fc954e3fe6cefc9f8d4b035eb8  test_a2_window.py
+e40440fffa36045d3259a44e7325da21  test_am_fixture_dump.py
+dcfeca4a92087908baf8d25b6ca95c6e  test_tool_parser.py
+c0a1f6657ba08f080cecb7ab951f447e  tool_parse.py
+3baee31e54e1b89d4e65069c7f16d4a7  tool_parser/Makefile
+a97852917d39a7020fcbd403e7b264e4  tool_parser/tokenize_cli.cpp
+5c8d5485de89b6120a894fa5573f112d  tool_parser/tool_parser_cli.cpp
+d31b50571b7af65e2fa3aa2143afe6ab  r1b_core.py
+4f0f1c94c8f16001a8e568b7450d393e  r2_core.py
+3e2f8f510d98e152251190298f99be6a  tests/test_a1.py
+b0b324a3946f20652c3404c2558dc9c5  /home/duster/r1e/code/a1/tool_parser/build/tool_parser_cli
+c6d79d92ca3fafbc2aa568b3153c6f51  /home/duster/r1e/code/a1/tool_parser/build/tokenize_cli
+80d14862d19ef04e06bd01062917f998  /home/duster/r1e/data/a1/B0_FULL.jsonl
+10d9da8d568463073ddb3c6234986ac8  /home/duster/r1e/data/a1/tasks_all60.jsonl
+4f2f96e2db420acb3b54e987c32ab6e4  /home/duster/r1e/data/a1/trajectories.jsonl
+a7f294a5f0be5f1903214304f259f87f  /home/duster/r1e/data/a1/qwen36_template.jinja
+77d3489a35fbccc145250fa37e6c0fb0  /home/duster/r1e/data/a1/qwen3.8-tokenizer.gguf
+b8da521798ea7a0b8d656a106e981665  /home/duster/r1e/data/a1/request_ids.sha256
+--- cmd: a1_e.py --out /home/duster/r1e/out/e3e2 --n 6 --ship-check-n 1
+               total        used        free      shared  buff/cache   available
+Mem:          128089       60049       43171           0       25979       68040
+Swap:           8191         462        7729

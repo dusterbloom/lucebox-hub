@@ -1,0 +1,11 @@
+{"id": "chatcmpl-40fe82c8835837b664f4a16458f9f17c:p24:0", "traj": "chatcmpl-40fe82c8835837b664f4a16458f9f17c", "equal": true, "pilot_row": true, "n": 3}
+{"id": "chatcmpl-40fe82c8835837b664f4a16458f9f17c:p24:1", "traj": "chatcmpl-40fe82c8835837b664f4a16458f9f17c", "equal": false, "pilot_row": true, "n": 19}
+{"id": "chatcmpl-40fe82c8835837b664f4a16458f9f17c:p24:5", "traj": "chatcmpl-40fe82c8835837b664f4a16458f9f17c", "equal": true, "pilot_row": true, "n": 14}
+{"id": "chatcmpl-40fe82c8835837b664f4a16458f9f17c:p24:7", "traj": "chatcmpl-40fe82c8835837b664f4a16458f9f17c", "equal": false, "pilot_row": true, "n": 8}
+{"id": "chatcmpl-40fe82c8835837b664f4a16458f9f17c:p36:0", "traj": "chatcmpl-40fe82c8835837b664f4a16458f9f17c", "equal": true, "pilot_row": true, "n": 2}
+{"id": "chatcmpl-40fe82c8835837b664f4a16458f9f17c:p36:1", "traj": "chatcmpl-40fe82c8835837b664f4a16458f9f17c", "equal": false, "pilot_row": true, "n": 19}
+{"id": "chatcmpl-40fe82c8835837b664f4a16458f9f17c:p36:3", "traj": "chatcmpl-40fe82c8835837b664f4a16458f9f17c", "equal": true, "pilot_row": true, "n": 16}
+{"id": "chatcmpl-40fe82c8835837b664f4a16458f9f17c:p36:4", "traj": "chatcmpl-40fe82c8835837b664f4a16458f9f17c", "equal": true, "pilot_row": true, "n": 2}
+{"id": "chatcmpl-40fe82c8835837b664f4a16458f9f17c:p36:5", "traj": "chatcmpl-40fe82c8835837b664f4a16458f9f17c", "equal": true, "pilot_row": true, "n": 19}
+{"id": "chatcmpl-40fe82c8835837b664f4a16458f9f17c:p36:8", "traj": "chatcmpl-40fe82c8835837b664f4a16458f9f17c", "equal": false, "pilot_row": true, "n": 4}
+{"id": "chatcmpl-40fe82c8835837b664f4a16458f9f17c:p36:9", "traj": "chatcmpl-40fe82c8835837b664f4a16458f9f17c", "equal": true, "pilot_row": true, "n": 7}
