@@ -1,0 +1,8 @@
+Running 37 test cases...
+[kvflash] no pool slot at pos 128 (pool 512 exhausted)
+[kvflash] pin_range [64,192) refused: sink=1 tail=4 pinned=0 new=2 pool_blocks=8 would deadlock eviction
+[kvflash] pin_range [128,192) refused: sink=1 tail=4 pinned=1 new=1 pool_blocks=8 would deadlock eviction
+Complete.
+    Passed:  37
+    Failed:  0
+    Skipped: 0

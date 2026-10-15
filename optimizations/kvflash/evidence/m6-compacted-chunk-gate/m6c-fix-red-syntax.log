@@ -1,0 +1,27 @@
+In file included from /home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:6:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp: In member function ‘void {anonymous}::TestCase_reset_identity_drops_every_compaction::Run()’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:389:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘reset_identity’; did you mean ‘is_identity’?
+  389 |     CHECK(p.reset_identity(300));                 // an exact snapshot hit rebuilds the mapping from scratch
+      |             ^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:400:13: error: ‘class luce::common::KvFlashPager’ has no member named ‘reset_identity’; did you mean ‘is_identity’?
+  400 |     CHECK(p.reset_identity(0));
+      |             ^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:402:14: error: ‘class luce::common::KvFlashPager’ has no member named ‘reset_identity’; did you mean ‘is_identity’?
+  402 |     CHECK(!p.reset_identity(kPool + 1));          // does not fit the pool
+      |              ^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp: In member function ‘void {anonymous}::TestCase_the_test_hook_spec_is_parsed_strictly::Run()’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:429:11: error: ‘kvflash_parse_test_compact’ was not declared in this scope
+  429 |     CHECK(kvflash_parse_test_compact("20:0", 100, c, beta));
+      |           ^~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/CppUnitTestFramework.hpp:877:210: note: in definition of macro ‘CHECK’
+  877 | #define CHECK(Expression)          CppUnitTestFramework::CommonFixture::HandleAssert(CppUnitTestFramework::AssertType::Continue, _CPPUTF_ASSERT_LOCATION, CppUnitTestFramework::Assert::IsTrue(static_cast<bool>(Expression), #Expression))
+      |                                                                                                                                                                                                                  ^~~~~~~~~~

@@ -1,0 +1,62 @@
+Running 37 test cases...
+Test: KvflashPagerCompactedFixture::reset_identity_drops_every_compaction
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:389 CHECK: IsTrue(p.reset_identity(300))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:390 CHECK: IsTrue(p.epoch() != e)
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:391 CHECK: IsTrue(!p.any_compacted())
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:392 CHECK: IsTrue(!p.is_covered(3))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:393 CHECK: IsTrue(p.is_identity())
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:394 CHECK: IsTrue(p.n_chunks() == 5)
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:395 CHECK: IsTrue(p.resident_blocks() == 5)
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:396 CHECK: IsTrue(p.slot_of(299) == 299)
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:397 CHECK: IsTrue(bias_of(p, 0) == expect_bias(0, -1))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:398 CHECK: IsTrue(bias_of(p, 1) == expect_bias(1, -1))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:400 CHECK: IsTrue(p.reset_identity(0))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:401 CHECK: IsTrue(p.n_chunks() == 0)
+Test: KvflashPagerCompactedFixture::slot_for_rejects_writes_into_a_compacted_head
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:412 CHECK: IsTrue(p.slot_for(2 * kChunk) == -1)
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:413 CHECK: IsTrue(p.slot_for(2 * kChunk + 40) == -1)
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:415 CHECK: IsTrue(!p.alloc_span(2 * kChunk, 4))
+Test: KvflashPagerCompactedFixture::the_test_hook_spec_is_parsed_strictly
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:429 CHECK: IsTrue(kvflash_parse_test_compact("20:0", 100, c, beta))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:430 CHECK: IsTrue(c == 79)
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:431 CHECK: IsTrue(beta == 0.0f)
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:432 CHECK: IsTrue(kvflash_parse_test_compact("1:-1000", 100, c, beta))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:433 CHECK: IsTrue(c == 98)
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:434 CHECK: IsTrue(beta == -1000.0f)
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:435 CHECK: IsTrue(kvflash_parse_test_compact("3:0.25", 10, c, beta))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:436 CHECK: IsTrue(c == 6)
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:447 CHECK: IsTrue(kvflash_parse_test_compact("19:0", 20, c, beta))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:448 CHECK: IsTrue(c == 0)
+Test: KvflashPagerCompactedFixture::every_damaged_compaction_trailer_is_rejected_before_any_state_changes
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:468 CHECK: IsTrue(rejected(std::vector<uint8_t>(blob.begin(), blob.begin() + kBase8)))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:469 CHECK: IsTrue(rejected(std::vector<uint8_t>(blob.begin(), blob.begin[kvflash] pin_range [128,320) refused: sink=1 tail=4 pinned=0 new=3 pool_blocks=8 would deadlock eviction
+[kvflash] pin_range [64,192) refused: sink=1 tail=4 pinned=0 new=2 pool_blocks=8 would deadlock eviction
+[kvflash] pin_range [128,192) refused: sink=1 tail=4 pinned=1 new=1 pool_blocks=8 would deadlock eviction
+() + kBase8 + 4)))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:470 CHECK: IsTrue(rejected(std::vector<uint8_t>(blob.begin(), blob.begin() + kBase8 + 7)))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:471 CHECK: IsTrue(rejected(b))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:472 CHECK: IsTrue(rejected(b))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:473 CHECK: IsTrue(rejected(b))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:474 CHECK: IsTrue(rejected(b))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:475 CHECK: IsTrue(rejected(b))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:476 CHECK: IsTrue(rejected(b))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:477 CHECK: IsTrue(rejected(b))
+Test: KvflashPagerCompactedFixture::trailing_bytes_after_an_uncompacted_blob_are_rejected
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:498 CHECK: IsTrue(!q.deserialize(b.data(), b.size()))
+Test: KvflashPagerCompactedFixture::a_pin_on_any_chunk_of_the_span_protects_the_head
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:514 CHECK: IsTrue(p.block_of(2) >= 0)
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:515 CHECK: IsTrue(p.block_of(1) < 0)
+Test: KvflashPagerCompactedFixture::pins_count_one_representative_per_block_for_the_capacity_guard
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:530 CHECK: IsTrue(p.is_pinned(2))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:531 CHECK: IsTrue(p.is_pinned(3))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:532 CHECK: IsTrue(p.is_pinned(4))
+Test: KvflashPagerCompactedFixture::a_block_that_touches_the_trailing_window_is_protected
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:544 CHECK: IsTrue(p.block_of(4) >= 0)
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_compacted.cpp:545 CHECK: IsTrue(p.block_of(1) < 0)
+Test: KvflashPagerSerdeFixture::malformed_blobs_are_rejected_without_touching_state
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_serde.cpp:335 CHECK: IsTrue(rejected(b))
+    @/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_kvflash_pager_serde.cpp:336 CHECK: IsTrue(untouched())
+Complete.
+    Passed:  28
+    Failed:  9
+    Skipped: 0

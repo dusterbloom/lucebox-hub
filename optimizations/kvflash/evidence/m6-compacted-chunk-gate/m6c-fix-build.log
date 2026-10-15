@@ -1,0 +1,184 @@
+[  3%] Built target libjpeg_turbo_external
+[  3%] Built target image_codec_png
+[  6%] Built target ggml-base
+[ 10%] Built target ggml-cpu
+[ 58%] Built target ggml-cuda
+[ 58%] Built target ggml
+[ 58%] Building CXX object CMakeFiles/luce_common.dir/src/qwen35/qwen35_target_graph.cpp.o
+[ 58%] Building CXX object CMakeFiles/luce_common.dir/src/gemma4/gemma4_graph.cpp.o
+[ 58%] Building CXX object CMakeFiles/luce_common.dir/src/gemma4/gemma4_backend.cpp.o
+[ 58%] Building CXX object CMakeFiles/luce_common.dir/src/bailingmoe3/bailingmoe3_backend.cpp.o
+[ 58%] Building CXX object CMakeFiles/luce_common.dir/src/gemma4/gemma4_daemon.cpp.o
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/src/gemma4/gemma4_graph.cpp: In function ‘bool luce::common::gemma4_prefill_bsa(ggml_backend_t, const Gemma4Weights&, Gemma4Cache&, const float*, const int32_t*, int, std::vector<float>&)’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/src/gemma4/gemma4_graph.cpp:1502:19: warning: unused variable ‘kv_source_il’ [-Wunused-variable]
+ 1502 |         const int kv_source_il = cache.kv_source[il];
+      |                   ^~~~~~~~~~~~
+[ 58%] Building CXX object CMakeFiles/luce_common.dir/src/gemma4/gemma4_dflash_target.cpp.o
+[ 60%] Building CXX object CMakeFiles/luce_common.dir/src/gemma4/gemma4_layer_split_adapter.cpp.o
+[ 60%] Building CXX object CMakeFiles/luce_common.dir/src/laguna/laguna_target_graph.cpp.o
+[ 60%] Building CXX object CMakeFiles/luce_common.dir/src/laguna/laguna_daemon.cpp.o
+[ 60%] Building CXX object CMakeFiles/luce_common.dir/src/laguna/laguna_backend.cpp.o
+[ 60%] Building CXX object CMakeFiles/luce_common.dir/src/laguna/laguna_layer_split_adapter.cpp.o
+[ 62%] Building CXX object CMakeFiles/luce_common.dir/src/laguna/laguna_dflash_target.cpp.o
+[ 62%] Building CXX object CMakeFiles/luce_common.dir/src/qwen35moe/qwen35moe_backend.cpp.o
+[ 62%] Building CXX object CMakeFiles/luce_common.dir/src/qwen35moe/qwen35moe_daemon.cpp.o
+[ 62%] Building CXX object CMakeFiles/luce_common.dir/src/qwen35/layer_split_forward.cpp.o
+[ 62%] Building CXX object CMakeFiles/luce_common.dir/src/qwen35/qwen35_target_shard_ipc_daemon.cpp.o
+In file included from /home/peppi/Dev/lucebox-builds/wt-m6c/server/src/common/model_backend.h:28,
+                 from /home/peppi/Dev/lucebox-builds/wt-m6c/server/src/laguna/laguna_backend.h:9,
+                 from /home/peppi/Dev/lucebox-builds/wt-m6c/server/src/laguna/laguna_backend.cpp:9:
+In constructor ‘luce::common::GenerateError::GenerateError(luce::common::GenerateError&&)’,
+    inlined from ‘void std::_Construct(_Tp*, _Args&& ...) [with _Tp = luce::common::GenerateError; _Args = {luce::common::GenerateError}]’ at /usr/include/c++/13/bits/stl_construct.h:119:7,
+    inlined from ‘constexpr void std::_Optional_payload_base<_Tp>::_M_construct(_Args&& ...) [with _Args = {luce::common::GenerateError}; _Tp = luce::common::GenerateError]’ at /usr/include/c++/13/optional:278:19,
+    inlined from ‘constexpr std::_Optional_payload_base<_Tp>::_Optional_payload_base(bool, std::_Optional_payload_base<_Tp>&&) [with _Tp = luce::common::GenerateError]’ at /usr/include/c++/13/optional:155:22,
+    inlined from ‘constexpr std::_Optional_payload<luce::common::GenerateError, true, false, false>::_Optional_payload(bool, std::_Optional_payload_base<luce::common::GenerateError>&&) [inherited from std::_Optional_payload_base<luce::common::GenerateError>]’ at /usr/include/c++/13/optional:399:42,
+    inlined from ‘constexpr std::_Optional_payload<luce::common::GenerateError, false, false, false>::_Optional_payload(bool, std::_Optional_payload_base<luce::common::GenerateError>&&) [inherited from std::_Optional_payload_base<luce::common::GenerateError>]’ at /usr/include/c++/13/optional:433:57,
+    inlined from ‘constexpr std::_Optional_base<_Tp, <anonymous>, <anonymous> >::_Optional_base(std::_Optional_base<_Tp, <anonymous>, <anonymous> >&&) [with _Tp = luce::common::GenerateError; bool <anonymous> = false; bool <anonymous> = false]’ at /usr/include/c++/13/optional:546:9,
+    inlined from ‘constexpr std::optional<luce::common::GenerateError>::optional(std::optional<luce::common::GenerateError>&&)’ at /usr/include/c++/13/optional:707:11,
+    inlined from ‘luce::common::GenerateResult::GenerateResult(luce::common::GenerateResult&&)’ at /home/peppi/Dev/lucebox-builds/wt-m6c/server/src/common/generation_types.h:98:8,
+    inlined from ‘virtual luce::common::GenerateResult luce::common::LagunaBackend::generate_impl(const luce::common::GenerateRequest&, const luce::common::DaemonIO&)’ at /home/peppi/Dev/lucebox-builds/wt-m6c/server/src/laguna/laguna_backend.cpp:1368:16:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/src/common/generation_types.h:93:8: warning: ‘*(luce::common::GenerateError*)((char*)&result + offsetof(luce::common::GenerateResult, luce::common::GenerateResult::error.std::optional<luce::common::GenerateError>::<unnamed>.std::_Optional_base<luce::common::GenerateError, false, false>::<unnamed>)).luce::common::GenerateError::code’ may be used uninitialized [-Wmaybe-uninitialized]
+   93 | struct GenerateError {
+      |        ^~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/src/laguna/laguna_backend.cpp: In member function ‘virtual luce::common::GenerateResult luce::common::LagunaBackend::generate_impl(const luce::common::GenerateRequest&, const luce::common::DaemonIO&)’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/src/laguna/laguna_backend.cpp:1292:20: note: ‘result’ declared here
+ 1292 |     GenerateResult result;
+      |                    ^~~~~~
+In file included from /usr/include/c++/13/string:54,
+                 from /home/peppi/Dev/lucebox-builds/wt-m6c/server/src/common/pflash_types.h:4,
+                 from /home/peppi/Dev/lucebox-builds/wt-m6c/server/src/common/model_backend.h:13:
+In member function ‘std::__cxx11::basic_string<_CharT, _Traits, _Alloc>::pointer std::__cxx11::basic_string<_CharT, _Traits, _Alloc>::_M_data() const [with _CharT = char; _Traits = std::char_traits<char>; _Alloc = std::allocator<char>]’,
+    inlined from ‘bool std::__cxx11::basic_string<_CharT, _Traits, _Alloc>::_M_is_local() const [with _CharT = char; _Traits = std::char_traits<char>; _Alloc = std::allocator<char>]’ at /usr/include/c++/13/bits/basic_string.h:264:13,
+    inlined from ‘std::__cxx11::basic_string<_CharT, _Traits, _Alloc>::basic_string(std::__cxx11::basic_string<_CharT, _Traits, _Alloc>&&) [with _CharT = char; _Traits = std::char_traits<char>; _Alloc = std::allocator<char>]’ at /usr/include/c++/13/bits/basic_string.h:680:23,
+    inlined from ‘luce::common::GenerateError::GenerateError(luce::common::GenerateError&&)’ at /home/peppi/Dev/lucebox-builds/wt-m6c/server/src/common/generation_types.h:93:8,
+    inlined from ‘void std::_Construct(_Tp*, _Args&& ...) [with _Tp = luce::common::GenerateError; _Args = {luce::common::GenerateError}]’ at /usr/include/c++/13/bits/stl_construct.h:119:7,
+    inlined from ‘constexpr void std::_Optional_payload_base<_Tp>::_M_construct(_Args&& ...) [with _Args = {luce::common::GenerateError}; _Tp = luce::common::GenerateError]’ at /usr/include/c++/13/optional:278:19,
+    inlined from ‘constexpr std::_Optional_payload_base<_Tp>::_Optional_payload_base(bool, std::_Optional_payload_base<_Tp>&&) [with _Tp = luce::common::GenerateError]’ at /usr/include/c++/13/optional:155:22,
+    inlined from ‘constexpr std::_Optional_payload<luce::common::GenerateError, true, false, false>::_Optional_payload(bool, std::_Optional_payload_base<luce::common::GenerateError>&&) [inherited from std::_Optional_payload_base<luce::common::GenerateError>]’ at /usr/include/c++/13/optional:399:42,
+    inlined from ‘constexpr std::_Optional_payload<luce::common::GenerateError, false, false, false>::_Optional_payload(bool, std::_Optional_payload_base<luce::common::GenerateError>&&) [inherited from std::_Optional_payload_base<luce::common::GenerateError>]’ at /usr/include/c++/13/optional:433:57,
+    inlined from ‘constexpr std::_Optional_base<_Tp, <anonymous>, <anonymous> >::_Optional_base(std::_Optional_base<_Tp, <anonymous>, <anonymous> >&&) [with _Tp = luce::common::GenerateError; bool <anonymous> = false; bool <anonymous> = false]’ at /usr/include/c++/13/optional:546:9,
+    inlined from ‘constexpr std::optional<luce::common::GenerateError>::optional(std::optional<luce::common::GenerateError>&&)’ at /usr/include/c++/13/optional:707:11,
+    inlined from ‘luce::common::GenerateResult::GenerateResult(luce::common::GenerateResult&&)’ at /home/peppi/Dev/lucebox-builds/wt-m6c/server/src/common/generation_types.h:98:8,
+    inlined from ‘virtual luce::common::GenerateResult luce::common::LagunaBackend::generate_impl(const luce::common::GenerateRequest&, const luce::common::DaemonIO&)’ at /home/peppi/Dev/lucebox-builds/wt-m6c/server/src/laguna/laguna_backend.cpp:1368:16:
+/usr/include/c++/13/bits/basic_string.h:223:28: warning: ‘*(const std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >*)((char*)&result + offsetof(luce::common::GenerateResult, luce::common::GenerateResult::error.std::optional<luce::common::GenerateError>::<unnamed>.std::_Optional_base<luce::common::GenerateError, false, false>::_M_payload.std::_Optional_payload<luce::common::GenerateError, false, false, false>::<unnamed>.std::_Optional_payload<luce::common::GenerateError, true, false, false>::<unnamed>.std::_Optional_payload_base<luce::common::GenerateError>::_M_payload) + 8).std::__cxx11::basic_string<char>::_M_dataplus.std::__cxx11::basic_string<char>::_Alloc_hider::_M_p’ may be used uninitialized [-Wmaybe-uninitialized]
+  223 |       { return _M_dataplus._M_p; }
+      |                            ^~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/src/laguna/laguna_backend.cpp: In member function ‘virtual luce::common::GenerateResult luce::common::LagunaBackend::generate_impl(const luce::common::GenerateRequest&, const luce::common::DaemonIO&)’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/src/laguna/laguna_backend.cpp:1292:20: note: ‘result’ declared here
+ 1292 |     GenerateResult result;
+      |                    ^~~~~~
+In member function ‘bool std::__cxx11::basic_string<_CharT, _Traits, _Alloc>::_M_is_local() const [with _CharT = char; _Traits = std::char_traits<char>; _Alloc = std::allocator<char>]’,
+    inlined from ‘std::__cxx11::basic_string<_CharT, _Traits, _Alloc>::basic_string(std::__cxx11::basic_string<_CharT, _Traits, _Alloc>&&) [with _CharT = char; _Traits = std::char_traits<char>; _Alloc = std::allocator<char>]’ at /usr/include/c++/13/bits/basic_string.h:680:23,
+    inlined from ‘luce::common::GenerateError::GenerateError(luce::common::GenerateError&&)’ at /home/peppi/Dev/lucebox-builds/wt-m6c/server/src/common/generation_types.h:93:8,
+    inlined from ‘void std::_Construct(_Tp*, _Args&& ...) [with _Tp = luce::common::GenerateError; _Args = {luce::common::GenerateError}]’ at /usr/include/c++/13/bits/stl_construct.h:119:7,
+    inlined from ‘constexpr void std::_Optional_payload_base<_Tp>::_M_construct(_Args&& ...) [with _Args = {luce::common::GenerateError}; _Tp = luce::common::GenerateError]’ at /usr/include/c++/13/optional:278:19,
+    inlined from ‘constexpr std::_Optional_payload_base<_Tp>::_Optional_payload_base(bool, std::_Optional_payload_base<_Tp>&&) [with _Tp = luce::common::GenerateError]’ at /usr/include/c++/13/optional:155:22,
+    inlined from ‘constexpr std::_Optional_payload<luce::common::GenerateError, true, false, false>::_Optional_payload(bool, std::_Optional_payload_base<luce::common::GenerateError>&&) [inherited from std::_Optional_payload_base<luce::common::GenerateError>]’ at /usr/include/c++/13/optional:399:42,
+    inlined from ‘constexpr std::_Optional_payload<luce::common::GenerateError, false, false, false>::_Optional_payload(bool, std::_Optional_payload_base<luce::common::GenerateError>&&) [inherited from std::_Optional_payload_base<luce::common::GenerateError>]’ at /usr/include/c++/13/optional:433:57,
+    inlined from ‘constexpr std::_Optional_base<_Tp, <anonymous>, <anonymous> >::_Optional_base(std::_Optional_base<_Tp, <anonymous>, <anonymous> >&&) [with _Tp = luce::common::GenerateError; bool <anonymous> = false; bool <anonymous> = false]’ at /usr/include/c++/13/optional:546:9,
+    inlined from ‘constexpr std::optional<luce::common::GenerateError>::optional(std::optional<luce::common::GenerateError>&&)’ at /usr/include/c++/13/optional:707:11,
+    inlined from ‘luce::common::GenerateResult::GenerateResult(luce::common::GenerateResult&&)’ at /home/peppi/Dev/lucebox-builds/wt-m6c/server/src/common/generation_types.h:98:8,
+    inlined from ‘virtual luce::common::GenerateResult luce::common::LagunaBackend::generate_impl(const luce::common::GenerateRequest&, const luce::common::DaemonIO&)’ at /home/peppi/Dev/lucebox-builds/wt-m6c/server/src/laguna/laguna_backend.cpp:1368:16:
+/usr/include/c++/13/bits/basic_string.h:266:17: warning: ‘*(const std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >*)((char*)&result + offsetof(luce::common::GenerateResult, luce::common::GenerateResult::error.std::optional<luce::common::GenerateError>::<unnamed>.std::_Optional_base<luce::common::GenerateError, false, false>::_M_payload.std::_Optional_payload<luce::common::GenerateError, false, false, false>::<unnamed>.std::_Optional_payload<luce::common::GenerateError, true, false, false>::<unnamed>.std::_Optional_payload_base<luce::common::GenerateError>::_M_payload) + 8).std::__cxx11::basic_string<char>::_M_string_length’ may be used uninitialized [-Wmaybe-uninitialized]
+  266 |             if (_M_string_length > _S_local_capacity)
+      |                 ^~~~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/src/laguna/laguna_backend.cpp: In member function ‘virtual luce::common::GenerateResult luce::common::LagunaBackend::generate_impl(const luce::common::GenerateRequest&, const luce::common::DaemonIO&)’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/src/laguna/laguna_backend.cpp:1292:20: note: ‘result’ declared here
+ 1292 |     GenerateResult result;
+      |                    ^~~~~~
+In constructor ‘std::__cxx11::basic_string<_CharT, _Traits, _Alloc>::basic_string(std::__cxx11::basic_string<_CharT, _Traits, _Alloc>&&) [with _CharT = char; _Traits = std::char_traits<char>; _Alloc = std::allocator<char>]’,
+    inlined from ‘luce::common::GenerateError::GenerateError(luce::common::GenerateError&&)’ at /home/peppi/Dev/lucebox-builds/wt-m6c/server/src/common/generation_types.h:93:8,
+    inlined from ‘void std::_Construct(_Tp*, _Args&& ...) [with _Tp = luce::common::GenerateError; _Args = {luce::common::GenerateError}]’ at /usr/include/c++/13/bits/stl_construct.h:119:7,
+    inlined from ‘constexpr void std::_Optional_payload_base<_Tp>::_M_construct(_Args&& ...) [with _Args = {luce::common::GenerateError}; _Tp = luce::common::GenerateError]’ at /usr/include/c++/13/optional:278:19,
+    inlined from ‘constexpr std::_Optional_payload_base<_Tp>::_Optional_payload_base(bool, std::_Optional_payload_base<_Tp>&&) [with _Tp = luce::common::GenerateError]’ at /usr/include/c++/13/optional:155:22,
+    inlined from ‘constexpr std::_Optional_payload<luce::common::GenerateError, true, false, false>::_Optional_payload(bool, std::_Optional_payload_base<luce::common::GenerateError>&&) [inherited from std::_Optional_payload_base<luce::common::GenerateError>]’ at /usr/include/c++/13/optional:399:42,
+    inlined from ‘constexpr std::_Optional_payload<luce::common::GenerateError, false, false, false>::_Optional_payload(bool, std::_Optional_payload_base<luce::common::GenerateError>&&) [inherited from std::_Optional_payload_base<luce::common::GenerateError>]’ at /usr/include/c++/13/optional:433:57,
+    inlined from ‘constexpr std::_Optional_base<_Tp, <anonymous>, <anonymous> >::_Optional_base(std::_Optional_base<_Tp, <anonymous>, <anonymous> >&&) [with _Tp = luce::common::GenerateError; bool <anonymous> = false; bool <anonymous> = false]’ at /usr/include/c++/13/optional:546:9,
+    inlined from ‘constexpr std::optional<luce::common::GenerateError>::optional(std::optional<luce::common::GenerateError>&&)’ at /usr/include/c++/13/optional:707:11,
+    inlined from ‘luce::common::GenerateResult::GenerateResult(luce::common::GenerateResult&&)’ at /home/peppi/Dev/lucebox-builds/wt-m6c/server/src/common/generation_types.h:98:8,
+    inlined from ‘virtual luce::common::GenerateResult luce::common::LagunaBackend::generate_impl(const luce::common::GenerateRequest&, const luce::common::DaemonIO&)’ at /home/peppi/Dev/lucebox-builds/wt-m6c/server/src/laguna/laguna_backend.cpp:1368:16:
+/usr/include/c++/13/bits/basic_string.h:689:24: warning: ‘*(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >*)((char*)&result + offsetof(luce::common::GenerateResult, luce::common::GenerateResult::error.std::optional<luce::common::GenerateError>::<unnamed>.std::_Optional_base<luce::common::GenerateError, false, false>::_M_payload.std::_Optional_payload<luce::common::GenerateError, false, false, false>::<unnamed>.std::_Optional_payload<luce::common::GenerateError, true, false, false>::<unnamed>.std::_Optional_payload_base<luce::common::GenerateError>::_M_payload) + 8).std::__cxx11::basic_string<char>::<anonymous>.std::__cxx11::basic_string<char>::<unnamed union>::_M_allocated_capacity’ may be used uninitialized [-Wmaybe-uninitialized]
+  689 |             _M_capacity(__str._M_allocated_capacity);
+      |             ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/src/laguna/laguna_backend.cpp: In member function ‘virtual luce::common::GenerateResult luce::common::LagunaBackend::generate_impl(const luce::common::GenerateRequest&, const luce::common::DaemonIO&)’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/src/laguna/laguna_backend.cpp:1292:20: note: ‘result’ declared here
+ 1292 |     GenerateResult result;
+      |                    ^~~~~~
+[ 62%] Building CXX object CMakeFiles/luce_common.dir/src/qwen35/qwen35_backend.cpp.o
+[ 62%] Building CXX object CMakeFiles/luce_common.dir/src/qwen35/qwen35_backend_images.cpp.o
+[ 62%] Building CXX object CMakeFiles/luce_common.dir/src/qwen35/concurrency/qwen35_seq_engine.cpp.o
+[ 62%] Building CXX object CMakeFiles/luce_common.dir/src/qwen35/qwen35_layer_split_adapter.cpp.o
+[ 62%] Building CXX object CMakeFiles/luce_common.dir/src/qwen35/qwen35_dflash_target.cpp.o
+[ 62%] Building CXX object CMakeFiles/luce_common.dir/src/qwen35/qwen35_layer_split_dflash_target.cpp.o
+[ 63%] Building CXX object CMakeFiles/luce_common.dir/src/qwen35/qwen35_daemon.cpp.o
+[ 65%] Building CXX object CMakeFiles/luce_common.dir/src/common/backend_factory.cpp.o
+[ 65%] Linking CXX static library libluce_common.a
+[ 98%] Built target luce_common
+[100%] Building CXX object CMakeFiles/luce_server.dir/src/server/server_main.cpp.o
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/src/server/server_main.cpp: In function ‘void print_usage(const char*)’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/src/server/server_main.cpp:323:54: warning: unknown conversion type character ‘O’ in format [-Wformat=]
+  323 |         "                              On Windows: %LOCALAPPDATA%/lucebox/kv-cache\n"
+      |                                                      ^
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/src/server/server_main.cpp:323:66: warning: unknown conversion type character ‘/’ in format [-Wformat=]
+  323 |         "                              On Windows: %LOCALAPPDATA%/lucebox/kv-cache\n"
+      |                                                                  ^
+[100%] Linking CXX executable luce_server
+Copying status.html to build/share/
+Copying share/deepseek41 to build/share/
+[100%] Built target luce_server
+[  1%] Built target libjpeg_turbo_external
+[  3%] Built target image_codec_png
+[  6%] Built target ggml-base
+[  9%] Built target ggml-cpu
+[ 53%] Built target ggml-cuda
+[ 53%] Built target ggml
+[ 89%] Built target luce_common
+[ 89%] Building CXX object CMakeFiles/test_server_unit.dir/test/unit/test_server_unit.cpp.o
+[ 89%] Building CXX object CMakeFiles/test_server_unit.dir/test/unit/test_kvflash_pager_compacted.cpp.o
+[ 89%] Building CXX object CMakeFiles/test_server_unit.dir/test/unit/test_kvflash_pager_truncate.cpp.o
+[ 89%] Building CXX object CMakeFiles/test_server_unit.dir/test/unit/test_kvflash_pager_serde.cpp.o
+[ 89%] Building CXX object CMakeFiles/test_server_unit.dir/test/unit/test_kvflash_pool_sizing.cpp.o
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_server_unit.cpp: In member function ‘void {anonymous}::TestCase_test_disk_cache_header_round_trip::Run()’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_server_unit.cpp:12145:30: warning: ignoring return value of ‘size_t fread(void*, size_t, size_t, FILE*)’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+12145 |     char magic[4]; std::fread(magic, 4, 1, f);
+      |                    ~~~~~~~~~~^~~~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_server_unit.cpp:12147:28: warning: ignoring return value of ‘size_t fread(void*, size_t, size_t, FILE*)’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+12147 |     uint32_t rv; std::fread(&rv, 4, 1, f);
+      |                  ~~~~~~~~~~^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_server_unit.cpp:12149:32: warning: ignoring return value of ‘size_t fread(void*, size_t, size_t, FILE*)’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+12149 |     uint8_t lid[16]; std::fread(lid, 16, 1, f);
+      |                      ~~~~~~~~~~^~~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_server_unit.cpp:12151:15: warning: ignoring return value of ‘size_t fread(void*, size_t, size_t, FILE*)’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+12151 |     std::fread(&rv, 4, 1, f); TEST_ASSERT(rv == 1234);  // cur_pos
+      |     ~~~~~~~~~~^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_server_unit.cpp:12152:15: warning: ignoring return value of ‘size_t fread(void*, size_t, size_t, FILE*)’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+12152 |     std::fread(&rv, 4, 1, f); TEST_ASSERT(rv == 42);    // n_tensors
+      |     ~~~~~~~~~~^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_server_unit.cpp:12153:15: warning: ignoring return value of ‘size_t fread(void*, size_t, size_t, FILE*)’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+12153 |     std::fread(&rv, 4, 1, f); TEST_ASSERT(rv == 567);   // token_count
+      |     ~~~~~~~~~~^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_server_unit.cpp:12154:31: warning: ignoring return value of ‘size_t fread(void*, size_t, size_t, FILE*)’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+12154 |     uint8_t th[16]; std::fread(th, 16, 1, f);
+      |                     ~~~~~~~~~~^~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_server_unit.cpp:12156:30: warning: ignoring return value of ‘size_t fread(void*, size_t, size_t, FILE*)’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+12156 |     uint64_t ru64; std::fread(&ru64, 8, 1, f); TEST_ASSERT(ru64 == 9999999);  // payload
+      |                    ~~~~~~~~~~^~~~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_server_unit.cpp:12157:15: warning: ignoring return value of ‘size_t fread(void*, size_t, size_t, FILE*)’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+12157 |     std::fread(&ru64, 8, 1, f); TEST_ASSERT(ru64 == 1700000000);  // created_at
+      |     ~~~~~~~~~~^~~~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_server_unit.cpp:12158:15: warning: ignoring return value of ‘size_t fread(void*, size_t, size_t, FILE*)’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+12158 |     std::fread(&ru64, 8, 1, f); TEST_ASSERT(ru64 == 1700000100);  // last_used
+      |     ~~~~~~~~~~^~~~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_server_unit.cpp:12159:29: warning: ignoring return value of ‘size_t fread(void*, size_t, size_t, FILE*)’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+12159 |     int32_t ri32; std::fread(&ri32, 4, 1, f); TEST_ASSERT(ri32 == 151643);  // last_tok
+      |                   ~~~~~~~~~~^~~~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_server_unit.cpp:12160:33: warning: ignoring return value of ‘size_t fread(void*, size_t, size_t, FILE*)’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+12160 |     uint8_t salt[16]; std::fread(salt, 16, 1, f);
+      |                       ~~~~~~~~~~^~~~~~~~~~~~~~~~
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_server_unit.cpp: In function ‘std::array<unsigned char, 16> read_layout_id_from_cache_dir(const std::string&)’:
+/home/peppi/Dev/lucebox-builds/wt-m6c/server/test/unit/test_server_unit.cpp:12336:23: warning: ignoring return value of ‘size_t fread(void*, size_t, size_t, FILE*)’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+12336 |             std::fread(id.data(), 1, 16, f);
+      |             ~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~
+[ 89%] Linking CXX executable test_server_unit
+Discovering CppUnitTestFramework tests for test_server_unit
+[100%] Built target test_server_unit
