@@ -573,3 +573,66 @@ The proper run (Amendment 1: stage 1, probes, one early look at 20 trajectories 
 - **Expected outcome.** The early look at 20 is expected to stop stage 1 with FAIL. It runs anyway for two reasons: it is the preregistered verdict, which the pilot is not; and its FULL-CHK rows are the reference that A2 reuses (section 6, item 3).
 - **What is run.** The block-512 control runs after stage 1 as in Amendment 1. Stage 2 (decisions) is not started by this amendment. Whether it runs, and on what, is set after the stage-1 verdict.
 - **A2.** A2 is preregistered separately before any A2 row, as section 6 requires.
+
+## A2: keep the most recent blocks exact (preregistered 2026-10-15, before any A2 row)
+
+What has been seen:
+- The A1 pilot rows: 6 trajectories, shipping-arm retention 10 of 118. By distance: 0-4096 2/41, 4096-8192 3/26, 8192-16384 3/33, over 16384 2/18. POOL16K on the same trajectories: 34/36, 23/25, 30/31, 1/19.
+- D1: ratio 1.0 gives 38 of 38.
+- Nothing from A1 trajectories 7 and up. The A1 proper run is in progress, and nobody has read its retention.
+- Why A2 is next: section 6 item 3 makes A2 the next rung after a FAIL. Its preregistered branch applies. On the pilot, retention under 8192 tokens is 5 of 67 (7.5%), against POOL16K's 57 of 61 (93%). So the loss is recency, and A2 first tests keeping the most recent blocks exact.
+- The project owner chose this A2: two arms, with the equal-memory arm as the primary.
+- A2 starts after A1's stage-1 verdict, because it reuses A1's FULL-CHK rows. If A1's stage 1 does not stop with FAIL at the early look, A2 is not run, and this section is reconsidered first.
+
+### Question
+
+A compacted block in the pilot recalls about as many verbatim facts per kept row as an exact block does: 10% of the rows, about 10% of the facts. Can the same 16,384 rows as POOL16K, split into an exact recent window plus the compacted older blocks, recall more than POOL16K, which drops what falls outside its 16K?
+
+### Arms
+
+Both arms use the A1 shipping arm with one change.
+- **What stays the same:** the 640-token blocks by stream position; each block compacted once (64 slots, ratio 0.10, the FUNI cell, a local fit on the block's own keys and values with that block's own prefill queries); the Gated DeltaNet state carried through; and the open tail exact.
+- **The one change:** the last W sealed blocks are kept **exact**. A block's compacted form replaces its exact form only when the block leaves the window. The compacted form is computed once, at seal time, from that block's own prefill (the same local fit as A1). A block is never re-compacted.
+- **What the block prefill attends to:** later blocks are prefilled behind what the cache holds at that moment, the compacted older blocks plus the exact window. An engine with query capture at prefill (M3) can do the same, by compacting at seal and keeping both forms of a block until it leaves the window, or by keeping its queries until then.
+
+| Arm | Window W | Exact tokens | Rows at 52,224 tokens (81 blocks + 384 tail) | Role |
+|---|---|---|---|---|
+| `WIN18` | 18 blocks | 11,520 + tail | 18x640 + 63x64 + 384 = 15,936 (at most 16,384, like POOL16K) | **primary** |
+| `WIN25` | 25 blocks | 16,000 + tail | 25x640 + 56x64 + 384 = 19,968 (more memory than POOL16K) | secondary |
+
+W = 18 is the largest window whose rows at the engine's 52,224-token limit stay within POOL16K's 16,384 (W = 19 gives 16,512). The owner was shown "19 blocks, 12,160 tokens" for the primary. That miscounted the tail and is corrected here. W = 25 is the window closest to 16K exact.
+
+### Reused unchanged
+
+- Everything in A1 sections 1 to 4: the harness, render, server tokenizer, stream, checkpoints, limits, parser, parity contract, determinism check and machine (lucebox6 integrated GPU, $0).
+- The reference is A1's FULL-CHK rows. A2 runs no reference for trajectories A1 already ran. If A2 continues past its early look and A1 stopped at 20, A2 runs FULL-CHK on trajectories 21 to 60 with the same code and the same flags.
+- A2 asks only the probes the reference got right, as A1's shipping arm does.
+
+### Code and CPU tests (before any A2 row)
+
+`r2_core.py` gets a window parameter on the block generator (`gen_fblk(..., window=0)`). Window 0 is the A1 shipping arm. The driver gets arms `WIN18` and `WIN25`, with rows in `WIN18.jsonl` and `WIN25.jsonl`. Tests on the tiny hybrid (`tests/test_a1.py`, block 24):
+- (a) **Window 0** is `torch.equal` to the current `gen_fblk` at every checkpoint.
+- (b) **A window of at least the number of blocks** equals FULL-CHK at every checkpoint: keys and values to 1e-4, and the logits of a following suffix to 1e-3.
+- (c) **Any other window:** at a checkpoint, each block older than the window holds exactly the triples the local fit produced at its seal time, each window block holds its exact keys and values, and the slot count per full-attention layer is 64 x (older blocks) + block x W + tail.
+- (d) **The row arithmetic** in the table above, for 52,224 tokens.
+
+### Statistics and decision rule
+
+- **Statistics** are as A1 section 5 (`r1b_stats`, the trajectory as the cluster), for each arm. Retention by distance and by probe type are reported for both arms, next to POOL16K's.
+- **Early look.** As A1 Amendment 1: one Haybittle-Peto look at 20 trajectories, at 99.9%, on the **primary** only.
+  - If the 99.9% lower bound is above 75.6%, the result is PASS. If the 99.9% upper bound is below 75.6%, the result is FAIL. Either way, A2 stops.
+  - Otherwise both arms run all 60 trajectories, and the primary is decided at 95% under A1 section 6's rule.
+  - INCONCLUSIVE with the point at or above 75.6%: the design ships on the point estimate with the risk written down, and the engine's agentic gate decides. The 120-trajectory extension is not used in A2.
+- **Primary `WIN18`:**
+  - **PASS:** the 2.0b design becomes "exact recent 18 blocks + compacted older". The plan's order after M5 holds, with the window added to M6 and M8.
+  - **FAIL:** under section 6 item 3, the compaction track stops after M5, and whether 2.0b ships without compaction goes to the project owner.
+- **Secondary `WIN25`:**
+  - It gets the same interval and is reported as not memory-matched. It cannot rescue or fail the primary.
+  - If `WIN25` passes while `WIN18` does not, that is reported to the owner as a finding: compaction adds recall only with more memory than the pool.
+- **Prediction, from the pilot distances only (not part of the rule).** Facts inside the window at about A1's exact rate, and facts outside it at the pilot's compacted rate of about 10%. `WIN18` is projected at about 71% against POOL16K's 79% on the pilot trajectories. `WIN25` is projected at about POOL16K plus 1 to 2 points.
+
+### Time
+
+- The window arms build like the shipping arm, about 140 s per trajectory. They answer behind about 12K to 16K exact rows, at about 10 s per probe for about 20 probes.
+- That is about 340 s per arm per trajectory. Both arms on 20 trajectories take about 3.8 h. All 60 take about 11 h, plus FULL-CHK on trajectories 21 to 60 if A1 stopped at 20 (about 8 h).
+- Machine: the lucebox6 integrated GPU, at $0.
