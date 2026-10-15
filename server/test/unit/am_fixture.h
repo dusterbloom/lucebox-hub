@@ -138,9 +138,10 @@ inline HeadCosine cosine_per_head(const float * ref, const uint16_t * eng, int H
 
 // Every head must clear the gate on its own: the layer average hides one bad head
 // (one negated head of 24 still averages 0.917), and cosine cannot see a scale error.
-// Constants are tripwires (the plan fixes no number: "Q4-vs-BF16 noise floor"), to be
-// replaced by the measured floor.
-struct HeadGate { double min_cos = 0.9, ratio_lo = 0.95, ratio_hi = 1.05; };
+// Constants from the measured Q4_K_M-vs-bf16 profile (F16 KV, traj1_12k_exactq, 384 heads): the layer-mean
+// cosine is 0.997 at layer 3 and 0.909 at layer 51, drifting down with depth; the worst head is 0.874
+// (layer 59, head 1). A capture bug lands near 0 or -1, so 0.85 still separates it clearly.
+struct HeadGate { double min_cos = 0.85, ratio_lo = 0.95, ratio_hi = 1.05; };
 
 inline std::string head_violation(const HeadCosine & r, HeadGate g = {}) {
     std::string out;

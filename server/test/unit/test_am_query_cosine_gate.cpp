@@ -273,7 +273,11 @@ TEST_CASE(AmGateFixture, q4km_queries_match_the_bf16_dump_of_trajectory_1_block)
     const luce_test::ScopedEnvVar cap("LUCE_KVFLASH_AM_CAPTURE", "1");
     const luce_test::ScopedEnvVar nokvf("LUCE_KVFLASH", nullptr);
     const char * kv_dump = std::getenv("LUCE_AM_DUMP_KV");  // diagnosis aid: K and V rows of the block at the first full-attention layer
-    const luce_test::ScopedEnvVar kvf16("LUCE_KV_F16", kv_dump ? "1" : std::getenv("LUCE_KV_F16"));
+    // The gate compares against an unrotated reference, so the KV cache must be F16: under the default Q4_0
+    // (and TQ3) the graph FWHT-rotates K and Q, and the captured Q would be in the rotated basis.
+    const luce_test::ScopedEnvVar kvf16("LUCE_KV_F16", "1");
+    const luce_test::ScopedEnvVar kvq4("LUCE_KV_Q4", nullptr), kvtq3("LUCE_KV_TQ3", nullptr), kvk("LUCE_KV_K", nullptr),
+                                  kvv("LUCE_KV_V", nullptr), kvrot("LUCE_KV_ROTATE", nullptr);
     Qwen35Config cfg;
     cfg.target_path = gguf;
     cfg.device.gpu = 0;
@@ -317,6 +321,7 @@ TEST_CASE(AmGateFixture, q4km_queries_match_the_bf16_dump_of_trajectory_1_block)
             o.write((const char *)out.data(), (std::streamsize)(out.size() * 2));
         }
     }
+    REQUIRE(be.cache().attn_k[0]->type == GGML_TYPE_F16);
     REQUIRE(!be.sealed.empty());
     CHECK(be.sealed.back() == block);
     REQUIRE(!be.plane.empty());
@@ -361,11 +366,12 @@ TEST_CASE(AmGateFixture, q4km_queries_match_the_bf16_dump_of_trajectory_1_block)
                 hs.min, hs.median, hs.mean, head_means.size(), worst_token);
     const Summary rs = summarize(head_ratios);
     auto p10 = [](std::vector<double> v) { std::sort(v.begin(), v.end()); return v[(size_t)((v.size() - 1) * 0.10)]; };
-    std::printf("[am-gate] SUMMARY case=%s per-head cos min %.4f median %.4f p10 %.4f | norm ratio min %.4f median %.4f max %.4f | "
+    std::printf("[am-gate] SUMMARY case=%s kv=%s/%s per-head cos min %.4f median %.4f p10 %.4f | norm ratio min %.4f median %.4f max %.4f | "
                 "worst cos (layer %d, head %d) %.4f | worst ratio (layer %d, head %d) %.4f\n",
-                fx.manifest["case"].get<std::string>().c_str(), hs.min, hs.median, p10(head_means), rs.min, rs.median,
+                fx.manifest["case"].get<std::string>().c_str(), ggml_type_name(be.cache().attn_k[0]->type),
+                ggml_type_name(be.cache().attn_v[0]->type), hs.min, hs.median, p10(head_means), rs.min, rs.median,
                 *std::max_element(head_ratios.begin(), head_ratios.end()), wc_layer, wc_head, worst_cos, wr_layer, wr_head, wr_val);
     std::printf("[am-gate] per-head norm ratio eng/ref: min %.4f median %.4f mean %.4f\n", rs.min, rs.median, rs.mean);
     if (!violations.empty()) std::printf("[am-gate] head violations:\n%s", violations.c_str());
-    CHECK(violations.empty());  // every head: mean cosine > 0.9 and norm ratio in [0.95, 1.05]; layer means above are reported only
+    CHECK(violations.empty());  // every head: mean cosine > 0.85 and norm ratio in [0.95, 1.05]; layer means above are reported only
 }
