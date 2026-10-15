@@ -4817,6 +4817,11 @@ bool ggml_cuda_flash_attn_ext_supported(int device, const ggml_tensor * dst) {
         return false;
 #endif // defined(GGML_USE_HIP)
     }
+    // Selected ids (src[5]) are honoured only by the QSA kernels, which do not read kv_bias; the generic
+    // kernels would abort at dispatch on a maskless op, so a biased QSA op is never admitted.
+    if (dst->src[5] != nullptr && dst->src[9] != nullptr) {
+        return false;
+    }
     const best_fattn_kernel kernel = ggml_cuda_get_best_fattn_kernel(device, dst);
     // kv_bias (src[9]) is only honoured by the kernels that read it.
     if (dst->src[9] != nullptr) {

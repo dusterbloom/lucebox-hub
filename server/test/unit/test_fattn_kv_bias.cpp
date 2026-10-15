@@ -322,6 +322,28 @@ bool test_lane_kv_guard() {
     return ok;
 }
 
+// A maskless op with QSA selected ids (src[5]) and a kv_bias: no kernel honours that pair (the QSA predicates
+// reject kv_bias, the generic kernels abort on maskless selected ids), so supports_op must decline it and the
+// scheduler never hands it to the backend.
+bool test_qsa_bias_not_admitted(ggml_backend_t gpu) {
+    bool ok = true;
+    for (int nq : { 1, 128 }) {
+        ggml_context * ctx = ggml_init({ 16u << 20, nullptr, true });
+        ggml_tensor * q  = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, 256, nq, 24, 1);
+        ggml_tensor * k  = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, 256, 1024, 2, 1);
+        ggml_tensor * v  = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, 256, 1024, 2, 1);
+        ggml_tensor * fa = ggml_flash_attn_ext(ctx, q, k, v, nullptr, 0.0625f, 0.0f, 0.0f);
+        fa->src[5] = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 64, nq);  // QSA selected ids
+        ggml_flash_attn_ext_add_kv_bias(fa, ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1024, 2));
+        const bool admitted = ggml_backend_supports_op(gpu, fa);
+        std::printf("%s qsa ids + kv_bias, %d queries: gpu supports_op %s\n",
+                    admitted ? "FAIL   " : "PASS   ", nq, admitted ? "ADMITS (dispatch would abort)" : "declines");
+        ok = ok && !admitted;
+        ggml_free(ctx);
+    }
+    return ok;
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {
@@ -341,6 +363,7 @@ int main(int argc, char ** argv) {
         ggml_backend_cuda_set_graphs_disabled_override(true);
     }
 #endif
+    const bool qsa_ok = !gpu || test_qsa_bias_not_admitted(gpu);
     std::vector<Case> cases;
     for (const Shape & s : SHAPES)
         for (ggml_type ty : KV_TYPES) {
@@ -396,6 +419,6 @@ int main(int argc, char ** argv) {
     if (gpu) std::printf("SUMMARY gpu: pass %d fail %d unsupp %d skip %d, max abs err %.3e, max nmse %.3e\n",
                 tg.pass, tg.fail, tg.unsupp, tg.skip, tg.worst_abs, tg.worst_nmse);
     const bool strict = std::getenv("FATTN_KV_BIAS_STRICT") != nullptr;
-    const int bad = !guard_ok + fail_nodisc + tc.fail + tg.fail + tc.unsupp + (strict ? tg.unsupp : 0);
+    const int bad = !guard_ok + !qsa_ok + fail_nodisc + tc.fail + tg.fail + tc.unsupp + (strict ? tg.unsupp : 0);
     return bad ? 1 : 0;
 }
