@@ -29,6 +29,16 @@
 //  * The FWHT K-rotation and KV quantization operate per-row; page-out /
 //    page-in moves raw quantized bytes and is therefore bit-exact.
 //
+// Region B (AM compaction): each layer's cache tensor may be longer than the
+// pool, [head_dim, pool_tokens + B_L, n_head_kv], B_L a multiple of
+// chunk_tokens that differs per layer. Rows [0, pool_tokens) are region A,
+// everything above is B and holds compacted segments: insert_compacted()
+// replaces the A chunks of [lo, hi) with per-layer B blocks (keys C1, values
+// C2, written by the caller at b_row()) and a per-(layer, head, slot) beta.
+// The shared slot mask covers region A only; fill_kv_bias() builds the
+// per-layer key bias [layer_cols, n_head_kv] (0 on A, beta on live B slots,
+// -inf on padding and free B slots). Positions inside a segment own no slot.
+//
 // Scope: full-attention layers only. DeltaNet/conv recurrent state is
 // fixed-size, position-dependent in-place state and is never paged.
 //
@@ -90,6 +100,17 @@ struct KvFlashStats {
     int64_t moved_bytes = 0;  // cumulative D2H+H2D traffic
 };
 
+// A compacted span [lo, hi) (chunk aligned). `blocks[l]` are layer l's B
+// blocks; `counts` / `beta` are indexed [layer * n_head_kv + head]. Head h of
+// layer l keeps counts[..] live slots: slot s sits in block blocks[l][s /
+// chunk_tokens], row s % chunk_tokens. The rest of its blocks is padding.
+struct KvFlashSegment {
+    int64_t lo = 0, hi = 0;
+    std::vector<std::vector<int>>   blocks;
+    std::vector<int>                counts;
+    std::vector<std::vector<float>> beta;
+};
+
 class KvFlashPager {
 public:
     // `attn_k` / `attn_v` are the per-full-attention-layer cache tensors,
@@ -129,6 +150,9 @@ public:
             const ggml_tensor * K0 = attn_k[0];
             if ((int)K0->ne[1] < cfg.pool_tokens) return false;
             n_head_kv_ = (int)K0->ne[2];
+            for (size_t l = 0; l < attn_k.size(); l++)   // region B extents may differ per layer
+                if ((int)attn_k[l]->ne[1] < cfg.pool_tokens ||
+                    attn_v[l]->ne[1] != attn_k[l]->ne[1]) return false;
 
             // Per-(tensor, head) contiguous segment of chunk_tokens rows.
             k_seg_bytes_ = (size_t)cfg.chunk_tokens * K0->nb[1];
@@ -146,6 +170,8 @@ public:
         free_blocks_.clear();
         for (int b = n_blocks_ - 1; b >= 0; b--) free_blocks_.push_back(b);
         chunks_.clear();
+        segments_.clear();
+        b_free_all_();
         stats_ = {};
         clock_ = 0;
         has_pending_page_in_ = false;
@@ -185,6 +211,8 @@ public:
         }
 #endif
         chunks_.clear();
+        segments_.clear();
+        b_free_all_();
         free_blocks_.clear();
         for (int b = n_blocks_ - 1; b >= 0; b--) free_blocks_.push_back(b);
         stats_.host_bytes = 0;
@@ -208,10 +236,16 @@ public:
     // pager (pins kept clipped to nothing); P at or beyond the materialized
     // length is a no-op. Valid for any P because full-attention KV at a
     // position does not depend on later tokens.
-    void truncate(int64_t P) {
-        if (!attached()) return;
+    // A compacted segment cannot be cut: a P inside one (lo < P < hi) drops
+    // the whole segment and truncates to lo instead. Returns the position the
+    // pager actually holds up to (P in every other case), so the caller
+    // replays from there. Segments at or above P give their B blocks back.
+    int64_t truncate(int64_t P) {
+        if (!attached()) return P;
         if (P < 0) P = 0;
-        if (P >= (int64_t)chunks_.size() * cfg_.chunk_tokens) return;
+        if (P >= (int64_t)chunks_.size() * cfg_.chunk_tokens) return P;
+        for (const KvFlashSegment & sg : segments_)
+            if (sg.lo < P && P < sg.hi) { P = sg.lo; break; }
         synchronize_paging();   // queued page DMA must not touch what is freed below
         const int keep = (int)((P + cfg_.chunk_tokens - 1) / cfg_.chunk_tokens);
         for (int c = (int)chunks_.size() - 1; c >= keep; c--) {
@@ -226,6 +260,10 @@ public:
             }
         }
         chunks_.resize((size_t)keep);
+        while (!segments_.empty() && segments_.back().lo >= P) {
+            b_release_(segments_.back());
+            segments_.pop_back();
+        }
         if (pinned_.size() > (size_t)keep) pinned_.resize((size_t)keep);
         if (keep > 0 && P % cfg_.chunk_tokens != 0) {
             zero_chunk_rows_(keep - 1, (int)(P % cfg_.chunk_tokens));
@@ -235,6 +273,87 @@ public:
         synchronize_paging();   // zeroing is queued on page_stream_
         refill_after_truncate_();
         synchronize_paging();   // recalls are queued on page_stream_
+        return P;
+    }
+
+    // Replace the region A chunks of [lo, hi) (chunk aligned, materialized, no
+    // overlap with another segment) by a compacted segment: counts[l *
+    // n_head_kv + h] live slots for head h of layer l, beta[..] their biases.
+    // Each layer takes ceil(max_h counts / chunk_tokens) B blocks, whose rows
+    // start at b_row(l, block); the caller writes C1/C2 there. False, nothing
+    // touched, on a bad geometry or when a layer's B region lacks free blocks.
+    bool insert_compacted(int64_t lo, int64_t hi, const std::vector<int> & counts,
+                          const std::vector<std::vector<float>> & beta) {
+        const int ct = cfg_.chunk_tokens;
+        const size_t n_lh = attn_k_.size() * (size_t)n_head_kv_;
+        if (!attached() || lo < 0 || hi <= lo || lo % ct || hi % ct ||
+            hi > (int64_t)chunks_.size() * ct || counts.size() != n_lh || beta.size() != n_lh)
+            return false;
+        for (size_t i = 0; i < n_lh; i++)
+            if (counts[i] < 0 || beta[i].size() != (size_t)counts[i]) return false;
+        for (int64_t c = lo / ct; c < hi / ct; c++) {
+            const ChunkState & st = chunks_[(size_t)c];
+            if (st.compacted || (st.block < 0 && !st.on_host)) return false;
+        }
+        const std::vector<int> need = b_need_(counts);
+        for (size_t l = 0; l < need.size(); l++)
+            if ((int)b_free_[l].size() < need[l]) return false;
+
+        synchronize_paging();
+        for (int64_t c = lo / ct; c < hi / ct; c++) {
+            ChunkState & st = chunks_[(size_t)c];
+            if (st.block >= 0) {
+                zero_block(st.block);
+                free_blocks_.push_back(st.block);
+                st.block = -1;
+            }
+            if (st.on_host && has_tensor_storage()) {
+                release_host_(st);
+                stats_.host_bytes -= (int64_t)chunk_bytes_;
+            }
+            st.on_host = false;
+            st.compacted = true;
+        }
+        synchronize_paging();   // the zeroing is queued on page_stream_
+        KvFlashSegment sg;
+        sg.lo = lo; sg.hi = hi; sg.counts = counts; sg.beta = beta;
+        b_take_(sg);
+        segments_.insert(std::upper_bound(segments_.begin(), segments_.end(), lo,
+            [](int64_t v, const KvFlashSegment & x) { return v < x.lo; }), std::move(sg));
+        epoch_++;
+        return true;
+    }
+
+    const std::vector<KvFlashSegment> & segments() const { return segments_; }
+    // First tensor row of B block `blk`: region A, then blk * chunk_tokens.
+    int b_row(int /*layer*/, int blk) const { return cfg_.pool_tokens + blk * cfg_.chunk_tokens; }
+    int b_free_blocks(int layer) const { return (int)b_free_[(size_t)layer].size(); }
+    // Columns of a layer's FA key span and kv_bias: pool + that layer's B_L.
+    int layer_cols(int layer) const {
+        return (size_t)layer < attn_k_.size() ? (int)attn_k_[(size_t)layer]->ne[1]
+                                              : cfg_.pool_tokens;
+    }
+
+    // F32 key bias of one layer, [layer_cols(layer), n_head_kv] with the head
+    // as the slow axis (the kv_bias of ggml_flash_attn_ext_add_kv_bias): 0 on
+    // region A (the slot mask decides there), beta on live compacted slots,
+    // -inf on padding slots and free B blocks.
+    void fill_kv_bias(int layer, float * dst) const {
+        const int cols = layer_cols(layer);
+        for (int h = 0; h < n_head_kv_; h++) {
+            float * row = dst + (size_t)h * cols;
+            std::fill(row, row + cfg_.pool_tokens, 0.0f);
+            std::fill(row + cfg_.pool_tokens, row + cols, -std::numeric_limits<float>::infinity());
+        }
+        for (const KvFlashSegment & sg : segments_)
+            for (int h = 0; h < n_head_kv_; h++) {
+                const size_t lh = (size_t)layer * n_head_kv_ + h;
+                for (int s = 0; s < sg.counts[lh]; s++) {
+                    const int blk = sg.blocks[(size_t)layer][(size_t)(s / cfg_.chunk_tokens)];
+                    dst[(size_t)h * cols + b_row(layer, blk) + s % cfg_.chunk_tokens] =
+                        sg.beta[lh][(size_t)s];
+                }
+            }
     }
 
     // After truncate the pool holds what the dropped tail left behind: after a
@@ -339,6 +458,7 @@ public:
     // appended token, in logical order.
     int slot_for(int64_t pos) {
         const int c = (int)(pos / cfg_.chunk_tokens);
+        if (c < (int)chunks_.size() && chunks_[c].compacted) return -1;   // lives in region B
         // cur_chunk_ tracks the append head only; a page_in of an older
         // chunk must not shrink the protected tail window. It must advance
         // BEFORE eviction (so the victim search protects the new tail), but
@@ -426,6 +546,7 @@ public:
         for (int c = 0; c < (int)chunks_.size(); c++) {
             if (chunks_[c].block >= 0 && chunks_[c].block != c) return false;
             if (chunks_[c].block < 0 && chunks_[c].on_host) return false;
+            if (chunks_[c].compacted) return false;
         }
         return true;
     }
@@ -552,8 +673,12 @@ public:
     // Not serialized: physical block numbers, LRU order, pins.
     std::vector<uint8_t> serialize(int max_chunks = -1) const {
         synchronize_page_stream_();   // queued D2H must land in host_data first
-        const int nc = (max_chunks >= 0 && max_chunks < (int)chunks_.size())
-                       ? max_chunks : (int)chunks_.size();
+        int nc = (max_chunks >= 0 && max_chunks < (int)chunks_.size())
+                 ? max_chunks : (int)chunks_.size();
+        for (const KvFlashSegment & sg : segments_) {   // a cut never splits a segment
+            const int slo = (int)(sg.lo / cfg_.chunk_tokens), shi = (int)(sg.hi / cfg_.chunk_tokens);
+            if (slo < nc && nc < shi) nc = slo;
+        }
         const size_t kv_bytes = (size_t)nc * chunk_bytes_;
         std::vector<uint8_t> out(kBlobHdr + kv_bytes + (size_t)nc * kLedgerEntry, 0);
         uint8_t * p = out.data();
@@ -587,7 +712,40 @@ public:
             }
             uint8_t * lp = out.data() + kBlobHdr + kv_bytes + (size_t)c * kLedgerEntry;
             lp[0] = st.block >= 0 ? 1u : 0u;
+            lp[1] = st.compacted ? 1u : 0u;
             std::memcpy(lp + 4, &st.score, 4);
+        }
+        // Region B trailer, only when segments exist (a blob without them is
+        // byte-identical to the pre-B layout).
+        auto put = [&out](const void * src, size_t n) {
+            const uint8_t * s = (const uint8_t *)src;
+            out.insert(out.end(), s, s + n);
+        };
+        std::vector<const KvFlashSegment *> keep;
+        for (const KvFlashSegment & sg : segments_)
+            if (sg.hi <= (int64_t)nc * cfg_.chunk_tokens) keep.push_back(&sg);
+        if (!keep.empty()) {
+            const uint32_t hdr2[2] = {kSegMagic, (uint32_t)keep.size()};
+            put(hdr2, sizeof(hdr2));
+            for (const KvFlashSegment * sg : keep) {
+                put(&sg->lo, 8);
+                put(&sg->hi, 8);
+                put(sg->counts.data(), sg->counts.size() * sizeof(int));
+                for (const auto & b : sg->beta) put(b.data(), b.size() * sizeof(float));
+                std::vector<uint8_t> seg;
+                for (size_t l = 0; l < attn_k_.size(); ++l)
+                    for (int blk : sg->blocks[l])
+                        for (int kv = 0; kv < 2; ++kv) {
+                            ggml_tensor * t = kv == 0 ? attn_k_[l] : attn_v_[l];
+                            const size_t n = kv == 0 ? k_seg_bytes_ : v_seg_bytes_;
+                            seg.resize(n);
+                            for (int h = 0; h < n_head_kv_; ++h) {
+                                ggml_backend_tensor_get(t, seg.data(),
+                                    (size_t)b_row((int)l, blk) * t->nb[1] + (size_t)h * t->nb[2], n);
+                                put(seg.data(), n);
+                            }
+                        }
+            }
         }
         return out;
     }
@@ -622,12 +780,17 @@ public:
         size_t n_resident = 0;
         for (size_t c = 0; c < nc; ++c) n_resident += lp[c * kLedgerEntry] != 0;
         if (n_resident > (size_t)n_blocks_) return false;
+        std::vector<KvFlashSegment> segs;
+        std::vector<const uint8_t *> bsrc;
+        if (!parse_segments_(lp, nc, data + n, segs, bsrc)) return false;
 
         reset();
         last_serialized_kv_k_type_ = h[6];
         chunks_.resize(nc);
         for (size_t c = 0; c < nc; ++c) {
             ChunkState & st = chunks_[c];
+            std::memcpy(&st.score, lp + c * kLedgerEntry + 4, 4);
+            if (lp[c * kLedgerEntry + 1] != 0) { st.compacted = true; continue; }   // lives in region B
             if (has_tensor_storage()) {
                 const uint8_t * src = kv + c * chunk_bytes_;
 #ifdef KVFLASH_HAS_ASYNC_DMA
@@ -643,11 +806,24 @@ public:
                 stats_.host_bytes += (int64_t)chunk_bytes_;
             }
             st.on_host = true;
-            std::memcpy(&st.score, lp + c * kLedgerEntry + 4, 4);
             // slot_for()'s recall branch copies host_data into the new block.
             if (lp[c * kLedgerEntry] != 0) slot_for((int64_t)c * cfg_.chunk_tokens);
         }
         if (nc > 0 && cur_chunk_ < (int)nc - 1) cur_chunk_ = (int)nc - 1;
+        for (size_t i = 0; i < segs.size(); ++i) {
+            b_take_(segs[i]);
+            size_t o = 0;
+            for (size_t l = 0; l < attn_k_.size(); ++l)
+                for (int blk : segs[i].blocks[l])
+                    for (int kv = 0; kv < 2; ++kv) {
+                        ggml_tensor * t = kv == 0 ? attn_k_[l] : attn_v_[l];
+                        const size_t seg = kv == 0 ? k_seg_bytes_ : v_seg_bytes_;
+                        for (int hh = 0; hh < n_head_kv_; ++hh, o += seg)
+                            ggml_backend_tensor_set(t, bsrc[i] + o,
+                                (size_t)b_row((int)l, blk) * t->nb[1] + (size_t)hh * t->nb[2], seg);
+                    }
+            segments_.push_back(std::move(segs[i]));
+        }
         if (has_pending_page_in_) synchronize_paging();   // async recalls settle
         return true;
     }
@@ -656,6 +832,112 @@ private:
     static constexpr uint64_t kBlobMagic = 0x4b56464c41534831ULL;  // "KVFLASH1"
     static constexpr size_t kBlobHdr = sizeof(uint64_t) + 8 * sizeof(uint32_t);
     static constexpr size_t kLedgerEntry = 8;
+    static constexpr uint32_t kSegMagic = 0x47534b56u;   // "VKSG": region B trailer
+
+    // ── Region B bookkeeping ──
+    int b_blocks_(size_t l) const {
+        return ((int)attn_k_[l]->ne[1] - cfg_.pool_tokens) / cfg_.chunk_tokens;
+    }
+    void b_free_all_() {
+        b_free_.assign(attn_k_.size(), {});
+        for (size_t l = 0; l < attn_k_.size(); l++)
+            for (int b = b_blocks_(l) - 1; b >= 0; b--) b_free_[l].push_back(b);
+    }
+    // B blocks per layer for a counts vector: ceil(max over heads / chunk_tokens).
+    std::vector<int> b_need_(const std::vector<int> & counts) const {
+        std::vector<int> need(attn_k_.size(), 0);
+        for (size_t l = 0; l < need.size(); l++) {
+            int mx = 0;
+            for (int h = 0; h < n_head_kv_; h++) mx = std::max(mx, counts[l * n_head_kv_ + h]);
+            need[l] = (mx + cfg_.chunk_tokens - 1) / cfg_.chunk_tokens;
+        }
+        return need;
+    }
+    // Hand a segment its B blocks (lowest free first); the caller checked capacity.
+    void b_take_(KvFlashSegment & sg) {
+        const std::vector<int> need = b_need_(sg.counts);
+        sg.blocks.assign(need.size(), {});
+        for (size_t l = 0; l < need.size(); l++)
+            for (int i = 0; i < need[l]; i++) {
+                sg.blocks[l].push_back(b_free_[l].back());
+                b_free_[l].pop_back();
+            }
+    }
+    // Give a segment's B blocks back, zeroed (a stale NaN in a masked V row
+    // would still poison P*V), keeping the free list lowest-first.
+    void b_release_(const KvFlashSegment & sg) {
+        for (size_t l = 0; l < sg.blocks.size(); l++) {
+            for (int blk : sg.blocks[l]) {
+                for (int kv = 0; kv < 2; kv++) {
+                    ggml_tensor * t = kv == 0 ? attn_k_[l] : attn_v_[l];
+                    const size_t seg = kv == 0 ? k_seg_bytes_ : v_seg_bytes_;
+                    for (int h = 0; h < n_head_kv_; h++)
+                        ggml_backend_tensor_set(t, zero_buf_.data(),
+                            (size_t)b_row((int)l, blk) * t->nb[1] + (size_t)h * t->nb[2], seg);
+                }
+                b_free_[l].push_back(blk);
+            }
+            std::sort(b_free_[l].rbegin(), b_free_[l].rend());
+        }
+        epoch_++;
+    }
+    // Validate and decode the region B trailer of a blob (`p` = just past the
+    // ledger, `end` = blob end; no trailer when p == end) without touching any
+    // pager state. `bsrc[i]` points at segment i's B bytes.
+    bool parse_segments_(const uint8_t * lp, size_t nc, const uint8_t * end,
+                         std::vector<KvFlashSegment> & segs,
+                         std::vector<const uint8_t *> & bsrc) const {
+        const uint8_t * p = lp + nc * kLedgerEntry;
+        const size_t L = attn_k_.size(), n_lh = L * (size_t)n_head_kv_;
+        const size_t blk_bytes = (k_seg_bytes_ + v_seg_bytes_) * (size_t)n_head_kv_;
+        std::vector<uint8_t> covered(nc, 0);
+        std::vector<int> used(L, 0);
+        uint32_t m[2] = {0, 0};   // trailing bytes that are not a trailer are tolerated
+        if ((size_t)(end - p) >= sizeof(m)) std::memcpy(m, p, sizeof(m));
+        if (m[0] == kSegMagic) {
+            p += sizeof(m);
+            int64_t prev_hi = 0;
+            for (uint32_t i = 0; i < m[1]; i++) {
+                KvFlashSegment sg;
+                if ((size_t)(end - p) < 16 + n_lh * sizeof(int)) return false;
+                std::memcpy(&sg.lo, p, 8); std::memcpy(&sg.hi, p + 8, 8); p += 16;
+                sg.counts.resize(n_lh);
+                if (n_lh) std::memcpy(sg.counts.data(), p, n_lh * sizeof(int));
+                p += n_lh * sizeof(int);
+                const int64_t ct = cfg_.chunk_tokens;
+                if (sg.lo < prev_hi || sg.hi <= sg.lo || sg.lo % ct || sg.hi % ct ||
+                    sg.hi / ct > (int64_t)nc) return false;
+                prev_hi = sg.hi;
+                size_t total = 0;
+                for (size_t k = 0; k < n_lh; k++) {
+                    if (sg.counts[k] < 0 || sg.counts[k] > b_blocks_(k / n_head_kv_) * cfg_.chunk_tokens)
+                        return false;
+                    total += (size_t)sg.counts[k];
+                }
+                if ((size_t)(end - p) < total * sizeof(float)) return false;
+                for (size_t k = 0; k < n_lh; k++) {
+                    sg.beta.emplace_back((size_t)sg.counts[k]);
+                    std::memcpy(sg.beta.back().data(), p, sg.beta.back().size() * sizeof(float));
+                    p += sg.beta.back().size() * sizeof(float);
+                }
+                const std::vector<int> need = b_need_(sg.counts);
+                size_t blocks = 0;
+                for (size_t l = 0; l < L; l++) {
+                    used[l] += need[l];
+                    if (used[l] > b_blocks_(l)) return false;
+                    blocks += (size_t)need[l];
+                }
+                if ((size_t)(end - p) < blocks * blk_bytes) return false;
+                bsrc.push_back(p);
+                p += blocks * blk_bytes;
+                std::fill(covered.begin() + sg.lo / ct, covered.begin() + sg.hi / ct, 1);
+                segs.push_back(std::move(sg));
+            }
+        }
+        for (size_t c = 0; c < nc; c++)
+            if ((lp[c * kLedgerEntry + 1] != 0) != (covered[c] != 0)) return false;
+        return true;
+    }
 
     uint32_t live_k_type_() const {
         return !attn_k_.empty() && attn_k_[0] ? (uint32_t)attn_k_[0]->type
@@ -670,6 +952,7 @@ private:
     struct ChunkState {
         int      block    = -1;       // pool block index, -1 = not resident
         bool     on_host  = false;    // backing store holds valid bytes
+        bool     compacted = false;   // inside a KvFlashSegment: no slot, no host copy
         uint64_t last_use = 0;
         float    score    = -std::numeric_limits<float>::infinity();  // QK ledger
 #ifdef KVFLASH_HAS_ASYNC_DMA
@@ -885,6 +1168,8 @@ private:
     std::vector<int> free_blocks_;
     std::vector<uint8_t> zero_buf_;   // used by zero_block() in non-CUDA builds
     std::vector<uint8_t> pinned_;     // per-chunk pin flag; empty = no pins
+    std::vector<KvFlashSegment> segments_;   // compacted spans, ascending lo
+    std::vector<std::vector<int>> b_free_;   // per layer: free B blocks, lowest at back
     KvFlashStats stats_;
     size_t k_seg_bytes_ = 0, v_seg_bytes_ = 0, chunk_bytes_ = 0;
     int n_blocks_ = 0, n_head_kv_ = 0, cur_chunk_ = 0;
