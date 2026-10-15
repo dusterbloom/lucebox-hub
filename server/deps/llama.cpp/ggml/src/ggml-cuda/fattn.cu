@@ -4832,5 +4832,13 @@ bool ggml_cuda_flash_attn_ext_supported(int device, const ggml_tensor * dst) {
             return false;
         }
     }
+#if defined(GGML_USE_HIP)
+    // HIP compiles no TQ3_0 vec instance (ggml_cuda_flash_attn_ext_vec), and the selector only
+    // sends TQ3_0 to CHUNKED when there is a mask. Anything else that lands on VEC would abort.
+    if (kernel == BEST_FATTN_KERNEL_VEC &&
+        (dst->src[1]->type == GGML_TYPE_TQ3_0 || dst->src[2]->type == GGML_TYPE_TQ3_0)) {
+        return false;
+    }
+#endif // defined(GGML_USE_HIP)
     return kernel != BEST_FATTN_KERNEL_NONE;
 }
