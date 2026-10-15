@@ -299,12 +299,26 @@ def window_rows(tokens, window, block=BLOCK, ratio=RATIO):
     return w * block + (nb - w) * slots_for(block, ratio) + tail
 
 
-def gen_fblk_window(R, segs, ks, window, on_block=None):
+def clone_triples(triples):
+    return tuple(tuple(x.clone() for x in e) for e in triples)
+
+
+def repeat_queries(S, state, orig_len, prompt_ids, block_ids):
+    """E6: the queries of a repeat-prefill pass over a CLONE of `state` (earlier blocks compacted, the current block exact, the DeltaNet
+    state after the block): `prompt_ids` (the chat-formatted repeat instruction) then the block's own tokens, teacher-forced at the
+    logical positions that follow the block (`orig_len`). The clone and its continuation are discarded; (L, H, n, d), post-RoPE."""
+    ids = torch.cat([prompt_ids, block_ids], 1).to(S.dev)
+    return extend(S.model, S.layer_types, clone_triples(state), orig_len, ids, want_queries=True)[2]
+
+
+def gen_fblk_window(R, segs, ks, window, on_block=None, repeat_prompt=None, exact_blocks=0):
     """A2: gen_fblk with the last `window` sealed blocks kept exact. Every block is fitted once, at seal time, exactly as
     `Runner.segment_step` does (the block's own keys and values, its own prefill queries, prefilled behind what the cache holds
     at that moment: compacted older blocks plus the exact window). A block's compacted form replaces its exact form only
     when it leaves the window; it is never re-fitted. Exact rows carry beta 0 (what `extend` appends). `on_block(j, a, b, exact,
-    comp)` (diagnostics E2/E3) is called at seal time with the block's exact and compacted full-attention entries; default off."""
+    comp)` (diagnostics E2/E3) is called at seal time with the block's exact and compacted full-attention entries; default off.
+    E6 `repeat_prompt` (ids, (1, m)): each block is fitted on `repeat_queries` instead of its context-prefill queries. E7
+    `exact_blocks`: the first N sealed blocks stay exact (a contiguous leading range) and are not fitted. Both default off."""
     S = R.S
     stream = torch.cat([s.ids for s in segs], 1)
     ends = [sum(s.n for s in segs[:i + 1]) for i in range(len(segs))]
@@ -328,9 +342,14 @@ def gen_fblk_window(R, segs, ks, window, on_block=None):
             t0 = time.time()
             state, orig_len, q = extend(S.model, S.layer_types, compose(), orig_len, ids.to(S.dev), want_queries=True)
             t1 = time.time()
-            seg, _ = R._compact(R._pseudo_kv(state, S.linear, last=n), slots_for(n, R.ratio), range(0, n), S.tok.decode(ids[0]),
-                                queries=q)
             exact = tuple(None if i in S.linear else tuple(x[:, :, -n:].clone() for x in state[i]) for i in range(n_layers))
+            if len(trace) < exact_blocks:                       # E7: the leading blocks stay exact, never fitted
+                seg = exact
+            else:
+                if repeat_prompt is not None:                   # E6: fit on repeat-prefill queries instead of the context ones
+                    q = repeat_queries(S, state, orig_len, repeat_prompt, ids)
+                seg, _ = R._compact(R._pseudo_kv(state, S.linear, last=n), slots_for(n, R.ratio), range(0, n), S.tok.decode(ids[0]),
+                                    queries=q)
             wins.append((exact, attn_only(seg)))
             if on_block is not None:
                 on_block(len(trace), a, b, exact, wins[-1][1])

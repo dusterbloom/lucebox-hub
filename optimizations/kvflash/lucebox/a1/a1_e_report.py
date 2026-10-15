@@ -1,6 +1,6 @@
 """Report for diagnostics E3, E3SPEC, E2 (dir 1) and E5 (dir 2) against the pilot's FULL-CHK reference and shipping rows.
-    python3 a1_e_report.py <e3e2_dir> <e5_dir> <pilot_dir>      -> prints JSON, writes <e3e2_dir>/e_report.json
-Decides nothing (PREREG "Diagnostics E2, E3, E5 before A2")."""
+    python3 a1_e_report.py <e3e2_dir> <e5_dir> <pilot_dir> [<e6_dir> <e7_dir>]    -> prints JSON, writes <e3e2_dir>/e_report.json
+Decides nothing (PREREG "Diagnostics E2, E3, E5 before A2" and "Diagnostics E6, E7")."""
 import json
 import os
 import sys
@@ -29,7 +29,7 @@ def e2_tables(rows):
     return out
 
 
-def main(d32, d5, pilot):
+def main(d32, d5, pilot, d6=None, d7=None):
     H = C.Harness(C.default_paths())
     tasks = H.load_tasks()
     full = C.read_rows(os.path.join(pilot, "FULL.jsonl"))
@@ -41,6 +41,13 @@ def main(d32, d5, pilot):
                     "mean_blocks_swapped": sum(len(r["swapped_blocks"]) for r in rows) / len(rows) if rows else None}
     if os.path.exists(os.path.join(d5, "SHIP.jsonl")):
         rep["E5_ratio_0.25"] = retention(H, tasks, full, C.read_rows(os.path.join(d5, "SHIP.jsonl")), T)
+    for name, d in (("E6_repeat_queries", d6), ("E7_system_prefix_exact", d7)):
+        f = os.path.join(d, name[:2] + ".jsonl") if d else None
+        if f and os.path.exists(f):
+            rep[name] = retention(H, tasks, full, C.read_rows(f), T)
+            if name[:2] == "E7":
+                pr = [r for r in C.read_rows(os.path.join(d, "progress.jsonl")) if "exact_tokens" in r]
+                rep[name]["exact_tokens_per_trajectory"] = {r["traj"][-8:]: r["exact_tokens"] for r in pr}
     rep["E2"] = e2_tables(C.read_rows(os.path.join(d32, "e2.jsonl")))
     sc = os.path.join(d32, "ship_check.json")
     rep["ship_check"] = json.load(open(sc)) if os.path.exists(sc) else None
@@ -50,4 +57,4 @@ def main(d32, d5, pilot):
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:4])
+    main(*sys.argv[1:6])

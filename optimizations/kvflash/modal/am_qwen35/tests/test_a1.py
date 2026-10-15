@@ -394,6 +394,47 @@ def test_e2_router_inputs_on_the_real_model_have_the_expected_shapes(setup, monk
         assert sc.shape == (4, q.shape[2]) and float(sc.abs().max()) <= 1.0 + 1e-4
 
 
+# ---------------------------------------------------------------- E6 / E7 on the tiny hybrid (PREREG "Diagnostics E6, E7")
+
+def test_e6_repeat_queries_change_the_fitted_tensors_and_nothing_else_about_the_state_shape(setup, monkeypatch):
+    S, segs = setup
+    _blocks24(monkeypatch)
+    cs = a1_core.segs_from_checkpoints(stream_of(segs)[:100], [100])      # 4 sealed blocks + tail of 4
+    prompt = torch.tensor([S.tok("Repeat the previous context verbatim.", add_special_tokens=False)["input_ids"]])
+    with session(S) as sess:
+        R = r2.Runner(sess, None, cell="FUNI", ratio=0.25)
+        (_, ship, n0, _), = list(r2.gen_fblk_window(R, cs, [0], 0))
+        (_, e6, n1, info), = list(r2.gen_fblk_window(R, cs, [0], 0, repeat_prompt=prompt))
+        assert n0 == n1 == 100 and info["tail_tokens"] == 4
+        full = [i for i in range(len(ship)) if i not in sess.linear]
+        assert all(ship[i][0].shape == e6[i][0].shape for i in full)                  # same rows per layer as the shipping arm
+        assert all(torch.isfinite(e6[i][c]).all() for i in full for c in (0, 2))
+        slots = r2.slots_for(BLOCK_W, 0.25)
+        differ = [(ship[i][c][:, :, :4 * slots] != e6[i][c][:, :, :4 * slots]).any().item() for i in full for c in range(3)]
+        assert any(differ)                                                            # the fit saw other queries
+
+
+def test_e7_zero_prefix_equals_the_shipping_state_and_a_prefix_holds_the_exact_rows(setup, monkeypatch):
+    S, segs = setup
+    _blocks24(monkeypatch)
+    cs = a1_core.segs_from_checkpoints(stream_of(segs)[:100], [100])
+    with session(S) as sess:
+        R = r2.Runner(sess, None, cell="FUNI", ratio=0.25)
+        (_, ship, _, _), = list(r2.gen_fblk_window(R, cs, [0], 0))
+        (_, zero, _, _), = list(r2.gen_fblk_window(R, cs, [0], 0, exact_blocks=0))
+        assert all(torch.equal(x, y) for a, b in zip(ship, zero) for x, y in zip(a, b))        # a zero-length prefix is SHIP
+        (_, e7, n, info), = list(r2.gen_fblk_window(R, cs, [0], 0, exact_blocks=2))
+        full_chk, = [tr for _, tr, _, _ in r2.gen_fullchk(R, cs, None, [0], block=BLOCK_W)]
+        slots = r2.slots_for(BLOCK_W, 0.25)
+        for i in range(len(e7)):
+            if i in sess.linear:
+                continue
+            assert e7[i][0].shape[2] == 2 * BLOCK_W + 2 * slots + 4
+            assert torch.allclose(e7[i][0][:, :, :2 * BLOCK_W], full_chk[i][0][:, :, :2 * BLOCK_W], atol=1e-4)    # exact rows, as FULL-CHK
+            assert not e7[i][1][:, :, :2 * BLOCK_W].any()
+        assert any((e7[i][1][:, :, 2 * BLOCK_W:2 * BLOCK_W + 2 * slots] != 0).any() for i in range(len(e7)) if i not in sess.linear)   # then compacted blocks
+
+
 # ---------------------------------------------------------------- real data, CPU
 
 _P = a1_core.default_paths()
