@@ -289,6 +289,7 @@ protected:
     // upload every step — the input's buffer region is reused by compute).
     void kvflash_upload_mask();
     void kvflash_sync_bias_flag();
+    void kvflash_check_bias_graph();
     void kvflash_upload_bias();
     void kvflash_test_compact();
     // Drafter rescore + reselect every kvflash_tau_ generated tokens.
