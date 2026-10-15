@@ -245,7 +245,8 @@ struct UbatchRun {
     std::vector<float> q_cap_last;   // cache.q_cap after the ubatch
 };
 UbatchRun run_ubatch(Model & m, TargetCache & cache, const std::vector<std::vector<float>> & emb,
-               int kv_start, int n, bool q_capture, int first, int count, int dst) {
+               int kv_start, int n, bool q_capture, int first, int count, int dst,
+               const std::vector<QBlockWindow> * windows = nullptr) {
     UbatchRun r;
     std::vector<uint8_t> arena(64u << 20);
     ggml_init_params ip{}; ip.mem_size = arena.size(); ip.mem_buffer = arena.data(); ip.no_alloc = true;
@@ -263,7 +264,8 @@ UbatchRun run_ubatch(Model & m, TargetCache & cache, const std::vector<std::vect
     gi.inp_embed = inp; gi.positions = pos; gi.attn_mask = mask;
     gi.n_tokens = n; gi.kv_start = kv_start;
     gi.q_capture = q_capture;
-    gi.q_blk_first = first; gi.q_blk_count = count; gi.q_blk_dst = dst;
+    if (windows) gi.q_blk_windows = *windows;
+    else if (count > 0) gi.q_blk_windows.push_back({first, count, dst, 0});
     QwenGraphOutputs go = build_qwen35_graph(ctx, gf, m.w, cache, gi);
     (void)go;
     ggml_tensor * out = ggml_graph_get_tensor(gf, "result_norm");
@@ -310,8 +312,8 @@ bool make_cache(Model & m, TargetCache & c) {
 }
 
 // Row `row` of layer `l`, head `h` of the F16 plane, as floats.
-std::vector<uint16_t> read_q_blk_raw(const TargetCache & c, int l, int row) {
-    const ggml_tensor * t = c.q_blk;
+std::vector<uint16_t> read_q_blk_raw(const TargetCache & c, int l, int row, int slot = 0) {
+    const ggml_tensor * t = c.q_blk_ring[(size_t)slot];
     std::vector<uint16_t> raw((size_t)t->ne[0] * t->ne[2]);
     for (int h = 0; h < (int)t->ne[2]; h++) {
         ggml_backend_tensor_get(t, raw.data() + (size_t)h * t->ne[0],
@@ -320,8 +322,8 @@ std::vector<uint16_t> read_q_blk_raw(const TargetCache & c, int l, int row) {
     }
     return raw;
 }
-std::vector<float> read_q_blk(const TargetCache & c, int l, int row) {
-    const std::vector<uint16_t> raw = read_q_blk_raw(c, l, row);
+std::vector<float> read_q_blk(const TargetCache & c, int l, int row, int slot = 0) {
+    const std::vector<uint16_t> raw = read_q_blk_raw(c, l, row, slot);
     std::vector<float> o(raw.size());
     for (size_t i = 0; i < raw.size(); i++) o[i] = f16_to_f32(raw[i]);
     return o;
@@ -463,31 +465,88 @@ TEST_CASE(QBlockCaptureFixture, capture_off_is_a_no_op) {
     m.destroy();
 }
 
-TEST_CASE(QBlockCaptureFixture, chunks_are_cut_at_block_boundaries) {
-    CHECK(q_block_chunk_tokens(0, 512, 640) == 512);
-    CHECK(q_block_chunk_tokens(512, 512, 640) == 128);
-    CHECK(q_block_chunk_tokens(640, 512, 640) == 512);
-    CHECK(q_block_chunk_tokens(1152, 512, 640) == 128);
-    CHECK(q_block_chunk_tokens(1280, 7, 640) == 7);
+TEST_CASE(QBlockCaptureFixture, ring_slots_cover_every_block_a_chunk_touches) {
+    CHECK(q_block_slots(512, 640) == 2);
+    CHECK(q_block_slots(1, 640) == 1);
+    CHECK(q_block_slots(642, 640) == 3);   // 639..1280 touches blocks 0, 1, 2
+    CHECK(q_block_slots(641, 640) == 2);
 }
 
-TEST_CASE(QBlockCaptureFixture, plan_marks_the_sealing_chunk_and_skips_partial_blocks) {
-    // Cold prefill: chunk 512..640 is the tail of block 0 and seals it.
-    QBlockPlan p = plan_q_block_window(512, 128, 640, 0);
-    CHECK(p.count == 128); CHECK(p.first == 0); CHECK(p.dst == 512);
-    CHECK(p.block == 0);   CHECK(p.seals);
-    // Next chunk starts block 1 at row 0 and does not seal.
-    p = plan_q_block_window(640, 384, 640, 0);
-    CHECK(p.count == 384); CHECK(p.dst == 0); CHECK(p.block == 1); CHECK(!p.seals);
-    p = plan_q_block_window(1024, 256, 640, 0);
-    CHECK(p.dst == 384); CHECK(p.block == 1); CHECK(p.seals);
-    // A prefill that resumes inside block 0 never captures or seals block 0 ...
-    p = plan_q_block_window(100, 540, 640, 100);
-    CHECK(p.count == 0); CHECK(!p.seals);
-    // ... but captures block 1 in full.
-    p = plan_q_block_window(640, 640, 640, 100);
-    CHECK(p.count == 640); CHECK(p.dst == 0); CHECK(p.seals);
+TEST_CASE(QBlockCaptureFixture, a_straddling_chunk_gets_one_segment_per_block) {
+    auto v = plan_q_block_segments(512, 512, 640, 0, 2);
+    REQUIRE(v.size() == 2);
+    CHECK(v[0].block == 0); CHECK(v[0].first == 0);   CHECK(v[0].count == 128);
+    CHECK(v[0].dst == 512); CHECK(v[0].slot == 0);    CHECK(v[0].seals);
+    CHECK(v[1].block == 1); CHECK(v[1].first == 128); CHECK(v[1].count == 384);
+    CHECK(v[1].dst == 0);   CHECK(v[1].slot == 1);    CHECK(!v[1].seals);
+    // A chunk ending exactly on the boundary seals and touches one block only.
+    v = plan_q_block_segments(128, 512, 640, 0, 2);
+    REQUIRE(v.size() == 1); CHECK(v[0].seals); CHECK(v[0].count == 512);
     // The last, incomplete block is captured but never sealed.
-    p = plan_q_block_window(1280, 300, 640, 0);
-    CHECK(p.count == 300); CHECK(!p.seals);
+    v = plan_q_block_segments(1280, 300, 640, 0, 2);
+    REQUIRE(v.size() == 1); CHECK(!v[0].seals); CHECK(v[0].count == 300);
+}
+
+TEST_CASE(QBlockCaptureFixture, restore_at_639_keeps_the_planner_chunks_and_skips_the_partial_block) {
+    // The backend takes chunk sizes from qwen35_prefill_chunk_tokens alone;
+    // capture only reads them. Replay a restore at 639 (off the 512 grid).
+    std::vector<int> restore_points;
+    const int ubatch = 512, kv_offset = 639, prompt = 3000;
+    std::vector<int> sizes, blocks_sealed;
+    std::vector<int> rows_seen(6, 0);
+    for (int start = 0; start < prompt;) {
+        const int kv_pos = kv_offset + start;
+        const int n = qwen35_prefill_chunk_tokens(kv_pos, prompt - start, ubatch, restore_points,
+                                                  start == 0 ? kQwen35OffGridLeadTokens : kQwen35MinChunkTokens);
+        sizes.push_back(n);
+        for (const QBlockSeg & g : plan_q_block_segments(kv_pos, n, 640, kv_offset, q_block_slots(ubatch, 640))) {
+            rows_seen[g.block] += g.count;
+            if (g.seals) blocks_sealed.push_back(g.block);
+        }
+        start += n;
+    }
+    for (size_t i = 0; i + 1 < sizes.size(); i++) CHECK(sizes[i] >= kQwen35MinChunkTokens);
+    CHECK(sizes.front() >= kQwen35OffGridLeadTokens);
+    // Block 0 began before the restore: no rows, no seal. Blocks 1..4 fully
+    // captured and sealed; the prompt ends at 3639, 439 rows into block 5.
+    CHECK(rows_seen[0] == 0);
+    for (int b = 1; b <= 4; b++) CHECK(rows_seen[b] == 640);
+    CHECK(rows_seen[5] == 439);
+    CHECK((blocks_sealed == std::vector<int>{1, 2, 3, 4}));
+    // Chunk count is a function of the planner only, with capture on or off.
+    int off_count = 0;
+    for (int start = 0; start < prompt; off_count++) {
+        start += qwen35_prefill_chunk_tokens(kv_offset + start, prompt - start, ubatch, restore_points,
+                                             start == 0 ? kQwen35OffGridLeadTokens : kQwen35MinChunkTokens);
+    }
+    CHECK((int)sizes.size() == off_count);
+}
+
+TEST_CASE(QBlockCaptureFixture, a_chunk_straddling_two_blocks_fills_both_planes_against_the_reference) {
+    const luce_test::ScopedEnvVar kv_f16("LUCE_KV_F16", "1");
+    Model m; REQUIRE(m.init());
+    const int kBlock = 8, kPrompt = 14;
+    const auto emb = make_embeddings(kPrompt);
+    const auto ref = reference_queries(m, emb);
+    TargetCache cache; REQUIRE(make_cache(m, cache));
+    REQUIRE(alloc_q_block_capture(cache, m.w, kBlock, 2));
+    REQUIRE(cache.q_blk_ring.size() == 2);
+    for (ggml_tensor * t : cache.q_blk_ring) {
+        std::vector<uint16_t> sent((size_t)ggml_nelements(t), 0x7E7E);
+        ggml_backend_tensor_set(t, sent.data(), 0, sent.size() * 2);
+    }
+    // One ubatch of tokens 0..13: block 0 = tokens 0..7 (slot 0), block 1 = tokens 8..13 (slot 1).
+    const std::vector<QBlockWindow> wins = {{0, 8, 0, 0}, {8, 6, 0, 1}};
+    REQUIRE(!run_ubatch(m, cache, emb, 0, kPrompt, false, 0, 0, 0, &wins).hidden.empty());
+    for (int l = 0; l < kLayers; l++) {
+        for (int row = 0; row < 8; row++)
+            CHECK(rel_err(read_q_blk(cache, l, row, 0), ref[l][row]) < (l == 0 ? 1e-3 : 2e-3));
+        for (int row = 0; row < 6; row++)
+            CHECK(rel_err(read_q_blk(cache, l, row, 1), ref[l][8 + row]) < (l == 0 ? 1e-3 : 2e-3));
+        for (int row = 6; row < 8; row++)
+            for (uint16_t v : read_q_blk_raw(cache, l, row, 1)) CHECK(v == 0x7E7E);
+    }
+    free_target_cache(cache);
+    CHECK(cache.q_blk_ring.empty());
+    m.destroy();
 }

@@ -504,23 +504,24 @@ void free_target_cache(TargetCache & c) {
     c.cur_pos = 0;
 }
 
-size_t q_block_capture_bytes(const TargetWeights & w, int block_tokens) {
+size_t q_block_capture_bytes(const TargetWeights & w, int block_tokens, int n_slots) {
     const int n_fa = w.n_layer / w.full_attention_interval;
     return (size_t)w.n_embd_head_k * (size_t)block_tokens * (size_t)w.n_head *
-           (size_t)n_fa * sizeof(uint16_t);
+           (size_t)n_fa * sizeof(uint16_t) * (size_t)n_slots;
 }
 
-bool alloc_q_block_capture(TargetCache & c, const TargetWeights & w, int block_tokens) {
+bool alloc_q_block_capture(TargetCache & c, const TargetWeights & w, int block_tokens, int n_slots) {
     const int n_fa = w.n_layer / w.full_attention_interval;
-    if (!c.backend || block_tokens <= 0 || n_fa <= 0) {
+    if (!c.backend || block_tokens <= 0 || n_fa <= 0 || n_slots <= 0) {
         set_last_error("q block capture: no backend or empty shape");
         return false;
     }
     if (c.q_blk) {
-        return c.q_blk->ne[1] == block_tokens && c.q_blk->ne[3] == n_fa;
+        return c.q_blk->ne[1] == block_tokens && c.q_blk->ne[3] == n_fa &&
+               (int)c.q_blk_ring.size() == n_slots;
     }
     ggml_init_params ip{};
-    ip.mem_size   = ggml_tensor_overhead() * 2;
+    ip.mem_size   = ggml_tensor_overhead() * (size_t)(n_slots + 1);
     ip.mem_buffer = nullptr;
     ip.no_alloc   = true;
     c.q_blk_ctx = ggml_init(ip);
@@ -528,9 +529,13 @@ bool alloc_q_block_capture(TargetCache & c, const TargetWeights & w, int block_t
         set_last_error("q block capture: ggml_init failed");
         return false;
     }
-    c.q_blk = ggml_new_tensor_4d(c.q_blk_ctx, GGML_TYPE_F16,
-                                 w.n_embd_head_k, block_tokens, w.n_head, n_fa);
-    ggml_set_name(c.q_blk, "q_blk");
+    for (int i = 0; i < n_slots; i++) {
+        ggml_tensor * t = ggml_new_tensor_4d(c.q_blk_ctx, GGML_TYPE_F16,
+                                             w.n_embd_head_k, block_tokens, w.n_head, n_fa);
+        ggml_set_name(t, "q_blk");
+        c.q_blk_ring.push_back(t);
+    }
+    c.q_blk = c.q_blk_ring[0];
     c.q_blk_buf = ggml_backend_alloc_ctx_tensors(c.q_blk_ctx, c.backend);
     if (!c.q_blk_buf) {
         free_q_block_capture(c);
@@ -544,6 +549,7 @@ void free_q_block_capture(TargetCache & c) {
     if (c.q_blk_buf) { ggml_backend_buffer_free(c.q_blk_buf); c.q_blk_buf = nullptr; }
     if (c.q_blk_ctx) { ggml_free(c.q_blk_ctx);                c.q_blk_ctx = nullptr; }
     c.q_blk = nullptr;
+    c.q_blk_ring.clear();
 }
 
 void reset_target_cache(TargetCache & c) {
@@ -2473,7 +2479,7 @@ QwenGraphOutputs build_qwen35_graph(
         ggml_tensor * cur = rms_norm_mul(ctx, inp_f32, L.attn_norm, eps);
 
         if (is_attn) {
-            const bool want_q_blk = cache.q_blk && in.q_blk_count > 0;
+            const bool want_q_blk = cache.q_blk && !in.q_blk_windows.empty();
             const bool want_q_cap = in.q_capture && cache.q_cap;
             ggml_tensor * q_fa = nullptr;
             if (w.is_bailingmoe3) {
@@ -2524,24 +2530,27 @@ QwenGraphOutputs build_qwen35_graph(
                 ggml_build_forward_expand(gf, ggml_cpy(ctx, src, dst));
             }
             if (want_q_blk && q_fa) {
-                // The captured window of this ubatch, converted to F16 into
-                // the layer's plane at the block row. q_fa is the tensor the
-                // attention consumed ([head_dim, n_tokens, n_head], contiguous).
-                GGML_ASSERT(in.q_blk_first >= 0 &&
-                            in.q_blk_first + in.q_blk_count <= n_tokens);
-                GGML_ASSERT(in.q_blk_dst >= 0 &&
-                            in.q_blk_dst + in.q_blk_count <= cache.q_blk->ne[1]);
-                GGML_ASSERT(fa_idx < cache.q_blk->ne[3]);
-                ggml_tensor * src = ggml_view_3d(ctx, q_fa,
-                    q_fa->ne[0], in.q_blk_count, q_fa->ne[2],
-                    q_fa->nb[1], q_fa->nb[2],
-                    (size_t)in.q_blk_first * q_fa->nb[1]);
-                ggml_tensor * dst = ggml_view_3d(ctx, cache.q_blk,
-                    cache.q_blk->ne[0], in.q_blk_count, cache.q_blk->ne[2],
-                    cache.q_blk->nb[1], cache.q_blk->nb[2],
-                    (size_t)fa_idx * cache.q_blk->nb[3] +
-                        (size_t)in.q_blk_dst * cache.q_blk->nb[1]);
-                ggml_build_forward_expand(gf, ggml_cpy(ctx, src, dst));
+                // Each window of this ubatch, converted to F16 into the
+                // layer's plane of the window's ring slot at the block row.
+                // q_fa is the tensor the attention consumed
+                // ([head_dim, n_tokens, n_head], contiguous).
+                for (const QBlockWindow & wd : in.q_blk_windows) {
+                    GGML_ASSERT(wd.slot >= 0 && wd.slot < (int)cache.q_blk_ring.size());
+                    ggml_tensor * blk = cache.q_blk_ring[(size_t)wd.slot];
+                    GGML_ASSERT(wd.first >= 0 && wd.count > 0 &&
+                                wd.first + wd.count <= n_tokens);
+                    GGML_ASSERT(wd.dst >= 0 && wd.dst + wd.count <= blk->ne[1]);
+                    GGML_ASSERT(fa_idx < blk->ne[3]);
+                    ggml_tensor * src = ggml_view_3d(ctx, q_fa,
+                        q_fa->ne[0], wd.count, q_fa->ne[2],
+                        q_fa->nb[1], q_fa->nb[2],
+                        (size_t)wd.first * q_fa->nb[1]);
+                    ggml_tensor * dst = ggml_view_3d(ctx, blk,
+                        blk->ne[0], wd.count, blk->ne[2],
+                        blk->nb[1], blk->nb[2],
+                        (size_t)fa_idx * blk->nb[3] + (size_t)wd.dst * blk->nb[1]);
+                    ggml_build_forward_expand(gf, ggml_cpy(ctx, src, dst));
+                }
             }
             fa_idx++;
         } else {

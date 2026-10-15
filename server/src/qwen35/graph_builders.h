@@ -194,7 +194,7 @@ bool build_target_step(
     int n_logits_rows = 0,
     bool compact_slots = false,
     // Query-block capture window of this ubatch (needs cache.q_blk).
-    QBlockWindow q_blk_window = {});
+    std::vector<QBlockWindow> q_blk_windows = {});
 
 // Full target forward: DDTree tree-verify mode.
 bool build_target_step_tree(

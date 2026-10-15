@@ -45,36 +45,39 @@ inline int qwen35_prefill_chunk_tokens(int kv_pos, int remaining, int ubatch,
 
 // KVFlash 2.0b query-block capture. AM compaction fits each sealed block of
 // kKvflashAmBlockTokens tokens from the queries of that block's own prefill.
+// Capture never changes the chunk plan: a chunk that straddles block
+// boundaries writes each block's rows into that block's plane of a ring.
 inline constexpr int kKvflashAmBlockTokens = 640;
 
-// Tokens of the chunk at kv_pos that stay inside kv_pos's block, so one
-// ubatch never feeds two blocks' capture buffers.
-inline int q_block_chunk_tokens(int kv_pos, int n_tokens, int block_tokens) {
-    return std::min(n_tokens, block_tokens - kv_pos % block_tokens);
+// Ring planes needed so that every block a chunk of up to max_chunk tokens
+// touches has its own plane (the block before them is already sealed).
+inline int q_block_slots(int max_chunk, int block_tokens) {
+    return (block_tokens + max_chunk - 2) / block_tokens + 1;
 }
 
-struct QBlockPlan {
-    int  first = 0;        // chunk tokens [first, first + count) are captured
-    int  count = 0;        // 0: nothing to capture in this chunk
-    int  dst   = 0;        // block row of chunk token `first`
-    int  block = 0;        // index of the block kv_pos lies in
-    bool seals = false;    // the chunk ends exactly on the block's last token
+struct QBlockSeg {
+    int  first = 0;        // chunk tokens [first, first + count) belong to `block`
+    int  count = 0;
+    int  dst   = 0;        // row of chunk token `first` inside the block
+    int  slot  = 0;        // ring plane of the block
+    int  block = 0;
+    bool seals = false;    // the chunk contains the block's last token
 };
 
-// Capture plan for a chunk [kv_pos, kv_pos + n_tokens) that does not cross a
-// block boundary (see q_block_chunk_tokens). A block that began before this
-// prefill (prefill_start, a restored prefix) is incomplete here and is never
-// captured or sealed.
-inline QBlockPlan plan_q_block_window(int kv_pos, int n_tokens, int block_tokens,
-                                      int prefill_start) {
-    QBlockPlan p;
-    const int block_start = kv_pos - kv_pos % block_tokens;
-    p.block = kv_pos / block_tokens;
-    if (block_start < prefill_start) return p;
-    p.count = n_tokens;
-    p.dst = kv_pos - block_start;
-    p.seals = (kv_pos + n_tokens) % block_tokens == 0;
-    return p;
+// Segments of the chunk [kv_pos, kv_pos + n_tokens), one per block it touches.
+// A block that began before this prefill (prefill_start, a restored prefix)
+// is incomplete here and is never captured or sealed.
+inline std::vector<QBlockSeg> plan_q_block_segments(int kv_pos, int n_tokens, int block_tokens,
+                                                    int prefill_start, int n_slots) {
+    std::vector<QBlockSeg> out;
+    for (int b = kv_pos / block_tokens; b <= (kv_pos + n_tokens - 1) / block_tokens; b++) {
+        const int bs = b * block_tokens;
+        if (bs < prefill_start) continue;
+        const int lo = std::max(bs, kv_pos);
+        const int hi = std::min(bs + block_tokens, kv_pos + n_tokens);
+        out.push_back({lo - kv_pos, hi - lo, lo - bs, b % n_slots, b, hi == bs + block_tokens});
+    }
+    return out;
 }
 
 inline int qwen35_prefill_ubatch(int fallback) {
