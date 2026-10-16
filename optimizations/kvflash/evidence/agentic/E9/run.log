@@ -1,0 +1,18 @@
+[a1] model loaded in 15s on Radeon 8060S Graphics torch 2.9.1+rocm7.13.0a20260513
+[e9] 58f9f17c cut 1/2 ctx 23522 blocks 36 peak alloc 54.0 reserved 56.0 GiB
+[e9] 58f9f17c cut 2/2 ctx 36590 blocks 57 peak alloc 56.0 reserved 61.7 GiB
+[e9] bef6b39d cut 1/3 ctx 11194 blocks 17 peak alloc 56.0 reserved 61.7 GiB
+[e9] bef6b39d cut 2/3 ctx 24239 blocks 37 peak alloc 56.0 reserved 61.7 GiB
+[e9] bef6b39d cut 3/3 ctx 36550 blocks 57 peak alloc 56.1 reserved 61.7 GiB
+[e9] 22767e8f cut 1/3 ctx 12088 blocks 18 peak alloc 56.1 reserved 61.7 GiB
+[e9] 22767e8f cut 2/3 ctx 24495 blocks 38 peak alloc 56.1 reserved 61.7 GiB
+[e9] 22767e8f cut 3/3 ctx 33349 blocks 52 peak alloc 56.1 reserved 61.7 GiB
+[e9] d5b2f250 cut 1/3 ctx 11205 blocks 17 peak alloc 56.1 reserved 61.7 GiB
+[e9] d5b2f250 cut 2/3 ctx 23955 blocks 37 peak alloc 56.1 reserved 61.7 GiB
+[e9] d5b2f250 cut 3/3 ctx 36489 blocks 57 peak alloc 56.1 reserved 61.7 GiB
+[e9] 93b0bbdc cut 1/3 ctx 12287 blocks 19 peak alloc 56.1 reserved 61.7 GiB
+[e9] 93b0bbdc cut 2/3 ctx 24567 blocks 38 peak alloc 56.1 reserved 61.7 GiB
+[e9] 93b0bbdc cut 3/3 ctx 36118 blocks 56 peak alloc 56.1 reserved 61.7 GiB
+[e9] b02cfcfc cut 1/3 ctx 11628 blocks 18 peak alloc 56.1 reserved 61.7 GiB
+[e9] b02cfcfc cut 2/3 ctx 24259 blocks 37 peak alloc 56.1 reserved 61.7 GiB
+[e9] b02cfcfc cut 3/3 ctx 35554 blocks 55 peak alloc 56.1 reserved 61.7 GiB

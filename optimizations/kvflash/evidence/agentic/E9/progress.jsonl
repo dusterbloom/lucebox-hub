@@ -1,0 +1,6 @@
+{"traj": "chatcmpl-40fe82c8835837b664f4a16458f9f17c", "n_rows": 11, "build_s": 145.17559099197388, "route_s": 24.16385579109192, "system_end_tok": 5920, "prefix_blocks": 10, "arm": "E9", "peak_alloc_gib": 56.04901599884033}
+{"traj": "chatcmpl-905125c7406f0c2f85fa42f3bef6b39d", "n_rows": 27, "build_s": 147.0299301147461, "route_s": 42.77248477935791, "system_end_tok": 5920, "prefix_blocks": 10, "arm": "E9", "peak_alloc_gib": 56.10434579849243}
+{"traj": "chatcmpl-9ad087ddb4caf2f06e6685fd22767e8f", "n_rows": 25, "build_s": 132.3746998310089, "route_s": 43.221816301345825, "system_end_tok": 5920, "prefix_blocks": 10, "arm": "E9", "peak_alloc_gib": 56.10434579849243}
+{"traj": "chatcmpl-31effae850e2879cd435597bd5b2f250", "n_rows": 13, "build_s": 147.71646881103516, "route_s": 23.657981872558594, "system_end_tok": 5920, "prefix_blocks": 10, "arm": "E9", "peak_alloc_gib": 56.10434579849243}
+{"traj": "chatcmpl-8a9e6a7c8230d26407b5072b93b0bbdc", "n_rows": 21, "build_s": 143.61316084861755, "route_s": 39.683690547943115, "system_end_tok": 5920, "prefix_blocks": 10, "arm": "E9", "peak_alloc_gib": 56.10434579849243}
+{"traj": "chatcmpl-2a396fbe44469a27e135f99fb02cfcfc", "n_rows": 21, "build_s": 141.6489543914795, "route_s": 31.27592945098877, "system_end_tok": 5920, "prefix_blocks": 10, "arm": "E9", "peak_alloc_gib": 56.10434579849243}
