@@ -597,7 +597,8 @@ bool Qwen35Backend::init() {
     }
     // KVFlash AM compaction: persistent per-layer kv_bias (attached to the graph
     // only while a pager chunk is compacted).
-    cache_.kvflash_bias = kvflash_active() && !cfg_.paged_attention && n_slots == 1;
+    cache_.kvflash_bias = luce::am::kv_bias_wanted(kvflash_active(), cfg_.paged_attention, n_slots, am_cfg_,
+                                                   kvflash_test_compact_ != nullptr);
     const int ctx_alloc = n_slots > 1
         ? (int)(pool_tokens + scratch_tokens)
         : (cfg_.paged_attention
@@ -617,6 +618,7 @@ bool Qwen35Backend::init() {
         const bool arch = !w_.is_bailingmoe3 && !cfg_.device.is_tensor_parallel() &&
                           KvFlashConfig{}.chunk_tokens == luce::am::kAutoSlots &&
                           luce::am::kAutoBlockTokens % luce::am::kAutoSlots == 0 &&
+                          luce::am::pool_fits_block((int)kvflash_tokens_) &&
                           !cache_.kv_bias.empty() && am_type(cache_.kv_k_type) && am_type(cache_.kv_v_type);
         kvflash_am_auto_ = luce::am::auto_active(am_cfg_, kvflash_active(), arch);
         if (kvflash_am_auto_) {
@@ -625,7 +627,8 @@ bool Qwen35Backend::init() {
                          am_cfg_.ratio, am_cfg_.prefix_blocks, am_cfg_.recent_blocks);
         } else {
             std::fprintf(stderr, "[kvflash-am] --kvflash-am-ratio is set but compaction is off: needs --kvflash with a pool smaller "
-                                 "than --max-ctx, a dense single-device Qwen3.5 target, 64-token pager chunks and an F16, Q4_0 or Q8_0 KV cache\n");
+                                 "than --max-ctx, a dense single-device Qwen3.5 target, 64-token pager chunks, an F16, Q4_0 or Q8_0 KV cache and a pool of at least %d tokens (here %d)\n",
+                         luce::am::auto_min_pool_tokens(), (int)kvflash_tokens_);
         }
     }
     if (cfg_.paged_attention) {
@@ -2083,7 +2086,17 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
     // only the delta at KV positions [snap_pos, snap_pos + delta.size()).
     int committed = snap_pos;
     const int prompt_len = (int)req.prompt.size();
-    if (prompt_len > snap_pos) {
+    // Compaction's pooled prefill rejects a nonzero kv_offset: a hit with a tail to prefill is a miss.
+    const bool am_miss = luce::am::restore_needs_fresh_prefill(kvflash_am_auto_, snap_pos, prompt_len);
+    if (am_miss) {
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            std::fprintf(stderr, "[kvflash-am] prefix-cache restore (snap=%d < prompt=%d) bypassed: "
+                                 "compaction prefills from scratch (logged once)\n", snap_pos, prompt_len);
+        }
+    }
+    if (prompt_len > snap_pos && !am_miss) {
         auto t_prefill_start = std::chrono::steady_clock::now();
         std::vector<int32_t> delta = restore_prompt_delta(req.prompt, snap_pos);
         am_request_tail_ = req.am_exact_tail;
@@ -2095,14 +2108,15 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
         }
         result.prefill_s = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - t_prefill_start).count();
-    } else if (prompt_len > 0 && prompt_len < snap_pos) {
+    } else if (am_miss || (prompt_len > 0 && prompt_len < snap_pos)) {
         // The slot's snapshot covers more KV than the new prompt. This is
         // routine with agent clients (Letta, Hermes, ...) that edit or
         // summarize their history between turns. Fall back to a fresh full
         // prefill instead of failing the request with zero tokens.
-        std::fprintf(stderr,
-            "[pc] snapshot longer than prompt (snap=%d > prompt=%d) — "
-            "fresh prefill fallback\n", snap_pos, prompt_len);
+        if (!am_miss)
+            std::fprintf(stderr,
+                "[pc] snapshot longer than prompt (snap=%d > prompt=%d) — "
+                "fresh prefill fallback\n", snap_pos, prompt_len);
         reset_recurrent_state(cache_);
         kvflash_bias_epoch_ = (uint64_t)-1;
         cache_.cur_pos = 0;
@@ -2866,7 +2880,7 @@ void Qwen35Backend::kvflash_am_end_prefill() {
 // to the V type. Nothing is published unless every layer succeeds; then the 64 rows
 // go into the head chunk's block, the pager marks the span compacted and the other
 // nine chunks free their blocks.
-void Qwen35Backend::kvflash_am_seal_block(int block, int slot) {
+void Qwen35Backend::kvflash_am_seal_block(int block, int slot) try {
     if (!kvflash_am_auto_) {
         std::fprintf(stderr, "[kvflash-am] sealed block %d (%d tokens) in ring slot %d of %zu\n",
                      block, kKvflashAmBlockTokens, slot, cache_.q_blk_ring.size());
@@ -2940,15 +2954,16 @@ void Qwen35Backend::kvflash_am_seal_block(int block, int slot) {
         ggml_init_params ip{};
         ip.mem_size = 2 * ggml_tensor_overhead();
         ip.no_alloc = true;
-        ggml_context * vctx = ggml_init(ip);
-        ggml_tensor * qv = ggml_view_3d(vctx, plane, plane->ne[0], plane->ne[1], plane->ne[2],
+        std::unique_ptr<ggml_context, decltype(&ggml_free)> vctx(ggml_init(ip), ggml_free);
+        if (!vctx) { fail("view context allocation failed"); return; }
+        ggml_tensor * qv = ggml_view_3d(vctx.get(), plane, plane->ne[0], plane->ne[1], plane->ne[2],
                                         plane->nb[1], plane->nb[2], (size_t)l * plane->nb[3]);
         ggml_backend_view_init(qv);
         BlockFit bf;
         std::string err;
         const bool ok = compact_block(target_backend_, *am_acc_, qv, am_k_, am_v_, kAutoSlots,
                                       luce_am::NnlsParams{}, bf, &err);
-        ggml_free(vctx);
+        vctx.reset();
         if (!ok) {
             fail(err.c_str());
             return;
@@ -2975,13 +2990,27 @@ void Qwen35Backend::kvflash_am_seal_block(int block, int slot) {
                 tv->from_float_ref(bf.fit.c2.data() + ((size_t)h * kAutoSlots + r) * d,
                                    o.v.data() + ((size_t)h * kAutoSlots + r) * rbv, d);
         }
+        // Finiteness again AFTER the cache-type encoding: an F16 or quantized overflow turns a finite F32 into inf.
+        if (!rows_finite(kt, o.k.data(), (int64_t)nkv * kAutoSlots, d) ||
+            !rows_finite(vt, o.v.data(), (int64_t)nkv * kAutoSlots, d)) {
+            am_stats_.nan_layers.push_back(l);
+            fail("non-finite K or V rows after the cache-type encoding");
+            return;
+        }
         t_io += ms(t_b);
     }
 
-    // Publish: every layer succeeded. The head chunk's block takes the 64 rows.
+    // Prepare everything that can fail or allocate BEFORE the first cache write: the beta table and the
+    // pager's validation. After this point only tensor writes and the allocation-free commit remain.
     const auto t_p = std::chrono::steady_clock::now();
     const size_t row0 = (size_t)blks[0] * ct;
     std::vector<float> beta((size_t)nfa * nkv * ct, 0.0f);
+    for (int l = 0; l < nfa; l++)
+        for (int h = 0; h < nkv; h++)
+            std::copy_n(outs[(size_t)l].beta.data() + (size_t)h * kAutoSlots, kAutoSlots,
+                        beta.data() + ((size_t)l * nkv + h) * ct);
+    if (!kvflash_pager_.can_compact(c0, span, beta.size())) { fail("pager refused the block"); return; }
+    // Publish: the head chunk's block takes the 64 rows.
     for (int l = 0; l < nfa; l++) {
         ggml_tensor * K = cache_.attn_k[(size_t)l];
         ggml_tensor * V = cache_.attn_v[(size_t)l];
@@ -2990,12 +3019,10 @@ void Qwen35Backend::kvflash_am_seal_block(int block, int slot) {
                                     row0 * K->nb[1] + (size_t)h * K->nb[2], (size_t)kAutoSlots * rbk);
             ggml_backend_tensor_set(V, outs[(size_t)l].v.data() + (size_t)h * kAutoSlots * rbv,
                                     row0 * V->nb[1] + (size_t)h * V->nb[2], (size_t)kAutoSlots * rbv);
-            std::copy_n(outs[(size_t)l].beta.data() + (size_t)h * kAutoSlots, kAutoSlots,
-                        beta.data() + ((size_t)l * nkv + h) * ct);
         }
     }
-    if (!kvflash_pager_.mark_compacted(c0, span, beta)) {
-        am_fatal_ = true;   // rows were overwritten: the cache is no longer exact
+    if (!kvflash_pager_.mark_compacted(c0, span, std::move(beta))) {
+        am_fatal_ = true;   // unreachable after can_compact; kept as the loud failure if it ever is not
         am_stats_.failed++;
         std::fprintf(stderr, "[kvflash-am] block %d: mark_compacted failed after the rows were written\n", block);
         return;
@@ -3009,6 +3036,10 @@ void Qwen35Backend::kvflash_am_seal_block(int block, int slot) {
     am_stats_.ms_total += total;
     std::fprintf(stderr, "[kvflash-am] block %d compacted: select=%.1fms fit=%.1fms io=%.1fms total=%.1fms\n",
                  block, t_sel, t_fit, t_io, total);
+} catch (const std::exception & e) {
+    // Anything thrown above happened before the commit (which does not allocate): the block stays exact.
+    am_stats_.failed++;
+    std::fprintf(stderr, "[kvflash-am] block %d stays exact: %s\n", block, e.what());
 }
 
 bool Qwen35Backend::do_ar_decode(int committed, ThinkingBudget & budget,
@@ -3502,7 +3533,9 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
     //   snapshot_kv/restore_kv only touch DeltaNet/conv state (pool-
     //   neutral); generation runs this same chain loop either way. The
     //   tree-verify graphs exist only in the test harness (test_dflash).
+    // A compacted pager decodes autoregressively: the draft verify path does not apply beta.
     const bool can_spec = cfg_.draft_path
+        && luce::am::spec_decode_allowed(true, kvflash_active() && kvflash_pager_.any_compacted())
         && !draft_parked_
         && (cfg_.remote_draft.enabled()
             ? remote_draft_.active()

@@ -17,6 +17,7 @@
 #endif
 
 #include "http_server.h"
+#include "common/am_compact.h"
 #include "image_input.h"
 #include "engine/luce_engine.h"
 #include "admission.h"
@@ -1793,8 +1794,12 @@ int parse_am_exact_tail(const json & body) {
     if (!body.is_object() || !body.contains("kvflash_am_exact_tail")) return -1;
     const json & v = body["kvflash_am_exact_tail"];
     if (!v.is_number_integer()) return -1;
+    if (v.is_number_unsigned()) {   // beyond long long still protects the whole prompt
+        const unsigned long long u = v.get<unsigned long long>();
+        return u > (unsigned long long)luce::am::kMaxExactTail ? luce::am::kMaxExactTail : (int)u;
+    }
     const long long n = v.get<long long>();
-    return n < 0 || n > 100000000 ? -1 : (int)n;
+    return n < 0 ? -1 : n > luce::am::kMaxExactTail ? luce::am::kMaxExactTail : (int)n;
 }
 
 SamplerCfg parse_request_sampler(const json & body,

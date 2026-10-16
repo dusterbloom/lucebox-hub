@@ -145,6 +145,7 @@ public:
         }
 
         free_blocks_.clear();
+        free_blocks_.reserve((size_t)n_blocks_);   // pushes during compaction never allocate
         for (int b = n_blocks_ - 1; b >= 0; b--) free_blocks_.push_back(b);
         chunks_.clear();
         stats_ = {};
@@ -558,15 +559,21 @@ public:
     // `beta` is the key bias per (attention layer, KV head, slot):
     // beta[(layer * n_head_kv + head) * chunk_tokens + slot]. False, nothing
     // touched, if the geometry is wrong or c0 is not resident.
-    bool mark_compacted(int c0, int span, const std::vector<float> & beta) {
+    // Validation half: no state is touched. A caller that writes rows before committing calls this first.
+    bool can_compact(int c0, int span, size_t beta_n) const {
         if (!attached() || span < 1 || c0 < 0 || c0 + span > (int)chunks_.size()) return false;
-        if (beta.size() != beta_floats_()) return false;
-        if (chunks_[(size_t)c0].block < 0) return false;
+        if (beta_n != beta_floats_() || chunks_[(size_t)c0].block < 0) return false;
         for (int c = c0; c < c0 + span; c++) {
             const ChunkState & st = chunks_[(size_t)c];
             if (st.compacted || st.covered) return false;
             if (c > c0 && st.block < 0 && !st.on_host) return false;   // never materialized
         }
+        return true;
+    }
+    // Commit half: allocation-free after can_compact (beta is moved, free_blocks_ has its capacity reserved
+    // in attach), so a bad_alloc cannot leave published rows with half-updated metadata.
+    bool mark_compacted(int c0, int span, std::vector<float> && beta) {
+        if (!can_compact(c0, span, beta.size())) return false;
         synchronize_paging();   // queued page DMA must not touch what is freed below
         for (int c = c0 + 1; c < c0 + span; c++) {
             ChunkState & st = chunks_[(size_t)c];
@@ -586,25 +593,13 @@ public:
         ChunkState & head = chunks_[(size_t)c0];
         head.compacted = true;
         head.span = span;
-        head.beta = beta;
+        head.beta = std::move(beta);
         epoch_++;
         synchronize_paging();   // the zeroing is queued on page_stream_
         return true;
     }
-    // RED PLACEHOLDER: validation half and the allocation-free commit half.
-    bool can_compact(int c0, int span, size_t beta_n) const {
-        if (!attached() || span < 1 || c0 < 0 || c0 + span > (int)chunks_.size()) return false;
-        if (beta_n != beta_floats_() || chunks_[(size_t)c0].block < 0) return false;
-        for (int c = c0; c < c0 + span; c++) {
-            const ChunkState & st = chunks_[(size_t)c];
-            if (st.compacted || st.covered) return false;
-            if (c > c0 && st.block < 0 && !st.on_host) return false;
-        }
-        return true;
-    }
-    bool mark_compacted(int c0, int span, std::vector<float> && beta) {
-        const std::vector<float> & b = beta;
-        return mark_compacted(c0, span, b);
+    bool mark_compacted(int c0, int span, const std::vector<float> & beta) {
+        return can_compact(c0, span, beta.size()) && mark_compacted(c0, span, std::vector<float>(beta));
     }
     bool is_compacted(int c) const { return c >= 0 && c < (int)chunks_.size() && chunks_[(size_t)c].compacted; }
     bool is_covered(int c) const { return c >= 0 && c < (int)chunks_.size() && chunks_[(size_t)c].covered; }

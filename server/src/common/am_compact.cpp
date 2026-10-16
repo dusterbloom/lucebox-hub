@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <vector>
 
 namespace luce::am {
 
@@ -157,14 +158,26 @@ void gather_rows(const uint8_t * rows, size_t row_bytes, const int32_t * sel, in
 }
 
 
-// RED STUBS: the previous behavior.
-bool spec_decode_allowed(bool draft_ready, bool) { return draft_ready; }
-bool restore_needs_fresh_prefill(bool, int, int) { return false; }
-bool kv_bias_wanted(bool kvflash_active, bool paged, int n_slots, const AutoConfig &, bool) {
-    return kvflash_active && !paged && n_slots == 1;
+bool spec_decode_allowed(bool draft_ready, bool compacted) { return draft_ready && !compacted; }
+
+bool restore_needs_fresh_prefill(bool auto_on, int snap_pos, int prompt_len) {
+    return auto_on && prompt_len > snap_pos;
 }
-int auto_min_pool_tokens() { return 0; }
-bool pool_fits_block(int) { return true; }
-bool rows_finite(ggml_type, const uint8_t *, int64_t, int) { return true; }
+
+bool kv_bias_wanted(bool kvflash_active, bool paged, int n_slots, const AutoConfig & cfg, bool test_hook) {
+    return kvflash_active && !paged && n_slots == 1 && (cfg.enabled() || test_hook);
+}
+
+// 10 chunks of the block, the 64-row sink chunk, and 5 chunks of slack for the protected tail.
+int auto_min_pool_tokens() { return kAutoBlockTokens + 6 * kAutoSlots; }
+bool pool_fits_block(int pool_tokens) { return pool_tokens >= auto_min_pool_tokens(); }
+
+bool rows_finite(ggml_type type, const uint8_t * rows, int64_t n_rows, int d) {
+    const ggml_type_traits * tr = ggml_get_type_traits(type);
+    std::vector<float> f((size_t) n_rows * d);
+    tr->to_float(rows, f.data(), n_rows * d);
+    for (float x : f) if (!std::isfinite(x)) return false;
+    return true;
+}
 
 }  // namespace luce::am
