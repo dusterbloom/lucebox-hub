@@ -1,4 +1,4 @@
-"""Read rules of PREREG.md (this folder, R-LRU), written before any answer row. Copied from ../prefill_reselect_run/analyze.py; adds rules 5 and 6 (prediction, scorer ms).
+"""Read rules of PREREG.md (this folder, R-LRU mode 4), fixed before any mode-4 row. Copied from ../rlru/analyze.py: log regex for mode=4, prediction 726, per-request scorer, wall minus scorer, share rewound.
     python3 -P analyze.py <worktree>   (-P, not -I: numpy lives in the user site)   (the kvflash-am worktree: harness probes.py, a1_core.boot_ci, B0 and E3E2 rows)"""
 import json
 import os
@@ -66,11 +66,24 @@ speed = {a: {"prefill_ms": med(a, lambda r: r["timings"].get("prefill_ms")),
              "cached_prefix_tokens": med(a, lambda r: r["timings"].get("cached_prefix_tokens")),
              "cache_hit_share": sum(bool(arms[a][i]["timings"].get("cache_hit")) for i in ids) / len(ids),
              "disk_hit_true": sum(bool(arms[a][i]["timings"].get("disk_hit")) for i in ids)} for a in arms}
-scorer = [float(m) for m in re.findall(r"scorer=exact .* scorer ([0-9.]+) ms", open(os.path.join(D, "on", "QK16KND.server.log")).read())]
+# Per request (the log is in row order; one block per "chat START"): scorer ms, rewound or skipped.
+blocks = open(os.path.join(D, "on", "QK16KND.server.log")).read().split("] chat START ")[1:]
+on_rows = [json.loads(l) for l in open(os.path.join(D, "on", "QK16KND.jsonl"))]
+assert len(blocks) == len(on_rows), (len(blocks), len(on_rows))
+req = []
+for r, b in zip(on_rows, blocks):
+    m = re.search(r"mode=4 scorer=exact .* scorer ([0-9.]+) ms", b)
+    req.append({"id": r["id"], "kind": r.get("kind"), "scorer_ms": float(m.group(1)) if m else 0.0,
+                "rewound": bool(re.search(r"mode=4 @\d+: re-prefill \d+ tokens ok", b)), "wall": r.get("client_wall_s")})
+scorer = [q["scorer_ms"] for q in req if q["scorer_ms"]]
 speed["on"]["scorer_ms_median"] = st.median(scorer) if scorer else None
-speed["on"]["reselects"] = len(scorer)
+speed["on"]["client_wall_s_minus_scorer"] = st.median([q["wall"] - q["scorer_ms"] / 1000 for q in req if q["kind"] == "probe" and q["wall"] is not None])
+speed["on"]["requests_rewound"] = f"{sum(q['rewound'] for q in req)}/{len(req)}"
+for band, S in (("within", subs["within 16K"]), ("beyond", subs["beyond 16K"])):
+    S = set(S)
+    speed["on"][f"probes_rewound_{band}"] = f"{sum(q['rewound'] for q in req if q['id'] in S)}/{len(S)}"
 print(json.dumps(speed, indent=1))
-print(f"prediction (PREREG step 1): 795 overall, 678 within 16K, 117 beyond; "
+print(f"prediction (PREREG step 1): 726 overall, 679 within 16K, 46 beyond; "
       f"actual {out['overall']['on']['correct']}, {out['within 16K']['on']['correct']}, {out['beyond 16K']['on']['correct']}")
 ov, wi = out["overall"], out["within 16K"]
 drop = (wi["off"]["correct"] - wi["on"]["correct"]) / len(subs["within 16K"])

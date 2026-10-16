@@ -109,3 +109,7 @@ Only k = 2 meets the 15-probe within-16K guard.
 **Choice: k = 2.**
 
 **Prediction (rule 5):** 726/951 = 76.3%, with 679/744 within 16K and 46/207 beyond. It is 7 above the 719 bar, and the estimate leans high (see step 1), so clearing the bar is not predicted with margin.
+
+## Binary (appended 2026-10-16T10:48:29+02:00 from `date`, before any mode-4 row)
+
+Engine `kvflash/2.0r-prefill-reselect`: 85172c29 (pager test: truncate back restores residency and replays the same evictions), 2e83d216 (mode 4, fits guard for modes 3 and 4, `LUCE_KVFLASH_REWIND_NOOP`). ctest 95/95. Binary for every smoke and both arms: `/mnt/kimi-k3/build/prs6-cuda/luce_server`, md5 4f47802fa18935063eacd46718a8372c. The runner is `run_arms4.sh <binary> 2`, with gates `cmp_smoke4.py` and smoke (b) inline; `analyze.py` is adapted for mode 4.
