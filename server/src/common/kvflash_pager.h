@@ -1130,4 +1130,18 @@ inline bool kvflash_fill_rows_and_masks(
     return true;
 }
 
+// RAII: restores the pager's score_hook to what it was at construction. A
+// request that installs its own hook (prefill reselect) holds one so the hook
+// of the arm's policy, or none (LRU), is back for the next request.
+class ScopedScoreHook {
+public:
+    explicit ScopedScoreHook(KvFlashPager & p) : p_(p), saved_(p.score_hook) {}
+    ~ScopedScoreHook() { p_.score_hook = std::move(saved_); }
+    ScopedScoreHook(const ScopedScoreHook &) = delete;
+    ScopedScoreHook & operator=(const ScopedScoreHook &) = delete;
+private:
+    KvFlashPager & p_;
+    std::function<float(int)> saved_;
+};
+
 } // namespace luce::common

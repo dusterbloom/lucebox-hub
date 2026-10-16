@@ -1708,6 +1708,7 @@ GenerateResult Qwen35Backend::generate_impl(const GenerateRequest & req,
     // position-addressed and will be overwritten during prefill.
     // S8a: resume from the live session when a ladder rung covers the common
     // prefix; the state checkpoint replaces the zeroing.
+    ReselectRequestScope reselect_scope(kvflash_pager_, kvflash_scores_);
     int live_cut = -1;
     if (kvflash_live_restore_enabled() && kvflash_active() && !cfg_.paged_attention &&
         !req.images) {
@@ -1884,6 +1885,7 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
               cache_.cur_pos == prefix_snapshots_[slot].cur_pos);
     GenerateResult result;
     DaemonIO out_io = io.with_token_callback(req.on_token);
+    ReselectRequestScope reselect_scope(kvflash_pager_, kvflash_scores_);
     if (cfg_.paged_attention) {
         result.fail(GenerateErrorCode::BackendSpecific,
                     "paged-attention snapshots are not yet supported");

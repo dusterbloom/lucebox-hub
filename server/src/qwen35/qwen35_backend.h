@@ -284,6 +284,16 @@ protected:
     // before the final prefill batch (pooled prefill, qk policy only).
     int                     kvflash_prefill_reselect_ = 0;   // 0 off, 1 last turn cut, 2 end-1
     int                     kvflash_reselect_tail_ = -1;     // LUCE_KVFLASH_RESELECT_TAIL_CHUNKS, -1 = cfg
+    // One request, prefill through decode: whatever score_hook and score ledger
+    // the prefill reselect installs is undone on every exit, so the next request
+    // (possibly another user) starts from the arm's policy hook, not this query's.
+    struct ReselectRequestScope {
+        luce::common::ScopedScoreHook hook;
+        std::vector<float> & scores;
+        ReselectRequestScope(luce::common::KvFlashPager & p, std::vector<float> & s)
+            : hook(p), scores(s) {}
+        ~ReselectRequestScope() { scores.clear(); }
+    };
     bool                    kvflash_exact_scorer_ = false;   // LUCE_KVFLASH_RESELECT_SCORER=exact
     int                     kvflash_recall_blocks_ = 0;      // LUCE_KVFLASH_RECALL_BLOCKS (R-LRU)
     std::string             kvflash_exact_dump_dir_;         // LUCE_KVFLASH_EXACT_DUMP

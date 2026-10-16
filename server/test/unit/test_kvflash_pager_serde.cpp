@@ -481,3 +481,47 @@ TEST_CASE(KvflashPagerSerdeFixture, reselect_with_full_tail_keeps_a_non_recent_r
     for (int c = 0; c < 12; c++) if (p.is_resident(c)) after.push_back(c);
     CHECK(after == before);
 }
+
+namespace {
+// Block map after: alloc 12 chunks, install the base hook, let `mid` run
+// (it may install a "reselect" hook), then truncate (refill_after_truncate_
+// ranks the host chunks by whatever hook is installed then).
+template <class Mid>
+std::vector<int> blocks_after_truncate(Mid && mid) {
+    Harness A;
+    KvFlashPager p;
+    must(p.attach(make_cfg(), A.k, A.v));
+    must(p.alloc_span(0, 12 * kChunk));
+    p.score_hook = [](int c) { return (float)-c; };     // base policy: older host chunks first
+    mid(p);
+    p.truncate(10 * kChunk);                             // frees two blocks; host chunks refill them
+    std::vector<int> blocks;
+    for (int c = 0; c < p.n_chunks(); c++) blocks.push_back(p.block_of(c));
+    return blocks;
+}
+}
+
+TEST_CASE(KvflashPagerSerdeFixture, scoped_score_hook_restores_the_base_hook_so_truncate_recalls_alike) {
+    const std::vector<int> ref = blocks_after_truncate([](KvFlashPager &) {});
+    const std::vector<int> scoped = blocks_after_truncate([](KvFlashPager & p) {
+        ScopedScoreHook scope(p);
+        p.score_hook = [](int c) { return (float)c; };   // the reselect's hook: newest host chunks first
+    });
+    const std::vector<int> leaked = blocks_after_truncate([](KvFlashPager & p) {
+        p.score_hook = [](int c) { return (float)c; };   // no restore: what apply did before
+    });
+    CHECK(scoped == ref);
+    CHECK(leaked != ref);                                // the test can see the contamination
+}
+
+TEST_CASE(KvflashPagerSerdeFixture, scoped_score_hook_restores_an_empty_hook_too) {
+    Harness A;
+    KvFlashPager p;
+    REQUIRE(p.attach(make_cfg(), A.k, A.v));
+    {
+        ScopedScoreHook scope(p);
+        p.score_hook = [](int c) { return (float)c; };
+        CHECK((bool)p.score_hook);
+    }
+    CHECK(!p.score_hook);
+}
