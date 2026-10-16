@@ -591,6 +591,21 @@ public:
         synchronize_paging();   // the zeroing is queued on page_stream_
         return true;
     }
+    // RED PLACEHOLDER: validation half and the allocation-free commit half.
+    bool can_compact(int c0, int span, size_t beta_n) const {
+        if (!attached() || span < 1 || c0 < 0 || c0 + span > (int)chunks_.size()) return false;
+        if (beta_n != beta_floats_() || chunks_[(size_t)c0].block < 0) return false;
+        for (int c = c0; c < c0 + span; c++) {
+            const ChunkState & st = chunks_[(size_t)c];
+            if (st.compacted || st.covered) return false;
+            if (c > c0 && st.block < 0 && !st.on_host) return false;
+        }
+        return true;
+    }
+    bool mark_compacted(int c0, int span, std::vector<float> && beta) {
+        const std::vector<float> & b = beta;
+        return mark_compacted(c0, span, b);
+    }
     bool is_compacted(int c) const { return c >= 0 && c < (int)chunks_.size() && chunks_[(size_t)c].compacted; }
     bool is_covered(int c) const { return c >= 0 && c < (int)chunks_.size() && chunks_[(size_t)c].covered; }
     int compacted_span(int c) const { return is_compacted(c) ? chunks_[(size_t)c].span : 0; }

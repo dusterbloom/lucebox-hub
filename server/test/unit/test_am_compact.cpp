@@ -24,6 +24,8 @@
 #include "ggml-cpu.h"
 
 #include <algorithm>
+#include <atomic>
+#include <new>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -467,4 +469,113 @@ TEST_CASE(AmCompactFixture, a_compacted_block_is_its_head_chunk_with_the_covered
     if (buf) ggml_backend_buffer_free(buf);
     ggml_free(ctx);
     ggml_backend_free(be);
+}
+
+// ---- 7. Codex review fixes ---------------------------------------------------------------------
+
+// Allocation counter: the commit half of a publish must not allocate (a bad_alloc there would leave
+// the rows overwritten and the pager half-updated).
+static std::atomic<long> g_allocs{0};
+static std::atomic<bool> g_count_allocs{false};
+void * operator new(std::size_t n) {
+    if (g_count_allocs.load(std::memory_order_relaxed)) g_allocs.fetch_add(1);
+    if (void * p = std::malloc(n ? n : 1)) return p;
+    throw std::bad_alloc();
+}
+void operator delete(void * p) noexcept { std::free(p); }
+void operator delete(void * p, std::size_t) noexcept { std::free(p); }
+
+TEST_CASE(AmCompactFixture, publishing_a_compacted_block_allocates_nothing_after_validation) {
+    constexpr int kChunk = 64, kPool = 1024, kHeads = 2, kD = 4, kLayers = 2;
+    ggml_backend_t be = ggml_backend_cpu_init();
+    ggml_init_params ip{};
+    ip.mem_size = 16 * ggml_tensor_overhead();
+    ip.no_alloc = true;
+    ggml_context * ctx = ggml_init(ip);
+    std::vector<ggml_tensor *> k, v;
+    for (int l = 0; l < kLayers; l++) {
+        k.push_back(ggml_new_tensor_3d(ctx, GGML_TYPE_F16, kD, kPool, kHeads));
+        v.push_back(ggml_new_tensor_3d(ctx, GGML_TYPE_F16, kD, kPool, kHeads));
+    }
+    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, be);
+    luce::common::KvFlashConfig cfg;
+    cfg.pool_tokens = kPool;
+    luce::common::KvFlashPager p;
+    REQUIRE(p.attach(cfg, k, v));
+    REQUIRE(p.alloc_span(0, 12 * kChunk));
+    const int span = kAutoBlockTokens / kChunk;
+    std::vector<float> beta((size_t)kLayers * kHeads * kChunk, 0.5f);
+    CHECK(!p.can_compact(0, span, beta.size() + 1));   // wrong geometry is refused up front
+    REQUIRE(p.can_compact(0, span, beta.size()));
+    g_allocs = 0;
+    g_count_allocs = true;
+    const bool ok = p.mark_compacted(0, span, std::move(beta));
+    g_count_allocs = false;
+    CHECK(ok);
+    CHECK(g_allocs.load() == 0);
+    CHECK(p.is_compacted(0));
+    if (buf) ggml_backend_buffer_free(buf);
+    ggml_free(ctx);
+    ggml_backend_free(be);
+}
+
+TEST_CASE(AmCompactFixture, a_compacted_state_never_speculates) {
+    using luce::am::spec_decode_allowed;
+    CHECK(spec_decode_allowed(true, false));
+    CHECK(!spec_decode_allowed(true, true));
+    CHECK(!spec_decode_allowed(false, false));
+    CHECK(!spec_decode_allowed(false, true));
+}
+
+TEST_CASE(AmCompactFixture, a_cache_hit_with_compaction_on_prefills_from_scratch) {
+    using luce::am::restore_needs_fresh_prefill;
+    CHECK(restore_needs_fresh_prefill(true, 1280, 3000));    // restore + tail prefill: nonzero offset
+    CHECK(!restore_needs_fresh_prefill(true, 3000, 3000));   // exact hit: nothing to prefill
+    CHECK(!restore_needs_fresh_prefill(false, 1280, 3000));  // compaction off: unchanged
+}
+
+TEST_CASE(AmCompactFixture, the_bias_tensors_exist_only_when_compaction_can_happen) {
+    using luce::am::kv_bias_wanted;
+    AutoConfig off;
+    CHECK(!kv_bias_wanted(true, false, 1, off, false));
+    CHECK(kv_bias_wanted(true, false, 1, on(), false));
+    CHECK(kv_bias_wanted(true, false, 1, off, true));        // M6 test hook
+    CHECK(!kv_bias_wanted(true, true, 1, on(), false));      // paged attention
+    CHECK(!kv_bias_wanted(true, false, 2, on(), false));     // several slots
+    CHECK(!kv_bias_wanted(false, false, 1, on(), false));    // no pager
+}
+
+TEST_CASE(AmCompactFixture, an_oversized_exact_tail_saturates_instead_of_falling_back_to_the_default) {
+    using luce::common::parse_am_exact_tail;
+    CHECK(parse_am_exact_tail(nlohmann::json::parse(R"({"kvflash_am_exact_tail": 100000001})")) == luce::am::kMaxExactTail);
+    CHECK(parse_am_exact_tail(nlohmann::json::parse(R"({"kvflash_am_exact_tail": 18446744073709551615})")) == luce::am::kMaxExactTail);
+    CHECK(parse_am_exact_tail(nlohmann::json::parse(R"({"kvflash_am_exact_tail": -1})")) == -1);
+}
+
+TEST_CASE(AmCompactFixture, finiteness_is_checked_after_the_cache_type_encoding) {
+    using luce::am::rows_finite;
+    const int d = 64;
+    std::vector<float> ok((size_t)d, 1.0f), big((size_t)d, 1.0f);
+    big[3] = 1.0e6f;   // finite in F32, inf in F16
+    std::vector<uint8_t> a(ggml_row_size(GGML_TYPE_F16, d)), b(ggml_row_size(GGML_TYPE_F16, d));
+    ggml_fp32_to_fp16_row(ok.data(), (ggml_fp16_t *)a.data(), d);
+    ggml_fp32_to_fp16_row(big.data(), (ggml_fp16_t *)b.data(), d);
+    CHECK(rows_finite(GGML_TYPE_F16, a.data(), 1, d));
+    CHECK(!rows_finite(GGML_TYPE_F16, b.data(), 1, d));
+    // a Q8_0 block whose f16 scale is +inf decodes to non-finite values
+    std::vector<uint8_t> q(ggml_row_size(GGML_TYPE_Q8_0, 32), 1);
+    q[0] = 0x00; q[1] = 0x7C;
+    CHECK(!rows_finite(GGML_TYPE_Q8_0, q.data(), 1, 32));
+    std::vector<uint8_t> q2(ggml_row_size(GGML_TYPE_Q8_0, 32), 1);
+    q2[0] = 0x00; q2[1] = 0x3C;   // scale 1.0
+    CHECK(rows_finite(GGML_TYPE_Q8_0, q2.data(), 1, 32));
+}
+
+TEST_CASE(AmCompactFixture, a_pool_smaller_than_one_block_plus_headroom_cannot_run_compaction) {
+    using luce::am::pool_fits_block;
+    CHECK(!pool_fits_block(512));
+    CHECK(!pool_fits_block(luce::am::kAutoBlockTokens));
+    CHECK(pool_fits_block(luce::am::auto_min_pool_tokens()));
+    CHECK(luce::am::auto_min_pool_tokens() > luce::am::kAutoBlockTokens);
+    CHECK(pool_fits_block(8192));
 }

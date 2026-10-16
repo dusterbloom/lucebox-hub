@@ -104,4 +104,31 @@ void sort_sel_ascending(std::vector<int32_t> & sel, int n_head_kv, int slots);
 // row_bytes each, in position order (n_keys rows); out receives slots rows.
 void gather_rows(const uint8_t * rows, size_t row_bytes, const int32_t * sel, int slots, uint8_t * out);
 
+
+// ---- engine gates (pure, so they are testable without a model) ------------------------------
+
+// Speculative decode verifies through a path that does not know about beta, so a pager holding a
+// compacted block decodes autoregressively instead.
+bool spec_decode_allowed(bool draft_ready, bool compacted);
+
+// A restore of a cached prefix followed by a prefill of the rest needs a nonzero kv_offset, which
+// pooled (compacting) prefill rejects: treat it as a cache miss and prefill from scratch.
+bool restore_needs_fresh_prefill(bool auto_on, int snap_pos, int prompt_len);
+
+// The persistent per-layer kv_bias tensors cost 4 x layers x KV heads x pool bytes: allocate them only
+// when compaction can happen (the ratio is set, or the M6 test hook is on). Default-off memory equals main's.
+bool kv_bias_wanted(bool kvflash_active, bool paged_attention, int n_slots, const AutoConfig & cfg, bool test_hook);
+
+// A block seals only when its 10 chunks are resident together, next to the sink, the protected tail and
+// the compacted blocks before it. Smaller pools are rejected: compaction would announce itself and never run.
+int  auto_min_pool_tokens();
+bool pool_fits_block(int pool_tokens);
+
+// True when every value of `n_rows` encoded rows of `d` elements decodes to a finite float (checked AFTER
+// the cache-type encoding: an F16 or quantized overflow turns a finite F32 into inf).
+bool rows_finite(ggml_type type, const uint8_t * rows, int64_t n_rows, int d);
+
+// Largest accepted kvflash_am_exact_tail; larger requests saturate to it (the whole prompt stays exact).
+inline constexpr int kMaxExactTail = 100000000;
+
 }  // namespace luce::am

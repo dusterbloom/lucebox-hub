@@ -156,4 +156,15 @@ void gather_rows(const uint8_t * rows, size_t row_bytes, const int32_t * sel, in
         std::memcpy(out + (size_t) s * row_bytes, rows + (size_t) sel[s] * row_bytes, row_bytes);
 }
 
+
+// RED STUBS: the previous behavior.
+bool spec_decode_allowed(bool draft_ready, bool) { return draft_ready; }
+bool restore_needs_fresh_prefill(bool, int, int) { return false; }
+bool kv_bias_wanted(bool kvflash_active, bool paged, int n_slots, const AutoConfig &, bool) {
+    return kvflash_active && !paged && n_slots == 1;
+}
+int auto_min_pool_tokens() { return 0; }
+bool pool_fits_block(int) { return true; }
+bool rows_finite(ggml_type, const uint8_t *, int64_t, int) { return true; }
+
 }  // namespace luce::am

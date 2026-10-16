@@ -1,0 +1,25 @@
+Running 1106 test cases...
+  keep-all: max |beta| 5.74e-02, max |C2 - V| 6.66e-02
+  SKIP: LUCE_AM_FIXTURES is not set (the fixture gate needs the dumped reference blocks)
+Test: AmCompactFixture::publishing_a_compacted_block_allocates_nothing_after_validation
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:515 CHECK: IsTrue(g_allocs.load() == 0)
+Test: AmCompactFixture::a_compacted_state_never_speculates
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:525 CHECK: IsTrue(!spec_decode_allowed(true, true))
+Test: AmCompactFixture::a_cache_hit_with_compaction_on_prefills_from_scratch
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:532 CHECK: IsTrue(restore_needs_fresh_prefill(true, 1280, 3000))
+Test: AmCompactFixture::the_bias_tensors_exist_only_when_compaction_can_happen
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:540 CHECK: IsTrue(!kv_bias_wanted(true, false, 1, off, false))
+Test: AmCompactFixture::an_oversized_exact_tail_saturates_instead_of_falling_back_to_the_default
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:550 CHECK: IsTrue(parse_am_exact_tail(nlohmann::json::parse(R"({"kvflash_am_exact_tail": 100000001})")) == luce::am::kMaxExactTail)
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:551 CHECK: IsTrue(parse_am_exact_tail(nlohmann::json::parse(R"({"kvflash_am_exact_tail": 18446744073709551615})")) == luce::am::kMaxExactTail)
+Test: AmCompactFixture::finiteness_is_checked_after_the_cache_type_encoding
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:564 CHECK: IsTrue(!rows_finite(GGML_TYPE_F16, b.data(), 1, d))
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:568 CHECK: IsTrue(!rows_finite(GGML_TYPE_Q8_0, q.data(), 1, 32))
+Test: AmCompactFixture::a_pool_smaller_than_one_block_plus_headroom_cannot_run_compaction
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:576 CHECK: IsTrue(!pool_fits_block(512))
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:577 CHECK: IsTrue(!pool_fits_block(luce::am::kAutoBlockTokens))
+    @/home/peppi/Dev/lucebox-builds/wt-m7/server/test/unit/test_am_compact.cpp:579 CHECK: IsTrue(luce::am::auto_min_pool_tokens() > luce::am::kAutoBlockTokens)
+Complete.
+    Passed:  20
+    Failed:  7
+    Skipped: 1079
