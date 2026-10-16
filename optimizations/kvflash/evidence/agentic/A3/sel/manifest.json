@@ -1,0 +1,29 @@
+{
+ "cap": 16384,
+ "code_md5": {
+  "a1_a3.py": "da09ad08d24633f4528e2f9da9ec21eb",
+  "a1_core.py": "ad6cba508d3b226fa88c8c1febbba4de",
+  "a1_e.py": "a7505243afd828fdc89d6837011c457b",
+  "a1_e67.py": "c414124457ba1c3333108bd3a6a439d6",
+  "r1b_core.py": "d31b50571b7af65e2fa3aa2143afe6ab",
+  "r2_core.py": "4f0f1c94c8f16001a8e568b7450d393e"
+ },
+ "data_md5": {
+  "tasks": "10d9da8d568463073ddb3c6234986ac8",
+  "template": "a7f294a5f0be5f1903214304f259f87f",
+  "tokenizer": "77d3489a35fbccc145250fa37e6c0fb0",
+  "traj": "4f2f96e2db420acb3b54e987c32ab6e4"
+ },
+ "early_at": 20,
+ "model": "/home/duster/r1e/models/Qwen3.8-27B",
+ "n": 6,
+ "ref_dir": "/home/duster/r1e/out/a1_pilot",
+ "ref_full_md5": "93a29de59549954ebd9d46ffd9214047",
+ "sel_report_sha256": null,
+ "stage": "sel",
+ "window_blocks": null,
+ "ws": [
+  2,
+  6
+ ]
+}

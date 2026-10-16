@@ -1,0 +1,49 @@
+[a3] attempt 20261015T225213302738916: manifest new
+[a1] model loaded in 171s on Radeon 8060S Graphics torch 2.9.1+rocm7.13.0a20260513
+[a3] 58f9f17c W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 58f9f17c W 2 cut 1/2 ctx 23522 blocks 36 tail 482 peak alloc 57.0 reserved 81.8 GiB
+[a3] 58f9f17c W 2 cut 2/2 ctx 36590 blocks 57 tail 110 peak alloc 58.4 reserved 81.9 GiB
+[a3] 58f9f17c W 6 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 58f9f17c W 6 cut 1/2 ctx 23522 blocks 36 tail 482 peak alloc 58.4 reserved 87.2 GiB
+[a3] 58f9f17c W 6 cut 2/2 ctx 36590 blocks 57 tail 110 peak alloc 59.4 reserved 87.7 GiB
+[a3] bef6b39d W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] bef6b39d W 2 cut 1/3 ctx 11194 blocks 17 tail 314 peak alloc 59.4 reserved 87.7 GiB
+[a3] bef6b39d W 2 cut 2/3 ctx 24239 blocks 37 tail 559 peak alloc 59.4 reserved 87.7 GiB
+[a3] bef6b39d W 2 cut 3/3 ctx 36550 blocks 57 tail 70 peak alloc 59.4 reserved 87.7 GiB
+[a3] bef6b39d W 6 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] bef6b39d W 6 cut 1/3 ctx 11194 blocks 17 tail 314 peak alloc 59.4 reserved 87.7 GiB
+[a3] bef6b39d W 6 cut 2/3 ctx 24239 blocks 37 tail 559 peak alloc 59.4 reserved 87.7 GiB
+[a3] bef6b39d W 6 cut 3/3 ctx 36550 blocks 57 tail 70 peak alloc 59.4 reserved 87.7 GiB
+[a3] 22767e8f W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 22767e8f W 2 cut 1/3 ctx 12088 blocks 18 tail 568 peak alloc 59.4 reserved 87.7 GiB
+[a3] 22767e8f W 2 cut 2/3 ctx 24495 blocks 38 tail 175 peak alloc 59.4 reserved 87.7 GiB
+[a3] 22767e8f W 2 cut 3/3 ctx 33349 blocks 52 tail 69 peak alloc 59.4 reserved 87.7 GiB
+[a3] 22767e8f W 6 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 22767e8f W 6 cut 1/3 ctx 12088 blocks 18 tail 568 peak alloc 59.4 reserved 87.7 GiB
+[a3] 22767e8f W 6 cut 2/3 ctx 24495 blocks 38 tail 175 peak alloc 59.4 reserved 87.7 GiB
+[a3] 22767e8f W 6 cut 3/3 ctx 33349 blocks 52 tail 69 peak alloc 59.4 reserved 87.7 GiB
+[a3] d5b2f250 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] d5b2f250 W 2 cut 1/3 ctx 11205 blocks 17 tail 325 peak alloc 59.4 reserved 87.7 GiB
+[a3] d5b2f250 W 2 cut 2/3 ctx 23955 blocks 37 tail 275 peak alloc 59.4 reserved 87.7 GiB
+[a3] d5b2f250 W 2 cut 3/3 ctx 36489 blocks 57 tail 9 peak alloc 59.4 reserved 87.7 GiB
+[a3] d5b2f250 W 6 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] d5b2f250 W 6 cut 1/3 ctx 11205 blocks 17 tail 325 peak alloc 59.4 reserved 87.7 GiB
+[a3] d5b2f250 W 6 cut 2/3 ctx 23955 blocks 37 tail 275 peak alloc 59.4 reserved 87.7 GiB
+[a3] d5b2f250 W 6 cut 3/3 ctx 36489 blocks 57 tail 9 peak alloc 59.4 reserved 88.0 GiB
+[a3] 93b0bbdc W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 93b0bbdc W 2 cut 1/3 ctx 12287 blocks 19 tail 127 peak alloc 59.4 reserved 88.0 GiB
+[a3] 93b0bbdc W 2 cut 2/3 ctx 24567 blocks 38 tail 247 peak alloc 59.4 reserved 88.0 GiB
+[a3] 93b0bbdc W 2 cut 3/3 ctx 36118 blocks 56 tail 278 peak alloc 59.4 reserved 88.0 GiB
+[a3] 93b0bbdc W 6 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 93b0bbdc W 6 cut 1/3 ctx 12287 blocks 19 tail 127 peak alloc 59.4 reserved 88.0 GiB
+[a3] 93b0bbdc W 6 cut 2/3 ctx 24567 blocks 38 tail 247 peak alloc 59.4 reserved 88.0 GiB
+[a3] 93b0bbdc W 6 cut 3/3 ctx 36118 blocks 56 tail 278 peak alloc 59.4 reserved 88.0 GiB
+[a3] b02cfcfc W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] b02cfcfc W 2 cut 1/3 ctx 11628 blocks 18 tail 108 peak alloc 59.4 reserved 88.0 GiB
+[a3] b02cfcfc W 2 cut 2/3 ctx 24259 blocks 37 tail 579 peak alloc 59.4 reserved 88.0 GiB
+[a3] b02cfcfc W 2 cut 3/3 ctx 35554 blocks 55 tail 354 peak alloc 59.4 reserved 88.0 GiB
+[a3] b02cfcfc W 6 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] b02cfcfc W 6 cut 1/3 ctx 11628 blocks 18 tail 108 peak alloc 59.4 reserved 88.0 GiB
+[a3] b02cfcfc W 6 cut 2/3 ctx 24259 blocks 37 tail 579 peak alloc 59.4 reserved 88.0 GiB
+[a3] b02cfcfc W 6 cut 3/3 ctx 35554 blocks 55 tail 354 peak alloc 59.4 reserved 88.0 GiB
+[a3] done: {'stopped': None, 'trajectories': ['chatcmpl-40fe82c8835837b664f4a16458f9f17c', 'chatcmpl-905125c7406f0c2f85fa42f3bef6b39d', 'chatcmpl-9ad087ddb4caf2f06e6685fd22767e8f', 'chatcmpl-31effae850e2879cd435597bd5b2f250', 'chatcmpl-8a9e6a7c8230d26407b5072b93b0bbdc', 'chatcmpl-2a396fbe44469a27e135f99fb02cfcfc'], 'attempt': '20261015T225213302738916'}
