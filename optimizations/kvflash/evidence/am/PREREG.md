@@ -1118,3 +1118,30 @@ The comparison with B0 is worded as follows, and nothing else is claimed.
 - **Rows on the GPU, not bytes.** A3 matches B0's POOL16K in rows per full-attention layer (16,384, question and answer included). A3 runs bf16 K/V and B0 runs q4_0, so the two arms do not use the same bytes; this is the framing A1 already has.
 - **The exact archive.** A3's exact K/V of the compacted blocks stands in for B0's paged-out host chunks. KVFlash keeps every evicted exact chunk on host, so both arms hold the full exact history off the counted rows. What differs is how a block is chosen to come back: A3's router (the compacted-slot attention mass at the last question token) against the pager's own policy.
 - **Caching.** The cache state is symmetric across A3's own arms and its reference (no prefix cache, no disk cache, everything built from scratch). It is not symmetric against B0, which uses a host prefix cache and primer requests. The bar is therefore each arm's retention against its own FULL reference, as in A1, and A3 is not an engine accuracy, speed or memory comparison.
+
+## M7 gate (c): compact-on-evict in the engine (2026-10-16, before any (c) row)
+
+Written by the M7 agent before any (c) row; committed unchanged except for formatting. Code: `kvflash/2.0b-m7-auto-compact` in wt-m7, unit tests red at 3757f453 and green at 9289742a and c776a972 (1108/0/7). Gates (a), output identical while the pool is not full, and (b), speed, must be green first. Seen before writing: R2 rows (FULL(8) 315/357, F-BLK(8) 296/357, 50,024 tokens at k = 8) and one unscored 13K-token smoke of the new binary; no (c) accuracy.
+
+1. **Question.** With a 16K-row pool and a 50K-token context, does compacting a block only when the pager evicts it keep accuracy near full context and far above plain paging?
+2. **Recipe (R2's).** Probe article = loader index i, then 8 distractors `random.Random(f"r2-0-{i}").sample(range(50,90),8)`, each a user turn, then the question as the last user turn. Non-thinking, temperature 0, seed 1, at most 256 new tokens, R1b parser and scoring. Probe set: loader indices 0-9, 181 questions (the cost subset R2's preregistration declared; every pooled question is a fresh ~50K-token prefill).
+3. **Arms, paired per question.**
+   - full: no `--kvflash`.
+   - pool: `--kvflash 16384`, no Attention Matching (AM).
+   - coe: pool + `--kvflash-am-ratio 0.10`, P = W = 0, AM fit (keys by attention, beta by non-negative least squares, values by least squares).
+   - coesel: coe + `--kvflash-am-select-only` (beta 0, original value rows, no fit).
+4. **Parity contract.** Same GGUF (Qwen3.8-27B UD-Q4_K_M); `--max-ctx 65536` on all arms; default KV cache types, read from each arm's server log and required identical; one `luce_server` binary md5 for all four arms; `--no-kv-cache` and `--prefix-cache-slots 0` so no arm caches (prompt tokens and effective prompt tokens equal across arms, checked from the rows); one server session per arm slice; the 3090 lock taken per run slice.
+5. **Reported per arm.** Correct/181; paired differences with a cluster bootstrap over the 10 articles (10,000 resamples, seed 0, 95% percentile) and exact McNemar; medians of prefill seconds, decode tok/s and wall; per coe and coesel run, the eviction victims by verdict (compacted, ineligible, no queries, not resident, already compacted), the peak host query-ring MiB, and failed compactions.
+6. **Predictions.** full 88% (R2 FULL(8)); pool 40% (the probe article sits ~45K tokens behind the 16K window; chance is 25%); coe 84% (R2 F-BLK(8) was 83%, and here the last ~16K tokens stay exact); coesel 79%.
+7. **Bars.**
+   - coe − pool ≥ +20 points with the interval's lower bound > 0.
+   - full − coe ≤ 8 points, with the interval's upper bound reported. With 10 clusters, an interval wider than the margin reads as inconclusive, not as a pass.
+   - coe ≥ coesel is reported, not gated.
+   - Any failed compaction or FATAL line voids the run.
+8. **Reading.** A missed bar is reported as missed. No arm is re-run to rescue a number.
+
+### Facts recorded with this preregistration (from the M7 build, not from (c) rows)
+
+- **Host query plane.** About 120 MiB per 640-token block (a 20-block prompt held 2,400 MiB on host), not the ~4 MB first estimated.
+- **No exact host copy.** M7's `mark_compacted` drops the covered chunks' host copies, so a compacted block cannot be fetched back exact. This differs from the plain pager, which keeps every evicted exact chunk on host, and from the routed-exact-fetch arms (A3, A4_CTK4, R-LRU mode 4). (c) has no exact-fetch arm, so it is unaffected.
+- **Gate (a) comparison.** The server has no logprobs endpoint, so gate (a) compares greedy text, tool calls, token counts, cached tokens and prefilled tokens per request, not a logits digest.
