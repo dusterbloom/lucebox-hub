@@ -1,0 +1,307 @@
+{
+ "stage": "proper",
+ "arm": "A3_W2",
+ "window_blocks": 2,
+ "selection_report_sha256": "68a27beb5b85f440d1c19390e1424e2ab579dcd5cf4aabf94a332041c8d9516a",
+ "trajectories": 54,
+ "reference_yield": [
+  877,
+  1650
+ ],
+ "retained_probes": 877,
+ "retention": {
+  "n": 877,
+  "correct": 732,
+  "retention": {
+   "mean": 0.8346636259977195,
+   "lo": 0.8033978525588283,
+   "hi": 0.8626309662398137,
+   "n_q": 877,
+   "n_art": 54,
+   "level": 95.0
+  },
+  "retention_ci99.9": {
+   "mean": 0.8346636259977195,
+   "lo": 0.7809307544831403,
+   "hi": 0.8783315596052413,
+   "n_q": 877,
+   "n_art": 54,
+   "level": 99.9
+  }
+ },
+ "bar": 0.756,
+ "decision": {
+  "basis": "final, 95% interval (A1 section 6)",
+  "verdict": "PASS"
+ },
+ "size_requirement_50_trajectories_and_600_retained_met": true,
+ "size_note": null,
+ "early_look": null,
+ "by_distance": {
+  "0-4096": [
+   256,
+   271
+  ],
+  "4096-8192": [
+   101,
+   121
+  ],
+  "8192-16384": [
+   233,
+   291
+  ],
+  "16384-inf": [
+   142,
+   194
+  ]
+ },
+ "by_type": {
+  "cmdline_text": [
+   112,
+   131
+  ],
+  "line": [
+   357,
+   417
+  ],
+  "defname": [
+   117,
+   151
+  ],
+  "cmdline_path": [
+   112,
+   142
+  ],
+  "traceback": [
+   20,
+   21
+  ],
+  "failed_test": [
+   14,
+   15
+  ]
+ },
+ "by_k_used": {
+  "3": {
+   "n": 11,
+   "correct": 11
+  },
+  "4": {
+   "n": 7,
+   "correct": 7
+  },
+  "5": {
+   "n": 38,
+   "correct": 36
+  },
+  "6": {
+   "n": 111,
+   "correct": 104
+  },
+  "7": {
+   "n": 53,
+   "correct": 49
+  },
+  "8": {
+   "n": 12,
+   "correct": 9
+  },
+  "9": {
+   "n": 319,
+   "correct": 244
+  },
+  "10": {
+   "n": 11,
+   "correct": 9
+  },
+  "11": {
+   "n": 300,
+   "correct": 250
+  },
+  "12": {
+   "n": 15,
+   "correct": 13
+  }
+ },
+ "source_fetch_coverage_vs_retention": {
+  "candidate_probes": 793,
+  "none": {
+   "n": 93,
+   "correct": 13
+  },
+  "partial": {
+   "n": 3,
+   "correct": 2
+  },
+  "all": {
+   "n": 697,
+   "correct": 637
+  }
+ },
+ "mean_rows": 14874.742303306728,
+ "mean_peak_rows": 15032.290763968072,
+ "cuts": {
+  "cuts": 138,
+  "mean_rows": 14929.130434782608,
+  "max_rows": 16214,
+  "mean_reserve": 157.31159420289856,
+  "max_reserve": 214,
+  "mean_peak_rows": 15086.442028985508,
+  "max_peak_rows": 16382,
+  "cuts_k_below_candidates": 105,
+  "cuts_without_candidates": 0,
+  "k_used_histogram": {
+   "11": 49,
+   "9": 50,
+   "7": 8,
+   "4": 1,
+   "3": 1,
+   "6": 17,
+   "5": 6,
+   "8": 2,
+   "10": 2,
+   "12": 2
+  },
+  "mean_k_used": 9.014492753623188
+ },
+ "provenance": {
+  "route_s_mean": 0.9134070695553022,
+  "fetch_bytes_mean": 375191731.81299883,
+  "probe_wall_s_mean": 9.926875712656786,
+  "answer_decode_tokens_mean": 14.517673888255416
+ },
+ "router": {
+  "probes": 877,
+  "source_status": {
+   "candidate": 793,
+   "exact_resident": 78,
+   "tail": 6
+  },
+  "a_last": {
+   "candidate_probes": {
+    "n": 793,
+    "recall": {
+     "1": 0.19924337957124844,
+     "2": 0.44388398486759145,
+     "4": 0.7036569987389659,
+     "8": 0.8600252206809584,
+     "16": 0.9558638083228247
+    },
+    "median_rank": 3.0,
+    "mean_rank": 4.675914249684742,
+    "quartiles": [
+     2.0,
+     3.0,
+     5.0
+    ],
+    "best": 1,
+    "worst": 40
+   },
+   "candidate_probes_over_16K": {
+    "n": 194,
+    "recall": {
+     "1": 0.23711340206185566,
+     "2": 0.3917525773195876,
+     "4": 0.6082474226804123,
+     "8": 0.7783505154639175,
+     "16": 0.9020618556701031
+    },
+    "median_rank": 3.0,
+    "mean_rank": 6.443298969072165,
+    "quartiles": [
+     2.0,
+     3.0,
+     7.0
+    ],
+    "best": 1,
+    "worst": 40
+   }
+  },
+  "mean_candidates_per_probe": 27.50285062713797
+ },
+ "source_exact_at_answer": {
+  "located_in_sealed_blocks": 871,
+  "source_exact_at_answer": 775
+ },
+ "pool16k": {
+  "pool16k_same_trajectories": {
+   "ci95": {
+    "mean": 0.7511904761904762,
+    "lo": 0.7209840586753973,
+    "hi": 0.7798818979933111,
+    "n_q": 840,
+    "n_art": 54,
+    "level": 95.0
+   },
+   "correct": 631,
+   "n": 840
+  },
+  "pool16k_by_distance": {
+   "0-4096": [
+    249,
+    260
+   ],
+   "4096-8192": [
+    108,
+    119
+   ],
+   "8192-16384": [
+    263,
+    273
+   ],
+   "16384-inf": [
+    11,
+    188
+   ]
+  },
+  "same_probe": {
+   "n": 782,
+   "a3": 676,
+   "pool16k": 600,
+   "mcnemar_a3_only_pool_only_p": [
+    142,
+    66,
+    1.461806579666828e-07
+   ]
+  },
+  "same_probe_by_distance": {
+   "a3": {
+    "0-4096": [
+     236,
+     243
+    ],
+    "4096-8192": [
+     98,
+     112
+    ],
+    "8192-16384": [
+     209,
+     255
+    ],
+    "16384-inf": [
+     133,
+     172
+    ]
+   },
+   "pool16k": {
+    "0-4096": [
+     235,
+     243
+    ],
+    "4096-8192": [
+     106,
+     112
+    ],
+    "8192-16384": [
+     249,
+     255
+    ],
+    "16384-inf": [
+     10,
+     172
+    ]
+   }
+  }
+ },
+ "b0_pool16k_bar_by_distance": "B0: 96%, 91%, 96%, 6% (PREREG A1 section 1); the same-trajectory values are in pool16k"
+}

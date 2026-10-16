@@ -1,0 +1,298 @@
+[a3] attempt 20261016T011948280315090: manifest new
+[a1] model loaded in 29s on Radeon 8060S Graphics torch 2.9.1+rocm7.13.0a20260513
+[a3] seeded 438 reference FULL rows from /home/duster/r1e/out/a1
+[a3] a3d0c14f W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] a3d0c14f W 2 cut 1/2 ctx 21539 blocks 33 tail 419 peak alloc 56.8 reserved 78.4 GiB
+[a3] a3d0c14f W 2 cut 2/2 ctx 35908 blocks 56 tail 68 peak alloc 58.3 reserved 83.7 GiB
+[a3] 2f5fd055 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 2f5fd055 W 2 cut 1/3 ctx 12175 blocks 19 tail 15 peak alloc 58.3 reserved 83.7 GiB
+[a3] 2f5fd055 W 2 cut 2/3 ctx 24030 blocks 37 tail 350 peak alloc 58.3 reserved 83.7 GiB
+[a3] 2f5fd055 W 2 cut 3/3 ctx 36578 blocks 57 tail 98 peak alloc 58.4 reserved 83.7 GiB
+[a3] 6801a5ac W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 6801a5ac W 2 cut 1/3 ctx 10758 blocks 16 tail 518 peak alloc 58.4 reserved 83.7 GiB
+[a3] 6801a5ac W 2 cut 2/3 ctx 24548 blocks 38 tail 228 peak alloc 58.4 reserved 83.7 GiB
+[a3] 6801a5ac W 2 cut 3/3 ctx 35546 blocks 55 tail 346 peak alloc 58.4 reserved 83.7 GiB
+[a3] 3a9a0504 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 3a9a0504 W 2 cut 1/3 ctx 12199 blocks 19 tail 39 peak alloc 58.4 reserved 83.7 GiB
+[a3] 3a9a0504 W 2 cut 2/3 ctx 23798 blocks 37 tail 118 peak alloc 58.4 reserved 83.7 GiB
+[a3] 3a9a0504 W 2 cut 3/3 ctx 36518 blocks 57 tail 38 peak alloc 58.5 reserved 83.7 GiB
+[a3] 0077a092 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 0077a092 W 2 cut 1/2 ctx 20946 blocks 32 tail 466 peak alloc 58.5 reserved 83.7 GiB
+[a3] 0077a092 W 2 cut 2/2 ctx 35368 blocks 55 tail 168 peak alloc 58.5 reserved 84.4 GiB
+[a3] 7fa8af14 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 7fa8af14 W 2 cut 1/2 ctx 24001 blocks 37 tail 321 peak alloc 58.5 reserved 84.4 GiB
+[a3] 7fa8af14 W 2 cut 2/2 ctx 35899 blocks 56 tail 59 peak alloc 58.5 reserved 84.4 GiB
+[a3] 716cf4f1 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 716cf4f1 W 2 cut 1/3 ctx 9903 blocks 15 tail 303 peak alloc 58.5 reserved 84.4 GiB
+[a3] 716cf4f1 W 2 cut 2/3 ctx 24227 blocks 37 tail 547 peak alloc 58.5 reserved 84.4 GiB
+[a3] 716cf4f1 W 2 cut 3/3 ctx 36798 blocks 57 tail 318 peak alloc 58.5 reserved 84.4 GiB
+[a3] 19653264 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 19653264 W 2 cut 1/3 ctx 12283 blocks 19 tail 123 peak alloc 58.5 reserved 84.4 GiB
+[a3] 19653264 W 2 cut 2/3 ctx 24188 blocks 37 tail 508 peak alloc 58.5 reserved 84.4 GiB
+[a3] 19653264 W 2 cut 3/3 ctx 36526 blocks 57 tail 46 peak alloc 58.5 reserved 84.4 GiB
+[a3] b64e0d5c W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] b64e0d5c W 2 cut 1/3 ctx 11927 blocks 18 tail 407 peak alloc 58.5 reserved 84.4 GiB
+[a3] b64e0d5c W 2 cut 2/3 ctx 24025 blocks 37 tail 345 peak alloc 58.5 reserved 84.4 GiB
+[a3] b64e0d5c W 2 cut 3/3 ctx 36368 blocks 56 tail 528 peak alloc 58.5 reserved 84.4 GiB
+[a3] ea2fa02a W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] ea2fa02a W 2 cut 1/3 ctx 10955 blocks 17 tail 75 peak alloc 58.5 reserved 84.4 GiB
+[a3] ea2fa02a W 2 cut 2/3 ctx 24278 blocks 37 tail 598 peak alloc 58.5 reserved 84.4 GiB
+[a3] ea2fa02a W 2 cut 3/3 ctx 35288 blocks 55 tail 88 peak alloc 58.5 reserved 84.4 GiB
+[a3] 4cb6a899 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 4cb6a899 W 2 cut 1/3 ctx 12076 blocks 18 tail 556 peak alloc 58.5 reserved 84.4 GiB
+[a3] 4cb6a899 W 2 cut 2/3 ctx 24096 blocks 37 tail 416 peak alloc 58.5 reserved 84.4 GiB
+[a3] 4cb6a899 W 2 cut 3/3 ctx 36185 blocks 56 tail 345 peak alloc 58.5 reserved 84.4 GiB
+[a3] 8ac46ba2 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 8ac46ba2 W 2 cut 1/2 ctx 24504 blocks 38 tail 184 peak alloc 58.5 reserved 84.4 GiB
+[a3] 8ac46ba2 W 2 cut 2/2 ctx 35683 blocks 55 tail 483 peak alloc 58.5 reserved 84.4 GiB
+[a3] 8984f360 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 8984f360 W 2 cut 1/2 ctx 23866 blocks 37 tail 186 peak alloc 58.5 reserved 84.4 GiB
+[a3] 8984f360 W 2 cut 2/2 ctx 36553 blocks 57 tail 73 peak alloc 58.5 reserved 84.4 GiB
+[a3] a36d1800 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] a36d1800 W 2 cut 1/3 ctx 11778 blocks 18 tail 258 peak alloc 58.5 reserved 84.4 GiB
+[a3] a36d1800 W 2 cut 2/3 ctx 23827 blocks 37 tail 147 peak alloc 58.5 reserved 84.4 GiB
+[a3] a36d1800 W 2 cut 3/3 ctx 36434 blocks 56 tail 594 peak alloc 58.5 reserved 84.4 GiB
+[a1] bd0d1f67 FULL cut 1/2 ctx 24561 build 149.5s answer 178.1s (12 items) peak alloc 59.0 reserved 60.6 GiB
+[a1] bd0d1f67 FULL cut 2/2 ctx 36534 build 139.5s answer 244.3s (12 items) peak alloc 64.8 reserved 66.5 GiB
+[a3] bd0d1f67 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] bd0d1f67 W 2 cut 1/2 ctx 24561 blocks 38 tail 241 peak alloc 64.8 reserved 76.9 GiB
+[a3] bd0d1f67 W 2 cut 2/2 ctx 36534 blocks 57 tail 54 peak alloc 64.8 reserved 79.5 GiB
+[a1] c0a5e451 FULL cut 1/2 ctx 24374 build 147.7s answer 207.9s (12 items) peak alloc 59.0 reserved 60.5 GiB
+[a1] c0a5e451 FULL cut 2/2 ctx 36746 build 141.8s answer 166.0s (12 items) peak alloc 64.8 reserved 67.2 GiB
+[a3] c0a5e451 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] c0a5e451 W 2 cut 1/2 ctx 24374 blocks 38 tail 54 peak alloc 64.8 reserved 73.1 GiB
+[a3] c0a5e451 W 2 cut 2/2 ctx 36746 blocks 57 tail 266 peak alloc 64.8 reserved 79.5 GiB
+[a1] 31ec037a FULL cut 1/3 ctx 12275 build 53.6s answer 110.4s (12 items) peak alloc 54.7 reserved 57.1 GiB
+[a1] 31ec037a FULL cut 2/3 ctx 24574 build 96.3s answer 226.0s (12 items) peak alloc 59.9 reserved 61.4 GiB
+[a1] 31ec037a FULL cut 3/3 ctx 36767 build 142.5s answer 331.1s (12 items) peak alloc 64.8 reserved 66.7 GiB
+[a3] 31ec037a W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 31ec037a W 2 cut 1/3 ctx 12275 blocks 19 tail 115 peak alloc 64.8 reserved 66.7 GiB
+[a3] 31ec037a W 2 cut 2/3 ctx 24574 blocks 38 tail 254 peak alloc 64.8 reserved 75.6 GiB
+[a3] 31ec037a W 2 cut 3/3 ctx 36767 blocks 57 tail 287 peak alloc 64.8 reserved 79.9 GiB
+[a1] 1adf4724 FULL cut 1/3 ctx 10924 build 45.9s answer 120.5s (12 items) peak alloc 54.3 reserved 56.9 GiB
+[a1] 1adf4724 FULL cut 2/3 ctx 23635 build 94.3s answer 181.7s (12 items) peak alloc 59.3 reserved 61.0 GiB
+[a1] 1adf4724 FULL cut 3/3 ctx 36002 build 143.5s answer 236.4s (12 items) peak alloc 64.6 reserved 66.6 GiB
+[a3] 1adf4724 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 1adf4724 W 2 cut 1/3 ctx 10924 blocks 17 tail 44 peak alloc 64.6 reserved 66.6 GiB
+[a3] 1adf4724 W 2 cut 2/3 ctx 23635 blocks 36 tail 595 peak alloc 64.6 reserved 75.4 GiB
+[a3] 1adf4724 W 2 cut 3/3 ctx 36002 blocks 56 tail 162 peak alloc 64.6 reserved 81.1 GiB
+[a1] 792546db FULL cut 1/2 ctx 23838 build 142.3s answer 170.0s (12 items) peak alloc 58.7 reserved 60.5 GiB
+[a1] 792546db FULL cut 2/2 ctx 36761 build 148.8s answer 220.2s (12 items) peak alloc 64.8 reserved 67.1 GiB
+[a3] 792546db W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 792546db W 2 cut 1/2 ctx 23838 blocks 37 tail 158 peak alloc 64.8 reserved 72.2 GiB
+[a3] 792546db W 2 cut 2/2 ctx 36761 blocks 57 tail 281 peak alloc 64.8 reserved 81.0 GiB
+[a1] b33dcf4e FULL cut 1/2 ctx 24204 build 145.4s answer 172.5s (12 items) peak alloc 58.7 reserved 60.5 GiB
+[a1] b33dcf4e FULL cut 2/2 ctx 36158 build 140.2s answer 182.9s (12 items) peak alloc 64.6 reserved 66.3 GiB
+[a3] b33dcf4e W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] b33dcf4e W 2 cut 1/2 ctx 24204 blocks 37 tail 524 peak alloc 64.6 reserved 76.8 GiB
+[a3] b33dcf4e W 2 cut 2/2 ctx 36158 blocks 56 tail 318 peak alloc 64.6 reserved 79.2 GiB
+[a3] early look at 20: {'ci': {'mean': 0.8651315789473685, 'lo': 0.7547163118306983, 'hi': 0.9359758037694014, 'n_q': 304, 'n_art': 20, 'level': 99.9}, 'verdict': 'CONTINUE', 'trajectories': 20, 'bar': 0.756}
+[a1] 8da51a1f FULL cut 1/3 ctx 12261 build 53.5s answer 105.9s (12 items) peak alloc 54.7 reserved 56.9 GiB
+[a1] 8da51a1f FULL cut 2/3 ctx 24354 build 94.5s answer 157.4s (12 items) peak alloc 59.8 reserved 61.1 GiB
+[a1] 8da51a1f FULL cut 3/3 ctx 36808 build 142.1s answer 175.4s (12 items) peak alloc 64.8 reserved 67.4 GiB
+[a3] 8da51a1f W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 8da51a1f W 2 cut 1/3 ctx 12261 blocks 19 tail 101 peak alloc 64.8 reserved 67.4 GiB
+[a3] 8da51a1f W 2 cut 2/3 ctx 24354 blocks 38 tail 34 peak alloc 64.8 reserved 76.0 GiB
+[a3] 8da51a1f W 2 cut 3/3 ctx 36808 blocks 57 tail 328 peak alloc 64.8 reserved 80.2 GiB
+[a1] 4bf0607d FULL cut 1/3 ctx 12091 build 52.3s answer 89.0s (12 items) peak alloc 54.5 reserved 57.2 GiB
+[a1] 4bf0607d FULL cut 2/3 ctx 24213 build 96.3s answer 116.4s (12 items) peak alloc 59.6 reserved 61.4 GiB
+[a1] 4bf0607d FULL cut 3/3 ctx 35398 build 129.9s answer 220.0s (12 items) peak alloc 64.4 reserved 66.8 GiB
+[a3] 4bf0607d W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 4bf0607d W 2 cut 1/3 ctx 12091 blocks 18 tail 571 peak alloc 64.4 reserved 66.8 GiB
+[a3] 4bf0607d W 2 cut 2/3 ctx 24213 blocks 37 tail 533 peak alloc 64.4 reserved 75.5 GiB
+[a3] 4bf0607d W 2 cut 3/3 ctx 35398 blocks 55 tail 198 peak alloc 64.4 reserved 78.7 GiB
+[a1] 2bec3953 FULL cut 1/3 ctx 11444 build 48.4s answer 96.5s (12 items) peak alloc 54.3 reserved 57.1 GiB
+[a1] 2bec3953 FULL cut 2/3 ctx 24450 build 103.1s answer 153.0s (12 items) peak alloc 59.8 reserved 61.3 GiB
+[a1] 2bec3953 FULL cut 3/3 ctx 36747 build 142.1s answer 182.4s (12 items) peak alloc 64.8 reserved 66.7 GiB
+[a3] 2bec3953 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 2bec3953 W 2 cut 1/3 ctx 11444 blocks 17 tail 564 peak alloc 64.8 reserved 66.7 GiB
+[a3] 2bec3953 W 2 cut 2/3 ctx 24450 blocks 38 tail 130 peak alloc 64.8 reserved 77.7 GiB
+[a3] 2bec3953 W 2 cut 3/3 ctx 36747 blocks 57 tail 267 peak alloc 64.8 reserved 80.1 GiB
+[a1] 53d5981b FULL cut 1/2 ctx 23880 build 142.7s answer 162.7s (12 items) peak alloc 58.7 reserved 60.5 GiB
+[a1] 53d5981b FULL cut 2/2 ctx 36067 build 138.8s answer 199.7s (12 items) peak alloc 64.6 reserved 67.2 GiB
+[a3] 53d5981b W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 53d5981b W 2 cut 1/2 ctx 23880 blocks 37 tail 200 peak alloc 64.6 reserved 78.5 GiB
+[a3] 53d5981b W 2 cut 2/2 ctx 36067 blocks 56 tail 227 peak alloc 64.6 reserved 79.2 GiB
+[a1] 35ff4946 FULL cut 1/3 ctx 12135 build 52.3s answer 106.5s (12 items) peak alloc 54.6 reserved 57.4 GiB
+[a1] 35ff4946 FULL cut 2/3 ctx 24402 build 98.4s answer 268.7s (12 items) peak alloc 59.9 reserved 61.2 GiB
+[a1] 35ff4946 FULL cut 3/3 ctx 36296 build 135.3s answer 175.7s (12 items) peak alloc 64.6 reserved 66.9 GiB
+[a3] 35ff4946 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 35ff4946 W 2 cut 1/3 ctx 12135 blocks 18 tail 615 peak alloc 64.6 reserved 66.9 GiB
+[a3] 35ff4946 W 2 cut 2/3 ctx 24402 blocks 38 tail 82 peak alloc 64.6 reserved 77.1 GiB
+[a3] 35ff4946 W 2 cut 3/3 ctx 36296 blocks 56 tail 456 peak alloc 64.6 reserved 79.0 GiB
+[a1] a56503d2 FULL cut 1/2 ctx 24534 build 149.1s answer 130.0s (12 items) peak alloc 59.0 reserved 60.5 GiB
+[a1] a56503d2 FULL cut 2/2 ctx 36011 build 132.2s answer 226.4s (12 items) peak alloc 64.6 reserved 66.6 GiB
+[a3] a56503d2 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] a56503d2 W 2 cut 1/2 ctx 24534 blocks 38 tail 214 peak alloc 64.6 reserved 78.1 GiB
+[a3] a56503d2 W 2 cut 2/2 ctx 36011 blocks 56 tail 171 peak alloc 64.6 reserved 78.3 GiB
+[a1] 9c9eac97 FULL cut 1/2 ctx 24543 build 148.9s answer 186.5s (12 items) peak alloc 59.0 reserved 60.5 GiB
+[a1] 9c9eac97 FULL cut 2/2 ctx 36483 build 138.0s answer 246.1s (12 items) peak alloc 64.8 reserved 66.8 GiB
+[a3] 9c9eac97 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 9c9eac97 W 2 cut 1/2 ctx 24543 blocks 38 tail 223 peak alloc 64.8 reserved 84.8 GiB
+[a3] 9c9eac97 W 2 cut 2/2 ctx 36483 blocks 57 tail 3 peak alloc 64.8 reserved 84.8 GiB
+[a1] a9f2e3da FULL cut 1/2 ctx 12028 build 51.7s answer 114.2s (12 items) peak alloc 54.5 reserved 57.0 GiB
+[a1] a9f2e3da FULL cut 2/2 ctx 36821 build 240.2s answer 179.2s (12 items) peak alloc 64.1 reserved 66.8 GiB
+[a3] a9f2e3da W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] a9f2e3da W 2 cut 1/2 ctx 12028 blocks 18 tail 508 peak alloc 64.1 reserved 66.8 GiB
+[a3] a9f2e3da W 2 cut 2/2 ctx 36821 blocks 57 tail 341 peak alloc 64.1 reserved 99.7 GiB
+[a1] 05303b2b FULL cut 1/3 ctx 12165 build 53.0s answer 71.1s (12 items) peak alloc 54.7 reserved 57.4 GiB
+[a1] 05303b2b FULL cut 2/3 ctx 24139 build 92.0s answer 140.5s (12 items) peak alloc 59.6 reserved 61.4 GiB
+[a1] 05303b2b FULL cut 3/3 ctx 36023 build 138.5s answer 229.4s (12 items) peak alloc 64.6 reserved 66.7 GiB
+[a3] 05303b2b W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 05303b2b W 2 cut 1/3 ctx 12165 blocks 19 tail 5 peak alloc 64.6 reserved 66.7 GiB
+[a3] 05303b2b W 2 cut 2/3 ctx 24139 blocks 37 tail 459 peak alloc 64.6 reserved 74.3 GiB
+[a3] 05303b2b W 2 cut 3/3 ctx 36023 blocks 56 tail 183 peak alloc 64.6 reserved 79.6 GiB
+[a1] 702cf077 FULL cut 1/3 ctx 12050 build 51.9s answer 90.5s (12 items) peak alloc 54.5 reserved 56.8 GiB
+[a1] 702cf077 FULL cut 2/3 ctx 24301 build 97.4s answer 148.2s (12 items) peak alloc 59.6 reserved 61.1 GiB
+[a1] 702cf077 FULL cut 3/3 ctx 36461 build 143.2s answer 218.5s (12 items) peak alloc 64.6 reserved 66.6 GiB
+[a3] 702cf077 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 702cf077 W 2 cut 1/3 ctx 12050 blocks 18 tail 530 peak alloc 64.6 reserved 66.6 GiB
+[a3] 702cf077 W 2 cut 2/3 ctx 24301 blocks 37 tail 621 peak alloc 64.6 reserved 75.4 GiB
+[a3] 702cf077 W 2 cut 3/3 ctx 36461 blocks 56 tail 621 peak alloc 64.6 reserved 79.7 GiB
+[a1] eb85b41d FULL cut 1/2 ctx 22394 build 128.9s answer 223.9s (12 items) peak alloc 58.2 reserved 60.0 GiB
+[a1] eb85b41d FULL cut 2/2 ctx 36343 build 160.1s answer 226.9s (12 items) peak alloc 64.5 reserved 66.8 GiB
+[a3] eb85b41d W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] eb85b41d W 2 cut 1/2 ctx 22394 blocks 34 tail 634 peak alloc 64.5 reserved 73.3 GiB
+[a3] eb85b41d W 2 cut 2/2 ctx 36343 blocks 56 tail 503 peak alloc 64.5 reserved 82.8 GiB
+[a1] 0d753aa1 FULL cut 1/1 ctx 36671 build 288.6s answer 183.3s (12 items) peak alloc 63.2 reserved 65.8 GiB
+[a3] 0d753aa1 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 0d753aa1 W 2 cut 1/1 ctx 36671 blocks 57 tail 191 peak alloc 63.2 reserved 93.3 GiB
+[a1] e92865d1 FULL cut 1/3 ctx 10948 build 45.9s answer 101.6s (12 items) peak alloc 54.3 reserved 56.1 GiB
+[a1] e92865d1 FULL cut 2/3 ctx 24001 build 98.7s answer 171.9s (12 items) peak alloc 59.6 reserved 61.3 GiB
+[a1] e92865d1 FULL cut 3/3 ctx 36348 build 141.8s answer 318.5s (12 items) peak alloc 64.6 reserved 66.5 GiB
+[a3] e92865d1 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] e92865d1 W 2 cut 1/3 ctx 10948 blocks 17 tail 68 peak alloc 64.6 reserved 66.5 GiB
+[a3] e92865d1 W 2 cut 2/3 ctx 24001 blocks 37 tail 321 peak alloc 64.6 reserved 76.4 GiB
+[a3] e92865d1 W 2 cut 3/3 ctx 36348 blocks 56 tail 508 peak alloc 64.6 reserved 79.8 GiB
+[a1] 0f973930 FULL cut 1/3 ctx 11557 build 49.4s answer 115.0s (12 items) peak alloc 54.5 reserved 57.0 GiB
+[a1] 0f973930 FULL cut 2/3 ctx 24572 build 99.7s answer 101.2s (12 items) peak alloc 59.8 reserved 60.8 GiB
+[a1] 0f973930 FULL cut 3/3 ctx 36572 build 139.4s answer 108.9s (12 items) peak alloc 64.8 reserved 67.3 GiB
+[a3] 0f973930 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 0f973930 W 2 cut 1/3 ctx 11557 blocks 18 tail 37 peak alloc 64.8 reserved 67.3 GiB
+[a3] 0f973930 W 2 cut 2/3 ctx 24572 blocks 38 tail 252 peak alloc 64.8 reserved 76.5 GiB
+[a3] 0f973930 W 2 cut 3/3 ctx 36572 blocks 57 tail 92 peak alloc 64.8 reserved 80.0 GiB
+[a1] 6116988f FULL cut 1/2 ctx 24025 build 144.1s answer 89.9s (12 items) peak alloc 58.7 reserved 60.8 GiB
+[a1] 6116988f FULL cut 2/2 ctx 36743 build 147.9s answer 147.1s (12 items) peak alloc 64.8 reserved 67.1 GiB
+[a3] 6116988f W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 6116988f W 2 cut 1/2 ctx 24025 blocks 37 tail 345 peak alloc 64.8 reserved 71.7 GiB
+[a3] 6116988f W 2 cut 2/2 ctx 36743 blocks 57 tail 263 peak alloc 64.8 reserved 80.4 GiB
+[a1] 061cdc39 FULL cut 1/3 ctx 11949 build 51.4s answer 115.1s (12 items) peak alloc 54.5 reserved 57.3 GiB
+[a1] 061cdc39 FULL cut 2/3 ctx 24259 build 96.9s answer 161.6s (12 items) peak alloc 59.6 reserved 61.4 GiB
+[a1] 061cdc39 FULL cut 3/3 ctx 36211 build 140.6s answer 278.3s (12 items) peak alloc 64.6 reserved 66.7 GiB
+[a3] 061cdc39 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 061cdc39 W 2 cut 1/3 ctx 11949 blocks 18 tail 429 peak alloc 64.6 reserved 66.7 GiB
+[a3] 061cdc39 W 2 cut 2/3 ctx 24259 blocks 37 tail 579 peak alloc 64.6 reserved 75.7 GiB
+[a3] 061cdc39 W 2 cut 3/3 ctx 36211 blocks 56 tail 371 peak alloc 64.6 reserved 80.2 GiB
+[a1] cd1d23d9 FULL cut 1/3 ctx 12100 build 52.2s answer 139.2s (12 items) peak alloc 54.5 reserved 57.3 GiB
+[a1] cd1d23d9 FULL cut 2/3 ctx 24176 build 95.9s answer 167.7s (12 items) peak alloc 59.6 reserved 61.4 GiB
+[a1] cd1d23d9 FULL cut 3/3 ctx 36580 build 145.0s answer 230.1s (12 items) peak alloc 64.8 reserved 67.0 GiB
+[a3] cd1d23d9 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] cd1d23d9 W 2 cut 1/3 ctx 12100 blocks 18 tail 580 peak alloc 64.8 reserved 67.0 GiB
+[a3] cd1d23d9 W 2 cut 2/3 ctx 24176 blocks 37 tail 496 peak alloc 64.8 reserved 75.5 GiB
+[a3] cd1d23d9 W 2 cut 3/3 ctx 36580 blocks 57 tail 100 peak alloc 64.8 reserved 81.0 GiB
+[a1] 51d30435 FULL cut 1/3 ctx 12051 build 52.0s answer 106.9s (12 items) peak alloc 54.5 reserved 57.4 GiB
+[a1] 51d30435 FULL cut 2/3 ctx 24109 build 95.3s answer 159.3s (12 items) peak alloc 59.6 reserved 61.0 GiB
+[a1] 51d30435 FULL cut 3/3 ctx 36648 build 146.4s answer 146.9s (12 items) peak alloc 64.8 reserved 67.1 GiB
+[a3] 51d30435 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 51d30435 W 2 cut 1/3 ctx 12051 blocks 18 tail 531 peak alloc 64.8 reserved 67.1 GiB
+[a3] 51d30435 W 2 cut 2/3 ctx 24109 blocks 37 tail 429 peak alloc 64.8 reserved 75.6 GiB
+[a3] 51d30435 W 2 cut 3/3 ctx 36648 blocks 57 tail 168 peak alloc 64.8 reserved 81.2 GiB
+[a1] 474568ea FULL cut 1/2 ctx 24558 build 148.9s answer 165.9s (12 items) peak alloc 59.0 reserved 60.6 GiB
+[a1] 474568ea FULL cut 2/2 ctx 36524 build 139.1s answer 262.2s (12 items) peak alloc 64.8 reserved 66.7 GiB
+[a3] 474568ea W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 474568ea W 2 cut 1/2 ctx 24558 blocks 38 tail 238 peak alloc 64.8 reserved 76.7 GiB
+[a3] 474568ea W 2 cut 2/2 ctx 36524 blocks 57 tail 44 peak alloc 64.8 reserved 79.4 GiB
+[a1] fc238694 FULL cut 1/3 ctx 12276 build 53.5s answer 77.5s (12 items) peak alloc 54.7 reserved 56.9 GiB
+[a1] fc238694 FULL cut 2/3 ctx 24468 build 95.2s answer 159.5s (12 items) peak alloc 59.8 reserved 61.5 GiB
+[a1] fc238694 FULL cut 3/3 ctx 36281 build 135.2s answer 286.4s (12 items) peak alloc 64.6 reserved 66.5 GiB
+[a3] fc238694 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] fc238694 W 2 cut 1/3 ctx 12276 blocks 19 tail 116 peak alloc 64.6 reserved 66.5 GiB
+[a3] fc238694 W 2 cut 2/3 ctx 24468 blocks 38 tail 148 peak alloc 64.6 reserved 75.7 GiB
+[a3] fc238694 W 2 cut 3/3 ctx 36281 blocks 56 tail 441 peak alloc 64.6 reserved 78.9 GiB
+[a1] befea5eb FULL cut 1/3 ctx 11867 build 51.3s answer 130.8s (12 items) peak alloc 54.5 reserved 57.1 GiB
+[a1] befea5eb FULL cut 2/3 ctx 24529 build 99.8s answer 83.9s (12 items) peak alloc 59.8 reserved 61.4 GiB
+[a1] befea5eb FULL cut 3/3 ctx 36279 build 135.5s answer 189.2s (12 items) peak alloc 64.6 reserved 67.1 GiB
+[a3] befea5eb W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] befea5eb W 2 cut 1/3 ctx 11867 blocks 18 tail 347 peak alloc 64.6 reserved 67.1 GiB
+[a3] befea5eb W 2 cut 2/3 ctx 24529 blocks 38 tail 209 peak alloc 64.6 reserved 76.7 GiB
+[a3] befea5eb W 2 cut 3/3 ctx 36279 blocks 56 tail 439 peak alloc 64.6 reserved 79.0 GiB
+[a1] 46daf5f6 FULL cut 1/2 ctx 24054 build 144.2s answer 141.9s (12 items) peak alloc 58.7 reserved 60.4 GiB
+[a1] 46daf5f6 FULL cut 2/2 ctx 36679 build 147.2s answer 165.4s (12 items) peak alloc 64.8 reserved 67.6 GiB
+[a3] 46daf5f6 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 46daf5f6 W 2 cut 1/2 ctx 24054 blocks 37 tail 374 peak alloc 64.8 reserved 69.3 GiB
+[a3] 46daf5f6 W 2 cut 2/2 ctx 36679 blocks 57 tail 199 peak alloc 64.8 reserved 80.8 GiB
+[a1] 67901439 FULL cut 1/3 ctx 11962 build 51.3s answer 88.1s (12 items) peak alloc 54.5 reserved 57.8 GiB
+[a1] 67901439 FULL cut 2/3 ctx 24388 build 98.5s answer 133.6s (12 items) peak alloc 59.8 reserved 61.2 GiB
+[a1] 67901439 FULL cut 3/3 ctx 36583 build 140.6s answer 183.3s (12 items) peak alloc 64.8 reserved 67.2 GiB
+[a3] 67901439 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 67901439 W 2 cut 1/3 ctx 11962 blocks 18 tail 442 peak alloc 64.8 reserved 67.2 GiB
+[a3] 67901439 W 2 cut 2/3 ctx 24388 blocks 38 tail 68 peak alloc 64.8 reserved 76.8 GiB
+[a3] 67901439 W 2 cut 3/3 ctx 36583 blocks 57 tail 103 peak alloc 64.8 reserved 80.2 GiB
+[a1] 46a5f366 FULL cut 1/1 ctx 22155 build 126.5s answer 86.6s (12 items) peak alloc 58.1 reserved 59.7 GiB
+[a3] 46a5f366 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 46a5f366 W 2 cut 1/1 ctx 22155 blocks 34 tail 395 peak alloc 58.1 reserved 79.4 GiB
+[a1] 00bfe504 FULL cut 1/2 ctx 24378 build 147.9s answer 203.4s (12 items) peak alloc 59.0 reserved 60.8 GiB
+[a1] 00bfe504 FULL cut 2/2 ctx 36517 build 139.4s answer 138.7s (12 items) peak alloc 64.8 reserved 66.4 GiB
+[a3] 00bfe504 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 00bfe504 W 2 cut 1/2 ctx 24378 blocks 38 tail 58 peak alloc 64.8 reserved 83.5 GiB
+[a3] 00bfe504 W 2 cut 2/2 ctx 36517 blocks 57 tail 37 peak alloc 64.8 reserved 83.5 GiB
+[a1] f471f5f1 FULL cut 1/3 ctx 11678 build 50.0s answer 118.7s (12 items) peak alloc 54.5 reserved 57.2 GiB
+[a1] f471f5f1 FULL cut 2/3 ctx 24408 build 98.9s answer 118.0s (12 items) peak alloc 59.8 reserved 61.1 GiB
+[a1] f471f5f1 FULL cut 3/3 ctx 36264 build 135.0s answer 202.8s (12 items) peak alloc 64.6 reserved 66.1 GiB
+[a3] f471f5f1 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] f471f5f1 W 2 cut 1/3 ctx 11678 blocks 18 tail 158 peak alloc 64.6 reserved 66.1 GiB
+[a3] f471f5f1 W 2 cut 2/3 ctx 24408 blocks 38 tail 88 peak alloc 64.6 reserved 76.9 GiB
+[a3] f471f5f1 W 2 cut 3/3 ctx 36264 blocks 56 tail 424 peak alloc 64.6 reserved 79.1 GiB
+[a1] 80500ea8 FULL cut 1/3 ctx 11085 build 46.7s answer 83.4s (12 items) peak alloc 54.3 reserved 57.3 GiB
+[a1] 80500ea8 FULL cut 2/3 ctx 24213 build 100.0s answer 151.6s (12 items) peak alloc 59.6 reserved 61.0 GiB
+[a1] 80500ea8 FULL cut 3/3 ctx 36872 build 149.2s answer 188.7s (12 items) peak alloc 64.8 reserved 67.0 GiB
+[a3] 80500ea8 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 80500ea8 W 2 cut 1/3 ctx 11085 blocks 17 tail 205 peak alloc 64.8 reserved 67.0 GiB
+[a3] 80500ea8 W 2 cut 2/3 ctx 24213 blocks 37 tail 533 peak alloc 64.8 reserved 76.2 GiB
+[a3] 80500ea8 W 2 cut 3/3 ctx 36872 blocks 57 tail 392 peak alloc 64.8 reserved 80.9 GiB
+[a1] 07a9dcdb FULL cut 1/3 ctx 11302 build 47.4s answer 83.0s (12 items) peak alloc 54.3 reserved 56.7 GiB
+[a1] 07a9dcdb FULL cut 2/3 ctx 24372 build 102.3s answer 154.7s (12 items) peak alloc 59.8 reserved 61.3 GiB
+[a1] 07a9dcdb FULL cut 3/3 ctx 36548 build 139.9s answer 209.0s (12 items) peak alloc 64.8 reserved 67.4 GiB
+[a3] 07a9dcdb W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 07a9dcdb W 2 cut 1/3 ctx 11302 blocks 17 tail 422 peak alloc 64.8 reserved 67.4 GiB
+[a3] 07a9dcdb W 2 cut 2/3 ctx 24372 blocks 38 tail 52 peak alloc 64.8 reserved 77.8 GiB
+[a3] 07a9dcdb W 2 cut 3/3 ctx 36548 blocks 57 tail 68 peak alloc 64.8 reserved 80.2 GiB
+[a1] 808f26a6 FULL cut 1/3 ctx 11765 build 50.6s answer 160.3s (12 items) peak alloc 54.5 reserved 57.1 GiB
+[a1] 808f26a6 FULL cut 2/3 ctx 23966 build 94.5s answer 182.4s (12 items) peak alloc 59.6 reserved 61.4 GiB
+[a1] 808f26a6 FULL cut 3/3 ctx 34070 build 113.4s answer 210.1s (12 items) peak alloc 63.9 reserved 66.1 GiB
+[a3] 808f26a6 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 808f26a6 W 2 cut 1/3 ctx 11765 blocks 18 tail 245 peak alloc 63.9 reserved 66.1 GiB
+[a3] 808f26a6 W 2 cut 2/3 ctx 23966 blocks 37 tail 286 peak alloc 63.9 reserved 75.7 GiB
+[a3] 808f26a6 W 2 cut 3/3 ctx 34070 blocks 53 tail 150 peak alloc 63.9 reserved 76.3 GiB
+[a1] 1f32c127 FULL cut 1/3 ctx 12260 build 53.5s answer 81.6s (12 items) peak alloc 54.7 reserved 57.2 GiB
+[a1] 1f32c127 FULL cut 2/3 ctx 20657 build 61.3s answer 100.5s (12 items) peak alloc 58.5 reserved 59.8 GiB
+[a1] 1f32c127 FULL cut 3/3 ctx 36786 build 177.0s answer 104.8s (12 items) peak alloc 64.6 reserved 66.8 GiB
+[a3] 1f32c127 W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 1f32c127 W 2 cut 1/3 ctx 12260 blocks 19 tail 100 peak alloc 64.6 reserved 66.8 GiB
+[a3] 1f32c127 W 2 cut 2/3 ctx 20657 blocks 32 tail 177 peak alloc 64.6 reserved 69.2 GiB
+[a3] 1f32c127 W 2 cut 3/3 ctx 36786 blocks 57 tail 306 peak alloc 64.6 reserved 86.6 GiB
+[a1] 00a4f97a FULL cut 1/3 ctx 11864 build 51.1s answer 157.6s (12 items) peak alloc 54.5 reserved 57.5 GiB
+[a1] 00a4f97a FULL cut 2/3 ctx 23783 build 92.5s answer 228.2s (12 items) peak alloc 59.6 reserved 61.5 GiB
+[a1] 00a4f97a FULL cut 3/3 ctx 32904 build 99.3s answer 285.9s (12 items) peak alloc 63.5 reserved 65.9 GiB
+[a3] 00a4f97a W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 00a4f97a W 2 cut 1/3 ctx 11864 blocks 18 tail 344 peak alloc 63.5 reserved 65.9 GiB
+[a3] 00a4f97a W 2 cut 2/3 ctx 23783 blocks 37 tail 103 peak alloc 63.5 reserved 75.5 GiB
+[a3] 00a4f97a W 2 cut 3/3 ctx 32904 blocks 51 tail 264 peak alloc 63.5 reserved 75.5 GiB
+[a1] 8ad58f1d FULL cut 1/3 ctx 12044 build 51.9s answer 89.1s (12 items) peak alloc 54.5 reserved 57.0 GiB
+[a1] 8ad58f1d FULL cut 2/3 ctx 24021 build 95.0s answer 171.6s (12 items) peak alloc 59.6 reserved 61.3 GiB
+[a1] 8ad58f1d FULL cut 3/3 ctx 36784 build 147.8s answer 161.2s (12 items) peak alloc 64.8 reserved 67.1 GiB
+[a3] 8ad58f1d W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 8ad58f1d W 2 cut 1/3 ctx 12044 blocks 18 tail 524 peak alloc 64.8 reserved 67.1 GiB
+[a3] 8ad58f1d W 2 cut 2/3 ctx 24021 blocks 37 tail 341 peak alloc 64.8 reserved 75.6 GiB
+[a3] 8ad58f1d W 2 cut 3/3 ctx 36784 blocks 57 tail 304 peak alloc 64.8 reserved 81.3 GiB
+[a1] f638417c FULL cut 1/2 ctx 21850 build 124.4s answer 206.4s (12 items) peak alloc 58.1 reserved 60.0 GiB
+[a1] f638417c FULL cut 2/2 ctx 36695 build 164.7s answer 287.5s (12 items) peak alloc 64.7 reserved 66.4 GiB
+[a3] f638417c W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] f638417c W 2 cut 1/2 ctx 21850 blocks 34 tail 90 peak alloc 64.7 reserved 77.2 GiB
+[a3] f638417c W 2 cut 2/2 ctx 36695 blocks 57 tail 215 peak alloc 64.7 reserved 83.9 GiB
+[a1] 0394d6eb FULL cut 1/2 ctx 24324 build 147.3s answer 127.5s (12 items) peak alloc 59.0 reserved 60.5 GiB
+[a1] 0394d6eb FULL cut 2/2 ctx 36481 build 139.2s answer 145.4s (12 items) peak alloc 64.8 reserved 67.5 GiB
+[a3] 0394d6eb W 2 blocks: system+tools end at token 5920, 10 exact prefix blocks
+[a3] 0394d6eb W 2 cut 1/2 ctx 24324 blocks 38 tail 4 peak alloc 64.8 reserved 70.2 GiB
+[a3] 0394d6eb W 2 cut 2/2 ctx 36481 blocks 57 tail 1 peak alloc 64.8 reserved 79.5 GiB
+[a3] done: {'stopped': None, 'window_blocks': 2, 'arm': 'A3_W2', 'attempt': '20261016T011948280315090', 'trajectories': ['chatcmpl-08db2cebdcf5a106502475fba3d0c14f', 'chatcmpl-f9b0f6072abe7d7d31ee12992f5fd055', 'chatcmpl-00bb5a89c1dd98ea404d3af76801a5ac', 'chatcmpl-6cdaf687a4f15c3c1ddfc0c93a9a0504', 'chatcmpl-61d280ef06a0b69b89a1c3bd0077a092', 'chatcmpl-45bf50980276d93d5e1aaff37fa8af14', 'chatcmpl-ec4d53753e73d33a9b36e8ed716cf4f1', 'chatcmpl-d005386703d3d2289b1e28e619653264', 'chatcmpl-7c1d51ce245430c3ceedf32ab64e0d5c', 'chatcmpl-79155ee6f1526d48f9b32c56ea2fa02a', 'chatcmpl-3d900cff00936bc2a482be4a4cb6a899', 'chatcmpl-2c8e3d0382b084c9507b86f28ac46ba2', 'chatcmpl-080e1c822da5419ca38e02718984f360', 'chatcmpl-ebcd0a793008fe097b75912da36d1800', 'chatcmpl-d21bbce65e1c60f3fb52c678bd0d1f67', 'chatcmpl-b8ef198f9230dedc19441767c0a5e451', 'chatcmpl-ef183e88c8727c3c67c6102831ec037a', 'chatcmpl-e766400b041e652c61e146af1adf4724', 'chatcmpl-ced5174c8d73234cacff7c3b792546db', 'chatcmpl-b4971f401ef1ef042316bbdcb33dcf4e', 'chatcmpl-c7379c8c78d0d3007a9947308da51a1f', 'chatcmpl-2fadbd0291051773b2c85f824bf0607d', 'chatcmpl-761eacd146f7c39d3aa99df32bec3953', 'chatcmpl-7ff4b7129d5a4b875c5f1ab453d5981b', 'chatcmpl-6dcbf2d4311238296ffc762635ff4946', 'chatcmpl-bcb15d4127dd9e9fe776a971a56503d2', 'chatcmpl-3b983ee2535b6c968c386eeb9c9eac97', 'chatcmpl-afb9429fdae1ad1b4b02b3f0a9f2e3da', 'chatcmpl-1a1aa05265fea8d65c53606605303b2b', 'chatcmpl-085b13f6a2187d5b40817698702cf077', 'chatcmpl-0fea8ce7a73927cd30674bbfeb85b41d', 'chatcmpl-47092d69b2657bc9cb3e05ff0d753aa1', 'chatcmpl-69d54ff3e1e5db963e2109a2e92865d1', 'chatcmpl-3f118abac271decde4ca00140f973930', 'chatcmpl-9f125fb27c843d4f530463cf6116988f', 'chatcmpl-30b4deee34875f493b88f75d061cdc39', 'chatcmpl-20f932e9d8ba789c32f6d465cd1d23d9', 'chatcmpl-759e5f8a72a327591676af4b51d30435', 'chatcmpl-0f72ddc6c30e499be4e034da474568ea', 'chatcmpl-3223fb6fc6aa1464688cae65fc238694', 'chatcmpl-dfb00b60ec16c5fec5d5a372befea5eb', 'chatcmpl-9dc95e9ce758845a0e66ec1746daf5f6', 'chatcmpl-93b203026fde540b10056fd067901439', 'chatcmpl-89331e6e34007ccd66dd4b0b46a5f366', 'chatcmpl-27caa018428c8c8d6157f58a00bfe504', 'chatcmpl-276c3eb3c66eaa97d4899caff471f5f1', 'chatcmpl-b7934188f8b578527d56f03d80500ea8', 'chatcmpl-1fc36edc32c69f16df0d00d807a9dcdb', 'chatcmpl-1b9fe605542dc6bc22a083b6808f26a6', 'chatcmpl-e032da34c91d621a043404ad1f32c127', 'chatcmpl-0c6c4f576a3e699319a2f76400a4f97a', 'chatcmpl-1a8588ef08a89a32db7b8f858ad58f1d', 'chatcmpl-8474356bbdf2eff20f191110f638417c', 'chatcmpl-039eee29e1741b9a8ee472070394d6eb']}
