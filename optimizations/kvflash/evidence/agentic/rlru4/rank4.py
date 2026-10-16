@@ -1,7 +1,7 @@
 """Mode-4 (rewind the turn) estimate per k from the exact-mass rank dump (OFF state, mass_end query = mode 4's query).
     python3 -I rank4.py <worktree>
 Window = POOL - 1 - 10k - reserve - 1 chunks, reserve = ceil(pt / 64) + 1 (pt = tokens this request prefilled, ~ end - R4).
-Per probe: fact chunk in window -> OFF answer; else the source message whole in window + top-k blocks -> P_WHOLE[band]; fact block
+Per probe: prompt fits the pool (mode 4 skips) or fact chunk in window -> OFF answer; else the source message whole in window + top-k blocks -> P_WHOLE[band]; fact block
 in top k but message cut -> P_PART; else 0. Rates are engine-measured with the source resident while the question was prefilled
 (prefill_reselect_diag: whole message 88/93 within, 17/21 beyond; fact chunk only 16/30 within)."""
 import json
@@ -45,7 +45,8 @@ for k in (2, 4, 6):
         wins.append(tail)
         fa, fb = span[i]["fact"]
         ma, mb = span[i]["msg"]
-        if fb // CT >= fwc:
+        fits = -(-d["prompt_len"] // CT) + reserve <= POOL      # mode 4 skips: the request runs as OFF
+        if fits or fb // CT >= fwc:
             est[band] += probes.score_exact(r.get("content") or "", tasks[i]["answer"])
             continue
         picked = top(d["mass_end"], fwc // CPB, k)
