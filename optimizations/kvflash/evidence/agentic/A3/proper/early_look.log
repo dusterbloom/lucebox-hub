@@ -1,0 +1,1 @@
+[a3] early look at 20: {'ci': {'mean': 0.8651315789473685, 'lo': 0.7547163118306983, 'hi': 0.9359758037694014, 'n_q': 304, 'n_art': 20, 'level': 99.9}, 'verdict': 'CONTINUE', 'trajectories': 20, 'bar': 0.756}
