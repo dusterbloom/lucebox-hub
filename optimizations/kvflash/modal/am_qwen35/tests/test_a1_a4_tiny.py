@@ -199,3 +199,27 @@ def test_e_compact_on_evict_state_rows_frozen_blocks_selection_values_and_the_fe
             want = torch.cat(sink_k + [(store.host[j][i][0] if (j in plan["window"] or j in fetched) else comps[j][i][0]) for j in sorted(set(plan["window"]) | set(plan["comp"]))]
                              + [ship[i][0][:, :, -TAIL:]], 2)
             assert torch.equal(trip[i][0], want)                                                     # K in logical order: sink, then blocks (exact or compacted), then the tail
+
+
+def test_f_ct_with_nothing_evicted_equals_the_k0_build_state_digest_and_answer(setup):
+    """Amendment 1 invariant on the real model: with a cap that never evicts, the CT build (queries captured, compactor attached) and the K0 build
+    produce the same state digest (K/V of every full layer, beta, DeltaNet state) and the same generated ids. Computed for both, never reused.
+    Run on lucebox6 through a1_pytest.sh before the launch."""
+    S, segs = setup
+    stream = stream_of(segs)
+    with session(S) as sess:
+        R = r2.Runner(sess, None, cell="FUNI", ratio=0.25)
+        full = [i for i in range(len(sess.layer_types)) if i not in sess.linear]
+        cs = a1_core.segs_from_checkpoints(stream[:N], [N])
+        suffix = question_ids(S)[0].tolist()
+        out = {}
+        for name in ("K0", "CT"):
+            store = a4.HostStore(full, chunk=CHUNK)
+            ct = a4.CtCompactor(R, torch.cat([s.ids for s in cs], 1), "CT", SINK, BLOCK_W) if name == "CT" else None
+            (_, ship, n, info), = list(a4.gen_lru(R, cs, [0], 0, SINK, 10 ** 6, BLOCK_W, store.on_block, ct=ct))
+            assert info["resident"] == list(range(NB)) and not info.get("compacted") and not info.get("drops")
+            plan = a4.cut_plan(NB, TAIL, 0, NB, 10, 0, SINK, 10 ** 6, BLOCK_W)
+            st = SimpleNamespace(ship=ship, host=store.host, sink=SINK, tail=TAIL, t_len=n, linear=sess.linear, full_layers=full)
+            gen, _, _ = a4.answer_state(sess, st, plan, [], suffix, 6, 10 ** 6, BLOCK_W)
+            out[name] = (a4.state_digest(ship), gen)
+        assert out["CT"] == out["K0"]

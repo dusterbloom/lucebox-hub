@@ -4,6 +4,7 @@ interval, overall, by distance bin and by probe type; the router rank tables of 
 Decides nothing. Prints JSON and writes <dir>/a4_report.json.
 
   python3 a1_a4_report.py <a4_dir> <pilot_dir> <b0_dir> [<a3sel_dir> [<e3e2_dir>]]
+  python3 a1_a4_report.py --partial <a4_dir> <pilot_dir>     (A4_K0 and A4_CT complete: prints the primary rule and the arms that are complete)
 Amendment 1 (compact-on-evict arms A4_CT, A4_CTK4, A4_CA, A4_CT0): when their row files exist the report adds `compact_on_evict`: per arm the
 retention over the reference-correct probes split within the pool (distance under 16K) and beyond it, each paired against A4_K0 (counts,
 McNemar, and the bootstrap interval of the paired difference clustered by trajectory), the mean compacted blocks, the drops and the
@@ -69,17 +70,17 @@ def paired(a, b):
             "neither": sum((not a[i]) and (not b[i]) for i in ids), "mcnemar_exact_p": p}
 
 
-def router_table(route):
+def router_table(route, rankers=None):
     """Rank tables of one routed arm. recall@k over the probes whose source block is a candidate (rank not None), overall and for facts
     older than 16K; the status counts (resident = pinned prefix, sink, window or tail); the share inside the fetched k of the cut."""
     status = {}
     for r in route:
         status[r["src_status"]] = status.get(r["src_status"], 0) + 1
-    cand = [r for r in route if r["src_status"] == "candidate" and r.get("ranks")]
-    far = [r for r in cand if r["distance_tok"] > a1_e.FAR]
+    cand = [r for r in route if r["src_status"] in ("candidate", "compacted") and r.get("ranks")]      # "compacted" is A4_CTK4's name for a routable source
+    far = [r for r in cand if r["distance_tok"] >= C.DISTANCE_BINS[-1][0]]                          # 16,384 and over, as the pool split and the distance bins
     out = {"probes": len(route), "source_status": status, "source_candidate_with_ranks": len(cand), "mean_candidates": _mean(r["n_cand"] for r in route),
            "mean_k": _mean(r["k"] for r in route)}
-    for name in a1_a4.RANKERS:
+    for name in (rankers or a1_a4.RANKERS):
         rs = [r["ranks"][name] for r in cand if r["ranks"].get(name) is not None]
         fr = [r["ranks"][name] for r in far if r["ranks"].get(name) is not None]
         out[name] = {"all": a1_e.recall_table(rs), "over_16K": a1_e.recall_table(fr),
@@ -171,29 +172,109 @@ def ct_stats(cuts, rows):
     return {"cuts": len(cuts), "mean_compacted_blocks_per_cut": _mean(c["n_compacted"] for c in cuts),
             "mean_compacted_blocks_per_probe": _mean(r["n_compacted"] for r in rows), "max_compacted_blocks": max((c["n_compacted"] for c in cuts), default=None),
             "drops_build": sum(c["drops_build"] for c in last.values()), "drops_cut_total": sum(c["drops_cut"] for c in cuts),
-            "cut_compactions": sum(c["n_cut_compact"] for c in cuts), "build_compactions": n_comp, "q_subsampled": sum(x["subsampled"] for x in q),
+            "cut_compactions": sum(c["n_cut_compact"] for c in cuts), "build_compactions": n_comp,
+            "q_cut_compactions": sum(c["q_cut"]["compactions"] for c in cuts), "q_cut_subsampled": sum(c["q_cut"]["subsampled"] for c in cuts), "q_subsampled": sum(x["subsampled"] for x in q),
             "q_avail_mean": sum(x["q_avail_mean"] * x["compactions"] for x in q if x["compactions"]) / n_comp if n_comp else None,
             "q_used_mean": sum(x["q_used_mean"] * x["compactions"] for x in q if x["compactions"]) / n_comp if n_comp else None,
             "window_cut_mean": _mean(c["window_cut"] for c in cuts)}
 
 
-def primary_rule(split_ct, bar=C.BAR):
-    """Amendment 1: A4_CT beats A4_K0 beyond the pool when the lower bound of the paired difference there is above 0. The A1 bar (75.6%, 719/951)
-    is unchanged and is reported next to it, never moved by this arm."""
+WITHIN_POOL_NET_LOSS = 2
+
+
+def primary_rule(split_ct, bar=C.BAR, slack=WITHIN_POOL_NET_LOSS):
+    """Amendment 1. POSITIVE needs both: (a) the lower bound of the paired difference A4_CT - A4_K0 beyond the pool is above 0, and (b) over ALL
+    within-pool probes (distance under 16,384, cuts after evictions included) K0-only correct - CT-only correct <= `slack` (at most two net losses).
+    A preregistered descriptive screen whose role is to decide a held-out run, not confirmatory evidence (18 beyond-pool probes in 6 clusters).
+    The A1 bar (75.6%, 719/951) is unchanged and printed next to it."""
     d = (split_ct["beyond"]["difference"] or {})
-    return {"beyond_pool_difference_vs_K0": d, "primary": "POSITIVE" if d and d["lo"] > 0 else "NOT_POSITIVE", "bar": bar}
+    w = split_ct["within"]["paired"]
+    k0_only = w["n"] - w["both"] - w["neither"] - w["only_a"]
+    guard = {"n": w["n"], "k0_only": k0_only, "ct_only": w["only_a"], "net_loss": k0_only - w["only_a"], "limit": slack}
+    guard["ok"] = guard["net_loss"] <= slack
+    lower_ok = bool(d) and d["lo"] > 0
+    return {"beyond_pool_difference_vs_K0": d, "beyond_n": split_ct["beyond"]["paired"]["n"], "beyond_lower_bound_above_0": lower_ok, "within_pool_guard": guard,
+            "primary": "POSITIVE" if lower_ok and guard["ok"] else "NOT_POSITIVE", "bar": bar}
 
 
-def compact_on_evict(d, H, tasks, full, T, want, vmap, full_by_id):
-    """The Amendment 1 section; arms whose row file is absent are left out."""
+def check_no_eviction(arm, cuts, rows, k0_cuts, k0_rows):
+    """The invariant, enforced: at every cut where an arm evicted nothing, its state digest (K/V and beta of the full-attention layers, DeltaNet
+    state) and the generated ids of every probe answered there equal A4_K0's. A cut that is evictionless in one and not the other, or a cut A4_K0 lacks,
+    is a violation too. Exits non-zero naming the cut."""
+    k0c = {(c["traj"], c["cut_index"]): c for c in k0_cuts}
+    bad, quiet = [], set()
+    for c in cuts:
+        key = (c["traj"], c["cut_index"])
+        o = k0c.get(key)
+        if o is None:
+            bad.append(f"{arm} cut {key}: A4_K0 has no such cut")
+        elif (c.get("digest") is None) != (o.get("digest") is None):
+            bad.append(f"{arm} cut {key}: nothing evicted in only one of {arm} and A4_K0")
+        elif c.get("digest"):
+            quiet.add(key)
+            if c["digest"] != o["digest"]:
+                bad.append(f"{arm} cut {key}: state digest differs from A4_K0")
+    k0g = {r["id"]: r["gen_ids"] for r in k0_rows}
+    for r in rows:
+        if (r["traj"], r["cut_index"]) in quiet and r["gen_ids"] != k0g.get(r["id"]):
+            bad.append(f"{arm} cut {(r['traj'], r['cut_index'])} probe {r['id']}: generated ids differ from A4_K0")
+    if bad:
+        sys.exit("A4 no-eviction invariant broken, refusing to report: " + "; ".join(bad))
+    return {"cuts_compared": len(quiet), "probes_compared": sum(1 for r in rows if (r["traj"], r["cut_index"]) in quiet)}
+
+
+def check_integrity(build, arm_rows, cuts, done, trajs):
+    """Done markers and cut records against the rows: one marker per expected trajectory, its n_rows equal to the rows of the build's arms, the rows
+    of one attempt, and per arm and trajectory exactly the cut records of the cuts that have rows."""
+    problems = []
+    dt = [r["traj"] for r in done]
+    for t in sorted(trajs):
+        if dt.count(t) != 1:
+            problems.append(f"done marker for {t}: {dt.count(t)}")
+        mk = [r for r in done if r["traj"] == t]
+        n = sum(1 for rows in arm_rows.values() for r in rows if r["traj"] == t)
+        if mk and mk[0]["n_rows"] != n:
+            problems.append(f"{t}: done marker says {mk[0]['n_rows']} rows, the files hold {n}")
+        if mk and {r.get("attempt") for rows in arm_rows.values() for r in rows if r["traj"] == t} != {mk[0].get("attempt")}:
+            problems.append(f"{t}: rows and done marker are from different attempts")
+    for arm, rows in arm_rows.items():
+        for t in sorted(trajs):
+            want = sorted({r["cut_index"] for r in rows if r["traj"] == t})
+            got = sorted(c["cut_index"] for c in cuts if c["arm"] == arm and c["traj"] == t)
+            if got != want:
+                problems.append(f"{arm} {t}: cut records {got} against the cuts with rows {want}")
+    if problems:
+        raise r3.IncompleteRun(f"build {build}: " + "; ".join(problems))
+
+
+def integrity_for_build(d, build, T, trajs):
+    arm_rows = {a: [r for r in C.read_rows(os.path.join(d, a + ".jsonl")) if r["traj"] in T] for a in a1_a4.arms_of(build)}
+    cuts = [c for c in C.read_rows(os.path.join(d, f"A4_cuts_{build}.jsonl")) if c["traj"] in T]
+    done = [r for r in C.read_rows(os.path.join(d, f"done_{build}.jsonl")) if r["traj"] in T]
+    check_integrity(build, arm_rows, cuts, done, trajs)
+
+
+def load_k0(d, T):
+    return ([r for r in C.read_rows(os.path.join(d, "A4_K0.jsonl")) if r["traj"] in T],
+            [c for c in C.read_rows(os.path.join(d, f"A4_cuts_{a1_a4.ARMS['A4_K0']['build']}.jsonl")) if c["arm"] == "A4_K0" and c["traj"] in T])
+
+
+def compact_on_evict(d, H, tasks, full, T, want, vmap, full_by_id, partial=False):
+    """The Amendment 1 section; arms whose row file is absent are left out (with `partial`, also the arms that are not complete)."""
     by = {t["id"]: t for t in tasks}
     cl = {i: by[i]["traj"] for i in want}
+    trajs = {by[i]["traj"] for i in want}
+    k0_rows, k0_cuts = load_k0(d, T)
     out = {}
     for arm, spec in a1_a4.CT_ARMS.items():
         path = os.path.join(d, arm + ".jsonl")
         if not os.path.exists(path):
             continue
         rows = [r for r in C.read_rows(path) if r["traj"] in T]
+        if partial and {r["id"] for r in rows} != set(want):
+            out[arm] = {"incomplete": f"{len({r['id'] for r in rows})} of {len(want)} probes"}
+            continue
+        integrity_for_build(d, spec["build"], T, trajs)
         if arm in a1_a4.ROUTED:
             route = [r for r in C.read_rows(os.path.join(d, arm + "_route.jsonl")) if r["traj"] in T]
             r3.check_complete(arm, rows, route, want)
@@ -204,13 +285,14 @@ def compact_on_evict(d, H, tasks, full, T, want, vmap, full_by_id):
         cuts = [c for c in C.read_rows(os.path.join(d, f"A4_cuts_{spec['build']}.jsonl")) if c["arm"] == arm and c["traj"] in T]
         split = dict(zip(ids, pool_split(tasks, ids)))
         sv = split_vs_k0(vm, vmap["A4_K0"], split, cl)
-        out[arm] = {**retention_cells(tasks, ids, vals, cls), **row_stats(rows), "compaction": ct_stats(cuts, rows), "vs_A4_K0": sv,
+        inv = check_no_eviction(arm, cuts, rows, k0_cuts, k0_rows)
+        out[arm] = {**retention_cells(tasks, ids, vals, cls), **row_stats(rows), "compaction": ct_stats(cuts, rows), "vs_A4_K0": sv, "no_eviction_identity_vs_K0": inv,
                     "no_candidate_identity": no_candidate_identity(rows, full_by_id), "descriptive_vs_bar": a1_a3.final_verdict(cell(vals, cls)["retention"]),
                     "source_status": {k: sum(1 for r in rows if r["src_status"] == k) for k in sorted({r["src_status"] for r in rows})}}
         vmap[arm] = vm
         if arm in a1_a4.ROUTED:
-            out[arm]["router"] = router_table(route)
-    if "A4_CT" in out:
+            out[arm]["router"] = router_table(route, ("x_last",))
+    if "vs_A4_K0" in out.get("A4_CT", {}):
         out["primary_rule"] = primary_rule(out["A4_CT"]["vs_A4_K0"])
         out["paired_vs_A4_CT"] = {a: paired(vmap[a], vmap["A4_CT"]) for a in out if a in vmap and a != "A4_CT"}
     return out
@@ -239,6 +321,9 @@ def main(d, pilot, b0, d3=None, d32=None):
     a1_a3.check_universe(want, a1_a3.PILOT_PROBES, "pilot reference")
     rep = {"reference_md5": a1_a3.PILOT_REF_MD5, "expected_probes": len(want), "arms": {}, "router": {}, "cuts": {}, "registered": REGISTERED}
     vmap, full_by_id = {}, {r["id"]: r for r in full}
+    by_id = {t["id"]: t for t in tasks}
+    for build in sorted({s["build"] for s in a1_a4.ARMS.values()}):
+        integrity_for_build(d, build, T, {by_id[i]["traj"] for i in want})
     for arm in a1_a4.ARMS:
         rows = [r for r in C.read_rows(os.path.join(d, arm + ".jsonl")) if r["traj"] in T]
         if arm in a1_a4.ROUTED:
@@ -275,5 +360,33 @@ def main(d, pilot, b0, d3=None, d32=None):
         json.dump(rep, f, indent=1)
 
 
+def partial(d, pilot):
+    """As soon as A4_K0 and A4_CT are complete: the primary rule, with every other complete arm next to it. Writes <dir>/a4_partial.json."""
+    H = C.Harness(C.default_paths())
+    tasks = H.load_tasks()
+    full = C.read_rows(os.path.join(pilot, "FULL.jsonl"))
+    a1_a3.check_reference(os.path.join(pilot, "FULL.jsonl"), a1_a3.PILOT_REF_MD5)
+    T = set(list(H.load_trajs())[:a1_a3.PILOT_N])
+    want = a1_a3.universe_ids(H, tasks, full, T)
+    a1_a3.check_universe(want, a1_a3.PILOT_PROBES, "pilot reference")
+    by = {t["id"]: t for t in tasks}
+    k0_rows, _ = load_k0(d, T)
+    if {r["id"] for r in k0_rows} != set(want):
+        sys.exit(f"A4_K0 is not complete ({len({r['id'] for r in k0_rows})} of {len(want)} probes): no partial report yet")
+    integrity_for_build(d, a1_a4.ARMS["A4_K0"]["build"], T, {by[i]["traj"] for i in want})
+    vals, cl, ids = values_of(H, tasks, full, k0_rows, T)
+    vmap = {"A4_K0": dict(zip(ids, vals))}
+    ct = compact_on_evict(d, H, tasks, full, T, want, vmap, {r["id"]: r for r in full}, partial=True)
+    if "vs_A4_K0" not in ct.get("A4_CT", {}):
+        sys.exit("A4_CT is not complete: no partial report yet")
+    rep = {"partial": True, "expected_probes": len(want), "A4_K0": cell(vals, cl), "compact_on_evict": ct}
+    print(json.dumps(rep, indent=1))
+    with open(os.path.join(d, "a4_partial.json"), "w") as f:
+        json.dump(rep, f, indent=1)
+
+
 if __name__ == "__main__":
-    main(*sys.argv[1:6])
+    if sys.argv[1] == "--partial":
+        partial(*sys.argv[2:4])
+    else:
+        main(*sys.argv[1:6])

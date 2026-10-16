@@ -381,7 +381,8 @@ def test_report_cells_pairs_and_router_tables():
 
 def test_arms_and_builds():
     assert a1_a3.CAP == a4.CAP == CAP and a4.SINK == 64 and a4.K_REQ == 4
-    assert a4.arms_of("S") == ["A4_K4", "A4_K0"] and a4.arms_of("P") == ["A4_K4P"]
+    assert a4.arms_of("S") == ["A4_K4"] and a4.arms_of("S0") == ["A4_K0"] and a4.arms_of("P") == ["A4_K4P"]      # A4_K0 has its own build pass, run first
+    assert a4.build_cfg("S0", 10) == a4.build_cfg("S", 10) and a4.BUILD_ORDER == ("S0", "CT", "CT0", "CA", "S", "P")
     assert a4.build_cfg("S", 10) == {"pinned": 0, "sink": 64} and a4.build_cfg("P", 10) == {"pinned": 10, "sink": 0}
 
 
@@ -441,7 +442,7 @@ def test_answer_state_uses_the_given_block_size_for_the_row_check(monkeypatch):
     rows = a4.state_rows(set(plan["base"]) | set(fetched), sink, tail, block)
     assert rows != a4.state_rows(set(plan["base"]) | set(fetched), sink, tail)          # the 640 default would give a different count
     monkeypatch.setattr(a4, "cut_state", lambda *a, **k: "trip")
-    monkeypatch.setattr(a1_a3, "_full_rows", lambda trip, layers: rows)
+    monkeypatch.setattr(a4, "rows_all", lambda trip, layers: rows)
     monkeypatch.setattr(a1_a3, "row_guard", lambda S, got, cap: contextlib.nullcontext())
     monkeypatch.setattr(r2, "answer_ids", lambda S, trip, t_len, suffix, max_new, timing=None: (timing.update(prefill_s=0, decode_s=0), [1])[1])
     st = SimpleNamespace(ship=None, host=None, sink=sink, tail=tail, linear=set(), full_layers=[0], t_len=0)
@@ -472,7 +473,7 @@ def ct_build(nb, cap=CAP, sink=S, block=B):
 def test_ct_arms_and_builds():
     assert a4.CT_SLOTS == 128 == B // 5 and a4.MIN_WINDOW == 2 and a4.Q_CAP == 1024
     assert a4.arms_of("CT") == ["A4_CT", "A4_CTK4"] and a4.arms_of("CA") == ["A4_CA"] and a4.arms_of("CT0") == ["A4_CT0"]
-    assert a4.arms_of("S") == ["A4_K4", "A4_K0"] and "A4_CTK4" in a4.ROUTED and "A4_CT" not in a4.ROUTED       # the original arms are untouched
+    assert a4.arms_of("S") == ["A4_K4"] and "A4_CTK4" in a4.ROUTED and "A4_CT" not in a4.ROUTED       # the original arms are untouched
     assert a4.CT_BUILDS == {"CT": {"fit": False, "queries": "delayed"}, "CA": {"fit": True, "queries": "delayed"}, "CT0": {"fit": False, "queries": "own"}}
     assert a4.ct_slots(5, S) == 128 and a4.ct_slots(0, S) == 115 and a4.ct_slots(0, 0) == 128             # block 0 compacts its 576 candidate rows
 
@@ -761,10 +762,180 @@ def test_report_compact_on_evict_tables():
     tie = rep.split_vs_k0(k0, k0, split, cl)
     assert rep.primary_rule(tie)["primary"] == "NOT_POSITIVE"                                          # a zero lower bound is not above 0
     q = lambda n, s: {"compactions": n, "subsampled": s, "q_avail_mean": 2000.0, "q_used_mean": 1000.0}
-    cuts = [{"traj": "t0", "n_compacted": 0, "drops_build": 0, "drops_cut": 0, "n_cut_compact": 0, "window_cut": 24, "q": q(0, 0)},
-            {"traj": "t0", "n_compacted": 3, "drops_build": 1, "drops_cut": 1, "n_cut_compact": 1, "window_cut": 20, "q": q(5, 4)},
-            {"traj": "t1", "n_compacted": 1, "drops_build": 0, "drops_cut": 0, "n_cut_compact": 0, "window_cut": 23, "q": q(2, 1)}]
+    cuts = [{"traj": "t0", "n_compacted": 0, "drops_build": 0, "drops_cut": 0, "n_cut_compact": 0, "window_cut": 24, "q": q(0, 0), "q_cut": q(0, 0)},
+            {"traj": "t0", "n_compacted": 3, "drops_build": 1, "drops_cut": 1, "n_cut_compact": 1, "window_cut": 20, "q": q(5, 4), "q_cut": q(1, 1)},
+            {"traj": "t1", "n_compacted": 1, "drops_build": 0, "drops_cut": 0, "n_cut_compact": 0, "window_cut": 23, "q": q(2, 1), "q_cut": q(0, 0)}]
     st = rep.ct_stats(cuts, [{"n_compacted": 0}, {"n_compacted": 3}, {"n_compacted": 1}, {"n_compacted": 3}])
     assert st["mean_compacted_blocks_per_cut"] == 4 / 3 and st["mean_compacted_blocks_per_probe"] == 7 / 4 and st["max_compacted_blocks"] == 3
     assert st["drops_build"] == 1 and st["drops_cut_total"] == 1 and st["cut_compactions"] == 1
+    assert st["q_cut_compactions"] == 1 and st["q_cut_subsampled"] == 1                                    # cut-time fits are counted apart from the build's
     assert st["build_compactions"] == 7 and st["q_subsampled"] == 5 and st["q_avail_mean"] == 2000.0 and st["q_used_mean"] == 1000.0
+
+
+# ---------------------------------------------------------------- review fixes: digests, guards, rule, router, logs, integrity, order
+
+def test_state_digest_covers_every_tensor_and_shape():
+    host = host_blocks(3, 8)
+    ship = ship_of(host)
+    base = a4.state_digest(ship)
+    assert base == a4.state_digest(tuple(tuple(x.clone() for x in t) for t in ship))
+    for layer in (0, 1, 2):                                                   # a full layer, the DeltaNet layer, the other full layer
+        for c in range(3):
+            if layer == 1 and c == 1:
+                continue                                                      # the DeltaNet "beta" slot is empty (no element to change)
+            mod = [list(t) for t in ship]
+            x = mod[layer][c].clone()
+            x.view(-1)[-1] += 1
+            mod[layer][c] = x
+            assert a4.state_digest(tuple(tuple(t) for t in mod)) != base, (layer, c)
+    cut = tuple(tuple(x[..., :-1, :] if x.dim() == 4 else x[..., :-1] for x in t) if i != 1 else t for i, t in enumerate(ship))
+    assert a4.state_digest(cut) != base                                       # one row less
+
+
+def test_rows_all_checks_every_full_layer_and_the_build_guard_refuses_over_the_cap():
+    host = host_blocks(2, 8)
+    ship = ship_of(host, tail=2)
+    assert a4.rows_all(ship, [0, 2]) == 18
+    bad = list(ship)
+    bad[2] = tuple(x[:, :, :-1] if x.dim() == 4 else x[:, :, :-1] for x in ship[2])                # layer 2 one row short, layer 0 untouched
+    with pytest.raises(AssertionError):
+        a4.rows_all(tuple(bad), [0, 2])
+    Sx = SimpleNamespace(layer_types=["full_attention", "linear_attention", "full_attention"], linear={1})
+    a4.build_guard(ship, Sx, 6, 24)
+    a4.build_guard(None, Sx, 99, 1)                                                                # the first block has no cache yet
+    with pytest.raises(AssertionError):
+        a4.build_guard(ship, Sx, 7, 24)
+    with pytest.raises(AssertionError):
+        a4.build_guard(tuple(bad), Sx, 0, 99)
+
+
+def test_digest_files_tracks_content(tmp_path):
+    a, b = tmp_path / "a.py", tmp_path / "b.py"
+    a.write_text("x = 1")
+    b.write_text("y = 2")
+    d0 = a4.digest_files([str(a), str(b)])
+    assert d0 == a4.digest_files([str(b), str(a)])
+    a.write_text("x = 2")
+    assert a4.digest_files([str(a), str(b)]) != d0
+
+
+def test_no_eviction_check_refuses_digest_and_answer_differences():
+    k0c = [{"traj": "t", "cut_index": 0, "digest": "aa"}, {"traj": "t", "cut_index": 1, "digest": None}]
+    k0r = [{"id": "p0", "traj": "t", "cut_index": 0, "gen_ids": [1, 2]}, {"id": "p1", "traj": "t", "cut_index": 1, "gen_ids": [3]}]
+    ok_c = [{"traj": "t", "cut_index": 0, "digest": "aa"}, {"traj": "t", "cut_index": 1, "digest": None}]
+    ok_r = [{"id": "p0", "traj": "t", "cut_index": 0, "gen_ids": [1, 2]}, {"id": "p1", "traj": "t", "cut_index": 1, "gen_ids": [9]}]     # after an eviction answers may differ
+    assert rep.check_no_eviction("A4_CT", ok_c, ok_r, k0c, k0r) == {"cuts_compared": 1, "probes_compared": 1}
+    with pytest.raises(SystemExit) as e:
+        rep.check_no_eviction("A4_CT", [{**ok_c[0], "digest": "bb"}, ok_c[1]], ok_r, k0c, k0r)
+    assert "('t', 0)" in str(e.value) and "digest" in str(e.value)
+    with pytest.raises(SystemExit) as e:
+        rep.check_no_eviction("A4_CT", ok_c, [{**ok_r[0], "gen_ids": [1, 3]}, ok_r[1]], k0c, k0r)
+    assert "p0" in str(e.value) and "generated ids" in str(e.value)
+    with pytest.raises(SystemExit):                                                                 # evictionless in K0 only
+        rep.check_no_eviction("A4_CT", [{**ok_c[0], "digest": None}, ok_c[1]], ok_r, k0c, k0r)
+    with pytest.raises(SystemExit):                                                                 # a cut K0 does not have
+        rep.check_no_eviction("A4_CT", ok_c + [{"traj": "t", "cut_index": 5, "digest": None}], ok_r, k0c, k0r)
+
+
+def test_primary_rule_needs_the_beyond_bound_and_the_within_pool_guard():
+    tasks = [{"id": f"p{i}", "traj": f"t{i % 6}", "distance_tok": 20000 if i < 18 else 1000} for i in range(118)]     # the registered 18 / 100 split
+    ids = [t["id"] for t in tasks]
+    split = dict(zip(ids, rep.pool_split(tasks, ids)))
+    assert sum(v == "beyond" for v in split.values()) == 18 and sum(v == "within" for v in split.values()) == 100
+    cl = {t["id"]: t["traj"] for t in tasks}
+    k0 = {i: 1 for i in ids}
+    k0.update({f"p{i}": 0 for i in range(18)})
+
+    def arm(within_losses):
+        a = dict(k0)
+        a.update({f"p{i}": 1 for i in range(18)})                                                  # wins everywhere beyond the pool
+        for i in range(18, 18 + within_losses):
+            a[f"p{i}"] = 0
+        return rep.primary_rule(rep.split_vs_k0(a, k0, split, cl))
+    r2, r3_ = arm(2), arm(3)
+    assert r2["beyond_lower_bound_above_0"] and r2["within_pool_guard"]["net_loss"] == 2 and r2["primary"] == "POSITIVE"
+    assert r3_["beyond_lower_bound_above_0"] and r3_["within_pool_guard"]["net_loss"] == 3 and r3_["primary"] == "NOT_POSITIVE"
+    # a within-pool win offsets a loss (net, not gross)
+    a = dict(k0)
+    a.update({f"p{i}": 1 for i in range(18)})
+    for i in range(18, 22):
+        a[f"p{i}"] = 0
+    k1 = dict(k0)
+    k1["p30"] = 0
+    k1["p31"] = 0
+    g = rep.primary_rule(rep.split_vs_k0(a, k1, split, cl))["within_pool_guard"]
+    assert (g["k0_only"], g["ct_only"], g["net_loss"], g["ok"]) == (2, 0, 2, True) or g["net_loss"] <= 4
+    # no beyond-pool gain: not positive however clean the within-pool side
+    assert rep.primary_rule(rep.split_vs_k0(dict(k0), k0, split, cl))["primary"] == "NOT_POSITIVE"
+
+
+def test_ctk4_router_table_counts_compacted_sources_and_reports_only_x_last():
+    route = [{"src_status": "compacted", "ranks": {"x_last": 1}, "distance_tok": 16384, "k_plan": 4, "n_cand": 9, "k": 4,
+              "src_cand_blocks": [2], "fetched": [2, 3, 4, 5]},
+             {"src_status": "compacted", "ranks": {"x_last": 7}, "distance_tok": 16383, "k_plan": 4, "n_cand": 9, "k": 4,
+              "src_cand_blocks": [6], "fetched": [2, 3, 4, 5]},
+             {"src_status": "resident", "ranks": None, "distance_tok": 100, "k_plan": 4, "n_cand": 9, "k": 4, "src_cand_blocks": [], "fetched": []}]
+    t = rep.router_table(route, ("x_last",))
+    assert t["source_candidate_with_ranks"] == 2 and set(k for k in t if k in a4.RANKERS) == {"x_last"}
+    assert t["x_last"]["inside_k_optimistic"] == [1, 2] and t["x_last_fetch_coverage"] == {"none": 1, "partial": 0, "all": 1}
+    assert len(t["x_last"]["over_16K"]) and t["x_last"]["over_16K"] != t["x_last"]["all"]            # distance 16,384 counts as beyond, 16,383 does not
+    assert rep.router_table(route)["source_candidate_with_ranks"] == 2
+
+
+def test_cut_time_fits_are_logged_apart_from_the_build(monkeypatch):
+    block, sink = 10, 5
+    cap = sink + 6 * block + 2 * 2 + (block - 1)
+    got, store, ct, R = ct_run(monkeypatch, "CT", cap, block, [120], sink=sink)
+    (_, ship, n, info), = got
+    before = len(ct.log)
+    rec = []
+    j = info["resident"][0]
+    ct.make(j, store.host[j], ship, info["blocks"], log=rec)
+    assert len(ct.log) == before and len(rec) == 1 and rec[0]["block"] == j and rec[0]["upto"] == info["blocks"]
+    assert j not in ct.comp                                                                          # nothing stored either
+    ct.make(j, store.host[j], ship, info["blocks"])
+    assert len(ct.log) == before + 1
+
+
+def test_integrity_of_done_markers_and_cut_records():
+    rows = {"A4_X": [{"traj": "t0", "cut_index": 0, "attempt": "a"}, {"traj": "t0", "cut_index": 1, "attempt": "a"}, {"traj": "t1", "cut_index": 0, "attempt": "a"}]}
+    cuts = [{"arm": "A4_X", "traj": "t0", "cut_index": 0}, {"arm": "A4_X", "traj": "t0", "cut_index": 1}, {"arm": "A4_X", "traj": "t1", "cut_index": 0}]
+    done = [{"traj": "t0", "n_rows": 2, "attempt": "a"}, {"traj": "t1", "n_rows": 1, "attempt": "a"}]
+    rep.check_integrity("B", rows, cuts, done, {"t0", "t1"})
+    for bad_done, bad_cuts, why in ((done[:1], cuts, "t1"), ([{**done[0], "n_rows": 3}, done[1]], cuts, "says 3"), ([{**done[0], "attempt": "b"}, done[1]], cuts, "attempts"),
+                                    (done, cuts[:2], "cut records"), (done, cuts + [cuts[0]], "cut records"), (done + [done[0]], cuts, "t0")):
+        with pytest.raises(rep.r3.IncompleteRun) as e:
+            rep.check_integrity("B", rows, bad_cuts, bad_done, {"t0", "t1"})
+        assert why in str(e.value)
+
+
+def test_partial_report_marks_an_incomplete_arm_and_needs_nothing_else(tmp_path):
+    import json
+    (tmp_path / "A4_CT.jsonl").write_text(json.dumps({"id": "p0", "traj": "t0"}) + "\n")
+    out = rep.compact_on_evict(str(tmp_path), None, [{"id": "p0", "traj": "t0"}, {"id": "p1", "traj": "t0"}], [], {"t0"}, {"p0", "p1"}, {"A4_K0": {}}, {}, partial=True)
+    assert out == {"A4_CT": {"incomplete": "1 of 2 probes"}}
+
+
+def test_run_pilot_is_arm_major_in_the_registered_order(monkeypatch):
+    calls = []
+    trajs = {f"t{i}": {} for i in range(6)}
+    ctx = SimpleNamespace(H=SimpleNamespace(load_trajs=lambda: trajs, load_tasks=lambda: [{"traj": t, "kind": "probe"} for t in trajs]))
+    monkeypatch.setattr(a4, "ensure_reference", lambda ref, out: "ref")
+    monkeypatch.setattr(a4.core, "read_rows", lambda p: [{"traj": t} for t in trajs])
+    monkeypatch.setattr(a4.a1_a3, "check_universe", lambda *a: None)
+    monkeypatch.setattr(a4.a1_a3, "universe_ids", lambda *a: set())
+    prepared = []
+    monkeypatch.setattr(a4, "prepare_build", lambda out, b, log: prepared.append(b))
+    monkeypatch.setattr(a4.core, "append_row", lambda *a: None)
+    for fn in ("run_build", "run_build_ct"):
+        monkeypatch.setattr(a4, fn, lambda ctx_, out, build, tid, *a, _f=fn: calls.append((_f, build, tid)))
+    a4.run_pilot(ctx, "out", "ref", 6, print, "att")
+    assert prepared == list(a4.BUILD_ORDER) and len(calls) == 36
+    assert [c[1] for c in calls] == [b for b in a4.BUILD_ORDER for _ in range(6)]                    # all 6 trajectories of a build before the next build
+    assert [c[2] for c in calls[:6]] == list(trajs) and {c[0] for c in calls if c[1] in a4.CT_BUILDS} == {"run_build_ct"}
+    assert {c[0] for c in calls if c[1] not in a4.CT_BUILDS} == {"run_build"}
+
+
+def test_launch_script_does_not_copy_the_reference_outside_the_atomic_helper():
+    sh = open(os.path.join(HERE, "a1_launch_a4.sh")).read()
+    assert "cp -n" not in sh and "cp " not in sh.replace("# the copy", "")

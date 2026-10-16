@@ -24,12 +24,11 @@ print("free:", m)
 sys.exit(0 if c.launch_ok(m) else 1)
 EOF
 mkdir -p $O
-cp -n $PILOT/FULL.jsonl $O/FULL.jsonl
 [ -e $O/pid ] && echo "attempt $ATT resumes after a stopped attempt (stale pid $(cat $O/pid))"
 {
   echo "A4 R-LRU offline pilot, attempt $ATT, launched $(date -Is); HIP_VISIBLE_DEVICES=$HIP_VISIBLE_DEVICES"
   echo "--- reference rows copied unedited from a1_pilot (registered md5 93a29de59549954ebd9d46ffd9214047)"
-  md5sum $PILOT/FULL.jsonl $O/FULL.jsonl
+  md5sum $PILOT/FULL.jsonl   # the copy in $O is made atomically by a1_a4.py (ensure_reference) and checked there
   echo "--- code md5"
   bash ~/r1e/md5set.sh ~/r1e/code/a1 ~/r1e/code/am_qwen35
   md5sum $A1_TP_BUILD/tool_parser_cli $A1_TP_BUILD/tokenize_cli ~/r1e/data/a1/*.jsonl ~/r1e/data/a1/*.jinja ~/r1e/data/a1/*.gguf ~/r1e/data/a1/request_ids.sha256
