@@ -1,0 +1,74 @@
+W=2: 118 probes; sim predicted 99, measured 95
+sim class -> measured class (pred, got): count
+  all   -> ex       pred 1 got 0: 1
+  all   -> ex       pred 1 got 1: 5
+  all   -> fetch    pred 1 got 0: 2
+  all   -> fetch    pred 1 got 1: 26
+  ex    -> ex       pred 1 got 1: 6
+  fetch -> fetch    pred 0 got 0: 2
+  fetch -> fetch    pred 0 got 1: 4
+  fetch -> fetch    pred 1 got 0: 3
+  fetch -> fetch    pred 1 got 1: 49
+  fetch -> miss     pred 0 got 0: 2
+  fetch -> miss     pred 1 got 0: 5
+  fetch -> partial  pred 1 got 1: 2
+  miss  -> fetch    pred 0 got 0: 2
+  miss  -> fetch    pred 0 got 1: 2
+  miss  -> miss     pred 0 got 0: 6
+  miss  -> miss     pred 0 got 1: 1
+disagreements (class or answer):
+  1632 435597bd5b2f250:p12:11 sim all   k  5 rank   4 pred 1 | meas ex      k  5 rank None got 1  e3 1 ship 0
+  2101 07b5072b93b0bbdc:p12:3 sim all   k  7 rank   3 pred 1 | meas ex      k  7 rank None got 0  e3 1 ship 0
+  2101 07b5072b93b0bbdc:p12:4 sim all   k  7 rank   3 pred 1 | meas ex      k  7 rank None got 1  e3 1 ship 0
+  2101 07b5072b93b0bbdc:p12:6 sim all   k  7 rank   2 pred 1 | meas fetch   k  7 rank    2 got 1  e3 1 ship 0
+  2101 07b5072b93b0bbdc:p12:8 sim all   k  7 rank   3 pred 1 | meas ex      k  7 rank None got 1  e3 1 ship 0
+  2101 07b5072b93b0bbdc:p12:9 sim all   k  7 rank   2 pred 1 | meas fetch   k  7 rank    2 got 1  e3 1 ship 0
+  2101 7b5072b93b0bbdc:p12:10 sim all   k  7 rank   2 pred 1 | meas fetch   k  7 rank    2 got 1  e3 1 ship 0
+  2108 6e6685fd22767e8f:p12:3 sim all   k  6 rank   3 pred 1 | meas fetch   k  6 rank    2 got 1  e3 1 ship 0
+  2453 6e6685fd22767e8f:p12:6 sim all   k  6 rank   1 pred 1 | meas fetch   k  6 rank    1 got 1  e3 1 ship 0
+  2453 6e6685fd22767e8f:p12:8 sim all   k  6 rank   1 pred 1 | meas fetch   k  6 rank    1 got 1  e3 0 ship 0
+  2700 135f99fb02cfcfc:p12:10 sim all   k  6 rank   1 pred 1 | meas fetch   k  6 rank    1 got 0  e3 1 ship 0
+  2700 e135f99fb02cfcfc:p12:1 sim all   k  6 rank   1 pred 1 | meas ex      k  6 rank None got 1  e3 1 ship 0
+  2700 e135f99fb02cfcfc:p12:2 sim all   k  6 rank   6 pred 1 | meas fetch   k  6 rank    3 got 1  e3 1 ship 0
+  2700 e135f99fb02cfcfc:p12:3 sim all   k  6 rank   3 pred 1 | meas fetch   k  6 rank    1 got 1  e3 1 ship 1
+  2700 e135f99fb02cfcfc:p12:4 sim all   k  6 rank   1 pred 1 | meas fetch   k  6 rank    1 got 1  e3 1 ship 0
+  2700 e135f99fb02cfcfc:p12:5 sim all   k  6 rank   1 pred 1 | meas fetch   k  6 rank    4 got 1  e3 1 ship 0
+  2700 e135f99fb02cfcfc:p12:6 sim all   k  6 rank   5 pred 1 | meas fetch   k  6 rank    1 got 1  e3 1 ship 0
+  2700 e135f99fb02cfcfc:p12:8 sim all   k  6 rank   2 pred 1 | meas ex      k  6 rank None got 1  e3 1 ship 0
+  2700 e135f99fb02cfcfc:p12:9 sim all   k  6 rank   5 pred 1 | meas fetch   k  6 rank    4 got 1  e3 1 ship 0
+  2947 6e6685fd22767e8f:p12:4 sim all   k  6 rank   4 pred 1 | meas fetch   k  6 rank    3 got 1  e3 1 ship 0
+  2947 e6685fd22767e8f:p12:10 sim all   k  6 rank   1 pred 1 | meas fetch   k  6 rank    2 got 1  e3 1 ship 0
+  3080 5fa42f3bef6b39d:p12:10 sim all   k  5 rank   1 pred 1 | meas fetch   k  5 rank    2 got 1  e3 1 ship 0
+  3080 5fa42f3bef6b39d:p12:11 sim all   k  5 rank   1 pred 1 | meas fetch   k  5 rank    2 got 1  e3 1 ship 0
+  3080 85fa42f3bef6b39d:p12:0 sim all   k  5 rank   1 pred 1 | meas fetch   k  5 rank    3 got 1  e3 0 ship 0
+  3080 85fa42f3bef6b39d:p12:2 sim all   k  5 rank   1 pred 1 | meas fetch   k  5 rank    2 got 1  e3 1 ship 0
+  3080 85fa42f3bef6b39d:p12:3 sim all   k  5 rank   2 pred 1 | meas fetch   k  5 rank    3 got 1  e3 1 ship 0
+  3080 85fa42f3bef6b39d:p12:4 sim all   k  5 rank   1 pred 1 | meas fetch   k  5 rank    2 got 1  e3 0 ship 0
+  3080 85fa42f3bef6b39d:p12:5 sim all   k  5 rank   2 pred 1 | meas fetch   k  5 rank    3 got 1  e3 1 ship 0
+  3080 85fa42f3bef6b39d:p12:6 sim all   k  5 rank   6 pred 1 | meas fetch   k  5 rank    4 got 1  e3 0 ship 0
+  3080 85fa42f3bef6b39d:p12:7 sim all   k  5 rank   1 pred 1 | meas fetch   k  5 rank    2 got 0  e3 1 ship 0
+  3080 85fa42f3bef6b39d:p12:8 sim all   k  5 rank   6 pred 1 | meas fetch   k  5 rank    4 got 1  e3 0 ship 0
+  3080 85fa42f3bef6b39d:p12:9 sim all   k  5 rank   6 pred 1 | meas fetch   k  5 rank    4 got 1  e3 1 ship 0
+  3115 64f4a16458f9f17c:p24:5 sim fetch k 11 rank   2 pred 1 | meas fetch   k 11 rank    3 got 0  e3 1 ship 0
+  3558 d435597bd5b2f250:p12:8 sim all   k  5 rank   5 pred 1 | meas fetch   k  5 rank    4 got 1  e3 1 ship 0
+  3558 d435597bd5b2f250:p12:9 sim all   k  5 rank   6 pred 1 | meas fetch   k  5 rank    4 got 1  e3 1 ship 0
+  4377 6e6685fd22767e8f:p24:4 sim miss  k 11 rank  15 pred 0 | meas fetch   k 11 rank   11 got 1  e3 1 ship 0
+  4377 6e6685fd22767e8f:p24:7 sim miss  k 11 rank  15 pred 0 | meas fetch   k 11 rank    4 got 1  e3 0 ship 0
+  4377 e6685fd22767e8f:p24:10 sim miss  k 11 rank  22 pred 0 | meas miss    k 11 rank   13 got 1  e3 0 ship 0
+  6246 e135f99fb02cfcfc:p24:0 sim fetch k 11 rank   6 pred 0 | meas fetch   k 11 rank    4 got 1  e3 0 ship 0
+  6246 e135f99fb02cfcfc:p24:5 sim fetch k 11 rank   6 pred 0 | meas fetch   k 11 rank    5 got 1  e3 0 ship 0
+  7155 64f4a16458f9f17c:p36:1 sim miss  k  9 rank  13 pred 0 | meas fetch   k  9 rank    6 got 0  e3 0 ship 0
+  8850 6e6685fd22767e8f:p36:0 sim fetch k 10 rank   5 pred 0 | meas fetch   k 10 rank    2 got 1  e3 0 ship 0
+  9053 07b5072b93b0bbdc:p36:8 sim fetch k  9 rank   6 pred 1 | meas miss    k  9 rank   21 got 0  e3 1 ship 0
+ 10783 d435597bd5b2f250:p24:2 sim fetch k 11 rank  10 pred 1 | meas partial k 11 rank    7 got 1  e3 1 ship 1
+ 11391 07b5072b93b0bbdc:p36:0 sim fetch k  9 rank   5 pred 1 | meas miss    k  9 rank   17 got 0  e3 1 ship 0
+ 11391 07b5072b93b0bbdc:p36:5 sim fetch k  9 rank   3 pred 1 | meas fetch   k  9 rank    4 got 0  e3 1 ship 0
+ 11391 07b5072b93b0bbdc:p36:9 sim fetch k  9 rank   3 pred 1 | meas fetch   k  9 rank    4 got 0  e3 1 ship 0
+ 12137 7b5072b93b0bbdc:p36:11 sim fetch k  9 rank   7 pred 1 | meas miss    k  9 rank   13 got 0  e3 1 ship 0
+ 14430 e135f99fb02cfcfc:p36:5 sim fetch k  9 rank   2 pred 1 | meas miss    k  9 rank   13 got 0  e3 1 ship 0
+ 14430 e135f99fb02cfcfc:p36:9 sim fetch k  9 rank   3 pred 0 | meas miss    k  9 rank   12 got 0  e3 0 ship 0
+ 16017 d435597bd5b2f250:p36:0 sim miss  k  9 rank  11 pred 0 | meas fetch   k  9 rank    7 got 0  e3 0 ship 0
+ 17019 5fa42f3bef6b39d:p36:11 sim fetch k  9 rank   3 pred 0 | meas miss    k  9 rank   16 got 0  e3 0 ship 0
+ 17019 85fa42f3bef6b39d:p36:0 sim fetch k  9 rank   5 pred 1 | meas miss    k  9 rank   10 got 0  e3 1 ship 0
+ 23302 d435597bd5b2f250:p36:2 sim fetch k  9 rank   7 pred 1 | meas partial k  9 rank    4 got 1  e3 1 ship 1
+ 23581 d435597bd5b2f250:p36:3 sim fetch k  9 rank   7 pred 0 | meas fetch   k  9 rank    3 got 1  e3 0 ship 0
