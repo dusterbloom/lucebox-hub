@@ -80,3 +80,32 @@ The scorer's median ms is its own line in the speed report. Wall time with and w
 These are the same as `../rlru/PREREG.md`:
 - A server crash, or more than 5 errored probes in an arm: stop, report, no verdict.
 - Past 2.5 hours for both arms together: release the lock between arms and tell kvflash-am-a0.
+
+## Amendment 1 (2026-10-16T10:37:09+02:00 from `date`; before `rank4.py` has run, before any mode-4 binary or row)
+
+**Pool-fits no-op, the exact predicate.** Mode 4 fires only if ceil(end/64) + reserve > 256, with reserve = ceil((end − R4)/64) + 1. That is, only if this request's prompt cannot be held by the pool alongside the tail's reserve. Otherwise it is a strict no-op: no snapshot, score, reselect, rewind or re-prefill; the batch plan is OFF's; the log says `skip, fits`.
+- This differs from "no chunk is outside the pool when the request arrives" in one case: the request whose own new tokens first overflow the pool. That request fires here. Recall is active once the pool is full, and that request would otherwise lose its oldest context to plain LRU without recall.
+
+**`rank4.py`** (md5 bfa92fa4…, edited at 10:36:27, before any run) scores fitting probes as OFF's answer. It uses reserve = ceil(pt/64) + 1, with pt the tokens this request prefilled.
+
+**Smoke (a) adds one fitting probe.** `smoke_ids4.json` is the 5 earlier probes plus `chatcmpl-905125c7406f0c2f85fa42f3bef6b39d:p12:0` (prompt 11,270 tokens). The gate adds:
+- that request logs `mode=4: skip, fits`;
+- its answer equals OFF's character for character. There are no logits to compare, because nothing is rerun on a skip.
+
+**Reported:** the share of ON requests that rewound, and of probes, by band.
+
+## Step 1 result (appended 2026-10-16T10:37:31+02:00 from `date`, after `rank4.py`, before any mode-4 row)
+
+`rank4.py` (md5 bfa92fa4…). OFF (dump arm): 688 within 16K, 12 beyond.
+
+| k | median window (tokens) | est. within 16K | est. drop | est. beyond 16K | est. total | out-of-window sources: whole / cut / missed |
+|---|---|---|---|---|---|---|
+| 2 | 14,528 | 679 | 9 | 46 | 726 | 29 / 63 / 136 |
+| 4 | 13,248 | 664 | 24 | 79 | 743 | 59 / 120 / 93 |
+| 6 | 11,968 | 662 | 26 | 92 | 753 | 108 / 142 / 68 |
+
+Only k = 2 meets the 15-probe within-16K guard.
+
+**Choice: k = 2.**
+
+**Prediction (rule 5):** 726/951 = 76.3%, with 679/744 within 16K and 46/207 beyond. It is 7 above the 719 bar, and the estimate leans high (see step 1), so clearing the bar is not predicted with margin.
