@@ -1145,3 +1145,7 @@ Written by the M7 agent before any (c) row; committed unchanged except for forma
 - **Host query plane.** About 120 MiB per 640-token block (a 20-block prompt held 2,400 MiB on host), not the ~4 MB first estimated.
 - **No exact host copy.** M7's `mark_compacted` drops the covered chunks' host copies, so a compacted block cannot be fetched back exact. This differs from the plain pager, which keeps every evicted exact chunk on host, and from the routed-exact-fetch arms (A3, A4_CTK4, R-LRU mode 4). (c) has no exact-fetch arm, so it is unaffected.
 - **Gate (a) comparison.** The server has no logprobs endpoint, so gate (a) compares greedy text, tool calls, token counts, cached tokens and prefilled tokens per request, not a logits digest.
+
+### M7 gate (c): withdrawn (2026-10-16 11:58 CEST, before any (c) row)
+
+Withdrawn by the user's direction: the project tests only agentic workloads from here on, and QuALITY is not one. Separately, the M7 build bypasses the prefix cache for every prompt longer than the pool (`restore_needs_fresh_prefill`, `am_compact.h:116`), so each turn of a long session is prefilled from scratch, which the product does not accept. Gates (b) and (c) are not run on this build. The replacement engine gate is an agentic turn-by-turn replay with the prefix cache on, preregistered separately before any of its rows.
