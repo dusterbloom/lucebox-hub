@@ -131,11 +131,12 @@ inline std::string kvflash_qk_dump_line(const KvFlashQkDumpMeta & m, int n_poole
 }
 
 // Append one line to <dir>/qk_dump.jsonl. An empty dir is a no-op.
-inline bool kvflash_qk_dump_append(const std::string & dir, const std::string & line) {
+inline bool kvflash_qk_dump_append(const std::string & dir, const std::string & line,
+                                   const char * file = "qk_dump.jsonl") {
     if (dir.empty()) return false;
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
-    std::ofstream f(std::filesystem::path(dir) / "qk_dump.jsonl", std::ios::app);
+    std::ofstream f(std::filesystem::path(dir) / file, std::ios::app);
     if (!f) return false;
     f << line << '\n';
     return (bool)f;

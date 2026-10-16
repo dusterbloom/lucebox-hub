@@ -284,7 +284,15 @@ protected:
     // before the final prefill batch (pooled prefill, qk policy only).
     int                     kvflash_prefill_reselect_ = 0;   // 0 off, 1 last turn cut, 2 end-1
     int                     kvflash_reselect_tail_ = -1;     // LUCE_KVFLASH_RESELECT_TAIL_CHUNKS, -1 = cfg
-    void kvflash_prefill_reselect_now(int committed);
+    bool                    kvflash_exact_scorer_ = false;   // LUCE_KVFLASH_RESELECT_SCORER=exact
+    int                     kvflash_recall_blocks_ = 0;      // LUCE_KVFLASH_RECALL_BLOCKS (R-LRU)
+    std::string             kvflash_exact_dump_dir_;         // LUCE_KVFLASH_EXACT_DUMP
+    KvFlashQkDims kvflash_exact_dims() const;
+    // Exact attention mass of each query over all sealed chunks (resident
+    // chunks read from the pool, host-backed ones from the pager's host copy).
+    bool kvflash_exact_scores(int sealed, const std::vector<const float *> & qs,
+                              std::vector<std::vector<float>> & outs);
+    void kvflash_prefill_reselect_now(int committed, int end);
     uint64_t                kvflash_qk_dump_seq_ = 0;
     std::vector<float>      kvflash_qk_dump_max_;   // running per-chunk max over folded queries
     int                     kvflash_qk_dump_nq_ = 0;

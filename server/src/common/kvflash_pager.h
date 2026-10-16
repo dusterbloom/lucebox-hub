@@ -472,6 +472,27 @@ public:
     const KvFlashStats & stats() const { return stats_; }
     int resident_blocks() const { return n_blocks_ - (int)free_blocks_.size(); }
     int n_chunks() const { return (int)chunks_.size(); }
+    int cur_chunk() const { return cur_chunk_; }
+    int n_pool_blocks() const { return n_blocks_; }
+    // Bytes of one (layer, kv_head) K segment: chunk_tokens contiguous rows.
+    size_t k_seg_bytes() const { return k_seg_bytes_; }
+    // Host copy of chunk c's K rows for (layer, kv_head), or nullptr when the
+    // chunk is resident (read the pool tensor instead) or has no host copy.
+    // Host layout (see copy_chunk): per layer, K for all heads then V for all
+    // heads, each segment k_seg_bytes_ / v_seg_bytes_.
+    const uint8_t * host_k_seg(int c, int layer, int head) const {
+        if (!has_tensor_storage() || c < 0 || c >= (int)chunks_.size()) return nullptr;
+        const ChunkState & st = chunks_[(size_t)c];
+        if (st.block >= 0 || !st.on_host) return nullptr;
+        if (layer < 0 || layer >= (int)attn_k_.size() || head < 0 || head >= n_head_kv_) return nullptr;
+        const size_t off = (size_t)layer * n_head_kv_ * (k_seg_bytes_ + v_seg_bytes_) +
+                           (size_t)head * k_seg_bytes_;
+#ifdef KVFLASH_HAS_ASYNC_DMA
+        return (const uint8_t *)st.host_data + off;
+#else
+        return st.host_data.data() + off;
+#endif
+    }
 
     // Bumped on every residency change (alloc / page_out / page_in).
     // Callers cache the slot mask and refill only when the epoch moves.

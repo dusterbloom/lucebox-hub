@@ -433,3 +433,30 @@ TEST_CASE(KvflashPagerSerdeFixture, reselect_tail_override_protects_only_n_chunk
     CHECK(std::find(two.begin(), two.end(), 9) == two.end());
     CHECK(std::find(two.begin(), two.end(), 0) != two.end());   // sink
 }
+
+TEST_CASE(KvflashPagerSerdeFixture, host_k_seg_points_at_the_paged_out_k_rows) {
+    Harness A;
+    KvFlashPager p;
+    REQUIRE(p.attach(make_cfg(), A.k, A.v));
+    REQUIRE(p.alloc_span(0, 8 * kChunk));
+    for (int c = 0; c < 8; c++) stamp_chunk(A, p, c, 3);
+    REQUIRE(p.alloc_span(8 * kChunk, 2 * kChunk));       // pages two chunks out
+    int cold = -1;
+    for (int c = 1; c < 8 && cold < 0; c++) if (!p.is_resident(c)) cold = c;
+    REQUIRE(cold > 0);
+    CHECK(p.host_k_seg(0, 0, 0) == nullptr);              // resident: no host copy to read
+    CHECK(p.cur_chunk() == 9);
+    CHECK(p.n_pool_blocks() == 8);
+    const size_t len = p.k_seg_bytes();
+    CHECK(len == (size_t)kChunk * kHeadDim * 2);
+    for (int l = 0; l < kNLayer; l++) {
+        for (int h = 0; h < kNHeadKv; h++) {
+            const uint8_t * s = p.host_k_seg(cold, l, h);
+            REQUIRE(s != nullptr);
+            const size_t n = (size_t)((l * 2 + 0) * kNHeadKv + h) * len;   // stamp order: layer, K|V, head
+            bool same = true;
+            for (size_t i = 0; i < len; i++) same = same && s[i] == pat(cold, 3, n + i);
+            CHECK(same);
+        }
+    }
+}

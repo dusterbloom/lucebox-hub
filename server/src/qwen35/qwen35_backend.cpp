@@ -29,6 +29,8 @@
 #include "qwen3/qwen3_drafter.h"
 #include "qwen3/qwen3_kvflash_scorer.h"
 #include "common/kvflash_prefill_reselect.h"
+#include "common/kvflash_exact_mass.h"
+#include "common/kvflash_exact_mass.h"
 
 #include "ggml-cuda.h"
 #include "ggml-backend-impl.h"
@@ -431,6 +433,11 @@ bool Qwen35Backend::init() {
         const int m = env_int_or_default("LUCE_KVFLASH_PREFILL_RESELECT", 0);
         kvflash_prefill_reselect_ = kvflash_qk_policy_ && (m == 1 || m == 2) ? m : 0;
         kvflash_reselect_tail_ = std::max(-1, env_int_or_default("LUCE_KVFLASH_RESELECT_TAIL_CHUNKS", -1));
+        const char * sc = std::getenv("LUCE_KVFLASH_RESELECT_SCORER");
+        kvflash_exact_scorer_ = sc && std::string(sc) == "exact";
+        kvflash_recall_blocks_ = std::max(0, env_int_or_default("LUCE_KVFLASH_RECALL_BLOCKS", 0));
+        const char * xd = std::getenv("LUCE_KVFLASH_EXACT_DUMP");
+        kvflash_exact_dump_dir_ = xd ? xd : "";
     }
     if (std::getenv("LUCE_KVFLASH") && !kvflash_qk_policy_) {
         kvflash_drafter_path_ = kvflash_find_drafter(
@@ -2324,14 +2331,18 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
 
     // LUCE_KVFLASH_PREFILL_RESELECT: R becomes a batch boundary (local cut
     // copy; turn_cuts itself still drives the ladder rung and restore).
+    // LUCE_KVFLASH_EXACT_DUMP also needs R (mode 1 when no reselect mode is set).
     const bool kvf_reselect = kvf_paged && kvflash_active() && kvflash_qk_policy_ &&
                               kvflash_prefill_reselect_ != 0 && !images;
-    const int reselect_r = kvf_reselect
+    const bool exact_dump = kvf_paged && kvflash_active() && !images &&
+                            !kvflash_exact_dump_dir_.empty();
+    const int reselect_r = (kvf_reselect || exact_dump)
         ? luce::common::kvflash_prefill_reselect_point(turn_cuts, kv_offset, kv_offset + prompt_len,
-                                                  kvflash_prefill_reselect_)
+                                                  kvflash_prefill_reselect_ ? kvflash_prefill_reselect_ : 1)
         : -1;
     const std::vector<int> batch_cuts = reselect_r >= 0
         ? luce::common::kvflash_cuts_with(turn_cuts, reselect_r) : turn_cuts;
+    std::vector<float> exact_q_r, exact_q_end;   // EXACT_DUMP queries (token R-1, token end-1)
 
     // Chunked prefill
     std::vector<float> embed_buf((size_t)hidden * prefill_ubatch);
@@ -2399,7 +2410,8 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         // Reselect point R: q_cap holds token R-1's query (the previous batch
         // ended at R and was built with capture_qk); refill the pool before
         // this batch's slots and mask are computed from the pager state.
-        if (reselect_r >= 0 && kv_pos == reselect_r) kvflash_prefill_reselect_now(kv_pos);
+        if (kvf_reselect && reselect_r >= 0 && kv_pos == reselect_r)
+            kvflash_prefill_reselect_now(kv_pos, kv_offset + prompt_len);
 
         // kvflash pooled prefill: allocate this chunk's slots up front
         // (evicting the lowest-priority resident chunk once the pool fills).
@@ -2435,7 +2447,8 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
                                should_capture_moe_router(),
                                /*kvflash_mask=*/kvf_paged,
                                /*capture_qk=*/(kvflash_qk_dump_ && kvflash_active()) ||
-                                   (reselect_r >= 0 && kv_pos + n_tokens == reselect_r))) {
+                                   (reselect_r >= 0 && kv_pos + n_tokens == reselect_r) ||
+                                   (exact_dump && start + n_tokens >= prompt_len))) {
             std::fprintf(stderr, "prefill build @%d\n", kv_pos);
             return -1;
         }
@@ -2539,6 +2552,14 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         cache_.cur_pos = committed;
         last_batch_tokens = n_tokens;
 
+        // EXACT_DUMP: keep the queries of token R-1 and of the last prompt
+        // token (q_cap is overwritten by the next captured batch).
+        if (exact_dump && (committed == reselect_r || is_final_chunk) && cache_.q_cap) {
+            std::vector<float> & dst = is_final_chunk ? exact_q_end : exact_q_r;
+            dst.resize((size_t)ggml_nelements(cache_.q_cap));
+            ggml_backend_tensor_get(cache_.q_cap, dst.data(), 0, dst.size() * sizeof(float));
+        }
+
         // S7: batch ends are grid points, so ladder rungs coincide with them.
         if (!ladder.empty() && std::binary_search(ladder.begin(), ladder.end(), committed) &&
             !state_ladder_capture(committed)) {
@@ -2594,6 +2615,15 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
 
     if (kvflash_qk_dump_ && kvflash_active() && last_batch_tokens > 0) {
         kvflash_qk_dump_prefill(tokens, kv_offset, committed, full_prompt);
+    }
+    if (exact_dump && !exact_q_r.empty() && !exact_q_end.empty() && last_batch_tokens > 0) {
+        std::vector<std::vector<float>> mass;
+        if (kvflash_exact_scores(committed / kvflash_pager_.chunk_tokens(),
+                                 {exact_q_r.data(), exact_q_end.data()}, mass)) {
+            luce::common::kvflash_qk_dump_append(kvflash_exact_dump_dir_,
+                luce::common::kvflash_exact_dump_line(kv_offset + prompt_len, kv_offset, reselect_r,
+                                                      mass[0], mass[1]), "exact_dump.jsonl");
+        }
     }
 
     // End-of-prefill snapshot: scoped disk-cache saves (auto/fixed policy)
@@ -2818,9 +2848,63 @@ void Qwen35Backend::kvflash_ensure_scorer() {
     std::fprintf(stderr, "[kvflash] drafter scorer attached (tau=%d)\n", kvflash_tau_);
 }
 
+KvFlashQkDims Qwen35Backend::kvflash_exact_dims() const {
+    KvFlashQkDims d;
+    d.n_layers   = (int)cache_.attn_k.size();
+    d.n_q_heads  = w_.n_head;
+    d.n_kv_heads = w_.n_head_kv;
+    d.head_dim   = w_.n_embd_head_k;
+    return d;
+}
+
+// Exact attention mass over the first `sealed` chunks. K segments per
+// (chunk, layer, kv head): [chunk_tokens, head_dim] rows of the cache K type.
+// Resident chunks are copied out of the pool tensors into scratch; host-backed
+// chunks are read in place from the pager's host copy.
+bool Qwen35Backend::kvflash_exact_scores(int sealed, const std::vector<const float *> & qs,
+                                         std::vector<std::vector<float>> & outs) {
+    const int ct = kvflash_pager_.chunk_tokens();
+    const KvFlashQkDims d = kvflash_exact_dims();
+    if (ct <= 0 || sealed <= 0 || d.n_layers <= 0 || cache_.attn_k.empty()) return false;
+    const ggml_tensor * k0 = cache_.attn_k[0];
+    const size_t seg = kvflash_pager_.k_seg_bytes();
+    const size_t nseg = (size_t)d.n_layers * d.n_kv_heads;
+    std::vector<const uint8_t *> ptr((size_t)sealed * nseg, nullptr);
+    int n_res = 0;
+    for (int c = 0; c < sealed; c++) n_res += kvflash_pager_.block_of(c) >= 0;
+    std::vector<uint8_t> scratch((size_t)n_res * nseg * seg);
+    size_t used = 0;
+    for (int c = 0; c < sealed; c++) {
+        const int blk = kvflash_pager_.block_of(c);
+        for (int l = 0; l < d.n_layers; l++) {
+            ggml_tensor * t = cache_.attn_k[(size_t)l];
+            for (int h = 0; h < d.n_kv_heads; h++) {
+                const uint8_t *& slot = ptr[((size_t)c * d.n_layers + l) * d.n_kv_heads + h];
+                if (blk >= 0) {
+                    uint8_t * dst = scratch.data() + used;
+                    used += seg;
+                    ggml_backend_tensor_get(t, dst, (size_t)blk * ct * t->nb[1] + (size_t)h * t->nb[2], seg);
+                    slot = dst;
+                } else {
+                    slot = kvflash_pager_.host_k_seg(c, l, h);
+                }
+            }
+        }
+    }
+    luce::common::KvFlashExactKeys keys;
+    keys.n_chunks = sealed;
+    keys.chunk_tokens = ct;
+    keys.type = k0->type;
+    keys.seg = [&](int c, int l, int h) { return ptr[((size_t)c * d.n_layers + l) * d.n_kv_heads + h]; };
+    return luce::common::kvflash_exact_mass_scores_multi(keys, d, qs, outs);
+}
+
 // LUCE_KVFLASH_PREFILL_RESELECT: score the sealed chunks with the query of the
 // token before `committed` (cache_.q_cap) and refill the pool from the scores.
-void Qwen35Backend::kvflash_prefill_reselect_now(int committed) {
+// With LUCE_KVFLASH_RECALL_BLOCKS=k the pool becomes an exact LRU window plus
+// k recalled 10-chunk blocks (R-LRU); `end` sizes the room reserved for the
+// rest of the prefill.
+void Qwen35Backend::kvflash_prefill_reselect_now(int committed, int end) {
     const int ct = kvflash_pager_.chunk_tokens();
     const KvFlashQkDims & d = kvflash_qk_pool_.dims();
     if (ct <= 0 || d.n_layers <= 0 || !cache_.q_cap) return;
@@ -2829,17 +2913,49 @@ void Qwen35Backend::kvflash_prefill_reselect_now(int committed) {
     std::vector<float> q(qsize);
     ggml_backend_tensor_get(cache_.q_cap, q.data(), 0, qsize * sizeof(float));
     const int sealed = committed / ct;
-    std::vector<const float *> pk((size_t)sealed, nullptr);
-    for (int c = 0; c < sealed; c++) pk[(size_t)c] = kvflash_qk_pool_.data(c);
-    kvflash_qk_chunk_scores(pk, q.data(), d, kvflash_scores_);
+    const auto t0 = std::chrono::steady_clock::now();
+    if (kvflash_exact_scorer_) {
+        std::vector<std::vector<float>> o;
+        if (!kvflash_exact_scores(sealed, {q.data()}, o)) {
+            std::fprintf(stderr, "[kvflash] exact scorer failed @%d; keeping the pool\n", committed);
+            return;
+        }
+        kvflash_scores_ = std::move(o[0]);
+    } else {
+        std::vector<const float *> pk((size_t)sealed, nullptr);
+        for (int c = 0; c < sealed; c++) pk[(size_t)c] = kvflash_qk_pool_.data(c);
+        kvflash_qk_chunk_scores(pk, q.data(), d, kvflash_scores_);
+    }
+    const double score_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t0).count();
+
+    int tail = kvflash_reselect_tail_;
+    std::vector<int> picked;
+    if (kvflash_recall_blocks_ > 0) {
+        constexpr int kCpb = 10;
+        const int reserve = (end - committed + ct - 1) / ct + 1;
+        tail = std::max(0, kvflash_pager_.n_pool_blocks() - 1 - kCpb * kvflash_recall_blocks_ - reserve - 1);
+        const int first_window = kvflash_pager_.cur_chunk() - tail;
+        picked = luce::common::kvflash_recall_pick(kvflash_scores_, first_window,
+                                                   kvflash_recall_blocks_, kCpb);
+        for (int b : picked)
+            for (int c = b * kCpb; c < (b + 1) * kCpb; c++) kvflash_scores_[(size_t)c] = 1e30f;
+        // The window is kept exactly: it must also survive evictions in the
+        // rest of the prefill, so pin it in the ledger the hook reads.
+        for (int c = std::max(0, first_window); c < (int)kvflash_scores_.size(); c++)
+            kvflash_scores_[(size_t)c] = 1e30f;
+    }
     kvflash_pager_.score_hook = [this](int c) {
         return c < (int)kvflash_scores_.size() ? kvflash_scores_[c] : 1e30f;
     };
-    const int events = kvflash_pager_.reselect(kvflash_reselect_tail_);
-    std::fprintf(stderr, "[kvflash] prefill reselect mode=%d tail=%d @%d (q tok %d): %d page events "
-                 "(resident %d/%d blocks)\n", kvflash_prefill_reselect_, kvflash_reselect_tail_,
-                 committed, committed - 1, events,
-                 kvflash_pager_.resident_blocks(), kvflash_tokens_ / ct);
+    const int events = kvflash_pager_.reselect(tail);
+    std::string ids;
+    for (int b : picked) ids += (ids.empty() ? "" : ",") + std::to_string(b);
+    std::fprintf(stderr, "[kvflash] prefill reselect mode=%d scorer=%s k=%d tail=%d @%d (q tok %d) "
+                 "picked=[%s]: %d page events (resident %d/%d blocks) scorer %.1f ms\n",
+                 kvflash_prefill_reselect_, kvflash_exact_scorer_ ? "exact" : "cosine",
+                 kvflash_recall_blocks_, tail, committed, committed - 1, ids.c_str(), events,
+                 kvflash_pager_.resident_blocks(), kvflash_tokens_ / ct, score_ms);
 }
 
 void Qwen35Backend::kvflash_maybe_reselect(int generated) {

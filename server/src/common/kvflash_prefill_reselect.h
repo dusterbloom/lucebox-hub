@@ -27,4 +27,29 @@ inline std::vector<int> kvflash_cuts_with(const std::vector<int> & cuts, int r) 
     return out;
 }
 
+// R-LRU recall: block b = chunks [cpb*b, cpb*b + cpb); its score is the sum of
+// its chunk scores. Eligible blocks lie entirely below first_window_chunk, lie
+// entirely inside chunk_scores, and exclude chunk 0 (the sink). Returns the
+// top-k block ids, best first, ties newer-first.
+inline std::vector<int> kvflash_recall_pick(const std::vector<float> & chunk_scores,
+                                            int first_window_chunk, int k,
+                                            int chunks_per_block = 10) {
+    std::vector<int> ids;
+    if (k <= 0 || chunks_per_block <= 0) return ids;
+    const int limit = std::min(first_window_chunk, (int)chunk_scores.size());
+    std::vector<double> bs;
+    for (int b = 1; (b + 1) * chunks_per_block <= limit; b++) {
+        double s = 0.0;
+        for (int c = b * chunks_per_block; c < (b + 1) * chunks_per_block; c++) s += chunk_scores[(size_t)c];
+        bs.resize((size_t)b + 1);
+        bs[(size_t)b] = s;
+        ids.push_back(b);
+    }
+    std::stable_sort(ids.begin(), ids.end(), [&](int a, int b) {
+        return bs[(size_t)a] != bs[(size_t)b] ? bs[(size_t)a] > bs[(size_t)b] : a > b;
+    });
+    if ((int)ids.size() > k) ids.resize((size_t)k);
+    return ids;
+}
+
 }  // namespace luce::common
