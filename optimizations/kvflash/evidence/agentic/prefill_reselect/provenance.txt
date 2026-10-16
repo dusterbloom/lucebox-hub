@@ -1,0 +1,17 @@
+binary /mnt/kimi-k3/build/prs-cuda/luce_server
+749138e922ee924ca1de2c79154ec3c9  /mnt/kimi-k3/build/prs-cuda/luce_server
+74fa7244faeca42825137e29597738e1  /mnt/kimi-k3/build/prs-cuda/deps/llama.cpp/ggml/src/libggml.so.0
+35edc0339f2037b4281bdfa3b99f1e31  /mnt/kimi-k3/build/prs-cuda/deps/llama.cpp/ggml/src/ggml-cuda/libggml-cuda.so.0
+019daee8169fce1588b334d83a04e68f  /mnt/kimi-k3/build/prs-cuda/deps/llama.cpp/ggml/src/libggml-cpu.so.0
+7ecf9aff8e683a13da9ee4357c2d9194  /mnt/kimi-k3/build/prs-cuda/deps/llama.cpp/ggml/src/libggml-base.so.0
+aae567aeec71a8825d6ecbc4867b4648  /mnt/kimi-k3/split-work/prefill_reselect_run/agentic_eval/build_data.py
+03e6948575401f4ed95059220b118231  /mnt/kimi-k3/split-work/prefill_reselect_run/agentic_eval/convert.py
+910e1f0075295e806241bec15b30b2db  /mnt/kimi-k3/split-work/prefill_reselect_run/agentic_eval/probes.py
+f1884de10c2c7d5eb5dc0c17dcf62b87  /mnt/kimi-k3/split-work/prefill_reselect_run/agentic_eval/report.py
+c016b19cb8e2684581a0a8350158d526  /mnt/kimi-k3/split-work/prefill_reselect_run/agentic_eval/run_arm.py
+d773303909bd7bb6bb988fe6e32a6fa9  /mnt/kimi-k3/split-work/prefill_reselect_run/agentic_eval/score.py
+b8c081097539290613d9a73f8dd91994  /mnt/kimi-k3/split-work/prefill_reselect_run/agentic_eval/tasks.py
+68a9bd9f1b00c342368e42c35c2a24f1  /mnt/kimi-k3/split-work/prefill_reselect_run/agentic_eval/test_agentic_eval.py
+c77c89018f683acaf262beafde5908c1  /mnt/kimi-k3/split-work/prefill_reselect_run/retained.json
+name, driver_version, memory.used [MiB]
+NVIDIA GeForce RTX 3090, 617.42, 905 MiB
