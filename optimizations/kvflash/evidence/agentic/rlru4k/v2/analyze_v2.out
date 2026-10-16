@@ -1,0 +1,219 @@
+probes on all arms: 951 of 951; errors off 0, on2 0, on6 0, on10 0
+resident sets: 1106 requests, 1106 pooled in A, 1106 in B; mismatches 0 (0 at the same kv_offset, 0 at a different one)
+resident sets: 1106 requests, 1106 pooled in A, 1106 in B; mismatches 0 (0 at the same kv_offset, 0 at a different one)
+resident sets: 1106 requests, 1106 pooled in A, 1106 in B; mismatches 0 (0 at the same kv_offset, 0 at a different one)
+structural check (0 mismatches): {'on2': True, 'on6': True, 'on10': True}
+off   overall  713/951  within  700/744  within excl. 27  674/717  beyond   13/207
+on2   overall  793/951  within  709/744  within excl. 27  686/717  beyond   84/207
+on6   overall  847/951  within  709/744  within excl. 27  685/717  beyond  138/207
+on10  overall  853/951  within  702/744  within excl. 27  676/717  beyond  151/207
+  on6-on2                  +5.7 [+3.9, +7.5] pts
+  on10-on6                 +0.6 [-1.1, +2.3] pts
+  on2-off                  +8.4 [+6.5, +10.4] pts
+  on2-off within           +1.2 [-0.3, +2.7] pts
+  on2-off within excl27    +1.7 [+0.4, +3.0] pts
+  on2-off beyond           +34.3 [+27.8, +41.2] pts
+  on6-off                  +14.1 [+11.6, +16.6] pts
+  on6-off within           +1.2 [-0.4, +2.8] pts
+  on6-off within excl27    +1.5 [+0.0, +3.1] pts
+  on6-off beyond           +60.4 [+52.1, +68.9] pts
+  on10-off                 +14.7 [+11.8, +17.5] pts
+  on10-off within          +0.3 [-1.7, +2.1] pts
+  on10-off within excl27   +0.3 [-1.7, +2.1] pts
+  on10-off beyond          +66.7 [+58.5, +74.6] pts
+prs8 (v2): {
+ "off": {
+  "prefill_ms": 398.9,
+  "decode_tok_s": 44.1,
+  "client_wall_s": 0.918,
+  "pt": 349,
+  "cached_prefix_tokens": 24064
+ },
+ "on2": {
+  "prefill_ms": 684.1,
+  "decode_tok_s": 44.0,
+  "client_wall_s": 1.25,
+  "pt": 349,
+  "cached_prefix_tokens": 24064,
+  "scorer_ms": 33.9,
+  "wall_minus_scorer_s": 1.218,
+  "page_events_per_reselect": 46,
+  "page_ins_per_reselect": 23,
+  "h2d_mib_per_reselect": 25.9,
+  "requests_reselected": "827/1106",
+  "recency_steps": 1106,
+  "recency_page_events_median": 42.0,
+  "recency_h2d_mib_median": 23.6,
+  "recency_h2d_mib_max": 24.8
+ },
+ "on6": {
+  "prefill_ms": 819.3,
+  "decode_tok_s": 44.2,
+  "client_wall_s": 1.37,
+  "pt": 349,
+  "cached_prefix_tokens": 24064,
+  "scorer_ms": 34.7,
+  "wall_minus_scorer_s": 1.3375,
+  "page_events_per_reselect": 108,
+  "page_ins_per_reselect": 54,
+  "h2d_mib_per_reselect": 60.8,
+  "requests_reselected": "827/1106",
+  "recency_steps": 1106,
+  "recency_page_events_median": 82.0,
+  "recency_h2d_mib_median": 46.1,
+  "recency_h2d_mib_max": 69.8
+ },
+ "on10": {
+  "prefill_ms": 913.6,
+  "decode_tok_s": 43.6,
+  "client_wall_s": 1.448,
+  "pt": 349,
+  "cached_prefix_tokens": 24064,
+  "scorer_ms": 32.5,
+  "wall_minus_scorer_s": 1.4156,
+  "page_events_per_reselect": 154,
+  "page_ins_per_reselect": 77,
+  "h2d_mib_per_reselect": 86.6,
+  "requests_reselected": "827/1106",
+  "recency_steps": 1106,
+  "recency_page_events_median": 106.0,
+  "recency_h2d_mib_median": 59.6,
+  "recency_h2d_mib_max": 114.8
+ }
+}
+prs7 (rlru4k, ON arms flag off) for comparison: {
+ "off": {
+  "prefill_ms": 416.7,
+  "decode_tok_s": 42.4,
+  "client_wall_s": 0.972,
+  "pt": 349,
+  "cached_prefix_tokens": 24064
+ },
+ "on2": {
+  "prefill_ms": 1041.3,
+  "decode_tok_s": 42.1,
+  "client_wall_s": 1.662,
+  "pt": 349,
+  "cached_prefix_tokens": 24064,
+  "scorer_ms": 441.3,
+  "wall_minus_scorer_s": 1.2443999999999997,
+  "page_events_per_reselect": 22,
+  "page_ins_per_reselect": 11,
+  "h2d_mib_per_reselect": 12.4,
+  "requests_reselected": "827/1106"
+ },
+ "on6": {
+  "prefill_ms": 1046.4,
+  "decode_tok_s": 42.8,
+  "client_wall_s": 1.617,
+  "pt": 349,
+  "cached_prefix_tokens": 24064,
+  "scorer_ms": 430.9,
+  "wall_minus_scorer_s": 1.211,
+  "page_events_per_reselect": 40,
+  "page_ins_per_reselect": 20,
+  "h2d_mib_per_reselect": 22.5,
+  "requests_reselected": "827/1106"
+ },
+ "on10": {
+  "prefill_ms": 1060.8,
+  "decode_tok_s": 43.6,
+  "client_wall_s": 1.624,
+  "pt": 349,
+  "cached_prefix_tokens": 24064,
+  "scorer_ms": 430.7,
+  "wall_minus_scorer_s": 1.2205,
+  "page_events_per_reselect": 58,
+  "page_ins_per_reselect": 29,
+  "h2d_mib_per_reselect": 32.6,
+  "requests_reselected": "827/1106"
+ }
+}
+clock: WSL tsc ~7% slow, absolute tok/s ~8% high; same-box ratios hold
+mechanism (out-of-window sources): {
+ "on2": {
+  "prs8_v2": {
+   "beyond engine hit dump hit": 66,
+   "beyond engine hit dump miss": 11,
+   "beyond engine miss dump hit": 3,
+   "beyond engine miss dump miss": 121,
+   "within engine hit dump hit": 13,
+   "within engine miss dump hit": 1,
+   "within engine miss dump miss": 7
+  },
+  "prs7": {
+   "beyond engine hit dump hit": 51,
+   "beyond engine hit dump miss": 4,
+   "beyond engine miss dump hit": 18,
+   "beyond engine miss dump miss": 128,
+   "within engine hit dump hit": 7,
+   "within engine miss dump hit": 7,
+   "within engine miss dump miss": 7
+  }
+ },
+ "on6": {
+  "prs8_v2": {
+   "beyond engine hit dump hit": 144,
+   "beyond engine hit dump miss": 5,
+   "beyond engine miss dump hit": 1,
+   "beyond engine miss dump miss": 56,
+   "within engine hit dump hit": 92,
+   "within engine miss dump hit": 1,
+   "within engine miss dump miss": 5
+  },
+  "prs7": {
+   "beyond engine hit dump hit": 129,
+   "beyond engine hit dump miss": 5,
+   "beyond engine miss dump hit": 16,
+   "beyond engine miss dump miss": 56,
+   "within engine hit dump hit": 71,
+   "within engine miss dump hit": 22,
+   "within engine miss dump miss": 5
+  }
+ },
+ "on10": {
+  "prs8_v2": {
+   "beyond engine hit dump hit": 162,
+   "beyond engine hit dump miss": 3,
+   "beyond engine miss dump hit": 5,
+   "beyond engine miss dump miss": 37,
+   "within engine hit dump hit": 200,
+   "within engine miss dump miss": 13
+  },
+  "prs7": {
+   "beyond engine hit dump hit": 153,
+   "beyond engine hit dump miss": 6,
+   "beyond engine miss dump hit": 14,
+   "beyond engine miss dump miss": 34,
+   "within engine hit dump hit": 177,
+   "within engine miss dump hit": 23,
+   "within engine miss dump miss": 13
+  }
+ }
+}
+predictions: see PREREG_v2.md; actual on2 793, on6 847, on10 853
+{
+ "structural_check": {
+  "on2": true,
+  "on6": true,
+  "on10": true
+ },
+ "rule1_on6_beats_on2": true,
+ "rule2_on10_beats_on6": false,
+ "rule3_guard_all_and_excl27": {
+  "on2": true,
+  "on6": true,
+  "on10": true
+ },
+ "rule4_bar": {
+  "on2": true,
+  "on6": true,
+  "on10": true
+ },
+ "rule6_speed_flag_vs_on2": {
+  "on6": false,
+  "on10": false
+ },
+ "rule7_pt_equal": true,
+ "ship": "k=6 (flag on)"
+}
