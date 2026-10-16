@@ -113,3 +113,16 @@ Only k = 2 meets the 15-probe within-16K guard.
 ## Binary (appended 2026-10-16T10:48:29+02:00 from `date`, before any mode-4 row)
 
 Engine `kvflash/2.0r-prefill-reselect`: 85172c29 (pager test: truncate back restores residency and replays the same evictions), 2e83d216 (mode 4, fits guard for modes 3 and 4, `LUCE_KVFLASH_REWIND_NOOP`). ctest 95/95. Binary for every smoke and both arms: `/mnt/kimi-k3/build/prs6-cuda/luce_server`, md5 4f47802fa18935063eacd46718a8372c. The runner is `run_arms4.sh <binary> 2`, with gates `cmp_smoke4.py` and smoke (b) inline; `analyze.py` is adapted for mode 4.
+
+## Amendment 2 (2026-10-16T10:51:24+02:00 from `date`; before any mode-4 row)
+
+**Lock per phase.** kvflash-am-a0 asked for short 3090 lock windows today, so another agent can run its compact-on-evict gates. `run_arms4.sh` (md5 56f9c1b3…) now takes `flock /mnt/kimi-k3/build/3090.lock` three times and releases it between them:
+1. smokes (a) and (b) with their gates;
+2. the OFF arm;
+3. the ON arm.
+
+If a phase fails, no later phase runs. The GPU idle check runs before every arm. The binary is the same for every phase, and each phase appends its md5 to `provenance_arms.txt`.
+- Accuracy is unaffected: temperature 0, the same binary, and a server restarted per arm as before.
+- Speed: another job may run on the 3090 between the arms, not during them. OFF and ON rows are therefore not interleaved in time. The speed medians are still read under rule 6, which has no gate.
+
+**Runner fix.** The arm end line logged `rc=$?` after a `$(date)` substitution, so it always showed 0; this was also true in `../rlru/run_arms.sh`. It now logs the exit code of `run_arm.py`.
