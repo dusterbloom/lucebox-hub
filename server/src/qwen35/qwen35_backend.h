@@ -297,6 +297,7 @@ protected:
     bool                    kvflash_exact_scorer_ = false;   // LUCE_KVFLASH_RESELECT_SCORER=exact
     int                     kvflash_recall_blocks_ = 0;      // LUCE_KVFLASH_RECALL_BLOCKS (R-LRU)
     std::string             kvflash_exact_dump_dir_;         // LUCE_KVFLASH_EXACT_DUMP
+    bool                    kvflash_scorer_ref_ = false;     // LUCE_KVFLASH_SCORER_REF=1: use the reference scorer (A/B)
     bool                    kvflash_scorer_shadow_ = false;  // LUCE_KVFLASH_SCORER_SHADOW=1: also run the reference scorer
     std::vector<float>      kvflash_scores_shadow_;          // reference scores of the latest reselect (shadow only)
     double                  kvflash_shadow_ms_ = 0;

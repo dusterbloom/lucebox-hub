@@ -437,6 +437,7 @@ bool Qwen35Backend::init() {
         const char * sc = std::getenv("LUCE_KVFLASH_RESELECT_SCORER");
         kvflash_exact_scorer_ = sc && std::string(sc) == "exact";
         kvflash_scorer_shadow_ = env_int_or_default("LUCE_KVFLASH_SCORER_SHADOW", 0) == 1;
+        kvflash_scorer_ref_ = env_int_or_default("LUCE_KVFLASH_SCORER_REF", 0) == 1;   // A/B: deploy the old scorer
         kvflash_recall_blocks_ = std::max(0, env_int_or_default("LUCE_KVFLASH_RECALL_BLOCKS", 0));
         const char * xd = std::getenv("LUCE_KVFLASH_EXACT_DUMP");
         kvflash_exact_dump_dir_ = xd ? xd : "";
@@ -3017,6 +3018,7 @@ bool Qwen35Backend::kvflash_exact_scores_ref(int sealed, const std::vector<const
 // AVX2 scorer (kvflash_exact_fast.h) over it. Host-backed chunks are read in place.
 bool Qwen35Backend::kvflash_exact_scores(int sealed, const std::vector<const float *> & qs,
                                          std::vector<std::vector<float>> & outs) {
+    if (kvflash_scorer_ref_) return kvflash_exact_scores_ref(sealed, qs, outs);
     const int ct = kvflash_pager_.chunk_tokens();
     kvflash_pager_.synchronize_paging();
     const KvFlashQkDims d = kvflash_exact_dims();
