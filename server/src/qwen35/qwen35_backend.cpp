@@ -1420,7 +1420,9 @@ bool Qwen35Backend::snapshot_adopt(int slot, ggml_context * ctx,
         if (!same_rows(snap.attn_k_snap[i], ck) ||
             !same_rows(snap.attn_v_snap[i], cv) ||
             snap.attn_k_snap[i]->ne[1] != cur_pos ||
-            snap.attn_v_snap[i]->ne[1] != cur_pos) {
+            snap.attn_v_snap[i]->ne[1] != cur_pos ||
+            // physical capacity: a snapshot from a larger KVFlash pool must not be adopted by a smaller one
+            cur_pos > ck->ne[1] || cur_pos > cv->ne[1]) {
             mismatch = "attention KV";
         }
     }
