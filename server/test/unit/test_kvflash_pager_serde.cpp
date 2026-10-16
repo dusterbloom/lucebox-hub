@@ -525,3 +525,36 @@ TEST_CASE(KvflashPagerSerdeFixture, scoped_score_hook_restores_an_empty_hook_too
     }
     CHECK(!p.score_hook);
 }
+
+// Mode 4 depends on this: without a hook, truncating back to a position and
+// appending the same tokens again evicts the same chunks as the first time.
+TEST_CASE(KvflashPagerSerdeFixture, truncate_back_restores_residency_and_replays_the_same_evictions) {
+    Harness A;
+    KvFlashPager p;
+    REQUIRE(p.attach(make_cfg(), A.k, A.v));
+    auto resident = [&]() {
+        std::vector<int> r;
+        for (int c = 0; c < 32; c++) if (p.is_resident(c)) r.push_back(c);
+        return r;
+    };
+    REQUIRE(p.alloc_span(0, 6 * kChunk));
+    const std::vector<int> pre = resident();
+    std::vector<int> first_grown;
+    for (int pass = 0; pass < 2; pass++) {
+        // Append past the pool so old chunks are evicted to host.
+        for (int c = 6; c < 14; c++) REQUIRE(p.alloc_span(c * kChunk, kChunk));
+        const std::vector<int> grown = resident();
+        if (pass == 0) CHECK(grown != pre);
+        if (pass == 0) first_grown = grown;
+        else CHECK(grown == first_grown);                    // same appends evict the same chunks
+        p.truncate(6 * kChunk);                              // rewind: free the new chunks, recall evicted ones
+        CHECK(resident() == pre);                            // residency equals the pre-append residency
+    }
+    // A mid-chunk rewind point (the question starts inside a chunk) behaves the same.
+    p.truncate(0);
+    REQUIRE(p.alloc_span(0, 5 * kChunk + 10));
+    const std::vector<int> pre2 = resident();
+    for (int c = 6; c < 14; c++) REQUIRE(p.alloc_span(c * kChunk, kChunk));
+    p.truncate(5 * kChunk + 10);
+    CHECK(resident() == pre2);
+}
