@@ -1,0 +1,1 @@
+{"arm": "AMOFF2", "binary": "/mnt/kimi-k3/build/m7-cuda/luce_server", "binary_md5": "19be08d802f2f17b88efc0d9ac1c6cac", "model": "/mnt/kimi-k3/home-models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf", "max_ctx": 52224, "pool": 16384, "started": "2026-10-16 16:04:55"}

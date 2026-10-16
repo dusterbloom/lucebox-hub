@@ -31,7 +31,7 @@ for arm in ('AMOFF', 'AMON'):
           len(re.findall(r'(?i)fresh prefill|full re-?prefill|from.scratch|am_miss', log)),
           'disk_hit=true', len(re.findall('disk_hit=true', log)), 'disk_hit=false', len(re.findall('disk_hit=false', log)))
 log = open(f'{D}/AMON/AMON.server.log', errors='replace').read()
-fits = re.findall(r'turn fit: fitted=(\d+) ineligible=(\d+) already=(\d+) in_pool=(\d+) no_rows=(\d+) plane=block (\d+) fit_ms=([\d.]+) .*?host plane ([\d.]+) MiB, peak ([\d.]+) MiB', log)
+fits = re.findall(r'turn fit: fitted=(\d+) ineligible=(\d+) already=(\d+) in_pool=(\d+) no_rows=(\d+) (?:backlog=\d+ )?plane=block (\d+) fit_ms=([\d.]+) .*?host plane ([\d.]+) MiB, peak ([\d.]+) MiB', log)
 print('turn fit lines', len(fits))
 if fits:
     ms = [float(f[6]) for f in fits]

@@ -15,3 +15,18 @@ arm AMON: 57 tasks, 0 done, 57 to run
 === 2026-10-16T14:56:12+02:00 AMON end rc=0
 === 2026-10-16T14:56:12+02:00 AMON: lock released
 === 2026-10-16T14:56:12+02:00 AMOFF2: waiting for the 3090 lock
+=== 2026-10-16T16:04:55+02:00 AMOFF2 start (think 4s)
+arm AMOFF2: 57 tasks, 0 done, 57 to run
+0 57 007a9947308da51a1f:p12:0 12335 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 11776, 'decode_ms': 703.2, 'decode_tokens_per_sec': 42.7, 'effective_prompt_tokens': 12335, 'prefill_ms': 634.3, 'prefilled_tokens': 559} 
+20 57 007a9947308da51a1f:p36:2 36892 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 36352, 'decode_ms': 231.4, 'decode_tokens_per_sec': 43.2, 'effective_prompt_tokens': 36892, 'prefill_ms': 719.8, 'prefilled_tokens': 540} 
+40 57 27d56f03d80500ea8:p12:11 11162 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 11086, 'decode_ms': 301.9, 'decode_tokens_per_sec': 43.1, 'effective_prompt_tokens': 11162, 'prefill_ms': 702.7, 'prefilled_tokens': 76} 
+=== 2026-10-16T16:12:00+02:00 AMOFF2 end rc=0
+=== 2026-10-16T16:12:00+02:00 AMOFF2: lock released
+=== 2026-10-16T16:12:00+02:00 AMON0: waiting for the 3090 lock
+=== 2026-10-16T17:18:33+02:00 AMON0 start (think 0s)
+arm AMON0: 57 tasks, 0 done, 57 to run
+0 57 007a9947308da51a1f:p12:0 12335 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 11776, 'decode_ms': 704.9, 'decode_tokens_per_sec': 42.6, 'effective_prompt_tokens': 12335, 'prefill_ms': 664.3, 'prefilled_tokens': 559} 
+20 57 007a9947308da51a1f:p36:2 36892 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 36352, 'decode_ms': 224.4, 'decode_tokens_per_sec': 44.6, 'effective_prompt_tokens': 36892, 'prefill_ms': 590.4, 'prefilled_tokens': 540} 
+40 57 27d56f03d80500ea8:p12:11 11162 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 11086, 'decode_ms': 296.6, 'decode_tokens_per_sec': 43.8, 'effective_prompt_tokens': 11162, 'prefill_ms': 533.6, 'prefilled_tokens': 76} 
+=== 2026-10-16T17:21:26+02:00 AMON0 end rc=0
+=== 2026-10-16T17:21:26+02:00 AMON0: lock released
