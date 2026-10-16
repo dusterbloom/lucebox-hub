@@ -70,3 +70,7 @@ These are the same as the prefill-reselect PREREG (`../prefill_reselect_run/PRER
 
 - A server crash, or more than 5 errored probes in an arm: stop, report, no verdict.
 - Past 2.5 hours for both arms together: release the lock between arms and tell kvflash-am-a0.
+
+## Amendment 1 (2026-10-16 06:05 CEST, before any dump or answer row)
+
+Smoke (a) uses `LUCE_KVFLASH_RESELECT_TAIL_CHUNKS=254`, not 255. `reselect()` protects the sink chunk and every chunk `c > cur - 1 - tail`, so 255 protects 257 chunks for 256 slots and `std::sort` drops one arbitrarily. 254 protects exactly the LRU set. The gate is `cmp_smoke.py`: at least one rewind, a `rerun ok` for every rewind, 0 page events on every rewind, every answer equal to OFF, no row errors. The runner is `run_arms.sh <binary> <mode> <k>`.
