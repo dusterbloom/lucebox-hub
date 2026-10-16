@@ -74,3 +74,24 @@ These are the same as the prefill-reselect PREREG (`../prefill_reselect_run/PRER
 ## Amendment 1 (2026-10-16 06:05 CEST, before any dump or answer row)
 
 Smoke (a) uses `LUCE_KVFLASH_RESELECT_TAIL_CHUNKS=254`, not 255. `reselect()` protects the sink chunk and every chunk `c > cur - 1 - tail`, so 255 protects 257 chunks for 256 slots and `std::sort` drops one arbitrarily. 254 protects exactly the LRU set. The gate is `cmp_smoke.py`: at least one rewind, a `rerun ok` for every rewind, 0 page events on every rewind, every answer equal to OFF, no row errors. The runner is `run_arms.sh <binary> <mode> <k>`.
+
+## Step 1 result (appended 2026-10-16T06:57:36+02:00, after the rank dump, before any answer-arm row)
+
+Dump: 951 probes, 1,106 requests, 1,106 score lines, 0 errors, binary prs-cuda md5 356f79c7f93468534ffd91a34b7b9415. Its own answers score 700/951 (688/744 within 16K, 12/207 beyond), identical to the earlier OFF.
+
+`rank_dump.py` estimates, over the rule set k in {2, 4, 6}:
+
+| k | query | in window | recalled | missed | est. correct | est. beyond 16K | recall@k out of window | random |
+|---|---|---|---|---|---|---|---|---|
+| 2 | mass_r | 736 | 49 | 166 | 718 | 34 | 22.8% | 6.4% |
+| 2 | mass_end | 736 | 83 | 132 | 745 | 59 | 38.6% | 6.4% |
+| 4 | mass_r | 707 | 98 | 146 | 734 | 51 | 40.2% | 12.8% |
+| 4 | mass_end | 707 | 163 | 81 | 787 | 102 | 66.8% | 12.8% |
+| 6 | mass_r | 653 | 184 | 114 | 752 | 78 | 61.7% | 19.3% |
+| 6 | mass_end | 653 | 237 | 61 | **795** | 117 | 79.5% | 19.3% |
+
+The top two are 795 (k 6, mass_end) and 787 (k 4, mass_end), 8 apart, so the 5-probe tie rule does not apply.
+
+**Choice: mode 3 (`LUCE_KVFLASH_PREFILL_RESELECT=3`), k = 6.** Smoke (a) applies.
+
+**Prediction (rule 5):** ON 795/951 = 83.6%. That is 678/744 within 16K (a 10-probe drop, inside the 15-probe guard) and 117/207 beyond. ON minus OFF = +95 probes against OFF 700.
