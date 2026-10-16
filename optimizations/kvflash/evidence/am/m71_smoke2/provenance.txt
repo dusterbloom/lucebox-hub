@@ -1,0 +1,9 @@
+binary /mnt/kimi-k3/build/m7-cuda/luce_server
+0563e2348b8e9e27de9950bc9cd16756  /mnt/kimi-k3/build/m7-cuda/luce_server
+0366261ec1ef23ad1c48ea3755a919be  /mnt/kimi-k3/build/m7-cuda/deps/llama.cpp/ggml/src/libggml.so.0
+0651bb8051b8e1ad97784172f32313db  /mnt/kimi-k3/build/m7-cuda/deps/llama.cpp/ggml/src/ggml-cuda/libggml-cuda.so.0
+3033c107f7f9487715d93ecf646b8556  /mnt/kimi-k3/build/m7-cuda/deps/llama.cpp/ggml/src/libggml-cpu.so.0
+2cf9678619632f0b0121286fd510f66e  /mnt/kimi-k3/build/m7-cuda/deps/llama.cpp/ggml/src/libggml-base.so.0
+commit 947888276cc4845e46ff8ba3506fa88376dfb815
+53a76c705d5178e7e5cbd7516ec49894  /mnt/kimi-k3/kvflash-gate-m7/m71_smoke2/run_arm_smoke2.py
+0531b23bc684631c0b01a6b04b3315c7  /mnt/kimi-k3/kvflash-gate-m7/m71_smoke2/ids.json

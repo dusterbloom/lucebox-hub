@@ -1,0 +1,14 @@
+=== 2026-10-16T14:11:40+02:00 R5MAIN: waiting for the 3090 lock
+=== 2026-10-16T14:45:26+02:00 R5MAIN start (/mnt/kimi-k3/build/main-tip-cuda/luce_server)
+arm R5MAIN: 25 tasks, 0 done, 25 to run
+0 25 007a9947308da51a1f:p12:0 12335 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 5922, 'decode_ms': 763.2, 'decode_tokens_per_sec': 39.3, 'effective_prompt_tokens': 12335, 'prefill_ms': 5791.7, 'prefilled_tokens': 6413} 
+20 25 527d56f03d80500ea8:p12:5 11162 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 11086, 'decode_ms': 314.6, 'decode_tokens_per_sec': 38.1, 'effective_prompt_tokens': 11162, 'prefill_ms': 298.6, 'prefilled_tokens': 76} 
+=== 2026-10-16T14:47:07+02:00 R5MAIN end rc=0
+=== 2026-10-16T14:47:07+02:00 R5MAIN: lock released
+=== 2026-10-16T14:47:07+02:00 R5M71: waiting for the 3090 lock
+=== 2026-10-16T14:56:12+02:00 R5M71 start (/mnt/kimi-k3/build/m7-cuda/luce_server)
+arm R5M71: 25 tasks, 0 done, 25 to run
+0 25 007a9947308da51a1f:p12:0 12335 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 5922, 'decode_ms': 742.5, 'decode_tokens_per_sec': 40.4, 'effective_prompt_tokens': 12335, 'prefill_ms': 5415.2, 'prefilled_tokens': 6413} 
+20 25 527d56f03d80500ea8:p12:5 11162 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 11086, 'decode_ms': 301.3, 'decode_tokens_per_sec': 39.8, 'effective_prompt_tokens': 11162, 'prefill_ms': 280.0, 'prefilled_tokens': 76} 
+=== 2026-10-16T14:57:52+02:00 R5M71 end rc=0
+=== 2026-10-16T14:57:52+02:00 R5M71: lock released

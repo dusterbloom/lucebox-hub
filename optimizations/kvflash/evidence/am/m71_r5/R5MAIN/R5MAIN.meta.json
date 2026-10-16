@@ -1,0 +1,1 @@
+{"arm": "R5MAIN", "binary": "/mnt/kimi-k3/build/main-tip-cuda/luce_server", "binary_md5": "acd888e0d9f626d46c0588060cef9601", "model": "/mnt/kimi-k3/home-models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf", "max_ctx": 52224, "pool": 16384, "started": "2026-10-16 14:45:26"}

@@ -1,0 +1,15 @@
+records 65 65
+errors []
+R1 prefilled/cached token diffs: 0
+answer diffs (all requests): 13 ['chatcmpl-c7379c8c78d0d3007a9947308da51a1f:p36:0', 'chatcmpl-c7379c8c78d0d3007a9947308da51a1f:p36:10', 'chatcmpl-c7379c8c78d0d3007a9947308da51a1f:p36:3', 'chatcmpl-c7379c8c78d0d3007a9947308da51a1f:p36:5', 'chatcmpl-afb9429fdae1ad1b4b02b3f0a9f2e3da:p36:9', 'chatcmpl-b7934188f8b578527d56f03d80500ea8:p24:5']
+AMOFF FATAL 0 from-scratch/full-prefill lines 0 disk_hit=true 0 disk_hit=false 65
+AMON FATAL 0 from-scratch/full-prefill lines 0 disk_hit=true 0 disk_hit=false 65
+turn fit lines 16
+fit_ms median 0.0 max 1019.1 ; fitted>0 turns 7 ; total fitted 40 ; no_rows total 0 ; peak plane MiB 120.0
+block fit failures 0 compacted lines 45
+first lines of turn fit:
+   [kvflash-am] turn fit: fitted=1 ineligible=0 already=0 in_pool=1 no_rows=0 plane=block 37 fit_ms=185.7 (idle, interrupted by a request, host plane 120.0 MiB, peak 120.0 MiB)
+   [kvflash-am] turn fit: fitted=5 ineligible=0 already=1 in_pool=1 no_rows=0 plane=block 56 fit_ms=481.4 (idle, interrupted by a request, host plane 120.0 MiB, peak 120.0 MiB)
+   [kvflash-am] turn fit: fitted=1 ineligible=0 already=0 in_pool=1 no_rows=0 plane=block 56 fit_ms=96.1 (idle, interrupted by a request, host plane 120.0 MiB, peak 120.0 MiB)
+AMOFF prefill_ms med 641.1 mean 1910.6 | prefill tok/s (>200 tok) med 703 | decode tok/s med 44.3 | wall s med 1.24 mean 2.77
+AMON prefill_ms med 682.9 mean 1951.2 | prefill tok/s (>200 tok) med 691 | decode tok/s med 44.5 | wall s med 1.24 mean 2.74

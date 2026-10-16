@@ -1,0 +1,11 @@
+records 28 28
+errors []
+R1 prefilled/cached token diffs: 0
+answer diffs (all requests): 0 []
+R5MAIN FATAL 0 from-scratch/full-prefill lines 0 disk_hit=true 0 disk_hit=false 28
+R5M71 FATAL 0 from-scratch/full-prefill lines 0 disk_hit=true 0 disk_hit=false 28
+turn fit lines 0
+block fit failures 0 compacted lines 0
+first lines of turn fit:
+R5MAIN prefill_ms med 356.2 mean 2853.4 | prefill tok/s (>200 tok) med 1149 | decode tok/s med 41.2 | wall s med 1.09 mean 3.42
+R5M71 prefill_ms med 311.2 mean 2782.8 | prefill tok/s (>200 tok) med 1184 | decode tok/s med 43.2 | wall s med 2.07 mean 3.40

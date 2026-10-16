@@ -1,0 +1,16 @@
+binary /mnt/kimi-k3/build/main-tip-cuda/luce_server
+acd888e0d9f626d46c0588060cef9601  /mnt/kimi-k3/build/main-tip-cuda/luce_server
+d75d0bbe82492fbe96ed8e6c0ec3a0bd  /mnt/kimi-k3/build/main-tip-cuda/deps/llama.cpp/ggml/src/libggml.so.0
+9bd1b5e07e23d385266c12afb672892a  /mnt/kimi-k3/build/main-tip-cuda/deps/llama.cpp/ggml/src/ggml-cuda/libggml-cuda.so.0
+95c452c18b033a84ee80a9e77f29b92f  /mnt/kimi-k3/build/main-tip-cuda/deps/llama.cpp/ggml/src/libggml-cpu.so.0
+968e410f041e4fe0b60fae44cfab8eea  /mnt/kimi-k3/build/main-tip-cuda/deps/llama.cpp/ggml/src/libggml-base.so.0
+binary /mnt/kimi-k3/build/m7-cuda/luce_server
+0563e2348b8e9e27de9950bc9cd16756  /mnt/kimi-k3/build/m7-cuda/luce_server
+0366261ec1ef23ad1c48ea3755a919be  /mnt/kimi-k3/build/m7-cuda/deps/llama.cpp/ggml/src/libggml.so.0
+0651bb8051b8e1ad97784172f32313db  /mnt/kimi-k3/build/m7-cuda/deps/llama.cpp/ggml/src/ggml-cuda/libggml-cuda.so.0
+3033c107f7f9487715d93ecf646b8556  /mnt/kimi-k3/build/m7-cuda/deps/llama.cpp/ggml/src/libggml-cpu.so.0
+2cf9678619632f0b0121286fd510f66e  /mnt/kimi-k3/build/m7-cuda/deps/llama.cpp/ggml/src/libggml-base.so.0
+main 5740ef0a3e72a256c826eef1caba964463436c90
+m71 947888276cc4845e46ff8ba3506fa88376dfb815
+683a5c816dfe223bfe51b82864bb769d  /mnt/kimi-k3/kvflash-gate-m7/m71_r5/run_arm_r5.py
+b947597374794b8029de99ea7b234e0c  /mnt/kimi-k3/kvflash-gate-m7/m71_r5/ids_within_pool.json
