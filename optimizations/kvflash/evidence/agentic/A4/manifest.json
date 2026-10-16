@@ -1,0 +1,91 @@
+{
+ "arms": {
+  "A4_CA": {
+   "build": "CA",
+   "k": 0
+  },
+  "A4_CT": {
+   "build": "CT",
+   "k": 0
+  },
+  "A4_CT0": {
+   "build": "CT0",
+   "k": 0
+  },
+  "A4_CTK4": {
+   "build": "CT",
+   "k": 4
+  },
+  "A4_K0": {
+   "build": "S0",
+   "k": 0
+  },
+  "A4_K4": {
+   "build": "S",
+   "k": 4
+  },
+  "A4_K4P": {
+   "build": "P",
+   "k": 4
+  }
+ },
+ "build_order": [
+  "S0",
+  "CT",
+  "CT0",
+  "CA",
+  "S",
+  "P"
+ ],
+ "cap": 16384,
+ "code_md5": {
+  "a1_a3.py": "da09ad08d24633f4528e2f9da9ec21eb",
+  "a1_a4.py": "2d5925306db7cb1030801348db86750e",
+  "a1_a4_report.py": "21a4f96d981c09db2ac9a4acdf47ae43",
+  "a1_core.py": "ad6cba508d3b226fa88c8c1febbba4de",
+  "a1_e.py": "a7505243afd828fdc89d6837011c457b",
+  "a1_e67.py": "c414124457ba1c3333108bd3a6a439d6",
+  "a1_e9.py": "18f3370e753b3178831287847d8ea928",
+  "a1_launch_a4.sh": "81af322881e8978edb0951733815ee59",
+  "r1b_core.py": "d31b50571b7af65e2fa3aa2143afe6ab",
+  "r2_core.py": "4f0f1c94c8f16001a8e568b7450d393e"
+ },
+ "ct": {
+  "builds": {
+   "CA": {
+    "fit": true,
+    "queries": "delayed"
+   },
+   "CT": {
+    "fit": false,
+    "queries": "delayed"
+   },
+   "CT0": {
+    "fit": false,
+    "queries": "own"
+   }
+  },
+  "deps": {
+   "cell": "FUNI",
+   "configs": "3eeb522fb17b16251cda2df3dc2374408fac87a41c1a3a64a8ded3012fa5ce29",
+   "files": "d94401ef7bff62d1c9b148edfcdbf515447772c7a178d186599bae6f574f5591",
+   "method": "highest_attn_keys_rms_nnls2_-3_3_lsq_on-policy",
+   "n_files": 44
+  },
+  "min_window": 2,
+  "q_cap": 1024,
+  "slots": 128
+ },
+ "data_md5": {
+  "tasks": "10d9da8d568463073ddb3c6234986ac8",
+  "template": "a7f294a5f0be5f1903214304f259f87f",
+  "tokenizer": "77d3489a35fbccc145250fa37e6c0fb0",
+  "traj": "4f2f96e2db420acb3b54e987c32ab6e4"
+ },
+ "model": "/home/duster/r1e/models/Qwen3.8-27B",
+ "n": 6,
+ "ref_dir": "/home/duster/r1e/out/a1_pilot",
+ "ref_full_md5": "93a29de59549954ebd9d46ffd9214047",
+ "sink": 64,
+ "stage": "a4"
+}
