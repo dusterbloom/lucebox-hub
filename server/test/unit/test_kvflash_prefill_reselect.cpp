@@ -35,3 +35,15 @@ TEST_CASE(KvflashPrefillReselectFixture, cuts_with_inserts_sorted) {
     CHECK((kvflash_cuts_with({100, 900}, 900) == std::vector<int>{100, 900}));
     CHECK((kvflash_cuts_with({100, 900}, -1) == std::vector<int>{100, 900}));
 }
+
+TEST_CASE(KvflashPrefillReselectFixture, mode2_ignores_cuts_and_uses_end_minus_1) {
+    CHECK(kvflash_prefill_reselect_point({100, 900}, 0, 1000, 2) == 999);
+    CHECK(kvflash_prefill_reselect_point({}, 0, 1000, 2) == 999);
+}
+TEST_CASE(KvflashPrefillReselectFixture, mode2_one_token_prefill_is_disabled) {
+    CHECK(kvflash_prefill_reselect_point({}, 999, 1000, 2) == -1);
+    CHECK(kvflash_prefill_reselect_point({500}, 999, 1000, 2) == -1);
+}
+TEST_CASE(KvflashPrefillReselectFixture, mode1_is_the_default) {
+    CHECK(kvflash_prefill_reselect_point({100, 900}, 0, 1000, 1) == 900);
+}

@@ -280,9 +280,10 @@ protected:
     // KVFLASH_QK_DUMP (diagnostic, opt-in): score every sealed chunk against
     // the final prefill batch's queries and append one JSON line.
     bool                    kvflash_qk_dump_ = false;
-    // LUCE_KVFLASH_PREFILL_RESELECT=1: reselect the pool by target-QK score
+    // LUCE_KVFLASH_PREFILL_RESELECT=1|2: reselect the pool by target-QK score
     // before the final prefill batch (pooled prefill, qk policy only).
-    bool                    kvflash_prefill_reselect_ = false;
+    int                     kvflash_prefill_reselect_ = 0;   // 0 off, 1 last turn cut, 2 end-1
+    int                     kvflash_reselect_tail_ = -1;     // LUCE_KVFLASH_RESELECT_TAIL_CHUNKS, -1 = cfg
     void kvflash_prefill_reselect_now(int committed);
     uint64_t                kvflash_qk_dump_seq_ = 0;
     std::vector<float>      kvflash_qk_dump_max_;   // running per-chunk max over folded queries

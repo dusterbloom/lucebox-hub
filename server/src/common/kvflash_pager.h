@@ -495,15 +495,17 @@ public:
     // the top-pool chunks by score_hook among ALL known chunks (resident or
     // host-backed). Sinks and the trailing window are always kept. Returns
     // the number of page events. Call between decode steps.
-    int reselect() {
+    // tail_override >= 0 replaces cfg tail_window_chunks for this call only.
+    int reselect(int tail_override = -1) {
         if (!score_hook) return 0;
+        const int tail = tail_override >= 0 ? tail_override : cfg_.tail_window_chunks;
         struct Cand { int c; float s; };
         std::vector<Cand> cands;
         for (int c = 0; c < (int)chunks_.size(); c++) {
             const ChunkState & st = chunks_[c];
             if (st.block < 0 && !st.on_host) continue;     // never materialized
             const bool prot = c < cfg_.sink_chunks ||
-                              c > cur_chunk_ - 1 - cfg_.tail_window_chunks ||
+                              c > cur_chunk_ - 1 - tail ||
                               is_pinned(c);
             cands.push_back({c, prot ? 3.4e38f : score_hook(c)});
         }

@@ -8,12 +8,13 @@
 
 namespace luce::common {
 
-// Absolute position R at which the pool is reselected: the last turn cut when
-// it lies strictly inside (kv_offset, end), else end-1 when that is past
-// kv_offset, else -1 (no reselect for this request).
+// Absolute position R at which the pool is reselected. mode 1: the last turn
+// cut when it lies strictly inside (kv_offset, end), else end-1 when that is
+// past kv_offset, else -1 (no reselect). mode 2: end-1 when past kv_offset,
+// else -1; cuts are ignored.
 inline int kvflash_prefill_reselect_point(const std::vector<int> & turn_cuts,
-                                          int kv_offset, int end) {
-    if (!turn_cuts.empty() && turn_cuts.back() > kv_offset && turn_cuts.back() < end)
+                                          int kv_offset, int end, int mode = 1) {
+    if (mode != 2 && !turn_cuts.empty() && turn_cuts.back() > kv_offset && turn_cuts.back() < end)
         return turn_cuts.back();
     return end - 1 > kv_offset ? end - 1 : -1;
 }

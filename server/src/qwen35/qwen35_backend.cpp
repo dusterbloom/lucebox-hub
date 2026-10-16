@@ -427,7 +427,11 @@ bool Qwen35Backend::init() {
     // (or the explicit choice via --kvflash-policy lru).
     kvflash_qk_policy_ = kvflash_policy_is_qk();
     kvflash_qk_dump_ = kvflash_qk_policy_ && !luce::common::kvflash_qk_dump_dir().empty();
-    kvflash_prefill_reselect_ = kvflash_qk_policy_ && env_int_or_default("LUCE_KVFLASH_PREFILL_RESELECT", 0) == 1;
+    {
+        const int m = env_int_or_default("LUCE_KVFLASH_PREFILL_RESELECT", 0);
+        kvflash_prefill_reselect_ = kvflash_qk_policy_ && (m == 1 || m == 2) ? m : 0;
+        kvflash_reselect_tail_ = std::max(-1, env_int_or_default("LUCE_KVFLASH_RESELECT_TAIL_CHUNKS", -1));
+    }
     if (std::getenv("LUCE_KVFLASH") && !kvflash_qk_policy_) {
         kvflash_drafter_path_ = kvflash_find_drafter(
             cfg_.target_path.c_str());
@@ -2321,9 +2325,10 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     // LUCE_KVFLASH_PREFILL_RESELECT: R becomes a batch boundary (local cut
     // copy; turn_cuts itself still drives the ladder rung and restore).
     const bool kvf_reselect = kvf_paged && kvflash_active() && kvflash_qk_policy_ &&
-                              kvflash_prefill_reselect_ && !images;
+                              kvflash_prefill_reselect_ != 0 && !images;
     const int reselect_r = kvf_reselect
-        ? luce::common::kvflash_prefill_reselect_point(turn_cuts, kv_offset, kv_offset + prompt_len)
+        ? luce::common::kvflash_prefill_reselect_point(turn_cuts, kv_offset, kv_offset + prompt_len,
+                                                  kvflash_prefill_reselect_)
         : -1;
     const std::vector<int> batch_cuts = reselect_r >= 0
         ? luce::common::kvflash_cuts_with(turn_cuts, reselect_r) : turn_cuts;
@@ -2830,9 +2835,10 @@ void Qwen35Backend::kvflash_prefill_reselect_now(int committed) {
     kvflash_pager_.score_hook = [this](int c) {
         return c < (int)kvflash_scores_.size() ? kvflash_scores_[c] : 1e30f;
     };
-    const int events = kvflash_pager_.reselect();
-    std::fprintf(stderr, "[kvflash] prefill reselect @%d: %d page events "
-                 "(resident %d/%d blocks)\n", committed, events,
+    const int events = kvflash_pager_.reselect(kvflash_reselect_tail_);
+    std::fprintf(stderr, "[kvflash] prefill reselect mode=%d tail=%d @%d (q tok %d): %d page events "
+                 "(resident %d/%d blocks)\n", kvflash_prefill_reselect_, kvflash_reselect_tail_,
+                 committed, committed - 1, events,
                  kvflash_pager_.resident_blocks(), kvflash_tokens_ / ct);
 }
 

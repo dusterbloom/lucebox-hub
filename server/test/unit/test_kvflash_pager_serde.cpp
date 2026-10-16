@@ -9,6 +9,7 @@
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -406,4 +407,29 @@ TEST_CASE(KvflashPagerSerdeFixture, reselect_recalls_top_scored_host_chunk_and_k
     CHECK(p.is_resident(cold));
     CHECK(p.is_resident(0));                      // sink
     for (int c = 8; c < 12; c++) CHECK(p.is_resident(c));   // tail window
+}
+
+TEST_CASE(KvflashPagerSerdeFixture, reselect_tail_override_protects_only_n_chunks) {
+    auto run = [](int tail_override) {
+        Harness A;
+        KvFlashPager p;
+        if (!p.attach(make_cfg(), A.k, A.v) || !p.alloc_span(0, 12 * kChunk)) return std::vector<int>{};
+        // Tail chunks score lowest; old chunks score by index.
+        p.score_hook = [](int c) { return c >= 8 ? -1000.0f + c : (float)c; };
+        if (tail_override < 0) p.reselect(); else p.reselect(tail_override);
+        std::vector<int> res;
+        for (int c = 0; c < 12; c++) if (p.is_resident(c)) res.push_back(c);
+        return res;
+    };
+    // Default (cfg tail = 4): 8..11 protected.
+    const std::vector<int> def = run(-1);
+    REQUIRE(!def.empty());
+    for (int c = 8; c < 12; c++) CHECK(std::find(def.begin(), def.end(), c) != def.end());
+    // Override 1: protects c > cur-1-1, i.e. the current chunk 11 plus 10; 8, 9 lose to the higher-scored old chunks.
+    const std::vector<int> two = run(1);
+    CHECK(std::find(two.begin(), two.end(), 10) != two.end());
+    CHECK(std::find(two.begin(), two.end(), 11) != two.end());
+    CHECK(std::find(two.begin(), two.end(), 8) == two.end());
+    CHECK(std::find(two.begin(), two.end(), 9) == two.end());
+    CHECK(std::find(two.begin(), two.end(), 0) != two.end());   // sink
 }
