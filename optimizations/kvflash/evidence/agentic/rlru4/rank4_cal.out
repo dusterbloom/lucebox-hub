@@ -1,0 +1,7 @@
+OFF (dump arm): within 688, beyond 12
+ k | window | within est  drop | beyond est |  total | whole/part/missed out of window
+ 2 |  14528 |        688     0 |         83 |    770 | 29/63/136
+ 4 |  13248 |        683     5 |        127 |    810 | 59/120/93
+ 6 |  11968 |        684     4 |        144 |    828 | 108/142/68
+ 8 |  10688 |        681     7 |        156 |    836 | 166/143/58
+10 |   9408 |        686     2 |        162 |    848 | 231/157/45

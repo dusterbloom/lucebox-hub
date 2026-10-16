@@ -1,0 +1,18 @@
+=== 2026-10-16T12:55:43+02:00 waiting for the 3090 lock
+4f47802fa18935063eacd46718a8372c  /mnt/kimi-k3/build/prs6-cuda/luce_server
+=== 2026-10-16T12:55:43+02:00 lock taken
+=== 2026-10-16T12:55:43+02:00 off start
+arm QK16KND: 11 tasks, 0 done, 11 to run
+0 11 06502475fba3d0c14f:p36:0 35986 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 35840, 'decode_ms': 143.7, 'decode_tokens_per_sec': 27.8, 'effective_prompt_tokens': 35986, 'prefill_ms': 335.2, 'prefilled_tokens': 146} 
+=== 2026-10-16T12:57:01+02:00 off end rc=0
+GPU busy, re-poll in 60s
+GPU busy, re-poll in 60s
+=== 2026-10-16T12:59:11+02:00 on start
+arm QK16KND: 11 tasks, 0 done, 11 to run
+0 11 06502475fba3d0c14f:p36:0 35986 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 35840, 'decode_ms': 81.4, 'decode_tokens_per_sec': 49.1, 'effective_prompt_tokens': 35986, 'prefill_ms': 962.0, 'prefilled_tokens': 146} 
+=== 2026-10-16T13:00:13+02:00 on end rc=0
+=== 2026-10-16T13:00:13+02:00 noop start
+arm QK16KND: 11 tasks, 0 done, 11 to run
+0 11 06502475fba3d0c14f:p36:0 35986 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 35840, 'decode_ms': 81.3, 'decode_tokens_per_sec': 49.2, 'effective_prompt_tokens': 35986, 'prefill_ms': 933.3, 'prefilled_tokens': 146} 
+=== 2026-10-16T13:01:13+02:00 noop end rc=0
+=== 2026-10-16T13:01:13+02:00 done, lock released

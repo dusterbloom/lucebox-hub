@@ -1,0 +1,42 @@
+off
+  8db2cebdcf5a106502475fba3d0c14f:40 primer  -       
+  2cebdcf5a106502475fba3d0c14f:p36:0 probe   -       DIFFERS from full OFF
+  2cebdcf5a106502475fba3d0c14f:p36:1 probe   -       DIFFERS from full OFF
+  cebdcf5a106502475fba3d0c14f:p36:11 probe   -       = full OFF
+  2cebdcf5a106502475fba3d0c14f:p36:4 probe   -       = full OFF
+  2cebdcf5a106502475fba3d0c14f:p36:5 probe   -       = full OFF
+  2cebdcf5a106502475fba3d0c14f:p36:8 probe   -       = full OFF
+  9b0f6072abe7d7d31ee12992f5fd055:30 primer  -       
+  f6072abe7d7d31ee12992f5fd055:p12:1 probe   -       DIFFERS from full OFF
+  6072abe7d7d31ee12992f5fd055:p12:10 probe   -       = full OFF
+  f6072abe7d7d31ee12992f5fd055:p12:3 probe   -       = full OFF
+  f6072abe7d7d31ee12992f5fd055:p12:4 probe   -       = full OFF
+  f6072abe7d7d31ee12992f5fd055:p12:7 probe   -       DIFFERS from full OFF
+on
+  8db2cebdcf5a106502475fba3d0c14f:40 primer  rewound 
+  2cebdcf5a106502475fba3d0c14f:p36:0 probe   rewound DIFFERS from full OFF
+  2cebdcf5a106502475fba3d0c14f:p36:1 probe   rewound DIFFERS from full OFF
+  cebdcf5a106502475fba3d0c14f:p36:11 probe   rewound DIFFERS from full OFF
+  2cebdcf5a106502475fba3d0c14f:p36:4 probe   rewound = full OFF
+  2cebdcf5a106502475fba3d0c14f:p36:5 probe   rewound = full OFF
+  2cebdcf5a106502475fba3d0c14f:p36:8 probe   rewound = full OFF
+  9b0f6072abe7d7d31ee12992f5fd055:30 primer  skip    
+  f6072abe7d7d31ee12992f5fd055:p12:1 probe   skip    = full OFF
+  6072abe7d7d31ee12992f5fd055:p12:10 probe   skip    = full OFF
+  f6072abe7d7d31ee12992f5fd055:p12:3 probe   skip    = full OFF
+  f6072abe7d7d31ee12992f5fd055:p12:4 probe   skip    = full OFF
+  f6072abe7d7d31ee12992f5fd055:p12:7 probe   skip    DIFFERS from full OFF
+noop
+  8db2cebdcf5a106502475fba3d0c14f:40 primer  rewound 
+  2cebdcf5a106502475fba3d0c14f:p36:0 probe   rewound DIFFERS from full OFF
+  2cebdcf5a106502475fba3d0c14f:p36:1 probe   rewound DIFFERS from full OFF
+  cebdcf5a106502475fba3d0c14f:p36:11 probe   rewound DIFFERS from full OFF
+  2cebdcf5a106502475fba3d0c14f:p36:4 probe   rewound = full OFF
+  2cebdcf5a106502475fba3d0c14f:p36:5 probe   rewound = full OFF
+  2cebdcf5a106502475fba3d0c14f:p36:8 probe   rewound = full OFF
+  9b0f6072abe7d7d31ee12992f5fd055:30 primer  skip    
+  f6072abe7d7d31ee12992f5fd055:p12:1 probe   skip    DIFFERS from full OFF
+  6072abe7d7d31ee12992f5fd055:p12:10 probe   skip    = full OFF
+  f6072abe7d7d31ee12992f5fd055:p12:3 probe   skip    = full OFF
+  f6072abe7d7d31ee12992f5fd055:p12:4 probe   skip    = full OFF
+  f6072abe7d7d31ee12992f5fd055:p12:7 probe   skip    DIFFERS from full OFF
