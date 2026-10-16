@@ -1,0 +1,31 @@
+=== 2026-10-16T03:43:00+02:00 waiting for the 3090 lock
+=== 2026-10-16T05:01:54+02:00 lock taken
+=== 2026-10-16T05:01:54+02:00 arm off start
+arm QK16KND: 67 tasks, 0 done, 67 to run
+0 67 b664f4a16458f9f17c:p36:0 36670 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 36352, 'decode_ms': 61.6, 'decode_tokens_per_sec': 48.7, 'effective_prompt_tokens': 36670, 'prefill_ms': 379.7, 'prefilled_tokens': 318} 
+20 67 7d31ee12992f5fd055:p36:7 36680 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 36352, 'decode_ms': 328.5, 'decode_tokens_per_sec': 39.6, 'effective_prompt_tokens': 36680, 'prefill_ms': 401.3, 'prefilled_tokens': 328} 
+40 67 2c61e146af1adf4724:p24:8 23712 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 23552, 'decode_ms': 81.3, 'decode_tokens_per_sec': 49.2, 'effective_prompt_tokens': 23712, 'prefill_ms': 238.5, 'prefilled_tokens': 160} 
+60 67 b40817698702cf077:p24:10 24398 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 24064, 'decode_ms': 736.1, 'decode_tokens_per_sec': 38.0, 'effective_prompt_tokens': 24398, 'prefill_ms': 426.8, 'prefilled_tokens': 334} 
+=== 2026-10-16T05:06:41+02:00 arm off end rc=0
+=== 2026-10-16T05:06:41+02:00 arm m1 start
+arm QK16KND: 67 tasks, 0 done, 67 to run
+0 67 b664f4a16458f9f17c:p36:0 36670 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 36352, 'decode_ms': 28.9, 'decode_tokens_per_sec': 69.2, 'effective_prompt_tokens': 36670, 'prefill_ms': 588.6, 'prefilled_tokens': 318} 
+20 67 7d31ee12992f5fd055:p36:7 36680 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 36352, 'decode_ms': 327.8, 'decode_tokens_per_sec': 39.7, 'effective_prompt_tokens': 36680, 'prefill_ms': 506.2, 'prefilled_tokens': 328} 
+40 67 2c61e146af1adf4724:p24:8 23712 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 23552, 'decode_ms': 53.9, 'decode_tokens_per_sec': 55.7, 'effective_prompt_tokens': 23712, 'prefill_ms': 307.4, 'prefilled_tokens': 160} 
+60 67 b40817698702cf077:p24:10 24398 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 24064, 'decode_ms': 753.2, 'decode_tokens_per_sec': 37.2, 'effective_prompt_tokens': 24398, 'prefill_ms': 625.6, 'prefilled_tokens': 334} 
+=== 2026-10-16T05:11:56+02:00 arm m1 end rc=0
+=== 2026-10-16T05:11:56+02:00 arm m2 start
+arm QK16KND: 67 tasks, 0 done, 67 to run
+0 67 b664f4a16458f9f17c:p36:0 36670 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 36352, 'decode_ms': 1640.7, 'decode_tokens_per_sec': 39.0, 'effective_prompt_tokens': 36670, 'prefill_ms': 508.6, 'prefilled_tokens': 318} 
+20 67 7d31ee12992f5fd055:p36:7 36680 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 36352, 'decode_ms': 327.2, 'decode_tokens_per_sec': 39.7, 'effective_prompt_tokens': 36680, 'prefill_ms': 486.1, 'prefilled_tokens': 328} 
+40 67 2c61e146af1adf4724:p24:8 23712 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 23552, 'decode_ms': 81.7, 'decode_tokens_per_sec': 49.0, 'effective_prompt_tokens': 23712, 'prefill_ms': 301.7, 'prefilled_tokens': 160} 
+60 67 b40817698702cf077:p24:10 24398 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 24064, 'decode_ms': 742.5, 'decode_tokens_per_sec': 37.7, 'effective_prompt_tokens': 24398, 'prefill_ms': 507.0, 'prefilled_tokens': 334} 
+=== 2026-10-16T05:17:04+02:00 arm m2 end rc=0
+=== 2026-10-16T05:17:04+02:00 arm m2t128 start
+arm QK16KND: 67 tasks, 0 done, 67 to run
+0 67 b664f4a16458f9f17c:p36:0 36670 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 36352, 'decode_ms': 60.4, 'decode_tokens_per_sec': 49.7, 'effective_prompt_tokens': 36670, 'prefill_ms': 474.7, 'prefilled_tokens': 318} 
+20 67 7d31ee12992f5fd055:p36:7 36680 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 36352, 'decode_ms': 310.7, 'decode_tokens_per_sec': 41.8, 'effective_prompt_tokens': 36680, 'prefill_ms': 478.5, 'prefilled_tokens': 328} 
+40 67 2c61e146af1adf4724:p24:8 23712 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 23552, 'decode_ms': 80.4, 'decode_tokens_per_sec': 49.7, 'effective_prompt_tokens': 23712, 'prefill_ms': 298.8, 'prefilled_tokens': 160} 
+60 67 b40817698702cf077:p24:10 24398 {'agent_turn_cache_hit': False, 'cache_hit': True, 'cached_prefix_tokens': 24064, 'decode_ms': 739.3, 'decode_tokens_per_sec': 37.9, 'effective_prompt_tokens': 24398, 'prefill_ms': 500.6, 'prefilled_tokens': 334} 
+=== 2026-10-16T05:22:12+02:00 arm m2t128 end rc=0
+=== 2026-10-16T05:22:12+02:00 lock released
