@@ -2064,6 +2064,8 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
         }
     }
 
+    std::fprintf(stderr, "[qwen35] restore rows_written=%lld (cumulative)\n", (long long)restore_rows_written());
+
     // Now generate from restored state
     sampler_ = req.sampler;
     if (req.do_sample && sampler_.seed != 0) {
@@ -2849,13 +2851,6 @@ static_assert(luce::am::kAutoBlockTokens == kKvflashAmBlockTokens, "M3 capture b
 // allocation (the backend wrapper allocates with new) leaves "no scratch" and the next seal retries.
 bool Qwen35Backend::kvflash_am_scratch_() {
     if (am_k_ && am_v_) return true;
-    // Test hook: LUCE_KVFLASH_AM_TEST_FAIL_SCRATCH makes the first scratch allocation of the process throw.
-    static bool injected = false;
-    if (!injected && std::getenv("LUCE_KVFLASH_AM_TEST_FAIL_SCRATCH")) {
-        injected = true;
-        std::fprintf(stderr, "[kvflash-am] test hook: scratch alloc failure injected\n");
-        throw std::bad_alloc();
-    }
     ggml_init_params ip{};
     ip.mem_size = 4 * ggml_tensor_overhead();
     ip.no_alloc = true;
@@ -2865,6 +2860,15 @@ bool Qwen35Backend::kvflash_am_scratch_() {
     ggml_tensor * k = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, d, luce::am::kAutoBlockTokens, nkv);
     ggml_tensor * v = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, d, luce::am::kAutoBlockTokens, nkv);
     if (!k || !v) return false;
+    // Test hook (value "1" only): the first buffer allocation of the process throws, after the context and the
+    // tensors exist: the point where assigning members early would leave unallocated tensors behind.
+    static bool injected = false;
+    const char * hook = std::getenv("LUCE_KVFLASH_AM_TEST_FAIL_SCRATCH");
+    if (!injected && hook && std::strcmp(hook, "1") == 0) {
+        injected = true;
+        std::fprintf(stderr, "[kvflash-am] test hook: scratch alloc failure injected\n");
+        throw std::bad_alloc();
+    }
     ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx.get(), target_backend_);
     if (!buf) return false;
     am_ctx_ = ctx.release();

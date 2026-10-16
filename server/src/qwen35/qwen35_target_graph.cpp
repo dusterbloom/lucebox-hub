@@ -46,6 +46,7 @@
 #include "ggml-backend-impl.h"
 #include "ggml-cuda.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -3105,6 +3106,9 @@ void clear_kv_rows_from(TargetCache & cache, int pos) {
     }
 }
 
+static std::atomic<int64_t> g_restore_rows_written{0};
+int64_t restore_rows_written() { return g_restore_rows_written.load(); }
+
 bool restore_target_cache(const PrefixSnapshot & snap, TargetCache & cache) {
     if (snap.layout != PrefixSnapshot::Layout::dense) {
         set_last_error("restore_target_cache: snapshot is not dense");
@@ -3159,6 +3163,7 @@ bool restore_target_cache(const PrefixSnapshot & snap, TargetCache & cache) {
             set_last_error("restore_target_cache: snapshot longer than the KV cache rows");
             return false;
         }
+        if (i == 0) g_restore_rows_written += snap_pos;
         const size_t k_strip = (size_t)snap_pos * sk->nb[1];
         const size_t v_strip = (size_t)snap_pos * sv->nb[1];
         for (int kh = 0; kh < (int)sk->ne[2]; kh++) {

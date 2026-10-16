@@ -89,7 +89,8 @@ def oversize():
 def bypass():
     lb = snapshot_case("bypass", 8192, filler(6000, salt=24) + Q)
     check(bool(grep_log(lb, r"disk_hit=true")), "the snapshot was found (not a vacuous run)")
-    check(bool(grep_log(lb, r"restore .*bypassed")), "the restore was bypassed as a miss, before any restore write")
+    check(bool(grep_log(lb, r"restore .*bypassed")), "the restore was bypassed as a miss")
+    check(bool(grep_log(lb, r"restore rows_written=0 ")), "the restore wrote 0 KV rows (counter, not just a log line)")
 
 
 {"hook": hook, "draft": draft, "oversize": oversize, "bypass": bypass}[sys.argv[1]]()

@@ -677,6 +677,9 @@ bool snapshot_target_cache(const TargetWeights & w,
 // snap.cur_pos. Does NOT touch ssm_intermediate / conv_input_cache —
 // those will be repopulated by the first decode step's verify forward.
 bool restore_target_cache(const PrefixSnapshot & snap, TargetCache & cache);
+// KV rows (per layer) written by restore_target_cache since the process started; a debug counter so a
+// request that bypasses its restore can prove it wrote nothing.
+int64_t restore_rows_written();
 
 // Zero the full-attention K/V rows at positions >= `pos` (what a
 // clear-then-restore leaves past a restored prefix).
