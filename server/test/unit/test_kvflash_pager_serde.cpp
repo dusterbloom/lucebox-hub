@@ -675,3 +675,67 @@ TEST_CASE(KvflashPagerSerdeFixture, truncate_fitting_prefix_gives_fresh_layout_a
         CHECK(got.after_append == fresh.after_append);
     }
 }
+
+// ── truncate() identity relayout moves real bytes ────────────────────────
+namespace {
+// Append chunks [from, to) one at a time and stamp each with `seed`.
+bool append_stamped(Harness & h, KvFlashPager & p, int from, int to, int seed) {
+    for (int c = from; c < to; c++) {
+        if (!p.alloc_span((int64_t)c * kChunk, kChunk)) return false;
+        stamp_chunk(h, p, c, seed);
+    }
+    return true;
+}
+
+bool all_match(Harness & h, KvFlashPager & p, int n, int seed) {
+    p.synchronize_paging();
+    for (int c = 0; c < n; c++)
+        if (!chunk_matches(h, p, c, seed)) return false;
+    return true;
+}
+}
+
+// Codex's case: 8 blocks, chunks 0-5, then 6-13, then truncate to 6 chunks.
+// The retained map used to be [0,7,1,2,3,4]; every retained chunk must now sit
+// in block c with its own bytes, and the next appends get blocks 6, 7.
+TEST_CASE(KvflashPagerSerdeFixture, truncate_relayout_codex_case_moves_bytes_to_identity_blocks) {
+    Harness A;
+    KvFlashPager p;
+    REQUIRE(p.attach(make_cfg(), A.k, A.v));
+    REQUIRE(append_stamped(A, p, 0, 6, 1));
+    REQUIRE(append_stamped(A, p, 6, 14, 1));
+    p.truncate(6 * kChunk);
+    CHECK(layout_of(p, 6) == (std::vector<int>{0, 1, 2, 3, 4, 5}));
+    CHECK(all_match(A, p, 6, 1));
+    REQUIRE(append_chunks(p, 6, 8));
+    CHECK(layout_of(p, 8) == (std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7}));
+    CHECK(all_match(A, p, 6, 1));
+}
+
+// A pure swap (a cycle with no free block to start from) plus a partial last
+// chunk: bytes survive, rows >= P are zero, and the vacated blocks are zero.
+TEST_CASE(KvflashPagerSerdeFixture, truncate_relayout_resolves_a_swap_cycle_without_losing_bytes) {
+    Harness A;
+    KvFlashPager p;
+    REQUIRE(p.attach(make_cfg(), A.k, A.v));
+    REQUIRE(append_stamped(A, p, 0, 8, 2));
+    REQUIRE(p.page_out(1));
+    REQUIRE(p.page_out(2));
+    REQUIRE(p.page_in(1));
+    REQUIRE(p.page_in(2));
+    p.synchronize_paging();
+    REQUIRE(p.block_of(1) == 2);
+    REQUIRE(p.block_of(2) == 1);                         // chunks 1 and 2 swapped
+    p.truncate(5 * kChunk);
+    CHECK(layout_of(p, 5) == (std::vector<int>{0, 1, 2, 3, 4}));
+    CHECK(all_match(A, p, 5, 2));
+    for (int b = 5; b < 8; b++) {                        // vacated blocks hold zeros
+        bool zero = true;
+        for_each_segment(A, b, [&](ggml_tensor * t, size_t off, size_t len) {
+            std::vector<uint8_t> v(len);
+            ggml_backend_tensor_get(t, v.data(), off, len);
+            for (uint8_t x : v) zero = zero && x == 0;
+        });
+        CHECK(zero);
+    }
+}
