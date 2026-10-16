@@ -1,0 +1,5 @@
+7ba540c7ddee4e010a851e0fc33f285c  /mnt/kimi-k3/build/scorer-cuda/luce_server
+a9b8cbd24e164e51e612c74c6ae37fbd  /mnt/kimi-k3/build/scorer-cuda/deps/llama.cpp/ggml/src/libggml.so.0
+89b5f1f23ad560e18c06a679a4bb8eae  /mnt/kimi-k3/build/scorer-cuda/deps/llama.cpp/ggml/src/ggml-cuda/libggml-cuda.so.0
+35f0f426ee75a3a24332f698cb2ad3e9  /mnt/kimi-k3/build/scorer-cuda/deps/llama.cpp/ggml/src/libggml-cpu.so.0
+afd77098132a0c3c87b90d226be1dc41  /mnt/kimi-k3/build/scorer-cuda/deps/llama.cpp/ggml/src/libggml-base.so.0
