@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <future>
 #include <random>
 #include <utility>
@@ -460,8 +461,18 @@ GenerateResult Qwen4ExpBackend::run(const GenerateRequest & req_in, const Daemon
     // exactly once per emitted token. No RNG draws for unvisited verify rows.
     long long drafts = 0, accepted = 0, steps = 0;
     std::array<long long, QWEN4EXP_MTP_MAX_VERIFY> width_steps{};
+    // LUCE_MTP_WIDTH_POLICY=legacy restores the pre-retune cost fit (MTP-E2E.md);
+    // LUCE_MTP_TRACE=1 logs every verify step (width, accepted, ms, fit).
+    static const bool legacy_policy = [] {
+        const char * value = std::getenv("LUCE_MTP_WIDTH_POLICY");
+        return value && std::strcmp(value, "legacy") == 0;
+    }();
+    static const bool trace_steps = [] {
+        const char * value = std::getenv("LUCE_MTP_TRACE");
+        return value && value[0] == '1' && value[1] == '\0';
+    }();
     auto width_policy = qwen4exp_mtp_width_policy(cache_.mtp_draft,
-        spec && cfg_.verify_width == 0, (int) req.prompt.size());
+        spec && cfg_.verify_width == 0, (int) req.prompt.size(), legacy_policy);
     double draft_s = 0.0;
     const auto t_dec0 = std::chrono::steady_clock::now();
     int32_t next = sample(logits.data());
@@ -547,8 +558,13 @@ GenerateResult Qwen4ExpBackend::run(const GenerateRequest & req_in, const Daemon
         }
         pos += retained;
         if (decode_check_) decode_check_(false, mtp_tok, logits_);
-        if (verify) width_policy.observe(decision.n_accepted + 1, k + 1,
-            (float) std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - step_start).count());
+        if (verify) {
+            const float step_ms = (float) std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - step_start).count();
+            width_policy.observe(decision.n_accepted + 1, k + 1, step_ms);
+            if (trace_steps) std::fprintf(stderr, "[qwen4exp-mtp-step] step=%lld k=%d accepted=%d ms=%.2f fit_base=%.1f fit_slope=%.1f\n",
+                                          steps, k, decision.n_accepted, step_ms, width_policy.base(), width_policy.slope());
+        }
     }
     if (cancelled) {
         result.fail(GenerateErrorCode::Cancelled, "cancelled during decode");
@@ -575,11 +591,13 @@ GenerateResult Qwen4ExpBackend::run(const GenerateRequest & req_in, const Daemon
         const double decoded = (double) result.tokens.size() - 1.0;   // the first token came from the prefill
         std::fprintf(stderr,
             "[qwen4exp-mtp] k=%d drafts=%lld accepted=%lld rate=%.3f tokens_per_step=%.3f draft_ms=%.2f decode=%.2f tok/s "
-            "adaptive=%d steps_k1=%lld steps_k2=%lld steps_k3=%lld steps_k4=%lld steps_k5=%lld steps_k6=%lld steps_k7=%lld\n",
+            "adaptive=%d steps_k1=%lld steps_k2=%lld steps_k3=%lld steps_k4=%lld steps_k5=%lld steps_k6=%lld steps_k7=%lld "
+            "policy=%s fit_base=%.1f fit_slope=%.1f\n",
             cache_.mtp_draft, drafts, accepted, (double) accepted / (double) drafts, steps > 0 ? decoded / (double) steps : 0.0,
             1e3 * draft_s / (double) drafts, result.decode_s > 0.0 ? decoded / result.decode_s : 0.0,
             (int) width_policy.enabled(), width_steps[1], width_steps[2], width_steps[3], width_steps[4],
-            width_steps[5], width_steps[6], width_steps[7]);
+            width_steps[5], width_steps[6], width_steps[7], width_policy.legacy() ? "legacy" : "retuned",
+            width_policy.base(), width_policy.slope());
     }
 
     guard.complete = true;

@@ -143,10 +143,101 @@ int main() {
                 best = std::max(best, expected / (base + slope * k));
             }
             worst_ratio = std::min(worst_ratio, tokens / elapsed / best);
+            if (tokens / elapsed < 0.95 * best)
+                std::printf("FAIL ctx=%d s1=%.2f slope=%.0f noisy=%d ratio=%.3f fit %.1f+%.1fk\n", context, survival[0], slope,
+                            (int) noisy, tokens / elapsed / best, policy.base(), policy.slope());
             CHECK(tokens / elapsed >= 0.95 * best);
         }
     }
     std::printf("MTP policy stationary/noisy worst ratio to best fixed: %.4f\n", worst_ratio);
+
+    // Pure cost fit. Samples at one width can move the intercept only: the slope is the prior's until a second
+    // width supplies a difference (this is what the legacy ridge fit got wrong: k=1-only samples cheaper than its
+    // prior dragged the base down and left the slope at 20, so every wide window looked 2x its real price).
+    {
+        Qwen4ExpMtpCostFit fit(47.0, 12.0);
+        for (int i = 0; i < 200; ++i) fit.observe(1, 70.0 + (i % 2 ? 2.0 : -2.0));
+        CHECK(std::fabs(fit.slope - 12.0) < 1e-9);
+        CHECK(std::fabs(fit.base - 58.0) < 0.5);              // 70 = base + 12, prior base 47 decayed out
+        CHECK(std::fabs(fit.predict(4) - (58.0 + 48.0)) < 0.5);
+        for (int i = 0; i < 200; ++i) fit.observe(4, 130.0);  // true curve 50 + 20k
+        CHECK(fit.slope > 18.0 && fit.slope < 20.5);
+        CHECK(std::fabs(fit.predict(1) - 70.0) < 2.0 && std::fabs(fit.predict(4) - 130.0) < 2.0);
+        Qwen4ExpMtpCostFit spike(47.0, 12.0);
+        spike.observe(2, 1000.0);                              // clamped to 1.25x the prediction
+        CHECK(spike.predict(2) < 1.25 * (47.0 + 24.0) + 1e-9);
+    }
+
+    // Pure pick: survivals and a cost curve in, the best width out.
+    {
+        std::array<double, QWEN4EXP_MTP_MAX_VERIFY> trials, successes;
+        trials.fill(100.0);
+        for (int d = 0; d < QWEN4EXP_MTP_MAX_VERIFY; ++d) successes[d] = 100.0 * (d == 1 ? 0.69 : 0.81);
+        CHECK(qwen4exp_mtp_pick_width(trials, successes, 7, Qwen4ExpMtpCostFit(47.5, 11.8)) == 3);  // prose16k
+        CHECK(qwen4exp_mtp_pick_width(trials, successes, 7, Qwen4ExpMtpCostFit(45.0, 20.0)) == 2);  // legacy prior
+        CHECK(qwen4exp_mtp_pick_width(trials, successes, 2, Qwen4ExpMtpCostFit(47.5, 11.8)) == 2);  // cap
+        successes.fill(99.5);
+        CHECK(qwen4exp_mtp_pick_width(trials, successes, 7, Qwen4ExpMtpCostFit(49.7, 9.8)) == 7);   // counting
+        successes.fill(20.0);
+        CHECK(qwen4exp_mtp_pick_width(trials, successes, 7, Qwen4ExpMtpCostFit(47.5, 11.8)) == 1);
+        // The policy's own 66K-code beliefs (step 40 of a traced request: depth 3-4 at 0.84-0.95, learned under
+        // its k=3-5 steps) put k=2/3/4 within 3% of each other; fixed k=2 beat fixed k=4 by 10% e2e there.
+        for (int d = 0; d < QWEN4EXP_MTP_MAX_VERIFY; ++d) successes[d] = 100.0 * (d == 1 ? 0.73 : d == 2 ? 0.70 : d == 3 ? 0.84 : 0.95);
+        CHECK(qwen4exp_mtp_pick_width(trials, successes, 7, Qwen4ExpMtpCostFit(48.4, 14.7)) == 3);
+    }
+
+    // The measured lucebox4 curves (MTP-E2E.md: step ms = 47.5 + 11.8 k on the 16-20K prompts, 49.7 + 9.8 k on
+    // the 72-token one) with the per-depth acceptance of the e2e runs, in 256-token requests (~133 steps, the
+    // policy restarts per request). The legacy policy sat at k=1 on 60-80% of these steps (ratio ~0.93); the
+    // retuned one has to be within 3% of the best fixed width on every workload and above the legacy one.
+    {
+        struct Workload { const char * name; double base, slope; int steps; std::array<double, 7> survival; double min_gain; };
+        const Workload workloads[] = {
+            {"prose16k", 47.5, 11.8, 133, {.69, .559, .453, .367, .297, .24, .195}, 0.03},
+            {"code16k", 47.3, 11.5, 120, {.657, .493, .37, .277, .208, .156, .117}, 0.03},
+            {"counting", 49.7, 9.8, 40, {.995, .99, .985, .98, .975, .97, .965}, 0.0},
+            // code16k's per-depth acceptance from its fixed k=7 trace (depth 4+ at 0.2) on the measured 64K-context
+            // curve (48.1 + 14.6 k): with the old 16-at-90% acceptance prior the retuned fit picked k=3-5 here and
+            // lost 10% e2e to the legacy policy's k=1-2.
+            {"code64k", 48.1, 14.6, 85, {.767, .507, .356, .205, .151, .096, .055}, 0.0},
+            // A heavier (unmeasured) curve: the prior is off by a third, the fit has to learn it within a request.
+            {"ctx64k", 56.0, 16.0, 133, {.69, .559, .453, .367, .297, .24, .195}, -0.02},
+        };
+        for (const auto & wl : workloads) {
+            double best = 0, expected = 1;
+            for (int k = 1; k <= 7; ++k) {
+                expected += wl.survival[k - 1];
+                best = std::max(best, expected / (wl.base + wl.slope * k));
+            }
+            double ratio[2]{};
+            for (bool legacy : {true, false}) {
+                uint32_t random = 7;
+                double tokens = 0, elapsed = 0;
+                std::array<int, 8> histogram{};
+                for (int rep = 0; rep < 20; ++rep) {
+                    auto policy = qwen4exp_mtp_width_policy(7, true, 20037, legacy);
+                    for (int i = 0; i < wl.steps; ++i) {
+                        const int width = qwen4exp_mtp_next_width(policy);
+                        ++histogram[width - 1];
+                        random = random * 1664525u + 1013904223u;
+                        const double draw = random / 4294967296.0;
+                        int accepted = 1;
+                        while (accepted < width && draw < wl.survival[accepted - 1]) ++accepted;
+                        const double cost = wl.base + wl.slope * (width - 1);
+                        policy.observe(accepted, width, cost * (i % 2 ? 1.05 : .95));
+                        tokens += accepted;
+                        elapsed += cost;
+                    }
+                }
+                ratio[legacy] = tokens / elapsed / best;
+                std::printf("MTP measured %s %s ratio to best fixed %.3f k1..7=", wl.name, legacy ? "legacy" : "retuned", ratio[legacy]);
+                for (int k = 1; k <= 7; ++k) std::printf("%s%d", k == 1 ? "" : "/", histogram[k]);
+                std::printf("\n");
+            }
+            CHECK(ratio[0] >= 0.97);
+            CHECK(ratio[0] >= ratio[1] + wl.min_gain);
+        }
+    }
 
     // Short requests resemble the session's code length and counting cell.
     // Feed identical latent acceptance to clean/noisy controllers; a spike

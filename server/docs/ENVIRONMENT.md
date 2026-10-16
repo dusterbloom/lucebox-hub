@@ -43,6 +43,8 @@ consolidation of this list into CLI flags is tracked as follow-up work.
 | `LUCE_MMVQ_INVARIANT_ROWS` | 2 | Weight rows per wave on the batch-invariant Q8_0 multi-column MMVQ launch (the MTP verify rows, T = 2..8): `1` restores one row per wave, `2` / `4` share the per-column activation loads across rows; every column stays byte-identical to its one-column product (test_mmvq_invariant_rows_parity). gfx1151 T=5 verify: 2 is -3.8 ms per call, 4 gains nothing (bench/exact/mtp/MTP-E2E.md). |
 | `LUCE_MMVQ_INVARIANT_LDS` | 16 | Waves per block on the same launch, each block staging the T columns' q8_1 activation in LDS once (whole K when it fits 64 KiB, else 128 blocks per column at a time) so the waves read it from LDS instead of streaming it per weight row: `0` restores the per-wave stream, `4` / `8` / `16` / `32` the block size (`8` with rows 1, `16` with rows 4). Same dot chain and reduction per column (test_mmvq_invariant_rows_parity, 900 cases). gfx1151: T=5 Q8_0 class 31.4 -> 26.8 ms per call, verify k=4 -4.1 ms, k=8 -15.2 ms, fixed k=4 decode +7-9% (bench/exact/mtp/MTP-E2E.md). |
 | `LUCE_MMVQ_INVARIANT_LDS_BLOCKS` | 2 x the device's multiprocessor count | Persistent blocks of the whole-K LDS-staged launch for up to 32768 rows (row groups dispensed from a block-local counter, interleaved across blocks); above that a block per 16 row groups. |
+| `LUCE_MTP_WIDTH_POLICY` | unset | BURN-IN KILL SWITCH: `legacy` restores the qwen4exp adaptive verify-width policy of 8d08d436 (one decayed least-squares cycle-cost line with a 45 + 20 k prior: on a 256-token request its slope never moved, so it ran k=1 on 60-80% of the 16K-prompt steps). The default keeps bounded per-width step-time means, moves the cost line's intercept from any width and its slope only from differences between widths (seeded at 47.5 + 12 k ms), and starts the per-depth acceptance at 4 trials at 80% instead of 16 at 90% (lucebox4 2x5: +6% / +10% / -2% decode on code 16K / prose 16K / counting, MTP-E2E.md). |
+| `LUCE_MTP_TRACE` | unset | DEBUG: `1` logs one `[qwen4exp-mtp-step]` line per MTP verify step (width, accepted rows, step ms, fitted cost line); bench/exact/mtp/mtp_policy_offline.py computes the offline-optimal width from these. |
 | `LUCE_DS4_MOE_TP` / `LUCE_DS4_MOE_TP_INPROC` | unset | BURN-IN: enable DeepSeek4 route-owner expert parallelism in one process. Prefer the CLI: `--expert-device <backend:gpu>` sets both with the device and backend. |
 | `LUCE_DS4_MOE_TP_BACKEND` / `LUCE_MOE_TP_BACKEND` | peer runtime in a mixed build; compiled runtime otherwise | Select the in-process cold expert owner backend. |
 | `LUCE_DS4_MOE_TP_GPU` | peer backend device 0 in a mixed build; other local device otherwise | Device index within the cold DeepSeek4 expert backend. |
@@ -417,6 +419,8 @@ consolidation of this list into CLI flags is tracked as follow-up work.
 - `LUCE_MMVQ_INVARIANT_LDS` - mmvq.cu (waves per block staging the activation in LDS on that launch; 0 = legacy)
 - `LUCE_MMVQ_INVARIANT_LDS_BLOCKS` - mmvq.cu (persistent block count of the whole-K LDS-staged launch)
 - `LUCE_MMVQ_MAX_NCOLS` - deepseek4_backend.cpp
+- `LUCE_MTP_TRACE` - qwen4exp_backend.cpp (per-step MTP verify trace)
+- `LUCE_MTP_WIDTH_POLICY` - qwen4exp_backend.cpp (`legacy` = the pre-retune adaptive width policy)
 - `LUCE_PC_DEEP_FIRST_MAX_HEAD` - prefix_cache.cpp
 - `LUCE_PC_DEEP_FIRST_MIN` - prefix_cache.cpp
 - `LUCE_QK_FUSE_LAYERS` - laguna_target_graph.cpp

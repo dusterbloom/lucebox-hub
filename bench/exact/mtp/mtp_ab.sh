@@ -21,10 +21,12 @@ PORT=${PORT:-18098}
 NTOK=${NTOK:-256}
 PREFILL=${PREFILL:-0}
 WORKLOADS=${WORKLOADS-code16k prose16k counting}   # WORKLOADS="" with PREFILL=1: prefill only
+MAXCTX=${MAXCTX:-20480}                             # code64k (textparity p16384 r0+r1+r2+r0, ~66K tokens) needs 81920
 mkdir -p $OUT
 md5sum $LUCE $(dirname $LUCE)/deps/llama.cpp/ggml/src/ggml-hip/libggml-hip.so.0.9.11 $MODEL > $OUT/binary.md5
 printf '%s\n' "$@" > $OUT/arms.txt
-declare -A WL=( [code16k]=$TP/prompt_p16384_r0.txt [prose16k]=$P/prose16k.txt [counting]=$P/counting.txt )
+declare -A WL=( [code16k]=$TP/prompt_p16384_r0.txt [prose16k]=$P/prose16k.txt [counting]=$P/counting.txt
+                [code64k]=$S/mtppolicy/code64k.txt )
 
 start_server() {  # $1 = arm spec, $2 = round
   local name=${1%%=*} spec=${1#*=}
@@ -32,7 +34,7 @@ start_server() {  # $1 = arm spec, $2 = round
   [ "$spec" != "$envs" ] && flags=${spec#*/}
   local draft="--draft $DRAFT"
   [[ "$flags" == *--no-draft* ]] && { draft=""; flags=${flags//--no-draft/}; }
-  env HIP_VISIBLE_DEVICES=1 GGML_CUDA_GRAPH_STATS=1 $envs nohup $LUCE --model "$MODEL" $draft --port $PORT --max-ctx 20480 --prefix-cache-slots 0 $flags \
+  env HIP_VISIBLE_DEVICES=1 GGML_CUDA_GRAPH_STATS=1 $envs nohup $LUCE --model "$MODEL" $draft --port $PORT --max-ctx $MAXCTX --prefix-cache-slots 0 $flags \
       > $OUT/serve_${name}_$2.log 2>&1 &
   SPID=$!
   for i in $(seq 1 900); do

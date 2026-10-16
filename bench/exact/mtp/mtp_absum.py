@@ -10,7 +10,7 @@ print(open(f"{out}/binary.md5").read().strip())
 arms_txt = open(f"{out}/arms.txt").read().strip(); print(arms_txt)
 ARMS = [l.split("=", 1)[0] for l in arms_txt.splitlines()]
 BASE = ARMS[0]
-WLS = ["code16k", "prose16k", "counting"]
+WLS = ["code16k", "prose16k", "counting", "code64k"]
 
 def files(arm, suffix):
     rr = {}

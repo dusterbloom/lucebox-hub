@@ -482,3 +482,132 @@ Decision: shipped (default LDS 16 waves per block, two rows per wave; `LUCE_MMVQ
 per-wave activation stream, `LUCE_MMVQ_INVARIANT_ROWS=1 LUCE_MMVQ_INVARIANT_LDS=0` the kernel of 0a6a47a7's parent).
 The T=5 Q8_0 class is now 1.3% above the sum of the T=1 launches on the same bytes standalone (3466 vs 3422 us) and 4.4 ms above in the model (26.8 vs 22.4 ms per call, the 15.9 MiB class above); what is left in the
 verify call is the per-row attention sub-graphs and the routed experts (items 1-2 at the top of this file).
+
+## Adaptive verify width: cost fit and acceptance prior (LUCE_MTP_WIDTH_POLICY, retuned)
+
+Same box, binary luce_server f0508d23 / ggml-hip cd77718d (the tree at this commit; the change is server-only,
+`qwen4exp_mtp.h` + the policy's call site in `qwen4exp_backend.cpp`). Scratch on the box:
+`~/qwen4exp-f16/scratch/mtppolicy/` (`k7/` fixed k=7 trace, `k23/` fixed k=2 / k=3, `ab/` the first retune's 2x5,
+`ab64/` its 64K run, `ab2/` and `ab64b/` the shipped policy's, `mtp_policy_offline.py`).
+
+### What the policy did and why it under-picked
+
+`Qwen4ExpMtpWidth` chooses k = argmax (1 + sum of prefix survivals) / cost(k) with cost(k) = base + slope * k fitted
+online per request. Its fit was one decayed least-squares line over every timed step, regularised by 16 synthetic
+cycles at k=1 and 16 at k=7 of the prior curve 45 + 20 k (the per-call verify of before the retained graphs), with
+the first four samples of every width dropped as cold builds. On the 16K prompts the policy sat at k=1, so every real
+sample was a k=1 step (58 ms against the prior's 65): those samples pulled the intercept down and left the k=7 anchor
+at 185 ms, i.e. the slope stayed at 20 (the logged `fit_base=38.0 fit_slope=20.3` on both prompts, the same numbers a
+synthetic replay of the class on the measured curve gives: 36.9 + 20.2 k at step 132). With that line the utility of
+k=2..4 at 0.65-0.69 depth-1 acceptance is below k=1, the 17-step probes landed on k=2 (and k=7 every 136 steps,
+whose samples the four-sample cold skip discarded), and the policy fed itself more k=1 samples: an absorbing state
+that forgets per request. The real in-server step cost (per-step trace, `LUCE_MTP_TRACE=1`, medians over the A/B
+arms) is 47 + 11-13 k on the 16K prompts -- AR 37.7, k=1 58.4, k=2 69-70, k=3 81-82, k=4 94, k=5 103, k=7 126-127
+ms -- and 48 + 14.6 k on a 66K code prompt (k=1 62.6, k=2 76.7, k=4 108, k=6 134), half the prior slope.
+
+The second half: the acceptance prior, 16 trials at 90% per depth, which only a reached depth updates. Hidden
+behind the steep cost line, it became the driver once the line was right: the first retune (cost fit only, `ab/`,
+`ab64/`) picked k=3-4 on the 16K prompts (+2.8% / +5.1% over the old policy, code16k / prose16k) but k=4-6 on the
+66K code prompt, whose depth-4+ conditional acceptance is ~0.2, and lost 10% there to the old policy's k=1-2
+(28.2 vs 31.4 tok/s, fixed k=4 29.1). A 256-token request never reaches depth 5 often enough to move that prior.
+
+### Offline optimum (fixed k=7 trace, 146 verify steps per 16K prompt, 64 on counting; `mtp_policy_offline.py`)
+
+Per-depth conditional acceptance from the k=7 steps, expected tokens per step against the measured step cost of each
+width, server-side tok/s (the step ms include the draft, sampling and rollback; the client sees ~4% less at 16K):
+
+| workload | survival at depth 1..7 | tok/s at fixed k=1 / 2 / 3 / 4 / 5 / 7 | best fixed | per-step oracle (k = rows the step would accept) |
+|---|---|---|---|---|
+| code16k | .77 .51 .36 .21 .15 .10 .06 | 30.3 / **33.0** / 32.1 / 30.4 / 29.0 / 25.0 | k=2 | 45.4 |
+| prose16k | .84 .56 .40 .30 .19 .07 .06 | 31.5 / 34.0 / **34.1** / 32.5 / 30.9 / 26.8 | k=3 | 46.2 |
+| counting | 1 1 1 .97 .97 .97 .97 | 30.4 / 36.8 / 51.5 / 55.2 / 59.2 / **64.5** | k=7 | 65.2 |
+
+Measured fixed widths (`k23/`, 1 x 3, same binary; client / server tok/s, tokens per step): code16k k=2 **34.55** /
+33.42 (2.33), k=3 33.89 / 32.63 (2.65), k=4 31.0 / 29.8 (2.82); prose16k k=2 **35.89** / 34.78 (2.43), k=3 34.71 /
+33.51 (2.74), k=4 33.2 / 32.0 (3.07). k=2 is the best fixed width on both 16K prompts, +11% / +8% over fixed k=4 and
++8% / +14% over the old adaptive policy; the stationary estimate ranks it right on code16k and overstates k=3 on
+prose16k by ~2% (a run of three accepted rows in a k=7 step is not the same event as depth 3 in a k=3 step: the
+step boundaries move with the width, so the k=7 trace's survivals are an optimistic bound for narrower widths).
+The per-step oracle, the width equal to the rows the step would accept (an unreachable bound on any per-step
+predictor), is +37% over the best fixed width on the 16K prompts and +1% on counting: the remaining pool is
+acceptance prediction, not the cost model.
+
+### The change
+
+`Qwen4ExpMtpCostFit` (pure, `qwen4exp_mtp.h`): bounded per-width sample means (128-sample decay like the acceptance
+counts), the line base + slope * k fitted over the per-width means with the slope ridge-blended toward the prior
+(strength 16) and the intercept following every sample (prior tail 4); `predict(k)` is the width's own mean blended
+with the line (line weight 8 samples), the line alone for a width without samples. Samples at one width therefore
+move the intercept only, a probed width reports its own measured price, and the slope moves only when two widths
+have samples. Prior curve 47.5 + 12 k (50 + 12 k at prompts >= 32K), cold skip two samples per width (one eager
+call and one capture). Acceptance prior 4 trials at 80% per depth (the first real reaches override it; counting
+still climbs to k=7 through the warm-up rule). `qwen4exp_mtp_pick_width()` is the pure argmax over the survival
+products and a fit; `Qwen4ExpMtpWidth` keeps the probes, warm-up and acceptance bookkeeping as they were. Kill
+switch: `LUCE_MTP_WIDTH_POLICY=legacy` keeps the old fit (`Qwen4ExpMtpLegacyCostFit`, same code, four-sample cold
+skip) and the old 16-at-90% prior. `LUCE_MTP_TRACE=1` logs every verify step; the `[qwen4exp-mtp]` summary line
+gained `policy= fit_base= fit_slope=`.
+
+`test_qwen4exp_mtp`: the fit (k=1-only samples leave the slope, move the base; a second width teaches the slope;
+spike clamp), the pick (prose / legacy-prior / cap / counting / low-acceptance cases) and replays of the measured
+curves with the e2e acceptance in 256-token requests (per-request restart): retuned vs legacy ratio to the best
+fixed width prose16k 1.012 vs 0.935, code16k 1.006 vs 0.948, counting 0.987 vs 0.986, code64k (the k=7 trace's
+code acceptance on the 66K curve) 0.986 vs 0.975, a heavier unmeasured curve (56 + 16 k) 1.005 vs 1.001; the
+pre-existing stationary / noisy / short-request suites still pass (worst ratio 0.970). The constants were chosen on
+that suite and on the measured replays: ridge 8 / line weight 2 lost 3% to the +/-20% alternating noise of the
+short-request test (per-width means lock onto the noise's parity), 16 / 8 does not; acceptance priors 16 @ 0.9 /
+8 @ 0.85 / 4 @ 0.9 / 4 @ 0.8 give code64k 0.941 / 0.974 / 0.973 / 0.986 and counting 0.996 / 0.990 / 0.996 /
+0.985 -- the 1% on counting is the warm-up climb k=3 -> 7 of a 33-step request, taken for the 4.5% on the long
+code prompt.
+
+### e2e (mtp_ab.sh, 2 rounds x 5 reps, arms alternating, PREFILL=1, `mtppolicy/ab2/`)
+
+`old` = `LUCE_MTP_WIDTH_POLICY=legacy`, `new` = default, `k4` = `--verify-width 5`, `ar` = `--verify-width 1
+--no-draft`, `LUCE_MTP_TRACE=1` on the three MTP arms; `prefix_len=0` on every request of every arm. Client decode
+tok/s, median of 10 (round-median spread in parentheses); server `decode=` / acceptance / tokens per step / width
+histogram / the fit at the end of a request.
+
+| arm | code16k | prose16k | counting |
+|---|---|---|---|
+| old, adaptive | 32.09 (0.4%) -- 31.00, 0.660, 2.00, k1 71% k2 14% k3 9% k4 5%, fit 37.4 + 20.3 k | 31.45 (0.1%) -- 30.51, 0.692, 1.92, k1 81% k3 11% k2 7%, fit 38.0 + 20.4 k | **72.50** (0.0%) -- 64.08, 0.995, 7.50, k7 76% k6 12%, fit 50.9 + 14.1 k |
+| new, adaptive | **34.09** (0.2%) -- 32.77, 0.560, 2.71, k3 83% k4 11% k2 5%, fit 46.8 + 11.5 k | **34.63** (0.1%) -- 33.41, 0.658, 2.46, k2 77% k3 22%, fit 44.8 + 12.7 k | 71.09 (0.2%) -- 64.33, 1.000, 7.50, k7 88% k3-6 3% each |
+| fixed k=4 | 31.01 (1.9%) -- 29.80, 0.457, 2.82 | 33.21 (0.1%) -- 31.96, 0.520, 3.07 | 60.77 (0.3%) -- 55.02, 0.995, 4.90 |
+| AR, no sidecar | 26.55 (0.0%) | 26.54 (0.0%) | 29.82 (0.1%) |
+
+new vs old: **+6.2% / +10.1% / -1.9%** (code16k / prose16k / counting), every delta > 2x both arms' round spread.
+The 16K prompts: the policy runs k=3 (code16k) and k=2-3 (prose16k) instead of k=1 on 71-81% of the steps, 2.7 /
+2.5 tokens per step; against the measured best fixed width (k=2, `k23/`) it is -1.3% / -3.5%, against fixed k=4
++9.9% / +4.3%. Counting: the same 7.50 tokens per step and server decode 64.33 vs 64.08, the client sees -1.9%:
+the 4-at-80% prior starts every request at k=3 and the warm-up rule climbs one width per clean step (k3-6 3% of
+the steps each vs the old prior's argmax at k=7 from step 0). Greedy-256 texts identical across old / new / k4 /
+AR on all three workloads (the width changes the schedule, not the verified tokens). AR 26.55 / 26.54 / 29.82 and
+prefill p4096 new 1297 vs old 1317 (-1.5%, old's round spread 4.1%), p16384 1381 vs 1380 (+0.1%): untouched (the
+policy runs only in the decode loop). MTP vs AR now +28% code16k, +30% prose16k, +138% counting (adaptive).
+
+### 64K context (mtp_ab.sh, 1 round x 3 reps, `MAXCTX=81920 WORKLOADS=code64k PREFILL=0`, `mtppolicy/ab64b/`)
+
+`code64k` = the textparity p16384 prompt three times plus its first third (298743 bytes, ~66K tokens), same binary
+(luce_server f0508d23, ggml-hip cd77718d), `prefix_len=0` on all 10 requests of every arm, greedy-256 texts
+identical across old / new / k4 / k2 / AR. Client decode tok/s, median of 3; server `decode=` / acceptance /
+tokens per step / widths.
+
+| arm | code64k |
+|---|---|
+| old, adaptive | 30.37 -- 28.98, 0.625, 2.22, k1 36% k2 41% k3 15% k4 5%, fit 40.6 + 20.5 k |
+| new, adaptive | 29.32 (**-3.5%**) -- 28.09, 0.518, 2.98, k3 35% k4 45% k5 17% k6 2%, fit 53.0 + 13.7 k |
+| fixed k=4 | 29.16 -- 27.76, 0.504, 3.00 |
+| fixed k=2 | **32.14** -- 30.50, 0.664, 2.33 |
+| AR, no sidecar | 26.12 |
+
+The measured step cost here is 48.4 + 14.7 k ms (k1 63, k2 78, k3 92, k4 107; AR 38) and the fit learns it
+(53.0 + 13.7 k at the end of a request), so the over-pick is not the cost model: replaying one traced request
+through the policy (0 pick mismatches) shows its per-depth conditionals at depth 3-4 at 0.84-0.95 by step 20-40
+(depth 1-2 at 0.73-0.80), which puts k=3/4/5 at 28.4-31.1 expected tok/s against k=2 at 27.6-29.5 -- while fixed
+k=2 realises 2.33 tokens per step and 30.5 server tok/s against the policy's 2.98 at 28.1. The depth estimates are
+pooled over the widths the policy ran, and a step after a wide window's rejection restarts from a different token
+than one after a narrow window's full accept, so the k=3-5 steps' depth-3/4 survivals do not transfer to k=2 steps;
+the 16K prompts show the same bias at 2-3% (the fixed k=7 trace rated k=3 above k=2 on prose16k, measured the other
+way). A near-tie margin (narrowest width within 1.5-2.5% of the best utility) was simulated: it moves code64k to
+k=2 in the simulator (0.995 vs 0.986 of the best fixed width) but costs 0.5-1% on counting (k=6 steps) and 2% on
+the +/-20% alternating-noise short-request test, and the simulator cannot model the boundary bias it targets, so
+it was not shipped. At 64K the retuned policy is 3.5% below the legacy one (k=1-2 there by accident of its broken
+fit) and 8.8% below fixed k=2, still +12% over AR; the 16K result stands (+6% / +10%).
