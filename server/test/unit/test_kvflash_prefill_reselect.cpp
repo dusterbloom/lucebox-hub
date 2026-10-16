@@ -63,3 +63,11 @@ TEST_CASE(KvflashPrefillReselectFixture, mode3_plan_skips_one_token_prefill) {
     CHECK(!kvflash_mode3_plan(0, 1).run);
     CHECK(kvflash_mode3_plan(0, 2).run);
 }
+
+TEST_CASE(KvflashPrefillReselectFixture, max_abs_diff_and_argmax) {
+    CHECK(kvflash_max_abs_diff({1.f, 2.f, 3.f}, {1.f, 2.5f, 2.f}) == 1.0f);
+    CHECK(kvflash_max_abs_diff({1.f, 2.f}, {1.f, 2.f}) == 0.0f);
+    CHECK(kvflash_max_abs_diff({1.f}, {1.f, 2.f}) < 0.0f);   // size mismatch: -1
+    CHECK(kvflash_argmax({0.f, 5.f, 3.f}) == 1);
+    CHECK(kvflash_argmax({}) == -1);
+}

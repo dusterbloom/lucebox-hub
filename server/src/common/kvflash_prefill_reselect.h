@@ -4,6 +4,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 namespace luce::common {
@@ -35,6 +36,18 @@ inline KvFlashMode3Plan kvflash_mode3_plan(int kv_offset, int end) {
     p.r = kvflash_prefill_reselect_point({}, kv_offset, end, 3);
     p.run = p.r >= 0;
     return p;
+}
+
+// Mode-3 rerun check: max |a-b| over two logits rows (-1 on a size mismatch),
+// and the argmax of a row (-1 when empty).
+inline float kvflash_max_abs_diff(const std::vector<float> & a, const std::vector<float> & b) {
+    if (a.size() != b.size()) return -1.0f;
+    float m = 0.0f;
+    for (size_t i = 0; i < a.size(); i++) m = std::max(m, std::fabs(a[i] - b[i]));
+    return m;
+}
+inline int kvflash_argmax(const std::vector<float> & a) {
+    return a.empty() ? -1 : (int)(std::max_element(a.begin(), a.end()) - a.begin());
 }
 
 // Sorted copy of `cuts` with r inserted; unchanged if r < 0 or already present.

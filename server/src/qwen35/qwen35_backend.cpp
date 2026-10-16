@@ -2353,6 +2353,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         ~M3Scratch() { free_prefix_snapshot(snap); }
     } m3_scratch;
     bool m3_done = false, m3_failed = false, m3_rerun_pending = false;
+    std::vector<float> m3_first_logits;   // first-pass final-token logits row
 
     // Chunked prefill
     std::vector<float> embed_buf((size_t)hidden * prefill_ubatch);
@@ -2560,9 +2561,22 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         }
         // The discarded first pass of mode 3 must not count in the MoE routing stats.
         if (!m3_capture) after_target_compute(sg_, kv_pos, n_tokens);
-        if (m3_rerun_pending) {
-            std::fprintf(stderr, "[kvflash] prefill reselect mode=3 @%d: rerun ok\n", kv_pos);
-            m3_rerun_pending = false;
+        // Mode 3 only: keep the first pass's logits row; the rerun is compared with it.
+        if (m3_capture || m3_rerun_pending) {
+            std::vector<float> row((size_t)vocab);
+            ggml_backend_tensor_get(sg_.logits, row.data(),
+                                    (size_t)(n_tokens - 1) * (size_t)vocab * sizeof(float),
+                                    row.size() * sizeof(float));
+            if (m3_capture) {
+                m3_first_logits = std::move(row);
+            } else {
+                std::fprintf(stderr, "[kvflash] prefill reselect mode=3 @%d: rerun ok, logits max|diff| %g "
+                             "vs first pass (argmax %d / %d)\n", kv_pos,
+                             (double)luce::common::kvflash_max_abs_diff(row, m3_first_logits),
+                             luce::common::kvflash_argmax(row),
+                             luce::common::kvflash_argmax(m3_first_logits));
+                m3_rerun_pending = false;
+            }
         }
 
         int32_t last_tok = -1;
