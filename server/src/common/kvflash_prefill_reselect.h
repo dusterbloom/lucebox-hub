@@ -14,9 +14,27 @@ namespace luce::common {
 // else -1; cuts are ignored.
 inline int kvflash_prefill_reselect_point(const std::vector<int> & turn_cuts,
                                           int kv_offset, int end, int mode = 1) {
-    if (mode != 2 && !turn_cuts.empty() && turn_cuts.back() > kv_offset && turn_cuts.back() < end)
+    if (mode < 2 && !turn_cuts.empty() && turn_cuts.back() > kv_offset && turn_cuts.back() < end)
         return turn_cuts.back();
     return end - 1 > kv_offset ? end - 1 : -1;
+}
+
+// Mode 3 (LUCE_KVFLASH_PREFILL_RESELECT=3): route with the LAST prompt token's
+// query. R = end-1 is a batch boundary; the state at R is snapshotted, the
+// final token runs once to produce q, the pool is reselected, the token is
+// rewound and re-run under the new pool. `run` is false when there is no
+// earlier state to snapshot (end-1 <= kv_offset). reserve_chunks: pool room
+// left for the one re-run token.
+struct KvFlashMode3Plan {
+    int  r = -1;
+    bool run = false;
+    int  reserve_chunks = 1;
+};
+inline KvFlashMode3Plan kvflash_mode3_plan(int kv_offset, int end) {
+    KvFlashMode3Plan p;
+    p.r = kvflash_prefill_reselect_point({}, kv_offset, end, 3);
+    p.run = p.r >= 0;
+    return p;
 }
 
 // Sorted copy of `cuts` with r inserted; unchanged if r < 0 or already present.

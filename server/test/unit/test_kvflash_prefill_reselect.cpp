@@ -47,3 +47,19 @@ TEST_CASE(KvflashPrefillReselectFixture, mode2_one_token_prefill_is_disabled) {
 TEST_CASE(KvflashPrefillReselectFixture, mode1_is_the_default) {
     CHECK(kvflash_prefill_reselect_point({100, 900}, 0, 1000, 1) == 900);
 }
+
+TEST_CASE(KvflashPrefillReselectFixture, mode3_point_is_end_minus_1_like_mode2) {
+    CHECK(kvflash_prefill_reselect_point({100, 900}, 0, 1000, 3) == 999);
+    CHECK(kvflash_prefill_reselect_point({}, 999, 1000, 3) == -1);
+}
+TEST_CASE(KvflashPrefillReselectFixture, mode3_plan_runs_with_one_chunk_reserve) {
+    const KvFlashMode3Plan p = kvflash_mode3_plan(16, 1000);
+    CHECK(p.run);
+    CHECK(p.r == 999);
+    CHECK(p.reserve_chunks == 1);
+}
+TEST_CASE(KvflashPrefillReselectFixture, mode3_plan_skips_one_token_prefill) {
+    CHECK(!kvflash_mode3_plan(999, 1000).run);   // end-1 == kv_offset: no prior state to snapshot
+    CHECK(!kvflash_mode3_plan(0, 1).run);
+    CHECK(kvflash_mode3_plan(0, 2).run);
+}

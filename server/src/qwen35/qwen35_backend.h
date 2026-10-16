@@ -292,7 +292,17 @@ protected:
     // chunks read from the pool, host-backed ones from the pager's host copy).
     bool kvflash_exact_scores(int sealed, const std::vector<const float *> & qs,
                               std::vector<std::vector<float>> & outs);
+    // Score the chunks sealed before `sealed_tokens` with the query in q_cap.
+    bool kvflash_prefill_score(int sealed_tokens, double & score_ms);
+    // Select (recall / tail logic) from kvflash_scores_ and reselect the pool.
+    // reserve_chunks < 0: derive it from `end` (room for the rest of the prefill).
+    void kvflash_prefill_apply(int committed, int end, int reserve_chunks, int q_tok,
+                               double score_ms, const char * note);
     void kvflash_prefill_reselect_now(int committed, int end);
+    // Mode 3: q_cap holds q(end-1) from the first final-token pass. Score,
+    // restore the scratch state at r, truncate the pager to r, reselect.
+    // 1 = rewound (re-run the token), 0 = nothing changed, -1 = fatal.
+    int kvflash_mode3_rewind(const PrefixSnapshot & snap, int r, int reserve_chunks);
     uint64_t                kvflash_qk_dump_seq_ = 0;
     std::vector<float>      kvflash_qk_dump_max_;   // running per-chunk max over folded queries
     int                     kvflash_qk_dump_nq_ = 0;
