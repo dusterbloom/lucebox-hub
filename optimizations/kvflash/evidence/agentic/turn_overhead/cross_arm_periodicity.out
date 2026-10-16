@@ -1,0 +1,21 @@
+agentic/B0_3090/FULL.jsonl                                             n=3447 wall=  10374s spikes=373 period_est= 27.8s  (1 per 28s) shortspikes=186 R=0.39 (rand 0.07) T=34.4
+agentic/B0_3090/FULLB.jsonl                                            n= 864 wall=   3191s spikes=108 period_est= 29.5s  (1 per 30s) shortspikes=29 R=0.53 (rand 0.19) T=35.6
+agentic/B0_3090/POOL16K.jsonl                                          n=2544 wall=   8657s spikes=275 period_est= 31.5s  (1 per 31s) shortspikes=76 R=0.50 (rand 0.11) T=35.4
+agentic/B0_3090/POOL8K.jsonl                                           n=2544 wall=   8076s spikes=261 period_est= 30.9s  (1 per 31s) shortspikes=98 R=0.50 (rand 0.10) T=34.6
+agentic/prefill_reselect/diag/m1/QK16KND.jsonl                         n=  76 wall=    310s spikes=  2 period_est=155.2s  (1 per 155s) shortspikes=1 R=0.00 (rand 1.00) T=0.0
+agentic/prefill_reselect/diag/m2/QK16KND.jsonl                         n=  76 wall=    302s spikes=  1 period_est=301.8s  (1 per 302s) shortspikes=0 R=0.00 (rand 1.00) T=0.0
+agentic/prefill_reselect/diag/m2t128/QK16KND.jsonl                     n=  76 wall=    303s spikes=  1 period_est=303.5s  (1 per 303s) shortspikes=0 R=0.00 (rand 1.00) T=0.0
+agentic/prefill_reselect/diag/off/QK16KND.jsonl                        n=  76 wall=    282s spikes=  1 period_est=282.3s  (1 per 282s) shortspikes=0 R=0.00 (rand 1.00) T=0.0
+agentic/prefill_reselect/off/QK16KND.jsonl                             n=1106 wall=   3030s spikes= 90 period_est= 33.7s  (1 per 34s) shortspikes=31 R=0.80 (rand 0.18) T=17.9
+agentic/prefill_reselect/on/QK16KND.jsonl                              n=1106 wall=   3156s spikes= 91 period_est= 34.7s  (1 per 35s) shortspikes=33 R=0.76 (rand 0.17) T=35.2
+agentic/rlru/dump/QK16KND.jsonl                                        n=1106 wall=   3618s spikes= 42 period_est= 86.2s  (1 per 86s) shortspikes=20 R=0.68 (rand 0.22) T=49.1
+agentic/rlru/off/QK16KND.jsonl                                         n=1106 wall=   3084s spikes=104 period_est= 29.7s  (1 per 30s) shortspikes=40 R=0.76 (rand 0.16) T=33.6
+agentic/rlru/on/QK16KND.jsonl                                          n=1106 wall=   3759s spikes=124 period_est= 30.3s  (1 per 30s) shortspikes=55 R=0.59 (rand 0.13) T=33.9
+agentic/rlru4/off/QK16KND.jsonl                                        n=1106 wall=   3037s spikes=100 period_est= 30.4s  (1 per 30s) shortspikes=33 R=0.78 (rand 0.17) T=34.1
+agentic/rlru4/on/QK16KND.jsonl                                         n=1106 wall=   3892s spikes=126 period_est= 30.9s  (1 per 31s) shortspikes=63 R=0.77 (rand 0.13) T=34.2
+am/m71_r5/R5M71/R5M71.jsonl                                            n=  28 wall=     95s spikes=  3 period_est= 31.8s  (1 per 32s) shortspikes=1 R=0.00 (rand 1.00) T=0.0
+am/m71_r5/R5MAIN/R5MAIN.jsonl                                          n=  28 wall=     96s spikes=  3 period_est= 32.0s  (1 per 32s) shortspikes=0 R=0.00 (rand 1.00) T=0.0
+am/m71_smoke/AMOFF/AMOFF.jsonl                                         n=  65 wall=    161s spikes=  4 period_est= 40.4s  (1 per 40s) shortspikes=0 R=0.00 (rand 1.00) T=0.0
+am/m71_smoke/AMON/AMON.jsonl                                           n=  65 wall=    182s spikes=  8 period_est= 22.8s  (1 per 23s) shortspikes=2 R=0.00 (rand 0.71) T=0.0
+am/m71_smoke2/AMOFF/AMOFF.jsonl                                        n=  65 wall=    180s spikes= 12 period_est= 15.0s  (1 per 15s) shortspikes=9 R=0.70 (rand 0.33) T=27.2
+am/m71_smoke2/AMON/AMON.jsonl                                          n=  65 wall=    178s spikes=  7 period_est= 25.4s  (1 per 25s) shortspikes=4 R=0.00 (rand 0.50) T=0.0

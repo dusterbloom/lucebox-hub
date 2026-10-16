@@ -1,0 +1,5 @@
+t=   27.03s wall-minus-monotonic step +2.537s
+t=   59.29s wall-minus-monotonic step +2.306s
+t=   91.54s wall-minus-monotonic step +2.356s
+t=  123.77s wall-minus-monotonic step +2.365s
+samples over 150s: 4 steps over 50 ms, total drift wall-minus-monotonic +9.564s

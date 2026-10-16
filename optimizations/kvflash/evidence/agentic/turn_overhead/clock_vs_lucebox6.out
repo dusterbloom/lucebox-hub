@@ -1,0 +1,2 @@
+remote 130.392s  local monotonic 120.704s  local wall 131.125s  (ssh rtt 0.928, 0.704)
+monotonic/remote 0.9257  wall/remote 1.0056
