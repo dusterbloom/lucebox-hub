@@ -609,7 +609,12 @@ public:
 
     // Reselect to the recency set (sink + the newest chunks that fit), then drop the
     // hook so later evictions are plain LRU. Returns the number of page events.
-    int reselect_recent() { return 0; }   // stub (red): not implemented yet
+    int reselect_recent() {
+        score_hook = [](int c) { return (float)c; };
+        const int events = reselect(0);
+        score_hook = nullptr;
+        return events;
+    }
 
     // Lookahead reselect (FlashMemory τ-step): rebuild the resident set as
     // the top-pool chunks by score_hook among ALL known chunks (resident or

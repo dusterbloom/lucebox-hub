@@ -432,6 +432,8 @@ bool Qwen35Backend::init() {
         const int m = env_int_or_default("LUCE_KVFLASH_PREFILL_RESELECT", 0);
         kvflash_prefill_reselect_ = kvflash_qk_policy_ && (m >= 1 && m <= 4) ? m : 0;
         kvflash_rewind_noop_ = env_int_or_default("LUCE_KVFLASH_REWIND_NOOP", 0) == 1;
+        kvflash_score_pool_recent_ = env_int_or_default("LUCE_KVFLASH_SCORE_POOL_RECENT", 0) == 1;
+        kvflash_log_resident_ = env_int_or_default("LUCE_KVFLASH_LOG_RESIDENT", 0) == 1;
         kvflash_reselect_tail_ = std::max(-1, env_int_or_default("LUCE_KVFLASH_RESELECT_TAIL_CHUNKS", -1));
         const char * sc = std::getenv("LUCE_KVFLASH_RESELECT_SCORER");
         kvflash_exact_scorer_ = sc && std::string(sc) == "exact";
@@ -2347,6 +2349,17 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     // user turn (clamped to the prefill start). A strict no-op when the pool holds
     // the whole prompt: recall and compaction are active only when the pool is full.
     struct RewindPlan { int r = -1; bool run = false; int reserve = -1; } rw;
+    // The first (scoring) pass must see OFF's plain-LRU pool, not the previous
+    // request's recalled blocks: recency-reselect on every pooled request, after
+    // every restore path and before the rw.run decision.
+    if (kvf_paged && kvflash_score_pool_recent_) {
+        const int64_t ins0 = kvflash_pager_.stats().page_ins;
+        const int events = kvflash_pager_.reselect_recent();
+        const int64_t ins = kvflash_pager_.stats().page_ins - ins0;
+        std::fprintf(stderr, "[kvflash] prefill reselect recent-pool @%d: %d page events; "
+                     "%d in (%.1f MiB H2D)\n", kv_offset, events, (int)ins,
+                     (double)ins * (double)kvflash_pager_.chunk_bytes() / 1048576.0);
+    }
     const bool rewind_mode = kvf_reselect && kvflash_prefill_reselect_ >= 3;
     if (rewind_mode) {
         const int end_abs = kv_offset + prompt_len;
@@ -2388,6 +2401,14 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     bool rw_snapped = false, rw_done = false, rw_failed = false, rw_rerun_pending = false;
     const bool rw_zero_state = rw.run && rw.r == 0;   // R4 = 0: the state to restore is the zero state
     std::vector<float> rw_first_logits;   // first-pass final-token logits row
+
+    if (kvf_paged && kvflash_log_resident_) {
+        std::vector<int> res;
+        for (int c = 0; c < kvflash_pager_.n_chunks(); c++)
+            if (kvflash_pager_.is_resident(c)) res.push_back(c);
+        std::fprintf(stderr, "[kvflash] resident @%d: n=%d chunks=%s\n", kv_offset, (int)res.size(),
+                     luce::common::kvflash_format_ranges(res).c_str());
+    }
 
     // Chunked prefill
     std::vector<float> embed_buf((size_t)hidden * prefill_ubatch);

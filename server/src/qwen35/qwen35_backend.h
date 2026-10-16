@@ -316,6 +316,8 @@ protected:
     int kvflash_rewind_turn(const PrefixSnapshot & snap, bool zero_state, int r, int end,
                             int reserve_chunks);
     bool                    kvflash_rewind_noop_ = false;    // LUCE_KVFLASH_REWIND_NOOP: rewind, skip the reselect
+    bool                    kvflash_log_resident_ = false;   // LUCE_KVFLASH_LOG_RESIDENT: log the resident chunk set per pooled request
+    bool                    kvflash_score_pool_recent_ = false;  // LUCE_KVFLASH_SCORE_POOL_RECENT: mode 4 scores on the recency pool
     uint64_t                kvflash_qk_dump_seq_ = 0;
     std::vector<float>      kvflash_qk_dump_max_;   // running per-chunk max over folded queries
     int                     kvflash_qk_dump_nq_ = 0;

@@ -87,7 +87,18 @@ inline bool kvflash_pool_fits(int end, int chunk_tokens, int reserve_chunks, int
 }
 
 // Sorted ascending ids as ranges: {0,3,4,5,9} -> "0,3-5,9" ("" when empty).
-inline std::string kvflash_format_ranges(const std::vector<int> &) { return ""; }   // stub (red)
+inline std::string kvflash_format_ranges(const std::vector<int> & ids) {
+    std::string out;
+    for (size_t i = 0; i < ids.size();) {
+        size_t j = i;
+        while (j + 1 < ids.size() && ids[j + 1] == ids[j] + 1) j++;
+        if (!out.empty()) out += ',';
+        out += std::to_string(ids[i]);
+        if (j > i) out += "-" + std::to_string(ids[j]);
+        i = j + 1;
+    }
+    return out;
+}
 
 // Sorted copy of `cuts` with r inserted; unchanged if r < 0 or already present.
 inline std::vector<int> kvflash_cuts_with(const std::vector<int> & cuts, int r) {
