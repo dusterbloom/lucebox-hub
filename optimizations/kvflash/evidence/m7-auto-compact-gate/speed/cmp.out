@@ -1,0 +1,22 @@
+main: 25 rows
+m7: 25 rows
+m7on: 25 rows
+disk_hit values: {'false'}
+GATE main == m7 (compaction off) greedy text on 25 keyed pairs
+m7on greedy text equal to main on 0 of 25 (informational)
+  prompt 0: distinct texts across 15 runs = 2
+  prompt 1: distinct texts across 15 runs = 2
+  prompt 2: distinct texts across 15 runs = 2
+  prompt 3: distinct texts across 15 runs = 2
+  prompt 4: distinct texts across 15 runs = 2
+metric        arm         median     mean      min      max   vs main
+prefill tok/s main       1247.42  1250.06  1239.14  1264.09    +0.00%
+prefill tok/s m7         1247.42  1250.71  1247.35  1264.09    +0.00%
+prefill tok/s m7on        775.14   773.20   750.40   788.08   -37.86%
+decode tok/s  main         41.30    40.75    34.60    41.80    +0.00%
+decode tok/s  m7           41.30    41.41    41.20    41.80    +0.00%
+decode tok/s  m7on         41.50    41.52    41.40    41.80    +0.48%
+wall s        main         21.30    21.39    21.10    22.60    +0.00%
+wall s        m7           21.30    21.26    21.00    21.40    +0.00%
+wall s        m7on         30.40    30.54    30.10    31.30   +42.72%
+compaction per sealed block (ms), m7on: median 332.7 min 322.1 max 361.2

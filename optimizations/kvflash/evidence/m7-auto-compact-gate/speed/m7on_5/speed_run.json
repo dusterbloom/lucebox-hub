@@ -1,0 +1,77 @@
+[
+ {
+  "prompt": 0,
+  "text": "Record 650: alpha-60 bravo-59. Record 651: alpha-67 bravo-72. Record 652: alpha-74 bravo-85. Record 653: alpha-81 bravo-18. Record 654: alpha-88 bravo-31. Record 655: alpha-95 bravo-44. Record 656: alpha-2 bravo-57. Record 657: alpha-9 bravo-70. Record 658: alpha-16 bravo-83. Record 659: alpha-23 bravo-16. Record 660: alpha-30 bravo-29. Record 661: alpha-37 bravo-42. Record 662: alpha-44 bravo-55. Record 663: alpha-51 bravo-68. Record 664: alpha-58 bravo-81. Record 665: alpha-65 bravo-14. Record 666: alpha-72 bravo-27. Record 6",
+  "prompt_tokens": 18835,
+  "ct": 256,
+  "cache": [
+   "[server] chat CACHE chatcmpl_0000000000000001 restore=false slot=-1 prefix_len=0 effective_prompt=18835 pflash=false disk_policy=full disk_hit=false snap_slot=1 snap_pos=18829 full_snap_slot=-1 full_snap_pos=0"
+  ],
+  "done": [
+   "[server] chat DONE chatcmpl_0000000000000001 ok=true in=18835 effective_in=18835 out=256 30.4s 8.4 tok/s finish=length restore=false slot=-1 prefix_len=0 prefill=24.3s decode=6.2s(41.4tok/s) error=- detail=-"
+  ],
+  "am": [
+   "[kvflash-am] prefill: sealed=29 compacted=29 skipped=0 failed=0 select=1448.7ms fit=6452.9ms io=1713.2ms total=9641.2ms per_block=332.5ms nan_layers=[]"
+  ]
+ },
+ {
+  "prompt": 1,
+  "text": "Record 1250: alpha-32 bravo-88. Record 1251: alpha-39 bravo-1. Record 1252: alpha-46 bravo-14. Record 1253: alpha-53 bravo-27. Record 1254: alpha-60 bravo-40. Record 1255: alpha-67 bravo-53. Record 1256: alpha-74 bravo-66. Record 1257: alpha-81 bravo-79. Record 1258: alpha-88 bravo-12. Record 1259: alpha-95 bravo-25. \nRecord 1260: alpha-2 bravo-38. Record 1261: alpha-9 bravo-51. Record 1262: alpha-16 bravo-64. Record 1263: alpha-23 bravo-77. Record 1264: alpha-30 bravo-10. Record 1265: alpha-37 bravo-23. Record ",
+  "prompt_tokens": 18835,
+  "ct": 256,
+  "cache": [
+   "[server] chat CACHE chatcmpl_0000000000000002 restore=false slot=-1 prefix_len=0 effective_prompt=18835 pflash=false disk_policy=full disk_hit=false snap_slot=2 snap_pos=18829 full_snap_slot=-1 full_snap_pos=0"
+  ],
+  "done": [
+   "[server] chat DONE chatcmpl_0000000000000002 ok=true in=18835 effective_in=18835 out=256 30.4s 8.4 tok/s finish=length restore=false slot=-1 prefix_len=0 prefill=24.2s decode=6.1s(41.8tok/s) error=- detail=-"
+  ],
+  "am": [
+   "[kvflash-am] prefill: sealed=29 compacted=29 skipped=0 failed=0 select=1438.8ms fit=6434.4ms io=1684.3ms total=9582.8ms per_block=330.4ms nan_layers=[]"
+  ]
+ },
+ {
+  "prompt": 2,
+  "text": "Record 1250: alpha-33 bravo-10. Record 1251: alpha-40 bravo-23. Record 1252: alpha-47 bravo-36. Record 1253: alpha-54 bravo-49. Record 1254: alpha-61 bravo-62. Record 1255: alpha-68 bravo-75. Record 1256: alpha-75 bravo-88. Record 1257: alpha-82 bravo-2. Record 1258: alpha-89 bravo-15. Record 1259: alpha-96 bravo-28.\nRecord 1260: alpha-3 bravo-41. Record 1261: alpha-10 bravo-54. Record 1262: alpha-17 bravo-67. Record 1263: alpha-24 bravo-80. Record 1264: alpha-31 bravo-3. Record 1265: alpha-38 bravo-16. Record ",
+  "prompt_tokens": 18835,
+  "ct": 256,
+  "cache": [
+   "[server] chat CACHE chatcmpl_0000000000000003 restore=false slot=-1 prefix_len=0 effective_prompt=18835 pflash=false disk_policy=full disk_hit=false snap_slot=3 snap_pos=18829 full_snap_slot=-1 full_snap_pos=0"
+  ],
+  "done": [
+   "[server] chat DONE chatcmpl_0000000000000003 ok=true in=18835 effective_in=18835 out=256 30.5s 8.4 tok/s finish=length restore=false slot=-1 prefix_len=0 prefill=24.4s decode=6.2s(41.4tok/s) error=- detail=-"
+  ],
+  "am": [
+   "[kvflash-am] prefill: sealed=29 compacted=29 skipped=0 failed=0 select=1454.5ms fit=6472.3ms io=1757.9ms total=9710.5ms per_block=334.8ms nan_layers=[]"
+  ]
+ },
+ {
+  "prompt": 3,
+  "text": "Record 1250: alpha-34 bravo-94. Record 1251: alpha-41 bravo-7. Record 1252: alpha-48 bravo-20. Record 1253: alpha-55 bravo-33. Record 1254: alpha-62 bravo-46. Record 1255: alpha-69 bravo-59. Record 1256: alpha-76 bravo-72. Record 1257: alpha-83 bravo-85. Record 1258: alpha-90 bravo-18. Record 1259: alpha-97 bravo-31.\nRecord 1260: alpha-4 bravo-44. Record 1261: alpha-11 bravo-57. Record 1262: alpha-18 bravo-70. Record 1263: alpha-25 bravo-83. Record 1264: alpha-32 bravo-16. Record 1265: alpha-39 bravo-29. Record",
+  "prompt_tokens": 18836,
+  "ct": 256,
+  "cache": [
+   "[server] chat CACHE chatcmpl_0000000000000004 restore=false slot=-1 prefix_len=0 effective_prompt=18836 pflash=false disk_policy=full disk_hit=false snap_slot=4 snap_pos=18830 full_snap_slot=-1 full_snap_pos=0"
+  ],
+  "done": [
+   "[server] chat DONE chatcmpl_0000000000000004 ok=true in=18836 effective_in=18836 out=256 30.9s 8.3 tok/s finish=length restore=false slot=-1 prefix_len=0 prefill=24.7s decode=6.2s(41.5tok/s) error=- detail=-"
+  ],
+  "am": [
+   "[kvflash-am] prefill: sealed=29 compacted=29 skipped=0 failed=0 select=1471.5ms fit=6597.3ms io=1971.4ms total=10065.7ms per_block=347.1ms nan_layers=[]"
+  ]
+ },
+ {
+  "prompt": 4,
+  "text": "Record 1250: alpha-35 bravo-97. Record 1251: alpha-42 bravo-10. Record 1252: alpha-49 bravo-23. Record 1253: alpha-56 bravo-36. Record 1254: alpha-63 bravo-49. Record 1255: alpha-70 bravo-62. Record 1256: alpha-77 bravo-75. Record 1257: alpha-84 bravo-88. Record 1258: alpha-91 bravo-1. Record 1259: alpha-98 bravo-14.\nRecord 1260: alpha-5 bravo-27. Record 1261: alpha-12 bravo-40. Record 1262: alpha-19 bravo-53. Record 1263: alpha-26 bravo-66. Record 1264: alpha-33 bravo-79. Record 1265: alpha-40 bravo-92. Record",
+  "prompt_tokens": 18836,
+  "ct": 256,
+  "cache": [
+   "[server] chat CACHE chatcmpl_0000000000000005 restore=false slot=-1 prefix_len=0 effective_prompt=18836 pflash=false disk_policy=full disk_hit=false snap_slot=5 snap_pos=18830 full_snap_slot=-1 full_snap_pos=0"
+  ],
+  "done": [
+   "[server] chat DONE chatcmpl_0000000000000005 ok=true in=18836 effective_in=18836 out=256 30.6s 8.4 tok/s finish=length restore=false slot=-1 prefix_len=0 prefill=24.4s decode=6.2s(41.5tok/s) error=- detail=-"
+  ],
+  "am": [
+   "[kvflash-am] prefill: sealed=29 compacted=29 skipped=0 failed=0 select=1461.1ms fit=6511.3ms io=1820.2ms total=9818.0ms per_block=338.6ms nan_layers=[]"
+  ]
+ }
+]

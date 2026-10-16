@@ -1,0 +1,31 @@
+flock command: flock /mnt/kimi-k3/build/3090.lock /home/peppi/Dev/lucebox-builds/wt-m7/optimizations/kvflash/am_gate/ab_speed_all.sh
+start: 2026-10-16T04:28:53+02:00
+workload: ab_speed.py, 5 distinct ~19K-token prompts per server run (salts 11..15), max_tokens 256, temperature 0, Qwen3.8-27B-UD-Q4_K_M, --max-ctx 131072, --kvflash 8192, LUCE_KVFLASH_POLICY=lru, --no-kv-cache, default KV type
+arms: main = 6f2b1795; m7 = /mnt/kimi-k3/build/m7-gate/luce_server_m7b built from branch kvflash/2.0b-m7-auto-compact f066ba3f, --kvflash-am-ratio unset (nothing compacted); m7on = same binary with --kvflash-am-ratio 0.10 (informational)
+main binary: /mnt/kimi-k3/build/main-6f2b-ab/luce_server md5 117e87665bc2d60cb715a35d7f2c4076
+56e714da50d4679c9117cb76af1b032f  /mnt/kimi-k3/build/main-6f2b-cuda/deps/llama.cpp/ggml/src/libggml-base.so.0.9.11
+92cfc356bf351e9cc152f51b13686d58  /mnt/kimi-k3/build/main-6f2b-cuda/deps/llama.cpp/ggml/src/libggml-cpu.so.0.9.11
+27bce702f56cc59e38021a2d0de25b79  /mnt/kimi-k3/build/main-6f2b-cuda/deps/llama.cpp/ggml/src/libggml.so.0.9.11
+cb05afca10c6b69faa0ff72a5b48f608  /mnt/kimi-k3/build/main-6f2b-cuda/deps/llama.cpp/ggml/src/ggml-cuda/libggml-cuda.so.0.9.11
+m7 binary: /mnt/kimi-k3/build/m7-gate/luce_server_m7b md5 5f1c3d3262aa9a27ddf905e4eb89f5af
+961fdd259e65d69aae6780d0816ab3b5  /mnt/kimi-k3/build/m7-cuda/deps/llama.cpp/ggml/src/libggml-base.so.0.9.11
+3033c107f7f9487715d93ecf646b8556  /mnt/kimi-k3/build/m7-cuda/deps/llama.cpp/ggml/src/libggml-cpu.so.0.9.11
+0366261ec1ef23ad1c48ea3755a919be  /mnt/kimi-k3/build/m7-cuda/deps/llama.cpp/ggml/src/libggml.so.0.9.11
+0651bb8051b8e1ad97784172f32313db  /mnt/kimi-k3/build/m7-cuda/deps/llama.cpp/ggml/src/ggml-cuda/libggml-cuda.so.0.9.11
+run main_1: bin /mnt/kimi-k3/build/main-6f2b-ab/luce_server | 2026-10-16T04:28:54+02:00 | compute apps before start: []
+run m7_1: bin /mnt/kimi-k3/build/m7-gate/luce_server_m7b | 2026-10-16T04:30:54+02:00 | compute apps before start: []
+run m7on_1: bin /mnt/kimi-k3/build/m7-gate/luce_server_m7b | 2026-10-16T04:32:50+02:00 | compute apps before start: []
+run main_2: bin /mnt/kimi-k3/build/main-6f2b-ab/luce_server | 2026-10-16T04:35:33+02:00 | compute apps before start: []
+run m7_2: bin /mnt/kimi-k3/build/m7-gate/luce_server_m7b | 2026-10-16T04:37:29+02:00 | compute apps before start: []
+run m7on_2: bin /mnt/kimi-k3/build/m7-gate/luce_server_m7b | 2026-10-16T04:39:25+02:00 | compute apps before start: []
+run main_3: bin /mnt/kimi-k3/build/main-6f2b-ab/luce_server | 2026-10-16T04:42:08+02:00 | compute apps before start: []
+run m7_3: bin /mnt/kimi-k3/build/m7-gate/luce_server_m7b | 2026-10-16T04:44:04+02:00 | compute apps before start: []
+run m7on_3: bin /mnt/kimi-k3/build/m7-gate/luce_server_m7b | 2026-10-16T04:46:00+02:00 | compute apps before start: []
+run main_4: bin /mnt/kimi-k3/build/main-6f2b-ab/luce_server | 2026-10-16T04:48:43+02:00 | compute apps before start: []
+run m7_4: bin /mnt/kimi-k3/build/m7-gate/luce_server_m7b | 2026-10-16T04:50:39+02:00 | compute apps before start: []
+run m7on_4: bin /mnt/kimi-k3/build/m7-gate/luce_server_m7b | 2026-10-16T04:52:35+02:00 | compute apps before start: []
+run main_5: bin /mnt/kimi-k3/build/main-6f2b-ab/luce_server | 2026-10-16T04:55:19+02:00 | compute apps before start: []
+run m7_5: bin /mnt/kimi-k3/build/m7-gate/luce_server_m7b | 2026-10-16T04:57:15+02:00 | compute apps before start: []
+run m7on_5: bin /mnt/kimi-k3/build/m7-gate/luce_server_m7b | 2026-10-16T04:59:11+02:00 | compute apps before start: []
+end: 2026-10-16T05:01:54+02:00
+ab_speed_cmp exit=0
